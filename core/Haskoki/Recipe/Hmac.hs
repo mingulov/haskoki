@@ -62,11 +62,14 @@ import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
 
 -- | One HMAC recipe: the mechanism name, the full tag width in
--- bytes, and whether it takes the GENERAL length parameter.
+-- bytes, whether it takes the GENERAL length parameter, and the
+-- per-digest key type name (@CKK_*_HMAC@) the Init key-type matrix
+-- permits alongside @CKK_GENERIC_SECRET@.
 data HmacRecipe = HmacRecipe
   { hrName :: !MechanismName
   , hrOutLen :: !Int
   , hrGeneral :: !Bool
+  , hrKeyType :: !MechanismName
   } deriving (Eq, Show)
 
 -- | The group's canonical parameter codecs: plain HMAC mechanisms
@@ -113,26 +116,26 @@ hmacParamsValid r params
 hmacRecipes :: [HmacRecipe]
 hmacRecipes = concatMap expand stems
   where
-    expand :: (MechanismName, Int) -> [HmacRecipe]
-    expand (stem, width) =
-      [ HmacRecipe ("CKM_" <> stem <> "_HMAC") width False
-      , HmacRecipe ("CKM_" <> stem <> "_HMAC_GENERAL") width True
+    expand :: (MechanismName, Int, MechanismName) -> [HmacRecipe]
+    expand (stem, width, keyType) =
+      [ HmacRecipe ("CKM_" <> stem <> "_HMAC") width False keyType
+      , HmacRecipe ("CKM_" <> stem <> "_HMAC_GENERAL") width True keyType
       ]
-    stems :: [(MechanismName, Int)]
+    stems :: [(MechanismName, Int, MechanismName)]
     stems =
-      [ ("SHA224", 28)
-      , ("SHA256", 32)
-      , ("SHA384", 48)
-      , ("SHA512", 64)
-      , ("SHA512_224", 28)
-      , ("SHA512_256", 32)
-      , ("SHA3_224", 28)
-      , ("SHA3_256", 32)
-      , ("SHA3_384", 48)
-      , ("SHA3_512", 64)
-      , ("SHA_1", 20)
-      , ("MD5", 16)
-      , ("RIPEMD160", 20)
+      [ ("SHA224", 28, "CKK_SHA224_HMAC")
+      , ("SHA256", 32, "CKK_SHA256_HMAC")
+      , ("SHA384", 48, "CKK_SHA384_HMAC")
+      , ("SHA512", 64, "CKK_SHA512_HMAC")
+      , ("SHA512_224", 28, "CKK_SHA512_224_HMAC")
+      , ("SHA512_256", 32, "CKK_SHA512_256_HMAC")
+      , ("SHA3_224", 28, "CKK_SHA3_224_HMAC")
+      , ("SHA3_256", 32, "CKK_SHA3_256_HMAC")
+      , ("SHA3_384", 48, "CKK_SHA3_384_HMAC")
+      , ("SHA3_512", 64, "CKK_SHA3_512_HMAC")
+      , ("SHA_1", 20, "CKK_SHA_1_HMAC")
+      , ("MD5", 16, "CKK_MD5_HMAC")
+      , ("RIPEMD160", 20, "CKK_RIPEMD160_HMAC")
       ]
 
 -- | Resolve a mechanism id to its HMAC recipe, if covered.

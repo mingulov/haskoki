@@ -203,8 +203,8 @@ ACVP vector + 1 crash.
   windows with no ceiling. Fixed (round 4): single requests past
   `generateRandomMaxBytes` (1 MiB, mirroring `seedRandomMaxBytes`)
   refuse with `DATA_LEN_RANGE` before any allocation, at both the FFI
-  boundary and the backends; oversize `C_SeedRandom` likewise refuses
-  before copying the caller buffer.
+  boundary and the backends; oversize `C_SeedRandom` inputs are likewise
+  length-capped before the caller buffer is copied.
 - Struct-params gap (next slice, recorded not fixed): probing shows
   real C structs are refused the same way — `CKM_SHA256_RSA_PKCS_PSS`
   with a native `CK_RSA_PKCS_PSS_PARAMS` gets `ARGUMENTS_BAD`, because

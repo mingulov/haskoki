@@ -1002,6 +1002,32 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
              "AES-CBC EncryptInit with generic key refused");
     }
+    /* Per-digest HMAC key types serve their own mechanism only. */
+    {
+      CK_KEY_TYPE h256kt = CKK_SHA256_HMAC, h512kt = CKK_SHA512_HMAC;
+      CK_BYTE hval[32] = { 0 };
+      CK_OBJECT_HANDLE h256 = 0, h512 = 0;
+      CK_ATTRIBUTE ht[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &h256kt, sizeof(h256kt) },
+        { CKA_VALUE, hval, sizeof(hval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) }
+      };
+      rv = f->C_CreateObject(ssess, ht, 5, &h256);
+      CHECKC(rv == CKR_OK && h256 != 0, "SHA256-HMAC key imports");
+      ht[1].pValue = &h512kt;
+      rv = f->C_CreateObject(ssess, ht, 5, &h512);
+      CHECKC(rv == CKR_OK && h512 != 0, "SHA512-HMAC key imports");
+      rv = f->C_SignInit(ssess, &hm, h256);
+      CHECKC(rv == CKR_OK, "HMAC SignInit with matching HMAC key ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "x", 1, sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen == 32, "matching HMAC key signs");
+      rv = f->C_SignInit(ssess, &hm, h512);
+      CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+             "HMAC SignInit with mismatched HMAC key refused");
+    }
     gm.mechanism = CKM_SHA256_HMAC_GENERAL;
     gm.pParameter = &gpar;
     gm.ulParameterLen = sizeof(gpar);

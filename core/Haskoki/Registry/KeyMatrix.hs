@@ -10,7 +10,9 @@ automatically and a mechanism with no recipe row stays
 unconstrained rather than silently misclassified.
 
 Coverage (classic Init path only): HMAC sign\/verify wants
-@CKK_GENERIC_SECRET@; RSA v1.5\/PSS sign\/verify and RSA-OAEP
+@CKK_GENERIC_SECRET@ or the row's per-digest @CKK_*_HMAC@ type
+(digest-precise: a SHA-512 HMAC key does not serve SHA-256 HMAC);
+RSA v1.5\/PSS sign\/verify and RSA-OAEP
 encrypt\/decrypt want @CKK_RSA@; ECDSA sign\/verify wants @CKK_EC@;
 block-cipher encrypt\/decrypt wants the recipe row's key type;
 CMAC sign\/verify wants @CKK_AES@ (@CKK_DES3@ for the DES3 rows).
@@ -48,7 +50,8 @@ matrixKeyTypes mid op = Map.lookup (mid, op) matrixTable
 -- to 'Nothing'.
 matrixTable :: Map (MechanismId, Operation) [Word64]
 matrixTable = Map.fromList (concat
-  [ [ ((midOf (hrName r), o), [ckkGeneric]) | r <- hmacRecipes, o <- [OpSign, OpVerify] ]
+  [ [ ((midOf (hrName r), o), [ckkGeneric, mustKeyTypeId (hrKeyType r)])
+    | r <- hmacRecipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (rrName r), o), [ckkRsa]) | r <- rsaPkcs1Recipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (rpName r), o), [ckkRsa]) | r <- rsaPssRecipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (roName r), o), [ckkRsa]) | r <- rsaOaepRecipes, o <- [OpEncrypt, OpDecrypt] ]

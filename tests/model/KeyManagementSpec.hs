@@ -27,6 +27,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..), encodeValue)
+import Haskoki.Attribute.Generated (mustKeyTypeId)
 import Haskoki.Engine.Backend
   ( CryptoBackend (..)
   , DigestAlg (..)
@@ -656,7 +657,8 @@ caseInitKeyTypeMatrix = withSynth $ \answer -> do
   let (_, encGen) = initOperation env emptySessionOps st (mkEnc genH)
   assertEqual "AES-CBC encrypt with generic key" CKR_KEY_TYPE_INCONSISTENT (ioCode encGen)
   -- Direct matrix pins.
-  assertEqual "hmac row" (Just [ckkGenericSecret]) (matrixKeyTypes hmacSha256Mech OpSign)
+  assertEqual "hmac row" (Just [ckkGenericSecret, mustKeyTypeId "CKK_SHA256_HMAC"])
+    (matrixKeyTypes hmacSha256Mech OpSign)
   assertEqual "cbc row" (Just [ckkAes]) (matrixKeyTypes aesCbcMech OpEncrypt)
   assertEqual "digest unmatrices" Nothing (matrixKeyTypes sha256Mech OpDigest)
   assertEqual "off-op unmatrices" Nothing (matrixKeyTypes hmacSha256Mech OpEncrypt)
