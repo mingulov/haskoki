@@ -44,8 +44,7 @@ INV_PATH = SPEC / "abi-inventory.json"
 REC_PATH = SPEC / "abi-reconciliation.json"
 ISSUES_PATH = SPEC / "source-issues.json"
 GEN_H = PKG / "cbits" / "abi_generated.h"
-CSV_PATH = (PKG.parent / "ws" / "docs" / "incoming"
-            / "haskell-pkcs11-design" / "spec" / "inventory" / "functions.csv")
+CSV_PATH = SPEC / "planning" / "functions.csv"
 
 ERRORS = []
 

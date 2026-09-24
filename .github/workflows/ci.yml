@@ -140,6 +140,12 @@ jobs:
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Align checkout ownership with image user
+        run: |
+          # The image runs as uid:gid 1000:1000 but the runner owns the
+          # checkout as 1001, so the bind-mounted /work would be
+          # read-only and cabal could not create dist-newstyle.
+          sudo chown -R 1000:1000 "$GITHUB_WORKSPACE"
       - name: Build release artifact
         run: |
           docker run --rm --network host -v "$PWD:/work" -w /work \

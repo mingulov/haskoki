@@ -295,6 +295,15 @@ written-at-the-time pointers.
   106+102+104+150 pass on the routed surface. `docs/coverage.md`
   regenerated; `SUPPORTED-HOSTS.md` carries the release scope.
 
+### Fixed
+
+- CI hermeticity (unreleased): the 104-row planning seed
+  (`functions.csv`) is vendored at `spec/planning/` so the ABI
+  generators and `validate-spec.py` no longer read the design
+  bundle outside the repo; the release job aligns the checkout
+  ownership with the image user so the bind-mounted build can
+  write `dist-newstyle`.
+
 ### Not claimed
 
 - SunPKCS11 / OpenSSL provider not attempted (no JVM/provider in

@@ -7,8 +7,8 @@ Reads:
                                   header, single-file form (the only
                                   generation input; older interfaces are
                                   positional prefixes of its order)
-  <ws>/docs/incoming/haskell-pkcs11-design/spec/inventory/functions.csv
-                                  104-row planning seed (reconciliation only)
+  spec/planning/functions.csv     104-row planning seed (reconciliation
+                                  only), vendored for hermetic generation
 
 Writes (deterministic bytes, no timestamps):
   spec/abi-inventory.json         ordered functions + prototypes + aliases
@@ -41,8 +41,7 @@ from pathlib import Path
 PKG = Path(__file__).resolve().parent.parent
 SPEC = PKG / "spec"
 LOCK_PATH = SPEC / "sources.lock.json"
-CSV_PATH = (PKG.parent / "ws" / "docs" / "incoming"
-            / "haskell-pkcs11-design" / "spec" / "inventory" / "functions.csv")
+CSV_PATH = SPEC / "planning" / "functions.csv"
 
 # PD function entries: `extern CK_RV C_Name(...);` (possibly multi-line).
 FUN_RE = re.compile(r"^extern\s+CK_RV\s+(C_[A-Za-z0-9]+)\s*\(", re.MULTILINE)
@@ -299,7 +298,7 @@ def main():
     reconciliation = {
         "schema_version": 1,
         "generated_by": "scripts/generate-abi.py",
-        "planning_seed": str(CSV_PATH.relative_to(PKG.parent)),
+        "planning_seed": str(CSV_PATH.relative_to(PKG)),
         "planning_seed_sha256": csv_sha,
         "summary": {"matched": n_matched, "added": n_added,
                     "removed": n_removed, "aliased": n_aliased},

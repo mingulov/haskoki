@@ -3,8 +3,8 @@
 
 Reads:
   spec/abi-inventory.json         generated function order per layout
-  <ws>/docs/incoming/haskell-pkcs11-design/spec/inventory/functions.csv
-                                  104-row planning seed (acceptance cases)
+  spec/planning/functions.csv     104-row planning seed (acceptance
+                                  cases), vendored for hermetic generation
 
 Writes (deterministic bytes, no timestamps):
   spec/function-contracts.json    all 104 3.2-layout functions classified
@@ -37,8 +37,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SPEC = REPO / "spec"
 ABI_PATH = SPEC / "abi-inventory.json"
-CSV_PATH = (REPO.parent / "ws" / "docs" / "incoming"
-            / "haskell-pkcs11-design" / "spec" / "inventory" / "functions.csv")
+CSV_PATH = SPEC / "planning" / "functions.csv"
 OUT_PATH = SPEC / "function-contracts.json"
 
 # name -> (entry, [(suite, spec_file_relative_to_repo)]).

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/generate-abi.py",
-  "planning_seed": "ws/docs/incoming/haskell-pkcs11-design/spec/inventory/functions.csv",
+  "planning_seed": "spec/planning/functions.csv",
   "planning_seed_sha256": "2be025255633c49eff47bbc73415b35185484aef0451ccfa582aaad9f5b6657a",
   "summary": {
     "matched": 104,
