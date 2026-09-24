@@ -4,7 +4,8 @@
 --   ws/docs/incoming/haskell-pkcs11-design/examples/storage-schema.sql
 -- (Design-bundle input, read-only). Adaptations recorded here:
 --
--- * `store_format` is `haskoki-demo-v1` (repo naming, not `hsp11-demo-v1`).
+-- * `store_format` is `haskoki-demo-v1` (adapted from the bundle's
+--   `hsp11-demo-v1`).
 -- * `store_meta` gains a `schema_version` key (`1`): the minimal
 --   integer schema version the opener checks. A wrong/future version
 --   is rejected without rewriting the database.

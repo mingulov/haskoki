@@ -1,35 +1,53 @@
 # haskoki
 
 A Haskell PKCS#11 soft token (demonstrator) covering APIs 2.40, 3.0, 3.1
-and 3.2. This repository directory is the **public package**; the private
-working space (`../ws/`) holds the design index, roadmap, and notes.
+and 3.2. This repository is the complete package: code, specs, docs,
+and release tooling. Dated working notes cited by older entries live
+outside this package (see `CHANGELOG.md`).
 
 > Status: 0.3.0.0 — behavior breadth (in-process) + consumer integration
 > + release packaging. C-loadable `libhaskoki.so` with byte-pinned
-> versioned tables (2.40/3.0/3.1/3.2); 106 behavior-tested mechanisms
-> proven in-process through real libcrypto; C tables expose the SHA-256
-> one-shot only and refuse the rest honestly. Not a conformance claim.
-> See `CHANGELOG.md` for the evidence index.
+> versioned tables (2.40/3.0/3.1/3.2); a 104-row mechanism catalog
+> proven in-process through real libcrypto, routed on the C tables
+> (sessions, objects, sign/verify, encrypt/decrypt, digest,
+> wrap/unwrap, derive); genuinely unsupported calls refuse honestly.
+> Not a conformance claim. See `CHANGELOG.md` for the evidence index.
 
 ## Layout
 
 ```text
 haskoki/
-  haskoki.cabal     library + test-suite
-  cabal.project     local project file
+  haskoki.cabal     2 libraries (haskoki-core pure core + main) +
+                    foreign-library libhaskoki.so + 2 executables +
+                    6 test suites
+  cabal.project(.freeze)  pinned build plan (Hackage index-state)
+  toolchain.lock    frozen toolchain record (compiler, image, OpenSSL)
   Setup.hs          stock Setup
+  core/             pure core: types, rules, registry, transition,
+                    session, object, operation, snapshot
   src/Haskoki.hs    public re-export surface
-  src/Haskoki/Types.hs   owned-value core types (stub)
-  src/Haskoki/PKCS11.hs  provider facade (stub)
-  test/Main.hs      placeholder tasty suite (+ pkcs11-check hook note)
-  cbits/            C facade: RTS bootstrap, function tables, probes
+  src/Haskoki/PKCS11.hs  provider facade (stub: CKR_GENERAL_ERROR)
+  src/Haskoki/Runtime/   config, control, trace, events, async,
+                    lifecycle, storage
+  src/Haskoki/Engine/    crypto engines (synthetic + OpenSSL 4)
+  src/Haskoki/Ctl.hs     haskoki-ctl logic (config/capabilities/
+                    scenario/store)
+  app/              haskoki-ctl executable
+  tools/            lifecycle-probe executable
+  cbits/            C: function tables, RTS bootstrap, OpenSSL shim,
+                    probes
   ffi/              Haskell foreign exports + measured layout types
-  spec/             byte-locked vendor headers + ABI inventory
-  scripts/          ABI generation/validation + test drivers
-  tests/c/          independent C harness (loader + layout probes)
+  spec/             byte-locked vendor header + ABI inventory
+                    (mechanisms, attributes, contracts)
+  scripts/          ABI generation/validation + gates + test drivers
+  test/             scaffold smoke suite (2 cases + pkcs11-check
+                    hook note)
+  tests/            model/engine/storage/prop/core suites, C harness
+                    (tests/c), ops fixtures (tests/ops)
+  docs/             operator + evidence docs (walkthrough, coverage,
+                    trust ladder, toolchain, ...)
   bench/            (reserved for future benchmarks)
-  docs/             package-local docs (reserved)
-  app/              (reserved for future executables)
+  .github/          CI (build + test + release + external lanes)
 ```
 
 ## Build and test
@@ -81,15 +99,8 @@ Recorded limits, not supported modes:
 
 `pkcs11-check` is an external consumer run as a separately built binary
 against the compiled shared library — never linked into the test suite and
-never the sole oracle. See the hook note in `test/Main.hs` and design doc
-`09-testing-and-acceptance.md`.
-
-## Design source
-
-The implementation design (revision 0.1) lives read-only at
-`../ws/docs/incoming/haskell-pkcs11-design/`; start at
-`../ws/docs/README.md`. It uses the working identifier `hsp11` /
-`libhsp11.so`; the public package ships as `haskoki`.
+never the sole oracle. See the hook note in `test/Main.hs` and rung 5 of
+`docs/trust-ladder.md`.
 
 ## License
 

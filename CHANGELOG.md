@@ -5,10 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Haskell Package Versioning Policy](https://pvp.haskell.org/).
 
+Older entries cite `../ws/notes/...` evidence notes and design paths
+under `../ws/docs/...`: those working notes live outside this package
+and are not shipped here; the paths stay verbatim as
+written-at-the-time pointers.
+
 ## [Unreleased]
 
 ### Added
 
+- Newcomer audit + GHC 10 alpha lane removal (unreleased):
+  `cabal.project.ghc10alpha(.freeze)` and
+  `Dockerfile.ghc10alpha` are removed (GHC 9.10.3 is the one
+  supported compiler; the full suite plus gates re-verified on
+  it); `docs/toolchain.md`, `Dockerfile`, `toolchain.lock`, and
+  the `haskoki.cabal` header comments drop the alternative
+  toolchain; the README layout block is rewritten to match the
+  tree; out-of-package `../ws/` pointers in the README, the
+  trust ladder, `src/Haskoki.hs`, and `test/Main.hs` now point
+  at in-repo docs; the plan-to-package rename table is deleted
+  (no rename happened: `hsp11` strings are verbatim
+  design-bundle inheritance, never the product name); the FIPS
+  doc drops the dead research-base
+  commit pin; the package description and
+  README status now state the routed 104-row C-surface catalog
+  instead of the retired SHA-256-one-shot-only note.
 - Public-domain header migration (unreleased): the eight
   OASIS/TC-vendored header sets (24 files, non-open OASIS IPR
   license) are replaced by the single verbatim latchset

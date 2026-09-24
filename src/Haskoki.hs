@@ -1,12 +1,13 @@
 {- | Top-level entry point for the @haskoki@ soft token.
 
-This scaffold re-exports the public surface. See the design package
-(@ws\/docs\/incoming\/haskell-pkcs11-design@, read-only) for the full
-architecture: a pure internal core, an effectful runtime, and a small
-generated C facade.
+This scaffold re-exports the public surface. See
+@docs\/demo-walkthrough.md@ (operator path) and
+@docs\/operations-notes.md@ (decisions) for the architecture: a pure
+internal core, an effectful runtime, and a small generated C facade.
 
-The working identifier used by the design documents is @hsp11@\/
-@libhsp11.so@; the public package ships as @haskoki@.
+The @hsp11@ strings in design-bundle-derived example files are
+inherited verbatim (see @tests\/ops\/fixtures\/PROVENANCE.md@);
+the package ships as @haskoki@.
 -}
 module Haskoki
   ( -- * Core types

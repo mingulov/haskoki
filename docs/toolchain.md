@@ -8,12 +8,10 @@ frozen in [`toolchain.lock`](../toolchain.lock) and
 
 | Compiler | Status | Install |
 |---|---|---|
-| GHC 9.10.3 | default | OS package (`apt install ghc cabal-install` on Ubuntu 26.04) or ghcup vanilla |
-| GHC 10.0.1-alpha1 (snapshot 10.0.0.20260917) | alternative | ghcup `prereleases` channel (see below) |
+| GHC 9.10.3 | supported | OS package (`apt install ghc cabal-install` on Ubuntu 26.04) or ghcup vanilla |
 
 `haskoki.cabal` (`tested-with`), `cabal.project(.freeze)`, and
-`Dockerfile` track the default compiler. The alternative lives in
-`cabal.project.ghc10alpha(.freeze)` and `Dockerfile.ghc10alpha`.
+`Dockerfile` track the one supported compiler.
 
 Minimum is GHC 9.10: the build treats `-Wincomplete-record-selectors`
 (introduced in 9.10) as a fatal omission class, so older compilers
@@ -88,18 +86,6 @@ version string (exact values in `toolchain.lock`).
 - `toolchain.lock` records the image, compiler, boot libraries,
   Hackage pins, OpenSSL build, and loader-proof facts. The release
   builder checksums it into every artifact (`toolchain-record.txt`).
-
-## Alternative toolchain (GHC 10 alpha)
-
-```sh
-ghcup -s prereleases install ghc 10.0.0.20260917 --set
-ghcup install cabal 3.18.1.0 --set
-cabal build --project-file=cabal.project.ghc10alpha
-```
-
-or build `Dockerfile.ghc10alpha` (tag
-`haskoki-dev:ghc-10.0.0.20260917`), which renames the alpha project
-files into place before the baked test run.
 
 ## Troubleshooting
 

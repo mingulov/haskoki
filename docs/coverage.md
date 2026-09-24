@@ -13,7 +13,7 @@ Denominator: 464 catalog rows (+ 16 aliases = 480 header CKM).
 > scripts/test-release-install.sh); genuinely unsupported calls
 > keep their documented refusals. No row below claims more than
 > its evidence. Consumer evidence: scripts/test-consumers.sh,
-> scripts/test-proxy-parity.sh, plus the 2026-09-21 consumer session notes.
+> scripts/test-proxy-parity.sh, plus the 2026-09-21 consumer session notes (working notes, outside this package).
 
 ## Mechanism coverage
 

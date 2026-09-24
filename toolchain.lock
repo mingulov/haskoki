@@ -1,6 +1,6 @@
-# haskoki toolchain lock (default GHC 9.10.3; frozen 2026-09-24).
+# haskoki toolchain lock (GHC 9.10.3; frozen 2026-09-24).
 #
-# Primary environment is the Docker image below. It carries the full
+# The environment is the Docker image below. It carries the full
 # toolchain plus prebuilt project deps and baked passing tests, so a fresh
 # machine needs only Docker + `docker load`.
 # Rebuild:  cd haskoki && docker build -t <image> .
@@ -40,35 +40,15 @@ tasty = 1.5.4
 tasty-hunit = 0.10.2
 freeze-file = cabal.project.freeze
 
-[alternative-ghc10alpha]
-ghc-numeric-version = 10.0.0.20260917
-ghc-release = 10.0.1-alpha1 (2026-09-18)
-ghcup-channel = prereleases (ghcup-prereleases-0.0.9.yaml)
-bindist-url = https://downloads.haskell.org/~ghc/10.0.0.20260917/ghc-10.0.0.20260917-x86_64-ubuntu24_04-linux.tar.xz
-bindist-sha256 = 5dd9665db5c4e72ca4ba6863db6d2bb7278cca4bf81cd81c0e15e1d8420a2853
-dockerfile = Dockerfile.ghc10alpha
-project = cabal.project.ghc10alpha(.freeze)
-image = haskoki-dev:ghc-10.0.0.20260917
-image-id = sha256:4f3797e128ea158de1408c5702b1bb487e9ed6650c107b7d09ad77f515008032
-note = pre-flip default, preserved as the alternative; not re-verified after the flip
-
 [verified]
 cabal-test = PASS (core 221/221, tests 2/2, storage 58/58, engine 147/147, prop 54/54, model 784/784; native GHC 9.10.3, 2026-09-24)
 cabal-test-image = PASS (in-image /work during build, 2026-09-24)
 warnings = EMPTY (forced native build, 0 warnings)
 make-release = PASS (native; 24 bundled libHS; host deps system-only incl. libffi/libnuma; glibc floor 2.43)
 
-[verified-ghc10alpha]
-cabal-test = PASS (2/2, in-image /work, 2026-09-20)
-cabal-test-loader = PASS (2/2, bind-mount /work, 2026-09-20; library + test-suite unchanged by the loader work)
-loader-suite = PASS (132/132 checks, A01-A06 + SHA KATs + stubs, bind-mount /work, 2026-09-20)
-cabal-test-engine-image = PASS (2/2 + 25/25 + 81/81, in-image /work during rebuild, 2026-09-20)
-cabal-test-engine-bind = PASS (2/2 + 25/25 + 81/81, bind-mount /work incl. --builddir=/tmp/forced-dist-engine 0 warnings, 2026-09-20)
-
 [openssl-freeze]
-# Loader-proof facts for the default toolchain (GHC 9.10.3). The
-# supported-loader policy below is shared; per-toolchain facts for
-# the alpha live in [g0-freeze-ghc10alpha].
+# Loader-proof facts for the toolchain (GHC 9.10.3). The
+# supported-loader policy below is the whole story.
 flib = foreign-library haskoki, type native-shared
 soname = libhaskoki.so
 so-path = dist-newstyle/build/x86_64-linux/ghc-9.10.3/haskoki-0.3.0.0/f/haskoki/build/haskoki/libhaskoki.so
@@ -89,21 +69,6 @@ package-set = unchanged from [hackage-pins] above (flib adds base-only Haskell m
 # hosts refused (CKR_NEED_TO_CREATE_THREADS).
 # Fork safety: every entry gates on the boot PID recorded at RTS
 # start; see SUPPORTED-HOSTS.md.
-
-[g0-freeze-ghc10alpha]
-# Pre-flip loader-proof facts (2026-09-20), preserved with the alpha.
-flib = foreign-library haskoki, type native-shared
-soname = libhaskoki.so
-so-path = dist-newstyle/build/x86_64-linux/ghc-10.0.0.20260917/haskoki-0.2.0.0/f/haskoki/build/haskoki/libhaskoki.so
-ghc-options-flib = -Wall -threaded
-cc-options-flib = -Wall -Wextra -std=c11 -pthread
-ld-options-flib = -Wl,-z,nodelete -pthread
-rts = threaded, dynamic (libHSrts-1.0.3_thr-ghc10.0.0.20260917.so)
-rts-ways-available = v thr thr_debug thr_debug_p thr_debug_p_dyn thr_debug_dyn thr_p thr_p_dyn thr_dyn debug debug_p debug_p_dyn debug_dyn p p_dyn dyn
-needed = libm.so.6, libHSbase-4.23.0.0, libHSghc-prim-0.14.0, libHSghc-internal-10.0.0, libHSrts-1.0.3_thr, libHSlibffi-clib-3.6.0, libgmp.so.10, libc.so.6
-pinning = DF_1_NODELETE (FLAGS_1: NODELETE; dlclose retention demonstrated, A06b)
-hs-exit = absent: no call-site in cbits/ ffi/, no symbol in cbits objects, no dynamic ref in libhaskoki.so
-package-set = unchanged from [hackage-pins] above (flib adds base-only Haskell module; no new deps)
 
 [openssl]
 # Pinned libcrypto for the OpenSSL4 backend (Dockerfile

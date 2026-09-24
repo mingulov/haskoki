@@ -14,8 +14,8 @@ Conventions:
 - Every external claim cites a URL fetched live on **2026-09-24**
   (access date in the cite) or the `/tmp` build spike whose logs stay
   out of the repo (spike log names in the cite).
-- Every code claim cites `file:line` at the research base, commit
-  `3620360`. Line numbers drift; symbols are stable.
+- Every code claim cites `file:line` at the 0.3.0.0 tree.
+  Line numbers drift; symbols are stable.
 - No claim rests on the prior workflow synthesis alone; where the
   workflow hypothesis is confirmed, the fresh citation is given.
 - `fips.so` = the OpenSSL FIPS provider shared object (Unix name).
@@ -348,7 +348,7 @@ untouched.
 
 ## §4 — code touchpoints (PROPOSED diff plan)
 
-Every touchpoint cites its seam at the research base (`3620360`).
+Every touchpoint cites its seam at the 0.3.0.0 tree.
 Seams first (what already fits), then blockers (what must
 change). All items are PROPOSED — no code changes in this task.
 
@@ -476,10 +476,9 @@ stance — it does not propose changing it. The stance, verified
 at base: "No certification, FIPS, Common Criteria, or
 production-security claim is made anywhere in this release"
 (`docs/coverage.md:208-209`); `fips = out of scope (default
-provider only)` (`toolchain.lock` `[openssl]`); the PRD excludes
-"FIPS/CC validation" from scope
-(`ws/docs/incoming/haskell-pkcs11-design/docs/01-PRD.md:102`,
-workspace-side). A FIPS flavor built per §3/§4 would narrow
+provider only)` (`toolchain.lock` `[openssl]`); the working-paper
+PRD excludes "FIPS/CC validation" from scope (unshipped, outside
+this package). A FIPS flavor built per §3/§4 would narrow
 but not erase that stance: the module inside the boundary is
 validated; haskoki itself holds no CMVP certificate and this
 doc proposes no haskoki-owned validation.
@@ -556,7 +555,7 @@ update fails review. This doc makes no such proposal.
 | Q2 | `fips.so` vs the no-shared static pin — can they coexist? | RESOLVED by the §3 spike | Criterion: build-system ruling with logs — MET (§3: static pin loads + drives `fips.so`, incl. 3.1.2-built module under the 4.0.2 binary). No watch needed; the ruling is structural (dispatch-table coupling, §2). Owner: none (closed). |
 | Q3 | Is the #5132 "vendor rebrand" rumor real, and does it change the module choice? | RESOLVED (real, no change) | #5132 is CONFIRMED: CMVP validated-modules search shows "5132 \| Chainguard, Inc. \| Chainguard FIPS Provider for OpenSSL \| Software \| 01/14/2026" (§1 CMVP cite), and Chainguard's announcement states the 3.4.0-based module is "the only OpenSSL 3.4-based module to receive FIPS 140-3 validation", effective in their images 17 Mar 2026 (https://www.chainguard.dev/unchained/introducing-the-chainguard-fips-provider-for-openssl-3-4-0; published 11 Mar 2026; accessed 2026-09-24). It does NOT change the recipe: it is a vendor-owned cert on 3.4.0 sources a haskoki deployer cannot self-build under; the self-buildable upstream path stays #4985/3.1.2 (§3 step 1). NOTE for the watch: a NEWER Chainguard row exists — #5523, 09/15/2026 (same CMVP search cite; module version not shown in the table) — plus #5102 (Chainguard's 3.1.2, per the same announcement: "a version upgrade from OpenSSL 3.1.2 (CMVP #5102)"). Vendor-cert tracking is the flavor owner's job, not this doc's. Owner: future FIPS-flavor task (watch). |
 | Q4 | PQC boundary: does the validated module cover post-quantum algorithms? | OPEN with criterion | No: the #4985 module is 3.1.2-based, which predates OpenSSL's PQC support (ML-KEM, ML-DSA, SLH-DSA arrived in 3.5, April 2025; the 3.5.4 submission is "the first step toward a FIPS-140 validated PQC-ready module" — PRLog 9 Oct 2025 cite in §1). Haskoki's catalog has no PQC mechanisms today (`scPqcSign = Set.empty`, `kcAlgs = Set.empty` at `src/Haskoki/Engine/OpenSSL4.hs:484-485`), so the gap is inherited, not created, by the flavor. Criterion to close: a validated PQC-ready module issues (watch Q1's row) AND a task extends the catalog + §4 item 8 narrowing to cover it. Owner: PQC-catalog task (future). |
-| Q5 | Prior-synthesis-only note: does any claim in this doc rest solely on the earlier workflow synthesis? | RESOLVED by construction | Criterion: every load-bearing claim carries a fresh cite (live URL + access date, repo file:line, or spike log) — MET: §1–§5 cite 11 distinct live URLs (all accessed 2026-09-24), ~30 file:line pins at `3620360`, and 6 spike logs. The workflow verdict survived as hypothesis only; §1 records where fresh evidence confirmed it (no 4.x validation/queue) and where it refined it (no 3.x library rebuild needed — the cross-version + spike finding). Owner: none (closed). |
+| Q5 | Prior-synthesis-only note: does any claim in this doc rest solely on the earlier workflow synthesis? | RESOLVED by construction | Criterion: every load-bearing claim carries a fresh cite (live URL + access date, repo file:line, or spike log) — MET: §1–§5 cite 11 distinct live URLs (all accessed 2026-09-24), ~30 file:line pins at the 0.3.0.0 tree, and 6 spike logs. The workflow verdict survived as hypothesis only; §1 records where fresh evidence confirmed it (no 4.x validation/queue) and where it refined it (no 3.x library rebuild needed — the cross-version + spike finding). Owner: none (closed). |
 
 ## Citation index (load-bearing claims → fresh sources)
 
@@ -574,8 +573,8 @@ scripts/release-evidence.sh, src/Haskoki/Engine/{Backend,
 Driver, OpenSSL4}.hs, ffi/Haskoki/FFI/OpenSSL4/Raw.hs,
 cbits/ossl4_ctx.c, core/Haskoki/Operation/Cipher.hs,
 src/Haskoki/Runtime/Config.hs, docs/{coverage,
-config-honesty}.md, spec/vendor/pkcs11.h, PRD:102
-(ws-side) — all pinned file:line at `3620360` in §1–§6.
+config-honesty}.md, spec/vendor/pkcs11.h, working-paper PRD
+(unshipped) — all pinned file:line at the 0.3.0.0 tree in §1–§6.
 Spike (`/tmp`, NOT committed): build-noshared.log,
 build-modules-noshared.log, build-312b.log, fips-openssl.cnf,
 fips312-openssl.cnf, fipsmodule-312.cnf + install transcripts

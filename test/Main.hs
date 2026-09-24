@@ -1,15 +1,15 @@
-{- | Placeholder test suite.
+{- | Scaffold smoke suite (kept): two cases pinning the version
+enumeration and the stub outcome type.
 
-Uses tasty. Real suites arrive with the implementation tasks: Tasty
-plus QuickCheck for pure\/state-machine work and an independent C harness
-for the public ABI.
+The real suites live in @tests\/@: model, engine, storage, prop, and
+core Haskell suites plus the independent C harness in @tests\/c@.
 
 @pkcs11-check@ hook note: @pkcs11-check@ is an /external, independent/
-consumer used as evidence (see @09-testing-and-acceptance.md@). It must be
-invoked as a separately built binary against the compiled shared library
-(e.g. from @scripts\/test-consumers.sh@), never linked into this suite
-and never as the sole oracle: do not import its expected results or reuse
-its marshalling implementation here.
+consumer used as evidence (rung 5 in @docs\/trust-ladder.md@). It must
+be invoked as a separately built binary against the compiled shared
+library (e.g. from @scripts\/test-consumers.sh@), never linked into
+this suite and never as the sole oracle: do not import its expected
+results or reuse its marshalling implementation here.
 -}
 module Main (main) where
 

@@ -5,19 +5,19 @@ synopsis:           Haskell PKCS#11 soft token (demonstrator)
 description:
   A Haskell soft token that makes the PKCS#11 surface (APIs 2.40, 3.0, 3.1
   and 3.2) easy to exercise and understand. At 0.3.0.0: a C-loadable
-  shared module with byte-pinned versioned tables, 106 behavior-tested
-  mechanisms proven in-process through real libcrypto, native consumer
+  shared module with byte-pinned versioned tables, a 104-row mechanism
+  catalog proven in-process through real libcrypto, native consumer
   and proxy-parity proofs, and a relocatable release artifact. The C
-  tables expose only the SHA-256 one-shot; sessions/objects/sign/encrypt
-  refuse honestly. Not a conformance claim.
+  tables route real crypto (sessions, objects, sign/verify,
+  encrypt/decrypt, digest, wrap/unwrap, derive); genuinely
+  unsupported calls refuse honestly. Not a conformance claim.
 license:            Apache-2.0
 author:             haskoki contributors
 maintainer:         haskoki contributors
 category:           Security, Cryptography
 build-type:         Simple
--- Baseline compiler: GHC 9.10.3 (OS package or ghcup vanilla).
--- Alternative: GHC 10.0.1-alpha1 snapshot 10.0.0.20260917 via the
--- ghcup prereleases channel (see docs/toolchain.md).
+-- Supported compiler: GHC 9.10.3 (OS package or ghcup vanilla;
+-- see docs/toolchain.md).
 tested-with:       GHC == 9.10.3
 extra-doc-files:
   README.md
@@ -25,9 +25,9 @@ extra-doc-files:
 
 -- Omission classes are fatal in the pinned validation
 -- configuration. Spellings confirmed by compiling probes on the pinned
--- alpha ghc-10.0.0.20260917; flag names must come from compiled
--- probes, never copied from upstream docs alone. Scope: the library +
--- test suites (what run-gates.sh + forced builds validate).
+-- GHC 9.10.3; flag names must come from compiled probes, never copied
+-- from upstream docs alone. Scope: the library + test suites (what
+-- run-gates.sh + forced builds validate).
 common fatal-omissions
   ghc-options:
     -Werror=incomplete-patterns

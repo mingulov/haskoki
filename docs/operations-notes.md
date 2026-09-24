@@ -1,15 +1,9 @@
 # Decision note — operations surface
 
-## Rename (plan `Hsp11.*` -> package `Haskoki.*`, per ROADMAP)
-
-| Design/plan name | Implemented name |
-|---|---|
-| `runtime/Hsp11/Runtime/{Events,Trace,Config,Control}.hs` | `src/Haskoki/Runtime/{Events,Trace,Config,Control}.hs` |
-| `HSP11_CONFIG` | `HASKOKI_CONFIG` |
-| `HSP11_Control` | `HASKOKI_Control` |
-| `hsp11_control.h` | `cbits/haskoki_control.h` |
-| `hsp11ctl` | `haskoki-ctl` (executable `app/Main.hs`, logic in `Haskoki.Ctl`) |
-| `hsp11-{pid}.jsonl` trace default | `haskoki-{pid}.jsonl` |
+`hsp11` strings in design-bundle-derived files (e.g. trace paths
+in `tests/ops/fixtures/*.toml`) are inherited verbatim from the
+design bundle (see `tests/ops/fixtures/PROVENANCE.md`) and were
+never the product name; the package ships as `haskoki`.
 
 ## TOML route: minimal hand parser (no new dependency)
 
@@ -18,7 +12,7 @@ The design examples use a small TOML subset (top-level scalars,
 comments). Options considered:
 
 1. Hackage `tomland` pinned in the freeze — full TOML, but a new
-   dependency subtree against a pinned alpha toolchain + index-state;
+   dependency subtree against the pinned toolchain + index-state;
    resolution risk inside the container with no network fallback.
 2. Minimal hand parser covering exactly the subset the example files
    use, with unknown-key rejection over an explicit known-key table.

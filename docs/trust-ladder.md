@@ -56,13 +56,13 @@ not the excluded lines.
 rung 5 — oracles (independent implementations). Proves our bytes
 agree with the outside world: FIPS KATs via the pinned OpenSSL
 4.0.2 CLI, `pkcs11-check`/`pkcs11-tool`/`p11-kit`/NSS against the
-served surface. Dated verbatim evidence under `ws/notes/`; each
+served surface. Dated verbatim evidence lives in working notes outside this package; each
 oracle run proves its own date and scope only. Non-attempts are
 disclosed, not implied (JVM consumers, the OpenSSL provider).
 
 rung 6 — audit (human review). Proves judgment was applied: the
 FP design review
-(`ws/notes/2026-09-22-haskell-fp-design-review.md`), the impl
+(2026-09-22, in working notes outside this package), the impl
 review, per-task audits. An audit finding is a scoped opinion
 with cited evidence, not an execution result; dispositions live
 in task reports and in this ladder's §Review-name dispositions

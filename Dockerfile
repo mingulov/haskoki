@@ -9,9 +9,8 @@
 #   Transfer to another machine:  docker save haskoki-dev:ghc-9.10.3 | zstd > haskoki-dev.tar.zst
 #                                 (elsewhere) docker load < haskoki-dev.tar.zst
 #
-# Alternative toolchain (GHC 10.0.1-alpha1 via ghcup prereleases):
-# Dockerfile.ghc10alpha. Pinned versions live in toolchain.lock and
-# in `tested-with` (haskoki.cabal); see docs/toolchain.md.
+# Pinned versions live in toolchain.lock and in `tested-with`
+# (haskoki.cabal); see docs/toolchain.md.
 # 26.04 base already ships user ubuntu (1000:1000); defaults reuse it so
 # bind-mounted files keep host ownership. For other ids pass e.g.
 # --build-arg USERNAME=dev --build-arg UID=2000 --build-arg GID=2000.

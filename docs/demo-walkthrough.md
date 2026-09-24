@@ -141,7 +141,8 @@ behind the proxy on opened sessions. Seeded-mismatch
 proves the script can fail.
 
 External consumers (throwaway containers; verbatim evidence in
-the 2026-09-22 oracle session notes): `pkcs11-check==0.2.0`
+the 2026-09-22 oracle session notes, kept outside this
+package): `pkcs11-check==0.2.0`
 doctor passing (interface v3.2, 1 token-present slot, 104
 mechanisms) with 51/51 digest files; `pkcs11-tool` REAL
 ECDSA-SHA256 sign (70-byte DER) + verify and REAL AES-ECB

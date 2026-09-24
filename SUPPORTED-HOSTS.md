@@ -6,9 +6,9 @@ limitations that apply everywhere. No certification or
 production-security claim is made for any host below: this is a
 demonstration-scope release (see "Limitations"). Host install
 verification below was re-exercised on the 0.3.0.0 GHC 9.10.3
-artifact; the C-surface scope below (re-run
-`scripts/make-release.sh` + `scripts/test-release-install.sh` to
-ship and re-verify).
+artifact. Re-run `scripts/make-release.sh` +
+`scripts/test-release-install.sh` to ship and re-verify the
+C-surface scope below.
 
 ## Verified hosts
 
@@ -100,7 +100,7 @@ gates loudly.
   digest files; `pkcs11-tool` real ECDSA-SHA256 sign+verify and
   AES-ECB encrypt/decrypt round-trips; `p11-kit` lists module +
   token; NSS attaches (0 certs). Evidence:
-  the 2026-09-22 oracle session notes. SunPKCS11 and the
+  the 2026-09-22 oracle session notes (working notes, outside this package). SunPKCS11 and the
   OpenSSL provider were NOT attempted (no JVM/provider in the
   toolchain image).
 - `haskoki-ctl scenario run` interprets scenarios against an owned
