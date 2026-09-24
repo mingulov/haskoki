@@ -21,6 +21,7 @@ records list interesting outcomes only (see Method).
 | r3 (key-import slice) | 1530 | 104 | 396 | 3732 | 0 |
 | r4 (matrix, one HMAC-type short) | 1566 | 97 | 366 | 3733 | 0 |
 | r5 (matrix + per-digest HMAC types) | 1576 | 92 | 362 | 3732 | 0 |
+| r6 (HOTP matrix rows) | 1576 | 92 | 362 | 3732 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -121,8 +122,12 @@ records list interesting outcomes only (see Method).
   (1/1, no crash), `test_wycheproof_hmac.py` passes 1732/1732
   (was 330 failed). Snapshots: `/tmp/pkcs11-fast-r5.json`,
   `/tmp/pkcs11-ws/out/targeted/`.
+- r6 reproof for the HOTP matrix rows: byte-identical failing set to
+  r5 (92 failed, 0 new, 0 fixed). The 2 HOTP `mech_negative` legs
+  still die in oracle setup (`MechConfig.key_type is None`, never
+  reaching the token). Snapshot: `/tmp/pkcs11-fast-r6.json`.
 
-## Remaining fast-lane failures (r5: 92), by cluster
+## Remaining fast-lane failures (r6: 92, identical set to r5), by cluster
 
 Ordered by count, with root cause and fixability as triaged from failure
 records and the oracle sources at `/tmp/pkcs11-ws/pkcs11-check`:
