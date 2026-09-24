@@ -61,6 +61,7 @@ import Haskoki.Registry.Generated
   , ckm_CAMELLIA_ECB
   , ckm_DES3_CBC
   , ckm_DES3_ECB
+  , ckm_RSA_PKCS_OAEP
   )
 
 -- ---------------------------------------------------------------------------
@@ -189,6 +190,10 @@ decodeInitInput bs = do
 -- The remaining recipe-backed block ciphers (Triple-DES
 -- 8-byte blocks, ARIA/Camellia 16-byte blocks; same rationale --
 -- every row behavior+real tested with backend KATs).
+-- RSA-OAEP carries the unpadded vestigial width: the operation layer
+-- refuses padded specs for OAEP ('Haskoki.Operation.checkShape')
+-- and the length bound lives in the backend, so the width never
+-- frames bytes (the 'allocateSingle' ShapePlain fallback convention).
 cipherShapeFor :: MechanismId -> Maybe CipherSpec
 cipherShapeFor (MechanismId m)
   | m == ckm_AES_CBC = Just (CipherSpec 16 False)
@@ -200,6 +205,7 @@ cipherShapeFor (MechanismId m)
   | m == ckm_ARIA_ECB = Just (CipherSpec 16 False)
   | m == ckm_CAMELLIA_CBC = Just (CipherSpec 16 False)
   | m == ckm_CAMELLIA_ECB = Just (CipherSpec 16 False)
+  | m == ckm_RSA_PKCS_OAEP = Just (CipherSpec 16 False)
   | otherwise = Nothing
 
 -- ---------------------------------------------------------------------------

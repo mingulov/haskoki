@@ -9,6 +9,7 @@ import qualified DetachedEngineSpec
 import qualified FfiAcquireSpec
 import qualified LeaseWedgeDenseSpec
 import qualified LeaseWedgeSpec
+import qualified NativeParamsSpec
 import qualified OpenSSLSpec
 import qualified OperationSmokeSpec
 import qualified RoutingE2ESpec
@@ -32,4 +33,5 @@ main = do
     , FfiAcquireSpec.spec envLock
     , LeaseWedgeSpec.spec
     , LeaseWedgeDenseSpec.spec
+    , NativeParamsSpec.spec
     ]

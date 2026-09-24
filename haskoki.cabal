@@ -111,6 +111,7 @@ library
     Haskoki.FFI.Exports
     Haskoki.FFI.KeyOutputs
     Haskoki.FFI.MessageParams
+    Haskoki.FFI.NativeParams
     Haskoki.FFI.Standard
     Haskoki.FFI.Instance
     Haskoki.Runtime
@@ -185,6 +186,7 @@ foreign-library haskoki
     Haskoki.FFI.Encode
     Haskoki.FFI.Exports
     Haskoki.FFI.OpenSSL4.Raw
+    Haskoki.FFI.NativeParams
     Haskoki.FFI.Standard
     Haskoki.FFI.Instance
     Haskoki.FFI.Types
@@ -409,6 +411,7 @@ test-suite haskoki-engine-tests
     FfiAcquireSpec
     LeaseWedgeDenseSpec
     LeaseWedgeSpec
+    NativeParamsSpec
     OpenSSLSpec
     OperationSmokeSpec
     RoutingE2ESpec

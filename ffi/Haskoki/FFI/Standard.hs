@@ -210,6 +210,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
+import Haskoki.FFI.NativeParams (normalizeMechParams)
 import Haskoki.Model
   ( Model (..)
   , SessionState (..)
@@ -2035,17 +2036,28 @@ runKeyedInit inst sid ifunc mid params key =
         mid [initOperation ifunc] False params
   in runCryptoSilentDecoded inst dreq
 
+-- | Shared keyed-init intake: copy the parameter block, normalize
+-- caller-native mechanism structs into the recipe canonical codecs
+-- ('normalizeMechParams'), and plan.
+runKeyedInitParams
+  :: StdInstance -> SessionId -> InitFunction -> CULong
+  -> Ptr Word8 -> CULong -> CULong -> IO CULong
+runKeyedInitParams inst sid ifunc (CULong mech) pParams (CULong paramsLen) (CULong key) = do
+  eParams <- decodeInputBytes pParams paramsLen
+  case eParams of
+    Left _ -> pure ckrArgsBad
+    Right raw -> do
+      let mid = MechanismId (fromIntegral mech)
+      params <- normalizeMechParams mid pParams paramsLen raw
+      runKeyedInit inst sid ifunc mid params key
+
 -- | Initialize a sign operation over one key.
 haskokiStdSignInit
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
   -> IO CULong
-haskokiStdSignInit ctx h (CULong mech) pParams (CULong paramsLen) (CULong key) =
-  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
-    eParams <- decodeInputBytes pParams paramsLen
-    case eParams of
-      Left _ -> pure ckrArgsBad
-      Right params -> runKeyedInit inst sid InitSign
-        (MechanismId (fromIntegral mech)) params key
+haskokiStdSignInit ctx h mech pParams paramsLen key =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    runKeyedInitParams inst sid InitSign mech pParams paramsLen key
 
 -- | Sign one-shot (size-query and short-buffer recall per the
 -- shared dialogue).
@@ -2101,13 +2113,9 @@ haskokiStdSignFinal ctx h pSig pLen =
 haskokiStdVerifyInit
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
   -> IO CULong
-haskokiStdVerifyInit ctx h (CULong mech) pParams (CULong paramsLen) (CULong key) =
-  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
-    eParams <- decodeInputBytes pParams paramsLen
-    case eParams of
-      Left _ -> pure ckrArgsBad
-      Right params -> runKeyedInit inst sid InitVerify
-        (MechanismId (fromIntegral mech)) params key
+haskokiStdVerifyInit ctx h mech pParams paramsLen key =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    runKeyedInitParams inst sid InitVerify mech pParams paramsLen key
 
 -- | Verify one-shot: data plus the candidate signature frame one
 -- input; the verdict is the code (verdicts carry no bytes).
@@ -2201,13 +2209,9 @@ runCryptoUpdate inst req pLen = do
 haskokiStdEncryptInit
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
   -> IO CULong
-haskokiStdEncryptInit ctx h (CULong mech) pParams (CULong paramsLen) (CULong key) =
-  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
-    eParams <- decodeInputBytes pParams paramsLen
-    case eParams of
-      Left _ -> pure ckrArgsBad
-      Right params -> runKeyedInit inst sid InitEncrypt
-        (MechanismId (fromIntegral mech)) params key
+haskokiStdEncryptInit ctx h mech pParams paramsLen key =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    runKeyedInitParams inst sid InitEncrypt mech pParams paramsLen key
 
 -- | Encrypt one-shot (size-query and short-buffer recall per the
 -- shared dialogue).
@@ -2268,13 +2272,9 @@ haskokiStdEncryptFinal ctx h pOut pLen =
 haskokiStdDecryptInit
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
   -> IO CULong
-haskokiStdDecryptInit ctx h (CULong mech) pParams (CULong paramsLen) (CULong key) =
-  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
-    eParams <- decodeInputBytes pParams paramsLen
-    case eParams of
-      Left _ -> pure ckrArgsBad
-      Right params -> runKeyedInit inst sid InitDecrypt
-        (MechanismId (fromIntegral mech)) params key
+haskokiStdDecryptInit ctx h mech pParams paramsLen key =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    runKeyedInitParams inst sid InitDecrypt mech pParams paramsLen key
 
 -- | Decrypt one-shot (size-query and short-buffer recall per the
 -- shared dialogue).

@@ -2016,6 +2016,108 @@ int main(int argc, char **argv) {
         rv = f->C_CreateObject(sess, rtmpl, 5, &rsaPub);
         CHECKC(rv == CKR_OK && rsaPub != 0, "RSA public import ok");
       }
+      /* Native struct params: real CK_RSA_PKCS_PSS_PARAMS and
+       * CK_RSA_PKCS_OAEP_PARAMS through the Init planners. */
+      {
+        CK_ATTRIBUTE pssPrivT[] = {
+          { CKA_CLASS, &prvcls, sizeof(prvcls) },
+          { CKA_KEY_TYPE, &rsakt, sizeof(rsakt) },
+          { CKA_TOKEN, &no, sizeof(no) },
+          { CKA_SENSITIVE, &no, sizeof(no) },
+          { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+          { CKA_SIGN, &yes, sizeof(yes) },
+          { CKA_DECRYPT, &yes, sizeof(yes) },
+          { CKA_MODULUS, n, sizeof(n) },
+          { CKA_PUBLIC_EXPONENT, e, 3 },
+          { CKA_PRIVATE_EXPONENT, d, sizeof(d) },
+          { CKA_PRIME_1, p, sizeof(p) },
+          { CKA_PRIME_2, q, sizeof(q) },
+          { CKA_EXPONENT_1, dp, sizeof(dp) },
+          { CKA_EXPONENT_2, dq, sizeof(dq) },
+          { CKA_COEFFICIENT, qi, sizeof(qi) },
+        };
+        CK_ATTRIBUTE pssPubT[] = {
+          { CKA_CLASS, &pubcls, sizeof(pubcls) },
+          { CKA_KEY_TYPE, &rsakt, sizeof(rsakt) },
+          { CKA_TOKEN, &no, sizeof(no) },
+          { CKA_VERIFY, &yes, sizeof(yes) },
+          { CKA_ENCRYPT, &yes, sizeof(yes) },
+          { CKA_MODULUS, n, sizeof(n) },
+          { CKA_PUBLIC_EXPONENT, e, 3 },
+        };
+        CK_OBJECT_HANDLE pssPriv = 0, pssPub = 0;
+        CK_RSA_PKCS_PSS_PARAMS pss;
+        CK_RSA_PKCS_OAEP_PARAMS oaep;
+        CK_MECHANISM sm, em;
+        CK_BYTE psig[256], ctext[256], back[256];
+        CK_ULONG psigLen, ctextLen, backLen;
+        CK_BYTE labelL[] = { 'L' }, labelX[] = { 'X' };
+        CK_BYTE msg[] = { 'a', 'b', 'c' };
+        CK_BYTE plain[16] = { '0','1','2','3','4','5','6','7',
+                              '8','9','a','b','c','d','e','f' };
+        rv = f->C_CreateObject(sess, pssPrivT, 15, &pssPriv);
+        CHECKC(rv == CKR_OK && pssPriv != 0, "PSS RSA private imports");
+        rv = f->C_CreateObject(sess, pssPubT, 7, &pssPub);
+        CHECKC(rv == CKR_OK && pssPub != 0, "PSS RSA public imports");
+        pss.hashAlg = CKM_SHA256;
+        pss.mgf = CKG_MGF1_SHA256;
+        pss.sLen = 32;
+        sm.mechanism = CKM_RSA_PKCS_PSS;
+        sm.pParameter = &pss;
+        sm.ulParameterLen = sizeof(pss);
+        rv = f->C_SignInit(sess, &sm, pssPriv);
+        CHECKC(rv == CKR_OK, "PSS native-struct SignInit ok");
+        psigLen = sizeof(psig);
+        rv = f->C_Sign(sess, msg, sizeof(msg), psig, &psigLen);
+        CHECKC(rv == CKR_OK && psigLen == 256, "PSS sign yields 256 bytes");
+        rv = f->C_VerifyInit(sess, &sm, pssPub);
+        CHECKC(rv == CKR_OK, "PSS native-struct VerifyInit ok");
+        rv = f->C_Verify(sess, msg, sizeof(msg), psig, psigLen);
+        CHECKC(rv == CKR_OK, "PSS verify of its own signature ok");
+        oaep.hashAlg = CKM_SHA256;
+        oaep.mgf = CKG_MGF1_SHA256;
+        oaep.source = CKZ_DATA_SPECIFIED;
+        oaep.pSourceData = NULL_PTR;
+        oaep.ulSourceDataLen = 0;
+        em.mechanism = CKM_RSA_PKCS_OAEP;
+        em.pParameter = &oaep;
+        em.ulParameterLen = sizeof(oaep);
+        rv = f->C_EncryptInit(sess, &em, pssPub);
+        CHECKC(rv == CKR_OK, "OAEP native-struct EncryptInit ok");
+        ctextLen = sizeof(ctext);
+        rv = f->C_Encrypt(sess, plain, sizeof(plain), ctext, &ctextLen);
+        CHECKC(rv == CKR_OK && ctextLen == 256, "OAEP encrypt yields 256 bytes");
+        rv = f->C_DecryptInit(sess, &em, pssPriv);
+        CHECKC(rv == CKR_OK, "OAEP native-struct DecryptInit ok");
+        backLen = sizeof(back);
+        rv = f->C_Decrypt(sess, ctext, ctextLen, back, &backLen);
+        CHECKC(rv == CKR_OK && backLen == sizeof(plain) &&
+                   memcmp(back, plain, sizeof(plain)) == 0,
+               "OAEP decrypt round-trips");
+        /* Labeled OAEP: the same label round-trips, a wrong label
+         * refuses (this leg proves the label pointer is chased). */
+        oaep.pSourceData = labelL;
+        oaep.ulSourceDataLen = sizeof(labelL);
+        rv = f->C_EncryptInit(sess, &em, pssPub);
+        CHECKC(rv == CKR_OK, "labeled OAEP EncryptInit ok");
+        ctextLen = sizeof(ctext);
+        rv = f->C_Encrypt(sess, plain, sizeof(plain), ctext, &ctextLen);
+        CHECKC(rv == CKR_OK, "labeled OAEP encrypt ok");
+        rv = f->C_DecryptInit(sess, &em, pssPriv);
+        CHECKC(rv == CKR_OK, "labeled OAEP DecryptInit ok");
+        backLen = sizeof(back);
+        rv = f->C_Decrypt(sess, ctext, ctextLen, back, &backLen);
+        CHECKC(rv == CKR_OK && backLen == sizeof(plain) &&
+                   memcmp(back, plain, sizeof(plain)) == 0,
+               "labeled OAEP decrypt round-trips");
+        oaep.pSourceData = labelX;
+        oaep.ulSourceDataLen = sizeof(labelX);
+        rv = f->C_DecryptInit(sess, &em, pssPriv);
+        CHECKC(rv == CKR_OK, "wrong-label OAEP DecryptInit ok");
+        backLen = sizeof(back);
+        rv = f->C_Decrypt(sess, ctext, ctextLen, back, &backLen);
+        CHECKC(rv != CKR_OK, "wrong-label OAEP decrypt refuses");
+      }
       {
         CK_ATTRIBUTE ptmpl[] = {
           { CKA_CLASS, &prvcls, sizeof(prvcls) },
