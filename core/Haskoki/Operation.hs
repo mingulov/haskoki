@@ -65,7 +65,7 @@ import Haskoki.Model (Model, ObjectState (..), SessionState (..))
 import Haskoki.Object (objectVisible, resolveHandle)
 import Haskoki.Outcome (ResourceRelease)
 import Haskoki.Operation.Effect
-import Haskoki.Operation.KeyManagement (policyFromObject)
+import Haskoki.Operation.KeyManagement (keyTypeCompatible, policyFromObject)
 import Haskoki.Operation.State
 import Haskoki.Output
   ( OutputPlan (..)
@@ -283,13 +283,18 @@ checkRecover args incoming = case (recoverRoleOf (iaOp args), iaRecover args) of
   (Nothing, Nothing) -> Right incoming
 
 -- | Key-shape and key-binding checks: keyed ops need a key, unkeyed
--- ops take none, and a bound key must resolve, be visible, permit
--- the operation, and (for always-authenticate keys) sit under a
--- user login. Success carries the resolved object id and the auth
--- marking. Usage permission and the always-authenticate mark come
--- from the key OBJECT ('policyFromObject') wherever key
--- attributes exist; legacy objects without them still honor the
--- caller-derived 'KeyPolicy' (the remaining seam).
+-- ops take none, and a bound key must resolve, be visible, carry a
+-- compatible key type, permit the operation, and (for
+-- always-authenticate keys) sit under a user login. Success carries
+-- the resolved object id and the auth marking. Usage permission and
+-- the always-authenticate mark come from the key OBJECT
+-- ('policyFromObject') wherever key attributes exist; legacy
+-- objects without them still honor the caller-derived 'KeyPolicy'
+-- (the remaining seam). The key-type check ('keyTypeCompatible')
+-- runs before the usage check: a type contradiction is the deeper
+-- mismatch, and the oracle's wrong-key-type fixtures carry usage
+-- flags (they must surface @KEY_TYPE_INCONSISTENT@, not a usage
+-- refusal).
 checkKeyBinding
   :: OpEnv -> SessionState -> InitArgs -> Either StepDeny (Maybe ObjectId, OpAuth)
 checkKeyBinding env st args = case (opKeyed (iaOp args), iaKey args) of
@@ -302,6 +307,9 @@ checkKeyBinding env st args = case (opKeyed (iaOp args), iaKey args) of
       | not (objectVisible st ost) ->
           Left (mkDeny CKR_OBJECT_HANDLE_INVALID
             "object not visible in this session")
+      | not (keyTypeCompatible (iaMech args) (iaOp args) ost) ->
+          Left (mkDeny CKR_KEY_TYPE_INCONSISTENT
+            "key type does not serve this mechanism")
       | otherwise ->
           let (permits, alwaysAuth) = case policyFromObject ost of
                 Just (p, a) -> (p, a)

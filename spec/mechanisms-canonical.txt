@@ -71,6 +71,7 @@ mech|0x000002C2|CKM_SHA3_384_HMAC_GENERAL||mac|mac-general/1|mechanism-specific:
 mech|0x000002D0|CKM_SHA3_512||digest|no-params/1|not-applicable:0-0|digest:A16,A37,A39
 mech|0x000002D1|CKM_SHA3_512_HMAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x000002D2|CKM_SHA3_512_HMAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
+mech|0x00000350|CKM_GENERIC_SECRET_KEY_GEN||keygen|no-params/1|bits:8-2040|generate-key:A37
 mech|0x00000392|CKM_SHA1_KEY_DERIVATION||derive|no-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x00000393|CKM_SHA256_KEY_DERIVATION||derive|no-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x00000394|CKM_SHA384_KEY_DERIVATION||derive|no-params/1|mechanism-specific:0-0|derive:A20,A37,A39
@@ -235,7 +236,6 @@ inv|0x00000342|CKM_IDEA_CBC||catalog-only
 inv|0x00000343|CKM_IDEA_MAC||catalog-only
 inv|0x00000344|CKM_IDEA_MAC_GENERAL||catalog-only
 inv|0x00000345|CKM_IDEA_CBC_PAD||catalog-only
-inv|0x00000350|CKM_GENERIC_SECRET_KEY_GEN||catalog-only
 inv|0x00000360|CKM_CONCATENATE_BASE_AND_KEY||catalog-only
 inv|0x00000362|CKM_CONCATENATE_BASE_AND_DATA||catalog-only
 inv|0x00000363|CKM_CONCATENATE_DATA_AND_BASE||catalog-only

@@ -43,6 +43,7 @@ import Haskoki.Registry
   , setCatalog
   )
 import Haskoki.Registry.Generated (mustGeneratedId)
+import qualified Haskoki.Registry.Generated as Gen
 import Haskoki.Types (Pkcs11Version (..))
 
 spec :: TestTree
@@ -164,112 +165,113 @@ caseCurated :: IO ()
 caseCurated = do
   let reg = curatedRegistry
   assertEqual "behavior population"
-    [ MechanismId 0x01
-    , MechanismId 0x05
-    , MechanismId 0x06
-    , MechanismId 0x08
-    , MechanismId 0x09
-    , MechanismId 0x0d
-    , MechanismId 0x0e
-    , MechanismId 0x0f
-    , MechanismId 0x17
-    , MechanismId 0x40
-    , MechanismId 0x41
-    , MechanismId 0x42
-    , MechanismId 0x43
-    , MechanismId 0x44
-    , MechanismId 0x45
-    , MechanismId 0x46
-    , MechanismId 0x47
-    , MechanismId 0x48
-    , MechanismId 0x49
-    , MechanismId 0x4a
-    , MechanismId 0x4b
-    , MechanismId 0x4c
-    , MechanismId 0x4d
-    , MechanismId 0x4e
-    , MechanismId 0x4f
-    , MechanismId 0x60
-    , MechanismId 0x61
-    , MechanismId 0x62
-    , MechanismId 0x63
-    , MechanismId 0x64
-    , MechanismId 0x65
-    , MechanismId 0x66
-    , MechanismId 0x67
-    , MechanismId 0x132
-    , MechanismId 0x133
-    , MechanismId 0x137
-    , MechanismId 0x138
-    , MechanismId 0x210
-    , MechanismId 0x211
-    , MechanismId 0x212
-    , MechanismId 0x220
-    , MechanismId 0x221
-    , MechanismId 0x222
-    , MechanismId 0x240
-    , MechanismId 0x241
-    , MechanismId 0x242
-    , MechanismId 0x250
-    , MechanismId 0x251
-    , MechanismId 0x252
-    , MechanismId 0x255
-    , MechanismId 0x256
-    , MechanismId 0x257
-    , MechanismId 0x260
-    , MechanismId 0x261
-    , MechanismId 0x262
-    , MechanismId 0x270
-    , MechanismId 0x271
-    , MechanismId 0x272
-    , MechanismId 0x290
-    , MechanismId 0x291
-    , MechanismId 0x2b0
-    , MechanismId 0x2b1
-    , MechanismId 0x2b2
-    , MechanismId 0x2b5
-    , MechanismId 0x2b6
-    , MechanismId 0x2b7
-    , MechanismId 0x2c0
-    , MechanismId 0x2c1
-    , MechanismId 0x2c2
-    , MechanismId 0x2d0
-    , MechanismId 0x2d1
-    , MechanismId 0x2d2
-    , MechanismId 0x392
-    , MechanismId 0x393
-    , MechanismId 0x394
-    , MechanismId 0x395
-    , MechanismId 0x396
-    , MechanismId 0x397
-    , MechanismId 0x398
-    , MechanismId 0x399
-    , MechanismId 0x39a
-    , MechanismId 0x3b0
-    , MechanismId 0x551
-    , MechanismId 0x552
-    , MechanismId 0x561
-    , MechanismId 0x562
-    , MechanismId 0x1040
-    , MechanismId 0x1041
-    , MechanismId 0x1042
-    , MechanismId 0x1043
-    , MechanismId 0x1044
-    , MechanismId 0x1045
-    , MechanismId 0x1046
-    , MechanismId 0x1047
-    , MechanismId 0x1048
-    , MechanismId 0x1049
-    , MechanismId 0x104a
-    , MechanismId 0x1050
-    , MechanismId 0x1051
-    , MechanismId 0x1080
-    , MechanismId 0x1081
-    , MechanismId 0x1082
-    , MechanismId 0x1085
-    , MechanismId 0x108a
-    , MechanismId 0x108b
-    , MechanismId 0x402a
+    [ MechanismId Gen.ckm_RSA_PKCS
+    , MechanismId Gen.ckm_MD5_RSA_PKCS
+    , MechanismId Gen.ckm_SHA1_RSA_PKCS
+    , MechanismId Gen.ckm_RIPEMD160_RSA_PKCS
+    , MechanismId Gen.ckm_RSA_PKCS_OAEP
+    , MechanismId Gen.ckm_RSA_PKCS_PSS
+    , MechanismId Gen.ckm_SHA1_RSA_PKCS_PSS
+    , MechanismId Gen.ckm_ML_KEM_KEY_PAIR_GEN
+    , MechanismId Gen.ckm_ML_KEM
+    , MechanismId Gen.ckm_SHA256_RSA_PKCS
+    , MechanismId Gen.ckm_SHA384_RSA_PKCS
+    , MechanismId Gen.ckm_SHA512_RSA_PKCS
+    , MechanismId Gen.ckm_SHA256_RSA_PKCS_PSS
+    , MechanismId Gen.ckm_SHA384_RSA_PKCS_PSS
+    , MechanismId Gen.ckm_SHA512_RSA_PKCS_PSS
+    , MechanismId Gen.ckm_SHA224_RSA_PKCS
+    , MechanismId Gen.ckm_SHA224_RSA_PKCS_PSS
+    , MechanismId Gen.ckm_SHA512_224
+    , MechanismId Gen.ckm_SHA512_224_HMAC
+    , MechanismId Gen.ckm_SHA512_224_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA512_224_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHA512_256
+    , MechanismId Gen.ckm_SHA512_256_HMAC
+    , MechanismId Gen.ckm_SHA512_256_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA512_256_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHA3_256_RSA_PKCS
+    , MechanismId Gen.ckm_SHA3_384_RSA_PKCS
+    , MechanismId Gen.ckm_SHA3_512_RSA_PKCS
+    , MechanismId Gen.ckm_SHA3_256_RSA_PKCS_PSS
+    , MechanismId Gen.ckm_SHA3_384_RSA_PKCS_PSS
+    , MechanismId Gen.ckm_SHA3_512_RSA_PKCS_PSS
+    , MechanismId Gen.ckm_SHA3_224_RSA_PKCS
+    , MechanismId Gen.ckm_SHA3_224_RSA_PKCS_PSS
+    , MechanismId Gen.ckm_DES3_ECB
+    , MechanismId Gen.ckm_DES3_CBC
+    , MechanismId Gen.ckm_DES3_CMAC_GENERAL
+    , MechanismId Gen.ckm_DES3_CMAC
+    , MechanismId Gen.ckm_MD5
+    , MechanismId Gen.ckm_MD5_HMAC
+    , MechanismId Gen.ckm_MD5_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA_1
+    , MechanismId Gen.ckm_SHA_1_HMAC
+    , MechanismId Gen.ckm_SHA_1_HMAC_GENERAL
+    , MechanismId Gen.ckm_RIPEMD160
+    , MechanismId Gen.ckm_RIPEMD160_HMAC
+    , MechanismId Gen.ckm_RIPEMD160_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA256
+    , MechanismId Gen.ckm_SHA256_HMAC
+    , MechanismId Gen.ckm_SHA256_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA224
+    , MechanismId Gen.ckm_SHA224_HMAC
+    , MechanismId Gen.ckm_SHA224_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA384
+    , MechanismId Gen.ckm_SHA384_HMAC
+    , MechanismId Gen.ckm_SHA384_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA512
+    , MechanismId Gen.ckm_SHA512_HMAC
+    , MechanismId Gen.ckm_SHA512_HMAC_GENERAL
+    , MechanismId Gen.ckm_HOTP_KEY_GEN
+    , MechanismId Gen.ckm_HOTP
+    , MechanismId Gen.ckm_SHA3_256
+    , MechanismId Gen.ckm_SHA3_256_HMAC
+    , MechanismId Gen.ckm_SHA3_256_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA3_224
+    , MechanismId Gen.ckm_SHA3_224_HMAC
+    , MechanismId Gen.ckm_SHA3_224_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA3_384
+    , MechanismId Gen.ckm_SHA3_384_HMAC
+    , MechanismId Gen.ckm_SHA3_384_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA3_512
+    , MechanismId Gen.ckm_SHA3_512_HMAC
+    , MechanismId Gen.ckm_SHA3_512_HMAC_GENERAL
+    , MechanismId Gen.ckm_GENERIC_SECRET_KEY_GEN
+    , MechanismId Gen.ckm_SHA1_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHA256_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHA384_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHA512_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHA224_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHA3_256_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHA3_224_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHA3_384_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHA3_512_KEY_DERIVATION
+    , MechanismId Gen.ckm_PKCS5_PBKD2
+    , MechanismId Gen.ckm_CAMELLIA_ECB
+    , MechanismId Gen.ckm_CAMELLIA_CBC
+    , MechanismId Gen.ckm_ARIA_ECB
+    , MechanismId Gen.ckm_ARIA_CBC
+    , MechanismId Gen.ckm_EC_KEY_PAIR_GEN
+    , MechanismId Gen.ckm_ECDSA
+    , MechanismId Gen.ckm_ECDSA_SHA1
+    , MechanismId Gen.ckm_ECDSA_SHA224
+    , MechanismId Gen.ckm_ECDSA_SHA256
+    , MechanismId Gen.ckm_ECDSA_SHA384
+    , MechanismId Gen.ckm_ECDSA_SHA512
+    , MechanismId Gen.ckm_ECDSA_SHA3_224
+    , MechanismId Gen.ckm_ECDSA_SHA3_256
+    , MechanismId Gen.ckm_ECDSA_SHA3_384
+    , MechanismId Gen.ckm_ECDSA_SHA3_512
+    , MechanismId Gen.ckm_ECDH1_DERIVE
+    , MechanismId Gen.ckm_ECDH1_COFACTOR_DERIVE
+    , MechanismId Gen.ckm_AES_KEY_GEN
+    , MechanismId Gen.ckm_AES_ECB
+    , MechanismId Gen.ckm_AES_CBC
+    , MechanismId Gen.ckm_AES_CBC_PAD
+    , MechanismId Gen.ckm_AES_CMAC
+    , MechanismId Gen.ckm_AES_CMAC_GENERAL
+    , MechanismId Gen.ckm_HKDF_DERIVE
     ]
     (behaviorIds reg)
   -- The full header inventory (464 canonical ids) is folded in
@@ -301,6 +303,7 @@ caseJsonProjection = do
         , "mech|0x00000250|CKM_SHA256||digest|no-params/1|not-applicable:0-0|digest:A16,A37,A39"
         , "mech|0x00000251|CKM_SHA256_HMAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39"
         , "mech|0x00001080|CKM_AES_KEY_GEN||keygen|no-params/1|bits:128-256|generate-key:A37"
+        , "mech|0x00000350|CKM_GENERIC_SECRET_KEY_GEN||keygen|no-params/1|bits:8-2040|generate-key:A37"
         , "mech|0x00001082|CKM_AES_CBC||cipher|iv-bytes/1|bytes:16-32|authenticated-unwrap:A23,A37;authenticated-wrap:A23,A37;decrypt:A16,A37,A39;encrypt:A16,A37,A39;unwrap:A20,A37,A39;wrap:A20,A37,A39"
         ]
       dumpLines = T.lines (dumpRegistry curatedRegistry)
@@ -309,11 +312,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 106 behavior + 358 catalog-only + catalog line.
+  -- schema + 107 behavior + 357 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 106
+  assertEqual "behavior line count" 107
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 358
+  assertEqual "catalog-only line count" 357
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -628,7 +631,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 358 (length invIds)
+  assertEqual "guard covers every catalog row" 357 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of
@@ -644,7 +647,7 @@ caseSpecialsCatalogOnly :: IO ()
 caseSpecialsCatalogOnly = do
   -- S15: one named representative per reviewed gap group stays
   -- catalog-only with its headline operation refused under
-  -- granted caps (the exhaustive guard above covers all 358;
+  -- granted caps (the exhaustive guard above covers all 357;
   -- this table documents the groups for humans).
   let reg = curatedRegistry
       reps =

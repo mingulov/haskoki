@@ -48,6 +48,7 @@ import Haskoki.Engine.Backend
   , PssParams (..)
   , SigCaps (..)
   , SigSpec (..)
+  , generateRandomMaxBytes
   , seedRandomMaxBytes
   )
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
@@ -1067,12 +1068,16 @@ caseSymKeygen = withBackend $ \env -> do
   assertEqual "aes-32 length" 32 (BS.length k32)
   (KeyBytes kh, Nothing) <- expectOk "gen hotp-20" =<< generateKey env (GenSym "HOTP" 20)
   assertEqual "hotp-20 length" 20 (BS.length kh)
+  (KeyBytes kg, Nothing) <- expectOk "gen generic-32" =<< generateKey env (GenSym "GENERIC" 32)
+  assertEqual "generic-32 length" 32 (BS.length kg)
   -- Bounds are typed: off-window lengths are bad params, unknown
   -- algorithms are unsupported (never silent bytes).
   expectBadParam "aes-15 refused" =<< generateKey env (GenSym "AES" 15)
   expectBadParam "aes-0 refused" =<< generateKey env (GenSym "AES" 0)
   expectBadParam "hotp-15 refused" =<< generateKey env (GenSym "HOTP" 15)
   expectBadParam "hotp-65 refused" =<< generateKey env (GenSym "HOTP" 65)
+  expectBadParam "generic-0 refused" =<< generateKey env (GenSym "GENERIC" 0)
+  expectBadParam "generic-256 refused" =<< generateKey env (GenSym "GENERIC" 256)
   expectUnsupported "des keygen out" =<< generateKey env (GenSym "DES" 8)
   expectUnsupported "ml-kem keygen out" =<< generateKey env (GenMLKEM ML_KEM_768)
 
@@ -1087,15 +1092,17 @@ caseRsaKeygenUnsupported = withBackend $ \env -> do
 
 caseRandomBytes :: IO ()
 caseRandomBytes = withBackend $ \env -> do
-  -- Fresh DRBG bytes every call; zero length is a bad param;
-  -- requests past the 1 MiB native window chunk transparently.
+  -- Fresh DRBG bytes every call; zero length is a bad param; the
+  -- 1 MiB window serves exactly; past it refuses (no transparent
+  -- chunking: unbounded requests amplify into OOM kills).
   r1 <- expectOk "random 32" =<< randomBytes env 32
   assertEqual "random length" 32 (BS.length r1)
   r2 <- expectOk "random 32 again" =<< randomBytes env 32
   assertBool "random fresh" (r1 /= r2)
   expectBadParam "random 0 refused" =<< randomBytes env 0
-  big <- expectOk "random 1MiB+1" =<< randomBytes env (1048576 + 1)
-  assertEqual "chunked length" (1048576 + 1) (BS.length big)
+  full <- expectOk "random 1MiB" =<< randomBytes env generateRandomMaxBytes
+  assertEqual "window length" generateRandomMaxBytes (BS.length full)
+  expectBadParam "random 1MiB+1 refused" =<< randomBytes env (generateRandomMaxBytes + 1)
 
 caseSeedRandomMix :: IO ()
 caseSeedRandomMix = withBackend $ \env -> do

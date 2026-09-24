@@ -192,7 +192,7 @@ caseParams = do
 
 caseCodecRoundTrip :: IO ()
 caseCodecRoundTrip = do
-  assertEqual "encodes 8-byte BE" (BS.pack [0,0,0,0,0,0,0,16]) (encodeMacGeneral 16)
+  assertEqual "encodes caller-native LE" (BS.pack [16,0,0,0,0,0,0,0]) (encodeMacGeneral 16)
   assertEqual "round-trip" (Just 16) (decodeMacGeneral (encodeMacGeneral 16))
   assertEqual "round-trip 1" (Just 1) (decodeMacGeneral (encodeMacGeneral 1))
   assertEqual "empty rejected" Nothing (decodeMacGeneral BS.empty)

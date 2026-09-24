@@ -8,10 +8,13 @@ truncated to that length). This module owns the group's canonical
 codecs, parameter validation, output widths, and mechanism table.
 Pure core only.
 
-The @mac-general\/1@ codec carries the length as 8-byte big-endian:
-the width honors @CK_ULONG@ on the pinned LP64 platform, the byte
-order honors the codebase length-encoding convention (cf. the
-snapshot version's 'Haskoki.Engine.Synthetic' 32-bit lengths);
+The @mac-general\/1@ codec carries the length as 8-byte
+caller-native little-endian: @CK_MAC_GENERAL_PARAMS@ is a
+@CK_ULONG@, and @CK_ULONG@ is platform-native (little-endian on
+every platform this design targets; the same convention as
+'Haskoki.FFI.Standard.decodeULongLE' for attribute values). An
+earlier big-endian revision refused every real caller's
+truncated-tag init (the oracle packs a native @CK_ULONG@);
 RecipeHmacSpec pins the encoding byte-for-byte.
 
 Consumers:
@@ -68,7 +71,7 @@ data HmacRecipe = HmacRecipe
 
 -- | The group's canonical parameter codecs: plain HMAC mechanisms
 -- take empty mechanism parameters; GENERAL mechanisms take the
--- 8-byte big-endian tag length.
+-- 8-byte caller-native (little-endian) tag length.
 hmacPlainCodec :: ParameterCodec
 hmacPlainCodec = ParameterCodec "no-params" 1
 
@@ -81,18 +84,20 @@ hmacCodecFor r
   | hrGeneral r = hmacGeneralCodec
   | otherwise = hmacPlainCodec
 
--- | Encode a GENERAL tag length (8-byte big-endian).
+-- | Encode a GENERAL tag length (8-byte caller-native
+-- little-endian, the in-memory @CK_ULONG@ shape).
 encodeMacGeneral :: Int -> ByteString
-encodeMacGeneral n = BS.pack [byte s | s <- [56, 48 .. 0]]
+encodeMacGeneral n = BS.pack [byte s | s <- [0, 8 .. 56]]
   where
     byte :: Int -> Word8
     byte s = fromIntegral ((n `shiftR` s) .&. 0xff)
 
--- | Strict decode: exactly 8 bytes, no trailing input.
+-- | Strict decode: exactly 8 bytes, no trailing input, decoded
+-- caller-native little-endian (the in-memory @CK_ULONG@ shape).
 decodeMacGeneral :: ByteString -> Maybe Int
 decodeMacGeneral bs
   | BS.length bs /= 8 = Nothing
-  | otherwise = Just (BS.foldl' (\a b -> a `shiftL` 8 + fromIntegral b) 0 bs)
+  | otherwise = Just (BS.foldr (\b a -> a `shiftL` 8 + fromIntegral b) 0 bs)
 
 -- | HMAC parameter validation: plain rows accept empty parameters
 -- only; GENERAL rows accept an in-range length (@1 .. full width@).

@@ -196,6 +196,8 @@ import Haskoki.Engine.Backend
   , CryptoBackend (..)
   , EngineResult (..)
   , KeyMaterial (..)
+  , generateRandomMaxBytes
+  , seedRandomMaxBytes
   )
 import Haskoki.Engine.Driver (KeyResolver, drainReleases, encodeResult, runEffect)
 import Haskoki.Engine.OpenSSL4 (OpenSSL4)
@@ -2338,7 +2340,10 @@ foreign export ccall "haskoki_std_generate_random" haskokiStdGenerateRandom
 
 -- | Fill the caller buffer with backend random bytes. Session
 -- validity is the only model check (no state changes); a zero
--- length is a vacuous OK.
+-- length is a vacuous OK. Lengths past 'generateRandomMaxBytes'
+-- refuse with @DATA_LEN_RANGE@ before any allocation: the backend
+-- would otherwise try to materialize the full request (the
+-- oracle's 4 GiB probe OOM-killed the process pre-bound).
 haskokiStdGenerateRandom
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> IO CULong
 haskokiStdGenerateRandom ctx h pOut (CULong len) =
@@ -2348,16 +2353,19 @@ haskokiStdGenerateRandom ctx h pOut (CULong len) =
       else
         if len == 0
           then pure ckrOk
-          else do
-            eBs <- randomBytes (siBackend inst) (fromIntegral len)
-            case eBs of
-              EngineFail _ -> pure ckrGeneralError
-              EngineOk bs
-                | BS.length bs /= fromIntegral len -> pure ckrGeneralError
-                | otherwise -> do
-                    BSU.unsafeUseAsCString bs $ \src ->
-                      copyBytes (castPtr pOut) src (fromIntegral len)
-                    pure ckrOk
+          else
+            if len > fromIntegral generateRandomMaxBytes
+              then pure (stdRvOf CKR_DATA_LEN_RANGE)
+              else do
+                eBs <- randomBytes (siBackend inst) (fromIntegral len)
+                case eBs of
+                  EngineFail _ -> pure ckrGeneralError
+                  EngineOk bs
+                    | BS.length bs /= fromIntegral len -> pure ckrGeneralError
+                    | otherwise -> do
+                        BSU.unsafeUseAsCString bs $ \src ->
+                          copyBytes (castPtr pOut) src (fromIntegral len)
+                        pure ckrOk
 
 foreign export ccall "haskoki_std_seed_random" haskokiStdSeedRandom
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> IO CULong
@@ -2365,8 +2373,10 @@ foreign export ccall "haskoki_std_seed_random" haskokiStdSeedRandom
 -- | Mix caller seed bytes into the backend RNG. Session
 -- validity is the only model check (no state changes) and runs
 -- FIRST; a zero length is a vacuous OK (NULL allowed); NULL with a
--- nonzero length is ARGS_BAD. Backend bad params (oversize seeds)
--- stay ARGS_BAD; anything else fails closed as GENERAL_ERROR.
+-- nonzero length is ARGS_BAD. Oversize seeds refuse with ARGS_BAD
+-- BEFORE the caller buffer is copied (copying first would let one
+-- call amplify into gigabytes of allocator pressure); backend bad
+-- params stay ARGS_BAD; anything else fails closed as GENERAL_ERROR.
 haskokiStdSeedRandom
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> IO CULong
 haskokiStdSeedRandom ctx h pSeed (CULong len) =
@@ -2376,13 +2386,16 @@ haskokiStdSeedRandom ctx h pSeed (CULong len) =
       else
         if len == 0
           then pure ckrOk
-          else do
-            seed <- BS.packCStringLen (castPtr pSeed, fromIntegral len)
-            eRes <- seedRandom (siBackend inst) seed
-            case eRes of
-              EngineFail (BackendBadParam _ _) -> pure ckrArgsBad
-              EngineFail _ -> pure ckrGeneralError
-              EngineOk () -> pure ckrOk
+          else
+            if len > fromIntegral seedRandomMaxBytes
+              then pure ckrArgsBad
+              else do
+                seed <- BS.packCStringLen (castPtr pSeed, fromIntegral len)
+                eRes <- seedRandom (siBackend inst) seed
+                case eRes of
+                  EngineFail (BackendBadParam _ _) -> pure ckrArgsBad
+                  EngineFail _ -> pure ckrGeneralError
+                  EngineOk () -> pure ckrOk
 
 -- ---------------------------------------------------------------------------
 -- wrap/unwrap/derive

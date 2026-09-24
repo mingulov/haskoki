@@ -49,6 +49,7 @@ import Haskoki.Engine.Backend
   , PqcSigAlg (..)
   , SigCaps (..)
   , SigSpec (..)
+  , generateRandomMaxBytes
   , seedRandomMaxBytes
   )
 import Haskoki.Engine.Driver (encodeResult, runEffect)
@@ -739,6 +740,9 @@ caseRandomBytes = do
     assertBool "counter advances" (x /= y)
     assertEqual "first replays head" a x
     expectBadParam "random 0 refused" =<< randomBytes env 0
+    full <- expectOk "random 1MiB" =<< randomBytes env generateRandomMaxBytes
+    assertEqual "window length" generateRandomMaxBytes (BS.length full)
+    expectBadParam "random 1MiB+1 refused" =<< randomBytes env (generateRandomMaxBytes + 1)
 
 caseSeedRandomReplay :: IO ()
 caseSeedRandomReplay = withSynth "21" $ \env -> do
@@ -1556,6 +1560,11 @@ caseHotp = withSynth "13" $ \env -> do
   expectBadParam "hotp-15 rejected" =<< generateKey env (GenSym "HOTP" 15)
   expectBadParam "hotp-65 rejected" =<< generateKey env (GenSym "HOTP" 65)
   expectBadParam "hotp-0 rejected" =<< generateKey env (GenSym "HOTP" 0)
+  (KeyBytes g32, Nothing) <- expectOk "generic backend" =<<
+    generateKey env (GenSym "GENERIC" 32)
+  assertEqual "generic length" 32 (BS.length g32)
+  expectBadParam "generic-0 rejected" =<< generateKey env (GenSym "GENERIC" 0)
+  expectBadParam "generic-256 rejected" =<< generateKey env (GenSym "GENERIC" 256)
   envA <- openSynth "13"
   envB <- openSynth "13"
   (KeyBytes a1, Nothing) <- expectOk "hotp seed a" =<<

@@ -9586,14 +9586,28 @@
       "canonical_name": "CKM_GENERIC_SECRET_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via the CKA_VALUE_LEN template attribute (1-255 bytes: empty secrets refused, ceiling is the one-byte GenBytes planner-driver frame). Real execution pinned (OpenSSLSpec caseSymKeygen generic legs, SyntheticSpec HOTP-case generic legs, KeyManagementSpec generic-secret keygen; consumer_roundtrip HMAC key mints via generic-secret keygen).",
       "numeric_id": "0x00000350",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_GENERIC_SECRET_KEY_GEN",
@@ -9602,12 +9616,38 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "generic-keygen",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "generic-keygen",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "native-keygen",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

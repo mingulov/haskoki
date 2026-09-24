@@ -91,6 +91,10 @@ w64 :: Word64 -> ByteString
 w64 n = BS.pack
   [fromIntegral ((n `div` (256 ^ s)) `mod` 256) | s <- ([7, 6 .. 0] :: [Int])]
 
+w64le :: Word64 -> ByteString
+w64le n = BS.pack
+  [fromIntegral ((n `div` (256 ^ s)) `mod` 256) | s <- ([0 .. 7] :: [Int])]
+
 -- | One 4-byte big-endian word.
 w32 :: Word64 -> ByteString
 w32 n = BS.pack
@@ -242,8 +246,8 @@ caseParams = guarded "params" $ do
   -- pss-params: digest code, MGF code, salt (SHA256=4, SHA_1=2).
   assertEqual "pss golden" (w64 4 <> w64 2 <> w64 20)
     (encodePssParams "SHA256" "SHA_1" 20)
-  -- mac-general: 8-byte big-endian tag length.
-  assertEqual "mac-general golden" (w64 8) (encodeMacGeneral 8)
+  -- mac-general: 8-byte caller-native little-endian tag length.
+  assertEqual "mac-general golden" (w64le 8) (encodeMacGeneral 8)
   -- hotp-params: counter, digit count.
   assertEqual "hotp golden" (w64 0 <> w64 6) (encodeHotpParams 0 6)
   -- oaep-params: digest code, MGF code, label.

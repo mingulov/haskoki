@@ -784,7 +784,7 @@ int main(int argc, char **argv) {
     CK_OBJECT_CLASS scls = CKO_PRIVATE_KEY;
     CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
     CK_KEY_TYPE ekt = CKK_EC;
-    CK_KEY_TYPE akt = CKK_AES;
+    CK_KEY_TYPE gkt = CKK_GENERIC_SECRET;
     CK_ULONG vlen = 16;
     CK_BBOOL bFalse = CK_FALSE;
     CK_BBOOL bTrue = CK_TRUE;
@@ -795,7 +795,7 @@ int main(int argc, char **argv) {
     CK_MECHANISM sm;
     CK_MECHANISM hm;
     CK_MECHANISM gm;
-    CK_BYTE gpar[8] = { 0, 0, 0, 0, 0, 0, 0, 16 };
+    CK_ULONG gpar = 16;
     rv = f->C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
                           NULL_PTR, &ssess);
     if (rv == CKR_SLOT_ID_INVALID) {
@@ -823,7 +823,7 @@ int main(int argc, char **argv) {
       };
       CK_ATTRIBUTE htmpl[] = {
         { CKA_CLASS, &ckcls, sizeof(ckcls) },
-        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_KEY_TYPE, &gkt, sizeof(gkt) },
         { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
         { CKA_TOKEN, &bFalse, sizeof(bFalse) },
         { CKA_SIGN, &bTrue, sizeof(bTrue) },
@@ -838,7 +838,7 @@ int main(int argc, char **argv) {
       rv = f->C_GenerateKeyPair(ssess, &kgm, pubT, 5, privT, 4,
                                 &pub, &priv);
       CHECKC(rv == CKR_OK && pub != 0 && priv != 0, "sign EC pair mints");
-      hm.mechanism = CKM_AES_KEY_GEN;
+      hm.mechanism = CKM_GENERIC_SECRET_KEY_GEN;
       hm.pParameter = NULL_PTR;
       hm.ulParameterLen = 0;
       rv = f->C_GenerateKey(ssess, &hm, htmpl, 6, &hmkey);
@@ -972,8 +972,38 @@ int main(int argc, char **argv) {
     CHECKC(rv == CKR_OK, "HMAC VerifyInit ok");
     rv = f->C_Verify(ssess, (CK_BYTE_PTR) "Hi There", 8, sig, sigLen);
     CHECKC(rv == CKR_OK, "HMAC verify ok");
+    /* Key-type matrix: wrong-typed keys refuse INCONSISTENT. */
+    {
+      CK_KEY_TYPE aakt = CKK_AES;
+      CK_ULONG avlen = 16;
+      CK_ATTRIBUTE atmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &aakt, sizeof(aakt) },
+        { CKA_VALUE_LEN, &avlen, sizeof(avlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_ENCRYPT, &bTrue, sizeof(bTrue) }
+      };
+      CK_MECHANISM agm, cm;
+      CK_BYTE iv[16] = { 0 };
+      CK_OBJECT_HANDLE aeskey = 0;
+      agm.mechanism = CKM_AES_KEY_GEN;
+      agm.pParameter = NULL_PTR;
+      agm.ulParameterLen = 0;
+      rv = f->C_GenerateKey(ssess, &agm, atmpl, 6, &aeskey);
+      CHECKC(rv == CKR_OK && aeskey != 0, "matrix AES key mints");
+      rv = f->C_SignInit(ssess, &hm, aeskey);
+      CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+             "HMAC SignInit with AES key refused");
+      cm.mechanism = CKM_AES_CBC;
+      cm.pParameter = iv;
+      cm.ulParameterLen = sizeof(iv);
+      rv = f->C_EncryptInit(ssess, &cm, hmkey);
+      CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+             "AES-CBC EncryptInit with generic key refused");
+    }
     gm.mechanism = CKM_SHA256_HMAC_GENERAL;
-    gm.pParameter = gpar;
+    gm.pParameter = &gpar;
     gm.ulParameterLen = sizeof(gpar);
     rv = f->C_SignInit(ssess, &gm, hmkey);
     CHECKC(rv == CKR_OK, "HMAC-GENERAL SignInit ok");
@@ -1189,23 +1219,46 @@ int main(int argc, char **argv) {
     CHECKC(rv == CKR_OK && ptLen == 16 &&
                memcmp(pt, "0123456789ABCDEF", 16) == 0,
            "CBC decrypt recovers 16 bytes");
-    /* Non-AES block ciphers route identically: the
-     * engine is key-type agnostic (permits + material only), so
-     * the AES-256 key object drives ARIA-256-CBC here. Runs
+    /* Non-AES block ciphers route identically: an imported ARIA-256
+     * key (typed CKK_ARIA, verbatim value) drives ARIA-256-CBC while
+     * the AES key object is refused by the key-type matrix. Runs
      * before the ragged check: a length-range denial keeps the
      * slot (later updates can repair it), so ragged goes last. */
     {
+      CK_OBJECT_CLASS acls = CKO_SECRET_KEY;
+      CK_KEY_TYPE arkt = CKK_ARIA;
+      CK_BBOOL aFalse = CK_FALSE, aTrue = CK_TRUE;
+      CK_BYTE akey[32] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+      };
+      CK_ATTRIBUTE itmpl[] = {
+        { CKA_CLASS, &acls, sizeof(acls) },
+        { CKA_KEY_TYPE, &arkt, sizeof(arkt) },
+        { CKA_VALUE, akey, sizeof(akey) },
+        { CKA_TOKEN, &aFalse, sizeof(aFalse) },
+        { CKA_ENCRYPT, &aTrue, sizeof(aTrue) },
+        { CKA_DECRYPT, &aTrue, sizeof(aTrue) }
+      };
+      CK_OBJECT_HANDLE ario = 0;
       CK_MECHANISM am;
       am.mechanism = CKM_ARIA_CBC;
       am.pParameter = iv;
       am.ulParameterLen = sizeof(iv);
+      rv = f->C_CreateObject(esess, itmpl, 6, &ario);
+      CHECKC(rv == CKR_OK && ario != 0, "ARIA key imports");
       rv = f->C_EncryptInit(esess, &am, ekey);
+      CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+             "ARIA-CBC EncryptInit with AES key refused");
+      rv = f->C_EncryptInit(esess, &am, ario);
       CHECKC(rv == CKR_OK, "ARIA-CBC EncryptInit ok");
       ctLen = sizeof(ct);
       rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "0123456789ABCDEF", 16, ct,
                         &ctLen);
       CHECKC(rv == CKR_OK && ctLen == 16, "ARIA-CBC encrypt yields 16 bytes");
-      rv = f->C_DecryptInit(esess, &am, ekey);
+      rv = f->C_DecryptInit(esess, &am, ario);
       CHECKC(rv == CKR_OK, "ARIA-CBC DecryptInit ok");
       ptLen = sizeof(pt);
       rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
@@ -1275,6 +1328,26 @@ int main(int argc, char **argv) {
     CHECKC(rv == CKR_OK, "SeedRandom zero length ok");
     rv = f->C_SeedRandom(rsess, NULL_PTR, 0);
     CHECKC(rv == CKR_OK, "SeedRandom NULL zero length ok");
+    /* Oversize lengths refuse before any allocation (the oracle's
+     * 4 GiB probe OOM-killed the process pre-bound). 2 MiB real
+     * buffers keep the pins safe in every revision. */
+    {
+      static const CK_ULONG big = 2 * 1024 * 1024;
+      CK_BYTE_PTR gbuf = (CK_BYTE_PTR) malloc(big);
+      CK_BYTE_PTR sbuf = (CK_BYTE_PTR) malloc(big);
+      CHECKC(gbuf != NULL_PTR && sbuf != NULL_PTR, "oversize buffers allocate");
+      if (gbuf != NULL_PTR && sbuf != NULL_PTR) {
+        memset(sbuf, 0x5A, big);
+        rv = f->C_GenerateRandom(rsess, gbuf, big);
+        CHECKC(rv == CKR_DATA_LEN_RANGE,
+               "GenerateRandom oversize refused before alloc");
+        rv = f->C_SeedRandom(rsess, sbuf, big);
+        CHECKC(rv == CKR_ARGUMENTS_BAD,
+               "SeedRandom oversize refused before copy");
+      }
+      free(gbuf);
+      free(sbuf);
+    }
     rv = f->C_CloseSession(rsess);
     CHECKC(rv == CKR_OK, "random session closes");
   }

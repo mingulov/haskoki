@@ -93,6 +93,26 @@ records list interesting outcomes only (see Method).
   the diff runs r1→r3; r1→r2 was already 3 fixed / 0 new, hence r2→r3 is
   26 fixed / 0 new). Snapshot: `/tmp/pkcs11-fast-r3.json`.
 
+## Round 4: key-type matrix, generic-secret keygen, random bound, GENERAL endianness
+
+- Init key-type matrix (`Haskoki.Registry.KeyMatrix`, enforced in
+  `checkKeyBinding` ahead of the usage check): HMAC→generic-secret,
+  RSA→RSA, ECDSA→EC, ciphers→recipe key type, CMAC→AES/DES3.
+  Wrong-typed keys surface `KEY_TYPE_INCONSISTENT`; unreviewed pairs
+  and untyped legacy objects keep prior behavior. Targets the
+  `test_mech_negative.py` cluster (14).
+- `CKM_GENERIC_SECRET_KEY_GEN` (1–255 bytes, the ceiling is the
+  one-byte `GenBytes` frame): planner + driver + both backends +
+  `CKM_GENERIC_SECRET_KEY_GEN` behavior descriptor; catalog row
+  flipped to tested (107 behavior rows, 105 C-surface rows) with
+  regenerated projection, C catalog, and coverage. The consumer HMAC
+  key and the HMAC engine legs now mint conformant generic keys; the
+  ARIA legs import a typed `CKK_ARIA` key.
+- Random bound + GENERAL endianness (see KAT lane status): the 4 GiB
+  `C_GenerateRandom` crash and the 330 wycheproof-HMAC failures.
+- Oracle reproof pending: fast lane for the matrix slice, targeted
+  KAT reruns for the crash probe and `test_wycheproof_hmac.py`.
+
 ## Remaining fast-lane failures (r3: 104), by cluster
 
 Ordered by count, with root cause and fixability as triaged from failure
@@ -161,14 +181,38 @@ Init-matrix follow-up takes the largest share.
 
 ## KAT lane status
 
-The KAT lane reports 21133 failures, dominated by vector-key import:
-KAT fixtures import fixed keys via `C_CreateObject` with standard
-component attributes (`CKA_MODULUS`, `CKA_PRIVATE_EXPONENT`,
-`CKA_EC_POINT`, …) for which `AttributeType` has no constructors, so
-import is refused with `ATTRIBUTE_TYPE_INVALID` and vectors never reach
-the engine. Remainder: read-only/login/create-path strictness gaps.
-Fix belongs to the representation-completion track (open vocabulary +
-reviewed import schemas); re-run KAT after it.
+Pre-r3, the KAT lane reported 21133 failures, dominated by vector-key
+import (`ATTRIBUTE_TYPE_INVALID` on component attributes). The r3
+import slice made KAT execute: 111946 tests — 16808 passed,
+436 failed, 0 crashed, 11860 xfailed, 82842 skipped
+(`/tmp/pkcs11-kat-r3.json`). The 436 decompose exactly: the fast-104
+(the KAT lane reruns the fast corpus) + 330 wycheproof-HMAC + 1 ECDSA
+ACVP vector + 1 crash.
+
+- wycheproof-HMAC (330, uniform 33/file × 10 digests, all `valid`):
+  every truncated-tag vector failed `C_VerifyInit` with
+  `ARGUMENTS_BAD`. Root cause: our `mac-general/1` codec decoded the
+  `CK_MAC_GENERAL_PARAMS` length big-endian, but the wire shape is a
+  native `CK_ULONG` (little-endian here), so every real truncated-tag
+  init read a gigantic length and refused. Fixed (round 4): the codec
+  is caller-native little-endian, matching `decodeULongLE`; the
+  consumer passes a `CK_ULONG` instead of byte-array params.
+- Crash (`test_generate_random_oversized_length_rejects_or_honors`):
+  `C_GenerateRandom` with length `0x100000008` OOM-killed the child
+  (SIGKILL): the backend materialized the full request in 1 MiB
+  windows with no ceiling. Fixed (round 4): single requests past
+  `generateRandomMaxBytes` (1 MiB, mirroring `seedRandomMaxBytes`)
+  refuse with `DATA_LEN_RANGE` before any allocation, at both the FFI
+  boundary and the backends; oversize `C_SeedRandom` likewise refuses
+  before copying the caller buffer.
+- Struct-params gap (next slice, recorded not fixed): probing shows
+  real C structs are refused the same way — `CKM_SHA256_RSA_PKCS_PSS`
+  with a native `CK_RSA_PKCS_PSS_PARAMS` gets `ARGUMENTS_BAD`, because
+  the recipe codecs expect an internal big-endian triple-word shape no
+  external caller produces. PSS/OAEP/ECDH/KDF need native struct
+  decoders before those vectors can execute; the current KAT passes on
+  those files ride sanctioned refusals, not execution.
+- ACVP ECDH (1): untooled; triage with the struct-params slice.
 
 ## Method
 

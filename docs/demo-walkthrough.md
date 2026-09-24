@@ -173,11 +173,11 @@ python3 scripts/publish-coverage.py --check
 # coverage publication current (464 rows, 11 issues)
 ```
 
-`docs/coverage.md`: 106 behavior-tested / 29 unsupported-with-reason /
-2 not-applicable / 327 planned (464 = mechanism denominator), per-family
+`docs/coverage.md`: 107 behavior-tested / 29 unsupported-with-reason /
+2 not-applicable / 326 planned (464 = mechanism denominator), per-family
 and per-mechanism tables with evidence case ids, generated
 limitations, 11 source issues — plus the release-scope boundary
-(in-process proofs vs the 104-row C surface). Known
+(in-process proofs vs the 105-row C surface). Known
 limitations and host support: `SUPPORTED-HOSTS.md`.
 
 ## 6. Token provisioning record

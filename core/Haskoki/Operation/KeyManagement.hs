@@ -41,6 +41,7 @@ module Haskoki.Operation.KeyManagement
     -- * Object reading
   , keyBytesOf
   , policyFromObject
+  , keyTypeCompatible
     -- * Class and key-type codes (spec\/vendor\/pkcs11.h)
   , ckoData
   , ckoSecretKey
@@ -55,6 +56,9 @@ module Haskoki.Operation.KeyManagement
     -- * Mechanism ids (spec\/vendor\/pkcs11.h)
   , aesKeyGenMech
   , hotpKeyGenMech
+  , genericSecretKeyGenMech
+  , genericSecretKeygenMinBytes
+  , genericSecretKeygenMaxBytes
   , ecKeyPairGenMech
   , rsaKeyPairGenMech
   , aesCbcMech
@@ -127,10 +131,12 @@ import Haskoki.Outcome
   )
 import Haskoki.Recipe.Otp (hotpKeygenMaxBytes, hotpKeygenMinBytes)
 import Haskoki.Registry (MechanismId (..), Operation (..))
+import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
 import Haskoki.Registry.Generated
   ( ckm_AES_CBC
   , ckm_AES_KEY_GEN
   , ckm_EC_KEY_PAIR_GEN
+  , ckm_GENERIC_SECRET_KEY_GEN
   , ckm_HOTP_KEY_GEN
   , ckm_ML_KEM_KEY_PAIR_GEN
   , ckm_RSA_PKCS_KEY_PAIR_GEN
@@ -201,6 +207,21 @@ aesKeyGenMech = MechanismId (ckm_AES_KEY_GEN)
 -- | @CKM_HOTP_KEY_GEN@ (generated id, resolved by name).
 hotpKeyGenMech :: MechanismId
 hotpKeyGenMech = MechanismId (ckm_HOTP_KEY_GEN)
+
+-- | @CKM_GENERIC_SECRET_KEY_GEN@ (generated id, resolved by name).
+genericSecretKeyGenMech :: MechanismId
+genericSecretKeyGenMech = MechanismId (ckm_GENERIC_SECRET_KEY_GEN)
+
+-- | Generic-secret keygen floor: a zero-length secret carries no key
+-- material, so the planner refuses it as inconsistent.
+genericSecretKeygenMinBytes :: Int
+genericSecretKeygenMinBytes = 1
+
+-- | Generic-secret keygen ceiling: the 'GenBytes' planner-driver frame
+-- carries the length in one byte, so 255 is the representable
+-- maximum. Revisit (wider frame) if a caller needs longer secrets.
+genericSecretKeygenMaxBytes :: Int
+genericSecretKeygenMaxBytes = 255
 
 -- | @CKM_EC_KEY_PAIR_GEN@ (generated id, resolved by name).
 ecKeyPairGenMech :: MechanismId
@@ -490,6 +511,20 @@ policyFromObject ost
           ]
       , flag t
       ]
+
+-- | Key-type compatibility for one @(mechanism, operation, key)@:
+-- the matrix ('Haskoki.Registry.KeyMatrix.matrixKeyTypes') permits
+-- the key's @CKA_KEY_TYPE@, the pair sits outside the reviewed
+-- matrix, or the key carries no key type at all (the legacy seam:
+-- untyped objects skip the matrix, mirroring the 'policyFromObject'
+-- fallback to the caller-derived policy). 'False' only when a
+-- present type contradicts a reviewed row.
+keyTypeCompatible :: MechanismId -> Operation -> ObjectState -> Bool
+keyTypeCompatible mech op ost = case matrixKeyTypes mech op of
+  Nothing -> True
+  Just tys -> case Map.lookup AttrKeyType (osAttrs ost) of
+    Just (ValULong k) -> k `elem` tys
+    _ -> True
 
 -- | A key-management denial as a plan outcome: no outputs, no delta.
 rejectOf :: KeyDeny -> PlanResult
@@ -965,6 +1000,22 @@ planGenerateKey rules model st mech tmpl =
               "HOTP value length is malformed")
             Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
               "HOTP keygen needs CKA_VALUE_LEN")
+      | mech == genericSecretKeyGenMech =
+          case checkKeyTemplate ckoSecretKey ckkGenericSecret tmpl of
+          Left deny -> Left deny
+          Right attrs -> case Map.lookup AttrValueLen attrs of
+            Just (ValULong n)
+              | n >= fromIntegral genericSecretKeygenMinBytes && n <= fromIntegral genericSecretKeygenMaxBytes -> Right
+                  ( PwGenerateKey (pendingFromAttrs st attrs)
+                  , FxGenerateKey mech BS.empty (encodeGenArgs (GenBytes (fromIntegral n)))
+                  )
+              | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                  ("generic-secret length must be " ++ show genericSecretKeygenMinBytes ++ " to "
+                    ++ show genericSecretKeygenMaxBytes ++ " bytes: " ++ show n))
+            Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "generic-secret value length is malformed")
+            Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+              "generic-secret keygen needs CKA_VALUE_LEN")
       | otherwise =
           Left (KeyDeny CKR_MECHANISM_INVALID
             ("not a key mechanism: " ++ show mech))

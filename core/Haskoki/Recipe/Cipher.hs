@@ -56,13 +56,15 @@ import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (
 
 -- | One block-cipher recipe: the mechanism name, the block width in
 -- bytes, the accepted raw key lengths, the IV length carried as
--- mechanism parameters (0 for ECB), and the PKCS#7 flag.
+-- mechanism parameters (0 for ECB), the PKCS#7 flag, and the key
+-- type name (@CKK_*@) the Init key-type matrix requires.
 data BlockCipherRecipe = BlockCipherRecipe
   { crName :: !MechanismName
   , crBlockBytes :: !Int
   , crKeyLens :: ![Int]
   , crIvBytes :: !Int
   , crPad :: !Bool
+  , crKeyType :: !MechanismName
   } deriving (Eq, Show)
 
 -- | The group's canonical parameter codecs: ECB mechanisms take
@@ -94,15 +96,15 @@ cipherKeyLenValid r n = n `elem` crKeyLens r
 -- | All nine covered mechanisms with their geometry.
 cipherRecipes :: [BlockCipherRecipe]
 cipherRecipes =
-  [ BlockCipherRecipe "CKM_AES_CBC" 16 [16, 24, 32] 16 False
-  , BlockCipherRecipe "CKM_AES_CBC_PAD" 16 [16, 24, 32] 16 True
-  , BlockCipherRecipe "CKM_AES_ECB" 16 [16, 24, 32] 0 False
-  , BlockCipherRecipe "CKM_DES3_CBC" 8 [16, 24] 8 False
-  , BlockCipherRecipe "CKM_DES3_ECB" 8 [16, 24] 0 False
-  , BlockCipherRecipe "CKM_ARIA_CBC" 16 [16, 24, 32] 16 False
-  , BlockCipherRecipe "CKM_ARIA_ECB" 16 [16, 24, 32] 0 False
-  , BlockCipherRecipe "CKM_CAMELLIA_CBC" 16 [16, 24, 32] 16 False
-  , BlockCipherRecipe "CKM_CAMELLIA_ECB" 16 [16, 24, 32] 0 False
+  [ BlockCipherRecipe "CKM_AES_CBC" 16 [16, 24, 32] 16 False "CKK_AES"
+  , BlockCipherRecipe "CKM_AES_CBC_PAD" 16 [16, 24, 32] 16 True "CKK_AES"
+  , BlockCipherRecipe "CKM_AES_ECB" 16 [16, 24, 32] 0 False "CKK_AES"
+  , BlockCipherRecipe "CKM_DES3_CBC" 8 [16, 24] 8 False "CKK_DES3"
+  , BlockCipherRecipe "CKM_DES3_ECB" 8 [16, 24] 0 False "CKK_DES3"
+  , BlockCipherRecipe "CKM_ARIA_CBC" 16 [16, 24, 32] 16 False "CKK_ARIA"
+  , BlockCipherRecipe "CKM_ARIA_ECB" 16 [16, 24, 32] 0 False "CKK_ARIA"
+  , BlockCipherRecipe "CKM_CAMELLIA_CBC" 16 [16, 24, 32] 16 False "CKK_CAMELLIA"
+  , BlockCipherRecipe "CKM_CAMELLIA_ECB" 16 [16, 24, 32] 0 False "CKK_CAMELLIA"
   ]
 
 -- | Resolve a mechanism id to its block-cipher recipe, if covered.

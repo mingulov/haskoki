@@ -63,6 +63,8 @@ module Haskoki.Engine.Backend
   , CryptoBackend (..)
     -- * Random reseed bound
   , seedRandomMaxBytes
+    -- * Random output bound
+  , generateRandomMaxBytes
   ) where
 
 import Data.ByteString (ByteString)
@@ -386,7 +388,7 @@ data SigSpec
 data KeyGenSpec
   = GenRSA { genBits :: !Int, genExponent :: !Integer }
   | GenEC { genEc :: !EcSpec }
-  | GenSym { genAlg :: !String, genLen :: !Int } -- "AES", "ChaCha20", "HMAC", "HOTP"
+  | GenSym { genAlg :: !String, genLen :: !Int } -- "AES", "ChaCha20", "HMAC", "HOTP", "GENERIC"
   | GenMLKEM { genKem :: !PqcKemAlg }
   | GenMLDSA { genSigAlg :: !PqcSigAlg }
   | GenSLHDSA { genSigAlg :: !PqcSigAlg }
@@ -438,6 +440,14 @@ data BackendCaps = BackendCaps
 -- Longer seeds are 'BackendBadParam' on every backend.
 seedRandomMaxBytes :: Int
 seedRandomMaxBytes = 1048576
+
+-- | Largest single 'randomBytes' request in bytes (1 MiB, the same
+-- window as 'seedRandomMaxBytes'). Longer requests are
+-- 'BackendBadParam' on every backend: an unbounded request lets a
+-- caller amplify one call into gigabytes of allocator pressure
+-- (the oracle's 4 GiB probe OOM-killed the process pre-bound).
+generateRandomMaxBytes :: Int
+generateRandomMaxBytes = 1048576
 
 -- | Crypto backend contract. Laws:
 --
@@ -496,6 +506,8 @@ class CryptoBackend b where
   -- ^ (private-or-only, public-if-asymmetric)
   -- Random bytes: n >= 1 bytes from the backend RNG
   -- (libctx DRBG on OpenSSL4; seeded stream on synthetic).
+  -- Requests longer than 'generateRandomMaxBytes' are
+  -- 'BackendBadParam'.
   randomBytes :: BackendEnv b -> Int -> IO (EngineResult ByteString)
   -- Random reseed: mix @seed@ into the backend RNG.
   -- Synthetic REPLACES the stream origin (new seed plus counter

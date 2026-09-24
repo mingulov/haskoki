@@ -366,7 +366,7 @@ instance CryptoBackend OpenSSL4 where
       Left code -> nativeFail "generateKey" code
       Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   -- Symmetric keygen is libctx DRBG bytes (bounds mirror
-  -- the key planner: AES 16/24/32, HOTP 16..64).
+  -- the key planner: AES 16/24/32, HOTP 16..64, GENERIC 1..255).
   generateKey be spec@(GenSym alg n) = runGuarded be "generateKey" (genSupported be spec) $ \env ->
     case symLenOk alg n of
       Just why -> pure (EngineFail (BackendBadParam "generateKey" why))
@@ -399,7 +399,10 @@ instance CryptoBackend OpenSSL4 where
     if n < 1
       then pure (EngineFail (BackendBadParam "randomBytes"
         ("length must be positive: " ++ show n)))
-      else withForeignPtr (osslEnv env) $ \_ -> go (osslCtx env) n []
+      else if n > generateRandomMaxBytes
+        then pure (EngineFail (BackendBadParam "randomBytes"
+          ("length longer than " ++ show generateRandomMaxBytes ++ " bytes: " ++ show n)))
+        else withForeignPtr (osslEnv env) $ \_ -> go (osslCtx env) n []
     where
       go _ 0 acc = pure (EngineOk (BS.concat (reverse acc)))
       go ctx remaining acc = do
@@ -786,7 +789,7 @@ genSupported (OSSL4Backend env) spec
   | GenEC ec <- spec
   , Set.member (ecCurve ec) (scCurves (bcSigs (osslCaps env))) = Nothing
   | GenSym alg _ <- spec
-  , alg `elem` ["AES", "HOTP"] = Nothing
+  , alg `elem` ["AES", "HOTP", "GENERIC"] = Nothing
   | otherwise = Just ("keygen not in set: " ++ show spec)
 
 -- | Symmetric keygen bounds: the key planner's windows.
@@ -798,6 +801,9 @@ symLenOk "AES" n
 symLenOk "HOTP" n
   | n >= 16 && n <= 64 = Nothing
   | otherwise = Just ("HOTP keygen length must be 16 to 64 bytes: " ++ show n)
+symLenOk "GENERIC" n
+  | n >= 1 && n <= 255 = Nothing
+  | otherwise = Just ("generic-secret keygen length must be 1 to 255 bytes: " ++ show n)
 symLenOk alg _ = Just ("symmetric keygen not in set: " ++ alg)
 
 -- ---------------------------------------------------------------------------

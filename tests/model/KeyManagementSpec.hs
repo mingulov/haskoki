@@ -99,6 +99,9 @@ import Haskoki.Operation.KeyManagement
   , ckoSecretKey
   , ecKeyPairGenMech
   , finishWork
+  , genericSecretKeyGenMech
+  , genericSecretKeygenMaxBytes
+  , genericSecretKeygenMinBytes
   , keyBytesOf
   , padPkcs7
   , pendingFromAttrs
@@ -122,7 +125,9 @@ import Haskoki.Outcome
   , StateDelta (..)
   )
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
-import Haskoki.Registry (Operation (..), curatedRegistry, mkCapabilities)
+import Haskoki.Registry (MechanismId (..), Operation (..), curatedRegistry, mkCapabilities)
+import Haskoki.Registry.Generated (ckm_SHA256, ckm_SHA256_HMAC)
+import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (defaultRules)
 import Haskoki.Session (SessionLogin (..))
@@ -142,6 +147,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Encaps delivers ciphertext and exactly one handle" caseKemEncaps
   , testCase "Short-buffer encaps creates no key" caseKemEncapsShort
   , testCase "AES keygen delivers one handle" caseAesKeygen
+  , testCase "Generic-secret keygen mints typed material in bounds" caseGenericSecretKeygen
+  , testCase "Init enforces the key-type matrix" caseInitKeyTypeMatrix
   , testCase "EC keypair delivers two handles" caseEcKeypair
   , testCase "RSA keypair is honestly unsupported" caseRsaUnsupported
   , testCase "Wrap length query then wrap/unwrap roundtrip" caseWrapRoundtrip
@@ -531,6 +538,142 @@ caseAesKeygen = withSynth $ \answer -> do
   case keyBytesOf ost of
     Just mat -> assertEqual "AES-256 material" 32 (BS.length mat)
     Nothing -> assertFailure "generated key lacks material"
+
+genericTmpl :: Int -> [(AttributeType, AttributeValue)]
+genericTmpl n =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong ckkGenericSecret)
+  , (AttrValueLen, ValULong (fromIntegral n))
+  , (AttrToken, ValBool False)
+  , (AttrPrivate, ValBool True)
+  , (AttrSign, ValBool True)
+  , (AttrVerify, ValBool True)
+  , (AttrEncrypt, ValBool True)
+  ]
+
+-- | Generate one key with an explicit mechanism through the planner
+-- + synthetic backend.
+genKeyWith :: (Model -> CryptoEffect -> IO CryptoResult)
+  -> Model -> SessionState -> MechanismId -> [(AttributeType, AttributeValue)]
+  -> IO (Model, ExternalHandle)
+genKeyWith answer m st mech tmpl = case planGenerateKey defaultRules m st mech tmpl of
+  KeyEffect pw fx -> do
+    res <- answer m fx
+    c <- finishCommit m st pw res 1
+    h <- handleOf (pcOutputs c !! 0)
+    m' <- expectRight (publishDelta m (pcDelta c))
+    pure (m', h)
+  other -> assertFailure ("keygen plan is not an effect: " ++ show other) >> undefined
+
+caseGenericSecretKeygen :: IO ()
+caseGenericSecretKeygen = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- genKeyWith answer m0 st genericSecretKeyGenMech (genericTmpl 32)
+  Just ost <- pure (resolveHandle m1 h)
+  assertEqual "key type" (Just (ValULong ckkGenericSecret)) (Map.lookup AttrKeyType (osAttrs ost))
+  case keyBytesOf ost of
+    Just mat -> assertEqual "generic-256 material" 32 (BS.length mat)
+    Nothing -> assertFailure "generated key lacks material"
+  -- Bounds: the 1..255 window mints, edges refuse.
+  let plan n = planGenerateKey defaultRules m1 st genericSecretKeyGenMech (genericTmpl n)
+  case plan genericSecretKeygenMinBytes of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("min length must plan: " ++ show (voidFx other))
+  case plan genericSecretKeygenMaxBytes of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("max length must plan: " ++ show (voidFx other))
+  case plan (genericSecretKeygenMinBytes - 1) of
+    KeyDenied deny -> assertEqual "zero length code" CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure ("zero length must refuse: " ++ show (voidFx other))
+  case plan (genericSecretKeygenMaxBytes + 1) of
+    KeyDenied deny -> assertEqual "over length code" CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure ("over length must refuse: " ++ show (voidFx other))
+  -- A contradictory key type refuses.
+  case planGenerateKey defaultRules m1 st genericSecretKeyGenMech
+      [ (AttrClass, ValULong ckoSecretKey)
+      , (AttrKeyType, ValULong ckkAes)
+      , (AttrValueLen, ValULong 16)
+      ] of
+    KeyDenied deny -> assertEqual "wrong type code" CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure ("wrong key type must refuse: " ++ show (voidFx other))
+  where
+    voidFx :: KeyPlan -> String
+    voidFx (KeyDenied deny) = "denied: " ++ show (kdCode deny)
+    voidFx (KeyImmediate _) = "immediate"
+    voidFx (KeyEffect _ _) = "effect"
+
+hmacSha256Mech :: MechanismId
+hmacSha256Mech = MechanismId ckm_SHA256_HMAC
+
+sha256Mech :: MechanismId
+sha256Mech = MechanismId ckm_SHA256
+
+caseInitKeyTypeMatrix :: IO ()
+caseInitKeyTypeMatrix = withSynth $ \answer -> do
+  mSeed <- seedModel
+  m0 <- loginUser mSeed
+  st <- getSession m0
+  -- Both keys carry sign AND encrypt usage: a usage-first check
+  -- would admit every leg below, so each refusal proves the matrix
+  -- fired (type before usage).
+  (m1, aesH) <- genKeyWith answer m0 st aesKeyGenMech
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkAes)
+    , (AttrValueLen, ValULong 16)
+    , (AttrToken, ValBool False)
+    , (AttrSign, ValBool True)
+    , (AttrEncrypt, ValBool True)
+    ]
+  (m2, genH) <- genKeyWith answer m1 st genericSecretKeyGenMech (genericTmpl 32)
+  let env = OpEnv
+        { oeRegistry = curatedRegistry
+        , oeCaps = mkCapabilities [(hmacSha256Mech, OpSign), (aesCbcMech, OpEncrypt)]
+        , oeModel = m2
+        }
+      mkSign h = InitArgs
+        { iaOp = OpSign
+        , iaMech = hmacSha256Mech
+        , iaParams = BS.empty
+        , iaKey = Just (KeyPolicy h [OpSign] False)
+        , iaCipher = Nothing
+        , iaRecover = Nothing
+        }
+      mkEnc h = InitArgs
+        { iaOp = OpEncrypt
+        , iaMech = aesCbcMech
+        , iaParams = iv16
+        , iaKey = Just (KeyPolicy h [OpEncrypt] False)
+        , iaCipher = Just (CipherSpec 16 False)
+        , iaRecover = Nothing
+        }
+  let (_, signGen) = initOperation env emptySessionOps st (mkSign genH)
+  assertEqual "HMAC sign with generic key" CKR_OK (ioCode signGen)
+  let (_, signAes) = initOperation env emptySessionOps st (mkSign aesH)
+  assertEqual "HMAC sign with AES key" CKR_KEY_TYPE_INCONSISTENT (ioCode signAes)
+  let (_, encAes) = initOperation env emptySessionOps st (mkEnc aesH)
+  assertEqual "AES-CBC encrypt with AES key" CKR_OK (ioCode encAes)
+  let (_, encGen) = initOperation env emptySessionOps st (mkEnc genH)
+  assertEqual "AES-CBC encrypt with generic key" CKR_KEY_TYPE_INCONSISTENT (ioCode encGen)
+  -- Direct matrix pins.
+  assertEqual "hmac row" (Just [ckkGenericSecret]) (matrixKeyTypes hmacSha256Mech OpSign)
+  assertEqual "cbc row" (Just [ckkAes]) (matrixKeyTypes aesCbcMech OpEncrypt)
+  assertEqual "digest unmatrices" Nothing (matrixKeyTypes sha256Mech OpDigest)
+  assertEqual "off-op unmatrices" Nothing (matrixKeyTypes hmacSha256Mech OpEncrypt)
+  -- Legacy objects without a key type skip the matrix (the seam).
+  let legacyAttrs = Map.fromList
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrToken, ValBool False)
+        ]
+  (m3, legacyH) <- case publishPending m2 st [pendingFromAttrs st legacyAttrs] of
+    Left deny -> assertFailure ("plant must publish: " ++ show deny) >> undefined
+    Right (delta, [h]) -> do
+      m' <- expectRight (publishDelta m2 delta)
+      pure (m', h)
+    Right _ -> assertFailure "plant must mint one handle" >> undefined
+  let env3 = env { oeModel = m3 }
+      (_, signLegacy) = initOperation env3 emptySessionOps st (mkSign legacyH)
+  assertEqual "untyped legacy key skips matrix" CKR_OK (ioCode signLegacy)
 
 caseEcKeypair :: IO ()
 caseEcKeypair = withSynth $ \answer -> do

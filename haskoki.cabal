@@ -74,6 +74,7 @@ library haskoki-core
     Haskoki.Output
     Haskoki.Registry
     Haskoki.Registry.Generated
+    Haskoki.Registry.KeyMatrix
     Haskoki.Registry.Types
     Haskoki.Recipe.Cipher
     Haskoki.Recipe.Cmac

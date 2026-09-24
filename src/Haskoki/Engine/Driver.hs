@@ -184,6 +184,7 @@ import Haskoki.Operation.KeyManagement
   , decodeWrapParams
   , ecKeyPairGenMech
   , encodeKeyPair
+  , genericSecretKeyGenMech
   , hotpKeyGenMech
   , rsaKeyPairGenMech
   )
@@ -718,12 +719,14 @@ runEffect env resolve fx = case fx of
             toKeyPair <$> generateKey env (GenSym "AES" n)
           (m, GenBytes n) | m == hotpKeyGenMech ->
             toKeyPair <$> generateKey env (GenSym "HOTP" n)
+          (m, GenBytes n) | m == genericSecretKeyGenMech ->
+            toKeyPair <$> generateKey env (GenSym "GENERIC" n)
           (m, GenEc curve) | m == ecKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenEC (EcSpec (BC8.unpack curve) "DER"))
           (m, GenRsa bits e) | m == rsaKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenRSA bits e)
           _
-            | mech `elem` [aesKeyGenMech, hotpKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech] ->
+            | mech `elem` [aesKeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)

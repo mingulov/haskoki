@@ -708,6 +708,15 @@ dHotpKeyGen = promotedDesc "CKM_HOTP_KEY_GEN" allBaselines FamilyKeyGen
   noParams [synthRoute OpGenerateKey "CKM_HOTP_KEY_GEN"]
   KeyBits 128 512
 
+-- | @CKM_GENERIC_SECRET_KEY_GEN@: mechanism parameters are NULL;
+-- the length arrives via the @CKA_VALUE_LEN@ template attribute
+-- (1-255 bytes: the floor refuses empty secrets, the ceiling is
+-- the one-byte 'GenBytes' planner-driver frame).
+dGenericSecretKeyGen :: Descriptor
+dGenericSecretKeyGen = promotedDesc "CKM_GENERIC_SECRET_KEY_GEN" allBaselines FamilyKeyGen
+  noParams [synthRoute OpGenerateKey "CKM_GENERIC_SECRET_KEY_GEN"]
+  KeyBits 8 2040
+
 -- | The block-cipher behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from
 -- 'cipherCodecFor', encrypt and decrypt routes citing the verified
@@ -810,7 +819,7 @@ curatedRegistry =
   where
     behaviorDescs :: [Descriptor]
     behaviorDescs =
-      ( [ dSHA256, dAESKeyGen, dHotpKeyGen
+      ( [ dSHA256, dAESKeyGen, dHotpKeyGen, dGenericSecretKeyGen
         , dECKeyPairGen, dMlKemKeyPairGen, dHkdfDerive, dMlKem
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512

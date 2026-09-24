@@ -96,6 +96,8 @@ import Haskoki.Engine.Backend
   , UnsaveableReason (..)
   )
 import qualified Haskoki.Engine.Backend as B
+import Haskoki.Operation.KeyManagement
+  (genericSecretKeygenMaxBytes, genericSecretKeygenMinBytes)
 import Haskoki.Recipe.Otp (hotpKeygenMaxBytes, hotpKeygenMinBytes)
 import Haskoki.Registry (MechanismId (..))
 import Haskoki.Types (EngineResourceId (..))
@@ -511,6 +513,11 @@ instance CryptoBackend Synthetic where
             pure (B.EngineOk (KeyBytes (genSymBytes seed ctr "HOTP" n), Nothing))
         | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
             "HOTP key length must be 16 to 64 bytes"))
+      GenSym "GENERIC" n
+        | n >= genericSecretKeygenMinBytes && n <= genericSecretKeygenMaxBytes ->
+            pure (B.EngineOk (KeyBytes (genSymBytes seed ctr "GENERIC" n), Nothing))
+        | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
+            "generic-secret key length must be 1 to 255 bytes"))
       GenEC ec
         | ecCurve ec == "P-256" -> pure (B.EngineOk (genPair seed ctr))
         | otherwise -> pure (B.EngineFail
@@ -526,7 +533,10 @@ instance CryptoBackend Synthetic where
     if n < 1
       then pure (B.EngineFail (BackendBadParam "randomBytes"
         ("length must be positive: " ++ show n)))
-      else do
+      else if n > B.generateRandomMaxBytes
+        then pure (B.EngineFail (BackendBadParam "randomBytes"
+          ("length longer than " ++ show B.generateRandomMaxBytes ++ " bytes: " ++ show n)))
+        else do
         ctr <- modifyMVar (seGenCtr env) $ \c -> pure (c + 1, c)
         seed <- readMVar (seSeed env)
         pure (B.EngineOk (genSymBytes seed ctr "random" n))
@@ -659,7 +669,7 @@ synthCaps = BackendCaps
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 66-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenEC P-256 pairs; GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC P-256 pairs; GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -848,6 +858,7 @@ genSupported :: BackendEnv Synthetic -> KeyGenSpec -> Maybe String
 genSupported _ spec = case spec of
   GenSym "AES" _ -> Nothing
   GenSym "HOTP" _ -> Nothing
+  GenSym "GENERIC" _ -> Nothing
   GenEC ec | ecCurve ec == "P-256" -> Nothing
   GenMLKEM _ -> Nothing
   _ -> Just ("keygen not in synthetic set: " ++ show spec)
