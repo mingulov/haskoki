@@ -240,7 +240,25 @@ prefers `KEY_TYPE_INCONSISTENT`; `ARGUMENTS_BAD` where it prefers
 `ENCRYPTED_DATA_LEN_RANGE`). Each is a small CKR-precision item; the
 Init-matrix follow-up takes the largest share.
 
-## KAT lane status
+## KAT lane status (r4: 24089 passed / 207 failed / 82687 skipped)
+
+r3→r4 (16808→24089 passed, 436→207 failed, 0 crashed): cleared 354,
+including the random-bound crash fix, all SHA3-KDF legs, the OAEP
+callability legs, and the key-type matrix legs. Newly visible 125,
+all `test_wycheproof_rsa_oaep.py` valid vectors (18× tc1 across the
+hash/mgf files + 107 `rsa_oaep_misc_test` edge vectors): every one
+decrypts to an EMPTY message, and the size-query path returned OK
+without writing the length and freed the slot (an empty output
+"fits" a zero cap), so the recall failed NOT_INITIALIZED. Invalid
+vectors all pass — refusals (ENCRYPTED_DATA_INVALID) are correct.
+
+Root-caused with host-local single-vector repros and fixed after
+r4: queries now run with the real `IntentNull` intent end to end
+(`stageBytes` always stages on `IntentNull`, `retryStaged`
+re-reports on re-query). The full OAEP file passes locally
+post-fix (819 passed, 0 failed); KAT r5 will confirm lane-wide.
+
+## KAT lane status (historical r3)
 
 Pre-r3, the KAT lane reported 21133 failures, dominated by vector-key
 import (`ATTRIBUTE_TYPE_INVALID` on component attributes). The r3
