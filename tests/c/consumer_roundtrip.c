@@ -2053,8 +2053,12 @@ int main(int argc, char **argv) {
         CK_ULONG psigLen, ctextLen, backLen;
         CK_BYTE labelL[] = { 'L' }, labelX[] = { 'X' };
         CK_BYTE msg[] = { 'a', 'b', 'c' };
-        CK_BYTE plain[16] = { '0','1','2','3','4','5','6','7',
-                              '8','9','a','b','c','d','e','f' };
+        /* Deliberately not block-aligned (27 bytes): OAEP inputs
+         * are length-bounded, never block-framed. */
+        CK_BYTE plain[27] = { 'O','A','E','P',' ','p','a','r','a','m',
+                              'e','t','e','r','-','f','i','d','e','l',
+                              'i','t','y',' ','p','r','o' };
+        CK_BYTE big[200] = { 0 };
         rv = f->C_CreateObject(sess, pssPrivT, 15, &pssPriv);
         CHECKC(rv == CKR_OK && pssPriv != 0, "PSS RSA private imports");
         rv = f->C_CreateObject(sess, pssPubT, 7, &pssPub);
@@ -2117,6 +2121,15 @@ int main(int argc, char **argv) {
         backLen = sizeof(back);
         rv = f->C_Decrypt(sess, ctext, ctextLen, back, &backLen);
         CHECKC(rv != CKR_OK, "wrong-label OAEP decrypt refuses");
+        /* Over-long input refuses (backend k-2*hLen-2 bound:
+         * 200 > 256-64-2). */
+        oaep.pSourceData = NULL_PTR;
+        oaep.ulSourceDataLen = 0;
+        rv = f->C_EncryptInit(sess, &em, pssPub);
+        CHECKC(rv == CKR_OK, "over-long OAEP EncryptInit ok");
+        ctextLen = sizeof(ctext);
+        rv = f->C_Encrypt(sess, big, sizeof(big), ctext, &ctextLen);
+        CHECKC(rv != CKR_OK, "over-long OAEP encrypt refuses");
       }
       {
         CK_ATTRIBUTE ptmpl[] = {

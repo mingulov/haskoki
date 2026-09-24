@@ -38,6 +38,7 @@ import Haskoki.Operation
   , TypedError (..)
   , interpretError
   , denyOutcome
+  , isUnframedCipher
   , mkDeny
   , gateDataCall
   , bufferedOf
@@ -138,22 +139,27 @@ planDualFinal ops st = case dualOf ops of
         in case duDir du of
           DirEncrypt ->
             let spec = duCipherSpec du
-            in if csPad spec
-              then case pkcs7Pad (csBlock spec) (bufferedOf cCom) of
-                Nothing ->
-                  ( freeDual ops
-                  , st'
-                  , denyOutcome (mkDeny CKR_GENERAL_ERROR
-                      "dual cipher shape escapes the PKCS#7 range")
-                  )
-                Just padded -> emitDual ops st' du' (bufferedOf dCom) padded
-              else if BS.length (bufferedOf cCom) `mod` csBlock spec /= 0
-                then ( setDual (Just du') ops
-                     , st'
-                     , denyOutcome (mkDeny CKR_DATA_LEN_RANGE
-                         "unpadded dual encrypt needs block-aligned input")
-                     )
-                else emitDual ops st' du' (bufferedOf dCom) (bufferedOf cCom)
+                buf = bufferedOf cCom
+            -- Asymmetric rows skip framing: the backend owns
+            -- their length bound.
+            in if isUnframedCipher (commonMech cCom)
+              then emitDual ops st' du' (bufferedOf dCom) buf
+              else if csPad spec
+                then case pkcs7Pad (csBlock spec) buf of
+                  Nothing ->
+                    ( freeDual ops
+                    , st'
+                    , denyOutcome (mkDeny CKR_GENERAL_ERROR
+                        "dual cipher shape escapes the PKCS#7 range")
+                    )
+                  Just padded -> emitDual ops st' du' (bufferedOf dCom) padded
+                else if BS.length buf `mod` csBlock spec /= 0
+                  then ( setDual (Just du') ops
+                       , st'
+                       , denyOutcome (mkDeny CKR_DATA_LEN_RANGE
+                           "unpadded dual encrypt needs block-aligned input")
+                       )
+                  else emitDual ops st' du' (bufferedOf dCom) buf
           DirDecrypt ->
             emitDual ops st' du' (bufferedOf dCom) (bufferedOf cCom)
   where
@@ -232,17 +238,20 @@ finishDual ops dName cName dRes cRes dIntent cIntent =
     kill code why = (freeDual ops, denyOutcome (mkDeny code why))
     cipherOut du raw = case duDir du of
       DirEncrypt -> Right raw
-      DirDecrypt ->
-        let spec = duCipherSpec du
-        in if csPad spec
-          then case pkcs7Unpad (csBlock spec) raw of
-            Just plain -> Right plain
-            Nothing -> Left (mkDeny CKR_ENCRYPTED_DATA_INVALID
-              "dual decrypt padding check failed")
-          else if BS.length raw `mod` csBlock spec == 0
-            then Right raw
-            else Left (mkDeny CKR_ENCRYPTED_DATA_LEN_RANGE
-              "unpadded dual decrypt answer is not block-aligned")
+      DirDecrypt
+        -- Asymmetric rows stage the answer raw.
+        | isUnframedCipher (commonMech (duCipher du)) -> Right raw
+        | otherwise ->
+            let spec = duCipherSpec du
+            in if csPad spec
+              then case pkcs7Unpad (csBlock spec) raw of
+                Just plain -> Right plain
+                Nothing -> Left (mkDeny CKR_ENCRYPTED_DATA_INVALID
+                  "dual decrypt padding check failed")
+              else if BS.length raw `mod` csBlock spec == 0
+                then Right raw
+                else Left (mkDeny CKR_ENCRYPTED_DATA_LEN_RANGE
+                  "unpadded dual decrypt answer is not block-aligned")
 
 -- | A quiet plan for an already-delivered dual side: no writes, the
 -- length answer repeated, and a terminating disposition.

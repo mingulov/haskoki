@@ -38,6 +38,7 @@ import Haskoki.Operation
   , TypedError (..)
   , interpretError
   , denyOutcome
+  , isUnframedCipher
   , mkDeny
   , gateDataCall
   , insertOp
@@ -53,6 +54,7 @@ import Haskoki.Operation
   , commonParams
   , mkActiveCipher
   )
+import Haskoki.Registry (MechanismId)
 import Haskoki.Request (OutputIntent)
 import Haskoki.Types (ReturnCode (..))
 
@@ -112,8 +114,11 @@ withCipherSlot ops kind = do
 -- | The effect input for an encrypt step: padded bytes, or the raw
 -- buffer when unpadded (which must already be block-aligned; the
 -- denial keeps the slot so later updates can repair it).
-encryptInput :: CipherSpec -> ByteString -> Either StepDeny ByteString
-encryptInput spec buf
+-- Asymmetric rows ('isUnframedCipher') skip framing entirely: the
+-- backend owns their length bound.
+encryptInput :: MechanismId -> CipherSpec -> ByteString -> Either StepDeny ByteString
+encryptInput mech spec buf
+  | isUnframedCipher mech = Right buf
   | csPad spec = case pkcs7Pad (csBlock spec) buf of
       Just padded -> Right padded
       Nothing -> Left (mkDeny CKR_GENERAL_ERROR
@@ -168,7 +173,7 @@ planCipherOneShot ops st kind _name input = case withCipherSlot ops kind of
           GateDeny d term ->
             (if term then removeSingle kind ops else ops, st, denyOutcome d)
           GateOk st' sc' -> case dir of
-            DirEncrypt -> case encryptInput spec input of
+            DirEncrypt -> case encryptInput (commonMech sc') spec input of
               Left d -> (insertOp (mkActiveCipher dir sc' spec) ops, st', denyOutcome d)
               Right padded -> runOneShot ops st' kind dir sc' spec input padded
             DirDecrypt -> runOneShot ops st' kind dir sc' spec input input
@@ -199,7 +204,7 @@ planCipherFinal ops st kind _name = case withCipherSlot ops kind of
       GateDeny d term ->
         (if term then removeSingle kind ops else ops, st, denyOutcome d)
       GateOk st' sc' -> case dir of
-        DirEncrypt -> case encryptInput spec (bufferedOf sc') of
+        DirEncrypt -> case encryptInput (commonMech sc') spec (bufferedOf sc') of
           Left d ->
             (insertOp (mkActiveCipher dir sc' spec) ops, st', denyOutcome d)
           Right padded ->
@@ -247,6 +252,7 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
         GotBytes raw -> case dir of
           DirEncrypt -> stageRaw raw
           DirDecrypt
+            | isUnframedCipher (commonMech sc) -> stageRaw raw
             | csPad spec -> case pkcs7Unpad (csBlock spec) raw of
                 Just plain -> stageRaw plain
                 Nothing ->

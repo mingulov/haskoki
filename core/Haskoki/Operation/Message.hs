@@ -59,6 +59,7 @@ import Haskoki.Operation
   , TypedError (..)
   , interpretError
   , denyOutcome
+  , isUnframedCipher
   , mkDeny
   , gateDataCall
   , insertOp
@@ -329,6 +330,17 @@ runCipherNext ops st fam dir params part end = case withMessageSlot ops fam of
           )
       | otherwise = case (dir, msCipher ms') of
           (DirEncrypt, Just spec)
+            -- Asymmetric rows skip framing: the backend owns
+            -- their length bound.
+            | isUnframedCipher (commonMech (msCommon ms')) ->
+                ( storeMessage o (ms' { msInner = MsgOpen pa aad buf' })
+                , s
+                , StepOutcome CKR_OK
+                    [FxMessageCipher dir (commonMech sc) (commonKey sc) pa aad buf']
+                    Nothing
+                    ["message end planned over "
+                      ++ show (BS.length buf') ++ " bytes"] [] Nothing
+                )
             | csPad spec -> case pkcs7Pad (csBlock spec) buf' of
                 Nothing ->
                   ( storeMessage o (abortMessage ms')
@@ -515,6 +527,10 @@ runCipherOneShot ops st fam dir params aad input = case withMessageSlot ops fam 
               Left denied -> denied
               Right (o, s, ms') -> case (dir, msCipher ms') of
                 (DirEncrypt, Just spec)
+                  -- Asymmetric rows skip framing: the backend
+                  -- owns their length bound.
+                  | isUnframedCipher (commonMech (msCommon ms')) ->
+                      planEffect o s ms' input
                   | csPad spec -> case pkcs7Pad (csBlock spec) input of
                       Nothing ->
                         (o, s, denyOutcome (mkDeny CKR_GENERAL_ERROR
@@ -689,6 +705,8 @@ runFinishDecrypt ops ms name result intent = case stagedOf (msCommon ms) of
             "message cipher lacks its block shape"))
       Just spec -> case result of
         GotBytes raw
+          -- Asymmetric rows stage the answer raw.
+          | isUnframedCipher (commonMech (msCommon ms)) -> stagePlain raw
           | csPad spec -> case pkcs7Unpad (csBlock spec) raw of
               Just plain -> stagePlain plain
               Nothing ->

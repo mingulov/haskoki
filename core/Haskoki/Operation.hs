@@ -52,6 +52,7 @@ module Haskoki.Operation
   , gateDataCall
   , stageBytes
   , retryStaged
+  , isUnframedCipher
     -- * Buffer bound for the per-kind lifecycles
   , maxBuffered
   , appendBuffered
@@ -211,6 +212,16 @@ checkShape args = case (cipherDirOf (iaOp args), iaCipher args) of
   (Nothing, Just _) ->
     Left (mkDeny CKR_ARGUMENTS_BAD "non-cipher operation takes no cipher spec")
   (Nothing, Nothing) -> checkRecover args ShapePlain
+
+-- | Asymmetric cipher rows skip block framing: an OAEP input is
+-- length-bounded by the backend (@k-2*hLen-2@), never block-aligned,
+-- and answers stage raw. 'checkShape' already refuses padded specs
+-- for these rows; the planners and finishers consult this so the
+-- vestigial cipher width never gates bytes. (@CKM_RSA_PKCS@ joins
+-- when it gets a cipher shape; today OAEP is the only asymmetric
+-- row that can hold a cipher slot.)
+isUnframedCipher :: MechanismId -> Bool
+isUnframedCipher m = isJust (rsaOaepRecipeFor m)
 
 -- | Mechanism-parameter check (recipe-backed mechanisms):
 -- operations whose recipe constrains mechanism parameters enforce
