@@ -174,8 +174,8 @@ planSignOneShot ops st _name input = case withPlainSlot ops SlotSign of
       "operation is finalized; retry the staged output instead"))
     Nothing
       | not (BS.null (bufferedOf sc)) ->
-          (ops, st, denyOutcome (mkDeny CKR_OPERATION_ACTIVE
-            "multipart input already buffered; finish or re-init"))
+          (removeSingle SlotSign ops, st, denyOutcome (mkDeny CKR_OPERATION_ACTIVE
+            "multipart input already buffered; re-init to continue"))
       | otherwise -> case gateDataCall st sc of
           GateDeny d term ->
             (if term then removeSingle SlotSign ops else ops, st, denyOutcome d)
@@ -279,8 +279,8 @@ planVerifyOneShot ops st _name input sig = case withPlainSlot ops SlotVerify of
       "operation is finalized"))
     Nothing
       | not (BS.null (bufferedOf sc)) ->
-          (ops, st, denyOutcome (mkDeny CKR_OPERATION_ACTIVE
-            "multipart input already buffered; finish or re-init"))
+          (removeSingle SlotVerify ops, st, denyOutcome (mkDeny CKR_OPERATION_ACTIVE
+            "multipart input already buffered; re-init to continue"))
       | BS.null sig ->
           ( removeSingle SlotVerify ops
           , st

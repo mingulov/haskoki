@@ -91,7 +91,7 @@ import Haskoki.Registry
   , descRoutes
   , supports
   )
-import Haskoki.Request (OutputIntent)
+import Haskoki.Request (OutputIntent (..))
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( Consumption (..)
@@ -508,19 +508,24 @@ gateDataCall st sc = case commonAuth sc of
 
 -- | Stage final bytes through the output planner: success frees the
 -- slot (no staged output is retained), a short buffer retains the
--- full bytes with their planner liveness for 'retryStaged'.
+-- full bytes with their planner liveness for 'retryStaged'. A size
+-- query ('IntentNull') always stages — even an empty output, which
+-- would otherwise "fit" and free the slot before the recall.
 stageBytes
   :: String -> ByteString -> OutputIntent
   -> (Maybe StagedOutput, OutputPlan, Bool)
 stageBytes name out intent =
   let (st', plan) = planOneShot (OpLive (Consumption 0)) name out intent
-  in case opCode plan of
-    CKR_OK -> (Nothing, plan, True)
+  in case (intent, opCode plan) of
+    (IntentNull, _) -> (Just (StagedOutput name out st'), plan, False)
+    (_, CKR_OK) -> (Nothing, plan, True)
     _ -> (Just (StagedOutput name out st'), plan, False)
 
 -- | Retry a staged final output with a fresh intent. Success frees
--- the slot; a still-short buffer keeps the full staged bytes again.
--- Unstaged, unknown, or kind-mismatched slots deny without mutation.
+-- the slot; a still-short buffer keeps the full staged bytes again;
+-- a re-query ('IntentNull') re-reports the staged length and keeps
+-- the slot. Unstaged, unknown, or kind-mismatched slots deny
+-- without mutation.
 retryStaged :: SessionOps -> SlotKind -> OutputIntent -> (SessionOps, StepOutcome)
 retryStaged ops kind intent = case lookupSingle ops kind of
   Nothing -> (ops, denyOutcome (mkDeny CKR_OPERATION_NOT_INITIALIZED
@@ -536,8 +541,16 @@ retryStaged ops kind intent = case lookupSingle ops kind of
       Just staged ->
         let (st', plan) = planOneShot (stState staged)
               (stName staged) (stBytes staged) intent
-        in case opCode plan of
-          CKR_OK ->
+        in case (intent, opCode plan) of
+          -- A re-query re-reports the staged length and keeps the
+          -- slot; only a fitting buffer completes the retry.
+          (IntentNull, _) ->
+            let sc' = setStaged (Just (staged { stState = st' })) sc
+            in ( insertOp (setCommon active sc') ops
+               , StepOutcome CKR_BUFFER_TOO_SMALL [] (Just plan)
+                   ["re-query re-reports the staged length"] [] Nothing
+               )
+          (_, CKR_OK) ->
             ( removeSingle kind ops
             , StepOutcome CKR_OK [] (Just plan) ["retry complete"] [] Nothing
             )

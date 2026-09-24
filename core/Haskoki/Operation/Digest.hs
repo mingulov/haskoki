@@ -121,8 +121,8 @@ planDigestOneShot ops st _name input = case lookupSingle ops SlotDigest of
         "digest is finalized; retry the staged output instead"))
       Nothing
         | streamFed (streamOf sc) || not (BS.null (bufferedOf sc)) ->
-            (o, s, denyOutcome (mkDeny CKR_OPERATION_ACTIVE
-              "multipart input already fed; finish or re-init"))
+            (removeSingle SlotDigest o, s, denyOutcome (mkDeny CKR_OPERATION_ACTIVE
+              "multipart input already fed; re-init to continue"))
         | otherwise -> case gateDataCall s sc of
             GateDeny d term ->
               (if term then removeSingle SlotDigest o else o, s, denyOutcome d)

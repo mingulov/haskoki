@@ -341,6 +341,16 @@ int main(int argc, char **argv) {
     outLen = sizeof(out);
     rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, out, &outLen);
     CHECKC(rv == CKR_OPERATION_ACTIVE, "one-shot over buffered is ACTIVE");
+    /* The refused one-shot terminates the op (spec: every error
+     * other than BUFFER_TOO_SMALL terminates); a re-init follows. */
+    outLen = sizeof(out);
+    rv = f->C_DigestFinal(dsess, out, &outLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "final after refused one-shot is NOT_INITIALIZED");
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OK, "re-init after termination ok");
+    rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "abc", 3);
+    CHECKC(rv == CKR_OK, "update after re-init ok");
     outLen = sizeof(out);
     rv = f->C_DigestFinal(dsess, out, &outLen);
     CHECKC(rv == CKR_OK && outLen == 32 && memcmp(out, kWant, 32) == 0,
@@ -381,6 +391,85 @@ int main(int argc, char **argv) {
     outLen = sizeof(out);
     rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, out, &outLen);
     CHECKC(rv == CKR_OK && outLen == 32, "terminating one-shot");
+    {
+      /* C_DigestKey feeds the secret value exactly like an update:
+       * digest-of-key equals digest-of-extracted-value. */
+      CK_OBJECT_HANDLE dkey = 0;
+      CK_OBJECT_CLASS dcls = CKO_SECRET_KEY;
+      CK_KEY_TYPE dkt = CKK_AES;
+      CK_ULONG dlen = 16;
+      CK_BBOOL bFalse = CK_FALSE, bTrue = CK_TRUE;
+      CK_BYTE kval[32];
+      CK_BYTE d1[64], d2[64];
+      CK_ULONG d1Len, d2Len;
+      CK_MECHANISM dkgm;
+      CK_ATTRIBUTE dtmpl[] = {
+        { CKA_CLASS, &dcls, sizeof(dcls) },
+        { CKA_KEY_TYPE, &dkt, sizeof(dkt) },
+        { CKA_VALUE_LEN, &dlen, sizeof(dlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SENSITIVE, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE vtmpl[] = {
+        { CKA_VALUE, kval, sizeof(kval) }
+      };
+      dkgm.mechanism = CKM_AES_KEY_GEN;
+      dkgm.pParameter = NULL_PTR;
+      dkgm.ulParameterLen = 0;
+      rv = f->C_GenerateKey(dsess, &dkgm, dtmpl, 6, &dkey);
+      CHECKC(rv == CKR_OK && dkey != 0, "digest-key AES keygen ok");
+      rv = f->C_DigestInit(dsess, &mech);
+      CHECKC(rv == CKR_OK, "init for digest-key");
+      rv = f->C_DigestKey(dsess, dkey);
+      CHECKC(rv == CKR_OK, "digest-key feeds");
+      d1Len = sizeof(d1);
+      rv = f->C_DigestFinal(dsess, d1, &d1Len);
+      CHECKC(rv == CKR_OK && d1Len == 32, "digest-key final ok");
+      /* The op stays multipart-capable: key bytes mix with updates. */
+      rv = f->C_DigestInit(dsess, &mech);
+      CHECKC(rv == CKR_OK, "init for mixed feed");
+      rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "pre", 3);
+      CHECKC(rv == CKR_OK, "mixed update ok");
+      rv = f->C_DigestKey(dsess, dkey);
+      CHECKC(rv == CKR_OK, "mixed digest-key ok");
+      rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "post", 4);
+      CHECKC(rv == CKR_OK, "mixed trailing update ok");
+      d2Len = sizeof(d2);
+      rv = f->C_DigestFinal(dsess, d2, &d2Len);
+      CHECKC(rv == CKR_OK && d2Len == 32, "mixed final ok");
+      rv = f->C_GetAttributeValue(dsess, dkey, vtmpl, 1);
+      CHECKC(rv == CKR_OK && vtmpl[0].ulValueLen == 16,
+             "key value extracts");
+      rv = f->C_DigestInit(dsess, &mech);
+      CHECKC(rv == CKR_OK, "init for value comparison");
+      rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "pre", 3);
+      CHECKC(rv == CKR_OK, "comparison update ok");
+      rv = f->C_DigestUpdate(dsess, kval, 16);
+      CHECKC(rv == CKR_OK, "comparison value update ok");
+      rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "post", 4);
+      CHECKC(rv == CKR_OK, "comparison trailing update ok");
+      d1Len = sizeof(d1);
+      rv = f->C_DigestFinal(dsess, d1, &d1Len);
+      CHECKC(rv == CKR_OK && d1Len == 32 &&
+                 memcmp(d1, d2, 32) == 0,
+             "digest-key equals digest-of-value");
+      rv = f->C_DigestKey(dsess, dkey);
+      CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+             "digest-key without init is NOT_INITIALIZED");
+      rv = f->C_DigestInit(dsess, &mech);
+      CHECKC(rv == CKR_OK, "init for bad-handle leg");
+      rv = f->C_DigestKey(dsess, 0xFFFFFFFFUL);
+      CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
+             "digest-key bad handle is HANDLE_INVALID");
+      rv = f->C_DigestInit(dsess, &mech);
+      CHECKC(rv == CKR_OK, "re-init after bad handle ok (terminated)");
+      rv = f->C_DestroyObject(dsess, dkey);
+      CHECKC(rv == CKR_OK, "digest key destroys");
+      d1Len = sizeof(d1);
+      rv = f->C_DigestFinal(dsess, d1, &d1Len);
+      CHECKC(rv == CKR_OK && d1Len == 32, "cleanup final ok");
+    }
     {
       /* The engine recipe requires empty digest params
        * (checkMechParams): a stray param byte is ARGUMENTS_BAD. */
@@ -1229,6 +1318,17 @@ int main(int argc, char **argv) {
     ctLen = sizeof(ct);
     rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "d", 1, ct, &ctLen);
     CHECKC(rv == CKR_OPERATION_ACTIVE, "one-shot over buffered is ACTIVE");
+    /* The refused one-shot terminates the op (spec: every error
+     * other than BUFFER_TOO_SMALL terminates); a re-init follows. */
+    ctLen = sizeof(ct);
+    rv = f->C_EncryptFinal(esess, ct, &ctLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "final after refused one-shot is NOT_INITIALIZED");
+    rv = f->C_EncryptInit(esess, &em, ekey);
+    CHECKC(rv == CKR_OK, "re-init after termination ok");
+    partLen = sizeof(ct);
+    rv = f->C_EncryptUpdate(esess, (CK_BYTE_PTR) "abc", 3, ct, &partLen);
+    CHECKC(rv == CKR_OK && partLen == 0, "update after re-init buffers");
     ctLen = sizeof(ct);
     rv = f->C_EncryptFinal(esess, ct, &ctLen);
     CHECKC(rv == CKR_OK && ctLen == 16, "encrypt final yields 16 bytes");

@@ -145,9 +145,10 @@ spec = testGroup "operation lifecycles"
   , testCase "pkcs7 pad and unpad vectors" casePkcs7
   , testCase "encrypt multipart equals one-shot" caseCipherMultipart
   , testCase "encrypt/decrypt roundtrip with padding" caseCipherRoundtrip
-  , testCase "unpadded length denies keep the slot" caseCipherLengths
+  , testCase "unpadded length denies terminate the slot" caseCipherLengths
   , testCase "decrypt bad padding fails terminally" caseCipherBadPad
   , testCase "cipher short buffer retry then failure" caseCipherShortFail
+  , testCase "empty-output query stages for the recall" caseEmptyQueryStages
   , testCase "always-auth encrypt consumes at first update" caseAuthConsumeUpdate
   , testCase "grantless first update terminates the slot" caseAuthLateFails
   , testCase "oversized padded block rejected at init" caseCipherBlockRange
@@ -156,6 +157,7 @@ spec = testGroup "operation lifecycles"
   , testCase "Guard: verify updates stay buffered" caseVerifyStaysBuffered
   , testCase "verify mismatch frees with SIGNATURE_INVALID" caseVerifyMismatch
   , testCase "verify empty signature fails without effect" caseVerifyEmpty
+  , testCase "verify one-shot after update terminates" caseVerifyOneShotAfterUpdate
   , testCase "sign one-shot after update rejected" caseSignOneShotAfterUpdate
   , testCase "sign short buffer retry; failure terminates" caseSignShortFail
   , testCase "recover roundtrip" caseRecoverRoundtrip
@@ -542,9 +544,10 @@ caseOneShotAfterUpdate = do
   let (ops0, _) = initOperation testEnv emptySessionOps testSession digestArgs
   let (ops1, _, upd) = planDigestUpdate (withDigestStream ops0) testSession "part"
   assertEqual "update ok" CKR_OK (soCode upd)
-  let (_, _, one) = planDigestOneShot ops1 testSession "digest" "whole"
+  let (ops2, _, one) = planDigestOneShot ops1 testSession "digest" "whole"
   assertEqual "one-shot after update rejected" CKR_OPERATION_ACTIVE (soCode one)
   assertEqual "rejected one-shot plans nothing" [] (soEffects one)
+  assertEqual "rejected one-shot terminates" [] (activeSlots ops2)
 
 caseDigestShortRetry :: IO ()
 caseDigestShortRetry = do
@@ -710,23 +713,30 @@ caseCipherRoundtrip = do
 
 caseCipherLengths :: IO ()
 caseCipherLengths = do
-  -- Unpadded encrypt of a ragged length denies but keeps the slot:
-  -- further updates can still repair the alignment.
+  -- Unpadded encrypt of a ragged length denies AND terminates the
+  -- slot (spec: every error other than BUFFER_TOO_SMALL terminates);
+  -- no repair update can follow a denied final.
   let (ops0, _) = initOperation testEnv emptySessionOps testSession encryptNoPadArgs
   let (ops1, _, _) = planCipherUpdate ops0 testSession SlotEncrypt "twelve bytes"
   assertEqual "buffered" (Just 12) (bufferedLength ops1 SlotEncrypt)
   let (ops2, _, fout) = planCipherFinal ops1 testSession SlotEncrypt "cipher"
   assertEqual "ragged unpadded denied" CKR_DATA_LEN_RANGE (soCode fout)
-  assertEqual "length deny keeps the slot" [SlotEncrypt] (activeSlots ops2)
-  assertEqual "buffer retained" (Just 12) (bufferedLength ops2 SlotEncrypt)
-  let (ops3, _, _) = planCipherUpdate ops2 testSession SlotEncrypt "1234"
-  let (ops4, _, f2) = planCipherFinal ops3 testSession SlotEncrypt "cipher"
-  assertEqual "aligned final plans" CKR_OK (soCode f2)
-  case soEffects f2 of
-    [FxCipher DirEncrypt _ _ _ input] ->
-      assertEqual "no pad bytes added" 16 (BS.length input)
-    other -> assertFailure ("expected one cipher effect, got " ++ show other)
-  assertEqual "slot still active" [SlotEncrypt] (activeSlots ops4)
+  assertEqual "length deny frees the slot" [] (activeSlots ops2)
+  let (_, _, upd) = planCipherUpdate ops2 testSession SlotEncrypt "1234"
+  assertEqual "no repair after denied final"
+    CKR_OPERATION_NOT_INITIALIZED (soCode upd)
+  -- The ragged one-shot terminates the same way.
+  let (opsA, _) = initOperation testEnv emptySessionOps testSession encryptNoPadArgs
+  let (opsB, _, one) = planCipherOneShot opsA testSession SlotEncrypt "cipher" "short"
+  assertEqual "ragged one-shot denied" CKR_DATA_LEN_RANGE (soCode one)
+  assertEqual "one-shot deny frees the slot" [] (activeSlots opsB)
+  -- One-shot over buffered multipart input denies ACTIVE and
+  -- terminates (a re-init, not a final, follows).
+  let (opsC, _) = initOperation testEnv emptySessionOps testSession encryptArgs
+  let (opsD, _, _) = planCipherUpdate opsC testSession SlotEncrypt "abc"
+  let (opsE, _, mid) = planCipherOneShot opsD testSession SlotEncrypt "cipher" "d"
+  assertEqual "one-shot over buffered" CKR_OPERATION_ACTIVE (soCode mid)
+  assertEqual "mid-stream deny frees the slot" [] (activeSlots opsE)
   -- Unpadded decrypt of a ragged driver answer fails at finish.
   let noPadDec = decryptArgs { iaCipher = Just (CipherSpec 16 False) }
   let (ops5, _) = initOperation testEnv emptySessionOps testSession noPadDec
@@ -769,6 +779,32 @@ caseCipherShortFail = do
         (GotCryptoError (CryptoFailed "boom")) (IntentBuffer 128)
   assertEqual "failure code" CKR_GENERAL_ERROR (soCode failed)
   assertEqual "failure frees" [] (activeSlots ops6)
+
+-- | A size query always stages — even an empty output, which would
+-- otherwise "fit" a zero cap and free the slot before the recall
+-- (the wycheproof empty-message OAEP legs).
+caseEmptyQueryStages :: IO ()
+caseEmptyQueryStages = do
+  let noPadDec = decryptArgs { iaCipher = Just (CipherSpec 16 False) }
+  let (ops0, _) = initOperation testEnv emptySessionOps testSession noPadDec
+  let (ops1, _, o1) = planCipherOneShot ops0 testSession SlotDecrypt "plain" BS.empty
+  assertEqual "empty plans" 1 (length (soEffects o1))
+  let (ops2, query) = finishCipher ops1 SlotDecrypt "plain"
+        (GotBytes BS.empty) IntentNull
+  assertEqual "query stages" CKR_BUFFER_TOO_SMALL (soCode query)
+  assertEqual "query keeps the slot" [SlotDecrypt] (activeSlots ops2)
+  let (ops3, recall) = retryStaged ops2 SlotDecrypt (IntentBuffer 0)
+  assertEqual "recall completes" CKR_OK (soCode recall)
+  assertEqual "recall frees" [] (activeSlots ops3)
+  -- A re-query re-reports instead of completing.
+  let (ops4, _) = initOperation testEnv emptySessionOps testSession noPadDec
+  let (ops5, _, _) = planCipherOneShot ops4 testSession SlotDecrypt "plain" BS.empty
+  let (ops6, q2) = finishCipher ops5 SlotDecrypt "plain"
+        (GotBytes BS.empty) IntentNull
+  assertEqual "second query stages" CKR_BUFFER_TOO_SMALL (soCode q2)
+  let (ops7, q3) = retryStaged ops6 SlotDecrypt IntentNull
+  assertEqual "re-query re-reports" CKR_BUFFER_TOO_SMALL (soCode q3)
+  assertEqual "re-query keeps the slot" [SlotDecrypt] (activeSlots ops7)
 
 caseAuthConsumeUpdate :: IO ()
 caseAuthConsumeUpdate = do
@@ -975,12 +1011,22 @@ caseVerifyEmpty = do
   assertEqual "empty sig plans nothing" [] (soEffects o1)
   assertEqual "empty sig frees" [] (activeSlots ops1)
 
+caseVerifyOneShotAfterUpdate :: IO ()
+caseVerifyOneShotAfterUpdate = do
+  let (ops0, _) = initOperation signEnv emptySessionOps testSession verifyArgs
+  let (ops1, _, _) = planVerifyUpdate ops0 testSession "part"
+  let (ops2, _, one) =
+        planVerifyOneShot ops1 testSession "verify" "whole" "sig-witness"
+  assertEqual "one-shot after update" CKR_OPERATION_ACTIVE (soCode one)
+  assertEqual "rejected one-shot terminates" [] (activeSlots ops2)
+
 caseSignOneShotAfterUpdate :: IO ()
 caseSignOneShotAfterUpdate = do
   let (ops0, _) = initOperation signEnv emptySessionOps testSession signArgs
   let (ops1, _, _) = planSignUpdate ops0 testSession "part"
-  let (_, _, one) = planSignOneShot ops1 testSession "signature" "whole"
+  let (ops2, _, one) = planSignOneShot ops1 testSession "signature" "whole"
   assertEqual "one-shot after update" CKR_OPERATION_ACTIVE (soCode one)
+  assertEqual "rejected one-shot terminates" [] (activeSlots ops2)
 
 caseSignShortFail :: IO ()
 caseSignShortFail = do

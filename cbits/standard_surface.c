@@ -54,6 +54,8 @@
 #include <stdint.h>
 extern void *haskoki_std_open(void);
 extern void haskoki_std_close(void *instance);
+extern uint64_t haskoki_std_terminate_slot(void *instance, uint64_t h_session,
+                                               uint64_t slot);
 extern uint64_t haskoki_std_get_slot_list(void *instance, uint8_t token_present,
                                           uint64_t *p_slot_list,
                                           uint64_t *p_count);
@@ -102,6 +104,8 @@ extern uint64_t haskoki_std_digest(void *instance, uint64_t h_session,
                                    uint8_t *p_out, uint64_t *p_len);
 extern uint64_t haskoki_std_digest_update(void *instance, uint64_t h_session,
                                           uint8_t *p_data, uint64_t data_len);
+extern uint64_t haskoki_std_digest_key(void *instance, uint64_t h_session,
+                                       uint64_t h_key);
 extern uint64_t haskoki_std_digest_final(void *instance, uint64_t h_session,
                                          uint8_t *p_out, uint64_t *p_len);
 extern uint64_t haskoki_std_generate_key(void *instance, uint64_t h_session,
@@ -294,6 +298,34 @@ static void *live_std(void) {
     return 0;
   }
   return haskoki_std_get();
+}
+
+/* Op-slot codes for haskoki_std_terminate_slot (mirrored by
+ * decodeSlotKind in ffi/Haskoki/FFI/Standard.hs). */
+#define HSK_SLOT_DIGEST 0u
+#define HSK_SLOT_SIGN 1u
+#define HSK_SLOT_VERIFY 2u
+#define HSK_SLOT_ENCRYPT 3u
+#define HSK_SLOT_DECRYPT 4u
+
+/* Refuse a NULL argument after terminating the session's active op
+ * of this slot kind (spec: every error other than BUFFER_TOO_SMALL
+ * terminates; only the successful length query keeps the slot).
+ * Lock failures and dead instances still refuse: there is nothing
+ * to terminate, but the caller's pointers are still NULL. */
+static CK_RV refuse_null_arg(CK_SESSION_HANDLE hSession, uint64_t slot) {
+  CK_RV lr = 0;
+  void *inst = 0;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  inst = live_std();
+  if (inst != 0) {
+    (void)haskoki_std_terminate_slot(inst, (uint64_t)hSession, slot);
+  }
+  (void)haskoki_state_unlock();
+  return CKR_ARGUMENTS_BAD;
 }
 
 CK_RV std_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
@@ -1060,10 +1092,10 @@ CK_RV std_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (pulDigestLen == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_DIGEST);
   }
   if (ulDataLen > 0 && pData == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_DIGEST);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1092,7 +1124,7 @@ CK_RV std_DigestUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (ulPartLen > 0 && pPart == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_DIGEST);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1110,6 +1142,30 @@ CK_RV std_DigestUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
   return rv;
 }
 
+CK_RV std_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) {
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_digest_key(inst, (uint64_t)hSession,
+                                     (uint64_t)hKey);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
 CK_RV std_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest,
                       CK_ULONG_PTR pulDigestLen) {
   void *inst = 0;
@@ -1121,7 +1177,7 @@ CK_RV std_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (pulDigestLen == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_DIGEST);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1289,10 +1345,10 @@ CK_RV std_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (pulSignatureLen == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_SIGN);
   }
   if (ulDataLen > 0 && pData == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_SIGN);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1321,7 +1377,7 @@ CK_RV std_SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (ulPartLen > 0 && pPart == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_SIGN);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1349,7 +1405,7 @@ CK_RV std_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (pulSignatureLen == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_SIGN);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1412,10 +1468,10 @@ CK_RV std_Verify(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (ulDataLen > 0 && pData == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_VERIFY);
   }
   if (ulSignatureLen > 0 && pSignature == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_VERIFY);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1444,7 +1500,7 @@ CK_RV std_VerifyUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (ulPartLen > 0 && pPart == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_VERIFY);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1472,7 +1528,7 @@ CK_RV std_VerifyFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (ulSignatureLen > 0 && pSignature == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_VERIFY);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1535,10 +1591,10 @@ CK_RV std_Encrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (pulEncryptedDataLen == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_ENCRYPT);
   }
   if (ulDataLen > 0 && pData == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_ENCRYPT);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1568,10 +1624,10 @@ CK_RV std_EncryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (pulEncryptedPartLen == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_ENCRYPT);
   }
   if (ulPartLen > 0 && pPart == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_ENCRYPT);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1600,7 +1656,7 @@ CK_RV std_EncryptFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pLastEncryptedPar
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (pulLastEncryptedPartLen == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_ENCRYPT);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1663,10 +1719,10 @@ CK_RV std_Decrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedData,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (pulDataLen == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_DECRYPT);
   }
   if (ulEncryptedDataLen > 0 && pEncryptedData == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_DECRYPT);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1697,10 +1753,10 @@ CK_RV std_DecryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedPart,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (pulPartLen == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_DECRYPT);
   }
   if (ulEncryptedPartLen > 0 && pEncryptedPart == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_DECRYPT);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
@@ -1729,7 +1785,7 @@ CK_RV std_DecryptFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pLastPart,
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (pulLastPartLen == NULL_PTR) {
-    return CKR_ARGUMENTS_BAD;
+    return refuse_null_arg(hSession, HSK_SLOT_DECRYPT);
   }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {

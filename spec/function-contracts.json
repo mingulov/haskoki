@@ -1045,13 +1045,13 @@
       ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A16",
         "A21",
         "A24"
       ],
-      "entry": "none",
+      "entry": "haskoki_std_digest_key:F_DigestUpdate",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -1061,8 +1061,13 @@
       ],
       "name": "C_DigestKey",
       "ordinal_3_2": 41,
-      "reason": "no model planning; ABI layout only",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_roundtrip.c"
+        }
+      ]
     },
     {
       "contract": "planned-with-behavior",

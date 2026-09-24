@@ -146,6 +146,10 @@ fitsLen intent len = case intent of
 fits :: OutputIntent -> ByteString -> Bool
 fits intent bs = fitsLen intent (BS.length bs)
 
+isQuery :: OutputIntent -> Bool
+isQuery IntentNull = True
+isQuery _ = False
+
 type StepRes = (ReturnCode, Bool)
 
 -- | The reference model: predicted (code, occupied-after) plus the
@@ -163,7 +167,9 @@ modelStep phase cmd = case cmd of
   DCOneShot _ -> case phase of
     PhAbsent -> ((CKR_OPERATION_NOT_INITIALIZED, False), PhAbsent)
     PhStaged _ -> ((CKR_OPERATION_NOT_INITIALIZED, True), phase)
-    PhActive _ True -> ((CKR_OPERATION_ACTIVE, True), phase)
+    -- One-shot over fed input denies ACTIVE and terminates (spec:
+    -- every error other than BUFFER_TOO_SMALL terminates).
+    PhActive _ True -> ((CKR_OPERATION_ACTIVE, False), PhAbsent)
     PhActive alloc False -> ((CKR_OK, True), PhActive alloc False)
   DCFinal -> case phase of
     PhAbsent -> ((CKR_OPERATION_NOT_INITIALIZED, False), PhAbsent)
@@ -187,10 +193,14 @@ modelStep phase cmd = case cmd of
     PhAbsent -> ((CKR_OPERATION_NOT_INITIALIZED, False), PhAbsent)
     PhStaged _ -> ((CKR_GENERAL_ERROR, True), phase)
     PhActive _ _
+      -- A size query always stages (even an empty output) and keeps
+      -- the slot for the recall; only a fitting buffer frees it.
+      | isQuery intent -> ((CKR_BUFFER_TOO_SMALL, True), PhStaged (BS.length bs))
       | fits intent bs -> ((CKR_OK, False), PhAbsent)
       | otherwise -> ((CKR_BUFFER_TOO_SMALL, True), PhStaged (BS.length bs))
   DCRetry intent -> case phase of
     PhStaged len
+      | isQuery intent -> ((CKR_BUFFER_TOO_SMALL, True), phase)
       | fitsLen intent len -> ((CKR_OK, False), PhAbsent)
       | otherwise -> ((CKR_BUFFER_TOO_SMALL, True), phase)
     PhAbsent -> ((CKR_OPERATION_NOT_INITIALIZED, False), PhAbsent)

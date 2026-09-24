@@ -4,10 +4,10 @@ Multipart sequencing over one encrypt or decrypt slot: updates
 buffer purely and plan no crypto; the final plans a single 'FxCipher'
 effect. Padding is decided in the pure layer with real PKCS#7
 framing: an encrypt final pads before the effect input is fixed, a
-decrypt final strips after the driver answers. Length denies at plan
-time (unpadded encrypt of a ragged buffer) keep the slot, since
-further updates can still repair the alignment; a corrupt pad or a
-ragged driver answer at finish time terminates it.
+decrypt final strips after the driver answers. Every plan-time deny
+(ragged one-shot/final, one-shot over buffered input) terminates the
+slot — spec: every error other than BUFFER_TOO_SMALL terminates —
+as do a corrupt pad and a ragged driver answer at finish time.
 -}
 module Haskoki.Operation.Cipher
   ( planCipherUpdate
@@ -155,8 +155,9 @@ planCipherUpdate ops st kind part = case withCipherSlot ops kind of
           )
 
 -- | Plan a cipher one-shot over the full input. Allowed only before
--- any update. For encrypt, alignment is validated before anything is
--- buffered, so a ragged unpadded one-shot denies on a pristine slot.
+-- any update. One-shot denies terminate the slot (spec: every error
+-- other than BUFFER_TOO_SMALL terminates); a re-init, not a final,
+-- follows a denied one-shot.
 planCipherOneShot
   :: SessionOps -> SessionState -> SlotKind -> String -> ByteString
   -> (SessionOps, SessionState, StepOutcome)
@@ -167,14 +168,14 @@ planCipherOneShot ops st kind _name input = case withCipherSlot ops kind of
       "cipher operation is finalized; retry the staged output instead"))
     Nothing
       | not (BS.null (bufferedOf sc)) ->
-          (ops, st, denyOutcome (mkDeny CKR_OPERATION_ACTIVE
-            "multipart input already buffered; finish or re-init"))
+          (removeSingle kind ops, st, denyOutcome (mkDeny CKR_OPERATION_ACTIVE
+            "multipart input already buffered; re-init to continue"))
       | otherwise -> case gateDataCall st sc of
           GateDeny d term ->
             (if term then removeSingle kind ops else ops, st, denyOutcome d)
           GateOk st' sc' -> case dir of
             DirEncrypt -> case encryptInput (commonMech sc') spec input of
-              Left d -> (insertOp (mkActiveCipher dir sc' spec) ops, st', denyOutcome d)
+              Left d -> (removeSingle kind ops, st', denyOutcome d)
               Right padded -> runOneShot ops st' kind dir sc' spec input padded
             DirDecrypt -> runOneShot ops st' kind dir sc' spec input input
   where
@@ -205,8 +206,7 @@ planCipherFinal ops st kind _name = case withCipherSlot ops kind of
         (if term then removeSingle kind ops else ops, st, denyOutcome d)
       GateOk st' sc' -> case dir of
         DirEncrypt -> case encryptInput (commonMech sc') spec (bufferedOf sc') of
-          Left d ->
-            (insertOp (mkActiveCipher dir sc' spec) ops, st', denyOutcome d)
+          Left d -> (removeSingle kind ops, st', denyOutcome d)
           Right padded ->
             ( insertOp (mkActiveCipher dir sc' spec) ops
             , st'

@@ -771,10 +771,10 @@ static CK_RV on_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
  * yield the stub code (pinned by the STB stub-beats-args checks),
  * so argument bugs in stub CALLERS are invisible here by design;
  * routed entries keep liveness -> args -> behavior. Per-entry
- * setting (16 x stub_probe, 2 x stub_parallel): stub_InitToken,
+ * setting (15 x stub_probe, 2 x stub_parallel): stub_InitToken,
  * stub_InitPIN, stub_SetPIN, stub_GetOperationState,
  * stub_SetOperationState, stub_GetObjectSize,
- * stub_SetAttributeValue, stub_DigestKey, stub_SignRecoverInit,
+ * stub_SetAttributeValue, stub_SignRecoverInit,
  * stub_SignRecover, stub_VerifyRecoverInit, stub_VerifyRecover,
  * stub_DigestEncryptUpdate, stub_DecryptDigestUpdate,
  * stub_SignEncryptUpdate, stub_DecryptVerifyUpdate ->
@@ -863,14 +863,8 @@ static CK_RV stub_SetAttributeValue(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
   (void)n;
   return stub_probe();
 }
-/* Digest update/final routed (std_DigestUpdate/
- * std_DigestFinal). DigestKey stays honestly unsupported (no
- * engine planner). */
-static CK_RV stub_DigestKey(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE k) {
-  (void)h;
-  (void)k;
-  return stub_probe();
-}
+/* Digest update/final/key routed (std_DigestUpdate/
+ * std_DigestKey/std_DigestFinal). */
 static CK_RV stub_SignRecoverInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
                                    CK_OBJECT_HANDLE k) {
   (void)h;
@@ -1017,6 +1011,7 @@ extern CK_RV std_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
                         CK_ULONG_PTR pulDigestLen);
 extern CK_RV std_DigestUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
                               CK_ULONG ulPartLen);
+extern CK_RV std_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey);
 extern CK_RV std_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest,
                              CK_ULONG_PTR pulDigestLen);
 extern CK_RV std_GenerateKey(CK_SESSION_HANDLE hSession,
@@ -1131,7 +1126,7 @@ static struct CK_FUNCTION_LIST g_function_list = {
   .C_DigestInit = std_DigestInit,
   .C_Digest = std_Digest,
   .C_DigestUpdate = std_DigestUpdate,
-  .C_DigestKey = stub_DigestKey,
+  .C_DigestKey = std_DigestKey,
   .C_DigestFinal = std_DigestFinal,
   .C_SignInit = std_SignInit,
   .C_Sign = std_Sign,

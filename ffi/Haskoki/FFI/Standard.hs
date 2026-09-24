@@ -114,6 +114,7 @@ module Haskoki.FFI.Standard
   , haskokiStdDigestInit
   , haskokiStdDigest
   , haskokiStdDigestUpdate
+  , haskokiStdDigestKey
   , haskokiStdDigestFinal
     -- * key generation
   , runKeyPlan
@@ -215,17 +216,19 @@ import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.FFI.NativeParams (normalizeEcdhParams, normalizeMechParams)
 import Haskoki.Model
   ( Model (..)
+  , ObjectState (..)
   , SessionState (..)
   , lookupSession
   , lookupTokenAuth
   , sessionsOnSlot
   )
-import Haskoki.Object (maxTemplateEntries)
+import Haskoki.Object (maxTemplateEntries, objectVisible, resolveHandle)
 import Haskoki.Operation
   ( SlotKind (..)
   , StagedOutput (..)
   , commonOf
   , lookupSingle
+  , removeSingle
   , stagedOf
   )
 import Haskoki.Operation.Codec (encodeVerifyInput)
@@ -239,6 +242,7 @@ import Haskoki.Recipe.Kdf (KdfRecipe (..), kdfRecipeFor)
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
+  , ckoSecretKey
   , finishWork
   , keyBytesOf
   , keyPairCompatible
@@ -248,7 +252,8 @@ import Haskoki.Operation.KeyManagement
   , planWrapKey
   )
 import Haskoki.Outcome
-  ( EffectRequest (..)
+  ( DeltaOp (..)
+  , EffectRequest (..)
   , ModelFault (..)
   , NativeOutput (..)
   , PlanResult (..)
@@ -1766,16 +1771,16 @@ runCryptoBuffered inst sid kind func input regionName pOut pLen cap = do
       | otherwise -> pure rv
     Right pc -> encodeCryptoCommit inst sid kind pOut pLen cap pc
 
--- | Size-query dialogue: run against zero capacity so the
--- finisher stages, then report the staged length with the slot
--- kept for the recall.
+-- | Size-query dialogue: run with the null intent so the
+-- finisher stages (even an empty output), then report the staged
+-- length with the slot kept for the recall.
 runCryptoQuery
   :: StdInstance -> SessionId -> SlotKind -> FunctionId -> ByteString -> String
   -> Ptr CULong -> IO CULong
 runCryptoQuery inst sid kind func input regionName pLen = do
   m <- snapshotModel (siEnv inst)
   let req = Request Pkcs11_3_2 func (Just sid) Nothing input
-        [RegionBytes regionName (IntentBuffer 0)]
+        [RegionBytes regionName IntentNull]
   epc <- runCryptoPlan inst m req
   case epc of
     Left rv
@@ -1793,6 +1798,56 @@ withStdSession inst (CULong h) k = do
   case lookupSession m (SessionId (fromIntegral h)) of
     Nothing -> pure (stdRvOf CKR_SESSION_HANDLE_INVALID)
     Just st -> k (ssId st)
+
+-- | Terminate one session op slot, if active. Shared by the
+-- Haskell-side early refusals and the C NULL-argument guards (via
+-- 'haskokiStdTerminateSlot'): input-decode failures never reach the
+-- planner, but the spec terminates on every error other than
+-- BUFFER_TOO_SMALL (only the successful length query keeps the
+-- slot), so the FFI publishes the termination itself.
+terminateSlot :: StdInstance -> SessionId -> SlotKind -> IO ()
+terminateSlot inst sid kind = do
+  m <- snapshotModel (siEnv inst)
+  case lookupSession m sid of
+    Nothing -> pure ()
+    Just st -> case lookupSingle (ssOps st) kind of
+      Nothing -> pure ()
+      Just _ -> do
+        _ <- publishStd inst
+          (StateDelta [DeltaSetSessionOps sid (removeSingle kind (ssOps st))])
+        pure ()
+
+-- | Refuse a crypto data call with ARGS_BAD after terminating the
+-- session's active operation of this slot kind. With no active op
+-- this is a plain refusal.
+refuseArgsTerminate :: StdInstance -> SessionId -> SlotKind -> IO CULong
+refuseArgsTerminate inst sid kind =
+  terminateSlot inst sid kind >> pure ckrArgsBad
+
+-- | Slot encoding shared with cbits/standard_surface.c
+-- (HSK_SLOT_*): 0 digest, 1 sign, 2 verify, 3 encrypt, 4 decrypt.
+decodeSlotKind :: Word64 -> Maybe SlotKind
+decodeSlotKind 0 = Just SlotDigest
+decodeSlotKind 1 = Just SlotSign
+decodeSlotKind 2 = Just SlotVerify
+decodeSlotKind 3 = Just SlotEncrypt
+decodeSlotKind 4 = Just SlotDecrypt
+decodeSlotKind _ = Nothing
+
+foreign export ccall "haskoki_std_terminate_slot" haskokiStdTerminateSlot
+  :: StablePtr StdInstance -> CULong -> CULong -> IO CULong
+
+-- | Terminate one session op slot for the C NULL-argument guards
+-- (unknown sessions and slot codes are silent no-ops). Always
+-- reports OK: the caller already decided the refusal code.
+haskokiStdTerminateSlot
+  :: StablePtr StdInstance -> CULong -> CULong -> IO CULong
+haskokiStdTerminateSlot ctx (CULong h) (CULong slot) =
+  withStdCtx ctx $ \inst -> do
+    case decodeSlotKind (fromIntegral slot) of
+      Nothing -> pure ()
+      Just kind -> terminateSlot inst (SessionId (fromIntegral h)) kind
+    pure ckrOk
 
 -- ---------------------------------------------------------------------------
 -- digest
@@ -1833,11 +1888,11 @@ haskokiStdDigest
 haskokiStdDigest ctx h pData (CULong dataLen) pOut pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
-      then pure ckrArgsBad
+      then refuseArgsTerminate inst sid SlotDigest
       else do
         eInput <- decodeInputBytes pData dataLen
         case eInput of
-          Left _ -> pure ckrArgsBad
+          Left _ -> refuseArgsTerminate inst sid SlotDigest
           Right input
             | pOut == nullPtr -> runCryptoQuery inst sid SlotDigest F_Digest
                 input "digest" pLen
@@ -1853,10 +1908,42 @@ haskokiStdDigestUpdate ctx h pData (CULong dataLen) =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
     eInput <- decodeInputBytes pData dataLen
     case eInput of
-      Left _ -> pure ckrArgsBad
+      Left _ -> refuseArgsTerminate inst sid SlotDigest
       Right input -> do
         let req = Request Pkcs11_3_2 F_DigestUpdate (Just sid) Nothing input []
         runCryptoSilent inst req
+
+foreign export ccall "haskoki_std_digest_key" haskokiStdDigestKey
+  :: StablePtr StdInstance -> CULong -> CULong -> IO CULong
+
+-- | Digest the value of a secret key into the active digest
+-- operation (spec 5.13.4: exactly as if the value had been passed
+-- to C_DigestUpdate, so op-presence and termination match the
+-- update path by construction). Unknown or invisible handles
+-- refuse OBJECT_HANDLE_INVALID, non-secret keys
+-- KEY_TYPE_INCONSISTENT; key-resolution refusals terminate the
+-- active digest like every other error. Digesting never exposes
+-- the value, so sensitivity/extractability do not gate it.
+haskokiStdDigestKey
+  :: StablePtr StdInstance -> CULong -> CULong -> IO CULong
+haskokiStdDigestKey ctx h (CULong keyH) =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    m <- snapshotModel (siEnv inst)
+    let refuse code = terminateSlot inst sid SlotDigest >> pure code
+    case resolveHandle m (ExternalHandle (fromIntegral keyH)) of
+      Nothing -> refuse (stdRvOf CKR_OBJECT_HANDLE_INVALID)
+      Just ost -> case lookupSession m sid of
+        Nothing -> pure (stdRvOf CKR_SESSION_HANDLE_INVALID)
+        Just st
+          | not (objectVisible st ost) ->
+              refuse (stdRvOf CKR_OBJECT_HANDLE_INVALID)
+          | Map.lookup AttrClass (osAttrs ost)
+              /= Just (ValULong ckoSecretKey) ->
+              refuse (stdRvOf CKR_KEY_TYPE_INCONSISTENT)
+          | otherwise -> case keyBytesOf ost of
+              Nothing -> refuse ckrGeneralError
+              Just mat -> runCryptoSilent inst
+                (Request Pkcs11_3_2 F_DigestUpdate (Just sid) Nothing mat [])
 
 -- | Digest final (size-query and short-buffer recall per the
 -- shared dialogue; a query completes the final).
@@ -1865,7 +1952,7 @@ haskokiStdDigestFinal
 haskokiStdDigestFinal ctx h pOut pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
-      then pure ckrArgsBad
+      then refuseArgsTerminate inst sid SlotDigest
       else
         if pOut == nullPtr
           then runCryptoQuery inst sid SlotDigest F_DigestFinal BS.empty
@@ -2071,11 +2158,11 @@ haskokiStdSign
 haskokiStdSign ctx h pData (CULong dataLen) pSig pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
-      then pure ckrArgsBad
+      then refuseArgsTerminate inst sid SlotSign
       else do
         eInput <- decodeInputBytes pData dataLen
         case eInput of
-          Left _ -> pure ckrArgsBad
+          Left _ -> refuseArgsTerminate inst sid SlotSign
           Right input
             | pSig == nullPtr -> runCryptoQuery inst sid SlotSign F_Sign
                 input "sign" pLen
@@ -2091,7 +2178,7 @@ haskokiStdSignUpdate ctx h pData (CULong dataLen) =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
     eInput <- decodeInputBytes pData dataLen
     case eInput of
-      Left _ -> pure ckrArgsBad
+      Left _ -> refuseArgsTerminate inst sid SlotSign
       Right input -> do
         let req = Request Pkcs11_3_2 F_SignUpdate (Just sid) Nothing input []
         runCryptoSilent inst req
@@ -2103,7 +2190,7 @@ haskokiStdSignFinal
 haskokiStdSignFinal ctx h pSig pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
-      then pure ckrArgsBad
+      then refuseArgsTerminate inst sid SlotSign
       else
         if pSig == nullPtr
           then runCryptoQuery inst sid SlotSign F_SignFinal BS.empty
@@ -2130,11 +2217,11 @@ haskokiStdVerify ctx h pData (CULong dataLen) pSig (CULong sigLen) =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
     eData <- decodeInputBytes pData dataLen
     case eData of
-      Left _ -> pure ckrArgsBad
+      Left _ -> refuseArgsTerminate inst sid SlotVerify
       Right dat -> do
         eSig <- decodeInputBytes pSig sigLen
         case eSig of
-          Left _ -> pure ckrArgsBad
+          Left _ -> refuseArgsTerminate inst sid SlotVerify
           Right sig -> do
             let req = Request Pkcs11_3_2 F_Verify (Just sid) Nothing
                   (encodeVerifyInput dat sig)
@@ -2148,7 +2235,7 @@ haskokiStdVerifyUpdate ctx h pData (CULong dataLen) =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
     eInput <- decodeInputBytes pData dataLen
     case eInput of
-      Left _ -> pure ckrArgsBad
+      Left _ -> refuseArgsTerminate inst sid SlotVerify
       Right input -> do
         let req = Request Pkcs11_3_2 F_VerifyUpdate (Just sid) Nothing input []
         runCryptoSilent inst req
@@ -2161,7 +2248,7 @@ haskokiStdVerifyFinal ctx h pSig (CULong sigLen) =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
     eSig <- decodeInputBytes pSig sigLen
     case eSig of
-      Left _ -> pure ckrArgsBad
+      Left _ -> refuseArgsTerminate inst sid SlotVerify
       Right sig -> do
         let req = Request Pkcs11_3_2 F_VerifyFinal (Just sid) Nothing sig
               [RegionBytes "verify" (IntentBuffer 0)]
@@ -2225,11 +2312,11 @@ haskokiStdEncrypt
 haskokiStdEncrypt ctx h pData (CULong dataLen) pOut pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
-      then pure ckrArgsBad
+      then refuseArgsTerminate inst sid SlotEncrypt
       else do
         eInput <- decodeInputBytes pData dataLen
         case eInput of
-          Left _ -> pure ckrArgsBad
+          Left _ -> refuseArgsTerminate inst sid SlotEncrypt
           Right input
             | pOut == nullPtr -> runCryptoQuery inst sid SlotEncrypt F_Encrypt
                 input "encrypt" pLen
@@ -2245,11 +2332,11 @@ haskokiStdEncryptUpdate
 haskokiStdEncryptUpdate ctx h pPart (CULong partLen) _pOut pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
-      then pure ckrArgsBad
+      then refuseArgsTerminate inst sid SlotEncrypt
       else do
         eInput <- decodeInputBytes pPart partLen
         case eInput of
-          Left _ -> pure ckrArgsBad
+          Left _ -> refuseArgsTerminate inst sid SlotEncrypt
           Right input -> do
             let req = Request Pkcs11_3_2 F_EncryptUpdate (Just sid) Nothing
                   input []
@@ -2262,7 +2349,7 @@ haskokiStdEncryptFinal
 haskokiStdEncryptFinal ctx h pOut pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
-      then pure ckrArgsBad
+      then refuseArgsTerminate inst sid SlotEncrypt
       else
         if pOut == nullPtr
           then runCryptoQuery inst sid SlotEncrypt F_EncryptFinal BS.empty
@@ -2288,11 +2375,11 @@ haskokiStdDecrypt
 haskokiStdDecrypt ctx h pData (CULong dataLen) pOut pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
-      then pure ckrArgsBad
+      then refuseArgsTerminate inst sid SlotDecrypt
       else do
         eInput <- decodeInputBytes pData dataLen
         case eInput of
-          Left _ -> pure ckrArgsBad
+          Left _ -> refuseArgsTerminate inst sid SlotDecrypt
           Right input
             | pOut == nullPtr -> runCryptoQuery inst sid SlotDecrypt F_Decrypt
                 input "decrypt" pLen
@@ -2308,11 +2395,11 @@ haskokiStdDecryptUpdate
 haskokiStdDecryptUpdate ctx h pPart (CULong partLen) _pOut pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
-      then pure ckrArgsBad
+      then refuseArgsTerminate inst sid SlotDecrypt
       else do
         eInput <- decodeInputBytes pPart partLen
         case eInput of
-          Left _ -> pure ckrArgsBad
+          Left _ -> refuseArgsTerminate inst sid SlotDecrypt
           Right input -> do
             let req = Request Pkcs11_3_2 F_DecryptUpdate (Just sid) Nothing
                   input []
@@ -2325,7 +2412,7 @@ haskokiStdDecryptFinal
 haskokiStdDecryptFinal ctx h pOut pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
-      then pure ckrArgsBad
+      then refuseArgsTerminate inst sid SlotDecrypt
       else
         if pOut == nullPtr
           then runCryptoQuery inst sid SlotDecrypt F_DecryptFinal BS.empty
