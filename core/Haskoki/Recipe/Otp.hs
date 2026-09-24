@@ -52,10 +52,12 @@ import Data.Word (Word64, Word8)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
 
--- | One OTP recipe: the mechanism name. The table carries the
--- sign\/verify row only; keygen has no parameter shape.
+-- | One OTP recipe: the mechanism name and the key type name
+-- (@CKK_HOTP@) the Init key-type matrix requires. The table carries
+-- the sign\/verify row only; keygen has no parameter shape.
 data OtpRecipe = OtpRecipe
   { otpName :: !MechanismName
+  , otpKeyType :: !MechanismName
   } deriving (Eq, Show)
 
 -- | HOTP parameters: @counter:u64be digits:u64be@.
@@ -135,7 +137,7 @@ hotpKeygenMaxBytes = 64
 -- | The covered mechanism.
 hotpRecipes :: [OtpRecipe]
 hotpRecipes =
-  [ OtpRecipe "CKM_HOTP"
+  [ OtpRecipe "CKM_HOTP" "CKK_HOTP"
   ]
 
 -- | Resolve a mechanism id to its HOTP recipe, if covered.

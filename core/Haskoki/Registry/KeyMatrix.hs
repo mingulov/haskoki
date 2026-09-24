@@ -15,7 +15,8 @@ Coverage (classic Init path only): HMAC sign\/verify wants
 RSA v1.5\/PSS sign\/verify and RSA-OAEP
 encrypt\/decrypt want @CKK_RSA@; ECDSA sign\/verify wants @CKK_EC@;
 block-cipher encrypt\/decrypt wants the recipe row's key type;
-CMAC sign\/verify wants @CKK_AES@ (@CKK_DES3@ for the DES3 rows).
+CMAC sign\/verify wants @CKK_AES@ (@CKK_DES3@ for the DES3 rows);
+HOTP sign\/verify wants @CKK_HOTP@.
 Derive, wrap\/unwrap, KEM, and message-family framing have their
 own planners and gates and are not matrix rows; digest is unkeyed.
 -}
@@ -33,6 +34,7 @@ import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipes)
 import Haskoki.Recipe.Cmac (CmacRecipe (..), cmacRecipes)
 import Haskoki.Recipe.Ecdsa (EcdsaRecipe (..), ecdsaRecipes)
 import Haskoki.Recipe.Hmac (HmacRecipe (..), hmacRecipes)
+import Haskoki.Recipe.Otp (OtpRecipe (..), hotpRecipes)
 import Haskoki.Recipe.RsaOaep (RsaOaepRecipe (..), rsaOaepRecipes)
 import Haskoki.Recipe.RsaPkcs1 (RsaPkcs1Recipe (..), rsaPkcs1Recipes)
 import Haskoki.Recipe.RsaPss (RsaPssRecipe (..), rsaPssRecipes)
@@ -60,6 +62,8 @@ matrixTable = Map.fromList (concat
     | r <- cipherRecipes, o <- [OpEncrypt, OpDecrypt] ]
   , [ ((midOf (rcName r), o), [if rcDes3 r then ckkDes3 else ckkAes])
     | r <- cmacRecipes, o <- [OpSign, OpVerify] ]
+  , [ ((midOf (otpName r), o), [mustKeyTypeId (otpKeyType r)])
+    | r <- hotpRecipes, o <- [OpSign, OpVerify] ]
   ])
   where
     midOf name = MechanismId (mustGeneratedId name)

@@ -1028,6 +1028,52 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
              "HMAC SignInit with mismatched HMAC key refused");
     }
+    /* HOTP matrix row: CKK_HOTP keys only; RFC 4226 vector 0. */
+    {
+      CK_KEY_TYPE hotpkt = CKK_HOTP;
+      CK_BYTE hotpval[20] = { '1','2','3','4','5','6','7','8','9','0',
+                                 '1','2','3','4','5','6','7','8','9','0' };
+      CK_OBJECT_HANDLE hotpk = 0;
+      CK_ATTRIBUTE hott[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &hotpkt, sizeof(hotpkt) },
+        { CKA_VALUE, hotpval, sizeof(hotpval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      CK_MECHANISM hotpm;
+      CK_BYTE hotpp[16] = { 0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,6 };
+      rv = f->C_CreateObject(ssess, hott, 6, &hotpk);
+      CHECKC(rv == CKR_OK && hotpk != 0, "HOTP key imports");
+      hotpm.mechanism = CKM_HOTP;
+      hotpm.pParameter = hotpp;
+      hotpm.ulParameterLen = sizeof(hotpp);
+      if (!isProxy) {
+        rv = f->C_SignInit(ssess, &hotpm, hmkey);
+        CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+               "HOTP SignInit with generic key refused");
+        rv = f->C_SignInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_OK, "HOTP SignInit with HOTP key ok");
+        sigLen = sizeof(sig);
+        rv = f->C_Sign(ssess, (CK_BYTE_PTR) "", 0, sig, &sigLen);
+        CHECKC(rv == CKR_OK && sigLen == 6 && memcmp(sig, "755224", 6) == 0,
+               "HOTP counter 0 yields 755224");
+        rv = f->C_VerifyInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_OK, "HOTP VerifyInit with HOTP key ok");
+        rv = f->C_Verify(ssess, (CK_BYTE_PTR) "", 0, sig, sigLen);
+        CHECKC(rv == CKR_OK, "HOTP verify of its own digits ok");
+      } else {
+        /* The shim's check_operation rejects parameterized
+         * invocations for mechanisms absent from its shape
+         * registry (0x291 unmapped in
+         * mechanism_params_default.toml) with PARAM_INVALID
+         * before forwarding — the ECDSA-DER precedent. */
+        rv = f->C_SignInit(ssess, &hotpm, hmkey);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "proxied HOTP params are PARAM_INVALID");
+      }
+    }
     gm.mechanism = CKM_SHA256_HMAC_GENERAL;
     gm.pParameter = &gpar;
     gm.ulParameterLen = sizeof(gpar);
