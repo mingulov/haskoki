@@ -9,7 +9,7 @@ Denominator: 464 catalog rows (+ 16 aliases = 480 header CKM).
 > Haskell suites (see test_evidence artifacts) against real
 > libcrypto (pinned OpenSSL 4.0.2) and/or the synthetic engine.
 > The C function tables of THIS release route real crypto over
-> the 104-row tested catalog (see docs/demo-walkthrough.md §5 and
+> the 105-row tested catalog (see docs/demo-walkthrough.md §5 and
 > scripts/test-release-install.sh); genuinely unsupported calls
 > keep their documented refusals. No row below claims more than
 > its evidence. Consumer evidence: scripts/test-consumers.sh,
@@ -202,7 +202,7 @@ Release-wide limitations (reviewed, non-generated):
 - C surface: the default config serves 1 slot with its token (a
   `[tokens]` catalog serves N slots; see SUPPORTED-HOSTS.md and
   `docs/demo-walkthrough.md` §8). Real C-surface crypto routes
-  over the 104-row tested catalog; genuinely unsupported calls
+  over the 105-row tested catalog; genuinely unsupported calls
   keep their documented refusals.
 - `haskoki-ctl scenario run` simulates against an owned in-memory
   model; it never controls another live process.
