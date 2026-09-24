@@ -164,6 +164,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "ECDH derive refuses a non-EC base before params" caseDeriveEcdhWrongKeyType
   , testCase "ECDH derive refuses malformed params on an EC base" caseDeriveEcdhBadParams
   , testCase "SHA-KDF derive refuses a destroyed base handle" caseDeriveKdfBadHandle
+  , testCase "SHA-KDF derive refuses a non-generic-secret base" caseDeriveKdfWrongKeyType
   , testCase "Shared publication is all-or-nothing" casePublishAtomic
   , testCase "Wrap padding mirrors the cipher construction" casePadMirror
   , testCase "Multi-key derive delivers N handles" caseDeriveMulti
@@ -934,7 +935,8 @@ caseDeriveEcdhBadParams = withSynth $ \answer -> do
     other -> assertFailure ("garbage params must not plan: " ++ show other)
 
 -- | KDF handle resolution: a destroyed base handle refuses
--- OBJECT_HANDLE_INVALID (the oracle's null-base leg).
+-- KEY_HANDLE_INVALID (the oracle's null-base leg prefers the
+-- key-specific code over OBJECT_HANDLE_INVALID).
 caseDeriveKdfBadHandle :: IO ()
 caseDeriveKdfBadHandle = do
   m0 <- seedModel
@@ -949,8 +951,28 @@ caseDeriveKdfBadHandle = do
   case planDerive defaultRules m0 st mech (ExternalHandle 99999)
       (encodeDeriveParams BS.empty [tmpl]) of
     KeyDenied (KeyDeny code _) ->
-      assertEqual "destroyed base handle" CKR_OBJECT_HANDLE_INVALID code
+      assertEqual "destroyed base handle" CKR_KEY_HANDLE_INVALID code
     other -> assertFailure ("destroyed handle must not plan: " ++ show other)
+
+-- | SHA-KDF rows derive from generic-secret bases only: an AES
+-- base refuses KEY_TYPE_INCONSISTENT (the oracle's
+-- derive-wrong-key-type legs).
+caseDeriveKdfWrongKeyType :: IO ()
+caseDeriveKdfWrongKeyType = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, baseH) <- genAesKey answer m0 st (aesTmpl 32 ++ [(AttrDerive, ValBool True)])
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong 16)
+        , (AttrToken, ValBool False)
+        ]
+      mech = MechanismId ckm_SHA256_KEY_DERIVATION
+  case planDerive defaultRules m1 st mech baseH (encodeDeriveParams BS.empty [tmpl]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "AES base" CKR_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("AES base must not plan: " ++ show other)
 
 casePublishAtomic :: IO ()
 casePublishAtomic = do

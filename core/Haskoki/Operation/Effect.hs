@@ -93,6 +93,7 @@ detailFor code why = case code of
   CKR_ATTRIBUTE_SENSITIVE -> DenyBadParams why
   CKR_ATTRIBUTE_TYPE_INVALID -> DenyBadParams why
   CKR_OBJECT_HANDLE_INVALID -> DenyBadParams why
+  CKR_KEY_HANDLE_INVALID -> DenyBadParams why
   CKR_KEY_FUNCTION_NOT_PERMITTED -> DenyKeyBinding why
   CKR_KEY_UNEXTRACTABLE -> DenyKeyBinding why
   CKR_KEY_NOT_WRAPPABLE -> DenyKeyBinding why

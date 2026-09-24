@@ -147,18 +147,20 @@ decodeDeriveParams bs = do
       pure (tmpl : rest, r2)
 
 -- | Plan one (possibly multi-key) derivation: the mechanism must be
--- a derive mechanism (HKDF or ECDH), the base handle must resolve to
--- a visible key carrying the derive mark and stored material, and
--- EVERY template must describe a secret key with a positive length.
--- Check order: mechanism, frame, base, then templates in order; the
--- first failure denies with zero objects. ECDH arms resolve the base
--- and require an EC key type before examining parameters (a
--- key-type contradiction outranks parameter shape); frames carry the
--- agreement parameters ('ecdh-params/1') in the info segment and the
--- derived total is capped by the base curve's coordinate width;
--- HKDF frames carry the context string, capped by the HKDF-Expand
--- ceiling. Admission gates with the EXACT validated template count
--- (post-validation: an unvalidated count could over-refuse).
+-- a derive mechanism (HKDF, ECDH, or KDF), the base handle must
+-- resolve to a visible key carrying the derive mark and stored
+-- material, and EVERY template must describe a secret key with a
+-- positive length. Check order: mechanism, frame, base, then
+-- templates in order; the first failure denies with zero objects.
+-- ECDH arms resolve the base and require an EC key type before
+-- examining parameters, and SHA-KDF arms require a generic-secret
+-- base (a key-type contradiction outranks parameter shape); ECDH
+-- frames carry the agreement parameters ('ecdh-params/1') in the
+-- info segment and the derived total is capped by the base
+-- curve's coordinate width; HKDF frames carry the context string,
+-- capped by the HKDF-Expand ceiling. Admission gates with the
+-- EXACT validated template count (post-validation: an
+-- unvalidated count could over-refuse).
 planDerive
   :: Rules -> Model -> SessionState -> MechanismId -> ExternalHandle
   -> ByteString -> KeyPlan
@@ -197,23 +199,29 @@ planDerive rules model st mech baseH blob
   | Just r <- kdfRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      Just (info, tmpls)
-        | rkPbkd2 r, not (kdfParamsValid r info) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
-            "PBKDF2 mechanism parameters rejected by the recipe")
-        | not (rkPbkd2 r), not (BS.null info) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
-            "SHA key derivation takes empty info")
-        | otherwise -> case resolveBase model st baseH of
-            Left deny -> KeyDenied deny
-            Right (ost, _)
-              | rkPbkd2 r -> finish tmpls maxDerivedTotal
-                  "derived total exceeds the derive ceiling"
-                  (FxDerive mech (Just (osId ost)) info BS.empty)
-              | otherwise -> case kdfShaWidth r of
-                  Just w -> finish tmpls w
-                    "derived total exceeds the digest width"
-                    (FxDerive mech (Just (osId ost)) BS.empty BS.empty)
-                  Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
-                    "KDF row without a digest width")
+      Just (info, tmpls) -> case resolveBase model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, _)
+          -- SHA-KDF rows derive from generic-secret bases only;
+          -- the key-type contradiction outranks parameter shape
+          -- (the Init-matrix ordering, shared with the ECDH arm).
+          | not (rkPbkd2 r)
+          , Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkGenericSecret) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "SHA-KDF base key is not a generic secret")
+          | rkPbkd2 r, not (kdfParamsValid r info) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              "PBKDF2 mechanism parameters rejected by the recipe")
+          | not (rkPbkd2 r), not (BS.null info) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              "SHA key derivation takes empty info")
+          | rkPbkd2 r -> finish tmpls maxDerivedTotal
+              "derived total exceeds the derive ceiling"
+              (FxDerive mech (Just (osId ost)) info BS.empty)
+          | otherwise -> case kdfShaWidth r of
+              Just w -> finish tmpls w
+                "derived total exceeds the digest width"
+                (FxDerive mech (Just (osId ost)) BS.empty BS.empty)
+              Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                "KDF row without a digest width")
   | otherwise =
       KeyDenied (KeyDeny CKR_MECHANISM_INVALID
         ("not a derive mechanism: " ++ show mech))
@@ -262,10 +270,10 @@ resolveBase
   :: Model -> SessionState -> ExternalHandle
   -> Either KeyDeny (ObjectState, ByteString)
 resolveBase model st baseH = case resolveHandle model baseH of
-  Nothing -> Left (KeyDeny CKR_OBJECT_HANDLE_INVALID
+  Nothing -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
     "unknown or destroyed base-key handle")
   Just ost
-    | not (objectVisible st ost) -> Left (KeyDeny CKR_OBJECT_HANDLE_INVALID
+    | not (objectVisible st ost) -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
         "base key not visible in this session")
     | Map.lookup AttrDerive (osAttrs ost) /= Just (ValBool True) ->
         Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED

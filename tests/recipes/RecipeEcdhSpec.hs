@@ -319,7 +319,7 @@ casePlan = do
   expectDeny "no derive mark" CKR_KEY_FUNCTION_NOT_PERMITTED
     (planDerive defaultRules (mkBaseModel p256Priv False) testSession
       ecdhMech baseHandle (blob p256Pub [derivedTmpl 32]))
-  expectDeny "unknown handle" CKR_OBJECT_HANDLE_INVALID
+  expectDeny "unknown handle" CKR_KEY_HANDLE_INVALID
     (planDerive defaultRules m testSession ecdhMech (ExternalHandle 999) (blob p256Pub [derivedTmpl 32]))
   -- HKDF still plans (ECDH extension changes nothing there).
   case planDerive defaultRules m testSession (MechanismId (ckm_HKDF_DERIVE))

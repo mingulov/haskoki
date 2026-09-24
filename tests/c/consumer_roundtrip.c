@@ -2166,7 +2166,7 @@ int main(int argc, char **argv) {
             { CKA_EXTRACTABLE, &yes, sizeof(yes) },
           };
           CK_OBJECT_HANDLE ecBase = 0, genBase = 0;
-          CK_OBJECT_HANDLE d1 = 0, d2 = 0, d3 = 0, d4 = 0;
+          CK_OBJECT_HANDLE d1 = 0, d2 = 0, d3 = 0, d4 = 0, d5 = 0;
           CK_ECDH1_DERIVE_PARAMS ecdh;
           CK_MECHANISM dm, km, shm;
           CK_BYTE sec1[32], sec2[32], kd1[32], kd2[32], dgst[32];
@@ -2220,7 +2220,7 @@ int main(int argc, char **argv) {
           km.pParameter = NULL_PTR;
           km.ulParameterLen = 0;
           rv = f->C_DeriveKey(sess, &km, d2, dtmpl, 6, &d4);
-          CHECKC(rv == CKR_OBJECT_HANDLE_INVALID && d4 == 0,
+          CHECKC(rv == CKR_KEY_HANDLE_INVALID && d4 == 0,
                  "derive with destroyed base refused typed");
           rv = f->C_CreateObject(sess, genBaseT, 5, &genBase);
           CHECKC(rv == CKR_OK && genBase != 0, "KDF base imports");
@@ -2239,6 +2239,9 @@ int main(int argc, char **argv) {
           CHECKC(rv == CKR_OK && gkd2[0].ulValueLen == 32 &&
                      memcmp(kd1, kd2, 32) == 0,
                  "SHA3-256 derived value deterministic");
+          rv = f->C_DeriveKey(sess, &km, ecBase, dtmpl, 6, &d5);
+          CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT && d5 == 0,
+                 "SHA3-256 derive with EC base refused typed");
           /* Token self-consistency: derived == Digest(base). */
           shm.mechanism = CKM_SHA3_256;
           shm.pParameter = NULL_PTR;

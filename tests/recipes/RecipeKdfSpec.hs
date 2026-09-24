@@ -253,6 +253,7 @@ mkBaseModel mat canDerive = emptyModel
       , osGeneration = Generation 1
       , osAttrs = Map.fromList
           [ (AttrClass, ValULong ckoSecretKey)
+          , (AttrKeyType, ValULong ckkGenericSecret)
           , (AttrPrivate, ValBool False)
           , (AttrDerive, ValBool canDerive)
           , (AttrValue, ValBytes mat)
@@ -317,7 +318,7 @@ casePlanSha = do
   expectDeny "no derive mark" CKR_KEY_FUNCTION_NOT_PERMITTED
     (planDerive defaultRules (mkBaseModel "password" False) testSession
       sha256Mech baseHandle (encodeDeriveParams BS.empty [derivedTmpl 32]))
-  expectDeny "unknown handle" CKR_OBJECT_HANDLE_INVALID
+  expectDeny "unknown handle" CKR_KEY_HANDLE_INVALID
     (planDerive defaultRules m testSession sha256Mech (ExternalHandle 999)
       (encodeDeriveParams BS.empty [derivedTmpl 32]))
 
