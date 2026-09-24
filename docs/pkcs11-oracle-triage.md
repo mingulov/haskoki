@@ -22,6 +22,8 @@ records list interesting outcomes only (see Method).
 | r4 (matrix, one HMAC-type short) | 1566 | 97 | 366 | 3733 | 0 |
 | r5 (matrix + per-digest HMAC types) | 1576 | 92 | 362 | 3732 | 0 |
 | r6 (HOTP matrix rows) | 1576 | 92 | 362 | 3732 | 0 |
+| r7 (PSS/OAEP native structs + OAEP gate) | 1578 | 92 | 360 | 3732 | 0 |
+| r8 (asymmetric rows skip block framing) | 1580 | 90 | 360 | 3732 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -126,22 +128,39 @@ records list interesting outcomes only (see Method).
   r5 (92 failed, 0 new, 0 fixed). The 2 HOTP `mech_negative` legs
   still die in oracle setup (`MechConfig.key_type is None`, never
   reaching the token). Snapshot: `/tmp/pkcs11-fast-r6.json`.
+- r7 reproof for native PSS/OAEP structs + the OAEP cipher-shape
+  gate: 92 failed with a 2-for-2 swap vs r6 — the 2 OAEP
+  `mech_flags` callable legs fixed (OAEP is callable through the C
+  surface now), 2 `oaep_parameter_fidelity` legs newly running (they
+  were xfail while OAEP was uncallable) and failing on block
+  framing. Snapshot: `/tmp/pkcs11-fast-r7.json`.
+- r8 reproof for the asymmetric unframed bypass: 90 failed, 0 new —
+  both `oaep_parameter_fidelity` legs fixed (encrypt-direction
+  fidelity cross-verified against the oracle's own OAEP with
+  SHA256/MGF1-SHA1/label, decrypt-direction correctness).
+  Snapshot: `/tmp/pkcs11-fast-r8.json`.
 
-## Remaining fast-lane failures (r6: 92, identical set to r5), by cluster
+## Remaining fast-lane failures (r8: 90), by cluster
 
 Ordered by count, with root cause and fixability as triaged from failure
 records and the oracle sources at `/tmp/pkcs11-ws/pkcs11-check`:
 
-- `test_mech_negative.py` (14): Init paths accept wrong-key-type keys
-  (AES/ARIA/CAMELLIA encrypt, AES decrypt, CMAC/HMAC sign/verify). The
-  oracle imports a wrong-secret-type key (generic where AES is required
-  and vice versa) and expects rejection. Root cause: no
-  mechanism↔key-type matrix in the Init planners. Top-priority follow-up; it needs
-  `CKM_GENERIC_SECRET_KEY_GEN` first (HMAC-conformant keys cannot be
-  minted today — our own consumer HMAC test uses an AES key). Includes 2
-  HOTP cases that fail inside the oracle's own setup
-  (`MechConfig.key_type` is `None` there) — oracle-side, not ours.
-- `test_kdf.py` (8): HKDF parameter handling gaps; needs a focused pass.
+- `test_mech_negative.py` (2, was 14): the 12 wrong-key-type legs
+  fixed by the r4/r5 matrix; the 2 remaining HOTP cases fail inside
+  the oracle's own setup (`MechConfig.key_type` is `None` there) —
+  oracle-side, not ours.
+- `test_kdf.py` (8): `CKM_SHA3_*_KEY_DERIVE` (produces-key +
+  deterministic × 4 digests) returns `FUNCTION_NOT_SUPPORTED`; the
+  KDF recipe + driver already cover the SHA rows (`KEY_DERIVE` is a
+  header alias of the recipe's `KEY_DERIVATION` rows, same ids), only
+  the C derive surface (HKDF-only today) needs the new arms. Next
+  slice alongside ECDH below. (`SHAKE_*` legs skip: no XOF rows —
+  honest gap.)
+- `test_ckr_derive.py` (2): needs `CKM_ECDH1_DERIVE` wired — a
+  destroyed base handle must surface a handle error (not the C
+  surface's `FUNCTION_NOT_SUPPORTED`), and an RSA base key with ECDH
+  must refuse `KEY_TYPE_INCONSISTENT` (key-type check before param
+  validation, the Init-matrix ordering).
 - `test_operation_termination.py` (8): the oracle asserts a rejected
   single-part call (NULL args → `ARGUMENTS_BAD`) terminates the active
   operation; we leave it live. Spec-ambiguity: confirm against the
