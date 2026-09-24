@@ -10,7 +10,7 @@
 # history-codes
 # and funnel-cwd (wired here) — then a forced `cabal build all`
 # plus `cabal test all` in the pinned toolchain container, then the
-# release-evidence manifest (13 drivers + release build +
+# release-evidence manifest (14 drivers + release build +
 # clean-container install).
 #
 # Order matters twice: the forced build runs BEFORE the tests (a fresh

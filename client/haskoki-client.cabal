@@ -1,0 +1,47 @@
+cabal-version:      3.0
+name:               haskoki-client
+version:            0.1.0.0
+synopsis:           Test-only PKCS#11 client driver for the Haskoki token
+description:
+  Test-only in-repo Haskell client: loads a PKCS#11 module over
+  @dlopen@\/@C_GetFunctionList@ and drives the C ABI (sessions, login,
+  digest, cipher, sign\/verify, keygen, derive, random). The bundled
+  @haskoki-client@ CLI exercises the built @libhaskoki.so@ end to end.
+  This package is a test jig: it is NOT shipped by @scripts\/make-release.sh@.
+license:            BSD-3-Clause
+license-file:       ../LICENSE
+author:             Haskoki
+maintainer:         Haskoki
+category:           Testing
+build-type:         Simple
+extra-doc-files:   README.md
+
+common warnings
+  ghc-options: -Wall
+  default-language: GHC2024
+
+library
+  import:           warnings
+  hs-source-dirs:   src
+  -- The single verbatim PKCS#11 header; all offsets and constants
+  -- come from it via hsc2hs (nothing hand-copied).
+  include-dirs:     ../spec/vendor
+  exposed-modules:
+    Haskoki.Client
+    Haskoki.Client.Raw
+  build-depends:
+    base        >= 4.14 && < 5,
+    bytestring  >= 0.10  && < 0.13,
+    unix        >= 2.7   && < 2.9
+  build-tool-depends:
+    hsc2hs:hsc2hs >= 0.68
+
+executable haskoki-client
+  import:           warnings
+  main-is:          Main.hs
+  hs-source-dirs:   app
+  build-depends:
+    base           >= 4.14 && < 5,
+    bytestring     >= 0.10  && < 0.13,
+    haskoki-client
+  ghc-options:      -threaded
