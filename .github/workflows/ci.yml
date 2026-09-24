@@ -1,7 +1,7 @@
 name: CI
 
-# Default toolchain (GHC 9.10.3) + release + external pkcs11-check
-# conformance, both lanes on every push/PR:
+# Default toolchain (GHC 9.10.3) + bundle build + external
+# pkcs11-check conformance, both lanes on every push/PR:
 #   fast  offline markers, no vector data (quick conformance signal)
 #   kat   full markers over fetched vector data (fetch-data, cached)
 # pkcs11-check findings are REPORTED, not gating (exit 1 passes the
@@ -9,8 +9,12 @@ name: CI
 # oracle records as findings. Exit >= 2 (setup error) fails loudly.
 # The framework pins to v0.2.0; workflow_dispatch can override it.
 #
-# CD: the toolchain image pushes to GHCR on main/tags; v* tags also
-# attach the release bundle to the GitHub release.
+# CD: publishing happens ONLY in the `publish` job, which runs only
+# for v* tags (push a tag and the release goes out with it). It needs
+# green build+tests+bundle+fast-lane, then pushes the toolchain image
+# to GHCR and attaches the release bundle to the GitHub release.
+# The KAT lane stays informational (too slow to gate a release).
+# To cut a release: git tag vX.Y.Z && git push origin vX.Y.Z.
 
 on:
   push:
@@ -120,14 +124,14 @@ jobs:
 
   # ------------------------------------------------------------------
   # Toolchain image + release artifact + bare-host install test.
-  # Pushes the image to GHCR on main/tags (CD).
+  # Build-only: runs everywhere the lanes need the bundle artifact.
+  # Nothing here publishes; see `publish`.
   # ------------------------------------------------------------------
-  release:
+  bundle:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -159,21 +163,56 @@ jobs:
           name: release-bundle
           path: dist-release
           if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # Publish (CD): the ONLY job that publishes. Runs only for v* tags,
+  # after green build+tests+bundle+fast-lane: pushes the toolchain
+  # image to GHCR and attaches the release bundle to the GitHub
+  # release (creating it when missing).
+  # ------------------------------------------------------------------
+  publish:
+    needs: [haskell, bundle, pkcs11-fast]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Push image (CD)
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+      - name: Push image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ghcr.io/${{ github.repository }}:ghc-9.10.3
           cache-from: type=gha
+      - name: Download bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: release-bundle
+          path: dist-release
+      - name: Attach bundle to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ART=$(echo dist-release/haskoki-*)
+          VER=$(basename "$ART" | sed 's/^haskoki-//')
+          tar czf "haskoki-$VER.tar.gz" -C dist-release "$(basename "$ART")"
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "haskoki $TAG" \
+              --notes "Automated release bundle."
+          gh release upload "$TAG" "haskoki-$VER.tar.gz" --clobber
 
   # ------------------------------------------------------------------
   # Fetch the Wycheproof/ACVP/CCTV/x509-limbo vectors ONCE (shared via
@@ -209,7 +248,7 @@ jobs:
   # Fast lane: offline markers, no vector data.
   # ------------------------------------------------------------------
   pkcs11-fast:
-    needs: release
+    needs: bundle
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -263,7 +302,7 @@ jobs:
   # KAT lane: full markers over the fetched vector data.
   # ------------------------------------------------------------------
   pkcs11-kat:
-    needs: [release, fetch-data]
+    needs: [bundle, fetch-data]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -318,32 +357,4 @@ jobs:
           path: pkcs11-kat-results.json
           if-no-files-found: warn
 
-  # ------------------------------------------------------------------
-  # Attach the release bundle to the GitHub release for v* tags (CD).
-  # ------------------------------------------------------------------
-  github-release:
-    needs: release
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    steps:
-      - name: Download bundle
-        uses: actions/download-artifact@v7
-        with:
-          name: release-bundle
-          path: dist-release
-      - name: Attach bundle to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          ART=$(echo dist-release/haskoki-*)
-          VER=$(basename "$ART" | sed 's/^haskoki-//')
-          tar czf "haskoki-$VER.tar.gz" -C dist-release "$(basename "$ART")"
-          gh release view "$TAG" >/dev/null 2>&1 \
-            || gh release create "$TAG" --title "haskoki $TAG" \
-              --notes "Automated release bundle."
-          gh release upload "$TAG" "haskoki-$VER.tar.gz" --clobber
+
