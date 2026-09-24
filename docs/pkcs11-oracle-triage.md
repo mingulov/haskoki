@@ -24,6 +24,8 @@ records list interesting outcomes only (see Method).
 | r6 (HOTP matrix rows) | 1576 | 92 | 362 | 3732 | 0 |
 | r7 (PSS/OAEP native structs + OAEP gate) | 1578 | 92 | 360 | 3732 | 0 |
 | r8 (asymmetric rows skip block framing) | 1580 | 90 | 360 | 3732 | 0 |
+| r9 (ECDH + SHA-KDF C arms) | 1744 | 92 | 367 | 3577 | 0 |
+| r10 (SHA-KDF key-type gate) | 1756 | 81 | 366 | 3577 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -140,27 +142,53 @@ records list interesting outcomes only (see Method).
   SHA256/MGF1-SHA1/label, decrypt-direction correctness).
   Snapshot: `/tmp/pkcs11-fast-r8.json`.
 
-## Remaining fast-lane failures (r8: 90), by cluster
+## Round 5: derive slice (ECDH + SHA-KDF C arms)
+
+Wired `C_DeriveKey` beyond HKDF: ECDH (native `CK_ECDH1_DERIVE_PARAMS`
+decoder, opaque peer intake, base curve-width cap) and the SHA-KDF rows
+(SHA1/224/256/384/512/512-224/512-256, SHA3-224/256/384/512) through the
+C surface, with `planDerive` checking key-type before params (the
+Init-matrix ordering) and the base handle resolving to
+`KEY_HANDLE_INVALID` on unknown/invisible handles.
+
+r8→r9 (90→92 failed, 1580→1744 passed): advertising ECDH/SHA-KDF derive
+un-skipped ~155 oracle legs (skipped 3732→3577; total collected
+5762→5780), which mostly pass. Cleared 9: the destroyed-base-handle leg
+and all 8 SHA3-KDF produces-key/deterministic legs. Newly visible 11:
+`test_registry_derive_wrong_key_type[SHA*]` — the SHA-KDF arms accepted
+non-generic-secret bases (e.g. AES) because the key-type gate was
+missing; fixed in round 6. `test_ckr_derive.py::test_key_type_inconsistent`
+remains oracle-side: it needs `gen_rsa_keypair` (RSA keygen, honestly
+unsupported → `MECHANISM_INVALID` in setup) before our ECDH arm — which
+is model-pinned to refuse a non-EC base with `KEY_TYPE_INCONSISTENT`
+— is ever reached.
+
+## Round 6: derive fidelity (SHA-KDF key-type gate)
+
+`planDerive` SHA-KDF arms now require a generic-secret base before
+examining params; `resolveBase` reports the key-specific
+`KEY_HANDLE_INVALID` (was `OBJECT_HANDLE_INVALID`) for unknown or
+invisible base handles.
+
+r9→r10 (92→81 failed, 1744→1756 passed): cleared exactly the 11
+`test_registry_derive_wrong_key_type[SHA*]` legs, zero new failures.
+No derive leg we can reach still fails.
+
+## Remaining fast-lane failures (r10: 81), by cluster
 
 Ordered by count, with root cause and fixability as triaged from failure
 records and the oracle sources at `/tmp/pkcs11-ws/pkcs11-check`:
 
-- `test_mech_negative.py` (2, was 14): the 12 wrong-key-type legs
-  fixed by the r4/r5 matrix; the 2 remaining HOTP cases fail inside
-  the oracle's own setup (`MechConfig.key_type` is `None` there) —
-  oracle-side, not ours.
-- `test_kdf.py` (8): `CKM_SHA3_*_KEY_DERIVE` (produces-key +
-  deterministic × 4 digests) returns `FUNCTION_NOT_SUPPORTED`; the
-  KDF recipe + driver already cover the SHA rows (`KEY_DERIVE` is a
-  header alias of the recipe's `KEY_DERIVATION` rows, same ids), only
-  the C derive surface (HKDF-only today) needs the new arms. Next
-  slice alongside ECDH below. (`SHAKE_*` legs skip: no XOF rows —
-  honest gap.)
-- `test_ckr_derive.py` (2): needs `CKM_ECDH1_DERIVE` wired — a
-  destroyed base handle must surface a handle error (not the C
-  surface's `FUNCTION_NOT_SUPPORTED`), and an RSA base key with ECDH
-  must refuse `KEY_TYPE_INCONSISTENT` (key-type check before param
-  validation, the Init-matrix ordering).
+- `test_mech_negative.py` (2): back to the 2 oracle-side HOTP cases
+  (fail inside the oracle's own setup, `MechConfig.key_type` is `None`
+  there); the 11 SHA-KDF wrong-key-type legs that appeared in r9
+  cleared in r10.
+- `test_kdf.py` (0, was 8): all SHA3-KDF produces-key/deterministic
+  legs pass since r9. (`SHAKE_*` legs skip: no XOF rows — honest gap.)
+- `test_ckr_derive.py` (1, was 2): the destroyed-base-handle leg
+  passes since r9; the remaining `test_key_type_inconsistent` fails in
+  oracle setup on `gen_rsa_keypair` (RSA keygen honestly unsupported)
+  — oracle-side, unreachable code on our side.
 - `test_operation_termination.py` (8): the oracle asserts a rejected
   single-part call (NULL args → `ARGUMENTS_BAD`) terminates the active
   operation; we leave it live. Spec-ambiguity: confirm against the
