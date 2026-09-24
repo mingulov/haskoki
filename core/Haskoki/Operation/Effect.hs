@@ -99,6 +99,7 @@ detailFor code why = case code of
   CKR_KEY_TYPE_INCONSISTENT -> DenyKeyBinding why
   CKR_WRAPPING_KEY_TYPE_INCONSISTENT -> DenyKeyBinding why
   CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT -> DenyKeyBinding why
+  CKR_CURVE_NOT_SUPPORTED -> DenyKeyBinding why
   CKR_USER_NOT_LOGGED_IN -> DenyAuthState why
   CKR_USER_ALREADY_LOGGED_IN -> DenyAuthState why
   CKR_USER_ANOTHER_ALREADY_LOGGED_IN -> DenyAuthState why

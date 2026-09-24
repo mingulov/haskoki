@@ -18,6 +18,7 @@ records list interesting outcomes only (see Method).
 | r0 (pre-fix) | 1121 | 142 | 810 | 3689 | 3 |
 | r1 (template bound + class defaulting) | 1504 | 133 | 400 | 3725 | 0 |
 | r2 (ECDSA raw + wrap key-type gate) | 1507 | 130 | 400 | 3725 | 0 |
+| r3 (key-import slice) | 1530 | 104 | 396 | 3732 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -45,7 +46,7 @@ records list interesting outcomes only (see Method).
   parameters and emit the raw concatenation; the old DER default read as
   an oracle crypto-kind nonce-bias finding (`test_r_value_distribution`:
   DER headers parsed as `r`, MSB never set) and broke OpenSSL-side
-  cross-verification while our own symmetric roundtrips stayed green.
+  cross-verification while our own symmetric roundtrips stayed passing.
   Fixed: `test_r_value_distribution`, `test_low_s_and_malleability`
   (harness buffer sized for 64-byte signatures vs DER lengths).
 - AES-CBC wrap/unwrap refuse a non-AES wrapping key with
@@ -62,16 +63,46 @@ records list interesting outcomes only (see Method).
   (`tests/c/consumer_roundtrip.c`, `tests/c/consumer_errors.c`).
 - Regression check on the r1→r2 diff: 3 fixed, 0 newly failing.
 
-## Remaining fast-lane failures (r2: 130), by cluster
+## Round 3: key-import slice (component attributes + DER assembly)
+
+- `AttributeType` gains the standard key-component constructors (RSA
+  modulus/exponent/private/CRT parts, `CKA_EC_POINT`; `CKA_EC_PARAMS` and
+  `CKA_PUBLIC_EXPONENT` already existed), `Haskoki.Der` assembles them
+  into OpenSSL-consumable DER, and `planCreateObject` derives import
+  material through `importMaterial` (`core/Haskoki/Object.hs`,
+  `core/Haskoki/Der.hs`, `core/Haskoki/Attribute.hs`). `C_CreateObject`
+  with component templates now mints usable keys instead of refusing
+  with `ATTRIBUTE_TYPE_INVALID`. Unknown curves refuse honestly with the
+  new `CKR_CURVE_NOT_SUPPORTED`.
+- Fixed (26, all import-adjacent): `test_rsa_key_import.py` (4),
+  `test_ec_import_coherence.py` (4), `test_ec_missing_params.py` (5),
+  `test_mech_sign.py` RSA KAT vectors (5), `test_oaep_parameter_fidelity.py`
+  (3), `test_verify_operability.py` (2: ECDSA-SHA256, RSA-PKCS1v15-SHA256),
+  RSA setup edges in `test_ckr_object.py` / `test_crypto_weakness.py` /
+  `test_provisioning_capability.py` (3).
+- Coverage: `tests/model/KeyImportSpec.hs` (component acceptance, DER
+  assembly goldens, curve allowlist, unknown-curve refusal),
+  `tests/c/consumer_roundtrip.c` (import→use roundtrips),
+  `tests/c/consumer_errors.c` (in-bounds 65-entry refusal in both
+  topologies; the OOB-count probe stays direct-only — the proxy shim
+  reads the full count out of bounds in external code, so its outcome is
+  garbage-determined — and vendor DER params assert `PARAM_INVALID`
+  proxied, where the shim refuses params on parameterless ECDSA).
+- Regression check on the r1→r3 node-id diff: 29 fixed, 0 newly failing
+  (r2's records were overwritten by the r3 run at the same lane path, so
+  the diff runs r1→r3; r1→r2 was already 3 fixed / 0 new, hence r2→r3 is
+  26 fixed / 0 new). Snapshot: `/tmp/pkcs11-fast-r3.json`.
+
+## Remaining fast-lane failures (r3: 104), by cluster
 
 Ordered by count, with root cause and fixability as triaged from failure
 records and the oracle sources at `/tmp/pkcs11-ws/pkcs11-check`:
 
-- `test_mech_negative.py` (15): Init paths accept wrong-key-type keys
+- `test_mech_negative.py` (14): Init paths accept wrong-key-type keys
   (AES/ARIA/CAMELLIA encrypt, AES decrypt, CMAC/HMAC sign/verify). The
   oracle imports a wrong-secret-type key (generic where AES is required
   and vice versa) and expects rejection. Root cause: no
-  mechanism↔key-type matrix in the Init planners. P0 follow-up; it needs
+  mechanism↔key-type matrix in the Init planners. Top-priority follow-up; it needs
   `CKM_GENERIC_SECRET_KEY_GEN` first (HMAC-conformant keys cannot be
   minted today — our own consumer HMAC test uses an AES key). Includes 2
   HOTP cases that fail inside the oracle's own setup
@@ -82,12 +113,13 @@ records and the oracle sources at `/tmp/pkcs11-ws/pkcs11-check`:
   operation; we leave it live. Spec-ambiguity: confirm against the
   standard text before changing the state machine.
 - `test_crossverify.py` (7), `test_crossverify_extended.py` (4),
-  `test_verify_*`/`test_mech_sign.py`/`test_interop.py`: cross-checks
+  `test_verify_signature.py` (4), `test_interop.py` (5): cross-checks
   against OpenSSL-side crypto; remainders past the ECDSA fix need
-  per-case reads.
-- `test_ec_missing_params.py` (5), `test_ec_import_coherence.py` (4),
-  `test_rsa_key_import.py` (4), `test_secret_key_value_len.py` (5):
-  import/coherence edges; several trace to attribute coverage (see KAT).
+  per-case reads. (r3 fixed the `test_mech_sign.py` RSA KAT vectors.)
+- `test_secret_key_value_len.py` (5): import/coherence edges; several
+  trace to attribute coverage (see KAT). (r3 fixed the sibling import
+  files: `test_ec_missing_params.py`, `test_ec_import_coherence.py`,
+  `test_rsa_key_import.py` now pass.)
 - `test_set_attribute.py` + `test_api_security.py` escalation cases +
   token-promotion/ro-session cases (~8 across files): `C_SetAttributeValue`
   is unimplemented (returns `FUNCTION_NOT_SUPPORTED`). Feature gap.
@@ -100,7 +132,7 @@ records and the oracle sources at `/tmp/pkcs11-ws/pkcs11-check`:
   objects, visibility, v3.0 session edges. Each needs its record read
   before it can be sized; none was sampled as a crash or hang.
 
-## Skip census (3725 skipped)
+## Skip census (r3: 3732 skipped)
 
 Skips are capability-gated: the oracle probes support and skips what the
 module does not advertise. The lane records distinct skip reasons per
@@ -118,7 +150,7 @@ unit (a reason inventory, not per-test attribution). Grouped:
 The census moves only when advertised support moves. Any skip whose
 mechanism we later add must flip to run (pass/xfail/fail), never vanish.
 
-## XFail notes (400)
+## XFail notes (r3: 396)
 
 Xfails are behavior-present/code-imprecise: the module refuses, but with
 a neighboring return code (e.g. `MECHANISM_INVALID` where the oracle
@@ -143,9 +175,11 @@ reviewed import schemas); re-run KAT after it.
 Pre/post diffs compare recorded outcomes by node id. Records hold
 interesting outcomes (fail/xfail/skip samples); unrecorded means passed
 — valid only when the lane reports complete with zero child crashes
-(true for r1, r2). A post-fix failure whose pre-run outcome was pass
-(or unrecorded) counts as a regression; r0→r1 and r1→r2 both show zero.
-Crash counts come from the lane summary (`child_crash`), not records.
-Results: `/tmp/pkcs11-ws/out/pkcs11-fast-results.json` (r0),
+(true for r1, r2, r3). A post-fix failure whose pre-run outcome was pass
+(or unrecorded) counts as a regression; r0→r1, r1→r2, and r1→r3 all show
+zero. Crash counts come from the lane summary (`child_crash`), not
+records. Results: `/tmp/pkcs11-ws/out/pkcs11-fast-results.json` (r0),
 `/tmp/pkcs11-fast-r1.json` (r1),
-`/tmp/pkcs11-ws/out/fast/pkcs11-fast-results.json` (r2).
+`/tmp/pkcs11-ws/out/fast/pkcs11-fast-results.json` (r2, since overwritten
+by the r3 run at the same lane path — snapshot future rounds aside
+before re-running), `/tmp/pkcs11-fast-r3.json` (r3).

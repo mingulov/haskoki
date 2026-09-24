@@ -10,6 +10,7 @@ Request arguments ride the 'Request.reqInput' 'ByteString' via
 tiny documented codecs ('encodeTemplate'/'parseTemplate',
 'encodeWanted'/'parseWanted'); real decode lives in the FFI layer.
 -}
+{-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Object
   ( TemplateError (..)
   , validateTemplate
@@ -41,7 +42,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing, listToMaybe)
 import Data.Text (Text)
-import Data.Word (Word8)
+import Data.Word (Word64, Word8)
 
 import Haskoki.Attribute
   ( AttributeResult (..)
@@ -55,7 +56,11 @@ import Haskoki.Attribute
   , payloadSealed
   , shapeMatches
   )
-import Haskoki.Attribute.Generated (classNameById, generatedTemplateRules)
+import Haskoki.Attribute.Generated
+  (classNameById, generatedTemplateRules, mustClassId, mustKeyTypeId)
+import Haskoki.Der
+  (curveCoordLen, curveOidOfParams, ecPrivateDer, ecPublicDer,
+   rsaPrivateDer, rsaPublicDer, unwrapEcPoint)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -314,9 +319,10 @@ objectVisible st ost =
 -- Planning
 -- ---------------------------------------------------------------------------
 
--- | Plan object creation: validate the template, then allocate the
--- object id and handle deterministically from the model counters. A
--- failed template leaves no partial object and no binding.
+-- | Plan object creation: validate the template, derive key-import
+-- material ('importMaterial'), then allocate the object id and handle
+-- deterministically from the model counters. A failed template
+-- leaves no partial object and no binding.
 planCreateObject
   :: Model -> SessionState -> [(AttributeType, AttributeValue)] -> PlanResult
 planCreateObject model st tmpl = case validateTemplate tmpl of
@@ -331,23 +337,123 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
     , isNothing (classNameById c) ->
         templateReject CKR_TEMPLATE_INCONSISTENT
           ("unknown object class: " ++ show c)
-    | otherwise ->
-        let oid = ObjectId (mNextObject model)
-            h = ExternalHandle (mNextHandle model)
-            owner
-              | Map.lookup AttrToken attrs == Just (ValBool True) = Nothing
-              | otherwise = Just (ssId st)
-        in Immediate PreparedCommit
-          { pcCode = CKR_OK
-          , pcDelta = StateDelta
-              [ DeltaCreateObjectFull oid attrs owner (ssSlot st)
-              , DeltaBindHandle h oid
-              ]
-          , pcPersist = []
-          , pcOutputs = [NativeOutput (RegionHandle "object") (encodeHandle h)]
-          , pcReleases = []
-          , pcReasons = ["created object " ++ show oid]
-          }
+    | otherwise -> case importMaterial attrs of
+        Left (code, msg) -> templateReject code msg
+        Right stored ->
+          let oid = ObjectId (mNextObject model)
+              h = ExternalHandle (mNextHandle model)
+              owner
+                | Map.lookup AttrToken stored == Just (ValBool True) = Nothing
+                | otherwise = Just (ssId st)
+          in Immediate PreparedCommit
+            { pcCode = CKR_OK
+            , pcDelta = StateDelta
+                [ DeltaCreateObjectFull oid stored owner (ssSlot st)
+                , DeltaBindHandle h oid
+                ]
+            , pcPersist = []
+            , pcOutputs = [NativeOutput (RegionHandle "object") (encodeHandle h)]
+            , pcReleases = []
+            , pcReasons = ["created object " ++ show oid]
+            }
+
+ckoPrivateKey, ckoPublicKey, ckkRsa, ckkEc :: Word64
+ckoPrivateKey = mustClassId "CKO_PRIVATE_KEY"
+ckoPublicKey = mustClassId "CKO_PUBLIC_KEY"
+ckkRsa = mustKeyTypeId "CKK_RSA"
+ckkEc = mustKeyTypeId "CKK_EC"
+
+-- | Key-import material: RSA/EC public/private templates carry
+-- components, but the engine consumes PKCS#8/SPKI DER in 'AttrValue'
+-- (the same shape key generation stores). For those four shapes,
+-- require the complete component set ('CKR_TEMPLATE_INCOMPLETE'
+-- when short), assemble the DER, and store it as the value
+-- alongside the verbatim components. An explicit value next to
+-- components contradicts (inconsistent), except the EC private
+-- scalar, which arrives as the value and is consumed by the
+-- assembly. Malformed parts refuse as inconsistent; foreign curves
+-- refuse as 'CKR_CURVE_NOT_SUPPORTED'. Anything else stores
+-- verbatim.
+importMaterial
+  :: Map AttributeType AttributeValue
+  -> Either (ReturnCode, String) (Map AttributeType AttributeValue)
+importMaterial attrs = case (classOf, keyTypeOf) of
+  (Just c, Just k)
+    | c == ckoPrivateKey && k == ckkRsa -> rsaPrivate
+    | c == ckoPublicKey && k == ckkRsa -> rsaPublic
+    | c == ckoPrivateKey && k == ckkEc -> ecPrivate
+    | c == ckoPublicKey && k == ckkEc -> ecPublic
+  _ -> Right attrs
+  where
+    classOf = case Map.lookup AttrClass attrs of
+      Just (ValULong c) -> Just c
+      _ -> Nothing
+    keyTypeOf = case Map.lookup AttrKeyType attrs of
+      Just (ValULong k) -> Just k
+      _ -> Nothing
+    need t = case Map.lookup t attrs of
+      Just (ValBytes bs)
+        | not (BS.null bs) -> Right bs
+        | otherwise -> Left (CKR_TEMPLATE_INCONSISTENT,
+            "empty component: " ++ show t)
+      Just _ -> Left (CKR_TEMPLATE_INCONSISTENT,
+        "wrong shape for component: " ++ show t)
+      Nothing -> Left (CKR_TEMPLATE_INCOMPLETE,
+        "missing component: " ++ show t)
+    forbidValue
+      | Map.member AttrValue attrs = Left (CKR_TEMPLATE_INCONSISTENT,
+          "explicit value with key components")
+      | otherwise = Right ()
+    orReject rej = maybe (Left rej) Right
+    rsaPrivate = do
+      n <- need AttrModulus
+      e <- need AttrPublicExponent
+      d <- need AttrPrivateExponent
+      p <- need AttrPrime1
+      q <- need AttrPrime2
+      dp <- need AttrExponent1
+      dq <- need AttrExponent2
+      qi <- need AttrCoefficient
+      forbidValue
+      pure (Map.insert AttrValue
+        (ValBytes (rsaPrivateDer n e d p q dp dq qi)) attrs)
+    rsaPublic = do
+      n <- need AttrModulus
+      e <- need AttrPublicExponent
+      forbidValue
+      pure (Map.insert AttrValue
+        (ValBytes (rsaPublicDer n e)) attrs)
+    ecPrivate = do
+      params <- need AttrEcParams
+      scalar <- need AttrValue
+      (oid, coordLen) <- orReject
+        (CKR_CURVE_NOT_SUPPORTED, "unsupported EC curve parameters")
+        (resolveCurve params)
+      scalar' <- orReject (CKR_TEMPLATE_INCONSISTENT,
+          "EC scalar length does not match the curve")
+        (checkScalar coordLen scalar)
+      pure (Map.insert AttrValue
+        (ValBytes (ecPrivateDer oid scalar')) attrs)
+    ecPublic = do
+      params <- need AttrEcParams
+      point <- need AttrEcPoint
+      (oid, coordLen) <- orReject
+        (CKR_CURVE_NOT_SUPPORTED, "unsupported EC curve parameters")
+        (resolveCurve params)
+      raw <- orReject (CKR_TEMPLATE_INCONSISTENT,
+          "EC_POINT is not a wrapped uncompressed point")
+        (unwrapEcPoint coordLen point)
+      forbidValue
+      pure (Map.insert AttrValue
+        (ValBytes (ecPublicDer oid raw)) attrs)
+    resolveCurve params = do
+      oid <- curveOidOfParams params
+      n <- curveCoordLen oid
+      pure (oid, n)
+    checkScalar coordLen s
+      | BS.null s = Nothing
+      | BS.length s > coordLen = Nothing
+      | otherwise = Just s
 
 -- | Plan object destruction: the handle must resolve and the
 -- object must be visible to the calling session, then one combined

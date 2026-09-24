@@ -11,7 +11,7 @@ name: CI
 #
 # CD: publishing happens ONLY in the `publish` job, which runs only
 # for v* tags (push a tag and the release goes out with it). It needs
-# green build+tests+bundle+fast-lane, then pushes the toolchain image
+# passing build+tests+bundle+fast-lane, then pushes the toolchain image
 # to GHCR and attaches the release bundle to the GitHub release.
 # The KAT lane stays informational (too slow to gate a release).
 # To cut a release: git tag vX.Y.Z && git push origin vX.Y.Z.
@@ -166,7 +166,7 @@ jobs:
 
   # ------------------------------------------------------------------
   # Publish (CD): the ONLY job that publishes. Runs only for v* tags,
-  # after green build+tests+bundle+fast-lane: pushes the toolchain
+  # after passing build+tests+bundle+fast-lane: pushes the toolchain
   # image to GHCR and attaches the release bundle to the GitHub
   # release (creating it when missing).
   # ------------------------------------------------------------------

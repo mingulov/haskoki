@@ -22,6 +22,7 @@ import qualified FfiAsyncSpec
 import qualified FfiHygieneSpec
 import qualified JobStepSpec
 import qualified LeaseScopeSpec
+import qualified KeyImportSpec
 import qualified KeyManagementSpec
 import qualified LifecycleSpec
 import qualified MechanismExhaustivenessSpec
@@ -84,6 +85,7 @@ main = defaultMain $ testGroup "haskoki model + lifecycle"
   , RegistrySpec.spec
   , MechanismExhaustivenessSpec.spec
   , RoutingSpec.spec
+  , KeyImportSpec.spec
   , KeyManagementSpec.spec
   , SimBridgeSpec.spec
   , SimStressSpec.spec

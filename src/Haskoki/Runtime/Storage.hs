@@ -964,6 +964,14 @@ attrName t = case t of
   AttrDecapsulate -> "decapsulate"
   AttrId -> "id"
   AttrPublicExponent -> "public_exponent"
+  AttrModulus -> "modulus"
+  AttrPrivateExponent -> "private_exponent"
+  AttrPrime1 -> "prime_1"
+  AttrPrime2 -> "prime_2"
+  AttrExponent1 -> "exponent_1"
+  AttrExponent2 -> "exponent_2"
+  AttrCoefficient -> "coefficient"
+  AttrEcPoint -> "ec_point"
 
 -- | Name back to type; unknown names fail.
 nameAttr :: String -> Maybe AttributeType
@@ -993,6 +1001,14 @@ nameAttr s = case s of
   "decapsulate" -> Just AttrDecapsulate
   "id" -> Just AttrId
   "public_exponent" -> Just AttrPublicExponent
+  "modulus" -> Just AttrModulus
+  "private_exponent" -> Just AttrPrivateExponent
+  "prime_1" -> Just AttrPrime1
+  "prime_2" -> Just AttrPrime2
+  "exponent_1" -> Just AttrExponent1
+  "exponent_2" -> Just AttrExponent2
+  "coefficient" -> Just AttrCoefficient
+  "ec_point" -> Just AttrEcPoint
   _ -> Nothing
 
 -- | Encode one attribute value: bools as JSON booleans, unsigned
@@ -1033,6 +1049,14 @@ decodeAttrValue t j = case t of
   AttrEcParams -> bytesOf j
   AttrId -> bytesOf j
   AttrPublicExponent -> bytesOf j
+  AttrModulus -> bytesOf j
+  AttrPrivateExponent -> bytesOf j
+  AttrPrime1 -> bytesOf j
+  AttrPrime2 -> bytesOf j
+  AttrExponent1 -> bytesOf j
+  AttrExponent2 -> bytesOf j
+  AttrCoefficient -> bytesOf j
+  AttrEcPoint -> bytesOf j
   where
     boolOf (JBool b) = Just (ValBool b)
     boolOf _ = Nothing
@@ -1280,6 +1304,7 @@ encodeReturnCode c = case c of
   CKR_KEY_TYPE_INCONSISTENT -> "CKR_KEY_TYPE_INCONSISTENT"
   CKR_WRAPPING_KEY_TYPE_INCONSISTENT -> "CKR_WRAPPING_KEY_TYPE_INCONSISTENT"
   CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT -> "CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT"
+  CKR_CURVE_NOT_SUPPORTED -> "CKR_CURVE_NOT_SUPPORTED"
   CKR_DATA_LEN_RANGE -> "CKR_DATA_LEN_RANGE"
   CKR_ENCRYPTED_DATA_INVALID -> "CKR_ENCRYPTED_DATA_INVALID"
   CKR_ENCRYPTED_DATA_LEN_RANGE -> "CKR_ENCRYPTED_DATA_LEN_RANGE"
@@ -1324,6 +1349,7 @@ decodeReturnCode s = case s of
   "CKR_KEY_TYPE_INCONSISTENT" -> Just CKR_KEY_TYPE_INCONSISTENT
   "CKR_WRAPPING_KEY_TYPE_INCONSISTENT" -> Just CKR_WRAPPING_KEY_TYPE_INCONSISTENT
   "CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT" -> Just CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT
+  "CKR_CURVE_NOT_SUPPORTED" -> Just CKR_CURVE_NOT_SUPPORTED
   "CKR_DATA_LEN_RANGE" -> Just CKR_DATA_LEN_RANGE
   "CKR_ENCRYPTED_DATA_INVALID" -> Just CKR_ENCRYPTED_DATA_INVALID
   "CKR_ENCRYPTED_DATA_LEN_RANGE" -> Just CKR_ENCRYPTED_DATA_LEN_RANGE

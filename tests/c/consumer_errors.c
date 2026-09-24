@@ -5,7 +5,11 @@
  *   - NULL mechanism init is CKR_ARGUMENTS_BAD
  *   - template-count overflow on C_GetAttributeValue is
  *     CKR_ARGUMENTS_BAD (64-entry bound shared with the pack path);
- *     a real 64-entry template over a live key still processes
+ *     a real 64-entry template over a live key still processes;
+ *     the over-long-count-over-1-entry probe is direct-only (the
+ *     shim reads the full count out of bounds in external code,
+ *     so its outcome is garbage-determined), with a real-65-entry
+ *     variant pinning the daemon-side bound in both topologies
  *   - final/update with no active op is CKR_OPERATION_NOT_INITIALIZED
  *   - short-buffer final/one-shot legs report CKR_BUFFER_TOO_SMALL
  *     with the required length
@@ -176,7 +180,15 @@ static void write_config(void) {
     }                                                                      \
     /* boundary variant: 65 entries (one past the 64-entry pack */          \
     /* bound) over a 1-entry template refuses the same way. */             \
-    {                                                                      \
+    /* Direct-only: the count is checked before any entry is read, */      \
+    /* so the over-long count never dereferences out of bounds. */         \
+    /* Behind the proxy the SHIM reads all 65 entries out of bounds */     \
+    /* in external code (shim object.rs has no 64-entry bound; its */      \
+    /* MAX_TEMPLATE_COUNT is 65536), and the garbage entries decide */     \
+    /* the outcome (HOST_MEMORY when a garbage length fails */             \
+    /* try_reserve_exact in backend from_queries, ARGUMENTS_BAD */         \
+    /* otherwise) -- stack-layout-determined, not our contract. */         \
+    if (!isProxy) {                                                        \
       CK_ATTRIBUTE one[1];                                                 \
       CK_BYTE val[8];                                                      \
       one[0].type = CKA_CLASS;                                             \
@@ -185,6 +197,21 @@ static void write_config(void) {
       prv = (T)->C_GetAttributeValue(sess, 1, one, 65);                     \
       CHECKC(prv == CKR_ARGUMENTS_BAD,                                     \
              "%s: getattr count 65 refused", tag);                         \
+    }                                                                      \
+    /* In-bounds variant, both topologies: a real 65-entry template */     \
+    /* (benign size queries) still refuses at the bound -- direct at */    \
+    /* our module, proxied at the daemon side after forwarding. */         \
+    {                                                                      \
+      CK_ATTRIBUTE many[65];                                               \
+      int manyi;                                                           \
+      for (manyi = 0; manyi < 65; manyi++) {                               \
+        many[manyi].type = CKA_CLASS;                                      \
+        many[manyi].pValue = NULL_PTR;                                     \
+        many[manyi].ulValueLen = 0;                                        \
+      }                                                                    \
+      prv = (T)->C_GetAttributeValue(sess, 1, many, 65);                   \
+      CHECKC(prv == CKR_ARGUMENTS_BAD,                                     \
+             "%s: getattr real 65 refused", tag);                          \
     }                                                                      \
     /* boundary control: a real 64-entry template over a live key          \
      * processes (the bound refuses 65+, never 64). */                     \

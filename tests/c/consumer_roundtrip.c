@@ -127,6 +127,24 @@ static const CK_BYTE kWant[32] = {
 
 static char g_cfg_path[256];
 
+static int hex_nibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+static CK_ULONG hex_to_bytes(const char *hex, CK_BYTE *out, CK_ULONG outlen) {
+  CK_ULONG i = 0, n = 0;
+  while (hex[i] && hex[i + 1] && n < outlen) {
+    int hi = hex_nibble(hex[i]), lo = hex_nibble(hex[i + 1]);
+    if (hi < 0 || lo < 0) break;
+    out[n++] = (CK_BYTE)((hi << 4) | lo);
+    i += 2;
+  }
+  return n;
+}
+
 static void write_config(void) {
   static const char body[] = "schema_version = 1\n"
                              "profile = \"real-crypto\"\n"
@@ -877,7 +895,11 @@ int main(int argc, char **argv) {
     sig[((size_t) sigLen) - 1] ^= 0xFF;
     rv = f->C_Verify(ssess, (CK_BYTE_PTR) "abc", 3, sig, sigLen);
     CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered ECDSA refused");
-    /* Explicit DER encoding stays available on request. */
+    /* Explicit DER encoding stays available on request (direct:
+     * our vendor params convention). Proxied, the shim refuses
+     * params on parameterless CKM_ECDSA_SHA256 before forwarding
+     * (validate_mechanism/check_operation), so the init surfaces
+     * PARAM_INVALID and no op starts. */
     {
       CK_MECHANISM dsm;
       CK_BYTE derp[] = { 'D', 'E', 'R' };
@@ -885,11 +907,16 @@ int main(int argc, char **argv) {
       dsm.pParameter = derp;
       dsm.ulParameterLen = sizeof(derp);
       rv = f->C_SignInit(ssess, &dsm, priv);
-      CHECKC(rv == CKR_OK, "DER SignInit ok");
-      sigLen = sizeof(sig);
-      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, sig, &sigLen);
-      CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72 && sig[0] == 0x30,
-             "explicit DER yields DER bytes");
+      if (!isProxy) {
+        CHECKC(rv == CKR_OK, "DER SignInit ok");
+        sigLen = sizeof(sig);
+        rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, sig, &sigLen);
+        CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72 && sig[0] == 0x30,
+               "explicit DER yields DER bytes");
+      } else {
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "proxied DER params are PARAM_INVALID");
+      }
     }
     /* ECDSA multipart. */
     rv = f->C_SignUpdate(ssess, (CK_BYTE_PTR) "a", 1);
@@ -1732,6 +1759,173 @@ int main(int argc, char **argv) {
       rv = f->C_CloseSession(rosess);
       CHECKC(rv == CKR_OK, "RO session closed");
     }
+    /* ---- key import: RSA/EC component templates create keys ---- */
+    {
+      /* Pinned OpenSSL 4.0.2 vectors (shared with KeyImportSpec). */
+      static const char hn[] =
+      "bf249542389ea0de381c11c04c7777e6c56106165ec581cc378e6f9022cd2b4f"
+      "efd66e575e7043004afef1e4916177cea097cef02d4f09de587d869840cd75ec"
+      "a6adb70c19824f9a8a573c9ac337876cd2c490e6c5d69a686386009d54d13f1b"
+      "1be0a71055f23717d81bdc060c29d0ec7a6d8280a677ab92d65c9b64981300e4"
+      "a4eb60e4180189362c964ba3d55ca2db2d2998331ea0e87ab44d577fe8533717"
+      "9f02cf8d71404b4f8bd99e4e3e636c45ceea91e7660165f35451ee15fd44b42a"
+      "5eee7552aaccc25737be7f3d43542a43cc46b39fb127608c5a055327d339855e"
+      "838995295160067a417cc8c3095ee012bf078da33c71becae36b9805c174f357";
+      static const char he[] =
+      "010001";
+      static const char hd[] =
+      "02147aaaa8fabcedbe219165e22478ac626079befb92b2fa0f1960886a8088b9"
+      "f5765966b4fde16a1ae6d1a8b6eb9f1b4e0468e43f31f97daf167fef9f363d29"
+      "7144e4558adf855092b47bfc83d1a7b51cf40ba449e9d9c34cb5f4181788b162"
+      "f0f78db4854d934b91f6a25079ddbdf5722847ea70cff8e62a540152e3bec287"
+      "3598079bf1965083cca686d500ab2867c43db553dd2894a3014fa30814f58966"
+      "b7f91e71b9c6928f41d22587daa3a939b409b9aeac3765404b0b3a890000c2e3"
+      "480d90950529f73df1340f69cc8be3c69def997524a3883cc618f51a81130842"
+      "f094b95699d093acb3e8c59a9a65b968101f6220638265e398f8f65ba6363ca5";
+      static const char hp[] =
+      "f38edb79d7c425b930bee769f17aa3cc565f6e0a72b7fd0c734a0257960213f5"
+      "c5c5d16887e80d0d8c9136daa855e26e38319f7cd5f454b875e9eff1c9a6dc88"
+      "753a65d825d079d1fd9b8d1843e250793279877e1db7bd932b09473a1973ce71"
+      "0f5179baf192a17052a66c5247205bdad49fb48938b6590d5f2154820337498b";
+      static const char hq[] =
+      "c8e8439d64764eaff4f6bf45bc56df3280d3c5aeedae00f0099f3d169db75f3a"
+      "0105900eef944f120f0d49d63d623e07b6feafa043914bf8e4ae243a9f82b853"
+      "dc1e347b262a250423d1f53f097cdce6677813a277f8eca15b5a61acb08bbdc2"
+      "042a0457492f09488ab22936aa8e098798484a230f3c4d27294589d4c8a1bee5";
+      static const char hdp[] =
+      "17e28b9d804e6910a73a21819f3fd2ae684e05819acc76517140f1c7db1b2b0f"
+      "f02c3d240e27f097c2903f1be4643fc765556079a295ca7528831f97cb99c488"
+      "d14e3fcc99b0bf319bb85476ebb95700fbb5355765dcae07afb1c23d6d5f9100"
+      "3f6b530fc53f06fbf7ef0032756d33f4dae32a96466c83812f321a9281743b8f";
+      static const char hdq[] =
+      "80b900096a02bb2bd5e1fa6f2ddae32ab28bfd0eb54e555f766ac673251e062f"
+      "5dd43896b93de6e3852d586fa1e8be21a747cb32fdd7ac3b8e195d310a5e70c7"
+      "9a32e8213734ad7ed78c807ba112955e325127136396e3d606780438e6ecc1e9"
+      "fb4d0876fc76dc95d3f78e9c6dee8f80873b59f4d8a02436c124c2c8c8bb8959";
+      static const char hqi[] =
+      "3cefd2574cbb2056d55f71c3fe82090a9797c6c038d1ef045e0373081801f4e4"
+      "68f7822b9580bcd21aac3c601a330ca745978cd01761cbccf29201086defab1f"
+      "08ec5024b60b79ed839dbf43c9c35a07da5cf8163fc4c57a1e06b20378077dab"
+      "fb54e39d56bf2a4d478187829ec00236001f1503a903482246a21aac1c04ae4f";
+      static const char hscalar[] =
+      "5bc5fc2e1cb344d11de202ea057cbfd5da5f9a9a54a83fda363e5742b044366c";
+      static const char hpoint[] =
+      "044104a113ffac941b89a293f5bb308496c60f74732c92b5724a97191ba3f76d"
+      "afa9b00ba279852742b80f7e8bc51f7fd41b368d1c611c391a4abd0559ddf16b"
+      "63ee01";      CK_OBJECT_CLASS prvcls = CKO_PRIVATE_KEY, pubcls = CKO_PUBLIC_KEY;
+      CK_KEY_TYPE rsakt = CKK_RSA, eckt = CKK_EC;
+      CK_BYTE n[256], e[8], d[256];
+      CK_BYTE p[128], q[128], dp[128], dq[128], qi[128];
+      CK_BYTE scalar[32], point[67];
+      CK_BYTE rparams[] = {
+        0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07
+      };
+      CK_OBJECT_HANDLE rsaPriv = 0, rsaPub = 0, ecPriv = 0, ecPub = 0;
+      CHECKC(hex_to_bytes(hn, n, sizeof(n)) == sizeof(n), "fixture n parses");
+      CHECKC(hex_to_bytes(he, e, sizeof(e)) == 3, "fixture e parses");
+      CHECKC(hex_to_bytes(hd, d, sizeof(d)) == sizeof(d), "fixture d parses");
+      CHECKC(hex_to_bytes(hp, p, sizeof(p)) == sizeof(p), "fixture p parses");
+      CHECKC(hex_to_bytes(hq, q, sizeof(q)) == sizeof(q), "fixture q parses");
+      CHECKC(hex_to_bytes(hdp, dp, sizeof(dp)) == sizeof(dp), "fixture dp parses");
+      CHECKC(hex_to_bytes(hdq, dq, sizeof(dq)) == sizeof(dq), "fixture dq parses");
+      CHECKC(hex_to_bytes(hqi, qi, sizeof(qi)) == sizeof(qi), "fixture qi parses");
+      CHECKC(hex_to_bytes(hscalar, scalar, sizeof(scalar)) == sizeof(scalar),
+             "fixture scalar parses");
+      CHECKC(hex_to_bytes(hpoint, point, sizeof(point)) == sizeof(point),
+             "fixture point parses");
+      {
+        CK_ATTRIBUTE rtmpl[] = {
+          { CKA_CLASS, &prvcls, sizeof(prvcls) },
+          { CKA_KEY_TYPE, &rsakt, sizeof(rsakt) },
+          { CKA_TOKEN, &no, sizeof(no) },
+          { CKA_SENSITIVE, &no, sizeof(no) },
+          { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+          { CKA_MODULUS, n, sizeof(n) },
+          { CKA_PUBLIC_EXPONENT, e, 3 },
+          { CKA_PRIVATE_EXPONENT, d, sizeof(d) },
+          { CKA_PRIME_1, p, sizeof(p) },
+          { CKA_PRIME_2, q, sizeof(q) },
+          { CKA_EXPONENT_1, dp, sizeof(dp) },
+          { CKA_EXPONENT_2, dq, sizeof(dq) },
+          { CKA_COEFFICIENT, qi, sizeof(qi) },
+        };
+        CK_ATTRIBUTE g[] = { { CKA_MODULUS, NULL_PTR, 0 } };
+        CK_BYTE got[256];
+        rv = f->C_CreateObject(sess, rtmpl, 13, &rsaPriv);
+        CHECKC(rv == CKR_OK && rsaPriv != 0, "RSA private import ok");
+        g[0].pValue = got;
+        g[0].ulValueLen = sizeof(got);
+        rv = f->C_GetAttributeValue(sess, rsaPriv, g, 1);
+        CHECKC(rv == CKR_OK && g[0].ulValueLen == sizeof(n) &&
+                   memcmp(got, n, sizeof(n)) == 0,
+               "RSA modulus reads back");
+      }
+      {
+        CK_ATTRIBUTE rtmpl[] = {
+          { CKA_CLASS, &pubcls, sizeof(pubcls) },
+          { CKA_KEY_TYPE, &rsakt, sizeof(rsakt) },
+          { CKA_TOKEN, &no, sizeof(no) },
+          { CKA_MODULUS, n, sizeof(n) },
+          { CKA_PUBLIC_EXPONENT, e, 3 },
+        };
+        rv = f->C_CreateObject(sess, rtmpl, 5, &rsaPub);
+        CHECKC(rv == CKR_OK && rsaPub != 0, "RSA public import ok");
+      }
+      {
+        CK_ATTRIBUTE ptmpl[] = {
+          { CKA_CLASS, &prvcls, sizeof(prvcls) },
+          { CKA_KEY_TYPE, &eckt, sizeof(eckt) },
+          { CKA_TOKEN, &no, sizeof(no) },
+          { CKA_SENSITIVE, &no, sizeof(no) },
+          { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+          { CKA_EC_PARAMS, rparams, sizeof(rparams) },
+          { CKA_VALUE, scalar, sizeof(scalar) },
+        };
+        rv = f->C_CreateObject(sess, ptmpl, 7, &ecPriv);
+        CHECKC(rv == CKR_OK && ecPriv != 0, "EC private import ok");
+      }
+      {
+        CK_ATTRIBUTE ptmpl[] = {
+          { CKA_CLASS, &pubcls, sizeof(pubcls) },
+          { CKA_KEY_TYPE, &eckt, sizeof(eckt) },
+          { CKA_TOKEN, &no, sizeof(no) },
+          { CKA_EC_PARAMS, rparams, sizeof(rparams) },
+          { CKA_EC_POINT, point, sizeof(point) },
+        };
+        CK_ATTRIBUTE g[] = { { CKA_EC_POINT, NULL_PTR, 0 } };
+        CK_BYTE got[67];
+        rv = f->C_CreateObject(sess, ptmpl, 5, &ecPub);
+        CHECKC(rv == CKR_OK && ecPub != 0, "EC public import ok");
+        g[0].pValue = got;
+        g[0].ulValueLen = sizeof(got);
+        rv = f->C_GetAttributeValue(sess, ecPub, g, 1);
+        CHECKC(rv == CKR_OK && g[0].ulValueLen == sizeof(point) &&
+                   memcmp(got, point, sizeof(point)) == 0,
+               "EC point reads back");
+      }
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        CK_ATTRIBUTE btmpl[] = {
+          { CKA_CLASS, &prvcls, sizeof(prvcls) },
+          { CKA_KEY_TYPE, &rsakt, sizeof(rsakt) },
+          { CKA_TOKEN, &no, sizeof(no) },
+          { CKA_MODULUS, n, sizeof(n) },
+          { CKA_PUBLIC_EXPONENT, e, 3 },
+        };
+        rv = f->C_CreateObject(sess, btmpl, 5, &bad);
+        CHECKC(rv == CKR_TEMPLATE_INCOMPLETE && bad == 0,
+               "partial RSA import incomplete");
+      }
+      rv = f->C_DestroyObject(sess, rsaPriv);
+      CHECKC(rv == CKR_OK, "imported RSA priv destroyed");
+      rv = f->C_DestroyObject(sess, rsaPub);
+      CHECKC(rv == CKR_OK, "imported RSA pub destroyed");
+      rv = f->C_DestroyObject(sess, ecPriv);
+      CHECKC(rv == CKR_OK, "imported EC priv destroyed");
+      rv = f->C_DestroyObject(sess, ecPub);
+      CHECKC(rv == CKR_OK, "imported EC pub destroyed");
+    }
+
     rv = f->C_DestroyObject(sess, dataObj);
     CHECKC(rv == CKR_OK, "DestroyObject ok");
     rv = f->C_DestroyObject(sess, dataObj);

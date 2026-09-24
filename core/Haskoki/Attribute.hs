@@ -14,6 +14,7 @@ module Haskoki.Attribute
   , PartialReads (..)
   , getAttributes
   , payloadSealed
+  , sealedAttrs
   , encodeValue
   , decodeValue
   , maxAttributeBytes
@@ -69,6 +70,14 @@ data AttributeType
   | AttrDecapsulate
   | AttrId
   | AttrPublicExponent
+  | AttrModulus
+  | AttrPrivateExponent
+  | AttrPrime1
+  | AttrPrime2
+  | AttrExponent1
+  | AttrExponent2
+  | AttrCoefficient
+  | AttrEcPoint
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Owned attribute values. The semantic value stays separate
@@ -131,13 +140,28 @@ getAttributes attrs wanted =
     readOne t = case Map.lookup t attrs of
       Nothing -> ResUnavailable
       Just v
-        | t == AttrValue && payloadSealed attrs -> ResSensitive
+        | t `elem` sealedAttrs && payloadSealed attrs -> ResSensitive
         | otherwise -> ResOk v
     overallCode :: [AttributeResult] -> ReturnCode
     overallCode rs
       | any (== ResSensitive) rs = CKR_ATTRIBUTE_SENSITIVE
       | any (== ResUnavailable) rs = CKR_ATTRIBUTE_TYPE_INVALID
       | otherwise = CKR_OK
+
+-- | Attributes sealed by the payload rule (sensitive or
+-- unextractable): the opaque value plus the private key components.
+-- Public components (modulus, public exponent, curve point) stay
+-- readable under the same flags.
+sealedAttrs :: [AttributeType]
+sealedAttrs =
+  [ AttrValue
+  , AttrPrivateExponent
+  , AttrPrime1
+  , AttrPrime2
+  , AttrExponent1
+  , AttrExponent2
+  , AttrCoefficient
+  ]
 
 -- | Whether the payload ('AttrValue') of the given attribute map is
 -- sealed: sensitive or unextractable. Either flag alone seals it.
@@ -191,6 +215,14 @@ shapeOf t = case t of
   AttrEcParams -> ShapeBytes
   AttrId -> ShapeBytes
   AttrPublicExponent -> ShapeBytes
+  AttrModulus -> ShapeBytes
+  AttrPrivateExponent -> ShapeBytes
+  AttrPrime1 -> ShapeBytes
+  AttrPrime2 -> ShapeBytes
+  AttrExponent1 -> ShapeBytes
+  AttrExponent2 -> ShapeBytes
+  AttrCoefficient -> ShapeBytes
+  AttrEcPoint -> ShapeBytes
 
 -- | Whether a value carries its type's shape. The template
 -- wrong-type gate ('Haskoki.Object.validateTemplate' refuses
@@ -290,6 +322,14 @@ attributeTypeByName name = case name of
   "CKA_DECAPSULATE" -> Just AttrDecapsulate
   "CKA_ID" -> Just AttrId
   "CKA_PUBLIC_EXPONENT" -> Just AttrPublicExponent
+  "CKA_MODULUS" -> Just AttrModulus
+  "CKA_PRIVATE_EXPONENT" -> Just AttrPrivateExponent
+  "CKA_PRIME_1" -> Just AttrPrime1
+  "CKA_PRIME_2" -> Just AttrPrime2
+  "CKA_EXPONENT_1" -> Just AttrExponent1
+  "CKA_EXPONENT_2" -> Just AttrExponent2
+  "CKA_COEFFICIENT" -> Just AttrCoefficient
+  "CKA_EC_POINT" -> Just AttrEcPoint
   _ -> Nothing
 
 -- | 8-byte big-endian decoding; total over 8-byte inputs (only
