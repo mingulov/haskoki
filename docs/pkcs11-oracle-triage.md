@@ -26,6 +26,7 @@ records list interesting outcomes only (see Method).
 | r8 (asymmetric rows skip block framing) | 1580 | 90 | 360 | 3732 | 0 |
 | r9 (ECDH + SHA-KDF C arms) | 1744 | 92 | 367 | 3577 | 0 |
 | r10 (SHA-KDF key-type gate) | 1756 | 81 | 366 | 3577 | 0 |
+| r11 (termination + DigestKey) | 1769 | 71 | 365 | 3575 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -174,7 +175,25 @@ r9→r10 (92→81 failed, 1744→1756 passed): cleared exactly the 11
 `test_registry_derive_wrong_key_type[SHA*]` legs, zero new failures.
 No derive leg we can reach still fails.
 
-## Remaining fast-lane failures (r10: 81), by cluster
+## Round 7: termination, empty-query staging, C_DigestKey
+
+Failed crypto calls now terminate the active op per the spec rule
+(every error other than BUFFER_TOO_SMALL terminates; only the
+successful length query keeps it): planner denies in the five
+classic families clear the slot, FFI early ARGS_BAD refusals
+terminate via `refuseArgsTerminate`, and the C NULL-argument guards
+terminate through the new `haskoki_std_terminate_slot` export.
+Size queries run the real `IntentNull` intent end to end
+(`stageBytes` always stages, `retryStaged` re-reports), fixing
+empty-output queries. `C_DigestKey` is routed (feeds the secret
+value through the digest-update planner; contract 66→67 planned).
+
+r10→r11 (81→71 failed, 1756→1769 passed): cleared exactly the 8
+`test_operation_termination` NULL-arg legs and the 2 `test_digest`
+DigestKey legs, zero new failures. The one-shot-over-buffered
+termination change caused no oracle regressions.
+
+## Remaining fast-lane failures (r11: 71), by cluster
 
 Ordered by count, with root cause and fixability as triaged from failure
 records and the oracle sources at `/tmp/pkcs11-ws/pkcs11-check`:
@@ -189,10 +208,11 @@ records and the oracle sources at `/tmp/pkcs11-ws/pkcs11-check`:
   passes since r9; the remaining `test_key_type_inconsistent` fails in
   oracle setup on `gen_rsa_keypair` (RSA keygen honestly unsupported)
   — oracle-side, unreachable code on our side.
-- `test_operation_termination.py` (8): the oracle asserts a rejected
-  single-part call (NULL args → `ARGUMENTS_BAD`) terminates the active
-  operation; we leave it live. Spec-ambiguity: confirm against the
-  standard text before changing the state machine.
+- `test_operation_termination.py` (0, was 8): confirmed against the
+  OASIS spec text (single-part: "always terminates ... unless
+  BUFFER_TOO_SMALL or successful length query"; Update: "error other
+  than BUFFER_TOO_SMALL terminates") and fixed in round 7 at all
+  three layers (planner denies, FFI early refusals, C NULL guards).
 - `test_crossverify.py` (7), `test_crossverify_extended.py` (4),
   `test_verify_signature.py` (4), `test_interop.py` (5): cross-checks
   against OpenSSL-side crypto; remainders past the ECDSA fix need
@@ -207,7 +227,8 @@ records and the oracle sources at `/tmp/pkcs11-ws/pkcs11-check`:
 - `test_aead.py` (2): GCM roundtrip fails with `MECHANISM_INVALID` while
   other GCM units skip as unsupported — capability-reporting
   inconsistency, needs a focused session.
-- `test_digest.py` (2): `C_DigestKey` unimplemented. Feature gap.
+- `test_digest.py` (0, was 2): `C_DigestKey` routed in round 7
+  (secret value through the digest-update planner).
 - Long tail (one-offs across ~20 files): attribute-enforcement edges
   (`CKA_COPYABLE` unsupported), multipart/message/codec edges, large
   objects, visibility, v3.0 session edges. Each needs its record read
