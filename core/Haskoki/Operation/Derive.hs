@@ -47,6 +47,7 @@ import Haskoki.Operation.KeyManagement
   , KeyPlan (..)
   , PendingWork (..)
   , checkKeyTemplateAny
+  , ckkEc
   , ckkGenericSecret
   , ckoSecretKey
   , keyBytesOf
@@ -150,7 +151,9 @@ decodeDeriveParams bs = do
 -- a visible key carrying the derive mark and stored material, and
 -- EVERY template must describe a secret key with a positive length.
 -- Check order: mechanism, frame, base, then templates in order; the
--- first failure denies with zero objects. ECDH frames carry the
+-- first failure denies with zero objects. ECDH arms resolve the base
+-- and require an EC key type before examining parameters (a
+-- key-type contradiction outranks parameter shape); frames carry the
 -- agreement parameters ('ecdh-params/1') in the info segment and the
 -- derived total is capped by the base curve's coordinate width;
 -- HKDF frames carry the context string, capped by the HKDF-Expand
@@ -171,19 +174,26 @@ planDerive rules model st mech baseH blob
   | Just r <- ecdhRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      Just (ecdhBlob, tmpls)
-        | not (ecdhParamsValid r ecdhBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
-            "ECDH mechanism parameters rejected by the recipe")
-        | otherwise -> case (decodeEcdhParams ecdhBlob, resolveBase model st baseH) of
-            (Just (_, _, peer), Right (ost, mat))
-              | curvesDiffer mat peer -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
-                  "ECDH base/peer curve mismatch")
-              | otherwise -> finish tmpls (ecdhSecretWidth mat)
-                  "derived total exceeds the ECDH secret width"
-                  (FxDerive mech (Just (osId ost)) ecdhBlob BS.empty)
-            (Just _, Left deny) -> KeyDenied deny
-            _ -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+      -- Key-type contradiction outranks parameter shape (the
+      -- Init-matrix ordering): the base resolves and must be EC
+      -- before params are examined.
+      Just (ecdhBlob, tmpls) -> case resolveBase model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, mat)
+          | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkEc) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "ECDH base key is not an EC key")
+          | not (ecdhParamsValid r ecdhBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
               "ECDH mechanism parameters rejected by the recipe")
+          | otherwise -> case decodeEcdhParams ecdhBlob of
+              Just (_, _, peer)
+                | curvesDiffer mat peer -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+                    "ECDH base/peer curve mismatch")
+                | otherwise -> finish tmpls (ecdhSecretWidth mat)
+                    "derived total exceeds the ECDH secret width"
+                    (FxDerive mech (Just (osId ost)) ecdhBlob BS.empty)
+              _ -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+                "ECDH mechanism parameters rejected by the recipe")
   | Just r <- kdfRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")

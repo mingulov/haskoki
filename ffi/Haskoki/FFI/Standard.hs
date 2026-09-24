@@ -145,6 +145,7 @@ module Haskoki.FFI.Standard
   , haskokiStdWrapKey
   , haskokiStdUnwrapKey
   , haskokiStdDeriveHkdf
+  , haskokiStdDeriveOpaque
   ) where
 
 import Control.Exception
@@ -167,6 +168,7 @@ import qualified Data.ByteString.Unsafe as BSU
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Word (Word64, Word8)
 import Foreign.C.Types (CULong (..))
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
@@ -210,7 +212,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
-import Haskoki.FFI.NativeParams (normalizeMechParams)
+import Haskoki.FFI.NativeParams (normalizeEcdhParams, normalizeMechParams)
 import Haskoki.Model
   ( Model (..)
   , SessionState (..)
@@ -232,6 +234,8 @@ import Haskoki.Operation.Derive
   , hkdfDeriveMech
   , planDerive
   )
+import Haskoki.Recipe.Ecdh (ecdhRecipeFor)
+import Haskoki.Recipe.Kdf (KdfRecipe (..), kdfRecipeFor)
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
@@ -2410,6 +2414,9 @@ foreign export ccall "haskoki_std_unwrap_key" haskokiStdUnwrapKey
 foreign export ccall "haskoki_std_derive_hkdf" haskokiStdDeriveHkdf
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
+foreign export ccall "haskoki_std_derive_opaque" haskokiStdDeriveOpaque
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
+  -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
 
 -- | Copy one blob output to the caller buffer and report its
 -- length. Anything off-shape fails closed.
@@ -2522,6 +2529,62 @@ haskokiStdUnwrapKey ctx h (CULong mech) pIv (CULong ivLen) (CULong wrapH)
                       Left rv -> pure rv
                       Right [oh] -> poke phKey (CULong oh) >> pure ckrOk
                       Right _ -> pure ckrGeneralError
+
+-- | Opaque derive for the ECDH and SHA-KDF rows: the C side
+-- forwards the mechanism id, the raw parameter image, and the
+-- template frame. ECDH structs normalize here
+-- ('normalizeEcdhParams'); base resolution and the EC key-type
+-- check run first inside 'planDerive', so a wrong-typed base
+-- refuses before parameter shape is examined. SHA rows take the
+-- image as the info segment (emptiness enforced by 'planDerive').
+-- Unmappable ECDH images pass through raw so the recipe refusal
+-- (and its @CKR@) is unchanged. PBKD2 is not served here (its
+-- native struct has no decoder yet) and refuses
+-- @CKR_MECHANISM_INVALID@.
+haskokiStdDeriveOpaque
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
+  -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
+haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
+    (CULong baseH) pFrame (CULong frameLen) phKey =
+  withStdCtx ctx $ \inst ->
+    if phKey == nullPtr
+      then pure ckrArgsBad
+      else withWritableSessionState inst h $ \st -> do
+        eParams <- decodeInputBytes pParams paramsLen
+        case eParams of
+          Left _ -> pure ckrArgsBad
+          Right raw -> do
+            eTmpl <- readFrame pFrame (CULong frameLen)
+            case eTmpl of
+              Left ferr -> pure (frameErrorRV ferr)
+              Right entries -> do
+                let mid = MechanismId (fromIntegral mech)
+                if not (isOpaqueDeriveMech mid)
+                  then pure (stdRvOf CKR_MECHANISM_INVALID)
+                  else do
+                    blob <- deriveBlob mid raw
+                    m <- snapshotModel (siEnv inst)
+                    eHs <- runKeyPlan inst m st
+                      (planDerive (envRules (siEnv inst)) m st mid
+                        (ExternalHandle (fromIntegral baseH))
+                        (encodeDeriveParams blob [entries]))
+                    case eHs of
+                      Left rv -> pure rv
+                      Right [oh] -> poke phKey (CULong oh) >> pure ckrOk
+                      Right _ -> pure ckrGeneralError
+  where
+    deriveBlob mid raw
+      | isJust (ecdhRecipeFor mid) =
+          fromMaybe raw <$> normalizeEcdhParams pParams paramsLen
+      | otherwise = pure raw
+
+-- | Mechanisms served by 'haskokiStdDeriveOpaque': the ECDH rows
+-- plus the SHA-KDF rows (PBKD2 excluded: no native decoder).
+isOpaqueDeriveMech :: MechanismId -> Bool
+isOpaqueDeriveMech mid =
+  isJust (ecdhRecipeFor mid) || case kdfRecipeFor mid of
+    Just r -> not (rkPbkd2 r)
+    Nothing -> False
 
 -- | HKDF-subset derive: the C side validates the Expand-only,
 -- empty-salt, SHA-256-PRF subset and passes the info bytes; the

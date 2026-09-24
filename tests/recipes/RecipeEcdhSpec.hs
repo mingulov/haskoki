@@ -45,6 +45,7 @@ import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
+  , ckkEc
   , ckkGenericSecret
   , ckoSecretKey
   )
@@ -244,6 +245,7 @@ mkBaseModel mat canDerive = emptyModel
       , osGeneration = Generation 1
       , osAttrs = Map.fromList
           [ (AttrClass, ValULong ckoSecretKey)
+          , (AttrKeyType, ValULong ckkEc)
           , (AttrPrivate, ValBool False)
           , (AttrDerive, ValBool canDerive)
           , (AttrValue, ValBytes mat)

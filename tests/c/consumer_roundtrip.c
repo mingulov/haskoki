@@ -1725,10 +1725,12 @@ int main(int argc, char **argv) {
       decdh.ulParameterLen = 0;
       {
         CK_OBJECT_HANDLE bad = 0;
+        /* ECDH is wired now: the AES wrap key refuses typed
+         * (key-type check runs before parameter shape). */
         rv = f->C_DeriveKey(wsess, &decdh, sealedKey, ktmpl, 5, &bad);
-        CHECKC(rv == CKR_FUNCTION_NOT_SUPPORTED,
-               "non-HKDF derive honestly NA");
-        CHECKC(bad == 0, "unmapped derive writes no handle");
+        CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+               "ECDH with AES base refused typed");
+        CHECKC(bad == 0, "refused ECDH derive writes no handle");
       }
     }
     rv = f->C_CloseSession(wsess);
@@ -2027,6 +2029,7 @@ int main(int argc, char **argv) {
           { CKA_EXTRACTABLE, &yes, sizeof(yes) },
           { CKA_SIGN, &yes, sizeof(yes) },
           { CKA_DECRYPT, &yes, sizeof(yes) },
+          { CKA_DERIVE, &yes, sizeof(yes) },
           { CKA_MODULUS, n, sizeof(n) },
           { CKA_PUBLIC_EXPONENT, e, 3 },
           { CKA_PRIVATE_EXPONENT, d, sizeof(d) },
@@ -2059,7 +2062,7 @@ int main(int argc, char **argv) {
                               'e','t','e','r','-','f','i','d','e','l',
                               'i','t','y',' ','p','r','o' };
         CK_BYTE big[200] = { 0 };
-        rv = f->C_CreateObject(sess, pssPrivT, 15, &pssPriv);
+        rv = f->C_CreateObject(sess, pssPrivT, 16, &pssPriv);
         CHECKC(rv == CKR_OK && pssPriv != 0, "PSS RSA private imports");
         rv = f->C_CreateObject(sess, pssPubT, 7, &pssPub);
         CHECKC(rv == CKR_OK && pssPub != 0, "PSS RSA public imports");
@@ -2130,6 +2133,123 @@ int main(int argc, char **argv) {
         ctextLen = sizeof(ctext);
         rv = f->C_Encrypt(sess, big, sizeof(big), ctext, &ctextLen);
         CHECKC(rv != CKR_OK, "over-long OAEP encrypt refuses");
+        /* ECDH + SHA-KDF derive through the opaque intake. */
+        {
+          CK_OBJECT_CLASS seccls = CKO_SECRET_KEY;
+          CK_KEY_TYPE genkt = CKK_GENERIC_SECRET;
+          CK_ULONG vlen = 32;
+          CK_ATTRIBUTE ecBaseT[] = {
+            { CKA_CLASS, &prvcls, sizeof(prvcls) },
+            { CKA_KEY_TYPE, &eckt, sizeof(eckt) },
+            { CKA_TOKEN, &no, sizeof(no) },
+            { CKA_SENSITIVE, &no, sizeof(no) },
+            { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+            { CKA_DERIVE, &yes, sizeof(yes) },
+            { CKA_EC_PARAMS, rparams, sizeof(rparams) },
+            { CKA_VALUE, scalar, sizeof(scalar) },
+          };
+          CK_BYTE genval[32] = { 'b','a','s','e','-','m','a','t','e','r','i','a','l','!','!','!',
+                                 '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f' };
+          CK_ATTRIBUTE genBaseT[] = {
+            { CKA_CLASS, &seccls, sizeof(seccls) },
+            { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+            { CKA_TOKEN, &no, sizeof(no) },
+            { CKA_DERIVE, &yes, sizeof(yes) },
+            { CKA_VALUE, genval, sizeof(genval) },
+          };
+          CK_ATTRIBUTE dtmpl[] = {
+            { CKA_CLASS, &seccls, sizeof(seccls) },
+            { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+            { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+            { CKA_TOKEN, &no, sizeof(no) },
+            { CKA_SENSITIVE, &no, sizeof(no) },
+            { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+          };
+          CK_OBJECT_HANDLE ecBase = 0, genBase = 0;
+          CK_OBJECT_HANDLE d1 = 0, d2 = 0, d3 = 0, d4 = 0;
+          CK_ECDH1_DERIVE_PARAMS ecdh;
+          CK_MECHANISM dm, km, shm;
+          CK_BYTE sec1[32], sec2[32], kd1[32], kd2[32], dgst[32];
+          CK_ULONG secLen, secLen2, kdLen, kdLen2, dgstLen;
+          CK_ATTRIBUTE gsec[] = { { CKA_VALUE, sec1, sizeof(sec1) } };
+          CK_ATTRIBUTE gsec2[] = { { CKA_VALUE, sec2, sizeof(sec2) } };
+          CK_ATTRIBUTE gkd[] = { { CKA_VALUE, kd1, sizeof(kd1) } };
+          CK_ATTRIBUTE gkd2[] = { { CKA_VALUE, kd2, sizeof(kd2) } };
+          CK_BYTE garbage[65] = { 0 };
+          CK_MECHANISM badm;
+          rv = f->C_CreateObject(sess, ecBaseT, 8, &ecBase);
+          CHECKC(rv == CKR_OK && ecBase != 0, "ECDH base imports");
+          /* The fixture point is DER-wrapped (04 41 || raw); the
+           * peer travels as the raw 65-byte point. */
+          ecdh.kdf = CKD_NULL;
+          ecdh.ulSharedDataLen = 0;
+          ecdh.pSharedData = NULL_PTR;
+          ecdh.ulPublicDataLen = sizeof(point) - 2;
+          ecdh.pPublicData = point + 2;
+          dm.mechanism = CKM_ECDH1_DERIVE;
+          dm.pParameter = &ecdh;
+          dm.ulParameterLen = sizeof(ecdh);
+          rv = f->C_DeriveKey(sess, &dm, ecBase, dtmpl, 6, &d1);
+          CHECKC(rv == CKR_OK && d1 != 0, "ECDH derive ok");
+          secLen = sizeof(sec1);
+          gsec[0].ulValueLen = secLen;
+          rv = f->C_GetAttributeValue(sess, d1, gsec, 1);
+          CHECKC(rv == CKR_OK && gsec[0].ulValueLen == 32,
+                 "ECDH secret reads 32 bytes");
+          rv = f->C_DeriveKey(sess, &dm, ecBase, dtmpl, 6, &d2);
+          CHECKC(rv == CKR_OK && d2 != 0, "ECDH derive replays");
+          secLen2 = sizeof(sec2);
+          gsec2[0].ulValueLen = secLen2;
+          rv = f->C_GetAttributeValue(sess, d2, gsec2, 1);
+          CHECKC(rv == CKR_OK && gsec2[0].ulValueLen == 32 &&
+                     memcmp(sec1, sec2, 32) == 0,
+                 "ECDH secret deterministic");
+          /* Wrong-typed base refuses before params are examined. */
+          badm.mechanism = CKM_ECDH1_DERIVE;
+          badm.pParameter = garbage;
+          badm.ulParameterLen = sizeof(garbage);
+          rv = f->C_DeriveKey(sess, &badm, pssPriv, dtmpl, 6, &d3);
+          CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT && d3 == 0,
+                 "ECDH with RSA base and garbage params refused typed");
+          rv = f->C_DeriveKey(sess, &dm, pssPriv, dtmpl, 6, &d3);
+          CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT && d3 == 0,
+                 "ECDH with RSA base and valid params refused typed");
+          rv = f->C_DestroyObject(sess, d2);
+          CHECKC(rv == CKR_OK, "second secret destroyed");
+          km.mechanism = CKM_SHA3_256_KEY_DERIVE;
+          km.pParameter = NULL_PTR;
+          km.ulParameterLen = 0;
+          rv = f->C_DeriveKey(sess, &km, d2, dtmpl, 6, &d4);
+          CHECKC(rv == CKR_OBJECT_HANDLE_INVALID && d4 == 0,
+                 "derive with destroyed base refused typed");
+          rv = f->C_CreateObject(sess, genBaseT, 5, &genBase);
+          CHECKC(rv == CKR_OK && genBase != 0, "KDF base imports");
+          rv = f->C_DeriveKey(sess, &km, genBase, dtmpl, 6, &d3);
+          CHECKC(rv == CKR_OK && d3 != 0, "SHA3-256 derive ok");
+          kdLen = sizeof(kd1);
+          gkd[0].ulValueLen = kdLen;
+          rv = f->C_GetAttributeValue(sess, d3, gkd, 1);
+          CHECKC(rv == CKR_OK && gkd[0].ulValueLen == 32,
+                 "SHA3-256 derived value reads 32 bytes");
+          rv = f->C_DeriveKey(sess, &km, genBase, dtmpl, 6, &d4);
+          CHECKC(rv == CKR_OK && d4 != 0, "SHA3-256 derive replays");
+          kdLen2 = sizeof(kd2);
+          gkd2[0].ulValueLen = kdLen2;
+          rv = f->C_GetAttributeValue(sess, d4, gkd2, 1);
+          CHECKC(rv == CKR_OK && gkd2[0].ulValueLen == 32 &&
+                     memcmp(kd1, kd2, 32) == 0,
+                 "SHA3-256 derived value deterministic");
+          /* Token self-consistency: derived == Digest(base). */
+          shm.mechanism = CKM_SHA3_256;
+          shm.pParameter = NULL_PTR;
+          shm.ulParameterLen = 0;
+          rv = f->C_DigestInit(sess, &shm);
+          CHECKC(rv == CKR_OK, "SHA3-256 DigestInit ok");
+          dgstLen = sizeof(dgst);
+          rv = f->C_Digest(sess, genval, sizeof(genval), dgst, &dgstLen);
+          CHECKC(rv == CKR_OK && dgstLen == 32 && memcmp(dgst, kd1, 32) == 0,
+                 "SHA3-256 derived equals token digest");
+        }
       }
       {
         CK_ATTRIBUTE ptmpl[] = {

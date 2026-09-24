@@ -176,6 +176,11 @@ extern uint64_t haskoki_std_derive_hkdf(void *instance, uint64_t h_session,
                                         uint8_t *p_info, uint64_t info_len,
                                         uint64_t h_base, uint8_t *p_frame,
                                         uint64_t frame_len, uint64_t *ph_key);
+extern uint64_t haskoki_std_derive_opaque(void *instance, uint64_t h_session,
+                                          uint64_t mechanism, uint8_t *p_params,
+                                          uint64_t params_len, uint64_t h_base,
+                                          uint8_t *p_frame, uint64_t frame_len,
+                                          uint64_t *ph_key);
 #endif
 
 /* C interval state lock (cbits/function_tables.c): every routed
@@ -1909,6 +1914,75 @@ static int hkdf_subset_ok(const CK_HKDF_PARAMS *hp) {
   return 1;
 }
 
+/* Derive mechanisms served through the opaque Haskell intake
+ * (ECDH + SHA-KDF rows; mirrors the Haskoki.Recipe.Ecdh/Kdf tables
+ * — Haskell re-checks membership before planning). */
+static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
+  switch (mech) {
+  case CKM_ECDH1_DERIVE:
+  case CKM_ECDH1_COFACTOR_DERIVE:
+  case CKM_SHA1_KEY_DERIVATION:
+  case CKM_SHA224_KEY_DERIVATION:
+  case CKM_SHA256_KEY_DERIVATION:
+  case CKM_SHA384_KEY_DERIVATION:
+  case CKM_SHA512_KEY_DERIVATION:
+  case CKM_SHA512_224_KEY_DERIVATION:
+  case CKM_SHA512_256_KEY_DERIVATION:
+  case CKM_SHA3_224_KEY_DERIVATION:
+  case CKM_SHA3_256_KEY_DERIVATION:
+  case CKM_SHA3_384_KEY_DERIVATION:
+  case CKM_SHA3_512_KEY_DERIVATION:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* Opaque derive arm: pack the template frame and forward the
+ * mechanism id plus the raw parameter image; struct decoding and
+ * all checks after the frame pack run in Haskell (ECDH base
+ * resolution and the EC key-type check run before parameter shape
+ * is examined). */
+static CK_RV std_derive_opaque(CK_SESSION_HANDLE hSession,
+                               CK_MECHANISM_PTR pMechanism,
+                               CK_OBJECT_HANDLE hBaseKey,
+                               CK_ATTRIBUTE_PTR pTemplate,
+                               CK_ULONG ulAttributeCount,
+                               CK_OBJECT_HANDLE_PTR phKey) {
+  void *inst = 0;
+  uint8_t *frame = NULL;
+  uint64_t frameLen = 0;
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (ulAttributeCount > 0 && pTemplate == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (haskoki_std_pack_template(pTemplate, (unsigned long)ulAttributeCount,
+                                &frame, &frameLen) != 0) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    free(frame);
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    free(frame);
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_derive_opaque(inst, (uint64_t)hSession,
+                                        (uint64_t)pMechanism->mechanism,
+                                        (uint8_t *)pMechanism->pParameter,
+                                        (uint64_t)pMechanism->ulParameterLen,
+                                        (uint64_t)hBaseKey, frame, frameLen,
+                                        (uint64_t *)phKey);
+  (void)haskoki_state_unlock();
+  free(frame);
+  return rv;
+}
+
 CK_RV std_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                     CK_OBJECT_HANDLE hBaseKey, CK_ATTRIBUTE_PTR pTemplate,
                     CK_ULONG ulAttributeCount, CK_OBJECT_HANDLE_PTR phKey) {
@@ -1927,7 +2001,11 @@ CK_RV std_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
     return CKR_ARGUMENTS_BAD;
   }
   if (pMechanism->mechanism != CKM_HKDF_DERIVE) {
-    return CKR_FUNCTION_NOT_SUPPORTED;
+    if (!derive_opaque_ok(pMechanism->mechanism)) {
+      return CKR_FUNCTION_NOT_SUPPORTED;
+    }
+    return std_derive_opaque(hSession, pMechanism, hBaseKey, pTemplate,
+                             ulAttributeCount, phKey);
   }
   if (pMechanism->pParameter == NULL_PTR ||
       pMechanism->ulParameterLen != (CK_ULONG)sizeof(CK_HKDF_PARAMS)) {

@@ -127,7 +127,13 @@ import Haskoki.Outcome
   )
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
 import Haskoki.Registry (MechanismId (..), Operation (..), curatedRegistry, mkCapabilities)
-import Haskoki.Registry.Generated (ckm_SHA256, ckm_SHA256_HMAC)
+import Haskoki.Recipe.Ecdh (encodeEcdhParams)
+import Haskoki.Registry.Generated
+  ( ckm_ECDH1_DERIVE
+  , ckm_SHA256
+  , ckm_SHA256_HMAC
+  , ckm_SHA256_KEY_DERIVATION
+  )
 import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (defaultRules)
@@ -155,6 +161,9 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Wrap length query then wrap/unwrap roundtrip" caseWrapRoundtrip
   , testCase "Authenticated wrap roundtrip binds the tag" caseAuthWrapRoundtrip
   , testCase "Single-key derive delivers one handle" caseDeriveSingle
+  , testCase "ECDH derive refuses a non-EC base before params" caseDeriveEcdhWrongKeyType
+  , testCase "ECDH derive refuses malformed params on an EC base" caseDeriveEcdhBadParams
+  , testCase "SHA-KDF derive refuses a destroyed base handle" caseDeriveKdfBadHandle
   , testCase "Shared publication is all-or-nothing" casePublishAtomic
   , testCase "Wrap padding mirrors the cipher construction" casePadMirror
   , testCase "Multi-key derive delivers N handles" caseDeriveMulti
@@ -850,6 +859,98 @@ caseDeriveSingle = withSynth $ \answer -> do
       Just ost <- pure (resolveHandle m3 h)
       assertEqual "derive replays" (Just (fst mats)) (keyBytesOf ost)
     other -> assertFailure ("derive plan is not an effect: " ++ show other)
+
+-- | ECDH key-type-before-params ordering (the Init-matrix rule for
+-- derive): an RSA base refuses KEY_TYPE_INCONSISTENT whether the
+-- agreement parameters are garbage or well-formed.
+caseDeriveEcdhWrongKeyType :: IO ()
+caseDeriveEcdhWrongKeyType = do
+  m0 <- seedModel
+  st <- getSession m0
+  let rsaAttrs = Map.fromList
+        [ (AttrClass, ValULong ckoPrivateKey)
+        , (AttrKeyType, ValULong ckkRsa)
+        , (AttrToken, ValBool False)
+        , (AttrDerive, ValBool True)
+        , (AttrModulus, ValBytes "n")
+        , (AttrPublicExponent, ValBytes "e")
+        , (AttrPrivateExponent, ValBytes "d")
+        , (AttrPrime1, ValBytes "p")
+        , (AttrPrime2, ValBytes "q")
+        , (AttrExponent1, ValBytes "dp")
+        , (AttrExponent2, ValBytes "dq")
+        , (AttrCoefficient, ValBytes "qi")
+        , (AttrValue, ValBytes "rsa-material-stands-in")
+        ]
+      tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong 16)
+        , (AttrToken, ValBool False)
+        ]
+      mech = MechanismId ckm_ECDH1_DERIVE
+  (m1, baseH) <- case publishPending m0 st [pendingFromAttrs st rsaAttrs] of
+    Left deny -> assertFailure ("plant must publish: " ++ show deny) >> undefined
+    Right (delta, [h]) -> do
+      m' <- expectRight (publishDelta m0 delta)
+      pure (m', h)
+    Right _ -> assertFailure "plant must mint one handle" >> undefined
+  let garbage = encodeDeriveParams "not-ecdh-params" [tmpl]
+      wellFormed = encodeDeriveParams (encodeEcdhParams 0 BS.empty "peer") [tmpl]
+  case planDerive defaultRules m1 st mech baseH garbage of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "garbage params, RSA base" CKR_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("RSA base must not plan: " ++ show other)
+  case planDerive defaultRules m1 st mech baseH wellFormed of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "valid params, RSA base" CKR_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("RSA base must not plan: " ++ show other)
+
+-- | ECDH parameter shape still enforced: an EC base with malformed
+-- agreement parameters refuses ARGUMENTS_BAD.
+caseDeriveEcdhBadParams :: IO ()
+caseDeriveEcdhBadParams = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let privTmpl = ecPrivTmpl ++ [(AttrDerive, ValBool True)]
+      tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong 16)
+        , (AttrToken, ValBool False)
+        ]
+      mech = MechanismId ckm_ECDH1_DERIVE
+  (m1, privH) <- case planGenerateKeyPair defaultRules m0 st ecKeyPairGenMech ecPubTmpl privTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 2
+      h <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      pure (m', h)
+    other -> assertFailure ("EC keypair must plan: " ++ show other) >> undefined
+  case planDerive defaultRules m1 st mech privH (encodeDeriveParams "garbage" [tmpl]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "EC base, garbage params" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("garbage params must not plan: " ++ show other)
+
+-- | KDF handle resolution: a destroyed base handle refuses
+-- OBJECT_HANDLE_INVALID (the oracle's null-base leg).
+caseDeriveKdfBadHandle :: IO ()
+caseDeriveKdfBadHandle = do
+  m0 <- seedModel
+  st <- getSession m0
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong 16)
+        , (AttrToken, ValBool False)
+        ]
+      mech = MechanismId ckm_SHA256_KEY_DERIVATION
+  case planDerive defaultRules m0 st mech (ExternalHandle 99999)
+      (encodeDeriveParams BS.empty [tmpl]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "destroyed base handle" CKR_OBJECT_HANDLE_INVALID code
+    other -> assertFailure ("destroyed handle must not plan: " ++ show other)
 
 casePublishAtomic :: IO ()
 casePublishAtomic = do

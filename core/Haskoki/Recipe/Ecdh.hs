@@ -44,11 +44,13 @@ module Haskoki.Recipe.Ecdh
   , decodeEcdhParams
   , ecdhParamsValid
   , ecdhSecretWidth
+  , ecdhPeerCurve
   ) where
 
 import Data.Bits ((.&.), shiftL, shiftR)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.Text (Text)
 import Data.Word (Word8)
 
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
@@ -130,6 +132,20 @@ ecdhSecretWidth mat = case ecdsaCurveOfDer mat of
   Just "P-384" -> 48
   Just "P-521" -> 66
   _ -> 66
+
+-- | Peer curve for the agreement: the DER OID scan first (SPKI
+-- peers), else the raw uncompressed-point length table (PKCS#11
+-- carries the peer as a bare @0x04 \|\| X \|\| Y@ point with no
+-- OID: 65\/97\/133 bytes pin P-256\/P-384\/P-521). Anything else
+-- is unscannable and refused downstream.
+ecdhPeerCurve :: ByteString -> Maybe Text
+ecdhPeerCurve bs = case ecdsaCurveOfDer bs of
+  Just c -> Just c
+  Nothing
+    | BS.length bs == 65, BS.index bs 0 == 0x04 -> Just "P-256"
+    | BS.length bs == 97, BS.index bs 0 == 0x04 -> Just "P-384"
+    | BS.length bs == 133, BS.index bs 0 == 0x04 -> Just "P-521"
+    | otherwise -> Nothing
 
 -- | Both covered mechanisms with their cofactor flags.
 ecdhRecipes :: [EcdhRecipe]

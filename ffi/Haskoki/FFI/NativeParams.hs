@@ -1,12 +1,14 @@
 {- | Caller-native mechanism structs into the recipe canonical codecs.
 
-The Init planners validate mechanism parameters against the recipe
-canonical codecs ('Haskoki.Recipe.RsaPss', 'Haskoki.Recipe.RsaOaep'):
-big-endian words over small digest tables. Real PKCS#11 callers pass
-native C structs instead (@CK_RSA_PKCS_PSS_PARAMS@,
-@CK_RSA_PKCS_OAEP_PARAMS@): host-order words, real @CKM_*@/@CKG_*@
-ids, and (for OAEP) a label pointer the pure core can never chase.
-'normalizeMechParams' translates at the FFI boundary, where the
+The Init and Derive planners validate mechanism parameters against
+the recipe canonical codecs ('Haskoki.Recipe.RsaPss',
+'Haskoki.Recipe.RsaOaep', 'Haskoki.Recipe.Ecdh'): big-endian words
+over small digest tables. Real PKCS#11 callers pass native C
+structs instead (@CK_RSA_PKCS_PSS_PARAMS@,
+@CK_RSA_PKCS_OAEP_PARAMS@, @CK_ECDH1_DERIVE_PARAMS@): host-order
+words, real @CKM_*@/@CKG_*@/@CKD_*@ ids, and (for OAEP/ECDH) data
+pointers the pure core can never chase. 'normalizeMechParams' and
+'normalizeEcdhParams' translate at the FFI boundary, where the
 caller's memory is still live.
 
 Covered structs (caller-native layout, offsets derived from
@@ -24,6 +26,12 @@ Covered structs (caller-native layout, offsets derived from
   @CKZ_DATA_SPECIFIED@ (0x01); the label chases @pSourceData@ under
   'maxInputBytes' with the 'decodeInputBytes' null conventions
   (null-with-zero is the empty label, null-with-length rejects).
+* ECDH (@CK_ECDH1_DERIVE_PARAMS@: kdf, shared length, shared
+  pointer, public length, public pointer): @kdf@ must be @CKD_NULL@
+  (0x01, the only served selector — every other KDF is a deferred
+  recipe dimension); both byte strings chase under 'maxInputBytes'
+  with the same null conventions, and the triple re-encodes with
+  'encodeEcdhParams' (canonical null-KDF code 0).
 
 Anything unmappable — wrong length, unknown ids, a bad source tag,
 an unreadable label — passes the input bytes through untouched, so
@@ -36,12 +44,15 @@ never parse as mapped native ids.
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.FFI.NativeParams
   ( normalizeMechParams
+  , normalizeEcdhParams
   , pssStructToCanonical
   , oaepStructToCanonical
+  , ecdhStructToCanonical
   , digestStemByCkm
   , mgfStemByCkg
   , pssNativeSize
   , oaepNativeSize
+  , ecdhNativeSize
   ) where
 
 import qualified Data.ByteString as BS
@@ -57,6 +68,7 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peekByteOff, sizeOf)
 
 import Haskoki.FFI.Decode (maxInputBytes)
+import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
 import Haskoki.Registry.Generated (mustGeneratedId)
@@ -78,6 +90,11 @@ pssNativeSize = 3 * wordSize
 -- pointer, one length.
 oaepNativeSize :: Int
 oaepNativeSize = 4 * wordSize + ptrSize
+
+-- | Native @CK_ECDH1_DERIVE_PARAMS@ image size: one KDF word, then
+-- (length, pointer) twice (shared data, peer public key).
+ecdhNativeSize :: Int
+ecdhNativeSize = 3 * wordSize + 2 * ptrSize
 
 -- | Native @CKM_*@ hash ids onto recipe digest stems. Ids come from
 -- the generated vocabulary, so a header drift breaks the build
@@ -120,6 +137,11 @@ mgfStemByCkg = Map.fromList
 ckzDataSpecified :: Word64
 ckzDataSpecified = 0x01
 
+-- | @CKD_NULL@ (@spec/vendor/pkcs11.h:306@): the only served ECDH
+-- KDF selector (canonical code 0).
+ckdNull :: Word64
+ckdNull = 0x01
+
 -- | Pure PSS translation: native (hashAlg, mgf, sLen) words onto the
 -- canonical @pss-params/1@ image. Unknown ids and unrepresentable
 -- salt lengths refuse ('Nothing'); the recipe bounds the rest.
@@ -140,6 +162,17 @@ oaepStructToCanonical hashId mgfId label = do
   m <- Map.lookup mgfId mgfStemByCkg
   Just (encodeOaepParams d m label)
 
+-- | Pure ECDH translation: the native KDF selector plus the chased
+-- shared-data and peer-key bytes onto the canonical
+-- @ecdh-params/1@ image. Only @CKD_NULL@ translates (canonical
+-- code 0); every other selector refuses ('Nothing'). An empty peer
+-- key translates and is refused downstream by the recipe
+-- (invalid parameters, not a malformed struct).
+ecdhStructToCanonical :: Word64 -> ByteString -> ByteString -> Maybe ByteString
+ecdhStructToCanonical kdf shared peer
+  | kdf /= ckdNull = Nothing
+  | otherwise = Just (encodeEcdhParams 0 shared peer)
+
 -- | Chase one bounded byte string from caller memory under the
 -- 'decodeInputBytes' null conventions: zero length never
 -- dereferences, null-with-length and over-bound lengths refuse.
@@ -152,6 +185,23 @@ chaseBytes ptr len
       let cstr :: CStringLen
           cstr = (castPtr ptr, fromIntegral len)
       Just <$> BS.packCStringLen cstr
+
+-- | Normalize one ECDH agreement struct: the native
+-- @CK_ECDH1_DERIVE_PARAMS@ image at @pParams@/@paramsLen@ onto the
+-- canonical @ecdh-params/1@ image. Wrong-sized images, non-null KDF
+-- selectors, and unreadable shared/peer bytes refuse ('Nothing').
+normalizeEcdhParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeEcdhParams pParams paramsLen
+  | paramsLen /= fromIntegral ecdhNativeSize = pure Nothing
+  | otherwise = do
+      CULong kdf <- peekByteOff pParams 0
+      CULong sharedLen <- peekByteOff pParams wordSize
+      pShared <- peekByteOff pParams (2 * wordSize)
+      CULong pubLen <- peekByteOff pParams (2 * wordSize + ptrSize)
+      pPub <- peekByteOff pParams (3 * wordSize + ptrSize)
+      mShared <- chaseBytes pShared sharedLen
+      mPub <- chaseBytes pPub pubLen
+      pure (mShared >>= \shared -> mPub >>= ecdhStructToCanonical kdf shared)
 
 -- | Normalize one call's mechanism parameters: struct mechanisms
 -- translate from the live caller image at @pParams@/@paramsLen@

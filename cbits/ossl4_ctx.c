@@ -531,6 +531,43 @@ static EVP_PKEY *hsk_ossl4_load_pub(OSSL_LIB_CTX *ctx, const char *propq,
     return pkey;
 }
 
+/* Raw SEC1 peer fallback for ECDH: PKCS#11 carries the peer as a
+ * bare point (0x04 || X || Y), not SPKI. Build the peer key from
+ * the private key's group plus the point octets (fromdata checks
+ * on-curve membership). Uncompressed form only; anything else is
+ * NULL. Group name buffer fits every named curve. */
+static EVP_PKEY *hsk_ossl4_load_raw_point(OSSL_LIB_CTX *ctx, const char *propq,
+                                          EVP_PKEY *priv,
+                                          const unsigned char *pt, size_t len)
+{
+    char group[64];
+    size_t grouplen = 0;
+    OSSL_PARAM params[3];
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *peer = NULL;
+
+    if (pt == NULL || len < 3 || pt[0] != 0x04)
+        return NULL;
+    if (!EVP_PKEY_get_utf8_string_param(priv, OSSL_PKEY_PARAM_GROUP_NAME,
+                                        group, sizeof(group), &grouplen))
+        return NULL;
+    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,
+                                                 group, 0);
+    params[1] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
+                                                  (void *)pt, len);
+    params[2] = OSSL_PARAM_construct_end();
+    pctx = EVP_PKEY_CTX_new_from_name(ctx, "EC", propq);
+    if (pctx == NULL)
+        return NULL;
+    if (EVP_PKEY_fromdata_init(pctx) <= 0
+        || EVP_PKEY_fromdata(pctx, &peer, EVP_PKEY_PUBLIC_KEY, params) <= 0) {
+        EVP_PKEY_CTX_free(pctx);
+        return NULL;
+    }
+    EVP_PKEY_CTX_free(pctx);
+    return peer;
+}
+
 /* Curve coordinate size in bytes from an EC key's encoded point
  * (0x04 || X || Y). Returns 1 on success, 0 otherwise. */
 static int hsk_ossl4_ec_coordlen(EVP_PKEY *pkey, size_t *coordlen)
@@ -824,6 +861,12 @@ long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     if (priv == NULL)
         return HSK_OSSL4_ERR_BADKEY;
     peer = hsk_ossl4_load_pub(ctx, propq, peer_der, peer_len);
+    if (peer == NULL) {
+        /* Not SPKI: try the PKCS#11 raw-point form on the
+         * private key's group. */
+        ERR_clear_error();
+        peer = hsk_ossl4_load_raw_point(ctx, propq, priv, peer_der, peer_len);
+    }
     if (peer == NULL) {
         rc = HSK_OSSL4_ERR_BADKEY;
         goto end;

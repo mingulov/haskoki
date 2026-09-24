@@ -63,6 +63,7 @@ import Foreign.Ptr (Ptr, nullPtr)
 
 import qualified Haskoki.FFI.OpenSSL4.Raw as Raw
 import Haskoki.Engine.Backend
+import Haskoki.Recipe.Ecdh (ecdhPeerCurve)
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
 import Haskoki.Types (EngineResourceId (..))
 
@@ -440,7 +441,7 @@ instance CryptoBackend OpenSSL4 where
         mpeer <- resolveKeyBytes env peer
         case mpeer of
           EngineFail err -> pure (EngineFail err)
-          EngineOk peerB -> case (ecdsaCurveOfDer privB, ecdsaCurveOfDer peerB) of
+          EngineOk peerB -> case (ecdsaCurveOfDer privB, ecdhPeerCurve peerB) of
             (Just a, Just b)
               | a == b -> do
                   r <- withForeignPtr (osslEnv env) $ \_ ->
@@ -453,7 +454,7 @@ instance CryptoBackend OpenSSL4 where
               | otherwise -> pure (EngineFail (BackendBadKey "ecdhDerive"
                   "base/peer curve mismatch"))
             _ -> pure (EngineFail (BackendBadKey "ecdhDerive"
-              "EC keys are not DER on P-256/P-384/P-521"))
+              "ECDH keys are not on P-256/P-384/P-521"))
 
   snapshotResource _ _ = pure (Left "unsaveable: OpenSSL4 multipart contexts cannot be serialized")
   restoreResource _ _ = pure (EngineFail (BackendUnsupported "restoreResource" "no saveable resources in engine set"))

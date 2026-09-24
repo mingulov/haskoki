@@ -25,11 +25,14 @@ import Test.Tasty.HUnit (assertEqual, testCase)
 
 import Haskoki.FFI.NativeParams
   ( digestStemByCkm
+  , ecdhNativeSize
   , mgfStemByCkg
+  , normalizeEcdhParams
   , normalizeMechParams
   , oaepNativeSize
   , pssNativeSize
   )
+import Haskoki.Recipe.Ecdh (ecdhParamsValid, ecdhRecipeFor, encodeEcdhParams)
 import Haskoki.Recipe.RsaOaep
   ( encodeOaepParams
   , rsaOaepParamsValid
@@ -164,4 +167,54 @@ spec = testGroup "native mechanism params"
   , testCase "id tables cover the recipe stems" $ do
       assertEqual "ckm table size" 11 (length digestStemByCkm)
       assertEqual "ckg table size" 9 (length mgfStemByCkg)
+  , testCase "ecdh native struct chases shared and peer" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_ECDH1_DERIVE")
+          shared = "shared-info" :: ByteString
+          peer = BS.replicate 65 0x04
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen shared $ \(sp, slen) ->
+        BS.useAsCStringLen peer $ \(pp, plen) ->
+          allocaBytes ecdhNativeSize $ \p -> do
+            pokeByteOff p 0 (CULong 0x01)
+            pokeByteOff p w (CULong (fromIntegral slen))
+            pokeByteOff p (2 * w) (castPtr sp)
+            pokeByteOff p (2 * w + pw) (CULong (fromIntegral plen))
+            pokeByteOff p (3 * w + pw) (castPtr pp)
+            normalizeEcdhParams p (fromIntegral ecdhNativeSize)
+      let want = encodeEcdhParams 0 shared peer
+      assertEqual "canonical ecdh image" (Just want) out
+      case (out, ecdhRecipeFor mid) of
+        (Just canon, Just r) ->
+          assertEqual "recipe accepts" True (ecdhParamsValid r canon)
+        _ -> fail "ecdh recipe or image missing"
+  , testCase "ecdh non-null kdf refuses" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+          peer = BS.replicate 65 0x04
+      out <- BS.useAsCStringLen peer $ \(pp, plen) ->
+        allocaBytes ecdhNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong 0x02)
+          pokeByteOff p w (CULong 0)
+          pokeByteOff p (2 * w) (nullPtr :: Ptr Word8)
+          pokeByteOff p (2 * w + pw) (CULong (fromIntegral plen))
+          pokeByteOff p (3 * w + pw) (castPtr pp)
+          normalizeEcdhParams p (fromIntegral ecdhNativeSize)
+      assertEqual "refused" Nothing out
+  , testCase "ecdh null peer with length refuses" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes ecdhNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 0x01)
+        pokeByteOff p w (CULong 0)
+        pokeByteOff p (2 * w) (nullPtr :: Ptr Word8)
+        pokeByteOff p (2 * w + pw) (CULong 65)
+        pokeByteOff p (3 * w + pw) (nullPtr :: Ptr Word8)
+        normalizeEcdhParams p (fromIntegral ecdhNativeSize)
+      assertEqual "refused" Nothing out
+  , testCase "ecdh short image refuses" $ do
+      out <- allocaBytes 8 $ \p -> do
+        pokeByteOff p 0 (CULong 0x01 :: CULong)
+        normalizeEcdhParams p 8
+      assertEqual "refused" Nothing out
   ]
