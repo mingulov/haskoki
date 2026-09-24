@@ -3,6 +3,8 @@
  * legacy 2.40 + 3.x tables:
  *   - bogus mechanism init is CKR_MECHANISM_INVALID
  *   - NULL mechanism init is CKR_ARGUMENTS_BAD
+ *   - template-count overflow on C_GetAttributeValue is
+ *     CKR_ARGUMENTS_BAD (64-entry bound shared with the pack path)
  *   - final/update with no active op is CKR_OPERATION_NOT_INITIALIZED
  *   - short-buffer final/one-shot legs report CKR_BUFFER_TOO_SMALL
  *     with the required length
@@ -158,6 +160,19 @@ static void write_config(void) {
     /* NULL mechanism */                                                   \
     prv = (T)->C_DigestInit(sess, NULL_PTR);                               \
     CHECKC(prv == CKR_ARGUMENTS_BAD, "%s: NULL init refused", tag);          \
+    /* template-count overflow: huge ulCount over a 1-entry */             \
+    /* template refuses loudly, never reads OOB (oracle probes */          \
+    /* segfaulted pre-bound). */                                           \
+    {                                                                      \
+      CK_ATTRIBUTE one[1];                                                 \
+      CK_BYTE val[8];                                                      \
+      one[0].type = CKA_CLASS;                                             \
+      one[0].pValue = val;                                                 \
+      one[0].ulValueLen = sizeof(val);                                     \
+      prv = (T)->C_GetAttributeValue(sess, 1, one, 0x100000000UL);          \
+      CHECKC(prv == CKR_ARGUMENTS_BAD,                                     \
+             "%s: getattr count overflow refused", tag);                   \
+    }                                                                      \
     /* final/update with no active op */                                   \
     outLen = sizeof(out);                                                  \
     prv = (T)->C_DigestFinal(sess, out, &outLen);                          \

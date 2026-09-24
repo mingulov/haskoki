@@ -39,7 +39,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Word (Word8)
 
@@ -55,7 +55,7 @@ import Haskoki.Attribute
   , payloadSealed
   , shapeMatches
   )
-import Haskoki.Attribute.Generated (generatedTemplateRules)
+import Haskoki.Attribute.Generated (classNameById, generatedTemplateRules)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -326,23 +326,28 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
     ("wrong shape for attribute: " ++ show t)
   Left TemplateIncomplete -> templateReject CKR_TEMPLATE_INCOMPLETE
     "template is missing the class"
-  Right attrs ->
-    let oid = ObjectId (mNextObject model)
-        h = ExternalHandle (mNextHandle model)
-        owner
-          | Map.lookup AttrToken attrs == Just (ValBool True) = Nothing
-          | otherwise = Just (ssId st)
-    in Immediate PreparedCommit
-      { pcCode = CKR_OK
-      , pcDelta = StateDelta
-          [ DeltaCreateObjectFull oid attrs owner (ssSlot st)
-          , DeltaBindHandle h oid
-          ]
-      , pcPersist = []
-      , pcOutputs = [NativeOutput (RegionHandle "object") (encodeHandle h)]
-      , pcReleases = []
-      , pcReasons = ["created object " ++ show oid]
-      }
+  Right attrs
+    | Just (ValULong c) <- Map.lookup AttrClass attrs
+    , isNothing (classNameById c) ->
+        templateReject CKR_TEMPLATE_INCONSISTENT
+          ("unknown object class: " ++ show c)
+    | otherwise ->
+        let oid = ObjectId (mNextObject model)
+            h = ExternalHandle (mNextHandle model)
+            owner
+              | Map.lookup AttrToken attrs == Just (ValBool True) = Nothing
+              | otherwise = Just (ssId st)
+        in Immediate PreparedCommit
+          { pcCode = CKR_OK
+          , pcDelta = StateDelta
+              [ DeltaCreateObjectFull oid attrs owner (ssSlot st)
+              , DeltaBindHandle h oid
+              ]
+          , pcPersist = []
+          , pcOutputs = [NativeOutput (RegionHandle "object") (encodeHandle h)]
+          , pcReleases = []
+          , pcReasons = ["created object " ++ show oid]
+          }
 
 -- | Plan object destruction: the handle must resolve and the
 -- object must be visible to the calling session, then one combined

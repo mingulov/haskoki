@@ -69,6 +69,7 @@ import Haskoki.Operation.KeyManagement
   , ckoPublicKey
   , ckoSecretKey
   , checkKeyTemplate
+  , checkKeyTemplateAny
   , ecKeyPairGenMech
   , hotpKeyGenMech
   , planGenerateKey
@@ -115,6 +116,10 @@ spec = testGroup "Template rules"
   , testCase "validateTemplate refuses wrong shapes" caseWrongShape
   , testCase "mistyped class is inconsistent at keygen" caseMistypedClassKeygen
   , testCase "mistyped class is inconsistent at creation" caseMistypedClassCreate
+  , testCase "classless AES keygen defaults the class" caseClasslessAesKeygen
+  , testCase "classless EC keypair defaults classes" caseClasslessEcKeypair
+  , testCase "classless derive check defaults the class" caseClasslessDeriveCheck
+  , testCase "unknown class value is rejected at creation" caseCreateUnknownClass
   ]
 
 caseClassIds :: IO ()
@@ -471,6 +476,51 @@ caseMistypedClassCreate = do
   -- class is ever allocated.
   case planCreateObject emptyModel testSession [(AttrClass, ValBool True)] of
     Reject rej -> assertEqual "inconsistent code"
+      CKR_TEMPLATE_INCONSISTENT (rejCode rej)
+    Immediate _ -> assertFailure "must reject, committed"
+    Execute _ _ -> assertFailure "must reject, reserved execution"
+
+caseClasslessAesKeygen :: IO ()
+caseClasslessAesKeygen = do
+  -- The mechanism implies the class: AES keygen without CKA_CLASS
+  -- is accepted (oracle fixtures omit it), and the validated
+  -- attributes carry the implied secret-key class.
+  let tmpl = [(AttrValueLen, ValULong 32)]
+  case checkKeyTemplate ckoSecretKey ckkAes tmpl of
+    Right attrs -> assertEqual "implied class"
+      (Just (ValULong ckoSecretKey)) (Map.lookup AttrClass attrs)
+    other -> assertFailure ("must accept, got: " ++ show other)
+  case planGenerateKey defaultRules emptyModel testSession aesKeyGenMech tmpl of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("must plan, got: " ++ show other)
+
+caseClasslessEcKeypair :: IO ()
+caseClasslessEcKeypair = do
+  -- Neither pair template repeats its class; the public curve
+  -- still gates, and the private side inherits it.
+  let pubT = [(AttrEcParams, ValBytes "P-256")]
+      privT = []
+  case planGenerateKeyPair defaultRules emptyModel testSession ecKeyPairGenMech pubT privT of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("must plan, got: " ++ show other)
+
+caseClasslessDeriveCheck :: IO ()
+caseClasslessDeriveCheck = do
+  -- Derivation templates share the defaulting (class implied by
+  -- the derivation context).
+  let tmpl = [(AttrValueLen, ValULong 32)]
+  case checkKeyTemplateAny ckoSecretKey ckkAes tmpl of
+    Right attrs -> assertEqual "implied class"
+      (Just (ValULong ckoSecretKey)) (Map.lookup AttrClass attrs)
+    other -> assertFailure ("must accept, got: " ++ show other)
+
+caseCreateUnknownClass :: IO ()
+caseCreateUnknownClass = do
+  -- 0xDEADBEEF is not an object class: creation refuses with
+  -- INCONSISTENT, the established code for bad template values
+  -- (oracle: invalid-class-value probe accepts any template error).
+  case planCreateObject emptyModel testSession [(AttrClass, ValULong 0xDEADBEEF)] of
+    Reject rej -> assertEqual "value code"
       CKR_TEMPLATE_INCONSISTENT (rejCode rej)
     Immediate _ -> assertFailure "must reject, committed"
     Execute _ _ -> assertFailure "must reject, reserved execution"

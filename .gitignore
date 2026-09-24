@@ -20,3 +20,6 @@ __pycache__/
 .DS_Store
 dist-release/
 dist-release-evidence/
+.pkcs11-check-isolation-state.json
+..pkcs11-check-isolation-state.json.report-records/
+core.*

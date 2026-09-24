@@ -803,7 +803,7 @@ caseDeriveInvalidExtra = withSynth $ \answer -> do
   st <- getSession m0
   (m1, baseH) <- deriveBase answer m0 st
   let before = Map.size (mObjects m1)
-      badClass = [(AttrKeyType, ValULong ckkGenericSecret), (AttrValueLen, ValULong 16)]
+      badClass = [(AttrClass, ValULong ckoPublicKey), (AttrKeyType, ValULong ckkGenericSecret), (AttrValueLen, ValULong 16)]
       badLen =
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrKeyType, ValULong ckkGenericSecret)
@@ -813,7 +813,7 @@ caseDeriveInvalidExtra = withSynth $ \answer -> do
   case planDerive defaultRules m1 st hkdfDeriveMech baseH
       (encodeDeriveParams "probe" [childTmpl 32, badClass]) of
     KeyDenied (KeyDeny code _) ->
-      assertEqual "missing class code" CKR_TEMPLATE_INCOMPLETE code
+      assertEqual "wrong class code" CKR_TEMPLATE_INCONSISTENT code
     other -> assertFailure ("bad additional template must deny, got: " ++ show other)
   -- An invalid THIRD template denies the whole derive.
   case planDerive defaultRules m1 st hkdfDeriveMech baseH

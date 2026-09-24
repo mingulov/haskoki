@@ -339,9 +339,12 @@ caseKeygenRefuse = do
   assertEqual "missing length incomplete" CKR_TEMPLATE_INCOMPLETE =<< denyCode
     (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech
       (filter ((/= AttrValueLen) . fst) (hotpTmpl 20)))
-  assertEqual "missing class incomplete" CKR_TEMPLATE_INCOMPLETE =<< denyCode
-    (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech
-      (filter ((/= AttrClass) . fst) (hotpTmpl 20)))
+  -- A missing class defaults to the mechanism's class (no longer
+  -- incomplete); the classless HOTP template plans.
+  case planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech
+      (filter ((/= AttrClass) . fst) (hotpTmpl 20)) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("classless HOTP must plan, got: " ++ show other)
   assertEqual "HOTP sign mech is not keygen" CKR_MECHANISM_INVALID =<< denyCode
     (planGenerateKey defaultRules emptyModel testSession hotpMech (hotpTmpl 20))
   assertEqual "unknown mech is not keygen" CKR_MECHANISM_INVALID =<< denyCode

@@ -303,6 +303,14 @@ written-at-the-time pointers.
   bundle outside the repo; the release job aligns the checkout
   ownership with the image user so the bind-mounted build can
   write `dist-newstyle`.
+- External-oracle fixes from the local `pkcs11-check==0.2.0` fast
+  lane (unreleased): `C_GetAttributeValue` refuses template counts
+  above the 64-entry bound instead of reading out of bounds
+  (oracle segfault probes; pinned by a `consumer_errors` probe);
+  keygen/keypair/derive/unwrap templates default a missing
+  `CKA_CLASS` to the mechanism-implied class (classless oracle
+  fixtures now plan; two contract pins updated); creation
+  rejects unknown class ids as inconsistent.
 
 ### Not claimed
 

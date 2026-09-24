@@ -516,15 +516,30 @@ internal why = Reject Rejection
 -- Shared template checks
 -- ---------------------------------------------------------------------------
 
+-- | Default a missing template class to the mechanism-implied class.
+-- Keygen, keypair, derive, and unwrap templates need not repeat the
+-- class the mechanism determines (standard practice: oracle fixtures
+-- omit it); a present class must still match, and wrong shapes
+-- still refuse before this default applies. The stored object
+-- always carries the class either way.
+ensureTemplateClass
+  :: Word64 -> [(AttributeType, AttributeValue)]
+  -> [(AttributeType, AttributeValue)]
+ensureTemplateClass wantClass tmpl
+  | any ((== AttrClass) . fst) tmpl = tmpl
+  | otherwise = (AttrClass, ValULong wantClass) : tmpl
+
 -- | Check one key template against its expected class and key type:
--- contradictions reject, a missing class is incomplete, a class that
--- is present but wrong is inconsistent, then the template rule
--- for the @(class, key-type)@ context enforces required/forbidden
--- presence, and a missing key type defaults to the mechanism's key.
+-- contradictions reject, a missing class defaults to the
+-- mechanism-implied class, a class that is present but wrong is
+-- inconsistent, then the template rule for the @(class, key-type)@
+-- context enforces required/forbidden presence, and a missing key
+-- type defaults to the mechanism's key.
 checkKeyTemplate
   :: Word64 -> Word64 -> [(AttributeType, AttributeValue)]
   -> Either KeyDeny (Map AttributeType AttributeValue)
-checkKeyTemplate wantClass wantKey tmpl = case validateTemplate tmpl of
+checkKeyTemplate wantClass wantKey tmpl =
+  case validateTemplate (ensureTemplateClass wantClass tmpl) of
   Left (TemplateContradiction t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
     ("contradictory attribute: " ++ show t))
   Left (TemplateWrongType t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
@@ -569,15 +584,16 @@ applyRules wantClass wantKey attrs =
     _ -> Right ()
 
 -- | Check one key template against its expected class with any key
--- type: contradictions reject, a missing class is incomplete, a
--- class that is present but wrong is inconsistent, and a missing
--- key type defaults to the caller's default. Derivation templates
--- use this (derived keys span key types); generation and KEM use
--- the strict 'checkKeyTemplate'.
+-- type: contradictions reject, a missing class defaults to the
+-- mechanism-implied class, a class that is present but wrong is
+-- inconsistent, and a missing key type defaults to the caller's
+-- default. Derivation templates use this (derived keys span key
+-- types); generation and KEM use the strict 'checkKeyTemplate'.
 checkKeyTemplateAny
   :: Word64 -> Word64 -> [(AttributeType, AttributeValue)]
   -> Either KeyDeny (Map AttributeType AttributeValue)
-checkKeyTemplateAny wantClass defaultKey tmpl = case validateTemplate tmpl of
+checkKeyTemplateAny wantClass defaultKey tmpl =
+  case validateTemplate (ensureTemplateClass wantClass tmpl) of
   Left (TemplateContradiction t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
     ("contradictory attribute: " ++ show t))
   Left (TemplateWrongType t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT

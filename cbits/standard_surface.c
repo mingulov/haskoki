@@ -809,6 +809,13 @@ CK_RV std_GetAttributeValue(CK_SESSION_HANDLE hSession,
   if (ulCount > 0 && pTemplate == NULL_PTR) {
     return CKR_ARGUMENTS_BAD;
   }
+  /* Same template-entry bound as the pack path (haskoki_std_pack_template):
+   * the per-attribute loop below dereferences pTemplate[i], so an
+   * unbounded count reads out of bounds (oracle: template_count
+   * overflow probes segfaulted). Refuse loudly, never truncate. */
+  if (ulCount > HASKOKI_STD_TEMPLATE_MAX_ATTRS) {
+    return CKR_ARGUMENTS_BAD;
+  }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
     return lr;
