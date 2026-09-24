@@ -42,7 +42,7 @@ table by @CKM_*@ name; no hand-typed numerics):
 * ECDSA runs the recipe 'SigSpec' ('ecdsaSpecFor'): the mechanism
   binds the digest (@CKM_ECDSA@ is the raw row — the input is signed
   directly, no hashing), the parameters select the signature
-  encoding (@"RAW"@, @"DER"@, or empty for the DER default), and the
+  encoding (@"RAW"@, @"DER"@, or empty for the RAW default), and the
   curve label is a dispatch hint from the DER key's curve OID
   ('ecCurveOfKey'), defaulting to P-256 for unscannable keys; key
   shape is the backend's call (the RSA precedent), so a covered

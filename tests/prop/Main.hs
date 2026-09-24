@@ -13,6 +13,7 @@ import qualified OracleProps
 import qualified SnapshotProps
 import qualified StreamProps
 import qualified ULongProps
+import qualified WrapProps
 import Gen (propCases)
 
 main :: IO ()
@@ -32,4 +33,5 @@ main = do
       , NamespaceProps.spec count
       , OracleProps.spec count
       , ULongProps.spec count
+      , WrapProps.spec count
       ]

@@ -3,8 +3,10 @@
 Ten header mechanisms share the encoding parameter shape —
 @sig-encoding\/1@: @"RAW"@, @"DER"@, or empty (an engine
 convention selecting the signature encoding; empty defaults to
-DER). Nine rows bind a digest (hash-and-sign); @CKM_ECDSA@ is the
-raw row (the input is signed directly, no hashing).
+RAW — PKCS#11 ECDSA mechanisms take no parameters and emit the
+raw r||s concatenation). Nine rows bind a digest (hash-and-sign);
+@CKM_ECDSA@ is the raw row (the input is signed directly, no
+hashing).
 
 This module owns the group's canonical codec, parameter
 validation, digest bindings, and mechanism table. Pure core only.
@@ -58,7 +60,7 @@ data EcdsaRecipe = EcdsaRecipe
   } deriving (Eq, Show)
 
 -- | The group's canonical parameter codec: the signature encoding
--- selection (@RAW@, @DER@, or empty for the DER default).
+-- selection (@RAW@, @DER@, or empty for the RAW default).
 ecdsaCodec :: ParameterCodec
 ecdsaCodec = ParameterCodec "sig-encoding" 1
 
@@ -66,15 +68,17 @@ ecdsaCodec = ParameterCodec "sig-encoding" 1
 ecdsaCodecFor :: EcdsaRecipe -> ParameterCodec
 ecdsaCodecFor _ = ecdsaCodec
 
--- | Decode the encoding selection (empty defaults to @DER@).
+-- | Decode the encoding selection (empty defaults to @RAW@: PKCS#11
+-- ECDSA mechanisms take no parameters, and the standard signature
+-- shape is the raw r||s concatenation).
 ecdsaEncodingOf :: ByteString -> Maybe Text
 ecdsaEncodingOf params
   | params == "RAW" = Just "RAW"
   | params == "DER" = Just "DER"
-  | params == "" = Just "DER"
+  | params == "" = Just "RAW"
   | otherwise = Nothing
 
--- | ECDSA parameter validation: @RAW@, @DER@, or empty only.
+-- | ECDSA parameter validation: @RAW@, @DER@, or empty (RAW) only.
 ecdsaParamsValid :: EcdsaRecipe -> ByteString -> Bool
 ecdsaParamsValid _ params = case ecdsaEncodingOf params of
   Just _ -> True

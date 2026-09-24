@@ -3,7 +3,7 @@
 The ECDSA group: 10 header mechanisms sharing the encoding
 parameter shape — @sig-encoding\/1@: @"RAW"@, @"DER"@, or empty
 (our engine convention selecting the signature encoding; empty
-defaults to DER). Nine rows bind a digest (hash-and-sign);
+defaults to RAW per PKCS#11). Nine rows bind a digest (hash-and-sign);
 @CKM_ECDSA@ is the raw row (the input is signed directly, no
 hashing — the old driver hashed under this id, which this
 recipe corrects).
@@ -27,6 +27,7 @@ module RecipeEcdsaSpec (spec) where
 
 import qualified Data.ByteString as BS
 import Data.Char (digitToInt, isHexDigit)
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Test.Tasty (TestTree, testGroup)
@@ -149,7 +150,7 @@ caseCodec = do
     ) groupShape
   assertEqual "RAW encodes" (Just "RAW") (ecdsaEncodingOf "RAW")
   assertEqual "DER encodes" (Just "DER") (ecdsaEncodingOf "DER")
-  assertEqual "empty defaults DER" (Just "DER") (ecdsaEncodingOf BS.empty)
+  assertEqual "empty defaults RAW" (Just "RAW") (ecdsaEncodingOf BS.empty)
   assertEqual "PEM refused" Nothing (ecdsaEncodingOf "PEM")
   assertEqual "lowercase refused" Nothing (ecdsaEncodingOf "der")
 
@@ -177,6 +178,24 @@ caseParams = do
       (ecdsaParamsValid rr p)) ["RAW", "DER", BS.empty]
     assertBool ("refused " ++ T.unpack suffix)
       (not (ecdsaParamsValid rr "PEM"))
+    ) groupShape
+  -- Malformed sweep: validity agrees with the decoder on every
+  -- input (the two entry points cannot drift apart).
+  let bogus = ["raw", "Raw", " RAW", "RAW ", "DER ", "D", "R", "RA",
+               "DERX", "RAWX", "DER\0", "RAW\0", "PEM", "der", "ber",
+               BS.replicate 64 0x41, BS.singleton 0x00]
+  mapM_ (\(suffix, _, _) -> do
+    let rr = recipeOf (mechName suffix)
+    mapM_ (\p -> do
+      assertBool ("bogus refused " ++ T.unpack suffix ++ "/" ++ show p)
+        (not (ecdsaParamsValid rr p))
+      assertEqual ("validity agrees " ++ T.unpack suffix ++ "/" ++ show p)
+        (isJust (ecdsaEncodingOf p)) (ecdsaParamsValid rr p)
+      ) bogus
+    mapM_ (\p ->
+      assertEqual ("validity agrees " ++ T.unpack suffix ++ "/" ++ show p)
+        (isJust (ecdsaEncodingOf p)) (ecdsaParamsValid rr p)
+      ) ["RAW", "DER", BS.empty]
     ) groupShape
 
 testSession :: SessionState
@@ -257,8 +276,8 @@ caseDriverMap = do
   assertEqual "sha256 DER P-256"
     (Just (SigECDSA (EcSpec "P-256" "DER") (Just D_SHA256)))
     (ecdsaSpecFor sha256 "DER" p256Pub)
-  assertEqual "sha256 empty defaults DER"
-    (Just (SigECDSA (EcSpec "P-256" "DER") (Just D_SHA256)))
+  assertEqual "sha256 empty defaults RAW"
+    (Just (SigECDSA (EcSpec "P-256" "RAW") (Just D_SHA256)))
     (ecdsaSpecFor sha256 BS.empty p256Priv)
   assertEqual "sha256 RAW P-384"
     (Just (SigECDSA (EcSpec "P-384" "RAW") (Just D_SHA256)))
@@ -279,11 +298,16 @@ caseDriverMap = do
   -- Whole-table agreement: every (recipe, encoding, curve) triple maps.
   mapM_ (\(suffix, _stem, alg) -> do
     let mech = MechanismId (mustGeneratedId (mechName suffix))
-    mapM_ (\(key, curve) ->
+    mapM_ (\(key, curve) -> do
       mapM_ (\enc ->
         assertEqual ("map " ++ T.unpack suffix ++ "/" ++ curve ++ "/" ++ enc)
           (Just (SigECDSA (EcSpec curve enc) alg))
           (ecdsaSpecFor mech (if enc == "DER" then "DER" else "RAW") key)
         ) ["DER", "RAW"]
+      -- Empty parameters (the only shape PKCS#11 callers send)
+      -- default to RAW on every row and curve.
+      assertEqual ("empty defaults RAW " ++ T.unpack suffix ++ "/" ++ curve)
+        (Just (SigECDSA (EcSpec curve "RAW") alg))
+        (ecdsaSpecFor mech BS.empty key)
       ) [(p256Pub, "P-256"), (p384Pub, "P-384"), (p521Pub, "P-521")]
     ) groupShape

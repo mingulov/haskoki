@@ -64,6 +64,7 @@ import Haskoki.Operation.KeyManagement
   , aesKeyGenMech
   , ckkAes
   , ckkEc
+  , ckkGenericSecret
   , ckkHotp
   , ckoPrivateKey
   , ckoPublicKey
@@ -119,6 +120,7 @@ spec = testGroup "Template rules"
   , testCase "classless AES keygen defaults the class" caseClasslessAesKeygen
   , testCase "classless EC keypair defaults classes" caseClasslessEcKeypair
   , testCase "classless derive check defaults the class" caseClasslessDeriveCheck
+  , testCase "classless unwrap check defaults the class" caseClasslessUnwrapCheck
   , testCase "unknown class value is rejected at creation" caseCreateUnknownClass
   ]
 
@@ -510,6 +512,18 @@ caseClasslessDeriveCheck = do
   -- the derivation context).
   let tmpl = [(AttrValueLen, ValULong 32)]
   case checkKeyTemplateAny ckoSecretKey ckkAes tmpl of
+    Right attrs -> assertEqual "implied class"
+      (Just (ValULong ckoSecretKey)) (Map.lookup AttrClass attrs)
+    other -> assertFailure ("must accept, got: " ++ show other)
+
+caseClasslessUnwrapCheck :: IO ()
+caseClasslessUnwrapCheck = do
+  -- Unwrap templates share the defaulting: the secret class is
+  -- implied by the unwrap context (the key type stays mandatory —
+  -- the blob carries no header — enforced by the planner before
+  -- this check runs).
+  let tmpl = [(AttrKeyType, ValULong ckkAes), (AttrToken, ValBool False)]
+  case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
     Right attrs -> assertEqual "implied class"
       (Just (ValULong ckoSecretKey)) (Map.lookup AttrClass attrs)
     other -> assertFailure ("must accept, got: " ++ show other)

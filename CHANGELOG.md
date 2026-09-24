@@ -311,15 +311,27 @@ written-at-the-time pointers.
   `CKA_CLASS` to the mechanism-implied class (classless oracle
   fixtures now plan; two contract pins updated); creation
   rejects unknown class ids as inconsistent.
+- External-oracle round 2 from the local `pkcs11-check==0.2.0` fast
+  lane (unreleased): ECDSA signatures default to the raw r||s
+  concatenation when the mechanism carries no parameters (PKCS#11;
+  the old DER default read as a nonce-bias SECURITY finding and
+  broke OpenSSL cross-verification) — explicit `"DER"` still
+  selects DER; AES-CBC wrap/unwrap refuse a non-AES wrapping key
+  with `CKR_WRAPPING_KEY_TYPE_INCONSISTENT` /
+  `CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT` instead of coercing
+  foreign key material (new `ReturnCode` constructors plus
+  `CKR_KEY_TYPE_INCONSISTENT` for the follow-up init-path
+  matrix); consumer pins move to raw with an explicit-DER case.
 
 ### Not claimed
 
 - SunPKCS11 / OpenSSL provider not attempted (no JVM/provider in
   the toolchain image); token objects never reach sqlite (no
   store-write call site); stale `token.db.lock` bricks sqlite init
-  after unclean exit; 141 triaged `pkcs11-check` findings await
-  engine/frame follow-ups (`C_GetAttributeValue` subset, template
-  attrs, key-type policy).
+  after unclean exit; remaining `pkcs11-check` findings are triaged
+  in `docs/pkcs11-oracle-triage.md` (130 fast-lane failures topped by
+  the Init key-type matrix gap; KAT blocked on key-material
+  attribute coverage).
 
 ## [0.3.0.0] - 2026-09-21
 

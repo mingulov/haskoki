@@ -844,23 +844,23 @@ int main(int argc, char **argv) {
     CHECKC(rv == CKR_OPERATION_ACTIVE, "second SignInit is ACTIVE");
     sigLen = 0;
     rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, NULL_PTR, &sigLen);
-    CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72,
-           "sign size query reports DER length");
+    CHECKC(rv == CKR_OK && sigLen == 64,
+           "sign size query reports raw length");
     /* The query leaves the op live: the follow-up one-shot signs. */
     sigLen = sizeof(sig);
     rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, sig, &sigLen);
-    CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72 && sig[0] == 0x30,
-           "one-shot after query yields DER bytes");
+    CHECKC(rv == CKR_OK && sigLen == 64,
+           "one-shot after query yields raw bytes");
     rv = f->C_SignInit(ssess, &sm, priv);
     CHECKC(rv == CKR_OK, "re-init after one-shot");
     sigLen = 10;
     rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, sig, &sigLen);
-    CHECKC(rv == CKR_BUFFER_TOO_SMALL && sigLen > 64 && sigLen <= 72,
-           "short sign buffer reports DER length");
+    CHECKC(rv == CKR_BUFFER_TOO_SMALL && sigLen == 64,
+           "short sign buffer reports raw length");
     sigLen = sizeof(sig);
     rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, sig, &sigLen);
-    CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72 && sig[0] == 0x30,
-           "one-shot sign yields DER bytes");
+    CHECKC(rv == CKR_OK && sigLen == 64,
+           "one-shot sign yields raw bytes");
     /* ECDSA verify one-shot + tamper. */
     rv = f->C_Verify(ssess, (CK_BYTE_PTR) "abc", 3, sig, sigLen);
     CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
@@ -877,6 +877,20 @@ int main(int argc, char **argv) {
     sig[((size_t) sigLen) - 1] ^= 0xFF;
     rv = f->C_Verify(ssess, (CK_BYTE_PTR) "abc", 3, sig, sigLen);
     CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered ECDSA refused");
+    /* Explicit DER encoding stays available on request. */
+    {
+      CK_MECHANISM dsm;
+      CK_BYTE derp[] = { 'D', 'E', 'R' };
+      dsm.mechanism = CKM_ECDSA_SHA256;
+      dsm.pParameter = derp;
+      dsm.ulParameterLen = sizeof(derp);
+      rv = f->C_SignInit(ssess, &dsm, priv);
+      CHECKC(rv == CKR_OK, "DER SignInit ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72 && sig[0] == 0x30,
+             "explicit DER yields DER bytes");
+    }
     /* ECDSA multipart. */
     rv = f->C_SignUpdate(ssess, (CK_BYTE_PTR) "a", 1);
     CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
@@ -892,8 +906,8 @@ int main(int argc, char **argv) {
     CHECKC(rv == CKR_OK, "multipart sign update two ok");
     sigLen = sizeof(sig);
     rv = f->C_SignFinal(ssess, sig, &sigLen);
-    CHECKC(rv == CKR_OK && sigLen > 64 && sig[0] == 0x30,
-           "multipart sign final yields DER");
+    CHECKC(rv == CKR_OK && sigLen == 64,
+           "multipart sign final yields raw");
     /* Final size query preserves the staged signature. */
     rv = f->C_SignInit(ssess, &sm, priv);
     CHECKC(rv == CKR_OK, "sign init for final-query");
@@ -901,12 +915,12 @@ int main(int argc, char **argv) {
     CHECKC(rv == CKR_OK, "sign update for final-query");
     sigLen = 0;
     rv = f->C_SignFinal(ssess, NULL_PTR, &sigLen);
-    CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72,
-           "sign final query reports DER length");
+    CHECKC(rv == CKR_OK && sigLen == 64,
+           "sign final query reports raw length");
     sigLen = sizeof(sig);
     rv = f->C_SignFinal(ssess, sig, &sigLen);
-    CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72 && sig[0] == 0x30,
-           "sign final after query yields DER bytes");
+    CHECKC(rv == CKR_OK && sigLen == 64,
+           "sign final after query yields raw bytes");
     rv = f->C_VerifyUpdate(ssess, (CK_BYTE_PTR) "a", 1);
     CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
            "verify update without init refused");
@@ -1343,6 +1357,77 @@ int main(int argc, char **argv) {
     rv = f->C_WrapKey(wsess, &wm, targetKey, sealedKey, probe, &probeLen);
     CHECKC(rv == CKR_KEY_FUNCTION_NOT_PERMITTED,
            "wrap without WRAP mark refused");
+    /* Wrap/unwrap with a non-AES key is a key-type refusal. */
+    {
+      static const CK_BYTE wp256oid[] = {
+        0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07
+      };
+      CK_OBJECT_CLASS wpubcls = CKO_PUBLIC_KEY;
+      CK_OBJECT_CLASS wprvcls = CKO_PRIVATE_KEY;
+      CK_KEY_TYPE wekt = CKK_EC;
+      CK_ATTRIBUTE wpubT[] = {
+        { CKA_CLASS, &wpubcls, sizeof(wpubcls) },
+        { CKA_KEY_TYPE, &wekt, sizeof(wekt) },
+        { CKA_EC_PARAMS, (CK_VOID_PTR) wp256oid, sizeof(wp256oid) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE wprivT[] = {
+        { CKA_CLASS, &wprvcls, sizeof(wprvcls) },
+        { CKA_KEY_TYPE, &wekt, sizeof(wekt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_WRAP, &bTrue, sizeof(bTrue) },
+        { CKA_UNWRAP, &bTrue, sizeof(bTrue) }
+      };
+      CK_MECHANISM wkgm;
+      CK_OBJECT_HANDLE wecPub = 0, wecPriv = 0;
+      wkgm.mechanism = CKM_EC_KEY_PAIR_GEN;
+      wkgm.pParameter = NULL_PTR;
+      wkgm.ulParameterLen = 0;
+      rv = f->C_GenerateKeyPair(wsess, &wkgm, wpubT, 5, wprivT, 6,
+                                &wecPub, &wecPriv);
+      CHECKC(rv == CKR_OK && wecPub != 0 && wecPriv != 0,
+             "wrap EC pair mints");
+      probeLen = sizeof(probe);
+      rv = f->C_WrapKey(wsess, &wm, wecPriv, targetKey, probe, &probeLen);
+      CHECKC(rv == CKR_WRAPPING_KEY_TYPE_INCONSISTENT,
+             "wrap with EC key refused");
+      {
+        CK_OBJECT_HANDLE badw = 0;
+        CK_ATTRIBUTE dwtmpl[] = {
+          { CKA_CLASS, &ckcls, sizeof(ckcls) },
+          { CKA_KEY_TYPE, &akt, sizeof(akt) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+        };
+        rv = f->C_UnwrapKey(wsess, &um, wecPriv, blob, blobLen,
+                            dwtmpl, 3, &badw);
+        CHECKC(rv == CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT,
+               "unwrap with EC key refused");
+        CHECKC(badw == 0, "refused unwrap writes no handle");
+      }
+      /* Generic-secret import (the oracle's negotiated wrong-key
+       * setup) refuses the same way. */
+      {
+        CK_BYTE gmat[32];
+        CK_OBJECT_HANDLE genKey = 0;
+        CK_ATTRIBUTE gtmpl[] = {
+          { CKA_CLASS, &ckcls, sizeof(ckcls) },
+          { CKA_KEY_TYPE, &gkt, sizeof(gkt) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+          { CKA_WRAP, &bTrue, sizeof(bTrue) },
+          { CKA_UNWRAP, &bTrue, sizeof(bTrue) },
+          { CKA_VALUE, gmat, sizeof(gmat) }
+        };
+        memset(gmat, 0x42, sizeof(gmat));
+        rv = f->C_CreateObject(wsess, gtmpl, 6, &genKey);
+        CHECKC(rv == CKR_OK && genKey != 0, "generic key imports");
+        probeLen = sizeof(probe);
+        rv = f->C_WrapKey(wsess, &wm, genKey, targetKey, probe, &probeLen);
+        CHECKC(rv == CKR_WRAPPING_KEY_TYPE_INCONSISTENT,
+               "wrap with generic key refused");
+      }
+    }
     /* Unwrap into a working key. */
     {
       CK_ATTRIBUTE dtmpl[] = {

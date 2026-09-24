@@ -4,7 +4,8 @@
  *   - bogus mechanism init is CKR_MECHANISM_INVALID
  *   - NULL mechanism init is CKR_ARGUMENTS_BAD
  *   - template-count overflow on C_GetAttributeValue is
- *     CKR_ARGUMENTS_BAD (64-entry bound shared with the pack path)
+ *     CKR_ARGUMENTS_BAD (64-entry bound shared with the pack path);
+ *     a real 64-entry template over a live key still processes
  *   - final/update with no active op is CKR_OPERATION_NOT_INITIALIZED
  *   - short-buffer final/one-shot legs report CKR_BUFFER_TOO_SMALL
  *     with the required length
@@ -172,6 +173,51 @@ static void write_config(void) {
       prv = (T)->C_GetAttributeValue(sess, 1, one, 0x100000000UL);          \
       CHECKC(prv == CKR_ARGUMENTS_BAD,                                     \
              "%s: getattr count overflow refused", tag);                   \
+    }                                                                      \
+    /* boundary variant: 65 entries (one past the 64-entry pack */          \
+    /* bound) over a 1-entry template refuses the same way. */             \
+    {                                                                      \
+      CK_ATTRIBUTE one[1];                                                 \
+      CK_BYTE val[8];                                                      \
+      one[0].type = CKA_CLASS;                                             \
+      one[0].pValue = val;                                                 \
+      one[0].ulValueLen = sizeof(val);                                     \
+      prv = (T)->C_GetAttributeValue(sess, 1, one, 65);                     \
+      CHECKC(prv == CKR_ARGUMENTS_BAD,                                     \
+             "%s: getattr count 65 refused", tag);                         \
+    }                                                                      \
+    /* boundary control: a real 64-entry template over a live key          \
+     * processes (the bound refuses 65+, never 64). */                     \
+    {                                                                      \
+      CK_OBJECT_CLASS bkcls = CKO_SECRET_KEY;                              \
+      CK_KEY_TYPE bkkt = CKK_AES;                                          \
+      CK_ULONG bkvlen = 16;                                                \
+      CK_BBOOL bkfalse = CK_FALSE;                                         \
+      CK_OBJECT_HANDLE bkobj = 0;                                          \
+      CK_ATTRIBUTE bktmpl[] = {                                            \
+        { CKA_CLASS, &bkcls, sizeof(bkcls) },                              \
+        { CKA_KEY_TYPE, &bkkt, sizeof(bkkt) },                             \
+        { CKA_VALUE_LEN, &bkvlen, sizeof(bkvlen) },                        \
+        { CKA_TOKEN, &bkfalse, sizeof(bkfalse) },                          \
+      };                                                                   \
+      CK_MECHANISM bkgm;                                                   \
+      CK_ATTRIBUTE bq[64];                                                 \
+      CK_BYTE bqv[64][16];                                                 \
+      int bqi;                                                             \
+      bkgm.mechanism = CKM_AES_KEY_GEN;                                    \
+      bkgm.pParameter = NULL_PTR;                                          \
+      bkgm.ulParameterLen = 0;                                             \
+      prv = (T)->C_GenerateKey(sess, &bkgm, bktmpl, 4, &bkobj);            \
+      CHECKC(prv == CKR_OK && bkobj != 0,                                  \
+             "%s: bound-probe key mints", tag);                            \
+      for (bqi = 0; bqi < 64; bqi++) {                                     \
+        bq[bqi].type = CKA_CLASS;                                          \
+        bq[bqi].pValue = bqv[bqi];                                         \
+        bq[bqi].ulValueLen = sizeof(bqv[bqi]);                             \
+      }                                                                    \
+      prv = (T)->C_GetAttributeValue(sess, bkobj, bq, 64);                 \
+      CHECKC(prv == CKR_OK,                                                \
+             "%s: getattr count 64 processes", tag);                       \
     }                                                                      \
     /* final/update with no active op */                                   \
     outLen = sizeof(out);                                                  \

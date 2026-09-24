@@ -974,7 +974,10 @@ planGenerateKey rules model st mech tmpl =
 -- ---------------------------------------------------------------------------
 
 -- | Resolve a wrapping key: the handle resolves to a visible object
--- carrying the required usage mark and stored material.
+-- carrying the required usage mark and stored material. Every
+-- caller is an AES-CBC wrap/unwrap path, so the key must be an AES
+-- secret key; anything else (EC/RSA halves, generic secrets) is a
+-- key-type refusal, never a silent coercion of foreign material.
 withWrappingKey
   :: Model -> SessionState -> AttributeType -> String -> ExternalHandle
   -> Either KeyDeny (ObjectId, ByteString)
@@ -987,6 +990,12 @@ withWrappingKey model st usage label h = case resolveHandle model h of
     | Map.lookup usage (osAttrs ost) /= Just (ValBool True) ->
         Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
           ("wrapping key does not permit " ++ label))
+    | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong ckoSecretKey) ||
+      Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkAes) ->
+        Left (KeyDeny (if usage == AttrWrap
+                        then CKR_WRAPPING_KEY_TYPE_INCONSISTENT
+                        else CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT)
+          ("wrapping key is not an AES secret key: " ++ label))
     | otherwise -> case keyBytesOf ost of
         Just mat -> Right (osId ost, mat)
         Nothing -> Left (KeyDeny CKR_GENERAL_ERROR

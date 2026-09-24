@@ -155,6 +155,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Decaps recovers the secret as one handle" caseKemDecaps
   , testCase "KEM key/ciphertext mismatches fail closed" caseKemMismatch
   , testCase "Wrap key/parameter mismatches fail closed" caseWrapMismatch
+  , testCase "Wrap/unwrap with a non-AES key is a key-type refusal" caseWrapKeyTypeGate
   , testCase "Auth-unwrap AAD/tag mismatches fail closed" caseAuthWrapMismatch
   , testCase "Init reads usage from the key object" caseInitFromObject
   , testCase "Usage attributes land on unwrap/derive children" caseAttrsLand
@@ -980,6 +981,80 @@ caseWrapMismatch = withSynth $ \answer -> do
       assertEqual "bare code" CKR_KEY_NOT_WRAPPABLE code
     other -> assertFailure ("bare wrap must deny, got: " ++ show other)
   assertEqual "zero objects from denies" (before + 3) (Map.size (mObjects m5))
+
+caseWrapKeyTypeGate :: IO ()
+caseWrapKeyTypeGate = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  -- An EC private key carrying the wrap/unwrap marks: the marks
+  -- pass, but the key type must refuse (AES-CBC wrap takes an AES
+  -- secret key only — never foreign key material).
+  let ecWrapTmpl = ecPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
+  (m1, privH) <- case planGenerateKeyPair defaultRules m0 st ecKeyPairGenMech ecPubTmpl ecWrapTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 2
+      h <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      pure (m', h)
+    other -> assertFailure ("EC keypair plan is not an effect: " ++ show other) >> undefined
+  (m2, targetH) <- genAesKey answer m1 st (aesTmpl 16)
+  case planWrapKey m2 st aesCbcMech iv16 privH targetH (IntentBuffer 64) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "wrap key-type code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("EC wrap must deny, got: " ++ show other)
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrToken, ValBool False)
+        ]
+  case planUnwrapKey defaultRules m2 st aesCbcMech iv16 privH (BS.replicate 32 0) tmpl of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "unwrap key-type code" CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("EC unwrap must deny, got: " ++ show other)
+  -- A generic-secret key with the marks (the oracle's exact
+  -- wrong-key setup: negotiated import, not keygen) refuses the
+  -- same way.
+  (m3, genH) <- plantKey m2 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrWrap, ValBool True)
+    , (AttrUnwrap, ValBool True)
+    ]
+    (BS.replicate 32 0x42)
+  case planWrapKey m3 st aesCbcMech iv16 genH targetH (IntentBuffer 64) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "generic wrap key-type code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("generic wrap must deny, got: " ++ show other)
+  case planUnwrapKey defaultRules m3 st aesCbcMech iv16 genH (BS.replicate 32 0) tmpl of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "generic unwrap key-type code" CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("generic unwrap must deny, got: " ++ show other)
+  -- An RSA private half refuses too (no silent use of
+  -- asymmetric material as a block-cipher key).
+  (m4, rsaH) <- plantKey m3 st
+    [ (AttrClass, ValULong ckoPrivateKey)
+    , (AttrKeyType, ValULong ckkRsa)
+    , (AttrToken, ValBool False)
+    , (AttrWrap, ValBool True)
+    ]
+    (BS.replicate 32 0x43)
+  case planWrapKey m4 st aesCbcMech iv16 rsaH targetH (IntentBuffer 64) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "RSA wrap key-type code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("RSA wrap must deny, got: " ++ show other)
+  -- The authenticated paths share the gate (all four
+  -- 'withWrappingKey' call sites).
+  let aad = "associated-data"
+  case planAuthWrapKey m4 st aesCbcMech iv16 privH targetH aad (IntentBuffer 64) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "auth-wrap key-type code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("EC auth-wrap must deny, got: " ++ show other)
+  case planAuthUnwrapKey defaultRules m4 st aesCbcMech iv16 privH (BS.replicate 48 0) aad tmpl of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "auth-unwrap key-type code" CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("EC auth-unwrap must deny, got: " ++ show other)
 
 caseAuthWrapMismatch :: IO ()
 caseAuthWrapMismatch = withSynth $ \answer -> do

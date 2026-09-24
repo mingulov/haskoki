@@ -250,7 +250,7 @@ caseParams = guarded "params" $ do
   assertEqual "oaep label golden" (w64 2 <> w64 2 <> "L")
     (encodeOaepParams "SHA_1" "SHA_1" "L")
   -- sig-encoding: RAW, DER, or empty (DER default).
-  assertEqual "ecdsa empty" (Just "DER") (ecdsaEncodingOf "")
+  assertEqual "ecdsa empty" (Just "RAW") (ecdsaEncodingOf "")
   assertEqual "ecdsa raw" (Just "RAW") (ecdsaEncodingOf "RAW")
   assertEqual "ecdsa der" (Just "DER") (ecdsaEncodingOf "DER")
   assertEqual "ecdsa bogus" Nothing (ecdsaEncodingOf "XX")
