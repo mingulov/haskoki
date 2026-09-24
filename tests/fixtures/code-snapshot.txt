@@ -1,0 +1,18 @@
+# Error-code snapshot. Each line pins an error->code
+# (or error->error-taxonomy) mapping that MUST stay identical.
+# Format: [section] headers, then `key = value` lines compared exactly.
+[cryptoCode]
+CryptoFailed = CKR_GENERAL_ERROR
+CryptoUnsupported = CKR_MECHANISM_INVALID
+CryptoBadKey = CKR_GENERAL_ERROR
+CryptoAuthFailed = CKR_ENCRYPTED_DATA_INVALID
+[denyInit]
+unknown-mech = CKR_MECHANISM_INVALID
+conflict = CKR_OPERATION_ACTIVE
+key-required = CKR_ARGUMENTS_BAD
+bad-handle = CKR_OBJECT_HANDLE_INVALID
+[denyReason]
+unknown-mech = unknown mechanism
+conflict = an operation is already active in this slot
+key-required = operation requires a key
+bad-handle = unknown object handle

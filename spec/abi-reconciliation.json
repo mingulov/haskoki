@@ -1,0 +1,742 @@
+{
+  "schema_version": 1,
+  "generated_by": "scripts/generate-abi.py",
+  "planning_seed": "ws/docs/incoming/haskell-pkcs11-design/spec/inventory/functions.csv",
+  "planning_seed_sha256": "2be025255633c49eff47bbc73415b35185484aef0451ccfa582aaad9f5b6657a",
+  "summary": {
+    "matched": 104,
+    "added": 0,
+    "removed": 0,
+    "aliased": 0
+  },
+  "rows": [
+    {
+      "function": "C_Initialize",
+      "planning_ordinal": 1,
+      "generated_ordinal": 1,
+      "status": "matched",
+      "explanation": "C_Initialize: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_Finalize",
+      "planning_ordinal": 2,
+      "generated_ordinal": 2,
+      "status": "matched",
+      "explanation": "C_Finalize: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetInfo",
+      "planning_ordinal": 3,
+      "generated_ordinal": 3,
+      "status": "matched",
+      "explanation": "C_GetInfo: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetFunctionList",
+      "planning_ordinal": 4,
+      "generated_ordinal": 4,
+      "status": "matched",
+      "explanation": "C_GetFunctionList: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetSlotList",
+      "planning_ordinal": 5,
+      "generated_ordinal": 5,
+      "status": "matched",
+      "explanation": "C_GetSlotList: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetSlotInfo",
+      "planning_ordinal": 6,
+      "generated_ordinal": 6,
+      "status": "matched",
+      "explanation": "C_GetSlotInfo: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetTokenInfo",
+      "planning_ordinal": 7,
+      "generated_ordinal": 7,
+      "status": "matched",
+      "explanation": "C_GetTokenInfo: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetMechanismList",
+      "planning_ordinal": 8,
+      "generated_ordinal": 8,
+      "status": "matched",
+      "explanation": "C_GetMechanismList: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetMechanismInfo",
+      "planning_ordinal": 9,
+      "generated_ordinal": 9,
+      "status": "matched",
+      "explanation": "C_GetMechanismInfo: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_InitToken",
+      "planning_ordinal": 10,
+      "generated_ordinal": 10,
+      "status": "matched",
+      "explanation": "C_InitToken: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_InitPIN",
+      "planning_ordinal": 11,
+      "generated_ordinal": 11,
+      "status": "matched",
+      "explanation": "C_InitPIN: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SetPIN",
+      "planning_ordinal": 12,
+      "generated_ordinal": 12,
+      "status": "matched",
+      "explanation": "C_SetPIN: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_OpenSession",
+      "planning_ordinal": 13,
+      "generated_ordinal": 13,
+      "status": "matched",
+      "explanation": "C_OpenSession: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_CloseSession",
+      "planning_ordinal": 14,
+      "generated_ordinal": 14,
+      "status": "matched",
+      "explanation": "C_CloseSession: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_CloseAllSessions",
+      "planning_ordinal": 15,
+      "generated_ordinal": 15,
+      "status": "matched",
+      "explanation": "C_CloseAllSessions: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetSessionInfo",
+      "planning_ordinal": 16,
+      "generated_ordinal": 16,
+      "status": "matched",
+      "explanation": "C_GetSessionInfo: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetOperationState",
+      "planning_ordinal": 17,
+      "generated_ordinal": 17,
+      "status": "matched",
+      "explanation": "C_GetOperationState: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SetOperationState",
+      "planning_ordinal": 18,
+      "generated_ordinal": 18,
+      "status": "matched",
+      "explanation": "C_SetOperationState: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_Login",
+      "planning_ordinal": 19,
+      "generated_ordinal": 19,
+      "status": "matched",
+      "explanation": "C_Login: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_Logout",
+      "planning_ordinal": 20,
+      "generated_ordinal": 20,
+      "status": "matched",
+      "explanation": "C_Logout: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_CreateObject",
+      "planning_ordinal": 21,
+      "generated_ordinal": 21,
+      "status": "matched",
+      "explanation": "C_CreateObject: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_CopyObject",
+      "planning_ordinal": 22,
+      "generated_ordinal": 22,
+      "status": "matched",
+      "explanation": "C_CopyObject: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DestroyObject",
+      "planning_ordinal": 23,
+      "generated_ordinal": 23,
+      "status": "matched",
+      "explanation": "C_DestroyObject: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetObjectSize",
+      "planning_ordinal": 24,
+      "generated_ordinal": 24,
+      "status": "matched",
+      "explanation": "C_GetObjectSize: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetAttributeValue",
+      "planning_ordinal": 25,
+      "generated_ordinal": 25,
+      "status": "matched",
+      "explanation": "C_GetAttributeValue: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SetAttributeValue",
+      "planning_ordinal": 26,
+      "generated_ordinal": 26,
+      "status": "matched",
+      "explanation": "C_SetAttributeValue: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_FindObjectsInit",
+      "planning_ordinal": 27,
+      "generated_ordinal": 27,
+      "status": "matched",
+      "explanation": "C_FindObjectsInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_FindObjects",
+      "planning_ordinal": 28,
+      "generated_ordinal": 28,
+      "status": "matched",
+      "explanation": "C_FindObjects: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_FindObjectsFinal",
+      "planning_ordinal": 29,
+      "generated_ordinal": 29,
+      "status": "matched",
+      "explanation": "C_FindObjectsFinal: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_EncryptInit",
+      "planning_ordinal": 30,
+      "generated_ordinal": 30,
+      "status": "matched",
+      "explanation": "C_EncryptInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_Encrypt",
+      "planning_ordinal": 31,
+      "generated_ordinal": 31,
+      "status": "matched",
+      "explanation": "C_Encrypt: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_EncryptUpdate",
+      "planning_ordinal": 32,
+      "generated_ordinal": 32,
+      "status": "matched",
+      "explanation": "C_EncryptUpdate: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_EncryptFinal",
+      "planning_ordinal": 33,
+      "generated_ordinal": 33,
+      "status": "matched",
+      "explanation": "C_EncryptFinal: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DecryptInit",
+      "planning_ordinal": 34,
+      "generated_ordinal": 34,
+      "status": "matched",
+      "explanation": "C_DecryptInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_Decrypt",
+      "planning_ordinal": 35,
+      "generated_ordinal": 35,
+      "status": "matched",
+      "explanation": "C_Decrypt: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DecryptUpdate",
+      "planning_ordinal": 36,
+      "generated_ordinal": 36,
+      "status": "matched",
+      "explanation": "C_DecryptUpdate: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DecryptFinal",
+      "planning_ordinal": 37,
+      "generated_ordinal": 37,
+      "status": "matched",
+      "explanation": "C_DecryptFinal: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DigestInit",
+      "planning_ordinal": 38,
+      "generated_ordinal": 38,
+      "status": "matched",
+      "explanation": "C_DigestInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_Digest",
+      "planning_ordinal": 39,
+      "generated_ordinal": 39,
+      "status": "matched",
+      "explanation": "C_Digest: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DigestUpdate",
+      "planning_ordinal": 40,
+      "generated_ordinal": 40,
+      "status": "matched",
+      "explanation": "C_DigestUpdate: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DigestKey",
+      "planning_ordinal": 41,
+      "generated_ordinal": 41,
+      "status": "matched",
+      "explanation": "C_DigestKey: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DigestFinal",
+      "planning_ordinal": 42,
+      "generated_ordinal": 42,
+      "status": "matched",
+      "explanation": "C_DigestFinal: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SignInit",
+      "planning_ordinal": 43,
+      "generated_ordinal": 43,
+      "status": "matched",
+      "explanation": "C_SignInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_Sign",
+      "planning_ordinal": 44,
+      "generated_ordinal": 44,
+      "status": "matched",
+      "explanation": "C_Sign: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SignUpdate",
+      "planning_ordinal": 45,
+      "generated_ordinal": 45,
+      "status": "matched",
+      "explanation": "C_SignUpdate: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SignFinal",
+      "planning_ordinal": 46,
+      "generated_ordinal": 46,
+      "status": "matched",
+      "explanation": "C_SignFinal: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SignRecoverInit",
+      "planning_ordinal": 47,
+      "generated_ordinal": 47,
+      "status": "matched",
+      "explanation": "C_SignRecoverInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SignRecover",
+      "planning_ordinal": 48,
+      "generated_ordinal": 48,
+      "status": "matched",
+      "explanation": "C_SignRecover: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifyInit",
+      "planning_ordinal": 49,
+      "generated_ordinal": 49,
+      "status": "matched",
+      "explanation": "C_VerifyInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_Verify",
+      "planning_ordinal": 50,
+      "generated_ordinal": 50,
+      "status": "matched",
+      "explanation": "C_Verify: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifyUpdate",
+      "planning_ordinal": 51,
+      "generated_ordinal": 51,
+      "status": "matched",
+      "explanation": "C_VerifyUpdate: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifyFinal",
+      "planning_ordinal": 52,
+      "generated_ordinal": 52,
+      "status": "matched",
+      "explanation": "C_VerifyFinal: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifyRecoverInit",
+      "planning_ordinal": 53,
+      "generated_ordinal": 53,
+      "status": "matched",
+      "explanation": "C_VerifyRecoverInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifyRecover",
+      "planning_ordinal": 54,
+      "generated_ordinal": 54,
+      "status": "matched",
+      "explanation": "C_VerifyRecover: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DigestEncryptUpdate",
+      "planning_ordinal": 55,
+      "generated_ordinal": 55,
+      "status": "matched",
+      "explanation": "C_DigestEncryptUpdate: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DecryptDigestUpdate",
+      "planning_ordinal": 56,
+      "generated_ordinal": 56,
+      "status": "matched",
+      "explanation": "C_DecryptDigestUpdate: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SignEncryptUpdate",
+      "planning_ordinal": 57,
+      "generated_ordinal": 57,
+      "status": "matched",
+      "explanation": "C_SignEncryptUpdate: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DecryptVerifyUpdate",
+      "planning_ordinal": 58,
+      "generated_ordinal": 58,
+      "status": "matched",
+      "explanation": "C_DecryptVerifyUpdate: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GenerateKey",
+      "planning_ordinal": 59,
+      "generated_ordinal": 59,
+      "status": "matched",
+      "explanation": "C_GenerateKey: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GenerateKeyPair",
+      "planning_ordinal": 60,
+      "generated_ordinal": 60,
+      "status": "matched",
+      "explanation": "C_GenerateKeyPair: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_WrapKey",
+      "planning_ordinal": 61,
+      "generated_ordinal": 61,
+      "status": "matched",
+      "explanation": "C_WrapKey: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_UnwrapKey",
+      "planning_ordinal": 62,
+      "generated_ordinal": 62,
+      "status": "matched",
+      "explanation": "C_UnwrapKey: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DeriveKey",
+      "planning_ordinal": 63,
+      "generated_ordinal": 63,
+      "status": "matched",
+      "explanation": "C_DeriveKey: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SeedRandom",
+      "planning_ordinal": 64,
+      "generated_ordinal": 64,
+      "status": "matched",
+      "explanation": "C_SeedRandom: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GenerateRandom",
+      "planning_ordinal": 65,
+      "generated_ordinal": 65,
+      "status": "matched",
+      "explanation": "C_GenerateRandom: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetFunctionStatus",
+      "planning_ordinal": 66,
+      "generated_ordinal": 66,
+      "status": "matched",
+      "explanation": "C_GetFunctionStatus: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_CancelFunction",
+      "planning_ordinal": 67,
+      "generated_ordinal": 67,
+      "status": "matched",
+      "explanation": "C_CancelFunction: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_WaitForSlotEvent",
+      "planning_ordinal": 68,
+      "generated_ordinal": 68,
+      "status": "matched",
+      "explanation": "C_WaitForSlotEvent: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetInterfaceList",
+      "planning_ordinal": 69,
+      "generated_ordinal": 69,
+      "status": "matched",
+      "explanation": "C_GetInterfaceList: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetInterface",
+      "planning_ordinal": 70,
+      "generated_ordinal": 70,
+      "status": "matched",
+      "explanation": "C_GetInterface: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_LoginUser",
+      "planning_ordinal": 71,
+      "generated_ordinal": 71,
+      "status": "matched",
+      "explanation": "C_LoginUser: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SessionCancel",
+      "planning_ordinal": 72,
+      "generated_ordinal": 72,
+      "status": "matched",
+      "explanation": "C_SessionCancel: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_MessageEncryptInit",
+      "planning_ordinal": 73,
+      "generated_ordinal": 73,
+      "status": "matched",
+      "explanation": "C_MessageEncryptInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_EncryptMessage",
+      "planning_ordinal": 74,
+      "generated_ordinal": 74,
+      "status": "matched",
+      "explanation": "C_EncryptMessage: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_EncryptMessageBegin",
+      "planning_ordinal": 75,
+      "generated_ordinal": 75,
+      "status": "matched",
+      "explanation": "C_EncryptMessageBegin: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_EncryptMessageNext",
+      "planning_ordinal": 76,
+      "generated_ordinal": 76,
+      "status": "matched",
+      "explanation": "C_EncryptMessageNext: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_MessageEncryptFinal",
+      "planning_ordinal": 77,
+      "generated_ordinal": 77,
+      "status": "matched",
+      "explanation": "C_MessageEncryptFinal: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_MessageDecryptInit",
+      "planning_ordinal": 78,
+      "generated_ordinal": 78,
+      "status": "matched",
+      "explanation": "C_MessageDecryptInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DecryptMessage",
+      "planning_ordinal": 79,
+      "generated_ordinal": 79,
+      "status": "matched",
+      "explanation": "C_DecryptMessage: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DecryptMessageBegin",
+      "planning_ordinal": 80,
+      "generated_ordinal": 80,
+      "status": "matched",
+      "explanation": "C_DecryptMessageBegin: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DecryptMessageNext",
+      "planning_ordinal": 81,
+      "generated_ordinal": 81,
+      "status": "matched",
+      "explanation": "C_DecryptMessageNext: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_MessageDecryptFinal",
+      "planning_ordinal": 82,
+      "generated_ordinal": 82,
+      "status": "matched",
+      "explanation": "C_MessageDecryptFinal: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_MessageSignInit",
+      "planning_ordinal": 83,
+      "generated_ordinal": 83,
+      "status": "matched",
+      "explanation": "C_MessageSignInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SignMessage",
+      "planning_ordinal": 84,
+      "generated_ordinal": 84,
+      "status": "matched",
+      "explanation": "C_SignMessage: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SignMessageBegin",
+      "planning_ordinal": 85,
+      "generated_ordinal": 85,
+      "status": "matched",
+      "explanation": "C_SignMessageBegin: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_SignMessageNext",
+      "planning_ordinal": 86,
+      "generated_ordinal": 86,
+      "status": "matched",
+      "explanation": "C_SignMessageNext: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_MessageSignFinal",
+      "planning_ordinal": 87,
+      "generated_ordinal": 87,
+      "status": "matched",
+      "explanation": "C_MessageSignFinal: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_MessageVerifyInit",
+      "planning_ordinal": 88,
+      "generated_ordinal": 88,
+      "status": "matched",
+      "explanation": "C_MessageVerifyInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifyMessage",
+      "planning_ordinal": 89,
+      "generated_ordinal": 89,
+      "status": "matched",
+      "explanation": "C_VerifyMessage: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifyMessageBegin",
+      "planning_ordinal": 90,
+      "generated_ordinal": 90,
+      "status": "matched",
+      "explanation": "C_VerifyMessageBegin: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifyMessageNext",
+      "planning_ordinal": 91,
+      "generated_ordinal": 91,
+      "status": "matched",
+      "explanation": "C_VerifyMessageNext: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_MessageVerifyFinal",
+      "planning_ordinal": 92,
+      "generated_ordinal": 92,
+      "status": "matched",
+      "explanation": "C_MessageVerifyFinal: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_EncapsulateKey",
+      "planning_ordinal": 93,
+      "generated_ordinal": 93,
+      "status": "matched",
+      "explanation": "C_EncapsulateKey: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_DecapsulateKey",
+      "planning_ordinal": 94,
+      "generated_ordinal": 94,
+      "status": "matched",
+      "explanation": "C_DecapsulateKey: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifySignatureInit",
+      "planning_ordinal": 95,
+      "generated_ordinal": 95,
+      "status": "matched",
+      "explanation": "C_VerifySignatureInit: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifySignature",
+      "planning_ordinal": 96,
+      "generated_ordinal": 96,
+      "status": "matched",
+      "explanation": "C_VerifySignature: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifySignatureUpdate",
+      "planning_ordinal": 97,
+      "generated_ordinal": 97,
+      "status": "matched",
+      "explanation": "C_VerifySignatureUpdate: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_VerifySignatureFinal",
+      "planning_ordinal": 98,
+      "generated_ordinal": 98,
+      "status": "matched",
+      "explanation": "C_VerifySignatureFinal: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_GetSessionValidationFlags",
+      "planning_ordinal": 99,
+      "generated_ordinal": 99,
+      "status": "matched",
+      "explanation": "C_GetSessionValidationFlags: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_AsyncComplete",
+      "planning_ordinal": 100,
+      "generated_ordinal": 100,
+      "status": "matched",
+      "explanation": "C_AsyncComplete: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_AsyncGetID",
+      "planning_ordinal": 101,
+      "generated_ordinal": 101,
+      "status": "matched",
+      "explanation": "C_AsyncGetID: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_AsyncJoin",
+      "planning_ordinal": 102,
+      "generated_ordinal": 102,
+      "status": "matched",
+      "explanation": "C_AsyncJoin: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_WrapKeyAuthenticated",
+      "planning_ordinal": 103,
+      "generated_ordinal": 103,
+      "status": "matched",
+      "explanation": "C_WrapKeyAuthenticated: ordinal, order, interfaces and first layout match generated header truth."
+    },
+    {
+      "function": "C_UnwrapKeyAuthenticated",
+      "planning_ordinal": 104,
+      "generated_ordinal": 104,
+      "status": "matched",
+      "explanation": "C_UnwrapKeyAuthenticated: ordinal, order, interfaces and first layout match generated header truth."
+    }
+  ]
+}

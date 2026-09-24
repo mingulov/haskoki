@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "notice": "Source/header discrepancy register. Per-issue fields: sources, inconsistency, affected ABI/behavior, decision, scope, tests, completeness-blocker.",
+  "issues": [
+    {
+      "id": "SRC-01",
+      "title": "3.0 publication header warning: attached headers outdated/flawed",
+      "status": "resolved",
+      "sources": [
+        "S-30 (pkcs11-base-v3.0-os.html, Related Work ALERT: attached headers outdated, may contain serious flaws; corrected headers at the TC)",
+        "S-30-TC (TC published/3-00-errata-1 at pinned commit 2aee0a6)"
+      ],
+      "inconsistency": "The S-30 publication explicitly warns that its own attached header set is outdated and flawed. Measured diff of the vendored OASIS attached set vs the TC corrected set (119 diff lines in pkcs11t.h, 27 in pkcs11f.h, 19 in pkcs11.h): (a) typo fixes with backward-compatible aliases in TC (CKM_DSA_PROBABLISTIC->PROBABILISTIC, CKF_MULTI_MESSGE->MULTI_MESSAGE, CKM_SHA3/SHAKE_*_KEY_DERIVE->KEY_DERIVATION); (b) TC additions (CKK_SHA512_224/256/T_HMAC, CKA_X2RATCHET_* 0x602-0x612, CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS, CKM_DSA_FIPS_G_GEN, CKM_SALSA20_KEY_GEN, CKR_OPERATION_CANCEL_FAILED, CKG_MGF1_SHA3_*, CK_SP800_108_*); (c) TC removals (CKM_TLS10_MAC_SERVER/CLIENT 0x3D6/0x3D7 present only in the attached set); (d) C_DecryptMessageNext parameter renames in TC (ABI-neutral, prose-aligned). The 92-entry function-pointer order is identical in both sets.",
+      "affected": "ABI constants/identifiers for interface 3.0 (no function-table layout effect: order and count identical). Using the attached set would bake wrong/outdated mechanism, attribute, key-type and return-code constants.",
+      "decision": "SELECT TC published/3-00-errata-1 as the interface 3.0 family (newest corrected TC source in the 3.00 lineage; its pkcs11.h matches the TC 3.1 pkcs11.h blob, showing the lineage converged). REJECT the OASIS attached set; it is vendored under spec/vendor/oasis-3.0-attached/ as evidence only and is never a generation or probe input (validate-spec.py enforces role=rejected exclusion). HISTORICAL: the OASIS/TC sets were removed in the SRC-08 public-domain migration; interface 3.0 is now a positional prefix of the single PD header.",
+      "scope": "Source lock for interface 3.0; generation, probes and Types.hsc all consume the TC errata set.",
+      "tests": "scripts/validate-spec.py (lock roles, no rejected input); scripts/generate-abi.py (function order parsed from the selected set); tests/c/layout_300.c (compiled against the selected set).",
+      "blocks_completeness": false
+    },
+    {
+      "id": "SRC-02",
+      "title": "3.1 OASIS publication vs TC mirror differ",
+      "status": "resolved",
+      "sources": [
+        "S-31 (OASIS 3.1 header directory)",
+        "S-HEAD31 (TC published/3-01 at pinned commit 2aee0a6)"
+      ],
+      "inconsistency": "The OASIS 3.1 set and the TC 3-01 set differ by 19 diff lines per file, ALL inside the top license/banner comment (OASIS OS banner vs older TC IPR banner). Zero non-comment bytes differ: function order (92), struct layouts, constants and prototypes are identical.",
+      "affected": "None (ABI-identical). Provenance choice only.",
+      "decision": "SELECT the OASIS publication as the interface 3.1 family (immutable OASIS Standard); vendor the TC set as a corroborating mirror. Either input would generate identical ABI artifacts. HISTORICAL: the OASIS/TC sets were removed in the SRC-08 public-domain migration; interface 3.1 is now a positional prefix of the single PD header.",
+      "scope": "Source lock for interface 3.1.",
+      "tests": "scripts/validate-spec.py (both hashes verified; generate-abi.py asserts parsed function orders match); tests/c/layout_310.c (compiled against the OASIS set).",
+      "blocks_completeness": false
+    },
+    {
+      "id": "SRC-03",
+      "title": "3.2 S-32-INCLUDE vs TC mirror reconciliation",
+      "status": "resolved",
+      "sources": [
+        "S-32-INCLUDE (OASIS 3.2 header directory, 03-Jun-2026)",
+        "S-HEAD32 (TC published/3-02 at pinned commit 2aee0a6)"
+      ],
+      "inconsistency": "None found: S-32-INCLUDE and the TC 3-02 mirror are byte-identical (all three SHA-256 match). No prose/header or mirror divergence at the ABI file level. Closes the header-family plan gap.",
+      "affected": "None.",
+      "decision": "SELECT the OASIS publication as the interface 3.2 family; vendor the TC set as a corroborating mirror. HISTORICAL: the OASIS/TC sets were removed in the SRC-08 public-domain migration; the single PD header is now the only source.",
+      "scope": "Source lock for interface 3.2.",
+      "tests": "scripts/validate-spec.py (hash equality of both sets); tests/c/layout_320.c (compiled against the OASIS set).",
+      "blocks_completeness": false
+    },
+    {
+      "id": "SRC-04",
+      "title": "2.40 OASIS errata01 vs TC mirror reconciliation",
+      "status": "resolved",
+      "sources": [
+        "S-240 (OASIS 2.40+Errata01 header directory)",
+        "S-240-TC (TC published/2-40-errata-1 at pinned commit 2aee0a6)"
+      ],
+      "inconsistency": "None found: the OASIS errata01 set and the TC 2-40-errata-1 mirror are byte-identical (all three SHA-256 match).",
+      "affected": "None.",
+      "decision": "SELECT the OASIS publication as the interface 2.40 family; vendor the TC set as a corroborating mirror. HISTORICAL: the OASIS/TC sets were removed in the SRC-08 public-domain migration; interface 2.40 is now a positional prefix of the single PD header.",
+      "scope": "Source lock for interface 2.40.",
+      "tests": "scripts/validate-spec.py (hash equality of both sets); tests/c/layout_240.c (compiled against the OASIS set).",
+      "blocks_completeness": false
+    },
+    {
+      "id": "SRC-05",
+      "title": "3.1 has no new function-list layout; CK_FUNCTION_LIST_3_1 must not be fabricated",
+      "status": "resolved",
+      "sources": [
+        "S-PD-32 header (defines only CK_FUNCTION_LIST and CK_FUNCTION_LIST_3_0)"
+      ],
+      "inconsistency": "A reader could expect a CK_FUNCTION_LIST_3_1 structure for interface 3.1. No such symbol exists in the vendored header (verified by grep at generation time; generate-abi.py fails if it ever appears).",
+      "affected": "ABI layout for interface 3.1: it reuses the CK_FUNCTION_LIST_3_0 physical layout with its own version ({3,1}) and table instance.",
+      "decision": "Generate interface 3.1 as a separately versioned 3.0-layout table: distinct CK_FUNCTION_LIST_3_0 instance with version 3.1, advertised via C_GetInterface('PKCS 11', {3,1}). Never define, declare or reference CK_FUNCTION_LIST_3_1 (validate-spec.py greps spec/, cbits/, ffi/ and tests/ to enforce this).",
+      "scope": "Generation; provider tables in cbits/exports.c; probes layout_310.c (layout equality with 3.0) and layout_320.c (dual-table isolation).",
+      "tests": "scripts/validate-spec.py (no-3_1-symbol check + 3.1 layout==3.0 assertion); tests/c/layout_310.c; tests/c/layout_320.c isolation check.",
+      "blocks_completeness": false
+    },
+    {
+      "id": "SRC-06",
+      "title": "3.1 file banner date (2023) vs OASIS directory listing date (2024)",
+      "status": "resolved",
+      "sources": [
+        "S-31 file banners ('PKCS #11 Specification Version 3.1, 23 July 2023')",
+        "S-31 directory listing (23-Jul-2024)"
+      ],
+      "inconsistency": "The three OASIS 3.1 files banner themselves '23 July 2023' while the OASIS directory listing dates them 23-Jul-2024 (likely a site-migration timestamp). One-year metadata mismatch; file bytes are unaffected.",
+      "affected": "None (provenance metadata only).",
+      "decision": "Record both dates verbatim in sources.lock.json (banner as publication, listing as observed fetch metadata). No ABI impact; no further action. HISTORICAL: the OASIS 3.1 set was removed in the SRC-08 public-domain migration.",
+      "scope": "Provenance note only.",
+      "tests": "None required (informational).",
+      "blocks_completeness": false
+    },
+    {
+      "id": "SRC-07",
+      "title": "Mechanism/constant-level prose-vs-header reconciliation deferred to the mechanism expansion",
+      "status": "open",
+      "sources": [
+        "S-32 prose (476-page OS PDF, targeted reading only)",
+        "S-PD-32 header (fully vendored)"
+      ],
+      "inconsistency": "The ABI lock reconciles the ABI surface that generation consumes (function order/prototypes, layouts, scalars, constant aliases). A full mechanism/parameter/profile prose-vs-header audit (e.g. working-document-only identifiers such as XOF functions, if any) is explicitly expansion scope and was not attempted: no prose-only C_* symbol was added to any table (tables are generated from headers only, by construction), but mechanism-level prose gaps remain unaudited.",
+      "affected": "No locked ABI artifact. Blocks only breadth/completeness claims, never the ABI validation gate.",
+      "decision": "Defer the exhaustive mechanism expansion. The ABI lock claims exactly: locked sources, generated versioned tables/constants, independent layout/prototype probes. No mechanism-coverage claim is made.",
+      "scope": "Mechanism expansion.",
+      "tests": "Expansion work items per mechanism (future).",
+      "blocks_completeness": true
+    },
+    {
+      "id": "SRC-08",
+      "title": "OASIS/TC sets removed; single latchset public-domain header selected",
+      "status": "resolved",
+      "sources": [
+        "S-PD-32 (latchset/pkcs11-headers public-domain/3.2/pkcs11.h at pinned commit c5e6199, vendored verbatim as spec/vendor/pkcs11.h)"
+      ],
+      "inconsistency": "The eight vendored OASIS/TC header sets (24 files) carry the non-open OASIS IPR license ('All Rights Reserved'), including the copy shipped to consumers in the release artifact. The latchset public-domain headers are a clean-room functional rewrite, but they differ in form: single-file layout, no CK_PKCS11_FUNCTION_INFO/CK_NEED_ARG_LIST idiom, no alias-style defines, and deprecated spellings gated behind PKCS11_DEPRECATED.",
+      "affected": "Every generation input and every C compile: header paths, parsers, lock roles, catalog source refs, and the shipped smoke headers.",
+      "decision": "Vendor ONLY the latchset public-domain v3.2 header, verbatim under its upstream name (spec/vendor/pkcs11.h, hash-pinned in sources.lock.json S-PD-32). One file suffices: v3.2 is a strict superset of every older interface (all 564+729+743 names present, same values, bit-identical struct layouts over all structs, same 68/92/92/104 function order), verified by differential audit at migration time. Older interfaces are positional prefixes of the 3.2 order with boundary pins (68 C_WaitForSlotEvent, 92 C_MessageVerifyFinal, 104 C_UnwrapKeyAuthenticated); any reorder fails loudly. baseline_versions is dropped from the catalogs (it was write-only metadata, consumed by nothing, and unverifiable from one header); source_refs collapse to the single canonical citation. The only deprecated-gated name our C uses (the DSA typo spelling asserted in tests/c/layout_300.c) is exposed by -DPKCS11_DEPRECATED=1 on that one probe compile. Regenerated catalogs are name/value/alias-identical to the OASIS era; the SRC-01 TC-vs-attached differences (incl. the TLS10_MAC 3.0 gap) are moot with no 3.0 source left. SRC-01..SRC-04 and SRC-06 are superseded historical records of the OASIS era.",
+      "scope": "Source lock (one source, one file); scripts/hdr_parse.py (single-file parse, deprecated-aware canonical rule); generators (single source_ref, no baselines); all C compiles (-Ispec/vendor); release smoke headers; catalog JSONs.",
+      "tests": "scripts/validate-spec.py (LOCK-SELECTION single-header tripwire, PD-LOCK marker check, SPOT-CHECKS boundary pins, INVENTORY-FRESH); scripts/check-denominators.py (480/160/13/69/104 byte-exact); tests/c/layout_*.c (recompiled against the single header); scripts/test-release-install.sh (clean-container proof).",
+      "blocks_completeness": false
+    },
+    {
+      "id": "GAP-TEMPLATES",
+      "title": "Full per-class template tables need the base-spec prose (not vendored)",
+      "status": "open",
+      "sources": [
+        "S-PD-32 header (fully vendored: CKA/CKO/CKK identity only, no template rules)",
+        "PKCS#11 base-spec object-template prose tables (NOT vendored: required/forbidden attributes per class/key-type/context)"
+      ],
+      "inconsistency": "The headers define attribute/class/key-type identity but no template semantics: which attributes are required vs forbidden for a (class, key-type, operation) context lives in the base-spec prose tables, which are not byte-locked inputs. Candidate rules from memory (e.g. CKA_VALUE forbidden in generation templates, CKA_VALUE_LEN handling in C_CreateObject, cross-key-type parameter forbiddens) cannot be verified and are therefore NOT implemented.",
+      "affected": "Template validation scope: only the in-repo-reviewed subset is enforced (keygen/pairgen presence: AES VALUE_LEN, EC EC_PARAMS, RSA MODULUS_BITS) plus value-context forbiddens (class/key-type mismatch, malformed values, pair disagreements). Creation-time (C_CreateObject) per-class required/forbidden sets and presence-based cross-parameter forbiddens stay unenforced.",
+      "decision": "Enforce the reviewed subset as data (TEMPLATE_RULES in scripts/generate-attributes.py, emitted to attributes.json template_rules and Haskoki.Attribute.Generated, enforced by Haskoki.Object.checkRules at the strict keygen/pairgen paths, pinned by TemplateRulesSpec). Forbidden lists stay empty until prose grounds exist. Vendor the base-spec prose (or a byte-locked template-table extract) to close this issue.",
+      "scope": "Template-rule enforcement; blocks full acceptance-5 coverage (all classes), not the reviewed subset.",
+      "tests": "scripts/check-attributes.py (rule shape + name references); scripts/check-denominators.py (rule closure JSON<->Haskell); TemplateRulesSpec (15 cases: resolution, consistency, missing-required, forbidden, mismatch, disagreement).",
+      "blocks_completeness": true
+    },
+    {
+      "id": "GAP-BLAKE2B",
+      "title": "BLAKE2B output-length semantics need the base-spec prose",
+      "status": "open",
+      "sources": [
+        "S-PD-32 header (CKM_BLAKE2B_160/256/384/512 identity only)",
+        "PKCS#11 base-spec BLAKE2 digest prose (NOT vendored: output-length parameter semantics)"
+      ],
+      "inconsistency": "The four BLAKE2B_* mechanisms name output lengths (160/256/384/512 bits), but whether each is a fixed full construction (nn = length, requiring an output-length parameter on the EVP call) or truncatable output is defined in the base-spec prose, not the headers. Slicing a full 64-byte BLAKE2b-512 output to 20 bytes would produce a DIFFERENT value than a native 20-byte parameterization, so truncation-by-slicing would be invented semantics.",
+      "affected": "CKM_BLAKE2B_160/256/384/512 stay planned (all columns); the digest recipe covers the 13 fixed-width mechanisms only.",
+      "decision": "Leave planned with notes; vendor the BLAKE2 base-spec prose (or a byte-locked output-length table) to close. CKM_BLAKE2B_512 is the likely first follow-up (plain BLAKE2b-512 via EVP BLAKE2b512) once prose confirms.",
+      "scope": "Digest group; blocks BLAKE2B_* behavior only.",
+      "tests": "N/A (no behavior claimed).",
+      "blocks_completeness": true
+    },
+    {
+      "id": "GAP-OTP-STATEFUL",
+      "title": "OTP/stateful gaps: ACTI is identifier-only; HOTP token-state and XMSS/HSS need post-success key mutation",
+      "status": "open",
+      "sources": [
+        "S-PD-32 pkcs11.h (CKM_ACTI 0x2A0, CKM_ACTI_KEY_GEN 0x2A1, CKK_ACTI 0x24 defines only; no CK_ACTI_* params struct anywhere)",
+        "S-PD-32 pkcs11.h OTP block (CK_OTP_PARAMS/CK_OTP_SIGNATURE_INFO shapes, CKA_OTP_* attributes, CKO_OTP_KEY class: present as ABI, but token counter-management prose is NOT vendored)",
+        "Haskoki architecture: immutable-engine CRUD (engines never mutate stored key objects post-success)"
+      ],
+      "inconsistency": "(a) ACTI: the vendored header carries only the three identifiers (mechanism, keygen, key type); no parameter struct, no attribute profile, no prose. There is nothing implementable beyond the catalog row. (b) HOTP standard profile: the token-managed counter (CKA_OTP_COUNTER advancement on each successful sign) plus CKO_OTP_KEY objects with CKA_OTP_* attributes (format, length, PIN/challenge/time requirements) is the stateful profile; the shipped hotp-params/1 profile is the stateless decimal subset (counter + digit count per call, secret-key objects), which is CK_OTP_PARAMS{counter, output-length} in canonical form. The stateful half needs post-success mutation of the stored key object, which immutable-engine CRUD forbids. (c) Stateful hash-based signatures (CKM_XMSS, CKM_XMSSMT, CKM_HSS): every signature consumes one-time key state, so correct execution MUST advance the private key; same architectural bar.",
+      "affected": "CKM_ACTI/CKM_ACTI_KEY_GEN stay planned (all columns). CKM_HOTP stays on the stateless counter-in-params profile only (no CKO_OTP_KEY minting, no CKA_OTP_* attributes, no counter advancement, decimal format fixed). CKM_XMSS/CKM_XMSSMT/CKM_HSS and their keypair gens stay planned (all columns).",
+      "decision": "Leave planned with notes; ship the stateless HOTP profile. Closing the stateful half needs an approved state-advancing execution path (planner-owned counter/key update committed with the success output, or a stateful-object execution mode) plus vendored OTP/stateful-signature prose; closing ACTI needs any semantic source at all. A validation slice may add CKO_OTP_KEY/CKA_OTP_* as validation-only denominators without behavior.",
+      "scope": "OTP/stateful group; blocks ACTI, HOTP-stateful, and XMSS/HSS behavior only.",
+      "tests": "N/A (no behavior claimed for the gap; the shipped HOTP profile is pinned by RecipeOtpSpec/RoutingE2ESpec/SyntheticSpec).",
+      "blocks_completeness": true
+    },
+    {
+      "id": "GAP-SPECIALS",
+      "title": "Specials missing semantics: SHA512_T parameterization, CMS/PBA/LYNKS/FASTHASH identifier-only rows",
+      "status": "open",
+      "sources": [
+        "S-PD-32 pkcs11.h (CKM_SHA512_T 0x50 family defines + CKK_SHA512_T_HMAC, no truncation-parameter struct; CKM_CMS_SIG, CKM_PBA_SHA1_WITH_SHA1_HMAC, CKM_KEY_WRAP_LYNKS, CKM_FASTHASH defines only, zero supporting structs)",
+        "PKCS#11 base-spec mechanism prose (NOT vendored for any of these rows)",
+        "Pinned OpenSSL 4.0.2 provider survey (SHA-512 present; CMS is non-provider API)"
+      ],
+      "inconsistency": "(a) SHA512_T family (digest, HMAC, HMAC_GENERAL, KEY_DERIVATION): SHA-512/t truncation is parameterized (FIPS 180-4), but whether the singleton CKM_SHA512_T takes a truncation parameter or each use fixes t out-of-band is defined in the base-spec prose, not the headers. Picking a t without prose would be invented semantics (same class as GAP-BLAKE2B BLAKE2B). (b) CKM_CMS_SIG: CMS signatures need the libcrypto CMS API, which is not provider API, so serving it needs both CMS-profile prose and an architecture exception to the provider-only Raw surface. (c) CKM_PBA_SHA1_WITH_SHA1_HMAC, CKM_KEY_WRAP_LYNKS, CKM_FASTHASH: identifier-only in the vendored header; no parameter struct, no attribute profile, no prose. There is nothing implementable.",
+      "affected": "CKM_SHA512_T/CKM_SHA512_T_HMAC/CKM_SHA512_T_HMAC_GENERAL/CKM_SHA512_T_KEY_DERIVATION stay planned (all columns). CKM_CMS_SIG, CKM_PBA_SHA1_WITH_SHA1_HMAC, CKM_KEY_WRAP_LYNKS stay unsupported-with-reason (all columns). CKM_FASTHASH keeps its all-columns marking with the S15 reason appended.",
+      "decision": "Leave as marked. Close (a) by vendoring the SHA512_T base-spec prose (or a byte-locked truncation table); close (b) with CMS profile prose plus an approved Raw-surface exception; close (c) only with any semantic source at all.",
+      "scope": "Specials batch; blocks the 9 listed rows only.",
+      "tests": "N/A (no behavior claimed; the rows are pinned catalog-only by RegistrySpec and refusing by SyntheticSpec).",
+      "blocks_completeness": true
+    }
+  ]
+}

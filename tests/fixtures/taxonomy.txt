@@ -1,0 +1,9 @@
+# Error-taxonomy pins. Unlike the code snapshot (frozen: codes never
+# change), this file tracks the error->error taxonomy mappings.
+# Each row maps a crypto error to its backend category; the
+# observable ReturnCode is unchanged by the mapping.
+[encode]
+CryptoUnsupported = BackendUnsupported
+CryptoBadKey = BackendBadKey
+CryptoAuthFailed = BackendAuthFailed
+CryptoFailed = BackendNative

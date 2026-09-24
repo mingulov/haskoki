@@ -1,0 +1,11 @@
+-- Alternative toolchain: GHC 10.0.1-alpha1 snapshot (see docs/toolchain.md).
+-- Use with: cabal build --project-file=cabal.project.ghc10alpha
+packages: .
+
+-- Alpha-GHC accommodation (GHC 10.0.1-alpha1, 2026-09-20): Hackage
+-- upper bounds lag the new boot libraries (base-4.23,
+-- template-haskell-2.25, containers-0.8, ...), so resolution needs
+-- bounds relaxation until the ecosystem catches up. Reproducibility
+-- comes from the freeze file at T00, not from these bounds.
+-- TODO(10.0.1-final): scope this down to specific packages, then drop it.
+allow-newer: all

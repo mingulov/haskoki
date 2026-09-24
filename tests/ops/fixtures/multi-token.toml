@@ -1,0 +1,20 @@
+# Fixture: 3-token serving catalog (slot = catalog index).
+# Repo-authored (not copied from the design bundle; see PROVENANCE.md).
+# Fixture credentials are test data only. Do not use production secrets.
+# Catalog PINs are EXAMPLE-GRADE fixture material (the same discipline
+# as the existing fixtures): slot 0 keeps the provisioned demo PINs and
+# every other entry carries distinct per-token PINs so per-slot auth
+# routing is observable. Never production secrets.
+schema_version = 1
+profile = "demo-maximal"
+
+[storage]
+kind = "memory"
+
+[engine]
+kind = "synthetic"
+
+[tokens]
+labels = ["haskoki-demo", "haskoki-ops", "haskoki-audit"]
+so_pins = ["5678", "6789", "7890"]
+user_pins = ["1234", "2345", "3456"]

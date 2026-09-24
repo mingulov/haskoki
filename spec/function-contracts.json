@@ -1,0 +1,2454 @@
+{
+  "scope": "planner/in-process reachability, NOT C-table routing",
+  "functions": [
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A01",
+        "A03",
+        "A04",
+        "A05",
+        "A06"
+      ],
+      "entry": "c-table:on_Initialize",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_Initialize",
+      "ordinal_3_2": 1,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/LifecycleSpec.hs"
+        },
+        {
+          "suite": "test-loader.sh",
+          "spec": "tests/c/loader.c"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A01",
+        "A03",
+        "A04",
+        "A05",
+        "A06"
+      ],
+      "entry": "c-table:on_Finalize",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_Finalize",
+      "ordinal_3_2": 2,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/LifecycleSpec.hs"
+        },
+        {
+          "suite": "test-loader.sh",
+          "spec": "tests/c/loader.c"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A01",
+        "A02"
+      ],
+      "entry": "planCall:F_GetInfo",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetInfo",
+      "ordinal_3_2": 3,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/RoutingSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A01",
+        "A02"
+      ],
+      "entry": "c-table:discovery",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetFunctionList",
+      "ordinal_3_2": 4,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "test-loader.sh",
+          "spec": "tests/c/loader.c"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "planCall:F_GetSlotList",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetSlotList",
+      "ordinal_3_2": 5,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/RoutingSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "c-table:std_GetSlotInfo",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetSlotInfo",
+      "ordinal_3_2": 6,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MultiTokenSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_discovery.c"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_multitoken.c"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "c-table:std_GetTokenInfo",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetTokenInfo",
+      "ordinal_3_2": 7,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MultiTokenSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_discovery.c"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_multitoken.c"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A40",
+        "A41",
+        "A45"
+      ],
+      "entry": "c-table:on_GetMechanismList",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetMechanismList",
+      "ordinal_3_2": 8,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "test-loader.sh",
+          "spec": "tests/c/loader.c"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A40",
+        "A41",
+        "A45"
+      ],
+      "entry": "c-table:on_GetMechanismInfo",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetMechanismInfo",
+      "ordinal_3_2": 9,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "test-loader.sh",
+          "spec": "tests/c/loader.c"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_InitToken",
+      "ordinal_3_2": 10,
+      "reason": "no C_InitToken planning; token setup exists only as the Ctl scenario fixture.load step",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_InitPIN",
+      "ordinal_3_2": 11,
+      "reason": "no PIN planning in the model; ABI layout only",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SetPIN",
+      "ordinal_3_2": 12,
+      "reason": "no PIN planning in the model; ABI layout only",
+      "test_evidence": []
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "planCall:F_OpenSession",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_OpenSession",
+      "ordinal_3_2": 13,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/SessionSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "planCall:F_CloseSession",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_CloseSession",
+      "ordinal_3_2": 14,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/SessionSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_CloseAllSessions",
+      "ordinal_3_2": 15,
+      "reason": "no close-all planning (single-session close only)",
+      "test_evidence": []
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "haskoki-export:haskoki_std_get_session_info",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetSessionInfo",
+      "ordinal_3_2": 16,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MultiTokenSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_discovery.c"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A24"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetOperationState",
+      "ordinal_3_2": 17,
+      "reason": "no C_GetOperationState framing; engine snapshot machinery is tested but unwired to this entry",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A24"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SetOperationState",
+      "ordinal_3_2": 18,
+      "reason": "no C_SetOperationState framing; engine snapshot machinery is tested but unwired to this entry",
+      "test_evidence": []
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "planCall:F_Login",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_Login",
+      "ordinal_3_2": 19,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/SessionSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "planCall:F_Logout",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_Logout",
+      "ordinal_3_2": 20,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/SessionSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15"
+      ],
+      "entry": "planCall:F_CreateObject",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_CreateObject",
+      "ordinal_3_2": 21,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/ObjectSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15"
+      ],
+      "entry": "planCall:F_CopyObject",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_CopyObject",
+      "ordinal_3_2": 22,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/ObjectSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15"
+      ],
+      "entry": "planCall:F_DestroyObject",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DestroyObject",
+      "ordinal_3_2": 23,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/ObjectSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetObjectSize",
+      "ordinal_3_2": 24,
+      "reason": "no model planning; ABI layout only",
+      "test_evidence": []
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15"
+      ],
+      "entry": "planCall:F_GetAttributeValue",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetAttributeValue",
+      "ordinal_3_2": 25,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/ObjectSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SetAttributeValue",
+      "ordinal_3_2": 26,
+      "reason": "no model planning; ABI layout only",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_FindObjectsInit",
+      "ordinal_3_2": 27,
+      "reason": "one-shot find only; no cursor state",
+      "test_evidence": []
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15"
+      ],
+      "entry": "planCall:F_FindObjects",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_FindObjects",
+      "ordinal_3_2": 28,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/ObjectSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_FindObjectsFinal",
+      "ordinal_3_2": 29,
+      "reason": "one-shot find only; no cursor state",
+      "test_evidence": []
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_EncryptInit",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_EncryptInit",
+      "ordinal_3_2": 30,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_Encrypt",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_Encrypt",
+      "ordinal_3_2": 31,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/SyntheticSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_EncryptUpdate",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_EncryptUpdate",
+      "ordinal_3_2": 32,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_EncryptFinal",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_EncryptFinal",
+      "ordinal_3_2": 33,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_DecryptInit",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DecryptInit",
+      "ordinal_3_2": 34,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_Decrypt",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_Decrypt",
+      "ordinal_3_2": 35,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/SyntheticSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_DecryptUpdate",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DecryptUpdate",
+      "ordinal_3_2": 36,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_DecryptFinal",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DecryptFinal",
+      "ordinal_3_2": 37,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_DigestInit",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DigestInit",
+      "ordinal_3_2": 38,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/RoutingSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/SyntheticSpec.hs"
+        },
+        {
+          "suite": "test-crypto-routed.sh",
+          "spec": "tests/c/crypto_routed.c"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_Digest",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_Digest",
+      "ordinal_3_2": 39,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/RoutingSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/SyntheticSpec.hs"
+        },
+        {
+          "suite": "test-crypto-routed.sh",
+          "spec": "tests/c/crypto_routed.c"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_DigestUpdate",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DigestUpdate",
+      "ordinal_3_2": 40,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/SyntheticSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DigestKey",
+      "ordinal_3_2": 41,
+      "reason": "no model planning; ABI layout only",
+      "test_evidence": []
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_DigestFinal",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DigestFinal",
+      "ordinal_3_2": 42,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/SyntheticSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_SignInit",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SignInit",
+      "ordinal_3_2": 43,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/RoutingSpec.hs"
+        },
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_Sign",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_Sign",
+      "ordinal_3_2": 44,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/RoutingSpec.hs"
+        },
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/SyntheticSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_SignUpdate",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SignUpdate",
+      "ordinal_3_2": 45,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_SignFinal",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SignFinal",
+      "ordinal_3_2": 46,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SignRecoverInit",
+      "ordinal_3_2": 47,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec recover cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SignRecover",
+      "ordinal_3_2": 48,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec recover cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_VerifyInit",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_VerifyInit",
+      "ordinal_3_2": 49,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_Verify",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_Verify",
+      "ordinal_3_2": 50,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/SyntheticSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_VerifyUpdate",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_VerifyUpdate",
+      "ordinal_3_2": 51,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "planCall:F_VerifyFinal",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_VerifyFinal",
+      "ordinal_3_2": 52,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/OperationSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_VerifyRecoverInit",
+      "ordinal_3_2": 53,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec recover cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_VerifyRecover",
+      "ordinal_3_2": 54,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec recover cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A17"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DigestEncryptUpdate",
+      "ordinal_3_2": 55,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec dual cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A17"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DecryptDigestUpdate",
+      "ordinal_3_2": 56,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec dual cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A17"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SignEncryptUpdate",
+      "ordinal_3_2": 57,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec dual cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A17"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DecryptVerifyUpdate",
+      "ordinal_3_2": 58,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec dual cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A19",
+        "A20",
+        "A22",
+        "A23"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GenerateKey",
+      "ordinal_3_2": 59,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec keygen cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A19",
+        "A20",
+        "A22",
+        "A23"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GenerateKeyPair",
+      "ordinal_3_2": 60,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec keypair + KEM cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A19",
+        "A20",
+        "A22",
+        "A23"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_WrapKey",
+      "ordinal_3_2": 61,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec wrap + mismatch cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A19",
+        "A20",
+        "A22",
+        "A23"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_UnwrapKey",
+      "ordinal_3_2": 62,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec unwrap + mismatch cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A19",
+        "A20",
+        "A22",
+        "A23"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DeriveKey",
+      "ordinal_3_2": 63,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec derive cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A37",
+        "A44"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SeedRandom",
+      "ordinal_3_2": 64,
+      "reason": "no model planning; ABI layout only",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A37",
+        "A44"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GenerateRandom",
+      "ordinal_3_2": 65,
+      "reason": "no model planning; ABI layout only",
+      "test_evidence": []
+    },
+    {
+      "contract": "not-applicable",
+      "csv_acceptance": [
+        "A02",
+        "A31"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetFunctionStatus",
+      "ordinal_3_2": 66,
+      "reason": "legacy parallel-management entry; specified CKR_FUNCTION_NOT_SUPPORTED outside legacy mode, which haskoki never enters",
+      "test_evidence": []
+    },
+    {
+      "contract": "not-applicable",
+      "csv_acceptance": [
+        "A02",
+        "A31"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_CancelFunction",
+      "ordinal_3_2": 67,
+      "reason": "legacy parallel-management entry; specified CKR_FUNCTION_NOT_SUPPORTED outside legacy mode, which haskoki never enters",
+      "test_evidence": []
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A32"
+      ],
+      "entry": "haskoki-export:haskoki_wait_for_slot_event",
+      "first_layout": "CK_FUNCTION_LIST",
+      "layouts": [
+        "2.40",
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_WaitForSlotEvent",
+      "ordinal_3_2": 68,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/EventsSpec.hs"
+        },
+        {
+          "suite": "test-control-events.sh",
+          "spec": "tests/c/control_events.c"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A01",
+        "A02"
+      ],
+      "entry": "c-global:C_GetInterfaceList",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetInterfaceList",
+      "ordinal_3_2": 69,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "test-c-abi.sh",
+          "spec": "tests/c/layout_320.c"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A01",
+        "A02"
+      ],
+      "entry": "c-global:C_GetInterface",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_GetInterface",
+      "ordinal_3_2": 70,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "test-c-abi.sh",
+          "spec": "tests/c/layout_320.c"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A07",
+        "A08",
+        "A09",
+        "A15"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_LoginUser",
+      "ordinal_3_2": 71,
+      "reason": "no C_LoginUser entry; role-login planning covers C_Login only",
+      "test_evidence": []
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A24",
+        "A30"
+      ],
+      "entry": "haskoki-export:haskoki_hs_async_cancel",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SessionCancel",
+      "ordinal_3_2": 72,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/AsyncEngineSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_MessageEncryptInit",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_MessageEncryptInit",
+      "ordinal_3_2": 73,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_EncryptMessage",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_EncryptMessage",
+      "ordinal_3_2": 74,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_EncryptMessageBegin",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_EncryptMessageBegin",
+      "ordinal_3_2": 75,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_EncryptMessageNext",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_EncryptMessageNext",
+      "ordinal_3_2": 76,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_MessageEncryptFinal",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_MessageEncryptFinal",
+      "ordinal_3_2": 77,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_MessageDecryptInit",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_MessageDecryptInit",
+      "ordinal_3_2": 78,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_DecryptMessage",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DecryptMessage",
+      "ordinal_3_2": 79,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_DecryptMessageBegin",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DecryptMessageBegin",
+      "ordinal_3_2": 80,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_DecryptMessageNext",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_DecryptMessageNext",
+      "ordinal_3_2": 81,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_MessageDecryptFinal",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_MessageDecryptFinal",
+      "ordinal_3_2": 82,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_MessageSignInit",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_MessageSignInit",
+      "ordinal_3_2": 83,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_SignMessage",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SignMessage",
+      "ordinal_3_2": 84,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_SignMessageBegin",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SignMessageBegin",
+      "ordinal_3_2": 85,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_SignMessageNext",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_SignMessageNext",
+      "ordinal_3_2": 86,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_MessageSignFinal",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_MessageSignFinal",
+      "ordinal_3_2": 87,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_MessageVerifyInit",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_MessageVerifyInit",
+      "ordinal_3_2": 88,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_VerifyMessage",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_VerifyMessage",
+      "ordinal_3_2": 89,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_VerifyMessageBegin",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_VerifyMessageBegin",
+      "ordinal_3_2": 90,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_VerifyMessageNext",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_VerifyMessageNext",
+      "ordinal_3_2": 91,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A18",
+        "A19"
+      ],
+      "entry": "planCall:F_MessageVerifyFinal",
+      "first_layout": "CK_FUNCTION_LIST_3_0",
+      "layouts": [
+        "3.0",
+        "3.1",
+        "3.2"
+      ],
+      "name": "C_MessageVerifyFinal",
+      "ordinal_3_2": 92,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/MessageSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A19",
+        "A20",
+        "A22",
+        "A23"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_EncapsulateKey",
+      "ordinal_3_2": 93,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec KEM encaps cases, SyntheticSpec KEM)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A19",
+        "A20",
+        "A22",
+        "A23"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_DecapsulateKey",
+      "ordinal_3_2": 94,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec KEM cases, SyntheticSpec KEM)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_VerifySignatureInit",
+      "ordinal_3_2": 95,
+      "reason": "no validation-object verify planning",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_VerifySignature",
+      "ordinal_3_2": 96,
+      "reason": "no validation-object verify planning",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_VerifySignatureUpdate",
+      "ordinal_3_2": 97,
+      "reason": "no validation-object verify planning",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A16",
+        "A21",
+        "A24"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_VerifySignatureFinal",
+      "ordinal_3_2": 98,
+      "reason": "no validation-object verify planning",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A40",
+        "A45"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_GetSessionValidationFlags",
+      "ordinal_3_2": 99,
+      "reason": "no validation-flags planning",
+      "test_evidence": []
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A25",
+        "A26",
+        "A27",
+        "A28",
+        "A30"
+      ],
+      "entry": "haskoki-export:haskoki_hs_async_complete",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_AsyncComplete",
+      "ordinal_3_2": 100,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/AsyncEngineSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/DetachedEngineSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A28",
+        "A29",
+        "A30"
+      ],
+      "entry": "haskoki-export:haskoki_hs_async_get_id",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_AsyncGetID",
+      "ordinal_3_2": 101,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/DetachedEngineSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "planned-with-behavior",
+      "csv_acceptance": [
+        "A28",
+        "A29",
+        "A30"
+      ],
+      "entry": "haskoki-export:haskoki_hs_async_join",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_AsyncJoin",
+      "ordinal_3_2": 102,
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/DetachedEngineSpec.hs"
+        }
+      ]
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A19",
+        "A20",
+        "A22",
+        "A23"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_WrapKeyAuthenticated",
+      "ordinal_3_2": 103,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec authenticated-wrapping cases)",
+      "test_evidence": []
+    },
+    {
+      "contract": "unsupported-with-reason",
+      "csv_acceptance": [
+        "A19",
+        "A20",
+        "A22",
+        "A23"
+      ],
+      "entry": "none",
+      "first_layout": "CK_FUNCTION_LIST_3_2",
+      "layouts": [
+        "3.2"
+      ],
+      "name": "C_UnwrapKeyAuthenticated",
+      "ordinal_3_2": 104,
+      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec authenticated-unwrapping cases)",
+      "test_evidence": []
+    }
+  ],
+  "schema_version": 1,
+  "status": "generated-source-of-truth",
+  "provenance": "104 3.2-layout functions from spec/abi-inventory.json with planning-seed acceptance cases; classification reviewed against the contract criterion (entry + executed behavior tests). Re-runs preserve no rows: classification edits land in this generator's PLANNED/UNSUPPORTED/NOT_APPLICABLE tables."
+}

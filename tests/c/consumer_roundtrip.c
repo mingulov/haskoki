@@ -1,0 +1,1692 @@
+/* tests/c/consumer_roundtrip.c — direct-load consumer, fully wired:
+ * real session/object/sign/encrypt round-trips plus pinned refusals
+ * for the genuinely unrouted calls.
+ *
+ * Standalone C consumer (non-Haskell executable): dlopen()s the built
+ * libhaskoki shared module (or, in proxy topology, the pkcs11-proxy-ng
+ * shim) and drives it through the pinned 3.2 headers:
+ *   - REAL digest round-trips via the routed engine:
+ *     one-shot/size-query/short-buffer recall over SHA-256, SHA-1
+ *     and SHA-512 (FIPS "abc" bytes), multipart update/final flows,
+ *     and init/update/final edge codes, on a real session in both
+ *     topologies
+ *   - the SAME bytes via the routed haskoki_crypto_* trampolines
+ *     (Haskell engine path; prototypes redeclared locally, never from
+ *     provider headers) and a byte cross-check between both paths
+ *     (direct topology only; the shim has no vendor trampolines)
+ *   - REAL session and object flows: create/get/
+ *     copy/find/destroy incl. visibility, the find cursor, and edge
+ *     codes
+ *   - PINNED honest refusals for the genuinely unrouted calls
+ *     (CKR_FUNCTION_NOT_SUPPORTED from the surviving stubs in
+ *     cbits/function_tables.c): no phantom support is claimed, and
+ *     any future wiring flips these pins loudly instead of silently
+ *   - slot-event no-event behavior + post-finalize state-first ordering
+ *
+ * Topology: HASKOKI_CONSUMER_TOPOLOGY=proxy selects proxy-mode
+ * expectations for handle-carrying calls (CKR_SESSION_HANDLE_INVALID
+ * from shim-side session validation — the backend never sees these
+ * calls) and skips the routed-trampoline section. Lines prefixed
+ * "crypto:"/"routed:" carry topology-specific assertions; all other
+ * check lines carry topology-independent assertions over forwarded
+ * calls, and the parity script diffs exactly those lines
+ * direct-vs-proxied.
+ *
+ * This TU deliberately includes ONLY the pinned vendor headers; it
+ * never consumes provider-generated artifacts (enforced by the
+ * driver script's independence guard).
+ *
+ * Compile with -Ispec/vendor. Part of
+ * scripts/test-consumers.sh and scripts/test-proxy-parity.sh.
+ * Usage: consumer_roundtrip <path-to-libhaskoki.so>
+ */
+#define _POSIX_C_SOURCE 200809L
+
+#define CK_PTR *
+#define CK_DECLARE_FUNCTION(returnType, name) returnType name
+#define CK_DECLARE_FUNCTION_POINTER(returnType, name) returnType(*name)
+#define CK_CALLBACK_FUNCTION(returnType, name) returnType(*name)
+/* NULL_PTR comes from the vendored PD header (always defined). */
+#include "pkcs11.h"
+
+#include <dlfcn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+/* Routed-digest trampolines: locally declared prototypes (independent
+ * consumer; this TU deliberately does NOT include cbits headers). */
+typedef void *haskoki_crypto_ctx_t;
+typedef haskoki_crypto_ctx_t (*fn_crypto_open)(void);
+typedef void (*fn_crypto_close)(haskoki_crypto_ctx_t ctx);
+typedef CK_RV (*fn_crypto_digest_init)(haskoki_crypto_ctx_t ctx,
+                                      CK_SESSION_HANDLE hSession,
+                                      CK_MECHANISM_TYPE mech,
+                                      CK_BYTE_PTR pParams,
+                                      CK_ULONG ulParamsLen);
+typedef CK_RV (*fn_crypto_digest)(haskoki_crypto_ctx_t ctx,
+                                 CK_SESSION_HANDLE hSession,
+                                 CK_BYTE_PTR pData, CK_ULONG ulDataLen,
+                                 CK_BYTE_PTR pDigest,
+                                 CK_ULONG_PTR pulDigestLen);
+
+static int g_failures = 0;
+
+#define CHECK(cond, ...)                                                   \
+  do {                                                                     \
+    if (!(cond)) {                                                         \
+      printf("FAIL [%s:%d]: ", __FILE__, __LINE__);                        \
+      printf(__VA_ARGS__);                                                 \
+      printf("\n");                                                        \
+      g_failures++;                                                        \
+    } else {                                                               \
+      printf("ok: ");                                                      \
+      printf(__VA_ARGS__);                                                 \
+      printf("\n");                                                        \
+    }                                                                      \
+  } while (0)
+
+/* Topology-scoped checks: prefixed so the parity script excludes them
+ * (handle-carrying calls legitimately diverge: the backend answers
+ * from its direct path while the shim rejects unopened handles first). */
+#define CHECKC(cond, ...)                                                  \
+  do {                                                                     \
+    if (!(cond)) {                                                         \
+      printf("crypto: FAIL [%s:%d]: ", __FILE__, __LINE__);                \
+      printf(__VA_ARGS__);                                                 \
+      printf("\n");                                                        \
+      g_failures++;                                                        \
+    } else {                                                               \
+      printf("crypto: ok: ");                                              \
+      printf(__VA_ARGS__);                                                 \
+      printf("\n");                                                        \
+    }                                                                      \
+  } while (0)
+
+#define CHECKR(cond, ...)                                                  \
+  do {                                                                     \
+    if (!(cond)) {                                                         \
+      printf("routed: FAIL [%s:%d]: ", __FILE__, __LINE__);                \
+      printf(__VA_ARGS__);                                                 \
+      printf("\n");                                                        \
+      g_failures++;                                                        \
+    } else {                                                               \
+      printf("routed: ok: ");                                              \
+      printf(__VA_ARGS__);                                                 \
+      printf("\n");                                                        \
+    }                                                                      \
+  } while (0)
+
+/* FIPS 180-4: SHA-256("abc"). */
+static const CK_BYTE kWant[32] = {
+  0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde,
+  0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+  0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
+};
+
+static char g_cfg_path[256];
+
+static void write_config(void) {
+  static const char body[] = "schema_version = 1\n"
+                             "profile = \"real-crypto\"\n"
+                             "[storage]\n"
+                             "kind = \"memory\"\n"
+                             "[engine]\n"
+                             "kind = \"openssl\"\n"
+                             "allow_synthetic_fallback = false\n"
+                             "private_library_context = true\n"
+                             "[trace]\n"
+                             "enabled = false\n";
+  char tmpl[] = "/tmp/haskoki-consumer-XXXXXX";
+  int fd = mkstemp(tmpl);
+  size_t want;
+  if (fd < 0) {
+    perror("mkstemp");
+    exit(2);
+  }
+  want = sizeof(body) - 1;
+  if (write(fd, body, want) != (ssize_t)want) {
+    perror("write");
+    exit(2);
+  }
+  close(fd);
+  snprintf(g_cfg_path, sizeof(g_cfg_path), "%s", tmpl);
+  if (setenv("HASKOKI_CONFIG", g_cfg_path, 1) != 0) {
+    perror("setenv");
+    exit(2);
+  }
+}
+
+int main(int argc, char **argv) {
+  void *handle;
+  CK_C_GetFunctionList pGetList;
+  CK_FUNCTION_LIST_PTR f = NULL_PTR;
+  CK_RV rv;
+  CK_MECHANISM mech;
+  CK_BYTE out[64];
+  CK_ULONG outLen;
+  CK_BYTE routed[64];
+  CK_ULONG routedLen;
+  int routedRan = 0;
+  fn_crypto_open pOpen;
+  fn_crypto_close pClose;
+  fn_crypto_digest_init pInit;
+  fn_crypto_digest pDigest;
+  haskoki_crypto_ctx_t ctx;
+  CK_SESSION_HANDLE sess = 0;
+  const char *topo;
+  int isProxy;
+
+  if (argc != 2) {
+    fprintf(stderr, "usage: %s <libhaskoki.so>\n", argv[0]);
+    return 2;
+  }
+  topo = getenv("HASKOKI_CONSUMER_TOPOLOGY");
+  isProxy = topo && strcmp(topo, "proxy") == 0;
+  printf("topology: %s\n", isProxy ? "proxy" : "direct");
+  write_config();
+  handle = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+  if (!handle) {
+    fprintf(stderr, "dlopen failed: %s\n", dlerror());
+    return 2;
+  }
+  pGetList = (CK_C_GetFunctionList)dlsym(handle, "C_GetFunctionList");
+  CHECK(pGetList != NULL, "C_GetFunctionList resolves");
+  rv = pGetList(&f);
+  CHECK(rv == CKR_OK && f, "function list fetches");
+  rv = f->C_Initialize(NULL_PTR);
+  CHECK(rv == CKR_OK, "C_Initialize ok");
+
+  mech.mechanism = CKM_SHA256;
+  mech.pParameter = NULL_PTR;
+  mech.ulParameterLen = 0;
+  /* ---- REAL digest via the routed engine: one-shot,
+   * size-query, short-buffer recall, and multipart, on a real
+   * session in both topologies (the shim forwards opened
+   * handles). ---- */
+  {
+    static const CK_BYTE kWant1[20] = {
+      0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e,
+      0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d
+    };
+    static const CK_BYTE kWant512[64] = {
+      0xdd, 0xaf, 0x35, 0xa1, 0x93, 0x61, 0x7a, 0xba, 0xcc, 0x41,
+      0x73, 0x49, 0xae, 0x20, 0x41, 0x31, 0x12, 0xe6, 0xfa, 0x4e,
+      0x89, 0xa9, 0x7e, 0xa2, 0x0a, 0x9e, 0xee, 0xe6, 0x4b, 0x55,
+      0xd3, 0x9a, 0x21, 0x92, 0x99, 0x2a, 0x27, 0x4f, 0xc1, 0xa8,
+      0x36, 0xba, 0x3c, 0x23, 0xa3, 0xfe, 0xeb, 0xbd, 0x45, 0x4d,
+      0x44, 0x23, 0x64, 0x3c, 0xe8, 0x0e, 0x2a, 0x9a, 0xc9, 0x4f,
+      0xa5, 0x4c, 0xa4, 0x9f
+    };
+    CK_SESSION_HANDLE dsess = 0;
+    CK_BYTE big[64];
+    CK_ULONG bigLen;
+    rv = f->C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
+                          NULL_PTR, &dsess);
+    if (rv == CKR_SLOT_ID_INVALID) {
+      CK_SLOT_ID psl[8];
+      CK_ULONG pn = 8;
+      if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
+        rv = f->C_OpenSession(psl[0], CKF_SERIAL_SESSION | CKF_RW_SESSION,
+                              NULL_PTR, NULL_PTR, &dsess);
+      }
+    }
+    CHECKC(rv == CKR_OK && dsess != 0, "digest session opens");
+    outLen = sizeof(out);
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, out, &outLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "digest without init is NOT_INITIALIZED");
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OK, "DigestInit SHA256 ok");
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OPERATION_ACTIVE, "second DigestInit is ACTIVE");
+    outLen = 0;
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, NULL_PTR, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32, "size query reports 32");
+    /* A successful size query does not terminate the op (PKCS#11 v3.1
+     * C_Digest: a call "to determine the length of the buffer needed"
+     * leaves the operation live): the follow-up one-shot completes. */
+    outLen = sizeof(out);
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, out, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32 && memcmp(out, kWant, 32) == 0,
+           "one-shot after query completes with FIPS bytes");
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OK, "re-init after one-shot");
+    outLen = 8;
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, out, &outLen);
+    CHECKC(rv == CKR_BUFFER_TOO_SMALL && outLen == 32,
+           "short buffer reports 32");
+    outLen = sizeof(out);
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, out, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32 && memcmp(out, kWant, 32) == 0,
+           "recall completes with FIPS bytes");
+    /* A query finalizes the one-shot: updates refuse, but the staged
+     * output stays for the recall. */
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OK, "re-init for query-update edge");
+    outLen = 0;
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, NULL_PTR, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32, "edge query reports 32");
+    rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "abc", 3);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "update after query is NOT_INITIALIZED");
+    outLen = sizeof(out);
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, out, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32 && memcmp(out, kWant, 32) == 0,
+           "recall after refused update keeps FIPS bytes");
+    /* A second size query re-reports the length; the op stays live. */
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OK, "re-init for double query");
+    outLen = 0;
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, NULL_PTR, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32, "first query reports 32");
+    outLen = 0;
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, NULL_PTR, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32, "second query reports 32");
+    outLen = sizeof(out);
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, out, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32 && memcmp(out, kWant, 32) == 0,
+           "one-shot after double query completes");
+    rv = f->C_DigestInit(dsess, NULL_PTR);
+    CHECKC(rv == CKR_ARGUMENTS_BAD, "NULL mechanism is ARGUMENTS_BAD");
+    mech.mechanism = 0xDEADUL;
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_MECHANISM_INVALID, "bogus init is MECHANISM_INVALID");
+    mech.mechanism = CKM_SHA_1;
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OK, "SHA-1 init ok (multi-digest)");
+    outLen = sizeof(out);
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, out, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 20 && memcmp(out, kWant1, 20) == 0,
+           "SHA-1 one-shot FIPS bytes");
+    mech.mechanism = CKM_SHA512;
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OK, "SHA-512 init ok");
+    bigLen = sizeof(big);
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, big, &bigLen);
+    CHECKC(rv == CKR_OK && bigLen == 64 && memcmp(big, kWant512, 64) == 0,
+           "SHA-512 one-shot FIPS bytes");
+    mech.mechanism = CKM_SHA256;
+    rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "a", 1);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "update without init is NOT_INITIALIZED");
+    rv = f->C_DigestFinal(dsess, out, &outLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "final without init is NOT_INITIALIZED");
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OK, "multipart init ok");
+    rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "a", 1);
+    CHECKC(rv == CKR_OK, "multipart update one ok");
+    rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "bc", 2);
+    CHECKC(rv == CKR_OK, "multipart update two ok");
+    outLen = sizeof(out);
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, out, &outLen);
+    CHECKC(rv == CKR_OPERATION_ACTIVE, "one-shot over buffered is ACTIVE");
+    outLen = sizeof(out);
+    rv = f->C_DigestFinal(dsess, out, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32 && memcmp(out, kWant, 32) == 0,
+           "multipart final FIPS bytes");
+    rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "a", 1);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "update after final is NOT_INITIALIZED");
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OK, "init for final-query");
+    rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "abc", 3);
+    CHECKC(rv == CKR_OK, "update for final-query");
+    outLen = 0;
+    rv = f->C_DigestFinal(dsess, NULL_PTR, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32, "final query reports 32");
+    outLen = sizeof(out);
+    rv = f->C_DigestFinal(dsess, out, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32 && memcmp(out, kWant, 32) == 0,
+           "final after query completes with FIPS bytes");
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OK, "init for short final");
+    rv = f->C_DigestUpdate(dsess, (CK_BYTE_PTR) "abc", 3);
+    CHECKC(rv == CKR_OK, "update for short final");
+    outLen = 8;
+    rv = f->C_DigestFinal(dsess, out, &outLen);
+    CHECKC(rv == CKR_BUFFER_TOO_SMALL && outLen == 32,
+           "short final reports 32");
+    /* A second short call re-reports the required length. */
+    outLen = 8;
+    rv = f->C_DigestFinal(dsess, out, &outLen);
+    CHECKC(rv == CKR_BUFFER_TOO_SMALL && outLen == 32,
+           "second short final reports 32");
+    outLen = sizeof(out);
+    rv = f->C_DigestFinal(dsess, out, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32 && memcmp(out, kWant, 32) == 0,
+           "final recall FIPS bytes");
+    rv = f->C_DigestInit(dsess, &mech);
+    CHECKC(rv == CKR_OK, "re-init after final");
+    outLen = sizeof(out);
+    rv = f->C_Digest(dsess, (CK_BYTE_PTR) "abc", 3, out, &outLen);
+    CHECKC(rv == CKR_OK && outLen == 32, "terminating one-shot");
+    {
+      /* The engine recipe requires empty digest params
+       * (checkMechParams): a stray param byte is ARGUMENTS_BAD. */
+      CK_MECHANISM bad;
+      CK_BYTE param = 0;
+      bad.mechanism = CKM_SHA256;
+      bad.pParameter = &param;
+      bad.ulParameterLen = 1;
+      rv = f->C_DigestInit(dsess, &bad);
+      if (!isProxy) {
+        CHECKC(rv == CKR_ARGUMENTS_BAD,
+               "SHA-256 with stray param is ARGUMENTS_BAD");
+      } else {
+        /* The shim translates init param errors to PARAM_INVALID. */
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "proxied stray param is PARAM_INVALID");
+      }
+    }
+    rv = f->C_CloseSession(dsess);
+    CHECKC(rv == CKR_OK, "digest session closes");
+  }
+
+  /* ---- SAME bytes via the routed Haskell-engine trampolines ----
+   * Direct topology only: the shim exports no vendor trampolines. */
+  pOpen = (fn_crypto_open)dlsym(handle, "haskoki_crypto_open");
+  pClose = (fn_crypto_close)dlsym(handle, "haskoki_crypto_close");
+  pInit = (fn_crypto_digest_init)dlsym(handle, "haskoki_crypto_digest_init");
+  pDigest = (fn_crypto_digest)dlsym(handle, "haskoki_crypto_digest");
+  if (!pOpen || !pClose || !pInit || !pDigest) {
+    if (!isProxy) {
+      CHECKR(0, "routed trampolines resolve");
+    } else {
+      printf("routed: skip: shim has no vendor trampolines\n");
+    }
+  } else {
+    ctx = pOpen();
+    CHECKR(ctx != NULL, "routed ctx opens");
+    if (ctx != NULL) {
+      rv = pInit(ctx, 1, CKM_SHA256, NULL_PTR, 0);
+      CHECKR(rv == CKR_OK, "routed digest init ok");
+      routedLen = sizeof(routed);
+      rv = pDigest(ctx, 1, (CK_BYTE_PTR) "abc", 3, routed, &routedLen);
+      CHECKR(rv == CKR_OK && routedLen == 32 && memcmp(routed, kWant, 32) == 0,
+             "routed digest yields FIPS bytes");
+      routedRan = (rv == CKR_OK && routedLen == 32);
+      pClose(ctx);
+    }
+  }
+  if (!isProxy && routedRan) {
+    CHECKR(memcmp(out, routed, 32) == 0,
+           "C-surface and routed bytes agree");
+  }
+
+  /* ---- sessions are real; the rest stays pinned ----
+   * Direct: sessions open/close against the routed engine; the calls
+   * below still return CKR_FUNCTION_NOT_SUPPORTED from the remaining
+   * stubs — no sessions meant no objects/login/keygen/sign/encrypt,
+   * and now the survivors are exactly the genuinely unrouted calls.
+   * Proxy: handle-free calls forward the same refusal; handle-
+   * carrying calls are rejected pre-forward with
+   * CKR_SESSION_HANDLE_INVALID (shim session validation). */
+  rv = f->C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
+                        NULL_PTR, &sess);
+  if (rv == CKR_SLOT_ID_INVALID) {
+    /* Proxy slot ids are remapped (observed: backend 0 -> proxy 1),
+     * so retry with the discovered id when slot 0 misses. */
+    CK_SLOT_ID psl[8];
+    CK_ULONG pn = 8;
+    if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
+      rv = f->C_OpenSession(psl[0], CKF_SERIAL_SESSION | CKF_RW_SESSION,
+                            NULL_PTR, NULL_PTR, &sess);
+    }
+  }
+  CHECK(rv == CKR_OK && sess != 0, "OpenSession RW ok");
+  rv = f->C_InitToken(0, (CK_UTF8CHAR_PTR) "5678", 4,
+                      (CK_UTF8CHAR_PTR) "roundtrip");
+  if (!isProxy) {
+    CHECK(rv == CKR_FUNCTION_NOT_SUPPORTED, "InitToken honestly NA");
+  } else {
+    if (rv == CKR_SLOT_ID_INVALID) {
+      CK_SLOT_ID psl[8];
+      CK_ULONG pn = 8;
+      if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
+        rv = f->C_InitToken(psl[0], (CK_UTF8CHAR_PTR) "5678", 4,
+                            (CK_UTF8CHAR_PTR) "roundtrip");
+      }
+    }
+    CHECK(rv == CKR_FUNCTION_NOT_SUPPORTED, "InitToken honestly NA");
+  }
+  /* ---- login/logout are real ---- */
+  {
+    CK_SESSION_INFO sinfo;
+    CK_TOKEN_INFO tinf;
+    CK_SLOT_ID here = 0;
+    {
+      CK_SLOT_ID psl[8];
+      CK_ULONG pn = 8;
+      if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
+        here = psl[0];
+      }
+    }
+    rv = f->C_GetSessionInfo(sess, &sinfo);
+    CHECKC(rv == CKR_OK && sinfo.state == CKS_RW_PUBLIC_SESSION,
+           "pre-login state public");
+    rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+    CHECKC(rv == CKR_OK, "user login ok");
+    rv = f->C_GetSessionInfo(sess, &sinfo);
+    CHECKC(rv == CKR_OK && sinfo.state == CKS_RW_USER_FUNCTIONS,
+           "post-login state user");
+    rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+    CHECKC(rv == CKR_USER_ALREADY_LOGGED_IN, "double login refused");
+    rv = f->C_Logout(sess);
+    CHECKC(rv == CKR_OK, "logout ok");
+    rv = f->C_GetSessionInfo(sess, &sinfo);
+    CHECKC(rv == CKR_OK && sinfo.state == CKS_RW_PUBLIC_SESSION,
+           "post-logout state public");
+    rv = f->C_Logout(sess);
+    CHECKC(rv == CKR_USER_NOT_LOGGED_IN, "logout without login refused");
+    rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "9999", 4);
+    CHECKC(rv == CKR_PIN_INCORRECT, "wrong PIN incorrect");
+    rv = f->C_GetTokenInfo(here, &tinf);
+    CHECKC(rv == CKR_OK && (tinf.flags & CKF_USER_PIN_COUNT_LOW) != 0 &&
+               (tinf.flags & CKF_USER_PIN_FINAL_TRY) == 0,
+           "one miss shows count-low");
+    rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+    CHECKC(rv == CKR_OK, "correct PIN after a miss");
+    rv = f->C_GetTokenInfo(here, &tinf);
+    CHECKC(rv == CKR_OK && (tinf.flags & CKF_USER_PIN_COUNT_LOW) == 0,
+           "success clears count-low");
+    rv = f->C_Logout(sess);
+    CHECKC(rv == CKR_OK, "logout before visibility flip");
+    {
+      CK_OBJECT_CLASS klass = CKO_DATA;
+      CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
+      CK_OBJECT_HANDLE priv = 0;
+      CK_BYTE buf[64];
+      CK_ATTRIBUTE ptmpl[] = {
+        { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &no, sizeof(no) },
+        { CKA_PRIVATE, &yes, sizeof(yes) },
+        { CKA_LABEL, "s3-priv", 7 },
+      };
+      CK_ATTRIBUTE g[] = { { CKA_LABEL, buf, sizeof(buf) } };
+      rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+      CHECKC(rv == CKR_OK, "login for visibility flip");
+      rv = f->C_CreateObject(sess, ptmpl, 4, &priv);
+      CHECKC(rv == CKR_OK && priv != 0, "private created while logged in");
+      rv = f->C_GetAttributeValue(sess, priv, g, 1);
+      CHECKC(rv == CKR_OK && g[0].ulValueLen == 7 &&
+                 memcmp(buf, "s3-priv", 7) == 0,
+             "private readable while logged in");
+      rv = f->C_Logout(sess);
+      CHECKC(rv == CKR_OK, "logout hides private");
+      rv = f->C_GetAttributeValue(sess, priv, g, 1);
+      CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "private hidden on logout");
+      rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+      CHECKC(rv == CKR_OK, "re-login reveals private");
+      rv = f->C_GetAttributeValue(sess, priv, g, 1);
+      CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
+             "logout-killed handle stays dead after re-login");
+      {
+        /* Re-find for a fresh handle: the object survived, only the
+         * pre-logout binding died. */
+        CK_OBJECT_HANDLE fresh[4];
+        CK_ULONG nfresh = 4;
+        CK_ATTRIBUTE match[] = { { CKA_LABEL, "s3-priv", 7 } };
+        rv = f->C_FindObjectsInit(sess, match, 1);
+        CHECKC(rv == CKR_OK, "re-find init after re-login");
+        rv = f->C_FindObjects(sess, fresh, 4, &nfresh);
+        CHECKC(rv == CKR_OK && nfresh == 1, "re-find yields one");
+        rv = f->C_FindObjectsFinal(sess);
+        CHECKC(rv == CKR_OK, "re-find final");
+        priv = fresh[0];
+      }
+      rv = f->C_GetAttributeValue(sess, priv, g, 1);
+      CHECKC(rv == CKR_OK && g[0].ulValueLen == 7, "private readable again");
+      rv = f->C_DestroyObject(sess, priv);
+      CHECKC(rv == CKR_OK, "private destroyed while logged in");
+      rv = f->C_Logout(sess);
+      CHECKC(rv == CKR_OK, "logout after visibility flip");
+    }
+    rv = f->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
+    CHECKC(rv == CKR_OK, "SO login ok");
+    rv = f->C_GetSessionInfo(sess, &sinfo);
+    CHECKC(rv == CKR_OK && sinfo.state == CKS_RW_SO_FUNCTIONS,
+           "SO session state");
+    rv = f->C_Logout(sess);
+    CHECKC(rv == CKR_OK, "SO logout ok");
+    {
+      CK_SESSION_HANDLE rosess = 0;
+      rv = f->C_OpenSession(here, CKF_SERIAL_SESSION, NULL_PTR, NULL_PTR,
+                            &rosess);
+      CHECKC(rv == CKR_OK && rosess != 0, "RO session for SO refusal");
+      rv = f->C_Login(rosess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
+      CHECKC(rv == CKR_SESSION_READ_ONLY_EXISTS, "SO on RO refused");
+      rv = f->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
+      CHECKC(rv == CKR_SESSION_READ_ONLY_EXISTS, "SO with RO open refused");
+      rv = f->C_CloseSession(rosess);
+      CHECKC(rv == CKR_OK, "RO session closed");
+    }
+    rv = f->C_Login(sess, CKU_CONTEXT_SPECIFIC, (CK_UTF8CHAR_PTR) "1234", 4);
+    CHECKC(rv == CKR_USER_NOT_LOGGED_IN, "context login needs a user login");
+    rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+    CHECKC(rv == CKR_OK, "user login for context re-auth");
+    rv = f->C_Login(sess, CKU_CONTEXT_SPECIFIC, (CK_UTF8CHAR_PTR) "1234", 4);
+    CHECKC(rv == CKR_OK, "context re-auth ok");
+    rv = f->C_GetSessionInfo(sess, &sinfo);
+    CHECKC(rv == CKR_OK && sinfo.state == CKS_RW_USER_FUNCTIONS,
+           "context session shows user functions");
+    rv = f->C_Logout(sess);
+    CHECKC(rv == CKR_OK, "logout after context ok");
+    rv = f->C_Login(sess, 99, (CK_UTF8CHAR_PTR) "1234", 4);
+    CHECKC(rv == CKR_USER_TYPE_INVALID, "bogus user type invalid");
+    rv = f->C_Login(sess, CKU_USER, NULL_PTR, 0);
+    CHECKC(rv == CKR_PIN_INCORRECT, "empty PIN incorrect");
+    /* SO lockout last: three misses lock the role (user flows
+     * elsewhere in this run are unaffected). */
+    rv = f->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "bad1", 4);
+    CHECKC(rv == CKR_PIN_INCORRECT, "SO miss one");
+    rv = f->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "bad2", 4);
+    CHECKC(rv == CKR_PIN_INCORRECT, "SO miss two");
+    rv = f->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "bad3", 4);
+    CHECKC(rv == CKR_PIN_LOCKED, "SO miss three locks");
+    rv = f->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
+    CHECKC(rv == CKR_PIN_LOCKED, "locked SO stays locked");
+    rv = f->C_GetTokenInfo(here, &tinf);
+    CHECKC(rv == CKR_OK && (tinf.flags & CKF_SO_PIN_LOCKED) != 0,
+           "token shows SO locked");
+  }
+  /* ---- keygen is real: AES + RSA pair on a real
+   * session, both topologies (public session objects: no login
+   * dependence) ---- */
+  {
+    CK_SESSION_HANDLE ksess = 0;
+    CK_OBJECT_CLASS cls;
+    CK_KEY_TYPE kt;
+    CK_ULONG vlen;
+    CK_BBOOL bFalse = CK_FALSE;
+    CK_BBOOL bTrue = CK_TRUE;
+    CK_OBJECT_HANDLE key = 0, key2 = 0, pub = 0, priv = 0;
+    CK_ULONG rlen;
+    CK_OBJECT_CLASS rcls;
+    CK_ATTRIBUTE get[1];
+    CK_MECHANISM kgm;
+    rv = f->C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
+                          NULL_PTR, &ksess);
+    if (rv == CKR_SLOT_ID_INVALID) {
+      CK_SLOT_ID psl[8];
+      CK_ULONG pn = 8;
+      if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
+        rv = f->C_OpenSession(psl[0], CKF_SERIAL_SESSION | CKF_RW_SESSION,
+                              NULL_PTR, NULL_PTR, &ksess);
+      }
+    }
+    CHECKC(rv == CKR_OK && ksess != 0, "keygen session opens");
+    cls = CKO_SECRET_KEY;
+    kt = CKK_AES;
+    vlen = 16;
+    {
+      CK_BYTE val1[16];
+      CK_BYTE val2[16];
+      CK_ATTRIBUTE tmpl[] = {
+        { CKA_CLASS, &cls, sizeof(cls) },
+        { CKA_KEY_TYPE, &kt, sizeof(kt) },
+        { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_PRIVATE, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+      };
+      kgm.mechanism = CKM_AES_KEY_GEN;
+      kgm.pParameter = NULL_PTR;
+      kgm.ulParameterLen = 0;
+      rv = f->C_GenerateKey(ksess, NULL_PTR, tmpl, 6, &key);
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "GenerateKey NULL mech refused");
+      rv = f->C_GenerateKey(ksess, &kgm, tmpl, 6, NULL_PTR);
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "GenerateKey NULL handle refused");
+      rv = f->C_GenerateKey(ksess, &kgm, tmpl, 6, &key);
+      CHECKC(rv == CKR_OK && key != 0, "AES-128 keygen ok");
+      get[0].type = CKA_VALUE_LEN;
+      get[0].pValue = &rlen;
+      get[0].ulValueLen = sizeof(rlen);
+      rv = f->C_GetAttributeValue(ksess, key, get, 1);
+      CHECKC(rv == CKR_OK && rlen == 16, "genned key VALUE_LEN 16");
+      get[0].type = CKA_VALUE;
+      get[0].pValue = val1;
+      get[0].ulValueLen = sizeof(val1);
+      rv = f->C_GetAttributeValue(ksess, key, get, 1);
+      CHECKC(rv == CKR_OK && get[0].ulValueLen == 16, "genned key VALUE reads");
+      rv = f->C_GenerateKey(ksess, &kgm, tmpl, 6, &key2);
+      CHECKC(rv == CKR_OK && key2 != 0 && key2 != key, "second AES keygen ok");
+      get[0].type = CKA_VALUE;
+      get[0].pValue = val2;
+      get[0].ulValueLen = sizeof(val2);
+      rv = f->C_GetAttributeValue(ksess, key2, get, 1);
+      CHECKC(rv == CKR_OK && memcmp(val1, val2, 16) != 0,
+             "two keygens differ (fresh randomness)");
+      key2 = 0;
+      vlen = 15;
+      rv = f->C_GenerateKey(ksess, &kgm, tmpl, 6, &key2);
+      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT, "AES-15 refused");
+      CHECKC(key2 == 0, "refused keygen writes no handle");
+      rv = f->C_GenerateKey(ksess, &kgm, tmpl, 2, &key2);
+      CHECKC(rv == CKR_TEMPLATE_INCOMPLETE, "missing VALUE_LEN incomplete");
+    }
+    /* RSA pairgen stays pinned: the spec row is
+     * unsupported-with-reason (no reviewed prime-generation
+     * rules; synthetic has no GenRSA), so the real backend
+     * refuses and the surface reports MECHANISM_INVALID — in
+     * both topologies (the session is open, so the proxy
+     * forwards and the refusal comes from the backend). */
+    {
+      CK_OBJECT_CLASS pcls = CKO_PUBLIC_KEY;
+      CK_OBJECT_CLASS scls = CKO_PRIVATE_KEY;
+      CK_KEY_TYPE rkt = CKK_RSA;
+      CK_ULONG bits = 2048;
+      CK_ATTRIBUTE pubT[] = {
+        { CKA_CLASS, &pcls, sizeof(pcls) },
+        { CKA_KEY_TYPE, &rkt, sizeof(rkt) },
+        { CKA_MODULUS_BITS, &bits, sizeof(bits) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_ATTRIBUTE privT[] = {
+        { CKA_CLASS, &scls, sizeof(scls) },
+        { CKA_KEY_TYPE, &rkt, sizeof(rkt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      pub = 0;
+      priv = 0;
+      kgm.mechanism = CKM_RSA_PKCS_KEY_PAIR_GEN;
+      kgm.pParameter = NULL_PTR;
+      kgm.ulParameterLen = 0;
+      rv = f->C_GenerateKeyPair(ksess, &kgm, pubT, 4, privT, 3, &pub, &priv);
+      CHECKC(rv == CKR_MECHANISM_INVALID, "RSA pairgen honestly refused");
+      CHECKC(pub == 0 && priv == 0, "refused pairgen writes no handles");
+    }
+    /* EC P-256 pairgen is real (spec real: tested): the pair
+     * lands with distinct handles, honest classes, and private
+     * material; the sign section below proves it signs. */
+    {
+      static const CK_BYTE p256oid[] = {
+        0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07
+      };
+      CK_OBJECT_CLASS pcls = CKO_PUBLIC_KEY;
+      CK_OBJECT_CLASS scls = CKO_PRIVATE_KEY;
+      CK_KEY_TYPE ekt = CKK_EC;
+      CK_ATTRIBUTE pubT[] = {
+        { CKA_CLASS, &pcls, sizeof(pcls) },
+        { CKA_KEY_TYPE, &ekt, sizeof(ekt) },
+        { CKA_EC_PARAMS, (CK_VOID_PTR) p256oid, sizeof(p256oid) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_PRIVATE, &bFalse, sizeof(bFalse) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE privT[] = {
+        { CKA_CLASS, &scls, sizeof(scls) },
+        { CKA_KEY_TYPE, &ekt, sizeof(ekt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_PRIVATE, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+      };
+      CK_ULONG vlen2 = 0;
+      pub = 0;
+      priv = 0;
+      kgm.mechanism = CKM_EC_KEY_PAIR_GEN;
+      kgm.pParameter = NULL_PTR;
+      kgm.ulParameterLen = 0;
+      rv = f->C_GenerateKeyPair(ksess, NULL_PTR, pubT, 6, privT, 6,
+                                &pub, &priv);
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "GenerateKeyPair NULL mech refused");
+      rv = f->C_GenerateKeyPair(ksess, &kgm, pubT, 6, privT, 6, &pub, &priv);
+      CHECKC(rv == CKR_OK && pub != 0 && priv != 0 && pub != priv,
+             "EC P-256 pair ok with distinct handles");
+      get[0].type = CKA_CLASS;
+      get[0].pValue = &rcls;
+      get[0].ulValueLen = sizeof(rcls);
+      rv = f->C_GetAttributeValue(ksess, pub, get, 1);
+      CHECKC(rv == CKR_OK && rcls == CKO_PUBLIC_KEY, "EC pair pub class reads");
+      rv = f->C_GetAttributeValue(ksess, priv, get, 1);
+      CHECKC(rv == CKR_OK && rcls == CKO_PRIVATE_KEY,
+             "EC pair priv class reads");
+      get[0].type = CKA_VALUE;
+      get[0].pValue = NULL_PTR;
+      get[0].ulValueLen = 0;
+      rv = f->C_GetAttributeValue(ksess, priv, get, 1);
+      vlen2 = get[0].ulValueLen;
+      CHECKC(rv == CKR_OK && vlen2 > 100 && vlen2 < 200,
+             "EC pair priv carries DER material");
+    }
+    rv = f->C_CloseSession(ksess);
+    CHECKC(rv == CKR_OK, "keygen session closes");
+  }
+  /* ---- sign/verify are real: ECDSA + HMAC one-shot
+   * and multipart on a real session, both topologies ---- */
+  {
+    static const CK_BYTE p256oid[] = {
+      0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07
+    };
+    CK_SESSION_HANDLE ssess = 0;
+    CK_OBJECT_CLASS pcls = CKO_PUBLIC_KEY;
+    CK_OBJECT_CLASS scls = CKO_PRIVATE_KEY;
+    CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+    CK_KEY_TYPE ekt = CKK_EC;
+    CK_KEY_TYPE akt = CKK_AES;
+    CK_ULONG vlen = 16;
+    CK_BBOOL bFalse = CK_FALSE;
+    CK_BBOOL bTrue = CK_TRUE;
+    CK_OBJECT_HANDLE pub = 0, priv = 0, hmkey = 0;
+    CK_BYTE sig[128];
+    CK_ULONG sigLen;
+    CK_MECHANISM kgm;
+    CK_MECHANISM sm;
+    CK_MECHANISM hm;
+    CK_MECHANISM gm;
+    CK_BYTE gpar[8] = { 0, 0, 0, 0, 0, 0, 0, 16 };
+    rv = f->C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
+                          NULL_PTR, &ssess);
+    if (rv == CKR_SLOT_ID_INVALID) {
+      CK_SLOT_ID psl[8];
+      CK_ULONG pn = 8;
+      if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
+        rv = f->C_OpenSession(psl[0], CKF_SERIAL_SESSION | CKF_RW_SESSION,
+                              NULL_PTR, NULL_PTR, &ssess);
+      }
+    }
+    CHECKC(rv == CKR_OK && ssess != 0, "sign session opens");
+    {
+      CK_ATTRIBUTE pubT[] = {
+        { CKA_CLASS, &pcls, sizeof(pcls) },
+        { CKA_KEY_TYPE, &ekt, sizeof(ekt) },
+        { CKA_EC_PARAMS, (CK_VOID_PTR) p256oid, sizeof(p256oid) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE privT[] = {
+        { CKA_CLASS, &scls, sizeof(scls) },
+        { CKA_KEY_TYPE, &ekt, sizeof(ekt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE htmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      sm.mechanism = CKM_ECDSA_SHA256;
+      sm.pParameter = NULL_PTR;
+      sm.ulParameterLen = 0;
+      kgm.mechanism = CKM_EC_KEY_PAIR_GEN;
+      kgm.pParameter = NULL_PTR;
+      kgm.ulParameterLen = 0;
+      rv = f->C_GenerateKeyPair(ssess, &kgm, pubT, 5, privT, 4,
+                                &pub, &priv);
+      CHECKC(rv == CKR_OK && pub != 0 && priv != 0, "sign EC pair mints");
+      hm.mechanism = CKM_AES_KEY_GEN;
+      hm.pParameter = NULL_PTR;
+      hm.ulParameterLen = 0;
+      rv = f->C_GenerateKey(ssess, &hm, htmpl, 6, &hmkey);
+      CHECKC(rv == CKR_OK && hmkey != 0, "sign HMAC key mints");
+    }
+    /* ECDSA one-shot + edges. */
+    sigLen = sizeof(sig);
+    rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, sig, &sigLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "sign without init is NOT_INITIALIZED");
+    rv = f->C_SignInit(ssess, NULL_PTR, priv);
+    CHECKC(rv == CKR_ARGUMENTS_BAD, "SignInit NULL mech refused");
+    rv = f->C_SignInit(ssess, &sm, 9999);
+    CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "SignInit bad key refused");
+    rv = f->C_SignInit(ssess, &sm, pub);
+    CHECKC(rv == CKR_KEY_FUNCTION_NOT_PERMITTED,
+           "SignInit with verify-only key refused");
+    rv = f->C_SignInit(ssess, &sm, priv);
+    CHECKC(rv == CKR_OK, "ECDSA SignInit ok");
+    rv = f->C_SignInit(ssess, &sm, priv);
+    CHECKC(rv == CKR_OPERATION_ACTIVE, "second SignInit is ACTIVE");
+    sigLen = 0;
+    rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, NULL_PTR, &sigLen);
+    CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72,
+           "sign size query reports DER length");
+    /* The query leaves the op live: the follow-up one-shot signs. */
+    sigLen = sizeof(sig);
+    rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, sig, &sigLen);
+    CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72 && sig[0] == 0x30,
+           "one-shot after query yields DER bytes");
+    rv = f->C_SignInit(ssess, &sm, priv);
+    CHECKC(rv == CKR_OK, "re-init after one-shot");
+    sigLen = 10;
+    rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, sig, &sigLen);
+    CHECKC(rv == CKR_BUFFER_TOO_SMALL && sigLen > 64 && sigLen <= 72,
+           "short sign buffer reports DER length");
+    sigLen = sizeof(sig);
+    rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, sig, &sigLen);
+    CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72 && sig[0] == 0x30,
+           "one-shot sign yields DER bytes");
+    /* ECDSA verify one-shot + tamper. */
+    rv = f->C_Verify(ssess, (CK_BYTE_PTR) "abc", 3, sig, sigLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "verify without init is NOT_INITIALIZED");
+    rv = f->C_VerifyInit(ssess, &sm, priv);
+    CHECKC(rv == CKR_KEY_FUNCTION_NOT_PERMITTED,
+           "VerifyInit with sign-only key refused");
+    rv = f->C_VerifyInit(ssess, &sm, pub);
+    CHECKC(rv == CKR_OK, "ECDSA VerifyInit ok");
+    rv = f->C_Verify(ssess, (CK_BYTE_PTR) "abc", 3, sig, sigLen);
+    CHECKC(rv == CKR_OK, "ECDSA verify ok");
+    rv = f->C_VerifyInit(ssess, &sm, pub);
+    CHECKC(rv == CKR_OK, "re-init for tamper");
+    sig[((size_t) sigLen) - 1] ^= 0xFF;
+    rv = f->C_Verify(ssess, (CK_BYTE_PTR) "abc", 3, sig, sigLen);
+    CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered ECDSA refused");
+    /* ECDSA multipart. */
+    rv = f->C_SignUpdate(ssess, (CK_BYTE_PTR) "a", 1);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "sign update without init refused");
+    rv = f->C_SignFinal(ssess, sig, &sigLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "sign final without init refused");
+    rv = f->C_SignInit(ssess, &sm, priv);
+    CHECKC(rv == CKR_OK, "multipart sign init ok");
+    rv = f->C_SignUpdate(ssess, (CK_BYTE_PTR) "a", 1);
+    CHECKC(rv == CKR_OK, "multipart sign update one ok");
+    rv = f->C_SignUpdate(ssess, (CK_BYTE_PTR) "bc", 2);
+    CHECKC(rv == CKR_OK, "multipart sign update two ok");
+    sigLen = sizeof(sig);
+    rv = f->C_SignFinal(ssess, sig, &sigLen);
+    CHECKC(rv == CKR_OK && sigLen > 64 && sig[0] == 0x30,
+           "multipart sign final yields DER");
+    /* Final size query preserves the staged signature. */
+    rv = f->C_SignInit(ssess, &sm, priv);
+    CHECKC(rv == CKR_OK, "sign init for final-query");
+    rv = f->C_SignUpdate(ssess, (CK_BYTE_PTR) "abc", 3);
+    CHECKC(rv == CKR_OK, "sign update for final-query");
+    sigLen = 0;
+    rv = f->C_SignFinal(ssess, NULL_PTR, &sigLen);
+    CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72,
+           "sign final query reports DER length");
+    sigLen = sizeof(sig);
+    rv = f->C_SignFinal(ssess, sig, &sigLen);
+    CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72 && sig[0] == 0x30,
+           "sign final after query yields DER bytes");
+    rv = f->C_VerifyUpdate(ssess, (CK_BYTE_PTR) "a", 1);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "verify update without init refused");
+    rv = f->C_VerifyInit(ssess, &sm, pub);
+    CHECKC(rv == CKR_OK, "multipart verify init ok");
+    rv = f->C_VerifyUpdate(ssess, (CK_BYTE_PTR) "a", 1);
+    CHECKC(rv == CKR_OK, "multipart verify update one ok");
+    rv = f->C_VerifyUpdate(ssess, (CK_BYTE_PTR) "bc", 2);
+    CHECKC(rv == CKR_OK, "multipart verify update two ok");
+    rv = f->C_VerifyFinal(ssess, sig, sigLen);
+    CHECKC(rv == CKR_OK, "multipart verify final ok");
+    /* HMAC one-shot + GENERAL truncation. */
+    hm.mechanism = CKM_SHA256_HMAC;
+    hm.pParameter = NULL_PTR;
+    hm.ulParameterLen = 0;
+    rv = f->C_SignInit(ssess, &hm, hmkey);
+    CHECKC(rv == CKR_OK, "HMAC SignInit ok");
+    sigLen = sizeof(sig);
+    rv = f->C_Sign(ssess, (CK_BYTE_PTR) "Hi There", 8, sig, &sigLen);
+    CHECKC(rv == CKR_OK && sigLen == 32, "HMAC sign yields 32 bytes");
+    rv = f->C_VerifyInit(ssess, &hm, hmkey);
+    CHECKC(rv == CKR_OK, "HMAC VerifyInit ok");
+    rv = f->C_Verify(ssess, (CK_BYTE_PTR) "Hi There", 8, sig, sigLen);
+    CHECKC(rv == CKR_OK, "HMAC verify ok");
+    gm.mechanism = CKM_SHA256_HMAC_GENERAL;
+    gm.pParameter = gpar;
+    gm.ulParameterLen = sizeof(gpar);
+    rv = f->C_SignInit(ssess, &gm, hmkey);
+    CHECKC(rv == CKR_OK, "HMAC-GENERAL SignInit ok");
+    sigLen = sizeof(sig);
+    rv = f->C_Sign(ssess, (CK_BYTE_PTR) "Hi There", 8, sig, &sigLen);
+    CHECKC(rv == CKR_OK && sigLen == 16, "HMAC-GENERAL sign yields 16 bytes");
+    rv = f->C_VerifyInit(ssess, &gm, hmkey);
+    CHECKC(rv == CKR_OK, "HMAC-GENERAL VerifyInit ok");
+    rv = f->C_Verify(ssess, (CK_BYTE_PTR) "Hi There", 8, sig, sigLen);
+    CHECKC(rv == CKR_OK, "HMAC-GENERAL verify ok");
+    gm.ulParameterLen = 0;
+    rv = f->C_SignInit(ssess, &gm, hmkey);
+    CHECKC(rv == CKR_ARGUMENTS_BAD, "HMAC-GENERAL empty params refused");
+    rv = f->C_CloseSession(ssess);
+    CHECKC(rv == CKR_OK, "sign session closes");
+  }
+  /* ---- encrypt/decrypt are real: AES-CBC-PAD and
+   * AES-CBC one-shot and multipart on a real session, both
+   * topologies ---- */
+  {
+    CK_SESSION_HANDLE esess = 0;
+    CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+    CK_KEY_TYPE akt = CKK_AES;
+    CK_ULONG vlen = 32;
+    CK_BBOOL bFalse = CK_FALSE;
+    CK_BBOOL bTrue = CK_TRUE;
+    CK_OBJECT_HANDLE ekey = 0;
+    CK_BYTE iv[16];
+    CK_BYTE ct[64];
+    CK_BYTE pt[64];
+    CK_ULONG ctLen;
+    CK_ULONG ptLen;
+    CK_ULONG partLen = 0;
+    CK_MECHANISM em;
+    CK_MECHANISM dm;
+    CK_MECHANISM cm;
+    memset(iv, 0xA5, sizeof(iv));
+    rv = f->C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
+                          NULL_PTR, &esess);
+    if (rv == CKR_SLOT_ID_INVALID) {
+      CK_SLOT_ID psl[8];
+      CK_ULONG pn = 8;
+      if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
+        rv = f->C_OpenSession(psl[0], CKF_SERIAL_SESSION | CKF_RW_SESSION,
+                              NULL_PTR, NULL_PTR, &esess);
+      }
+    }
+    CHECKC(rv == CKR_OK && esess != 0, "crypt session opens");
+    {
+      CK_ATTRIBUTE tmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_ENCRYPT, &bTrue, sizeof(bTrue) },
+        { CKA_DECRYPT, &bTrue, sizeof(bTrue) }
+      };
+      CK_MECHANISM kgm;
+      kgm.mechanism = CKM_AES_KEY_GEN;
+      kgm.pParameter = NULL_PTR;
+      kgm.ulParameterLen = 0;
+      rv = f->C_GenerateKey(esess, &kgm, tmpl, 6, &ekey);
+      CHECKC(rv == CKR_OK && ekey != 0, "crypt AES-256 key mints");
+    }
+    em.mechanism = CKM_AES_CBC_PAD;
+    em.pParameter = iv;
+    em.ulParameterLen = sizeof(iv);
+    dm.mechanism = CKM_AES_CBC_PAD;
+    dm.pParameter = iv;
+    dm.ulParameterLen = sizeof(iv);
+    /* Encrypt one-shot + edges. */
+    ctLen = sizeof(ct);
+    rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "abc", 3, ct, &ctLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "encrypt without init is NOT_INITIALIZED");
+    rv = f->C_EncryptInit(esess, NULL_PTR, ekey);
+    CHECKC(rv == CKR_ARGUMENTS_BAD, "EncryptInit NULL mech refused");
+    {
+      CK_MECHANISM noiv;
+      noiv.mechanism = CKM_AES_CBC_PAD;
+      noiv.pParameter = NULL_PTR;
+      noiv.ulParameterLen = 0;
+      rv = f->C_EncryptInit(esess, &noiv, ekey);
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "EncryptInit empty IV refused");
+    }
+    rv = f->C_EncryptInit(esess, &em, 9999);
+    CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "EncryptInit bad key refused");
+    rv = f->C_EncryptInit(esess, &em, ekey);
+    CHECKC(rv == CKR_OK, "CBC-PAD EncryptInit ok");
+    rv = f->C_EncryptInit(esess, &em, ekey);
+    CHECKC(rv == CKR_OPERATION_ACTIVE, "second EncryptInit is ACTIVE");
+    ctLen = 0;
+    rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "abc", 3, NULL_PTR, &ctLen);
+    CHECKC(rv == CKR_OK && ctLen == 16, "encrypt size query reports 16");
+    /* The query leaves the op live: the follow-up one-shot encrypts. */
+    ctLen = sizeof(ct);
+    rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "abc", 3, ct, &ctLen);
+    CHECKC(rv == CKR_OK && ctLen == 16, "one-shot after query yields 16 bytes");
+    rv = f->C_EncryptInit(esess, &em, ekey);
+    CHECKC(rv == CKR_OK, "re-init after one-shot");
+    ctLen = 8;
+    rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "abc", 3, ct, &ctLen);
+    CHECKC(rv == CKR_BUFFER_TOO_SMALL && ctLen == 16,
+           "short encrypt buffer reports 16");
+    ctLen = sizeof(ct);
+    rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "abc", 3, ct, &ctLen);
+    CHECKC(rv == CKR_OK && ctLen == 16, "one-shot encrypt yields 16 bytes");
+    /* Decrypt one-shot + tamper. */
+    ptLen = sizeof(pt);
+    rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "decrypt without init is NOT_INITIALIZED");
+    rv = f->C_DecryptInit(esess, &dm, ekey);
+    CHECKC(rv == CKR_OK, "CBC-PAD DecryptInit ok");
+    ptLen = sizeof(pt);
+    rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
+    CHECKC(rv == CKR_OK && ptLen == 3 && memcmp(pt, "abc", 3) == 0,
+           "one-shot decrypt recovers abc");
+    /* Decrypt size query preserves the staged plaintext. */
+    rv = f->C_DecryptInit(esess, &dm, ekey);
+    CHECKC(rv == CKR_OK, "re-init for decrypt query");
+    ptLen = 0;
+    rv = f->C_Decrypt(esess, ct, ctLen, NULL_PTR, &ptLen);
+    CHECKC(rv == CKR_OK && ptLen == 3, "decrypt size query reports 3");
+    ptLen = sizeof(pt);
+    rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
+    CHECKC(rv == CKR_OK && ptLen == 3 && memcmp(pt, "abc", 3) == 0,
+           "one-shot after query recovers abc");
+    rv = f->C_DecryptInit(esess, &dm, ekey);
+    CHECKC(rv == CKR_OK, "re-init for tamper");
+    ct[ctLen - 1] ^= 0xFF;
+    ptLen = sizeof(pt);
+    rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
+    CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "tampered ciphertext refused");
+    ct[ctLen - 1] ^= 0xFF;
+    /* Multipart (updates buffer; final emits). */
+    rv = f->C_EncryptUpdate(esess, (CK_BYTE_PTR) "a", 1, ct, &partLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "encrypt update without init refused");
+    rv = f->C_EncryptFinal(esess, ct, &ctLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "encrypt final without init refused");
+    rv = f->C_EncryptInit(esess, &em, ekey);
+    CHECKC(rv == CKR_OK, "multipart encrypt init ok");
+    partLen = sizeof(ct);
+    rv = f->C_EncryptUpdate(esess, (CK_BYTE_PTR) "a", 1, ct, &partLen);
+    CHECKC(rv == CKR_OK && partLen == 0, "encrypt update buffers");
+    partLen = sizeof(ct);
+    rv = f->C_EncryptUpdate(esess, (CK_BYTE_PTR) "bc", 2, ct, &partLen);
+    CHECKC(rv == CKR_OK && partLen == 0, "encrypt update two buffers");
+    ctLen = sizeof(ct);
+    rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "d", 1, ct, &ctLen);
+    CHECKC(rv == CKR_OPERATION_ACTIVE, "one-shot over buffered is ACTIVE");
+    ctLen = sizeof(ct);
+    rv = f->C_EncryptFinal(esess, ct, &ctLen);
+    CHECKC(rv == CKR_OK && ctLen == 16, "encrypt final yields 16 bytes");
+    /* Encrypt-final size query preserves the staged block. */
+    rv = f->C_EncryptInit(esess, &em, ekey);
+    CHECKC(rv == CKR_OK, "encrypt init for final-query");
+    partLen = sizeof(ct);
+    rv = f->C_EncryptUpdate(esess, (CK_BYTE_PTR) "abc", 3, ct, &partLen);
+    CHECKC(rv == CKR_OK && partLen == 0, "encrypt update for final-query buffers");
+    ctLen = 0;
+    rv = f->C_EncryptFinal(esess, NULL_PTR, &ctLen);
+    CHECKC(rv == CKR_OK && ctLen == 16, "encrypt final query reports 16");
+    ctLen = sizeof(ct);
+    rv = f->C_EncryptFinal(esess, ct, &ctLen);
+    CHECKC(rv == CKR_OK && ctLen == 16, "encrypt final after query yields 16 bytes");
+    rv = f->C_DecryptUpdate(esess, ct, 8, pt, &partLen);
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "decrypt update without init refused");
+    rv = f->C_DecryptInit(esess, &dm, ekey);
+    CHECKC(rv == CKR_OK, "multipart decrypt init ok");
+    partLen = sizeof(pt);
+    rv = f->C_DecryptUpdate(esess, ct, 8, pt, &partLen);
+    CHECKC(rv == CKR_OK && partLen == 0, "decrypt update buffers");
+    partLen = sizeof(pt);
+    rv = f->C_DecryptUpdate(esess, ct + 8, 8, pt, &partLen);
+    CHECKC(rv == CKR_OK && partLen == 0, "decrypt update two buffers");
+    ptLen = sizeof(pt);
+    rv = f->C_DecryptFinal(esess, pt, &ptLen);
+    CHECKC(rv == CKR_OK && ptLen == 3 && memcmp(pt, "abc", 3) == 0,
+           "decrypt final recovers abc");
+    /* Decrypt-final size query preserves the staged plaintext. */
+    rv = f->C_DecryptInit(esess, &dm, ekey);
+    CHECKC(rv == CKR_OK, "decrypt init for final-query");
+    partLen = sizeof(pt);
+    rv = f->C_DecryptUpdate(esess, ct, 8, pt, &partLen);
+    CHECKC(rv == CKR_OK && partLen == 0, "decrypt update for final-query buffers");
+    partLen = sizeof(pt);
+    rv = f->C_DecryptUpdate(esess, ct + 8, 8, pt, &partLen);
+    CHECKC(rv == CKR_OK && partLen == 0, "decrypt update two for final-query buffers");
+    ptLen = 0;
+    rv = f->C_DecryptFinal(esess, NULL_PTR, &ptLen);
+    CHECKC(rv == CKR_OK && ptLen == 3, "decrypt final query reports 3");
+    ptLen = sizeof(pt);
+    rv = f->C_DecryptFinal(esess, pt, &ptLen);
+    CHECKC(rv == CKR_OK && ptLen == 3 && memcmp(pt, "abc", 3) == 0,
+           "decrypt final after query recovers abc");
+    /* Unpadded CBC: aligned round-trips, ragged refused. */
+    cm.mechanism = CKM_AES_CBC;
+    cm.pParameter = iv;
+    cm.ulParameterLen = sizeof(iv);
+    rv = f->C_EncryptInit(esess, &cm, ekey);
+    CHECKC(rv == CKR_OK, "CBC EncryptInit ok");
+    ctLen = sizeof(ct);
+    rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "0123456789ABCDEF", 16, ct, &ctLen);
+    CHECKC(rv == CKR_OK && ctLen == 16, "CBC encrypt yields 16 bytes");
+    rv = f->C_DecryptInit(esess, &cm, ekey);
+    CHECKC(rv == CKR_OK, "CBC DecryptInit ok");
+    ptLen = sizeof(pt);
+    rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
+    CHECKC(rv == CKR_OK && ptLen == 16 &&
+               memcmp(pt, "0123456789ABCDEF", 16) == 0,
+           "CBC decrypt recovers 16 bytes");
+    /* Non-AES block ciphers route identically: the
+     * engine is key-type agnostic (permits + material only), so
+     * the AES-256 key object drives ARIA-256-CBC here. Runs
+     * before the ragged check: a length-range denial keeps the
+     * slot (later updates can repair it), so ragged goes last. */
+    {
+      CK_MECHANISM am;
+      am.mechanism = CKM_ARIA_CBC;
+      am.pParameter = iv;
+      am.ulParameterLen = sizeof(iv);
+      rv = f->C_EncryptInit(esess, &am, ekey);
+      CHECKC(rv == CKR_OK, "ARIA-CBC EncryptInit ok");
+      ctLen = sizeof(ct);
+      rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "0123456789ABCDEF", 16, ct,
+                        &ctLen);
+      CHECKC(rv == CKR_OK && ctLen == 16, "ARIA-CBC encrypt yields 16 bytes");
+      rv = f->C_DecryptInit(esess, &am, ekey);
+      CHECKC(rv == CKR_OK, "ARIA-CBC DecryptInit ok");
+      ptLen = sizeof(pt);
+      rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
+      CHECKC(rv == CKR_OK && ptLen == 16 &&
+                 memcmp(pt, "0123456789ABCDEF", 16) == 0,
+             "ARIA-CBC decrypt recovers 16 bytes");
+    }
+    rv = f->C_EncryptInit(esess, &cm, ekey);
+    CHECKC(rv == CKR_OK, "re-init for ragged");
+    ctLen = sizeof(ct);
+    rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "abc", 3, ct, &ctLen);
+    CHECKC(rv == CKR_DATA_LEN_RANGE, "ragged CBC encrypt refused");
+    rv = f->C_CloseSession(esess);
+    CHECKC(rv == CKR_OK, "crypt session closes");
+  }
+  /* ---- random is real: GenerateRandom yields
+   * fresh bytes; SeedRandom mixes caller seed into the DRBG ---- */
+  {
+    CK_SESSION_HANDLE rsess = 0;
+    CK_BYTE r1[32];
+    CK_BYTE r2[32];
+    CK_BYTE seed[16];
+    rv = f->C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
+                          NULL_PTR, &rsess);
+    if (rv == CKR_SLOT_ID_INVALID) {
+      CK_SLOT_ID psl[8];
+      CK_ULONG pn = 8;
+      if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
+        rv = f->C_OpenSession(psl[0], CKF_SERIAL_SESSION | CKF_RW_SESSION,
+                              NULL_PTR, NULL_PTR, &rsess);
+      }
+    }
+    CHECKC(rv == CKR_OK && rsess != 0, "random session opens");
+    rv = f->C_GenerateRandom(rsess, NULL_PTR, 32);
+    CHECKC(rv == CKR_ARGUMENTS_BAD, "GenerateRandom NULL buffer refused");
+    rv = f->C_GenerateRandom(9999, r1, 32);
+    CHECKC(rv == CKR_SESSION_HANDLE_INVALID,
+           "GenerateRandom bad session refused");
+    rv = f->C_GenerateRandom(rsess, r1, 0);
+    CHECKC(rv == CKR_OK, "GenerateRandom zero length ok");
+    rv = f->C_GenerateRandom(rsess, r1, 32);
+    CHECKC(rv == CKR_OK, "GenerateRandom 32 ok");
+    rv = f->C_GenerateRandom(rsess, r2, 32);
+    CHECKC(rv == CKR_OK && memcmp(r1, r2, 32) != 0, "two randoms differ");
+    memset(seed, 0xA5, sizeof(seed));
+    rv = f->C_SeedRandom(rsess, seed, sizeof(seed));
+    CHECKC(rv == CKR_OK, "SeedRandom 16 ok");
+    rv = f->C_GenerateRandom(rsess, r1, 32);
+    CHECKC(rv == CKR_OK, "GenerateRandom 32 ok after seed");
+    rv = f->C_GenerateRandom(rsess, r2, 32);
+    CHECKC(rv == CKR_OK && memcmp(r1, r2, 32) != 0,
+           "randoms differ after seed");
+    rv = f->C_SeedRandom(rsess, NULL_PTR, 32);
+    if (!isProxy) {
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "SeedRandom NULL seed refused");
+    } else {
+      /* Proxy shim normalizes NULL input bytes to empty
+       * (read_input_slice maps NULL of any length to &[]), so the
+       * daemon serves a vacuous OK; direct mode refuses per the
+       * pinned bad-session-first/ARGS_BAD contract. */
+      CHECKC(rv == CKR_OK, "SeedRandom NULL seed vacuous via proxy");
+    }
+    rv = f->C_SeedRandom(9999, seed, sizeof(seed));
+    CHECKC(rv == CKR_SESSION_HANDLE_INVALID,
+           "SeedRandom bad session refused");
+    rv = f->C_SeedRandom(rsess, seed, 0);
+    CHECKC(rv == CKR_OK, "SeedRandom zero length ok");
+    rv = f->C_SeedRandom(rsess, NULL_PTR, 0);
+    CHECKC(rv == CKR_OK, "SeedRandom NULL zero length ok");
+    rv = f->C_CloseSession(rsess);
+    CHECKC(rv == CKR_OK, "random session closes");
+  }
+  /* ---- wrap/unwrap/derive are real: AES-CBC wrap
+   * round-trip plus an HKDF-subset derive; non-HKDF derive
+   * stays honestly unsupported ---- */
+  {
+    CK_SESSION_HANDLE wsess = 0;
+    CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+    CK_KEY_TYPE akt = CKK_AES;
+    CK_KEY_TYPE gkt = CKK_GENERIC_SECRET;
+    CK_ULONG vlen = 32;
+    CK_ULONG tlen = 16;
+    CK_ULONG dlen = 32;
+    CK_BBOOL bFalse = CK_FALSE;
+    CK_BBOOL bTrue = CK_TRUE;
+    CK_OBJECT_HANDLE wrapKey = 0, targetKey = 0, sealedKey = 0;
+    CK_OBJECT_HANDLE unwrapped = 0, derived = 0, derived2 = 0;
+    CK_BYTE iv[16];
+    CK_BYTE blob[64];
+    CK_BYTE probe[64];
+    CK_ULONG blobLen;
+    CK_ULONG probeLen;
+    CK_MECHANISM wm;
+    CK_MECHANISM um;
+    CK_MECHANISM dmpad;
+    CK_MECHANISM dhkdf;
+    CK_MECHANISM decdh;
+    CK_HKDF_PARAMS hkdf;
+    CK_BYTE infoA[] = { 'c', 't', 'x', 'A' };
+    CK_BYTE infoB[] = { 'c', 't', 'x', 'B' };
+    memset(iv, 0x1B, sizeof(iv));
+    rv = f->C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
+                          NULL_PTR, &wsess);
+    if (rv == CKR_SLOT_ID_INVALID) {
+      CK_SLOT_ID psl[8];
+      CK_ULONG pn = 8;
+      if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
+        rv = f->C_OpenSession(psl[0], CKF_SERIAL_SESSION | CKF_RW_SESSION,
+                              NULL_PTR, NULL_PTR, &wsess);
+      }
+    }
+    CHECKC(rv == CKR_OK && wsess != 0, "wrap session opens");
+    {
+      CK_ATTRIBUTE wtmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_WRAP, &bTrue, sizeof(bTrue) },
+        { CKA_UNWRAP, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE ttmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_VALUE_LEN, &tlen, sizeof(tlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) },
+        { CKA_ENCRYPT, &bTrue, sizeof(bTrue) },
+        { CKA_DECRYPT, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE stmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_VALUE_LEN, &tlen, sizeof(tlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_DERIVE, &bTrue, sizeof(bTrue) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+      };
+      CK_MECHANISM kgm;
+      kgm.mechanism = CKM_AES_KEY_GEN;
+      kgm.pParameter = NULL_PTR;
+      kgm.ulParameterLen = 0;
+      rv = f->C_GenerateKey(wsess, &kgm, wtmpl, 6, &wrapKey);
+      CHECKC(rv == CKR_OK && wrapKey != 0, "wrapping key mints");
+      rv = f->C_GenerateKey(wsess, &kgm, ttmpl, 7, &targetKey);
+      CHECKC(rv == CKR_OK && targetKey != 0, "wrap target mints");
+      rv = f->C_GenerateKey(wsess, &kgm, stmpl, 6, &sealedKey);
+      CHECKC(rv == CKR_OK && sealedKey != 0, "derive base mints");
+    }
+    wm.mechanism = CKM_AES_CBC;
+    wm.pParameter = iv;
+    wm.ulParameterLen = sizeof(iv);
+    um.mechanism = CKM_AES_CBC;
+    um.pParameter = iv;
+    um.ulParameterLen = sizeof(iv);
+    /* Wrap dialogue: query, short, full. */
+    rv = f->C_WrapKey(wsess, NULL_PTR, wrapKey, targetKey, blob, &blobLen);
+    CHECKC(rv == CKR_ARGUMENTS_BAD, "WrapKey NULL mech refused");
+    dmpad.mechanism = CKM_AES_CBC_PAD;
+    dmpad.pParameter = iv;
+    dmpad.ulParameterLen = sizeof(iv);
+    blobLen = sizeof(blob);
+    rv = f->C_WrapKey(wsess, &dmpad, wrapKey, targetKey, blob, &blobLen);
+    CHECKC(rv == CKR_MECHANISM_INVALID, "WrapKey PAD mech refused");
+    blobLen = 0;
+    rv = f->C_WrapKey(wsess, &wm, wrapKey, targetKey, NULL_PTR, &blobLen);
+    CHECKC(rv == CKR_OK && blobLen == 32, "wrap size query reports 32");
+    blobLen = 16;
+    rv = f->C_WrapKey(wsess, &wm, wrapKey, targetKey, blob, &blobLen);
+    CHECKC(rv == CKR_BUFFER_TOO_SMALL && blobLen == 32,
+           "short wrap buffer reports 32");
+    blobLen = sizeof(blob);
+    rv = f->C_WrapKey(wsess, &wm, wrapKey, targetKey, blob, &blobLen);
+    CHECKC(rv == CKR_OK && blobLen == 32, "wrap yields 32 bytes");
+    probeLen = sizeof(probe);
+    rv = f->C_WrapKey(wsess, &wm, targetKey, sealedKey, probe, &probeLen);
+    CHECKC(rv == CKR_KEY_FUNCTION_NOT_PERMITTED,
+           "wrap without WRAP mark refused");
+    /* Unwrap into a working key. */
+    {
+      CK_ATTRIBUTE dtmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) },
+        { CKA_ENCRYPT, &bTrue, sizeof(bTrue) },
+        { CKA_DECRYPT, &bTrue, sizeof(bTrue) }
+      };
+      CK_MECHANISM noiv;
+      noiv.mechanism = CKM_AES_CBC;
+      noiv.pParameter = NULL_PTR;
+      noiv.ulParameterLen = 0;
+      rv = f->C_UnwrapKey(wsess, &noiv, wrapKey, blob, blobLen,
+                          dtmpl, 6, &unwrapped);
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "UnwrapKey empty IV refused");
+      rv = f->C_UnwrapKey(wsess, &um, wrapKey, blob, blobLen,
+                          dtmpl, 6, &unwrapped);
+      CHECKC(rv == CKR_OK && unwrapped != 0 && unwrapped != targetKey,
+             "unwrap mints a distinct key");
+      {
+        CK_MECHANISM cem;
+        CK_BYTE ct[32];
+        CK_BYTE pt[32];
+        CK_ULONG ctl = sizeof(ct);
+        CK_ULONG ptl = sizeof(pt);
+        cem.mechanism = CKM_AES_CBC_PAD;
+        cem.pParameter = iv;
+        cem.ulParameterLen = sizeof(iv);
+        rv = f->C_EncryptInit(wsess, &cem, unwrapped);
+        CHECKC(rv == CKR_OK, "unwrapped key encrypts");
+        rv = f->C_Encrypt(wsess, (CK_BYTE_PTR) "wrap-proved", 11, ct, &ctl);
+        CHECKC(rv == CKR_OK && ctl == 16, "unwrapped encrypt yields 16");
+        rv = f->C_DecryptInit(wsess, &cem, targetKey);
+        CHECKC(rv == CKR_OK, "target key decrypts");
+        rv = f->C_Decrypt(wsess, ct, ctl, pt, &ptl);
+        CHECKC(rv == CKR_OK && ptl == 11 &&
+                   memcmp(pt, "wrap-proved", 11) == 0,
+               "target decrypts unwrapped-key ciphertext");
+      }
+      blob[blobLen - 1] ^= 0xFF;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_UnwrapKey(wsess, &um, wrapKey, blob, blobLen,
+                            dtmpl, 6, &bad);
+        CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "tampered blob refused");
+        CHECKC(bad == 0, "refused unwrap writes no handle");
+      }
+      blob[blobLen - 1] ^= 0xFF;
+    }
+    /* HKDF-subset derive: expand-only, empty salt, SHA-256 PRF. */
+    {
+      CK_ATTRIBUTE ktmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &gkt, sizeof(gkt) },
+        { CKA_VALUE_LEN, &dlen, sizeof(dlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+      };
+      CK_BYTE valA[32];
+      CK_BYTE valB[32];
+      CK_BYTE saltByte = 0;
+      CK_ATTRIBUTE get[1];
+      dhkdf.mechanism = CKM_HKDF_DERIVE;
+      dhkdf.pParameter = &hkdf;
+      dhkdf.ulParameterLen = sizeof(hkdf);
+      hkdf.bExtract = CK_FALSE;
+      hkdf.bExpand = CK_TRUE;
+      hkdf.prfHashMechanism = CKM_SHA256_HMAC;
+      hkdf.ulSaltType = CKF_HKDF_SALT_NULL;
+      hkdf.pSalt = NULL_PTR;
+      hkdf.ulSaltLen = 0;
+      hkdf.hSaltKey = 0;
+      hkdf.pInfo = infoA;
+      hkdf.ulInfoLen = sizeof(infoA);
+      rv = f->C_DeriveKey(wsess, NULL_PTR, sealedKey, ktmpl, 5, &derived);
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "DeriveKey NULL mech refused");
+      rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &derived);
+      CHECKC(rv == CKR_OK && derived != 0, "HKDF derive ok");
+      get[0].type = CKA_VALUE;
+      get[0].pValue = valA;
+      get[0].ulValueLen = sizeof(valA);
+      rv = f->C_GetAttributeValue(wsess, derived, get, 1);
+      CHECKC(rv == CKR_OK && get[0].ulValueLen == 32,
+             "derived VALUE reads 32 bytes");
+      hkdf.pInfo = infoB;
+      hkdf.ulInfoLen = sizeof(infoB);
+      rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &derived2);
+      CHECKC(rv == CKR_OK && derived2 != 0 && derived2 != derived,
+             "second info derives distinct key");
+      get[0].type = CKA_VALUE;
+      get[0].pValue = valB;
+      get[0].ulValueLen = sizeof(valB);
+      rv = f->C_GetAttributeValue(wsess, derived2, get, 1);
+      CHECKC(rv == CKR_OK && memcmp(valA, valB, 32) != 0,
+             "distinct infos derive distinct bytes");
+      hkdf.bExtract = CK_TRUE;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
+        CHECKC(rv == CKR_ARGUMENTS_BAD, "extract phase refused");
+        CHECKC(bad == 0, "refused derive writes no handle");
+      }
+      hkdf.bExtract = CK_FALSE;
+      hkdf.prfHashMechanism = CKM_SHA512_HMAC;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
+        CHECKC(rv == CKR_ARGUMENTS_BAD, "non-SHA256 PRF refused");
+      }
+      hkdf.prfHashMechanism = CKM_SHA256_HMAC;
+      hkdf.ulSaltType = CKF_HKDF_SALT_DATA;
+      hkdf.pSalt = &saltByte;
+      hkdf.ulSaltLen = 1;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
+        CHECKC(rv == CKR_ARGUMENTS_BAD, "non-empty salt refused");
+      }
+      decdh.mechanism = CKM_ECDH1_DERIVE;
+      decdh.pParameter = NULL_PTR;
+      decdh.ulParameterLen = 0;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_DeriveKey(wsess, &decdh, sealedKey, ktmpl, 5, &bad);
+        CHECKC(rv == CKR_FUNCTION_NOT_SUPPORTED,
+               "non-HKDF derive honestly NA");
+        CHECKC(bad == 0, "unmapped derive writes no handle");
+      }
+    }
+    rv = f->C_CloseSession(wsess);
+    CHECKC(rv == CKR_OK, "wrap session closes");
+  }
+  /* ---- objects are real: create/get/copy/find/destroy ---- */
+  {
+    CK_OBJECT_CLASS klass = CKO_DATA;
+    CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
+    CK_OBJECT_HANDLE dataObj = 0, copyObj = 0, privObj = 0;
+    CK_ATTRIBUTE tmpl[] = {
+      { CKA_CLASS, &klass, sizeof(klass) },
+      { CKA_TOKEN, &no, sizeof(no) },
+      { CKA_PRIVATE, &no, sizeof(no) },
+      { CKA_LABEL, "s2-data", 7 },
+      { CKA_VALUE, "payload-1", 9 },
+    };
+    rv = f->C_CreateObject(sess, tmpl, 5, &dataObj);
+    CHECKC(rv == CKR_OK && dataObj != 0, "CreateObject data ok");
+    {
+      CK_BYTE buf[64];
+      CK_ATTRIBUTE g[] = {
+        { CKA_LABEL, NULL_PTR, 0 },
+        { CKA_VALUE, buf, sizeof(buf) },
+      };
+      rv = f->C_GetAttributeValue(sess, dataObj, g, 2);
+      CHECKC(rv == CKR_OK && g[0].ulValueLen == 7 &&
+                 g[1].ulValueLen == 9 && memcmp(buf, "payload-1", 9) == 0,
+             "GetAttributeValue reads label+value");
+      g[1].pValue = buf;
+      g[1].ulValueLen = 4;
+      rv = f->C_GetAttributeValue(sess, dataObj, &g[1], 1);
+      CHECKC(rv == CKR_BUFFER_TOO_SMALL && g[1].ulValueLen == 9,
+             "short value buffer reports length");
+    }
+    {
+      CK_ULONG bits = 0;
+      CK_ATTRIBUTE g[] = { { CKA_MODULUS_BITS, &bits, sizeof(bits) } };
+      rv = f->C_GetAttributeValue(sess, dataObj, g, 1);
+      CHECKC(rv == CKR_ATTRIBUTE_TYPE_INVALID &&
+                 g[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
+             "missing attr type invalid, len -1");
+    }
+    {
+      CK_BYTE buf[64];
+      CK_ATTRIBUTE g[] = { { 0xFFFFFFFEUL, buf, sizeof(buf) } };
+      rv = f->C_GetAttributeValue(sess, dataObj, g, 1);
+      if (!isProxy) {
+        CHECKC(rv == CKR_ATTRIBUTE_TYPE_INVALID &&
+                   g[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
+               "unknown attr id invalid, len -1");
+      } else {
+        /* The shim rejects unknown attr ids itself (ARGUMENTS_BAD,
+         * length untouched) without forwarding. */
+        CHECKC(rv == CKR_ARGUMENTS_BAD && g[0].ulValueLen == sizeof(buf),
+               "proxied unknown attr refused, len kept");
+      }
+    }
+    {
+      CK_ATTRIBUTE ctmpl[] = { { CKA_LABEL, "s2-copy", 7 } };
+      rv = f->C_CopyObject(sess, dataObj, ctmpl, 1, &copyObj);
+      CHECKC(rv == CKR_OK && copyObj != 0 && copyObj != dataObj,
+             "CopyObject ok, distinct handle");
+    }
+    {
+      CK_BYTE buf[64];
+      CK_ATTRIBUTE g[] = { { CKA_LABEL, buf, sizeof(buf) } };
+      rv = f->C_GetAttributeValue(sess, copyObj, g, 1);
+      CHECKC(rv == CKR_OK && g[0].ulValueLen == 7 &&
+                 memcmp(buf, "s2-copy", 7) == 0,
+             "copy carries the new label");
+    }
+    {
+      CK_ATTRIBUTE ptmpl[] = {
+        { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &no, sizeof(no) },
+        { CKA_PRIVATE, &yes, sizeof(yes) },
+        { CKA_LABEL, "s2-priv", 7 },
+      };
+      CK_BYTE buf[64];
+      CK_ATTRIBUTE g[] = { { CKA_LABEL, buf, sizeof(buf) } };
+      rv = f->C_CreateObject(sess, ptmpl, 4, &privObj);
+      CHECKC(rv == CKR_OK && privObj != 0, "private object created");
+      rv = f->C_GetAttributeValue(sess, privObj, g, 1);
+      CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
+             "private object unaddressable while logged out");
+    }
+    {
+      CK_OBJECT_HANDLE found[8];
+      CK_ULONG nfound = 0;
+      CK_ATTRIBUTE match[] = { { CKA_LABEL, "s2-data", 7 } };
+      rv = f->C_FindObjectsInit(sess, match, 1);
+      CHECKC(rv == CKR_OK, "FindObjectsInit label ok");
+      rv = f->C_FindObjectsInit(sess, match, 1);
+      CHECKC(rv == CKR_OPERATION_ACTIVE, "double find-init active");
+      nfound = 8;
+      rv = f->C_FindObjects(sess, found, 8, &nfound);
+      CHECKC(rv == CKR_OK && nfound == 1 && found[0] == dataObj,
+             "find by label yields the object");
+      nfound = 8;
+      rv = f->C_FindObjects(sess, found, 8, &nfound);
+      CHECKC(rv == CKR_OK && nfound == 0, "find cursor exhausts");
+      rv = f->C_FindObjectsFinal(sess);
+      CHECKC(rv == CKR_OK, "FindObjectsFinal ok");
+      rv = f->C_FindObjectsFinal(sess);
+      CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+             "double find-final uninitialized");
+      nfound = 8;
+      rv = f->C_FindObjects(sess, found, 8, &nfound);
+      CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+             "find without init uninitialized");
+    }
+    {
+      CK_OBJECT_HANDLE found[8];
+      CK_ULONG nfound = 2;
+      int sawData = 0, sawCopy = 0;
+      CK_ULONG i = 0;
+      rv = f->C_FindObjectsInit(sess, NULL_PTR, 0);
+      CHECKC(rv == CKR_OK, "match-all find-init ok");
+      rv = f->C_FindObjects(sess, found, 2, &nfound);
+      CHECKC(rv == CKR_OK && nfound == 2, "match-all page one has two");
+      for (i = 0; i < nfound; i++) {
+        if (found[i] == dataObj) {
+          sawData = 1;
+        }
+        if (found[i] == copyObj) {
+          sawCopy = 1;
+        }
+      }
+      nfound = 8;
+      rv = f->C_FindObjects(sess, found, 8, &nfound);
+      CHECKC(rv == CKR_OK && nfound == 0, "match-all page two empty");
+      CHECKC(sawData && sawCopy, "match-all sees data+copy, not private");
+      rv = f->C_FindObjectsFinal(sess);
+      CHECKC(rv == CKR_OK, "match-all final ok");
+    }
+    {
+      CK_OBJECT_HANDLE bad = 0;
+      CK_ATTRIBUTE btmpl[] = {
+        { CKA_CLASS, &klass, sizeof(klass) },
+        { 0xFFFFFFFEUL, "x", 1 },
+      };
+      rv = f->C_CreateObject(sess, btmpl, 2, &bad);
+      CHECKC(rv == CKR_ATTRIBUTE_TYPE_INVALID,
+             "unknown template attr rejected");
+    }
+    {
+      CK_OBJECT_HANDLE bad = 0;
+      CK_ULONG wide = 1;
+      CK_ATTRIBUTE btmpl[] = {
+        { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &wide, sizeof(wide) },
+      };
+      rv = f->C_CreateObject(sess, btmpl, 2, &bad);
+      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT, "misshapen value rejected");
+    }
+    {
+      CK_SESSION_HANDLE rosess = 0;
+      CK_OBJECT_HANDLE bad = 0;
+      rv = f->C_OpenSession(0, CKF_SERIAL_SESSION, NULL_PTR, NULL_PTR,
+                            &rosess);
+      if (rv == CKR_SLOT_ID_INVALID) {
+        CK_SLOT_ID psl[8];
+        CK_ULONG pn = 8;
+        if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
+          rv = f->C_OpenSession(psl[0], CKF_SERIAL_SESSION, NULL_PTR,
+                                NULL_PTR, &rosess);
+        }
+      }
+      CHECKC(rv == CKR_OK && rosess != 0, "RO session for refusal check");
+      rv = f->C_CreateObject(rosess, tmpl, 5, &bad);
+      CHECKC(rv == CKR_SESSION_READ_ONLY, "RO create refused");
+      rv = f->C_CloseSession(rosess);
+      CHECKC(rv == CKR_OK, "RO session closed");
+    }
+    rv = f->C_DestroyObject(sess, dataObj);
+    CHECKC(rv == CKR_OK, "DestroyObject ok");
+    rv = f->C_DestroyObject(sess, dataObj);
+    CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "double destroy invalid");
+    {
+      CK_BYTE buf[64];
+      CK_ATTRIBUTE g[] = { { CKA_LABEL, buf, sizeof(buf) } };
+      rv = f->C_GetAttributeValue(sess, dataObj, g, 1);
+      CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "destroyed object unreadable");
+    }
+    rv = f->C_DestroyObject(sess, copyObj);
+    CHECKC(rv == CKR_OK, "copy destroyed");
+    rv = f->C_DestroyObject(sess, privObj);
+    CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
+           "hidden object undestroyable while logged out");
+  }
+  rv = f->C_CloseSession(sess);
+  CHECKC(rv == CKR_OK, "CloseSession ok");
+  rv = f->C_CloseSession(sess);
+  CHECKC(rv == CKR_SESSION_HANDLE_INVALID, "double close invalid");
+
+  /* ---- slot-event no-event + post-finalize state-first ---- */
+  {
+    CK_SLOT_ID sl = 0xDEADUL;
+    rv = f->C_WaitForSlotEvent(CKF_DONT_BLOCK, &sl, NULL_PTR);
+    CHECK(rv == CKR_NO_EVENT && sl == 0xDEADUL,
+          "nonblocking wait reports NO_EVENT, slot untouched");
+  }
+  rv = f->C_Finalize(NULL_PTR);
+  CHECK(rv == CKR_OK, "C_Finalize ok");
+  rv = f->C_OpenSession(0, CKF_SERIAL_SESSION, NULL_PTR, NULL_PTR, &sess);
+  CHECK(rv == CKR_CRYPTOKI_NOT_INITIALIZED,
+        "post-finalize OpenSession needs init (state first)");
+
+  dlclose(handle);
+  unlink(g_cfg_path);
+  if (g_failures == 0) {
+    printf("PASS: consumer_roundtrip (%s)\n", argv[1]);
+    return 0;
+  }
+  printf("FAILURES: %d\n", g_failures);
+  return 1;
+}

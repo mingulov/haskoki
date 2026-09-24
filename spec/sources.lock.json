@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "notice": "ABI byte lock. The single ABI generation input is the verbatim latchset public-domain PKCS #11 v3.2 header vendored as spec/vendor/pkcs11.h with a measured SHA-256. No hash is fabricated: verify with python3 scripts/validate-spec.py from haskoki/. One file suffices: v3.2 is a strict superset of every older interface (same names, values, layouts, and function order), so per-version vendoring would only duplicate bytes. OASIS/TC sets were removed (see spec/source-issues.json SRC-08); no non-open-licensed header remains in the tree.",
+  "acquired_date": "2026-09-24",
+  "acquired_by": "public-domain migration (latchset/pkcs11-headers)",
+  "pinned_pd_commit": "c5e61990c5621a9b955fc208644fe8145ac0a75d",
+  "pinned_pd_commit_date": "2025-09-15T09:10:41-04:00",
+  "pinned_pd_repo": "latchset/pkcs11-headers (public-domain/ dirs)",
+  "sources": [
+    {
+      "id": "S-PD-32",
+      "title": "Latchset public-domain PKCS #11 v3.2 header (the single interface source)",
+      "url": "https://github.com/latchset/pkcs11-headers/tree/c5e61990c5621a9b955fc208644fe8145ac0a75d/public-domain/3.2"
+    }
+  ],
+  "files": [
+    {
+      "source_id": "S-PD-32",
+      "publication_or_commit": "latchset/pkcs11-headers commit c5e61990c5621a9b955fc208644fe8145ac0a75d (2025-09-15); file header: This file is in the Public Domain",
+      "relative_path": "spec/vendor/pkcs11.h",
+      "sha256": "61e0b3f996fa9f095859d7d3b8e361d0b982de69fc8b6a4bf10291afbe7e24d8",
+      "license_notice": "Public domain (latchset/pkcs11-headers public-domain rewrite; no OASIS IPR encumbrance).",
+      "interface": "3.2",
+      "role": "selected"
+    }
+  ]
+}

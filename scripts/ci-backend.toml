@@ -1,0 +1,17 @@
+# Canonical pkcs11-check backend: real crypto (OpenSSL engine), memory
+# storage, trace off. Demo token on slot 0 (user PIN 1234, SO PIN
+# 5678) comes from the minimal-demo fixtures. Used by
+# scripts/ci-pkcs11-lane.sh (locally and in CI).
+schema_version = 1
+profile = "demo-maximal"
+
+[storage]
+kind = "memory"
+
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+
+[trace]
+enabled = false

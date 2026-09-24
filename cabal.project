@@ -1,0 +1,7 @@
+packages: .
+
+-- Default toolchain: GHC 9.10.3 (see docs/toolchain.md). Hackage
+-- upper bounds lag newer boot libraries, so resolution needs bounds
+-- relaxation until the ecosystem catches up; reproducibility comes
+-- from cabal.project.freeze, not from these bounds.
+allow-newer: all

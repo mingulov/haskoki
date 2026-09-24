@@ -1,0 +1,343 @@
+name: CI
+
+# Default toolchain (GHC 9.10.3) + release + external pkcs11-check
+# conformance, both lanes on every push/PR:
+#   fast  offline markers, no vector data (quick conformance signal)
+#   kat   full markers over fetched vector data (fetch-data, cached)
+# pkcs11-check findings are REPORTED, not gating (exit 1 passes the
+# lane): the module is a demonstrator whose honest refusals the
+# oracle records as findings. Exit >= 2 (setup error) fails loudly.
+# The framework pins to v0.2.0; workflow_dispatch can override it.
+#
+# CD: the toolchain image pushes to GHCR on main/tags; v* tags also
+# attach the release bundle to the GitHub release.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      framework_ref:
+        description: "mingulov/pkcs11-check ref (tag/branch/sha)"
+        default: "v0.2.0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # One canonical data location shared by the fetch job (cache save)
+  # and the kat lane (cache restore).
+  PKCS11_CHECK_DATA_DIR: ${{ github.workspace }}/data
+  FRAMEWORK_REF: ${{ github.event.inputs.framework_ref || 'v0.2.0' }}
+
+jobs:
+  # ------------------------------------------------------------------
+  # Native build + full test suite + static gates in an Ubuntu 26.04
+  # container (OS GHC 9.10.3, same base as the Dockerfile).
+  # ------------------------------------------------------------------
+  haskell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: ubuntu:26.04
+    env:
+      # Keep the cabal store on the mounted workspace so the cache
+      # action (host-side) can persist it across runs.
+      CABAL_DIR: ${{ github.workspace }}/.cabal
+    steps:
+      - name: Base packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential ghc cabal-install libgmp-dev git perl curl \
+            ca-certificates python3
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Restore OpenSSL prefix cache
+        id: ossl-cache
+        uses: actions/cache@v5
+        with:
+          path: ossl-cache/openssl-4.0.2.tar.gz
+          key: openssl-4.0.2-static-v1
+      - name: Build OpenSSL prefix (cache miss only)
+        if: steps.ossl-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ossl-build ossl-cache
+          cd /tmp/ossl-build
+          OSSL_URL=https://github.com/openssl/openssl/releases/download
+          curl -fsSLO "$OSSL_URL/openssl-4.0.2/openssl-4.0.2.tar.gz"
+          OSSL_SHA=736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8
+          echo "$OSSL_SHA  openssl-4.0.2.tar.gz" | sha256sum -c -
+          tar xzf openssl-4.0.2.tar.gz
+          cd openssl-4.0.2
+          perl ./Configure --prefix=/opt/openssl-4.0.2 --openssldir=/opt/openssl-4.0.2/ssl \
+            --libdir=lib no-docs no-tests threads no-shared no-pinshared linux-x86_64
+          make -j"$(nproc)"
+          make install_sw
+          /opt/openssl-4.0.2/bin/openssl version
+          tar czf "$GITHUB_WORKSPACE/ossl-cache/openssl-4.0.2.tar.gz" -C / opt/openssl-4.0.2
+      - name: Install cached OpenSSL prefix
+        if: steps.ossl-cache.outputs.cache-hit == 'true'
+        run: tar xzf ossl-cache/openssl-4.0.2.tar.gz -C /
+      - name: Restore cabal store cache
+        uses: actions/cache@v5
+        with:
+          path: .cabal
+          key: cabal-store-9.10.3-${{ hashFiles('cabal.project.freeze') }}
+          restore-keys: |
+            cabal-store-9.10.3-
+      - name: Static gates (build-free)
+        run: |
+          set -euo pipefail
+          for g in check-core-boundary check-mechanisms check-denominators \
+              check-attributes check-ossl4-surface check-version check-ckr \
+              check-seed-honesty check-warnings-zero check-docs \
+              check-fork-stance check-test-wiring check-coverage-boundary \
+              check-release-pivots check-loader-norm check-release-install-flags \
+              check-smoke-surface check-history-codes; do
+            python3 scripts/$g.py
+          done
+          python3 scripts/publish-coverage.py --check
+      - name: Build and test
+        run: |
+          set -euo pipefail
+          cabal update
+          cabal build all --enable-tests
+          cabal test all 2>&1 | tee haskell-test.log
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: haskell-test-log
+          path: haskell-test.log
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------------
+  # Toolchain image + release artifact + bare-host install test.
+  # Pushes the image to GHCR on main/tags (CD).
+  # ------------------------------------------------------------------
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (load for local use)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: haskoki-dev:ghc-9.10.3
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build release artifact
+        run: |
+          docker run --rm --network host -v "$PWD:/work" -w /work \
+            haskoki-dev:ghc-9.10.3 scripts/make-release.sh
+      - name: Install test on bare image
+        run: bash scripts/test-release-install.sh
+      - name: Upload bundle
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-bundle
+          path: dist-release
+          if-no-files-found: error
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push image (CD)
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:ghc-9.10.3
+          cache-from: type=gha
+
+  # ------------------------------------------------------------------
+  # Fetch the Wycheproof/ACVP/CCTV/x509-limbo vectors ONCE (shared via
+  # cache); the kat lane restores this cache instead of re-downloading.
+  # ------------------------------------------------------------------
+  fetch-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout framework
+        uses: actions/checkout@v6
+        with:
+          repository: mingulov/pkcs11-check
+          ref: ${{ env.FRAMEWORK_REF }}
+          path: pkcs11-check
+      - uses: astral-sh/setup-uv@v8.1.0
+      - name: Restore / populate vector-data cache
+        id: data-cache
+        uses: actions/cache@v5
+        with:
+          path: data
+          key: pkcs11-data-${{ hashFiles('pkcs11-check/src/pkcs11_check/testcases/data/sources.toml') }}
+      - name: Fetch vectors (cache miss only)
+        if: steps.data-cache.outputs.cache-hit != 'true'
+        run: |
+          uv sync --project pkcs11-check --frozen --extra dev
+          uv run --project pkcs11-check pkcs11-check fetch-data all --data-dir data
+          uv run --project pkcs11-check pkcs11-check fetch-disabled --data-dir data
+      - name: Show data status
+        run: uv run --project pkcs11-check pkcs11-check fetch-data --status --data-dir data || true
+
+  # ------------------------------------------------------------------
+  # Fast lane: offline markers, no vector data.
+  # ------------------------------------------------------------------
+  pkcs11-fast:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Checkout framework
+        uses: actions/checkout@v6
+        with:
+          repository: mingulov/pkcs11-check
+          ref: ${{ env.FRAMEWORK_REF }}
+          path: pkcs11-check
+      - name: System libs
+        run: sudo apt-get update && sudo apt-get install -y libgmp10 libffi8 libnuma1
+      - uses: astral-sh/setup-uv@v8.1.0
+      - run: uv sync --project pkcs11-check --frozen --extra dev
+      - name: Download bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: release-bundle
+          path: dist-release
+      - name: Run fast lane
+        run: |
+          ART=$(echo dist-release/haskoki-*)
+          PKCS11_CHECK="uv run --project pkcs11-check pkcs11-check" \
+            bash scripts/ci-pkcs11-lane.sh fast "$ART" pkcs11-fast-results.json
+      - name: Summarize results
+        if: always()
+        run: |
+          python3 - pkcs11-fast-results.json fast <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import sys, json
+          path, lane = sys.argv[1], sys.argv[2]
+          try:
+              s = json.load(open(path)).get("summary", {})
+              g = s.get
+              print(f"### {lane}: {g('total', 0)} tests — "
+                    f"{g('passed', 0)} passed, {g('failed', 0)} failed, "
+                    f"{g('crashed', 0)} crashed, {g('timeout', 0)} timeout, "
+                    f"{g('xfailed', 0)} xfailed, {g('skipped', 0)} skipped")
+          except Exception as e:  # noqa: BLE001
+              print(f"### {lane}: no JSON report ({e})")
+          PY
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pkcs11-fast-report
+          path: pkcs11-fast-results.json
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------------
+  # KAT lane: full markers over the fetched vector data.
+  # ------------------------------------------------------------------
+  pkcs11-kat:
+    needs: [release, fetch-data]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Checkout framework
+        uses: actions/checkout@v6
+        with:
+          repository: mingulov/pkcs11-check
+          ref: ${{ env.FRAMEWORK_REF }}
+          path: pkcs11-check
+      - name: System libs
+        run: sudo apt-get update && sudo apt-get install -y libgmp10 libffi8 libnuma1
+      - uses: astral-sh/setup-uv@v8.1.0
+      - run: uv sync --project pkcs11-check --frozen --extra dev
+      - name: Restore vector-data cache
+        uses: actions/cache/restore@v5
+        with:
+          path: data
+          key: pkcs11-data-${{ hashFiles('pkcs11-check/src/pkcs11_check/testcases/data/sources.toml') }}
+      - name: Download bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: release-bundle
+          path: dist-release
+      - name: Run KAT lane
+        run: |
+          ART=$(echo dist-release/haskoki-*)
+          PKCS11_CHECK="uv run --project pkcs11-check pkcs11-check" \
+            bash scripts/ci-pkcs11-lane.sh kat "$ART" pkcs11-kat-results.json
+      - name: Summarize results
+        if: always()
+        run: |
+          python3 - pkcs11-kat-results.json kat <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import sys, json
+          path, lane = sys.argv[1], sys.argv[2]
+          try:
+              s = json.load(open(path)).get("summary", {})
+              g = s.get
+              print(f"### {lane}: {g('total', 0)} tests — "
+                    f"{g('passed', 0)} passed, {g('failed', 0)} failed, "
+                    f"{g('crashed', 0)} crashed, {g('timeout', 0)} timeout, "
+                    f"{g('xfailed', 0)} xfailed, {g('skipped', 0)} skipped")
+          except Exception as e:  # noqa: BLE001
+              print(f"### {lane}: no JSON report ({e})")
+          PY
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pkcs11-kat-report
+          path: pkcs11-kat-results.json
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------------
+  # Attach the release bundle to the GitHub release for v* tags (CD).
+  # ------------------------------------------------------------------
+  github-release:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: release-bundle
+          path: dist-release
+      - name: Attach bundle to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ART=$(echo dist-release/haskoki-*)
+          VER=$(basename "$ART" | sed 's/^haskoki-//')
+          tar czf "haskoki-$VER.tar.gz" -C dist-release "$(basename "$ART")"
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "haskoki $TAG" \
+              --notes "Automated release bundle."
+          gh release upload "$TAG" "haskoki-$VER.tar.gz" --clobber

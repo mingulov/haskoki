@@ -1,0 +1,3233 @@
+{
+  "attributes": [
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_CLASS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000000",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_CLASS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_TOKEN",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000001",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_TOKEN",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PRIVATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000002",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PRIVATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_LABEL",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000003",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_LABEL",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_UNIQUE_ID",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000004",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_UNIQUE_ID",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_APPLICATION",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000010",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_APPLICATION",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALUE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000011",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALUE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OBJECT_ID",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000012",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OBJECT_ID",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_CERTIFICATE_TYPE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000080",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_CERTIFICATE_TYPE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_ISSUER",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000081",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_ISSUER",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_SERIAL_NUMBER",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000082",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_SERIAL_NUMBER",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_AC_ISSUER",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000083",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_AC_ISSUER",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OWNER",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000084",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OWNER",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_ATTR_TYPES",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000085",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_ATTR_TYPES",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_TRUSTED",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000086",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_TRUSTED",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_CERTIFICATE_CATEGORY",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000087",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_CERTIFICATE_CATEGORY",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_JAVA_MIDP_SECURITY_DOMAIN",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000088",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_JAVA_MIDP_SECURITY_DOMAIN",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_URL",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000089",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_URL",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_HASH_OF_SUBJECT_PUBLIC_KEY",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000008a",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_HASH_OF_SUBJECT_PUBLIC_KEY",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_HASH_OF_ISSUER_PUBLIC_KEY",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000008b",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_HASH_OF_ISSUER_PUBLIC_KEY",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_NAME_HASH_ALGORITHM",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000008c",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_NAME_HASH_ALGORITHM",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_CHECK_VALUE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000090",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_CHECK_VALUE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_KEY_TYPE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000100",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_KEY_TYPE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_SUBJECT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000101",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_SUBJECT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_ID",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000102",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_ID",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_SENSITIVE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000103",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_SENSITIVE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_ENCRYPT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000104",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_ENCRYPT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_DECRYPT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000105",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_DECRYPT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_WRAP",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000106",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_WRAP",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_UNWRAP",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000107",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_UNWRAP",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_SIGN",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000108",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_SIGN",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_SIGN_RECOVER",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000109",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_SIGN_RECOVER",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VERIFY",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000010a",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VERIFY",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VERIFY_RECOVER",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000010b",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VERIFY_RECOVER",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_DERIVE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000010c",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_DERIVE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_START_DATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000110",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_START_DATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_END_DATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000111",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_END_DATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_MODULUS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000120",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_MODULUS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_MODULUS_BITS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000121",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_MODULUS_BITS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PUBLIC_EXPONENT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000122",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PUBLIC_EXPONENT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PRIVATE_EXPONENT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000123",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PRIVATE_EXPONENT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PRIME_1",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000124",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PRIME_1",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PRIME_2",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000125",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PRIME_2",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_EXPONENT_1",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000126",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_EXPONENT_1",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_EXPONENT_2",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000127",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_EXPONENT_2",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_COEFFICIENT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000128",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_COEFFICIENT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PUBLIC_KEY_INFO",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000129",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PUBLIC_KEY_INFO",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PRIME",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000130",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PRIME",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_SUBPRIME",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000131",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_SUBPRIME",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_BASE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000132",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_BASE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PRIME_BITS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000133",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PRIME_BITS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [
+        "CKA_SUB_PRIME_BITS"
+      ],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_SUBPRIME_BITS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000134",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_SUBPRIME_BITS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALUE_BITS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000160",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALUE_BITS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALUE_LEN",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000161",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALUE_LEN",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_EXTRACTABLE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000162",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_EXTRACTABLE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_LOCAL",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000163",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_LOCAL",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_NEVER_EXTRACTABLE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000164",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_NEVER_EXTRACTABLE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_ALWAYS_SENSITIVE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000165",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_ALWAYS_SENSITIVE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_KEY_GEN_MECHANISM",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000166",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_KEY_GEN_MECHANISM",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_MODIFIABLE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000170",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_MODIFIABLE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_COPYABLE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000171",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_COPYABLE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_DESTROYABLE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000172",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_DESTROYABLE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [
+        "CKA_ECDSA_PARAMS"
+      ],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_EC_PARAMS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000180",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_EC_PARAMS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_EC_POINT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000181",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_EC_POINT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_SECONDARY_AUTH",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000200",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_SECONDARY_AUTH",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_AUTH_PIN_FLAGS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000201",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_AUTH_PIN_FLAGS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_ALWAYS_AUTHENTICATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000202",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_ALWAYS_AUTHENTICATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_WRAP_WITH_TRUSTED",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000210",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_WRAP_WITH_TRUSTED",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_FORMAT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000220",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_FORMAT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_LENGTH",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000221",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_LENGTH",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_TIME_INTERVAL",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000222",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_TIME_INTERVAL",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_USER_FRIENDLY_MODE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000223",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_USER_FRIENDLY_MODE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_CHALLENGE_REQUIREMENT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000224",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_CHALLENGE_REQUIREMENT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_TIME_REQUIREMENT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000225",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_TIME_REQUIREMENT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_COUNTER_REQUIREMENT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000226",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_COUNTER_REQUIREMENT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_PIN_REQUIREMENT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000227",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_PIN_REQUIREMENT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_USER_IDENTIFIER",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000022a",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_USER_IDENTIFIER",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_SERVICE_IDENTIFIER",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000022b",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_SERVICE_IDENTIFIER",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_SERVICE_LOGO",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000022c",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_SERVICE_LOGO",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_SERVICE_LOGO_TYPE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000022d",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_SERVICE_LOGO_TYPE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_COUNTER",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000022e",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_COUNTER",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OTP_TIME",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000022f",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OTP_TIME",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_GOSTR3410_PARAMS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000250",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_GOSTR3410_PARAMS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_GOSTR3411_PARAMS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000251",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_GOSTR3411_PARAMS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_GOST28147_PARAMS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000252",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_GOST28147_PARAMS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_HW_FEATURE_TYPE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000300",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_HW_FEATURE_TYPE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_RESET_ON_INIT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000301",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_RESET_ON_INIT",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_HAS_RESET",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000302",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_HAS_RESET",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PIXEL_X",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000400",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PIXEL_X",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PIXEL_Y",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000401",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PIXEL_Y",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_RESOLUTION",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000402",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_RESOLUTION",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_CHAR_ROWS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000403",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_CHAR_ROWS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_CHAR_COLUMNS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000404",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_CHAR_COLUMNS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_COLOR",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000405",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_COLOR",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_BITS_PER_PIXEL",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000406",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_BITS_PER_PIXEL",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_CHAR_SETS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000480",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_CHAR_SETS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_ENCODING_METHODS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000481",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_ENCODING_METHODS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_MIME_TYPES",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000482",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_MIME_TYPES",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_MECHANISM_TYPE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000500",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_MECHANISM_TYPE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_REQUIRED_CMS_ATTRIBUTES",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000501",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_REQUIRED_CMS_ATTRIBUTES",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_DEFAULT_CMS_ATTRIBUTES",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000502",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_DEFAULT_CMS_ATTRIBUTES",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_SUPPORTED_CMS_ATTRIBUTES",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000503",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_SUPPORTED_CMS_ATTRIBUTES",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PROFILE_ID",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000601",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PROFILE_ID",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_BAG",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000602",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_BAG",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_BAGSIZE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000603",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_BAGSIZE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_BOBS1STMSG",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000604",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_BOBS1STMSG",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_CKR",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000605",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_CKR",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_CKS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000606",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_CKS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_DHP",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000607",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_DHP",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_DHR",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000608",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_DHR",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_DHS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000609",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_DHS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_HKR",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000060a",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_HKR",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_HKS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000060b",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_HKS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_ISALICE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000060c",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_ISALICE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_NHKR",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000060d",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_NHKR",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_NHKS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000060e",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_NHKS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_NR",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000060f",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_NR",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_NS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000610",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_NS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_PNS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000611",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_PNS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_X2RATCHET_RK",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000612",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_X2RATCHET_RK",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_HSS_LEVELS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000617",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_HSS_LEVELS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_HSS_LMS_TYPE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000618",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_HSS_LMS_TYPE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_HSS_LMOTS_TYPE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000619",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_HSS_LMOTS_TYPE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_HSS_LMS_TYPES",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000061a",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_HSS_LMS_TYPES",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_HSS_LMOTS_TYPES",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000061b",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_HSS_LMOTS_TYPES",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_HSS_KEYS_REMAINING",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000061c",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_HSS_KEYS_REMAINING",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PARAMETER_SET",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000061d",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PARAMETER_SET",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_OBJECT_VALIDATION_FLAGS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000061e",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_OBJECT_VALIDATION_FLAGS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALIDATION_TYPE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000061f",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALIDATION_TYPE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALIDATION_VERSION",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000620",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALIDATION_VERSION",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALIDATION_LEVEL",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000621",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALIDATION_LEVEL",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALIDATION_MODULE_ID",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000622",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALIDATION_MODULE_ID",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALIDATION_FLAG",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000623",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALIDATION_FLAG",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALIDATION_AUTHORITY_TYPE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000624",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALIDATION_AUTHORITY_TYPE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALIDATION_COUNTRY",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000625",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALIDATION_COUNTRY",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALIDATION_CERTIFICATE_IDENTIFIER",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000626",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALIDATION_CERTIFICATE_IDENTIFIER",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALIDATION_CERTIFICATE_URI",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000627",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALIDATION_CERTIFICATE_URI",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALIDATION_VENDOR_URI",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000628",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALIDATION_VENDOR_URI",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VALIDATION_PROFILE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000629",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VALIDATION_PROFILE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_ENCAPSULATE_TEMPLATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000062a",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_ENCAPSULATE_TEMPLATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_DECAPSULATE_TEMPLATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000062b",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_DECAPSULATE_TEMPLATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_TRUST_SERVER_AUTH",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000062c",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_TRUST_SERVER_AUTH",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_TRUST_CLIENT_AUTH",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000062d",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_TRUST_CLIENT_AUTH",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_TRUST_CODE_SIGNING",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000062e",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_TRUST_CODE_SIGNING",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_TRUST_EMAIL_PROTECTION",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000062f",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_TRUST_EMAIL_PROTECTION",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_TRUST_IPSEC_IKE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000630",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_TRUST_IPSEC_IKE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_TRUST_TIME_STAMPING",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000631",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_TRUST_TIME_STAMPING",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_TRUST_OCSP_SIGNING",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000632",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_TRUST_OCSP_SIGNING",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_ENCAPSULATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000633",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_ENCAPSULATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_DECAPSULATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000634",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_DECAPSULATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_HASH_OF_CERTIFICATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000635",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_HASH_OF_CERTIFICATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_PUBLIC_CRC64_VALUE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000636",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_PUBLIC_CRC64_VALUE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_SEED",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000637",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_SEED",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_WRAP_TEMPLATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x40000211",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_WRAP_TEMPLATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_UNWRAP_TEMPLATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x40000212",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_UNWRAP_TEMPLATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_DERIVE_TEMPLATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x40000213",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_DERIVE_TEMPLATE",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_ALLOWED_MECHANISMS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x40000600",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_ALLOWED_MECHANISMS",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    },
+    {
+      "aliases": [],
+      "applies_to": "unreviewed",
+      "canonical_name": "CKA_VENDOR_DEFINED",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x80000000",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKA_VENDOR_DEFINED",
+          "source_id": "S-PD-32"
+        }
+      ],
+      "value_type": "unreviewed"
+    }
+  ],
+  "classes": [
+    {
+      "aliases": [],
+      "canonical_name": "CKO_DATA",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000000",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_DATA",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_CERTIFICATE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000001",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_CERTIFICATE",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_PUBLIC_KEY",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000002",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_PUBLIC_KEY",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_PRIVATE_KEY",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000003",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_PRIVATE_KEY",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_SECRET_KEY",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000004",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_SECRET_KEY",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_HW_FEATURE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000005",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_HW_FEATURE",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_DOMAIN_PARAMETERS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000006",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_DOMAIN_PARAMETERS",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_MECHANISM",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000007",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_MECHANISM",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_OTP_KEY",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000008",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_OTP_KEY",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_PROFILE",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000009",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_PROFILE",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_VALIDATION",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000000a",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_VALIDATION",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_TRUST",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000000b",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_TRUST",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKO_VENDOR_DEFINED",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x80000000",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKO_VENDOR_DEFINED",
+          "source_id": "S-PD-32"
+        }
+      ]
+    }
+  ],
+  "key_types": [
+    {
+      "aliases": [],
+      "canonical_name": "CKK_RSA",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000000",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_RSA",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_DSA",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000001",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_DSA",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_DH",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000002",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_DH",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [
+        "CKK_ECDSA"
+      ],
+      "canonical_name": "CKK_EC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000003",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_EC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_X9_42_DH",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000004",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_X9_42_DH",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_KEA",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000005",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_KEA",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_GENERIC_SECRET",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000010",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_GENERIC_SECRET",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_RC2",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000011",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_RC2",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_RC4",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000012",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_RC4",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_DES",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000013",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_DES",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_DES2",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000014",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_DES2",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_DES3",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000015",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_DES3",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_CAST",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000016",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_CAST",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_CAST3",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000017",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_CAST3",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [
+        "CKK_CAST5"
+      ],
+      "canonical_name": "CKK_CAST128",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000018",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_CAST128",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_RC5",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000019",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_RC5",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_IDEA",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000001a",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_IDEA",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SKIPJACK",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000001b",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SKIPJACK",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_BATON",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000001c",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_BATON",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_JUNIPER",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000001d",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_JUNIPER",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_CDMF",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000001e",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_CDMF",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_AES",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000001f",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_AES",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_BLOWFISH",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000020",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_BLOWFISH",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_TWOFISH",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000021",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_TWOFISH",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SECURID",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000022",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SECURID",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_HOTP",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000023",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_HOTP",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_ACTI",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000024",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_ACTI",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_CAMELLIA",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000025",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_CAMELLIA",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_ARIA",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000026",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_ARIA",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_MD5_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000027",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_MD5_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA_1_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000028",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA_1_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_RIPEMD128_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000029",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_RIPEMD128_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_RIPEMD160_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000002a",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_RIPEMD160_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA256_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000002b",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA256_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA384_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000002c",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA384_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA512_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000002d",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA512_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA224_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000002e",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA224_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SEED",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000002f",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SEED",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_GOSTR3410",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000030",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_GOSTR3410",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_GOSTR3411",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000031",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_GOSTR3411",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_GOST28147",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000032",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_GOST28147",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_CHACHA20",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000033",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_CHACHA20",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_POLY1305",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000034",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_POLY1305",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_AES_XTS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000035",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_AES_XTS",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA3_224_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000036",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA3_224_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA3_256_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000037",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA3_256_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA3_384_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000038",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA3_384_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA3_512_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000039",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA3_512_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_BLAKE2B_160_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000003a",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_BLAKE2B_160_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_BLAKE2B_256_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000003b",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_BLAKE2B_256_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_BLAKE2B_384_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000003c",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_BLAKE2B_384_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_BLAKE2B_512_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000003d",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_BLAKE2B_512_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SALSA20",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000003e",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SALSA20",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_X2RATCHET",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000003f",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_X2RATCHET",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_EC_EDWARDS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000040",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_EC_EDWARDS",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_EC_MONTGOMERY",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000041",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_EC_MONTGOMERY",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_HKDF",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000042",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_HKDF",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA512_224_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000043",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA512_224_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA512_256_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000044",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA512_256_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SHA512_T_HMAC",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000045",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SHA512_T_HMAC",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_HSS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000046",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_HSS",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_XMSS",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000047",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_XMSS",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_XMSSMT",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000048",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_XMSSMT",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_ML_KEM",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x00000049",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_ML_KEM",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_ML_DSA",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000004a",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_ML_DSA",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_SLH_DSA",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x0000004b",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_SLH_DSA",
+          "source_id": "S-PD-32"
+        }
+      ]
+    },
+    {
+      "aliases": [],
+      "canonical_name": "CKK_VENDOR_DEFINED",
+      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "numeric_id": "0x80000000",
+      "source_refs": [
+        {
+          "section": "pkcs11.h:CKK_VENDOR_DEFINED",
+          "source_id": "S-PD-32"
+        }
+      ]
+    }
+  ],
+  "template_rules": [
+    {
+      "class": "CKO_SECRET_KEY",
+      "forbidden": [],
+      "key_type": "CKK_AES",
+      "notes": "AES keygen: VALUE_LEN required (planGenerateKey, KeyManagementSpec caseAesKeygen).",
+      "required": [
+        "CKA_CLASS",
+        "CKA_VALUE_LEN"
+      ]
+    },
+    {
+      "class": "CKO_PUBLIC_KEY",
+      "forbidden": [],
+      "key_type": "CKK_EC",
+      "notes": "EC pair: EC_PARAMS required in the public template (ecCurveOf, KeyManagementSpec caseEcKeypair).",
+      "required": [
+        "CKA_CLASS",
+        "CKA_EC_PARAMS"
+      ]
+    },
+    {
+      "class": "CKO_PUBLIC_KEY",
+      "forbidden": [],
+      "key_type": "CKK_RSA",
+      "notes": "RSA pair: MODULUS_BITS required in the public template (rsaBitsOf).",
+      "required": [
+        "CKA_CLASS",
+        "CKA_MODULUS_BITS"
+      ]
+    },
+    {
+      "class": "CKO_SECRET_KEY",
+      "forbidden": [],
+      "key_type": "CKK_HOTP",
+      "notes": "HOTP keygen: VALUE_LEN required (planGenerateKey, RecipeOtpSpec caseKeygenPlan).",
+      "required": [
+        "CKA_CLASS",
+        "CKA_VALUE_LEN"
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "status": "generated-source-of-truth",
+  "provenance": "Identity (numeric_id, aliases, source_refs) generated from the byte-locked header; template_rules is the generator-owned reviewed subset (each rule cites its in-repo source), enforced by Haskoki.Object.checkRules. Full base-spec tables need the OASIS prose (not vendored): see source-issues.json GAP-TEMPLATES."
+}

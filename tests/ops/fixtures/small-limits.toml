@@ -1,0 +1,15 @@
+# Fixture: small attribute/buffer limits. Template enforcement
+# does NOT track these (pinned 64 entries / 65536 bytes, disclosed in
+# the capabilities report); the suite pins that documented ignored-ness.
+schema_version = 1
+profile = "real-crypto"
+
+[storage]
+kind = "memory"
+
+[engine]
+kind = "openssl"
+
+[limits]
+attribute_entries = 8
+buffer_bytes = 1024

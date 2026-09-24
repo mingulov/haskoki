@@ -1,0 +1,490 @@
+cabal-version:      3.12
+name:               haskoki
+version:            0.3.0.0
+synopsis:           Haskell PKCS#11 soft token (demonstrator)
+description:
+  A Haskell soft token that makes the PKCS#11 surface (APIs 2.40, 3.0, 3.1
+  and 3.2) easy to exercise and understand. At 0.3.0.0: a C-loadable
+  shared module with byte-pinned versioned tables, 106 behavior-tested
+  mechanisms proven in-process through real libcrypto, native consumer
+  and proxy-parity proofs, and a relocatable release artifact. The C
+  tables expose only the SHA-256 one-shot; sessions/objects/sign/encrypt
+  refuse honestly. Not a conformance claim.
+license:            Apache-2.0
+author:             haskoki contributors
+maintainer:         haskoki contributors
+category:           Security, Cryptography
+build-type:         Simple
+-- Baseline compiler: GHC 9.10.3 (OS package or ghcup vanilla).
+-- Alternative: GHC 10.0.1-alpha1 snapshot 10.0.0.20260917 via the
+-- ghcup prereleases channel (see docs/toolchain.md).
+tested-with:       GHC == 9.10.3
+extra-doc-files:
+  README.md
+  CHANGELOG.md
+
+-- Omission classes are fatal in the pinned validation
+-- configuration. Spellings confirmed by compiling probes on the pinned
+-- alpha ghc-10.0.0.20260917; flag names must come from compiled
+-- probes, never copied from upstream docs alone. Scope: the library +
+-- test suites (what run-gates.sh + forced builds validate).
+common fatal-omissions
+  ghc-options:
+    -Werror=incomplete-patterns
+    -Werror=incomplete-uni-patterns
+    -Werror=incomplete-record-selectors
+    -Werror=incomplete-record-updates
+    -Werror=missing-fields
+    -Werror=missing-methods
+
+-- The pure core as a separate component. Dependency
+-- direction is structural: this component depends on nothing
+-- project-internal (external data libraries only); the main library,
+-- the foreign library, and the test suites depend on it, never the
+-- reverse. Visibility is private: the package's public API is the
+-- main library alone.
+library haskoki-core
+  import:             fatal-omissions
+  visibility:         private
+  exposed-modules:
+    Haskoki.Types
+    Haskoki.Request
+    Haskoki.Outcome
+    Haskoki.Model
+    Haskoki.Rules
+    Haskoki.Session
+    Haskoki.Snapshot
+    Haskoki.Attribute
+    Haskoki.Attribute.Generated
+    Haskoki.Object
+    Haskoki.Operation
+    Haskoki.Operation.Cipher
+    Haskoki.Operation.Codec
+    Haskoki.Operation.Digest
+    Haskoki.Operation.Effect
+    Haskoki.Operation.Dual
+    Haskoki.Operation.Derive
+    Haskoki.Operation.Kem
+    Haskoki.Operation.KeyManagement
+    Haskoki.Operation.Message
+    Haskoki.Operation.Signature
+    Haskoki.Operation.State
+    Haskoki.Transition
+    Haskoki.Output
+    Haskoki.Registry
+    Haskoki.Registry.Generated
+    Haskoki.Registry.Types
+    Haskoki.Recipe.Cipher
+    Haskoki.Recipe.Cmac
+    Haskoki.Recipe.Digest
+    Haskoki.Recipe.Hmac
+    Haskoki.Recipe.Kdf
+    Haskoki.Recipe.RsaOaep
+    Haskoki.Recipe.RsaPkcs1
+    Haskoki.Recipe.RsaPss
+    Haskoki.Recipe.Ecdsa
+    Haskoki.Recipe.Ecdh
+    Haskoki.Recipe.Otp
+  hs-source-dirs:     core
+  build-depends:
+    base          >= 4.14 && < 5,
+    bytestring    >= 0.10  && < 0.13,
+    containers    >= 0.6   && < 0.9,
+    text          >= 1.2   && < 2.2
+  ghc-options:      -Wall
+  default-language: GHC2024
+
+library
+  import:           fatal-omissions
+  exposed-modules:
+    Haskoki
+    Haskoki.Engine.Backend
+    Haskoki.Engine.Driver
+    Haskoki.Engine.OpenSSL4
+    Haskoki.Engine.Synthetic
+    Haskoki.Ctl
+    Haskoki.FFI.Async
+    Haskoki.FFI.Decode
+    Haskoki.FFI.Encode
+    Haskoki.FFI.Exports
+    Haskoki.FFI.KeyOutputs
+    Haskoki.FFI.MessageParams
+    Haskoki.FFI.Standard
+    Haskoki.FFI.Instance
+    Haskoki.Runtime
+    Haskoki.Runtime.Async
+    Haskoki.Runtime.Config
+    Haskoki.Runtime.Control
+    Haskoki.Runtime.Detached
+    Haskoki.Runtime.Events
+    Haskoki.Runtime.Lifecycle
+    Haskoki.Runtime.Storage
+    Haskoki.Runtime.Storage.Memory
+    Haskoki.Runtime.Storage.SQLite
+    Haskoki.Runtime.Trace
+    Haskoki.PKCS11
+  -- Private provider-only OpenSSL 4 raw bindings (not a public API).
+  other-modules:
+    Haskoki.FFI.OpenSSL4.Raw
+  -- Narrow ossl4 shim, linked against the pinned static libcrypto
+  -- at $OPENSSL4_PREFIX (/opt/openssl-4.0.2 in the image; bind-mount the
+  -- staged prefix there when building outside the rebuilt image).
+  c-sources:
+    cbits/ossl4_ctx.c
+  include-dirs:
+    cbits
+    /opt/openssl-4.0.2/include
+  extra-lib-dirs:
+    /opt/openssl-4.0.2/lib
+  -- Exact-archive match: force the STATIC libcrypto.a even where the
+  -- prefix also ships libcrypto.so (host lib64/). GNU ld -l:filename
+  -- bypasses .so/.a search preference; both the container lib/ and
+  -- the host lib64/ carry libcrypto.a, and this propagates to all
+  -- dependent links (flib/exe/test) like plain -lcrypto did.
+  extra-libraries:
+    :libcrypto.a
+  -- The pure core lives in core/ (single home of Haskoki.Types and
+  -- the request/outcome/model contracts); src/ keeps the facade.
+  -- The native decode/encode side lives in ffi/ but is wired
+  -- through the library so model tests exercise it without a
+  -- cross-component duplicate; the foreign library picks these
+  -- modules up when export trampolines need them.
+  -- core/ is the separate haskoki-core component (above);
+  -- this library compiles src/ + ffi/ and depends on it.
+  hs-source-dirs:   src ffi
+  build-depends:
+    base          >= 4.14 && < 5,
+    bytestring    >= 0.10  && < 0.13,
+    containers    >= 0.6   && < 0.9,
+    direct-sqlite >= 2.3   && < 2.4,
+    stm           >= 2.5   && < 2.6,
+    text          >= 1.2   && < 2.2,
+    unix          >= 2.7   && < 2.9,
+    haskoki:haskoki-core
+  ghc-options:      -Wall
+  default-language: GHC2024
+
+-- C-loadable provider module. Produces libhaskoki.so via the
+-- threaded RTS (foreign-thread entry), DF_1_NODELETE linker pinning
+-- (process-pinned embedding: dlclose must not unload Haskell code),
+-- and the FFI export slice. No hs_exit anywhere in this package.
+foreign-library haskoki
+  type:             native-shared
+  -- A1: the routed crypto exports pull the core/engine/runtime
+  -- closure into the loadable module.
+  -- Core modules come via haskoki:haskoki-core (below).
+  hs-source-dirs:   src ffi
+  other-modules:
+    Haskoki.Engine.Backend
+    Haskoki.Engine.Driver
+    Haskoki.Engine.OpenSSL4
+    Haskoki.FFI.Async
+    Haskoki.FFI.Decode
+    Haskoki.FFI.Encode
+    Haskoki.FFI.Exports
+    Haskoki.FFI.OpenSSL4.Raw
+    Haskoki.FFI.Standard
+    Haskoki.FFI.Instance
+    Haskoki.FFI.Types
+    Haskoki.Runtime.Async
+    Haskoki.Runtime.Config
+    Haskoki.Runtime.Control
+    Haskoki.Runtime.Detached
+    Haskoki.Runtime.Events
+    Haskoki.Runtime.Lifecycle
+    Haskoki.Runtime.Storage
+    Haskoki.Runtime.Storage.Memory
+    Haskoki.Runtime.Storage.SQLite
+    Haskoki.Runtime.Trace
+  c-sources:
+    cbits/rts_bootstrap.c
+    cbits/function_tables.c
+    cbits/control_entry.c
+    cbits/exports.c
+    cbits/abi_probe.c
+    cbits/ossl4_ctx.c
+    cbits/standard_surface.c
+  -- Pinned PD 3.2 headers (declare all layouts + CK_C_* typedefs)
+  -- for cbits/exports.c and ffi/Haskoki/FFI/Types.hsc. The mirror TU
+  -- (function_tables.c) does not include them.
+  -- Plus the pinned OpenSSL 4 headers; the module links the pinned
+  -- static libcrypto ($OPENSSL4_PREFIX=/opt/openssl-4.0.2 in the image).
+  include-dirs:
+    spec/vendor
+    /opt/openssl-4.0.2/include
+  extra-lib-dirs:
+    /opt/openssl-4.0.2/lib
+  -- Exact-archive match: force the STATIC libcrypto.a even where the
+  -- prefix also ships libcrypto.so (host lib64/). GNU ld -l:filename
+  -- bypasses .so/.a search preference; both the container lib/ and
+  -- the host lib64/ carry libcrypto.a, and this propagates to all
+  -- dependent links (flib/exe/test) like plain -lcrypto did.
+  extra-libraries:
+    :libcrypto.a
+  build-depends:
+    base          >= 4.14 && < 5,
+    bytestring    >= 0.10 && < 0.13,
+    containers    >= 0.6  && < 0.9,
+    direct-sqlite >= 2.3  && < 2.4,
+    stm           >= 2.5  && < 2.6,
+    text          >= 1.2  && < 2.2,
+    unix          >= 2.7  && < 2.9,
+    haskoki:haskoki-core
+  ghc-options:      -Wall -threaded
+  cc-options:       -Wall -Wextra -std=c11 -pthread
+  -- Relocatable bundle: resolve the bundled libHS* closure from the
+  -- directory containing libhaskoki.so, so consumers need no
+  -- LD_LIBRARY_PATH (dlopen honors this object's own RUNPATH).
+  ld-options:       -Wl,-z,nodelete -Wl,-z,origin -pthread -Wl,-rpath,$ORIGIN
+  default-language: GHC2024
+
+-- Offline / owned-instance operator tool.
+executable haskoki-ctl
+  main-is:          Main.hs
+  hs-source-dirs:   app
+  build-depends:
+    base     >= 4.14 && < 5,
+    haskoki
+  ghc-options:      -Wall -threaded
+  -- NOTE: no ld-options here by design. This exe links fully static
+  -- (Haskell libs + libcrypto.a inside; only system libc/libm/libgmp/
+  -- libffi/libnuma NEEDED), so it needs no RUNPATH and no
+  -- LD_LIBRARY_PATH anywhere it runs.
+  default-language: GHC2024
+
+-- Stale-handle injection probe (subprocess-isolated: every
+-- stale use must answer CKR_CRYPTOKI_NOT_INITIALIZED). Test
+-- jig, not a shipped tool: driven only by
+-- scripts/test-lifecycle.sh.
+executable lifecycle-probe
+  main-is:          Main.hs
+  hs-source-dirs:   tools/lifecycle-probe
+  build-depends:
+    base     >= 4.14 && < 5,
+    haskoki
+  ghc-options:      -Wall -threaded
+  default-language: GHC2024
+
+-- Generated laws + command sequences over pure core (QuickCheck
+-- properties with fixed replay seeds; see tests/prop/Gen.hs).
+test-suite haskoki-prop-tests
+  import:           fatal-omissions
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   tests/prop
+  other-modules:
+    Gen
+    BytesProps
+    CodecProps
+    ErrorProps
+    DeltaProps
+    SnapshotProps
+    StreamProps
+    DigestCmdProps
+    CipherProps
+    NamespaceProps
+    OracleProps
+    ULongProps
+  build-depends:
+    base            >= 4.14 && < 5,
+    bytestring      >= 0.10 && < 0.13,
+    containers      >= 0.6  && < 0.9,
+    directory       >= 1.3  && < 1.4,
+    filepath        >= 1.4  && < 1.6,
+    haskoki,
+    haskoki:haskoki-core,
+    process         >= 1.6  && < 1.7,
+    QuickCheck      >= 2.14 && < 2.20,
+    tasty           >= 1.4  && < 1.6,
+    tasty-hunit     >= 0.10 && < 0.11,
+    tasty-quickcheck >= 0.11 && < 0.12
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+  default-language: GHC2024
+
+test-suite haskoki-tests
+  import:           fatal-omissions
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   test
+  build-depends:
+    base        >= 4.14 && < 5,
+    haskoki,
+    tasty       >= 1.4  && < 1.6,
+    tasty-hunit >= 0.10 && < 0.11
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+  default-language: GHC2024
+
+test-suite haskoki-model-tests
+  import:           fatal-omissions
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  -- Per-group recipe specs live in tests/recipes/ but compile
+  -- into this suite (recipes are pure core; the model suite is their
+  -- home). Engine-executed recipe cases extend the engine suites.
+  hs-source-dirs:   tests/model tests/recipes
+  other-modules:
+    AdmissionSpec
+    AsyncSpec
+    ByteFormatSpec
+    BytesSpec
+    ConfigHonestySpec
+    ConfigSpec
+    ControlSpec
+    CtlSpec
+    DecodedRequestSpec
+    DenominatorSpec
+    DetachedSpec
+    ErrorDetailSpec
+    ErrorInterpSpec
+    ErrorPinSpec
+    ErrorUnifySpec
+    EventsSpec
+    FfiAsyncSpec
+    FfiHygieneSpec
+    JobStepSpec
+    LeaseScopeSpec
+    TransitionSpec
+    SecretsSpec
+    SessionSpec
+    LifecycleSpec
+    KeyManagementSpec
+    MechanismExhaustivenessSpec
+    MessageSpec
+    MultiSessionSpec
+    MultiTokenSpec
+    ObjectSpec
+    OperationSpec
+    OwnershipSpec
+    OutputSpec
+    RecipeCipherSpec
+    RecipeCmacSpec
+    RecipeDigestSpec
+    RecipeEcdsaSpec
+    RecipeEcdhSpec
+    RecipeHmacSpec
+    RecipeKdfSpec
+    RecipeOaepSpec
+    RecipeOtpSpec
+    RecipePssSpec
+    RecipeRsaSpec
+    RegistrySpec
+    RoutingSpec
+    SimBridgeSpec
+    SimStressSpec
+    SlotInsertSpec
+    SlotPhaseSpec
+    SnapshotSpec
+    StandardSurfaceSpec
+    TemplateRulesSpec
+    TraceSpec
+    ULongSpec
+  build-depends:
+    base        >= 4.14 && < 5,
+    bytestring  >= 0.10 && < 0.13,
+    containers  >= 0.6  && < 0.9,
+    directory   >= 1.3  && < 1.4,
+    filepath    >= 1.4  && < 1.6,
+    haskoki,
+    haskoki:haskoki-core,
+    tasty       >= 1.4  && < 1.6,
+    tasty-hunit >= 0.10 && < 0.11,
+    text        >= 1.2  && < 2.2
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+  default-language: GHC2024
+
+test-suite haskoki-engine-tests
+  import:           fatal-omissions
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   tests/engine
+  other-modules:
+    AsyncEngineSpec
+    CryptoExportSpec
+    DetachedEngineSpec
+    EnvLock
+    FfiAcquireSpec
+    LeaseWedgeDenseSpec
+    LeaseWedgeSpec
+    OpenSSLSpec
+    OperationSmokeSpec
+    RoutingE2ESpec
+    SnapshotEngineSpec
+    SyntheticSpec
+  build-depends:
+    base        >= 4.14 && < 5,
+    bytestring  >= 0.10 && < 0.13,
+    containers  >= 0.6  && < 0.9,
+    directory   >= 1.3  && < 1.4,
+    haskoki,
+    haskoki:haskoki-core,
+    tasty       >= 1.4  && < 1.6,
+    tasty-hunit >= 0.10 && < 0.11,
+    text        >= 1.2  && < 2.2
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+  default-language: GHC2024
+
+-- Isolated file-IO store suite (Memory + SQLite behind one contract).
+test-suite haskoki-storage-tests
+  import:           fatal-omissions
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   tests/storage
+  other-modules:
+    CommitSpec
+    MultiSessionSpec
+    StoreCtlSpec
+    StoreSpec
+  build-depends:
+    base        >= 4.14 && < 5,
+    bytestring  >= 0.10 && < 0.13,
+    containers  >= 0.6  && < 0.9,
+    directory   >= 1.3  && < 1.4,
+    direct-sqlite >= 2.3 && < 2.4,
+    filepath    >= 1.4  && < 1.6,
+    haskoki,
+    haskoki:haskoki-core,
+    tasty       >= 1.4  && < 1.6,
+    tasty-hunit >= 0.10 && < 0.11,
+    text        >= 1.2  && < 2.2,
+    unix        >= 2.7  && < 2.9
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+  default-language: GHC2024
+
+-- The core test subset as its own suite: the 16 model specs
+-- that import pure-core modules only, compiled against haskoki-core
+-- WITHOUT the runtime/FFI libraries (no `haskoki` in build-depends).
+-- Any Haskoki.Runtime/Haskoki.FFI import here is a compile error.
+test-suite haskoki-core-tests
+  import:           fatal-omissions
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   tests/coretests tests/model
+  other-modules:
+    ByteFormatSpec
+    DenominatorSpec
+    ErrorDetailSpec
+    ErrorInterpSpec
+    FfiHygieneSpec
+    MechanismExhaustivenessSpec
+    ObjectSpec
+    OperationSpec
+    RegistrySpec
+    SessionSpec
+    SlotInsertSpec
+    SlotPhaseSpec
+    SnapshotSpec
+    TemplateRulesSpec
+    TransitionSpec
+    ULongSpec
+  build-depends:
+    base            >= 4.14 && < 5,
+    bytestring      >= 0.10 && < 0.13,
+    containers      >= 0.6  && < 0.9,
+    directory       >= 1.3  && < 1.4,
+    filepath        >= 1.4  && < 1.6,
+    haskoki:haskoki-core,
+    tasty           >= 1.4  && < 1.6,
+    tasty-hunit     >= 0.10 && < 0.11,
+    text            >= 1.2  && < 2.2
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+  default-language: GHC2024

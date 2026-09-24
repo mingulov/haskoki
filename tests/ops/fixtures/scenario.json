@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "status": "design-example-not-executed",
+  "name": "pending-sign-and-token-removal",
+  "notice": "The owned-instance runner interprets these actions; a separate CLI does not control another loaded process.",
+  "rules": [
+    {
+      "match": {
+        "function": "C_Sign",
+        "async_session": true,
+        "call_index": 1
+      },
+      "effect": {
+        "kind": "pending",
+        "completion_polls": 2
+      }
+    }
+  ],
+  "steps": [
+    {
+      "action": "initialize"
+    },
+    {
+      "action": "fixture.load",
+      "arguments": {
+        "fixture": "minimal-demo",
+        "only_if_new_store": true
+      }
+    },
+    {
+      "action": "session.open",
+      "arguments": {
+        "token": "demo-token",
+        "read_write": true,
+        "asynchronous": true
+      },
+      "save_as": "s1"
+    },
+    {
+      "action": "session.login",
+      "arguments": {
+        "session": "s1",
+        "role": "USER",
+        "pin": "1234"
+      }
+    },
+    {
+      "action": "sign.init",
+      "arguments": {
+        "session": "s1",
+        "fixture_key": "demo-signing-key",
+        "mechanism": "CKM_RSA_PKCS"
+      }
+    },
+    {
+      "action": "sign",
+      "arguments": {
+        "session": "s1",
+        "data_base64": "ZGVtbyBtZXNzYWdl",
+        "output_capacity": 256
+      },
+      "expect": {
+        "return": "CKR_PENDING"
+      }
+    },
+    {
+      "action": "async.complete",
+      "arguments": {
+        "session": "s1",
+        "function": "C_Sign"
+      },
+      "expect": {
+        "return": "CKR_PENDING"
+      }
+    },
+    {
+      "action": "async.complete",
+      "arguments": {
+        "session": "s1",
+        "function": "C_Sign"
+      },
+      "expect": {
+        "return": "CKR_PENDING"
+      }
+    },
+    {
+      "action": "async.complete",
+      "arguments": {
+        "session": "s1",
+        "function": "C_Sign"
+      },
+      "expect": {
+        "return": "CKR_OK"
+      }
+    },
+    {
+      "action": "token.remove",
+      "arguments": {
+        "token": "demo-token"
+      }
+    },
+    {
+      "action": "slot-event.wait",
+      "arguments": {
+        "nonblocking": true
+      },
+      "expect": {
+        "event": "token-state-change"
+      }
+    },
+    {
+      "action": "finalize"
+    }
+  ]
+}

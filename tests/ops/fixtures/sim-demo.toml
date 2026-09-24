@@ -1,0 +1,25 @@
+# Fixture: full [sim] surface demo.
+# Repo-authored (not copied from the design bundle; see PROVENANCE.md).
+# - delay_schedule entries are "NAME:TICKS": a CKM mechanism name, a
+#   job-function tag (sign/digest/genkey/genkeypair), or "*" (all jobs).
+# - token_script entries run in file order at scenario start.
+# - fault_window_* bounds the labeled simulation fault window (ticks).
+schema_version = 1
+profile = "demo-maximal"
+
+[storage]
+kind = "memory"
+
+[engine]
+kind = "synthetic"
+
+[control]
+enabled = true
+test_enabled = true
+
+[sim]
+enabled = true
+delay_schedule = ["CKM_RSA_PKCS:3", "sign:1", "*:1"]
+token_script = ["insert 1", "remove 1"]
+fault_window_start = 2
+fault_window_ticks = 4

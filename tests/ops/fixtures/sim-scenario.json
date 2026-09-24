@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "status": "sim-demo",
+  "name": "sim-delay-token-fault",
+  "notice": "Repo-authored: exercises token.insert, async.delay and fault.window on the owned-instance runner (never another live process). Run with sim-demo.toml (test-enabled + [sim] knobs).",
+  "rules": [],
+  "steps": [
+    {
+      "action": "initialize"
+    },
+    {
+      "action": "fixture.load",
+      "arguments": {
+        "fixture": "minimal-demo",
+        "only_if_new_store": true
+      }
+    },
+    {
+      "action": "token.insert",
+      "arguments": {
+        "slot": 5
+      }
+    },
+    {
+      "action": "session.open",
+      "arguments": {
+        "token": "demo-token",
+        "read_write": true,
+        "asynchronous": true
+      },
+      "save_as": "s1"
+    },
+    {
+      "action": "session.login",
+      "arguments": {
+        "session": "s1",
+        "role": "USER",
+        "pin": "1234"
+      }
+    },
+    {
+      "action": "sign.init",
+      "arguments": {
+        "session": "s1",
+        "fixture_key": "demo-signing-key",
+        "mechanism": "CKM_RSA_PKCS"
+      }
+    },
+    {
+      "action": "sign",
+      "arguments": {
+        "session": "s1",
+        "data_base64": "ZGVtbyBtZXNzYWdl",
+        "output_capacity": 256
+      },
+      "expect": {
+        "return": "CKR_PENDING"
+      }
+    },
+    {
+      "action": "fault.window",
+      "arguments": {
+        "start": 9,
+        "ticks": 1
+      }
+    },
+    {
+      "action": "async.delay",
+      "arguments": {
+        "session": "s1",
+        "polls": 1
+      }
+    },
+    {
+      "action": "async.complete",
+      "arguments": {
+        "session": "s1",
+        "function": "C_Sign"
+      },
+      "expect": {
+        "return": "CKR_DEVICE_ERROR"
+      }
+    },
+    {
+      "action": "async.complete",
+      "arguments": {
+        "session": "s1",
+        "function": "C_Sign"
+      },
+      "expect": {
+        "return": "CKR_PENDING"
+      }
+    },
+    {
+      "action": "async.complete",
+      "arguments": {
+        "session": "s1",
+        "function": "C_Sign"
+      },
+      "expect": {
+        "return": "CKR_PENDING"
+      }
+    },
+    {
+      "action": "async.complete",
+      "arguments": {
+        "session": "s1",
+        "function": "C_Sign"
+      },
+      "expect": {
+        "return": "CKR_PENDING"
+      }
+    },
+    {
+      "action": "async.complete",
+      "arguments": {
+        "session": "s1",
+        "function": "C_Sign"
+      },
+      "expect": {
+        "return": "CKR_OK"
+      }
+    },
+    {
+      "action": "token.remove",
+      "arguments": {
+        "token": "demo-token"
+      }
+    },
+    {
+      "action": "slot-event.wait",
+      "arguments": {
+        "nonblocking": true
+      },
+      "expect": {
+        "event": "token-state-change"
+      }
+    },
+    {
+      "action": "finalize"
+    },
+    {
+      "action": "session.open",
+      "arguments": {
+        "token": "demo-token",
+        "read_write": true
+      },
+      "save_as": "s2"
+    },
+    {
+      "action": "session.login",
+      "arguments": {
+        "session": "s2",
+        "role": "USER",
+        "pin": "1234"
+      }
+    },
+    {
+      "action": "sign.init",
+      "arguments": {
+        "session": "s2",
+        "fixture_key": "demo-signing-key",
+        "mechanism": "CKM_RSA_PKCS"
+      }
+    },
+    {
+      "action": "async.delay",
+      "arguments": {
+        "session": "s2",
+        "polls": 5
+      }
+    },
+    {
+      "action": "sign",
+      "arguments": {
+        "session": "s2",
+        "data_base64": "ZGVtbyBtZXNzYWdl",
+        "output_capacity": 256
+      },
+      "expect": {
+        "return": "CKR_OK"
+      }
+    }
+  ]
+}
