@@ -142,6 +142,7 @@ import Haskoki.Engine.Backend
   , MacSpec (..)
   , OaepParams (..)
   , PqcKemAlg (..)
+  , RsaCipherParams (..)
   , PssParams (..)
   , SigSpec (..)
   )
@@ -1012,8 +1013,8 @@ runEffect env resolve fx = case fx of
         Nothing -> pure (GotCryptoError (CryptoFailed
           "driver: OAEP mechanism parameters rejected by the recipe"))
         Just oparams -> case dir of
-          DirEncrypt -> toBytes <$> pkeyEncrypt env oparams key input
-          DirDecrypt -> toBytes <$> pkeyDecrypt env oparams key input
+          DirEncrypt -> toBytes <$> pkeyEncrypt env (RsaOaep oparams) key input
+          DirDecrypt -> toBytes <$> pkeyDecrypt env (RsaOaep oparams) key input
     runAuthWrap :: Bool -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
     runAuthWrap isWrap mech key iv aad input = case key of
       KeyBytes kb -> case cipherSpecFor mech (BS.length kb) iv of

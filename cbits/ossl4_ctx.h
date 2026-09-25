@@ -283,6 +283,28 @@ long hsk_ossl4_rsa_oaep_decrypt(OSSL_LIB_CTX *ctx, const char *mdname,
                                size_t priv_len, const unsigned char *in,
                                size_t inlen, unsigned char **out);
 
+/* --- RSA PKCS#1 v1.5 encrypt/decrypt ------------------------------ */
+
+/* pub_der: SPKI DER. Overlong input is HSK_OSSL4_ERR_BADPARAM
+ * (typed bound: k - 11). Returns output length with *out set, or a
+ * negative HSK_OSSL4_ERR_* code. */
+long hsk_ossl4_rsa_pkcs1_encrypt(OSSL_LIB_CTX *ctx, const char *propq,
+                                 const unsigned char *pub_der, size_t pub_len,
+                                 const unsigned char *in, size_t inlen,
+                                 unsigned char **out);
+
+/* priv_der: PKCS#8 DER. Raw decrypt plus constant-time type-2
+ * unpad (the 4.0 provider answers padded v1.5 failures with
+ * implicit rejection, which cannot surface a verdict). Padding
+ * failures answer HSK_OSSL4_ERR_AUTHFAIL (a verdict, uniform
+ * like OAEP); off-modulus input lengths answer
+ * HSK_OSSL4_ERR_BADPARAM; internal errors stay
+ * HSK_OSSL4_ERR_NATIVE. Returns output length with *out set. */
+long hsk_ossl4_rsa_pkcs1_decrypt(OSSL_LIB_CTX *ctx, const char *propq,
+                                 const unsigned char *priv_der,
+                                 size_t priv_len, const unsigned char *in,
+                                 size_t inlen, unsigned char **out);
+
 #ifdef __cplusplus
 }
 #endif

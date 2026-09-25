@@ -52,6 +52,8 @@ module Haskoki.FFI.OpenSSL4.Raw
   , rsaPssVerify
   , rsaOaepEncrypt
   , rsaOaepDecrypt
+  , rsaPkcs1Encrypt
+  , rsaPkcs1Decrypt
   ) where
 
 import qualified Data.ByteString as BS
@@ -178,6 +180,12 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_oaep_encrypt"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_oaep_decrypt"
   c_rsa_oaep_decrypt :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_pkcs1_encrypt"
+  c_rsa_pkcs1_encrypt :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_pkcs1_decrypt"
+  c_rsa_pkcs1_decrypt :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
 
 -- Managed wrappers.
 
@@ -450,3 +458,17 @@ rsaOaepDecrypt ctx mdname mgfname label propq privDer input =
           withBytes privDer $ \(ppriv, npriv) ->
             withBytes input $ \(pin, nin) ->
               withOut (c_rsa_oaep_decrypt ctx cmd cmgf plabel nlabel cpq ppriv npriv pin nin)
+
+rsaPkcs1Encrypt :: Ptr OsslLibCtx -> String -> ByteString -> ByteString -> IO (Either Int ByteString)
+rsaPkcs1Encrypt ctx propq pubDer input =
+  withCString propq $ \cpq ->
+    withBytes pubDer $ \(ppub, npub) ->
+      withBytes input $ \(pin, nin) ->
+        withOut (c_rsa_pkcs1_encrypt ctx cpq ppub npub pin nin)
+
+rsaPkcs1Decrypt :: Ptr OsslLibCtx -> String -> ByteString -> ByteString -> IO (Either Int ByteString)
+rsaPkcs1Decrypt ctx propq privDer input =
+  withCString propq $ \cpq ->
+    withBytes privDer $ \(ppriv, npriv) ->
+      withBytes input $ \(pin, nin) ->
+        withOut (c_rsa_pkcs1_decrypt ctx cpq ppriv npriv pin nin)

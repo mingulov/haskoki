@@ -88,6 +88,7 @@ import Haskoki.Engine.Backend
   , MacSpec (..)
   , OaepParams (..)
   , PqcKemAlg (..)
+  , RsaCipherParams (..)
   , ResourceSaveability (..)
   , rsaSigCap
   , rsaPssCap
@@ -449,20 +450,35 @@ instance CryptoBackend Synthetic where
       B.EngineOk blob -> B.EngineOk (BS.splitAt (BS.length blob - aeadTagLen spec) blob)
   aeadDecrypt be spec key iv aad input tag =
     aeadRun be "aeadDecrypt" False spec key iv aad input tag
-  pkeyEncrypt be params key input =
+  pkeyEncrypt be (RsaOaep params) key input =
     runGuarded be "pkeyEncrypt" (oaepSupported be params) $ \env -> do
       mkey <- resolveKeyBytes env key
       case mkey of
         B.EngineFail err -> pure (B.EngineFail err)
         B.EngineOk kb ->
           pure (B.EngineOk (classOaepSeal (signIdentity kb) params input))
+  pkeyEncrypt be RsaPkcs1 key input =
+    runGuarded be "pkeyEncrypt" (pkcs1Supported be) $ \env -> do
+      mkey <- resolveKeyBytes env key
+      case mkey of
+        B.EngineFail err -> pure (B.EngineFail err)
+        B.EngineOk kb ->
+          pure (B.EngineOk (classPkcs1Seal (signIdentity kb) input))
 
-  pkeyDecrypt be params key input =
+  pkeyDecrypt be (RsaOaep params) key input =
     runGuarded be "pkeyDecrypt" (oaepSupported be params) $ \env -> do
       mkey <- resolveKeyBytes env key
       case mkey of
         B.EngineFail err -> pure (B.EngineFail err)
         B.EngineOk kb -> case classOaepOpen (signIdentity kb) params input of
+          Just pt -> pure (B.EngineOk pt)
+          Nothing -> pure (B.EngineFail (BackendAuthFailed "pkeyDecrypt"))
+  pkeyDecrypt be RsaPkcs1 key input =
+    runGuarded be "pkeyDecrypt" (pkcs1Supported be) $ \env -> do
+      mkey <- resolveKeyBytes env key
+      case mkey of
+        B.EngineFail err -> pure (B.EngineFail err)
+        B.EngineOk kb -> case classPkcs1Open (signIdentity kb) input of
           Just pt -> pure (B.EngineOk pt)
           Nothing -> pure (B.EngineFail (BackendAuthFailed "pkeyDecrypt"))
   kemEncapsulate be spec pub = runGuarded be "kemEncapsulate" (kemSupported be spec) $ \env -> do
@@ -802,6 +818,11 @@ oaepSupported (SynthBackend env) params
   | Set.member (oaepHash params) (dcAlgs (bcDigests (seCaps env)))
   , Set.member (oaepMgf params) (dcAlgs (bcDigests (seCaps env))) = Nothing
   | otherwise = Just ("oaep not in synthetic set: " ++ show params)
+
+-- | PKCS#1 v1.5 availability: the synthetic backend models v1.5
+-- unconditionally (no digest or probe dimension).
+pkcs1Supported :: BackendEnv Synthetic -> Maybe String
+pkcs1Supported _ = Nothing
 
 -- | The cipher set: every backend spec the block-cipher
 -- recipe reaches (AES/ARIA/CAMELLIA CBC+ECB at three widths plus
@@ -1317,6 +1338,40 @@ oaepStreamFrame identity params =
 oaepTagFrame :: ByteString -> OaepParams -> ByteString -> [ByteString]
 oaepTagFrame identity params body =
   "haskoki-synth/class-oaep-tag/v1" : identity : oaepParamFrame params ++ [body]
+
+-- | Synthetic PKCS#1 v1.5 seal: the OAEP construction with its own
+-- domain tags, so v1.5 and OAEP envelopes never cross-open. No
+-- parameter framing (v1.5 carries none); the tag still binds
+-- (identity, body), so a wrong key fails the open.
+classPkcs1Seal :: ByteString -> ByteString -> ByteString
+classPkcs1Seal identity input =
+  body <> prfBytes (frame (pkcs1TagFrame identity body)) 16
+  where
+    body = BS.packZipWith xor
+      (prfBytes (frame (pkcs1StreamFrame identity)) (BS.length input))
+      input
+
+-- | Open a synthetic v1.5 envelope: recompute the tag (mismatch is
+-- 'Nothing'), then XOR back. Short inputs are 'Nothing', never a
+-- crash.
+classPkcs1Open :: ByteString -> ByteString -> Maybe ByteString
+classPkcs1Open identity sealed
+  | BS.length sealed < 16 = Nothing
+  | not (ctEq tag (prfBytes (frame (pkcs1TagFrame identity body)) 16)) =
+      Nothing
+  | otherwise = Just (BS.packZipWith xor
+      (prfBytes (frame (pkcs1StreamFrame identity)) (BS.length body))
+      body)
+  where
+    (body, tag) = BS.splitAt (BS.length sealed - 16) sealed
+
+pkcs1StreamFrame :: ByteString -> [ByteString]
+pkcs1StreamFrame identity =
+  ["haskoki-synth/class-pkcs1-stream/v1", identity]
+
+pkcs1TagFrame :: ByteString -> ByteString -> [ByteString]
+pkcs1TagFrame identity body =
+  ["haskoki-synth/class-pkcs1-tag/v1", identity, body]
 
 -- | Class-interface cipher: length-preserving reversible stream
 -- construction (keystream XOR over the owned key bytes and iv).

@@ -329,7 +329,7 @@ instance CryptoBackend OpenSSL4 where
   aeadDecrypt be spec key iv aad input tag =
     aeadRun be "aeadDecrypt" False spec key iv aad input tag
 
-  pkeyEncrypt be params key input =
+  pkeyEncrypt be (RsaOaep params) key input =
     runGuarded be "pkeyEncrypt" (oaepSupported be params) $ \env -> do
       mkey <- resolveKeyBytes env key
       case mkey of
@@ -348,8 +348,21 @@ instance CryptoBackend OpenSSL4 where
                 | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "pkeyEncrypt" "public key DER rejected"))
                 | otherwise -> nativeOut "pkeyEncrypt" (Left code)
               Right ct -> pure (EngineOk ct)
+  pkeyEncrypt be RsaPkcs1 key input =
+    runGuarded be "pkeyEncrypt" (pkcs1Supported be) $ \env -> do
+      mkey <- resolveKeyBytes env key
+      case mkey of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk kb -> do
+          r <- withForeignPtr (osslEnv env) $ \_ ->
+            Raw.rsaPkcs1Encrypt (osslCtx env) (osslPropQ env) kb input
+          case r of
+            Left code
+              | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "pkeyEncrypt" "public key DER rejected"))
+              | otherwise -> nativeOut "pkeyEncrypt" (Left code)
+            Right ct -> pure (EngineOk ct)
 
-  pkeyDecrypt be params key input =
+  pkeyDecrypt be (RsaOaep params) key input =
     runGuarded be "pkeyDecrypt" (oaepSupported be params) $ \env -> do
       mkey <- resolveKeyBytes env key
       case mkey of
@@ -366,6 +379,19 @@ instance CryptoBackend OpenSSL4 where
                 | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "pkeyDecrypt" "private key DER rejected"))
                 | otherwise -> nativeOut "pkeyDecrypt" (Left code)
               Right pt -> pure (EngineOk pt)
+  pkeyDecrypt be RsaPkcs1 key input =
+    runGuarded be "pkeyDecrypt" (pkcs1Supported be) $ \env -> do
+      mkey <- resolveKeyBytes env key
+      case mkey of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk kb -> do
+          r <- withForeignPtr (osslEnv env) $ \_ ->
+            Raw.rsaPkcs1Decrypt (osslCtx env) (osslPropQ env) kb input
+          case r of
+            Left code
+              | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "pkeyDecrypt" "private key DER rejected"))
+              | otherwise -> nativeOut "pkeyDecrypt" (Left code)
+            Right pt -> pure (EngineOk pt)
 
   generateKey be spec@(GenEC ec) = runGuarded be "generateKey" (genSupported be spec) $ \env -> do
     r <- withForeignPtr (osslEnv env) $ \_ ->
@@ -760,6 +786,14 @@ oaepSupported (OSSL4Backend env) params
   , Set.member (oaepHash params) (dcAlgs (bcDigests (osslCaps env)))
   , Set.member (oaepMgf params) (dcAlgs (bcDigests (osslCaps env))) = Nothing
   | otherwise = Just ("oaep not in probed set: " ++ show params)
+
+-- | PKCS#1 v1.5 availability: the RSA pkey gate (same
+-- probe-narrowed RSA signature set as OAEP); no digest
+-- dimension, so no per-digest fetch probes.
+pkcs1Supported :: BackendEnv OpenSSL4 -> Maybe String
+pkcs1Supported (OSSL4Backend env)
+  | Set.member "RSA-RAW" (scSpecs (bcSigs (osslCaps env))) = Nothing
+  | otherwise = Just "pkcs1 not in probed set"
 
 -- | Fetch names for one OAEP parameter set ('Nothing' when either
 -- digest has no fixed-width fetch, e.g. an XOF).

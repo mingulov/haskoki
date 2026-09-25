@@ -47,6 +47,7 @@ import Haskoki.Engine.Backend
   , MacSpec (..)
   , OaepParams (..)
   , PqcKemAlg (..)
+  , RsaCipherParams (..)
   , PssParams (..)
   , SigCaps (..)
   , SigSpec (..)
@@ -72,6 +73,7 @@ spec = testGroup "openssl4 engine"
   , testCase "RSA v1.5 KATs (CLI vectors)" caseRsaKats
   , testCase "RSA-PSS interop (CLI vector)" caseRsaPssVectors
   , testCase "RSA-OAEP interop (CLI vectors)" caseRsaOaepVectors
+  , testCase "RSA PKCS#1 v1.5 interop (CLI vector)" caseRsaPkcs1Vectors
   , testCase "ecdsa fixed-vector verify (DER and RAW)" caseEcdsaKat
   , testCase "ecdsa sign/verify roundtrip, both encodings" caseEcdsaRoundtrip
   , testCase "ECDSA curves/digests/raw (CLI vectors)" caseEcdsaCurvesVectors
@@ -390,6 +392,25 @@ oaepCtLabel = hex $ concat
   , "da7c783d3d1bf59391eef1a6f30cd5be6c7d0e1fd32d7fbf57629e60ea43a250"
   , "de38228fb7cb7d016cd64710c4b9485cbb336abca3699e0f11ebde8c57889940"
   , "20a2a3e03dfb241ff23d76351f9bbdd6e7e292e02fdd6c19d967b4f904187e73"
+  ]
+
+-- PKCS#1 v1.5 interop vector (pinned 4.0.2 CLI, same RSA-2048 key
+-- as the OAEP vectors): @pkeyutl -encrypt -pkeyopt
+-- rsa_padding_mode:pkcs1@ over 'pkcs1Msg'. The CLI decrypted the
+-- same bytes back before embedding.
+pkcs1Msg :: ByteString
+pkcs1Msg = "pkcs1-v15-secret-payload"
+
+pkcs1Ct :: ByteString
+pkcs1Ct = hex $ concat
+  [ "95c544fce5a8a92aa7ce3e2cd4c3b8f1f73ef2bab790f7b47bd68b0f852e6390"
+  , "59beca2d3d9c755880b5665f0b86384bd8fd993516f09a19e2ef47d526d781dc"
+  , "a9f28eac278cb5ac6cd4582013f0b48e415a5ce8a8f1d4f6374fcd755a9c8239"
+  , "f9c3df96be044a3fb21de404b0b4dae2981bfad77af50b763e290f5e4308e7ff"
+  , "cc9e950f9d1cff829df9ca2d9a21b01472b7eaab505cf05771c5f22a2823690b"
+  , "1c2c70892cb74fab75f105b83ff22f36a39023a41dd916190f8b3df30b9caf90"
+  , "e7827d13d4672a3315f854598b385cdcceac5d1c0b486d5c6010d74489858a06"
+  , "eeeeefebddf38af708eb71fbec554aa5c8f5f0163c6a9f470f8d8af53f7f7bf4"
   ]
 
 -- P-384/SHA-384, P-521/SHA-512, and raw-P-256 interop
@@ -860,8 +881,8 @@ caseRsaOaepVectors :: IO ()
 caseRsaOaepVectors = withBackend $ \env -> do
   let priv = KeyDer rsaPrivDer
       pub = KeyDer rsaPubDer
-      sha256 = OaepParams D_SHA256 D_SHA256 BS.empty
-      sha1Label = OaepParams D_SHA1 D_SHA1 "label"
+      sha256 = RsaOaep (OaepParams D_SHA256 D_SHA256 BS.empty)
+      sha1Label = RsaOaep (OaepParams D_SHA1 D_SHA1 "label")
   -- Interop: the backend decrypts the CLI's ciphertexts.
   pt <- expectOk "oaep-sha256 decrypt cli vector" =<<
     pkeyDecrypt env sha256 priv oaepCt256
@@ -874,6 +895,16 @@ caseRsaOaepVectors = withBackend $ \env -> do
     pkeyDecrypt env sha256 priv oaepCtLabel
   expectAuthFailed "oaep tampered rejected" =<<
     pkeyDecrypt env sha256 priv (BS.init oaepCt256 <> "X")
+  -- Uniformity (Manger 2001): every modulus-wide invalid
+  -- ciphertext is the same AuthFailed verdict — no reason-code
+  -- partition across padding-failure shapes.
+  let badBlobs = [ BS.replicate 256 0x00
+                 , BS.replicate 256 0xFF
+                 , BS.pack [0x00, 0x02] <> BS.replicate 254 0x00
+                 , BS.reverse oaepCt256
+                 ]
+  mapM_ (\(i, bad) -> expectAuthFailed ("oaep uniform " ++ show (i :: Int)) =<<
+    pkeyDecrypt env sha256 priv bad) (zip [1 ..] badBlobs)
   expectBadParam "oaep wrong-length refused" =<<
     pkeyDecrypt env sha256 priv "short"
   -- Roundtrips: fresh randomness each call, label binding holds.
@@ -900,6 +931,53 @@ caseRsaOaepVectors = withBackend $ \env -> do
       assertBool ("randomized " ++ label) (c1 /= c2)
       p1 <- expectOk ("open " ++ label) =<< pkeyDecrypt env params priv c1
       assertEqual ("reversible " ++ label) oaepMsg p1
+
+caseRsaPkcs1Vectors :: IO ()
+caseRsaPkcs1Vectors = withBackend $ \env -> do
+  let priv = KeyDer rsaPrivDer
+      pub = KeyDer rsaPubDer
+  -- Interop: the backend decrypts the CLI's ciphertext.
+  pt <- expectOk "pkcs1 decrypt cli vector" =<<
+    pkeyDecrypt env RsaPkcs1 priv pkcs1Ct
+  assertEqual "pkcs1 interop" pkcs1Msg pt
+  -- Header tampering is a verdict. (A last-byte flip is NOT
+  -- tested: v1.5 carries no integrity check, so it still opens to
+  -- garbage — that is correct padding behavior, not a bypass.)
+  expectAuthFailed "pkcs1 tampered rejected" =<<
+    pkeyDecrypt env RsaPkcs1 priv ("\xFF\xFF" <> BS.drop 2 pkcs1Ct)
+  -- Uniformity (Manger 2001): every modulus-wide invalid
+  -- ciphertext is the same AuthFailed verdict — no reason-code
+  -- partition across padding-failure shapes.
+  let badBlobs = [ BS.replicate 256 0x00
+                 , BS.replicate 256 0xFF
+                 , BS.pack [0x00, 0x02] <> BS.replicate 254 0x00
+                 , BS.pack [0x00, 0x01] <> BS.replicate 254 0xFF
+                 , BS.reverse pkcs1Ct
+                 ]
+  mapM_ (\(i, bad) -> expectAuthFailed ("pkcs1 uniform " ++ show (i :: Int)) =<<
+    pkeyDecrypt env RsaPkcs1 priv bad) (zip [1 ..] badBlobs)
+  expectBadParam "pkcs1 wrong-length refused" =<<
+    pkeyDecrypt env RsaPkcs1 priv "short"
+  -- Roundtrip: fresh randomness each call, own output opens.
+  c1 <- expectOk "pkcs1 seal" =<< pkeyEncrypt env RsaPkcs1 pub pkcs1Msg
+  assertEqual "pkcs1 ct length" 256 (BS.length c1)
+  c2 <- expectOk "pkcs1 reseal" =<< pkeyEncrypt env RsaPkcs1 pub pkcs1Msg
+  assertBool "pkcs1 randomized" (c1 /= c2)
+  p1 <- expectOk "pkcs1 open" =<< pkeyDecrypt env RsaPkcs1 priv c1
+  assertEqual "pkcs1 reversible" pkcs1Msg p1
+  -- Typed bounds: overlong input is BadParam (k-11 = 245 on this
+  -- key), garbage DER is a bad key.
+  expectBadParam "pkcs1 overlong refused" =<<
+    pkeyEncrypt env RsaPkcs1 pub (BS.replicate 246 0x41)
+  ct245 <- expectOk "pkcs1 boundary seals" =<<
+    pkeyEncrypt env RsaPkcs1 pub (BS.replicate 245 0x41)
+  pt245 <- expectOk "pkcs1 boundary opens" =<<
+    pkeyDecrypt env RsaPkcs1 priv ct245
+  assertEqual "pkcs1 boundary reversible" (BS.replicate 245 0x41) pt245
+  expectBadKey "pkcs1 encrypt garbage pub" =<<
+    pkeyEncrypt env RsaPkcs1 (KeyDer "bogus") pkcs1Msg
+  expectBadKey "pkcs1 decrypt garbage priv" =<<
+    pkeyDecrypt env RsaPkcs1 (KeyDer "bogus") pkcs1Ct
 
 caseEcdsaKat :: IO ()
 caseEcdsaKat = withBackend $ \env -> do
@@ -1408,8 +1486,8 @@ caseInvalidInputs = withBackend $ \env -> do
 mkEc :: String -> String -> EcSpec
 mkEc curve enc = EcSpec { ecCurve = curve, ecEncoding = enc }
 
-mkOaep :: DigestAlg -> OaepParams
-mkOaep d = OaepParams { oaepHash = d, oaepMgf = d, oaepLabel = BS.empty }
+mkOaep :: DigestAlg -> RsaCipherParams
+mkOaep d = RsaOaep (OaepParams { oaepHash = d, oaepMgf = d, oaepLabel = BS.empty })
 
 mkKem :: PqcKemAlg -> KemSpec
 mkKem a = KemSpec { kemAlg = a }

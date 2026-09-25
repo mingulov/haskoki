@@ -29,6 +29,7 @@
 #include <openssl/provider.h>
 #include <openssl/rand.h>
 #include <openssl/rsa.h>
+#include <openssl/rsa.h>
 #include <openssl/rsaerr.h>
 #include <openssl/x509.h>
 
@@ -1374,18 +1375,18 @@ end:
 
 /* --- RSA-OAEP encrypt/decrypt ----------------------------------- */
 
-/* A failed OAEP decrypt is a verdict (padding/label mismatch) unless
- * the queued reason says otherwise; internal errors stay native. */
+/* A failed OAEP decrypt is always a padding verdict. This function
+ * runs only after init succeeded and the ciphertext length checked,
+ * so every failure here is data-dependent: distinguishing OpenSSL
+ * reason codes would partition invalid ciphertexts into categories
+ * (Manger 2001). Error uniformity is the security property;
+ * PKCS#11 v3.2 says implementations SHOULD return
+ * CKR_ENCRYPTED_DATA_INVALID uniformly. Typed caller/key faults
+ * (BADPARAM/BADKEY/NOMEM) return before this point and stay typed. */
 static long hsk_ossl4_oaep_fail(void)
 {
-    unsigned long code = ERR_peek_error();
-    int reason = ERR_GET_REASON(code);
     ERR_clear_error();
-    if (reason == RSA_R_OAEP_DECODING_ERROR ||
-        reason == RSA_R_BLOCK_TYPE_IS_NOT_01 ||
-        reason == RSA_R_PKCS_DECODING_ERROR)
-        return HSK_OSSL4_ERR_AUTHFAIL;
-    return HSK_OSSL4_ERR_NATIVE;
+    return HSK_OSSL4_ERR_AUTHFAIL;
 }
 
 /* Configure OAEP padding on an encrypt/decrypt pkey context: hash,
@@ -1483,6 +1484,172 @@ end:
     EVP_PKEY_CTX_free(pctx);
     EVP_MD_free(mgfmd);
     EVP_MD_free(md);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+long hsk_ossl4_rsa_pkcs1_encrypt(OSSL_LIB_CTX *ctx, const char *propq,
+                                 const unsigned char *pub_der, size_t pub_len,
+                                 const unsigned char *in, size_t inlen,
+                                 unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    unsigned char *buf = NULL;
+    size_t buflen = 0;
+    size_t k;
+    int ksize;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL ||
+        (in == NULL && inlen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* Typed input bound: mLen <= k - 11. */
+    ksize = EVP_PKEY_get_size(pkey);
+    if (ksize <= 0) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    k = (size_t)ksize;
+    if (k <= 11 || inlen > k - 11) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    pctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
+    if (pctx == NULL)
+        goto end;
+    if (EVP_PKEY_encrypt_init(pctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PADDING) <= 0 ||
+        EVP_PKEY_encrypt(pctx, NULL, &buflen, in, inlen) <= 0)
+        goto end;
+    buf = OPENSSL_malloc(buflen);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (EVP_PKEY_encrypt(pctx, buf, &buflen, in, inlen) <= 0) {
+        OPENSSL_clear_free(buf, buflen);
+        buf = NULL;
+        goto end;
+    }
+    *out = buf;
+    buf = NULL;
+    rc = (long)buflen;
+
+end:
+    if (buf != NULL)
+        OPENSSL_clear_free(buf, buflen);
+    EVP_PKEY_CTX_free(pctx);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+long hsk_ossl4_rsa_pkcs1_decrypt(OSSL_LIB_CTX *ctx, const char *propq,
+                                 const unsigned char *priv_der,
+                                 size_t priv_len, const unsigned char *in,
+                                 size_t inlen, unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    unsigned char *em = NULL;
+    unsigned char *msg = NULL;
+    unsigned char *outbuf = NULL;
+    size_t emlen = 0;
+    size_t k;
+    size_t mlen;
+    int ksize;
+    int padlen;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL ||
+        (in == NULL && inlen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* Off-modulus input is a caller shape error, not a padding verdict. */
+    ksize = EVP_PKEY_get_size(pkey);
+    if (ksize <= 0) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    k = (size_t)ksize;
+    if (inlen != k) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    /* Raw decrypt plus manual type-2 unpad: the 4.0 provider
+     * answers PKCS#1 v1.5 padding failures with implicit rejection
+     * (rc 0, random bytes), which cannot surface the PKCS#11
+     * ENCRYPTED_DATA_INVALID verdict. Unpadding here keeps every
+     * padding failure a uniform AUTHFAIL. */
+    pctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
+    if (pctx == NULL)
+        goto end;
+    if (EVP_PKEY_decrypt_init(pctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_NO_PADDING) <= 0) {
+        rc = HSK_OSSL4_ERR_NATIVE;
+        goto end;
+    }
+    if (EVP_PKEY_decrypt(pctx, NULL, &emlen, in, inlen) <= 0 ||
+        emlen != k) {
+        /* Modulus-wide but unusable (e.g. above n): a verdict,
+         * uniform with every other padding failure. */
+        rc = HSK_OSSL4_ERR_AUTHFAIL;
+        goto end;
+    }
+    em = OPENSSL_malloc(emlen);
+    if (em == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (EVP_PKEY_decrypt(pctx, em, &emlen, in, inlen) <= 0 ||
+        emlen != k) {
+        rc = HSK_OSSL4_ERR_AUTHFAIL;
+        goto end;
+    }
+    /* Constant-time type-2 unpad via the vetted primitive
+     * (EM = 00 02 PS 00 M, |PS| >= 8): the message length, or -1
+     * for every padding failure shape — one AUTHFAIL verdict, no
+     * secret-dependent branches of our own. Unpad into a scratch
+     * k-block, then move exactly mlen bytes to the owned output. */
+    msg = OPENSSL_malloc(k);
+    if (msg == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    padlen = RSA_padding_check_PKCS1_type_2(msg, ksize, em, ksize, ksize);
+    if (padlen < 0) {
+        rc = HSK_OSSL4_ERR_AUTHFAIL;
+        goto end;
+    }
+    mlen = (size_t)padlen;
+    outbuf = OPENSSL_malloc(mlen > 0 ? mlen : 1);
+    if (outbuf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (mlen > 0)
+        memcpy(outbuf, msg, mlen);
+    *out = outbuf;
+    outbuf = NULL;
+    rc = (long)mlen;
+
+end:
+    /* outbuf is NULL on every arrival (moved to *out on success);
+     * msg is the k-byte unpad scratch (cleared whole). */
+    if (msg != NULL)
+        OPENSSL_clear_free(msg, k);
+    if (em != NULL)
+        OPENSSL_clear_free(em, emlen);
+    EVP_PKEY_CTX_free(pctx);
     EVP_PKEY_free(pkey);
     return rc;
 }

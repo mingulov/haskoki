@@ -51,6 +51,7 @@ module Haskoki.Engine.Backend
   , SigSpec (..)
   , PssParams (..)
   , OaepParams (..)
+  , RsaCipherParams (..)
   , EcSpec (..)
   , PqcKemAlg (..)
   , PqcSigAlg (..)
@@ -337,6 +338,11 @@ data OaepParams = OaepParams
   { oaepHash :: !DigestAlg, oaepMgf :: !DigestAlg, oaepLabel :: !ByteString }
   deriving (Eq, Show)
 
+-- | RSA cipher padding selector: OAEP with explicit parameters, or
+-- PKCS#1 v1.5 (no parameters; the typed input bound is k - 11).
+data RsaCipherParams = RsaOaep OaepParams | RsaPkcs1
+  deriving (Eq, Show)
+
 data EcSpec = EcSpec
   { ecCurve :: !String -- "P-256" | "P-384" | "P-521" | "Ed25519" | ...
   , ecEncoding :: !String -- "DER" | "RAW" | "COMPRESSED" | "UNCOMPRESSED"
@@ -497,9 +503,9 @@ class CryptoBackend b where
   aeadEncrypt :: BackendEnv b -> AeadSpec -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO (EngineResult (ByteString, ByteString))
   aeadDecrypt :: BackendEnv b -> AeadSpec -> KeyMaterial -> ByteString -> ByteString -> ByteString -> ByteString -> IO (EngineResult ByteString)
 
-  -- Asymmetric encrypt / decrypt (OAEP params explicit).
-  pkeyEncrypt :: BackendEnv b -> OaepParams -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
-  pkeyDecrypt :: BackendEnv b -> OaepParams -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
+  -- Asymmetric encrypt / decrypt (padding explicit).
+  pkeyEncrypt :: BackendEnv b -> RsaCipherParams -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
+  pkeyDecrypt :: BackendEnv b -> RsaCipherParams -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
 
   -- Key generation (returns owned material or registry ref; never a Ptr).
   generateKey :: BackendEnv b -> KeyGenSpec -> IO (EngineResult (KeyMaterial, Maybe KeyMaterial))

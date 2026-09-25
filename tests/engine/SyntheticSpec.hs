@@ -46,6 +46,7 @@ import Haskoki.Engine.Backend
   , OaepParams (..)
   , PqcKemAlg (..)
   , PssParams (..)
+  , RsaCipherParams (..)
   , PqcSigAlg (..)
   , SigCaps (..)
   , SigSpec (..)
@@ -111,6 +112,7 @@ spec = testGroup "synthetic engine"
   , testCase "RSA v1.5 specs roundtrip per digest" caseRsaRoundtrip
   , testCase "RSA-PSS specs roundtrip per salt" casePssRoundtrip
   , testCase "RSA-OAEP envelopes bind params" caseOaepRoundtrip
+  , testCase "RSA PKCS#1 v1.5 envelopes roundtrip, never cross-open" casePkcs1Roundtrip
   , testCase "synthetic AEAD seals deterministically" caseAeadRoundtrip
   , testCase "ECDSA curves and digests roundtrip" caseEcdsaCurves
   , testCase "ECDH agreements separate and replay" caseEcdh
@@ -271,9 +273,9 @@ caseUnsupportedRest = withSynth "11" $ \env -> do
   -- OAEP is supported (see caseOaepRoundtrip); XOF
   -- hashes stay out.
   expectUnsupported "pkeyEncrypt xof" =<<
-    pkeyEncrypt env (OaepParams D_SHAKE128 D_SHA256 BS.empty) key32 "m"
+    pkeyEncrypt env (RsaOaep (OaepParams D_SHAKE128 D_SHA256 BS.empty)) key32 "m"
   expectUnsupported "pkeyDecrypt xof" =<<
-    pkeyDecrypt env (OaepParams D_SHA256 D_SHAKE256 BS.empty) key32 "c"
+    pkeyDecrypt env (RsaOaep (OaepParams D_SHA256 D_SHAKE256 BS.empty)) key32 "c"
   expectUnsupported "generateKey mldsa" =<< generateKey env (GenMLDSA ML_DSA_65)
   expectUnsupported "generateKey slhdsa" =<< generateKey env (GenSLHDSA SLH_DSA_SHA2_128s)
   expectResourceGone "exportKey unknown" =<<
@@ -1242,8 +1244,8 @@ caseAeadRoundtrip = do
 
 caseOaepRoundtrip :: IO ()
 caseOaepRoundtrip = withSynth "11" $ \env -> do
-  let sha256 = OaepParams D_SHA256 D_SHA256 BS.empty
-      labeled = OaepParams D_SHA256 D_SHA256 "label"
+  let sha256 = RsaOaep (OaepParams D_SHA256 D_SHA256 BS.empty)
+      labeled = RsaOaep (OaepParams D_SHA256 D_SHA256 "label")
   ct <- expectOk "seal" =<< pkeyEncrypt env sha256 key32 "secret bytes"
   assertEqual "tag growth" (BS.length "secret bytes" + 16) (BS.length ct)
   pt <- expectOk "open" =<< pkeyDecrypt env sha256 key32 ct
@@ -1256,9 +1258,9 @@ caseOaepRoundtrip = withSynth "11" $ \env -> do
   expectAuthFailed "unlabeled open of labeled rejected" =<<
     pkeyDecrypt env sha256 key32 ctL
   expectAuthFailed "wrong hash rejected" =<<
-    pkeyDecrypt env (OaepParams D_SHA512 D_SHA256 BS.empty) key32 ct
+    pkeyDecrypt env (RsaOaep (OaepParams D_SHA512 D_SHA256 BS.empty)) key32 ct
   expectAuthFailed "wrong mgf rejected" =<<
-    pkeyDecrypt env (OaepParams D_SHA256 D_SHA512 BS.empty) key32 ct
+    pkeyDecrypt env (RsaOaep (OaepParams D_SHA256 D_SHA512 BS.empty)) key32 ct
   expectAuthFailed "wrong key rejected" =<<
     pkeyDecrypt env sha256 otherKey32 ct
   expectAuthFailed "tampered rejected" =<<
@@ -1271,6 +1273,34 @@ caseOaepRoundtrip = withSynth "11" $ \env -> do
   ct0 <- expectOk "seal empty" =<< pkeyEncrypt env sha256 key32 BS.empty
   assertEqual "empty tag-only" 16 (BS.length ct0)
   pt0 <- expectOk "open empty" =<< pkeyDecrypt env sha256 key32 ct0
+  assertEqual "empty reversible" BS.empty pt0
+
+casePkcs1Roundtrip :: IO ()
+casePkcs1Roundtrip = withSynth "11" $ \env -> do
+  let oaep = RsaOaep (OaepParams D_SHA256 D_SHA256 BS.empty)
+  ct <- expectOk "seal" =<< pkeyEncrypt env RsaPkcs1 key32 "secret bytes"
+  assertEqual "tag growth" (BS.length "secret bytes" + 16) (BS.length ct)
+  pt <- expectOk "open" =<< pkeyDecrypt env RsaPkcs1 key32 ct
+  assertEqual "reversible" "secret bytes" pt
+  -- Key binds, tampering and truncation fail shut.
+  expectAuthFailed "wrong key rejected" =<<
+    pkeyDecrypt env RsaPkcs1 otherKey32 ct
+  expectAuthFailed "tampered rejected" =<<
+    pkeyDecrypt env RsaPkcs1 key32 (BS.map complement ct)
+  expectAuthFailed "short rejected" =<<
+    pkeyDecrypt env RsaPkcs1 key32 "short"
+  -- Padding domains never cross-open: a v1.5 envelope is not
+  -- OAEP, and an OAEP envelope is not v1.5.
+  ctO <- expectOk "seal oaep" =<< pkeyEncrypt env oaep key32 "secret bytes"
+  assertBool "domains separate" (ctO /= ct)
+  expectAuthFailed "oaep open of v1.5 rejected" =<<
+    pkeyDecrypt env oaep key32 ct
+  expectAuthFailed "v1.5 open of oaep rejected" =<<
+    pkeyDecrypt env RsaPkcs1 key32 ctO
+  -- Empty plaintext still seals (tag-only envelope).
+  ct0 <- expectOk "seal empty" =<< pkeyEncrypt env RsaPkcs1 key32 BS.empty
+  assertEqual "empty tag-only" 16 (BS.length ct0)
+  pt0 <- expectOk "open empty" =<< pkeyDecrypt env RsaPkcs1 key32 ct0
   assertEqual "empty reversible" BS.empty pt0
 
 -- ---------------------------------------------------------------------------
