@@ -54,6 +54,7 @@ import Haskoki.Registry (MechanismId (..), Operation (..))
 import Haskoki.Registry.Generated
   ( ckm_AES_CBC
   , ckm_AES_CBC_PAD
+  , ckm_AES_CCM
   , ckm_AES_CTR
   , ckm_AES_ECB
   , ckm_AES_GCM
@@ -211,6 +212,7 @@ cipherShapeFor (MechanismId m)
   | m == ckm_CAMELLIA_ECB = Just (CipherSpec 16 False)
   | m == ckm_RSA_PKCS_OAEP = Just (CipherSpec 16 False)
   | m == ckm_AES_GCM = Just (CipherSpec 1 False)
+  | m == ckm_AES_CCM = Just (CipherSpec 1 False)
   | otherwise = Nothing
 
 -- ---------------------------------------------------------------------------

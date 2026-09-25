@@ -36,6 +36,7 @@ import Haskoki.Operation
   , emptySessionOps
   , initOperation
   )
+import Haskoki.Operation.Codec (cipherShapeFor)
 import Haskoki.Recipe.Ccm
   ( CcmRecipe (..)
   , ccmCodec
@@ -79,6 +80,7 @@ spec = testGroup "AES-CCM recipe"
   , testCase "ccm native translation agrees on lengths" caseNative
   , testCase "init enforces CCM params" caseInitParams
   , testCase "driver maps every triple to its AeadSpec" caseDriverMap
+  , testCase "planner resolves a CCM cipher shape" caseCipherShape
   ]
 
 caseTable :: IO ()
@@ -233,3 +235,10 @@ caseDriverMap = do
     (aeadSpecFor ccmMech 32 (params 8 "1234567"))
   assertEqual "ccm rejects bad keylen" Nothing
     (aeadSpecFor ccmMech 15 p12)
+
+caseCipherShape :: IO ()
+caseCipherShape = do
+  -- The planner gates classic inits on this shape; without it init
+  -- refuses CKR_MECHANISM_INVALID before the driver is reached.
+  assertEqual "ccm cipher shape" (Just (CipherSpec 1 False))
+    (cipherShapeFor ccmMech)
