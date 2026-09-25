@@ -190,13 +190,13 @@ aes128Key :: ByteString
 aes128Key = hex "2b7e151628aed2a6abf7158809cf4f3c"
 
 aes192Key :: ByteString
-aes192Key = hex "8e73b0f7da0e6452c810f32b809079e562f8ead2522df6b7"
+aes192Key = hex "8e73b0f7da0e6452c810f32b809079e562f8ead2522c6b7b"
 
 aes128CbcCt, aes128EcbCt, aes192CbcCt, aes192EcbCt, aes256EcbCt :: ByteString
 aes128CbcCt = hex "7649abac8119b246cee98e9b12e9197d"
 aes128EcbCt = hex "3ad77bb40d7a3660a89ecaf32466ef97"
-aes192CbcCt = hex "ff87f0f85e80701fc2dc1d5c3e7fcf15"
-aes192EcbCt = hex "0b5e474002644fbf77a6b11f3806dcdb"
+aes192CbcCt = hex "4f021db243bc633d7178183a9fa071e8"
+aes192EcbCt = hex "bd334f1d6e45f25ff712a214571fa5cc"
 aes256EcbCt = hex "f3eed1bdb5d2a03c064b5a7e3db181f8"
 
 -- Triple-DES MMT row (K1 = K3, so the 24-byte key doubles
