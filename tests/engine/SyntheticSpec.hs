@@ -20,6 +20,7 @@ import Numeric (showHex)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
+import Haskoki.Der (coveredCurveNames)
 import Haskoki.Engine.Backend
   ( AeadSpec (..)
   , BackendCaps (..)
@@ -1340,7 +1341,7 @@ caseEcdsaCurves = withSynth "11" $ \env -> do
     ecdsaSpecs :: [SigSpec]
     ecdsaSpecs =
       [ SigECDSA (EcSpec curve enc) digest
-      | curve <- ["P-256", "P-384", "P-521"]
+      | curve <- coveredCurveNames
       , enc <- ["DER", "RAW"]
       , digest <- Nothing :
           [ Just alg
