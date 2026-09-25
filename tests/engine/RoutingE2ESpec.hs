@@ -664,20 +664,19 @@ caseDriverEcdsa = withBackend $ \env -> do
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   -- 0x1041 is the raw row (no hashing); the digested rows
-  -- hash-and-sign (here SHA-256 over a long message raw could never
-  -- take).
+  -- hash-and-sign (here SHA-256 over a long message).
   let sha256MechDig = MechanismId 0x1044
       long = BS.replicate 100 0x61
   sigH <- runEffect env res (FxSign sha256MechDig (Just privOid) "DER" long)
     >>= expectBytes
   vH <- runEffect env res (FxVerify sha256MechDig (Just pubOid) "DER" long sigH)
   assertEqual "digested verifies" (GotValid True) vH
-  tooLong <- runEffect env res (FxSign ecdsaMech (Just privOid) "DER" long)
-  case tooLong of
-    -- The native BadParam arrives with its category intact
-    -- (same CKR_GENERAL_ERROR as the old collapse).
-    GotCryptoError (CryptoBadParam _ _) -> pure ()
-    other -> assertFailure ("expected BadParam, got: " ++ show other)
+  -- The raw row truncates overlong input to the leftmost order
+  -- bits (SEC1 §4.1.3): a 100-byte message signs and verifies.
+  sigLong <- runEffect env res (FxSign ecdsaMech (Just privOid) "DER" long)
+    >>= expectBytes
+  vLong <- runEffect env res (FxVerify ecdsaMech (Just pubOid) "DER" long sigLong)
+  assertEqual "truncated verifies" (GotValid True) vLong
 
 -- | ECDH through the driver — full-width agreement equals
 -- the direct backend call, truncation drops leading bytes

@@ -40,6 +40,7 @@ sampleErrors =
   [ BackendUnsupported "op" "why"
   , BackendBadParam "op" "why"
   , BackendBadKey "op" "why"
+  , BackendMechParamInvalid "op" "why"
   , BackendAuthFailed "op"
   , BackendInvalidState "op" "why"
   , BackendNative "op" 7 "why"
@@ -51,6 +52,7 @@ sampleFailures =
   [ O.BackendUnsupported "op" "why"
   , O.BackendBadParam "op" "why"
   , O.BackendBadKey "op" "why"
+  , O.BackendMechParamInvalid "op" "why"
   , O.BackendAuthFailed "op"
   , O.BackendInvalidState "op" "why"
   , O.BackendNative "op" 7 "why"
@@ -62,6 +64,7 @@ sampleCryptos =
   [ CryptoUnsupported "op" "why"
   , CryptoBadParam "op" "why"
   , CryptoBadKey "op" "why"
+  , CryptoMechParamInvalid "op" "why"
   , CryptoAuthFailed "op"
   , CryptoInvalidState "op" "why"
   , CryptoNative "op" 7 "why"
@@ -84,6 +87,7 @@ cryptoTag err = case err of
   CryptoUnsupported _ _ -> "CryptoUnsupported"
   CryptoBadParam _ _ -> "CryptoBadParam"
   CryptoBadKey _ _ -> "CryptoBadKey"
+  CryptoMechParamInvalid _ _ -> "CryptoMechParamInvalid"
   CryptoAuthFailed _ -> "CryptoAuthFailed"
   CryptoInvalidState _ _ -> "CryptoInvalidState"
   CryptoNative _ _ _ -> "CryptoNative"
@@ -96,6 +100,7 @@ caseCoreMap = do
     [ "CryptoUnsupported"
     , "CryptoBadParam"
     , "CryptoBadKey"
+    , "CryptoMechParamInvalid"
     , "CryptoAuthFailed"
     , "CryptoInvalidState"
     , "CryptoNative"
@@ -112,6 +117,7 @@ caseDriverMap = do
     [ "CryptoUnsupported"
     , "CryptoBadParam"
     , "CryptoBadKey"
+    , "CryptoMechParamInvalid"
     , "CryptoAuthFailed"
     , "CryptoInvalidState"
     , "CryptoNative"
@@ -128,6 +134,8 @@ caseNewCodes :: IO ()
 caseNewCodes = do
   assertEqual "bad param code" CKR_GENERAL_ERROR
     (cryptoCode (CryptoBadParam "op" "why"))
+  assertEqual "mech param invalid code" CKR_MECHANISM_PARAM_INVALID
+    (cryptoCode (CryptoMechParamInvalid "op" "why"))
   assertEqual "invalid state code" CKR_GENERAL_ERROR
     (cryptoCode (CryptoInvalidState "op" "why"))
   assertEqual "native code" CKR_GENERAL_ERROR

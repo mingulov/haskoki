@@ -1328,6 +1328,7 @@ toCryptoError err = case err of
   BackendUnsupported o w -> CryptoUnsupported o w
   BackendBadParam o w -> CryptoBadParam o w
   BackendBadKey o w -> CryptoBadKey o w
+  BackendMechParamInvalid o w -> CryptoMechParamInvalid o w
   BackendAuthFailed o -> CryptoAuthFailed o
   BackendInvalidState o w -> CryptoInvalidState o w
   BackendNative o c w -> CryptoNative o c w
@@ -1341,25 +1342,27 @@ toCoreFailure err = case err of
   BackendUnsupported o w -> O.BackendUnsupported o w
   BackendBadParam o w -> O.BackendBadParam o w
   BackendBadKey o w -> O.BackendBadKey o w
+  BackendMechParamInvalid o w -> O.BackendMechParamInvalid o w
   BackendAuthFailed o -> O.BackendAuthFailed o
   BackendInvalidState o w -> O.BackendInvalidState o w
   BackendNative o c w -> O.BackendNative o c w
   BackendResourceGone o r -> O.BackendResourceGone o r
 
 -- | Core failures back onto backend errors: the exact inverse of
--- 'toCoreFailure' over all seven constructors.
+-- 'toCoreFailure' over all eight constructors.
 fromCoreFailure :: O.BackendFailure -> BackendError
 fromCoreFailure f = case f of
   O.BackendUnsupported o w -> BackendUnsupported o w
   O.BackendBadParam o w -> BackendBadParam o w
   O.BackendBadKey o w -> BackendBadKey o w
+  O.BackendMechParamInvalid o w -> BackendMechParamInvalid o w
   O.BackendAuthFailed o -> BackendAuthFailed o
   O.BackendInvalidState o w -> BackendInvalidState o w
   O.BackendNative o c w -> BackendNative o c w
   O.BackendResourceGone o r -> BackendResourceGone o r
 
 -- | Crypto failures back onto core failures: the exact
--- inverse of 'toCryptoError' on the seven shared categories. The
+-- inverse of 'toCryptoError' on the eight shared categories. The
 -- unclassified 'CryptoFailed' bucket has no backend counterpart and
 -- lands on a native failure (pinned one-way mapping, code unchanged).
 cryptoToCore :: CryptoError -> O.BackendFailure
@@ -1367,6 +1370,7 @@ cryptoToCore err = case err of
   CryptoUnsupported o w -> O.BackendUnsupported o w
   CryptoBadParam o w -> O.BackendBadParam o w
   CryptoBadKey o w -> O.BackendBadKey o w
+  CryptoMechParamInvalid o w -> O.BackendMechParamInvalid o w
   CryptoAuthFailed o -> O.BackendAuthFailed o
   CryptoInvalidState o w -> O.BackendInvalidState o w
   CryptoNative o c w -> O.BackendNative o c w

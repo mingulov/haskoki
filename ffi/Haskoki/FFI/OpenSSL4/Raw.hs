@@ -19,6 +19,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , errBadKey
   , errNoMem
   , errAuthFail
+  , errBadPeer
     -- * Lifecycle
   , envNew
   , envLoad
@@ -75,12 +76,13 @@ data DigestHandle
 
 -- Shim error codes (mirror cbits/ossl4_ctx.h).
 
-errNative, errBadParam, errBadKey, errNoMem, errAuthFail :: Int
+errNative, errBadParam, errBadKey, errNoMem, errAuthFail, errBadPeer :: Int
 errNative = -1
 errBadParam = -2
 errBadKey = -3
 errNoMem = -4
 errAuthFail = -5
+errBadPeer = -6
 
 -- Foreign imports: the hsk_ossl4_* shim only.
 

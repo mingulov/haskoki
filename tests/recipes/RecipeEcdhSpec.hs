@@ -348,10 +348,11 @@ casePlan = do
     (planDerive defaultRules (mkBaseModel ckkEc (BS.replicate 32 0) True) testSession
       ecdhMech baseHandle (blob p256Pub [derivedTmpl 73]))
   -- Base/peer curve mismatch denies (both scan, curves differ).
-  expectDeny "curve mismatch" CKR_ARGUMENTS_BAD
+  expectDeny "curve mismatch" CKR_MECHANISM_PARAM_INVALID
     (planDerive defaultRules m testSession ecdhMech baseHandle (blob p384Pub [derivedTmpl 32]))
-  -- KDF selectors and malformed blobs deny at the frame.
-  expectDeny "kdf selector" CKR_ARGUMENTS_BAD
+  -- KDF selectors deny as bad mechanism parameters; malformed
+  -- blobs deny at the frame.
+  expectDeny "kdf selector" CKR_MECHANISM_PARAM_INVALID
     (planDerive defaultRules m testSession ecdhMech baseHandle
       (encodeDeriveParams (encodeEcdhParams 1 BS.empty p256Pub) [derivedTmpl 32]))
   expectDeny "malformed blob" CKR_ARGUMENTS_BAD

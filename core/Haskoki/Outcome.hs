@@ -141,6 +141,7 @@ data BackendFailure
   = BackendUnsupported !String !String
   | BackendBadParam !String !String
   | BackendBadKey !String !String
+  | BackendMechParamInvalid !String !String
   | BackendAuthFailed !String
   | BackendInvalidState !String !String
   | BackendNative !String !Int !String

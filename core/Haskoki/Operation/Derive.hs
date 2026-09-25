@@ -191,17 +191,17 @@ planDerive rules model st mech baseH blob
           | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkEc) ->
               KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
                 "ECDH base key is not an EC key")
-          | not (ecdhParamsValid r ecdhBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+          | not (ecdhParamsValid r ecdhBlob) -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
               "ECDH mechanism parameters rejected by the recipe")
           | otherwise -> case decodeEcdhParams ecdhBlob of
               Just (_, _, peer)
-                | curvesDiffer mat peer -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+                | curvesDiffer mat peer -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
                     "ECDH base/peer curve mismatch")
                 | otherwise -> finish tmpls (ecdhSecretWidth mat)
                     "derived total exceeds the ECDH secret width"
                     (FxDerive mech (Just (osId ost)) ecdhBlob BS.empty)
                     (Just (ecdhSecretWidth mat))
-              _ -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              _ -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
                 "ECDH mechanism parameters rejected by the recipe")
   | Just r <- kdfRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD

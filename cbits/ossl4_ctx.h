@@ -40,6 +40,7 @@ typedef struct hsk_ossl4_env hsk_ossl4_env_t;
 #define HSK_OSSL4_ERR_BADKEY (-3)
 #define HSK_OSSL4_ERR_NOMEM (-4)
 #define HSK_OSSL4_ERR_AUTHFAIL (-5)
+#define HSK_OSSL4_ERR_BADPEER (-6)
 
 /* --- private context lifecycle -------------------------------------- */
 
@@ -198,11 +199,12 @@ long hsk_ossl4_rand_seed(OSSL_LIB_CTX *ctx, const unsigned char *seed,
 /* priv_der: PKCS#8 DER. want_raw: 0 = DER signature, nonzero = raw
  * fixed-size r||s. no_hash: 0 = hash-and-sign via EVP_DigestSign
  * (mdname fetched under libctx+propq), nonzero = raw operation over
- * the input (mdname ignored; overlong input is
- * HSK_OSSL4_ERR_BADPARAM). The curve always follows the key (the
- * DER<->raw conversion derives the coordinate size from the key's
- * point). Returns output length with *out set, or a negative
- * HSK_OSSL4_ERR_* code (bad DER key -> HSK_OSSL4_ERR_BADKEY). */
+ * the input (mdname ignored; overlong input truncates to the
+ * leftmost group-order bits per SEC1 §4.1.3 / PKCS#11 §2.3.1). The
+ * curve always follows the key (the DER<->raw conversion derives
+ * the coordinate size from the key's point). Returns output length
+ * with *out set, or a negative HSK_OSSL4_ERR_* code (bad DER key ->
+ * HSK_OSSL4_ERR_BADKEY). */
 long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
                           const char *propq, const unsigned char *priv_der,
                           size_t priv_len, const unsigned char *msg,
@@ -210,9 +212,13 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
                           unsigned char **out);
 
 /* pub_der: SPKI DER. is_raw: 0 = DER signature, nonzero = raw r||s.
- * no_hash selects the same operation as sign. Returns 1 (valid), 0
- * (bad signature), HSK_OSSL4_ERR_BADKEY (bad DER key), or
- * HSK_OSSL4_ERR_* on other failures. */
+ * no_hash selects the same operation as sign (overlong input
+ * truncates likewise). Malformed DER and odd-length raw
+ * signatures answer 0 (mismatch — they can never be valid), as
+ * does degenerate verification math landing on the point at
+ * infinity (X9.62 §7.4.2 rejects; OpenSSL reports rc -1). Returns
+ * 1 (valid), 0 (bad signature), HSK_OSSL4_ERR_BADKEY (bad DER
+ * key), or HSK_OSSL4_ERR_* on other failures. */
 int hsk_ossl4_ecdsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
                            const char *propq, const unsigned char *pub_der,
                            size_t pub_len, const unsigned char *msg,
@@ -225,8 +231,11 @@ int hsk_ossl4_ecdsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
  * 0 = plain agreement, nonzero = cofactor multiplication (a no-op on
  * the h=1 NIST prime curves, threaded through for mechanism honesty).
  * Returns the raw x-coordinate secret length with *out set, or a
- * negative HSK_OSSL4_ERR_* code (bad DER on either side, or a
- * base/peer curve mismatch, -> HSK_OSSL4_ERR_BADKEY). */
+ * negative HSK_OSSL4_ERR_* code (bad base DER ->
+ * HSK_OSSL4_ERR_BADKEY; a rejected peer — bad encoding, off-curve,
+ * or a base/peer curve mismatch — answers
+ * HSK_OSSL4_ERR_BADPEER: the peer rides in the mechanism
+ * parameters, so it is a parameter fault, not a key fault). */
 long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
                            const unsigned char *priv_der, size_t priv_len,
                            const unsigned char *peer_der, size_t peer_len,

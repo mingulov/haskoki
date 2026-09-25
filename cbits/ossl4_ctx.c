@@ -22,6 +22,7 @@
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
 #include <openssl/ec.h>
+#include <openssl/ecerr.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/param_build.h>
@@ -959,21 +960,99 @@ static EVP_PKEY *hsk_ossl4_load_raw_point(OSSL_LIB_CTX *ctx, const char *propq,
     return peer;
 }
 
-/* Curve coordinate size in bytes from an EC key's encoded point
- * (0x04 || X || Y). Returns 1 on success, 0 otherwise. */
-static int hsk_ossl4_ec_coordlen(EVP_PKEY *pkey, size_t *coordlen)
+/* Group order size in bits from the provider key (SEC1 truncation
+ * input: E is the leftmost min(N, n) bits of the input). Exact for
+ * every curve, including non-byte-aligned orders (P-521: 521).
+ * Returns 1 on success, 0 otherwise. */
+static int hsk_ossl4_ec_orderbits(EVP_PKEY *pkey, unsigned int *bits)
 {
-    unsigned char point[1 + 2 * HSK_OSSL4_EC_MAX_COORD]; /* 0x04 || X || Y */
-    size_t pointlen = 0;
+    BIGNUM *ord = NULL;
+    int n = 0;
 
-    if (!EVP_PKEY_get_octet_string_param(pkey,
-                                         OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY,
-                                         point, sizeof(point), &pointlen)
-        || pointlen < 3 || point[0] != 0x04
-        || ((pointlen - 1) % 2) != 0)
+    if (!EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_EC_ORDER, &ord)
+        || ord == NULL)
         return 0;
-    *coordlen = (pointlen - 1) / 2;
+    n = BN_num_bits(ord);
+    BN_free(ord);
+    if (n <= 0)
+        return 0;
+    *bits = (unsigned int)n;
     return 1;
+}
+
+/* Truncate a raw-operation input to the leftmost orderbits bits
+ * (SEC1 §4.1.3 / PKCS#11 §2.3.1): full bytes plus a masked partial
+ * byte when the order is not byte-aligned. Returns 1 with *out
+ * holding a fresh *outlen-byte buffer when truncation applies, 0
+ * when the input already fits (caller keeps the original), -1 on
+ * allocation failure. The fits check is overflow-free: msglen*8 >
+ * orderbits iff msglen > orderbits/8 over the integers. */
+static int hsk_ossl4_ec_truncate(const unsigned char *msg, size_t msglen,
+                                 unsigned int orderbits,
+                                 unsigned char **out, size_t *outlen)
+{
+    size_t keep;
+    unsigned int rem;
+    unsigned char *buf;
+
+    if (out == NULL || outlen == NULL || orderbits == 0)
+        return -1;
+    if (msglen <= orderbits / 8)
+        return 0;
+    if (msg == NULL)
+        return -1;
+    rem = orderbits % 8;
+    keep = orderbits / 8 + (rem ? 1 : 0);
+    buf = OPENSSL_malloc(keep);
+    if (buf == NULL)
+        return -1;
+    memcpy(buf, msg, keep);
+    if (rem)
+        buf[keep - 1] &= (unsigned char)(0xFF00 >> rem);
+    *out = buf;
+    *outlen = keep;
+    return 1;
+}
+
+/* Map a failed ECDSA verify return onto the shim contract. X9.62
+ * §7.4.2 says verification math landing on the point at infinity
+ * REJECTS the signature, but OpenSSL reports it as an internal
+ * error (rc -1 with EC_R_POINT_AT_INFINITY at the head of the
+ * queue). That one degenerate-math reason answers mismatch (0);
+ * anything else — including a queue that also carries a malloc
+ * failure or overflows the drain bound — stays native.
+ * Non-infinity failures leave the queue untouched for last_error
+ * (peek only); the re-put path below runs solely when an
+ * infinity-headed queue also signals resource exhaustion (lib and
+ * reason codes preserved; func is legacy-ignored by ERR_PACK, and
+ * file/line/data strings are dropped on that path only). */
+static int hsk_ossl4_ecdsa_verify_post(int rc)
+{
+    unsigned long first, saved[32];
+    int n = 0, saw_nomem = 0, i;
+    unsigned long e;
+
+    if (rc >= 0)
+        return rc;
+    first = ERR_peek_error();
+    if (ERR_GET_LIB(first) != ERR_LIB_EC
+        || ERR_GET_REASON(first) != EC_R_POINT_AT_INFINITY)
+        return HSK_OSSL4_ERR_NATIVE;
+    /* Infinity-headed: drain (bounded) and scan for malloc failure. */
+    while (n < 32 && (e = ERR_get_error()) != 0) {
+        saved[n++] = e;
+        if (ERR_GET_REASON(e) == ERR_R_MALLOC_FAILURE)
+            saw_nomem = 1;
+    }
+    while (ERR_get_error() != 0)
+        saw_nomem = 1; /* overfull queue: fail safe, stay native */
+    if (saw_nomem) {
+        for (i = 0; i < n; i++)
+            ERR_put_error(ERR_GET_LIB(saved[i]), 0,
+                          ERR_GET_REASON(saved[i]), "", 0);
+        return HSK_OSSL4_ERR_NATIVE;
+    }
+    return 0;
 }
 
 long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
@@ -988,6 +1067,8 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *der = NULL;
     size_t derlen = 0;
+    unsigned char *trunc = NULL; /* SEC1 truncation buffer, if any */
+    size_t trunclen = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
     if (ctx == NULL || propq == NULL || out == NULL ||
@@ -1000,11 +1081,22 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
         return HSK_OSSL4_ERR_BADKEY;
     if (no_hash) {
         /* Raw operation (CKM_ECDSA): sign the input directly with no
-         * hashing; overlong input is a typed refusal. */
-        size_t coordlen = 0;
-        if (!hsk_ossl4_ec_coordlen(pkey, &coordlen) || msglen > coordlen) {
+         * hashing; overlong input truncates to the leftmost order
+         * bits (SEC1 §4.1.3 / PKCS#11 §2.3.1). */
+        unsigned int orderbits = 0;
+        int trc;
+        if (!hsk_ossl4_ec_orderbits(pkey, &orderbits)) {
             rc = HSK_OSSL4_ERR_BADPARAM;
             goto end;
+        }
+        trc = hsk_ossl4_ec_truncate(msg, msglen, orderbits, &trunc, &trunclen);
+        if (trc < 0) {
+            rc = HSK_OSSL4_ERR_NOMEM;
+            goto end;
+        }
+        if (trc > 0) {
+            msg = trunc;
+            msglen = trunclen;
         }
         pctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
         if (pctx == NULL)
@@ -1090,6 +1182,8 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
 end:
     if (der != NULL)
         OPENSSL_clear_free(der, derlen);
+    if (trunc != NULL)
+        OPENSSL_clear_free(trunc, trunclen);
     EVP_PKEY_CTX_free(pctx);
     EVP_MD_CTX_free(mctx);
     EVP_PKEY_free(pkey);
@@ -1110,6 +1204,8 @@ int hsk_ossl4_ecdsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
     size_t derlen = 0;
     unsigned char *conv = NULL; /* raw -> DER conversion buffer, if any */
     size_t convlen = 0;
+    unsigned char *trunc = NULL; /* SEC1 truncation buffer, if any */
+    size_t trunclen = 0;
     int rc = HSK_OSSL4_ERR_NATIVE;
 
     if (ctx == NULL || propq == NULL || sig == NULL ||
@@ -1121,11 +1217,22 @@ int hsk_ossl4_ecdsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
     if (no_hash) {
-        /* Raw operation: overlong input is a typed refusal. */
-        size_t coordlen = 0;
-        if (!hsk_ossl4_ec_coordlen(pkey, &coordlen) || msglen > coordlen) {
+        /* Raw operation: overlong input truncates to the leftmost
+         * order bits (SEC1 §4.1.3 / PKCS#11 §2.3.1). */
+        unsigned int orderbits = 0;
+        int trc;
+        if (!hsk_ossl4_ec_orderbits(pkey, &orderbits)) {
             rc = HSK_OSSL4_ERR_BADPARAM;
             goto end;
+        }
+        trc = hsk_ossl4_ec_truncate(msg, msglen, orderbits, &trunc, &trunclen);
+        if (trc < 0) {
+            rc = HSK_OSSL4_ERR_NOMEM;
+            goto end;
+        }
+        if (trc > 0) {
+            msg = trunc;
+            msglen = trunclen;
         }
     } else {
         mctx = EVP_MD_CTX_new();
@@ -1154,14 +1261,21 @@ int hsk_ossl4_ecdsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
         der = sig;
         derlen = siglen;
     } else {
-        /* Raw r||s -> DER: split halves, range-check against the curve
-         * order size, re-encode. Odd lengths can never be valid. */
+        /* Raw r||s -> DER: split halves, re-encode (range is
+         * enforced by the provider math, not here). Odd lengths
+         * cannot split into halves and can never be valid: answer
+         * mismatch, like malformed DER. */
         ECDSA_SIG *osig = NULL;
         BIGNUM *r = NULL, *s = NULL;
         unsigned char *p = NULL;
         int len;
-        if (siglen == 0 || (siglen % 2) != 0) {
+        if (siglen == 0) {
             rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+        if ((siglen % 2) != 0) {
+            ERR_clear_error();
+            rc = 0;
             goto end;
         }
         r = BN_bin2bn(sig, (int)(siglen / 2), NULL);
@@ -1212,17 +1326,17 @@ int hsk_ossl4_ecdsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
             goto end;
         rc = EVP_DigestVerify(mctx, der, derlen, msg, msglen);
     }
-    if (rc < 0) {
-        /* Internal error (not a plain mismatch); keep the queue clean. */
-        rc = HSK_OSSL4_ERR_NATIVE;
+    rc = hsk_ossl4_ecdsa_verify_post(rc);
+    if (rc < 0)
         goto end;
-    }
     /* rc is 1 (valid) or 0 (bad signature) here. */
     ERR_clear_error();
 
 end:
     if (conv != NULL)
         OPENSSL_clear_free(conv, convlen);
+    if (trunc != NULL)
+        OPENSSL_clear_free(trunc, trunclen);
     EVP_PKEY_CTX_free(pctx);
     EVP_MD_CTX_free(mctx);
     EVP_PKEY_free(pkey);
@@ -1259,7 +1373,10 @@ long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
         peer = hsk_ossl4_load_raw_point(ctx, propq, priv, peer_der, peer_len);
     }
     if (peer == NULL) {
-        rc = HSK_OSSL4_ERR_BADKEY;
+        /* The peer arrives inside the mechanism parameters, so a
+         * rejected peer is a parameter fault (BADPEER), distinct
+         * from a bad base key (BADKEY). */
+        rc = HSK_OSSL4_ERR_BADPEER;
         goto end;
     }
     pctx = EVP_PKEY_CTX_new_from_pkey(ctx, priv, propq);
@@ -1269,10 +1386,11 @@ long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
         goto end;
     if (cofactor && EVP_PKEY_CTX_set_ecdh_cofactor_mode(pctx, 1) <= 0)
         goto end;
-    /* A peer on another curve (or a non-EC peer) fails here: key
-     * shape, not a native malfunction. */
+    /* A peer on another curve (or a non-EC peer) fails here: a
+     * parameter fault (the peer rides in the mechanism params),
+     * not a native malfunction. */
     if (EVP_PKEY_derive_set_peer(pctx, peer) <= 0) {
-        rc = HSK_OSSL4_ERR_BADKEY;
+        rc = HSK_OSSL4_ERR_BADPEER;
         goto end;
     }
     if (EVP_PKEY_derive(pctx, NULL, &secretlen) <= 0)

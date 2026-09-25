@@ -39,7 +39,7 @@ import Haskoki.Types
   , redactShown
   )
 
--- | A typed crypto failure reported by a driver. The seven structured
+-- | A typed crypto failure reported by a driver. The eight structured
 -- cases mirror the backend failure taxonomy one-to-one, so
 -- adapters preserve every category with its fields instead of
 -- concatenating strings; 'CryptoFailed' is the unclassified
@@ -50,6 +50,7 @@ data CryptoError
   | CryptoUnsupported !String !String
   | CryptoBadParam !String !String
   | CryptoBadKey !String !String
+  | CryptoMechParamInvalid !String !String
   | CryptoAuthFailed !String
   | CryptoInvalidState !String !String
   | CryptoNative !String !Int !String
@@ -183,6 +184,7 @@ interpretError terr = case terr of
     CryptoUnsupported _ _ -> CKR_MECHANISM_INVALID
     CryptoBadParam _ _ -> CKR_GENERAL_ERROR
     CryptoBadKey _ _ -> CKR_GENERAL_ERROR
+    CryptoMechParamInvalid _ _ -> CKR_MECHANISM_PARAM_INVALID
     CryptoAuthFailed _ -> CKR_ENCRYPTED_DATA_INVALID
     CryptoInvalidState _ _ -> CKR_GENERAL_ERROR
     CryptoNative _ _ _ -> CKR_GENERAL_ERROR

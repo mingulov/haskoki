@@ -106,6 +106,10 @@ data BackendError
     -- must NOT retry on another engine/mode (no silent fallback).
   | BackendBadParam { beOp :: !String, beWhy :: !String }
   | BackendBadKey { beOp :: !String, beWhy :: !String }
+  | BackendMechParamInvalid { beOp :: !String, beWhy :: !String }
+    -- ^ The backend rejected mechanism parameters it alone can
+    -- validate (an ECDH peer point off the base curve); the edge
+    -- answers CKR_MECHANISM_PARAM_INVALID.
   | BackendAuthFailed { beOp :: !String } -- ^ verify/tag mismatch only
   | BackendInvalidState { beOp :: !String, beWhy :: !String }
   | BackendNative { beOp :: !String, beCode :: !Int, beWhy :: !String }

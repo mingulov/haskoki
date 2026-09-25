@@ -1005,6 +1005,7 @@ toCryptoError f = case f of
   BackendUnsupported o w -> CryptoUnsupported o w
   BackendBadParam o w -> CryptoBadParam o w
   BackendBadKey o w -> CryptoBadKey o w
+  BackendMechParamInvalid o w -> CryptoMechParamInvalid o w
   BackendAuthFailed o -> CryptoAuthFailed o
   BackendInvalidState o w -> CryptoInvalidState o w
   BackendNative o c w -> CryptoNative o c w

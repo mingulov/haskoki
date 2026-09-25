@@ -491,7 +491,11 @@ instance CryptoBackend OpenSSL4 where
           -- a width, never a curve (lengths collide). Equal widths
           -- proceed; the shim arbitrates on-curve membership
           -- natively, so a same-width cross-curve peer still
-          -- refuses (as a bad key, never a wrong secret).
+          -- refuses (as a parameter fault, never a wrong secret).
+          -- Fault attribution: the base is the caller's key (bad
+          -- base stays a bad key) while the peer rides in the
+          -- mechanism parameters (any peer fault answers
+          -- mechanism-param-invalid at the edge).
           EngineOk peerB -> case (ecdsaCurveOfDer privB >>= curveWidthOfName, ecdhPeerWidth peerB) of
             (Just w, Just pw)
               | w == pw -> do
@@ -499,13 +503,16 @@ instance CryptoBackend OpenSSL4 where
                     Raw.ecdhDerive (osslCtx env) (osslPropQ env) privB peerB (spec == EcdhCofactor)
                   case r of
                     Left code
-                      | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "ecdhDerive" "ECDH key rejected"))
+                      | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "ecdhDerive" "ECDH base key rejected"))
+                      | code == Raw.errBadPeer -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive" "ECDH peer rejected"))
                       | otherwise -> nativeFail "ecdhDerive" code
                     Right secret -> pure (EngineOk secret)
-              | otherwise -> pure (EngineFail (BackendBadKey "ecdhDerive"
+              | otherwise -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive"
                   "base/peer curve mismatch"))
-            _ -> pure (EngineFail (BackendBadKey "ecdhDerive"
-              "ECDH keys are not on a covered curve"))
+            (Nothing, _) -> pure (EngineFail (BackendBadKey "ecdhDerive"
+              "ECDH base key is not on a covered curve"))
+            _ -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive"
+              "ECDH peer is not on a covered curve"))
 
   snapshotResource _ _ = pure (Left "unsaveable: OpenSSL4 multipart contexts cannot be serialized")
   restoreResource _ _ = pure (EngineFail (BackendUnsupported "restoreResource" "no saveable resources in engine set"))

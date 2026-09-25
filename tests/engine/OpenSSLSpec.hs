@@ -77,6 +77,9 @@ spec = testGroup "openssl4 engine"
   , testCase "ecdsa fixed-vector verify (DER and RAW)" caseEcdsaKat
   , testCase "ecdsa sign/verify roundtrip, both encodings" caseEcdsaRoundtrip
   , testCase "ECDSA curves/digests/raw (CLI vectors)" caseEcdsaCurvesVectors
+  , testCase "ECDSA raw truncates overlong digests (SEC1)" caseEcdsaRawTruncate
+  , testCase "ECDSA point-at-infinity rejects as mismatch" caseEcdsaInfinity
+  , testCase "ECDSA odd-length raw sig mismatches" caseEcdsaOddSig
   , testCase "ECDSA off-curve keys refused typed" caseEcdsaOffCurve
   , testCase "ECDH agreement KATs (CLI vectors)" caseEcdhVectors
   , testCase "raw-vs-der encodings never convert silently" caseRawVsDer
@@ -143,6 +146,11 @@ expectBadKey :: Show a => String -> EngineResult a -> IO ()
 expectBadKey label r = case r of
   EngineFail (BackendBadKey _ _) -> pure ()
   other -> assertFailure (label ++ ": expected BackendBadKey, got " ++ show other)
+
+expectMechParamInvalid :: Show a => String -> EngineResult a -> IO ()
+expectMechParamInvalid label r = case r of
+  EngineFail (BackendMechParamInvalid _ _) -> pure ()
+  other -> assertFailure (label ++ ": expected BackendMechParamInvalid, got " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- Known-answer fixtures (independent oracles, see module header)
@@ -545,6 +553,26 @@ ecRawSig = hex $ concat
   [ "304502200c0b980a724edb395232d3fe7434d0ff85c10ee8db983fc5ca245d67"
   , "5d6337c7022100f446a1b647aa0fc78ed12dab16076692a4128980fdbba6f874"
   , "997a935c1219b3"
+  ]
+
+-- | Point-at-infinity fixture: Wycheproof
+-- @ecdsa_brainpoolP224r1_sha224_test.json@ tc360 (invalid,
+-- PointDuplication/ArithmeticError), PKCS#11-shaped exactly as the
+-- lane sends it — 28-byte SHA-224 digest, 56-byte raw r||s with
+-- both halves in range. The verification math lands on the point
+-- at infinity, which X9.62 §7.4.2 says REJECTS; OpenSSL reports
+-- it as an internal error (rc -1), so the shim must map that one
+-- degenerate-math reason to a mismatch verdict.
+ecInf224Pub, ecInf224Digest, ecInf224Sig :: ByteString
+ecInf224Pub = hex $ concat
+  [ "3052301406072a8648ce3d020106092b2403030208010105033a0004d4b6e51"
+  , "12406fb743b6bb55f49ea2030d904420831ebddacd67bba89652265384b75d85"
+  , "0e7c27f4e33ed6c576df0ff969470a9ef25ffafcd"
+  ]
+ecInf224Digest = hex "753bb40078934081d7bd113ec49b19ef09d1ba33498690516d4d122c"
+ecInf224Sig = hex $ concat
+  [ "6be09a551321b343150c1812bae87dcc688b5e25b6ef5e51d2d3c9cf47eb11"
+  , "8e0cc1222cb8b2bab72745a932f05ce96e79f4e98be1e2868a"
   ]
 
 -- | Off-set-curve fixtures: a well-formed brainpoolP160r1 key
@@ -1170,11 +1198,12 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
     verify env sraw (KeyDer ecPubDer) ecRaw32 ecRawSig
   expectAuthFailed "raw tampered" =<<
     verify env sraw (KeyDer ecPubDer) ecRaw32 (BS.init ecRawSig <> "X")
-  -- Raw input bounds are typed: 33 bytes on P-256 is BadParam.
-  expectBadParam "raw overlong sign refused" =<<
+  -- Raw input bounds follow SEC1: 33 bytes on P-256 truncates
+  -- to the leftmost 256 bits (a verdict input, never a refusal).
+  sig33 <- expectOk "raw overlong sign truncates" =<<
     sign env sraw (KeyDer ecPrivDer) (BS.replicate 33 0)
-  expectBadParam "raw overlong verify refused" =<<
-    verify env sraw (KeyDer ecPubDer) (BS.replicate 33 0) ecRawSig
+  expectOk "raw overlong verify truncates" =<<
+    verify env sraw (KeyDer ecPubDer) (BS.replicate 33 0) sig33
   -- Roundtrips: every (curve, digest-or-raw, encoding) signs and
   -- verifies its own output (fresh randomness each call).
   (p384, Just q384) <- expectOk "gen p384" =<<
@@ -1226,6 +1255,62 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
       sigR <- expectOk ("sign RAW " ++ label) =<< sign env rawSpec priv input
       assertEqual ("raw length " ++ label) rawLen (BS.length sigR)
       expectOk ("verify RAW " ++ label) =<< verify env rawSpec pub input sigR
+
+-- | SEC1 truncation on the raw row: PKCS#11 §2.3.1 / SEC1
+-- §4.1.3 sign and verify the leftmost min(N, n) bits when the
+-- input is longer than the group order — overlong input is a
+-- verdict input, never a parameter refusal.
+caseEcdsaRawTruncate :: IO ()
+caseEcdsaRawTruncate = withBackend $ \env -> do
+  let sraw = SigECDSA (mkEc "P-256" "RAW") Nothing
+      long = ecRaw32 <> BS.replicate 32 0xA5
+  sigL <- expectOk "sign 64B on P-256 truncates" =<<
+    sign env sraw (KeyDer ecPrivDer) long
+  assertEqual "truncated sign is r||s" 64 (BS.length sigL)
+  expectOk "verify 64B with its own sig" =<<
+    verify env sraw (KeyDer ecPubDer) long sigL
+  -- Cross: a signature over the 32-byte prefix verifies against
+  -- the 64-byte input (same leftmost 256 bits).
+  sigP <- expectOk "sign 32B prefix" =<<
+    sign env sraw (KeyDer ecPrivDer) ecRaw32
+  expectOk "verify truncates to the prefix" =<<
+    verify env sraw (KeyDer ecPubDer) long sigP
+  -- Negative: a wrong prefix still mismatches after truncation.
+  expectAuthFailed "verify wrong prefix mismatches" =<<
+    verify env sraw (KeyDer ecPubDer)
+      (BS.replicate 32 0x5A <> BS.replicate 32 0xA5) sigP
+  -- Non-aligned order (P-521: 521 bits): a 66-byte input keeps
+  -- the leftmost 521 bits — the low 7 bits of the last byte are
+  -- masked away, so inputs differing only there are identical.
+  (p521, Just q521) <- expectOk "gen p521" =<<
+    generateKey env (GenEC (mkEc "P-521" "DER"))
+  let sraw521 = SigECDSA (mkEc "P-521" "RAW") Nothing
+      hi = BS.replicate 65 0x33 <> BS.singleton 0x80
+      lo = BS.replicate 65 0x33 <> BS.singleton 0xFF
+  sig521 <- expectOk "sign 66B on P-521 truncates" =<<
+    sign env sraw521 p521 hi
+  assertEqual "p521 truncated sign is r||s" 132 (BS.length sig521)
+  expectOk "verify masked-away bits ignored" =<<
+    verify env sraw521 q521 lo sig521
+
+-- | Degenerate-math verdict: the point-at-infinity fixture
+-- verifies as a mismatch (X9.62 §7.4.2 rejects), never a native
+-- malfunction — even though OpenSSL reports rc -1.
+caseEcdsaInfinity :: IO ()
+caseEcdsaInfinity = withBackend $ \env -> do
+  let sraw = SigECDSA (mkEc "brainpoolP224r1" "RAW") Nothing
+  assertEqual "fixture sig is r||s" 56 (BS.length ecInf224Sig)
+  expectAuthFailed "infinity fixture mismatches" =<<
+    verify env sraw (KeyDer ecInf224Pub) ecInf224Digest ecInf224Sig
+
+-- | An odd-length raw signature cannot split into halves and can
+-- never be valid: a mismatch verdict, like malformed DER — not a
+-- parameter refusal.
+caseEcdsaOddSig :: IO ()
+caseEcdsaOddSig = withBackend $ \env -> do
+  let sraw = SigECDSA (mkEc "P-256" "RAW") Nothing
+  expectAuthFailed "63-byte raw sig mismatches" =<<
+    verify env sraw (KeyDer ecPubDer) ecRaw32 (BS.replicate 63 1)
 
 -- | The curve allowlist: a well-formed brainpoolP160r1 key (real
 -- but uncollected) refuses typed on both sign and verify (the
@@ -1281,9 +1366,9 @@ caseEcdhVectors = withBackend $ \env -> do
   assertEqual "KAT t283k1 cofactor" ecdhSecretDEcof sDEcof
   assertBool "cofactor differs (h=2)" (sDEcof /= ecdhSecretDE)
   expectBadKey "garbage priv refused" =<< ecdhDerive env EcdhPlain (KeyDer "bogus") qB
-  expectBadKey "garbage peer refused" =<< ecdhDerive env EcdhPlain pA (KeyDer "bogus")
+  expectMechParamInvalid "garbage peer refused" =<< ecdhDerive env EcdhPlain pA (KeyDer "bogus")
   expectBadKey "off-curve priv refused" =<< ecdhDerive env EcdhPlain (KeyDer ecBp160Priv) qB
-  expectBadKey "curve mismatch refused" =<< ecdhDerive env EcdhPlain pA qC
+  expectMechParamInvalid "curve mismatch refused" =<< ecdhDerive env EcdhPlain pA qC
 
 caseRawVsDer :: IO ()
 caseRawVsDer = withBackend $ \env -> do

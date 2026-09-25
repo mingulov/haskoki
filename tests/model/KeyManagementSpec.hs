@@ -1370,7 +1370,7 @@ caseDeriveEcdhWrongKeyType = do
     other -> assertFailure ("RSA base must not plan: " ++ show other)
 
 -- | ECDH parameter shape still enforced: an EC base with malformed
--- agreement parameters refuses ARGUMENTS_BAD.
+-- agreement parameters refuses CKR_MECHANISM_PARAM_INVALID.
 caseDeriveEcdhBadParams :: IO ()
 caseDeriveEcdhBadParams = withSynth $ \answer -> do
   m0 <- seedModel >>= loginUser
@@ -1393,7 +1393,7 @@ caseDeriveEcdhBadParams = withSynth $ \answer -> do
     other -> assertFailure ("EC keypair must plan: " ++ show other) >> undefined
   case planDerive defaultRules m1 st mech privH (encodeDeriveParams "garbage" [tmpl]) of
     KeyDenied (KeyDeny code _) ->
-      assertEqual "EC base, garbage params" CKR_ARGUMENTS_BAD code
+      assertEqual "EC base, garbage params" CKR_MECHANISM_PARAM_INVALID code
     other -> assertFailure ("garbage params must not plan: " ++ show other)
 
 -- | KDF handle resolution: a destroyed base handle refuses
