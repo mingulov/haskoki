@@ -244,7 +244,10 @@ isUnframedCipher m = isJust (rsaOaepRecipeFor m) || isJust (gcmRecipeFor m) || i
 -- 'rsaOaepRecipeFor'; ECDSA inits enforce the encoding selection
 -- via 'ecdsaRecipeFor'; CMAC inits enforce the plain/GENERAL
 -- shape via 'cmacRecipeFor'; AEAD inits enforce the caller IV and
--- approved tag width via 'gcmRecipeFor'; later slices extend this
+-- approved tag width via 'gcmRecipeFor'; CCM inits refuse
+-- out-of-range nonces and tag widths with
+-- 'CKR_MECHANISM_PARAM_INVALID' (OASIS §2.20.2 pins that code for
+-- bad CCM parameters at init); later slices extend this
 -- to KDF recipes.
 -- Runs after shape checks (which govern specs) and before key
 -- binding.
@@ -292,7 +295,7 @@ checkMechParams args
         "GCM mechanism parameters rejected by the recipe")
   | Just r <- ccmRecipeFor (iaMech args)
   , not (ccmParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "CCM mechanism parameters rejected by the recipe")
   | otherwise = Right ()
 

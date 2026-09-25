@@ -87,6 +87,7 @@ mkDeny code why = StepDeny code (detailFor code why)
 detailFor :: ReturnCode -> String -> DenyDetail
 detailFor code why = case code of
   CKR_MECHANISM_INVALID -> DenyUnknownMechanism why
+  CKR_MECHANISM_PARAM_INVALID -> DenyBadParams why
   CKR_ARGUMENTS_BAD -> DenyBadParams why
   CKR_TEMPLATE_INCOMPLETE -> DenyBadParams why
   CKR_TEMPLATE_INCONSISTENT -> DenyBadParams why

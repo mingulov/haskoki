@@ -160,6 +160,7 @@ spec = testGroup "Decoded requests"
   , testCase "Init-function maps are total" caseInitFunctionMaps
   , testCase "Writability is one pure admission" casePureAdmission
   , testCase "Read-only code maps everywhere" caseCodeMaps
+  , testCase "Param-invalid code maps everywhere" caseParamInvalidMaps
   , testCase "Read-only sessions enforce the owner dimension" caseRoRefusals
   , testCase "Session objects admitted on read-only sessions" caseRoTokenDimension
   , testCase "Read-only sessions read and compute" caseRoAllowed
@@ -710,6 +711,21 @@ caseCodeMaps = do
   assertEqual "denial category"
     (StepDeny CKR_SESSION_READ_ONLY (DenyOpState "w"))
     (mkDeny CKR_SESSION_READ_ONLY "w")
+
+-- | The mechanism-param code maps identically at every boundary:
+-- the C value (locked header @CKR_MECHANISM_PARAM_INVALID = 0x71@),
+-- the stored document name, and the denial category (bad-params,
+-- like every other parameter refusal).
+caseParamInvalidMaps :: IO ()
+caseParamInvalidMaps = do
+  assertEqual "C value" 0x71 (returnCodeToRV CKR_MECHANISM_PARAM_INVALID)
+  assertEqual "stored name" "CKR_MECHANISM_PARAM_INVALID"
+    (encodeReturnCode CKR_MECHANISM_PARAM_INVALID)
+  assertEqual "stored round-trip" (Just CKR_MECHANISM_PARAM_INVALID)
+    (decodeReturnCode "CKR_MECHANISM_PARAM_INVALID")
+  assertEqual "denial category"
+    (StepDeny CKR_MECHANISM_PARAM_INVALID (DenyBadParams "w"))
+    (mkDeny CKR_MECHANISM_PARAM_INVALID "w")
 
 -- | Read-only sessions enforce the owner dimension through the C
 -- adapter (§5.7.1-5.7.3): session-object create, copy,

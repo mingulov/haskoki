@@ -109,6 +109,7 @@ import Haskoki.Operation.Signature
   )
 import Haskoki.Outcome (ResourceRelease (..))
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
+import Haskoki.Recipe.Ccm (encodeCcmParams)
 import Haskoki.Registry
   ( Descriptor (..)
   , Family (..)
@@ -140,6 +141,7 @@ import Haskoki.Types
 spec :: TestTree
 spec = testGroup "operation lifecycles"
   [ testCase "gcm encrypt init admits canonical params" caseGcmInit
+  , testCase "ccm encrypt init admits canonical params" caseCcmInit
   , testCase "digest/encrypt pair permitted, same-kind rejected" casePairVsConflict
   , testCase "init checks source routes before engine caps" caseInitLegality
   , testCase "init enforces key shape and usage" caseInitKeyPolicy
@@ -206,6 +208,9 @@ aesEcbMech = MechanismId 0x1081
 
 aesGcmMech :: MechanismId
 aesGcmMech = MechanismId 0x1087
+
+aesCcmMech :: MechanismId
+aesCcmMech = MechanismId 0x1088
 
 rsaGenMech :: MechanismId
 rsaGenMech = MechanismId 0x0
@@ -362,6 +367,32 @@ caseGcmInit = do
   let badArgs = gcmArgs { iaParams = "nope" }
       (_, outBad) = initOperation env emptySessionOps testSession badArgs
   assertEqual "gcm bad params code" CKR_ARGUMENTS_BAD (ioCode outBad)
+
+ccmArgs :: InitArgs
+ccmArgs = InitArgs
+  { iaOp = OpEncrypt
+  , iaMech = aesCcmMech
+  , iaParams = encodeCcmParams "0123456789ab" "AD" 8 16
+  , iaKey = Just aesKey
+  , iaCipher = Just (CipherSpec 1 False)
+  , iaRecover = Nothing
+  }
+
+caseCcmInit :: IO ()
+caseCcmInit = do
+  let env = testEnv { oeCaps = mkCapabilities [(aesCcmMech, OpEncrypt)] }
+      (ops1, out1) = initOperation env emptySessionOps testSession ccmArgs
+  assertEqual "ccm init code" CKR_OK (ioCode out1)
+  assertEqual "one active slot" [SlotEncrypt] (activeSlots ops1)
+  let badNonce = ccmArgs
+        { iaParams = encodeCcmParams "0123456789abcdef" "AD" 8 16 }
+      (_, outNonce) = initOperation env emptySessionOps testSession badNonce
+  assertEqual "ccm bad nonce code"
+    CKR_MECHANISM_PARAM_INVALID (ioCode outNonce)
+  let badTag = ccmArgs { iaParams = encodeCcmParams "0123456789ab" "AD" 2 16 }
+      (_, outTag) = initOperation env emptySessionOps testSession badTag
+  assertEqual "ccm bad tag code"
+    CKR_MECHANISM_PARAM_INVALID (ioCode outTag)
 
 -- ---------------------------------------------------------------------------
 -- Acceptance 1: pair permitted, same-kind conflict rejected

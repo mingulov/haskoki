@@ -29,7 +29,7 @@ spec count =
     , testCase "mkDeny preserves code" caseMkDeny
     ]
 
--- | All 37 return codes (Types.hs), enumerated.
+-- | All 38 return codes (Types.hs), enumerated.
 allCodes :: [ReturnCode]
 allCodes =
   [ CKR_OK
@@ -58,6 +58,7 @@ allCodes =
   , CKR_TEMPLATE_INCOMPLETE
   , CKR_TEMPLATE_INCONSISTENT
   , CKR_MECHANISM_INVALID
+  , CKR_MECHANISM_PARAM_INVALID
   , CKR_OPERATION_ACTIVE
   , CKR_OPERATION_NOT_INITIALIZED
   , CKR_SIGNATURE_INVALID
@@ -92,7 +93,7 @@ pDenyPassthrough :: Property
 pDenyPassthrough = forAll genDeny $ \d ->
   interpretError (TyDeny d) == sdCode d
 
--- | The full 37x7=259 (code,detail) space, enumerated
+-- | The full 38x7=266 (code,detail) space, enumerated
 -- deterministically: the QC sampler above can miss codes
 -- at default counts, so the strongest available property — every
 -- pair keeps its code — runs as a seed-independent testCase.

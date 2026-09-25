@@ -7,7 +7,7 @@ AAD). 'Haskoki.Recipe.Ccm' owns the canonical codec and parameter
 validation; these tests pin the recipe and its two consumers:
 
 * the model init path enforces CCM parameters ('validateInit',
-  'CKR_ARGUMENTS_BAD');
+  'CKR_MECHANISM_PARAM_INVALID');
 * the driver maps every covered (mechanism, key length, params)
   triple to its backend 'AeadSpec' ('aeadSpecFor' agrees with
   the recipe table: key length selects the AES width, the nonce
@@ -196,7 +196,7 @@ testEnv = OpEnv
 
 -- | Unknown handle: valid parameters proceed PAST the parameter check
 -- to key resolution (proving acceptance); bad parameters stop at
--- 'CKR_ARGUMENTS_BAD'.
+-- 'CKR_MECHANISM_PARAM_INVALID'.
 badKey :: KeyPolicy
 badKey = KeyPolicy (ExternalHandle 999) [OpEncrypt] False
 
@@ -210,11 +210,11 @@ mkArgs mech params = InitArgs OpEncrypt mech params (Just badKey)
 caseInitParams :: IO ()
 caseInitParams = do
   let good = encodeCcmParams nonce12 "AD" 16 2
-  assertEqual "short nonce refused" CKR_ARGUMENTS_BAD
+  assertEqual "short nonce refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs ccmMech (encodeCcmParams (BS.replicate 6 0) "AD" 16 2)))
-  assertEqual "bad tag refused" CKR_ARGUMENTS_BAD
+  assertEqual "bad tag refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs ccmMech (encodeCcmParams nonce12 "AD" 5 2)))
-  assertEqual "garbage refused" CKR_ARGUMENTS_BAD
+  assertEqual "garbage refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs ccmMech "nope"))
   assertEqual "valid params pass to key resolution" CKR_OBJECT_HANDLE_INVALID
     (runInit (mkArgs ccmMech good))

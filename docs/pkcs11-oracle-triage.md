@@ -11,7 +11,8 @@ not per test.
 ## Fast-lane results across fix rounds
 
 Total collected varies by framework checkout (r11: 5780; r14: 5798;
-r15: 5820; r18: 5840; r19: 5844; r20: 5864; r21: 5888). Summaries are authoritative;
+r15: 5820; r18: 5840; r19: 5844; r20: 5864; r21: 5888; r22: 5910).
+Summaries are authoritative;
 the per-test records list interesting outcomes only (see Method).
 
 | Round | Passed | Failed | XFailed | Skipped | Child crashes |
@@ -38,6 +39,7 @@ the per-test records list interesting outcomes only (see Method).
 | r19 (T5a/b/c/d + T8 RSA wrap) | 2874 | 2 | 387 | 2581 | 0 |
 | r20 (EC_POINT stamp + GCM/ECDH fixes) | 2930 | 2 | 351 | 2581 | 0 |
 | r21 (AES-CTR slice) | 2947 | 2 | 357 | 2582 | 0 |
+| r22 (AES-CCM slice) | 2967 | 2 | 361 | 2580 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -237,7 +239,7 @@ first lane proving all of them together.
   harness-side keygen). T4 message-API legs never materialized
   (the oracle skips clean `FUNCTION_NOT_SUPPORTED`).
 
-## Remaining fast-lane failures (r21: 2), by cluster
+## Remaining fast-lane failures (r22: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
 `/tmp/pkcs11-ws/pkcs11-check` (import recipes, negotiation, gates).
@@ -248,6 +250,26 @@ Slices ordered by leg count:
   registry (`MechConfig.key_type is None` for HOTP; the assert
   text is byte-identical in r20b — the module is never called).
   (`eddsa_wrong_length` was fixed oracle-side in 0.2.1.)
+- Added in round 12 (r21→r22): AES-CCM slice (recipe
+  `e9c5eb0`, FFI `a0e7c59`, engine `c7e086e`, driver/catalog
+  `18ea1aa`, cipher shape `7a1ef97`, key-type matrix
+  `4f8d6da`: `ccm-params/1` image with `ulDataLen`, single-part
+  CCM over OpenSSL 4.0.2 EVP, SP 800-38C widths, catalog
+  108→109 rows). Per-unit diff is fully attributed, every
+  changed unit CCM-related: +20 passed (`aead_short_ciphertext`
+  +2, `ffi_length_boundary` +7, `parameter_validation` +1,
+  `mech_encrypt` +2, `mech_flags` +4, `mech_negative` +4),
+  +4 xfailed (2× CCM keygen-correctly-refused, 2× CCM
+  missing-params expecting `MECHANISM_PARAM_INVALID` — fixed
+  post-lane, see the KAT r5 note), −2 skipped net (`mech_probe`
+  +3 "tested elsewhere", `mech_flags` +5 non-encrypt flags
+  correctly unadvertised, security files −10 now running).
+  Zero pass→fail, zero crashes, zero xpass; limbo stable at
+  698 on the canonical data dir. The first r22 attempt carried
+  2 extra failures (CCM wrong-key-type encrypt/decrypt: the
+  key-type matrix had no CCM row yet); the matrix commit fixed
+  them and migrated 15 setup-xfails to pass (r22→r22b is
+  `mech_negative`-only: +17 passed, −2 failed, −15 xfailed).
 - Added in round 11 (r20→r21): AES-CTR slice (`cf0a164`:
   `ctr-params/1` image for AES-128/192/256, big-endian counter
   chaining, 16-byte block-aligned streaming splits, NIST F.5
@@ -410,7 +432,39 @@ OAEP error uniformity). T5a (RO owner dimension) and T5b
 (public/private gates) are implemented and passing in-suite
 post-r18; lane reproof needs a bundle rebuild.
 
-## KAT lane status (r3, CTR bundle: COMPLETE)
+## KAT lane status (r5, CCM bundle: COMPLETE)
+
+112094 tests — 34627 passed, 2 failed, 0 crashed, 5128 xfailed,
+72337 skipped (`/tmp/lane-kat-r5.json`; `incomplete: false`),
+canonical data dir `/tmp/pkcs11-ws/data`. The only failures are
+the 2 external HOTP registry asserts (same pair as the fast
+lane). Delta vs r3/r4 is fully attributed, every changed unit
+CCM-related: +8816 passed / +158 xfailed / −8952 skipped
+(`acvp/aes/test_ccm.py`: 8398 skipped → 8310 passed + 88
+xfailed; `wycheproof_aes`: +486 passed, 66 xfailed;
+`aead_short_ciphertext` +2, `ffi_length_boundary` +7,
+`parameter_validation` +1, `mech_encrypt` +2, `mech_flags` +4
+passed; `mech_negative` +4 passed +4 xfailed; `mech_probe` +3
+"tested elsewhere"). Zero pass→fail, zero crashes, zero xpass.
+
+Post-lane fix (same source tree, targeted reproof): the KAT r5
+run exposed a real spec deviation — out-of-range CCM nonces
+and tag widths, and CCM inits with missing params, were refused
+with `CKR_ARGUMENTS_BAD`, while OASIS §2.20.2 pins
+`CKR_MECHANISM_PARAM_INVALID` (the core `ReturnCode` type never
+modeled that code). The fix adds the code (`0x71`, header-pinned,
+stored-name round-trip, `DenyBadParams` category) and points the
+CCM init arm at it; every other arm keeps its historical code.
+Rerunning the 9 CCM-attributable units post-fix: wycheproof 66
+xfail→pass, `mech_negative` 2 xfail→pass (the missing-params
+legs), ACVP CCM unchanged at 8310/88 (the 88 ECMA 16-byte-nonce
+legs stay honest xfails — a clean reject whatever the code),
+all other units byte-identical, same 2 HOTP failures, zero
+xpass. No full-lane rerun: the change is provably scoped (one
+CCM arm plus an additive code no other producer emits), and the
+9 rerun units are exactly the CCM-exercising ones.
+
+## KAT lane status (historical r3, CTR bundle)
 
 112072 tests — 25811 passed, 2 failed, 0 crashed, 4970 xfailed,
 81289 skipped (`/tmp/pkcs11-ws/out/kat-r3-results.json`;

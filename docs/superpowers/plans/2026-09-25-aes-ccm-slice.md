@@ -62,7 +62,7 @@ Note on CCM variants (user observation): the oracle runs CCM + CCM-ECMA + wychep
 - Consumes: nothing yet (`Haskoki.Recipe.Ccm` does not exist; test must fail to compile/run)
 - Produces: `spec :: TestTree` named `RecipeCcm` covering encode/decode roundtrip + validation rejects
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```haskell
 module RecipeCcmSpec (spec) where
@@ -93,12 +93,12 @@ spec = testGroup "RecipeCcm"
   ]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cabal test haskoki-model-tests --test-option=-p --test-option=/RecipeCcm/`
 Expected: FAIL (compile error: module `Haskoki.Recipe.Ccm` not found)
 
-- [ ] **Step 3: Write minimal implementation** (see Task 2)
+- [x] **Step 3: Write minimal implementation** (see Task 2)
 
 ### Task 2: CCM recipe module green
 
@@ -110,18 +110,18 @@ Expected: FAIL (compile error: module `Haskoki.Recipe.Ccm` not found)
 - Consumes: `Haskoki.Registry.Generated.mustGeneratedId`, `Haskoki.Registry.Types`
 - Produces: `encodeCcmParams :: ByteString -> ByteString -> Int -> ByteString`, `decodeCcmParams :: ByteString -> Maybe (ByteString, ByteString, Int)`, `ccmParamsValid :: ByteString -> Bool`, `ccmRecipeFor :: MechanismId -> Maybe CcmRecipe`, `ccmCodecFor :: CcmRecipe -> ParameterCodec`
 
-- [ ] **Step 1: Implement `core/Haskoki/Recipe/Ccm.hs` per the Gcm.hs mirror above**
-- [ ] **Step 2: Run test to verify it passes**
+- [x] **Step 1: Implement `core/Haskoki/Recipe/Ccm.hs` per the Gcm.hs mirror above**
+- [x] **Step 2: Run test to verify it passes**
 
 Run: `cabal test haskoki-model-tests --test-option=-p --test-option=/RecipeCcm/`
 Expected: PASS (2/2)
 
-- [ ] **Step 3: Run full model suite for regressions**
+- [x] **Step 3: Run full model suite for regressions**
 
 Run: `cabal test haskoki-model-tests`
 Expected: PASS, no new failures
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add core/Haskoki/Recipe/Ccm.hs tests/recipes/RecipeCcmSpec.hs haskoki.cabal tests/model/Main.hs
@@ -138,21 +138,21 @@ git commit -m "CCM slice 1/8: ccm-params/1 recipe codec + focused spec (red-gree
 - Consumes: `Haskoki.Recipe.Ccm.encodeCcmParams`
 - Produces: `ccmNativeSize :: Int` (= `4 * wordSize + 2 * ptrSize`, 48 on 64-bit), `ccmStructToCanonical :: ByteString -> ByteString -> Word64 -> Word64 -> Word64 -> Maybe ByteString` (nonce bytes, aad bytes, dataLen, nonceLen, macLen; lengths in BYTES; `Nothing` unless lengths match buffers and widths validate)
 
-- [ ] **Step 1: Extend the spec with a native-image case** (hand-pack ulDataLen=2, nonce=12 bytes of 0x01, aad=2 bytes, macLen=16 in host order; dispatch must yield the `ccm-params/1` image; a `paramsLen /= ccmNativeSize` buffer must yield `Nothing`)
+- [x] **Step 1: Extend the spec with a native-image case** (hand-pack ulDataLen=2, nonce=12 bytes of 0x01, aad=2 bytes, macLen=16 in host order; dispatch must yield the `ccm-params/1` image; a `paramsLen /= ccmNativeSize` buffer must yield `Nothing`)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cabal test haskoki-model-tests --test-option=-p --test-option=/RecipeCcm/`
 Expected: FAIL (compile error: `ccmStructToCanonical` not in scope)
 
-- [ ] **Step 3: Implement unmarshal in `NativeParams.hs`** (mirror `gcmStructToCanonical` at line 200 and `decodeGcmNative` at line 286; chase `pNonce`/`pAAD` pointers exactly like the GCM arm)
+- [x] **Step 3: Implement unmarshal in `NativeParams.hs`** (mirror `gcmStructToCanonical` at line 200 and `decodeGcmNative` at line 286; chase `pNonce`/`pAAD` pointers exactly like the GCM arm)
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cabal test haskoki-model-tests --test-option=-p --test-option=/RecipeCcm/`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ffi/Haskoki/FFI/NativeParams.hs tests/recipes/RecipeCcmSpec.hs
@@ -170,26 +170,26 @@ git commit -m "CCM slice 2/8: CK_AES_CCM_PARAMS FFI unmarshal (red-green)"
 - Consumes: `Haskoki.Recipe.Ccm.decodeCcmParams` (nonce, aad, tagLen)
 - Produces: engine encrypt returns `ct <> tag`, decrypt verifies tag and returns `pt` or maps failure to `CKR_ENCRYPTED_DATA_INVALID`
 
-- [ ] **Step 1: Write the engine KAT test** (encrypt tcId 1 through the OpenSSL4 engine, assert ct+tag bytes; decrypt roundtrip asserts pt)
+- [x] **Step 1: Write the engine KAT test** (encrypt tcId 1 through the OpenSSL4 engine, assert ct+tag bytes; decrypt roundtrip asserts pt)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cabal test haskoki-engine-tests --test-option=-p --test-option=/CCM/`
 Expected: FAIL (no CCM route: `CCM not routed` or equivalent)
 
-- [ ] **Step 3: Implement C shims + engine arms**
+- [x] **Step 3: Implement C shims + engine arms**
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cabal test haskoki-engine-tests --test-option=-p --test-option=/CCM/`
 Expected: PASS
 
-- [ ] **Step 5: Run both engine and model suites for regressions**
+- [x] **Step 5: Run both engine and model suites for regressions**
 
 Run: `cabal test haskoki-engine-tests haskoki-model-tests`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add cbits/ossl4_ctx.c src/Haskoki/Engine/OpenSSL4.hs tests/engine/OpenSSLSpec.hs
@@ -207,21 +207,21 @@ git commit -m "CCM slice 3/8: OpenSSL CCM shims + engine route (red-green)"
 - Consumes: Task 4 engine route
 - Produces: end-to-end single-part CCM encrypt/decrypt through `Driver`; synthetic determinism (same input, same output, differs from real)
 
-- [ ] **Step 1: Write refusal + roundtrip smoke tests**
+- [x] **Step 1: Write refusal + roundtrip smoke tests**
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cabal test haskoki-engine-tests --test-option=-p --test-option=/CCM/`
 Expected: FAIL (CCM not dispatched)
 
-- [ ] **Step 3: Implement Driver + Synthetic arms**
+- [x] **Step 3: Implement Driver + Synthetic arms**
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cabal test haskoki-engine-tests`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/Haskoki/Engine/Driver.hs src/Haskoki/Engine/Synthetic.hs tests/engine/OperationSmokeSpec.hs
@@ -238,21 +238,21 @@ git commit -m "CCM slice 4/8: driver arm + synthetic parity (red-green)"
 - Consumes: Tasks 4-5 routes
 - Produces: invalid-tag decrypt returns exactly `CKR_ENCRYPTED_DATA_INVALID` (in oracle `_CCM_DATA_REJECTS`)
 
-- [ ] **Step 1: Write negative tests**
+- [x] **Step 1: Write negative tests**
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cabal test haskoki-model-tests --test-option=-p --test-option=/RecipeCcm/`
 Expected: FAIL (new assertions fail)
 
-- [ ] **Step 3: Fix product code until green** (no test-expectation weakening; if a width the oracle needs refuses, widen the recipe constants with a cited reason)
+- [x] **Step 3: Fix product code until green** (no test-expectation weakening; if a width the oracle needs refuses, widen the recipe constants with a cited reason)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cabal test haskoki-model-tests`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/recipes/RecipeCcmSpec.hs
@@ -271,14 +271,14 @@ git commit -m "CCM slice 5/8: negative CCM KAT (invalid tag, bad widths)"
 - Consumes: Tasks 1-6 evidence (case ids must exist before citing)
 - Produces: 109-row tested real catalog; `check-coverage-boundary.py` + `check-docs.py` green
 
-- [ ] **Step 1: Promote registry + JSON row, regenerate, fix pins**
+- [x] **Step 1: Promote registry + JSON row, regenerate, fix pins**
 
-- [ ] **Step 2: Verify docs**
+- [x] **Step 2: Verify docs**
 
 Run: `python3 scripts/check-coverage-boundary.py && python3 scripts/check-docs.py && cabal test haskoki-model-tests`
 Expected: all green
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add -A
