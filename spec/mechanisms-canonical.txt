@@ -1,4 +1,5 @@
 schema 1
+mech|0x00000000|CKM_RSA_PKCS_KEY_PAIR_GEN||keypair|no-params/1|bits:0-0|generate-key-pair:A20,A37
 mech|0x00000001|CKM_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x00000005|CKM_MD5_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x00000006|CKM_SHA1_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
@@ -106,7 +107,6 @@ mech|0x00001085|CKM_AES_CBC_PAD||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A
 mech|0x0000108A|CKM_AES_CMAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x0000108B|CKM_AES_CMAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x0000402A|CKM_HKDF_DERIVE||derive|hkdf-expand-params/1|mechanism-specific:0-0|derive:A20,A37,A39
-inv|0x00000000|CKM_RSA_PKCS_KEY_PAIR_GEN||catalog-only
 inv|0x00000002|CKM_RSA_9796||catalog-only
 inv|0x00000003|CKM_RSA_X_509||catalog-only
 inv|0x00000004|CKM_MD2_RSA_PKCS||catalog-only

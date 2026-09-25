@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 105
+#define HASKOKI_MECH_COUNT 106
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -20,6 +20,7 @@ struct haskoki_mech_row {
 
 static const struct haskoki_mech_row
     haskoki_mech_catalog[HASKOKI_MECH_COUNT] = {
+  { 0x00000000UL, 0UL, 0UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_RSA_PKCS_KEY_PAIR_GEN */
   { 0x00000001UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_RSA_PKCS */
   { 0x00000005UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_MD5_RSA_PKCS */
   { 0x00000006UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA1_RSA_PKCS */

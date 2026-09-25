@@ -38,6 +38,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , hmac
   , cipherCbc
   , ecGen
+  , rsaGen
   , randBytes
   , randSeed
   , ecdsaSign
@@ -131,6 +132,9 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_cbc"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_ec_gen"
   c_ec_gen :: Ptr OsslLibCtx -> CString -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_gen_keypair"
+  c_rsa_gen :: Ptr OsslLibCtx -> CInt -> Ptr CUChar -> CSize -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rand_bytes"
   c_rand_bytes :: Ptr OsslLibCtx -> CSize -> Ptr (Ptr CUChar) -> IO CLong
@@ -299,6 +303,26 @@ ecGen ctx group propq =
 randBytes :: Ptr OsslLibCtx -> Int -> IO (Either Int ByteString)
 randBytes ctx n =
   withOut (c_rand_bytes ctx (fromIntegral n))
+
+rsaGen :: Ptr OsslLibCtx -> Int -> ByteString -> String -> IO (Either Int (ByteString, ByteString))
+rsaGen ctx bits eBe propq =
+  withBytes eBe $ \(pe, ne) ->
+    withCString propq $ \cpq ->
+      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+        rc <- c_rsa_gen ctx (fromIntegral bits) pe ne cpq ppriv npriv ppub npub
+        if rc /= 0
+          then pure (Left (fromIntegral rc))
+          else do
+            privp <- peek ppriv
+            privn <- peek npriv
+            pubp <- peek ppub
+            pubn <- peek npub
+            if privp == nullPtr || pubp == nullPtr
+              then pure (Left errNative)
+              else do
+                priv <- takeOwned privp (fromIntegral privn)
+                pub <- takeOwned pubp (fromIntegral pubn)
+                pure (Right (priv, pub))
 
 -- | Mix seed bytes via the shim's @RAND_add@ entry: 0 is
 -- success, a negative shim code is the @Left@ (mirrors 'withOut').

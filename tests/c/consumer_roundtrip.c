@@ -774,17 +774,17 @@ int main(int argc, char **argv) {
       rv = f->C_GenerateKey(ksess, &kgm, tmpl, 2, &key2);
       CHECKC(rv == CKR_TEMPLATE_INCOMPLETE, "missing VALUE_LEN incomplete");
     }
-    /* RSA pairgen stays pinned: the spec row is
-     * unsupported-with-reason (no reviewed prime-generation
-     * rules; synthetic has no GenRSA), so the real backend
-     * refuses and the surface reports MECHANISM_INVALID — in
-     * both topologies (the session is open, so the proxy
-     * forwards and the refusal comes from the backend). */
+    /* RSA pairgen is real (spec real: tested): the pair
+     * lands with distinct handles, honest classes, and stamped
+     * components (256-byte modulus, default exponent).
+     * Out-of-window sizes refuse without writing handles. */
     {
       CK_OBJECT_CLASS pcls = CKO_PUBLIC_KEY;
       CK_OBJECT_CLASS scls = CKO_PRIVATE_KEY;
       CK_KEY_TYPE rkt = CKK_RSA;
       CK_ULONG bits = 2048;
+      CK_BYTE ebuf[8];
+      static CK_BYTE mod[256];
       CK_ATTRIBUTE pubT[] = {
         { CKA_CLASS, &pcls, sizeof(pcls) },
         { CKA_KEY_TYPE, &rkt, sizeof(rkt) },
@@ -802,7 +802,32 @@ int main(int argc, char **argv) {
       kgm.pParameter = NULL_PTR;
       kgm.ulParameterLen = 0;
       rv = f->C_GenerateKeyPair(ksess, &kgm, pubT, 4, privT, 3, &pub, &priv);
-      CHECKC(rv == CKR_MECHANISM_INVALID, "RSA pairgen honestly refused");
+      CHECKC(rv == CKR_OK && pub != 0 && priv != 0 && pub != priv,
+             "RSA pair ok with distinct handles");
+      get[0].type = CKA_CLASS;
+      get[0].pValue = &rcls;
+      get[0].ulValueLen = sizeof(rcls);
+      rv = f->C_GetAttributeValue(ksess, pub, get, 1);
+      CHECKC(rv == CKR_OK && rcls == CKO_PUBLIC_KEY,
+             "RSA pair pub class reads");
+      get[0].type = CKA_MODULUS;
+      get[0].pValue = mod;
+      get[0].ulValueLen = sizeof(mod);
+      rv = f->C_GetAttributeValue(ksess, pub, get, 1);
+      CHECKC(rv == CKR_OK && get[0].ulValueLen == 256,
+             "RSA pair modulus reads 256 bytes");
+      get[0].type = CKA_PUBLIC_EXPONENT;
+      get[0].pValue = ebuf;
+      get[0].ulValueLen = sizeof(ebuf);
+      rv = f->C_GetAttributeValue(ksess, pub, get, 1);
+      CHECKC(rv == CKR_OK && get[0].ulValueLen == 3 && ebuf[0] == 1 &&
+                 ebuf[1] == 0 && ebuf[2] == 1,
+             "RSA pair default exponent reads 65537");
+      bits = 1024;
+      pub = 0;
+      priv = 0;
+      rv = f->C_GenerateKeyPair(ksess, &kgm, pubT, 4, privT, 3, &pub, &priv);
+      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT, "RSA-1024 refused");
       CHECKC(pub == 0 && priv == 0, "refused pairgen writes no handles");
     }
     /* EC P-256 pairgen is real (spec real: tested): the pair

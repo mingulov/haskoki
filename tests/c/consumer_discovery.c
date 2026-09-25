@@ -8,7 +8,7 @@
  *     (3.2/3.1/3.0 + legacy C_GetFunctionList), callable pre-Initialize
  *   - versioned-table isolation (distinct instances, exact versions)
  *   - cross-table consistency (same bytes via legacy and 3.2 pointers)
- *   - mechanism/info queries (105 real-tested rows, info records,
+ *   - mechanism/info queries (106 real-tested rows, info records,
  *     invalid codes)
  *   - real slot/token records (provisioned token) + session
  *     open/info/close/close-all flows
@@ -357,7 +357,7 @@ int main(int argc, char **argv) {
   }
   nmechL = 128;
   rv = legacy->C_GetMechanismList(slotsL[0], mechsL, &nmechL);
-  CHECK(rv == CKR_OK && nmechL == 105, "legacy mechanism list has 105 rows");
+  CHECK(rv == CKR_OK && nmechL == 106, "legacy mechanism list has 106 rows");
   {
     CK_ULONG nq = 128;
     rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nq);
@@ -416,7 +416,7 @@ int main(int argc, char **argv) {
   /* ---- mechanism/info queries ---- */
   nmech = 128;
   rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nmech);
-  CHECK(rv == CKR_OK && nmech == 105, "mechanism list has 105 rows");
+  CHECK(rv == CKR_OK && nmech == 106, "mechanism list has 106 rows");
   {
     int has256 = 0, hasPad = 0, hasEC = 0, hasAESkg = 0, hasHOTPkg = 0;
     int ascending = 1;
@@ -448,12 +448,12 @@ int main(int argc, char **argv) {
   {
     CK_ULONG nq = 0;
     rv = tbl32->C_GetMechanismList(slotsL[0], NULL_PTR, &nq);
-    CHECK(rv == CKR_OK && nq == 105, "mechanism size query reports 105");
+    CHECK(rv == CKR_OK && nq == 106, "mechanism size query reports 106");
   }
   nmech = 3;
   rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nmech);
-  CHECK(rv == CKR_BUFFER_TOO_SMALL && nmech == 105,
-        "short mechanism buffer reports 105");
+  CHECK(rv == CKR_BUFFER_TOO_SMALL && nmech == 106,
+        "short mechanism buffer reports 106");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_SHA256, &mi);
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 0 && mi.ulMaxKeySize == 0 &&
             mi.flags == CKF_DIGEST,
@@ -467,6 +467,10 @@ int main(int argc, char **argv) {
             mi.flags == (CKF_ENCRYPT | CKF_DECRYPT),
         "AES_CBC_PAD info: 16..32, encrypt/decrypt");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_RSA_PKCS_KEY_PAIR_GEN, &mi);
+  CHECK(rv == CKR_OK && mi.ulMinKeySize == 0 && mi.ulMaxKeySize == 0 &&
+            mi.flags == CKF_GENERATE_KEY_PAIR,
+        "RSA_KEY_PAIR_GEN info: generate-pair-only, 0/0 bounds");
+  rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_RSA_X9_31_KEY_PAIR_GEN, &mi);
   CHECK(rv == CKR_MECHANISM_INVALID, "unlisted mechanism info rejected");
   rv = tbl32->C_GetMechanismInfo(999991UL, CKM_SHA256, &mi);
   CHECK(rv == CKR_SLOT_ID_INVALID, "bad slot mechanism info rejected");

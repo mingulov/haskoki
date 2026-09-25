@@ -1,11 +1,14 @@
-{- | Minimal DER writer for key-import assembly.
+{- | Minimal DER codec for key assembly and keygen stamping.
 
 'planCreateObject' stores asymmetric keys the same way key generation
 does: @AttrValue@ carries PKCS#8 (private) or SubjectPublicKeyInfo
 (public) DER, while the PKCS#11 components stay stored verbatim for
-reads. This module assembles that DER purely from components — the
+reads. The writers assemble that DER purely from components — the
 only runtime input the backend needs beyond the components is the
-curve OID, resolved by 'curveOidOfParams'.
+curve OID, resolved by 'curveOidOfParams'. The readers run the
+other way at keygen finish time: the backend returns DER halves,
+and 'finishWork' stamps the components back onto the new objects
+so reads serve them without a decode-on-read path.
 
 Scope is deliberately narrow: RSA PKCS#1/SPKI/PKCS#8 and SEC1 EC
 keys on the three SEC2 prime curves. Anything else refuses at the
@@ -22,6 +25,11 @@ module Haskoki.Der
   , unwrapEcPoint
   , curveOidOfParams
   , curveCoordLen
+  , integerToBE
+  , RsaCrt (..)
+  , parseRsaPrivate
+  , parseRsaPublic
+  , spkiPoint
   ) where
 
 import Data.Bits (shiftR, (.&.))
@@ -50,6 +58,17 @@ derLen n
 
 tagged :: Word8 -> ByteString -> ByteString
 tagged t body = BS.singleton t <> derLen (BS.length body) <> body
+
+-- | Minimal big-endian encoding of a non-negative integer (at
+-- least one octet; no leading zero). Shared by the backends for
+-- exponent framing.
+integerToBE :: Integer -> ByteString
+integerToBE n
+  | n <= 0 = BS.singleton 0
+  | otherwise = BS.pack (go n [])
+  where
+    go 0 acc = acc
+    go x acc = go (x `div` 256) (fromIntegral (x `mod` 256) : acc)
 
 derSeq :: [ByteString] -> ByteString
 derSeq parts = tagged 0x30 (mconcat parts)
@@ -194,3 +213,134 @@ ecPrivateDer curveOid scalar =
 ecPublicDer :: ByteString -> ByteString -> ByteString
 ecPublicDer curveOid point =
   derSeq [derSeq [oidEcPublicKey, curveOid], derBitString point]
+
+-- ---------------------------------------------------------------------------
+-- Parsing (total; 'Nothing' on any malformation)
+-- ---------------------------------------------------------------------------
+
+-- | One TLV element: tag, content, remainder. Lengths accept short
+-- form and long form up to two octets (16 MiB ceiling, far above
+-- any key DER here).
+tlv :: ByteString -> Maybe (Word8, ByteString, ByteString)
+tlv bs = do
+  (t, rest) <- BS.uncons bs
+  (n, body) <- splitLen rest
+  guardLen n body
+  pure (t, BS.take n body, BS.drop n body)
+  where
+    splitLen s = case BS.uncons s of
+      Just (h, rest)
+        | h < 0x80 -> Just (fromIntegral h, rest)
+        | h == 0x81 -> case BS.uncons rest of
+            Just (b, r) -> Just (fromIntegral b, r)
+            Nothing -> Nothing
+        | h == 0x82 -> case BS.unpack (BS.take 2 rest) of
+            [b1, b2] -> Just (fromIntegral b1 * 256 + fromIntegral b2,
+              BS.drop 2 rest)
+            _ -> Nothing
+        | otherwise -> Nothing
+      Nothing -> Nothing
+    guardLen n body
+      | BS.length body >= n = Just ()
+      | otherwise = Nothing
+
+-- | The top-level elements of a SEQUENCE body, in order, WITH
+-- their tags (re-encoded, so callers re-enter per element).
+seqTop :: ByteString -> Maybe [ByteString]
+seqTop body = go body []
+  where
+    go rest acc
+      | BS.null rest = Just (reverse acc)
+      | otherwise = case tlv rest of
+          Just (t, content, rest') -> go rest' (tagged t content : acc)
+          Nothing -> Nothing
+
+-- | INTEGER content as minimal unsigned bytes (inverse of
+-- 'derInteger' over well-formed input).
+derInt :: ByteString -> Maybe ByteString
+derInt el = do
+  (t, content, rest) <- tlv el
+  case (t, BS.null rest) of
+    (0x02, True) -> Just (minimal content)
+    _ -> Nothing
+  where
+    minimal bs = case BS.dropWhile (== 0) bs of
+      stripped | BS.null stripped -> BS.singleton 0
+               | otherwise -> stripped
+
+-- | Expect a full TLV element of the given tag covering the whole
+-- input; return its content.
+whole :: Word8 -> ByteString -> Maybe ByteString
+whole tag el = do
+  (t, content, rest) <- tlv el
+  case (t, BS.null rest) of
+    (tag', True) | tag' == tag -> Just content
+    _ -> Nothing
+
+-- | RSA CRT components in 'rsaPrivateDer' order.
+data RsaCrt = RsaCrt
+  { crtN :: !ByteString
+  , crtE :: !ByteString
+  , crtD :: !ByteString
+  , crtP :: !ByteString
+  , crtQ :: !ByteString
+  , crtDp :: !ByteString
+  , crtDq :: !ByteString
+  , crtQinv :: !ByteString
+  } deriving (Eq, Show)
+
+-- | Parse PKCS#8 RSA private DER into CRT components: outer SEQ of
+-- [version, algId, OCTET STRING], inner RSAPrivateKey SEQ of
+-- [version, n, e, d, p, q, dp, dq, qinv]. Versions and the
+-- algorithm identifier are shape-checked, not value-checked.
+parseRsaPrivate :: ByteString -> Maybe RsaCrt
+parseRsaPrivate der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [_, _, privOct] -> do
+      pkcs1 <- whole 0x04 privOct
+      inner <- whole 0x30 pkcs1
+      parts <- seqTop inner
+      case parts of
+        [_v, n, e, d, p, q, dp, dq, qi] -> RsaCrt
+          <$> derInt n <*> derInt e <*> derInt d <*> derInt p
+          <*> derInt q <*> derInt dp <*> derInt dq <*> derInt qi
+        _ -> Nothing
+    _ -> Nothing
+
+-- | The RSA modulus and public exponent from an RSA SPKI:
+-- outer SEQ of [algId, BIT STRING]; the bit string (past its
+-- zero unused-bits octet) is a PKCS#1 RSAPublicKey, a SEQ of
+-- exactly two INTEGERs. 'Nothing' on any framing or tag
+-- mismatch.
+parseRsaPublic :: ByteString -> Maybe (ByteString, ByteString)
+parseRsaPublic der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [_, bits] -> do
+      content <- whole 0x03 bits
+      case BS.uncons content of
+        Just (0, pkcs1der) -> do
+          inner <- whole 0x30 pkcs1der
+          parts <- seqTop inner
+          case parts of
+            [n, e] -> (,) <$> derInt n <*> derInt e
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | The raw X9.62 point from an EC SPKI: outer SEQ of [algId, BIT
+-- STRING]; the bit string's leading unused-bits octet must be 0.
+spkiPoint :: ByteString -> Maybe ByteString
+spkiPoint der = do
+  outer <- whole 0x30 der
+  parts <- seqTop outer
+  case parts of
+    [_, bits] -> do
+      content <- whole 0x03 bits
+      case BS.uncons content of
+        Just (0, point) -> Just point
+        _ -> Nothing
+    _ -> Nothing

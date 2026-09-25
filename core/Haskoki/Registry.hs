@@ -785,6 +785,11 @@ dECKeyPairGen = promotedDesc "CKM_EC_KEY_PAIR_GEN" allBaselines FamilyKeyPair
   noParams [mechRoute OpGenerateKeyPair "CKM_EC_KEY_PAIR_GEN" ["A20", "A37"]]
   KeyBits 0 0
 
+dRsaPkcsKeyPairGen :: Descriptor
+dRsaPkcsKeyPairGen = promotedDesc "CKM_RSA_PKCS_KEY_PAIR_GEN" allBaselines FamilyKeyPair
+  noParams [mechRoute OpGenerateKeyPair "CKM_RSA_PKCS_KEY_PAIR_GEN" ["A20", "A37"]]
+  KeyBits 0 0
+
 dMlKemKeyPairGen :: Descriptor
 dMlKemKeyPairGen = promotedDesc "CKM_ML_KEM_KEY_PAIR_GEN" [Pkcs11_3_2] FamilyKeyPair
   noParams [mechRoute OpGenerateKeyPair "CKM_ML_KEM_KEY_PAIR_GEN" ["A20", "A37"]]
@@ -805,11 +810,11 @@ dMlKem = promotedDesc "CKM_ML_KEM" [Pkcs11_3_2] FamilyKem
   ]
   MechanismSpecific 0 0
 
--- | The curated population: four reviewed behavior descriptors
+-- | The curated population: 108 reviewed behavior descriptors
 -- with concrete rules, plus the full header inventory (464
 -- canonical rows covering all 480 header CKM names) folded in from
--- the generated table. Catalog-only rows (460: everything but the
--- four behavior ids) stay in the coverage denominator but never
+-- the generated table. Catalog-only rows (356: everything but the
+-- 108 behavior ids) stay in the coverage denominator but never
 -- become executable. The catalog covers the full inventory.
 curatedRegistry :: Registry
 curatedRegistry =
@@ -820,7 +825,7 @@ curatedRegistry =
     behaviorDescs :: [Descriptor]
     behaviorDescs =
       ( [ dSHA256, dAESKeyGen, dHotpKeyGen, dGenericSecretKeyGen
-        , dECKeyPairGen, dMlKemKeyPairGen, dHkdfDerive, dMlKem
+        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dHkdfDerive, dMlKem
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160

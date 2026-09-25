@@ -26,13 +26,23 @@ import Foreign.Ptr (Ptr, nullPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
-import Haskoki.Attribute (AttributeType (..), AttributeValue (..), encodeValue)
+import Haskoki.Attribute
+  ( AttributeResult (..)
+  , AttributeType (..)
+  , AttributeValue (..)
+  , PartialReads (..)
+  , encodeValue
+  , getAttributes
+  )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
+import Haskoki.Der (rsaPrivateDer, rsaPublicDer)
 import Haskoki.Engine.Backend
-  ( CryptoBackend (..)
+  ( BackendError (..)
+  , CryptoBackend (..)
   , DigestAlg (..)
   , EcSpec (..)
   , EngineResult (..)
+  , KeyGenSpec (..)
   , KeyMaterial (..)
   , MacSpec (..)
   , SigSpec (..)
@@ -84,7 +94,8 @@ import Haskoki.Operation.Kem
   , planKemEncaps
   )
 import Haskoki.Operation.KeyManagement
-  ( KeyDeny (..)
+  ( GenArgs (..)
+  , KeyDeny (..)
   , KeyPlan (..)
   , PendingObject (..)
   , PendingWork
@@ -98,6 +109,7 @@ import Haskoki.Operation.KeyManagement
   , ckoPrivateKey
   , ckoPublicKey
   , ckoSecretKey
+  , decodeGenArgs
   , ecKeyPairGenMech
   , finishWork
   , genericSecretKeyGenMech
@@ -115,6 +127,7 @@ import Haskoki.Operation.KeyManagement
   , planWrapKey
   , publishPending
   , rsaKeyPairGenMech
+  , stampPairComponents
   , unpadPkcs7
   )
 import Haskoki.Outcome
@@ -159,7 +172,11 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Generic-secret keygen mints typed material in bounds" caseGenericSecretKeygen
   , testCase "Init enforces the key-type matrix" caseInitKeyTypeMatrix
   , testCase "EC keypair delivers two handles" caseEcKeypair
-  , testCase "RSA keypair is honestly unsupported" caseRsaUnsupported
+  , testCase "RSA keypair stamps components and round-trips" caseRsaKeygen
+  , testCase "RSA keypair generations are distinct" caseRsaKeygenDistinct
+  , testCase "RSA keygen bounds refuse out-of-window specs" caseRsaKeygenBounds
+  , testCase "RSA exponent plans, agrees and refuses" caseRsaExponentPlanner
+  , testCase "RSA stamping refuses mismatched halves" caseRsaStampMismatch
   , testCase "Wrap length query then wrap/unwrap roundtrip" caseWrapRoundtrip
   , testCase "Authenticated wrap roundtrip binds the tag" caseAuthWrapRoundtrip
   , testCase "Single-key derive delivers one handle" caseDeriveSingle
@@ -180,10 +197,11 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Init reads usage from the key object" caseInitFromObject
   , testCase "Usage attributes land on unwrap/derive children" caseAttrsLand
   , testCase "Real EC keypair generates and signs" caseRealEcKeygen
+  , testCase "Real RSA keypair generates and signs" caseRealRsaKeygen
   , testCase "Real wrap matches SP 800-38A and round-trips" caseRealWrapVector
   , testCase "Real derive matches RFC 5869" caseRealHkdfVector
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
-  , testCase "Real backend mints AES, honestly lacks KEM/RSA-gen" caseRealUnsupported
+  , testCase "Real backend mints AES, honestly lacks KEM" caseRealUnsupported
   , testCase "Handle writeback plans one exact handle" caseHandleWriteback
   , testCase "Wrapped writeback plans query/short/exact" caseWrappedWriteback
   , testCase "Ciphertext writeback enforces the length" caseCiphertextWriteback
@@ -767,22 +785,169 @@ caseEcKeypair = withSynth $ \answer -> do
         _ -> assertFailure "EC halves lack material"
     other -> assertFailure ("EC keypair plan is not an effect: " ++ show other)
 
-caseRsaUnsupported :: IO ()
-caseRsaUnsupported = withSynth $ \answer -> do
+caseRsaKeygen :: IO ()
+caseRsaKeygen = do
+  opened <- openBackend "11" :: IO (EngineResult (BackendEnv Synthetic))
+  case opened of
+    EngineFail err -> assertFailure ("synthetic open failed: " ++ show err)
+    EngineOk env -> do
+      let answer m fx = runEffect env (resolverFromModel m) fx
+      m0 <- seedModel
+      st <- getSession m0
+      (m1, pubH, privH) <- case planGenerateKeyPair defaultRules m0 st rsaKeyPairGenMech rsaPubTmpl rsaPrivTmpl of
+        KeyEffect pw fx -> do
+          res <- answer m0 fx
+          c <- finishCommit m0 st pw res 2
+          h1 <- handleOf (pcOutputs c !! 0)
+          h2 <- handleOf (pcOutputs c !! 1)
+          m' <- expectRight (publishDelta m0 (pcDelta c))
+          pure (m', h1, h2)
+        other -> assertFailure ("RSA plan is not an effect: " ++ show other) >> undefined
+      Just pub <- pure (resolveHandle m1 pubH)
+      Just priv <- pure (resolveHandle m1 privH)
+      -- Components stamped: 256-byte modulus, default exponent.
+      n <- case Map.lookup AttrModulus (osAttrs pub) of
+        Just (ValBytes bs) -> do
+          assertEqual "modulus length" 256 (BS.length bs)
+          pure bs
+        other -> assertFailure ("pub lacks modulus: " ++ show other) >> undefined
+      assertEqual "default exponent"
+        (Just (ValBytes (BS.pack [1, 0, 1])))
+        (Map.lookup AttrPublicExponent (osAttrs pub))
+      -- Generation params are not stored attributes.
+      assertBool "modulus bits dropped"
+        (Map.notMember AttrModulusBits (osAttrs pub))
+      assertBool "modulus bits dropped (priv)"
+        (Map.notMember AttrModulusBits (osAttrs priv))
+      -- The private half carries all eight CRT parts ...
+      mapM_ (assertPresent (osAttrs priv))
+        [ AttrModulus, AttrPublicExponent, AttrPrivateExponent, AttrPrime1
+        , AttrPrime2, AttrExponent1, AttrExponent2, AttrCoefficient
+        ]
+      -- ... sealed on the read path (sensitive + unextractable template).
+      case getAttributes (osAttrs priv) [AttrPrivateExponent, AttrModulus] of
+        PartialReads code results -> do
+          assertEqual "seal code" CKR_ATTRIBUTE_SENSITIVE code
+          assertEqual "private exponent sealed" (Just ResSensitive)
+            (lookup AttrPrivateExponent results)
+          assertEqual "modulus stays readable"
+            (Just (ResOk (ValBytes n))) (lookup AttrModulus results)
+      -- The generated pair really signs at the backend.
+      case (keyBytesOf pub, keyBytesOf priv) of
+        (Just pubB, Just privB) -> do
+          sres <- sign env (SigRSA_PKCS1v15 D_SHA256) (KeyDer privB) "rsa-msg"
+          sig <- case sres of
+            EngineOk s -> pure s
+            EngineFail err -> assertFailure ("synth sign failed: " ++ show err) >> undefined
+          vres <- verify env (SigRSA_PKCS1v15 D_SHA256) (KeyDer pubB) "rsa-msg" sig
+          case vres of
+            EngineOk () -> pure ()
+            EngineFail err -> assertFailure ("synth verify failed: " ++ show err)
+        _ -> assertFailure "RSA halves lack material"
+      closeBackend env
+  where
+    assertPresent attrs t = case Map.lookup t attrs of
+      Just (ValBytes bs) | not (BS.null bs) -> pure ()
+      other -> assertFailure ("missing component " ++ show t ++ ": " ++ show other)
+
+caseRsaKeygenDistinct :: IO ()
+caseRsaKeygenDistinct = withSynth $ \answer -> do
   m0 <- seedModel
   st <- getSession m0
-  let before = Map.size (mObjects m0)
-  case planGenerateKeyPair defaultRules m0 st rsaKeyPairGenMech rsaPubTmpl rsaPrivTmpl of
-    KeyEffect pw fx -> do
-      res <- answer m0 fx
-      case finishWork m0 st pw res of
-        Reject r -> do
-          assertEqual "unsupported code" CKR_MECHANISM_INVALID (rejCode r)
-          assertEqual "zero objects" (StateDelta []) (rejDelta r)
-          m1 <- expectRight (publishDelta m0 (rejDelta r))
-          assertEqual "nothing published" before (Map.size (mObjects m1))
-        other -> assertFailure ("RSA finish must reject, got: " ++ show other)
-    other -> assertFailure ("RSA keypair plan is not an effect: " ++ show other)
+  let gen m = case planGenerateKeyPair defaultRules m st rsaKeyPairGenMech rsaPubTmpl rsaPrivTmpl of
+        KeyEffect pw fx -> do
+          res <- answer m fx
+          c <- finishCommit m st pw res 2
+          h <- handleOf (pcOutputs c !! 0)
+          m' <- expectRight (publishDelta m (pcDelta c))
+          Just ost <- pure (resolveHandle m' h)
+          case Map.lookup AttrModulus (osAttrs ost) of
+            Just (ValBytes n) -> pure (m', n)
+            other -> assertFailure ("modulus missing: " ++ show other) >> undefined
+        other -> assertFailure ("RSA plan is not an effect: " ++ show other) >> undefined
+  (m1, n1) <- gen m0
+  (_, n2) <- gen m1
+  assertBool "sequential pairs differ" (n1 /= n2)
+
+caseRsaKeygenBounds :: IO ()
+caseRsaKeygenBounds = do
+  opened <- openBackend "11" :: IO (EngineResult (BackendEnv Synthetic))
+  case opened of
+    EngineFail err -> assertFailure ("synthetic open failed: " ++ show err)
+    EngineOk env -> do
+      ok <- generateKey env (GenRSA 2048 65537)
+      case ok of
+        EngineOk (KeyDer priv, Just (KeyDer pub)) -> do
+          assertBool "priv DER nonempty" (not (BS.null priv))
+          assertBool "pub DER nonempty" (not (BS.null pub))
+          assertBool "halves differ" (priv /= pub)
+        other -> assertFailure ("2048/65537 must mint: " ++ show other)
+      badBits <- generateKey env (GenRSA 1024 65537)
+      case badBits of
+        EngineFail (BackendBadParam _ _) -> pure ()
+        other -> assertFailure ("1024 bits must refuse: " ++ show other)
+      evenE <- generateKey env (GenRSA 2048 4)
+      case evenE of
+        EngineFail (BackendBadParam _ _) -> pure ()
+        other -> assertFailure ("even exponent must refuse: " ++ show other)
+      closeBackend env
+
+caseRsaExponentPlanner :: IO ()
+caseRsaExponentPlanner = do
+  m0 <- seedModel
+  st <- getSession m0
+  let argsOf pubT privT =
+        case planGenerateKeyPair defaultRules m0 st rsaKeyPairGenMech pubT privT of
+          KeyEffect _ (FxGenerateKey _ _ input) -> Right (decodeGenArgs input)
+          KeyDenied (KeyDeny code _) -> Left code
+          other -> error ("unexpected plan shape: " ++ show other)
+      withExp tmpl e = tmpl ++ [(AttrPublicExponent, ValBytes e)]
+  -- Absent on both sides: the 65537 default.
+  assertEqual "default exponent" (Right (Just (GenRsa 2048 65537)))
+    (argsOf rsaPubTmpl rsaPrivTmpl)
+  -- Custom odd exponent carries into the effect args.
+  assertEqual "custom exponent" (Right (Just (GenRsa 2048 257)))
+    (argsOf (withExp rsaPubTmpl (BS.pack [1, 1])) rsaPrivTmpl)
+  -- Private-side exponent alone also plans.
+  assertEqual "private-side exponent" (Right (Just (GenRsa 2048 3)))
+    (argsOf rsaPubTmpl (withExp rsaPrivTmpl (BS.pack [3])))
+  -- Disagreement refuses.
+  assertEqual "exponent disagreement" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withExp rsaPubTmpl (BS.pack [1, 0, 1]))
+      (withExp rsaPrivTmpl (BS.pack [3])))
+  -- Even exponents refuse.
+  assertEqual "even exponent" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withExp rsaPubTmpl (BS.pack [4])) rsaPrivTmpl)
+  -- Overlong exponents refuse.
+  assertEqual "overlong exponent" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withExp rsaPubTmpl (BS.replicate 9 1)) rsaPrivTmpl)
+
+caseRsaStampMismatch :: IO ()
+caseRsaStampMismatch = do
+  m0 <- seedModel
+  st <- getSession m0
+  let n = BS.pack [1, 2, 3]
+      n2 = BS.pack [4, 5, 6]
+      e = BS.pack [1, 0, 1]
+      tiny = BS.pack [7]
+      pubM = rsaPublicDer n e
+      privM = rsaPrivateDer n e tiny tiny tiny tiny tiny tiny
+      privM2 = rsaPrivateDer n2 e tiny tiny tiny tiny tiny tiny
+      pub = pendingFromAttrs st (Map.fromList rsaPubTmpl)
+      priv = pendingFromAttrs st (Map.fromList rsaPrivTmpl)
+  case stampPairComponents pub priv pubM privM of
+    Just (pub', _) -> assertEqual "modulus stamped"
+      (Just (ValBytes n)) (Map.lookup AttrModulus (poAttrs pub'))
+    Nothing -> assertFailure "matching halves must stamp"
+  assertEqual "mismatched halves refuse" Nothing
+    (stampPairComponents pub priv pubM privM2)
+  assertEqual "garbage refuses" Nothing
+    (stampPairComponents pub priv "nope" "nope")
+  -- Non-RSA pairs pass through untouched (EC keeps its HKS1 halves).
+  let ecPub = pendingFromAttrs st (Map.fromList ecPubTmpl)
+      ecPriv = pendingFromAttrs st (Map.fromList ecPrivTmpl)
+  assertEqual "EC passthrough" (Just (ecPub, ecPriv))
+    (stampPairComponents ecPub ecPriv "pub" "priv")
 
 caseWrapRoundtrip :: IO ()
 caseWrapRoundtrip = withSynth $ \answer -> do
@@ -1623,6 +1788,45 @@ caseRealEcKeygen = withRealEnv $ \env -> do
         EngineFail err -> assertFailure ("real verify failed: " ++ show err)
     _ -> assertFailure "real EC halves lack material"
 
+caseRealRsaKeygen :: IO ()
+caseRealRsaKeygen = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, pubH, privH) <- case planGenerateKeyPair defaultRules m0 st rsaKeyPairGenMech rsaPubTmpl rsaPrivTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 2
+      h1 <- handleOf (pcOutputs c !! 0)
+      h2 <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      pure (m', h1, h2)
+    other -> assertFailure ("RSA plan is not an effect: " ++ show other) >> undefined
+  Just pub <- pure (resolveHandle m1 pubH)
+  Just priv <- pure (resolveHandle m1 privH)
+  -- The native halves carry real DER; stamped components match.
+  case (keyBytesOf pub, keyBytesOf priv) of
+    (Just pubB, Just privB) -> do
+      assertBool "real pub DER nonempty" (not (BS.null pubB))
+      assertBool "real priv DER nonempty" (not (BS.null privB))
+      assertBool "halves differ" (pubB /= privB)
+      case Map.lookup AttrModulus (osAttrs pub) of
+        Just (ValBytes n) -> assertEqual "real modulus length" 256 (BS.length n)
+        other -> assertFailure ("real pub lacks modulus: " ++ show other)
+      assertEqual "real default exponent"
+        (Just (ValBytes (BS.pack [1, 0, 1])))
+        (Map.lookup AttrPublicExponent (osAttrs pub))
+      -- The generated pair really signs: RSA v1.5 roundtrip at the backend.
+      sres <- sign env (SigRSA_PKCS1v15 D_SHA256) (KeyDer privB) "rsa-msg"
+      sig <- case sres of
+        EngineOk s -> pure s
+        EngineFail err -> assertFailure ("real sign failed: " ++ show err) >> undefined
+      vres <- verify env (SigRSA_PKCS1v15 D_SHA256) (KeyDer pubB) "rsa-msg" sig
+      case vres of
+        EngineOk () -> pure ()
+        EngineFail err -> assertFailure ("real verify failed: " ++ show err)
+    _ -> assertFailure "real RSA halves lack material"
+
 caseRealWrapVector :: IO ()
 caseRealWrapVector = withRealEnv $ \env -> do
   m0 <- seedModel >>= loginUser
@@ -1784,8 +1988,6 @@ caseRealUnsupported = withRealEnv $ \env -> do
     , (AttrToken, ValBool False)
     , (AttrEncapsulate, ValBool True)
     ] "not-a-real-kem-key"
-  -- RSA keygen: planned, honestly refused by the real backend.
-  expectUnsupported m1 (planGenerateKeyPair defaultRules m1 st rsaKeyPairGenMech rsaPubTmpl rsaPrivTmpl)
   -- AES keygen: real via the native DRBG surface; one
   -- object lands carrying 32 fresh bytes.
   case planGenerateKey defaultRules m1 st aesKeyGenMech (aesTmpl 32) of

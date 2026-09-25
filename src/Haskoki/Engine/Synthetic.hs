@@ -95,6 +95,14 @@ import Haskoki.Engine.Backend
   , SigSpec (..)
   , UnsaveableReason (..)
   )
+import Haskoki.Der
+  ( RsaCrt (..)
+  , integerToBE
+  , parseRsaPrivate
+  , parseRsaPublic
+  , rsaPrivateDer
+  , rsaPublicDer
+  )
 import qualified Haskoki.Engine.Backend as B
 import Haskoki.Operation.KeyManagement
   (genericSecretKeygenMaxBytes, genericSecretKeygenMinBytes)
@@ -522,6 +530,13 @@ instance CryptoBackend Synthetic where
         | ecCurve ec == "P-256" -> pure (B.EngineOk (genPair seed ctr))
         | otherwise -> pure (B.EngineFail
             (BackendUnsupported "generateKey" ("not in synthetic set: " ++ show spec)))
+      GenRSA bits e
+        | bits `elem` [2048, 3072, 4096]
+        , e >= 3, odd e, e < 256 ^ (8 :: Int) ->
+            pure (B.EngineOk (genRsaPair seed ctr bits e))
+        | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
+            ("RSA keygen needs 2048/3072/4096 bits and an odd exponent 3..2^64-1: "
+              ++ show spec)))
       GenMLKEM alg -> pure (B.EngineOk (genKemPair seed ctr alg))
       _ -> pure (B.EngineFail
         (BackendUnsupported "generateKey" ("not in synthetic set: " ++ show spec)))
@@ -669,7 +684,7 @@ synthCaps = BackendCaps
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 66-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC P-256 pairs; GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC P-256 pairs; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -860,6 +875,7 @@ genSupported _ spec = case spec of
   GenSym "HOTP" _ -> Nothing
   GenSym "GENERIC" _ -> Nothing
   GenEC ec | ecCurve ec == "P-256" -> Nothing
+  GenRSA {} -> Nothing
   GenMLKEM _ -> Nothing
   _ -> Just ("keygen not in synthetic set: " ++ show spec)
 
@@ -891,11 +907,23 @@ genPair seed ctr = (KeyDer priv, Just (KeyDer pub))
     pub = "HKS1" <> pairId <> BS.singleton 1 <> pubM
 
 -- | The signing identity: pair halves sign under the shared pair
--- identity, raw keys under their own bytes.
+-- identity, RSA DER halves under their shared modulus, raw keys
+-- under their own bytes. The modulus rule lets generated RSA
+-- pairs roundtrip sign/verify (both halves carry n) while every
+-- distinct key still owns a distinct identity.
 signIdentity :: ByteString -> ByteString
 signIdentity kb = case pairIdOf kb of
   Just pid -> pid
-  Nothing -> kb
+  Nothing -> case rsaModulusOf kb of
+    Just n -> n
+    Nothing -> kb
+
+-- | The RSA modulus when the bytes are an RSA SPKI or PKCS#8
+-- half (either side of a generated or planted pair).
+rsaModulusOf :: ByteString -> Maybe ByteString
+rsaModulusOf kb = case parseRsaPublic kb of
+  Just (n, _) -> Just n
+  Nothing -> crtN <$> parseRsaPrivate kb
 
 -- | Parse a generated pair half back to its pair identity (strict:
 -- exact 69 bytes, magic, role 0 or 1).
@@ -925,6 +953,36 @@ genKemPair seed ctr alg = (KeyDer priv, Just (KeyDer pub))
       (frame ["haskoki-synth/kem-pair-pub/v1", tag]) 32
     priv = "HKS2" <> tag <> pairId <> BS.singleton 0 <> privM
     pub = "HKS2" <> tag <> pairId <> BS.singleton 1 <> pubM
+
+-- | A deterministic test RSA pair: well-formed PKCS#8/SPKI DER
+-- around PRF-drawn components (NOT real RSA math; the fixed
+-- construction is what makes model tests replay). Both halves
+-- share the modulus, so 'signIdentity' unites them for
+-- sign/verify roundtrips exactly like the @HKS1@ pair identity
+-- does for EC. The exponent is the requested one in minimal
+-- big-endian form; primes and CRT parts are top-bit-set PRF
+-- bytes at the standard widths.
+genRsaPair :: Word64 -> Word64 -> Int -> Integer -> (KeyMaterial, Maybe KeyMaterial)
+genRsaPair seed ctr bits e = (KeyDer priv, Just (KeyDer pub))
+  where
+    nLen = bits `div` 8
+    halfLen = bits `div` 16
+    base = frame ["haskoki-synth/rsa-pair/v1", word64BE seed, word64BE ctr,
+      word64BE (fromIntegral bits), integerToBE e]
+    comp label len = topBit (prfBytes (base <> label) len)
+    n = comp "n" nLen
+    eBs = integerToBE e
+    d = comp "d" nLen
+    p = comp "p" halfLen
+    q = comp "q" halfLen
+    dp = comp "dp" halfLen
+    dq = comp "dq" halfLen
+    qi = comp "qinv" halfLen
+    priv = rsaPrivateDer n eBs d p q dp dq qi
+    pub = rsaPublicDer n eBs
+    topBit bs = case BS.uncons bs of
+      Just (b, rest) -> BS.cons (b .|. 0x80) rest
+      Nothing -> bs
 
 -- | Parse a KEM half back to its parameter set, pair identity and
 -- role (strict: exact 70 bytes, @HKS2@ magic, known set, role 0/1).

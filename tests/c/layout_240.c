@@ -320,7 +320,7 @@ int main(int argc, char **argv) {
         (unsigned long)rv, (unsigned long)count);
   count = 0;
   rv = p11->C_GetMechanismList(0, NULL, &count);
-  CHECK(rv == CKR_OK && count == 105,
+  CHECK(rv == CKR_OK && count == 106,
         "C_GetMechanismList post-init rv=%lu n=%lu",
         (unsigned long)rv, (unsigned long)count);
   rv = p11->C_GetMechanismList(99, NULL, &count);
@@ -338,7 +338,7 @@ int main(int argc, char **argv) {
     CHECK(rv == CKR_OK && (minfo.flags & CKF_DIGEST) != 0,
           "C_GetMechanismInfo rv=%lu flags=0x%lx",
           (unsigned long)rv, (unsigned long)minfo.flags);
-    rv = p11->C_GetMechanismInfo(0, CKM_RSA_PKCS_KEY_PAIR_GEN, &minfo);
+    rv = p11->C_GetMechanismInfo(0, CKM_RSA_X9_31_KEY_PAIR_GEN, &minfo);
     CHECK(rv == CKR_MECHANISM_INVALID, "C_GetMechanismInfo bad mech rv=%lu",
           (unsigned long)rv);
     /* NULL out-param is ARGUMENTS_BAD; a real open yields a live RW

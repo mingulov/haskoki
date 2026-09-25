@@ -276,7 +276,6 @@ caseUnsupportedRest = withSynth "11" $ \env -> do
     pkeyEncrypt env (OaepParams D_SHAKE128 D_SHA256 BS.empty) key32 "m"
   expectUnsupported "pkeyDecrypt xof" =<<
     pkeyDecrypt env (OaepParams D_SHA256 D_SHAKE256 BS.empty) key32 "c"
-  expectUnsupported "generateKey rsa" =<< generateKey env (GenRSA 2048 65537)
   expectUnsupported "generateKey mldsa" =<< generateKey env (GenMLDSA ML_DSA_65)
   expectUnsupported "generateKey slhdsa" =<< generateKey env (GenSLHDSA SLH_DSA_SHA2_128s)
   expectResourceGone "exportKey unknown" =<<
@@ -648,7 +647,20 @@ caseKeygen = do
   assertBool "ec deterministic across same-seed backends" (priv == privB && pub == pubB)
   assertBool "halves differ" (priv /= pub)
   expectUnsupported "p384 gen" =<< generateKey envD (GenEC (EcSpec "P-384" "DER"))
-  mapM_ closeBackend [envA, envB, envC, envD, envE]
+  -- RSA: deterministic DER pairs replay bit-for-bit across
+  -- same-seed backends; bounds refuse as bad params.
+  envF <- openSynth "11"
+  envG <- openSynth "11"
+  (KeyDer rpriv, Just (KeyDer rpub)) <- expectOk "gen rsa" =<<
+    generateKey envF (GenRSA 2048 65537)
+  (KeyDer rprivB, Just (KeyDer rpubB)) <- expectOk "gen rsa b" =<<
+    generateKey envG (GenRSA 2048 65537)
+  assertBool "rsa deterministic across same-seed backends"
+    (rpriv == rprivB && rpub == rpubB)
+  assertBool "rsa halves differ" (rpriv /= rpub)
+  expectBadParam "rsa-1024 refused" =<< generateKey envF (GenRSA 1024 65537)
+  expectBadParam "rsa even exponent refused" =<< generateKey envF (GenRSA 2048 4)
+  mapM_ closeBackend [envA, envB, envC, envD, envE, envF, envG]
 
 caseRegistry :: IO ()
 caseRegistry = withSynth "11" $ \env -> do
@@ -1588,8 +1600,7 @@ caseHotp = withSynth "13" $ \env -> do
 -- stateful exhaustion (sign\/verify\/keygen), unknown-semantics and
 -- historical specials, absent-provider primitives, unmapped
 -- surfaces, and both recovery effects. Backends never see these
--- effects (driver-otherwise), except RSA pairgen, which reaches
--- the backend and pins its missing GenRSA route.
+-- effects (driver-otherwise).
 caseSpecialsRefuse :: IO ()
 caseSpecialsRefuse = withSynth "15" $ \env -> do
   let kOid = ObjectId 91
@@ -1636,10 +1647,6 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   refused "derive DH" (FxDerive (mech "CKM_DH_PKCS_DERIVE") (Just kOid) BS.empty BS.empty 32)
   refused "wrap AES_KW"
     (FxWrap (mech "CKM_AES_KEY_WRAP") (Just kOid) BS.empty "0123456789abcdef")
-  -- RSA pairgen reaches the backend and pins its missing GenRSA
-  -- route (planner+driver exist; no backend serves it).
-  refused "keygen RSA pair"
-    (keygen "CKM_RSA_PKCS_KEY_PAIR_GEN" (GenRsa 2048 65537))
   -- Recovery effects refuse on synthetic exactly as on real.
   refused "sign-recover"
     (FxSignRecover (mech "CKM_SHA256_HMAC") (Just kOid) BS.empty BS.empty 4)

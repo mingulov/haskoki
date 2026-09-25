@@ -77,7 +77,7 @@ spec = testGroup "openssl4 engine"
   , testCase "ECDH agreement KATs (CLI vectors)" caseEcdhVectors
   , testCase "raw-vs-der encodings never convert silently" caseRawVsDer
   , testCase "Symmetric keygen (fresh random bytes)" caseSymKeygen
-  , testCase "RSA keygen honestly unsupported (spec row)" caseRsaKeygenUnsupported
+  , testCase "RSA keygen mints DER halves in bounds" caseRsaKeygen
   , testCase "Random bytes (fresh DRBG output)" caseRandomBytes
   , testCase "seedRandom mixes, randomBytes unaffected" caseSeedRandomMix
   , testCase "Seed entropy estimate pinned at 0.0" caseSeedEntropyHonesty
@@ -1081,14 +1081,20 @@ caseSymKeygen = withBackend $ \env -> do
   expectUnsupported "des keygen out" =<< generateKey env (GenSym "DES" 8)
   expectUnsupported "ml-kem keygen out" =<< generateKey env (GenMLKEM ML_KEM_768)
 
-caseRsaKeygenUnsupported :: IO ()
-caseRsaKeygenUnsupported = withBackend $ \env -> do
-  -- The spec row stays unsupported-with-reason (no reviewed
-  -- prime-generation rules; synthetic has no GenRSA, so behavior
-  -- can never promote): the real backend refuses without
-  -- fallback, and the C surface reports CKR_MECHANISM_INVALID.
-  expectUnsupported "rsa-2048 out" =<< generateKey env (GenRSA 2048 65537)
-  expectUnsupported "rsa-3072 out" =<< generateKey env (GenRSA 3072 65537)
+caseRsaKeygen :: IO ()
+caseRsaKeygen = withBackend $ \env -> do
+  -- The real backend mints PKCS#8/SPKI DER halves (no KAT
+  -- possible for randomized generation; lengths pin the shape).
+  (KeyDer priv, Just (KeyDer pub)) <- expectOk "rsa-2048 mints" =<<
+    generateKey env (GenRSA 2048 65537)
+  assertBool "priv PKCS#8 length" (BS.length priv >= 1180 && BS.length priv <= 1250)
+  assertBool "pub SPKI length" (BS.length pub >= 280 && BS.length pub <= 310)
+  assertBool "halves differ" (priv /= pub)
+  assertEqual "priv framing" (BS.singleton 0x30) (BS.take 1 priv)
+  assertEqual "pub framing" (BS.singleton 0x30) (BS.take 1 pub)
+  -- Bounds mirror the key planner (bad params, never silent).
+  expectBadParam "rsa-1024 refused" =<< generateKey env (GenRSA 1024 65537)
+  expectBadParam "rsa even exponent refused" =<< generateKey env (GenRSA 2048 4)
 
 caseRandomBytes :: IO ()
 caseRandomBytes = withBackend $ \env -> do

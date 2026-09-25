@@ -140,32 +140,33 @@ caseAliases = do
 caseCatalogOnly :: IO ()
 caseCatalogOnly = do
   let reg = curatedRegistry
-      rsa = MechanismId 0x0
+      x931 = MechanismId 0xa
       gcm = MechanismId 0x1087
       -- Even with engine support present, catalog-only rows stay down.
       caps :: EngineCapabilities
       caps = mkCapabilities
-        [ (rsa, OpGenerateKeyPair)
+        [ (x931, OpGenerateKeyPair)
         , (gcm, OpEncrypt)
         , (gcm, OpDecrypt)
         ]
-  assertEqual "rsa catalog-only" StatusCatalogOnly (describeStatus reg rsa)
+  assertEqual "x931 catalog-only" StatusCatalogOnly (describeStatus reg x931)
   assertEqual "gcm catalog-only" StatusCatalogOnly (describeStatus reg gcm)
-  assertEqual "rsa no behavior" Nothing (lookupBehavior reg rsa)
-  assertBool "rsa not executable"
-    (not (isExecutable reg caps rsa OpGenerateKeyPair))
+  assertEqual "x931 no behavior" Nothing (lookupBehavior reg x931)
+  assertBool "x931 not executable"
+    (not (isExecutable reg caps x931 OpGenerateKeyPair))
   assertBool "gcm not executable"
     (not (isExecutable reg caps gcm OpEncrypt))
   -- But they are still listed in the catalog projection: they remain
   -- in the coverage denominator.
-  assertBool "rsa listed" (rsa `elem` mechanismList reg)
+  assertBool "x931 listed" (x931 `elem` mechanismList reg)
   assertBool "gcm listed" (gcm `elem` mechanismList reg)
 
 caseCurated :: IO ()
 caseCurated = do
   let reg = curatedRegistry
   assertEqual "behavior population"
-    [ MechanismId Gen.ckm_RSA_PKCS
+    [ MechanismId Gen.ckm_RSA_PKCS_KEY_PAIR_GEN
+    , MechanismId Gen.ckm_RSA_PKCS
     , MechanismId Gen.ckm_MD5_RSA_PKCS
     , MechanismId Gen.ckm_SHA1_RSA_PKCS
     , MechanismId Gen.ckm_RIPEMD160_RSA_PKCS
@@ -293,7 +294,7 @@ caseCurated = do
 
 caseJsonProjection :: IO ()
 caseJsonProjection = do
-  -- The reviewed head stays pinned verbatim; the 460 generated
+  -- The reviewed head stays pinned verbatim; the 356 generated
   -- catalog-only rows are pinned by count + full file equality (the
   -- file is generator output; equality proves the Haskell registry
   -- matches the JSON catalog byte-for-byte, and
@@ -312,11 +313,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 107 behavior + 357 catalog-only + catalog line.
+  -- schema + 108 behavior + 356 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 107
+  assertEqual "behavior line count" 108
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 357
+  assertEqual "catalog-only line count" 356
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -382,6 +383,7 @@ caseKeyMgmtPromoted = do
   -- catalog-only to supported, with executable routes under caps.
   let cases =
         [ (MechanismId 0x1040, "CKM_EC_KEY_PAIR_GEN", [OpGenerateKeyPair])
+        , (MechanismId 0x0, "CKM_RSA_PKCS_KEY_PAIR_GEN", [OpGenerateKeyPair])
         , (MechanismId 0x0f, "CKM_ML_KEM_KEY_PAIR_GEN", [OpGenerateKeyPair])
         , (MechanismId 0x402a, "CKM_HKDF_DERIVE", [OpDerive])
         , (MechanismId 0x17, "CKM_ML_KEM", [OpEncapsulate, OpDecapsulate])
@@ -631,7 +633,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 357 (length invIds)
+  assertEqual "guard covers every catalog row" 356 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of
@@ -647,7 +649,7 @@ caseSpecialsCatalogOnly :: IO ()
 caseSpecialsCatalogOnly = do
   -- S15: one named representative per reviewed gap group stays
   -- catalog-only with its headline operation refused under
-  -- granted caps (the exhaustive guard above covers all 357;
+  -- granted caps (the exhaustive guard above covers all 356;
   -- this table documents the groups for humans).
   let reg = curatedRegistry
       reps =
@@ -665,7 +667,7 @@ caseSpecialsCatalogOnly = do
         , ("CKM_TLS_PRF", OpDerive)
         , ("CKM_AES_KEY_WRAP", OpWrap)
         , ("CKM_DH_PKCS_DERIVE", OpDerive)
-        , ("CKM_RSA_PKCS_KEY_PAIR_GEN", OpGenerateKeyPair)
+        , ("CKM_RSA_X9_31_KEY_PAIR_GEN", OpGenerateKeyPair)
         , ("CKM_NULL", OpDigest)
         , ("CKM_VENDOR_DEFINED", OpDigest)
         ]

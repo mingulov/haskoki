@@ -37,6 +37,7 @@ module Haskoki.Operation.KeyManagement
   , PendingWork (..)
   , publishPending
   , finishWork
+  , stampPairComponents
   , keyPairCompatible
     -- * Object reading
   , keyBytesOf
@@ -107,6 +108,7 @@ import Haskoki.Attribute.Generated
   , mustClassId
   , mustKeyTypeId
   )
+import Haskoki.Der (RsaCrt (..), parseRsaPrivate, parseRsaPublic)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState (..))
 import Haskoki.Object
   ( RuleDeny (..)
@@ -361,7 +363,10 @@ finishWork :: Model -> SessionState -> PendingWork -> CryptoResult -> PlanResult
 finishWork model st pw res = case (pw, res) of
   (PwGeneratePair pub priv, GotBytes bs) -> case decodeKeyPair bs of
     Just (privM, Just pubM) ->
-      publish (storeMaterial pubM pub) (storeMaterial privM priv)
+      case stampPairComponents pub priv pubM privM of
+        Just (pub', priv') ->
+          publish (storeMaterial pubM pub') (storeMaterial privM priv')
+        Nothing -> internal "keypair answer material fails component decode"
     _ -> internal "keypair answer is not a framed private/public pair"
   (PwEncaps sec ctLen ssLen, GotBytes bs)
     | BS.length bs == ctLen + ssLen ->
@@ -464,6 +469,36 @@ finishWork model st pw res = case (pw, res) of
 -- | Store driver-supplied key material on a pending object.
 storeMaterial :: ByteString -> PendingObject -> PendingObject
 storeMaterial mat po = po { poAttrs = Map.insert AttrValue (ValBytes mat) (poAttrs po) }
+
+-- | Stamp keygen components back onto a pending pair. Reads serve
+-- stored attributes only (no decode-on-read path), so an RSA pair
+-- must carry its CRT components: the public half gets the modulus
+-- and exponent, the private half all eight PKCS#1 parts. The two
+-- DER halves must agree on (n, e); any parse failure or mismatch
+-- is 'Nothing' (the finisher rejects with zero objects). Other key
+-- types pass through untouched.
+stampPairComponents
+  :: PendingObject -> PendingObject -> ByteString -> ByteString
+  -> Maybe (PendingObject, PendingObject)
+stampPairComponents pub priv pubM privM
+  | Map.lookup AttrKeyType (poAttrs pub) /= Just (ValULong ckkRsa) =
+      Just (pub, priv)
+  | otherwise = do
+      (n, e) <- parseRsaPublic pubM
+      crt <- parseRsaPrivate privM
+      guard (crtN crt == n && crtE crt == e)
+      let pubA = Map.insert AttrModulus (ValBytes n)
+            (Map.insert AttrPublicExponent (ValBytes e) (poAttrs pub))
+          privA = Map.insert AttrModulus (ValBytes n)
+            (Map.insert AttrPublicExponent (ValBytes e)
+            (Map.insert AttrPrivateExponent (ValBytes (crtD crt))
+            (Map.insert AttrPrime1 (ValBytes (crtP crt))
+            (Map.insert AttrPrime2 (ValBytes (crtQ crt))
+            (Map.insert AttrExponent1 (ValBytes (crtDp crt))
+            (Map.insert AttrExponent2 (ValBytes (crtDq crt))
+            (Map.insert AttrCoefficient (ValBytes (crtQinv crt))
+              (poAttrs priv))))))))
+      Just (pub { poAttrs = pubA }, priv { poAttrs = privA })
 
 -- | Split concatenated derived material at the planned lengths.
 splitLens :: [Int] -> ByteString -> [ByteString]
@@ -671,11 +706,14 @@ checkKeyTemplateAny wantClass defaultKey tmpl =
             "template key type is malformed")
     _ -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE "template is missing the class")
 
--- | Build a pending object from validated attributes: the token flag
--- decides the lifetime owner, the calling session the home slot.
+-- | Pending object from validated template attributes: the token
+-- flag decides the lifetime owner, the calling session the home
+-- slot. Generation parameters that are not stored key attributes
+-- (@AttrModulusBits@) are dropped; everything else carries over
+-- verbatim.
 pendingFromAttrs :: SessionState -> Map AttributeType AttributeValue -> PendingObject
 pendingFromAttrs st attrs = PendingObject
-  { poAttrs = attrs
+  { poAttrs = Map.delete AttrModulusBits attrs
   , poOwner =
       if Map.lookup AttrToken attrs == Just (ValBool True)
         then Nothing
@@ -865,7 +903,8 @@ planGenerateKeyPair rules model st mech pubT privT =
       | mech == rsaKeyPairGenMech =
           withPair st mech ckkRsa pubT privT $ \pubA privA -> do
             bits <- rsaBitsOf pubA privA
-            pure (GenRsa bits 65537, pubA, privA)
+            e <- rsaExponentOf pubA privA
+            pure (GenRsa bits e, pubA, privA)
       | otherwise =
           Left (KeyDeny CKR_MECHANISM_INVALID
             ("not a key-pair mechanism: " ++ show mech))
@@ -949,10 +988,51 @@ ecCurveOf pubA privA = case Map.lookup AttrEcParams pubA of
   Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
     "EC keypair templates must name the curve")
 
+-- | The RSA public exponent for a pair: the public template's
+-- @AttrPublicExponent@ when present (big-endian bytes, must decode
+-- to an odd integer >= 3), else the 65537 default. A private
+-- exponent must agree when present.
+rsaExponentOf
+  :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+  -> Either KeyDeny Integer
+rsaExponentOf pubA privA = case Map.lookup AttrPublicExponent pubA of
+  Just (ValBytes bs) -> case bytesToInteger bs of
+    Just e
+      | e >= 3 && odd e -> case Map.lookup AttrPublicExponent privA of
+          Nothing -> Right e
+          Just (ValBytes bs')
+            | bytesToInteger bs' == Just e -> Right e
+            | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                "keypair templates disagree on the public exponent")
+          Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            "private public exponent is malformed")
+      | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          "public exponent must be odd and >= 3")
+    Nothing -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+      "public exponent is malformed")
+  Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+    "public exponent is malformed")
+  Nothing -> case Map.lookup AttrPublicExponent privA of
+    Nothing -> Right 65537
+    Just (ValBytes bs) -> case bytesToInteger bs of
+      Just e
+        | e >= 3 && odd e -> Right e
+        | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            "public exponent must be odd and >= 3")
+      Nothing -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        "public exponent is malformed")
+    Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+      "public exponent is malformed")
+
+-- | Big-endian bytes to an integer; empty input decodes to 0.
+bytesToInteger :: ByteString -> Maybe Integer
+bytesToInteger bs
+  | BS.length bs > 8 = Nothing
+  | otherwise = Just (BS.foldl' (\acc b -> acc * 256 + fromIntegral b) 0 bs)
+
 -- | The RSA modulus size for a pair: @AttrModulusBits@ is required
 -- in the public template, the private template inherits it when
--- absent and must agree when present. The public exponent is fixed
--- at 65537 (no exponent attribute in the key inventory).
+-- absent and must agree when present.
 rsaBitsOf
   :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
   -> Either KeyDeny Int

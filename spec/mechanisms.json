@@ -12,17 +12,21 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Catalog-only: no reviewed parameter/prime-generation rules yet, so no behavior descriptor and no synthetic execution. Key-size bounds stay 0/0 (unspecified) until reviewed. Real unsupported-with-reason: no RSA keygen route in the backend surface; behavior/synthetic stay planned.",
+      "notes": "pairgen (templates via the template rules; 2048/3072/4096 bits via rsaBitsOf, odd exponent >= 3 defaulting to 65537 via rsaExponentOf; GenRsa). Real execution pinned by KeyManagementSpec caseRealRsaKeygen (fresh keys sign/verify; components stamped by stampPairComponents; no KAT possible for randomized generation). Synthetic execution is deterministic DER around PRF components. Bounds 0/0 unspecified (discrete sizes).",
       "numeric_id": "0x00000000",
       "routes": [
         {
           "acceptance_cases": [
-            "A41"
+            "A20",
+            "A37"
           ],
-          "key_constraints": [],
+          "key_constraints": [
+            "bits-2048-3072-4096",
+            "odd-exponent"
+          ],
           "operation": "generate-key-pair",
-          "output_rule": "unimplemented",
-          "parameter_codec": "none/0"
+          "output_rule": "synthetic-rsa-pair/v1",
+          "parameter_codec": "no-params/1"
         }
       ],
       "source_refs": [
@@ -33,12 +37,38 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "real": "tested",
         "recovery": "not-applicable",
-        "synthetic": "planned"
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "key-generation",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

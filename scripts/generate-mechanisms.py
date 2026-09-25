@@ -352,7 +352,17 @@ def main():
     # real-tested projection of the rows just written).
     inc_text = mech_catalog.render_inc(
         mech_catalog.real_tested_rows(doc["mechanisms"]))
+    inc_before = (mech_catalog.INC_PATH.read_text()
+                  if mech_catalog.INC_PATH.exists() else None)
     mech_catalog.INC_PATH.write_text(inc_text)
+    # Cabal does not track the .inc as a dependency of its C
+    # consumer, so a changed catalog would link stale (the .so
+    # keeps serving the old count). Touch the consumer when the
+    # bytes moved, forcing a rebuild of standard_surface.o.
+    if inc_text != inc_before:
+        surf = REPO / "cbits" / "standard_surface.c"
+        surf.touch()
+        print(f"touched {surf} (catalog changed)")
     # Family histogram to stdout (review aid, not a file).
     hist = {}
     specials = []

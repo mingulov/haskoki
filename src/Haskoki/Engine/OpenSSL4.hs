@@ -62,6 +62,7 @@ import Foreign.ForeignPtr (ForeignPtr, finalizeForeignPtr, newForeignPtr, withFo
 import Foreign.Ptr (Ptr, nullPtr)
 
 import qualified Haskoki.FFI.OpenSSL4.Raw as Raw
+import Haskoki.Der (integerToBE)
 import Haskoki.Engine.Backend
 import Haskoki.Recipe.Ecdh (ecdhPeerCurve)
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
@@ -366,6 +367,18 @@ instance CryptoBackend OpenSSL4 where
     case r of
       Left code -> nativeFail "generateKey" code
       Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
+  -- RSA keygen bounds mirror the key planner (2048/3072/4096
+  -- bits, odd exponent >= 3); the native call enforces the same
+  -- window again.
+  generateKey be spec@(GenRSA bits e) = runGuarded be "generateKey" (genSupported be spec) $ \env ->
+    case rsaLenOk bits e of
+      Just why -> pure (EngineFail (BackendBadParam "generateKey" why))
+      Nothing -> do
+        r <- withForeignPtr (osslEnv env) $ \_ ->
+          Raw.rsaGen (osslCtx env) bits (integerToBE e) (osslPropQ env)
+        case r of
+          Left code -> nativeFail "generateKey" code
+          Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   -- Symmetric keygen is libctx DRBG bytes (bounds mirror
   -- the key planner: AES 16/24/32, HOTP 16..64, GENERIC 1..255).
   generateKey be spec@(GenSym alg n) = runGuarded be "generateKey" (genSupported be spec) $ \env ->
@@ -791,7 +804,21 @@ genSupported (OSSL4Backend env) spec
   , Set.member (ecCurve ec) (scCurves (bcSigs (osslCaps env))) = Nothing
   | GenSym alg _ <- spec
   , alg `elem` ["AES", "HOTP", "GENERIC"] = Nothing
+  | GenRSA {} <- spec
+  , Set.member "RSA-PSS" (scSpecs (bcSigs (osslCaps env))) = Nothing
   | otherwise = Just ("keygen not in set: " ++ show spec)
+
+-- | RSA keygen bounds: the key planner's window (2048/3072/4096
+-- bits, odd exponent >= 3). 'Nothing' when the pair may execute.
+rsaLenOk :: Int -> Integer -> Maybe String
+rsaLenOk bits e
+  | bits `notElem` [2048, 3072, 4096] =
+      Just ("RSA keygen bits must be 2048, 3072 or 4096: " ++ show bits)
+  | e < 3 || even e =
+      Just ("RSA keygen exponent must be odd and >= 3: " ++ show e)
+  | otherwise = Nothing
+
+
 
 -- | Symmetric keygen bounds: the key planner's windows.
 -- 'Nothing' when the (algorithm, length) may execute.

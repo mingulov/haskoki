@@ -25,6 +25,7 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/param_build.h>
+#include <openssl/x509.h>
 #include <openssl/provider.h>
 #include <openssl/rand.h>
 #include <openssl/rsa.h>
@@ -440,6 +441,74 @@ int hsk_ossl4_ec_gen(OSSL_LIB_CTX *ctx, const char *groupname,
     if (!EVP_PKEY_generate(pctx, &pkey))
         goto end;
     privlen = i2d_PrivateKey(pkey, &priv);
+    publen = i2d_PUBKEY(pkey, &pub);
+    if (privlen <= 0 || publen <= 0) {
+        OPENSSL_free(priv);
+        OPENSSL_free(pub);
+        goto end;
+    }
+    *priv_der = priv;
+    *priv_len = (size_t)privlen;
+    *pub_der = pub;
+    *pub_len = (size_t)publen;
+    rc = HSK_OSSL4_OK;
+
+end:
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(pctx);
+    return rc;
+}
+
+/* --- RSA keygen ------------------------------------------------------- */
+
+int hsk_ossl4_rsa_gen_keypair(OSSL_LIB_CTX *ctx, int bits,
+                              const unsigned char *e_be, size_t e_len,
+                              const char *propq, unsigned char **priv_der,
+                              size_t *priv_len, unsigned char **pub_der,
+                              size_t *pub_len)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *pkey = NULL;
+    OSSL_PARAM params[3];
+    unsigned char *priv = NULL, *pub = NULL;
+    int privlen = 0, publen = 0;
+    int rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || e_be == NULL || e_len == 0 || e_len > 8 ||
+        propq == NULL || priv_der == NULL || priv_len == NULL ||
+        pub_der == NULL || pub_len == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (bits != 2048 && bits != 3072 && bits != 4096)
+        return HSK_OSSL4_ERR_BADPARAM;
+    if ((e_be[e_len - 1] & 1) == 0)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pctx = EVP_PKEY_CTX_new_from_name(ctx, "RSA", propq);
+    if (pctx == NULL)
+        goto end;
+    if (!EVP_PKEY_keygen_init(pctx))
+        goto end;
+    params[0] = OSSL_PARAM_construct_int(OSSL_PKEY_PARAM_RSA_BITS, &bits);
+    params[1] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_RSA_E,
+                                        (unsigned char *)e_be, e_len);
+    params[2] = OSSL_PARAM_construct_end();
+    if (!EVP_PKEY_CTX_set_params(pctx, params)) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    if (!EVP_PKEY_generate(pctx, &pkey))
+        goto end;
+    /* PKCS#8 explicitly: i2d_PrivateKey prefers the traditional
+     * (PKCS#1) encoding for RSA, but the house convention (and the
+     * keygen stamping that parses these bytes) is PKCS#8. */
+    {
+        PKCS8_PRIV_KEY_INFO *p8 = EVP_PKEY2PKCS8(pkey);
+        if (p8 == NULL)
+            goto end;
+        privlen = i2d_PKCS8_PRIV_KEY_INFO(p8, &priv);
+        PKCS8_PRIV_KEY_INFO_free(p8);
+    }
     publen = i2d_PUBKEY(pkey, &pub);
     if (privlen <= 0 || publen <= 0) {
         OPENSSL_free(priv);

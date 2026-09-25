@@ -116,12 +116,29 @@ long hsk_ossl4_cipher_cbc(OSSL_LIB_CTX *ctx, const char *ciphername,
                           const unsigned char *in, size_t inlen,
                           unsigned char **out);
 
-/* --- EC keygen (PKCS#8 + SPKI DER out) -------------------------------- */
+/* --- EC keygen (SEC1-traditional + SPKI DER out) ---------------------- */
+/* NOTE: the private half is traditional SEC1 (i2d_PrivateKey
+ * prefers the traditional encoding), NOT PKCS#8 as the import
+ * path ('ecPrivateDer') assembles. Every consumer re-imports
+ * through d2i auto-detection, so the split is invisible today;
+ * unifying on PKCS#8 needs an oracle length/format audit first
+ * (CKA_VALUE reads serve these bytes verbatim). */
 
 int hsk_ossl4_ec_gen(OSSL_LIB_CTX *ctx, const char *groupname,
                      const char *propq, unsigned char **priv_der,
                      size_t *priv_len, unsigned char **pub_der,
                      size_t *pub_len);
+
+/* --- RSA keygen (PKCS#8 + SPKI DER out) ------------------------------- */
+
+/* bits in {2048, 3072, 4096}, e_len/e_be the big-endian public
+ * exponent (odd, >= 3); anything else is HSK_OSSL4_ERR_BADPARAM.
+ * Ownership mirrors ec_gen (OPENSSL_malloc'd DERs, caller frees). */
+int hsk_ossl4_rsa_gen_keypair(OSSL_LIB_CTX *ctx, int bits,
+                              const unsigned char *e_be, size_t e_len,
+                              const char *propq, unsigned char **priv_der,
+                              size_t *priv_len, unsigned char **pub_der,
+                              size_t *pub_len);
 
 /* --- Random bytes ------------------------------------------------ */
 
