@@ -47,8 +47,11 @@ module Haskoki.Recipe.Ecdsa
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.List (find)
 import Data.Text (Text)
+import qualified Data.Text.Encoding as TE
 
+import Haskoki.Der (curveTable)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
 
@@ -99,24 +102,21 @@ ecdsaRecipes =
   , EcdsaRecipe "CKM_ECDSA_SHA3_512" (Just "SHA3_512")
   ]
 
--- | The NIST prime curve named by a DER key's curve OID (SPKI
--- and PKCS#8 both carry it in the algorithm parameters): P-256 is
--- @1.2.840.10045.3.1.7@, P-384 @1.3.132.0.34@, P-521
--- @1.3.132.0.35@. 'Nothing' means not a DER key on the covered set
--- (raw bytes, RSA, garbage, or an off-set curve). The driver uses
--- this as a dispatch hint (defaulting to P-256); the real backend
--- re-checks it before any native call so an off-set curve can
--- refuse but never mis-sign.
+-- | The covered curve named by a DER key's curve OID (SPKI and
+-- PKCS#8 both carry it in the algorithm parameters): the first
+-- 'Haskoki.Der.curveTable' OID found as a substring, table order
+-- (no OID is a substring of another, so the match is unambiguous).
+-- 'Nothing' means not a DER key on the covered set (raw bytes,
+-- RSA, garbage, or an off-set curve). The driver uses this as a
+-- dispatch hint (defaulting to P-256); the real backend re-checks
+-- it before any native call so an off-set curve can refuse but
+-- never mis-sign.
 ecdsaCurveOfDer :: ByteString -> Maybe Text
-ecdsaCurveOfDer der
-  | p256 `BS.isInfixOf` der = Just "P-256"
-  | p384 `BS.isInfixOf` der = Just "P-384"
-  | p521 `BS.isInfixOf` der = Just "P-521"
-  | otherwise = Nothing
+ecdsaCurveOfDer der = case find hit curveTable of
+  Just (name, _, _) -> Just (TE.decodeUtf8 name)
+  Nothing -> Nothing
   where
-    p256 = BS.pack [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]
-    p384 = BS.pack [0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22]
-    p521 = BS.pack [0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23]
+    hit (_, oid, _) = oid `BS.isInfixOf` der
 
 -- | Resolve a mechanism id to its ECDSA recipe, if covered.
 ecdsaRecipeFor :: MechanismId -> Maybe EcdsaRecipe
