@@ -966,14 +966,15 @@ kemAlgOf pubA privA = case Map.lookup AttrKemAlg pubA of
 -- | The EC curve for a pair: @AttrEcParams@ is required in the
 -- public template (PKCS#11 names the curve there), the private
 -- template inherits it when absent and must agree when present.
--- Only P-256 executes in the engine set; anything else is
--- mechanism-invalid, never silently substituted.
+-- The three SEC2 prime curves execute in the engine set;
+-- anything else is mechanism-invalid, never silently
+-- substituted.
 ecCurveOf
   :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
   -> Either KeyDeny ByteString
 ecCurveOf pubA privA = case Map.lookup AttrEcParams pubA of
   Just (ValBytes curve)
-    | curve == "P-256" -> case Map.lookup AttrEcParams privA of
+    | curve `elem` ["P-256", "P-384", "P-521"] -> case Map.lookup AttrEcParams privA of
         Nothing -> Right curve
         Just (ValBytes curve')
           | curve' == curve -> Right curve

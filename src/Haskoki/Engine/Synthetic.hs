@@ -527,7 +527,8 @@ instance CryptoBackend Synthetic where
         | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
             "generic-secret key length must be 1 to 255 bytes"))
       GenEC ec
-        | ecCurve ec == "P-256" -> pure (B.EngineOk (genPair seed ctr))
+        | ecCurve ec `elem` ["P-256", "P-384", "P-521"] ->
+            pure (B.EngineOk (genPair seed ctr))
         | otherwise -> pure (B.EngineFail
             (BackendUnsupported "generateKey" ("not in synthetic set: " ++ show spec)))
       GenRSA bits e
@@ -684,7 +685,7 @@ synthCaps = BackendCaps
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 66-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC P-256 pairs; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC P-256/P-384/P-521 pairs; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -874,7 +875,7 @@ genSupported _ spec = case spec of
   GenSym "AES" _ -> Nothing
   GenSym "HOTP" _ -> Nothing
   GenSym "GENERIC" _ -> Nothing
-  GenEC ec | ecCurve ec == "P-256" -> Nothing
+  GenEC ec | ecCurve ec `elem` ["P-256", "P-384", "P-521"] -> Nothing
   GenRSA {} -> Nothing
   GenMLKEM _ -> Nothing
   _ -> Just ("keygen not in synthetic set: " ++ show spec)

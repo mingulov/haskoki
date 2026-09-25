@@ -13663,7 +13663,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "pairgen (templates via the template rules; P-256 only via ecCurveOf; GenEc). Real execution pinned by KeyManagementSpec caseRealEcKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 0/0 unspecified (curve-dependent).",
+      "notes": "pairgen (templates via the template rules; P-256/P-384/P-521 via ecCurveOf; GenEc). Real execution pinned by KeyManagementSpec caseRealEcKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 0/0 unspecified (curve-dependent).",
       "numeric_id": "0x00001040",
       "routes": [
         {
@@ -13672,7 +13672,7 @@
             "A37"
           ],
           "key_constraints": [
-            "curve-p256-only"
+            "nist-curves-p256-p384-p521"
           ],
           "operation": "generate-key-pair",
           "output_rule": "synthetic-pair/v1",

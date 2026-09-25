@@ -646,7 +646,17 @@ caseKeygen = do
   (privB, Just pubB) <- expectOk "gen p256 b" =<< generateKey envE (GenEC (EcSpec "P-256" "DER"))
   assertBool "ec deterministic across same-seed backends" (priv == privB && pub == pubB)
   assertBool "halves differ" (priv /= pub)
-  expectUnsupported "p384 gen" =<< generateKey envD (GenEC (EcSpec "P-384" "DER"))
+  -- P-384/P-521 replay the same curve-blind construction;
+  -- off-set curves stay out.
+  (KeyDer p384, Just (KeyDer q384)) <- expectOk "gen p384" =<<
+    generateKey envD (GenEC (EcSpec "P-384" "DER"))
+  (KeyDer p384b, Just (KeyDer q384b)) <- expectOk "gen p384 b" =<<
+    generateKey envE (GenEC (EcSpec "P-384" "DER"))
+  assertBool "p384 deterministic" (p384 == p384b && q384 == q384b)
+  (KeyDer p521, Just (KeyDer q521)) <- expectOk "gen p521" =<<
+    generateKey envD (GenEC (EcSpec "P-521" "DER"))
+  assertBool "p521 halves differ" (p521 /= q521)
+  expectUnsupported "p224 gen" =<< generateKey envD (GenEC (EcSpec "P-224" "DER"))
   -- RSA: deterministic DER pairs replay bit-for-bit across
   -- same-seed backends; bounds refuse as bad params.
   envF <- openSynth "11"

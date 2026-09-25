@@ -172,6 +172,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Generic-secret keygen mints typed material in bounds" caseGenericSecretKeygen
   , testCase "Init enforces the key-type matrix" caseInitKeyTypeMatrix
   , testCase "EC keypair delivers two handles" caseEcKeypair
+  , testCase "EC keypair serves P-384 and P-521" caseEcKeygenCurves
   , testCase "RSA keypair stamps components and round-trips" caseRsaKeygen
   , testCase "RSA keypair generations are distinct" caseRsaKeygenDistinct
   , testCase "RSA keygen bounds refuse out-of-window specs" caseRsaKeygenBounds
@@ -198,6 +199,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Usage attributes land on unwrap/derive children" caseAttrsLand
   , testCase "Real EC keypair generates and signs" caseRealEcKeygen
   , testCase "Real RSA keypair generates and signs" caseRealRsaKeygen
+  , testCase "Real P-384 keypair generates and signs" caseRealEcKeygen384
+  , testCase "Real P-521 keypair generates and signs" caseRealEcKeygen521
   , testCase "Real wrap matches SP 800-38A and round-trips" caseRealWrapVector
   , testCase "Real derive matches RFC 5869" caseRealHkdfVector
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
@@ -784,6 +787,39 @@ caseEcKeypair = withSynth $ \answer -> do
           assertEqual "pair magic" "HKS1" (BS.take 4 p)
         _ -> assertFailure "EC halves lack material"
     other -> assertFailure ("EC keypair plan is not an effect: " ++ show other)
+
+-- | EC templates on the given engine curve name.
+ecTmpls :: ByteString
+  -> ([(AttributeType, AttributeValue)], [(AttributeType, AttributeValue)])
+ecTmpls curve = (retmpl ecPubTmpl, retmpl ecPrivTmpl)
+  where
+    retmpl = map (\(t, v) -> if t == AttrEcParams then (t, ValBytes curve) else (t, v))
+
+caseEcKeygenCurves :: IO ()
+caseEcKeygenCurves = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let gen m curve = do
+        let (pubT, privT) = ecTmpls curve
+        case planGenerateKeyPair defaultRules m st ecKeyPairGenMech pubT privT of
+          KeyEffect pw fx -> do
+            res <- answer m fx
+            c <- finishCommit m st pw res 2
+            pubH <- handleOf (pcOutputs c !! 0)
+            privH <- handleOf (pcOutputs c !! 1)
+            m' <- expectRight (publishDelta m (pcDelta c))
+            Just pub <- pure (resolveHandle m' pubH)
+            Just priv <- pure (resolveHandle m' privH)
+            case (keyBytesOf pub, keyBytesOf priv) of
+              (Just p, Just q) -> do
+                assertEqual "pair magic" "HKS1" (BS.take 4 p)
+                assertBool "halves differ" (p /= q)
+              _ -> assertFailure "EC halves lack material"
+            pure m'
+          other -> assertFailure ("EC plan is not an effect: " ++ show other) >> undefined
+  m1 <- gen m0 "P-384"
+  _ <- gen m1 "P-521"
+  pure ()
 
 caseRsaKeygen :: IO ()
 caseRsaKeygen = do
@@ -1826,6 +1862,72 @@ caseRealRsaKeygen = withRealEnv $ \env -> do
         EngineOk () -> pure ()
         EngineFail err -> assertFailure ("real verify failed: " ++ show err)
     _ -> assertFailure "real RSA halves lack material"
+
+caseRealEcKeygen384 :: IO ()
+caseRealEcKeygen384 = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+      (pubT, privT) = ecTmpls "P-384"
+  (m1, pubH, privH) <- case planGenerateKeyPair defaultRules m0 st ecKeyPairGenMech pubT privT of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 2
+      h1 <- handleOf (pcOutputs c !! 0)
+      h2 <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      pure (m', h1, h2)
+    other -> assertFailure ("P-384 plan is not an effect: " ++ show other) >> undefined
+  Just pub <- pure (resolveHandle m1 pubH)
+  Just priv <- pure (resolveHandle m1 privH)
+  case (keyBytesOf pub, keyBytesOf priv) of
+    (Just pubB, Just privB) -> do
+      assertBool "real pub DER nonempty" (not (BS.null pubB))
+      assertBool "real priv DER nonempty" (not (BS.null privB))
+      sres <- sign env (SigECDSA (EcSpec "P-384" "DER") (Just D_SHA384))
+        (KeyDer privB) "ec384-msg"
+      sig <- case sres of
+        EngineOk s -> pure s
+        EngineFail err -> assertFailure ("real sign failed: " ++ show err) >> undefined
+      vres <- verify env (SigECDSA (EcSpec "P-384" "DER") (Just D_SHA384))
+        (KeyDer pubB) "ec384-msg" sig
+      case vres of
+        EngineOk () -> pure ()
+        EngineFail err -> assertFailure ("real verify failed: " ++ show err)
+    _ -> assertFailure "real P-384 halves lack material"
+
+caseRealEcKeygen521 :: IO ()
+caseRealEcKeygen521 = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+      (pubT, privT) = ecTmpls "P-521"
+  (m1, pubH, privH) <- case planGenerateKeyPair defaultRules m0 st ecKeyPairGenMech pubT privT of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 2
+      h1 <- handleOf (pcOutputs c !! 0)
+      h2 <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      pure (m', h1, h2)
+    other -> assertFailure ("P-521 plan is not an effect: " ++ show other) >> undefined
+  Just pub <- pure (resolveHandle m1 pubH)
+  Just priv <- pure (resolveHandle m1 privH)
+  case (keyBytesOf pub, keyBytesOf priv) of
+    (Just pubB, Just privB) -> do
+      assertBool "real pub DER nonempty" (not (BS.null pubB))
+      assertBool "real priv DER nonempty" (not (BS.null privB))
+      sres <- sign env (SigECDSA (EcSpec "P-521" "DER") (Just D_SHA512))
+        (KeyDer privB) "ec521-msg"
+      sig <- case sres of
+        EngineOk s -> pure s
+        EngineFail err -> assertFailure ("real sign failed: " ++ show err) >> undefined
+      vres <- verify env (SigECDSA (EcSpec "P-521" "DER") (Just D_SHA512))
+        (KeyDer pubB) "ec521-msg" sig
+      case vres of
+        EngineOk () -> pure ()
+        EngineFail err -> assertFailure ("real verify failed: " ++ show err)
+    _ -> assertFailure "real P-521 halves lack material"
 
 caseRealWrapVector :: IO ()
 caseRealWrapVector = withRealEnv $ \env -> do

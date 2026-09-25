@@ -774,8 +774,7 @@ decodeULongLE bs
 -- | Map @CKA_EC_PARAMS@ wire bytes to the engine curve name: the
 -- DER object identifiers for the three SEC2 prime curves (RFC
 -- 5480 section 2.1.1) become @"P-256"@\/@"P-384"@\/@"P-521"@;
--- anything else passes through for the engine to refuse (only
--- P-256 executes).
+-- anything else passes through for the engine to refuse.
 ecParamsFromWire :: ByteString -> ByteString
 ecParamsFromWire bs
   | bs == BS.pack [0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07] = "P-256"

@@ -108,6 +108,7 @@ spec = testGroup "Template rules"
   , testCase "checkRules refuses forbidden-present" caseForbiddenPresent
   , testCase "AES keygen without VALUE_LEN is incomplete" caseAesMissingLen
   , testCase "EC pair without curve is incomplete" caseEcMissingCurve
+  , testCase "EC pair off-set curve is mechanism-invalid" caseEcOffSetCurve
   , testCase "RSA pair without modulus bits is incomplete" caseRsaMissingBits
   , testCase "wrong class value is inconsistent" caseWrongClass
   , testCase "wrong key type value is inconsistent" caseWrongKeyType
@@ -377,6 +378,21 @@ caseEcMissingCurve = do
       assertEqual "incomplete code" CKR_TEMPLATE_INCOMPLETE code
       assertEqual "rule-citing reason"
         "template rule CKO_PUBLIC_KEY/CKK_EC requires CKA_EC_PARAMS" reason
+    other -> assertFailure ("must deny, got: " ++ show other)
+
+caseEcOffSetCurve :: IO ()
+caseEcOffSetCurve = do
+  -- Only the SEC2 prime curves plan; secp256k1 (a real curve
+  -- outside the engine set) is mechanism-invalid, never
+  -- substituted.
+  let pubT = [ (AttrClass, ValULong ckoPublicKey)
+             , (AttrKeyType, ValULong ckkEc)
+             , (AttrEcParams, ValBytes "secp256k1")
+             ]
+      privT = [(AttrClass, ValULong ckoPrivateKey)]
+  case planGenerateKeyPair defaultRules emptyModel testSession ecKeyPairGenMech pubT privT of
+    KeyDenied (KeyDeny code _) -> assertEqual "mechanism code"
+      CKR_MECHANISM_INVALID code
     other -> assertFailure ("must deny, got: " ++ show other)
 
 caseRsaMissingBits :: IO ()
