@@ -128,7 +128,7 @@ import Haskoki.Runtime.Lifecycle
   , seatToken
   )
 import Haskoki.Runtime.Storage (decodeReturnCode, encodeReturnCode)
-import Haskoki.Session (AdmitDeny (..), admitCode, admitWritable)
+import Haskoki.Session (AdmitDeny (..), SessionLogin (..), admitCode, admitPrivate, admitWritable)
 import Haskoki.Transition (planCall, planDecoded, publishDelta)
 import Haskoki.Types
   ( EngineResourceId (..)
@@ -162,6 +162,7 @@ spec = testGroup "Decoded requests"
   , testCase "Read-only sessions enforce the owner dimension" caseRoRefusals
   , testCase "Session objects admitted on read-only sessions" caseRoTokenDimension
   , testCase "Read-only sessions read and compute" caseRoAllowed
+  , testCase "Public sessions refuse private creation" casePublicPrivateRefusals
   , testCase "DecodedRequest Show redacts templates" caseShowRedacts
     ]
   , testGroup "async construction"
@@ -683,6 +684,13 @@ casePureAdmission = do
   assertEqual "read-only admits session" (Right ()) (admitWritable True False)
   assertEqual "read-only denies token" (Left AdmitReadOnly) (admitWritable True True)
   assertEqual "denial code" CKR_SESSION_READ_ONLY (admitCode AdmitReadOnly)
+  assertEqual "public creating private denies"
+    (Left AdmitLoginRequired) (admitPrivate LoginPublic True)
+  assertEqual "public creating public admits"
+    (Right ()) (admitPrivate LoginPublic False)
+  assertEqual "user creating private admits"
+    (Right ()) (admitPrivate LoginUser True)
+  assertEqual "login denial code" CKR_USER_NOT_LOGGED_IN (admitCode AdmitLoginRequired)
 
 -- | The read-only code maps identically at every boundary: the
 -- C value (locked header @CKR_SESSION_READ_ONLY = 0xB5@), the
@@ -791,6 +799,28 @@ caseRoAllowed = do
     assertEqual "RO digest-init" (CULong 0) rvDigest
   case mTimed of
     Nothing -> assertFailure "RO allowed wedged (30s timeout)"
+    Just () -> pure ()
+
+-- | Public (unauthenticated) sessions refuse private-object
+-- creation with @CKR_USER_NOT_LOGGED_IN@: token objects, session
+-- objects, and copies landing private. Public creation on the
+-- same session still admits.
+casePublicPrivateRefusals :: IO ()
+casePublicPrivateRefusals = do
+  mTimed <- timeout 30000000 $ withManualInstance [slot0] $ \inst -> do
+    hRW <- openRwSession inst 0
+    let privTok = tmpl ++ [(AttrToken, ValBool True), (AttrPrivate, ValBool True)]
+        privSes = tmpl ++ [(AttrToken, ValBool False), (AttrPrivate, ValBool True)]
+    (rvT, _) <- createViaC inst hRW (frameOf privTok)
+    assertEqual "public create private token" (CULong 0x101) rvT
+    (rvS, _) <- createViaC inst hRW (frameOf privSes)
+    assertEqual "public create private session" (CULong 0x101) rvS
+    (rvC, hC) <- createViaC inst hRW (frameOf tmpl)
+    assertEqual "public create public" (CULong 0) rvC
+    (rvCopy, _) <- copyViaC inst hRW hC (frameOf [(AttrPrivate, ValBool True)])
+    assertEqual "public copy to private" (CULong 0x101) rvCopy
+  case mTimed of
+    Nothing -> assertFailure "public/private refusals wedged (30s timeout)"
     Just () -> pure ()
 
 -- | AES-128 keygen template (CKO_SECRET_KEY, CKK_AES, 16 bytes).
@@ -1283,12 +1313,13 @@ signInitViaC inst hSession (MechanismId mech) params (ExternalHandle key) =
 
 -- | Attribute type ids for the frames under test (locked header
 -- @spec/vendor/pkcs11.h@: CKA_CLASS 0x00, CKA_TOKEN
--- 0x01, CKA_LABEL 0x03, CKA_VALUE 0x11, CKA_KEY_TYPE 0x100,
--- CKA_WRAP 0x106, CKA_SIGN 0x108, CKA_VALUE_LEN 0x161,
--- CKA_EXTRACTABLE 0x162).
+-- 0x01, CKA_PRIVATE 0x02, CKA_LABEL 0x03, CKA_VALUE 0x11,
+-- CKA_KEY_TYPE 0x100, CKA_WRAP 0x106, CKA_SIGN 0x108,
+-- CKA_VALUE_LEN 0x161, CKA_EXTRACTABLE 0x162).
 attrId :: AttributeType -> Word64
 attrId AttrClass = 0x00
 attrId AttrToken = 0x01
+attrId AttrPrivate = 0x02
 attrId AttrLabel = 0x03
 attrId AttrValue = 0x11
 attrId AttrKeyType = 0x100

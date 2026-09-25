@@ -79,7 +79,7 @@ import Haskoki.Outcome
   , StateDelta (..)
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
-import Haskoki.Session (SessionLogin (LoginPublic), admitCode, admitWritable)
+import Haskoki.Session (SessionLogin (LoginPublic), admitCode, admitPrivate, admitWritable)
 import Haskoki.Types
   ( ExternalHandle (..)
   , ObjectId (..)
@@ -319,6 +319,15 @@ mergedIsToken m = Map.lookup AttrToken m == Just (ValBool True)
 tmplWantsToken :: [(AttributeType, AttributeValue)] -> Bool
 tmplWantsToken tmpl = lookup AttrToken tmpl == Just (ValBool True)
 
+-- | Privacy test over merged/stored attributes (absent or wrongly
+-- shaped = public).
+mergedIsPrivate :: Map AttributeType AttributeValue -> Bool
+mergedIsPrivate m = Map.lookup AttrPrivate m == Just (ValBool True)
+
+-- | Privacy test over a raw template list (first match wins).
+tmplWantsPrivate :: [(AttributeType, AttributeValue)] -> Bool
+tmplWantsPrivate tmpl = lookup AttrPrivate tmpl == Just (ValBool True)
+
 -- | Whether the object may be copied (absent = copyable, per the
 -- PKCS#11 default; only an explicit false prohibits).
 objectCopyable :: ObjectState -> Bool
@@ -364,6 +373,9 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
     | otherwise -> case importMaterial attrs of
         Left (code, msg) -> templateReject code msg
         Right stored
+          | Left deny <- admitPrivate (ssLogin st) (mergedIsPrivate stored) ->
+              templateReject (admitCode deny)
+                "public session cannot create private objects"
           | Left deny <- admitWritable (ssReadOnly st) (mergedIsToken stored) ->
               templateReject (admitCode deny)
                 "read-only session cannot create token objects"
@@ -572,6 +584,10 @@ planCopyObject model st h tmpl = case resolveHandle model h of
           , Map.lookup AttrExtractable over == Just (ValBool True) ->
               templateReject CKR_TEMPLATE_INCONSISTENT
                 "copy cannot set extractable on an unextractable source"
+          | Left deny <- admitPrivate (ssLogin st)
+              (mergedIsPrivate (Map.union over (osAttrs src))) ->
+              templateReject (admitCode deny)
+                "public session cannot copy to private objects"
           | Left deny <- admitWritable (ssReadOnly st)
               (mergedIsToken (Map.union over (osAttrs src))) ->
               templateReject (admitCode deny)
@@ -620,6 +636,9 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
   Just ost
     | not (objectVisible st ost) ->
         invalidHandle "object not visible to session"
+    | Left deny <- admitPrivate (ssLogin st) (tmplWantsPrivate tmpl) ->
+        templateReject (admitCode deny)
+          "public session cannot mark objects private"
     | Left deny <- admitWritable (ssReadOnly st)
         (objectToken ost || tmplWantsToken tmpl) ->
         templateReject (admitCode deny)

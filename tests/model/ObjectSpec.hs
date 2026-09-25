@@ -758,7 +758,12 @@ caseVisibilityLogin = do
   -- The pure rule first: public is always visible, private needs a
   -- non-public login.
   (a0, m0) <- openSession seeded
-  (pcP, m1) <- runCommit m0 (createReq a0 [classData, label "priv", privateFlag])
+  -- Public sessions cannot mint private objects in the first place.
+  (codeP, _) <- runReject m0 (createReq a0 [classData, label "priv", privateFlag])
+  assertEqual "public cannot create private" CKR_USER_NOT_LOGGED_IN codeP
+  -- Log in, then create: visibility follows the login state.
+  m0login <- loginAs m0 a0
+  (pcP, m1) <- runCommit m0login (createReq a0 [classData, label "priv", privateFlag])
   hp <- commitHandle pcP
   (pcU, m2) <- runCommit m1 (createReq a0 [classData, label "pub"])
   hu <- commitHandle pcU
@@ -771,11 +776,10 @@ caseVisibilityLogin = do
   assertBool "public visible to public" =<< vis hu LoginPublic
   assertBool "private hidden from public" . not =<< vis hp LoginPublic
   assertBool "private visible to user" =<< vis hp LoginUser
-  -- End to end through the routes: login, read, logout, read.
-  m3 <- loginAs m2 a0
-  (pcG, _) <- runCommit m3 (getReq a0 hp [AttrLabel])
+  -- End to end through the routes: read while logged in, logout, read.
+  (pcG, _) <- runCommit m2 (getReq a0 hp [AttrLabel])
   assertEqual "user reads private" CKR_OK (pcCode pcG)
-  (pcF, mf) <- runCommit m3 (findReq a0 [])
+  (pcF, mf) <- runCommit m2 (findReq a0 [])
   foundUser <- findHandles pcF
   assertBool "find includes private while logged in" (hp `elem` foundUser)
   m4 <- snd <$> runCommit mf (logoutReq a0)

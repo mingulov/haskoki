@@ -2035,7 +2035,14 @@ int main(int argc, char **argv) {
       CK_BYTE buf[64];
       CK_ATTRIBUTE g[] = { { CKA_LABEL, buf, sizeof(buf) } };
       rv = f->C_CreateObject(sess, ptmpl, 4, &privObj);
+      CHECKC(rv == CKR_USER_NOT_LOGGED_IN,
+             "private create refused while logged out");
+      rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+      CHECKC(rv == CKR_OK, "login mints private");
+      rv = f->C_CreateObject(sess, ptmpl, 4, &privObj);
       CHECKC(rv == CKR_OK && privObj != 0, "private object created");
+      rv = f->C_Logout(sess);
+      CHECKC(rv == CKR_OK, "logout after private create");
       rv = f->C_GetAttributeValue(sess, privObj, g, 1);
       CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
              "private object unaddressable while logged out");

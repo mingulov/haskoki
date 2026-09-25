@@ -35,6 +35,7 @@ module Haskoki.Session
   , admitObjects
   , admitToken
   , admitWritable
+  , admitPrivate
     -- * Request-argument codecs
   , parseOpenArgs
   , parseLoginArgs
@@ -243,6 +244,7 @@ data AdmitDeny
   | AdmitObjectsFull
   | AdmitTokensFull
   | AdmitReadOnly
+  | AdmitLoginRequired
   deriving (Eq, Show)
 
 -- | Source-defined return code for each admission denial. Exhaustion
@@ -257,6 +259,7 @@ admitCode d = case d of
   AdmitObjectsFull -> CKR_HOST_MEMORY
   AdmitTokensFull -> CKR_HOST_MEMORY
   AdmitReadOnly -> CKR_SESSION_READ_ONLY
+  AdmitLoginRequired -> CKR_USER_NOT_LOGGED_IN
 
 -- | Admit a session open: the slot must hold a token, the session
 -- bound must not be exhausted, and a read-only session must not open
@@ -305,6 +308,16 @@ admitWritable :: Bool -> Bool -> Either AdmitDeny ()
 admitWritable readOnly isToken
   | readOnly && isToken = Left AdmitReadOnly
   | otherwise = Right ()
+
+-- | Admit private-object creation against the session login: any
+-- authenticated login (user, SO, context grant) admits; a public
+-- session creating a private object denies with
+-- 'AdmitLoginRequired' (PKCS#11: public sessions see and create
+-- public objects only). Checked before 'admitWritable':
+-- authentication outranks the session mode.
+admitPrivate :: SessionLogin -> Bool -> Either AdmitDeny ()
+admitPrivate LoginPublic True = Left AdmitLoginRequired
+admitPrivate _ _ = Right ()
 
 -- | Decode OpenSession arguments: @slot=\<nat\>,rw@ or @slot=\<nat\>,ro@.
 parseOpenArgs :: ByteString -> Maybe (SlotId, Bool)

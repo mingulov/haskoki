@@ -149,7 +149,7 @@ import Haskoki.Registry.Generated
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (Rules)
-import Haskoki.Session (admitCode, admitObjects, admitWritable)
+import Haskoki.Session (admitCode, admitObjects, admitPrivate, admitWritable)
 import Haskoki.Types
   ( ExternalHandle (..)
   , ObjectId (..)
@@ -307,15 +307,22 @@ data PendingWork
 -- Length queries and wrap paths create nothing and always admit.
 admitPending :: SessionState -> PendingWork -> Either KeyDeny ()
 admitPending st pw =
-  case admitWritable (ssReadOnly st) wantsToken of
+  case admitPrivate (ssLogin st) wantsPrivate of
     Left deny -> Left (KeyDeny (admitCode deny)
-      "read-only session cannot create token objects")
-    Right () -> Right ()
+      "public session cannot create private objects")
+    Right () -> case admitWritable (ssReadOnly st) wantsToken of
+      Left deny -> Left (KeyDeny (admitCode deny)
+        "read-only session cannot create token objects")
+      Right () -> Right ()
   where
-    wantsToken = any isToken (pendingObjects pw)
+    pos = pendingObjects pw
+    wantsToken = any isToken pos
     isToken po = case poOwner po of
       Nothing -> True
       Just _ -> False
+    wantsPrivate = any isPrivate pos
+    isPrivate po =
+      Map.lookup AttrPrivate (poAttrs po) == Just (ValBool True)
 
 -- | Objects a pending work item will create (queries and pure
 -- bytes-out work create none).
