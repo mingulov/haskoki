@@ -328,6 +328,17 @@ mergedIsPrivate m = Map.lookup AttrPrivate m == Just (ValBool True)
 tmplWantsPrivate :: [(AttributeType, AttributeValue)] -> Bool
 tmplWantsPrivate tmpl = lookup AttrPrivate tmpl == Just (ValBool True)
 
+-- | Secret-key CKA_VALUE_LEN must match the value length. A huge
+-- LEN over a short value is inconsistent (and must never become an
+-- allocation); the copy path checks the merged template.
+valueLenConflict :: Map AttributeType AttributeValue -> Maybe String
+valueLenConflict m =
+  case (Map.lookup AttrClass m, Map.lookup AttrValueLen m, Map.lookup AttrValue m) of
+    (Just (ValULong c), Just (ValULong want), Just (ValBytes bs))
+      | c == ckoSecretKey, want /= fromIntegral (BS.length bs) ->
+          Just "CKA_VALUE_LEN does not match the value length"
+    _ -> Nothing
+
 -- | Whether the object may be copied (absent = copyable, per the
 -- PKCS#11 default; only an explicit false prohibits).
 objectCopyable :: ObjectState -> Bool
@@ -584,6 +595,8 @@ planCopyObject model st h tmpl = case resolveHandle model h of
           , Map.lookup AttrExtractable over == Just (ValBool True) ->
               templateReject CKR_TEMPLATE_INCONSISTENT
                 "copy cannot set extractable on an unextractable source"
+          | Just msg <- valueLenConflict (Map.union over (osAttrs src)) ->
+              templateReject CKR_TEMPLATE_INCONSISTENT msg
           | Left deny <- admitPrivate (ssLogin st)
               (mergedIsPrivate (Map.union over (osAttrs src))) ->
               templateReject (admitCode deny)
@@ -675,6 +688,9 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
     mutableAs :: Map AttributeType AttributeValue
       -> AttributeType -> AttributeValue -> Maybe (ReturnCode, String)
     mutableAs cur t v
+      | Map.lookup AttrModifiable cur == Just (ValBool False)
+      , Map.lookup t cur /= Just v = Just (CKR_ATTRIBUTE_READ_ONLY,
+          "object is not modifiable (CKA_MODIFIABLE=false)")
       | t `elem` [AttrLabel, AttrApplication, AttrId] = Nothing
       | t `elem` [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
                  , AttrWrap, AttrUnwrap, AttrDerive

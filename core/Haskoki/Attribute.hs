@@ -88,6 +88,7 @@ data AttributeType
   | AttrPublicKeyInfo
   | AttrHashOfSubjectPublicKey
   | AttrHashOfIssuerPublicKey
+  | AttrModifiable
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Owned attribute values. The semantic value stays separate
@@ -239,6 +240,7 @@ shapeOf t = case t of
   AttrEcPoint -> ShapeBytes
   AttrCopyable -> ShapeBool
   AttrDestroyable -> ShapeBool
+  AttrModifiable -> ShapeBool
   AttrCertificateType -> ShapeULong
   AttrAllowedMechanisms -> ShapeBytes
   AttrSubject -> ShapeBytes
@@ -357,6 +359,7 @@ attributeTypeByName name = case name of
   "CKA_ALLOWED_MECHANISMS" -> Just AttrAllowedMechanisms
   "CKA_COPYABLE" -> Just AttrCopyable
   "CKA_DESTROYABLE" -> Just AttrDestroyable
+  "CKA_MODIFIABLE" -> Just AttrModifiable
   "CKA_CERTIFICATE_TYPE" -> Just AttrCertificateType
   "CKA_SUBJECT" -> Just AttrSubject
   "CKA_ISSUER" -> Just AttrIssuer

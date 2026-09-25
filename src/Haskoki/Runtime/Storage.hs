@@ -975,6 +975,7 @@ attrName t = case t of
   AttrAllowedMechanisms -> "allowed_mechanisms"
   AttrCopyable -> "copyable"
   AttrDestroyable -> "destroyable"
+  AttrModifiable -> "modifiable"
   AttrCertificateType -> "certificate_type"
   AttrSubject -> "subject"
   AttrIssuer -> "issuer"
@@ -1022,6 +1023,7 @@ nameAttr s = case s of
   "allowed_mechanisms" -> Just AttrAllowedMechanisms
   "copyable" -> Just AttrCopyable
   "destroyable" -> Just AttrDestroyable
+  "modifiable" -> Just AttrModifiable
   "certificate_type" -> Just AttrCertificateType
   "subject" -> Just AttrSubject
   "issuer" -> Just AttrIssuer
@@ -1060,6 +1062,7 @@ decodeAttrValue t j = case t of
   AttrDecapsulate -> boolOf j
   AttrCopyable -> boolOf j
   AttrDestroyable -> boolOf j
+  AttrModifiable -> boolOf j
   AttrClass -> ulongOf j
   AttrKeyType -> ulongOf j
   AttrValueLen -> ulongOf j

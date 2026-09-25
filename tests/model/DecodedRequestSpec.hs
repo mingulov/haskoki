@@ -165,6 +165,8 @@ spec = testGroup "Decoded requests"
   , testCase "Read-only sessions read and compute" caseRoAllowed
   , testCase "Public sessions refuse private creation" casePublicPrivateRefusals
   , testCase "Context login needs an active operation" caseContextLoginOpGate
+  , testCase "Copy VALUE_LEN mismatch refuses" caseCopyValueLenMismatch
+  , testCase "Modifiable data object flow" caseModifiableDataFlow
   , testCase "DecodedRequest Show redacts templates" caseShowRedacts
     ]
   , testGroup "async construction"
@@ -845,6 +847,54 @@ caseContextLoginOpGate = do
     Nothing -> assertFailure "context op gate wedged (30s timeout)"
     Just () -> pure ()
 
+-- | Copying a secret key with a CKA_VALUE_LEN that does not match
+-- the value refuses TEMPLATE_INCONSISTENT (a huge LEN is never an
+-- allocation); a label-only copy of the same key admits.
+caseCopyValueLenMismatch :: IO ()
+caseCopyValueLenMismatch = do
+  mTimed <- timeout 30000000 $ withManualInstance [slot0] $ \inst -> do
+    hRW <- openRwSession inst 0
+    let keyTmpl = [ (AttrClass, ValULong 4)
+                  , (AttrKeyType, ValULong 0x10)
+                  , (AttrValue, ValBytes "12345678")
+                  ]
+    (rvK, hK) <- createViaC inst hRW (frameOf keyTmpl)
+    assertEqual "secret create" (CULong 0) rvK
+    (rvCopy, _) <- copyViaC inst hRW hK
+      (frameOf [(AttrValueLen, ValULong 0xFFFFFFFFFFFFFFFF)])
+    assertEqual "huge VALUE_LEN refused" (CULong 0xD1) rvCopy
+    (rvCopy2, _) <- copyViaC inst hRW hK (frameOf [(AttrLabel, ValBytes "k2")])
+    assertEqual "label-only copy admits" (CULong 0) rvCopy2
+  case mTimed of
+    Nothing -> assertFailure "copy VALUE_LEN wedged (30s timeout)"
+    Just () -> pure ()
+
+-- | CKA_MODIFIABLE end to end: creation carrying the flag admits
+-- (it once decoded as unknown), label modification on a modifiable
+-- object admits, value modification refuses READ_ONLY, and an
+-- unmodifiable object refuses changes while admitting no-op writes.
+caseModifiableDataFlow :: IO ()
+caseModifiableDataFlow = do
+  mTimed <- timeout 30000000 $ withManualInstance [slot0] $ \inst -> do
+    hRW <- openRwSession inst 0
+    let modTmpl = tmpl ++ [(AttrToken, ValBool True), (AttrModifiable, ValBool True)]
+        unmodTmpl = tmpl ++ [(AttrToken, ValBool True), (AttrModifiable, ValBool False)]
+    (rvM, hM) <- createViaC inst hRW (frameOf modTmpl)
+    assertEqual "modifiable create" (CULong 0) rvM
+    rvSet <- setViaC inst hRW hM (frameOf [(AttrLabel, ValBytes "b")])
+    assertEqual "label set admits" (CULong 0) rvSet
+    rvVal <- setViaC inst hRW hM (frameOf [(AttrValue, ValBytes "v2")])
+    assertEqual "value set refuses" (CULong 0x10) rvVal
+    (rvU, hU) <- createViaC inst hRW (frameOf unmodTmpl)
+    assertEqual "unmodifiable create" (CULong 0) rvU
+    rvSetU <- setViaC inst hRW hU (frameOf [(AttrLabel, ValBytes "c")])
+    assertEqual "unmodifiable change refuses" (CULong 0x10) rvSetU
+    rvNoop <- setViaC inst hRW hU (frameOf [(AttrLabel, ValBytes "a")])
+    assertEqual "unmodifiable no-op admits" (CULong 0) rvNoop
+  case mTimed of
+    Nothing -> assertFailure "modifiable flow wedged (30s timeout)"
+    Just () -> pure ()
+
 -- | AES-128 keygen template (CKO_SECRET_KEY, CKK_AES, 16 bytes).
 aesGenTmpl :: [(AttributeType, AttributeValue)]
 aesGenTmpl =
@@ -1344,11 +1394,13 @@ signInitViaC inst hSession (MechanismId mech) params (ExternalHandle key) =
 -- @spec/vendor/pkcs11.h@: CKA_CLASS 0x00, CKA_TOKEN
 -- 0x01, CKA_PRIVATE 0x02, CKA_LABEL 0x03, CKA_VALUE 0x11,
 -- CKA_KEY_TYPE 0x100, CKA_WRAP 0x106, CKA_SIGN 0x108,
--- CKA_VALUE_LEN 0x161, CKA_EXTRACTABLE 0x162).
+-- CKA_VALUE_LEN 0x161, CKA_EXTRACTABLE 0x162,
+-- CKA_MODIFIABLE 0x170).
 attrId :: AttributeType -> Word64
 attrId AttrClass = 0x00
 attrId AttrToken = 0x01
 attrId AttrPrivate = 0x02
+attrId AttrModifiable = 0x170
 attrId AttrLabel = 0x03
 attrId AttrValue = 0x11
 attrId AttrKeyType = 0x100

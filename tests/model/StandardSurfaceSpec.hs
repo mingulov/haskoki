@@ -120,14 +120,16 @@ caseEmptyFrame = do
 
 caseValues :: IO ()
 caseValues = do
-  let frame = word 3
+  let frame = word 4
         <> attr 0x00 (word 4) -- CKA_CLASS = 4 (secret key)
         <> attr 0x01 (BS.singleton 1) -- CKA_TOKEN = true
         <> attr 0x03 "key-1" -- CKA_LABEL
-  assertEqual "three attrs" (Right
+        <> attr 0x170 (BS.singleton 1) -- CKA_MODIFIABLE = true
+  assertEqual "four attrs" (Right
     [ (AttrClass, ValULong 4)
     , (AttrToken, ValBool True)
     , (AttrLabel, ValBytes "key-1")
+    , (AttrModifiable, ValBool True)
     ]) (parseTemplateFrame frame)
 
 caseMalformed :: IO ()
