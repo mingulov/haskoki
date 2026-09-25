@@ -11,7 +11,7 @@ not per test.
 ## Fast-lane results across fix rounds
 
 Total collected varies by framework checkout (r11: 5780; r14: 5798;
-r15: 5820; r18: 5840). Summaries are authoritative; the per-test
+r15: 5820; r18: 5840; r19: 5844). Summaries are authoritative; the per-test
 records list interesting outcomes only (see Method).
 
 | Round | Passed | Failed | XFailed | Skipped | Child crashes |
@@ -35,6 +35,7 @@ records list interesting outcomes only (see Method).
 | r16 (T6 streaming cipher) | 2842 | 21 | 399 | 2558 | 0 |
 | r17 (T6 + ECB decrypt chain fix) | 2843 | 21 | 398 | 2558 | 0 |
 | r18 (pkcs11-check 0.2.1 oracle) | 2863 | 20 | 398 | 2559 | 0 |
+| r19 (T5a/b/c/d + T8 RSA wrap) | 2874 | 2 | 387 | 2581 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -234,41 +235,27 @@ first lane proving all of them together.
   harness-side keygen). T4 message-API legs never materialized
   (the oracle skips clean `FUNCTION_NOT_SUPPORTED`).
 
-## Remaining fast-lane failures (r15: 25), by cluster
+## Remaining fast-lane failures (r19: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
 `/tmp/pkcs11-ws/pkcs11-check` (import recipes, negotiation, gates).
 Slices ordered by leg count:
 
-- T5 session/login + stragglers (12): RO sessions wrongly refuse
-  session-object creation (`SESSION_READ_ONLY`, 2 legs) and the
-  RO generate-token leg misbehaves; creation paths ignore login
-  state (public session creates `CKA_PRIVATE` token/session
-  objects that readback then invalidates — spec wants
-  `USER_NOT_LOGGED_IN` at creation — plus `C_CopyObject` to
-  private, 3 legs); `CKU_CONTEXT_SPECIFIC` login granted with no
-  active op (spec wants `OPERATION_NOT_INITIALIZED`, 3 legs).
-  Login-state machinery exists (`Session.hs`); the
-  creation/login gates are unwired. Stragglers: `C_CopyObject`
-  accepts `CKA_VALUE_LEN=2^64-1` (1 leg); cross-session
-  modify/readback fails with `ATTRIBUTE_TYPE_INVALID` (2 legs).
-- T8 RSA wrap/unwrap (6): the 5 `test_rsa_key_wrapping` legs fail
-  with `MECHANISM_INVALID` (no RSA wrap routes); plus
-  `test_oaep_error_uniformity` (OAEP decrypt answers
-  `GENERAL_ERROR` vs `ENCRYPTED_DATA_INVALID` non-uniformly —
-  padding-oracle vector, error taxonomy fix).
-- T6 buffer guards (4): CBC-PAD final retry length (32 vs 16),
-  one-byte `Update` output accepted (encrypt + decrypt),
-  `GetAttributeValue` guard.
-- External (3, no spec-compliant code fix): `eddsa_wrong_length`
-  fails inside the oracle's own int-path mechanism gate, which
-  asserts `CKR_OK` from `C_GetMechanismInfo` and crashes on our
-  spec-correct `MECHANISM_INVALID` for unadvertised `CKM_EDDSA`;
-  the 2 HOTP `mech_negative` legs assert inside the oracle's static
+- External (2, no spec-compliant code fix): the 2 HOTP
+  `mech_negative` legs assert inside the oracle's static
   registry (`MechConfig.key_type is None` for HOTP).
+  (`eddsa_wrong_length` was fixed oracle-side in 0.2.1.)
+- Cleared in round 9 (r18→r19): T5 session/login (10: 3× RO
+  session-object refusal, 2× public-creates-private, 3×
+  context-login-without-op, 2× cross-session modify),
+  stragglers (2: copy-to-private, oversized `CKA_VALUE_LEN`),
+  T8 RSA wrap/unwrap (6: 5× wrap routes, OAEP error
+  uniformity). T5a/b/c/d + T8 shipped in commits
+  `589677f` (v1.5 engine) and `ebd150b` (RSA wrap end to
+  end). `test_kdf` stays 0 failed.
 - Cleared in round 8: T1 template attributes (27), x509 cert fix
   (9), T2 RSA keygen (12 cleared, 6 new T8 surfaced), T3 P-384
-  (2), T7 GCM (2). `test_kdf` stays 0 failed.
+  (2), T7 GCM (2).
 
 ## Skip census (r3: 3732 skipped)
 
