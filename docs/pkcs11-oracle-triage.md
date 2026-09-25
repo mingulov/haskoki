@@ -10,7 +10,8 @@ not per test.
 
 ## Fast-lane results across fix rounds
 
-Total collected: 5762 each run. Summaries are authoritative; the per-test
+Total collected varies by framework checkout (r11: 5780; r14: 5798;
+r15: 5820). Summaries are authoritative; the per-test
 records list interesting outcomes only (see Method).
 
 | Round | Passed | Failed | XFailed | Skipped | Child crashes |
@@ -27,6 +28,10 @@ records list interesting outcomes only (see Method).
 | r9 (ECDH + SHA-KDF C arms) | 1744 | 92 | 367 | 3577 | 0 |
 | r10 (SHA-KDF key-type gate) | 1756 | 81 | 366 | 3577 | 0 |
 | r11 (termination + DigestKey) | 1769 | 71 | 365 | 3575 | 0 |
+| r12 (T1 template attributes) | 2499 | 44 | 358 | 2879 | 0 |
+| r13 (x509 cert-attr fix) | 2519 | 35 | 347 | 2879 | 0 |
+| r14 (T2 RSA keygen) | 2783 | 29 | 397 | 2589 | 0 |
+| r15 (T3 P-384/P-521 + T7 GCM) | 2839 | 25 | 398 | 2558 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -203,55 +208,64 @@ root-cause variants the oracle never probes (it only exercises
 cipher NULL-arg). KAT r5 independently confirms the slice at scale
 (207→72 failed, zero new).
 
-## Remaining fast-lane failures (r11: 71), by cluster
+## Round 8: T1/T2/T3/T7 slices (r12–r15)
+
+Four fix slices landed without per-round triage notes; r15 is the
+first lane proving all of them together.
+
+- r11→r12 (71→44 failed): T1 template attributes
+  (`ALLOWED_MECHANISMS`/`COPYABLE`/`DESTROYABLE`, cert attrs,
+  `C_SetAttributeValue`, `VALUE_LEN` coherence).
+- r12→r13 (44→35 failed): x509 certificate-attribute fix.
+- r13→r14 (35→29 failed): T2 RSA keygen (native EVP keygen +
+  stamping + promotion) clears 12 legs; 6 RSA-wrap legs surface
+  as new failures (T8).
+- r14→r15 (29→25 failed, zero new): T3 P-384/P-521 keygen clears
+  the 2 EC legs (first measured here); T7 AES-GCM clears the 2
+  `test_aead` property legs. All 9 `test_aead` legs now
+  pass-or-designed-skip (crossverify byte-exact vs Python
+  `cryptography`, 96-bit tag fidelity honored, short-ciphertext
+  exact codes, generated-IV legs skip on honest refusal); the 6
+  GCM xfails sit at full AES-CBC parity (weak-tag
+  `honest_deviation`, `ARGUMENTS_BAD`-vs-`PARAM_INVALID`,
+  harness-side keygen). T4 message-API legs never materialized
+  (the oracle skips clean `FUNCTION_NOT_SUPPORTED`).
+
+## Remaining fast-lane failures (r15: 25), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
 `/tmp/pkcs11-ws/pkcs11-check` (import recipes, negotiation, gates).
 Slices ordered by leg count:
 
-- T1 template attributes (~30): every `crossverify`/`interop`/
-  `multipart_streaming` AES/HMAC import leg fails with
-  `ATTRIBUTE_TYPE_INVALID` solely because the template carries
-  `CKA_ALLOWED_MECHANISMS`, which the model `AttributeType` lacks
-  (the `_probe_secret` import without it passes). Same family:
-  `CKA_COPYABLE`/`CKA_DESTROYABLE` unknown to the model (keygen and
-  enforcement legs), `C_SetAttributeValue` unimplemented
-  (`FUNCTION_NOT_SUPPORTED`), oversized `CKA_VALUE_LEN=2^64-1`
-  accepted by create/copy, missing cert attrs
-  (`CERTIFICATE_TYPE`/`SUBJECT`), the data-object value size cap
-  (1 MB/100 KB legs), and the missing encapsulate-on-AES template
-  rule.
-- T2 RSA keygen (12): `verify_signature` (4), `message_crypto` (5),
-  RSA crossverify (2), and `ckr_derive::test_key_type_inconsistent`
-  all fail inside oracle setup at `gen_rsa_keypair` with
-  `MECHANISM_INVALID` — `CKM_RSA_PKCS_KEY_PAIR_GEN` has no backend
-  route. (The derive negative itself is unreachable until this lands.)
-- T3 P-384 (2): EC keygen hard-codes P-256
-  (`KeyManagement.hs`, "Only P-256 executes"); the P-384 crossverify
-  and interop legs fail at keygen.
-- T4 message APIs (up to 9): `C_MessageSign/Verify*` and
-  `C_VerifySignature*` legs currently masked by T2; probe after RSA
-  keygen lands (the oracle skips clean `FUNCTION_NOT_SUPPORTED`).
-- T5 session/login policy (7): RO sessions wrongly refused
-  session-object creation (`SESSION_READ_ONLY`); creation paths
-  ignore login state (private-object keygen succeeds, then readback
-  refuses — a self-contradiction; spec wants `USER_NOT_LOGGED_IN`
-  at creation and for `C_CopyObject` to private); `CKU_CONTEXT_SPECIFIC`
-  login granted with no active op (spec wants
-  `OPERATION_NOT_INITIALIZED`). Login-state machinery exists
-  (`Session.hs`); the creation/login gates are unwired.
+- T5 session/login + stragglers (12): RO sessions wrongly refuse
+  session-object creation (`SESSION_READ_ONLY`, 2 legs) and the
+  RO generate-token leg misbehaves; creation paths ignore login
+  state (public session creates `CKA_PRIVATE` token/session
+  objects that readback then invalidates — spec wants
+  `USER_NOT_LOGGED_IN` at creation — plus `C_CopyObject` to
+  private, 3 legs); `CKU_CONTEXT_SPECIFIC` login granted with no
+  active op (spec wants `OPERATION_NOT_INITIALIZED`, 3 legs).
+  Login-state machinery exists (`Session.hs`); the
+  creation/login gates are unwired. Stragglers: `C_CopyObject`
+  accepts `CKA_VALUE_LEN=2^64-1` (1 leg); cross-session
+  modify/readback fails with `ATTRIBUTE_TYPE_INVALID` (2 legs).
+- T8 RSA wrap/unwrap (6): the 5 `test_rsa_key_wrapping` legs fail
+  with `MECHANISM_INVALID` (no RSA wrap routes); plus
+  `test_oaep_error_uniformity` (OAEP decrypt answers
+  `GENERAL_ERROR` vs `ENCRYPTED_DATA_INVALID` non-uniformly —
+  padding-oracle vector, error taxonomy fix).
 - T6 buffer guards (4): CBC-PAD final retry length (32 vs 16),
-  one-byte `Update` output accepted, `GetAttributeValue` guard.
-- T7 GCM (2): `test_aead` GCM legs call `CKM_AES_GCM` with no
-  capability gate — AEAD support is mandated, not skippable.
+  one-byte `Update` output accepted (encrypt + decrypt),
+  `GetAttributeValue` guard.
 - External (3, no spec-compliant code fix): `eddsa_wrong_length`
   fails inside the oracle's own int-path mechanism gate, which
   asserts `CKR_OK` from `C_GetMechanismInfo` and crashes on our
   spec-correct `MECHANISM_INVALID` for unadvertised `CKM_EDDSA`;
   the 2 HOTP `mech_negative` legs assert inside the oracle's static
   registry (`MechConfig.key_type is None` for HOTP).
-- Cleared in round 7: `test_operation_termination` (8),
-  `test_digest` DigestKey (2). `test_kdf` stays 0 failed.
+- Cleared in round 8: T1 template attributes (27), x509 cert fix
+  (9), T2 RSA keygen (12 cleared, 6 new T8 surfaced), T3 P-384
+  (2), T7 GCM (2). `test_kdf` stays 0 failed.
 
 ## Skip census (r3: 3732 skipped)
 
