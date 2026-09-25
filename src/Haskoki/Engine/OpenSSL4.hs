@@ -62,7 +62,7 @@ import Foreign.ForeignPtr (ForeignPtr, finalizeForeignPtr, newForeignPtr, withFo
 import Foreign.Ptr (Ptr, nullPtr)
 
 import qualified Haskoki.FFI.OpenSSL4.Raw as Raw
-import Haskoki.Der (integerToBE)
+import Haskoki.Der (coveredCurveNames, integerToBE)
 import Haskoki.Engine.Backend
 import Haskoki.Recipe.Ecdh (curveWidthOfName, ecdhPeerWidth)
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
@@ -243,7 +243,7 @@ instance CryptoBackend OpenSSL4 where
           -- execute past the advertised cap set.
           Just (mdname, noHash) -> case ecdsaCurveOfDer kb of
             Nothing -> pure (EngineFail (BackendBadKey "sign"
-              "EC key is not DER on P-256/P-384/P-521"))
+              "EC key is not DER on a covered curve"))
             Just _ -> do
               r <- withForeignPtr (osslEnv env) $ \_ ->
                 Raw.ecdsaSign (osslCtx env) mdname (osslPropQ env) kb msg (sigWantRaw spec) noHash
@@ -285,7 +285,7 @@ instance CryptoBackend OpenSSL4 where
           -- Same curve allowlist as sign: before any native call.
           Just (mdname, noHash) -> case ecdsaCurveOfDer kb of
             Nothing -> pure (EngineFail (BackendBadKey "verify"
-              "EC key is not DER on P-256/P-384/P-521"))
+              "EC key is not DER on a covered curve"))
             Just _ -> do
               rc <- withForeignPtr (osslEnv env) $ \_ ->
                 Raw.ecdsaVerify (osslCtx env) mdname (osslPropQ env) kb msg sig (sigWantRaw spec) noHash
@@ -556,8 +556,11 @@ ossl4Caps version propq = BackendCaps
   }
 
 -- | The ECDSA curve set: the NIST prime curves.
+-- | The ECDSA curve set: every covered curve (deliberately
+-- maximal — weak sub-224-bit and binary rows ride for oracle
+-- coverage, never as a deployment recommendation).
 t16EcdsaCurves :: [String]
-t16EcdsaCurves = ["P-256", "P-384", "P-521"]
+t16EcdsaCurves = coveredCurveNames
 
 -- | ECDSA capability names over curves and digests: one
 -- hash-and-sign name per (curve, fixed-width digest) plus the raw

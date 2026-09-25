@@ -26,6 +26,7 @@ module Haskoki.Der
   , curveOidOfParams
   , curveCoordLen
   , curveTable
+  , coveredCurveNames
   , integerToBE
   , RsaCrt (..)
   , parseRsaPrivate
@@ -37,6 +38,7 @@ module Haskoki.Der
 import Data.Bits (shiftR, (.&.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BC8
 import Data.List (find)
 import Data.Word (Word8)
 
@@ -158,6 +160,10 @@ curveTable =
   , ("sect571k1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x26], 72)
   , ("sect571r1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x27], 72)
   ]
+
+-- | Covered engine curve names (the 'curveTable' name column).
+coveredCurveNames :: [String]
+coveredCurveNames = [BC8.unpack n | (n, _, _) <- curveTable]
 
 -- | Resolve engine curve names (@"P-256"@, …) or raw DER OIDs to the
 -- DER OID. Anything else is unsupported ('Nothing'). The OID table

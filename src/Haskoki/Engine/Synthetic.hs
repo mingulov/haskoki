@@ -98,6 +98,7 @@ import Haskoki.Engine.Backend
   )
 import Haskoki.Der
   ( RsaCrt (..)
+  , coveredCurveNames
   , curveTable
   , integerToBE
   , parseRsaPrivate
@@ -693,7 +694,7 @@ synthCaps = BackendCaps
   , bcMacs = MacCaps { mcSpecs = synthMacSpecs }
   , bcSigs = SigCaps
       { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames)
-      , scCurves = Set.fromList ["P-256", "P-384", "P-521"]
+      , scCurves = Set.fromList coveredCurveNames
       , scPqcSign = Set.empty
       }
   , bcKems = KemCaps { kcAlgs = Set.fromList [ML_KEM_512, ML_KEM_768, ML_KEM_1024] }
@@ -706,7 +707,7 @@ synthCaps = BackendCaps
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 72-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC P-256/P-384/P-521 pairs; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -750,7 +751,7 @@ synthRsaSpecNames =
 synthEcdsaSpecNames :: [String]
 synthEcdsaSpecNames =
   [ name
-  | curve <- ["P-256", "P-384", "P-521"]
+  | curve <- coveredCurveNames
   , spec <- SigECDSA (EcSpec curve "DER") Nothing :
       [ SigECDSA (EcSpec curve "DER") (Just alg) | alg <- synthEcdsaAlgs ]
   , Just name <- [ecdsaSigCap spec]
@@ -781,7 +782,7 @@ synthMacNotes =
 synthEcdsaNotes :: [(String, String)]
 synthEcdsaNotes =
   [ (name, note spec)
-  | curve <- ["P-256", "P-384", "P-521"]
+  | curve <- coveredCurveNames
   , spec <- SigECDSA (EcSpec curve "DER") Nothing :
       [ SigECDSA (EcSpec curve "DER") (Just alg)
       | alg <- [minBound .. maxBound]

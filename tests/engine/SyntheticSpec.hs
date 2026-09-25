@@ -889,8 +889,26 @@ caseCapsFull = withSynth "11" $ \env -> do
   assertBool "ecdsa-p256-sha256 advertised"
     (Set.member "ECDSA-P-256-SHA256" (scSpecs (bcSigs caps)))
   -- The RSA v1.5 names join the signature set.
+  -- The ECDSA names (22 curves x 13 digests + 22 raw), generated
+  -- over explicit dimensions so a dropped curve or digest fails.
+  let dsaCurves =
+        [ "P-256", "P-384", "P-521", "secp224r1", "secp224k1"
+        , "secp256k1", "secp192r1", "secp192k1", "secp160r1"
+        , "secp160r2", "secp160k1", "brainpoolP224r1"
+        , "brainpoolP256r1", "brainpoolP320r1", "brainpoolP384r1"
+        , "brainpoolP512r1", "sect283k1", "sect283r1", "sect409k1"
+        , "sect409r1", "sect571k1", "sect571r1"
+        ]
+      dsaStems =
+        [ "MD5", "SHA1", "SHA224", "SHA256", "SHA384", "SHA512"
+        , "SHA512-224", "SHA512-256", "SHA3-224", "SHA3-256"
+        , "SHA3-384", "SHA3-512", "RIPEMD160"
+        ]
+      dsaNames =
+        ["ECDSA-" ++ c ++ "-RAW" | c <- dsaCurves]
+          ++ ["ECDSA-" ++ c ++ "-" ++ s | c <- dsaCurves, s <- dsaStems]
   assertEqual "sig set" (Set.fromList
-    [ "RSA-PSS"
+    ([ "RSA-PSS"
     , "RSA-RAW"
     , "RSA-PKCS1v15-MD5", "RSA-PKCS1v15-SHA1"
     , "RSA-PKCS1v15-SHA224", "RSA-PKCS1v15-SHA256"
@@ -898,51 +916,8 @@ caseCapsFull = withSynth "11" $ \env -> do
     , "RSA-PKCS1v15-SHA3-224", "RSA-PKCS1v15-SHA3-256"
     , "RSA-PKCS1v15-SHA3-384", "RSA-PKCS1v15-SHA3-512"
     , "RSA-PKCS1v15-RIPEMD160"
-    -- The ECDSA names (3 curves x 13 digests + 3 raw).
-    , "ECDSA-P-256-RAW"
-    , "ECDSA-P-256-MD5"
-    , "ECDSA-P-256-SHA1"
-    , "ECDSA-P-256-SHA224"
-    , "ECDSA-P-256-SHA256"
-    , "ECDSA-P-256-SHA384"
-    , "ECDSA-P-256-SHA512"
-    , "ECDSA-P-256-SHA512-224"
-    , "ECDSA-P-256-SHA512-256"
-    , "ECDSA-P-256-SHA3-224"
-    , "ECDSA-P-256-SHA3-256"
-    , "ECDSA-P-256-SHA3-384"
-    , "ECDSA-P-256-SHA3-512"
-    , "ECDSA-P-256-RIPEMD160"
-    , "ECDSA-P-384-RAW"
-    , "ECDSA-P-384-MD5"
-    , "ECDSA-P-384-SHA1"
-    , "ECDSA-P-384-SHA224"
-    , "ECDSA-P-384-SHA256"
-    , "ECDSA-P-384-SHA384"
-    , "ECDSA-P-384-SHA512"
-    , "ECDSA-P-384-SHA512-224"
-    , "ECDSA-P-384-SHA512-256"
-    , "ECDSA-P-384-SHA3-224"
-    , "ECDSA-P-384-SHA3-256"
-    , "ECDSA-P-384-SHA3-384"
-    , "ECDSA-P-384-SHA3-512"
-    , "ECDSA-P-384-RIPEMD160"
-    , "ECDSA-P-521-RAW"
-    , "ECDSA-P-521-MD5"
-    , "ECDSA-P-521-SHA1"
-    , "ECDSA-P-521-SHA224"
-    , "ECDSA-P-521-SHA256"
-    , "ECDSA-P-521-SHA384"
-    , "ECDSA-P-521-SHA512"
-    , "ECDSA-P-521-SHA512-224"
-    , "ECDSA-P-521-SHA512-256"
-    , "ECDSA-P-521-SHA3-224"
-    , "ECDSA-P-521-SHA3-256"
-    , "ECDSA-P-521-SHA3-384"
-    , "ECDSA-P-521-SHA3-512"
-    , "ECDSA-P-521-RIPEMD160"
-    ]) (scSpecs (bcSigs caps))
-  assertEqual "curves" (Set.fromList ["P-256", "P-384", "P-521"]) (scCurves (bcSigs caps))
+    ] ++ dsaNames)) (scSpecs (bcSigs caps))
+  assertEqual "curves" (Set.fromList dsaCurves) (scCurves (bcSigs caps))
   assertEqual "no pqc sig" Set.empty (scPqcSign (bcSigs caps))
   assertEqual "kem set"
     (Set.fromList [ML_KEM_512, ML_KEM_768, ML_KEM_1024]) (kcAlgs (bcKems caps))

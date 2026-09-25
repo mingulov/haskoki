@@ -73,6 +73,7 @@ import qualified Data.ByteString as BS
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 
+import Haskoki.Der (coveredCurveNames)
 import Haskoki.Types (EngineResourceId (..), redactShown)
 
 -- | Opaque backend-side key reference (registry id + public fingerprint).
@@ -228,13 +229,13 @@ rsaPssCap _ = Nothing
 
 -- | Capability string required by one ECDSA spec:
 -- @ECDSA-<curve>-<digest stem>@ for hash-and-sign,
--- @ECDSA-<curve>-RAW@ for the raw row. Curves cover the NIST prime
--- set (P-256/P-384/P-521), encodings DER/RAW, digests the
+-- @ECDSA-<curve>-RAW@ for the raw row. Curves cover the full
+-- 'Haskoki.Der.curveTable' set, encodings DER/RAW, digests the
 -- fixed-width set. 'Nothing' means the spec is never servable
 -- (non-ECDSA family, off-set curve/encoding, or an XOF digest).
 ecdsaSigCap :: SigSpec -> Maybe String
 ecdsaSigCap (SigECDSA (EcSpec curve enc) digest)
-  | curve `elem` ["P-256", "P-384", "P-521"]
+  | curve `elem` coveredCurveNames
   , enc == "DER" || enc == "RAW" = case digest of
       Nothing -> Just ("ECDSA-" ++ curve ++ "-RAW")
       Just alg -> (("ECDSA-" ++ curve ++ "-") ++) <$> digestMacStem alg
@@ -344,7 +345,7 @@ data RsaCipherParams = RsaOaep OaepParams | RsaPkcs1
   deriving (Eq, Show)
 
 data EcSpec = EcSpec
-  { ecCurve :: !String -- "P-256" | "P-384" | "P-521" | "Ed25519" | ...
+  { ecCurve :: !String -- coveredCurveNames | "Ed25519" | ...
   , ecEncoding :: !String -- "DER" | "RAW" | "COMPRESSED" | "UNCOMPRESSED"
   } deriving (Eq, Show)
 
