@@ -35,6 +35,11 @@
 
 #define HSK_OSSL4_MAX_PROV 4
 
+/* Largest EC coordinate width over the covered curves (sect571, 72
+ * bytes; P-521's 66 no longer the max). Uncompressed-point scratch
+ * buffers derive from this. */
+#define HSK_OSSL4_EC_MAX_COORD 72
+
 struct hsk_ossl4_md {
     EVP_MD_CTX *mctx;
     EVP_MD *md;
@@ -958,7 +963,7 @@ static EVP_PKEY *hsk_ossl4_load_raw_point(OSSL_LIB_CTX *ctx, const char *propq,
  * (0x04 || X || Y). Returns 1 on success, 0 otherwise. */
 static int hsk_ossl4_ec_coordlen(EVP_PKEY *pkey, size_t *coordlen)
 {
-    unsigned char point[1 + 2 * 66]; /* 0x04 || X || Y, P-521 max */
+    unsigned char point[1 + 2 * HSK_OSSL4_EC_MAX_COORD]; /* 0x04 || X || Y */
     size_t pointlen = 0;
 
     if (!EVP_PKEY_get_octet_string_param(pkey,
@@ -1050,7 +1055,7 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
         ECDSA_SIG *sig = d2i_ECDSA_SIG(NULL, &p, (long)derlen);
         const BIGNUM *r = NULL, *s = NULL;
         unsigned char *raw = NULL;
-        unsigned char point[1 + 2 * 66]; /* 0x04 || X || Y, P-521 max */
+        unsigned char point[1 + 2 * HSK_OSSL4_EC_MAX_COORD]; /* 0x04 || X || Y */
         size_t pointlen = 0;
         size_t coordlen = 0;
         if (sig == NULL)
