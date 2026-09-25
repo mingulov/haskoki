@@ -92,6 +92,7 @@ import Haskoki.Operation
   , lookupSingle
   , msgFamilyKind
   , msgFamilyOp
+  , opsActive
   , retryStaged
   , stagedOf
   , streamOf
@@ -525,7 +526,7 @@ planLogin rules model req st =
           }
         Just auth ->
           let roExists = any ssReadOnly (sessionsOnSlot model slot)
-          in case loginAttempt rules auth roExists kind mName pin of
+          in case loginAttempt rules auth roExists (opsActive (ssOps st)) kind mName pin of
             LoginDenied deny auth' -> Reject Rejection
               { rejCode = denyCode deny
               , rejOutputs = []

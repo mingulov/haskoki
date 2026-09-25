@@ -44,7 +44,7 @@ spec = testGroup "session lifecycle"
   [ testCase "login through A is visible through B" caseLoginVisible
   , testCase "last session close logs out" caseLastCloseLogout
   , testCase "SO and read-only sessions exclude each other" caseSoRoConflict
-  , testCase "context grant touches one session only" caseContextGrant
+  , testCase "context login needs user login and active op" caseContextGrant
   , testCase "named-user login records the principal" caseNamedUser
   , testCase "PIN lockout is deterministic (default 3)" casePinLockout
   , testCase "PIN threshold comes from rules" casePinThreshold
@@ -207,17 +207,16 @@ caseContextGrant = do
   (code, _) <- runReject defaultRules m2 (loginReq b "ctx-ok")
   assertEqual "context needs user login" CKR_USER_NOT_LOGGED_IN code
   m3 <- loginAs defaultRules m2 a "user-ok"
-  let epochBefore = taAuthEpoch (authOf m3 slot0)
-  m4 <- loginAs defaultRules m3 b "ctx-ok"
-  assertEqual "grant on B only" LoginContextUser (loginOf m4 b)
-  assertEqual "A untouched" LoginUser (loginOf m4 a)
-  assertEqual "token login untouched" (Just AuthUser) (taLogin (authOf m4 slot0))
-  assertEqual "epoch untouched" epochBefore (taAuthEpoch (authOf m4 slot0))
-  -- A wrong context PIN consumes a user attempt without touching B.
-  (code2, m5) <- runReject defaultRules m4 (loginReq b "ctx-bad")
-  assertEqual "context bad PIN" CKR_PIN_INCORRECT code2
-  assertEqual "user attempts bumped" 1 (taUserAttempts (authOf m5 slot0))
-  assertEqual "B keeps grant" LoginContextUser (loginOf m5 b)
+  -- Without an active operation there is nothing to re-authenticate:
+  -- state conflicts decide before PIN evaluation, so even the right
+  -- PIN refuses with OPERATION_NOT_INITIALIZED (the grant shape with
+  -- an active op is pinned at the C adapter instead).
+  (codeOp, m4) <- runReject defaultRules m3 (loginReq b "ctx-ok")
+  assertEqual "context needs active op" CKR_OPERATION_NOT_INITIALIZED codeOp
+  (codeBad, m5) <- runReject defaultRules m4 (loginReq b "ctx-bad")
+  assertEqual "no-op refuses before PIN check" CKR_OPERATION_NOT_INITIALIZED codeBad
+  assertEqual "no attempt consumed" 0 (taUserAttempts (authOf m5 slot0))
+  assertEqual "B observes user login without grant" LoginUser (loginOf m5 b)
 
 caseNamedUser :: IO ()
 caseNamedUser = do

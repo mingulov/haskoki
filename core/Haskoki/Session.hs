@@ -8,9 +8,10 @@ optional named-user principal.
 
 Check order inside 'loginAttempt' (documented, tested): state
 conflicts (already/another logged in, SO/RO exclusion,
-context-requires-user-login) are decided BEFORE PIN evaluation, so a
-call that cannot succeed never consumes an attempt. A locked role
-denies everything for that role, including conflict-shaped calls.
+context-requires-user-login, context-needs-active-op) are decided
+BEFORE PIN evaluation, so a call that cannot succeed never consumes
+an attempt. A locked role denies everything for that role,
+including conflict-shaped calls.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Session
@@ -112,6 +113,7 @@ data LoginDeny
   | DenyPinLocked
   | DenyReadOnlyExists
   | DenyUserNotLoggedIn
+  | DenyNoActiveOp
   deriving (Eq, Show)
 
 -- | Source-defined return code for each denial.
@@ -123,6 +125,7 @@ denyCode d = case d of
   DenyPinLocked -> CKR_PIN_LOCKED
   DenyReadOnlyExists -> CKR_SESSION_READ_ONLY_EXISTS
   DenyUserNotLoggedIn -> CKR_USER_NOT_LOGGED_IN
+  DenyNoActiveOp -> CKR_OPERATION_NOT_INITIALIZED
 
 -- | A login attempt always yields the token state to persist (failed
 -- attempts move counters) plus either the denial or the granted
@@ -140,11 +143,12 @@ loginAttempt
   :: Rules
   -> TokenAuth
   -> Bool -- ^ a read-only session is open on this slot
+  -> Bool -- ^ the session has an active operation
   -> LoginKind
   -> Maybe String -- ^ named-user principal ('Nothing' = default)
   -> PinCheck
   -> LoginOutcome
-loginAttempt rules auth roExists kind mName pin =
+loginAttempt rules auth roExists hasOp kind mName pin =
   let limit = max 1 (rulesMaxPinAttempts rules)
       locked = case kind of
         LoginAsUser -> taUserLocked auth
@@ -152,15 +156,15 @@ loginAttempt rules auth roExists kind mName pin =
         LoginAsSO -> taSoLocked auth
   in if locked
     then LoginDenied DenyPinLocked auth
-    else case checkConflict auth roExists kind of
+    else case checkConflict auth roExists hasOp kind of
       Just deny -> LoginDenied deny auth
       Nothing -> case pin of
         PinIncorrect -> LoginDenied (bump limit) (bumpAuth limit)
         PinCorrect -> LoginGranted (grantAuth kind mName) (grantLogin kind)
   where
     -- State conflicts first: a doomed call consumes no attempts.
-    checkConflict :: TokenAuth -> Bool -> LoginKind -> Maybe LoginDeny
-    checkConflict a ro k = case k of
+    checkConflict :: TokenAuth -> Bool -> Bool -> LoginKind -> Maybe LoginDeny
+    checkConflict a ro hasActive k = case k of
       LoginAsUser -> case taLogin a of
         Just AuthSO -> Just DenyAnotherLoggedIn
         Just AuthUser -> Just DenyAlreadyLoggedIn
@@ -172,7 +176,9 @@ loginAttempt rules auth roExists kind mName pin =
           | ro -> Just DenyReadOnlyExists
           | otherwise -> Nothing
       LoginAsContext -> case taLogin a of
-        Just AuthUser -> Nothing
+        Just AuthUser
+          | hasActive -> Nothing
+          | otherwise -> Just DenyNoActiveOp
         Just AuthSO -> Just DenyAnotherLoggedIn
         Nothing -> Just DenyUserNotLoggedIn
     -- Failed attempt: bump the role counter, lock at the limit.

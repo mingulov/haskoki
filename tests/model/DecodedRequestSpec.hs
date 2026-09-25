@@ -71,6 +71,7 @@ import Haskoki.FFI.Standard
   , haskokiStdFindInit
   , haskokiStdGenerateKey
   , haskokiStdGetOneAttr
+  , haskokiStdLogin
   , haskokiStdOpenSession
   , haskokiStdSetAttributeValue
   , haskokiStdSignInit
@@ -163,6 +164,7 @@ spec = testGroup "Decoded requests"
   , testCase "Session objects admitted on read-only sessions" caseRoTokenDimension
   , testCase "Read-only sessions read and compute" caseRoAllowed
   , testCase "Public sessions refuse private creation" casePublicPrivateRefusals
+  , testCase "Context login needs an active operation" caseContextLoginOpGate
   , testCase "DecodedRequest Show redacts templates" caseShowRedacts
     ]
   , testGroup "async construction"
@@ -823,6 +825,26 @@ casePublicPrivateRefusals = do
     Nothing -> assertFailure "public/private refusals wedged (30s timeout)"
     Just () -> pure ()
 
+-- | Context login through the C adapter needs an active operation
+-- to re-authenticate: user login on A, then context login on B
+-- refuses while B is idle and grants once B holds a digest.
+caseContextLoginOpGate :: IO ()
+caseContextLoginOpGate = do
+  mTimed <- timeout 30000000 $ withManualInstance [slot0] $ \inst -> do
+    hA <- openRwSession inst 0
+    hB <- openRwSession inst 0
+    rvLogin <- loginViaC inst hA 1 "1234"
+    assertEqual "user login" (CULong 0) rvLogin
+    rvBare <- loginViaC inst hB 2 "1234"
+    assertEqual "context without op" (CULong 0x91) rvBare
+    rvInit <- digestInitViaC inst hB sha256Mech BS.empty
+    assertEqual "digest init" (CULong 0) rvInit
+    rvCtx <- loginViaC inst hB 2 "1234"
+    assertEqual "context with op grants" (CULong 0) rvCtx
+  case mTimed of
+    Nothing -> assertFailure "context op gate wedged (30s timeout)"
+    Just () -> pure ()
+
 -- | AES-128 keygen template (CKO_SECRET_KEY, CKK_AES, 16 bytes).
 aesGenTmpl :: [(AttributeType, AttributeValue)]
 aesGenTmpl =
@@ -1302,6 +1324,13 @@ digestInitViaC inst hSession (MechanismId mech) params =
   BS.useAsCStringLen params $ \(p, n) ->
     haskokiStdDigestInit inst hSession (CULong (fromIntegral mech))
       (castPtr p) (fromIntegral n)
+
+-- | Log in through the C adapter (userType 0=SO, 1=user,
+-- 2=context); returns the CK_RV.
+loginViaC :: StablePtr StdInstance -> CULong -> CULong -> ByteString -> IO CULong
+loginViaC inst hSession userType pin =
+  BS.useAsCStringLen pin $ \(p, n) ->
+    haskokiStdLogin inst hSession userType (castPtr p) (fromIntegral n)
 
 -- | Initialize a sign operation through the C adapter over one key.
 signInitViaC :: StablePtr StdInstance -> CULong -> MechanismId -> ByteString

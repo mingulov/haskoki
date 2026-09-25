@@ -675,10 +675,28 @@ int main(int argc, char **argv) {
     rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
     CHECKC(rv == CKR_OK, "user login for context re-auth");
     rv = f->C_Login(sess, CKU_CONTEXT_SPECIFIC, (CK_UTF8CHAR_PTR) "1234", 4);
-    CHECKC(rv == CKR_OK, "context re-auth ok");
-    rv = f->C_GetSessionInfo(sess, &sinfo);
-    CHECKC(rv == CKR_OK && sinfo.state == CKS_RW_USER_FUNCTIONS,
-           "context session shows user functions");
+    CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+           "context re-auth needs an active op");
+    {
+      /* The op and the re-auth live on a scratch session: an
+       * unspent context grant is spendable only on pending
+       * always-authenticate slots, so finalizing the plain digest
+       * here would refuse; closing the scratch session drops it. */
+      CK_SESSION_HANDLE csess = 0;
+      CK_MECHANISM dmech = { CKM_SHA256, NULL_PTR, 0 };
+      rv = f->C_OpenSession(here, CKF_RW_SESSION | CKF_SERIAL_SESSION,
+                            NULL_PTR, NULL_PTR, &csess);
+      CHECKC(rv == CKR_OK && csess != 0, "scratch session for re-auth");
+      rv = f->C_DigestInit(csess, &dmech);
+      CHECKC(rv == CKR_OK, "digest init for context re-auth");
+      rv = f->C_Login(csess, CKU_CONTEXT_SPECIFIC, (CK_UTF8CHAR_PTR) "1234", 4);
+      CHECKC(rv == CKR_OK, "context re-auth ok");
+      rv = f->C_GetSessionInfo(csess, &sinfo);
+      CHECKC(rv == CKR_OK && sinfo.state == CKS_RW_USER_FUNCTIONS,
+             "context session shows user functions");
+      rv = f->C_CloseSession(csess);
+      CHECKC(rv == CKR_OK, "scratch session closed");
+    }
     rv = f->C_Logout(sess);
     CHECKC(rv == CKR_OK, "logout after context ok");
     rv = f->C_Login(sess, 99, (CK_UTF8CHAR_PTR) "1234", 4);

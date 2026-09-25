@@ -39,6 +39,7 @@ module Haskoki.Operation.State
   , emptySessionOps
   , activeSlots
   , hasDual
+  , opsActive
   , dirKind
   , kindOccupied
   , slotAuth
@@ -351,6 +352,12 @@ activeSlots ops =
 -- | Whether a dual operation is active.
 hasDual :: SessionOps -> Bool
 hasDual = isJust . soDual
+
+-- | Whether any operation is active (any single slot or the dual).
+-- Context-specific login requires one: there must be an operation
+-- to re-authenticate.
+opsActive :: SessionOps -> Bool
+opsActive = not . null . activeSlots
 
 -- | Whether a slot is occupied by a single or by the dual.
 kindOccupied :: SessionOps -> SlotKind -> Bool
