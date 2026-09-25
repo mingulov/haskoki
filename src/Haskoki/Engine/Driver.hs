@@ -155,6 +155,8 @@ import Haskoki.Recipe.Cipher
   , cipherKeyLenValid
   , cipherParamsValid
   , cipherRecipeFor
+  , ctrRecipeFor
+  , decodeCtrParams
   )
 import Haskoki.Recipe.Ecdh
   ( EcdhRecipe (..)
@@ -454,11 +456,13 @@ isGcmMech mech = isJust (gcmRecipeFor mech)
 
 -- | Recipe row + key length onto the backend width. @CKM_AES_CBC_PAD@
 -- shares the CBC specs (the planner pads before the effect input is
--- fixed); Triple-DES widths collapse (the engines expand two-key
--- material to @K1||K2||K1@).
+-- fixed); @CKM_AES_CTR@ maps its three widths (the counter block is
+-- split from the parameter image in 'runCipher'); Triple-DES widths
+-- collapse (the engines expand two-key material to @K1||K2||K1@).
 cipherCtor :: MechanismName -> Int -> Maybe CipherSpec
 cipherCtor name keyLen
   | name == "CKM_AES_CBC" || name == "CKM_AES_CBC_PAD" = aesCbc keyLen
+  | name == "CKM_AES_CTR" = aesCtr keyLen
   | name == "CKM_AES_ECB" = aesEcb keyLen
   | name == "CKM_DES3_CBC" = des3 C_DES3_CBC
   | name == "CKM_DES3_ECB" = des3 C_DES3_ECB
@@ -474,6 +478,11 @@ cipherCtor name keyLen
       16 -> Just C_AES128_CBC
       24 -> Just C_AES192_CBC
       32 -> Just C_AES256_CBC
+      _ -> Nothing
+    aesCtr n = case n of
+      16 -> Just C_AES128_CTR
+      24 -> Just C_AES192_CTR
+      32 -> Just C_AES256_CTR
       _ -> Nothing
     aesEcb n = case n of
       16 -> Just C_AES128_ECB
@@ -978,11 +987,23 @@ runEffect env resolve fx = case fx of
       KeyBytes kb -> case cipherSpecFor mech (BS.length kb) iv of
         Nothing -> pure (GotCryptoError (CryptoFailed
           "driver: cipher (mechanism, key length, params) rejected by the recipe"))
-        Just spec -> case dir of
-          DirEncrypt -> toBytes <$> cipherEncrypt env spec key iv input
-          DirDecrypt -> toBytes <$> cipherDecrypt env spec key iv input
+        -- CTR parameters are the canonical image, not the raw
+        -- counter block: split the served 128-bit image (the recipe
+        -- already validated it; a mistimed image fails closed).
+        Just spec -> case ctrImage iv of
+          Nothing -> pure (GotCryptoError (CryptoFailed
+            "driver: CTR parameter image rejected"))
+          Just cb -> case dir of
+            DirEncrypt -> toBytes <$> cipherEncrypt env spec key cb input
+            DirDecrypt -> toBytes <$> cipherDecrypt env spec key cb input
       _ -> pure (GotCryptoError (CryptoBadKey "driver"
         "block ciphers need raw symmetric key bytes"))
+      where
+        ctrImage params = case ctrRecipeFor mech of
+          Just _ -> case decodeCtrParams params of
+            Just (128, cb) -> Just cb
+            _ -> Nothing
+          Nothing -> Just params
 
     -- | AEAD cipher effects: the @gcm-params/1@ image decodes to
     -- (IV, AAD, tag length); the key length selects the AES width.

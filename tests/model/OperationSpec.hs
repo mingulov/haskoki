@@ -786,6 +786,17 @@ caseUpdateSplitTable = do
     (cipherUpdateSplit oaep (CipherSpec 16 False) DirEncrypt 64)
   assertEqual "zero block buffers" (0, 32)
     (cipherUpdateSplit cbc (CipherSpec 0 False) DirEncrypt 32)
+  -- CTR streams whole counter blocks despite its unit shape (the
+  -- partial tail retains for final: the chain cannot name a
+  -- mid-block offset).
+  let ctr = MechanismId 0x1086
+      stream = CipherSpec 1 False
+  mapM_ (\(total, want) -> do
+      assertEqual ("ctr enc " ++ show total) want
+        (cipherUpdateSplit ctr stream DirEncrypt total)
+      assertEqual ("ctr dec " ++ show total) want
+        (cipherUpdateSplit ctr stream DirDecrypt total)
+    ) [(0, (0, 0)), (15, (0, 15)), (16, (16, 0)), (20, (16, 4)), (31, (16, 15)), (32, (32, 0))]
 
 caseUpdateShortNoConsume :: IO ()
 caseUpdateShortNoConsume = do

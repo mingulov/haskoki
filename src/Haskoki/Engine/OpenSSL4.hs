@@ -611,11 +611,13 @@ osslRsaNotes algs =
 
 -- | The cipher set: every backend spec the block-cipher
 -- recipe reaches (AES/ARIA/CAMELLIA CBC+ECB at three widths plus
--- Triple-DES CBC+ECB). Candidates that fail the fetch probe are
--- narrowed out of the advertised caps (never silently kept).
+-- Triple-DES CBC+ECB, plus AES CTR at three widths). Candidates
+-- that fail the fetch probe are narrowed out of the advertised
+-- caps (never silently kept).
 t16CipherSpecs :: [CipherSpec]
 t16CipherSpecs =
   [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
+  , C_AES128_CTR, C_AES192_CTR, C_AES256_CTR
   , C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
   , C_DES3_CBC, C_DES3_ECB
   , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
@@ -632,7 +634,8 @@ osslCipherNotes specs =
   where
     cipherNote spec =
       "no padding; key " ++ keyNote spec
-        ++ ", iv " ++ show (cipherIvLen spec) ++ " bytes, input block-aligned"
+        ++ ", iv " ++ show (cipherIvLen spec) ++ " bytes, input "
+        ++ (if cipherBlockLen spec == 1 then "any length" else "block-aligned")
     keyNote spec =
       intercalate "/" (map show (cipherKeyLens spec)) ++ " bytes"
 
@@ -922,11 +925,16 @@ cipherFetchName spec = case spec of
   C_CAMELLIA256_ECB -> "CAMELLIA-256-ECB"
 
 -- | Block width in bytes per cipher spec: 8 for Triple-DES, 16 for
--- the AES family (CBC alignment; ECB shares the width).
+-- the AES family (CBC alignment; ECB shares the width), 1 for the
+-- CTR stream specs (any input length; the provider reports the
+-- stream block size 1 too, so the shim gate agrees).
 cipherBlockLen :: CipherSpec -> Int
 cipherBlockLen spec = case spec of
   C_DES3_CBC -> 8
   C_DES3_ECB -> 8
+  C_AES128_CTR -> 1
+  C_AES192_CTR -> 1
+  C_AES256_CTR -> 1
   _ -> 16
 
 -- | Expand two-key Triple-DES material (@K1||K2@) to the three-key

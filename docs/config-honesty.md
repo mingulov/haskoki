@@ -31,7 +31,7 @@ Counts: E=27 pure + 1 dual (`storage.path`, E/R) + R=9 pure + D=6.
 | `storage.path` | E/R | sqlite opens it; memory+path refused (ignored otherwise) | `FfiAsyncSpec` + `ConfigHonestySpec` memory-path refusal |
 | `storage.busy_timeout_ms` | R | pinned 5000 at open; only 5000 accepted | `ConfigHonestySpec` busy refusal |
 | `storage.exclusive_provider_ownership` | R | always single-writer O_EXCL; `false` refused | `ConfigHonestySpec` exclusive refusal |
-| `engine.kind` | E | validated + selects the reported active catalog (109 vs 107 rows); native paths always bind OpenSSL4 (disclosed by the `native-engine` line) | `CtlSpec` capabilities + native-scope |
+| `engine.kind` | E | validated + selects the reported active catalog (110 vs 108 rows); native paths always bind OpenSSL4 (disclosed by the `native-engine` line) | `CtlSpec` capabilities + native-scope |
 | `engine.allow_synthetic_fallback` | R | no fallback exists; `true` refused | `ConfigHonestySpec` fallback refusal |
 | `engine.private_library_context` | R | native OpenSSL4 always opens a private libctx; `false` refused, default `true` | `ConfigHonestySpec` privctx refusal + default |
 | `async.executor` | E | must be `"logical"` | `ConfigHonestySpec` executor refusal |

@@ -841,11 +841,11 @@ aeadDescs =
   | r <- gcmRecipes
   ]
 
--- | The curated population: 109 reviewed behavior descriptors
+-- | The curated population: 110 reviewed behavior descriptors
 -- with concrete rules, plus the full header inventory (464
 -- canonical rows covering all 480 header CKM names) folded in from
--- the generated table. Catalog-only rows (355: everything but the
--- 109 behavior ids) stay in the coverage denominator but never
+-- the generated table. Catalog-only rows (354: everything but the
+-- 110 behavior ids) stay in the coverage denominator but never
 -- become executable. The catalog covers the full inventory.
 curatedRegistry :: Registry
 curatedRegistry =

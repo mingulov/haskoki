@@ -54,6 +54,7 @@ import Haskoki.Registry (MechanismId (..), Operation (..))
 import Haskoki.Registry.Generated
   ( ckm_AES_CBC
   , ckm_AES_CBC_PAD
+  , ckm_AES_CTR
   , ckm_AES_ECB
   , ckm_AES_GCM
   , ckm_ARIA_CBC
@@ -190,7 +191,8 @@ decodeInitInput bs = do
 -- already cover them -- only this gate was missing).
 -- The remaining recipe-backed block ciphers (Triple-DES
 -- 8-byte blocks, ARIA/Camellia 16-byte blocks; same rationale --
--- every row behavior+real tested with backend KATs).
+-- every row behavior+real tested with backend KATs). CTR is the
+-- unit-width stream shape (any input length, no padding).
 -- RSA-OAEP carries the unpadded vestigial width: the operation layer
 -- refuses padded specs for OAEP ('Haskoki.Operation.checkShape')
 -- and the length bound lives in the backend, so the width never
@@ -199,6 +201,7 @@ cipherShapeFor :: MechanismId -> Maybe CipherSpec
 cipherShapeFor (MechanismId m)
   | m == ckm_AES_CBC = Just (CipherSpec 16 False)
   | m == ckm_AES_CBC_PAD = Just (CipherSpec 16 True)
+  | m == ckm_AES_CTR = Just (CipherSpec 1 False)
   | m == ckm_AES_ECB = Just (CipherSpec 16 False)
   | m == ckm_DES3_CBC = Just (CipherSpec 8 False)
   | m == ckm_DES3_ECB = Just (CipherSpec 8 False)

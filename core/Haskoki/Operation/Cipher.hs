@@ -70,7 +70,7 @@ import Haskoki.Operation
 import Haskoki.Output (OutputPlan (..), planOneShot)
 import Haskoki.Registry (MechanismId)
 import Haskoki.Request (OutputIntent (..))
-import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipeFor)
+import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipeFor, ctrNextImage, ctrRecipeFor)
 import Haskoki.Types (Consumption (..), OpState (..))
 import Haskoki.Types (ReturnCode (..))
 
@@ -157,12 +157,16 @@ encryptInput mech spec buf
 -- emit all full blocks both directions; padded encrypt holds back
 -- the trailing partial block (or one full block when aligned, the
 -- pad companion being undecided); padded decrypt always holds the
--- last block (it carries the pad). Exported for the FFI
--- short-buffer length dialogue, which re-derives the same split.
+-- last block (it carries the pad). The streaming width is the
+-- recipe block width (never the unit stream shape: CTR updates
+-- stream whole counter blocks and retain the partial tail, since
+-- a counter-block chain cannot name a mid-block offset; the tail
+-- flushes at final). Exported for the FFI short-buffer length
+-- dialogue, which re-derives the same split.
 cipherUpdateSplit
   :: MechanismId -> CipherSpec -> CipherDir -> Int -> (Int, Int)
 cipherUpdateSplit mech spec dir total
-  | block <= 0 = (0, total)
+  | csBlock spec <= 0 = (0, total)
   | isUnframedCipher mech = (0, total)
   | isEcb = (total - total `mod` block, total `mod` block)
   | csPad spec = case dir of
@@ -175,10 +179,17 @@ cipherUpdateSplit mech spec dir total
         | otherwise -> (total - hold, hold)
   | otherwise = (total - total `mod` block, total `mod` block)
   where
-    block = csBlock spec
+    block = streamBlock mech spec
     r = total `mod` block
     hold = block + (total - block) `mod` block
     isEcb = maybe False ((== 0) . crIvBytes) (cipherRecipeFor mech)
+
+-- | Multipart streaming width: the recipe block width for cipher
+-- rows (identical to the operation shape for CBC/ECB; 16 for the
+-- CTR stream whose shape is unit), else the operation shape.
+streamBlock :: MechanismId -> CipherSpec -> Int
+streamBlock mech spec =
+  fromMaybe (csBlock spec) (crBlockBytes <$> cipherRecipeFor mech)
 
 -- | The chaining IV for a cipher effect: the running value once the
 -- slot has streamed, else the init IV from the parameters.
@@ -235,9 +246,23 @@ planCipherUpdate ops st kind part mIntent = case withCipherSlot ops kind of
               | otherwise ->
                   let (streamBytes, retainBytes) = BS.splitAt streamable full
                       scRetain = setBuffered retainBytes sc'
+                      -- CTR chains the counter forward by whole
+                      -- blocks consumed (never the ciphertext tail:
+                      -- the chain stays a parameter image). A
+                      -- corrupt chain falls through to the CBC arm,
+                      -- whose non-image the recipe refuses on the
+                      -- next effect (fail closed; unreachable: init
+                      -- and every advance keep images valid).
+                      isCtr = case ctrRecipeFor (commonMech sc) of
+                        Just _ -> True
+                        Nothing -> False
+                      ctrChain = ctrNextImage (effectParamsFor sc)
+                        (BS.length streamBytes `div` 16)
                       scAdv = case dir of
                         DirDecrypt
                           | isEcbMech -> setChainIv (Just BS.empty) scRetain
+                          | isCtr, Just img <- ctrChain ->
+                              setChainIv (Just img) scRetain
                           | otherwise -> setChainIv (Just (lastBlock streamBytes)) scRetain
                         DirEncrypt
                           | isEcbMech -> setChainIv (Just BS.empty) scRetain
@@ -386,12 +411,14 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
               ("cipher crypto failed: " ++ show err)))
 
 -- | Finish a planned cipher update: write the streamed chunk through
--- the output intent and advance the CBC encrypt chaining value from
--- the answer (decrypt chaining and the ECB marker advance at plan
--- time, when their inputs are known). The slot stays open with the
--- retained suffix. Anything unexpected — a verdict, a resource, a
--- short answer, an over-cap answer, a null intent (queries never
--- execute) — terminates the slot instead of releasing bytes.
+-- the output intent and advance the encrypt chaining value from
+-- the answer (CBC: the ciphertext tail; CTR: the counter image
+-- advanced by whole answer blocks; decrypt chaining and the ECB
+-- marker advance at plan time, when their inputs are known). The
+-- slot stays open with the retained suffix. Anything unexpected —
+-- a verdict, a resource, a short answer, an over-cap answer, a
+-- null intent (queries never execute) — terminates the slot
+-- instead of releasing bytes.
 finishCipherUpdate
   :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
@@ -404,12 +431,25 @@ finishCipherUpdate ops kind name result intent = case withCipherSlot ops kind of
       let block = csBlock spec
           isEcbMech =
             maybe False ((== 0) . crIvBytes) (cipherRecipeFor (commonMech sc))
+          isCtr = case ctrRecipeFor (commonMech sc) of
+            Just _ -> True
+            Nothing -> False
           advance = case dir of
             DirDecrypt -> const (Right sc)
             DirEncrypt
               | isEcbMech -> const (Right sc)
               | otherwise -> advanceEncrypt
+          -- CTR advances the counter image by whole answer
+          -- blocks (updates always stream multiples of 16; a
+          -- ragged answer is a driver violation and fails
+          -- closed). CBC keeps the ciphertext-tail chaining.
           advanceEncrypt raw
+            | isCtr, BS.length raw `mod` 16 == 0
+            , Just img <- ctrNextImage (effectParamsFor sc)
+                (BS.length raw `div` 16) =
+                Right (setChainIv (Just img) sc)
+            | isCtr =
+                Left "cipher update answer is not a whole CTR block run"
             | BS.length raw < block || block <= 0 =
                 Left "cipher update answer shorter than one block"
             | otherwise = Right (setChainIv

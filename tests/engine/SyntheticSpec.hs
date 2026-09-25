@@ -265,10 +265,13 @@ caseUnsupportedRest = withSynth "11" $ \env -> do
   -- P-224 stays the curve holdout.
   expectUnsupported "ecdsa p224" =<<
     sign env (SigECDSA (EcSpec "P-224" "DER") (Just D_SHA256)) key32 "msg"
-  -- The 20-spec CBC/ECB set is supported (see
-  -- caseCipherSpecs); CTR stays the cipher holdout.
-  expectUnsupported "aes128-ctr" =<<
+  -- The 23-spec CBC/CTR/ECB set is supported (see
+  -- caseCipherSpecs, which roundtrips the CTR stream specs too).
+  ctrCt <- expectOk "aes128-ctr served" =<<
     cipherEncrypt env C_AES128_CTR (KeyBytes "0123456789abcdef") "0123456789abcdef" "0123456789abcdef"
+  ctrPt <- expectOk "aes128-ctr opens" =<<
+    cipherDecrypt env C_AES128_CTR (KeyBytes "0123456789abcdef") "0123456789abcdef" ctrCt
+  assertEqual "aes128-ctr reversible" "0123456789abcdef" ctrPt
   -- AEAD is supported (see caseAeadRoundtrip).
   -- OAEP is supported (see caseOaepRoundtrip); XOF
   -- hashes stay out.
@@ -856,6 +859,7 @@ caseCapsFull = withSynth "11" $ \env -> do
   assertBool "no xof" (not (dcXof (bcDigests caps)))
   assertEqual "cipher set" (Set.fromList
     [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
+    , C_AES128_CTR, C_AES192_CTR, C_AES256_CTR
     , C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
     , C_DES3_CBC, C_DES3_ECB
     , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
@@ -1057,7 +1061,7 @@ caseDriverBridge = withSynth "11" $ \env -> do
     other -> assertFailure ("seam must keep bytes, got " ++ show other)
 
 -- ---------------------------------------------------------------------------
--- The 20-spec block-cipher set
+-- The 23-spec block-cipher set
 -- ---------------------------------------------------------------------------
 
 -- | Every advertised spec roundtrips at every accepted geometry,
@@ -1092,6 +1096,7 @@ caseCipherSpecs = withSynth "11" $ \env -> do
     cipherSpecSet :: [CipherSpec]
     cipherSpecSet =
       [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
+      , C_AES128_CTR, C_AES192_CTR, C_AES256_CTR
       , C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
       , C_DES3_CBC, C_DES3_ECB
       , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC

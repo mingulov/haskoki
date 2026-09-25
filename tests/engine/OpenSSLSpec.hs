@@ -199,6 +199,31 @@ aes192CbcCt = hex "4f021db243bc633d7178183a9fa071e8"
 aes192EcbCt = hex "bd334f1d6e45f25ff712a214571fa5cc"
 aes256EcbCt = hex "f3eed1bdb5d2a03c064b5a7e3db181f8"
 
+-- NIST SP 800-38A F.5 CTR rows (128/192/256): the shared
+-- four-block plaintext and initial counter plus the per-width
+-- ciphertexts, transcribed from the PDF and cross-checked with
+-- Python cryptography.
+ctrPt, ctrIcb :: ByteString
+ctrPt = hex $ "6bc1bee22e409f96e93d7e117393172a"
+  <> "ae2d8a571e03ac9c9eb76fac45af8e51"
+  <> "30c81c46a35ce411e5fbc1191a0a52ef"
+  <> "f69f2445df4f9b17ad2b417be66c3710"
+ctrIcb = hex "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+
+aes128CtrCt, aes192CtrCt, aes256CtrCt :: ByteString
+aes128CtrCt = hex $ "874d6191b620e3261bef6864990db6ce"
+  <> "9806f66b7970fdff8617187bb9fffdff"
+  <> "5ae4df3edbd5d35e5b4f09020db03eab"
+  <> "1e031dda2fbe03d1792170a0f3009cee"
+aes192CtrCt = hex $ "1abc932417521ca24f2b0459fe7e6e0b"
+  <> "090339ec0aa6faefd5ccc2c6f4ce8e94"
+  <> "1e36b26bd1ebc670d1bd1d665620abf7"
+  <> "4f78a7f6d29809585a97daec58c6b050"
+aes256CtrCt = hex $ "601ec313775789a5b7a7f504bbf3d228"
+  <> "f443e3ca4d62b59aca84e990cacaf5c5"
+  <> "2b0930daa23de94ce87017ba2d84988d"
+  <> "dfc9c58db67aada613c2dd08457941a6"
+
 -- Triple-DES MMT row (K1 = K3, so the 24-byte key doubles
 -- as the two-key expansion target): zero block -> 08d7b4fb629d0885;
 -- CBC with the zero IV equals ECB. Agreed on both CLIs.
@@ -747,6 +772,16 @@ caseCipherKats = withBackend $ \env -> do
   katCbc env "aes-192-cbc" C_AES192_CBC aes192Key aes256Iv aes256Pt aes192CbcCt
   katEcb env "aes-192-ecb" C_AES192_ECB aes192Key aes256Pt aes192EcbCt
   katEcb env "aes-256-ecb" C_AES256_ECB aes256Key aes256Pt aes256EcbCt
+  -- AES-CTR: the F.5 rows at all widths, plus unaligned stream input.
+  katCtr env "aes-128-ctr" C_AES128_CTR aes128Key ctrIcb ctrPt aes128CtrCt
+  katCtr env "aes-192-ctr" C_AES192_CTR aes192Key ctrIcb ctrPt aes192CtrCt
+  katCtr env "aes-256-ctr" C_AES256_CTR aes256Key ctrIcb ctrPt aes256CtrCt
+  ragged <- expectOk "ctr unaligned encrypt" =<<
+    cipherEncrypt env C_AES128_CTR (KeyBytes aes128Key) ctrIcb "twenty bytes exactly!!"
+  assertEqual "ctr length preserved" 22 (BS.length ragged)
+  raggedPt <- expectOk "ctr unaligned decrypt" =<<
+    cipherDecrypt env C_AES128_CTR (KeyBytes aes128Key) ctrIcb ragged
+  assertEqual "ctr unaligned inverts" "twenty bytes exactly!!" raggedPt
   -- Triple-DES: three-key and two-key (K1 = K3, so both agree).
   katCbc env "des3-cbc" C_DES3_CBC des3Key24 des3Iv des3Pt des3Ct
   katEcb env "des3-ecb" C_DES3_ECB des3Key24 des3Pt des3Ct
@@ -787,6 +822,13 @@ caseCipherKats = withBackend $ \env -> do
       assertEqual (label ++ " kat") want ct
       pt' <- expectOk (label ++ " decrypt")
         =<< cipherDecrypt env cipher (KeyBytes key) BS.empty want
+      assertEqual (label ++ " inverts") pt pt'
+    katCtr env label cipher key icb pt want = do
+      ct <- expectOk (label ++ " encrypt")
+        =<< cipherEncrypt env cipher (KeyBytes key) icb pt
+      assertEqual (label ++ " kat") want ct
+      pt' <- expectOk (label ++ " decrypt")
+        =<< cipherDecrypt env cipher (KeyBytes key) icb want
       assertEqual (label ++ " inverts") pt pt'
 
 caseRsaKats :: IO ()
@@ -1313,9 +1355,8 @@ caseUnsupported = withBackend $ \env -> do
   -- Fixed-length digests are supported; XOF stays out.
   expectUnsupported "shake128 digest" =<< digestOneShot env D_SHAKE128 "abc"
   expectUnsupported "shake256 digest" =<< digestOneShot env D_SHAKE256 "abc"
-  -- The 20-spec CBC/ECB set is supported (see
-  -- caseCipherKats); CTR stays the cipher holdout.
-  expectUnsupported "aes-128-ctr" =<< cipherEncrypt env C_AES128_CTR (KeyBytes aes128Key) aes256Iv aes256Pt
+  -- The 23-spec CBC/CTR/ECB set is supported (see
+  -- caseCipherKats, which pins the CTR stream specs too).
   expectUnsupported "cmac" =<< macSign env (MacCMAC C_AES256_CBC) (KeyBytes hmacKey1) hmacMsg1
   -- In-range truncation is supported (see caseHmacGeneral);
   -- out-of-range lengths and XOFs stay out.
@@ -1330,15 +1371,19 @@ caseUnsupported = withBackend $ \env -> do
 caseGuardBeforeNative :: IO ()
 caseGuardBeforeNative = do
   -- On a closed backend the capability guard still answers Unsupported
-  -- (not a native crash): the check precedes any native call.
+  -- (not a native crash): the check precedes any native call. Every
+  -- cipher spec is served, so the cipher leg pins the closed check
+  -- instead: a supported cipher answers InvalidState, never a crash.
   r <- openBackend "provider=default" :: IO (EngineResult (BackendEnv OpenSSL4))
   env <- case r of
     EngineFail err -> assertFailure ("openBackend failed: " ++ show err)
     EngineOk e -> pure e
   closeBackend env
   expectUnsupported "unsupported on closed backend" =<< digestOneShot env D_SHAKE128 "abc"
-  expectUnsupported "unsupported cipher on closed backend"
-    =<< cipherEncrypt env C_AES128_CTR (KeyBytes aes128Key) aes256Iv aes256Pt
+  closed <- cipherEncrypt env C_AES128_CTR (KeyBytes aes128Key) aes256Iv aes256Pt
+  case closed of
+    EngineFail (BackendInvalidState _ _) -> pure ()
+    other -> assertFailure ("expected InvalidState, got: " ++ show other)
 
 caseCaps :: IO ()
 caseCaps = withBackend $ \env -> do
@@ -1354,6 +1399,7 @@ caseCaps = withBackend $ \env -> do
     ]) (dcAlgs (bcDigests caps))
   assertEqual "cipher set" (Set.fromList
     [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
+    , C_AES128_CTR, C_AES192_CTR, C_AES256_CTR
     , C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
     , C_DES3_CBC, C_DES3_ECB
     , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC

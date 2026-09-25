@@ -30,9 +30,12 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 import Haskoki.Engine.Backend
   ( CipherSpec
     ( C_AES128_CBC
+    , C_AES128_CTR
     , C_AES128_ECB
     , C_AES192_CBC
+    , C_AES192_CTR
     , C_AES256_CBC
+    , C_AES256_CTR
     , C_AES256_ECB
     , C_ARIA256_CBC
     , C_CAMELLIA128_ECB
@@ -55,12 +58,16 @@ import Haskoki.Operation
 import Haskoki.Recipe.Cipher
   ( BlockCipherRecipe (..)
   , cipherCodecFor
+  , cipherCtrCodec
   , cipherIvCodec
   , cipherKeyLenValid
   , cipherParamsValid
   , cipherPlainCodec
   , cipherRecipeFor
   , cipherRecipes
+  , ctrNextImage
+  , decodeCtrParams
+  , encodeCtrParams
   )
 import Haskoki.Registry
   ( MechanismId (..)
@@ -72,6 +79,7 @@ import Haskoki.Registry
 import Haskoki.Registry.Generated
   ( mustGeneratedId
   , ckm_AES_CBC
+  , ckm_AES_CTR
   , ckm_AES_ECB
   , ckm_DES3_CBC
   , ckm_SHA256
@@ -105,6 +113,7 @@ groupShape =
   [ ("AES_CBC", 16, [16, 24, 32], 16, False)
   , ("AES_CBC_PAD", 16, [16, 24, 32], 16, True)
   , ("AES_ECB", 16, [16, 24, 32], 0, False)
+  , ("AES_CTR", 16, [16, 24, 32], 16, False)
   , ("DES3_CBC", 8, [16, 24], 8, False)
   , ("DES3_ECB", 8, [16, 24], 0, False)
   , ("ARIA_CBC", 16, [16, 24, 32], 16, False)
@@ -113,12 +122,20 @@ groupShape =
   , ("CAMELLIA_ECB", 16, [16, 24, 32], 0, False)
   ]
 
+-- | Valid mechanism parameters per row: the CTR row takes the
+-- canonical image (128-bit width over a zero block), every other
+-- row the zero IV of its length.
+validParams :: Text -> Int -> BS.ByteString
+validParams suffix iv
+  | suffix == "AES_CTR" = encodeCtrParams 128 (BS.replicate 16 0)
+  | otherwise = BS.replicate iv 0
+
 mechName :: Text -> Text
 mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 9 (length cipherRecipes)
+  assertEqual "recipe count" 10 (length cipherRecipes)
   mapM_ (\(suffix, block, keys, iv, pad) -> do
     let name = mechName suffix
         found = [ r | r <- cipherRecipes, crName r == name ]
@@ -152,9 +169,13 @@ caseCodec :: IO ()
 caseCodec = do
   assertEqual "plain codec" (ParameterCodec "no-params" 1) cipherPlainCodec
   assertEqual "iv codec" (ParameterCodec "iv-bytes" 1) cipherIvCodec
+  assertEqual "ctr codec" (ParameterCodec "ctr-params" 1) cipherCtrCodec
   mapM_ (\(suffix, _, _, iv, _) -> do
     let name = mechName suffix
-        want = if iv == 0 then cipherPlainCodec else cipherIvCodec
+        want
+          | suffix == "AES_CTR" = cipherCtrCodec
+          | iv == 0 = cipherPlainCodec
+          | otherwise = cipherIvCodec
     case cipherRecipeFor (MechanismId (mustGeneratedId name)) of
       Nothing -> assertFailure ("unresolved " ++ T.unpack name)
       Just r -> assertEqual ("codec " ++ T.unpack name) want (cipherCodecFor r)
@@ -187,11 +208,40 @@ caseParams = do
   assertBool "des3-ecb empty valid" (cipherParamsValid d3e BS.empty)
   assertBool "des3-ecb 8 refused"
     (not (cipherParamsValid d3e (BS.replicate 8 0)))
+  let ctr = recipeOf "CKM_AES_CTR"
+      ctrGood = encodeCtrParams 128 (BS.replicate 16 0xcb)
+  assertBool "ctr 128-bit image valid" (cipherParamsValid ctr ctrGood)
+  assertEqual "ctr image roundtrips" (Just (128, BS.replicate 16 0xcb))
+    (decodeCtrParams ctrGood)
+  assertBool "ctr 64-bit refused"
+    (not (cipherParamsValid ctr (encodeCtrParams 64 (BS.replicate 16 0))))
+  assertBool "ctr zero-width refused"
+    (not (cipherParamsValid ctr (encodeCtrParams 0 (BS.replicate 16 0))))
+  assertBool "ctr short block refused"
+    (not (cipherParamsValid ctr (encodeCtrParams 128 (BS.replicate 15 0))))
+  assertBool "ctr truncated refused"
+    (not (cipherParamsValid ctr (BS.replicate 20 0)))
+  assertBool "ctr raw iv refused"
+    (not (cipherParamsValid ctr (BS.replicate 16 0)))
+  -- Counter advance: big-endian block steps with carry and wrap.
+  let cb0 = BS.replicate 16 0
+      img0 = encodeCtrParams 128 cb0
+  assertEqual "advance zero" (Just img0) (ctrNextImage img0 0)
+  assertEqual "advance one" (Just (encodeCtrParams 128 (BS.replicate 15 0 <> BS.singleton 1)))
+    (ctrNextImage img0 1)
+  assertEqual "advance carries" (Just (encodeCtrParams 128 (BS.replicate 14 0 <> BS.pack [1, 0])))
+    (ctrNextImage img0 256)
+  assertEqual "advance wraps"
+    (Just img0)
+    (ctrNextImage (encodeCtrParams 128 (BS.replicate 16 0xff)) 1)
+  assertEqual "advance refuses non-image" Nothing
+    (ctrNextImage (encodeCtrParams 64 cb0) 1)
+  assertEqual "advance refuses negative" Nothing (ctrNextImage img0 (-1))
   -- Every row enforces its own IV geometry across the table.
   mapM_ (\(suffix, _, _, iv, _) -> do
     let r = recipeOf (mechName suffix)
-    assertBool ("iv ok " ++ T.unpack suffix)
-      (cipherParamsValid r (BS.replicate iv 0))
+    assertBool ("params ok " ++ T.unpack suffix)
+      (cipherParamsValid r (validParams suffix iv))
     assertBool ("iv+1 refused " ++ T.unpack suffix)
       (not (cipherParamsValid r (BS.replicate (iv + 1) 0)))
     ) groupShape
@@ -225,16 +275,19 @@ testSession = SessionState
   , ssOps = emptySessionOps
   }
 
-cbcMech, ecbMech, d3Mech :: MechanismId
+cbcMech, ecbMech, d3Mech, ctrMech :: MechanismId
 cbcMech = MechanismId (ckm_AES_CBC)
 ecbMech = MechanismId (ckm_AES_ECB)
 d3Mech = MechanismId (ckm_DES3_CBC)
+ctrMech = MechanismId (ckm_AES_CTR)
 
 testEnv :: OpEnv
 testEnv = OpEnv
   { oeRegistry = curatedRegistry
   , oeCaps = mkCapabilities
-      [ (cbcMech, OpEncrypt), (ecbMech, OpEncrypt), (d3Mech, OpEncrypt) ]
+      [ (cbcMech, OpEncrypt), (ecbMech, OpEncrypt), (d3Mech, OpEncrypt)
+      , (ctrMech, OpEncrypt)
+      ]
   , oeModel = emptyModel
   }
 
@@ -270,6 +323,12 @@ caseInitParams = do
     (runInit (mkArgs d3Mech (BS.replicate 16 0)))
   assertEqual "des3 8-byte iv passes params" CKR_OBJECT_HANDLE_INVALID
     (runInit (mkArgs d3Mech (BS.replicate 8 0)))
+  assertEqual "ctr 128-bit image passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs ctrMech (encodeCtrParams 128 (BS.replicate 16 0))))
+  assertEqual "ctr 64-bit refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs ctrMech (encodeCtrParams 64 (BS.replicate 16 0))))
+  assertEqual "ctr raw iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs ctrMech (BS.replicate 16 0)))
 
 caseDriverMap :: IO ()
 caseDriverMap = do
@@ -302,12 +361,27 @@ caseDriverMap = do
     (cipherSpecFor d3Mech 32 iv8)
   assertEqual "des3-cbc rejects 16-iv" Nothing
     (cipherSpecFor d3Mech 24 iv16)
+  -- AES-CTR: the canonical image maps each width; off-width and
+  -- raw-IV parameters refuse.
+  let ctrGood = encodeCtrParams 128 iv16
+  assertEqual "aes-ctr-128" (Just C_AES128_CTR)
+    (cipherSpecFor ctrMech 16 ctrGood)
+  assertEqual "aes-ctr-192" (Just C_AES192_CTR)
+    (cipherSpecFor ctrMech 24 ctrGood)
+  assertEqual "aes-ctr-256" (Just C_AES256_CTR)
+    (cipherSpecFor ctrMech 32 ctrGood)
+  assertEqual "aes-ctr rejects bad keylen" Nothing
+    (cipherSpecFor ctrMech 15 ctrGood)
+  assertEqual "aes-ctr rejects 64-bit" Nothing
+    (cipherSpecFor ctrMech 16 (encodeCtrParams 64 iv16))
+  assertEqual "aes-ctr rejects raw iv" Nothing
+    (cipherSpecFor ctrMech 16 iv16)
   assertEqual "non-cipher uncovered" Nothing
     (cipherSpecFor (MechanismId (ckm_SHA256)) 32 iv16)
   -- Whole-table agreement: every (recipe, key length) triple maps.
   mapM_ (\(suffix, _, keys, iv, _) -> do
     let mech = MechanismId (mustGeneratedId (mechName suffix))
-        params = BS.replicate iv 0
+        params = validParams suffix iv
     mapM_ (\n -> case cipherSpecFor mech n params of
       Nothing -> assertFailure ("unmapped " ++ T.unpack suffix ++ "/" ++ show n)
       Just cspec -> do
@@ -323,6 +397,10 @@ caseGeometryLaw = do
   assertEqual "aes256-cbc key" [32] (cipherKeyLens C_AES256_CBC)
   assertEqual "aes-cbc iv" 16 (cipherIvLen C_AES256_CBC)
   assertEqual "aes-ecb iv" 0 (cipherIvLen C_AES256_ECB)
+  assertEqual "aes128-ctr key" [16] (cipherKeyLens C_AES128_CTR)
+  assertEqual "aes192-ctr key" [24] (cipherKeyLens C_AES192_CTR)
+  assertEqual "aes256-ctr key" [32] (cipherKeyLens C_AES256_CTR)
+  assertEqual "aes-ctr iv" 16 (cipherIvLen C_AES256_CTR)
   assertEqual "des3 keys" [16, 24] (cipherKeyLens C_DES3_CBC)
   assertEqual "des3 iv" 8 (cipherIvLen C_DES3_CBC)
   assertEqual "aria key" [32] (cipherKeyLens C_ARIA256_CBC)

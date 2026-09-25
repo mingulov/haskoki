@@ -667,7 +667,7 @@ parseSeed s = case reads s of
   _ -> Nothing
 
 -- | The synthetic capability set: SHA-256 digest (one-shot and
--- multipart), full-tag HMAC-SHA-256, the 20-spec
+-- multipart), full-tag HMAC-SHA-256, the 23-spec
 -- block-cipher set (AES-256-CBC keeps the original stream bytes),
 -- ECDSA P-256/SHA-256 (DER and RAW), symmetric, EC and ML-KEM key
 -- generation, and deterministic ML-KEM encapsulation. Advertised
@@ -831,6 +831,7 @@ pkcs1Supported _ = Nothing
 synthCipherSpecs :: [CipherSpec]
 synthCipherSpecs =
   [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
+  , C_AES128_CTR, C_AES192_CTR, C_AES256_CTR
   , C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
   , C_DES3_CBC, C_DES3_ECB
   , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC

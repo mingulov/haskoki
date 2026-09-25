@@ -49,12 +49,14 @@ module Haskoki.FFI.NativeParams
   , oaepStructToCanonical
   , ecdhStructToCanonical
   , gcmStructToCanonical
+  , ctrStructToCanonical
   , digestStemByCkm
   , mgfStemByCkg
   , pssNativeSize
   , oaepNativeSize
   , ecdhNativeSize
   , gcmNativeSize
+  , ctrNativeSize
   ) where
 
 import Control.Monad (guard)
@@ -67,10 +69,11 @@ import Data.Text (Text)
 import Data.Word (Word64, Word8)
 import Foreign.C.String (CStringLen)
 import Foreign.C.Types (CULong (..))
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peekByteOff, sizeOf)
 
 import Haskoki.FFI.Decode (maxInputBytes)
+import Haskoki.Recipe.Cipher (ctrRecipeFor, encodeCtrParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
@@ -105,6 +108,11 @@ ecdhNativeSize = 3 * wordSize + 2 * ptrSize
 -- word.
 gcmNativeSize :: Int
 gcmNativeSize = 4 * wordSize + 2 * ptrSize
+
+-- | Native @CK_AES_CTR_PARAMS@ image size: one counter-bits word
+-- plus the inline 16-byte counter block.
+ctrNativeSize :: Int
+ctrNativeSize = wordSize + 16
 
 -- | Native @CKM_*@ hash ids onto recipe digest stems. Ids come from
 -- the generated vocabulary, so a header drift breaks the build
@@ -197,6 +205,17 @@ gcmStructToCanonical iv aad ivBits tagBits = do
   guard (not (BS.null iv))
   pure (encodeGcmParams iv aad tagLen)
 
+-- | Pure CTR translation: the native counter-bits word plus the
+-- inline counter block onto the canonical @ctr-params/1@ image.
+-- Any width translates (even unserved ones: the recipe refuses
+-- downstream with the parameter CKR, never a malformed struct);
+-- only an unrepresentable width refuses here.
+ctrStructToCanonical :: Word64 -> ByteString -> Maybe ByteString
+ctrStructToCanonical bits cb
+  | bits > fromIntegral (maxBound :: Int) = Nothing
+  | BS.length cb /= 16 = Nothing
+  | otherwise = Just (encodeCtrParams (fromIntegral bits) cb)
+
 -- | Chase one bounded byte string from caller memory under the
 -- 'decodeInputBytes' null conventions: zero length never
 -- dereferences, null-with-length and over-bound lengths refuse.
@@ -239,6 +258,7 @@ normalizeMechParams mid pParams paramsLen raw
   | isJust (rsaPssRecipeFor mid) = fromMaybe raw <$> decodePssNative
   | isJust (rsaOaepRecipeFor mid) = fromMaybe raw <$> decodeOaepNative
   | isJust (gcmRecipeFor mid) = fromMaybe raw <$> decodeGcmNative
+  | isJust (ctrRecipeFor mid) = fromMaybe raw <$> decodeCtrNative
   | otherwise = pure raw
   where
     decodePssNative :: IO (Maybe ByteString)
@@ -276,3 +296,10 @@ normalizeMechParams mid pParams paramsLen raw
           mIv <- chaseBytes pIv ivLen
           mAad <- chaseBytes pAad aadLen
           pure (mIv >>= \iv -> mAad >>= \aad -> gcmStructToCanonical iv aad ivBits tagBits)
+    decodeCtrNative :: IO (Maybe ByteString)
+    decodeCtrNative
+      | paramsLen /= fromIntegral ctrNativeSize = pure Nothing
+      | otherwise = do
+          CULong bits <- peekByteOff pParams 0
+          cb <- BS.packCStringLen (castPtr (pParams `plusPtr` wordSize), 16)
+          pure (ctrStructToCanonical bits cb)
