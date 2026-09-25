@@ -1,4 +1,4 @@
-# AES-CCM Slice Implementation Plan
+# AES-CCM slice implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -13,11 +13,11 @@
 ## Global Constraints
 
 - Pinned libcrypto is OpenSSL 4.0.2 at `/opt/openssl-4.0.2`; never the system 3.5.5 `/usr/bin/openssl`.
-- TDD red-green per task: watch each new test fail for the right reason before implementing.
+- TDD test-first per task: watch each new test fail for the right reason before implementing.
 - No new test frameworks: tasty suites `haskoki-model-tests` (recipes) and `haskoki-engine-tests` (OpenSSL4 engine).
 - Wycheproof result mapping: `valid` must pass, `invalid` must fail, `acceptable` is investigated, never silently passed.
 - CCM is single-part only per oracle registry (`multi_part_supported=False`); multipart Update with CCM refuses.
-- Every slice ends lane-proven (targeted + fast + KAT delta attributed) with gates green before commit.
+- Every slice ends lane-proven (targeted + fast + KAT delta attributed) with gates passing before commit.
 - B catalog rows (`CKM_ML_DSA_EXTERNAL_MU_*`) are OUT of this slice (deferred to PQC slice 9 by user call).
 
 ## Ranked program (all slices; this plan implements slice 1 only)
@@ -52,7 +52,7 @@ Note on CCM variants (user observation): the oracle runs CCM + CCM-ECMA + wychep
 - Modify `spec/mechanisms.json`: promote row `CKM_AES_CCM` (0x00001088) to tested with `test_evidence`, `routes`, reviewed `mechanism_info` (flags `[CKF_ENCRYPT, CKF_DECRYPT]`, min 16 / max 32 key bytes); regenerate via `python3 scripts/generate-mechanisms.py` + `python3 scripts/publish-coverage.py`; fix 108→109 count pins (mirror commit cf0a164 file list).
 - Modify `tests/engine/OpenSSLSpec.hs`: engine-level CCM KAT case against real libcrypto.
 
-### Task 1: CCM recipe codec red
+### Task 1: CCM recipe codec (spec first)
 
 **Files:**
 - Create: `tests/recipes/RecipeCcmSpec.hs`
@@ -100,7 +100,7 @@ Expected: FAIL (compile error: module `Haskoki.Recipe.Ccm` not found)
 
 - [x] **Step 3: Write minimal implementation** (see Task 2)
 
-### Task 2: CCM recipe module green
+### Task 2: CCM recipe module (implementation)
 
 **Files:**
 - Create: `core/Haskoki/Recipe/Ccm.hs` (mirror `core/Haskoki/Recipe/Gcm.hs` lines 1-80: `CcmRecipe`, `ccmRecipes = [CcmRecipe "CKM_AES_CCM"]`, `ccmCodec = ParameterCodec "ccm-params" 1`, `ccmCodecFor`, `ccmRecipeFor` via `mustGeneratedId "CKM_AES_CCM"`, `encodeWord64`/`decodeWord64`, `encodeCcmParams`, `decodeCcmParams`, `ccmParamsValid`)
@@ -125,10 +125,10 @@ Expected: PASS, no new failures
 
 ```bash
 git add core/Haskoki/Recipe/Ccm.hs tests/recipes/RecipeCcmSpec.hs haskoki.cabal tests/model/Main.hs
-git commit -m "CCM slice 1/8: ccm-params/1 recipe codec + focused spec (red-green)"
+git commit -m "CCM slice 1/8: ccm-params/1 recipe codec + focused spec (test-first)"
 ```
 
-### Task 3: FFI unmarshal red-green
+### Task 3: FFI unmarshal test-first
 
 **Files:**
 - Modify: `ffi/Haskoki/FFI/NativeParams.hs` (add `ccmStructToCanonical`, `ccmNativeSize`, export list entries, dispatch beside `decodeGcmNative`)
@@ -156,10 +156,10 @@ Expected: PASS
 
 ```bash
 git add ffi/Haskoki/FFI/NativeParams.hs tests/recipes/RecipeCcmSpec.hs
-git commit -m "CCM slice 2/8: CK_AES_CCM_PARAMS FFI unmarshal (red-green)"
+git commit -m "CCM slice 2/8: CK_AES_CCM_PARAMS FFI unmarshal (test-first)"
 ```
 
-### Task 4: OpenSSL CCM shims + engine call path red-green
+### Task 4: OpenSSL CCM shims + engine call path test-first
 
 **Files:**
 - Modify: `cbits/ossl4_ctx.c` (new `hsk_ossl4_aead_ccm_encrypt/decrypt` after line ~481; mode check `EVP_CIPH_CCM_MODE`; ctrls `EVP_CTRL_CCM_SET_IVLEN`/`EVP_CTRL_CCM_SET_TAG`; preset plaintext length with `EVP_EncryptUpdate(cctx, NULL, &tmplen, NULL, inlen)` before AAD; keep the AAD `aadl` throwaway pattern from the GCM shims)
@@ -193,10 +193,10 @@ Expected: PASS
 
 ```bash
 git add cbits/ossl4_ctx.c src/Haskoki/Engine/OpenSSL4.hs tests/engine/OpenSSLSpec.hs
-git commit -m "CCM slice 3/8: OpenSSL CCM shims + engine route (red-green)"
+git commit -m "CCM slice 3/8: OpenSSL CCM shims + engine route (test-first)"
 ```
 
-### Task 5: Driver arm + synthetic parity red-green
+### Task 5: Driver arm + synthetic parity test-first
 
 **Files:**
 - Modify: `src/Haskoki/Engine/Driver.hs` (`isCcmMech` beside `isGcmMech` line 454; AEAD arm beside lines 702-708; `ulDataLen` precondition: encrypt requires `dataLen == pt length`, decrypt requires `dataLen == ct length - tagLen`, else `CKR_MECHANISM_PARAM_INVALID`; multipart Update with CCM refuses with `CKR_MECHANISM_PARAM_INVALID`)
@@ -225,7 +225,7 @@ Expected: PASS
 
 ```bash
 git add src/Haskoki/Engine/Driver.hs src/Haskoki/Engine/Synthetic.hs tests/engine/OperationSmokeSpec.hs
-git commit -m "CCM slice 4/8: driver arm + synthetic parity (red-green)"
+git commit -m "CCM slice 4/8: driver arm + synthetic parity (test-first)"
 ```
 
 ### Task 6: Negative KAT (invalid tag, bad widths)
@@ -245,7 +245,7 @@ git commit -m "CCM slice 4/8: driver arm + synthetic parity (red-green)"
 Run: `cabal test haskoki-model-tests --test-option=-p --test-option=/RecipeCcm/`
 Expected: FAIL (new assertions fail)
 
-- [x] **Step 3: Fix product code until green** (no test-expectation weakening; if a width the oracle needs refuses, widen the recipe constants with a cited reason)
+- [x] **Step 3: Fix product code until passing** (no test-expectation weakening; if a width the oracle needs refuses, widen the recipe constants with a cited reason)
 
 - [x] **Step 4: Run tests to verify they pass**
 
@@ -269,14 +269,14 @@ git commit -m "CCM slice 5/8: negative CCM KAT (invalid tag, bad widths)"
 
 **Interfaces:**
 - Consumes: Tasks 1-6 evidence (case ids must exist before citing)
-- Produces: 109-row tested real catalog; `check-coverage-boundary.py` + `check-docs.py` green
+- Produces: 109-row tested real catalog; `check-coverage-boundary.py` + `check-docs.py` passing
 
 - [x] **Step 1: Promote registry + JSON row, regenerate, fix pins**
 
 - [x] **Step 2: Verify docs**
 
 Run: `python3 scripts/check-coverage-boundary.py && python3 scripts/check-docs.py && cabal test haskoki-model-tests`
-Expected: all green
+Expected: all passing
 
 - [x] **Step 3: Commit**
 
@@ -292,7 +292,7 @@ git commit -m "CCM slice 6/8: catalog promotion to 109-row tested real (+docs re
 
 **Interfaces:**
 - Consumes: release bundle rebuilt via `scripts/make-release.sh`
-- Produces: targeted CCM legs pass; fast lane ≥2947 passed with only the 2 HOTP asserts; KAT lane complete with only the 2 HOTP asserts; `run-gates.sh` green
+- Produces: targeted CCM legs pass; fast lane ≥2947 passed with only the 2 HOTP asserts; KAT lane complete with only the 2 HOTP asserts; `run-gates.sh` passing
 
 - [x] **Step 1: Rebuild bundle**
 
