@@ -11,7 +11,7 @@ not per test.
 ## Fast-lane results across fix rounds
 
 Total collected varies by framework checkout (r11: 5780; r14: 5798;
-r15: 5820). Summaries are authoritative; the per-test
+r15: 5820; r18: 5840). Summaries are authoritative; the per-test
 records list interesting outcomes only (see Method).
 
 | Round | Passed | Failed | XFailed | Skipped | Child crashes |
@@ -32,6 +32,9 @@ records list interesting outcomes only (see Method).
 | r13 (x509 cert-attr fix) | 2519 | 35 | 347 | 2879 | 0 |
 | r14 (T2 RSA keygen) | 2783 | 29 | 397 | 2589 | 0 |
 | r15 (T3 P-384/P-521 + T7 GCM) | 2839 | 25 | 398 | 2558 | 0 |
+| r16 (T6 streaming cipher) | 2842 | 21 | 399 | 2558 | 0 |
+| r17 (T6 + ECB decrypt chain fix) | 2843 | 21 | 398 | 2558 | 0 |
+| r18 (pkcs11-check 0.2.1 oracle) | 2863 | 20 | 398 | 2559 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -372,3 +375,63 @@ records. Results: `/tmp/pkcs11-ws/out/pkcs11-fast-results.json` (r0),
 `/tmp/pkcs11-ws/out/fast/pkcs11-fast-results.json` (r2, since overwritten
 by the r3 run at the same lane path — snapshot future rounds aside
 before re-running), `/tmp/pkcs11-fast-r3.json` (r3).
+
+## Remaining fast-lane failures (r18: 20)
+
+r17→r18 (same T6 bundle, oracle 0.2.0→0.2.1): `eddsa_wrong_length`
+fixed oracle-side (the int-path gate no longer asserts `CKR_OK`
+from `C_GetMechanismInfo`), zero new failures, +20 newly
+collected passing tests. The 20: T5 session/login (10: 3× RO
+session-object refusal, 2× public-creates-private, 3×
+context-login-without-op, 2× cross-session modify), stragglers
+(4: copy-to-private, oversized `CKA_VALUE_LEN`, 2× HOTP
+oracle-registry asserts), T8 RSA wrap/unwrap (6: 5× wrap routes,
+OAEP error uniformity). T5a (RO owner dimension) and T5b
+(public/private gates) are implemented and passing in-suite
+post-r18; lane reproof needs a bundle rebuild.
+
+## KAT lane status (0.2.1 vectors, T6 bundle: incomplete)
+
+112034 tests — 25635 passed, 24 failed, 10 crashed, 5027
+xfailed, 81118 skipped (`/tmp/pkcs11-kat-021.json`). The lane is
+INCOMPLETE (`crash_limited: 220`): the 10 ACVP AES-GCM encrypt
+crashes (tc1–tc10, `free(): invalid size` at teardown finalize)
+trip the crash limiter and cut the run short. The 24 failed are
+exactly the 20 fast legs plus 4 KAT-only: ECDH keygen
+`CKA_EC_POINT` incompleteness on P-256/P-384/P-521 (3) and
+wycheproof AES-GCM decrypt KAT tc92 wrong answer (1). The GCM
+crash (heap corruption) is top severity: it blocks full-lane
+proof independently of every leg count.
+
+## Full-lane skip census (KAT 0.2.1): the servable gap
+
+81,118 skipped; 30,490 hide behind 18 whole-file skips. Engine
+column is the pinned OpenSSL 4.0.2 default provider (enumerated
+from the toolchain image); haskoki column is the 107-row
+real-tested catalog.
+
+Whole-file skips by hidden test count: ACVP AES-CCM 8398,
+CTS 7500, OFB/CFB8/CFB128/CFB1 ~2140 each, XTS 1200;
+wycheproof DSA 1956, ML-DSA 631+220(+45 hash-ML-DSA, 42
+hash-SLH-DSA), ChaCha 325, Ed25519 238; CCTV Ed25519 914,
+ML-DSA 449; HKDF-data-KAT 1, EdDSA-encoding 1.
+
+Servable (engine has it, haskoki doesn't), by volume: AES
+CTR/CFB1/CFB8/CFB128/OFB/CCM/XTS/CTS cipher modes (~24k
+hidden tests); AES key-wrap/KWP (wrap family 0 tested);
+symmetric keygens ARIA/CAMELLIA/DES3 (random-bytes pattern,
+same as AES keygen); ML-DSA-44/65/87 sign+keygen
+(PQC 0 tested); Ed25519 (keygen+sign/verify, CKM_EDDSA
+unadvertised); DH keypair; DSA keygen/sign/verify;
+ChaCha20-Poly1305; RSA_X_509 + the `CKF_ENCRYPT` flag on
+RSA_PKCS (currently SIGN/VERIFY only); KMAC/SLH-DSA rows to
+confirm. Investigate HKDF-data-KAT and ML-KEM skip reasons
+(both partially served — may be cheap).
+
+Honest skips (no engine support, stay skipped): RC2/RC4,
+Blowfish, CAST, IDEA, SEED, GOST, Salsa20, WTLS/KEA/FORTEZZA,
+CMS/PBA/LYNKS/FASTHASH, HSS/XMSS stateful, SSL3 KDFs,
+message-mode CKF flags (T4 skips clean), x509-limbo
+(certificate objects unserved), v2.40-only legs. Destructive
+tests (13) need the explicit flag. Counts shift after the GCM
+crash fix completes the lane.
