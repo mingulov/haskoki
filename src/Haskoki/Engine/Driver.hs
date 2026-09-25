@@ -78,7 +78,9 @@ the answer frames the private half plus the optional public half
 via 'encodeKeyPair'); 'FxKemEncaps' runs backend encapsulation and
 answers @ciphertext || secret@ (the finisher splits at the
 mechanism's ciphertext length); 'FxWrap'\/'FxUnwrap' run raw AES-CBC
-(the planner pads); 'FxAuthWrap'\/'FxAuthUnwrap' compose AES-CBC
+(the planner pads) or the RSA cipher (the payload travels raw:
+v1.5 takes empty parameters, OAEP the labeled params);
+'FxAuthWrap'\/'FxAuthUnwrap' compose AES-CBC
 with an HMAC-SHA-256 tag over @aad || ct@ under a domain-separated
 tag key; 'FxDerive' runs HKDF-Expand with HMAC-SHA-256 ('hkdfExpand')
 for the HKDF mechanism, backend ECDH agreement ('ecdhDerive',
@@ -187,6 +189,7 @@ import Haskoki.Operation.KeyManagement
   , decodeGenArgs
   , decodeWrapParams
   , ecKeyPairGenMech
+  , rsaPkcsMech
   , encodeKeyPair
   , genericSecretKeyGenMech
   , hotpKeyGenMech
@@ -506,6 +509,11 @@ rsaPkcs1SpecFor mech params = do
 isRsaPkcs1Mech :: MechanismId -> Bool
 isRsaPkcs1Mech mech = isJust (rsaPkcs1RecipeFor mech)
 
+-- | The raw RSA v1.5 row: the only v1.5 mechanism that wraps
+-- (the digest rows are signature-only).
+isRsaPkcsWrapMech :: MechanismId -> Bool
+isRsaPkcsWrapMech mech = mech == rsaPkcsMech
+
 -- | Recipe digest stem onto the backend digest.
 rsaDigest :: T.Text -> Maybe DigestAlg
 rsaDigest stem
@@ -786,14 +794,22 @@ runEffect env resolve fx = case fx of
           "driver: unknown KEM parameter name"))
         Just alg -> withKey mkey $ \key ->
           toBytes <$> kemDecapsulate env (KemSpec (toPqcKem alg)) key input
-  FxWrap _mech mkey iv input
-    | _mech /= aesCbcMech -> pure (unsupported fx)
-    | otherwise -> withKey mkey $ \key ->
-        runCipher DirEncrypt _mech key iv input
-  FxUnwrap _mech mkey iv input
-    | _mech /= aesCbcMech -> pure (unsupported fx)
-    | otherwise -> withKey mkey $ \key ->
-        runCipher DirDecrypt _mech key iv input
+  FxWrap _mech mkey params input
+    | _mech == aesCbcMech -> withKey mkey $ \key ->
+        runCipher DirEncrypt _mech key params input
+    | isRsaOaepMech _mech -> withKey mkey $ \key ->
+        runOaep DirEncrypt _mech key params input
+    | isRsaPkcsWrapMech _mech -> withKey mkey $ \key ->
+        runPkcs1 DirEncrypt _mech key params input
+    | otherwise -> pure (unsupported fx)
+  FxUnwrap _mech mkey params input
+    | _mech == aesCbcMech -> withKey mkey $ \key ->
+        runCipher DirDecrypt _mech key params input
+    | isRsaOaepMech _mech -> withKey mkey $ \key ->
+        runOaep DirDecrypt _mech key params input
+    | isRsaPkcsWrapMech _mech -> withKey mkey $ \key ->
+        runPkcs1 DirDecrypt _mech key params input
+    | otherwise -> pure (unsupported fx)
   FxAuthWrap _mech mkey params input
     | _mech /= aesCbcMech -> pure (unsupported fx)
     | otherwise -> case decodeWrapParams params of
@@ -1015,6 +1031,18 @@ runEffect env resolve fx = case fx of
         Just oparams -> case dir of
           DirEncrypt -> toBytes <$> pkeyEncrypt env (RsaOaep oparams) key input
           DirDecrypt -> toBytes <$> pkeyDecrypt env (RsaOaep oparams) key input
+
+    -- | RSA v1.5 cipher effects (wrap/unwrap only): empty
+    -- parameters straight to the asymmetric backend entry points
+    -- (encrypt takes the public half, decrypt the private half;
+    -- both travel as DER key material).
+    runPkcs1 :: CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runPkcs1 dir _mech key params input
+      | not (BS.null params) = pure (GotCryptoError (CryptoFailed
+          "driver: v1.5 wrap takes no mechanism parameters"))
+      | otherwise = case dir of
+          DirEncrypt -> toBytes <$> pkeyEncrypt env RsaPkcs1 key input
+          DirDecrypt -> toBytes <$> pkeyDecrypt env RsaPkcs1 key input
     runAuthWrap :: Bool -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
     runAuthWrap isWrap mech key iv aad input = case key of
       KeyBytes kb -> case cipherSpecFor mech (BS.length kb) iv of

@@ -474,40 +474,41 @@ caseCipherPromoted = do
 caseRsaPromoted :: IO ()
 caseRsaPromoted = do
   -- The 12 RSA v1.5 behaviors resolve with the sign/verify
-  -- routes and execute under caps.
-  let mids =
-        [ MechanismId 0x01, MechanismId 0x05
-        , MechanismId 0x06, MechanismId 0x08
-        , MechanismId 0x40, MechanismId 0x41
-        , MechanismId 0x42, MechanismId 0x46
-        , MechanismId 0x60, MechanismId 0x61
-        , MechanismId 0x62, MechanismId 0x66
-        ]
-  mapM_ checkOne mids
+  -- routes and execute under caps; the raw row additionally
+  -- serves wrap/unwrap (the digest rows are signature-only).
+  mapM_ (checkOne [OpSign, OpVerify])
+    [ MechanismId 0x05
+    , MechanismId 0x06, MechanismId 0x08
+    , MechanismId 0x40, MechanismId 0x41
+    , MechanismId 0x42, MechanismId 0x46
+    , MechanismId 0x60, MechanismId 0x61
+    , MechanismId 0x62, MechanismId 0x66
+    ]
+  checkOne [OpSign, OpVerify, OpWrap, OpUnwrap] (MechanismId 0x01)
   where
-    checkOne mid = do
+    checkOne ops mid = do
       let reg = curatedRegistry
       assertEqual ("supported " ++ show mid) StatusSupported (describeStatus reg mid)
       case lookupBehavior reg mid of
         Nothing -> assertFailure ("behavior must resolve " ++ show mid)
-        Just d -> assertEqual ("rsa routes " ++ show mid) [OpSign, OpVerify]
+        Just d -> assertEqual ("rsa routes " ++ show mid) ops
           (map routeOperation (descRoutes d))
       mapM_ (\op -> assertBool ("executable " ++ show mid ++ " " ++ show op)
         (isExecutable reg (mkCapabilities [(mid, op)]) mid op))
-        [OpSign, OpVerify]
+        ops
 
 caseRsaPssOaepPromoted :: IO ()
 caseRsaPssOaepPromoted = do
   -- The 10 PSS behaviors resolve with sign/verify routes and
-  -- the OAEP behavior with encrypt/decrypt routes; all execute
-  -- under caps.
+  -- the OAEP behavior with encrypt/decrypt/wrap/unwrap routes;
+  -- all execute under caps.
   mapM_ (checkOne [OpSign, OpVerify])
     [ MechanismId 0x0d, MechanismId 0x0e
     , MechanismId 0x43, MechanismId 0x44, MechanismId 0x45
     , MechanismId 0x47, MechanismId 0x63, MechanismId 0x64
     , MechanismId 0x65, MechanismId 0x67
     ]
-  checkOne [OpEncrypt, OpDecrypt] (MechanismId 0x09)
+  checkOne [OpEncrypt, OpDecrypt, OpWrap, OpUnwrap] (MechanismId 0x09)
   where
     checkOne ops mid = do
       let reg = curatedRegistry

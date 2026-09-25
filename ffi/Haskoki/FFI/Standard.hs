@@ -2662,8 +2662,10 @@ runWrapPlan inst m st kp pOut pLen = case kp of
     m2 <- snapshotModel (siEnv inst)
     publishWrapResult inst (finishWork m2 st pw res) pOut pLen
 
--- | Wrap one key: the IV rides the mechanism params; a NULL
--- out-buffer queries the padded length.
+-- | Wrap one key: the mechanism parameters ride the raw block
+-- (an IV for AES-CBC, empty for v1.5, the native OAEP struct
+-- normalized to the canonical codec); a NULL out-buffer queries
+-- the blob length.
 haskokiStdWrapKey
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
   -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
@@ -2676,13 +2678,15 @@ haskokiStdWrapKey ctx h (CULong mech) pIv (CULong ivLen)
         eIv <- decodeInputBytes pIv ivLen
         case eIv of
           Left _ -> pure ckrArgsBad
-          Right iv -> do
+          Right raw -> do
             CULong cap <- peek pLen
             let intent = if pOut == nullPtr then IntentNull
                          else IntentBuffer (fromIntegral cap)
+                mid = MechanismId (fromIntegral mech)
+            params <- normalizeMechParams mid pIv ivLen raw
             m <- snapshotModel (siEnv inst)
             runWrapPlan inst m st
-              (planWrapKey m st (MechanismId (fromIntegral mech)) iv
+              (planWrapKey m st mid params
                 (ExternalHandle (fromIntegral wrapH))
                 (ExternalHandle (fromIntegral targetH)) intent)
               pOut pLen
@@ -2700,7 +2704,7 @@ haskokiStdUnwrapKey ctx h (CULong mech) pIv (CULong ivLen) (CULong wrapH)
         eIv <- decodeInputBytes pIv ivLen
         case eIv of
           Left _ -> pure ckrArgsBad
-          Right iv -> do
+          Right raw -> do
             eBlob <- decodeInputBytes pBlob blobLen
             case eBlob of
               Left _ -> pure ckrArgsBad
@@ -2709,10 +2713,12 @@ haskokiStdUnwrapKey ctx h (CULong mech) pIv (CULong ivLen) (CULong wrapH)
                 case eTmpl of
                   Left ferr -> pure (frameErrorRV ferr)
                   Right entries -> do
+                    let mid = MechanismId (fromIntegral mech)
+                    params <- normalizeMechParams mid pIv ivLen raw
                     m <- snapshotModel (siEnv inst)
                     eHs <- runKeyPlan inst m st
                       (planUnwrapKey (envRules (siEnv inst)) m st
-                        (MechanismId (fromIntegral mech)) iv
+                        mid params
                         (ExternalHandle (fromIntegral wrapH)) blob entries)
                     case eHs of
                       Left rv -> pure rv

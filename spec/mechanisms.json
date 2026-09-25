@@ -77,13 +77,15 @@
       "mechanism_info": {
         "flags": [
           "CKF_SIGN",
-          "CKF_VERIFY"
+          "CKF_VERIFY",
+          "CKF_UNWRAP",
+          "CKF_WRAP"
         ],
         "key_size_unit": "bits",
         "max_key_size": 4096,
         "min_key_size": 512
       },
-      "notes": "RSA PKCS#1 v1.5 recipe (core/Haskoki/Recipe/RsaPkcs1.hs): raw block-type-1 operation over the input (no hashing), empty mechanism parameters. Real execution pinned (OpenSSLSpec caseRsaKats against the pinned libcrypto: fixed RSA-2048 CLI vector, raw block-type-1 KAT (pkeyutl vector)); synthetic per-digest constructions pinned (SyntheticSpec caseRsaRoundtrip); init enforces empty params (RecipeRsaSpec).",
+      "notes": "RSA PKCS#1 v1.5 recipe (core/Haskoki/Recipe/RsaPkcs1.hs): raw block-type-1 operation over the input (no hashing), empty mechanism parameters. Real execution pinned (OpenSSLSpec caseRsaKats against the pinned libcrypto: fixed RSA-2048 CLI vector, raw block-type-1 KAT (pkeyutl vector)); synthetic per-digest constructions pinned (SyntheticSpec caseRsaRoundtrip); init enforces empty params (RecipeRsaSpec). Wrap/unwrap (block-type-2 cipher, empty parameters, typed input bound k-11, modulus-wide blobs, padding failures are verdicts): planner pinned (KeyManagementSpec caseRsaWrapRoundtrip/caseRsaWrapMismatch), synthetic envelopes pinned (SyntheticSpec casePkcs1Roundtrip), real execution pinned (OpenSSLSpec caseRsaPkcs1Vectors CLI interop + RoutingE2ESpec caseDriverRsaWrap).",
       "numeric_id": "0x00000001",
       "routes": [
         {
@@ -108,6 +110,32 @@
           ],
           "operation": "verify",
           "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "wrapping-key"
+          ],
+          "operation": "wrap",
+          "output_rule": "synthetic-pkcs1/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "unwrapping-key"
+          ],
+          "operation": "unwrap",
+          "output_rule": "synthetic-pkcs1/v1",
           "parameter_codec": "no-params/1"
         }
       ],
@@ -154,6 +182,11 @@
           "case_id": "A42",
           "build_id": "exhaustiveness",
           "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
         }
       ]
     },
@@ -537,13 +570,15 @@
       "mechanism_info": {
         "flags": [
           "CKF_DECRYPT",
-          "CKF_ENCRYPT"
+          "CKF_ENCRYPT",
+          "CKF_UNWRAP",
+          "CKF_WRAP"
         ],
         "key_size_unit": "bits",
         "max_key_size": 4096,
         "min_key_size": 512
       },
-      "notes": "RSA-OAEP recipe (core/Haskoki/Recipe/RsaOaep.hs): labeled oaep-params/1 (hash, MGF1 hash, label); encrypt/decrypt route to the asymmetric backend entry points (typed input bound k-2*hLen-2, padding/label failures are verdicts). Real execution pinned (OpenSSLSpec caseRsaOaepVectors against the pinned libcrypto: two CLI interop vectors incl. a labeled one + roundtrips); synthetic labeled envelopes pinned (SyntheticSpec caseOaepRoundtrip); init enforces params and refuses PKCS#7 specs (RecipeOaepSpec). No wrap/unwrap routes: the wrap planner is AES-CBC only (named gap).",
+      "notes": "RSA-OAEP recipe (core/Haskoki/Recipe/RsaOaep.hs): labeled oaep-params/1 (hash, MGF1 hash, label); encrypt/decrypt route to the asymmetric backend entry points (typed input bound k-2*hLen-2, padding/label failures are verdicts). Real execution pinned (OpenSSLSpec caseRsaOaepVectors against the pinned libcrypto: two CLI interop vectors incl. a labeled one + roundtrips); synthetic labeled envelopes pinned (SyntheticSpec caseOaepRoundtrip); init enforces params and refuses PKCS#7 specs (RecipeOaepSpec). Wrap/unwrap (same padding, typed input bound k-2*hLen-2, modulus-wide blobs): planner pinned (KeyManagementSpec caseRsaWrapRoundtrip/caseRsaWrapMismatch), synthetic envelopes pinned (SyntheticSpec caseOaepRoundtrip), real execution pinned (OpenSSLSpec caseRsaOaepVectors + RoutingE2ESpec caseDriverRsaWrap).",
       "numeric_id": "0x00000009",
       "routes": [
         {
@@ -569,6 +604,32 @@
             "decryption-key"
           ],
           "operation": "decrypt",
+          "output_rule": "synthetic-oaep/v1",
+          "parameter_codec": "oaep-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "wrapping-key"
+          ],
+          "operation": "wrap",
+          "output_rule": "synthetic-oaep/v1",
+          "parameter_codec": "oaep-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "unwrapping-key"
+          ],
+          "operation": "unwrap",
           "output_rule": "synthetic-oaep/v1",
           "parameter_codec": "oaep-params/1"
         }
@@ -621,6 +682,11 @@
           "case_id": "A42",
           "build_id": "exhaustiveness",
           "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
         }
       ]
     },

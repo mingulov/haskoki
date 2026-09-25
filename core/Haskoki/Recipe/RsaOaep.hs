@@ -36,6 +36,7 @@ module Haskoki.Recipe.RsaOaep
   , encodeOaepParams
   , decodeOaepParams
   , rsaOaepParamsValid
+  , oaepDigestWidth
   ) where
 
 import Data.Bits (shiftL, shiftR, (.&.))
@@ -133,6 +134,25 @@ rsaOaepParamsValid :: RsaOaepRecipe -> ByteString -> Bool
 rsaOaepParamsValid _ params = case decodeOaepParams params of
   Just _ -> True
   Nothing -> False
+
+-- | Output width of an OAEP digest stem ('Nothing' for unknown
+-- stems, which never validate). The wrap planner bounds payloads
+-- by the main hash width (mLen <= k - 2*hLen - 2); the MGF width
+-- never enters the bound.
+oaepDigestWidth :: Text -> Maybe Int
+oaepDigestWidth stem
+  | stem == "MD5" = Just 16
+  | stem == "SHA_1" = Just 20
+  | stem == "SHA224" = Just 28
+  | stem == "SHA256" = Just 32
+  | stem == "SHA384" = Just 48
+  | stem == "SHA512" = Just 64
+  | stem == "SHA3_224" = Just 28
+  | stem == "SHA3_256" = Just 32
+  | stem == "SHA3_384" = Just 48
+  | stem == "SHA3_512" = Just 64
+  | stem == "RIPEMD160" = Just 20
+  | otherwise = Nothing
 
 -- | The single covered mechanism.
 rsaOaepRecipes :: [RsaOaepRecipe]

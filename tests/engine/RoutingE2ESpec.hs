@@ -19,7 +19,7 @@ import Data.Char (digitToInt, isHexDigit)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import qualified Data.Map.Strict as Map
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Engine.Backend
@@ -67,6 +67,7 @@ import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Otp (encodeHotpParams)
+import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Registry (MechanismId (..), Operation (..))
 import Haskoki.Request
   ( FunctionId (..)
@@ -96,6 +97,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: digest KAT + unknown mechanism" caseDriverDigest
   , testCase "driver: hmac sign/verify + key errors" caseDriverHmac
   , testCase "driver: aes KAT + size errors" caseDriverAes
+  , testCase "driver: RSA wrap/unwrap roundtrip, modulus-wide" caseDriverRsaWrap
   , testCase "driver: gcm roundtrip + tamper fails closed" caseDriverGcm
   , testCase "driver: ecdsa roundtrip both encodings" caseDriverEcdsa
   , testCase "driver: ecdh agree + truncate + refuse" caseDriverEcdh
@@ -535,6 +537,70 @@ caseDriverAes = withBackend $ \env -> do
   case badIv of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
+
+rsaPkcsWrapMech, rsaOaepWrapMech, sha256RsaMech :: MechanismId
+rsaPkcsWrapMech = MechanismId 0x1
+rsaOaepWrapMech = MechanismId 0x9
+sha256RsaMech = MechanismId 0x40
+
+caseDriverRsaWrap :: IO ()
+caseDriverRsaWrap = withBackend $ \env -> do
+  gen <- generateKey env (GenRSA 2048 65537)
+  (priv, pub) <- case gen of
+    EngineOk (p, Just q) -> pure (p, q)
+    other -> assertFailure ("keygen failed: " ++ show other)
+  let pubOid = ObjectId 41
+      privOid = ObjectId 42
+      res oid
+        | oid == pubOid = Just pub
+        | oid == privOid = Just priv
+        | otherwise = Nothing
+      oaep = encodeOaepParams "SHA256" "SHA256" BS.empty
+      target = "wrap-target-16byte"
+  -- v1.5: modulus-wide, randomized, reversible.
+  c1 <- runEffect env res
+      (FxWrap rsaPkcsWrapMech (Just pubOid) BS.empty target)
+    >>= expectBytes
+  assertEqual "v1.5 modulus-wide" 256 (BS.length c1)
+  c2 <- runEffect env res
+      (FxWrap rsaPkcsWrapMech (Just pubOid) BS.empty target)
+    >>= expectBytes
+  assertBool "v1.5 randomized" (c1 /= c2)
+  p1 <- runEffect env res
+      (FxUnwrap rsaPkcsWrapMech (Just privOid) BS.empty c1)
+    >>= expectBytes
+  assertEqual "v1.5 reversible" target p1
+  -- OAEP: likewise.
+  o1 <- runEffect env res
+      (FxWrap rsaOaepWrapMech (Just pubOid) oaep target)
+    >>= expectBytes
+  assertEqual "oaep modulus-wide" 256 (BS.length o1)
+  o2 <- runEffect env res
+      (FxWrap rsaOaepWrapMech (Just pubOid) oaep target)
+    >>= expectBytes
+  assertBool "oaep randomized" (o1 /= o2)
+  po <- runEffect env res
+      (FxUnwrap rsaOaepWrapMech (Just privOid) oaep o1)
+    >>= expectBytes
+  assertEqual "oaep reversible" target po
+  assertBool "padding domains separate" (c1 /= o1)
+  -- Tampering fails closed with a verdict, never a wrong plaintext.
+  tampered <- runEffect env res
+    (FxUnwrap rsaOaepWrapMech (Just privOid) oaep (BS.init o1 <> "X"))
+  case tampered of
+    GotCryptoError (CryptoAuthFailed _) -> pure ()
+    other -> assertFailure ("expected AuthFailed, got: " ++ show other)
+  -- v1.5 takes no parameters; the digest v1.5 rows never wrap.
+  badParams <- runEffect env res
+    (FxWrap rsaPkcsWrapMech (Just pubOid) "nope" target)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  digestRow <- runEffect env res
+    (FxWrap sha256RsaMech (Just pubOid) BS.empty target)
+  case digestRow of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
 
 caseDriverEcdsa :: IO ()
 caseDriverEcdsa = withBackend $ \env -> do

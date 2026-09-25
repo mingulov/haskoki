@@ -64,6 +64,8 @@ module Haskoki.Operation.KeyManagement
   , ecKeyPairGenMech
   , rsaKeyPairGenMech
   , aesCbcMech
+  , rsaPkcsMech
+  , rsaOaepMech
     -- * Shared template checks
   , checkKeyTemplate
   , checkKeyTemplateAny
@@ -136,6 +138,13 @@ import Haskoki.Outcome
   , StateDelta (..)
   )
 import Haskoki.Recipe.Otp (hotpKeygenMaxBytes, hotpKeygenMinBytes)
+import Haskoki.Recipe.RsaOaep
+  ( decodeOaepParams
+  , oaepDigestWidth
+  , rsaOaepParamsValid
+  , rsaOaepRecipeFor
+  )
+import Haskoki.Recipe.RsaPkcs1 (rsaPkcs1ParamsValid, rsaPkcs1RecipeFor)
 import Haskoki.Registry (MechanismId (..), Operation (..))
 import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
 import Haskoki.Registry.Generated
@@ -145,7 +154,9 @@ import Haskoki.Registry.Generated
   , ckm_GENERIC_SECRET_KEY_GEN
   , ckm_HOTP_KEY_GEN
   , ckm_ML_KEM_KEY_PAIR_GEN
+  , ckm_RSA_PKCS
   , ckm_RSA_PKCS_KEY_PAIR_GEN
+  , ckm_RSA_PKCS_OAEP
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (Rules)
@@ -237,10 +248,21 @@ ecKeyPairGenMech = MechanismId (ckm_EC_KEY_PAIR_GEN)
 rsaKeyPairGenMech :: MechanismId
 rsaKeyPairGenMech = MechanismId (ckm_RSA_PKCS_KEY_PAIR_GEN)
 
--- | @CKM_AES_CBC@ (the wrap mechanism: the planner pads, the
--- driver runs raw CBC; generated id, resolved by name).
+-- | @CKM_AES_CBC@ (the symmetric wrap mechanism: the planner
+-- pads, the driver runs raw CBC; generated id, resolved by name).
 aesCbcMech :: MechanismId
 aesCbcMech = MechanismId (ckm_AES_CBC)
+
+-- | @CKM_RSA_PKCS@ (the v1.5 wrap mechanism: empty parameters,
+-- the payload travels raw, the blob is modulus-wide).
+rsaPkcsMech :: MechanismId
+rsaPkcsMech = MechanismId (ckm_RSA_PKCS)
+
+-- | @CKM_RSA_PKCS_OAEP@ (the OAEP wrap mechanism: labeled
+-- @oaep-params\/1@ parameters, the payload travels raw, the blob
+-- is modulus-wide).
+rsaOaepMech :: MechanismId
+rsaOaepMech = MechanismId (ckm_RSA_PKCS_OAEP)
 
 -- ---------------------------------------------------------------------------
 -- Plan currency
@@ -295,6 +317,9 @@ data PendingWork
   | PwUnwrap
       { pwKey :: !PendingObject
       }
+  | PwUnwrapRaw
+      { pwKey :: !PendingObject
+      }
   | PwDerive
       { pwKeys :: ![PendingObject]
       , pwLens :: ![Int]
@@ -334,6 +359,7 @@ pendingObjects pw = case pw of
   PwDecaps s -> [s]
   PwBlobOut _ -> []
   PwUnwrap k -> [k]
+  PwUnwrapRaw k -> [k]
   PwDerive pos _ -> pos
 
 -- | Publish pending objects as one atomic delta: every object
@@ -386,6 +412,7 @@ keyPairCompatible (PwBlobOut _) (FxWrap _ _ _ _) = True
 keyPairCompatible (PwBlobOut _) (FxAuthWrap _ _ _ _) = True
 keyPairCompatible (PwUnwrap _) (FxUnwrap _ _ _ _) = True
 keyPairCompatible (PwUnwrap _) (FxAuthUnwrap _ _ _ _) = True
+keyPairCompatible (PwUnwrapRaw _) (FxUnwrap _ _ _ _) = True
 keyPairCompatible (PwEncaps _ _ _) (FxKemEncaps _ _ _ _) = True
 keyPairCompatible (PwDecaps _) (FxKemDecaps _ _ _ _) = True
 keyPairCompatible (PwDerive _ _) (FxDerive _ _ _ _ _) = True
@@ -441,6 +468,10 @@ finishWork model st pw res = case (pw, res) of
       , rejReleases = []
       , rejReasons = ["unwrap padding check failed"]
       }
+  -- RSA unwrap answers raw key material (the asymmetric padding
+  -- is consumed by the backend): no PKCS#7 framing to strip.
+  (PwUnwrapRaw po, GotBytes bs) ->
+    publish1 (storeMaterial bs po) [] ["unwrapped key"]
   (PwDerive pos lens, GotBytes bs)
     | BS.length bs /= sum lens -> internal
         ("derive answer length " ++ show (BS.length bs)
@@ -1195,6 +1226,57 @@ withWrappingKey model st usage label h = case resolveHandle model h of
         Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
           "wrapping key lacks material")
 
+-- | Modulus byte width of an RSA wrapping key: the stored DER
+-- parses first (authoritative — the same parser that stamps
+-- keygen components), the stamped @CKA_MODULUS@ second. The DER
+-- integers parse minimal, and a real modulus always sets its top
+-- bit, so the parsed length is the modulus width.
+rsaModulusBytes :: ObjectState -> Maybe Int
+rsaModulusBytes ost =
+  case keyBytesOf ost of
+    Just der -> case parseRsaPublic der of
+      Just (n, _) -> Just (BS.length n)
+      Nothing -> case parseRsaPrivate der of
+        Just crt -> Just (BS.length (crtN crt))
+        Nothing -> fromAttr
+    Nothing -> fromAttr
+  where
+    fromAttr = case Map.lookup AttrModulus (osAttrs ost) of
+      Just (ValBytes n) ->
+        let stripped = BS.dropWhile (== 0) n
+        in if BS.null stripped then Nothing else Just (BS.length stripped)
+      _ -> Nothing
+
+-- | Resolve an RSA wrapping key: the handle resolves to a visible
+-- RSA object of the required half (public for wrapping, private
+-- for unwrapping) carrying the required usage mark and modulus
+-- material. Answers the object id and the modulus byte width the
+-- length checks and the blob length derive from. Anything else is
+-- a key-type refusal, never a silent coercion.
+withRsaWrappingKey
+  :: Model -> SessionState -> AttributeType -> String -> Word64 -> ExternalHandle
+  -> Either KeyDeny (ObjectId, Int)
+withRsaWrappingKey model st usage label wantClass h =
+  case resolveHandle model h of
+    Nothing -> Left (KeyDeny CKR_OBJECT_HANDLE_INVALID
+      "unknown or destroyed wrapping-key handle")
+    Just ost
+      | not (objectVisible st ost) -> Left (KeyDeny CKR_OBJECT_HANDLE_INVALID
+          "wrapping key not visible in this session")
+      | Map.lookup usage (osAttrs ost) /= Just (ValBool True) ->
+          Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+            ("wrapping key does not permit " ++ label))
+      | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong wantClass) ||
+        Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkRsa) ->
+          Left (KeyDeny (if usage == AttrWrap
+                          then CKR_WRAPPING_KEY_TYPE_INCONSISTENT
+                          else CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT)
+            ("wrapping key is not an RSA key half: " ++ label))
+      | otherwise -> case rsaModulusBytes ost of
+          Just k -> Right (osId ost, k)
+          Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
+            "wrapping key lacks modulus material")
+
 -- | Resolve a wrap target: the handle resolves to a visible
 -- extractable object carrying stored material.
 withWrapTarget
@@ -1213,18 +1295,99 @@ withWrapTarget model st h = case resolveHandle model h of
         Nothing -> Left (KeyDeny CKR_KEY_NOT_WRAPPABLE
           "target carries no key material")
 
--- | Plan one wrap: the wrapping key needs the wrap mark, the target
--- must be extractable. Length queries and short buffers answer the
--- padded length and plan no crypto; a sufficient buffer plans one
--- wrap effect over the padded material.
+-- | Plan one wrap: AES-CBC pads through 'planAesWrapKey', the
+-- RSA mechanisms travel raw through 'planRsaWrapKey'.
 planWrapKey
   :: Model -> SessionState -> MechanismId -> ByteString
   -> ExternalHandle -> ExternalHandle -> OutputIntent
   -> KeyPlan
-planWrapKey model st mech iv wrapH targetH intent
-  | mech /= aesCbcMech =
+planWrapKey model st mech params wrapH targetH intent
+  | mech == aesCbcMech = planAesWrapKey model st mech params wrapH targetH intent
+  | mech == rsaPkcsMech || mech == rsaOaepMech =
+      planRsaWrapKey model st mech params wrapH targetH intent
+  | otherwise =
       KeyDenied (KeyDeny CKR_MECHANISM_INVALID
         ("not a wrap mechanism: " ++ show mech))
+
+-- | Padding overhead per RSA wrap mechanism: v1.5 takes empty
+-- parameters and 11 bytes; OAEP takes the labeled
+-- @oaep-params\/1@ parameters and 2*hLen+2 over the main hash
+-- width. Rejected shapes are argument errors (parse-first).
+rsaWrapOverhead :: MechanismId -> ByteString -> Either KeyDeny Int
+rsaWrapOverhead mech params
+  | mech == rsaPkcsMech = case rsaPkcs1RecipeFor mech of
+      Just r | rsaPkcs1ParamsValid r params -> Right 11
+      _ -> Left (KeyDeny CKR_ARGUMENTS_BAD
+        "RSA v1.5 wrap takes empty mechanism parameters")
+  | otherwise = case rsaOaepRecipeFor mech of
+      Just r | rsaOaepParamsValid r params ->
+        case decodeOaepParams params of
+          Just (d, _, _) -> case oaepDigestWidth d of
+            Just h -> Right (2 * h + 2)
+            -- Unreachable post-validation (the width table covers
+            -- every code the codec admits); typed, never a crash.
+            Nothing -> Left (KeyDeny CKR_ARGUMENTS_BAD
+              "RSA-OAEP hash width is unknown")
+          Nothing -> Left (KeyDeny CKR_ARGUMENTS_BAD
+            "RSA-OAEP mechanism parameters rejected by the recipe")
+      _ -> Left (KeyDeny CKR_ARGUMENTS_BAD
+        "RSA-OAEP mechanism parameters rejected by the recipe")
+
+-- | Plan one RSA wrap: the public wrapping key needs the wrap
+-- mark, the target must be extractable, and the raw material must
+-- fit the padding input bound (over the wrapping key's modulus
+-- width). Length queries and short buffers answer the
+-- modulus-wide blob length and plan no crypto; a sufficient
+-- buffer plans one wrap effect over the raw material.
+planRsaWrapKey
+  :: Model -> SessionState -> MechanismId -> ByteString
+  -> ExternalHandle -> ExternalHandle -> OutputIntent
+  -> KeyPlan
+planRsaWrapKey model st mech params wrapH targetH intent =
+  case rsaWrapOverhead mech params of
+    Left deny -> KeyDenied deny
+    Right over ->
+      case withRsaWrappingKey model st AttrWrap "wrapping" ckoPublicKey wrapH of
+        Left deny -> KeyDenied deny
+        Right (wrapOid, k) -> case withWrapTarget model st targetH of
+          Left deny -> KeyDenied deny
+          Right mat
+            | BS.length mat > k - over -> KeyDenied (KeyDeny CKR_DATA_LEN_RANGE
+                "wrap payload escapes the RSA input bound")
+            | otherwise ->
+                let blobLen = k
+                    lenOut = NativeOutput (RegionBytes "wrapped" intent)
+                      (encodeValue (ValULong (fromIntegral blobLen)))
+                in case intent of
+                  IntentNull -> KeyImmediate (Immediate PreparedCommit
+                    { pcCode = CKR_OK
+                    , pcDelta = StateDelta []
+                    , pcPersist = []
+                    , pcOutputs = [lenOut]
+                    , pcReleases = []
+                    , pcReasons = ["wrap length query"]
+                    })
+                  IntentBuffer cap
+                    | cap < fromIntegral blobLen -> KeyImmediate (Reject Rejection
+                        { rejCode = CKR_BUFFER_TOO_SMALL
+                        , rejOutputs = [lenOut]
+                        , rejDelta = StateDelta []
+                        , rejReleases = []
+                        , rejReasons = ["short buffer"]
+                        })
+                    | otherwise -> KeyEffect (PwBlobOut "wrapped")
+                        (FxWrap mech (Just wrapOid) params mat)
+
+-- | Plan one AES-CBC wrap: the wrapping key needs the wrap mark,
+-- the target must be extractable. Length queries and short
+-- buffers answer the padded length and plan no crypto; a
+-- sufficient buffer plans one wrap effect over the padded
+-- material.
+planAesWrapKey
+  :: Model -> SessionState -> MechanismId -> ByteString
+  -> ExternalHandle -> ExternalHandle -> OutputIntent
+  -> KeyPlan
+planAesWrapKey model st mech iv wrapH targetH intent
   | BS.length iv /= 16 =
       KeyDenied (KeyDeny CKR_ARGUMENTS_BAD "AES-CBC wrap needs a 16-byte IV")
   | otherwise = case withWrappingKey model st AttrWrap "wrapping" wrapH of
@@ -1258,16 +1421,71 @@ planWrapKey model st mech iv wrapH targetH intent
                 | otherwise -> KeyEffect (PwBlobOut "wrapped")
                     (FxWrap mech (Just wrapOid) iv padded)
 
--- | Plan one unwrap: the wrapping key needs the unwrap mark, the
--- blob must be block-aligned, and the template must name the new
--- key's class and key type explicitly (the blob carries no header).
--- Admission gates last (parse-first): mechanism, IV, blob,
--- key, template, then the bound check just before the effect.
+-- | Plan one unwrap: AES-CBC aligns through 'planAesUnwrapKey',
+-- the RSA mechanisms measure modulus-wide through
+-- 'planRsaUnwrapKey'.
 planUnwrapKey
   :: Rules -> Model -> SessionState -> MechanismId -> ByteString
   -> ExternalHandle -> ByteString -> [(AttributeType, AttributeValue)]
   -> KeyPlan
-planUnwrapKey rules model st mech iv wrapH blob tmpl =
+planUnwrapKey rules model st mech params wrapH blob tmpl
+  | mech == aesCbcMech = planAesUnwrapKey rules model st mech params wrapH blob tmpl
+  | mech == rsaPkcsMech || mech == rsaOaepMech =
+      planRsaUnwrapKey rules model st mech params wrapH blob tmpl
+  | otherwise =
+      KeyDenied (KeyDeny CKR_MECHANISM_INVALID
+        ("not a wrap mechanism: " ++ show mech))
+
+-- | Plan one RSA unwrap: the private wrapping key needs the
+-- unwrap mark, the blob must be exactly modulus-wide, and the
+-- template must name the new key's class and key type explicitly
+-- (the blob carries no header). Admission gates last
+-- (parse-first): mechanism, parameters, key, blob, template,
+-- then admission just before the effect. The pending work is raw
+-- (no PKCS#7 framing to strip).
+planRsaUnwrapKey
+  :: Rules -> Model -> SessionState -> MechanismId -> ByteString
+  -> ExternalHandle -> ByteString -> [(AttributeType, AttributeValue)]
+  -> KeyPlan
+planRsaUnwrapKey rules model st mech params wrapH blob tmpl =
+  case validated of
+    Left deny -> KeyDenied deny
+    Right (pw, fx) ->
+      case admitObjects rules (Map.size (mObjects model)) 1 of
+        Left deny -> KeyDenied (KeyDeny (admitCode deny)
+          ("admission denied: " ++ show deny))
+        Right () -> KeyEffect pw fx
+  where
+    validated =
+      case rsaWrapOverhead mech params of
+        Left deny -> Left deny
+        Right _ -> case withRsaWrappingKey model st AttrUnwrap "unwrapping" ckoPrivateKey wrapH of
+          Left deny -> Left deny
+          Right (wrapOid, k)
+            | BS.length blob /= k ->
+                Left (KeyDeny CKR_ARGUMENTS_BAD
+                  "wrapped blob length mismatches the RSA modulus")
+            | not (any ((== AttrKeyType) . fst) tmpl) ->
+                Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+                  "unwrap template must name the key type")
+            | otherwise -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
+                Left deny -> Left deny
+                Right attrs -> Right
+                  ( PwUnwrapRaw (pendingFromAttrs st attrs)
+                  , FxUnwrap mech (Just wrapOid) params blob
+                  )
+
+-- | Plan one AES-CBC unwrap: the wrapping key needs the unwrap
+-- mark, the blob must be block-aligned, and the template must
+-- name the new key's class and key type explicitly (the blob
+-- carries no header). Admission gates last (parse-first):
+-- mechanism, IV, blob, key, template, then the bound check just
+-- before the effect.
+planAesUnwrapKey
+  :: Rules -> Model -> SessionState -> MechanismId -> ByteString
+  -> ExternalHandle -> ByteString -> [(AttributeType, AttributeValue)]
+  -> KeyPlan
+planAesUnwrapKey rules model st mech iv wrapH blob tmpl =
   case validated of
     Left deny -> KeyDenied deny
     Right (pw, fx) ->
@@ -1277,9 +1495,6 @@ planUnwrapKey rules model st mech iv wrapH blob tmpl =
         Right () -> KeyEffect pw fx
   where
     validated
-      | mech /= aesCbcMech =
-          Left (KeyDeny CKR_MECHANISM_INVALID
-            ("not a wrap mechanism: " ++ show mech))
       | BS.length iv /= 16 =
           Left (KeyDeny CKR_ARGUMENTS_BAD "AES-CBC unwrap needs a 16-byte IV")
       | BS.null blob || BS.length blob `mod` 16 /= 0 =

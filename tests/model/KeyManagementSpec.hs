@@ -98,7 +98,7 @@ import Haskoki.Operation.KeyManagement
   , KeyDeny (..)
   , KeyPlan (..)
   , PendingObject (..)
-  , PendingWork
+  , PendingWork (..)
   , aesCbcMech
   , aesKeyGenMech
   , ckkAes
@@ -116,6 +116,7 @@ import Haskoki.Operation.KeyManagement
   , genericSecretKeygenMaxBytes
   , genericSecretKeygenMinBytes
   , keyBytesOf
+  , keyPairCompatible
   , padPkcs7
   , pendingFromAttrs
   , planAuthUnwrapKey
@@ -127,6 +128,8 @@ import Haskoki.Operation.KeyManagement
   , planWrapKey
   , publishPending
   , rsaKeyPairGenMech
+  , rsaOaepMech
+  , rsaPkcsMech
   , stampPairComponents
   , unpadPkcs7
   )
@@ -141,6 +144,7 @@ import Haskoki.Outcome
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
 import Haskoki.Registry (MechanismId (..), Operation (..), curatedRegistry, mkCapabilities)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
+import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Registry.Generated
   ( ckm_ECDH1_DERIVE
   , ckm_SHA256
@@ -179,6 +183,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "RSA exponent plans, agrees and refuses" caseRsaExponentPlanner
   , testCase "RSA stamping refuses mismatched halves" caseRsaStampMismatch
   , testCase "Wrap length query then wrap/unwrap roundtrip" caseWrapRoundtrip
+  , testCase "RSA wrap/unwrap roundtrips modulus-wide" caseRsaWrapRoundtrip
+  , testCase "RSA wrap key/parameter/length mismatches fail closed" caseRsaWrapMismatch
   , testCase "Authenticated wrap roundtrip binds the tag" caseAuthWrapRoundtrip
   , testCase "Single-key derive delivers one handle" caseDeriveSingle
   , testCase "ECDH derive refuses a non-EC base before params" caseDeriveEcdhWrongKeyType
@@ -1035,6 +1041,169 @@ caseWrapRoundtrip = withSynth $ \answer -> do
         (Just (ValBytes "unwrapped")) (Map.lookup AttrLabel (osAttrs ost))
       assertEqual "usage landed" (Just (ValBool True)) (Map.lookup AttrEncrypt (osAttrs ost))
     other -> assertFailure ("unwrap plan is not an effect: " ++ show other)
+
+-- | Generate one RSA pair through the planner + backend, with
+-- caller-supplied templates (so the wrap/unwrap marks land).
+genRsaPair :: (Model -> CryptoEffect -> IO CryptoResult)
+  -> Model -> SessionState
+  -> [(AttributeType, AttributeValue)] -> [(AttributeType, AttributeValue)]
+  -> IO (Model, ExternalHandle, ExternalHandle)
+genRsaPair answer m st pubT privT =
+  case planGenerateKeyPair defaultRules m st rsaKeyPairGenMech pubT privT of
+    KeyEffect pw fx -> do
+      res <- answer m fx
+      c <- finishCommit m st pw res 2
+      h1 <- handleOf (pcOutputs c !! 0)
+      h2 <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m (pcDelta c))
+      pure (m', h1, h2)
+    other -> assertFailure ("RSA plan is not an effect: " ++ show other) >> undefined
+
+caseRsaWrapRoundtrip :: IO ()
+caseRsaWrapRoundtrip = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let pubT = rsaPubTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
+      privT = rsaPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
+      oaep = encodeOaepParams "SHA256" "SHA256" BS.empty
+      oaepLabel = encodeOaepParams "SHA_1" "SHA_1" "label"
+  (m1, pubH, privH) <- genRsaPair answer m0 st pubT privT
+  (m2, targetH) <- genAesKey answer m1 st (aesTmpl 16)
+  Just target <- pure (resolveHandle m2 targetH)
+  Just targetMat <- pure (keyBytesOf target)
+  -- Length queries answer the modulus width and plan no crypto.
+  mapM_ (queryOk m2 st pubH targetH) [(rsaPkcsMech, BS.empty), (rsaOaepMech, oaep)]
+  -- Both paddings wrap the raw material. (The synthetic seal is
+  -- tag-sized, not modulus-wide; the modulus-wide real-backend
+  -- roundtrip is pinned in RoutingE2ESpec caseDriverRsaWrap.)
+  blob15 <- wrapOk m2 st answer rsaPkcsMech BS.empty pubH targetH
+  assertEqual "v1.5 synthetic length" 32 (BS.length blob15)
+  assertBool "v1.5 blob differs from plaintext" (blob15 /= targetMat)
+  blobO <- wrapOk m2 st answer rsaOaepMech oaep pubH targetH
+  assertEqual "oaep synthetic length" 32 (BS.length blobO)
+  assertBool "padding domains separate" (blob15 /= blobO)
+  blobL <- wrapOk m2 st answer rsaOaepMech oaepLabel pubH targetH
+  assertBool "labeled row differs" (blobL /= blobO)
+  -- Unwrap plans pair raw pending work with the unwrap effect
+  -- (coherent, modulus-wide blob), and the finisher stores the
+  -- answer raw (no PKCS#7 framing to strip).
+  mapM_ (unwrapPlanOk m2 st privH) [(rsaPkcsMech, BS.empty), (rsaOaepMech, oaep)]
+  case planUnwrapKey defaultRules m2 st rsaPkcsMech BS.empty privH
+    (BS.replicate 256 0)
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkAes)
+    , (AttrToken, ValBool False)
+    , (AttrLabel, ValBytes "unwrapped")
+    , (AttrEncrypt, ValBool True)
+    ] of
+    KeyEffect pw@(PwUnwrapRaw _) fx@(FxUnwrap _ _ _ _) -> do
+      assertBool "raw pair coherent" (keyPairCompatible pw fx)
+      c <- finishCommit m2 st pw (GotBytes targetMat) 1
+      h <- handleOf (pcOutputs c !! 0)
+      m3 <- expectRight (publishDelta m2 (pcDelta c))
+      Just ost <- pure (resolveHandle m3 h)
+      assertEqual "unwrapped material" (Just targetMat) (keyBytesOf ost)
+      assertEqual "label landed"
+        (Just (ValBytes "unwrapped")) (Map.lookup AttrLabel (osAttrs ost))
+      assertEqual "usage landed" (Just (ValBool True)) (Map.lookup AttrEncrypt (osAttrs ost))
+    other -> assertFailure ("unwrap plan is not a raw effect: " ++ show other)
+  where
+    queryOk m st pubH targetH (mech, params) =
+      case planWrapKey m st mech params pubH targetH IntentNull of
+        KeyImmediate (Immediate c) -> do
+          assertEqual ("query length " ++ show mech)
+            [NativeOutput (RegionBytes "wrapped" IntentNull) (encodeValue (ValULong 256))]
+            (pcOutputs c)
+          assertEqual "query publishes nothing" (StateDelta []) (pcDelta c)
+        other -> assertFailure ("wrap query is not an Immediate commit: " ++ show other)
+    wrapOk m st answer mech params wrapH targetH =
+      case planWrapKey m st mech params wrapH targetH (IntentBuffer 256) of
+        KeyEffect pw fx -> do
+          res <- answer m fx
+          case finishWork m st pw res of
+            Immediate c -> case pcOutputs c of
+              [NativeOutput (RegionBytes "wrapped" _) bs] -> pure bs
+              o -> assertFailure ("wrap outputs one blob, got: " ++ show o) >> undefined
+            other -> assertFailure ("wrap finish must commit, got: " ++ show other) >> undefined
+        other -> assertFailure ("wrap plan is not an effect: " ++ show other) >> undefined
+    unwrapPlanOk m st wrapH (mech, params) =
+      case planUnwrapKey defaultRules m st mech params wrapH (BS.replicate 256 0)
+        [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong ckkAes)] of
+        KeyEffect pw@(PwUnwrapRaw _) fx@(FxUnwrap _ _ _ _) ->
+          assertBool ("raw pair coherent " ++ show mech) (keyPairCompatible pw fx)
+        other -> assertFailure ("unwrap plan is not a raw effect: " ++ show other)
+
+caseRsaWrapMismatch :: IO ()
+caseRsaWrapMismatch = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  -- Both halves carry both marks, so the wrong-half legs reach
+  -- the type gate (usage gates first, mirroring the AES resolver).
+  let pubT = rsaPubTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
+      privT = rsaPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
+      oaep = encodeOaepParams "SHA256" "SHA256" BS.empty
+  (m1, pubH, privH) <- genRsaPair answer m0 st pubT privT
+  (m2, targetH) <- genAesKey answer m1 st (aesTmpl 16)
+  (m3, aesWrapH) <- genAesKey answer m2 st wrapKeyTmpl
+  let denyWrap m mech params wrapH targetH cap = case planWrapKey m st mech params wrapH targetH cap of
+        KeyDenied (KeyDeny code _) -> pure code
+        other -> assertFailure ("wrap must deny, got: " ++ show other) >> undefined
+      denyUnwrap m mech params wrapH blob tmpl =
+        case planUnwrapKey defaultRules m st mech params wrapH blob tmpl of
+          KeyDenied (KeyDeny code _) -> pure code
+          other -> assertFailure ("unwrap must deny, got: " ++ show other) >> undefined
+      tmpl = [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong ckkAes)]
+  -- Parameter shapes refuse.
+  code <- denyWrap m3 rsaPkcsMech "nonempty" pubH targetH (IntentBuffer 256)
+  assertEqual "v1.5 params code" CKR_ARGUMENTS_BAD code
+  code <- denyWrap m3 rsaOaepMech "garbage" pubH targetH (IntentBuffer 256)
+  assertEqual "oaep params code" CKR_ARGUMENTS_BAD code
+  -- Wrong halves and foreign key types refuse.
+  code <- denyWrap m3 rsaPkcsMech BS.empty privH targetH (IntentBuffer 256)
+  assertEqual "private-half wrap code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT code
+  code <- denyWrap m3 rsaPkcsMech BS.empty aesWrapH targetH (IntentBuffer 256)
+  assertEqual "aes-key wrap code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT code
+  code <- denyUnwrap m3 rsaPkcsMech BS.empty pubH (BS.replicate 256 0) tmpl
+  assertEqual "public-half unwrap code" CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT code
+  -- A key without the mark cannot wrap.
+  (m4, plainPubH, _) <- genRsaPair answer m3 st rsaPubTmpl rsaPrivTmpl
+  code <- denyWrap m4 rsaPkcsMech BS.empty plainPubH targetH (IntentBuffer 256)
+  assertEqual "no-wrap-mark code" CKR_KEY_FUNCTION_NOT_PERMITTED code
+  -- An unextractable target cannot wrap.
+  (m5, sealedH) <- genAesKey answer m4 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkAes)
+    , (AttrValueLen, ValULong 16)
+    , (AttrToken, ValBool False)
+    , (AttrExtractable, ValBool False)
+    ]
+  code <- denyWrap m5 rsaPkcsMech BS.empty pubH sealedH (IntentBuffer 256)
+  assertEqual "unextractable code" CKR_KEY_UNEXTRACTABLE code
+  -- Oversized payloads refuse with the length code (v1.5 bound
+  -- k-11 = 245; OAEP-SHA-512 bound k-2*64-2 = 126).
+  (m6, bigH) <- genKeyWith answer m5 st genericSecretKeyGenMech
+    (genericTmpl 250 ++ [(AttrExtractable, ValBool True)])
+  code <- denyWrap m6 rsaPkcsMech BS.empty pubH bigH (IntentBuffer 256)
+  assertEqual "oversized code" CKR_DATA_LEN_RANGE code
+  let oaep512 = encodeOaepParams "SHA512" "SHA512" BS.empty
+  (m7, midH) <- genKeyWith answer m6 st genericSecretKeyGenMech
+    (genericTmpl 200 ++ [(AttrExtractable, ValBool True)])
+  code <- denyWrap m7 rsaOaepMech oaep512 pubH midH (IntentBuffer 256)
+  assertEqual "oversized oaep code" CKR_DATA_LEN_RANGE code
+  -- Off-modulus blobs and key-typeless templates refuse.
+  code <- denyUnwrap m7 rsaPkcsMech BS.empty privH "short" tmpl
+  assertEqual "short blob code" CKR_ARGUMENTS_BAD code
+  code <- denyUnwrap m7 rsaPkcsMech BS.empty privH (BS.replicate 256 0)
+    [(AttrClass, ValULong ckoSecretKey)]
+  assertEqual "typeless template code" CKR_TEMPLATE_INCOMPLETE code
+  -- Short buffers answer the modulus width.
+  case planWrapKey m3 st rsaPkcsMech BS.empty pubH targetH (IntentBuffer 255) of
+    KeyImmediate (Reject r) -> do
+      assertEqual "short code" CKR_BUFFER_TOO_SMALL (rejCode r)
+      assertEqual "short length"
+        [NativeOutput (RegionBytes "wrapped" (IntentBuffer 255)) (encodeValue (ValULong 256))]
+        (rejOutputs r)
+    other -> assertFailure ("short buffer must reject, got: " ++ show other)
 
 caseAuthWrapRoundtrip :: IO ()
 caseAuthWrapRoundtrip = withSynth $ \answer -> do

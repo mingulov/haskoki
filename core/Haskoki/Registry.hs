@@ -556,17 +556,27 @@ rsaPkcs1Baselines name
 -- one descriptor per recipe row, codec from 'rsaPkcs1CodecFor',
 -- sign and verify routes citing synthetic A37 and real-KAT A39 (no
 -- A16: the backends offer one-shot sign only, no multipart sign
--- entry). Key bounds are the de-facto vendor range 512..4096 bits.
+-- entry). The raw row additionally serves wrap/unwrap (block-type-2
+-- cipher; the digest rows are signature-only). Key bounds are the
+-- de-facto vendor range 512..4096 bits.
 rsaPkcs1Descs :: [Descriptor]
 rsaPkcs1Descs =
   [ promotedDesc (rrName r) (rsaPkcs1Baselines (rrName r)) FamilyRsa
       (rsaPkcs1CodecFor r)
-      [ mechRoute OpSign (rrName r) ["A37", "A39"]
-      , mechRoute OpVerify (rrName r) ["A37", "A39"]
-      ]
+      ( [ mechRoute OpSign (rrName r) ["A37", "A39"]
+        , mechRoute OpVerify (rrName r) ["A37", "A39"]
+        ] ++ wrapRoutes (rrName r)
+      )
       KeyBits 512 4096
   | r <- rsaPkcs1Recipes
   ]
+  where
+    wrapRoutes name
+      | name == "CKM_RSA_PKCS" =
+          [ mechRoute OpWrap "CKM_RSA_PKCS" ["A20", "A37", "A39"]
+          , mechRoute OpUnwrap "CKM_RSA_PKCS" ["A20", "A37", "A39"]
+          ]
+      | otherwise = []
 
 -- | The RSA-PSS behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from 'rsaPssCodecFor',
@@ -588,14 +598,16 @@ rsaPssDescs =
 -- encrypt and decrypt routes citing the verified
 -- multipart (A16: the planner buffers updates and emits one
 -- asymmetric effect at final), synthetic (A37), and real-KAT (A39)
--- cases. No wrap/unwrap routes: the wrap planner is AES-CBC
--- only (named gap, see the JSON note).
+-- cases, plus wrap/unwrap routes citing the key-management (A20),
+-- synthetic (A37), and real-KAT (A39) cases.
 rsaOaepDescs :: [Descriptor]
 rsaOaepDescs =
   [ promotedDesc (roName r) allBaselines FamilyRsa
       (rsaOaepCodecFor r)
       [ mechRoute OpEncrypt (roName r) ["A16", "A37", "A39"]
       , mechRoute OpDecrypt (roName r) ["A16", "A37", "A39"]
+      , mechRoute OpWrap (roName r) ["A20", "A37", "A39"]
+      , mechRoute OpUnwrap (roName r) ["A20", "A37", "A39"]
       ]
       KeyBits 512 4096
   | r <- rsaOaepRecipes
