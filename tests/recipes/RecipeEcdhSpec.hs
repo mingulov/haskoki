@@ -26,6 +26,7 @@ import Data.Char (digitToInt, isHexDigit)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Word (Word64)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
@@ -45,6 +46,8 @@ import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
+  , PendingObject (..)
+  , PendingWork (..)
   , ckkEc
   , ckkGenericSecret
   , ckoSecretKey
@@ -69,6 +72,7 @@ import Haskoki.Registry.Generated
   , ckm_ECDSA_SHA256
   , ckm_ECMQV_DERIVE
   , ckm_HKDF_DERIVE
+  , ckm_SHA256_KEY_DERIVATION
   )
 import Haskoki.Registry.Types (ParameterCodec (..))
 import Haskoki.Rules (defaultRules)
@@ -233,8 +237,8 @@ testSession = SessionState
   , ssOps = emptySessionOps
   }
 
-mkBaseModel :: BS.ByteString -> Bool -> Model
-mkBaseModel mat canDerive = emptyModel
+mkBaseModel :: Word64 -> BS.ByteString -> Bool -> Model
+mkBaseModel keyType mat canDerive = emptyModel
   { mObjects = Map.fromList [(baseOid, ost)]
   , mHandles = Map.fromList [(baseHandle, HandleBinding baseOid (Generation 1))]
   }
@@ -245,7 +249,7 @@ mkBaseModel mat canDerive = emptyModel
       , osGeneration = Generation 1
       , osAttrs = Map.fromList
           [ (AttrClass, ValULong ckoSecretKey)
-          , (AttrKeyType, ValULong ckkEc)
+          , (AttrKeyType, ValULong keyType)
           , (AttrPrivate, ValBool False)
           , (AttrDerive, ValBool canDerive)
           , (AttrValue, ValBytes mat)
@@ -262,6 +266,15 @@ derivedTmpl n =
   , (AttrToken, ValBool False)
   ]
 
+-- | Derive template without CKA_VALUE_LEN (the oracle's basic-ECDH shape).
+derivedTmplNoLen :: [(AttributeType, AttributeValue)]
+derivedTmplNoLen =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong ckkGenericSecret)
+  , (AttrSensitive, ValBool False)
+  , (AttrExtractable, ValBool True)
+  ]
+
 ecdhMech, ecdhCofMech :: MechanismId
 ecdhMech = MechanismId (ckm_ECDH1_DERIVE)
 ecdhCofMech = MechanismId (ckm_ECDH1_COFACTOR_DERIVE)
@@ -273,7 +286,7 @@ expectDeny label code plan = case plan of
 
 casePlan :: IO ()
 casePlan = do
-  let m = mkBaseModel p256Priv True
+  let m = mkBaseModel ckkEc p256Priv True
       blob peer = encodeDeriveParams (encodeEcdhParams 0 BS.empty peer)
   -- Accepted: single key under the P-256 width; the effect carries
   -- the ECDH blob as mechanism params with empty info.
@@ -297,12 +310,12 @@ casePlan = do
   expectDeny "over width" CKR_ARGUMENTS_BAD
     (planDerive defaultRules m testSession ecdhMech baseHandle (blob p256Pub [derivedTmpl 33]))
   -- Unscannable base (synthetic opaque bytes) plans against the max width.
-  case planDerive defaultRules (mkBaseModel (BS.replicate 32 0) True) testSession
+  case planDerive defaultRules (mkBaseModel ckkEc (BS.replicate 32 0) True) testSession
         ecdhMech baseHandle (blob p256Pub [derivedTmpl 66]) of
     KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "total" 66 total
     other -> assertFailure ("expected effect, got " ++ show other)
   expectDeny "over max width" CKR_ARGUMENTS_BAD
-    (planDerive defaultRules (mkBaseModel (BS.replicate 32 0) True) testSession
+    (planDerive defaultRules (mkBaseModel ckkEc (BS.replicate 32 0) True) testSession
       ecdhMech baseHandle (blob p256Pub [derivedTmpl 67]))
   -- Base/peer curve mismatch denies (both scan, curves differ).
   expectDeny "curve mismatch" CKR_ARGUMENTS_BAD
@@ -317,7 +330,7 @@ casePlan = do
     (planDerive defaultRules m testSession ecdhMech baseHandle (blob p256Pub []))
   -- Base-key faults mirror the HKDF denials.
   expectDeny "no derive mark" CKR_KEY_FUNCTION_NOT_PERMITTED
-    (planDerive defaultRules (mkBaseModel p256Priv False) testSession
+    (planDerive defaultRules (mkBaseModel ckkEc p256Priv False) testSession
       ecdhMech baseHandle (blob p256Pub [derivedTmpl 32]))
   expectDeny "unknown handle" CKR_KEY_HANDLE_INVALID
     (planDerive defaultRules m testSession ecdhMech (ExternalHandle 999) (blob p256Pub [derivedTmpl 32]))
@@ -326,6 +339,35 @@ casePlan = do
       baseHandle (encodeDeriveParams "info" [derivedTmpl 32]) of
     KeyEffect _ _ -> pure ()
     other -> assertFailure ("hkdf must still plan, got " ++ show other)
+  -- Missing CKA_VALUE_LEN defaults to the full agreement secret
+  -- (PKCS#11 v3.2 ECDH: "if it has one" a length); the default is
+  -- stamped on the pending object so readback matches explicit.
+  case planDerive defaultRules m testSession ecdhMech baseHandle (blob p256Pub [derivedTmplNoLen]) of
+    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ total) -> do
+      assertEqual "default total" 32 total
+      assertEqual "default len" 32 n
+      assertEqual "default stamped" (Just (ValULong 32))
+        (Map.lookup AttrValueLen (poAttrs po))
+    other -> assertFailure ("expected defaulted effect, got " ++ show other)
+  -- The cofactor row defaults identically.
+  case planDerive defaultRules m testSession ecdhCofMech baseHandle (blob p256Pub [derivedTmplNoLen]) of
+    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "cofactor default total" 32 total
+    other -> assertFailure ("expected defaulted effect, got " ++ show other)
+  -- Unscannable base material defaults to the max width.
+  case planDerive defaultRules (mkBaseModel ckkEc (BS.replicate 32 0) True) testSession
+        ecdhMech baseHandle (blob p256Pub [derivedTmplNoLen]) of
+    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "opaque default total" 66 total
+    other -> assertFailure ("expected defaulted effect, got " ++ show other)
+  -- Open-ended constructions keep INCOMPLETE without a length
+  -- (v3.2: HKDF-Expand "should be set"; SHA-KDF generic secrets
+  -- have no well-defined length).
+  expectDeny "hkdf needs length" CKR_TEMPLATE_INCOMPLETE
+    (planDerive defaultRules m testSession (MechanismId (ckm_HKDF_DERIVE))
+      baseHandle (encodeDeriveParams "info" [derivedTmplNoLen]))
+  let gm = mkBaseModel ckkGenericSecret (BS.replicate 32 0x11) True
+  expectDeny "sha-kdf generic needs length" CKR_TEMPLATE_INCOMPLETE
+    (planDerive defaultRules gm testSession (MechanismId (ckm_SHA256_KEY_DERIVATION))
+      baseHandle (encodeDeriveParams BS.empty [derivedTmplNoLen]))
 
 -- ---------------------------------------------------------------------------
 -- Driver mapping

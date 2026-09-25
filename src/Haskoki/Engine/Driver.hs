@@ -1099,7 +1099,11 @@ runEffect env resolve fx = case fx of
             EngineOk secret
               | BS.length secret < outLen -> GotCryptoError (CryptoFailed
                   "driver: derive length exceeds the agreement secret")
-              | otherwise -> GotBytes (BS.take outLen secret)
+              -- Truncation drops leading bytes (PKCS#11 v3.2 ECDH:
+              -- "removes bytes from the leading end"); full width
+              -- drops nothing.
+              | otherwise -> GotBytes
+                  (BS.drop (BS.length secret - outLen) secret)
     -- | SHA key-derivation effects: digest the base value,
     -- truncate to the planned length (capped by the digest width —
     -- the planner caps honestly, so over-width fires only for

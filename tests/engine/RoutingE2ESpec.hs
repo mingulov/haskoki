@@ -647,9 +647,9 @@ caseDriverEcdsa = withBackend $ \env -> do
     other -> assertFailure ("expected BadParam, got: " ++ show other)
 
 -- | ECDH through the driver — full-width agreement equals
--- the direct backend call, truncation takes the prefix, the reverse
--- direction commutes, cofactor agrees (h=1), over-length/KDF/info
--- faults refuse typed.
+-- the direct backend call, truncation drops leading bytes
+-- (PKCS#11 v3.2), the reverse direction commutes, cofactor agrees
+-- (h=1), over-length/KDF/info faults refuse typed.
 caseDriverEcdh :: IO ()
 caseDriverEcdh = withBackend $ \env -> do
   genA <- generateKey env (GenEC (EcSpec "P-256" "DER"))
@@ -684,7 +684,7 @@ caseDriverEcdh = withBackend $ \env -> do
   assertEqual "driver == direct" direct full
   short <- runEffect env res (FxDerive ecdhMech (Just aOid) (blob peerB) BS.empty 16)
     >>= expectBytes
-  assertEqual "truncation is the prefix" (BS.take 16 direct) short
+  assertEqual "truncation drops leading bytes" (BS.drop 16 direct) short
   rev <- runEffect env res (FxDerive ecdhMech (Just bOid) (blob peerA) BS.empty 32)
     >>= expectBytes
   assertEqual "commutes" direct rev

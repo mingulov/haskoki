@@ -13,7 +13,9 @@ lengths replay the same bytes on every backend offering HMAC-SHA-256.
 ECDH agreement (plain or cofactor, per the mechanism row) runs
 between the base EC key and the peer public key
 carried in the frame's info segment: the raw x-coordinate secret,
-truncated across the pending objects. Derived totals are capped by
+truncated across the pending objects (leading bytes dropped per
+PKCS#11 v3.2; a missing CKA_VALUE_LEN takes the full secret).
+Derived totals are capped by
 the construction's ceiling (the HKDF-Expand ceiling for HKDF, the
 base curve's coordinate width for ECDH). The hash and PBKDF2
 constructions are the SHA key-derivations (hash the base value,
@@ -150,8 +152,11 @@ decodeDeriveParams bs = do
 -- a derive mechanism (HKDF, ECDH, or KDF), the base handle must
 -- resolve to a visible key carrying the derive mark and stored
 -- material, and EVERY template must describe a secret key with a
--- positive length. Check order: mechanism, frame, base, then
--- templates in order; the first failure denies with zero objects.
+-- positive length — except ECDH templates, where a missing
+-- CKA_VALUE_LEN defaults to the full agreement secret (PKCS#11
+-- v3.2: truncation applies "if it has one" a length). Check
+-- order: mechanism, frame, base, then templates in order; the
+-- first failure denies with zero objects.
 -- ECDH arms resolve the base and require an EC key type before
 -- examining parameters, and SHA-KDF arms require a generic-secret
 -- base (a key-type contradiction outranks parameter shape); ECDH
@@ -173,6 +178,7 @@ planDerive rules model st mech baseH blob
         Right (ost, _) -> finish tmpls maxDerivedTotal
           "derived total exceeds the HKDF-Expand ceiling"
           (FxDerive mech (Just (osId ost)) BS.empty info)
+          Nothing
   | Just r <- ecdhRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -194,6 +200,7 @@ planDerive rules model st mech baseH blob
                 | otherwise -> finish tmpls (ecdhSecretWidth mat)
                     "derived total exceeds the ECDH secret width"
                     (FxDerive mech (Just (osId ost)) ecdhBlob BS.empty)
+                    (Just (ecdhSecretWidth mat))
               _ -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
                 "ECDH mechanism parameters rejected by the recipe")
   | Just r <- kdfRecipeFor mech = case decodeDeriveParams blob of
@@ -216,18 +223,20 @@ planDerive rules model st mech baseH blob
           | rkPbkd2 r -> finish tmpls maxDerivedTotal
               "derived total exceeds the derive ceiling"
               (FxDerive mech (Just (osId ost)) info BS.empty)
+              Nothing
           | otherwise -> case kdfShaWidth r of
               Just w -> finish tmpls w
                 "derived total exceeds the digest width"
                 (FxDerive mech (Just (osId ost)) BS.empty BS.empty)
+                Nothing
               Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
                 "KDF row without a digest width")
   | otherwise =
       KeyDenied (KeyDeny CKR_MECHANISM_INVALID
         ("not a derive mechanism: " ++ show mech))
   where
-    finish tmpls ceilingN ceilingMsg fx =
-      case checkAll tmpls of
+    finish tmpls ceilingN ceilingMsg fx defLen =
+      case checkAll defLen tmpls of
         Left deny -> KeyDenied deny
         Right keyed
           | null keyed -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
@@ -243,13 +252,13 @@ planDerive rules model st mech baseH blob
                     [(pendingFromAttrs st attrs, n) | (attrs, n) <- keyed]
               in KeyEffect (PwDerive pos lens) (fx (sum lens))
     checkAll
-      :: [[(AttributeType, AttributeValue)]]
+      :: Maybe Int -> [[(AttributeType, AttributeValue)]]
       -> Either KeyDeny [(Map.Map AttributeType AttributeValue, Int)]
-    checkAll = mapM checkOne
+    checkAll defLen = mapM (checkOne defLen)
     checkOne
-      :: [(AttributeType, AttributeValue)]
+      :: Maybe Int -> [(AttributeType, AttributeValue)]
       -> Either KeyDeny (Map.Map AttributeType AttributeValue, Int)
-    checkOne tmpl = case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
+    checkOne defLen tmpl = case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
       Left deny -> Left deny
       Right attrs -> case Map.lookup AttrValueLen attrs of
         Just (ValULong n)
@@ -260,8 +269,20 @@ planDerive rules model st mech baseH blob
           | otherwise -> Right (attrs, fromIntegral n)
         Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
           "derived length is malformed")
-        Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
-          "derived template needs CKA_VALUE_LEN")
+        -- Constructions with a natural output width (ECDH: the
+        -- agreement secret) default a missing length to that width
+        -- (PKCS#11 v3.2 ECDH: "if it has one ... CKA_VALUE_LEN");
+        -- the default is stamped so readback matches an explicit
+        -- template. Open-ended constructions (HKDF-Expand, PBKDF2)
+        -- and SHA-KDF over generic secrets keep INCOMPLETE (v3.2
+        -- SHA-KDF: generic secrets have no well-defined length).
+        Nothing -> case defLen of
+          Just n -> Right
+            ( Map.insert AttrValueLen (ValULong (fromIntegral n)) attrs
+            , n
+            )
+          Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+            "derived template needs CKA_VALUE_LEN")
 
 -- | Resolve the base key: known handle, session-visible, derive
 -- mark set, stored material present. Shared by the HKDF and ECDH
