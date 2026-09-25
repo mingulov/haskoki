@@ -395,7 +395,7 @@ instance CryptoBackend OpenSSL4 where
 
   generateKey be spec@(GenEC ec) = runGuarded be "generateKey" (genSupported be spec) $ \env -> do
     r <- withForeignPtr (osslEnv env) $ \_ ->
-      Raw.ecGen (osslCtx env) (ecCurve ec) (osslPropQ env)
+      Raw.ecGen (osslCtx env) (ecGroupName (ecCurve ec)) (osslPropQ env)
     case r of
       Left code -> nativeFail "generateKey" code
       Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
@@ -849,6 +849,14 @@ cipherSupported :: BackendEnv OpenSSL4 -> CipherSpec -> Maybe String
 cipherSupported (OSSL4Backend env) spec
   | Set.member spec (ccCiphers (bcCiphers (osslCaps env))) = Nothing
   | otherwise = Just ("cipher not in engine set: " ++ show spec)
+
+-- | OpenSSL group name for an engine curve name: identical except
+-- @secp192r1@, whose provider group name is @prime192v1@ (the SECG
+-- alias is rejected at keygen with "invalid curve"; probed per
+-- curve against the pinned CLI).
+ecGroupName :: String -> String
+ecGroupName "secp192r1" = "prime192v1"
+ecGroupName c = c
 
 genSupported :: BackendEnv OpenSSL4 -> KeyGenSpec -> Maybe String
 genSupported (OSSL4Backend env) spec

@@ -442,9 +442,61 @@ pkcs1Ct = hex $ concat
 
 -- P-384/SHA-384, P-521/SHA-512, and raw-P-256 interop
 -- vectors (pinned 4.0.2 CLI; the raw vector reuses the P-256 key from
--- the fixtures above). ECDSA is randomized, so the suite verifies the
--- CLI's bytes (proving interop) and roundtrips its own. All vectors
--- were CLI-verified before embedding.
+-- the fixtures above), plus one vector per new curve family
+-- (Koblitz secp256k1, brainpoolP256r1, binary sect283r1).
+-- ECDSA is randomized, so the suite verifies the CLI's bytes
+-- (proving interop) and roundtrips its own. All vectors were
+-- CLI-verified before embedding.
+ecMsgK256 :: ByteString
+ecMsgK256 = "T16 curves ECDSA secp256k1 message"
+
+ecK256Pub :: ByteString
+ecK256Pub = hex $ concat
+  [ "3056301006072a8648ce3d020106052b8104000a03420004e352f674324827b1f8"
+  , "37300d5895a22acc9525bbe6870870be10da08c1a86564d459a356f3c940fbc11f"
+  , "dc99b1c14b1fd066cc5b70c0ce2f5da36c98cc21302d"
+  ]
+
+ecSigK256 :: ByteString
+ecSigK256 = hex $ concat
+  [ "3045022100a090d3cf9830d5119cbb22ad47643819af723a45b140be25f65bb324"
+  , "3d1c927402207e2d68f4e8c18d57964f8fcc6613f4f8882653b1661db1abf3fb62"
+  , "18b308f745"
+  ]
+
+ecMsgBp256 :: ByteString
+ecMsgBp256 = "T16 curves ECDSA brainpoolP256r1 message"
+
+ecBp256Pub :: ByteString
+ecBp256Pub = hex $ concat
+  [ "305a301406072a8648ce3d020106092b2403030208010107034200040bd5b550aad"
+  , "747b0cc578ac7b16b0def74c510abaad293e37782316101d9bb5d6f22ed582fd49b"
+  , "5624c612eeb556710ebd8cbf479748d717ee3af83e7956cf6a"
+  ]
+
+ecSigBp256 :: ByteString
+ecSigBp256 = hex $ concat
+  [ "304402207462de59f25d911fef3f6fa57abe9476583c61b6fccbaa25a5fb88ea27c"
+  , "c18cd02203750f9012d446286c257337fc1bc6a5d43d27a1913eab536eb78c828fb"
+  , "79d3ed"
+  ]
+
+ecMsgT283 :: ByteString
+ecMsgT283 = "T16 curves ECDSA sect283r1 message"
+
+ecT283Pub :: ByteString
+ecT283Pub = hex $ concat
+  [ "305e301006072a8648ce3d020106052b81040011034a00040776c09667a56b6f058"
+  , "5fd97a89be7cf0210f279264f8e3a4429835000951148fbed79ec03ca63c04605c1"
+  , "dbac6efc38b97d99af003eafe001febbefbdbce33d5b9ea34f2d8a5d6b"
+  ]
+
+ecSigT283 :: ByteString
+ecSigT283 = hex $ concat
+  [ "304c0224027d44ac97d49f193cf0ffee770a5a7a1e2e046ddb3452276fabb32d9fe"
+  , "7fcfc3fbd014202240371cf18faf7654c4b0a5a6d902295e72859d9fadee6498084"
+  , "8236a12832177883e388c6"
+  ]
 ecMsg384 :: ByteString
 ecMsg384 = "T16 S9 ECDSA P-384/SHA384 message"
 
@@ -558,13 +610,48 @@ ecdhPubC = hex $ concat
 ecdhSecretAB = hex "9671ac43cbf5d68893022679b588483c63cdd6e370ae62c81d4ce95d9eae7b05"
 ecdhSecretCC = hex "6c0636f7c3858a26c97f7215f27f7a5a952ac99513c70ee3ea54386dad9ff3e50f9eb0004242035779c505284316e9c0"
 
+-- | sect283k1 ECDH KAT (pinned CLI): plain and cofactor (h=2, so
+-- the two secrets differ) plus the bare peer point.
+ecdhPrivD, ecdhPubD, ecdhPrivE, ecdhPubE :: ByteString
+ecdhPrivD = hex $ concat
+  [ "308180020101042400d5930db9e585af6e5ea746c0fd932202771cbcd2e4acd91"
+  , "4ca94a95ef95c2eab736beca00706052b81040010a14c034a000400a519b87152d"
+  , "fcb842c7ba62870f3c910db05aaf690bb790c2226822005de24e118e64e0731b30"
+  , "b4a66a4a86ebaa58b5b0a23673ab13bcb46421ab42a4710f24c578cbbc94c7a38"
+  ]
+ecdhPubD = hex $ concat
+  [ "305e301006072a8648ce3d020106052b81040010034a000400a519b87152dfcb84"
+  , "2c7ba62870f3c910db05aaf690bb790c2226822005de24e118e64e0731b30b4a66"
+  , "a4a86ebaa58b5b0a23673ab13bcb46421ab42a4710f24c578cbbc94c7a38"
+  ]
+ecdhPrivE = hex $ concat
+  [ "3081800201010424000b81e39e6ef5ccc92df1b207beb8cd71b246ff4e57c1494d"
+  , "4221f5fa91d00b01dd2f40a00706052b81040010a14c034a000407277db5580914a"
+  , "8be1b6752a4abbe5e329d63243632155bd04174a611af790852d57a16079ed448d"
+  , "e40bb0c7d01f3a882bf0aa01e3278b8f537397cc606b7323ef57eeb134d022a"
+  ]
+ecdhPubE = hex $ concat
+  [ "305e301006072a8648ce3d020106052b81040010034a000407277db5580914a8be1"
+  , "b6752a4abbe5e329d63243632155bd04174a611af790852d57a16079ed448de40bb"
+  , "0c7d01f3a882bf0aa01e3278b8f537397cc606b7323ef57eeb134d022a"
+  ]
+ecdhPointE :: ByteString
+ecdhPointE = hex $ concat
+  [ "0407277db5580914a8be1b6752a4abbe5e329d63243632155bd04174a611af7908"
+  , "52d57a16079ed448de40bb0c7d01f3a882bf0aa01e3278b8f537397cc606b7323ef"
+  , "57eeb134d022a"
+  ]
+ecdhSecretDE, ecdhSecretDEcof :: ByteString
+ecdhSecretDE = hex "01d8b812087d09360c6db7f56ebc9c9799348bf951571db0390a8fd5e696c1369aedb255"
+ecdhSecretDEcof = hex "07e629aca2075197a2a88ca5e4dc2c870bb32ae36a070c84bde114af867386b2a58879e4"
+
 -- | Tiny DER ECDSA-signature parser: SEQUENCE { INTEGER r, INTEGER s }.
 -- Independent of the backend's own conversion; used to cross-check
 -- RAW (r || s) against DER on the same signature bytes.
 -- | Minimal DER ECDSA-signature parser for cross-checks: the
--- coordinate length is the caller's curve half-width (32/48/66).
--- P-384/P-521 signatures use long-form lengths, so both length
--- forms parse.
+-- coordinate length is the caller's curve half-width (any covered
+-- width). Wider curves use long-form lengths, so both length forms
+-- parse.
 parseDerEcdsa :: Int -> ByteString -> Maybe (ByteString, ByteString)
 parseDerEcdsa coordLen der = do
   (seqBody, rest0) <- takeTLV 0x30 der
@@ -1063,8 +1150,20 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
     verify env s384 (KeyDer ecP384Pub) ecMsg384 ecSig384
   expectOk "verify cli p521" =<<
     verify env s521 (KeyDer ecP521Pub) ecMsg521 ecSig521
+  -- Interop on the new families: Koblitz, brainpool, binary.
+  let sK256 = SigECDSA (mkEc "secp256k1" "DER") (Just D_SHA256)
+      sBp256 = SigECDSA (mkEc "brainpoolP256r1" "DER") (Just D_SHA256)
+      sT283 = SigECDSA (mkEc "sect283r1" "DER") (Just D_SHA256)
+  expectOk "verify cli k256" =<<
+    verify env sK256 (KeyDer ecK256Pub) ecMsgK256 ecSigK256
+  expectOk "verify cli bp256" =<<
+    verify env sBp256 (KeyDer ecBp256Pub) ecMsgBp256 ecSigBp256
+  expectOk "verify cli t283" =<<
+    verify env sT283 (KeyDer ecT283Pub) ecMsgT283 ecSigT283
   expectAuthFailed "p384 tampered" =<<
     verify env s384 (KeyDer ecP384Pub) ecMsg384 (BS.init ecSig384 <> "X")
+  expectAuthFailed "t283 tampered" =<<
+    verify env sT283 (KeyDer ecT283Pub) ecMsgT283 (BS.init ecSigT283 <> "X")
   -- Raw interop: the CLI's raw P-256 bytes verify under the raw row.
   let sraw = SigECDSA (mkEc "P-256" "DER") Nothing
   expectOk "verify cli raw" =<<
@@ -1095,7 +1194,27 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
     [Nothing, Just D_SHA256, Just D_SHA512, Just D_SHA3_512]
   mapM_ (roundtrip env p256 q256 "P-256" 64)
     [Nothing, Just D_SHA1, Just D_SHA256, Just D_SHA512, Just D_SHA3_256]
+  -- Roundtrips on every new curve (real keygen each): the raw
+  -- length pins the coordinate width end to end.
+  mapM_ (\(curve, rawLen) -> do
+    (p, Just q) <- expectOk ("gen " ++ curve) =<<
+      generateKey env (GenEC (mkEc curve "DER"))
+    mapM_ (roundtrip env p q curve rawLen)
+      [Nothing, Just D_SHA256, Just D_SHA512]
+    ) newCurveLens
   where
+    newCurveLens :: [(String, Int)]
+    newCurveLens =
+      [ ("secp160r1", 40), ("secp160r2", 40), ("secp160k1", 40)
+      , ("secp192r1", 48), ("secp192k1", 48)
+      , ("secp224r1", 56), ("secp224k1", 56), ("secp256k1", 64)
+      , ("brainpoolP224r1", 56), ("brainpoolP256r1", 64)
+      , ("brainpoolP320r1", 80), ("brainpoolP384r1", 96)
+      , ("brainpoolP512r1", 128)
+      , ("sect283k1", 72), ("sect283r1", 72)
+      , ("sect409k1", 104), ("sect409r1", 104)
+      , ("sect571k1", 144), ("sect571r1", 144)
+      ]
     roundtrip env priv pub curve rawLen digest = do
       let derSpec = SigECDSA (mkEc curve "DER") digest
           rawSpec = SigECDSA (mkEc curve "RAW") digest
@@ -1108,10 +1227,10 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
       assertEqual ("raw length " ++ label) rawLen (BS.length sigR)
       expectOk ("verify RAW " ++ label) =<< verify env rawSpec pub input sigR
 
--- | The curve allowlist: a well-formed P-224 key refuses typed
--- on both sign and verify (the driver only hints the curve label,
--- so the backend re-checks before any native call). Garbage DER
--- refuses the same way.
+-- | The curve allowlist: a well-formed brainpoolP160r1 key (real
+-- but uncollected) refuses typed on both sign and verify (the
+-- driver only hints the curve label, so the backend re-checks
+-- before any native call). Garbage DER refuses the same way.
 caseEcdsaOffCurve :: IO ()
 caseEcdsaOffCurve = withBackend $ \env -> do
   let ecdsaSpec = SigECDSA (mkEc "P-256" "DER") (Just D_SHA256)
@@ -1145,6 +1264,22 @@ caseEcdhVectors = withBackend $ \env -> do
   sCC <- expectOk "derive P-384" =<< ecdhDerive env EcdhPlain pC qC
   assertEqual "KAT P-384" ecdhSecretCC sCC
   assertEqual "P-384 width" 48 (BS.length sCC)
+  -- sect283k1 KAT: plain + cofactor (h=2, so they differ), SPKI and
+  -- bare-point peers agree, commute holds.
+  let pD = KeyDer ecdhPrivD
+      qE = KeyDer ecdhPubE
+      bE = KeyDer ecdhPointE
+  sDE <- expectOk "derive t283k1" =<< ecdhDerive env EcdhPlain pD qE
+  assertEqual "KAT t283k1" ecdhSecretDE sDE
+  assertEqual "t283k1 width" 36 (BS.length sDE)
+  sDEb <- expectOk "derive t283k1 bare peer" =<< ecdhDerive env EcdhPlain pD bE
+  assertEqual "bare peer agrees" ecdhSecretDE sDEb
+  sED <- expectOk "derive t283k1 commute" =<<
+    ecdhDerive env EcdhPlain (KeyDer ecdhPrivE) (KeyDer ecdhPubD)
+  assertEqual "commute t283k1" ecdhSecretDE sED
+  sDEcof <- expectOk "derive t283k1 cofactor" =<< ecdhDerive env EcdhCofactor pD qE
+  assertEqual "KAT t283k1 cofactor" ecdhSecretDEcof sDEcof
+  assertBool "cofactor differs (h=2)" (sDEcof /= ecdhSecretDE)
   expectBadKey "garbage priv refused" =<< ecdhDerive env EcdhPlain (KeyDer "bogus") qB
   expectBadKey "garbage peer refused" =<< ecdhDerive env EcdhPlain pA (KeyDer "bogus")
   expectBadKey "off-curve priv refused" =<< ecdhDerive env EcdhPlain (KeyDer ecBp160Priv) qB
