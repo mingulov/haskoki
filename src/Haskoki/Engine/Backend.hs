@@ -263,6 +263,10 @@ data CipherSpec
   | C_AES128_CTR | C_AES192_CTR | C_AES256_CTR
   | C_AES128_ECB | C_AES192_ECB | C_AES256_ECB
   | C_AES128_CTS | C_AES192_CTS | C_AES256_CTS
+  | C_AES128_CFB128 | C_AES192_CFB128 | C_AES256_CFB128
+  | C_AES128_CFB8 | C_AES192_CFB8 | C_AES256_CFB8
+  | C_AES128_CFB1 | C_AES192_CFB1 | C_AES256_CFB1
+  | C_AES128_OFB | C_AES192_OFB | C_AES256_OFB
   | C_DES3_CBC | C_DES3_ECB
   | C_ARIA128_CBC | C_ARIA192_CBC | C_ARIA256_CBC
   | C_ARIA128_ECB | C_ARIA192_ECB | C_ARIA256_ECB
@@ -288,6 +292,18 @@ cipherKeyLens spec = case spec of
   C_AES128_CTS -> [16]
   C_AES192_CTS -> [24]
   C_AES256_CTS -> [32]
+  C_AES128_CFB128 -> [16]
+  C_AES192_CFB128 -> [24]
+  C_AES256_CFB128 -> [32]
+  C_AES128_CFB8 -> [16]
+  C_AES192_CFB8 -> [24]
+  C_AES256_CFB8 -> [32]
+  C_AES128_CFB1 -> [16]
+  C_AES192_CFB1 -> [24]
+  C_AES256_CFB1 -> [32]
+  C_AES128_OFB -> [16]
+  C_AES192_OFB -> [24]
+  C_AES256_OFB -> [32]
   C_DES3_CBC -> [16, 24]
   C_DES3_ECB -> [16, 24]
   C_ARIA128_CBC -> [16]
@@ -303,9 +319,9 @@ cipherKeyLens spec = case spec of
   C_CAMELLIA192_ECB -> [24]
   C_CAMELLIA256_ECB -> [32]
 
--- | IV length in bytes per cipher: the block width for CBC and CTS,
--- 16 for CTR, 0 for ECB. Both engines enforce this;
--- RecipeCipherSpec pins it against the recipe.
+-- | IV length in bytes per cipher: the block width for CBC, CTS,
+-- CFB128, CFB8, CFB1 and OFB, 16 for CTR, 0 for ECB. Both engines
+-- enforce this; RecipeCipherSpec pins it against the recipe.
 cipherIvLen :: CipherSpec -> Int
 cipherIvLen spec = case spec of
   C_AES128_CBC -> 16
@@ -320,6 +336,18 @@ cipherIvLen spec = case spec of
   C_AES128_CTS -> 16
   C_AES192_CTS -> 16
   C_AES256_CTS -> 16
+  C_AES128_CFB128 -> 16
+  C_AES192_CFB128 -> 16
+  C_AES256_CFB128 -> 16
+  C_AES128_CFB8 -> 16
+  C_AES192_CFB8 -> 16
+  C_AES256_CFB8 -> 16
+  C_AES128_CFB1 -> 16
+  C_AES192_CFB1 -> 16
+  C_AES256_CFB1 -> 16
+  C_AES128_OFB -> 16
+  C_AES192_OFB -> 16
+  C_AES256_OFB -> 16
   C_DES3_CBC -> 8
   C_DES3_ECB -> 0
   C_ARIA128_CBC -> 16

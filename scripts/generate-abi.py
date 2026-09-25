@@ -426,13 +426,21 @@ def main():
     inc.append(" *")
     inc.append(" * Post-2.40 stub implementations with exact pinned-header")
     inc.append(" * prototypes, plus the table-fill macros wiring them (and the")
-    inc.append(" * two discovery globals) into the versioned tables.")
+    inc.append(" * two discovery globals, plus routed definitions with a real")
+    inc.append(" * implementation) into the versioned tables.")
     inc.append(" * Included only by cbits/exports.c, after x_live_check().")
     inc.append(" */")
+    # Routed definitions: post-2.40 entries with a real implementation.
+    # A routed entry leaves the stub generator (no x30_/x32_ body) and
+    # the fill macro wires the table slot to its implementation; the
+    # implementation TU owns the exact pinned prototype.
+    routed300 = {"C_SessionCancel": "std_SessionCancel"}
     discrete300, discrete320 = [], []
     for name in n300[68:]:
         if name in ("C_GetInterfaceList", "C_GetInterface"):
             discrete300.append((name, name))
+        elif name in routed300:
+            discrete300.append((name, routed300[name]))
         else:
             inc.append(stub("30", name, proto30[name]))
             discrete300.append((name, f"x30_{name}"))

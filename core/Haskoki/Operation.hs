@@ -54,6 +54,8 @@ module Haskoki.Operation
   , retryStaged
   , isUnframedCipher
   , isCtsMech
+  , isAesStreamMech
+  , isOfbMech
     -- * Buffer bound for the per-kind lifecycles
   , maxBuffered
   , appendBuffered
@@ -74,7 +76,7 @@ import Haskoki.Output
   , planOneShot
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor)
-import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName)
+import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, ofbName, streamNames)
 import Haskoki.Recipe.Cmac (cmacParamsValid, cmacRecipeFor)
 import Haskoki.Recipe.Digest (digestParamsValid)
 import Haskoki.Recipe.Ecdsa (ecdsaParamsValid, ecdsaRecipeFor)
@@ -241,6 +243,27 @@ isUnframedCipher m = isJust (rsaOaepRecipeFor m) || isJust (gcmRecipeFor m) || i
 isCtsMech :: MechanismId -> Bool
 isCtsMech m = case cipherRecipeFor m of
   Just r -> crName r == ctsName
+  Nothing -> False
+
+-- | Length-preserving AES stream rows (@CKM_AES_CFB128@,
+-- @CKM_AES_CFB8@, @CKM_AES_CFB1@, @CKM_AES_OFB@): any input length
+-- round-trips length-preserved, including empty. The planners
+-- accept unaligned input for these rows; chaining follows the
+-- ciphertext tail like CBC (streamed answers are always >= 1
+-- block, so the tail IS the next register), except OFB (see
+-- 'isOfbMech').
+isAesStreamMech :: MechanismId -> Bool
+isAesStreamMech m = case cipherRecipeFor m of
+  Just r -> crName r `elem` streamNames
+  Nothing -> False
+
+-- | OFB never streams multipart updates: its register evolves
+-- through the block cipher, so the planner cannot derive the next
+-- register from the answer tail — only the final (which sees the
+-- whole buffer) runs the effect. CFB128/CFB8/CFB1 stream like CBC.
+isOfbMech :: MechanismId -> Bool
+isOfbMech m = case cipherRecipeFor m of
+  Just r -> crName r == ofbName
   Nothing -> False
 
 -- | Mechanism-parameter check (recipe-backed mechanisms):

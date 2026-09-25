@@ -1,13 +1,15 @@
 {- | block-cipher-shape recipe tests.
 
-The CBC/ECB group: 11 header mechanisms sharing one parameter shape
+The CBC/ECB group: 15 header mechanisms sharing one parameter shape
 over four algorithm families — CBC takes the IV as mechanism
 parameters (one block: 16 bytes for AES/ARIA/CAMELLIA, 8 for
 Triple-DES), ECB takes empty parameters, @CKM_AES_CTR@ takes the
 canonical counter image, @CKM_AES_CTS@ takes the raw IV like CBC
-(the stealing floor replaces alignment in the planners), and
-@CKM_AES_CBC_PAD@ adds PKCS#7 framing (decided in the pure
-planner, never the backend). 'Haskoki.Recipe.Cipher' owns the group's canonical
+(the stealing floor replaces alignment in the planners),
+@CKM_AES_CFB128@/@CFB8@/@CFB1@/@OFB@ take the raw IV with any
+input length (length-preserving streams), and @CKM_AES_CBC_PAD@
+adds PKCS#7 framing (decided in the pure planner, never the
+backend). 'Haskoki.Recipe.Cipher' owns the group's canonical
 codecs, parameter validation, block/key/IV geometry, and mechanism
 table; these tests pin the recipe and its three consumers:
 
@@ -34,13 +36,25 @@ import Haskoki.Engine.Backend
     ( C_AES128_CBC
     , C_AES128_CTR
     , C_AES128_CTS
+    , C_AES128_CFB1
+    , C_AES128_CFB128
+    , C_AES128_CFB8
     , C_AES128_ECB
+    , C_AES128_OFB
     , C_AES192_CBC
     , C_AES192_CTR
     , C_AES192_CTS
+    , C_AES192_CFB1
+    , C_AES192_CFB128
+    , C_AES192_CFB8
+    , C_AES192_OFB
     , C_AES256_CBC
     , C_AES256_CTR
     , C_AES256_CTS
+    , C_AES256_CFB1
+    , C_AES256_CFB128
+    , C_AES256_CFB8
+    , C_AES256_OFB
     , C_AES256_ECB
     , C_ARIA256_CBC
     , C_CAMELLIA128_ECB
@@ -84,9 +98,13 @@ import Haskoki.Registry
 import Haskoki.Registry.Generated
   ( mustGeneratedId
   , ckm_AES_CBC
+  , ckm_AES_CFB1
+  , ckm_AES_CFB128
+  , ckm_AES_CFB8
   , ckm_AES_CTR
   , ckm_AES_CTS
   , ckm_AES_ECB
+  , ckm_AES_OFB
   , ckm_DES3_CBC
   , ckm_SHA256
   , ckm_SHA256_HMAC
@@ -103,7 +121,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "Block-cipher recipe"
-  [ testCase "recipe table covers 11 mechanisms with geometry" caseTable
+  [ testCase "recipe table covers 15 mechanisms with geometry" caseTable
   , testCase "recipe lookup resolves by id" caseLookup
   , testCase "ECB is no-params/1, CBC is iv-bytes/1" caseCodec
   , testCase "params: IV length or empty-only" caseParams
@@ -121,6 +139,10 @@ groupShape =
   , ("AES_ECB", 16, [16, 24, 32], 0, False)
   , ("AES_CTR", 16, [16, 24, 32], 16, False)
   , ("AES_CTS", 16, [16, 24, 32], 16, False)
+  , ("AES_CFB128", 16, [16, 24, 32], 16, False)
+  , ("AES_CFB8", 16, [16, 24, 32], 16, False)
+  , ("AES_CFB1", 16, [16, 24, 32], 16, False)
+  , ("AES_OFB", 16, [16, 24, 32], 16, False)
   , ("DES3_CBC", 8, [16, 24], 8, False)
   , ("DES3_ECB", 8, [16, 24], 0, False)
   , ("ARIA_CBC", 16, [16, 24, 32], 16, False)
@@ -142,7 +164,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 11 (length cipherRecipes)
+  assertEqual "recipe count" 15 (length cipherRecipes)
   mapM_ (\(suffix, block, keys, iv, pad) -> do
     let name = mechName suffix
         found = [ r | r <- cipherRecipes, crName r == name ]
@@ -212,6 +234,22 @@ caseParams = do
   assertBool "cts empty refused" (not (cipherParamsValid cts BS.empty))
   assertBool "cts 8 refused" (not (cipherParamsValid cts (BS.replicate 8 0)))
   assertBool "cts 17 refused" (not (cipherParamsValid cts (BS.replicate 17 0)))
+  let cfb128 = recipeOf "CKM_AES_CFB128"
+  assertBool "cfb128 16 valid" (cipherParamsValid cfb128 (BS.replicate 16 0))
+  assertBool "cfb128 empty refused" (not (cipherParamsValid cfb128 BS.empty))
+  assertBool "cfb128 8 refused" (not (cipherParamsValid cfb128 (BS.replicate 8 0)))
+  assertBool "cfb128 17 refused" (not (cipherParamsValid cfb128 (BS.replicate 17 0)))
+  let cfb8 = recipeOf "CKM_AES_CFB8"
+  assertBool "cfb8 16 valid" (cipherParamsValid cfb8 (BS.replicate 16 0))
+  assertBool "cfb8 empty refused" (not (cipherParamsValid cfb8 BS.empty))
+  let cfb1 = recipeOf "CKM_AES_CFB1"
+  assertBool "cfb1 16 valid" (cipherParamsValid cfb1 (BS.replicate 16 0))
+  assertBool "cfb1 empty refused" (not (cipherParamsValid cfb1 BS.empty))
+  let ofb = recipeOf "CKM_AES_OFB"
+  assertBool "ofb 16 valid" (cipherParamsValid ofb (BS.replicate 16 0))
+  assertBool "ofb empty refused" (not (cipherParamsValid ofb BS.empty))
+  assertBool "ofb 8 refused" (not (cipherParamsValid ofb (BS.replicate 8 0)))
+  assertBool "ofb 17 refused" (not (cipherParamsValid ofb (BS.replicate 17 0)))
   let d3 = recipeOf "CKM_DES3_CBC"
   assertBool "des3 8 valid" (cipherParamsValid d3 (BS.replicate 8 0))
   assertBool "des3 16 refused" (not (cipherParamsValid d3 (BS.replicate 16 0)))
@@ -287,12 +325,16 @@ testSession = SessionState
   , ssOps = emptySessionOps
   }
 
-cbcMech, ecbMech, d3Mech, ctrMech, ctsMech :: MechanismId
+cbcMech, ecbMech, d3Mech, ctrMech, ctsMech, cfb128Mech, cfb8Mech, cfb1Mech, ofbMech :: MechanismId
 cbcMech = MechanismId (ckm_AES_CBC)
 ecbMech = MechanismId (ckm_AES_ECB)
 d3Mech = MechanismId (ckm_DES3_CBC)
 ctrMech = MechanismId (ckm_AES_CTR)
 ctsMech = MechanismId (ckm_AES_CTS)
+cfb128Mech = MechanismId (ckm_AES_CFB128)
+cfb8Mech = MechanismId (ckm_AES_CFB8)
+cfb1Mech = MechanismId (ckm_AES_CFB1)
+ofbMech = MechanismId (ckm_AES_OFB)
 
 testEnv :: OpEnv
 testEnv = OpEnv
@@ -300,6 +342,8 @@ testEnv = OpEnv
   , oeCaps = mkCapabilities
       [ (cbcMech, OpEncrypt), (ecbMech, OpEncrypt), (d3Mech, OpEncrypt)
       , (ctrMech, OpEncrypt), (ctsMech, OpEncrypt)
+      , (cfb128Mech, OpEncrypt), (cfb8Mech, OpEncrypt)
+      , (cfb1Mech, OpEncrypt), (ofbMech, OpEncrypt)
       ]
   , oeModel = emptyModel
   }
@@ -348,6 +392,18 @@ caseInitParams = do
     (runInit (mkArgs ctsMech BS.empty))
   assertEqual "cts valid iv passes params" CKR_OBJECT_HANDLE_INVALID
     (runInit (mkArgs ctsMech (BS.replicate 16 0)))
+  assertEqual "cfb128 ragged iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs cfb128Mech (BS.replicate 8 0)))
+  assertEqual "cfb128 valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs cfb128Mech (BS.replicate 16 0)))
+  assertEqual "cfb8 valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs cfb8Mech (BS.replicate 16 0)))
+  assertEqual "cfb1 valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs cfb1Mech (BS.replicate 16 0)))
+  assertEqual "ofb ragged iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs ofbMech (BS.replicate 8 0)))
+  assertEqual "ofb valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs ofbMech (BS.replicate 16 0)))
 
 caseDriverMap :: IO ()
 caseDriverMap = do
@@ -406,6 +462,43 @@ caseDriverMap = do
     (cipherSpecFor ctsMech 15 iv16)
   assertEqual "aes-cts rejects bad iv" Nothing
     (cipherSpecFor ctsMech 16 iv8)
+  -- AES-CFB128: raw IV, three widths, same refusals as CBC.
+  assertEqual "aes-cfb128-128" (Just C_AES128_CFB128)
+    (cipherSpecFor cfb128Mech 16 iv16)
+  assertEqual "aes-cfb128-192" (Just C_AES192_CFB128)
+    (cipherSpecFor cfb128Mech 24 iv16)
+  assertEqual "aes-cfb128-256" (Just C_AES256_CFB128)
+    (cipherSpecFor cfb128Mech 32 iv16)
+  assertEqual "aes-cfb128 rejects bad keylen" Nothing
+    (cipherSpecFor cfb128Mech 15 iv16)
+  assertEqual "aes-cfb128 rejects bad iv" Nothing
+    (cipherSpecFor cfb128Mech 16 iv8)
+  assertEqual "aes-cfb8-128" (Just C_AES128_CFB8)
+    (cipherSpecFor cfb8Mech 16 iv16)
+  assertEqual "aes-cfb8-192" (Just C_AES192_CFB8)
+    (cipherSpecFor cfb8Mech 24 iv16)
+  assertEqual "aes-cfb8-256" (Just C_AES256_CFB8)
+    (cipherSpecFor cfb8Mech 32 iv16)
+  assertEqual "aes-cfb8 rejects bad keylen" Nothing
+    (cipherSpecFor cfb8Mech 15 iv16)
+  assertEqual "aes-cfb1-128" (Just C_AES128_CFB1)
+    (cipherSpecFor cfb1Mech 16 iv16)
+  assertEqual "aes-cfb1-192" (Just C_AES192_CFB1)
+    (cipherSpecFor cfb1Mech 24 iv16)
+  assertEqual "aes-cfb1-256" (Just C_AES256_CFB1)
+    (cipherSpecFor cfb1Mech 32 iv16)
+  assertEqual "aes-cfb1 rejects bad keylen" Nothing
+    (cipherSpecFor cfb1Mech 15 iv16)
+  assertEqual "aes-ofb-128" (Just C_AES128_OFB)
+    (cipherSpecFor ofbMech 16 iv16)
+  assertEqual "aes-ofb-192" (Just C_AES192_OFB)
+    (cipherSpecFor ofbMech 24 iv16)
+  assertEqual "aes-ofb-256" (Just C_AES256_OFB)
+    (cipherSpecFor ofbMech 32 iv16)
+  assertEqual "aes-ofb rejects bad keylen" Nothing
+    (cipherSpecFor ofbMech 15 iv16)
+  assertEqual "aes-ofb rejects bad iv" Nothing
+    (cipherSpecFor ofbMech 16 iv8)
   assertEqual "non-cipher uncovered" Nothing
     (cipherSpecFor (MechanismId (ckm_SHA256)) 32 iv16)
   -- Whole-table agreement: every (recipe, key length) triple maps.
@@ -435,6 +528,22 @@ caseGeometryLaw = do
   assertEqual "aes192-cts key" [24] (cipherKeyLens C_AES192_CTS)
   assertEqual "aes256-cts key" [32] (cipherKeyLens C_AES256_CTS)
   assertEqual "aes-cts iv" 16 (cipherIvLen C_AES256_CTS)
+  assertEqual "aes128-cfb128 key" [16] (cipherKeyLens C_AES128_CFB128)
+  assertEqual "aes192-cfb128 key" [24] (cipherKeyLens C_AES192_CFB128)
+  assertEqual "aes256-cfb128 key" [32] (cipherKeyLens C_AES256_CFB128)
+  assertEqual "aes-cfb128 iv" 16 (cipherIvLen C_AES256_CFB128)
+  assertEqual "aes128-cfb8 key" [16] (cipherKeyLens C_AES128_CFB8)
+  assertEqual "aes192-cfb8 key" [24] (cipherKeyLens C_AES192_CFB8)
+  assertEqual "aes256-cfb8 key" [32] (cipherKeyLens C_AES256_CFB8)
+  assertEqual "aes-cfb8 iv" 16 (cipherIvLen C_AES256_CFB8)
+  assertEqual "aes128-cfb1 key" [16] (cipherKeyLens C_AES128_CFB1)
+  assertEqual "aes192-cfb1 key" [24] (cipherKeyLens C_AES192_CFB1)
+  assertEqual "aes256-cfb1 key" [32] (cipherKeyLens C_AES256_CFB1)
+  assertEqual "aes-cfb1 iv" 16 (cipherIvLen C_AES256_CFB1)
+  assertEqual "aes128-ofb key" [16] (cipherKeyLens C_AES128_OFB)
+  assertEqual "aes192-ofb key" [24] (cipherKeyLens C_AES192_OFB)
+  assertEqual "aes256-ofb key" [32] (cipherKeyLens C_AES256_OFB)
+  assertEqual "aes-ofb iv" 16 (cipherIvLen C_AES256_OFB)
   assertEqual "des3 keys" [16, 24] (cipherKeyLens C_DES3_CBC)
   assertEqual "des3 iv" 8 (cipherIvLen C_DES3_CBC)
   assertEqual "aria key" [32] (cipherKeyLens C_ARIA256_CBC)

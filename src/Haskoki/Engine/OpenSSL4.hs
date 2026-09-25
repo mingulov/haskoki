@@ -627,15 +627,19 @@ osslRsaNotes algs =
 
 -- | The cipher set: every backend spec the block-cipher
 -- recipe reaches (AES/ARIA/CAMELLIA CBC+ECB at three widths plus
--- Triple-DES CBC+ECB, plus AES CTR and AES CTS at three widths).
--- Candidates that fail the fetch probe are narrowed out of the
--- advertised caps (never silently kept).
+-- Triple-DES CBC+ECB, plus AES CTR, AES CTS and AES CFB128/CFB8/
+-- CFB1/OFB at three widths). Candidates that fail the fetch probe
+-- are narrowed out of the advertised caps (never silently kept).
 t16CipherSpecs :: [CipherSpec]
 t16CipherSpecs =
   [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
   , C_AES128_CTR, C_AES192_CTR, C_AES256_CTR
   , C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
   , C_AES128_CTS, C_AES192_CTS, C_AES256_CTS
+  , C_AES128_CFB128, C_AES192_CFB128, C_AES256_CFB128
+  , C_AES128_CFB8, C_AES192_CFB8, C_AES256_CFB8
+  , C_AES128_CFB1, C_AES192_CFB1, C_AES256_CFB1
+  , C_AES128_OFB, C_AES192_OFB, C_AES256_OFB
   , C_DES3_CBC, C_DES3_ECB
   , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
   , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
@@ -930,7 +934,8 @@ runGuarded (OSSL4Backend env) op miss action = case miss of
 -- CTS labels are capability-report names only: the provider has no
 -- CTS mode, so 'cipherProbeName' / 'ctsEcbName' resolve the
 -- underlying ECB primitive the shim builds the stealing
--- construction over.
+-- construction over. CFB128 fetches @AES-*-CFB@ (the provider has
+-- no @-CFB128@ alias; bare CFB is the 128-bit feedback).
 cipherFetchName :: CipherSpec -> String
 cipherFetchName spec = case spec of
   C_AES128_CBC -> "AES-128-CBC"
@@ -945,6 +950,18 @@ cipherFetchName spec = case spec of
   C_AES128_CTS -> "AES-128-CTS"
   C_AES192_CTS -> "AES-192-CTS"
   C_AES256_CTS -> "AES-256-CTS"
+  C_AES128_CFB128 -> "AES-128-CFB"
+  C_AES192_CFB128 -> "AES-192-CFB"
+  C_AES256_CFB128 -> "AES-256-CFB"
+  C_AES128_CFB8 -> "AES-128-CFB8"
+  C_AES192_CFB8 -> "AES-192-CFB8"
+  C_AES256_CFB8 -> "AES-256-CFB8"
+  C_AES128_CFB1 -> "AES-128-CFB1"
+  C_AES192_CFB1 -> "AES-192-CFB1"
+  C_AES256_CFB1 -> "AES-256-CFB1"
+  C_AES128_OFB -> "AES-128-OFB"
+  C_AES192_OFB -> "AES-192-OFB"
+  C_AES256_OFB -> "AES-256-OFB"
   C_DES3_CBC -> "DES-EDE3-CBC"
   C_DES3_ECB -> "DES-EDE3"
   C_ARIA128_CBC -> "ARIA-128-CBC"
@@ -963,10 +980,12 @@ cipherFetchName spec = case spec of
 -- | Block width in bytes per cipher spec: 8 for Triple-DES, 16 for
 -- the AES family (CBC alignment; ECB shares the width), 1 for the
 -- CTR stream specs (any input length; the provider reports the
--- stream block size 1 too, so the shim gate agrees) and for the
+-- stream block size 1 too, so the shim gate agrees), for the
 -- CTS specs (any length >= 1 block; the unit width lets ragged
 -- input past the Haskell gate and the shim refuses sub-block
--- input with BADPARAM, which 'nativeFail' reports typed).
+-- input with BADPARAM, which 'nativeFail' reports typed), and for
+-- the CFB128/CFB8/CFB1/OFB stream specs (any length, even empty;
+-- length-preserving).
 cipherBlockLen :: CipherSpec -> Int
 cipherBlockLen spec = case spec of
   C_DES3_CBC -> 8
@@ -977,6 +996,18 @@ cipherBlockLen spec = case spec of
   C_AES128_CTS -> 1
   C_AES192_CTS -> 1
   C_AES256_CTS -> 1
+  C_AES128_CFB128 -> 1
+  C_AES192_CFB128 -> 1
+  C_AES256_CFB128 -> 1
+  C_AES128_CFB8 -> 1
+  C_AES192_CFB8 -> 1
+  C_AES256_CFB8 -> 1
+  C_AES128_CFB1 -> 1
+  C_AES192_CFB1 -> 1
+  C_AES256_CFB1 -> 1
+  C_AES128_OFB -> 1
+  C_AES192_OFB -> 1
+  C_AES256_OFB -> 1
   _ -> 16
 
 -- | The CTS specs run the manual CBC-CS1 construction instead of

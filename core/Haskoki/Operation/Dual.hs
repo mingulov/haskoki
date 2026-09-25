@@ -38,6 +38,7 @@ import Haskoki.Operation
   , TypedError (..)
   , interpretError
   , denyOutcome
+  , isAesStreamMech
   , isCtsMech
   , isUnframedCipher
   , mkDeny
@@ -146,6 +147,8 @@ planDualFinal ops st = case dualOf ops of
             -- floor (>= 1 block) instead of block alignment.
             in if isUnframedCipher (commonMech cCom)
               then emitDual ops st' du' (bufferedOf dCom) buf
+              else if isAesStreamMech (commonMech cCom)
+                then emitDual ops st' du' (bufferedOf dCom) buf
               else if isCtsMech (commonMech cCom)
                 then if BS.length buf >= csBlock spec
                   then emitDual ops st' du' (bufferedOf dCom) buf
@@ -251,6 +254,7 @@ finishDual ops dName cName dRes cRes dIntent cIntent =
       DirDecrypt
         -- Asymmetric rows stage the answer raw.
         | isUnframedCipher (commonMech (duCipher du)) -> Right raw
+        | isAesStreamMech (commonMech (duCipher du)) -> Right raw
         | isCtsMech (commonMech (duCipher du))
         , BS.length raw >= csBlock (duCipherSpec du) -> Right raw
         | isCtsMech (commonMech (duCipher du)) ->

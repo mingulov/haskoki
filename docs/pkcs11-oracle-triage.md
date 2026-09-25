@@ -12,7 +12,7 @@ not per test.
 
 Total collected varies by framework checkout (r11: 5780; r14: 5798;
 r15: 5820; r18: 5840; r19: 5844; r20: 5864; r21: 5888; r22: 5910;
-r23: 5910).
+r23: 5910; r24: 5934; r25: 6030).
 Summaries are authoritative;
 the per-test records list interesting outcomes only (see Method).
 
@@ -42,6 +42,8 @@ the per-test records list interesting outcomes only (see Method).
 | r21 (AES-CTR slice) | 2947 | 2 | 357 | 2582 | 0 |
 | r22 (AES-CCM slice) | 2967 | 2 | 361 | 2580 | 0 |
 | r23 (curves verdict precision) | 2985 | 2 | 350 | 2573 | 0 |
+| r24 (AES-CTS slice) | 2998 | 2 | 354 | 2580 | 0 |
+| r25 (CFB/OFB slice + C_SessionCancel) | 3055 | 2 | 370 | 2603 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -241,7 +243,31 @@ first lane proving all of them together.
   harness-side keygen). T4 message-API legs never materialized
   (the oracle skips clean `FUNCTION_NOT_SUPPORTED`).
 
-## Remaining fast-lane failures (r23: 2), by cluster
+## Round 9: CTS + CFB/OFB slices with C_SessionCancel (r24–r25)
+
+- r23→r24 (2985→2998 passed, zero new failures): AES-CTS slice
+  (commit 5497650; manual CBC-CS1 shim, 12 ACVP legs).
+- r24→r25 (2998→3055 passed, +16 xfailed, zero pass→fail, zero
+  new failures): AES CFB1/CFB8/CFB128/OFB slice plus the real
+  C_SessionCancel it forced. Per-unit diff fully attributed:
+  `test_aes_modes` +6, `test_mech_encrypt` +7, `test_mech_flags`
+  +16, `test_mech_multipart` +4, `test_mech_negative` +16 passed
+  / +16 xfailed (CFB/OFB negative legs), `test_mech_probe` +12
+  skipped (new mechanism probes), `test_operation_termination`
+  +4 (cancel now exercises termination paths),
+  `test_v30_session` +3 pass / −3 skip and `test_ckr_v30_raw`
+  +1 / −1 (C_SessionCancel legs now run instead of skipping
+  on `FUNCTION_NOT_SUPPORTED`). Same 2 HOTP external
+  failures, confirmed by test id
+  (`TestWrongKeyType::test_registry_{sign,verify}_wrong_key_type[HOTP]`).
+- Targeted CFB/OFB r1→r2 (same 13 files): r1 exposed 12 MCT
+  failures (6 CFB8 + 6 OFB, CKR_OPERATION_ACTIVE) because the
+  MCT fallback's C_SessionCancel hit the generated stub; r2
+  with the real cancel shows CFB8/OFB 2144/2144 pass and zero
+  MCT failures
+  (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-cfb-ofb-r2.json`).
+
+## Remaining fast-lane failures (r25: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
 `/tmp/pkcs11-ws/pkcs11-check` (import recipes, negotiation, gates).
@@ -469,7 +495,43 @@ OAEP error uniformity). T5a (RO owner dimension) and T5b
 (public/private gates) are implemented and passing in-suite
 post-r18; lane reproof needs a bundle rebuild.
 
-## KAT lane status (r7, AES-CTS slice: COMPLETE)
+## KAT lane status (r8, CFB/OFB slice + C_SessionCancel: COMPLETE)
+
+112214 tests — 66739 passed, 2 failed, 0 crashed, 3585 xfailed,
+41888 skipped (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r8-results.json`;
+`incomplete: false`), canonical data dir `/tmp/pkcs11-ws/data`,
+clean-rebuild release. The only failures are the 2 external
+HOTP registry asserts (same pair as every lane). Delta vs r7 is
+fully attributed, +8633 passed / +16 xfailed / −8553 skipped,
+zero pass→fail, zero crashes, zero xpass:
+
+- `acvp/aes/test_cfb1.py`: 0→2138 passed (skip→pass).
+- `acvp/aes/test_cfb128.py`: 0→2144 passed (skip→pass).
+- `acvp/aes/test_cfb8.py`: 0→2144 passed (skip→pass; the 6 MCT
+  legs that failed in targeted r1 pass here via the cancel fix).
+- `acvp/aes/test_ofb.py`: 0→2144 passed (skip→pass; same MCT
+  story as CFB8).
+- `security/test_output_length_truncation.py`: +6 passed
+  (CFB/OFB truncation legs now run).
+- Fast-lane units inside KAT repeat the fast r25 deltas
+  exactly (`test_aes_modes` +6, `test_ckr_v30_raw` +1,
+  `test_mech_encrypt` +7, `test_mech_flags` +16,
+  `test_mech_multipart` +4, `test_mech_negative` +16 passed /
+  +16 xfailed, `test_mech_probe` +12 skipped,
+  `test_operation_termination` +4, `test_v30_session` +3) —
+  cross-lane consistency check passes. Fast r25 standalone:
+  6030 tests — 3055 passed, same 2 HOTP failed, 370 xfailed,
+  2603 skipped
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r25-results.json`).
+- Targeted CFB/OFB r2 (same bundle):
+  `test_cfb1/cfb128/cfb8/ofb` 2138/2144/2144/2144 pass, 0 fail
+  (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-cfb-ofb-r2.json`).
+
+Remaining 3585 xfails + 41888 skips are the ranked slices
+still ahead (WRAP/KWP, XTS, DSA, EdDSA, PQC, legacy, TLS/KDF —
+same taxonomy as r7, CFB/OFB rows now served).
+
+## KAT lane status (historical r7, AES-CTS slice: COMPLETE)
 
 112118 tests — 58106 passed, 2 failed, 0 crashed, 3569 xfailed,
 50441 skipped (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r7-results.json`;

@@ -164,6 +164,7 @@ spec = testGroup "operation lifecycles"
   , testCase "encrypt/decrypt roundtrip with padding" caseCipherRoundtrip
   , testCase "unpadded length denies terminate the slot" caseCipherLengths
   , testCase "cts stealing floor and buffer-all" caseCtsFloor
+  , testCase "aes stream rows accept any length" caseAesStreamFloor
   , testCase "decrypt bad padding fails terminally" caseCipherBadPad
   , testCase "cipher short buffer retry then failure" caseCipherShortFail
   , testCase "empty-output query stages for the recall" caseEmptyQueryStages
@@ -215,6 +216,12 @@ aesCcmMech = MechanismId 0x1088
 
 aesCtsMech :: MechanismId
 aesCtsMech = MechanismId 0x1089
+
+aesCfb128Mech, aesCfb8Mech, aesCfb1Mech, aesOfbMech :: MechanismId
+aesCfb128Mech = MechanismId 0x2107
+aesCfb8Mech = MechanismId 0x2106
+aesCfb1Mech = MechanismId 0x2108
+aesOfbMech = MechanismId 0x2104
 
 rsaGenMech :: MechanismId
 rsaGenMech = MechanismId 0x0
@@ -707,6 +714,28 @@ ctsEncArgs = InitArgs
 ctsDecArgs :: InitArgs
 ctsDecArgs = ctsEncArgs { iaOp = OpDecrypt }
 
+-- | AES stream init environment and arguments: the 16-byte shape
+-- with raw IV parameters; CFB128 represents the streaming rows,
+-- OFB the buffer-all row.
+streamEnv :: OpEnv
+streamEnv = testEnv
+  { oeCaps = mkCapabilities
+      [ (m, op)
+      | m <- [aesCfb128Mech, aesCfb8Mech, aesCfb1Mech, aesOfbMech]
+      , op <- [OpEncrypt, OpDecrypt]
+      ]
+  }
+
+streamArgs :: MechanismId -> InitArgs
+streamArgs mech = InitArgs
+  { iaOp = OpEncrypt
+  , iaMech = mech
+  , iaParams = BS.replicate 16 0
+  , iaKey = Just aesKey
+  , iaCipher = Just (CipherSpec 16 False)
+  , iaRecover = Nothing
+  }
+
 -- | Toy block cipher: byte reversal, self-inverse, length-preserving.
 toyCrypt :: ByteString -> ByteString
 toyCrypt = BS.reverse
@@ -861,6 +890,25 @@ caseUpdateSplitTable = do
       assertEqual ("cts dec " ++ show total) want
         (cipherUpdateSplit cts plain DirDecrypt total)
     ) [(0, (0, 0)), (5, (0, 5)), (16, (0, 16)), (19, (0, 19)), (32, (0, 32)), (37, (0, 37))]
+  -- CFB128/CFB8/CFB1 stream full 16-byte chunks like unpadded CBC
+  -- (ciphertext-tail chaining); OFB buffers everything (its
+  -- register evolves through the block cipher).
+  mapM_ (\(total, want) -> do
+      assertEqual ("cfb128 enc " ++ show total) want
+        (cipherUpdateSplit aesCfb128Mech plain DirEncrypt total)
+      assertEqual ("cfb128 dec " ++ show total) want
+        (cipherUpdateSplit aesCfb128Mech plain DirDecrypt total)
+      assertEqual ("cfb8 enc " ++ show total) want
+        (cipherUpdateSplit aesCfb8Mech plain DirEncrypt total)
+      assertEqual ("cfb1 enc " ++ show total) want
+        (cipherUpdateSplit aesCfb1Mech plain DirEncrypt total)
+    ) [(0, (0, 0)), (15, (0, 15)), (16, (16, 0)), (20, (16, 4)), (32, (32, 0)), (37, (32, 5))]
+  mapM_ (\(total, want) -> do
+      assertEqual ("ofb enc " ++ show total) want
+        (cipherUpdateSplit aesOfbMech plain DirEncrypt total)
+      assertEqual ("ofb dec " ++ show total) want
+        (cipherUpdateSplit aesOfbMech plain DirDecrypt total)
+    ) [(0, (0, 0)), (15, (0, 15)), (16, (0, 16)), (20, (0, 20)), (32, (0, 32))]
 
 caseUpdateShortNoConsume :: IO ()
 caseUpdateShortNoConsume = do
@@ -1127,6 +1175,73 @@ caseCtsFloor = do
         (GotBytes "short") (IntentBuffer 128)
   assertEqual "cts short decrypt refused" CKR_ENCRYPTED_DATA_LEN_RANGE (soCode finS)
   assertEqual "cts short decrypt frees" [] (activeSlots opsL)
+
+-- | AES stream rows (CFB128/CFB8/CFB1/OFB) accept any input length,
+-- empty included: ragged one-shots plan, CFB* multipart streams
+-- 16-byte chunks with ciphertext-tail chaining, OFB multipart
+-- buffers to the final, and decrypt finish stages ragged answers.
+caseAesStreamFloor :: IO ()
+caseAesStreamFloor = do
+  let ragged20 = "0123456789abcdefghij" :: ByteString
+  -- Ragged one-shot encrypt plans on all four rows.
+  mapM_ (\mech -> do
+      let (ops0, i0) = initOperation streamEnv emptySessionOps testSession (streamArgs mech)
+      assertEqual ("stream init ok " ++ show mech) CKR_OK (ioCode i0)
+      let (_, _, one) = planCipherOneShot ops0 testSession SlotEncrypt "cipher" ragged20
+      assertEqual ("ragged one-shot plans " ++ show mech) CKR_OK (soCode one)
+      case soEffects one of
+        [FxCipher DirEncrypt _ _ _ input] ->
+          assertEqual ("effect carries ragged bytes " ++ show mech) ragged20 input
+        other -> assertFailure ("expected one stream effect, got " ++ show other)
+    ) [aesCfb128Mech, aesCfb8Mech, aesCfb1Mech, aesOfbMech]
+  -- Empty one-shot plans too (length-preserving, 0 -> 0).
+  let (opsE, _) = initOperation streamEnv emptySessionOps testSession (streamArgs aesCfb128Mech)
+  let (_, _, empty) = planCipherOneShot opsE testSession SlotEncrypt "cipher" BS.empty
+  assertEqual "empty one-shot plans" CKR_OK (soCode empty)
+  -- CFB128 multipart streams 16, chains the answer tail, finals 4.
+  let (ops0, _) = initOperation streamEnv emptySessionOps testSession (streamArgs aesCfb128Mech)
+  let (ops1, _, u1) = planCipherUpdate ops0 testSession SlotEncrypt "0123456789abcdef" Nothing
+  assertEqual "cfb128 update ok" CKR_OK (soCode u1)
+  updAns <- case soEffects u1 of
+    [fx@(FxCipher DirEncrypt _ _ _ input)] -> do
+      assertEqual "update streams one block" 16 (BS.length input)
+      pure (runCipherEffect fx)
+    other -> assertFailure ("expected one update effect, got " ++ show other)
+  let (ops2, finU) = finishCipherUpdate ops1 SlotEncrypt "cipher" updAns (IntentBuffer 128)
+  assertEqual "update finish ok" CKR_OK (soCode finU)
+  let (ops3, _, u2) = planCipherUpdate ops2 testSession SlotEncrypt "ghij" Nothing
+  assertEqual "cfb128 tail update ok" CKR_OK (soCode u2)
+  assertEqual "tail update plans no crypto" [] (soEffects u2)
+  let (_, _, f0) = planCipherFinal ops3 testSession SlotEncrypt "cipher"
+  assertEqual "cfb128 final plans" CKR_OK (soCode f0)
+  case (updAns, soEffects f0) of
+    (GotBytes ans, [FxCipher DirEncrypt _ _ params input]) -> do
+      assertEqual "final input is the retained tail" "ghij" input
+      assertEqual "final chains the answer tail" ans params
+    other -> assertFailure ("expected chained final effect, got " ++ show other)
+  -- OFB multipart buffers everything: updates plan no crypto.
+  let (opsA, _) = initOperation streamEnv emptySessionOps testSession (streamArgs aesOfbMech)
+  let (opsB, _, uo1) = planCipherUpdate opsA testSession SlotEncrypt "0123456789abcdef" Nothing
+  assertEqual "ofb update ok" CKR_OK (soCode uo1)
+  assertEqual "ofb update plans no crypto" [] (soEffects uo1)
+  let (opsC, _, uo2) = planCipherUpdate opsB testSession SlotEncrypt ragged20 Nothing
+  assertEqual "ofb update 2 plans no crypto" [] (soEffects uo2)
+  assertEqual "ofb buffered all" (Just 36) (bufferedLength opsC SlotEncrypt)
+  let (_, _, fo) = planCipherFinal opsC testSession SlotEncrypt "cipher"
+  assertEqual "ofb final plans" CKR_OK (soCode fo)
+  case soEffects fo of
+    [FxCipher DirEncrypt _ _ _ input] ->
+      assertEqual "ofb final input is the whole buffer" 36 (BS.length input)
+    other -> assertFailure ("expected one ofb final effect, got " ++ show other)
+  -- Decrypt finish stages ragged answers (even 1-byte CFB8).
+  let (opsD, _) = initOperation streamEnv emptySessionOps testSession
+        ((streamArgs aesCfb8Mech) { iaOp = OpDecrypt })
+  let (opsF, _, _) = planCipherOneShot opsD testSession SlotDecrypt "plain" "X"
+  let (opsG, fin) = finishCipher opsF SlotDecrypt "plain"
+        (GotBytes "X") (IntentBuffer 128)
+  assertEqual "cfb8 1-byte decrypt stages" CKR_OK (soCode fin)
+  assertEqual "decrypt stages bytes" (Just "X") (stagedBytes fin)
+  assertEqual "decrypt frees the slot" [] (activeSlots opsG)
 
 caseCipherBadPad :: IO ()
 caseCipherBadPad = do

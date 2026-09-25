@@ -85,10 +85,12 @@ import Haskoki.Operation
   , SlotKind (..)
   , StepOutcome (..)
   , activeDigest
+  , cancelOps
   , commonOf
   , emptySessionOps
   , initMessageOperation
   , initOperation
+  , kindOccupied
   , lookupSingle
   , msgFamilyKind
   , msgFamilyOp
@@ -106,6 +108,7 @@ import Haskoki.Operation.Cipher
   )
 import Haskoki.Operation.Codec
   ( cipherShapeFor
+  , decodeCancelInput
   , decodeInitInput
   , decodeMsgBegin
   , decodeMsgNext
@@ -191,6 +194,7 @@ planCall rules model req = case reqFunction req of
   F_CloseSession -> withSession $ \st -> planCloseSession model st
   F_Login -> withSession $ \st -> planLogin rules model req st
   F_Logout -> withSession $ \st -> planLogout model st
+  F_SessionCancel -> withSession $ planSessionCancel req
   -- Legacy-bytes compat decode (see F_CreateObject).
   F_DigestInit -> withSession $ planInitCompat rules model req InitDigest
   F_Digest -> withSession $ planRetryable req SlotDigest
@@ -504,6 +508,32 @@ planCloseSession model st =
     , pcReleases = streamReleases (ssOps st)
     , pcReasons = ["closed session " ++ show (ssId st)]
     }
+
+-- | Plan SessionCancel: decode the CKF_* selector mask and drop the
+-- selected operations immediately (pure state transition, no engine
+-- effect — the MCT recovery path depends on cancel clearing
+-- CKR_OPERATION_ACTIVE). A cancelled live digest stream drains its
+-- backend context, exactly as session close drains it; cancelling
+-- an idle selection commits an empty delta. Unknown sessions
+-- reject (via 'withSession'); malformed flags refuse.
+planSessionCancel :: Request -> SessionState -> PlanResult
+planSessionCancel req st = case decodeCancelInput (reqInput req) of
+  Nothing -> badArgs "malformed session-cancel flags"
+  Just flags ->
+    let before = ssOps st
+        after = cancelOps flags before
+        digestCancelled = kindOccupied before SlotDigest
+          && not (kindOccupied after SlotDigest)
+        delta = [DeltaSetSessionOps (ssId st) after | after /= before]
+    in Immediate PreparedCommit
+      { pcCode = CKR_OK
+      , pcDelta = StateDelta delta
+      , pcPersist = []
+      , pcOutputs = []
+      , pcReleases =
+          [ r | digestCancelled, r <- streamReleases before ]
+      , pcReasons = ["cancelled session operations: " ++ show flags]
+      }
 
 -- | Plan Login: decode @(kind, principal, PIN verdict)@, run the
 -- attempt, and commit. A denied attempt still persists its counter
@@ -1073,6 +1103,7 @@ runFinisher step res = case csFunction step of
   F_MessageDecryptFinal -> Nothing
   F_MessageSignFinal -> Nothing
   F_MessageVerifyFinal -> Nothing
+  F_SessionCancel -> Nothing
   where
     go fin = Just (fin (csOps step) (csKind step) (csName step) res (csIntent step))
     goMsg fam = Just

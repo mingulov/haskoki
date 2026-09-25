@@ -86,6 +86,7 @@ module Haskoki.FFI.Standard
   , haskokiStdOpenSession
   , haskokiStdCloseSession
   , haskokiStdCloseAllSessions
+  , haskokiStdSessionCancel
   , haskokiStdGetSessionInfo
   , haskokiStdTokenLive
   , haskokiStdTokenLabel
@@ -161,7 +162,7 @@ import Control.Exception
   , throwIO
   , try
   )
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import Data.Bits (shiftL, shiftR, xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -240,7 +241,7 @@ import Haskoki.Operation
   , stagedOf
   )
 import Haskoki.Operation.Cipher (cipherUpdateSplit)
-import Haskoki.Operation.Codec (encodeVerifyInput)
+import Haskoki.Operation.Codec (encodeCancelInput, encodeVerifyInput)
 import Haskoki.Operation.Derive
   ( encodeDeriveParams
   , hkdfDeriveMech
@@ -970,6 +971,8 @@ foreign export ccall "haskoki_std_close_session" haskokiStdCloseSession
   :: StablePtr StdInstance -> CULong -> IO CULong
 foreign export ccall "haskoki_std_close_all_sessions" haskokiStdCloseAllSessions
   :: StablePtr StdInstance -> CULong -> IO CULong
+foreign export ccall "haskoki_std_session_cancel" haskokiStdSessionCancel
+  :: StablePtr StdInstance -> CULong -> CULong -> IO CULong
 foreign export ccall "haskoki_std_get_session_info" haskokiStdGetSessionInfo
   :: StablePtr StdInstance -> CULong
   -> Ptr CULong -> Ptr CULong -> Ptr CULong -> Ptr CULong -> IO CULong
@@ -1101,6 +1104,37 @@ haskokiStdCloseAllSessions ctx (CULong slot) =
         pure ckrOk
   where
     slotId = SlotId (fromIntegral slot)
+
+-- | Cancel a session's active operations under its CKF_* selector
+-- mask (unknown handles refuse; the planner clears the selected
+-- slots and drains a cancelled live digest stream). A zero mask or
+-- the CKF_FIND_OBJECTS bit (0x40, pinned header) also drops the
+-- session's find cursor: cancel-all means every session operation,
+-- find included.
+haskokiStdSessionCancel
+  :: StablePtr StdInstance -> CULong -> CULong -> IO CULong
+haskokiStdSessionCancel ctx (CULong h) (CULong flags) =
+  withStdCtx ctx $ \inst -> do
+    m0 <- snapshotModel (siEnv inst)
+    let sid = SessionId (fromIntegral h)
+        req = Request Pkcs11_3_2 F_SessionCancel (Just sid)
+          Nothing (encodeCancelInput (fromIntegral flags)) []
+    case planCall (envRules (siEnv inst)) m0 req of
+      Immediate pc -> do
+        pr <- publishCommit inst pc
+        case pr of
+          Left _ -> pure ckrGeneralError
+          Right ()
+            | pcCode pc == CKR_OK -> do
+                -- CKF_FIND_OBJECTS is 0x40 in the pinned header.
+                when (flags == 0 || flags .&. 0x40 /= 0) $
+                  clearCursor inst sid
+                pure ckrOk
+            | otherwise -> pure (stdRvOf (pcCode pc))
+      Reject rej -> do
+        publishRejection inst rej
+        pure (stdRvOf (rejCode rej))
+      Execute _ _ -> pure ckrGeneralError
 
 -- | Project one session onto the C scalars (see 'sessionScalars').
 haskokiStdGetSessionInfo

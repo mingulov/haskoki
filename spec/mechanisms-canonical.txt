@@ -110,6 +110,10 @@ mech|0x00001088|CKM_AES_CCM||aead|ccm-params/1|bytes:16-32|decrypt:A16,A37,A39;e
 mech|0x00001089|CKM_AES_CTS||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x0000108A|CKM_AES_CMAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x0000108B|CKM_AES_CMAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
+mech|0x00002104|CKM_AES_OFB||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
+mech|0x00002106|CKM_AES_CFB8||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
+mech|0x00002107|CKM_AES_CFB128||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
+mech|0x00002108|CKM_AES_CFB1||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x0000402A|CKM_HKDF_DERIVE||derive|hkdf-expand-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 inv|0x00000002|CKM_RSA_9796||catalog-only
 inv|0x00000003|CKM_RSA_X_509||catalog-only
@@ -396,11 +400,7 @@ inv|0x00002002|CKM_X9_42_DH_PARAMETER_GEN||catalog-only
 inv|0x00002003|CKM_DSA_PROBABILISTIC_PARAMETER_GEN|CKM_DSA_PROBABLISTIC_PARAMETER_GEN|catalog-only
 inv|0x00002004|CKM_DSA_SHAWE_TAYLOR_PARAMETER_GEN||catalog-only
 inv|0x00002005|CKM_DSA_FIPS_G_GEN||catalog-only
-inv|0x00002104|CKM_AES_OFB||catalog-only
 inv|0x00002105|CKM_AES_CFB64||catalog-only
-inv|0x00002106|CKM_AES_CFB8||catalog-only
-inv|0x00002107|CKM_AES_CFB128||catalog-only
-inv|0x00002108|CKM_AES_CFB1||catalog-only
 inv|0x00002109|CKM_AES_KEY_WRAP||catalog-only
 inv|0x0000210A|CKM_AES_KEY_WRAP_PAD||catalog-only
 inv|0x0000210B|CKM_AES_KEY_WRAP_KWP||catalog-only

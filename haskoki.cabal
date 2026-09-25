@@ -352,6 +352,7 @@ test-suite haskoki-model-tests
     LeaseScopeSpec
     TransitionSpec
     SecretsSpec
+    SessionCancelSpec
     SessionSpec
     LifecycleSpec
     KeyImportSpec

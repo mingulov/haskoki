@@ -64,6 +64,8 @@ extern uint64_t haskoki_std_open_session(void *instance, uint64_t slot,
                                          uint64_t *ph_session);
 extern uint64_t haskoki_std_close_session(void *instance, uint64_t h_session);
 extern uint64_t haskoki_std_close_all_sessions(void *instance, uint64_t slot);
+extern uint64_t haskoki_std_session_cancel(void *instance, uint64_t h_session,
+                                           uint64_t flags);
 extern uint64_t haskoki_std_get_session_info(void *instance, uint64_t h_session,
                                              uint64_t *p_slot, uint64_t *p_ro,
                                              uint64_t *p_login,
@@ -664,6 +666,30 @@ CK_RV std_CloseAllSessions(CK_SLOT_ID slotID) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
   rv = (CK_RV)haskoki_std_close_all_sessions(inst, (uint64_t)slotID);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_SessionCancel(CK_SESSION_HANDLE hSession, CK_FLAGS flags) {
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_session_cancel(inst, (uint64_t)hSession,
+                                         (uint64_t)flags);
   (void)haskoki_state_unlock();
   return rv;
 }

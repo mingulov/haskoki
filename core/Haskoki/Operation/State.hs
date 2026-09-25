@@ -47,6 +47,7 @@ module Haskoki.Operation.State
     -- * Slot accessors for the per-kind lifecycles
   , lookupSingle
   , removeSingle
+  , cancelOps
     -- * Validated insertion (the kind is derived from the op)
   , slotOfActive
   , SlotMismatch (..)
@@ -93,12 +94,14 @@ module Haskoki.Operation.State
   , setDual
   ) where
 
+import Data.Bits ((.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
+import Data.Word (Word32)
 
 import Haskoki.Registry
   ( MechanismId
@@ -385,6 +388,46 @@ lookupSingle ops kind = Map.lookup kind (soSingles ops)
 removeSingle :: SlotKind -> SessionOps -> SessionOps
 removeSingle kind ops =
   ops { soSingles = Map.delete kind (soSingles ops) }
+
+-- | The CKF_* selector bits addressing one slot: the pinned-header
+-- mechanism-flag values (spec/vendor/pkcs11.h), reused as the
+-- C_SessionCancel operation-class mask. Recovery bits select their
+-- shared slot (sign-recover shares 'SlotSign', verify-recover
+-- shares 'SlotVerify').
+slotCancelBits :: SlotKind -> Word32
+slotCancelBits kind = case kind of
+  SlotEncrypt -> 0x100
+  SlotDecrypt -> 0x200
+  SlotDigest -> 0x400
+  SlotSign -> 0x800 .|. 0x1000
+  SlotVerify -> 0x2000 .|. 0x4000
+
+-- | The slots a cancel mask selects. A zero mask selects every
+-- slot: with no class selected the whole session operation set is
+-- cancelled (the recovery semantic — a caller passing no selection
+-- wants a clean session, not a no-op). Unknown bits select
+-- nothing: teardown stays lenient so a future flag cannot strand a
+-- session behind an un-clearable operation.
+cancelSlots :: Word32 -> [SlotKind]
+cancelSlots 0 = [minBound .. maxBound]
+cancelSlots flags =
+  [ kind | kind <- [minBound .. maxBound], flags .&. slotCancelBits kind /= 0 ]
+
+-- | Drop the operations a cancel mask selects. Selected singles
+-- are freed; the dual drops when the mask covers either side it
+-- occupies (a dual is one operation: half-cancelling it is
+-- unrepresentable). Idempotent: cancelling an idle selection is a
+-- no-op.
+cancelOps :: Word32 -> SessionOps -> SessionOps
+cancelOps flags ops =
+  let kinds = cancelSlots flags
+      singles' = foldr Map.delete (soSingles ops) kinds
+      dual' = case soDual ops of
+        Nothing -> Nothing
+        Just du
+          | SlotDigest `elem` kinds || dirKind (duDir du) `elem` kinds -> Nothing
+          | otherwise -> Just du
+  in SessionOps singles' dual'
 
 -- | The slot one active operation truly occupies: the kind side of
 -- the validated insertion pair. Total: every constructor names its

@@ -1756,7 +1756,7 @@
         "A24",
         "A30"
       ],
-      "entry": "haskoki-export:haskoki_hs_async_cancel",
+      "entry": "planCall:F_SessionCancel",
       "first_layout": "CK_FUNCTION_LIST_3_0",
       "layouts": [
         "3.0",
@@ -1768,8 +1768,12 @@
       "reason": null,
       "test_evidence": [
         {
-          "suite": "haskoki-engine-tests",
-          "spec": "tests/engine/AsyncEngineSpec.hs"
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/SessionCancelSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_session_cancel.c"
         }
       ]
     },

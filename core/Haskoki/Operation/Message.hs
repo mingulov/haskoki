@@ -59,6 +59,7 @@ import Haskoki.Operation
   , TypedError (..)
   , interpretError
   , denyOutcome
+  , isAesStreamMech
   , isCtsMech
   , isUnframedCipher
   , mkDeny
@@ -343,6 +344,15 @@ runCipherNext ops st fam dir params part end = case withMessageSlot ops fam of
                     ["message end planned over "
                       ++ show (BS.length buf') ++ " bytes"] [] Nothing
                 )
+            | isAesStreamMech (commonMech (msCommon ms')) ->
+                ( storeMessage o (ms' { msInner = MsgOpen pa aad buf' })
+                , s
+                , StepOutcome CKR_OK
+                    [FxMessageCipher dir (commonMech sc) (commonKey sc) pa aad buf']
+                    Nothing
+                    ["message end planned over "
+                      ++ show (BS.length buf') ++ " bytes"] [] Nothing
+                )
             | isCtsMech (commonMech (msCommon ms'))
             , BS.length buf' < csBlock spec ->
                 ( storeMessage o (ms' { msInner = MsgOpen pa aad buf' })
@@ -541,6 +551,8 @@ runCipherOneShot ops st fam dir params aad input = case withMessageSlot ops fam 
                   -- stealing floor instead of block alignment.
                   | isUnframedCipher (commonMech (msCommon ms')) ->
                       planEffect o s ms' input
+                  | isAesStreamMech (commonMech (msCommon ms')) ->
+                      planEffect o s ms' input
                   | isCtsMech (commonMech (msCommon ms'))
                   , BS.length input < csBlock spec ->
                       (o, s, denyOutcome (mkDeny CKR_DATA_LEN_RANGE
@@ -721,8 +733,10 @@ runFinishDecrypt ops ms name result intent = case stagedOf (msCommon ms) of
       Just spec -> case result of
         GotBytes raw
           -- Asymmetric rows stage the answer raw. CTS rows stage
-          -- any answer at or above the stealing floor.
+          -- any answer at or above the stealing floor. AES stream
+          -- rows stage any answer (length-preserving).
           | isUnframedCipher (commonMech (msCommon ms)) -> stagePlain raw
+          | isAesStreamMech (commonMech (msCommon ms)) -> stagePlain raw
           | isCtsMech (commonMech (msCommon ms))
           , BS.length raw >= csBlock spec -> stagePlain raw
           | isCtsMech (commonMech (msCommon ms)) ->

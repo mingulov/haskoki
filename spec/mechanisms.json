@@ -17310,14 +17310,44 @@
       "canonical_name": "CKM_AES_OFB",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "max_key_size": 32,
+        "min_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: the stream/block mode present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): raw 16-byte IV mechanism parameters like CBC, keys 16/24/32 bytes; any input length round-trips length-preserved (empty included). Multipart buffers all updates to the final (the OFB register evolves through the block cipher, underivable from the answer tail). Real execution is the provider AES-OFB mode, pinned by OpenSSLSpec caseAesCfbOfb (ACVP-AES-OFB-1.0 vectors) against the pinned libcrypto; synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00002104",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_OFB",
@@ -17326,12 +17356,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "classic-ops",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "block-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17343,7 +17409,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: the stream/block mode present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: provider 4.0.2 has no AES CFB64 mode (fetch probe: only CFB/CFB8/CFB1/OFB); behavior/synthetic stay planned.",
       "numeric_id": "0x00002105",
       "routes": [],
       "source_refs": [
@@ -17366,14 +17432,44 @@
       "canonical_name": "CKM_AES_CFB8",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "max_key_size": 32,
+        "min_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: the stream/block mode present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): raw 16-byte IV mechanism parameters like CBC, keys 16/24/32 bytes; any input length round-trips length-preserved (empty included). Multipart streams 16-byte chunks with ciphertext-tail chaining. Real execution is the provider AES-CFB8 mode, pinned by OpenSSLSpec caseAesCfbOfb (ACVP-AES-CFB8-1.0 vectors) against the pinned libcrypto; synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00002106",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_CFB8",
@@ -17382,26 +17478,92 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "classic-ops",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "block-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_AES_CFB128",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "max_key_size": 32,
+        "min_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: the stream/block mode present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): raw 16-byte IV mechanism parameters like CBC, keys 16/24/32 bytes; any input length round-trips length-preserved (empty included). Multipart streams 16-byte chunks with ciphertext-tail chaining (streamed answers are always >= 1 block, so the tail is the next register). Real execution is the provider AES-CFB mode (bare CFB is the 128-bit feedback; the provider has no -CFB128 alias), pinned by OpenSSLSpec caseAesCfbOfb (ACVP-AES-CFB128-1.0 vectors) against the pinned libcrypto; synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00002107",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_CFB128",
@@ -17410,26 +17572,92 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "classic-ops",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "block-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_AES_CFB1",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "max_key_size": 32,
+        "min_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: the stream/block mode present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): raw 16-byte IV mechanism parameters like CBC, keys 16/24/32 bytes; full-byte input (8 CFB1 bit-operations per byte), any length round-trips length-preserved. Multipart streams 16-byte chunks with ciphertext-tail chaining. Real execution is the provider AES-CFB1 mode, pinned by OpenSSLSpec caseAesCfbOfb (ACVP-AES-CFB1-1.0 vectors, sub-byte payloadLen legs masked to the top payload bits per the oracle rule) against the pinned libcrypto; synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00002108",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_CFB1",
@@ -17438,12 +17666,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "classic-ops",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "block-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

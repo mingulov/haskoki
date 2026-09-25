@@ -49,6 +49,7 @@ import qualified RecipeRsaSpec
 import qualified RegistrySpec
 import qualified RoutingSpec
 import qualified SecretsSpec
+import qualified SessionCancelSpec
 import qualified SessionSpec
 import qualified SimBridgeSpec
 import qualified SimStressSpec
@@ -64,6 +65,7 @@ import qualified ULongSpec
 main :: IO ()
 main = defaultMain $ testGroup "haskoki model + lifecycle"
   [ TransitionSpec.spec
+  , SessionCancelSpec.spec
   , SessionSpec.spec
   , LifecycleSpec.spec
   , MessageSpec.spec

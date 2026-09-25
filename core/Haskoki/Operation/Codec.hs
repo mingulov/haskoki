@@ -39,6 +39,8 @@ module Haskoki.Operation.Codec
   , decodeMsgNext
   , encodeMsgOneShot
   , decodeMsgOneShot
+  , encodeCancelInput
+  , decodeCancelInput
   ) where
 
 import Control.Monad (guard)
@@ -55,9 +57,13 @@ import Haskoki.Registry.Generated
   ( ckm_AES_CBC
   , ckm_AES_CBC_PAD
   , ckm_AES_CCM
+  , ckm_AES_CFB1
+  , ckm_AES_CFB128
+  , ckm_AES_CFB8
   , ckm_AES_CTR
   , ckm_AES_CTS
   , ckm_AES_ECB
+  , ckm_AES_OFB
   , ckm_AES_GCM
   , ckm_ARIA_CBC
   , ckm_ARIA_ECB
@@ -205,6 +211,10 @@ cipherShapeFor (MechanismId m)
   | m == ckm_AES_CBC_PAD = Just (CipherSpec 16 True)
   | m == ckm_AES_CTR = Just (CipherSpec 1 False)
   | m == ckm_AES_CTS = Just (CipherSpec 16 False)
+  | m == ckm_AES_CFB128 = Just (CipherSpec 16 False)
+  | m == ckm_AES_CFB8 = Just (CipherSpec 16 False)
+  | m == ckm_AES_CFB1 = Just (CipherSpec 16 False)
+  | m == ckm_AES_OFB = Just (CipherSpec 16 False)
   | m == ckm_AES_ECB = Just (CipherSpec 16 False)
   | m == ckm_DES3_CBC = Just (CipherSpec 8 False)
   | m == ckm_DES3_ECB = Just (CipherSpec 8 False)
@@ -233,6 +243,20 @@ decodeVerifyInput bs = do
   let n = fromIntegral n32
   _ <- checkLen n rest0
   pure (BS.splitAt n rest0)
+
+-- | Frame session-cancel flags: the CKF_* selector mask as u32be.
+encodeCancelInput :: Word32 -> ByteString
+encodeCancelInput = u32be
+
+-- | Parse framed session-cancel flags: exactly four bytes, nothing
+-- else. A new function id with no legacy byte-carrying callers, so
+-- there is no empty-input compat arm — short or long input is
+-- malformed.
+decodeCancelInput :: ByteString -> Maybe Word32
+decodeCancelInput bs = do
+  (flags, rest) <- takeU32 bs
+  guard (BS.null rest)
+  pure flags
 
 -- ---------------------------------------------------------------------------
 -- Message arguments

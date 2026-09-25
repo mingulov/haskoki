@@ -14,8 +14,10 @@
  * this TU assigns designators). The 24 + 12 post-2.40 entries come from the
  * generated cbits/abi_stubs.inc (exact pinned prototypes). C_GetInterfaceList
  * and C_GetInterface are real globals (dlsym-able discovery, callable
- * before C_Initialize); every other post-2.40 entry is a lifecycle-aware
- * stub (NOT_INITIALIZED pre-init, NOT_SUPPORTED once live).
+ * before C_Initialize); C_SessionCancel is a routed definition
+ * (std_SessionCancel in standard_surface.c); every other post-2.40
+ * entry is a lifecycle-aware stub (NOT_INITIALIZED pre-init,
+ * NOT_SUPPORTED once live).
  *
  * Discovery data (interface array, tables) is static and needs no Haskell
  * entry. Tables are filled once via pthread_once on first 3.x discovery.
@@ -40,6 +42,10 @@
 #include "crypto_trampoline.h"
 
 /* ---------- stub policy ---------- */
+
+/* Routed post-2.40 definitions (exact pinned prototypes; the fill
+ * macros in abi_stubs.inc wire these table slots to them). */
+extern CK_RV std_SessionCancel(CK_SESSION_HANDLE hSession, CK_FLAGS flags);
 
 /* Lifecycle-aware stub result: state first (matches the contract
  * order), arguments are never inspected by stubs. Fork children observe no

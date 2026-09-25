@@ -2,7 +2,8 @@
  *
  * Post-2.40 stub implementations with exact pinned-header
  * prototypes, plus the table-fill macros wiring them (and the
- * two discovery globals) into the versioned tables.
+ * two discovery globals, plus routed definitions with a real
+ * implementation) into the versioned tables.
  * Included only by cbits/exports.c, after x_live_check().
  */
 static CK_DECLARE_FUNCTION(CK_RV, x30_C_LoginUser)
@@ -13,13 +14,6 @@ static CK_DECLARE_FUNCTION(CK_RV, x30_C_LoginUser)
   (void)p3;
   (void)p4;
   (void)p5;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_SessionCancel)
-(CK_SESSION_HANDLE p0, CK_FLAGS p1) {
-  (void)p0;
-  (void)p1;
   return x_live_check();
 }
 
@@ -343,7 +337,7 @@ static CK_DECLARE_FUNCTION(CK_RV, x32_C_UnwrapKeyAuthenticated)
     (T)->C_GetInterfaceList = C_GetInterfaceList; \
     (T)->C_GetInterface = C_GetInterface; \
     (T)->C_LoginUser = x30_C_LoginUser; \
-    (T)->C_SessionCancel = x30_C_SessionCancel; \
+    (T)->C_SessionCancel = std_SessionCancel; \
     (T)->C_MessageEncryptInit = x30_C_MessageEncryptInit; \
     (T)->C_EncryptMessage = x30_C_EncryptMessage; \
     (T)->C_EncryptMessageBegin = x30_C_EncryptMessageBegin; \

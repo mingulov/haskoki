@@ -46,7 +46,9 @@ import Haskoki.Operation
   , TypedError (..)
   , interpretError
   , denyOutcome
+  , isAesStreamMech
   , isCtsMech
+  , isOfbMech
   , isUnframedCipher
   , mkDeny
   , gateDataCall
@@ -134,9 +136,12 @@ withCipherSlot ops kind = do
 -- Asymmetric rows ('isUnframedCipher') skip framing entirely: the
 -- backend owns their length bound. CTS rows ('isCtsMech') replace
 -- alignment with the stealing floor: >= 1 block, any length above.
+-- AES stream rows ('isAesStreamMech') accept any length outright
+-- (length-preserving, empty included).
 encryptInput :: MechanismId -> CipherSpec -> ByteString -> Either StepDeny ByteString
 encryptInput mech spec buf
   | isUnframedCipher mech = Right buf
+  | isAesStreamMech mech = Right buf
   | isCtsMech mech
   , BS.length buf >= csBlock spec = Right buf
   | isCtsMech mech = Left (mkDeny CKR_DATA_LEN_RANGE
@@ -160,7 +165,9 @@ encryptInput mech spec buf
 -- decryption must not release plaintext before the tag verifies,
 -- and asymmetric multipart is degenerate. CTS never streams
 -- either: the steal pair intertwines the last two blocks, so only
--- the final (which sees the whole buffer) runs the effect.
+-- the final (which sees the whole buffer) runs the effect. OFB
+-- never streams either: its register evolves through the block
+-- cipher, underivable from the answer tail.
 -- Framed block ciphers
 -- stream every block the padding rules release: unpadded modes
 -- emit all full blocks both directions; padded encrypt holds back
@@ -178,6 +185,7 @@ cipherUpdateSplit mech spec dir total
   | csBlock spec <= 0 = (0, total)
   | isUnframedCipher mech = (0, total)
   | isCtsMech mech = (0, total)
+  | isOfbMech mech = (0, total)
   | isEcb = (total - total `mod` block, total `mod` block)
   | csPad spec = case dir of
       DirEncrypt
@@ -387,6 +395,7 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
           DirEncrypt -> stageRaw raw
           DirDecrypt
             | isUnframedCipher (commonMech sc) -> stageRaw raw
+            | isAesStreamMech (commonMech sc) -> stageRaw raw
             | isCtsMech (commonMech sc)
             , BS.length raw >= csBlock spec -> stageRaw raw
             | isCtsMech (commonMech sc) ->

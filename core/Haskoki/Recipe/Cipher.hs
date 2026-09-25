@@ -29,8 +29,8 @@ Consumers:
   KATs execute the geometry pinned here (SyntheticSpec,
   OpenSSLSpec).
 
-Deferred family members (not recipes, named gaps): the remaining
-streaming sub-shapes (@CFB*@\/@OFB@, same for ARIA/CAMELLIA),
+Deferred family members (not recipes, named gaps): @CKM_AES_CFB64@
+(provider 4.0.2 has no CFB64 mode for AES),
 @CKM_AES_XTS@, @CKM_*_GCM@\/@CCM@ (AEAD shape, needs its
 own nonce\/tag recipe), @CKM_*_ENCRYPT_DATA@ (single-part data
 shape), the PBE constructors, and every legacy-only or
@@ -55,6 +55,8 @@ module Haskoki.Recipe.Cipher
   , decodeCtrParams
   , ctrNextImage
   , ctsName
+  , streamNames
+  , ofbName
   ) where
 
 import Data.Bits (shiftL, shiftR, (.&.))
@@ -119,6 +121,16 @@ ctrName = "CKM_AES_CTR"
 -- 'Haskoki.Operation.isCtsMech').
 ctsName :: MechanismName
 ctsName = "CKM_AES_CTS"
+
+-- | The length-preserving AES stream rows: CFB128/CFB8/CFB1/OFB
+-- accept any input length (see 'Haskoki.Operation.isAesStreamMech').
+streamNames :: [MechanismName]
+streamNames = ["CKM_AES_CFB128", "CKM_AES_CFB8", "CKM_AES_CFB1", "CKM_AES_OFB"]
+
+-- | The OFB row, which never streams multipart updates (see
+-- 'Haskoki.Operation.isOfbMech').
+ofbName :: MechanismName
+ofbName = "CKM_AES_OFB"
 
 -- | Encode one 8-byte big-endian word.
 encodeWord64 :: Int -> ByteString
@@ -191,6 +203,13 @@ cipherRecipes =
   -- >= 1 block of input; the planners enforce the length floor, not
   -- block alignment, via 'Haskoki.Operation.isCtsMech').
   , BlockCipherRecipe "CKM_AES_CTS" 16 [16, 24, 32] 16 False "CKK_AES"
+  -- CFB128/CFB8/CFB1/OFB take the raw IV like CBC and accept any
+  -- input length (length-preserving streams; the planners allow
+  -- unaligned input via 'Haskoki.Operation.isAesStreamMech').
+  , BlockCipherRecipe "CKM_AES_CFB128" 16 [16, 24, 32] 16 False "CKK_AES"
+  , BlockCipherRecipe "CKM_AES_CFB8" 16 [16, 24, 32] 16 False "CKK_AES"
+  , BlockCipherRecipe "CKM_AES_CFB1" 16 [16, 24, 32] 16 False "CKK_AES"
+  , BlockCipherRecipe "CKM_AES_OFB" 16 [16, 24, 32] 16 False "CKK_AES"
   , BlockCipherRecipe "CKM_DES3_CBC" 8 [16, 24] 8 False "CKK_DES3"
   , BlockCipherRecipe "CKM_DES3_ECB" 8 [16, 24] 0 False "CKK_DES3"
   , BlockCipherRecipe "CKM_ARIA_CBC" 16 [16, 24, 32] 16 False "CKK_ARIA"

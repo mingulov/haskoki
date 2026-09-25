@@ -276,6 +276,10 @@ caseCurated = do
     , MechanismId Gen.ckm_AES_CTS
     , MechanismId Gen.ckm_AES_CMAC
     , MechanismId Gen.ckm_AES_CMAC_GENERAL
+    , MechanismId Gen.ckm_AES_OFB
+    , MechanismId Gen.ckm_AES_CFB8
+    , MechanismId Gen.ckm_AES_CFB128
+    , MechanismId Gen.ckm_AES_CFB1
     , MechanismId Gen.ckm_HKDF_DERIVE
     ]
     (behaviorIds reg)
@@ -298,7 +302,7 @@ caseCurated = do
 
 caseJsonProjection :: IO ()
 caseJsonProjection = do
-  -- The reviewed head stays pinned verbatim; the 352 generated
+  -- The reviewed head stays pinned verbatim; the 348 generated
   -- catalog-only rows are pinned by count + full file equality (the
   -- file is generator output; equality proves the Haskell registry
   -- matches the JSON catalog byte-for-byte, and
@@ -318,11 +322,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 112 behavior + 352 catalog-only + catalog line.
+  -- schema + 116 behavior + 348 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 112
+  assertEqual "behavior line count" 116
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 352
+  assertEqual "catalog-only line count" 348
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -639,7 +643,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 352 (length invIds)
+  assertEqual "guard covers every catalog row" 348 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of

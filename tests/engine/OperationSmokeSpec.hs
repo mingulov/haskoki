@@ -28,7 +28,7 @@ import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Engine.Backend
   ( BackendError (..)
   , BackendEnv
-  , CipherSpec (C_AES256_CBC, C_AES256_CTR, C_AES256_CTS)
+  , CipherSpec (C_AES256_CBC, C_AES256_CTR, C_AES256_CTS, C_AES256_CFB128, C_AES256_OFB)
   , CryptoBackend (..)
   , DigestAlg (..)
   , EcSpec (..)
@@ -127,6 +127,8 @@ spec = testGroup "operations over the real backend"
   , testCase "aes padded roundtrip through cipher slots" caseAesPadSlot
   , testCase "aes-ctr unaligned roundtrip through cipher slots" caseAesCtrSlot
   , testCase "aes-cts ragged roundtrip through cipher slots" caseAesCtsSlot
+  , testCase "aes-cfb128 ragged roundtrip through cipher slots" caseAesCfb128Slot
+  , testCase "aes-ofb ragged roundtrip through cipher slots" caseAesOfbSlot
   , testCase "ecdsa sign/verify through slots, DER and RAW" caseEcdsaSlot
   , testCase "dual digest+encrypt through the real backend" caseDualSlot
   , testCase "denied init plans no crypto" caseDeniedPlansNothing
@@ -191,16 +193,18 @@ ecSigRaw = hex "debdbb00072c928d38bf43791d32f0eefe8a562d8444869adabdf77820cbed49
 -- Fixtures: registry, model, sessions
 -- ---------------------------------------------------------------------------
 
-sha256Mech, hmacMech, aesCbcMech, ecdsaMech, aesCtrMech, aesCtsMech :: MechanismId
+sha256Mech, hmacMech, aesCbcMech, ecdsaMech, aesCtrMech, aesCtsMech, aesCfb128Mech, aesOfbMech :: MechanismId
 sha256Mech = MechanismId 0x250
 hmacMech = MechanismId 0x251
 aesCbcMech = MechanismId 0x1082
 ecdsaMech = MechanismId 0x1041
 aesCtrMech = MechanismId 0x1086
 aesCtsMech = MechanismId 0x1089
+aesCfb128Mech = MechanismId 0x2107
+aesOfbMech = MechanismId 0x2104
 
 -- | The curated registry as-is: every mechanism these smoke
--- tests touch (0x250, 0x251, 0x1082, 0x1041, 0x1086, 0x1089) ships behavior-tested
+-- tests touch (0x250, 0x251, 0x1082, 0x1041, 0x1086, 0x1089, 0x2107, 0x2104) ships behavior-tested
 -- (promoting a tested row is a 'DuplicateMechanism' error by
 -- design).
 smokeRegistry :: Registry
@@ -247,6 +251,10 @@ smokeEnv = OpEnv
       , (aesCtrMech, OpDecrypt)
       , (aesCtsMech, OpEncrypt)
       , (aesCtsMech, OpDecrypt)
+      , (aesCfb128Mech, OpEncrypt)
+      , (aesCfb128Mech, OpDecrypt)
+      , (aesOfbMech, OpEncrypt)
+      , (aesOfbMech, OpDecrypt)
       , (ecdsaMech, OpSign)
       , (ecdsaMech, OpVerify)
       ]
@@ -331,6 +339,10 @@ runRealEffect env fx = case fx of
         toBytes <$> cipherEncrypt env C_AES256_CTR key cb input
     | mech == aesCtsMech, Just key <- keyFor oid ->
         toBytes <$> cipherEncrypt env C_AES256_CTS key iv input
+    | mech == aesCfb128Mech, Just key <- keyFor oid ->
+        toBytes <$> cipherEncrypt env C_AES256_CFB128 key iv input
+    | mech == aesOfbMech, Just key <- keyFor oid ->
+        toBytes <$> cipherEncrypt env C_AES256_OFB key iv input
     | otherwise -> pure (badKey fx)
   FxCipher DirDecrypt mech (Just oid) iv input
     | mech == aesCbcMech, Just key <- keyFor oid ->
@@ -339,6 +351,10 @@ runRealEffect env fx = case fx of
         toBytes <$> cipherDecrypt env C_AES256_CTR key cb input
     | mech == aesCtsMech, Just key <- keyFor oid ->
         toBytes <$> cipherDecrypt env C_AES256_CTS key iv input
+    | mech == aesCfb128Mech, Just key <- keyFor oid ->
+        toBytes <$> cipherDecrypt env C_AES256_CFB128 key iv input
+    | mech == aesOfbMech, Just key <- keyFor oid ->
+        toBytes <$> cipherDecrypt env C_AES256_OFB key iv input
     | otherwise -> pure (badKey fx)
   -- Message effects: per-message params drive crypto (the IV
   -- arrives per message, not from init). The backend is not
@@ -625,6 +641,48 @@ caseAesCtsSlot = withBackend $ \env -> do
     other -> assertFailure ("expected one cipher effect, got " ++ show other)
   assertEqual "stealing length preserved" (BS.length msg) (BS.length ct)
   let dArgs = InitArgs OpDecrypt aesCtsMech aes256Iv (Just aesKeyP) noPad Nothing
+      (ops2, _) = initOperation smokeEnv emptySessionOps smokeSession dArgs
+      (ops3, _, o2) = planCipherOneShot ops2 smokeSession
+        SlotDecrypt "plain" ct
+  case soEffects o2 of
+    [fx] -> do
+      out <- expectBytes env fx
+      let (ops4, fin) = finishCipher ops3 SlotDecrypt "plain"
+            (GotBytes out) (IntentBuffer 64)
+      assertEqual "decrypt ok" CKR_OK (soCode fin)
+      assertEqual "roundtrip recovers" (Just msg) (stagedBytes fin)
+      assertEqual "slot freed" [] (activeSlots ops4)
+    other -> assertFailure ("expected one cipher effect, got " ++ show other)
+
+-- | CFB128/OFB through the slots: ragged input plans (no alignment
+-- denial), the real backend streams over provider modes, decrypt
+-- recovers. (Roundtrips, not KATs: no ACVP vector covers the fixed
+-- smoke key; the KATs live in OpenSSLSpec.)
+caseAesCfb128Slot :: IO ()
+caseAesCfb128Slot = streamSlot aesCfb128Mech "cfb128 streams over ragged input!"
+
+caseAesOfbSlot :: IO ()
+caseAesOfbSlot = streamSlot aesOfbMech "ofb buffers over ragged input!!"
+
+streamSlot :: MechanismId -> ByteString -> IO ()
+streamSlot mech msg = withBackend $ \env -> do
+  let noPad = Just (CipherSpec 16 False)
+      eArgs = InitArgs OpEncrypt mech aes256Iv (Just aesKeyP) noPad Nothing
+      (ops0, _) = initOperation smokeEnv emptySessionOps smokeSession eArgs
+      (ops1, _, o1) = planCipherOneShot ops0 smokeSession
+        SlotEncrypt "cipher" msg
+  ct <- case soEffects o1 of
+    [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
+      out <- expectBytes env fx
+      let (_, fin) = finishCipher ops1 SlotEncrypt "cipher"
+            (GotBytes out) (IntentBuffer 64)
+      assertEqual "encrypt ok" CKR_OK (soCode fin)
+      case stagedBytes fin of
+        Just c -> pure c
+        Nothing -> assertFailure "expected ciphertext"
+    other -> assertFailure ("expected one cipher effect, got " ++ show other)
+  assertEqual "stream length preserved" (BS.length msg) (BS.length ct)
+  let dArgs = InitArgs OpDecrypt mech aes256Iv (Just aesKeyP) noPad Nothing
       (ops2, _) = initOperation smokeEnv emptySessionOps smokeSession dArgs
       (ops3, _, o2) = planCipherOneShot ops2 smokeSession
         SlotDecrypt "plain" ct

@@ -14,7 +14,7 @@ isolation, and shim-hygiene assertions.
 {-# LANGUAGE OverloadedStrings #-}
 module OpenSSLSpec (spec) where
 
-import Data.Bits (xor)
+import Data.Bits ((.&.), shiftL, xor)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
@@ -71,6 +71,7 @@ spec = testGroup "openssl4 engine"
   , testCase "aes-256-cbc roundtrip and bad lengths" caseAesRoundtrip
   , testCase "Block-cipher KATs (NIST/RFC/CLI)" caseCipherKats
   , testCase "aes-cts known answers (ACVP CBC-CS1)" caseAesCts
+  , testCase "aes cfb/ofb known answers (ACVP)" caseAesCfbOfb
   , testCase "RSA v1.5 KATs (CLI vectors)" caseRsaKats
   , testCase "RSA-PSS interop (CLI vector)" caseRsaPssVectors
   , testCase "RSA-OAEP interop (CLI vectors)" caseRsaOaepVectors
@@ -223,6 +224,109 @@ cts256Key19 = hex "2A88FED687FF2FC5E920DD98100DB031057A847758A12FF5D1E63579CE21C
 cts256Iv19 = hex "460D42F6C44BF495DFCB7D6855C60F0A"
 cts256Pt19 = hex "E325A505A54F7CCB859B98F440C67B14444B89"
 cts256Ct19 = hex "8752AD80462421DC5E5ECA1EFAA9790E4B398A"
+
+-- ACVP-AES-CFB128/CFB8/CFB1/OFB-1.0 encrypt vectors (prompt +
+-- expectedResults). One leg per mode x width; CFB1 adds sub-byte
+-- payloadLen-10 legs with oracle-defined top-bits masking.
+cfb128_128_key, cfb128_128_iv, cfb128_128_pt, cfb128_128_ct :: ByteString
+cfb128_128_key = hex "8E5D75D976DB6983954B54C1A714E135"
+cfb128_128_iv = hex "A610F1879CDD7B3D1267E51D55ACFE87"
+cfb128_128_pt = hex $ concat
+  [ "531F2B906CFFE6541BDDE16F267D7481A62DA1A6462525D1A05E878332971BF4D"
+  , "60C9ACA2DA5B42F04BCFF9CAC0AE21D"
+  ]
+cfb128_128_ct = hex $ concat
+  [ "04F436D93655427BB495029F789F72B597CCEBEC6FE927BF1B08FE29AC05CCCDE5"
+  , "AED842AE89C8D858736C1772760FD2"
+  ]
+cfb128_192_key, cfb128_192_iv, cfb128_192_pt, cfb128_192_ct :: ByteString
+cfb128_192_key = hex "D86D60ABA397596E00FC643E5CA178679F92127470514715"
+cfb128_192_iv = hex "4B82C289E366F05F5F23E4D2B8E48ED2"
+cfb128_192_pt = hex $ concat
+  [ "31DA4A73E7BF25ADAB8778AD607F1B5DF733DB2A7C213AAA97CB91DD913A5A501A"
+  , "C12ABEF450A2DB27E060964B103230"
+  ]
+cfb128_192_ct = hex $ concat
+  [ "5325ED26C6695717E7813790CAB764F43C60C3B8882AC1F3DEB2FA5A4E1E784DFD"
+  , "E4CB4BDAA8F500DD470AB08F71C312"
+  ]
+cfb128_256_key, cfb128_256_iv, cfb128_256_pt, cfb128_256_ct :: ByteString
+cfb128_256_key = hex "193477C335697BA0FA61FDA15AE1E4BA9D0D76EE5EA4552EE5DD22759FFA2EEE"
+cfb128_256_iv = hex "B335E95FCD2983A349165581C1A8E9A6"
+cfb128_256_pt = hex $ concat
+  [ "0F98CBBE70A5EB2A244703235869816B8CF57CF097F93EE4F2E8692193A0E8FE84"
+  , "550ADC4C70B01AFD0EE79D8848164F"
+  ]
+cfb128_256_ct = hex $ concat
+  [ "37D20635E92B613C7A36FFE827B4C74D75D5E2A92965C8850380F5E1340D8C17CF"
+  , "98B53D98372AABA4C286D956DEC1F7"
+  ]
+cfb8_128_key, cfb8_128_iv, cfb8_128_pt, cfb8_128_ct :: ByteString
+cfb8_128_key = hex "D8B5B55196BC7BA12C1A3F383D53055E"
+cfb8_128_iv = hex "59866908DB5E9CBD8188E5BB11228E91"
+cfb8_128_pt = hex "746C1B57DA68713B3826094A9FE85DC2680AC7C696457074DD44704D99D5E48B"
+cfb8_128_ct = hex "4EE17694BBFC7EF4CE603CD14D5E8EBDF1AB7BD84F2A7C4E4E1577B81205DEDB"
+cfb8_192_key, cfb8_192_iv, cfb8_192_pt, cfb8_192_ct :: ByteString
+cfb8_192_key = hex "9A3E3FCE8BC21CCBE4893470234F48845BD1B4AE23B3BCF8"
+cfb8_192_iv = hex "0419D52672D4C61B4924E09A5347C0EF"
+cfb8_192_pt = hex "602562FEFB49745E2A185A3651AB98B9C8F8D92FCC2741AB23DCE4C7A6EB08F5"
+cfb8_192_ct = hex "C5D1E776F3F428D592A3116A6993C10E0DB63737775D2A77200262A1EF8DDD21"
+cfb8_256_key, cfb8_256_iv, cfb8_256_pt, cfb8_256_ct :: ByteString
+cfb8_256_key = hex "880B1086E6326896D02DCE97C04DB55A10BD17F97F257374265FA3A1AED8495E"
+cfb8_256_iv = hex "2306207DE21D456E1B4E2DD21419BC54"
+cfb8_256_pt = hex "25E3EDD024537E3B009FA356926CCDBEEFDBAA5E77E23775DB34D9646D683673"
+cfb8_256_ct = hex "267A52D8B3C6BE04FC16412A99682089CDD17328126A5DF6B3E78C4DE8F2B3CF"
+cfb1_128_key, cfb1_128_iv :: ByteString
+cfb1_128_key = hex "5ACB11FB4A72B089C492D6C8B3636E95"
+cfb1_128_iv = hex "0E9BCCA0A1F1A840D0C9F6FB6FCD4B6E"
+cfb1_192_key, cfb1_192_iv :: ByteString
+cfb1_192_key = hex "5E763B08CE4A24E9059E134F8DB68A6500C847B4A1876ADE"
+cfb1_192_iv = hex "F2AB1305D9D681A02DE6D6C0D9CC3E53"
+cfb1_256_key, cfb1_256_iv :: ByteString
+cfb1_256_key = hex "A2C614B71BE9F438C472A9DACB49865DE2516AE353AD0E7453E8731799DFC0A1"
+cfb1_256_iv = hex "9FD31916DEC92DB8CBB390ABD3ADDA05"
+cfb1_128b_key, cfb1_128b_iv :: ByteString
+cfb1_128b_key = hex "CA8838F0F0E94106A9FED0120A79C2B3"
+cfb1_128b_iv = hex "A6070E04A2DD5C1CA26B279E2EB5183C"
+cfb1_192b_key, cfb1_192b_iv :: ByteString
+cfb1_192b_key = hex "B33C80CCCB7E2D9C272E3052D7A1D300661A33357670403B"
+cfb1_192b_iv = hex "52F67B2D4A2C21E9AB33BC8BF6E2D07C"
+cfb1_256b_key, cfb1_256b_iv :: ByteString
+cfb1_256b_key = hex "01416CB918CAD2CEF6AC40B2E2CACC0B976A91EC40902F9185B5622055FD9B3F"
+cfb1_256b_iv = hex "1B263E429DA5F706A62DB54AC45CE040"
+ofb_128_key, ofb_128_iv, ofb_128_pt, ofb_128_ct :: ByteString
+ofb_128_key = hex "055B701A06741E45FF8F9A0AB72AD4C8"
+ofb_128_iv = hex "D3B99DB990F923FF0C46A41D810B2763"
+ofb_128_pt = hex $ concat
+  [ "CD49B6830E22C3C08B5965175C21885F47C62E3A67CC558A3DABDB54BAAE58715D"
+  , "003F096A6E293395D8E75BFE5BF1DAE455B80F9C32C90C5321F23755599872"
+  ]
+ofb_128_ct = hex $ concat
+  [ "D0C883857DC4DE820D76E115A74274EFFBF3DD364E27EE57050BF161F5AAE2F498"
+  , "31DCAD7F1E464728B59A9E59C655552D5D91219D8D88F320F4681925B8CAA8"
+  ]
+ofb_192_key, ofb_192_iv, ofb_192_pt, ofb_192_ct :: ByteString
+ofb_192_key = hex "1737AC3C014C74E20F6254A71C9165D311AE21D2DDCF8F74"
+ofb_192_iv = hex "F4BFF3A113C0C63732BEB6E77216EB9F"
+ofb_192_pt = hex $ concat
+  [ "18ADD7BF57AA00844759AFA1B468C81592D170A335DFE50A7D0D91729B32F8C7D8"
+  , "60A5C96206B480058987019BE2E0A220BD04D69668D5BE773AC60B2A050ECE"
+  ]
+ofb_192_ct = hex $ concat
+  [ "E7765838AF94B62C494C6E0C5D43E6D1BD6DCA82E8C90BCED23AA2FFF3B250E5F"
+  , "9D86CE055EABD6951EED2B2E6901D1D0DDE9329F4ADC66D3B48906476713A34"
+  ]
+ofb_256_key, ofb_256_iv, ofb_256_pt, ofb_256_ct :: ByteString
+ofb_256_key = hex "FAA7B060B20C10D6700D13718CA610223688BFD4D49C5CF5CA10992CD93F6494"
+ofb_256_iv = hex "83922A2CC59B353517FE3965DAA9BBCF"
+ofb_256_pt = hex $ concat
+  [ "1355175F24941D4367FFC922900045B12A13A43E3ECE241206D5F4CF5078D5392F"
+  , "A471D2573A35DAC7FDA3F8AF62CBBFE0E9A4AF79933984276F99596FE5410B"
+  ]
+ofb_256_ct = hex $ concat
+  [ "56A0EAA8290D0DE9EF6C382E33327D108D04793AE3FE97933E5AF1F0A617C28E0"
+  , "0C07BD84A498EF39C6C33668F044FB7C10C2F4383BE61F20212210025B90666"
+  ]
 
 -- FIPS 180-4 §B.1 / §B.2.
 sha256Abc :: ByteString
@@ -1049,6 +1153,84 @@ caseAesCts = withBackend $ \env -> do
         =<< cipherDecrypt env cipher (KeyBytes key) iv want
       assertEqual (label ++ " inverts") pt pt'
 
+-- AES CFB128/CFB8/CFB1/OFB: ACVP encrypt vectors (enc+dec) plus
+-- ragged roundtrips (length-preserving, self-inverse) and geometry
+-- negatives. CFB1 sub-byte legs mask to the payload bits per the
+-- oracle's _cfb1_mask rule (top payloadLen bits compared).
+caseAesCfbOfb :: IO ()
+caseAesCfbOfb = withBackend $ \env -> do
+  kat env "aes-128-cfb128-48" C_AES128_CFB128 cfb128_128_key cfb128_128_iv cfb128_128_pt cfb128_128_ct
+  kat env "aes-192-cfb128-48" C_AES192_CFB128 cfb128_192_key cfb128_192_iv cfb128_192_pt cfb128_192_ct
+  kat env "aes-256-cfb128-48" C_AES256_CFB128 cfb128_256_key cfb128_256_iv cfb128_256_pt cfb128_256_ct
+  kat env "aes-128-cfb8-32" C_AES128_CFB8 cfb8_128_key cfb8_128_iv cfb8_128_pt cfb8_128_ct
+  kat env "aes-192-cfb8-32" C_AES192_CFB8 cfb8_192_key cfb8_192_iv cfb8_192_pt cfb8_192_ct
+  kat env "aes-256-cfb8-32" C_AES256_CFB8 cfb8_256_key cfb8_256_iv cfb8_256_pt cfb8_256_ct
+  kat env "aes-128-cfb1-8b" C_AES128_CFB1 cfb1_128_key cfb1_128_iv (hex "93") (hex "75")
+  kat env "aes-192-cfb1-8b" C_AES192_CFB1 cfb1_192_key cfb1_192_iv (hex "5C") (hex "76")
+  kat env "aes-256-cfb1-8b" C_AES256_CFB1 cfb1_256_key cfb1_256_iv (hex "51") (hex "D2")
+  katMasked env "aes-128-cfb1-10b" C_AES128_CFB1 cfb1_128b_key cfb1_128b_iv (hex "CDC0") (hex "6B00") 10
+  katMasked env "aes-192-cfb1-10b" C_AES192_CFB1 cfb1_192b_key cfb1_192b_iv (hex "3480") (hex "F740") 10
+  katMasked env "aes-256-cfb1-10b" C_AES256_CFB1 cfb1_256b_key cfb1_256b_iv (hex "1280") (hex "2F00") 10
+  kat env "aes-128-ofb-64" C_AES128_OFB ofb_128_key ofb_128_iv ofb_128_pt ofb_128_ct
+  kat env "aes-192-ofb-64" C_AES192_OFB ofb_192_key ofb_192_iv ofb_192_pt ofb_192_ct
+  kat env "aes-256-ofb-64" C_AES256_OFB ofb_256_key ofb_256_iv ofb_256_pt ofb_256_ct
+  -- Ragged roundtrips (no ACVP ragged vectors exist; these pin
+  -- length preservation + inversion, not oracle bytes).
+  roundtrip env "cfb128 ragged 20" C_AES128_CFB128 cfb128_128_key cfb128_128_iv 20
+  roundtrip env "cfb8 ragged 20" C_AES128_CFB8 cfb8_128_key cfb8_128_iv 20
+  roundtrip env "cfb1 ragged 3" C_AES128_CFB1 cfb1_128_key cfb1_128_iv 3
+  roundtrip env "ofb ragged 20" C_AES128_OFB ofb_128_key ofb_128_iv 20
+  -- Geometry negatives.
+  expectBadParam "cfb128 bad key" =<<
+    cipherEncrypt env C_AES128_CFB128 (KeyBytes "short") cfb128_128_iv cfb128_128_pt
+  expectBadParam "cfb128 bad iv" =<<
+    cipherEncrypt env C_AES128_CFB128 (KeyBytes cfb128_128_key) "short" cfb128_128_pt
+  expectBadParam "cfb8 bad key" =<<
+    cipherEncrypt env C_AES128_CFB8 (KeyBytes "short") cfb8_128_iv cfb8_128_pt
+  expectBadParam "cfb8 bad iv" =<<
+    cipherEncrypt env C_AES128_CFB8 (KeyBytes cfb8_128_key) "short" cfb8_128_pt
+  expectBadParam "cfb1 bad key" =<<
+    cipherEncrypt env C_AES128_CFB1 (KeyBytes "short") cfb1_128_iv (hex "93")
+  expectBadParam "cfb1 bad iv" =<<
+    cipherEncrypt env C_AES128_CFB1 (KeyBytes cfb1_128_key) "short" (hex "93")
+  expectBadParam "ofb bad key" =<<
+    cipherEncrypt env C_AES128_OFB (KeyBytes "short") ofb_128_iv ofb_128_pt
+  expectBadParam "ofb bad iv" =<<
+    cipherEncrypt env C_AES128_OFB (KeyBytes ofb_128_key) "short" ofb_128_pt
+  where
+    kat env label cipher key iv pt want = do
+      ct <- expectOk (label ++ " encrypt")
+        =<< cipherEncrypt env cipher (KeyBytes key) iv pt
+      assertEqual (label ++ " kat") want ct
+      pt' <- expectOk (label ++ " decrypt")
+        =<< cipherDecrypt env cipher (KeyBytes key) iv want
+      assertEqual (label ++ " inverts") pt pt'
+    katMasked env label cipher key iv pt want bits = do
+      ct <- expectOk (label ++ " encrypt")
+        =<< cipherEncrypt env cipher (KeyBytes key) iv pt
+      assertEqual (label ++ " kat") (maskTopBits bits want) (maskTopBits bits ct)
+      pt' <- expectOk (label ++ " decrypt")
+        =<< cipherDecrypt env cipher (KeyBytes key) iv want
+      assertEqual (label ++ " inverts") (maskTopBits bits pt) (maskTopBits bits pt')
+    roundtrip env label cipher key iv n = do
+      let pt = BS.take n "ragged-input-bytes-0123456789ABCDEF"
+      ct <- expectOk (label ++ " encrypt")
+        =<< cipherEncrypt env cipher (KeyBytes key) iv pt
+      assertEqual (label ++ " length preserved") n (BS.length ct)
+      pt' <- expectOk (label ++ " decrypt")
+        =<< cipherDecrypt env cipher (KeyBytes key) iv ct
+      assertEqual (label ++ " inverts") pt pt'
+    -- Keep the first n bits (oracle _cfb1_mask rule); the engine
+    -- always returns full bytes.
+    maskTopBits bits bs
+      | BS.length bs * 8 <= bits = bs
+      | rest == 0 = hd
+      | otherwise = hd <> BS.take 1 (BS.map (.&. mask) tl)
+      where
+        (full, rest) = bits `divMod` 8
+        (hd, tl) = BS.splitAt full bs
+        mask = fromIntegral (0xFF `shiftL` (8 - rest) .&. 0xFF :: Int)
+
 caseRsaKats :: IO ()
 caseRsaKats = withBackend $ \env -> do
   let priv = KeyDer rsaPrivDer
@@ -1762,6 +1944,10 @@ caseCaps = withBackend $ \env -> do
     , C_AES128_CTR, C_AES192_CTR, C_AES256_CTR
     , C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
     , C_AES128_CTS, C_AES192_CTS, C_AES256_CTS
+    , C_AES128_CFB128, C_AES192_CFB128, C_AES256_CFB128
+    , C_AES128_CFB8, C_AES192_CFB8, C_AES256_CFB8
+    , C_AES128_CFB1, C_AES192_CFB1, C_AES256_CFB1
+    , C_AES128_OFB, C_AES192_OFB, C_AES256_OFB
     , C_DES3_CBC, C_DES3_ECB
     , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
     , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB

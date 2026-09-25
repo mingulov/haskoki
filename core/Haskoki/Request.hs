@@ -84,6 +84,7 @@ data FunctionId
   | F_MessageDecryptFinal
   | F_MessageSignFinal
   | F_MessageVerifyFinal
+  | F_SessionCancel
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | How the caller provided (or omitted) an output buffer. Null (absent)

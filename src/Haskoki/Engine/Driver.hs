@@ -499,6 +499,10 @@ cipherCtor name keyLen
   | name == "CKM_AES_CTR" = aesCtr keyLen
   | name == "CKM_AES_ECB" = aesEcb keyLen
   | name == "CKM_AES_CTS" = aesCts keyLen
+  | name == "CKM_AES_CFB128" = aesCfb128 keyLen
+  | name == "CKM_AES_CFB8" = aesCfb8 keyLen
+  | name == "CKM_AES_CFB1" = aesCfb1 keyLen
+  | name == "CKM_AES_OFB" = aesOfb keyLen
   | name == "CKM_DES3_CBC" = des3 C_DES3_CBC
   | name == "CKM_DES3_ECB" = des3 C_DES3_ECB
   | name == "CKM_ARIA_CBC" = aria C_ARIA128_CBC C_ARIA192_CBC C_ARIA256_CBC
@@ -528,6 +532,26 @@ cipherCtor name keyLen
       16 -> Just C_AES128_CTS
       24 -> Just C_AES192_CTS
       32 -> Just C_AES256_CTS
+      _ -> Nothing
+    aesCfb128 n = case n of
+      16 -> Just C_AES128_CFB128
+      24 -> Just C_AES192_CFB128
+      32 -> Just C_AES256_CFB128
+      _ -> Nothing
+    aesCfb8 n = case n of
+      16 -> Just C_AES128_CFB8
+      24 -> Just C_AES192_CFB8
+      32 -> Just C_AES256_CFB8
+      _ -> Nothing
+    aesCfb1 n = case n of
+      16 -> Just C_AES128_CFB1
+      24 -> Just C_AES192_CFB1
+      32 -> Just C_AES256_CFB1
+      _ -> Nothing
+    aesOfb n = case n of
+      16 -> Just C_AES128_OFB
+      24 -> Just C_AES192_OFB
+      32 -> Just C_AES256_OFB
       _ -> Nothing
     des3 spec
       | keyLen == 16 || keyLen == 24 = Just spec
