@@ -30,6 +30,7 @@ module Haskoki.Der
   , parseRsaPrivate
   , parseRsaPublic
   , spkiPoint
+  , derOctet
   ) where
 
 import Data.Bits (shiftR, (.&.))

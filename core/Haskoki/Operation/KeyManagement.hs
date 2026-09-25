@@ -112,7 +112,7 @@ import Haskoki.Attribute.Generated
   , mustClassId
   , mustKeyTypeId
   )
-import Haskoki.Der (RsaCrt (..), parseRsaPrivate, parseRsaPublic)
+import Haskoki.Der (RsaCrt (..), derOctet, parseRsaPrivate, parseRsaPublic, spkiPoint)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState (..))
 import Haskoki.Object
   ( RuleDeny (..)
@@ -543,12 +543,21 @@ storeMaterial mat po = po { poAttrs = Map.insert AttrValue (ValBytes mat) (poAtt
 -- must carry its CRT components: the public half gets the modulus
 -- and exponent, the private half all eight PKCS#1 parts. The two
 -- DER halves must agree on (n, e); any parse failure or mismatch
--- is 'Nothing' (the finisher rejects with zero objects). Other key
--- types pass through untouched.
+-- is 'Nothing' (the finisher rejects with zero objects). An EC
+-- pair stamps @CKA_EC_POINT@ (the DER OCTET STRING of the
+-- uncompressed SPKI point) on the public half; opaque halves
+-- (synthetic test doubles, not SPKI) pass through unstamped
+-- rather than rejecting. Other key types pass through untouched.
 stampPairComponents
   :: PendingObject -> PendingObject -> ByteString -> ByteString
   -> Maybe (PendingObject, PendingObject)
 stampPairComponents pub priv pubM privM
+  | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkEc) =
+      case spkiPoint pubM of
+        Just pt | BS.take 1 pt == BS.singleton 0x04 ->
+          let pubA = Map.insert AttrEcPoint (ValBytes (derOctet pt)) (poAttrs pub)
+          in Just (pub { poAttrs = pubA }, priv)
+        _ -> Just (pub, priv)
   | Map.lookup AttrKeyType (poAttrs pub) /= Just (ValULong ckkRsa) =
       Just (pub, priv)
   | otherwise = do

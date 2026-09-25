@@ -35,7 +35,7 @@ import Haskoki.Attribute
   , getAttributes
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
-import Haskoki.Der (rsaPrivateDer, rsaPublicDer)
+import Haskoki.Der (ecPublicDer, rsaPrivateDer, rsaPublicDer)
 import Haskoki.Engine.Backend
   ( BackendError (..)
   , CryptoBackend (..)
@@ -182,6 +182,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "RSA keygen bounds refuse out-of-window specs" caseRsaKeygenBounds
   , testCase "RSA exponent plans, agrees and refuses" caseRsaExponentPlanner
   , testCase "RSA stamping refuses mismatched halves" caseRsaStampMismatch
+  , testCase "EC stamping lands CKA_EC_POINT" caseEcPointStamped
   , testCase "Wrap length query then wrap/unwrap roundtrip" caseWrapRoundtrip
   , testCase "RSA wrap/unwrap roundtrips modulus-wide" caseRsaWrapRoundtrip
   , testCase "RSA wrap key/parameter/length mismatches fail closed" caseRsaWrapMismatch
@@ -985,10 +986,35 @@ caseRsaStampMismatch = do
     (stampPairComponents pub priv pubM privM2)
   assertEqual "garbage refuses" Nothing
     (stampPairComponents pub priv "nope" "nope")
-  -- Non-RSA pairs pass through untouched (EC keeps its HKS1 halves).
+  -- Non-RSA, non-EC pairs pass through untouched.
   let ecPub = pendingFromAttrs st (Map.fromList ecPubTmpl)
       ecPriv = pendingFromAttrs st (Map.fromList ecPrivTmpl)
-  assertEqual "EC passthrough" (Just (ecPub, ecPriv))
+  assertEqual "EC opaque passthrough" (Just (ecPub, ecPriv))
+    (stampPairComponents ecPub ecPriv "pub" "priv")
+
+caseEcPointStamped :: IO ()
+caseEcPointStamped = do
+  m0 <- seedModel
+  st <- getSession m0
+  let p256oid = hex "06082a8648ce3d030107"
+      point = BS.pack (0x04 : [1 .. 64])
+      spki = ecPublicDer p256oid point
+      ecPub = pendingFromAttrs st (Map.fromList ecPubTmpl)
+      ecPriv = pendingFromAttrs st (Map.fromList ecPrivTmpl)
+  -- A parseable EC SPKI stamps CKA_EC_POINT (DER OCTET STRING
+  -- of the uncompressed point) on the public half; the private
+  -- half is untouched.
+  case stampPairComponents ecPub ecPriv spki "opaque-priv" of
+    Just (pub', priv') -> do
+      -- CKA_EC_POINT is the DER OCTET STRING of the point
+      -- (0x04 0x41 header over the 65 uncompressed bytes).
+      assertEqual "EC_POINT stamped"
+        (Just (ValBytes ("\x04\x41" <> point))) (Map.lookup AttrEcPoint (poAttrs pub'))
+      assertEqual "priv untouched" (poAttrs ecPriv) (poAttrs priv')
+    Nothing -> assertFailure "EC SPKI halves must stamp"
+  -- Opaque halves (synthetic HKS1 frames) pass through: no
+  -- EC_POINT, no rejection.
+  assertEqual "opaque passthrough" (Just (ecPub, ecPriv))
     (stampPairComponents ecPub ecPriv "pub" "priv")
 
 caseWrapRoundtrip :: IO ()
