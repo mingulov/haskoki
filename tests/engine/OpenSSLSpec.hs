@@ -70,6 +70,7 @@ spec = testGroup "openssl4 engine"
   , testCase "aes-256-cbc known answer (SP 800-38A)" caseAesKat
   , testCase "aes-256-cbc roundtrip and bad lengths" caseAesRoundtrip
   , testCase "Block-cipher KATs (NIST/RFC/CLI)" caseCipherKats
+  , testCase "aes-cts known answers (ACVP CBC-CS1)" caseAesCts
   , testCase "RSA v1.5 KATs (CLI vectors)" caseRsaKats
   , testCase "RSA-PSS interop (CLI vector)" caseRsaPssVectors
   , testCase "RSA-OAEP interop (CLI vectors)" caseRsaOaepVectors
@@ -155,6 +156,73 @@ expectMechParamInvalid label r = case r of
 -- ---------------------------------------------------------------------------
 -- Known-answer fixtures (independent oracles, see module header)
 -- ---------------------------------------------------------------------------
+
+-- ACVP-AES-CBC-CS1-1.0 encrypt vectors (prompt + expectedResults).
+-- PKCS#11 names no CS variant for CKM_AES_CTS, so the module
+-- implements CS1 (NIST SP 800-38A canonical first variant) and the
+-- oracle auto-detects it; CS2/CS3 legs skip by detector design.
+cts128Key64, cts128Iv64, cts128Pt64, cts128Ct64 :: ByteString
+cts128Key64 = hex "D08FF477651FE9C084F20B2FFE50849B"
+cts128Iv64 = hex "5A2623FC47B3F0D88C641AFC0DE45967"
+cts128Pt64 = hex $ concat
+  [ "28DE99791E5BA3329AF0C1E66DE07E1CE117A6211390F0F49F4157EBE58BC94"
+  , "E4A88DD8B003A7E77B1070855138902DBDDF1BBC79FCF23056A9AB49DD25539A2"
+  ]
+cts128Ct64 = hex $ concat
+  [ "247D046CBEA8A6A76CC9EFA0564559C19BC39869BDAFB9350ED5995469B705C13"
+  , "177B7397625FD1A5B2FDFABCC9AEC131C7766F0081024F9718E781B491580E9"
+  ]
+cts128Key156, cts128Iv156, cts128Pt156, cts128Ct156 :: ByteString
+cts128Key156 = hex "D616101E6BA31CF80E62A6EC8FC74F6F"
+cts128Iv156 = hex "7E1E4E5E1A29465BF5987E5020DDE649"
+cts128Pt156 = hex $ concat
+  [ "25E5E1339994FD97A82CFE9B3297E52A64EE0D8914EA206052E7F217C0EF88F3"
+  , "33B1E705074B38E4A025098B036EE0017A66DB17BA82210DEAE97ED1789DBCB2B"
+  , "8020A12985F914006C80C35F70B4AD1B96BB47DA140F63DC48065998B3FACAC5A"
+  , "01964D40996C2FE47D58B1C0E58D50830A11244917B34F504AAC058F75BD5E79CC"
+  , "1B855BCDDBCA90FE94548F46877186F40F499E25797686F21B1B"
+  ]
+cts128Ct156 = hex $ concat
+  [ "D751512C2C7548A71DAA70FDABA2A30F15EB09DF75D398A03E8CDE6F80FBE3335D"
+  , "B3C98EF4188692E03BF99FF3BFFBF6FA256EE4C06B936DCE72A553FD2D6358DC39"
+  , "392CD84A84F057CF77F834DD157F98F97A79187C883F6C020EE2EEA495A91EB272C"
+  , "1308C19ED7402198E6FD02384F53DDDA839D55C902E8E5C01FF3B66A0FED0987D2"
+  , "1834A7F36A49BC32452B2DBEF92EF40FA4BD25122B39E58"
+  ]
+cts192Key32, cts192Iv32, cts192Pt32, cts192Ct32 :: ByteString
+cts192Key32 = hex "851ADF39D5CA81EB5ABD6043766DA706C42E3ABB74ED754E"
+cts192Iv32 = hex "877FA72ED20AE32EE57BE60E86F5B5C6"
+cts192Pt32 = hex $ concat
+  [ "87EAA4FEAEC9803DA1B7D4F39B4146C23A1C1C47596A198A7994D80732567E59" ]
+cts192Ct32 = hex $ concat
+  [ "678D222A3E661C726C54B0877115921B319D2639AB00A23CC03B6A9D034EC225" ]
+cts192Key57, cts192Iv57, cts192Pt57, cts192Ct57 :: ByteString
+cts192Key57 = hex "000000000000000000000000000000000000000000000000"
+cts192Iv57 = hex "00000000000000000000000000000000"
+cts192Pt57 = hex $ concat
+  [ "1B077A6AF4B7F98229DE786D7516B63900000000000000000000000000000000"
+  , "00000000000000000000000000000000000000000000000000"
+  ]
+cts192Ct57 = hex $ concat
+  [ "275CFC0413D8CCB70513C3859B1D0F729F88A422F49262C8B0B54CFD7C95DD5E2"
+  , "4137195A73064E6EDB3EC9A5446C99351A26B06CF7DC930E7"
+  ]
+cts256Key66, cts256Iv66, cts256Pt66, cts256Ct66 :: ByteString
+cts256Key66 = hex "8E6635BB59960919CDD8BAA3DEF14D7AC38D86882539A5CCAF9FE27B3B6D9C78"
+cts256Iv66 = hex "BFBD702277C2FC416FB27656A011B6A2"
+cts256Pt66 = hex $ concat
+  [ "8E1B6C9FCCCCC84546955C1C8FACE0522DB2C43D8A44BEFA06028722DC50AF29F4"
+  , "494FBE437A2D87CA10CDE334ABCE36C1BECBEA9791C2DDDAB01AFA539355137890"
+  ]
+cts256Ct66 = hex $ concat
+  [ "3CEA9005FCA1DEEFDC800A271C06868A2068B0145084B8C1F400B8418C2AC38E20C"
+  , "B26B674FB629DF542EC152CA36998494514902C77AB5E620C0517B0E53E7210F1"
+  ]
+cts256Key19, cts256Iv19, cts256Pt19, cts256Ct19 :: ByteString
+cts256Key19 = hex "2A88FED687FF2FC5E920DD98100DB031057A847758A12FF5D1E63579CE21C0A4"
+cts256Iv19 = hex "460D42F6C44BF495DFCB7D6855C60F0A"
+cts256Pt19 = hex "E325A505A54F7CCB859B98F440C67B14444B89"
+cts256Ct19 = hex "8752AD80462421DC5E5ECA1EFAA9790E4B398A"
 
 -- FIPS 180-4 §B.1 / §B.2.
 sha256Abc :: ByteString
@@ -947,6 +1015,40 @@ caseCipherKats = withBackend $ \env -> do
         =<< cipherDecrypt env cipher (KeyBytes key) icb want
       assertEqual (label ++ " inverts") pt pt'
 
+-- AES-CTS (CBC-CS1): ACVP encrypt vectors plus geometry/KAT-edge negatives.
+caseAesCts :: IO ()
+caseAesCts = withBackend $ \env -> do
+  -- 6 legs: 128/192/256 x (exactly-2-blocks, multi-block, ragged, short).
+  katCts env "aes-128-cts-64" C_AES128_CTS cts128Key64 cts128Iv64 cts128Pt64 cts128Ct64
+  katCts env "aes-128-cts-156" C_AES128_CTS cts128Key156 cts128Iv156 cts128Pt156 cts128Ct156
+  katCts env "aes-192-cts-32" C_AES192_CTS cts192Key32 cts192Iv32 cts192Pt32 cts192Ct32
+  katCts env "aes-192-cts-57" C_AES192_CTS cts192Key57 cts192Iv57 cts192Pt57 cts192Ct57
+  katCts env "aes-256-cts-66" C_AES256_CTS cts256Key66 cts256Iv66 cts256Pt66 cts256Ct66
+  katCts env "aes-256-cts-19" C_AES256_CTS cts256Key19 cts256Iv19 cts256Pt19 cts256Ct19
+  -- CTS needs >= 1 full block; sub-block input is a typed refusal.
+  expectBadParam "cts encrypt sub-block" =<<
+    cipherEncrypt env C_AES128_CTS (KeyBytes cts128Key64) cts128Iv64 "short"
+  expectBadParam "cts decrypt sub-block" =<<
+    cipherDecrypt env C_AES128_CTS (KeyBytes cts128Key64) cts128Iv64 "short!!"
+  expectBadParam "cts bad key length" =<<
+    cipherEncrypt env C_AES128_CTS (KeyBytes "short") cts128Iv64 cts128Pt64
+  expectBadParam "cts bad iv length" =<<
+    cipherEncrypt env C_AES128_CTS (KeyBytes cts128Key64) "short" cts128Pt64
+  -- CS1 degenerates to plain CBC at exactly one block: cross-check.
+  oneBlock <- expectOk "cts 1-block encrypt" =<<
+    cipherEncrypt env C_AES256_CTS (KeyBytes aes256Key) aes256Iv aes256Pt
+  oneBlockCbc <- expectOk "cbc 1-block encrypt" =<<
+    cipherEncrypt env C_AES256_CBC (KeyBytes aes256Key) aes256Iv aes256Pt
+  assertEqual "cts==cbc at 16 bytes" oneBlockCbc oneBlock
+  where
+    katCts env label cipher key iv pt want = do
+      ct <- expectOk (label ++ " encrypt")
+        =<< cipherEncrypt env cipher (KeyBytes key) iv pt
+      assertEqual (label ++ " kat") want ct
+      pt' <- expectOk (label ++ " decrypt")
+        =<< cipherDecrypt env cipher (KeyBytes key) iv want
+      assertEqual (label ++ " inverts") pt pt'
+
 caseRsaKats :: IO ()
 caseRsaKats = withBackend $ \env -> do
   let priv = KeyDer rsaPrivDer
@@ -1659,6 +1761,7 @@ caseCaps = withBackend $ \env -> do
     [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
     , C_AES128_CTR, C_AES192_CTR, C_AES256_CTR
     , C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
+    , C_AES128_CTS, C_AES192_CTS, C_AES256_CTS
     , C_DES3_CBC, C_DES3_ECB
     , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
     , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB

@@ -117,6 +117,24 @@ long hsk_ossl4_cipher_cbc(OSSL_LIB_CTX *ctx, const char *ciphername,
                           const unsigned char *in, size_t inlen,
                           unsigned char **out);
 
+/* --- AES-CTS (CBC-CS1 over the fetched ECB primitive) ------------------ */
+
+/* enc: 1 = encrypt, 0 = decrypt. The provider has no CTS mode (fetch
+ * probe record: "AES-128-CTS" unimplemented), so the shim runs the
+ * NIST SP 800-38A Addendum CBC-CS1 construction with the fetched
+ * ECB cipher as the block primitive. Wire order is short-tail
+ * first, full pair block second (pinned by the ACVP CBC-CS1
+ * vectors, not the RFC 3962 order).
+ * Key length must match the fetched ECB cipher; iv is one block;
+ * input keeps its length and must be >= 1 block (shorter input
+ * returns HSK_OSSL4_ERR_BADPARAM). A single-block input degenerates
+ * to plain CBC. Output length always equals input length. */
+long hsk_ossl4_cipher_cts(OSSL_LIB_CTX *ctx, const char *ecbname,
+                          const char *propq, int enc, const unsigned char *key,
+                          size_t keylen, const unsigned char *iv, size_t ivlen,
+                          const unsigned char *in, size_t inlen,
+                          unsigned char **out);
+
 /* --- AEAD (AES-GCM; output is ct || tag) ------------------------------- */
 
 /* Encrypt: *out is ct || tag (inlen + taglen bytes). Decrypt takes

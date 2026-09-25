@@ -31,7 +31,7 @@ Consumers:
 
 Deferred family members (not recipes, named gaps): the remaining
 streaming sub-shapes (@CFB*@\/@OFB@, same for ARIA/CAMELLIA),
-@CKM_AES_CTS@\/@XTS@, @CKM_*_GCM@\/@CCM@ (AEAD shape, needs its
+@CKM_AES_XTS@, @CKM_*_GCM@\/@CCM@ (AEAD shape, needs its
 own nonce\/tag recipe), @CKM_*_ENCRYPT_DATA@ (single-part data
 shape), the PBE constructors, and every legacy-only or
 provider-absent cipher (single DES, RC2\/RC4\/RC5, IDEA, CAST,
@@ -54,6 +54,7 @@ module Haskoki.Recipe.Cipher
   , encodeCtrParams
   , decodeCtrParams
   , ctrNextImage
+  , ctsName
   ) where
 
 import Data.Bits (shiftL, shiftR, (.&.))
@@ -112,6 +113,12 @@ cipherParamsValid r params
 -- | This group's CTR row name (the only streaming row).
 ctrName :: MechanismName
 ctrName = "CKM_AES_CTR"
+
+-- | The CTS mechanism name. CTS keeps the CBC IV geometry but the
+-- planners replace block alignment with the stealing floor (see
+-- 'Haskoki.Operation.isCtsMech').
+ctsName :: MechanismName
+ctsName = "CKM_AES_CTS"
 
 -- | Encode one 8-byte big-endian word.
 encodeWord64 :: Int -> ByteString
@@ -180,6 +187,10 @@ cipherRecipes =
   , BlockCipherRecipe "CKM_AES_CBC_PAD" 16 [16, 24, 32] 16 True "CKK_AES"
   , BlockCipherRecipe "CKM_AES_ECB" 16 [16, 24, 32] 0 False "CKK_AES"
   , BlockCipherRecipe "CKM_AES_CTR" 16 [16, 24, 32] 16 False "CKK_AES"
+  -- CTS takes the raw IV like CBC (the stealing construction needs
+  -- >= 1 block of input; the planners enforce the length floor, not
+  -- block alignment, via 'Haskoki.Operation.isCtsMech').
+  , BlockCipherRecipe "CKM_AES_CTS" 16 [16, 24, 32] 16 False "CKK_AES"
   , BlockCipherRecipe "CKM_DES3_CBC" 8 [16, 24] 8 False "CKK_DES3"
   , BlockCipherRecipe "CKM_DES3_ECB" 8 [16, 24] 0 False "CKK_DES3"
   , BlockCipherRecipe "CKM_ARIA_CBC" 16 [16, 24, 32] 16 False "CKK_ARIA"

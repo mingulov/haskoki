@@ -1,11 +1,13 @@
 {- | block-cipher-shape recipe tests.
 
-The CBC/ECB group: 9 header mechanisms sharing one parameter shape
+The CBC/ECB group: 11 header mechanisms sharing one parameter shape
 over four algorithm families — CBC takes the IV as mechanism
 parameters (one block: 16 bytes for AES/ARIA/CAMELLIA, 8 for
-Triple-DES), ECB takes empty parameters, and @CKM_AES_CBC_PAD@
-adds PKCS#7 framing (decided in the pure planner, never the
-backend). 'Haskoki.Recipe.Cipher' owns the group's canonical
+Triple-DES), ECB takes empty parameters, @CKM_AES_CTR@ takes the
+canonical counter image, @CKM_AES_CTS@ takes the raw IV like CBC
+(the stealing floor replaces alignment in the planners), and
+@CKM_AES_CBC_PAD@ adds PKCS#7 framing (decided in the pure
+planner, never the backend). 'Haskoki.Recipe.Cipher' owns the group's canonical
 codecs, parameter validation, block/key/IV geometry, and mechanism
 table; these tests pin the recipe and its three consumers:
 
@@ -31,11 +33,14 @@ import Haskoki.Engine.Backend
   ( CipherSpec
     ( C_AES128_CBC
     , C_AES128_CTR
+    , C_AES128_CTS
     , C_AES128_ECB
     , C_AES192_CBC
     , C_AES192_CTR
+    , C_AES192_CTS
     , C_AES256_CBC
     , C_AES256_CTR
+    , C_AES256_CTS
     , C_AES256_ECB
     , C_ARIA256_CBC
     , C_CAMELLIA128_ECB
@@ -80,6 +85,7 @@ import Haskoki.Registry.Generated
   ( mustGeneratedId
   , ckm_AES_CBC
   , ckm_AES_CTR
+  , ckm_AES_CTS
   , ckm_AES_ECB
   , ckm_DES3_CBC
   , ckm_SHA256
@@ -97,7 +103,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "Block-cipher recipe"
-  [ testCase "recipe table covers 9 mechanisms with geometry" caseTable
+  [ testCase "recipe table covers 11 mechanisms with geometry" caseTable
   , testCase "recipe lookup resolves by id" caseLookup
   , testCase "ECB is no-params/1, CBC is iv-bytes/1" caseCodec
   , testCase "params: IV length or empty-only" caseParams
@@ -114,6 +120,7 @@ groupShape =
   , ("AES_CBC_PAD", 16, [16, 24, 32], 16, True)
   , ("AES_ECB", 16, [16, 24, 32], 0, False)
   , ("AES_CTR", 16, [16, 24, 32], 16, False)
+  , ("AES_CTS", 16, [16, 24, 32], 16, False)
   , ("DES3_CBC", 8, [16, 24], 8, False)
   , ("DES3_ECB", 8, [16, 24], 0, False)
   , ("ARIA_CBC", 16, [16, 24, 32], 16, False)
@@ -135,7 +142,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 10 (length cipherRecipes)
+  assertEqual "recipe count" 11 (length cipherRecipes)
   mapM_ (\(suffix, block, keys, iv, pad) -> do
     let name = mechName suffix
         found = [ r | r <- cipherRecipes, crName r == name ]
@@ -200,6 +207,11 @@ caseParams = do
   let ecb = recipeOf "CKM_AES_ECB"
   assertBool "ecb empty valid" (cipherParamsValid ecb BS.empty)
   assertBool "ecb 16 refused" (not (cipherParamsValid ecb (BS.replicate 16 0)))
+  let cts = recipeOf "CKM_AES_CTS"
+  assertBool "cts 16 valid" (cipherParamsValid cts (BS.replicate 16 0))
+  assertBool "cts empty refused" (not (cipherParamsValid cts BS.empty))
+  assertBool "cts 8 refused" (not (cipherParamsValid cts (BS.replicate 8 0)))
+  assertBool "cts 17 refused" (not (cipherParamsValid cts (BS.replicate 17 0)))
   let d3 = recipeOf "CKM_DES3_CBC"
   assertBool "des3 8 valid" (cipherParamsValid d3 (BS.replicate 8 0))
   assertBool "des3 16 refused" (not (cipherParamsValid d3 (BS.replicate 16 0)))
@@ -275,18 +287,19 @@ testSession = SessionState
   , ssOps = emptySessionOps
   }
 
-cbcMech, ecbMech, d3Mech, ctrMech :: MechanismId
+cbcMech, ecbMech, d3Mech, ctrMech, ctsMech :: MechanismId
 cbcMech = MechanismId (ckm_AES_CBC)
 ecbMech = MechanismId (ckm_AES_ECB)
 d3Mech = MechanismId (ckm_DES3_CBC)
 ctrMech = MechanismId (ckm_AES_CTR)
+ctsMech = MechanismId (ckm_AES_CTS)
 
 testEnv :: OpEnv
 testEnv = OpEnv
   { oeRegistry = curatedRegistry
   , oeCaps = mkCapabilities
       [ (cbcMech, OpEncrypt), (ecbMech, OpEncrypt), (d3Mech, OpEncrypt)
-      , (ctrMech, OpEncrypt)
+      , (ctrMech, OpEncrypt), (ctsMech, OpEncrypt)
       ]
   , oeModel = emptyModel
   }
@@ -329,6 +342,12 @@ caseInitParams = do
     (runInit (mkArgs ctrMech (encodeCtrParams 64 (BS.replicate 16 0))))
   assertEqual "ctr raw iv refused" CKR_ARGUMENTS_BAD
     (runInit (mkArgs ctrMech (BS.replicate 16 0)))
+  assertEqual "cts ragged iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs ctsMech (BS.replicate 8 0)))
+  assertEqual "cts empty iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs ctsMech BS.empty))
+  assertEqual "cts valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs ctsMech (BS.replicate 16 0)))
 
 caseDriverMap :: IO ()
 caseDriverMap = do
@@ -376,6 +395,17 @@ caseDriverMap = do
     (cipherSpecFor ctrMech 16 (encodeCtrParams 64 iv16))
   assertEqual "aes-ctr rejects raw iv" Nothing
     (cipherSpecFor ctrMech 16 iv16)
+  -- AES-CTS: raw IV, three widths, same refusals as CBC.
+  assertEqual "aes-cts-128" (Just C_AES128_CTS)
+    (cipherSpecFor ctsMech 16 iv16)
+  assertEqual "aes-cts-192" (Just C_AES192_CTS)
+    (cipherSpecFor ctsMech 24 iv16)
+  assertEqual "aes-cts-256" (Just C_AES256_CTS)
+    (cipherSpecFor ctsMech 32 iv16)
+  assertEqual "aes-cts rejects bad keylen" Nothing
+    (cipherSpecFor ctsMech 15 iv16)
+  assertEqual "aes-cts rejects bad iv" Nothing
+    (cipherSpecFor ctsMech 16 iv8)
   assertEqual "non-cipher uncovered" Nothing
     (cipherSpecFor (MechanismId (ckm_SHA256)) 32 iv16)
   -- Whole-table agreement: every (recipe, key length) triple maps.
@@ -401,6 +431,10 @@ caseGeometryLaw = do
   assertEqual "aes192-ctr key" [24] (cipherKeyLens C_AES192_CTR)
   assertEqual "aes256-ctr key" [32] (cipherKeyLens C_AES256_CTR)
   assertEqual "aes-ctr iv" 16 (cipherIvLen C_AES256_CTR)
+  assertEqual "aes128-cts key" [16] (cipherKeyLens C_AES128_CTS)
+  assertEqual "aes192-cts key" [24] (cipherKeyLens C_AES192_CTS)
+  assertEqual "aes256-cts key" [32] (cipherKeyLens C_AES256_CTS)
+  assertEqual "aes-cts iv" 16 (cipherIvLen C_AES256_CTS)
   assertEqual "des3 keys" [16, 24] (cipherKeyLens C_DES3_CBC)
   assertEqual "des3 iv" 8 (cipherIvLen C_DES3_CBC)
   assertEqual "aria key" [32] (cipherKeyLens C_ARIA256_CBC)

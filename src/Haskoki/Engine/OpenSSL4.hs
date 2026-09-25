@@ -627,14 +627,15 @@ osslRsaNotes algs =
 
 -- | The cipher set: every backend spec the block-cipher
 -- recipe reaches (AES/ARIA/CAMELLIA CBC+ECB at three widths plus
--- Triple-DES CBC+ECB, plus AES CTR at three widths). Candidates
--- that fail the fetch probe are narrowed out of the advertised
--- caps (never silently kept).
+-- Triple-DES CBC+ECB, plus AES CTR and AES CTS at three widths).
+-- Candidates that fail the fetch probe are narrowed out of the
+-- advertised caps (never silently kept).
 t16CipherSpecs :: [CipherSpec]
 t16CipherSpecs =
   [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
   , C_AES128_CTR, C_AES192_CTR, C_AES256_CTR
   , C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
+  , C_AES128_CTS, C_AES192_CTS, C_AES256_CTS
   , C_DES3_CBC, C_DES3_ECB
   , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
   , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
@@ -651,7 +652,11 @@ osslCipherNotes specs =
     cipherNote spec =
       "no padding; key " ++ keyNote spec
         ++ ", iv " ++ show (cipherIvLen spec) ++ " bytes, input "
-        ++ (if cipherBlockLen spec == 1 then "any length" else "block-aligned")
+        ++ cipherLenNote spec
+    cipherLenNote spec
+      | isCtsSpec spec = "any length >= 1 block, length preserved (manual CBC-CS1 over provider ECB)"
+      | cipherBlockLen spec == 1 = "any length"
+      | otherwise = "block-aligned"
     keyNote spec =
       intercalate "/" (map show (cipherKeyLens spec)) ++ " bytes"
 
@@ -717,7 +722,7 @@ probeCaps env = do
       Nothing -> pure False
       Just mdname -> probe1 "md" mdname
     probeCiphers = filterM probeCipher t16CipherSpecs
-    probeCipher spec = probe1 "cipher" (cipherFetchName spec)
+    probeCipher spec = probe1 "cipher" (cipherProbeName spec)
     keep True s = s
     keep False _ = Set.empty
 
@@ -922,6 +927,10 @@ runGuarded (OSSL4Backend env) op miss action = case miss of
 -- | Provider fetch names per cipher spec, verified by
 -- executing the OpenSSLSpec KATs against the pinned libcrypto.
 -- Triple-DES ECB fetches @DES-EDE3@ (the provider's ECB alias).
+-- CTS labels are capability-report names only: the provider has no
+-- CTS mode, so 'cipherProbeName' / 'ctsEcbName' resolve the
+-- underlying ECB primitive the shim builds the stealing
+-- construction over.
 cipherFetchName :: CipherSpec -> String
 cipherFetchName spec = case spec of
   C_AES128_CBC -> "AES-128-CBC"
@@ -933,6 +942,9 @@ cipherFetchName spec = case spec of
   C_AES128_ECB -> "AES-128-ECB"
   C_AES192_ECB -> "AES-192-ECB"
   C_AES256_ECB -> "AES-256-ECB"
+  C_AES128_CTS -> "AES-128-CTS"
+  C_AES192_CTS -> "AES-192-CTS"
+  C_AES256_CTS -> "AES-256-CTS"
   C_DES3_CBC -> "DES-EDE3-CBC"
   C_DES3_ECB -> "DES-EDE3"
   C_ARIA128_CBC -> "ARIA-128-CBC"
@@ -951,7 +963,10 @@ cipherFetchName spec = case spec of
 -- | Block width in bytes per cipher spec: 8 for Triple-DES, 16 for
 -- the AES family (CBC alignment; ECB shares the width), 1 for the
 -- CTR stream specs (any input length; the provider reports the
--- stream block size 1 too, so the shim gate agrees).
+-- stream block size 1 too, so the shim gate agrees) and for the
+-- CTS specs (any length >= 1 block; the unit width lets ragged
+-- input past the Haskell gate and the shim refuses sub-block
+-- input with BADPARAM, which 'nativeFail' reports typed).
 cipherBlockLen :: CipherSpec -> Int
 cipherBlockLen spec = case spec of
   C_DES3_CBC -> 8
@@ -959,7 +974,33 @@ cipherBlockLen spec = case spec of
   C_AES128_CTR -> 1
   C_AES192_CTR -> 1
   C_AES256_CTR -> 1
+  C_AES128_CTS -> 1
+  C_AES192_CTS -> 1
+  C_AES256_CTS -> 1
   _ -> 16
+
+-- | The CTS specs run the manual CBC-CS1 construction instead of
+-- the provider CBC path.
+isCtsSpec :: CipherSpec -> Bool
+isCtsSpec C_AES128_CTS = True
+isCtsSpec C_AES192_CTS = True
+isCtsSpec C_AES256_CTS = True
+isCtsSpec _ = False
+
+-- | The ECB primitive a CTS spec steals over (width-matched).
+ctsEcbName :: CipherSpec -> String
+ctsEcbName C_AES128_CTS = "AES-128-ECB"
+ctsEcbName C_AES192_CTS = "AES-192-ECB"
+ctsEcbName C_AES256_CTS = "AES-256-ECB"
+ctsEcbName spec = cipherFetchName spec
+
+-- | The provider fetch the capability probe executes per spec: the
+-- fetch name, except CTS probes its underlying ECB primitive (the
+-- CTS labels name no provider algorithm).
+cipherProbeName :: CipherSpec -> String
+cipherProbeName spec
+  | isCtsSpec spec = ctsEcbName spec
+  | otherwise = cipherFetchName spec
 
 -- | Expand two-key Triple-DES material (@K1||K2@) to the three-key
 -- form the provider takes (@K1||K2||K1@). Any other spec passes
@@ -969,6 +1010,14 @@ cipherProviderKey spec kb
   | (spec == C_DES3_CBC || spec == C_DES3_ECB) && BS.length kb == 16 =
       kb <> BS.take 8 kb
   | otherwise = kb
+
+-- | The native entry per spec: CTS runs the shim's manual CBC-CS1
+-- over its width-matched ECB primitive; every other spec runs the
+-- provider mode named by 'cipherFetchName'.
+cipherNative :: Ptr Raw.OsslLibCtx -> String -> Bool -> CipherSpec -> ByteString -> ByteString -> ByteString -> IO (Either Int ByteString)
+cipherNative ctx propq enc spec
+  | isCtsSpec spec = Raw.cipherCts ctx (ctsEcbName spec) propq enc
+  | otherwise = Raw.cipherCbc ctx (cipherFetchName spec) propq enc
 
 cipherRun :: BackendEnv OpenSSL4 -> String -> Bool -> CipherSpec -> KeyMaterial -> ByteString -> ByteString -> IO (EngineResult ByteString)
 cipherRun be op enc spec key iv input =
@@ -991,7 +1040,7 @@ cipherRun be op enc spec key iv input =
                 ++ show (cipherBlockLen spec) ++ " (no padding)")))
         | otherwise -> do
             r <- withForeignPtr (osslEnv env) $ \_ ->
-              Raw.cipherCbc (osslCtx env) (cipherFetchName spec) (osslPropQ env) enc
+              cipherNative (osslCtx env) (osslPropQ env) enc spec
                 (cipherProviderKey spec kb) iv input
             nativeOut op r
 

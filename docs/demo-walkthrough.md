@@ -29,7 +29,7 @@ This unpacks the artifact on bare `ubuntu:26.04` (+ documented
 `haskoki-ctl --version`, and compiles+runs the bundled
 `release_smoke`: `SMOKE-OK` over the full served surface
 (dlopen + init + lib metadata + one slot + token presence
-with the pinned `haskoki-demo` label + the EXACT 109-row served
+with the pinned `haskoki-demo` label + the EXACT 110-row served
 mechanism catalog with `CKM_SHA256` membership + two REAL session
 lifecycles each yielding REAL FIPS SHA-256 "abc" bytes +
 finalize). The smoke keeps proving REAL libcrypto bytes
@@ -79,7 +79,7 @@ scripts/test-consumers.sh
 
 - `consumer_discovery`: 3.x interface discovery per version,
   versioned-table isolation, cross-table consistency, mechanism/info
-  queries (109 rows), real slot/token records (provisioned
+  queries (110 rows), real slot/token records (provisioned
   `haskoki-demo`), session open/info/close, legacy-vs-3.2
   no-skew checks.
 - `consumer_roundtrip`: REAL round-trips over real sessions —
@@ -177,7 +177,7 @@ python3 scripts/publish-coverage.py --check
 2 not-applicable / 322 planned (464 = mechanism denominator), per-family
 and per-mechanism tables with evidence case ids, generated
 limitations, 12 source issues — plus the release-scope boundary
-(in-process proofs vs the 109-row C surface). Known
+(in-process proofs vs the 110-row C surface). Known
 limitations and host support: `SUPPORTED-HOSTS.md`.
 
 ## 6. Token provisioning record

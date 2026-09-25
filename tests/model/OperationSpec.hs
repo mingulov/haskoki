@@ -163,6 +163,7 @@ spec = testGroup "operation lifecycles"
   , testCase "encrypt update chains the next chunk from the answer" caseEncryptChainsFromAnswer
   , testCase "encrypt/decrypt roundtrip with padding" caseCipherRoundtrip
   , testCase "unpadded length denies terminate the slot" caseCipherLengths
+  , testCase "cts stealing floor and buffer-all" caseCtsFloor
   , testCase "decrypt bad padding fails terminally" caseCipherBadPad
   , testCase "cipher short buffer retry then failure" caseCipherShortFail
   , testCase "empty-output query stages for the recall" caseEmptyQueryStages
@@ -211,6 +212,9 @@ aesGcmMech = MechanismId 0x1087
 
 aesCcmMech :: MechanismId
 aesCcmMech = MechanismId 0x1088
+
+aesCtsMech :: MechanismId
+aesCtsMech = MechanismId 0x1089
 
 rsaGenMech :: MechanismId
 rsaGenMech = MechanismId 0x0
@@ -684,6 +688,25 @@ decryptArgs = InitArgs
 encryptNoPadArgs :: InitArgs
 encryptNoPadArgs = encryptArgs { iaCipher = Just (CipherSpec 16 False) }
 
+-- | CTS init environment and arguments: the 16-byte shape with raw
+-- IV parameters, encrypt and decrypt routed.
+ctsEnv :: OpEnv
+ctsEnv = testEnv
+  { oeCaps = mkCapabilities [(aesCtsMech, OpEncrypt), (aesCtsMech, OpDecrypt)] }
+
+ctsEncArgs :: InitArgs
+ctsEncArgs = InitArgs
+  { iaOp = OpEncrypt
+  , iaMech = aesCtsMech
+  , iaParams = BS.replicate 16 0
+  , iaKey = Just aesKey
+  , iaCipher = Just (CipherSpec 16 False)
+  , iaRecover = Nothing
+  }
+
+ctsDecArgs :: InitArgs
+ctsDecArgs = ctsEncArgs { iaOp = OpDecrypt }
+
 -- | Toy block cipher: byte reversal, self-inverse, length-preserving.
 toyCrypt :: ByteString -> ByteString
 toyCrypt = BS.reverse
@@ -828,6 +851,16 @@ caseUpdateSplitTable = do
       assertEqual ("ctr dec " ++ show total) want
         (cipherUpdateSplit ctr stream DirDecrypt total)
     ) [(0, (0, 0)), (15, (0, 15)), (16, (16, 0)), (20, (16, 4)), (31, (16, 15)), (32, (32, 0))]
+  -- CTS never streams: the steal pair intertwines the last two
+  -- blocks, so every update buffers and only the final runs the
+  -- effect over the whole input.
+  let cts = aesCtsMech
+  mapM_ (\(total, want) -> do
+      assertEqual ("cts enc " ++ show total) want
+        (cipherUpdateSplit cts plain DirEncrypt total)
+      assertEqual ("cts dec " ++ show total) want
+        (cipherUpdateSplit cts plain DirDecrypt total)
+    ) [(0, (0, 0)), (5, (0, 5)), (16, (0, 16)), (19, (0, 19)), (32, (0, 32)), (37, (0, 37))]
 
 caseUpdateShortNoConsume :: IO ()
 caseUpdateShortNoConsume = do
@@ -1038,6 +1071,62 @@ caseCipherLengths = do
         (GotBytes "short") (IntentBuffer 128)
   assertEqual "ragged decrypt answer" CKR_ENCRYPTED_DATA_LEN_RANGE (soCode fin)
   assertEqual "length failure frees" [] (activeSlots ops7)
+
+-- | CTS replaces block alignment with the stealing floor: ragged
+-- input at/above one block plans (one-shot and multipart final),
+-- sub-block input denies DATA_LEN_RANGE and terminates, updates
+-- buffer everything, and decrypt finish stages ragged answers at
+-- the floor while refusing short ones.
+caseCtsFloor :: IO ()
+caseCtsFloor = do
+  let ragged21 = "0123456789abcdefghijk" :: ByteString
+  -- Ragged one-shot encrypt plans with the raw bytes as effect input.
+  let (ops0, i0) = initOperation ctsEnv emptySessionOps testSession ctsEncArgs
+  assertEqual "cts init ok" CKR_OK (ioCode i0)
+  let (ops1, _, one) = planCipherOneShot ops0 testSession SlotEncrypt "cipher" ragged21
+  assertEqual "cts ragged one-shot plans" CKR_OK (soCode one)
+  case soEffects one of
+    [FxCipher DirEncrypt mech _ _ input] -> do
+      assertEqual "cts effect mechanism" aesCtsMech mech
+      assertEqual "cts effect carries ragged bytes" ragged21 input
+    other -> assertFailure ("expected one cts effect, got " ++ show other)
+  assertEqual "cts one-shot keeps the slot" [SlotEncrypt] (activeSlots ops1)
+  -- Sub-block one-shot denies and terminates.
+  let (opsA, _) = initOperation ctsEnv emptySessionOps testSession ctsEncArgs
+  let (opsB, _, short) = planCipherOneShot opsA testSession SlotEncrypt "cipher" "short"
+  assertEqual "cts short one-shot denied" CKR_DATA_LEN_RANGE (soCode short)
+  assertEqual "cts short deny frees the slot" [] (activeSlots opsB)
+  -- Multipart buffers everything: updates plan no crypto, the
+  -- final sees the whole 37-byte buffer.
+  let (opsC, _) = initOperation ctsEnv emptySessionOps testSession ctsEncArgs
+  let (opsD, _, u1) = planCipherUpdate opsC testSession SlotEncrypt "0123456789abcdef" Nothing
+  assertEqual "cts update 1 ok" CKR_OK (soCode u1)
+  assertEqual "cts update 1 plans no crypto" [] (soEffects u1)
+  let (opsE, _, u2) = planCipherUpdate opsD testSession SlotEncrypt "0123456789abcdef01234" Nothing
+  assertEqual "cts update 2 ok" CKR_OK (soCode u2)
+  assertEqual "cts update 2 plans no crypto" [] (soEffects u2)
+  assertEqual "cts buffered all" (Just 37) (bufferedLength opsE SlotEncrypt)
+  let (_, _, f0) = planCipherFinal opsE testSession SlotEncrypt "cipher"
+  assertEqual "cts final plans" CKR_OK (soCode f0)
+  case soEffects f0 of
+    [FxCipher DirEncrypt _ _ _ input] ->
+      assertEqual "cts final input is the whole buffer" 37 (BS.length input)
+    other -> assertFailure ("expected one cts final effect, got " ++ show other)
+  -- Decrypt finish stages ragged answers at/above the floor.
+  let (opsG, _) = initOperation ctsEnv emptySessionOps testSession ctsDecArgs
+  let (opsH, _, _) = planCipherOneShot opsG testSession SlotDecrypt "plain" ragged21
+  let (opsI, fin) = finishCipher opsH SlotDecrypt "plain"
+        (GotBytes ragged21) (IntentBuffer 128)
+  assertEqual "cts ragged decrypt stages" CKR_OK (soCode fin)
+  assertEqual "cts decrypt stages bytes" (Just ragged21) (stagedBytes fin)
+  assertEqual "cts decrypt frees the slot" [] (activeSlots opsI)
+  -- ... and refuses answers below the floor.
+  let (opsJ, _) = initOperation ctsEnv emptySessionOps testSession ctsDecArgs
+  let (opsK, _, _) = planCipherOneShot opsJ testSession SlotDecrypt "plain" "short"
+  let (opsL, finS) = finishCipher opsK SlotDecrypt "plain"
+        (GotBytes "short") (IntentBuffer 128)
+  assertEqual "cts short decrypt refused" CKR_ENCRYPTED_DATA_LEN_RANGE (soCode finS)
+  assertEqual "cts short decrypt frees" [] (activeSlots opsL)
 
 caseCipherBadPad :: IO ()
 caseCipherBadPad = do

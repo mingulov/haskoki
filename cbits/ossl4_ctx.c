@@ -413,6 +413,158 @@ end:
     return rc;
 }
 
+/* --- AES-CTS (CBC-CS1) ------------------------------------------------ */
+
+/* Fixed 16-byte XOR over stack block buffers. */
+static void
+hsk_cts_xor(unsigned char dst[16], const unsigned char a[16],
+            const unsigned char b[16])
+{
+    size_t i;
+    for (i = 0; i < 16; i++)
+        dst[i] = (unsigned char)(a[i] ^ b[i]);
+}
+
+/* One ECB block through an Update-only context (padding disabled at
+ * init; each 16-byte Update emits exactly one block). Returns 1 on
+ * success, 0 on failure. */
+static int
+hsk_cts_block(EVP_CIPHER_CTX *cctx, unsigned char out[16],
+              const unsigned char in[16])
+{
+    int outl = 0;
+    if (!EVP_CipherUpdate(cctx, out, &outl, in, 16))
+        return 0;
+    return outl == 16;
+}
+
+long hsk_ossl4_cipher_cts(OSSL_LIB_CTX *ctx, const char *ecbname,
+                          const char *propq, int enc, const unsigned char *key,
+                          size_t keylen, const unsigned char *iv, size_t ivlen,
+                          const unsigned char *in, size_t inlen,
+                          unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_CIPHER *ecb = NULL;
+    EVP_CIPHER_CTX *cctx = NULL;
+    unsigned char *buf = NULL;
+    unsigned char chain[16], tmp[16], e1[16], pad[16];
+    size_t nfull, rem, pairOff, tailLen, i;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || ecbname == NULL || propq == NULL || out == NULL ||
+        key == NULL || iv == NULL || (in == NULL && inlen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    ecb = EVP_CIPHER_fetch(ctx, ecbname, propq);
+    if (ecb == NULL)
+        goto end;
+    /* The construction below is written for a 16-byte block; refuse
+     * anything else rather than mis-framing. */
+    if (EVP_CIPHER_get_block_size(ecb) != 16 ||
+        EVP_CIPHER_get_mode(ecb) != EVP_CIPH_ECB_MODE ||
+        keylen != (size_t)EVP_CIPHER_get_key_length(ecb) || ivlen != 16) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    if (inlen < 16 || inlen > INT_MAX) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    cctx = EVP_CIPHER_CTX_new();
+    if (cctx == NULL)
+        goto end;
+    if (!EVP_CipherInit_ex2(cctx, ecb, key, NULL, enc ? 1 : 0, NULL)) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    EVP_CIPHER_CTX_set_padding(cctx, 0);
+    buf = OPENSSL_malloc(inlen);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+
+    nfull = inlen / 16;
+    rem = inlen % 16;
+    if (nfull == 1 && rem == 0) {
+        /* Single block: plain CBC. */
+        if (enc) {
+            hsk_cts_xor(tmp, in, iv);
+            if (!hsk_cts_block(cctx, buf, tmp))
+                goto end;
+        } else {
+            if (!hsk_cts_block(cctx, tmp, in))
+                goto end;
+            hsk_cts_xor(buf, tmp, iv);
+        }
+        rc = (long)inlen;
+        goto end;
+    }
+    /* Steal pair: the last full block plus the tail (a partial tail
+     * when rem > 0, else the final full block). Everything before the
+     * pair chains as plain CBC. */
+    pairOff = rem > 0 ? (nfull - 1) * 16 : (nfull - 2) * 16;
+    tailLen = rem > 0 ? rem : 16;
+    memcpy(chain, iv, 16);
+    if (enc) {
+        for (i = 0; i < pairOff; i += 16) {
+            hsk_cts_xor(tmp, in + i, chain);
+            if (!hsk_cts_block(cctx, buf + i, tmp))
+                goto end;
+            memcpy(chain, buf + i, 16);
+        }
+        hsk_cts_xor(tmp, in + pairOff, chain);
+        if (!hsk_cts_block(cctx, e1, tmp))
+            goto end;
+        /* CS1 wire order: the stolen tail first, then the full pair
+         * block (ACVP CBC-CS1 vectors pin this order). */
+        memcpy(buf + pairOff, e1, tailLen);
+        memset(pad, 0, 16);
+        memcpy(pad, in + pairOff + 16, tailLen);
+        hsk_cts_xor(tmp, pad, e1);
+        if (!hsk_cts_block(cctx, buf + pairOff + tailLen, tmp))
+            goto end;
+    } else {
+        for (i = 0; i < pairOff; i += 16) {
+            if (!hsk_cts_block(cctx, tmp, in + i))
+                goto end;
+            hsk_cts_xor(buf + i, tmp, chain);
+            memcpy(chain, in + i, 16);
+        }
+        /* Ciphertext wire order: stolen tail first, full pair block
+         * second; the plaintext pair stays in place. */
+        if (!hsk_cts_block(cctx, e1, in + pairOff + tailLen))
+            goto end;
+        /* P_tail = head(D(C_pair)) ^ C_tail: the decrypted head still
+         * carries the stolen bytes. */
+        for (i = 0; i < tailLen; i++)
+            buf[pairOff + 16 + i] = (unsigned char)(e1[i] ^ in[pairOff + i]);
+        /* Splice the transmitted tail over the decrypted head. */
+        memcpy(tmp, e1, 16);
+        memcpy(tmp, in + pairOff, tailLen);
+        if (!hsk_cts_block(cctx, pad, tmp))
+            goto end;
+        hsk_cts_xor(buf + pairOff, pad, chain);
+    }
+    rc = (long)inlen;
+
+end:
+    OPENSSL_cleanse(chain, sizeof chain);
+    OPENSSL_cleanse(tmp, sizeof tmp);
+    OPENSSL_cleanse(e1, sizeof e1);
+    OPENSSL_cleanse(pad, sizeof pad);
+    EVP_CIPHER_CTX_free(cctx);
+    EVP_CIPHER_free(ecb);
+    if (rc < 0) {
+        if (buf != NULL)
+            OPENSSL_clear_free(buf, inlen);
+    } else {
+        *out = buf;
+    }
+    return rc;
+}
+
 /* --- AEAD (AES-GCM) --------------------------------------------------- */
 
 long hsk_ossl4_aead_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,

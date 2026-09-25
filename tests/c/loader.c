@@ -3,7 +3,7 @@
  * Standalone C program (non-Haskell executable): dlopen()s the built
  * libhaskoki shared module, resolves C_GetFunctionList via dlsym(), and
  * exercises acceptance cases A01–A06 plus the digest slice (real
- * sessions, provisioned token, 109-row catalog, SHA-1).
+ * sessions, provisioned token, 110-row catalog, SHA-1).
  *
  * Usage: loader <path-to-libhaskoki.so>
  * Exit status: 0 iff every check passes.
@@ -465,7 +465,7 @@ static int _case_ok(void) { return g_failures == g_case_failures_at_start; }
 #define DUMMY_SESSION 0UL
 /* Routed mechanism-catalog row count (pinned exactly here and in
  * consumer_discovery; the generator is scripts/mech_catalog.py). */
-#define ROUTED_MECH_COUNT 109UL
+#define ROUTED_MECH_COUNT 110UL
 
 /* ---------- A05 mutex-callback fixtures ---------- */
 
@@ -552,7 +552,7 @@ static void *worker_main(void *arg) {
       w->failed = 1;
       return NULL;
     }
-    /* 109-row catalog: a 1-slot fill no longer suffices. */
+    /* 110-row catalog: a 1-slot fill no longer suffices. */
     {
       CK_MECHANISM_TYPE ms[128];
       CK_ULONG nq = 0;
@@ -996,7 +996,7 @@ static void case_sha(CK_FUNCTION_LIST_PTR p11) {
     int i, found = 0;
     rv = p11->C_GetMechanismList(0, NULL, &n);
     EXPECT_RV(rv, CKR_OK, "mech count query");
-    EXPECT_TRUE(n == ROUTED_MECH_COUNT, "109 mechanisms");
+    EXPECT_TRUE(n == ROUTED_MECH_COUNT, "110 mechanisms");
     n = 1;
     rv = p11->C_GetMechanismList(0, ms, &n);
     EXPECT_RV(rv, CKR_BUFFER_TOO_SMALL, "mech list short fill");

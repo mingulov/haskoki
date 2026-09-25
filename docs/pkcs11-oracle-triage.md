@@ -469,7 +469,40 @@ OAEP error uniformity). T5a (RO owner dimension) and T5b
 (public/private gates) are implemented and passing in-suite
 post-r18; lane reproof needs a bundle rebuild.
 
-## KAT lane status (r6, curves verdict precision: COMPLETE)
+## KAT lane status (r7, AES-CTS slice: COMPLETE)
+
+112118 tests — 58106 passed, 2 failed, 0 crashed, 3569 xfailed,
+50441 skipped (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r7-results.json`;
+`incomplete: false`), canonical data dir `/tmp/pkcs11-ws/data`,
+clean-rebuild release. The only failures are the 2 external
+HOTP registry asserts (same pair as every lane). Delta vs r6 is
+fully attributed, +2649 passed / +4 xfailed / −2629 skipped,
+zero pass→fail, zero crashes, zero xpass:
+
+- `acvp/aes/test_cts.py`: 0→2636 passed, 7500→4864 skipped.
+  First exposure: the oracle detects "Module implements CS1"
+  (fixed-key 32/33-byte probes) and runs the CS1 legs; the
+  4864 skips are exactly CS2 (2386) + CS3 (2478) by detector
+  design (non-byte-aligned payloads are excluded at collection,
+  outside the 7500).
+- Fast-lane units inside KAT repeat the fast r24 deltas
+  exactly (`test_aes_modes` +2, `test_mech_encrypt` +1,
+  `test_mech_flags` +4, `test_mech_multipart` +1,
+  `test_mech_negative` +4 passed / +4 xfailed CTS legs,
+  `test_mech_probe` +3 skipped, `test_operation_termination`
+  +1) — cross-lane consistency check passes. Fast r24
+  standalone: 5934 tests — 2998 passed, same 2 HOTP failed,
+  354 xfailed, 2580 skipped
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r24-results.json`).
+- Targeted CTS r1 (same bundle):
+  `test_cts.py` 2636/0/0x/4864s, `TestAESCTS` roundtrip legs
+  pass (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-cts-r1.json`).
+
+Remaining 3569 xfails + 50441 skips are the ranked slices
+still ahead (CFB/OFB, WRAP/KWP, XTS, DSA, EdDSA, PQC, legacy,
+TLS/KDF — same taxonomy as r6, CTS rows now served).
+
+## KAT lane status (historical r6, curves verdict precision: COMPLETE)
 
 112094 tests — 55457 passed, 2 failed, 0 crashed, 3565 xfailed,
 53070 skipped (`/tmp/lane-out-kat-r6/pkcs11-kat-r6-results.json`;

@@ -38,6 +38,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , digestFree
   , hmac
   , cipherCbc
+  , cipherCts
   , aeadEncrypt
   , aeadDecrypt
   , aeadCcmEncrypt
@@ -137,6 +138,9 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_hmac"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_cbc"
   c_cipher_cbc :: Ptr OsslLibCtx -> CString -> CString -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_cts"
+  c_cipher_cts :: Ptr OsslLibCtx -> CString -> CString -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_aead_encrypt"
   c_aead_encrypt :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CSize -> Ptr (Ptr CUChar) -> IO CLong
@@ -302,6 +306,19 @@ cipherCbc ctx ciphername propq enc key iv input =
         withBytes iv $ \(piv, niv) ->
           withBytes input $ \(pin, nin) ->
             withOut (c_cipher_cbc ctx cc cpq (if enc then 1 else 0) pkey nkey piv niv pin nin)
+
+-- | AES-CTS (CBC-CS1): @ecbname@ is the fetched ECB primitive the
+-- shim builds the stealing construction over. Output length always
+-- equals input length; input shorter than one block answers
+-- 'errBadParam'.
+cipherCts :: Ptr OsslLibCtx -> String -> String -> Bool -> ByteString -> ByteString -> ByteString -> IO (Either Int ByteString)
+cipherCts ctx ecbname propq enc key iv input =
+  withCString ecbname $ \cc ->
+    withCString propq $ \cpq ->
+      withBytes key $ \(pkey, nkey) ->
+        withBytes iv $ \(piv, niv) ->
+          withBytes input $ \(pin, nin) ->
+            withOut (c_cipher_cts ctx cc cpq (if enc then 1 else 0) pkey nkey piv niv pin nin)
 
 -- | AEAD encrypt: returns @ct || tag@ (tag length known to the caller).
 aeadEncrypt :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> ByteString -> ByteString -> Int -> IO (Either Int ByteString)

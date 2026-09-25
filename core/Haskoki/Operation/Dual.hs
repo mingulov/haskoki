@@ -38,6 +38,7 @@ import Haskoki.Operation
   , TypedError (..)
   , interpretError
   , denyOutcome
+  , isCtsMech
   , isUnframedCipher
   , mkDeny
   , gateDataCall
@@ -141,9 +142,18 @@ planDualFinal ops st = case dualOf ops of
             let spec = duCipherSpec du
                 buf = bufferedOf cCom
             -- Asymmetric rows skip framing: the backend owns
-            -- their length bound.
+            -- their length bound. CTS rows take the stealing
+            -- floor (>= 1 block) instead of block alignment.
             in if isUnframedCipher (commonMech cCom)
               then emitDual ops st' du' (bufferedOf dCom) buf
+              else if isCtsMech (commonMech cCom)
+                then if BS.length buf >= csBlock spec
+                  then emitDual ops st' du' (bufferedOf dCom) buf
+                  else ( setDual (Just du') ops
+                       , st'
+                       , denyOutcome (mkDeny CKR_DATA_LEN_RANGE
+                           "cts dual encrypt needs at least one block of input")
+                       )
               else if csPad spec
                 then case pkcs7Pad (csBlock spec) buf of
                   Nothing ->
@@ -241,6 +251,11 @@ finishDual ops dName cName dRes cRes dIntent cIntent =
       DirDecrypt
         -- Asymmetric rows stage the answer raw.
         | isUnframedCipher (commonMech (duCipher du)) -> Right raw
+        | isCtsMech (commonMech (duCipher du))
+        , BS.length raw >= csBlock (duCipherSpec du) -> Right raw
+        | isCtsMech (commonMech (duCipher du)) ->
+            Left (mkDeny CKR_ENCRYPTED_DATA_LEN_RANGE
+              "cts dual decrypt answer is shorter than one block")
         | otherwise ->
             let spec = duCipherSpec du
             in if csPad spec

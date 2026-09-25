@@ -53,6 +53,7 @@ module Haskoki.Operation
   , stageBytes
   , retryStaged
   , isUnframedCipher
+  , isCtsMech
     -- * Buffer bound for the per-kind lifecycles
   , maxBuffered
   , appendBuffered
@@ -73,7 +74,7 @@ import Haskoki.Output
   , planOneShot
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor)
-import Haskoki.Recipe.Cipher (cipherParamsValid, cipherRecipeFor)
+import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName)
 import Haskoki.Recipe.Cmac (cmacParamsValid, cmacRecipeFor)
 import Haskoki.Recipe.Digest (digestParamsValid)
 import Haskoki.Recipe.Ecdsa (ecdsaParamsValid, ecdsaRecipeFor)
@@ -230,6 +231,17 @@ checkShape args = case (cipherDirOf (iaOp args), iaCipher args) of
 -- row that can hold a cipher slot.)
 isUnframedCipher :: MechanismId -> Bool
 isUnframedCipher m = isJust (rsaOaepRecipeFor m) || isJust (gcmRecipeFor m) || isJust (ccmRecipeFor m)
+
+-- | Ciphertext-stealing rows: @CKM_AES_CTS@ keeps the 16-byte shape
+-- but replaces block alignment with a length floor (input must
+-- cover >= 1 block; output length equals input length) and never
+-- streams multipart updates (the steal pair intertwines the last
+-- two blocks, so only the final sees the whole buffer). The
+-- planners consult this alongside 'isUnframedCipher'.
+isCtsMech :: MechanismId -> Bool
+isCtsMech m = case cipherRecipeFor m of
+  Just r -> crName r == ctsName
+  Nothing -> False
 
 -- | Mechanism-parameter check (recipe-backed mechanisms):
 -- operations whose recipe constrains mechanism parameters enforce

@@ -46,6 +46,7 @@ import Haskoki.Operation
   , TypedError (..)
   , interpretError
   , denyOutcome
+  , isCtsMech
   , isUnframedCipher
   , mkDeny
   , gateDataCall
@@ -131,10 +132,15 @@ withCipherSlot ops kind = do
 -- buffer when unpadded (which must already be block-aligned; the
 -- denial keeps the slot so later updates can repair it).
 -- Asymmetric rows ('isUnframedCipher') skip framing entirely: the
--- backend owns their length bound.
+-- backend owns their length bound. CTS rows ('isCtsMech') replace
+-- alignment with the stealing floor: >= 1 block, any length above.
 encryptInput :: MechanismId -> CipherSpec -> ByteString -> Either StepDeny ByteString
 encryptInput mech spec buf
   | isUnframedCipher mech = Right buf
+  | isCtsMech mech
+  , BS.length buf >= csBlock spec = Right buf
+  | isCtsMech mech = Left (mkDeny CKR_DATA_LEN_RANGE
+      "cts encrypt needs at least one block of input")
   | csPad spec = case pkcs7Pad (csBlock spec) buf of
       Just padded -> Right padded
       Nothing -> Left (mkDeny CKR_GENERAL_ERROR
@@ -152,7 +158,10 @@ encryptInput mech spec buf
 -- part) into the streamable prefix and the retained suffix, in
 -- bytes. Unframed ciphers (AEAD, asymmetric) never stream: AEAD
 -- decryption must not release plaintext before the tag verifies,
--- and asymmetric multipart is degenerate. Framed block ciphers
+-- and asymmetric multipart is degenerate. CTS never streams
+-- either: the steal pair intertwines the last two blocks, so only
+-- the final (which sees the whole buffer) runs the effect.
+-- Framed block ciphers
 -- stream every block the padding rules release: unpadded modes
 -- emit all full blocks both directions; padded encrypt holds back
 -- the trailing partial block (or one full block when aligned, the
@@ -168,6 +177,7 @@ cipherUpdateSplit
 cipherUpdateSplit mech spec dir total
   | csBlock spec <= 0 = (0, total)
   | isUnframedCipher mech = (0, total)
+  | isCtsMech mech = (0, total)
   | isEcb = (total - total `mod` block, total `mod` block)
   | csPad spec = case dir of
       DirEncrypt
@@ -377,6 +387,13 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
           DirEncrypt -> stageRaw raw
           DirDecrypt
             | isUnframedCipher (commonMech sc) -> stageRaw raw
+            | isCtsMech (commonMech sc)
+            , BS.length raw >= csBlock spec -> stageRaw raw
+            | isCtsMech (commonMech sc) ->
+                ( removeSingle kind ops
+                , denyOutcome (mkDeny CKR_ENCRYPTED_DATA_LEN_RANGE
+                    "cts decrypt answer is shorter than one block")
+                )
             | csPad spec -> case pkcs7Unpad (csBlock spec) raw of
                 Just plain -> stageRaw plain
                 Nothing ->

@@ -5,7 +5,7 @@ A42: every catalog id in @spec/mechanisms-canonical.txt@ (the
 source of truth) routes through 'initOperation' — the classic-init
 planning funnel — to its cataloged disposition:
 
-* allowed ids (the 111 @mech|@ rows): the curated descriptor
+* allowed ids (the 112 @mech|@ rows): the curated descriptor
   matches the cataloged name and routes exactly, every cataloged
   classic route initializes to @CKR_OK@ under full caps with
   valid parameters, and every cataloged NON-classic route
@@ -17,7 +17,7 @@ planning funnel — to its cataloged disposition:
   the derive\/KEM paths for derive\/encapsulate), pinned by
   @KeyManagementSpec@ (A20\/A22\/A23) and the engine suites,
   not through classic init;
-* refused ids (the 353 @inv|@ rows): @StatusCatalogOnly@, no
+* refused ids (the 352 @inv|@ rows): @StatusCatalogOnly@, no
   behavior descriptor, and init refuses with the exact
   @(CKR_MECHANISM_INVALID, "unknown mechanism")@ even under
   fully granted caps (the refusal is registry-driven, never a
@@ -111,7 +111,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "mechanism exhaustiveness (A42)"
-  [ testCase "catalog coverage: 464 ids, 111 allowed + 353 refused" caseCoverage
+  [ testCase "catalog coverage: 464 ids, 112 allowed + 352 refused" caseCoverage
   , testCase "allowed ids: descriptors match catalog routes" caseDescriptors
   , testCase "allowed routes: classic init OK, non-classic exact refusal" caseInitRouting
   , testCase "allowed classic routes: caps miss refuses exactly" caseCapsStage
@@ -383,10 +383,10 @@ caseCoverage = guarded "coverage" $ do
       allIds = sort (mechIds ++ invIds)
       mm =
         parseBad
-        ++ ["allowed count: want 111, got " ++ show (length mechs)
-           | length mechs /= 111]
-        ++ ["refused count: want 353, got " ++ show (length invs)
-           | length invs /= 353]
+        ++ ["allowed count: want 112, got " ++ show (length mechs)
+           | length mechs /= 112]
+        ++ ["refused count: want 352, got " ++ show (length invs)
+           | length invs /= 352]
         ++ ["catalog count: want 464, got " ++ show (length catIds)
            | length catIds /= 464]
         ++ ["mech/inv overlap: "

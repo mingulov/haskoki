@@ -498,6 +498,7 @@ cipherCtor name keyLen
   | name == "CKM_AES_CBC" || name == "CKM_AES_CBC_PAD" = aesCbc keyLen
   | name == "CKM_AES_CTR" = aesCtr keyLen
   | name == "CKM_AES_ECB" = aesEcb keyLen
+  | name == "CKM_AES_CTS" = aesCts keyLen
   | name == "CKM_DES3_CBC" = des3 C_DES3_CBC
   | name == "CKM_DES3_ECB" = des3 C_DES3_ECB
   | name == "CKM_ARIA_CBC" = aria C_ARIA128_CBC C_ARIA192_CBC C_ARIA256_CBC
@@ -522,6 +523,11 @@ cipherCtor name keyLen
       16 -> Just C_AES128_ECB
       24 -> Just C_AES192_ECB
       32 -> Just C_AES256_ECB
+      _ -> Nothing
+    aesCts n = case n of
+      16 -> Just C_AES128_CTS
+      24 -> Just C_AES192_CTS
+      32 -> Just C_AES256_CTS
       _ -> Nothing
     des3 spec
       | keyLen == 16 || keyLen == 24 = Just spec

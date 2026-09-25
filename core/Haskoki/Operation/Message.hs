@@ -59,6 +59,7 @@ import Haskoki.Operation
   , TypedError (..)
   , interpretError
   , denyOutcome
+  , isCtsMech
   , isUnframedCipher
   , mkDeny
   , gateDataCall
@@ -331,7 +332,8 @@ runCipherNext ops st fam dir params part end = case withMessageSlot ops fam of
       | otherwise = case (dir, msCipher ms') of
           (DirEncrypt, Just spec)
             -- Asymmetric rows skip framing: the backend owns
-            -- their length bound.
+            -- their length bound. CTS rows take the stealing
+            -- floor (>= 1 block) instead of block alignment.
             | isUnframedCipher (commonMech (msCommon ms')) ->
                 ( storeMessage o (ms' { msInner = MsgOpen pa aad buf' })
                 , s
@@ -341,6 +343,12 @@ runCipherNext ops st fam dir params part end = case withMessageSlot ops fam of
                     ["message end planned over "
                       ++ show (BS.length buf') ++ " bytes"] [] Nothing
                 )
+            | isCtsMech (commonMech (msCommon ms'))
+            , BS.length buf' < csBlock spec ->
+                ( storeMessage o (ms' { msInner = MsgOpen pa aad buf' })
+                , s
+                , denyOutcome (mkDeny CKR_DATA_LEN_RANGE
+                    "cts encrypt needs at least one block of input"))
             | csPad spec -> case pkcs7Pad (csBlock spec) buf' of
                 Nothing ->
                   ( storeMessage o (abortMessage ms')
@@ -356,7 +364,8 @@ runCipherNext ops st fam dir params part end = case withMessageSlot ops fam of
                       ["message end planned over "
                         ++ show (BS.length buf') ++ " bytes"] [] Nothing
                   )
-            | BS.length buf' `mod` csBlock spec /= 0 ->
+            | BS.length buf' `mod` csBlock spec /= 0
+            , not (isCtsMech (commonMech (msCommon ms'))) ->
                 ( storeMessage o (ms' { msInner = MsgOpen pa aad buf' })
                 , s
                 , denyOutcome (mkDeny CKR_DATA_LEN_RANGE
@@ -528,15 +537,21 @@ runCipherOneShot ops st fam dir params aad input = case withMessageSlot ops fam 
               Right (o, s, ms') -> case (dir, msCipher ms') of
                 (DirEncrypt, Just spec)
                   -- Asymmetric rows skip framing: the backend
-                  -- owns their length bound.
+                  -- owns their length bound. CTS rows take the
+                  -- stealing floor instead of block alignment.
                   | isUnframedCipher (commonMech (msCommon ms')) ->
                       planEffect o s ms' input
+                  | isCtsMech (commonMech (msCommon ms'))
+                  , BS.length input < csBlock spec ->
+                      (o, s, denyOutcome (mkDeny CKR_DATA_LEN_RANGE
+                        "cts encrypt needs at least one block of input"))
                   | csPad spec -> case pkcs7Pad (csBlock spec) input of
                       Nothing ->
                         (o, s, denyOutcome (mkDeny CKR_GENERAL_ERROR
                           "cipher shape escapes the PKCS#7 range"))
                       Just padded -> planEffect o s ms' padded
-                  | BS.length input `mod` csBlock spec /= 0 ->
+                  | BS.length input `mod` csBlock spec /= 0
+                  , not (isCtsMech (commonMech (msCommon ms'))) ->
                       (o, s, denyOutcome (mkDeny CKR_DATA_LEN_RANGE
                         "unpadded encrypt needs block-aligned input"))
                   | otherwise -> planEffect o s ms' input
@@ -705,8 +720,16 @@ runFinishDecrypt ops ms name result intent = case stagedOf (msCommon ms) of
             "message cipher lacks its block shape"))
       Just spec -> case result of
         GotBytes raw
-          -- Asymmetric rows stage the answer raw.
+          -- Asymmetric rows stage the answer raw. CTS rows stage
+          -- any answer at or above the stealing floor.
           | isUnframedCipher (commonMech (msCommon ms)) -> stagePlain raw
+          | isCtsMech (commonMech (msCommon ms))
+          , BS.length raw >= csBlock spec -> stagePlain raw
+          | isCtsMech (commonMech (msCommon ms)) ->
+              ( storeMessage ops (abortMessage ms)
+              , denyOutcome (mkDeny CKR_ENCRYPTED_DATA_LEN_RANGE
+                  "cts decrypt answer is shorter than one block")
+              )
           | csPad spec -> case pkcs7Unpad (csBlock spec) raw of
               Just plain -> stagePlain plain
               Nothing ->
