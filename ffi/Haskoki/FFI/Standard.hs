@@ -195,6 +195,7 @@ import Haskoki.Attribute
   , shapeMatches
   )
 import Haskoki.Attribute.Generated (attributeNameById)
+import Haskoki.Der (curveTable)
 import Haskoki.Engine.Backend
   ( BackendEnv
   , BackendError (..)
@@ -778,25 +779,27 @@ decodeULongLE bs
 -- ---------------------------------------------------------------------------
 
 -- | Map @CKA_EC_PARAMS@ wire bytes to the engine curve name: the
--- DER object identifiers for the three SEC2 prime curves (RFC
--- 5480 section 2.1.1) become @"P-256"@\/@"P-384"@\/@"P-521"@;
--- anything else passes through for the engine to refuse.
+-- DER object identifiers for the covered curves (RFC 5480 section
+-- 2.1.1 for the SEC curves, RFC 5639 for brainpool) become engine
+-- names; anything else passes through for the engine to refuse.
+-- Derived from the core 'Haskoki.Der.curveTable' (pinned both ways
+-- by KeyImportSpec).
 ecParamsFromWire :: ByteString -> ByteString
-ecParamsFromWire bs
-  | bs == BS.pack [0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07] = "P-256"
-  | bs == BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22] = "P-384"
-  | bs == BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x23] = "P-521"
-  | otherwise = bs
+ecParamsFromWire bs = case lookup bs oidToName of
+  Just name -> name
+  Nothing -> bs
+  where
+    oidToName = [(oid, name) | (name, oid, _) <- curveTable]
 
 -- | Map an engine curve name back to @CKA_EC_PARAMS@ wire bytes
--- (the inverse of 'ecParamsFromWire' on the three known curves;
+-- (the inverse of 'ecParamsFromWire' on the known curves;
 -- anything else passes through).
 ecParamsToWire :: ByteString -> ByteString
-ecParamsToWire bs
-  | bs == "P-256" = BS.pack [0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07]
-  | bs == "P-384" = BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22]
-  | bs == "P-521" = BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x23]
-  | otherwise = bs
+ecParamsToWire bs = case lookup bs nameToOid of
+  Just oid -> oid
+  Nothing -> bs
+  where
+    nameToOid = [(name, oid) | (name, oid, _) <- curveTable]
 
 -- ---------------------------------------------------------------------------
 -- Scalar projections (pure)

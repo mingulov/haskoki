@@ -11,8 +11,8 @@ and 'finishWork' stamps the components back onto the new objects
 so reads serve them without a decode-on-read path.
 
 Scope is deliberately narrow: RSA PKCS#1/SPKI/PKCS#8 and SEC1 EC
-keys on the three SEC2 prime curves. Anything else refuses at the
-call site ('CKR_CURVE_NOT_SUPPORTED' for foreign curves,
+keys on the 22 covered curves ('curveTable'). Anything else refuses
+at the call site ('CKR_CURVE_NOT_SUPPORTED' for foreign curves,
 'CKR_TEMPLATE_INCONSISTENT' for malformed parts) instead of
 encoding half-understood structures.
 -}
@@ -25,6 +25,7 @@ module Haskoki.Der
   , unwrapEcPoint
   , curveOidOfParams
   , curveCoordLen
+  , curveTable
   , integerToBE
   , RsaCrt (..)
   , parseRsaPrivate
@@ -36,6 +37,7 @@ module Haskoki.Der
 import Data.Bits (shiftR, (.&.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.List (find)
 import Data.Word (Word8)
 
 -- ---------------------------------------------------------------------------
@@ -110,37 +112,70 @@ oidRsaEncryption = BS.pack
 oidEcPublicKey :: ByteString
 oidEcPublicKey = BS.pack [0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01]
 
-oidP256 :: ByteString
-oidP256 = BS.pack
-  [0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07]
-
-oidP384 :: ByteString
-oidP384 = BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22]
-
-oidP521 :: ByteString
-oidP521 = BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x23]
-
 -- ---------------------------------------------------------------------------
 -- Curves
 -- ---------------------------------------------------------------------------
+
+-- | The covered curve table: engine name, DER OID (tag included),
+-- coordinate width in bytes. The single source of truth both
+-- lookups below derive from (pinned against the oracle's OID table
+-- by KeyImportSpec, and against the FFI wire mapping).
+--
+-- Coverage is deliberately maximal: every curve the oracle collects
+-- legs for, including the groups below that production deployments
+-- should treat with suspicion. Sub-224-bit curves offer below
+-- 112-bit security and binary curves are legacy-only; both ride
+-- here exactly so the oracle's wycheproof legs execute instead of
+-- skipping, never as a recommendation to deploy them.
+curveTable :: [(ByteString, ByteString, Int)]
+curveTable =
+  -- NIST prime curves (the original set).
+  [ ("P-256", BS.pack [0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07], 32)
+  , ("P-384", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22], 48)
+  , ("P-521", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x23], 66)
+  -- SEC prime curves at 224 bits and above.
+  , ("secp224r1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x21], 28)
+  , ("secp224k1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x20], 28)
+  , ("secp256k1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x0A], 32)
+  -- Weak sub-224-bit curves: maximal-coverage rows only (see above).
+  , ("secp192r1", BS.pack [0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x01], 24)
+  , ("secp192k1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x1F], 24)
+  , ("secp160r1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x08], 20)
+  , ("secp160r2", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x1E], 20)
+  , ("secp160k1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x09], 20)
+  -- Brainpool prime curves (RFC 5639; the P224r1 tail byte is 0x05 —
+  -- 0x0C would be the twisted variant, which is NOT covered).
+  , ("brainpoolP224r1", BS.pack [0x06, 0x09, 0x2B, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x05], 28)
+  , ("brainpoolP256r1", BS.pack [0x06, 0x09, 0x2B, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x07], 32)
+  , ("brainpoolP320r1", BS.pack [0x06, 0x09, 0x2B, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x09], 40)
+  , ("brainpoolP384r1", BS.pack [0x06, 0x09, 0x2B, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x0B], 48)
+  , ("brainpoolP512r1", BS.pack [0x06, 0x09, 0x2B, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x0D], 64)
+  -- Binary curves: maximal-coverage rows only (see above).
+  , ("sect283k1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x10], 36)
+  , ("sect283r1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x11], 36)
+  , ("sect409k1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x24], 52)
+  , ("sect409r1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x25], 52)
+  , ("sect571k1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x26], 72)
+  , ("sect571r1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x27], 72)
+  ]
 
 -- | Resolve engine curve names (@"P-256"@, …) or raw DER OIDs to the
 -- DER OID. Anything else is unsupported ('Nothing'). The OID table
 -- must agree with 'ecParamsToWire' (pinned by KeyImportSpec).
 curveOidOfParams :: ByteString -> Maybe ByteString
-curveOidOfParams bs
-  | bs == "P-256" || bs == oidP256 = Just oidP256
-  | bs == "P-384" || bs == oidP384 = Just oidP384
-  | bs == "P-521" || bs == oidP521 = Just oidP521
-  | otherwise = Nothing
+curveOidOfParams bs = case find hit curveTable of
+  Just (_, oid, _) -> Just oid
+  Nothing -> Nothing
+  where
+    hit (name, oid, _) = bs == name || bs == oid
 
 -- | Coordinate length in bytes for a DER curve OID.
 curveCoordLen :: ByteString -> Maybe Int
-curveCoordLen oid
-  | oid == oidP256 = Just 32
-  | oid == oidP384 = Just 48
-  | oid == oidP521 = Just 66
-  | otherwise = Nothing
+curveCoordLen oid = case find hit curveTable of
+  Just (_, _, w) -> Just w
+  Nothing -> Nothing
+  where
+    hit (_, o, _) = oid == o
 
 -- | Unwrap a @CKA_EC_POINT@ value (DER OCTET STRING around the X9.62
 -- point) against the expected coordinate length. Only uncompressed

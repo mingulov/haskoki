@@ -23,12 +23,12 @@ import Test.Tasty.HUnit
 import Haskoki.Attribute
   (AttributeResult (..), AttributeType (..), AttributeValue (..),
    PartialReads (..), getAttributes)
-import Haskoki.Der (curveOidOfParams, unwrapEcPoint)
+import Haskoki.Der (curveCoordLen, curveOidOfParams, unwrapEcPoint)
 import Haskoki.Engine.Backend
   (CryptoBackend (..), DigestAlg (..), EcSpec (..),
    EngineResult (..), KeyMaterial (..), SigSpec (..))
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
-import Haskoki.FFI.Standard (ecParamsToWire)
+import Haskoki.FFI.Standard (ecParamsFromWire, ecParamsToWire)
 import Haskoki.Model
   (Model, ObjectState (..), SessionState, addToken, emptyModel,
    lookupSession)
@@ -219,9 +219,10 @@ caseForeignCurve :: IO ()
 caseForeignCurve = do
   m0 <- seedModel
   st <- getSession m0
-  -- secp256k1 OID (DER): a real curve we do not execute.
-  let k1 = hex "06052b8104000a"
-      tmpl = (AttrEcParams, ValBytes k1)
+  -- brainpoolP160r1 OID (DER): a real curve we do not execute
+  -- (uncollected by the oracle, so outside the covered set).
+  let foreignOid = hex "06092b2403030208010101"
+      tmpl = (AttrEcParams, ValBytes foreignOid)
         : filter ((/= AttrEcParams) . fst) ecPubTmpl
   expectReject CKR_CURVE_NOT_SUPPORTED (planCreateObject m0 st tmpl)
 
@@ -279,14 +280,40 @@ caseSealedComponents = do
 caseCurveTableAgreement :: IO ()
 caseCurveTableAgreement = do
   -- The core OID table and the FFI wire mapping agree both ways on
-  -- the three curves; anything else passes through untouched.
-  let oids = ["06082a8648ce3d030107", "06052b81040022", "06052b81040023"]
-      names = ["P-256", "P-384", "P-521"]
-  mapM_ (\(name, oid) -> do
+  -- all 22 oracle-collected curves (OID bytes verified against the
+  -- oracle's own table); anything else passes through untouched.
+  -- (name, DER OID hex, coordinate width)
+  let curves =
+        [ ("P-256", "06082a8648ce3d030107", 32)
+        , ("P-384", "06052b81040022", 48)
+        , ("P-521", "06052b81040023", 66)
+        , ("secp160r1", "06052b81040008", 20)
+        , ("secp160r2", "06052b8104001e", 20)
+        , ("secp160k1", "06052b81040009", 20)
+        , ("secp192k1", "06052b8104001f", 24)
+        , ("secp192r1", "06082a8648ce3d030101", 24)
+        , ("secp224k1", "06052b81040020", 28)
+        , ("secp224r1", "06052b81040021", 28)
+        , ("secp256k1", "06052b8104000a", 32)
+        , ("brainpoolP224r1", "06092b2403030208010105", 28)
+        , ("brainpoolP256r1", "06092b2403030208010107", 32)
+        , ("brainpoolP320r1", "06092b2403030208010109", 40)
+        , ("brainpoolP384r1", "06092b240303020801010b", 48)
+        , ("brainpoolP512r1", "06092b240303020801010d", 64)
+        , ("sect283k1", "06052b81040010", 36)
+        , ("sect283r1", "06052b81040011", 36)
+        , ("sect409k1", "06052b81040024", 52)
+        , ("sect409r1", "06052b81040025", 52)
+        , ("sect571k1", "06052b81040026", 72)
+        , ("sect571r1", "06052b81040027", 72)
+        ]
+  mapM_ (\(name, oid, width) -> do
     assertEqual ("core resolves " ++ name) (Just (hex oid)) (curveOidOfParams (BS8.pack name))
     assertEqual ("core resolves DER " ++ name) (Just (hex oid)) (curveOidOfParams (hex oid))
+    assertEqual ("core width " ++ name) (Just width) (curveCoordLen (hex oid))
     assertEqual ("ffi emits " ++ name) (hex oid) (ecParamsToWire (BS8.pack name))
-    ) (zip names oids)
+    assertEqual ("ffi parses " ++ name) (BS8.pack name) (ecParamsFromWire (hex oid))
+    ) curves
 
 caseEcExecutes :: IO ()
 caseEcExecutes = withRealEnv $ \env -> do
