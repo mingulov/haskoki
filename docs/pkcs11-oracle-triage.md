@@ -193,46 +193,65 @@ r10→r11 (81→71 failed, 1756→1769 passed): cleared exactly the 8
 DigestKey legs, zero new failures. The one-shot-over-buffered
 termination change caused no oracle regressions.
 
+Post-patch validation (runtime, base `1ee44df` vs patched `fcabf37`,
+`consumer_termination` run against both modules): base fails all 27
+termination/empty-recall legs (NULL-arg re-init and refused-one-shot
+finals across digest/sign/verify/encrypt/decrypt, plus empty recall)
+while every benign control leg passes on both revisions; patched
+passes 77/77 with 0 failures. The digest/sign/verify legs are
+root-cause variants the oracle never probes (it only exercises
+cipher NULL-arg). KAT r5 independently confirms the slice at scale
+(207→72 failed, zero new).
+
 ## Remaining fast-lane failures (r11: 71), by cluster
 
-Ordered by count, with root cause and fixability as triaged from failure
-records and the oracle sources at `/tmp/pkcs11-ws/pkcs11-check`:
+Fully root-caused from failure records plus the oracle sources at
+`/tmp/pkcs11-ws/pkcs11-check` (import recipes, negotiation, gates).
+Slices ordered by leg count:
 
-- `test_mech_negative.py` (2): back to the 2 oracle-side HOTP cases
-  (fail inside the oracle's own setup, `MechConfig.key_type` is `None`
-  there); the 11 SHA-KDF wrong-key-type legs that appeared in r9
-  cleared in r10.
-- `test_kdf.py` (0, was 8): all SHA3-KDF produces-key/deterministic
-  legs pass since r9. (`SHAKE_*` legs skip: no XOF rows — honest gap.)
-- `test_ckr_derive.py` (1, was 2): the destroyed-base-handle leg
-  passes since r9; the remaining `test_key_type_inconsistent` fails in
-  oracle setup on `gen_rsa_keypair` (RSA keygen honestly unsupported)
-  — oracle-side, unreachable code on our side.
-- `test_operation_termination.py` (0, was 8): confirmed against the
-  OASIS spec text (single-part: "always terminates ... unless
-  BUFFER_TOO_SMALL or successful length query"; Update: "error other
-  than BUFFER_TOO_SMALL terminates") and fixed in round 7 at all
-  three layers (planner denies, FFI early refusals, C NULL guards).
-- `test_crossverify.py` (7), `test_crossverify_extended.py` (4),
-  `test_verify_signature.py` (4), `test_interop.py` (5): cross-checks
-  against OpenSSL-side crypto; remainders past the ECDSA fix need
-  per-case reads. (r3 fixed the `test_mech_sign.py` RSA KAT vectors.)
-- `test_secret_key_value_len.py` (5): import/coherence edges; several
-  trace to attribute coverage (see KAT). (r3 fixed the sibling import
-  files: `test_ec_missing_params.py`, `test_ec_import_coherence.py`,
-  `test_rsa_key_import.py` now pass.)
-- `test_set_attribute.py` + `test_api_security.py` escalation cases +
-  token-promotion/ro-session cases (~8 across files): `C_SetAttributeValue`
-  is unimplemented (returns `FUNCTION_NOT_SUPPORTED`). Feature gap.
-- `test_aead.py` (2): GCM roundtrip fails with `MECHANISM_INVALID` while
-  other GCM units skip as unsupported — capability-reporting
-  inconsistency, needs a focused session.
-- `test_digest.py` (0, was 2): `C_DigestKey` routed in round 7
-  (secret value through the digest-update planner).
-- Long tail (one-offs across ~20 files): attribute-enforcement edges
-  (`CKA_COPYABLE` unsupported), multipart/message/codec edges, large
-  objects, visibility, v3.0 session edges. Each needs its record read
-  before it can be sized; none was sampled as a crash or hang.
+- T1 template attributes (~30): every `crossverify`/`interop`/
+  `multipart_streaming` AES/HMAC import leg fails with
+  `ATTRIBUTE_TYPE_INVALID` solely because the template carries
+  `CKA_ALLOWED_MECHANISMS`, which the model `AttributeType` lacks
+  (the `_probe_secret` import without it passes). Same family:
+  `CKA_COPYABLE`/`CKA_DESTROYABLE` unknown to the model (keygen and
+  enforcement legs), `C_SetAttributeValue` unimplemented
+  (`FUNCTION_NOT_SUPPORTED`), oversized `CKA_VALUE_LEN=2^64-1`
+  accepted by create/copy, missing cert attrs
+  (`CERTIFICATE_TYPE`/`SUBJECT`), the data-object value size cap
+  (1 MB/100 KB legs), and the missing encapsulate-on-AES template
+  rule.
+- T2 RSA keygen (12): `verify_signature` (4), `message_crypto` (5),
+  RSA crossverify (2), and `ckr_derive::test_key_type_inconsistent`
+  all fail inside oracle setup at `gen_rsa_keypair` with
+  `MECHANISM_INVALID` — `CKM_RSA_PKCS_KEY_PAIR_GEN` has no backend
+  route. (The derive negative itself is unreachable until this lands.)
+- T3 P-384 (2): EC keygen hard-codes P-256
+  (`KeyManagement.hs`, "Only P-256 executes"); the P-384 crossverify
+  and interop legs fail at keygen.
+- T4 message APIs (up to 9): `C_MessageSign/Verify*` and
+  `C_VerifySignature*` legs currently masked by T2; probe after RSA
+  keygen lands (the oracle skips clean `FUNCTION_NOT_SUPPORTED`).
+- T5 session/login policy (7): RO sessions wrongly refused
+  session-object creation (`SESSION_READ_ONLY`); creation paths
+  ignore login state (private-object keygen succeeds, then readback
+  refuses — a self-contradiction; spec wants `USER_NOT_LOGGED_IN`
+  at creation and for `C_CopyObject` to private); `CKU_CONTEXT_SPECIFIC`
+  login granted with no active op (spec wants
+  `OPERATION_NOT_INITIALIZED`). Login-state machinery exists
+  (`Session.hs`); the creation/login gates are unwired.
+- T6 buffer guards (4): CBC-PAD final retry length (32 vs 16),
+  one-byte `Update` output accepted, `GetAttributeValue` guard.
+- T7 GCM (2): `test_aead` GCM legs call `CKM_AES_GCM` with no
+  capability gate — AEAD support is mandated, not skippable.
+- External (3, no spec-compliant code fix): `eddsa_wrong_length`
+  fails inside the oracle's own int-path mechanism gate, which
+  asserts `CKR_OK` from `C_GetMechanismInfo` and crashes on our
+  spec-correct `MECHANISM_INVALID` for unadvertised `CKM_EDDSA`;
+  the 2 HOTP `mech_negative` legs assert inside the oracle's static
+  registry (`MechConfig.key_type is None` for HOTP).
+- Cleared in round 7: `test_operation_termination` (8),
+  `test_digest` DigestKey (2). `test_kdf` stays 0 failed.
 
 ## Skip census (r3: 3732 skipped)
 
@@ -261,7 +280,19 @@ prefers `KEY_TYPE_INCONSISTENT`; `ARGUMENTS_BAD` where it prefers
 `ENCRYPTED_DATA_LEN_RANGE`). Each is a small CKR-precision item; the
 Init-matrix follow-up takes the largest share.
 
-## KAT lane status (r4: 24089 passed / 207 failed / 82687 skipped)
+## KAT lane status (r5: 24230 passed / 72 failed / 82685 skipped)
+
+r4→r5 (207→72 failed, +141 passed, zero new failures): the round-7
+empty-query fix cleared all 125 predicted OAEP empty-message legs
+plus 10 more. The remaining 72 are exactly the 71 fast-lane r11
+failures (same node ids) plus one KAT-only leg,
+`test_ecdh_key_agreement_basic[P-256]` ("P-256 EC keygen claimed
+success but CKA_EC_POINT is missing" — EC keygen attribute
+completeness, folds into the keygen slice). No KAT-only crypto
+fidelity failures remain: every other KAT fail is one of the
+triaged T1–T7/external slices above.
+
+## KAT lane status (historical r4: 24089 passed / 207 failed)
 
 r3→r4 (16808→24089 passed, 436→207 failed, 0 crashed): cleared 354,
 including the random-bound crash fix, all SHA3-KDF legs, the OAEP
