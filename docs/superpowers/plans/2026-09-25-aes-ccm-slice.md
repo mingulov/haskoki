@@ -294,26 +294,26 @@ git commit -m "CCM slice 6/8: catalog promotion to 109-row tested real (+docs re
 - Consumes: release bundle rebuilt via `scripts/make-release.sh`
 - Produces: targeted CCM legs pass; fast lane ≥2947 passed with only the 2 HOTP asserts; KAT lane complete with only the 2 HOTP asserts; `run-gates.sh` green
 
-- [ ] **Step 1: Rebuild bundle**
+- [x] **Step 1: Rebuild bundle**
 
 Run: `bash scripts/make-release.sh`
 Expected: exit 0
 
-- [ ] **Step 2: Targeted CCM legs**
+- [x] **Step 2: Targeted CCM legs**
 
 Run: `pkcs11-check test` on `testcases/acvp/aes/test_ccm.py` + `testcases/test_mech_encrypt.py` with canonical data dir
 Expected: CCM legs pass; ECMA edge sizes skip/xfail only, zero failures
 
-- [ ] **Step 3: Fast + KAT lanes with per-unit diff vs r21d/r4**
+- [x] **Step 3: Fast + KAT lanes with per-unit diff vs r21d/r4**
 
 Expected: CCM units flip skip→pass; zero pass→fail; 2 HOTP asserts only; 0 crashes
 
-- [ ] **Step 4: Gates**
+- [x] **Step 4: Gates**
 
 Run: `HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng bash scripts/run-gates.sh`
 Expected: `GATES: all passing`
 
-- [ ] **Step 5: Commit triage + slice**
+- [x] **Step 5: Commit triage + slice**
 
 ```bash
 git add docs/pkcs11-oracle-triage.md
