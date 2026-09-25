@@ -22,4 +22,6 @@ dist-release/
 dist-release-evidence/
 .pkcs11-check-isolation-state.json
 ..pkcs11-check-isolation-state.json.report-records/
+.pkcs11-check-isolation-policy.json
+.pkcs11-check-isolation-*.lock
 core.*

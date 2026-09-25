@@ -7,7 +7,7 @@ name: CI
 # pkcs11-check findings are REPORTED, not gating (exit 1 passes the
 # lane): the module is a demonstrator whose honest refusals the
 # oracle records as findings. Exit >= 2 (setup error) fails loudly.
-# The framework pins to v0.2.0; workflow_dispatch can override it.
+# The framework pins to v0.2.1; workflow_dispatch can override it.
 #
 # CD: publishing happens ONLY in the `publish` job, which runs only
 # for v* tags (push a tag and the release goes out with it). It needs
@@ -23,7 +23,7 @@ on:
     inputs:
       framework_ref:
         description: "mingulov/pkcs11-check ref (tag/branch/sha)"
-        default: "v0.2.0"
+        default: "v0.2.1"
         type: string
 
 permissions:
@@ -37,7 +37,7 @@ env:
   # One canonical data location shared by the fetch job (cache save)
   # and the kat lane (cache restore).
   PKCS11_CHECK_DATA_DIR: ${{ github.workspace }}/data
-  FRAMEWORK_REF: ${{ github.event.inputs.framework_ref || 'v0.2.0' }}
+  FRAMEWORK_REF: ${{ github.event.inputs.framework_ref || 'v0.2.1' }}
 
 jobs:
   # ------------------------------------------------------------------
