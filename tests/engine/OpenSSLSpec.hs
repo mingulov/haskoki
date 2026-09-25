@@ -84,6 +84,7 @@ spec = testGroup "openssl4 engine"
   , testCase "RSA keygen mints DER halves in bounds" caseRsaKeygen
   , testCase "AES-GCM matches the pinned vector and round-trips" caseAeadReal
   , testCase "AES-GCM empty plaintext with AAD round-trips (tc92)" caseAeadEmptyPlaintext
+  , testCase "AES-CCM wycheproof KATs seal and open" caseAeadCcmReal
   , testCase "Random bytes (fresh DRBG output)" caseRandomBytes
   , testCase "seedRandom mixes, randomBytes unaffected" caseSeedRandomMix
   , testCase "Seed entropy estimate pinned at 0.0" caseSeedEntropyHonesty
@@ -1265,6 +1266,36 @@ caseAeadEmptyPlaintext = withBackend $ \env -> do
     aeadDecrypt env spec key nonce "" ct0 tag0
   assertEqual "empty-pt roundtrip without aad" "" pt0
 
+caseAeadCcmReal :: IO ()
+caseAeadCcmReal = withBackend $ \env -> do
+  -- Wycheproof aes_ccm_test.json group 0 (AES-128, 128-bit tag).
+  -- tcId 1: empty message, the CCM analogue of the GCM tc92 shape.
+  let key1 = KeyBytes (hex "bedcfb5a011ebc84600fcb296c15af0d")
+      nonce1 = hex "438a547a94ea88dce46c6c85"
+      cspec = AeadSpec "AES-128-CCM" 12 16
+  (ct1, tag1) <- expectOk "ccm tcId 1 seal" =<<
+    aeadEncrypt env cspec key1 nonce1 "" ""
+  assertEqual "ccm tcId 1 ct" "" ct1
+  assertEqual "ccm tcId 1 tag" (hex "25d1a38495a7dea45bda049705627d10") tag1
+  pt1 <- expectOk "ccm tcId 1 open" =<<
+    aeadDecrypt env cspec key1 nonce1 "" ct1 tag1
+  assertEqual "ccm tcId 1 roundtrip" "" pt1
+  -- tcId 2: single-byte message.
+  let key2 = KeyBytes (hex "384ea416ac3c2f51a76e7d8226346d4e")
+      nonce2 = hex "b30c084727ad1c592ac21d12"
+  (ct2, tag2) <- expectOk "ccm tcId 2 seal" =<<
+    aeadEncrypt env cspec key2 nonce2 "" (hex "35")
+  assertEqual "ccm tcId 2 ct" (hex "d7") ct2
+  assertEqual "ccm tcId 2 tag" (hex "6be3fd13b7065afc19e3b8a3b96b39fb") tag2
+  pt2 <- expectOk "ccm tcId 2 open" =<<
+    aeadDecrypt env cspec key2 nonce2 "" ct2 tag2
+  assertEqual "ccm tcId 2 roundtrip" (hex "35") pt2
+  -- Bounds: CCM-only widths refuse as bad params.
+  expectBadParam "ccm 6-byte tag" =<<
+    aeadEncrypt env (AeadSpec "AES-128-CCM" 12 5) key2 nonce2 "" (hex "35")
+  expectBadParam "ccm 6-byte nonce" =<<
+    aeadEncrypt env (AeadSpec "AES-128-CCM" 6 16) key2 (BS.take 6 nonce2) "" (hex "35")
+
 caseRsaKeygen :: IO ()
 caseRsaKeygen = withBackend $ \env -> do
   -- The real backend mints PKCS#8/SPKI DER halves (no KAT
@@ -1409,6 +1440,7 @@ caseCaps = withBackend $ \env -> do
     ]) (ccCiphers (bcCiphers caps))
   assertEqual "aead set" (Set.fromList
     [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
+    , "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"
     ]) (ccAead (bcCiphers caps))
   assertEqual "mac set" (Set.fromList
     [ "HMAC-MD5", "HMAC-SHA1"

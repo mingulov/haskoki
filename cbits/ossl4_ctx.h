@@ -138,6 +138,21 @@ long hsk_ossl4_aead_decrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
                             size_t aadlen, const unsigned char *in,
                             size_t inlen, const unsigned char *tag,
                             size_t taglen, unsigned char **out);
+/* CCM twins: same signatures; nonce 7..13 bytes, tag even 4..16. */
+long hsk_ossl4_aead_ccm_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
+                            const char *propq, const unsigned char *key,
+                            size_t keylen, const unsigned char *iv,
+                            size_t ivlen, const unsigned char *aad,
+                            size_t aadlen, const unsigned char *in,
+                            size_t inlen, size_t taglen,
+                            unsigned char **out);
+long hsk_ossl4_aead_ccm_decrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
+                            const char *propq, const unsigned char *key,
+                            size_t keylen, const unsigned char *iv,
+                            size_t ivlen, const unsigned char *aad,
+                            size_t aadlen, const unsigned char *in,
+                            size_t inlen, const unsigned char *tag,
+                            size_t taglen, unsigned char **out);
 
 /* --- EC keygen (SEC1-traditional + SPKI DER out) ---------------------- */
 /* NOTE: the private half is traditional SEC1 (i2d_PrivateKey
