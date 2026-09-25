@@ -11,8 +11,8 @@ not per test.
 ## Fast-lane results across fix rounds
 
 Total collected varies by framework checkout (r11: 5780; r14: 5798;
-r15: 5820; r18: 5840; r19: 5844). Summaries are authoritative; the per-test
-records list interesting outcomes only (see Method).
+r15: 5820; r18: 5840; r19: 5844; r20: 5864). Summaries are authoritative;
+the per-test records list interesting outcomes only (see Method).
 
 | Round | Passed | Failed | XFailed | Skipped | Child crashes |
 |---|---|---|---|---|---|
@@ -36,6 +36,7 @@ records list interesting outcomes only (see Method).
 | r17 (T6 + ECB decrypt chain fix) | 2843 | 21 | 398 | 2558 | 0 |
 | r18 (pkcs11-check 0.2.1 oracle) | 2863 | 20 | 398 | 2559 | 0 |
 | r19 (T5a/b/c/d + T8 RSA wrap) | 2874 | 2 | 387 | 2581 | 0 |
+| r20 (EC_POINT stamp + GCM/ECDH fixes) | 2930 | 2 | 351 | 2581 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -235,7 +236,7 @@ first lane proving all of them together.
   harness-side keygen). T4 message-API legs never materialized
   (the oracle skips clean `FUNCTION_NOT_SUPPORTED`).
 
-## Remaining fast-lane failures (r19: 2), by cluster
+## Remaining fast-lane failures (r20: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
 `/tmp/pkcs11-ws/pkcs11-check` (import recipes, negotiation, gates).
@@ -243,8 +244,22 @@ Slices ordered by leg count:
 
 - External (2, no spec-compliant code fix): the 2 HOTP
   `mech_negative` legs assert inside the oracle's static
-  registry (`MechConfig.key_type is None` for HOTP).
+  registry (`MechConfig.key_type is None` for HOTP; the assert
+  text is byte-identical in r20b — the module is never called).
   (`eddsa_wrong_length` was fixed oracle-side in 0.2.1.)
+- Cleared in round 10 (r19→r20): EC keygen `CKA_EC_POINT`
+  stamping (`71633ee`, prerequisite for the ECDH legs), the GCM
+  AAD-length corruption (`d2d9d2c`: tc92 wrong answer plus the
+  ACVP encrypt OOB-write crash), and the ECDH
+  missing-`CKA_VALUE_LEN` default plus v3.2 tail truncation
+  (`8ceaae7`). Passed +56, xfailed −36 (fix-spawned migrations
+  from setup-xfail to run-and-pass; the only product delta is
+  those three commits). Collection +20 r19→r20 is unattributed
+  but bounded (failed unchanged at the same 2, lane complete).
+  The first r20 attempt was discarded: a concurrent
+  `make-release.sh` (from `release-evidence.sh`) replaced the
+  bundle mid-lane and flaked one worker with a loader `OSError`;
+  r20b is the clean rerun with no concurrent rebuild.
 - Cleared in round 9 (r18→r19): T5 session/login (10: 3× RO
   session-object refusal, 2× public-creates-private, 3×
   context-login-without-op, 2× cross-session modify),
@@ -377,7 +392,21 @@ OAEP error uniformity). T5a (RO owner dimension) and T5b
 (public/private gates) are implemented and passing in-suite
 post-r18; lane reproof needs a bundle rebuild.
 
-## KAT lane status (0.2.1 vectors, T6 bundle: incomplete)
+## KAT lane status (r2, fixed bundle: COMPLETE)
+
+112028 tests — 25774 passed, 2 failed, 0 crashed, 4962 xfailed,
+81290 skipped (`/tmp/pkcs11-ws/out/kat-r2-results.json`;
+`incomplete: false`). The only failures are the 2 external HOTP
+registry asserts (same pair as the fast lane). Cleared since the
+T8 reproof (25654/6 + 10 crashed + 220 crash-limited):
+Wycheproof AES-GCM tc92 and the 10 ACVP GCM-encrypt SIGABRTs plus
+their 220 crash-limited follow-ons (one root cause: the AAD
+`EVP_*Update` clobbered the shared output-length accumulator —
+`d2d9d2c`), and the 3 ECDH basic legs (missing-`CKA_VALUE_LEN`
+now defaults to the full secret per v3.2 — `8ceaae7`, on top of
+the `CKA_EC_POINT` stamping prerequisite `71633ee`).
+
+## KAT lane status (historical: 0.2.1 vectors, T6 bundle, incomplete)
 
 112034 tests — 25635 passed, 24 failed, 10 crashed, 5027
 xfailed, 81118 skipped (`/tmp/pkcs11-kat-021.json`). The lane is
