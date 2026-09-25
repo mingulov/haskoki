@@ -187,13 +187,25 @@ caseTemplate :: IO ()
 caseTemplate = guarded "template" $ do
   -- Tag order is the AttributeType enumerant order, pinned stable.
   let tags = [minBound .. maxBound] :: [AttributeType]
-  assertEqual "tag count" 33 (length tags)
-  assertEqual "tag order" [0 .. 32] (map fromEnum tags)
+  assertEqual "tag count" 43 (length tags)
+  assertEqual "tag order" [0 .. 42] (map fromEnum tags)
   assertEqual "class tag" 0 (fromEnum AttrClass)
   assertEqual "label tag" 3 (fromEnum AttrLabel)
   assertEqual "value tag" 5 (fromEnum AttrValue)
   assertEqual "modulus tag" 25 (fromEnum AttrModulus)
   assertEqual "ecpoint tag" 32 (fromEnum AttrEcPoint)
+  assertEqual "allowed-mechanisms tag" 33 (fromEnum AttrAllowedMechanisms)
+  assertEqual "copyable tag" 34 (fromEnum AttrCopyable)
+  assertEqual "destroyable tag" 35 (fromEnum AttrDestroyable)
+  assertEqual "certificate-type tag" 36 (fromEnum AttrCertificateType)
+  assertEqual "subject tag" 37 (fromEnum AttrSubject)
+  assertEqual "issuer tag" 38 (fromEnum AttrIssuer)
+  assertEqual "serial-number tag" 39 (fromEnum AttrSerialNumber)
+  assertEqual "public-key-info tag" 40 (fromEnum AttrPublicKeyInfo)
+  assertEqual "hash-of-subject-public-key tag" 41
+    (fromEnum AttrHashOfSubjectPublicKey)
+  assertEqual "hash-of-issuer-public-key tag" 42
+    (fromEnum AttrHashOfIssuerPublicKey)
   -- entry: tag:u8 vlen:u32 value:vlen.
   let tmpl = [(AttrClass, ValULong 4), (AttrLabel, ValBytes "ab")]
       blob = encodeTemplate tmpl
@@ -234,12 +246,12 @@ caseValue = guarded "value" $ do
     (decodeValue AttrToken (encodeValue (ValULong 1)))
   assertEqual "bad bool byte" Nothing (decodeValue AttrToken (u8 7))
   assertEqual "short ulong" Nothing (decodeValue AttrClass "short")
-  -- Byte arrays bound at 64 KiB.
-  assertEqual "bound value" 65536 maxAttributeBytes
-  assertEqual "at bound" (Just (ValBytes (BS.replicate 65536 0)))
-    (decodeValue AttrValue (BS.replicate 65536 0))
+  -- Byte arrays bound at 4 MiB.
+  assertEqual "bound value" 4194304 maxAttributeBytes
+  assertEqual "at bound" (Just (ValBytes (BS.replicate 4194304 0)))
+    (decodeValue AttrValue (BS.replicate 4194304 0))
   assertEqual "over bound" Nothing
-    (decodeValue AttrValue (BS.replicate 65537 0))
+    (decodeValue AttrValue (BS.replicate 4194305 0))
 
 caseParams :: IO ()
 caseParams = guarded "params" $ do

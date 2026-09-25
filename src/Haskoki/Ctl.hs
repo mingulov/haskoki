@@ -227,7 +227,7 @@ nativeEngineLine = "native-engine: EngineOpenSSL (native paths always run OpenSS
 -- ConfigSpec: effective bounds are the pinned constants; the
 -- config keys are reserved and drive no enforcement.
 templateBoundsLine :: String
-templateBoundsLine = "template-bounds: entries=64 bytes=65536 (pinned; limits.attribute_entries/buffer_bytes reserved, no enforcement effect)"
+templateBoundsLine = "template-bounds: entries=64 bytes=4194304 (pinned; limits.attribute_entries/buffer_bytes reserved, no enforcement effect)"
 
 -- | The detached-durability disclosure sentence, pinned verbatim by
 -- ConfigHonestySpec: detached records always commit to the store

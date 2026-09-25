@@ -66,7 +66,7 @@ import Haskoki.Model (Model, ObjectState (..), SessionState (..))
 import Haskoki.Object (objectVisible, resolveHandle)
 import Haskoki.Outcome (ResourceRelease)
 import Haskoki.Operation.Effect
-import Haskoki.Operation.KeyManagement (keyTypeCompatible, policyFromObject)
+import Haskoki.Operation.KeyManagement (keyTypeCompatible, mechAllowed, policyFromObject)
 import Haskoki.Operation.State
 import Haskoki.Output
   ( OutputPlan (..)
@@ -305,7 +305,9 @@ checkRecover args incoming = case (recoverRoleOf (iaOp args), iaRecover args) of
 -- runs before the usage check: a type contradiction is the deeper
 -- mismatch, and the oracle's wrong-key-type fixtures carry usage
 -- flags (they must surface @KEY_TYPE_INCONSISTENT@, not a usage
--- refusal).
+-- refusal). The allowed-mechanism check ('mechAllowed') sits
+-- between them: a key that names its mechanisms refuses unlisted
+-- ones with @KEY_FUNCTION_NOT_PERMITTED@.
 checkKeyBinding
   :: OpEnv -> SessionState -> InitArgs -> Either StepDeny (Maybe ObjectId, OpAuth)
 checkKeyBinding env st args = case (opKeyed (iaOp args), iaKey args) of
@@ -321,6 +323,9 @@ checkKeyBinding env st args = case (opKeyed (iaOp args), iaKey args) of
       | not (keyTypeCompatible (iaMech args) (iaOp args) ost) ->
           Left (mkDeny CKR_KEY_TYPE_INCONSISTENT
             "key type does not serve this mechanism")
+      | not (mechAllowed (iaMech args) ost) ->
+          Left (mkDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+            "mechanism is not in the key's allowed list")
       | otherwise ->
           let (permits, alwaysAuth) = case policyFromObject ost of
                 Just (p, a) -> (p, a)

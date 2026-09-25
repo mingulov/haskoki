@@ -285,7 +285,7 @@ generatedKeyTypes =
 -- | Template rules: @(class, key type, required, forbidden)@.
 generatedTemplateRules :: [(Text, Maybe Text, [Text], [Text])]
 generatedTemplateRules =
-  [ ("CKO_SECRET_KEY", Just "CKK_AES", ["CKA_CLASS", "CKA_VALUE_LEN"], [])
+  [ ("CKO_SECRET_KEY", Just "CKK_AES", ["CKA_CLASS", "CKA_VALUE_LEN"], ["CKA_ENCAPSULATE", "CKA_DECAPSULATE"])
   , ("CKO_PUBLIC_KEY", Just "CKK_EC", ["CKA_CLASS", "CKA_EC_PARAMS"], [])
   , ("CKO_PUBLIC_KEY", Just "CKK_RSA", ["CKA_CLASS", "CKA_MODULUS_BITS"], [])
   , ("CKO_SECRET_KEY", Just "CKK_HOTP", ["CKA_CLASS", "CKA_VALUE_LEN"], [])

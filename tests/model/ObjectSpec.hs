@@ -34,6 +34,7 @@ import Haskoki.Attribute
   , getAttributes
   , maxAttributeBytes
   )
+import Haskoki.Attribute.Generated (mustClassId, mustKeyTypeId)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -97,6 +98,12 @@ spec = testGroup "objects and attributes"
   , testCase "redaction: adversarial flag mixes never leak" caseRedactionMixes
   , testCase "get-attributes: partial outcome is error plus effects" casePartialOutcome
   , testCase "get-attributes: all readable commits" caseReadAllOk
+  , testCase "set-attributes: label change and token promotion" caseSetAttrFlow
+  , testCase "set-attributes: ratchets and atomicity" caseSetAttrRatchets
+  , testCase "copy: COPYABLE=false prohibits" caseCopyableGate
+  , testCase "destroy: DESTROYABLE=false prohibits" caseDestroyableGate
+  , testCase "create: secret VALUE/VALUE_LEN coherence" caseSecretImportCoherence
+  , testCase "create: certificate stores verbatim" caseCertCreate
   , testCase "visibility: private objects follow login state" caseVisibilityLogin
   , testCase "isolation: sessions only touch their own slot objects" caseSlotIsolation
   , testCase "logout: private handles die without resurrection" caseLogoutNoResurrection
@@ -260,6 +267,11 @@ getReq :: SessionId -> ExternalHandle -> [AttributeType] -> Request
 getReq sid h wanted =
   (mkRequest F_GetAttributeValue (Just sid))
     { reqHandle = Just h, reqInput = encodeWanted wanted }
+
+setReq :: SessionId -> ExternalHandle -> [(AttributeType, AttributeValue)] -> Request
+setReq sid h tmpl =
+  (mkRequest F_SetAttributeValue (Just sid))
+    { reqHandle = Just h, reqInput = encodeTemplate tmpl }
 
 loginReq :: SessionId -> Request
 loginReq sid = (mkRequest F_Login (Just sid)) { reqInput = "user:ok" }
@@ -885,3 +897,150 @@ caseCreatorClose = do
   assertEqual "token object survives creator close" CKR_OK (pcCode pcB3)
   (pcF2, _) <- runCommit m5 (findReq b [])
   assertEqual "only the token object remains" [ht] =<< findHandles pcF2
+
+secretAes :: ByteString -> [(AttributeType, AttributeValue)]
+secretAes keyBytes =
+  [ (AttrClass, ValULong (mustClassId "CKO_SECRET_KEY"))
+  , (AttrKeyType, ValULong (mustKeyTypeId "CKK_AES"))
+  , (AttrValue, ValBytes keyBytes)
+  , (AttrToken, ValBool False)
+  ]
+
+caseSetAttrFlow :: IO ()
+caseSetAttrFlow = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid [classData, label "old"])
+  h <- commitHandle pc
+  -- Label change commits and stores.
+  (_, m2) <- runCommit m1 (setReq sid h [label "new"])
+  case resolveHandle m2 h of
+    Nothing -> assertFailure "handle lost after setattr"
+    Just ost -> assertEqual "label changed"
+      (Just (ValBytes "new")) (Map.lookup AttrLabel (osAttrs ost))
+  -- Token promotion commits, reads back, and moves ownership.
+  (_, m3) <- runCommit m2 (setReq sid h [(AttrToken, ValBool True)])
+  case resolveHandle m3 h of
+    Nothing -> assertFailure "handle lost after promotion"
+    Just ost -> do
+      assertEqual "token reads back" (Just (ValBool True))
+        (Map.lookup AttrToken (osAttrs ost))
+      assertEqual "token-owned" Nothing (osOwner ost)
+  -- Demotion refuses and changes nothing.
+  (code, m4) <- runReject m3 (setReq sid h [(AttrToken, ValBool False)])
+  assertEqual "demote code" CKR_ATTRIBUTE_READ_ONLY code
+  case resolveHandle m4 h of
+    Nothing -> assertFailure "handle lost after refused demote"
+    Just ost -> assertEqual "still token" (Just (ValBool True))
+      (Map.lookup AttrToken (osAttrs ost))
+
+caseSetAttrRatchets :: IO ()
+caseSetAttrRatchets = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0
+    (createReq sid [classData, label "k", (AttrExtractable, ValBool True)])
+  h <- commitHandle pc
+  -- Extractable true->false ok, false->true refused.
+  (_, m2) <- runCommit m1
+    (setReq sid h [(AttrExtractable, ValBool False)])
+  (codeE, _) <- runReject m2
+    (setReq sid h [(AttrExtractable, ValBool True)])
+  assertEqual "extractable escalation" CKR_ATTRIBUTE_READ_ONLY codeE
+  -- Sensitive false->true ok, true->false refused.
+  (_, m4) <- runCommit m2
+    (setReq sid h [(AttrSensitive, ValBool True)])
+  (codeS, _) <- runReject m4
+    (setReq sid h [(AttrSensitive, ValBool False)])
+  assertEqual "sensitive downgrade" CKR_ATTRIBUTE_READ_ONLY codeS
+  -- Class and value never mutable.
+  (codeC, _) <- runReject m4 (setReq sid h [classData])
+  assertEqual "class immutable" CKR_ATTRIBUTE_READ_ONLY codeC
+  (codeV, _) <- runReject m4
+    (setReq sid h [(AttrValue, ValBytes "x")])
+  assertEqual "value immutable" CKR_ATTRIBUTE_READ_ONLY codeV
+  -- Mixed valid+invalid is atomic: nothing changes.
+  (codeM, m5) <- runReject m4
+    (setReq sid h [label "changed", classData])
+  assertEqual "mixed code" CKR_ATTRIBUTE_READ_ONLY codeM
+  case resolveHandle m5 h of
+    Nothing -> assertFailure "handle lost after mixed refuse"
+    Just ost -> assertEqual "label kept" (Just (ValBytes "k"))
+      (Map.lookup AttrLabel (osAttrs ost))
+
+caseCopyableGate :: IO ()
+caseCopyableGate = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0
+    (createReq sid [classData, label "nc", (AttrCopyable, ValBool False)])
+  h <- commitHandle pc
+  (code, _) <- runReject m1 (copyReq sid h [label "copy"])
+  assertEqual "non-copyable copy" CKR_ACTION_PROHIBITED code
+  (pc2, m2) <- runCommit m1
+    (createReq sid [classData, label "c", (AttrCopyable, ValBool True)])
+  h2 <- commitHandle pc2
+  (pcC, _) <- runCommit m2 (copyReq sid h2 [])
+  assertEqual "copyable copy" CKR_OK (pcCode pcC)
+
+caseDestroyableGate :: IO ()
+caseDestroyableGate = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0
+    (createReq sid [classData, label "nd", (AttrDestroyable, ValBool False)])
+  h <- commitHandle pc
+  (code, m2) <- runReject m1 (destroyReq sid h)
+  assertEqual "non-destroyable destroy" CKR_ACTION_PROHIBITED code
+  case resolveHandle m2 h of
+    Nothing -> assertFailure "refused destroy killed the object"
+    Just _ -> pure ()
+  (pc2, m3) <- runCommit m2
+    (createReq sid [classData, label "d", (AttrDestroyable, ValBool True)])
+  h2 <- commitHandle pc2
+  (pcD, _) <- runCommit m3 (destroyReq sid h2)
+  assertEqual "destroyable destroy" CKR_OK (pcCode pcD)
+
+caseSecretImportCoherence :: IO ()
+caseSecretImportCoherence = do
+  (sid, m0) <- openSession seeded
+  let key16 = BC8.pack (replicate 16 'k')
+  -- Matching VALUE_LEN imports.
+  (pcOk, m1) <- runCommit m0
+    (createReq sid (secretAes key16 ++ [(AttrValueLen, ValULong 16)]))
+  assertEqual "matching import" CKR_OK (pcCode pcOk)
+  -- Mismatched VALUE_LEN refuses.
+  (codeM, _) <- runReject m1
+    (createReq sid (secretAes key16 ++ [(AttrValueLen, ValULong 17)]))
+  assertEqual "mismatch code" CKR_TEMPLATE_INCONSISTENT codeM
+  -- Absurd VALUE_LEN refuses.
+  (codeA, _) <- runReject m1
+    (createReq sid (secretAes key16 ++ [(AttrValueLen, ValULong maxBound)]))
+  assertEqual "absurd code" CKR_TEMPLATE_INCONSISTENT codeA
+  -- Short AES value refuses.
+  (codeS, _) <- runReject m1
+    (createReq sid (secretAes (BC8.pack (replicate 15 'k'))))
+  assertEqual "short AES code" CKR_ATTRIBUTE_VALUE_INVALID codeS
+  -- Omitted VALUE_LEN stamps the derived length.
+  (pcS, m2) <- runCommit m1 (createReq sid (secretAes key16))
+  h <- commitHandle pcS
+  case resolveHandle m2 h of
+    Nothing -> assertFailure "imported handle lost"
+    Just ost -> assertEqual "stamped length" (Just (ValULong 16))
+      (Map.lookup AttrValueLen (osAttrs ost))
+
+caseCertCreate :: IO ()
+caseCertCreate = do
+  (sid, m0) <- openSession seeded
+  let tmpl =
+        [ (AttrClass, ValULong (mustClassId "CKO_CERTIFICATE"))
+        , (AttrCertificateType, ValULong 0)
+        , (AttrValue, ValBytes "der")
+        , (AttrSubject, ValBytes "cn")
+        , (AttrId, ValBytes "id")
+        , (AttrToken, ValBool False)
+        , (AttrPublicKeyInfo, ValBytes "spki")
+        ]
+  (pc, m1) <- runCommit m0 (createReq sid tmpl)
+  assertEqual "cert import" CKR_OK (pcCode pc)
+  h <- commitHandle pc
+  case resolveHandle m1 h of
+    Nothing -> assertFailure "cert handle lost"
+    Just ost -> assertEqual "cert stored verbatim"
+      (Map.fromList tmpl) (osAttrs ost)

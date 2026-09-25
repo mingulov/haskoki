@@ -46,7 +46,7 @@ import Test.Tasty.HUnit (assertEqual, testCase)
 spec :: TestTree
 spec = testGroup "Denominators"
   [ testCase "mechanisms.json holds 464+16 CKM names" caseMechanisms
-  , testCase "attributes.json holds 158+2+8/13+4/67+2+4 refs" caseAttributes
+  , testCase "attributes.json holds 158+2+10/13+4/67+2+4 refs" caseAttributes
   , testCase "function-contracts.json holds 104 functions" caseFunctions
   ]
 
@@ -64,12 +64,13 @@ caseMechanisms = do
 caseAttributes :: IO ()
 caseAttributes = do
   -- Totals include template-rule references (8 CKA
-  -- required refs, 4 CKO class refs, 4 CKK key-type refs); canonical
-  -- counts pin the header populations exactly.
+  -- required refs, 2 CKA forbidden refs, 4 CKO class refs, 4 CKK
+  -- key-type refs); canonical counts pin the header populations
+  -- exactly.
   content <- TIO.readFile "spec/attributes.json"
   assertEqual "CKA canonical entries" 158
     (countTag "\"canonical_name\": \"CKA_" content)
-  assertEqual "CKA total quoted names" 168
+  assertEqual "CKA total quoted names" 170
     (countTag "\"CKA_" content)
   assertEqual "CKO canonical entries" 13
     (countTag "\"canonical_name\": \"CKO_" content)

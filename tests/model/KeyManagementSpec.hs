@@ -14,7 +14,7 @@ suite.
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagementSpec (spec) where
 
-import Data.Bits (complement)
+import Data.Bits ((.&.), complement, shiftR)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
@@ -154,6 +154,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Encaps delivers ciphertext and exactly one handle" caseKemEncaps
   , testCase "Short-buffer encaps creates no key" caseKemEncapsShort
   , testCase "AES keygen delivers one handle" caseAesKeygen
+  , testCase "AES keygen refuses PQC wrap flags" caseAesKeygenEncapsulate
+  , testCase "Init enforces the allowed-mechanism list" caseInitAllowedMechanisms
   , testCase "Generic-secret keygen mints typed material in bounds" caseGenericSecretKeygen
   , testCase "Init enforces the key-type matrix" caseInitKeyTypeMatrix
   , testCase "EC keypair delivers two handles" caseEcKeypair
@@ -549,6 +551,61 @@ caseAesKeygen = withSynth $ \answer -> do
   case keyBytesOf ost of
     Just mat -> assertEqual "AES-256 material" 32 (BS.length mat)
     Nothing -> assertFailure "generated key lacks material"
+
+caseAesKeygenEncapsulate :: IO ()
+caseAesKeygenEncapsulate = withSynth $ \_answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  case planGenerateKey defaultRules m0 st aesKeyGenMech (aesTmpl 16 ++
+      [(AttrEncapsulate, ValBool True)]) of
+    KeyDenied deny -> assertEqual "encapsulate code"
+      CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure
+      ("encapsulate on AES keygen must refuse: " ++ show (voidFx other))
+  where
+    voidFx :: KeyPlan -> String
+    voidFx (KeyDenied deny) = "denied: " ++ show (kdCode deny)
+    voidFx (KeyImmediate _) = "immediate"
+    voidFx (KeyEffect _ _) = "effect"
+
+caseInitAllowedMechanisms :: IO ()
+caseInitAllowedMechanisms = withSynth $ \answer -> do
+  mSeed <- seedModel
+  m0 <- loginUser mSeed
+  st <- getSession m0
+  let listed = le64 (unMech hmacSha256Mech)
+      other = le64 (unMech aesCbcMech)
+  (m1, listedH) <- genKeyWith answer m0 st genericSecretKeyGenMech
+    (genericTmpl 32 ++ [(AttrAllowedMechanisms, ValBytes listed)])
+  (m2, otherH) <- genKeyWith answer m1 st genericSecretKeyGenMech
+    (genericTmpl 32 ++ [(AttrAllowedMechanisms, ValBytes other)])
+  (m3, freeH) <- genKeyWith answer m2 st genericSecretKeyGenMech
+    (genericTmpl 32)
+  let env = OpEnv
+        { oeRegistry = curatedRegistry
+        , oeCaps = mkCapabilities [(hmacSha256Mech, OpSign)]
+        , oeModel = m3
+        }
+      mkSign h = InitArgs
+        { iaOp = OpSign
+        , iaMech = hmacSha256Mech
+        , iaParams = BS.empty
+        , iaKey = Just (KeyPolicy h [OpSign] False)
+        , iaCipher = Nothing
+        , iaRecover = Nothing
+        }
+  let (_, okListed) = initOperation env emptySessionOps st (mkSign listedH)
+  assertEqual "listed mech inits" CKR_OK (ioCode okListed)
+  let (_, denyOther) = initOperation env emptySessionOps st (mkSign otherH)
+  assertEqual "unlisted mech refused" CKR_KEY_FUNCTION_NOT_PERMITTED
+    (ioCode denyOther)
+  let (_, okFree) = initOperation env emptySessionOps st (mkSign freeH)
+  assertEqual "unlisted key inits" CKR_OK (ioCode okFree)
+  where
+    unMech (MechanismId w) = w
+    le64 :: Word64 -> ByteString
+    le64 w = BS.pack
+      [ fromIntegral ((w `shiftR` s) .&. 0xFF) | s <- [0, 8 .. 56] ]
 
 genericTmpl :: Int -> [(AttributeType, AttributeValue)]
 genericTmpl n =

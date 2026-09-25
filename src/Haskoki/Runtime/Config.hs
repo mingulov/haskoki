@@ -126,7 +126,7 @@ data FixturesCfg = FixturesCfg
 -- Slots\/sessions\/objects drive instance admission ('rulesFromConfig').
 -- @buffer_bytes@ and @attribute_entries@ are RESERVED: they
 -- parse, validate, and report, but drive no enforcement — template
--- bounds are the pinned constants (64 entries, 65536 bytes),
+-- bounds are the pinned constants (64 entries, 4194304 bytes),
 -- disclosed in the capabilities @template-bounds@ line.
 data Limits = Limits
   { limSlots :: !Int

@@ -81,6 +81,11 @@ extern uint64_t haskoki_std_create_object(void *instance, uint64_t h_session,
 extern uint64_t haskoki_std_copy_object(void *instance, uint64_t h_session,
                                         uint64_t h_object, uint8_t *p_frame,
                                         uint64_t frame_len, uint64_t *ph_new);
+extern uint64_t haskoki_std_set_attribute_value(void *instance,
+                                                uint64_t h_session,
+                                                uint64_t h_object,
+                                                uint8_t *p_frame,
+                                                uint64_t frame_len);
 extern uint64_t haskoki_std_destroy_object(void *instance, uint64_t h_session,
                                            uint64_t h_object);
 extern uint64_t haskoki_std_get_one_attr(void *instance, uint64_t h_session,
@@ -801,6 +806,45 @@ CK_RV std_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject,
   rv = (CK_RV)haskoki_std_copy_object(inst, (uint64_t)hSession,
                                       (uint64_t)hObject, frame, frameLen,
                                       (uint64_t *)phNewObject);
+  (void)haskoki_state_unlock();
+  free(frame);
+  return rv;
+}
+
+CK_RV std_SetAttributeValue(CK_SESSION_HANDLE hSession,
+                           CK_OBJECT_HANDLE hObject,
+                           CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  uint8_t *frame = NULL;
+  uint64_t frameLen = 0;
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (ulCount > 0 && pTemplate == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (haskoki_std_pack_template(pTemplate, (unsigned long)ulCount, &frame,
+                                &frameLen) != 0) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    free(frame);
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    free(frame);
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_set_attribute_value(inst, (uint64_t)hSession,
+                                              (uint64_t)hObject, frame,
+                                              frameLen);
   (void)haskoki_state_unlock();
   free(frame);
   return rv;

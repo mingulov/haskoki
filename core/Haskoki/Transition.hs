@@ -60,6 +60,7 @@ import Haskoki.Outcome
   )
 import Haskoki.Object
   ( objectPrivate
+  , objectToken
   , parseTemplate
   , parseWanted
   , planCopyObject
@@ -67,6 +68,7 @@ import Haskoki.Object
   , planDestroyObject
   , planFindObjects
   , planGetAttributes
+  , planSetAttributes
   )
 import Haskoki.Operation
   ( CipherSpec
@@ -282,6 +284,13 @@ planCall rules model req = case reqFunction req of
       (Just h, Just wanted) -> planDecoded rules model (DRGetAttributeValue (ssId st) h wanted)
       (Nothing, _) -> badArgs "get-attributes requires an object handle"
       (_, Nothing) -> badArgs "malformed wanted-attribute list"
+  -- Legacy-bytes compat decode (see F_CreateObject);
+  -- decode precedes admission (parse-first).
+  F_SetAttributeValue -> withSession $ \st ->
+    case (reqHandle req, parseTemplate (reqInput req)) of
+      (Just h, Just tmpl) -> planDecoded rules model (DRSetAttributeValue (ssId st) h tmpl)
+      (Nothing, _) -> badArgs "set-attributes requires an object handle"
+      (_, Nothing) -> badArgs "malformed set-attributes template"
   where
     withSession :: (SessionState -> PlanResult) -> PlanResult
     withSession k = case reqSession req of
@@ -359,6 +368,8 @@ planDecoded rules model dreq = case dreq of
     planFindObjects model st tmpl
   DRGetAttributeValue sid h wanted -> withSessionSid model sid $ \st ->
     planGetAttributes model st h wanted
+  DRSetAttributeValue sid h tmpl -> withSessionSid model sid $ \st ->
+    planSetAttributes model st h tmpl
   -- Plan a classic init from decoded arguments: validate against
   -- the registry, capabilities, and key binding, and persist the
   -- slot immediately. A denied init allocates nothing, so its
@@ -1033,6 +1044,7 @@ runFinisher step res = case csFunction step of
   F_CopyObject -> Nothing
   F_FindObjects -> Nothing
   F_GetAttributeValue -> Nothing
+  F_SetAttributeValue -> Nothing
   F_SignUpdate -> Nothing
   F_VerifyInit -> Nothing
   F_VerifyUpdate -> Nothing
@@ -1147,6 +1159,17 @@ applyOp m op = case op of
         { mObjects = Map.insert oid ost (mObjects m1)
         , mNextObject = max (mNextObject m1) (unObjectId oid + 1)
         }
+  DeltaSetAttributes oid over -> case Map.lookup oid (mObjects m) of
+    Nothing -> Left (FaultUnknownObject oid)
+    Just ost ->
+      let (rev, m1) = nextRevision m
+          merged = Map.union over (osAttrs ost)
+          ost' = ost { osAttrs = merged, osRevision = rev }
+          -- Token promotion moves ownership off the session; the
+          -- planner only ever flips token false->true, so the
+          -- owner never moves back here.
+          owner' = if objectToken ost' then Nothing else osOwner ost
+      in Right m1 { mObjects = Map.insert oid (ost' { osOwner = owner' }) (mObjects m1) }
   DeltaBindHandle h oid -> case Map.lookup oid (mObjects m) of
     Nothing -> Left (FaultUnknownObject oid)
     Just ost

@@ -155,7 +155,7 @@ def main():
          for m in attrs.get("key_types", [])],
         "attributes.json/key_types")
     # Template-rule refs: 8 CKA (required), 4 CKO (class), 4 CKK (key_type).
-    check_counting_discipline(ATTR_PATH, "CKA_", 158, 168, allow_rules=True)
+    check_counting_discipline(ATTR_PATH, "CKA_", 158, 170, allow_rules=True)
     check_counting_discipline(ATTR_PATH, "CKO_", 13, 17, allow_rules=True)
     check_counting_discipline(ATTR_PATH, "CKK_", 67, 73, allow_rules=True)
 
@@ -187,11 +187,12 @@ def main():
              f"name field: {line.strip()[:80]}")
     # Planner-scope wording: the behavior label claims
     # planner/in-process reachability, never C-table routing.
-    # 63 -> 66 -> 67; the session-info rows reclassified first,
-    # then C_DigestKey (routed via the digest-update planner with
-    # executed consumer evidence).
-    if text.count('"contract": "planned-with-behavior"') != 67:
-        fail("function-contracts.json: planned-with-behavior count != 67")
+    # 63 -> 66 -> 67 -> 68; the session-info rows reclassified
+    # first, then C_DigestKey (routed via the digest-update
+    # planner), then C_SetAttributeValue (routed via the object
+    # planner with executed consumer evidence).
+    if text.count('"contract": "planned-with-behavior"') != 68:
+        fail("function-contracts.json: planned-with-behavior count != 68")
     # The three reclassified rows stay planned with
     # executed evidence (the stale "no behavior test" reasons stay gone).
     for _name in ("C_GetSessionInfo", "C_GetSlotInfo", "C_GetTokenInfo"):

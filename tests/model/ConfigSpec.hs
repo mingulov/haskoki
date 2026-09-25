@@ -165,7 +165,7 @@ caseTraceOverride = do
 caseTemplatePins :: IO ()
 caseTemplatePins = do
   assertEqual "max template attrs" 64 maxTemplateAttrs
-  assertEqual "max attribute bytes" 65536 maxAttributeBytes
+  assertEqual "max attribute bytes" 4194304 maxAttributeBytes
   -- The FFI bound is an alias of the core source of truth,
   -- not a second literal.
   assertEqual "ffi aliases core" maxTemplateAttrs
@@ -175,7 +175,7 @@ caseTemplatePins = do
 -- template enforcement (reserved keys); the capabilities report
 -- discloses that loudly instead of ignoring them silently. The
 -- small-limits fixture proves the ignored-ness is genuine: 8/1024
--- configured, 64/65536 still enforced.
+-- configured, 64/4194304 still enforced.
 caseTemplateDisclosure :: IO ()
 caseTemplateDisclosure = do
   eCfg <- loadConfigFile (fixture "small-limits.toml")
@@ -188,7 +188,7 @@ caseTemplateDisclosure = do
   assertEqual "exit 0" 0 (ceCode r)
   assertBool "disclosure line present" (templateBoundsLine `isInfixOf` ceOut r)
   where
-    templateBoundsLine = "template-bounds: entries=64 bytes=65536 (pinned; limits.attribute_entries/buffer_bytes reserved, no enforcement effect)"
+    templateBoundsLine = "template-bounds: entries=64 bytes=4194304 (pinned; limits.attribute_entries/buffer_bytes reserved, no enforcement effect)"
 
 -- | The full [sim] fixture parses with the expected knob values
 -- (values ALSO pin end to end through 'caseSimReported').

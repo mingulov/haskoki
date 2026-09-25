@@ -87,6 +87,7 @@ data DeltaOp
   | DeltaCreateObject !ObjectId
   | DeltaDestroyObject !ObjectId
   | DeltaCreateObjectFull !ObjectId !(Map AttributeType AttributeValue) !(Maybe SessionId) !SlotId
+  | DeltaSetAttributes !ObjectId !(Map AttributeType AttributeValue)
   | DeltaBindHandle !ExternalHandle !ObjectId
   | DeltaBumpHandle !ExternalHandle
   | DeltaOpenSession !SessionId !SlotId !Bool

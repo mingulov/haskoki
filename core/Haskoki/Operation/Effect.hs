@@ -92,6 +92,9 @@ detailFor code why = case code of
   CKR_TEMPLATE_INCONSISTENT -> DenyBadParams why
   CKR_ATTRIBUTE_SENSITIVE -> DenyBadParams why
   CKR_ATTRIBUTE_TYPE_INVALID -> DenyBadParams why
+  CKR_ATTRIBUTE_READ_ONLY -> DenyBadParams why
+  CKR_ATTRIBUTE_VALUE_INVALID -> DenyBadParams why
+  CKR_ACTION_PROHIBITED -> DenyKeyBinding why
   CKR_OBJECT_HANDLE_INVALID -> DenyBadParams why
   CKR_KEY_HANDLE_INVALID -> DenyBadParams why
   CKR_KEY_FUNCTION_NOT_PERMITTED -> DenyKeyBinding why

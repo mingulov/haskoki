@@ -54,8 +54,9 @@ GENERATED_NOTE_PREFIX = "Catalog-only (generator note):"
 # pinned by TemplateRulesSpec.
 TEMPLATE_RULES = [
     {"class": "CKO_SECRET_KEY", "key_type": "CKK_AES",
-     "required": ["CKA_CLASS", "CKA_VALUE_LEN"], "forbidden": [],
-     "notes": "AES keygen: VALUE_LEN required "
+     "required": ["CKA_CLASS", "CKA_VALUE_LEN"],
+     "forbidden": ["CKA_ENCAPSULATE", "CKA_DECAPSULATE"],
+     "notes": "AES keygen: VALUE_LEN required; PQC wrap flags forbidden "
               "(planGenerateKey, KeyManagementSpec caseAesKeygen)."},
     {"class": "CKO_PUBLIC_KEY", "key_type": "CKK_EC",
      "required": ["CKA_CLASS", "CKA_EC_PARAMS"], "forbidden": [],

@@ -3188,9 +3188,12 @@
   "template_rules": [
     {
       "class": "CKO_SECRET_KEY",
-      "forbidden": [],
+      "forbidden": [
+        "CKA_ENCAPSULATE",
+        "CKA_DECAPSULATE"
+      ],
       "key_type": "CKK_AES",
-      "notes": "AES keygen: VALUE_LEN required (planGenerateKey, KeyManagementSpec caseAesKeygen).",
+      "notes": "AES keygen: VALUE_LEN required; PQC wrap flags forbidden (planGenerateKey, KeyManagementSpec caseAesKeygen).",
       "required": [
         "CKA_CLASS",
         "CKA_VALUE_LEN"

@@ -47,6 +47,7 @@ data FunctionId
   | F_CopyObject
   | F_FindObjects
   | F_GetAttributeValue
+  | F_SetAttributeValue
   | F_DigestUpdate
   | F_DigestFinal
   | F_SignUpdate
@@ -167,6 +168,12 @@ data DecodedRequest
       , drHandle :: !ExternalHandle
       , drWanted :: ![AttributeType]
       }
+  | -- | Set decoded attributes on one object, atomically.
+    DRSetAttributeValue
+      { drSession :: !SessionId
+      , drHandle :: !ExternalHandle
+      , drTemplate :: ![(AttributeType, AttributeValue)]
+      }
   | -- | Initialize a classic operation from decoded init
       -- arguments (no init frame to re-parse).
     DRInit
@@ -204,6 +211,10 @@ instance Show DecodedRequest where
     "DRGetAttributeValue {drSession = " ++ show sid
       ++ ", drHandle = " ++ show h
       ++ ", drWanted = " ++ show wanted ++ "}"
+  show (DRSetAttributeValue sid h tmpl) =
+    "DRSetAttributeValue {drSession = " ++ show sid
+      ++ ", drHandle = " ++ show h
+      ++ ", drTemplate = " ++ redactShown "template" (length tmpl) ++ "}"
   show (DRInit sid fun key mech permits auth params) =
     "DRInit {drSession = " ++ show sid
       ++ ", drInitFunction = " ++ show fun

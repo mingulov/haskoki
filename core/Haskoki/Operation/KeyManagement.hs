@@ -42,6 +42,7 @@ module Haskoki.Operation.KeyManagement
   , keyBytesOf
   , policyFromObject
   , keyTypeCompatible
+  , mechAllowed
     -- * Class and key-type codes (spec\/vendor\/pkcs11.h)
   , ckoData
   , ckoSecretKey
@@ -87,12 +88,13 @@ module Haskoki.Operation.KeyManagement
   ) where
 
 import Control.Monad (guard)
+import Data.Bits ((.|.), shiftL)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
-import Data.Word (Word64)
+import Data.Word (Word64, Word8)
 
 import Haskoki.Attribute
   ( AttributeType (..)
@@ -525,6 +527,29 @@ keyTypeCompatible mech op ost = case matrixKeyTypes mech op of
   Just tys -> case Map.lookup AttrKeyType (osAttrs ost) of
     Just (ValULong k) -> k `elem` tys
     _ -> True
+
+-- | Allowed-mechanism compatibility for a @(mechanism, key)@: keys
+-- without @CKA_ALLOWED_MECHANISMS@ serve every mechanism; keys
+-- carrying it serve exactly the listed ids. The stored value is a
+-- packed little-endian @CK_MECHANISM_TYPE@ array (the frame wire
+-- order); a misaligned value or a wrong shape fails closed (serves
+-- nothing), since a list the token cannot parse must not grant.
+mechAllowed :: MechanismId -> ObjectState -> Bool
+mechAllowed (MechanismId m) ost = case Map.lookup AttrAllowedMechanisms (osAttrs ost) of
+  Nothing -> True
+  Just (ValBytes bs)
+    | BS.length bs `mod` 8 /= 0 -> False
+    | otherwise -> m `elem` decodeIds bs
+  Just _ -> False
+  where
+    decodeIds :: ByteString -> [Word64]
+    decodeIds rest
+      | BS.null rest = []
+      | otherwise =
+          let (h, t) = BS.splitAt 8 rest
+          in foldr step 0 (BS.unpack h) : decodeIds t
+    step :: Word8 -> Word64 -> Word64
+    step b acc = acc `shiftL` 8 .|. fromIntegral b
 
 -- | A key-management denial as a plan outcome: no outputs, no delta.
 rejectOf :: KeyDeny -> PlanResult

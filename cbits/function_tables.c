@@ -771,10 +771,10 @@ static CK_RV on_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
  * yield the stub code (pinned by the STB stub-beats-args checks),
  * so argument bugs in stub CALLERS are invisible here by design;
  * routed entries keep liveness -> args -> behavior. Per-entry
- * setting (15 x stub_probe, 2 x stub_parallel): stub_InitToken,
+ * setting (14 x stub_probe, 2 x stub_parallel): stub_InitToken,
  * stub_InitPIN, stub_SetPIN, stub_GetOperationState,
  * stub_SetOperationState, stub_GetObjectSize,
- * stub_SetAttributeValue, stub_SignRecoverInit,
+ * stub_SignRecoverInit,
  * stub_SignRecover, stub_VerifyRecoverInit, stub_VerifyRecover,
  * stub_DigestEncryptUpdate, stub_DecryptDigestUpdate,
  * stub_SignEncryptUpdate, stub_DecryptVerifyUpdate ->
@@ -843,23 +843,15 @@ static CK_RV stub_SetOperationState(CK_SESSION_HANDLE h, CK_BYTE_PTR p,
   return stub_probe();
 }
 /* Login/logout routed (std_Login/std_Logout). */
-/* Create/copy/destroy/get-attribute/find routed
+/* Create/copy/destroy/get-attribute/set-attribute/find routed
  * (std_CreateObject/std_CopyObject/std_DestroyObject/
- * std_GetAttributeValue/std_FindObjectsInit/std_FindObjects/
- * std_FindObjectsFinal). GetObjectSize and SetAttributeValue stay
- * honestly unsupported (no engine planners). */
+ * std_GetAttributeValue/std_SetAttributeValue/std_FindObjectsInit/
+ * std_FindObjects/std_FindObjectsFinal). GetObjectSize stays
+ * honestly unsupported (no engine planner). */
 static CK_RV stub_GetObjectSize(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
                                  CK_ULONG_PTR n) {
   (void)h;
   (void)o;
-  (void)n;
-  return stub_probe();
-}
-static CK_RV stub_SetAttributeValue(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
-                                     CK_ATTRIBUTE_PTR t, CK_ULONG n) {
-  (void)h;
-  (void)o;
-  (void)t;
   (void)n;
   return stub_probe();
 }
@@ -987,6 +979,10 @@ extern CK_RV std_CopyObject(CK_SESSION_HANDLE hSession,
                             CK_OBJECT_HANDLE hObject,
                             CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                             CK_OBJECT_HANDLE_PTR phNewObject);
+extern CK_RV std_SetAttributeValue(CK_SESSION_HANDLE hSession,
+                                   CK_OBJECT_HANDLE hObject,
+                                   CK_ATTRIBUTE_PTR pTemplate,
+                                   CK_ULONG ulCount);
 extern CK_RV std_DestroyObject(CK_SESSION_HANDLE hSession,
                                CK_OBJECT_HANDLE hObject);
 extern CK_RV std_GetAttributeValue(CK_SESSION_HANDLE hSession,
@@ -1111,7 +1107,7 @@ static struct CK_FUNCTION_LIST g_function_list = {
   .C_DestroyObject = std_DestroyObject,
   .C_GetObjectSize = stub_GetObjectSize,
   .C_GetAttributeValue = std_GetAttributeValue,
-  .C_SetAttributeValue = stub_SetAttributeValue,
+  .C_SetAttributeValue = std_SetAttributeValue,
   .C_FindObjectsInit = std_FindObjectsInit,
   .C_FindObjects = std_FindObjects,
   .C_FindObjectsFinal = std_FindObjectsFinal,

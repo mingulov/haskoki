@@ -67,6 +67,9 @@ PLANNED = {
                       [("haskoki-model-tests", "tests/model/ObjectSpec.hs")]),
     "C_GetAttributeValue": ("planCall:F_GetAttributeValue",
                             [("haskoki-model-tests", "tests/model/ObjectSpec.hs")]),
+    "C_SetAttributeValue": ("planCall:F_SetAttributeValue",
+                            [("haskoki-model-tests", "tests/model/ObjectSpec.hs"),
+                             ("test-consumers.sh", "tests/c/consumer_template_attrs.c")]),
     # planCall entries: classic crypt (digest/sign/verify/cipher).
     "C_DigestInit": ("planCall:F_DigestInit",
                      [("haskoki-model-tests", "tests/model/RoutingSpec.hs"),
@@ -225,7 +228,6 @@ UNSUPPORTED = {
     "C_SetOperationState": ("no C_SetOperationState framing; engine snapshot "
                             "machinery is tested but unwired to this entry"),
     "C_GetObjectSize": "no model planning; ABI layout only",
-    "C_SetAttributeValue": "no model planning; ABI layout only",
     "C_FindObjectsInit": "one-shot find only; no cursor state",
     "C_FindObjectsFinal": "one-shot find only; no cursor state",
     "C_SignRecoverInit": UNWIRed_OP + " (OperationSpec recover cases)",

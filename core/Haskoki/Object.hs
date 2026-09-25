@@ -28,10 +28,13 @@ module Haskoki.Object
   , resolveHandle
   , objectToken
   , objectPrivate
+  , objectCopyable
+  , objectDestroyable
   , objectVisible
   , planCreateObject
   , planDestroyObject
   , planCopyObject
+  , planSetAttributes
   , planFindObjects
   , planGetAttributes
   ) where
@@ -305,6 +308,16 @@ objectToken ost = Map.lookup AttrToken (osAttrs ost) == Just (ValBool True)
 objectPrivate :: ObjectState -> Bool
 objectPrivate ost = Map.lookup AttrPrivate (osAttrs ost) == Just (ValBool True)
 
+-- | Whether the object may be copied (absent = copyable, per the
+-- PKCS#11 default; only an explicit false prohibits).
+objectCopyable :: ObjectState -> Bool
+objectCopyable ost = Map.lookup AttrCopyable (osAttrs ost) /= Just (ValBool False)
+
+-- | Whether the object may be destroyed (absent = destroyable;
+-- only an explicit false prohibits).
+objectDestroyable :: ObjectState -> Bool
+objectDestroyable ost = Map.lookup AttrDestroyable (osAttrs ost) /= Just (ValBool False)
+
 -- | Visibility per calling session: the object must live on the
 -- session's slot, and private objects additionally need a
 -- non-public login. Any authenticated login (user, SO,
@@ -357,11 +370,13 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
             , pcReasons = ["created object " ++ show oid]
             }
 
-ckoPrivateKey, ckoPublicKey, ckkRsa, ckkEc :: Word64
+ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkRsa, ckkEc, ckkAes :: Word64
 ckoPrivateKey = mustClassId "CKO_PRIVATE_KEY"
 ckoPublicKey = mustClassId "CKO_PUBLIC_KEY"
+ckoSecretKey = mustClassId "CKO_SECRET_KEY"
 ckkRsa = mustKeyTypeId "CKK_RSA"
 ckkEc = mustKeyTypeId "CKK_EC"
+ckkAes = mustKeyTypeId "CKK_AES"
 
 -- | Key-import material: RSA/EC public/private templates carry
 -- components, but the engine consumes PKCS#8/SPKI DER in 'AttrValue'
@@ -372,8 +387,10 @@ ckkEc = mustKeyTypeId "CKK_EC"
 -- components contradicts (inconsistent), except the EC private
 -- scalar, which arrives as the value and is consumed by the
 -- assembly. Malformed parts refuse as inconsistent; foreign curves
--- refuse as 'CKR_CURVE_NOT_SUPPORTED'. Anything else stores
--- verbatim.
+-- refuse as 'CKR_CURVE_NOT_SUPPORTED'. Secret keys require the
+-- value, cohere it with an explicit value length, restrict AES to
+-- its fixed lengths, and stamp a derived value length when the
+-- caller omits it. Anything else stores verbatim.
 importMaterial
   :: Map AttributeType AttributeValue
   -> Either (ReturnCode, String) (Map AttributeType AttributeValue)
@@ -383,6 +400,7 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     | c == ckoPublicKey && k == ckkRsa -> rsaPublic
     | c == ckoPrivateKey && k == ckkEc -> ecPrivate
     | c == ckoPublicKey && k == ckkEc -> ecPublic
+    | c == ckoSecretKey -> secretKey k
   _ -> Right attrs
   where
     classOf = case Map.lookup AttrClass attrs of
@@ -454,15 +472,48 @@ importMaterial attrs = case (classOf, keyTypeOf) of
       | BS.null s = Nothing
       | BS.length s > coordLen = Nothing
       | otherwise = Just s
+    secretKey k = do
+      bytes <- needValue
+      let n = fromIntegral (BS.length bytes) :: Word64
+      case Map.lookup AttrValueLen attrs of
+        Just (ValULong want)
+          | want /= n -> Left (CKR_TEMPLATE_INCONSISTENT,
+              "CKA_VALUE_LEN does not match the value length")
+          | otherwise -> checkAes k n
+        Just _ -> Left (CKR_TEMPLATE_INCONSISTENT,
+          "wrong shape for attribute: AttrValueLen")
+        Nothing
+          | k == ckkAes && n `notElem` [16, 24, 32] ->
+              Left (CKR_ATTRIBUTE_VALUE_INVALID,
+                "AES key value must be 16, 24, or 32 bytes")
+          | otherwise -> Right (Map.insert AttrValueLen (ValULong n) attrs)
+    checkAes k n
+      | k == ckkAes && n `notElem` [16, 24, 32] =
+          Left (CKR_ATTRIBUTE_VALUE_INVALID,
+            "AES key value must be 16, 24, or 32 bytes")
+      | otherwise = Right attrs
+    needValue = case Map.lookup AttrValue attrs of
+      Just (ValBytes bs) -> Right bs
+      Just _ -> Left (CKR_TEMPLATE_INCONSISTENT,
+        "wrong shape for attribute: AttrValue")
+      Nothing -> Left (CKR_TEMPLATE_INCOMPLETE,
+        "missing component: AttrValue")
 
 -- | Plan object destruction: the handle must resolve and the
 -- object must be visible to the calling session, then one combined
--- delta removes the object and stale-marks its bindings.
+-- delta removes the object and stale-marks its bindings. An
+-- explicit @CKA_DESTROYABLE=false@ prohibits the destroy
+-- ('CKR_ACTION_PROHIBITED').
 planDestroyObject :: Model -> SessionState -> ExternalHandle -> PlanResult
 planDestroyObject model st h = case resolveHandle model h of
   Nothing -> invalidHandle "unknown or destroyed object handle"
   Just ost
-    | objectVisible st ost -> Immediate PreparedCommit
+    | not (objectVisible st ost) ->
+        invalidHandle "object not visible to session"
+    | not (objectDestroyable ost) ->
+        templateReject CKR_ACTION_PROHIBITED
+          "object is not destroyable (CKA_DESTROYABLE=false)"
+    | otherwise -> Immediate PreparedCommit
         { pcCode = CKR_OK
         , pcDelta = StateDelta [DeltaDestroyObject (osId ost)]
         , pcPersist = []
@@ -470,7 +521,6 @@ planDestroyObject model st h = case resolveHandle model h of
         , pcReleases = []
         , pcReasons = ["destroyed object " ++ show (osId ost)]
         }
-    | otherwise -> invalidHandle "object not visible to session"
 
 -- | Plan object copy: the source handle must resolve and be
 -- visible to the calling session, the override template must be
@@ -479,16 +529,20 @@ planDestroyObject model st h = case resolveHandle model h of
 -- untouched. Seal ratchet: overrides that flip sensitive true->false
 -- or extractable false->true are rejected ('CKR_TEMPLATE_INCONSISTENT');
 -- sealed flags otherwise inherit, so a copy of a sealed object is
--- sealed too.
+-- sealed too. An explicit @CKA_COPYABLE=false@ on the source
+-- prohibits the copy ('CKR_ACTION_PROHIBITED').
 planCopyObject
   :: Model -> SessionState -> ExternalHandle -> [(AttributeType, AttributeValue)]
   -> PlanResult
 planCopyObject model st h tmpl = case resolveHandle model h of
   Nothing -> invalidHandle "unknown or destroyed source handle"
-  Just src ->
-    if not (objectVisible st src)
-      then invalidHandle "object not visible to session"
-      else case checkDuplicates tmpl of
+  Just src
+    | not (objectVisible st src) ->
+        invalidHandle "object not visible to session"
+    | not (objectCopyable src) ->
+        templateReject CKR_ACTION_PROHIBITED
+          "source object is not copyable (CKA_COPYABLE=false)"
+    | otherwise -> case checkDuplicates tmpl of
         Left t -> templateReject CKR_TEMPLATE_INCONSISTENT
           ("contradictory attribute: " ++ show t)
         Right over
@@ -522,6 +576,84 @@ planCopyObject model st h tmpl = case resolveHandle model h of
                 }
             else templateReject CKR_TEMPLATE_INCOMPLETE
               "merged template is missing the class"
+
+-- | Plan an attribute change: the handle must resolve and be
+-- visible to the calling session, the template must be
+-- contradiction-free with well-shaped values, and every entry must
+-- be mutable on this object. Freely mutable: label, application,
+-- id, and the operation usage flags. One-way ratchets (a flip
+-- against the ratchet refuses 'CKR_ATTRIBUTE_READ_ONLY', a no-op
+-- write succeeds): token false->true, extractable true->false,
+-- sensitive false->true, copyable true->false, destroyable
+-- true->false. Everything else (class, key type, value, value
+-- length, mechanism policy, certificate and key-component
+-- attributes) is unmodifiable and refuses
+-- 'CKR_ATTRIBUTE_READ_ONLY'. The change is atomic: one combined
+-- delta applies all entries or none.
+planSetAttributes
+  :: Model -> SessionState -> ExternalHandle -> [(AttributeType, AttributeValue)]
+  -> PlanResult
+planSetAttributes model st h tmpl = case resolveHandle model h of
+  Nothing -> invalidHandle "unknown or destroyed object handle"
+  Just ost
+    | not (objectVisible st ost) ->
+        invalidHandle "object not visible to session"
+    | otherwise -> case checkDuplicates tmpl of
+        Left t -> templateReject CKR_TEMPLATE_INCONSISTENT
+          ("contradictory attribute: " ++ show t)
+        Right over -> case wrongShape (Map.toList over) of
+          Just t -> templateReject CKR_TEMPLATE_INCONSISTENT
+            ("wrong shape for attribute: " ++ show t)
+          Nothing -> case firstRefusal (osAttrs ost) (Map.toList over) of
+            Just (code, msg) -> templateReject code msg
+            Nothing -> Immediate PreparedCommit
+              { pcCode = CKR_OK
+              , pcDelta = StateDelta [DeltaSetAttributes (osId ost) over]
+              , pcPersist = []
+              , pcOutputs = []
+              , pcReleases = []
+              , pcReasons = ["set " ++ show (Map.size over)
+                  ++ " attributes on " ++ show (osId ost)]
+              }
+  where
+    wrongShape [] = Nothing
+    wrongShape ((t, v) : rest)
+      | shapeMatches t v = wrongShape rest
+      | otherwise = Just t
+    firstRefusal _ [] = Nothing
+    firstRefusal cur ((t, v) : rest) = case mutableAs cur t v of
+      Just refusal -> Just refusal
+      Nothing -> firstRefusal cur rest
+    -- Nothing = mutable, Just = refusal. Absent flags read as
+    -- false (the PKCS#11 defaults), so a no-op write to an absent
+    -- flag succeeds while a ratchet flip refuses.
+    mutableAs :: Map AttributeType AttributeValue
+      -> AttributeType -> AttributeValue -> Maybe (ReturnCode, String)
+    mutableAs cur t v
+      | t `elem` [AttrLabel, AttrApplication, AttrId] = Nothing
+      | t `elem` [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
+                 , AttrWrap, AttrUnwrap, AttrDerive
+                 , AttrEncapsulate, AttrDecapsulate ] = Nothing
+      | t == AttrToken = ratchet cur AttrToken True
+          "CKA_TOKEN can only change false->true"
+      | t == AttrExtractable = ratchet cur AttrExtractable False
+          "CKA_EXTRACTABLE can only change true->false"
+      | t == AttrSensitive = ratchet cur AttrSensitive True
+          "CKA_SENSITIVE can only change false->true"
+      | t == AttrCopyable = ratchet cur AttrCopyable False
+          "CKA_COPYABLE can only change true->false"
+      | t == AttrDestroyable = ratchet cur AttrDestroyable False
+          "CKA_DESTROYABLE can only change true->false"
+      | otherwise = Just (CKR_ATTRIBUTE_READ_ONLY,
+          "attribute is not modifiable: " ++ show t)
+      where
+        ratchet curMap flag allowTrue msg = case (curVal, v) of
+          (ValBool c, ValBool n)
+            | c == n -> Nothing
+            | n == allowTrue -> Nothing
+            | otherwise -> Just (CKR_ATTRIBUTE_READ_ONLY, msg)
+          _ -> Just (CKR_ATTRIBUTE_READ_ONLY, msg)
+          where curVal = Map.findWithDefault (ValBool False) flag curMap
 
 -- | Plan a one-shot find: matches carry equality over the stored
 -- attributes in ascending object-id order, restricted to objects

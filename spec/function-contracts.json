@@ -645,7 +645,7 @@
       ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A10",
         "A11",
@@ -654,7 +654,7 @@
         "A14",
         "A15"
       ],
-      "entry": "none",
+      "entry": "planCall:F_SetAttributeValue",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -664,8 +664,17 @@
       ],
       "name": "C_SetAttributeValue",
       "ordinal_3_2": 26,
-      "reason": "no model planning; ABI layout only",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/ObjectSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_template_attrs.c"
+        }
+      ]
     },
     {
       "contract": "unsupported-with-reason",

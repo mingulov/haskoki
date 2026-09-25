@@ -78,6 +78,16 @@ data AttributeType
   | AttrExponent2
   | AttrCoefficient
   | AttrEcPoint
+  | AttrAllowedMechanisms
+  | AttrCopyable
+  | AttrDestroyable
+  | AttrCertificateType
+  | AttrSubject
+  | AttrIssuer
+  | AttrSerialNumber
+  | AttrPublicKeyInfo
+  | AttrHashOfSubjectPublicKey
+  | AttrHashOfIssuerPublicKey
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Owned attribute values. The semantic value stays separate
@@ -171,16 +181,18 @@ payloadSealed attrs = isTrue AttrSensitive || isFalse AttrExtractable
     isTrue t = Map.lookup t attrs == Just (ValBool True)
     isFalse t = Map.lookup t attrs == Just (ValBool False)
 
--- | Bound on external byte-array attribute encodings (64 KiB;
+-- | Bound on external byte-array attribute encodings (4 MiB;
 -- pinned single source of truth, ConfigSpec pins the value).
 -- 'decodeValue' rejects longer byte arrays for bytes-typed
 -- attributes; scalar shapes have their own fixed widths. The C
 -- packer enforces a looser 16 MiB per-value ceiling above this, so
--- this Haskell bound is the effective one. @limits.buffer_bytes@
+-- this Haskell bound is the effective one. Sized for 1 MiB data
+-- objects with headroom; worst-case transient per template stays
+-- well under the C ceiling (64 entries). @limits.buffer_bytes@
 -- does NOT drive this bound (reserved key, disclosed in the
 -- capabilities report).
 maxAttributeBytes :: Int
-maxAttributeBytes = 65536
+maxAttributeBytes = 4194304
 
 -- | Value shapes: each attribute type owns exactly one.
 data Shape = ShapeBool | ShapeULong | ShapeBytes
@@ -188,6 +200,8 @@ data Shape = ShapeBool | ShapeULong | ShapeBytes
 
 -- | The shape owned by an attribute type. Flag attributes are
 -- booleans, class is an unsigned long, labels/payloads are bytes.
+-- 'AttrAllowedMechanisms' is bytes (a packed @CK_MECHANISM_TYPE@
+-- array; 8-alignment is a planner range check, not a shape).
 shapeOf :: AttributeType -> Shape
 shapeOf t = case t of
   AttrToken -> ShapeBool
@@ -223,6 +237,16 @@ shapeOf t = case t of
   AttrExponent2 -> ShapeBytes
   AttrCoefficient -> ShapeBytes
   AttrEcPoint -> ShapeBytes
+  AttrCopyable -> ShapeBool
+  AttrDestroyable -> ShapeBool
+  AttrCertificateType -> ShapeULong
+  AttrAllowedMechanisms -> ShapeBytes
+  AttrSubject -> ShapeBytes
+  AttrIssuer -> ShapeBytes
+  AttrSerialNumber -> ShapeBytes
+  AttrPublicKeyInfo -> ShapeBytes
+  AttrHashOfSubjectPublicKey -> ShapeBytes
+  AttrHashOfIssuerPublicKey -> ShapeBytes
 
 -- | Whether a value carries its type's shape. The template
 -- wrong-type gate ('Haskoki.Object.validateTemplate' refuses
@@ -330,6 +354,16 @@ attributeTypeByName name = case name of
   "CKA_EXPONENT_2" -> Just AttrExponent2
   "CKA_COEFFICIENT" -> Just AttrCoefficient
   "CKA_EC_POINT" -> Just AttrEcPoint
+  "CKA_ALLOWED_MECHANISMS" -> Just AttrAllowedMechanisms
+  "CKA_COPYABLE" -> Just AttrCopyable
+  "CKA_DESTROYABLE" -> Just AttrDestroyable
+  "CKA_CERTIFICATE_TYPE" -> Just AttrCertificateType
+  "CKA_SUBJECT" -> Just AttrSubject
+  "CKA_ISSUER" -> Just AttrIssuer
+  "CKA_SERIAL_NUMBER" -> Just AttrSerialNumber
+  "CKA_PUBLIC_KEY_INFO" -> Just AttrPublicKeyInfo
+  "CKA_HASH_OF_SUBJECT_PUBLIC_KEY" -> Just AttrHashOfSubjectPublicKey
+  "CKA_HASH_OF_ISSUER_PUBLIC_KEY" -> Just AttrHashOfIssuerPublicKey
   _ -> Nothing
 
 -- | 8-byte big-endian decoding; total over 8-byte inputs (only

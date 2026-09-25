@@ -972,6 +972,16 @@ attrName t = case t of
   AttrExponent2 -> "exponent_2"
   AttrCoefficient -> "coefficient"
   AttrEcPoint -> "ec_point"
+  AttrAllowedMechanisms -> "allowed_mechanisms"
+  AttrCopyable -> "copyable"
+  AttrDestroyable -> "destroyable"
+  AttrCertificateType -> "certificate_type"
+  AttrSubject -> "subject"
+  AttrIssuer -> "issuer"
+  AttrSerialNumber -> "serial_number"
+  AttrPublicKeyInfo -> "public_key_info"
+  AttrHashOfSubjectPublicKey -> "hash_of_subject_public_key"
+  AttrHashOfIssuerPublicKey -> "hash_of_issuer_public_key"
 
 -- | Name back to type; unknown names fail.
 nameAttr :: String -> Maybe AttributeType
@@ -1009,6 +1019,16 @@ nameAttr s = case s of
   "exponent_2" -> Just AttrExponent2
   "coefficient" -> Just AttrCoefficient
   "ec_point" -> Just AttrEcPoint
+  "allowed_mechanisms" -> Just AttrAllowedMechanisms
+  "copyable" -> Just AttrCopyable
+  "destroyable" -> Just AttrDestroyable
+  "certificate_type" -> Just AttrCertificateType
+  "subject" -> Just AttrSubject
+  "issuer" -> Just AttrIssuer
+  "serial_number" -> Just AttrSerialNumber
+  "public_key_info" -> Just AttrPublicKeyInfo
+  "hash_of_subject_public_key" -> Just AttrHashOfSubjectPublicKey
+  "hash_of_issuer_public_key" -> Just AttrHashOfIssuerPublicKey
   _ -> Nothing
 
 -- | Encode one attribute value: bools as JSON booleans, unsigned
@@ -1038,11 +1058,14 @@ decodeAttrValue t j = case t of
   AttrAlwaysAuthenticate -> boolOf j
   AttrEncapsulate -> boolOf j
   AttrDecapsulate -> boolOf j
+  AttrCopyable -> boolOf j
+  AttrDestroyable -> boolOf j
   AttrClass -> ulongOf j
   AttrKeyType -> ulongOf j
   AttrValueLen -> ulongOf j
   AttrModulusBits -> ulongOf j
   AttrKemAlg -> ulongOf j
+  AttrCertificateType -> ulongOf j
   AttrLabel -> bytesOf j
   AttrApplication -> bytesOf j
   AttrValue -> bytesOf j
@@ -1057,6 +1080,13 @@ decodeAttrValue t j = case t of
   AttrExponent2 -> bytesOf j
   AttrCoefficient -> bytesOf j
   AttrEcPoint -> bytesOf j
+  AttrAllowedMechanisms -> bytesOf j
+  AttrSubject -> bytesOf j
+  AttrIssuer -> bytesOf j
+  AttrSerialNumber -> bytesOf j
+  AttrPublicKeyInfo -> bytesOf j
+  AttrHashOfSubjectPublicKey -> bytesOf j
+  AttrHashOfIssuerPublicKey -> bytesOf j
   where
     boolOf (JBool b) = Just (ValBool b)
     boolOf _ = Nothing
@@ -1295,6 +1325,9 @@ encodeReturnCode c = case c of
   CKR_KEY_HANDLE_INVALID -> "CKR_KEY_HANDLE_INVALID"
   CKR_ATTRIBUTE_SENSITIVE -> "CKR_ATTRIBUTE_SENSITIVE"
   CKR_ATTRIBUTE_TYPE_INVALID -> "CKR_ATTRIBUTE_TYPE_INVALID"
+  CKR_ATTRIBUTE_READ_ONLY -> "CKR_ATTRIBUTE_READ_ONLY"
+  CKR_ATTRIBUTE_VALUE_INVALID -> "CKR_ATTRIBUTE_VALUE_INVALID"
+  CKR_ACTION_PROHIBITED -> "CKR_ACTION_PROHIBITED"
   CKR_TEMPLATE_INCOMPLETE -> "CKR_TEMPLATE_INCOMPLETE"
   CKR_TEMPLATE_INCONSISTENT -> "CKR_TEMPLATE_INCONSISTENT"
   CKR_MECHANISM_INVALID -> "CKR_MECHANISM_INVALID"
@@ -1341,6 +1374,9 @@ decodeReturnCode s = case s of
   "CKR_KEY_HANDLE_INVALID" -> Just CKR_KEY_HANDLE_INVALID
   "CKR_ATTRIBUTE_SENSITIVE" -> Just CKR_ATTRIBUTE_SENSITIVE
   "CKR_ATTRIBUTE_TYPE_INVALID" -> Just CKR_ATTRIBUTE_TYPE_INVALID
+  "CKR_ATTRIBUTE_READ_ONLY" -> Just CKR_ATTRIBUTE_READ_ONLY
+  "CKR_ATTRIBUTE_VALUE_INVALID" -> Just CKR_ATTRIBUTE_VALUE_INVALID
+  "CKR_ACTION_PROHIBITED" -> Just CKR_ACTION_PROHIBITED
   "CKR_TEMPLATE_INCOMPLETE" -> Just CKR_TEMPLATE_INCOMPLETE
   "CKR_TEMPLATE_INCONSISTENT" -> Just CKR_TEMPLATE_INCONSISTENT
   "CKR_MECHANISM_INVALID" -> Just CKR_MECHANISM_INVALID

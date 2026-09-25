@@ -97,6 +97,7 @@ module Haskoki.FFI.Standard
   , beWord64
   , haskokiStdCreateObject
   , haskokiStdCopyObject
+  , haskokiStdSetAttributeValue
   , haskokiStdDestroyObject
   , haskokiStdGetOneAttr
   , haskokiStdFindInit
@@ -1197,6 +1198,9 @@ foreign export ccall "haskoki_std_create_object" haskokiStdCreateObject
 foreign export ccall "haskoki_std_copy_object" haskokiStdCopyObject
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> Ptr CULong -> IO CULong
+foreign export ccall "haskoki_std_set_attribute_value" haskokiStdSetAttributeValue
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
+  -> IO CULong
 foreign export ccall "haskoki_std_destroy_object" haskokiStdDestroyObject
   :: StablePtr StdInstance -> CULong -> CULong -> IO CULong
 foreign export ccall "haskoki_std_get_one_attr" haskokiStdGetOneAttr
@@ -1352,6 +1356,40 @@ haskokiStdCopyObject ctx (CULong h) (CULong o) pFrame (CULong frameLen) phNew =
                     publishRejection inst rej
                     pure (stdRvOf (rejCode rej))
                   Execute _ _ -> pure ckrGeneralError
+
+-- | Set attributes on an object from a template frame. The plan
+-- carries no outputs: success is the commit itself.
+haskokiStdSetAttributeValue
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
+  -> IO CULong
+haskokiStdSetAttributeValue ctx (CULong h) (CULong o) pFrame (CULong frameLen) =
+  withStdCtx ctx $ \inst -> do
+    eW <- requireWritable inst (SessionId (fromIntegral h))
+    case eW of
+      Left rv -> pure rv
+      Right () -> do
+        eTmpl <- readFrame pFrame (CULong frameLen)
+        case eTmpl of
+          Left ferr -> pure (frameErrorRV ferr)
+          Right entries -> do
+            m0 <- snapshotModel (siEnv inst)
+            -- Decoded frame straight to the planner.
+            let dreq = DRSetAttributeValue (SessionId (fromIntegral h))
+                  (ExternalHandle (fromIntegral o)) entries
+            case planDecoded (envRules (siEnv inst)) m0 dreq of
+              Immediate pc
+                | not (null (pcOutputs pc)) -> pure ckrGeneralError
+                | otherwise -> do
+                    pr <- publishCommit inst pc
+                    case pr of
+                      Left _ -> pure ckrGeneralError
+                      Right ()
+                        | pcCode pc == CKR_OK -> pure ckrOk
+                        | otherwise -> pure (stdRvOf (pcCode pc))
+              Reject rej -> do
+                publishRejection inst rej
+                pure (stdRvOf (rejCode rej))
+              Execute _ _ -> pure ckrGeneralError
 
 -- | Destroy an object.
 haskokiStdDestroyObject :: StablePtr StdInstance -> CULong -> CULong -> IO CULong
