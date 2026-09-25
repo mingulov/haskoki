@@ -104,8 +104,10 @@ finisherJustSet =
   , F_Verify
   , F_VerifyFinal
   , F_Encrypt
+  , F_EncryptUpdate
   , F_EncryptFinal
   , F_Decrypt
+  , F_DecryptUpdate
   , F_DecryptFinal
   , F_EncryptMessage
   , F_DecryptMessage

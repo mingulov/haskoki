@@ -47,7 +47,7 @@ import Haskoki.Operation
   , setBuffered
   , setLive
   )
-import Haskoki.Operation.Cipher (planCipherUpdate)
+import Haskoki.Operation.Cipher (finishCipherUpdate, planCipherFinal, planCipherUpdate)
 import Haskoki.Operation.Dual (planDualUpdate)
 import Haskoki.Operation.Digest
   ( finishDigest
@@ -92,6 +92,7 @@ spec = testGroup "operation snapshots"
   [ testCase "live stream refuses save; staged output roundtrips" caseDigestRoundtrip
   , testCase "retry after restore equals uninterrupted" caseFinalizeEquals
   , testCase "keyed cipher save/restore roundtrip preserves the slot" caseCipherRoundtrip
+  , testCase "mid-stream save resumes chaining after restore" caseMidStreamRoundtrip
   , testCase "golden fixture bytes are pinned" caseGolden
   , testCase "profile mismatch rejects without touching the target" caseProfileMismatch
   , testCase "token mismatch rejects without touching the target" caseTokenMismatch
@@ -203,7 +204,7 @@ caseDigestRoundtrip = do
   bytes <- case saveOperation defaultQuotas emptyModel stA Pkcs11_3_2 (SaveSlot SlotDigest) of
     Left err -> assertFailure ("save failed: " ++ show err) >> undefined
     Right b -> pure b
-  assertEqual "magic" "HKSNAP01" (BS.take 8 bytes)
+  assertEqual "magic" "HKSNAP02" (BS.take 8 bytes)
   let stB = mkSession (SessionId 2)
   stB' <- case restoreOperation defaultQuotas emptyModel stB Pkcs11_3_2 (RestoreSingle Nothing) bytes of
     Left err -> assertFailure ("restore failed: " ++ show err) >> undefined
@@ -299,7 +300,7 @@ caseCipherRoundtrip = do
       (ops1, out1) = initOperation cipherEnv (ssOps stA0) stA0 encryptArgs
   assertEqual "init code" CKR_OK (ioCode out1)
   let stA1 = stA0 { ssOps = ops1 }
-      (ops2, stA2, stepU) = planCipherUpdate ops1 stA1 SlotEncrypt "block#1-block#2-"
+      (ops2, stA2, stepU) = planCipherUpdate ops1 stA1 SlotEncrypt "block#1-block#2-" Nothing
   assertEqual "update code" CKR_OK (soCode stepU)
   let stA = stA2 { ssOps = ops2 }
   bytes <- case saveOperation defaultQuotas modelWithAesKey stA Pkcs11_3_2 (SaveSlot SlotEncrypt) of
@@ -313,13 +314,50 @@ caseCipherRoundtrip = do
     (lookupSingle (ssOps stA) SlotEncrypt)
     (lookupSingle (ssOps stB') SlotEncrypt)
 
+-- | A mid-stream cipher save carries the running chaining value:
+-- restore resumes chaining exactly (the final over the restored
+-- slot chains from the streamed answer block, not the init IV).
+caseMidStreamRoundtrip :: IO ()
+caseMidStreamRoundtrip = do
+  let stA0 = mkSession (SessionId 1)
+      (ops1, out1) = initOperation cipherEnv (ssOps stA0) stA0 encryptArgs
+  assertEqual "init code" CKR_OK (ioCode out1)
+  let stA1 = stA0 { ssOps = ops1 }
+      (ops2, _, stepU) = planCipherUpdate ops1 stA1 SlotEncrypt
+        (BS.replicate 32 0x44) Nothing
+  assertEqual "update code" CKR_OK (soCode stepU)
+  case soEffects stepU of
+    [_] -> pure ()
+    other -> assertFailure ("expected one update effect, got " ++ show other)
+  let answer = BS.pack [200 .. 215]
+      (ops3, finU) = finishCipherUpdate ops2 SlotEncrypt "cipher"
+        (GotBytes answer) (IntentBuffer 128)
+  assertEqual "update finish ok" CKR_OK (soCode finU)
+  let stA = stA1 { ssOps = ops3 }
+  bytes <- case saveOperation defaultQuotas modelWithAesKey stA Pkcs11_3_2 (SaveSlot SlotEncrypt) of
+    Left err -> assertFailure ("save failed: " ++ show err)
+    Right b -> pure b
+  stB' <- case restoreOperation defaultQuotas modelWithAesKey
+      (mkSession (SessionId 2)) Pkcs11_3_2 (RestoreSingle (Just keyHandle)) bytes of
+    Left err -> assertFailure ("restore failed: " ++ show err)
+    Right s -> pure s
+  assertEqual "restored slot equals saved slot"
+    (lookupSingle (ssOps stA) SlotEncrypt)
+    (lookupSingle (ssOps stB') SlotEncrypt)
+  let (_, _, f0) = planCipherFinal (ssOps stB') stB' SlotEncrypt "cipher"
+  assertEqual "final plans" CKR_OK (soCode f0)
+  case soEffects f0 of
+    [FxCipher _ _ _ params _] ->
+      assertEqual "final chains the streamed answer" answer params
+    other -> assertFailure ("expected one final effect, got " ++ show other)
+
 -- | Golden fixture: a digest snapshot over buffered "ab" on slot 7 under
 -- profile 3.2, hand-derived from the format document in
 -- 'Haskoki.Snapshot'. Any format drift — including a smuggled pointer,
 -- handle, or resource-id field — breaks this pin.
 goldenDigestAb :: BS.ByteString
 goldenDigestAb = BS.pack
-  [ 0x48, 0x4B, 0x53, 0x4E, 0x41, 0x50, 0x30, 0x31 -- "HKSNAP01"
+  [ 0x48, 0x4B, 0x53, 0x4E, 0x41, 0x50, 0x30, 0x32 -- "HKSNAP02"
   , 0x03                                        -- profile 3.2
   , 0x00, 0x00, 0x00, 0x07                      -- slot 7
   , 0x00                                        -- single body
@@ -330,6 +368,7 @@ goldenDigestAb = BS.pack
   , 0x00, 0x00, 0x00, 0x00                      -- params ""
   , 0x00                                        -- AuthNone
   , 0x00, 0x00, 0x00, 0x02, 0x61, 0x62          -- buffered "ab"
+  , 0x00                                        -- no chaining value
   , 0x00                                        -- no staged output
   , 0x00                                        -- unkeyed
   ]
@@ -431,7 +470,7 @@ initEncryptAs h st = do
       (ops1, out1) = initOperation twoKeyEnv (ssOps st) st args
   assertEqual "init code" CKR_OK (ioCode out1)
   let (ops2, st2, stepU) =
-        planCipherUpdate ops1 (st { ssOps = ops1 }) SlotEncrypt "block#1-block#2-"
+        planCipherUpdate ops1 (st { ssOps = ops1 }) SlotEncrypt "block#1-block#2-" Nothing
   assertEqual "update code" CKR_OK (soCode stepU)
   pure st2 { ssOps = ops2 }
 
@@ -693,9 +732,9 @@ caseNoPointers = do
   -- Positive control first: the scanner finds the magic it must find,
   -- so a clean scan means clean bytes, not a broken scanner.
   let found pat bs = pat `BS.isInfixOf` bs
-  assertBool "control: magic in digest" (found "HKSNAP01" digest)
-  assertBool "control: magic in keyed" (found "HKSNAP01" keyed)
-  assertBool "control: magic in staged" (found "HKSNAP01" staged)
+  assertBool "control: magic in digest" (found "HKSNAP02" digest)
+  assertBool "control: magic in keyed" (found "HKSNAP02" keyed)
+  assertBool "control: magic in staged" (found "HKSNAP02" staged)
   assertBool "control: planted tag detected"
     (found "PTR\0" (digest <> "PTR\0"))
   -- The real assertion: no fixture carries a forbidden encoding.

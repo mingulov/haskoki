@@ -81,6 +81,9 @@ module Haskoki.Operation.State
   , setCommonAuth
   , bufferedOf
   , setBuffered
+  , chainIvOf
+  , setChainIv
+  , hasStreamed
   , phaseOf
   , setLive
   , resetToBuffered
@@ -248,6 +251,7 @@ data SlotCommon = SlotCommon
   , scAuth :: !OpAuth
   , scBuffered :: !ByteString
   , scPhase :: !SlotPhase
+  , scChainIv :: !(Maybe ByteString)
   } deriving (Eq, Show)
 
 -- | One active single operation: its kind plus its shared state and,
@@ -472,6 +476,7 @@ mkSlotCommon mech op key params auth = SlotCommon
   , scAuth = auth
   , scBuffered = BS.empty
   , scPhase = PhaseBuffered
+  , scChainIv = Nothing
   }
 
 -- | Build single-shape active operations.
@@ -565,6 +570,26 @@ bufferedOf = scBuffered
 -- | Replace the buffered multipart bytes of shared slot state.
 setBuffered :: ByteString -> SlotCommon -> SlotCommon
 setBuffered buf sc = sc { scBuffered = buf }
+
+-- | The running CBC chaining value once a cipher slot has streamed
+-- an update ('Nothing' before the first streamed chunk, when the
+-- init IV in 'scParams' still chains). ECB slots record 'Just'
+-- empty after their first streamed chunk: chaining is vacuous
+-- there, but the marker still proves multipart input exists (a
+-- one-shot after any update is 'CKR_OPERATION_ACTIVE' even when
+-- the buffer drained). Slots that never stream (digests, signs,
+-- unframed AEAD/asymmetric ciphers, dual/message inners) keep
+-- 'Nothing'.
+chainIvOf :: SlotCommon -> Maybe ByteString
+chainIvOf = scChainIv
+
+-- | Replace the running chaining value of shared slot state.
+setChainIv :: Maybe ByteString -> SlotCommon -> SlotCommon
+setChainIv iv sc = sc { scChainIv = iv }
+
+-- | Whether the slot has streamed an update chunk.
+hasStreamed :: SlotCommon -> Bool
+hasStreamed = isJust . scChainIv
 
 -- | The phase of shared slot state.
 phaseOf :: SlotCommon -> SlotPhase

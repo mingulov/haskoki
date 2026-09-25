@@ -1,19 +1,26 @@
 {- | Cipher operation lifecycle (pure).
 
 Multipart sequencing over one encrypt or decrypt slot: updates
-buffer purely and plan no crypto; the final plans a single 'FxCipher'
-effect. Padding is decided in the pure layer with real PKCS#7
-framing: an encrypt final pads before the effect input is fixed, a
-decrypt final strips after the driver answers. Every plan-time deny
-(ragged one-shot/final, one-shot over buffered input) terminates the
-slot — spec: every error other than BUFFER_TOO_SMALL terminates —
-as do a corrupt pad and a ragged driver answer at finish time.
+stream every block the padding rules release through one
+'FxCipher' effect and retain the suffix (framed block ciphers
+only; AEAD and asymmetric updates still buffer); the final plans
+a single 'FxCipher' effect over the retained bytes, chained from
+the running IV. A short update buffer refuses
+'CKR_BUFFER_TOO_SMALL' with no state change. Padding is decided
+in the pure layer with real PKCS#7 framing: an encrypt final pads
+before the effect input is fixed, a decrypt final strips after
+the driver answers. Every plan-time deny (ragged one-shot/final,
+one-shot over buffered or streamed input) terminates the slot —
+spec: every error other than BUFFER_TOO_SMALL terminates — as do
+a corrupt pad and a ragged driver answer at finish time.
 -}
 module Haskoki.Operation.Cipher
   ( planCipherUpdate
   , planCipherOneShot
   , planCipherFinal
   , finishCipher
+  , finishCipherUpdate
+  , cipherUpdateSplit
   , pkcs7Pad
   , pkcs7Unpad
   ) where
@@ -21,6 +28,7 @@ module Haskoki.Operation.Cipher
 import Control.Monad (guard)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import Data.Maybe (fromMaybe)
 
 import Haskoki.Model (SessionState)
 import Haskoki.Operation
@@ -43,19 +51,27 @@ import Haskoki.Operation
   , gateDataCall
   , insertOp
   , lookupSingle
+  , maxBuffered
   , removeSingle
   , setStaged
+  , setChainIv
   , stageBytes
   , stagedOf
+  , chainIvOf
+  , hasStreamed
   , activeCipher
   , bufferedOf
   , commonKey
   , commonMech
   , commonParams
   , mkActiveCipher
+  , setBuffered
   )
+import Haskoki.Output (OutputPlan (..), planOneShot)
 import Haskoki.Registry (MechanismId)
-import Haskoki.Request (OutputIntent)
+import Haskoki.Request (OutputIntent (..))
+import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipeFor)
+import Haskoki.Types (Consumption (..), OpState (..))
 import Haskoki.Types (ReturnCode (..))
 
 -- ---------------------------------------------------------------------------
@@ -132,27 +148,110 @@ encryptInput mech spec buf
 -- ---------------------------------------------------------------------------
 
 -- | Plan one cipher update: buffer the part. No crypto is planned.
+-- | Split one update's total input (already-buffered plus the new
+-- part) into the streamable prefix and the retained suffix, in
+-- bytes. Unframed ciphers (AEAD, asymmetric) never stream: AEAD
+-- decryption must not release plaintext before the tag verifies,
+-- and asymmetric multipart is degenerate. Framed block ciphers
+-- stream every block the padding rules release: unpadded modes
+-- emit all full blocks both directions; padded encrypt holds back
+-- the trailing partial block (or one full block when aligned, the
+-- pad companion being undecided); padded decrypt always holds the
+-- last block (it carries the pad). Exported for the FFI
+-- short-buffer length dialogue, which re-derives the same split.
+cipherUpdateSplit
+  :: MechanismId -> CipherSpec -> CipherDir -> Int -> (Int, Int)
+cipherUpdateSplit mech spec dir total
+  | block <= 0 = (0, total)
+  | isUnframedCipher mech = (0, total)
+  | isEcb = (total - total `mod` block, total `mod` block)
+  | csPad spec = case dir of
+      DirEncrypt
+        | total < block -> (0, total)
+        | r == 0 -> (total - block, block)
+        | otherwise -> (total - r, r)
+      DirDecrypt
+        | total < 2 * block -> (0, total)
+        | otherwise -> (total - hold, hold)
+  | otherwise = (total - total `mod` block, total `mod` block)
+  where
+    block = csBlock spec
+    r = total `mod` block
+    hold = block + (total - block) `mod` block
+    isEcb = maybe False ((== 0) . crIvBytes) (cipherRecipeFor mech)
+
+-- | The chaining IV for a cipher effect: the running value once the
+-- slot has streamed, else the init IV from the parameters.
+effectParamsFor :: SlotCommon -> ByteString
+effectParamsFor sc = fromMaybe (commonParams sc) (chainIvOf sc)
+
+-- | Plan a cipher update: stream the releasable prefix through one
+-- effect, retain the suffix. A short output buffer refuses
+-- 'CKR_BUFFER_TOO_SMALL' with NO state change (no gate spend, no
+-- append): the caller repeats the same part with room. Empty
+-- streamable input buffers exactly as before (zero bytes out).
 planCipherUpdate
   :: SessionOps -> SessionState -> SlotKind -> ByteString
+  -> Maybe OutputIntent
   -> (SessionOps, SessionState, StepOutcome)
-planCipherUpdate ops st kind part = case withCipherSlot ops kind of
+planCipherUpdate ops st kind part mIntent = case withCipherSlot ops kind of
   Left d -> (ops, st, denyOutcome d)
   Right (dir, sc, spec) -> case stagedOf sc of
     Just _ -> (ops, st, denyOutcome (mkDeny CKR_OPERATION_NOT_INITIALIZED
       "cipher operation is finalized; retry the staged output instead"))
-    Nothing -> case gateDataCall st sc of
-      GateDeny d term ->
-        (if term then removeSingle kind ops else ops, st, denyOutcome d)
-      GateOk st' sc' -> case appendBuffered sc' part of
-        Left d -> (removeSingle kind ops, st', denyOutcome d)
-        Right sc'' ->
-          ( insertOp (mkActiveCipher dir sc'' spec) ops
-          , st'
-          , StepOutcome CKR_OK [] Nothing
-              ["buffered " ++ show (BS.length part)
-                ++ " bytes (" ++ show (BS.length (bufferedOf sc''))
-                ++ " total)"] [] Nothing
-          )
+    Nothing ->
+      let full = bufferedOf sc <> part
+          (streamable, _) =
+            cipherUpdateSplit (commonMech sc) spec dir (BS.length full)
+          cap = case mIntent of
+            Just (IntentBuffer n)
+              | n > fromIntegral (maxBound :: Int) -> maxBound
+              | otherwise -> fromIntegral n
+            _ -> maxBound
+          block = csBlock spec
+          isEcbMech =
+            maybe False ((== 0) . crIvBytes) (cipherRecipeFor (commonMech sc))
+          lastBlock bs = BS.drop (max 0 (BS.length bs - block)) bs
+      in if BS.length full > maxBuffered
+        then (removeSingle kind ops, st, denyOutcome (mkDeny CKR_ARGUMENTS_BAD
+          "multipart input exceeds the buffer bound"))
+        else if streamable > cap
+          then (ops, st, denyOutcome (mkDeny CKR_BUFFER_TOO_SMALL
+            ("update output needs " ++ show streamable ++ " bytes")))
+          else case gateDataCall st sc of
+            GateDeny d term ->
+              (if term then removeSingle kind ops else ops, st, denyOutcome d)
+            GateOk st' sc'
+              | streamable == 0 -> case appendBuffered sc' part of
+                  Left d -> (removeSingle kind ops, st', denyOutcome d)
+                  Right sc'' ->
+                    ( insertOp (mkActiveCipher dir sc'' spec) ops
+                    , st'
+                    , StepOutcome CKR_OK [] Nothing
+                        ["buffered " ++ show (BS.length part)
+                          ++ " bytes (" ++ show (BS.length (bufferedOf sc''))
+                          ++ " total)"] [] Nothing
+                    )
+              | otherwise ->
+                  let (streamBytes, retainBytes) = BS.splitAt streamable full
+                      scRetain = setBuffered retainBytes sc'
+                      scAdv = case dir of
+                        DirDecrypt
+                          | isEcbMech -> setChainIv (Just BS.empty) scRetain
+                          | otherwise -> setChainIv (Just (lastBlock streamBytes)) scRetain
+                        DirEncrypt
+                          | isEcbMech -> setChainIv (Just BS.empty) scRetain
+                          | otherwise -> scRetain
+                  in ( insertOp (mkActiveCipher dir scAdv spec) ops
+                     , st'
+                     , StepOutcome CKR_OK
+                         [FxCipher dir (commonMech sc) (commonKey sc)
+                           (effectParamsFor sc) streamBytes]
+                         Nothing
+                         ["cipher update streams " ++ show streamable
+                           ++ " bytes (" ++ show (BS.length retainBytes)
+                           ++ " retained)"] [] Nothing
+                     )
 
 -- | Plan a cipher one-shot over the full input. Allowed only before
 -- any update. One-shot denies terminate the slot (spec: every error
@@ -167,9 +266,9 @@ planCipherOneShot ops st kind _name input = case withCipherSlot ops kind of
     Just _ -> (ops, st, denyOutcome (mkDeny CKR_OPERATION_NOT_INITIALIZED
       "cipher operation is finalized; retry the staged output instead"))
     Nothing
-      | not (BS.null (bufferedOf sc)) ->
+      | not (BS.null (bufferedOf sc)) || hasStreamed sc ->
           (removeSingle kind ops, st, denyOutcome (mkDeny CKR_OPERATION_ACTIVE
-            "multipart input already buffered; re-init to continue"))
+            "multipart input already buffered or streamed; re-init to continue"))
       | otherwise -> case gateDataCall st sc of
           GateDeny d term ->
             (if term then removeSingle kind ops else ops, st, denyOutcome d)
@@ -211,7 +310,7 @@ planCipherFinal ops st kind _name = case withCipherSlot ops kind of
             ( insertOp (mkActiveCipher dir sc' spec) ops
             , st'
             , StepOutcome CKR_OK
-                [FxCipher dir (commonMech sc') (commonKey sc') (commonParams sc') padded]
+                [FxCipher dir (commonMech sc') (commonKey sc') (effectParamsFor sc') padded]
                 Nothing
                 ["cipher final planned over "
                   ++ show (BS.length (bufferedOf sc')) ++ " bytes"] [] Nothing
@@ -220,7 +319,7 @@ planCipherFinal ops st kind _name = case withCipherSlot ops kind of
           ( insertOp (mkActiveCipher dir sc' spec) ops
           , st'
           , StepOutcome CKR_OK
-              [FxCipher dir (commonMech sc') (commonKey sc') (commonParams sc') (bufferedOf sc')]
+              [FxCipher dir (commonMech sc') (commonKey sc') (effectParamsFor sc') (bufferedOf sc')]
               Nothing
               ["cipher final planned over "
                 ++ show (BS.length (bufferedOf sc')) ++ " bytes"] [] Nothing
@@ -285,3 +384,56 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
           ( removeSingle kind ops
           , denyOutcome (mkDeny (interpretError (TyCrypto err))
               ("cipher crypto failed: " ++ show err)))
+
+-- | Finish a planned cipher update: write the streamed chunk through
+-- the output intent and advance the CBC encrypt chaining value from
+-- the answer (decrypt chaining and the ECB marker advance at plan
+-- time, when their inputs are known). The slot stays open with the
+-- retained suffix. Anything unexpected — a verdict, a resource, a
+-- short answer, an over-cap answer, a null intent (queries never
+-- execute) — terminates the slot instead of releasing bytes.
+finishCipherUpdate
+  :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
+  -> (SessionOps, StepOutcome)
+finishCipherUpdate ops kind name result intent = case withCipherSlot ops kind of
+  Left d -> (ops, denyOutcome d)
+  Right (dir, sc, spec) -> case stagedOf sc of
+    Just _ -> (ops, denyOutcome (mkDeny CKR_GENERAL_ERROR
+      "cipher output already staged; use retry"))
+    Nothing ->
+      let block = csBlock spec
+          isEcbMech =
+            maybe False ((== 0) . crIvBytes) (cipherRecipeFor (commonMech sc))
+          advance = case dir of
+            DirDecrypt -> const (Right sc)
+            DirEncrypt
+              | isEcbMech -> const (Right sc)
+              | otherwise -> advanceEncrypt
+          advanceEncrypt raw
+            | BS.length raw < block || block <= 0 =
+                Left "cipher update answer shorter than one block"
+            | otherwise = Right (setChainIv
+                (Just (BS.drop (BS.length raw - block) raw)) sc)
+      in case result of
+        GotBytes raw -> case advance raw of
+          Left why ->
+            (removeSingle kind ops, denyOutcome (mkDeny CKR_GENERAL_ERROR why))
+          Right scAdv ->
+            let (_, plan) = planOneShot (OpLive (Consumption 0)) name raw intent
+            in case opCode plan of
+              CKR_OK ->
+                ( insertOp (mkActiveCipher dir scAdv spec) ops
+                , StepOutcome CKR_OK [] (Just plan)
+                    ["cipher update streamed " ++ show (BS.length raw)
+                      ++ " bytes"] [] Nothing
+                )
+              _ -> (removeSingle kind ops, denyOutcome (mkDeny CKR_GENERAL_ERROR
+                "cipher update answer exceeds the checked output cap"))
+        GotCryptoError err ->
+          ( removeSingle kind ops
+          , denyOutcome (mkDeny (interpretError (TyCrypto err))
+              ("cipher update crypto failed: " ++ show err)))
+        _ ->
+          ( removeSingle kind ops
+          , denyOutcome (mkDeny CKR_GENERAL_ERROR
+              "driver answered a cipher update with a non-bytes result"))

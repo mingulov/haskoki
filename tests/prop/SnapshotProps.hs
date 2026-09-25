@@ -359,7 +359,7 @@ caseCipher count = mapM_ check [1 .. fromIntegral count]
           (ops1, out1) = initOperation cipherEnv (ssOps stA0) stA0 encryptArgs
       assertEqual "init code" CKR_OK (ioCode out1)
       let stA1 = stA0 { ssOps = ops1 }
-          (ops2, stA2, stepU) = planCipherUpdate ops1 stA1 SlotEncrypt part
+          (ops2, stA2, stepU) = planCipherUpdate ops1 stA1 SlotEncrypt part Nothing
       assertEqual "update code" CKR_OK (soCode stepU)
       let stA = stA2 { ssOps = ops2 }
       bytes <- case saveOperation defaultQuotas modelWithAesKey stA
@@ -510,7 +510,7 @@ caseDecrypt count = mapM_ check [1 .. fromIntegral count]
           (ops1, out1) = initOperation decryptEnv (ssOps stA0) stA0 decryptArgs
       assertEqual "init code" CKR_OK (ioCode out1)
       let stA1 = stA0 { ssOps = ops1 }
-          (ops2, stA2, stepU) = planCipherUpdate ops1 stA1 SlotDecrypt part
+          (ops2, stA2, stepU) = planCipherUpdate ops1 stA1 SlotDecrypt part Nothing
       assertEqual "update code" CKR_OK (soCode stepU)
       let stA = stA2 { ssOps = ops2 }
       bytes <- case saveOperation defaultQuotas modelWithAesKey stA
@@ -538,7 +538,7 @@ saveCipherBytes env args kind = do
       (ops1, out1) = initOperation env (ssOps stA0) stA0 args
   assertEqual "init code" CKR_OK (ioCode out1)
   let stA1 = stA0 { ssOps = ops1 }
-      (ops2, stA2, stepU) = planCipherUpdate ops1 stA1 kind "probe-part"
+      (ops2, stA2, stepU) = planCipherUpdate ops1 stA1 kind "probe-part" Nothing
   assertEqual "update code" CKR_OK (soCode stepU)
   case saveOperation defaultQuotas modelWithAesKey (stA2 { ssOps = ops2 })
     Pkcs11_3_2 (SaveSlot kind) of
@@ -581,7 +581,7 @@ caseDecryptPadded count = mapM_ check [1 .. fromIntegral count]
           (ops1, out1) = initOperation decryptPadEnv (ssOps stA0) stA0 decryptPadArgs
       assertEqual "init code" CKR_OK (ioCode out1)
       let stA1 = stA0 { ssOps = ops1 }
-          (ops2, stA2, stepU) = planCipherUpdate ops1 stA1 SlotDecrypt part
+          (ops2, stA2, stepU) = planCipherUpdate ops1 stA1 SlotDecrypt part Nothing
       assertEqual "update code" CKR_OK (soCode stepU)
       let stA = stA2 { ssOps = ops2 }
       bytes <- case saveOperation defaultQuotas modelWithAesKey stA

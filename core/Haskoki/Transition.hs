@@ -98,6 +98,7 @@ import Haskoki.Operation
   )
 import Haskoki.Operation.Cipher
   ( finishCipher
+  , finishCipherUpdate
   , planCipherFinal
   , planCipherOneShot
   , planCipherUpdate
@@ -222,7 +223,7 @@ planCall rules model req = case reqFunction req of
     (\ops st -> planCipherOneShot ops st SlotEncrypt "" (reqInput req))
     (retryFor SlotEncrypt)
   F_EncryptUpdate -> withSession $ planData req SlotEncrypt $ \ops st ->
-    planCipherUpdate ops st SlotEncrypt (reqInput req)
+    planCipherUpdate ops st SlotEncrypt (reqInput req) (updateIntent req)
   F_EncryptFinal -> withSession $ planRetryable req SlotEncrypt
     (\ops st -> planCipherFinal ops st SlotEncrypt "")
     (retryFor SlotEncrypt)
@@ -231,7 +232,7 @@ planCall rules model req = case reqFunction req of
     (\ops st -> planCipherOneShot ops st SlotDecrypt "" (reqInput req))
     (retryFor SlotDecrypt)
   F_DecryptUpdate -> withSession $ planData req SlotDecrypt $ \ops st ->
-    planCipherUpdate ops st SlotDecrypt (reqInput req)
+    planCipherUpdate ops st SlotDecrypt (reqInput req) (updateIntent req)
   F_DecryptFinal -> withSession $ planRetryable req SlotDecrypt
     (\ops st -> planCipherFinal ops st SlotDecrypt "")
     (retryFor SlotDecrypt)
@@ -645,6 +646,12 @@ singleOutput req = case reqRegions req of
   [RegionBytes name intent] -> Just (name, intent)
   _ -> Nothing
 
+-- | The output intent for an update call, if the caller attached a
+-- byte region. Regionless updates (legacy model tests, silent
+-- dialogues) plan unbounded: they stream everything releasable.
+updateIntent :: Request -> Maybe OutputIntent
+updateIntent req = fmap snd (singleOutput req)
+
 -- | Run one pure planner step and pack the outcome: denies reject
 -- (persisting any termination), effect-free successes commit
 -- immediately, single-effect successes execute with a pinned step.
@@ -1049,9 +1056,9 @@ runFinisher step res = case csFunction step of
   F_VerifyInit -> Nothing
   F_VerifyUpdate -> Nothing
   F_EncryptInit -> Nothing
-  F_EncryptUpdate -> Nothing
+  F_EncryptUpdate -> go finishCipherUpdate
   F_DecryptInit -> Nothing
-  F_DecryptUpdate -> Nothing
+  F_DecryptUpdate -> go finishCipherUpdate
   F_MessageEncryptInit -> Nothing
   F_MessageDecryptInit -> Nothing
   F_MessageSignInit -> Nothing

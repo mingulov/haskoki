@@ -10,7 +10,7 @@ fixture scan can pin their absence.
 Byte format (all integers big-endian; @len32@ is a u32 length plus
 that many bytes; @u8@ tags reject any other value):
 
-> MAGIC    8 bytes "HKSNAP01" (schema id plus format version "01")
+> MAGIC    8 bytes "HKSNAP02" (schema id plus format version "02")
 > PROFILE  u8: 0 = 2.40, 1 = 3.0, 2 = 3.1, 3 = 3.2
 > SLOT     u32: token SlotId (< 2^31)
 > BODY     SINGLE | DUAL
@@ -18,12 +18,14 @@ that many bytes; @u8@ tags reject any other value):
 > SINGLE   0x00 KIND OPTAG COMMON EXTRA
 > KIND     u8 SlotKind tag (must match the reconstructed operation)
 > OPTAG    u8: 0 digest, 1 sign, 2 verify, 3 recover, 4 cipher, 5 message
-> COMMON   MECH OP PARAMS AUTH BUFFERED STAGED KEYSECT
+> COMMON   MECH OP PARAMS AUTH BUFFERED CHAINIV STAGED KEYSECT
 >   MECH     u64 MechanismId
 >   OP       u8 Operation tag (must cohere with OPTAG)
 >   PARAMS   len32 bytes
 >   AUTH     u8: 0 none, 1 pending, 2 satisfied
 >   BUFFERED len32 bytes
+>   CHAINIV u8 0 (never streamed), or 0x01 IV (len32 running
+>            chaining value; empty for ECB, which chains vacuously)
 >   STAGED   u8 0, or 0x01 NAME STBYTES STSTATE
 >     NAME     len32 UTF-8 bytes
 >     STBYTES  len32 bytes
@@ -141,8 +143,10 @@ import Haskoki.Operation.State
   , setBuffered
   , setDual
   , setStaged
+  , setChainIv
   , slotOfActive
   , stagedOf
+  , chainIvOf
   )
 import Haskoki.Registry (MechanismId (..), Operation (..))
 import Haskoki.Types
@@ -161,11 +165,11 @@ import Haskoki.Types
 
 -- | Snapshot magic: schema id plus format version.
 snapshotMagic :: ByteString
-snapshotMagic = "HKSNAP01"
+snapshotMagic = "HKSNAP02"
 
 -- | Snapshot format version carried in the magic.
 snapshotFormatVersion :: Word8
-snapshotFormatVersion = 1
+snapshotFormatVersion = 2
 
 -- | Snapshot size policy: the total-bytes bound plus the per-staged-output
 -- bound. Restore enforces the same quotas, so hostile bytes cannot stage
@@ -543,6 +547,7 @@ encodeCommon :: Model -> SlotCommon -> Either SaveError ByteString
 encodeCommon model sc = do
   params <- putLen (commonParams sc)
   buffered <- putLen (bufferedOf sc)
+  streamIv <- encodeChainIv (chainIvOf sc)
   staged <- encodeStaged (stagedOf sc)
   key <- encodeKeySection model (commonKey sc)
   pure (putU64 (unMechanismId (commonMech sc))
@@ -550,8 +555,14 @@ encodeCommon model sc = do
     <> params
     <> BS.singleton (encodeAuth (commonAuth sc))
     <> buffered
+    <> streamIv
     <> staged
     <> key)
+
+-- | Chaining-value section: absent before the first streamed chunk.
+encodeChainIv :: Maybe ByteString -> Either SaveError ByteString
+encodeChainIv Nothing = Right (BS.singleton 0x00)
+encodeChainIv (Just iv) = (BS.singleton 0x01 <>) <$> putLen iv
 
 -- | Auth mark tag.
 encodeAuth :: OpAuth -> Word8
@@ -694,6 +705,7 @@ data BareCommon = BareCommon
   , bcParams :: !ByteString
   , bcAuth :: !OpAuth
   , bcBuffered :: !ByteString
+  , bcChainIv :: !(Maybe ByteString)
   , bcStaged :: !(Maybe StagedOutput)
   , bcKey :: !(Maybe KeyIdentity)
   } deriving (Eq, Show)
@@ -702,12 +714,14 @@ data BareCommon = BareCommon
 -- slots are always streamless: live streams refuse to save, so no
 -- snapshot can name one. Each decoded shape maps to its phase
 -- explicitly: staged output restores staged, anything else restores
--- buffered.
+-- buffered. The chaining value restores verbatim, so a mid-stream
+-- cipher save resumes chaining exactly.
 toCommon :: BareCommon -> Maybe ObjectId -> SlotCommon
 toCommon bc mkey =
   setStaged (bcStaged bc)
-    (setBuffered (bcBuffered bc)
-      (mkSlotCommon (bcMech bc) (bcOp bc) mkey (bcParams bc) (bcAuth bc)))
+    (setChainIv (bcChainIv bc)
+      (setBuffered (bcBuffered bc)
+        (mkSlotCommon (bcMech bc) (bcOp bc) mkey (bcParams bc) (bcAuth bc))))
 
 -- | A decoded single-operation body.
 data DecodedSingle = DecodedSingle
@@ -1001,9 +1015,19 @@ getCommon = do
   params <- getLenBytes
   auth <- getAuth
   buffered <- getLenBytes
+  streamIv <- getChainIv
   staged <- getStaged
   key <- getKeySection
-  pure (BareCommon mech op params auth buffered staged key)
+  pure (BareCommon mech op params auth buffered streamIv staged key)
+
+-- | Chaining-value section.
+getChainIv :: Get (Maybe ByteString)
+getChainIv = do
+  t <- getU8
+  case t of
+    0 -> pure Nothing
+    1 -> Just <$> getLenBytes
+    _ -> getFail ("chain-iv tag out of range: " ++ show t)
 
 -- | Operation tag; bounded by the 'Operation' enumeration.
 getOperation :: Get Operation

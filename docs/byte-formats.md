@@ -147,11 +147,12 @@ but never validate.
 ## 4. Snapshot/portable bytes (`core/Haskoki/Snapshot.hs`)
 
 Bounded versioned export/import of multipart operations
-(`saveOperation`/`restoreOperation`). Magic `HKSNAP01` (schema id
-plus format version `01`), then a `u8` profile tag (0 = 2.40, 1 =
+(`saveOperation`/`restoreOperation`). Magic `HKSNAP02` (schema id
+plus format version `02`), then a `u8` profile tag (0 = 2.40, 1 =
 3.0, 2 = 3.1, 3 = 3.2), a `u32` slot id, then a single/dual body
-carrying mechanism, operation, parameters, buffered input, staged
-output, shape specs, auth marks, and canonical key identities
+carrying mechanism, operation, parameters, buffered input, the
+cipher chaining value, staged output, shape specs, auth marks,
+and canonical key identities
 (class/key-type/FNV-1a fingerprint — never resource ids,
 pointers, or native handles). The full section grammar is the
 `Snapshot.hs` module header (quoted here in skeleton; the header

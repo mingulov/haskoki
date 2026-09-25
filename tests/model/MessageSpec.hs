@@ -630,7 +630,7 @@ caseClassicMessageMixing = do
   let (opsM, _) =
         initMessageOperation MsgEncrypt testEnv emptySessionOps testSession encryptArgs
       -- Classic update on a message slot: foreign operation.
-      (_, _, upd) = planCipherUpdate opsM testSession SlotEncrypt "part"
+      (_, _, upd) = planCipherUpdate opsM testSession SlotEncrypt "part" Nothing
   assertEqual "classic update on message slot" CKR_GENERAL_ERROR (soCode upd)
   -- Message begin on a classic slot: message process uninitialized.
   let (opsC, _) = initOperation testEnv emptySessionOps testSession encryptArgs

@@ -10,7 +10,7 @@ visibility, usage permission, auth marking); the context-auth gate
 {-# LANGUAGE OverloadedStrings #-}
 module OperationSpec (spec) where
 
-import Data.Bits ((.&.), shiftR)
+import Data.Bits ((.&.), complement, shiftR)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
@@ -44,14 +44,19 @@ import Haskoki.Operation
   , SlotKind (..)
   , StepDeny (..)
   , StepOutcome (..)
+  , activeCipher
   , activeDigest
   , activeSlots
   , bufferedLength
+  , bufferedOf
+  , chainIvOf
   , commonAuth
+  , commonMech
   , commonOf
   , emptySessionOps
   , gateDataCall
   , hasDual
+  , hasStreamed
   , initDualOperation
   , initOperation
   , insertOp
@@ -65,7 +70,9 @@ import Haskoki.Operation
   , slotAuth
   )
 import Haskoki.Operation.Cipher
-  ( finishCipher
+  ( cipherUpdateSplit
+  , finishCipher
+  , finishCipherUpdate
   , pkcs7Pad
   , pkcs7Unpad
   , planCipherFinal
@@ -146,6 +153,12 @@ spec = testGroup "operation lifecycles"
   , testCase "premature grant use fails and consumes nothing" casePremature
   , testCase "pkcs7 pad and unpad vectors" casePkcs7
   , testCase "encrypt multipart equals one-shot" caseCipherMultipart
+  , testCase "update split table" caseUpdateSplitTable
+  , testCase "update short buffer refuses without consuming" caseUpdateShortNoConsume
+  , testCase "streamed-but-drained slot still blocks one-shot" caseStreamedDrainedMarker
+  , testCase "decrypt update advances the chaining value" caseDecryptChainsRunningIv
+  , testCase "ecb decrypt streams without a chaining value" caseEcbDecryptNoChain
+  , testCase "encrypt update chains the next chunk from the answer" caseEncryptChainsFromAnswer
   , testCase "encrypt/decrypt roundtrip with padding" caseCipherRoundtrip
   , testCase "unpadded length denies terminate the slot" caseCipherLengths
   , testCase "decrypt bad padding fails terminally" caseCipherBadPad
@@ -187,6 +200,9 @@ hmacMech = MechanismId 0x251
 
 aesCbcMech :: MechanismId
 aesCbcMech = MechanismId 0x1082
+
+aesEcbMech :: MechanismId
+aesEcbMech = MechanismId 0x1081
 
 aesGcmMech :: MechanismId
 aesGcmMech = MechanismId 0x1087
@@ -670,28 +686,49 @@ casePkcs7 = do
 caseCipherMultipart :: IO ()
 caseCipherMultipart = do
   let msg = "hello, world, this is padded"
-  -- Multipart: two updates plus final.
+      -- A bytewise toy (streaming preserves one-shot equivalence
+      -- exactly when the cipher is position-independent; the
+      -- reversing toy cannot express that).
+      streamCrypt = BS.map complement
+      runStream (FxCipher _ _ _ _ input) = GotBytes (streamCrypt input)
+      runStream fx = GotCryptoError (CryptoFailed ("unexpected effect: " ++ show fx))
+  -- Multipart: two updates plus final. The first update buffers
+  -- (7 bytes release nothing); the second streams 16 and retains
+  -- 12; the final pads the retained 12.
   let (ops0, i0) = initOperation testEnv emptySessionOps testSession encryptArgs
   assertEqual "encrypt init ok" CKR_OK (ioCode i0)
-  let (ops1, _, u1) = planCipherUpdate ops0 testSession SlotEncrypt "hello, "
+  let (ops1, _, u1) = planCipherUpdate ops0 testSession SlotEncrypt "hello, " Nothing
   assertEqual "update 1 ok" CKR_OK (soCode u1)
-  assertEqual "update plans no crypto" [] (soEffects u1)
-  let (ops2, _, u2) = planCipherUpdate ops1 testSession SlotEncrypt "world, this is padded"
+  assertEqual "update 1 plans no crypto" [] (soEffects u1)
+  let (ops2, _, u2) = planCipherUpdate ops1 testSession SlotEncrypt "world, this is padded" Nothing
   assertEqual "update 2 ok" CKR_OK (soCode u2)
-  let (ops3, _, f0) = planCipherFinal ops2 testSession SlotEncrypt "cipher"
+  updCt <- case soEffects u2 of
+    [fx@(FxCipher DirEncrypt mech _ _ input)] -> do
+      assertEqual "update mechanism" aesCbcMech mech
+      assertEqual "update streams one block" 16 (BS.length input)
+      let (opsU, finU) = finishCipherUpdate ops2 SlotEncrypt "cipher"
+            (runStream fx) (IntentBuffer 128)
+      assertEqual "update finish ok" CKR_OK (soCode finU)
+      assertEqual "update keeps the slot" [SlotEncrypt] (activeSlots opsU)
+      case stagedBytes finU of
+        Just ct -> pure (opsU, ct)
+        Nothing -> assertFailure "expected streamed ciphertext"
+    other -> assertFailure ("expected one update effect, got " ++ show other)
+  let (opsU, updBytes) = updCt
+  let (ops3, _, f0) = planCipherFinal opsU testSession SlotEncrypt "cipher"
   assertEqual "final plans" CKR_OK (soCode f0)
   multiCt <- case soEffects f0 of
     [FxCipher DirEncrypt mech _ _ input] -> do
       assertEqual "effect mechanism" aesCbcMech mech
-      assertEqual "effect input is padded" 32 (BS.length input)
+      assertEqual "final input is padded retained" 16 (BS.length input)
       assertBool "block aligned" (BS.length input `mod` 16 == 0)
       let (ops4, fin) = finishCipher ops3 SlotEncrypt "cipher"
-            (runCipherEffect (FxCipher DirEncrypt mech Nothing BS.empty input))
+            (runStream (FxCipher DirEncrypt mech Nothing BS.empty input))
             (IntentBuffer 128)
       assertEqual "final ok" CKR_OK (soCode fin)
       assertEqual "final frees the slot" [] (activeSlots ops4)
       case stagedBytes fin of
-        Just ct -> pure ct
+        Just ct -> pure (updBytes <> ct)
         Nothing -> assertFailure "expected staged ciphertext"
     other -> assertFailure ("expected one cipher effect, got " ++ show other)
   -- One-shot over the same message gives identical bytes.
@@ -700,7 +737,7 @@ caseCipherMultipart = do
   oneCt <- case soEffects o1 of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
       let (_, fin) = finishCipher ops6 SlotEncrypt "cipher"
-            (runCipherEffect fx) (IntentBuffer 128)
+            (runStream fx) (IntentBuffer 128)
       case stagedBytes fin of
         Just ct -> pure ct
         Nothing -> assertFailure "expected staged ciphertext"
@@ -708,9 +745,195 @@ caseCipherMultipart = do
   assertEqual "multipart equals one-shot" oneCt multiCt
   -- One-shot after an update is rejected on cipher slots too.
   let (ops7, _) = initOperation testEnv emptySessionOps testSession encryptArgs
-  let (ops8, _, _) = planCipherUpdate ops7 testSession SlotEncrypt "part"
+  let (ops8, _, _) = planCipherUpdate ops7 testSession SlotEncrypt "part" Nothing
   let (_, _, bad) = planCipherOneShot ops8 testSession SlotEncrypt "cipher" msg
   assertEqual "one-shot after update" CKR_OPERATION_ACTIVE (soCode bad)
+
+caseUpdateSplitTable :: IO ()
+caseUpdateSplitTable = do
+  let cbc = aesCbcMech
+      ecb = aesEcbMech
+      gcm = aesGcmMech
+      oaep = MechanismId 0x0009
+      plain = CipherSpec 16 False
+      padded = CipherSpec 16 True
+  -- Unpadded modes stream every full block, both directions.
+  mapM_ (\(total, want) -> do
+      assertEqual ("ecb enc " ++ show total) want
+        (cipherUpdateSplit ecb plain DirEncrypt total)
+      assertEqual ("ecb dec " ++ show total) want
+        (cipherUpdateSplit ecb plain DirDecrypt total)
+      assertEqual ("cbc enc " ++ show total) want
+        (cipherUpdateSplit cbc plain DirEncrypt total)
+      assertEqual ("cbc dec " ++ show total) want
+        (cipherUpdateSplit cbc plain DirDecrypt total)
+    ) [(0, (0, 0)), (15, (0, 15)), (16, (16, 0)), (31, (16, 15)), (32, (32, 0))]
+  -- Padded encrypt holds the trailing partial block (or one full
+  -- block when aligned: the pad companion is undecided).
+  mapM_ (\(total, want) -> assertEqual ("pad enc " ++ show total) want
+    (cipherUpdateSplit cbc padded DirEncrypt total)
+    ) [(0, (0, 0)), (15, (0, 15)), (16, (0, 16)), (31, (16, 15)), (32, (16, 16)), (33, (32, 1))]
+  -- Padded decrypt always holds the last block (it carries the pad).
+  mapM_ (\(total, want) -> assertEqual ("pad dec " ++ show total) want
+    (cipherUpdateSplit cbc padded DirDecrypt total)
+    ) [(0, (0, 0)), (16, (0, 16)), (31, (0, 31)), (32, (16, 16)), (40, (16, 24)), (48, (32, 16))]
+  -- Unframed ciphers never stream; degenerate specs buffer too.
+  assertEqual "gcm buffers" (0, 100)
+    (cipherUpdateSplit gcm (CipherSpec 1 False) DirEncrypt 100)
+  assertEqual "gcm decrypt buffers" (0, 100)
+    (cipherUpdateSplit gcm (CipherSpec 1 False) DirDecrypt 100)
+  assertEqual "oaep buffers" (0, 64)
+    (cipherUpdateSplit oaep (CipherSpec 16 False) DirEncrypt 64)
+  assertEqual "zero block buffers" (0, 32)
+    (cipherUpdateSplit cbc (CipherSpec 0 False) DirEncrypt 32)
+
+caseUpdateShortNoConsume :: IO ()
+caseUpdateShortNoConsume = do
+  let (ops0, _) = initOperation testEnv emptySessionOps testSession encryptArgs
+      part = BS.replicate 31 0x41
+      -- 31 bytes release 16; a 1-byte buffer refuses cleanly.
+      (ops1, st1, short) = planCipherUpdate ops0 testSession SlotEncrypt part
+        (Just (IntentBuffer 1))
+  assertEqual "short update refuses" CKR_BUFFER_TOO_SMALL (soCode short)
+  assertEqual "short update changes no slot state"
+    (lookupSingle ops0 SlotEncrypt) (lookupSingle ops1 SlotEncrypt)
+  assertEqual "short update spends no gate" (ssLogin testSession) (ssLogin st1)
+  -- The same part with room streams; the slot was untouched, so
+  -- this plans exactly as a first call.
+  let (ops2, _, full) = planCipherUpdate ops0 testSession SlotEncrypt part
+        (Just (IntentBuffer 128))
+  assertEqual "roomy update ok" CKR_OK (soCode full)
+  case soEffects full of
+    [FxCipher DirEncrypt _ _ _ input] ->
+      assertEqual "streams one block" 16 (BS.length input)
+    other -> assertFailure ("expected one update effect, got " ++ show other)
+  assertEqual "retained suffix" (Just 15) (bufferedLength ops2 SlotEncrypt)
+
+ecbEncryptArgs :: InitArgs
+ecbEncryptArgs = InitArgs
+  { iaOp = OpEncrypt
+  , iaMech = aesEcbMech
+  , iaParams = BS.empty
+  , iaKey = Just aesKey
+  , iaCipher = Just (CipherSpec 16 False)
+  , iaRecover = Nothing
+  }
+
+ecbDecryptArgs :: InitArgs
+ecbDecryptArgs = InitArgs
+  { iaOp = OpDecrypt
+  , iaMech = aesEcbMech
+  , iaParams = BS.empty
+  , iaKey = Just aesKey
+  , iaCipher = Just (CipherSpec 16 False)
+  , iaRecover = Nothing
+  }
+
+ecbTestEnv :: OpEnv
+ecbTestEnv = testEnv
+  { oeCaps = mkCapabilities [(aesEcbMech, OpEncrypt), (aesEcbMech, OpDecrypt)] }
+
+caseStreamedDrainedMarker :: IO ()
+caseStreamedDrainedMarker = do
+  let (ops0, i0) = initOperation ecbTestEnv emptySessionOps testSession ecbEncryptArgs
+  assertEqual "ecb init ok" CKR_OK (ioCode i0)
+  -- One full block streams and drains the buffer — yet the slot
+  -- still counts as multipart-started.
+  let (ops1, _, u1) = planCipherUpdate ops0 testSession SlotEncrypt
+        (BS.replicate 16 0x42) Nothing
+  assertEqual "update ok" CKR_OK (soCode u1)
+  assertEqual "buffer drained" (Just 0) (bufferedLength ops1 SlotEncrypt)
+  case lookupSingle ops1 SlotEncrypt >>= activeCipher of
+    Just (_, sc, _) -> do
+      assertBool "stream marker set" (hasStreamed sc)
+      assertEqual "ecb marker is empty" (Just BS.empty) (chainIvOf sc)
+    Nothing -> assertFailure "expected cipher slot"
+  let (_, _, bad) = planCipherOneShot ops1 testSession SlotEncrypt "cipher" "x"
+  assertEqual "one-shot after streamed update" CKR_OPERATION_ACTIVE (soCode bad)
+
+caseDecryptChainsRunningIv :: IO ()
+caseDecryptChainsRunningIv = do
+  let (ops0, i0) = initOperation testEnv emptySessionOps testSession decryptArgs
+  assertEqual "decrypt init ok" CKR_OK (ioCode i0)
+  -- 32 bytes of padded-decrypt input release the first block; the
+  -- chaining value advances to it at plan time (ciphertext input
+  -- is known before the effect runs).
+  let ct = BS.pack [0 .. 31]
+      (ops1, _, u1) = planCipherUpdate ops0 testSession SlotDecrypt ct Nothing
+  assertEqual "update ok" CKR_OK (soCode u1)
+  case soEffects u1 of
+    [FxCipher DirDecrypt mech _ params input] -> do
+      assertEqual "update mechanism" aesCbcMech mech
+      assertEqual "streams one block" 16 (BS.length input)
+      assertEqual "first chunk chains the init IV" (BS.replicate 16 0) params
+    other -> assertFailure ("expected one update effect, got " ++ show other)
+  sc1 <- case lookupSingle ops1 SlotDecrypt >>= activeCipher of
+    Just (_, sc, _) -> pure sc
+    Nothing -> assertFailure "expected decrypt slot"
+  assertEqual "chaining value is the first block"
+    (Just (BS.pack [0 .. 15])) (chainIvOf sc1)
+  assertEqual "retained suffix" 16 (BS.length (bufferedOf sc1))
+  -- The final chains from the running value, not the init IV.
+  let (_, _, f0) = planCipherFinal ops1 testSession SlotDecrypt "cipher"
+  case soEffects f0 of
+    [FxCipher DirDecrypt _ _ params _] ->
+      assertEqual "final chains the running IV" (BS.pack [0 .. 15]) params
+    other -> assertFailure ("expected one final effect, got " ++ show other)
+
+caseEcbDecryptNoChain :: IO ()
+caseEcbDecryptNoChain = do
+  let (ops0, i0) = initOperation ecbTestEnv emptySessionOps testSession ecbDecryptArgs
+  assertEqual "ecb decrypt init ok" CKR_OK (ioCode i0)
+  -- ECB has no IV: the streamed block must NOT become a chaining
+  -- value, or the final effect would carry a 16-byte "IV" the ECB
+  -- recipe rejects (GENERAL_ERROR at the driver).
+  let ct = BS.pack [0 .. 15]
+      (ops1, _, u1) = planCipherUpdate ops0 testSession SlotDecrypt ct Nothing
+  assertEqual "update ok" CKR_OK (soCode u1)
+  case lookupSingle ops1 SlotDecrypt >>= activeCipher of
+    Just (_, sc, _) -> do
+      assertBool "stream marker set" (hasStreamed sc)
+      assertEqual "ecb marker is empty" (Just BS.empty) (chainIvOf sc)
+    Nothing -> assertFailure "expected decrypt slot"
+  let (_, _, f0) = planCipherFinal ops1 testSession SlotDecrypt "cipher"
+  case soEffects f0 of
+    [FxCipher DirDecrypt mech _ params input] -> do
+      assertEqual "final mechanism" aesEcbMech mech
+      assertEqual "final chains empty params" BS.empty params
+      assertEqual "final input drained" BS.empty input
+    other -> assertFailure ("expected one final effect, got " ++ show other)
+
+caseEncryptChainsFromAnswer :: IO ()
+caseEncryptChainsFromAnswer = do
+  let (ops0, _) = initOperation testEnv emptySessionOps testSession encryptArgs
+  -- Nothing is known at plan time (the chaining block is ciphertext
+  -- the driver has not produced yet).
+  let (ops1, _, u1) = planCipherUpdate ops0 testSession SlotEncrypt
+        (BS.replicate 31 0x43) Nothing
+  case soEffects u1 of
+    [FxCipher DirEncrypt _ _ _ input] ->
+      assertEqual "streams one block" 16 (BS.length input)
+    other -> assertFailure ("expected one update effect, got " ++ show other)
+  case lookupSingle ops1 SlotEncrypt >>= activeCipher of
+    Just (_, sc, _) -> assertEqual "no chaining value yet" Nothing (chainIvOf sc)
+    Nothing -> assertFailure "expected cipher slot"
+  -- The finisher advances the chaining value from the answer and
+  -- keeps the slot open on the retained suffix.
+  let answer = BS.pack [100 .. 115]
+      (ops2, fin) = finishCipherUpdate ops1 SlotEncrypt "cipher"
+        (GotBytes answer) (IntentBuffer 128)
+  assertEqual "update finish ok" CKR_OK (soCode fin)
+  assertEqual "update keeps the slot" [SlotEncrypt] (activeSlots ops2)
+  sc2 <- case lookupSingle ops2 SlotEncrypt >>= activeCipher of
+    Just (_, sc, _) -> pure sc
+    Nothing -> assertFailure "expected cipher slot"
+  assertEqual "chaining value is the answer block" (Just answer) (chainIvOf sc2)
+  assertEqual "retained suffix" 15 (BS.length (bufferedOf sc2))
+  -- A short answer terminates instead of chaining garbage.
+  let (ops3, badFin) = finishCipherUpdate ops1 SlotEncrypt "cipher"
+        (GotBytes "short") (IntentBuffer 128)
+  assertEqual "short answer fails closed" CKR_GENERAL_ERROR (soCode badFin)
+  assertEqual "short answer terminates" [] (activeSlots ops3)
 
 caseCipherRoundtrip :: IO ()
 caseCipherRoundtrip = do
@@ -745,12 +968,12 @@ caseCipherLengths = do
   -- slot (spec: every error other than BUFFER_TOO_SMALL terminates);
   -- no repair update can follow a denied final.
   let (ops0, _) = initOperation testEnv emptySessionOps testSession encryptNoPadArgs
-  let (ops1, _, _) = planCipherUpdate ops0 testSession SlotEncrypt "twelve bytes"
+  let (ops1, _, _) = planCipherUpdate ops0 testSession SlotEncrypt "twelve bytes" Nothing
   assertEqual "buffered" (Just 12) (bufferedLength ops1 SlotEncrypt)
   let (ops2, _, fout) = planCipherFinal ops1 testSession SlotEncrypt "cipher"
   assertEqual "ragged unpadded denied" CKR_DATA_LEN_RANGE (soCode fout)
   assertEqual "length deny frees the slot" [] (activeSlots ops2)
-  let (_, _, upd) = planCipherUpdate ops2 testSession SlotEncrypt "1234"
+  let (_, _, upd) = planCipherUpdate ops2 testSession SlotEncrypt "1234" Nothing
   assertEqual "no repair after denied final"
     CKR_OPERATION_NOT_INITIALIZED (soCode upd)
   -- The ragged one-shot terminates the same way.
@@ -761,7 +984,7 @@ caseCipherLengths = do
   -- One-shot over buffered multipart input denies ACTIVE and
   -- terminates (a re-init, not a final, follows).
   let (opsC, _) = initOperation testEnv emptySessionOps testSession encryptArgs
-  let (opsD, _, _) = planCipherUpdate opsC testSession SlotEncrypt "abc"
+  let (opsD, _, _) = planCipherUpdate opsC testSession SlotEncrypt "abc" Nothing
   let (opsE, _, mid) = planCipherOneShot opsD testSession SlotEncrypt "cipher" "d"
   assertEqual "one-shot over buffered" CKR_OPERATION_ACTIVE (soCode mid)
   assertEqual "mid-stream deny frees the slot" [] (activeSlots opsE)
@@ -843,12 +1066,12 @@ caseAuthConsumeUpdate = do
   assertEqual "init ok" CKR_OK (ioCode i0)
   assertEqual "pending" (Just AuthPending) (slotAuth ops0 SlotEncrypt)
   -- First data call spends the grant and returns to a plain login.
-  let (ops1, st1, u1) = planCipherUpdate ops0 granted SlotEncrypt "part-1"
+  let (ops1, st1, u1) = planCipherUpdate ops0 granted SlotEncrypt "part-1" Nothing
   assertEqual "first update ok" CKR_OK (soCode u1)
   assertEqual "grant consumed" LoginUser (ssLogin st1)
   assertEqual "slot satisfied" (Just AuthSatisfied) (slotAuth ops1 SlotEncrypt)
   -- Later updates proceed under the plain login.
-  let (ops2, st2, u2) = planCipherUpdate ops1 st1 SlotEncrypt "part-2"
+  let (ops2, st2, u2) = planCipherUpdate ops1 st1 SlotEncrypt "part-2" Nothing
   assertEqual "second update ok" CKR_OK (soCode u2)
   assertEqual "still plain login" LoginUser (ssLogin st2)
   assertEqual "buffered both" (Just 12) (bufferedLength ops2 SlotEncrypt)
@@ -860,12 +1083,12 @@ caseAuthLateFails = do
       granted = testSession { ssLogin = LoginContextUser }
   let (ops0, _) = initOperation testEnv emptySessionOps logged authArgs
   -- Grantless first data call denies and terminates the pending slot.
-  let (ops1, st1, u1) = planCipherUpdate ops0 logged SlotEncrypt "part-1"
+  let (ops1, st1, u1) = planCipherUpdate ops0 logged SlotEncrypt "part-1" Nothing
   assertEqual "grantless denied" CKR_USER_NOT_LOGGED_IN (soCode u1)
   assertEqual "pending slot terminated" [] (activeSlots ops1)
   assertEqual "login untouched" LoginUser (ssLogin st1)
   -- The late grant finds no operation to spend on.
-  let (_, _, u2) = planCipherUpdate ops1 granted SlotEncrypt "part-1"
+  let (_, _, u2) = planCipherUpdate ops1 granted SlotEncrypt "part-1" Nothing
   assertEqual "late use fails" CKR_OPERATION_NOT_INITIALIZED (soCode u2)
 
 caseCipherBlockRange :: IO ()
@@ -1204,8 +1427,8 @@ caseDualUpdate = do
   let (dOps1, _, du1) = planDigestUpdate (withDigestStream dOps0) testSession "part-1"
   let (dOps2, _, du2) = planDigestUpdate dOps1 testSession "part-2!!"
   let (cOps0, _) = initOperation testEnv emptySessionOps testSession encryptArgs
-  let (cOps1, _, _) = planCipherUpdate cOps0 testSession SlotEncrypt "part-1"
-  let (cOps2, _, _) = planCipherUpdate cOps1 testSession SlotEncrypt "part-2!!"
+  let (cOps1, _, _) = planCipherUpdate cOps0 testSession SlotEncrypt "part-1" Nothing
+  let (cOps2, _, _) = planCipherUpdate cOps1 testSession SlotEncrypt "part-2!!" Nothing
   assertEqual "single digest streams part 1"
     [FxDigestFeed streamRid "part-1"] (soEffects du1)
   assertEqual "single digest streams part 2"
@@ -1216,6 +1439,12 @@ caseDualUpdate = do
 caseDualFinal :: IO ()
 caseDualFinal = do
   let msg = "hello, world, this is padded"
+      -- Bytewise toy: dual buffers everything while the streamed
+      -- single cipher emits per chunk, so only a
+      -- position-independent cipher keeps the pair equal.
+      runStream (FxCipher _ _ _ _ input) =
+        GotBytes (BS.map complement input)
+      runStream fx = GotCryptoError (CryptoFailed ("unexpected effect: " ++ show fx))
   let (ops0, _) = initDualOperation testEnv emptySessionOps testSession
         digestArgs encryptArgs
   let (ops1, _, _) = planDualUpdate ops0 testSession "hello, "
@@ -1230,7 +1459,7 @@ caseDualFinal = do
       assertEqual "cipher input padded" 32 (BS.length cIn)
       let (ops4, fin) = finishDual ops3 "digest" "cipher"
             (runDigestEffect (FxDigest dMech dIn))
-            (runCipherEffect (FxCipher DirEncrypt cMech Nothing BS.empty cIn))
+            (runStream (FxCipher DirEncrypt cMech Nothing BS.empty cIn))
             (IntentBuffer 64) (IntentBuffer 128)
       assertEqual "dual final ok" CKR_OK (soCode fin)
       assertBool "dual freed" (not (hasDual ops4))
@@ -1254,15 +1483,26 @@ caseDualFinal = do
         Nothing -> assertFailure "expected digest bytes"
     other -> assertFailure ("expected one consume effect, got " ++ show other)
   let (cOps0, _) = initOperation testEnv emptySessionOps testSession encryptArgs
-  let (cOps1, _, _) = planCipherUpdate cOps0 testSession SlotEncrypt "hello, "
-  let (cOps2, _, _) = planCipherUpdate cOps1 testSession SlotEncrypt "world, this is padded"
-  let (cOps3, _, cf) = planCipherFinal cOps2 testSession SlotEncrypt "cipher"
+  let (cOps1, _, _) = planCipherUpdate cOps0 testSession SlotEncrypt "hello, " Nothing
+  let (cOps2, _, cu) = planCipherUpdate cOps1 testSession SlotEncrypt "world, this is padded" Nothing
+  streamOut <- case soEffects cu of
+    [fx@(FxCipher DirEncrypt _ _ _ input)] -> do
+      assertEqual "update streams one block" 16 (BS.length input)
+      let (cOpsU, finU) = finishCipherUpdate cOps2 SlotEncrypt "cipher"
+            (runStream fx) (IntentBuffer 128)
+      assertEqual "update finish ok" CKR_OK (soCode finU)
+      case stagedBytes finU of
+        Just b -> pure (cOpsU, b)
+        Nothing -> assertFailure "expected streamed bytes"
+    other -> assertFailure ("expected one update effect, got " ++ show other)
+  let (cOpsU, updBytes) = streamOut
+  let (cOps3, _, cf) = planCipherFinal cOpsU testSession SlotEncrypt "cipher"
   cOut <- case soEffects cf of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
       let (_, fin) = finishCipher cOps3 SlotEncrypt "cipher"
-            (runCipherEffect fx) (IntentBuffer 128)
+            (runStream fx) (IntentBuffer 128)
       case stagedBytes fin of
-        Just b -> pure b
+        Just b -> pure (updBytes <> b)
         Nothing -> assertFailure "expected cipher bytes"
     other -> assertFailure ("expected one cipher effect, got " ++ show other)
   assertEqual "dual equals non-combined" (dOut, cOut) dualPair
