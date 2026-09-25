@@ -13729,7 +13729,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "pairgen (templates via the template rules; P-256/P-384/P-521 via ecCurveOf; GenEc). Real execution pinned by KeyManagementSpec caseRealEcKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 0/0 unspecified (curve-dependent).",
+      "notes": "pairgen (templates via the template rules; all 22 Der.curveTable rows via ecCurveOf; GenEc). Real execution pinned by KeyManagementSpec caseRealEcKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 0/0 unspecified (curve-dependent).",
       "numeric_id": "0x00001040",
       "routes": [
         {
@@ -13799,7 +13799,7 @@
         "max_key_size": 521,
         "min_key_size": 256
       },
-      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): raw row: the input is signed directly with no hashing (overlong input is a typed refusal); An earlier revision hashed under this id; corrected to spec-true raw. Curves P-256/P-384/P-521 (driver sniffs the DER curve OID; the backends execute against the key's actual curve). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: raw P-256 CLI interop vector + per-curve roundtrips (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
+      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): raw row: the input is signed directly with no hashing (overlong input is a typed refusal); An earlier revision hashed under this id; corrected to spec-true raw. Curves: all 22 Der.curveTable rows (driver sniffs the DER curve OID; the backends execute against the key's actual curve; weak/binary rows ride for maximal oracle coverage). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: raw P-256 CLI interop vector + per-curve roundtrips over all 22 curves (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
       "numeric_id": "0x00001041",
       "routes": [
         {
@@ -13886,7 +13886,7 @@
         "max_key_size": 521,
         "min_key_size": 256
       },
-      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA-1 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves P-256/P-384/P-521 (driver sniffs the DER curve OID; the backends execute against the key's actual curve). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
+      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA-1 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves: all 22 Der.curveTable rows (driver sniffs the DER curve OID; the backends execute against the key's actual curve; weak/binary rows ride for maximal oracle coverage). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips over all 22 curves (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
       "numeric_id": "0x00001042",
       "routes": [
         {
@@ -13973,7 +13973,7 @@
         "max_key_size": 521,
         "min_key_size": 256
       },
-      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA-224 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves P-256/P-384/P-521 (driver sniffs the DER curve OID; the backends execute against the key's actual curve). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
+      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA-224 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves: all 22 Der.curveTable rows (driver sniffs the DER curve OID; the backends execute against the key's actual curve; weak/binary rows ride for maximal oracle coverage). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips over all 22 curves (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
       "numeric_id": "0x00001043",
       "routes": [
         {
@@ -14060,7 +14060,7 @@
         "max_key_size": 521,
         "min_key_size": 256
       },
-      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA-256 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves P-256/P-384/P-521 (driver sniffs the DER curve OID; the backends execute against the key's actual curve). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: P-256 fixed vector (original pin) + per-curve roundtrips (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
+      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA-256 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves: all 22 Der.curveTable rows (driver sniffs the DER curve OID; the backends execute against the key's actual curve; weak/binary rows ride for maximal oracle coverage). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: P-256 fixed vector (original pin) + per-curve roundtrips over all 22 curves (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
       "numeric_id": "0x00001044",
       "routes": [
         {
@@ -14147,7 +14147,7 @@
         "max_key_size": 521,
         "min_key_size": 256
       },
-      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA-384 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves P-256/P-384/P-521 (driver sniffs the DER curve OID; the backends execute against the key's actual curve). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: P-384 CLI interop vector + per-curve roundtrips (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
+      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA-384 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves: all 22 Der.curveTable rows (driver sniffs the DER curve OID; the backends execute against the key's actual curve; weak/binary rows ride for maximal oracle coverage). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: P-384 CLI interop vector + per-curve roundtrips over all 22 curves (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
       "numeric_id": "0x00001045",
       "routes": [
         {
@@ -14234,7 +14234,7 @@
         "max_key_size": 521,
         "min_key_size": 256
       },
-      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA-512 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves P-256/P-384/P-521 (driver sniffs the DER curve OID; the backends execute against the key's actual curve). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: P-521 CLI interop vector + per-curve roundtrips (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
+      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA-512 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves: all 22 Der.curveTable rows (driver sniffs the DER curve OID; the backends execute against the key's actual curve; weak/binary rows ride for maximal oracle coverage). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: P-521 CLI interop vector + per-curve roundtrips over all 22 curves (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
       "numeric_id": "0x00001046",
       "routes": [
         {
@@ -14321,7 +14321,7 @@
         "max_key_size": 521,
         "min_key_size": 256
       },
-      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA3-224 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves P-256/P-384/P-521 (driver sniffs the DER curve OID; the backends execute against the key's actual curve). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
+      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA3-224 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves: all 22 Der.curveTable rows (driver sniffs the DER curve OID; the backends execute against the key's actual curve; weak/binary rows ride for maximal oracle coverage). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips over all 22 curves (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
       "numeric_id": "0x00001047",
       "routes": [
         {
@@ -14408,7 +14408,7 @@
         "max_key_size": 521,
         "min_key_size": 256
       },
-      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA3-256 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves P-256/P-384/P-521 (driver sniffs the DER curve OID; the backends execute against the key's actual curve). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
+      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA3-256 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves: all 22 Der.curveTable rows (driver sniffs the DER curve OID; the backends execute against the key's actual curve; weak/binary rows ride for maximal oracle coverage). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips over all 22 curves (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
       "numeric_id": "0x00001048",
       "routes": [
         {
@@ -14495,7 +14495,7 @@
         "max_key_size": 521,
         "min_key_size": 256
       },
-      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA3-384 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves P-256/P-384/P-521 (driver sniffs the DER curve OID; the backends execute against the key's actual curve). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
+      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA3-384 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves: all 22 Der.curveTable rows (driver sniffs the DER curve OID; the backends execute against the key's actual curve; weak/binary rows ride for maximal oracle coverage). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips over all 22 curves (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
       "numeric_id": "0x00001049",
       "routes": [
         {
@@ -14582,7 +14582,7 @@
         "max_key_size": 521,
         "min_key_size": 256
       },
-      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA3-512 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves P-256/P-384/P-521 (driver sniffs the DER curve OID; the backends execute against the key's actual curve). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
+      "notes": "ECDSA recipe (core/Haskoki/Recipe/Ecdsa.hs): hash-and-sign with SHA3-512 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER. Curves: all 22 Der.curveTable rows (driver sniffs the DER curve OID; the backends execute against the key's actual curve; weak/binary rows ride for maximal oracle coverage). Real execution pinned (OpenSSLSpec caseEcdsaCurvesVectors against the pinned libcrypto: per-curve roundtrips over all 22 curves (RAW and DER)); synthetic per-curve/per-digest constructions pinned (SyntheticSpec caseEcdsaCurves); init enforces the encoding selection (RecipeEcdsaSpec).",
       "numeric_id": "0x0000104a",
       "routes": [
         {
@@ -14668,7 +14668,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "ECDH recipe (core/Haskoki/Recipe/Ecdh.hs): plain agreement. Null-KDF (raw x-coordinate) only; every other KDF selector is a typed refusal (deferred dimension). Curves P-256/P-384/P-521 (base and peer must scan on one curve; the shim agrees via EVP_PKEY_derive under the pinned libctx). Real KATs pinned (OpenSSLSpec caseEcdhVectors against the pinned libcrypto: P-256 both directions + cofactor, P-384); synthetic 66-byte max-width constructions pinned (SyntheticSpec caseEcdh); planner width ceiling + driver truncation pinned (RecipeEcdhSpec, RoutingE2ESpec caseDriverEcdh).",
+      "notes": "ECDH recipe (core/Haskoki/Recipe/Ecdh.hs): plain agreement. Null-KDF (raw x-coordinate) only; every other KDF selector is a typed refusal (deferred dimension). Curves: all 22 rows (base scans exactly, bare peers resolve widths since lengths collide; the shim agrees via EVP_PKEY_derive under the pinned libctx). Real KATs pinned (OpenSSLSpec caseEcdhVectors against the pinned libcrypto: P-256 both directions + cofactor, P-384, sect283k1 plain/cofactor); synthetic 72-byte max-width constructions pinned (SyntheticSpec caseEcdh); planner width ceiling + driver truncation pinned (RecipeEcdhSpec, RoutingE2ESpec caseDriverEcdh).",
       "numeric_id": "0x00001050",
       "routes": [
         {
@@ -14748,7 +14748,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "ECDH recipe (core/Haskoki/Recipe/Ecdh.hs): cofactor-multiplied agreement (threaded to libcrypto; a no-op on the h=1 NIST prime curves, pinned equal to plain). Null-KDF (raw x-coordinate) only; every other KDF selector is a typed refusal (deferred dimension). Curves P-256/P-384/P-521 (base and peer must scan on one curve; the shim agrees via EVP_PKEY_derive under the pinned libctx). Real KATs pinned (OpenSSLSpec caseEcdhVectors against the pinned libcrypto: P-256 both directions + cofactor, P-384); synthetic 66-byte max-width constructions pinned (SyntheticSpec caseEcdh); planner width ceiling + driver truncation pinned (RecipeEcdhSpec, RoutingE2ESpec caseDriverEcdh).",
+      "notes": "ECDH recipe (core/Haskoki/Recipe/Ecdh.hs): cofactor-multiplied agreement (threaded to libcrypto; a no-op on h=1 curves, pinned equal to plain; sect283k1 KAT pins h=2 divergence). Null-KDF (raw x-coordinate) only; every other KDF selector is a typed refusal (deferred dimension). Curves: all 22 rows (base scans exactly, bare peers resolve widths since lengths collide; the shim agrees via EVP_PKEY_derive under the pinned libctx). Real KATs pinned (OpenSSLSpec caseEcdhVectors against the pinned libcrypto: P-256 both directions + cofactor, P-384, sect283k1 plain/cofactor); synthetic 72-byte max-width constructions pinned (SyntheticSpec caseEcdh); planner width ceiling + driver truncation pinned (RecipeEcdhSpec, RoutingE2ESpec caseDriverEcdh).",
       "numeric_id": "0x00001051",
       "routes": [
         {
