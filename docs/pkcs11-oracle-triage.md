@@ -425,6 +425,10 @@ KAT-r2 ran the stale `/tmp/p11data` limbo.json (9786 cases) while
 fast r20 and KAT-r3 use the canonical fetch (9793 cases); r2
 normalized to canonical data would read 25794 passed.
 Zero pass→fail, zero crashes, zero xpass.
+r4 reruns the KAT lane on the post-gates rebuild of the same
+source and is byte-identical to r3 (25811/2, same HOTP pair),
+closing the evidence chain on the shipped bundle; likewise fast
+r21d matches r21c exactly.
 
 ## KAT lane status (historical r2, fixed bundle: COMPLETE)
 
