@@ -11,7 +11,7 @@ not per test.
 ## Fast-lane results across fix rounds
 
 Total collected varies by framework checkout (r11: 5780; r14: 5798;
-r15: 5820; r18: 5840; r19: 5844; r20: 5864). Summaries are authoritative;
+r15: 5820; r18: 5840; r19: 5844; r20: 5864; r21: 5888). Summaries are authoritative;
 the per-test records list interesting outcomes only (see Method).
 
 | Round | Passed | Failed | XFailed | Skipped | Child crashes |
@@ -37,6 +37,7 @@ the per-test records list interesting outcomes only (see Method).
 | r18 (pkcs11-check 0.2.1 oracle) | 2863 | 20 | 398 | 2559 | 0 |
 | r19 (T5a/b/c/d + T8 RSA wrap) | 2874 | 2 | 387 | 2581 | 0 |
 | r20 (EC_POINT stamp + GCM/ECDH fixes) | 2930 | 2 | 351 | 2581 | 0 |
+| r21 (AES-CTR slice) | 2947 | 2 | 357 | 2582 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -236,7 +237,7 @@ first lane proving all of them together.
   harness-side keygen). T4 message-API legs never materialized
   (the oracle skips clean `FUNCTION_NOT_SUPPORTED`).
 
-## Remaining fast-lane failures (r20: 2), by cluster
+## Remaining fast-lane failures (r21: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
 `/tmp/pkcs11-ws/pkcs11-check` (import recipes, negotiation, gates).
@@ -247,6 +248,23 @@ Slices ordered by leg count:
   registry (`MechConfig.key_type is None` for HOTP; the assert
   text is byte-identical in r20b — the module is never called).
   (`eddsa_wrong_length` was fixed oracle-side in 0.2.1.)
+- Added in round 11 (r20→r21): AES-CTR slice (`cf0a164`:
+  `ctr-params/1` image for AES-128/192/256, big-endian counter
+  chaining, 16-byte block-aligned streaming splits, NIST F.5
+  KAT + all-split multipart probes + oracle `TestAESCTR` 5/5).
+  Per-unit diff is fully attributed, every changed unit
+  CTR-related: +17 passed (`aes_modes` +5, `mech_encrypt` +2,
+  `mech_flags` +4, `mech_multipart` +1, `mech_negative` +4,
+  `operation_termination` +1), +6 xfailed (newly exercised
+  mechanism-conditional negatives, all expected-behavior),
+  +1 skipped net (`mech_probe` +3 "tested elsewhere",
+  `mech_flags` +5 non-encrypt flags correctly unadvertised,
+  `aes_modes` −5 now running, UAF −2 skip→xfail). Zero
+  pass→fail, zero crashes, zero xpass; limbo collection back
+  at r20 levels on the canonical data dir (the r21a/b dip to
+  678 was a stale `/tmp/p11data` limbo.json — 9786 cases vs
+  9793 in `/tmp/pkcs11-ws/data`; all other provenance pins
+  identical, rerun r21c byte-stable).
 - Cleared in round 10 (r19→r20): EC keygen `CKA_EC_POINT`
   stamping (`71633ee`, prerequisite for the ECDH legs), the GCM
   AAD-length corruption (`d2d9d2c`: tc92 wrong answer plus the
@@ -392,7 +410,23 @@ OAEP error uniformity). T5a (RO owner dimension) and T5b
 (public/private gates) are implemented and passing in-suite
 post-r18; lane reproof needs a bundle rebuild.
 
-## KAT lane status (r2, fixed bundle: COMPLETE)
+## KAT lane status (r3, CTR bundle: COMPLETE)
+
+112072 tests — 25811 passed, 2 failed, 0 crashed, 4970 xfailed,
+81289 skipped (`/tmp/pkcs11-ws/out/kat-r3-results.json`;
+`incomplete: false`), canonical data dir
+`/tmp/pkcs11-ws/data`. The only failures are the 2 external HOTP
+registry asserts (same pair as the fast lane). Delta vs r2 is
+fully attributed: +17 passed / +8 xfailed / +1 skipped-net from
+the CTR slice (same units as fast r21, plus 2
+`output_length_truncation` skip→xfail mechanism-conditional
+legs), and +20 limbo passes that are a data-dir artifact —
+KAT-r2 ran the stale `/tmp/p11data` limbo.json (9786 cases) while
+fast r20 and KAT-r3 use the canonical fetch (9793 cases); r2
+normalized to canonical data would read 25794 passed.
+Zero pass→fail, zero crashes, zero xpass.
+
+## KAT lane status (historical r2, fixed bundle: COMPLETE)
 
 112028 tests — 25774 passed, 2 failed, 0 crashed, 4962 xfailed,
 81290 skipped (`/tmp/pkcs11-ws/out/kat-r2-results.json`;
