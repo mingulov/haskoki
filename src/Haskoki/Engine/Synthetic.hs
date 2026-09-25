@@ -107,6 +107,7 @@ import Haskoki.Der
 import qualified Haskoki.Engine.Backend as B
 import Haskoki.Operation.KeyManagement
   (genericSecretKeygenMaxBytes, genericSecretKeygenMinBytes)
+import Haskoki.Recipe.Ecdh (ecdhSecretWidthMax)
 import Haskoki.Recipe.Otp (hotpKeygenMaxBytes, hotpKeygenMinBytes)
 import Haskoki.Registry (MechanismId (..))
 import Haskoki.Types (EngineResourceId (..))
@@ -149,12 +150,13 @@ synthMacLength = 32
 synthSigLength :: Int
 synthSigLength = 64
 
--- | Synthetic ECDH secret width (bytes): the P-521 coordinate width,
--- the maximum over the covered curves. Synthetic keys are opaque
--- bytes with no scannable curve, so agreements always emit the max
--- width and the driver truncates to the planned length.
+-- | Synthetic ECDH secret width (bytes): the maximum over the
+-- covered curves (the recipe's 'ecdhSecretWidthMax'). Synthetic
+-- keys are opaque bytes with no scannable curve, so agreements
+-- always emit the max width and the driver truncates to the
+-- planned length.
 synthEcdhWidth :: Int
-synthEcdhWidth = 66
+synthEcdhWidth = ecdhSecretWidthMax
 
 -- | Synthetic key-context format version (first context byte).
 synthKeyContextVersion :: Word8
@@ -701,7 +703,7 @@ synthCaps = BackendCaps
        ] ++ synthMacNotes ++ synthEcdsaNotes ++
        [ ("RSA-PSS", "salt 0..64; hash/MGF any fixed-width digest")
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
-       , ("ECDH", "deterministic test agreement; 66-byte max-width secrets")
+       , ("ECDH", "deterministic test agreement; 72-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
        , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC P-256/P-384/P-521 pairs; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")

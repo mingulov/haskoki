@@ -495,21 +495,21 @@ ecRawSig = hex $ concat
   , "997a935c1219b3"
   ]
 
--- | Off-set-curve fixtures: a well-formed P-224 key pair (CLI
--- genpkey; curve OID @1.3.132.0.33@, no NIST-prime OID inside).
--- The real backend must refuse these with 'BackendBadKey' — never
--- execute past the advertised cap set.
-ecP224Priv, ecP224Pub :: ByteString
-ecP224Priv = hex $ concat
-  [ "3078020100301006072a8648ce3d020106052b810400210461305f020101041c"
-  , "60a3eaa5bf3398c85fed5831565d9f3df6af49ae8df97add70ad7b09a13c033"
-  , "a000411c9d285d8dec7fa92aea29ec83c513b246484cf6b746013046b3741661"
-  , "6b8dd3b6b8178a0036a6078eb7053be09c60933a3e78e2bbff85b"
+-- | Off-set-curve fixtures: a well-formed brainpoolP160r1 key
+-- pair (CLI genpkey; curve OID @1.3.36.3.3.2.8.1.1.1@ — real but
+-- uncollected, so outside the covered set). The real backend must
+-- refuse these with 'BackendBadKey' — never execute past the
+-- advertised cap set.
+ecBp160Priv, ecBp160Pub :: ByteString
+ecBp160Priv = hex $ concat
+  [ "305402010104148b826497e301a31d83e16a10c7ba9070fd6e5bf6a00b0609"
+  , "2b2403030208010101a12c032a0004e471b91d45036f84037b7e2c3804348be"
+  , "1455d93662b6814bfeb22a8acb58b5ae6f583f2a0de1081"
   ]
-ecP224Pub = hex $ concat
-  [ "304e301006072a8648ce3d020106052b81040021033a000411c9d285d8dec7fa"
-  , "92aea29ec83c513b246484cf6b746013046b37416616b8dd3b6b8178a0036a60"
-  , "78eb7053be09c60933a3e78e2bbff85b"
+ecBp160Pub = hex $ concat
+  [ "3042301406072a8648ce3d020106092b2403030208010101032a0004e471b91d"
+  , "45036f84037b7e2c3804348be1455d93662b6814bfeb22a8acb58b5ae6f583f2"
+  , "a0de1081"
   ]
 
 -- | S10 ECDH KAT fixtures: two fresh P-256 pairs plus one P-384 pair
@@ -1115,10 +1115,10 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
 caseEcdsaOffCurve :: IO ()
 caseEcdsaOffCurve = withBackend $ \env -> do
   let ecdsaSpec = SigECDSA (mkEc "P-256" "DER") (Just D_SHA256)
-  expectBadKey "p224 sign refused" =<<
-    sign env ecdsaSpec (KeyDer ecP224Priv) ecMsg
-  expectBadKey "p224 verify refused" =<<
-    verify env ecdsaSpec (KeyDer ecP224Pub) ecMsg ecSigDer
+  expectBadKey "bp160 sign refused" =<<
+    sign env ecdsaSpec (KeyDer ecBp160Priv) ecMsg
+  expectBadKey "bp160 verify refused" =<<
+    verify env ecdsaSpec (KeyDer ecBp160Pub) ecMsg ecSigDer
   expectBadKey "garbage sign refused" =<<
     sign env ecdsaSpec (KeyDer "bogus") ecMsg
   expectBadKey "garbage verify refused" =<<
@@ -1147,7 +1147,7 @@ caseEcdhVectors = withBackend $ \env -> do
   assertEqual "P-384 width" 48 (BS.length sCC)
   expectBadKey "garbage priv refused" =<< ecdhDerive env EcdhPlain (KeyDer "bogus") qB
   expectBadKey "garbage peer refused" =<< ecdhDerive env EcdhPlain pA (KeyDer "bogus")
-  expectBadKey "off-curve priv refused" =<< ecdhDerive env EcdhPlain (KeyDer ecP224Priv) qB
+  expectBadKey "off-curve priv refused" =<< ecdhDerive env EcdhPlain (KeyDer ecBp160Priv) qB
   expectBadKey "curve mismatch refused" =<< ecdhDerive env EcdhPlain pA qC
 
 caseRawVsDer :: IO ()

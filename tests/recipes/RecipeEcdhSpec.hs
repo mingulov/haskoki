@@ -31,6 +31,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.Der (curveTable)
 import Haskoki.Engine.Backend (EcdhSpec (..))
 import Haskoki.Engine.Driver (ecdhParamsFor)
 import Haskoki.Model
@@ -58,9 +59,11 @@ import Haskoki.Recipe.Ecdh
   , ecdhCodec
   , ecdhCodecFor
   , ecdhParamsValid
+  , ecdhPeerWidth
   , ecdhRecipeFor
   , ecdhRecipes
   , ecdhSecretWidth
+  , ecdhSecretWidthMax
   , encodeEcdhParams
   )
 import Haskoki.Registry (MechanismId (..))
@@ -94,6 +97,7 @@ spec = testGroup "ECDH recipe"
   , testCase "codec identity" caseCodec
   , testCase "params: valid and refused shapes" caseParams
   , testCase "secret width per curve" caseWidth
+  , testCase "peer width resolves widths not curves" casePeerWidth
   , testCase "planDerive: ECDH accept and deny" casePlan
   , testCase "driver maps mechanisms to specs" caseDriverMap
   ]
@@ -211,10 +215,36 @@ caseWidth = do
   assertEqual "P-256 pub width" 32 (ecdhSecretWidth p256Pub)
   assertEqual "P-384 width" 48 (ecdhSecretWidth p384Pub)
   assertEqual "P-521 width" 66 (ecdhSecretWidth p521Pub)
-  assertEqual "unscannable defaults to the max width" 66
+  -- Every table row resolves its width from the bare OID (the
+  -- substring scan on real DER is pinned by the ECDSA sniff test).
+  mapM_ (\(_, oid, w) ->
+    assertEqual ("width " ++ show w) w (ecdhSecretWidth oid)) curveTable
+  assertEqual "max width is the sect571 width" 72 ecdhSecretWidthMax
+  assertEqual "unscannable defaults to the max width" 72
     (ecdhSecretWidth (BS.replicate 32 0))
-  assertEqual "garbage defaults to the max width" 66
+  assertEqual "garbage defaults to the max width" 72
     (ecdhSecretWidth "bogus")
+
+casePeerWidth :: IO ()
+casePeerWidth = do
+  -- SPKI peers resolve exactly.
+  assertEqual "P-256 SPKI" (Just 32) (ecdhPeerWidth p256Pub)
+  assertEqual "P-384 SPKI" (Just 48) (ecdhPeerWidth p384Pub)
+  assertEqual "P-521 SPKI" (Just 66) (ecdhPeerWidth p521Pub)
+  -- Bare points resolve widths, never curves: 65 bytes is 32 wide
+  -- whether the curve is P-256, secp256k1, or brainpoolP256r1.
+  let point w = BS.cons 0x04 (BS.replicate (2 * w) 0x11)
+  mapM_ (\(_, _, w) ->
+    assertEqual ("bare width " ++ show w) (Just w) (ecdhPeerWidth (point w))
+    ) curveTable
+  assertEqual "compressed refuses" Nothing
+    (ecdhPeerWidth (BS.cons 0x02 (BS.replicate 64 0x11)))
+  assertEqual "off-width refuses" Nothing
+    (ecdhPeerWidth (BS.cons 0x04 (BS.replicate 61 0x11)))
+  assertEqual "unknown even width refuses" Nothing
+    (ecdhPeerWidth (BS.cons 0x04 (BS.replicate 66 0x11)))
+  assertEqual "empty refuses" Nothing (ecdhPeerWidth BS.empty)
+  assertEqual "garbage refuses" Nothing (ecdhPeerWidth "bogus")
 
 -- ---------------------------------------------------------------------------
 -- planDerive pins (light model harness: one EC base key + handle)
@@ -311,12 +341,12 @@ casePlan = do
     (planDerive defaultRules m testSession ecdhMech baseHandle (blob p256Pub [derivedTmpl 33]))
   -- Unscannable base (synthetic opaque bytes) plans against the max width.
   case planDerive defaultRules (mkBaseModel ckkEc (BS.replicate 32 0) True) testSession
-        ecdhMech baseHandle (blob p256Pub [derivedTmpl 66]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "total" 66 total
+        ecdhMech baseHandle (blob p256Pub [derivedTmpl 72]) of
+    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "total" 72 total
     other -> assertFailure ("expected effect, got " ++ show other)
   expectDeny "over max width" CKR_ARGUMENTS_BAD
     (planDerive defaultRules (mkBaseModel ckkEc (BS.replicate 32 0) True) testSession
-      ecdhMech baseHandle (blob p256Pub [derivedTmpl 67]))
+      ecdhMech baseHandle (blob p256Pub [derivedTmpl 73]))
   -- Base/peer curve mismatch denies (both scan, curves differ).
   expectDeny "curve mismatch" CKR_ARGUMENTS_BAD
     (planDerive defaultRules m testSession ecdhMech baseHandle (blob p384Pub [derivedTmpl 32]))
@@ -356,7 +386,7 @@ casePlan = do
   -- Unscannable base material defaults to the max width.
   case planDerive defaultRules (mkBaseModel ckkEc (BS.replicate 32 0) True) testSession
         ecdhMech baseHandle (blob p256Pub [derivedTmplNoLen]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "opaque default total" 66 total
+    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "opaque default total" 72 total
     other -> assertFailure ("expected defaulted effect, got " ++ show other)
   -- Open-ended constructions keep INCOMPLETE without a length
   -- (v3.2: HKDF-Expand "should be set"; SHA-KDF generic secrets

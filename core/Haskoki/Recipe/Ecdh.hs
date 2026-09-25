@@ -44,15 +44,20 @@ module Haskoki.Recipe.Ecdh
   , decodeEcdhParams
   , ecdhParamsValid
   , ecdhSecretWidth
-  , ecdhPeerCurve
+  , ecdhSecretWidthMax
+  , ecdhPeerWidth
+  , curveWidthOfName
   ) where
 
 import Data.Bits ((.&.), shiftL, shiftR)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.List (find)
 import Data.Text (Text)
+import qualified Data.Text.Encoding as TE
 import Data.Word (Word8)
 
+import Haskoki.Der (curveTable)
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
@@ -121,31 +126,51 @@ ecdhParamsValid _ params = case decodeEcdhParams params of
   Just (0, _, peer) -> not (BS.null peer)
   _ -> False
 
--- | Raw-secret width in bytes for a base-key material: the curve's
--- coordinate width (32\/48\/66) when the DER curve OID scans,
--- else the 66-byte maximum (synthetic backends serve opaque key
--- bytes with 66-byte secrets, so the planner must not cap them
--- lower; the real backend refuses unscannable keys itself).
-ecdhSecretWidth :: ByteString -> Int
-ecdhSecretWidth mat = case ecdsaCurveOfDer mat of
-  Just "P-256" -> 32
-  Just "P-384" -> 48
-  Just "P-521" -> 66
-  _ -> 66
+-- | Coordinate width in bytes for a covered curve name
+-- ('Nothing' for anything off-table).
+curveWidthOfName :: Text -> Maybe Int
+curveWidthOfName name = case find hit curveTable of
+  Just (_, _, w) -> Just w
+  Nothing -> Nothing
+  where
+    hit (n, _, _) = TE.encodeUtf8 name == n
 
--- | Peer curve for the agreement: the DER OID scan first (SPKI
--- peers), else the raw uncompressed-point length table (PKCS#11
--- carries the peer as a bare @0x04 \|\| X \|\| Y@ point with no
--- OID: 65\/97\/133 bytes pin P-256\/P-384\/P-521). Anything else
--- is unscannable and refused downstream.
-ecdhPeerCurve :: ByteString -> Maybe Text
-ecdhPeerCurve bs = case ecdsaCurveOfDer bs of
-  Just c -> Just c
+-- | The maximum coordinate width over the covered curves (the
+-- sect571 width): unscannable base material (synthetic opaque
+-- bytes) plans against this so the planner never caps it lower;
+-- the real backend refuses unscannable keys itself.
+ecdhSecretWidthMax :: Int
+ecdhSecretWidthMax = maximum [w | (_, _, w) <- curveTable]
+
+-- | Raw-secret width in bytes for a base-key material: the curve's
+-- coordinate width when the DER curve OID scans, else the maximum
+-- (see 'ecdhSecretWidthMax').
+ecdhSecretWidth :: ByteString -> Int
+ecdhSecretWidth mat = case ecdsaCurveOfDer mat >>= curveWidthOfName of
+  Just w -> w
+  Nothing -> ecdhSecretWidthMax
+
+-- | Peer width for the agreement: the DER OID scan first (SPKI
+-- peers resolve exactly), else the raw uncompressed-point length
+-- (PKCS#11 carries the peer as a bare @0x04 \|\| X \|\| Y@ point
+-- with no OID). A bare length resolves a WIDTH, never a curve:
+-- lengths collide across curves (65 bytes is P-256, secp256k1, or
+-- brainpoolP256r1), so exact peer labels from bare points are
+-- unknowable and the agreement gates on width equality instead
+-- (the backend arbitrates on-curve membership natively).
+ecdhPeerWidth :: ByteString -> Maybe Int
+ecdhPeerWidth bs = case ecdsaCurveOfDer bs >>= curveWidthOfName of
+  Just w -> Just w
   Nothing
-    | BS.length bs == 65, BS.index bs 0 == 0x04 -> Just "P-256"
-    | BS.length bs == 97, BS.index bs 0 == 0x04 -> Just "P-384"
-    | BS.length bs == 133, BS.index bs 0 == 0x04 -> Just "P-521"
+    | BS.length bs >= 2
+    , BS.index bs 0 == 0x04
+    , let n = BS.length bs - 1
+    , even n
+    , let w = n `div` 2
+    , w `elem` knownWidths -> Just w
     | otherwise -> Nothing
+  where
+    knownWidths = [w | (_, _, w) <- curveTable]
 
 -- | Both covered mechanisms with their cofactor flags.
 ecdhRecipes :: [EcdhRecipe]

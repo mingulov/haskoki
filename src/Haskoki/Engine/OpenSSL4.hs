@@ -64,7 +64,7 @@ import Foreign.Ptr (Ptr, nullPtr)
 import qualified Haskoki.FFI.OpenSSL4.Raw as Raw
 import Haskoki.Der (integerToBE)
 import Haskoki.Engine.Backend
-import Haskoki.Recipe.Ecdh (ecdhPeerCurve)
+import Haskoki.Recipe.Ecdh (curveWidthOfName, ecdhPeerWidth)
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
 import Haskoki.Types (EngineResourceId (..))
 
@@ -486,9 +486,15 @@ instance CryptoBackend OpenSSL4 where
         mpeer <- resolveKeyBytes env peer
         case mpeer of
           EngineFail err -> pure (EngineFail err)
-          EngineOk peerB -> case (ecdsaCurveOfDer privB, ecdhPeerCurve peerB) of
-            (Just a, Just b)
-              | a == b -> do
+          -- Width-based agreement gate: the base scans exactly (DER
+          -- always carries the OID) while a bare peer point resolves
+          -- a width, never a curve (lengths collide). Equal widths
+          -- proceed; the shim arbitrates on-curve membership
+          -- natively, so a same-width cross-curve peer still
+          -- refuses (as a bad key, never a wrong secret).
+          EngineOk peerB -> case (ecdsaCurveOfDer privB >>= curveWidthOfName, ecdhPeerWidth peerB) of
+            (Just w, Just pw)
+              | w == pw -> do
                   r <- withForeignPtr (osslEnv env) $ \_ ->
                     Raw.ecdhDerive (osslCtx env) (osslPropQ env) privB peerB (spec == EcdhCofactor)
                   case r of
@@ -499,7 +505,7 @@ instance CryptoBackend OpenSSL4 where
               | otherwise -> pure (EngineFail (BackendBadKey "ecdhDerive"
                   "base/peer curve mismatch"))
             _ -> pure (EngineFail (BackendBadKey "ecdhDerive"
-              "ECDH keys are not on P-256/P-384/P-521"))
+              "ECDH keys are not on a covered curve"))
 
   snapshotResource _ _ = pure (Left "unsaveable: OpenSSL4 multipart contexts cannot be serialized")
   restoreResource _ _ = pure (EngineFail (BackendUnsupported "restoreResource" "no saveable resources in engine set"))

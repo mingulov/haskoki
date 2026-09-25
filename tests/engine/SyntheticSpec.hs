@@ -1392,7 +1392,7 @@ caseEcdsaCurves = withSynth "11" $ \env -> do
 -- ECDH agreement
 -- ---------------------------------------------------------------------------
 
--- | Agreements replay deterministically at the 66-byte max width and
+-- | Agreements replay deterministically at the 72-byte max width and
 -- stay domain-separated across bases, peers, and the cofactor bit.
 -- Opaque key bytes are served (no key parsing in synthetic).
 caseEcdh :: IO ()

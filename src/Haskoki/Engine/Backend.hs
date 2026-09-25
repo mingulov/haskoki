@@ -535,7 +535,7 @@ class CryptoBackend b where
   -- ECDH agreement: the raw x-coordinate secret at the
   -- curve's coordinate width (@CKD_NULL@ only — the recipe refuses
   -- every KDF selector). The real backend returns 32/48/66 bytes
-  -- per the base curve; synthetic always returns the 66-byte max
+  -- per the base curve; synthetic always returns the 72-byte max
   -- width. The driver truncates to the planned length.
   ecdhDerive :: BackendEnv b -> EcdhSpec -> KeyMaterial -> KeyMaterial -> IO (EngineResult ByteString)
   -- ^ (base private, peer public) -> full secret.
