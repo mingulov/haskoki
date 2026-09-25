@@ -146,7 +146,8 @@ import Haskoki.Registry (MechanismId (..), Operation (..), curatedRegistry, mkCa
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Registry.Generated
-  ( ckm_ECDH1_DERIVE
+  ( ckm_AES_CCM
+  , ckm_ECDH1_DERIVE
   , ckm_SHA256
   , ckm_SHA256_HMAC
   , ckm_SHA256_KEY_DERIVATION
@@ -705,6 +706,9 @@ hmacSha256Mech = MechanismId ckm_SHA256_HMAC
 sha256Mech :: MechanismId
 sha256Mech = MechanismId ckm_SHA256
 
+aesCcmMech :: MechanismId
+aesCcmMech = MechanismId ckm_AES_CCM
+
 caseInitKeyTypeMatrix :: IO ()
 caseInitKeyTypeMatrix = withSynth $ \answer -> do
   mSeed <- seedModel
@@ -755,6 +759,8 @@ caseInitKeyTypeMatrix = withSynth $ \answer -> do
   assertEqual "hmac row" (Just [ckkGenericSecret, mustKeyTypeId "CKK_SHA256_HMAC"])
     (matrixKeyTypes hmacSha256Mech OpSign)
   assertEqual "cbc row" (Just [ckkAes]) (matrixKeyTypes aesCbcMech OpEncrypt)
+  assertEqual "ccm row" (Just [ckkAes]) (matrixKeyTypes aesCcmMech OpEncrypt)
+  assertEqual "ccm row decrypt" (Just [ckkAes]) (matrixKeyTypes aesCcmMech OpDecrypt)
   assertEqual "digest unmatrices" Nothing (matrixKeyTypes sha256Mech OpDigest)
   assertEqual "off-op unmatrices" Nothing (matrixKeyTypes hmacSha256Mech OpEncrypt)
   -- Legacy objects without a key type skip the matrix (the seam).

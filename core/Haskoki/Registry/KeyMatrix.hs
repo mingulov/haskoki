@@ -30,6 +30,7 @@ import qualified Data.Map.Strict as Map
 import Data.Word (Word64)
 
 import Haskoki.Attribute.Generated (mustKeyTypeId)
+import Haskoki.Recipe.Ccm (CcmRecipe (..), ccmRecipes)
 import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipes)
 import Haskoki.Recipe.Cmac (CmacRecipe (..), cmacRecipes)
 import Haskoki.Recipe.Ecdsa (EcdsaRecipe (..), ecdsaRecipes)
@@ -63,6 +64,8 @@ matrixTable = Map.fromList (concat
     | r <- cipherRecipes, o <- [OpEncrypt, OpDecrypt] ]
   , [ ((midOf (gcmName r), o), [ckkAes])
     | r <- gcmRecipes, o <- [OpEncrypt, OpDecrypt] ]
+  , [ ((midOf (ccmName r), o), [ckkAes])
+    | r <- ccmRecipes, o <- [OpEncrypt, OpDecrypt] ]
   , [ ((midOf (rcName r), o), [if rcDes3 r then ckkDes3 else ckkAes])
     | r <- cmacRecipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (otpName r), o), [mustKeyTypeId (otpKeyType r)])
