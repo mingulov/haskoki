@@ -1,11 +1,12 @@
 {- | AES-CCM mechanism recipe.
 
 Canonical @ccm-params/1@ image: tag length (u64be), nonce length
-(u64be), nonce, AAD (the remainder). Nonce is 7..13 bytes and tag
-widths are the NIST SP 800-38C approved even widths (4, 6, 8, 10,
-12, 14, 16 bytes); the data length ('ulDataLen') is a
-precondition checked at operation time, not stored in the image.
-Encoding is total; validation is strict.
+(u64be), data length (u64be), nonce, AAD (the remainder). Nonce
+is 7..13 bytes and tag widths are the NIST SP 800-38C approved
+even widths (4, 6, 8, 10, 12, 14, 16 bytes); the data length
+('ulDataLen') rides the image and is enforced as an
+operation-time precondition against the input. Encoding is
+total; validation is strict.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Ccm
@@ -74,29 +75,36 @@ decodeWord64 bs
   | BS.length bs /= 8 = Nothing
   | otherwise = Just (BS.foldl' (\a b -> a `shiftL` 8 + fromIntegral b) 0 bs)
 
--- | Encode CCM parameters: tag length, nonce length, nonce, AAD.
-encodeCcmParams :: ByteString -> ByteString -> Int -> ByteString
-encodeCcmParams nonce aad tagLen =
-  encodeWord64 tagLen <> encodeWord64 (BS.length nonce) <> nonce <> aad
+-- | Encode CCM parameters: tag length, nonce length, data
+-- length, nonce, AAD.
+encodeCcmParams :: ByteString -> ByteString -> Int -> Int -> ByteString
+encodeCcmParams nonce aad tagLen dataLen =
+  encodeWord64 tagLen <> encodeWord64 (BS.length nonce)
+    <> encodeWord64 dataLen <> nonce <> aad
 
--- | Decode CCM parameters: @(nonce, aad, tagLen)@. 'Nothing' on
--- truncation or negative lengths (which cannot encode).
-decodeCcmParams :: ByteString -> Maybe (ByteString, ByteString, Int)
+-- | Decode CCM parameters: @(nonce, aad, tagLen, dataLen)@.
+-- 'Nothing' on truncation or negative lengths (which cannot
+-- encode).
+decodeCcmParams :: ByteString -> Maybe (ByteString, ByteString, Int, Int)
 decodeCcmParams bs = do
   let (wTag, r1) = BS.splitAt 8 bs
   let (wNonce, r2) = BS.splitAt 8 r1
+  let (wData, r3) = BS.splitAt 8 r2
   tagLen <- decodeWord64 wTag
   nonceLen <- decodeWord64 wNonce
-  if nonceLen < 0 || BS.length r2 < nonceLen
+  dataLen <- decodeWord64 wData
+  if nonceLen < 0 || dataLen < 0 || BS.length r3 < nonceLen
     then Nothing
-    else let (nonce, aad) = BS.splitAt nonceLen r2
-         in Just (nonce, aad, tagLen)
+    else let (nonce, aad) = BS.splitAt nonceLen r3
+         in Just (nonce, aad, tagLen, dataLen)
 
 -- | Validate canonical parameters: the image decodes, the tag
 -- width is approved, and the nonce is caller-supplied in range.
+-- The data length is an operation-time precondition (checked
+-- against the input in the driver), not a recipe refusal.
 ccmParamsValid :: CcmRecipe -> ByteString -> Bool
 ccmParamsValid _ bs = case decodeCcmParams bs of
-  Just (nonce, _, tagLen) ->
+  Just (nonce, _, tagLen, _) ->
     tagLen `elem` ccmTagLens
       && BS.length nonce >= ccmNonceMin
       && BS.length nonce <= ccmNonceMax

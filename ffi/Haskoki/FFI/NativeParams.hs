@@ -49,6 +49,7 @@ module Haskoki.FFI.NativeParams
   , oaepStructToCanonical
   , ecdhStructToCanonical
   , gcmStructToCanonical
+  , ccmStructToCanonical
   , ctrStructToCanonical
   , digestStemByCkm
   , mgfStemByCkg
@@ -56,6 +57,7 @@ module Haskoki.FFI.NativeParams
   , oaepNativeSize
   , ecdhNativeSize
   , gcmNativeSize
+  , ccmNativeSize
   , ctrNativeSize
   ) where
 
@@ -73,6 +75,7 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peekByteOff, sizeOf)
 
 import Haskoki.FFI.Decode (maxInputBytes)
+import Haskoki.Recipe.Ccm (ccmRecipeFor, encodeCcmParams)
 import Haskoki.Recipe.Cipher (ctrRecipeFor, encodeCtrParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
@@ -108,6 +111,13 @@ ecdhNativeSize = 3 * wordSize + 2 * ptrSize
 -- word.
 gcmNativeSize :: Int
 gcmNativeSize = 4 * wordSize + 2 * ptrSize
+
+-- | Native @CK_AES_CCM_PARAMS@ (layout-identical to
+-- @CK_CCM_PARAMS@) image size: the data-length word, (pointer,
+-- length) for the nonce, (pointer, length) for the AAD, then the
+-- MAC-length word. All lengths are BYTES (unlike GCM bits).
+ccmNativeSize :: Int
+ccmNativeSize = 4 * wordSize + 2 * ptrSize
 
 -- | Native @CK_AES_CTR_PARAMS@ image size: one counter-bits word
 -- plus the inline 16-byte counter block.
@@ -205,6 +215,26 @@ gcmStructToCanonical iv aad ivBits tagBits = do
   guard (not (BS.null iv))
   pure (encodeGcmParams iv aad tagLen)
 
+-- | Pure CCM translation: the chased nonce and AAD plus the
+-- native byte lengths onto the canonical @ccm-params/1@ image.
+-- The nonce length must agree with the chased nonce bytes; any
+-- width translates (even unserved ones: the recipe refuses
+-- downstream with the parameter CKR, never a malformed struct);
+-- only an unrepresentable width refuses here.
+ccmStructToCanonical :: ByteString -> ByteString -> Word64 -> Word64 -> Word64 -> Maybe ByteString
+ccmStructToCanonical nonce aad dataLen nonceLen macLen = do
+  guard (fromIntegral (BS.length nonce) == nonceLen)
+  tagLen <- word64ToInt macLen
+  dLen <- word64ToInt dataLen
+  pure (encodeCcmParams nonce aad tagLen dLen)
+
+-- | Narrow one native word onto 'Int'; 'Nothing' when it does not
+-- fit (which cannot encode downstream).
+word64ToInt :: Word64 -> Maybe Int
+word64ToInt w
+  | w > fromIntegral (maxBound :: Int) = Nothing
+  | otherwise = Just (fromIntegral w)
+
 -- | Pure CTR translation: the native counter-bits word plus the
 -- inline counter block onto the canonical @ctr-params/1@ image.
 -- Any width translates (even unserved ones: the recipe refuses
@@ -258,6 +288,7 @@ normalizeMechParams mid pParams paramsLen raw
   | isJust (rsaPssRecipeFor mid) = fromMaybe raw <$> decodePssNative
   | isJust (rsaOaepRecipeFor mid) = fromMaybe raw <$> decodeOaepNative
   | isJust (gcmRecipeFor mid) = fromMaybe raw <$> decodeGcmNative
+  | isJust (ccmRecipeFor mid) = fromMaybe raw <$> decodeCcmNative
   | isJust (ctrRecipeFor mid) = fromMaybe raw <$> decodeCtrNative
   | otherwise = pure raw
   where
@@ -296,6 +327,19 @@ normalizeMechParams mid pParams paramsLen raw
           mIv <- chaseBytes pIv ivLen
           mAad <- chaseBytes pAad aadLen
           pure (mIv >>= \iv -> mAad >>= \aad -> gcmStructToCanonical iv aad ivBits tagBits)
+    decodeCcmNative :: IO (Maybe ByteString)
+    decodeCcmNative
+      | paramsLen /= fromIntegral ccmNativeSize = pure Nothing
+      | otherwise = do
+          CULong dataLen <- peekByteOff pParams 0
+          pNonce <- peekByteOff pParams wordSize
+          CULong nonceLen <- peekByteOff pParams (wordSize + ptrSize)
+          pAad <- peekByteOff pParams (2 * wordSize + ptrSize)
+          CULong aadLen <- peekByteOff pParams (2 * wordSize + 2 * ptrSize)
+          CULong macLen <- peekByteOff pParams (3 * wordSize + 2 * ptrSize)
+          mNonce <- chaseBytes pNonce nonceLen
+          mAad <- chaseBytes pAad aadLen
+          pure (mNonce >>= \nonce -> mAad >>= \aad -> ccmStructToCanonical nonce aad dataLen nonceLen macLen)
     decodeCtrNative :: IO (Maybe ByteString)
     decodeCtrNative
       | paramsLen /= fromIntegral ctrNativeSize = pure Nothing
