@@ -39,8 +39,8 @@ def check(rule, cond, detail):
 def main() -> int:
     src = Path(sys.argv[1]).read_text() if len(sys.argv) > 1 else DEFAULT.read_text()
 
-    check("COUNT", "#define SMOKE_MECH_COUNT 108" in src,
-          "exact served count pinned at 108")
+    check("COUNT", "#define SMOKE_MECH_COUNT 109" in src,
+          "exact served count pinned at 109")
     check("SIZEQ", "C_GetMechanismList(slots[0], NULL_PTR, &q)" in src,
           "NULL size-query leg pins the count first")
     check("MEMBER", "mechs[i] == CKM_SHA256" in src

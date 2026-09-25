@@ -121,6 +121,7 @@ module Haskoki.Engine.Driver
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
+import Control.Applicative ((<|>))
 import Control.Monad (guard)
 import Data.Bits ((.&.), (.|.), shiftL, shiftR, xor)
 import Data.List (unsnoc)
@@ -171,6 +172,7 @@ import Haskoki.Recipe.Ecdsa
   , ecdsaParamsValid
   , ecdsaRecipeFor
   )
+import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
 import Haskoki.Recipe.Gcm (decodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (decodeOaepParams, rsaOaepParamsValid, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPkcs1
@@ -431,16 +433,29 @@ isCipherMech mech = isJust (cipherRecipeFor mech)
 -- 'Nothing' means uncovered (non-AEAD mechanism) or a rejected
 -- triple.
 aeadPartsFor :: MechanismId -> Int -> ByteString -> Maybe (AeadSpec, ByteString, ByteString)
-aeadPartsFor mech keyLen params = do
-  r <- gcmRecipeFor mech
-  guard (gcmParamsValid r params)
-  (iv, aad, tagLen) <- decodeGcmParams params
-  alg <- case keyLen of
-    16 -> Just "AES-128-GCM"
-    24 -> Just "AES-192-GCM"
-    32 -> Just "AES-256-GCM"
-    _ -> Nothing
-  pure (AeadSpec alg (BS.length iv) tagLen, iv, aad)
+aeadPartsFor mech keyLen params =
+  gcmParts <|> ccmParts
+  where
+    gcmParts = do
+      r <- gcmRecipeFor mech
+      guard (gcmParamsValid r params)
+      (iv, aad, tagLen) <- decodeGcmParams params
+      alg <- case keyLen of
+        16 -> Just "AES-128-GCM"
+        24 -> Just "AES-192-GCM"
+        32 -> Just "AES-256-GCM"
+        _ -> Nothing
+      pure (AeadSpec alg (BS.length iv) tagLen, iv, aad)
+    ccmParts = do
+      r <- ccmRecipeFor mech
+      guard (ccmParamsValid r params)
+      (nonce, aad, tagLen, _) <- decodeCcmParams params
+      alg <- case keyLen of
+        16 -> Just "AES-128-CCM"
+        24 -> Just "AES-192-CCM"
+        32 -> Just "AES-256-CCM"
+        _ -> Nothing
+      pure (AeadSpec alg (BS.length nonce) tagLen, nonce, aad)
 
 -- | The backend spec of a covered AEAD triple ('aeadPartsFor'
 -- without the decoded parts).
@@ -448,11 +463,30 @@ aeadSpecFor :: MechanismId -> Int -> ByteString -> Maybe AeadSpec
 aeadSpecFor mech keyLen params =
   (\(spec, _, _) -> spec) <$> aeadPartsFor mech keyLen params
 
+-- | CCM data-length agreement: @ulDataLen@ must equal the
+-- plaintext length (encrypt: the input; decrypt: the input minus
+-- the tag). Short decrypt inputs defer to the authentication
+-- failure in 'runAeadSealed' instead of failing here.
+ccmLengthBad :: CipherDir -> ByteString -> ByteString -> Int -> Bool
+ccmLengthBad dir params input tagLen = case decodeCcmParams params of
+  Just (_, _, _, dataLen) -> case dir of
+    DirEncrypt -> dataLen /= BS.length input
+    DirDecrypt
+      | BS.length input < tagLen -> False
+      | otherwise -> dataLen /= BS.length input - tagLen
+  Nothing -> True
+
 -- | An AEAD mechanism regardless of triple validity (drives the
 -- parameter-refusal branch: rejected triples are 'CryptoFailed',
 -- never 'CryptoUnsupported').
 isGcmMech :: MechanismId -> Bool
 isGcmMech mech = isJust (gcmRecipeFor mech)
+
+-- | A CCM mechanism regardless of triple validity (same refusal
+-- branch as GCM: rejected triples are 'CryptoFailed', never
+-- 'CryptoUnsupported').
+isCcmMech :: MechanismId -> Bool
+isCcmMech mech = isJust (ccmRecipeFor mech)
 
 -- | Recipe row + key length onto the backend width. @CKM_AES_CBC_PAD@
 -- shares the CBC specs (the planner pads before the effect input is
@@ -700,6 +734,8 @@ runEffect env resolve fx = case fx of
     | isCipherMech mech -> withKey mkey $ \key ->
         runCipher dir mech key params input
     | isGcmMech mech -> withKey mkey $ \key ->
+        runAead dir mech key params input
+    | isCcmMech mech -> withKey mkey $ \key ->
         runAead dir mech key params input
     | isRsaOaepMech mech -> withKey mkey $ \key ->
         runOaep dir mech key params input
@@ -1016,7 +1052,11 @@ runEffect env resolve fx = case fx of
       KeyBytes kb -> case aeadPartsFor mech (BS.length kb) params of
         Nothing -> pure (GotCryptoError (CryptoFailed
           "driver: AEAD (mechanism, key length, params) rejected by the recipe"))
-        Just (spec, iv, aad) -> runAeadSealed dir spec key iv aad input
+        Just (spec, iv, aad)
+          | isCcmMech mech, ccmLengthBad dir params input (aeadTagLen spec) ->
+              pure (GotCryptoError (CryptoFailed
+                "driver: CCM ulDataLen does not match the input length"))
+          | otherwise -> runAeadSealed dir spec key iv aad input
       _ -> pure (GotCryptoError (CryptoBadKey "driver"
         "AEAD needs raw symmetric key bytes"))
     -- | AEAD message effects: the parameters decode (IV, tag length)

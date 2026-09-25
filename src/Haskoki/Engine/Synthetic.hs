@@ -686,7 +686,7 @@ synthCaps = BackendCaps
           ]
       , dcMultipart = True, dcXof = False }
   , bcCiphers = CipherCaps
-      { ccCiphers = Set.fromList synthCipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM"] }
+      { ccCiphers = Set.fromList synthCipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
   , bcMacs = MacCaps { mcSpecs = synthMacSpecs }
   , bcSigs = SigCaps
       { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames)
@@ -879,10 +879,10 @@ aeadRun be op enc spec key iv aad input tag =
             pure (B.EngineFail (BackendBadParam op
               ("key length " ++ show (BS.length kb)
                 ++ " not accepted by " ++ aeadAlg spec)))
-        | aeadTagLen spec `notElem` [4, 8, 12, 13, 14, 15, 16] ->
+        | aeadTagLen spec `notElem` aeadTagSet (aeadAlg spec) ->
             pure (B.EngineFail (BackendBadParam op
               ("tag length " ++ show (aeadTagLen spec) ++ " is not approved")))
-        | aeadNonceLen spec < 1 || aeadNonceLen spec > 64
+        | aeadNonceLen spec < fst nonceBounds || aeadNonceLen spec > snd nonceBounds
           || BS.length iv /= aeadNonceLen spec ->
             pure (B.EngineFail (BackendBadParam op
               ("nonce length " ++ show (BS.length iv)
@@ -894,19 +894,34 @@ aeadRun be op enc spec key iv aad input tag =
         | otherwise -> case classAeadOpen kb spec iv aad input tag of
             Just pt -> pure (B.EngineOk pt)
             Nothing -> pure (B.EngineFail (BackendAuthFailed op))
+  where
+    nonceBounds
+      | isCcmAlg (aeadAlg spec) = (7, 13)
+      | otherwise = (1, 64)
 
--- | AEAD support: the three AES-GCM widths with sane nonce/tag
--- lengths.
+-- | AEAD support: the three AES-GCM widths and the three
+-- AES-CCM widths with sane nonce/tag lengths.
 aeadSupported :: BackendEnv Synthetic -> AeadSpec -> Maybe String
 aeadSupported _ spec
-  | aeadAlg spec `elem` ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM"] = Nothing
+  | aeadAlg spec `elem` ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] = Nothing
   | otherwise = Just ("aead not in synthetic set: " ++ show spec)
+
+-- | CCM algorithm names take the CCM bounds.
+isCcmAlg :: String -> Bool
+isCcmAlg alg = alg `elem` ["AES-128-CCM", "AES-192-CCM", "AES-256-CCM"]
+
+-- | Approved tag widths per AEAD family (GCM: SP 800-38D; CCM:
+-- SP 800-38C even widths).
+aeadTagSet :: String -> [Int]
+aeadTagSet alg
+  | isCcmAlg alg = [4, 6, 8, 10, 12, 14, 16]
+  | otherwise = [4, 8, 12, 13, 14, 15, 16]
 
 -- | Key length in bytes for a supported AEAD algorithm name.
 aeadKeyLen :: String -> Int
 aeadKeyLen alg
-  | alg == "AES-128-GCM" = 16
-  | alg == "AES-192-GCM" = 24
+  | alg == "AES-128-GCM" || alg == "AES-128-CCM" = 16
+  | alg == "AES-192-GCM" || alg == "AES-192-CCM" = 24
   | otherwise = 32
 
 -- | Seal under the synthetic AEAD: PRF keystream XOR plus a tag

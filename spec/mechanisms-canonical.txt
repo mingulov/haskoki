@@ -106,6 +106,7 @@ mech|0x00001082|CKM_AES_CBC||cipher|iv-bytes/1|bytes:16-32|authenticated-unwrap:
 mech|0x00001085|CKM_AES_CBC_PAD||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00001086|CKM_AES_CTR||cipher|ctr-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00001087|CKM_AES_GCM||aead|gcm-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
+mech|0x00001088|CKM_AES_CCM||aead|ccm-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x0000108A|CKM_AES_CMAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x0000108B|CKM_AES_CMAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x0000402A|CKM_HKDF_DERIVE||derive|hkdf-expand-params/1|mechanism-specific:0-0|derive:A20,A37,A39
@@ -356,7 +357,6 @@ inv|0x00001071|CKM_AES_XTS||catalog-only
 inv|0x00001072|CKM_AES_XTS_KEY_GEN||catalog-only
 inv|0x00001083|CKM_AES_MAC||catalog-only
 inv|0x00001084|CKM_AES_MAC_GENERAL||catalog-only
-inv|0x00001088|CKM_AES_CCM||catalog-only
 inv|0x00001089|CKM_AES_CTS||catalog-only
 inv|0x0000108C|CKM_AES_XCBC_MAC||catalog-only
 inv|0x0000108D|CKM_AES_XCBC_MAC_96||catalog-only

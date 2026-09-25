@@ -4,7 +4,7 @@ C surface truthfully, via the publisher.
 
 Fails (exit 1) when any rule fails. The original one-mechanism boundary
 note ("C function tables ... expose exactly one mechanism") went
-stale when the real C surface grew to the 108-row tested
+stale when the real C surface grew to the 109-row tested
 catalog; the corrected boundary names that surface and records the
 retirement provenance. The fix lives in the PUBLISHER
 (scripts/publish-coverage.py), never as a hand-edit of the
@@ -12,9 +12,9 @@ GENERATED file:
 
 * BLOCK: the doc carries a `>`-quoted boundary block (sanity).
 * NO-ONEMECH: the stale one-mechanism claim is gone from it.
-* SURFACE-108: it names the 108-row tested C surface.
+* SURFACE-109: it names the 109-row tested C surface.
 * PROVENANCE: it records the note retirement.
-* PUB-EMITS-108: the publisher source emits the 108-row boundary.
+* PUB-EMITS-109: the publisher source emits the 109-row boundary.
 * PUB-DROPS-ONEMECH: the publisher source drops the stale claim.
 
 STDLIB ONLY. Run on HOST python3 from anywhere:
@@ -52,12 +52,12 @@ def main() -> int:
           "a quoted boundary block exists")
     check("NO-ONEMECH", "exactly one mechanism" not in block,
           "stale one-mechanism claim gone from the boundary")
-    check("SURFACE-108", "108-row" in block,
-          "boundary names the 108-row tested C surface")
+    check("SURFACE-109", "109-row" in block,
+          "boundary names the 109-row tested C surface")
     check("PROVENANCE", "retired" in block,
           "boundary records the note retirement")
-    check("PUB-EMITS-108", "108-row" in pub,
-          "publisher emits the 108-row boundary")
+    check("PUB-EMITS-109", "109-row" in pub,
+          "publisher emits the 109-row boundary")
     check("PUB-DROPS-ONEMECH", "exactly one mechanism" not in pub,
           "publisher drops the stale claim")
 

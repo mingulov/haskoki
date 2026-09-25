@@ -51,12 +51,12 @@ caseCapabilities = do
   r2 <- runCtl ["capabilities", "--config", fixture "maximal-demo.toml"]
   assertBool "demo-maximal labeled as target" ("target-profile" `isInfixOf` ceOut r2)
   -- The catalogs derive from the registry (no stale gaps,
-  -- no phantom routes). OpenSSL serves the 108 real-tested
+  -- no phantom routes). OpenSSL serves the 109 real-tested
   -- behaviors (AES/HOTP/generic-secret keys minted for real);
-  -- synthetic serves all 110 tested behaviors; both cover the
+  -- synthetic serves all 111 tested behaviors; both cover the
   -- 464-mechanism baseline exactly once.
-  checkCatalog (ceOut r2) 110 354 "synthetic"
-  checkCatalog out 108 356 "openssl"
+  checkCatalog (ceOut r2) 111 353 "synthetic"
+  checkCatalog out 109 355 "openssl"
   where
     reportLine prefix text =
       case [drop (length prefix) ln | ln <- lines text, prefix `isInfixOf` ln] of

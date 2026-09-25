@@ -29,7 +29,7 @@ This unpacks the artifact on bare `ubuntu:26.04` (+ documented
 `haskoki-ctl --version`, and compiles+runs the bundled
 `release_smoke`: `SMOKE-OK` over the full served surface
 (dlopen + init + lib metadata + one slot + token presence
-with the pinned `haskoki-demo` label + the EXACT 108-row served
+with the pinned `haskoki-demo` label + the EXACT 109-row served
 mechanism catalog with `CKM_SHA256` membership + two REAL session
 lifecycles each yielding REAL FIPS SHA-256 "abc" bytes +
 finalize). The smoke keeps proving REAL libcrypto bytes
@@ -64,7 +64,7 @@ $CTL scenario run --config tests/ops/fixtures/maximal-demo.toml \
 
 The `active-catalog` names IN-PROCESS behavior coverage (proven by
 the Haskell suites; see `docs/coverage.md`). The C surface exposes
-the `support.real == "tested"` projection (108 rows, step 3).
+the `support.real == "tested"` projection (109 rows, step 3).
 `scenario run` interprets steps against an owned in-memory model; it
 never controls another live process.
 
@@ -79,7 +79,7 @@ scripts/test-consumers.sh
 
 - `consumer_discovery`: 3.x interface discovery per version,
   versioned-table isolation, cross-table consistency, mechanism/info
-  queries (108 rows), real slot/token records (provisioned
+  queries (109 rows), real slot/token records (provisioned
   `haskoki-demo`), session open/info/close, legacy-vs-3.2
   no-skew checks.
 - `consumer_roundtrip`: REAL round-trips over real sessions —
@@ -173,11 +173,11 @@ python3 scripts/publish-coverage.py --check
 # coverage publication current (464 rows, 11 issues)
 ```
 
-`docs/coverage.md`: 110 behavior-tested / 29 unsupported-with-reason /
-2 not-applicable / 323 planned (464 = mechanism denominator), per-family
+`docs/coverage.md`: 111 behavior-tested / 29 unsupported-with-reason /
+2 not-applicable / 322 planned (464 = mechanism denominator), per-family
 and per-mechanism tables with evidence case ids, generated
 limitations, 12 source issues — plus the release-scope boundary
-(in-process proofs vs the 108-row C surface). Known
+(in-process proofs vs the 109-row C surface). Known
 limitations and host support: `SUPPORTED-HOSTS.md`.
 
 ## 6. Token provisioning record

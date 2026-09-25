@@ -63,6 +63,7 @@ import Haskoki.Outcome
   , ResourceRelease (..)
   )
 import qualified Haskoki.Outcome as O
+import Haskoki.Recipe.Ccm (encodeCcmParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
@@ -99,6 +100,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: aes KAT + size errors" caseDriverAes
   , testCase "driver: RSA wrap/unwrap roundtrip, modulus-wide" caseDriverRsaWrap
   , testCase "driver: gcm roundtrip + tamper fails closed" caseDriverGcm
+  , testCase "driver: ccm roundtrip + datalen + tamper" caseDriverCcm
   , testCase "driver: ecdsa roundtrip both encodings" caseDriverEcdsa
   , testCase "driver: ecdh agree + truncate + refuse" caseDriverEcdh
   , testCase "driver: cmac KATs + truncate + refuse" caseDriverCmac
@@ -165,6 +167,9 @@ cmac3GenMech = MechanismId 0x137
 
 aesGcmMech :: MechanismId
 aesGcmMech = MechanismId 0x1087
+
+aesCcmMech :: MechanismId
+aesCcmMech = MechanismId 0x1088
 
 pbkd2Mech :: MechanismId
 pbkd2Mech = MechanismId 0x3b0
@@ -497,6 +502,34 @@ caseDriverGcm = withBackend $ \env -> do
   -- Tag tamper fails closed (never a wrong plaintext).
   tampered <- runEffect env resolver
     (FxCipher DirDecrypt aesGcmMech (Just aesOid) params (ct <> BS.pack [0] <> BS.drop 1 tag))
+  case tampered of
+    GotCryptoError (CryptoAuthFailed _) -> pure ()
+    other -> assertFailure ("expected AuthFailed, got: " ++ show other)
+
+caseDriverCcm :: IO ()
+caseDriverCcm = withBackend $ \env -> do
+  -- Canonical ccm-params/1 image via the recipe encoder.
+  let nonce = "0123456789ab"
+      params d = encodeCcmParams nonce "AD" 16 d
+  out <- runEffect env resolver
+      (FxCipher DirEncrypt aesCcmMech (Just aesOid) (params 6) "hello!")
+    >>= expectBytes
+  -- Ciphertext plus the 16-byte tag in one answer.
+  assertEqual "ct+tag length" (6 + 16) (BS.length out)
+  pt <- runEffect env resolver
+      (FxCipher DirDecrypt aesCcmMech (Just aesOid) (params 6) out)
+    >>= expectBytes
+  assertEqual "decrypt recovers" "hello!" pt
+  -- ulDataLen mismatch is a recipe refusal (CryptoFailed, never Unsupported).
+  bad <- runEffect env resolver
+      (FxCipher DirEncrypt aesCcmMech (Just aesOid) (params 5) "hello!")
+  case bad of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  -- Tag tamper fails closed (never a wrong plaintext).
+  let (ct, tag) = BS.splitAt 6 out
+  tampered <- runEffect env resolver
+    (FxCipher DirDecrypt aesCcmMech (Just aesOid) (params 6) (ct <> BS.pack [0] <> BS.drop 1 tag))
   case tampered of
     GotCryptoError (CryptoAuthFailed _) -> pure ()
     other -> assertFailure ("expected AuthFailed, got: " ++ show other)

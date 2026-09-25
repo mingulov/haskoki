@@ -1290,6 +1290,13 @@ caseAeadCcmReal = withBackend $ \env -> do
   pt2 <- expectOk "ccm tcId 2 open" =<<
     aeadDecrypt env cspec key2 nonce2 "" ct2 tag2
   assertEqual "ccm tcId 2 roundtrip" (hex "35") pt2
+  -- tcId 52 "Flipped bit 0 in tag" (result invalid): must fail closed.
+  let key52 = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")
+      nonce52 = hex "505152535455565758595a5b"
+      ct52 = hex "3ee9f3430f3e803c0a46b7a84cd803de"
+      badTag52 = hex "3d6d5f66430ad65bb034077297f0929a"
+  expectAuthFailed "ccm tcId 52 flipped tag" =<<
+    aeadDecrypt env cspec key52 nonce52 "" ct52 badTag52
   -- Bounds: CCM-only widths refuse as bad params.
   expectBadParam "ccm 6-byte tag" =<<
     aeadEncrypt env (AeadSpec "AES-128-CCM" 12 5) key2 nonce2 "" (hex "35")

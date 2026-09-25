@@ -114,6 +114,7 @@ spec = testGroup "synthetic engine"
   , testCase "RSA-OAEP envelopes bind params" caseOaepRoundtrip
   , testCase "RSA PKCS#1 v1.5 envelopes roundtrip, never cross-open" casePkcs1Roundtrip
   , testCase "synthetic AEAD seals deterministically" caseAeadRoundtrip
+  , testCase "synthetic CCM seals deterministically" caseAeadCcmRoundtrip
   , testCase "ECDSA curves and digests roundtrip" caseEcdsaCurves
   , testCase "ECDH agreements separate and replay" caseEcdh
   , testCase "CMAC tags separate and truncate" caseCmac
@@ -869,6 +870,7 @@ caseCapsFull = withSynth "11" $ \env -> do
     ]) (ccCiphers (bcCiphers caps))
   assertEqual "aead set" (Set.fromList
     [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
+    , "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"
     ]) (ccAead (bcCiphers caps))
   assertEqual "mac set" (Set.fromList
     [ "HMAC-MD5", "HMAC-SHA1"
@@ -1246,6 +1248,33 @@ caseAeadRoundtrip = do
     (ctA, tagA) <- expectOk "seal a" =<< aeadEncrypt envA spec key nonce "aad" "input"
     (ctB, tagB) <- expectOk "seal b" =<< aeadEncrypt envB spec key nonce "aad" "input"
     assertEqual "deterministic" (ctA, tagA) (ctB, tagB)
+
+-- | CCM twin of 'caseAeadRoundtrip': the synthetic seal/open path
+-- serves AES-CCM with the SP 800-38C widths (nonce 7..13, even
+-- tags), fails tampering closed, and stays deterministic.
+caseAeadCcmRoundtrip :: IO ()
+caseAeadCcmRoundtrip = do
+  let spec = AeadSpec "AES-256-CCM" 12 16
+      key = key32
+      nonce = "nonce1234567"
+  withSynth "11" $ \env -> do
+    (ct, tag) <- expectOk "ccm seal" =<< aeadEncrypt env spec key nonce "aad" "input"
+    assertEqual "ccm ct length" 5 (BS.length ct)
+    assertEqual "ccm tag length" 16 (BS.length tag)
+    pt <- expectOk "ccm open" =<< aeadDecrypt env spec key nonce "aad" ct tag
+    assertEqual "ccm roundtrip" "input" pt
+    expectAuthFailed "ccm tag tamper" =<<
+      aeadDecrypt env spec key nonce "aad" ct (BS.pack [0] <> BS.drop 1 tag)
+    expectAuthFailed "ccm aad tamper" =<<
+      aeadDecrypt env spec key nonce "AAX" ct tag
+    expectBadParam "ccm odd tag" =<<
+      aeadEncrypt env (AeadSpec "AES-256-CCM" 12 5) key nonce "aad" "input"
+    expectBadParam "ccm short nonce" =<<
+      aeadEncrypt env (AeadSpec "AES-256-CCM" 6 16) key "short!" "aad" "input"
+  withSynth "11" $ \envA -> withSynth "11" $ \envB -> do
+    (ctA, tagA) <- expectOk "ccm seal a" =<< aeadEncrypt envA spec key nonce "aad" "input"
+    (ctB, tagB) <- expectOk "ccm seal b" =<< aeadEncrypt envB spec key nonce "aad" "input"
+    assertEqual "ccm deterministic" (ctA, tagA) (ctB, tagB)
 
 caseOaepRoundtrip :: IO ()
 caseOaepRoundtrip = withSynth "11" $ \env -> do
