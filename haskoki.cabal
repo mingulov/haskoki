@@ -76,6 +76,7 @@ library haskoki-core
     Haskoki.Registry.Generated
     Haskoki.Registry.KeyMatrix
     Haskoki.Registry.Types
+    Haskoki.Recipe.Ccm
     Haskoki.Recipe.Cipher
     Haskoki.Recipe.Cmac
     Haskoki.Recipe.Digest
@@ -363,6 +364,7 @@ test-suite haskoki-model-tests
     OperationSpec
     OwnershipSpec
     OutputSpec
+    RecipeCcmSpec
     RecipeCipherSpec
     RecipeCmacSpec
     RecipeDigestSpec
