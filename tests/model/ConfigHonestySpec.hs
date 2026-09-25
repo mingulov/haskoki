@@ -276,7 +276,7 @@ caseExclTrue =
 -- ---------------------------------------------------------------------------
 
 -- | ENFORCED: kind validates + observably selects the reported
--- active catalog (CtlSpec caseCapabilities: 108 synthetic vs 106
+-- active catalog (CtlSpec caseCapabilities: 109 synthetic vs 107
 -- openssl rows). Headline answer (S2a): NOTHING routes native
 -- backends by engine.kind — all four native opens bind
 -- @BackendEnv OpenSSL4@ ('Standard.hs' engine-policy doc,

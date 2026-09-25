@@ -406,6 +406,147 @@ end:
     return rc;
 }
 
+/* --- AEAD (AES-GCM) --------------------------------------------------- */
+
+long hsk_ossl4_aead_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
+                            const char *propq, const unsigned char *key,
+                            size_t keylen, const unsigned char *iv,
+                            size_t ivlen, const unsigned char *aad,
+                            size_t aadlen, const unsigned char *in,
+                            size_t inlen, size_t taglen,
+                            unsigned char **out)
+{
+    ERR_clear_error();
+    EVP_CIPHER *cipher = NULL;
+    EVP_CIPHER_CTX *cctx = NULL;
+    unsigned char *buf = NULL;
+    int outl1 = 0, outl2 = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || ciphername == NULL || propq == NULL || out == NULL ||
+        key == NULL || iv == NULL || ivlen < 1 || ivlen > 64 ||
+        taglen < 1 || taglen > 16 || inlen > INT_MAX || aadlen > INT_MAX ||
+        (in == NULL && inlen > 0) || (aad == NULL && aadlen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    cipher = EVP_CIPHER_fetch(ctx, ciphername, propq);
+    if (cipher == NULL)
+        goto end;
+    if (keylen != (size_t)EVP_CIPHER_get_key_length(cipher) ||
+        EVP_CIPHER_get_mode(cipher) != EVP_CIPH_GCM_MODE) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    cctx = EVP_CIPHER_CTX_new();
+    if (cctx == NULL)
+        goto end;
+    if (!EVP_EncryptInit_ex(cctx, cipher, NULL, NULL, NULL) ||
+        !EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_SET_IVLEN, (int)ivlen, NULL) ||
+        !EVP_EncryptInit_ex(cctx, NULL, NULL, key, iv)) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    buf = OPENSSL_malloc(inlen + taglen > 0 ? inlen + taglen : 1);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (aadlen > 0 &&
+        !EVP_EncryptUpdate(cctx, NULL, &outl1, aad, (int)aadlen))
+        goto end;
+    if (inlen > 0 &&
+        !EVP_EncryptUpdate(cctx, buf, &outl1, in, (int)inlen))
+        goto end;
+    if (!EVP_EncryptFinal_ex(cctx, buf + outl1, &outl2))
+        goto end;
+    if (!EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_GET_TAG, (int)taglen,
+                             buf + outl1 + outl2))
+        goto end;
+    *out = buf;
+    rc = (long)(outl1 + outl2 + taglen);
+
+end:
+    EVP_CIPHER_CTX_free(cctx);
+    EVP_CIPHER_free(cipher);
+    if (rc < 0 && buf != NULL)
+        OPENSSL_clear_free(buf, inlen + taglen > 0 ? inlen + taglen : 1);
+    return rc;
+}
+
+long hsk_ossl4_aead_decrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
+                            const char *propq, const unsigned char *key,
+                            size_t keylen, const unsigned char *iv,
+                            size_t ivlen, const unsigned char *aad,
+                            size_t aadlen, const unsigned char *in,
+                            size_t inlen, const unsigned char *tag,
+                            size_t taglen, unsigned char **out)
+{
+    ERR_clear_error();
+    EVP_CIPHER *cipher = NULL;
+    EVP_CIPHER_CTX *cctx = NULL;
+    unsigned char *buf = NULL;
+    int outl1 = 0, outl2 = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || ciphername == NULL || propq == NULL || out == NULL ||
+        key == NULL || iv == NULL || ivlen < 1 || ivlen > 64 ||
+        tag == NULL || taglen < 1 || taglen > 16 ||
+        inlen > INT_MAX || aadlen > INT_MAX ||
+        (in == NULL && inlen > 0) || (aad == NULL && aadlen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    cipher = EVP_CIPHER_fetch(ctx, ciphername, propq);
+    if (cipher == NULL)
+        goto end;
+    if (keylen != (size_t)EVP_CIPHER_get_key_length(cipher) ||
+        EVP_CIPHER_get_mode(cipher) != EVP_CIPH_GCM_MODE) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    cctx = EVP_CIPHER_CTX_new();
+    if (cctx == NULL)
+        goto end;
+    if (!EVP_DecryptInit_ex(cctx, cipher, NULL, NULL, NULL) ||
+        !EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_SET_IVLEN, (int)ivlen, NULL) ||
+        !EVP_DecryptInit_ex(cctx, NULL, NULL, key, iv)) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    if (!EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_SET_TAG, (int)taglen,
+                             (void *)tag)) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    buf = OPENSSL_malloc(inlen > 0 ? inlen : 1);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (aadlen > 0 &&
+        !EVP_DecryptUpdate(cctx, NULL, &outl1, aad, (int)aadlen)) {
+        rc = HSK_OSSL4_ERR_AUTHFAIL;
+        goto end;
+    }
+    if (inlen > 0 &&
+        !EVP_DecryptUpdate(cctx, buf, &outl1, in, (int)inlen)) {
+        rc = HSK_OSSL4_ERR_AUTHFAIL;
+        goto end;
+    }
+    if (!EVP_DecryptFinal_ex(cctx, buf + outl1, &outl2)) {
+        rc = HSK_OSSL4_ERR_AUTHFAIL;
+        goto end;
+    }
+    *out = buf;
+    rc = (long)(outl1 + outl2);
+
+end:
+    EVP_CIPHER_CTX_free(cctx);
+    EVP_CIPHER_free(cipher);
+    if (rc < 0 && buf != NULL)
+        OPENSSL_clear_free(buf, inlen > 0 ? inlen : 1);
+    return rc;
+}
+
 /* --- EC keygen -------------------------------------------------------- */
 
 int hsk_ossl4_ec_gen(OSSL_LIB_CTX *ctx, const char *groupname,

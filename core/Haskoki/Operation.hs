@@ -76,6 +76,7 @@ import Haskoki.Recipe.Cipher (cipherParamsValid, cipherRecipeFor)
 import Haskoki.Recipe.Cmac (cmacParamsValid, cmacRecipeFor)
 import Haskoki.Recipe.Digest (digestParamsValid)
 import Haskoki.Recipe.Ecdsa (ecdsaParamsValid, ecdsaRecipeFor)
+import Haskoki.Recipe.Gcm (gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.Hmac (hmacParamsValid, hmacRecipeFor)
 import Haskoki.Recipe.Otp (hotpParamsValid, hotpRecipeFor)
 import Haskoki.Recipe.RsaOaep (rsaOaepParamsValid, rsaOaepRecipeFor)
@@ -208,6 +209,9 @@ checkShape args = case (cipherDirOf (iaOp args), iaCipher args) of
     | csPad spec && isJust (rsaOaepRecipeFor (iaMech args)) ->
         Left (mkDeny CKR_ARGUMENTS_BAD
           "asymmetric cipher operation takes no padding spec")
+    | csPad spec && isJust (gcmRecipeFor (iaMech args)) ->
+        Left (mkDeny CKR_ARGUMENTS_BAD
+          "AEAD cipher operation takes no padding spec")
     | otherwise -> checkRecover args (ShapeCipher spec)
   (Nothing, Just _) ->
     Left (mkDeny CKR_ARGUMENTS_BAD "non-cipher operation takes no cipher spec")
@@ -221,7 +225,7 @@ checkShape args = case (cipherDirOf (iaOp args), iaCipher args) of
 -- when it gets a cipher shape; today OAEP is the only asymmetric
 -- row that can hold a cipher slot.)
 isUnframedCipher :: MechanismId -> Bool
-isUnframedCipher m = isJust (rsaOaepRecipeFor m)
+isUnframedCipher m = isJust (rsaOaepRecipeFor m) || isJust (gcmRecipeFor m)
 
 -- | Mechanism-parameter check (recipe-backed mechanisms):
 -- operations whose recipe constrains mechanism parameters enforce
@@ -235,7 +239,9 @@ isUnframedCipher m = isJust (rsaOaepRecipeFor m)
 -- 'rsaPssRecipeFor'; RSA-OAEP inits enforce the labeled params via
 -- 'rsaOaepRecipeFor'; ECDSA inits enforce the encoding selection
 -- via 'ecdsaRecipeFor'; CMAC inits enforce the plain/GENERAL
--- shape via 'cmacRecipeFor'; later slices extend this to KDF recipes.
+-- shape via 'cmacRecipeFor'; AEAD inits enforce the caller IV and
+-- approved tag width via 'gcmRecipeFor'; later slices extend this
+-- to KDF recipes.
 -- Runs after shape checks (which govern specs) and before key
 -- binding.
 checkMechParams :: InitArgs -> Either StepDeny ()
@@ -276,6 +282,10 @@ checkMechParams args
   , not (hotpParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD
         "HOTP mechanism parameters rejected by the recipe")
+  | Just r <- gcmRecipeFor (iaMech args)
+  , not (gcmParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "GCM mechanism parameters rejected by the recipe")
   | otherwise = Right ()
 
 -- | Recovery shape check, preserving whatever the cipher check

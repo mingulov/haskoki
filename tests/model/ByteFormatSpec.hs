@@ -59,12 +59,18 @@ import Haskoki.Recipe.Cipher
   , cipherRecipeFor
   )
 import Haskoki.Recipe.Ecdsa (ecdsaEncodingOf)
+import Haskoki.Recipe.Gcm
+  ( decodeGcmParams
+  , encodeGcmParams
+  , gcmParamsValid
+  , gcmRecipeFor
+  )
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Otp (encodeHotpParams)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Recipe.RsaPss (encodePssParams)
 import Haskoki.Registry (MechanismId (..), Operation (..))
-import Haskoki.Registry.Generated (ckm_AES_CBC)
+import Haskoki.Registry.Generated (ckm_AES_CBC, ckm_AES_GCM)
 import Haskoki.Types (ExternalHandle (..))
 
 spec :: TestTree
@@ -267,6 +273,24 @@ caseParams = guarded "params" $ do
     (encodeOaepParams "SHA_1" "SHA_1" "")
   assertEqual "oaep label golden" (w64 2 <> w64 2 <> "L")
     (encodeOaepParams "SHA_1" "SHA_1" "L")
+  -- gcm-params: tag length, IV length, IV, AAD.
+  assertEqual "gcm golden" (w64 16 <> w64 12 <> "0123456789ab" <> "AD")
+    (encodeGcmParams "0123456789ab" "AD" 16)
+  assertEqual "gcm roundtrip"
+    (Just ("0123456789ab", "AD", 16))
+    (decodeGcmParams (encodeGcmParams "0123456789ab" "AD" 16))
+  assertEqual "gcm truncated" Nothing
+    (decodeGcmParams (w64 16 <> w64 12 <> "short"))
+  case gcmRecipeFor (MechanismId ckm_AES_GCM) of
+    Nothing -> assertFailure "no AES-GCM recipe"
+    Just r -> do
+      assertEqual "gcm valid" True
+        (gcmParamsValid r (encodeGcmParams "0123456789ab" "AD" 16))
+      assertEqual "gcm empty iv" False
+        (gcmParamsValid r (encodeGcmParams "" "AD" 16))
+      assertEqual "gcm bad tag" False
+        (gcmParamsValid r (encodeGcmParams "0123456789ab" "AD" 7))
+      assertEqual "gcm garbage" False (gcmParamsValid r "nope")
   -- sig-encoding: RAW, DER, or empty (DER default).
   assertEqual "ecdsa empty" (Just "RAW") (ecdsaEncodingOf "")
   assertEqual "ecdsa raw" (Just "RAW") (ecdsaEncodingOf "RAW")

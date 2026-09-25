@@ -141,25 +141,25 @@ caseCatalogOnly :: IO ()
 caseCatalogOnly = do
   let reg = curatedRegistry
       x931 = MechanismId 0xa
-      gcm = MechanismId 0x1087
+      ccm = MechanismId 0x1088
       -- Even with engine support present, catalog-only rows stay down.
       caps :: EngineCapabilities
       caps = mkCapabilities
         [ (x931, OpGenerateKeyPair)
-        , (gcm, OpEncrypt)
-        , (gcm, OpDecrypt)
+        , (ccm, OpEncrypt)
+        , (ccm, OpDecrypt)
         ]
   assertEqual "x931 catalog-only" StatusCatalogOnly (describeStatus reg x931)
-  assertEqual "gcm catalog-only" StatusCatalogOnly (describeStatus reg gcm)
+  assertEqual "ccm catalog-only" StatusCatalogOnly (describeStatus reg ccm)
   assertEqual "x931 no behavior" Nothing (lookupBehavior reg x931)
   assertBool "x931 not executable"
     (not (isExecutable reg caps x931 OpGenerateKeyPair))
-  assertBool "gcm not executable"
-    (not (isExecutable reg caps gcm OpEncrypt))
+  assertBool "ccm not executable"
+    (not (isExecutable reg caps ccm OpEncrypt))
   -- But they are still listed in the catalog projection: they remain
   -- in the coverage denominator.
   assertBool "x931 listed" (x931 `elem` mechanismList reg)
-  assertBool "gcm listed" (gcm `elem` mechanismList reg)
+  assertBool "ccm listed" (ccm `elem` mechanismList reg)
 
 caseCurated :: IO ()
 caseCurated = do
@@ -270,6 +270,7 @@ caseCurated = do
     , MechanismId Gen.ckm_AES_ECB
     , MechanismId Gen.ckm_AES_CBC
     , MechanismId Gen.ckm_AES_CBC_PAD
+    , MechanismId Gen.ckm_AES_GCM
     , MechanismId Gen.ckm_AES_CMAC
     , MechanismId Gen.ckm_AES_CMAC_GENERAL
     , MechanismId Gen.ckm_HKDF_DERIVE
@@ -294,7 +295,7 @@ caseCurated = do
 
 caseJsonProjection :: IO ()
 caseJsonProjection = do
-  -- The reviewed head stays pinned verbatim; the 356 generated
+  -- The reviewed head stays pinned verbatim; the 355 generated
   -- catalog-only rows are pinned by count + full file equality (the
   -- file is generator output; equality proves the Haskell registry
   -- matches the JSON catalog byte-for-byte, and
@@ -306,6 +307,7 @@ caseJsonProjection = do
         , "mech|0x00001080|CKM_AES_KEY_GEN||keygen|no-params/1|bits:128-256|generate-key:A37"
         , "mech|0x00000350|CKM_GENERIC_SECRET_KEY_GEN||keygen|no-params/1|bits:8-2040|generate-key:A37"
         , "mech|0x00001082|CKM_AES_CBC||cipher|iv-bytes/1|bytes:16-32|authenticated-unwrap:A23,A37;authenticated-wrap:A23,A37;decrypt:A16,A37,A39;encrypt:A16,A37,A39;unwrap:A20,A37,A39;wrap:A20,A37,A39"
+        , "mech|0x00001087|CKM_AES_GCM||aead|gcm-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39"
         ]
       dumpLines = T.lines (dumpRegistry curatedRegistry)
   -- Order-free: behavior sorts by id, so new low-id promotions sort
@@ -313,11 +315,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 108 behavior + 356 catalog-only + catalog line.
+  -- schema + 109 behavior + 355 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 108
+  assertEqual "behavior line count" 109
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 356
+  assertEqual "catalog-only line count" 355
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -330,32 +332,32 @@ caseJsonProjection = do
 
 casePromote :: IO ()
 casePromote = do
-  -- Promote a real catalog-only row (CKM_AES_GCM, 0x1087) with a
+  -- Promote a real catalog-only row (CKM_AES_CCM, 0x1088) with a
   -- test-local descriptor: behavior appears, inventory is unchanged,
   -- and executability follows caps.
-  let gcm = MechanismId 0x1087
+  let ccm = MechanismId 0x1088
       reg = curatedRegistry
-  assertEqual "gcm starts catalog-only" StatusCatalogOnly (describeStatus reg gcm)
-  let d = (mkTestDesc gcm "CKM_AES_GCM" (Just testCodec) [testRoute OpEncrypt])
-        { descFamily = FamilyCipher }
+  assertEqual "ccm starts catalog-only" StatusCatalogOnly (describeStatus reg ccm)
+  let d = (mkTestDesc ccm "CKM_AES_CCM" (Just testCodec) [testRoute OpEncrypt])
+        { descFamily = FamilyAead }
   regP <- expectRight (promoteInventory reg d)
-  assertEqual "gcm promoted" StatusSupported (describeStatus regP gcm)
+  assertEqual "ccm promoted" StatusSupported (describeStatus regP ccm)
   assertEqual "inventory unchanged" (inventoryIds reg) (inventoryIds regP)
   assertEqual "catalog unchanged" (mechanismList reg) (mechanismList regP)
-  case lookupBehavior regP gcm of
+  case lookupBehavior regP ccm of
     Nothing -> assertFailure "promoted behavior must resolve"
-    Just got -> assertEqual "promoted canonical" "CKM_AES_GCM" (descCanonical got)
-  let caps = mkCapabilities [(gcm, OpEncrypt)]
+    Just got -> assertEqual "promoted canonical" "CKM_AES_CCM" (descCanonical got)
+  let caps = mkCapabilities [(ccm, OpEncrypt)]
   assertBool "promoted row executable with caps"
-    (isExecutable regP caps gcm OpEncrypt)
+    (isExecutable regP caps ccm OpEncrypt)
   assertBool "unpermitted op stays down"
-    (not (isExecutable regP caps gcm OpDecrypt))
+    (not (isExecutable regP caps ccm OpDecrypt))
 
 casePromoteReject :: IO ()
 casePromoteReject = do
   let reg = curatedRegistry
-      gcm = MechanismId 0x1087
-      d = mkTestDesc gcm "CKM_AES_GCM" (Just testCodec) [testRoute OpDigest]
+      ccm = MechanismId 0x1088
+      d = mkTestDesc ccm "CKM_AES_CCM" (Just testCodec) [testRoute OpDigest]
   -- Unknown id.
   case promoteInventory reg (d { descId = MechanismId 0x4712 }) of
     Left (UnknownCatalogMember _) -> pure ()
@@ -633,7 +635,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 356 (length invIds)
+  assertEqual "guard covers every catalog row" 355 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of
@@ -649,7 +651,7 @@ caseSpecialsCatalogOnly :: IO ()
 caseSpecialsCatalogOnly = do
   -- S15: one named representative per reviewed gap group stays
   -- catalog-only with its headline operation refused under
-  -- granted caps (the exhaustive guard above covers all 356;
+  -- granted caps (the exhaustive guard above covers all 355;
   -- this table documents the groups for humans).
   let reg = curatedRegistry
       reps =
@@ -661,7 +663,7 @@ caseSpecialsCatalogOnly = do
         , ("CKM_FORTEZZA_TIMESTAMP", OpSign)
         , ("CKM_DES_CBC", OpEncrypt)
         , ("CKM_RC4", OpEncrypt)
-        , ("CKM_AES_GCM", OpEncrypt)
+        , ("CKM_AES_CCM", OpEncrypt)
         , ("CKM_DSA_SHA256", OpSign)
         , ("CKM_ML_DSA", OpSign)
         , ("CKM_TLS_PRF", OpDerive)

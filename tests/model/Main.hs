@@ -38,6 +38,7 @@ import qualified RecipeCmacSpec
 import qualified RecipeDigestSpec
 import qualified RecipeEcdhSpec
 import qualified RecipeEcdsaSpec
+import qualified RecipeGcmSpec
 import qualified RecipeHmacSpec
 import qualified RecipeKdfSpec
 import qualified RecipeOaepSpec
@@ -76,6 +77,7 @@ main = defaultMain $ testGroup "haskoki model + lifecycle"
   , RecipeDigestSpec.spec
   , RecipeEcdhSpec.spec
   , RecipeEcdsaSpec.spec
+  , RecipeGcmSpec.spec
   , RecipeHmacSpec.spec
   , RecipeKdfSpec.spec
   , RecipeOaepSpec.spec

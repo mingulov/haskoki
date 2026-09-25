@@ -442,11 +442,13 @@ instance CryptoBackend Synthetic where
   cipherDecrypt be spec key iv input =
     cipherRun be "cipherDecrypt" spec key iv input
 
-  -- Permanent outsiders: outside the synthetic capability set.
-  aeadEncrypt _ spec _ _ _ _ =
-    pure (B.EngineFail (BackendUnsupported "aeadEncrypt" ("not in synthetic set: " ++ aeadAlg spec)))
-  aeadDecrypt _ spec _ _ _ _ _ =
-    pure (B.EngineFail (BackendUnsupported "aeadDecrypt" ("not in synthetic set: " ++ aeadAlg spec)))
+  aeadEncrypt be spec key iv aad input = do
+    r <- aeadRun be "aeadEncrypt" True spec key iv aad input BS.empty
+    pure $ case r of
+      B.EngineFail err -> B.EngineFail err
+      B.EngineOk blob -> B.EngineOk (BS.splitAt (BS.length blob - aeadTagLen spec) blob)
+  aeadDecrypt be spec key iv aad input tag =
+    aeadRun be "aeadDecrypt" False spec key iv aad input tag
   pkeyEncrypt be params key input =
     runGuarded be "pkeyEncrypt" (oaepSupported be params) $ \env -> do
       mkey <- resolveKeyBytes env key
@@ -668,7 +670,7 @@ synthCaps = BackendCaps
           ]
       , dcMultipart = True, dcXof = False }
   , bcCiphers = CipherCaps
-      { ccCiphers = Set.fromList synthCipherSpecs, ccAead = Set.empty }
+      { ccCiphers = Set.fromList synthCipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM"] }
   , bcMacs = MacCaps { mcSpecs = synthMacSpecs }
   , bcSigs = SigCaps
       { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames)
@@ -842,6 +844,73 @@ cipherRun be op spec key iv input =
               ("iv length " ++ show (BS.length iv)
                 ++ " not accepted by " ++ show spec)))
         | otherwise -> pure (B.EngineOk (classCipherFor spec kb iv input))
+
+aeadRun :: BackendEnv Synthetic -> String -> Bool -> AeadSpec -> KeyMaterial
+  -> ByteString -> ByteString -> ByteString -> ByteString -> IO (B.EngineResult ByteString)
+aeadRun be op enc spec key iv aad input tag =
+  runGuarded be op (aeadSupported be spec) $ \env -> do
+    mkey <- resolveKeyBytes env key
+    case mkey of
+      B.EngineFail err -> pure (B.EngineFail err)
+      B.EngineOk kb
+        | BS.length kb /= aeadKeyLen (aeadAlg spec) ->
+            pure (B.EngineFail (BackendBadParam op
+              ("key length " ++ show (BS.length kb)
+                ++ " not accepted by " ++ aeadAlg spec)))
+        | aeadTagLen spec `notElem` [4, 8, 12, 13, 14, 15, 16] ->
+            pure (B.EngineFail (BackendBadParam op
+              ("tag length " ++ show (aeadTagLen spec) ++ " is not approved")))
+        | aeadNonceLen spec < 1 || aeadNonceLen spec > 64
+          || BS.length iv /= aeadNonceLen spec ->
+            pure (B.EngineFail (BackendBadParam op
+              ("nonce length " ++ show (BS.length iv)
+                ++ " does not match spec " ++ show (aeadNonceLen spec))))
+        | not enc && BS.length tag /= aeadTagLen spec ->
+            pure (B.EngineFail (BackendAuthFailed op))
+        | enc -> let (ct, tg) = classAeadSeal kb spec iv aad input
+                 in pure (B.EngineOk (ct <> tg))
+        | otherwise -> case classAeadOpen kb spec iv aad input tag of
+            Just pt -> pure (B.EngineOk pt)
+            Nothing -> pure (B.EngineFail (BackendAuthFailed op))
+
+-- | AEAD support: the three AES-GCM widths with sane nonce/tag
+-- lengths.
+aeadSupported :: BackendEnv Synthetic -> AeadSpec -> Maybe String
+aeadSupported _ spec
+  | aeadAlg spec `elem` ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM"] = Nothing
+  | otherwise = Just ("aead not in synthetic set: " ++ show spec)
+
+-- | Key length in bytes for a supported AEAD algorithm name.
+aeadKeyLen :: String -> Int
+aeadKeyLen alg
+  | alg == "AES-128-GCM" = 16
+  | alg == "AES-192-GCM" = 24
+  | otherwise = 32
+
+-- | Seal under the synthetic AEAD: PRF keystream XOR plus a tag
+-- over (key, nonce, aad, body). Deterministic; NOT real GCM.
+classAeadSeal :: ByteString -> AeadSpec -> ByteString -> ByteString -> ByteString -> (ByteString, ByteString)
+classAeadSeal kb spec iv aad input = (body, tag)
+  where
+    body = BS.packZipWith xor
+      (prfBytes (frame ["haskoki-synth/aead-ct/v1", kb, iv]) (BS.length input))
+      input
+    tag = prfBytes
+      (frame ["haskoki-synth/aead-tag/v1", kb, iv, aad, body])
+      (aeadTagLen spec)
+
+-- | Open a synthetic AEAD envelope: the tag must match exactly
+-- (constant-time) or the whole open is 'Nothing'.
+classAeadOpen :: ByteString -> AeadSpec -> ByteString -> ByteString -> ByteString -> ByteString -> Maybe ByteString
+classAeadOpen kb spec iv aad body tag
+  | not (ctEq tag want) = Nothing
+  | otherwise = Just (BS.packZipWith xor
+      (prfBytes (frame ["haskoki-synth/aead-ct/v1", kb, iv]) (BS.length body))
+      body)
+  where
+    want = prfBytes
+      (frame ["haskoki-synth/aead-tag/v1", kb, iv, aad, body])
+      (aeadTagLen spec)
 
 -- | Signature encoding tag carried into the construction (the guard
 -- admits DER and RAW only; anything else never reaches here).

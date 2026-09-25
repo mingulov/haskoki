@@ -1416,6 +1416,50 @@ int main(int argc, char **argv) {
     CHECKC(rv == CKR_OK && ptLen == 16 &&
                memcmp(pt, "0123456789ABCDEF", 16) == 0,
            "CBC decrypt recovers 16 bytes");
+    /* AES-GCM: tag-appended round-trip; tamper, short input, and the
+     * provider-generated-IV shape fail closed. */
+    {
+      CK_BYTE giv[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+      CK_BYTE gaad[2] = { 'A', 'D' };
+      CK_AES_GCM_PARAMS gp;
+      CK_MECHANISM gm;
+      gp.pIv = giv;
+      gp.ulIvLen = sizeof(giv);
+      gp.ulIvBits = sizeof(giv) * 8;
+      gp.pAAD = gaad;
+      gp.ulAADLen = sizeof(gaad);
+      gp.ulTagBits = 128;
+      gm.mechanism = CKM_AES_GCM;
+      gm.pParameter = &gp;
+      gm.ulParameterLen = sizeof(gp);
+      rv = f->C_EncryptInit(esess, &gm, ekey);
+      CHECKC(rv == CKR_OK, "GCM EncryptInit ok");
+      ctLen = sizeof(ct);
+      rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "hello!", 6, ct, &ctLen);
+      CHECKC(rv == CKR_OK && ctLen == 22, "GCM encrypt appends 16-byte tag");
+      rv = f->C_DecryptInit(esess, &gm, ekey);
+      CHECKC(rv == CKR_OK, "GCM DecryptInit ok");
+      ptLen = sizeof(pt);
+      rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
+      CHECKC(rv == CKR_OK && ptLen == 6 && memcmp(pt, "hello!", 6) == 0,
+             "GCM decrypt recovers hello!");
+      ct[ctLen - 1] ^= 0x01;
+      rv = f->C_DecryptInit(esess, &gm, ekey);
+      CHECKC(rv == CKR_OK, "GCM DecryptInit for tamper ok");
+      ptLen = sizeof(pt);
+      rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
+      CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "GCM tamper fails closed");
+      ct[ctLen - 1] ^= 0x01;
+      rv = f->C_DecryptInit(esess, &gm, ekey);
+      CHECKC(rv == CKR_OK, "GCM DecryptInit for short ok");
+      ptLen = sizeof(pt);
+      rv = f->C_Decrypt(esess, ct, 4, pt, &ptLen);
+      CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "GCM short input fails closed");
+      gp.ulIvLen = 0;
+      gp.ulIvBits = 96;
+      rv = f->C_EncryptInit(esess, &gm, ekey);
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "GCM generated-IV refused");
+    }
     /* Non-AES block ciphers route identically: an imported ARIA-256
      * key (typed CKK_ARIA, verbatim value) drives ARIA-256-CBC while
      * the AES key object is refused by the key-type matrix. Runs

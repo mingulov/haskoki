@@ -318,10 +318,16 @@ instance CryptoBackend OpenSSL4 where
   cipherDecrypt be spec key iv input =
     cipherRun be "cipherDecrypt" False spec key iv input
 
-  aeadEncrypt _ spec _ _ _ _ =
-    pure (EngineFail (BackendUnsupported "aeadEncrypt" ("not in engine set: " ++ aeadAlg spec)))
-  aeadDecrypt _ spec _ _ _ _ _ =
-    pure (EngineFail (BackendUnsupported "aeadDecrypt" ("not in engine set: " ++ aeadAlg spec)))
+  aeadEncrypt be spec key iv aad input = do
+    r <- aeadRun be "aeadEncrypt" True spec key iv aad input BS.empty
+    pure $ case r of
+      EngineFail err -> EngineFail err
+      EngineOk blob
+        | BS.length blob < aeadTagLen spec -> EngineFail
+            (BackendNative "aeadEncrypt" (-1) "native AEAD answer shorter than tag")
+        | otherwise -> EngineOk (BS.splitAt (BS.length blob - aeadTagLen spec) blob)
+  aeadDecrypt be spec key iv aad input tag =
+    aeadRun be "aeadDecrypt" False spec key iv aad input tag
 
   pkeyEncrypt be params key input =
     runGuarded be "pkeyEncrypt" (oaepSupported be params) $ \env -> do
@@ -500,7 +506,7 @@ ossl4Caps version propq = BackendCaps
   { bcName = "openssl4"
   , bcVersion = version
   , bcDigests = DigestCaps { dcAlgs = Set.fromList t16DigestAlgs, dcMultipart = True, dcXof = False }
-  , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.empty }
+  , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM"] }
   , bcMacs = MacCaps { mcSpecs = osslMacSpecs t16DigestAlgs }
   , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.empty }
   , bcKems = KemCaps { kcAlgs = Set.empty }
@@ -925,6 +931,46 @@ cipherRun be op enc spec key iv input =
 
 -- | Resolve key material to owned bytes; registry references are
 -- looked up, missing ones answer ResourceGone.
+aeadRun :: BackendEnv OpenSSL4 -> String -> Bool -> AeadSpec -> KeyMaterial -> ByteString -> ByteString -> ByteString -> ByteString -> IO (EngineResult ByteString)
+aeadRun be op enc spec key iv aad input tag =
+  runGuarded be op Nothing $ \env -> do
+    mkey <- resolveKeyBytes env key
+    case mkey of
+      EngineFail err -> pure (EngineFail err)
+      EngineOk kb
+        | aeadAlg spec `notElem` ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM"] ->
+            pure (EngineFail (BackendBadParam op
+              ("AEAD algorithm " ++ show (aeadAlg spec) ++ " is not served")))
+        | BS.length kb /= aeadKeyLen (aeadAlg spec) ->
+            pure (EngineFail (BackendBadParam op
+              ("key length " ++ show (BS.length kb)
+                ++ " not accepted by " ++ aeadAlg spec)))
+        | aeadNonceLen spec < 1 || aeadNonceLen spec > 64
+          || BS.length iv /= aeadNonceLen spec ->
+            pure (EngineFail (BackendBadParam op
+              ("nonce length " ++ show (BS.length iv)
+                ++ " does not match spec " ++ show (aeadNonceLen spec))))
+        | aeadTagLen spec `notElem` [4, 8, 12, 13, 14, 15, 16] ->
+            pure (EngineFail (BackendBadParam op
+              ("tag length " ++ show (aeadTagLen spec) ++ " is not approved")))
+        | not enc && BS.length tag /= aeadTagLen spec ->
+            pure (EngineFail (BackendAuthFailed op))
+        | otherwise -> do
+            r <- withForeignPtr (osslEnv env) $ \_ ->
+              if enc
+                then Raw.aeadEncrypt (osslCtx env) (aeadAlg spec) (osslPropQ env)
+                  kb iv aad input (aeadTagLen spec)
+                else Raw.aeadDecrypt (osslCtx env) (aeadAlg spec) (osslPropQ env)
+                  kb iv aad input tag
+            nativeOut op r
+
+-- | Key length in bytes for a supported AEAD algorithm name.
+aeadKeyLen :: String -> Int
+aeadKeyLen alg
+  | alg == "AES-128-GCM" = 16
+  | alg == "AES-192-GCM" = 24
+  | otherwise = 32
+
 resolveKeyBytes :: OSSL4Env -> KeyMaterial -> IO (EngineResult ByteString)
 resolveKeyBytes _ (KeyBytes bs) = pure (EngineOk bs)
 resolveKeyBytes _ (KeyDer bs) = pure (EngineOk bs)

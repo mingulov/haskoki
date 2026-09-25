@@ -33,6 +33,7 @@ import Haskoki.Attribute.Generated (mustKeyTypeId)
 import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipes)
 import Haskoki.Recipe.Cmac (CmacRecipe (..), cmacRecipes)
 import Haskoki.Recipe.Ecdsa (EcdsaRecipe (..), ecdsaRecipes)
+import Haskoki.Recipe.Gcm (GcmRecipe (..), gcmRecipes)
 import Haskoki.Recipe.Hmac (HmacRecipe (..), hmacRecipes)
 import Haskoki.Recipe.Otp (OtpRecipe (..), hotpRecipes)
 import Haskoki.Recipe.RsaOaep (RsaOaepRecipe (..), rsaOaepRecipes)
@@ -60,6 +61,8 @@ matrixTable = Map.fromList (concat
   , [ ((midOf (reName r), o), [ckkEc]) | r <- ecdsaRecipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (crName r), o), [mustKeyTypeId (crKeyType r)])
     | r <- cipherRecipes, o <- [OpEncrypt, OpDecrypt] ]
+  , [ ((midOf (gcmName r), o), [ckkAes])
+    | r <- gcmRecipes, o <- [OpEncrypt, OpDecrypt] ]
   , [ ((midOf (rcName r), o), [if rcDes3 r then ckkDes3 else ckkAes])
     | r <- cmacRecipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (otpName r), o), [mustKeyTypeId (otpKeyType r)])

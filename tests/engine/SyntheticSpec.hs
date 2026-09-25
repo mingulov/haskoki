@@ -111,6 +111,7 @@ spec = testGroup "synthetic engine"
   , testCase "RSA v1.5 specs roundtrip per digest" caseRsaRoundtrip
   , testCase "RSA-PSS specs roundtrip per salt" casePssRoundtrip
   , testCase "RSA-OAEP envelopes bind params" caseOaepRoundtrip
+  , testCase "synthetic AEAD seals deterministically" caseAeadRoundtrip
   , testCase "ECDSA curves and digests roundtrip" caseEcdsaCurves
   , testCase "ECDH agreements separate and replay" caseEcdh
   , testCase "CMAC tags separate and truncate" caseCmac
@@ -266,10 +267,7 @@ caseUnsupportedRest = withSynth "11" $ \env -> do
   -- caseCipherSpecs); CTR stays the cipher holdout.
   expectUnsupported "aes128-ctr" =<<
     cipherEncrypt env C_AES128_CTR (KeyBytes "0123456789abcdef") "0123456789abcdef" "0123456789abcdef"
-  expectUnsupported "aeadEncrypt" =<<
-    aeadEncrypt env (AeadSpec "AES-256-GCM" 12 16) key32 "nonce1234567" "aad" "input"
-  expectUnsupported "aeadDecrypt" =<<
-    aeadDecrypt env (AeadSpec "AES-256-GCM" 12 16) key32 "nonce1234567" "aad" "ct" "tag"
+  -- AEAD is supported (see caseAeadRoundtrip).
   -- OAEP is supported (see caseOaepRoundtrip); XOF
   -- hashes stay out.
   expectUnsupported "pkeyEncrypt xof" =<<
@@ -298,7 +296,7 @@ caseClosedGuards = do
   -- Guard-before-state: a capability miss still reports
   -- Unsupported on a closed backend, never InvalidState.
   expectUnsupported "closed unsupported stays Unsupported" =<<
-    aeadEncrypt env (AeadSpec "AES-256-GCM" 12 16) key32 "nonce1234567" "aad" "input"
+    digestOneShot env D_SHAKE128 "abc"
 
 -- ---------------------------------------------------------------------------
 -- Part 2 cases: multipart digest + versioned resource snapshots
@@ -863,7 +861,9 @@ caseCapsFull = withSynth "11" $ \env -> do
     , C_CAMELLIA128_CBC, C_CAMELLIA192_CBC, C_CAMELLIA256_CBC
     , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
     ]) (ccCiphers (bcCiphers caps))
-  assertEqual "no aead" Set.empty (ccAead (bcCiphers caps))
+  assertEqual "aead set" (Set.fromList
+    [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
+    ]) (ccAead (bcCiphers caps))
   assertEqual "mac set" (Set.fromList
     [ "HMAC-MD5", "HMAC-SHA1"
     , "HMAC-SHA224", "HMAC-SHA256", "HMAC-SHA384", "HMAC-SHA512"
@@ -1205,6 +1205,41 @@ casePssRoundtrip = withSynth "11" $ \env -> do
 
 -- | OAEP envelopes roundtrip, bind the label/hash/MGF/key, and stay
 -- unsupported for XOF hashes.
+caseAeadRoundtrip :: IO ()
+caseAeadRoundtrip = do
+  let spec = AeadSpec "AES-256-GCM" 12 16
+      key = key32
+      nonce = "nonce1234567"
+  withSynth "11" $ \env -> do
+    (ct, tag) <- expectOk "seal" =<< aeadEncrypt env spec key nonce "aad" "input"
+    assertEqual "ct length" 5 (BS.length ct)
+    assertEqual "tag length" 16 (BS.length tag)
+    pt <- expectOk "open" =<< aeadDecrypt env spec key nonce "aad" ct tag
+    assertEqual "roundtrip" "input" pt
+    -- Tampering anywhere fails closed.
+    expectAuthFailed "tag tamper" =<<
+      aeadDecrypt env spec key nonce "aad" ct (BS.pack [0] <> BS.drop 1 tag)
+    expectAuthFailed "ct tamper" =<<
+      aeadDecrypt env spec key nonce "aad" (BS.pack [0] <> BS.drop 1 ct) tag
+    expectAuthFailed "aad tamper" =<<
+      aeadDecrypt env spec key nonce "AAX" ct tag
+    expectAuthFailed "nonce tamper" =<<
+      aeadDecrypt env spec key "nonce123456X" "aad" ct tag
+    expectAuthFailed "short tag" =<<
+      aeadDecrypt env spec key nonce "aad" ct "short"
+    -- Bounds: unknown algs unsupported, short keys bad params.
+    expectUnsupported "bad alg" =<<
+      aeadEncrypt env (AeadSpec "NOPE" 12 16) key nonce "aad" "input"
+    expectBadParam "short key" =<<
+      aeadEncrypt env spec (KeyBytes "short") nonce "aad" "input"
+    expectBadParam "short nonce" =<<
+      aeadEncrypt env spec key "short" "aad" "input"
+  -- Deterministic across same-seed backends.
+  withSynth "11" $ \envA -> withSynth "11" $ \envB -> do
+    (ctA, tagA) <- expectOk "seal a" =<< aeadEncrypt envA spec key nonce "aad" "input"
+    (ctB, tagB) <- expectOk "seal b" =<< aeadEncrypt envB spec key nonce "aad" "input"
+    assertEqual "deterministic" (ctA, tagA) (ctB, tagB)
+
 caseOaepRoundtrip :: IO ()
 caseOaepRoundtrip = withSynth "11" $ \env -> do
   let sha256 = OaepParams D_SHA256 D_SHA256 BS.empty
@@ -1648,7 +1683,9 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   refused "cipher RC4" (FxCipher DirEncrypt (mech "CKM_RC4") (Just kOid) BS.empty BS.empty)
   refused "sign DSA" (mkSign "CKM_DSA_SHA256")
   -- Present-but-unmapped surfaces (needs a Raw entry point).
-  refused "cipher GCM" (FxCipher DirEncrypt (mech "CKM_AES_GCM") (Just kOid) BS.empty BS.empty)
+  -- GCM left this group when the AEAD entry points landed (see
+  -- caseAeadRoundtrip); empty GCM params still fail typed at the
+  -- driver (CryptoFailed recipe refusal, pinned below).
   refused "sign ML-DSA" (mkSign "CKM_ML_DSA")
   refused "message-sign DSA"
     (FxMessageSign (mech "CKM_DSA_SHA256") (Just kOid) BS.empty BS.empty)
@@ -1662,3 +1699,10 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
     (FxSignRecover (mech "CKM_SHA256_HMAC") (Just kOid) BS.empty BS.empty 4)
   refused "verify-recover"
     (FxVerifyRecover (mech "CKM_SHA256_HMAC") (Just kOid) BS.empty BS.empty 4)
+  -- GCM with empty params: mapped but recipe-refused (typed
+  -- 'CryptoFailed', never 'CryptoUnsupported', never success).
+  rGcm <- runEffect env res
+    (FxCipher DirEncrypt (mech "CKM_AES_GCM") (Just kOid) BS.empty BS.empty)
+  case rGcm of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("cipher GCM empty params: expected Failed, got: " ++ show other)

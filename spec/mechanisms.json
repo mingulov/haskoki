@@ -15669,7 +15669,7 @@
     {
       "aliases": [],
       "canonical_name": "CKM_AES_GCM",
-      "family": "cipher",
+      "family": "aead",
       "mechanism_info": {
         "flags": [
           "CKF_DECRYPT",
@@ -15679,17 +15679,34 @@
         "max_key_size": 32,
         "min_key_size": 16
       },
-      "notes": "Catalog-only: GCM parameter/tag/AAD rules are unreviewed (needs operation-layer work), so no behavior descriptor and no synthetic execution. Flags provisional; full flag review pending. Correction: the early row wrongly assumed 3.0-only; the locked header defines CKM_AES_GCM (0x1087), which predates 3.0. Real unsupported-with-reason: the AEAD mode present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Reviewed: caller-supplied IV (1..64 bytes, bit width agrees), NIST SP 800-38D tag widths (32/64/96/104/112/120/128 bits), AAD bound at seal; encrypt answers ciphertext with the tag appended, decrypt splits at the tag length and fails authentication on tamper or short input (core/Haskoki/Recipe/Gcm.hs, gcm-params/1). The provider-generated-IV conventions never translate (recipe refusal downstream). Real execution is native EVP AES-GCM pinned against Python cryptography (OpenSSLSpec caseAeadReal); synthetic execution is a deterministic PRF keystream plus tag, explicitly not GCM. No wrap/unwrap routes: key wrapping stays CBC-shaped, RSA wrap is T8.",
       "numeric_id": "0x00001087",
       "routes": [
         {
           "acceptance_cases": [
-            "A41"
+            "A16",
+            "A37",
+            "A39"
           ],
-          "key_constraints": [],
+          "key_constraints": [
+            "encryption-key"
+          ],
           "operation": "encrypt",
-          "output_rule": "unimplemented",
-          "parameter_codec": "none/0"
+          "output_rule": "synthetic-aead/v1",
+          "parameter_codec": "gcm-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-aead/v1",
+          "parameter_codec": "gcm-params/1"
         }
       ],
       "source_refs": [
@@ -15700,12 +15717,33 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "real": "tested",
         "recovery": "not-applicable",
-        "synthetic": "planned"
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "classic-ops",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "aead-gcm",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "aead-gcm",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeGcmSpec",
+          "build_id": "aead-gcm",
+          "case_id": "A40"
+        }
+      ]
     },
     {
       "aliases": [],

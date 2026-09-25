@@ -10,6 +10,7 @@ visibility, usage permission, auth marking); the context-auth gate
 {-# LANGUAGE OverloadedStrings #-}
 module OperationSpec (spec) where
 
+import Data.Bits ((.&.), shiftR)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
@@ -131,7 +132,8 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "operation lifecycles"
-  [ testCase "digest/encrypt pair permitted, same-kind rejected" casePairVsConflict
+  [ testCase "gcm encrypt init admits canonical params" caseGcmInit
+  , testCase "digest/encrypt pair permitted, same-kind rejected" casePairVsConflict
   , testCase "init checks source routes before engine caps" caseInitLegality
   , testCase "init enforces key shape and usage" caseInitKeyPolicy
   , testCase "context gate consumes only at the first data call" caseGate
@@ -185,6 +187,9 @@ hmacMech = MechanismId 0x251
 
 aesCbcMech :: MechanismId
 aesCbcMech = MechanismId 0x1082
+
+aesGcmMech :: MechanismId
+aesGcmMech = MechanismId 0x1087
 
 rsaGenMech :: MechanismId
 rsaGenMech = MechanismId 0x0
@@ -296,6 +301,19 @@ encryptArgs = InitArgs
   , iaRecover = Nothing
   }
 
+gcmArgs :: InitArgs
+gcmArgs = InitArgs
+  { iaOp = OpEncrypt
+  , iaMech = aesGcmMech
+  , iaParams = u64be 16 <> u64be 12 <> "0123456789ab" <> "AD"
+  , iaKey = Just aesKey
+  , iaCipher = Just (CipherSpec 1 False)
+  , iaRecover = Nothing
+  }
+  where
+    u64be :: Int -> ByteString
+    u64be n = BS.pack [fromIntegral (n `shiftR` s) .&. 0xff | s <- [56, 48 .. 0]]
+
 -- | Fake stream resource for planner-level tests, which bypass the
 -- init-alloc finish that records the real one.
 streamRid :: EngineResourceId
@@ -318,6 +336,16 @@ toyDigest bs = BS.pack [fromIntegral (BS.length bs)] <> BS.reverse bs
 runDigestEffect :: CryptoEffect -> CryptoResult
 runDigestEffect (FxDigest _ input) = GotBytes (toyDigest input)
 runDigestEffect fx = GotCryptoError (CryptoFailed ("unexpected effect: " ++ show fx))
+
+caseGcmInit :: IO ()
+caseGcmInit = do
+  let env = testEnv { oeCaps = mkCapabilities [(aesGcmMech, OpEncrypt)] }
+      (ops1, out1) = initOperation env emptySessionOps testSession gcmArgs
+  assertEqual "gcm init code" CKR_OK (ioCode out1)
+  assertEqual "one active slot" [SlotEncrypt] (activeSlots ops1)
+  let badArgs = gcmArgs { iaParams = "nope" }
+      (_, outBad) = initOperation env emptySessionOps testSession badArgs
+  assertEqual "gcm bad params code" CKR_ARGUMENTS_BAD (ioCode outBad)
 
 -- ---------------------------------------------------------------------------
 -- Acceptance 1: pair permitted, same-kind conflict rejected

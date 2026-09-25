@@ -48,13 +48,16 @@ module Haskoki.FFI.NativeParams
   , pssStructToCanonical
   , oaepStructToCanonical
   , ecdhStructToCanonical
+  , gcmStructToCanonical
   , digestStemByCkm
   , mgfStemByCkg
   , pssNativeSize
   , oaepNativeSize
   , ecdhNativeSize
+  , gcmNativeSize
   ) where
 
+import Control.Monad (guard)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Map.Strict (Map)
@@ -69,6 +72,7 @@ import Foreign.Storable (peekByteOff, sizeOf)
 
 import Haskoki.FFI.Decode (maxInputBytes)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
+import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
 import Haskoki.Registry.Generated (mustGeneratedId)
@@ -95,6 +99,12 @@ oaepNativeSize = 4 * wordSize + ptrSize
 -- (length, pointer) twice (shared data, peer public key).
 ecdhNativeSize :: Int
 ecdhNativeSize = 3 * wordSize + 2 * ptrSize
+
+-- | Native @CK_GCM_PARAMS@ image size: (pointer, length, bits) for
+-- the IV, then (pointer, length) for the AAD, then the tag-bits
+-- word.
+gcmNativeSize :: Int
+gcmNativeSize = 4 * wordSize + 2 * ptrSize
 
 -- | Native @CKM_*@ hash ids onto recipe digest stems. Ids come from
 -- the generated vocabulary, so a header drift breaks the build
@@ -173,6 +183,20 @@ ecdhStructToCanonical kdf shared peer
   | kdf /= ckdNull = Nothing
   | otherwise = Just (encodeEcdhParams 0 shared peer)
 
+-- | Pure GCM translation: the chased IV and AAD plus the native
+-- bit/tag widths onto the canonical @gcm-params/1@ image. The bit
+-- width must agree with the chased IV length and the tag width
+-- must be whole bytes; the IV must be caller-supplied, so the
+-- provider-generated-IV convention (empty IV) never translates and
+-- passes through to the recipe refusal downstream.
+gcmStructToCanonical :: ByteString -> ByteString -> Word64 -> Word64 -> Maybe ByteString
+gcmStructToCanonical iv aad ivBits tagBits = do
+  guard (fromIntegral (BS.length iv) * 8 == ivBits)
+  guard (tagBits `mod` 8 == 0)
+  let tagLen = fromIntegral (tagBits `div` 8)
+  guard (not (BS.null iv))
+  pure (encodeGcmParams iv aad tagLen)
+
 -- | Chase one bounded byte string from caller memory under the
 -- 'decodeInputBytes' null conventions: zero length never
 -- dereferences, null-with-length and over-bound lengths refuse.
@@ -214,6 +238,7 @@ normalizeMechParams
 normalizeMechParams mid pParams paramsLen raw
   | isJust (rsaPssRecipeFor mid) = fromMaybe raw <$> decodePssNative
   | isJust (rsaOaepRecipeFor mid) = fromMaybe raw <$> decodeOaepNative
+  | isJust (gcmRecipeFor mid) = fromMaybe raw <$> decodeGcmNative
   | otherwise = pure raw
   where
     decodePssNative :: IO (Maybe ByteString)
@@ -238,3 +263,16 @@ normalizeMechParams mid pParams paramsLen raw
             else do
               mLabel <- chaseBytes pLabel labelLen
               pure (mLabel >>= oaepStructToCanonical hashId mgfId)
+    decodeGcmNative :: IO (Maybe ByteString)
+    decodeGcmNative
+      | paramsLen /= fromIntegral gcmNativeSize = pure Nothing
+      | otherwise = do
+          pIv <- peekByteOff pParams 0
+          CULong ivLen <- peekByteOff pParams ptrSize
+          CULong ivBits <- peekByteOff pParams (ptrSize + wordSize)
+          pAad <- peekByteOff pParams (ptrSize + 2 * wordSize)
+          CULong aadLen <- peekByteOff pParams (2 * ptrSize + 2 * wordSize)
+          CULong tagBits <- peekByteOff pParams (2 * ptrSize + 3 * wordSize)
+          mIv <- chaseBytes pIv ivLen
+          mAad <- chaseBytes pAad aadLen
+          pure (mIv >>= \iv -> mAad >>= \aad -> gcmStructToCanonical iv aad ivBits tagBits)

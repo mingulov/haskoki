@@ -12,6 +12,7 @@ randomized) plus the keyed sign\/verify path through
 {-# LANGUAGE TypeFamilies #-}
 module RoutingE2ESpec (spec) where
 
+import Data.Bits ((.&.), shiftR)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
@@ -95,6 +96,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: digest KAT + unknown mechanism" caseDriverDigest
   , testCase "driver: hmac sign/verify + key errors" caseDriverHmac
   , testCase "driver: aes KAT + size errors" caseDriverAes
+  , testCase "driver: gcm roundtrip + tamper fails closed" caseDriverGcm
   , testCase "driver: ecdsa roundtrip both encodings" caseDriverEcdsa
   , testCase "driver: ecdh agree + truncate + refuse" caseDriverEcdh
   , testCase "driver: cmac KATs + truncate + refuse" caseDriverCmac
@@ -158,6 +160,9 @@ cmacMech = MechanismId 0x108a
 cmacGenMech = MechanismId 0x108b
 cmac3Mech = MechanismId 0x138
 cmac3GenMech = MechanismId 0x137
+
+aesGcmMech :: MechanismId
+aesGcmMech = MechanismId 0x1087
 
 pbkd2Mech :: MechanismId
 pbkd2Mech = MechanismId 0x3b0
@@ -470,6 +475,29 @@ caseDriverHmac = withBackend $ \env -> do
   case ghost of
     GotCryptoError (CryptoBadKey _ _) -> pure ()
     other -> assertFailure ("expected BadKey, got: " ++ show other)
+
+caseDriverGcm :: IO ()
+caseDriverGcm = withBackend $ \env -> do
+  -- Canonical gcm-params/1 image: tagLen || ivLen || iv || aad.
+  let params = u64be 16 <> u64be 12 <> "0123456789ab" <> "AD"
+      u64be :: Int -> ByteString
+      u64be n = BS.pack [fromIntegral (n `shiftR` s) .&. 0xff | s <- [56, 48 .. 0]]
+  out <- runEffect env resolver
+      (FxCipher DirEncrypt aesGcmMech (Just aesOid) params "hello!")
+    >>= expectBytes
+  -- Ciphertext plus the 16-byte tag in one answer.
+  assertEqual "ct+tag length" (6 + 16) (BS.length out)
+  let (ct, tag) = BS.splitAt 6 out
+  pt <- runEffect env resolver
+      (FxCipher DirDecrypt aesGcmMech (Just aesOid) params out)
+    >>= expectBytes
+  assertEqual "decrypt recovers" "hello!" pt
+  -- Tag tamper fails closed (never a wrong plaintext).
+  tampered <- runEffect env resolver
+    (FxCipher DirDecrypt aesGcmMech (Just aesOid) params (ct <> BS.pack [0] <> BS.drop 1 tag))
+  case tampered of
+    GotCryptoError (CryptoAuthFailed _) -> pure ()
+    other -> assertFailure ("expected AuthFailed, got: " ++ show other)
 
 caseDriverAes :: IO ()
 caseDriverAes = withBackend $ \env -> do

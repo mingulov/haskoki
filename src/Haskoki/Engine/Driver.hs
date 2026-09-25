@@ -102,6 +102,7 @@ module Haskoki.Engine.Driver
   , digestAlgFor
   , hmacSpecFor
   , cipherSpecFor
+  , aeadSpecFor
   , rsaPkcs1SpecFor
   , rsaPssSpecFor
   , rsaOaepParamsFor
@@ -126,7 +127,8 @@ import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 
 import Haskoki.Engine.Backend
-  ( BackendError (..)
+  ( AeadSpec (..)
+  , BackendError (..)
   , CipherSpec (..)
   , CryptoBackend (..)
   , DigestAlg (..)
@@ -164,6 +166,7 @@ import Haskoki.Recipe.Ecdsa
   , ecdsaParamsValid
   , ecdsaRecipeFor
   )
+import Haskoki.Recipe.Gcm (decodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (decodeOaepParams, rsaOaepParamsValid, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPkcs1
   ( RsaPkcs1Recipe (..)
@@ -413,6 +416,38 @@ cipherSpecFor mech keyLen params = do
 isCipherMech :: MechanismId -> Bool
 isCipherMech mech = isJust (cipherRecipeFor mech)
 
+-- | AEAD dispatch: covered (mechanism, key length, params)
+-- triples to the backend spec plus the decoded (IV, AAD) (pinned
+-- against 'Haskoki.Recipe.Gcm' by RecipeGcmSpec, so the table and
+-- the recipe can never drift silently). The recipe validates the
+-- parameters (caller IV, approved tag width) and the key length
+-- selects the AES width; the nonce length is the IV length.
+-- 'Nothing' means uncovered (non-AEAD mechanism) or a rejected
+-- triple.
+aeadPartsFor :: MechanismId -> Int -> ByteString -> Maybe (AeadSpec, ByteString, ByteString)
+aeadPartsFor mech keyLen params = do
+  r <- gcmRecipeFor mech
+  guard (gcmParamsValid r params)
+  (iv, aad, tagLen) <- decodeGcmParams params
+  alg <- case keyLen of
+    16 -> Just "AES-128-GCM"
+    24 -> Just "AES-192-GCM"
+    32 -> Just "AES-256-GCM"
+    _ -> Nothing
+  pure (AeadSpec alg (BS.length iv) tagLen, iv, aad)
+
+-- | The backend spec of a covered AEAD triple ('aeadPartsFor'
+-- without the decoded parts).
+aeadSpecFor :: MechanismId -> Int -> ByteString -> Maybe AeadSpec
+aeadSpecFor mech keyLen params =
+  (\(spec, _, _) -> spec) <$> aeadPartsFor mech keyLen params
+
+-- | An AEAD mechanism regardless of triple validity (drives the
+-- parameter-refusal branch: rejected triples are 'CryptoFailed',
+-- never 'CryptoUnsupported').
+isGcmMech :: MechanismId -> Bool
+isGcmMech mech = isJust (gcmRecipeFor mech)
+
 -- | Recipe row + key length onto the backend width. @CKM_AES_CBC_PAD@
 -- shares the CBC specs (the planner pads before the effect input is
 -- fixed); Triple-DES widths collapse (the engines expand two-key
@@ -646,10 +681,14 @@ runEffect env resolve fx = case fx of
   FxCipher dir mech mkey params input
     | isCipherMech mech -> withKey mkey $ \key ->
         runCipher dir mech key params input
+    | isGcmMech mech -> withKey mkey $ \key ->
+        runAead dir mech key params input
     | isRsaOaepMech mech -> withKey mkey $ \key ->
         runOaep dir mech key params input
     | otherwise -> pure (unsupported fx)
   FxMessageCipher dir mech mkey params aad input
+    | isGcmMech mech -> withKey mkey $ \key ->
+        runAeadMessage dir mech key params aad input
     | not (isCipherMech mech) && not (isRsaOaepMech mech) ->
         pure (unsupported fx)
     | not (BS.null aad) -> pure (GotCryptoError (CryptoUnsupported "driver"
@@ -927,6 +966,41 @@ runEffect env resolve fx = case fx of
           DirDecrypt -> toBytes <$> cipherDecrypt env spec key iv input
       _ -> pure (GotCryptoError (CryptoBadKey "driver"
         "block ciphers need raw symmetric key bytes"))
+
+    -- | AEAD cipher effects: the @gcm-params/1@ image decodes to
+    -- (IV, AAD, tag length); the key length selects the AES width.
+    -- Encrypt answers ciphertext and tag concatenated; decrypt
+    -- splits the input at the tag length. An input shorter than
+    -- the tag carries no tag to verify and fails authentication
+    -- ('CryptoAuthFailed', never a wrong plaintext).
+    runAead :: CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runAead dir mech key params input = case key of
+      KeyBytes kb -> case aeadPartsFor mech (BS.length kb) params of
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: AEAD (mechanism, key length, params) rejected by the recipe"))
+        Just (spec, iv, aad) -> runAeadSealed dir spec key iv aad input
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "AEAD needs raw symmetric key bytes"))
+    -- | AEAD message effects: the parameters decode (IV, tag length)
+    -- as above, but the AAD travels on the effect, not in the
+    -- parameters.
+    runAeadMessage :: CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
+    runAeadMessage dir mech key params aad input = case key of
+      KeyBytes kb -> case aeadPartsFor mech (BS.length kb) params of
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: AEAD (mechanism, key length, params) rejected by the recipe"))
+        Just (spec, iv, _) -> runAeadSealed dir spec key iv aad input
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "AEAD needs raw symmetric key bytes"))
+    runAeadSealed :: CipherDir -> AeadSpec -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
+    runAeadSealed dir spec key iv aad input = case dir of
+      DirEncrypt -> toKemPair <$> aeadEncrypt env spec key iv aad input
+      DirDecrypt
+        | BS.length input < aeadTagLen spec -> pure (GotCryptoError (CryptoAuthFailed
+            "driver: AEAD input shorter than the authentication tag"))
+        | otherwise ->
+            let (ct, tag) = BS.splitAt (BS.length input - aeadTagLen spec) input
+            in toBytes <$> aeadDecrypt env spec key iv aad ct tag
 
     -- | RSA-OAEP cipher effects: the effect parameters carry the
     -- @oaep-params\/1@ encoding straight to the asymmetric backend

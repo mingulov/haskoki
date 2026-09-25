@@ -26,6 +26,7 @@ import Test.Tasty.HUnit (assertEqual, testCase)
 import Haskoki.FFI.NativeParams
   ( digestStemByCkm
   , ecdhNativeSize
+  , gcmNativeSize
   , mgfStemByCkg
   , normalizeEcdhParams
   , normalizeMechParams
@@ -33,6 +34,7 @@ import Haskoki.FFI.NativeParams
   , pssNativeSize
   )
 import Haskoki.Recipe.Ecdh (ecdhParamsValid, ecdhRecipeFor, encodeEcdhParams)
+import Haskoki.Recipe.Gcm (encodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep
   ( encodeOaepParams
   , rsaOaepParamsValid
@@ -92,6 +94,43 @@ spec = testGroup "native mechanism params"
       out <- allocaBytes 8 $ \p -> do
         pokeByteOff p 0 (CULong 0x250 :: CULong)
         normalizeMechParams mid p 8 raw
+      assertEqual "passthrough" raw out
+  , testCase "gcm native struct chases iv and aad" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_AES_GCM")
+          iv = "0123456789ab" :: ByteString
+          aad = "AD" :: ByteString
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen iv $ \(ivp, ivlen) ->
+        BS.useAsCStringLen aad $ \(aadp, aadlen) ->
+          allocaBytes gcmNativeSize $ \p -> do
+            pokeByteOff p 0 (castPtr ivp)
+            pokeByteOff p pw (CULong (fromIntegral ivlen))
+            pokeByteOff p (pw + w) (CULong (fromIntegral (ivlen * 8)))
+            pokeByteOff p (pw + 2 * w) (castPtr aadp)
+            pokeByteOff p (2 * pw + 2 * w) (CULong (fromIntegral aadlen))
+            pokeByteOff p (2 * pw + 3 * w) (CULong 128)
+            raw <- BS.packCStringLen (castPtr p, gcmNativeSize)
+            normalizeMechParams mid p (fromIntegral gcmNativeSize) raw
+      let want = encodeGcmParams iv aad 16
+      assertEqual "canonical gcm image" want out
+      case gcmRecipeFor mid of
+        Nothing -> fail "gcm recipe missing"
+        Just r -> assertEqual "recipe accepts" True (gcmParamsValid r out)
+  , testCase "gcm generated-iv convention passes through" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_AES_GCM")
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      (raw, out) <- allocaBytes gcmNativeSize $ \p -> do
+        pokeByteOff p 0 (nullPtr :: Ptr Word8)
+        pokeByteOff p pw (CULong 0)
+        pokeByteOff p (pw + w) (CULong 96)
+        pokeByteOff p (pw + 2 * w) (nullPtr :: Ptr Word8)
+        pokeByteOff p (2 * pw + 2 * w) (CULong 0)
+        pokeByteOff p (2 * pw + 3 * w) (CULong 128)
+        raw <- BS.packCStringLen (castPtr p, gcmNativeSize)
+        out <- normalizeMechParams mid p (fromIntegral gcmNativeSize) raw
+        pure (raw, out)
       assertEqual "passthrough" raw out
   , testCase "oaep native struct chases the label" $ do
       let mid = MechanismId (mustGeneratedId "CKM_RSA_PKCS_OAEP")

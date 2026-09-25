@@ -92,6 +92,11 @@ import Haskoki.Recipe.Ecdsa
   , ecdsaCodecFor
   , ecdsaRecipes
   )
+import Haskoki.Recipe.Gcm
+  ( GcmRecipe (..)
+  , gcmCodecFor
+  , gcmRecipes
+  )
 import Haskoki.Recipe.Hmac (HmacRecipe (..), hmacCodecFor, hmacRecipes)
 import Haskoki.Recipe.Kdf
   ( KdfRecipe (..)
@@ -810,11 +815,25 @@ dMlKem = promotedDesc "CKM_ML_KEM" [Pkcs11_3_2] FamilyKem
   ]
   MechanismSpecific 0 0
 
--- | The curated population: 108 reviewed behavior descriptors
+-- | AEAD behavior descriptors: one per GCM recipe row, with the
+-- recipe codec, encrypt/decrypt routes, and AES key bounds
+-- (16..32 bytes).
+aeadDescs :: [Descriptor]
+aeadDescs =
+  [ promotedDesc (gcmName r) allBaselines FamilyAead
+      (gcmCodecFor r)
+      [ mechRoute OpEncrypt (gcmName r) ["A16", "A37", "A39"]
+      , mechRoute OpDecrypt (gcmName r) ["A16", "A37", "A39"]
+      ]
+      KeyBytes 16 32
+  | r <- gcmRecipes
+  ]
+
+-- | The curated population: 109 reviewed behavior descriptors
 -- with concrete rules, plus the full header inventory (464
 -- canonical rows covering all 480 header CKM names) folded in from
--- the generated table. Catalog-only rows (356: everything but the
--- 108 behavior ids) stay in the coverage denominator but never
+-- the generated table. Catalog-only rows (355: everything but the
+-- 109 behavior ids) stay in the coverage denominator but never
 -- become executable. The catalog covers the full inventory.
 curatedRegistry :: Registry
 curatedRegistry =
@@ -829,7 +848,7 @@ curatedRegistry =
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160
-        ] ++ hmacDescs ++ cipherDescs ++ rsaPkcs1Descs
+        ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ ecdsaDescs ++ ecdhDescs
           ++ cmacDescs ++ kdfDescs ++ otpDescs
       )

@@ -116,6 +116,29 @@ long hsk_ossl4_cipher_cbc(OSSL_LIB_CTX *ctx, const char *ciphername,
                           const unsigned char *in, size_t inlen,
                           unsigned char **out);
 
+/* --- AEAD (AES-GCM; output is ct || tag) ------------------------------- */
+
+/* Encrypt: *out is ct || tag (inlen + taglen bytes). Decrypt takes
+ * ct and the expected tag separately; a tag mismatch (or any
+ * authentication failure) returns HSK_OSSL4_ERR_AUTHFAIL with *out
+ * untouched. Key length must match the fetched cipher; iv 1..64
+ * bytes (non-default lengths via SET_IVLEN); tag 1..16 bytes (the
+ * recipe admits only the approved widths). */
+long hsk_ossl4_aead_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
+                            const char *propq, const unsigned char *key,
+                            size_t keylen, const unsigned char *iv,
+                            size_t ivlen, const unsigned char *aad,
+                            size_t aadlen, const unsigned char *in,
+                            size_t inlen, size_t taglen,
+                            unsigned char **out);
+long hsk_ossl4_aead_decrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
+                            const char *propq, const unsigned char *key,
+                            size_t keylen, const unsigned char *iv,
+                            size_t ivlen, const unsigned char *aad,
+                            size_t aadlen, const unsigned char *in,
+                            size_t inlen, const unsigned char *tag,
+                            size_t taglen, unsigned char **out);
+
 /* --- EC keygen (SEC1-traditional + SPKI DER out) ---------------------- */
 /* NOTE: the private half is traditional SEC1 (i2d_PrivateKey
  * prefers the traditional encoding), NOT PKCS#8 as the import

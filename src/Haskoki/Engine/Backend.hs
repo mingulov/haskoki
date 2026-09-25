@@ -324,7 +324,7 @@ cipherIvLen spec = case spec of
 
 -- | AEAD carries its own nonce/tag lengths; padding is never implicit.
 data AeadSpec = AeadSpec
-  { aeadAlg :: !String -- "AES-128-GCM" | "AES-256-GCM" | "ChaCha20-Poly1305"
+  { aeadAlg :: !String -- "AES-128-GCM" | "AES-192-GCM" | "AES-256-GCM" | "ChaCha20-Poly1305"
   , aeadNonceLen :: !Int
   , aeadTagLen :: !Int
   } deriving (Eq, Show)

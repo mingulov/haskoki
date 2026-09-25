@@ -14,6 +14,7 @@ isolation, and shim-hygiene assertions.
 {-# LANGUAGE OverloadedStrings #-}
 module OpenSSLSpec (spec) where
 
+import Data.Bits (xor)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
@@ -25,7 +26,8 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Data.Word (Word32)
 import Haskoki.Engine.Backend
-  ( BackendCaps (..)
+  ( AeadSpec (..)
+  , BackendCaps (..)
   , BackendEnv
   , BackendError (..)
   , CipherCaps (..)
@@ -78,6 +80,7 @@ spec = testGroup "openssl4 engine"
   , testCase "raw-vs-der encodings never convert silently" caseRawVsDer
   , testCase "Symmetric keygen (fresh random bytes)" caseSymKeygen
   , testCase "RSA keygen mints DER halves in bounds" caseRsaKeygen
+  , testCase "AES-GCM matches the pinned vector and round-trips" caseAeadReal
   , testCase "Random bytes (fresh DRBG output)" caseRandomBytes
   , testCase "seedRandom mixes, randomBytes unaffected" caseSeedRandomMix
   , testCase "Seed entropy estimate pinned at 0.0" caseSeedEntropyHonesty
@@ -1081,6 +1084,40 @@ caseSymKeygen = withBackend $ \env -> do
   expectUnsupported "des keygen out" =<< generateKey env (GenSym "DES" 8)
   expectUnsupported "ml-kem keygen out" =<< generateKey env (GenMLKEM ML_KEM_768)
 
+caseAeadReal :: IO ()
+caseAeadReal = withBackend $ \env -> do
+  -- Pinned vector (Python cryptography AESGCM, the oracle's own
+  -- cross-check root): key 00..0f, nonce 00..0b, aad "aad-data",
+  -- pt "Hello GCM world!".
+  let key = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")
+      nonce = hex "000102030405060708090a0b"
+      aad = "aad-data"
+      pt = "Hello GCM world!"
+      spec = AeadSpec "AES-128-GCM" 12 16
+  (ct, tag) <- expectOk "gcm vector" =<<
+    aeadEncrypt env spec key nonce aad pt
+  assertEqual "vector ct" (hex "db09cba2093bb01706f216e544cf1429") ct
+  assertEqual "vector tag" (hex "39f0385041afdfd3a2d5a8e8ed69a2e6") tag
+  pt' <- expectOk "gcm vector decrypt" =<<
+    aeadDecrypt env spec key nonce aad ct tag
+  assertEqual "vector roundtrip" pt pt'
+  -- Tampering anywhere fails closed.
+  let badTag = BS.pack [BS.head tag `xor` 1] <> BS.tail tag
+  expectAuthFailed "tag tamper" =<<
+    aeadDecrypt env spec key nonce aad ct badTag
+  let badCt = BS.pack [BS.head ct `xor` 1] <> BS.tail ct
+  expectAuthFailed "ct tamper" =<<
+    aeadDecrypt env spec key nonce aad badCt tag
+  expectAuthFailed "aad tamper" =<<
+    aeadDecrypt env spec key nonce "aad-datX" ct tag
+  -- Bounds: wrong key/nonce/tag widths refuse as bad params.
+  expectBadParam "short key" =<<
+    aeadEncrypt env spec (KeyBytes "short") nonce aad pt
+  expectBadParam "short nonce" =<<
+    aeadEncrypt env (AeadSpec "AES-128-GCM" 12 16) key "short" aad pt
+  expectBadParam "bad alg" =<<
+    aeadEncrypt env (AeadSpec "NOPE" 12 16) key nonce aad pt
+
 caseRsaKeygen :: IO ()
 caseRsaKeygen = withBackend $ \env -> do
   -- The real backend mints PKCS#8/SPKI DER halves (no KAT
@@ -1219,6 +1256,9 @@ caseCaps = withBackend $ \env -> do
     , C_CAMELLIA128_CBC, C_CAMELLIA192_CBC, C_CAMELLIA256_CBC
     , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
     ]) (ccCiphers (bcCiphers caps))
+  assertEqual "aead set" (Set.fromList
+    [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
+    ]) (ccAead (bcCiphers caps))
   assertEqual "mac set" (Set.fromList
     [ "HMAC-MD5", "HMAC-SHA1"
     , "HMAC-SHA224", "HMAC-SHA256", "HMAC-SHA384", "HMAC-SHA512"

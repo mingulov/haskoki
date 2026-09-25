@@ -37,6 +37,8 @@ module Haskoki.FFI.OpenSSL4.Raw
   , digestFree
   , hmac
   , cipherCbc
+  , aeadEncrypt
+  , aeadDecrypt
   , ecGen
   , rsaGen
   , randBytes
@@ -129,6 +131,11 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_hmac"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_cbc"
   c_cipher_cbc :: Ptr OsslLibCtx -> CString -> CString -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_aead_encrypt"
+  c_aead_encrypt :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_aead_decrypt"
+  c_aead_decrypt :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_ec_gen"
   c_ec_gen :: Ptr OsslLibCtx -> CString -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
@@ -279,6 +286,29 @@ cipherCbc ctx ciphername propq enc key iv input =
         withBytes iv $ \(piv, niv) ->
           withBytes input $ \(pin, nin) ->
             withOut (c_cipher_cbc ctx cc cpq (if enc then 1 else 0) pkey nkey piv niv pin nin)
+
+-- | AEAD encrypt: returns @ct || tag@ (tag length known to the caller).
+aeadEncrypt :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> ByteString -> ByteString -> Int -> IO (Either Int ByteString)
+aeadEncrypt ctx ciphername propq key iv aad input tagLen =
+  withCString ciphername $ \cc ->
+    withCString propq $ \cpq ->
+      withBytes key $ \(pkey, nkey) ->
+        withBytes iv $ \(piv, niv) ->
+          withBytes aad $ \(paad, naad) ->
+            withBytes input $ \(pin, nin) ->
+              withOut (c_aead_encrypt ctx cc cpq pkey nkey piv niv paad naad pin nin (fromIntegral tagLen))
+
+-- | AEAD decrypt: takes ct and the expected tag separately.
+aeadDecrypt :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> ByteString -> ByteString -> ByteString -> IO (Either Int ByteString)
+aeadDecrypt ctx ciphername propq key iv aad input tag =
+  withCString ciphername $ \cc ->
+    withCString propq $ \cpq ->
+      withBytes key $ \(pkey, nkey) ->
+        withBytes iv $ \(piv, niv) ->
+          withBytes aad $ \(paad, naad) ->
+            withBytes input $ \(pin, nin) ->
+              withBytes tag $ \(ptag, ntag) ->
+                withOut (c_aead_decrypt ctx cc cpq pkey nkey piv niv paad naad pin nin ptag ntag)
 
 ecGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, ByteString))
 ecGen ctx group propq =
