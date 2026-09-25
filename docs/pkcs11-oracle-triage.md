@@ -11,7 +11,8 @@ not per test.
 ## Fast-lane results across fix rounds
 
 Total collected varies by framework checkout (r11: 5780; r14: 5798;
-r15: 5820; r18: 5840; r19: 5844; r20: 5864; r21: 5888; r22: 5910).
+r15: 5820; r18: 5840; r19: 5844; r20: 5864; r21: 5888; r22: 5910;
+r23: 5910).
 Summaries are authoritative;
 the per-test records list interesting outcomes only (see Method).
 
@@ -40,6 +41,7 @@ the per-test records list interesting outcomes only (see Method).
 | r20 (EC_POINT stamp + GCM/ECDH fixes) | 2930 | 2 | 351 | 2581 | 0 |
 | r21 (AES-CTR slice) | 2947 | 2 | 357 | 2582 | 0 |
 | r22 (AES-CCM slice) | 2967 | 2 | 361 | 2580 | 0 |
+| r23 (curves verdict precision) | 2985 | 2 | 350 | 2573 | 0 |
 
 ## Round 1: template-count bound, class defaulting, class range
 
@@ -239,11 +241,46 @@ first lane proving all of them together.
   harness-side keygen). T4 message-API legs never materialized
   (the oracle skips clean `FUNCTION_NOT_SUPPORTED`).
 
-## Remaining fast-lane failures (r22: 2), by cluster
+## Remaining fast-lane failures (r23: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
 `/tmp/pkcs11-ws/pkcs11-check` (import recipes, negotiation, gates).
 Slices ordered by leg count:
+
+- Added in round 13 (r22→r23): curves verdict-precision slice
+  (uncommitted at lane time; this turn). Three ECDSA verdict
+  fixes in the OpenSSL 4 shim — SEC1 truncation of overlong
+  raw inputs (PKCS#11 §2.3.1), point-at-infinity math mapped to
+  mismatch (X9.62 §7.4.2 rejects; OpenSSL reports rc −1), and
+  odd-length raw signatures answered as mismatch like
+  malformed DER — plus a `MechParamInvalid` error category
+  (backend→core→crypto→edge, `interpretError` → 0x71) wiring
+  every ECDH peer fault to `CKR_MECHANISM_PARAM_INVALID`:
+  plan-time shape/mismatch arms plus backend peer attribution
+  via a new shim `HSK_OSSL4_ERR_BADPEER` code (bad base DER
+  stays a bad key). Per-unit diff is fully attributed:
+  +18 passed (`parameter_validation` +3 ECDH invalid-point
+  legs now clean-reject, `ec_curves` +6, `ec_import_coherence`
+  +3 skip→pass, `mech_negative` +2 CCM missing-params legs now
+  clean-reject (committed CCM 7/8, first full-lane exposure —
+  exactly the targeted reproof the r5 note predicted),
+  `mech_sign` +5 with −4 skip/−1 xfail), −11 xfailed net. The
+  `ec_curves` / `ec_import_coherence` / `mech_sign` skip→pass
+  legs are first-fast-exposure of the committed curves
+  capability (tasks 5–10 widened keygen and the 22-curve set
+  after r22 ran); the xfail→pass legs are this slice's verdict
+  precision (`parameter_validation` ECDH 0x71, `mech_sign`
+  ECDSA verify precision). One pass→xfail:
+  `capability_boundary::test_ec_above_max_is_refused` now
+  performs secp160r1 keygen above the advertised max=0
+  (benign over-performance xfail) — expected from committed
+  task 5 ("keygen admits all 22 curves"), not this diff: r22
+  ran before that commit. Same 2 HOTP external failures,
+  zero crashes, zero xpass. (First r23 attempt ran without
+  `PKCS11_CHECK_DATA_DIR` and under-collected 708
+  data-dependent cases — limbo/attributes/search; the
+  recorded r23 reran with the canonical data dir, total
+  5910 = r22.)
 
 - External (2, no spec-compliant code fix): the 2 HOTP
   `mech_negative` legs assert inside the oracle's static
@@ -432,7 +469,50 @@ OAEP error uniformity). T5a (RO owner dimension) and T5b
 (public/private gates) are implemented and passing in-suite
 post-r18; lane reproof needs a bundle rebuild.
 
-## KAT lane status (r5, CCM bundle: COMPLETE)
+## KAT lane status (r6, curves verdict precision: COMPLETE)
+
+112094 tests — 55457 passed, 2 failed, 0 crashed, 3565 xfailed,
+53070 skipped (`/tmp/lane-out-kat-r6/pkcs11-kat-r6-results.json`;
+`incomplete: false`), canonical data dir `/tmp/pkcs11-ws/data`,
+clean-rebuild release. The only failures are the 2 external
+HOTP registry asserts (same pair as every lane). Delta vs r5 is
+fully attributed, +20830 passed / −1563 xfailed / −19267
+skipped, zero pass→fail, zero crashes, zero xpass:
+
+- `wycheproof_ecdsa`: +16380 passed, 1306→0 xfailed,
+  −15074 skipped. Joint: the committed curves tasks
+  un-skipped the weak/binary-curve legs (first KAT exposure —
+  r5 predates tasks 5–10), and this slice's verdict precision
+  (SEC1 truncation, infinity→mismatch, odd-sig→mismatch) made
+  them pass-or-clean instead of xfail. Without this slice the
+  un-skipped legs xfail — proven by the targeted r1 run
+  (5016 ECDSA xfails on the same post-curves tree) and r3
+  (0 xfailed).
+- `wycheproof_ecdh`: +4356 passed, 170→0 xfailed, −4186
+  skipped. Joint, same shape: curves tasks un-skipped, this
+  slice's `MechParamInvalid` category (plan-time arms +
+  backend peer attribution) made every invalid leg
+  clean-reject 0x71 (targeted r1: 647 xfails → r3: 0).
+- `wycheproof_aes`: +66 passed, 66→0 xfailed. Committed CCM
+  7/8 (`1b2614c`, first KAT exposure — it landed after r5
+  ran): the bad-CCM-params legs now clean-reject 0x71,
+  exactly the targeted reproof the r5 note recorded. Not
+  this diff.
+- `wycheproof` umbrella: +10 passed, 16→6 xfailed. This
+  slice's ECDSA precision fixed all 10 P-256/P-384 verify
+  negatives; the 6 remaining are AES-GCM (untouched area).
+- Fast-lane units inside KAT repeat the fast r23 deltas
+  exactly (`parameter_validation` +3 ECDH 0x71,
+  `mech_negative` +2 CCM, `mech_sign`, `ec_curves`,
+  `ec_import_coherence`, `capability_boundary` +1 benign
+  over-performance xfail) — cross-lane consistency check
+  passes.
+
+Remaining 3565 xfails + 53070 skips are the ranked slices
+still ahead (CTS, CFB/OFB, WRAP/KWP, XTS, DSA, EdDSA, PQC,
+legacy, TLS/KDF — same taxonomy as r5, EC rows now zero).
+
+## KAT lane status (historical r5, CCM bundle: COMPLETE)
 
 112094 tests — 34627 passed, 2 failed, 0 crashed, 5128 xfailed,
 72337 skipped (`/tmp/lane-kat-r5.json`; `incomplete: false`),
