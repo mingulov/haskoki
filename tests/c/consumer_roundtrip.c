@@ -1325,7 +1325,7 @@ int main(int argc, char **argv) {
     rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
     CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "tampered ciphertext refused");
     ct[ctLen - 1] ^= 0xFF;
-    /* Multipart (updates buffer; final emits). */
+    /* Multipart (sub-block updates buffer; final emits). */
     rv = f->C_EncryptUpdate(esess, (CK_BYTE_PTR) "a", 1, ct, &partLen);
     CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
            "encrypt update without init refused");
@@ -1400,6 +1400,58 @@ int main(int argc, char **argv) {
     rv = f->C_DecryptFinal(esess, pt, &ptLen);
     CHECKC(rv == CKR_OK && ptLen == 3 && memcmp(pt, "abc", 3) == 0,
            "decrypt final after query recovers abc");
+    /* Streaming updates: releasable blocks emit, the suffix retains,
+     * queries and short buffers consume nothing. */
+    {
+      CK_BYTE longPt[48];
+      CK_BYTE streamCt[64];
+      CK_BYTE streamPt[64];
+      CK_ULONG streamLen;
+      CK_ULONG finalLen;
+      memset(longPt, 0x41, sizeof(longPt));
+      rv = f->C_EncryptInit(esess, &em, ekey);
+      CHECKC(rv == CKR_OK, "stream encrypt init ok");
+      streamLen = 0;
+      rv = f->C_EncryptUpdate(esess, longPt, 17, NULL_PTR, &streamLen);
+      CHECKC(rv == CKR_OK && streamLen == 16, "update query reports 16");
+      streamLen = sizeof(streamCt);
+      rv = f->C_EncryptUpdate(esess, longPt, 17, streamCt, &streamLen);
+      CHECKC(rv == CKR_OK && streamLen == 16,
+             "update streams 16 (query consumed nothing)");
+      streamLen = 1;
+      rv = f->C_EncryptUpdate(esess, longPt + 17, 31, streamCt + 16, &streamLen);
+      CHECKC(rv == CKR_BUFFER_TOO_SMALL && streamLen == 16,
+             "short update refuses with the streamable length");
+      streamLen = sizeof(streamCt) - 16;
+      rv = f->C_EncryptUpdate(esess, longPt + 17, 31, streamCt + 16, &streamLen);
+      CHECKC(rv == CKR_OK && streamLen == 16,
+             "retry after short streams 16 (consumed nothing)");
+      finalLen = sizeof(streamCt) - 32;
+      rv = f->C_EncryptFinal(esess, streamCt + 32, &finalLen);
+      CHECKC(rv == CKR_OK && finalLen == 32, "stream final yields 32");
+      rv = f->C_DecryptInit(esess, &dm, ekey);
+      CHECKC(rv == CKR_OK, "stream decrypt init ok");
+      ptLen = sizeof(streamPt);
+      rv = f->C_Decrypt(esess, streamCt, 64, streamPt, &ptLen);
+      CHECKC(rv == CKR_OK && ptLen == 48 && memcmp(streamPt, longPt, 48) == 0,
+             "streamed ciphertext decrypts to 48 bytes");
+      /* ECB drains fully yet stays multipart-started. */
+      {
+        CK_MECHANISM ecbm;
+        ecbm.mechanism = CKM_AES_ECB;
+        ecbm.pParameter = NULL_PTR;
+        ecbm.ulParameterLen = 0;
+        rv = f->C_EncryptInit(esess, &ecbm, ekey);
+        CHECKC(rv == CKR_OK, "ECB init ok");
+        streamLen = sizeof(streamCt);
+        rv = f->C_EncryptUpdate(esess, (CK_BYTE_PTR) "0123456789ABCDEF", 16,
+                                streamCt, &streamLen);
+        CHECKC(rv == CKR_OK && streamLen == 16, "ECB update streams 16");
+        ctLen = sizeof(ct);
+        rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "x", 1, ct, &ctLen);
+        CHECKC(rv == CKR_OPERATION_ACTIVE, "one-shot after drained update");
+      }
+    }
     /* Unpadded CBC: aligned round-trips, ragged refused. */
     cm.mechanism = CKM_AES_CBC;
     cm.pParameter = iv;
@@ -1932,8 +1984,9 @@ int main(int argc, char **argv) {
       g[1].pValue = buf;
       g[1].ulValueLen = 4;
       rv = f->C_GetAttributeValue(sess, dataObj, &g[1], 1);
-      CHECKC(rv == CKR_BUFFER_TOO_SMALL && g[1].ulValueLen == 9,
-             "short value buffer reports length");
+      CHECKC(rv == CKR_BUFFER_TOO_SMALL &&
+                 g[1].ulValueLen == CK_UNAVAILABLE_INFORMATION,
+             "short value buffer reports the unavailable sentinel");
     }
     {
       CK_ULONG bits = 0;
@@ -2069,9 +2122,22 @@ int main(int argc, char **argv) {
                                 NULL_PTR, &rosess);
         }
       }
-      CHECKC(rv == CKR_OK && rosess != 0, "RO session for refusal check");
+      CHECKC(rv == CKR_OK && rosess != 0, "RO session for owner-dimension check");
       rv = f->C_CreateObject(rosess, tmpl, 5, &bad);
-      CHECKC(rv == CKR_SESSION_READ_ONLY, "RO create refused");
+      CHECKC(rv == CKR_OK && bad != 0, "RO session-object create admitted");
+      {
+        CK_BBOOL yes = CK_TRUE;
+        CK_ATTRIBUTE ttmpl[] = {
+          { CKA_CLASS, &klass, sizeof(klass) },
+          { CKA_TOKEN, &yes, sizeof(yes) },
+          { CKA_PRIVATE, &no, sizeof(no) },
+          { CKA_LABEL, "ro-tok", 6 },
+          { CKA_VALUE, "payload-1", 9 },
+        };
+        CK_OBJECT_HANDLE tbad = 0;
+        rv = f->C_CreateObject(rosess, ttmpl, 5, &tbad);
+        CHECKC(rv == CKR_SESSION_READ_ONLY, "RO token-object create refused");
+      }
       rv = f->C_CloseSession(rosess);
       CHECKC(rv == CKR_OK, "RO session closed");
     }

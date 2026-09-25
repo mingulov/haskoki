@@ -286,30 +286,24 @@ admitToken rules seatedCount
   | seatedCount >= rulesMaxTokens rules = Left AdmitTokensFull
   | otherwise = Right ()
 
--- | Admit a mutation against the session's read-only flag:
--- the ONE pure writability decision. Read/write sessions
--- admit; read-only sessions deny with 'AdmitReadOnly'. The FFI
--- owns only the transport (snapshot lookup, code mapping); the
--- policy lives here.
---
--- Session/token audit (against OASIS PKCS#11 Base v3.0):
--- 'CKA_TOKEN' is honored uniformly by every object class on every
--- creation path (create, copy, all key planners derive the owner
--- from the flag alone) — matching the standard's common storage
--- attribute. Reads, pure crypto, session lifecycle, and random
--- generation are correctly ungated (no object mutation). The
--- standard permits session-object create/copy/destroy in
--- read-only sessions (§5.7.1-5.7.3: "only session objects can be
--- created/destroyed during a read-only session") and restricts
--- nothing on bytes-out paths, while Haskoki refuses ALL
--- create/copy/destroy/generate/wrap/unwrap/derive on read-only
--- sessions: a deliberate conservative (fail-safe) deviation, kept
--- unchanged and pinned by the DecodedRequestSpec writability
--- cases (including the detached-path gating gap and the unenforced
--- public-object login rule — both follow-ups).
-admitWritable :: Bool -> Either AdmitDeny ()
-admitWritable readOnly
-  | readOnly = Left AdmitReadOnly
+-- | Admit a mutation against the session's read-only flag and the
+-- target object's owner: the ONE pure writability decision.
+-- Read/write sessions admit everything; read-only sessions admit
+-- session objects and deny token objects with 'AdmitReadOnly'
+-- (OASIS PKCS#11 Base v3.0 §5.7.1-5.7.3: "only session objects
+-- can be created/destroyed during a read-only session"). Every
+-- creation path (create, copy, generate, keypair, unwrap, derive,
+-- encapsulate, decapsulate) and every mutation of an existing
+-- object (set-attributes, destroy) enforces this where the owner
+-- is decided: the object planners decide inline, and the key-plan
+-- runner decides over the pending work ('admitPending') before
+-- any effect runs. Reads,
+-- pure crypto, wrap (no object created), session lifecycle, and
+-- random generation are ungated (no object mutation). The
+-- unenforced public-object login rule is a separate follow-up.
+admitWritable :: Bool -> Bool -> Either AdmitDeny ()
+admitWritable readOnly isToken
+  | readOnly && isToken = Left AdmitReadOnly
   | otherwise = Right ()
 
 -- | Decode OpenSession arguments: @slot=\<nat\>,rw@ or @slot=\<nat\>,ro@.

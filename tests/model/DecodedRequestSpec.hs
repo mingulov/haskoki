@@ -9,7 +9,8 @@ provider loop (plan → publish → re-read against a pure 'Model')
 receive the same domain decision.
 
 Session writability is decided once in pure core
-('admitWritable'); the FFI owns only the transport.
+('admitWritable', owner-aware per §5.7.1-5.7.3); the FFI owns
+only the transport.
 
 The Transition create/copy seams dissolve with decode hoisting
 (decode is hoisted before admission on every path); the
@@ -71,6 +72,7 @@ import Haskoki.FFI.Standard
   , haskokiStdGenerateKey
   , haskokiStdGetOneAttr
   , haskokiStdOpenSession
+  , haskokiStdSetAttributeValue
   , haskokiStdSignInit
   , haskokiStdWrapKey
   , nativeEncodeAttr
@@ -157,8 +159,8 @@ spec = testGroup "Decoded requests"
   , testCase "Init-function maps are total" caseInitFunctionMaps
   , testCase "Writability is one pure admission" casePureAdmission
   , testCase "Read-only code maps everywhere" caseCodeMaps
-  , testCase "Read-only sessions refuse mutation" caseRoRefusals
-  , testCase "Refusal holds for session objects too" caseRoTokenDimension
+  , testCase "Read-only sessions enforce the owner dimension" caseRoRefusals
+  , testCase "Session objects admitted on read-only sessions" caseRoTokenDimension
   , testCase "Read-only sessions read and compute" caseRoAllowed
   , testCase "DecodedRequest Show redacts templates" caseShowRedacts
     ]
@@ -671,12 +673,15 @@ caseInitFunctionMaps = do
 -- ---------------------------------------------------------------------------
 
 -- | Writability is decided once in pure core: a read/write session
--- admits, a read-only session denies with 'AdmitReadOnly', which
--- maps to 'CKR_SESSION_READ_ONLY'.
+-- admits every owner, a read-only session admits session objects
+-- and denies token objects with 'AdmitReadOnly', which maps to
+-- 'CKR_SESSION_READ_ONLY'.
 casePureAdmission :: IO ()
 casePureAdmission = do
-  assertEqual "writable admits" (Right ()) (admitWritable False)
-  assertEqual "read-only denies" (Left AdmitReadOnly) (admitWritable True)
+  assertEqual "writable admits session" (Right ()) (admitWritable False False)
+  assertEqual "writable admits token" (Right ()) (admitWritable False True)
+  assertEqual "read-only admits session" (Right ()) (admitWritable True False)
+  assertEqual "read-only denies token" (Left AdmitReadOnly) (admitWritable True True)
   assertEqual "denial code" CKR_SESSION_READ_ONLY (admitCode AdmitReadOnly)
 
 -- | The read-only code maps identically at every boundary: the
@@ -694,45 +699,62 @@ caseCodeMaps = do
     (StepDeny CKR_SESSION_READ_ONLY (DenyOpState "w"))
     (mkDeny CKR_SESSION_READ_ONLY "w")
 
--- | Read-only sessions refuse every mutation path through the C
--- adapter with @CKR_SESSION_READ_ONLY@: create, copy, destroy,
--- generate, and wrap (wrap creates no object but is gated with
--- the key paths — an explicit audit pin).
+-- | Read-only sessions enforce the owner dimension through the C
+-- adapter (§5.7.1-5.7.3): session-object create, copy,
+-- set-attributes, destroy, and generate admit; the token-object
+-- counterparts refuse with @CKR_SESSION_READ_ONLY@. Wrap creates
+-- no object and is ungated.
 caseRoRefusals :: IO ()
 caseRoRefusals = do
   mTimed <- timeout 60000000 $ withManualInstance [slot0] $ \inst -> do
     hRW <- openRwSession inst 0
     hRO <- openRoSession inst 0
-    -- Create refuses.
-    (rvCreate, _) <- createViaC inst hRO (frameOf tmpl)
-    assertEqual "RO create" (CULong 0xB5) rvCreate
-    -- Copy and destroy refuse (objects made over the RW session).
-    (rvC, hC) <- createViaC inst hRW (frameOf tmpl)
-    assertEqual "RW create" (CULong 0) rvC
-    (rvCopy, _) <- copyViaC inst hRO hC (frameOf [(AttrLabel, ValBytes "b")])
-    assertEqual "RO copy" (CULong 0xB5) rvCopy
-    rvDestroy <- haskokiStdDestroyObject inst hRO (cuLongOf hC)
-    assertEqual "RO destroy" (CULong 0xB5) rvDestroy
-    -- Generate refuses.
-    rvGen <- generateViaC inst hRO (MechanismId 0x1080) (frameOf aesGenTmpl)
-    assertEqual "RO generate" (CULong 0xB5) rvGen
-    -- Wrap refuses (keys made over the RW session).
+    let sessionTmpl = tmpl ++ [(AttrToken, ValBool False)]
+        tokenTmpl = tmpl ++ [(AttrToken, ValBool True)]
+        labelOver = frameOf [(AttrLabel, ValBytes "b")]
+    -- Create: session admits, token refuses.
+    (rvCS, _) <- createViaC inst hRO (frameOf sessionTmpl)
+    assertEqual "RO session-object create" (CULong 0) rvCS
+    (rvCT, _) <- createViaC inst hRO (frameOf tokenTmpl)
+    assertEqual "RO token-object create" (CULong 0xB5) rvCT
+    -- Copy, set-attributes, destroy (objects made over RW).
+    (rvC, hC) <- createViaC inst hRW (frameOf sessionTmpl)
+    assertEqual "RW session create" (CULong 0) rvC
+    (rvT, hT) <- createViaC inst hRW (frameOf tokenTmpl)
+    assertEqual "RW token create" (CULong 0) rvT
+    (rvCopyS, _) <- copyViaC inst hRO hC labelOver
+    assertEqual "RO session copy" (CULong 0) rvCopyS
+    (rvCopyT, _) <- copyViaC inst hRO hT labelOver
+    assertEqual "RO token copy" (CULong 0xB5) rvCopyT
+    (rvCopyP, _) <- copyViaC inst hRO hC (frameOf [(AttrToken, ValBool True)])
+    assertEqual "RO copy promoting to token" (CULong 0xB5) rvCopyP
+    rvSetS <- setViaC inst hRO hC labelOver
+    assertEqual "RO session set-attributes" (CULong 0) rvSetS
+    rvSetT <- setViaC inst hRO hT labelOver
+    assertEqual "RO token set-attributes" (CULong 0xB5) rvSetT
+    rvDestroyS <- haskokiStdDestroyObject inst hRO (cuLongOf hC)
+    assertEqual "RO session destroy" (CULong 0) rvDestroyS
+    rvDestroyT <- haskokiStdDestroyObject inst hRO (cuLongOf hT)
+    assertEqual "RO token destroy" (CULong 0xB5) rvDestroyT
+    -- Generate: session admits, token refuses.
+    rvGenS <- generateViaC inst hRO (MechanismId 0x1080) (frameOf aesGenTmpl)
+    assertEqual "RO session generate" (CULong 0) rvGenS
+    rvGenT <- generateViaC inst hRO (MechanismId 0x1080) (frameOf aesGenTokenTmpl)
+    assertEqual "RO token generate" (CULong 0xB5) rvGenT
+    -- Wrap is ungated (keys made over the RW session).
     (rvW, hW) <- createViaC inst hRW (frameOf wrapKeyTmpl)
     assertEqual "RW wrapper create" (CULong 0) rvW
-    (rvT, hT) <- createViaC inst hRW (frameOf targetKeyTmpl)
-    assertEqual "RW target create" (CULong 0) rvT
-    rvWrap <- wrapViaC inst hRO (MechanismId 0x1082) (BS.replicate 16 0) hW hT
-    assertEqual "RO wrap" (CULong 0xB5) rvWrap
+    (rvT2, hT2) <- createViaC inst hRW (frameOf targetKeyTmpl)
+    assertEqual "RW target create" (CULong 0) rvT2
+    rvWrap <- wrapViaC inst hRO (MechanismId 0x1082) (BS.replicate 16 0) hW hT2
+    assertEqual "RO wrap admitted" (CULong 0) rvWrap
   case mTimed of
     Nothing -> assertFailure "RO refusals wedged (60s timeout)"
     Just () -> pure ()
 
--- | Explicit audit pin: the standard
--- (OASIS v3.0 §5.7.1-5.7.3) permits session-object
--- create/copy/destroy in read-only sessions and reserves the
--- refusal for token objects; Haskoki conservatively refuses both.
--- The direction is fail-safe; this pin makes the choice explicit
--- instead of implicit.
+-- | The §5.7 owner dimension, pinned end to end on create:
+-- read-only sessions admit session objects and refuse token
+-- objects; read/write sessions admit both.
 caseRoTokenDimension :: IO ()
 caseRoTokenDimension = do
   mTimed <- timeout 30000000 $ withManualInstance [slot0] $ \inst -> do
@@ -741,7 +763,7 @@ caseRoTokenDimension = do
     let sessionTmpl = tmpl ++ [(AttrToken, ValBool False)]
         tokenTmpl = tmpl ++ [(AttrToken, ValBool True)]
     (rvSO, _) <- createViaC inst hRO (frameOf sessionTmpl)
-    assertEqual "RO session-object create still refused" (CULong 0xB5) rvSO
+    assertEqual "RO session-object create admitted" (CULong 0) rvSO
     (rvTO, _) <- createViaC inst hRO (frameOf tokenTmpl)
     assertEqual "RO token-object create refused" (CULong 0xB5) rvTO
     (rvRWS, _) <- createViaC inst hRW (frameOf sessionTmpl)
@@ -778,6 +800,15 @@ aesGenTmpl =
   , (AttrKeyType, ValULong 0x1F)
   , (AttrValueLen, ValULong 16)
   , (AttrToken, ValBool False)
+  ]
+
+-- | AES-128 keygen template asking for a token object.
+aesGenTokenTmpl :: [(AttributeType, AttributeValue)]
+aesGenTokenTmpl =
+  [ (AttrClass, ValULong 4)
+  , (AttrKeyType, ValULong 0x1F)
+  , (AttrValueLen, ValULong 16)
+  , (AttrToken, ValBool True)
   ]
 
 -- | AES wrapping-key template (wrap mark + 16 material bytes).
@@ -1214,6 +1245,13 @@ copyViaC inst hSession (ExternalHandle o) frame =
         (castPtr p) (fromIntegral n) phNew
     CULong oh <- peek phNew
     pure (rv, ExternalHandle (fromIntegral oh))
+
+-- | Set attributes through the C adapter; returns the CK_RV.
+setViaC :: StablePtr StdInstance -> CULong -> ExternalHandle -> ByteString -> IO CULong
+setViaC inst hSession (ExternalHandle o) frame =
+  BS.useAsCStringLen frame $ \(p, n) ->
+    haskokiStdSetAttributeValue inst hSession (CULong (fromIntegral o))
+      (castPtr p) (fromIntegral n)
 
 -- | One little-endian u64 word (frame integers are caller-native).
 word :: Word64 -> ByteString

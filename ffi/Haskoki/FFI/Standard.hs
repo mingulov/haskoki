@@ -131,7 +131,8 @@ module Haskoki.FFI.Standard
   , haskokiStdVerifyUpdate
   , haskokiStdVerifyFinal
     -- * encrypt/decrypt
-  , runCryptoUpdate
+  , runCryptoUpdateBuffered
+  , runCryptoUpdateQuery
   , haskokiStdEncryptInit
   , haskokiStdEncrypt
   , haskokiStdEncryptUpdate
@@ -225,13 +226,19 @@ import Haskoki.Model
   )
 import Haskoki.Object (maxTemplateEntries, objectVisible, resolveHandle)
 import Haskoki.Operation
-  ( SlotKind (..)
+  ( CipherDir (..)
+  , CryptoEffect (..)
+  , SlotKind (..)
   , StagedOutput (..)
+  , activeCipher
+  , bufferedOf
+  , commonMech
   , commonOf
   , lookupSingle
   , removeSingle
   , stagedOf
   )
+import Haskoki.Operation.Cipher (cipherUpdateSplit)
 import Haskoki.Operation.Codec (encodeVerifyInput)
 import Haskoki.Operation.Derive
   ( encodeDeriveParams
@@ -243,6 +250,7 @@ import Haskoki.Recipe.Kdf (KdfRecipe (..), kdfRecipeFor)
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
+  , admitPending
   , ckoSecretKey
   , finishWork
   , keyBytesOf
@@ -307,8 +315,6 @@ import Haskoki.Session
   ( AdmitDeny
   , SessionLogin (..)
   , TokenAuth (..)
-  , admitCode
-  , admitWritable
   , tokenAuthNew
   )
 import Haskoki.Transition (finishEffect, planCall, planDecoded)
@@ -894,21 +900,17 @@ clearCursor :: StdInstance -> SessionId -> IO ()
 clearCursor inst sid =
   atomicModifyIORef' (siFind inst) (\m -> (Map.delete sid m, ()))
 
--- | Enforce the PKCS#11 read/write requirement for object and key
--- creation paths (create, copy, destroy, generate, unwrap,
--- derive). The policy is pure core ('admitWritable'); this is
--- transport only: unknown sessions report
--- @SESSION_HANDLE_INVALID@ (exactly what planning would say),
--- denials map through 'admitCode', and admitted sessions proceed
--- to planning (which re-validates everything else).
-requireWritable :: StdInstance -> SessionId -> IO (Either CULong ())
-requireWritable inst sid = do
+-- | Resolve a session for the object paths (create, copy, destroy,
+-- set-attributes): unknown sessions report @SESSION_HANDLE_INVALID@
+-- (exactly what planning would say). Read/write enforcement is
+-- owner-aware and lives in the planners ('admitWritable'), which
+-- see the target owner; this is transport only.
+requireSession :: StdInstance -> SessionId -> IO (Either CULong ())
+requireSession inst sid = do
   m <- snapshotModel (siEnv inst)
   case lookupSession m sid of
     Nothing -> pure (Left (stdRvOf CKR_SESSION_HANDLE_INVALID))
-    Just st -> case admitWritable (ssReadOnly st) of
-      Left deny -> pure (Left (stdRvOf (admitCode deny)))
-      Right () -> pure (Right ())
+    Just _ -> pure (Right ())
 
 -- ---------------------------------------------------------------------------
 -- FFI-only CK_RV values (pinned by spec/vendor/pkcs11.h).
@@ -1288,7 +1290,7 @@ haskokiStdCreateObject ctx (CULong h) pFrame (CULong frameLen) phObj =
     if phObj == nullPtr
       then pure ckrArgsBad
       else do
-        eW <- requireWritable inst (SessionId (fromIntegral h))
+        eW <- requireSession inst (SessionId (fromIntegral h))
         case eW of
           Left rv -> pure rv
           Right () -> do
@@ -1327,7 +1329,7 @@ haskokiStdCopyObject ctx (CULong h) (CULong o) pFrame (CULong frameLen) phNew =
     if phNew == nullPtr
       then pure ckrArgsBad
       else do
-        eW <- requireWritable inst (SessionId (fromIntegral h))
+        eW <- requireSession inst (SessionId (fromIntegral h))
         case eW of
           Left rv -> pure rv
           Right () -> do
@@ -1363,7 +1365,7 @@ haskokiStdSetAttributeValue
   -> IO CULong
 haskokiStdSetAttributeValue ctx (CULong h) (CULong o) pFrame (CULong frameLen) =
   withStdCtx ctx $ \inst -> do
-    eW <- requireWritable inst (SessionId (fromIntegral h))
+    eW <- requireSession inst (SessionId (fromIntegral h))
     case eW of
       Left rv -> pure rv
       Right () -> do
@@ -1394,7 +1396,7 @@ haskokiStdSetAttributeValue ctx (CULong h) (CULong o) pFrame (CULong frameLen) =
 haskokiStdDestroyObject :: StablePtr StdInstance -> CULong -> CULong -> IO CULong
 haskokiStdDestroyObject ctx (CULong h) (CULong o) =
   withStdCtx ctx $ \inst -> do
-    eW <- requireWritable inst (SessionId (fromIntegral h))
+    eW <- requireSession inst (SessionId (fromIntegral h))
     case eW of
       Left rv -> pure rv
       Right () -> do
@@ -1418,8 +1420,10 @@ haskokiStdDestroyObject ctx (CULong h) (CULong o) =
 -- | Serve one attribute read: unknown type ids report
 -- @ATTRIBUTE_TYPE_INVALID@ with length @-1@; sensitive and
 -- object-missing attributes report their engine code with length
--- @-1@; otherwise size-query, short-buffer, and exact-write
--- semantics apply. Whole-call failures (bad session\/object)
+-- @-1@; otherwise size-query, exact-write, and short-buffer
+-- semantics apply (short buffers report @BUFFER_TOO_SMALL@ with
+-- the @CK_UNAVAILABLE_INFORMATION@ length sentinel, never the
+-- needed length). Whole-call failures (bad session\/object)
 -- leave the length word untouched.
 haskokiStdGetOneAttr
   :: StablePtr StdInstance -> CULong -> CULong -> CULong -> Ptr Word8
@@ -1481,7 +1485,9 @@ haskokiStdGetOneAttr ctx (CULong h) (CULong o) (CULong ckaId) pValue pLen =
           CULong cap <- peek pl
           if cap < need
             then do
-              poke pl (CULong need)
+              -- Short attribute buffers report CK_UNAVAILABLE_INFORMATION
+              -- (-1), not the needed length (PKCS#11 size-guard rule).
+              poke pl (CULong maxBound)
               pure ckrBufferTooSmall
             else do
               pokeArray pv (BS.unpack native)
@@ -2032,7 +2038,9 @@ publishKeyResult inst pr = case pr of
 -- | Execute one key-management plan: denials report their code;
 -- effects run through the instance backend with snapshot keys and
 -- finish against a fresh snapshot; immediate commits publish.
--- Returns the decoded handle outputs, or the CK_RV.
+-- Owner-aware read-only enforcement ('admitPending') refuses
+-- token-object creation before any effect runs. Returns the
+-- decoded handle outputs, or the CK_RV.
 runKeyPlan
   :: StdInstance -> Model -> SessionState -> KeyPlan -> IO (Either CULong [Word64])
 runKeyPlan inst m st kp = case kp of
@@ -2042,6 +2050,7 @@ runKeyPlan inst m st kp = case kp of
   -- runs (same GENERAL_ERROR class as 'finishWork' internals).
   KeyEffect pw fx
     | not (keyPairCompatible pw fx) -> pure (Left (stdRvOf CKR_GENERAL_ERROR))
+    | Left deny <- admitPending st pw -> pure (Left (stdRvOf (kdCode deny)))
     | otherwise -> do
     res <- runEffect (siBackend inst) (stdResolver m) fx
     m2 <- snapshotModel (siEnv inst)
@@ -2055,19 +2064,19 @@ runKeyPlan inst m st kp = case kp of
           Left rej -> publishKeyResult inst (Reject rej)
           Right pc -> publishKeyResult inst (Immediate pc)
 
--- | Resolve a writable session for keygen (unknown handles refuse
--- exactly as planning would; read-only refuses through the pure
--- 'admitWritable' gate — transport only, like 'requireWritable').
-withWritableSessionState
+-- | Resolve a session and run a key-path continuation with its
+-- state (unknown handles refuse exactly as planning would).
+-- Writability is owner-aware and enforced at the key-plan runner
+-- ('admitPending'), which sees the pending objects; wrap creates
+-- nothing and is ungated. Transport only, like 'requireSession'.
+withSessionState
   :: StdInstance -> CULong -> (SessionState -> IO CULong) -> IO CULong
-withWritableSessionState inst (CULong h) k =
+withSessionState inst (CULong h) k =
   withStdSession inst (CULong h) $ \sid -> do
     m <- snapshotModel (siEnv inst)
     case lookupSession m sid of
       Nothing -> pure (stdRvOf CKR_SESSION_HANDLE_INVALID)
-      Just st -> case admitWritable (ssReadOnly st) of
-        Left deny -> pure (stdRvOf (admitCode deny))
-        Right () -> k st
+      Just st -> k st
 
 -- | Generate one secret key from a template frame. Keygen
 -- mechanisms take no parameters (the planner builds
@@ -2080,7 +2089,7 @@ haskokiStdGenerateKey ctx h (CULong mech) pFrame (CULong frameLen) phKey =
   withStdCtx ctx $ \inst ->
     if phKey == nullPtr
       then pure ckrArgsBad
-      else withWritableSessionState inst h $ \st -> do
+      else withSessionState inst h $ \st -> do
         eTmpl <- readFrame pFrame (CULong frameLen)
         case eTmpl of
           Left ferr -> pure (frameErrorRV ferr)
@@ -2105,7 +2114,7 @@ haskokiStdGenerateKeyPair ctx h (CULong mech)
   withStdCtx ctx $ \inst ->
     if phPub == nullPtr || phPriv == nullPtr
       then pure ckrArgsBad
-      else withWritableSessionState inst h $ \st -> do
+      else withSessionState inst h $ \st -> do
         ePub <- readFrame pPubFrame (CULong pubLen)
         case ePub of
           Left ferr -> pure (frameErrorRV ferr)
@@ -2318,20 +2327,68 @@ foreign export ccall "haskoki_std_decrypt_update" haskokiStdDecryptUpdate
 foreign export ccall "haskoki_std_decrypt_final" haskokiStdDecryptFinal
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
 
--- | Cipher-update dialogue: the engine purely buffers (updates
--- never emit), so a clean commit reports zero bytes out.
-runCryptoUpdate :: StdInstance -> Request -> Ptr CULong -> IO CULong
-runCryptoUpdate inst req pLen = do
+-- | Cipher-update dialogue: stream the releasable prefix, or buffer
+-- when nothing releases (zero bytes out). A short buffer refuses
+-- with the re-derived streamable length; the planner changed no
+-- state, so the caller repeats the same part with room.
+runCryptoUpdateBuffered
+  :: StdInstance -> SessionId -> SlotKind -> FunctionId -> ByteString -> String
+  -> Ptr Word8 -> Ptr CULong -> Word64 -> IO CULong
+runCryptoUpdateBuffered inst sid kind func input regionName pOut pLen cap = do
   m <- snapshotModel (siEnv inst)
+  let req = Request Pkcs11_3_2 func (Just sid) Nothing input
+        [RegionBytes regionName (IntentBuffer cap)]
   epc <- runCryptoPlan inst m req
   case epc of
-    Left rv -> pure rv
+    Left rv
+      | rv == ckrBufferTooSmall -> reportUpdateShortLength inst sid kind input pLen
+      | otherwise -> pure rv
     Right pc
       | pcCode pc == CKR_OK && null (pcOutputs pc) -> do
-          poke pLen (CULong 0)
+          _ <- encodeLength pLen 0
           pure ckrOk
-      | pcCode pc == CKR_OK -> pure ckrGeneralError
-      | otherwise -> pure (stdRvOf (pcCode pc))
+      | otherwise -> encodeCryptoCommit inst sid kind pOut pLen cap pc
+
+-- | Report an update short-buffer length: re-derive the planner's
+-- own split from the live slot (the SMALL rejection changed no
+-- state, so the slot still holds the pre-call buffer).
+reportUpdateShortLength
+  :: StdInstance -> SessionId -> SlotKind -> ByteString -> Ptr CULong -> IO CULong
+reportUpdateShortLength inst sid kind part pLen = do
+  m <- snapshotModel (siEnv inst)
+  case lookupSession m sid >>= \st -> lookupSingle (ssOps st) kind of
+    Just active -> case activeCipher active of
+      Just (dir, sc, spec) -> do
+        let total = BS.length (bufferedOf sc) + BS.length part
+            (streamable, _) = cipherUpdateSplit (commonMech sc) spec dir total
+        _ <- encodeLength pLen (fromIntegral streamable)
+        pure ckrBufferTooSmall
+      Nothing -> pure ckrGeneralError
+    Nothing -> pure ckrGeneralError
+
+-- | Update size-query dialogue: dry-run the planner and report the
+-- streamable length WITHOUT committing or executing anything (no
+-- append, no gate spend, no crypto). Rejections (missing slot,
+-- bound violation) publish and report exactly as the real call.
+runCryptoUpdateQuery
+  :: StdInstance -> SessionId -> SlotKind -> FunctionId -> ByteString -> String
+  -> Ptr CULong -> IO CULong
+runCryptoUpdateQuery inst sid _kind func input regionName pLen = do
+  m <- snapshotModel (siEnv inst)
+  let req = Request Pkcs11_3_2 func (Just sid) Nothing input
+        [RegionBytes regionName IntentNull]
+  case planCall (envRules (siEnv inst)) m req of
+    Reject rej -> do
+      publishRejection inst rej
+      pure (stdRvOf (rejCode rej))
+    Immediate _ -> do
+      _ <- encodeLength pLen 0
+      pure ckrOk
+    Execute _ (EffectCrypto fx) -> case fx of
+      FxCipher _ _ _ _ effectInput -> do
+        _ <- encodeLength pLen (fromIntegral (BS.length effectInput))
+        pure ckrOk
+      _ -> pure ckrGeneralError
 
 -- | Initialize an encrypt operation over one key.
 haskokiStdEncryptInit
@@ -2362,11 +2419,12 @@ haskokiStdEncrypt ctx h pData (CULong dataLen) pOut pLen =
                 runCryptoBuffered inst sid SlotEncrypt F_Encrypt input "encrypt"
                   pOut pLen cap
 
--- | Encrypt multipart update (buffers; zero bytes out).
+-- | Encrypt multipart update (streams releasable blocks; retains
+-- the suffix; short buffers refuse without consuming).
 haskokiStdEncryptUpdate
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
   -> Ptr CULong -> IO CULong
-haskokiStdEncryptUpdate ctx h pPart (CULong partLen) _pOut pLen =
+haskokiStdEncryptUpdate ctx h pPart (CULong partLen) pOut pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
       then refuseArgsTerminate inst sid SlotEncrypt
@@ -2374,10 +2432,13 @@ haskokiStdEncryptUpdate ctx h pPart (CULong partLen) _pOut pLen =
         eInput <- decodeInputBytes pPart partLen
         case eInput of
           Left _ -> refuseArgsTerminate inst sid SlotEncrypt
-          Right input -> do
-            let req = Request Pkcs11_3_2 F_EncryptUpdate (Just sid) Nothing
-                  input []
-            runCryptoUpdate inst req pLen
+          Right input
+            | pOut == nullPtr -> runCryptoUpdateQuery inst sid SlotEncrypt
+                F_EncryptUpdate input "encrypt" pLen
+            | otherwise -> do
+                CULong cap <- peek pLen
+                runCryptoUpdateBuffered inst sid SlotEncrypt F_EncryptUpdate
+                  input "encrypt" pOut pLen cap
 
 -- | Encrypt final (size-query and short-buffer recall per the
 -- shared dialogue).
@@ -2425,11 +2486,12 @@ haskokiStdDecrypt ctx h pData (CULong dataLen) pOut pLen =
                 runCryptoBuffered inst sid SlotDecrypt F_Decrypt input "decrypt"
                   pOut pLen cap
 
--- | Decrypt multipart update (buffers; zero bytes out).
+-- | Decrypt multipart update (streams releasable blocks; retains
+-- the suffix; short buffers refuse without consuming).
 haskokiStdDecryptUpdate
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
   -> Ptr CULong -> IO CULong
-haskokiStdDecryptUpdate ctx h pPart (CULong partLen) _pOut pLen =
+haskokiStdDecryptUpdate ctx h pPart (CULong partLen) pOut pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
       then refuseArgsTerminate inst sid SlotDecrypt
@@ -2437,10 +2499,13 @@ haskokiStdDecryptUpdate ctx h pPart (CULong partLen) _pOut pLen =
         eInput <- decodeInputBytes pPart partLen
         case eInput of
           Left _ -> refuseArgsTerminate inst sid SlotDecrypt
-          Right input -> do
-            let req = Request Pkcs11_3_2 F_DecryptUpdate (Just sid) Nothing
-                  input []
-            runCryptoUpdate inst req pLen
+          Right input
+            | pOut == nullPtr -> runCryptoUpdateQuery inst sid SlotDecrypt
+                F_DecryptUpdate input "decrypt" pLen
+            | otherwise -> do
+                CULong cap <- peek pLen
+                runCryptoUpdateBuffered inst sid SlotDecrypt F_DecryptUpdate
+                  input "decrypt" pOut pLen cap
 
 -- | Decrypt final (size-query and short-buffer recall per the
 -- shared dialogue).
@@ -2607,7 +2672,7 @@ haskokiStdWrapKey ctx h (CULong mech) pIv (CULong ivLen)
   withStdCtx ctx $ \inst ->
     if pLen == nullPtr
       then pure ckrArgsBad
-      else withWritableSessionState inst h $ \st -> do
+      else withSessionState inst h $ \st -> do
         eIv <- decodeInputBytes pIv ivLen
         case eIv of
           Left _ -> pure ckrArgsBad
@@ -2631,7 +2696,7 @@ haskokiStdUnwrapKey ctx h (CULong mech) pIv (CULong ivLen) (CULong wrapH)
   withStdCtx ctx $ \inst ->
     if phKey == nullPtr
       then pure ckrArgsBad
-      else withWritableSessionState inst h $ \st -> do
+      else withSessionState inst h $ \st -> do
         eIv <- decodeInputBytes pIv ivLen
         case eIv of
           Left _ -> pure ckrArgsBad
@@ -2673,7 +2738,7 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
   withStdCtx ctx $ \inst ->
     if phKey == nullPtr
       then pure ckrArgsBad
-      else withWritableSessionState inst h $ \st -> do
+      else withSessionState inst h $ \st -> do
         eParams <- decodeInputBytes pParams paramsLen
         case eParams of
           Left _ -> pure ckrArgsBad
@@ -2721,7 +2786,7 @@ haskokiStdDeriveHkdf ctx h pInfo (CULong infoLen) (CULong baseH)
   withStdCtx ctx $ \inst ->
     if phKey == nullPtr
       then pure ckrArgsBad
-      else withWritableSessionState inst h $ \st -> do
+      else withSessionState inst h $ \st -> do
         eInfo <- decodeInputBytes pInfo infoLen
         case eInfo of
           Left _ -> pure ckrArgsBad

@@ -86,6 +86,8 @@ module Haskoki.Operation.KeyManagement
   , planUnwrapKey
   , planAuthWrapKey
   , planAuthUnwrapKey
+    -- * Writability admission
+  , admitPending
   ) where
 
 import Control.Monad (guard)
@@ -147,7 +149,7 @@ import Haskoki.Registry.Generated
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (Rules)
-import Haskoki.Session (admitCode, admitObjects)
+import Haskoki.Session (admitCode, admitObjects, admitWritable)
 import Haskoki.Types
   ( ExternalHandle (..)
   , ObjectId (..)
@@ -298,6 +300,34 @@ data PendingWork
       , pwLens :: ![Int]
       }
   deriving (Eq, Show)
+
+-- | Writability over the objects a key plan will create: read-only
+-- sessions admit session objects and deny token objects
+-- (OASIS PKCS#11 Base v3.0 §5.7.1-5.7.3, via 'admitWritable').
+-- Length queries and wrap paths create nothing and always admit.
+admitPending :: SessionState -> PendingWork -> Either KeyDeny ()
+admitPending st pw =
+  case admitWritable (ssReadOnly st) wantsToken of
+    Left deny -> Left (KeyDeny (admitCode deny)
+      "read-only session cannot create token objects")
+    Right () -> Right ()
+  where
+    wantsToken = any isToken (pendingObjects pw)
+    isToken po = case poOwner po of
+      Nothing -> True
+      Just _ -> False
+
+-- | Objects a pending work item will create (queries and pure
+-- bytes-out work create none).
+pendingObjects :: PendingWork -> [PendingObject]
+pendingObjects pw = case pw of
+  PwGeneratePair pub priv -> [pub, priv]
+  PwGenerateKey k -> [k]
+  PwEncaps s _ _ -> [s]
+  PwDecaps s -> [s]
+  PwBlobOut _ -> []
+  PwUnwrap k -> [k]
+  PwDerive pos _ -> pos
 
 -- | Publish pending objects as one atomic delta: every object
 -- validates before any id or handle is allocated, so a bad entry

@@ -79,7 +79,7 @@ import Haskoki.Outcome
   , StateDelta (..)
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
-import Haskoki.Session (SessionLogin (LoginPublic))
+import Haskoki.Session (SessionLogin (LoginPublic), admitCode, admitWritable)
 import Haskoki.Types
   ( ExternalHandle (..)
   , ObjectId (..)
@@ -308,6 +308,17 @@ objectToken ost = Map.lookup AttrToken (osAttrs ost) == Just (ValBool True)
 objectPrivate :: ObjectState -> Bool
 objectPrivate ost = Map.lookup AttrPrivate (osAttrs ost) == Just (ValBool True)
 
+-- | Token-owner test over merged/stored attributes (absent or
+-- wrongly shaped = session object). Single predicate behind the
+-- owner derivation and the read-only writability checks.
+mergedIsToken :: Map AttributeType AttributeValue -> Bool
+mergedIsToken m = Map.lookup AttrToken m == Just (ValBool True)
+
+-- | Token-owner test over a raw template list (first match wins;
+-- duplicates are rejected downstream by template validation).
+tmplWantsToken :: [(AttributeType, AttributeValue)] -> Bool
+tmplWantsToken tmpl = lookup AttrToken tmpl == Just (ValBool True)
+
 -- | Whether the object may be copied (absent = copyable, per the
 -- PKCS#11 default; only an explicit false prohibits).
 objectCopyable :: ObjectState -> Bool
@@ -352,11 +363,15 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
           ("unknown object class: " ++ show c)
     | otherwise -> case importMaterial attrs of
         Left (code, msg) -> templateReject code msg
-        Right stored ->
+        Right stored
+          | Left deny <- admitWritable (ssReadOnly st) (mergedIsToken stored) ->
+              templateReject (admitCode deny)
+                "read-only session cannot create token objects"
+          | otherwise ->
           let oid = ObjectId (mNextObject model)
               h = ExternalHandle (mNextHandle model)
               owner
-                | Map.lookup AttrToken stored == Just (ValBool True) = Nothing
+                | mergedIsToken stored = Nothing
                 | otherwise = Just (ssId st)
           in Immediate PreparedCommit
             { pcCode = CKR_OK
@@ -513,6 +528,9 @@ planDestroyObject model st h = case resolveHandle model h of
     | not (objectDestroyable ost) ->
         templateReject CKR_ACTION_PROHIBITED
           "object is not destroyable (CKA_DESTROYABLE=false)"
+    | Left deny <- admitWritable (ssReadOnly st) (objectToken ost) ->
+        templateReject (admitCode deny)
+          "read-only session cannot destroy token objects"
     | otherwise -> Immediate PreparedCommit
         { pcCode = CKR_OK
         , pcDelta = StateDelta [DeltaDestroyObject (osId ost)]
@@ -554,6 +572,10 @@ planCopyObject model st h tmpl = case resolveHandle model h of
           , Map.lookup AttrExtractable over == Just (ValBool True) ->
               templateReject CKR_TEMPLATE_INCONSISTENT
                 "copy cannot set extractable on an unextractable source"
+          | Left deny <- admitWritable (ssReadOnly st)
+              (mergedIsToken (Map.union over (osAttrs src))) ->
+              templateReject (admitCode deny)
+                "read-only session cannot copy to token objects"
           | otherwise ->
               let merged = Map.union over (osAttrs src)
               in if Map.member AttrClass merged
@@ -561,7 +583,7 @@ planCopyObject model st h tmpl = case resolveHandle model h of
               let oid = ObjectId (mNextObject model)
                   h2 = ExternalHandle (mNextHandle model)
                   owner
-                    | Map.lookup AttrToken merged == Just (ValBool True) = Nothing
+                    | mergedIsToken merged = Nothing
                     | otherwise = Just (ssId st)
               in Immediate PreparedCommit
                 { pcCode = CKR_OK
@@ -598,6 +620,10 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
   Just ost
     | not (objectVisible st ost) ->
         invalidHandle "object not visible to session"
+    | Left deny <- admitWritable (ssReadOnly st)
+        (objectToken ost || tmplWantsToken tmpl) ->
+        templateReject (admitCode deny)
+          "read-only session cannot modify token objects"
     | otherwise -> case checkDuplicates tmpl of
         Left t -> templateReject CKR_TEMPLATE_INCONSISTENT
           ("contradictory attribute: " ++ show t)
