@@ -98,6 +98,7 @@ import Haskoki.Engine.Backend
   )
 import Haskoki.Der
   ( RsaCrt (..)
+  , curveTable
   , integerToBE
   , parseRsaPrivate
   , parseRsaPublic
@@ -547,7 +548,7 @@ instance CryptoBackend Synthetic where
         | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
             "generic-secret key length must be 1 to 255 bytes"))
       GenEC ec
-        | ecCurve ec `elem` ["P-256", "P-384", "P-521"] ->
+        | genCurveOk (ecCurve ec) ->
             pure (B.EngineOk (genPair seed ctr))
         | otherwise -> pure (B.EngineFail
             (BackendUnsupported "generateKey" ("not in synthetic set: " ++ show spec)))
@@ -978,12 +979,17 @@ resolveKeyBytes env (KeyRefMaterial (KeyRef rid _)) = do
     Just (SynthKey (KeyRefMaterial _)) -> pure (B.EngineFail
       (BackendInvalidState "key" "nested key reference"))
 
+-- | Synthetic keygen admits every covered curve: pairs are opaque
+-- tagged bytes (see 'genPair'), so no per-curve material applies.
+genCurveOk :: String -> Bool
+genCurveOk c = BC8.pack c `elem` [n | (n, _, _) <- curveTable]
+
 genSupported :: BackendEnv Synthetic -> KeyGenSpec -> Maybe String
 genSupported _ spec = case spec of
   GenSym "AES" _ -> Nothing
   GenSym "HOTP" _ -> Nothing
   GenSym "GENERIC" _ -> Nothing
-  GenEC ec | ecCurve ec `elem` ["P-256", "P-384", "P-521"] -> Nothing
+  GenEC ec | genCurveOk (ecCurve ec) -> Nothing
   GenRSA {} -> Nothing
   GenMLKEM _ -> Nothing
   _ -> Just ("keygen not in synthetic set: " ++ show spec)

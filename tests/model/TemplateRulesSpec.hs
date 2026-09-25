@@ -382,12 +382,12 @@ caseEcMissingCurve = do
 
 caseEcOffSetCurve :: IO ()
 caseEcOffSetCurve = do
-  -- Only the SEC2 prime curves plan; secp256k1 (a real curve
+  -- Only covered curves plan; brainpoolP160r1 (a real curve
   -- outside the engine set) is mechanism-invalid, never
   -- substituted.
   let pubT = [ (AttrClass, ValULong ckoPublicKey)
              , (AttrKeyType, ValULong ckkEc)
-             , (AttrEcParams, ValBytes "secp256k1")
+             , (AttrEcParams, ValBytes "brainpoolP160r1")
              ]
       privT = [(AttrClass, ValULong ckoPrivateKey)]
   case planGenerateKeyPair defaultRules emptyModel testSession ecKeyPairGenMech pubT privT of

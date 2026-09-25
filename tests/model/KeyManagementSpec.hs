@@ -35,7 +35,7 @@ import Haskoki.Attribute
   , getAttributes
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
-import Haskoki.Der (ecPublicDer, rsaPrivateDer, rsaPublicDer)
+import Haskoki.Der (curveTable, ecPublicDer, rsaPrivateDer, rsaPublicDer)
 import Haskoki.Engine.Backend
   ( BackendError (..)
   , CryptoBackend (..)
@@ -177,7 +177,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Generic-secret keygen mints typed material in bounds" caseGenericSecretKeygen
   , testCase "Init enforces the key-type matrix" caseInitKeyTypeMatrix
   , testCase "EC keypair delivers two handles" caseEcKeypair
-  , testCase "EC keypair serves P-384 and P-521" caseEcKeygenCurves
+  , testCase "EC keypair serves all covered curves" caseEcKeygenCurves
   , testCase "RSA keypair stamps components and round-trips" caseRsaKeygen
   , testCase "RSA keypair generations are distinct" caseRsaKeygenDistinct
   , testCase "RSA keygen bounds refuse out-of-window specs" caseRsaKeygenBounds
@@ -830,8 +830,11 @@ caseEcKeygenCurves = withSynth $ \answer -> do
               _ -> assertFailure "EC halves lack material"
             pure m'
           other -> assertFailure ("EC plan is not an effect: " ++ show other) >> undefined
-  m1 <- gen m0 "P-384"
-  _ <- gen m1 "P-521"
+  let go m [] = pure m
+      go m (c : cs) = do
+        m' <- gen m c
+        go m' cs
+  _ <- go m0 [n | (n, _, _) <- curveTable]
   pure ()
 
 caseRsaKeygen :: IO ()
