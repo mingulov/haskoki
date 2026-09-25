@@ -452,9 +452,13 @@ long hsk_ossl4_aead_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (aadlen > 0 &&
-        !EVP_EncryptUpdate(cctx, NULL, &outl1, aad, (int)aadlen))
-        goto end;
+    /* AAD Update reports aadlen through its outl argument; keep it in a
+       throwaway so an empty message cannot inherit aadlen as ct length. */
+    if (aadlen > 0) {
+        int aadl = 0;
+        if (!EVP_EncryptUpdate(cctx, NULL, &aadl, aad, (int)aadlen))
+            goto end;
+    }
     if (inlen > 0 &&
         !EVP_EncryptUpdate(cctx, buf, &outl1, in, (int)inlen))
         goto end;
@@ -523,10 +527,14 @@ long hsk_ossl4_aead_decrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (aadlen > 0 &&
-        !EVP_DecryptUpdate(cctx, NULL, &outl1, aad, (int)aadlen)) {
-        rc = HSK_OSSL4_ERR_AUTHFAIL;
-        goto end;
+    /* AAD Update reports aadlen through its outl argument; keep it in a
+       throwaway so an empty message cannot inherit aadlen as pt length. */
+    if (aadlen > 0) {
+        int aadl = 0;
+        if (!EVP_DecryptUpdate(cctx, NULL, &aadl, aad, (int)aadlen)) {
+            rc = HSK_OSSL4_ERR_AUTHFAIL;
+            goto end;
+        }
     }
     if (inlen > 0 &&
         !EVP_DecryptUpdate(cctx, buf, &outl1, in, (int)inlen)) {

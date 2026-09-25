@@ -83,6 +83,7 @@ spec = testGroup "openssl4 engine"
   , testCase "Symmetric keygen (fresh random bytes)" caseSymKeygen
   , testCase "RSA keygen mints DER halves in bounds" caseRsaKeygen
   , testCase "AES-GCM matches the pinned vector and round-trips" caseAeadReal
+  , testCase "AES-GCM empty plaintext with AAD round-trips (tc92)" caseAeadEmptyPlaintext
   , testCase "Random bytes (fresh DRBG output)" caseRandomBytes
   , testCase "seedRandom mixes, randomBytes unaffected" caseSeedRandomMix
   , testCase "Seed entropy estimate pinned at 0.0" caseSeedEntropyHonesty
@@ -1195,6 +1196,32 @@ caseAeadReal = withBackend $ \env -> do
     aeadEncrypt env (AeadSpec "AES-128-GCM" 12 16) key "short" aad pt
   expectBadParam "bad alg" =<<
     aeadEncrypt env (AeadSpec "NOPE" 12 16) key nonce aad pt
+
+-- | Empty plaintext must seal to ct="" plus the pinned tag and open back
+-- to "". The AAD Update call used to clobber the shared output-length
+-- accumulator, so empty-message seals wrote the tag out of bounds (lane
+-- crash) and opens returned aad-length garbage (Wycheproof tc92).
+caseAeadEmptyPlaintext :: IO ()
+caseAeadEmptyPlaintext = withBackend $ \env -> do
+  -- Pinned tags from Python cryptography AESGCM (same oracle root as
+  -- caseAeadReal): key 00..0f, nonce 00..0b.
+  let key = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")
+      nonce = hex "000102030405060708090a0b"
+      spec = AeadSpec "AES-128-GCM" 12 16
+  (ct1, tag1) <- expectOk "empty-pt seal with aad" =<<
+    aeadEncrypt env spec key nonce "aad-data" ""
+  assertEqual "empty-pt ct with aad" "" ct1
+  assertEqual "empty-pt tag with aad" (hex "e01312146176abd643fcee9d4a640184") tag1
+  pt1 <- expectOk "empty-pt open with aad" =<<
+    aeadDecrypt env spec key nonce "aad-data" ct1 tag1
+  assertEqual "empty-pt roundtrip with aad" "" pt1
+  (ct0, tag0) <- expectOk "empty-pt seal without aad" =<<
+    aeadEncrypt env spec key nonce "" ""
+  assertEqual "empty-pt ct without aad" "" ct0
+  assertEqual "empty-pt tag without aad" (hex "435b9ba12d75a4be8a977ea3cd011890") tag0
+  pt0 <- expectOk "empty-pt open without aad" =<<
+    aeadDecrypt env spec key nonce "" ct0 tag0
+  assertEqual "empty-pt roundtrip without aad" "" pt0
 
 caseRsaKeygen :: IO ()
 caseRsaKeygen = withBackend $ \env -> do
