@@ -52,6 +52,7 @@ import Haskoki.Operation
   , isKwpMech
   , isOfbMech
   , isUnframedCipher
+  , isXtsMech
   , mkDeny
   , gateDataCall
   , insertOp
@@ -139,7 +140,9 @@ withCipherSlot ops kind = do
 -- backend owns their length bound. CTS rows ('isCtsMech') replace
 -- alignment with the stealing floor: >= 1 block, any length above.
 -- AES stream rows ('isAesStreamMech') accept any length outright
--- (length-preserving, empty included). Wrap rows
+-- (length-preserving, empty included). XTS ('isXtsMech') replaces
+-- alignment with the data-unit floor: >= 16 bytes, any length
+-- above (stealing covers ragged tails). Wrap rows
 -- ('isAesWrapMech') enforce the wrap floors: KW needs
 -- multiple-of-8 input >= 16 bytes, KWP ('isKwpMech') any length
 -- >= 1 (the provider answers empty KWP with a vacuous success,
@@ -152,6 +155,10 @@ encryptInput mech spec buf
   , BS.length buf >= csBlock spec = Right buf
   | isCtsMech mech = Left (mkDeny CKR_DATA_LEN_RANGE
       "cts encrypt needs at least one block of input")
+  | isXtsMech mech
+  , BS.length buf >= 16 = Right buf
+  | isXtsMech mech = Left (mkDeny CKR_DATA_LEN_RANGE
+      "xts encrypt needs at least 16 bytes of input")
   | isKwpMech mech
   , not (BS.null buf) = Right buf
   | isKwpMech mech = Left (mkDeny CKR_DATA_LEN_RANGE
@@ -182,7 +189,10 @@ encryptInput mech spec buf
 -- the final (which sees the whole buffer) runs the effect. OFB
 -- never streams either: its register evolves through the block
 -- cipher, underivable from the answer tail. Wraps never stream
--- either: one-shot integrity covers the whole buffer.
+-- either: one-shot integrity covers the whole buffer. XTS never
+-- streams either: within-call tweak evolution is GF doubling per
+-- block, unadvanceable from the answer tail, so the whole data
+-- unit buffers to the final.
 -- Framed block ciphers
 -- stream every block the padding rules release: unpadded modes
 -- emit all full blocks both directions; padded encrypt holds back
@@ -202,6 +212,7 @@ cipherUpdateSplit mech spec dir total
   | isCtsMech mech = (0, total)
   | isOfbMech mech = (0, total)
   | isAesWrapMech mech = (0, total)
+  | isXtsMech mech = (0, total)
   | isEcb = (total - total `mod` block, total `mod` block)
   | csPad spec = case dir of
       DirEncrypt
@@ -419,6 +430,13 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
                 ( removeSingle kind ops
                 , denyOutcome (mkDeny CKR_ENCRYPTED_DATA_LEN_RANGE
                     "cts decrypt answer is shorter than one block")
+                )
+            | isXtsMech (commonMech sc)
+            , BS.length raw >= 16 -> stageRaw raw
+            | isXtsMech (commonMech sc) ->
+                ( removeSingle kind ops
+                , denyOutcome (mkDeny CKR_ENCRYPTED_DATA_LEN_RANGE
+                    "xts decrypt answer is shorter than one block")
                 )
             | csPad spec -> case pkcs7Unpad (csBlock spec) raw of
                 Just plain -> stageRaw plain

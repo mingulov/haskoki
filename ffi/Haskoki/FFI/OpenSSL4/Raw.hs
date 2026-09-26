@@ -40,6 +40,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , cipherCbc
   , cipherCts
   , cipherWrap
+  , cipherXts
   , aeadEncrypt
   , aeadDecrypt
   , aeadCcmEncrypt
@@ -145,6 +146,8 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_cts"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_wrap"
   c_cipher_wrap :: Ptr OsslLibCtx -> CString -> CString -> CInt -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_xts"
+  c_cipher_xts :: Ptr OsslLibCtx -> CString -> CString -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_aead_encrypt"
   c_aead_encrypt :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CSize -> Ptr (Ptr CUChar) -> IO CLong
@@ -337,6 +340,20 @@ cipherWrap ctx ciphername propq enc kwp key input =
       withBytes key $ \(pkey, nkey) ->
         withBytes input $ \(pin, nin) ->
           withOut (c_cipher_wrap ctx cc cpq (if enc then 1 else 0) (if kwp then 1 else 0) pkey nkey pin nin)
+
+-- | AES-XTS: @ciphername@ is the fetched XTS cipher
+-- (@AES-\\{128,256\\}-XTS@); @tweak@ is the 16-byte data-unit
+-- tweak (rides as the IV). Length-preserving over inputs >= 16
+-- bytes. Short input answers 'errBadParam'; an equal-halves
+-- weak key answers 'errBadKey'.
+cipherXts :: Ptr OsslLibCtx -> String -> String -> Bool -> ByteString -> ByteString -> ByteString -> IO (Either Int ByteString)
+cipherXts ctx ciphername propq enc key tweak input =
+  withCString ciphername $ \cc ->
+    withCString propq $ \cpq ->
+      withBytes key $ \(pkey, nkey) ->
+        withBytes tweak $ \(ptweak, ntweak) ->
+          withBytes input $ \(pin, nin) ->
+            withOut (c_cipher_xts ctx cc cpq (if enc then 1 else 0) pkey nkey ptweak ntweak pin nin)
 
 -- | AEAD encrypt: returns @ct || tag@ (tag length known to the caller).
 aeadEncrypt :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> ByteString -> ByteString -> Int -> IO (Either Int ByteString)

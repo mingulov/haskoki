@@ -50,6 +50,7 @@ module Haskoki.Engine.Backend
   , isKwSpec
   , isKwpSpec
   , isWrapSpec
+  , isXtsSpec
   , AeadSpec (..)
   , SigSpec (..)
   , PssParams (..)
@@ -272,6 +273,7 @@ data CipherSpec
   | C_AES128_OFB | C_AES192_OFB | C_AES256_OFB
   | C_AES128_KW | C_AES192_KW | C_AES256_KW
   | C_AES128_KWP | C_AES192_KWP | C_AES256_KWP
+  | C_AES128_XTS | C_AES256_XTS
   | C_DES3_CBC | C_DES3_ECB
   | C_ARIA128_CBC | C_ARIA192_CBC | C_ARIA256_CBC
   | C_ARIA128_ECB | C_ARIA192_ECB | C_ARIA256_ECB
@@ -297,6 +299,17 @@ isKwpSpec _ = False
 
 isWrapSpec :: CipherSpec -> Bool
 isWrapSpec spec = isKwSpec spec || isKwpSpec spec
+
+-- | The AES-XTS specs: IEEE 1619 tweakable encryption over data
+-- units of >= 16 bytes (any length above; ciphertext stealing
+-- covers ragged tails, length-preserving). Keys are double-width
+-- (data key + tweak key: 32 bytes under AES-128, 64 under
+-- AES-256); there is no 192 width (the provider has no
+-- AES-192-XTS). The 16-byte tweak rides as the IV.
+isXtsSpec :: CipherSpec -> Bool
+isXtsSpec C_AES128_XTS = True
+isXtsSpec C_AES256_XTS = True
+isXtsSpec _ = False
 
 -- | Accepted raw key lengths in bytes per cipher. Triple-DES takes
 -- 16 two-key (@K1||K2@, expanded to @K1||K2||K1@) or 24 three-key
@@ -334,6 +347,8 @@ cipherKeyLens spec = case spec of
   C_AES128_KWP -> [16]
   C_AES192_KWP -> [24]
   C_AES256_KWP -> [32]
+  C_AES128_XTS -> [32]
+  C_AES256_XTS -> [64]
   C_DES3_CBC -> [16, 24]
   C_DES3_ECB -> [16, 24]
   C_ARIA128_CBC -> [16]
@@ -350,9 +365,10 @@ cipherKeyLens spec = case spec of
   C_CAMELLIA256_ECB -> [32]
 
 -- | IV length in bytes per cipher: the block width for CBC, CTS,
--- CFB128, CFB8, CFB1 and OFB, 16 for CTR, 0 for ECB, KW and KWP
--- (wraps use the fixed AIV, never a caller IV). Both engines
--- enforce this; RecipeCipherSpec pins it against the recipe.
+-- CFB128, CFB8, CFB1 and OFB, 16 for CTR, 16 for the XTS tweak,
+-- 0 for ECB, KW and KWP (wraps use the fixed AIV, never a caller
+-- IV). Both engines enforce this; RecipeCipherSpec pins it
+-- against the recipe.
 cipherIvLen :: CipherSpec -> Int
 cipherIvLen spec = case spec of
   C_AES128_CBC -> 16
@@ -385,6 +401,8 @@ cipherIvLen spec = case spec of
   C_AES128_KWP -> 0
   C_AES192_KWP -> 0
   C_AES256_KWP -> 0
+  C_AES128_XTS -> 16
+  C_AES256_XTS -> 16
   C_DES3_CBC -> 8
   C_DES3_ECB -> 0
   C_ARIA128_CBC -> 16

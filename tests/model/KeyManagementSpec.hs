@@ -1215,8 +1215,8 @@ caseAesKwpWrapRoundtrip = withSynth $ \answer -> do
 -- | Unwrap commits measure the answered material against the
 -- template key type (Tookan §3.2 key-type confusion: a 16-byte
 -- AES blob unwrapped as CKK_DES3 must refuse, never mint a
--- confused key). AES takes 16/24/32 bytes, DES3 takes 24, and
--- generic secret takes any length.
+-- confused key). AES takes 16/24/32 bytes, DES3 takes 24, XTS
+-- takes 32/64, and generic secret takes any length.
 caseUnwrapKeyTypeLength :: IO ()
 caseUnwrapKeyTypeLength = withSynth $ \answer -> do
   m0 <- seedModel >>= loginUser
@@ -1226,12 +1226,18 @@ caseUnwrapKeyTypeLength = withSynth $ \answer -> do
   (m3, target24H) <- genAesKey answer m2 st (aesTmpl 24)
   Just target24 <- pure (resolveHandle m3 target24H)
   Just target24Mat <- pure (keyBytesOf target24)
-  let wrap16Blob = doWrap m3 st answer wrapH targetH 24
+  let wrap16Blob = doWrap aesKwMech m3 st answer wrapH targetH 24
   blob16 <- wrap16Blob
-  blob32 <- doWrap m3 st answer wrapH target24H 32
+  blob32 <- doWrap aesKwMech m3 st answer wrapH target24H 32
   let des3Tmpl =
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrKeyType, ValULong (mustKeyTypeId "CKK_DES3"))
+        , (AttrToken, ValBool False)
+        , (AttrExtractable, ValBool True)
+        ]
+      xtsTmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong (mustKeyTypeId "CKK_AES_XTS"))
         , (AttrToken, ValBool False)
         , (AttrExtractable, ValBool True)
         ]
@@ -1255,9 +1261,35 @@ caseUnwrapKeyTypeLength = withSynth $ \answer -> do
       Just ost <- pure (resolveHandle m4 h)
       assertEqual "des3 material" (Just target24Mat) (keyBytesOf ost)
     other -> assertFailure ("unwrap plan is not an effect: " ++ show other)
+  -- 32 bytes as XTS commits (double-width data + tweak halves).
+  (m5, target32H) <- genAesKey answer m3 st (aesTmpl 32)
+  Just target32 <- pure (resolveHandle m5 target32H)
+  Just target32Mat <- pure (keyBytesOf target32)
+  blob40 <- doWrap aesKwMech m5 st answer wrapH target32H 40
+  case planUnwrapKey defaultRules m5 st aesKwMech BS.empty wrapH blob40 xtsTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m5 fx
+      c <- finishCommit m5 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m6 <- expectRight (publishDelta m5 (pcDelta c))
+      Just ost <- pure (resolveHandle m6 h)
+      assertEqual "xts material" (Just target32Mat) (keyBytesOf ost)
+    other -> assertFailure ("unwrap plan is not an effect: " ++ show other)
+  -- 12 bytes as XTS refuses (not a double width).
+  (m7, target12H) <- genKeyWith answer m5 st genericSecretKeyGenMech (secretTmplN 12)
+  blob24 <- doWrap aesKwpMech m7 st answer wrapH target12H 24
+  case planUnwrapKey defaultRules m7 st aesKwpMech BS.empty wrapH blob24 xtsTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m7 fx
+      case finishWork m7 st pw res of
+        Reject r -> do
+          assertEqual "xts confusion code" CKR_TEMPLATE_INCONSISTENT (rejCode r)
+          assertEqual "xts confusion publishes nothing" (StateDelta []) (rejDelta r)
+        other -> assertFailure ("confused unwrap committed, got: " ++ show other)
+    other -> assertFailure ("unwrap plan is not an effect: " ++ show other)
   where
-    doWrap m st answer wrapH targetH wantLen =
-      case planWrapKey m st aesKwMech BS.empty wrapH targetH (IntentBuffer wantLen) of
+    doWrap wmech m st answer wrapH targetH wantLen =
+      case planWrapKey m st wmech BS.empty wrapH targetH (IntentBuffer wantLen) of
         KeyEffect pw fx -> do
           res <- answer m fx
           case finishWork m st pw res of

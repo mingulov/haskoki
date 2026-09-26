@@ -1343,6 +1343,57 @@ int main(int argc, char **argv) {
     rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
     CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "tampered ciphertext refused");
     ct[ctLen - 1] ^= 0xFF;
+    /* AES-XTS: import a 32-byte CKK_AES_XTS key, one-shot a 21-byte
+     * data unit under the 16-byte tweak, roundtrip; short units
+     * refused at the planner floor. */
+    {
+      CK_OBJECT_CLASS xtcls = CKO_SECRET_KEY;
+      CK_KEY_TYPE xtkt = CKK_AES_XTS;
+      CK_BYTE xtval[32] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+        0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf
+      };
+      CK_ATTRIBUTE xttmpl[] = {
+        { CKA_CLASS, &xtcls, sizeof(xtcls) },
+        { CKA_KEY_TYPE, &xtkt, sizeof(xtkt) },
+        { CKA_VALUE, xtval, sizeof(xtval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_ENCRYPT, &bTrue, sizeof(bTrue) },
+        { CKA_DECRYPT, &bTrue, sizeof(bTrue) }
+      };
+      CK_OBJECT_HANDLE xtkey = 0;
+      CK_BYTE tweak[16] = {
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+      };
+      CK_MECHANISM xtm;
+      CK_BYTE xtct[64], xtpt[64];
+      CK_ULONG xtctLen, xtptLen;
+      rv = f->C_CreateObject(esess, xttmpl, 6, &xtkey);
+      CHECKC(rv == CKR_OK && xtkey != 0, "xts key imports");
+      xtm.mechanism = CKM_AES_XTS;
+      xtm.pParameter = tweak;
+      xtm.ulParameterLen = sizeof(tweak);
+      rv = f->C_EncryptInit(esess, &xtm, xtkey);
+      CHECKC(rv == CKR_OK, "xts EncryptInit ok");
+      xtctLen = sizeof(xtct);
+      rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "twenty-one byte unit!", 21, xtct, &xtctLen);
+      CHECKC(rv == CKR_OK && xtctLen == 21, "xts one-shot yields 21 bytes");
+      rv = f->C_DecryptInit(esess, &xtm, xtkey);
+      CHECKC(rv == CKR_OK, "xts DecryptInit ok");
+      xtptLen = sizeof(xtpt);
+      rv = f->C_Decrypt(esess, xtct, xtctLen, xtpt, &xtptLen);
+      CHECKC(rv == CKR_OK && xtptLen == 21
+             && memcmp(xtpt, "twenty-one byte unit!", 21) == 0,
+             "xts decrypt recovers");
+      rv = f->C_EncryptInit(esess, &xtm, xtkey);
+      CHECKC(rv == CKR_OK, "xts re-init for short");
+      xtctLen = sizeof(xtct);
+      rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "short", 5, xtct, &xtctLen);
+      CHECKC(rv == CKR_DATA_LEN_RANGE, "xts short unit refused");
+    }
     /* Multipart (sub-block updates buffer; final emits). */
     rv = f->C_EncryptUpdate(esess, (CK_BYTE_PTR) "a", 1, ct, &partLen);
     CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,

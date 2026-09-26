@@ -158,6 +158,26 @@ long hsk_ossl4_cipher_wrap(OSSL_LIB_CTX *ctx, const char *ciphername,
                            const unsigned char *in, size_t inlen,
                            unsigned char **out);
 
+/* --- AES-XTS (IEEE 1619 disk mode) ------------------------------------ */
+
+/* enc: 1 = encrypt, 0 = decrypt. The provider implements XTS (fetch
+ * probe record: AES-128-XTS/AES-256-XTS fetch from the default
+ * provider; AES-192-XTS is absent); the shim runs the fetched
+ * cipher one-shot with padding disabled over the 16-byte tweak IV
+ * (tweak rides as the IV). Key length (32/64: data + tweak
+ * halves) and tweak length (16) must match the fetched cipher.
+ * Geometry (provider-proven): input is >= 16 bytes, any length
+ * above (stealing covers ragged tails, length-preserving);
+ * shorter input returns HSK_OSSL4_ERR_BADPARAM. Init failure
+ * (the provider's equal-halves weak-key refusal) returns
+ * HSK_OSSL4_ERR_BADKEY. */
+long hsk_ossl4_cipher_xts(OSSL_LIB_CTX *ctx, const char *ciphername,
+                          const char *propq, int enc,
+                          const unsigned char *key, size_t keylen,
+                          const unsigned char *tweak, size_t tweaklen,
+                          const unsigned char *in, size_t inlen,
+                          unsigned char **out);
+
 /* --- AEAD (AES-GCM; output is ct || tag) ------------------------------- */
 
 /* Encrypt: *out is ct || tag (inlen + taglen bytes). Decrypt takes

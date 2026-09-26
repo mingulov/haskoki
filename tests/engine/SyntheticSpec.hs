@@ -870,6 +870,7 @@ caseCapsFull = withSynth "11" $ \env -> do
     , C_AES128_OFB, C_AES192_OFB, C_AES256_OFB
     , C_AES128_KW, C_AES192_KW, C_AES256_KW
     , C_AES128_KWP, C_AES192_KWP, C_AES256_KWP
+    , C_AES128_XTS, C_AES256_XTS
     , C_DES3_CBC, C_DES3_ECB
     , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
     , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
@@ -1055,6 +1056,7 @@ caseDriverBridge = withSynth "11" $ \env -> do
 caseCipherSpecs :: IO ()
 caseCipherSpecs = withSynth "11" $ \env -> do
   mapM_ (roundtripAll env) cipherSpecSet
+  xtsFloor env
   -- ECB takes empty IV only; CBC takes its block.
   expectBadParam "ecb rejects iv" =<<
     cipherEncrypt env C_AES256_ECB key32 "0123456789abcdef" "sixteen bytes xx"
@@ -1088,7 +1090,13 @@ caseCipherSpecs = withSynth "11" $ \env -> do
       , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
       , C_CAMELLIA128_CBC, C_CAMELLIA192_CBC, C_CAMELLIA256_CBC
       , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
+      , C_AES128_XTS, C_AES256_XTS
       ]
+    xtsFloor env = do
+      let key = KeyBytes (BS.replicate 32 0x4b)
+          tweak = BS.replicate 16 0x77
+      expectBadParam "xts rejects short input" =<<
+        cipherEncrypt env C_AES128_XTS key tweak "fifteen bytes!!"
     roundtripAll env cspec = mapM_ (roundtripOne env cspec) (cipherKeyLens cspec)
     roundtripOne env cspec keyLen = do
       let key = KeyBytes (BS.replicate keyLen 0x4b)

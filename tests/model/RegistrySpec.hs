@@ -266,6 +266,7 @@ caseCurated = do
     , MechanismId Gen.ckm_ECDSA_SHA3_512
     , MechanismId Gen.ckm_ECDH1_DERIVE
     , MechanismId Gen.ckm_ECDH1_COFACTOR_DERIVE
+    , MechanismId Gen.ckm_AES_XTS
     , MechanismId Gen.ckm_AES_KEY_GEN
     , MechanismId Gen.ckm_AES_ECB
     , MechanismId Gen.ckm_AES_CBC
@@ -305,7 +306,7 @@ caseCurated = do
 
 caseJsonProjection :: IO ()
 caseJsonProjection = do
-  -- The reviewed head stays pinned verbatim; the 345 generated
+  -- The reviewed head stays pinned verbatim; the 344 generated
   -- catalog-only rows are pinned by count + full file equality (the
   -- file is generator output; equality proves the Haskell registry
   -- matches the JSON catalog byte-for-byte, and
@@ -325,11 +326,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 119 behavior + 345 catalog-only + catalog line.
+  -- schema + 120 behavior + 344 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 119
+  assertEqual "behavior line count" 120
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 345
+  assertEqual "catalog-only line count" 344
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -646,7 +647,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 345 (length invIds)
+  assertEqual "guard covers every catalog row" 344 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of
@@ -662,7 +663,7 @@ caseSpecialsCatalogOnly :: IO ()
 caseSpecialsCatalogOnly = do
   -- S15: one named representative per reviewed gap group stays
   -- catalog-only with its headline operation refused under
-  -- granted caps (the exhaustive guard above covers all 345;
+  -- granted caps (the exhaustive guard above covers all 344;
   -- this table documents the groups for humans).
   let reg = curatedRegistry
       reps =

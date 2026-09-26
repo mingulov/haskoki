@@ -100,6 +100,7 @@ mech|0x00001049|CKM_ECDSA_SHA3_384||ec|sig-encoding/1|bits:256-521|sign:A37,A39;
 mech|0x0000104A|CKM_ECDSA_SHA3_512||ec|sig-encoding/1|bits:256-521|sign:A37,A39;verify:A37,A39
 mech|0x00001050|CKM_ECDH1_DERIVE||derive|ecdh-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x00001051|CKM_ECDH1_COFACTOR_DERIVE||derive|ecdh-params/1|mechanism-specific:0-0|derive:A20,A37,A39
+mech|0x00001071|CKM_AES_XTS||cipher|iv-bytes/1|bytes:32-64|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00001080|CKM_AES_KEY_GEN||keygen|no-params/1|bits:128-256|generate-key:A37
 mech|0x00001081|CKM_AES_ECB||cipher|no-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00001082|CKM_AES_CBC||cipher|iv-bytes/1|bytes:16-32|authenticated-unwrap:A23,A37;authenticated-wrap:A23,A37;decrypt:A16,A37,A39;encrypt:A16,A37,A39;unwrap:A20,A37,A39;wrap:A20,A37,A39
@@ -361,7 +362,6 @@ inv|0x00001063|CKM_JUNIPER_COUNTER||catalog-only
 inv|0x00001064|CKM_JUNIPER_SHUFFLE||catalog-only
 inv|0x00001065|CKM_JUNIPER_WRAP||catalog-only
 inv|0x00001070|CKM_FASTHASH||catalog-only
-inv|0x00001071|CKM_AES_XTS||catalog-only
 inv|0x00001072|CKM_AES_XTS_KEY_GEN||catalog-only
 inv|0x00001083|CKM_AES_MAC||catalog-only
 inv|0x00001084|CKM_AES_MAC_GENERAL||catalog-only

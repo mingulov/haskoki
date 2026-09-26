@@ -67,6 +67,7 @@ import Haskoki.Registry.Generated
   , ckm_AES_KEY_WRAP
   , ckm_AES_KEY_WRAP_PAD
   , ckm_AES_KEY_WRAP_KWP
+  , ckm_AES_XTS
   , ckm_AES_GCM
   , ckm_ARIA_CBC
   , ckm_ARIA_ECB
@@ -223,6 +224,7 @@ cipherShapeFor (MechanismId m)
   | m == ckm_AES_KEY_WRAP = Just (CipherSpec 8 False)
   | m == ckm_AES_KEY_WRAP_PAD = Just (CipherSpec 1 False)
   | m == ckm_AES_KEY_WRAP_KWP = Just (CipherSpec 1 False)
+  | m == ckm_AES_XTS = Just (CipherSpec 16 False)
   | m == ckm_AES_ECB = Just (CipherSpec 16 False)
   | m == ckm_DES3_CBC = Just (CipherSpec 8 False)
   | m == ckm_DES3_ECB = Just (CipherSpec 8 False)

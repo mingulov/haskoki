@@ -216,6 +216,9 @@ aesCcmMech = MechanismId 0x1088
 aesCtsMech :: MechanismId
 aesCtsMech = MechanismId 0x1089
 
+aesXtsMech :: MechanismId
+aesXtsMech = MechanismId 0x1071
+
 aesCfb128Mech, aesCfb8Mech, aesCfb1Mech, aesOfbMech :: MechanismId
 aesCfb128Mech = MechanismId 0x2107
 aesCfb8Mech = MechanismId 0x2106
@@ -907,6 +910,15 @@ caseUpdateSplitTable = do
         (cipherUpdateSplit aesOfbMech plain DirEncrypt total)
       assertEqual ("ofb dec " ++ show total) want
         (cipherUpdateSplit aesOfbMech plain DirDecrypt total)
+    ) [(0, (0, 0)), (15, (0, 15)), (16, (0, 16)), (20, (0, 20)), (32, (0, 32))]
+  -- XTS never streams: within-call tweak evolution is GF doubling
+  -- per block, so every update buffers and only the final runs the
+  -- effect over the whole data unit.
+  mapM_ (\(total, want) -> do
+      assertEqual ("xts enc " ++ show total) want
+        (cipherUpdateSplit aesXtsMech plain DirEncrypt total)
+      assertEqual ("xts dec " ++ show total) want
+        (cipherUpdateSplit aesXtsMech plain DirDecrypt total)
     ) [(0, (0, 0)), (15, (0, 15)), (16, (0, 16)), (20, (0, 20)), (32, (0, 32))]
 
 caseUpdateShortNoConsume :: IO ()

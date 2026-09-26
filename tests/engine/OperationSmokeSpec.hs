@@ -28,7 +28,7 @@ import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Engine.Backend
   ( BackendError (..)
   , BackendEnv
-  , CipherSpec (C_AES256_CBC, C_AES256_CTR, C_AES256_CTS, C_AES256_CFB128, C_AES256_OFB, C_AES256_KW, C_AES256_KWP)
+  , CipherSpec (C_AES256_CBC, C_AES256_CTR, C_AES256_CTS, C_AES256_CFB128, C_AES256_OFB, C_AES256_KW, C_AES256_KWP, C_AES128_XTS)
   , CryptoBackend (..)
   , DigestAlg (..)
   , EcSpec (..)
@@ -131,6 +131,7 @@ spec = testGroup "operations over the real backend"
   , testCase "aes-ofb ragged roundtrip through cipher slots" caseAesOfbSlot
   , testCase "aes-kw expanding roundtrip through cipher slots" caseAesKwSlot
   , testCase "aes-kwp ragged roundtrip through cipher slots" caseAesKwpSlot
+  , testCase "aes-xts ragged roundtrip through cipher slots" caseAesXtsSlot
   , testCase "ecdsa sign/verify through slots, DER and RAW" caseEcdsaSlot
   , testCase "dual digest+encrypt through the real backend" caseDualSlot
   , testCase "denied init plans no crypto" caseDeniedPlansNothing
@@ -195,7 +196,7 @@ ecSigRaw = hex "debdbb00072c928d38bf43791d32f0eefe8a562d8444869adabdf77820cbed49
 -- Fixtures: registry, model, sessions
 -- ---------------------------------------------------------------------------
 
-sha256Mech, hmacMech, aesCbcMech, ecdsaMech, aesCtrMech, aesCtsMech, aesCfb128Mech, aesOfbMech, aesKwMech, aesKwpMech :: MechanismId
+sha256Mech, hmacMech, aesCbcMech, ecdsaMech, aesCtrMech, aesCtsMech, aesCfb128Mech, aesOfbMech, aesKwMech, aesKwpMech, aesXtsMech :: MechanismId
 sha256Mech = MechanismId 0x250
 hmacMech = MechanismId 0x251
 aesCbcMech = MechanismId 0x1082
@@ -206,6 +207,7 @@ aesCfb128Mech = MechanismId 0x2107
 aesOfbMech = MechanismId 0x2104
 aesKwMech = MechanismId 0x2109
 aesKwpMech = MechanismId 0x210B
+aesXtsMech = MechanismId 0x1071
 
 -- | The curated registry as-is: every mechanism these smoke
 -- tests touch (0x250, 0x251, 0x1082, 0x1041, 0x1086, 0x1089, 0x2107, 0x2104) ships behavior-tested
@@ -263,6 +265,8 @@ smokeEnv = OpEnv
       , (aesKwMech, OpDecrypt)
       , (aesKwpMech, OpEncrypt)
       , (aesKwpMech, OpDecrypt)
+      , (aesXtsMech, OpEncrypt)
+      , (aesXtsMech, OpDecrypt)
       , (ecdsaMech, OpSign)
       , (ecdsaMech, OpVerify)
       ]
@@ -355,6 +359,8 @@ runRealEffect env fx = case fx of
         toBytes <$> cipherEncrypt env C_AES256_KW key iv input
     | mech == aesKwpMech, Just key <- keyFor oid ->
         toBytes <$> cipherEncrypt env C_AES256_KWP key iv input
+    | mech == aesXtsMech, Just key <- keyFor oid ->
+        toBytes <$> cipherEncrypt env C_AES128_XTS key iv input
     | otherwise -> pure (badKey fx)
   FxCipher DirDecrypt mech (Just oid) iv input
     | mech == aesCbcMech, Just key <- keyFor oid ->
@@ -371,6 +377,8 @@ runRealEffect env fx = case fx of
         toBytes <$> cipherDecrypt env C_AES256_KW key iv input
     | mech == aesKwpMech, Just key <- keyFor oid ->
         toBytes <$> cipherDecrypt env C_AES256_KWP key iv input
+    | mech == aesXtsMech, Just key <- keyFor oid ->
+        toBytes <$> cipherDecrypt env C_AES128_XTS key iv input
     | otherwise -> pure (badKey fx)
   -- Message effects: per-message params drive crypto (the IV
   -- arrives per message, not from init). The backend is not
@@ -717,6 +725,44 @@ caseAesKwSlot = wrapSlot aesKwMech "wrap-me-16-byte!" 24
 
 caseAesKwpSlot :: IO ()
 caseAesKwpSlot = wrapSlot aesKwpMech "kwp ragged msg, 23 byte" 32
+
+-- | XTS through the slots: the 32-byte smoke key feeds XTS-128,
+-- the 16-byte tweak rides as the parameter, ragged input plans
+-- (no alignment denial), decrypt recovers. (Roundtrip, not KAT:
+-- no ACVP vector covers the fixed smoke key; the KATs live in
+-- OpenSSLSpec.)
+caseAesXtsSlot :: IO ()
+caseAesXtsSlot = withBackend $ \env -> do
+  let noPad = Just (CipherSpec 16 False)
+      msg = "xts data unit, 23 bytes" :: ByteString
+      eArgs = InitArgs OpEncrypt aesXtsMech aes256Iv (Just aesKeyP) noPad Nothing
+      (ops0, _) = initOperation smokeEnv emptySessionOps smokeSession eArgs
+      (ops1, _, o1) = planCipherOneShot ops0 smokeSession
+        SlotEncrypt "cipher" msg
+  ct <- case soEffects o1 of
+    [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
+      out <- expectBytes env fx
+      let (_, fin) = finishCipher ops1 SlotEncrypt "cipher"
+            (GotBytes out) (IntentBuffer 64)
+      assertEqual "encrypt ok" CKR_OK (soCode fin)
+      case stagedBytes fin of
+        Just c -> pure c
+        Nothing -> assertFailure "expected ciphertext"
+    other -> assertFailure ("expected one cipher effect, got " ++ show other)
+  assertEqual "xts length preserved" (BS.length msg) (BS.length ct)
+  let dArgs = InitArgs OpDecrypt aesXtsMech aes256Iv (Just aesKeyP) noPad Nothing
+      (ops2, _) = initOperation smokeEnv emptySessionOps smokeSession dArgs
+      (ops3, _, o2) = planCipherOneShot ops2 smokeSession
+        SlotDecrypt "plain" ct
+  case soEffects o2 of
+    [fx] -> do
+      out <- expectBytes env fx
+      let (ops4, fin) = finishCipher ops3 SlotDecrypt "plain"
+            (GotBytes out) (IntentBuffer 64)
+      assertEqual "decrypt ok" CKR_OK (soCode fin)
+      assertEqual "roundtrip recovers" (Just msg) (stagedBytes fin)
+      assertEqual "slot freed" [] (activeSlots ops4)
+    other -> assertFailure ("expected one cipher effect, got " ++ show other)
 
 -- | Wrap roundtrip through the cipher slots: wraps take empty
 -- mechanism parameters (no IV), expand the output by the wrap

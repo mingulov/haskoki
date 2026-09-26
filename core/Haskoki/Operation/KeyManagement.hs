@@ -215,6 +215,10 @@ ckkAes = mustKeyTypeId "CKK_AES"
 ckkDes3 :: Word64
 ckkDes3 = mustKeyTypeId "CKK_DES3"
 
+-- | @CKK_AES_XTS@ (generated id, resolved by name).
+ckkAesXts :: Word64
+ckkAesXts = mustKeyTypeId "CKK_AES_XTS"
+
 -- | @CKK_HOTP@ (generated id, resolved by name).
 ckkHotp :: Word64
 ckkHotp = mustKeyTypeId "CKK_HOTP"
@@ -562,9 +566,10 @@ finishWork model st pw res = case (pw, res) of
       Right _ -> internal "single publication arity"
     -- Publish unwrapped material after the type/length coherence
     -- check: the answered bytes must suit the template key type
-    -- (AES: 16/24/32; DES3: 24; anything else: any length). A
-    -- mismatch is key-type confusion (Tookan section 3.2) and
-    -- refuses with CKR_TEMPLATE_INCONSISTENT, publishing nothing.
+    -- (AES: 16/24/32; DES3: 24; XTS: 32/64; anything else: any
+    -- length). A mismatch is key-type confusion (Tookan section
+    -- 3.2) and refuses with CKR_TEMPLATE_INCONSISTENT, publishing
+    -- nothing.
     publishUnwrap :: ByteString -> PendingObject -> PlanResult
     publishUnwrap mat po
       | typeLenOk = publish1 (storeMaterial mat po) [] ["unwrapped key"]
@@ -582,6 +587,7 @@ finishWork model st pw res = case (pw, res) of
           Just (ValULong k)
             | k == ckkAes -> BS.length mat `elem` [16, 24, 32]
             | k == ckkDes3 -> BS.length mat == 24
+            | k == ckkAesXts -> BS.length mat `elem` [32, 64]
           _ -> True
 
 -- | Store driver-supplied key material on a pending object.

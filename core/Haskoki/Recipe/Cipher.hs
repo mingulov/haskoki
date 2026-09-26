@@ -31,7 +31,7 @@ Consumers:
 
 Deferred family members (not recipes, named gaps): @CKM_AES_CFB64@
 (provider 4.0.2 has no CFB64 mode for AES),
-@CKM_AES_XTS@, @CKM_*_GCM@\/@CCM@ (AEAD shape, needs its
+@CKM_*_GCM@\/@CCM@ (AEAD shape, needs its
 own nonce\/tag recipe), @CKM_*_ENCRYPT_DATA@ (single-part data
 shape), the PBE constructors, and every legacy-only or
 provider-absent cipher (single DES, RC2\/RC4\/RC5, IDEA, CAST,
@@ -59,6 +59,7 @@ module Haskoki.Recipe.Cipher
   , ofbName
   , wrapNames
   , kwpNames
+  , xtsName
   ) where
 
 import Data.Bits (shiftL, shiftR, (.&.))
@@ -147,6 +148,13 @@ wrapNames = ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_AES_KEY_WRAP_KWP"]
 kwpNames :: [MechanismName]
 kwpNames = ["CKM_AES_KEY_WRAP_PAD", "CKM_AES_KEY_WRAP_KWP"]
 
+-- | The XTS row: IEEE 1619 tweakable encryption over data units of
+-- >= 16 bytes (see 'Haskoki.Operation.isXtsMech'). The 16-byte
+-- tweak rides as the raw mechanism parameter like a CBC IV; keys
+-- are double-width (data + tweak halves, 32/64 bytes).
+xtsName :: MechanismName
+xtsName = "CKM_AES_XTS"
+
 -- | Encode one 8-byte big-endian word.
 encodeWord64 :: Int -> ByteString
 encodeWord64 n = BS.pack [byte s | s <- [56, 48 .. 0]]
@@ -201,7 +209,7 @@ ctrNextImage bs n = case decodeCtrParams bs of
 cipherKeyLenValid :: BlockCipherRecipe -> Int -> Bool
 cipherKeyLenValid r n = n `elem` crKeyLens r
 
--- | All eighteen covered mechanisms with their geometry. The CTR row
+-- | All nineteen covered mechanisms with their geometry. The CTR row
 -- carries the counter-block width as its block geometry and IV
 -- length (agreeing with the backend 'cipherIvLen' law); the
 -- canonical parameter image is wider (width word plus block) and
@@ -232,6 +240,11 @@ cipherRecipes =
   , BlockCipherRecipe "CKM_AES_KEY_WRAP" 8 [16, 24, 32] 0 False "CKK_AES"
   , BlockCipherRecipe "CKM_AES_KEY_WRAP_PAD" 8 [16, 24, 32] 0 False "CKK_AES"
   , BlockCipherRecipe "CKM_AES_KEY_WRAP_KWP" 8 [16, 24, 32] 0 False "CKK_AES"
+  -- XTS takes the 16-byte tweak as the raw parameter like a CBC IV
+  -- on double-width keys (no 192 width: the provider has no
+  -- AES-192-XTS); the planners enforce the >= 16 floor and never
+  -- stream multipart updates (see 'Haskoki.Operation.isXtsMech').
+  , BlockCipherRecipe "CKM_AES_XTS" 16 [32, 64] 16 False "CKK_AES_XTS"
   , BlockCipherRecipe "CKM_DES3_CBC" 8 [16, 24] 8 False "CKK_DES3"
   , BlockCipherRecipe "CKM_DES3_ECB" 8 [16, 24] 0 False "CKK_DES3"
   , BlockCipherRecipe "CKM_ARIA_CBC" 16 [16, 24, 32] 16 False "CKK_ARIA"

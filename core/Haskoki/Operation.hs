@@ -58,6 +58,7 @@ module Haskoki.Operation
   , isAesWrapMech
   , isKwpMech
   , isOfbMech
+  , isXtsMech
     -- * Buffer bound for the per-kind lifecycles
   , maxBuffered
   , appendBuffered
@@ -78,7 +79,7 @@ import Haskoki.Output
   , planOneShot
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor)
-import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, kwpNames, ofbName, streamNames, wrapNames)
+import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, kwpNames, ofbName, streamNames, wrapNames, xtsName)
 import Haskoki.Recipe.Cmac (cmacParamsValid, cmacRecipeFor)
 import Haskoki.Recipe.Digest (digestParamsValid)
 import Haskoki.Recipe.Ecdsa (ecdsaParamsValid, ecdsaRecipeFor)
@@ -285,6 +286,17 @@ isAesWrapMech m = case cipherRecipeFor m of
 isKwpMech :: MechanismId -> Bool
 isKwpMech m = case cipherRecipeFor m of
   Just r -> crName r `elem` kwpNames
+  Nothing -> False
+
+-- | The XTS row (@CKM_AES_XTS@): IEEE 1619 tweakable encryption
+-- over data units of >= 16 bytes (any length above; stealing
+-- covers ragged tails). Multipart updates never stream (only the
+-- final runs the effect): within-call tweak evolution is GF
+-- doubling per block, which the planner cannot advance from the
+-- answer tail, so the whole unit buffers to the final like OFB.
+isXtsMech :: MechanismId -> Bool
+isXtsMech m = case cipherRecipeFor m of
+  Just r -> crName r == xtsName
   Nothing -> False
 
 -- | Mechanism-parameter check (recipe-backed mechanisms):

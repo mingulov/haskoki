@@ -73,6 +73,7 @@ spec = testGroup "openssl4 engine"
   , testCase "aes-cts known answers (ACVP CBC-CS1)" caseAesCts
   , testCase "aes cfb/ofb known answers (ACVP)" caseAesCfbOfb
   , testCase "aes-kw/kwp known answers (ACVP)" caseAesWrapKwp
+  , testCase "aes-xts known answers (ACVP)" caseAesXts
   , testCase "RSA v1.5 KATs (CLI vectors)" caseRsaKats
   , testCase "RSA-PSS interop (CLI vector)" caseRsaPssVectors
   , testCase "RSA-OAEP interop (CLI vectors)" caseRsaOaepVectors
@@ -305,6 +306,32 @@ kwp256_269_pt = hex $ concat
 kwp256_269_ct = hex $ concat
   [ "9CF90C5CF0364383D94748245C6D727D058BD18CF35BFF30EF9249A6990526B83328EAA9E0462396EAEDF905696853A21909294C52D34DAD0DD9D49363B9082289DC15FF6D3AD9814877492BE56F292CF640FD85CFBD2D6D311942E2049126A6366E0E9303730B5537962372E8C66827B67F2CFA4995871320541A694E0F5DB3D4DA897023DBA6B9BAF289368339ECC56536E865BBF0AF059B88EA4D758F4F4AC758B3A2120C03A98F2E73DD29AD4436D8055FF596F46412CC9DE54245C0269BB9082D2017CC9672340AEEB4C74949B6C7112BC58242DF18B527DF7A12C5F3E32A7F6A382B022F1270FC76234D4BA1D0269378ED51D9A896437DF2F709EF285AF432D2DB047A202A4D087C4D96689D08333C240737B03D62"
   ]
+
+-- ACVP-AES-XTS-2.0 encrypt vectors (prompt + expectedResults,
+-- each cross-checked against the `cryptography` oracle before
+-- hardcoding). One aligned (16B) + one ragged leg per width;
+-- keys are double-width (data + tweak halves), tweak is the
+-- 16-byte data-unit sequence number.
+xts128_key, xts128_tweak, xts128_pt, xts128_ct :: ByteString
+xts128_key = hex "8ACB99D1D215612314D6B262147343F23F1B1E8F34F1DCBD6D57200FAE54E8C4"
+xts128_tweak = hex "bf0d3404d7bce2b4132d02e90a256ebf"
+xts128_pt = hex "EA29098CB827A1DE9D69F5B47A500C34"
+xts128_ct = hex "7A4CC60DE7997471AAB765348F08D935"
+xts128_rag_key, xts128_rag_tweak, xts128_rag_pt, xts128_rag_ct :: ByteString
+xts128_rag_key = hex "6FA0AE27860CB658B40A3D95666954442E418EE3E4565657DD08EDC69E20E5D2"
+xts128_rag_tweak = hex "c7c71ac8a3f858145b9ba0e658491af7"
+xts128_rag_pt = hex "316F416DD8828155AAFE1EFA50361D48613E073E1B4B66B00D86A908626157D3058DCB83B1B6833580AA2F4A0663DE87115027F5F4EB60FCF2F2235BB801"
+xts128_rag_ct = hex "74FCCB3C6FA20BAE9D1FBA9525519A5AEBB0BD4F2803A40C4EC0D80FBE3D5ECF53EA3D8C7456D23B4FD7772C4BC44B06C0C7A533E53747A4CB94927D4572"
+xts256_key, xts256_tweak, xts256_pt, xts256_ct :: ByteString
+xts256_key = hex "9D9674635844373FBAC65EA8FEFCCF4BEDB7B1845C89DC1B28B343FDCD5DF7AF1C0A96EDEEAD069C6666B741153FA3F367AD7538F9615C348462115FE09DA571"
+xts256_tweak = hex "eae1092e65f917efaf69e01740494551"
+xts256_pt = hex "0873E8A1EF36F962EFAAE5B9BD617D39"
+xts256_ct = hex "6EA0F22583C4C6397ADCAF702A08C27D"
+xts256_rag_key, xts256_rag_tweak, xts256_rag_pt, xts256_rag_ct :: ByteString
+xts256_rag_key = hex "DCF8C5F5AC2FF90719DF2DCBBEE159C53C44E80BCFA95C718C659C4E8F6FC0A4C85A9E3C16527E66BDD924C13EC8314987F0F3E89089007B34DC472B95B7E03E"
+xts256_rag_tweak = hex "7eb2097b64cc3bccad39608427ecc1a5"
+xts256_rag_pt = hex "A06B93F02AE1B52F2D7995D024914DD490320670AD610F5B4BC91E"
+xts256_rag_ct = hex "87E96FCD94D73BA5E2CFE45A96BE469C2A13CE2F621CD76FC1C875"
 
 -- ACVP-AES-CFB128/CFB8/CFB1/OFB-1.0 encrypt vectors (prompt +
 -- expectedResults). One leg per mode x width; CFB1 adds sub-byte
@@ -1369,6 +1396,36 @@ caseAesWrapKwp = withBackend $ \env -> do
       Nothing -> bs
       Just (b, rest) -> BS.cons (b `xor` 0x01) rest
 
+-- AES-XTS (IEEE 1619): ACVP vectors, 16-byte tweak as the IV,
+-- double-width keys (data + tweak halves), length-preserving
+-- over data units >= 16 bytes (stealing covers ragged tails).
+caseAesXts :: IO ()
+caseAesXts = withBackend $ \env -> do
+  -- 4 legs: 128/256 x (aligned 16B, ragged).
+  kat env "aes-128-xts-16" C_AES128_XTS xts128_key xts128_tweak xts128_pt xts128_ct
+  kat env "aes-128-xts-62" C_AES128_XTS xts128_rag_key xts128_rag_tweak xts128_rag_pt xts128_rag_ct
+  kat env "aes-256-xts-16" C_AES256_XTS xts256_key xts256_tweak xts256_pt xts256_ct
+  kat env "aes-256-xts-27" C_AES256_XTS xts256_rag_key xts256_rag_tweak xts256_rag_pt xts256_rag_ct
+  -- Geometry negatives (provider-proven: input floor is 16
+  -- bytes; equal-halves keys refused at init as bad keys).
+  expectBadParam "xts rejects 15-byte input" =<<
+    cipherEncrypt env C_AES128_XTS (KeyBytes xts128_key) xts128_tweak (BS.take 15 xts128_pt)
+  expectBadParam "xts bad key length" =<<
+    cipherEncrypt env C_AES128_XTS (KeyBytes "short") xts128_tweak xts128_pt
+  expectBadParam "xts bad tweak length" =<<
+    cipherEncrypt env C_AES128_XTS (KeyBytes xts128_key) "short" xts128_pt
+  expectBadKey "xts rejects equal-halves key" =<<
+    cipherEncrypt env C_AES128_XTS (KeyBytes (BS.take 16 xts128_key <> BS.take 16 xts128_key)) xts128_tweak xts128_pt
+  where
+    kat env label cipher key tweak pt want = do
+      ct <- expectOk (label ++ " encrypt")
+        =<< cipherEncrypt env cipher (KeyBytes key) tweak pt
+      assertEqual (label ++ " kat") want ct
+      assertEqual (label ++ " length preserved") (BS.length pt) (BS.length ct)
+      pt' <- expectOk (label ++ " decrypt")
+        =<< cipherDecrypt env cipher (KeyBytes key) tweak want
+      assertEqual (label ++ " inverts") pt pt'
+
 caseRsaKats :: IO ()
 caseRsaKats = withBackend $ \env -> do
   let priv = KeyDer rsaPrivDer
@@ -2088,6 +2145,7 @@ caseCaps = withBackend $ \env -> do
     , C_AES128_OFB, C_AES192_OFB, C_AES256_OFB
     , C_AES128_KW, C_AES192_KW, C_AES256_KW
     , C_AES128_KWP, C_AES192_KWP, C_AES256_KWP
+    , C_AES128_XTS, C_AES256_XTS
     , C_DES3_CBC, C_DES3_ECB
     , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
     , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB

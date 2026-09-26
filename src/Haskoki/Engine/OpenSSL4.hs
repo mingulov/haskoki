@@ -643,6 +643,7 @@ t16CipherSpecs =
   , C_AES128_OFB, C_AES192_OFB, C_AES256_OFB
   , C_AES128_KW, C_AES192_KW, C_AES256_KW
   , C_AES128_KWP, C_AES192_KWP, C_AES256_KWP
+  , C_AES128_XTS, C_AES256_XTS
   , C_DES3_CBC, C_DES3_ECB
   , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
   , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
@@ -664,6 +665,7 @@ osslCipherNotes specs =
       | isCtsSpec spec = "any length >= 1 block, length preserved (manual CBC-CS1 over provider ECB)"
       | isKwSpec spec = "multiple of 8, >= 16 bytes, expands by 8 (RFC 3394)"
       | isKwpSpec spec = "any length >= 1, expands to ceil8 + 8 (RFC 5649)"
+      | isXtsSpec spec = "any length >= 16, length preserved (IEEE 1619 stealing)"
       | cipherBlockLen spec == 1 = "any length"
       | otherwise = "block-aligned"
     keyNote spec =
@@ -940,7 +942,8 @@ runGuarded (OSSL4Backend env) op miss action = case miss of
 -- CTS mode, so 'cipherProbeName' / 'ctsEcbName' resolve the
 -- underlying ECB primitive the shim builds the stealing
 -- construction over. CFB128 fetches @AES-*-CFB@ (the provider has
--- no @-CFB128@ alias; bare CFB is the 128-bit feedback).
+-- no @-CFB128@ alias; bare CFB is the 128-bit feedback). XTS has
+-- no 192 width (the provider has no @AES-192-XTS@).
 cipherFetchName :: CipherSpec -> String
 cipherFetchName spec = case spec of
   C_AES128_CBC -> "AES-128-CBC"
@@ -973,6 +976,8 @@ cipherFetchName spec = case spec of
   C_AES128_KWP -> "AES-128-WRAP-PAD"
   C_AES192_KWP -> "AES-192-WRAP-PAD"
   C_AES256_KWP -> "AES-256-WRAP-PAD"
+  C_AES128_XTS -> "AES-128-XTS"
+  C_AES256_XTS -> "AES-256-XTS"
   C_DES3_CBC -> "DES-EDE3-CBC"
   C_DES3_ECB -> "DES-EDE3"
   C_ARIA128_CBC -> "ARIA-128-CBC"
@@ -1028,6 +1033,8 @@ cipherBlockLen spec = case spec of
   C_AES128_OFB -> 1
   C_AES192_OFB -> 1
   C_AES256_OFB -> 1
+  C_AES128_XTS -> 1
+  C_AES256_XTS -> 1
   _ -> 16
 
 -- | The CTS specs run the manual CBC-CS1 construction instead of
@@ -1065,13 +1072,16 @@ cipherProviderKey spec kb
 -- | The native entry per spec: CTS runs the shim's manual CBC-CS1
 -- over its width-matched ECB primitive; KW/KWP run the shim's
 -- wrap entry over the fetched wrap cipher (no IV — already gated
--- empty); every other spec runs the provider mode named by
--- 'cipherFetchName'.
+-- empty); XTS runs the shim's XTS entry over the fetched XTS
+-- cipher (16-byte tweak as the IV); every other spec runs the
+-- provider mode named by 'cipherFetchName'.
 cipherNative :: Ptr Raw.OsslLibCtx -> String -> Bool -> CipherSpec -> ByteString -> ByteString -> ByteString -> IO (Either Int ByteString)
 cipherNative ctx propq enc spec
   | isCtsSpec spec = Raw.cipherCts ctx (ctsEcbName spec) propq enc
   | isWrapSpec spec = \key _iv input ->
       Raw.cipherWrap ctx (cipherFetchName spec) propq enc (isKwpSpec spec) key input
+  | isXtsSpec spec = \key tweak input ->
+      Raw.cipherXts ctx (cipherFetchName spec) propq enc key tweak input
   | otherwise = Raw.cipherCbc ctx (cipherFetchName spec) propq enc
 
 cipherRun :: BackendEnv OpenSSL4 -> String -> Bool -> CipherSpec -> KeyMaterial -> ByteString -> ByteString -> IO (EngineResult ByteString)
@@ -1106,6 +1116,9 @@ cipherRun be op enc spec key iv input =
           && (BS.length input < 16 || BS.length input `mod` 8 /= 0) ->
             pure (EngineFail (BackendBadParam op
               ("KWP ciphertext must be a multiple of 8, at least 16 bytes")))
+        | isXtsSpec spec && BS.length input < 16 ->
+            pure (EngineFail (BackendBadParam op
+              ("XTS input must be at least 16 bytes (IEEE 1619 data unit)")))
         | otherwise -> do
             r <- withForeignPtr (osslEnv env) $ \_ ->
               cipherNative (osslCtx env) (osslPropQ env) enc spec
@@ -1211,6 +1224,7 @@ nativeOut op (Left code) = nativeFail op code
 nativeFail :: String -> Int -> IO (EngineResult a)
 nativeFail op code
   | code == Raw.errBadParam = pure (EngineFail (BackendBadParam op "native parameter rejected"))
+  | code == Raw.errBadKey = pure (EngineFail (BackendBadKey op "native key rejected"))
   | code == Raw.errAuthFail = pure (EngineFail (BackendAuthFailed op))
   | code == Raw.errNoMem = pure (EngineFail (BackendNative op code "native out of memory"))
   | otherwise = do

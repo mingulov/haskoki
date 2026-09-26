@@ -310,7 +310,31 @@ first lane proving all of them together.
   `test_ckr_wrap` 5 pass + 1 skip + 1 xfail
   (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-wrap-r1.json`).
 
-## Remaining fast-lane failures (r27: 2), by cluster
+## Round 11: AES XTS slice (r28)
+
+- r27→r28 (3117→3125 passed, +8 pass / +14 skip / +2 xfail,
+  zero pass→fail, zero xpass, same 2 HOTP external failures
+  confirmed by test id): AES-XTS slice (provider AES-128/256-XTS
+  one-shot over 16-byte tweaks, 120 behavior rows). Per-unit
+  diff fully attributed: `parameter_validation` +1 pass / −1
+  skip (XTS param leg now runs), `test_mech_encrypt` +1 / +1
+  (single-part passes; multipart-XTS setup skips — updates
+  buffer to final, unexercised), `test_mech_flags` +4 / +5
+  (ENCRYPT/DECRYPT probes pass), `test_mech_multipart` +1
+  skip, `test_mech_negative` +2 pass / +4 skip / +2 xfail (the
+  xfails are the AES_XTS registry without-flag legs, self-held:
+  XTS keygen honestly absent, `CKM_AES_XTS_KEY_GEN`
+  catalog-only), `test_mech_probe` +3 skipped,
+  `test_operation_termination` +1 skip
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r28-results.json`).
+- Targeted XTS r1 (passing on the first run): 1200 collected —
+  336 passed, 0 failed, 0 xpass, 864 skipped; every skip is a
+  bit-level ACVP vector (non-byte-aligned payloadLen /
+  dataUnitLen, inexpressible in PKCS#11 byte strings), none a
+  Haskoki gap
+  (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-xts-r1.json`).
+
+## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
 `/tmp/pkcs11-ws/pkcs11-check` (import recipes, negotiation, gates).
@@ -538,7 +562,41 @@ OAEP error uniformity). T5a (RO owner dimension) and T5b
 (public/private gates) are implemented and passing in-suite
 post-r18; lane reproof needs a bundle rebuild.
 
-## KAT lane status (r9, WRAP/KWP slice + unwrap-confusion fix: COMPLETE)
+## KAT lane status (r10, AES-XTS slice: COMPLETE)
+
+112310 tests — 74634 passed, 2 failed, 0 crashed, 3886 xfailed,
+33788 skipped (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r10-results.json`;
+`incomplete: false`), canonical data dir `/tmp/pkcs11-ws/data`,
+clean-rebuild release. The only failures are the 2 external
+HOTP registry asserts (same pair as every lane). Delta vs r9 is
+fully attributed, +346 passed / +123 xfailed / −445 skipped,
+zero pass→fail, zero crashes, zero xpass:
+
+- `acvp/aes/test_xts.py`: 0→336 passed (skip→pass); the 864
+  remaining skips are the bit-level vectors (same taxonomy as
+  targeted r1).
+- `test_wycheproof_aes.py`: +2 passed / +121 xfailed / −123
+  skipped (XTS wycheproof vectors newly collected). The 2
+  passes are tc121/tc123 — the only served-width vectors with
+  a 16-byte tweak — with full KAT ciphertext equality. The
+  121 xfails are honest framework holds on inexpressible
+  inputs: tc1–tc120 carry 1–15-byte tweaks (PKCS#11 fixes the
+  XTS tweak parameter at 16 bytes), clean-rejected
+  `CKR_ARGUMENTS_BAD` by the planner (sibling convention);
+  tc122 is AES-192-XTS (48-byte key, provider-absent):
+  structural import accepts, use-time triple rejected
+  `CKR_GENERAL_ERROR` via the documented `CryptoFailed`
+  convention (same path as CBC with a 20-byte key).
+- Fast-lane units inside KAT repeat the fast r28 deltas
+  exactly (`parameter_validation` +1 / −1, `test_mech_encrypt`
+  +1 / +1, `test_mech_flags` +4 / +5, `test_mech_multipart` +1
+  skip, `test_mech_negative` +2 / +4 / +2, `test_mech_probe`
+  +3 skipped, `test_operation_termination` +1 skip) —
+  cross-lane consistency check passes. Fast r28 standalone:
+  6126 tests — 3125 passed, same 2 HOTP failed, 418 xfailed,
+  2581 skipped.
+
+## KAT lane status (historical r9, WRAP/KWP slice + unwrap-confusion fix: COMPLETE)
 
 112286 tests — 74288 passed, 2 failed, 0 crashed, 3763 xfailed,
 34233 skipped (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r9-results.json`;

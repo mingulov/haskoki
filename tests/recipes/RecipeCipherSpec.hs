@@ -1,6 +1,6 @@
 {- | block-cipher-shape recipe tests.
 
-The CBC/ECB group: 18 header mechanisms sharing one parameter shape
+The CBC/ECB group: 19 header mechanisms sharing one parameter shape
 over four algorithm families — CBC takes the IV as mechanism
 parameters (one block: 16 bytes for AES/ARIA/CAMELLIA, 8 for
 Triple-DES), ECB takes empty parameters, @CKM_AES_CTR@ takes the
@@ -10,7 +10,9 @@ canonical counter image, @CKM_AES_CTS@ takes the raw IV like CBC
 input length (length-preserving streams), @CKM_AES_KEY_WRAP@/
 @KEY_WRAP_PAD@/@KEY_WRAP_KWP@ take empty parameters on the 8-byte
 wrap quantum (KW: multiple-of-8 input >= 16; KWP: any length >= 1;
-output expands by the wrap framing), and @CKM_AES_CBC_PAD@
+output expands by the wrap framing), @CKM_AES_XTS@ takes the
+16-byte tweak like a CBC IV on double-width keys (data units
+>= 16 bytes, any length above), and @CKM_AES_CBC_PAD@
 adds PKCS#7 framing (decided in the pure planner, never the
 backend). 'Haskoki.Recipe.Cipher' owns the group's canonical
 codecs, parameter validation, block/key/IV geometry, and mechanism
@@ -46,6 +48,7 @@ import Haskoki.Engine.Backend
     , C_AES128_KW
     , C_AES128_KWP
     , C_AES128_OFB
+    , C_AES128_XTS
     , C_AES192_CBC
     , C_AES192_CTR
     , C_AES192_CTS
@@ -64,6 +67,7 @@ import Haskoki.Engine.Backend
     , C_AES256_KW
     , C_AES256_KWP
     , C_AES256_OFB
+    , C_AES256_XTS
     , C_AES256_ECB
     , C_ARIA256_CBC
     , C_CAMELLIA128_ECB
@@ -117,6 +121,7 @@ import Haskoki.Registry.Generated
   , ckm_AES_KEY_WRAP_KWP
   , ckm_AES_KEY_WRAP_PAD
   , ckm_AES_OFB
+  , ckm_AES_XTS
   , ckm_DES3_CBC
   , ckm_SHA256
   , ckm_SHA256_HMAC
@@ -133,11 +138,11 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "Block-cipher recipe"
-  [ testCase "recipe table covers 18 mechanisms with geometry" caseTable
+  [ testCase "recipe table covers 19 mechanisms with geometry" caseTable
   , testCase "recipe lookup resolves by id" caseLookup
   , testCase "ECB is no-params/1, CBC is iv-bytes/1" caseCodec
   , testCase "params: IV length or empty-only" caseParams
-  , testCase "key lengths: AES-family 16/24/32, DES3 16/24" caseKeyLens
+  , testCase "key lengths: AES-family 16/24/32, DES3 16/24, XTS 32/64" caseKeyLens
   , testCase "init enforces per-mechanism cipher params" caseInitParams
   , testCase "driver maps every triple to its CipherSpec" caseDriverMap
   , testCase "engine geometry agrees with the recipe" caseGeometryLaw
@@ -158,6 +163,7 @@ groupShape =
   , ("AES_KEY_WRAP", 8, [16, 24, 32], 0, False)
   , ("AES_KEY_WRAP_PAD", 8, [16, 24, 32], 0, False)
   , ("AES_KEY_WRAP_KWP", 8, [16, 24, 32], 0, False)
+  , ("AES_XTS", 16, [32, 64], 16, False)
   , ("DES3_CBC", 8, [16, 24], 8, False)
   , ("DES3_ECB", 8, [16, 24], 0, False)
   , ("ARIA_CBC", 16, [16, 24, 32], 16, False)
@@ -179,7 +185,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 18 (length cipherRecipes)
+  assertEqual "recipe count" 19 (length cipherRecipes)
   mapM_ (\(suffix, block, keys, iv, pad) -> do
     let name = mechName suffix
         found = [ r | r <- cipherRecipes, crName r == name ]
@@ -275,6 +281,11 @@ caseParams = do
   let kwpad = recipeOf "CKM_AES_KEY_WRAP_PAD"
   assertBool "kwpad empty valid" (cipherParamsValid kwpad BS.empty)
   assertBool "kwpad 16 refused" (not (cipherParamsValid kwpad (BS.replicate 16 0)))
+  let xts = recipeOf "CKM_AES_XTS"
+  assertBool "xts tweak 16 valid" (cipherParamsValid xts (BS.replicate 16 0))
+  assertBool "xts empty refused" (not (cipherParamsValid xts BS.empty))
+  assertBool "xts 8 refused" (not (cipherParamsValid xts (BS.replicate 8 0)))
+  assertBool "xts 17 refused" (not (cipherParamsValid xts (BS.replicate 17 0)))
   let d3 = recipeOf "CKM_DES3_CBC"
   assertBool "des3 8 valid" (cipherParamsValid d3 (BS.replicate 8 0))
   assertBool "des3 16 refused" (not (cipherParamsValid d3 (BS.replicate 16 0)))
@@ -333,6 +344,11 @@ caseKeyLens = do
     [16, 24]
   mapM_ (\n -> assertBool ("des3 key refused " ++ show n)
     (not (cipherKeyLenValid d3 n))) [0, 8, 15, 17, 23, 25, 32]
+  let xts = recipeOf "CKM_AES_XTS"
+  mapM_ (\n -> assertBool ("xts key " ++ show n) (cipherKeyLenValid xts n))
+    [32, 64]
+  mapM_ (\n -> assertBool ("xts key refused " ++ show n)
+    (not (cipherKeyLenValid xts n))) [0, 16, 24, 31, 33, 48, 63, 65]
   mapM_ (\(suffix, _, keys, _, _) -> do
     let r = recipeOf (mechName suffix)
     mapM_ (\n -> assertBool ("key ok " ++ T.unpack suffix ++ "/" ++ show n)
@@ -350,7 +366,7 @@ testSession = SessionState
   , ssOps = emptySessionOps
   }
 
-cbcMech, ecbMech, d3Mech, ctrMech, ctsMech, cfb128Mech, cfb8Mech, cfb1Mech, ofbMech, kwMech, kwPadMech, kwpMech :: MechanismId
+cbcMech, ecbMech, d3Mech, ctrMech, ctsMech, cfb128Mech, cfb8Mech, cfb1Mech, ofbMech, kwMech, kwPadMech, kwpMech, xtsMech :: MechanismId
 cbcMech = MechanismId (ckm_AES_CBC)
 ecbMech = MechanismId (ckm_AES_ECB)
 d3Mech = MechanismId (ckm_DES3_CBC)
@@ -363,6 +379,7 @@ ofbMech = MechanismId (ckm_AES_OFB)
 kwMech = MechanismId (ckm_AES_KEY_WRAP)
 kwPadMech = MechanismId (ckm_AES_KEY_WRAP_PAD)
 kwpMech = MechanismId (ckm_AES_KEY_WRAP_KWP)
+xtsMech = MechanismId (ckm_AES_XTS)
 
 testEnv :: OpEnv
 testEnv = OpEnv
@@ -373,6 +390,7 @@ testEnv = OpEnv
       , (cfb128Mech, OpEncrypt), (cfb8Mech, OpEncrypt)
       , (cfb1Mech, OpEncrypt), (ofbMech, OpEncrypt)
       , (kwMech, OpEncrypt), (kwPadMech, OpEncrypt), (kwpMech, OpEncrypt)
+      , (xtsMech, OpEncrypt)
       ]
   , oeModel = emptyModel
   }
@@ -445,6 +463,12 @@ caseInitParams = do
     (runInit (mkArgs kwpMech (BS.replicate 16 0)))
   assertEqual "kwp empty passes params" CKR_OBJECT_HANDLE_INVALID
     (runInit (mkArgs kwpMech BS.empty))
+  assertEqual "xts ragged tweak refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs xtsMech (BS.replicate 8 0)))
+  assertEqual "xts empty refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs xtsMech BS.empty))
+  assertEqual "xts valid tweak passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs xtsMech (BS.replicate 16 0)))
 
 caseDriverMap :: IO ()
 caseDriverMap = do
@@ -566,6 +590,17 @@ caseDriverMap = do
     (cipherSpecFor kwPadMech 32 BS.empty)
   assertEqual "aes-kwpad rejects iv" Nothing
     (cipherSpecFor kwPadMech 32 iv16)
+  -- AES-XTS: 16-byte tweak, double-width keys, no 192.
+  assertEqual "aes-xts-128" (Just C_AES128_XTS)
+    (cipherSpecFor xtsMech 32 iv16)
+  assertEqual "aes-xts-256" (Just C_AES256_XTS)
+    (cipherSpecFor xtsMech 64 iv16)
+  assertEqual "aes-xts rejects bad keylen" Nothing
+    (cipherSpecFor xtsMech 48 iv16)
+  assertEqual "aes-xts rejects single-width key" Nothing
+    (cipherSpecFor xtsMech 16 iv16)
+  assertEqual "aes-xts rejects bad tweak" Nothing
+    (cipherSpecFor xtsMech 32 iv8)
   assertEqual "non-cipher uncovered" Nothing
     (cipherSpecFor (MechanismId (ckm_SHA256)) 32 iv16)
   -- Whole-table agreement: every (recipe, key length) triple maps.
@@ -619,6 +654,9 @@ caseGeometryLaw = do
   assertEqual "aes192-kwp key" [24] (cipherKeyLens C_AES192_KWP)
   assertEqual "aes256-kwp key" [32] (cipherKeyLens C_AES256_KWP)
   assertEqual "aes-kwp iv" 0 (cipherIvLen C_AES256_KWP)
+  assertEqual "aes128-xts key" [32] (cipherKeyLens C_AES128_XTS)
+  assertEqual "aes256-xts key" [64] (cipherKeyLens C_AES256_XTS)
+  assertEqual "aes-xts tweak iv" 16 (cipherIvLen C_AES256_XTS)
   assertEqual "des3 keys" [16, 24] (cipherKeyLens C_DES3_CBC)
   assertEqual "des3 iv" 8 (cipherIvLen C_DES3_CBC)
   assertEqual "aria key" [32] (cipherKeyLens C_ARIA256_CBC)

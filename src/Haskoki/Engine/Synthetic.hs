@@ -72,6 +72,7 @@ import Haskoki.Engine.Backend
   , isKwSpec
   , isKwpSpec
   , isWrapSpec
+  , isXtsSpec
   , CryptoBackend (..)
   , DigestAlg (..)
   , DigestCaps (..)
@@ -850,6 +851,7 @@ synthCipherSpecs =
   , C_AES128_OFB, C_AES192_OFB, C_AES256_OFB
   , C_AES128_KW, C_AES192_KW, C_AES256_KW
   , C_AES128_KWP, C_AES192_KWP, C_AES256_KWP
+  , C_AES128_XTS, C_AES256_XTS
   , C_DES3_CBC, C_DES3_ECB
   , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
   , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
@@ -882,6 +884,9 @@ cipherRun be op spec key iv input =
             pure (B.EngineFail (BackendBadParam op
               ("iv length " ++ show (BS.length iv)
                 ++ " not accepted by " ++ show spec)))
+        | isXtsSpec spec && BS.length input < 16 ->
+            pure (B.EngineFail (BackendBadParam op
+              ("XTS input must be at least 16 bytes (IEEE 1619 data unit)")))
         | otherwise -> pure (B.EngineOk (classCipherFor spec kb iv input))
 
 -- | Synthetic wrap path: same guards as 'cipherRun' plus the wrap

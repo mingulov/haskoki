@@ -509,6 +509,7 @@ cipherCtor name keyLen
   | name == "CKM_AES_KEY_WRAP" = aesKw keyLen
   | name == "CKM_AES_KEY_WRAP_KWP" = aesKwp keyLen
   | name == "CKM_AES_KEY_WRAP_PAD" = aesKwp keyLen
+  | name == "CKM_AES_XTS" = aesXts keyLen
   | name == "CKM_DES3_CBC" = des3 C_DES3_CBC
   | name == "CKM_DES3_ECB" = des3 C_DES3_ECB
   | name == "CKM_ARIA_CBC" = aria C_ARIA128_CBC C_ARIA192_CBC C_ARIA256_CBC
@@ -570,6 +571,12 @@ cipherCtor name keyLen
       16 -> Just C_AES128_KWP
       24 -> Just C_AES192_KWP
       32 -> Just C_AES256_KWP
+      _ -> Nothing
+    -- XTS keys are double-width (data + tweak halves); there is no
+    -- 192 width (the provider has no AES-192-XTS).
+    aesXts n = case n of
+      32 -> Just C_AES128_XTS
+      64 -> Just C_AES256_XTS
       _ -> Nothing
     des3 spec
       | keyLen == 16 || keyLen == 24 = Just spec
