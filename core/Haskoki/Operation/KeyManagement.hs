@@ -38,6 +38,7 @@ module Haskoki.Operation.KeyManagement
   , publishPending
   , finishWork
   , stampPairComponents
+  , stampParamsObject
   , keyPairCompatible
     -- * Object reading
   , keyBytesOf
@@ -49,8 +50,10 @@ module Haskoki.Operation.KeyManagement
   , ckoSecretKey
   , ckoPublicKey
   , ckoPrivateKey
+  , ckoDomainParameters
   , ckkRsa
   , ckkEc
+  , ckkDsa
   , ckkGenericSecret
   , ckkAes
   , ckkHotp
@@ -63,6 +66,8 @@ module Haskoki.Operation.KeyManagement
   , genericSecretKeygenMaxBytes
   , ecKeyPairGenMech
   , rsaKeyPairGenMech
+  , dsaKeyPairGenMech
+  , dsaParameterGenMech
   , aesCbcMech
   , aesKwMech
   , aesKwPadMech
@@ -96,7 +101,7 @@ module Haskoki.Operation.KeyManagement
   ) where
 
 import Control.Monad (guard)
-import Data.Bits ((.|.), shiftL)
+import Data.Bits ((.|.), countLeadingZeros, shiftL)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Map.Strict (Map)
@@ -107,6 +112,7 @@ import Data.Word (Word64, Word8)
 import Haskoki.Attribute
   ( AttributeType (..)
   , AttributeValue (..)
+  , attributeTypeByName
   , encodeValue
   )
 import Haskoki.Attribute.Generated
@@ -115,11 +121,12 @@ import Haskoki.Attribute.Generated
   , mustClassId
   , mustKeyTypeId
   )
-import Haskoki.Der (RsaCrt (..), curveTable, derOctet, parseRsaPrivate, parseRsaPublic, spkiPoint)
+import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, parseDsaParams, parseRsaPrivate, parseRsaPublic, spkiPoint)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState (..))
 import Haskoki.Object
   ( RuleDeny (..)
   , TemplateError (..)
+  , TemplateRule (..)
   , checkRules
   , findRule
   , objectVisible
@@ -156,6 +163,8 @@ import Haskoki.Registry.Generated
   , ckm_AES_KEY_WRAP
   , ckm_AES_KEY_WRAP_KWP
   , ckm_AES_KEY_WRAP_PAD
+  , ckm_DSA_KEY_PAIR_GEN
+  , ckm_DSA_PARAMETER_GEN
   , ckm_EC_KEY_PAIR_GEN
   , ckm_GENERIC_SECRET_KEY_GEN
   , ckm_HOTP_KEY_GEN
@@ -195,6 +204,10 @@ ckoPublicKey = mustClassId "CKO_PUBLIC_KEY"
 ckoPrivateKey :: Word64
 ckoPrivateKey = mustClassId "CKO_PRIVATE_KEY"
 
+-- | @CKO_DOMAIN_PARAMETERS@ (generated id, resolved by name).
+ckoDomainParameters :: Word64
+ckoDomainParameters = mustClassId "CKO_DOMAIN_PARAMETERS"
+
 -- | @CKK_RSA@ (generated id, resolved by name).
 ckkRsa :: Word64
 ckkRsa = mustKeyTypeId "CKK_RSA"
@@ -202,6 +215,10 @@ ckkRsa = mustKeyTypeId "CKK_RSA"
 -- | @CKK_EC@ (generated id, resolved by name).
 ckkEc :: Word64
 ckkEc = mustKeyTypeId "CKK_EC"
+
+-- | @CKK_DSA@ (generated id, resolved by name).
+ckkDsa :: Word64
+ckkDsa = mustKeyTypeId "CKK_DSA"
 
 -- | @CKK_GENERIC_SECRET@ (generated id, resolved by name).
 ckkGenericSecret :: Word64
@@ -261,6 +278,14 @@ ecKeyPairGenMech = MechanismId (ckm_EC_KEY_PAIR_GEN)
 -- | @CKM_RSA_PKCS_KEY_PAIR_GEN@ (generated id, resolved by name).
 rsaKeyPairGenMech :: MechanismId
 rsaKeyPairGenMech = MechanismId (ckm_RSA_PKCS_KEY_PAIR_GEN)
+
+-- | @CKM_DSA_KEY_PAIR_GEN@ (generated id, resolved by name).
+dsaKeyPairGenMech :: MechanismId
+dsaKeyPairGenMech = MechanismId (ckm_DSA_KEY_PAIR_GEN)
+
+-- | @CKM_DSA_PARAMETER_GEN@ (generated id, resolved by name).
+dsaParameterGenMech :: MechanismId
+dsaParameterGenMech = MechanismId (ckm_DSA_PARAMETER_GEN)
 
 -- | @CKM_AES_CBC@ (the symmetric wrap mechanism: the planner
 -- pads, the driver runs raw CBC; generated id, resolved by name).
@@ -434,11 +459,13 @@ keyPairCompatible (PwGeneratePair _ _) (FxGenerateKey _ _ input) =
     Just (GenEc _) -> True
     Just (GenRsa _ _) -> True
     Just (GenMlKem _) -> True
+    Just (GenDsaKeypair _) -> True
     _ -> False
 keyPairCompatible (PwGenerateKey _) (FxGenerateKey _ _ input) =
   case decodeGenArgs input of
     Just (GenAes _) -> True
     Just (GenBytes _) -> True
+    Just (GenDsaParams _ _) -> True
     _ -> False
 keyPairCompatible (PwBlobOut _) (FxWrap _ _ _ _) = True
 keyPairCompatible (PwBlobOut _) (FxAuthWrap _ _ _ _) = True
@@ -479,8 +506,10 @@ finishWork model st pw res = case (pw, res) of
     | otherwise -> internal
         ("decaps answer length " ++ show (BS.length bs) ++ " mismatches 32")
   (PwGenerateKey po, GotBytes bs) -> case decodeKeyPair bs of
-    Just (mat, Nothing) -> publish1 (storeMaterial mat po) []
-      ["generated key"]
+    Just (mat, Nothing) -> case stampParamsObject po mat of
+      Just po' -> publish1 (storeMaterial mat po') []
+        [paramsReason po']
+      Nothing -> internal "params answer material fails component decode"
     _ -> internal "single-key answer is not lone material"
   (PwBlobOut region, GotBytes bs) -> Immediate PreparedCommit
     { pcCode = CKR_OK
@@ -599,15 +628,31 @@ storeMaterial mat po = po { poAttrs = Map.insert AttrValue (ValBytes mat) (poAtt
 -- must carry its CRT components: the public half gets the modulus
 -- and exponent, the private half all eight PKCS#1 parts. The two
 -- DER halves must agree on (n, e); any parse failure or mismatch
--- is 'Nothing' (the finisher rejects with zero objects). An EC
+-- is 'Nothing' (the finisher rejects with zero objects). A DSA
+-- pair stamps @CKA_PRIME@\/@CKA_SUBPRIME@\/@CKA_BASE@ onto both
+-- halves, parsed authoritatively from the SPKI\/PKCS#8 halves
+-- (which must agree on (p, q, g)); @AttrValue@ keeps the DER
+-- halves ('storeMaterial' runs after stamping, as for RSA\/EC).
+-- Opaque halves (synthetic test doubles, not DER) pass through
+-- unstamped rather than rejecting, mirroring the EC arm. An EC
 -- pair stamps @CKA_EC_POINT@ (the DER OCTET STRING of the
 -- uncompressed SPKI point) on the public half; opaque halves
--- (synthetic test doubles, not SPKI) pass through unstamped
--- rather than rejecting. Other key types pass through untouched.
+-- pass through unstamped rather than rejecting. Other key types
+-- pass through untouched.
 stampPairComponents
   :: PendingObject -> PendingObject -> ByteString -> ByteString
   -> Maybe (PendingObject, PendingObject)
 stampPairComponents pub priv pubM privM
+  | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkDsa) =
+      case (dsaSpkiFields pubM, dsaPkcs8Fields privM) of
+        (Just (p, q, g, _), Just (p', q', g', _))
+          | p' == p && q' == q && g' == g ->
+              let stamp a = Map.insert AttrPrime (ValBytes p)
+                    (Map.insert AttrSubprime (ValBytes q)
+                    (Map.insert AttrBase (ValBytes g) a))
+              in Just (pub { poAttrs = stamp (poAttrs pub) }
+                     , priv { poAttrs = stamp (poAttrs priv) })
+        _ -> Just (pub, priv)
   | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkEc) =
       case spkiPoint pubM of
         Just pt | BS.take 1 pt == BS.singleton 0x04 ->
@@ -632,6 +677,47 @@ stampPairComponents pub priv pubM privM
             (Map.insert AttrCoefficient (ValBytes (crtQinv crt))
               (poAttrs priv))))))))
       Just (pub { poAttrs = pubA }, priv { poAttrs = privA })
+
+-- | Stamp domain-parameter components back onto a pending
+-- single object. A @CKO_DOMAIN_PARAMETERS@ pending object carries
+-- DER DSS-Parms material; reads serve stored attributes only, so
+-- the finisher parses the material and stamps @CKA_PRIME@\/
+-- @CKA_SUBPRIME@\/@CKA_BASE@ plus the true bit widths as
+-- @CKA_PRIME_BITS@\/@CKA_SUBPRIME_BITS@. Opaque material
+-- (synthetic test doubles, not DER) passes through unstamped
+-- rather than rejecting, mirroring the EC pair arm. Other
+-- classes pass through untouched.
+stampParamsObject :: PendingObject -> ByteString -> Maybe PendingObject
+stampParamsObject po mat
+  | Map.lookup AttrClass (poAttrs po) /= Just (ValULong ckoDomainParameters) =
+      Just po
+  | otherwise = case parseDsaParams mat of
+      Just (p, q, g)
+        | not (BS.null p) && not (BS.null q) && not (BS.null g) ->
+            let stamped = Map.insert AttrPrime (ValBytes p)
+                  (Map.insert AttrSubprime (ValBytes q)
+                  (Map.insert AttrBase (ValBytes g)
+                  (Map.insert AttrPrimeBits (ValULong (fromIntegral (bitsOf p)))
+                  (Map.insert AttrSubprimeBits (ValULong (fromIntegral (bitsOf q)))
+                    (poAttrs po)))))
+            in Just (po { poAttrs = stamped })
+      _ -> Just po
+
+-- | The committed reason for a finished single-key job: domain
+-- parameters name themselves, everything else is a key.
+paramsReason :: PendingObject -> String
+paramsReason po
+  | Map.lookup AttrClass (poAttrs po) == Just (ValULong ckoDomainParameters) =
+      "generated domain parameters"
+  | otherwise = "generated key"
+
+-- | True bit width of unsigned big-endian bytes (leading zero
+-- bits discounted, so short top octets measure honestly).
+bitsOf :: ByteString -> Int
+bitsOf bs = case BS.dropWhile (== 0) bs of
+  stripped
+    | BS.null stripped -> 0
+    | otherwise -> BS.length stripped * 8 - countLeadingZeros (BS.head stripped)
 
 -- | Split concatenated derived material at the planned lengths.
 splitLens :: [Int] -> ByteString -> [ByteString]
@@ -781,14 +867,51 @@ checkKeyTemplate wantClass wantKey tmpl =
       | otherwise -> case applyRules wantClass wantKey attrs of
           Left deny -> Left deny
           Right () -> case Map.lookup AttrKeyType attrs of
-            Nothing -> Right (Map.insert AttrKeyType (ValULong wantKey) attrs)
+            Nothing -> Right (defaultUsage wantClass wantKey
+              (Map.insert AttrKeyType (ValULong wantKey) attrs))
             Just (ValULong k)
-              | k == wantKey -> Right attrs
+              | k == wantKey -> Right (defaultUsage wantClass wantKey attrs)
               | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
                   ("template key type " ++ show k ++ " is not " ++ show wantKey))
             Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
               "template key type is malformed")
     _ -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE "template is missing the class")
+
+-- | Generation-time usage defaults: absent operation flags
+-- default TRUE on the strict key-template path (single/pair
+-- generation and KEM outputs), so minimal templates mint usable
+-- keys; explicit values — including FALSE — always win
+-- (left-biased union). Defaults follow the object class: public
+-- keys default the public operations (encrypt\/verify\/wrap\/
+-- encapsulate), private and secret keys the full set (a private
+-- key serves the public operations too); non-key classes get no
+-- defaults. Flags the context's generated rule forbids stay
+-- absent (a defaulted forbidden flag would poison re-validation:
+-- detached rejoin replays stored templates through this same
+-- check). This matches the oracle's minimal-template legs (which
+-- generate with no usage flags and then operate) and the
+-- SoftHSM/NSS generation behavior; explicit-false refusal tests
+-- are unaffected. @CKA_ALWAYS_AUTHENTICATE@ is not a usage
+-- permit and stays absent (false). Creation (@C_CreateObject@)
+-- does not use this path and keeps absent-means-false.
+defaultUsage :: Word64 -> Word64 -> Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+defaultUsage wantClass wantKey attrs = Map.union attrs defaults
+  where
+    defaults = Map.fromList [(t, ValBool True) | t <- usageFlags, t `notElem` forbidden]
+    usageFlags
+      | wantClass == ckoPublicKey =
+          [AttrEncrypt, AttrVerify, AttrWrap, AttrEncapsulate]
+      | wantClass == ckoPrivateKey || wantClass == ckoSecretKey =
+          [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
+          , AttrWrap, AttrUnwrap, AttrDerive
+          , AttrEncapsulate, AttrDecapsulate
+          ]
+      | otherwise = []
+    forbidden = case (classNameById wantClass, keyTypeNameById wantKey) of
+      (Just cn, Just kn) -> case findRule cn kn of
+        Just rule -> [t | name <- trForbidden rule, Just t <- [attributeTypeByName name]]
+        Nothing -> []
+      _ -> []
 
 -- | Enforce the generated template rule for a @(class, key-type)@
 -- context selected by the planner (not by the template: the rule
@@ -842,11 +965,12 @@ checkKeyTemplateAny wantClass defaultKey tmpl =
 -- | Pending object from validated template attributes: the token
 -- flag decides the lifetime owner, the calling session the home
 -- slot. Generation parameters that are not stored key attributes
--- (@AttrModulusBits@) are dropped; everything else carries over
--- verbatim.
+-- (@AttrModulusBits@, @AttrPrimeBits@, @AttrSubprimeBits@) are
+-- dropped (the finisher re-stamps authoritative sizes); everything
+-- else carries over verbatim.
 pendingFromAttrs :: SessionState -> Map AttributeType AttributeValue -> PendingObject
 pendingFromAttrs st attrs = PendingObject
-  { poAttrs = Map.delete AttrModulusBits attrs
+  { poAttrs = Map.delete AttrSubprimeBits (Map.delete AttrPrimeBits (Map.delete AttrModulusBits attrs))
   , poOwner =
       if Map.lookup AttrToken attrs == Just (ValBool True)
         then Nothing
@@ -860,19 +984,24 @@ pendingFromAttrs st attrs = PendingObject
 
 -- | Key-generation arguments framed for the driver: AES length in
 -- bytes, EC curve name, RSA modulus bits plus public exponent, the
--- ML-KEM parameter set (512\/768\/1024), or an opaque secret length
--- in bytes (HOTP).
+-- ML-KEM parameter set (512\/768\/1024), an opaque secret length in
+-- bytes (HOTP), the DSA @(L, N)@ size pair (parameter generation),
+-- or DER DSS-Parms (DSA keypair generation from domain parameters).
 data GenArgs
   = GenAes !Int
   | GenEc !ByteString
   | GenRsa !Int !Integer
   | GenMlKem !Int
   | GenBytes !Int
+  | GenDsaParams !Int !Int
+  | GenDsaKeypair !ByteString
   deriving (Eq, Show)
 
 -- | Frame generation arguments: @tag:u8 ...@ with tag 0 AES
 -- (@len:u8@), 1 EC (curve bytes), 2 RSA (@bits:u64be exp:u64be@),
--- 3 ML-KEM (@alg:u16be@), 4 opaque secret bytes (@len:u8@).
+-- 3 ML-KEM (@alg:u16be@), 4 opaque secret bytes (@len:u8@), 5 DSA
+-- parameter sizes (@L:u16be N:u16be@), 6 DSA keypair domain
+-- parameters (@len:u32be DER@).
 encodeGenArgs :: GenArgs -> ByteString
 encodeGenArgs args = case args of
   GenAes n -> BS.singleton 0 <> BS.singleton (fromIntegral n)
@@ -881,6 +1010,8 @@ encodeGenArgs args = case args of
   GenMlKem alg -> BS.singleton 3 <> BS.pack
     [fromIntegral (alg `div` 256), fromIntegral (alg `mod` 256)]
   GenBytes n -> BS.singleton 4 <> BS.singleton (fromIntegral n)
+  GenDsaParams l n -> BS.singleton 5 <> u16be l <> u16be n
+  GenDsaKeypair der -> BS.singleton 6 <> u32be (BS.length der) <> der
 
 -- | Parse framed generation arguments. Short frames, unknown tags
 -- and trailing bytes all fail.
@@ -903,7 +1034,36 @@ decodeGenArgs bs = case BS.uncons bs of
   Just (4, rest) -> case BS.unpack rest of
     [n] -> Just (GenBytes (fromIntegral n))
     _ -> Nothing
+  Just (5, rest) -> case BS.unpack rest of
+    [lhi, llo, nhi, nlo] -> Just (GenDsaParams
+      (fromIntegral lhi * 256 + fromIntegral llo)
+      (fromIntegral nhi * 256 + fromIntegral nlo))
+    _ -> Nothing
+  Just (6, rest)
+    | BS.length rest >= 4 ->
+        let (bLen, der) = BS.splitAt 4 rest
+            n = fromInteger (foldBE bLen)
+        in if BS.length der == n && n > 0
+          then Just (GenDsaKeypair der)
+          else Nothing
+    | otherwise -> Nothing
   _ -> Nothing
+
+-- | 2-byte big-endian framing.
+u16be :: Int -> ByteString
+u16be n = BS.pack
+  [ fromIntegral (n `div` 256 `mod` 256)
+  , fromIntegral (n `mod` 256)
+  ]
+
+-- | 4-byte big-endian framing.
+u32be :: Int -> ByteString
+u32be n = BS.pack
+  [ fromIntegral (n `div` 16777216 `mod` 256)
+  , fromIntegral (n `div` 65536 `mod` 256)
+  , fromIntegral (n `div` 256 `mod` 256)
+  , fromIntegral (n `mod` 256)
+  ]
 
 -- | 8-byte big-endian framing.
 u64be :: Int -> ByteString
@@ -1006,8 +1166,8 @@ unpadPkcs7 block bs = do
 
 -- | Plan key-pair generation: both templates validate fully before
 -- any effect plans, so a bad template yields zero objects. ML-KEM,
--- EC and RSA pair mechanisms (generated ids, resolved by name).
--- Admission gates last (parse-first, mirroring
+-- EC, RSA and DSA pair mechanisms (generated ids, resolved by
+-- name). Admission gates last (parse-first, mirroring
 -- 'Haskoki.Operation.Derive'): mechanism, templates, then the
 -- bound check just before the effect.
 planGenerateKeyPair
@@ -1038,6 +1198,10 @@ planGenerateKeyPair rules model st mech pubT privT =
             bits <- rsaBitsOf pubA privA
             e <- rsaExponentOf pubA privA
             pure (GenRsa bits e, pubA, privA)
+      | mech == dsaKeyPairGenMech =
+          withPair st mech ckkDsa pubT privT $ \pubA privA -> do
+            der <- dsaDomainOf pubA privA
+            pure (GenDsaKeypair der, pubA, privA)
       | otherwise =
           Left (KeyDeny CKR_MECHANISM_INVALID
             ("not a key-pair mechanism: " ++ show mech))
@@ -1189,15 +1353,72 @@ rsaBitsOf pubA privA = case Map.lookup AttrModulusBits pubA of
   Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
     "RSA keypair templates must name the modulus size")
 
+-- | The DSA domain parameters for a pair, framed as DER DSS-Parms
+-- for the driver. @AttrPrime@\/@AttrSubprime@\/@AttrBase@ are
+-- required in the public template (PKCS#11 names the domain there),
+-- the private template inherits them when absent and must agree
+-- when present. Present-but-unserved @AttrPrimeBits@\/
+-- @AttrSubprimeBits@ refuse as inconsistent first (a template
+-- whose only size hint is unserved contradicts the mechanism even
+-- before the missing-parameters check runs, mirroring 'rsaBitsOf');
+-- missing parameters are incomplete; malformed or empty parts are
+-- inconsistent. Size bounds are generous ceilings (4096-bit p\/g,
+-- 512-bit q) — the backend, not the planner, owns the served-pair
+-- policy.
+dsaDomainOf
+  :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+  -> Either KeyDeny ByteString
+dsaDomainOf pubA privA = do
+  checkSizeBit AttrPrimeBits [1024, 2048, 3072] pubA
+  checkSizeBit AttrPrimeBits [1024, 2048, 3072] privA
+  checkSizeBit AttrSubprimeBits [160, 224, 256] pubA
+  checkSizeBit AttrSubprimeBits [160, 224, 256] privA
+  p <- component AttrPrime pubA privA
+  q <- component AttrSubprime pubA privA
+  g <- component AttrBase pubA privA
+  pure (dsaParamsDer p q g)
+  where
+    checkSizeBit t served attrs = case Map.lookup t attrs of
+      Nothing -> Right ()
+      Just (ValULong n)
+        | n `elem` served -> Right ()
+        | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            ("DSA size out of range: " ++ show t ++ "=" ++ show n))
+      Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("DSA size attribute is malformed: " ++ show t))
+    component t pub priv = case Map.lookup t pub of
+      Just (ValBytes bs)
+        | BS.null bs -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            ("DSA domain parameter is empty: " ++ show t))
+        | BS.length bs > bound t -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            ("DSA domain parameter oversized: " ++ show t))
+        | otherwise -> case Map.lookup t priv of
+            Nothing -> Right bs
+            Just (ValBytes bs')
+              | bs' == bs -> Right bs
+              | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                  "keypair templates disagree on DSA domain parameters")
+            Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "private DSA domain parameter is malformed")
+      Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("DSA domain parameter is malformed: " ++ show t))
+      Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+        "DSA keypair templates must carry p, q and g")
+    bound AttrSubprime = 64
+    bound _ = 512
+
 -- ---------------------------------------------------------------------------
 -- Single-key generation
 -- ---------------------------------------------------------------------------
 
 -- | Plan single-key generation: AES takes a 128\/192\/256-bit
 -- length via @AttrValueLen@ (bytes); HOTP takes any length in the
--- recipe's 16-64 byte window. The driver answer completes one
--- pending secret object. Admission gates last (parse-first):
--- mechanism, template, then the bound check just before the effect.
+-- recipe's 16-64 byte window; DSA parameter generation takes the
+-- @(L, N)@ size pair via @AttrPrimeBits@ (required) and
+-- @AttrSubprimeBits@ (defaulted) and completes one pending
+-- domain-parameters object. The driver answer completes one
+-- pending object. Admission gates last (parse-first): mechanism,
+-- template, then the bound check just before the effect.
 planGenerateKey
   :: Rules -> Model -> SessionState -> MechanismId
   -> [(AttributeType, AttributeValue)]
@@ -1212,6 +1433,15 @@ planGenerateKey rules model st mech tmpl =
         Right () -> KeyEffect pw fx
   where
     validated
+      | mech == dsaParameterGenMech =
+          case checkKeyTemplate ckoDomainParameters ckkDsa tmpl of
+          Left deny -> Left deny
+          Right attrs -> case dsaParamSizes attrs of
+            Left deny -> Left deny
+            Right (l, n) -> Right
+              ( PwGenerateKey (pendingFromAttrs st attrs)
+              , FxGenerateKey mech BS.empty (encodeGenArgs (GenDsaParams l n))
+              )
       | mech == aesKeyGenMech = case checkKeyTemplate ckoSecretKey ckkAes tmpl of
           Left deny -> Left deny
           Right attrs -> case Map.lookup AttrValueLen attrs of
@@ -1260,6 +1490,37 @@ planGenerateKey rules model st mech tmpl =
       | otherwise =
           Left (KeyDeny CKR_MECHANISM_INVALID
             ("not a key mechanism: " ++ show mech))
+
+-- | The DSA @(L, N)@ size pair for parameter generation:
+-- @AttrPrimeBits@ is required, @AttrSubprimeBits@ defaults per L
+-- (@{1024: 160, 2048: 256, 3072: 256}@). Served pairs are the FIPS
+-- 186-4 (L, N) set the backends approve — (1024, 160), (2048,
+-- 224), (2048, 256), (3072, 256) — anything else is inconsistent,
+-- mirroring 'rsaBitsOf' (unserved keygen sizes refuse as
+-- inconsistent, never silently substituted).
+dsaParamSizes :: Map AttributeType AttributeValue -> Either KeyDeny (Int, Int)
+dsaParamSizes attrs = case Map.lookup AttrPrimeBits attrs of
+  Just (ValULong l)
+    | l == 1024 || l == 2048 || l == 3072 -> case Map.lookup AttrSubprimeBits attrs of
+        Nothing -> Right (fromIntegral l, dflt (fromIntegral l))
+        Just (ValULong n)
+          | (fromIntegral l, fromIntegral n) `elem` served ->
+              Right (fromIntegral l, fromIntegral n)
+          | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              ("DSA (L, N) pair out of range: " ++ show (l, n)))
+        Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          "DSA subprime bits are malformed")
+    | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("DSA prime size out of range: " ++ show l))
+  Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+    "DSA prime bits are malformed")
+  Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+    "DSA parameter generation needs CKA_PRIME_BITS")
+  where
+    served = [(1024, 160), (2048, 224), (2048, 256), (3072, 256)]
+    dflt 1024 = 160
+    dflt 2048 = 256
+    dflt _ = 256
 
 -- ---------------------------------------------------------------------------
 -- Wrap and unwrap

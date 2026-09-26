@@ -10,9 +10,10 @@ other way at keygen finish time: the backend returns DER halves,
 and 'finishWork' stamps the components back onto the new objects
 so reads serve them without a decode-on-read path.
 
-Scope is deliberately narrow: RSA PKCS#1/SPKI/PKCS#8 and SEC1 EC
-keys on the 22 covered curves ('curveTable'). Anything else refuses
-at the call site ('CKR_CURVE_NOT_SUPPORTED' for foreign curves,
+Scope is deliberately narrow: RSA PKCS#1/SPKI/PKCS#8, SEC1 EC
+keys on the 22 covered curves ('curveTable'), and DSA DSS-Parms /
+SPKI / PKCS#8. Anything else refuses at the call site
+('CKR_CURVE_NOT_SUPPORTED' for foreign curves,
 'CKR_TEMPLATE_INCONSISTENT' for malformed parts) instead of
 encoding half-understood structures.
 -}
@@ -22,6 +23,12 @@ module Haskoki.Der
   , rsaPublicDer
   , ecPrivateDer
   , ecPublicDer
+  , dsaParamsDer
+  , dsaPrivateDer
+  , dsaPublicDer
+  , parseDsaParams
+  , dsaSpkiFields
+  , dsaPkcs8Fields
   , unwrapEcPoint
   , curveOidOfParams
   , curveCoordLen
@@ -256,6 +263,29 @@ ecPublicDer :: ByteString -> ByteString -> ByteString
 ecPublicDer curveOid point =
   derSeq [derSeq [oidEcPublicKey, curveOid], derBitString point]
 
+-- | DER DSS-Parms: the SEQUENCE of p, q, g INTEGERs (minimal
+-- encoding, leading zeros stripped, sign pad when the top bit is
+-- set). Shared by SPKI/PKCS#8 assembly, keypair-gen input
+-- assembly, and paramgen-answer parsing.
+dsaParamsDer :: ByteString -> ByteString -> ByteString -> ByteString
+dsaParamsDer p q g = derSeq [derInteger p, derInteger q, derInteger g]
+
+-- | PKCS#8 (version 0, dsaEncryption OID 1.2.840.10040.4.1) for a
+-- DSA private key: parameters plus the OCTET-wrapped INTEGER x.
+dsaPrivateDer :: ByteString -> ByteString -> ByteString -> ByteString -> ByteString
+dsaPrivateDer p q g x =
+  derSeq [derSmallInt 0, derSeq [oidDsa, dsaParamsDer p q g], derOctet (derInteger x)]
+
+-- | SPKI for a DSA public key: parameters plus the BIT-wrapped
+-- INTEGER y.
+dsaPublicDer :: ByteString -> ByteString -> ByteString -> ByteString -> ByteString
+dsaPublicDer p q g y =
+  derSeq [derSeq [oidDsa, dsaParamsDer p q g], derBitString (derInteger y)]
+
+-- | DER OID 1.2.840.10040.4.1 (dsaEncryption).
+oidDsa :: ByteString
+oidDsa = BS.pack [0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x38, 0x04, 0x01]
+
 -- ---------------------------------------------------------------------------
 -- Parsing (total; 'Nothing' on any malformation)
 -- ---------------------------------------------------------------------------
@@ -384,5 +414,65 @@ spkiPoint der = do
       content <- whole 0x03 bits
       case BS.uncons content of
         Just (0, point) -> Just point
+        _ -> Nothing
+    _ -> Nothing
+
+-- | DSS-Parms from DER: a SEQUENCE of exactly three INTEGERs
+-- (p, q, g), values unsigned-stripped. 'Nothing' on any framing
+-- or tag mismatch.
+parseDsaParams :: ByteString -> Maybe (ByteString, ByteString, ByteString)
+parseDsaParams der = do
+  body <- whole 0x30 der
+  parts <- seqTop body
+  case parts of
+    [p, q, g] -> (,,) <$> derInt p <*> derInt q <*> derInt g
+    _ -> Nothing
+
+-- | DSA parameters plus the public value from an SPKI: outer SEQ
+-- of [algId, BIT STRING] where the algorithm is dsaEncryption,
+-- the parameters are DSS-Parms, and the bit string (past its zero
+-- unused-bits octet) is the INTEGER y. 'Nothing' on any framing,
+-- tag, or OID mismatch.
+dsaSpkiFields :: ByteString -> Maybe (ByteString, ByteString, ByteString, ByteString)
+dsaSpkiFields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [algId, bits] -> do
+      algParts <- whole 0x30 algId >>= seqTop
+      case algParts of
+        [oid, params] | oid == oidDsa -> do
+          (p, q, g) <- parseDsaParams params
+          content <- whole 0x03 bits
+          case BS.uncons content of
+            Just (0, yder) -> do
+              y <- derInt yder
+              pure (p, q, g, y)
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | DSA parameters plus the private scalar from a PKCS#8: outer SEQ
+-- of [version INTEGER 0, algId, OCTET STRING] where the algorithm
+-- is dsaEncryption, the parameters are DSS-Parms, and the octet
+-- string wraps the INTEGER x. 'Nothing' on any framing, tag,
+-- version, or OID mismatch.
+dsaPkcs8Fields :: ByteString -> Maybe (ByteString, ByteString, ByteString, ByteString)
+dsaPkcs8Fields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [ver, algId, oct] -> do
+      v <- derInt ver
+      case BS.uncons v of
+        Just (0, rest) | BS.null rest -> do
+          algParts <- whole 0x30 algId >>= seqTop
+          case algParts of
+            [oid, params] | oid == oidDsa -> do
+              (p, q, g) <- parseDsaParams params
+              xder <- whole 0x04 oct
+              x <- derInt xder
+              pure (p, q, g, x)
+            _ -> Nothing
         _ -> Nothing
     _ -> Nothing

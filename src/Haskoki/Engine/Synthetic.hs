@@ -81,6 +81,7 @@ import Haskoki.Engine.Backend
   , ecdhCap
   , EcdhSpec (..)
   , ecdsaSigCap
+  , dsaSigCap
   , EcSpec (..)
   , hmacSpecCap
   , KdfCaps (..)
@@ -430,21 +431,26 @@ instance CryptoBackend Synthetic where
           then pure (B.EngineOk True)
           else pure (B.EngineFail (BackendAuthFailed "macVerify"))
 
-  sign be spec key msg = runGuarded be "sign" (sigSupported be spec) $ \env -> do
-    mkey <- resolveKeyBytes env key
-    case mkey of
-      B.EngineFail err -> pure (B.EngineFail err)
-      B.EngineOk kb ->
-        pure (B.EngineOk (classSignFor spec (signIdentity kb) msg))
+  sign be spec key msg = runGuarded be "sign" (sigSupported be spec) $ \env ->
+    case dsaFloor spec msg of
+      Just why -> pure (B.EngineFail (BackendBadParam "sign" why))
+      Nothing -> do
+        mkey <- resolveKeyBytes env key
+        case mkey of
+          B.EngineFail err -> pure (B.EngineFail err)
+          B.EngineOk kb ->
+            pure (B.EngineOk (classSignFor spec (signIdentity kb) msg))
 
   verify be spec key msg sig = runGuarded be "verify" (sigSupported be spec) $ \env -> do
     mkey <- resolveKeyBytes env key
     case mkey of
       B.EngineFail err -> pure (B.EngineFail err)
-      B.EngineOk kb ->
-        if ctEq (classSignFor spec (signIdentity kb) msg) sig
-          then pure (B.EngineOk ())
-          else pure (B.EngineFail (BackendAuthFailed "verify"))
+      B.EngineOk kb -> case dsaFloor spec msg of
+        Just why -> pure (B.EngineFail (BackendBadParam "verify" why))
+        Nothing ->
+          if ctEq (classSignFor spec (signIdentity kb) msg) sig
+            then pure (B.EngineOk ())
+            else pure (B.EngineFail (BackendAuthFailed "verify"))
 
   cipherEncrypt be spec key iv input
     | isWrapSpec spec = wrapRun be "cipherEncrypt" True spec key iv input
@@ -567,6 +573,10 @@ instance CryptoBackend Synthetic where
         | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
             ("RSA keygen needs 2048/3072/4096 bits and an odd exponent 3..2^64-1: "
               ++ show spec)))
+      GenDSAParams p q ->
+        pure (B.EngineOk (KeyDer (synthDsaParams seed ctr p q), Nothing))
+      GenDSAKeypair {} ->
+        pure (B.EngineOk (genPair seed ctr))
       GenMLKEM alg -> pure (B.EngineOk (genKemPair seed ctr alg))
       _ -> pure (B.EngineFail
         (BackendUnsupported "generateKey" ("not in synthetic set: " ++ show spec)))
@@ -700,7 +710,7 @@ synthCaps = BackendCaps
       { ccCiphers = Set.fromList synthCipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
   , bcMacs = MacCaps { mcSpecs = synthMacSpecs }
   , bcSigs = SigCaps
-      { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames)
+      { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames ++ synthDsaSpecNames)
       , scCurves = Set.fromList coveredCurveNames
       , scPqcSign = Set.empty
       }
@@ -709,12 +719,12 @@ synthCaps = BackendCaps
   , bcParamNotes = Map.fromList
       ([ ("open", "decimal Word64 seed string; nothing else opens")
        , ("AES-256-CBC", "length-preserving stream construction; key 32 bytes, iv 16 bytes")
-       ] ++ synthMacNotes ++ synthEcdsaNotes ++
+       ] ++ synthMacNotes ++ synthEcdsaNotes ++ synthDsaNotes ++
        [ ("RSA-PSS", "salt 0..64; hash/MGF any fixed-width digest")
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 72-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -771,6 +781,37 @@ synthEcdsaSpecNames =
       , D_RIPEMD160
       ]
 
+-- | The DSA digest set: exactly the recipe's nine (same names as
+-- the OpenSSL4 pre-probe set, so both engines advertise the same
+-- DSA names).
+synthDsaAlgs :: [DigestAlg]
+synthDsaAlgs =
+  [ D_SHA1, D_SHA224, D_SHA256, D_SHA384, D_SHA512
+  , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
+  ]
+
+-- | DSA capability names: one hash-and-sign name per recipe digest
+-- plus the raw row.
+synthDsaSpecNames :: [String]
+synthDsaSpecNames =
+  [ name
+  | spec <- SigDSA "DER" Nothing :
+      [ SigDSA "DER" (Just alg) | alg <- synthDsaAlgs ]
+  , Just name <- [dsaSigCap spec]
+  ]
+
+-- | Per-name DSA parameter notes for the capability report.
+synthDsaNotes :: [(String, String)]
+synthDsaNotes =
+  [ (name, note spec)
+  | spec <- SigDSA "DER" Nothing :
+      [ SigDSA "DER" (Just alg) | alg <- synthDsaAlgs ]
+  , Just name <- [dsaSigCap spec]
+  ]
+  where
+    note (SigDSA _ Nothing) = "raw operation, no hashing (>= 20-byte digest); encodings DER and RAW"
+    note _ = "hash-and-sign; encodings DER and RAW"
+
 -- | Per-name MAC parameter notes for the capability report.
 synthMacNotes :: [(String, String)]
 synthMacNotes =
@@ -809,6 +850,8 @@ macSupported (SynthBackend env) spec
 sigSupported :: BackendEnv Synthetic -> SigSpec -> Maybe String
 sigSupported (SynthBackend env) spec
   | Just name <- ecdsaSigCap spec
+  , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
+  | Just name <- dsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
   | Just name <- rsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
@@ -1018,7 +1061,18 @@ sigEncoding :: SigSpec -> ByteString
 sigEncoding (SigECDSA ec _)
   | ecEncoding ec == "RAW" = "RAW"
   | otherwise = "DER"
+sigEncoding (SigDSA enc _)
+  | enc == "RAW" = "RAW"
+  | otherwise = "DER"
 sigEncoding _ = "DER"
+
+-- | DSA raw floor: the raw row signs caller digests of at least
+-- 20 bytes (PKCS#11); prehash rows hash arbitrary input (empty
+-- included). Mirrors the planner check and the real shim floor.
+dsaFloor :: SigSpec -> ByteString -> Maybe String
+dsaFloor (SigDSA _ Nothing) msg
+  | BS.length msg < 20 = Just "DSA raw digest shorter than 20 bytes"
+dsaFloor _ _ = Nothing
 
 -- | Resolve key material to owned bytes: empty material is BadKey
 -- (as with the retired record's prepare), registry references look
@@ -1051,6 +1105,9 @@ genSupported _ spec = case spec of
   GenSym "GENERIC" _ -> Nothing
   GenEC ec | genCurveOk (ecCurve ec) -> Nothing
   GenRSA {} -> Nothing
+  GenDSAParams p q
+    | (p, q) `elem` [(1024, 160), (2048, 224), (2048, 256), (3072, 256)] -> Nothing
+  GenDSAKeypair {} -> Nothing
   GenMLKEM _ -> Nothing
   _ -> Just ("keygen not in synthetic set: " ++ show spec)
 
@@ -1080,6 +1137,14 @@ genPair seed ctr = (KeyDer priv, Just (KeyDer pub))
       (frame ["haskoki-synth/class-pair-pub/v1"]) 32
     priv = "HKS1" <> pairId <> BS.singleton 0 <> privM
     pub = "HKS1" <> pairId <> BS.singleton 1 <> pubM
+
+-- | Opaque DSA domain parameters: length-framed PRF bytes under
+-- a DSA-params domain (an opaque test double, not DER — stamping
+-- passes synthetic halves through unstamped, like EC). The length
+-- frames the (L, N) pair: p || q || g widths.
+synthDsaParams :: Word64 -> Word64 -> Int -> Int -> ByteString
+synthDsaParams seed ctr p q =
+  genSymBytes seed ctr "DSA-params" (p `div` 8 + (q + 7) `div` 8 + p `div` 8)
 
 -- | The signing identity: pair halves sign under the shared pair
 -- identity, RSA DER halves under their shared modulus, raw keys
@@ -1357,14 +1422,18 @@ classSign enc identity input = prfBytes
 -- | Spec-keyed signature: the original ECDSA row (P-256, either
 -- encoding, SHA-256) keeps the encoding tag byte-for-byte
 -- (existing pins hold); every other ECDSA spec tags with its full
--- parameters (curve, encoding, and digest, raw included); RSA rows
--- tag with their capability name (PSS tags with its full
--- parameters, salt included) — so curves, digests, and families
--- never share a test signature over one identity.
+-- parameters (curve, encoding, and digest, raw included); DSA
+-- specs tag with their full parameters (encoding and digest, raw
+-- included); RSA rows tag with their capability name (PSS tags
+-- with its full parameters, salt included) — so curves, digests,
+-- encodings, and families never share a test signature over one
+-- identity.
 classSignFor :: SigSpec -> ByteString -> ByteString -> ByteString
 classSignFor spec@(SigECDSA (EcSpec "P-256" _) (Just D_SHA256)) identity input =
   classSign (sigEncoding spec) identity input
 classSignFor spec@(SigECDSA _ _) identity input =
+  classSign (BC8.pack (show spec)) identity input
+classSignFor spec@(SigDSA _ _) identity input =
   classSign (BC8.pack (show spec)) identity input
 classSignFor spec@(SigRSA_PSS _) identity input =
   classSign (BC8.pack (show spec)) identity input

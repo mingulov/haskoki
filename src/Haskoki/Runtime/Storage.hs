@@ -983,6 +983,11 @@ attrName t = case t of
   AttrPublicKeyInfo -> "public_key_info"
   AttrHashOfSubjectPublicKey -> "hash_of_subject_public_key"
   AttrHashOfIssuerPublicKey -> "hash_of_issuer_public_key"
+  AttrPrime -> "prime"
+  AttrSubprime -> "subprime"
+  AttrBase -> "base"
+  AttrPrimeBits -> "prime_bits"
+  AttrSubprimeBits -> "subprime_bits"
 
 -- | Name back to type; unknown names fail.
 nameAttr :: String -> Maybe AttributeType
@@ -1031,6 +1036,11 @@ nameAttr s = case s of
   "public_key_info" -> Just AttrPublicKeyInfo
   "hash_of_subject_public_key" -> Just AttrHashOfSubjectPublicKey
   "hash_of_issuer_public_key" -> Just AttrHashOfIssuerPublicKey
+  "prime" -> Just AttrPrime
+  "subprime" -> Just AttrSubprime
+  "base" -> Just AttrBase
+  "prime_bits" -> Just AttrPrimeBits
+  "subprime_bits" -> Just AttrSubprimeBits
   _ -> Nothing
 
 -- | Encode one attribute value: bools as JSON booleans, unsigned
@@ -1090,6 +1100,11 @@ decodeAttrValue t j = case t of
   AttrPublicKeyInfo -> bytesOf j
   AttrHashOfSubjectPublicKey -> bytesOf j
   AttrHashOfIssuerPublicKey -> bytesOf j
+  AttrPrime -> bytesOf j
+  AttrSubprime -> bytesOf j
+  AttrBase -> bytesOf j
+  AttrPrimeBits -> ulongOf j
+  AttrSubprimeBits -> ulongOf j
   where
     boolOf (JBool b) = Just (ValBool b)
     boolOf _ = Nothing

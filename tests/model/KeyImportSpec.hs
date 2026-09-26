@@ -23,7 +23,7 @@ import Test.Tasty.HUnit
 import Haskoki.Attribute
   (AttributeResult (..), AttributeType (..), AttributeValue (..),
    PartialReads (..), getAttributes)
-import Haskoki.Der (curveCoordLen, curveOidOfParams, unwrapEcPoint)
+import Haskoki.Der (curveCoordLen, curveOidOfParams, dsaPkcs8Fields, dsaSpkiFields, parseDsaParams, unwrapEcPoint)
 import Haskoki.Engine.Backend
   (CryptoBackend (..), DigestAlg (..), EcSpec (..),
    EngineResult (..), KeyMaterial (..), SigSpec (..))
@@ -34,7 +34,7 @@ import Haskoki.Model
    lookupSession)
 import Haskoki.Object (decodeHandle, planCreateObject, resolveHandle)
 import Haskoki.Operation.KeyManagement
-  (ckoPrivateKey, ckoPublicKey, ckkEc, ckkRsa)
+  (ckoPrivateKey, ckoPublicKey, ckkDsa, ckkEc, ckkRsa)
 import Haskoki.Outcome
   (DeltaOp (..), NativeOutput (..), PlanResult (..),
    PreparedCommit (..), Rejection (..), StateDelta (..))
@@ -48,7 +48,12 @@ spec = testGroup "key import"
   , testCase "RSA public import assembles SPKI" caseRsaPublic
   , testCase "EC private import assembles PKCS#8" caseEcPrivate
   , testCase "EC public import assembles SPKI" caseEcPublic
+  , testCase "DSA private import assembles PKCS#8" caseDsaPrivate
+  , testCase "DSA public import assembles SPKI" caseDsaPublic
+  , testCase "DSA DER readers parse openssl goldens" caseDsaDerReaders
   , testCase "partial RSA import is incomplete" casePartialRsa
+  , testCase "partial DSA import is incomplete" casePartialDsa
+  , testCase "empty DSA component refuses inconsistent" caseBadDsaValue
   , testCase "foreign curve refuses CURVE_NOT_SUPPORTED" caseForeignCurve
   , testCase "malformed point refuses inconsistent" caseBadPoint
   , testCase "explicit value with components contradicts" caseValueConflict
@@ -56,6 +61,7 @@ spec = testGroup "key import"
   , testCase "curve OID table agrees with the FFI" caseCurveTableAgreement
   , testCase "imported EC key signs through the real backend" caseEcExecutes
   , testCase "imported RSA key signs through the real backend" caseRsaExecutes
+  , testCase "imported DSA key signs through the real backend" caseDsaExecutes
   ]
 
 slot0 :: SlotId
@@ -168,6 +174,106 @@ ecPubTmpl =
   , (AttrEcPoint, ValBytes ecPointWrapped)
   ]
 
+-- | DSA fixtures: a CLI-generated (2048,224) key (pinned
+-- @openssl dsaparam/gendsa@); the DER goldens are openssl-emitted
+-- bytes, so golden equality is an independent cross-check of the
+-- assembly, not self-agreement.
+dsaP :: ByteString
+dsaP = hex $ concat
+  ["887ba402e537402944fc0b99930fe8dc2cf648f063ca5c40e7d8679f3c584d93125abf9d8e21daba7f1b64c8ed6e11ace9bb"
+  , "78ad66d71c71cdc2f3c0ea4341c174006c80f5833311dfd6dd7e902dc806ce1e470e9dfa4fb7581b744b9412c42948d9f5c9"
+  , "8cd2a9b3dabb058a6eb9d4adaa11ebf79cc665acaea98729ff6bab6172db75ef22dc55a440f0f89c4a0d018756eb9077b6ba"
+  , "d92500238caefe7bb42080a3f071340b8cf8c4ec8128dbad5352fec210030d649a172802d2f92763c02d051c97114d01562c"
+  , "c82c8a40d5de28cab2e311a3e6842eaf990d3cb26096ed7a495b81e82472f770b0201a8aea0c27ecf5f6e711f2356f8f262d"
+  , "71cf4c6f91fb"
+  ]
+
+dsaQ :: ByteString
+dsaQ = hex "f9db1760fb0a352f4fed24e43fb2905f7156d7d425fb3a392468cc41"
+
+dsaG :: ByteString
+dsaG = hex $ concat
+  ["122cdd506b17ee6999e5874f3426a4540ba2bed03c654b69149cad7cac01bbc0124f3881ea856b420eb5ec1d9d4a77b6c364"
+  , "d00161d711a32bc8edcc900233dce8814a56758f6e7caba971e135b82d9b37a77e01cae0f7f38249578fec4f78dfaf64f372"
+  , "dd3bbd64ca8448199b30fbf44551f2a13b48c2e9a890cb715d87ea7a8060cc8eb36afaa5b9cc89f7947b6345d482bff613b1"
+  , "2cadf1cfa006b5694a6bb501ae76c9e759667a53f635757a5db97f50acf4447962b18ac91ce966ed96cf0d6b52c9d5eeb049"
+  , "c634917cd450b24627ec12f2d8818f179b4df221d999e75e6835147abf4b0b68956b4db9d85fab096bdf9afac381c367ed0f"
+  , "1143f0ea87c3"
+  ]
+
+dsaX :: ByteString
+dsaX = hex "0017d4566d451940d21d58ac3059302cb8dabcdf2a80adaf36f21bd0"
+
+dsaY :: ByteString
+dsaY = hex $ concat
+  ["60b8ba1b907936a778f3eb7027a6a6fdecc1ee0ae417fcec01aefbedb60e48bb4999e10d49efcb2db0ada5c429212c8b52f5"
+  , "9ecf71982c619a573b42ad63a94dcce71166ee4a9575a0c9188311194f7207f5fb91ff89ac8b11a0b2119f6a0b67da8c5e07"
+  , "3f0ad05da9c36a7b1bb7d731b91960d65e361c5e5d2d001d46586b54bbc40a3fa1d1a80db188b5b8deea97ac53e176972607"
+  , "ecf8c4dd96a3ed2d7d2817b32ac62c3899470ae8e30412eef07098ab75be9269570d3dfb4bc9db68df75398aee11f2218bcf"
+  , "7dca414048a25ac59f8df695e435d0fb0e4a327063fc86bada9db51cc7b1f176f35ce11a985ae2e5a7b2e61bb55af290866f"
+  , "e2099f1050a9"
+  ]
+
+dsaP8Gold :: ByteString
+dsaP8Gold = hex $ concat
+  ["3082025b0201003082023506072a8648ce380401308202280282010100887ba402e537402944fc0b99930fe8dc2cf648f063"
+  , "ca5c40e7d8679f3c584d93125abf9d8e21daba7f1b64c8ed6e11ace9bb78ad66d71c71cdc2f3c0ea4341c174006c80f58333"
+  , "11dfd6dd7e902dc806ce1e470e9dfa4fb7581b744b9412c42948d9f5c98cd2a9b3dabb058a6eb9d4adaa11ebf79cc665acae"
+  , "a98729ff6bab6172db75ef22dc55a440f0f89c4a0d018756eb9077b6bad92500238caefe7bb42080a3f071340b8cf8c4ec81"
+  , "28dbad5352fec210030d649a172802d2f92763c02d051c97114d01562cc82c8a40d5de28cab2e311a3e6842eaf990d3cb260"
+  , "96ed7a495b81e82472f770b0201a8aea0c27ecf5f6e711f2356f8f262d71cf4c6f91fb021d00f9db1760fb0a352f4fed24e4"
+  , "3fb2905f7156d7d425fb3a392468cc4102820100122cdd506b17ee6999e5874f3426a4540ba2bed03c654b69149cad7cac01"
+  , "bbc0124f3881ea856b420eb5ec1d9d4a77b6c364d00161d711a32bc8edcc900233dce8814a56758f6e7caba971e135b82d9b"
+  , "37a77e01cae0f7f38249578fec4f78dfaf64f372dd3bbd64ca8448199b30fbf44551f2a13b48c2e9a890cb715d87ea7a8060"
+  , "cc8eb36afaa5b9cc89f7947b6345d482bff613b12cadf1cfa006b5694a6bb501ae76c9e759667a53f635757a5db97f50acf4"
+  , "447962b18ac91ce966ed96cf0d6b52c9d5eeb049c634917cd450b24627ec12f2d8818f179b4df221d999e75e6835147abf4b"
+  , "0b68956b4db9d85fab096bdf9afac381c367ed0f1143f0ea87c3041d021b17d4566d451940d21d58ac3059302cb8dabcdf2a"
+  , "80adaf36f21bd0"
+  ]
+
+dsaSpkiGold :: ByteString
+dsaSpkiGold = hex $ concat
+  ["308203423082023506072a8648ce380401308202280282010100887ba402e537402944fc0b99930fe8dc2cf648f063ca5c40"
+  , "e7d8679f3c584d93125abf9d8e21daba7f1b64c8ed6e11ace9bb78ad66d71c71cdc2f3c0ea4341c174006c80f5833311dfd6"
+  , "dd7e902dc806ce1e470e9dfa4fb7581b744b9412c42948d9f5c98cd2a9b3dabb058a6eb9d4adaa11ebf79cc665acaea98729"
+  , "ff6bab6172db75ef22dc55a440f0f89c4a0d018756eb9077b6bad92500238caefe7bb42080a3f071340b8cf8c4ec8128dbad"
+  , "5352fec210030d649a172802d2f92763c02d051c97114d01562cc82c8a40d5de28cab2e311a3e6842eaf990d3cb26096ed7a"
+  , "495b81e82472f770b0201a8aea0c27ecf5f6e711f2356f8f262d71cf4c6f91fb021d00f9db1760fb0a352f4fed24e43fb290"
+  , "5f7156d7d425fb3a392468cc4102820100122cdd506b17ee6999e5874f3426a4540ba2bed03c654b69149cad7cac01bbc012"
+  , "4f3881ea856b420eb5ec1d9d4a77b6c364d00161d711a32bc8edcc900233dce8814a56758f6e7caba971e135b82d9b37a77e"
+  , "01cae0f7f38249578fec4f78dfaf64f372dd3bbd64ca8448199b30fbf44551f2a13b48c2e9a890cb715d87ea7a8060cc8eb3"
+  , "6afaa5b9cc89f7947b6345d482bff613b12cadf1cfa006b5694a6bb501ae76c9e759667a53f635757a5db97f50acf4447962"
+  , "b18ac91ce966ed96cf0d6b52c9d5eeb049c634917cd450b24627ec12f2d8818f179b4df221d999e75e6835147abf4b0b6895"
+  , "6b4db9d85fab096bdf9afac381c367ed0f1143f0ea87c303820105000282010060b8ba1b907936a778f3eb7027a6a6fdecc1"
+  , "ee0ae417fcec01aefbedb60e48bb4999e10d49efcb2db0ada5c429212c8b52f59ecf71982c619a573b42ad63a94dcce71166"
+  , "ee4a9575a0c9188311194f7207f5fb91ff89ac8b11a0b2119f6a0b67da8c5e073f0ad05da9c36a7b1bb7d731b91960d65e36"
+  , "1c5e5d2d001d46586b54bbc40a3fa1d1a80db188b5b8deea97ac53e176972607ecf8c4dd96a3ed2d7d2817b32ac62c389947"
+  , "0ae8e30412eef07098ab75be9269570d3dfb4bc9db68df75398aee11f2218bcf7dca414048a25ac59f8df695e435d0fb0e4a"
+  , "327063fc86bada9db51cc7b1f176f35ce11a985ae2e5a7b2e61bb55af290866fe2099f1050a9"
+  ]
+
+dsaPrivTmpl :: [(AttributeType, AttributeValue)]
+dsaPrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkDsa)
+  , (AttrToken, ValBool False)
+  , (AttrPrime, ValBytes dsaP)
+  , (AttrSubprime, ValBytes dsaQ)
+  , (AttrBase, ValBytes dsaG)
+  , (AttrValue, ValBytes dsaX)
+  ]
+
+dsaPubTmpl :: [(AttributeType, AttributeValue)]
+dsaPubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkDsa)
+  , (AttrToken, ValBool False)
+  , (AttrPrime, ValBytes dsaP)
+  , (AttrSubprime, ValBytes dsaQ)
+  , (AttrBase, ValBytes dsaG)
+  , (AttrValue, ValBytes dsaY)
+  ]
+
 storedValue :: Map.Map AttributeType AttributeValue -> IO ByteString
 storedValue attrs = case Map.lookup AttrValue attrs of
   Just (ValBytes bs) -> pure bs
@@ -207,6 +313,81 @@ caseEcPublic = do
   der <- storedValue attrs
   assertEqual "SPKI golden" ecSpkiGold der
   assertEqual "point kept" (Just (ValBytes ecPointWrapped)) (Map.lookup AttrEcPoint attrs)
+
+caseDsaPrivate :: IO ()
+caseDsaPrivate = do
+  m0 <- seedModel
+  st <- getSession m0
+  (_, _, attrs) <- doCreate m0 st dsaPrivTmpl
+  der <- storedValue attrs
+  assertEqual "PKCS#8 golden" dsaP8Gold der
+  assertEqual "prime kept" (Just (ValBytes dsaP)) (Map.lookup AttrPrime attrs)
+  assertEqual "subprime kept" (Just (ValBytes dsaQ)) (Map.lookup AttrSubprime attrs)
+  assertEqual "base kept" (Just (ValBytes dsaG)) (Map.lookup AttrBase attrs)
+
+caseDsaPublic :: IO ()
+caseDsaPublic = do
+  m0 <- seedModel
+  st <- getSession m0
+  (_, _, attrs) <- doCreate m0 st dsaPubTmpl
+  der <- storedValue attrs
+  assertEqual "SPKI golden" dsaSpkiGold der
+  assertEqual "prime kept" (Just (ValBytes dsaP)) (Map.lookup AttrPrime attrs)
+  assertEqual "subprime kept" (Just (ValBytes dsaQ)) (Map.lookup AttrSubprime attrs)
+  assertEqual "base kept" (Just (ValBytes dsaG)) (Map.lookup AttrBase attrs)
+
+caseDsaDerReaders :: IO ()
+caseDsaDerReaders = do
+  -- The openssl-emitted goldens parse back to the fixture components
+  -- (independent cross-check of the keygen-stamping readers).
+  -- Note: dsaX carries a leading zero octet on the wire; readers
+  -- return minimal unsigned bytes.
+  assertEqual "SPKI fields" (Just (dsaP, dsaQ, dsaG, dsaY))
+    (dsaSpkiFields dsaSpkiGold)
+  assertEqual "PKCS#8 fields" (Just (dsaP, dsaQ, dsaG, BS.drop 1 dsaX))
+    (dsaPkcs8Fields dsaP8Gold)
+  -- DSS-Parms extraction from the SPKI algorithm parameters.
+  case dsaSpkiFields dsaSpkiGold of
+    Just (p, q, g, _) -> do
+      assertEqual "params p" dsaP p
+      assertEqual "params q" dsaQ q
+      assertEqual "params g" dsaG g
+    Nothing -> assertFailure "SPKI golden must parse"
+  -- Malformed input refuses.
+  assertEqual "truncated SPKI" Nothing
+    (dsaSpkiFields (BS.take (BS.length dsaSpkiGold - 1) dsaSpkiGold))
+  assertEqual "truncated PKCS#8" Nothing
+    (dsaPkcs8Fields (BS.take 10 dsaP8Gold))
+  assertEqual "garbage params" Nothing (parseDsaParams "nope")
+  assertEqual "wrong tag" Nothing
+    (parseDsaParams (BS.cons 0x31 (BS.drop 1 dsaSpkiGold)))
+
+casePartialDsa :: IO ()
+casePartialDsa = do
+  m0 <- seedModel
+  st <- getSession m0
+  let noQ = filter ((/= AttrSubprime) . fst) dsaPrivTmpl
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noQ)
+  let noY = filter ((/= AttrValue) . fst) dsaPubTmpl
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noY)
+
+caseBadDsaValue :: IO ()
+caseBadDsaValue = do
+  m0 <- seedModel
+  st <- getSession m0
+  let bads =
+        [ ("empty value", (AttrValue, ValBytes BS.empty), dsaPrivTmpl)
+        , ("empty prime", (AttrPrime, ValBytes BS.empty), dsaPubTmpl)
+        , ("empty subprime", (AttrSubprime, ValBytes BS.empty), dsaPubTmpl)
+        , ("empty base", (AttrBase, ValBytes BS.empty), dsaPubTmpl)
+        ]
+  mapM_ (\(label, (t, v), tmpl) -> do
+    let tmpl' = (t, v) : filter ((/= t) . fst) tmpl
+    case planCreateObject m0 st tmpl' of
+      Reject rej -> assertEqual ("bad DSA " ++ label) CKR_TEMPLATE_INCONSISTENT (rejCode rej)
+      Immediate _ -> assertFailure ("bad DSA accepted: " ++ label)
+      Execute _ _ -> assertFailure ("bad DSA executed: " ++ label)
+    ) bads
 
 casePartialRsa :: IO ()
 casePartialRsa = do
@@ -333,6 +514,25 @@ caseEcExecutes = withRealEnv $ \env -> do
   case vres of
     EngineOk () -> pure ()
     EngineFail err -> assertFailure ("imported EC verify failed: " ++ show err)
+
+caseDsaExecutes :: IO ()
+caseDsaExecutes = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, _, privAttrs) <- doCreate m0 st dsaPrivTmpl
+  privDer <- storedValue privAttrs
+  (_, _, pubAttrs) <- doCreate m1 st dsaPubTmpl
+  pubDer <- storedValue pubAttrs
+  let spec = SigDSA "RAW" (Just D_SHA256)
+  sres <- sign env spec (KeyDer privDer) "import-msg"
+  sig <- case sres of
+    EngineOk s -> pure s
+    EngineFail err -> assertFailure ("imported DSA sign failed: " ++ show err) >> undefined
+  assertEqual "raw signature length" 56 (BS.length sig)
+  vres <- verify env spec (KeyDer pubDer) "import-msg" sig
+  case vres of
+    EngineOk () -> pure ()
+    EngineFail err -> assertFailure ("imported DSA verify failed: " ++ show err)
 
 caseRsaExecutes :: IO ()
 caseRsaExecutes = withRealEnv $ \env -> do

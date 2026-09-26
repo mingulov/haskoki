@@ -8,7 +8,7 @@
  *     (3.2/3.1/3.0 + legacy C_GetFunctionList), callable pre-Initialize
  *   - versioned-table isolation (distinct instances, exact versions)
  *   - cross-table consistency (same bytes via legacy and 3.2 pointers)
- *   - mechanism/info queries (118 real-tested rows, info records,
+ *   - mechanism/info queries (130 real-tested rows, info records,
  *     invalid codes)
  *   - real slot/token records (provisioned token) + session
  *     open/info/close/close-all flows
@@ -131,10 +131,10 @@ int main(int argc, char **argv) {
   CK_INFO infoL, info3;
   CK_SLOT_ID slotsL[16], slots3[16];
   CK_ULONG nL = 16, n3 = 16;
-  CK_MECHANISM_TYPE mechs[128];
-  CK_MECHANISM_TYPE mechsL[128];
-  CK_ULONG nmech = 128;
-  CK_ULONG nmechL = 128;
+  CK_MECHANISM_TYPE mechs[144];
+  CK_MECHANISM_TYPE mechsL[144];
+  CK_ULONG nmech = 144;
+  CK_ULONG nmechL = 144;
   CK_MECHANISM_INFO mi;
   CK_SLOT_INFO si;
   CK_TOKEN_INFO ti;
@@ -355,11 +355,11 @@ int main(int argc, char **argv) {
                    (void *)tbl32->C_SeedRandom,
            "routed entries share code pointers legacy/3.2");
   }
-  nmechL = 128;
+  nmechL = 144;
   rv = legacy->C_GetMechanismList(slotsL[0], mechsL, &nmechL);
-  CHECK(rv == CKR_OK && nmechL == 118, "legacy mechanism list has 118 rows");
+  CHECK(rv == CKR_OK && nmechL == 130, "legacy mechanism list has 130 rows");
   {
-    CK_ULONG nq = 128;
+    CK_ULONG nq = 144;
     rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nq);
     CHECK(rv == CKR_OK && nq == nmechL &&
               memcmp(mechs, mechsL, nq * sizeof(CK_MECHANISM_TYPE)) == 0,
@@ -414,9 +414,9 @@ int main(int argc, char **argv) {
   }
 
   /* ---- mechanism/info queries ---- */
-  nmech = 128;
+  nmech = 144;
   rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nmech);
-  CHECK(rv == CKR_OK && nmech == 118, "mechanism list has 118 rows");
+  CHECK(rv == CKR_OK && nmech == 130, "mechanism list has 130 rows");
   {
     int has256 = 0, hasPad = 0, hasEC = 0, hasAESkg = 0, hasHOTPkg = 0;
     int ascending = 1;
@@ -448,12 +448,12 @@ int main(int argc, char **argv) {
   {
     CK_ULONG nq = 0;
     rv = tbl32->C_GetMechanismList(slotsL[0], NULL_PTR, &nq);
-    CHECK(rv == CKR_OK && nq == 118, "mechanism size query reports 118");
+    CHECK(rv == CKR_OK && nq == 130, "mechanism size query reports 130");
   }
   nmech = 3;
   rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nmech);
-  CHECK(rv == CKR_BUFFER_TOO_SMALL && nmech == 118,
-        "short mechanism buffer reports 118");
+  CHECK(rv == CKR_BUFFER_TOO_SMALL && nmech == 130,
+        "short mechanism buffer reports 130");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_SHA256, &mi);
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 0 && mi.ulMaxKeySize == 0 &&
             mi.flags == CKF_DIGEST,

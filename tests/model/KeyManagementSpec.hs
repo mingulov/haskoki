@@ -35,7 +35,7 @@ import Haskoki.Attribute
   , getAttributes
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
-import Haskoki.Der (curveTable, ecPublicDer, rsaPrivateDer, rsaPublicDer)
+import Haskoki.Der (curveTable, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPublicDer, parseDsaParams, rsaPrivateDer, rsaPublicDer)
 import Haskoki.Engine.Backend
   ( BackendError (..)
   , CryptoBackend (..)
@@ -105,15 +105,21 @@ import Haskoki.Operation.KeyManagement
   , aesKwPadMech
   , aesKwpMech
   , ckkAes
+  , ckkDsa
   , ckkEc
   , ckkGenericSecret
   , ckkMlKem
   , ckkRsa
+  , ckoDomainParameters
   , ckoPrivateKey
   , ckoPublicKey
   , ckoSecretKey
+  , checkKeyTemplate
   , decodeGenArgs
+  , dsaKeyPairGenMech
+  , dsaParameterGenMech
   , ecKeyPairGenMech
+  , encodeGenArgs
   , finishWork
   , genericSecretKeyGenMech
   , genericSecretKeygenMaxBytes
@@ -134,6 +140,7 @@ import Haskoki.Operation.KeyManagement
   , rsaOaepMech
   , rsaPkcsMech
   , stampPairComponents
+  , stampParamsObject
   , unpadPkcs7
   )
 import Haskoki.Outcome
@@ -213,6 +220,14 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Usage attributes land on unwrap/derive children" caseAttrsLand
   , testCase "Real EC keypair generates and signs" caseRealEcKeygen
   , testCase "Real RSA keypair generates and signs" caseRealRsaKeygen
+  , testCase "DSA param sizes plan and refuse" caseDsaParamSizesPlanner
+  , testCase "DSA domain templates plan and refuse" caseDsaDomainPlanner
+  , testCase "DSA GenArgs codec round-trips and rejects" caseDsaGenArgsCodec
+  , testCase "DSA pending/effect pairs cohere" caseDsaCompatible
+  , testCase "DSA components stamp, doubles pass through" caseDsaStamp
+  , testCase "Real DSA params generate with readback" caseRealDsaParamgen
+  , testCase "Real DSA keypair generates and signs" caseRealDsaKeygen
+  , testCase "Keygen defaults absent usage flags true" caseKeygenUsageDefaults
   , testCase "Real P-384 keypair generates and signs" caseRealEcKeygen384
   , testCase "Real P-521 keypair generates and signs" caseRealEcKeygen521
   , testCase "Real wrap matches SP 800-38A and round-trips" caseRealWrapVector
@@ -568,6 +583,47 @@ rsaPrivTmpl =
   , (AttrPrivate, ValBool True)
   , (AttrSensitive, ValBool True)
   , (AttrExtractable, ValBool False)
+  ]
+
+-- Toy DSA domain values (shaped, not prime: planners check
+-- presence and shape, never primality).
+dsaP :: ByteString
+dsaP = BS.pack (0x80 : replicate 127 1)
+
+dsaQ :: ByteString
+dsaQ = BS.pack (0x80 : replicate 19 2)
+
+dsaG :: ByteString
+dsaG = BS.pack (0x40 : replicate 127 3)
+
+dsaPubTmpl :: [(AttributeType, AttributeValue)]
+dsaPubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkDsa)
+  , (AttrPrime, ValBytes dsaP)
+  , (AttrSubprime, ValBytes dsaQ)
+  , (AttrBase, ValBytes dsaG)
+  , (AttrToken, ValBool False)
+  , (AttrVerify, ValBool True)
+  ]
+
+dsaPrivTmpl :: [(AttributeType, AttributeValue)]
+dsaPrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkDsa)
+  , (AttrToken, ValBool False)
+  , (AttrPrivate, ValBool True)
+  , (AttrSensitive, ValBool True)
+  , (AttrExtractable, ValBool False)
+  , (AttrSign, ValBool True)
+  ]
+
+dsaParamsTmpl :: Word64 -> [(AttributeType, AttributeValue)]
+dsaParamsTmpl l =
+  [ (AttrClass, ValULong ckoDomainParameters)
+  , (AttrKeyType, ValULong ckkDsa)
+  , (AttrPrimeBits, ValULong l)
+  , (AttrToken, ValBool False)
   ]
 
 -- ---------------------------------------------------------------------------
@@ -1007,6 +1063,261 @@ caseRsaStampMismatch = do
   assertEqual "EC opaque passthrough" (Just (ecPub, ecPriv))
     (stampPairComponents ecPub ecPriv "pub" "priv")
 
+caseDsaParamSizesPlanner :: IO ()
+caseDsaParamSizesPlanner = do
+  m0 <- seedModel
+  st <- getSession m0
+  let argsOf tmpl =
+        case planGenerateKey defaultRules m0 st dsaParameterGenMech tmpl of
+          KeyEffect _ (FxGenerateKey _ _ input) -> Right (decodeGenArgs input)
+          KeyDenied (KeyDeny code _) -> Left code
+          other -> error ("unexpected plan shape: " ++ show other)
+      withN tmpl n = tmpl ++ [(AttrSubprimeBits, ValULong n)]
+  -- Served sizes plan with per-L subprime defaults.
+  assertEqual "1024 defaults to 160" (Right (Just (GenDsaParams 1024 160)))
+    (argsOf (dsaParamsTmpl 1024))
+  assertEqual "2048 defaults to 256" (Right (Just (GenDsaParams 2048 256)))
+    (argsOf (dsaParamsTmpl 2048))
+  assertEqual "3072 defaults to 256" (Right (Just (GenDsaParams 3072 256)))
+    (argsOf (dsaParamsTmpl 3072))
+  -- Explicit served pairs plan.
+  assertEqual "explicit (2048, 224)" (Right (Just (GenDsaParams 2048 224)))
+    (argsOf (withN (dsaParamsTmpl 2048) 224))
+  assertEqual "explicit (2048, 256)" (Right (Just (GenDsaParams 2048 256)))
+    (argsOf (withN (dsaParamsTmpl 2048) 256))
+  -- Missing prime bits are incomplete (oracle-pinned).
+  assertEqual "missing prime bits" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf [(AttrToken, ValBool False)])
+  -- Unserved sizes and pairs are inconsistent.
+  assertEqual "unserved L" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (dsaParamsTmpl 512))
+  assertEqual "unserved pair" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withN (dsaParamsTmpl 2048) 160))
+  -- Malformed sizes are inconsistent.
+  assertEqual "malformed prime bits" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf ([(AttrPrimeBits, ValBool True), (AttrToken, ValBool False)]))
+
+caseDsaDomainPlanner :: IO ()
+caseDsaDomainPlanner = do
+  m0 <- seedModel
+  st <- getSession m0
+  let argsOf pubT privT =
+        case planGenerateKeyPair defaultRules m0 st dsaKeyPairGenMech pubT privT of
+          KeyEffect _ (FxGenerateKey _ _ input) -> Right (decodeGenArgs input)
+          KeyDenied (KeyDeny code _) -> Left code
+          other -> error ("unexpected plan shape: " ++ show other)
+      dropT t = filter ((/= t) . fst)
+      withT tmpl t v = tmpl ++ [(t, v)]
+  -- Happy path frames DER DSS-Parms.
+  case argsOf dsaPubTmpl dsaPrivTmpl of
+    Right (Just (GenDsaKeypair der)) ->
+      assertEqual "DER round-trips" (Just (dsaP, dsaQ, dsaG)) (parseDsaParams der)
+    other -> assertFailure ("DSA pair must plan: " ++ show other)
+  -- Served size hints alongside the domain are accepted.
+  case argsOf (withT dsaPubTmpl AttrPrimeBits (ValULong 2048)) dsaPrivTmpl of
+    Right (Just (GenDsaKeypair _)) -> pure ()
+    other -> assertFailure ("served size hint must plan: " ++ show other)
+  -- Missing parameters are incomplete.
+  assertEqual "missing base" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf (dropT AttrBase dsaPubTmpl) dsaPrivTmpl)
+  assertEqual "missing all" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf [(AttrToken, ValBool False)] dsaPrivTmpl)
+  -- The field-size probe shape (PRIME_BITS=(1<<32)+1024, no p/q/g)
+  -- refuses inconsistent, never incomplete.
+  assertEqual "oversized prime bits" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf [(AttrPrimeBits, ValULong 4294968320), (AttrToken, ValBool False)]
+      [(AttrToken, ValBool False)])
+  assertEqual "unserved prime bits" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withT dsaPubTmpl AttrPrimeBits (ValULong 512)) dsaPrivTmpl)
+  assertEqual "unserved subprime bits" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withT dsaPubTmpl AttrSubprimeBits (ValULong 128)) dsaPrivTmpl)
+  -- Disagreement, empty, oversized and malformed parts refuse.
+  assertEqual "domain disagreement" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dsaPubTmpl (withT dsaPrivTmpl AttrPrime (ValBytes "other")))
+  assertEqual "empty prime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withT (dropT AttrPrime dsaPubTmpl) AttrPrime (ValBytes BS.empty)) dsaPrivTmpl)
+  assertEqual "oversized prime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withT (dropT AttrPrime dsaPubTmpl) AttrPrime (ValBytes (BS.replicate 513 1))) dsaPrivTmpl)
+  assertEqual "malformed prime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withT (dropT AttrPrime dsaPubTmpl) AttrPrime (ValULong 7)) dsaPrivTmpl)
+  -- Private-side agreement plans.
+  case argsOf dsaPubTmpl (dsaPrivTmpl ++
+      [(AttrPrime, ValBytes dsaP), (AttrSubprime, ValBytes dsaQ), (AttrBase, ValBytes dsaG)]) of
+    Right (Just (GenDsaKeypair _)) -> pure ()
+    other -> assertFailure ("agreeing priv domain must plan: " ++ show other)
+
+caseDsaGenArgsCodec :: IO ()
+caseDsaGenArgsCodec = do
+  let rt args = assertEqual ("round-trip " ++ show args) (Just args)
+        (decodeGenArgs (encodeGenArgs args))
+  rt (GenDsaParams 1024 160)
+  rt (GenDsaParams 2048 224)
+  rt (GenDsaParams 2048 256)
+  rt (GenDsaParams 3072 256)
+  rt (GenDsaKeypair (dsaParamsDer dsaP dsaQ dsaG))
+  -- Tag bytes are pinned (5 sizes, 6 domain DER).
+  assertEqual "params tag" (Just 5) (fst <$> BS.uncons (encodeGenArgs (GenDsaParams 2048 256)))
+  assertEqual "keypair tag" (Just 6)
+    (fst <$> BS.uncons (encodeGenArgs (GenDsaKeypair "d")))
+  -- Short frames, trailing bytes, empty DER and unknown tags fail.
+  assertEqual "short params" Nothing (decodeGenArgs (BS.pack [5, 8]))
+  assertEqual "params trailing" Nothing
+    (decodeGenArgs (encodeGenArgs (GenDsaParams 2048 256) <> "x"))
+  assertEqual "short keypair" Nothing (decodeGenArgs (BS.pack [6, 0, 0]))
+  assertEqual "keypair trailing" Nothing
+    (decodeGenArgs (encodeGenArgs (GenDsaKeypair "der") <> "x"))
+  assertEqual "empty keypair DER" Nothing
+    (decodeGenArgs (BS.pack [6, 0, 0, 0, 0]))
+  assertEqual "unknown tag" Nothing (decodeGenArgs (BS.pack [7, 1, 2, 3]))
+
+caseDsaCompatible :: IO ()
+caseDsaCompatible = do
+  m0 <- seedModel
+  st <- getSession m0
+  let pub = pendingFromAttrs st (Map.fromList dsaPubTmpl)
+      priv = pendingFromAttrs st (Map.fromList dsaPrivTmpl)
+      params = pendingFromAttrs st (Map.fromList (dsaParamsTmpl 2048))
+      fx args = FxGenerateKey dsaKeyPairGenMech BS.empty (encodeGenArgs args)
+      fxP args = FxGenerateKey dsaParameterGenMech BS.empty (encodeGenArgs args)
+      der = dsaParamsDer dsaP dsaQ dsaG
+  assertBool "pair/keypair cohere"
+    (keyPairCompatible (PwGeneratePair pub priv) (fx (GenDsaKeypair der)))
+  assertBool "single/params cohere"
+    (keyPairCompatible (PwGenerateKey params) (fxP (GenDsaParams 2048 256)))
+  assertBool "pair/params incoherent"
+    (not (keyPairCompatible (PwGeneratePair pub priv) (fxP (GenDsaParams 2048 256))))
+  assertBool "single/keypair incoherent"
+    (not (keyPairCompatible (PwGenerateKey params) (fx (GenDsaKeypair der))))
+  -- Coherence is shape-level: any pair-shaped args cohere with a pair.
+  assertBool "pair/RSA coherent"
+    (keyPairCompatible (PwGeneratePair pub priv) (fx (GenRsa 2048 65537)))
+  assertBool "pair/AES incoherent"
+    (not (keyPairCompatible (PwGeneratePair pub priv) (fx (GenAes 16))))
+
+caseDsaStamp :: IO ()
+caseDsaStamp = do
+  m0 <- seedModel
+  st <- getSession m0
+  let y = BS.pack (0x60 : replicate 127 4)
+      x = BS.pack (0x07 : replicate 19 5)
+      pubM = dsaPublicDer dsaP dsaQ dsaG y
+      privM = dsaPrivateDer dsaP dsaQ dsaG x
+      privM2 = dsaPrivateDer dsaQ dsaQ dsaG x
+      pub = pendingFromAttrs st (Map.fromList dsaPubTmpl)
+      priv = pendingFromAttrs st (Map.fromList dsaPrivTmpl)
+  case stampPairComponents pub priv pubM privM of
+    Just (pub', priv') -> do
+      assertEqual "prime stamped"
+        (Just (ValBytes dsaP)) (Map.lookup AttrPrime (poAttrs pub'))
+      assertEqual "subprime stamped"
+        (Just (ValBytes dsaQ)) (Map.lookup AttrSubprime (poAttrs pub'))
+      assertEqual "base stamped"
+        (Just (ValBytes dsaG)) (Map.lookup AttrBase (poAttrs pub'))
+      assertEqual "priv inherits prime"
+        (Just (ValBytes dsaP)) (Map.lookup AttrPrime (poAttrs priv'))
+      assertEqual "priv inherits base"
+        (Just (ValBytes dsaG)) (Map.lookup AttrBase (poAttrs priv'))
+    Nothing -> assertFailure "matching DSA halves must stamp"
+  -- Disagreeing and opaque halves pass through unstamped (EC mirror).
+  assertEqual "mismatched halves pass through" (Just (pub, priv))
+    (stampPairComponents pub priv pubM privM2)
+  assertEqual "opaque halves pass through" (Just (pub, priv))
+    (stampPairComponents pub priv "HKS1pub" "HKS1priv")
+  -- Params objects stamp p/q/g plus true bit widths.
+  let params = pendingFromAttrs st (Map.fromList (dsaParamsTmpl 1024))
+      mat = dsaParamsDer dsaP dsaQ dsaG
+  case stampParamsObject params mat of
+    Just po' -> do
+      assertEqual "params prime" (Just (ValBytes dsaP))
+        (Map.lookup AttrPrime (poAttrs po'))
+      assertEqual "params subprime" (Just (ValBytes dsaQ))
+        (Map.lookup AttrSubprime (poAttrs po'))
+      assertEqual "params base" (Just (ValBytes dsaG))
+        (Map.lookup AttrBase (poAttrs po'))
+      assertEqual "prime bits" (Just (ValULong 1024))
+        (Map.lookup AttrPrimeBits (poAttrs po'))
+      assertEqual "subprime bits" (Just (ValULong 160))
+        (Map.lookup AttrSubprimeBits (poAttrs po'))
+    Nothing -> assertFailure "DER params must stamp"
+  assertEqual "opaque params pass through" (Just params)
+    (stampParamsObject params "HKS1params")
+  -- Non-params classes pass through untouched.
+  let secret = pendingFromAttrs st (Map.fromList
+        [(AttrClass, ValULong ckoSecretKey), (AttrToken, ValBool False)])
+  assertEqual "secret untouched" (Just secret)
+    (stampParamsObject secret mat)
+
+caseKeygenUsageDefaults :: IO ()
+caseKeygenUsageDefaults = do
+  -- Minimal templates (the oracle's DSA leg shape: p/q/g only, empty
+  -- private side) mint keys whose absent usage flags read TRUE,
+  -- scoped by class: public keys default the public operations,
+  -- private keys the full set, domain parameters none.
+  let minimal =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrPrime, ValBytes dsaP)
+        , (AttrSubprime, ValBytes dsaQ)
+        , (AttrBase, ValBytes dsaG)
+        ]
+  case checkKeyTemplate ckoPublicKey ckkDsa minimal of
+    Right attrs -> do
+      mapM_
+        (\t -> assertEqual ("pub default " ++ show t) (Just (ValBool True))
+          (Map.lookup t attrs))
+        [AttrEncrypt, AttrVerify, AttrWrap, AttrEncapsulate]
+      mapM_
+        (\t -> assertEqual ("pub skips " ++ show t) Nothing
+          (Map.lookup t attrs))
+        [AttrDecrypt, AttrSign, AttrUnwrap, AttrDerive, AttrDecapsulate]
+    Left deny -> assertFailure ("minimal template must check: " ++ show deny)
+  case checkKeyTemplate ckoPrivateKey ckkDsa [(AttrClass, ValULong ckoPrivateKey)] of
+    Right attrs -> mapM_
+      (\t -> assertEqual ("priv default " ++ show t) (Just (ValBool True))
+        (Map.lookup t attrs))
+      [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
+      , AttrWrap, AttrUnwrap, AttrDerive
+      , AttrEncapsulate, AttrDecapsulate
+      ]
+    Left deny -> assertFailure ("empty priv template must check: " ++ show deny)
+  case checkKeyTemplate ckoDomainParameters ckkDsa
+      [(AttrClass, ValULong ckoDomainParameters), (AttrPrimeBits, ValULong 1024)] of
+    Right attrs -> mapM_
+      (\t -> assertEqual ("params skip " ++ show t) Nothing
+        (Map.lookup t attrs))
+      [AttrEncrypt, AttrSign, AttrVerify, AttrDerive]
+    Left deny -> assertFailure ("params template must check: " ++ show deny)
+  -- Explicit values win, including FALSE (refusal tests unaffected).
+  case checkKeyTemplate ckoPrivateKey ckkDsa
+      [(AttrSign, ValBool False), (AttrToken, ValBool False)] of
+    Right attrs -> do
+      assertEqual "explicit false kept" (Just (ValBool False))
+        (Map.lookup AttrSign attrs)
+      assertEqual "sibling defaulted" (Just (ValBool True))
+        (Map.lookup AttrVerify attrs)
+    Left deny -> assertFailure ("explicit template must check: " ++ show deny)
+  -- A minimal pair plans and carries usable permits end to end.
+  m0 <- seedModel
+  st <- getSession m0
+  case planGenerateKeyPair defaultRules m0 st dsaKeyPairGenMech minimal [] of
+    KeyEffect (PwGeneratePair pub priv) _ -> do
+      assertEqual "pub verify default" (Just (ValBool True))
+        (Map.lookup AttrVerify (poAttrs pub))
+      assertEqual "priv sign default" (Just (ValBool True))
+        (Map.lookup AttrSign (poAttrs priv))
+    other -> assertFailure ("minimal pair must plan: " ++ show other)
+  -- Rule-forbidden flags stay absent (AES secrets forbid the
+  -- encapsulate pair; a defaulted forbidden flag would poison
+  -- detached rejoin, which replays stored templates).
+  case checkKeyTemplate ckoSecretKey ckkAes [(AttrValueLen, ValULong 16)] of
+    Right attrs -> do
+      assertEqual "aes encrypt default" (Just (ValBool True))
+        (Map.lookup AttrEncrypt attrs)
+      assertEqual "encapsulate stays absent" Nothing
+        (Map.lookup AttrEncapsulate attrs)
+      assertEqual "decapsulate stays absent" Nothing
+        (Map.lookup AttrDecapsulate attrs)
+    Left deny -> assertFailure ("minimal AES template must check: " ++ show deny)
+
 caseEcPointStamped :: IO ()
 caseEcPointStamped = do
   m0 <- seedModel
@@ -1422,8 +1733,10 @@ caseRsaWrapMismatch = withSynth $ \answer -> do
   assertEqual "aes-key wrap code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT code
   code <- denyUnwrap m3 rsaPkcsMech BS.empty pubH (BS.replicate 256 0) tmpl
   assertEqual "public-half unwrap code" CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT code
-  -- A key without the mark cannot wrap.
-  (m4, plainPubH, _) <- genRsaPair answer m3 st rsaPubTmpl rsaPrivTmpl
+  -- A key marked non-wrapping cannot wrap (absent flags default
+  -- true at keygen, so the refusal needs an explicit false).
+  (m4, plainPubH, _) <- genRsaPair answer m3 st
+    (rsaPubTmpl ++ [(AttrWrap, ValBool False)]) rsaPrivTmpl
   code <- denyWrap m4 rsaPkcsMech BS.empty plainPubH targetH (IntentBuffer 256)
   assertEqual "no-wrap-mark code" CKR_KEY_FUNCTION_NOT_PERMITTED code
   -- An unextractable target cannot wrap.
@@ -1898,8 +2211,9 @@ caseWrapMismatch = withSynth $ \answer -> do
     KeyDenied (KeyDeny code _) ->
       assertEqual "ragged blob code" CKR_ARGUMENTS_BAD code
     other -> assertFailure ("ragged blob must deny, got: " ++ show other)
-  -- A key without the wrap mark cannot wrap.
-  (m3, plainH) <- genAesKey answer m2 st (aesTmpl 32)
+  -- A key marked non-wrapping cannot wrap (absent flags default
+  -- true at keygen, so the refusal needs an explicit false).
+  (m3, plainH) <- genAesKey answer m2 st (aesTmpl 32 ++ [(AttrWrap, ValBool False)])
   case planWrapKey m3 st aesCbcMech iv16 plainH targetH (IntentBuffer 32) of
     KeyDenied (KeyDeny code _) ->
       assertEqual "no-wrap-mark code" CKR_KEY_FUNCTION_NOT_PERMITTED code
@@ -2092,9 +2406,13 @@ caseInitFromObject = withSynth $ \answer -> do
   -- The object forbids decrypt even when the caller claims it.
   let (_, decClaim) = initOperation env emptySessionOps st (mkArgs OpDecrypt [OpDecrypt] False)
   assertEqual "object forbids decrypt" CKR_KEY_FUNCTION_NOT_PERMITTED (ioCode decClaim)
-  -- The object policy reads back directly.
+  -- The object policy reads back directly (absent flags defaulted
+  -- true at keygen; the explicit Decrypt=false stays out, as do
+  -- the rule-forbidden encapsulate flags on AES secrets).
   Just ost <- pure (resolveHandle m1 keyH)
-  assertEqual "policy from object" (Just ([OpEncrypt], False)) (policyFromObject ost)
+  assertEqual "policy from object"
+    (Just ([OpEncrypt, OpSign, OpVerify, OpWrap, OpUnwrap, OpDerive], False))
+    (policyFromObject ost)
   -- Legacy objects without usage attributes still honor the caller.
   let legacyAttrs = Map.fromList
         [ (AttrClass, ValULong ckoSecretKey)
@@ -2288,6 +2606,92 @@ caseRealRsaKeygen = withRealEnv $ \env -> do
         EngineOk () -> pure ()
         EngineFail err -> assertFailure ("real verify failed: " ++ show err)
     _ -> assertFailure "real RSA halves lack material"
+
+caseRealDsaParamgen :: IO ()
+caseRealDsaParamgen = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, h) <- case planGenerateKey defaultRules m0 st dsaParameterGenMech (dsaParamsTmpl 1024) of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 1
+      h' <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      pure (m', h')
+    other -> assertFailure ("DSA paramgen plan is not an effect: " ++ show other) >> undefined
+  Just ost <- pure (resolveHandle m1 h)
+  assertEqual "params class" (Just (ValULong ckoDomainParameters))
+    (Map.lookup AttrClass (osAttrs ost))
+  assertEqual "params key type" (Just (ValULong ckkDsa))
+    (Map.lookup AttrKeyType (osAttrs ost))
+  case (Map.lookup AttrPrime (osAttrs ost), Map.lookup AttrSubprime (osAttrs ost),
+      Map.lookup AttrBase (osAttrs ost)) of
+    (Just (ValBytes p), Just (ValBytes q), Just (ValBytes g)) -> do
+      assertEqual "prime width" 128 (BS.length p)
+      assertEqual "subprime width" 20 (BS.length q)
+      assertEqual "base width" 128 (BS.length g)
+      assertEqual "prime bits" (Just (ValULong 1024))
+        (Map.lookup AttrPrimeBits (osAttrs ost))
+      assertEqual "subprime bits" (Just (ValULong 160))
+        (Map.lookup AttrSubprimeBits (osAttrs ost))
+    other -> assertFailure ("real params lack components: " ++ show other)
+
+caseRealDsaKeygen :: IO ()
+caseRealDsaKeygen = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, ph) <- case planGenerateKey defaultRules m0 st dsaParameterGenMech (dsaParamsTmpl 1024) of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 1
+      h' <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      pure (m', h')
+    other -> assertFailure ("DSA paramgen plan is not an effect: " ++ show other) >> undefined
+  Just post <- pure (resolveHandle m1 ph)
+  (p, q, g) <- case (Map.lookup AttrPrime (osAttrs post),
+      Map.lookup AttrSubprime (osAttrs post), Map.lookup AttrBase (osAttrs post)) of
+    (Just (ValBytes p), Just (ValBytes q), Just (ValBytes g)) -> pure (p, q, g)
+    other -> assertFailure ("real params lack components: " ++ show other) >> undefined
+  let pubT =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkDsa)
+        , (AttrPrime, ValBytes p)
+        , (AttrSubprime, ValBytes q)
+        , (AttrBase, ValBytes g)
+        , (AttrToken, ValBool False)
+        , (AttrVerify, ValBool True)
+        ]
+  (m2, pubH, privH) <- case planGenerateKeyPair defaultRules m1 st dsaKeyPairGenMech pubT dsaPrivTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m1 fx
+      c <- finishCommit m1 st pw res 2
+      h1 <- handleOf (pcOutputs c !! 0)
+      h2 <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m1 (pcDelta c))
+      pure (m', h1, h2)
+    other -> assertFailure ("DSA plan is not an effect: " ++ show other) >> undefined
+  Just pub <- pure (resolveHandle m2 pubH)
+  Just priv <- pure (resolveHandle m2 privH)
+  case (keyBytesOf pub, keyBytesOf priv) of
+    (Just pubB, Just privB) -> do
+      assertBool "real pub DER nonempty" (not (BS.null pubB))
+      assertBool "real priv DER nonempty" (not (BS.null privB))
+      assertBool "halves differ" (pubB /= privB)
+      assertEqual "priv inherits prime" (Just (ValBytes p))
+        (Map.lookup AttrPrime (osAttrs priv))
+      -- The generated pair really signs: DSA-SHA256 roundtrip at the backend.
+      sres <- sign env (SigDSA "DER" (Just D_SHA256)) (KeyDer privB) "dsa-msg"
+      sig <- case sres of
+        EngineOk s -> pure s
+        EngineFail err -> assertFailure ("real sign failed: " ++ show err) >> undefined
+      vres <- verify env (SigDSA "DER" (Just D_SHA256)) (KeyDer pubB) "dsa-msg" sig
+      case vres of
+        EngineOk () -> pure ()
+        EngineFail err -> assertFailure ("real verify failed: " ++ show err)
+    _ -> assertFailure "real DSA halves lack material"
 
 caseRealEcKeygen384 :: IO ()
 caseRealEcKeygen384 = withRealEnv $ \env -> do

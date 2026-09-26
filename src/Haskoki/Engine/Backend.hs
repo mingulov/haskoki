@@ -42,6 +42,7 @@ module Haskoki.Engine.Backend
   , rsaSigCap
   , rsaPssCap
   , ecdsaSigCap
+  , dsaSigCap
   , ecdhCap
   , MacSpec (..)
   , CipherSpec (..)
@@ -248,6 +249,18 @@ ecdsaSigCap (SigECDSA (EcSpec curve enc) digest)
       Nothing -> Just ("ECDSA-" ++ curve ++ "-RAW")
       Just alg -> (("ECDSA-" ++ curve ++ "-") ++) <$> digestMacStem alg
 ecdsaSigCap _ = Nothing
+
+-- | Capability string required by one DSA spec: @DSA-RAW@ for the
+-- raw row, @DSA-<digest stem>@ for hash-and-sign. No curve
+-- dimension (the key carries p/q/g); encodings DER/RAW, digests
+-- the fixed-width set. 'Nothing' means the spec is never servable
+-- (non-DSA family, off-set encoding, or an XOF digest).
+dsaSigCap :: SigSpec -> Maybe String
+dsaSigCap (SigDSA enc digest)
+  | enc == "DER" || enc == "RAW" = case digest of
+      Nothing -> Just "DSA-RAW"
+      Just alg -> ("DSA-" ++) <$> digestMacStem alg
+dsaSigCap _ = Nothing
 
 -- | Capability string required by one ECDH spec: @ECDH@ for plain
 -- agreement, @ECDH-COFACTOR@ for cofactor-multiplied.
@@ -472,6 +485,10 @@ data SigSpec
   | SigRSA_PSS { sigPss :: !PssParams }
   | SigECDSA { sigEc :: !EcSpec, sigEcDigest :: !(Maybe DigestAlg) }
     -- ^ Nothing = raw (caller hashed); Just d = digested input.
+  | SigDSA { sigDsaEncoding :: !String, sigDsaDigest :: !(Maybe DigestAlg) }
+    -- ^ DSA (FIPS 186): Nothing = raw (caller hashed, >= 20 bytes);
+    -- Just d = digested input. Encoding is "RAW" (r||s) or "DER".
+    -- No curve label (unlike ECDSA): the key carries p/q/g.
   | SigEdDSA { sigEc :: !EcSpec, sigContext :: !ByteString }
   | SigMLDSA
       { sigPqcAlg :: !PqcSigAlg
@@ -489,6 +506,12 @@ data SigSpec
 data KeyGenSpec
   = GenRSA { genBits :: !Int, genExponent :: !Integer }
   | GenEC { genEc :: !EcSpec }
+  | GenDSAParams { genDsaPBits :: !Int, genDsaQBits :: !Int }
+    -- ^ DSA domain parameters (FIPS 186-4 (L, N) pair); answers
+    -- lone DER params.
+  | GenDSAKeypair { genDsaParams :: !ByteString }
+    -- ^ DSA keypair from DER domain parameters; answers the
+    -- PKCS#8/SPKI DER halves.
   | GenSym { genAlg :: !String, genLen :: !Int } -- "AES", "ChaCha20", "HMAC", "HOTP", "GENERIC"
   | GenMLKEM { genKem :: !PqcKemAlg }
   | GenMLDSA { genSigAlg :: !PqcSigAlg }

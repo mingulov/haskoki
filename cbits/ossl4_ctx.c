@@ -21,6 +21,8 @@
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
+#include <openssl/decoder.h>
+#include <openssl/dsa.h>
 #include <openssl/ec.h>
 #include <openssl/ecerr.h>
 #include <openssl/err.h>
@@ -1667,6 +1669,487 @@ end:
     EVP_PKEY_CTX_free(pctx);
     EVP_MD_CTX_free(mctx);
     EVP_PKEY_free(pkey);
+    return rc;
+}
+
+/* --- DSA sign/verify ---------------------------------------------------- */
+
+/* Subprime (q) size in bits from the provider key (FIPS 186-4 §4.6
+ * truncation input: the signed digest is the leftmost min(N, n)
+ * bits of the input). Returns 1 on success, 0 otherwise. */
+static int hsk_ossl4_dsa_qbits(EVP_PKEY *pkey, unsigned int *bits)
+{
+    BIGNUM *q = NULL;
+    int n = 0;
+
+    if (!EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_FFC_Q, &q)
+        || q == NULL)
+        return 0;
+    n = BN_num_bits(q);
+    BN_free(q);
+    if (n <= 0)
+        return 0;
+    *bits = (unsigned int)n;
+    return 1;
+}
+
+/* Truncate a raw-operation input to the leftmost qbits bits (FIPS
+ * 186-4 §4.6): full bytes plus a masked partial byte when the
+ * subprime is not byte-aligned. Returns 1 with *out holding a
+ * fresh *outlen-byte buffer when truncation applies, 0 when the
+ * input already fits (caller keeps the original), -1 on allocation
+ * failure. The fits check is overflow-free: msglen*8 > qbits iff
+ * msglen > qbits/8 over the integers. */
+static int hsk_ossl4_dsa_truncate(const unsigned char *msg, size_t msglen,
+                                 unsigned int qbits,
+                                 unsigned char **out, size_t *outlen)
+{
+    size_t keep;
+    unsigned int rem;
+    unsigned char *buf;
+
+    if (out == NULL || outlen == NULL || qbits == 0)
+        return -1;
+    if (msglen <= qbits / 8)
+        return 0;
+    if (msg == NULL)
+        return -1;
+    rem = qbits % 8;
+    keep = qbits / 8 + (rem ? 1 : 0);
+    buf = OPENSSL_malloc(keep);
+    if (buf == NULL)
+        return -1;
+    memcpy(buf, msg, keep);
+    if (rem)
+        buf[keep - 1] &= (unsigned char)(0xFF00 >> rem);
+    *out = buf;
+    *outlen = keep;
+    return 1;
+}
+
+long hsk_ossl4_dsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
+                        const char *propq, const unsigned char *priv_der,
+                        size_t priv_len, const unsigned char *msg,
+                        size_t msglen, int want_raw, int no_hash,
+                        unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_MD_CTX *mctx = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    unsigned char *der = NULL;
+    size_t derlen = 0;
+    unsigned char *trunc = NULL; /* FIPS truncation buffer, if any */
+    size_t trunclen = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL ||
+        (msg == NULL && msglen > 0) ||
+        (no_hash != 0 && no_hash != 1) || (no_hash == 0 && mdname == NULL))
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (no_hash && msglen < 20)
+        return HSK_OSSL4_ERR_BADPARAM; /* PKCS#11 20-byte digest floor */
+
+    pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* A well-formed non-DSA key (EC, RSA) must refuse here rather
+     * than execute past the advertised cap set. */
+    if (EVP_PKEY_get_base_id(pkey) != EVP_PKEY_DSA) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+    if (no_hash) {
+        /* Raw operation (CKM_DSA): sign the input directly with no
+         * hashing; overlong input truncates to the leftmost q bits
+         * (FIPS 186-4 §4.6). */
+        unsigned int qbits = 0;
+        int trc;
+        if (!hsk_ossl4_dsa_qbits(pkey, &qbits)) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+        trc = hsk_ossl4_dsa_truncate(msg, msglen, qbits, &trunc, &trunclen);
+        if (trc < 0) {
+            rc = HSK_OSSL4_ERR_NOMEM;
+            goto end;
+        }
+        if (trc > 0) {
+            msg = trunc;
+            msglen = trunclen;
+        }
+        pctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
+        if (pctx == NULL)
+            goto end;
+        if (EVP_PKEY_sign_init(pctx) <= 0 ||
+            EVP_PKEY_sign(pctx, NULL, &derlen, msg, msglen) <= 0)
+            goto end;
+        der = OPENSSL_malloc(derlen);
+        if (der == NULL) {
+            rc = HSK_OSSL4_ERR_NOMEM;
+            goto end;
+        }
+        if (EVP_PKEY_sign(pctx, der, &derlen, msg, msglen) <= 0) {
+            OPENSSL_clear_free(der, derlen);
+            der = NULL;
+            goto end;
+        }
+    } else {
+        mctx = EVP_MD_CTX_new();
+        if (mctx == NULL)
+            goto end;
+        /* OpenSSL 4 fetches the digest by name under libctx+propq here. */
+        if (!EVP_DigestSignInit_ex(mctx, NULL, mdname, ctx, propq, pkey, NULL))
+            goto end;
+        if (!EVP_DigestSign(mctx, NULL, &derlen, msg, msglen))
+            goto end;
+        der = OPENSSL_malloc(derlen);
+        if (der == NULL) {
+            rc = HSK_OSSL4_ERR_NOMEM;
+            goto end;
+        }
+        if (!EVP_DigestSign(mctx, der, &derlen, msg, msglen)) {
+            OPENSSL_clear_free(der, derlen);
+            der = NULL;
+            goto end;
+        }
+    }
+    if (!want_raw) {
+        *out = der;
+        rc = (long)derlen;
+        der = NULL;
+        goto end;
+    }
+    /* DER -> raw r||s: parse the ASN.1 signature, pad each scalar to
+     * the subprime length derived from the key's FFC parameters. */
+    {
+        const unsigned char *p = der;
+        DSA_SIG *sig = d2i_DSA_SIG(NULL, &p, (long)derlen);
+        const BIGNUM *r = NULL, *s = NULL;
+        unsigned char *raw = NULL;
+        unsigned int qbits = 0;
+        size_t qlen = 0;
+        if (sig == NULL)
+            goto end;
+        DSA_SIG_get0(sig, &r, &s);
+        if (!hsk_ossl4_dsa_qbits(pkey, &qbits) || qbits == 0) {
+            DSA_SIG_free(sig);
+            goto end;
+        }
+        qlen = (size_t)((qbits + 7) / 8);
+        raw = OPENSSL_malloc(2 * qlen);
+        if (raw == NULL) {
+            DSA_SIG_free(sig);
+            rc = HSK_OSSL4_ERR_NOMEM;
+            goto end;
+        }
+        if (BN_bn2binpad(r, raw, (int)qlen) < 0 ||
+            BN_bn2binpad(s, raw + qlen, (int)qlen) < 0) {
+            OPENSSL_clear_free(raw, 2 * qlen);
+            DSA_SIG_free(sig);
+            goto end;
+        }
+        DSA_SIG_free(sig);
+        *out = raw;
+        rc = (long)(2 * qlen);
+    }
+
+end:
+    if (der != NULL)
+        OPENSSL_clear_free(der, derlen);
+    if (trunc != NULL)
+        OPENSSL_clear_free(trunc, trunclen);
+    EVP_PKEY_CTX_free(pctx);
+    EVP_MD_CTX_free(mctx);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+int hsk_ossl4_dsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
+                         const char *propq, const unsigned char *pub_der,
+                         size_t pub_len, const unsigned char *msg,
+                         size_t msglen, const unsigned char *sig,
+                         size_t siglen, int is_raw, int no_hash)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_MD_CTX *mctx = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    const unsigned char *der = NULL;
+    size_t derlen = 0;
+    unsigned char *conv = NULL; /* raw -> DER conversion buffer, if any */
+    size_t convlen = 0;
+    unsigned char *trunc = NULL; /* FIPS truncation buffer, if any */
+    size_t trunclen = 0;
+    int rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || sig == NULL ||
+        (msg == NULL && msglen > 0) ||
+        (no_hash != 0 && no_hash != 1) || (no_hash == 0 && mdname == NULL))
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (no_hash && msglen < 20)
+        return HSK_OSSL4_ERR_BADPARAM; /* PKCS#11 20-byte digest floor */
+
+    pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* A well-formed non-DSA key (EC, RSA) must refuse here rather
+     * than execute past the advertised cap set. */
+    if (EVP_PKEY_get_base_id(pkey) != EVP_PKEY_DSA) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+    if (no_hash) {
+        /* Raw operation: overlong input truncates to the leftmost
+         * q bits (FIPS 186-4 §4.6). */
+        unsigned int qbits = 0;
+        int trc;
+        if (!hsk_ossl4_dsa_qbits(pkey, &qbits)) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+        trc = hsk_ossl4_dsa_truncate(msg, msglen, qbits, &trunc, &trunclen);
+        if (trc < 0) {
+            rc = HSK_OSSL4_ERR_NOMEM;
+            goto end;
+        }
+        if (trc > 0) {
+            msg = trunc;
+            msglen = trunclen;
+        }
+    } else {
+        mctx = EVP_MD_CTX_new();
+        if (mctx == NULL)
+            goto end;
+    }
+
+    if (!is_raw) {
+        /* Malformed DER can never verify: answer mismatch (0) without
+         * calling the provider, so encoding errors surface as
+         * authentication failures rather than native errors. */
+        const unsigned char *q = sig;
+        DSA_SIG *chk = NULL;
+        if (siglen == 0 || siglen > (size_t)INT_MAX) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+        chk = d2i_DSA_SIG(NULL, &q, (long)siglen);
+        if (chk == NULL || (size_t)(q - sig) != siglen) {
+            DSA_SIG_free(chk);
+            ERR_clear_error();
+            rc = 0;
+            goto end;
+        }
+        DSA_SIG_free(chk);
+        der = sig;
+        derlen = siglen;
+    } else {
+        /* Raw r||s -> DER: split halves, re-encode (range is
+         * enforced by the provider math, not here). Odd lengths
+         * cannot split into halves and can never be valid: answer
+         * mismatch, like malformed DER. */
+        DSA_SIG *osig = NULL;
+        BIGNUM *r = NULL, *s = NULL;
+        unsigned char *p = NULL;
+        int len;
+        if (siglen == 0) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+        if ((siglen % 2) != 0) {
+            ERR_clear_error();
+            rc = 0;
+            goto end;
+        }
+        r = BN_bin2bn(sig, (int)(siglen / 2), NULL);
+        s = BN_bin2bn(sig + siglen / 2, (int)(siglen / 2), NULL);
+        osig = DSA_SIG_new();
+        if (r == NULL || s == NULL || osig == NULL ||
+            !DSA_SIG_set0(osig, r, s)) {
+            BN_free(r);
+            BN_free(s);
+            DSA_SIG_free(osig);
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+        r = s = NULL; /* owned by osig now */
+        len = i2d_DSA_SIG(osig, NULL);
+        if (len <= 0) {
+            DSA_SIG_free(osig);
+            goto end;
+        }
+        conv = OPENSSL_malloc((size_t)len);
+        if (conv == NULL) {
+            DSA_SIG_free(osig);
+            rc = HSK_OSSL4_ERR_NOMEM;
+            goto end;
+        }
+        p = conv;
+        convlen = (size_t)len;
+        if (i2d_DSA_SIG(osig, &p) != len) {
+            DSA_SIG_free(osig);
+            goto end;
+        }
+        DSA_SIG_free(osig);
+        der = conv;
+        derlen = convlen;
+    }
+
+    if (no_hash) {
+        /* Raw operation (CKM_DSA): verify the input directly. */
+        pctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
+        if (pctx == NULL)
+            goto end;
+        if (EVP_PKEY_verify_init(pctx) <= 0)
+            goto end;
+        rc = EVP_PKEY_verify(pctx, der, derlen, msg, msglen);
+    } else {
+        /* OpenSSL 4 fetches the digest by name under libctx+propq here. */
+        if (!EVP_DigestVerifyInit_ex(mctx, NULL, mdname, ctx, propq, pkey, NULL))
+            goto end;
+        rc = EVP_DigestVerify(mctx, der, derlen, msg, msglen);
+    }
+    /* 1 (valid) or 0 (bad signature); provider-internal failures
+     * (rc < 0: DSA has no degenerate-math mismatch case) stay
+     * native. */
+    if (rc < 0)
+        rc = HSK_OSSL4_ERR_NATIVE;
+    else
+        ERR_clear_error();
+
+end:
+    if (conv != NULL)
+        OPENSSL_clear_free(conv, convlen);
+    if (trunc != NULL)
+        OPENSSL_clear_free(trunc, trunclen);
+    EVP_PKEY_CTX_free(pctx);
+    EVP_MD_CTX_free(mctx);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+/* --- DSA paramgen + keygen -------------------------------------------- */
+
+long hsk_ossl4_dsa_gen_params(OSSL_LIB_CTX *ctx, const char *propq,
+                              int pbits, int qbits, unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *params = NULL;
+    OSSL_PARAM bld[3];
+    unsigned char *der = NULL;
+    int derlen = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+    /* Approved FIPS 186-4 (L, N) pairs only. */
+    if (!((pbits == 1024 && qbits == 160) ||
+          (pbits == 2048 && (qbits == 224 || qbits == 256)) ||
+          (pbits == 3072 && qbits == 256)))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pctx = EVP_PKEY_CTX_new_from_name(ctx, "DSA", propq);
+    if (pctx == NULL)
+        goto end;
+    if (EVP_PKEY_paramgen_init(pctx) <= 0)
+        goto end;
+    bld[0] = OSSL_PARAM_construct_int(OSSL_PKEY_PARAM_FFC_PBITS, &pbits);
+    bld[1] = OSSL_PARAM_construct_int(OSSL_PKEY_PARAM_FFC_QBITS, &qbits);
+    bld[2] = OSSL_PARAM_construct_end();
+    if (EVP_PKEY_CTX_set_params(pctx, bld) <= 0) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    if (EVP_PKEY_paramgen(pctx, &params) <= 0)
+        goto end;
+    derlen = i2d_KeyParams(params, &der);
+    if (derlen <= 0) {
+        OPENSSL_free(der);
+        goto end;
+    }
+    *out = der;
+    rc = (long)derlen;
+
+end:
+    EVP_PKEY_free(params);
+    EVP_PKEY_CTX_free(pctx);
+    return rc;
+}
+
+int hsk_ossl4_dsa_gen_keypair(OSSL_LIB_CTX *ctx, const char *propq,
+                              const unsigned char *params_der,
+                              size_t params_len, unsigned char **priv_der,
+                              size_t *priv_len, unsigned char **pub_der,
+                              size_t *pub_len)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    OSSL_DECODER_CTX *dctx = NULL;
+    EVP_PKEY *params = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *pkey = NULL;
+    unsigned char *priv = NULL, *pub = NULL;
+    int privlen = 0, publen = 0;
+    int rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || params_der == NULL ||
+        params_len == 0 || params_len > (size_t)INT_MAX ||
+        priv_der == NULL || priv_len == NULL ||
+        pub_der == NULL || pub_len == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    /* Decode DER domain parameters into a provider key (libctx +
+     * propq bound); undecodable params are BADKEY. */
+    dctx = OSSL_DECODER_CTX_new_for_pkey(&params, "DER", NULL, "DSA",
+                                         OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS,
+                                         ctx, propq);
+    if (dctx == NULL)
+        goto end;
+    {
+        const unsigned char *p = params_der;
+        size_t len = params_len;
+        if (!OSSL_DECODER_from_data(dctx, &p, &len)) {
+            rc = HSK_OSSL4_ERR_BADKEY;
+            goto end;
+        }
+    }
+    if (params == NULL) {
+        rc = HSK_OSSL4_ERR_BADKEY;
+        goto end;
+    }
+    pctx = EVP_PKEY_CTX_new(params, NULL);
+    if (pctx == NULL)
+        goto end;
+    if (EVP_PKEY_keygen_init(pctx) <= 0 || EVP_PKEY_keygen(pctx, &pkey) <= 0)
+        goto end;
+    /* PKCS#8 explicitly: i2d_PrivateKey prefers the traditional
+     * (DSAPrivateKey) encoding for DSA, but the house convention (and the
+     * keygen stamping that parses these bytes) is PKCS#8. Same quirk as
+     * the RSA keygen above. */
+    {
+        PKCS8_PRIV_KEY_INFO *p8 = EVP_PKEY2PKCS8(pkey);
+        if (p8 == NULL)
+            goto end;
+        privlen = i2d_PKCS8_PRIV_KEY_INFO(p8, &priv);
+        PKCS8_PRIV_KEY_INFO_free(p8);
+    }
+    publen = i2d_PUBKEY(pkey, &pub);
+    if (privlen <= 0 || publen <= 0) {
+        OPENSSL_free(priv);
+        OPENSSL_free(pub);
+        goto end;
+    }
+    *priv_der = priv;
+    *priv_len = (size_t)privlen;
+    *pub_der = pub;
+    *pub_len = (size_t)publen;
+    rc = HSK_OSSL4_OK;
+
+end:
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(pctx);
+    EVP_PKEY_free(params);
+    OSSL_DECODER_CTX_free(dctx);
     return rc;
 }
 

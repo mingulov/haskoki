@@ -252,6 +252,22 @@ instance CryptoBackend OpenSSL4 where
                   | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "sign" "private key DER rejected"))
                   | otherwise -> nativeFail "sign" code
                 Right sig -> pure (EngineOk sig)
+        SigDSA _ digest -> case dsaNativeDigest digest of
+          -- Unreachable post-guard (the guard only admits the 9
+          -- recipe digests and the raw row); typed, never a crash.
+          Nothing -> pure (EngineFail (BackendUnsupported "sign"
+            ("no fetch name: " ++ show spec)))
+          -- No curve allowlist: DSA keys carry p/q/g, and the shim
+          -- refuses well-formed non-DSA keys as BADKEY before any
+          -- provider math.
+          Just (mdname, noHash) -> do
+            r <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.dsaSign (osslCtx env) mdname (osslPropQ env) kb msg (sigWantRaw spec) noHash
+            case r of
+              Left code
+                | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "sign" "private key DER rejected"))
+                | otherwise -> nativeFail "sign" code
+              Right sig -> pure (EngineOk sig)
         SigRSA_PKCS1v15 alg -> case digestFetchName alg of
           -- Unreachable post-guard (the guard only admits probed
           -- fixed-width digests); typed, never a crash.
@@ -272,7 +288,7 @@ instance CryptoBackend OpenSSL4 where
             _ -> pure (EngineFail (BackendUnsupported "sign"
               ("no fetch name: " ++ show spec)))
         _ -> pure (EngineFail (BackendUnsupported "sign"
-          ("non-RSA/ECDSA spec: " ++ show spec)))
+          ("non-RSA/ECDSA/DSA spec: " ++ show spec)))
 
   verify be spec key msg sig = runGuarded be "verify" (sigSupported be spec) $ \env -> do
     mkey <- resolveKeyBytes env key
@@ -290,6 +306,13 @@ instance CryptoBackend OpenSSL4 where
               rc <- withForeignPtr (osslEnv env) $ \_ ->
                 Raw.ecdsaVerify (osslCtx env) mdname (osslPropQ env) kb msg sig (sigWantRaw spec) noHash
               verifyRc "verify" "malformed signature encoding" rc
+        SigDSA _ digest -> case dsaNativeDigest digest of
+          Nothing -> pure (EngineFail (BackendUnsupported "verify"
+            ("no fetch name: " ++ show spec)))
+          Just (mdname, noHash) -> do
+            rc <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.dsaVerify (osslCtx env) mdname (osslPropQ env) kb msg sig (sigWantRaw spec) noHash
+            verifyRc "verify" "raw digest shorter than 20 bytes" rc
         SigRSA_PKCS1v15 alg -> case digestFetchName alg of
           Nothing -> pure (EngineFail (BackendUnsupported "verify"
             ("no fetch name: " ++ show alg)))
@@ -310,7 +333,7 @@ instance CryptoBackend OpenSSL4 where
             _ -> pure (EngineFail (BackendUnsupported "verify"
               ("no fetch name: " ++ show spec)))
         _ -> pure (EngineFail (BackendUnsupported "verify"
-          ("non-RSA/ECDSA spec: " ++ show spec)))
+          ("non-RSA/ECDSA/DSA spec: " ++ show spec)))
 
   cipherEncrypt be spec key iv input =
     cipherRun be "cipherEncrypt" True spec key iv input
@@ -398,6 +421,22 @@ instance CryptoBackend OpenSSL4 where
       Raw.ecGen (osslCtx env) (ecGroupName (ecCurve ec)) (osslPropQ env)
     case r of
       Left code -> nativeFail "generateKey" code
+      Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
+  -- DSA paramgen answers lone DER params (the planner stamps p/q/g
+  -- for reads); DSA keygen answers the PKCS#8/SPKI DER halves.
+  generateKey be spec@(GenDSAParams p q) = runGuarded be "generateKey" (genSupported be spec) $ \env -> do
+    r <- withForeignPtr (osslEnv env) $ \_ ->
+      Raw.dsaGenParams (osslCtx env) (osslPropQ env) p q
+    case r of
+      Left code -> nativeFail "generateKey" code
+      Right der -> pure (EngineOk (KeyDer der, Nothing))
+  generateKey be spec@(GenDSAKeypair params) = runGuarded be "generateKey" (genSupported be spec) $ \env -> do
+    r <- withForeignPtr (osslEnv env) $ \_ ->
+      Raw.dsaGenKeypair (osslCtx env) (osslPropQ env) params
+    case r of
+      Left code
+        | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "generateKey" "domain parameters DER rejected"))
+        | otherwise -> nativeFail "generateKey" code
       Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   -- RSA keygen bounds mirror the key planner (2048/3072/4096
   -- bits, odd exponent >= 3); the native call enforces the same
@@ -547,7 +586,7 @@ ossl4Caps version propq = BackendCaps
   , bcDigests = DigestCaps { dcAlgs = Set.fromList t16DigestAlgs, dcMultipart = True, dcXof = False }
   , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
   , bcMacs = MacCaps { mcSpecs = osslMacSpecs t16DigestAlgs }
-  , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.empty }
+  , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.empty }
   , bcKems = KemCaps { kcAlgs = Set.empty }
   , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR"] }
   , bcParamNotes = Map.fromList
@@ -559,6 +598,7 @@ ossl4Caps version propq = BackendCaps
        , ("ECDH", "raw x-coordinate secret; base/peer DER on one NIST prime curve")
        , ("ECDH-COFACTOR", "cofactor-multiplied; no-op on h=1 curves, threaded honestly")
        ] ++ osslRsaNotes t16RsaAlgs ++ osslEcdsaNotes t16EcdsaCurves t16DigestAlgs
+         ++ osslDsaNotes t16DsaAlgs
       )
   }
 
@@ -594,6 +634,39 @@ osslEcdsaNotes curves algs =
   ]
   where
     note (SigECDSA _ Nothing) = "raw operation, no hashing; encodings DER and RAW"
+    note _ = "hash-and-sign; encodings DER and RAW"
+
+-- | The DSA digest set: exactly the recipe's nine (SHA-1, the
+-- SHA-2 family, the SHA-3 family). No MD5/RIPEMD160/XOF breadth:
+-- no PKCS#11 DSA mechanism binds them.
+t16DsaAlgs :: [DigestAlg]
+t16DsaAlgs =
+  [ D_SHA1, D_SHA224, D_SHA256, D_SHA384, D_SHA512
+  , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
+  ]
+
+-- | DSA capability names over a digest set: one hash-and-sign name
+-- per digest plus the raw row. The pre-probe caps cover
+-- 't16DsaAlgs'; 'probeCaps' re-derives over the probed subset
+-- under the DSA keymgmt gate.
+osslDsaSpecNames :: [DigestAlg] -> [String]
+osslDsaSpecNames algs =
+  [ name
+  | spec <- SigDSA "DER" Nothing :
+      [ SigDSA "DER" (Just alg) | alg <- algs ]
+  , Just name <- [dsaSigCap spec]
+  ]
+
+-- | Per-name DSA parameter notes for the capability report.
+osslDsaNotes :: [DigestAlg] -> [(String, String)]
+osslDsaNotes algs =
+  [ (name, note spec)
+  | spec <- SigDSA "DER" Nothing :
+      [ SigDSA "DER" (Just alg) | alg <- algs ]
+  , Just name <- [dsaSigCap spec]
+  ]
+  where
+    note (SigDSA _ Nothing) = "raw operation, no hashing (>= 20-byte digest); encodings DER and RAW"
     note _ = "hash-and-sign; encodings DER and RAW"
 
 -- | The RSA digest set: every fixed-length digest the RSA
@@ -707,8 +780,10 @@ probeCaps env = do
   ciphers <- probeCiphers
   pkeyOk <- probe1 "pkey" "EC"
   rsaOk <- probe1 "pkey" "RSA"
+  dsaOk <- probe1 "pkey" "DSA"
   let base = osslCaps env
       rsaAlgs = filter (`elem` mdAlgs) t16RsaAlgs
+      dsaAlgs = filter (`elem` mdAlgs) t16DsaAlgs
   pure base
     { bcDigests = (bcDigests base) { dcAlgs = Set.fromList mdAlgs }
     , bcCiphers = (bcCiphers base) { ccCiphers = Set.fromList ciphers }
@@ -719,9 +794,11 @@ probeCaps env = do
     , bcMacs = (bcMacs base)
         { mcSpecs = if macOk then osslMacSpecs mdAlgs else Set.empty }
     , bcSigs = (bcSigs base)
-        { scSpecs = Set.union
-            (keep pkeyOk (Set.fromList (osslEcdsaSpecNames t16EcdsaCurves mdAlgs)))
-            (keep rsaOk (Set.fromList ("RSA-PSS" : osslRsaSpecNames rsaAlgs)))
+        { scSpecs = Set.unions
+            [ keep pkeyOk (Set.fromList (osslEcdsaSpecNames t16EcdsaCurves mdAlgs))
+            , keep rsaOk (Set.fromList ("RSA-PSS" : osslRsaSpecNames rsaAlgs))
+            , keep dsaOk (Set.fromList (osslDsaSpecNames dsaAlgs))
+            ]
         , scCurves = keep pkeyOk (Set.fromList t16EcdsaCurves)
         }
     }
@@ -792,6 +869,8 @@ sigSupported :: BackendEnv OpenSSL4 -> SigSpec -> Maybe String
 sigSupported (OSSL4Backend env) spec
   | Just name <- ecdsaSigCap spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
+  | Just name <- dsaSigCap spec
+  , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | Just name <- rsaSigCap spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | Just name <- rsaPssCap spec
@@ -810,6 +889,13 @@ ecdhSupported (OSSL4Backend env) spec
 ecdsaNativeDigest :: Maybe DigestAlg -> Maybe (String, Bool)
 ecdsaNativeDigest Nothing = Just ("", True)
 ecdsaNativeDigest (Just alg) = (, False) <$> digestFetchName alg
+
+-- | Native digest selection for one DSA spec: same rule as ECDSA
+-- (fetch name, or the raw row with no hashing; XOF never
+-- servable).
+dsaNativeDigest :: Maybe DigestAlg -> Maybe (String, Bool)
+dsaNativeDigest Nothing = Just ("", True)
+dsaNativeDigest (Just alg) = (, False) <$> digestFetchName alg
 
 -- | OAEP availability: the RSA pkey gate (witnessed by the
 -- probe-narrowed RSA signature set) plus per-digest fetch probes
@@ -839,6 +925,7 @@ oaepFetchNames params = (,)
 
 sigWantRaw :: SigSpec -> Bool
 sigWantRaw (SigECDSA ec _) = ecEncoding ec == "RAW"
+sigWantRaw (SigDSA enc _) = enc == "RAW"
 sigWantRaw _ = False
 
 -- | RSA sign execution: one native call under the env ForeignPtr,
@@ -885,6 +972,14 @@ genSupported :: BackendEnv OpenSSL4 -> KeyGenSpec -> Maybe String
 genSupported (OSSL4Backend env) spec
   | GenEC ec <- spec
   , Set.member (ecCurve ec) (scCurves (bcSigs (osslCaps env))) = Nothing
+  -- DSA generation gates on the DSA pkey probe ('DSA-RAW' in the
+  -- signature set); paramgen additionally enforces the approved
+  -- FIPS 186-4 (L, N) pairs (the shim checks again).
+  | GenDSAParams p q <- spec
+  , Set.member "DSA-RAW" (scSpecs (bcSigs (osslCaps env)))
+  , (p, q) `elem` [(1024, 160), (2048, 224), (2048, 256), (3072, 256)] = Nothing
+  | GenDSAKeypair {} <- spec
+  , Set.member "DSA-RAW" (scSpecs (bcSigs (osslCaps env))) = Nothing
   | GenSym alg _ <- spec
   , alg `elem` ["AES", "HOTP", "GENERIC"] = Nothing
   | GenRSA {} <- spec

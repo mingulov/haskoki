@@ -193,8 +193,8 @@ caseTemplate :: IO ()
 caseTemplate = guarded "template" $ do
   -- Tag order is the AttributeType enumerant order, pinned stable.
   let tags = [minBound .. maxBound] :: [AttributeType]
-  assertEqual "tag count" 44 (length tags)
-  assertEqual "tag order" [0 .. 43] (map fromEnum tags)
+  assertEqual "tag count" 49 (length tags)
+  assertEqual "tag order" [0 .. 48] (map fromEnum tags)
   assertEqual "class tag" 0 (fromEnum AttrClass)
   assertEqual "label tag" 3 (fromEnum AttrLabel)
   assertEqual "value tag" 5 (fromEnum AttrValue)
@@ -213,6 +213,11 @@ caseTemplate = guarded "template" $ do
   assertEqual "hash-of-issuer-public-key tag" 42
     (fromEnum AttrHashOfIssuerPublicKey)
   assertEqual "modifiable tag" 43 (fromEnum AttrModifiable)
+  assertEqual "prime tag" 44 (fromEnum AttrPrime)
+  assertEqual "subprime tag" 45 (fromEnum AttrSubprime)
+  assertEqual "base tag" 46 (fromEnum AttrBase)
+  assertEqual "prime-bits tag" 47 (fromEnum AttrPrimeBits)
+  assertEqual "subprime-bits tag" 48 (fromEnum AttrSubprimeBits)
   -- entry: tag:u8 vlen:u32 value:vlen.
   let tmpl = [(AttrClass, ValULong 4), (AttrLabel, ValBytes "ab")]
       blob = encodeTemplate tmpl

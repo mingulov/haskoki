@@ -178,6 +178,7 @@ spec = testGroup "operation lifecycles"
   , testCase "verify one-shot after update terminates" caseVerifyOneShotAfterUpdate
   , testCase "sign one-shot after update rejected" caseSignOneShotAfterUpdate
   , testCase "sign short buffer retry; failure terminates" caseSignShortFail
+  , testCase "raw DSA digest floor refuses short input" caseRawDsaFloor
   , testCase "recover roundtrip" caseRecoverRoundtrip
   , testCase "recover oversize data fails terminally" caseRecoverOversize
   , testCase "recover tampered block fails" caseRecoverTampered
@@ -227,6 +228,12 @@ aesOfbMech = MechanismId 0x2104
 
 rsaGenMech :: MechanismId
 rsaGenMech = MechanismId 0x0
+
+dsaMech :: MechanismId
+dsaMech = MechanismId 0x11
+
+dsaSha256Mech :: MechanismId
+dsaSha256Mech = MechanismId 0x14
 
 unknownMech :: MechanismId
 unknownMech = MechanismId 0x9999
@@ -1374,6 +1381,62 @@ signArgs = InitArgs OpSign hmacMech BS.empty (Just signKey) Nothing Nothing
 
 verifyArgs :: InitArgs
 verifyArgs = InitArgs OpVerify hmacMech BS.empty (Just signKey) Nothing Nothing
+
+dsaSignEnv :: OpEnv
+dsaSignEnv = testEnv
+  { oeCaps = mkCapabilities
+      [ (dsaMech, OpSign), (dsaMech, OpVerify)
+      , (dsaSha256Mech, OpSign), (dsaSha256Mech, OpVerify)
+      ]
+  }
+
+dsaSignArgs :: InitArgs
+dsaSignArgs = InitArgs OpSign dsaMech BS.empty (Just signKey) Nothing Nothing
+
+dsaVerifyArgs :: InitArgs
+dsaVerifyArgs = InitArgs OpVerify dsaMech BS.empty (Just signKey) Nothing Nothing
+
+dsaSha256SignArgs :: InitArgs
+dsaSha256SignArgs = InitArgs OpSign dsaSha256Mech BS.empty (Just signKey) Nothing Nothing
+
+caseRawDsaFloor :: IO ()
+caseRawDsaFloor = do
+  -- Sign one-shot under the floor refuses and terminates.
+  let (ops0, i0) = initOperation dsaSignEnv emptySessionOps testSession dsaSignArgs
+  assertEqual "raw DSA sign init ok" CKR_OK (ioCode i0)
+  let (ops1, _, o1) = planSignOneShot ops0 testSession "signature" (BS.replicate 7 0)
+  assertEqual "short digest code" CKR_DATA_LEN_RANGE (soCode o1)
+  assertEqual "short digest plans nothing" [] (soEffects o1)
+  assertEqual "short digest frees" [] (activeSlots ops1)
+  -- A 20-byte digest plans one effect.
+  let (ops2, _) = initOperation dsaSignEnv emptySessionOps testSession dsaSignArgs
+      (_, _, o2) = planSignOneShot ops2 testSession "signature" (BS.replicate 20 0)
+  assertEqual "floor digest plans" 1 (length (soEffects o2))
+  -- Sign final under the floor refuses too.
+  let (ops3, _) = initOperation dsaSignEnv emptySessionOps testSession dsaSignArgs
+      (ops4, _, _) = planSignUpdate ops3 testSession (BS.replicate 7 0)
+      (ops5, _, o3) = planSignFinal ops4 testSession "signature"
+  assertEqual "short final code" CKR_DATA_LEN_RANGE (soCode o3)
+  assertEqual "short final frees" [] (activeSlots ops5)
+  -- Verify one-shot under the floor refuses and terminates.
+  let (ops6, i6) = initOperation dsaSignEnv emptySessionOps testSession dsaVerifyArgs
+  assertEqual "raw DSA verify init ok" CKR_OK (ioCode i6)
+  let (ops7, _, o4) = planVerifyOneShot ops6 testSession "verify"
+        (BS.replicate 7 0) "sig-witness"
+  assertEqual "short verify code" CKR_DATA_LEN_RANGE (soCode o4)
+  assertEqual "short verify plans nothing" [] (soEffects o4)
+  assertEqual "short verify frees" [] (activeSlots ops7)
+  -- Verify final under the floor refuses.
+  let (ops8, _) = initOperation dsaSignEnv emptySessionOps testSession dsaVerifyArgs
+      (ops9, _, _) = planVerifyUpdate ops8 testSession (BS.replicate 7 0)
+      (ops10, _, o5) = planVerifyFinal ops9 testSession "verify" "sig-witness"
+  assertEqual "short verify final code" CKR_DATA_LEN_RANGE (soCode o5)
+  assertEqual "short verify final frees" [] (activeSlots ops10)
+  -- Hash-and-sign rows carry no floor: short messages plan.
+  let (ops11, i11) = initOperation dsaSignEnv emptySessionOps testSession dsaSha256SignArgs
+  assertEqual "DSA-SHA256 init ok" CKR_OK (ioCode i11)
+  let (_, _, o6) = planSignOneShot ops11 testSession "signature" (BS.replicate 7 0)
+  assertEqual "hash row plans short input" 1 (length (soEffects o6))
 
 -- | Toy MAC: 8-byte length tag over the reversal. Verify recomputes.
 toyTag :: ByteString -> ByteString

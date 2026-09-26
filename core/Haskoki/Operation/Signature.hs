@@ -72,6 +72,7 @@ import Haskoki.Output
   , OutputPlan (..)
   , ResultDisposition (..)
   )
+import Haskoki.Recipe.Dsa (dsaRawFloorFor)
 import Haskoki.Request (OutputIntent)
 import Haskoki.Types (ReturnCode (..))
 
@@ -89,6 +90,18 @@ verdictPlan name code why = OutputPlan
   , opDispositions = [ResultDisposition [name] code OpTerminate]
   , opReasons = [why]
   }
+
+-- | Raw-DSA digest-floor denial: the raw row signs a
+-- caller-supplied digest of at least 'dsaRawFloorFor' bytes;
+-- shorter input refuses @CKR_DATA_LEN_RANGE@ (the callers
+-- terminate the slot). Hash-and-sign rows and non-DSA mechanisms
+-- pass ('Nothing').
+rawFloorDeny :: SlotCommon -> Int -> Maybe StepDeny
+rawFloorDeny sc len = case dsaRawFloorFor (commonMech sc) of
+  Just fl
+    | len < fl -> Just (mkDeny CKR_DATA_LEN_RANGE
+        ("raw DSA digest is shorter than " ++ show fl ++ " bytes"))
+  _ -> Nothing
 
 -- | The active plain (non-recovery) operation in a sign/verify slot.
 withPlainSlot :: SessionOps -> SlotKind -> Either StepDeny SlotCommon
@@ -181,16 +194,18 @@ planSignOneShot ops st _name input = case withPlainSlot ops SlotSign of
             (if term then removeSingle SlotSign ops else ops, st, denyOutcome d)
           GateOk st' sc' -> case appendBuffered sc' input of
             Left d -> (removeSingle SlotSign ops, st', denyOutcome d)
-            Right sc'' ->
-              ( insertOp (mkActiveSign sc'') ops
-              , st'
-              , StepOutcome CKR_OK
-                  [FxSign (commonMech sc'') (commonKey sc'') (commonParams sc'')
-                    (bufferedOf sc'')]
-                  Nothing
-                  ["sign one-shot planned over "
-                    ++ show (BS.length input) ++ " bytes"] [] Nothing
-              )
+            Right sc'' -> case rawFloorDeny sc'' (BS.length (bufferedOf sc'')) of
+              Just d -> (removeSingle SlotSign ops, st', denyOutcome d)
+              Nothing ->
+                ( insertOp (mkActiveSign sc'') ops
+                , st'
+                , StepOutcome CKR_OK
+                    [FxSign (commonMech sc'') (commonKey sc'') (commonParams sc'')
+                      (bufferedOf sc'')]
+                    Nothing
+                    ["sign one-shot planned over "
+                      ++ show (BS.length input) ++ " bytes"] [] Nothing
+                )
 
 -- | Plan a sign final: one effect over the concatenation.
 planSignFinal
@@ -204,15 +219,17 @@ planSignFinal ops st _name = case withPlainSlot ops SlotSign of
     Nothing -> case gateDataCall st sc of
       GateDeny d term ->
         (if term then removeSingle SlotSign ops else ops, st, denyOutcome d)
-      GateOk st' sc' ->
-        ( insertOp (mkActiveSign sc') ops
-        , st'
-        , StepOutcome CKR_OK
-            [FxSign (commonMech sc') (commonKey sc') (commonParams sc') (bufferedOf sc')]
-            Nothing
-            ["sign final planned over "
-              ++ show (BS.length (bufferedOf sc')) ++ " bytes"] [] Nothing
-        )
+      GateOk st' sc' -> case rawFloorDeny sc' (BS.length (bufferedOf sc')) of
+        Just d -> (removeSingle SlotSign ops, st', denyOutcome d)
+        Nothing ->
+          ( insertOp (mkActiveSign sc') ops
+          , st'
+          , StepOutcome CKR_OK
+              [FxSign (commonMech sc') (commonKey sc') (commonParams sc') (bufferedOf sc')]
+              Nothing
+              ["sign final planned over "
+                ++ show (BS.length (bufferedOf sc')) ++ " bytes"] [] Nothing
+          )
 
 -- | Finish a planned sign final or one-shot: stage the signature, or
 -- terminate on any failure or driver-protocol violation.
@@ -290,16 +307,18 @@ planVerifyOneShot ops st _name input sig = case withPlainSlot ops SlotVerify of
             (if term then removeSingle SlotVerify ops else ops, st, denyOutcome d)
           GateOk st' sc' -> case appendBuffered sc' input of
             Left d -> (removeSingle SlotVerify ops, st', denyOutcome d)
-            Right sc'' ->
-              ( insertOp (mkActiveVerify sc'') ops
-              , st'
-              , StepOutcome CKR_OK
-                  [FxVerify (commonMech sc'') (commonKey sc'') (commonParams sc'')
-                    (bufferedOf sc'') sig]
-                  Nothing
-                  ["verify one-shot planned over "
-                    ++ show (BS.length input) ++ " bytes"] [] Nothing
-              )
+            Right sc'' -> case rawFloorDeny sc'' (BS.length (bufferedOf sc'')) of
+              Just d -> (removeSingle SlotVerify ops, st', denyOutcome d)
+              Nothing ->
+                ( insertOp (mkActiveVerify sc'') ops
+                , st'
+                , StepOutcome CKR_OK
+                    [FxVerify (commonMech sc'') (commonKey sc'') (commonParams sc'')
+                      (bufferedOf sc'') sig]
+                    Nothing
+                    ["verify one-shot planned over "
+                      ++ show (BS.length input) ++ " bytes"] [] Nothing
+                )
 
 -- | Plan a verify final: one effect over the concatenation plus the
 -- witness. An empty witness is invalid without an effect.
@@ -319,16 +338,18 @@ planVerifyFinal ops st _name sig = case withPlainSlot ops SlotVerify of
       | otherwise -> case gateDataCall st sc of
           GateDeny d term ->
             (if term then removeSingle SlotVerify ops else ops, st, denyOutcome d)
-          GateOk st' sc' ->
-            ( insertOp (mkActiveVerify sc') ops
-            , st'
-            , StepOutcome CKR_OK
-                [FxVerify (commonMech sc') (commonKey sc') (commonParams sc')
-                  (bufferedOf sc') sig]
-                Nothing
-                ["verify final planned over "
-                  ++ show (BS.length (bufferedOf sc')) ++ " bytes"] [] Nothing
-            )
+          GateOk st' sc' -> case rawFloorDeny sc' (BS.length (bufferedOf sc')) of
+            Just d -> (removeSingle SlotVerify ops, st', denyOutcome d)
+            Nothing ->
+              ( insertOp (mkActiveVerify sc') ops
+              , st'
+              , StepOutcome CKR_OK
+                  [FxVerify (commonMech sc') (commonKey sc') (commonParams sc')
+                    (bufferedOf sc') sig]
+                  Nothing
+                  ["verify final planned over "
+                    ++ show (BS.length (bufferedOf sc')) ++ " bytes"] [] Nothing
+              )
 
 -- | Finish a planned verify final or one-shot. A valid witness
 -- completes, a mismatch reports 'CKR_SIGNATURE_INVALID', and bytes

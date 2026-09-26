@@ -286,6 +286,41 @@ int hsk_ossl4_ecdsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
                            size_t msglen, const unsigned char *sig,
                            size_t siglen, int is_raw, int no_hash);
 
+/* --- DSA sign/verify (FIPS 186) --------------------------------------- */
+/* Same contract as the ECDSA pair, with two DSA deltas: the raw
+ * operation (no_hash) enforces the PKCS#11 20-byte digest floor
+ * (shorter answers HSK_OSSL4_ERR_BADPARAM — the planner enforces
+ * CKR_DATA_LEN_RANGE first, this is defense in depth), and
+ * overlong raw input truncates to the leftmost subprime (q) bits
+ * (FIPS 186-4 §4.6). Raw signatures are r||s padded to the q
+ * length derived from the key's FFC parameters. */
+long hsk_ossl4_dsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
+                        const char *propq, const unsigned char *priv_der,
+                        size_t priv_len, const unsigned char *msg,
+                        size_t msglen, int want_raw, int no_hash,
+                        unsigned char **out);
+int hsk_ossl4_dsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
+                         const char *propq, const unsigned char *pub_der,
+                         size_t pub_len, const unsigned char *msg,
+                         size_t msglen, const unsigned char *sig,
+                         size_t siglen, int is_raw, int no_hash);
+
+/* --- DSA paramgen + keygen -------------------------------------------- */
+/* hsk_ossl4_dsa_gen_params mints FIPS 186-4 domain parameters for an
+ * approved (pbits, qbits) pair — (1024,160), (2048,224),
+ * (2048,256), (3072,256); anything else is BADPARAM — and answers
+ * the DER-encoded DSS-Parms SEQUENCE (byte length on success).
+ * hsk_ossl4_dsa_gen_keypair mints a pair from DER params and
+ * answers the PKCS#8 private + SPKI public DER halves
+ * (HSK_OSSL4_OK); undecodable params are BADKEY. */
+long hsk_ossl4_dsa_gen_params(OSSL_LIB_CTX *ctx, const char *propq,
+                              int pbits, int qbits, unsigned char **out);
+int hsk_ossl4_dsa_gen_keypair(OSSL_LIB_CTX *ctx, const char *propq,
+                              const unsigned char *params_der,
+                              size_t params_len, unsigned char **priv_der,
+                              size_t *priv_len, unsigned char **pub_der,
+                              size_t *pub_len);
+
 /* --- ECDH agreement ------------------------------------------ */
 
 /* priv_der: PKCS#8 DER base key; peer_der: SPKI DER peer key. cofactor:

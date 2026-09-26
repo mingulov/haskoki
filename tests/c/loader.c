@@ -465,7 +465,7 @@ static int _case_ok(void) { return g_failures == g_case_failures_at_start; }
 #define DUMMY_SESSION 0UL
 /* Routed mechanism-catalog row count (pinned exactly here and in
  * consumer_discovery; the generator is scripts/mech_catalog.py). */
-#define ROUTED_MECH_COUNT 118UL
+#define ROUTED_MECH_COUNT 130UL
 
 /* ---------- A05 mutex-callback fixtures ---------- */
 
@@ -552,9 +552,9 @@ static void *worker_main(void *arg) {
       w->failed = 1;
       return NULL;
     }
-    /* 118-row catalog: a 1-slot fill no longer suffices. */
+    /* Full catalog fill: sized by the pinned row count. */
     {
-      CK_MECHANISM_TYPE ms[128];
+      CK_MECHANISM_TYPE ms[ROUTED_MECH_COUNT];
       CK_ULONG nq = 0;
       int j, found = 0;
       if (w->p11->C_GetMechanismList(0, NULL, &nq) != CKR_OK ||
@@ -562,7 +562,7 @@ static void *worker_main(void *arg) {
         w->failed = 1;
         return NULL;
       }
-      nm = 128;
+      nm = ROUTED_MECH_COUNT;
       if (w->p11->C_GetMechanismList(0, ms, &nm) != CKR_OK ||
           nm != ROUTED_MECH_COUNT) {
         w->failed = 1;

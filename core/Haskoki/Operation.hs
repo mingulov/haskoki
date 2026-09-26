@@ -83,6 +83,7 @@ import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cip
 import Haskoki.Recipe.Cmac (cmacParamsValid, cmacRecipeFor)
 import Haskoki.Recipe.Digest (digestParamsValid)
 import Haskoki.Recipe.Ecdsa (ecdsaParamsValid, ecdsaRecipeFor)
+import Haskoki.Recipe.Dsa (dsaParamsValid, dsaRecipeFor)
 import Haskoki.Recipe.Gcm (gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.Hmac (hmacParamsValid, hmacRecipeFor)
 import Haskoki.Recipe.Otp (hotpParamsValid, hotpRecipeFor)
@@ -310,7 +311,8 @@ isXtsMech m = case cipherRecipeFor m of
 -- 'rsaPkcs1RecipeFor'; RSA-PSS inits enforce the salted binding via
 -- 'rsaPssRecipeFor'; RSA-OAEP inits enforce the labeled params via
 -- 'rsaOaepRecipeFor'; ECDSA inits enforce the encoding selection
--- via 'ecdsaRecipeFor'; CMAC inits enforce the plain/GENERAL
+-- via 'ecdsaRecipeFor'; DSA inits enforce the encoding selection
+-- via 'dsaRecipeFor'; CMAC inits enforce the plain/GENERAL
 -- shape via 'cmacRecipeFor'; AEAD inits enforce the caller IV and
 -- approved tag width via 'gcmRecipeFor'; CCM inits refuse
 -- out-of-range nonces and tag widths with
@@ -349,6 +351,10 @@ checkMechParams args
   , not (ecdsaParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD
         "ECDSA mechanism parameters rejected by the recipe")
+  | Just r <- dsaRecipeFor (iaMech args)
+  , not (dsaParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "DSA mechanism parameters rejected by the recipe")
   | Just r <- cmacRecipeFor (iaMech args)
   , not (cmacParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD

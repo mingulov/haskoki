@@ -62,8 +62,9 @@ import Haskoki.Attribute
 import Haskoki.Attribute.Generated
   (classNameById, generatedTemplateRules, mustClassId, mustKeyTypeId)
 import Haskoki.Der
-  (curveCoordLen, curveOidOfParams, ecPrivateDer, ecPublicDer,
-   rsaPrivateDer, rsaPublicDer, unwrapEcPoint)
+  (curveCoordLen, curveOidOfParams, dsaPrivateDer, dsaPublicDer,
+   ecPrivateDer, ecPublicDer, rsaPrivateDer, rsaPublicDer,
+   unwrapEcPoint)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -414,6 +415,7 @@ ckoPublicKey = mustClassId "CKO_PUBLIC_KEY"
 ckoSecretKey = mustClassId "CKO_SECRET_KEY"
 ckkRsa = mustKeyTypeId "CKK_RSA"
 ckkEc = mustKeyTypeId "CKK_EC"
+ckkDsa = mustKeyTypeId "CKK_DSA"
 ckkAes = mustKeyTypeId "CKK_AES"
 
 -- | Key-import material: RSA/EC public/private templates carry
@@ -438,6 +440,8 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     | c == ckoPublicKey && k == ckkRsa -> rsaPublic
     | c == ckoPrivateKey && k == ckkEc -> ecPrivate
     | c == ckoPublicKey && k == ckkEc -> ecPublic
+    | c == ckoPrivateKey && k == ckkDsa -> dsaPrivate
+    | c == ckoPublicKey && k == ckkDsa -> dsaPublic
     | c == ckoSecretKey -> secretKey k
   _ -> Right attrs
   where
@@ -502,6 +506,20 @@ importMaterial attrs = case (classOf, keyTypeOf) of
       forbidValue
       pure (Map.insert AttrValue
         (ValBytes (ecPublicDer oid raw)) attrs)
+    dsaPrivate = do
+      p <- need AttrPrime
+      q <- need AttrSubprime
+      g <- need AttrBase
+      x <- need AttrValue
+      pure (Map.insert AttrValue
+        (ValBytes (dsaPrivateDer p q g x)) attrs)
+    dsaPublic = do
+      p <- need AttrPrime
+      q <- need AttrSubprime
+      g <- need AttrBase
+      y <- need AttrValue
+      pure (Map.insert AttrValue
+        (ValBytes (dsaPublicDer p q g y)) attrs)
     resolveCurve params = do
       oid <- curveOidOfParams params
       n <- curveCoordLen oid

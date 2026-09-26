@@ -49,6 +49,15 @@ table by @CKM_*@ name; no hand-typed numerics):
   mechanism with malformed parameters is a 'CryptoFailed' parameter
   refusal, never 'CryptoUnsupported', and the driver never refuses
   a key.
+* DSA runs the recipe 'SigSpec' ('dsaSpecFor'): the mechanism
+  binds the digest (@CKM_DSA@ is the raw row — the input is a
+  caller-supplied digest, signed directly, no hashing) and the
+  parameters select the signature encoding (@"RAW"@, @"DER"@, or
+  empty for the RAW default). Unlike ECDSA there is no curve
+  label to hint (the key carries p/q/g); key shape is the
+  backend's call, so a covered mechanism with malformed
+  parameters is a 'CryptoFailed' parameter refusal, never
+  'CryptoUnsupported', and the driver never refuses a key.
 * Block ciphers run the recipe 'CipherSpec' ('cipherSpecFor'):
   every (mechanism, key length, params) triple the
   'Haskoki.Recipe.Cipher' table covers maps to its backend spec
@@ -109,6 +118,7 @@ module Haskoki.Engine.Driver
   , rsaPssSpecFor
   , rsaOaepParamsFor
   , ecdsaSpecFor
+  , dsaSpecFor
   , ecCurveOfKey
   , ecdhParamsFor
   , cmacSpecFor
@@ -172,6 +182,12 @@ import Haskoki.Recipe.Ecdsa
   , ecdsaParamsValid
   , ecdsaRecipeFor
   )
+import Haskoki.Recipe.Dsa
+  ( DsaRecipe (..)
+  , dsaEncodingOf
+  , dsaParamsValid
+  , dsaRecipeFor
+  )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
 import Haskoki.Recipe.Gcm (decodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (decodeOaepParams, rsaOaepParamsValid, rsaOaepRecipeFor)
@@ -195,6 +211,8 @@ import Haskoki.Operation.KeyManagement
   , aesKwpMech
   , decodeGenArgs
   , decodeWrapParams
+  , dsaKeyPairGenMech
+  , dsaParameterGenMech
   , ecKeyPairGenMech
   , rsaPkcsMech
   , encodeKeyPair
@@ -703,6 +721,29 @@ ecdsaSpecFor mech params key = do
 isEcdsaMech :: MechanismId -> Bool
 isEcdsaMech mech = isJust (ecdsaRecipeFor mech)
 
+-- | DSA dispatch: covered (mechanism, params) pairs to backend
+-- specs (pinned against 'Haskoki.Recipe.Dsa' by RecipeDsaSpec).
+-- The recipe binds the digest and validates the encoding
+-- selection; there is no curve label to hint (the DSA key carries
+-- its own domain parameters) and key shape is the backend's call
+-- (the driver never refuses a key). 'Nothing' means uncovered
+-- (non-DSA mechanism) or malformed parameters.
+dsaSpecFor :: MechanismId -> ByteString -> Maybe SigSpec
+dsaSpecFor mech params = do
+  r <- dsaRecipeFor mech
+  guard (dsaParamsValid r params)
+  enc <- dsaEncodingOf params
+  alg <- case rdDigestStem r of
+    Nothing -> pure Nothing
+    Just stem -> Just <$> rsaDigest stem
+  pure (SigDSA (T.unpack enc) alg)
+
+-- | A DSA mechanism regardless of parameter validity (drives the
+-- parameter-refusal branch: malformed DSA params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isDsaMech :: MechanismId -> Bool
+isDsaMech mech = isJust (dsaRecipeFor mech)
+
 -- | The curve named by a DER key's curve OID, via the recipe's
 -- 'ecdsaCurveOfDer' ('Nothing' for raw bytes, references, RSA,
 -- garbage, or an off-set curve). The marker is advisory for
@@ -769,6 +810,10 @@ runEffect env resolve fx = case fx of
         case ecdsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure ecdsaRefusal
+    | isDsaMech mech -> withKey mkey $ \key ->
+        case dsaSpecFor mech params of
+          Just spec -> toBytes <$> sign env spec key input
+          Nothing -> pure dsaRefusal
     | otherwise -> pure (unsupported fx)
   FxVerify mech mkey params input sig
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
@@ -791,6 +836,10 @@ runEffect env resolve fx = case fx of
         case ecdsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure ecdsaRefusal
+    | isDsaMech mech -> withKey mkey $ \key ->
+        case dsaSpecFor mech params of
+          Just spec -> toVerifyUnit <$> verify env spec key input sig
+          Nothing -> pure dsaRefusal
     | otherwise -> pure (unsupported fx)
   FxCipher dir mech mkey params input
     | isCipherMech mech -> withKey mkey $ \key ->
@@ -834,6 +883,10 @@ runEffect env resolve fx = case fx of
         case ecdsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure ecdsaRefusal
+    | isDsaMech mech -> withKey mkey $ \key ->
+        case dsaSpecFor mech params of
+          Just spec -> toBytes <$> sign env spec key input
+          Nothing -> pure dsaRefusal
     | otherwise -> pure (unsupported fx)
   FxMessageVerify mech mkey params input sig
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
@@ -856,6 +909,10 @@ runEffect env resolve fx = case fx of
         case ecdsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure ecdsaRefusal
+    | isDsaMech mech -> withKey mkey $ \key ->
+        case dsaSpecFor mech params of
+          Just spec -> toVerifyUnit <$> verify env spec key input sig
+          Nothing -> pure dsaRefusal
     | otherwise -> pure (unsupported fx)
   FxSignRecover {} -> pure (unsupported fx)
   FxVerifyRecover {} -> pure (unsupported fx)
@@ -880,8 +937,12 @@ runEffect env resolve fx = case fx of
             toKeyPair <$> generateKey env (GenEC (EcSpec (BC8.unpack curve) "DER"))
           (m, GenRsa bits e) | m == rsaKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenRSA bits e)
+          (m, GenDsaParams p q) | m == dsaParameterGenMech ->
+            toKeyPair <$> generateKey env (GenDSAParams p q)
+          (m, GenDsaKeypair der) | m == dsaKeyPairGenMech ->
+            toKeyPair <$> generateKey env (GenDSAKeypair der)
           _
-            | mech `elem` [aesKeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech] ->
+            | mech `elem` [aesKeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)
@@ -1299,6 +1360,12 @@ runEffect env resolve fx = case fx of
 -- refusal is unconditionally a 'CryptoFailed' parameter refusal.
 ecdsaRefusal :: CryptoResult
 ecdsaRefusal = GotCryptoError (CryptoFailed "ECDSA: params must be RAW, DER, or empty")
+
+-- | DSA dispatch refusal: 'dsaSpecFor' only fails on malformed
+-- parameters, so the refusal is unconditionally a 'CryptoFailed'
+-- parameter refusal.
+dsaRefusal :: CryptoResult
+dsaRefusal = GotCryptoError (CryptoFailed "DSA: params must be RAW, DER, or empty")
 
 -- | CMAC block width per cipher (only the ECB specs 'cmacSpecFor'
 -- yields).

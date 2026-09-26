@@ -1022,14 +1022,29 @@
       "canonical_name": "CKM_DSA_KEY_PAIR_GEN",
       "family": "keypair",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE_KEY_PAIR"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: no DSA keygen route in the backend surface; behavior/synthetic stay planned.",
+      "notes": "pairgen from explicit domain parameters (p/q/g required in the public template via dsaDomainOf, private inherits; present prime/subprime size hints must be served or refuse CKR_TEMPLATE_INCONSISTENT (mirroring rsaBitsOf); GenDsaKeypair DER frame). Components stamped by stampPairComponents (opaque synthetic doubles pass through, mirroring EC). Real execution pinned by KeyManagementSpec caseRealDsaKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00000010",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37"
+          ],
+          "key_constraints": [
+            "dsa-domain-params-required"
+          ],
+          "operation": "generate-key-pair",
+          "output_rule": "synthetic-pair/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA_KEY_PAIR_GEN",
@@ -1038,26 +1053,80 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "key-generation",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DSA",
       "family": "dsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA sign/verify present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "DSA recipe (core/Haskoki/Recipe/Dsa.hs): raw row: signs a caller-supplied digest of at least 20 bytes directly (shorter refuses CKR_DATA_LEN_RANGE), no hashing; sig-encoding/1 selects RAW/DER (empty defaults RAW: r||s on the wire). Served FIPS pairs (1024,160), (2048,224), (2048,256), (3072,256) (defaults {1024:160, 2048:256, 3072:256}); keys carry p/q/g (DER SPKI/PKCS#8 storage, components stamped for reads). Real execution pinned (OpenSSLSpec caseDsa against the pinned libcrypto: wycheproof DSA vectors + roundtrips over served pairs, RAW and DER); synthetic per-digest constructions pinned (SyntheticSpec caseDsa); init enforces the encoding selection (RecipeDsaSpec).",
       "numeric_id": "0x00000011",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "sig-encoding/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "sig-encoding/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA",
@@ -1066,26 +1135,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "dsa",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "dsa",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDsaSpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DSA_SHA1",
       "family": "dsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA sign/verify present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "DSA recipe (core/Haskoki/Recipe/Dsa.hs): hash-and-sign with SHA-1 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER (empty defaults RAW: r||s on the wire). Served FIPS pairs (1024,160), (2048,224), (2048,256), (3072,256) (defaults {1024:160, 2048:256, 3072:256}); keys carry p/q/g (DER SPKI/PKCS#8 storage, components stamped for reads). Real execution pinned (OpenSSLSpec caseDsa against the pinned libcrypto: wycheproof DSA vectors + roundtrips over served pairs, RAW and DER); synthetic per-digest constructions pinned (SyntheticSpec caseDsa); init enforces the encoding selection (RecipeDsaSpec).",
       "numeric_id": "0x00000012",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "sig-encoding/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "sig-encoding/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA_SHA1",
@@ -1094,26 +1222,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "dsa",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "dsa",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDsaSpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DSA_SHA224",
       "family": "dsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA sign/verify present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "DSA recipe (core/Haskoki/Recipe/Dsa.hs): hash-and-sign with SHA-224 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER (empty defaults RAW: r||s on the wire). Served FIPS pairs (1024,160), (2048,224), (2048,256), (3072,256) (defaults {1024:160, 2048:256, 3072:256}); keys carry p/q/g (DER SPKI/PKCS#8 storage, components stamped for reads). Real execution pinned (OpenSSLSpec caseDsa against the pinned libcrypto: wycheproof DSA vectors + roundtrips over served pairs, RAW and DER); synthetic per-digest constructions pinned (SyntheticSpec caseDsa); init enforces the encoding selection (RecipeDsaSpec).",
       "numeric_id": "0x00000013",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "sig-encoding/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "sig-encoding/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA_SHA224",
@@ -1122,26 +1309,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "dsa",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "dsa",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDsaSpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DSA_SHA256",
       "family": "dsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA sign/verify present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "DSA recipe (core/Haskoki/Recipe/Dsa.hs): hash-and-sign with SHA-256 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER (empty defaults RAW: r||s on the wire). Served FIPS pairs (1024,160), (2048,224), (2048,256), (3072,256) (defaults {1024:160, 2048:256, 3072:256}); keys carry p/q/g (DER SPKI/PKCS#8 storage, components stamped for reads). Real execution pinned (OpenSSLSpec caseDsa against the pinned libcrypto: wycheproof DSA vectors + roundtrips over served pairs, RAW and DER); synthetic per-digest constructions pinned (SyntheticSpec caseDsa); init enforces the encoding selection (RecipeDsaSpec).",
       "numeric_id": "0x00000014",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "sig-encoding/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "sig-encoding/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA_SHA256",
@@ -1150,26 +1396,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "dsa",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "dsa",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDsaSpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DSA_SHA384",
       "family": "dsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA sign/verify present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "DSA recipe (core/Haskoki/Recipe/Dsa.hs): hash-and-sign with SHA-384 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER (empty defaults RAW: r||s on the wire). Served FIPS pairs (1024,160), (2048,224), (2048,256), (3072,256) (defaults {1024:160, 2048:256, 3072:256}); keys carry p/q/g (DER SPKI/PKCS#8 storage, components stamped for reads). Real execution pinned (OpenSSLSpec caseDsa against the pinned libcrypto: wycheproof DSA vectors + roundtrips over served pairs, RAW and DER); synthetic per-digest constructions pinned (SyntheticSpec caseDsa); init enforces the encoding selection (RecipeDsaSpec).",
       "numeric_id": "0x00000015",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "sig-encoding/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "sig-encoding/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA_SHA384",
@@ -1178,26 +1483,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "dsa",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "dsa",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDsaSpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DSA_SHA512",
       "family": "dsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA sign/verify present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "DSA recipe (core/Haskoki/Recipe/Dsa.hs): hash-and-sign with SHA-512 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER (empty defaults RAW: r||s on the wire). Served FIPS pairs (1024,160), (2048,224), (2048,256), (3072,256) (defaults {1024:160, 2048:256, 3072:256}); keys carry p/q/g (DER SPKI/PKCS#8 storage, components stamped for reads). Real execution pinned (OpenSSLSpec caseDsa against the pinned libcrypto: wycheproof DSA vectors + roundtrips over served pairs, RAW and DER); synthetic per-digest constructions pinned (SyntheticSpec caseDsa); init enforces the encoding selection (RecipeDsaSpec).",
       "numeric_id": "0x00000016",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "sig-encoding/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "sig-encoding/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA_SHA512",
@@ -1206,12 +1570,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "dsa",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "dsa",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDsaSpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -1300,14 +1695,42 @@
       "canonical_name": "CKM_DSA_SHA3_224",
       "family": "dsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA sign/verify present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "DSA recipe (core/Haskoki/Recipe/Dsa.hs): hash-and-sign with SHA3-224 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER (empty defaults RAW: r||s on the wire). Served FIPS pairs (1024,160), (2048,224), (2048,256), (3072,256) (defaults {1024:160, 2048:256, 3072:256}); keys carry p/q/g (DER SPKI/PKCS#8 storage, components stamped for reads). Real execution pinned (OpenSSLSpec caseDsa against the pinned libcrypto: wycheproof DSA vectors + roundtrips over served pairs, RAW and DER); synthetic per-digest constructions pinned (SyntheticSpec caseDsa); init enforces the encoding selection (RecipeDsaSpec).",
       "numeric_id": "0x00000018",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "sig-encoding/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "sig-encoding/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA_SHA3_224",
@@ -1316,26 +1739,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "dsa",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "dsa",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDsaSpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DSA_SHA3_256",
       "family": "dsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA sign/verify present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "DSA recipe (core/Haskoki/Recipe/Dsa.hs): hash-and-sign with SHA3-256 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER (empty defaults RAW: r||s on the wire). Served FIPS pairs (1024,160), (2048,224), (2048,256), (3072,256) (defaults {1024:160, 2048:256, 3072:256}); keys carry p/q/g (DER SPKI/PKCS#8 storage, components stamped for reads). Real execution pinned (OpenSSLSpec caseDsa against the pinned libcrypto: wycheproof DSA vectors + roundtrips over served pairs, RAW and DER); synthetic per-digest constructions pinned (SyntheticSpec caseDsa); init enforces the encoding selection (RecipeDsaSpec).",
       "numeric_id": "0x00000019",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "sig-encoding/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "sig-encoding/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA_SHA3_256",
@@ -1344,26 +1826,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "dsa",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "dsa",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDsaSpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DSA_SHA3_384",
       "family": "dsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA sign/verify present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "DSA recipe (core/Haskoki/Recipe/Dsa.hs): hash-and-sign with SHA3-384 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER (empty defaults RAW: r||s on the wire). Served FIPS pairs (1024,160), (2048,224), (2048,256), (3072,256) (defaults {1024:160, 2048:256, 3072:256}); keys carry p/q/g (DER SPKI/PKCS#8 storage, components stamped for reads). Real execution pinned (OpenSSLSpec caseDsa against the pinned libcrypto: wycheproof DSA vectors + roundtrips over served pairs, RAW and DER); synthetic per-digest constructions pinned (SyntheticSpec caseDsa); init enforces the encoding selection (RecipeDsaSpec).",
       "numeric_id": "0x0000001a",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "sig-encoding/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "sig-encoding/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA_SHA3_384",
@@ -1372,26 +1913,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "dsa",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "dsa",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDsaSpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DSA_SHA3_512",
       "family": "dsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA sign/verify present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "DSA recipe (core/Haskoki/Recipe/Dsa.hs): hash-and-sign with SHA3-512 (one EVP_DigestSign step); sig-encoding/1 selects RAW/DER (empty defaults RAW: r||s on the wire). Served FIPS pairs (1024,160), (2048,224), (2048,256), (3072,256) (defaults {1024:160, 2048:256, 3072:256}); keys carry p/q/g (DER SPKI/PKCS#8 storage, components stamped for reads). Real execution pinned (OpenSSLSpec caseDsa against the pinned libcrypto: wycheproof DSA vectors + roundtrips over served pairs, RAW and DER); synthetic per-digest constructions pinned (SyntheticSpec caseDsa); init enforces the encoding selection (RecipeDsaSpec).",
       "numeric_id": "0x0000001b",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "sig-encoding/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "sig-encoding/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA_SHA3_512",
@@ -1400,12 +2000,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "dsa",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "dsa",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDsaSpec",
+          "build_id": "dsa",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17204,16 +17835,30 @@
     {
       "aliases": [],
       "canonical_name": "CKM_DSA_PARAMETER_GEN",
-      "family": "dsa",
+      "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA parameter generation present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "paramgen (CKA_PRIME_BITS required via dsaParamSizes, CKA_SUBPRIME_BITS defaulted {1024:160, 2048:256, 3072:256}; served FIPS pairs (1024,160), (2048,224), (2048,256), (3072,256); GenDsaParams frame; CKO_DOMAIN_PARAMETERS object with p/q/g and true bit widths stamped by stampParamsObject). Real execution pinned by KeyManagementSpec caseRealDsaParamgen (generated params feed keypair generation; no KAT possible for randomized generation). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00002000",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "prime-bits-required"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DSA_PARAMETER_GEN",
@@ -17222,12 +17867,33 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "registry-seed",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17297,7 +17963,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA parameter generation present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (reviewed): FIPS 186-4 verifiable p/q generation needs a seed/counter/index path; OpenSSL 4.0.2 exposes none (legacy DSA_generate_parameters_ex fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002003",
       "routes": [],
       "source_refs": [
@@ -17325,7 +17991,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA parameter generation present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (reviewed): FIPS 186-4 Shawe-Taylor verifiable p/q generation needs a seed/counter/index path; OpenSSL 4.0.2 exposes none (legacy DSA_generate_parameters_ex fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002004",
       "routes": [],
       "source_refs": [
@@ -17353,7 +18019,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DSA parameter generation present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (reviewed): verifiable g derivation from (p, q, seed, index) needs the FIPS 186-4 seed path; OpenSSL 4.0.2 exposes none (legacy entry fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002005",
       "routes": [],
       "source_refs": [

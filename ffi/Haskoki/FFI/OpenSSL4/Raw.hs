@@ -51,6 +51,10 @@ module Haskoki.FFI.OpenSSL4.Raw
   , randSeed
   , ecdsaSign
   , ecdsaVerify
+  , dsaSign
+  , dsaVerify
+  , dsaGenParams
+  , dsaGenKeypair
   , ecdhDerive
   , rsaSign
   , rsaVerify
@@ -178,6 +182,18 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_ecdsa_sign"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_ecdsa_verify"
   c_ecdsa_verify :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> CInt -> IO CInt
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_dsa_sign"
+  c_dsa_sign :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_dsa_verify"
+  c_dsa_verify :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> CInt -> IO CInt
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_dsa_gen_params"
+  c_dsa_gen_params :: Ptr OsslLibCtx -> CString -> CInt -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_dsa_gen_keypair"
+  c_dsa_gen_keypair :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_ecdh_derive"
   c_ecdh_derive :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
@@ -471,6 +487,50 @@ ecdsaVerify ctx mdname propq pubDer msg sig isRaw noHash =
         withBytes msg $ \(pmsg, nmsg) ->
           withBytes sig $ \(psig, nsig) ->
             fromIntegral <$> c_ecdsa_verify ctx cmd cpq ppub npub pmsg nmsg psig nsig (if isRaw then 1 else 0) (if noHash then 1 else 0)
+
+dsaSign :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> Bool -> Bool -> IO (Either Int ByteString)
+dsaSign ctx mdname propq privDer msg wantRaw noHash =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      withBytes privDer $ \(ppriv, npriv) ->
+        withBytes msg $ \(pmsg, nmsg) ->
+          withOut (c_dsa_sign ctx cmd cpq ppriv npriv pmsg nmsg (if wantRaw then 1 else 0) (if noHash then 1 else 0))
+
+dsaVerify :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> ByteString -> Bool -> Bool -> IO Int
+dsaVerify ctx mdname propq pubDer msg sig isRaw noHash =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      withBytes pubDer $ \(ppub, npub) ->
+        withBytes msg $ \(pmsg, nmsg) ->
+          withBytes sig $ \(psig, nsig) ->
+            fromIntegral <$> c_dsa_verify ctx cmd cpq ppub npub pmsg nmsg psig nsig (if isRaw then 1 else 0) (if noHash then 1 else 0)
+
+-- | DSA domain parameters: DER DSS-Parms for an approved (L, N) pair.
+dsaGenParams :: Ptr OsslLibCtx -> String -> Int -> Int -> IO (Either Int ByteString)
+dsaGenParams ctx propq pbits qbits =
+  withCString propq $ \cpq ->
+    withOut (c_dsa_gen_params ctx cpq (fromIntegral pbits) (fromIntegral qbits))
+
+-- | DSA keypair from DER domain parameters: PKCS#8 + SPKI halves.
+dsaGenKeypair :: Ptr OsslLibCtx -> String -> ByteString -> IO (Either Int (ByteString, ByteString))
+dsaGenKeypair ctx propq paramsDer =
+  withCString propq $ \cpq ->
+    withBytes paramsDer $ \(pparams, nparams) ->
+      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+        rc <- c_dsa_gen_keypair ctx cpq pparams nparams ppriv npriv ppub npub
+        if rc /= 0
+          then pure (Left (fromIntegral rc))
+          else do
+            privp <- peek ppriv
+            privn <- peek npriv
+            pubp <- peek ppub
+            pubn <- peek npub
+            if privp == nullPtr || pubp == nullPtr
+              then pure (Left errNative)
+              else do
+                priv <- takeOwned privp (fromIntegral privn)
+                pub <- takeOwned pubp (fromIntegral pubn)
+                pure (Right (priv, pub))
 
 -- | ECDH agreement: the raw secret for (PKCS#8 base, SPKI peer);
 -- @cofactor@ selects cofactor multiplication.

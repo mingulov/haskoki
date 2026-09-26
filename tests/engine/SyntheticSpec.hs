@@ -117,6 +117,7 @@ spec = testGroup "synthetic engine"
   , testCase "synthetic AEAD seals deterministically" caseAeadRoundtrip
   , testCase "synthetic CCM seals deterministically" caseAeadCcmRoundtrip
   , testCase "ECDSA curves and digests roundtrip" caseEcdsaCurves
+  , testCase "DSA digests and raw roundtrip" caseDsaRoundtrip
   , testCase "ECDH agreements separate and replay" caseEcdh
   , testCase "CMAC tags separate and truncate" caseCmac
   , testCase "KDF output separates and truncates" caseKdf
@@ -916,6 +917,13 @@ caseCapsFull = withSynth "11" $ \env -> do
       dsaNames =
         ["ECDSA-" ++ c ++ "-RAW" | c <- dsaCurves]
           ++ ["ECDSA-" ++ c ++ "-" ++ s | c <- dsaCurves, s <- dsaStems]
+      fipsDsaNames =
+        ["DSA-RAW"]
+          ++ ["DSA-" ++ s | s <- fipsDsaStems]
+      fipsDsaStems =
+        [ "SHA1", "SHA224", "SHA256", "SHA384", "SHA512"
+        , "SHA3-224", "SHA3-256", "SHA3-384", "SHA3-512"
+        ]
   assertEqual "sig set" (Set.fromList
     ([ "RSA-PSS"
     , "RSA-RAW"
@@ -925,7 +933,7 @@ caseCapsFull = withSynth "11" $ \env -> do
     , "RSA-PKCS1v15-SHA3-224", "RSA-PKCS1v15-SHA3-256"
     , "RSA-PKCS1v15-SHA3-384", "RSA-PKCS1v15-SHA3-512"
     , "RSA-PKCS1v15-RIPEMD160"
-    ] ++ dsaNames)) (scSpecs (bcSigs caps))
+    ] ++ dsaNames ++ fipsDsaNames)) (scSpecs (bcSigs caps))
   assertEqual "curves" (Set.fromList dsaCurves) (scCurves (bcSigs caps))
   assertEqual "no pqc sig" Set.empty (scPqcSign (bcSigs caps))
   assertEqual "kem set"
@@ -1335,6 +1343,59 @@ casePkcs1Roundtrip = withSynth "11" $ \env -> do
 -- | Every (curve, digest-or-raw, encoding) spec roundtrips, rejects
 -- tampering and wrong keys, and stays domain-separated across
 -- curves, digests, and the P-256/SHA-256 baseline row.
+caseDsaRoundtrip :: IO ()
+caseDsaRoundtrip = withSynth "11" $ \env -> do
+  mapM_ (roundtrip env) dsaSpecs
+  -- Separation: digests, encodings, and the raw row never share a
+  -- test signature over one key and message.
+  s256 <- expectOk "sign sha256" =<< sign env (SigDSA "RAW" (Just D_SHA256)) key32 "msg"
+  s512 <- expectOk "sign sha512" =<< sign env (SigDSA "RAW" (Just D_SHA512)) key32 "msg"
+  assertBool "digests separated" (s256 /= s512)
+  sder <- expectOk "sign der" =<< sign env (SigDSA "DER" (Just D_SHA256)) key32 "msg"
+  assertBool "encodings separated" (sder /= s256)
+  sraw <- expectOk "sign raw" =<< sign env (SigDSA "RAW" Nothing) key32 (BS.replicate 20 0)
+  assertBool "raw separated" (sraw /= s256)
+  expectBadParam "raw short refused" =<< sign env (SigDSA "RAW" Nothing) key32 "short"
+  expectBadParam "raw short verify refused" =<<
+    verify env (SigDSA "RAW" Nothing) key32 "short" sraw
+  expectAuthFailed "sha512 sig under sha256 rejected" =<<
+    verify env (SigDSA "RAW" (Just D_SHA256)) key32 "msg" s512
+  -- Keygen: approved pairs mint opaque params, pairs roundtrip.
+  (paramsM, mAgain) <- expectOk "paramgen" =<< generateKey env (GenDSAParams 2048 256)
+  assertEqual "params single" Nothing mAgain
+  paramsDer <- case paramsM of
+    KeyDer der -> pure der
+    other -> assertFailure ("params answer is not DER: " ++ show other)
+  assertEqual "params length frames (L,N)" (256 + 32 + 256) (BS.length paramsDer)
+  (priv, Just pub) <- expectOk "keygen" =<< generateKey env (GenDSAKeypair paramsDer)
+  sig <- expectOk "genkey sign" =<< sign env (SigDSA "RAW" (Just D_SHA256)) priv "msg"
+  expectOk "genkey verify" =<< verify env (SigDSA "RAW" (Just D_SHA256)) pub "msg" sig
+  expectUnsupported "off-pair params refused" =<< generateKey env (GenDSAParams 2048 160)
+  where
+    dsaSpecs :: [SigSpec]
+    dsaSpecs =
+      [ SigDSA enc digest
+      | enc <- ["DER", "RAW"]
+      , digest <- Nothing :
+          [ Just alg
+          | alg <- [ D_SHA1, D_SHA224, D_SHA256, D_SHA384, D_SHA512
+                   , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
+                   ]
+          ]
+      ]
+    roundtrip env sspec = do
+      let label = show sspec
+          input = case sspec of
+            SigDSA _ Nothing -> BS.replicate 20 0xA5
+            _ -> "msg"
+      sig <- expectOk ("sign " ++ label) =<< sign env sspec key32 input
+      assertEqual ("sig length " ++ label) synthSigLength (BS.length sig)
+      expectOk ("verify " ++ label) =<< verify env sspec key32 input sig
+      expectAuthFailed ("tampered " ++ label) =<<
+        verify env sspec key32 input (BS.map complement sig)
+      expectAuthFailed ("wrong key " ++ label) =<<
+        verify env sspec otherKey32 input sig
+
 caseEcdsaCurves :: IO ()
 caseEcdsaCurves = withSynth "11" $ \env -> do
   mapM_ (roundtrip env) ecdsaSpecs
@@ -1736,16 +1797,15 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   -- Absent-provider primitives (pinned-CLI survey).
   refused "cipher DES" (FxCipher DirEncrypt (mech "CKM_DES_CBC") (Just kOid) BS.empty BS.empty)
   refused "cipher RC4" (FxCipher DirEncrypt (mech "CKM_RC4") (Just kOid) BS.empty BS.empty)
-  refused "sign DSA" (mkSign "CKM_DSA_SHA256")
   -- Present-but-unmapped surfaces (needs a Raw entry point).
   -- GCM left this group when the AEAD entry points landed (see
   -- caseAeadRoundtrip); AES-KW left it when the wrap entry point
   -- landed (see caseCipherSpecs and the OpenSSLSpec wrap KATs);
-  -- empty GCM params still fail typed at the driver (CryptoFailed
-  -- recipe refusal, pinned below).
+  -- DSA left it when the DSA entry points landed (see
+  -- caseDsaRoundtrip and the OpenSSLSpec DSA KATs); empty GCM
+  -- params still fail typed at the driver (CryptoFailed recipe
+  -- refusal, pinned below).
   refused "sign ML-DSA" (mkSign "CKM_ML_DSA")
-  refused "message-sign DSA"
-    (FxMessageSign (mech "CKM_DSA_SHA256") (Just kOid) BS.empty BS.empty)
   refused "derive TLS_PRF"
     (FxDerive (mech "CKM_TLS_PRF") (Just kOid) BS.empty BS.empty 32)
   refused "derive DH" (FxDerive (mech "CKM_DH_PKCS_DERIVE") (Just kOid) BS.empty BS.empty 32)

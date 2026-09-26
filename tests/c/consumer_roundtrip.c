@@ -951,7 +951,10 @@ int main(int argc, char **argv) {
         { CKA_CLASS, &scls, sizeof(scls) },
         { CKA_KEY_TYPE, &ekt, sizeof(ekt) },
         { CKA_TOKEN, &bFalse, sizeof(bFalse) },
-        { CKA_SIGN, &bTrue, sizeof(bTrue) }
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        /* Absent usage flags default true at keygen; the
+         * sign-only refusal leg needs an explicit false. */
+        { CKA_VERIFY, &bFalse, sizeof(bFalse) }
       };
       CK_ATTRIBUTE htmpl[] = {
         { CKA_CLASS, &ckcls, sizeof(ckcls) },
@@ -967,7 +970,7 @@ int main(int argc, char **argv) {
       kgm.mechanism = CKM_EC_KEY_PAIR_GEN;
       kgm.pParameter = NULL_PTR;
       kgm.ulParameterLen = 0;
-      rv = f->C_GenerateKeyPair(ssess, &kgm, pubT, 5, privT, 4,
+      rv = f->C_GenerateKeyPair(ssess, &kgm, pubT, 5, privT, 5,
                                 &pub, &priv);
       CHECKC(rv == CKR_OK && pub != 0 && priv != 0, "sign EC pair mints");
       hm.mechanism = CKM_GENERIC_SECRET_KEY_GEN;
@@ -1221,6 +1224,128 @@ int main(int argc, char **argv) {
     gm.ulParameterLen = 0;
     rv = f->C_SignInit(ssess, &gm, hmkey);
     CHECKC(rv == CKR_ARGUMENTS_BAD, "HMAC-GENERAL empty params refused");
+    /* DSA: paramgen(1024) -> keypair -> sign/verify + raw floor. */
+    {
+      CK_OBJECT_CLASS dpcls = CKO_DOMAIN_PARAMETERS;
+      CK_KEY_TYPE dkt = CKK_DSA;
+      CK_ULONG pbits = 1024;
+      CK_OBJECT_HANDLE dparams = 0, dpub = 0, dpriv = 0;
+      CK_BYTE pbuf[128], qbuf[32], gbuf[128];
+      CK_MECHANISM dpgm, dkgm, dsm, drm;
+      CK_ATTRIBUTE pgtmpl[] = {
+        { CKA_CLASS, &dpcls, sizeof(dpcls) },
+        { CKA_KEY_TYPE, &dkt, sizeof(dkt) },
+        { CKA_PRIME_BITS, &pbits, sizeof(pbits) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_ATTRIBUTE pgshort[] = {
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_ATTRIBUTE pget[3];
+      CK_ATTRIBUTE dpubT[7];
+      CK_ATTRIBUTE dprivT[4];
+      CK_BYTE digest[20] = { 1 };
+      CK_BYTE shortd[7] = { 0 };
+      dpgm.mechanism = CKM_DSA_PARAMETER_GEN;
+      dpgm.pParameter = NULL_PTR;
+      dpgm.ulParameterLen = 0;
+      rv = f->C_GenerateKey(ssess, &dpgm, pgshort, 1, &dparams);
+      CHECKC(rv == CKR_TEMPLATE_INCOMPLETE,
+             "DSA paramgen without prime bits is INCOMPLETE");
+      rv = f->C_GenerateKey(ssess, &dpgm, pgtmpl, 4, &dparams);
+      CHECKC(rv == CKR_OK && dparams != 0, "DSA params mint");
+      pget[0].type = CKA_PRIME;
+      pget[0].pValue = NULL_PTR;
+      pget[0].ulValueLen = 0;
+      pget[1].type = CKA_SUBPRIME;
+      pget[1].pValue = NULL_PTR;
+      pget[1].ulValueLen = 0;
+      pget[2].type = CKA_BASE;
+      pget[2].pValue = NULL_PTR;
+      pget[2].ulValueLen = 0;
+      rv = f->C_GetAttributeValue(ssess, dparams, pget, 3);
+      CHECKC(rv == CKR_OK && pget[0].ulValueLen == 128 &&
+                 pget[1].ulValueLen == 20 && pget[2].ulValueLen == 128,
+             "DSA params read back 128/20/128");
+      pget[0].pValue = pbuf;
+      pget[1].pValue = qbuf;
+      pget[2].pValue = gbuf;
+      rv = f->C_GetAttributeValue(ssess, dparams, pget, 3);
+      CHECKC(rv == CKR_OK, "DSA params fill");
+      dpubT[0].type = CKA_CLASS;
+      dpubT[0].pValue = &pcls;
+      dpubT[0].ulValueLen = sizeof(pcls);
+      dpubT[1].type = CKA_KEY_TYPE;
+      dpubT[1].pValue = &dkt;
+      dpubT[1].ulValueLen = sizeof(dkt);
+      dpubT[2].type = CKA_PRIME;
+      dpubT[2].pValue = pbuf;
+      dpubT[2].ulValueLen = 128;
+      dpubT[3].type = CKA_SUBPRIME;
+      dpubT[3].pValue = qbuf;
+      dpubT[3].ulValueLen = 20;
+      dpubT[4].type = CKA_BASE;
+      dpubT[4].pValue = gbuf;
+      dpubT[4].ulValueLen = 128;
+      dpubT[5].type = CKA_TOKEN;
+      dpubT[5].pValue = &bFalse;
+      dpubT[5].ulValueLen = sizeof(bFalse);
+      dpubT[6].type = CKA_VERIFY;
+      dpubT[6].pValue = &bTrue;
+      dpubT[6].ulValueLen = sizeof(bTrue);
+      dprivT[0].type = CKA_CLASS;
+      dprivT[0].pValue = &scls;
+      dprivT[0].ulValueLen = sizeof(scls);
+      dprivT[1].type = CKA_KEY_TYPE;
+      dprivT[1].pValue = &dkt;
+      dprivT[1].ulValueLen = sizeof(dkt);
+      dprivT[2].type = CKA_TOKEN;
+      dprivT[2].pValue = &bFalse;
+      dprivT[2].ulValueLen = sizeof(bFalse);
+      dprivT[3].type = CKA_SIGN;
+      dprivT[3].pValue = &bTrue;
+      dprivT[3].ulValueLen = sizeof(bTrue);
+      dkgm.mechanism = CKM_DSA_KEY_PAIR_GEN;
+      dkgm.pParameter = NULL_PTR;
+      dkgm.ulParameterLen = 0;
+      rv = f->C_GenerateKeyPair(ssess, &dkgm, dpubT, 7, dprivT, 4,
+                                &dpub, &dpriv);
+      CHECKC(rv == CKR_OK && dpub != 0 && dpriv != 0, "DSA pair mints");
+      dsm.mechanism = CKM_DSA_SHA256;
+      dsm.pParameter = NULL_PTR;
+      dsm.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &dsm, dpriv);
+      CHECKC(rv == CKR_OK, "DSA SignInit ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "dsa-consumer", 12, sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen == 40, "DSA sign yields 40 bytes");
+      rv = f->C_VerifyInit(ssess, &dsm, dpub);
+      CHECKC(rv == CKR_OK, "DSA VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "dsa-consumer", 12, sig, sigLen);
+      CHECKC(rv == CKR_OK, "DSA verify ok");
+      rv = f->C_VerifyInit(ssess, &dsm, dpub);
+      CHECKC(rv == CKR_OK, "DSA re-init for tamper");
+      sig[sigLen - 1] ^= 0xFF;
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "dsa-consumer", 12, sig, sigLen);
+      CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered DSA refused");
+      drm.mechanism = CKM_DSA;
+      drm.pParameter = NULL_PTR;
+      drm.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &drm, dpriv);
+      CHECKC(rv == CKR_OK, "raw DSA SignInit ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, shortd, sizeof(shortd), sig, &sigLen);
+      CHECKC(rv == CKR_DATA_LEN_RANGE, "raw DSA short digest refused");
+      rv = f->C_SignInit(ssess, &drm, dpriv);
+      CHECKC(rv == CKR_OK, "raw DSA re-init ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, digest, sizeof(digest), sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen == 40, "raw DSA signs 20 bytes");
+      rv = f->C_VerifyInit(ssess, &drm, dpub);
+      CHECKC(rv == CKR_OK, "raw DSA VerifyInit ok");
+      rv = f->C_Verify(ssess, digest, sizeof(digest), sig, sigLen);
+      CHECKC(rv == CKR_OK, "raw DSA verify ok");
+    }
     rv = f->C_CloseSession(ssess);
     CHECKC(rv == CKR_OK, "sign session closes");
   }
@@ -1769,7 +1894,10 @@ int main(int argc, char **argv) {
         { CKA_TOKEN, &bFalse, sizeof(bFalse) },
         { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) },
         { CKA_ENCRYPT, &bTrue, sizeof(bTrue) },
-        { CKA_DECRYPT, &bTrue, sizeof(bTrue) }
+        { CKA_DECRYPT, &bTrue, sizeof(bTrue) },
+        /* Absent usage flags default true at keygen; the
+         * no-WRAP-mark refusal leg needs an explicit false. */
+        { CKA_WRAP, &bFalse, sizeof(bFalse) }
       };
       CK_ATTRIBUTE stmpl[] = {
         { CKA_CLASS, &ckcls, sizeof(ckcls) },
@@ -1785,7 +1913,7 @@ int main(int argc, char **argv) {
       kgm.ulParameterLen = 0;
       rv = f->C_GenerateKey(wsess, &kgm, wtmpl, 6, &wrapKey);
       CHECKC(rv == CKR_OK && wrapKey != 0, "wrapping key mints");
-      rv = f->C_GenerateKey(wsess, &kgm, ttmpl, 7, &targetKey);
+      rv = f->C_GenerateKey(wsess, &kgm, ttmpl, 8, &targetKey);
       CHECKC(rv == CKR_OK && targetKey != 0, "wrap target mints");
       rv = f->C_GenerateKey(wsess, &kgm, stmpl, 6, &sealedKey);
       CHECKC(rv == CKR_OK && sealedKey != 0, "derive base mints");

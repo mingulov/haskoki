@@ -89,6 +89,11 @@ data AttributeType
   | AttrHashOfSubjectPublicKey
   | AttrHashOfIssuerPublicKey
   | AttrModifiable
+  | AttrPrime
+  | AttrSubprime
+  | AttrBase
+  | AttrPrimeBits
+  | AttrSubprimeBits
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Owned attribute values. The semantic value stays separate
@@ -249,6 +254,11 @@ shapeOf t = case t of
   AttrPublicKeyInfo -> ShapeBytes
   AttrHashOfSubjectPublicKey -> ShapeBytes
   AttrHashOfIssuerPublicKey -> ShapeBytes
+  AttrPrime -> ShapeBytes
+  AttrSubprime -> ShapeBytes
+  AttrBase -> ShapeBytes
+  AttrPrimeBits -> ShapeULong
+  AttrSubprimeBits -> ShapeULong
 
 -- | Whether a value carries its type's shape. The template
 -- wrong-type gate ('Haskoki.Object.validateTemplate' refuses
@@ -367,6 +377,11 @@ attributeTypeByName name = case name of
   "CKA_PUBLIC_KEY_INFO" -> Just AttrPublicKeyInfo
   "CKA_HASH_OF_SUBJECT_PUBLIC_KEY" -> Just AttrHashOfSubjectPublicKey
   "CKA_HASH_OF_ISSUER_PUBLIC_KEY" -> Just AttrHashOfIssuerPublicKey
+  "CKA_PRIME" -> Just AttrPrime
+  "CKA_SUBPRIME" -> Just AttrSubprime
+  "CKA_BASE" -> Just AttrBase
+  "CKA_PRIME_BITS" -> Just AttrPrimeBits
+  "CKA_SUBPRIME_BITS" -> Just AttrSubprimeBits
   _ -> Nothing
 
 -- | 8-byte big-endian decoding; total over 8-byte inputs (only

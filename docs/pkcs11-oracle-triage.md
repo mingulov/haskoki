@@ -334,6 +334,62 @@ first lane proving all of them together.
   Haskoki gap
   (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-xts-r1.json`).
 
+## Round 12: DSA slice (r29/r30 + KAT r11/r12)
+
+- r28→r29 (3125→3169 passed, +44 pass / +1 xfail / +239 skip,
+  zero pass→fail, zero xpass, same 2 HOTP external failures
+  confirmed by test id): DSA slice (raw + 9 prehash sign rows
+  over provider DSA, keypair gen from explicit domain params,
+  parameter gen to domain-param objects, 132 behavior rows).
+  Per-unit diff fully attributed: `test_mech_flags` +44 pass /
+  +64 skip (new DSA flag/size probes pass; absence probes
+  skip), `test_field_size_boundary` +1 xfail / −1 skip (the DSA
+  prime-bits probe now runs and xfails on P11C-002 — Haskoki
+  answers the spec-correct CKR_TEMPLATE_INCONSISTENT but the
+  framework's `_KEY_SIZE_REJECT_RVS` tuple carries wrong numeric
+  codes, so no provider-side code can pass), `test_mech_probe`
+  +36 skip, `test_mech_negative` +80 skip, `test_mech_sign` +30
+  skip, `test_mech_multipart` +18 skip, `test_mech_attribute` +8
+  skip, `test_mech_keygen` +4 skip — all new-leg skips are the
+  framework's domain-params provisioning gate (`gen_keypair_for_mech`
+  skips DSA/DH as "requires external domain parameters"), none
+  a Haskoki gap
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r29-results.json`).
+- Targeted DSA r1 (passing on the first run): 2040 collected —
+  690 passed, 0 failed, 0 xpass; `test_dsa_complete.py` 74 pass
+  + 3 skips (the skips are the unadvertised FIPS seed-variant
+  gates — honest catalog-only), `test_wycheproof_dsa.py` 613
+  pass + 1343 skips (duplicate-vector dedup), 3 xfails all in
+  `test_field_size_boundary.py` (RSA/DSA/AES probes in the same
+  P11C-002 bucket — RSA/AES pre-date the slice)
+  (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-dsa-r1.json`).
+- KAT r11 (first DSA run): 75365 passed, 3 failed — the 2 known
+  HOTP externals plus a new real finding,
+  `test_sign.py::TestDSASignature::test_dsa_generate_and_sign`
+  (minimal keygen templates — no usage flags — then sign:
+  Haskoki refused `CKR_KEY_FUNCTION_NOT_PERMITTED`). Root cause:
+  Haskoki treated absent usage flags as refused on generated
+  keys; the oracle (and SoftHSM/NSS generation behavior)
+  requires minimal templates to mint usable keys. Fix (same
+  slice): `checkKeyTemplate` now defaults absent usage flags
+  TRUE, scoped by class (public keys default the public
+  operations, private/secret the full set, non-key classes
+  none) and skipping rule-forbidden flags (AES forbids the
+  encapsulate pair — a defaulted forbidden flag would poison
+  detached rejoin, which replays stored templates). Explicit
+  FALSE still refuses; creation (`C_CreateObject`) keeps
+  absent-means-false. Migrated the in-repo pins of the old
+  contract to explicit-false templates (2 wrap legs, 1 init
+  policy pin, 2 C consumer legs). Proof: targeted
+  `test_sign.py` r2 18/18, fast r30 identical to r29 (3169/2/419
+  — same HOTP ids, zero drift from the behavior change), KAT r12
+  below.
+- Follow-up (pre-existing, not introduced by the slice):
+  `keyTypeCompatible` does not separate public/private key
+  direction, so a public key explicitly marked `CKA_SIGN=true`
+  passes init (crypto fails later). Filed for a hardening slice;
+  no oracle leg covers it.
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
@@ -562,7 +618,46 @@ OAEP error uniformity). T5a (RO owner dimension) and T5b
 (public/private gates) are implemented and passing in-suite
 post-r18; lane reproof needs a bundle rebuild.
 
-## KAT lane status (r10, AES-XTS slice: COMPLETE)
+## KAT lane status (r12, DSA slice + usage-default fix: COMPLETE)
+
+112594 tests — 75366 passed, 2 failed, 0 crashed, 3887 xfailed,
+33339 skipped (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r12-results.json`;
+`incomplete: false`), canonical data dir `/tmp/pkcs11-ws/data`,
+clean-rebuild release. The only failures are the 2 external
+HOTP registry asserts (same pair as every lane, confirmed by
+test id). Delta vs r10 is fully attributed, +732 passed / +1
+xfailed, zero pass→fail, zero crashes, zero xpass:
+
+- `test_dsa_complete.py`: 0→74 passed (skip→pass); 3 remaining
+  skips are the unadvertised FIPS seed-variant gates (honest
+  catalog-only, provider-absent per OSSL4-002).
+- `test_wycheproof_dsa.py`: 0→613 passed (skip→pass); 1343
+  skips are duplicate-vector dedup. Every served vector
+  verifies with strict invalid rejection (no accepted-invalid).
+- `test_sign.py`: +1 passed (the KAT r11 finding
+  `TestDSASignature::test_dsa_generate_and_sign`, fixed by the
+  keygen usage-default change — minimal templates now mint
+  usable keys).
+- `test_mech_flags.py`: +44 passed / +64 skipped (new DSA
+  flag/size probes pass).
+- `test_field_size_boundary.py`: +1 xfail / −1 skip (the DSA
+  prime-bits probe now runs; xfail is P11C-002 — the
+  framework's reject tuple carries wrong numeric codes, so the
+  spec-correct `CKR_TEMPLATE_INCONSISTENT` cannot pass).
+- Registry legs newly collected for the 12 advertised DSA
+  mechanisms skip on the framework's domain-params
+  provisioning gate (`test_mech_negative` +80,
+  `test_mech_probe` +36, `test_mech_sign` +30,
+  `test_mech_multipart` +18, `test_mech_attribute` +8,
+  `test_mech_keygen` +4) — none a Haskoki gap.
+- KAT r11 (intermediate): 75365 passed, 3 failed — the 2 HOTP
+  externals plus the minimal-template DSA finding above, fixed
+  in-slice (see Round 12). Fast r30 standalone repeats r29
+  exactly (6410 tests — 3169 passed, same 2 HOTP failed, 419
+  xfailed, 2820 skipped): zero drift from the usage-default
+  behavior change.
+
+## KAT lane status (historical r10, AES-XTS slice: COMPLETE)
 
 112310 tests — 74634 passed, 2 failed, 0 crashed, 3886 xfailed,
 33788 skipped (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r10-results.json`;

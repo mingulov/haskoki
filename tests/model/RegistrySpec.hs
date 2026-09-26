@@ -174,7 +174,18 @@ caseCurated = do
     , MechanismId Gen.ckm_RSA_PKCS_PSS
     , MechanismId Gen.ckm_SHA1_RSA_PKCS_PSS
     , MechanismId Gen.ckm_ML_KEM_KEY_PAIR_GEN
+    , MechanismId Gen.ckm_DSA_KEY_PAIR_GEN
+    , MechanismId Gen.ckm_DSA
+    , MechanismId Gen.ckm_DSA_SHA1
+    , MechanismId Gen.ckm_DSA_SHA224
+    , MechanismId Gen.ckm_DSA_SHA256
+    , MechanismId Gen.ckm_DSA_SHA384
+    , MechanismId Gen.ckm_DSA_SHA512
     , MechanismId Gen.ckm_ML_KEM
+    , MechanismId Gen.ckm_DSA_SHA3_224
+    , MechanismId Gen.ckm_DSA_SHA3_256
+    , MechanismId Gen.ckm_DSA_SHA3_384
+    , MechanismId Gen.ckm_DSA_SHA3_512
     , MechanismId Gen.ckm_SHA256_RSA_PKCS
     , MechanismId Gen.ckm_SHA384_RSA_PKCS
     , MechanismId Gen.ckm_SHA512_RSA_PKCS
@@ -277,6 +288,7 @@ caseCurated = do
     , MechanismId Gen.ckm_AES_CTS
     , MechanismId Gen.ckm_AES_CMAC
     , MechanismId Gen.ckm_AES_CMAC_GENERAL
+    , MechanismId Gen.ckm_DSA_PARAMETER_GEN
     , MechanismId Gen.ckm_AES_OFB
     , MechanismId Gen.ckm_AES_CFB8
     , MechanismId Gen.ckm_AES_CFB128
@@ -306,7 +318,7 @@ caseCurated = do
 
 caseJsonProjection :: IO ()
 caseJsonProjection = do
-  -- The reviewed head stays pinned verbatim; the 344 generated
+  -- The reviewed head stays pinned verbatim; the 332 generated
   -- catalog-only rows are pinned by count + full file equality (the
   -- file is generator output; equality proves the Haskell registry
   -- matches the JSON catalog byte-for-byte, and
@@ -326,11 +338,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 120 behavior + 344 catalog-only + catalog line.
+  -- schema + 132 behavior + 332 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 120
+  assertEqual "behavior line count" 132
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 344
+  assertEqual "catalog-only line count" 332
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -398,6 +410,8 @@ caseKeyMgmtPromoted = do
         [ (MechanismId 0x1040, "CKM_EC_KEY_PAIR_GEN", [OpGenerateKeyPair])
         , (MechanismId 0x0, "CKM_RSA_PKCS_KEY_PAIR_GEN", [OpGenerateKeyPair])
         , (MechanismId 0x0f, "CKM_ML_KEM_KEY_PAIR_GEN", [OpGenerateKeyPair])
+        , (MechanismId 0x10, "CKM_DSA_KEY_PAIR_GEN", [OpGenerateKeyPair])
+        , (MechanismId 0x2000, "CKM_DSA_PARAMETER_GEN", [OpGenerateKey])
         , (MechanismId 0x402a, "CKM_HKDF_DERIVE", [OpDerive])
         , (MechanismId 0x17, "CKM_ML_KEM", [OpEncapsulate, OpDecapsulate])
         ]
@@ -647,7 +661,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 344 (length invIds)
+  assertEqual "guard covers every catalog row" 332 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of
@@ -663,7 +677,7 @@ caseSpecialsCatalogOnly :: IO ()
 caseSpecialsCatalogOnly = do
   -- S15: one named representative per reviewed gap group stays
   -- catalog-only with its headline operation refused under
-  -- granted caps (the exhaustive guard above covers all 344;
+  -- granted caps (the exhaustive guard above covers all 332;
   -- this table documents the groups for humans).
   let reg = curatedRegistry
       reps =
@@ -675,7 +689,7 @@ caseSpecialsCatalogOnly = do
         , ("CKM_FORTEZZA_TIMESTAMP", OpSign)
         , ("CKM_DES_CBC", OpEncrypt)
         , ("CKM_RC4", OpEncrypt)
-        , ("CKM_DSA_SHA256", OpSign)
+        , ("CKM_DSA_PROBABILISTIC_PARAMETER_GEN", OpGenerateKey)
         , ("CKM_ML_DSA", OpSign)
         , ("CKM_TLS_PRF", OpDerive)
         , ("CKM_AES_KEY_WRAP_PKCS7", OpWrap)
