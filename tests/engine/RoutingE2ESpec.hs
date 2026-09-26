@@ -69,6 +69,7 @@ import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Otp (encodeHotpParams)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
+import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Registry (MechanismId (..), Operation (..))
 import Haskoki.Request
   ( FunctionId (..)
@@ -106,6 +107,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: cmac KATs + truncate + refuse" caseDriverCmac
   , testCase "driver: 3des-mac KATs + truncate + refuse" caseDriverDes3Mac
   , testCase "driver: kdf vectors + refuse" caseDriverKdf
+  , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
   , testCase "driver: message cipher/sign/verify" caseDriverMessage
   , testCase "driver: recovery is honestly unsupported" caseDriverRecover
@@ -970,6 +972,59 @@ caseDriverKdf = withBackend $ \env -> do
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badLen <- runEffect env res
     (FxDerive (MechanismId 0x393) (Just pwOid) BS.empty BS.empty 33)
+  case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- | TLS-PRF through the driver over real HMAC-MD5\/SHA-1 —
+-- 48-byte (even) and 47-byte (odd, shared middle byte) secrets,
+-- truncation, label\/seed separation, and typed refusals. The
+-- expected outputs come from the pinned OpenSSL 4.0.2 CLI ('openssl
+-- mac' per P_hash block; only concat\/XOR in the harness — the
+-- provider's TLS1-PRF takes a digest and serves TLS 1.2 only, so it
+-- cannot oracle the MD5\/SHA-1 split directly).
+caseDriverTlsPrf :: IO ()
+caseDriverTlsPrf = withBackend $ \env -> do
+  let tlsPrf = MechanismId 0x378
+      sec48 = BS.pack [0 .. 47]
+      sec47 = BS.pack [0 .. 46]
+      evenOid = ObjectId 74
+      oddOid = ObjectId 75
+      res oid
+        | oid == evenOid = Just (KeyBytes sec48)
+        | oid == oddOid = Just (KeyBytes sec47)
+        | otherwise = Nothing
+      deriveAs oid params outLen =
+        runEffect env res (FxDerive tlsPrf (Just oid) params BS.empty outLen)
+          >>= expectBytes
+      params = encodeTlsPrfParams "test label" "0123456789abcdef"
+  full48 <- deriveAs evenOid params 48
+  assertEqual "tls-prf even secret"
+    (hex "7b986b57ecc5575e7ac26a43f503a3b4b2d0721c16a9176f2f6d6ec426294904a121842a6d2c1c7a1cd00fc0f48ed8a8") full48
+  odd48 <- deriveAs oddOid params 48
+  assertEqual "tls-prf odd secret (shared middle byte)"
+    (hex "8674e6753c2ce33ce4af90a9b081a1340061db03dd08408b848577684ec9d26916658f0baa24fa6f151d27942487002d") odd48
+  trunc16 <- deriveAs evenOid params 16
+  assertEqual "truncation prefix" (BS.take 16 full48) trunc16
+  trunc20 <- deriveAs oddOid params 20
+  assertEqual "odd truncation prefix" (BS.take 20 odd48) trunc20
+  otherLab <- deriveAs evenOid (encodeTlsPrfParams "other label" "0123456789abcdef") 48
+  assertBool "labels separated" (otherLab /= full48)
+  otherSeed <- deriveAs evenOid (encodeTlsPrfParams "test label" "0123456789abcdee") 48
+  assertBool "seeds separated" (otherSeed /= full48)
+  -- Typed refusals.
+  badParams <- runEffect env res
+    (FxDerive tlsPrf (Just evenOid) "junk" BS.empty 48)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badInfo <- runEffect env res
+    (FxDerive tlsPrf (Just evenOid) params "x" 48)
+  case badInfo of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badLen <- runEffect env res
+    (FxDerive tlsPrf (Just evenOid) params BS.empty 0)
   case badLen of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)

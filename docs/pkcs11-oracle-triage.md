@@ -645,6 +645,58 @@ first lane proving all of them together.
   afterwards, so no stale-bundle re-verify is
   needed this round.
 
+## Round 17: DES3-MAC + TLS-PRF slices (fast r36→r37→r38 + KAT r17→r18)
+
+- r37 (first 10a+10b bundle: 3305 passed / 16 failed /
+  509 xfailed / 2824 skipped; summary from lane output,
+  file not preserved): 14 fresh failures, all DES3. 12
+  `test_des` + 1 `test_cve_regression::test_wrap_3des_key`
+  share one root — `C_GenerateKey(CKM_DES3_KEY_GEN)` with
+  `{CKA_TOKEN}` only returns `CKR_TEMPLATE_INCOMPLETE`
+  (10a required `CKA_VALUE_LEN`; fixed-size keygen takes the
+  headline default instead). 1
+  `test_mech_negative::test_registry_verify_wrong_key_type[DES3_MAC]`
+  — verify with a wrong-typed key returned `CKR_OK` (10a never
+  added the DES3-MAC init-matrix rows, so init fell through to
+  usage flags only). The other 2 are the HOTP externals by id.
+- Fixes (all in-stack, 10a commit): DES3 keygen defaults an
+  absent length to three-key 24 bytes (AES keeps its required
+  length — no single headline size); `KeyMatrix` gains the
+  DES3-MAC sign+verify rows (`CKK_DES3`); `caseInitKeyTypeMatrix`
+  pins DES3-MAC init accept/refuse both ops;
+  `caseDes3Keygen` pins the default. Consumer parity: DES3-MAC
+  nonempty-params refusal is per-topology (direct
+  `ARGUMENTS_BAD`, proxied `PARAM_INVALID` — the recorded shim
+  translation precedent); TLS-PRF zero-image params are
+  per-topology (direct `ARGUMENTS_BAD` on the wrong-sized
+  image, proxied `CKR_OK` — the shim chases the all-zero struct
+  to empty label+seed under its NULL-on-miss contract and empty
+  params are legal inputs).
+- r38: 3387 passed / 2 failed / 442 xfailed / 2823 skipped
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r38-results.json`).
+  r37→r38: +82 pass / −14 fail / −67 xfail / −1 skip; the
+  −67 xfail is the keygen fix moving setup-blocked legs into
+  runs. Net vs r36 (3316 passed): +71 pass, same 2 HOTP
+  externals by id, zero pass→fail.
+- KAT r17→r18: 78440→78511 passed (+71) / 8 failed (=) /
+  3995→4007 xfailed / 30310→30312 skipped
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r18-results.json`). The 8
+  failures are identical by id to r17 (6 P11C-003 + 2 HOTP
+  externals); zero pass→fail. Movers: `test_des` 0/33-skip →
+  12 pass / 21 skip; `test_tls12` 0/38-skip → 2 pass / 36 skip
+  (`test_tls_prf_availability` +
+  `test_tls_prf` — the latter derives a master secret through
+  our `CKM_TLS_PRF` and compares against the framework's own
+  RFC 2246 implementation, passing); matrix families +10 pass
+  each across `test_mech_sign`/`test_mech_multipart`/
+  `test_mech_negative`(+10 xfail)/`test_mech_flags`(+12 pass,
+  +24 skip) as the 4 new mechanisms register; `test_mech_probe`
+  +12 skip (registered, tested elsewhere).
+- Bundle note: r37/r38/KAT-r18 all ran on release bundles built
+  from the 10a+10b stack (rebuilt after the in-stack fixes for
+  r38/r18). Only the triage doc changed afterwards, so no
+  stale-bundle re-verify is needed this round.
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

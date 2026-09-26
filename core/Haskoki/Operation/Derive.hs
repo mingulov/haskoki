@@ -68,6 +68,11 @@ import Haskoki.Recipe.Kdf
   , kdfRecipeFor
   , kdfShaWidth
   )
+import Haskoki.Recipe.TlsPrf
+  ( maxTlsPrfOutput
+  , tlsPrfParamsValid
+  , tlsPrfRecipeFor
+  )
 import Haskoki.Registry (MechanismId (..))
 import Haskoki.Registry.Generated (ckm_HKDF_DERIVE)
 import Haskoki.Rules (Rules)
@@ -231,6 +236,25 @@ planDerive rules model st mech baseH blob
                 Nothing
               Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
                 "KDF row without a digest width")
+  | Just r <- tlsPrfRecipeFor mech = case decodeDeriveParams blob of
+      Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "malformed derive arguments")
+      Just (prfBlob, tmpls) -> case resolveBase model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, _)
+          -- TLS-PRF derives from generic-secret bases only; the
+          -- key-type contradiction outranks parameter shape (the
+          -- Init-matrix ordering, shared with the ECDH and SHA-KDF
+          -- arms).
+          | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkGenericSecret) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "TLS-PRF base key is not a generic secret")
+          | not (tlsPrfParamsValid r prfBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              "TLS-PRF mechanism parameters rejected by the recipe")
+          | otherwise -> finish tmpls maxTlsPrfOutput
+              "derived total exceeds the TLS-PRF ceiling"
+              (FxDerive mech (Just (osId ost)) prfBlob BS.empty)
+              Nothing
   | otherwise =
       KeyDenied (KeyDeny CKR_MECHANISM_INVALID
         ("not a derive mechanism: " ++ show mech))

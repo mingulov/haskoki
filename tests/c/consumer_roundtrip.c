@@ -3246,6 +3246,94 @@ int main(int argc, char **argv) {
           rv = f->C_Digest(sess, genval, sizeof(genval), dgst, &dgstLen);
           CHECKC(rv == CKR_OK && dgstLen == 32 && memcmp(dgst, kd1, 32) == 0,
                  "SHA3-256 derived equals token digest");
+          /* TLS-PRF: C-surface KAT (libcrypto-oracle bytes), replay,
+           * and typed refusals. */
+          {
+            CK_BYTE ksec[48];
+            CK_BYTE prf1[48], prf2[48];
+            CK_ULONG prfLen, prfLen2, vlen48 = 48;
+            CK_OBJECT_HANDLE prfBase = 0, pd1 = 0, pd2 = 0, pd3 = 0;
+            CK_TLS_PRF_PARAMS prf;
+            CK_MECHANISM pm, badpm;
+            CK_BYTE label[] = "test label";
+            CK_BYTE seed[] = "0123456789abcdef";
+            CK_BYTE want[48] = {
+              0x7b,0x98,0x6b,0x57,0xec,0xc5,0x57,0x5e,0x7a,0xc2,0x6a,0x43,
+              0xf5,0x03,0xa3,0xb4,0xb2,0xd0,0x72,0x1c,0x16,0xa9,0x17,0x6f,
+              0x2f,0x6d,0x6e,0xc4,0x26,0x29,0x49,0x04,0xa1,0x21,0x84,0x2a,
+              0x6d,0x2c,0x1c,0x7a,0x1c,0xd0,0x0f,0xc0,0xf4,0x8e,0xd8,0xa8
+            };
+            CK_ATTRIBUTE prfBaseT[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_DERIVE, &yes, sizeof(yes) },
+              { CKA_VALUE, ksec, sizeof(ksec) },
+            };
+            CK_ATTRIBUTE ptmpl[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_VALUE_LEN, &vlen48, sizeof(vlen48) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_SENSITIVE, &no, sizeof(no) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+            };
+            CK_ATTRIBUTE gprf[] = { { CKA_VALUE, prf1, sizeof(prf1) } };
+            CK_ATTRIBUTE gprf2[] = { { CKA_VALUE, prf2, sizeof(prf2) } };
+            int i;
+            for (i = 0; i < 48; i++) ksec[i] = (CK_BYTE)i;
+            rv = f->C_CreateObject(sess, prfBaseT, 5, &prfBase);
+            CHECKC(rv == CKR_OK && prfBase != 0, "TLS-PRF base imports");
+            prf.pSeed = seed;
+            prf.ulSeedLen = sizeof(seed) - 1;
+            prf.pLabel = label;
+            prf.ulLabelLen = sizeof(label) - 1;
+            prf.pOutput = NULL_PTR;
+            prf.pulOutputLen = NULL_PTR;
+            pm.mechanism = CKM_TLS_PRF;
+            pm.pParameter = &prf;
+            pm.ulParameterLen = sizeof(prf);
+            rv = f->C_DeriveKey(sess, &pm, prfBase, ptmpl, 6, &pd1);
+            CHECKC(rv == CKR_OK && pd1 != 0, "TLS-PRF derive ok");
+            prfLen = sizeof(prf1);
+            gprf[0].ulValueLen = prfLen;
+            rv = f->C_GetAttributeValue(sess, pd1, gprf, 1);
+            CHECKC(rv == CKR_OK && gprf[0].ulValueLen == 48 &&
+                       memcmp(prf1, want, 48) == 0,
+                   "TLS-PRF derived matches KAT bytes");
+            rv = f->C_DeriveKey(sess, &pm, prfBase, ptmpl, 6, &pd2);
+            CHECKC(rv == CKR_OK && pd2 != 0, "TLS-PRF derive replays");
+            prfLen2 = sizeof(prf2);
+            gprf2[0].ulValueLen = prfLen2;
+            rv = f->C_GetAttributeValue(sess, pd2, gprf2, 1);
+            CHECKC(rv == CKR_OK && gprf2[0].ulValueLen == 48 &&
+                       memcmp(prf1, prf2, 48) == 0,
+                   "TLS-PRF derived deterministic");
+            rv = f->C_DeriveKey(sess, &pm, ecBase, ptmpl, 6, &pd3);
+            CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT && pd3 == 0,
+                   "TLS-PRF with EC base refused typed");
+            badpm.mechanism = CKM_TLS_PRF;
+            badpm.pParameter = garbage;
+            badpm.ulParameterLen = sizeof(garbage);
+            rv = f->C_DeriveKey(sess, &badpm, prfBase, ptmpl, 6, &pd3);
+            if (!isProxy) {
+              CHECKC(rv == CKR_ARGUMENTS_BAD && pd3 == 0,
+                     "TLS-PRF with garbage params refused typed");
+            } else {
+              /* The shim chases the all-zero image to empty
+               * label+seed (NULL-on-miss contract); empty params
+               * are legal TLS-PRF inputs, so the backend serves. */
+              CHECKC(rv == CKR_OK && pd3 != 0,
+                     "proxied zero-image params derive with empty label+seed");
+              if (rv == CKR_OK && pd3 != 0) {
+                rv = f->C_DestroyObject(sess, pd3);
+                CHECKC(rv == CKR_OK, "proxied empty-params secret destroyed");
+                pd3 = 0;
+              }
+            }
+            rv = f->C_DestroyObject(sess, pd2);
+            CHECKC(rv == CKR_OK, "second TLS-PRF secret destroyed");
+          }
         }
       }
       {

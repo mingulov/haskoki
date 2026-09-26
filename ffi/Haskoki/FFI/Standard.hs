@@ -217,7 +217,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
-import Haskoki.FFI.NativeParams (normalizeEcdhParams, normalizeMechParams)
+import Haskoki.FFI.NativeParams (normalizeEcdhParams, normalizeMechParams, normalizeTlsPrfParams)
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
@@ -249,6 +249,7 @@ import Haskoki.Operation.Derive
   )
 import Haskoki.Recipe.Ecdh (ecdhRecipeFor)
 import Haskoki.Recipe.Kdf (KdfRecipe (..), kdfRecipeFor)
+import Haskoki.Recipe.TlsPrf (tlsPrfRecipeFor)
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
@@ -2903,17 +2904,17 @@ haskokiStdUnwrapKey ctx h (CULong mech) pIv (CULong ivLen) (CULong wrapH)
                       Right [oh] -> poke phKey (CULong oh) >> pure ckrOk
                       Right _ -> pure ckrGeneralError
 
--- | Opaque derive for the ECDH and SHA-KDF rows: the C side
--- forwards the mechanism id, the raw parameter image, and the
--- template frame. ECDH structs normalize here
--- ('normalizeEcdhParams'); base resolution and the EC key-type
--- check run first inside 'planDerive', so a wrong-typed base
--- refuses before parameter shape is examined. SHA rows take the
--- image as the info segment (emptiness enforced by 'planDerive').
--- Unmappable ECDH images pass through raw so the recipe refusal
--- (and its @CKR@) is unchanged. PBKD2 is not served here (its
--- native struct has no decoder yet) and refuses
--- @CKR_MECHANISM_INVALID@.
+-- | Opaque derive for the ECDH, SHA-KDF, and TLS-PRF rows: the
+-- C side forwards the mechanism id, the raw parameter image, and
+-- the template frame. ECDH and TLS-PRF structs normalize here
+-- ('normalizeEcdhParams', 'normalizeTlsPrfParams'); base
+-- resolution and the key-type check run first inside 'planDerive',
+-- so a wrong-typed base refuses before parameter shape is
+-- examined. SHA rows take the image as the info segment (emptiness
+-- enforced by 'planDerive'). Unmappable struct images pass through
+-- raw so the recipe refusal (and its @CKR@) is unchanged. PBKD2 is
+-- not served here (its native struct has no decoder yet) and
+-- refuses @CKR_MECHANISM_INVALID@.
 haskokiStdDeriveOpaque
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
@@ -2949,13 +2950,16 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
     deriveBlob mid raw
       | isJust (ecdhRecipeFor mid) =
           fromMaybe raw <$> normalizeEcdhParams pParams paramsLen
+      | isJust (tlsPrfRecipeFor mid) =
+          fromMaybe raw <$> normalizeTlsPrfParams pParams paramsLen
       | otherwise = pure raw
 
--- | Mechanisms served by 'haskokiStdDeriveOpaque': the ECDH rows
--- plus the SHA-KDF rows (PBKD2 excluded: no native decoder).
+-- | Mechanisms served by 'haskokiStdDeriveOpaque': the ECDH rows,
+-- the SHA-KDF rows, and TLS-PRF (PBKD2 excluded: no native
+-- decoder).
 isOpaqueDeriveMech :: MechanismId -> Bool
 isOpaqueDeriveMech mid =
-  isJust (ecdhRecipeFor mid) || case kdfRecipeFor mid of
+  isJust (ecdhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || case kdfRecipeFor mid of
     Just r -> not (rkPbkd2 r)
     Nothing -> False
 

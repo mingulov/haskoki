@@ -78,6 +78,7 @@ import Haskoki.Operation.State (CipherDir (..))
 import qualified Haskoki.Outcome as O
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
+import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Recipe.Otp (encodeHotpParams)
 import Haskoki.Registry (MechanismId (..))
 import Haskoki.Registry.Generated (mustGeneratedId)
@@ -126,6 +127,7 @@ spec = testGroup "synthetic engine"
   , testCase "CMAC tags separate and truncate" caseCmac
   , testCase "3DES-MAC tags separate and truncate" caseDes3mac
   , testCase "KDF output separates and truncates" caseKdf
+  , testCase "TLS-PRF output separates and truncates" caseTlsPrf
   , testCase "HOTP codes separate, keygen lengths" caseHotp
   , testCase "Specials refuse explicitly" caseSpecialsRefuse
   , testCase "Random bytes deterministic on seed" caseRandomBytes
@@ -1845,6 +1847,55 @@ caseKdf = withSynth "11" $ \env -> do
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
 
+-- | TLS-PRF through the driver over synthetic HMAC-MD5\/SHA-1:
+-- deterministic output, separated across secrets\/labels\/seeds,
+-- truncation is the prefix, even and odd secrets both serve, and
+-- typed refusals. (The synthetic MAC stream differs from real HMAC
+-- by design; exact KAT bytes live on the real backend.)
+caseTlsPrf :: IO ()
+caseTlsPrf = withSynth "11" $ \env -> do
+  let tlsPrf = MechanismId 0x378
+      secOid = ObjectId 74
+      oddOid = ObjectId 75
+      res oid
+        | oid == secOid = Just (KeyBytes (BS.pack [0 .. 47]))
+        | oid == oddOid = Just (KeyBytes (BS.pack [0 .. 46]))
+        | otherwise = Nothing
+      deriveAs oid params outLen =
+        runEffect env res (FxDerive tlsPrf (Just oid) params BS.empty outLen)
+          >>= expectBytes
+      params = encodeTlsPrfParams "test label" "0123456789abcdef"
+  d1 <- deriveAs secOid params 48
+  assertEqual "output length" 48 (BS.length d1)
+  d2 <- deriveAs secOid params 48
+  assertEqual "deterministic" d1 d2
+  dOdd <- deriveAs oddOid params 48
+  assertBool "secrets separated" (d1 /= dOdd)
+  dLab <- deriveAs secOid (encodeTlsPrfParams "other label" "0123456789abcdef") 48
+  assertBool "labels separated" (d1 /= dLab)
+  dSeed <- deriveAs secOid (encodeTlsPrfParams "test label" "0123456789abcdee") 48
+  assertBool "seeds separated" (d1 /= dSeed)
+  trunc16 <- deriveAs secOid params 16
+  assertEqual "truncation prefix" (BS.take 16 d1) trunc16
+  dBig <- deriveAs secOid params 64
+  assertEqual "multi-block prefix" d1 (BS.take 48 dBig)
+  -- Typed refusals.
+  badParams <- runEffect env res
+    (FxDerive tlsPrf (Just secOid) "junk" BS.empty 48)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badInfo <- runEffect env res
+    (FxDerive tlsPrf (Just secOid) params "x" 48)
+  case badInfo of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badLen <- runEffect env res
+    (FxDerive tlsPrf (Just secOid) params BS.empty 0)
+  case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
 -- ---------------------------------------------------------------------------
 -- OTP constructions
 -- ---------------------------------------------------------------------------
@@ -2054,11 +2105,11 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   -- it when the ML-DSA entry points landed (see caseMldsaRoundtrip
   -- and the OpenSSLSpec ML-DSA KATs); SLH-DSA left it when the
   -- SLH-DSA entry points landed (see caseSlhdsaRoundtrip and the
-  -- OpenSSLSpec SLH-DSA KATs); empty GCM
+  -- OpenSSLSpec SLH-DSA KATs); TLS-PRF left it when the driver
+  -- composition over the HMAC routes landed (see caseTlsPrf and
+  -- the RoutingE2ESpec TLS-PRF KATs); empty GCM
   -- params still fail typed at the driver (CryptoFailed recipe
   -- refusal, pinned below).
-  refused "derive TLS_PRF"
-    (FxDerive (mech "CKM_TLS_PRF") (Just kOid) BS.empty BS.empty 32)
   refused "derive DH" (FxDerive (mech "CKM_DH_PKCS_DERIVE") (Just kOid) BS.empty BS.empty 32)
   -- Recovery effects refuse on synthetic exactly as on real.
   refused "sign-recover"

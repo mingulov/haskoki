@@ -257,6 +257,7 @@ caseCurated = do
     , MechanismId Gen.ckm_SHA3_512_HMAC
     , MechanismId Gen.ckm_SHA3_512_HMAC_GENERAL
     , MechanismId Gen.ckm_GENERIC_SECRET_KEY_GEN
+    , MechanismId Gen.ckm_TLS_PRF
     , MechanismId Gen.ckm_SHA1_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA256_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA384_KEY_DERIVATION
@@ -347,11 +348,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 141 behavior + 323 catalog-only + catalog line.
+  -- schema + 142 behavior + 322 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 141
+  assertEqual "behavior line count" 142
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 323
+  assertEqual "catalog-only line count" 322
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -670,7 +671,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 323 (length invIds)
+  assertEqual "guard covers every catalog row" 322 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of
@@ -686,7 +687,7 @@ caseSpecialsCatalogOnly :: IO ()
 caseSpecialsCatalogOnly = do
   -- S15: one named representative per reviewed gap group stays
   -- catalog-only with its headline operation refused under
-  -- granted caps (the exhaustive guard above covers all 323;
+  -- granted caps (the exhaustive guard above covers all 322;
   -- this table documents the groups for humans).
   let reg = curatedRegistry
       reps =
@@ -700,7 +701,7 @@ caseSpecialsCatalogOnly = do
         , ("CKM_RC4", OpEncrypt)
         , ("CKM_DSA_PROBABILISTIC_PARAMETER_GEN", OpGenerateKey)
         , ("CKM_HASH_ML_DSA", OpSign)
-        , ("CKM_TLS_PRF", OpDerive)
+        , ("CKM_TLS_MASTER_KEY_DERIVE", OpDerive)
         , ("CKM_AES_KEY_WRAP_PKCS7", OpWrap)
         , ("CKM_DH_PKCS_DERIVE", OpDerive)
         , ("CKM_RSA_X9_31_KEY_PAIR_GEN", OpGenerateKeyPair)

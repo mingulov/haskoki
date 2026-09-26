@@ -94,6 +94,7 @@ library haskoki-core
     Haskoki.Recipe.MlDsa
     Haskoki.Recipe.Otp
     Haskoki.Recipe.SlhDsa
+    Haskoki.Recipe.TlsPrf
   hs-source-dirs:     core
   build-depends:
     base          >= 4.14 && < 5,
@@ -388,6 +389,7 @@ test-suite haskoki-model-tests
     RecipePssSpec
     RecipeRsaSpec
     RecipeSlhDsaSpec
+    RecipeTlsPrfSpec
     RegistrySpec
     RoutingSpec
     SimBridgeSpec

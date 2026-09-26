@@ -59,6 +59,9 @@ pointer is undefined behavior, not a refusal.
 module Haskoki.FFI.NativeParams
   ( normalizeMechParams
   , normalizeEcdhParams
+  , normalizeTlsPrfParams
+  , tlsPrfStructToCanonical
+  , tlsPrfNativeSize
   , pssStructToCanonical
   , oaepStructToCanonical
   , ecdhStructToCanonical
@@ -105,6 +108,7 @@ import Haskoki.Recipe.SlhDsa (encodeSlhdsaParams, slhdsaRecipeFor)
 import qualified Haskoki.Recipe.SlhDsa as SlhDsa
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
+import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId)
 
@@ -129,6 +133,13 @@ oaepNativeSize = 4 * wordSize + ptrSize
 -- (length, pointer) twice (shared data, peer public key).
 ecdhNativeSize :: Int
 ecdhNativeSize = 3 * wordSize + 2 * ptrSize
+
+-- | Native @CK_TLS_PRF_PARAMS@ image size: (pointer, length) for
+-- the seed, (pointer, length) for the label, then the output
+-- pointer pair (ignored on the derive path — the output lands in
+-- the derived object).
+tlsPrfNativeSize :: Int
+tlsPrfNativeSize = 2 * wordSize + 4 * ptrSize
 
 -- | Native @CK_GCM_PARAMS@ image size: (pointer, length, bits) for
 -- the IV, then (pointer, length) for the AAD, then the tag-bits
@@ -252,6 +263,13 @@ ecdhStructToCanonical kdf shared peer
   | kdf /= ckdNull = Nothing
   | otherwise = Just (encodeEcdhParams 0 shared peer)
 
+-- | Pure TLS-PRF translation: the chased label and seed onto the
+-- canonical @tls-prf-params\/1@ image. The over-ceiling refusal
+-- lives downstream (the recipe validation in 'planDerive'); the
+-- chase bounds plus that check fail the shape closed.
+tlsPrfStructToCanonical :: ByteString -> ByteString -> Maybe ByteString
+tlsPrfStructToCanonical lab seed = Just (encodeTlsPrfParams lab seed)
+
 -- | Pure GCM translation: the chased IV and AAD plus the native
 -- bit/tag widths onto the canonical @gcm-params/1@ image. The bit
 -- width must agree with the chased IV length and the tag width
@@ -363,6 +381,24 @@ normalizeEcdhParams pParams paramsLen
       mShared <- chaseBytes pShared sharedLen
       mPub <- chaseBytes pPub pubLen
       pure (mShared >>= \shared -> mPub >>= ecdhStructToCanonical kdf shared)
+
+-- | Normalize one TLS-PRF struct: the native @CK_TLS_PRF_PARAMS@
+-- image at @pParams@/@paramsLen@ onto the canonical
+-- @tls-prf-params\/1@ image. Wrong-sized images and null-with-length
+-- or over-bound seed\/label chases refuse ('Nothing'). The output
+-- pointer pair is ignored (the derive path publishes objects, not
+-- caller buffers).
+normalizeTlsPrfParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeTlsPrfParams pParams paramsLen
+  | paramsLen /= fromIntegral tlsPrfNativeSize = pure Nothing
+  | otherwise = do
+      pSeed <- peekByteOff pParams 0
+      CULong seedLen <- peekByteOff pParams ptrSize
+      pLabel <- peekByteOff pParams (ptrSize + wordSize)
+      CULong labelLen <- peekByteOff pParams (2 * ptrSize + wordSize)
+      mSeed <- chaseBytes pSeed seedLen
+      mLabel <- chaseBytes pLabel labelLen
+      pure (mSeed >>= \seed -> mLabel >>= \lab -> tlsPrfStructToCanonical lab seed)
 
 -- | Normalize one call's mechanism parameters: struct mechanisms
 -- translate from the live caller image at @pParams@/@paramsLen@

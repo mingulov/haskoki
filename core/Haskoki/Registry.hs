@@ -138,6 +138,11 @@ import Haskoki.Recipe.Otp
   , hotpCodecFor
   , hotpRecipes
   )
+import Haskoki.Recipe.TlsPrf
+  ( TlsPrfRecipe (..)
+  , tlsPrfCodecFor
+  , tlsPrfRecipes
+  )
 import Haskoki.Recipe.RsaOaep
   ( RsaOaepRecipe (..)
   , rsaOaepCodecFor
@@ -800,6 +805,22 @@ kdfDescs =
   | r <- kdfRecipes
   ]
 
+-- | The TLS-PRF behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from 'tlsPrfCodecFor',
+-- the derive route citing the planner case (A20), the synthetic
+-- construction (A37), and the real vectors (A39). The single row
+-- predates 2.40; key bounds are mechanism-specific (the planned
+-- length, capped by the TLS-PRF ceiling).
+tlsPrfDescs :: [Descriptor]
+tlsPrfDescs =
+  [ promotedDesc (rtName r) allBaselines FamilyDerive
+      (tlsPrfCodecFor r)
+      [ mechRoute OpDerive (rtName r) ["A20", "A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- tlsPrfRecipes
+  ]
+
 -- | The OTP behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from 'hotpCodecFor',
 -- the sign and verify routes citing the synthetic construction
@@ -1049,7 +1070,7 @@ curatedRegistry =
         , dSHA1, dMD5, dRIPEMD160
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs
-          ++ cmacDescs ++ des3macDescs ++ kdfDescs ++ otpDescs
+          ++ cmacDescs ++ des3macDescs ++ kdfDescs ++ tlsPrfDescs ++ otpDescs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

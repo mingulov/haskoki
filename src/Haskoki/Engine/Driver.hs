@@ -150,6 +150,8 @@ module Haskoki.Engine.Driver
   , Pbkd2Params (..)
   , kdfShaFor
   , pbkd2ParamsFor
+  , TlsPrfParams (..)
+  , tlsPrfParamsFor
   ) where
 
 import qualified Data.ByteString as BS
@@ -296,6 +298,12 @@ import Haskoki.Recipe.Otp
   , encodeHotpCounter
   , hotpRecipeFor
   , hotpTruncate
+  )
+import Haskoki.Recipe.TlsPrf
+  ( decodeTlsPrfParams
+  , maxTlsPrfOutput
+  , tlsPrfParamsValid
+  , tlsPrfRecipeFor
   )
 import Haskoki.Registry (MechanismId (..), MechanismName)
 import Haskoki.Registry.Generated
@@ -476,6 +484,37 @@ isKdfShaMech mech = case kdfRecipeFor mech of
 isPbkd2Mech :: MechanismId -> Bool
 isPbkd2Mech mech = case kdfRecipeFor mech of
   Just r -> rkPbkd2 r
+  Nothing -> False
+
+-- | TLS-PRF inputs: the label plus the seed (RFC 2246 §5).
+data TlsPrfParams = TlsPrfParams
+  { tpLabel :: !ByteString
+  , tpSeed :: !ByteString
+  } deriving (Eq, Show)
+
+-- | TLS-PRF dispatch: the covered (mechanism, params) pair to its
+-- decoded label + seed (pinned by RecipeTlsPrfSpec). 'Nothing'
+-- means uncovered (non-TLS-PRF mechanism) or malformed parameters.
+tlsPrfParamsFor :: MechanismId -> ByteString -> Maybe TlsPrfParams
+tlsPrfParamsFor mech params = do
+  r <- tlsPrfRecipeFor mech
+  guard (tlsPrfParamsValid r params)
+  (lab, seed) <- decodeTlsPrfParams params
+  pure (TlsPrfParams lab seed)
+
+-- | TLS-PRF secret split (RFC 2246 §5): the first
+-- @ceiling(len\/2)@ bytes and the last @ceiling(len\/2)@ bytes; the
+-- middle byte is shared on odd lengths.
+splitTlsSecret :: ByteString -> (ByteString, ByteString)
+splitTlsSecret secret = (BS.take half secret, BS.drop (len - half) secret)
+  where
+    len = BS.length secret
+    half = (len + 1) `div` 2
+
+-- | The TLS-PRF mechanism (drives the parameter-refusal branch).
+isTlsPrfMech :: MechanismId -> Bool
+isTlsPrfMech mech = case tlsPrfRecipeFor mech of
+  Just _ -> True
   Nothing -> False
 
 -- | Digest stem of an HMAC recipe name, without the parameter-shape
@@ -1313,6 +1352,14 @@ runEffect env resolve fx = case fx of
         "driver: PBKDF2 derive takes no info string"))
     | isPbkd2Mech mech -> pure (GotCryptoError (CryptoFailed
         "driver: PBKDF2 mechanism parameters rejected by the recipe"))
+    | Just prf <- tlsPrfParamsFor mech params
+    , BS.null info -> withKey mkey $ \key ->
+        runTlsPrf prf key outLen
+    | isTlsPrfMech mech
+    , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
+        "driver: TLS-PRF derive takes no info string"))
+    | isTlsPrfMech mech -> pure (GotCryptoError (CryptoFailed
+        "driver: TLS-PRF mechanism parameters rejected by the recipe"))
     | otherwise -> pure (unsupported fx)
   where
     withKey :: Maybe ObjectId -> (KeyMaterial -> IO CryptoResult) -> IO CryptoResult
@@ -1692,6 +1739,56 @@ runEffect env resolve fx = case fx of
             EngineFail err -> pure (EngineFail err)
             EngineOk u' -> mix (k - 1) (acc `xorB` u') u'
         prfOf msg = macSign env (MacHMAC prf Nothing) pwd msg
+    -- | TLS-PRF effects: the RFC 2246 expansion over the backend
+    -- HMAC-MD5\/SHA-1 routes. Off-range lengths are 'CryptoFailed';
+    -- a non-bytes key is 'CryptoBadKey'.
+    runTlsPrf :: TlsPrfParams -> KeyMaterial -> Int -> IO CryptoResult
+    runTlsPrf (TlsPrfParams lab seed) key outLen = case key of
+      KeyBytes kb
+        | outLen >= 1 && outLen <= maxTlsPrfOutput -> do
+            r <- tlsPrfExpand kb (lab <> seed) outLen
+            pure $ case r of
+              EngineFail err -> GotCryptoError (toCryptoError err)
+              EngineOk ok -> GotBytes (BS.take outLen ok)
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: derive length out of range"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "key derivation needs raw secret bytes"))
+    -- | TLS 1.0\/1.1 PRF: P_MD5 over the first secret half XOR
+    -- P_SHA-1 over the second (RFC 2246 §5; the halves share the
+    -- middle byte on odd lengths).
+    tlsPrfExpand :: ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
+    tlsPrfExpand secret seedBytes outLen = do
+      m <- pHash D_MD5 (KeyBytes s1) seedBytes outLen
+      case m of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk mOut -> do
+          s <- pHash D_SHA1 (KeyBytes s2) seedBytes outLen
+          pure $ case s of
+            EngineFail err -> EngineFail err
+            EngineOk sOut -> EngineOk (BS.take outLen mOut `xorB` BS.take outLen sOut)
+      where
+        (s1, s2) = splitTlsSecret secret
+    -- | P_hash: A(0) = seed, A(i) = HMAC(secret, A(i-1)),
+    -- P(i) = HMAC(secret, A(i) ++ seed), concatenated.
+    pHash :: DigestAlg -> KeyMaterial -> ByteString -> Int -> IO (EngineResult ByteString)
+    pHash alg secret seedBytes outLen = case digestOutLen alg of
+      Nothing -> pure (EngineFail (BackendBadParam "pHash"
+        "TLS-PRF needs a fixed-width HMAC"))
+      Just h -> do
+        let n = (outLen + h - 1) `div` h
+        go n seedBytes []
+      where
+        go 0 _ acc = pure (EngineOk (BS.concat (reverse acc)))
+        go k aPrev acc = do
+          aNext <- macSign env (MacHMAC alg Nothing) secret aPrev
+          case aNext of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk a -> do
+              p <- macSign env (MacHMAC alg Nothing) secret (a <> seedBytes)
+              case p of
+                EngineFail err -> pure (EngineFail err)
+                EngineOk blk -> go (k - 1) a (blk : acc)
     unsupported :: CryptoEffect -> CryptoResult
     unsupported e = GotCryptoError (CryptoUnsupported "driver" (show e))
 

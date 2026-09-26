@@ -2155,10 +2155,12 @@ static int hkdf_subset_ok(const CK_HKDF_PARAMS *hp) {
 }
 
 /* Derive mechanisms served through the opaque Haskell intake
- * (ECDH + SHA-KDF rows; mirrors the Haskoki.Recipe.Ecdh/Kdf tables
- * — Haskell re-checks membership before planning). */
+ * (ECDH + SHA-KDF rows + TLS-PRF; mirrors the
+ * Haskoki.Recipe.Ecdh/Kdf/TlsPrf tables — Haskell re-checks
+ * membership before planning). */
 static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   switch (mech) {
+  case CKM_TLS_PRF:
   case CKM_ECDH1_DERIVE:
   case CKM_ECDH1_COFACTOR_DERIVE:
   case CKM_SHA1_KEY_DERIVATION:
