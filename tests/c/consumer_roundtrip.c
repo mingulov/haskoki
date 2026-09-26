@@ -1745,6 +1745,94 @@ int main(int argc, char **argv) {
       rv = f->C_Verify(ssess, (CK_BYTE_PTR) "slhdsa-consumer", 15, ssig, ssigLen);
       CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered SLH-DSA refused");
     }
+    /* DES3-MAC: keygen (16/24 via CKA_VALUE_LEN) -> sign/verify.
+     * The plain row emits the first 4 of the CBC-MAC block (the
+     * OASIS half-block rule); the GENERAL row the requested
+     * 1..8 prefix. Ragged input zero-pads. */
+    {
+      CK_KEY_TYPE dkt = CKK_DES3;
+      CK_OBJECT_CLASS dcls = CKO_SECRET_KEY;
+      CK_OBJECT_HANDLE dkey = 0, dkey2 = 0;
+      CK_ULONG dvlen = 24;
+      CK_MECHANISM dkgm, dnm, dgm, dbm;
+      CK_ULONG dmacLen = 8;
+      CK_ATTRIBUTE dktmpl[6];
+      CK_BYTE dtag[8];
+      CK_ULONG dtagLen;
+      dkgm.mechanism = CKM_DES3_KEY_GEN;
+      dkgm.pParameter = NULL_PTR;
+      dkgm.ulParameterLen = 0;
+      dktmpl[0].type = CKA_CLASS;
+      dktmpl[0].pValue = &dcls;
+      dktmpl[0].ulValueLen = sizeof(dcls);
+      dktmpl[1].type = CKA_KEY_TYPE;
+      dktmpl[1].pValue = &dkt;
+      dktmpl[1].ulValueLen = sizeof(dkt);
+      dktmpl[2].type = CKA_VALUE_LEN;
+      dktmpl[2].pValue = &dvlen;
+      dktmpl[2].ulValueLen = sizeof(dvlen);
+      dktmpl[3].type = CKA_TOKEN;
+      dktmpl[3].pValue = &bFalse;
+      dktmpl[3].ulValueLen = sizeof(bFalse);
+      dktmpl[4].type = CKA_SIGN;
+      dktmpl[4].pValue = &bTrue;
+      dktmpl[4].ulValueLen = sizeof(bTrue);
+      dktmpl[5].type = CKA_VERIFY;
+      dktmpl[5].pValue = &bTrue;
+      dktmpl[5].ulValueLen = sizeof(bTrue);
+      rv = f->C_GenerateKey(ssess, &dkgm, dktmpl, 6, &dkey);
+      CHECKC(rv == CKR_OK && dkey != 0, "DES3-24 keygen ok");
+      dvlen = 16;
+      rv = f->C_GenerateKey(ssess, &dkgm, dktmpl, 6, &dkey2);
+      CHECKC(rv == CKR_OK && dkey2 != 0 && dkey2 != dkey, "DES3-16 keygen ok");
+      dvlen = 32;
+      dkey2 = 0;
+      rv = f->C_GenerateKey(ssess, &dkgm, dktmpl, 6, &dkey2);
+      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT, "DES3-32 refused");
+      dnm.mechanism = CKM_DES3_MAC;
+      dnm.pParameter = NULL_PTR;
+      dnm.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &dnm, dkey);
+      CHECKC(rv == CKR_OK, "DES3-MAC SignInit ok");
+      dtagLen = sizeof(dtag);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "des3-mac-consumer-data!", 21, dtag, &dtagLen);
+      CHECKC(rv == CKR_OK && dtagLen == 4, "DES3-MAC sign yields 4 bytes");
+      rv = f->C_VerifyInit(ssess, &dnm, dkey);
+      CHECKC(rv == CKR_OK, "DES3-MAC VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "des3-mac-consumer-data!", 21, dtag, dtagLen);
+      CHECKC(rv == CKR_OK, "DES3-MAC verify ok");
+      dgm.mechanism = CKM_DES3_MAC_GENERAL;
+      dgm.pParameter = &dmacLen;
+      dgm.ulParameterLen = sizeof(dmacLen);
+      rv = f->C_SignInit(ssess, &dgm, dkey);
+      CHECKC(rv == CKR_OK, "DES3-MAC-GENERAL SignInit ok");
+      dtagLen = sizeof(dtag);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "des3-mac-consumer-data!", 21, dtag, &dtagLen);
+      CHECKC(rv == CKR_OK && dtagLen == 8, "DES3-MAC-GENERAL sign yields 8 bytes");
+      rv = f->C_VerifyInit(ssess, &dgm, dkey);
+      CHECKC(rv == CKR_OK, "DES3-MAC-GENERAL VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "des3-mac-consumer-data!", 21, dtag, dtagLen);
+      CHECKC(rv == CKR_OK, "DES3-MAC-GENERAL verify ok");
+      dmacLen = 9;
+      rv = f->C_SignInit(ssess, &dgm, dkey);
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "DES3-MAC-GENERAL length 9 refused");
+      dbm.mechanism = CKM_DES3_MAC;
+      dbm.pParameter = &dmacLen;
+      dbm.ulParameterLen = sizeof(dmacLen);
+      rv = f->C_SignInit(ssess, &dbm, dkey);
+      if (!isProxy) {
+        CHECKC(rv == CKR_ARGUMENTS_BAD, "DES3-MAC nonempty params refused");
+      } else {
+        /* The shim translates init param errors to PARAM_INVALID. */
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "proxied DES3-MAC nonempty params is PARAM_INVALID");
+      }
+      rv = f->C_VerifyInit(ssess, &dnm, dkey);
+      CHECKC(rv == CKR_OK, "DES3-MAC re-init for tamper");
+      dtag[0] ^= 0xFF;
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "des3-mac-consumer-data!", 21, dtag, 4);
+      CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered DES3-MAC refused");
+    }
     rv = f->C_CloseSession(ssess);
     CHECKC(rv == CKR_OK, "sign session closes");
   }

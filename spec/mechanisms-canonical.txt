@@ -48,8 +48,11 @@ mech|0x00000064|CKM_SHA3_384_RSA_PKCS_PSS||rsa|pss-params/1|bits:512-4096|sign:A
 mech|0x00000065|CKM_SHA3_512_RSA_PKCS_PSS||rsa|pss-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x00000066|CKM_SHA3_224_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x00000067|CKM_SHA3_224_RSA_PKCS_PSS||rsa|pss-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
+mech|0x00000131|CKM_DES3_KEY_GEN||keygen|no-params/1|bits:128-192|generate-key:A37
 mech|0x00000132|CKM_DES3_ECB||cipher|no-params/1|bytes:16-24|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00000133|CKM_DES3_CBC||cipher|iv-bytes/1|bytes:16-24|decrypt:A16,A37,A39;encrypt:A16,A37,A39
+mech|0x00000134|CKM_DES3_MAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
+mech|0x00000135|CKM_DES3_MAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x00000137|CKM_DES3_CMAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x00000138|CKM_DES3_CMAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x00000210|CKM_MD5||digest|no-params/1|not-applicable:0-0|digest:A16,A37,A39
@@ -193,9 +196,6 @@ inv|0x00000123|CKM_DES_MAC||catalog-only
 inv|0x00000124|CKM_DES_MAC_GENERAL||catalog-only
 inv|0x00000125|CKM_DES_CBC_PAD||catalog-only
 inv|0x00000130|CKM_DES2_KEY_GEN||catalog-only
-inv|0x00000131|CKM_DES3_KEY_GEN||catalog-only
-inv|0x00000134|CKM_DES3_MAC||catalog-only
-inv|0x00000135|CKM_DES3_MAC_GENERAL||catalog-only
 inv|0x00000136|CKM_DES3_CBC_PAD||catalog-only
 inv|0x00000140|CKM_CDMF_KEY_GEN||catalog-only
 inv|0x00000141|CKM_CDMF_ECB||catalog-only

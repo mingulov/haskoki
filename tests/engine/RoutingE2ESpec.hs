@@ -104,6 +104,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: ecdsa roundtrip both encodings" caseDriverEcdsa
   , testCase "driver: ecdh agree + truncate + refuse" caseDriverEcdh
   , testCase "driver: cmac KATs + truncate + refuse" caseDriverCmac
+  , testCase "driver: 3des-mac KATs + truncate + refuse" caseDriverDes3Mac
   , testCase "driver: kdf vectors + refuse" caseDriverKdf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
   , testCase "driver: message cipher/sign/verify" caseDriverMessage
@@ -164,6 +165,10 @@ cmacMech = MechanismId 0x108a
 cmacGenMech = MechanismId 0x108b
 cmac3Mech = MechanismId 0x138
 cmac3GenMech = MechanismId 0x137
+
+des3macMech, des3macGenMech :: MechanismId
+des3macMech = MechanismId 0x134
+des3macGenMech = MechanismId 0x135
 
 aesGcmMech :: MechanismId
 aesGcmMech = MechanismId 0x1087
@@ -814,6 +819,71 @@ caseDriverCmac = withBackend $ \env -> do
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badGen <- runEffect env res (FxSign cmac3GenMech (Just o3b)
+    (encodeMacGeneral 9) m18)
+  case badGen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- | 3DES-MAC through the driver over real ECB — lane des3_mac
+-- vectors (one-block 192-bit, plain half block + GENERAL full
+-- block) plus pinned-CLI two-key and zero-padded multi-block
+-- vectors, GENERAL truncation, verify verdicts, and typed
+-- refusals.
+caseDriverDes3Mac :: IO ()
+caseDriverDes3Mac = withBackend $ \env -> do
+  let kLane = KeyBytes (hex "96dea09d832e4609742ccd800a8958caecdb70730c27d8b1")
+      k2 = KeyBytes (hex "0123456789abcdeffedcba9876543210")
+      k3 = KeyBytes (hex "0123456789abcdeffedcba98765432100011223344556677")
+      kBad = KeyBytes (hex "00112233445566778899aabbccddee")
+      mLane = hex "0cb1c9965ea202b0"
+      m8 = hex "6bc1bee22e409f96"
+      m18 = hex "6bc1bee22e409f96e93d7e117393172a4b5c"
+      oLane = ObjectId 67
+      o2 = ObjectId 68
+      o3 = ObjectId 69
+      oBad = ObjectId 70
+      res oid
+        | oid == oLane = Just kLane
+        | oid == o2 = Just k2
+        | oid == o3 = Just k3
+        | oid == oBad = Just kBad
+        | otherwise = Nothing
+      tag mech oid params msg =
+        runEffect env res (FxSign mech (Just oid) params msg) >>= expectBytes
+  -- Lane vectors: one-block 192-bit key, plain emits the first
+  -- 4 of the 8-byte CBC-MAC block, GENERAL the full block.
+  tLane <- tag des3macMech oLane BS.empty mLane
+  assertEqual "lane half block" (hex "2bc46d1d") tLane
+  gLane <- tag des3macGenMech oLane (encodeMacGeneral 8) mLane
+  assertEqual "lane full block" (hex "2bc46d1df3349c3b") gLane
+  -- Pinned CLI: two-key expands K1||K2||K1; ragged input
+  -- zero-pads (18 bytes -> 24 zero-padded, last CBC block).
+  t2 <- tag des3macMech o2 BS.empty m8
+  assertEqual "cli two-key" (hex "ea43f9aa") t2
+  t3 <- tag des3macGenMech o3 (encodeMacGeneral 8) m18
+  assertEqual "cli ragged padded" (hex "642073063006a81a") t3
+  -- GENERAL truncation is the prefix.
+  g4 <- tag des3macGenMech oLane (encodeMacGeneral 4) mLane
+  assertEqual "general prefix" tLane g4
+  -- Verify verdicts.
+  vGood <- runEffect env res (FxVerify des3macMech (Just oLane) BS.empty mLane tLane)
+  assertEqual "verifies" (GotValid True) vGood
+  vBad <- runEffect env res (FxVerify des3macMech (Just oLane) BS.empty mLane
+    (BS.map (255 -) tLane))
+  assertEqual "tamper rejects" (GotValid False) vBad
+  vGen <- runEffect env res (FxVerify des3macGenMech (Just oLane)
+    (encodeMacGeneral 8) mLane gLane)
+  assertEqual "general verifies" (GotValid True) vGen
+  -- Typed refusals: bad key length, bad params, bad GENERAL length.
+  badLen <- runEffect env res (FxSign des3macMech (Just oBad) BS.empty m8)
+  case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badParams <- runEffect env res (FxSign des3macMech (Just oLane) "x" mLane)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badGen <- runEffect env res (FxSign des3macGenMech (Just o3)
     (encodeMacGeneral 9) m18)
   case badGen of
     GotCryptoError (CryptoFailed _) -> pure ()

@@ -557,6 +557,11 @@ instance CryptoBackend Synthetic where
             pure (B.EngineOk (KeyBytes (genSymBytes seed ctr "AES" n), Nothing))
         | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
             "AES key length must be 16, 24, or 32 bytes"))
+      GenSym "DES3" n
+        | n `elem` [16, 24] ->
+            pure (B.EngineOk (KeyBytes (genSymBytes seed ctr "DES3" n), Nothing))
+        | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
+            "DES3 key length must be 16 or 24 bytes"))
       GenSym "HOTP" n
         | n >= hotpKeygenMinBytes && n <= hotpKeygenMaxBytes ->
             pure (B.EngineOk (KeyBytes (genSymBytes seed ctr "HOTP" n), Nothing))
@@ -736,7 +741,7 @@ synthCaps = BackendCaps
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 72-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenSLHDSA opaque pairs; GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym DES3 16/24 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenSLHDSA opaque pairs; GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -1173,6 +1178,7 @@ genCurveOk c = BC8.pack c `elem` [n | (n, _, _) <- curveTable]
 genSupported :: BackendEnv Synthetic -> KeyGenSpec -> Maybe String
 genSupported _ spec = case spec of
   GenSym "AES" _ -> Nothing
+  GenSym "DES3" _ -> Nothing
   GenSym "HOTP" _ -> Nothing
   GenSym "GENERIC" _ -> Nothing
   GenEC ec | genCurveOk (ecCurve ec) -> Nothing

@@ -16,6 +16,7 @@ RSA v1.5\/PSS sign\/verify and RSA-OAEP
 encrypt\/decrypt want @CKK_RSA@; ECDSA sign\/verify wants @CKK_EC@;
 block-cipher encrypt\/decrypt wants the recipe row's key type;
 CMAC sign\/verify wants @CKK_AES@ (@CKK_DES3@ for the DES3 rows);
+3DES-MAC sign\/verify wants @CKK_DES3@;
 HOTP sign\/verify wants @CKK_HOTP@.
 Derive, wrap\/unwrap, KEM, and message-family framing have their
 own planners and gates and are not matrix rows; digest is unkeyed.
@@ -33,6 +34,7 @@ import Haskoki.Attribute.Generated (mustKeyTypeId)
 import Haskoki.Recipe.Ccm (CcmRecipe (..), ccmRecipes)
 import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipes)
 import Haskoki.Recipe.Cmac (CmacRecipe (..), cmacRecipes)
+import Haskoki.Recipe.Des3Mac (Des3MacRecipe (..), des3macRecipes)
 import Haskoki.Recipe.Ecdsa (EcdsaRecipe (..), ecdsaRecipes)
 import Haskoki.Recipe.Gcm (GcmRecipe (..), gcmRecipes)
 import Haskoki.Recipe.Hmac (HmacRecipe (..), hmacRecipes)
@@ -68,6 +70,8 @@ matrixTable = Map.fromList (concat
     | r <- ccmRecipes, o <- [OpEncrypt, OpDecrypt] ]
   , [ ((midOf (rcName r), o), [if rcDes3 r then ckkDes3 else ckkAes])
     | r <- cmacRecipes, o <- [OpSign, OpVerify] ]
+  , [ ((midOf (rdmName r), o), [ckkDes3])
+    | r <- des3macRecipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (otpName r), o), [mustKeyTypeId (otpKeyType r)])
     | r <- hotpRecipes, o <- [OpSign, OpVerify] ]
   ])

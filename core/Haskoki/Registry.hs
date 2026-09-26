@@ -81,6 +81,11 @@ import Haskoki.Recipe.Cmac
   , cmacCodecFor
   , cmacRecipes
   )
+import Haskoki.Recipe.Des3Mac
+  ( Des3MacRecipe (..)
+  , des3macCodecFor
+  , des3macRecipes
+  )
 import Haskoki.Recipe.Digest (digestCodec)
 import Haskoki.Recipe.Ecdh
   ( EcdhRecipe (..)
@@ -764,6 +769,21 @@ cmacDescs =
   | r <- cmacRecipes
   ]
 
+-- | The 3DES-MAC behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from 'des3macCodecFor',
+-- sign and verify routes citing synthetic A37 and real-KAT A39 (no
+-- A16: the driver offers one-shot MAC only).
+des3macDescs :: [Descriptor]
+des3macDescs =
+  [ promotedDesc (rdmName r) allBaselines FamilyMac
+      (des3macCodecFor r)
+      [ mechRoute OpSign (rdmName r) ["A37", "A39"]
+      , mechRoute OpVerify (rdmName r) ["A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- des3macRecipes
+  ]
+
 -- | The KDF behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from 'kdfCodecFor',
 -- the derive route citing the planner case (A20), the synthetic
@@ -837,6 +857,14 @@ dHotpKeyGen :: Descriptor
 dHotpKeyGen = promotedDesc "CKM_HOTP_KEY_GEN" allBaselines FamilyKeyGen
   noParams [synthRoute OpGenerateKey "CKM_HOTP_KEY_GEN"]
   KeyBits 128 512
+
+-- | @CKM_DES3_KEY_GEN@: mechanism parameters are NULL;
+-- the length arrives via the @CKA_VALUE_LEN@ template attribute
+-- (16/24 bytes, two-key/three-key), not via pParameter.
+dDES3KeyGen :: Descriptor
+dDES3KeyGen = promotedDesc "CKM_DES3_KEY_GEN" allBaselines FamilyKeyGen
+  noParams [synthRoute OpGenerateKey "CKM_DES3_KEY_GEN"]
+  KeyBits 128 192
 
 -- | @CKM_GENERIC_SECRET_KEY_GEN@: mechanism parameters are NULL;
 -- the length arrives via the @CKA_VALUE_LEN@ template attribute
@@ -1014,14 +1042,14 @@ curatedRegistry =
   where
     behaviorDescs :: [Descriptor]
     behaviorDescs =
-      ( [ dSHA256, dAESKeyGen, dHotpKeyGen, dGenericSecretKeyGen
+      ( [ dSHA256, dAESKeyGen, dDES3KeyGen, dHotpKeyGen, dGenericSecretKeyGen
         , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dEdwardsKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dMlKem
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs
-          ++ cmacDescs ++ kdfDescs ++ otpDescs
+          ++ cmacDescs ++ des3macDescs ++ kdfDescs ++ otpDescs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

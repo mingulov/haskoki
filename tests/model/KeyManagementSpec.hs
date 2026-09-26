@@ -105,6 +105,7 @@ import Haskoki.Operation.KeyManagement
   , aesKwPadMech
   , aesKwpMech
   , ckkAes
+  , ckkDes3
   , ckkDsa
   , ckkEc
   , ckkEcEdwards
@@ -118,6 +119,7 @@ import Haskoki.Operation.KeyManagement
   , ckoSecretKey
   , checkKeyTemplate
   , decodeGenArgs
+  , des3KeyGenMech
   , dsaKeyPairGenMech
   , dsaParameterGenMech
   , ecKeyPairGenMech
@@ -161,6 +163,8 @@ import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Registry.Generated
   ( ckm_AES_CCM
+  , ckm_DES3_MAC
+  , ckm_DES3_MAC_GENERAL
   , ckm_ECDH1_DERIVE
   , ckm_SHA256
   , ckm_SHA256_HMAC
@@ -186,6 +190,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Encaps delivers ciphertext and exactly one handle" caseKemEncaps
   , testCase "Short-buffer encaps creates no key" caseKemEncapsShort
   , testCase "AES keygen delivers one handle" caseAesKeygen
+  , testCase "DES3 keygen delivers one handle" caseDes3Keygen
   , testCase "AES keygen refuses PQC wrap flags" caseAesKeygenEncapsulate
   , testCase "Init enforces the allowed-mechanism list" caseInitAllowedMechanisms
   , testCase "Generic-secret keygen mints typed material in bounds" caseGenericSecretKeygen
@@ -547,6 +552,32 @@ aesTmpl n =
   , (AttrDecrypt, ValBool True)
   ]
 
+-- | Generate one 3DES key through the planner + synthetic backend.
+genDes3Key :: (Model -> CryptoEffect -> IO CryptoResult)
+  -> Model -> SessionState -> [(AttributeType, AttributeValue)]
+  -> IO (Model, ExternalHandle)
+genDes3Key answer m st tmpl = case planGenerateKey defaultRules m st des3KeyGenMech tmpl of
+  KeyEffect pw fx -> do
+    res <- answer m fx
+    c <- finishCommit m st pw res 1
+    h <- handleOf (pcOutputs c !! 0)
+    m' <- expectRight (publishDelta m (pcDelta c))
+    pure (m', h)
+  other -> assertFailure ("keygen plan is not an effect: " ++ show other) >> undefined
+
+des3Tmpl :: Int -> [(AttributeType, AttributeValue)]
+des3Tmpl n =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong ckkDes3)
+  , (AttrValueLen, ValULong (fromIntegral n))
+  , (AttrToken, ValBool False)
+  , (AttrPrivate, ValBool True)
+  , (AttrSensitive, ValBool True)
+  , (AttrExtractable, ValBool True)
+  , (AttrSign, ValBool True)
+  , (AttrVerify, ValBool True)
+  ]
+
 wrapKeyTmpl :: [(AttributeType, AttributeValue)]
 wrapKeyTmpl =
   [ (AttrClass, ValULong ckoSecretKey)
@@ -691,6 +722,36 @@ caseAesKeygen = withSynth $ \answer -> do
     Just mat -> assertEqual "AES-256 material" 32 (BS.length mat)
     Nothing -> assertFailure "generated key lacks material"
 
+caseDes3Keygen :: IO ()
+caseDes3Keygen = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- genDes3Key answer m0 st (des3Tmpl 24)
+  Just ost <- pure (resolveHandle m1 h)
+  assertEqual "key class" (Just (ValULong ckoSecretKey)) (Map.lookup AttrClass (osAttrs ost))
+  assertEqual "key type" (Just (ValULong ckkDes3)) (Map.lookup AttrKeyType (osAttrs ost))
+  assertEqual "usage landed" (Just (ValBool True)) (Map.lookup AttrSign (osAttrs ost))
+  case keyBytesOf ost of
+    Just mat -> assertEqual "DES3 material" 24 (BS.length mat)
+    Nothing -> assertFailure "generated key lacks material"
+  -- Two-key mints; off-geometry refuses inconsistent; a missing
+  -- length mints three-key (24 bytes, the headline default).
+  (m2, h2) <- genDes3Key answer m1 st (des3Tmpl 16)
+  Just ost2 <- pure (resolveHandle m2 h2)
+  case keyBytesOf ost2 of
+    Just mat2 -> assertEqual "DES3 two-key material" 16 (BS.length mat2)
+    Nothing -> assertFailure "generated key lacks material"
+  case planGenerateKey defaultRules m2 st des3KeyGenMech (des3Tmpl 32) of
+    KeyDenied deny -> assertEqual "bad length code"
+      CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure ("32-byte DES3 must refuse: " ++ show other)
+  (m3, h3) <- genDes3Key answer m2 st
+    [a | a@(t, _) <- des3Tmpl 24, t /= AttrValueLen]
+  Just ost3 <- pure (resolveHandle m3 h3)
+  case keyBytesOf ost3 of
+    Just mat3 -> assertEqual "DES3 default material" 24 (BS.length mat3)
+    Nothing -> assertFailure "generated key lacks material"
+
 caseAesKeygenEncapsulate :: IO ()
 caseAesKeygenEncapsulate = withSynth $ \_answer -> do
   m0 <- seedModel
@@ -813,6 +874,12 @@ caseGenericSecretKeygen = withSynth $ \answer -> do
 hmacSha256Mech :: MechanismId
 hmacSha256Mech = MechanismId ckm_SHA256_HMAC
 
+des3macMech :: MechanismId
+des3macMech = MechanismId ckm_DES3_MAC
+
+des3macGenMech :: MechanismId
+des3macGenMech = MechanismId ckm_DES3_MAC_GENERAL
+
 sha256Mech :: MechanismId
 sha256Mech = MechanismId ckm_SHA256
 
@@ -824,22 +891,29 @@ caseInitKeyTypeMatrix = withSynth $ \answer -> do
   mSeed <- seedModel
   m0 <- loginUser mSeed
   st <- getSession m0
-  -- Both keys carry sign AND encrypt usage: a usage-first check
-  -- would admit every leg below, so each refusal proves the matrix
-  -- fired (type before usage).
+  -- All keys carry sign, verify, AND encrypt usage: a usage-first
+  -- check would admit every leg below, so each refusal proves the
+  -- matrix fired (type before usage).
   (m1, aesH) <- genKeyWith answer m0 st aesKeyGenMech
     [ (AttrClass, ValULong ckoSecretKey)
     , (AttrKeyType, ValULong ckkAes)
     , (AttrValueLen, ValULong 16)
     , (AttrToken, ValBool False)
     , (AttrSign, ValBool True)
+    , (AttrVerify, ValBool True)
     , (AttrEncrypt, ValBool True)
     ]
   (m2, genH) <- genKeyWith answer m1 st genericSecretKeyGenMech (genericTmpl 32)
+  (m3, des3H) <- genDes3Key answer m2 st (des3Tmpl 24)
   let env = OpEnv
         { oeRegistry = curatedRegistry
-        , oeCaps = mkCapabilities [(hmacSha256Mech, OpSign), (aesCbcMech, OpEncrypt)]
-        , oeModel = m2
+        , oeCaps = mkCapabilities
+            [ (hmacSha256Mech, OpSign)
+            , (aesCbcMech, OpEncrypt)
+            , (des3macMech, OpSign)
+            , (des3macMech, OpVerify)
+            ]
+        , oeModel = m3
         }
       mkSign h = InitArgs
         { iaOp = OpSign
@@ -857,6 +931,22 @@ caseInitKeyTypeMatrix = withSynth $ \answer -> do
         , iaCipher = Just (CipherSpec 16 False)
         , iaRecover = Nothing
         }
+      mkMacSign h = InitArgs
+        { iaOp = OpSign
+        , iaMech = des3macMech
+        , iaParams = BS.empty
+        , iaKey = Just (KeyPolicy h [OpSign] False)
+        , iaCipher = Nothing
+        , iaRecover = Nothing
+        }
+      mkMacVerify h = InitArgs
+        { iaOp = OpVerify
+        , iaMech = des3macMech
+        , iaParams = BS.empty
+        , iaKey = Just (KeyPolicy h [OpVerify] False)
+        , iaCipher = Nothing
+        , iaRecover = Nothing
+        }
   let (_, signGen) = initOperation env emptySessionOps st (mkSign genH)
   assertEqual "HMAC sign with generic key" CKR_OK (ioCode signGen)
   let (_, signAes) = initOperation env emptySessionOps st (mkSign aesH)
@@ -865,9 +955,21 @@ caseInitKeyTypeMatrix = withSynth $ \answer -> do
   assertEqual "AES-CBC encrypt with AES key" CKR_OK (ioCode encAes)
   let (_, encGen) = initOperation env emptySessionOps st (mkEnc genH)
   assertEqual "AES-CBC encrypt with generic key" CKR_KEY_TYPE_INCONSISTENT (ioCode encGen)
+  let (_, macSignDes3) = initOperation env emptySessionOps st (mkMacSign des3H)
+  assertEqual "3DES-MAC sign with DES3 key" CKR_OK (ioCode macSignDes3)
+  let (_, macSignAes) = initOperation env emptySessionOps st (mkMacSign aesH)
+  assertEqual "3DES-MAC sign with AES key" CKR_KEY_TYPE_INCONSISTENT (ioCode macSignAes)
+  let (_, macVerifyDes3) = initOperation env emptySessionOps st (mkMacVerify des3H)
+  assertEqual "3DES-MAC verify with DES3 key" CKR_OK (ioCode macVerifyDes3)
+  let (_, macVerifyGen) = initOperation env emptySessionOps st (mkMacVerify genH)
+  assertEqual "3DES-MAC verify with generic key" CKR_KEY_TYPE_INCONSISTENT (ioCode macVerifyGen)
   -- Direct matrix pins.
   assertEqual "hmac row" (Just [ckkGenericSecret, mustKeyTypeId "CKK_SHA256_HMAC"])
     (matrixKeyTypes hmacSha256Mech OpSign)
+  assertEqual "des3mac row" (Just [ckkDes3]) (matrixKeyTypes des3macMech OpSign)
+  assertEqual "des3mac row verify" (Just [ckkDes3]) (matrixKeyTypes des3macMech OpVerify)
+  assertEqual "des3mac general row" (Just [ckkDes3]) (matrixKeyTypes des3macGenMech OpSign)
+  assertEqual "des3mac general row verify" (Just [ckkDes3]) (matrixKeyTypes des3macGenMech OpVerify)
   assertEqual "cbc row" (Just [ckkAes]) (matrixKeyTypes aesCbcMech OpEncrypt)
   assertEqual "ccm row" (Just [ckkAes]) (matrixKeyTypes aesCcmMech OpEncrypt)
   assertEqual "ccm row decrypt" (Just [ckkAes]) (matrixKeyTypes aesCcmMech OpDecrypt)

@@ -145,6 +145,7 @@ module Haskoki.Engine.Driver
   , slhdsaLevelOfKey
   , ecdhParamsFor
   , cmacSpecFor
+  , des3macSpecFor
   , hotpParamsFor
   , Pbkd2Params (..)
   , kdfShaFor
@@ -251,6 +252,7 @@ import Haskoki.Operation.KeyManagement
   , aesKeyGenMech
   , aesKwMech
   , aesKwPadMech
+  , des3KeyGenMech
   , aesKwpMech
   , decodeGenArgs
   , decodeWrapParams
@@ -271,6 +273,12 @@ import Haskoki.Recipe.Cmac
   ( CmacRecipe (..)
   , cmacBlockLen
   , cmacRecipeFor
+  )
+import Haskoki.Recipe.Des3Mac
+  ( Des3MacRecipe (..)
+  , des3macBlockLen
+  , des3macPlainOutLen
+  , des3macRecipeFor
   )
 import Haskoki.Recipe.Hmac
   ( HmacRecipe (..)
@@ -387,6 +395,30 @@ cmacSpecFor mech params keyLen = do
 -- 'CryptoFailed', never 'CryptoUnsupported').
 isCmacMech :: MechanismId -> Bool
 isCmacMech mech = isJust (cmacRecipeFor mech)
+
+-- | 3DES-MAC dispatch: covered (mechanism, params, key length)
+-- triples map to the ECB cipher spec plus the output width (4 for
+-- the plain half-block row, the decoded length for GENERAL rows).
+-- 'Nothing' means uncovered (non-3DES-MAC mechanism), malformed
+-- parameters, or an off-geometry key length.
+des3macSpecFor :: MechanismId -> ByteString -> Int -> Maybe (CipherSpec, Maybe Int)
+des3macSpecFor mech params keyLen = do
+  r <- des3macRecipeFor mech
+  guard (keyLen == 16 || keyLen == 24)
+  if rdmGeneral r
+    then do
+      n <- decodeMacGeneral params
+      guard (n >= 1 && n <= des3macBlockLen r)
+      pure (C_DES3_ECB, Just n)
+    else do
+      guard (BS.null params)
+      pure (C_DES3_ECB, Just (des3macPlainOutLen r))
+
+-- | A 3DES-MAC mechanism regardless of parameter validity (drives
+-- the parameter-refusal branch: malformed MAC params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isDes3MacMech :: MechanismId -> Bool
+isDes3MacMech mech = isJust (des3macRecipeFor mech)
 
 -- | HOTP dispatch: a covered mechanism with valid @hotp-params\/1@
 -- parameters to (counter, digits) (pinned against
@@ -984,6 +1016,8 @@ runEffect env resolve fx = case fx of
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
     | isCmacMech mech -> withKey mkey $ \key ->
         runCmacSign mech params key input
+    | isDes3MacMech mech -> withKey mkey $ \key ->
+        runDes3MacSign mech params key input
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpSign mech params key input
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
@@ -1022,6 +1056,8 @@ runEffect env resolve fx = case fx of
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
     | isCmacMech mech -> withKey mkey $ \key ->
         runCmacVerify mech params key input sig
+    | isDes3MacMech mech -> withKey mkey $ \key ->
+        runDes3MacVerify mech params key input sig
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpVerify mech params key input sig
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
@@ -1081,6 +1117,8 @@ runEffect env resolve fx = case fx of
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
     | isCmacMech mech -> withKey mkey $ \key ->
         runCmacSign mech params key input
+    | isDes3MacMech mech -> withKey mkey $ \key ->
+        runDes3MacSign mech params key input
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpSign mech params key input
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
@@ -1119,6 +1157,8 @@ runEffect env resolve fx = case fx of
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
     | isCmacMech mech -> withKey mkey $ \key ->
         runCmacVerify mech params key input sig
+    | isDes3MacMech mech -> withKey mkey $ \key ->
+        runDes3MacVerify mech params key input sig
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpVerify mech params key input sig
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
@@ -1165,6 +1205,8 @@ runEffect env resolve fx = case fx of
               ("driver: unknown KEM parameter set: " ++ show n)))
           (m, GenAes n) | m == aesKeyGenMech ->
             toKeyPair <$> generateKey env (GenSym "AES" n)
+          (m, GenBytes n) | m == des3KeyGenMech ->
+            toKeyPair <$> generateKey env (GenSym "DES3" n)
           (m, GenBytes n) | m == hotpKeyGenMech ->
             toKeyPair <$> generateKey env (GenSym "HOTP" n)
           (m, GenBytes n) | m == genericSecretKeyGenMech ->
@@ -1188,7 +1230,7 @@ runEffect env resolve fx = case fx of
             Nothing -> pure (GotCryptoError (CryptoFailed
               ("driver: unknown SLH-DSA parameter set: " ++ show n)))
           _
-            | mech `elem` [aesKeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech] ->
+            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)
@@ -1312,6 +1354,41 @@ runEffect env resolve fx = case fx of
           "driver: CMAC (mechanism, key length, params) rejected by the recipe"))
       _ -> pure (GotCryptoError (CryptoBadKey "driver"
         "CMAC needs raw symmetric key bytes"))
+    -- | 3DES-MAC sign effects: CBC-MAC chaining over the backend
+    -- ECB route, truncated to the half block (plain) or the
+    -- decoded length (GENERAL). Off-geometry (mechanism, key
+    -- length, params) triples are 'CryptoFailed'; a non-bytes key
+    -- is 'CryptoBadKey'.
+    runDes3MacSign :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
+    runDes3MacSign mech params key input = case key of
+      KeyBytes kb -> case des3macSpecFor mech params (BS.length kb) of
+        Just (spec, trunc) -> do
+          r <- des3macTag spec key input
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk tag -> GotBytes (maybe tag (`BS.take` tag) trunc)
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: 3DES-MAC (mechanism, key length, params) rejected by the recipe"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "3DES-MAC needs raw symmetric key bytes"))
+    -- | 3DES-MAC verify effects: recompute, truncate,
+    -- constant-time compare. A mismatch is the 'False' verdict,
+    -- never a malfunction.
+    runDes3MacVerify :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runDes3MacVerify mech params key input tag = case key of
+      KeyBytes kb -> case des3macSpecFor mech params (BS.length kb) of
+        Just (spec, trunc) -> do
+          r <- des3macTag spec key input
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk full
+              | driverCtEq want tag -> GotValid True
+              | otherwise -> GotValid False
+              where want = maybe full (`BS.take` full) trunc
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: 3DES-MAC (mechanism, key length, params) rejected by the recipe"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "3DES-MAC needs raw symmetric key bytes"))
     -- | HOTP sign effects: HMAC-SHA1 over the counter, then RFC
     -- 4226 dynamic truncation to ASCII digits. The input is always
     -- empty (HOTP signs the counter only); anything else is a
@@ -1384,6 +1461,23 @@ runEffect env resolve fx = case fx of
       _ -> pure (EngineFail (BackendBadParam "cmac"
         "CMAC needs an AES or 3DES ECB cipher spec"))
       where
+        enc b = cipherEncrypt env spec key BS.empty b
+        chain x [] = pure (EngineOk x)
+        chain x (m : ms) = do
+          e <- enc (x `xorB` m)
+          case e of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk x' -> chain x' ms
+    -- | The 3DES CBC-MAC tag: zero IV, input zero-padded to the
+    -- 8-byte block, chaining over single-block ECB calls. Full
+    -- width; truncation is the caller's call.
+    des3macTag :: CipherSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
+    des3macTag spec key input
+      | spec /= C_DES3_ECB = pure (EngineFail (BackendBadParam "des3mac"
+          "3DES-MAC needs the 3DES ECB cipher spec"))
+      | otherwise = chain (BS.replicate blk 0) (zeroPad blk input)
+      where
+        blk = 8
         enc b = cipherEncrypt env spec key BS.empty b
         chain x [] = pure (EngineOk x)
         chain x (m : ms) = do
@@ -1675,6 +1769,17 @@ chunksOf :: Int -> ByteString -> [ByteString]
 chunksOf n bs
   | BS.null bs = []
   | otherwise = let (h, t) = BS.splitAt n bs in h : chunksOf n t
+
+-- | Split into zero-padded full blocks (empty input yields one
+-- zero block, so CBC-MAC over empty input is well-defined).
+zeroPad :: Int -> ByteString -> [ByteString]
+zeroPad n bs = case chunksOf n bs of
+  [] -> [BS.replicate n 0]
+  blks -> case unsnoc blks of
+    Just (pre, lst)
+      | BS.length lst == n -> blks
+      | otherwise -> pre ++ [lst <> BS.replicate (n - BS.length lst) 0]
+    Nothing -> [BS.replicate n 0]
 
 -- | Four-byte big-endian word (PBKDF2 block index).
 word32BE :: Int -> ByteString

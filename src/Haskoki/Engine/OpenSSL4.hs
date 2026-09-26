@@ -563,7 +563,8 @@ instance CryptoBackend OpenSSL4 where
           Left code -> nativeFail "generateKey" code
           Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   -- Symmetric keygen is libctx DRBG bytes (bounds mirror
-  -- the key planner: AES 16/24/32, HOTP 16..64, GENERIC 1..255).
+  -- the key planner: AES 16/24/32, DES3 16/24, HOTP 16..64,
+  -- GENERIC 1..255).
   generateKey be spec@(GenSym alg n) = runGuarded be "generateKey" (genSupported be spec) $ \env ->
     case symLenOk alg n of
       Just why -> pure (EngineFail (BackendBadParam "generateKey" why))
@@ -1384,7 +1385,7 @@ genSupported (OSSL4Backend env) spec
   | GenMLKEM alg <- spec
   , Set.member alg (kcAlgs (bcKems (osslCaps env))) = Nothing
   | GenSym alg _ <- spec
-  , alg `elem` ["AES", "HOTP", "GENERIC"] = Nothing
+  , alg `elem` ["AES", "DES3", "HOTP", "GENERIC"] = Nothing
   | GenRSA {} <- spec
   , Set.member "RSA-PSS" (scSpecs (bcSigs (osslCaps env))) = Nothing
   | otherwise = Just ("keygen not in set: " ++ show spec)
@@ -1407,6 +1408,9 @@ symLenOk :: String -> Int -> Maybe String
 symLenOk "AES" n
   | n `elem` [16, 24, 32] = Nothing
   | otherwise = Just ("AES keygen length must be 16, 24 or 32 bytes: " ++ show n)
+symLenOk "DES3" n
+  | n `elem` [16, 24] = Nothing
+  | otherwise = Just ("DES3 keygen length must be 16 or 24 bytes: " ++ show n)
 symLenOk "HOTP" n
   | n >= 16 && n <= 64 = Nothing
   | otherwise = Just ("HOTP keygen length must be 16 to 64 bytes: " ++ show n)

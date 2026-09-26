@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 138
+#define HASKOKI_MECH_COUNT 141
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -69,8 +69,11 @@ static const struct haskoki_mech_row
   { 0x00000065UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA3_512_RSA_PKCS_PSS */
   { 0x00000066UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA3_224_RSA_PKCS */
   { 0x00000067UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA3_224_RSA_PKCS_PSS */
+  { 0x00000131UL, 128UL, 192UL, (unsigned long)(CKF_GENERATE) }, /* CKM_DES3_KEY_GEN */
   { 0x00000132UL, 16UL, 24UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_DES3_ECB */
   { 0x00000133UL, 16UL, 24UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_DES3_CBC */
+  { 0x00000134UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DES3_MAC */
+  { 0x00000135UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DES3_MAC_GENERAL */
   { 0x00000137UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DES3_CMAC_GENERAL */
   { 0x00000138UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DES3_CMAC */
   { 0x00000210UL, 0UL, 0UL, (unsigned long)(CKF_DIGEST) }, /* CKM_MD5 */

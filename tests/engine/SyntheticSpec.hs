@@ -124,6 +124,7 @@ spec = testGroup "synthetic engine"
   , testCase "SLH-DSA sets roundtrip" caseSlhdsaRoundtrip
   , testCase "ECDH agreements separate and replay" caseEcdh
   , testCase "CMAC tags separate and truncate" caseCmac
+  , testCase "3DES-MAC tags separate and truncate" caseDes3mac
   , testCase "KDF output separates and truncates" caseKdf
   , testCase "HOTP codes separate, keygen lengths" caseHotp
   , testCase "Specials refuse explicitly" caseSpecialsRefuse
@@ -1139,6 +1140,12 @@ caseCipherSpecs = withSynth "11" $ \env -> do
 des3Key24 :: KeyMaterial
 des3Key24 = KeyBytes "0123456789abcdef01234567"
 
+des3Key24b :: KeyMaterial
+des3Key24b = KeyBytes "0123456789abcdef01234566"
+
+des3Key16 :: KeyMaterial
+des3Key16 = KeyBytes "0123456789abcdef"
+
 -- ---------------------------------------------------------------------------
 -- The RSA v1.5 spec set
 -- ---------------------------------------------------------------------------
@@ -1713,6 +1720,70 @@ caseCmac = withSynth "11" $ \env -> do
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
 
+-- | 3DES-MAC through the driver over synthetic ECB:
+-- deterministic 4-byte half-block tags on the plain row,
+-- GENERAL truncation is the prefix, keys/messages separate,
+-- verify verdicts, and off-geometry triples refuse typed.
+caseDes3mac :: IO ()
+caseDes3mac = withSynth "11" $ \env -> do
+  let macMech = MechanismId 0x134
+      macGen = MechanismId 0x135
+      kOid = ObjectId 55
+      badOid = ObjectId 56
+      k2Oid = ObjectId 57
+      shortOid = ObjectId 58
+      res oid
+        | oid == kOid = Just des3Key24
+        | oid == badOid = Just des3Key24b
+        | oid == k2Oid = Just des3Key16
+        | oid == shortOid = Just (KeyBytes "fifteen bytes!!")
+        | otherwise = Nothing
+      signAs mech oid params msg =
+        runEffect env res (FxSign mech (Just oid) params msg) >>= expectBytes
+      msg = "twenty bytes of input!!"
+  t1 <- signAs macMech kOid BS.empty msg
+  assertEqual "plain half width" 4 (BS.length t1)
+  t2 <- signAs macMech kOid BS.empty msg
+  assertEqual "deterministic" t1 t2
+  tOther <- signAs macMech badOid BS.empty msg
+  assertBool "keys separated" (t1 /= tOther)
+  tMsg <- signAs macMech kOid BS.empty "?wenty bytes of input!!"
+  assertBool "messages separated" (t1 /= tMsg)
+  tEmpty <- signAs macMech kOid BS.empty BS.empty
+  assertEqual "empty width" 4 (BS.length tEmpty)
+  -- GENERAL truncation is the tag prefix; bounds enforced.
+  g8 <- signAs macGen kOid (encodeMacGeneral 8) msg
+  assertEqual "truncation width" 8 (BS.length g8)
+  assertEqual "half is the prefix" t1 (BS.take 4 g8)
+  vGen <- runEffect env res (FxVerify macGen (Just kOid) (encodeMacGeneral 8)
+    msg g8)
+  assertEqual "general verifies" (GotValid True) vGen
+  badLen <- runEffect env res (FxSign macGen (Just kOid) (encodeMacGeneral 9)
+    msg)
+  case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  -- Verify verdicts.
+  vGood <- runEffect env res (FxVerify macMech (Just kOid) BS.empty msg t1)
+  assertEqual "verifies" (GotValid True) vGood
+  vBad <- runEffect env res (FxVerify macMech (Just kOid) BS.empty msg
+    (BS.map (255 -) t1))
+  assertEqual "tamper rejects" (GotValid False) vBad
+  vKey <- runEffect env res (FxVerify macMech (Just badOid) BS.empty msg t1)
+  assertEqual "wrong key rejects" (GotValid False) vKey
+  -- Off-geometry triples refuse typed.
+  badParams <- runEffect env res (FxSign macMech (Just kOid) "x" msg)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badKey <- runEffect env res (FxSign macMech (Just shortOid) BS.empty msg)
+  case badKey of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  -- Two-key path serves at the half width.
+  tagHalf <- signAs macMech k2Oid BS.empty msg
+  assertEqual "two-key width" 4 (BS.length tagHalf)
+
 -- ---------------------------------------------------------------------------
 -- KDF constructions
 -- ---------------------------------------------------------------------------
@@ -1907,6 +1978,14 @@ caseHotp = withSynth "13" $ \env -> do
   assertEqual "generic length" 32 (BS.length g32)
   expectBadParam "generic-0 rejected" =<< generateKey env (GenSym "GENERIC" 0)
   expectBadParam "generic-256 rejected" =<< generateKey env (GenSym "GENERIC" 256)
+  (KeyBytes d24, Nothing) <- expectOk "des3 backend" =<<
+    generateKey env (GenSym "DES3" 24)
+  assertEqual "des3 length" 24 (BS.length d24)
+  (KeyBytes d16, Nothing) <- expectOk "des3 two-key backend" =<<
+    generateKey env (GenSym "DES3" 16)
+  assertEqual "des3 two-key length" 16 (BS.length d16)
+  expectBadParam "des3-15 rejected" =<< generateKey env (GenSym "DES3" 15)
+  expectBadParam "des3-32 rejected" =<< generateKey env (GenSym "DES3" 32)
   envA <- openSynth "13"
   envB <- openSynth "13"
   (KeyBytes a1, Nothing) <- expectOk "hotp seed a" =<<

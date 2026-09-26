@@ -3636,10 +3636,16 @@ caseSymKeygen = withBackend $ \env -> do
   assertEqual "hotp-20 length" 20 (BS.length kh)
   (KeyBytes kg, Nothing) <- expectOk "gen generic-32" =<< generateKey env (GenSym "GENERIC" 32)
   assertEqual "generic-32 length" 32 (BS.length kg)
+  (KeyBytes kd, Nothing) <- expectOk "gen des3-24" =<< generateKey env (GenSym "DES3" 24)
+  assertEqual "des3-24 length" 24 (BS.length kd)
+  (KeyBytes kd2, Nothing) <- expectOk "gen des3-16" =<< generateKey env (GenSym "DES3" 16)
+  assertEqual "des3-16 length" 16 (BS.length kd2)
   -- Bounds are typed: off-window lengths are bad params, unknown
   -- algorithms are unsupported (never silent bytes).
   expectBadParam "aes-15 refused" =<< generateKey env (GenSym "AES" 15)
   expectBadParam "aes-0 refused" =<< generateKey env (GenSym "AES" 0)
+  expectBadParam "des3-15 refused" =<< generateKey env (GenSym "DES3" 15)
+  expectBadParam "des3-32 refused" =<< generateKey env (GenSym "DES3" 32)
   expectBadParam "hotp-15 refused" =<< generateKey env (GenSym "HOTP" 15)
   expectBadParam "hotp-65 refused" =<< generateKey env (GenSym "HOTP" 65)
   expectBadParam "generic-0 refused" =<< generateKey env (GenSym "GENERIC" 0)

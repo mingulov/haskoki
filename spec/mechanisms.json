@@ -5748,14 +5748,28 @@
       "canonical_name": "CKM_DES3_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "max_key_size": 192,
+        "min_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via the CKA_VALUE_LEN template attribute (absent: three-key, 24 bytes). DES3 lengths 128/192 bits (two-key/three-key). Deterministic per (seed, operation) stream on synthetic. Real execution pinned (OpenSSLSpec caseSymKeygen: fresh DES3-16/24 DRBG bytes via hsk_ossl4_rand_bytes; KeyManagementSpec caseDes3Keygen: plans mint 16/24-byte handles, off-geometry refuses).",
       "numeric_id": "0x00000131",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-16-24-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES3_KEY_GEN",
@@ -5764,12 +5778,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "registry-seed",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "registry-seed",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "native-keygen",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-generation",
+          "case_id": "A20"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -5964,14 +6009,42 @@
       "canonical_name": "CKM_DES3_MAC",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice.",
+      "notes": "3DES-MAC recipe (core/Haskoki/Recipe/Des3Mac.hs): plain row, empty params, first 4 bytes of the final CBC-MAC block (the OASIS half-block rule); keys two-key/three-key 3DES (16/24 bytes); input zero-pads to the 8-byte block. The driver executes CBC-MAC chaining over the backend ECB route (single-block calls, zero IV) \u2014 real 3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverDes3Mac: lane des3_mac vectors); constructions pinned (SyntheticSpec caseDes3mac); params/init/map pinned (RecipeDes3MacSpec).",
       "numeric_id": "0x00000134",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac4/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES3_MAC",
@@ -5980,26 +6053,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "des3mac",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "des3mac",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "des3mac",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDes3MacSpec",
+          "build_id": "des3mac",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DES3_MAC_GENERAL",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice.",
+      "notes": "3DES-MAC recipe (core/Haskoki/Recipe/Des3Mac.hs): GENERAL truncation 1..8. The driver executes CBC-MAC chaining over the backend ECB route (single-block calls, zero IV) \u2014 real 3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverDes3Mac: lane des3_mac_general vectors); constructions pinned (SyntheticSpec caseDes3mac); params/init/map pinned (RecipeDes3MacSpec).",
       "numeric_id": "0x00000135",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac8-trunc/v1",
+          "parameter_codec": "mac-general/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "mac-general/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES3_MAC_GENERAL",
@@ -6008,12 +6140,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "des3mac",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "des3mac",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "des3mac",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeDes3MacSpec",
+          "build_id": "des3mac",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

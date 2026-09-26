@@ -79,6 +79,7 @@ library haskoki-core
     Haskoki.Recipe.Ccm
     Haskoki.Recipe.Cipher
     Haskoki.Recipe.Cmac
+    Haskoki.Recipe.Des3Mac
     Haskoki.Recipe.Digest
     Haskoki.Recipe.Dsa
     Haskoki.Recipe.Hmac
@@ -372,6 +373,7 @@ test-suite haskoki-model-tests
     RecipeCcmSpec
     RecipeCipherSpec
     RecipeCmacSpec
+    RecipeDes3MacSpec
     RecipeDigestSpec
     RecipeDsaSpec
     RecipeEcdsaSpec

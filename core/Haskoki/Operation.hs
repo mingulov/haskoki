@@ -81,6 +81,7 @@ import Haskoki.Output
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor)
 import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, kwpNames, ofbName, streamNames, wrapNames, xtsName)
 import Haskoki.Recipe.Cmac (cmacParamsValid, cmacRecipeFor)
+import Haskoki.Recipe.Des3Mac (des3macParamsValid, des3macRecipeFor)
 import Haskoki.Recipe.Digest (digestParamsValid)
 import Haskoki.Recipe.Ecdsa (ecdsaParamsValid, ecdsaRecipeFor)
 import Haskoki.Recipe.Dsa (dsaParamsValid, dsaRecipeFor)
@@ -378,6 +379,10 @@ checkMechParams args
   , not (cmacParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD
         "CMAC mechanism parameters rejected by the recipe")
+  | Just r <- des3macRecipeFor (iaMech args)
+  , not (des3macParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "3DES-MAC mechanism parameters rejected by the recipe")
   | Just r <- hotpRecipeFor (iaMech args)
   , not (hotpParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD

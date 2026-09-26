@@ -57,12 +57,14 @@ module Haskoki.Operation.KeyManagement
   , ckkEcEdwards
   , ckkGenericSecret
   , ckkAes
+  , ckkDes3
   , ckkHotp
   , ckkMlKem
   , ckkMlDsa
   , ckkSlhDsa
     -- * Mechanism ids (spec\/vendor\/pkcs11.h)
   , aesKeyGenMech
+  , des3KeyGenMech
   , hotpKeyGenMech
   , genericSecretKeyGenMech
   , genericSecretKeygenMinBytes
@@ -169,6 +171,7 @@ import Haskoki.Registry.Generated
   , ckm_AES_KEY_WRAP
   , ckm_AES_KEY_WRAP_KWP
   , ckm_AES_KEY_WRAP_PAD
+  , ckm_DES3_KEY_GEN
   , ckm_DSA_KEY_PAIR_GEN
   , ckm_DSA_PARAMETER_GEN
   , ckm_EC_EDWARDS_KEY_PAIR_GEN
@@ -268,6 +271,10 @@ ckkMlDsa = mustKeyTypeId "CKK_ML_DSA"
 -- | @CKM_AES_KEY_GEN@ (generated id, resolved by name).
 aesKeyGenMech :: MechanismId
 aesKeyGenMech = MechanismId (ckm_AES_KEY_GEN)
+
+-- | @CKM_DES3_KEY_GEN@ (generated id, resolved by name).
+des3KeyGenMech :: MechanismId
+des3KeyGenMech = MechanismId (ckm_DES3_KEY_GEN)
 
 -- | @CKM_HOTP_KEY_GEN@ (generated id, resolved by name).
 hotpKeyGenMech :: MechanismId
@@ -1704,6 +1711,26 @@ planGenerateKey rules model st mech tmpl =
               "AES value length is malformed")
             Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
               "AES keygen needs CKA_VALUE_LEN")
+      | mech == des3KeyGenMech = case checkKeyTemplate ckoSecretKey ckkDes3 tmpl of
+          Left deny -> Left deny
+          Right attrs -> case Map.lookup AttrValueLen attrs of
+            Just (ValULong n)
+              | n `elem` [16, 24] -> Right
+                  ( PwGenerateKey (pendingFromAttrs st attrs)
+                  , FxGenerateKey mech BS.empty (encodeGenArgs (GenBytes (fromIntegral n)))
+                  )
+              | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                  ("DES3 length must be 16 or 24 bytes: " ++ show n))
+            Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "DES3 value length is malformed")
+            -- A missing length mints three-key (24 bytes): the
+            -- mechanism's headline size (16 selects the two-key
+            -- variant explicitly). Fixed-size keygen defaults where
+            -- the size is natural; AES keeps its required length.
+            Nothing -> Right
+              ( PwGenerateKey (pendingFromAttrs st attrs)
+              , FxGenerateKey mech BS.empty (encodeGenArgs (GenBytes 24))
+              )
       | mech == hotpKeyGenMech = case checkKeyTemplate ckoSecretKey ckkHotp tmpl of
           Left deny -> Left deny
           Right attrs -> case Map.lookup AttrValueLen attrs of
