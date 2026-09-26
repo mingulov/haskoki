@@ -312,6 +312,12 @@ caseFindRule = do
     (findRule "CKO_PUBLIC_KEY" "CKK_RSA" /= Nothing)
   assertBool "SECRET/HOTP resolves"
     (findRule "CKO_SECRET_KEY" "CKK_HOTP" /= Nothing)
+  -- KEM pairs carry no presence rule: CKA_DERIVE defaults FALSE
+  -- via kemNoDerive (it must READ false, not go missing).
+  assertEqual "PUB/KEM has no presence rule" Nothing
+    (findRule "CKO_PUBLIC_KEY" "CKK_ML_KEM")
+  assertEqual "PRIV/KEM has no presence rule" Nothing
+    (findRule "CKO_PRIVATE_KEY" "CKK_ML_KEM")
   assertEqual "PRIV/EC has no presence rule" Nothing
     (findRule "CKO_PRIVATE_KEY" "CKK_EC")
   assertEqual "SECRET/GENERIC has no presence rule" Nothing

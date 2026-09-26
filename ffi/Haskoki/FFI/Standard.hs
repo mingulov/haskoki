@@ -262,6 +262,11 @@ import Haskoki.Operation.KeyManagement
   , planUnwrapKey
   , planWrapKey
   )
+import Haskoki.Operation.Kem
+  ( kemAlgOfKey
+  , planKemDecaps
+  , planKemEncaps
+  )
 import Haskoki.Outcome
   ( DeltaOp (..)
   , EffectRequest (..)
@@ -2629,6 +2634,139 @@ haskokiStdSeedRandom ctx h pSeed (CULong len) =
                   EngineFail (BackendBadParam _ _) -> pure ckrArgsBad
                   EngineFail _ -> pure ckrGeneralError
                   EngineOk () -> pure ckrOk
+
+-- ---------------------------------------------------------------------------
+-- encapsulate/decapsulate
+-- ---------------------------------------------------------------------------
+
+foreign export ccall "haskoki_std_encapsulate_key" haskokiStdEncapsulateKey
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
+  -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> Ptr CULong -> IO CULong
+foreign export ccall "haskoki_std_decapsulate_key" haskokiStdDecapsulateKey
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
+  -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
+
+-- | Publish one encapsulate-plan result: the query and
+-- short-buffer legs report the ciphertext length (no key
+-- created); a sufficient buffer lands the ciphertext bytes
+-- plus exactly one secret handle. Anything off-shape fails
+-- closed.
+publishEncapsResult
+  :: StdInstance -> PlanResult -> Ptr Word8 -> Ptr CULong -> Ptr CULong -> IO CULong
+publishEncapsResult inst pr pOut pLen phKey = case pr of
+  Reject rej -> do
+    publishRejection inst rej
+    case rejCode rej of
+      CKR_BUFFER_TOO_SMALL -> pokeLenOut (rejOutputs rej) pLen
+        (stdRvOf CKR_BUFFER_TOO_SMALL)
+      _ -> pure (stdRvOf (rejCode rej))
+  Immediate pc -> do
+    ePub <- publishCommit inst pc
+    case ePub of
+      Left _ -> pure ckrGeneralError
+      Right ()
+        | pcCode pc /= CKR_OK -> pure (stdRvOf (pcCode pc))
+        | pOut == nullPtr -> pokeLenOut (pcOutputs pc) pLen ckrOk
+        | otherwise -> case pcOutputs pc of
+            [NativeOutput (RegionBytes "ciphertext" _) ct, hout] ->
+              case decodeHandles [hout] of
+                Just [w] -> do
+                  BSU.unsafeUseAsCString ct $ \src ->
+                    copyBytes (castPtr pOut) src (BS.length ct)
+                  poke pLen (CULong (fromIntegral (BS.length ct)))
+                  poke phKey (CULong w)
+                  pure ckrOk
+                _ -> pure ckrGeneralError
+            _ -> pure ckrGeneralError
+  Execute _ _ -> pure ckrGeneralError
+
+-- | Execute one encapsulate plan through the instance backend.
+runEncapsPlan
+  :: StdInstance -> Model -> SessionState -> KeyPlan
+  -> Ptr Word8 -> Ptr CULong -> Ptr CULong -> IO CULong
+runEncapsPlan inst m st kp pOut pLen phKey = case kp of
+  KeyDenied deny -> pure (stdRvOf (kdCode deny))
+  KeyImmediate pr -> publishEncapsResult inst pr pOut pLen phKey
+  -- Finisher-incoherent pairs refuse BEFORE any effect runs.
+  KeyEffect pw fx
+    | not (keyPairCompatible pw fx) -> pure (stdRvOf CKR_GENERAL_ERROR)
+    | Left deny <- admitPending st pw -> pure (stdRvOf (kdCode deny))
+    | otherwise -> do
+    res <- runEffect (siBackend inst) (stdResolver m) fx
+    m2 <- snapshotModel (siEnv inst)
+    publishEncapsResult inst (finishWork m2 st pw res) pOut pLen phKey
+
+-- | Encapsulate to a KEM public key: @CKM_ML_KEM@ takes no
+-- mechanism parameters (anything non-empty is
+-- @CKR_MECHANISM_PARAM_INVALID@); the set resolves from the
+-- peer key's parameter tag. A NULL out-buffer queries the
+-- ciphertext length, a short buffer reports it with
+-- @CKR_BUFFER_TOO_SMALL@ (neither creates a key), and a
+-- sufficient buffer lands the ciphertext plus one secret.
+haskokiStdEncapsulateKey
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
+  -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> Ptr CULong -> IO CULong
+haskokiStdEncapsulateKey ctx h (CULong mech) pParams (CULong paramsLen)
+    (CULong keyH) pFrame (CULong frameLen) pOut pLen phKey =
+  withStdCtx ctx $ \inst ->
+    if pLen == nullPtr || phKey == nullPtr
+      then pure ckrArgsBad
+      else withSessionState inst h $ \st -> do
+        eParams <- decodeInputBytes pParams paramsLen
+        case eParams of
+          Left _ -> pure ckrArgsBad
+          Right raw
+            | not (BS.null raw) -> pure (stdRvOf CKR_MECHANISM_PARAM_INVALID)
+            | otherwise -> do
+                eTmpl <- readFrame pFrame (CULong frameLen)
+                case eTmpl of
+                  Left ferr -> pure (frameErrorRV ferr)
+                  Right entries -> do
+                    CULong cap <- peek pLen
+                    let intent = if pOut == nullPtr then IntentNull
+                                 else IntentBuffer (fromIntegral cap)
+                        mid = MechanismId (fromIntegral mech)
+                        kh = ExternalHandle (fromIntegral keyH)
+                    m <- snapshotModel (siEnv inst)
+                    runEncapsPlan inst m st
+                      (planKemEncaps m st mid kh (kemAlgOfKey m kh) entries intent)
+                      pOut pLen phKey
+
+-- | Decapsulate with a KEM private key: the parameter rule
+-- matches encapsulate; the ciphertext is the whole input and
+-- the answer is exactly one secret handle.
+haskokiStdDecapsulateKey
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
+  -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
+haskokiStdDecapsulateKey ctx h (CULong mech) pParams (CULong paramsLen)
+    (CULong keyH) pCt (CULong ctLen) pFrame (CULong frameLen) phKey =
+  withStdCtx ctx $ \inst ->
+    if phKey == nullPtr
+      then pure ckrArgsBad
+      else withSessionState inst h $ \st -> do
+        eParams <- decodeInputBytes pParams paramsLen
+        case eParams of
+          Left _ -> pure ckrArgsBad
+          Right raw
+            | not (BS.null raw) -> pure (stdRvOf CKR_MECHANISM_PARAM_INVALID)
+            | otherwise -> do
+                eCt <- decodeInputBytes pCt ctLen
+                case eCt of
+                  Left _ -> pure ckrArgsBad
+                  Right ct -> do
+                    eTmpl <- readFrame pFrame (CULong frameLen)
+                    case eTmpl of
+                      Left ferr -> pure (frameErrorRV ferr)
+                      Right entries -> do
+                        let mid = MechanismId (fromIntegral mech)
+                            kh = ExternalHandle (fromIntegral keyH)
+                        m <- snapshotModel (siEnv inst)
+                        eHs <- runKeyPlan inst m st
+                          (planKemDecaps m st mid kh (kemAlgOfKey m kh) ct entries)
+                        case eHs of
+                          Left rv -> pure rv
+                          Right [oh] -> poke phKey (CULong oh) >> pure ckrOk
+                          Right _ -> pure ckrGeneralError
 
 -- ---------------------------------------------------------------------------
 -- wrap/unwrap/derive

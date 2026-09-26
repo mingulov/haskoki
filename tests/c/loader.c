@@ -465,7 +465,7 @@ static int _case_ok(void) { return g_failures == g_case_failures_at_start; }
 #define DUMMY_SESSION 0UL
 /* Routed mechanism-catalog row count (pinned exactly here and in
  * consumer_discovery; the generator is scripts/mech_catalog.py). */
-#define ROUTED_MECH_COUNT 130UL
+#define ROUTED_MECH_COUNT 136UL
 
 /* ---------- A05 mutex-callback fixtures ---------- */
 
@@ -991,17 +991,17 @@ static void case_sha(CK_FUNCTION_LIST_PTR p11) {
   /* Mechanism advertisement (full catalog, not one row). */
   {
     CK_ULONG n = 0;
-    CK_MECHANISM_TYPE ms[128];
+    CK_MECHANISM_TYPE ms[ROUTED_MECH_COUNT];
     CK_MECHANISM_INFO mi;
     int i, found = 0;
     rv = p11->C_GetMechanismList(0, NULL, &n);
     EXPECT_RV(rv, CKR_OK, "mech count query");
-    EXPECT_TRUE(n == ROUTED_MECH_COUNT, "118 mechanisms");
+    EXPECT_TRUE(n == ROUTED_MECH_COUNT, "mechanism count");
     n = 1;
     rv = p11->C_GetMechanismList(0, ms, &n);
     EXPECT_RV(rv, CKR_BUFFER_TOO_SMALL, "mech list short fill");
     EXPECT_TRUE(n == ROUTED_MECH_COUNT, "short fill reports count");
-    n = 128;
+    n = ROUTED_MECH_COUNT;
     rv = p11->C_GetMechanismList(0, ms, &n);
     EXPECT_RV(rv, CKR_OK, "mech list fill");
     EXPECT_TRUE(n == ROUTED_MECH_COUNT, "fill reports count");

@@ -19,6 +19,7 @@ module Haskoki.Operation.Kem
   , kemAlgFromName
   , mlKemMech
   , mlKemKeyPairGenMech
+  , kemAlgOfKey
   , planKemEncaps
   , planKemDecaps
   ) where
@@ -37,6 +38,7 @@ import Haskoki.Operation.KeyManagement
   , KeyPlan (..)
   , PendingWork (..)
   , checkKeyTemplate
+  , ckkAes
   , ckkGenericSecret
   , ckkMlKem
   , ckoSecretKey
@@ -103,12 +105,30 @@ mlKemMech = MechanismId (ckm_ML_KEM)
 mlKemKeyPairGenMech :: MechanismId
 mlKemKeyPairGenMech = MechanismId (ckm_ML_KEM_KEY_PAIR_GEN)
 
+-- | The KEM set for a key handle: the object's parameter tag
+-- (512\/768\/1024). Unknown handles and untagged keys default
+-- to 768 — the default never survives to an effect, because
+-- the planners deny unknown handles, mistyped keys, and
+-- mistagged keys before planning one.
+kemAlgOfKey :: Model -> ExternalHandle -> KemAlg
+kemAlgOfKey model h = case resolveHandle model h of
+  Just ost -> case Map.lookup AttrKemAlg (osAttrs ost) of
+    Just (ValULong 512) -> KemMl512
+    Just (ValULong 1024) -> KemMl1024
+    _ -> KemMl768
+  Nothing -> KemMl768
+
 -- | Plan one encapsulation against a peer public key: the mechanism
 -- must be ML-KEM, the handle must resolve to a visible ML-KEM key
 -- of this parameter set carrying the encapsulate mark, and the
--- secret template must describe a 32-byte generic secret. Check
--- order is documented and tested: mechanism, handle, key kind and
--- parameter set, usage mark, template, then the output intent.
+-- secret template must describe a 32-byte secret
+-- (generic-secret, or AES-256 — the oracle's output shape).
+-- Check order is documented and tested: mechanism, handle, key
+-- kind, parameter set, usage mark, template, then the output
+-- intent. A wrong key TYPE is the deeper mismatch
+-- (@CKR_KEY_TYPE_INCONSISTENT@, the 'checkKeyBinding'
+-- precedent); a right-typed key on another set or without the
+-- usage mark refuses @CKR_KEY_FUNCTION_NOT_PERMITTED@.
 planKemEncaps
   :: Model -> SessionState -> MechanismId -> ExternalHandle -> KemAlg
   -> [(AttributeType, AttributeValue)] -> OutputIntent
@@ -124,7 +144,7 @@ planKemEncaps model st mech h alg tmpl intent
         | not (objectVisible st ost) -> KeyDenied (KeyDeny CKR_OBJECT_HANDLE_INVALID
             "object not visible in this session")
         | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkMlKem) ->
-            KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+            KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
               "peer key is not an ML-KEM key")
         | Map.lookup AttrKemAlg (osAttrs ost) /= Just (ValULong (fromIntegral (kemAlgNum alg))) ->
             KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
@@ -132,7 +152,7 @@ planKemEncaps model st mech h alg tmpl intent
         | Map.lookup AttrEncapsulate (osAttrs ost) /= Just (ValBool True) ->
             KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
               "peer key does not permit encapsulation")
-        | otherwise -> case checkKeyTemplate ckoSecretKey ckkGenericSecret tmpl of
+        | otherwise -> case checkKemSecret tmpl of
             Left deny -> KeyDenied deny
             Right attrs -> case checkSecretLen attrs of
               Left deny -> KeyDenied deny
@@ -173,12 +193,51 @@ checkSecretLen attrs = case Map.lookup AttrValueLen attrs of
   _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
     "KEM shared secrets are 32 bytes")
 
+-- | The shared-secret template check: a strict secret-key
+-- template whose key type is generic-secret (the default when
+-- absent) or AES (32 bytes mint AES-256 — the oracle's output
+-- shape for every KEM leg). Any other explicit type is
+-- inconsistent: no other secret type carries a 32-byte
+-- ML-KEM secret. A caller-supplied @CKA_VALUE@ refuses
+-- first: the finisher overwrites the value slot, so accepting
+-- it would silently discard caller bytes (the oracle's
+-- injection leg fails any accept).
+checkKemSecret
+  :: [(AttributeType, AttributeValue)]
+  -> Either KeyDeny (Map.Map AttributeType AttributeValue)
+checkKemSecret tmpl
+  | any (\(t, _) -> t == AttrValue) tmpl =
+      Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        "mechanism-contributed CKA_VALUE must not be supplied")
+  | otherwise = case lookup AttrKeyType tmpl of
+  Nothing -> strict ckkGenericSecret tmpl
+  Just (ValULong k)
+    | k == ckkGenericSecret -> strict ckkGenericSecret tmpl
+    | k == ckkAes -> strict ckkAes tmpl
+    | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("KEM shared-secret key type " ++ show k
+          ++ " is not generic-secret or AES"))
+  Just _ -> strict ckkGenericSecret tmpl
+  where
+    -- The KEM output length is mechanism-determined (32), so an
+    -- absent CKA_VALUE_LEN is supplied upfront rather than
+    -- refused: the (secret, AES) presence rule requires the
+    -- length, but the mechanism already knows it (the same 32
+    -- 'checkSecretLen' would default to — supplied early so
+    -- the rule sees a complete template).
+    strict key t = checkKeyTemplate ckoSecretKey key (withLen t)
+    withLen t
+      | any (\(a, _) -> a == AttrValueLen) t = t
+      | otherwise = (AttrValueLen, ValULong 32) : t
+
 -- | Plan one decapsulation against a private KEM key: the ciphertext
 -- must be exactly the mechanism's length (checked purely, before any
 -- effect), the handle must resolve to a visible ML-KEM key of this
 -- parameter set carrying the decapsulate mark, and the secret
--- template must describe a 32-byte generic secret. The answer
--- completes exactly one pending secret object.
+-- template must describe a 32-byte secret (generic-secret or
+-- AES-256). The answer completes exactly one pending secret
+-- object. Wrong key types refuse @CKR_KEY_TYPE_INCONSISTENT@
+-- (the encaps precedent).
 planKemDecaps
   :: Model -> SessionState -> MechanismId -> ExternalHandle -> KemAlg
   -> ByteString -> [(AttributeType, AttributeValue)]
@@ -188,7 +247,7 @@ planKemDecaps model st mech h alg ct tmpl
       KeyDenied (KeyDeny CKR_MECHANISM_INVALID
         ("not a KEM mechanism: " ++ show mech))
   | BS.length ct /= kemCtLen alg =
-      KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+      KeyDenied (KeyDeny CKR_ENCRYPTED_DATA_LEN_RANGE
         ("ciphertext length " ++ show (BS.length ct)
           ++ " mismatches " ++ show (kemCtLen alg)))
   | otherwise = case resolveHandle model h of
@@ -198,7 +257,7 @@ planKemDecaps model st mech h alg ct tmpl
         | not (objectVisible st ost) -> KeyDenied (KeyDeny CKR_OBJECT_HANDLE_INVALID
             "object not visible in this session")
         | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkMlKem) ->
-            KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+            KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
               "key is not an ML-KEM key")
         | Map.lookup AttrKemAlg (osAttrs ost) /= Just (ValULong (fromIntegral (kemAlgNum alg))) ->
             KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
@@ -206,7 +265,7 @@ planKemDecaps model st mech h alg ct tmpl
         | Map.lookup AttrDecapsulate (osAttrs ost) /= Just (ValBool True) ->
             KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
               "key does not permit decapsulation")
-        | otherwise -> case checkKeyTemplate ckoSecretKey ckkGenericSecret tmpl of
+        | otherwise -> case checkKemSecret tmpl of
             Left deny -> KeyDenied deny
             Right attrs -> case checkSecretLen attrs of
               Left deny -> KeyDenied deny

@@ -8,7 +8,7 @@
  *     (3.2/3.1/3.0 + legacy C_GetFunctionList), callable pre-Initialize
  *   - versioned-table isolation (distinct instances, exact versions)
  *   - cross-table consistency (same bytes via legacy and 3.2 pointers)
- *   - mechanism/info queries (134 real-tested rows, info records,
+ *   - mechanism/info queries (136 real-tested rows, info records,
  *     invalid codes)
  *   - real slot/token records (provisioned token) + session
  *     open/info/close/close-all flows
@@ -357,7 +357,7 @@ int main(int argc, char **argv) {
   }
   nmechL = 144;
   rv = legacy->C_GetMechanismList(slotsL[0], mechsL, &nmechL);
-  CHECK(rv == CKR_OK && nmechL == 134, "legacy mechanism list has 134 rows");
+  CHECK(rv == CKR_OK && nmechL == 136, "legacy mechanism list has 136 rows");
   {
     CK_ULONG nq = 144;
     rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nq);
@@ -416,9 +416,10 @@ int main(int argc, char **argv) {
   /* ---- mechanism/info queries ---- */
   nmech = 144;
   rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nmech);
-  CHECK(rv == CKR_OK && nmech == 134, "mechanism list has 134 rows");
+  CHECK(rv == CKR_OK && nmech == 136, "mechanism list has 136 rows");
   {
     int has256 = 0, hasPad = 0, hasEC = 0, hasAESkg = 0, hasHOTPkg = 0;
+    int hasKEM = 0, hasKEMkg = 0;
     int ascending = 1;
     CK_ULONG i = 0;
     for (i = 0; i < nmech; i++) {
@@ -437,23 +438,30 @@ int main(int argc, char **argv) {
       if (mechs[i] == CKM_HOTP_KEY_GEN) {
         hasHOTPkg = 1;
       }
+      if (mechs[i] == CKM_ML_KEM) {
+        hasKEM = 1;
+      }
+      if (mechs[i] == CKM_ML_KEM_KEY_PAIR_GEN) {
+        hasKEMkg = 1;
+      }
       if (i > 0 && mechs[i] <= mechs[i - 1]) {
         ascending = 0;
       }
     }
     CHECK(has256 && hasPad && hasEC && hasAESkg && hasHOTPkg,
           "digest/cipher/keygen members present");
+    CHECK(hasKEM && hasKEMkg, "KEM members present");
     CHECK(ascending, "mechanism list ascends");
   }
   {
     CK_ULONG nq = 0;
     rv = tbl32->C_GetMechanismList(slotsL[0], NULL_PTR, &nq);
-    CHECK(rv == CKR_OK && nq == 134, "mechanism size query reports 134");
+    CHECK(rv == CKR_OK && nq == 136, "mechanism size query reports 136");
   }
   nmech = 3;
   rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nmech);
-  CHECK(rv == CKR_BUFFER_TOO_SMALL && nmech == 134,
-        "short mechanism buffer reports 134");
+  CHECK(rv == CKR_BUFFER_TOO_SMALL && nmech == 136,
+        "short mechanism buffer reports 136");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_SHA256, &mi);
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 0 && mi.ulMaxKeySize == 0 &&
             mi.flags == CKF_DIGEST,
@@ -470,6 +478,14 @@ int main(int argc, char **argv) {
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 0 && mi.ulMaxKeySize == 0 &&
             mi.flags == CKF_GENERATE_KEY_PAIR,
         "RSA_KEY_PAIR_GEN info: generate-pair-only, 0/0 bounds");
+  rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_ML_KEM_KEY_PAIR_GEN, &mi);
+  CHECK(rv == CKR_OK && mi.ulMinKeySize == 800 && mi.ulMaxKeySize == 1568 &&
+            mi.flags == CKF_GENERATE_KEY_PAIR,
+        "ML_KEM_KEY_PAIR_GEN info: generate-pair-only, 800..1568");
+  rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_ML_KEM, &mi);
+  CHECK(rv == CKR_OK && mi.ulMinKeySize == 800 && mi.ulMaxKeySize == 1568 &&
+            mi.flags == (CKF_ENCAPSULATE | CKF_DECAPSULATE),
+        "ML_KEM info: 800..1568, encapsulate/decapsulate");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_AES_GCM, &mi);
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 16 && mi.ulMaxKeySize == 32 &&
             mi.flags == (CKF_ENCRYPT | CKF_DECRYPT),

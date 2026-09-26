@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 134
+#define HASKOKI_MECH_COUNT 136
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -28,6 +28,7 @@ static const struct haskoki_mech_row
   { 0x00000009UL, 512UL, 4096UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT | CKF_UNWRAP | CKF_WRAP) }, /* CKM_RSA_PKCS_OAEP */
   { 0x0000000DUL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_RSA_PKCS_PSS */
   { 0x0000000EUL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA1_RSA_PKCS_PSS */
+  { 0x0000000FUL, 800UL, 1568UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_ML_KEM_KEY_PAIR_GEN */
   { 0x00000010UL, 1024UL, 3072UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_DSA_KEY_PAIR_GEN */
   { 0x00000011UL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA */
   { 0x00000012UL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA_SHA1 */
@@ -35,6 +36,7 @@ static const struct haskoki_mech_row
   { 0x00000014UL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA_SHA256 */
   { 0x00000015UL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA_SHA384 */
   { 0x00000016UL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA_SHA512 */
+  { 0x00000017UL, 800UL, 1568UL, (unsigned long)(CKF_DECAPSULATE | CKF_ENCAPSULATE) }, /* CKM_ML_KEM */
   { 0x00000018UL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA_SHA3_224 */
   { 0x00000019UL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA_SHA3_256 */
   { 0x0000001AUL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA_SHA3_384 */

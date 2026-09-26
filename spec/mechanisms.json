@@ -956,11 +956,11 @@
         "flags": [
           "CKF_GENERATE_KEY_PAIR"
         ],
-        "key_size_unit": "bits",
-        "max_key_size": 0,
-        "min_key_size": 0
+        "key_size_unit": "bytes",
+        "max_key_size": 1568,
+        "min_key_size": 800
       },
-      "notes": "KEM pairgen (kemAlgOf, 512/768/1024). Real: OpenSSL4 has no KEM entry in the Raw/C surface (caseRealUnsupported pins the honest lack); the pinned libcrypto 4.0.2 provider offers ML-KEM-512/768/1024 (probed 2026-09-21) but it is unwired C work.",
+      "notes": "pairgen from the public template CKA_PARAMETER_SET (CKP_ML_KEM_512/768/1024 = 1/2/3 via kemAlgOf, default 768, private inherits; the internal AttrKemAlg tag serves pre-resolved callers; unknown sets and disagreeing templates refuse CKR_TEMPLATE_INCONSISTENT; GenMlKem alg frame). The mechanism takes no parameter (OASIS v3.2). Keygen stores the provider SEQ{seed64, dk} form plus SPKI and stamps CKA_SEED (stampPairComponents; opaque synthetic doubles pass through) and CKA_PARAMETER_SET. Real execution pinned by OpenSSLSpec caseRealMlkemKeygen (halves parse, OIDs agree, fresh pairs round-trip). Bounds 800/1568 bytes (served encapsulation-key window, the OASIS mechanism-info unit).",
       "numeric_id": "0x0000000f",
       "routes": [
         {
@@ -985,7 +985,7 @@
       "support": {
         "abi": "planned",
         "behavior": "tested",
-        "real": "unsupported-with-reason",
+        "real": "tested",
         "recovery": "not-applicable",
         "synthetic": "tested"
       },
@@ -1617,11 +1617,11 @@
           "CKF_DECAPSULATE",
           "CKF_ENCAPSULATE"
         ],
-        "key_size_unit": "mechanism-specific",
-        "max_key_size": 0,
-        "min_key_size": 0
+        "key_size_unit": "bytes",
+        "max_key_size": 1568,
+        "min_key_size": 800
       },
-      "notes": "KEM finishers (deterministic ct lens, 32-byte ss; planKemEncaps/planKemDecaps). Real: OpenSSL4 has no KEM entry in the Raw/C surface (caseRealUnsupported pins the honest lack); the pinned libcrypto 4.0.2 provider offers ML-KEM-512/768/1024 (probed 2026-09-21) but it is unwired C work.",
+      "notes": "encapsulate/decapsulate one-shot (planKemEncaps/planKemDecaps: mechanism, handle, key kind, set, usage mark, template, intent; wrong key types refuse CKR_KEY_TYPE_INCONSISTENT, wrong sets and missing usage marks CKR_KEY_FUNCTION_NOT_PERMITTED; the 32-byte secret template accepts generic-secret or AES-256; non-empty mechanism parameters refuse CKR_MECHANISM_PARAM_INVALID at the routed C_EncapsulateKey/C_DecapsulateKey entries, which also serve the length query and short-buffer legs). Keys import as SPKI (public, with the FIPS 203 modulus check: non-canonical eks refuse CKR_ATTRIBUTE_VALUE_INVALID) or raw dk bytes (private: the provider refuses flat-dk PKCS#8, so dk-only import stores verbatim and the shim loads via fromdata; seed+dk assembles the provider form). The shim cross-checks the keymgmt type NAME (provider KEM keys report base_id 0, the ML-DSA lesson) and frames ct||ss by NULL-queried provider lengths against the FIPS 203 table. Real execution pinned (OpenSSLSpec caseMlkem: wycheproof tc1 decaps KATs on all three sets, tamper legs proving provider-owned implicit rejection, cross-set and raw-shape legs; KeyImportSpec import legs; consumer_kem end to end). Bounds 800/1568 bytes (served encapsulation-key window).",
       "numeric_id": "0x00000017",
       "routes": [
         {
@@ -1658,7 +1658,7 @@
       "support": {
         "abi": "planned",
         "behavior": "tested",
-        "real": "unsupported-with-reason",
+        "real": "tested",
         "recovery": "not-applicable",
         "synthetic": "tested"
       },
@@ -1671,6 +1671,11 @@
         {
           "artifact": "haskoki-model-tests/KeyManagementSpec",
           "build_id": "key-management",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "mlkem",
           "case_id": "A37"
         },
         {

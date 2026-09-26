@@ -35,7 +35,7 @@ import Haskoki.Attribute
   , getAttributes
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
-import Haskoki.Der (curveTable, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer, parseDsaParams, rsaPrivateDer, rsaPublicDer)
+import Haskoki.Der (curveTable, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer, mlkemPkcs8Fields, mlkemSpkiFields, parseDsaParams, rsaPrivateDer, rsaPublicDer)
 import Haskoki.Engine.Backend
   ( BackendError (..)
   , CryptoBackend (..)
@@ -244,7 +244,10 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real wrap matches SP 800-38A and round-trips" caseRealWrapVector
   , testCase "Real derive matches RFC 5869" caseRealHkdfVector
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
-  , testCase "Real backend mints AES, honestly lacks KEM" caseRealUnsupported
+  , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
+  , testCase "KEM refuses wrong key types inconsistent" caseKemWrongKeyType
+  , testCase "KEM accepts AES-256 secret templates" caseKemAesTemplate
+  , testCase "KEM keygen honors CKA_PARAMETER_SET" caseKemKeygenParamSet
   , testCase "Handle writeback plans one exact handle" caseHandleWriteback
   , testCase "Wrapped writeback plans query/short/exact" caseWrappedWriteback
   , testCase "Ciphertext writeback enforces the length" caseCiphertextWriteback
@@ -2431,10 +2434,12 @@ caseKemMismatch = withSynth $ \answer -> do
         Reject r -> assertEqual "tampered code" CKR_ENCRYPTED_DATA_INVALID (rejCode r)
         other -> assertFailure ("tampered decaps must reject, got: " ++ show other)
     other -> assertFailure ("decaps plan is not an effect: " ++ show other)
-  -- A short ciphertext is a parameter refusal with no effect planned.
+  -- A short ciphertext is a length-range refusal with no
+  -- effect planned (the cipher/dual precedent for wrong-length
+  -- crypto inputs, and the oracle's expected code).
   case planKemDecaps m3 st mlKemMech privH KemMl768 "short" secretTmpl of
     KeyDenied (KeyDeny code _) ->
-      assertEqual "short ct code" CKR_ARGUMENTS_BAD code
+      assertEqual "short ct code" CKR_ENCRYPTED_DATA_LEN_RANGE code
     other -> assertFailure ("short ct must deny, got: " ++ show other)
   assertEqual "zero objects published" before (Map.size (mObjects m3))
 
@@ -3145,23 +3150,11 @@ caseRealAuthWrap = withRealEnv $ \env -> do
       assertEqual "real auth-unwrap recovers" (Just spP1) (keyBytesOf ost)
     other -> assertFailure ("unwrap must plan: " ++ show other)
 
-caseRealUnsupported :: IO ()
-caseRealUnsupported = withRealEnv $ \env -> do
+caseRealAesKem :: IO ()
+caseRealAesKem = withRealEnv $ \env -> do
   m0 <- seedModel >>= loginUser
   st <- getSession m0
   let answer = answerReal env
-      expectUnsupported m plan = case plan of
-        KeyEffect pw fx -> do
-          res <- answer m fx
-          case res of
-            GotCryptoError (CryptoUnsupported _ _) -> pure ()
-            other -> assertFailure ("must be unsupported, got: " ++ show other)
-          case finishWork m st pw res of
-            Reject r -> do
-              assertEqual "code" CKR_MECHANISM_INVALID (rejCode r)
-              assertEqual "zero objects" (StateDelta []) (rejDelta r)
-            other -> assertFailure ("must reject, got: " ++ show other)
-        other -> assertFailure ("must plan an effect, got: " ++ show other)
   (m1, fakeH) <- plantKey m0 st
     [ (AttrClass, ValULong ckoPublicKey)
     , (AttrKeyType, ValULong ckkMlKem)
@@ -3181,12 +3174,225 @@ caseRealUnsupported = withRealEnv $ \env -> do
       Just mat <- pure (keyBytesOf ost)
       assertEqual "real AES-256 material length" 32 (BS.length mat)
     other -> assertFailure ("AES keygen plan is not an effect: " ++ show other)
-  -- ML-KEM keygen and encaps: no real KEM in the supported set.
-  expectUnsupported m1
-    (planGenerateKeyPair defaultRules m1 st mlKemKeyPairGenMech kemPubTmpl kemPrivTmpl)
-  expectUnsupported m1
-    (planKemEncaps m1 st mlKemMech fakeH KemMl768 secretTmpl
-      (IntentBuffer (fromIntegral (kemCtLen KemMl768))))
+  -- ML-KEM keygen through the real backend mints a usable
+  -- pair (provider DER halves, agreeing OIDs, 64-byte seed
+  -- stamped, set tag kept); encaps/decaps round-trip; a
+  -- corrupt KEM key fails closed as a bad key (GENERAL_ERROR),
+  -- never unsupported.
+  (m2, realPubH, realPrivH) <- genKemPair answer m1 st
+  Just realPub <- pure (resolveHandle m2 realPubH)
+  Just realPriv <- pure (resolveHandle m2 realPrivH)
+  Just pubDer <- pure (keyBytesOf realPub)
+  Just privDer <- pure (keyBytesOf realPriv)
+  case (mlkemSpkiFields pubDer, mlkemPkcs8Fields privDer) of
+    (Just (pubOid, _), Just (privOid, seed, _))
+      | pubOid == privOid -> assertEqual "real seed width" 64 (BS.length seed)
+    _ -> assertFailure "real KEM halves disagree or do not parse"
+  assertEqual "real set tag" (Just (ValULong 2))
+    (Map.lookup AttrParameterSet (osAttrs realPub))
+  (m3, ct, ss) <- runEncaps answer m2 st realPubH
+  assertEqual "real ct length" (kemCtLen KemMl768) (BS.length ct)
+  assertEqual "real ss length" 32 (BS.length ss)
+  case planKemDecaps m3 st mlKemMech realPrivH KemMl768 ct secretTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m3 fx
+      c <- finishCommit m3 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m4 <- expectRight (publishDelta m3 (pcDelta c))
+      Just ost <- pure (resolveHandle m4 h)
+      assertEqual "real decaps recovers" (Just ss) (keyBytesOf ost)
+    other -> assertFailure ("real decaps must plan: " ++ show other)
+  case planKemEncaps m1 st mlKemMech fakeH KemMl768 secretTmpl
+      (IntentBuffer (fromIntegral (kemCtLen KemMl768))) of
+    KeyEffect pw fx -> do
+      res <- answer m1 fx
+      case res of
+        GotCryptoError (CryptoBadKey _ _) -> pure ()
+        other -> assertFailure ("must be a bad key, got: " ++ show other)
+      case finishWork m1 st pw res of
+        Reject r -> do
+          assertEqual "code" CKR_GENERAL_ERROR (rejCode r)
+          assertEqual "zero objects" (StateDelta []) (rejDelta r)
+        other -> assertFailure ("must reject, got: " ++ show other)
+    other -> assertFailure ("must plan an effect, got: " ++ show other)
+
+caseKemWrongKeyType :: IO ()
+caseKemWrongKeyType = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, aesH) <- genAesKey answer m0 st wrapKeyTmpl
+  (m2, pubH, _) <- genKemPair answer m1 st
+  let ctLen = kemCtLen KemMl768
+      intent = IntentBuffer (fromIntegral ctLen)
+  -- A wrong-typed key refuses TYPE_INCONSISTENT (the deep
+  -- mismatch), even carrying usage flags.
+  case planKemEncaps m2 st mlKemMech aesH KemMl768 secretTmpl intent of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "encaps wrong-type code" CKR_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("must deny, got: " ++ show other)
+  case planKemDecaps m2 st mlKemMech aesH KemMl768 (BS.replicate ctLen 0) secretTmpl of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "decaps wrong-type code" CKR_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("must deny, got: " ++ show other)
+  -- A right-typed key on another set refuses PERMITTED (the
+  -- usage-class refusal, not a type contradiction).
+  case planKemEncaps m2 st mlKemMech pubH KemMl512 secretTmpl intent of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "encaps wrong-set code" CKR_KEY_FUNCTION_NOT_PERMITTED code
+    other -> assertFailure ("must deny, got: " ++ show other)
+  -- An unknown handle refuses handle-invalid.
+  case planKemEncaps m2 st mlKemMech (ExternalHandle 9999) KemMl768 secretTmpl intent of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "encaps bad-handle code" CKR_OBJECT_HANDLE_INVALID code
+    other -> assertFailure ("must deny, got: " ++ show other)
+
+caseKemAesTemplate :: IO ()
+caseKemAesTemplate = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, pubH, privH) <- genKemPair answer m0 st
+  let aesTmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrValueLen, ValULong 32)
+        , (AttrToken, ValBool False)
+        , (AttrExtractable, ValBool True)
+        ]
+      ctLen = kemCtLen KemMl768
+  -- Encaps against an AES template mints an AES-256 object
+  -- carrying the 32-byte secret.
+  (m2, ct) <- case planKemEncaps m1 st mlKemMech pubH KemMl768 aesTmpl
+      (IntentBuffer (fromIntegral ctLen)) of
+    KeyEffect pw fx -> do
+      res <- answer m1 fx
+      c <- finishCommit m1 st pw res 1
+      hh <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m1 (pcDelta c))
+      Just ost <- pure (resolveHandle m' hh)
+      assertEqual "secret keytype" (Just (ValULong ckkAes))
+        (Map.lookup AttrKeyType (osAttrs ost))
+      case keyBytesOf ost of
+        Just ss -> assertEqual "secret length" 32 (BS.length ss)
+        Nothing -> assertFailure "AES secret lacks material"
+      case pcOutputs c !! 0 of
+        NativeOutput (RegionBytes "ciphertext" _) bytes -> pure (m', bytes)
+        o -> assertFailure ("no ciphertext: " ++ show o) >> undefined
+    other -> assertFailure ("must plan, got: " ++ show other) >> undefined
+  -- Decaps against an AES template likewise mints AES-256.
+  case planKemDecaps m2 st mlKemMech privH KemMl768 ct aesTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      c <- finishCommit m2 st pw res 1
+      hh <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m2 (pcDelta c))
+      Just ost <- pure (resolveHandle m' hh)
+      assertEqual "decaps keytype" (Just (ValULong ckkAes))
+        (Map.lookup AttrKeyType (osAttrs ost))
+    other -> assertFailure ("must plan, got: " ++ show other)
+  -- Any other explicit secret type refuses inconsistent.
+  let rsaTmpl = (AttrKeyType, ValULong ckkRsa) :
+        filter ((/= AttrKeyType) . fst) aesTmpl
+  case planKemEncaps m1 st mlKemMech pubH KemMl768 rsaTmpl
+      (IntentBuffer (fromIntegral ctLen)) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "rsa template code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("must deny, got: " ++ show other)
+  -- Mechanism-contributed attributes refuse inconsistent on
+  -- both entries (the finisher would otherwise silently
+  -- overwrite caller bytes with the real secret).
+  let injected = (AttrValue, ValBytes "injected") : aesTmpl
+  case planKemEncaps m1 st mlKemMech pubH KemMl768 injected
+      (IntentBuffer (fromIntegral ctLen)) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "encaps injection code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("must deny, got: " ++ show other)
+  case planKemDecaps m2 st mlKemMech privH KemMl768 ct injected of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "decaps injection code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("must deny, got: " ++ show other)
+  -- An AES template without CKA_VALUE_LEN proceeds (the 32 is
+  -- mechanism-determined, supplied upfront for the presence
+  -- rule rather than refused).
+  let noLen = filter ((/= AttrValueLen) . fst) aesTmpl
+  case planKemEncaps m1 st mlKemMech pubH KemMl768 noLen
+      (IntentBuffer (fromIntegral ctLen)) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("must plan, got: " ++ show other)
+
+caseKemKeygenParamSet :: IO ()
+caseKemKeygenParamSet = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let setT tmpl v = (AttrParameterSet, ValULong v) :
+        filter ((/= AttrParameterSet) . fst) tmpl
+      noAlg tmpl = filter ((/= AttrKemAlg) . fst) tmpl
+      gen pubT privT = planGenerateKeyPair defaultRules m0 st
+        mlKemKeyPairGenMech pubT privT
+  -- CKA_PARAMETER_SET selects the set (1/2/3 -> 512/768/1024);
+  -- the minted halves carry both the numeric tag and the CKP id.
+  mapM_ (\(ckp, alg) -> do
+    let pubT = setT (noAlg kemPubTmpl) ckp
+        privT = setT (noAlg kemPrivTmpl) ckp
+    case gen pubT privT of
+      KeyEffect pw fx -> do
+        res <- answer m0 fx
+        c <- finishCommit m0 st pw res 2
+        pubH <- handleOf (pcOutputs c !! 0)
+        privH <- handleOf (pcOutputs c !! 1)
+        m' <- expectRight (publishDelta m0 (pcDelta c))
+        Just pub <- pure (resolveHandle m' pubH)
+        Just priv <- pure (resolveHandle m' privH)
+        assertEqual ("alg tag " ++ show alg) (Just (ValULong alg))
+          (Map.lookup AttrKemAlg (osAttrs pub))
+        assertEqual ("ckp tag " ++ show alg) (Just (ValULong ckp))
+          (Map.lookup AttrParameterSet (osAttrs priv))
+        assertBool ("halves differ " ++ show alg)
+          (keyBytesOf pub /= keyBytesOf priv)
+      other -> assertFailure ("must plan: " ++ show other))
+    [(1, 512), (2, 768), (3, 1024)]
+  -- An unknown set refuses inconsistent.
+  case gen (setT (noAlg kemPubTmpl) 7) (noAlg kemPrivTmpl) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "unknown set code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("must deny, got: " ++ show other)
+  -- Disagreeing templates refuse inconsistent.
+  case gen (setT (noAlg kemPubTmpl) 1) (setT (noAlg kemPrivTmpl) 2) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "disagree code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("must deny, got: " ++ show other)
+  -- A template contradicting itself refuses inconsistent.
+  let contra = (AttrKemAlg, ValULong 512) : setT (noAlg kemPubTmpl) 2
+  case gen contra (noAlg kemPrivTmpl) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "self-contradiction code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("must deny, got: " ++ show other)
+  -- CKA_DERIVE stamps false on KEM halves (no derive
+  -- operation exists): explicit-true refuses, and minted
+  -- halves read back false (the oracle's derive-false leg
+  -- only passes on an explicit false, not a missing flag).
+  let withDerive tmpl = (AttrDerive, ValBool True) : tmpl
+  case gen (withDerive (setT (noAlg kemPubTmpl) 2)) (noAlg kemPrivTmpl) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "pub derive code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("must deny, got: " ++ show other)
+  case gen (setT (noAlg kemPubTmpl) 2) (withDerive (noAlg kemPrivTmpl)) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "priv derive code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("must deny, got: " ++ show other)
+  case gen (setT (noAlg kemPubTmpl) 2) (setT (noAlg kemPrivTmpl) 2) of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 2
+      pubH <- handleOf (pcOutputs c !! 0)
+      privH <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      Just pub <- pure (resolveHandle m' pubH)
+      Just priv <- pure (resolveHandle m' privH)
+      assertEqual "minted pub derive false" (Just (ValBool False))
+        (Map.lookup AttrDerive (osAttrs pub))
+      assertEqual "minted priv derive false" (Just (ValBool False))
+        (Map.lookup AttrDerive (osAttrs priv))
+    other -> assertFailure ("must plan: " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- Part 6: key-output codecs

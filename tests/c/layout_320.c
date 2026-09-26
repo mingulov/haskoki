@@ -438,14 +438,16 @@ int main(int argc, char **argv) {
         "info via 3.0 reports %u.%u", info30.cryptokiVersion.major,
         info30.cryptokiVersion.minor);
 
-  /* ---- lifecycle-aware 3.2 stubs: pre -> live -> pre ---- */
+  /* ---- lifecycle-aware 3.2 entries: pre -> live -> pre ----
+   * (encapsulate is ROUTED: a NULL mechanism is an argument
+   * error on a live token, never NOT_SUPPORTED). */
   rv = tbl32->C_EncapsulateKey(0, NULL, 0, NULL, 0, NULL, &ctlen, &key);
   CHECK(rv == CKR_CRYPTOKI_NOT_INITIALIZED, "encaps pre-init rv=%lu",
         (unsigned long)rv);
   rv = tbl32->C_Initialize(NULL);
   CHECK(rv == CKR_OK, "init via 3.2 rv=%lu", (unsigned long)rv);
   rv = tbl32->C_EncapsulateKey(0, NULL, 0, NULL, 0, NULL, &ctlen, &key);
-  CHECK(rv == CKR_FUNCTION_NOT_SUPPORTED, "encaps live rv=%lu",
+  CHECK(rv == CKR_ARGUMENTS_BAD, "encaps live rv=%lu",
         (unsigned long)rv);
   CHECK(haskoki_version_eq(tbl30->version.major, tbl30->version.minor, 3, 0),
         "3.0 version moved across init");

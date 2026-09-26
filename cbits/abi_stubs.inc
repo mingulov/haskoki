@@ -211,32 +211,6 @@ static CK_DECLARE_FUNCTION(CK_RV, x30_C_MessageVerifyFinal)
   return x_live_check();
 }
 
-static CK_DECLARE_FUNCTION(CK_RV, x32_C_EncapsulateKey)
-(CK_SESSION_HANDLE p0, CK_MECHANISM * p1, CK_OBJECT_HANDLE p2, CK_ATTRIBUTE * p3, CK_ULONG p4, CK_BYTE * p5, CK_ULONG * p6, CK_OBJECT_HANDLE * p7) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  (void)p5;
-  (void)p6;
-  (void)p7;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x32_C_DecapsulateKey)
-(CK_SESSION_HANDLE p0, CK_MECHANISM * p1, CK_OBJECT_HANDLE p2, CK_ATTRIBUTE * p3, CK_ULONG p4, CK_BYTE * p5, CK_ULONG p6, CK_OBJECT_HANDLE * p7) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  (void)p5;
-  (void)p6;
-  (void)p7;
-  return x_live_check();
-}
-
 static CK_DECLARE_FUNCTION(CK_RV, x32_C_VerifySignatureInit)
 (CK_SESSION_HANDLE p0, CK_MECHANISM * p1, CK_OBJECT_HANDLE p2, CK_BYTE * p3, CK_ULONG p4) {
   (void)p0;
@@ -363,8 +337,8 @@ static CK_DECLARE_FUNCTION(CK_RV, x32_C_UnwrapKeyAuthenticated)
 /* HASKOKI_FILL_320_NEW(T): assign post-2.40 entries of table pointer (T) in pinned order. */
 #define HASKOKI_FILL_320_NEW(T) \
   do { \
-    (T)->C_EncapsulateKey = x32_C_EncapsulateKey; \
-    (T)->C_DecapsulateKey = x32_C_DecapsulateKey; \
+    (T)->C_EncapsulateKey = std_EncapsulateKey; \
+    (T)->C_DecapsulateKey = std_DecapsulateKey; \
     (T)->C_VerifySignatureInit = x32_C_VerifySignatureInit; \
     (T)->C_VerifySignature = x32_C_VerifySignature; \
     (T)->C_VerifySignatureUpdate = x32_C_VerifySignatureUpdate; \

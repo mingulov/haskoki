@@ -192,6 +192,18 @@ extern uint64_t haskoki_std_derive_opaque(void *instance, uint64_t h_session,
                                           uint64_t params_len, uint64_t h_base,
                                           uint8_t *p_frame, uint64_t frame_len,
                                           uint64_t *ph_key);
+extern uint64_t haskoki_std_encapsulate_key(void *instance, uint64_t h_session,
+                                            uint64_t mechanism, uint8_t *p_params,
+                                            uint64_t params_len, uint64_t h_key,
+                                            uint8_t *p_frame, uint64_t frame_len,
+                                            uint8_t *p_out, uint64_t *p_len,
+                                            uint64_t *ph_key);
+extern uint64_t haskoki_std_decapsulate_key(void *instance, uint64_t h_session,
+                                            uint64_t mechanism, uint8_t *p_params,
+                                            uint64_t params_len, uint64_t h_key,
+                                            uint8_t *p_ct, uint64_t ct_len,
+                                            uint8_t *p_frame, uint64_t frame_len,
+                                            uint64_t *ph_key);
 #endif
 
 /* C interval state lock (cbits/function_tables.c): every routed
@@ -2012,6 +2024,108 @@ CK_RV std_UnwrapKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
       (uint8_t *)pMechanism->pParameter, (uint64_t)pMechanism->ulParameterLen,
       (uint64_t)hUnwrappingKey, (uint8_t *)pWrappedKey,
       (uint64_t)ulWrappedKeyLen, frame, frameLen, (uint64_t *)phKey);
+  (void)haskoki_state_unlock();
+  free(frame);
+  return rv;
+}
+
+CK_RV std_EncapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
+                         CK_OBJECT_HANDLE hPublicKey, CK_ATTRIBUTE_PTR pTemplate,
+                         CK_ULONG ulAttributeCount, CK_BYTE_PTR pCiphertext,
+                         CK_ULONG_PTR pulCiphertextLen, CK_OBJECT_HANDLE_PTR phKey) {
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  uint8_t *frame = NULL;
+  uint64_t frameLen = 0;
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  /* NULL pCiphertext is the length query (legal); the length
+   * out-word and the key handle out-pointer are mandatory. */
+  if (pMechanism == NULL_PTR || pulCiphertextLen == NULL_PTR ||
+      phKey == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (pMechanism->ulParameterLen > 0 && pMechanism->pParameter == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (ulAttributeCount > 0 && pTemplate == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (haskoki_std_pack_template(pTemplate, (unsigned long)ulAttributeCount,
+                                &frame, &frameLen) != 0) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    free(frame);
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    free(frame);
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_encapsulate_key(
+      inst, (uint64_t)hSession, (uint64_t)pMechanism->mechanism,
+      (uint8_t *)pMechanism->pParameter, (uint64_t)pMechanism->ulParameterLen,
+      (uint64_t)hPublicKey, frame, frameLen, (uint8_t *)pCiphertext,
+      (uint64_t *)pulCiphertextLen, (uint64_t *)phKey);
+  (void)haskoki_state_unlock();
+  free(frame);
+  return rv;
+}
+
+CK_RV std_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
+                         CK_OBJECT_HANDLE hPrivateKey, CK_ATTRIBUTE_PTR pTemplate,
+                         CK_ULONG ulAttributeCount, CK_BYTE_PTR pCiphertext,
+                         CK_ULONG ulCiphertextLen, CK_OBJECT_HANDLE_PTR phKey) {
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  uint8_t *frame = NULL;
+  uint64_t frameLen = 0;
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pMechanism == NULL_PTR || phKey == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (pMechanism->ulParameterLen > 0 && pMechanism->pParameter == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (ulCiphertextLen > 0 && pCiphertext == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (ulAttributeCount > 0 && pTemplate == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (haskoki_std_pack_template(pTemplate, (unsigned long)ulAttributeCount,
+                                &frame, &frameLen) != 0) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    free(frame);
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    free(frame);
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_decapsulate_key(
+      inst, (uint64_t)hSession, (uint64_t)pMechanism->mechanism,
+      (uint8_t *)pMechanism->pParameter, (uint64_t)pMechanism->ulParameterLen,
+      (uint64_t)hPrivateKey, (uint8_t *)pCiphertext,
+      (uint64_t)ulCiphertextLen, frame, frameLen, (uint64_t *)phKey);
   (void)haskoki_state_unlock();
   free(frame);
   return rv;

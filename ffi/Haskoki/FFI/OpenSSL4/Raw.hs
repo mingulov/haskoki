@@ -61,6 +61,9 @@ module Haskoki.FFI.OpenSSL4.Raw
   , mldsaSign
   , mldsaVerify
   , mldsaGen
+  , mlkemEncaps
+  , mlkemDecaps
+  , mlkemGen
   , ecdhDerive
   , rsaSign
   , rsaVerify
@@ -218,6 +221,15 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mldsa_verify"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mldsa_gen"
   c_mldsa_gen :: Ptr OsslLibCtx -> CString -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mlkem_encaps"
+  c_mlkem_encaps :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mlkem_decaps"
+  c_mlkem_decaps :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mlkem_gen"
+  c_mlkem_gen :: Ptr OsslLibCtx -> CString -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_ecdh_derive"
   c_ecdh_derive :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
@@ -639,6 +651,49 @@ mldsaGen ctx propq algname =
     withCString algname $ \calg ->
       alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
         rc <- c_mldsa_gen ctx cpq calg ppriv npriv ppub npub
+        if rc /= 0
+          then pure (Left (fromIntegral rc))
+          else do
+            privp <- peek ppriv
+            privn <- peek npriv
+            pubp <- peek ppub
+            pubn <- peek npub
+            if privp == nullPtr || pubp == nullPtr
+              then pure (Left errNative)
+              else do
+                priv <- takeOwned privp (fromIntegral privn)
+                pub <- takeOwned pubp (fromIntegral pubn)
+                pure (Right (priv, pub))
+
+-- | ML-KEM encapsulate: ct||ss for (set name, SPKI DER or raw
+-- ek); the shim splits nothing — the caller frames by the
+-- set's ciphertext width (768/1088/1568, secret always 32).
+mlkemEncaps :: Ptr OsslLibCtx -> String -> String -> ByteString -> IO (Either Int ByteString)
+mlkemEncaps ctx algname propq pub =
+  withCString algname $ \calg ->
+    withCString propq $ \cpq ->
+      withBytes pub $ \(ppub, npub) ->
+        withOut (c_mlkem_encaps ctx calg cpq ppub npub)
+
+-- | ML-KEM decapsulate: the 32-byte shared secret for (set
+-- name, provider-form PKCS#8 DER or raw dk, exact-width
+-- ciphertext). Off-width ciphertexts refuse at the shim.
+mlkemDecaps :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> IO (Either Int ByteString)
+mlkemDecaps ctx algname propq priv ct =
+  withCString algname $ \calg ->
+    withCString propq $ \cpq ->
+      withBytes priv $ \(ppriv, npriv) ->
+        withBytes ct $ \(pct, nct) ->
+          withOut (c_mlkem_decaps ctx calg cpq ppriv npriv pct nct)
+
+-- | ML-KEM keypair for a set name: provider-form PKCS#8 +
+-- SPKI halves.
+mlkemGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, ByteString))
+mlkemGen ctx propq algname =
+  withCString propq $ \cpq ->
+    withCString algname $ \calg ->
+      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+        rc <- c_mlkem_gen ctx cpq calg ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
           else do

@@ -2571,6 +2571,334 @@ end:
     return rc;
 }
 
+/* --- ML-KEM encapsulate/decapsulate/keygen (FIPS 203) --------- */
+
+/* Canonical set name ("ML-KEM-512"/"ML-KEM-768"/"ML-KEM-1024",
+ * the backend's fetch spelling); NULL for anything else. */
+static const char *hsk_ossl4_mlkem_name(const char *algname)
+{
+    if (algname == NULL)
+        return NULL;
+    if (strcmp(algname, "ML-KEM-512") == 0 ||
+        strcmp(algname, "ML-KEM-768") == 0 ||
+        strcmp(algname, "ML-KEM-1024") == 0)
+        return algname;
+    return NULL;
+}
+
+/* Fixed widths for a canonical set name (FIPS 203 Table 2):
+ * encapsulation key, decapsulation key, ciphertext. Every
+ * shared secret is 32 bytes. Returns 1 on a known set, 0
+ * otherwise. */
+static int hsk_ossl4_mlkem_widths(const char *algname, size_t *eklen,
+                                  size_t *dklen, size_t *ctlen)
+{
+    if (algname == NULL)
+        return 0;
+    if (strcmp(algname, "ML-KEM-512") == 0) {
+        *eklen = 800; *dklen = 1632; *ctlen = 768;
+        return 1;
+    }
+    if (strcmp(algname, "ML-KEM-768") == 0) {
+        *eklen = 1184; *dklen = 2400; *ctlen = 1088;
+        return 1;
+    }
+    if (strcmp(algname, "ML-KEM-1024") == 0) {
+        *eklen = 1568; *dklen = 3168; *ctlen = 1568;
+        return 1;
+    }
+    return 0;
+}
+
+/* The key's actual algorithm must match the requested set
+ * (the ML-DSA lesson: provider PQC keys report base_id 0, so
+ * compare the keymgmt type name, never a NID). Returns 1 on
+ * match, 0 otherwise. */
+static int hsk_ossl4_mlkem_key_matches(EVP_PKEY *pkey, const char *algname)
+{
+    const char *tname;
+
+    if (pkey == NULL || algname == NULL)
+        return 0;
+    tname = EVP_PKEY_get0_type_name(pkey);
+    if (tname == NULL)
+        return 0;
+    return strcmp(tname, algname) == 0;
+}
+
+/* Build a public key from width-exact raw ek bytes (fromdata).
+ * Import stores raw eks only as assembled SPKI, but the
+ * fallback keeps the loader total over both shapes; fromdata
+ * re-validates the modulus, so a non-canonical ek refuses
+ * here even if it ever reaches the backend. */
+static EVP_PKEY *hsk_ossl4_mlkem_fromdata_pub(OSSL_LIB_CTX *ctx,
+                                              const char *propq,
+                                              const char *algname,
+                                              const unsigned char *ek,
+                                              size_t eklen)
+{
+    EVP_PKEY_CTX *fctx = NULL;
+    EVP_PKEY *pkey = NULL;
+    OSSL_PARAM bld[2];
+
+    fctx = EVP_PKEY_CTX_new_from_name(ctx, algname, propq);
+    if (fctx == NULL)
+        return NULL;
+    bld[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
+                                               (void *)ek, eklen);
+    bld[1] = OSSL_PARAM_construct_end();
+    if (!EVP_PKEY_fromdata_init(fctx) ||
+        !EVP_PKEY_fromdata(fctx, &pkey, EVP_PKEY_PUBLIC_KEY, bld))
+        pkey = NULL;
+    EVP_PKEY_CTX_free(fctx);
+    return pkey;
+}
+
+/* Build a keypair from a width-exact raw dk (fromdata). This
+ * is the dk-only import path: no decodable DER exists without
+ * the seed (the provider refuses flat-dk PKCS#8 — proven by
+ * probe), so the raw dk stores verbatim and loads here. */
+static EVP_PKEY *hsk_ossl4_mlkem_fromdata_priv(OSSL_LIB_CTX *ctx,
+                                               const char *propq,
+                                               const char *algname,
+                                               const unsigned char *dk,
+                                               size_t dklen)
+{
+    EVP_PKEY_CTX *fctx = NULL;
+    EVP_PKEY *pkey = NULL;
+    OSSL_PARAM bld[2];
+
+    fctx = EVP_PKEY_CTX_new_from_name(ctx, algname, propq);
+    if (fctx == NULL)
+        return NULL;
+    bld[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PRIV_KEY,
+                                               (void *)dk, dklen);
+    bld[1] = OSSL_PARAM_construct_end();
+    if (!EVP_PKEY_fromdata_init(fctx) ||
+        !EVP_PKEY_fromdata(fctx, &pkey, EVP_PKEY_KEYPAIR, bld))
+        pkey = NULL;
+    EVP_PKEY_CTX_free(fctx);
+    return pkey;
+}
+
+/* Load a KEM public key from SPKI DER or raw ek bytes: DER
+ * first; when the decode fails the queue is cleared and raw
+ * fromdata is tried if the width is exact for the set. NULL
+ * when neither shape loads (the queue keeps the last error
+ * for last_error). */
+static EVP_PKEY *hsk_ossl4_mlkem_load_pub(OSSL_LIB_CTX *ctx, const char *propq,
+                                          const char *algname,
+                                          const unsigned char *kb,
+                                          size_t kblen)
+{
+    EVP_PKEY *pkey;
+    size_t eklen, dklen, ctlen;
+
+    pkey = hsk_ossl4_load_pub(ctx, propq, kb, kblen);
+    if (pkey != NULL)
+        return pkey;
+    ERR_clear_error();
+    if (!hsk_ossl4_mlkem_widths(algname, &eklen, &dklen, &ctlen) ||
+        kblen != eklen)
+        return NULL;
+    pkey = hsk_ossl4_mlkem_fromdata_pub(ctx, propq, algname, kb, kblen);
+    if (pkey != NULL)
+        ERR_clear_error();
+    return pkey;
+}
+
+/* Load a KEM private key from provider-form PKCS#8 DER or raw
+ * dk bytes (same DER-first discipline as the public loader). */
+static EVP_PKEY *hsk_ossl4_mlkem_load_priv(OSSL_LIB_CTX *ctx, const char *propq,
+                                           const char *algname,
+                                           const unsigned char *kb,
+                                           size_t kblen)
+{
+    EVP_PKEY *pkey;
+    size_t eklen, dklen, ctlen;
+
+    pkey = hsk_ossl4_load_priv(ctx, propq, kb, kblen);
+    if (pkey != NULL)
+        return pkey;
+    ERR_clear_error();
+    if (!hsk_ossl4_mlkem_widths(algname, &eklen, &dklen, &ctlen) ||
+        kblen != dklen)
+        return NULL;
+    pkey = hsk_ossl4_mlkem_fromdata_priv(ctx, propq, algname, kb, kblen);
+    if (pkey != NULL)
+        ERR_clear_error();
+    return pkey;
+}
+
+long hsk_ossl4_mlkem_encaps(OSSL_LIB_CTX *ctx, const char *algname,
+                            const char *propq, const unsigned char *pub,
+                            size_t pub_len, unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *ectx = NULL;
+    unsigned char *buf = NULL;
+    size_t eklen, dklen, ctlen, ctq = 0, ssq = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (hsk_ossl4_mlkem_name(algname) == NULL ||
+        !hsk_ossl4_mlkem_widths(algname, &eklen, &dklen, &ctlen))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_mlkem_load_pub(ctx, propq, algname, pub, pub_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* The key's actual set must match the requested set:
+     * cross-set execution refuses here rather than past the
+     * advertised cap set. */
+    if (!hsk_ossl4_mlkem_key_matches(pkey, algname)) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+    ectx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
+    if (ectx == NULL)
+        goto end;
+    if (!EVP_PKEY_encapsulate_init(ectx, NULL))
+        goto end;
+    /* NULL-query the output lengths (probed 768/1088/1568 ct,
+     * 32 ss); the provider is authoritative for sizing, the
+     * table for framing — disagreement is a native error. */
+    if (!EVP_PKEY_encapsulate(ectx, NULL, &ctq, NULL, &ssq))
+        goto end;
+    if (ctq != ctlen || ssq != 32)
+        goto end;
+    buf = OPENSSL_malloc(ctlen + 32);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (!EVP_PKEY_encapsulate(ectx, buf, &ctq, buf + ctlen, &ssq) ||
+        ctq != ctlen || ssq != 32) {
+        OPENSSL_clear_free(buf, ctlen + 32);
+        buf = NULL;
+        goto end;
+    }
+    *out = buf;
+    rc = (long)(ctlen + 32);
+    buf = NULL;
+
+end:
+    if (buf != NULL)
+        OPENSSL_clear_free(buf, ctlen + 32);
+    EVP_PKEY_CTX_free(ectx);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+long hsk_ossl4_mlkem_decaps(OSSL_LIB_CTX *ctx, const char *algname,
+                            const char *propq, const unsigned char *priv,
+                            size_t priv_len, const unsigned char *ct,
+                            size_t ctlen_in, unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *dctx = NULL;
+    unsigned char *ss = NULL;
+    size_t eklen, dklen, ctlen, ssq = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (hsk_ossl4_mlkem_name(algname) == NULL ||
+        !hsk_ossl4_mlkem_widths(algname, &eklen, &dklen, &ctlen))
+        return HSK_OSSL4_ERR_BADPARAM;
+    /* Off-width ciphertexts can never decapsulate (the model
+     * layer enforces this first; defense in depth here). */
+    if (ct == NULL || ctlen_in != ctlen)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_mlkem_load_priv(ctx, propq, algname, priv, priv_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    if (!hsk_ossl4_mlkem_key_matches(pkey, algname)) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+    dctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
+    if (dctx == NULL)
+        goto end;
+    if (!EVP_PKEY_decapsulate_init(dctx, NULL))
+        goto end;
+    if (!EVP_PKEY_decapsulate(dctx, NULL, &ssq, ct, ctlen_in))
+        goto end;
+    if (ssq != 32)
+        goto end;
+    ss = OPENSSL_malloc(32);
+    if (ss == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (!EVP_PKEY_decapsulate(dctx, ss, &ssq, ct, ctlen_in) || ssq != 32) {
+        OPENSSL_clear_free(ss, 32);
+        ss = NULL;
+        goto end;
+    }
+    /* FIPS 203 implicit rejection: a malformed ciphertext
+     * yields a pseudorandom secret, never an error — the
+     * provider owns that behavior end to end. */
+    *out = ss;
+    rc = 32;
+    ss = NULL;
+
+end:
+    if (ss != NULL)
+        OPENSSL_clear_free(ss, 32);
+    EVP_PKEY_CTX_free(dctx);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+int hsk_ossl4_mlkem_gen(OSSL_LIB_CTX *ctx, const char *propq,
+                        const char *algname, unsigned char **priv_der,
+                        size_t *priv_len, unsigned char **pub_der,
+                        size_t *pub_len)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *pkey = NULL;
+    unsigned char *priv = NULL, *pub = NULL;
+    int prvlen = 0, publen = 0;
+    int rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || priv_der == NULL ||
+        priv_len == NULL || pub_der == NULL || pub_len == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (hsk_ossl4_mlkem_name(algname) == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pctx = EVP_PKEY_CTX_new_from_name(ctx, algname, propq);
+    if (pctx == NULL)
+        goto end;
+    if (!EVP_PKEY_keygen_init(pctx))
+        goto end;
+    if (!EVP_PKEY_generate(pctx, &pkey))
+        goto end;
+    prvlen = i2d_PrivateKey(pkey, &priv);
+    publen = i2d_PUBKEY(pkey, &pub);
+    if (prvlen <= 0 || publen <= 0) {
+        OPENSSL_free(priv);
+        OPENSSL_free(pub);
+        goto end;
+    }
+    *priv_der = priv;
+    *priv_len = (size_t)prvlen;
+    *pub_der = pub;
+    *pub_len = (size_t)publen;
+    rc = HSK_OSSL4_OK;
+
+end:
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(pctx);
+    return rc;
+}
+
 /* --- ECDH agreement ------------------------------------------- */
 
 long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,

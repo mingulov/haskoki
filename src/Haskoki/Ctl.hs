@@ -168,15 +168,12 @@ behaviorNames = sort
   ]
 
 -- | Behaviors the real backend does not serve (real column not
--- tested in @spec/mechanisms.json@: the synthetic-only KEM pair;
--- keygen went real, so its rows left the list). CtlSpec pins the
--- per-engine counts, so a new synthetic-only behavior fails loudly
--- here until this list grows with it.
+-- tested in @spec/mechanisms.json@). Empty: every tested behavior
+-- runs on real libcrypto (the KEM pair went real in slice 9b).
+-- CtlSpec pins the per-engine counts, so a new synthetic-only
+-- behavior fails loudly here until this list grows with it.
 realGapNames :: [String]
-realGapNames =
-  [ "CKM_ML_KEM"
-  , "CKM_ML_KEM_KEY_PAIR_GEN"
-  ]
+realGapNames = []
 
 -- | Active catalog per engine, derived from the registry:
 -- synthetic serves every tested behavior; OpenSSL serves every

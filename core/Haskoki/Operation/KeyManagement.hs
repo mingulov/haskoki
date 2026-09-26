@@ -125,7 +125,7 @@ import Haskoki.Attribute.Generated
   , mustClassId
   , mustKeyTypeId
   )
-import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaSpkiFields, edwardsNameOfOid, edwardsTable, mldsaPkcs8Fields, mldsaSpkiFields, parseDsaParams, parseRsaPrivate, parseRsaPublic, spkiPoint)
+import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaSpkiFields, edwardsNameOfOid, edwardsTable, mldsaPkcs8Fields, mldsaSpkiFields, mlkemPkcs8Fields, mlkemSpkiFields, parseDsaParams, parseRsaPrivate, parseRsaPublic, spkiPoint)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState (..))
 import Haskoki.Object
   ( RuleDeny (..)
@@ -671,6 +671,9 @@ storeMaterial mat po = po { poAttrs = Map.insert AttrValue (ValBytes mat) (poAtt
 -- planner tag, and @AttrValue@ keeps the DER halves via
 -- 'storeMaterial' as for every asymmetric family — reads serve
 -- DER as @CKA_VALUE@, the codebase-wide convention);
+-- disagreeing or opaque halves pass through unstamped. An
+-- ML-KEM pair stamps the @CKA_SEED@ on the private half the
+-- same way (parsed from the provider-form PKCS#8 half);
 -- disagreeing or opaque halves pass through unstamped. Other
 -- key types pass through untouched.
 stampPairComponents
@@ -689,6 +692,13 @@ stampPairComponents pub priv pubM privM
         _ -> Just (pub, priv)
   | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkMlDsa) =
       case (mldsaSpkiFields pubM, mldsaPkcs8Fields privM) of
+        (Just (pubOid, _), Just (privOid, seed, _))
+          | pubOid == privOid ->
+              let privA = Map.insert AttrSeed (ValBytes seed) (poAttrs priv)
+              in Just (pub, priv { poAttrs = privA })
+        _ -> Just (pub, priv)
+  | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkMlKem) =
+      case (mlkemSpkiFields pubM, mlkemPkcs8Fields privM) of
         (Just (pubOid, _), Just (privOid, seed, _))
           | pubOid == privOid ->
               let privA = Map.insert AttrSeed (ValBytes seed) (poAttrs priv)
@@ -1250,8 +1260,15 @@ planGenerateKeyPair rules model st mech pubT privT =
       | mech == MechanismId (ckm_ML_KEM_KEY_PAIR_GEN) =
           withPair st mech ckkMlKem pubT privT $ \pubA privA -> do
             alg <- kemAlgOf pubA privA
-            let tag = Map.insert AttrKemAlg (ValULong (fromIntegral alg))
-            pure (GenMlKem alg, tag pubA, tag privA)
+            pubA' <- kemNoDerive pubT pubA
+            privA' <- kemNoDerive privT privA
+            let ckp = case alg of
+                  512 -> 1 :: Int
+                  768 -> 2
+                  _ -> 3
+                tag = Map.insert AttrKemAlg (ValULong (fromIntegral alg))
+                  . Map.insert AttrParameterSet (ValULong (fromIntegral ckp))
+            pure (GenMlKem alg, tag pubA', tag privA')
       | mech == ecKeyPairGenMech =
           withPair st mech ckkEc pubT privT $ \pubA privA -> do
             curve <- ecCurveOf pubA privA
@@ -1303,34 +1320,70 @@ withPair st mech wantKey pubT privT argsOf =
             , FxGenerateKey mech BS.empty (encodeGenArgs args)
             )
 
--- | The ML-KEM parameter set for a pair: the public template's
--- @AttrKemAlg@ (default 768), which the private template inherits
--- when absent and must agree with when present.
+-- | KEM keys never derive (no KEM derive operation exists):
+-- an explicit @CKA_DERIVE=true@ refuses inconsistent, and
+-- absent (or explicit-false) stamps false — the oracle's
+-- derive-false leg reads the value back, and only an explicit
+-- false passes (a missing attribute records a deviation).
+-- Inspects the RAW template: by tag time 'defaultUsage' has
+-- already defaulted the flag true. (Not a forbidden rule: a
+-- stored false would poison presence-based re-validation.)
+kemNoDerive
+  :: [(AttributeType, AttributeValue)] -> Map AttributeType AttributeValue
+  -> Either KeyDeny (Map AttributeType AttributeValue)
+kemNoDerive raw attrs
+  | any (\(t, v) -> t == AttrDerive && v == ValBool True) raw =
+      Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        "KEM keys do not derive: CKA_DERIVE must not be true")
+  | otherwise = Right (Map.insert AttrDerive (ValBool False) attrs)
+
+-- | The ML-KEM parameter set for a pair: the OASIS keygen
+-- input @AttrParameterSet@ (@CKP_ML_KEM_512\/768\/1024@ =
+-- 1\/2\/3, the 'mldsaSetOf' precedent) wins when present; the
+-- internal @AttrKemAlg@ tag (512\/768\/1024) serves callers
+-- that already resolved it; absent everywhere defaults to 768.
+-- The private template inherits when absent and must agree
+-- when present; a template carrying both must agree with
+-- itself.
 kemAlgOf
   :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
   -> Either KeyDeny Int
-kemAlgOf pubA privA = case Map.lookup AttrKemAlg pubA of
-  Just (ValULong alg)
-    | alg `elem` [512, 768, 1024] -> case Map.lookup AttrKemAlg privA of
-        Nothing -> Right (fromIntegral alg)
-        Just (ValULong alg')
-          | alg' == alg -> Right (fromIntegral alg)
-          | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-              "keypair templates disagree on the KEM parameter set")
-        Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-          "private KEM parameter set is malformed")
-    | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-        ("unknown KEM parameter set: " ++ show alg))
-  Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-    "public KEM parameter set is malformed")
-  Nothing -> case Map.lookup AttrKemAlg privA of
-    Nothing -> Right 768
-    Just (ValULong alg)
-      | alg `elem` [512, 768, 1024] -> Right (fromIntegral alg)
+kemAlgOf pubA privA = do
+  pubSet <- resolveOne "public" pubA
+  privSet <- resolveOne "private" privA
+  case (pubSet, privSet) of
+    (Just a, Just b)
+      | a == b -> Right a
       | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-          ("unknown KEM parameter set: " ++ show alg))
-    Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-      "private KEM parameter set is malformed")
+          "keypair templates disagree on the KEM parameter set")
+    (Just a, Nothing) -> Right a
+    (Nothing, Just b) -> Right b
+    (Nothing, Nothing) -> Right 768
+  where
+    resolveOne who attrs = case Map.lookup AttrParameterSet attrs of
+      Just (ValULong ckp)
+        | ckp `elem` [1, 2, 3] ->
+            let alg = [512, 768, 1024] !! fromIntegral (ckp - 1)
+            in case Map.lookup AttrKemAlg attrs of
+              Nothing -> Right (Just alg)
+              Just (ValULong alg')
+                | fromIntegral alg' == alg -> Right (Just alg)
+                | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                    (who ++ " template KEM set contradicts its parameter set"))
+              Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                (who ++ " KEM parameter set is malformed"))
+        | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            ("unknown ML-KEM parameter set: " ++ show ckp))
+      Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        (who ++ " KEM parameter set is malformed"))
+      Nothing -> case Map.lookup AttrKemAlg attrs of
+        Nothing -> Right Nothing
+        Just (ValULong alg)
+          | alg `elem` [512, 768, 1024] -> Right (Just (fromIntegral alg))
+          | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              ("unknown KEM parameter set: " ++ show alg))
+        Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          (who ++ " KEM parameter set is malformed"))
 
 -- | The ML-DSA parameter-set id for a pair: the public
 -- template's @AttrParameterSet@ (@CKP_ML_DSA_44\/65\/87@ =

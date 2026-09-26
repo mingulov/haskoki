@@ -518,6 +518,77 @@ first lane proving all of them together.
   defaulting is visible on the published objects via
   the stamped set.
 
+## Round 15: ML-KEM slice (fast r33→r35 + KAT r15→r16)
+
+- r33→r35 (3240→3294 passed, +54 / +5 xfail /
+  −29 skip, same 2 HOTP externals confirmed by test
+  id, zero pass→fail): `test_kem` 0/29-skip →
+  24 pass / 2 skip / 3 xfail (the KEM legs
+  resolve), `test_ckr_kem` 0/4-skip → 4 pass,
+  `test_mech_kem` 0/2-skip → 2 pass,
+  `test_arithmetic_overflow` +6 pass / −6 skip,
+  `test_ckr_keygen` +4 pass / −4 skip,
+  `test_ckr_v32_raw` +4 pass / −4 skip,
+  `test_mech_attribute` +3 pass / +1 xfail,
+  `test_mech_flags` +4 pass / +14 skip,
+  `test_key_usage_policy` +2 pass / −2 skip,
+  `test_mech_keygen` +1 pass / +1 xfail,
+  `test_mech_probe` +6 skip
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r35-results.json`).
+- r34 ran on a stale bundle (built 19:40, before the
+  final `Kem.hs` verdict edit at 20:19); r35 is the
+  same tree on a fresh bundle and moves exactly
+  `test_kem` 21→24 pass / 6→3 xfail. The 3 flips:
+  `test_decapsulate_extractability_flags` passes,
+  the `CKA_VALUE`-injection negative now refuses
+  `CKR_TEMPLATE_INCONSISTENT` (an expected code),
+  and the short-ciphertext negative now refuses
+  `CKR_ENCRYPTED_DATA_LEN_RANGE` (an expected
+  code).
+- Remaining `test_kem` xfails (3), all root-caused:
+  AES-128 / AES-16 / AES-24 encapsulate legs
+  refuse `CKR_TEMPLATE_INCONSISTENT` — the module
+  derives 32-byte secrets only (generic-secret or
+  AES-256), so short-AES derive is unserved and
+  refuses honestly; the oracle accepts the refusal.
+  The 2 skips are parameter-set negotiation (the
+  module sits on the 1024 set, ct_len 1088).
+- Remaining new xfails (2), both the module-global
+  `CKA_LOCAL`-on-public cluster: `test_mech_attribute`
+  and `test_mech_keygen` each gain one
+  `ML_KEM_KEY_PAIR_GEN` leg (`CKA_LOCAL on public:
+  attribute unavailable`, same as every family).
+  New skips are honest gates: +14 `test_mech_flags`
+  (ML-KEM × 7 unadvertised `CKF_*` legs),
+  +6 `test_mech_probe` (registered, tested
+  elsewhere).
+- KAT r15→r16: +216 pass / +14 xfail / −200 skip
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r16-results.json`).
+  KAT-only movers: `test_acvp_mlkem` 0/180-skip →
+  108 pass / 72 skip (skips are duplicate KeyGen
+  inputs, deduped by design),
+  `test_wycheproof_mlkem` 0/27-skip → 21 pass /
+  6 xfail, `test_wycheproof_mlkem_encaps_modulus`
+  0/36-skip → 36 pass; the fast files move as
+  above. The 6 wycheproof xfails are the
+  tc6/tc7 invalid decaps vectors per set, refused
+  `CKR_GENERAL_ERROR` — runtime provider-decode
+  failure is `GENERAL_ERROR` module-wide for every
+  family (the ML-DSA `InvalidPrivateKey`
+  precedent); the oracle accepts the refusal.
+- r16 ran on the stale 19:40 bundle; the only
+  post-bundle behavioral edit is `Kem.hs`
+  (spec + consumer sources are test-only), and
+  targeted r4 re-verified all 6 `Kem.hs`-reachable
+  files on the fresh bundle (195 pass, 0 failed,
+  9 xfailed, 74 skipped —
+  `/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-kem-r4.json`),
+  with fast r35 empirically confirming no other
+  file moves. Current-code KAT is therefore r16
+  plus the same 3 `test_kem` flips (78340 pass /
+  3993 xfail); the 2 failures stay the known HOTP
+  externals by id.
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

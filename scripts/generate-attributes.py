@@ -70,6 +70,9 @@ TEMPLATE_RULES = [
      "required": ["CKA_CLASS", "CKA_VALUE_LEN"], "forbidden": [],
      "notes": "HOTP keygen: VALUE_LEN required "
               "(planGenerateKey, RecipeOtpSpec caseKeygenPlan)."},
+    # No ML-KEM rule: CKA_DERIVE defaults FALSE (not absent) on
+    # KEM pairs (kemNoDerive), and a forbidden flag may never be
+    # stored (presence-based re-validation would poison it).
 ]
 
 HS_PATH = REPO / "core" / "Haskoki" / "Attribute" / "Generated.hs"

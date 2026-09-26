@@ -506,6 +506,16 @@ instance CryptoBackend OpenSSL4 where
         case r of
           Left code -> nativeFail "generateKey" code
           Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
+  generateKey be spec@(GenMLKEM alg) = runGuarded be "generateKey" (genSupported be spec) $ \env ->
+    case mlkemNativeAlg alg of
+      Nothing -> pure (EngineFail (BackendBadParam "generateKey"
+        ("unknown ML-KEM set: " ++ show alg)))
+      Just algname -> do
+        r <- withForeignPtr (osslEnv env) $ \_ ->
+          Raw.mlkemGen (osslCtx env) (osslPropQ env) algname
+        case r of
+          Left code -> nativeFail "generateKey" code
+          Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   -- RSA keygen bounds mirror the key planner (2048/3072/4096
   -- bits, odd exponent >= 3); the native call enforces the same
   -- window again.
@@ -580,10 +590,54 @@ instance CryptoBackend OpenSSL4 where
   destroyKey (OSSL4Backend env) (KeyRef rid _) =
     modifyMVar (osslKeys env) $ \m -> pure (Map.delete (unEngineResourceId rid) m, ())
 
-  kemEncapsulate _ spec _ =
-    pure (EngineFail (BackendUnsupported "kemEncapsulate" ("not in engine set: " ++ show (kemAlg spec))))
-  kemDecapsulate _ spec _ _ =
-    pure (EngineFail (BackendUnsupported "kemDecapsulate" ("not in engine set: " ++ show (kemAlg spec))))
+  -- No key allowlist (the DSA precedent): the shim checks the
+  -- key's actual keymgmt type name against the set and refuses
+  -- garbage/cross-set keys as BADKEY before any provider math.
+  -- The shim answers ct||ss; framing splits by the set width.
+  kemEncapsulate be spec key = runGuarded be "kemEncapsulate" (kemSupported be spec) $ \env -> do
+    mkey <- resolveKeyBytes env key
+    case mkey of
+      EngineFail err -> pure (EngineFail err)
+      EngineOk kb -> case mlkemNativeAlg (kemAlg spec) of
+        -- Unreachable post-guard (the guard admits exactly the
+        -- three served sets); typed, never a crash.
+        Nothing -> pure (EngineFail (BackendUnsupported "kemEncapsulate"
+          ("no provider name: " ++ show spec)))
+        Just algname -> do
+          r <- withForeignPtr (osslEnv env) $ \_ ->
+            Raw.mlkemEncaps (osslCtx env) algname (osslPropQ env) kb
+          case r of
+            Left code
+              | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "kemEncapsulate" "public key rejected"))
+              | otherwise -> nativeFail "kemEncapsulate" code
+            Right packed ->
+              let (ct, ss) = BS.splitAt (mlkemCtLen (kemAlg spec)) packed
+              in if BS.length ss == 32
+                then pure (EngineOk (ct, ss))
+                else pure (EngineFail (BackendNative "kemEncapsulate" Raw.errNative
+                  ("encaps answer length " ++ show (BS.length packed) ++ " mismatches the set framing")))
+  -- Off-width ciphertexts refuse at the shim (BADPARAM); the
+  -- model layer enforces the width first. FIPS 203 implicit
+  -- rejection is provider-owned: malformed ciphertexts yield a
+  -- pseudorandom secret, never an error.
+  kemDecapsulate be spec key ct = runGuarded be "kemDecapsulate" (kemSupported be spec) $ \env -> do
+    mkey <- resolveKeyBytes env key
+    case mkey of
+      EngineFail err -> pure (EngineFail err)
+      EngineOk kb -> case mlkemNativeAlg (kemAlg spec) of
+        Nothing -> pure (EngineFail (BackendUnsupported "kemDecapsulate"
+          ("no provider name: " ++ show spec)))
+        Just algname -> do
+          r <- withForeignPtr (osslEnv env) $ \_ ->
+            Raw.mlkemDecaps (osslCtx env) algname (osslPropQ env) kb ct
+          case r of
+            Left code
+              | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "kemDecapsulate" "private key rejected"))
+              | otherwise -> nativeFail "kemDecapsulate" code
+            Right ss
+              | BS.length ss == 32 -> pure (EngineOk ss)
+              | otherwise -> pure (EngineFail (BackendNative "kemDecapsulate" Raw.errNative
+                  ("decaps answer length " ++ show (BS.length ss) ++ " is not 32 bytes")))
 
   ecdhDerive be spec priv peer = runGuarded be "ecdhDerive" (ecdhSupported be spec) $ \env -> do
     mpriv <- resolveKeyBytes env priv
@@ -655,7 +709,7 @@ ossl4Caps version propq = BackendCaps
   , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
   , bcMacs = MacCaps { mcSpecs = osslMacSpecs t16DigestAlgs }
   , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs ++ osslEddsaSpecNames t16EdwardsCurves ++ osslMldsaSpecNames t16MldsaLevels), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.fromList t16MldsaLevels }
-  , bcKems = KemCaps { kcAlgs = Set.empty }
+  , bcKems = KemCaps { kcAlgs = Set.fromList t16MlkemSets }
   , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR"] }
   , bcParamNotes = Map.fromList
       ([ ("provider", "default only; propquery " ++ propq)
@@ -667,7 +721,7 @@ ossl4Caps version propq = BackendCaps
        , ("ECDH-COFACTOR", "cofactor-multiplied; no-op on h=1 curves, threaded honestly")
        ] ++ osslRsaNotes t16RsaAlgs ++ osslEcdsaNotes t16EcdsaCurves t16DigestAlgs
          ++ osslDsaNotes t16DsaAlgs ++ osslEddsaNotes t16EdwardsCurves
-         ++ osslMldsaNotes t16MldsaLevels
+         ++ osslMldsaNotes t16MldsaLevels ++ osslMlkemNotes t16MlkemSets
       )
   }
 
@@ -780,6 +834,19 @@ osslMldsaNotes levels =
   [ (name, "pure ML-DSA plus 0..255-byte contexts, hedged or deterministic, one-shot; raw fixed-width signatures (2420/3309/4627 bytes)")
   | alg <- levels
   , Just name <- [mldsaSigCap (SigMLDSA alg False BS.empty True)]
+  ]
+
+-- | The ML-KEM set list: all three FIPS 203 sets.
+t16MlkemSets :: [PqcKemAlg]
+t16MlkemSets = [ML_KEM_512, ML_KEM_768, ML_KEM_1024]
+
+-- | Per-set ML-KEM parameter notes for the capability report,
+-- keyed by provider fetch name.
+osslMlkemNotes :: [PqcKemAlg] -> [(String, String)]
+osslMlkemNotes sets =
+  [ (name, "encapsulate/decapsulate one-shot; ct " ++ show (mlkemCtLen alg) ++ " bytes, ss 32 bytes; SPKI/DER or raw key bytes")
+  | alg <- sets
+  , Just name <- [mlkemNativeAlg alg]
   ]
 
 -- | The RSA digest set: every fixed-length digest the RSA
@@ -899,6 +966,9 @@ probeCaps env = do
   mldsa44Ok <- probe1 "pkey" "ML-DSA-44"
   mldsa65Ok <- probe1 "pkey" "ML-DSA-65"
   mldsa87Ok <- probe1 "pkey" "ML-DSA-87"
+  mlkem512Ok <- probe1 "pkey" "ML-KEM-512"
+  mlkem768Ok <- probe1 "pkey" "ML-KEM-768"
+  mlkem1024Ok <- probe1 "pkey" "ML-KEM-1024"
   let base = osslCaps env
       rsaAlgs = filter (`elem` mdAlgs) t16RsaAlgs
       dsaAlgs = filter (`elem` mdAlgs) t16DsaAlgs
@@ -927,6 +997,12 @@ probeCaps env = do
             ([ ML_DSA_44 | mldsa44Ok ]
               ++ [ ML_DSA_65 | mldsa65Ok ]
               ++ [ ML_DSA_87 | mldsa87Ok ])
+        }
+    , bcKems = (bcKems base)
+        { kcAlgs = Set.fromList
+            ([ ML_KEM_512 | mlkem512Ok ]
+              ++ [ ML_KEM_768 | mlkem768Ok ]
+              ++ [ ML_KEM_1024 | mlkem1024Ok ])
         }
     }
   where
@@ -1013,6 +1089,29 @@ ecdhSupported :: BackendEnv OpenSSL4 -> EcdhSpec -> Maybe String
 ecdhSupported (OSSL4Backend env) spec
   | Set.member (ecdhCap spec) (kcKdfs (bcKdfs (osslCaps env))) = Nothing
   | otherwise = Just ("ecdh not in supported set: " ++ show spec)
+
+-- | KEM availability: the probed ML-KEM set gates both
+-- encapsulation and decapsulation.
+kemSupported :: BackendEnv OpenSSL4 -> KemSpec -> Maybe String
+kemSupported (OSSL4Backend env) spec
+  | Set.member (kemAlg spec) (kcAlgs (bcKems (osslCaps env))) = Nothing
+  | otherwise = Just ("kem not in probed set: " ++ show spec)
+
+-- | Provider fetch names per ML-KEM set. Total over the
+-- served sets ('Nothing' is uninhabited — the type admits
+-- exactly the three FIPS 203 sets).
+mlkemNativeAlg :: PqcKemAlg -> Maybe String
+mlkemNativeAlg alg = case alg of
+  ML_KEM_512 -> Just "ML-KEM-512"
+  ML_KEM_768 -> Just "ML-KEM-768"
+  ML_KEM_1024 -> Just "ML-KEM-1024"
+
+-- | Ciphertext widths in bytes per ML-KEM set (FIPS 203
+-- Table 2): the ct||ss framing rule for encaps answers.
+mlkemCtLen :: PqcKemAlg -> Int
+mlkemCtLen ML_KEM_512 = 768
+mlkemCtLen ML_KEM_768 = 1088
+mlkemCtLen ML_KEM_1024 = 1568
 
 -- | Native digest selection for one ECDSA spec: the fetch name, or
 -- the raw row (empty name, no hashing). 'Nothing' means an XOF
@@ -1158,6 +1257,8 @@ genSupported (OSSL4Backend env) spec
   | GenMLDSA alg <- spec
   , [Just name] <- [mldsaSigCap (SigMLDSA alg False BS.empty True)]
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
+  | GenMLKEM alg <- spec
+  , Set.member alg (kcAlgs (bcKems (osslCaps env))) = Nothing
   | GenSym alg _ <- spec
   , alg `elem` ["AES", "HOTP", "GENERIC"] = Nothing
   | GenRSA {} <- spec

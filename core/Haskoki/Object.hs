@@ -66,6 +66,8 @@ import Haskoki.Der
    ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
    edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
    mldsaPrivateDer, mldsaPublicDer, mldsaWidthsOfOid,
+   mlkemEkWellFormed, mlkemOidOfCkp,
+   mlkemPrivateDer, mlkemPublicDer, mlkemWidthsOfOid,
    rsaPrivateDer, rsaPublicDer,
    unwrapEcPoint, unwrapEdwardsPoint)
 import Haskoki.Model
@@ -421,6 +423,7 @@ ckkEc = mustKeyTypeId "CKK_EC"
 ckkDsa = mustKeyTypeId "CKK_DSA"
 ckkEcEdwards = mustKeyTypeId "CKK_EC_EDWARDS"
 ckkMlDsa = mustKeyTypeId "CKK_ML_DSA"
+ckkMlKem = mustKeyTypeId "CKK_ML_KEM"
 ckkAes = mustKeyTypeId "CKK_AES"
 
 -- | Key-import material: RSA/EC public/private templates carry
@@ -455,6 +458,8 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     | c == ckoPublicKey && k == ckkEcEdwards -> eddsaPublic
     | c == ckoPrivateKey && k == ckkMlDsa -> mldsaPrivate
     | c == ckoPublicKey && k == ckkMlDsa -> mldsaPublic
+    | c == ckoPrivateKey && k == ckkMlKem -> mlkemPrivate
+    | c == ckoPublicKey && k == ckkMlKem -> mlkemPublic
     | c == ckoSecretKey -> secretKey k
   _ -> Right attrs
   where
@@ -598,6 +603,67 @@ importMaterial attrs = case (classOf, keyTypeOf) of
       oid <- mldsaOidOfCkp (fromIntegral n)
       (pubW, privW, sigW) <- mldsaWidthsOfOid oid
       pure (oid, pubW, privW, sigW)
+    mlkemPrivate = do
+      (oid, _, dkW, _, alg) <- needMlkemSet
+      dk <- case Map.lookup AttrValue attrs of
+        Just (ValBytes bs)
+          | not (BS.null bs) -> orReject (CKR_TEMPLATE_INCONSISTENT,
+              "ML-KEM private value length does not match the parameter set")
+              (checkExact dkW bs)
+          | otherwise -> Left (CKR_TEMPLATE_INCONSISTENT,
+              "empty component: AttrValue")
+        Just _ -> Left (CKR_TEMPLATE_INCONSISTENT,
+          "wrong shape for component: AttrValue")
+        Nothing -> Left (CKR_TEMPLATE_INCOMPLETE,
+          "missing component: AttrValue")
+      -- The provider accepts seed+dk (its own SEQ form) but
+      -- refuses flat-dk PKCS#8, so dk-only import stores the
+      -- raw dk verbatim (the backend loads it via fromdata)
+      -- while seed+dk assembles the provider form.
+      stored <- case Map.lookup AttrSeed attrs of
+        Just (ValBytes seed)
+          | BS.length seed == 64 ->
+              pure (mlkemPrivateDer oid seed dk)
+          | otherwise -> Left (CKR_TEMPLATE_INCONSISTENT,
+              "ML-KEM seed length is not 64 bytes (d || z)")
+        Just _ -> Left (CKR_TEMPLATE_INCONSISTENT,
+          "wrong shape for component: AttrSeed")
+        Nothing -> pure dk
+      pure (Map.insert AttrKemAlg (ValULong (fromIntegral alg))
+        (Map.insert AttrValue (ValBytes stored) attrs))
+    mlkemPublic = do
+      (oid, ekW, _, _, alg) <- needMlkemSet
+      ek <- need AttrValue
+      ek' <- orReject (CKR_TEMPLATE_INCONSISTENT,
+          "ML-KEM public value length does not match the parameter set")
+        (checkExact ekW ek)
+      -- FIPS 203 §7.2 modulus check at import time: a
+      -- non-canonical ek is a malformed CKA_VALUE
+      -- (CKR_ATTRIBUTE_VALUE_INVALID, the spec-correct code),
+      -- never a key the backend would touch.
+      if mlkemEkWellFormed oid ek'
+        then pure (Map.insert AttrKemAlg (ValULong (fromIntegral alg))
+          (Map.insert AttrValue
+            (ValBytes (mlkemPublicDer oid ek')) attrs))
+        else Left (CKR_ATTRIBUTE_VALUE_INVALID,
+          "ML-KEM public value is not a canonical encapsulation key")
+    needMlkemSet = case Map.lookup AttrParameterSet attrs of
+      Just (ValULong n) -> orReject (CKR_TEMPLATE_INCONSISTENT,
+          "unknown ML-KEM parameter set: " ++ show n)
+        (resolveMlkemSet n)
+      Just _ -> Left (CKR_TEMPLATE_INCONSISTENT,
+        "wrong shape for component: AttrParameterSet")
+      Nothing -> Left (CKR_TEMPLATE_INCOMPLETE,
+        "missing component: AttrParameterSet")
+    resolveMlkemSet n = do
+      oid <- mlkemOidOfCkp (fromIntegral n)
+      (ekW, dkW, ctW) <- mlkemWidthsOfOid oid
+      alg <- case (fromIntegral n :: Int) of
+        1 -> Just 512
+        2 -> Just 768
+        3 -> Just 1024
+        _ -> Nothing
+      pure (oid, ekW, dkW, ctW, alg)
     checkExact w s
       | BS.length s == w = Just s
       | otherwise = Nothing

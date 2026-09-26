@@ -7,7 +7,7 @@ mech|0x00000008|CKM_RIPEMD160_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A
 mech|0x00000009|CKM_RSA_PKCS_OAEP||rsa|oaep-params/1|bits:512-4096|decrypt:A16,A37,A39;encrypt:A16,A37,A39;unwrap:A20,A37,A39;wrap:A20,A37,A39
 mech|0x0000000D|CKM_RSA_PKCS_PSS||rsa|pss-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x0000000E|CKM_SHA1_RSA_PKCS_PSS||rsa|pss-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
-mech|0x0000000F|CKM_ML_KEM_KEY_PAIR_GEN||keypair|no-params/1|bits:0-0|generate-key-pair:A20,A37
+mech|0x0000000F|CKM_ML_KEM_KEY_PAIR_GEN||keypair|no-params/1|bytes:800-1568|generate-key-pair:A20,A37
 mech|0x00000010|CKM_DSA_KEY_PAIR_GEN||keypair|no-params/1|bits:1024-3072|generate-key-pair:A20,A37
 mech|0x00000011|CKM_DSA||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;verify:A37,A39
 mech|0x00000012|CKM_DSA_SHA1||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;verify:A37,A39
@@ -15,7 +15,7 @@ mech|0x00000013|CKM_DSA_SHA224||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;v
 mech|0x00000014|CKM_DSA_SHA256||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;verify:A37,A39
 mech|0x00000015|CKM_DSA_SHA384||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;verify:A37,A39
 mech|0x00000016|CKM_DSA_SHA512||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;verify:A37,A39
-mech|0x00000017|CKM_ML_KEM||kem|no-params/1|mechanism-specific:0-0|decapsulate:A22,A37;encapsulate:A22,A37
+mech|0x00000017|CKM_ML_KEM||kem|no-params/1|bytes:800-1568|decapsulate:A22,A37;encapsulate:A22,A37
 mech|0x00000018|CKM_DSA_SHA3_224||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;verify:A37,A39
 mech|0x00000019|CKM_DSA_SHA3_256||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;verify:A37,A39
 mech|0x0000001A|CKM_DSA_SHA3_384||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;verify:A37,A39

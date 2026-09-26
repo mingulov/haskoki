@@ -24,10 +24,10 @@ import Test.Tasty.HUnit
 import Haskoki.Attribute
   (AttributeResult (..), AttributeType (..), AttributeValue (..),
    PartialReads (..), getAttributes)
-import Haskoki.Der (curveCoordLen, curveOidOfParams, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, parseDsaParams, unwrapEcPoint, unwrapEdwardsPoint)
+import Haskoki.Der (curveCoordLen, curveOidOfParams, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, unwrapEcPoint, unwrapEdwardsPoint)
 import Haskoki.Engine.Backend
   (CryptoBackend (..), DigestAlg (..), EcSpec (..),
-   EngineResult (..), KeyMaterial (..), PqcSigAlg (..), SigSpec (..))
+   EngineResult (..), KemSpec (..), KeyMaterial (..), PqcKemAlg (..), PqcSigAlg (..), SigSpec (..))
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
 import Haskoki.FFI.Standard (ecParamsFromWire, ecParamsToWire)
 import Haskoki.Model
@@ -35,7 +35,7 @@ import Haskoki.Model
    lookupSession)
 import Haskoki.Object (decodeHandle, planCreateObject, resolveHandle)
 import Haskoki.Operation.KeyManagement
-  (ckoPrivateKey, ckoPublicKey, ckkDsa, ckkEc, ckkEcEdwards, ckkMlDsa, ckkRsa)
+  (ckoPrivateKey, ckoPublicKey, ckkDsa, ckkEc, ckkEcEdwards, ckkMlDsa, ckkMlKem, ckkRsa)
 import Haskoki.Outcome
   (DeltaOp (..), NativeOutput (..), PlanResult (..),
    PreparedCommit (..), Rejection (..), StateDelta (..))
@@ -77,6 +77,14 @@ spec = testGroup "key import"
   , testCase "partial ML-DSA import is incomplete" casePartialMldsa
   , testCase "bad ML-DSA value refuses inconsistent" caseBadMldsaValue
   , testCase "imported ML-DSA key signs through the real backend" caseMldsaExecutes
+  , testCase "ML-KEM assembly matches openssl-emitted SPKIs" caseMlkemDerGoldens
+  , testCase "ML-KEM DER readers parse openssl halves" caseMlkemDerReaders
+  , testCase "ML-KEM private import stores raw dk, seed+dk assembles" caseMlkemPrivate
+  , testCase "ML-KEM public import assembles SPKI" caseMlkemPublic
+  , testCase "partial ML-KEM import is incomplete" casePartialMlkem
+  , testCase "bad ML-KEM value refuses inconsistent" caseBadMlkemValue
+  , testCase "non-canonical ML-KEM ek refuses value-invalid" caseMlkemModulus
+  , testCase "imported ML-KEM keys encapsulate through the real backend" caseMlkemExecutes
   ]
 
 slot0 :: SlotId
@@ -1108,4 +1116,239 @@ caseMldsaExecutes = withRealEnv $ \env -> do
   case vres of
     EngineOk () -> pure ()
     EngineFail err -> assertFailure ("imported ML-DSA verify failed: " ++ show err)
+
+loadMlkemHalves :: String -> IO (ByteString, ByteString, ByteString, ByteString, ByteString)
+loadMlkemHalves tag = do
+  pubDer <- BS.readFile ("tests/fixtures/mlkem" ++ tag ++ "-pub.der")
+  privDer <- BS.readFile ("tests/fixtures/mlkem" ++ tag ++ "-priv.der")
+  case (mlkemSpkiFields pubDer, mlkemPkcs8Fields privDer) of
+    (Just (pubOid, ek), Just (privOid, seed, dk))
+      | pubOid == privOid -> pure (pubOid, ek, seed, dk, pubDer)
+    _ -> assertFailure ("ML-KEM fixture halves disagree: " ++ tag) >> undefined
+
+mlkemOids :: [(String, Int, ByteString)]
+mlkemOids =
+  [ ("512", 1, hex "0609608648016503040401")
+  , ("768", 2, hex "0609608648016503040402")
+  , ("1024", 3, hex "0609608648016503040403")
+  ]
+
+mlkemCkp :: ByteString -> Word64
+mlkemCkp o
+  | o == hex "0609608648016503040401" = 1
+  | o == hex "0609608648016503040402" = 2
+  | otherwise = 3
+
+mlkemAlgNum :: ByteString -> Word64
+mlkemAlgNum o
+  | o == hex "0609608648016503040401" = 512
+  | o == hex "0609608648016503040402" = 768
+  | otherwise = 1024
+
+mlkemPrivTmpl :: ByteString -> ByteString -> [(AttributeType, AttributeValue)]
+mlkemPrivTmpl oid dk =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkMlKem)
+  , (AttrToken, ValBool False)
+  , (AttrParameterSet, ValULong (mlkemCkp oid))
+  , (AttrValue, ValBytes dk)
+  ]
+
+mlkemPubTmpl :: ByteString -> ByteString -> [(AttributeType, AttributeValue)]
+mlkemPubTmpl oid ek =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkMlKem)
+  , (AttrToken, ValBool False)
+  , (AttrParameterSet, ValULong (mlkemCkp oid))
+  , (AttrValue, ValBytes ek)
+  ]
+
+caseMlkemDerGoldens :: IO ()
+caseMlkemDerGoldens = do
+  -- Every served set: SPKI assembly from the parsed ek
+  -- reproduces the openssl-emitted fixture bytes exactly.
+  mapM_ golden ["512", "768", "1024"]
+  -- The table rows pin names, OIDs, widths, and CKP ids.
+  assertEqual "table rows"
+    [ ("ML-KEM-512", hex "0609608648016503040401", 800, 1632, 768, 1)
+    , ("ML-KEM-768", hex "0609608648016503040402", 1184, 2400, 1088, 2)
+    , ("ML-KEM-1024", hex "0609608648016503040403", 1568, 3168, 1568, 3)
+    ]
+    mlkemTable
+  mapM_ (\(tag, ckp, oid) ->
+    assertEqual ("OID " ++ tag) (Just oid) (mlkemOidOfCkp ckp)) mlkemOids
+  assertEqual "unknown CKP" Nothing (mlkemOidOfCkp 7)
+  assertEqual "768 widths" (Just (1184, 2400, 1088))
+    (mlkemWidthsOfOid (hex "0609608648016503040402"))
+  assertEqual "ML-DSA OID has no ML-KEM widths" Nothing
+    (mlkemWidthsOfOid (hex "0609608648016503040311"))
+  assertEqual "garbage has no ML-KEM widths" Nothing
+    (mlkemWidthsOfOid "nope")
+  where
+    golden tag = do
+      (oid, ek, _, _, pubDer) <- loadMlkemHalves tag
+      assertEqual ("SPKI golden " ++ tag) pubDer (mlkemPublicDer oid ek)
+
+caseMlkemDerReaders :: IO ()
+caseMlkemDerReaders = do
+  (oid768, ek768, seed768, dk768, pub768) <- loadMlkemHalves "768"
+  priv768 <- BS.readFile "tests/fixtures/mlkem768-priv.der"
+  assertEqual "768 SPKI fields" (Just (oid768, ek768)) (mlkemSpkiFields pub768)
+  assertEqual "768 PKCS#8 fields" (Just (oid768, seed768, dk768)) (mlkemPkcs8Fields priv768)
+  assertEqual "768 seed width" 64 (BS.length seed768)
+  assertEqual "768 ek width" 1184 (BS.length ek768)
+  assertEqual "768 dk width" 2400 (BS.length dk768)
+  -- Malformed input refuses.
+  assertEqual "truncated SPKI" Nothing
+    (mlkemSpkiFields (BS.take (BS.length pub768 - 1) pub768))
+  assertEqual "truncated PKCS#8" Nothing (mlkemPkcs8Fields (BS.take 10 priv768))
+  assertEqual "garbage SPKI" Nothing (mlkemSpkiFields "nope")
+  assertEqual "garbage PKCS#8" Nothing (mlkemPkcs8Fields "nope")
+  -- Foreign algorithms refuse (OID membership, not shape).
+  assertEqual "EC SPKI refuses" Nothing (mlkemSpkiFields ecSpkiGold)
+  assertEqual "ML-DSA SPKI refuses" Nothing
+    (mlkemSpkiFields (mldsaPublicDer (hex "0609608648016503040311") (BS.replicate 1312 0)))
+  -- The provider reader refuses a flat-dk PKCS#8 (import and
+  -- keygen shapes differ by design: the provider's own form is
+  -- SEQ{seed64, dk}, while dk-only import stores raw bytes).
+  assertEqual "provider reader refuses flat" Nothing
+    (mlkemPkcs8Fields (mlkemFlatPriv oid768 dk768))
+  -- Seed+dk assembly reproduces the provider form exactly.
+  assertEqual "seed+dk assembles provider form" priv768
+    (mlkemPrivateDer oid768 seed768 dk768)
+
+-- | A flat OCTET(dk) PKCS#8 (the shape the provider decoder
+-- refuses): test-local assembly the production reader must
+-- reject, proving import/keygen shape separation.
+mlkemFlatPriv :: ByteString -> ByteString -> ByteString
+mlkemFlatPriv oid dk =
+  derSeqLocal [derIntLocal 0, derSeqLocal [oid], derOctetLocal dk]
+  where
+    derLen n
+      | n < 128 = BS.singleton (fromIntegral n)
+      | n < 256 = BS.pack [0x81, fromIntegral n]
+      | otherwise = BS.pack [0x82, fromIntegral (n `div` 256), fromIntegral (n `mod` 256)]
+    derTlv t body = BS.singleton t <> derLen (BS.length body) <> body
+    derSeqLocal parts = derTlv 0x30 (mconcat parts)
+    derIntLocal 0 = BS.pack [0x02, 0x01, 0x00]
+    derIntLocal _ = error "mlkemFlatPriv: version only"
+    derOctetLocal = derTlv 0x04
+
+caseMlkemPrivate :: IO ()
+caseMlkemPrivate = do
+  m0 <- seedModel
+  st <- getSession m0
+  (oid, _, seed, dk, _) <- loadMlkemHalves "768"
+  priv768 <- BS.readFile "tests/fixtures/mlkem768-priv.der"
+  -- dk-only import: no decodable DER exists without the seed
+  -- (the provider refuses flat-dk PKCS#8), so the raw dk
+  -- stores verbatim and the set tags AttrKemAlg for dispatch.
+  (_, _, dkAttrs) <- doCreate m0 st (mlkemPrivTmpl oid dk)
+  dkStored <- storedValue dkAttrs
+  assertEqual "dk stored verbatim" dk dkStored
+  assertEqual "set kept" (Just (ValULong 2)) (Map.lookup AttrParameterSet dkAttrs)
+  assertEqual "alg tagged" (Just (ValULong 768)) (Map.lookup AttrKemAlg dkAttrs)
+  -- Seed+dk import assembles the provider-form PKCS#8 (the
+  -- decoder accepts SEQ{seed64, dk}); the seed rides verbatim.
+  (m1, _, bothAttrs) <- doCreate m0 st (mlkemPrivTmpl oid dk ++ [(AttrSeed, ValBytes seed)])
+  bothStored <- storedValue bothAttrs
+  assertEqual "provider-form PKCS#8 golden" priv768 bothStored
+  assertEqual "seed kept verbatim" (Just (ValBytes seed)) (Map.lookup AttrSeed bothAttrs)
+  assertEqual "alg tagged" (Just (ValULong 768)) (Map.lookup AttrKemAlg bothAttrs)
+  -- A wrong-width seed with a good dk refuses inconsistent.
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m1 st
+    (mlkemPrivTmpl oid dk ++ [(AttrSeed, ValBytes (BS.take 63 seed))]))
+
+caseMlkemPublic :: IO ()
+caseMlkemPublic = do
+  m0 <- seedModel
+  st <- getSession m0
+  (oid, ek, _, _, pubDer) <- loadMlkemHalves "512"
+  (_, _, attrs) <- doCreate m0 st (mlkemPubTmpl oid ek)
+  der <- storedValue attrs
+  assertEqual "SPKI golden" pubDer der
+  assertEqual "set kept" (Just (ValULong 1)) (Map.lookup AttrParameterSet attrs)
+  assertEqual "alg tagged" (Just (ValULong 512)) (Map.lookup AttrKemAlg attrs)
+
+casePartialMlkem :: IO ()
+casePartialMlkem = do
+  m0 <- seedModel
+  st <- getSession m0
+  (oid, ek, _, dk, _) <- loadMlkemHalves "768"
+  let noSet = filter ((/= AttrParameterSet) . fst) (mlkemPrivTmpl oid dk)
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noSet)
+  let noValue = filter ((/= AttrValue) . fst) (mlkemPrivTmpl oid dk)
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noValue)
+  let noSetPub = filter ((/= AttrParameterSet) . fst) (mlkemPubTmpl oid ek)
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noSetPub)
+  let noRaw = filter ((/= AttrValue) . fst) (mlkemPubTmpl oid ek)
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noRaw)
+
+caseBadMlkemValue :: IO ()
+caseBadMlkemValue = do
+  m0 <- seedModel
+  st <- getSession m0
+  (oid, ek, _, dk, _) <- loadMlkemHalves "768"
+  let setT tmpl t v = (t, v) : filter ((/= t) . fst) tmpl
+      priv = mlkemPrivTmpl oid dk
+      pub = mlkemPubTmpl oid ek
+  -- Off-width values refuse inconsistent.
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT priv AttrValue (ValBytes (BS.take 2399 dk))))
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT priv AttrValue (ValBytes (dk <> BS.singleton 0))))
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT pub AttrValue (ValBytes (BS.take 1183 ek))))
+  -- An unknown set refuses inconsistent.
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT priv AttrParameterSet (ValULong 7)))
+
+caseMlkemModulus :: IO ()
+caseMlkemModulus = do
+  m0 <- seedModel
+  st <- getSession m0
+  (oid512, ek512, _, _, _) <- loadMlkemHalves "512"
+  (oid768, ek768, _, _, _) <- loadMlkemHalves "768"
+  (oid1024, ek1024, _, _, _) <- loadMlkemHalves "1024"
+  -- Positive controls: honestly generated eks are canonical
+  -- (this also pins the 12-bit unpacking against real keys).
+  assertBool "512 ek canonical" (mlkemEkWellFormed oid512 ek512)
+  assertBool "768 ek canonical" (mlkemEkWellFormed oid768 ek768)
+  assertBool "1024 ek canonical" (mlkemEkWellFormed oid1024 ek1024)
+  -- Forcing the first coefficient pair to 0xFFF (above
+  -- q = 3329) breaks canonicity on every set.
+  let bad ek = BS.pack [0xFF, 0xFF, 0xFF] <> BS.drop 3 ek
+  assertBool "512 ek non-canonical" (not (mlkemEkWellFormed oid512 (bad ek512)))
+  assertBool "768 ek non-canonical" (not (mlkemEkWellFormed oid768 (bad ek768)))
+  assertBool "1024 ek non-canonical" (not (mlkemEkWellFormed oid1024 (bad ek1024)))
+  -- A corrupted trailing seed (rho) still passes: the modulus
+  -- check covers the packed coefficients only (FIPS 203 7.2).
+  let badRho ek = BS.take (BS.length ek - 1) ek <> BS.singleton 0xFF
+  assertBool "rho corruption passes" (mlkemEkWellFormed oid768 (badRho ek768))
+  -- Import refuses a non-canonical ek with the spec-correct
+  -- code (the oracle's encaps-modulus pass condition).
+  let badTmpl = mlkemPubTmpl oid768 (bad ek768)
+  expectReject CKR_ATTRIBUTE_VALUE_INVALID (planCreateObject m0 st badTmpl)
+
+caseMlkemExecutes :: IO ()
+caseMlkemExecutes = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (oid, ek, _, dk, _) <- loadMlkemHalves "768"
+  (m1, _, privAttrs) <- doCreate m0 st (mlkemPrivTmpl oid dk)
+  dkStored <- storedValue privAttrs
+  (_, _, pubAttrs) <- doCreate m1 st (mlkemPubTmpl oid ek)
+  pubStored <- storedValue pubAttrs
+  let spec = KemSpec ML_KEM_768
+  eres <- kemEncapsulate env spec (KeyBytes pubStored)
+  (ct, ss1) <- case eres of
+    EngineOk pair -> pure pair
+    EngineFail err -> assertFailure ("imported ML-KEM encaps failed: " ++ show err) >> undefined
+  assertEqual "ciphertext length" 1088 (BS.length ct)
+  assertEqual "shared secret length" 32 (BS.length ss1)
+  dres <- kemDecapsulate env spec (KeyBytes dkStored) ct
+  ss2 <- case dres of
+    EngineOk ss -> pure ss
+    EngineFail err -> assertFailure ("imported ML-KEM decaps failed: " ++ show err) >> undefined
+  assertEqual "roundtrip secret agrees" ss1 ss2
 

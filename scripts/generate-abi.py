@@ -435,6 +435,8 @@ def main():
     # the fill macro wires the table slot to its implementation; the
     # implementation TU owns the exact pinned prototype.
     routed300 = {"C_SessionCancel": "std_SessionCancel"}
+    routed320 = {"C_EncapsulateKey": "std_EncapsulateKey",
+                 "C_DecapsulateKey": "std_DecapsulateKey"}
     discrete300, discrete320 = [], []
     for name in n300[68:]:
         if name in ("C_GetInterfaceList", "C_GetInterface"):
@@ -445,8 +447,11 @@ def main():
             inc.append(stub("30", name, proto30[name]))
             discrete300.append((name, f"x30_{name}"))
     for name in n320[92:]:
-        inc.append(stub("32", name, proto32[name]))
-        discrete320.append((name, f"x32_{name}"))
+        if name in routed320:
+            discrete320.append((name, routed320[name]))
+        else:
+            inc.append(stub("32", name, proto32[name]))
+            discrete320.append((name, f"x32_{name}"))
     inc.append(fillmacro("HASKOKI_FILL_300_NEW(T)", discrete300))
     inc.append(fillmacro("HASKOKI_FILL_320_NEW(T)", discrete320))
     (PKG / "cbits" / "abi_stubs.inc").write_text(

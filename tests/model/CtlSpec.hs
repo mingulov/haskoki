@@ -51,12 +51,12 @@ caseCapabilities = do
   r2 <- runCtl ["capabilities", "--config", fixture "maximal-demo.toml"]
   assertBool "demo-maximal labeled as target" ("target-profile" `isInfixOf` ceOut r2)
   -- The catalogs derive from the registry (no stale gaps,
-  -- no phantom routes). OpenSSL serves the 134 real-tested
-  -- behaviors (AES/HOTP/generic-secret keys minted for real);
-  -- synthetic serves all 136 tested behaviors; both cover the
+  -- no phantom routes). Both engines serve all 136 tested
+  -- behaviors (OpenSSL included: every behavior runs on real
+  -- libcrypto since the KEM pair went real); both cover the
   -- 464-mechanism baseline exactly once.
   checkCatalog (ceOut r2) 136 328 "synthetic"
-  checkCatalog out 134 330 "openssl"
+  checkCatalog out 136 328 "openssl"
   where
     reportLine prefix text =
       case [drop (length prefix) ln | ln <- lines text, prefix `isInfixOf` ln] of
@@ -84,6 +84,10 @@ caseCapabilities = do
             ("CKM_HOTP_KEY_GEN" `elem` active)
           assertBool "real mints AES keys"
             ("CKM_AES_KEY_GEN" `elem` active)
+          assertBool "real serves KEM"
+            ("CKM_ML_KEM" `elem` active)
+          assertBool "real mints KEM pairs"
+            ("CKM_ML_KEM_KEY_PAIR_GEN" `elem` active)
 
 -- | The report pins the native binding scope. All four
 -- native opens ('haskoki_std_open', 'haskokiCryptoOpen',

@@ -908,7 +908,7 @@ dRsaPkcsKeyPairGen = promotedDesc "CKM_RSA_PKCS_KEY_PAIR_GEN" allBaselines Famil
 dMlKemKeyPairGen :: Descriptor
 dMlKemKeyPairGen = promotedDesc "CKM_ML_KEM_KEY_PAIR_GEN" [Pkcs11_3_2] FamilyKeyPair
   noParams [mechRoute OpGenerateKeyPair "CKM_ML_KEM_KEY_PAIR_GEN" ["A20", "A37"]]
-  KeyBits 0 0
+  KeyBytes 800 1568
 
 dDsaKeyPairGen :: Descriptor
 dDsaKeyPairGen = promotedDesc "CKM_DSA_KEY_PAIR_GEN" allBaselines FamilyKeyPair
@@ -943,7 +943,7 @@ dMlKem = promotedDesc "CKM_ML_KEM" [Pkcs11_3_2] FamilyKem
   [ mechRoute OpEncapsulate "CKM_ML_KEM" ["A22", "A37"]
   , mechRoute OpDecapsulate "CKM_ML_KEM" ["A22", "A37"]
   ]
-  MechanismSpecific 0 0
+  KeyBytes 800 1568
 
 -- | AEAD behavior descriptors: one per GCM/CCM recipe row, with
 -- the recipe codec, encrypt/decrypt routes, and AES key bounds

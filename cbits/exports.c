@@ -46,6 +46,22 @@
 /* Routed post-2.40 definitions (exact pinned prototypes; the fill
  * macros in abi_stubs.inc wire these table slots to them). */
 extern CK_RV std_SessionCancel(CK_SESSION_HANDLE hSession, CK_FLAGS flags);
+extern CK_RV std_EncapsulateKey(CK_SESSION_HANDLE hSession,
+                                CK_MECHANISM_PTR pMechanism,
+                                CK_OBJECT_HANDLE hPublicKey,
+                                CK_ATTRIBUTE_PTR pTemplate,
+                                CK_ULONG ulAttributeCount,
+                                CK_BYTE_PTR pCiphertext,
+                                CK_ULONG_PTR pulCiphertextLen,
+                                CK_OBJECT_HANDLE_PTR phKey);
+extern CK_RV std_DecapsulateKey(CK_SESSION_HANDLE hSession,
+                                CK_MECHANISM_PTR pMechanism,
+                                CK_OBJECT_HANDLE hPrivateKey,
+                                CK_ATTRIBUTE_PTR pTemplate,
+                                CK_ULONG ulAttributeCount,
+                                CK_BYTE_PTR pCiphertext,
+                                CK_ULONG ulCiphertextLen,
+                                CK_OBJECT_HANDLE_PTR phKey);
 
 /* Lifecycle-aware stub result: state first (matches the contract
  * order), arguments are never inspected by stubs. Fork children observe no

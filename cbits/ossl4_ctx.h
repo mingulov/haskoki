@@ -390,6 +390,35 @@ int hsk_ossl4_mldsa_gen(OSSL_LIB_CTX *ctx, const char *propq,
                         size_t *priv_len, unsigned char **pub_der,
                         size_t *pub_len);
 
+/* --- ML-KEM encapsulate/decapsulate/keygen ------------------- */
+
+/* Encapsulates to a KEM public key (SPKI DER or width-exact
+ * raw ek; the set name gates both shapes). The key's actual
+ * set must match algname (BADKEY otherwise). Answers ct||ss
+ * (768+32/1088+32/1568+32 bytes) with *out set, or a negative
+ * HSK_OSSL4_ERR_* code. */
+long hsk_ossl4_mlkem_encaps(OSSL_LIB_CTX *ctx, const char *algname,
+                            const char *propq, const unsigned char *pub,
+                            size_t pub_len, unsigned char **out);
+/* Decapsulates with a KEM private key (provider-form PKCS#8
+ * DER or width-exact raw dk; the set name gates both shapes).
+ * The ciphertext must be exactly the set width (BADPARAM
+ * otherwise). Answers the 32-byte shared secret with *out
+ * set, or a negative HSK_OSSL4_ERR_* code. FIPS 203 implicit
+ * rejection is provider-owned: malformed ciphertexts yield a
+ * pseudorandom secret, never an error. */
+long hsk_ossl4_mlkem_decaps(OSSL_LIB_CTX *ctx, const char *algname,
+                            const char *propq, const unsigned char *priv,
+                            size_t priv_len, const unsigned char *ct,
+                            size_t ctlen, unsigned char **out);
+/* Mints an ML-KEM pair and answers the provider-form PKCS#8
+ * private + SPKI public DER halves (HSK_OSSL4_OK); an unknown
+ * set name is BADPARAM. */
+int hsk_ossl4_mlkem_gen(OSSL_LIB_CTX *ctx, const char *propq,
+                        const char *algname, unsigned char **priv_der,
+                        size_t *priv_len, unsigned char **pub_der,
+                        size_t *pub_len);
+
 /* --- ECDH agreement ------------------------------------------ */
 
 /* priv_der: PKCS#8 DER base key; peer_der: SPKI DER peer key. cofactor:
