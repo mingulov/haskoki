@@ -57,6 +57,8 @@ module Haskoki.Recipe.Cipher
   , ctsName
   , streamNames
   , ofbName
+  , wrapNames
+  , kwpNames
   ) where
 
 import Data.Bits (shiftL, shiftR, (.&.))
@@ -132,6 +134,19 @@ streamNames = ["CKM_AES_CFB128", "CKM_AES_CFB8", "CKM_AES_CFB1", "CKM_AES_OFB"]
 ofbName :: MechanismName
 ofbName = "CKM_AES_OFB"
 
+-- | The AES key-wrap rows: KW (RFC 3394) plus the two KWP names
+-- (see 'Haskoki.Operation.isAesWrapMech'). Wraps never stream
+-- multipart updates (one-shot integrity over the whole buffer)
+-- and take empty parameters like ECB.
+wrapNames :: [MechanismName]
+wrapNames = ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_AES_KEY_WRAP_KWP"]
+
+-- | The KWP rows (RFC 5649, any input length >= 1), including the
+-- PAD alias the oracle equates with KWP (see
+-- 'Haskoki.Operation.isKwpMech').
+kwpNames :: [MechanismName]
+kwpNames = ["CKM_AES_KEY_WRAP_PAD", "CKM_AES_KEY_WRAP_KWP"]
+
 -- | Encode one 8-byte big-endian word.
 encodeWord64 :: Int -> ByteString
 encodeWord64 n = BS.pack [byte s | s <- [56, 48 .. 0]]
@@ -186,7 +201,7 @@ ctrNextImage bs n = case decodeCtrParams bs of
 cipherKeyLenValid :: BlockCipherRecipe -> Int -> Bool
 cipherKeyLenValid r n = n `elem` crKeyLens r
 
--- | All ten covered mechanisms with their geometry. The CTR row
+-- | All eighteen covered mechanisms with their geometry. The CTR row
 -- carries the counter-block width as its block geometry and IV
 -- length (agreeing with the backend 'cipherIvLen' law); the
 -- canonical parameter image is wider (width word plus block) and
@@ -210,6 +225,13 @@ cipherRecipes =
   , BlockCipherRecipe "CKM_AES_CFB8" 16 [16, 24, 32] 16 False "CKK_AES"
   , BlockCipherRecipe "CKM_AES_CFB1" 16 [16, 24, 32] 16 False "CKK_AES"
   , BlockCipherRecipe "CKM_AES_OFB" 16 [16, 24, 32] 16 False "CKK_AES"
+  -- KW/KWP take empty parameters like ECB on the 8-byte wrap
+  -- quantum; the planners enforce the length rules (KW:
+  -- multiple-of-8 >= 16; KWP: any length >= 1) and never stream
+  -- multipart updates (see 'Haskoki.Operation.isAesWrapMech').
+  , BlockCipherRecipe "CKM_AES_KEY_WRAP" 8 [16, 24, 32] 0 False "CKK_AES"
+  , BlockCipherRecipe "CKM_AES_KEY_WRAP_PAD" 8 [16, 24, 32] 0 False "CKK_AES"
+  , BlockCipherRecipe "CKM_AES_KEY_WRAP_KWP" 8 [16, 24, 32] 0 False "CKK_AES"
   , BlockCipherRecipe "CKM_DES3_CBC" 8 [16, 24] 8 False "CKK_DES3"
   , BlockCipherRecipe "CKM_DES3_ECB" 8 [16, 24] 0 False "CKK_DES3"
   , BlockCipherRecipe "CKM_ARIA_CBC" 16 [16, 24, 32] 16 False "CKK_ARIA"

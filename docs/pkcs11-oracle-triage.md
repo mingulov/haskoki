@@ -267,7 +267,50 @@ first lane proving all of them together.
   MCT failures
   (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-cfb-ofb-r2.json`).
 
-## Remaining fast-lane failures (r25: 2), by cluster
+## Round 10: AES WRAP/KWP slice with the unwrap-confusion fix (r25–r27)
+
+- r25→r26 (3055→3116 passed, +1 failure): AES Key Wrap / KWP
+  slice (provider AES-WRAP/WRAP-PAD, dual encrypt+wrap surface,
+  119 behavior rows). Per-unit diff fully attributed:
+  `test_error_path_kwp` +16 pass / +26 xfail (newly collected
+  KWP error-path matrix), `test_ckr_wrap` +5 / −6 skip+1 xfail,
+  `test_mech_wrap` +3, `test_mech_negative` +4 pass / +18 xfail
+  (wrap negative legs), `test_mech_flags` +12 pass (new WRAP
+  flag probes), `test_mech_probe` +9 skipped (new mechanism
+  probes), plus skip→pass first-exposures in `test_cve_regression`
+  (+2), `test_key_lifecycle` (+2), `test_rsa_key_wrapping` (+3),
+  `test_api_security`, `test_handle_reuse`,
+  `test_public_session_private_creation`,
+  `test_scalar_attr_length_extended`, `test_keymgmt`,
+  `test_mech_lifecycle`, `test_metamorphic` (+1 each),
+  `test_authenticated_wrap` +1 (CBC auth-wrap leg now runs),
+  `test_unwrap_reimport` +1, `test_aes_keywrap_pad_overflow` +1,
+  `test_ckr_raw_buffer` +1 pass / −1 xfail, and
+  `test_ro_session_restrictions` +2 xfail. The +1 failure was
+  `test_tookan.py::TestKeyTypeConfusionOnUnwrap::test_unwrap_aes_as_des3_rejected`,
+  newly collected (was skip): the unwrap commit never measured
+  answered material against the template key type, so a 16-byte
+  KW blob minted a live CKK_DES3 key.
+- r26→r27 (3116→3117 passed, failure cleared, zero pass→fail,
+  zero xpass): the shared unwrap-commit fix (`publishUnwrap`
+  in KeyManagement.hs: AES takes 16/24/32 bytes, DES3 takes 24,
+  anything else any length; mismatch refuses
+  CKR_TEMPLATE_INCONSISTENT publishing nothing), pinned by
+  KeyManagementSpec caseUnwrapKeyTypeLength (16-as-DES3 refuses,
+  24-as-DES3 commits). `test_tookan` 6→7 passed. Same 2 HOTP
+  external failures, confirmed by test id
+  (`TestWrongKeyType::test_registry_{sign,verify}_wrong_key_type[HOTP]`).
+- Targeted wrap r1 (8 files, passing on the first run): 7230 passed, 0
+  failed, 0 xpass — `test_wrap.py` 7200/7200 ACVP legs,
+  `test_mech_wrap` 6, `test_error_path_kwp` 16 pass + 26
+  framework-xfail holds, `test_aes_keywrap_pad_overflow` 1,
+  `test_unwrap_reimport` 1 pass + 1 skip, `test_aead_wrap_outputs`
+  2 skips (non-CBC AEAD-wrap setups), `test_authenticated_wrap`
+  1 pass + 12 skips (ECDH-composition/v3.2-interface setups),
+  `test_ckr_wrap` 5 pass + 1 skip + 1 xfail
+  (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-wrap-r1.json`).
+
+## Remaining fast-lane failures (r27: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
 `/tmp/pkcs11-ws/pkcs11-check` (import recipes, negotiation, gates).
@@ -495,7 +538,31 @@ OAEP error uniformity). T5a (RO owner dimension) and T5b
 (public/private gates) are implemented and passing in-suite
 post-r18; lane reproof needs a bundle rebuild.
 
-## KAT lane status (r8, CFB/OFB slice + C_SessionCancel: COMPLETE)
+## KAT lane status (r9, WRAP/KWP slice + unwrap-confusion fix: COMPLETE)
+
+112286 tests — 74288 passed, 2 failed, 0 crashed, 3763 xfailed,
+34233 skipped (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r9-results.json`;
+`incomplete: false`), canonical data dir `/tmp/pkcs11-ws/data`,
+clean-rebuild release. The only failures are the 2 external
+HOTP registry asserts (same pair as every lane). Delta vs r8 is
+fully attributed, +7549 passed / +178 xfailed / −7655 skipped,
+zero pass→fail, zero crashes, zero xpass:
+
+- `acvp/aes/test_wrap.py`: 0→7200 passed (skip→pass).
+- `test_wycheproof_aes.py`: +287 passed / +132 xfailed / −419
+  skipped (KW wycheproof vectors newly collected; the xfails
+  are the corpus's expected-reject legs).
+- Fast-lane units inside KAT repeat the fast r27 deltas
+  exactly (`test_error_path_kwp` +16 pass / +26 xfail,
+  `test_ckr_wrap` +5, `test_mech_wrap` +3, `test_mech_negative`
+  +4 pass / +18 xfailed, `test_mech_flags` +12 pass,
+  `test_mech_probe` +9 skipped, `test_tookan` +2 including the
+  confusion leg, plus the +1 skip→pass first-exposures) —
+  cross-lane consistency check passes. Fast r27 standalone:
+  6102 tests — 3117 passed, same 2 HOTP failed, 416 xfailed,
+  2567 skipped.
+
+## KAT lane status (historical r8, CFB/OFB slice + C_SessionCancel: COMPLETE)
 
 112214 tests — 66739 passed, 2 failed, 0 crashed, 3585 xfailed,
 41888 skipped (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r8-results.json`;

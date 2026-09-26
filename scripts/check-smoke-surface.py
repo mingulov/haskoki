@@ -6,7 +6,7 @@ Fails (exit 1) when any rule fails. Presence rules demand the exact
 contract substrings in tests/c/release_smoke.c; absence rules demand
 the early reduced-catalog/session-less defects be gone:
 
-* COUNT: SMOKE_MECH_COUNT is 114 (measured; see the smoke header).
+* COUNT: SMOKE_MECH_COUNT is 117 (measured; see the smoke header).
 * SIZEQ: a NULL size-query leg pins the count before the full list.
 * MEMBER: CKM_SHA256 membership is asserted over the served list.
 * TOKEN: C_GetTokenInfo pins the single-token default label.
@@ -39,8 +39,8 @@ def check(rule, cond, detail):
 def main() -> int:
     src = Path(sys.argv[1]).read_text() if len(sys.argv) > 1 else DEFAULT.read_text()
 
-    check("COUNT", "#define SMOKE_MECH_COUNT 114" in src,
-          "exact served count pinned at 114")
+    check("COUNT", "#define SMOKE_MECH_COUNT 117" in src,
+          "exact served count pinned at 117")
     check("SIZEQ", "C_GetMechanismList(slots[0], NULL_PTR, &q)" in src,
           "NULL size-query leg pins the count first")
     check("MEMBER", "mechs[i] == CKM_SHA256" in src

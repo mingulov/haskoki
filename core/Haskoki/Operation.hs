@@ -55,6 +55,8 @@ module Haskoki.Operation
   , isUnframedCipher
   , isCtsMech
   , isAesStreamMech
+  , isAesWrapMech
+  , isKwpMech
   , isOfbMech
     -- * Buffer bound for the per-kind lifecycles
   , maxBuffered
@@ -76,7 +78,7 @@ import Haskoki.Output
   , planOneShot
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor)
-import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, ofbName, streamNames)
+import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, kwpNames, ofbName, streamNames, wrapNames)
 import Haskoki.Recipe.Cmac (cmacParamsValid, cmacRecipeFor)
 import Haskoki.Recipe.Digest (digestParamsValid)
 import Haskoki.Recipe.Ecdsa (ecdsaParamsValid, ecdsaRecipeFor)
@@ -264,6 +266,25 @@ isAesStreamMech m = case cipherRecipeFor m of
 isOfbMech :: MechanismId -> Bool
 isOfbMech m = case cipherRecipeFor m of
   Just r -> crName r == ofbName
+  Nothing -> False
+
+-- | AES key-wrap rows (@CKM_AES_KEY_WRAP@, @CKM_AES_KEY_WRAP_PAD@,
+-- @CKM_AES_KEY_WRAP_KWP@): one-shot integrity over the whole
+-- buffer, so multipart updates never stream (only the final runs
+-- the effect) and output expands by the wrap framing. KW takes
+-- multiple-of-8 input >= 16 bytes; KWP takes any length >= 1
+-- (see 'isKwpMech').
+isAesWrapMech :: MechanismId -> Bool
+isAesWrapMech m = case cipherRecipeFor m of
+  Just r -> crName r `elem` wrapNames
+  Nothing -> False
+
+-- | The KWP rows (@CKM_AES_KEY_WRAP_KWP@ plus the PAD alias the
+-- oracle equates with KWP): RFC 5649 padding accepts any input
+-- length >= 1, unlike KW's multiple-of-8 floor.
+isKwpMech :: MechanismId -> Bool
+isKwpMech m = case cipherRecipeFor m of
+  Just r -> crName r `elem` kwpNames
   Nothing -> False
 
 -- | Mechanism-parameter check (recipe-backed mechanisms):

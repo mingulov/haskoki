@@ -47,6 +47,9 @@ module Haskoki.Engine.Backend
   , CipherSpec (..)
   , cipherKeyLens
   , cipherIvLen
+  , isKwSpec
+  , isKwpSpec
+  , isWrapSpec
   , AeadSpec (..)
   , SigSpec (..)
   , PssParams (..)
@@ -267,12 +270,33 @@ data CipherSpec
   | C_AES128_CFB8 | C_AES192_CFB8 | C_AES256_CFB8
   | C_AES128_CFB1 | C_AES192_CFB1 | C_AES256_CFB1
   | C_AES128_OFB | C_AES192_OFB | C_AES256_OFB
+  | C_AES128_KW | C_AES192_KW | C_AES256_KW
+  | C_AES128_KWP | C_AES192_KWP | C_AES256_KWP
   | C_DES3_CBC | C_DES3_ECB
   | C_ARIA128_CBC | C_ARIA192_CBC | C_ARIA256_CBC
   | C_ARIA128_ECB | C_ARIA192_ECB | C_ARIA256_ECB
   | C_CAMELLIA128_CBC | C_CAMELLIA192_CBC | C_CAMELLIA256_CBC
   | C_CAMELLIA128_ECB | C_CAMELLIA192_ECB | C_CAMELLIA256_ECB
   deriving (Eq, Ord, Show)
+
+-- | The AES key-wrap specs: KW runs RFC 3394 (input a multiple
+-- of 8 bytes, minimum 16; output expands by the 8-byte IV), KWP
+-- runs RFC 5649 (any input length >= 1; output pads to a multiple
+-- of 8 plus the 8-byte IV). Both take no IV.
+isKwSpec :: CipherSpec -> Bool
+isKwSpec C_AES128_KW = True
+isKwSpec C_AES192_KW = True
+isKwSpec C_AES256_KW = True
+isKwSpec _ = False
+
+isKwpSpec :: CipherSpec -> Bool
+isKwpSpec C_AES128_KWP = True
+isKwpSpec C_AES192_KWP = True
+isKwpSpec C_AES256_KWP = True
+isKwpSpec _ = False
+
+isWrapSpec :: CipherSpec -> Bool
+isWrapSpec spec = isKwSpec spec || isKwpSpec spec
 
 -- | Accepted raw key lengths in bytes per cipher. Triple-DES takes
 -- 16 two-key (@K1||K2@, expanded to @K1||K2||K1@) or 24 three-key
@@ -304,6 +328,12 @@ cipherKeyLens spec = case spec of
   C_AES128_OFB -> [16]
   C_AES192_OFB -> [24]
   C_AES256_OFB -> [32]
+  C_AES128_KW -> [16]
+  C_AES192_KW -> [24]
+  C_AES256_KW -> [32]
+  C_AES128_KWP -> [16]
+  C_AES192_KWP -> [24]
+  C_AES256_KWP -> [32]
   C_DES3_CBC -> [16, 24]
   C_DES3_ECB -> [16, 24]
   C_ARIA128_CBC -> [16]
@@ -320,7 +350,8 @@ cipherKeyLens spec = case spec of
   C_CAMELLIA256_ECB -> [32]
 
 -- | IV length in bytes per cipher: the block width for CBC, CTS,
--- CFB128, CFB8, CFB1 and OFB, 16 for CTR, 0 for ECB. Both engines
+-- CFB128, CFB8, CFB1 and OFB, 16 for CTR, 0 for ECB, KW and KWP
+-- (wraps use the fixed AIV, never a caller IV). Both engines
 -- enforce this; RecipeCipherSpec pins it against the recipe.
 cipherIvLen :: CipherSpec -> Int
 cipherIvLen spec = case spec of
@@ -348,6 +379,12 @@ cipherIvLen spec = case spec of
   C_AES128_OFB -> 16
   C_AES192_OFB -> 16
   C_AES256_OFB -> 16
+  C_AES128_KW -> 0
+  C_AES192_KW -> 0
+  C_AES256_KW -> 0
+  C_AES128_KWP -> 0
+  C_AES192_KWP -> 0
+  C_AES256_KWP -> 0
   C_DES3_CBC -> 8
   C_DES3_ECB -> 0
   C_ARIA128_CBC -> 16

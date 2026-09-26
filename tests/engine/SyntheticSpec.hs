@@ -868,6 +868,8 @@ caseCapsFull = withSynth "11" $ \env -> do
     , C_AES128_CFB8, C_AES192_CFB8, C_AES256_CFB8
     , C_AES128_CFB1, C_AES192_CFB1, C_AES256_CFB1
     , C_AES128_OFB, C_AES192_OFB, C_AES256_OFB
+    , C_AES128_KW, C_AES192_KW, C_AES256_KW
+    , C_AES128_KWP, C_AES192_KWP, C_AES256_KWP
     , C_DES3_CBC, C_DES3_ECB
     , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
     , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
@@ -1197,37 +1199,37 @@ casePssRoundtrip = withSynth "11" $ \env -> do
 -- unsupported for XOF hashes.
 caseAeadRoundtrip :: IO ()
 caseAeadRoundtrip = do
-  let spec = AeadSpec "AES-256-GCM" 12 16
+  let aspec = AeadSpec "AES-256-GCM" 12 16
       key = key32
       nonce = "nonce1234567"
   withSynth "11" $ \env -> do
-    (ct, tag) <- expectOk "seal" =<< aeadEncrypt env spec key nonce "aad" "input"
+    (ct, tag) <- expectOk "seal" =<< aeadEncrypt env aspec key nonce "aad" "input"
     assertEqual "ct length" 5 (BS.length ct)
     assertEqual "tag length" 16 (BS.length tag)
-    pt <- expectOk "open" =<< aeadDecrypt env spec key nonce "aad" ct tag
+    pt <- expectOk "open" =<< aeadDecrypt env aspec key nonce "aad" ct tag
     assertEqual "roundtrip" "input" pt
     -- Tampering anywhere fails closed.
     expectAuthFailed "tag tamper" =<<
-      aeadDecrypt env spec key nonce "aad" ct (BS.pack [0] <> BS.drop 1 tag)
+      aeadDecrypt env aspec key nonce "aad" ct (BS.pack [0] <> BS.drop 1 tag)
     expectAuthFailed "ct tamper" =<<
-      aeadDecrypt env spec key nonce "aad" (BS.pack [0] <> BS.drop 1 ct) tag
+      aeadDecrypt env aspec key nonce "aad" (BS.pack [0] <> BS.drop 1 ct) tag
     expectAuthFailed "aad tamper" =<<
-      aeadDecrypt env spec key nonce "AAX" ct tag
+      aeadDecrypt env aspec key nonce "AAX" ct tag
     expectAuthFailed "nonce tamper" =<<
-      aeadDecrypt env spec key "nonce123456X" "aad" ct tag
+      aeadDecrypt env aspec key "nonce123456X" "aad" ct tag
     expectAuthFailed "short tag" =<<
-      aeadDecrypt env spec key nonce "aad" ct "short"
+      aeadDecrypt env aspec key nonce "aad" ct "short"
     -- Bounds: unknown algs unsupported, short keys bad params.
     expectUnsupported "bad alg" =<<
       aeadEncrypt env (AeadSpec "NOPE" 12 16) key nonce "aad" "input"
     expectBadParam "short key" =<<
-      aeadEncrypt env spec (KeyBytes "short") nonce "aad" "input"
+      aeadEncrypt env aspec (KeyBytes "short") nonce "aad" "input"
     expectBadParam "short nonce" =<<
-      aeadEncrypt env spec key "short" "aad" "input"
+      aeadEncrypt env aspec key "short" "aad" "input"
   -- Deterministic across same-seed backends.
   withSynth "11" $ \envA -> withSynth "11" $ \envB -> do
-    (ctA, tagA) <- expectOk "seal a" =<< aeadEncrypt envA spec key nonce "aad" "input"
-    (ctB, tagB) <- expectOk "seal b" =<< aeadEncrypt envB spec key nonce "aad" "input"
+    (ctA, tagA) <- expectOk "seal a" =<< aeadEncrypt envA aspec key nonce "aad" "input"
+    (ctB, tagB) <- expectOk "seal b" =<< aeadEncrypt envB aspec key nonce "aad" "input"
     assertEqual "deterministic" (ctA, tagA) (ctB, tagB)
 
 -- | CCM twin of 'caseAeadRoundtrip': the synthetic seal/open path
@@ -1235,26 +1237,26 @@ caseAeadRoundtrip = do
 -- tags), fails tampering closed, and stays deterministic.
 caseAeadCcmRoundtrip :: IO ()
 caseAeadCcmRoundtrip = do
-  let spec = AeadSpec "AES-256-CCM" 12 16
+  let aspec = AeadSpec "AES-256-CCM" 12 16
       key = key32
       nonce = "nonce1234567"
   withSynth "11" $ \env -> do
-    (ct, tag) <- expectOk "ccm seal" =<< aeadEncrypt env spec key nonce "aad" "input"
+    (ct, tag) <- expectOk "ccm seal" =<< aeadEncrypt env aspec key nonce "aad" "input"
     assertEqual "ccm ct length" 5 (BS.length ct)
     assertEqual "ccm tag length" 16 (BS.length tag)
-    pt <- expectOk "ccm open" =<< aeadDecrypt env spec key nonce "aad" ct tag
+    pt <- expectOk "ccm open" =<< aeadDecrypt env aspec key nonce "aad" ct tag
     assertEqual "ccm roundtrip" "input" pt
     expectAuthFailed "ccm tag tamper" =<<
-      aeadDecrypt env spec key nonce "aad" ct (BS.pack [0] <> BS.drop 1 tag)
+      aeadDecrypt env aspec key nonce "aad" ct (BS.pack [0] <> BS.drop 1 tag)
     expectAuthFailed "ccm aad tamper" =<<
-      aeadDecrypt env spec key nonce "AAX" ct tag
+      aeadDecrypt env aspec key nonce "AAX" ct tag
     expectBadParam "ccm odd tag" =<<
       aeadEncrypt env (AeadSpec "AES-256-CCM" 12 5) key nonce "aad" "input"
     expectBadParam "ccm short nonce" =<<
       aeadEncrypt env (AeadSpec "AES-256-CCM" 6 16) key "short!" "aad" "input"
   withSynth "11" $ \envA -> withSynth "11" $ \envB -> do
-    (ctA, tagA) <- expectOk "ccm seal a" =<< aeadEncrypt envA spec key nonce "aad" "input"
-    (ctB, tagB) <- expectOk "ccm seal b" =<< aeadEncrypt envB spec key nonce "aad" "input"
+    (ctA, tagA) <- expectOk "ccm seal a" =<< aeadEncrypt envA aspec key nonce "aad" "input"
+    (ctB, tagB) <- expectOk "ccm seal b" =<< aeadEncrypt envB aspec key nonce "aad" "input"
     assertEqual "ccm deterministic" (ctA, tagA) (ctB, tagB)
 
 caseOaepRoundtrip :: IO ()
@@ -1729,16 +1731,16 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   refused "sign DSA" (mkSign "CKM_DSA_SHA256")
   -- Present-but-unmapped surfaces (needs a Raw entry point).
   -- GCM left this group when the AEAD entry points landed (see
-  -- caseAeadRoundtrip); empty GCM params still fail typed at the
-  -- driver (CryptoFailed recipe refusal, pinned below).
+  -- caseAeadRoundtrip); AES-KW left it when the wrap entry point
+  -- landed (see caseCipherSpecs and the OpenSSLSpec wrap KATs);
+  -- empty GCM params still fail typed at the driver (CryptoFailed
+  -- recipe refusal, pinned below).
   refused "sign ML-DSA" (mkSign "CKM_ML_DSA")
   refused "message-sign DSA"
     (FxMessageSign (mech "CKM_DSA_SHA256") (Just kOid) BS.empty BS.empty)
   refused "derive TLS_PRF"
     (FxDerive (mech "CKM_TLS_PRF") (Just kOid) BS.empty BS.empty 32)
   refused "derive DH" (FxDerive (mech "CKM_DH_PKCS_DERIVE") (Just kOid) BS.empty BS.empty 32)
-  refused "wrap AES_KW"
-    (FxWrap (mech "CKM_AES_KEY_WRAP") (Just kOid) BS.empty "0123456789abcdef")
   -- Recovery effects refuse on synthetic exactly as on real.
   refused "sign-recover"
     (FxSignRecover (mech "CKM_SHA256_HMAC") (Just kOid) BS.empty BS.empty 4)

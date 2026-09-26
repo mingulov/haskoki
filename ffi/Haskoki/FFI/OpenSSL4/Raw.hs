@@ -39,6 +39,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , hmac
   , cipherCbc
   , cipherCts
+  , cipherWrap
   , aeadEncrypt
   , aeadDecrypt
   , aeadCcmEncrypt
@@ -141,6 +142,9 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_cbc"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_cts"
   c_cipher_cts :: Ptr OsslLibCtx -> CString -> CString -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_wrap"
+  c_cipher_wrap :: Ptr OsslLibCtx -> CString -> CString -> CInt -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_aead_encrypt"
   c_aead_encrypt :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CSize -> Ptr (Ptr CUChar) -> IO CLong
@@ -319,6 +323,20 @@ cipherCts ctx ecbname propq enc key iv input =
         withBytes iv $ \(piv, niv) ->
           withBytes input $ \(pin, nin) ->
             withOut (c_cipher_cts ctx cc cpq (if enc then 1 else 0) pkey nkey piv niv pin nin)
+
+-- | AES key wrap: @ciphername@ is the fetched wrap cipher
+-- (@AES-\{128,192,256\}-WRAP@ for @kwp == False@,
+-- @AES-\{128,192,256\}-WRAP-PAD@ for @kwp == True@); no IV.
+-- Output expands (KW: inlen + 8; KWP: ceil8(inlen) + 8).
+-- Geometry violations answer 'errBadParam'; a decrypt-side
+-- integrity failure answers 'errAuthFail'.
+cipherWrap :: Ptr OsslLibCtx -> String -> String -> Bool -> Bool -> ByteString -> ByteString -> IO (Either Int ByteString)
+cipherWrap ctx ciphername propq enc kwp key input =
+  withCString ciphername $ \cc ->
+    withCString propq $ \cpq ->
+      withBytes key $ \(pkey, nkey) ->
+        withBytes input $ \(pin, nin) ->
+          withOut (c_cipher_wrap ctx cc cpq (if enc then 1 else 0) (if kwp then 1 else 0) pkey nkey pin nin)
 
 -- | AEAD encrypt: returns @ct || tag@ (tag length known to the caller).
 aeadEncrypt :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> ByteString -> ByteString -> Int -> IO (Either Int ByteString)

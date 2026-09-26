@@ -7,10 +7,11 @@ Fails (exit 1) when any rule fails:
   (contract/entry/reason/evidence) -- both are backend-direct with no
   planner seam, and the catalog is planner-scoped, so neither
   row moves.
-* PLANNED-COUNT contracts: planned-with-behavior count stays 68 (deliberately
+* PLANNED-COUNT contracts: planned-with-behavior count stays 70 (deliberately
   raised from 63 by the session-info reclassification of the
   C_GetSessionInfo/C_GetSlotInfo/C_GetTokenInfo rows, then by the
-  C_DigestKey routing, then by the C_SetAttributeValue routing).
+  C_DigestKey routing, then by the C_SetAttributeValue routing,
+  then by the C_WrapKey/C_UnwrapKey routing).
 * HOSTS-DROP SUPPORTED-HOSTS.md: SeedRandom no longer listed as unsupported.
 * WALK-RANDOM docs/demo-walkthrough.md: the random section documents per-engine
   seed semantics, the 1 MiB bound, the entropy-estimate home, and why
@@ -53,11 +54,13 @@ def main():
     check("ROW-MIRROR", same, "C_SeedRandom row mirrors C_GenerateRandom exactly")
 
     # --- PLANNED-COUNT: planned-count pin holds ---
-    # 63 -> 66 -> 67; the session-info rows reclassified first,
-    # then C_DigestKey (routed via the digest-update planner with
-    # executed consumer evidence).
+    # 63 -> 66 -> 67 -> 68 -> 70; the session-info rows reclassified
+    # first, then C_DigestKey (routed via the digest-update planner
+    # with executed consumer evidence), then C_SetAttributeValue,
+    # then C_WrapKey/C_UnwrapKey (c-table routes with executed
+    # consumer evidence).
     planned = CONTRACTS.read_text().count('"contract": "planned-with-behavior"')
-    check("PLANNED-COUNT", planned == 68, f"planned-with-behavior count == 68 (saw {planned})")
+    check("PLANNED-COUNT", planned == 70, f"planned-with-behavior count == 70 (saw {planned})")
 
     # --- HOSTS-DROP: supported-hosts drops the seed holdout ---
     hosts = (REPO / "SUPPORTED-HOSTS.md").read_text()

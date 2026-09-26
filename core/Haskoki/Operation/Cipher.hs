@@ -47,7 +47,9 @@ import Haskoki.Operation
   , interpretError
   , denyOutcome
   , isAesStreamMech
+  , isAesWrapMech
   , isCtsMech
+  , isKwpMech
   , isOfbMech
   , isUnframedCipher
   , mkDeny
@@ -137,7 +139,11 @@ withCipherSlot ops kind = do
 -- backend owns their length bound. CTS rows ('isCtsMech') replace
 -- alignment with the stealing floor: >= 1 block, any length above.
 -- AES stream rows ('isAesStreamMech') accept any length outright
--- (length-preserving, empty included).
+-- (length-preserving, empty included). Wrap rows
+-- ('isAesWrapMech') enforce the wrap floors: KW needs
+-- multiple-of-8 input >= 16 bytes, KWP ('isKwpMech') any length
+-- >= 1 (the provider answers empty KWP with a vacuous success,
+-- refused here).
 encryptInput :: MechanismId -> CipherSpec -> ByteString -> Either StepDeny ByteString
 encryptInput mech spec buf
   | isUnframedCipher mech = Right buf
@@ -146,6 +152,14 @@ encryptInput mech spec buf
   , BS.length buf >= csBlock spec = Right buf
   | isCtsMech mech = Left (mkDeny CKR_DATA_LEN_RANGE
       "cts encrypt needs at least one block of input")
+  | isKwpMech mech
+  , not (BS.null buf) = Right buf
+  | isKwpMech mech = Left (mkDeny CKR_DATA_LEN_RANGE
+      "kwp encrypt needs non-empty input")
+  | isAesWrapMech mech
+  , BS.length buf >= 16 && BS.length buf `mod` 8 == 0 = Right buf
+  | isAesWrapMech mech = Left (mkDeny CKR_DATA_LEN_RANGE
+      "kw encrypt needs multiple-of-8 input of at least 16 bytes")
   | csPad spec = case pkcs7Pad (csBlock spec) buf of
       Just padded -> Right padded
       Nothing -> Left (mkDeny CKR_GENERAL_ERROR
@@ -167,7 +181,8 @@ encryptInput mech spec buf
 -- either: the steal pair intertwines the last two blocks, so only
 -- the final (which sees the whole buffer) runs the effect. OFB
 -- never streams either: its register evolves through the block
--- cipher, underivable from the answer tail.
+-- cipher, underivable from the answer tail. Wraps never stream
+-- either: one-shot integrity covers the whole buffer.
 -- Framed block ciphers
 -- stream every block the padding rules release: unpadded modes
 -- emit all full blocks both directions; padded encrypt holds back
@@ -186,6 +201,7 @@ cipherUpdateSplit mech spec dir total
   | isUnframedCipher mech = (0, total)
   | isCtsMech mech = (0, total)
   | isOfbMech mech = (0, total)
+  | isAesWrapMech mech = (0, total)
   | isEcb = (total - total `mod` block, total `mod` block)
   | csPad spec = case dir of
       DirEncrypt
@@ -396,6 +412,7 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
           DirDecrypt
             | isUnframedCipher (commonMech sc) -> stageRaw raw
             | isAesStreamMech (commonMech sc) -> stageRaw raw
+            | isAesWrapMech (commonMech sc) -> stageRaw raw
             | isCtsMech (commonMech sc)
             , BS.length raw >= csBlock spec -> stageRaw raw
             | isCtsMech (commonMech sc) ->

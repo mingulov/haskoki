@@ -64,6 +64,9 @@ import Haskoki.Registry.Generated
   , ckm_AES_CTS
   , ckm_AES_ECB
   , ckm_AES_OFB
+  , ckm_AES_KEY_WRAP
+  , ckm_AES_KEY_WRAP_PAD
+  , ckm_AES_KEY_WRAP_KWP
   , ckm_AES_GCM
   , ckm_ARIA_CBC
   , ckm_ARIA_ECB
@@ -200,7 +203,9 @@ decodeInitInput bs = do
 -- The remaining recipe-backed block ciphers (Triple-DES
 -- 8-byte blocks, ARIA/Camellia 16-byte blocks; same rationale --
 -- every row behavior+real tested with backend KATs). CTR is the
--- unit-width stream shape (any input length, no padding).
+-- unit-width stream shape (any input length, no padding); KWP rows
+-- share the unit width (any length >= 1) while KW takes the 8-byte
+-- wrap quantum.
 -- RSA-OAEP carries the unpadded vestigial width: the operation layer
 -- refuses padded specs for OAEP ('Haskoki.Operation.checkShape')
 -- and the length bound lives in the backend, so the width never
@@ -215,6 +220,9 @@ cipherShapeFor (MechanismId m)
   | m == ckm_AES_CFB8 = Just (CipherSpec 16 False)
   | m == ckm_AES_CFB1 = Just (CipherSpec 16 False)
   | m == ckm_AES_OFB = Just (CipherSpec 16 False)
+  | m == ckm_AES_KEY_WRAP = Just (CipherSpec 8 False)
+  | m == ckm_AES_KEY_WRAP_PAD = Just (CipherSpec 1 False)
+  | m == ckm_AES_KEY_WRAP_KWP = Just (CipherSpec 1 False)
   | m == ckm_AES_ECB = Just (CipherSpec 16 False)
   | m == ckm_DES3_CBC = Just (CipherSpec 8 False)
   | m == ckm_DES3_ECB = Just (CipherSpec 8 False)

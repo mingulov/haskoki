@@ -190,6 +190,9 @@ import Haskoki.Operation.KeyManagement
   ( GenArgs (..)
   , aesCbcMech
   , aesKeyGenMech
+  , aesKwMech
+  , aesKwPadMech
+  , aesKwpMech
   , decodeGenArgs
   , decodeWrapParams
   , ecKeyPairGenMech
@@ -503,6 +506,9 @@ cipherCtor name keyLen
   | name == "CKM_AES_CFB8" = aesCfb8 keyLen
   | name == "CKM_AES_CFB1" = aesCfb1 keyLen
   | name == "CKM_AES_OFB" = aesOfb keyLen
+  | name == "CKM_AES_KEY_WRAP" = aesKw keyLen
+  | name == "CKM_AES_KEY_WRAP_KWP" = aesKwp keyLen
+  | name == "CKM_AES_KEY_WRAP_PAD" = aesKwp keyLen
   | name == "CKM_DES3_CBC" = des3 C_DES3_CBC
   | name == "CKM_DES3_ECB" = des3 C_DES3_ECB
   | name == "CKM_ARIA_CBC" = aria C_ARIA128_CBC C_ARIA192_CBC C_ARIA256_CBC
@@ -553,6 +559,18 @@ cipherCtor name keyLen
       24 -> Just C_AES192_OFB
       32 -> Just C_AES256_OFB
       _ -> Nothing
+    aesKw n = case n of
+      16 -> Just C_AES128_KW
+      24 -> Just C_AES192_KW
+      32 -> Just C_AES256_KW
+      _ -> Nothing
+    -- CKM_AES_KEY_WRAP_PAD takes KWP semantics (the oracle runs no
+    -- distinct vectors for it and calls it the "KWP-PAD path").
+    aesKwp n = case n of
+      16 -> Just C_AES128_KWP
+      24 -> Just C_AES192_KWP
+      32 -> Just C_AES256_KWP
+      _ -> Nothing
     des3 spec
       | keyLen == 16 || keyLen == 24 = Just spec
       | otherwise = Nothing
@@ -586,6 +604,13 @@ isRsaPkcs1Mech mech = isJust (rsaPkcs1RecipeFor mech)
 -- (the digest rows are signature-only).
 isRsaPkcsWrapMech :: MechanismId -> Bool
 isRsaPkcsWrapMech mech = mech == rsaPkcsMech
+
+-- | The AES key-wrap rows (KW plus the two KWP names): the
+-- planner frames the payload raw (no padding) and 'runCipher'
+-- executes the wrap backend spec selected by 'cipherCtor'.
+isAesKwWrapMech :: MechanismId -> Bool
+isAesKwWrapMech mech =
+  mech == aesKwMech || mech == aesKwPadMech || mech == aesKwpMech
 
 -- | Recipe digest stem onto the backend digest.
 rsaDigest :: T.Text -> Maybe DigestAlg
@@ -872,6 +897,8 @@ runEffect env resolve fx = case fx of
   FxWrap _mech mkey params input
     | _mech == aesCbcMech -> withKey mkey $ \key ->
         runCipher DirEncrypt _mech key params input
+    | isAesKwWrapMech _mech -> withKey mkey $ \key ->
+        runCipher DirEncrypt _mech key params input
     | isRsaOaepMech _mech -> withKey mkey $ \key ->
         runOaep DirEncrypt _mech key params input
     | isRsaPkcsWrapMech _mech -> withKey mkey $ \key ->
@@ -879,6 +906,8 @@ runEffect env resolve fx = case fx of
     | otherwise -> pure (unsupported fx)
   FxUnwrap _mech mkey params input
     | _mech == aesCbcMech -> withKey mkey $ \key ->
+        runCipher DirDecrypt _mech key params input
+    | isAesKwWrapMech _mech -> withKey mkey $ \key ->
         runCipher DirDecrypt _mech key params input
     | isRsaOaepMech _mech -> withKey mkey $ \key ->
         runOaep DirDecrypt _mech key params input

@@ -51,7 +51,6 @@ import Haskoki.Operation
   , bufferedOf
   , chainIvOf
   , commonAuth
-  , commonMech
   , commonOf
   , emptySessionOps
   , gateDataCall

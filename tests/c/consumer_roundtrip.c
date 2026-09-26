@@ -1890,6 +1890,74 @@ int main(int argc, char **argv) {
       }
       blob[blobLen - 1] ^= 0xFF;
     }
+    /* AES-KW wrap/unwrap: the 16-byte target wraps to 24 (+8 IV);
+     * KWP agrees on block-aligned input and unwraps the same way. */
+    {
+      CK_ATTRIBUTE kwdtmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) },
+        { CKA_ENCRYPT, &bTrue, sizeof(bTrue) },
+        { CKA_DECRYPT, &bTrue, sizeof(bTrue) }
+      };
+      CK_MECHANISM kwm;
+      CK_MECHANISM kwum;
+      CK_OBJECT_HANDLE kwUnwrapped = 0;
+      CK_BYTE kwblob[64];
+      CK_ULONG kwblobLen;
+      kwm.mechanism = CKM_AES_KEY_WRAP;
+      kwm.pParameter = NULL_PTR;
+      kwm.ulParameterLen = 0;
+      kwum = kwm;
+      kwblobLen = 0;
+      rv = f->C_WrapKey(wsess, &kwm, wrapKey, targetKey, NULL_PTR, &kwblobLen);
+      CHECKC(rv == CKR_OK && kwblobLen == 24, "kw size query reports 24");
+      kwblobLen = 16;
+      rv = f->C_WrapKey(wsess, &kwm, wrapKey, targetKey, kwblob, &kwblobLen);
+      CHECKC(rv == CKR_BUFFER_TOO_SMALL && kwblobLen == 24,
+             "short kw buffer reports 24");
+      kwblobLen = sizeof(kwblob);
+      rv = f->C_WrapKey(wsess, &kwm, wrapKey, targetKey, kwblob, &kwblobLen);
+      CHECKC(rv == CKR_OK && kwblobLen == 24, "kw wrap yields 24 bytes");
+      rv = f->C_UnwrapKey(wsess, &kwum, wrapKey, kwblob, kwblobLen,
+                          kwdtmpl, 6, &kwUnwrapped);
+      CHECKC(rv == CKR_OK && kwUnwrapped != 0 && kwUnwrapped != targetKey,
+             "kw unwrap mints a distinct key");
+      kwblob[kwblobLen - 1] ^= 0xFF;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_UnwrapKey(wsess, &kwum, wrapKey, kwblob, kwblobLen,
+                            kwdtmpl, 6, &bad);
+        CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "tampered kw blob refused");
+        CHECKC(bad == 0, "refused kw unwrap writes no handle");
+      }
+      kwblob[kwblobLen - 1] ^= 0xFF;
+    }
+    /* AES-KWP object path: same 24-byte framing on aligned input. */
+    {
+      CK_ATTRIBUTE kwpdtmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) },
+        { CKA_ENCRYPT, &bTrue, sizeof(bTrue) },
+        { CKA_DECRYPT, &bTrue, sizeof(bTrue) }
+      };
+      CK_MECHANISM kwpm;
+      CK_OBJECT_HANDLE kwpUnwrapped = 0;
+      CK_BYTE kwpblob[64];
+      CK_ULONG kwpblobLen = sizeof(kwpblob);
+      kwpm.mechanism = CKM_AES_KEY_WRAP_KWP;
+      kwpm.pParameter = NULL_PTR;
+      kwpm.ulParameterLen = 0;
+      rv = f->C_WrapKey(wsess, &kwpm, wrapKey, targetKey, kwpblob, &kwpblobLen);
+      CHECKC(rv == CKR_OK && kwpblobLen == 24, "kwp wrap yields 24 bytes");
+      rv = f->C_UnwrapKey(wsess, &kwpm, wrapKey, kwpblob, kwpblobLen,
+                          kwpdtmpl, 6, &kwpUnwrapped);
+      CHECKC(rv == CKR_OK && kwpUnwrapped != 0 && kwpUnwrapped != targetKey,
+             "kwp unwrap mints a distinct key");
+    }
     /* HKDF-subset derive: expand-only, empty salt, SHA-256 PRF. */
     {
       CK_ATTRIBUTE ktmpl[] = {

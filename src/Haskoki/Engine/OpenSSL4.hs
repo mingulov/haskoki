@@ -627,9 +627,10 @@ osslRsaNotes algs =
 
 -- | The cipher set: every backend spec the block-cipher
 -- recipe reaches (AES/ARIA/CAMELLIA CBC+ECB at three widths plus
--- Triple-DES CBC+ECB, plus AES CTR, AES CTS and AES CFB128/CFB8/
--- CFB1/OFB at three widths). Candidates that fail the fetch probe
--- are narrowed out of the advertised caps (never silently kept).
+-- Triple-DES CBC+ECB, plus AES CTR, AES CTS, AES CFB128/CFB8/
+-- CFB1/OFB and AES KW/KWP at three widths). Candidates that fail
+-- the fetch probe are narrowed out of the advertised caps (never
+-- silently kept).
 t16CipherSpecs :: [CipherSpec]
 t16CipherSpecs =
   [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
@@ -640,6 +641,8 @@ t16CipherSpecs =
   , C_AES128_CFB8, C_AES192_CFB8, C_AES256_CFB8
   , C_AES128_CFB1, C_AES192_CFB1, C_AES256_CFB1
   , C_AES128_OFB, C_AES192_OFB, C_AES256_OFB
+  , C_AES128_KW, C_AES192_KW, C_AES256_KW
+  , C_AES128_KWP, C_AES192_KWP, C_AES256_KWP
   , C_DES3_CBC, C_DES3_ECB
   , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
   , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
@@ -659,6 +662,8 @@ osslCipherNotes specs =
         ++ cipherLenNote spec
     cipherLenNote spec
       | isCtsSpec spec = "any length >= 1 block, length preserved (manual CBC-CS1 over provider ECB)"
+      | isKwSpec spec = "multiple of 8, >= 16 bytes, expands by 8 (RFC 3394)"
+      | isKwpSpec spec = "any length >= 1, expands to ceil8 + 8 (RFC 5649)"
       | cipherBlockLen spec == 1 = "any length"
       | otherwise = "block-aligned"
     keyNote spec =
@@ -962,6 +967,12 @@ cipherFetchName spec = case spec of
   C_AES128_OFB -> "AES-128-OFB"
   C_AES192_OFB -> "AES-192-OFB"
   C_AES256_OFB -> "AES-256-OFB"
+  C_AES128_KW -> "AES-128-WRAP"
+  C_AES192_KW -> "AES-192-WRAP"
+  C_AES256_KW -> "AES-256-WRAP"
+  C_AES128_KWP -> "AES-128-WRAP-PAD"
+  C_AES192_KWP -> "AES-192-WRAP-PAD"
+  C_AES256_KWP -> "AES-256-WRAP-PAD"
   C_DES3_CBC -> "DES-EDE3-CBC"
   C_DES3_ECB -> "DES-EDE3"
   C_ARIA128_CBC -> "ARIA-128-CBC"
@@ -983,13 +994,22 @@ cipherFetchName spec = case spec of
 -- stream block size 1 too, so the shim gate agrees), for the
 -- CTS specs (any length >= 1 block; the unit width lets ragged
 -- input past the Haskell gate and the shim refuses sub-block
--- input with BADPARAM, which 'nativeFail' reports typed), and for
--- the CFB128/CFB8/CFB1/OFB stream specs (any length, even empty;
--- length-preserving).
+-- input with BADPARAM, which 'nativeFail' reports typed), for the
+-- CFB128/CFB8/CFB1/OFB stream specs (any length, even empty;
+-- length-preserving), and for the KWP specs (any length >= 1;
+-- the Haskell gate refuses empty and the shim agrees). The KW
+-- specs take width 8 (multiple-of-8 input) with a Haskell-side
+-- 16-byte minimum matching the provider.
 cipherBlockLen :: CipherSpec -> Int
 cipherBlockLen spec = case spec of
   C_DES3_CBC -> 8
   C_DES3_ECB -> 8
+  C_AES128_KW -> 8
+  C_AES192_KW -> 8
+  C_AES256_KW -> 8
+  C_AES128_KWP -> 1
+  C_AES192_KWP -> 1
+  C_AES256_KWP -> 1
   C_AES128_CTR -> 1
   C_AES192_CTR -> 1
   C_AES256_CTR -> 1
@@ -1043,11 +1063,15 @@ cipherProviderKey spec kb
   | otherwise = kb
 
 -- | The native entry per spec: CTS runs the shim's manual CBC-CS1
--- over its width-matched ECB primitive; every other spec runs the
--- provider mode named by 'cipherFetchName'.
+-- over its width-matched ECB primitive; KW/KWP run the shim's
+-- wrap entry over the fetched wrap cipher (no IV — already gated
+-- empty); every other spec runs the provider mode named by
+-- 'cipherFetchName'.
 cipherNative :: Ptr Raw.OsslLibCtx -> String -> Bool -> CipherSpec -> ByteString -> ByteString -> ByteString -> IO (Either Int ByteString)
 cipherNative ctx propq enc spec
   | isCtsSpec spec = Raw.cipherCts ctx (ctsEcbName spec) propq enc
+  | isWrapSpec spec = \key _iv input ->
+      Raw.cipherWrap ctx (cipherFetchName spec) propq enc (isKwpSpec spec) key input
   | otherwise = Raw.cipherCbc ctx (cipherFetchName spec) propq enc
 
 cipherRun :: BackendEnv OpenSSL4 -> String -> Bool -> CipherSpec -> KeyMaterial -> ByteString -> ByteString -> IO (EngineResult ByteString)
@@ -1069,6 +1093,19 @@ cipherRun be op enc spec key iv input =
             pure (EngineFail (BackendBadParam op
               ("input length must be a multiple of "
                 ++ show (cipherBlockLen spec) ++ " (no padding)")))
+        | isKwSpec spec && BS.length input < 16 ->
+            pure (EngineFail (BackendBadParam op
+              ("KW input must be at least 16 bytes (RFC 3394)")))
+        | isKwpSpec spec && BS.null input ->
+            pure (EngineFail (BackendBadParam op
+              ("KWP input must be non-empty (the provider answers empty input with a vacuous 0-byte success)")))
+        | not enc && isKwSpec spec && BS.length input < 24 ->
+            pure (EngineFail (BackendBadParam op
+              ("KW ciphertext must be at least 24 bytes (16-byte minimum plaintext plus IV)")))
+        | not enc && isKwpSpec spec
+          && (BS.length input < 16 || BS.length input `mod` 8 /= 0) ->
+            pure (EngineFail (BackendBadParam op
+              ("KWP ciphertext must be a multiple of 8, at least 16 bytes")))
         | otherwise -> do
             r <- withForeignPtr (osslEnv env) $ \_ ->
               cipherNative (osslCtx env) (osslPropQ env) enc spec

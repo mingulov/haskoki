@@ -413,6 +413,98 @@ end:
     return rc;
 }
 
+/* --- AES key wrap (RFC 3394 KW / RFC 5649 KWP) ------------------------ */
+
+long hsk_ossl4_cipher_wrap(OSSL_LIB_CTX *ctx, const char *ciphername,
+                           const char *propq, int enc, int kwp,
+                           const unsigned char *key, size_t keylen,
+                           const unsigned char *in, size_t inlen,
+                           unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_CIPHER *cipher = NULL;
+    EVP_CIPHER_CTX *cctx = NULL;
+    unsigned char *buf = NULL;
+    size_t cap = 0;
+    int outl1 = 0, outl2 = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || ciphername == NULL || propq == NULL || out == NULL ||
+        key == NULL || (in == NULL && inlen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    cipher = EVP_CIPHER_fetch(ctx, ciphername, propq);
+    if (cipher == NULL)
+        goto end;
+    if (keylen != (size_t)EVP_CIPHER_get_key_length(cipher)) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    if (kwp) {
+        if (inlen == 0) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+    } else {
+        if (inlen < 16 || inlen % 8 != 0) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+    }
+    cctx = EVP_CIPHER_CTX_new();
+    if (cctx == NULL)
+        goto end;
+    /* Direction-specific init (probe record: NULL IV works; wraps
+     * use the fixed AIV). Padding disabled: KW/KWP frame the
+     * input themselves. */
+    if (enc) {
+        if (!EVP_EncryptInit_ex(cctx, cipher, NULL, key, NULL)) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+    } else {
+        if (!EVP_DecryptInit_ex(cctx, cipher, NULL, key, NULL)) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+    }
+    EVP_CIPHER_CTX_set_padding(cctx, 0);
+    /* KW emits inlen + 8; KWP emits ceil8(inlen) + 8 (<= inlen + 15). */
+    cap = inlen + 16;
+    buf = OPENSSL_malloc(cap);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (enc) {
+        if (!EVP_EncryptUpdate(cctx, buf, &outl1, in, (int)inlen))
+            goto end;
+        if (!EVP_EncryptFinal_ex(cctx, buf + outl1, &outl2))
+            goto end;
+    } else {
+        /* Integrity failures surface at Update for wraps (probe
+         * record); either way a decrypt-side EVP failure is an
+         * authentication failure, never wrong plaintext. */
+        if (!EVP_DecryptUpdate(cctx, buf, &outl1, in, (int)inlen)) {
+            rc = HSK_OSSL4_ERR_AUTHFAIL;
+            goto end;
+        }
+        if (!EVP_DecryptFinal_ex(cctx, buf + outl1, &outl2)) {
+            rc = HSK_OSSL4_ERR_AUTHFAIL;
+            goto end;
+        }
+    }
+    *out = buf;
+    rc = (long)(outl1 + outl2);
+
+end:
+    EVP_CIPHER_CTX_free(cctx);
+    EVP_CIPHER_free(cipher);
+    if (rc < 0 && buf != NULL)
+        OPENSSL_clear_free(buf, cap);
+    return rc;
+}
+
 /* --- AES-CTS (CBC-CS1) ------------------------------------------------ */
 
 /* Fixed 16-byte XOR over stack block buffers. */

@@ -1518,14 +1518,14 @@
       "test_evidence": []
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A19",
         "A20",
         "A22",
         "A23"
       ],
-      "entry": "none",
+      "entry": "c-table:std_WrapKey",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -1535,18 +1535,27 @@
       ],
       "name": "C_WrapKey",
       "ordinal_3_2": 61,
-      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec wrap + mismatch cases)",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/KeyManagementSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_roundtrip.c"
+        }
+      ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A19",
         "A20",
         "A22",
         "A23"
       ],
-      "entry": "none",
+      "entry": "c-table:std_UnwrapKey",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -1556,8 +1565,17 @@
       ],
       "name": "C_UnwrapKey",
       "ordinal_3_2": 62,
-      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec unwrap + mismatch cases)",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/KeyManagementSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_roundtrip.c"
+        }
+      ]
     },
     {
       "contract": "unsupported-with-reason",

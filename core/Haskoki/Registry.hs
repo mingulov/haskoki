@@ -768,7 +768,19 @@ cipherDescs =
           , mechRoute OpAuthWrap "CKM_AES_CBC" ["A23", "A37"]
           , mechRoute OpAuthUnwrap "CKM_AES_CBC" ["A23", "A37"]
           ]
+      -- The AES key-wrap rows serve the object path (plain
+      -- wrap/unwrap only: the authenticated construction is
+      -- CBC-specific) alongside raw encrypt/decrypt.
+      | name `elem` wrapNames =
+          [ mechRoute OpWrap name ["A20", "A37", "A39"]
+          , mechRoute OpUnwrap name ["A20", "A37", "A39"]
+          ]
       | otherwise = []
+    wrapNames =
+      [ "CKM_AES_KEY_WRAP"
+      , "CKM_AES_KEY_WRAP_PAD"
+      , "CKM_AES_KEY_WRAP_KWP"
+      ]
 
 -- | Aliases for one inventoried id, resolved through the generated
 -- table (header-derived, never hand-typed). Unknown ids (test-local)
@@ -855,11 +867,11 @@ aeadDescs =
   | r <- ccmRecipes
   ]
 
--- | The curated population: 116 reviewed behavior descriptors
+-- | The curated population: 119 reviewed behavior descriptors
 -- with concrete rules, plus the full header inventory (464
 -- canonical rows covering all 480 header CKM names) folded in from
--- the generated table. Catalog-only rows (348: everything but the
--- 116 behavior ids) stay in the coverage denominator but never
+-- the generated table. Catalog-only rows (345: everything but the
+-- 119 behavior ids) stay in the coverage denominator but never
 -- become executable. The catalog covers the full inventory.
 curatedRegistry :: Registry
 curatedRegistry =

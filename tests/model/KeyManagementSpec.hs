@@ -101,6 +101,9 @@ import Haskoki.Operation.KeyManagement
   , PendingWork (..)
   , aesCbcMech
   , aesKeyGenMech
+  , aesKwMech
+  , aesKwPadMech
+  , aesKwpMech
   , ckkAes
   , ckkEc
   , ckkGenericSecret
@@ -185,6 +188,9 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "RSA stamping refuses mismatched halves" caseRsaStampMismatch
   , testCase "EC stamping lands CKA_EC_POINT" caseEcPointStamped
   , testCase "Wrap length query then wrap/unwrap roundtrip" caseWrapRoundtrip
+  , testCase "AES-KW wrap/unwrap roundtrips with +8 expansion" caseAesKwWrapRoundtrip
+  , testCase "AES-KWP wrap/unwrap roundtrips ragged (PAD alias)" caseAesKwpWrapRoundtrip
+  , testCase "unwrap commits refuse type/length confusion" caseUnwrapKeyTypeLength
   , testCase "RSA wrap/unwrap roundtrips modulus-wide" caseRsaWrapRoundtrip
   , testCase "RSA wrap key/parameter/length mismatches fail closed" caseRsaWrapMismatch
   , testCase "Authenticated wrap roundtrip binds the tag" caseAuthWrapRoundtrip
@@ -1076,6 +1082,190 @@ caseWrapRoundtrip = withSynth $ \answer -> do
         (Just (ValBytes "unwrapped")) (Map.lookup AttrLabel (osAttrs ost))
       assertEqual "usage landed" (Just (ValBool True)) (Map.lookup AttrEncrypt (osAttrs ost))
     other -> assertFailure ("unwrap plan is not an effect: " ++ show other)
+
+-- | Extractable generic-secret template with caller-chosen length
+-- (ragged wrap targets the AES keygen bounds cannot mint).
+secretTmplN :: Int -> [(AttributeType, AttributeValue)]
+secretTmplN n =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong ckkGenericSecret)
+  , (AttrValueLen, ValULong (fromIntegral n))
+  , (AttrToken, ValBool False)
+  , (AttrPrivate, ValBool True)
+  , (AttrSensitive, ValBool True)
+  , (AttrExtractable, ValBool True)
+  ]
+
+caseAesKwWrapRoundtrip :: IO ()
+caseAesKwWrapRoundtrip = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, wrapH) <- genAesKey answer m0 st wrapKeyTmpl
+  (m2, targetH) <- genAesKey answer m1 st (aesTmpl 16)
+  Just target <- pure (resolveHandle m2 targetH)
+  Just targetMat <- pure (keyBytesOf target)
+  -- Length query first: 16 + 8 expansion, no effect planned.
+  case planWrapKey m2 st aesKwMech BS.empty wrapH targetH IntentNull of
+    KeyImmediate (Immediate c) -> do
+      assertEqual "kw query length"
+        [NativeOutput (RegionBytes "wrapped" IntentNull) (encodeValue (ValULong 24))]
+        (pcOutputs c)
+      assertEqual "query publishes nothing" (StateDelta []) (pcDelta c)
+    other -> assertFailure ("kw query is not an Immediate commit: " ++ show other)
+  -- Short buffer refuses with the predicted length.
+  case planWrapKey m2 st aesKwMech BS.empty wrapH targetH (IntentBuffer 23) of
+    KeyImmediate (Reject r) -> do
+      assertEqual "short buffer code" CKR_BUFFER_TOO_SMALL (rejCode r)
+      assertEqual "short buffer length"
+        [NativeOutput (RegionBytes "wrapped" (IntentBuffer 23)) (encodeValue (ValULong 24))]
+        (rejOutputs r)
+    other -> assertFailure ("kw short buffer is not a Reject: " ++ show other)
+  -- Non-empty parameters refuse (KW takes empty params like ECB).
+  case planWrapKey m2 st aesKwMech iv16 wrapH targetH IntentNull of
+    KeyDenied d -> assertEqual "params code" CKR_ARGUMENTS_BAD (kdCode d)
+    other -> assertFailure ("kw params accepted, got: " ++ show other)
+  -- Wrap for real.
+  blob <- case planWrapKey m2 st aesKwMech BS.empty wrapH targetH (IntentBuffer 24) of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      case finishWork m2 st pw res of
+        Immediate c -> do
+          assertEqual "wrap publishes nothing" (StateDelta []) (pcDelta c)
+          case pcOutputs c of
+            [NativeOutput (RegionBytes "wrapped" _) bs] -> pure bs
+            o -> assertFailure ("wrap outputs one blob, got: " ++ show o) >> undefined
+        other -> assertFailure ("wrap finish must commit, got: " ++ show other) >> undefined
+    other -> assertFailure ("kw plan is not an effect: " ++ show other) >> undefined
+  assertEqual "wrapped length" 24 (BS.length blob)
+  assertBool "blob differs from plaintext" (blob /= targetMat)
+  -- Unwrap under a fresh template: material back.
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrToken, ValBool False)
+        , (AttrLabel, ValBytes "unwrapped-kw")
+        ]
+  case planUnwrapKey defaultRules m2 st aesKwMech BS.empty wrapH blob tmpl of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      c <- finishCommit m2 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m3 <- expectRight (publishDelta m2 (pcDelta c))
+      Just ost <- pure (resolveHandle m3 h)
+      assertEqual "unwrapped material" (Just targetMat) (keyBytesOf ost)
+    other -> assertFailure ("kw unwrap plan is not an effect: " ++ show other)
+  -- An 8-byte target is below the KW floor (generic secret mints
+  -- what AES keygen bounds forbid).
+  (m4, shortH) <- genKeyWith answer m2 st genericSecretKeyGenMech (secretTmplN 8)
+  case planWrapKey m4 st aesKwMech BS.empty wrapH shortH IntentNull of
+    KeyDenied d -> assertEqual "floor code" CKR_DATA_LEN_RANGE (kdCode d)
+    other -> assertFailure ("short target accepted, got: " ++ show other)
+  -- A 16-byte blob cannot be a KW wrap (minimum 24).
+  case planUnwrapKey defaultRules m2 st aesKwMech BS.empty wrapH (BS.replicate 16 0) tmpl of
+    KeyDenied d -> assertEqual "blob code" CKR_ARGUMENTS_BAD (kdCode d)
+    other -> assertFailure ("short blob accepted, got: " ++ show other)
+
+caseAesKwpWrapRoundtrip :: IO ()
+caseAesKwpWrapRoundtrip = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, wrapH) <- genAesKey answer m0 st wrapKeyTmpl
+  (m2, targetH) <- genKeyWith answer m1 st genericSecretKeyGenMech (secretTmplN 20)
+  Just target <- pure (resolveHandle m2 targetH)
+  Just targetMat <- pure (keyBytesOf target)
+  assertEqual "target length" 20 (BS.length targetMat)
+  -- Length query: ceil8(20) + 8 = 32, no effect planned.
+  case planWrapKey m2 st aesKwpMech BS.empty wrapH targetH IntentNull of
+    KeyImmediate (Immediate c) ->
+      assertEqual "kwp query length"
+        [NativeOutput (RegionBytes "wrapped" IntentNull) (encodeValue (ValULong 32))]
+        (pcOutputs c)
+    other -> assertFailure ("kwp query is not an Immediate commit: " ++ show other)
+  -- Wrap under the PAD alias, unwrap under KWP: the equation holds
+  -- end to end (same RFC 5649 construction).
+  blob <- case planWrapKey m2 st aesKwPadMech BS.empty wrapH targetH (IntentBuffer 32) of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      case finishWork m2 st pw res of
+        Immediate c -> case pcOutputs c of
+          [NativeOutput (RegionBytes "wrapped" _) bs] -> pure bs
+          o -> assertFailure ("wrap outputs one blob, got: " ++ show o) >> undefined
+        other -> assertFailure ("wrap finish must commit, got: " ++ show other) >> undefined
+    other -> assertFailure ("pad plan is not an effect: " ++ show other) >> undefined
+  assertEqual "wrapped length" 32 (BS.length blob)
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        ]
+  case planUnwrapKey defaultRules m2 st aesKwpMech BS.empty wrapH blob tmpl of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      c <- finishCommit m2 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m3 <- expectRight (publishDelta m2 (pcDelta c))
+      Just ost <- pure (resolveHandle m3 h)
+      assertEqual "unwrapped material" (Just targetMat) (keyBytesOf ost)
+    other -> assertFailure ("kwp unwrap plan is not an effect: " ++ show other)
+  -- A 10-byte blob is not KWP framing (multiple of 8, >= 16).
+  case planUnwrapKey defaultRules m2 st aesKwpMech BS.empty wrapH (BS.replicate 10 0) tmpl of
+    KeyDenied d -> assertEqual "blob code" CKR_ARGUMENTS_BAD (kdCode d)
+    other -> assertFailure ("ragged blob accepted, got: " ++ show other)
+
+-- | Unwrap commits measure the answered material against the
+-- template key type (Tookan §3.2 key-type confusion: a 16-byte
+-- AES blob unwrapped as CKK_DES3 must refuse, never mint a
+-- confused key). AES takes 16/24/32 bytes, DES3 takes 24, and
+-- generic secret takes any length.
+caseUnwrapKeyTypeLength :: IO ()
+caseUnwrapKeyTypeLength = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, wrapH) <- genAesKey answer m0 st wrapKeyTmpl
+  (m2, targetH) <- genAesKey answer m1 st (aesTmpl 16)
+  (m3, target24H) <- genAesKey answer m2 st (aesTmpl 24)
+  Just target24 <- pure (resolveHandle m3 target24H)
+  Just target24Mat <- pure (keyBytesOf target24)
+  let wrap16Blob = doWrap m3 st answer wrapH targetH 24
+  blob16 <- wrap16Blob
+  blob32 <- doWrap m3 st answer wrapH target24H 32
+  let des3Tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong (mustKeyTypeId "CKK_DES3"))
+        , (AttrToken, ValBool False)
+        , (AttrExtractable, ValBool True)
+        ]
+  -- 16 bytes as DES3 refuses at commit (the confusion leg).
+  case planUnwrapKey defaultRules m3 st aesKwMech BS.empty wrapH blob16 des3Tmpl of
+    KeyEffect pw fx -> do
+      res <- answer m3 fx
+      case finishWork m3 st pw res of
+        Reject r -> do
+          assertEqual "confusion code" CKR_TEMPLATE_INCONSISTENT (rejCode r)
+          assertEqual "confusion publishes nothing" (StateDelta []) (rejDelta r)
+        other -> assertFailure ("confused unwrap committed, got: " ++ show other)
+    other -> assertFailure ("unwrap plan is not an effect: " ++ show other)
+  -- 24 bytes as DES3 commits (the type path itself works).
+  case planUnwrapKey defaultRules m3 st aesKwMech BS.empty wrapH blob32 des3Tmpl of
+    KeyEffect pw fx -> do
+      res <- answer m3 fx
+      c <- finishCommit m3 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m4 <- expectRight (publishDelta m3 (pcDelta c))
+      Just ost <- pure (resolveHandle m4 h)
+      assertEqual "des3 material" (Just target24Mat) (keyBytesOf ost)
+    other -> assertFailure ("unwrap plan is not an effect: " ++ show other)
+  where
+    doWrap m st answer wrapH targetH wantLen =
+      case planWrapKey m st aesKwMech BS.empty wrapH targetH (IntentBuffer wantLen) of
+        KeyEffect pw fx -> do
+          res <- answer m fx
+          case finishWork m st pw res of
+            Immediate c -> case pcOutputs c of
+              [NativeOutput (RegionBytes "wrapped" _) bs] -> pure bs
+              o -> assertFailure ("wrap outputs one blob, got: " ++ show o) >> undefined
+            other -> assertFailure ("wrap finish must commit, got: " ++ show other) >> undefined
+        other -> assertFailure ("wrap plan is not an effect: " ++ show other) >> undefined
 
 -- | Generate one RSA pair through the planner + backend, with
 -- caller-supplied templates (so the wrap/unwrap marks land).

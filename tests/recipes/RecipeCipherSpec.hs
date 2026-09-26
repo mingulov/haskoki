@@ -1,13 +1,16 @@
 {- | block-cipher-shape recipe tests.
 
-The CBC/ECB group: 15 header mechanisms sharing one parameter shape
+The CBC/ECB group: 18 header mechanisms sharing one parameter shape
 over four algorithm families — CBC takes the IV as mechanism
 parameters (one block: 16 bytes for AES/ARIA/CAMELLIA, 8 for
 Triple-DES), ECB takes empty parameters, @CKM_AES_CTR@ takes the
 canonical counter image, @CKM_AES_CTS@ takes the raw IV like CBC
 (the stealing floor replaces alignment in the planners),
 @CKM_AES_CFB128@/@CFB8@/@CFB1@/@OFB@ take the raw IV with any
-input length (length-preserving streams), and @CKM_AES_CBC_PAD@
+input length (length-preserving streams), @CKM_AES_KEY_WRAP@/
+@KEY_WRAP_PAD@/@KEY_WRAP_KWP@ take empty parameters on the 8-byte
+wrap quantum (KW: multiple-of-8 input >= 16; KWP: any length >= 1;
+output expands by the wrap framing), and @CKM_AES_CBC_PAD@
 adds PKCS#7 framing (decided in the pure planner, never the
 backend). 'Haskoki.Recipe.Cipher' owns the group's canonical
 codecs, parameter validation, block/key/IV geometry, and mechanism
@@ -40,6 +43,8 @@ import Haskoki.Engine.Backend
     , C_AES128_CFB128
     , C_AES128_CFB8
     , C_AES128_ECB
+    , C_AES128_KW
+    , C_AES128_KWP
     , C_AES128_OFB
     , C_AES192_CBC
     , C_AES192_CTR
@@ -47,6 +52,8 @@ import Haskoki.Engine.Backend
     , C_AES192_CFB1
     , C_AES192_CFB128
     , C_AES192_CFB8
+    , C_AES192_KW
+    , C_AES192_KWP
     , C_AES192_OFB
     , C_AES256_CBC
     , C_AES256_CTR
@@ -54,6 +61,8 @@ import Haskoki.Engine.Backend
     , C_AES256_CFB1
     , C_AES256_CFB128
     , C_AES256_CFB8
+    , C_AES256_KW
+    , C_AES256_KWP
     , C_AES256_OFB
     , C_AES256_ECB
     , C_ARIA256_CBC
@@ -104,6 +113,9 @@ import Haskoki.Registry.Generated
   , ckm_AES_CTR
   , ckm_AES_CTS
   , ckm_AES_ECB
+  , ckm_AES_KEY_WRAP
+  , ckm_AES_KEY_WRAP_KWP
+  , ckm_AES_KEY_WRAP_PAD
   , ckm_AES_OFB
   , ckm_DES3_CBC
   , ckm_SHA256
@@ -121,7 +133,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "Block-cipher recipe"
-  [ testCase "recipe table covers 15 mechanisms with geometry" caseTable
+  [ testCase "recipe table covers 18 mechanisms with geometry" caseTable
   , testCase "recipe lookup resolves by id" caseLookup
   , testCase "ECB is no-params/1, CBC is iv-bytes/1" caseCodec
   , testCase "params: IV length or empty-only" caseParams
@@ -143,6 +155,9 @@ groupShape =
   , ("AES_CFB8", 16, [16, 24, 32], 16, False)
   , ("AES_CFB1", 16, [16, 24, 32], 16, False)
   , ("AES_OFB", 16, [16, 24, 32], 16, False)
+  , ("AES_KEY_WRAP", 8, [16, 24, 32], 0, False)
+  , ("AES_KEY_WRAP_PAD", 8, [16, 24, 32], 0, False)
+  , ("AES_KEY_WRAP_KWP", 8, [16, 24, 32], 0, False)
   , ("DES3_CBC", 8, [16, 24], 8, False)
   , ("DES3_ECB", 8, [16, 24], 0, False)
   , ("ARIA_CBC", 16, [16, 24, 32], 16, False)
@@ -164,7 +179,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 15 (length cipherRecipes)
+  assertEqual "recipe count" 18 (length cipherRecipes)
   mapM_ (\(suffix, block, keys, iv, pad) -> do
     let name = mechName suffix
         found = [ r | r <- cipherRecipes, crName r == name ]
@@ -250,6 +265,16 @@ caseParams = do
   assertBool "ofb empty refused" (not (cipherParamsValid ofb BS.empty))
   assertBool "ofb 8 refused" (not (cipherParamsValid ofb (BS.replicate 8 0)))
   assertBool "ofb 17 refused" (not (cipherParamsValid ofb (BS.replicate 17 0)))
+  let kw = recipeOf "CKM_AES_KEY_WRAP"
+  assertBool "kw empty valid" (cipherParamsValid kw BS.empty)
+  assertBool "kw 16 refused" (not (cipherParamsValid kw (BS.replicate 16 0)))
+  assertBool "kw 8 refused" (not (cipherParamsValid kw (BS.replicate 8 0)))
+  let kwp = recipeOf "CKM_AES_KEY_WRAP_KWP"
+  assertBool "kwp empty valid" (cipherParamsValid kwp BS.empty)
+  assertBool "kwp 16 refused" (not (cipherParamsValid kwp (BS.replicate 16 0)))
+  let kwpad = recipeOf "CKM_AES_KEY_WRAP_PAD"
+  assertBool "kwpad empty valid" (cipherParamsValid kwpad BS.empty)
+  assertBool "kwpad 16 refused" (not (cipherParamsValid kwpad (BS.replicate 16 0)))
   let d3 = recipeOf "CKM_DES3_CBC"
   assertBool "des3 8 valid" (cipherParamsValid d3 (BS.replicate 8 0))
   assertBool "des3 16 refused" (not (cipherParamsValid d3 (BS.replicate 16 0)))
@@ -325,7 +350,7 @@ testSession = SessionState
   , ssOps = emptySessionOps
   }
 
-cbcMech, ecbMech, d3Mech, ctrMech, ctsMech, cfb128Mech, cfb8Mech, cfb1Mech, ofbMech :: MechanismId
+cbcMech, ecbMech, d3Mech, ctrMech, ctsMech, cfb128Mech, cfb8Mech, cfb1Mech, ofbMech, kwMech, kwPadMech, kwpMech :: MechanismId
 cbcMech = MechanismId (ckm_AES_CBC)
 ecbMech = MechanismId (ckm_AES_ECB)
 d3Mech = MechanismId (ckm_DES3_CBC)
@@ -335,6 +360,9 @@ cfb128Mech = MechanismId (ckm_AES_CFB128)
 cfb8Mech = MechanismId (ckm_AES_CFB8)
 cfb1Mech = MechanismId (ckm_AES_CFB1)
 ofbMech = MechanismId (ckm_AES_OFB)
+kwMech = MechanismId (ckm_AES_KEY_WRAP)
+kwPadMech = MechanismId (ckm_AES_KEY_WRAP_PAD)
+kwpMech = MechanismId (ckm_AES_KEY_WRAP_KWP)
 
 testEnv :: OpEnv
 testEnv = OpEnv
@@ -344,6 +372,7 @@ testEnv = OpEnv
       , (ctrMech, OpEncrypt), (ctsMech, OpEncrypt)
       , (cfb128Mech, OpEncrypt), (cfb8Mech, OpEncrypt)
       , (cfb1Mech, OpEncrypt), (ofbMech, OpEncrypt)
+      , (kwMech, OpEncrypt), (kwPadMech, OpEncrypt), (kwpMech, OpEncrypt)
       ]
   , oeModel = emptyModel
   }
@@ -404,6 +433,18 @@ caseInitParams = do
     (runInit (mkArgs ofbMech (BS.replicate 8 0)))
   assertEqual "ofb valid iv passes params" CKR_OBJECT_HANDLE_INVALID
     (runInit (mkArgs ofbMech (BS.replicate 16 0)))
+  assertEqual "kw iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs kwMech (BS.replicate 16 0)))
+  assertEqual "kw empty passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs kwMech BS.empty))
+  assertEqual "kwpad iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs kwPadMech (BS.replicate 8 0)))
+  assertEqual "kwpad empty passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs kwPadMech BS.empty))
+  assertEqual "kwp iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs kwpMech (BS.replicate 16 0)))
+  assertEqual "kwp empty passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs kwpMech BS.empty))
 
 caseDriverMap :: IO ()
 caseDriverMap = do
@@ -499,6 +540,32 @@ caseDriverMap = do
     (cipherSpecFor ofbMech 15 iv16)
   assertEqual "aes-ofb rejects bad iv" Nothing
     (cipherSpecFor ofbMech 16 iv8)
+  -- AES-KW: empty params only, three widths.
+  assertEqual "aes-kw-128" (Just C_AES128_KW)
+    (cipherSpecFor kwMech 16 BS.empty)
+  assertEqual "aes-kw-192" (Just C_AES192_KW)
+    (cipherSpecFor kwMech 24 BS.empty)
+  assertEqual "aes-kw-256" (Just C_AES256_KW)
+    (cipherSpecFor kwMech 32 BS.empty)
+  assertEqual "aes-kw rejects bad keylen" Nothing
+    (cipherSpecFor kwMech 15 BS.empty)
+  assertEqual "aes-kw rejects iv" Nothing
+    (cipherSpecFor kwMech 16 iv16)
+  -- AES-KWP (+ PAD alias): empty params only, three widths.
+  assertEqual "aes-kwp-128" (Just C_AES128_KWP)
+    (cipherSpecFor kwpMech 16 BS.empty)
+  assertEqual "aes-kwp-192" (Just C_AES192_KWP)
+    (cipherSpecFor kwpMech 24 BS.empty)
+  assertEqual "aes-kwp-256" (Just C_AES256_KWP)
+    (cipherSpecFor kwpMech 32 BS.empty)
+  assertEqual "aes-kwp rejects bad keylen" Nothing
+    (cipherSpecFor kwpMech 15 BS.empty)
+  assertEqual "aes-kwp rejects iv" Nothing
+    (cipherSpecFor kwpMech 32 iv8)
+  assertEqual "aes-kwpad-256" (Just C_AES256_KWP)
+    (cipherSpecFor kwPadMech 32 BS.empty)
+  assertEqual "aes-kwpad rejects iv" Nothing
+    (cipherSpecFor kwPadMech 32 iv16)
   assertEqual "non-cipher uncovered" Nothing
     (cipherSpecFor (MechanismId (ckm_SHA256)) 32 iv16)
   -- Whole-table agreement: every (recipe, key length) triple maps.
@@ -544,6 +611,14 @@ caseGeometryLaw = do
   assertEqual "aes192-ofb key" [24] (cipherKeyLens C_AES192_OFB)
   assertEqual "aes256-ofb key" [32] (cipherKeyLens C_AES256_OFB)
   assertEqual "aes-ofb iv" 16 (cipherIvLen C_AES256_OFB)
+  assertEqual "aes128-kw key" [16] (cipherKeyLens C_AES128_KW)
+  assertEqual "aes192-kw key" [24] (cipherKeyLens C_AES192_KW)
+  assertEqual "aes256-kw key" [32] (cipherKeyLens C_AES256_KW)
+  assertEqual "aes-kw iv" 0 (cipherIvLen C_AES256_KW)
+  assertEqual "aes128-kwp key" [16] (cipherKeyLens C_AES128_KWP)
+  assertEqual "aes192-kwp key" [24] (cipherKeyLens C_AES192_KWP)
+  assertEqual "aes256-kwp key" [32] (cipherKeyLens C_AES256_KWP)
+  assertEqual "aes-kwp iv" 0 (cipherIvLen C_AES256_KWP)
   assertEqual "des3 keys" [16, 24] (cipherKeyLens C_DES3_CBC)
   assertEqual "des3 iv" 8 (cipherIvLen C_DES3_CBC)
   assertEqual "aria key" [32] (cipherKeyLens C_ARIA256_CBC)

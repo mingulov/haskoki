@@ -135,6 +135,29 @@ long hsk_ossl4_cipher_cts(OSSL_LIB_CTX *ctx, const char *ecbname,
                           const unsigned char *in, size_t inlen,
                           unsigned char **out);
 
+/* --- AES key wrap (RFC 3394 KW / RFC 5649 KWP) ------------------------- */
+
+/* enc: 1 = wrap, 0 = unwrap. kwp: 0 = KW (ciphername AES-*-WRAP),
+ * 1 = KWP (ciphername AES-*-WRAP-PAD). The provider implements both
+ * (fetch probe record: AES-{128,192,256}-WRAP{,-PAD} fetch from the
+ * default provider); the shim runs the fetched cipher one-shot with
+ * padding disabled and no IV (wraps use the fixed AIV). Key length
+ * must match the fetched cipher. Geometry (provider-proven):
+ * KW input is a multiple of 8 bytes and >= 16 (shorter or
+ * unaligned input returns HSK_OSSL4_ERR_BADPARAM); KWP input is
+ * >= 1 byte (empty input is HSK_OSSL4_ERR_BADPARAM — the provider
+ * answers empty input with a vacuous 0-byte success, which the
+ * shim refuses rather than emitting a non-unwrappable blob).
+ * Output expands: KW outlen is inlen + 8; KWP outlen is
+ * ceil8(inlen) + 8. Any decrypt-side EVP failure (integrity)
+ * returns HSK_OSSL4_ERR_AUTHFAIL with *out untouched (GCM
+ * tag-failure precedent). */
+long hsk_ossl4_cipher_wrap(OSSL_LIB_CTX *ctx, const char *ciphername,
+                           const char *propq, int enc, int kwp,
+                           const unsigned char *key, size_t keylen,
+                           const unsigned char *in, size_t inlen,
+                           unsigned char **out);
+
 /* --- AEAD (AES-GCM; output is ct || tag) ------------------------------- */
 
 /* Encrypt: *out is ct || tag (inlen + taglen bytes). Decrypt takes

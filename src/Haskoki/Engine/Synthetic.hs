@@ -14,7 +14,8 @@ Shape contracts (exact, no debug prefixes on fixed-length outputs):
 * signature: 64 bytes over the signing identity (raw keys sign
   under their own bytes; generated pair halves share one identity,
   so a pair verifies across);
-* cipher: length-preserving reversible stream construction;
+* cipher: length-preserving reversible stream construction
+  (wrap specs expand: keyed tag + padded body);
 * key generation: explicit byte lengths from the backend's seeded
   sequence; EC pairs as tagged halves;
 * resource contexts: @0x01@-versioned key encoding, @0x02@-versioned
@@ -48,7 +49,7 @@ module Haskoki.Engine.Synthetic
 
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
 import Control.Monad (guard)
-import Data.Bits ((.|.), shiftR, xor)
+import Data.Bits ((.|.), shiftL, shiftR, xor)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
@@ -68,6 +69,9 @@ import Haskoki.Engine.Backend
   , CipherSpec (..)
   , cipherIvLen
   , cipherKeyLens
+  , isKwSpec
+  , isKwpSpec
+  , isWrapSpec
   , CryptoBackend (..)
   , DigestAlg (..)
   , DigestCaps (..)
@@ -441,11 +445,13 @@ instance CryptoBackend Synthetic where
           then pure (B.EngineOk ())
           else pure (B.EngineFail (BackendAuthFailed "verify"))
 
-  cipherEncrypt be spec key iv input =
-    cipherRun be "cipherEncrypt" spec key iv input
+  cipherEncrypt be spec key iv input
+    | isWrapSpec spec = wrapRun be "cipherEncrypt" True spec key iv input
+    | otherwise = cipherRun be "cipherEncrypt" spec key iv input
 
-  cipherDecrypt be spec key iv input =
-    cipherRun be "cipherDecrypt" spec key iv input
+  cipherDecrypt be spec key iv input
+    | isWrapSpec spec = wrapRun be "cipherDecrypt" False spec key iv input
+    | otherwise = cipherRun be "cipherDecrypt" spec key iv input
 
   aeadEncrypt be spec key iv aad input = do
     r <- aeadRun be "aeadEncrypt" True spec key iv aad input BS.empty
@@ -842,6 +848,8 @@ synthCipherSpecs =
   , C_AES128_CFB8, C_AES192_CFB8, C_AES256_CFB8
   , C_AES128_CFB1, C_AES192_CFB1, C_AES256_CFB1
   , C_AES128_OFB, C_AES192_OFB, C_AES256_OFB
+  , C_AES128_KW, C_AES192_KW, C_AES256_KW
+  , C_AES128_KWP, C_AES192_KWP, C_AES256_KWP
   , C_DES3_CBC, C_DES3_ECB
   , C_ARIA128_CBC, C_ARIA192_CBC, C_ARIA256_CBC
   , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
@@ -875,6 +883,47 @@ cipherRun be op spec key iv input =
               ("iv length " ++ show (BS.length iv)
                 ++ " not accepted by " ++ show spec)))
         | otherwise -> pure (B.EngineOk (classCipherFor spec kb iv input))
+
+-- | Synthetic wrap path: same guards as 'cipherRun' plus the wrap
+-- geometry (KW: multiple-of-8 input >= 16; KWP: non-empty input;
+-- decrypt-side minimum ciphertexts), then the expanding test
+-- construction. Decrypt refuses malformed blobs with BadParam
+-- and integrity failures with AuthFailed, mirroring the real
+-- backend's split.
+wrapRun :: BackendEnv Synthetic -> String -> Bool -> CipherSpec -> KeyMaterial
+          -> ByteString -> ByteString -> IO (B.EngineResult ByteString)
+wrapRun be op enc spec key iv input =
+  runGuarded be op (cipherSupported be spec) $ \env -> do
+    mkey <- resolveKeyBytes env key
+    case mkey of
+      B.EngineFail err -> pure (B.EngineFail err)
+      B.EngineOk kb
+        | BS.length kb `notElem` cipherKeyLens spec ->
+            pure (B.EngineFail (BackendBadParam op
+              ("key length " ++ show (BS.length kb)
+                ++ " not accepted by " ++ show spec)))
+        | BS.length iv /= cipherIvLen spec ->
+            pure (B.EngineFail (BackendBadParam op
+              ("iv length " ++ show (BS.length iv)
+                ++ " not accepted by " ++ show spec)))
+        | isKwSpec spec && (BS.length input < 16 || BS.length input `mod` 8 /= 0) ->
+            pure (B.EngineFail (BackendBadParam op
+              ("KW input must be a multiple of 8, at least 16 bytes")))
+        | isKwpSpec spec && BS.null input ->
+            pure (B.EngineFail (BackendBadParam op
+              ("KWP input must be non-empty")))
+        | not enc && isKwSpec spec
+          && (BS.length input < 24 || BS.length input `mod` 8 /= 0) ->
+            pure (B.EngineFail (BackendBadParam op
+              ("KW ciphertext must be a multiple of 8, at least 24 bytes")))
+        | not enc && isKwpSpec spec
+          && (BS.length input < 16 || BS.length input `mod` 8 /= 0) ->
+            pure (B.EngineFail (BackendBadParam op
+              ("KWP ciphertext must be a multiple of 8, at least 16 bytes")))
+        | enc -> pure (B.EngineOk (synthWrapSeal spec kb input))
+        | otherwise -> case synthWrapOpen spec kb input of
+            Just pt -> pure (B.EngineOk pt)
+            Nothing -> pure (B.EngineFail (BackendAuthFailed op))
 
 aeadRun :: BackendEnv Synthetic -> String -> Bool -> AeadSpec -> KeyMaterial
   -> ByteString -> ByteString -> ByteString -> ByteString -> IO (B.EngineResult ByteString)
@@ -1419,6 +1468,54 @@ classCipherFor :: CipherSpec -> ByteString -> ByteString -> ByteString -> ByteSt
 classCipherFor C_AES256_CBC kb iv input = classCipher kb iv input
 classCipherFor spec kb iv input =
   classCipher (BC8.pack (show spec) <> kb) iv input
+
+-- | Synthetic wrap seal (test construction, NOT RFC 3394/5649):
+-- the input is zero-padded to a multiple of 8, XORed with the
+-- spec-keyed stream, and prefixed with an 8-byte keyed tag
+-- (@\"HSKW\" <> u32be(length)@ XOR the wrap-tag stream). Output
+-- expands exactly like the real thing (KW: inlen + 8; KWP:
+-- ceil8(inlen) + 8) so shape-level parity holds.
+synthWrapSeal :: CipherSpec -> ByteString -> ByteString -> ByteString
+synthWrapSeal spec kb input =
+  let n = BS.length input
+      pad = (8 - n `mod` 8) `mod` 8
+      body = classCipherFor spec kb BS.empty (input <> BS.replicate pad 0)
+      tag = BS.packZipWith xor
+        (classStream (wrapTagKey spec kb) BS.empty 8)
+        ("HSKW" <> word32BE n)
+  in tag <> body
+
+-- | Synthetic wrap open: verifies the keyed tag (magic plus
+-- canonical zero padding) and returns the original bytes.
+-- 'Nothing' (reported as AuthFailed) covers wrong keys,
+-- corruption, truncation, and non-canonical padding.
+synthWrapOpen :: CipherSpec -> ByteString -> ByteString -> Maybe ByteString
+synthWrapOpen spec kb ct = do
+  let (tag, body) = BS.splitAt 8 ct
+  guard (BS.length tag == 8 && BS.length body >= 8 && BS.length body `mod` 8 == 0)
+  let clear = BS.packZipWith xor
+        (classStream (wrapTagKey spec kb) BS.empty 8) tag
+  guard (BS.take 4 clear == "HSKW")
+  let n = unword32BE (BS.drop 4 clear)
+  guard (n <= BS.length body)
+  let padded = classCipherFor spec kb BS.empty body
+      (pt, rest) = BS.splitAt n padded
+  guard (BS.length rest == (8 - n `mod` 8) `mod` 8)
+  guard (BS.all (== 0) rest)
+  pure pt
+
+-- | Domain separation for the wrap tag stream.
+wrapTagKey :: CipherSpec -> ByteString -> ByteString
+wrapTagKey spec kb = BC8.pack (show spec) <> kb <> "wrap-tag"
+
+-- | Decode the 'word32BE' encoding (short input decodes 0; the
+-- caller bounds the result against the body length).
+unword32BE :: ByteString -> Int
+unword32BE bs = case BS.unpack (BS.take 4 (bs <> BS.replicate 4 0)) of
+  [a, b, c, d] ->
+    fromIntegral a `shiftL` 24 .|. fromIntegral b `shiftL` 16
+      .|. fromIntegral c `shiftL` 8 .|. fromIntegral d
+  _ -> 0
 
 classStream :: ByteString -> ByteString -> Int -> ByteString
 classStream kb iv n = prfBytes
