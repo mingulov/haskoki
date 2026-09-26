@@ -133,11 +133,12 @@ typedef CK_RV (*fn_digest_init)(CK_SESSION_HANDLE, CK_MECHANISM_PTR);
 typedef CK_RV (*fn_digest)(CK_SESSION_HANDLE, CK_BYTE_PTR, CK_ULONG,
                            CK_BYTE_PTR, CK_ULONG_PTR);
 typedef CK_RV (*fn_cancel)(CK_SESSION_HANDLE, CK_FLAGS);
+typedef CK_RV (*fn_get_slot_list)(CK_BBOOL, CK_SLOT_ID_PTR, CK_ULONG_PTR);
 
 static void run_cancel_scenario(const char *tag, fn_open_session pOpen,
                                 fn_close_session pClose,
                                 fn_digest_init pDigestInit, fn_digest pDigest,
-                                fn_cancel pCancel) {
+                                fn_cancel pCancel, fn_get_slot_list pSlots) {
   CK_SESSION_HANDLE sess = 0;
   CK_MECHANISM mech;
   CK_RV rv;
@@ -153,6 +154,14 @@ static void run_cancel_scenario(const char *tag, fn_open_session pOpen,
 
   rv = pOpen(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR, NULL_PTR,
              &sess);
+  if (rv == CKR_SLOT_ID_INVALID) {
+    CK_SLOT_ID psl[8];
+    CK_ULONG pn = 8;
+    if (pSlots(0, psl, &pn) == CKR_OK && pn >= 1) {
+      rv = pOpen(psl[0], CKF_SERIAL_SESSION | CKF_RW_SESSION,
+                 NULL_PTR, NULL_PTR, &sess);
+    }
+  }
   CHECKC(rv == CKR_OK, "%s: session opens", tag);
   if (rv != CKR_OK) {
     return;
@@ -208,8 +217,8 @@ int main(int argc, char **argv) {
   CK_C_GetFunctionList pGetList;
   CK_C_GetInterface pGetInterface;
   CK_FUNCTION_LIST_PTR legacy = NULL_PTR;
-  CK_FUNCTION_LIST_3_0_PTR t30 = NULL_PTR;
-  CK_FUNCTION_LIST_3_2_PTR t32 = NULL_PTR;
+  CK_FUNCTION_LIST_3_0_PTR tab30 = NULL_PTR;
+  CK_FUNCTION_LIST_3_2_PTR tab32 = NULL_PTR;
   CK_INTERFACE_PTR pIf = NULL_PTR;
   CK_VERSION v;
   CK_RV rv;
@@ -245,16 +254,16 @@ int main(int argc, char **argv) {
   rv = pGetInterface((CK_UTF8CHAR_PTR) "PKCS 11", &v, &pIf, 0);
   CHECK(rv == CKR_OK && pIf != NULL_PTR, "GetInterface selects 3.2");
   if (pIf != NULL_PTR) {
-    t32 = (CK_FUNCTION_LIST_3_2_PTR)pIf->pFunctionList;
+    tab32 = (CK_FUNCTION_LIST_3_2_PTR)pIf->pFunctionList;
   }
   pIf = NULL_PTR;
   v.minor = 0;
   rv = pGetInterface((CK_UTF8CHAR_PTR) "PKCS 11", &v, &pIf, 0);
   CHECK(rv == CKR_OK && pIf != NULL_PTR, "GetInterface selects 3.0");
   if (pIf != NULL_PTR) {
-    t30 = (CK_FUNCTION_LIST_3_0_PTR)pIf->pFunctionList;
+    tab30 = (CK_FUNCTION_LIST_3_0_PTR)pIf->pFunctionList;
   }
-  if (!t32 || !t30) {
+  if (!tab32 || !tab30) {
     return 2;
   }
 
@@ -265,12 +274,14 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  run_cancel_scenario("3.2", t32->C_OpenSession, t32->C_CloseSession,
-                      t32->C_DigestInit, t32->C_Digest, t32->C_SessionCancel);
-  run_cancel_scenario("3.0", t30->C_OpenSession, t30->C_CloseSession,
-                      t30->C_DigestInit, t30->C_Digest, t30->C_SessionCancel);
+  run_cancel_scenario("3.2", tab32->C_OpenSession, tab32->C_CloseSession,
+                      tab32->C_DigestInit, tab32->C_Digest, tab32->C_SessionCancel,
+                      tab32->C_GetSlotList);
+  run_cancel_scenario("3.0", tab30->C_OpenSession, tab30->C_CloseSession,
+                      tab30->C_DigestInit, tab30->C_Digest, tab30->C_SessionCancel,
+                      tab30->C_GetSlotList);
 
-  rv = t32->C_Finalize(NULL_PTR);
+  rv = tab32->C_Finalize(NULL_PTR);
   CHECK(rv == CKR_OK, "C_Finalize ok");
 
   unlink(g_cfg_path);

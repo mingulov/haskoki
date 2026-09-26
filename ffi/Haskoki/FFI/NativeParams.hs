@@ -32,14 +32,22 @@ Covered structs (caller-native layout, offsets derived from
   recipe dimension); both byte strings chase under 'maxInputBytes'
   with the same null conventions, and the triple re-encodes with
   'encodeEcdhParams' (canonical null-KDF code 0).
+* EdDSA (@CK_EDDSA_PARAMS@: phFlag, context length, context
+  pointer): flags 0/1 translate (anything else passes through);
+  the context chases under 'maxInputBytes' with the same null
+  conventions, and the pair re-encodes with 'encodeEddsaParams'
+  (non-pure combinations refuse downstream at the recipe).
 
 Anything unmappable — wrong length, unknown ids, a bad source tag,
-an unreadable label — passes the input bytes through untouched, so
-the recipe refusal (and its @CKR@) is exactly today's: the
-normalizer only ever turns a would-be refusal into an acceptance
-when the native struct is fully understood. In particular the
-historical canonical byte images still validate, since their words
-never parse as mapped native ids.
+a null-with-length or over-bound chase — passes the input bytes
+through untouched, so the recipe refusal (and its @CKR@) is
+exactly today's: the normalizer only ever turns a would-be refusal
+into an acceptance when the native struct is fully understood. In
+particular the historical canonical byte images still validate,
+since their words never parse as mapped native ids. Non-null
+chased pointers must be readable for the stated length (the usual
+PKCS#11 caller contract, shared with 'decodeInputBytes'): a wild
+pointer is undefined behavior, not a refusal.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.FFI.NativeParams
@@ -51,6 +59,7 @@ module Haskoki.FFI.NativeParams
   , gcmStructToCanonical
   , ccmStructToCanonical
   , ctrStructToCanonical
+  , eddsaStructToCanonical
   , digestStemByCkm
   , mgfStemByCkg
   , pssNativeSize
@@ -59,6 +68,7 @@ module Haskoki.FFI.NativeParams
   , gcmNativeSize
   , ccmNativeSize
   , ctrNativeSize
+  , eddsaNativeSize
   ) where
 
 import Control.Monad (guard)
@@ -72,12 +82,13 @@ import Data.Word (Word64, Word8)
 import Foreign.C.String (CStringLen)
 import Foreign.C.Types (CULong (..))
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
-import Foreign.Storable (peekByteOff, sizeOf)
+import Foreign.Storable (alignment, peekByteOff, sizeOf)
 
 import Haskoki.FFI.Decode (maxInputBytes)
 import Haskoki.Recipe.Ccm (ccmRecipeFor, encodeCcmParams)
 import Haskoki.Recipe.Cipher (ctrRecipeFor, encodeCtrParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
+import Haskoki.Recipe.Eddsa (eddsaRecipeFor, encodeEddsaParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
@@ -123,6 +134,20 @@ ccmNativeSize = 4 * wordSize + 2 * ptrSize
 -- plus the inline 16-byte counter block.
 ctrNativeSize :: Int
 ctrNativeSize = wordSize + 16
+
+-- | Offset of @ulContextDataLen@ in a native @CK_EDDSA_PARAMS@
+-- image: the @CK_BBOOL@ flag byte plus padding to the word
+-- alignment. The header order is flag, length, pointer (the
+-- pointer follows at @eddsaLenOff + wordSize@).
+eddsaLenOff :: Int
+eddsaLenOff = ((1 + wordAlign - 1) `div` wordAlign) * wordAlign
+  where
+    wordAlign = alignment (undefined :: CULong)
+
+-- | Native @CK_EDDSA_PARAMS@ image size: the flag byte (plus
+-- padding), one length word, one pointer.
+eddsaNativeSize :: Int
+eddsaNativeSize = eddsaLenOff + wordSize + ptrSize
 
 -- | Native @CKM_*@ hash ids onto recipe digest stems. Ids come from
 -- the generated vocabulary, so a header drift breaks the build
@@ -246,6 +271,18 @@ ctrStructToCanonical bits cb
   | BS.length cb /= 16 = Nothing
   | otherwise = Just (encodeCtrParams (fromIntegral bits) cb)
 
+-- | Pure EdDSA translation: the native @CK_BBOOL@ prehash flag
+-- plus the chased context bytes onto the canonical
+-- @eddsa-params/1@ image. Only flags 0/1 translate; anything
+-- else refuses ('Nothing'). Non-pure combinations translate and
+-- are refused downstream by the recipe (invalid parameters, not
+-- a malformed struct).
+eddsaStructToCanonical :: Word8 -> ByteString -> Maybe ByteString
+eddsaStructToCanonical flag ctx
+  | flag == 0 = Just (encodeEddsaParams False ctx)
+  | flag == 1 = Just (encodeEddsaParams True ctx)
+  | otherwise = Nothing
+
 -- | Chase one bounded byte string from caller memory under the
 -- 'decodeInputBytes' null conventions: zero length never
 -- dereferences, null-with-length and over-bound lengths refuse.
@@ -262,7 +299,8 @@ chaseBytes ptr len
 -- | Normalize one ECDH agreement struct: the native
 -- @CK_ECDH1_DERIVE_PARAMS@ image at @pParams@/@paramsLen@ onto the
 -- canonical @ecdh-params/1@ image. Wrong-sized images, non-null KDF
--- selectors, and unreadable shared/peer bytes refuse ('Nothing').
+-- selectors, and null-with-length or over-bound shared/peer chases
+-- refuse ('Nothing').
 normalizeEcdhParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
 normalizeEcdhParams pParams paramsLen
   | paramsLen /= fromIntegral ecdhNativeSize = pure Nothing
@@ -290,6 +328,7 @@ normalizeMechParams mid pParams paramsLen raw
   | isJust (gcmRecipeFor mid) = fromMaybe raw <$> decodeGcmNative
   | isJust (ccmRecipeFor mid) = fromMaybe raw <$> decodeCcmNative
   | isJust (ctrRecipeFor mid) = fromMaybe raw <$> decodeCtrNative
+  | isJust (eddsaRecipeFor mid) = fromMaybe raw <$> decodeEddsaNative
   | otherwise = pure raw
   where
     decodePssNative :: IO (Maybe ByteString)
@@ -347,3 +386,12 @@ normalizeMechParams mid pParams paramsLen raw
           CULong bits <- peekByteOff pParams 0
           cb <- BS.packCStringLen (castPtr (pParams `plusPtr` wordSize), 16)
           pure (ctrStructToCanonical bits cb)
+    decodeEddsaNative :: IO (Maybe ByteString)
+    decodeEddsaNative
+      | paramsLen /= fromIntegral eddsaNativeSize = pure Nothing
+      | otherwise = do
+          flag <- peekByteOff pParams 0
+          CULong ctxLen <- peekByteOff pParams eddsaLenOff
+          pCtx <- peekByteOff pParams (eddsaLenOff + wordSize)
+          mCtx <- chaseBytes pCtx ctxLen
+          pure (mCtx >>= eddsaStructToCanonical flag)

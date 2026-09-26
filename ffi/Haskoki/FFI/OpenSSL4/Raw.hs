@@ -55,6 +55,9 @@ module Haskoki.FFI.OpenSSL4.Raw
   , dsaVerify
   , dsaGenParams
   , dsaGenKeypair
+  , eddsaSign
+  , eddsaVerify
+  , edwardsGen
   , ecdhDerive
   , rsaSign
   , rsaVerify
@@ -194,6 +197,15 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_dsa_gen_params"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_dsa_gen_keypair"
   c_dsa_gen_keypair :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_eddsa_sign"
+  c_eddsa_sign :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_eddsa_verify"
+  c_eddsa_verify :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> IO CInt
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_edwards_gen"
+  c_edwards_gen :: Ptr OsslLibCtx -> CString -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_ecdh_derive"
   c_ecdh_derive :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
@@ -518,6 +530,47 @@ dsaGenKeypair ctx propq paramsDer =
     withBytes paramsDer $ \(pparams, nparams) ->
       alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
         rc <- c_dsa_gen_keypair ctx cpq pparams nparams ppriv npriv ppub npub
+        if rc /= 0
+          then pure (Left (fromIntegral rc))
+          else do
+            privp <- peek ppriv
+            privn <- peek npriv
+            pubp <- peek ppub
+            pubn <- peek npub
+            if privp == nullPtr || pubp == nullPtr
+              then pure (Left errNative)
+              else do
+                priv <- takeOwned privp (fromIntegral privn)
+                pub <- takeOwned pubp (fromIntegral pubn)
+                pure (Right (priv, pub))
+
+-- | Pure EdDSA sign: the raw signature for (curve name, PKCS#8,
+-- message); empty messages serve.
+eddsaSign :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> IO (Either Int ByteString)
+eddsaSign ctx curvename propq privDer msg =
+  withCString curvename $ \ccurve ->
+    withCString propq $ \cpq ->
+      withBytes privDer $ \(ppriv, npriv) ->
+        withBytes msg $ \(pmsg, nmsg) ->
+          withOut (c_eddsa_sign ctx ccurve cpq ppriv npriv pmsg nmsg)
+
+-- | Pure EdDSA verify: 1 valid, 0 mismatch, negative shim code.
+eddsaVerify :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> ByteString -> IO Int
+eddsaVerify ctx curvename propq pubDer msg sig =
+  withCString curvename $ \ccurve ->
+    withCString propq $ \cpq ->
+      withBytes pubDer $ \(ppub, npub) ->
+        withBytes msg $ \(pmsg, nmsg) ->
+          withBytes sig $ \(psig, nsig) ->
+            fromIntegral <$> c_eddsa_verify ctx ccurve cpq ppub npub pmsg nmsg psig nsig
+
+-- | Edwards keypair for a curve name: PKCS#8 + SPKI halves.
+edwardsGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, ByteString))
+edwardsGen ctx propq curvename =
+  withCString propq $ \cpq ->
+    withCString curvename $ \ccurve ->
+      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+        rc <- c_edwards_gen ctx cpq ccurve ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
           else do

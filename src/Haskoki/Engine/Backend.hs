@@ -43,6 +43,7 @@ module Haskoki.Engine.Backend
   , rsaPssCap
   , ecdsaSigCap
   , dsaSigCap
+  , eddsaSigCap
   , ecdhCap
   , MacSpec (..)
   , CipherSpec (..)
@@ -78,7 +79,7 @@ import qualified Data.ByteString as BS
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 
-import Haskoki.Der (coveredCurveNames)
+import Haskoki.Der (coveredCurveNames, edwardsCurveNames)
 import Haskoki.Types (EngineResourceId (..), redactShown)
 
 -- | Opaque backend-side key reference (registry id + public fingerprint).
@@ -261,6 +262,17 @@ dsaSigCap (SigDSA enc digest)
       Nothing -> Just "DSA-RAW"
       Just alg -> ("DSA-" ++) <$> digestMacStem alg
 dsaSigCap _ = Nothing
+
+-- | Capability string required by one EdDSA spec:
+-- @EDDSA-<curve>@, pure only (RAW encoding, empty context).
+-- 'Nothing' means the spec is never servable (non-EdDSA family,
+-- off-set curve, a non-RAW encoding, or a non-empty context).
+eddsaSigCap :: SigSpec -> Maybe String
+eddsaSigCap (SigEdDSA (EcSpec curve enc) ctx)
+  | curve `elem` edwardsCurveNames
+  , enc == "RAW"
+  , BS.null ctx = Just ("EDDSA-" ++ curve)
+eddsaSigCap _ = Nothing
 
 -- | Capability string required by one ECDH spec: @ECDH@ for plain
 -- agreement, @ECDH-COFACTOR@ for cofactor-multiplied.
@@ -511,6 +523,9 @@ data KeyGenSpec
     -- lone DER params.
   | GenDSAKeypair { genDsaParams :: !ByteString }
     -- ^ DSA keypair from DER domain parameters; answers the
+    -- PKCS#8/SPKI DER halves.
+  | GenEdDSAKeypair { genEdwardsName :: !ByteString }
+    -- ^ Edwards keypair from the engine curve name; answers the
     -- PKCS#8/SPKI DER halves.
   | GenSym { genAlg :: !String, genLen :: !Int } -- "AES", "ChaCha20", "HMAC", "HOTP", "GENERIC"
   | GenMLKEM { genKem :: !PqcKemAlg }

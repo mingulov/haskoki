@@ -82,6 +82,7 @@ import Haskoki.Engine.Backend
   , EcdhSpec (..)
   , ecdsaSigCap
   , dsaSigCap
+  , eddsaSigCap
   , EcSpec (..)
   , hmacSpecCap
   , KdfCaps (..)
@@ -106,6 +107,7 @@ import Haskoki.Der
   ( RsaCrt (..)
   , coveredCurveNames
   , curveTable
+  , edwardsCurveNames
   , integerToBE
   , parseRsaPrivate
   , parseRsaPublic
@@ -577,6 +579,8 @@ instance CryptoBackend Synthetic where
         pure (B.EngineOk (KeyDer (synthDsaParams seed ctr p q), Nothing))
       GenDSAKeypair {} ->
         pure (B.EngineOk (genPair seed ctr))
+      GenEdDSAKeypair {} ->
+        pure (B.EngineOk (genPair seed ctr))
       GenMLKEM alg -> pure (B.EngineOk (genKemPair seed ctr alg))
       _ -> pure (B.EngineFail
         (BackendUnsupported "generateKey" ("not in synthetic set: " ++ show spec)))
@@ -710,7 +714,7 @@ synthCaps = BackendCaps
       { ccCiphers = Set.fromList synthCipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
   , bcMacs = MacCaps { mcSpecs = synthMacSpecs }
   , bcSigs = SigCaps
-      { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames ++ synthDsaSpecNames)
+      { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames ++ synthDsaSpecNames ++ synthEddsaSpecNames)
       , scCurves = Set.fromList coveredCurveNames
       , scPqcSign = Set.empty
       }
@@ -719,12 +723,12 @@ synthCaps = BackendCaps
   , bcParamNotes = Map.fromList
       ([ ("open", "decimal Word64 seed string; nothing else opens")
        , ("AES-256-CBC", "length-preserving stream construction; key 32 bytes, iv 16 bytes")
-       ] ++ synthMacNotes ++ synthEcdsaNotes ++ synthDsaNotes ++
+       ] ++ synthMacNotes ++ synthEcdsaNotes ++ synthDsaNotes ++ synthEddsaNotes ++
        [ ("RSA-PSS", "salt 0..64; hash/MGF any fixed-width digest")
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 72-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -812,6 +816,24 @@ synthDsaNotes =
     note (SigDSA _ Nothing) = "raw operation, no hashing (>= 20-byte digest); encodings DER and RAW"
     note _ = "hash-and-sign; encodings DER and RAW"
 
+-- | The EdDSA names: one pure-sign name per served curve (exactly
+-- the OpenSSL4 pre-probe set, so both engines advertise the same
+-- names).
+synthEddsaSpecNames :: [String]
+synthEddsaSpecNames =
+  [ name
+  | curve <- edwardsCurveNames
+  , Just name <- [eddsaSigCap (SigEdDSA (EcSpec curve "RAW") "")]
+  ]
+
+-- | Per-name EdDSA parameter notes for the capability report.
+synthEddsaNotes :: [(String, String)]
+synthEddsaNotes =
+  [ (name, "pure EdDSA, one-shot; raw fixed-width signatures (64/114 bytes)")
+  | curve <- edwardsCurveNames
+  , Just name <- [eddsaSigCap (SigEdDSA (EcSpec curve "RAW") "")]
+  ]
+
 -- | Per-name MAC parameter notes for the capability report.
 synthMacNotes :: [(String, String)]
 synthMacNotes =
@@ -852,6 +874,8 @@ sigSupported (SynthBackend env) spec
   | Just name <- ecdsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
   | Just name <- dsaSigCap spec
+  , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
+  | Just name <- eddsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
   | Just name <- rsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
@@ -1108,6 +1132,7 @@ genSupported _ spec = case spec of
   GenDSAParams p q
     | (p, q) `elem` [(1024, 160), (2048, 224), (2048, 256), (3072, 256)] -> Nothing
   GenDSAKeypair {} -> Nothing
+  GenEdDSAKeypair name | BC8.unpack name `elem` edwardsCurveNames -> Nothing
   GenMLKEM _ -> Nothing
   _ -> Just ("keygen not in synthetic set: " ++ show spec)
 
@@ -1434,6 +1459,8 @@ classSignFor spec@(SigECDSA (EcSpec "P-256" _) (Just D_SHA256)) identity input =
 classSignFor spec@(SigECDSA _ _) identity input =
   classSign (BC8.pack (show spec)) identity input
 classSignFor spec@(SigDSA _ _) identity input =
+  classSign (BC8.pack (show spec)) identity input
+classSignFor spec@(SigEdDSA _ _) identity input =
   classSign (BC8.pack (show spec)) identity input
 classSignFor spec@(SigRSA_PSS _) identity input =
   classSign (BC8.pack (show spec)) identity input

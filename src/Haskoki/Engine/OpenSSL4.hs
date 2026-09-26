@@ -52,6 +52,7 @@ import Control.Exception (mask_, onException)
 import Control.Monad (filterM)
 import Data.Bits (xor, (.|.))
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
 import Data.List (intercalate, isInfixOf)
 import qualified Data.Map.Strict as Map
@@ -62,7 +63,7 @@ import Foreign.ForeignPtr (ForeignPtr, finalizeForeignPtr, newForeignPtr, withFo
 import Foreign.Ptr (Ptr, nullPtr)
 
 import qualified Haskoki.FFI.OpenSSL4.Raw as Raw
-import Haskoki.Der (coveredCurveNames, integerToBE)
+import Haskoki.Der (coveredCurveNames, edwardsCurveNames, integerToBE)
 import Haskoki.Engine.Backend
 import Haskoki.Recipe.Ecdh (curveWidthOfName, ecdhPeerWidth)
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
@@ -268,6 +269,22 @@ instance CryptoBackend OpenSSL4 where
                 | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "sign" "private key DER rejected"))
                 | otherwise -> nativeFail "sign" code
               Right sig -> pure (EngineOk sig)
+        -- No key allowlist (the DSA precedent): the shim checks the
+        -- key's actual algorithm against the curve and refuses
+        -- garbage/cross-curve keys as BADKEY before any provider
+        -- math. Only pure specs translate (anything else is
+        -- unservable, never executed).
+        SigEdDSA ec ctx -> case eddsaNativeCurve ec ctx of
+          Nothing -> pure (EngineFail (BackendUnsupported "sign"
+            ("no provider name: " ++ show spec)))
+          Just curvename -> do
+            r <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.eddsaSign (osslCtx env) curvename (osslPropQ env) kb msg
+            case r of
+              Left code
+                | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "sign" "private key DER rejected"))
+                | otherwise -> nativeFail "sign" code
+              Right sig -> pure (EngineOk sig)
         SigRSA_PKCS1v15 alg -> case digestFetchName alg of
           -- Unreachable post-guard (the guard only admits probed
           -- fixed-width digests); typed, never a crash.
@@ -313,6 +330,13 @@ instance CryptoBackend OpenSSL4 where
             rc <- withForeignPtr (osslEnv env) $ \_ ->
               Raw.dsaVerify (osslCtx env) mdname (osslPropQ env) kb msg sig (sigWantRaw spec) noHash
             verifyRc "verify" "raw digest shorter than 20 bytes" rc
+        SigEdDSA ec ctx -> case eddsaNativeCurve ec ctx of
+          Nothing -> pure (EngineFail (BackendUnsupported "verify"
+            ("no provider name: " ++ show spec)))
+          Just curvename -> do
+            rc <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.eddsaVerify (osslCtx env) curvename (osslPropQ env) kb msg sig
+            verifyRc "verify" "signature is not a raw EdDSA signature" rc
         SigRSA_PKCS1v15 alg -> case digestFetchName alg of
           Nothing -> pure (EngineFail (BackendUnsupported "verify"
             ("no fetch name: " ++ show alg)))
@@ -436,6 +460,14 @@ instance CryptoBackend OpenSSL4 where
     case r of
       Left code
         | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "generateKey" "domain parameters DER rejected"))
+        | otherwise -> nativeFail "generateKey" code
+      Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
+  generateKey be spec@(GenEdDSAKeypair name) = runGuarded be "generateKey" (genSupported be spec) $ \env -> do
+    r <- withForeignPtr (osslEnv env) $ \_ ->
+      Raw.edwardsGen (osslCtx env) (osslPropQ env) (eddsaFetchName name)
+    case r of
+      Left code
+        | code == Raw.errBadParam -> pure (EngineFail (BackendBadParam "generateKey" "unknown Edwards curve"))
         | otherwise -> nativeFail "generateKey" code
       Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   -- RSA keygen bounds mirror the key planner (2048/3072/4096
@@ -586,7 +618,7 @@ ossl4Caps version propq = BackendCaps
   , bcDigests = DigestCaps { dcAlgs = Set.fromList t16DigestAlgs, dcMultipart = True, dcXof = False }
   , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
   , bcMacs = MacCaps { mcSpecs = osslMacSpecs t16DigestAlgs }
-  , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.empty }
+  , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs ++ osslEddsaSpecNames t16EdwardsCurves), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.empty }
   , bcKems = KemCaps { kcAlgs = Set.empty }
   , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR"] }
   , bcParamNotes = Map.fromList
@@ -598,7 +630,7 @@ ossl4Caps version propq = BackendCaps
        , ("ECDH", "raw x-coordinate secret; base/peer DER on one NIST prime curve")
        , ("ECDH-COFACTOR", "cofactor-multiplied; no-op on h=1 curves, threaded honestly")
        ] ++ osslRsaNotes t16RsaAlgs ++ osslEcdsaNotes t16EcdsaCurves t16DigestAlgs
-         ++ osslDsaNotes t16DsaAlgs
+         ++ osslDsaNotes t16DsaAlgs ++ osslEddsaNotes t16EdwardsCurves
       )
   }
 
@@ -668,6 +700,28 @@ osslDsaNotes algs =
   where
     note (SigDSA _ Nothing) = "raw operation, no hashing (>= 20-byte digest); encodings DER and RAW"
     note _ = "hash-and-sign; encodings DER and RAW"
+
+-- | The EdDSA curve set: exactly the recipe's two (Ed25519/Ed448).
+t16EdwardsCurves :: [String]
+t16EdwardsCurves = edwardsCurveNames
+
+-- | EdDSA capability names: one pure-sign name per curve. The
+-- pre-probe caps cover 't16EdwardsCurves'; 'probeCaps' keeps each
+-- curve under its own pkey gate.
+osslEddsaSpecNames :: [String] -> [String]
+osslEddsaSpecNames curves =
+  [ name
+  | curve <- curves
+  , Just name <- [eddsaSigCap (SigEdDSA (EcSpec curve "RAW") BS.empty)]
+  ]
+
+-- | Per-name EdDSA parameter notes for the capability report.
+osslEddsaNotes :: [String] -> [(String, String)]
+osslEddsaNotes curves =
+  [ (name, "pure EdDSA, one-shot; raw fixed-width signatures (64/114 bytes)")
+  | curve <- curves
+  , Just name <- [eddsaSigCap (SigEdDSA (EcSpec curve "RAW") BS.empty)]
+  ]
 
 -- | The RSA digest set: every fixed-length digest the RSA
 -- v1.5 recipe binds. Candidates that fail the fetch probe are
@@ -781,6 +835,8 @@ probeCaps env = do
   pkeyOk <- probe1 "pkey" "EC"
   rsaOk <- probe1 "pkey" "RSA"
   dsaOk <- probe1 "pkey" "DSA"
+  ed19Ok <- probe1 "pkey" "ED25519"
+  ed448Ok <- probe1 "pkey" "ED448"
   let base = osslCaps env
       rsaAlgs = filter (`elem` mdAlgs) t16RsaAlgs
       dsaAlgs = filter (`elem` mdAlgs) t16DsaAlgs
@@ -798,6 +854,8 @@ probeCaps env = do
             [ keep pkeyOk (Set.fromList (osslEcdsaSpecNames t16EcdsaCurves mdAlgs))
             , keep rsaOk (Set.fromList ("RSA-PSS" : osslRsaSpecNames rsaAlgs))
             , keep dsaOk (Set.fromList (osslDsaSpecNames dsaAlgs))
+            , keep ed19Ok (Set.fromList (osslEddsaSpecNames ["Ed25519"]))
+            , keep ed448Ok (Set.fromList (osslEddsaSpecNames ["Ed448"]))
             ]
         , scCurves = keep pkeyOk (Set.fromList t16EcdsaCurves)
         }
@@ -871,6 +929,8 @@ sigSupported (OSSL4Backend env) spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | Just name <- dsaSigCap spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
+  | Just name <- eddsaSigCap spec
+  , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | Just name <- rsaSigCap spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | Just name <- rsaPssCap spec
@@ -896,6 +956,27 @@ ecdsaNativeDigest (Just alg) = (, False) <$> digestFetchName alg
 dsaNativeDigest :: Maybe DigestAlg -> Maybe (String, Bool)
 dsaNativeDigest Nothing = Just ("", True)
 dsaNativeDigest (Just alg) = (, False) <$> digestFetchName alg
+
+-- | Native curve selection for one EdDSA spec: the provider fetch
+-- name, pure specs only (RAW encoding, empty context).
+-- 'Nothing' means unservable (off-set curve, a non-RAW encoding,
+-- or a non-empty context).
+eddsaNativeCurve :: EcSpec -> ByteString -> Maybe String
+eddsaNativeCurve (EcSpec curve enc) ctx
+  | enc == "RAW", BS.null ctx = case curve of
+      "Ed25519" -> Just "ED25519"
+      "Ed448" -> Just "ED448"
+      _ -> Nothing
+  | otherwise = Nothing
+
+-- | Engine Edwards names to provider fetch names. Unknown names
+-- pass through for the shim to refuse (the support gate normally
+-- admits served curves only).
+eddsaFetchName :: ByteString -> String
+eddsaFetchName name = case BC8.unpack name of
+  "Ed25519" -> "ED25519"
+  "Ed448" -> "ED448"
+  other -> other
 
 -- | OAEP availability: the RSA pkey gate (witnessed by the
 -- probe-narrowed RSA signature set) plus per-digest fetch probes
@@ -980,6 +1061,8 @@ genSupported (OSSL4Backend env) spec
   , (p, q) `elem` [(1024, 160), (2048, 224), (2048, 256), (3072, 256)] = Nothing
   | GenDSAKeypair {} <- spec
   , Set.member "DSA-RAW" (scSpecs (bcSigs (osslCaps env))) = Nothing
+  | GenEdDSAKeypair name <- spec
+  , Set.member ("EDDSA-" ++ BC8.unpack name) (scSpecs (bcSigs (osslCaps env))) = Nothing
   | GenSym alg _ <- spec
   , alg `elem` ["AES", "HOTP", "GENERIC"] = Nothing
   | GenRSA {} <- spec

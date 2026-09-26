@@ -63,8 +63,9 @@ import Haskoki.Attribute.Generated
   (classNameById, generatedTemplateRules, mustClassId, mustKeyTypeId)
 import Haskoki.Der
   (curveCoordLen, curveOidOfParams, dsaPrivateDer, dsaPublicDer,
-   ecPrivateDer, ecPublicDer, rsaPrivateDer, rsaPublicDer,
-   unwrapEcPoint)
+   ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
+   edwardsOidOfParams, edwardsWidthsOfParams, rsaPrivateDer, rsaPublicDer,
+   unwrapEcPoint, unwrapEdwardsPoint)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -416,6 +417,7 @@ ckoSecretKey = mustClassId "CKO_SECRET_KEY"
 ckkRsa = mustKeyTypeId "CKK_RSA"
 ckkEc = mustKeyTypeId "CKK_EC"
 ckkDsa = mustKeyTypeId "CKK_DSA"
+ckkEcEdwards = mustKeyTypeId "CKK_EC_EDWARDS"
 ckkAes = mustKeyTypeId "CKK_AES"
 
 -- | Key-import material: RSA/EC public/private templates carry
@@ -442,6 +444,8 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     | c == ckoPublicKey && k == ckkEc -> ecPublic
     | c == ckoPrivateKey && k == ckkDsa -> dsaPrivate
     | c == ckoPublicKey && k == ckkDsa -> dsaPublic
+    | c == ckoPrivateKey && k == ckkEcEdwards -> eddsaPrivate
+    | c == ckoPublicKey && k == ckkEcEdwards -> eddsaPublic
     | c == ckoSecretKey -> secretKey k
   _ -> Right attrs
   where
@@ -520,6 +524,36 @@ importMaterial attrs = case (classOf, keyTypeOf) of
       y <- need AttrValue
       pure (Map.insert AttrValue
         (ValBytes (dsaPublicDer p q g y)) attrs)
+    eddsaPrivate = do
+      params <- need AttrEcParams
+      seed <- need AttrValue
+      (oid, seedW, _) <- orReject
+        (CKR_CURVE_NOT_SUPPORTED, "unsupported Edwards curve parameters")
+        (resolveEdwards params)
+      seed' <- orReject (CKR_TEMPLATE_INCONSISTENT,
+          "EdDSA seed length does not match the curve")
+        (checkExact seedW seed)
+      pure (Map.insert AttrValue
+        (ValBytes (eddsaPrivateDer oid seed')) attrs)
+    eddsaPublic = do
+      params <- need AttrEcParams
+      point <- need AttrEcPoint
+      (oid, seedW, _) <- orReject
+        (CKR_CURVE_NOT_SUPPORTED, "unsupported Edwards curve parameters")
+        (resolveEdwards params)
+      raw <- orReject (CKR_TEMPLATE_INCONSISTENT,
+          "EC_POINT is not a raw or wrapped Edwards point")
+        (unwrapEdwardsPoint seedW point)
+      forbidValue
+      pure (Map.insert AttrValue
+        (ValBytes (eddsaPublicDer oid raw)) attrs)
+    resolveEdwards params = do
+      oid <- edwardsOidOfParams params
+      (seedW, sigW) <- edwardsWidthsOfParams oid
+      pure (oid, seedW, sigW)
+    checkExact w s
+      | BS.length s == w = Just s
+      | otherwise = Nothing
     resolveCurve params = do
       oid <- curveOidOfParams params
       n <- curveCoordLen oid

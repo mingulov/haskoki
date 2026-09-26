@@ -2153,6 +2153,182 @@ end:
     return rc;
 }
 
+/* --- EdDSA sign/verify/keygen (RFC 8032, pure) ------------------------ */
+
+/* Provider key type for an engine curve name ("ED25519"/"ED448",
+ * the backend's fetch spelling of Ed25519/Ed448); NID_undef for
+ * anything else. */
+static int hsk_ossl4_eddsa_nid(const char *curvename)
+{
+    if (curvename == NULL)
+        return NID_undef;
+    if (strcmp(curvename, "ED25519") == 0)
+        return EVP_PKEY_ED25519;
+    if (strcmp(curvename, "ED448") == 0)
+        return EVP_PKEY_ED448;
+    return NID_undef;
+}
+
+long hsk_ossl4_eddsa_sign(OSSL_LIB_CTX *ctx, const char *curvename,
+                          const char *propq, const unsigned char *priv_der,
+                          size_t priv_len, const unsigned char *msg,
+                          size_t msglen, unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_MD_CTX *mctx = NULL;
+    unsigned char *sig = NULL;
+    size_t siglen = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+    int nid;
+
+    if (ctx == NULL || propq == NULL || out == NULL ||
+        (msg == NULL && msglen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+    nid = hsk_ossl4_eddsa_nid(curvename);
+    if (nid == NID_undef)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* The key's actual algorithm must match the requested curve:
+     * cross-curve execution refuses here rather than past the
+     * advertised cap set. */
+    if (EVP_PKEY_get_base_id(pkey) != nid) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+    /* Pure EdDSA is one-shot (no streaming, no prehash, no
+     * context): NULL digest through the whole call. */
+    mctx = EVP_MD_CTX_new();
+    if (mctx == NULL)
+        goto end;
+    if (!EVP_DigestSignInit_ex(mctx, NULL, NULL, ctx, propq, pkey, NULL))
+        goto end;
+    if (!EVP_DigestSign(mctx, NULL, &siglen, msg, msglen))
+        goto end;
+    sig = OPENSSL_malloc(siglen);
+    if (sig == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (!EVP_DigestSign(mctx, sig, &siglen, msg, msglen)) {
+        OPENSSL_clear_free(sig, siglen);
+        sig = NULL;
+        goto end;
+    }
+    *out = sig;
+    rc = (long)siglen;
+    sig = NULL;
+
+end:
+    if (sig != NULL)
+        OPENSSL_clear_free(sig, siglen);
+    EVP_MD_CTX_free(mctx);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+int hsk_ossl4_eddsa_verify(OSSL_LIB_CTX *ctx, const char *curvename,
+                           const char *propq, const unsigned char *pub_der,
+                           size_t pub_len, const unsigned char *msg,
+                           size_t msglen, const unsigned char *sig,
+                           size_t siglen)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_MD_CTX *mctx = NULL;
+    int rc = HSK_OSSL4_ERR_NATIVE;
+    int nid;
+
+    if (ctx == NULL || propq == NULL || sig == NULL ||
+        (msg == NULL && msglen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+    nid = hsk_ossl4_eddsa_nid(curvename);
+    if (nid == NID_undef)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    if (EVP_PKEY_get_base_id(pkey) != nid) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+    /* Fixed widths (64/114): anything else can never be valid, so
+     * answer mismatch (0) without calling the provider — encoding
+     * errors surface as authentication failures, never native
+     * errors. */
+    if ((nid == EVP_PKEY_ED25519 && siglen != 64) ||
+        (nid == EVP_PKEY_ED448 && siglen != 114)) {
+        EVP_PKEY_free(pkey);
+        ERR_clear_error();
+        return 0;
+    }
+    mctx = EVP_MD_CTX_new();
+    if (mctx == NULL)
+        goto end;
+    if (!EVP_DigestVerifyInit_ex(mctx, NULL, NULL, ctx, propq, pkey, NULL))
+        goto end;
+    rc = EVP_DigestVerify(mctx, sig, siglen, msg, msglen);
+    /* 1 (valid) or 0 (bad signature); provider-internal failures
+     * stay native. */
+    if (rc < 0)
+        rc = HSK_OSSL4_ERR_NATIVE;
+    else
+        ERR_clear_error();
+
+end:
+    EVP_MD_CTX_free(mctx);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+int hsk_ossl4_edwards_gen(OSSL_LIB_CTX *ctx, const char *propq,
+                          const char *curvename, unsigned char **priv_der,
+                          size_t *priv_len, unsigned char **pub_der,
+                          size_t *pub_len)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *pkey = NULL;
+    unsigned char *priv = NULL, *pub = NULL;
+    int privlen = 0, publen = 0;
+    int rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || priv_der == NULL ||
+        priv_len == NULL || pub_der == NULL || pub_len == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (hsk_ossl4_eddsa_nid(curvename) == NID_undef)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pctx = EVP_PKEY_CTX_new_from_name(ctx, curvename, propq);
+    if (pctx == NULL)
+        goto end;
+    if (!EVP_PKEY_keygen_init(pctx))
+        goto end;
+    if (!EVP_PKEY_generate(pctx, &pkey))
+        goto end;
+    privlen = i2d_PrivateKey(pkey, &priv);
+    publen = i2d_PUBKEY(pkey, &pub);
+    if (privlen <= 0 || publen <= 0) {
+        OPENSSL_free(priv);
+        OPENSSL_free(pub);
+        goto end;
+    }
+    *priv_der = priv;
+    *priv_len = (size_t)privlen;
+    *pub_der = pub;
+    *pub_len = (size_t)publen;
+    rc = HSK_OSSL4_OK;
+
+end:
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(pctx);
+    return rc;
+}
+
 /* --- ECDH agreement ------------------------------------------- */
 
 long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,

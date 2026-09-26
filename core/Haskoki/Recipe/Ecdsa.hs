@@ -29,9 +29,9 @@ Consumers:
 
 Deferred family members (not recipes, named gaps): @CKM_ECDH1_DERIVE@
 and @CKM_ECDH1_COFACTOR_DERIVE@ (the ECDH shape, next slice),
-@CKM_EDDSA@ (Ed25519: provider-supported, later slice),
 @CKM_XEDDSA@ (no provider equivalent), @CKM_GOSTR3410*@ (no
 provider equivalent) — see mechanisms.json honesty notes.
+(@CKM_EDDSA@ is served: 'Haskoki.Recipe.Eddsa'.)
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Ecdsa

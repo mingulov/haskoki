@@ -35,7 +35,7 @@ import Haskoki.Attribute
   , getAttributes
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
-import Haskoki.Der (curveTable, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPublicDer, parseDsaParams, rsaPrivateDer, rsaPublicDer)
+import Haskoki.Der (curveTable, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer, parseDsaParams, rsaPrivateDer, rsaPublicDer)
 import Haskoki.Engine.Backend
   ( BackendError (..)
   , CryptoBackend (..)
@@ -107,6 +107,7 @@ import Haskoki.Operation.KeyManagement
   , ckkAes
   , ckkDsa
   , ckkEc
+  , ckkEcEdwards
   , ckkGenericSecret
   , ckkMlKem
   , ckkRsa
@@ -119,6 +120,7 @@ import Haskoki.Operation.KeyManagement
   , dsaKeyPairGenMech
   , dsaParameterGenMech
   , ecKeyPairGenMech
+  , edwardsKeyPairGenMech
   , encodeGenArgs
   , finishWork
   , genericSecretKeyGenMech
@@ -224,6 +226,10 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "DSA domain templates plan and refuse" caseDsaDomainPlanner
   , testCase "DSA GenArgs codec round-trips and rejects" caseDsaGenArgsCodec
   , testCase "DSA pending/effect pairs cohere" caseDsaCompatible
+  , testCase "Edwards GenArgs codec round-trips and rejects" caseEdwardsGenArgsCodec
+  , testCase "Edwards pair templates plan and refuse" caseEdwardsPairPlanner
+  , testCase "Edwards pending/effect pairs cohere" caseEdwardsCompatible
+  , testCase "Edwards components stamp, doubles pass through" caseEdwardsStamp
   , testCase "DSA components stamp, doubles pass through" caseDsaStamp
   , testCase "Real DSA params generate with readback" caseRealDsaParamgen
   , testCase "Real DSA keypair generates and signs" caseRealDsaKeygen
@@ -624,6 +630,40 @@ dsaParamsTmpl l =
   , (AttrKeyType, ValULong ckkDsa)
   , (AttrPrimeBits, ValULong l)
   , (AttrToken, ValBool False)
+  ]
+
+-- Toy Edwards values (shaped: planners check presence and shape;
+-- stamping parses real DER assembled from these parts).
+ed19OidBytes :: ByteString
+ed19OidBytes = hex "06032b6570"
+
+ed48OidBytes :: ByteString
+ed48OidBytes = hex "06032b6571"
+
+edPoint19 :: ByteString
+edPoint19 = BS.pack (0x58 : replicate 31 0x42)
+
+edSeed19 :: ByteString
+edSeed19 = BS.pack (0x11 : replicate 31 0x24)
+
+edPubTmpl :: [(AttributeType, AttributeValue)]
+edPubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkEcEdwards)
+  , (AttrEcParams, ValBytes "Ed25519")
+  , (AttrToken, ValBool False)
+  , (AttrVerify, ValBool True)
+  ]
+
+edPrivTmpl :: [(AttributeType, AttributeValue)]
+edPrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkEcEdwards)
+  , (AttrToken, ValBool False)
+  , (AttrPrivate, ValBool True)
+  , (AttrSensitive, ValBool True)
+  , (AttrExtractable, ValBool False)
+  , (AttrSign, ValBool True)
   ]
 
 -- ---------------------------------------------------------------------------
@@ -1168,7 +1208,7 @@ caseDsaGenArgsCodec = do
     (decodeGenArgs (encodeGenArgs (GenDsaKeypair "der") <> "x"))
   assertEqual "empty keypair DER" Nothing
     (decodeGenArgs (BS.pack [6, 0, 0, 0, 0]))
-  assertEqual "unknown tag" Nothing (decodeGenArgs (BS.pack [7, 1, 2, 3]))
+  assertEqual "unknown tag" Nothing (decodeGenArgs (BS.pack [8, 1, 2, 3]))
 
 caseDsaCompatible :: IO ()
 caseDsaCompatible = do
@@ -1246,6 +1286,106 @@ caseDsaStamp = do
         [(AttrClass, ValULong ckoSecretKey), (AttrToken, ValBool False)])
   assertEqual "secret untouched" (Just secret)
     (stampParamsObject secret mat)
+
+caseEdwardsGenArgsCodec :: IO ()
+caseEdwardsGenArgsCodec = do
+  let rt args = assertEqual ("round-trip " ++ show args) (Just args)
+        (decodeGenArgs (encodeGenArgs args))
+  rt (GenEdwardsKeypair "Ed25519")
+  rt (GenEdwardsKeypair "Ed448")
+  -- Tag byte is pinned (7 Edwards keypair curve name).
+  assertEqual "keypair tag" (Just 7)
+    (fst <$> BS.uncons (encodeGenArgs (GenEdwardsKeypair "Ed25519")))
+  -- Short frames and empty names fail.
+  assertEqual "short keypair" Nothing (decodeGenArgs (BS.singleton 7))
+  assertEqual "unknown tag" Nothing (decodeGenArgs (BS.pack [8, 1, 2, 3]))
+
+caseEdwardsPairPlanner :: IO ()
+caseEdwardsPairPlanner = do
+  m0 <- seedModel
+  st <- getSession m0
+  let argsOf pubT privT =
+        case planGenerateKeyPair defaultRules m0 st edwardsKeyPairGenMech pubT privT of
+          KeyEffect _ (FxGenerateKey _ _ input) -> Right (decodeGenArgs input)
+          KeyDenied (KeyDeny code _) -> Left code
+          other -> error ("unexpected plan shape: " ++ show other)
+      dropT t = filter ((/= t) . fst)
+      withT tmpl t v = tmpl ++ [(t, v)]
+      setParams tmpl curve =
+        withT (dropT AttrEcParams tmpl) AttrEcParams (ValBytes curve)
+  -- Happy path frames the curve name (both curves).
+  case argsOf edPubTmpl edPrivTmpl of
+    Right (Just (GenEdwardsKeypair "Ed25519")) -> pure ()
+    other -> assertFailure ("Ed25519 pair must plan: " ++ show other)
+  case argsOf (setParams edPubTmpl "Ed448") edPrivTmpl of
+    Right (Just (GenEdwardsKeypair "Ed448")) -> pure ()
+    other -> assertFailure ("Ed448 pair must plan: " ++ show other)
+  -- Missing curve is incomplete.
+  assertEqual "missing params" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf (dropT AttrEcParams edPubTmpl) edPrivTmpl)
+  assertEqual "missing all" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf [(AttrToken, ValBool False)] edPrivTmpl)
+  -- Foreign curves refuse mechanism-invalid (the EC precedent),
+  -- never incomplete: the template names a curve the mechanism
+  -- cannot serve.
+  assertEqual "weierstrass refused" (Left CKR_MECHANISM_INVALID)
+    (argsOf (setParams edPubTmpl "P-256") edPrivTmpl)
+  assertEqual "garbage refused" (Left CKR_MECHANISM_INVALID)
+    (argsOf (setParams edPubTmpl "nope") edPrivTmpl)
+  -- Disagreement and malformed parts refuse inconsistent.
+  assertEqual "curve disagreement" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf edPubTmpl (withT edPrivTmpl AttrEcParams (ValBytes "Ed448")))
+  assertEqual "malformed params" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withT (dropT AttrEcParams edPubTmpl) AttrEcParams (ValULong 7)) edPrivTmpl)
+  assertEqual "malformed priv params" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf edPubTmpl (withT edPrivTmpl AttrEcParams (ValULong 7)))
+  -- Private-side agreement plans; key-type contradiction refuses.
+  case argsOf edPubTmpl (withT edPrivTmpl AttrEcParams (ValBytes "Ed25519")) of
+    Right (Just (GenEdwardsKeypair "Ed25519")) -> pure ()
+    other -> assertFailure ("agreeing priv curve must plan: " ++ show other)
+  assertEqual "key-type contradiction" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withT (dropT AttrKeyType edPubTmpl) AttrKeyType (ValULong ckkEc)) edPrivTmpl)
+
+caseEdwardsCompatible :: IO ()
+caseEdwardsCompatible = do
+  m0 <- seedModel
+  st <- getSession m0
+  let pub = pendingFromAttrs st (Map.fromList edPubTmpl)
+      priv = pendingFromAttrs st (Map.fromList edPrivTmpl)
+      fx args = FxGenerateKey edwardsKeyPairGenMech BS.empty (encodeGenArgs args)
+  assertBool "pair/edwards cohere"
+    (keyPairCompatible (PwGeneratePair pub priv) (fx (GenEdwardsKeypair "Ed25519")))
+  assertBool "single/edwards incoherent"
+    (not (keyPairCompatible (PwGenerateKey pub) (fx (GenEdwardsKeypair "Ed25519"))))
+  -- Coherence is shape-level: any pair-shaped args cohere with a pair.
+  assertBool "pair/RSA coherent"
+    (keyPairCompatible (PwGeneratePair pub priv) (fx (GenRsa 2048 65537)))
+  assertBool "pair/AES incoherent"
+    (not (keyPairCompatible (PwGeneratePair pub priv) (fx (GenAes 16))))
+
+caseEdwardsStamp :: IO ()
+caseEdwardsStamp = do
+  m0 <- seedModel
+  st <- getSession m0
+  let pubM = eddsaPublicDer ed19OidBytes edPoint19
+      privM = eddsaPrivateDer ed19OidBytes edSeed19
+      privM48 = eddsaPrivateDer ed48OidBytes (BS.replicate 57 9)
+      pub = pendingFromAttrs st (Map.fromList edPubTmpl)
+      priv = pendingFromAttrs st (Map.fromList edPrivTmpl)
+  case stampPairComponents pub priv pubM privM of
+    Just (pub', priv') -> do
+      assertEqual "point stamped raw"
+        (Just (ValBytes edPoint19)) (Map.lookup AttrEcPoint (poAttrs pub'))
+      assertEqual "pub params kept"
+        (Just (ValBytes "Ed25519")) (Map.lookup AttrEcParams (poAttrs pub'))
+      assertEqual "priv inherits params"
+        (Just (ValBytes "Ed25519")) (Map.lookup AttrEcParams (poAttrs priv'))
+    Nothing -> assertFailure "matching Edwards halves must stamp"
+  -- Disagreeing and opaque halves pass through unstamped (EC mirror).
+  assertEqual "mismatched halves pass through" (Just (pub, priv))
+    (stampPairComponents pub priv pubM privM48)
+  assertEqual "opaque halves pass through" (Just (pub, priv))
+    (stampPairComponents pub priv "HKS1pub" "HKS1priv")
 
 caseKeygenUsageDefaults :: IO ()
 caseKeygenUsageDefaults = do

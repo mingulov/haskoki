@@ -19,13 +19,14 @@ import Data.Word (Word8)
 import Foreign.C.Types (CULong (..))
 import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
-import Foreign.Storable (pokeByteOff, sizeOf)
+import Foreign.Storable (alignment, pokeByteOff, sizeOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, testCase)
 
 import Haskoki.FFI.NativeParams
   ( digestStemByCkm
   , ecdhNativeSize
+  , eddsaNativeSize
   , gcmNativeSize
   , mgfStemByCkg
   , normalizeEcdhParams
@@ -34,6 +35,11 @@ import Haskoki.FFI.NativeParams
   , pssNativeSize
   )
 import Haskoki.Recipe.Ecdh (ecdhParamsValid, ecdhRecipeFor, encodeEcdhParams)
+import Haskoki.Recipe.Eddsa
+  ( eddsaParamsValid
+  , eddsaRecipeFor
+  , encodeEddsaParams
+  )
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep
   ( encodeOaepParams
@@ -256,4 +262,87 @@ spec = testGroup "native mechanism params"
         pokeByteOff p 0 (CULong 0x01 :: CULong)
         normalizeEcdhParams p 8
       assertEqual "refused" Nothing out
+  , testCase "eddsa pure native struct translates to canonical" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_EDDSA")
+          w = sizeOf (undefined :: CULong)
+          wa = alignment (undefined :: CULong)
+          lenOff = ((1 + wa - 1) `div` wa) * wa
+      out <- allocaBytes eddsaNativeSize $ \p -> do
+        pokeByteOff p 0 (0 :: Word8)
+        pokeByteOff p lenOff (CULong 0)
+        pokeByteOff p (lenOff + w) (nullPtr :: Ptr Word8)
+        raw <- BS.packCStringLen (castPtr p, eddsaNativeSize)
+        normalizeMechParams mid p (fromIntegral eddsaNativeSize) raw
+      let want = encodeEddsaParams False BS.empty
+      assertEqual "canonical eddsa image" want out
+      case eddsaRecipeFor mid of
+        Nothing -> fail "eddsa recipe missing"
+        Just r -> assertEqual "recipe accepts" True (eddsaParamsValid r out)
+      assertEqual "native size" (lenOff + w + sizeOf (undefined :: Ptr Word8)) eddsaNativeSize
+  , testCase "eddsa context struct translates, recipe refuses" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_EDDSA")
+          ctx = "CTX" :: ByteString
+          w = sizeOf (undefined :: CULong)
+          wa = alignment (undefined :: CULong)
+          lenOff = ((1 + wa - 1) `div` wa) * wa
+      out <- BS.useAsCStringLen ctx $ \(cp, clen) ->
+        allocaBytes eddsaNativeSize $ \p -> do
+          pokeByteOff p 0 (0 :: Word8)
+          pokeByteOff p lenOff (CULong (fromIntegral clen))
+          pokeByteOff p (lenOff + w) (castPtr cp)
+          raw <- BS.packCStringLen (castPtr p, eddsaNativeSize)
+          normalizeMechParams mid p (fromIntegral eddsaNativeSize) raw
+      assertEqual "canonical eddsa image" (encodeEddsaParams False ctx) out
+      case eddsaRecipeFor mid of
+        Nothing -> fail "eddsa recipe missing"
+        Just r -> assertEqual "recipe refuses" False (eddsaParamsValid r out)
+  , testCase "eddsa prehash struct translates, recipe refuses" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_EDDSA")
+          w = sizeOf (undefined :: CULong)
+          wa = alignment (undefined :: CULong)
+          lenOff = ((1 + wa - 1) `div` wa) * wa
+      out <- allocaBytes eddsaNativeSize $ \p -> do
+        pokeByteOff p 0 (1 :: Word8)
+        pokeByteOff p lenOff (CULong 0)
+        pokeByteOff p (lenOff + w) (nullPtr :: Ptr Word8)
+        raw <- BS.packCStringLen (castPtr p, eddsaNativeSize)
+        normalizeMechParams mid p (fromIntegral eddsaNativeSize) raw
+      assertEqual "canonical eddsa image"
+        (encodeEddsaParams True BS.empty) out
+      case eddsaRecipeFor mid of
+        Nothing -> fail "eddsa recipe missing"
+        Just r -> assertEqual "recipe refuses" False (eddsaParamsValid r out)
+  , testCase "eddsa null context with length passes through" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_EDDSA")
+          w = sizeOf (undefined :: CULong)
+          wa = alignment (undefined :: CULong)
+          lenOff = ((1 + wa - 1) `div` wa) * wa
+      (raw, out) <- allocaBytes eddsaNativeSize $ \p -> do
+        pokeByteOff p 0 (0 :: Word8)
+        pokeByteOff p lenOff (CULong 7)
+        pokeByteOff p (lenOff + w) (nullPtr :: Ptr Word8)
+        raw <- BS.packCStringLen (castPtr p, eddsaNativeSize)
+        out <- normalizeMechParams mid p (fromIntegral eddsaNativeSize) raw
+        pure (raw, out)
+      assertEqual "passthrough" raw out
+  , testCase "eddsa bad flag passes through" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_EDDSA")
+          w = sizeOf (undefined :: CULong)
+          wa = alignment (undefined :: CULong)
+          lenOff = ((1 + wa - 1) `div` wa) * wa
+      (raw, out) <- allocaBytes eddsaNativeSize $ \p -> do
+        pokeByteOff p 0 (2 :: Word8)
+        pokeByteOff p lenOff (CULong 0)
+        pokeByteOff p (lenOff + w) (nullPtr :: Ptr Word8)
+        raw <- BS.packCStringLen (castPtr p, eddsaNativeSize)
+        out <- normalizeMechParams mid p (fromIntegral eddsaNativeSize) raw
+        pure (raw, out)
+      assertEqual "passthrough" raw out
+  , testCase "eddsa short image passes through" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_EDDSA")
+          raw = BS.replicate 8 0
+      out <- allocaBytes 8 $ \p -> do
+        pokeByteOff p 0 (0 :: Word8)
+        normalizeMechParams mid p 8 raw
+      assertEqual "passthrough" raw out
   ]

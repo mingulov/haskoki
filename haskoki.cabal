@@ -88,6 +88,7 @@ library haskoki-core
     Haskoki.Recipe.RsaPss
     Haskoki.Recipe.Ecdsa
     Haskoki.Recipe.Ecdh
+    Haskoki.Recipe.Eddsa
     Haskoki.Recipe.Gcm
     Haskoki.Recipe.Otp
   hs-source-dirs:     core
@@ -373,6 +374,7 @@ test-suite haskoki-model-tests
     RecipeDsaSpec
     RecipeEcdsaSpec
     RecipeEcdhSpec
+    RecipeEddsaSpec
     RecipeGcmSpec
     RecipeHmacSpec
     RecipeKdfSpec

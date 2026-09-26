@@ -23,7 +23,7 @@ import Test.Tasty.HUnit
 import Haskoki.Attribute
   (AttributeResult (..), AttributeType (..), AttributeValue (..),
    PartialReads (..), getAttributes)
-import Haskoki.Der (curveCoordLen, curveOidOfParams, dsaPkcs8Fields, dsaSpkiFields, parseDsaParams, unwrapEcPoint)
+import Haskoki.Der (curveCoordLen, curveOidOfParams, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, parseDsaParams, unwrapEcPoint, unwrapEdwardsPoint)
 import Haskoki.Engine.Backend
   (CryptoBackend (..), DigestAlg (..), EcSpec (..),
    EngineResult (..), KeyMaterial (..), SigSpec (..))
@@ -34,7 +34,7 @@ import Haskoki.Model
    lookupSession)
 import Haskoki.Object (decodeHandle, planCreateObject, resolveHandle)
 import Haskoki.Operation.KeyManagement
-  (ckoPrivateKey, ckoPublicKey, ckkDsa, ckkEc, ckkRsa)
+  (ckoPrivateKey, ckoPublicKey, ckkDsa, ckkEc, ckkEcEdwards, ckkRsa)
 import Haskoki.Outcome
   (DeltaOp (..), NativeOutput (..), PlanResult (..),
    PreparedCommit (..), Rejection (..), StateDelta (..))
@@ -51,6 +51,13 @@ spec = testGroup "key import"
   , testCase "DSA private import assembles PKCS#8" caseDsaPrivate
   , testCase "DSA public import assembles SPKI" caseDsaPublic
   , testCase "DSA DER readers parse openssl goldens" caseDsaDerReaders
+  , testCase "EdDSA assembly matches openssl goldens" caseEddsaDerGoldens
+  , testCase "EdDSA DER readers parse openssl goldens" caseEddsaDerReaders
+  , testCase "EdDSA private import assembles PKCS#8" caseEddsaPrivate
+  , testCase "EdDSA public import assembles SPKI" caseEddsaPublic
+  , testCase "partial EdDSA import is incomplete" casePartialEddsa
+  , testCase "bad EdDSA value refuses inconsistent" caseBadEddsaValue
+  , testCase "Edwards OID table agrees with the FFI" caseEdwardsTableAgreement
   , testCase "partial RSA import is incomplete" casePartialRsa
   , testCase "partial DSA import is incomplete" casePartialDsa
   , testCase "empty DSA component refuses inconsistent" caseBadDsaValue
@@ -335,6 +342,222 @@ caseDsaPublic = do
   assertEqual "prime kept" (Just (ValBytes dsaP)) (Map.lookup AttrPrime attrs)
   assertEqual "subprime kept" (Just (ValBytes dsaQ)) (Map.lookup AttrSubprime attrs)
   assertEqual "base kept" (Just (ValBytes dsaG)) (Map.lookup AttrBase attrs)
+
+-- | Edwards fixtures: CLI-generated Ed25519/Ed448 keys (pinned
+-- @openssl genpkey@); the DER goldens are openssl-emitted bytes,
+-- so golden equality is an independent cross-check of the
+-- assembly, not self-agreement.
+ed19Oid :: ByteString
+ed19Oid = hex "06032b6570"
+
+ed19Point :: ByteString
+ed19Point = hex $ concat
+  ["e3066819aa9f7d91c3c4ebad5584adeef588d8a1cbf2a09a8081d41cc5183402"
+  ]
+
+ed19Seed :: ByteString
+ed19Seed = hex $ concat
+  ["e48c12f6fd3bd16c24e972eab3910d1053a23f9db0113d10d0835223f638dd05"
+  ]
+
+ed19SpkiGold :: ByteString
+ed19SpkiGold = hex $ concat
+  ["302a300506032b6570032100e3066819aa9f7d91c3c4ebad5584adeef588d8a1cbf2a09a8081d41cc5183402"
+  ]
+
+ed19P8Gold :: ByteString
+ed19P8Gold = hex $ concat
+  ["302e020100300506032b657004220420e48c12f6fd3bd16c24e972eab3910d1053a23f9db0113d10d0835223f638dd05"
+  ]
+
+ed48Oid :: ByteString
+ed48Oid = hex "06032b6571"
+
+ed48Point :: ByteString
+ed48Point = hex $ concat
+  ["86328bf04c3d241a0f05968cee630c68cdd2e2378a2f63e01ec215a661c7f83dddfddc788c1102a2529c68b8d3c0155e"
+  ,"c9e263561e2545d280"
+  ]
+
+ed48Seed :: ByteString
+ed48Seed = hex $ concat
+  ["8217a8d0ea3724199e10d866da9b2f582ce7c9a8aa37ad7763df96d48c210c1c3ef3fe87ad7ce40306f70747dfee39a7"
+  ,"99cd1a0ecb1481f9e1"
+  ]
+
+ed48SpkiGold :: ByteString
+ed48SpkiGold = hex $ concat
+  ["3043300506032b6571033a0086328bf04c3d241a0f05968cee630c68cdd2e2378a2f63e01ec215a661c7f83dddfddc78"
+  ,"8c1102a2529c68b8d3c0155ec9e263561e2545d280"
+  ]
+
+ed48P8Gold :: ByteString
+ed48P8Gold = hex $ concat
+  ["3047020100300506032b6571043b04398217a8d0ea3724199e10d866da9b2f582ce7c9a8aa37ad7763df96d48c210c1c"
+  ,"3ef3fe87ad7ce40306f70747dfee39a799cd1a0ecb1481f9e1"
+  ]
+
+eddsaPrivTmpl :: [(AttributeType, AttributeValue)]
+eddsaPrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkEcEdwards)
+  , (AttrToken, ValBool False)
+  , (AttrEcParams, ValBytes ed19Oid)
+  , (AttrValue, ValBytes ed19Seed)
+  ]
+
+eddsaPubTmpl :: [(AttributeType, AttributeValue)]
+eddsaPubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkEcEdwards)
+  , (AttrToken, ValBool False)
+  , (AttrEcParams, ValBytes ed19Oid)
+  , (AttrEcPoint, ValBytes ed19Point)
+  ]
+
+caseEddsaDerGoldens :: IO ()
+caseEddsaDerGoldens = do
+  assertEqual "Ed25519 SPKI golden" ed19SpkiGold
+    (eddsaPublicDer ed19Oid ed19Point)
+  assertEqual "Ed448 SPKI golden" ed48SpkiGold
+    (eddsaPublicDer ed48Oid ed48Point)
+  assertEqual "Ed25519 PKCS#8 golden" ed19P8Gold
+    (eddsaPrivateDer ed19Oid ed19Seed)
+  assertEqual "Ed448 PKCS#8 golden" ed48P8Gold
+    (eddsaPrivateDer ed48Oid ed48Seed)
+  assertEqual "table rows" [("Ed25519", ed19Oid, 32, 64), ("Ed448", ed48Oid, 57, 114)]
+    edwardsTable
+  assertEqual "Ed25519 widths" (Just (32, 64)) (edwardsWidthsOfParams ed19Oid)
+  assertEqual "Ed448 widths" (Just (57, 114)) (edwardsWidthsOfParams ed48Oid)
+  assertEqual "P-256 has no Edwards widths" Nothing
+    (edwardsWidthsOfParams (hex "06082a8648ce3d030107"))
+  assertEqual "garbage has no Edwards widths" Nothing
+    (edwardsWidthsOfParams "nope")
+  -- Point unwrap: raw RFC 8032 bytes pass through; a DER OCTET
+  -- STRING wrapper unwraps; widths are enforced either way.
+  assertEqual "raw point passes" (Just ed19Point)
+    (unwrapEdwardsPoint 32 ed19Point)
+  assertEqual "wrapped point unwraps" (Just ed19Point)
+    (unwrapEdwardsPoint 32 (BS.pack [0x04, 0x20] <> ed19Point))
+  assertEqual "wrapped Ed448 unwraps" (Just ed48Point)
+    (unwrapEdwardsPoint 57 (BS.pack [0x04, 0x39] <> ed48Point))
+  assertEqual "short raw refuses" Nothing
+    (unwrapEdwardsPoint 32 (BS.take 31 ed19Point))
+  assertEqual "long raw refuses" Nothing
+    (unwrapEdwardsPoint 32 (ed19Point <> BS.singleton 0x00))
+  assertEqual "wrong-width wrap refuses" Nothing
+    (unwrapEdwardsPoint 32 (BS.pack [0x04, 0x39] <> ed48Point))
+  assertEqual "truncated wrap refuses" Nothing
+    (unwrapEdwardsPoint 32 (BS.pack [0x04, 0x20] <> BS.take 31 ed19Point))
+  assertEqual "garbage refuses" Nothing
+    (unwrapEdwardsPoint 32 "nope")
+
+caseEddsaDerReaders :: IO ()
+caseEddsaDerReaders = do
+  -- The openssl-emitted goldens parse back to the fixture
+  -- components (independent cross-check of the
+  -- keygen-stamping readers).
+  assertEqual "Ed25519 SPKI fields" (Just (ed19Oid, ed19Point))
+    (eddsaSpkiFields ed19SpkiGold)
+  assertEqual "Ed448 SPKI fields" (Just (ed48Oid, ed48Point))
+    (eddsaSpkiFields ed48SpkiGold)
+  assertEqual "Ed25519 PKCS#8 fields" (Just (ed19Oid, ed19Seed))
+    (eddsaPkcs8Fields ed19P8Gold)
+  assertEqual "Ed448 PKCS#8 fields" (Just (ed48Oid, ed48Seed))
+    (eddsaPkcs8Fields ed48P8Gold)
+  -- Malformed input refuses.
+  assertEqual "truncated SPKI" Nothing
+    (eddsaSpkiFields (BS.take (BS.length ed19SpkiGold - 1) ed19SpkiGold))
+  assertEqual "truncated PKCS#8" Nothing
+    (eddsaPkcs8Fields (BS.take 10 ed19P8Gold))
+  assertEqual "garbage SPKI" Nothing (eddsaSpkiFields "nope")
+  assertEqual "garbage PKCS#8" Nothing (eddsaPkcs8Fields "nope")
+  assertEqual "wrong tag" Nothing
+    (eddsaSpkiFields (BS.cons 0x31 (BS.drop 1 ed19SpkiGold)))
+  -- Foreign algorithms refuse (OID membership, not shape).
+  assertEqual "EC SPKI refuses" Nothing (eddsaSpkiFields ecSpkiGold)
+  assertEqual "DSA SPKI refuses" Nothing (eddsaSpkiFields dsaSpkiGold)
+
+caseEddsaPrivate :: IO ()
+caseEddsaPrivate = do
+  m0 <- seedModel
+  st <- getSession m0
+  (_, _, attrs) <- doCreate m0 st eddsaPrivTmpl
+  der <- storedValue attrs
+  assertEqual "PKCS#8 golden" ed19P8Gold der
+  assertEqual "params kept" (Just (ValBytes ed19Oid)) (Map.lookup AttrEcParams attrs)
+  -- Engine-name params (the post-wire form) assemble identically.
+  let named = map (\(t, v) -> if t == AttrEcParams then (t, ValBytes "Ed25519") else (t, v)) eddsaPrivTmpl
+  (_, _, attrsN) <- doCreate m0 st named
+  derN <- storedValue attrsN
+  assertEqual "named-params PKCS#8 golden" ed19P8Gold derN
+
+caseEddsaPublic :: IO ()
+caseEddsaPublic = do
+  m0 <- seedModel
+  st <- getSession m0
+  (_, _, attrs) <- doCreate m0 st eddsaPubTmpl
+  der <- storedValue attrs
+  assertEqual "SPKI golden" ed19SpkiGold der
+  assertEqual "point kept" (Just (ValBytes ed19Point)) (Map.lookup AttrEcPoint attrs)
+  -- A DER OCTET STRING wrapper around the point unwraps to the
+  -- same golden (maximal coverage: some providers emit it).
+  let wrapped = map (\(t, v) -> if t == AttrEcPoint
+        then (t, ValBytes (BS.pack [0x04, 0x20] <> ed19Point)) else (t, v)) eddsaPubTmpl
+  (_, _, attrsW) <- doCreate m0 st wrapped
+  derW <- storedValue attrsW
+  assertEqual "wrapped-point SPKI golden" ed19SpkiGold derW
+
+casePartialEddsa :: IO ()
+casePartialEddsa = do
+  m0 <- seedModel
+  st <- getSession m0
+  let noParams = filter ((/= AttrEcParams) . fst) eddsaPrivTmpl
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noParams)
+  let noSeed = filter ((/= AttrValue) . fst) eddsaPrivTmpl
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noSeed)
+  let noPoint = filter ((/= AttrEcPoint) . fst) eddsaPubTmpl
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noPoint)
+
+caseBadEddsaValue :: IO ()
+caseBadEddsaValue = do
+  m0 <- seedModel
+  st <- getSession m0
+  let setT tmpl t v = (t, v) : filter ((/= t) . fst) tmpl
+      p256 = hex "06082a8648ce3d030107"
+  -- Off-width seed/point refuse inconsistent.
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT eddsaPrivTmpl AttrValue (ValBytes (BS.take 31 ed19Seed))))
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT eddsaPrivTmpl AttrValue (ValBytes (ed19Seed <> BS.singleton 0))))
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT eddsaPubTmpl AttrEcPoint (ValBytes (BS.take 31 ed19Point))))
+  -- A foreign curve refuses CURVE_NOT_SUPPORTED (the EC precedent).
+  expectReject CKR_CURVE_NOT_SUPPORTED (planCreateObject m0 st
+    (setT eddsaPrivTmpl AttrEcParams (ValBytes p256)))
+  expectReject CKR_CURVE_NOT_SUPPORTED (planCreateObject m0 st
+    (setT eddsaPubTmpl AttrEcParams (ValBytes p256)))
+  -- An explicit value next to public components contradicts.
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (eddsaPubTmpl ++ [(AttrValue, ValBytes "x")]))
+
+caseEdwardsTableAgreement :: IO ()
+caseEdwardsTableAgreement = do
+  -- The core Edwards table and the FFI wire mapping agree both
+  -- ways (the EC agreement precedent); anything else passes
+  -- through untouched.
+  let curves =
+        [ ("Ed25519", "06032b6570", 32, 64)
+        , ("Ed448", "06032b6571", 57, 114)
+        ]
+  mapM_ (\(name, oid, seedW, sigW) -> do
+    assertEqual ("core resolves " ++ name) (Just (hex oid)) (edwardsOidOfParams (BS8.pack name))
+    assertEqual ("core resolves DER " ++ name) (Just (hex oid)) (edwardsOidOfParams (hex oid))
+    assertEqual ("core names " ++ name) (Just (BS8.pack name)) (edwardsNameOfOid (hex oid))
+    assertEqual ("core widths " ++ name) (Just (seedW, sigW)) (edwardsWidthsOfParams (hex oid))
+    assertEqual ("ffi emits " ++ name) (hex oid) (ecParamsToWire (BS8.pack name))
+    assertEqual ("ffi parses " ++ name) (BS8.pack name) (ecParamsFromWire (hex oid))
+    ) curves
 
 caseDsaDerReaders :: IO ()
 caseDsaDerReaders = do

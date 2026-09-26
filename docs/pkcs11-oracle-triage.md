@@ -390,6 +390,77 @@ first lane proving all of them together.
   passes init (crypto fails later). Filed for a hardening slice;
   no oracle leg covers it.
 
+## Round 13: EdDSA slice (fast r31/r32 + KAT r13/r14)
+
+- r30→r31 (NULL-accepting build, superseded): 2 new
+  failures,
+  `test_mech_negative.py::TestBadParameters::test_registry_
+  sign|verify_missing_required_param[EDDSA]` (oracle
+  registry marks `CKM_EDDSA` `param_required`; NULL must
+  refuse with exactly `CKR_MECHANISM_PARAM_INVALID`, the
+  module answered `CKR_OK`) plus 50 collateral xfails: the
+  accepted NULL init left a stale sign op on the shared
+  session and every later sign/verify leg saw
+  `CKR_OPERATION_ACTIVE`. Root cause: the slice first read
+  the KAT drivers' null-first probe order as a NULL
+  requirement; the drivers fall back to the explicit pure
+  struct on `PARAM_INVALID`/`ARGUMENTS_BAD`, and the
+  oracle's own happy-path legs always send the struct.
+  Fix (same slice): the struct is required — recipe
+  validity is pure-explicit-only, `checkMechParams`
+  refuses empty with `PARAM_INVALID` exactly, non-pure
+  keeps the sibling `ARGUMENTS_BAD` (134 behavior rows).
+- Targeted EdDSA r1/r2 (post-fix build): `test_eddsa.py`
+  12 pass + 3 xfail, encoding 1 pass; KAT r2 (wycheproof
+  + CCTV + ACVP + eddsa) 1092 pass, 0 failed, 100 xfailed,
+  4 skipped — the profile fallback to `(raw, explicit)`
+  is transparent
+  (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-eddsa-kat-r2.json`).
+- r30→r32 (3169→3203 passed, +34 / +6 xfail / +3 skip,
+  same 2 HOTP externals confirmed by test id, zero
+  pass→fail): `test_eddsa` 15 skips resolve (12 pass + 3
+  xfail), encoding 1 pass, `test_mech_negative` +4 pass
+  (the EDDSA missing/malformed legs), `test_mech_flags`
+  +6 pass, `test_mech_sign` +2 pass / +1 xfail,
+  `test_mech_attribute` +3 pass / +1 xfail,
+  `test_mech_multipart` +2 pass, `test_mech_keygen` +1
+  pass / +1 xfail, `test_ffi_length_boundary` +3 pass
+  (EdDSA null-context + length-boundary probes: no crash,
+  honest refusal), `test_mech_probe` +6 skip
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r32-results.json`).
+- KAT r13 (first EdDSA run): 75366→76480 passed (+1114),
+  same 2 HOTP, +103 xfail — of which 87 wycheproof Ed448
+  + 10 ACVP Ed448 legs xfailed with `CKR_GENERAL_ERROR`
+  while every Ed25519 leg passed and engine-level Ed448
+  roundtrips passed. Root cause (real slice bug):
+  production resolves every stored key as `KeyBytes`
+  (`stdResolver`) but the driver curve sniff matched
+  `KeyDer` only, so every production Ed448 op
+  misdispatched as Ed25519 and the shim's base-id check
+  refused with BADKEY. (ECDSA survives the same shape:
+  its shim takes no curve name — the provider reads the
+  curve off the key DER.) Fix (same slice): sniff both
+  constructors, with committed `KeyBytes`-carrying-DER
+  legs in RecipeEddsaSpec. Proof: targeted KAT r3
+  1192/1196, 0 failed, 0 xfailed (4 pre-existing ACVP
+  config skips).
+- KAT r14: +101 pass / −101 xfail vs r13 (wycheproof
+  238/238, ACVP 25 pass, `test_eddsa` 15/15,
+  `test_mech_sign` +1), same 2 HOTP externals by id,
+  zero drift
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r14-results.json`).
+- Standing notes: EdDSA wrong-length verify answers
+  `CKR_SIGNATURE_INVALID`, matching the module-global
+  stance (RSA/ECDSA/HMAC xfail the oracle's
+  `LEN_RANGE` preference identically — a split would be
+  cross-cutting); the `test_ckr_verify` EdDSA leg skips
+  (NULL refused → skip path); pre-existing
+  `consumer_session_cancel` slot-0 hardcode fixed in
+  passing (the daemon remaps backend slot 0 to virtual
+  slot 1 — parity could never pass with a hardcoded 0);
+  history-codes net −10 hits (the version-table locals
+  renamed, zero new).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

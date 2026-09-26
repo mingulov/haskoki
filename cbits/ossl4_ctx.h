@@ -321,6 +321,36 @@ int hsk_ossl4_dsa_gen_keypair(OSSL_LIB_CTX *ctx, const char *propq,
                               size_t *priv_len, unsigned char **pub_der,
                               size_t *pub_len);
 
+/* --- EdDSA sign/verify/keygen (RFC 8032, pure) ------------------------ */
+/* curvename: "ED25519" or "ED448" (anything else is BADPARAM).
+ * priv_der: PKCS#8 DER; the key's actual algorithm must match the
+ * requested curve (cross-curve execution is BADKEY). Pure EdDSA is
+ * one-shot with a NULL digest (no streaming, no prehash, no
+ * context); empty messages serve. Answers the raw signature
+ * length with *out set (64/114 bytes), or a negative
+ * HSK_OSSL4_ERR_* code. */
+long hsk_ossl4_eddsa_sign(OSSL_LIB_CTX *ctx, const char *curvename,
+                          const char *propq, const unsigned char *priv_der,
+                          size_t priv_len, const unsigned char *msg,
+                          size_t msglen, unsigned char **out);
+/* pub_der: SPKI DER (same curve-match rule as sign). Off-width
+ * signatures (anything but 64/114 for the curve) answer 0
+ * (mismatch — they can never be valid). Returns 1 (valid), 0
+ * (bad signature), HSK_OSSL4_ERR_BADKEY (bad DER key), or
+ * HSK_OSSL4_ERR_* on other failures. */
+int hsk_ossl4_eddsa_verify(OSSL_LIB_CTX *ctx, const char *curvename,
+                           const char *propq, const unsigned char *pub_der,
+                           size_t pub_len, const unsigned char *msg,
+                           size_t msglen, const unsigned char *sig,
+                           size_t siglen);
+/* Mints an Edwards pair and answers the PKCS#8 private + SPKI
+ * public DER halves (HSK_OSSL4_OK); an unknown curve name is
+ * BADPARAM. */
+int hsk_ossl4_edwards_gen(OSSL_LIB_CTX *ctx, const char *propq,
+                          const char *curvename, unsigned char **priv_der,
+                          size_t *priv_len, unsigned char **pub_der,
+                          size_t *pub_len);
+
 /* --- ECDH agreement ------------------------------------------ */
 
 /* priv_der: PKCS#8 DER base key; peer_der: SPKI DER peer key. cofactor:

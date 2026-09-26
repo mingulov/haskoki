@@ -118,6 +118,7 @@ spec = testGroup "synthetic engine"
   , testCase "synthetic CCM seals deterministically" caseAeadCcmRoundtrip
   , testCase "ECDSA curves and digests roundtrip" caseEcdsaCurves
   , testCase "DSA digests and raw roundtrip" caseDsaRoundtrip
+  , testCase "EdDSA curves roundtrip" caseEddsaRoundtrip
   , testCase "ECDH agreements separate and replay" caseEcdh
   , testCase "CMAC tags separate and truncate" caseCmac
   , testCase "KDF output separates and truncates" caseKdf
@@ -558,15 +559,18 @@ caseSign = withSynth "11" $ \env -> do
     verify env ecdsaRaw key32 "msg" sig
   expectAuthFailed "raw sig under der rejected" =<<
     verify env ecdsaDer key32 "msg" sigR
-  -- Outside the set: off-set curves/digests and EdDSA.
+  -- Outside the set: off-set curves/digests.
   -- (Raw ECDSA, the NIST prime curves, and every fixed-width
-  -- digest are supported, see caseEcdsaCurves.)
+  -- digest are supported, see caseEcdsaCurves; EdDSA signs
+  -- inside the set, see caseEddsaRoundtrip.)
   expectUnsupported "p224" =<<
     sign env (SigECDSA (EcSpec "P-224" "DER") (Just D_SHA256)) key32 "msg"
   expectUnsupported "xof digest" =<<
     sign env (SigECDSA (EcSpec "P-256" "DER") (Just D_SHAKE128)) key32 "msg"
-  expectUnsupported "eddsa" =<<
+  edSig <- expectOk "eddsa signs" =<<
     sign env (SigEdDSA (EcSpec "Ed25519" "RAW") BS.empty) key32 "msg"
+  expectOk "eddsa verifies" =<<
+    verify env (SigEdDSA (EcSpec "Ed25519" "RAW") BS.empty) key32 "msg" edSig
 
 -- ---------------------------------------------------------------------------
 -- Part 4 case: cipher
@@ -924,6 +928,7 @@ caseCapsFull = withSynth "11" $ \env -> do
         [ "SHA1", "SHA224", "SHA256", "SHA384", "SHA512"
         , "SHA3-224", "SHA3-256", "SHA3-384", "SHA3-512"
         ]
+      eddsaNames = ["EDDSA-Ed25519", "EDDSA-Ed448"]
   assertEqual "sig set" (Set.fromList
     ([ "RSA-PSS"
     , "RSA-RAW"
@@ -933,7 +938,7 @@ caseCapsFull = withSynth "11" $ \env -> do
     , "RSA-PKCS1v15-SHA3-224", "RSA-PKCS1v15-SHA3-256"
     , "RSA-PKCS1v15-SHA3-384", "RSA-PKCS1v15-SHA3-512"
     , "RSA-PKCS1v15-RIPEMD160"
-    ] ++ dsaNames ++ fipsDsaNames)) (scSpecs (bcSigs caps))
+    ] ++ dsaNames ++ fipsDsaNames ++ eddsaNames)) (scSpecs (bcSigs caps))
   assertEqual "curves" (Set.fromList dsaCurves) (scCurves (bcSigs caps))
   assertEqual "no pqc sig" Set.empty (scPqcSign (bcSigs caps))
   assertEqual "kem set"
@@ -1395,6 +1400,42 @@ caseDsaRoundtrip = withSynth "11" $ \env -> do
         verify env sspec key32 input (BS.map complement sig)
       expectAuthFailed ("wrong key " ++ label) =<<
         verify env sspec otherKey32 input sig
+
+-- | Both Edwards curves roundtrip through the synthetic
+-- constructions (pure specs only), tampering and wrong keys fail,
+-- curves stay domain-separated from each other and from ECDSA,
+-- and keygen mints opaque pairs that sign/verify across halves.
+caseEddsaRoundtrip :: IO ()
+caseEddsaRoundtrip = withSynth "11" $ \env -> do
+  mapM_ (roundtrip env) eddsaSpecs
+  -- Separation: curves never share a test signature over one key
+  -- and message, and EdDSA never collides with ECDSA.
+  s19 <- expectOk "sign Ed25519" =<< sign env ed19 key32 "msg"
+  s48 <- expectOk "sign Ed448" =<< sign env ed48 key32 "msg"
+  assertBool "curves separated" (s19 /= s48)
+  ec <- expectOk "sign ecdsa" =<< sign env ecdsaDer key32 "msg"
+  assertBool "families separated" (ec /= s19)
+  expectAuthFailed "Ed448 sig under Ed25519 rejected" =<<
+    verify env ed19 key32 "msg" s48
+  -- Keygen: opaque pairs roundtrip across halves.
+  (priv, Just pub) <- expectOk "keygen" =<< generateKey env (GenEdDSAKeypair "Ed25519")
+  sig <- expectOk "genkey sign" =<< sign env ed19 priv "msg"
+  expectOk "genkey verify" =<< verify env ed19 pub "msg" sig
+  expectUnsupported "off-set curve refused" =<< generateKey env (GenEdDSAKeypair "P-256")
+  where
+    ed19 = SigEdDSA (EcSpec "Ed25519" "RAW") ""
+    ed48 = SigEdDSA (EcSpec "Ed448" "RAW") ""
+    eddsaSpecs :: [SigSpec]
+    eddsaSpecs = [ed19, ed48]
+    roundtrip env sspec = do
+      let label = show sspec
+      sig <- expectOk ("sign " ++ label) =<< sign env sspec key32 "msg"
+      assertEqual ("sig length " ++ label) synthSigLength (BS.length sig)
+      expectOk ("verify " ++ label) =<< verify env sspec key32 "msg" sig
+      expectAuthFailed ("tampered " ++ label) =<<
+        verify env sspec key32 "msg" (BS.map complement sig)
+      expectAuthFailed ("wrong key " ++ label) =<<
+        verify env sspec otherKey32 "msg" sig
 
 caseEcdsaCurves :: IO ()
 caseEcdsaCurves = withSynth "11" $ \env -> do

@@ -1346,6 +1346,109 @@ int main(int argc, char **argv) {
       rv = f->C_Verify(ssess, digest, sizeof(digest), sig, sigLen);
       CHECKC(rv == CKR_OK, "raw DSA verify ok");
     }
+    /* EdDSA: Edwards keypair -> sign/verify. The struct is
+     * required (OASIS pins CK_EDDSA_PARAMS; the oracle
+     * registry marks it param_required): NULL refuses
+     * PARAM_INVALID exactly. The shim maps CKM_EDDSA both
+     * parameterless and as the eddsa shape, so both forms
+     * forward transparently in both topologies (no
+     * ECDSA-DER-style proxy branch needed). */
+    {
+      CK_KEY_TYPE ekt = CKK_EC_EDWARDS;
+      CK_OBJECT_HANDLE epub = 0, epriv = 0;
+      CK_BYTE edParams[] = { 0x06, 0x03, 0x2B, 0x65, 0x70 };
+      CK_MECHANISM ekgm, esm, enm, ebm;
+      CK_EDDSA_PARAMS epure, ebad;
+      CK_ATTRIBUTE epubT[5];
+      CK_ATTRIBUTE eprivT[4];
+      CK_ATTRIBUTE eshortT[3];
+      ekgm.mechanism = CKM_EC_EDWARDS_KEY_PAIR_GEN;
+      ekgm.pParameter = NULL_PTR;
+      ekgm.ulParameterLen = 0;
+      eshortT[0].type = CKA_CLASS;
+      eshortT[0].pValue = &pcls;
+      eshortT[0].ulValueLen = sizeof(pcls);
+      eshortT[1].type = CKA_KEY_TYPE;
+      eshortT[1].pValue = &ekt;
+      eshortT[1].ulValueLen = sizeof(ekt);
+      eshortT[2].type = CKA_TOKEN;
+      eshortT[2].pValue = &bFalse;
+      eshortT[2].ulValueLen = sizeof(bFalse);
+      eprivT[0].type = CKA_CLASS;
+      eprivT[0].pValue = &scls;
+      eprivT[0].ulValueLen = sizeof(scls);
+      eprivT[1].type = CKA_KEY_TYPE;
+      eprivT[1].pValue = &ekt;
+      eprivT[1].ulValueLen = sizeof(ekt);
+      eprivT[2].type = CKA_TOKEN;
+      eprivT[2].pValue = &bFalse;
+      eprivT[2].ulValueLen = sizeof(bFalse);
+      eprivT[3].type = CKA_SIGN;
+      eprivT[3].pValue = &bTrue;
+      eprivT[3].ulValueLen = sizeof(bTrue);
+      rv = f->C_GenerateKeyPair(ssess, &ekgm, eshortT, 3, eprivT, 4,
+                                &epub, &epriv);
+      CHECKC(rv == CKR_TEMPLATE_INCOMPLETE,
+             "Edwards keypair without EC_PARAMS is INCOMPLETE");
+      epubT[0].type = CKA_CLASS;
+      epubT[0].pValue = &pcls;
+      epubT[0].ulValueLen = sizeof(pcls);
+      epubT[1].type = CKA_KEY_TYPE;
+      epubT[1].pValue = &ekt;
+      epubT[1].ulValueLen = sizeof(ekt);
+      epubT[2].type = CKA_EC_PARAMS;
+      epubT[2].pValue = edParams;
+      epubT[2].ulValueLen = sizeof(edParams);
+      epubT[3].type = CKA_TOKEN;
+      epubT[3].pValue = &bFalse;
+      epubT[3].ulValueLen = sizeof(bFalse);
+      epubT[4].type = CKA_VERIFY;
+      epubT[4].pValue = &bTrue;
+      epubT[4].ulValueLen = sizeof(bTrue);
+      rv = f->C_GenerateKeyPair(ssess, &ekgm, epubT, 5, eprivT, 4,
+                                &epub, &epriv);
+      CHECKC(rv == CKR_OK && epub != 0 && epriv != 0, "Edwards pair mints");
+      epure.phFlag = CK_FALSE;
+      epure.ulContextDataLen = 0;
+      epure.pContextData = NULL_PTR;
+      esm.mechanism = CKM_EDDSA;
+      esm.pParameter = &epure;
+      esm.ulParameterLen = sizeof(epure);
+      enm.mechanism = CKM_EDDSA;
+      enm.pParameter = NULL_PTR;
+      enm.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &esm, epriv);
+      CHECKC(rv == CKR_OK, "EdDSA struct SignInit ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "eddsa-consumer", 14, sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen == 64, "EdDSA sign yields 64 bytes");
+      rv = f->C_VerifyInit(ssess, &esm, epub);
+      CHECKC(rv == CKR_OK, "EdDSA struct VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "eddsa-consumer", 14, sig, sigLen);
+      CHECKC(rv == CKR_OK, "EdDSA struct verify ok");
+      ebad.phFlag = CK_TRUE;
+      ebad.ulContextDataLen = 0;
+      ebad.pContextData = NULL_PTR;
+      ebm.mechanism = CKM_EDDSA;
+      ebm.pParameter = &ebad;
+      ebm.ulParameterLen = sizeof(ebad);
+      rv = f->C_SignInit(ssess, &ebm, epriv);
+      CHECKC(rv == CKR_ARGUMENTS_BAD,
+             "EdDSA prehash struct refused");
+      rv = f->C_SignInit(ssess, &enm, epriv);
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+             "EdDSA NULL-params SignInit refused");
+      rv = f->C_VerifyInit(ssess, &enm, epub);
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+             "EdDSA NULL-params VerifyInit refused");
+      /* Tamper under the struct params (sig still holds the
+       * 64 struct-signed bytes; the refusals started no op). */
+      rv = f->C_VerifyInit(ssess, &esm, epub);
+      CHECKC(rv == CKR_OK, "EdDSA re-init for tamper");
+      sig[sigLen - 1] ^= 0xFF;
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "eddsa-consumer", 14, sig, sigLen);
+      CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered EdDSA refused");
+    }
     rv = f->C_CloseSession(ssess);
     CHECKC(rv == CKR_OK, "sign session closes");
   }

@@ -87,6 +87,8 @@ spec = testGroup "openssl4 engine"
   , testCase "ECDSA off-curve keys refused typed" caseEcdsaOffCurve
   , testCase "DSA wycheproof KAT + roundtrips (q224/q256)" caseDsa
   , testCase "DSA paramgen + keygen mint usable pairs" caseDsaKeygen
+  , testCase "EdDSA wycheproof KAT + roundtrips (Ed25519/Ed448)" caseEddsa
+  , testCase "EdDSA keygen mints usable pairs" caseRealEddsaKeygen
   , testCase "ECDH agreement KATs (CLI vectors)" caseEcdhVectors
   , testCase "raw-vs-der encodings never convert silently" caseRawVsDer
   , testCase "Symmetric keygen (fresh random bytes)" caseSymKeygen
@@ -1855,6 +1857,80 @@ dsaCliMsg = hex "4453412066697874757265206d657373616765"
 dsaCliSigDer :: ByteString
 dsaCliSigDer = hex "303d021c2cf49ba16d76c738ce1d586bc5d5c24d24b5278f66167cd432b72e75021d009d247ced58ddc6591799508425029b03f145a3a9dff66d77ef68c2ce"
 
+-- | EdDSA fixtures: Wycheproof ed25519 vectors (TEST 1 tcId 80,
+-- group0 tc1 valid + tc10 invalid) copied from
+-- @testvectors_v1/ed25519_test.json@ (SPKI-wrapped here for the
+-- backend's KeyDer shape); a CLI cross-implementation KAT (pinned
+-- @openssl pkeyutl@ over the KeyImportSpec Ed25519 key); and a
+-- pinned-CLI Ed448 keypair for roundtrips.
+edWyT1Pub :: ByteString
+edWyT1Pub = hex $ concat
+  ["302a300506032b6570032100d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+  ]
+
+edWyT1Msg :: ByteString
+edWyT1Msg = hex ""
+
+edWyT1Sig :: ByteString
+edWyT1Sig = hex $ concat
+  ["e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46b"
+  ,"d25bf5f0595bbe24655141438e7a100b"
+  ]
+
+edWyG0Pub :: ByteString
+edWyG0Pub = hex $ concat
+  ["302a300506032b65700321007d4d0e7f6153a69b6242b522abbee685fda4420f8834b108c3bdae369ef549fa"
+  ]
+
+edWyG0Msg :: ByteString
+edWyG0Msg = hex ""
+
+edWyG0Sig :: ByteString
+edWyG0Sig = hex $ concat
+  ["d4fbdb52bfa726b44d1786a8c0d171c3e62ca83c9e5bbe63de0bb2483f8fd6cc1429ab72cafc41ab56af02ff8fcc43b9"
+  ,"9bfe4c7ae940f60f38ebaa9d311c4007"
+  ]
+
+edWyBadMsg :: ByteString
+edWyBadMsg = hex "3f"
+
+edWyBadSig :: ByteString
+edWyBadSig = hex $ concat
+  ["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  ,"00000000000000000000000000000000"
+  ]
+
+edCliPriv :: ByteString
+edCliPriv = hex $ concat
+  ["302e020100300506032b657004220420e48c12f6fd3bd16c24e972eab3910d1053a23f9db0113d10d0835223f638dd05"
+  ]
+
+edCliPub :: ByteString
+edCliPub = hex $ concat
+  ["302a300506032b6570032100e3066819aa9f7d91c3c4ebad5584adeef588d8a1cbf2a09a8081d41cc5183402"
+  ]
+
+edCliMsg :: ByteString
+edCliMsg = "eddsa cli kat message"
+
+edCliSig :: ByteString
+edCliSig = hex $ concat
+  ["6b88ff1978856a802dd75dc694a6435d3df4da2909d43a00e5ec3718a7cce79cdeafacceabe5a05eb676f8315e9ca793"
+  ,"0a9b1d6497562a3d650cb07cc20ce30e"
+  ]
+
+ed48Priv :: ByteString
+ed48Priv = hex $ concat
+  ["3047020100300506032b6571043b04398217a8d0ea3724199e10d866da9b2f582ce7c9a8aa37ad7763df96d48c210c1c"
+  ,"3ef3fe87ad7ce40306f70747dfee39a799cd1a0ecb1481f9e1"
+  ]
+
+ed48Pub :: ByteString
+ed48Pub = hex $ concat
+  ["3043300506032b6571033a0086328bf04c3d241a0f05968cee630c68cdd2e2378a2f63e01ec215a661c7f83dddfddc78"
+  ,"8c1102a2529c68b8d3c0155ec9e263561e2545d280"
+  ]
+
 dsaWyPub :: ByteString
 dsaWyPub = hex $ concat
   ["308203463082023906072a8648ce3804013082022c0282010100faa45850a6f185cff01790524f60c6867461578fcb013cf340fe495b43b4"
@@ -1960,6 +2036,92 @@ caseDsaKeygen = withBackend $ \env -> do
   expectOk "genkey verify" =<< verify env spec pub dsaCliMsg sig
   expectBadKey "garbage params refused" =<<
     generateKey env (GenDSAKeypair "bogus")
+
+-- | EdDSA: Wycheproof KATs (TEST 1 tcId 80 + group0 tc1 verify,
+-- group0 tc10 invalid mismatches), a CLI cross-implementation KAT,
+-- and roundtrips on both curves (fixed widths, determinism, empty
+-- messages, typed key-shape refusals, cross-curve refusal).
+caseEddsa :: IO ()
+caseEddsa = withBackend $ \env -> do
+  let ed19 = SigEdDSA (EcSpec "Ed25519" "RAW") ""
+      ed48 = SigEdDSA (EcSpec "Ed448" "RAW") ""
+      tamper bs = BS.init bs <> BS.singleton (BS.last bs + 1)
+  -- Wycheproof KATs: TEST 1 + group0 tc1 verify; tc10 invalid
+  -- and tampered vectors mismatch.
+  expectOk "wycheproof TEST 1" =<<
+    verify env ed19 (KeyDer edWyT1Pub) edWyT1Msg edWyT1Sig
+  expectOk "wycheproof group0 tc1" =<<
+    verify env ed19 (KeyDer edWyG0Pub) edWyG0Msg edWyG0Sig
+  expectAuthFailed "wycheproof group0 tc10 invalid" =<<
+    verify env ed19 (KeyDer edWyG0Pub) edWyBadMsg edWyBadSig
+  expectAuthFailed "wycheproof TEST 1 tampered" =<<
+    verify env ed19 (KeyDer edWyT1Pub) edWyT1Msg (tamper edWyT1Sig)
+  -- CLI cross-implementation KAT (pkeyutl signature over edCliMsg).
+  expectOk "cli verifies" =<<
+    verify env ed19 (KeyDer edCliPub) edCliMsg edCliSig
+  expectAuthFailed "cli tampered" =<<
+    verify env ed19 (KeyDer edCliPub) edCliMsg (tamper edCliSig)
+  -- Roundtrips: Ed25519 sigs are exactly 64 bytes, Ed448 114;
+  -- signing is deterministic; empty messages serve.
+  sig19 <- expectOk "sign Ed25519" =<<
+    sign env ed19 (KeyDer edCliPriv) edCliMsg
+  assertEqual "Ed25519 width" 64 (BS.length sig19)
+  expectOk "verify Ed25519" =<<
+    verify env ed19 (KeyDer edCliPub) edCliMsg sig19
+  sig19b <- expectOk "resign Ed25519" =<<
+    sign env ed19 (KeyDer edCliPriv) edCliMsg
+  assertEqual "Ed25519 deterministic" sig19 sig19b
+  expectAuthFailed "Ed25519 tampered" =<<
+    verify env ed19 (KeyDer edCliPub) edCliMsg (tamper sig19)
+  sigE <- expectOk "sign empty" =<<
+    sign env ed19 (KeyDer edCliPriv) BS.empty
+  expectOk "verify empty" =<<
+    verify env ed19 (KeyDer edCliPub) BS.empty sigE
+  sig48 <- expectOk "sign Ed448" =<<
+    sign env ed48 (KeyDer ed48Priv) edCliMsg
+  assertEqual "Ed448 width" 114 (BS.length sig48)
+  expectOk "verify Ed448" =<<
+    verify env ed48 (KeyDer ed48Pub) edCliMsg sig48
+  expectAuthFailed "Ed448 tampered" =<<
+    verify env ed48 (KeyDer ed48Pub) edCliMsg (tamper sig48)
+  -- Wrong-length signatures mismatch, never verify.
+  expectAuthFailed "truncated mismatches" =<<
+    verify env ed19 (KeyDer edCliPub) edCliMsg (BS.init sig19)
+  expectAuthFailed "overlong mismatches" =<<
+    verify env ed19 (KeyDer edCliPub) edCliMsg (sig19 <> "\x00")
+  -- Garbage keys refuse typed.
+  expectBadKey "garbage sign refused" =<<
+    sign env ed19 (KeyDer "bogus") edCliMsg
+  expectBadKey "garbage verify refused" =<<
+    verify env ed19 (KeyDer "bogus") edCliMsg sig19
+  -- Cross-curve execution refuses typed (the label is a hint;
+  -- the shim checks the key's actual algorithm).
+  expectBadKey "Ed448 key under Ed25519 refused" =<<
+    sign env ed19 (KeyDer ed48Priv) edCliMsg
+  expectBadKey "Ed25519 key under Ed448 refused" =<<
+    sign env ed48 (KeyDer edCliPriv) edCliMsg
+  -- Non-pure specs (context) stay unsupported.
+  expectUnsupported "context unsupported" =<<
+    sign env (SigEdDSA (EcSpec "Ed25519" "RAW") "CTX") (KeyDer edCliPriv) edCliMsg
+
+-- | EdDSA generation: keygen mints usable pairs on both curves,
+-- and unknown curves refuse typed.
+caseRealEddsaKeygen :: IO ()
+caseRealEddsaKeygen = withBackend $ \env -> do
+  (priv19, Just pub19) <- expectOk "keygen Ed25519" =<<
+    generateKey env (GenEdDSAKeypair "Ed25519")
+  let spec19 = SigEdDSA (EcSpec "Ed25519" "RAW") ""
+  sig19 <- expectOk "genkey sign Ed25519" =<< sign env spec19 priv19 edCliMsg
+  assertEqual "genkey Ed25519 width" 64 (BS.length sig19)
+  expectOk "genkey verify Ed25519" =<< verify env spec19 pub19 edCliMsg sig19
+  (priv48, Just pub48) <- expectOk "keygen Ed448" =<<
+    generateKey env (GenEdDSAKeypair "Ed448")
+  let spec48 = SigEdDSA (EcSpec "Ed448" "RAW") ""
+  sig48 <- expectOk "genkey sign Ed448" =<< sign env spec48 priv48 edCliMsg
+  assertEqual "genkey Ed448 width" 114 (BS.length sig48)
+  expectOk "genkey verify Ed448" =<< verify env spec48 pub48 edCliMsg sig48
+  expectUnsupported "unknown curve refused" =<<
+    generateKey env (GenEdDSAKeypair "P-256")
 
 -- | S10 ECDH agreement: CLI cross-checked KATs in both
 -- directions, cofactor-equals-plain on P-256 (h=1), the P-384
@@ -2353,6 +2515,7 @@ caseCaps = withBackend $ \env -> do
         [ "SHA1", "SHA224", "SHA256", "SHA384", "SHA512"
         , "SHA3-224", "SHA3-256", "SHA3-384", "SHA3-512"
         ]
+      eddsaNames = ["EDDSA-Ed25519", "EDDSA-Ed448"]
   assertEqual "sig set" (Set.fromList
     ([ "RSA-PSS"
     , "RSA-RAW"
@@ -2362,7 +2525,7 @@ caseCaps = withBackend $ \env -> do
     , "RSA-PKCS1v15-SHA3-224", "RSA-PKCS1v15-SHA3-256"
     , "RSA-PKCS1v15-SHA3-384", "RSA-PKCS1v15-SHA3-512"
     , "RSA-PKCS1v15-RIPEMD160"
-    ] ++ dsaNames ++ fipsDsaNames)) (scSpecs (bcSigs caps))
+    ] ++ dsaNames ++ fipsDsaNames ++ eddsaNames)) (scSpecs (bcSigs caps))
   assertEqual "curves" (Set.fromList dsaCurves) (scCurves (bcSigs caps))
   assertEqual "no kem advertised" Set.empty (kcAlgs (bcKems caps))
   assertEqual "kdf set" (Set.fromList ["ECDH", "ECDH-COFACTOR"]) (kcKdfs (bcKdfs caps))

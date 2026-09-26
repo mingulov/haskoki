@@ -54,6 +54,7 @@ module Haskoki.Operation.KeyManagement
   , ckkRsa
   , ckkEc
   , ckkDsa
+  , ckkEcEdwards
   , ckkGenericSecret
   , ckkAes
   , ckkHotp
@@ -68,6 +69,7 @@ module Haskoki.Operation.KeyManagement
   , rsaKeyPairGenMech
   , dsaKeyPairGenMech
   , dsaParameterGenMech
+  , edwardsKeyPairGenMech
   , aesCbcMech
   , aesKwMech
   , aesKwPadMech
@@ -121,7 +123,7 @@ import Haskoki.Attribute.Generated
   , mustClassId
   , mustKeyTypeId
   )
-import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, parseDsaParams, parseRsaPrivate, parseRsaPublic, spkiPoint)
+import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaSpkiFields, edwardsNameOfOid, edwardsTable, parseDsaParams, parseRsaPrivate, parseRsaPublic, spkiPoint)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState (..))
 import Haskoki.Object
   ( RuleDeny (..)
@@ -165,6 +167,7 @@ import Haskoki.Registry.Generated
   , ckm_AES_KEY_WRAP_PAD
   , ckm_DSA_KEY_PAIR_GEN
   , ckm_DSA_PARAMETER_GEN
+  , ckm_EC_EDWARDS_KEY_PAIR_GEN
   , ckm_EC_KEY_PAIR_GEN
   , ckm_GENERIC_SECRET_KEY_GEN
   , ckm_HOTP_KEY_GEN
@@ -219,6 +222,10 @@ ckkEc = mustKeyTypeId "CKK_EC"
 -- | @CKK_DSA@ (generated id, resolved by name).
 ckkDsa :: Word64
 ckkDsa = mustKeyTypeId "CKK_DSA"
+
+-- | @CKK_EC_EDWARDS@ (generated id, resolved by name).
+ckkEcEdwards :: Word64
+ckkEcEdwards = mustKeyTypeId "CKK_EC_EDWARDS"
 
 -- | @CKK_GENERIC_SECRET@ (generated id, resolved by name).
 ckkGenericSecret :: Word64
@@ -286,6 +293,10 @@ dsaKeyPairGenMech = MechanismId (ckm_DSA_KEY_PAIR_GEN)
 -- | @CKM_DSA_PARAMETER_GEN@ (generated id, resolved by name).
 dsaParameterGenMech :: MechanismId
 dsaParameterGenMech = MechanismId (ckm_DSA_PARAMETER_GEN)
+
+-- | @CKM_EC_EDWARDS_KEY_PAIR_GEN@ (generated id, resolved by name).
+edwardsKeyPairGenMech :: MechanismId
+edwardsKeyPairGenMech = MechanismId (ckm_EC_EDWARDS_KEY_PAIR_GEN)
 
 -- | @CKM_AES_CBC@ (the symmetric wrap mechanism: the planner
 -- pads, the driver runs raw CBC; generated id, resolved by name).
@@ -460,6 +471,7 @@ keyPairCompatible (PwGeneratePair _ _) (FxGenerateKey _ _ input) =
     Just (GenRsa _ _) -> True
     Just (GenMlKem _) -> True
     Just (GenDsaKeypair _) -> True
+    Just (GenEdwardsKeypair _) -> True
     _ -> False
 keyPairCompatible (PwGenerateKey _) (FxGenerateKey _ _ input) =
   case decodeGenArgs input of
@@ -637,8 +649,12 @@ storeMaterial mat po = po { poAttrs = Map.insert AttrValue (ValBytes mat) (poAtt
 -- unstamped rather than rejecting, mirroring the EC arm. An EC
 -- pair stamps @CKA_EC_POINT@ (the DER OCTET STRING of the
 -- uncompressed SPKI point) on the public half; opaque halves
--- pass through unstamped rather than rejecting. Other key types
--- pass through untouched.
+-- pass through unstamped rather than rejecting. An Edwards pair
+-- stamps the raw @CKA_EC_POINT@ on the public half and the
+-- agreed engine curve name as @CKA_EC_PARAMS@ on the private
+-- half (whose template lacks it); disagreeing or opaque halves
+-- pass through unstamped. Other key types pass through
+-- untouched.
 stampPairComponents
   :: PendingObject -> PendingObject -> ByteString -> ByteString
   -> Maybe (PendingObject, PendingObject)
@@ -652,6 +668,15 @@ stampPairComponents pub priv pubM privM
                     (Map.insert AttrBase (ValBytes g) a))
               in Just (pub { poAttrs = stamp (poAttrs pub) }
                      , priv { poAttrs = stamp (poAttrs priv) })
+        _ -> Just (pub, priv)
+  | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkEcEdwards) =
+      case (eddsaSpkiFields pubM, eddsaPkcs8Fields privM) of
+        (Just (pubOid, pubPoint), Just (privOid, _seed))
+          | pubOid == privOid
+          , Just curve <- edwardsNameOfOid pubOid ->
+              let pubA = Map.insert AttrEcPoint (ValBytes pubPoint) (poAttrs pub)
+                  privA = Map.insert AttrEcParams (ValBytes curve) (poAttrs priv)
+              in Just (pub { poAttrs = pubA }, priv { poAttrs = privA })
         _ -> Just (pub, priv)
   | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkEc) =
       case spkiPoint pubM of
@@ -986,7 +1011,8 @@ pendingFromAttrs st attrs = PendingObject
 -- bytes, EC curve name, RSA modulus bits plus public exponent, the
 -- ML-KEM parameter set (512\/768\/1024), an opaque secret length in
 -- bytes (HOTP), the DSA @(L, N)@ size pair (parameter generation),
--- or DER DSS-Parms (DSA keypair generation from domain parameters).
+-- DER DSS-Parms (DSA keypair generation from domain parameters),
+-- or the Edwards curve name (Edwards keypair generation).
 data GenArgs
   = GenAes !Int
   | GenEc !ByteString
@@ -995,13 +1021,15 @@ data GenArgs
   | GenBytes !Int
   | GenDsaParams !Int !Int
   | GenDsaKeypair !ByteString
+  | GenEdwardsKeypair !ByteString
   deriving (Eq, Show)
 
 -- | Frame generation arguments: @tag:u8 ...@ with tag 0 AES
 -- (@len:u8@), 1 EC (curve bytes), 2 RSA (@bits:u64be exp:u64be@),
 -- 3 ML-KEM (@alg:u16be@), 4 opaque secret bytes (@len:u8@), 5 DSA
 -- parameter sizes (@L:u16be N:u16be@), 6 DSA keypair domain
--- parameters (@len:u32be DER@).
+-- parameters (@len:u32be DER@), 7 Edwards keypair curve name
+-- (curve bytes).
 encodeGenArgs :: GenArgs -> ByteString
 encodeGenArgs args = case args of
   GenAes n -> BS.singleton 0 <> BS.singleton (fromIntegral n)
@@ -1012,6 +1040,7 @@ encodeGenArgs args = case args of
   GenBytes n -> BS.singleton 4 <> BS.singleton (fromIntegral n)
   GenDsaParams l n -> BS.singleton 5 <> u16be l <> u16be n
   GenDsaKeypair der -> BS.singleton 6 <> u32be (BS.length der) <> der
+  GenEdwardsKeypair curve -> BS.singleton 7 <> curve
 
 -- | Parse framed generation arguments. Short frames, unknown tags
 -- and trailing bytes all fail.
@@ -1046,6 +1075,9 @@ decodeGenArgs bs = case BS.uncons bs of
         in if BS.length der == n && n > 0
           then Just (GenDsaKeypair der)
           else Nothing
+    | otherwise -> Nothing
+  Just (7, curve)
+    | not (BS.null curve) -> Just (GenEdwardsKeypair curve)
     | otherwise -> Nothing
   _ -> Nothing
 
@@ -1202,6 +1234,10 @@ planGenerateKeyPair rules model st mech pubT privT =
           withPair st mech ckkDsa pubT privT $ \pubA privA -> do
             der <- dsaDomainOf pubA privA
             pure (GenDsaKeypair der, pubA, privA)
+      | mech == edwardsKeyPairGenMech =
+          withPair st mech ckkEcEdwards pubT privT $ \pubA privA -> do
+            curve <- edwardsCurveOf pubA privA
+            pure (GenEdwardsKeypair curve, pubA, privA)
       | otherwise =
           Left (KeyDeny CKR_MECHANISM_INVALID
             ("not a key-pair mechanism: " ++ show mech))
@@ -1287,6 +1323,33 @@ ecCurveOf pubA privA = case Map.lookup AttrEcParams pubA of
     "public EC params are malformed")
   Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
     "EC keypair templates must name the curve")
+
+-- | The served Edwards curve for a pair: the public template's
+-- @AttrEcParams@ (an 'edwardsTable' engine name — the wire codec
+-- maps caller OIDs to names), which the private template inherits
+-- when absent and must agree with when present. Unknown curves
+-- (including Weierstrass names — a caller mixing
+-- @CKM_EC_KEY_PAIR_GEN@ parameters into the Edwards mechanism)
+-- refuse mechanism-invalid (the 'ecCurveOf' precedent).
+edwardsCurveOf
+  :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+  -> Either KeyDeny ByteString
+edwardsCurveOf pubA privA = case Map.lookup AttrEcParams pubA of
+  Just (ValBytes curve)
+    | curve `elem` [n | (n, _, _, _) <- edwardsTable] -> case Map.lookup AttrEcParams privA of
+        Nothing -> Right curve
+        Just (ValBytes curve')
+          | curve' == curve -> Right curve
+          | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "keypair templates disagree on the curve")
+        Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          "private EC params are malformed")
+    | otherwise -> Left (KeyDeny CKR_MECHANISM_INVALID
+        ("unsupported curve: " ++ show curve))
+  Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+    "public EC params are malformed")
+  Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+    "Edwards keypair templates must name the curve")
 
 -- | The RSA public exponent for a pair: the public template's
 -- @AttrPublicExponent@ when present (big-endian bytes, must decode

@@ -109,6 +109,7 @@ import Haskoki.Operation.Signature
 import Haskoki.Outcome (ResourceRelease (..))
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
 import Haskoki.Recipe.Ccm (encodeCcmParams)
+import Haskoki.Recipe.Eddsa (encodeEddsaParams)
 import Haskoki.Registry
   ( Descriptor (..)
   , Family (..)
@@ -179,6 +180,7 @@ spec = testGroup "operation lifecycles"
   , testCase "sign one-shot after update rejected" caseSignOneShotAfterUpdate
   , testCase "sign short buffer retry; failure terminates" caseSignShortFail
   , testCase "raw DSA digest floor refuses short input" caseRawDsaFloor
+  , testCase "EdDSA init requires explicit pure, refuses rest" caseEddsaParams
   , testCase "recover roundtrip" caseRecoverRoundtrip
   , testCase "recover oversize data fails terminally" caseRecoverOversize
   , testCase "recover tampered block fails" caseRecoverTampered
@@ -234,6 +236,9 @@ dsaMech = MechanismId 0x11
 
 dsaSha256Mech :: MechanismId
 dsaSha256Mech = MechanismId 0x14
+
+eddsaMech :: MechanismId
+eddsaMech = MechanismId 0x1057
 
 unknownMech :: MechanismId
 unknownMech = MechanismId 0x9999
@@ -1398,6 +1403,43 @@ dsaVerifyArgs = InitArgs OpVerify dsaMech BS.empty (Just signKey) Nothing Nothin
 
 dsaSha256SignArgs :: InitArgs
 dsaSha256SignArgs = InitArgs OpSign dsaSha256Mech BS.empty (Just signKey) Nothing Nothing
+
+eddsaSignEnv :: OpEnv
+eddsaSignEnv = testEnv
+  { oeCaps = mkCapabilities
+      [ (eddsaMech, OpSign), (eddsaMech, OpVerify)
+      ]
+  }
+
+caseEddsaParams :: IO ()
+caseEddsaParams = do
+  -- NULL params refuse: the struct is required (PARAM_INVALID, exact).
+  let (_, i0) = initOperation eddsaSignEnv emptySessionOps testSession
+        (InitArgs OpSign eddsaMech BS.empty (Just signKey) Nothing Nothing)
+  assertEqual "eddsa NULL refused" CKR_MECHANISM_PARAM_INVALID (ioCode i0)
+  let (_, i0v) = initOperation eddsaSignEnv emptySessionOps testSession
+        (InitArgs OpVerify eddsaMech BS.empty (Just signKey) Nothing Nothing)
+  assertEqual "eddsa verify NULL refused" CKR_MECHANISM_PARAM_INVALID (ioCode i0v)
+  -- Pure explicit struct admits.
+  let (_, i1) = initOperation eddsaSignEnv emptySessionOps testSession
+        (InitArgs OpSign eddsaMech (encodeEddsaParams False BS.empty)
+          (Just signKey) Nothing Nothing)
+  assertEqual "eddsa pure init ok" CKR_OK (ioCode i1)
+  -- Prehash flag refuses with the sibling recipe code.
+  let (_, i2) = initOperation eddsaSignEnv emptySessionOps testSession
+        (InitArgs OpSign eddsaMech (encodeEddsaParams True BS.empty)
+          (Just signKey) Nothing Nothing)
+  assertEqual "eddsa prehash refused" CKR_ARGUMENTS_BAD (ioCode i2)
+  -- Non-empty context refuses the same way.
+  let (_, i3) = initOperation eddsaSignEnv emptySessionOps testSession
+        (InitArgs OpSign eddsaMech (encodeEddsaParams False "CTX")
+          (Just signKey) Nothing Nothing)
+  assertEqual "eddsa context refused" CKR_ARGUMENTS_BAD (ioCode i3)
+  -- Verify init follows the same params gate.
+  let (_, i4) = initOperation eddsaSignEnv emptySessionOps testSession
+        (InitArgs OpVerify eddsaMech (encodeEddsaParams True BS.empty)
+          (Just signKey) Nothing Nothing)
+  assertEqual "eddsa verify prehash refused" CKR_ARGUMENTS_BAD (ioCode i4)
 
 caseRawDsaFloor :: IO ()
 caseRawDsaFloor = do

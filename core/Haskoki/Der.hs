@@ -11,8 +11,9 @@ and 'finishWork' stamps the components back onto the new objects
 so reads serve them without a decode-on-read path.
 
 Scope is deliberately narrow: RSA PKCS#1/SPKI/PKCS#8, SEC1 EC
-keys on the 22 covered curves ('curveTable'), and DSA DSS-Parms /
-SPKI / PKCS#8. Anything else refuses at the call site
+keys on the 22 covered curves ('curveTable'), DSA DSS-Parms /
+SPKI / PKCS#8, and Edwards SPKI / PKCS#8 on the 2 served curves
+('edwardsTable'). Anything else refuses at the call site
 ('CKR_CURVE_NOT_SUPPORTED' for foreign curves,
 'CKR_TEMPLATE_INCONSISTENT' for malformed parts) instead of
 encoding half-understood structures.
@@ -29,11 +30,21 @@ module Haskoki.Der
   , parseDsaParams
   , dsaSpkiFields
   , dsaPkcs8Fields
+  , eddsaPrivateDer
+  , eddsaPublicDer
+  , eddsaSpkiFields
+  , eddsaPkcs8Fields
   , unwrapEcPoint
+  , unwrapEdwardsPoint
   , curveOidOfParams
   , curveCoordLen
   , curveTable
+  , edwardsTable
+  , edwardsOidOfParams
+  , edwardsNameOfOid
+  , edwardsWidthsOfParams
   , coveredCurveNames
+  , edwardsCurveNames
   , integerToBE
   , RsaCrt (..)
   , parseRsaPrivate
@@ -168,9 +179,22 @@ curveTable =
   , ("sect571r1", BS.pack [0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x27], 72)
   ]
 
+-- | Edwards curves served by the EdDSA recipe: (name, DER OID,
+-- seed width, signature width). Kept separate from 'curveTable'
+-- (Weierstrass ECDSA/ECDH must never resolve an Edwards OID).
+edwardsTable :: [(ByteString, ByteString, Int, Int)]
+edwardsTable =
+  [ ("Ed25519", BS.pack [0x06, 0x03, 0x2B, 0x65, 0x70], 32, 64)
+  , ("Ed448", BS.pack [0x06, 0x03, 0x2B, 0x65, 0x71], 57, 114)
+  ]
+
 -- | Covered engine curve names (the 'curveTable' name column).
 coveredCurveNames :: [String]
 coveredCurveNames = [BC8.unpack n | (n, _, _) <- curveTable]
+
+-- | Served Edwards engine names (the 'edwardsTable' name column).
+edwardsCurveNames :: [String]
+edwardsCurveNames = [BC8.unpack n | (n, _, _, _) <- edwardsTable]
 
 -- | Resolve engine curve names (@"P-256"@, …) or raw DER OIDs to the
 -- DER OID. Anything else is unsupported ('Nothing'). The OID table
@@ -189,6 +213,32 @@ curveCoordLen oid = case find hit curveTable of
   Nothing -> Nothing
   where
     hit (_, o, _) = oid == o
+
+-- | Resolve engine Edwards names (@"Ed25519"@, …) or raw DER
+-- OIDs to the DER OID (the 'curveOidOfParams' precedent).
+edwardsOidOfParams :: ByteString -> Maybe ByteString
+edwardsOidOfParams bs = case find hit edwardsTable of
+  Just (_, oid, _, _) -> Just oid
+  Nothing -> Nothing
+  where
+    hit (name, oid, _, _) = bs == name || bs == oid
+
+-- | The engine Edwards name for a DER OID ('Nothing' for
+-- foreign OIDs).
+edwardsNameOfOid :: ByteString -> Maybe ByteString
+edwardsNameOfOid oid = case find hit edwardsTable of
+  Just (name, _, _, _) -> Just name
+  Nothing -> Nothing
+  where
+    hit (_, o, _, _) = oid == o
+
+-- | Seed and signature widths in bytes for a DER Edwards OID.
+edwardsWidthsOfParams :: ByteString -> Maybe (Int, Int)
+edwardsWidthsOfParams oid = case find hit edwardsTable of
+  Just (_, _, seedW, sigW) -> Just (seedW, sigW)
+  Nothing -> Nothing
+  where
+    hit (_, o, _, _) = oid == o
 
 -- | Unwrap a @CKA_EC_POINT@ value (DER OCTET STRING around the X9.62
 -- point) against the expected coordinate length. Only uncompressed
@@ -217,6 +267,19 @@ unwrapEcPoint coordLen bs = case BS.uncons bs of
             _ -> Nothing
         | otherwise -> Nothing
       Nothing -> Nothing
+
+-- | Unwrap a @CKA_EC_POINT@ value for a @CKK_EC_EDWARDS@ key
+-- against the expected seed width. Raw RFC 8032 bytes
+-- (width-exact) pass through; a DER OCTET STRING wrapper
+-- unwraps (some providers emit it). The length decides —
+-- unambiguous, since a wrapped point is always longer than the
+-- seed width.
+unwrapEdwardsPoint :: Int -> ByteString -> Maybe ByteString
+unwrapEdwardsPoint seedW bs
+  | BS.length bs == seedW = Just bs
+  | otherwise = do
+      body <- whole 0x04 bs
+      if BS.length body == seedW then Just body else Nothing
 
 -- ---------------------------------------------------------------------------
 -- Assembly (total over any input bytes; validation is the caller's)
@@ -281,6 +344,20 @@ dsaPrivateDer p q g x =
 dsaPublicDer :: ByteString -> ByteString -> ByteString -> ByteString -> ByteString
 dsaPublicDer p q g y =
   derSeq [derSeq [oidDsa, dsaParamsDer p q g], derBitString (derInteger y)]
+
+-- | PKCS#8 for an Edwards private key from the DER curve OID and
+-- the seed (RFC 8410 @OneAsymmetricKey@: the inner OCTET STRING
+-- carries the seed directly).
+eddsaPrivateDer :: ByteString -> ByteString -> ByteString
+eddsaPrivateDer oid seed =
+  derSeq [derSmallInt 0, derSeq [oid], derOctet (derOctet seed)]
+
+-- | SPKI for an Edwards public key from the DER curve OID and the
+-- raw point (the algorithm identifier is the bare OID — Edwards
+-- SPKIs carry no parameters).
+eddsaPublicDer :: ByteString -> ByteString -> ByteString
+eddsaPublicDer oid point =
+  derSeq [derSeq [oid], derBitString point]
 
 -- | DER OID 1.2.840.10040.4.1 (dsaEncryption).
 oidDsa :: ByteString
@@ -473,6 +550,57 @@ dsaPkcs8Fields der = do
               xder <- whole 0x04 oct
               x <- derInt xder
               pure (p, q, g, x)
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | The curve OID plus the raw point from an Edwards SPKI: outer
+-- SEQ of [algId, BIT STRING] where the algorithm identifier is
+-- the bare OID (a served 'edwardsTable' row) and the bit string
+-- (past its zero unused-bits octet) is the width-exact point.
+-- 'Nothing' on any framing, tag, OID, or width mismatch.
+eddsaSpkiFields :: ByteString -> Maybe (ByteString, ByteString)
+eddsaSpkiFields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [algId, bits] -> do
+      algParts <- whole 0x30 algId >>= seqTop
+      case algParts of
+        [oid] -> do
+          (seedW, _) <- edwardsWidthsOfParams oid
+          content <- whole 0x03 bits
+          case BS.uncons content of
+            Just (0, point)
+              | BS.length point == seedW -> pure (oid, point)
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | The curve OID plus the seed from an Edwards PKCS#8: outer SEQ
+-- of [version INTEGER 0, algId, OCTET STRING] where the
+-- algorithm identifier is the bare OID (a served 'edwardsTable'
+-- row) and the octet string wraps the width-exact seed (RFC 8410
+-- nested OCTET STRING). 'Nothing' on any framing, tag, version,
+-- OID, or width mismatch.
+eddsaPkcs8Fields :: ByteString -> Maybe (ByteString, ByteString)
+eddsaPkcs8Fields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [ver, algId, oct] -> do
+      v <- derInt ver
+      case BS.uncons v of
+        Just (0, rest) | BS.null rest -> do
+          algParts <- whole 0x30 algId >>= seqTop
+          case algParts of
+            [oid] -> do
+              (seedW, _) <- edwardsWidthsOfParams oid
+              inner <- whole 0x04 oct
+              seed <- whole 0x04 inner
+              if BS.length seed == seedW
+                then pure (oid, seed)
+                else Nothing
             _ -> Nothing
         _ -> Nothing
     _ -> Nothing

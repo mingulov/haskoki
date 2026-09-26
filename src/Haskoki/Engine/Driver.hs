@@ -58,6 +58,14 @@ table by @CKM_*@ name; no hand-typed numerics):
   backend's call, so a covered mechanism with malformed
   parameters is a 'CryptoFailed' parameter refusal, never
   'CryptoUnsupported', and the driver never refuses a key.
+* EdDSA runs the recipe 'SigSpec' ('eddsaSpecFor'): pure EdDSA
+  only (phFlag clear, empty context — empty parameters default
+  to pure), and the curve label is a dispatch hint from the DER
+  key ('eddsaCurveOfKey'), defaulting to Ed25519 when the key is
+  unscannable. Key shape is the backend's call, so a covered
+  mechanism with non-pure parameters is a 'CryptoFailed'
+  parameter refusal, never 'CryptoUnsupported', and the driver
+  never refuses a key.
 * Block ciphers run the recipe 'CipherSpec' ('cipherSpecFor'):
   every (mechanism, key length, params) triple the
   'Haskoki.Recipe.Cipher' table covers maps to its backend spec
@@ -119,7 +127,9 @@ module Haskoki.Engine.Driver
   , rsaOaepParamsFor
   , ecdsaSpecFor
   , dsaSpecFor
+  , eddsaSpecFor
   , ecCurveOfKey
+  , eddsaCurveOfKey
   , ecdhParamsFor
   , cmacSpecFor
   , hotpParamsFor
@@ -188,6 +198,11 @@ import Haskoki.Recipe.Dsa
   , dsaParamsValid
   , dsaRecipeFor
   )
+import Haskoki.Recipe.Eddsa
+  ( eddsaCurveOfDer
+  , eddsaParamsValid
+  , eddsaRecipeFor
+  )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
 import Haskoki.Recipe.Gcm (decodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (decodeOaepParams, rsaOaepParamsValid, rsaOaepRecipeFor)
@@ -214,6 +229,7 @@ import Haskoki.Operation.KeyManagement
   , dsaKeyPairGenMech
   , dsaParameterGenMech
   , ecKeyPairGenMech
+  , edwardsKeyPairGenMech
   , rsaPkcsMech
   , encodeKeyPair
   , genericSecretKeyGenMech
@@ -744,6 +760,44 @@ dsaSpecFor mech params = do
 isDsaMech :: MechanismId -> Bool
 isDsaMech mech = isJust (dsaRecipeFor mech)
 
+-- | EdDSA dispatch: the covered (mechanism, params, key) triple
+-- to its backend spec (pinned against 'Haskoki.Recipe.Eddsa' by
+-- RecipeEddsaSpec). The recipe validates pure parameters; the
+-- curve label is a dispatch hint from the DER key
+-- ('eddsaCurveOfKey'), defaulting to Ed25519 when the key is
+-- unscannable (the backends execute against the key's actual
+-- material and refuse bad keys themselves — the driver never
+-- refuses a key). 'Nothing' means uncovered (non-EdDSA mechanism),
+-- missing parameters, or non-pure parameters.
+eddsaSpecFor :: MechanismId -> ByteString -> KeyMaterial -> Maybe SigSpec
+eddsaSpecFor mech params key = do
+  r <- eddsaRecipeFor mech
+  guard (eddsaParamsValid r params)
+  let curve = fromMaybe "Ed25519" (eddsaCurveOfKey key)
+  pure (SigEdDSA (EcSpec (T.unpack curve) "RAW") BS.empty)
+
+-- | An EdDSA mechanism regardless of parameter validity (drives
+-- the parameter-refusal branch: non-pure EdDSA params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isEddsaMech :: MechanismId -> Bool
+isEddsaMech mech = isJust (eddsaRecipeFor mech)
+
+-- | The Edwards curve named by a key's curve OID, via the
+-- recipe's 'eddsaCurveOfDer'. Both constructors sniff: production
+-- resolves every stored key as 'KeyBytes' ('stdResolver'), so a
+-- 'KeyDer'-only sniff would miss every production Ed448 key and
+-- misdispatch it as Ed25519 (the shim's base-id check then
+-- refuses with BADKEY). 'Nothing' for references, symmetric
+-- bytes, RSA, garbage, or a Weierstrass curve. The marker is
+-- advisory for dispatch only: 'eddsaSpecFor' defaults it to
+-- Ed25519 and the backends always execute against the key's
+-- actual material, so a miss can refuse downstream but never
+-- mis-sign.
+eddsaCurveOfKey :: KeyMaterial -> Maybe T.Text
+eddsaCurveOfKey (KeyDer der) = eddsaCurveOfDer der
+eddsaCurveOfKey (KeyBytes bs) = eddsaCurveOfDer bs
+eddsaCurveOfKey _ = Nothing
+
 -- | The curve named by a DER key's curve OID, via the recipe's
 -- 'ecdsaCurveOfDer' ('Nothing' for raw bytes, references, RSA,
 -- garbage, or an off-set curve). The marker is advisory for
@@ -814,6 +868,10 @@ runEffect env resolve fx = case fx of
         case dsaSpecFor mech params of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure dsaRefusal
+    | isEddsaMech mech -> withKey mkey $ \key ->
+        case eddsaSpecFor mech params key of
+          Just spec -> toBytes <$> sign env spec key input
+          Nothing -> pure eddsaRefusal
     | otherwise -> pure (unsupported fx)
   FxVerify mech mkey params input sig
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
@@ -840,6 +898,10 @@ runEffect env resolve fx = case fx of
         case dsaSpecFor mech params of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure dsaRefusal
+    | isEddsaMech mech -> withKey mkey $ \key ->
+        case eddsaSpecFor mech params key of
+          Just spec -> toVerifyUnit <$> verify env spec key input sig
+          Nothing -> pure eddsaRefusal
     | otherwise -> pure (unsupported fx)
   FxCipher dir mech mkey params input
     | isCipherMech mech -> withKey mkey $ \key ->
@@ -887,6 +949,10 @@ runEffect env resolve fx = case fx of
         case dsaSpecFor mech params of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure dsaRefusal
+    | isEddsaMech mech -> withKey mkey $ \key ->
+        case eddsaSpecFor mech params key of
+          Just spec -> toBytes <$> sign env spec key input
+          Nothing -> pure eddsaRefusal
     | otherwise -> pure (unsupported fx)
   FxMessageVerify mech mkey params input sig
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
@@ -913,6 +979,10 @@ runEffect env resolve fx = case fx of
         case dsaSpecFor mech params of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure dsaRefusal
+    | isEddsaMech mech -> withKey mkey $ \key ->
+        case eddsaSpecFor mech params key of
+          Just spec -> toVerifyUnit <$> verify env spec key input sig
+          Nothing -> pure eddsaRefusal
     | otherwise -> pure (unsupported fx)
   FxSignRecover {} -> pure (unsupported fx)
   FxVerifyRecover {} -> pure (unsupported fx)
@@ -941,8 +1011,10 @@ runEffect env resolve fx = case fx of
             toKeyPair <$> generateKey env (GenDSAParams p q)
           (m, GenDsaKeypair der) | m == dsaKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenDSAKeypair der)
+          (m, GenEdwardsKeypair curve) | m == edwardsKeyPairGenMech ->
+            toKeyPair <$> generateKey env (GenEdDSAKeypair curve)
           _
-            | mech `elem` [aesKeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech] ->
+            | mech `elem` [aesKeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, edwardsKeyPairGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)
@@ -1366,6 +1438,12 @@ ecdsaRefusal = GotCryptoError (CryptoFailed "ECDSA: params must be RAW, DER, or 
 -- parameter refusal.
 dsaRefusal :: CryptoResult
 dsaRefusal = GotCryptoError (CryptoFailed "DSA: params must be RAW, DER, or empty")
+
+-- | EdDSA dispatch refusal: 'eddsaSpecFor' only fails on
+-- non-pure parameters, so the refusal is unconditionally a
+-- 'CryptoFailed' parameter refusal.
+eddsaRefusal :: CryptoResult
+eddsaRefusal = GotCryptoError (CryptoFailed "EdDSA: params must be an explicit pure struct (phFlag clear, empty context)")
 
 -- | CMAC block width per cipher (only the ECB specs 'cmacSpecFor'
 -- yields).

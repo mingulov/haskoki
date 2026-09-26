@@ -15536,14 +15536,29 @@
       "canonical_name": "CKM_EC_EDWARDS_KEY_PAIR_GEN",
       "family": "keypair",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE_KEY_PAIR"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 256,
+        "max_key_size": 456
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: no Edwards keygen route in the backend surface; behavior/synthetic stay planned.",
+      "notes": "pairgen from the named Edwards curve (public EC_PARAMS required via edwardsCurveOf, private inherits; Weierstrass/foreign curves refuse CKR_MECHANISM_INVALID (mirroring ecCurveOf); GenEdwardsKeypair name frame). Components stamped by stampPairComponents (raw EC_POINT on the public half, agreed curve name as EC_PARAMS on the private half; opaque synthetic doubles pass through, mirroring EC). Real execution pinned by OpenSSLSpec caseRealEddsaKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 256/456 bits (served seed window).",
       "numeric_id": "0x00001055",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37"
+          ],
+          "key_constraints": [
+            "eddsa-curve-required"
+          ],
+          "operation": "generate-key-pair",
+          "output_rule": "synthetic-pair/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_EC_EDWARDS_KEY_PAIR_GEN",
@@ -15552,12 +15567,38 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "key-generation",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -15592,14 +15633,42 @@
       "canonical_name": "CKM_EDDSA",
       "family": "ec",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 256,
+        "max_key_size": 456
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Ed25519 has a pinned-provider surface but no shim/recipe wires it yet; stays planned (later slice). Real unsupported-with-reason: EdDSA (ED25519/ED448) present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "EdDSA recipe (core/Haskoki/Recipe/Eddsa.hs): pure EdDSA only (phFlag clear, empty context; prehash/context refuse at the recipe); eddsa-params/1 carries the flag plus the length-prefixed context (empty defaults pure: NULL params and the pure CK_EDDSA_PARAMS struct both serve). Served curves Ed25519/Ed448 (seed widths 32/57, sig widths 64/114); keys carry the curve OID (DER SPKI/PKCS#8 storage, raw point stamped for reads). Real execution pinned (OpenSSLSpec caseEddsa against the pinned libcrypto: Wycheproof TEST 1 + roundtrips both curves); synthetic per-curve constructions pinned (SyntheticSpec caseEddsa); init enforces pure params (RecipeEddsaSpec).",
       "numeric_id": "0x00001057",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-eddsa/v1",
+          "parameter_codec": "eddsa-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "eddsa-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_EDDSA",
@@ -15608,12 +15677,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "eddsa",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "eddsa",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "eddsa",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEddsaSpec",
+          "build_id": "eddsa",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
