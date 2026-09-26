@@ -2329,6 +2329,248 @@ end:
     return rc;
 }
 
+/* --- ML-DSA sign/verify/keygen (FIPS 204, pure + context) ---------- */
+
+/* Canonical level name ("ML-DSA-44"/"ML-DSA-65"/"ML-DSA-87",
+ * the backend's fetch spelling); NULL for anything else. */
+static const char *hsk_ossl4_mldsa_name(const char *algname)
+{
+    if (algname == NULL)
+        return NULL;
+    if (strcmp(algname, "ML-DSA-44") == 0 ||
+        strcmp(algname, "ML-DSA-65") == 0 ||
+        strcmp(algname, "ML-DSA-87") == 0)
+        return algname;
+    return NULL;
+}
+
+/* Fixed signature width for a canonical level name (FIPS 204
+ * Table 2); 0 for anything else. */
+static size_t hsk_ossl4_mldsa_siglen(const char *algname)
+{
+    if (algname == NULL)
+        return 0;
+    if (strcmp(algname, "ML-DSA-44") == 0)
+        return 2420;
+    if (strcmp(algname, "ML-DSA-65") == 0)
+        return 3309;
+    if (strcmp(algname, "ML-DSA-87") == 0)
+        return 4627;
+    return 0;
+}
+
+/* The key's actual algorithm must match the requested level.
+ * Provider ML-DSA keys report base_id 0 / id -1 (probed
+ * 2026-09-26), so the EdDSA NID check cannot work here: compare
+ * the keymgmt type name against the canonical fetch spelling
+ * instead. Returns 1 on match, 0 otherwise. */
+static int hsk_ossl4_mldsa_key_matches(EVP_PKEY *pkey, const char *algname)
+{
+    const char *tname;
+
+    if (pkey == NULL || algname == NULL)
+        return 0;
+    tname = EVP_PKEY_get0_type_name(pkey);
+    if (tname == NULL)
+        return 0;
+    return strcmp(tname, algname) == 0;
+}
+
+long hsk_ossl4_mldsa_sign(OSSL_LIB_CTX *ctx, const char *algname,
+                          const char *propq, const unsigned char *priv_der,
+                          size_t priv_len, const unsigned char *msg,
+                          size_t msglen, const unsigned char *ctxstr,
+                          size_t ctxlen, int deterministic, unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *sctx = NULL;
+    EVP_MD_CTX *mctx = NULL;
+    unsigned char *sig = NULL;
+    size_t siglen = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL ||
+        (msg == NULL && msglen > 0) ||
+        (ctxstr == NULL && ctxlen > 0) || ctxlen > 255)
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (hsk_ossl4_mldsa_name(algname) == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* The key's actual algorithm must match the requested level:
+     * cross-level execution refuses here rather than past the
+     * advertised cap set. */
+    if (!hsk_ossl4_mldsa_key_matches(pkey, algname)) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+    /* Pure ML-DSA is one-shot with a NULL digest; the optional
+     * context string rides the signature ctx params (NULL ctxstr
+     * means absent, matching CK_SIGN_ADDITIONAL_CONTEXT with
+     * ulContextLen 0 / NULL pContext, or no parameter at
+     * all). Nonzero deterministic selects FIPS 204
+     * deterministic signing (CKH_DETERMINISTIC_REQUIRED);
+     * zero is the provider default, proven randomized
+     * (hedged) by probe, which also serves
+     * CKH_HEDGE_PREFERRED and CKH_HEDGE_REQUIRED — the
+     * provider exposes no force-hedge param. */
+    mctx = EVP_MD_CTX_new();
+    if (mctx == NULL)
+        goto end;
+    if (!EVP_DigestSignInit_ex(mctx, &sctx, NULL, ctx, propq, pkey, NULL))
+        goto end;
+    if (ctxstr != NULL || deterministic) {
+        OSSL_PARAM params[3];
+        size_t n = 0;
+
+        if (ctxstr != NULL)
+            params[n++] = OSSL_PARAM_construct_octet_string(
+                OSSL_SIGNATURE_PARAM_CONTEXT_STRING, (void *)ctxstr,
+                ctxlen);
+        if (deterministic)
+            params[n++] = OSSL_PARAM_construct_int(
+                OSSL_SIGNATURE_PARAM_DETERMINISTIC, &deterministic);
+        params[n] = OSSL_PARAM_construct_end();
+        if (!EVP_PKEY_CTX_set_params(sctx, params))
+            goto end;
+    }
+    if (!EVP_DigestSign(mctx, NULL, &siglen, msg, msglen))
+        goto end;
+    sig = OPENSSL_malloc(siglen);
+    if (sig == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (!EVP_DigestSign(mctx, sig, &siglen, msg, msglen)) {
+        OPENSSL_clear_free(sig, siglen);
+        sig = NULL;
+        goto end;
+    }
+    *out = sig;
+    rc = (long)siglen;
+    sig = NULL;
+
+end:
+    if (sig != NULL)
+        OPENSSL_clear_free(sig, siglen);
+    EVP_MD_CTX_free(mctx);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+int hsk_ossl4_mldsa_verify(OSSL_LIB_CTX *ctx, const char *algname,
+                           const char *propq, const unsigned char *pub_der,
+                           size_t pub_len, const unsigned char *msg,
+                           size_t msglen, const unsigned char *ctxstr,
+                           size_t ctxlen, const unsigned char *sig,
+                           size_t siglen)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *sctx = NULL;
+    EVP_MD_CTX *mctx = NULL;
+    int rc = HSK_OSSL4_ERR_NATIVE;
+    size_t expect;
+
+    if (ctx == NULL || propq == NULL || sig == NULL ||
+        (msg == NULL && msglen > 0) ||
+        (ctxstr == NULL && ctxlen > 0) || ctxlen > 255)
+        return HSK_OSSL4_ERR_BADPARAM;
+    expect = hsk_ossl4_mldsa_siglen(algname);
+    if (expect == 0)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    if (!hsk_ossl4_mldsa_key_matches(pkey, algname)) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+    /* Fixed widths (2420/3309/4627): anything else can never be
+     * valid, so answer mismatch (0) without calling the provider
+     * — encoding errors surface as authentication failures,
+     * never native errors. */
+    if (siglen != expect) {
+        EVP_PKEY_free(pkey);
+        ERR_clear_error();
+        return 0;
+    }
+    mctx = EVP_MD_CTX_new();
+    if (mctx == NULL)
+        goto end;
+    if (!EVP_DigestVerifyInit_ex(mctx, &sctx, NULL, ctx, propq, pkey, NULL))
+        goto end;
+    if (ctxstr != NULL) {
+        OSSL_PARAM params[2];
+
+        params[0] = OSSL_PARAM_construct_octet_string(
+            OSSL_SIGNATURE_PARAM_CONTEXT_STRING, (void *)ctxstr, ctxlen);
+        params[1] = OSSL_PARAM_construct_end();
+        if (!EVP_PKEY_CTX_set_params(sctx, params))
+            goto end;
+    }
+    rc = EVP_DigestVerify(mctx, sig, siglen, msg, msglen);
+    /* 1 (valid) or 0 (bad signature); provider-internal failures
+     * stay native. */
+    if (rc < 0)
+        rc = HSK_OSSL4_ERR_NATIVE;
+    else
+        ERR_clear_error();
+
+end:
+    EVP_MD_CTX_free(mctx);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+int hsk_ossl4_mldsa_gen(OSSL_LIB_CTX *ctx, const char *propq,
+                        const char *algname, unsigned char **priv_der,
+                        size_t *priv_len, unsigned char **pub_der,
+                        size_t *pub_len)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *pkey = NULL;
+    unsigned char *priv = NULL, *pub = NULL;
+    int prvlen = 0, publen = 0;
+    int rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || priv_der == NULL ||
+        priv_len == NULL || pub_der == NULL || pub_len == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (hsk_ossl4_mldsa_name(algname) == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pctx = EVP_PKEY_CTX_new_from_name(ctx, algname, propq);
+    if (pctx == NULL)
+        goto end;
+    if (!EVP_PKEY_keygen_init(pctx))
+        goto end;
+    if (!EVP_PKEY_generate(pctx, &pkey))
+        goto end;
+    prvlen = i2d_PrivateKey(pkey, &priv);
+    publen = i2d_PUBKEY(pkey, &pub);
+    if (prvlen <= 0 || publen <= 0) {
+        OPENSSL_free(priv);
+        OPENSSL_free(pub);
+        goto end;
+    }
+    *priv_der = priv;
+    *priv_len = (size_t)prvlen;
+    *pub_der = pub;
+    *pub_len = (size_t)publen;
+    rc = HSK_OSSL4_OK;
+
+end:
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(pctx);
+    return rc;
+}
+
 /* --- ECDH agreement ------------------------------------------- */
 
 long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,

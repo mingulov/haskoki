@@ -29,6 +29,7 @@ import Haskoki.FFI.NativeParams
   , eddsaNativeSize
   , gcmNativeSize
   , mgfStemByCkg
+  , mldsaNativeSize
   , normalizeEcdhParams
   , normalizeMechParams
   , oaepNativeSize
@@ -41,6 +42,12 @@ import Haskoki.Recipe.Eddsa
   , encodeEddsaParams
   )
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmParamsValid, gcmRecipeFor)
+import Haskoki.Recipe.MlDsa
+  ( MldsaHedge (..)
+  , encodeMldsaParams
+  , mldsaParamsValid
+  , mldsaRecipeFor
+  )
 import Haskoki.Recipe.RsaOaep
   ( encodeOaepParams
   , rsaOaepParamsValid
@@ -343,6 +350,100 @@ spec = testGroup "native mechanism params"
           raw = BS.replicate 8 0
       out <- allocaBytes 8 $ \p -> do
         pokeByteOff p 0 (0 :: Word8)
+        normalizeMechParams mid p 8 raw
+      assertEqual "passthrough" raw out
+  , testCase "mldsa pure native struct translates to canonical" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_ML_DSA")
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes mldsaNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 0)
+        pokeByteOff p w (nullPtr :: Ptr Word8)
+        pokeByteOff p (w + pw) (CULong 0)
+        raw <- BS.packCStringLen (castPtr p, mldsaNativeSize)
+        normalizeMechParams mid p (fromIntegral mldsaNativeSize) raw
+      let want = encodeMldsaParams HedgePreferred BS.empty
+      assertEqual "canonical mldsa image" want out
+      case mldsaRecipeFor mid of
+        Nothing -> fail "mldsa recipe missing"
+        Just r -> assertEqual "recipe accepts" True (mldsaParamsValid r out)
+      assertEqual "native size" (2 * w + pw) mldsaNativeSize
+  , testCase "mldsa context struct translates, recipe accepts" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_ML_DSA")
+          ctx = "CTX" :: ByteString
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen ctx $ \(cp, clen) ->
+        allocaBytes mldsaNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong 0)
+          pokeByteOff p w (castPtr cp)
+          pokeByteOff p (w + pw) (CULong (fromIntegral clen))
+          raw <- BS.packCStringLen (castPtr p, mldsaNativeSize)
+          normalizeMechParams mid p (fromIntegral mldsaNativeSize) raw
+      assertEqual "canonical mldsa image" (encodeMldsaParams HedgePreferred ctx) out
+      case mldsaRecipeFor mid of
+        Nothing -> fail "mldsa recipe missing"
+        Just r -> assertEqual "recipe accepts" True (mldsaParamsValid r out)
+  , testCase "mldsa deterministic struct translates, recipe accepts" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_ML_DSA")
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes mldsaNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 2)
+        pokeByteOff p w (nullPtr :: Ptr Word8)
+        pokeByteOff p (w + pw) (CULong 0)
+        raw <- BS.packCStringLen (castPtr p, mldsaNativeSize)
+        normalizeMechParams mid p (fromIntegral mldsaNativeSize) raw
+      assertEqual "canonical mldsa image"
+        (encodeMldsaParams HedgeDeterministic BS.empty) out
+      case mldsaRecipeFor mid of
+        Nothing -> fail "mldsa recipe missing"
+        Just r -> assertEqual "recipe accepts" True (mldsaParamsValid r out)
+  , testCase "mldsa overlong context translates, recipe refuses" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_ML_DSA")
+          ctx = BS.replicate 256 0x41
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen ctx $ \(cp, clen) ->
+        allocaBytes mldsaNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong 0)
+          pokeByteOff p w (castPtr cp)
+          pokeByteOff p (w + pw) (CULong (fromIntegral clen))
+          raw <- BS.packCStringLen (castPtr p, mldsaNativeSize)
+          normalizeMechParams mid p (fromIntegral mldsaNativeSize) raw
+      assertEqual "canonical mldsa image" (encodeMldsaParams HedgePreferred ctx) out
+      case mldsaRecipeFor mid of
+        Nothing -> fail "mldsa recipe missing"
+        Just r -> assertEqual "recipe refuses" False (mldsaParamsValid r out)
+  , testCase "mldsa null context with length passes through" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_ML_DSA")
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      (raw, out) <- allocaBytes mldsaNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 0)
+        pokeByteOff p w (nullPtr :: Ptr Word8)
+        pokeByteOff p (w + pw) (CULong 7)
+        raw <- BS.packCStringLen (castPtr p, mldsaNativeSize)
+        out <- normalizeMechParams mid p (fromIntegral mldsaNativeSize) raw
+        pure (raw, out)
+      assertEqual "passthrough" raw out
+  , testCase "mldsa bad hedge passes through" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_ML_DSA")
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      (raw, out) <- allocaBytes mldsaNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 3)
+        pokeByteOff p w (nullPtr :: Ptr Word8)
+        pokeByteOff p (w + pw) (CULong 0)
+        raw <- BS.packCStringLen (castPtr p, mldsaNativeSize)
+        out <- normalizeMechParams mid p (fromIntegral mldsaNativeSize) raw
+        pure (raw, out)
+      assertEqual "passthrough" raw out
+  , testCase "mldsa short image passes through" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_ML_DSA")
+          raw = BS.replicate 8 0
+      out <- allocaBytes 8 $ \p -> do
+        pokeByteOff p 0 (CULong 0 :: CULong)
         normalizeMechParams mid p 8 raw
       assertEqual "passthrough" raw out
   ]

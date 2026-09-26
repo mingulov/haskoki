@@ -58,6 +58,9 @@ module Haskoki.FFI.OpenSSL4.Raw
   , eddsaSign
   , eddsaVerify
   , edwardsGen
+  , mldsaSign
+  , mldsaVerify
+  , mldsaGen
   , ecdhDerive
   , rsaSign
   , rsaVerify
@@ -207,6 +210,15 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_eddsa_verify"
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_edwards_gen"
   c_edwards_gen :: Ptr OsslLibCtx -> CString -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
 
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mldsa_sign"
+  c_mldsa_sign :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mldsa_verify"
+  c_mldsa_verify :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> IO CInt
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mldsa_gen"
+  c_mldsa_gen :: Ptr OsslLibCtx -> CString -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
+
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_ecdh_derive"
   c_ecdh_derive :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
 
@@ -243,6 +255,15 @@ withBytes bs action
   | BS.null bs = allocaBytes 1 $ \p -> action (p, 0)
   | otherwise = BSU.unsafeUseAsCStringLen bs $ \(p, n) ->
       action (castPtr p, fromIntegral n)
+
+-- | 'Nothing' is @(NULL, 0)@ (parameter absent); @Just@ uses
+-- 'withBytes', so @Just ""@ is a present-but-empty buffer —
+-- distinct from absent for shims that branch on NULL (ML-DSA
+-- context: absent means pure, present means the context-string
+-- param is set, even when empty).
+withOptBytes :: Maybe ByteString -> ((Ptr CUChar, CSize) -> IO a) -> IO a
+withOptBytes Nothing action = action (nullPtr, 0)
+withOptBytes (Just bs) action = withBytes bs action
 
 -- | Take ownership of a shim output buffer: copy @len@ bytes into an
 -- owned 'ByteString', then clear+free the native buffer.
@@ -571,6 +592,53 @@ edwardsGen ctx propq curvename =
     withCString curvename $ \ccurve ->
       alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
         rc <- c_edwards_gen ctx cpq ccurve ppriv npriv ppub npub
+        if rc /= 0
+          then pure (Left (fromIntegral rc))
+          else do
+            privp <- peek ppriv
+            privn <- peek npriv
+            pubp <- peek ppub
+            pubn <- peek npub
+            if privp == nullPtr || pubp == nullPtr
+              then pure (Left errNative)
+              else do
+                priv <- takeOwned privp (fromIntegral privn)
+                pub <- takeOwned pubp (fromIntegral pubn)
+                pure (Right (priv, pub))
+
+-- | ML-DSA sign: the raw signature for (level name, PKCS#8,
+-- message, optional context, deterministic flag); @Nothing@
+-- context is pure mode. @True@ selects FIPS 204 deterministic
+-- signing (@CKH_DETERMINISTIC_REQUIRED@); @False@ is the
+-- provider default (proven hedged). Empty messages serve.
+mldsaSign :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> Maybe ByteString -> Bool -> IO (Either Int ByteString)
+mldsaSign ctx algname propq privDer msg mctx deterministic =
+  withCString algname $ \calg ->
+    withCString propq $ \cpq ->
+      withBytes privDer $ \(ppriv, npriv) ->
+        withBytes msg $ \(pmsg, nmsg) ->
+          withOptBytes mctx $ \(pctx, nctx) ->
+            withOut (c_mldsa_sign ctx calg cpq ppriv npriv pmsg nmsg pctx nctx (if deterministic then 1 else 0))
+
+-- | ML-DSA verify: 1 valid, 0 mismatch, negative shim code.
+-- The context must match the signing call ('Nothing' = pure).
+mldsaVerify :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> Maybe ByteString -> ByteString -> IO Int
+mldsaVerify ctx algname propq pubDer msg mctx sig =
+  withCString algname $ \calg ->
+    withCString propq $ \cpq ->
+      withBytes pubDer $ \(ppub, npub) ->
+        withBytes msg $ \(pmsg, nmsg) ->
+          withOptBytes mctx $ \(pctx, nctx) ->
+            withBytes sig $ \(psig, nsig) ->
+              fromIntegral <$> c_mldsa_verify ctx calg cpq ppub npub pmsg nmsg pctx nctx psig nsig
+
+-- | ML-DSA keypair for a level name: PKCS#8 + SPKI halves.
+mldsaGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, ByteString))
+mldsaGen ctx propq algname =
+  withCString propq $ \cpq ->
+    withCString algname $ \calg ->
+      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+        rc <- c_mldsa_gen ctx cpq calg ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
           else do

@@ -83,6 +83,7 @@ import Haskoki.Engine.Backend
   , ecdsaSigCap
   , dsaSigCap
   , eddsaSigCap
+  , mldsaSigCap
   , EcSpec (..)
   , hmacSpecCap
   , KdfCaps (..)
@@ -95,6 +96,7 @@ import Haskoki.Engine.Backend
   , MacSpec (..)
   , OaepParams (..)
   , PqcKemAlg (..)
+  , PqcSigAlg (..)
   , RsaCipherParams (..)
   , ResourceSaveability (..)
   , rsaSigCap
@@ -581,6 +583,8 @@ instance CryptoBackend Synthetic where
         pure (B.EngineOk (genPair seed ctr))
       GenEdDSAKeypair {} ->
         pure (B.EngineOk (genPair seed ctr))
+      GenMLDSA {} ->
+        pure (B.EngineOk (genPair seed ctr))
       GenMLKEM alg -> pure (B.EngineOk (genKemPair seed ctr alg))
       _ -> pure (B.EngineFail
         (BackendUnsupported "generateKey" ("not in synthetic set: " ++ show spec)))
@@ -714,21 +718,21 @@ synthCaps = BackendCaps
       { ccCiphers = Set.fromList synthCipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
   , bcMacs = MacCaps { mcSpecs = synthMacSpecs }
   , bcSigs = SigCaps
-      { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames ++ synthDsaSpecNames ++ synthEddsaSpecNames)
+      { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames ++ synthDsaSpecNames ++ synthEddsaSpecNames ++ synthMldsaSpecNames)
       , scCurves = Set.fromList coveredCurveNames
-      , scPqcSign = Set.empty
+      , scPqcSign = Set.fromList [ML_DSA_44, ML_DSA_65, ML_DSA_87]
       }
   , bcKems = KemCaps { kcAlgs = Set.fromList [ML_KEM_512, ML_KEM_768, ML_KEM_1024] }
   , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR"] }
   , bcParamNotes = Map.fromList
       ([ ("open", "decimal Word64 seed string; nothing else opens")
        , ("AES-256-CBC", "length-preserving stream construction; key 32 bytes, iv 16 bytes")
-       ] ++ synthMacNotes ++ synthEcdsaNotes ++ synthDsaNotes ++ synthEddsaNotes ++
+       ] ++ synthMacNotes ++ synthEcdsaNotes ++ synthDsaNotes ++ synthEddsaNotes ++ synthMldsaNotes ++
        [ ("RSA-PSS", "salt 0..64; hash/MGF any fixed-width digest")
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 72-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -834,6 +838,24 @@ synthEddsaNotes =
   , Just name <- [eddsaSigCap (SigEdDSA (EcSpec curve "RAW") "")]
   ]
 
+-- | The ML-DSA names: one sign name per level (exactly the
+-- OpenSSL4 pre-probe set, so both engines advertise the same
+-- names).
+synthMldsaSpecNames :: [String]
+synthMldsaSpecNames =
+  [ name
+  | alg <- [ML_DSA_44, ML_DSA_65, ML_DSA_87]
+  , Just name <- [mldsaSigCap (SigMLDSA alg False "" True)]
+  ]
+
+-- | Per-name ML-DSA parameter notes for the capability report.
+synthMldsaNotes :: [(String, String)]
+synthMldsaNotes =
+  [ (name, "deterministic test construction; level, context, and hedge in domain")
+  | alg <- [ML_DSA_44, ML_DSA_65, ML_DSA_87]
+  , Just name <- [mldsaSigCap (SigMLDSA alg False "" True)]
+  ]
+
 -- | Per-name MAC parameter notes for the capability report.
 synthMacNotes :: [(String, String)]
 synthMacNotes =
@@ -876,6 +898,8 @@ sigSupported (SynthBackend env) spec
   | Just name <- dsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
   | Just name <- eddsaSigCap spec
+  , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
+  | Just name <- mldsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
   | Just name <- rsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
@@ -1133,6 +1157,7 @@ genSupported _ spec = case spec of
     | (p, q) `elem` [(1024, 160), (2048, 224), (2048, 256), (3072, 256)] -> Nothing
   GenDSAKeypair {} -> Nothing
   GenEdDSAKeypair name | BC8.unpack name `elem` edwardsCurveNames -> Nothing
+  GenMLDSA alg | alg `elem` [ML_DSA_44, ML_DSA_65, ML_DSA_87] -> Nothing
   GenMLKEM _ -> Nothing
   _ -> Just ("keygen not in synthetic set: " ++ show spec)
 
@@ -1449,9 +1474,11 @@ classSign enc identity input = prfBytes
 -- (existing pins hold); every other ECDSA spec tags with its full
 -- parameters (curve, encoding, and digest, raw included); DSA
 -- specs tag with their full parameters (encoding and digest, raw
--- included); RSA rows tag with their capability name (PSS tags
--- with its full parameters, salt included) — so curves, digests,
--- encodings, and families never share a test signature over one
+-- included); EdDSA and ML-DSA specs tag with their full
+-- parameters (level, context, and hedge included); RSA rows tag
+-- with their capability name (PSS tags with its full parameters,
+-- salt included) — so curves, digests, encodings, levels,
+-- contexts, and families never share a test signature over one
 -- identity.
 classSignFor :: SigSpec -> ByteString -> ByteString -> ByteString
 classSignFor spec@(SigECDSA (EcSpec "P-256" _) (Just D_SHA256)) identity input =
@@ -1461,6 +1488,8 @@ classSignFor spec@(SigECDSA _ _) identity input =
 classSignFor spec@(SigDSA _ _) identity input =
   classSign (BC8.pack (show spec)) identity input
 classSignFor spec@(SigEdDSA _ _) identity input =
+  classSign (BC8.pack (show spec)) identity input
+classSignFor spec@(SigMLDSA _ _ _ _) identity input =
   classSign (BC8.pack (show spec)) identity input
 classSignFor spec@(SigRSA_PSS _) identity input =
   classSign (BC8.pack (show spec)) identity input

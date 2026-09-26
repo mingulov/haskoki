@@ -351,6 +351,45 @@ int hsk_ossl4_edwards_gen(OSSL_LIB_CTX *ctx, const char *propq,
                           size_t *priv_len, unsigned char **pub_der,
                           size_t *pub_len);
 
+/* --- ML-DSA sign/verify/keygen (FIPS 204, pure + context) --------- */
+/* algname: "ML-DSA-44", "ML-DSA-65", or "ML-DSA-87" (anything
+ * else is BADPARAM). priv_der: PKCS#8 DER; the key's actual
+ * algorithm must match the requested level (provider ML-DSA
+ * keys report base_id 0, so the shim compares the keymgmt type
+ * name; cross-level execution is BADKEY). Pure ML-DSA is
+ * one-shot with a NULL digest; ctxstr/ctxlen carry the optional
+ * context string (NULL ctxstr means absent; over 255 bytes is
+ * BADPARAM). deterministic: nonzero selects FIPS 204
+ * deterministic signing (CKH_DETERMINISTIC_REQUIRED), zero is
+ * the provider default (proven hedged — serves
+ * CKH_HEDGE_PREFERRED and CKH_HEDGE_REQUIRED). Answers the raw
+ * signature length with *out set (2420/3309/4627 bytes), or a
+ * negative HSK_OSSL4_ERR_* code. */
+long hsk_ossl4_mldsa_sign(OSSL_LIB_CTX *ctx, const char *algname,
+                          const char *propq, const unsigned char *priv_der,
+                          size_t priv_len, const unsigned char *msg,
+                          size_t msglen, const unsigned char *ctxstr,
+                          size_t ctxlen, int deterministic,
+                          unsigned char **out);
+/* pub_der: SPKI DER (same level-match rule as sign). Off-width
+ * signatures (anything but 2420/3309/4627 for the level)
+ * answer 0 (mismatch — they can never be valid). Returns 1
+ * (valid), 0 (bad signature), HSK_OSSL4_ERR_BADKEY (bad DER
+ * key), or HSK_OSSL4_ERR_* on other failures. */
+int hsk_ossl4_mldsa_verify(OSSL_LIB_CTX *ctx, const char *algname,
+                           const char *propq, const unsigned char *pub_der,
+                           size_t pub_len, const unsigned char *msg,
+                           size_t msglen, const unsigned char *ctxstr,
+                           size_t ctxlen, const unsigned char *sig,
+                           size_t siglen);
+/* Mints an ML-DSA pair and answers the PKCS#8 private + SPKI
+ * public DER halves (HSK_OSSL4_OK); an unknown level name is
+ * BADPARAM. */
+int hsk_ossl4_mldsa_gen(OSSL_LIB_CTX *ctx, const char *propq,
+                        const char *algname, unsigned char **priv_der,
+                        size_t *priv_len, unsigned char **pub_der,
+                        size_t *pub_len);
+
 /* --- ECDH agreement ------------------------------------------ */
 
 /* priv_der: PKCS#8 DER base key; peer_der: SPKI DER peer key. cofactor:

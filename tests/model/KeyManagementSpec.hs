@@ -109,6 +109,7 @@ import Haskoki.Operation.KeyManagement
   , ckkEc
   , ckkEcEdwards
   , ckkGenericSecret
+  , ckkMlDsa
   , ckkMlKem
   , ckkRsa
   , ckoDomainParameters
@@ -122,6 +123,7 @@ import Haskoki.Operation.KeyManagement
   , ecKeyPairGenMech
   , edwardsKeyPairGenMech
   , encodeGenArgs
+  , mldsaKeyPairGenMech
   , finishWork
   , genericSecretKeyGenMech
   , genericSecretKeygenMaxBytes
@@ -189,6 +191,9 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Generic-secret keygen mints typed material in bounds" caseGenericSecretKeygen
   , testCase "Init enforces the key-type matrix" caseInitKeyTypeMatrix
   , testCase "EC keypair delivers two handles" caseEcKeypair
+  , testCase "ML-DSA keypair delivers two handles" caseMldsaKeypair
+  , testCase "ML-DSA set plans, agrees and refuses" caseMldsaSetPlanner
+  , testCase "ML-DSA stamping lands CKA_SEED on agreement" caseMldsaStampSeed
   , testCase "EC keypair serves all covered curves" caseEcKeygenCurves
   , testCase "RSA keypair stamps components and round-trips" caseRsaKeygen
   , testCase "RSA keypair generations are distinct" caseRsaKeygenDistinct
@@ -902,6 +907,110 @@ caseEcKeypair = withSynth $ \answer -> do
           assertEqual "pair magic" "HKS1" (BS.take 4 p)
         _ -> assertFailure "EC halves lack material"
     other -> assertFailure ("EC keypair plan is not an effect: " ++ show other)
+
+-- | ML-DSA keygen templates (the set rides the public half; the
+-- private half inherits it).
+mldsaPubTmpl :: [(AttributeType, AttributeValue)]
+mldsaPubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkMlDsa)
+  , (AttrToken, ValBool False)
+  , (AttrVerify, ValBool True)
+  , (AttrParameterSet, ValULong 1)
+  ]
+
+mldsaPrivTmpl :: [(AttributeType, AttributeValue)]
+mldsaPrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkMlDsa)
+  , (AttrToken, ValBool False)
+  , (AttrSign, ValBool True)
+  ]
+
+caseMldsaKeypair :: IO ()
+caseMldsaKeypair = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  case planGenerateKeyPair defaultRules m0 st mldsaKeyPairGenMech mldsaPubTmpl mldsaPrivTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 2
+      pubH <- handleOf (pcOutputs c !! 0)
+      privH <- handleOf (pcOutputs c !! 1)
+      m1 <- expectRight (publishDelta m0 (pcDelta c))
+      Just pub <- pure (resolveHandle m1 pubH)
+      Just priv <- pure (resolveHandle m1 privH)
+      assertEqual "pub usage" (Just (ValBool True)) (Map.lookup AttrVerify (osAttrs pub))
+      assertEqual "priv usage" (Just (ValBool True)) (Map.lookup AttrSign (osAttrs priv))
+      assertEqual "pub set" (Just (ValULong 1)) (Map.lookup AttrParameterSet (osAttrs pub))
+      assertEqual "priv set inherited" (Just (ValULong 1)) (Map.lookup AttrParameterSet (osAttrs priv))
+      -- Opaque synthetic halves pass through unstamped: no seed.
+      assertEqual "no seed stamped" Nothing (Map.lookup AttrSeed (osAttrs priv))
+      case (keyBytesOf pub, keyBytesOf priv) of
+        (Just p, Just q) -> do
+          assertEqual "pair magic" "HKS1" (BS.take 4 p)
+          assertBool "halves differ" (p /= q)
+        _ -> assertFailure "ML-DSA halves lack material"
+    other -> assertFailure ("ML-DSA keypair plan is not an effect: " ++ show other)
+
+caseMldsaSetPlanner :: IO ()
+caseMldsaSetPlanner = do
+  m0 <- seedModel
+  st <- getSession m0
+  let argsOf pubT privT =
+        case planGenerateKeyPair defaultRules m0 st mldsaKeyPairGenMech pubT privT of
+          KeyEffect _ (FxGenerateKey _ _ input) -> Right (decodeGenArgs input)
+          KeyDenied (KeyDeny code _) -> Left code
+          other -> error ("unexpected plan shape: " ++ show other)
+      withSet tmpl n = tmpl ++ [(AttrParameterSet, ValULong n)]
+      noSet = filter ((/= AttrParameterSet) . fst) mldsaPubTmpl
+  -- Public-side set carries into the effect args.
+  assertEqual "44 plans" (Right (Just (GenMlDsa 1)))
+    (argsOf mldsaPubTmpl mldsaPrivTmpl)
+  assertEqual "87 plans" (Right (Just (GenMlDsa 3)))
+    (argsOf (withSet noSet 3) mldsaPrivTmpl)
+  -- Private-side set alone also plans.
+  assertEqual "private-side set" (Right (Just (GenMlDsa 3)))
+    (argsOf noSet (withSet mldsaPrivTmpl 3))
+  -- Absent everywhere defaults to 65 (the KEM precedent).
+  assertEqual "default 65" (Right (Just (GenMlDsa 2)))
+    (argsOf noSet mldsaPrivTmpl)
+  -- Disagreement and unknown sets refuse.
+  assertEqual "set disagreement" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf mldsaPubTmpl (withSet mldsaPrivTmpl 3))
+  assertEqual "unknown set" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withSet noSet 7) mldsaPrivTmpl)
+  -- The tag-8 frame pins the CKP id big-endian.
+  assertEqual "frame tag 8" (BS.pack [8, 0, 2]) (encodeGenArgs (GenMlDsa 2))
+  assertEqual "frame roundtrip" (Just (GenMlDsa 3))
+    (decodeGenArgs (BS.pack [8, 0, 3]))
+  assertEqual "short frame refuses" Nothing
+    (decodeGenArgs (BS.pack [8, 0]))
+
+caseMldsaStampSeed :: IO ()
+caseMldsaStampSeed = do
+  m0 <- seedModel
+  st <- getSession m0
+  pub44 <- BS.readFile "tests/fixtures/mldsa44-pub.der"
+  priv44 <- BS.readFile "tests/fixtures/mldsa44-priv.der"
+  priv65 <- BS.readFile "tests/fixtures/mldsa65-priv.der"
+  let pub = pendingFromAttrs st (Map.fromList mldsaPubTmpl)
+      priv = pendingFromAttrs st (Map.fromList mldsaPrivTmpl)
+  case stampPairComponents pub priv pub44 priv44 of
+    Just (_, priv') -> case Map.lookup AttrSeed (poAttrs priv') of
+      Just (ValBytes seed) -> assertEqual "seed width" 32 (BS.length seed)
+      other -> assertFailure ("seed not stamped: " ++ show other)
+    Nothing -> assertFailure "agreeing halves must stamp"
+  -- Disagreeing or opaque halves pass through unstamped (no
+  -- seed), never refused.
+  case stampPairComponents pub priv pub44 priv65 of
+    Just (_, priv') -> assertEqual "mismatch unstamped" Nothing
+      (Map.lookup AttrSeed (poAttrs priv'))
+    Nothing -> assertFailure "mismatched halves must pass through"
+  case stampPairComponents pub priv "nope" "nope" of
+    Just (_, priv') -> assertEqual "garbage unstamped" Nothing
+      (Map.lookup AttrSeed (poAttrs priv'))
+    Nothing -> assertFailure "opaque halves must pass through"
 
 -- | EC templates on the given engine curve name.
 ecTmpls :: ByteString

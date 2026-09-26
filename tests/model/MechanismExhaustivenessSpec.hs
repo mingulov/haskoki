@@ -5,7 +5,7 @@ A42: every catalog id in @spec/mechanisms-canonical.txt@ (the
 source of truth) routes through 'initOperation' — the classic-init
 planning funnel — to its cataloged disposition:
 
-* allowed ids (the 134 @mech|@ rows): the curated descriptor
+* allowed ids (the 136 @mech|@ rows): the curated descriptor
   matches the cataloged name and routes exactly, every cataloged
   classic route initializes to @CKR_OK@ under full caps with
   valid parameters, and every cataloged NON-classic route
@@ -17,7 +17,7 @@ planning funnel — to its cataloged disposition:
   the derive\/KEM paths for derive\/encapsulate), pinned by
   @KeyManagementSpec@ (A20\/A22\/A23) and the engine suites,
   not through classic init;
-* refused ids (the 330 @inv|@ rows): @StatusCatalogOnly@, no
+* refused ids (the 328 @inv|@ rows): @StatusCatalogOnly@, no
   behavior descriptor, and init refuses with the exact
   @(CKR_MECHANISM_INVALID, "unknown mechanism")@ even under
   fully granted caps (the refusal is registry-driven, never a
@@ -76,6 +76,7 @@ import Haskoki.Operation
 import Haskoki.Recipe.Ccm (ccmRecipeFor, encodeCcmParams)
 import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipeFor, encodeCtrParams)
 import Haskoki.Recipe.Eddsa (encodeEddsaParams)
+import Haskoki.Recipe.MlDsa (MldsaHedge (..), encodeMldsaParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Otp (encodeHotpParams)
@@ -112,7 +113,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "mechanism exhaustiveness (A42)"
-  [ testCase "catalog coverage: 464 ids, 134 allowed + 330 refused" caseCoverage
+  [ testCase "catalog coverage: 464 ids, 136 allowed + 328 refused" caseCoverage
   , testCase "allowed ids: descriptors match catalog routes" caseDescriptors
   , testCase "allowed routes: classic init OK, non-classic exact refusal" caseInitRouting
   , testCase "allowed classic routes: caps miss refuses exactly" caseCapsStage
@@ -302,6 +303,7 @@ paramsFor codec mid = case codec of
   "no-params/1" -> Right BS.empty
   "sig-encoding/1" -> Right BS.empty
   "eddsa-params/1" -> Right (encodeEddsaParams False BS.empty)
+  "mldsa-params/1" -> Right (encodeMldsaParams HedgePreferred BS.empty)
   "mac-general/1" -> Right (encodeMacGeneral 8)
   "pss-params/1" -> case rsaPssRecipeFor mid of
     Just r ->
@@ -385,10 +387,10 @@ caseCoverage = guarded "coverage" $ do
       allIds = sort (mechIds ++ invIds)
       mm =
         parseBad
-        ++ ["allowed count: want 134, got " ++ show (length mechs)
-           | length mechs /= 134]
-        ++ ["refused count: want 330, got " ++ show (length invs)
-           | length invs /= 330]
+        ++ ["allowed count: want 136, got " ++ show (length mechs)
+           | length mechs /= 136]
+        ++ ["refused count: want 328, got " ++ show (length invs)
+           | length invs /= 328]
         ++ ["catalog count: want 464, got " ++ show (length catIds)
            | length catIds /= 464]
         ++ ["mech/inv overlap: "

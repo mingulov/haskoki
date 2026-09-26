@@ -41,7 +41,8 @@ import Haskoki.Types (ReturnCode (..), redactShown)
 -- key-management attributes (key type, value length, usage flags,
 -- always-authenticate mark, EC params, modulus bits, KEM parameter
 -- set, encapsulate\/decapsulate flags), plus the standard-surface
--- attributes (key id search key, RSA public exponent). Later
+-- attributes (key id search key, RSA public exponent), plus the
+-- PQC attributes (parameter set, seed). Later
 -- constructors are appended so the external tag order
 -- ('Haskoki.Object.attrTag') is stable.
 data AttributeType
@@ -94,6 +95,8 @@ data AttributeType
   | AttrBase
   | AttrPrimeBits
   | AttrSubprimeBits
+  | AttrParameterSet
+  | AttrSeed
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Owned attribute values. The semantic value stays separate
@@ -258,6 +261,8 @@ shapeOf t = case t of
   AttrSubprime -> ShapeBytes
   AttrBase -> ShapeBytes
   AttrPrimeBits -> ShapeULong
+  AttrParameterSet -> ShapeULong
+  AttrSeed -> ShapeBytes
   AttrSubprimeBits -> ShapeULong
 
 -- | Whether a value carries its type's shape. The template
@@ -382,6 +387,8 @@ attributeTypeByName name = case name of
   "CKA_BASE" -> Just AttrBase
   "CKA_PRIME_BITS" -> Just AttrPrimeBits
   "CKA_SUBPRIME_BITS" -> Just AttrSubprimeBits
+  "CKA_PARAMETER_SET" -> Just AttrParameterSet
+  "CKA_SEED" -> Just AttrSeed
   _ -> Nothing
 
 -- | 8-byte big-endian decoding; total over 8-byte inputs (only

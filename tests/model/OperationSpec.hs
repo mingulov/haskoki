@@ -110,6 +110,7 @@ import Haskoki.Outcome (ResourceRelease (..))
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
 import Haskoki.Recipe.Ccm (encodeCcmParams)
 import Haskoki.Recipe.Eddsa (encodeEddsaParams)
+import Haskoki.Recipe.MlDsa (MldsaHedge (..), encodeMldsaParams)
 import Haskoki.Registry
   ( Descriptor (..)
   , Family (..)
@@ -181,6 +182,7 @@ spec = testGroup "operation lifecycles"
   , testCase "sign short buffer retry; failure terminates" caseSignShortFail
   , testCase "raw DSA digest floor refuses short input" caseRawDsaFloor
   , testCase "EdDSA init requires explicit pure, refuses rest" caseEddsaParams
+  , testCase "ML-DSA init admits empty, refuses bad hedge/overlong" caseMldsaParams
   , testCase "recover roundtrip" caseRecoverRoundtrip
   , testCase "recover oversize data fails terminally" caseRecoverOversize
   , testCase "recover tampered block fails" caseRecoverTampered
@@ -239,6 +241,9 @@ dsaSha256Mech = MechanismId 0x14
 
 eddsaMech :: MechanismId
 eddsaMech = MechanismId 0x1057
+
+mldsaMech :: MechanismId
+mldsaMech = MechanismId 0x1D
 
 unknownMech :: MechanismId
 unknownMech = MechanismId 0x9999
@@ -1440,6 +1445,48 @@ caseEddsaParams = do
         (InitArgs OpVerify eddsaMech (encodeEddsaParams True BS.empty)
           (Just signKey) Nothing Nothing)
   assertEqual "eddsa verify prehash refused" CKR_ARGUMENTS_BAD (ioCode i4)
+
+mldsaSignEnv :: OpEnv
+mldsaSignEnv = testEnv
+  { oeCaps = mkCapabilities
+      [ (mldsaMech, OpSign), (mldsaMech, OpVerify)
+      ]
+  }
+
+caseMldsaParams :: IO ()
+caseMldsaParams = do
+  -- NULL params admit (the struct is optional; empty means
+  -- hedge-preferred, empty context) — the opposite of EdDSA.
+  let (_, i0) = initOperation mldsaSignEnv emptySessionOps testSession
+        (InitArgs OpSign mldsaMech BS.empty (Just signKey) Nothing Nothing)
+  assertEqual "mldsa NULL admits" CKR_OK (ioCode i0)
+  let (_, i0v) = initOperation mldsaSignEnv emptySessionOps testSession
+        (InitArgs OpVerify mldsaMech BS.empty (Just signKey) Nothing Nothing)
+  assertEqual "mldsa verify NULL admits" CKR_OK (ioCode i0v)
+  -- Explicit structs admit (context and deterministic included).
+  let (_, i1) = initOperation mldsaSignEnv emptySessionOps testSession
+        (InitArgs OpSign mldsaMech (encodeMldsaParams HedgePreferred "CTX")
+          (Just signKey) Nothing Nothing)
+  assertEqual "mldsa context init ok" CKR_OK (ioCode i1)
+  let (_, i1d) = initOperation mldsaSignEnv emptySessionOps testSession
+        (InitArgs OpSign mldsaMech (encodeMldsaParams HedgeDeterministic BS.empty)
+          (Just signKey) Nothing Nothing)
+  assertEqual "mldsa deterministic init ok" CKR_OK (ioCode i1d)
+  -- Unmapped hedge words refuse with the recipe code.
+  let (_, i2) = initOperation mldsaSignEnv emptySessionOps testSession
+        (InitArgs OpSign mldsaMech (BS.replicate 15 0 <> BS.singleton 3 <> BS.replicate 8 0)
+          (Just signKey) Nothing Nothing)
+  assertEqual "mldsa bad hedge refused" CKR_ARGUMENTS_BAD (ioCode i2)
+  -- Overlong contexts refuse the same way.
+  let (_, i3) = initOperation mldsaSignEnv emptySessionOps testSession
+        (InitArgs OpSign mldsaMech (encodeMldsaParams HedgePreferred (BS.replicate 256 0x41))
+          (Just signKey) Nothing Nothing)
+  assertEqual "mldsa overlong context refused" CKR_ARGUMENTS_BAD (ioCode i3)
+  -- Verify init follows the same params gate.
+  let (_, i4) = initOperation mldsaSignEnv emptySessionOps testSession
+        (InitArgs OpVerify mldsaMech (encodeMldsaParams HedgePreferred (BS.replicate 256 0x41))
+          (Just signKey) Nothing Nothing)
+  assertEqual "mldsa verify overlong refused" CKR_ARGUMENTS_BAD (ioCode i4)
 
 caseRawDsaFloor :: IO ()
 caseRawDsaFloor = do

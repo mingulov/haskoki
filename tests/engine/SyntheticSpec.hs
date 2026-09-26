@@ -119,6 +119,7 @@ spec = testGroup "synthetic engine"
   , testCase "ECDSA curves and digests roundtrip" caseEcdsaCurves
   , testCase "DSA digests and raw roundtrip" caseDsaRoundtrip
   , testCase "EdDSA curves roundtrip" caseEddsaRoundtrip
+  , testCase "ML-DSA levels roundtrip" caseMldsaRoundtrip
   , testCase "ECDH agreements separate and replay" caseEcdh
   , testCase "CMAC tags separate and truncate" caseCmac
   , testCase "KDF output separates and truncates" caseKdf
@@ -283,7 +284,6 @@ caseUnsupportedRest = withSynth "11" $ \env -> do
     pkeyEncrypt env (RsaOaep (OaepParams D_SHAKE128 D_SHA256 BS.empty)) key32 "m"
   expectUnsupported "pkeyDecrypt xof" =<<
     pkeyDecrypt env (RsaOaep (OaepParams D_SHA256 D_SHAKE256 BS.empty)) key32 "c"
-  expectUnsupported "generateKey mldsa" =<< generateKey env (GenMLDSA ML_DSA_65)
   expectUnsupported "generateKey slhdsa" =<< generateKey env (GenSLHDSA SLH_DSA_SHA2_128s)
   expectResourceGone "exportKey unknown" =<<
     exportKey env (KeyRef (EngineResourceId 999) "SYM")
@@ -929,6 +929,7 @@ caseCapsFull = withSynth "11" $ \env -> do
         , "SHA3-224", "SHA3-256", "SHA3-384", "SHA3-512"
         ]
       eddsaNames = ["EDDSA-Ed25519", "EDDSA-Ed448"]
+      mldsaNames = ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]
   assertEqual "sig set" (Set.fromList
     ([ "RSA-PSS"
     , "RSA-RAW"
@@ -938,9 +939,10 @@ caseCapsFull = withSynth "11" $ \env -> do
     , "RSA-PKCS1v15-SHA3-224", "RSA-PKCS1v15-SHA3-256"
     , "RSA-PKCS1v15-SHA3-384", "RSA-PKCS1v15-SHA3-512"
     , "RSA-PKCS1v15-RIPEMD160"
-    ] ++ dsaNames ++ fipsDsaNames ++ eddsaNames)) (scSpecs (bcSigs caps))
+    ] ++ dsaNames ++ fipsDsaNames ++ eddsaNames ++ mldsaNames)) (scSpecs (bcSigs caps))
   assertEqual "curves" (Set.fromList dsaCurves) (scCurves (bcSigs caps))
-  assertEqual "no pqc sig" Set.empty (scPqcSign (bcSigs caps))
+  assertEqual "pqc sig set"
+    (Set.fromList [ML_DSA_44, ML_DSA_65, ML_DSA_87]) (scPqcSign (bcSigs caps))
   assertEqual "kem set"
     (Set.fromList [ML_KEM_512, ML_KEM_768, ML_KEM_1024]) (kcAlgs (bcKems caps))
   assertEqual "kdf set" (Set.fromList ["ECDH", "ECDH-COFACTOR"]) (kcKdfs (bcKdfs caps))
@@ -1437,6 +1439,65 @@ caseEddsaRoundtrip = withSynth "11" $ \env -> do
       expectAuthFailed ("wrong key " ++ label) =<<
         verify env sspec otherKey32 "msg" sig
 
+-- | All three ML-DSA levels roundtrip through the synthetic
+-- constructions (both hedges, pure and context modes), tampering
+-- and wrong keys fail, levels/contexts/hedges stay
+-- domain-separated from each other and from EdDSA, external-mu
+-- mode and overlong contexts refuse unsupported, and keygen
+-- mints opaque pairs that sign/verify across halves.
+caseMldsaRoundtrip :: IO ()
+caseMldsaRoundtrip = withSynth "11" $ \env -> do
+  mapM_ (roundtrip env) mldsaSpecs
+  -- Separation: levels, contexts, and hedges never share a test
+  -- signature over one key and message, and ML-DSA never
+  -- collides with EdDSA.
+  s44 <- expectOk "sign 44" =<< sign env mldsa44 key32 "msg"
+  s65 <- expectOk "sign 65" =<< sign env mldsa65 key32 "msg"
+  assertBool "levels separated" (s44 /= s65)
+  sctx <- expectOk "sign ctx" =<< sign env mldsa44ctx key32 "msg"
+  assertBool "contexts separated" (sctx /= s44)
+  sdet <- expectOk "sign det" =<< sign env mldsa44det key32 "msg"
+  assertBool "hedges separated" (sdet /= s44)
+  ed <- expectOk "sign eddsa" =<< sign env ed19 key32 "msg"
+  assertBool "families separated" (ed /= s44)
+  expectAuthFailed "65 sig under 44 rejected" =<<
+    verify env mldsa44 key32 "msg" s65
+  expectAuthFailed "ctx sig under pure rejected" =<<
+    verify env mldsa44 key32 "msg" sctx
+  expectUnsupported "external-mu refused" =<<
+    sign env (SigMLDSA ML_DSA_44 True "" True) key32 "msg"
+  expectUnsupported "overlong context refused" =<<
+    sign env (SigMLDSA ML_DSA_44 False (BS.replicate 256 0) True) key32 "msg"
+  expectUnsupported "SLH level refused" =<<
+    sign env (SigMLDSA SLH_DSA_SHA2_128s False "" True) key32 "msg"
+  -- Keygen: opaque pairs roundtrip across halves.
+  (priv, Just pub) <- expectOk "keygen" =<< generateKey env (GenMLDSA ML_DSA_65)
+  sig <- expectOk "genkey sign" =<< sign env mldsa65 priv "msg"
+  expectOk "genkey verify" =<< verify env mldsa65 pub "msg" sig
+  expectUnsupported "off-set level refused" =<< generateKey env (GenMLDSA SLH_DSA_SHA2_128s)
+  where
+    ed19 = SigEdDSA (EcSpec "Ed25519" "RAW") ""
+    mldsa44 = SigMLDSA ML_DSA_44 False "" True
+    mldsa65 = SigMLDSA ML_DSA_65 False "" True
+    mldsa44ctx = SigMLDSA ML_DSA_44 False "CTX" True
+    mldsa44det = SigMLDSA ML_DSA_44 False "" False
+    mldsaSpecs :: [SigSpec]
+    mldsaSpecs =
+      [ SigMLDSA alg False ctx hedged
+      | alg <- [ML_DSA_44, ML_DSA_65, ML_DSA_87]
+      , ctx <- ["", "CTX"]
+      , hedged <- [True, False]
+      ]
+    roundtrip env sspec = do
+      let label = show sspec
+      sig <- expectOk ("sign " ++ label) =<< sign env sspec key32 "msg"
+      assertEqual ("sig length " ++ label) synthSigLength (BS.length sig)
+      expectOk ("verify " ++ label) =<< verify env sspec key32 "msg" sig
+      expectAuthFailed ("tampered " ++ label) =<<
+        verify env sspec key32 "msg" (BS.map complement sig)
+      expectAuthFailed ("wrong key " ++ label) =<<
+        verify env sspec otherKey32 "msg" sig
+
 caseEcdsaCurves :: IO ()
 caseEcdsaCurves = withSynth "11" $ \env -> do
   mapM_ (roundtrip env) ecdsaSpecs
@@ -1843,10 +1904,12 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   -- caseAeadRoundtrip); AES-KW left it when the wrap entry point
   -- landed (see caseCipherSpecs and the OpenSSLSpec wrap KATs);
   -- DSA left it when the DSA entry points landed (see
-  -- caseDsaRoundtrip and the OpenSSLSpec DSA KATs); empty GCM
+  -- caseDsaRoundtrip and the OpenSSLSpec DSA KATs); ML-DSA left
+  -- it when the ML-DSA entry points landed (see caseMldsaRoundtrip
+  -- and the OpenSSLSpec ML-DSA KATs); empty GCM
   -- params still fail typed at the driver (CryptoFailed recipe
   -- refusal, pinned below).
-  refused "sign ML-DSA" (mkSign "CKM_ML_DSA")
+  refused "sign SLH-DSA" (mkSign "CKM_SLH_DSA")
   refused "derive TLS_PRF"
     (FxDerive (mech "CKM_TLS_PRF") (Just kOid) BS.empty BS.empty 32)
   refused "derive DH" (FxDerive (mech "CKM_DH_PKCS_DERIVE") (Just kOid) BS.empty BS.empty 32)

@@ -16,6 +16,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
 import Data.Char (digitToInt, isHexDigit)
 import qualified Data.Map.Strict as Map
+import Data.Word (Word64)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
   (assertBool, assertEqual, assertFailure, testCase)
@@ -23,10 +24,10 @@ import Test.Tasty.HUnit
 import Haskoki.Attribute
   (AttributeResult (..), AttributeType (..), AttributeValue (..),
    PartialReads (..), getAttributes)
-import Haskoki.Der (curveCoordLen, curveOidOfParams, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, parseDsaParams, unwrapEcPoint, unwrapEdwardsPoint)
+import Haskoki.Der (curveCoordLen, curveOidOfParams, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, parseDsaParams, unwrapEcPoint, unwrapEdwardsPoint)
 import Haskoki.Engine.Backend
   (CryptoBackend (..), DigestAlg (..), EcSpec (..),
-   EngineResult (..), KeyMaterial (..), SigSpec (..))
+   EngineResult (..), KeyMaterial (..), PqcSigAlg (..), SigSpec (..))
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
 import Haskoki.FFI.Standard (ecParamsFromWire, ecParamsToWire)
 import Haskoki.Model
@@ -34,7 +35,7 @@ import Haskoki.Model
    lookupSession)
 import Haskoki.Object (decodeHandle, planCreateObject, resolveHandle)
 import Haskoki.Operation.KeyManagement
-  (ckoPrivateKey, ckoPublicKey, ckkDsa, ckkEc, ckkEcEdwards, ckkRsa)
+  (ckoPrivateKey, ckoPublicKey, ckkDsa, ckkEc, ckkEcEdwards, ckkMlDsa, ckkRsa)
 import Haskoki.Outcome
   (DeltaOp (..), NativeOutput (..), PlanResult (..),
    PreparedCommit (..), Rejection (..), StateDelta (..))
@@ -69,6 +70,13 @@ spec = testGroup "key import"
   , testCase "imported EC key signs through the real backend" caseEcExecutes
   , testCase "imported RSA key signs through the real backend" caseRsaExecutes
   , testCase "imported DSA key signs through the real backend" caseDsaExecutes
+  , testCase "ML-DSA assembly matches openssl-emitted SPKIs" caseMldsaDerGoldens
+  , testCase "ML-DSA DER readers parse openssl halves" caseMldsaDerReaders
+  , testCase "ML-DSA private import assembles flat PKCS#8" caseMldsaPrivate
+  , testCase "ML-DSA public import assembles SPKI" caseMldsaPublic
+  , testCase "partial ML-DSA import is incomplete" casePartialMldsa
+  , testCase "bad ML-DSA value refuses inconsistent" caseBadMldsaValue
+  , testCase "imported ML-DSA key signs through the real backend" caseMldsaExecutes
   ]
 
 slot0 :: SlotId
@@ -926,4 +934,178 @@ ecP8NoPubGold = hex $ concat
     , "0104205bc5fc2e1cb344d11de202ea057cbfd5da5f9a9a54a83fda363e5742b0"
     , "44366c"
     ]
+
+-- | ML-DSA fixtures: CLI-generated halves per level (pinned
+-- @openssl genpkey@, read from tests/fixtures/); the DER files
+-- are openssl-emitted bytes, so golden equality is an
+-- independent cross-check of the assembly, not self-agreement.
+loadMldsaHalves :: String -> IO (ByteString, ByteString, ByteString, ByteString, ByteString)
+loadMldsaHalves tag = do
+  pubDer <- BS.readFile ("tests/fixtures/mldsa" ++ tag ++ "-pub.der")
+  privDer <- BS.readFile ("tests/fixtures/mldsa" ++ tag ++ "-priv.der")
+  case (mldsaSpkiFields pubDer, mldsaPkcs8Fields privDer) of
+    (Just (pubOid, raw), Just (privOid, seed, expanded))
+      | pubOid == privOid -> pure (pubOid, raw, seed, expanded, pubDer)
+    _ -> assertFailure ("ML-DSA fixture halves disagree: " ++ tag) >> undefined
+
+mldsaOids :: [(String, Int, ByteString)]
+mldsaOids =
+  [ ("44", 1, hex "0609608648016503040311")
+  , ("65", 2, hex "0609608648016503040312")
+  , ("87", 3, hex "0609608648016503040313")
+  ]
+
+mldsaCkp :: ByteString -> Word64
+mldsaCkp o
+  | o == hex "0609608648016503040311" = 1
+  | o == hex "0609608648016503040312" = 2
+  | otherwise = 3
+
+mldsaPrivTmpl :: ByteString -> ByteString -> [(AttributeType, AttributeValue)]
+mldsaPrivTmpl oid expanded =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkMlDsa)
+  , (AttrToken, ValBool False)
+  , (AttrParameterSet, ValULong (mldsaCkp oid))
+  , (AttrValue, ValBytes expanded)
+  ]
+
+mldsaPubTmpl :: ByteString -> ByteString -> [(AttributeType, AttributeValue)]
+mldsaPubTmpl oid raw =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkMlDsa)
+  , (AttrToken, ValBool False)
+  , (AttrParameterSet, ValULong (mldsaCkp oid))
+  , (AttrValue, ValBytes raw)
+  ]
+
+caseMldsaDerGoldens :: IO ()
+caseMldsaDerGoldens = do
+  -- Every served level: SPKI assembly from the parsed raw key
+  -- reproduces the openssl-emitted fixture bytes exactly.
+  mapM_ golden ["44", "65", "87"]
+  -- The table rows pin names, OIDs, widths, and CKP ids.
+  assertEqual "table rows"
+    [ ("ML-DSA-44", hex "0609608648016503040311", 1312, 2560, 2420, 1)
+    , ("ML-DSA-65", hex "0609608648016503040312", 1952, 4032, 3309, 2)
+    , ("ML-DSA-87", hex "0609608648016503040313", 2592, 4896, 4627, 3)
+    ]
+    mldsaTable
+  mapM_ (\(tag, ckp, oid) ->
+    assertEqual ("OID " ++ tag) (Just oid) (mldsaOidOfCkp ckp)) mldsaOids
+  assertEqual "unknown CKP" Nothing (mldsaOidOfCkp 7)
+  assertEqual "44 widths" (Just (1312, 2560, 2420))
+    (mldsaWidthsOfOid (hex "0609608648016503040311"))
+  assertEqual "P-256 has no ML-DSA widths" Nothing
+    (mldsaWidthsOfOid (hex "06082a8648ce3d030107"))
+  assertEqual "garbage has no ML-DSA widths" Nothing
+    (mldsaWidthsOfOid "nope")
+  where
+    golden tag = do
+      (oid, raw, _, _, pubDer) <- loadMldsaHalves tag
+      assertEqual ("SPKI golden " ++ tag) pubDer (mldsaPublicDer oid raw)
+
+caseMldsaDerReaders :: IO ()
+caseMldsaDerReaders = do
+  (oid44, raw44, seed44, exp44, pub44) <- loadMldsaHalves "44"
+  priv44 <- BS.readFile "tests/fixtures/mldsa44-priv.der"
+  assertEqual "44 SPKI fields" (Just (oid44, raw44)) (mldsaSpkiFields pub44)
+  assertEqual "44 PKCS#8 fields" (Just (oid44, seed44, exp44)) (mldsaPkcs8Fields priv44)
+  assertEqual "44 seed width" 32 (BS.length seed44)
+  -- Malformed input refuses.
+  assertEqual "truncated SPKI" Nothing
+    (mldsaSpkiFields (BS.take (BS.length pub44 - 1) pub44))
+  assertEqual "truncated PKCS#8" Nothing (mldsaPkcs8Fields (BS.take 10 priv44))
+  assertEqual "garbage SPKI" Nothing (mldsaSpkiFields "nope")
+  assertEqual "garbage PKCS#8" Nothing (mldsaPkcs8Fields "nope")
+  -- Foreign algorithms refuse (OID membership, not shape).
+  assertEqual "EC SPKI refuses" Nothing (mldsaSpkiFields ecSpkiGold)
+  assertEqual "Ed25519 SPKI refuses" Nothing (mldsaSpkiFields ed19SpkiGold)
+  -- The flat import form is deliberately NOT provider-form: the
+  -- provider reader refuses it (import and keygen shapes differ
+  -- by design).
+  assertEqual "provider reader refuses flat" Nothing
+    (mldsaPkcs8Fields (mldsaPrivateDer oid44 exp44))
+
+caseMldsaPrivate :: IO ()
+caseMldsaPrivate = do
+  m0 <- seedModel
+  st <- getSession m0
+  (oid, _, _, expanded, _) <- loadMldsaHalves "44"
+  (_, _, attrs) <- doCreate m0 st (mldsaPrivTmpl oid expanded)
+  der <- storedValue attrs
+  assertEqual "flat PKCS#8 golden" (mldsaPrivateDer oid expanded) der
+  assertBool "flat framing" (BS.isPrefixOf (hex "30820a14020100300b060960864801650304031104820a00") der)
+  assertEqual "flat carries expanded" expanded (BS.drop (BS.length der - 2560) der)
+  assertEqual "set kept" (Just (ValULong 1)) (Map.lookup AttrParameterSet attrs)
+
+caseMldsaPublic :: IO ()
+caseMldsaPublic = do
+  m0 <- seedModel
+  st <- getSession m0
+  (oid, raw, _, _, pubDer) <- loadMldsaHalves "65"
+  (_, _, attrs) <- doCreate m0 st (mldsaPubTmpl oid raw)
+  der <- storedValue attrs
+  assertEqual "SPKI golden" pubDer der
+  assertEqual "set kept" (Just (ValULong 2)) (Map.lookup AttrParameterSet attrs)
+
+casePartialMldsa :: IO ()
+casePartialMldsa = do
+  m0 <- seedModel
+  st <- getSession m0
+  (oid, raw, _, expanded, _) <- loadMldsaHalves "44"
+  let noSet = filter ((/= AttrParameterSet) . fst) (mldsaPrivTmpl oid expanded)
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noSet)
+  let noValue = filter ((/= AttrValue) . fst) (mldsaPrivTmpl oid expanded)
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noValue)
+  let noSetPub = filter ((/= AttrParameterSet) . fst) (mldsaPubTmpl oid raw)
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noSetPub)
+  let noRaw = filter ((/= AttrValue) . fst) (mldsaPubTmpl oid raw)
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noRaw)
+
+caseBadMldsaValue :: IO ()
+caseBadMldsaValue = do
+  m0 <- seedModel
+  st <- getSession m0
+  (oid, raw, seed, expanded, _) <- loadMldsaHalves "44"
+  let setT tmpl t v = (t, v) : filter ((/= t) . fst) tmpl
+      priv = mldsaPrivTmpl oid expanded
+      pub = mldsaPubTmpl oid raw
+  -- Off-width values refuse inconsistent.
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT priv AttrValue (ValBytes (BS.take 2559 expanded))))
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT priv AttrValue (ValBytes (expanded <> BS.singleton 0))))
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT pub AttrValue (ValBytes (BS.take 1311 raw))))
+  -- An unknown set refuses inconsistent.
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT priv AttrParameterSet (ValULong 7)))
+  -- A seed-only private template refuses inconsistent (the
+  -- provider cannot expand a lone seed); seed plus value
+  -- imports fine (the seed rides verbatim).
+  let seedOnly = setT (filter ((/= AttrValue) . fst) priv) AttrSeed (ValBytes seed)
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st seedOnly)
+  (_, _, bothAttrs) <- doCreate m0 st (priv ++ [(AttrSeed, ValBytes seed)])
+  assertEqual "seed kept verbatim" (Just (ValBytes seed)) (Map.lookup AttrSeed bothAttrs)
+
+caseMldsaExecutes :: IO ()
+caseMldsaExecutes = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (oid, raw, _, expanded, _) <- loadMldsaHalves "44"
+  (m1, _, privAttrs) <- doCreate m0 st (mldsaPrivTmpl oid expanded)
+  privDer <- storedValue privAttrs
+  (_, _, pubAttrs) <- doCreate m1 st (mldsaPubTmpl oid raw)
+  pubDer <- storedValue pubAttrs
+  let spec = SigMLDSA ML_DSA_44 False "" True
+  sres <- sign env spec (KeyDer privDer) "import-msg"
+  sig <- case sres of
+    EngineOk s -> pure s
+    EngineFail err -> assertFailure ("imported ML-DSA sign failed: " ++ show err) >> undefined
+  assertEqual "raw signature length" 2420 (BS.length sig)
+  vres <- verify env spec (KeyDer pubDer) "import-msg" sig
+  case vres of
+    EngineOk () -> pure ()
+    EngineFail err -> assertFailure ("imported ML-DSA verify failed: " ++ show err)
 

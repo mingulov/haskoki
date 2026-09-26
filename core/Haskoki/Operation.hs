@@ -87,6 +87,7 @@ import Haskoki.Recipe.Dsa (dsaParamsValid, dsaRecipeFor)
 import Haskoki.Recipe.Eddsa (eddsaParamsValid, eddsaRecipeFor)
 import Haskoki.Recipe.Gcm (gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.Hmac (hmacParamsValid, hmacRecipeFor)
+import Haskoki.Recipe.MlDsa (mldsaParamsValid, mldsaRecipeFor)
 import Haskoki.Recipe.Otp (hotpParamsValid, hotpRecipeFor)
 import Haskoki.Recipe.RsaOaep (rsaOaepParamsValid, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPkcs1 (rsaPkcs1ParamsValid, rsaPkcs1RecipeFor)
@@ -364,6 +365,10 @@ checkMechParams args
   , not (eddsaParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD
         "EdDSA mechanism parameters rejected by the recipe")
+  | Just r <- mldsaRecipeFor (iaMech args)
+  , not (mldsaParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "ML-DSA mechanism parameters rejected by the recipe")
   | Just r <- cmacRecipeFor (iaMech args)
   , not (cmacParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD

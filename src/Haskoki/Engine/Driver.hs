@@ -66,6 +66,15 @@ table by @CKM_*@ name; no hand-typed numerics):
   mechanism with non-pure parameters is a 'CryptoFailed'
   parameter refusal, never 'CryptoUnsupported', and the driver
   never refuses a key.
+* ML-DSA runs the recipe 'SigSpec' ('mldsaSpecFor'): any hedge
+  variant with a 0..255-byte context (empty parameters default
+  to preferred, empty context), and the level label is a
+  dispatch hint from the DER key ('mldsaLevelOfKey'),
+  defaulting to ML-DSA-44 when the key is unscannable. Key
+  shape is the backend's call, so a covered mechanism with
+  refused parameters is a 'CryptoFailed' parameter refusal,
+  never 'CryptoUnsupported', and the driver never refuses a
+  key.
 * Block ciphers run the recipe 'CipherSpec' ('cipherSpecFor'):
   every (mechanism, key length, params) triple the
   'Haskoki.Recipe.Cipher' table covers maps to its backend spec
@@ -128,8 +137,10 @@ module Haskoki.Engine.Driver
   , ecdsaSpecFor
   , dsaSpecFor
   , eddsaSpecFor
+  , mldsaSpecFor
   , ecCurveOfKey
   , eddsaCurveOfKey
+  , mldsaLevelOfKey
   , ecdhParamsFor
   , cmacSpecFor
   , hotpParamsFor
@@ -165,6 +176,7 @@ import Haskoki.Engine.Backend
   , MacSpec (..)
   , OaepParams (..)
   , PqcKemAlg (..)
+  , PqcSigAlg (..)
   , RsaCipherParams (..)
   , PssParams (..)
   , SigSpec (..)
@@ -203,6 +215,13 @@ import Haskoki.Recipe.Eddsa
   , eddsaParamsValid
   , eddsaRecipeFor
   )
+import Haskoki.Recipe.MlDsa
+  ( MldsaHedge (..)
+  , decodeMldsaParams
+  , mldsaLevelOfDer
+  , mldsaParamsValid
+  , mldsaRecipeFor
+  )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
 import Haskoki.Recipe.Gcm (decodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (decodeOaepParams, rsaOaepParamsValid, rsaOaepRecipeFor)
@@ -230,6 +249,7 @@ import Haskoki.Operation.KeyManagement
   , dsaParameterGenMech
   , ecKeyPairGenMech
   , edwardsKeyPairGenMech
+  , mldsaKeyPairGenMech
   , rsaPkcsMech
   , encodeKeyPair
   , genericSecretKeyGenMech
@@ -782,6 +802,56 @@ eddsaSpecFor mech params key = do
 isEddsaMech :: MechanismId -> Bool
 isEddsaMech mech = isJust (eddsaRecipeFor mech)
 
+-- | ML-DSA dispatch: the covered (mechanism, params, key) triple
+-- to its backend spec (pinned against 'Haskoki.Recipe.MlDsa' by
+-- RecipeMlDsaSpec). The recipe validates the hedge/context
+-- parameters (empty defaults to preferred, empty context); the
+-- level label is a dispatch hint from the DER key
+-- ('mldsaLevelOfKey'), defaulting to ML-DSA-44 when the key is
+-- unscannable (the backends execute against the key's actual
+-- material and refuse bad keys themselves — the driver never
+-- refuses a key). Deterministic hedge clears the hedged flag;
+-- external-mu mode never dispatches (out of scope). 'Nothing'
+-- means uncovered (non-ML-DSA mechanism) or refused parameters.
+mldsaSpecFor :: MechanismId -> ByteString -> KeyMaterial -> Maybe SigSpec
+mldsaSpecFor mech params key = do
+  r <- mldsaRecipeFor mech
+  guard (mldsaParamsValid r params)
+  (hedge, ctx) <- decodeMldsaParams params
+  let alg = fromMaybe ML_DSA_44 (mldsaLevelOfKey key)
+      hedged = hedge /= HedgeDeterministic
+  pure (SigMLDSA alg False ctx hedged)
+
+-- | An ML-DSA mechanism regardless of parameter validity (drives
+-- the parameter-refusal branch: refused ML-DSA params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isMldsaMech :: MechanismId -> Bool
+isMldsaMech mech = isJust (mldsaRecipeFor mech)
+
+-- | The ML-DSA level named by a key's algorithm OID, via the
+-- recipe's 'mldsaLevelOfDer'. Both constructors sniff: production
+-- resolves every stored key as 'KeyBytes' ('stdResolver'), so a
+-- 'KeyDer'-only sniff would miss every production key and
+-- misdispatch it as ML-DSA-44 (the shim's type-name check then
+-- refuses with BADKEY). 'Nothing' for references, symmetric
+-- bytes, RSA, garbage, or a foreign curve. The marker is
+-- advisory for dispatch only: 'mldsaSpecFor' defaults it to
+-- ML-DSA-44 and the backends always execute against the key's
+-- actual material, so a miss can refuse downstream but never
+-- mis-sign.
+mldsaLevelOfKey :: KeyMaterial -> Maybe PqcSigAlg
+mldsaLevelOfKey (KeyDer der) = mldsaLevelOfDer der >>= levelOfName
+mldsaLevelOfKey (KeyBytes bs) = mldsaLevelOfDer bs >>= levelOfName
+mldsaLevelOfKey _ = Nothing
+
+-- | Engine level names onto backend algorithms.
+levelOfName :: T.Text -> Maybe PqcSigAlg
+levelOfName name = case T.unpack name of
+  "ML-DSA-44" -> Just ML_DSA_44
+  "ML-DSA-65" -> Just ML_DSA_65
+  "ML-DSA-87" -> Just ML_DSA_87
+  _ -> Nothing
+
 -- | The Edwards curve named by a key's curve OID, via the
 -- recipe's 'eddsaCurveOfDer'. Both constructors sniff: production
 -- resolves every stored key as 'KeyBytes' ('stdResolver'), so a
@@ -872,6 +942,10 @@ runEffect env resolve fx = case fx of
         case eddsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure eddsaRefusal
+    | isMldsaMech mech -> withKey mkey $ \key ->
+        case mldsaSpecFor mech params key of
+          Just spec -> toBytes <$> sign env spec key input
+          Nothing -> pure mldsaRefusal
     | otherwise -> pure (unsupported fx)
   FxVerify mech mkey params input sig
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
@@ -902,6 +976,10 @@ runEffect env resolve fx = case fx of
         case eddsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure eddsaRefusal
+    | isMldsaMech mech -> withKey mkey $ \key ->
+        case mldsaSpecFor mech params key of
+          Just spec -> toVerifyUnit <$> verify env spec key input sig
+          Nothing -> pure mldsaRefusal
     | otherwise -> pure (unsupported fx)
   FxCipher dir mech mkey params input
     | isCipherMech mech -> withKey mkey $ \key ->
@@ -953,6 +1031,10 @@ runEffect env resolve fx = case fx of
         case eddsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure eddsaRefusal
+    | isMldsaMech mech -> withKey mkey $ \key ->
+        case mldsaSpecFor mech params key of
+          Just spec -> toBytes <$> sign env spec key input
+          Nothing -> pure mldsaRefusal
     | otherwise -> pure (unsupported fx)
   FxMessageVerify mech mkey params input sig
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
@@ -983,6 +1065,10 @@ runEffect env resolve fx = case fx of
         case eddsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure eddsaRefusal
+    | isMldsaMech mech -> withKey mkey $ \key ->
+        case mldsaSpecFor mech params key of
+          Just spec -> toVerifyUnit <$> verify env spec key input sig
+          Nothing -> pure mldsaRefusal
     | otherwise -> pure (unsupported fx)
   FxSignRecover {} -> pure (unsupported fx)
   FxVerifyRecover {} -> pure (unsupported fx)
@@ -1013,8 +1099,12 @@ runEffect env resolve fx = case fx of
             toKeyPair <$> generateKey env (GenDSAKeypair der)
           (m, GenEdwardsKeypair curve) | m == edwardsKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenEdDSAKeypair curve)
+          (m, GenMlDsa n) | m == mldsaKeyPairGenMech -> case mlDsaAlg n of
+            Just alg -> toKeyPair <$> generateKey env (GenMLDSA alg)
+            Nothing -> pure (GotCryptoError (CryptoFailed
+              ("driver: unknown ML-DSA parameter set: " ++ show n)))
           _
-            | mech `elem` [aesKeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, edwardsKeyPairGenMech] ->
+            | mech `elem` [aesKeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)
@@ -1445,6 +1535,12 @@ dsaRefusal = GotCryptoError (CryptoFailed "DSA: params must be RAW, DER, or empt
 eddsaRefusal :: CryptoResult
 eddsaRefusal = GotCryptoError (CryptoFailed "EdDSA: params must be an explicit pure struct (phFlag clear, empty context)")
 
+-- | ML-DSA dispatch refusal: 'mldsaSpecFor' only fails on
+-- refused parameters, so the refusal is unconditionally a
+-- 'CryptoFailed' parameter refusal.
+mldsaRefusal :: CryptoResult
+mldsaRefusal = GotCryptoError (CryptoFailed "ML-DSA: params must be mldsa-params/1 (hedge 0..2, context 0..255 bytes) or empty")
+
 -- | CMAC block width per cipher (only the ECB specs 'cmacSpecFor'
 -- yields).
 cmacBlockOf :: CipherSpec -> Maybe Int
@@ -1614,6 +1710,15 @@ mlKemAlg n = case n of
   512 -> Just ML_KEM_512
   768 -> Just ML_KEM_768
   1024 -> Just ML_KEM_1024
+  _ -> Nothing
+
+-- | ML-DSA parameter-set ids (@CKP_ML_DSA_44\/65\/87@) onto
+-- backend algorithms.
+mlDsaAlg :: Int -> Maybe PqcSigAlg
+mlDsaAlg n = case n of
+  1 -> Just ML_DSA_44
+  2 -> Just ML_DSA_65
+  3 -> Just ML_DSA_87
   _ -> Nothing
 
 -- | Planner KEM sets onto backend algorithms.

@@ -1449,6 +1449,154 @@ int main(int argc, char **argv) {
       rv = f->C_Verify(ssess, (CK_BYTE_PTR) "eddsa-consumer", 14, sig, sigLen);
       CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered EdDSA refused");
     }
+    /* ML-DSA: keypair (the set rides the public template; the
+     * mechanism takes no parameter) -> sign/verify. The struct
+     * is OPTIONAL (OASIS v3.2: absent means hedge-preferred,
+     * empty context): NULL params serve pure — the opposite of
+     * EdDSA. Hedge 0/1/2 serve; anything else refuses
+     * ARGUMENTS_BAD. */
+    {
+      CK_KEY_TYPE mkt = CKK_ML_DSA;
+      CK_OBJECT_HANDLE mpub = 0, mpriv = 0;
+      CK_OBJECT_HANDLE dpub = 0, dpriv = 0;
+      CK_ULONG mset44 = CKP_ML_DSA_44;
+      CK_ULONG msetBad = 7;
+      CK_MECHANISM mkgm, mnm, msm, mcm, mdm, mbm;
+      CK_SIGN_ADDITIONAL_CONTEXT mctx, mdet, mbad;
+      CK_BYTE mctxBuf[] = { 'C', 'T', 'X' };
+      CK_ATTRIBUTE mpubT[5];
+      CK_ATTRIBUTE mprivT[4];
+      CK_ATTRIBUTE mshortT[4];
+      CK_BYTE msig[5000];
+      CK_BYTE mdet1[5000];
+      CK_ULONG msigLen;
+      CK_ULONG mdetLen;
+      mkgm.mechanism = CKM_ML_DSA_KEY_PAIR_GEN;
+      mkgm.pParameter = NULL_PTR;
+      mkgm.ulParameterLen = 0;
+      mshortT[0].type = CKA_CLASS;
+      mshortT[0].pValue = &pcls;
+      mshortT[0].ulValueLen = sizeof(pcls);
+      mshortT[1].type = CKA_KEY_TYPE;
+      mshortT[1].pValue = &mkt;
+      mshortT[1].ulValueLen = sizeof(mkt);
+      mshortT[2].type = CKA_TOKEN;
+      mshortT[2].pValue = &bFalse;
+      mshortT[2].ulValueLen = sizeof(bFalse);
+      mshortT[3].type = CKA_VERIFY;
+      mshortT[3].pValue = &bTrue;
+      mshortT[3].ulValueLen = sizeof(bTrue);
+      mprivT[0].type = CKA_CLASS;
+      mprivT[0].pValue = &scls;
+      mprivT[0].ulValueLen = sizeof(scls);
+      mprivT[1].type = CKA_KEY_TYPE;
+      mprivT[1].pValue = &mkt;
+      mprivT[1].ulValueLen = sizeof(mkt);
+      mprivT[2].type = CKA_TOKEN;
+      mprivT[2].pValue = &bFalse;
+      mprivT[2].ulValueLen = sizeof(bFalse);
+      mprivT[3].type = CKA_SIGN;
+      mprivT[3].pValue = &bTrue;
+      mprivT[3].ulValueLen = sizeof(bTrue);
+      rv = f->C_GenerateKeyPair(ssess, &mkgm, mshortT, 4, mprivT, 4,
+                                &dpub, &dpriv);
+      CHECKC(rv == CKR_OK && dpub != 0 && dpriv != 0,
+             "ML-DSA pair mints without a set (default 65)");
+      mpubT[0].type = CKA_CLASS;
+      mpubT[0].pValue = &pcls;
+      mpubT[0].ulValueLen = sizeof(pcls);
+      mpubT[1].type = CKA_KEY_TYPE;
+      mpubT[1].pValue = &mkt;
+      mpubT[1].ulValueLen = sizeof(mkt);
+      mpubT[2].type = CKA_PARAMETER_SET;
+      mpubT[2].pValue = &mset44;
+      mpubT[2].ulValueLen = sizeof(mset44);
+      mpubT[3].type = CKA_TOKEN;
+      mpubT[3].pValue = &bFalse;
+      mpubT[3].ulValueLen = sizeof(bFalse);
+      mpubT[4].type = CKA_VERIFY;
+      mpubT[4].pValue = &bTrue;
+      mpubT[4].ulValueLen = sizeof(bTrue);
+      rv = f->C_GenerateKeyPair(ssess, &mkgm, mpubT, 5, mprivT, 4,
+                                &mpub, &mpriv);
+      CHECKC(rv == CKR_OK && mpub != 0 && mpriv != 0, "ML-DSA-44 pair mints");
+      mpubT[2].pValue = &msetBad;
+      rv = f->C_GenerateKeyPair(ssess, &mkgm, mpubT, 5, mprivT, 4,
+                                &dpub, &dpriv);
+      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT,
+             "ML-DSA keypair with unknown set is INCONSISTENT");
+      mnm.mechanism = CKM_ML_DSA;
+      mnm.pParameter = NULL_PTR;
+      mnm.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &mnm, mpriv);
+      CHECKC(rv == CKR_OK, "ML-DSA NULL-params SignInit ok");
+      msigLen = sizeof(msig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "mldsa-consumer", 14, msig, &msigLen);
+      CHECKC(rv == CKR_OK && msigLen == 2420, "ML-DSA sign yields 2420 bytes");
+      rv = f->C_VerifyInit(ssess, &mnm, mpub);
+      CHECKC(rv == CKR_OK, "ML-DSA NULL-params VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "mldsa-consumer", 14, msig, msigLen);
+      CHECKC(rv == CKR_OK, "ML-DSA NULL-params verify ok");
+      mctx.hedgeVariant = CKH_HEDGE_PREFERRED;
+      mctx.pContext = mctxBuf;
+      mctx.ulContextLen = sizeof(mctxBuf);
+      msm.mechanism = CKM_ML_DSA;
+      msm.pParameter = &mctx;
+      msm.ulParameterLen = sizeof(mctx);
+      rv = f->C_SignInit(ssess, &msm, mpriv);
+      CHECKC(rv == CKR_OK, "ML-DSA context SignInit ok");
+      msigLen = sizeof(msig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "mldsa-consumer", 14, msig, &msigLen);
+      CHECKC(rv == CKR_OK && msigLen == 2420, "ML-DSA context sign yields 2420 bytes");
+      rv = f->C_VerifyInit(ssess, &msm, mpub);
+      CHECKC(rv == CKR_OK, "ML-DSA context VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "mldsa-consumer", 14, msig, msigLen);
+      CHECKC(rv == CKR_OK, "ML-DSA context verify ok");
+      rv = f->C_VerifyInit(ssess, &mnm, mpub);
+      CHECKC(rv == CKR_OK, "ML-DSA re-init pure for separation");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "mldsa-consumer", 14, msig, msigLen);
+      CHECKC(rv == CKR_SIGNATURE_INVALID, "context sig under pure refused");
+      mdet.hedgeVariant = CKH_DETERMINISTIC_REQUIRED;
+      mdet.pContext = NULL_PTR;
+      mdet.ulContextLen = 0;
+      mdm.mechanism = CKM_ML_DSA;
+      mdm.pParameter = &mdet;
+      mdm.ulParameterLen = sizeof(mdet);
+      mcm.mechanism = CKM_ML_DSA;
+      mcm.pParameter = &mdet;
+      mcm.ulParameterLen = sizeof(mdet);
+      rv = f->C_SignInit(ssess, &mdm, mpriv);
+      CHECKC(rv == CKR_OK, "ML-DSA deterministic SignInit ok");
+      mdetLen = sizeof(mdet1);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "mldsa-consumer", 14, mdet1, &mdetLen);
+      CHECKC(rv == CKR_OK && mdetLen == 2420, "ML-DSA deterministic signs");
+      rv = f->C_SignInit(ssess, &mdm, mpriv);
+      CHECKC(rv == CKR_OK, "ML-DSA deterministic re-init ok");
+      msigLen = sizeof(msig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "mldsa-consumer", 14, msig, &msigLen);
+      CHECKC(rv == CKR_OK && msigLen == mdetLen &&
+                 memcmp(msig, mdet1, msigLen) == 0,
+             "ML-DSA deterministic reproduces");
+      rv = f->C_VerifyInit(ssess, &mcm, mpub);
+      CHECKC(rv == CKR_OK, "ML-DSA deterministic VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "mldsa-consumer", 14, msig, msigLen);
+      CHECKC(rv == CKR_OK, "ML-DSA deterministic verify ok");
+      mbad.hedgeVariant = 3;
+      mbad.pContext = NULL_PTR;
+      mbad.ulContextLen = 0;
+      mbm.mechanism = CKM_ML_DSA;
+      mbm.pParameter = &mbad;
+      mbm.ulParameterLen = sizeof(mbad);
+      rv = f->C_SignInit(ssess, &mbm, mpriv);
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "ML-DSA bad-hedge struct refused");
+      /* Tamper under NULL params (msig still holds the 2420
+       * deterministic-signed bytes; the refusal started no op). */
+      rv = f->C_VerifyInit(ssess, &mnm, mpub);
+      CHECKC(rv == CKR_OK, "ML-DSA re-init for tamper");
+      msig[msigLen - 1] ^= 0xFF;
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "mldsa-consumer", 14, msig, msigLen);
+      CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered ML-DSA refused");
+    }
     rv = f->C_CloseSession(ssess);
     CHECKC(rv == CKR_OK, "sign session closes");
   }

@@ -37,6 +37,12 @@ Covered structs (caller-native layout, offsets derived from
   the context chases under 'maxInputBytes' with the same null
   conventions, and the pair re-encodes with 'encodeEddsaParams'
   (non-pure combinations refuse downstream at the recipe).
+* ML-DSA (@CK_SIGN_ADDITIONAL_CONTEXT@: hedge word, context
+  pointer, context length): hedge words 0/1/2 translate
+  (anything else passes through); the context chases under
+  'maxInputBytes' with the same null conventions, and the pair
+  re-encodes with 'encodeMldsaParams' (overlong contexts refuse
+  downstream at the recipe).
 
 Anything unmappable — wrong length, unknown ids, a bad source tag,
 a null-with-length or over-bound chase — passes the input bytes
@@ -60,6 +66,7 @@ module Haskoki.FFI.NativeParams
   , ccmStructToCanonical
   , ctrStructToCanonical
   , eddsaStructToCanonical
+  , mldsaStructToCanonical
   , digestStemByCkm
   , mgfStemByCkg
   , pssNativeSize
@@ -69,6 +76,7 @@ module Haskoki.FFI.NativeParams
   , ccmNativeSize
   , ctrNativeSize
   , eddsaNativeSize
+  , mldsaNativeSize
   ) where
 
 import Control.Monad (guard)
@@ -90,6 +98,7 @@ import Haskoki.Recipe.Cipher (ctrRecipeFor, encodeCtrParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Eddsa (eddsaRecipeFor, encodeEddsaParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
+import Haskoki.Recipe.MlDsa (encodeMldsaParams, hedgeOfWord, mldsaRecipeFor)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
 import Haskoki.Registry.Generated (mustGeneratedId)
@@ -148,6 +157,13 @@ eddsaLenOff = ((1 + wordAlign - 1) `div` wordAlign) * wordAlign
 -- padding), one length word, one pointer.
 eddsaNativeSize :: Int
 eddsaNativeSize = eddsaLenOff + wordSize + ptrSize
+
+-- | Native @CK_SIGN_ADDITIONAL_CONTEXT@ image size: the hedge
+-- word, one pointer, one length word — all-word, 24 bytes on
+-- LP64 (no padding traps; the header order is hedge, pointer,
+-- length).
+mldsaNativeSize :: Int
+mldsaNativeSize = 2 * wordSize + ptrSize
 
 -- | Native @CKM_*@ hash ids onto recipe digest stems. Ids come from
 -- the generated vocabulary, so a header drift breaks the build
@@ -283,6 +299,18 @@ eddsaStructToCanonical flag ctx
   | flag == 1 = Just (encodeEddsaParams True ctx)
   | otherwise = Nothing
 
+-- | ML-DSA translation: the native @CK_HEDGE_TYPE@ word plus the
+-- chased context onto the canonical @mldsa-params/1@ image. Only
+-- words 0/1/2 translate (the bound check runs on the 'Word64'
+-- before narrowing, so no wrap-around can smuggle a hedge);
+-- anything else passes through.
+mldsaStructToCanonical :: Word64 -> ByteString -> Maybe ByteString
+mldsaStructToCanonical hedge ctx
+  | hedge > 2 = Nothing
+  | otherwise = case hedgeOfWord (fromIntegral hedge) of
+      Just h -> Just (encodeMldsaParams h ctx)
+      Nothing -> Nothing
+
 -- | Chase one bounded byte string from caller memory under the
 -- 'decodeInputBytes' null conventions: zero length never
 -- dereferences, null-with-length and over-bound lengths refuse.
@@ -329,6 +357,7 @@ normalizeMechParams mid pParams paramsLen raw
   | isJust (ccmRecipeFor mid) = fromMaybe raw <$> decodeCcmNative
   | isJust (ctrRecipeFor mid) = fromMaybe raw <$> decodeCtrNative
   | isJust (eddsaRecipeFor mid) = fromMaybe raw <$> decodeEddsaNative
+  | isJust (mldsaRecipeFor mid) = fromMaybe raw <$> decodeMldsaNative
   | otherwise = pure raw
   where
     decodePssNative :: IO (Maybe ByteString)
@@ -395,3 +424,12 @@ normalizeMechParams mid pParams paramsLen raw
           pCtx <- peekByteOff pParams (eddsaLenOff + wordSize)
           mCtx <- chaseBytes pCtx ctxLen
           pure (mCtx >>= eddsaStructToCanonical flag)
+    decodeMldsaNative :: IO (Maybe ByteString)
+    decodeMldsaNative
+      | paramsLen /= fromIntegral mldsaNativeSize = pure Nothing
+      | otherwise = do
+          CULong hedge <- peekByteOff pParams 0
+          pCtx <- peekByteOff pParams wordSize
+          CULong ctxLen <- peekByteOff pParams (wordSize + ptrSize)
+          mCtx <- chaseBytes pCtx ctxLen
+          pure (mCtx >>= mldsaStructToCanonical hedge)

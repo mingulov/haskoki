@@ -20,6 +20,8 @@ mech|0x00000018|CKM_DSA_SHA3_224||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39
 mech|0x00000019|CKM_DSA_SHA3_256||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;verify:A37,A39
 mech|0x0000001A|CKM_DSA_SHA3_384||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;verify:A37,A39
 mech|0x0000001B|CKM_DSA_SHA3_512||dsa|sig-encoding/1|bits:1024-3072|sign:A37,A39;verify:A37,A39
+mech|0x0000001C|CKM_ML_DSA_KEY_PAIR_GEN||keypair|no-params/1|bytes:1312-2592|generate-key-pair:A20,A37
+mech|0x0000001D|CKM_ML_DSA||pqc|mldsa-params/1|bytes:1312-2592|sign:A37,A39;verify:A37,A39
 mech|0x00000040|CKM_SHA256_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x00000041|CKM_SHA384_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x00000042|CKM_SHA512_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
@@ -140,8 +142,6 @@ inv|0x00000007|CKM_RIPEMD128_RSA_PKCS||catalog-only
 inv|0x0000000A|CKM_RSA_X9_31_KEY_PAIR_GEN||catalog-only
 inv|0x0000000B|CKM_RSA_X9_31||catalog-only
 inv|0x0000000C|CKM_SHA1_RSA_X9_31||catalog-only
-inv|0x0000001C|CKM_ML_DSA_KEY_PAIR_GEN||catalog-only
-inv|0x0000001D|CKM_ML_DSA||catalog-only
 inv|0x0000001F|CKM_HASH_ML_DSA||catalog-only
 inv|0x00000020|CKM_DH_PKCS_KEY_PAIR_GEN||catalog-only
 inv|0x00000021|CKM_DH_PKCS_DERIVE||catalog-only

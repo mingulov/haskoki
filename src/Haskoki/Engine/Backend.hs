@@ -44,6 +44,7 @@ module Haskoki.Engine.Backend
   , ecdsaSigCap
   , dsaSigCap
   , eddsaSigCap
+  , mldsaSigCap
   , ecdhCap
   , MacSpec (..)
   , CipherSpec (..)
@@ -273,6 +274,22 @@ eddsaSigCap (SigEdDSA (EcSpec curve enc) ctx)
   , enc == "RAW"
   , BS.null ctx = Just ("EDDSA-" ++ curve)
 eddsaSigCap _ = Nothing
+
+-- | Capability string required by one ML-DSA spec:
+-- @ML-DSA-44\/65\/87@, either hedge, contexts to 255 bytes (the
+-- FIPS 204 bound). 'Nothing' means the spec is never servable
+-- (non-ML-DSA family — SLH-DSA levels included — external-mu
+-- mode, or an overlong context).
+mldsaSigCap :: SigSpec -> Maybe String
+mldsaSigCap (SigMLDSA alg mu ctx _)
+  | not mu
+  , BS.length ctx <= 255 = ("ML-DSA-" ++) <$> levelSuffix alg
+  where
+    levelSuffix ML_DSA_44 = Just "44"
+    levelSuffix ML_DSA_65 = Just "65"
+    levelSuffix ML_DSA_87 = Just "87"
+    levelSuffix _ = Nothing
+mldsaSigCap _ = Nothing
 
 -- | Capability string required by one ECDH spec: @ECDH@ for plain
 -- agreement, @ECDH-COFACTOR@ for cofactor-multiplied.

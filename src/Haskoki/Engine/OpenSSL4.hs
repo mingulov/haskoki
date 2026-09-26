@@ -285,6 +285,24 @@ instance CryptoBackend OpenSSL4 where
                 | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "sign" "private key DER rejected"))
                 | otherwise -> nativeFail "sign" code
               Right sig -> pure (EngineOk sig)
+        -- No key allowlist (the DSA precedent): the shim checks the
+        -- key's actual keymgmt type name against the level and
+        -- refuses garbage/cross-level keys as BADKEY before any
+        -- provider math. Empty context is pure mode (Nothing);
+        -- deterministic hedge sets the provider deterministic
+        -- param, hedged rides the default.
+        SigMLDSA alg mu ctx hedged -> case mldsaNativeAlg alg mu of
+          Nothing -> pure (EngineFail (BackendUnsupported "sign"
+            ("no provider name: " ++ show spec)))
+          Just algname -> do
+            r <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.mldsaSign (osslCtx env) algname (osslPropQ env) kb msg
+                (mldsaContext ctx) (not hedged)
+            case r of
+              Left code
+                | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "sign" "private key DER rejected"))
+                | otherwise -> nativeFail "sign" code
+              Right sig -> pure (EngineOk sig)
         SigRSA_PKCS1v15 alg -> case digestFetchName alg of
           -- Unreachable post-guard (the guard only admits probed
           -- fixed-width digests); typed, never a crash.
@@ -337,6 +355,14 @@ instance CryptoBackend OpenSSL4 where
             rc <- withForeignPtr (osslEnv env) $ \_ ->
               Raw.eddsaVerify (osslCtx env) curvename (osslPropQ env) kb msg sig
             verifyRc "verify" "signature is not a raw EdDSA signature" rc
+        SigMLDSA alg mu ctx _ -> case mldsaNativeAlg alg mu of
+          Nothing -> pure (EngineFail (BackendUnsupported "verify"
+            ("no provider name: " ++ show spec)))
+          Just algname -> do
+            rc <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.mldsaVerify (osslCtx env) algname (osslPropQ env) kb msg
+                (mldsaContext ctx) sig
+            verifyRc "verify" "signature is not a raw ML-DSA signature" rc
         SigRSA_PKCS1v15 alg -> case digestFetchName alg of
           Nothing -> pure (EngineFail (BackendUnsupported "verify"
             ("no fetch name: " ++ show alg)))
@@ -470,6 +496,16 @@ instance CryptoBackend OpenSSL4 where
         | code == Raw.errBadParam -> pure (EngineFail (BackendBadParam "generateKey" "unknown Edwards curve"))
         | otherwise -> nativeFail "generateKey" code
       Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
+  generateKey be spec@(GenMLDSA alg) = runGuarded be "generateKey" (genSupported be spec) $ \env ->
+    case mldsaNativeAlg alg False of
+      Nothing -> pure (EngineFail (BackendBadParam "generateKey"
+        ("unknown ML-DSA level: " ++ show alg)))
+      Just algname -> do
+        r <- withForeignPtr (osslEnv env) $ \_ ->
+          Raw.mldsaGen (osslCtx env) (osslPropQ env) algname
+        case r of
+          Left code -> nativeFail "generateKey" code
+          Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   -- RSA keygen bounds mirror the key planner (2048/3072/4096
   -- bits, odd exponent >= 3); the native call enforces the same
   -- window again.
@@ -618,7 +654,7 @@ ossl4Caps version propq = BackendCaps
   , bcDigests = DigestCaps { dcAlgs = Set.fromList t16DigestAlgs, dcMultipart = True, dcXof = False }
   , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
   , bcMacs = MacCaps { mcSpecs = osslMacSpecs t16DigestAlgs }
-  , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs ++ osslEddsaSpecNames t16EdwardsCurves), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.empty }
+  , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs ++ osslEddsaSpecNames t16EdwardsCurves ++ osslMldsaSpecNames t16MldsaLevels), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.fromList t16MldsaLevels }
   , bcKems = KemCaps { kcAlgs = Set.empty }
   , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR"] }
   , bcParamNotes = Map.fromList
@@ -631,6 +667,7 @@ ossl4Caps version propq = BackendCaps
        , ("ECDH-COFACTOR", "cofactor-multiplied; no-op on h=1 curves, threaded honestly")
        ] ++ osslRsaNotes t16RsaAlgs ++ osslEcdsaNotes t16EcdsaCurves t16DigestAlgs
          ++ osslDsaNotes t16DsaAlgs ++ osslEddsaNotes t16EdwardsCurves
+         ++ osslMldsaNotes t16MldsaLevels
       )
   }
 
@@ -721,6 +758,28 @@ osslEddsaNotes curves =
   [ (name, "pure EdDSA, one-shot; raw fixed-width signatures (64/114 bytes)")
   | curve <- curves
   , Just name <- [eddsaSigCap (SigEdDSA (EcSpec curve "RAW") BS.empty)]
+  ]
+
+-- | The ML-DSA level set: all three FIPS 204 levels.
+t16MldsaLevels :: [PqcSigAlg]
+t16MldsaLevels = [ML_DSA_44, ML_DSA_65, ML_DSA_87]
+
+-- | ML-DSA capability names: one pure-sign name per level. The
+-- pre-probe caps cover 't16MldsaLevels'; 'probeCaps' keeps each
+-- level under its own pkey gate.
+osslMldsaSpecNames :: [PqcSigAlg] -> [String]
+osslMldsaSpecNames levels =
+  [ name
+  | alg <- levels
+  , Just name <- [mldsaSigCap (SigMLDSA alg False BS.empty True)]
+  ]
+
+-- | Per-name ML-DSA parameter notes for the capability report.
+osslMldsaNotes :: [PqcSigAlg] -> [(String, String)]
+osslMldsaNotes levels =
+  [ (name, "pure ML-DSA plus 0..255-byte contexts, hedged or deterministic, one-shot; raw fixed-width signatures (2420/3309/4627 bytes)")
+  | alg <- levels
+  , Just name <- [mldsaSigCap (SigMLDSA alg False BS.empty True)]
   ]
 
 -- | The RSA digest set: every fixed-length digest the RSA
@@ -837,6 +896,9 @@ probeCaps env = do
   dsaOk <- probe1 "pkey" "DSA"
   ed19Ok <- probe1 "pkey" "ED25519"
   ed448Ok <- probe1 "pkey" "ED448"
+  mldsa44Ok <- probe1 "pkey" "ML-DSA-44"
+  mldsa65Ok <- probe1 "pkey" "ML-DSA-65"
+  mldsa87Ok <- probe1 "pkey" "ML-DSA-87"
   let base = osslCaps env
       rsaAlgs = filter (`elem` mdAlgs) t16RsaAlgs
       dsaAlgs = filter (`elem` mdAlgs) t16DsaAlgs
@@ -856,8 +918,15 @@ probeCaps env = do
             , keep dsaOk (Set.fromList (osslDsaSpecNames dsaAlgs))
             , keep ed19Ok (Set.fromList (osslEddsaSpecNames ["Ed25519"]))
             , keep ed448Ok (Set.fromList (osslEddsaSpecNames ["Ed448"]))
+            , keep mldsa44Ok (Set.fromList (osslMldsaSpecNames [ML_DSA_44]))
+            , keep mldsa65Ok (Set.fromList (osslMldsaSpecNames [ML_DSA_65]))
+            , keep mldsa87Ok (Set.fromList (osslMldsaSpecNames [ML_DSA_87]))
             ]
         , scCurves = keep pkeyOk (Set.fromList t16EcdsaCurves)
+        , scPqcSign = Set.fromList
+            ([ ML_DSA_44 | mldsa44Ok ]
+              ++ [ ML_DSA_65 | mldsa65Ok ]
+              ++ [ ML_DSA_87 | mldsa87Ok ])
         }
     }
   where
@@ -931,6 +1000,8 @@ sigSupported (OSSL4Backend env) spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | Just name <- eddsaSigCap spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
+  | Just name <- mldsaSigCap spec
+  , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | Just name <- rsaSigCap spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | Just name <- rsaPssCap spec
@@ -977,6 +1048,27 @@ eddsaFetchName name = case BC8.unpack name of
   "Ed25519" -> "ED25519"
   "Ed448" -> "ED448"
   other -> other
+
+-- | Native level selection for one ML-DSA spec: the provider fetch
+-- name, pure/context mode only. 'Nothing' means unservable
+-- (external-mu mode or a non-ML-DSA level — SLH-DSA rows are
+-- never ML-DSA specs).
+mldsaNativeAlg :: PqcSigAlg -> Bool -> Maybe String
+mldsaNativeAlg alg mu
+  | mu = Nothing
+  | otherwise = case alg of
+      ML_DSA_44 -> Just "ML-DSA-44"
+      ML_DSA_65 -> Just "ML-DSA-65"
+      ML_DSA_87 -> Just "ML-DSA-87"
+      _ -> Nothing
+
+-- | Spec context bytes onto the optional native context: empty is
+-- pure mode ('Nothing'), anything else rides the
+-- @context-string@ param.
+mldsaContext :: ByteString -> Maybe ByteString
+mldsaContext ctx
+  | BS.null ctx = Nothing
+  | otherwise = Just ctx
 
 -- | OAEP availability: the RSA pkey gate (witnessed by the
 -- probe-narrowed RSA signature set) plus per-digest fetch probes
@@ -1063,6 +1155,9 @@ genSupported (OSSL4Backend env) spec
   , Set.member "DSA-RAW" (scSpecs (bcSigs (osslCaps env))) = Nothing
   | GenEdDSAKeypair name <- spec
   , Set.member ("EDDSA-" ++ BC8.unpack name) (scSpecs (bcSigs (osslCaps env))) = Nothing
+  | GenMLDSA alg <- spec
+  , [Just name] <- [mldsaSigCap (SigMLDSA alg False BS.empty True)]
+  , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | GenSym alg _ <- spec
   , alg `elem` ["AES", "HOTP", "GENERIC"] = Nothing
   | GenRSA {} <- spec

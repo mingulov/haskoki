@@ -113,6 +113,11 @@ import Haskoki.Recipe.Gcm
   , gcmRecipes
   )
 import Haskoki.Recipe.Hmac (HmacRecipe (..), hmacCodecFor, hmacRecipes)
+import Haskoki.Recipe.MlDsa
+  ( MldsaRecipe (..)
+  , mldsaCodecFor
+  , mldsaRecipes
+  )
 import Haskoki.Recipe.Kdf
   ( KdfRecipe (..)
   , kdfCodecFor
@@ -695,6 +700,28 @@ eddsaDescs =
   | r <- eddsaRecipes
   ]
 
+-- | Baseline span for the ML-DSA recipe (@CKM_ML_DSA@ arrived in
+-- 3.2).
+mldsaBaselines :: MechanismName -> [Pkcs11Version]
+mldsaBaselines _ = [Pkcs11_3_2]
+
+-- | The ML-DSA behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from 'mldsaCodecFor',
+-- sign and verify routes citing synthetic A37 and real-KAT A39 (no
+-- A16: the backends offer one-shot sign only). Key bounds are the
+-- served public-key range 1312..2592 bytes (FIPS 204 widths for
+-- ML-DSA-44..87, the OASIS mechanism-info unit).
+mldsaDescs :: [Descriptor]
+mldsaDescs =
+  [ promotedDesc (rmlName r) (mldsaBaselines (rmlName r)) FamilyPqc
+      (mldsaCodecFor r)
+      [ mechRoute OpSign (rmlName r) ["A37", "A39"]
+      , mechRoute OpVerify (rmlName r) ["A37", "A39"]
+      ]
+      KeyBytes 1312 2592
+  | r <- mldsaRecipes
+  ]
+
 -- | The CMAC behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from 'cmacCodecFor',
 -- sign and verify routes citing synthetic A37 and real-KAT A39 (no
@@ -893,6 +920,11 @@ dEdwardsKeyPairGen = promotedDesc "CKM_EC_EDWARDS_KEY_PAIR_GEN" [Pkcs11_3_0, Pkc
   noParams [mechRoute OpGenerateKeyPair "CKM_EC_EDWARDS_KEY_PAIR_GEN" ["A20", "A37"]]
   KeyBits 256 456
 
+dMlDsaKeyPairGen :: Descriptor
+dMlDsaKeyPairGen = promotedDesc "CKM_ML_DSA_KEY_PAIR_GEN" [Pkcs11_3_2] FamilyKeyPair
+  noParams [mechRoute OpGenerateKeyPair "CKM_ML_DSA_KEY_PAIR_GEN" ["A20", "A37"]]
+  KeyBytes 1312 2592
+
 dDsaParameterGen :: Descriptor
 dDsaParameterGen = promotedDesc "CKM_DSA_PARAMETER_GEN" allBaselines FamilyKeyGen
   noParams [synthRoute OpGenerateKey "CKM_DSA_PARAMETER_GEN"]
@@ -936,7 +968,7 @@ aeadDescs =
   | r <- ccmRecipes
   ]
 
--- | The curated population: 132 reviewed behavior descriptors
+-- | The curated population: 134 reviewed behavior descriptors
 -- with concrete rules, plus the full header inventory (464
 -- canonical rows covering all 480 header CKM names) folded in from
 -- the generated table. Catalog-only rows (332: everything but the
@@ -951,12 +983,12 @@ curatedRegistry =
     behaviorDescs :: [Descriptor]
     behaviorDescs =
       ( [ dSHA256, dAESKeyGen, dHotpKeyGen, dGenericSecretKeyGen
-        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dEdwardsKeyPairGen, dHkdfDerive, dMlKem
+        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dEdwardsKeyPairGen, dMlDsaKeyPairGen, dHkdfDerive, dMlKem
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ rsaPkcs1Descs
-          ++ rsaPssDescs ++ rsaOaepDescs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ ecdhDescs
+          ++ rsaPssDescs ++ rsaOaepDescs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ ecdhDescs
           ++ cmacDescs ++ kdfDescs ++ otpDescs
       )
     behaviorIds0 :: [Word64]

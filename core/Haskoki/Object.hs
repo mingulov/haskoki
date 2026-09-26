@@ -64,7 +64,9 @@ import Haskoki.Attribute.Generated
 import Haskoki.Der
   (curveCoordLen, curveOidOfParams, dsaPrivateDer, dsaPublicDer,
    ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
-   edwardsOidOfParams, edwardsWidthsOfParams, rsaPrivateDer, rsaPublicDer,
+   edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
+   mldsaPrivateDer, mldsaPublicDer, mldsaWidthsOfOid,
+   rsaPrivateDer, rsaPublicDer,
    unwrapEcPoint, unwrapEdwardsPoint)
 import Haskoki.Model
   ( HandleBinding (..)
@@ -418,18 +420,23 @@ ckkRsa = mustKeyTypeId "CKK_RSA"
 ckkEc = mustKeyTypeId "CKK_EC"
 ckkDsa = mustKeyTypeId "CKK_DSA"
 ckkEcEdwards = mustKeyTypeId "CKK_EC_EDWARDS"
+ckkMlDsa = mustKeyTypeId "CKK_ML_DSA"
 ckkAes = mustKeyTypeId "CKK_AES"
 
 -- | Key-import material: RSA/EC public/private templates carry
 -- components, but the engine consumes PKCS#8/SPKI DER in 'AttrValue'
--- (the same shape key generation stores). For those four shapes,
+-- (the same shape key generation stores). For those shapes,
 -- require the complete component set ('CKR_TEMPLATE_INCOMPLETE'
 -- when short), assemble the DER, and store it as the value
 -- alongside the verbatim components. An explicit value next to
 -- components contradicts (inconsistent), except the EC private
 -- scalar, which arrives as the value and is consumed by the
 -- assembly. Malformed parts refuse as inconsistent; foreign curves
--- refuse as 'CKR_CURVE_NOT_SUPPORTED'. Secret keys require the
+-- refuse as 'CKR_CURVE_NOT_SUPPORTED'. ML-DSA halves assemble
+-- from the parameter set plus the raw key value (the public
+-- value, the private expanded key); a seed-only private
+-- template refuses — the pinned provider cannot expand a lone
+-- seed. Secret keys require the
 -- value, cohere it with an explicit value length, restrict AES to
 -- its fixed lengths, and stamp a derived value length when the
 -- caller omits it. Anything else stores verbatim.
@@ -446,6 +453,8 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     | c == ckoPublicKey && k == ckkDsa -> dsaPublic
     | c == ckoPrivateKey && k == ckkEcEdwards -> eddsaPrivate
     | c == ckoPublicKey && k == ckkEcEdwards -> eddsaPublic
+    | c == ckoPrivateKey && k == ckkMlDsa -> mldsaPrivate
+    | c == ckoPublicKey && k == ckkMlDsa -> mldsaPublic
     | c == ckoSecretKey -> secretKey k
   _ -> Right attrs
   where
@@ -551,6 +560,44 @@ importMaterial attrs = case (classOf, keyTypeOf) of
       oid <- edwardsOidOfParams params
       (seedW, sigW) <- edwardsWidthsOfParams oid
       pure (oid, seedW, sigW)
+    mldsaPrivate = do
+      (oid, _, privW, _) <- needMldsaSet
+      expanded <- case Map.lookup AttrValue attrs of
+        Just (ValBytes bs)
+          | not (BS.null bs) -> orReject (CKR_TEMPLATE_INCONSISTENT,
+              "ML-DSA private value length does not match the parameter set")
+              (checkExact privW bs)
+          | otherwise -> Left (CKR_TEMPLATE_INCONSISTENT,
+              "empty component: AttrValue")
+        Just _ -> Left (CKR_TEMPLATE_INCONSISTENT,
+          "wrong shape for component: AttrValue")
+        Nothing
+          | Map.member AttrSeed attrs -> Left (CKR_TEMPLATE_INCONSISTENT,
+              "seed-only ML-DSA import is unsupported: supply CKA_VALUE (the expanded private key)")
+          | otherwise -> Left (CKR_TEMPLATE_INCOMPLETE,
+              "missing component: AttrValue")
+      pure (Map.insert AttrValue
+        (ValBytes (mldsaPrivateDer oid expanded)) attrs)
+    mldsaPublic = do
+      (oid, pubW, _, _) <- needMldsaSet
+      raw <- need AttrValue
+      raw' <- orReject (CKR_TEMPLATE_INCONSISTENT,
+          "ML-DSA public value length does not match the parameter set")
+        (checkExact pubW raw)
+      pure (Map.insert AttrValue
+        (ValBytes (mldsaPublicDer oid raw')) attrs)
+    needMldsaSet = case Map.lookup AttrParameterSet attrs of
+      Just (ValULong n) -> orReject (CKR_TEMPLATE_INCONSISTENT,
+          "unknown ML-DSA parameter set: " ++ show n)
+        (resolveMldsaSet n)
+      Just _ -> Left (CKR_TEMPLATE_INCONSISTENT,
+        "wrong shape for component: AttrParameterSet")
+      Nothing -> Left (CKR_TEMPLATE_INCOMPLETE,
+        "missing component: AttrParameterSet")
+    resolveMldsaSet n = do
+      oid <- mldsaOidOfCkp (fromIntegral n)
+      (pubW, privW, sigW) <- mldsaWidthsOfOid oid
+      pure (oid, pubW, privW, sigW)
     checkExact w s
       | BS.length s == w = Just s
       | otherwise = Nothing

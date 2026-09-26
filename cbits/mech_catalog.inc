@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 132
+#define HASKOKI_MECH_COUNT 134
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -39,6 +39,8 @@ static const struct haskoki_mech_row
   { 0x00000019UL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA_SHA3_256 */
   { 0x0000001AUL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA_SHA3_384 */
   { 0x0000001BUL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA_SHA3_512 */
+  { 0x0000001CUL, 1312UL, 2592UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_ML_DSA_KEY_PAIR_GEN */
+  { 0x0000001DUL, 1312UL, 2592UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_ML_DSA */
   { 0x00000040UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA256_RSA_PKCS */
   { 0x00000041UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA384_RSA_PKCS */
   { 0x00000042UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA512_RSA_PKCS */

@@ -12,9 +12,10 @@ so reads serve them without a decode-on-read path.
 
 Scope is deliberately narrow: RSA PKCS#1/SPKI/PKCS#8, SEC1 EC
 keys on the 22 covered curves ('curveTable'), DSA DSS-Parms /
-SPKI / PKCS#8, and Edwards SPKI / PKCS#8 on the 2 served curves
-('edwardsTable'). Anything else refuses at the call site
-('CKR_CURVE_NOT_SUPPORTED' for foreign curves,
+SPKI / PKCS#8, Edwards SPKI / PKCS#8 on the 2 served curves
+('edwardsTable'), and ML-DSA SPKI / flat-expanded PKCS#8 on
+the 3 served levels ('mldsaTable'). Anything else refuses at
+the call site ('CKR_CURVE_NOT_SUPPORTED' for foreign curves,
 'CKR_TEMPLATE_INCONSISTENT' for malformed parts) instead of
 encoding half-understood structures.
 -}
@@ -34,6 +35,16 @@ module Haskoki.Der
   , eddsaPublicDer
   , eddsaSpkiFields
   , eddsaPkcs8Fields
+  , mldsaTable
+  , mldsaPublicDer
+  , mldsaPrivateDer
+  , mldsaSpkiFields
+  , mldsaPkcs8Fields
+  , mldsaOidOfParams
+  , mldsaNameOfOid
+  , mldsaWidthsOfOid
+  , mldsaCkpOfOid
+  , mldsaOidOfCkp
   , unwrapEcPoint
   , unwrapEdwardsPoint
   , curveOidOfParams
@@ -188,6 +199,19 @@ edwardsTable =
   , ("Ed448", BS.pack [0x06, 0x03, 0x2B, 0x65, 0x71], 57, 114)
   ]
 
+-- | ML-DSA parameter sets: engine name, DER algorithm OID
+-- (2.16.840.1.101.3.4.3.17/18/19), public-key width, private
+-- (expanded) width, signature width, and the 'CKP_ML_DSA_*' id
+-- carried by @CKA_PARAMETER_SET@. Widths are FIPS 204 (sig
+-- 2420 and the flat private import additionally
+-- provider-witnessed).
+mldsaTable :: [(ByteString, ByteString, Int, Int, Int, Int)]
+mldsaTable =
+  [ ("ML-DSA-44", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x11], 1312, 2560, 2420, 1)
+  , ("ML-DSA-65", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12], 1952, 4032, 3309, 2)
+  , ("ML-DSA-87", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x13], 2592, 4896, 4627, 3)
+  ]
+
 -- | Covered engine curve names (the 'curveTable' name column).
 coveredCurveNames :: [String]
 coveredCurveNames = [BC8.unpack n | (n, _, _) <- curveTable]
@@ -239,6 +263,49 @@ edwardsWidthsOfParams oid = case find hit edwardsTable of
   Nothing -> Nothing
   where
     hit (_, o, _, _) = oid == o
+
+-- | Resolve engine ML-DSA names (@"ML-DSA-44"@, …) or raw DER
+-- OIDs to the DER OID (the 'edwardsOidOfParams' precedent).
+mldsaOidOfParams :: ByteString -> Maybe ByteString
+mldsaOidOfParams bs = case find hit mldsaTable of
+  Just (_, oid, _, _, _, _) -> Just oid
+  Nothing -> Nothing
+  where
+    hit (name, oid, _, _, _, _) = bs == name || bs == oid
+
+-- | The engine ML-DSA name for a DER OID ('Nothing' for
+-- foreign OIDs).
+mldsaNameOfOid :: ByteString -> Maybe ByteString
+mldsaNameOfOid oid = case find hit mldsaTable of
+  Just (name, _, _, _, _, _) -> Just name
+  Nothing -> Nothing
+  where
+    hit (_, o, _, _, _, _) = oid == o
+
+-- | Public-key, private (expanded), and signature widths in
+-- bytes for a DER ML-DSA OID.
+mldsaWidthsOfOid :: ByteString -> Maybe (Int, Int, Int)
+mldsaWidthsOfOid oid = case find hit mldsaTable of
+  Just (_, _, pubW, privW, sigW, _) -> Just (pubW, privW, sigW)
+  Nothing -> Nothing
+  where
+    hit (_, o, _, _, _, _) = oid == o
+
+-- | The @CKP_ML_DSA_*@ id for a DER ML-DSA OID.
+mldsaCkpOfOid :: ByteString -> Maybe Int
+mldsaCkpOfOid oid = case find hit mldsaTable of
+  Just (_, _, _, _, _, ckp) -> Just ckp
+  Nothing -> Nothing
+  where
+    hit (_, o, _, _, _, _) = oid == o
+
+-- | The DER ML-DSA OID for a @CKP_ML_DSA_*@ id.
+mldsaOidOfCkp :: Int -> Maybe ByteString
+mldsaOidOfCkp ckp = case find hit mldsaTable of
+  Just (_, oid, _, _, _, _) -> Just oid
+  Nothing -> Nothing
+  where
+    hit (_, _, _, _, _, c) = ckp == c
 
 -- | Unwrap a @CKA_EC_POINT@ value (DER OCTET STRING around the X9.62
 -- point) against the expected coordinate length. Only uncompressed
@@ -357,6 +424,22 @@ eddsaPrivateDer oid seed =
 -- SPKIs carry no parameters).
 eddsaPublicDer :: ByteString -> ByteString -> ByteString
 eddsaPublicDer oid point =
+  derSeq [derSeq [oid], derBitString point]
+
+-- | PKCS#8 for an ML-DSA private key from the DER algorithm OID
+-- and the raw expanded key (NOT the Edwards nested-seed shape:
+-- the pinned provider refuses seed-only PKCS#8 and has no
+-- seed fromdata; it decodes the flat expanded key — proven by
+-- probe against a wycheproof vector, sign+verify roundtrip).
+mldsaPrivateDer :: ByteString -> ByteString -> ByteString
+mldsaPrivateDer oid raw =
+  derSeq [derSmallInt 0, derSeq [oid], derOctet raw]
+
+-- | SPKI for an ML-DSA public key from the DER algorithm OID and
+-- the raw public key (the algorithm identifier is the bare OID —
+-- ML-DSA SPKIs carry no parameters).
+mldsaPublicDer :: ByteString -> ByteString -> ByteString
+mldsaPublicDer oid point =
   derSeq [derSeq [oid], derBitString point]
 
 -- | DER OID 1.2.840.10040.4.1 (dsaEncryption).
@@ -601,6 +684,68 @@ eddsaPkcs8Fields der = do
               if BS.length seed == seedW
                 then pure (oid, seed)
                 else Nothing
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | The algorithm OID plus the raw public key from an ML-DSA
+-- SPKI: outer SEQ of [algId, BIT STRING] where the algorithm
+-- identifier is the bare OID (a served 'mldsaTable' row) and
+-- the bit string (past its zero unused-bits octet) is the
+-- width-exact key. 'Nothing' on any framing, tag, OID, or
+-- width mismatch.
+mldsaSpkiFields :: ByteString -> Maybe (ByteString, ByteString)
+mldsaSpkiFields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [algId, bits] -> do
+      algParts <- whole 0x30 algId >>= seqTop
+      case algParts of
+        [oid] -> do
+          (pubW, _, _) <- mldsaWidthsOfOid oid
+          content <- whole 0x03 bits
+          case BS.uncons content of
+            Just (0, point)
+              | BS.length point == pubW -> pure (oid, point)
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | The algorithm OID plus the seed and the raw expanded key
+-- from a provider-form ML-DSA PKCS#8: outer SEQ of [version
+-- INTEGER 0, algId, OCTET STRING] where the algorithm
+-- identifier is the bare OID (a served 'mldsaTable' row) and
+-- the octet string wraps SEQ { seed OCTET (32), expanded OCTET
+-- (width-exact) }. This is the provider's own encoding (what
+-- keygen stores; the seed feeds @CKA_SEED@, the expanded key
+-- @CKA_VALUE@); our import assembly is the flat form instead
+-- ('mldsaPrivateDer'), which this reader does not accept.
+-- 'Nothing' on any framing, tag, version, OID, or width
+-- mismatch.
+mldsaPkcs8Fields :: ByteString -> Maybe (ByteString, ByteString, ByteString)
+mldsaPkcs8Fields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [ver, algId, oct] -> do
+      v <- derInt ver
+      case BS.uncons v of
+        Just (0, rest) | BS.null rest -> do
+          algParts <- whole 0x30 algId >>= seqTop
+          case algParts of
+            [oid] -> do
+              (_, privW, _) <- mldsaWidthsOfOid oid
+              inner <- whole 0x04 oct
+              parts1 <- whole 0x30 inner >>= seqTop
+              case parts1 of
+                [seedOct, expOct] -> do
+                  seed <- whole 0x04 seedOct
+                  expanded <- whole 0x04 expOct
+                  if BS.length seed == 32 && BS.length expanded == privW
+                    then pure (oid, seed, expanded)
+                    else Nothing
+                _ -> Nothing
             _ -> Nothing
         _ -> Nothing
     _ -> Nothing

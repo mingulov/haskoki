@@ -461,6 +461,63 @@ first lane proving all of them together.
   history-codes net −10 hits (the version-table locals
   renamed, zero new).
 
+## Round 14: ML-DSA slice (fast r33 + KAT r15)
+
+- r32→r33 (3203→3240 passed, +37 / −2 xfail / +8 skip,
+  same 2 HOTP externals confirmed by test id, zero
+  pass→fail): `test_pqc_sign` 13 pass (the ML-DSA legs
+  resolve), `test_mldsa_missing_param_set` 1 pass
+  (param-less import refuses clean), `test_mech_flags`
+  +6 pass, `test_ckr_keygen` +4 pass,
+  `test_mech_attribute` +3 pass / +1 xfail,
+  `test_mech_sign` +3 pass, `test_mech_multipart` +2
+  pass, `test_mech_keygen` +1 pass / +1 xfail,
+  `test_ffi_length_boundary` +1 pass (no crash, honest
+  refusal), `test_mech_negative` +8 skip (new ML-DSA
+  negative legs skip — the KAT drivers' null-first
+  probes take the skip path since NULL serves pure;
+  no failure), `test_mech_probe` +6 skip
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r33-results.json`).
+- `test_eddsa` 15/15 (the 3 Ed448 xfails from r32
+  resolve to pass): first fast lane on a build
+  carrying the slice-8 `KeyBytes` sniff fix — r32 ran
+  before that fix landed, so its Ed448 legs xfailed
+  with `GENERAL_ERROR`; no EdDSA-path change in this
+  slice.
+- KAT r15: +1540 pass / +93 xfail / −1590 skip vs r14
+  (wycheproof `mldsa` 616 pass, `mldsa_context` 9 pass,
+  `mldsa_sign` 205 pass, CCTV 449/449, ACVP 228 pass),
+  same 2 HOTP externals by id, zero drift
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r15-results.json`).
+  New xfails, all root-caused: 70 ACVP prehash legs
+  (`CKR_MECHANISM_INVALID` — the `hash_alg`-missing
+  →`pure` fallback defeats the driver's own skip
+  gate, so unadvertised `HASH_*` rows refuse honestly
+  instead of skipping); 15 wycheproof overlong-context
+  legs (`CKR_ARGUMENTS_BAD` at init — the module
+  refuses 256-byte contexts at the recipe gate rather
+  than attempting verify, the EdDSA-prehash
+  precedent; the oracle's clean set admits only
+  `SIGNATURE_*` for verify negatives); 6
+  `InvalidPrivateKey` legs (`CKR_GENERAL_ERROR` —
+  width-correct but lattice-invalid keys import,
+  since coefficients are uncheckable without lattice
+  math, and the provider decode fails at sign;
+  runtime key failure is `GENERAL_ERROR` module-wide
+  for every family).
+- Targeted ML-DSA r1: 1521 pass, 0 failed, 91 xfailed
+  (exactly the 70 + 15 + 6 clusters above), 146
+  skipped
+  (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-mldsa-r1.json`).
+- Standing notes: ML-DSA wrong-length verify answers
+  `CKR_SIGNATURE_INVALID`, matching the module-global
+  stance; ML-DSA keygen without `CKA_PARAMETER_SET`
+  defaults to 65 (the KEM precedent — the oracle's
+  missing-set probe covers import only, where the
+  module refuses `TEMPLATE_INCOMPLETE`); keygen
+  defaulting is visible on the published objects via
+  the stamped set.
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
