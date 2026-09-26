@@ -60,6 +60,7 @@ module Haskoki.Operation.KeyManagement
   , ckkHotp
   , ckkMlKem
   , ckkMlDsa
+  , ckkSlhDsa
     -- * Mechanism ids (spec\/vendor\/pkcs11.h)
   , aesKeyGenMech
   , hotpKeyGenMech
@@ -72,6 +73,7 @@ module Haskoki.Operation.KeyManagement
   , dsaParameterGenMech
   , edwardsKeyPairGenMech
   , mldsaKeyPairGenMech
+  , slhdsaKeyPairGenMech
   , aesCbcMech
   , aesKwMech
   , aesKwPadMech
@@ -125,7 +127,7 @@ import Haskoki.Attribute.Generated
   , mustClassId
   , mustKeyTypeId
   )
-import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaSpkiFields, edwardsNameOfOid, edwardsTable, mldsaPkcs8Fields, mldsaSpkiFields, mlkemPkcs8Fields, mlkemSpkiFields, parseDsaParams, parseRsaPrivate, parseRsaPublic, spkiPoint)
+import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaSpkiFields, edwardsNameOfOid, edwardsTable, mldsaPkcs8Fields, mldsaSpkiFields, mlkemPkcs8Fields, mlkemSpkiFields, parseDsaParams, parseRsaPrivate, parseRsaPublic, slhdsaPkcs8Fields, slhdsaSpkiFields, spkiPoint)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState (..))
 import Haskoki.Object
   ( RuleDeny (..)
@@ -175,6 +177,7 @@ import Haskoki.Registry.Generated
   , ckm_HOTP_KEY_GEN
   , ckm_ML_KEM_KEY_PAIR_GEN
   , ckm_ML_DSA_KEY_PAIR_GEN
+  , ckm_SLH_DSA_KEY_PAIR_GEN
   , ckm_RSA_PKCS
   , ckm_RSA_PKCS_KEY_PAIR_GEN
   , ckm_RSA_PKCS_OAEP
@@ -308,6 +311,14 @@ edwardsKeyPairGenMech = MechanismId (ckm_EC_EDWARDS_KEY_PAIR_GEN)
 -- | @CKM_ML_DSA_KEY_PAIR_GEN@ (generated id, resolved by name).
 mldsaKeyPairGenMech :: MechanismId
 mldsaKeyPairGenMech = MechanismId (ckm_ML_DSA_KEY_PAIR_GEN)
+
+-- | @CKK_SLH_DSA@ (generated id, resolved by name).
+ckkSlhDsa :: Word64
+ckkSlhDsa = mustKeyTypeId "CKK_SLH_DSA"
+
+-- | @CKM_SLH_DSA_KEY_PAIR_GEN@ (generated id, resolved by name).
+slhdsaKeyPairGenMech :: MechanismId
+slhdsaKeyPairGenMech = MechanismId (ckm_SLH_DSA_KEY_PAIR_GEN)
 
 -- | @CKM_AES_CBC@ (the symmetric wrap mechanism: the planner
 -- pads, the driver runs raw CBC; generated id, resolved by name).
@@ -484,6 +495,7 @@ keyPairCompatible (PwGeneratePair _ _) (FxGenerateKey _ _ input) =
     Just (GenDsaKeypair _) -> True
     Just (GenEdwardsKeypair _) -> True
     Just (GenMlDsa _) -> True
+    Just (GenSlhDsa _) -> True
     _ -> False
 keyPairCompatible (PwGenerateKey _) (FxGenerateKey _ _ input) =
   case decodeGenArgs input of
@@ -695,6 +707,14 @@ stampPairComponents pub priv pubM privM
         (Just (pubOid, _), Just (privOid, seed, _))
           | pubOid == privOid ->
               let privA = Map.insert AttrSeed (ValBytes seed) (poAttrs priv)
+              in Just (pub, priv { poAttrs = privA })
+        _ -> Just (pub, priv)
+  | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkSlhDsa) =
+      case (slhdsaSpkiFields pubM, slhdsaPkcs8Fields privM) of
+        (Just (pubOid, _), Just (privOid, raw))
+          | pubOid == privOid ->
+              let n = BS.length raw `div` 4
+                  privA = Map.insert AttrSeed (ValBytes (BS.take n raw)) (poAttrs priv)
               in Just (pub, priv { poAttrs = privA })
         _ -> Just (pub, priv)
   | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkMlKem) =
@@ -1048,7 +1068,8 @@ pendingFromAttrs st attrs = PendingObject
 -- bytes (HOTP), the DSA @(L, N)@ size pair (parameter generation),
 -- DER DSS-Parms (DSA keypair generation from domain parameters),
 -- the Edwards curve name (Edwards keypair generation), or the
--- ML-DSA parameter-set id (@CKP_ML_DSA_44\/65\/87@ = 1\/2\/3).
+-- ML-DSA parameter-set id (@CKP_ML_DSA_44\/65\/87@ = 1\/2\/3),
+-- or the SLH-DSA parameter-set id (@CKP_SLH_DSA_*@ = 1..12).
 data GenArgs
   = GenAes !Int
   | GenEc !ByteString
@@ -1059,6 +1080,7 @@ data GenArgs
   | GenDsaKeypair !ByteString
   | GenEdwardsKeypair !ByteString
   | GenMlDsa !Int
+  | GenSlhDsa !Int
   deriving (Eq, Show)
 
 -- | Frame generation arguments: @tag:u8 ...@ with tag 0 AES
@@ -1066,7 +1088,8 @@ data GenArgs
 -- 3 ML-KEM (@alg:u16be@), 4 opaque secret bytes (@len:u8@), 5 DSA
 -- parameter sizes (@L:u16be N:u16be@), 6 DSA keypair domain
 -- parameters (@len:u32be DER@), 7 Edwards keypair curve name
--- (curve bytes), 8 ML-DSA parameter-set id (@ckp:u16be@).
+-- (curve bytes), 8 ML-DSA parameter-set id (@ckp:u16be@),
+-- 9 SLH-DSA parameter-set id (@ckp:u16be@).
 encodeGenArgs :: GenArgs -> ByteString
 encodeGenArgs args = case args of
   GenAes n -> BS.singleton 0 <> BS.singleton (fromIntegral n)
@@ -1079,6 +1102,7 @@ encodeGenArgs args = case args of
   GenDsaKeypair der -> BS.singleton 6 <> u32be (BS.length der) <> der
   GenEdwardsKeypair curve -> BS.singleton 7 <> curve
   GenMlDsa ckp -> BS.singleton 8 <> u16be ckp
+  GenSlhDsa ckp -> BS.singleton 9 <> u16be ckp
 
 -- | Parse framed generation arguments. Short frames, unknown tags
 -- and trailing bytes all fail.
@@ -1119,6 +1143,9 @@ decodeGenArgs bs = case BS.uncons bs of
     | otherwise -> Nothing
   Just (8, rest) -> case BS.unpack rest of
     [hi, lo] -> Just (GenMlDsa (fromIntegral hi * 256 + fromIntegral lo))
+    _ -> Nothing
+  Just (9, rest) -> case BS.unpack rest of
+    [hi, lo] -> Just (GenSlhDsa (fromIntegral hi * 256 + fromIntegral lo))
     _ -> Nothing
   _ -> Nothing
 
@@ -1291,6 +1318,11 @@ planGenerateKeyPair rules model st mech pubT privT =
             ckp <- mldsaSetOf pubA privA
             let tag = Map.insert AttrParameterSet (ValULong (fromIntegral ckp))
             pure (GenMlDsa ckp, tag pubA, tag privA)
+      | mech == slhdsaKeyPairGenMech =
+          withPair st mech ckkSlhDsa pubT privT $ \pubA privA -> do
+            ckp <- slhdsaSetOf pubA privA
+            let tag = Map.insert AttrParameterSet (ValULong (fromIntegral ckp))
+            pure (GenSlhDsa ckp, tag pubA, tag privA)
       | otherwise =
           Left (KeyDeny CKR_MECHANISM_INVALID
             ("not a key-pair mechanism: " ++ show mech))
@@ -1416,6 +1448,38 @@ mldsaSetOf pubA privA = case Map.lookup AttrParameterSet pubA of
           ("unknown ML-DSA parameter set: " ++ show ckp))
     Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
       "private ML-DSA parameter set is malformed")
+
+-- | The SLH-DSA parameter-set id for a pair: the public
+-- template's @AttrParameterSet@ (@CKP_SLH_DSA_*@ = 1..12, the
+-- OASIS keygen input), which the private template inherits
+-- when absent and must agree with when present. Absent
+-- everywhere defaults to 1 (SLH-DSA-SHA2-128s, the first set
+-- and the driver's unscannable-key default).
+slhdsaSetOf
+  :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+  -> Either KeyDeny Int
+slhdsaSetOf pubA privA = case Map.lookup AttrParameterSet pubA of
+  Just (ValULong ckp)
+    | ckp `elem` [1 .. 12] -> case Map.lookup AttrParameterSet privA of
+        Nothing -> Right (fromIntegral ckp)
+        Just (ValULong ckp')
+          | ckp' == ckp -> Right (fromIntegral ckp)
+          | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "keypair templates disagree on the SLH-DSA parameter set")
+        Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          "private SLH-DSA parameter set is malformed")
+    | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("unknown SLH-DSA parameter set: " ++ show ckp))
+  Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+    "public SLH-DSA parameter set is malformed")
+  Nothing -> case Map.lookup AttrParameterSet privA of
+    Nothing -> Right 1
+    Just (ValULong ckp)
+      | ckp `elem` [1 .. 12] -> Right (fromIntegral ckp)
+      | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          ("unknown SLH-DSA parameter set: " ++ show ckp))
+    Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+      "private SLH-DSA parameter set is malformed")
 
 -- | The EC curve for a pair: @AttrEcParams@ is required in the
 -- public template (PKCS#11 names the curve there), the private

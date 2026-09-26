@@ -61,6 +61,9 @@ module Haskoki.FFI.OpenSSL4.Raw
   , mldsaSign
   , mldsaVerify
   , mldsaGen
+  , slhdsaSign
+  , slhdsaVerify
+  , slhdsaGen
   , mlkemEncaps
   , mlkemDecaps
   , mlkemGen
@@ -221,6 +224,15 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mldsa_verify"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mldsa_gen"
   c_mldsa_gen :: Ptr OsslLibCtx -> CString -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_slhdsa_sign"
+  c_slhdsa_sign :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_slhdsa_verify"
+  c_slhdsa_verify :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> IO CInt
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_slhdsa_gen"
+  c_slhdsa_gen :: Ptr OsslLibCtx -> CString -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mlkem_encaps"
   c_mlkem_encaps :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
@@ -651,6 +663,53 @@ mldsaGen ctx propq algname =
     withCString algname $ \calg ->
       alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
         rc <- c_mldsa_gen ctx cpq calg ppriv npriv ppub npub
+        if rc /= 0
+          then pure (Left (fromIntegral rc))
+          else do
+            privp <- peek ppriv
+            privn <- peek npriv
+            pubp <- peek ppub
+            pubn <- peek npub
+            if privp == nullPtr || pubp == nullPtr
+              then pure (Left errNative)
+              else do
+                priv <- takeOwned privp (fromIntegral privn)
+                pub <- takeOwned pubp (fromIntegral pubn)
+                pure (Right (priv, pub))
+
+-- | SLH-DSA sign: the raw signature for (set name, PKCS#8,
+-- message, optional context, deterministic flag); @Nothing@
+-- context is pure mode. @True@ selects FIPS 205 deterministic
+-- signing (@CKH_DETERMINISTIC_REQUIRED@); @False@ is the
+-- provider default (proven hedged). Empty messages serve.
+slhdsaSign :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> Maybe ByteString -> Bool -> IO (Either Int ByteString)
+slhdsaSign ctx algname propq privDer msg mctx deterministic =
+  withCString algname $ \calg ->
+    withCString propq $ \cpq ->
+      withBytes privDer $ \(ppriv, npriv) ->
+        withBytes msg $ \(pmsg, nmsg) ->
+          withOptBytes mctx $ \(pctx, nctx) ->
+            withOut (c_slhdsa_sign ctx calg cpq ppriv npriv pmsg nmsg pctx nctx (if deterministic then 1 else 0))
+
+-- | SLH-DSA verify: 1 valid, 0 mismatch, negative shim code.
+-- The context must match the signing call ('Nothing' = pure).
+slhdsaVerify :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> Maybe ByteString -> ByteString -> IO Int
+slhdsaVerify ctx algname propq pubDer msg mctx sig =
+  withCString algname $ \calg ->
+    withCString propq $ \cpq ->
+      withBytes pubDer $ \(ppub, npub) ->
+        withBytes msg $ \(pmsg, nmsg) ->
+          withOptBytes mctx $ \(pctx, nctx) ->
+            withBytes sig $ \(psig, nsig) ->
+              fromIntegral <$> c_slhdsa_verify ctx calg cpq ppub npub pmsg nmsg pctx nctx psig nsig
+
+-- | SLH-DSA keypair for a set name: PKCS#8 + SPKI halves.
+slhdsaGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, ByteString))
+slhdsaGen ctx propq algname =
+  withCString propq $ \cpq ->
+    withCString algname $ \calg ->
+      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+        rc <- c_slhdsa_gen ctx cpq calg ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
           else do

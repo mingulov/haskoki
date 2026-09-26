@@ -45,6 +45,8 @@ module Haskoki.Engine.Backend
   , dsaSigCap
   , eddsaSigCap
   , mldsaSigCap
+  , slhdsaSigCap
+  , slhdsaSets
   , ecdhCap
   , MacSpec (..)
   , CipherSpec (..)
@@ -291,6 +293,41 @@ mldsaSigCap (SigMLDSA alg mu ctx _)
     levelSuffix _ = Nothing
 mldsaSigCap _ = Nothing
 
+-- | The twelve served SLH-DSA parameter sets (the single list
+-- both engines advertise from, so capabilities cannot drift).
+slhdsaSets :: [PqcSigAlg]
+slhdsaSets =
+  [ SLH_DSA_SHA2_128s, SLH_DSA_SHA2_128f
+  , SLH_DSA_SHA2_192s, SLH_DSA_SHA2_192f
+  , SLH_DSA_SHA2_256s, SLH_DSA_SHA2_256f
+  , SLH_DSA_SHAKE_128s, SLH_DSA_SHAKE_128f
+  , SLH_DSA_SHAKE_192s, SLH_DSA_SHAKE_192f
+  , SLH_DSA_SHAKE_256s, SLH_DSA_SHAKE_256f
+  ]
+
+-- | Capability string required by one SLH-DSA spec: the engine
+-- set name (@SLH-DSA-SHA2-128s@, …), either hedge, contexts to
+-- 255 bytes (the FIPS 205 bound). 'Nothing' means the spec is
+-- never servable (non-SLH-DSA family or an overlong context).
+slhdsaSigCap :: SigSpec -> Maybe String
+slhdsaSigCap (SigSLHDSA alg ctx _)
+  | BS.length ctx <= 255 = slhName alg
+  where
+    slhName SLH_DSA_SHA2_128s = Just "SLH-DSA-SHA2-128s"
+    slhName SLH_DSA_SHA2_128f = Just "SLH-DSA-SHA2-128f"
+    slhName SLH_DSA_SHA2_192s = Just "SLH-DSA-SHA2-192s"
+    slhName SLH_DSA_SHA2_192f = Just "SLH-DSA-SHA2-192f"
+    slhName SLH_DSA_SHA2_256s = Just "SLH-DSA-SHA2-256s"
+    slhName SLH_DSA_SHA2_256f = Just "SLH-DSA-SHA2-256f"
+    slhName SLH_DSA_SHAKE_128s = Just "SLH-DSA-SHAKE-128s"
+    slhName SLH_DSA_SHAKE_128f = Just "SLH-DSA-SHAKE-128f"
+    slhName SLH_DSA_SHAKE_192s = Just "SLH-DSA-SHAKE-192s"
+    slhName SLH_DSA_SHAKE_192f = Just "SLH-DSA-SHAKE-192f"
+    slhName SLH_DSA_SHAKE_256s = Just "SLH-DSA-SHAKE-256s"
+    slhName SLH_DSA_SHAKE_256f = Just "SLH-DSA-SHAKE-256f"
+    slhName _ = Nothing
+slhdsaSigCap _ = Nothing
+
 -- | Capability string required by one ECDH spec: @ECDH@ for plain
 -- agreement, @ECDH-COFACTOR@ for cofactor-multiplied.
 ecdhCap :: EcdhSpec -> String
@@ -503,7 +540,9 @@ data EcdhSpec = EcdhPlain | EcdhCofactor
 data PqcSigAlg
   = ML_DSA_44 | ML_DSA_65 | ML_DSA_87
   | SLH_DSA_SHA2_128s | SLH_DSA_SHA2_128f | SLH_DSA_SHA2_192s
-  | SLH_DSA_SHAKE_128s | SLH_DSA_SHAKE_128f
+  | SLH_DSA_SHA2_192f | SLH_DSA_SHA2_256s | SLH_DSA_SHA2_256f
+  | SLH_DSA_SHAKE_128s | SLH_DSA_SHAKE_128f | SLH_DSA_SHAKE_192s
+  | SLH_DSA_SHAKE_192f | SLH_DSA_SHAKE_256s | SLH_DSA_SHAKE_256f
   deriving (Eq, Ord, Show)
 
 data SigSpec

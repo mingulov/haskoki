@@ -66,6 +66,8 @@ import Haskoki.Der
    ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
    edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
    mldsaPrivateDer, mldsaPublicDer, mldsaWidthsOfOid,
+   slhdsaOidOfCkp, slhdsaPrivateDer, slhdsaPublicDer,
+   slhdsaWidthsOfOid,
    mlkemEkWellFormed, mlkemOidOfCkp,
    mlkemPrivateDer, mlkemPublicDer, mlkemWidthsOfOid,
    rsaPrivateDer, rsaPublicDer,
@@ -423,6 +425,7 @@ ckkEc = mustKeyTypeId "CKK_EC"
 ckkDsa = mustKeyTypeId "CKK_DSA"
 ckkEcEdwards = mustKeyTypeId "CKK_EC_EDWARDS"
 ckkMlDsa = mustKeyTypeId "CKK_ML_DSA"
+ckkSlhDsa = mustKeyTypeId "CKK_SLH_DSA"
 ckkMlKem = mustKeyTypeId "CKK_ML_KEM"
 ckkAes = mustKeyTypeId "CKK_AES"
 
@@ -439,7 +442,8 @@ ckkAes = mustKeyTypeId "CKK_AES"
 -- from the parameter set plus the raw key value (the public
 -- value, the private expanded key); a seed-only private
 -- template refuses — the pinned provider cannot expand a lone
--- seed. Secret keys require the
+-- seed. SLH-DSA halves assemble the same way (the public
+-- value, the private 4n secret). Secret keys require the
 -- value, cohere it with an explicit value length, restrict AES to
 -- its fixed lengths, and stamp a derived value length when the
 -- caller omits it. Anything else stores verbatim.
@@ -458,6 +462,8 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     | c == ckoPublicKey && k == ckkEcEdwards -> eddsaPublic
     | c == ckoPrivateKey && k == ckkMlDsa -> mldsaPrivate
     | c == ckoPublicKey && k == ckkMlDsa -> mldsaPublic
+    | c == ckoPrivateKey && k == ckkSlhDsa -> slhdsaPrivate
+    | c == ckoPublicKey && k == ckkSlhDsa -> slhdsaPublic
     | c == ckoPrivateKey && k == ckkMlKem -> mlkemPrivate
     | c == ckoPublicKey && k == ckkMlKem -> mlkemPublic
     | c == ckoSecretKey -> secretKey k
@@ -602,6 +608,44 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     resolveMldsaSet n = do
       oid <- mldsaOidOfCkp (fromIntegral n)
       (pubW, privW, sigW) <- mldsaWidthsOfOid oid
+      pure (oid, pubW, privW, sigW)
+    slhdsaPrivate = do
+      (oid, _, privW, _) <- needSlhdsaSet
+      raw <- case Map.lookup AttrValue attrs of
+        Just (ValBytes bs)
+          | not (BS.null bs) -> orReject (CKR_TEMPLATE_INCONSISTENT,
+              "SLH-DSA private value length does not match the parameter set")
+              (checkExact privW bs)
+          | otherwise -> Left (CKR_TEMPLATE_INCONSISTENT,
+              "empty component: AttrValue")
+        Just _ -> Left (CKR_TEMPLATE_INCONSISTENT,
+          "wrong shape for component: AttrValue")
+        Nothing
+          | Map.member AttrSeed attrs -> Left (CKR_TEMPLATE_INCONSISTENT,
+              "seed-only SLH-DSA import is unsupported: supply CKA_VALUE (the 4n secret)")
+          | otherwise -> Left (CKR_TEMPLATE_INCOMPLETE,
+              "missing component: AttrValue")
+      pure (Map.insert AttrValue
+        (ValBytes (slhdsaPrivateDer oid raw)) attrs)
+    slhdsaPublic = do
+      (oid, pubW, _, _) <- needSlhdsaSet
+      raw <- need AttrValue
+      raw' <- orReject (CKR_TEMPLATE_INCONSISTENT,
+          "SLH-DSA public value length does not match the parameter set")
+        (checkExact pubW raw)
+      pure (Map.insert AttrValue
+        (ValBytes (slhdsaPublicDer oid raw')) attrs)
+    needSlhdsaSet = case Map.lookup AttrParameterSet attrs of
+      Just (ValULong n) -> orReject (CKR_TEMPLATE_INCONSISTENT,
+          "unknown SLH-DSA parameter set: " ++ show n)
+        (resolveSlhdsaSet n)
+      Just _ -> Left (CKR_TEMPLATE_INCONSISTENT,
+        "wrong shape for component: AttrParameterSet")
+      Nothing -> Left (CKR_TEMPLATE_INCOMPLETE,
+        "missing component: AttrParameterSet")
+    resolveSlhdsaSet n = do
+      oid <- slhdsaOidOfCkp (fromIntegral n)
+      (pubW, privW, sigW) <- slhdsaWidthsOfOid oid
       pure (oid, pubW, privW, sigW)
     mlkemPrivate = do
       (oid, _, dkW, _, alg) <- needMlkemSet

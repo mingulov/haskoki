@@ -118,6 +118,11 @@ import Haskoki.Recipe.MlDsa
   , mldsaCodecFor
   , mldsaRecipes
   )
+import Haskoki.Recipe.SlhDsa
+  ( SlhdsaRecipe (..)
+  , slhdsaCodecFor
+  , slhdsaRecipes
+  )
 import Haskoki.Recipe.Kdf
   ( KdfRecipe (..)
   , kdfCodecFor
@@ -722,6 +727,28 @@ mldsaDescs =
   | r <- mldsaRecipes
   ]
 
+-- | Baseline span for the SLH-DSA recipe (@CKM_SLH_DSA@ arrived in
+-- 3.2).
+slhdsaBaselines :: MechanismName -> [Pkcs11Version]
+slhdsaBaselines _ = [Pkcs11_3_2]
+
+-- | The SLH-DSA behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from 'slhdsaCodecFor',
+-- sign and verify routes citing synthetic A37 and real-KAT A39 (no
+-- A16: the backends offer one-shot sign only). Key bounds are the
+-- served public-key range 32..64 bytes (FIPS 205 widths for
+-- SLH-DSA-SHA2/SHAKE-128..256, the OASIS mechanism-info unit).
+slhdsaDescs :: [Descriptor]
+slhdsaDescs =
+  [ promotedDesc (rslName r) (slhdsaBaselines (rslName r)) FamilyPqc
+      (slhdsaCodecFor r)
+      [ mechRoute OpSign (rslName r) ["A37", "A39"]
+      , mechRoute OpVerify (rslName r) ["A37", "A39"]
+      ]
+      KeyBytes 32 64
+  | r <- slhdsaRecipes
+  ]
+
 -- | The CMAC behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from 'cmacCodecFor',
 -- sign and verify routes citing synthetic A37 and real-KAT A39 (no
@@ -925,6 +952,11 @@ dMlDsaKeyPairGen = promotedDesc "CKM_ML_DSA_KEY_PAIR_GEN" [Pkcs11_3_2] FamilyKey
   noParams [mechRoute OpGenerateKeyPair "CKM_ML_DSA_KEY_PAIR_GEN" ["A20", "A37"]]
   KeyBytes 1312 2592
 
+dSlhDsaKeyPairGen :: Descriptor
+dSlhDsaKeyPairGen = promotedDesc "CKM_SLH_DSA_KEY_PAIR_GEN" [Pkcs11_3_2] FamilyKeyPair
+  noParams [mechRoute OpGenerateKeyPair "CKM_SLH_DSA_KEY_PAIR_GEN" ["A20", "A37"]]
+  KeyBytes 32 64
+
 dDsaParameterGen :: Descriptor
 dDsaParameterGen = promotedDesc "CKM_DSA_PARAMETER_GEN" allBaselines FamilyKeyGen
   noParams [synthRoute OpGenerateKey "CKM_DSA_PARAMETER_GEN"]
@@ -983,12 +1015,12 @@ curatedRegistry =
     behaviorDescs :: [Descriptor]
     behaviorDescs =
       ( [ dSHA256, dAESKeyGen, dHotpKeyGen, dGenericSecretKeyGen
-        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dEdwardsKeyPairGen, dMlDsaKeyPairGen, dHkdfDerive, dMlKem
+        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dEdwardsKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dMlKem
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ rsaPkcs1Descs
-          ++ rsaPssDescs ++ rsaOaepDescs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ ecdhDescs
+          ++ rsaPssDescs ++ rsaOaepDescs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs
           ++ cmacDescs ++ kdfDescs ++ otpDescs
       )
     behaviorIds0 :: [Word64]

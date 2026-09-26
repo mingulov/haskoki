@@ -58,6 +58,16 @@ module Haskoki.Der
   , mlkemCkpOfOid
   , mlkemOidOfCkp
   , mlkemEkWellFormed
+  , slhdsaTable
+  , slhdsaPublicDer
+  , slhdsaPrivateDer
+  , slhdsaSpkiFields
+  , slhdsaPkcs8Fields
+  , slhdsaOidOfParams
+  , slhdsaNameOfOid
+  , slhdsaWidthsOfOid
+  , slhdsaCkpOfOid
+  , slhdsaOidOfCkp
   , unwrapEcPoint
   , unwrapEdwardsPoint
   , curveOidOfParams
@@ -320,6 +330,72 @@ mldsaOidOfCkp ckp = case find hit mldsaTable of
   where
     hit (_, _, _, _, _, c) = ckp == c
 
+-- | SLH-DSA parameter sets: engine name, DER algorithm OID
+-- (2.16.840.1.101.3.4.3.20-31), public-key width (2n),
+-- private-key width (4n, the full FIPS 205 secret), signature
+-- width, and the 'CKP_SLH_DSA_*' id carried by
+-- @CKA_PARAMETER_SET@. Widths are FIPS 205 (sig widths and
+-- the flat private shape additionally provider-witnessed).
+slhdsaTable :: [(ByteString, ByteString, Int, Int, Int, Int)]
+slhdsaTable =
+  [ ("SLH-DSA-SHA2-128s", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x14], 32, 64, 7856, 1)
+  , ("SLH-DSA-SHA2-128f", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x15], 32, 64, 17088, 3)
+  , ("SLH-DSA-SHA2-192s", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x16], 48, 96, 16224, 5)
+  , ("SLH-DSA-SHA2-192f", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x17], 48, 96, 35664, 7)
+  , ("SLH-DSA-SHA2-256s", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x18], 64, 128, 29792, 9)
+  , ("SLH-DSA-SHA2-256f", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x19], 64, 128, 49856, 11)
+  , ("SLH-DSA-SHAKE-128s", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x1a], 32, 64, 7856, 2)
+  , ("SLH-DSA-SHAKE-128f", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x1b], 32, 64, 17088, 4)
+  , ("SLH-DSA-SHAKE-192s", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x1c], 48, 96, 16224, 6)
+  , ("SLH-DSA-SHAKE-192f", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x1d], 48, 96, 35664, 8)
+  , ("SLH-DSA-SHAKE-256s", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x1e], 64, 128, 29792, 10)
+  , ("SLH-DSA-SHAKE-256f", BS.pack [0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x1f], 64, 128, 49856, 12)
+  ]
+
+-- | Resolve engine SLH-DSA names (@"SLH-DSA-SHA2-128s"@, …) or
+-- raw DER OIDs to the DER OID (the 'mldsaOidOfParams'
+-- precedent).
+slhdsaOidOfParams :: ByteString -> Maybe ByteString
+slhdsaOidOfParams bs = case find hit slhdsaTable of
+  Just (_, oid, _, _, _, _) -> Just oid
+  Nothing -> Nothing
+  where
+    hit (name, oid, _, _, _, _) = bs == name || bs == oid
+
+-- | The engine SLH-DSA name for a DER OID ('Nothing' for
+-- foreign OIDs).
+slhdsaNameOfOid :: ByteString -> Maybe ByteString
+slhdsaNameOfOid oid = case find hit slhdsaTable of
+  Just (name, _, _, _, _, _) -> Just name
+  Nothing -> Nothing
+  where
+    hit (_, o, _, _, _, _) = oid == o
+
+-- | Public-key, private (4n secret), and signature widths in
+-- bytes for a DER SLH-DSA OID.
+slhdsaWidthsOfOid :: ByteString -> Maybe (Int, Int, Int)
+slhdsaWidthsOfOid oid = case find hit slhdsaTable of
+  Just (_, _, pubW, privW, sigW, _) -> Just (pubW, privW, sigW)
+  Nothing -> Nothing
+  where
+    hit (_, o, _, _, _, _) = oid == o
+
+-- | The @CKP_SLH_DSA_*@ id for a DER SLH-DSA OID.
+slhdsaCkpOfOid :: ByteString -> Maybe Int
+slhdsaCkpOfOid oid = case find hit slhdsaTable of
+  Just (_, _, _, _, _, ckp) -> Just ckp
+  Nothing -> Nothing
+  where
+    hit (_, o, _, _, _, _) = oid == o
+
+-- | The DER SLH-DSA OID for a @CKP_SLH_DSA_*@ id.
+slhdsaOidOfCkp :: Int -> Maybe ByteString
+slhdsaOidOfCkp ckp = case find hit slhdsaTable of
+  Just (_, oid, _, _, _, _) -> Just oid
+  Nothing -> Nothing
+  where
+    hit (_, _, _, _, _, c) = ckp == c
+
 -- | ML-KEM parameter sets: engine name, DER algorithm OID
 -- (2.16.840.1.101.3.4.4.1\/2\/3), encapsulation-key width,
 -- decapsulation-key width, ciphertext width, and the
@@ -552,6 +628,22 @@ mlkemPrivateDer oid seed dk =
 mlkemPublicDer :: ByteString -> ByteString -> ByteString
 mlkemPublicDer oid ek =
   derSeq [derSeq [oid], derBitString ek]
+
+-- | PKCS#8 for an SLH-DSA private key from the DER algorithm OID
+-- and the raw 4n secret (the provider's own flat shape —
+-- asn1parse-witnessed on pinned-CLI genpkey output — so
+-- assembly and the keygen-stored form agree; no SEQ{seed,
+-- expanded} dual shape like ML-DSA).
+slhdsaPrivateDer :: ByteString -> ByteString -> ByteString
+slhdsaPrivateDer oid raw =
+  derSeq [derSmallInt 0, derSeq [oid], derOctet raw]
+
+-- | SPKI for an SLH-DSA public key from the DER algorithm OID and
+-- the raw public key (the algorithm identifier is the bare OID —
+-- SLH-DSA SPKIs carry no parameters).
+slhdsaPublicDer :: ByteString -> ByteString -> ByteString
+slhdsaPublicDer oid point =
+  derSeq [derSeq [oid], derBitString point]
 
 -- | DER OID 1.2.840.10040.4.1 (dsaEncryption).
 oidDsa :: ByteString
@@ -857,6 +949,59 @@ mldsaPkcs8Fields der = do
                     then pure (oid, seed, expanded)
                     else Nothing
                 _ -> Nothing
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | The algorithm OID plus the raw public key from an SLH-DSA
+-- SPKI: outer SEQ of [algId, BIT STRING] where the algorithm
+-- identifier is the bare OID (a served 'slhdsaTable' row) and
+-- the bit string (past its zero unused-bits octet) is the
+-- width-exact key. 'Nothing' on any framing, tag, OID, or
+-- width mismatch.
+slhdsaSpkiFields :: ByteString -> Maybe (ByteString, ByteString)
+slhdsaSpkiFields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [algId, bits] -> do
+      algParts <- whole 0x30 algId >>= seqTop
+      case algParts of
+        [oid] -> do
+          (pubW, _, _) <- slhdsaWidthsOfOid oid
+          content <- whole 0x03 bits
+          case BS.uncons content of
+            Just (0, point)
+              | BS.length point == pubW -> pure (oid, point)
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | The algorithm OID plus the raw 4n secret from an SLH-DSA
+-- PKCS#8: outer SEQ of [version INTEGER 0, algId, OCTET STRING]
+-- where the algorithm identifier is the bare OID (a served
+-- 'slhdsaTable' row) and the octet string carries the flat
+-- secret directly (the provider's own shape — assembly and
+-- the keygen-stored form agree, unlike ML-DSA's SEQ form).
+-- 'Nothing' on any framing, tag, version, OID, or width
+-- mismatch.
+slhdsaPkcs8Fields :: ByteString -> Maybe (ByteString, ByteString)
+slhdsaPkcs8Fields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [ver, algId, oct] -> do
+      v <- derInt ver
+      case BS.uncons v of
+        Just (0, rest) | BS.null rest -> do
+          algParts <- whole 0x30 algId >>= seqTop
+          case algParts of
+            [oid] -> do
+              (_, privW, _) <- slhdsaWidthsOfOid oid
+              raw <- whole 0x04 oct
+              if BS.length raw == privW
+                then pure (oid, raw)
+                else Nothing
             _ -> Nothing
         _ -> Nothing
     _ -> Nothing

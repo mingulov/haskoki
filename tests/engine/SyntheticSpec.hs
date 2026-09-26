@@ -51,6 +51,7 @@ import Haskoki.Engine.Backend
   , PqcSigAlg (..)
   , SigCaps (..)
   , SigSpec (..)
+  , slhdsaSets
   , generateRandomMaxBytes
   , seedRandomMaxBytes
   )
@@ -120,6 +121,7 @@ spec = testGroup "synthetic engine"
   , testCase "DSA digests and raw roundtrip" caseDsaRoundtrip
   , testCase "EdDSA curves roundtrip" caseEddsaRoundtrip
   , testCase "ML-DSA levels roundtrip" caseMldsaRoundtrip
+  , testCase "SLH-DSA sets roundtrip" caseSlhdsaRoundtrip
   , testCase "ECDH agreements separate and replay" caseEcdh
   , testCase "CMAC tags separate and truncate" caseCmac
   , testCase "KDF output separates and truncates" caseKdf
@@ -284,7 +286,6 @@ caseUnsupportedRest = withSynth "11" $ \env -> do
     pkeyEncrypt env (RsaOaep (OaepParams D_SHAKE128 D_SHA256 BS.empty)) key32 "m"
   expectUnsupported "pkeyDecrypt xof" =<<
     pkeyDecrypt env (RsaOaep (OaepParams D_SHA256 D_SHAKE256 BS.empty)) key32 "c"
-  expectUnsupported "generateKey slhdsa" =<< generateKey env (GenSLHDSA SLH_DSA_SHA2_128s)
   expectResourceGone "exportKey unknown" =<<
     exportKey env (KeyRef (EngineResourceId 999) "SYM")
   -- (All temporary entries migrated out; the ML-KEM entries:
@@ -930,6 +931,14 @@ caseCapsFull = withSynth "11" $ \env -> do
         ]
       eddsaNames = ["EDDSA-Ed25519", "EDDSA-Ed448"]
       mldsaNames = ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]
+      slhdsaNames =
+        [ "SLH-DSA-SHA2-128s", "SLH-DSA-SHA2-128f"
+        , "SLH-DSA-SHA2-192s", "SLH-DSA-SHA2-192f"
+        , "SLH-DSA-SHA2-256s", "SLH-DSA-SHA2-256f"
+        , "SLH-DSA-SHAKE-128s", "SLH-DSA-SHAKE-128f"
+        , "SLH-DSA-SHAKE-192s", "SLH-DSA-SHAKE-192f"
+        , "SLH-DSA-SHAKE-256s", "SLH-DSA-SHAKE-256f"
+        ]
   assertEqual "sig set" (Set.fromList
     ([ "RSA-PSS"
     , "RSA-RAW"
@@ -939,10 +948,10 @@ caseCapsFull = withSynth "11" $ \env -> do
     , "RSA-PKCS1v15-SHA3-224", "RSA-PKCS1v15-SHA3-256"
     , "RSA-PKCS1v15-SHA3-384", "RSA-PKCS1v15-SHA3-512"
     , "RSA-PKCS1v15-RIPEMD160"
-    ] ++ dsaNames ++ fipsDsaNames ++ eddsaNames ++ mldsaNames)) (scSpecs (bcSigs caps))
+    ] ++ dsaNames ++ fipsDsaNames ++ eddsaNames ++ mldsaNames ++ slhdsaNames)) (scSpecs (bcSigs caps))
   assertEqual "curves" (Set.fromList dsaCurves) (scCurves (bcSigs caps))
   assertEqual "pqc sig set"
-    (Set.fromList [ML_DSA_44, ML_DSA_65, ML_DSA_87]) (scPqcSign (bcSigs caps))
+    (Set.fromList ([ML_DSA_44, ML_DSA_65, ML_DSA_87] ++ slhdsaSets)) (scPqcSign (bcSigs caps))
   assertEqual "kem set"
     (Set.fromList [ML_KEM_512, ML_KEM_768, ML_KEM_1024]) (kcAlgs (bcKems caps))
   assertEqual "kdf set" (Set.fromList ["ECDH", "ECDH-COFACTOR"]) (kcKdfs (bcKdfs caps))
@@ -1498,6 +1507,64 @@ caseMldsaRoundtrip = withSynth "11" $ \env -> do
       expectAuthFailed ("wrong key " ++ label) =<<
         verify env sspec otherKey32 "msg" sig
 
+-- | All twelve SLH-DSA sets roundtrip through the synthetic
+-- constructions (both hedges, pure and context modes), tampering
+-- and wrong keys fail, sets/contexts/hedges stay
+-- domain-separated from each other and from ML-DSA, ML-DSA
+-- levels and overlong contexts refuse unsupported, and keygen
+-- mints opaque pairs that sign/verify across halves.
+caseSlhdsaRoundtrip :: IO ()
+caseSlhdsaRoundtrip = withSynth "11" $ \env -> do
+  mapM_ (roundtrip env) slhdsaSpecs
+  -- Separation: sets, contexts, and hedges never share a test
+  -- signature over one key and message, and SLH-DSA never
+  -- collides with ML-DSA.
+  ss <- expectOk "sign 128s" =<< sign env slh128s key32 "msg"
+  sf <- expectOk "sign 128f" =<< sign env slh128f key32 "msg"
+  assertBool "sets separated" (ss /= sf)
+  sctx <- expectOk "sign ctx" =<< sign env slh128sCtx key32 "msg"
+  assertBool "contexts separated" (sctx /= ss)
+  sdet <- expectOk "sign det" =<< sign env slh128sDet key32 "msg"
+  assertBool "hedges separated" (sdet /= ss)
+  m44 <- expectOk "sign mldsa" =<< sign env mldsa44 key32 "msg"
+  assertBool "families separated" (m44 /= ss)
+  expectAuthFailed "128f sig under 128s rejected" =<<
+    verify env slh128s key32 "msg" sf
+  expectAuthFailed "ctx sig under pure rejected" =<<
+    verify env slh128s key32 "msg" sctx
+  expectUnsupported "ML-DSA level refused" =<<
+    sign env (SigSLHDSA ML_DSA_44 "" True) key32 "msg"
+  expectUnsupported "overlong context refused" =<<
+    sign env (SigSLHDSA SLH_DSA_SHA2_128s (BS.replicate 256 0) True) key32 "msg"
+  -- Keygen: opaque pairs roundtrip across halves.
+  (priv, Just pub) <- expectOk "keygen" =<< generateKey env (GenSLHDSA SLH_DSA_SHAKE_256f)
+  sig <- expectOk "genkey sign" =<< sign env slhShake256f priv "msg"
+  expectOk "genkey verify" =<< verify env slhShake256f pub "msg" sig
+  expectUnsupported "off-set level refused" =<< generateKey env (GenSLHDSA ML_DSA_44)
+  where
+    mldsa44 = SigMLDSA ML_DSA_44 False "" True
+    slh128s = SigSLHDSA SLH_DSA_SHA2_128s "" True
+    slh128f = SigSLHDSA SLH_DSA_SHA2_128f "" True
+    slh128sCtx = SigSLHDSA SLH_DSA_SHA2_128s "CTX" True
+    slh128sDet = SigSLHDSA SLH_DSA_SHA2_128s "" False
+    slhShake256f = SigSLHDSA SLH_DSA_SHAKE_256f "" True
+    slhdsaSpecs :: [SigSpec]
+    slhdsaSpecs =
+      [ SigSLHDSA alg ctx hedged
+      | alg <- slhdsaSets
+      , ctx <- ["", "CTX"]
+      , hedged <- [True, False]
+      ]
+    roundtrip env sspec = do
+      let label = show sspec
+      sig <- expectOk ("sign " ++ label) =<< sign env sspec key32 "msg"
+      assertEqual ("sig length " ++ label) synthSigLength (BS.length sig)
+      expectOk ("verify " ++ label) =<< verify env sspec key32 "msg" sig
+      expectAuthFailed ("tampered " ++ label) =<<
+        verify env sspec key32 "msg" (BS.map complement sig)
+      expectAuthFailed ("wrong key " ++ label) =<<
+        verify env sspec otherKey32 "msg" sig
+
 caseEcdsaCurves :: IO ()
 caseEcdsaCurves = withSynth "11" $ \env -> do
   mapM_ (roundtrip env) ecdsaSpecs
@@ -1906,10 +1973,11 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   -- DSA left it when the DSA entry points landed (see
   -- caseDsaRoundtrip and the OpenSSLSpec DSA KATs); ML-DSA left
   -- it when the ML-DSA entry points landed (see caseMldsaRoundtrip
-  -- and the OpenSSLSpec ML-DSA KATs); empty GCM
+  -- and the OpenSSLSpec ML-DSA KATs); SLH-DSA left it when the
+  -- SLH-DSA entry points landed (see caseSlhdsaRoundtrip and the
+  -- OpenSSLSpec SLH-DSA KATs); empty GCM
   -- params still fail typed at the driver (CryptoFailed recipe
   -- refusal, pinned below).
-  refused "sign SLH-DSA" (mkSign "CKM_SLH_DSA")
   refused "derive TLS_PRF"
     (FxDerive (mech "CKM_TLS_PRF") (Just kOid) BS.empty BS.empty 32)
   refused "derive DH" (FxDerive (mech "CKM_DH_PKCS_DERIVE") (Just kOid) BS.empty BS.empty 32)

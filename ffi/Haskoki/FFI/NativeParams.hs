@@ -67,6 +67,7 @@ module Haskoki.FFI.NativeParams
   , ctrStructToCanonical
   , eddsaStructToCanonical
   , mldsaStructToCanonical
+  , slhdsaStructToCanonical
   , digestStemByCkm
   , mgfStemByCkg
   , pssNativeSize
@@ -77,6 +78,7 @@ module Haskoki.FFI.NativeParams
   , ctrNativeSize
   , eddsaNativeSize
   , mldsaNativeSize
+  , slhdsaNativeSize
   ) where
 
 import Control.Monad (guard)
@@ -99,6 +101,8 @@ import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Eddsa (eddsaRecipeFor, encodeEddsaParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.MlDsa (encodeMldsaParams, hedgeOfWord, mldsaRecipeFor)
+import Haskoki.Recipe.SlhDsa (encodeSlhdsaParams, slhdsaRecipeFor)
+import qualified Haskoki.Recipe.SlhDsa as SlhDsa
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
 import Haskoki.Registry.Generated (mustGeneratedId)
@@ -164,6 +168,12 @@ eddsaNativeSize = eddsaLenOff + wordSize + ptrSize
 -- length).
 mldsaNativeSize :: Int
 mldsaNativeSize = 2 * wordSize + ptrSize
+
+-- | Native @CK_SIGN_ADDITIONAL_CONTEXT@ size for CKM_SLH_DSA:
+-- same struct shape as ML-DSA (the header order is hedge,
+-- pointer, length).
+slhdsaNativeSize :: Int
+slhdsaNativeSize = 2 * wordSize + ptrSize
 
 -- | Native @CKM_*@ hash ids onto recipe digest stems. Ids come from
 -- the generated vocabulary, so a header drift breaks the build
@@ -311,6 +321,18 @@ mldsaStructToCanonical hedge ctx
       Just h -> Just (encodeMldsaParams h ctx)
       Nothing -> Nothing
 
+-- | SLH-DSA translation: the native @CK_HEDGE_TYPE@ word plus the
+-- chased context onto the canonical @slhdsa-params/1@ image
+-- (same struct shape as ML-DSA — @CK_SIGN_ADDITIONAL_CONTEXT@
+-- is shared). Only words 0/1/2 translate; anything else passes
+-- through.
+slhdsaStructToCanonical :: Word64 -> ByteString -> Maybe ByteString
+slhdsaStructToCanonical hedge ctx
+  | hedge > 2 = Nothing
+  | otherwise = case SlhDsa.hedgeOfWord (fromIntegral hedge) of
+      Just h -> Just (encodeSlhdsaParams h ctx)
+      Nothing -> Nothing
+
 -- | Chase one bounded byte string from caller memory under the
 -- 'decodeInputBytes' null conventions: zero length never
 -- dereferences, null-with-length and over-bound lengths refuse.
@@ -358,6 +380,7 @@ normalizeMechParams mid pParams paramsLen raw
   | isJust (ctrRecipeFor mid) = fromMaybe raw <$> decodeCtrNative
   | isJust (eddsaRecipeFor mid) = fromMaybe raw <$> decodeEddsaNative
   | isJust (mldsaRecipeFor mid) = fromMaybe raw <$> decodeMldsaNative
+  | isJust (slhdsaRecipeFor mid) = fromMaybe raw <$> decodeSlhdsaNative
   | otherwise = pure raw
   where
     decodePssNative :: IO (Maybe ByteString)
@@ -433,3 +456,12 @@ normalizeMechParams mid pParams paramsLen raw
           CULong ctxLen <- peekByteOff pParams (wordSize + ptrSize)
           mCtx <- chaseBytes pCtx ctxLen
           pure (mCtx >>= mldsaStructToCanonical hedge)
+    decodeSlhdsaNative :: IO (Maybe ByteString)
+    decodeSlhdsaNative
+      | paramsLen /= fromIntegral slhdsaNativeSize = pure Nothing
+      | otherwise = do
+          CULong hedge <- peekByteOff pParams 0
+          pCtx <- peekByteOff pParams wordSize
+          CULong ctxLen <- peekByteOff pParams (wordSize + ptrSize)
+          mCtx <- chaseBytes pCtx ctxLen
+          pure (mCtx >>= slhdsaStructToCanonical hedge)

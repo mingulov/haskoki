@@ -1597,6 +1597,154 @@ int main(int argc, char **argv) {
       rv = f->C_Verify(ssess, (CK_BYTE_PTR) "mldsa-consumer", 14, msig, msigLen);
       CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered ML-DSA refused");
     }
+    /* SLH-DSA: keypair (the set rides the public template; the
+     * mechanism takes no parameter) -> sign/verify. Like ML-DSA
+     * the context struct is OPTIONAL (absent means
+     * hedge-preferred, empty context): NULL params serve pure.
+     * Hedge 0/1/2 serve; anything else refuses
+     * ARGUMENTS_BAD. Default set is 1 (SHA2-128s). */
+    {
+      CK_KEY_TYPE skt = CKK_SLH_DSA;
+      CK_OBJECT_HANDLE spub = 0, spriv = 0;
+      CK_OBJECT_HANDLE dpub = 0, dpriv = 0;
+      CK_ULONG sset1 = CKP_SLH_DSA_SHA2_128S;
+      CK_ULONG ssetBad = 13;
+      CK_MECHANISM skgm, snm, ssm, scm, sdm, sbm;
+      CK_SIGN_ADDITIONAL_CONTEXT sctx, sdet, sbad;
+      CK_BYTE sctxBuf[] = { 'C', 'T', 'X' };
+      CK_ATTRIBUTE spubT[5];
+      CK_ATTRIBUTE sprivT[4];
+      CK_ATTRIBUTE sshortT[4];
+      CK_BYTE ssig[8000];
+      CK_BYTE sdet1[8000];
+      CK_ULONG ssigLen;
+      CK_ULONG sdetLen;
+      skgm.mechanism = CKM_SLH_DSA_KEY_PAIR_GEN;
+      skgm.pParameter = NULL_PTR;
+      skgm.ulParameterLen = 0;
+      sshortT[0].type = CKA_CLASS;
+      sshortT[0].pValue = &pcls;
+      sshortT[0].ulValueLen = sizeof(pcls);
+      sshortT[1].type = CKA_KEY_TYPE;
+      sshortT[1].pValue = &skt;
+      sshortT[1].ulValueLen = sizeof(skt);
+      sshortT[2].type = CKA_TOKEN;
+      sshortT[2].pValue = &bFalse;
+      sshortT[2].ulValueLen = sizeof(bFalse);
+      sshortT[3].type = CKA_VERIFY;
+      sshortT[3].pValue = &bTrue;
+      sshortT[3].ulValueLen = sizeof(bTrue);
+      sprivT[0].type = CKA_CLASS;
+      sprivT[0].pValue = &scls;
+      sprivT[0].ulValueLen = sizeof(scls);
+      sprivT[1].type = CKA_KEY_TYPE;
+      sprivT[1].pValue = &skt;
+      sprivT[1].ulValueLen = sizeof(skt);
+      sprivT[2].type = CKA_TOKEN;
+      sprivT[2].pValue = &bFalse;
+      sprivT[2].ulValueLen = sizeof(bFalse);
+      sprivT[3].type = CKA_SIGN;
+      sprivT[3].pValue = &bTrue;
+      sprivT[3].ulValueLen = sizeof(bTrue);
+      rv = f->C_GenerateKeyPair(ssess, &skgm, sshortT, 4, sprivT, 4,
+                                &dpub, &dpriv);
+      CHECKC(rv == CKR_OK && dpub != 0 && dpriv != 0,
+             "SLH-DSA pair mints without a set (default SHA2-128s)");
+      spubT[0].type = CKA_CLASS;
+      spubT[0].pValue = &pcls;
+      spubT[0].ulValueLen = sizeof(pcls);
+      spubT[1].type = CKA_KEY_TYPE;
+      spubT[1].pValue = &skt;
+      spubT[1].ulValueLen = sizeof(skt);
+      spubT[2].type = CKA_PARAMETER_SET;
+      spubT[2].pValue = &sset1;
+      spubT[2].ulValueLen = sizeof(sset1);
+      spubT[3].type = CKA_TOKEN;
+      spubT[3].pValue = &bFalse;
+      spubT[3].ulValueLen = sizeof(bFalse);
+      spubT[4].type = CKA_VERIFY;
+      spubT[4].pValue = &bTrue;
+      spubT[4].ulValueLen = sizeof(bTrue);
+      rv = f->C_GenerateKeyPair(ssess, &skgm, spubT, 5, sprivT, 4,
+                                &spub, &spriv);
+      CHECKC(rv == CKR_OK && spub != 0 && spriv != 0, "SLH-DSA-128s pair mints");
+      spubT[2].pValue = &ssetBad;
+      rv = f->C_GenerateKeyPair(ssess, &skgm, spubT, 5, sprivT, 4,
+                                &dpub, &dpriv);
+      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT,
+             "SLH-DSA keypair with unknown set is INCONSISTENT");
+      snm.mechanism = CKM_SLH_DSA;
+      snm.pParameter = NULL_PTR;
+      snm.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &snm, spriv);
+      CHECKC(rv == CKR_OK, "SLH-DSA NULL-params SignInit ok");
+      ssigLen = sizeof(ssig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "slhdsa-consumer", 15, ssig, &ssigLen);
+      CHECKC(rv == CKR_OK && ssigLen == 7856, "SLH-DSA sign yields 7856 bytes");
+      rv = f->C_VerifyInit(ssess, &snm, spub);
+      CHECKC(rv == CKR_OK, "SLH-DSA NULL-params VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "slhdsa-consumer", 15, ssig, ssigLen);
+      CHECKC(rv == CKR_OK, "SLH-DSA NULL-params verify ok");
+      sctx.hedgeVariant = CKH_HEDGE_PREFERRED;
+      sctx.pContext = sctxBuf;
+      sctx.ulContextLen = sizeof(sctxBuf);
+      ssm.mechanism = CKM_SLH_DSA;
+      ssm.pParameter = &sctx;
+      ssm.ulParameterLen = sizeof(sctx);
+      rv = f->C_SignInit(ssess, &ssm, spriv);
+      CHECKC(rv == CKR_OK, "SLH-DSA context SignInit ok");
+      ssigLen = sizeof(ssig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "slhdsa-consumer", 15, ssig, &ssigLen);
+      CHECKC(rv == CKR_OK && ssigLen == 7856, "SLH-DSA context sign yields 7856 bytes");
+      rv = f->C_VerifyInit(ssess, &ssm, spub);
+      CHECKC(rv == CKR_OK, "SLH-DSA context VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "slhdsa-consumer", 15, ssig, ssigLen);
+      CHECKC(rv == CKR_OK, "SLH-DSA context verify ok");
+      rv = f->C_VerifyInit(ssess, &snm, spub);
+      CHECKC(rv == CKR_OK, "SLH-DSA re-init pure for separation");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "slhdsa-consumer", 15, ssig, ssigLen);
+      CHECKC(rv == CKR_SIGNATURE_INVALID, "context sig under pure refused");
+      sdet.hedgeVariant = CKH_DETERMINISTIC_REQUIRED;
+      sdet.pContext = NULL_PTR;
+      sdet.ulContextLen = 0;
+      sdm.mechanism = CKM_SLH_DSA;
+      sdm.pParameter = &sdet;
+      sdm.ulParameterLen = sizeof(sdet);
+      scm.mechanism = CKM_SLH_DSA;
+      scm.pParameter = &sdet;
+      scm.ulParameterLen = sizeof(sdet);
+      rv = f->C_SignInit(ssess, &sdm, spriv);
+      CHECKC(rv == CKR_OK, "SLH-DSA deterministic SignInit ok");
+      sdetLen = sizeof(sdet1);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "slhdsa-consumer", 15, sdet1, &sdetLen);
+      CHECKC(rv == CKR_OK && sdetLen == 7856, "SLH-DSA deterministic signs");
+      rv = f->C_SignInit(ssess, &sdm, spriv);
+      CHECKC(rv == CKR_OK, "SLH-DSA deterministic re-init ok");
+      ssigLen = sizeof(ssig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "slhdsa-consumer", 15, ssig, &ssigLen);
+      CHECKC(rv == CKR_OK && ssigLen == sdetLen &&
+                 memcmp(ssig, sdet1, ssigLen) == 0,
+             "SLH-DSA deterministic reproduces");
+      rv = f->C_VerifyInit(ssess, &scm, spub);
+      CHECKC(rv == CKR_OK, "SLH-DSA deterministic VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "slhdsa-consumer", 15, ssig, ssigLen);
+      CHECKC(rv == CKR_OK, "SLH-DSA deterministic verify ok");
+      sbad.hedgeVariant = 3;
+      sbad.pContext = NULL_PTR;
+      sbad.ulContextLen = 0;
+      sbm.mechanism = CKM_SLH_DSA;
+      sbm.pParameter = &sbad;
+      sbm.ulParameterLen = sizeof(sbad);
+      rv = f->C_SignInit(ssess, &sbm, spriv);
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "SLH-DSA bad-hedge struct refused");
+      /* Tamper under NULL params (ssig still holds the 7856
+       * deterministic-signed bytes; the refusal started no op). */
+      rv = f->C_VerifyInit(ssess, &snm, spub);
+      CHECKC(rv == CKR_OK, "SLH-DSA re-init for tamper");
+      ssig[ssigLen - 1] ^= 0xFF;
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "slhdsa-consumer", 15, ssig, ssigLen);
+      CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered SLH-DSA refused");
+    }
     rv = f->C_CloseSession(ssess);
     CHECKC(rv == CKR_OK, "sign session closes");
   }

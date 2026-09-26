@@ -303,6 +303,22 @@ instance CryptoBackend OpenSSL4 where
                 | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "sign" "private key DER rejected"))
                 | otherwise -> nativeFail "sign" code
               Right sig -> pure (EngineOk sig)
+        -- Same contract as ML-DSA (the shim checks the key's actual
+        -- keymgmt type name against the set; empty context is pure
+        -- mode; deterministic hedge sets the provider deterministic
+        -- param, hedged rides the default).
+        SigSLHDSA alg ctx hedged -> case slhdsaNativeAlg alg of
+          Nothing -> pure (EngineFail (BackendUnsupported "sign"
+            ("no provider name: " ++ show spec)))
+          Just algname -> do
+            r <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.slhdsaSign (osslCtx env) algname (osslPropQ env) kb msg
+                (slhdsaContext ctx) (not hedged)
+            case r of
+              Left code
+                | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "sign" "private key DER rejected"))
+                | otherwise -> nativeFail "sign" code
+              Right sig -> pure (EngineOk sig)
         SigRSA_PKCS1v15 alg -> case digestFetchName alg of
           -- Unreachable post-guard (the guard only admits probed
           -- fixed-width digests); typed, never a crash.
@@ -363,6 +379,14 @@ instance CryptoBackend OpenSSL4 where
               Raw.mldsaVerify (osslCtx env) algname (osslPropQ env) kb msg
                 (mldsaContext ctx) sig
             verifyRc "verify" "signature is not a raw ML-DSA signature" rc
+        SigSLHDSA alg ctx _ -> case slhdsaNativeAlg alg of
+          Nothing -> pure (EngineFail (BackendUnsupported "verify"
+            ("no provider name: " ++ show spec)))
+          Just algname -> do
+            rc <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.slhdsaVerify (osslCtx env) algname (osslPropQ env) kb msg
+                (slhdsaContext ctx) sig
+            verifyRc "verify" "signature is not a raw SLH-DSA signature" rc
         SigRSA_PKCS1v15 alg -> case digestFetchName alg of
           Nothing -> pure (EngineFail (BackendUnsupported "verify"
             ("no fetch name: " ++ show alg)))
@@ -503,6 +527,16 @@ instance CryptoBackend OpenSSL4 where
       Just algname -> do
         r <- withForeignPtr (osslEnv env) $ \_ ->
           Raw.mldsaGen (osslCtx env) (osslPropQ env) algname
+        case r of
+          Left code -> nativeFail "generateKey" code
+          Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
+  generateKey be spec@(GenSLHDSA alg) = runGuarded be "generateKey" (genSupported be spec) $ \env ->
+    case slhdsaNativeAlg alg of
+      Nothing -> pure (EngineFail (BackendBadParam "generateKey"
+        ("unknown SLH-DSA set: " ++ show alg)))
+      Just algname -> do
+        r <- withForeignPtr (osslEnv env) $ \_ ->
+          Raw.slhdsaGen (osslCtx env) (osslPropQ env) algname
         case r of
           Left code -> nativeFail "generateKey" code
           Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
@@ -708,7 +742,7 @@ ossl4Caps version propq = BackendCaps
   , bcDigests = DigestCaps { dcAlgs = Set.fromList t16DigestAlgs, dcMultipart = True, dcXof = False }
   , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
   , bcMacs = MacCaps { mcSpecs = osslMacSpecs t16DigestAlgs }
-  , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs ++ osslEddsaSpecNames t16EdwardsCurves ++ osslMldsaSpecNames t16MldsaLevels), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.fromList t16MldsaLevels }
+  , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs ++ osslEddsaSpecNames t16EdwardsCurves ++ osslMldsaSpecNames t16MldsaLevels ++ osslSlhdsaSpecNames t16SlhdsaSets), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.fromList (t16MldsaLevels ++ t16SlhdsaSets) }
   , bcKems = KemCaps { kcAlgs = Set.fromList t16MlkemSets }
   , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR"] }
   , bcParamNotes = Map.fromList
@@ -721,7 +755,7 @@ ossl4Caps version propq = BackendCaps
        , ("ECDH-COFACTOR", "cofactor-multiplied; no-op on h=1 curves, threaded honestly")
        ] ++ osslRsaNotes t16RsaAlgs ++ osslEcdsaNotes t16EcdsaCurves t16DigestAlgs
          ++ osslDsaNotes t16DsaAlgs ++ osslEddsaNotes t16EdwardsCurves
-         ++ osslMldsaNotes t16MldsaLevels ++ osslMlkemNotes t16MlkemSets
+         ++ osslMldsaNotes t16MldsaLevels ++ osslSlhdsaNotes t16SlhdsaSets ++ osslMlkemNotes t16MlkemSets
       )
   }
 
@@ -834,6 +868,28 @@ osslMldsaNotes levels =
   [ (name, "pure ML-DSA plus 0..255-byte contexts, hedged or deterministic, one-shot; raw fixed-width signatures (2420/3309/4627 bytes)")
   | alg <- levels
   , Just name <- [mldsaSigCap (SigMLDSA alg False BS.empty True)]
+  ]
+
+-- | The SLH-DSA set list: all twelve FIPS 205 sets.
+t16SlhdsaSets :: [PqcSigAlg]
+t16SlhdsaSets = slhdsaSets
+
+-- | SLH-DSA capability names: one pure-sign name per set. The
+-- pre-probe caps cover 't16SlhdsaSets'; 'probeCaps' keeps each
+-- set under its own pkey gate.
+osslSlhdsaSpecNames :: [PqcSigAlg] -> [String]
+osslSlhdsaSpecNames sets =
+  [ name
+  | alg <- sets
+  , Just name <- [slhdsaSigCap (SigSLHDSA alg BS.empty True)]
+  ]
+
+-- | Per-name SLH-DSA parameter notes for the capability report.
+osslSlhdsaNotes :: [PqcSigAlg] -> [(String, String)]
+osslSlhdsaNotes sets =
+  [ (name, "pure SLH-DSA plus 0..255-byte contexts, hedged or deterministic, one-shot; raw fixed-width signatures")
+  | alg <- sets
+  , Just name <- [slhdsaSigCap (SigSLHDSA alg BS.empty True)]
   ]
 
 -- | The ML-KEM set list: all three FIPS 203 sets.
@@ -966,6 +1022,18 @@ probeCaps env = do
   mldsa44Ok <- probe1 "pkey" "ML-DSA-44"
   mldsa65Ok <- probe1 "pkey" "ML-DSA-65"
   mldsa87Ok <- probe1 "pkey" "ML-DSA-87"
+  slhSha2_128sOk <- probe1 "pkey" "SLH-DSA-SHA2-128s"
+  slhSha2_128fOk <- probe1 "pkey" "SLH-DSA-SHA2-128f"
+  slhSha2_192sOk <- probe1 "pkey" "SLH-DSA-SHA2-192s"
+  slhSha2_192fOk <- probe1 "pkey" "SLH-DSA-SHA2-192f"
+  slhSha2_256sOk <- probe1 "pkey" "SLH-DSA-SHA2-256s"
+  slhSha2_256fOk <- probe1 "pkey" "SLH-DSA-SHA2-256f"
+  slhShake128sOk <- probe1 "pkey" "SLH-DSA-SHAKE-128s"
+  slhShake128fOk <- probe1 "pkey" "SLH-DSA-SHAKE-128f"
+  slhShake192sOk <- probe1 "pkey" "SLH-DSA-SHAKE-192s"
+  slhShake192fOk <- probe1 "pkey" "SLH-DSA-SHAKE-192f"
+  slhShake256sOk <- probe1 "pkey" "SLH-DSA-SHAKE-256s"
+  slhShake256fOk <- probe1 "pkey" "SLH-DSA-SHAKE-256f"
   mlkem512Ok <- probe1 "pkey" "ML-KEM-512"
   mlkem768Ok <- probe1 "pkey" "ML-KEM-768"
   mlkem1024Ok <- probe1 "pkey" "ML-KEM-1024"
@@ -991,12 +1059,36 @@ probeCaps env = do
             , keep mldsa44Ok (Set.fromList (osslMldsaSpecNames [ML_DSA_44]))
             , keep mldsa65Ok (Set.fromList (osslMldsaSpecNames [ML_DSA_65]))
             , keep mldsa87Ok (Set.fromList (osslMldsaSpecNames [ML_DSA_87]))
+            , keep slhSha2_128sOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHA2_128s]))
+            , keep slhSha2_128fOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHA2_128f]))
+            , keep slhSha2_192sOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHA2_192s]))
+            , keep slhSha2_192fOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHA2_192f]))
+            , keep slhSha2_256sOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHA2_256s]))
+            , keep slhSha2_256fOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHA2_256f]))
+            , keep slhShake128sOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHAKE_128s]))
+            , keep slhShake128fOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHAKE_128f]))
+            , keep slhShake192sOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHAKE_192s]))
+            , keep slhShake192fOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHAKE_192f]))
+            , keep slhShake256sOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHAKE_256s]))
+            , keep slhShake256fOk (Set.fromList (osslSlhdsaSpecNames [SLH_DSA_SHAKE_256f]))
             ]
         , scCurves = keep pkeyOk (Set.fromList t16EcdsaCurves)
         , scPqcSign = Set.fromList
             ([ ML_DSA_44 | mldsa44Ok ]
               ++ [ ML_DSA_65 | mldsa65Ok ]
-              ++ [ ML_DSA_87 | mldsa87Ok ])
+              ++ [ ML_DSA_87 | mldsa87Ok ]
+              ++ [ SLH_DSA_SHA2_128s | slhSha2_128sOk ]
+              ++ [ SLH_DSA_SHA2_128f | slhSha2_128fOk ]
+              ++ [ SLH_DSA_SHA2_192s | slhSha2_192sOk ]
+              ++ [ SLH_DSA_SHA2_192f | slhSha2_192fOk ]
+              ++ [ SLH_DSA_SHA2_256s | slhSha2_256sOk ]
+              ++ [ SLH_DSA_SHA2_256f | slhSha2_256fOk ]
+              ++ [ SLH_DSA_SHAKE_128s | slhShake128sOk ]
+              ++ [ SLH_DSA_SHAKE_128f | slhShake128fOk ]
+              ++ [ SLH_DSA_SHAKE_192s | slhShake192sOk ]
+              ++ [ SLH_DSA_SHAKE_192f | slhShake192fOk ]
+              ++ [ SLH_DSA_SHAKE_256s | slhShake256sOk ]
+              ++ [ SLH_DSA_SHAKE_256f | slhShake256fOk ])
         }
     , bcKems = (bcKems base)
         { kcAlgs = Set.fromList
@@ -1077,6 +1169,8 @@ sigSupported (OSSL4Backend env) spec
   | Just name <- eddsaSigCap spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | Just name <- mldsaSigCap spec
+  , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
+  | Just name <- slhdsaSigCap spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | Just name <- rsaSigCap spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
@@ -1169,6 +1263,33 @@ mldsaContext ctx
   | BS.null ctx = Nothing
   | otherwise = Just ctx
 
+-- | Native set selection for one SLH-DSA spec: the provider fetch
+-- name, pure/context mode only. 'Nothing' means unservable (a
+-- non-SLH-DSA set — ML-DSA levels are never SLH-DSA specs).
+slhdsaNativeAlg :: PqcSigAlg -> Maybe String
+slhdsaNativeAlg alg = case alg of
+  SLH_DSA_SHA2_128s -> Just "SLH-DSA-SHA2-128s"
+  SLH_DSA_SHA2_128f -> Just "SLH-DSA-SHA2-128f"
+  SLH_DSA_SHA2_192s -> Just "SLH-DSA-SHA2-192s"
+  SLH_DSA_SHA2_192f -> Just "SLH-DSA-SHA2-192f"
+  SLH_DSA_SHA2_256s -> Just "SLH-DSA-SHA2-256s"
+  SLH_DSA_SHA2_256f -> Just "SLH-DSA-SHA2-256f"
+  SLH_DSA_SHAKE_128s -> Just "SLH-DSA-SHAKE-128s"
+  SLH_DSA_SHAKE_128f -> Just "SLH-DSA-SHAKE-128f"
+  SLH_DSA_SHAKE_192s -> Just "SLH-DSA-SHAKE-192s"
+  SLH_DSA_SHAKE_192f -> Just "SLH-DSA-SHAKE-192f"
+  SLH_DSA_SHAKE_256s -> Just "SLH-DSA-SHAKE-256s"
+  SLH_DSA_SHAKE_256f -> Just "SLH-DSA-SHAKE-256f"
+  _ -> Nothing
+
+-- | Spec context bytes onto the optional native context: empty is
+-- pure mode ('Nothing'), anything else rides the
+-- @context-string@ param.
+slhdsaContext :: ByteString -> Maybe ByteString
+slhdsaContext ctx
+  | BS.null ctx = Nothing
+  | otherwise = Just ctx
+
 -- | OAEP availability: the RSA pkey gate (witnessed by the
 -- probe-narrowed RSA signature set) plus per-digest fetch probes
 -- for the hash and the MGF. Same probe inputs as the RSA signature
@@ -1256,6 +1377,9 @@ genSupported (OSSL4Backend env) spec
   , Set.member ("EDDSA-" ++ BC8.unpack name) (scSpecs (bcSigs (osslCaps env))) = Nothing
   | GenMLDSA alg <- spec
   , [Just name] <- [mldsaSigCap (SigMLDSA alg False BS.empty True)]
+  , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
+  | GenSLHDSA alg <- spec
+  , [Just name] <- [slhdsaSigCap (SigSLHDSA alg BS.empty True)]
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | GenMLKEM alg <- spec
   , Set.member alg (kcAlgs (bcKems (osslCaps env))) = Nothing

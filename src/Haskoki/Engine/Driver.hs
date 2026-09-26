@@ -138,9 +138,11 @@ module Haskoki.Engine.Driver
   , dsaSpecFor
   , eddsaSpecFor
   , mldsaSpecFor
+  , slhdsaSpecFor
   , ecCurveOfKey
   , eddsaCurveOfKey
   , mldsaLevelOfKey
+  , slhdsaLevelOfKey
   , ecdhParamsFor
   , cmacSpecFor
   , hotpParamsFor
@@ -222,6 +224,13 @@ import Haskoki.Recipe.MlDsa
   , mldsaParamsValid
   , mldsaRecipeFor
   )
+import Haskoki.Recipe.SlhDsa
+  ( SlhdsaHedge (..)
+  , decodeSlhdsaParams
+  , slhdsaLevelOfDer
+  , slhdsaParamsValid
+  , slhdsaRecipeFor
+  )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
 import Haskoki.Recipe.Gcm (decodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (decodeOaepParams, rsaOaepParamsValid, rsaOaepRecipeFor)
@@ -250,6 +259,7 @@ import Haskoki.Operation.KeyManagement
   , ecKeyPairGenMech
   , edwardsKeyPairGenMech
   , mldsaKeyPairGenMech
+  , slhdsaKeyPairGenMech
   , rsaPkcsMech
   , encodeKeyPair
   , genericSecretKeyGenMech
@@ -844,12 +854,66 @@ mldsaLevelOfKey (KeyDer der) = mldsaLevelOfDer der >>= levelOfName
 mldsaLevelOfKey (KeyBytes bs) = mldsaLevelOfDer bs >>= levelOfName
 mldsaLevelOfKey _ = Nothing
 
+-- | SLH-DSA dispatch: the covered (mechanism, params, key) triple
+-- to its backend spec (pinned against 'Haskoki.Recipe.SlhDsa' by
+-- RecipeSlhDsaSpec). The recipe validates the hedge/context
+-- parameters (empty defaults to preferred, empty context); the
+-- set label is a dispatch hint from the DER key
+-- ('slhdsaLevelOfKey'), defaulting to SLH-DSA-SHA2-128s when the
+-- key is unscannable (the backends execute against the key's
+-- actual material and refuse bad keys themselves — the driver
+-- never refuses a key). Deterministic hedge clears the hedged
+-- flag. 'Nothing' means uncovered (non-SLH-DSA mechanism) or
+-- refused parameters.
+slhdsaSpecFor :: MechanismId -> ByteString -> KeyMaterial -> Maybe SigSpec
+slhdsaSpecFor mech params key = do
+  r <- slhdsaRecipeFor mech
+  guard (slhdsaParamsValid r params)
+  (hedge, ctx) <- decodeSlhdsaParams params
+  let alg = fromMaybe SLH_DSA_SHA2_128s (slhdsaLevelOfKey key)
+      hedged = hedge /= SlhDeterministic
+  pure (SigSLHDSA alg ctx hedged)
+
+-- | An SLH-DSA mechanism regardless of parameter validity (drives
+-- the parameter-refusal branch: refused SLH-DSA params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isSlhdsaMech :: MechanismId -> Bool
+isSlhdsaMech mech = isJust (slhdsaRecipeFor mech)
+
+-- | The SLH-DSA set named by a key's algorithm OID, via the
+-- recipe's 'slhdsaLevelOfDer'. Both constructors sniff: production
+-- resolves every stored key as 'KeyBytes' ('stdResolver'), so a
+-- 'KeyDer'-only sniff would miss every production key and
+-- misdispatch it as SLH-DSA-SHA2-128s (the shim's type-name check
+-- then refuses with BADKEY). 'Nothing' for references, symmetric
+-- bytes, RSA, garbage, or a foreign curve. The marker is
+-- advisory for dispatch only: 'slhdsaSpecFor' defaults it to
+-- SLH-DSA-SHA2-128s and the backends always execute against the
+-- key's actual material, so a miss can refuse downstream but never
+-- mis-sign.
+slhdsaLevelOfKey :: KeyMaterial -> Maybe PqcSigAlg
+slhdsaLevelOfKey (KeyDer der) = slhdsaLevelOfDer der >>= levelOfName
+slhdsaLevelOfKey (KeyBytes bs) = slhdsaLevelOfDer bs >>= levelOfName
+slhdsaLevelOfKey _ = Nothing
+
 -- | Engine level names onto backend algorithms.
 levelOfName :: T.Text -> Maybe PqcSigAlg
 levelOfName name = case T.unpack name of
   "ML-DSA-44" -> Just ML_DSA_44
   "ML-DSA-65" -> Just ML_DSA_65
   "ML-DSA-87" -> Just ML_DSA_87
+  "SLH-DSA-SHA2-128s" -> Just SLH_DSA_SHA2_128s
+  "SLH-DSA-SHA2-128f" -> Just SLH_DSA_SHA2_128f
+  "SLH-DSA-SHA2-192s" -> Just SLH_DSA_SHA2_192s
+  "SLH-DSA-SHA2-192f" -> Just SLH_DSA_SHA2_192f
+  "SLH-DSA-SHA2-256s" -> Just SLH_DSA_SHA2_256s
+  "SLH-DSA-SHA2-256f" -> Just SLH_DSA_SHA2_256f
+  "SLH-DSA-SHAKE-128s" -> Just SLH_DSA_SHAKE_128s
+  "SLH-DSA-SHAKE-128f" -> Just SLH_DSA_SHAKE_128f
+  "SLH-DSA-SHAKE-192s" -> Just SLH_DSA_SHAKE_192s
+  "SLH-DSA-SHAKE-192f" -> Just SLH_DSA_SHAKE_192f
+  "SLH-DSA-SHAKE-256s" -> Just SLH_DSA_SHAKE_256s
+  "SLH-DSA-SHAKE-256f" -> Just SLH_DSA_SHAKE_256f
   _ -> Nothing
 
 -- | The Edwards curve named by a key's curve OID, via the
@@ -946,6 +1010,10 @@ runEffect env resolve fx = case fx of
         case mldsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure mldsaRefusal
+    | isSlhdsaMech mech -> withKey mkey $ \key ->
+        case slhdsaSpecFor mech params key of
+          Just spec -> toBytes <$> sign env spec key input
+          Nothing -> pure slhdsaRefusal
     | otherwise -> pure (unsupported fx)
   FxVerify mech mkey params input sig
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
@@ -980,6 +1048,10 @@ runEffect env resolve fx = case fx of
         case mldsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure mldsaRefusal
+    | isSlhdsaMech mech -> withKey mkey $ \key ->
+        case slhdsaSpecFor mech params key of
+          Just spec -> toVerifyUnit <$> verify env spec key input sig
+          Nothing -> pure slhdsaRefusal
     | otherwise -> pure (unsupported fx)
   FxCipher dir mech mkey params input
     | isCipherMech mech -> withKey mkey $ \key ->
@@ -1035,6 +1107,10 @@ runEffect env resolve fx = case fx of
         case mldsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure mldsaRefusal
+    | isSlhdsaMech mech -> withKey mkey $ \key ->
+        case slhdsaSpecFor mech params key of
+          Just spec -> toBytes <$> sign env spec key input
+          Nothing -> pure slhdsaRefusal
     | otherwise -> pure (unsupported fx)
   FxMessageVerify mech mkey params input sig
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
@@ -1069,6 +1145,10 @@ runEffect env resolve fx = case fx of
         case mldsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure mldsaRefusal
+    | isSlhdsaMech mech -> withKey mkey $ \key ->
+        case slhdsaSpecFor mech params key of
+          Just spec -> toVerifyUnit <$> verify env spec key input sig
+          Nothing -> pure slhdsaRefusal
     | otherwise -> pure (unsupported fx)
   FxSignRecover {} -> pure (unsupported fx)
   FxVerifyRecover {} -> pure (unsupported fx)
@@ -1103,8 +1183,12 @@ runEffect env resolve fx = case fx of
             Just alg -> toKeyPair <$> generateKey env (GenMLDSA alg)
             Nothing -> pure (GotCryptoError (CryptoFailed
               ("driver: unknown ML-DSA parameter set: " ++ show n)))
+          (m, GenSlhDsa n) | m == slhdsaKeyPairGenMech -> case slhDsaAlg n of
+            Just alg -> toKeyPair <$> generateKey env (GenSLHDSA alg)
+            Nothing -> pure (GotCryptoError (CryptoFailed
+              ("driver: unknown SLH-DSA parameter set: " ++ show n)))
           _
-            | mech `elem` [aesKeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech] ->
+            | mech `elem` [aesKeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)
@@ -1540,6 +1624,8 @@ eddsaRefusal = GotCryptoError (CryptoFailed "EdDSA: params must be an explicit p
 -- 'CryptoFailed' parameter refusal.
 mldsaRefusal :: CryptoResult
 mldsaRefusal = GotCryptoError (CryptoFailed "ML-DSA: params must be mldsa-params/1 (hedge 0..2, context 0..255 bytes) or empty")
+slhdsaRefusal :: CryptoResult
+slhdsaRefusal = GotCryptoError (CryptoFailed "SLH-DSA: params must be slhdsa-params/1 (hedge 0..2, context 0..255 bytes) or empty")
 
 -- | CMAC block width per cipher (only the ECB specs 'cmacSpecFor'
 -- yields).
@@ -1719,6 +1805,24 @@ mlDsaAlg n = case n of
   1 -> Just ML_DSA_44
   2 -> Just ML_DSA_65
   3 -> Just ML_DSA_87
+  _ -> Nothing
+
+-- | SLH-DSA parameter-set ids (@CKP_SLH_DSA_*@) onto backend
+-- algorithms.
+slhDsaAlg :: Int -> Maybe PqcSigAlg
+slhDsaAlg n = case n of
+  1 -> Just SLH_DSA_SHA2_128s
+  2 -> Just SLH_DSA_SHAKE_128s
+  3 -> Just SLH_DSA_SHA2_128f
+  4 -> Just SLH_DSA_SHAKE_128f
+  5 -> Just SLH_DSA_SHA2_192s
+  6 -> Just SLH_DSA_SHAKE_192s
+  7 -> Just SLH_DSA_SHA2_192f
+  8 -> Just SLH_DSA_SHAKE_192f
+  9 -> Just SLH_DSA_SHA2_256s
+  10 -> Just SLH_DSA_SHAKE_256s
+  11 -> Just SLH_DSA_SHA2_256f
+  12 -> Just SLH_DSA_SHAKE_256f
   _ -> Nothing
 
 -- | Planner KEM sets onto backend algorithms.

@@ -589,6 +589,62 @@ first lane proving all of them together.
   3993 xfail); the 2 failures stay the known HOTP
   externals by id.
 
+## Round 16: SLH-DSA slice (fast r35→r36 + KAT r16→r17)
+
+- r35→r36 (3294→3316 passed, +22 / +2 xfail /
+  +19 skip, same 2 HOTP externals confirmed by test
+  id, zero pass→fail): `test_pqc_sign` 13/8-skip →
+  21 pass / 0 skip (the 8 SLH legs resolve),
+  `test_mech_sign` +2 pass / +1 skip,
+  `test_mech_multipart` +2 pass,
+  `test_mech_flags` +6 pass / +12 skip,
+  `test_mech_attribute` +3 pass / +1 xfail,
+  `test_mech_keygen` +1 pass / +1 xfail,
+  `test_mech_negative` +8 skip,
+  `test_mech_probe` +6 skip
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r36-results.json`).
+- The 2 new xfails are the module-global
+  `CKA_LOCAL`-on-public cluster:
+  `test_local_flag_on_generated_key[SLH_DSA_KEY_PAIR_GEN]`
+  and `test_local_flag[SLH_DSA_KEY_PAIR_GEN]`
+  (`CKA_LOCAL on public: attribute unavailable`,
+  same as every family). New skips are honest
+  gates: +12 `test_mech_flags` (SLH × 6
+  unadvertised `CKF_*` legs per mechanism),
+  +8 `test_mech_negative`, +6 `test_mech_probe`
+  (registered, tested elsewhere), +1
+  `test_mech_sign`.
+- KAT r16→r17: +103 pass / +6 fail / −1 xfail /
+  −65 skip
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r17-results.json`).
+  KAT-only mover: `test_acvp_slhdsa` 0/84-skip →
+  78 pass / 6 fail / 0 skip; the 6 failures are
+  P11C-003 (context-bound ACVP vectors the harness
+  verifies under pure params — tc2/tc87/tc113/
+  tc143/tc284/tc368, confirmed by id identical to
+  the targeted run), never module behavior. The
+  8 failures are exactly 6 P11C-003 + 2 HOTP
+  externals by id; zero pass→fail.
+- r17 also lands the 3 `test_kem` flips predicted
+  in round 15 (`test_kem` 21→24 pass / 6→3 xfail),
+  because r17 runs on a fresh bundle carrying the
+  9b `Kem.hs` fix (r16 ran stale). Pass arithmetic
+  closes exactly: +103 = 78 SLH + 3 KEM + 22
+  fast; xfail −1 = −3 KEM + 2 SLH `CKA_LOCAL`;
+  skip −65 = −84 SLH − 8 pqc + 27 fast.
+- Targeted-slhdsa-r1 on the same fresh bundle:
+  147 tests, 99 pass / 6 fail (P11C-003 by id) /
+  42 skip (`test_pqc_sign` 21/0/0,
+  `test_acvp_slhdsa` 78/6/0, `test_hash_slh_dsa`
+  0/0/42 — the prehash skips are catalog-only by
+  design;
+  `/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-slhdsa-r1.json`).
+  All lanes ran on one fresh bundle built from the
+  current tree; only docs and the parity script
+  (test-only, ships no bundle bytes) were edited
+  afterwards, so no stale-bundle re-verify is
+  needed this round.
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

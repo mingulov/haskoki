@@ -390,6 +390,45 @@ int hsk_ossl4_mldsa_gen(OSSL_LIB_CTX *ctx, const char *propq,
                         size_t *priv_len, unsigned char **pub_der,
                         size_t *pub_len);
 
+/* --- SLH-DSA sign/verify/keygen ------------------------------- */
+
+/* Signs with an SLH-DSA private key (PKCS#8 DER). The key's
+ * actual keymgmt type name must match algname (provider SLH-DSA
+ * keys report base_id 0, so NIDs cannot work — BADKEY
+ * otherwise). Pure SLH-DSA is one-shot with a NULL digest;
+ * ctxstr/ctxlen carry the optional context string (NULL ctxstr
+ * means absent; over 255 bytes is BADPARAM). deterministic:
+ * nonzero selects FIPS 205 deterministic signing
+ * (CKH_DETERMINISTIC_REQUIRED), zero is the provider default
+ * (proven hedged — serves CKH_HEDGE_PREFERRED and
+ * CKH_HEDGE_REQUIRED). Answers the raw signature length with
+ * *out set (7856/17088/16224/35664/29792/49856 bytes), or a
+ * negative HSK_OSSL4_ERR_* code. */
+long hsk_ossl4_slhdsa_sign(OSSL_LIB_CTX *ctx, const char *algname,
+                           const char *propq, const unsigned char *priv_der,
+                           size_t priv_len, const unsigned char *msg,
+                           size_t msglen, const unsigned char *ctxstr,
+                           size_t ctxlen, int deterministic,
+                           unsigned char **out);
+/* pub_der: SPKI DER (same set-match rule as sign). Off-width
+ * signatures answer 0 (mismatch — they can never be valid).
+ * Returns 1 (valid), 0 (bad signature),
+ * HSK_OSSL4_ERR_BADKEY (bad DER key), or HSK_OSSL4_ERR_* on
+ * other failures. */
+int hsk_ossl4_slhdsa_verify(OSSL_LIB_CTX *ctx, const char *algname,
+                            const char *propq, const unsigned char *pub_der,
+                            size_t pub_len, const unsigned char *msg,
+                            size_t msglen, const unsigned char *ctxstr,
+                            size_t ctxlen, const unsigned char *sig,
+                            size_t siglen);
+/* Mints an SLH-DSA pair and answers the PKCS#8 private + SPKI
+ * public DER halves (HSK_OSSL4_OK); an unknown set name is
+ * BADPARAM. */
+int hsk_ossl4_slhdsa_gen(OSSL_LIB_CTX *ctx, const char *propq,
+                         const char *algname, unsigned char **priv_der,
+                         size_t *priv_len, unsigned char **pub_der,
+                         size_t *pub_len);
+
 /* --- ML-KEM encapsulate/decapsulate/keygen ------------------- */
 
 /* Encapsulates to a KEM public key (SPKI DER or width-exact

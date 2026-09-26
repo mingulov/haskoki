@@ -155,6 +155,26 @@ auth = "none"
 allow_insecure_tcp = true
 EOF
 
+# Shim mechanism override (PKCS11_PROXY_MECHANISMS): the pinned
+# proxy's embedded shape table maps CK_SIGN_ADDITIONAL_CONTEXT
+# only to CKM_ML_DSA (0x001D); CKM_SLH_DSA (0x002E) takes the
+# identical struct but has no entry, so struct-param SLH legs
+# fail proxied while NULL-param legs pass. The override merges
+# per-mechanism over the embedded defaults (proxy
+# MechanismRegistry::merge_config: additive insert, existing
+# entries untouched), so this one mapping is the whole delta —
+# no proxy rebuild, no re-pin. Upstream should gain 0x002E in
+# mechanism_params_default.toml next to 0x001D; until then this
+# file is the recorded extension point (extend here, never fork
+# the pinned binaries).
+cat > "$TMPD/mechanisms-override.toml" <<'EOF'
+[[params]]
+shape = "sign_additional_context"
+mechanisms = [
+    0x002E,  # CKM_SLH_DSA (optional -- hedge mode, same struct as ML-DSA)
+]
+EOF
+
 compile_scenario() {
   base=$(basename "$1" .c)
   cc -std=c11 -O2 -g -Wall -Wextra -Werror \
@@ -223,6 +243,7 @@ run_parity() {
     || { echo "--- direct log:"; cat "$DLOG"; fail "$base FAILED direct"; }
   echo "direct exit 0"
   HASKOKI_CONSUMER_TOPOLOGY=proxy PKCS11_PROXY_ENDPOINT="$ENDPOINT" \
+    PKCS11_PROXY_MECHANISMS="$TMPD/mechanisms-override.toml" \
     "$BIN" "$SHIM_SO" >"$PLOG" 2>&1 \
     || { echo "--- proxied log:"; cat "$PLOG"; fail "$base FAILED proxied"; }
   echo "proxied exit 0"

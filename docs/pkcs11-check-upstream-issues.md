@@ -91,6 +91,64 @@ and the intended-allowed code per the tuple's own comments) and
 triages these xfails as framework-bug in
 `docs/pkcs11-oracle-triage.md`.
 
+## P11C-003: ACVP SLH-DSA sigver drops the vector context; valid context-bound signatures HARD-FAIL
+
+**Severity**: medium (6 red tests in every lane running `test_acvp_slhdsa.py`; masks real regressions)
+**Component**: `src/pkcs11_check/testcases/acvp/test_acvp_slhdsa.py` (`_load_sigver_vectors` + `test_slhdsa_sigver`)
+**Found**: 2026-09-26 (SLH-DSA slice targeted-slhdsa-r1)
+
+The sigver loader merges `pk`/`message`/`signature` but never reads
+the vector `context`:
+
+```python
+merged: dict[str, Any] = {
+    "param_set": param_set,
+    "param_name": param_name,
+    "pk": bytes.fromhex(pk),
+    "msg": bytes.fromhex(msg),
+    "sig": bytes.fromhex(sig),
+    ...
+}
+```
+
+and the test verifies with bare NULL params:
+
+```python
+verified = verify_single(rs.raw, rs.sh, pub_key, CKM_SLH_DSA, vec["msg"], vec["sig"])
+```
+
+The ML-DSA counterpart (`test_acvp_mldsa.py`) passes the vector
+context via `mech_sign_context` when non-empty; the SLH-DSA test
+has no such path (no `context` mention in the file at all). Every
+ACVP `testPassed=true` sigver vector with a non-empty context
+therefore fails against any FIPS-205-correct module, which must
+reject a context-bound signature under pure params. Failing ids
+(targeted-slhdsa-r1, contexts 40..255 bytes):
+
+- `test_slhdsa_sigver[sigVer-SLH-DSA-SHA2-128f-tc2]` (ctx 213)
+- `test_slhdsa_sigver[sigVer-SLH-DSA-SHAKE-128f-tc87]` (ctx 255)
+- `test_slhdsa_sigver[sigVer-SLH-DSA-SHAKE-192f-tc113]` (ctx 164)
+- `test_slhdsa_sigver[sigVer-SLH-DSA-SHAKE-256f-tc143]` (ctx 40)
+- `test_slhdsa_sigver[sigVer-SLH-DSA-SHA2-192s-tc284]` (ctx 112)
+- `test_slhdsa_sigver[sigVer-SLH-DSA-SHAKE-192s-tc368]` (ctx 71)
+
+Failure record (identical shape each):
+
+```text
+Failed: sigVer-SLH-DSA-SHA2-128f-tc2: rejected VALID SLH-DSA signature
+```
+
+Expected: the loader carries `context` and the test passes it via
+`CK_SIGN_ADDITIONAL_CONTEXT` (mirroring the ML-DSA test), so
+context-bound vectors verify and pure vectors keep NULL params.
+
+Downstream handling: Haskoki triages these 6 as known-external in
+every round (`docs/pkcs11-oracle-triage.md`) and confirms by test id
+that no other failure hides behind the count. Module-side
+context-verify is proven independently by the committed ACVP KAT
+(OpenSSLSpec `caseSlhdsa`: tcId 266 under its 255-byte context,
+tcId 343 pure).
+
 ## Observations (not issues)
 
 - **Wycheproof XTS tc1–tc120 labeled "valid" with 1–15-byte

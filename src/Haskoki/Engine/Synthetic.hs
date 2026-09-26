@@ -84,6 +84,8 @@ import Haskoki.Engine.Backend
   , dsaSigCap
   , eddsaSigCap
   , mldsaSigCap
+  , slhdsaSigCap
+  , slhdsaSets
   , EcSpec (..)
   , hmacSpecCap
   , KdfCaps (..)
@@ -585,6 +587,8 @@ instance CryptoBackend Synthetic where
         pure (B.EngineOk (genPair seed ctr))
       GenMLDSA {} ->
         pure (B.EngineOk (genPair seed ctr))
+      GenSLHDSA {} ->
+        pure (B.EngineOk (genPair seed ctr))
       GenMLKEM alg -> pure (B.EngineOk (genKemPair seed ctr alg))
       _ -> pure (B.EngineFail
         (BackendUnsupported "generateKey" ("not in synthetic set: " ++ show spec)))
@@ -718,21 +722,21 @@ synthCaps = BackendCaps
       { ccCiphers = Set.fromList synthCipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
   , bcMacs = MacCaps { mcSpecs = synthMacSpecs }
   , bcSigs = SigCaps
-      { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames ++ synthDsaSpecNames ++ synthEddsaSpecNames ++ synthMldsaSpecNames)
+      { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames ++ synthDsaSpecNames ++ synthEddsaSpecNames ++ synthMldsaSpecNames ++ synthSlhdsaSpecNames)
       , scCurves = Set.fromList coveredCurveNames
-      , scPqcSign = Set.fromList [ML_DSA_44, ML_DSA_65, ML_DSA_87]
+      , scPqcSign = Set.fromList ([ML_DSA_44, ML_DSA_65, ML_DSA_87] ++ slhdsaSets)
       }
   , bcKems = KemCaps { kcAlgs = Set.fromList [ML_KEM_512, ML_KEM_768, ML_KEM_1024] }
   , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR"] }
   , bcParamNotes = Map.fromList
       ([ ("open", "decimal Word64 seed string; nothing else opens")
        , ("AES-256-CBC", "length-preserving stream construction; key 32 bytes, iv 16 bytes")
-       ] ++ synthMacNotes ++ synthEcdsaNotes ++ synthDsaNotes ++ synthEddsaNotes ++ synthMldsaNotes ++
+       ] ++ synthMacNotes ++ synthEcdsaNotes ++ synthDsaNotes ++ synthEddsaNotes ++ synthMldsaNotes ++ synthSlhdsaNotes ++
        [ ("RSA-PSS", "salt 0..64; hash/MGF any fixed-width digest")
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 72-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenSLHDSA opaque pairs; GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -856,6 +860,24 @@ synthMldsaNotes =
   , Just name <- [mldsaSigCap (SigMLDSA alg False "" True)]
   ]
 
+-- | The SLH-DSA names: one sign name per set (exactly the
+-- OpenSSL4 pre-probe set, so both engines advertise the same
+-- names).
+synthSlhdsaSpecNames :: [String]
+synthSlhdsaSpecNames =
+  [ name
+  | alg <- slhdsaSets
+  , Just name <- [slhdsaSigCap (SigSLHDSA alg "" True)]
+  ]
+
+-- | Per-name SLH-DSA parameter notes for the capability report.
+synthSlhdsaNotes :: [(String, String)]
+synthSlhdsaNotes =
+  [ (name, "deterministic test construction; set, context, and hedge in domain")
+  | alg <- slhdsaSets
+  , Just name <- [slhdsaSigCap (SigSLHDSA alg "" True)]
+  ]
+
 -- | Per-name MAC parameter notes for the capability report.
 synthMacNotes :: [(String, String)]
 synthMacNotes =
@@ -900,6 +922,8 @@ sigSupported (SynthBackend env) spec
   | Just name <- eddsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
   | Just name <- mldsaSigCap spec
+  , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
+  | Just name <- slhdsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
   | Just name <- rsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
@@ -1158,6 +1182,7 @@ genSupported _ spec = case spec of
   GenDSAKeypair {} -> Nothing
   GenEdDSAKeypair name | BC8.unpack name `elem` edwardsCurveNames -> Nothing
   GenMLDSA alg | alg `elem` [ML_DSA_44, ML_DSA_65, ML_DSA_87] -> Nothing
+  GenSLHDSA alg | alg `elem` slhdsaSets -> Nothing
   GenMLKEM _ -> Nothing
   _ -> Just ("keygen not in synthetic set: " ++ show spec)
 
@@ -1490,6 +1515,8 @@ classSignFor spec@(SigDSA _ _) identity input =
 classSignFor spec@(SigEdDSA _ _) identity input =
   classSign (BC8.pack (show spec)) identity input
 classSignFor spec@(SigMLDSA _ _ _ _) identity input =
+  classSign (BC8.pack (show spec)) identity input
+classSignFor spec@(SigSLHDSA _ _ _) identity input =
   classSign (BC8.pack (show spec)) identity input
 classSignFor spec@(SigRSA_PSS _) identity input =
   classSign (BC8.pack (show spec)) identity input
