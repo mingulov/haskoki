@@ -134,6 +134,8 @@ module Haskoki.Engine.Driver
   , rsaPkcs1SpecFor
   , rsaPssSpecFor
   , rsaOaepParamsFor
+  , rsaX509SigFor
+  , rsaX509CipherFor
   , ecdsaSpecFor
   , dsaSpecFor
   , eddsaSpecFor
@@ -252,6 +254,7 @@ import Haskoki.Recipe.Chacha20
   )
 import Haskoki.Recipe.Gcm (decodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (decodeOaepParams, rsaOaepParamsValid, rsaOaepRecipeFor)
+import Haskoki.Recipe.RsaX509 (rsaX509ParamsValid, rsaX509RecipeFor)
 import Haskoki.Recipe.RsaPkcs1
   ( RsaPkcs1Recipe (..)
   , rsaPkcs1ParamsValid
@@ -869,6 +872,32 @@ rsaOaepParamsFor mech params = do
 isRsaOaepMech :: MechanismId -> Bool
 isRsaOaepMech mech = isJust (rsaOaepRecipeFor mech)
 
+-- | RSA-X.509 dispatch: the covered (mechanism, params) pair to
+-- its sign/verify backend spec (pinned against
+-- 'Haskoki.Recipe.RsaX509' by RecipeX509Spec). 'Nothing' means
+-- uncovered (non-X.509 mechanism) or malformed parameters.
+rsaX509SigFor :: MechanismId -> ByteString -> Maybe SigSpec
+rsaX509SigFor mech params = do
+  r <- rsaX509RecipeFor mech
+  guard (rsaX509ParamsValid r params)
+  pure SigRSA_X509
+
+-- | RSA-X.509 dispatch: the covered (mechanism, params) pair to
+-- its cipher backend params (pinned against
+-- 'Haskoki.Recipe.RsaX509' by RecipeX509Spec). 'Nothing' means
+-- uncovered (non-X.509 mechanism) or malformed parameters.
+rsaX509CipherFor :: MechanismId -> ByteString -> Maybe RsaCipherParams
+rsaX509CipherFor mech params = do
+  r <- rsaX509RecipeFor mech
+  guard (rsaX509ParamsValid r params)
+  pure RsaX509
+
+-- | An X.509 mechanism regardless of parameter validity (drives the
+-- parameter-refusal branch: malformed X.509 params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isRsaX509Mech :: MechanismId -> Bool
+isRsaX509Mech mech = isJust (rsaX509RecipeFor mech)
+
 -- | ECDSA dispatch: covered (mechanism, params, key) triples to
 -- backend specs (pinned against
 -- 'Haskoki.Recipe.Ecdsa' by RecipeEcdsaSpec). The recipe binds the
@@ -1141,6 +1170,10 @@ runEffect env resolve fx = case fx of
         toBytes <$> sign env spec key input
     | isRsaPssMech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-PSS takes pss-params/1 (hash, MGF1 hash, salt 0..64)"))
+    | Just spec <- rsaX509SigFor mech params -> withKey mkey $ \key ->
+        toBytes <$> sign env spec key input
+    | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
+        "RSA-X.509 takes empty mechanism parameters"))
     | isEcdsaMech mech -> withKey mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
@@ -1181,6 +1214,10 @@ runEffect env resolve fx = case fx of
         toVerifyUnit <$> verify env spec key input sig
     | isRsaPssMech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-PSS takes pss-params/1 (hash, MGF1 hash, salt 0..64)"))
+    | Just spec <- rsaX509SigFor mech params -> withKey mkey $ \key ->
+        toVerifyUnit <$> verify env spec key input sig
+    | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
+        "RSA-X.509 takes empty mechanism parameters"))
     | isEcdsaMech mech -> withKey mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
@@ -1213,16 +1250,20 @@ runEffect env resolve fx = case fx of
         runAead dir mech key params input
     | isRsaOaepMech mech -> withKey mkey $ \key ->
         runOaep dir mech key params input
+    | isRsaX509Mech mech -> withKey mkey $ \key ->
+        runX509 dir mech key params input
     | otherwise -> pure (unsupported fx)
   FxMessageCipher dir mech mkey params aad input
     | isGcmMech mech -> withKey mkey $ \key ->
         runAeadMessage dir mech key params aad input
-    | not (isCipherMech mech) && not (isRsaOaepMech mech) ->
+    | not (isCipherMech mech) && not (isRsaOaepMech mech) && not (isRsaX509Mech mech) ->
         pure (unsupported fx)
     | not (BS.null aad) -> pure (GotCryptoError (CryptoUnsupported "driver"
         "non-AEAD backend takes no AAD"))
     | isRsaOaepMech mech -> withKey mkey $ \key ->
         runOaep dir mech key params input
+    | isRsaX509Mech mech -> withKey mkey $ \key ->
+        runX509 dir mech key params input
     | otherwise -> withKey mkey $ \key ->
         runCipher dir mech key params input
   FxMessageSign mech mkey params input
@@ -1244,6 +1285,10 @@ runEffect env resolve fx = case fx of
         toBytes <$> sign env spec key input
     | isRsaPssMech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-PSS takes pss-params/1 (hash, MGF1 hash, salt 0..64)"))
+    | Just spec <- rsaX509SigFor mech params -> withKey mkey $ \key ->
+        toBytes <$> sign env spec key input
+    | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
+        "RSA-X.509 takes empty mechanism parameters"))
     | isEcdsaMech mech -> withKey mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
@@ -1284,6 +1329,10 @@ runEffect env resolve fx = case fx of
         toVerifyUnit <$> verify env spec key input sig
     | isRsaPssMech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-PSS takes pss-params/1 (hash, MGF1 hash, salt 0..64)"))
+    | Just spec <- rsaX509SigFor mech params -> withKey mkey $ \key ->
+        toVerifyUnit <$> verify env spec key input sig
+    | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
+        "RSA-X.509 takes empty mechanism parameters"))
     | isEcdsaMech mech -> withKey mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
@@ -1381,6 +1430,8 @@ runEffect env resolve fx = case fx of
         runOaep DirEncrypt _mech key params input
     | isRsaPkcsWrapMech _mech -> withKey mkey $ \key ->
         runPkcs1 DirEncrypt _mech key params input
+    | isRsaX509Mech _mech -> withKey mkey $ \key ->
+        runX509 DirEncrypt _mech key params input
     | otherwise -> pure (unsupported fx)
   FxUnwrap _mech mkey params input
     | _mech == aesCbcMech -> withKey mkey $ \key ->
@@ -1391,6 +1442,8 @@ runEffect env resolve fx = case fx of
         runOaep DirDecrypt _mech key params input
     | isRsaPkcsWrapMech _mech -> withKey mkey $ \key ->
         runPkcs1 DirDecrypt _mech key params input
+    | isRsaX509Mech _mech -> withKey mkey $ \key ->
+        runX509 DirDecrypt _mech key params input
     | otherwise -> pure (unsupported fx)
   FxAuthWrap _mech mkey params input
     | _mech /= aesCbcMech -> pure (unsupported fx)
@@ -1714,6 +1767,20 @@ runEffect env resolve fx = case fx of
       | otherwise = case dir of
           DirEncrypt -> toBytes <$> pkeyEncrypt env RsaPkcs1 key input
           DirDecrypt -> toBytes <$> pkeyDecrypt env RsaPkcs1 key input
+
+    -- | RSA-X.509 cipher effects: empty parameters straight to the
+    -- asymmetric backend entry points (encrypt takes the public
+    -- half, decrypt the private half; both travel as DER key
+    -- material). The backends left-pad short inputs to the modulus
+    -- width and answer full k-blocks.
+    runX509 :: CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runX509 dir mech key params input =
+      case rsaX509CipherFor mech params of
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: X.509 mechanism parameters rejected by the recipe"))
+        Just cparams -> case dir of
+          DirEncrypt -> toBytes <$> pkeyEncrypt env cparams key input
+          DirDecrypt -> toBytes <$> pkeyDecrypt env cparams key input
     runAuthWrap :: Bool -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
     runAuthWrap isWrap mech key iv aad input = case key of
       KeyBytes kb -> case cipherSpecFor mech (BS.length kb) iv of

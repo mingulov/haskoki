@@ -43,6 +43,7 @@ import Haskoki.Recipe.Otp (OtpRecipe (..), hotpRecipes)
 import Haskoki.Recipe.RsaOaep (RsaOaepRecipe (..), rsaOaepRecipes)
 import Haskoki.Recipe.RsaPkcs1 (RsaPkcs1Recipe (..), rsaPkcs1Recipes)
 import Haskoki.Recipe.RsaPss (RsaPssRecipe (..), rsaPssRecipes)
+import Haskoki.Recipe.RsaX509 (RsaX509Recipe (..), rsaX509Recipes)
 import Haskoki.Registry (Operation (..))
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..))
@@ -62,6 +63,7 @@ matrixTable = Map.fromList (concat
   , [ ((midOf (rrName r), o), [ckkRsa]) | r <- rsaPkcs1Recipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (rpName r), o), [ckkRsa]) | r <- rsaPssRecipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (roName r), o), [ckkRsa]) | r <- rsaOaepRecipes, o <- [OpEncrypt, OpDecrypt] ]
+  , [ ((midOf (rxName r), o), [ckkRsa]) | r <- rsaX509Recipes, o <- [OpSign, OpVerify, OpEncrypt, OpDecrypt] ]
   , [ ((midOf (reName r), o), [ckkEc]) | r <- ecdsaRecipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (crName r), o), [mustKeyTypeId (crKeyType r)])
     | r <- cipherRecipes, o <- [OpEncrypt, OpDecrypt] ]

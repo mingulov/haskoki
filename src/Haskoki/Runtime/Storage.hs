@@ -952,7 +952,9 @@ attrName t = case t of
   AttrEncrypt -> "encrypt"
   AttrDecrypt -> "decrypt"
   AttrSign -> "sign"
+  AttrSignRecover -> "sign_recover"
   AttrVerify -> "verify"
+  AttrVerifyRecover -> "verify_recover"
   AttrWrap -> "wrap"
   AttrUnwrap -> "unwrap"
   AttrDerive -> "derive"
@@ -1007,7 +1009,9 @@ nameAttr s = case s of
   "encrypt" -> Just AttrEncrypt
   "decrypt" -> Just AttrDecrypt
   "sign" -> Just AttrSign
+  "sign_recover" -> Just AttrSignRecover
   "verify" -> Just AttrVerify
+  "verify_recover" -> Just AttrVerifyRecover
   "wrap" -> Just AttrWrap
   "unwrap" -> Just AttrUnwrap
   "derive" -> Just AttrDerive
@@ -1067,7 +1071,9 @@ decodeAttrValue t j = case t of
   AttrEncrypt -> boolOf j
   AttrDecrypt -> boolOf j
   AttrSign -> boolOf j
+  AttrSignRecover -> boolOf j
   AttrVerify -> boolOf j
+  AttrVerifyRecover -> boolOf j
   AttrWrap -> boolOf j
   AttrUnwrap -> boolOf j
   AttrDerive -> boolOf j

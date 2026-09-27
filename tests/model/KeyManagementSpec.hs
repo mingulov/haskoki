@@ -154,6 +154,7 @@ import Haskoki.Operation.KeyManagement
   , rsaKeyPairGenMech
   , rsaOaepMech
   , rsaPkcsMech
+  , rsaX509Mech
   , stampPairComponents
   , stampParamsObject
   , unpadPkcs7
@@ -223,6 +224,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "unwrap commits refuse type/length confusion" caseUnwrapKeyTypeLength
   , testCase "RSA wrap/unwrap roundtrips modulus-wide" caseRsaWrapRoundtrip
   , testCase "RSA wrap key/parameter/length mismatches fail closed" caseRsaWrapMismatch
+  , testCase "RSA-X.509 wrap seals wide, unwrap tails value_len" caseRsaX509Wrap
+  , testCase "recover usage flags store and gate permits" caseRecoverAttrs
   , testCase "Authenticated wrap roundtrip binds the tag" caseAuthWrapRoundtrip
   , testCase "Single-key derive delivers one handle" caseDeriveSingle
   , testCase "ECDH derive refuses a non-EC base before params" caseDeriveEcdhWrongKeyType
@@ -2487,6 +2490,137 @@ caseRsaWrapMismatch = withSynth $ \answer -> do
         [NativeOutput (RegionBytes "wrapped" (IntentBuffer 255)) (encodeValue (ValULong 256))]
         (rejOutputs r)
     other -> assertFailure ("short buffer must reject, got: " ++ show other)
+
+caseRsaX509Wrap :: IO ()
+caseRsaX509Wrap = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let pubT = rsaPubTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
+      privT = rsaPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
+  (m1, pubH, privH) <- genRsaPair answer m0 st pubT privT
+  (m2, targetH) <- genAesKey answer m1 st (aesTmpl 16)
+  Just target <- pure (resolveHandle m2 targetH)
+  Just targetMat <- pure (keyBytesOf target)
+  -- Length queries answer the modulus width and plan no crypto.
+  case planWrapKey m2 st rsaX509Mech BS.empty pubH targetH IntentNull of
+    KeyImmediate (Immediate c) -> do
+      assertEqual "query length"
+        [NativeOutput (RegionBytes "wrapped" IntentNull) (encodeValue (ValULong 256))]
+        (pcOutputs c)
+      assertEqual "query publishes nothing" (StateDelta []) (pcDelta c)
+    other -> assertFailure ("wrap query is not an Immediate commit: " ++ show other)
+  -- Wrap seals modulus-wide (the synthetic seal pads like the real one).
+  blob <- case planWrapKey m2 st rsaX509Mech BS.empty pubH targetH (IntentBuffer 256) of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      case finishWork m2 st pw res of
+        Immediate c -> case pcOutputs c of
+          [NativeOutput (RegionBytes "wrapped" _) bs] -> pure bs
+          o -> assertFailure ("wrap outputs one blob, got: " ++ show o) >> undefined
+        other -> assertFailure ("wrap finish must commit, got: " ++ show other) >> undefined
+    other -> assertFailure ("wrap plan is not an effect: " ++ show other) >> undefined
+  assertEqual "wrapped width" 256 (BS.length blob)
+  assertBool "blob differs from plaintext" (blob /= targetMat)
+  -- Unwrap pairs tail pending work with the unwrap effect, and the
+  -- full roundtrip recovers the target material.
+  let tmpl16 =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrValueLen, ValULong 16)
+        , (AttrToken, ValBool False)
+        , (AttrExtractable, ValBool True)
+        ]
+  case planUnwrapKey defaultRules m2 st rsaX509Mech BS.empty privH blob tmpl16 of
+    KeyEffect pw@(PwUnwrapTail _ 256 16) fx@(FxUnwrap _ _ _ _) -> do
+      assertBool "tail pair coherent" (keyPairCompatible pw fx)
+      res <- answer m2 fx
+      case finishWork m2 st pw res of
+        Immediate c -> do
+          h <- handleOf (pcOutputs c !! 0)
+          m3 <- expectRight (publishDelta m2 (pcDelta c))
+          Just ost <- pure (resolveHandle m3 h)
+          assertEqual "unwrapped material" (Just targetMat) (keyBytesOf ost)
+        other -> assertFailure ("unwrap finish must commit, got: " ++ show other)
+    other -> assertFailure ("unwrap plan is not a tail effect: " ++ show other)
+  -- Direct finisher pin: the key is the trailing value_len bytes.
+  let block = BS.replicate 240 0 <> targetMat
+  case planUnwrapKey defaultRules m2 st rsaX509Mech BS.empty privH
+    (BS.replicate 256 0) tmpl16 of
+    KeyEffect pw@(PwUnwrapTail _ 256 16) _ ->
+      case finishWork m2 st pw (GotBytes block) of
+        Immediate c -> do
+          h <- handleOf (pcOutputs c !! 0)
+          m3 <- expectRight (publishDelta m2 (pcDelta c))
+          Just ost <- pure (resolveHandle m3 h)
+          assertEqual "tail material" (Just targetMat) (keyBytesOf ost)
+        other -> assertFailure ("tail finish must commit, got: " ++ show other)
+    other -> assertFailure ("unwrap plan is not a tail effect: " ++ show other)
+  -- Refusals: parameters, lengths, blobs, oversized payloads.
+  let denyWrap m mech params wrapH targetH cap =
+        case planWrapKey m st mech params wrapH targetH cap of
+          KeyDenied (KeyDeny code _) -> pure code
+          other -> assertFailure ("wrap must deny, got: " ++ show other) >> undefined
+      denyUnwrap m mech params wrapH blob tmpl =
+        case planUnwrapKey defaultRules m st mech params wrapH blob tmpl of
+          KeyDenied (KeyDeny code _) -> pure code
+          other -> assertFailure ("unwrap must deny, got: " ++ show other) >> undefined
+      notmpl = [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong ckkAes)]
+  code <- denyWrap m2 rsaX509Mech "nonempty" pubH targetH (IntentBuffer 256)
+  assertEqual "params code" CKR_ARGUMENTS_BAD code
+  code <- denyUnwrap m2 rsaX509Mech BS.empty privH (BS.replicate 256 0) notmpl
+  assertEqual "missing length code" CKR_TEMPLATE_INCOMPLETE code
+  code <- denyUnwrap m2 rsaX509Mech BS.empty privH (BS.replicate 256 0)
+    (notmpl ++ [(AttrValueLen, ValULong 300)])
+  assertEqual "over-wide length code" CKR_TEMPLATE_INCONSISTENT code
+  code <- denyUnwrap m2 rsaX509Mech BS.empty privH (BS.replicate 256 0)
+    (notmpl ++ [(AttrValueLen, ValBool True)])
+  assertEqual "malformed length code" CKR_TEMPLATE_INCONSISTENT code
+  code <- denyUnwrap m2 rsaX509Mech BS.empty privH "short" tmpl16
+  assertEqual "short blob code" CKR_ARGUMENTS_BAD code
+  -- Zero overhead: the widest generatable secret (255) fits, while
+  -- an extractable RSA private half (DER wider than k) refuses.
+  (m3, wideH) <- genKeyWith answer m2 st genericSecretKeyGenMech
+    (genericTmpl 255 ++ [(AttrExtractable, ValBool True)])
+  case planWrapKey m3 st rsaX509Mech BS.empty pubH wideH (IntentBuffer 256) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("255-byte payload must plan, got: " ++ show other)
+  (m4, _, bigPrivH) <- genRsaPair answer m3 st rsaPubTmpl
+    (filter ((/= AttrExtractable) . fst) rsaPrivTmpl
+      ++ [(AttrExtractable, ValBool True)])
+  code <- denyWrap m4 rsaX509Mech BS.empty pubH bigPrivH (IntentBuffer 512)
+  assertEqual "oversized code" CKR_DATA_LEN_RANGE code
+
+caseRecoverAttrs :: IO ()
+caseRecoverAttrs = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  -- The oracle's sign-recover subset generates with these flags; the
+  -- template must accept and store them (C_SignRecover itself stays
+  -- stubbed, which the oracle skips cleanly).
+  (m1, pubH, privH) <- genRsaPair answer m0 st
+    (rsaPubTmpl ++ [(AttrVerifyRecover, ValBool True)])
+    (rsaPrivTmpl ++ [(AttrSignRecover, ValBool True)])
+  Just pub <- pure (resolveHandle m1 pubH)
+  Just priv <- pure (resolveHandle m1 privH)
+  assertEqual "verify-recover stored" (Just (ValBool True))
+    (Map.lookup AttrVerifyRecover (osAttrs pub))
+  assertEqual "sign-recover stored" (Just (ValBool True))
+    (Map.lookup AttrSignRecover (osAttrs priv))
+  case (policyFromObject pub, policyFromObject priv) of
+    (Just (pubPermits, _), Just (privPermits, _)) -> do
+      assertBool "pub recover permit" (OpVerifyRecover `elem` pubPermits)
+      assertBool "priv recover permit" (OpSignRecover `elem` privPermits)
+    other -> assertFailure ("policies must resolve, got: " ++ show other)
+  -- Absent flags read as false (the PKCS#11 defaults): a plain pair
+  -- carries no recover permits.
+  (m2, pubH2, privH2) <- genRsaPair answer m1 st rsaPubTmpl rsaPrivTmpl
+  Just pub2 <- pure (resolveHandle m2 pubH2)
+  Just priv2 <- pure (resolveHandle m2 privH2)
+  case (policyFromObject pub2, policyFromObject priv2) of
+    (Just (pubPermits, _), Just (privPermits, _)) -> do
+      assertBool "no pub recover permit" (OpVerifyRecover `notElem` pubPermits)
+      assertBool "no priv recover permit" (OpSignRecover `notElem` privPermits)
+    other -> assertFailure ("policies must resolve, got: " ++ show other)
 
 caseAuthWrapRoundtrip :: IO ()
 caseAuthWrapRoundtrip = withSynth $ \answer -> do

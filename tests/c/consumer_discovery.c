@@ -8,7 +8,7 @@
  *     (3.2/3.1/3.0 + legacy C_GetFunctionList), callable pre-Initialize
  *   - versioned-table isolation (distinct instances, exact versions)
  *   - cross-table consistency (same bytes via legacy and 3.2 pointers)
- *   - mechanism/info queries (154 real-tested rows, info records,
+ *   - mechanism/info queries (155 real-tested rows, info records,
  *     invalid codes)
  *   - real slot/token records (provisioned token) + session
  *     open/info/close/close-all flows
@@ -357,7 +357,7 @@ int main(int argc, char **argv) {
   }
   nmechL = 156;
   rv = legacy->C_GetMechanismList(slotsL[0], mechsL, &nmechL);
-  CHECK(rv == CKR_OK && nmechL == 154, "legacy mechanism list has 154 rows");
+  CHECK(rv == CKR_OK && nmechL == 155, "legacy mechanism list has 155 rows");
   {
     CK_ULONG nq = 156;
     rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nq);
@@ -416,7 +416,7 @@ int main(int argc, char **argv) {
   /* ---- mechanism/info queries ---- */
   nmech = 156;
   rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nmech);
-  CHECK(rv == CKR_OK && nmech == 154, "mechanism list has 154 rows");
+  CHECK(rv == CKR_OK && nmech == 155, "mechanism list has 155 rows");
   {
     int has256 = 0, hasPad = 0, hasEC = 0, hasAESkg = 0, hasHOTPkg = 0;
     int hasKEM = 0, hasKEMkg = 0;
@@ -456,12 +456,12 @@ int main(int argc, char **argv) {
   {
     CK_ULONG nq = 0;
     rv = tbl32->C_GetMechanismList(slotsL[0], NULL_PTR, &nq);
-    CHECK(rv == CKR_OK && nq == 154, "mechanism size query reports 154");
+    CHECK(rv == CKR_OK && nq == 155, "mechanism size query reports 155");
   }
   nmech = 3;
   rv = tbl32->C_GetMechanismList(slotsL[0], mechs, &nmech);
-  CHECK(rv == CKR_BUFFER_TOO_SMALL && nmech == 154,
-        "short mechanism buffer reports 154");
+  CHECK(rv == CKR_BUFFER_TOO_SMALL && nmech == 155,
+        "short mechanism buffer reports 155");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_SHA256, &mi);
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 0 && mi.ulMaxKeySize == 0 &&
             mi.flags == CKF_DIGEST,

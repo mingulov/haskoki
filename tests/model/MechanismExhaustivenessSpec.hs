@@ -5,7 +5,7 @@ A42: every catalog id in @spec/mechanisms-canonical.txt@ (the
 source of truth) routes through 'initOperation' — the classic-init
 planning funnel — to its cataloged disposition:
 
-* allowed ids (the 154 @mech|@ rows): the curated descriptor
+* allowed ids (the 155 @mech|@ rows): the curated descriptor
   matches the cataloged name and routes exactly, every cataloged
   classic route initializes to @CKR_OK@ under full caps with
   valid parameters, and every cataloged NON-classic route
@@ -17,7 +17,7 @@ planning funnel — to its cataloged disposition:
   the derive\/KEM paths for derive\/encapsulate), pinned by
   @KeyManagementSpec@ (A20\/A22\/A23) and the engine suites,
   not through classic init;
-* refused ids (the 310 @inv|@ rows): @StatusCatalogOnly@, no
+* refused ids (the 309 @inv|@ rows): @StatusCatalogOnly@, no
   behavior descriptor, and init refuses with the exact
   @(CKR_MECHANISM_INVALID, "unknown mechanism")@ even under
   fully granted caps (the refusal is registry-driven, never a
@@ -87,6 +87,7 @@ import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Otp (encodeHotpParams)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
+import Haskoki.Recipe.RsaX509 (rsaX509RecipeFor)
 import Haskoki.Recipe.RsaPss
   ( RsaPssRecipe (..)
   , encodePssParams
@@ -119,7 +120,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "mechanism exhaustiveness (A42)"
-  [ testCase "catalog coverage: 464 ids, 154 allowed + 310 refused" caseCoverage
+  [ testCase "catalog coverage: 464 ids, 155 allowed + 309 refused" caseCoverage
   , testCase "allowed ids: descriptors match catalog routes" caseDescriptors
   , testCase "allowed routes: classic init OK, non-classic exact refusal" caseInitRouting
   , testCase "allowed classic routes: caps miss refuses exactly" caseCapsStage
@@ -346,8 +347,8 @@ isKeyed OpDigest = False
 isKeyed _ = True
 
 -- | Init arguments for one cataloged route: the fixture key for
--- keyed ops, an unpadded cipher spec on OAEP/AEAD/stream rows
--- (the planner forbids padded specs there) and a padded one
+-- keyed ops, an unpadded cipher spec on OAEP/X.509/AEAD/stream
+-- rows (the planner forbids padded specs there) and a padded one
 -- elsewhere, and a recover spec on recovery ops.
 argsFor :: Operation -> MechanismId -> ByteString -> InitArgs
 argsFor op mid params = InitArgs
@@ -359,6 +360,7 @@ argsFor op mid params = InitArgs
       Nothing -> Nothing
       Just _
         | isJust (rsaOaepRecipeFor mid) -> Just (CipherSpec 16 False)
+        | isJust (rsaX509RecipeFor mid) -> Just (CipherSpec 16 False)
         | isJust (gcmRecipeFor mid) -> Just (CipherSpec 1 False)
         | isJust (ccmRecipeFor mid) -> Just (CipherSpec 1 False)
         | isJust (chachaRecipeFor mid) -> Just (CipherSpec 1 False)
@@ -401,10 +403,10 @@ caseCoverage = guarded "coverage" $ do
       allIds = sort (mechIds ++ invIds)
       mm =
         parseBad
-        ++ ["allowed count: want 154, got " ++ show (length mechs)
-           | length mechs /= 154]
-        ++ ["refused count: want 310, got " ++ show (length invs)
-           | length invs /= 310]
+        ++ ["allowed count: want 155, got " ++ show (length mechs)
+           | length mechs /= 155]
+        ++ ["refused count: want 309, got " ++ show (length invs)
+           | length invs /= 309]
         ++ ["catalog count: want 464, got " ++ show (length catIds)
            | length catIds /= 464]
         ++ ["mech/inv overlap: "

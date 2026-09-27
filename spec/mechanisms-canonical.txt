@@ -1,6 +1,7 @@
 schema 1
 mech|0x00000000|CKM_RSA_PKCS_KEY_PAIR_GEN||keypair|no-params/1|bits:0-0|generate-key-pair:A20,A37
 mech|0x00000001|CKM_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;unwrap:A20,A37,A39;verify:A37,A39;wrap:A20,A37,A39
+mech|0x00000003|CKM_RSA_X_509||rsa|no-params/1|bits:512-4096|decrypt:A16,A37,A39;encrypt:A16,A37,A39;sign:A37,A39;unwrap:A20,A37,A39;verify:A37,A39;wrap:A20,A37,A39
 mech|0x00000005|CKM_MD5_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x00000006|CKM_SHA1_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x00000008|CKM_RIPEMD160_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
@@ -154,7 +155,6 @@ mech|0x0000401F|CKM_BLAKE2B_512_KEY_GEN||keygen|no-params/1|bits:512-512|generat
 mech|0x00004021|CKM_CHACHA20_POLY1305||aead|chacha20poly1305-params/1|bytes:32-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x0000402A|CKM_HKDF_DERIVE||derive|hkdf-expand-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 inv|0x00000002|CKM_RSA_9796||catalog-only
-inv|0x00000003|CKM_RSA_X_509||catalog-only
 inv|0x00000004|CKM_MD2_RSA_PKCS||catalog-only
 inv|0x00000007|CKM_RIPEMD128_RSA_PKCS||catalog-only
 inv|0x0000000A|CKM_RSA_X9_31_KEY_PAIR_GEN||catalog-only

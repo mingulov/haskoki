@@ -118,6 +118,8 @@ spec = testGroup "synthetic engine"
   , testCase "RSA-PSS specs roundtrip per salt" casePssRoundtrip
   , testCase "RSA-OAEP envelopes bind params" caseOaepRoundtrip
   , testCase "RSA PKCS#1 v1.5 envelopes roundtrip, never cross-open" casePkcs1Roundtrip
+  , testCase "RSA-X.509 k-blocks roundtrip, pad left" caseX509Roundtrip
+  , testCase "RSA-X.509 signatures roundtrip per key" caseX509Sign
   , testCase "synthetic AEAD seals deterministically" caseAeadRoundtrip
   , testCase "synthetic CCM seals deterministically" caseAeadCcmRoundtrip
   , testCase "ECDSA curves and digests roundtrip" caseEcdsaCurves
@@ -959,6 +961,7 @@ caseCapsFull = withSynth "11" $ \env -> do
   assertEqual "sig set" (Set.fromList
     ([ "RSA-PSS"
     , "RSA-RAW"
+    , "RSA-X509"
     , "RSA-PKCS1v15-MD5", "RSA-PKCS1v15-SHA1"
     , "RSA-PKCS1v15-SHA224", "RSA-PKCS1v15-SHA256"
     , "RSA-PKCS1v15-SHA384", "RSA-PKCS1v15-SHA512"
@@ -1374,6 +1377,57 @@ casePkcs1Roundtrip = withSynth "11" $ \env -> do
   assertEqual "empty tag-only" 16 (BS.length ct0)
   pt0 <- expectOk "open empty" =<< pkeyDecrypt env RsaPkcs1 key32 ct0
   assertEqual "empty reversible" BS.empty pt0
+
+caseX509Roundtrip :: IO ()
+caseX509Roundtrip = withSynth "11" $ \env -> do
+  (priv, mPub) <- expectOk "gen rsa" =<< generateKey env (GenRSA 2048 65537)
+  pub <- case mPub of
+    Just p -> pure p
+    Nothing -> assertFailure "rsa gen must return a pair"
+  let msg = "secret bytes"
+      padded = BS.replicate (256 - BS.length msg) 0 <> msg
+  ct <- expectOk "seal" =<< pkeyEncrypt env RsaX509 pub msg
+  assertEqual "modulus-wide" 256 (BS.length ct)
+  ct2 <- expectOk "reseal" =<< pkeyEncrypt env RsaX509 pub msg
+  assertEqual "deterministic" ct ct2
+  pt <- expectOk "open" =<< pkeyDecrypt env RsaX509 priv ct
+  assertEqual "padded reversible" padded pt
+  -- Exact-width input passes through with no extra pad.
+  full <- expectOk "seal full" =<< pkeyEncrypt env RsaX509 pub padded
+  fullPt <- expectOk "open full" =<< pkeyDecrypt env RsaX509 priv full
+  assertEqual "full reversible" padded fullPt
+  -- Raw RSA has no integrity: wrong-key and tampered opens yield
+  -- other blocks, never verdicts.
+  (privB, _) <- expectOk "gen rsa b" =<< generateKey env (GenRSA 2048 65537)
+  garbled <- expectOk "open wrong key" =<< pkeyDecrypt env RsaX509 privB ct
+  assertBool "wrong key garbles" (garbled /= padded)
+  tampered <- expectOk "open tampered" =<<
+    pkeyDecrypt env RsaX509 priv (BS.map complement ct)
+  assertBool "tamper garbles" (tampered /= padded)
+  -- Shape discipline: empty/over-wide seals and off-width opens
+  -- refuse; non-RSA keys are key errors.
+  expectBadParam "seal empty refused" =<< pkeyEncrypt env RsaX509 pub BS.empty
+  expectBadParam "seal over-wide refused" =<<
+    pkeyEncrypt env RsaX509 pub (BS.replicate 257 1)
+  expectBadParam "short open refused" =<< pkeyDecrypt env RsaX509 priv "short"
+  expectBadParam "empty open refused" =<< pkeyDecrypt env RsaX509 priv BS.empty
+  expectBadKey "seal with bytes key refused" =<<
+    pkeyEncrypt env RsaX509 key32 msg
+  expectBadKey "open with bytes key refused" =<< pkeyDecrypt env RsaX509 key32 ct
+
+caseX509Sign :: IO ()
+caseX509Sign = withSynth "11" $ \env -> do
+  sig <- expectOk "sign x509" =<< sign env SigRSA_X509 key32 "msg"
+  assertEqual "sig length" synthSigLength (BS.length sig)
+  expectOk "verify x509" =<< verify env SigRSA_X509 key32 "msg" sig
+  expectAuthFailed "tampered rejected" =<<
+    verify env SigRSA_X509 key32 "msg" (BS.map complement sig)
+  expectAuthFailed "wrong key rejected" =<<
+    verify env SigRSA_X509 otherKey32 "msg" sig
+  sig2 <- expectOk "resign" =<< sign env SigRSA_X509 key32 "msg"
+  assertEqual "deterministic" sig sig2
+  sraw <- expectOk "sign raw" =<< sign env SigRSA_Raw key32 "msg"
+  assertBool "x509 separated from raw" (sig /= sraw)
 
 -- ---------------------------------------------------------------------------
 -- ECDSA curves and digests

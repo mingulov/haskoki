@@ -104,6 +104,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: hmac sign/verify + key errors" caseDriverHmac
   , testCase "driver: aes KAT + size errors" caseDriverAes
   , testCase "driver: RSA wrap/unwrap roundtrip, modulus-wide" caseDriverRsaWrap
+  , testCase "driver: RSA-X.509 wrap/unwrap, trailing key bytes" caseDriverRsaX509Wrap
   , testCase "driver: gcm roundtrip + tamper fails closed" caseDriverGcm
   , testCase "driver: ccm roundtrip + datalen + tamper" caseDriverCcm
   , testCase "driver: ecdsa roundtrip both encodings" caseDriverEcdsa
@@ -729,9 +730,10 @@ caseDriverAes = withBackend $ \env -> do
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
 
-rsaPkcsWrapMech, rsaOaepWrapMech, sha256RsaMech :: MechanismId
+rsaPkcsWrapMech, rsaOaepWrapMech, rsaX509WrapMech, sha256RsaMech :: MechanismId
 rsaPkcsWrapMech = MechanismId 0x1
 rsaOaepWrapMech = MechanismId 0x9
+rsaX509WrapMech = MechanismId 0x3
 sha256RsaMech = MechanismId 0x40
 
 caseDriverRsaWrap :: IO ()
@@ -792,6 +794,47 @@ caseDriverRsaWrap = withBackend $ \env -> do
   case digestRow of
     GotCryptoError (CryptoUnsupported _ _) -> pure ()
     other -> assertFailure ("expected Unsupported, got: " ++ show other)
+
+caseDriverRsaX509Wrap :: IO ()
+caseDriverRsaX509Wrap = withBackend $ \env -> do
+  gen <- generateKey env (GenRSA 2048 65537)
+  (priv, pub) <- case gen of
+    EngineOk (p, Just q) -> pure (p, q)
+    other -> assertFailure ("keygen failed: " ++ show other)
+  let pubOid = ObjectId 41
+      privOid = ObjectId 42
+      res oid
+        | oid == pubOid = Just pub
+        | oid == privOid = Just priv
+        | otherwise = Nothing
+      target = "wrap-target-16byte"
+  -- X.509: modulus-wide, deterministic, and the decrypted block
+  -- carries the key in its trailing bytes (the planner slices).
+  c1 <- runEffect env res
+      (FxWrap rsaX509WrapMech (Just pubOid) BS.empty target)
+    >>= expectBytes
+  assertEqual "x509 modulus-wide" 256 (BS.length c1)
+  c2 <- runEffect env res
+      (FxWrap rsaX509WrapMech (Just pubOid) BS.empty target)
+    >>= expectBytes
+  assertEqual "x509 deterministic" c1 c2
+  p1 <- runEffect env res
+      (FxUnwrap rsaX509WrapMech (Just privOid) BS.empty c1)
+    >>= expectBytes
+  assertEqual "x509 block-wide" 256 (BS.length p1)
+  let tailOf = BS.drop (256 - BS.length target)
+  assertEqual "x509 trailing key bytes" target (tailOf p1)
+  -- Tampering garbles instead of failing: raw RSA has no verdict.
+  g1 <- runEffect env res
+      (FxUnwrap rsaX509WrapMech (Just privOid) BS.empty (BS.init c1 <> "X"))
+    >>= expectBytes
+  assertBool "x509 tamper garbles" (tailOf g1 /= target)
+  -- X.509 takes no parameters.
+  badParams <- runEffect env res
+    (FxWrap rsaX509WrapMech (Just pubOid) "nope" target)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
 
 caseDriverEcdsa :: IO ()
 caseDriverEcdsa = withBackend $ \env -> do

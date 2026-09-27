@@ -232,6 +232,7 @@ hmacSpecCap _ = Nothing
 rsaSigCap :: SigSpec -> Maybe String
 rsaSigCap (SigRSA_PKCS1v15 alg) = ("RSA-PKCS1v15-" ++) <$> digestMacStem alg
 rsaSigCap SigRSA_Raw = Just "RSA-RAW"
+rsaSigCap SigRSA_X509 = Just "RSA-X509"
 rsaSigCap _ = Nothing
 
 -- | Capability string required by one RSA-PSS spec: the single
@@ -529,9 +530,11 @@ data OaepParams = OaepParams
   { oaepHash :: !DigestAlg, oaepMgf :: !DigestAlg, oaepLabel :: !ByteString }
   deriving (Eq, Show)
 
--- | RSA cipher padding selector: OAEP with explicit parameters, or
--- PKCS#1 v1.5 (no parameters; the typed input bound is k - 11).
-data RsaCipherParams = RsaOaep OaepParams | RsaPkcs1
+-- | RSA cipher padding selector: OAEP with explicit parameters,
+-- PKCS#1 v1.5 (no parameters; the typed input bound is k - 11), or
+-- X.509 raw (no parameters; inputs left-pad to the modulus width k
+-- and outputs are full k-blocks).
+data RsaCipherParams = RsaOaep OaepParams | RsaPkcs1 | RsaX509
   deriving (Eq, Show)
 
 data EcSpec = EcSpec
@@ -573,6 +576,9 @@ data SigSpec
   | SigRSA_Raw
     -- ^ Raw PKCS#1 v1.5 private operation (CKM_RSA_PKCS): the input
     -- is signed directly with block-type-1 padding, no hashing.
+  | SigRSA_X509
+    -- ^ Raw RSA (CKM_RSA_X_509): short inputs left-pad with zero
+    -- bytes to the modulus width, no padding, no hashing.
   | SigRSA_PSS { sigPss :: !PssParams }
   | SigECDSA { sigEc :: !EcSpec, sigEcDigest :: !(Maybe DigestAlg) }
     -- ^ Nothing = raw (caller hashed); Just d = digested input.

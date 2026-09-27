@@ -587,6 +587,43 @@ long hsk_ossl4_rsa_pkcs1_decrypt(OSSL_LIB_CTX *ctx, const char *propq,
                                  size_t priv_len, const unsigned char *in,
                                  size_t inlen, unsigned char **out);
 
+/* --- RSA-X.509 raw encrypt/decrypt/sign/verify -------------------- */
+
+/* pub_der: SPKI DER. Short inputs left-pad with zero bytes to the
+ * modulus width; empty or over-wide input is
+ * HSK_OSSL4_ERR_BADPARAM. Returns the k-byte block length with
+ * *out set, or a negative HSK_OSSL4_ERR_* code. */
+long hsk_ossl4_rsa_x509_encrypt(OSSL_LIB_CTX *ctx, const char *propq,
+                                const unsigned char *pub_der, size_t pub_len,
+                                const unsigned char *in, size_t inlen,
+                                unsigned char **out);
+
+/* priv_der: PKCS#8 DER. The input must be exactly one modulus
+ * wide (anything else is HSK_OSSL4_ERR_BADPARAM); unusable
+ * blocks answer HSK_OSSL4_ERR_AUTHFAIL (a verdict, uniform like
+ * v1.5/OAEP). Returns the k-byte block length with *out set. */
+long hsk_ossl4_rsa_x509_decrypt(OSSL_LIB_CTX *ctx, const char *propq,
+                                const unsigned char *priv_der,
+                                size_t priv_len, const unsigned char *in,
+                                size_t inlen, unsigned char **out);
+
+/* priv_der: PKCS#8 DER. Same input rule as x509_encrypt.
+ * Returns the k-byte signature length with *out set, or a
+ * negative HSK_OSSL4_ERR_* code. */
+long hsk_ossl4_rsa_x509_sign(OSSL_LIB_CTX *ctx, const char *propq,
+                             const unsigned char *priv_der, size_t priv_len,
+                             const unsigned char *in, size_t inlen,
+                             unsigned char **out);
+
+/* pub_der: SPKI DER. 1 is valid, 0 is a verdict-shaped mismatch
+ * (bad public operation or unequal blocks, constant-time
+ * compare); shape errors answer the negative HSK_OSSL4_ERR_*
+ * codes. */
+int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
+                              const unsigned char *pub_der, size_t pub_len,
+                              const unsigned char *msg, size_t msglen,
+                              const unsigned char *sig, size_t siglen);
+
 #ifdef __cplusplus
 }
 #endif

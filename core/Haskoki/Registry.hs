@@ -168,6 +168,11 @@ import Haskoki.Recipe.RsaPss
   , rsaPssCodecFor
   , rsaPssRecipes
   )
+import Haskoki.Recipe.RsaX509
+  ( RsaX509Recipe (..)
+  , rsaX509CodecFor
+  , rsaX509Recipes
+  )
 import Haskoki.Registry.Generated (generatedInventory, mustGeneratedId)
 import Haskoki.Registry.Types
 import Haskoki.Types (Pkcs11Version (..))
@@ -662,6 +667,29 @@ rsaOaepDescs =
   | r <- rsaOaepRecipes
   ]
 
+-- | The RSA-X.509 behavior descriptor, derived from the recipe table:
+-- sign and verify routes citing synthetic A37 and real-KAT A39 (no
+-- A16: the backends offer one-shot sign only), encrypt and decrypt
+-- routes citing the verified multipart (A16: the planner buffers
+-- updates and emits one asymmetric effect at final), synthetic
+-- (A37), and real-KAT (A39) cases, plus wrap/unwrap routes citing
+-- the key-management (A20), synthetic (A37), and real-KAT (A39)
+-- cases. Key bounds are the de-facto vendor range 512..4096 bits.
+rsaX509Descs :: [Descriptor]
+rsaX509Descs =
+  [ promotedDesc (rxName r) allBaselines FamilyRsa
+      (rsaX509CodecFor r)
+      [ mechRoute OpSign (rxName r) ["A37", "A39"]
+      , mechRoute OpVerify (rxName r) ["A37", "A39"]
+      , mechRoute OpEncrypt (rxName r) ["A16", "A37", "A39"]
+      , mechRoute OpDecrypt (rxName r) ["A16", "A37", "A39"]
+      , mechRoute OpWrap (rxName r) ["A20", "A37", "A39"]
+      , mechRoute OpUnwrap (rxName r) ["A20", "A37", "A39"]
+      ]
+      KeyBits 512 4096
+  | r <- rsaX509Recipes
+  ]
+
 -- | Baseline span for an ECDSA recipe name (SHA-3 arrived in
 -- 3.0; the rest, the raw row included, are 2.40).
 ecdsaBaselines :: MechanismName -> [Pkcs11Version]
@@ -1149,7 +1177,7 @@ curatedRegistry =
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160, dBLAKE2B_512
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ rsaPkcs1Descs
-          ++ rsaPssDescs ++ rsaOaepDescs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
+          ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
           ++ cmacDescs ++ des3macDescs ++ kdfDescs ++ tlsPrfDescs ++ otpDescs
       )
     behaviorIds0 :: [Word64]

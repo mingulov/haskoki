@@ -167,6 +167,7 @@ caseCurated = do
   assertEqual "behavior population"
     [ MechanismId Gen.ckm_RSA_PKCS_KEY_PAIR_GEN
     , MechanismId Gen.ckm_RSA_PKCS
+    , MechanismId Gen.ckm_RSA_X_509
     , MechanismId Gen.ckm_MD5_RSA_PKCS
     , MechanismId Gen.ckm_SHA1_RSA_PKCS
     , MechanismId Gen.ckm_RIPEMD160_RSA_PKCS
@@ -362,9 +363,9 @@ caseJsonProjection = do
     (line `elem` dumpLines)) expectedHead
   -- schema + 154 behavior + 310 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 154
+  assertEqual "behavior line count" 155
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 310
+  assertEqual "catalog-only line count" 309
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -683,7 +684,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 310 (length invIds)
+  assertEqual "guard covers every catalog row" 309 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of

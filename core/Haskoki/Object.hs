@@ -930,6 +930,7 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
           "object is not modifiable (CKA_MODIFIABLE=false)")
       | t `elem` [AttrLabel, AttrApplication, AttrId] = Nothing
       | t `elem` [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
+                 , AttrSignRecover, AttrVerifyRecover
                  , AttrWrap, AttrUnwrap, AttrDerive
                  , AttrEncapsulate, AttrDecapsulate ] = Nothing
       | t == AttrToken = ratchet cur AttrToken True

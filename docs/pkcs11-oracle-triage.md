@@ -820,6 +820,41 @@ first lane proving all of them together.
   from the 10e stack including the structural floor (no
   in-stack fixes needed after the lanes).
 
+## Round 21: RSA-X.509 slice (fast r42→r43 + KAT r21→r22)
+
+- r43: 3489 passed / 15 failed / 487 xfailed / 2947 skipped
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r43-results.json`).
+  r42→r43: +10 pass / +0 fail / +35 skip. The 15 failures
+  are identical by test id to r42 (13 P11C-004 X9.42 legs +
+  the same 2 HOTP externals); zero pass→fail.
+- Movers (unit `counts`, exact reconciliation): the single
+  advertised X_509 row lands `test_mech_flags` +6 pass /
+  +3 skip, `test_mech_sign` +2 pass / +1 skip,
+  `test_mech_encrypt` +1 pass / +1 skip, `test_mech_wrap`
+  +1 pass; registration-only skips in `test_mech_negative`
+  (+27) and `test_mech_probe` (+3). No dedicated x509
+  behavior file exists in the oracle, so the +10 all sit in
+  the shared mech files.
+- KAT r21→r22: 78930→78940 passed (+10) / 21 failed (same
+  ids) / 4052 xfailed / 30074→30109 skipped (+35)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r22-results.json`).
+  Identical mover shape to the fast lane (same 6 units,
+  same deltas); `coverage.json` shows CKM_RSA_X_509
+  exercised (28 hits). Zero pass→fail.
+- Corroborated by the targeted reproof
+  (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-x509-r2.json`:
+  727 pass / 0 fail / 12 xfail): sign/encrypt/wrap/flags
+  units all passing, and the sign-recover files
+  (`test_mech_sign_recover`, `test_sign_recover`) skip
+  cleanly (2 + 6) on the named sign-recover stub gap.
+- Two real oracle findings fixed in-slice (ours, no new
+  upstream issue): the `CipherSpec` gate had no X_509
+  entry, and `CKA_SIGN_RECOVER`/`CKA_VERIFY_RECOVER` had
+  no attribute plumbing.
+- Bundle note: r43/KAT-r22 run on a release bundle rebuilt
+  from the 10f stack (no in-stack fixes needed after the
+  lanes).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

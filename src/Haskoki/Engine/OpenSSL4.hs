@@ -328,6 +328,14 @@ instance CryptoBackend OpenSSL4 where
             ("no fetch name: " ++ show alg)))
           Just mdname -> rsaSignRun env "sign" mdname False kb msg
         SigRSA_Raw -> rsaSignRun env "sign" "" True kb msg
+        SigRSA_X509 -> do
+          r <- withForeignPtr (osslEnv env) $ \_ ->
+            Raw.rsaX509Sign (osslCtx env) (osslPropQ env) kb msg
+          case r of
+            Left code
+              | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "sign" "private key DER rejected"))
+              | otherwise -> nativeFail "sign" code
+            Right sig -> pure (EngineOk sig)
         SigRSA_PSS (PssParams h m s) ->
           case (digestFetchName h, digestFetchName m) of
             (Just mdname, Just mgfname) -> do
@@ -400,6 +408,10 @@ instance CryptoBackend OpenSSL4 where
           rc <- withForeignPtr (osslEnv env) $ \_ ->
             Raw.rsaVerify (osslCtx env) "" (osslPropQ env) kb msg sig True
           verifyRc "verify" "malformed RSA signature" rc
+        SigRSA_X509 -> do
+          rc <- withForeignPtr (osslEnv env) $ \_ ->
+            Raw.rsaX509Verify (osslCtx env) (osslPropQ env) kb msg sig
+          verifyRc "verify" "malformed X.509 block" rc
         SigRSA_PSS (PssParams h m s) ->
           case (digestFetchName h, digestFetchName m) of
             (Just mdname, Just mgfname) -> do
@@ -460,6 +472,19 @@ instance CryptoBackend OpenSSL4 where
               | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "pkeyEncrypt" "public key DER rejected"))
               | otherwise -> nativeOut "pkeyEncrypt" (Left code)
             Right ct -> pure (EngineOk ct)
+  pkeyEncrypt be RsaX509 key input =
+    runGuarded be "pkeyEncrypt" (x509Supported be) $ \env -> do
+      mkey <- resolveKeyBytes env key
+      case mkey of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk kb -> do
+          r <- withForeignPtr (osslEnv env) $ \_ ->
+            Raw.rsaX509Encrypt (osslCtx env) (osslPropQ env) kb input
+          case r of
+            Left code
+              | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "pkeyEncrypt" "public key DER rejected"))
+              | otherwise -> nativeOut "pkeyEncrypt" (Left code)
+            Right ct -> pure (EngineOk ct)
 
   pkeyDecrypt be (RsaOaep params) key input =
     runGuarded be "pkeyDecrypt" (oaepSupported be params) $ \env -> do
@@ -486,6 +511,19 @@ instance CryptoBackend OpenSSL4 where
         EngineOk kb -> do
           r <- withForeignPtr (osslEnv env) $ \_ ->
             Raw.rsaPkcs1Decrypt (osslCtx env) (osslPropQ env) kb input
+          case r of
+            Left code
+              | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "pkeyDecrypt" "private key DER rejected"))
+              | otherwise -> nativeOut "pkeyDecrypt" (Left code)
+            Right pt -> pure (EngineOk pt)
+  pkeyDecrypt be RsaX509 key input =
+    runGuarded be "pkeyDecrypt" (x509Supported be) $ \env -> do
+      mkey <- resolveKeyBytes env key
+      case mkey of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk kb -> do
+          r <- withForeignPtr (osslEnv env) $ \_ ->
+            Raw.rsaX509Decrypt (osslCtx env) (osslPropQ env) kb input
           case r of
             Left code
               | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "pkeyDecrypt" "private key DER rejected"))
@@ -957,10 +995,10 @@ t16RsaAlgs =
   ]
 
 -- | RSA capability names over a digest set: one PKCS#1 v1.5 name per
--- digest plus the raw row. The pre-probe caps cover 't16RsaAlgs';
--- 'probeCaps' re-derives over the probed subset.
+-- digest plus the raw and X.509 rows. The pre-probe caps cover
+-- 't16RsaAlgs'; 'probeCaps' re-derives over the probed subset.
 osslRsaSpecNames :: [DigestAlg] -> [String]
-osslRsaSpecNames algs = "RSA-RAW" :
+osslRsaSpecNames algs = "RSA-RAW" : "RSA-X509" :
   [ name
   | alg <- algs
   , Just name <- [rsaSigCap (SigRSA_PKCS1v15 alg)]
@@ -970,6 +1008,7 @@ osslRsaSpecNames algs = "RSA-RAW" :
 osslRsaNotes :: [DigestAlg] -> [(String, String)]
 osslRsaNotes algs =
   ("RSA-RAW", "raw block-type-1 operation, no hashing") :
+  ("RSA-X509", "raw modular exponentiation, no padding") :
   [ (name, "PKCS#1 v1.5 hash-and-sign")
   | alg <- algs
   , Just name <- [rsaSigCap (SigRSA_PKCS1v15 alg)]
@@ -1358,6 +1397,14 @@ pkcs1Supported :: BackendEnv OpenSSL4 -> Maybe String
 pkcs1Supported (OSSL4Backend env)
   | Set.member "RSA-RAW" (scSpecs (bcSigs (osslCaps env))) = Nothing
   | otherwise = Just "pkcs1 not in probed set"
+
+-- | X.509 availability: the RSA-X509 cap in the probe-narrowed
+-- RSA signature set; no digest dimension, so no per-digest
+-- fetch probes.
+x509Supported :: BackendEnv OpenSSL4 -> Maybe String
+x509Supported (OSSL4Backend env)
+  | Set.member "RSA-X509" (scSpecs (bcSigs (osslCaps env))) = Nothing
+  | otherwise = Just "x509 not in probed set"
 
 -- | Fetch names for one OAEP parameter set ('Nothing' when either
 -- digest has no fixed-width fetch, e.g. an XOF).

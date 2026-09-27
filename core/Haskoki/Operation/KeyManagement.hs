@@ -90,6 +90,7 @@ module Haskoki.Operation.KeyManagement
   , aesKwpMech
   , rsaPkcsMech
   , rsaOaepMech
+  , rsaX509Mech
     -- * Shared template checks
   , checkKeyTemplate
   , checkKeyTemplateAny
@@ -171,6 +172,7 @@ import Haskoki.Recipe.RsaOaep
   , rsaOaepRecipeFor
   )
 import Haskoki.Recipe.RsaPkcs1 (rsaPkcs1ParamsValid, rsaPkcs1RecipeFor)
+import Haskoki.Recipe.RsaX509 (rsaX509ParamsValid, rsaX509RecipeFor, x509Tail)
 import Haskoki.Registry (MechanismId (..), Operation (..))
 import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
 import Haskoki.Registry.Generated
@@ -196,6 +198,7 @@ import Haskoki.Registry.Generated
   , ckm_RSA_PKCS
   , ckm_RSA_PKCS_KEY_PAIR_GEN
   , ckm_RSA_PKCS_OAEP
+  , ckm_RSA_X_509
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (Rules)
@@ -405,6 +408,12 @@ rsaPkcsMech = MechanismId (ckm_RSA_PKCS)
 rsaOaepMech :: MechanismId
 rsaOaepMech = MechanismId (ckm_RSA_PKCS_OAEP)
 
+-- | @CKM_RSA_X_509@ (the raw-RSA wrap mechanism: empty
+-- parameters, the payload travels raw, the blob is modulus-wide,
+-- unwrap slices the trailing key bytes off the decrypted block).
+rsaX509Mech :: MechanismId
+rsaX509Mech = MechanismId (ckm_RSA_X_509)
+
 -- ---------------------------------------------------------------------------
 -- Plan currency
 -- ---------------------------------------------------------------------------
@@ -461,6 +470,11 @@ data PendingWork
   | PwUnwrapRaw
       { pwKey :: !PendingObject
       }
+  | PwUnwrapTail
+      { pwKey :: !PendingObject
+      , pwWidth :: !Int
+      , pwLen :: !Int
+      }
   | PwDerive
       { pwKeys :: ![PendingObject]
       , pwLens :: ![Int]
@@ -501,6 +515,7 @@ pendingObjects pw = case pw of
   PwBlobOut _ -> []
   PwUnwrap k -> [k]
   PwUnwrapRaw k -> [k]
+  PwUnwrapTail k _ _ -> [k]
   PwDerive pos _ -> pos
 
 -- | Publish pending objects as one atomic delta: every object
@@ -560,6 +575,7 @@ keyPairCompatible (PwBlobOut _) (FxAuthWrap _ _ _ _) = True
 keyPairCompatible (PwUnwrap _) (FxUnwrap _ _ _ _) = True
 keyPairCompatible (PwUnwrap _) (FxAuthUnwrap _ _ _ _) = True
 keyPairCompatible (PwUnwrapRaw _) (FxUnwrap _ _ _ _) = True
+keyPairCompatible (PwUnwrapTail _ _ _) (FxUnwrap _ _ _ _) = True
 keyPairCompatible (PwEncaps _ _ _) (FxKemEncaps _ _ _ _) = True
 keyPairCompatible (PwDecaps _) (FxKemDecaps _ _ _ _) = True
 keyPairCompatible (PwDerive _ _) (FxDerive _ _ _ _ _) = True
@@ -620,6 +636,13 @@ finishWork model st pw res = case (pw, res) of
   -- is consumed by the backend): no PKCS#7 framing to strip.
   (PwUnwrapRaw po, GotBytes bs) ->
     publishUnwrap bs po
+  -- X.509 unwrap answers a full k-block; the key is the trailing
+  -- value_len bytes (the length the unwrap template named).
+  (PwUnwrapTail po k n, GotBytes bs) -> case x509Tail k n bs of
+    Just mat -> publishUnwrap mat po
+    Nothing -> internal
+      ("x509 answer length " ++ show (BS.length bs)
+        ++ " mismatches width " ++ show k)
   (PwDerive pos lens, GotBytes bs)
     | BS.length bs /= sum lens -> internal
         ("derive answer length " ++ show (BS.length bs)
@@ -890,6 +913,7 @@ policyFromObject ost
     keyAttrs =
       [ AttrKeyType
       , AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
+      , AttrSignRecover, AttrVerifyRecover
       , AttrWrap, AttrUnwrap, AttrDerive
       , AttrEncapsulate, AttrDecapsulate
       , AttrAlwaysAuthenticate
@@ -902,6 +926,8 @@ policyFromObject ost
           , (AttrDecrypt, OpDecrypt)
           , (AttrSign, OpSign)
           , (AttrVerify, OpVerify)
+          , (AttrSignRecover, OpSignRecover)
+          , (AttrVerifyRecover, OpVerifyRecover)
           , (AttrWrap, OpWrap)
           , (AttrUnwrap, OpUnwrap)
           , (AttrDerive, OpDerive)
@@ -2120,7 +2146,7 @@ planWrapKey model st mech params wrapH targetH intent
   | mech == aesCbcMech = planAesWrapKey model st mech params wrapH targetH intent
   | mech == aesKwMech || mech == aesKwPadMech || mech == aesKwpMech =
       planAesKwWrapKey model st mech params wrapH targetH intent
-  | mech == rsaPkcsMech || mech == rsaOaepMech =
+  | mech == rsaPkcsMech || mech == rsaOaepMech || mech == rsaX509Mech =
       planRsaWrapKey model st mech params wrapH targetH intent
   | otherwise =
       KeyDenied (KeyDeny CKR_MECHANISM_INVALID
@@ -2129,13 +2155,18 @@ planWrapKey model st mech params wrapH targetH intent
 -- | Padding overhead per RSA wrap mechanism: v1.5 takes empty
 -- parameters and 11 bytes; OAEP takes the labeled
 -- @oaep-params\/1@ parameters and 2*hLen+2 over the main hash
--- width. Rejected shapes are argument errors (parse-first).
+-- width; X.509 takes empty parameters and zero overhead (raw
+-- block). Rejected shapes are argument errors (parse-first).
 rsaWrapOverhead :: MechanismId -> ByteString -> Either KeyDeny Int
 rsaWrapOverhead mech params
   | mech == rsaPkcsMech = case rsaPkcs1RecipeFor mech of
       Just r | rsaPkcs1ParamsValid r params -> Right 11
       _ -> Left (KeyDeny CKR_ARGUMENTS_BAD
         "RSA v1.5 wrap takes empty mechanism parameters")
+  | mech == rsaX509Mech = case rsaX509RecipeFor mech of
+      Just r | rsaX509ParamsValid r params -> Right 0
+      _ -> Left (KeyDeny CKR_ARGUMENTS_BAD
+        "RSA-X.509 wrap takes empty mechanism parameters")
   | otherwise = case rsaOaepRecipeFor mech of
       Just r | rsaOaepParamsValid r params ->
         case decodeOaepParams params of
@@ -2249,7 +2280,7 @@ planUnwrapKey rules model st mech params wrapH blob tmpl
   | mech == aesCbcMech = planAesUnwrapKey rules model st mech params wrapH blob tmpl
   | mech == aesKwMech || mech == aesKwPadMech || mech == aesKwpMech =
       planAesKwUnwrapKey rules model st mech params wrapH blob tmpl
-  | mech == rsaPkcsMech || mech == rsaOaepMech =
+  | mech == rsaPkcsMech || mech == rsaOaepMech || mech == rsaX509Mech =
       planRsaUnwrapKey rules model st mech params wrapH blob tmpl
   | otherwise =
       KeyDenied (KeyDeny CKR_MECHANISM_INVALID
@@ -2289,10 +2320,23 @@ planRsaUnwrapKey rules model st mech params wrapH blob tmpl =
                   "unwrap template must name the key type")
             | otherwise -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
                 Left deny -> Left deny
-                Right attrs -> Right
-                  ( PwUnwrapRaw (pendingFromAttrs st attrs)
-                  , FxUnwrap mech (Just wrapOid) params blob
-                  )
+                Right attrs
+                  | mech == rsaX509Mech -> case Map.lookup AttrValueLen attrs of
+                      Just (ValULong n)
+                        | n >= 1 && fromIntegral n <= k -> Right
+                            ( PwUnwrapTail (pendingFromAttrs st attrs) k (fromIntegral n)
+                            , FxUnwrap mech (Just wrapOid) params blob
+                            )
+                        | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                            ("X.509 unwrap length escapes the modulus width: " ++ show n))
+                      Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                        "X.509 unwrap value length is malformed")
+                      Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+                        "X.509 unwrap needs CKA_VALUE_LEN")
+                  | otherwise -> Right
+                      ( PwUnwrapRaw (pendingFromAttrs st attrs)
+                      , FxUnwrap mech (Just wrapOid) params blob
+                      )
 
 -- | Plan one AES key-wrap wrap: the wrapping key needs the wrap
 -- mark (AES secret: 'withWrappingKey'), the target must be

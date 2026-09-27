@@ -94,6 +94,7 @@ import Haskoki.Recipe.SlhDsa (slhdsaParamsValid, slhdsaRecipeFor)
 import Haskoki.Recipe.Otp (hotpParamsValid, hotpRecipeFor)
 import Haskoki.Recipe.RsaOaep (rsaOaepParamsValid, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPkcs1 (rsaPkcs1ParamsValid, rsaPkcs1RecipeFor)
+import Haskoki.Recipe.RsaX509 (rsaX509ParamsValid, rsaX509RecipeFor)
 import Haskoki.Recipe.RsaPss (rsaPssParamsValid, rsaPssRecipeFor)
 import Haskoki.Registry
   ( EngineCapabilities
@@ -222,6 +223,9 @@ checkShape args = case (cipherDirOf (iaOp args), iaCipher args) of
     | csPad spec && isJust (rsaOaepRecipeFor (iaMech args)) ->
         Left (mkDeny CKR_ARGUMENTS_BAD
           "asymmetric cipher operation takes no padding spec")
+    | csPad spec && isJust (rsaX509RecipeFor (iaMech args)) ->
+        Left (mkDeny CKR_ARGUMENTS_BAD
+          "asymmetric cipher operation takes no padding spec")
     | csPad spec && isJust (gcmRecipeFor (iaMech args)) ->
         Left (mkDeny CKR_ARGUMENTS_BAD
           "AEAD cipher operation takes no padding spec")
@@ -237,14 +241,15 @@ checkShape args = case (cipherDirOf (iaOp args), iaCipher args) of
   (Nothing, Nothing) -> checkRecover args ShapePlain
 
 -- | Asymmetric cipher rows skip block framing: an OAEP input is
--- length-bounded by the backend (@k-2*hLen-2@), never block-aligned,
--- and answers stage raw. 'checkShape' already refuses padded specs
--- for these rows; the planners and finishers consult this so the
--- vestigial cipher width never gates bytes. (@CKM_RSA_PKCS@ joins
--- when it gets a cipher shape; today OAEP is the only asymmetric
--- row that can hold a cipher slot.)
+-- length-bounded by the backend (@k-2*hLen-2@), an X.509 input by
+-- the modulus width (@k@), never block-aligned, and answers stage
+-- raw. 'checkShape' already refuses padded specs for these rows;
+-- the planners and finishers consult this so the vestigial cipher
+-- width never gates bytes. (@CKM_RSA_PKCS@ joins when it gets a
+-- cipher shape; today OAEP and X.509 are the only asymmetric rows
+-- that can hold a cipher slot.)
 isUnframedCipher :: MechanismId -> Bool
-isUnframedCipher m = isJust (rsaOaepRecipeFor m) || isJust (gcmRecipeFor m) || isJust (ccmRecipeFor m) || isJust (chachaRecipeFor m)
+isUnframedCipher m = isJust (rsaOaepRecipeFor m) || isJust (rsaX509RecipeFor m) || isJust (gcmRecipeFor m) || isJust (ccmRecipeFor m) || isJust (chachaRecipeFor m)
 
 -- | Ciphertext-stealing rows: @CKM_AES_CTS@ keeps the 16-byte shape
 -- but replaces block alignment with a length floor (input must
@@ -318,7 +323,8 @@ isXtsMech m = case cipherRecipeFor m of
 -- 'cipherRecipeFor'; RSA v1.5 inits take empty parameters only via
 -- 'rsaPkcs1RecipeFor'; RSA-PSS inits enforce the salted binding via
 -- 'rsaPssRecipeFor'; RSA-OAEP inits enforce the labeled params via
--- 'rsaOaepRecipeFor'; ECDSA inits enforce the encoding selection
+-- 'rsaOaepRecipeFor'; RSA-X.509 inits take empty parameters only via
+-- 'rsaX509RecipeFor'; ECDSA inits enforce the encoding selection
 -- via 'ecdsaRecipeFor'; DSA inits enforce the encoding selection
 -- via 'dsaRecipeFor'; CMAC inits enforce the plain/GENERAL
 -- shape via 'cmacRecipeFor'; AEAD inits enforce the caller IV and
@@ -355,6 +361,10 @@ checkMechParams args
   , not (rsaOaepParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD
         "RSA-OAEP mechanism parameters rejected by the recipe")
+  | Just r <- rsaX509RecipeFor (iaMech args)
+  , not (rsaX509ParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "RSA-X.509 mechanism parameters rejected by the recipe")
   | Just r <- ecdsaRecipeFor (iaMech args)
   , not (ecdsaParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD

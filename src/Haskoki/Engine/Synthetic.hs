@@ -127,6 +127,7 @@ import Haskoki.Operation.KeyManagement
 import Haskoki.Recipe.Dh (dhSecretWidthMax)
 import Haskoki.Recipe.Ecdh (ecdhSecretWidthMax)
 import Haskoki.Recipe.Otp (hotpKeygenMaxBytes, hotpKeygenMinBytes)
+import Haskoki.Recipe.RsaX509 (x509PadBlock)
 import Haskoki.Registry (MechanismId (..))
 import Haskoki.Types (EngineResourceId (..))
 
@@ -500,6 +501,18 @@ instance CryptoBackend Synthetic where
         B.EngineFail err -> pure (B.EngineFail err)
         B.EngineOk kb ->
           pure (B.EngineOk (classPkcs1Seal (signIdentity kb) input))
+  pkeyEncrypt be RsaX509 key input =
+    runGuarded be "pkeyEncrypt" (x509Supported be) $ \env -> do
+      mkey <- resolveKeyBytes env key
+      case mkey of
+        B.EngineFail err -> pure (B.EngineFail err)
+        B.EngineOk kb -> case rsaModulusOf kb of
+          Nothing -> pure (B.EngineFail (BackendBadKey "pkeyEncrypt"
+            "X.509 sealing needs an RSA key"))
+          Just n -> case classX509Seal n input of
+            Just ct -> pure (B.EngineOk ct)
+            Nothing -> pure (B.EngineFail (BackendBadParam "pkeyEncrypt"
+              "X.509 input is empty or wider than the modulus"))
 
   pkeyDecrypt be (RsaOaep params) key input =
     runGuarded be "pkeyDecrypt" (oaepSupported be params) $ \env -> do
@@ -517,6 +530,18 @@ instance CryptoBackend Synthetic where
         B.EngineOk kb -> case classPkcs1Open (signIdentity kb) input of
           Just pt -> pure (B.EngineOk pt)
           Nothing -> pure (B.EngineFail (BackendAuthFailed "pkeyDecrypt"))
+  pkeyDecrypt be RsaX509 key input =
+    runGuarded be "pkeyDecrypt" (x509Supported be) $ \env -> do
+      mkey <- resolveKeyBytes env key
+      case mkey of
+        B.EngineFail err -> pure (B.EngineFail err)
+        B.EngineOk kb -> case rsaModulusOf kb of
+          Nothing -> pure (B.EngineFail (BackendBadKey "pkeyDecrypt"
+            "X.509 opening needs an RSA key"))
+          Just n -> case classX509Open n input of
+            Just pt -> pure (B.EngineOk pt)
+            Nothing -> pure (B.EngineFail (BackendBadParam "pkeyDecrypt"
+              "X.509 block mismatches the modulus width"))
   kemEncapsulate be spec pub = runGuarded be "kemEncapsulate" (kemSupported be spec) $ \env -> do
     mkey <- resolveKeyBytes env pub
     case mkey of
@@ -800,12 +825,12 @@ synthMacSpecs = Set.fromList
   ]
 
 -- | The RSA names: one PKCS#1 v1.5 name per recipe digest
--- plus the raw row (exactly the OpenSSL4 pre-probe set, so both
--- engines advertise the same names).
+-- plus the raw and X.509 rows (exactly the OpenSSL4 pre-probe
+-- set, so both engines advertise the same names).
 synthRsaSpecNames :: [String]
 synthRsaSpecNames =
   [ name
-  | spec <- SigRSA_Raw : map SigRSA_PKCS1v15 synthRsaAlgs
+  | spec <- SigRSA_Raw : SigRSA_X509 : map SigRSA_PKCS1v15 synthRsaAlgs
   , Just name <- [rsaSigCap spec]
   ]
   where
@@ -997,6 +1022,11 @@ oaepSupported (SynthBackend env) params
 -- unconditionally (no digest or probe dimension).
 pkcs1Supported :: BackendEnv Synthetic -> Maybe String
 pkcs1Supported _ = Nothing
+
+-- | X.509 availability: the synthetic backend models raw RSA
+-- unconditionally (no digest or probe dimension).
+x509Supported :: BackendEnv Synthetic -> Maybe String
+x509Supported _ = Nothing
 
 -- | The cipher set: every backend spec the block-cipher
 -- recipe reaches (AES/ARIA/CAMELLIA CBC+ECB at three widths plus
@@ -1671,6 +1701,30 @@ pkcs1StreamFrame identity =
 pkcs1TagFrame :: ByteString -> ByteString -> [ByteString]
 pkcs1TagFrame identity body =
   ["haskoki-synth/class-pkcs1-tag/v1", identity, body]
+
+-- | Synthetic X.509 seal: the input left-pads to the modulus width
+-- and XORs with the modulus-keyed stream. No tag (raw RSA has no
+-- integrity, so opens never fail on content). 'Nothing' on empty
+-- or over-wide input, never a crash.
+classX509Seal :: ByteString -> ByteString -> Maybe ByteString
+classX509Seal modulus input = do
+  padded <- x509PadBlock (BS.length modulus) input
+  pure (BS.packZipWith xor
+    (prfBytes (frame (x509StreamFrame modulus)) (BS.length padded))
+    padded)
+
+-- | Open a synthetic X.509 block: XOR back. Non-modulus-wide
+-- inputs are 'Nothing', never a crash.
+classX509Open :: ByteString -> ByteString -> Maybe ByteString
+classX509Open modulus sealed
+  | BS.length sealed /= BS.length modulus = Nothing
+  | otherwise = Just (BS.packZipWith xor
+      (prfBytes (frame (x509StreamFrame modulus)) (BS.length sealed))
+      sealed)
+
+x509StreamFrame :: ByteString -> [ByteString]
+x509StreamFrame modulus =
+  ["haskoki-synth/class-x509-stream/v1", modulus]
 
 -- | Class-interface cipher: length-preserving reversible stream
 -- construction (keystream XOR over the owned key bytes and iv).

@@ -78,6 +78,10 @@ module Haskoki.FFI.OpenSSL4.Raw
   , rsaOaepDecrypt
   , rsaPkcs1Encrypt
   , rsaPkcs1Decrypt
+  , rsaX509Encrypt
+  , rsaX509Decrypt
+  , rsaX509Sign
+  , rsaX509Verify
   ) where
 
 import qualified Data.ByteString as BS
@@ -276,6 +280,18 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_pkcs1_encrypt"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_pkcs1_decrypt"
   c_rsa_pkcs1_decrypt :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_x509_encrypt"
+  c_rsa_x509_encrypt :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_x509_decrypt"
+  c_rsa_x509_decrypt :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_x509_sign"
+  c_rsa_x509_sign :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_x509_verify"
+  c_rsa_x509_verify :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> IO CInt
 
 -- Managed wrappers.
 
@@ -889,3 +905,32 @@ rsaPkcs1Decrypt ctx propq privDer input =
     withBytes privDer $ \(ppriv, npriv) ->
       withBytes input $ \(pin, nin) ->
         withOut (c_rsa_pkcs1_decrypt ctx cpq ppriv npriv pin nin)
+
+rsaX509Encrypt :: Ptr OsslLibCtx -> String -> ByteString -> ByteString -> IO (Either Int ByteString)
+rsaX509Encrypt ctx propq pubDer input =
+  withCString propq $ \cpq ->
+    withBytes pubDer $ \(ppub, npub) ->
+      withBytes input $ \(pin, nin) ->
+        withOut (c_rsa_x509_encrypt ctx cpq ppub npub pin nin)
+
+rsaX509Decrypt :: Ptr OsslLibCtx -> String -> ByteString -> ByteString -> IO (Either Int ByteString)
+rsaX509Decrypt ctx propq privDer input =
+  withCString propq $ \cpq ->
+    withBytes privDer $ \(ppriv, npriv) ->
+      withBytes input $ \(pin, nin) ->
+        withOut (c_rsa_x509_decrypt ctx cpq ppriv npriv pin nin)
+
+rsaX509Sign :: Ptr OsslLibCtx -> String -> ByteString -> ByteString -> IO (Either Int ByteString)
+rsaX509Sign ctx propq privDer input =
+  withCString propq $ \cpq ->
+    withBytes privDer $ \(ppriv, npriv) ->
+      withBytes input $ \(pin, nin) ->
+        withOut (c_rsa_x509_sign ctx cpq ppriv npriv pin nin)
+
+rsaX509Verify :: Ptr OsslLibCtx -> String -> ByteString -> ByteString -> ByteString -> IO Int
+rsaX509Verify ctx propq pubDer msg sig =
+  withCString propq $ \cpq ->
+    withBytes pubDer $ \(ppub, npub) ->
+      withBytes msg $ \(pmsg, nmsg) ->
+        withBytes sig $ \(psig, nsig) ->
+          fromIntegral <$> c_rsa_x509_verify ctx cpq ppub npub pmsg nmsg psig nsig

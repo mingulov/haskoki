@@ -4061,6 +4061,286 @@ end:
     return rc;
 }
 
+/* --- RSA-X.509 raw operations (CKM_RSA_X_509) ---------------------- */
+
+/* One RSA_NO_PADDING public operation over a k-block. Returns the
+ * output length (always k) with *out set, or a negative
+ * HSK_OSSL4_ERR_* code. */
+static long x509_pub_op(OSSL_LIB_CTX *ctx, const char *propq, EVP_PKEY *pkey,
+                        const unsigned char *in, size_t k,
+                        unsigned char **out)
+{
+    EVP_PKEY_CTX *pctx = NULL;
+    unsigned char *buf = NULL;
+    size_t buflen = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    pctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
+    if (pctx == NULL)
+        goto end;
+    if (EVP_PKEY_encrypt_init(pctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_NO_PADDING) <= 0 ||
+        EVP_PKEY_encrypt(pctx, NULL, &buflen, in, k) <= 0 ||
+        buflen != k)
+        goto end;
+    buf = OPENSSL_malloc(buflen);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (EVP_PKEY_encrypt(pctx, buf, &buflen, in, k) <= 0 ||
+        buflen != k) {
+        OPENSSL_clear_free(buf, k);
+        buf = NULL;
+        goto end;
+    }
+    *out = buf;
+    buf = NULL;
+    rc = (long)buflen;
+
+end:
+    if (buf != NULL)
+        OPENSSL_clear_free(buf, k);
+    EVP_PKEY_CTX_free(pctx);
+    return rc;
+}
+
+/* One RSA_NO_PADDING private operation over a k-block. Returns the
+ * output length (always k) with *out set, or a negative
+ * HSK_OSSL4_ERR_* code. */
+static long x509_priv_op(OSSL_LIB_CTX *ctx, const char *propq, EVP_PKEY *pkey,
+                         const unsigned char *in, size_t k,
+                         unsigned char **out)
+{
+    EVP_PKEY_CTX *pctx = NULL;
+    unsigned char *buf = NULL;
+    size_t buflen = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    pctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
+    if (pctx == NULL)
+        goto end;
+    if (EVP_PKEY_decrypt_init(pctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_NO_PADDING) <= 0 ||
+        EVP_PKEY_decrypt(pctx, NULL, &buflen, in, k) <= 0 ||
+        buflen != k)
+        goto end;
+    buf = OPENSSL_malloc(buflen);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (EVP_PKEY_decrypt(pctx, buf, &buflen, in, k) <= 0 ||
+        buflen != k) {
+        OPENSSL_clear_free(buf, k);
+        buf = NULL;
+        goto end;
+    }
+    *out = buf;
+    buf = NULL;
+    rc = (long)buflen;
+
+end:
+    if (buf != NULL)
+        OPENSSL_clear_free(buf, k);
+    EVP_PKEY_CTX_free(pctx);
+    return rc;
+}
+
+long hsk_ossl4_rsa_x509_encrypt(OSSL_LIB_CTX *ctx, const char *propq,
+                                const unsigned char *pub_der, size_t pub_len,
+                                const unsigned char *in, size_t inlen,
+                                unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    unsigned char *padded = NULL;
+    size_t k;
+    int ksize;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL ||
+        (in == NULL && inlen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* Typed input bound: 1 <= mLen <= k, left-padded. */
+    ksize = EVP_PKEY_get_size(pkey);
+    if (ksize <= 0) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    k = (size_t)ksize;
+    if (inlen == 0 || inlen > k) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    padded = OPENSSL_malloc(k);
+    if (padded == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    memset(padded, 0, k - inlen);
+    memcpy(padded + (k - inlen), in, inlen);
+    rc = x509_pub_op(ctx, propq, pkey, padded, k, out);
+
+end:
+    if (padded != NULL)
+        OPENSSL_clear_free(padded, k);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+long hsk_ossl4_rsa_x509_decrypt(OSSL_LIB_CTX *ctx, const char *propq,
+                                const unsigned char *priv_der, size_t priv_len,
+                                const unsigned char *in, size_t inlen,
+                                unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    unsigned char *blk = NULL;
+    size_t k;
+    int ksize;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL ||
+        (in == NULL && inlen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* Ciphertexts are exactly one modulus wide; anything else is a
+     * typed length refusal, never a verdict. */
+    ksize = EVP_PKEY_get_size(pkey);
+    if (ksize <= 0) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    k = (size_t)ksize;
+    if (inlen != k) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    rc = x509_priv_op(ctx, propq, pkey, in, k, &blk);
+    if (rc == HSK_OSSL4_ERR_NATIVE) {
+        /* Modulus-wide but unusable (e.g. above n): a verdict,
+         * uniform with every other padding failure. */
+        rc = HSK_OSSL4_ERR_AUTHFAIL;
+        goto end;
+    }
+    if (rc < 0)
+        goto end;
+    *out = blk;
+    blk = NULL;
+
+end:
+    if (blk != NULL)
+        OPENSSL_clear_free(blk, k);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+long hsk_ossl4_rsa_x509_sign(OSSL_LIB_CTX *ctx, const char *propq,
+                             const unsigned char *priv_der, size_t priv_len,
+                             const unsigned char *in, size_t inlen,
+                             unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    unsigned char *padded = NULL;
+    size_t k;
+    int ksize;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL ||
+        (in == NULL && inlen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* Typed input bound: 1 <= mLen <= k, left-padded. */
+    ksize = EVP_PKEY_get_size(pkey);
+    if (ksize <= 0) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    k = (size_t)ksize;
+    if (inlen == 0 || inlen > k) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    padded = OPENSSL_malloc(k);
+    if (padded == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    memset(padded, 0, k - inlen);
+    memcpy(padded + (k - inlen), in, inlen);
+    rc = x509_priv_op(ctx, propq, pkey, padded, k, out);
+
+end:
+    if (padded != NULL)
+        OPENSSL_clear_free(padded, k);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
+                              const unsigned char *pub_der, size_t pub_len,
+                              const unsigned char *msg, size_t msglen,
+                              const unsigned char *sig, size_t siglen)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    unsigned char *padded = NULL;
+    unsigned char *recovered = NULL;
+    size_t k;
+    int ksize;
+    int ok = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL ||
+        (msg == NULL && msglen > 0) || (sig == NULL && siglen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    ksize = EVP_PKEY_get_size(pkey);
+    if (ksize <= 0) {
+        ok = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    k = (size_t)ksize;
+    if (siglen != k || msglen == 0 || msglen > k) {
+        ok = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    padded = OPENSSL_malloc(k);
+    if (padded == NULL) {
+        ok = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    memset(padded, 0, k - msglen);
+    memcpy(padded + (k - msglen), msg, msglen);
+    if (x509_pub_op(ctx, propq, pkey, sig, k, &recovered) < 0) {
+        ok = 0;
+        goto end;
+    }
+    ok = (CRYPTO_memcmp(recovered, padded, k) == 0) ? 1 : 0;
+
+end:
+    if (padded != NULL)
+        OPENSSL_clear_free(padded, k);
+    if (recovered != NULL)
+        OPENSSL_clear_free(recovered, k);
+    EVP_PKEY_free(pkey);
+    return ok;
+}
+
 long hsk_ossl4_rsa_oaep_decrypt(OSSL_LIB_CTX *ctx, const char *mdname,
                                const char *mgfname,
                                const unsigned char *label, size_t labellen,

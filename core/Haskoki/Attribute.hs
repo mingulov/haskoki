@@ -97,6 +97,8 @@ data AttributeType
   | AttrSubprimeBits
   | AttrParameterSet
   | AttrSeed
+  | AttrSignRecover
+  | AttrVerifyRecover
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Owned attribute values. The semantic value stays separate
@@ -227,6 +229,8 @@ shapeOf t = case t of
   AttrAlwaysAuthenticate -> ShapeBool
   AttrEncapsulate -> ShapeBool
   AttrDecapsulate -> ShapeBool
+  AttrSignRecover -> ShapeBool
+  AttrVerifyRecover -> ShapeBool
   AttrClass -> ShapeULong
   AttrKeyType -> ShapeULong
   AttrValueLen -> ShapeULong
@@ -352,7 +356,9 @@ attributeTypeByName name = case name of
   "CKA_ENCRYPT" -> Just AttrEncrypt
   "CKA_DECRYPT" -> Just AttrDecrypt
   "CKA_SIGN" -> Just AttrSign
+  "CKA_SIGN_RECOVER" -> Just AttrSignRecover
   "CKA_VERIFY" -> Just AttrVerify
+  "CKA_VERIFY_RECOVER" -> Just AttrVerifyRecover
   "CKA_WRAP" -> Just AttrWrap
   "CKA_UNWRAP" -> Just AttrUnwrap
   "CKA_DERIVE" -> Just AttrDerive

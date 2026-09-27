@@ -81,6 +81,7 @@ spec = testGroup "openssl4 engine"
   , testCase "RSA-PSS interop (CLI vector)" caseRsaPssVectors
   , testCase "RSA-OAEP interop (CLI vectors)" caseRsaOaepVectors
   , testCase "RSA PKCS#1 v1.5 interop (CLI vector)" caseRsaPkcs1Vectors
+  , testCase "RSA-X.509 interop (CLI vectors)" caseRsaX509Vectors
   , testCase "ecdsa fixed-vector verify (DER and RAW)" caseEcdsaKat
   , testCase "ecdsa sign/verify roundtrip, both encodings" caseEcdsaRoundtrip
   , testCase "ECDSA curves/digests/raw (CLI vectors)" caseEcdsaCurvesVectors
@@ -743,6 +744,39 @@ pkcs1Ct = hex $ concat
   , "1c2c70892cb74fab75f105b83ff22f36a39023a41dd916190f8b3df30b9caf90"
   , "e7827d13d4672a3315f854598b385cdcceac5d1c0b486d5c6010d74489858a06"
   , "eeeeefebddf38af708eb71fbec554aa5c8f5f0163c6a9f470f8d8af53f7f7bf4"
+  ]
+
+-- X.509 raw-RSA interop vectors (host 3.5.5 CLI, same RSA-2048 key
+-- as the v1.5 vectors; raw RSA is deterministic modular
+-- exponentiation, so the bytes are version-independent). The
+-- 32-byte message left-pads to the 256-byte block; the ciphertext
+-- is `pkeyutl -encrypt -pkeyopt rsa_padding_mode:none` output and
+-- the signature is the private-op output (`pkeyutl -decrypt` with
+-- rsa_padding_mode:none — the CLI sign path refuses padding none).
+-- Both were CLI roundtripped before embedding.
+x509Msg :: ByteString
+x509Msg = "x509-secret-32-bytes-payload!!!!"
+x509Ct :: ByteString
+x509Ct = hex $ concat
+  [ "a7f6abc64915f4386b2e119279cd401812c50abef4e3793b73274b4ac45c1e38"
+  , "57d58688cde8de2175138d9d93514d5f42f3ca44ee46ebafdac354d130deeaa4"
+  , "d78986ee865932e3c83820ee94300c06d0e235ad244dbcc35ca2b938ec6a6291"
+  , "7d931b784c6f0e801de6076e704ac4b71ab685f84875d5b9b2155a36f704621f"
+  , "f9758a41629a99be36b66fea0c98509571ec902f6ec018e4ce5fe9d22657192f"
+  , "f6ede732ce8f7acdd38781ce7250f17b8e2757d929650dd69de55ad2f46f0727"
+  , "81357a7f2952d9f739feba0021a4168041f4ebea0cce69f1eb18de1a82e77910"
+  , "5ac7565685b880b4b008a350e52ceb90ac9c7b6d48d621a1f7c238db0c43b76a"
+  ]
+x509Sig :: ByteString
+x509Sig = hex $ concat
+  [ "7b62d8db852ec3c1ff4b3c5b61abe1db40e29f17a778888a88e7aa69087a6304"
+  , "2976e27207d690a66f5becc18562f95ffabe90429ed817a4ff02b1662dafb24c"
+  , "1ea340bc7df8cc8aaedd568d417238653f5916ae0aaa1961a27501dde8aead57"
+  , "4565f396f80b77050476e7192069e4fc08ae65ad826b64219e5a34030786ea90"
+  , "062b5721f2f502758891f68587762f48c94617db402062b5bbb7461f3229b4ae"
+  , "348d871d7f8f2e6d65110a3378d444c409ad2e92dc35b7c844616fc4641dec01"
+  , "d2b287d34a706b196c8b21f3d8a421360b4e811e5a399ab5b994b426a5bc9d8a"
+  , "8627519be535674cb4a09d02eede177143a5e7fde37b1ecdb2a9efd1ac20048a"
   ]
 
 -- P-384/SHA-384, P-521/SHA-512, and raw-P-256 interop
@@ -1747,6 +1781,70 @@ caseRsaPkcs1Vectors = withBackend $ \env -> do
     pkeyEncrypt env RsaPkcs1 (KeyDer "bogus") pkcs1Msg
   expectBadKey "pkcs1 decrypt garbage priv" =<<
     pkeyDecrypt env RsaPkcs1 (KeyDer "bogus") pkcs1Ct
+
+caseRsaX509Vectors :: IO ()
+caseRsaX509Vectors = withBackend $ \env -> do
+  let priv = KeyDer rsaPrivDer
+      pub = KeyDer rsaPubDer
+      padded = BS.replicate (256 - BS.length x509Msg) 0 <> x509Msg
+  -- Interop: the backend decrypts the CLI's ciphertext and verifies
+  -- the CLI's raw signature (same RSA-2048 key as the v1.5 vectors).
+  pt <- expectOk "x509 decrypt cli vector" =<<
+    pkeyDecrypt env RsaX509 priv x509Ct
+  assertEqual "x509 interop" padded pt
+  expectOk "x509 verify cli vector" =<<
+    verify env SigRSA_X509 pub x509Msg x509Sig
+  -- Raw RSA has no integrity: tampered blocks open to garbage and
+  -- mismatched messages verify to a verdict; the zero block is
+  -- the identity.
+  garbled <- expectOk "x509 tampered opens" =<<
+    pkeyDecrypt env RsaX509 priv (BS.init x509Ct <> "X")
+  assertBool "x509 tamper garbles" (garbled /= padded)
+  expectAuthFailed "x509 tampered sig rejected" =<<
+    verify env SigRSA_X509 pub x509Msg (BS.init x509Sig <> "X")
+  expectAuthFailed "x509 wrong msg rejected" =<<
+    verify env SigRSA_X509 pub "tampered-data-32-bytes-payload!!!" x509Sig
+  zeroPt <- expectOk "x509 zero opens" =<<
+    pkeyDecrypt env RsaX509 priv (BS.replicate 256 0)
+  assertEqual "x509 zero identity" (BS.replicate 256 0) zeroPt
+  -- Above-modulus blocks are verdicts (uniform invalid-block shape).
+  expectAuthFailed "x509 above-n rejected" =<<
+    pkeyDecrypt env RsaX509 priv (BS.replicate 256 0xFF)
+  expectBadParam "x509 wrong-length refused" =<<
+    pkeyDecrypt env RsaX509 priv "short"
+  -- Roundtrips: raw RSA is deterministic — seals replay the CLI
+  -- vector byte for byte.
+  c1 <- expectOk "x509 seal" =<< pkeyEncrypt env RsaX509 pub x509Msg
+  assertEqual "x509 ct length" 256 (BS.length c1)
+  assertEqual "x509 matches cli vector" x509Ct c1
+  c2 <- expectOk "x509 reseal" =<< pkeyEncrypt env RsaX509 pub x509Msg
+  assertEqual "x509 deterministic" c1 c2
+  p1 <- expectOk "x509 open" =<< pkeyDecrypt env RsaX509 priv c1
+  assertEqual "x509 reversible" padded p1
+  s1 <- expectOk "x509 sign" =<< sign env SigRSA_X509 priv x509Msg
+  assertEqual "x509 sig length" 256 (BS.length s1)
+  assertEqual "x509 sig matches cli vector" x509Sig s1
+  expectOk "x509 self-verify" =<< verify env SigRSA_X509 pub x509Msg s1
+  -- Typed bounds: empty and over-wide inputs refuse (k = 256 on
+  -- this key), garbage DER is a bad key.
+  expectBadParam "x509 empty encrypt refused" =<<
+    pkeyEncrypt env RsaX509 pub BS.empty
+  expectBadParam "x509 overlong encrypt refused" =<<
+    pkeyEncrypt env RsaX509 pub (BS.replicate 257 0x41)
+  full <- expectOk "x509 full-width seals" =<<
+    pkeyEncrypt env RsaX509 pub (BS.replicate 256 0x41)
+  assertEqual "x509 full-width length" 256 (BS.length full)
+  expectBadParam "x509 empty sign refused" =<< sign env SigRSA_X509 priv BS.empty
+  expectBadParam "x509 overlong sign refused" =<<
+    sign env SigRSA_X509 priv (BS.replicate 257 0x41)
+  expectBadKey "x509 encrypt garbage pub" =<<
+    pkeyEncrypt env RsaX509 (KeyDer "bogus") x509Msg
+  expectBadKey "x509 decrypt garbage priv" =<<
+    pkeyDecrypt env RsaX509 (KeyDer "bogus") x509Ct
+  expectBadKey "x509 sign garbage priv" =<<
+    sign env SigRSA_X509 (KeyDer "bogus") x509Msg
+  expectBadKey "x509 verify garbage pub" =<<
+    verify env SigRSA_X509 (KeyDer "bogus") x509Msg x509Sig
 
 caseEcdsaKat :: IO ()
 caseEcdsaKat = withBackend $ \env -> do
@@ -4281,6 +4379,7 @@ caseCaps = withBackend $ \env -> do
   assertEqual "sig set" (Set.fromList
     ([ "RSA-PSS"
     , "RSA-RAW"
+    , "RSA-X509"
     , "RSA-PKCS1v15-MD5", "RSA-PKCS1v15-SHA1"
     , "RSA-PKCS1v15-SHA224", "RSA-PKCS1v15-SHA256"
     , "RSA-PKCS1v15-SHA384", "RSA-PKCS1v15-SHA512"

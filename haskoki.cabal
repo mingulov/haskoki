@@ -88,6 +88,7 @@ library haskoki-core
     Haskoki.Recipe.RsaOaep
     Haskoki.Recipe.RsaPkcs1
     Haskoki.Recipe.RsaPss
+    Haskoki.Recipe.RsaX509
     Haskoki.Recipe.Ecdsa
     Haskoki.Recipe.Ecdh
     Haskoki.Recipe.Eddsa
@@ -394,6 +395,7 @@ test-suite haskoki-model-tests
     RecipeRsaSpec
     RecipeSlhDsaSpec
     RecipeTlsPrfSpec
+    RecipeX509Spec
     RegistrySpec
     RoutingSpec
     SimBridgeSpec
