@@ -1096,7 +1096,7 @@ replanRecipe rules m st recFunc recipe = case recipe of
     | otherwise -> Left "recipe/function incoherence"
   RecipeGenKey _ _ fx tmpl owned
     | recFunc == JobGenKey -> case fx of
-        FxGenerateKey mech _ _ -> case planGenerateKey rules m st mech (Map.toList tmpl) of
+        FxGenerateKey mech params _ -> case planGenerateKey rules m st mech params (Map.toList tmpl) of
           KeyEffect (PwGenerateKey k) fx'
             | fx' == fx -> Right (WorkKey (joinReservation st)
                 (PwGenerateKey k { poOwner = joinOwner owned }) fx')

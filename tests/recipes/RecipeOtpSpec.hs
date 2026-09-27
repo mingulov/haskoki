@@ -315,7 +315,7 @@ hotpTmpl n =
 
 caseKeygenPlan :: IO ()
 caseKeygenPlan =
-  mapM_ (\n -> case planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech (hotpTmpl n) of
+  mapM_ (\n -> case planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech BS.empty (hotpTmpl n) of
     KeyEffect _ (FxGenerateKey m params input)
       | m == hotpKeyGenMech
       , BS.null params
@@ -331,27 +331,27 @@ denyCode plan = case plan of
 caseKeygenRefuse :: IO ()
 caseKeygenRefuse = do
   assertEqual "8 bytes refused" CKR_TEMPLATE_INCONSISTENT =<< denyCode
-    (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech (hotpTmpl 8))
+    (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech BS.empty (hotpTmpl 8))
   assertEqual "15 bytes refused" CKR_TEMPLATE_INCONSISTENT =<< denyCode
-    (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech (hotpTmpl 15))
+    (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech BS.empty (hotpTmpl 15))
   assertEqual "65 bytes refused" CKR_TEMPLATE_INCONSISTENT =<< denyCode
-    (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech (hotpTmpl 65))
+    (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech BS.empty (hotpTmpl 65))
   assertEqual "missing length incomplete" CKR_TEMPLATE_INCOMPLETE =<< denyCode
-    (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech
+    (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech BS.empty
       (filter ((/= AttrValueLen) . fst) (hotpTmpl 20)))
   -- A missing class defaults to the mechanism's class (no longer
   -- incomplete); the classless HOTP template plans.
-  case planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech
+  case planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech BS.empty
       (filter ((/= AttrClass) . fst) (hotpTmpl 20)) of
     KeyEffect _ _ -> pure ()
     other -> assertFailure ("classless HOTP must plan, got: " ++ show other)
   assertEqual "HOTP sign mech is not keygen" CKR_MECHANISM_INVALID =<< denyCode
-    (planGenerateKey defaultRules emptyModel testSession hotpMech (hotpTmpl 20))
+    (planGenerateKey defaultRules emptyModel testSession hotpMech BS.empty (hotpTmpl 20))
   assertEqual "unknown mech is not keygen" CKR_MECHANISM_INVALID =<< denyCode
-    (planGenerateKey defaultRules emptyModel testSession (MechanismId 0x4712) (hotpTmpl 20))
+    (planGenerateKey defaultRules emptyModel testSession (MechanismId 0x4712) BS.empty (hotpTmpl 20))
   -- A CKK_AES key type contradicts the HOTP keygen mechanism.
   assertEqual "wrong key type refused" CKR_TEMPLATE_INCONSISTENT =<< denyCode
-    (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech
+    (planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech BS.empty
       [ (AttrClass, ValULong ckoSecretKey)
       , (AttrKeyType, ValULong ckkAes)
       , (AttrValueLen, ValULong 20)

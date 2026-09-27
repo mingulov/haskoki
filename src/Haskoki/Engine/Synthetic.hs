@@ -97,6 +97,8 @@ import Haskoki.Engine.Backend
   , KeyGenSpec (..)
   , KeyMaterial (..)
   , KeyRef (..)
+  , symKeygenBounds
+  , symLenBoundOk
   , MacCaps (..)
   , MacSpec (..)
   , OaepParams (..)
@@ -622,15 +624,22 @@ instance CryptoBackend Synthetic where
         | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
             "generic-secret key length must be 1 to 255 bytes"))
       GenSym "BLAKE2B-512-HMAC" n
-        | n == 64 ->
+        | n >= 1 && n <= 255 ->
             pure (B.EngineOk (KeyBytes (genSymBytes seed ctr "BLAKE2B-512-HMAC" n), Nothing))
         | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
-            "BLAKE2B-512-HMAC key length must be 64 bytes"))
+            "BLAKE2B-512-HMAC key length must be 1 to 255 bytes"))
       GenSym "ChaCha20" n
         | n == 32 ->
             pure (B.EngineOk (KeyBytes (genSymBytes seed ctr "ChaCha20" n), Nothing))
         | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
             "ChaCha20 key length must be 32 bytes"))
+      GenSym label n
+        | Just bound <- lookup label symKeygenBounds
+        , symLenBoundOk bound n ->
+            pure (B.EngineOk (KeyBytes (genSymBytes seed ctr (BC8.pack label) n), Nothing))
+        | Just bound <- lookup label symKeygenBounds ->
+            pure (B.EngineFail (BackendBadParam "generateKey"
+              (label ++ " keygen length out of range " ++ show bound ++ ": " ++ show n)))
       GenEC ec
         | genCurveOk (ecCurve ec) ->
             pure (B.EngineOk (genPair seed ctr))
@@ -803,7 +812,7 @@ synthCaps = BackendCaps
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 72-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym DES3 16/24 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenSym BLAKE2B-512-HMAC 64 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenDHKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenSLHDSA opaque pairs; GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym DES3 16/24 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenSym BLAKE2B-512-HMAC 1-255 bytes; GenSym sweep labels per symKeygenBounds; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenDHKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenSLHDSA opaque pairs; GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -1258,6 +1267,7 @@ genSupported _ spec = case spec of
   GenSym "GENERIC" _ -> Nothing
   GenSym "BLAKE2B-512-HMAC" _ -> Nothing
   GenSym "ChaCha20" _ -> Nothing
+  GenSym label _ | label `elem` map fst symKeygenBounds -> Nothing
   GenEC ec | genCurveOk (ecCurve ec) -> Nothing
   GenRSA {} -> Nothing
   GenDSAParams p q

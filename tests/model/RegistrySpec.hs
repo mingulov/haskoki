@@ -219,6 +219,10 @@ caseCurated = do
     , MechanismId Gen.ckm_SHA3_512_RSA_PKCS_PSS
     , MechanismId Gen.ckm_SHA3_224_RSA_PKCS
     , MechanismId Gen.ckm_SHA3_224_RSA_PKCS_PSS
+    , MechanismId Gen.ckm_RC2_KEY_GEN
+    , MechanismId Gen.ckm_RC4_KEY_GEN
+    , MechanismId Gen.ckm_DES_KEY_GEN
+    , MechanismId Gen.ckm_DES2_KEY_GEN
     , MechanismId Gen.ckm_DES3_KEY_GEN
     , MechanismId Gen.ckm_DES3_ECB
     , MechanismId Gen.ckm_DES3_CBC
@@ -226,6 +230,7 @@ caseCurated = do
     , MechanismId Gen.ckm_DES3_MAC_GENERAL
     , MechanismId Gen.ckm_DES3_CMAC_GENERAL
     , MechanismId Gen.ckm_DES3_CMAC
+    , MechanismId Gen.ckm_CDMF_KEY_GEN
     , MechanismId Gen.ckm_MD5
     , MechanismId Gen.ckm_MD5_HMAC
     , MechanismId Gen.ckm_MD5_HMAC_GENERAL
@@ -252,16 +257,27 @@ caseCurated = do
     , MechanismId Gen.ckm_SHA3_256
     , MechanismId Gen.ckm_SHA3_256_HMAC
     , MechanismId Gen.ckm_SHA3_256_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA3_256_KEY_GEN
     , MechanismId Gen.ckm_SHA3_224
     , MechanismId Gen.ckm_SHA3_224_HMAC
     , MechanismId Gen.ckm_SHA3_224_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA3_224_KEY_GEN
     , MechanismId Gen.ckm_SHA3_384
     , MechanismId Gen.ckm_SHA3_384_HMAC
     , MechanismId Gen.ckm_SHA3_384_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA3_384_KEY_GEN
     , MechanismId Gen.ckm_SHA3_512
     , MechanismId Gen.ckm_SHA3_512_HMAC
     , MechanismId Gen.ckm_SHA3_512_HMAC_GENERAL
+    , MechanismId Gen.ckm_SHA3_512_KEY_GEN
+    , MechanismId Gen.ckm_CAST_KEY_GEN
+    , MechanismId Gen.ckm_CAST3_KEY_GEN
+    , MechanismId Gen.ckm_CAST128_KEY_GEN
+    , MechanismId Gen.ckm_RC5_KEY_GEN
+    , MechanismId Gen.ckm_IDEA_KEY_GEN
     , MechanismId Gen.ckm_GENERIC_SECRET_KEY_GEN
+    , MechanismId Gen.ckm_SSL3_PRE_MASTER_KEY_GEN
+    , MechanismId Gen.ckm_TLS_PRE_MASTER_KEY_GEN
     , MechanismId Gen.ckm_TLS_PRF
     , MechanismId Gen.ckm_SHA1_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA256_KEY_DERIVATION
@@ -273,10 +289,16 @@ caseCurated = do
     , MechanismId Gen.ckm_SHA3_384_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA3_512_KEY_DERIVATION
     , MechanismId Gen.ckm_PKCS5_PBKD2
+    , MechanismId Gen.ckm_WTLS_PRE_MASTER_KEY_GEN
+    , MechanismId Gen.ckm_CAMELLIA_KEY_GEN
     , MechanismId Gen.ckm_CAMELLIA_ECB
     , MechanismId Gen.ckm_CAMELLIA_CBC
+    , MechanismId Gen.ckm_ARIA_KEY_GEN
     , MechanismId Gen.ckm_ARIA_ECB
     , MechanismId Gen.ckm_ARIA_CBC
+    , MechanismId Gen.ckm_SEED_KEY_GEN
+    , MechanismId Gen.ckm_SKIPJACK_KEY_GEN
+    , MechanismId Gen.ckm_BATON_KEY_GEN
     , MechanismId Gen.ckm_EC_KEY_PAIR_GEN
     , MechanismId Gen.ckm_ECDSA
     , MechanismId Gen.ckm_ECDSA_SHA1
@@ -292,7 +314,9 @@ caseCurated = do
     , MechanismId Gen.ckm_ECDH1_COFACTOR_DERIVE
     , MechanismId Gen.ckm_EC_EDWARDS_KEY_PAIR_GEN
     , MechanismId Gen.ckm_EDDSA
+    , MechanismId Gen.ckm_JUNIPER_KEY_GEN
     , MechanismId Gen.ckm_AES_XTS
+    , MechanismId Gen.ckm_AES_XTS_KEY_GEN
     , MechanismId Gen.ckm_AES_KEY_GEN
     , MechanismId Gen.ckm_AES_ECB
     , MechanismId Gen.ckm_AES_CBC
@@ -303,8 +327,12 @@ caseCurated = do
     , MechanismId Gen.ckm_AES_CTS
     , MechanismId Gen.ckm_AES_CMAC
     , MechanismId Gen.ckm_AES_CMAC_GENERAL
+    , MechanismId Gen.ckm_BLOWFISH_KEY_GEN
+    , MechanismId Gen.ckm_TWOFISH_KEY_GEN
+    , MechanismId Gen.ckm_GOST28147_KEY_GEN
     , MechanismId Gen.ckm_CHACHA20_KEY_GEN
     , MechanismId Gen.ckm_CHACHA20
+    , MechanismId Gen.ckm_POLY1305_KEY_GEN
     , MechanismId Gen.ckm_DSA_PARAMETER_GEN
     , MechanismId Gen.ckm_AES_OFB
     , MechanismId Gen.ckm_AES_CFB8
@@ -313,6 +341,17 @@ caseCurated = do
     , MechanismId Gen.ckm_AES_KEY_WRAP
     , MechanismId Gen.ckm_AES_KEY_WRAP_PAD
     , MechanismId Gen.ckm_AES_KEY_WRAP_KWP
+    , MechanismId Gen.ckm_SHA_1_KEY_GEN
+    , MechanismId Gen.ckm_SHA224_KEY_GEN
+    , MechanismId Gen.ckm_SHA256_KEY_GEN
+    , MechanismId Gen.ckm_SHA384_KEY_GEN
+    , MechanismId Gen.ckm_SHA512_KEY_GEN
+    , MechanismId Gen.ckm_SHA512_224_KEY_GEN
+    , MechanismId Gen.ckm_SHA512_256_KEY_GEN
+    , MechanismId Gen.ckm_SHA512_T_KEY_GEN
+    , MechanismId Gen.ckm_BLAKE2B_160_KEY_GEN
+    , MechanismId Gen.ckm_BLAKE2B_256_KEY_GEN
+    , MechanismId Gen.ckm_BLAKE2B_384_KEY_GEN
     , MechanismId Gen.ckm_BLAKE2B_512
     , MechanismId Gen.ckm_BLAKE2B_512_HMAC
     , MechanismId Gen.ckm_BLAKE2B_512_HMAC_GENERAL
@@ -320,6 +359,8 @@ caseCurated = do
     , MechanismId Gen.ckm_BLAKE2B_512_KEY_GEN
     , MechanismId Gen.ckm_CHACHA20_POLY1305
     , MechanismId Gen.ckm_HKDF_DERIVE
+    , MechanismId Gen.ckm_HKDF_KEY_GEN
+    , MechanismId Gen.ckm_SALSA20_KEY_GEN
     ]
     (behaviorIds reg)
   -- The full header inventory (464 canonical ids) is folded in
@@ -361,11 +402,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 154 behavior + 310 catalog-only + catalog line.
+  -- schema + 196 behavior + 268 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 155
+  assertEqual "behavior line count" 196
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 309
+  assertEqual "catalog-only line count" 268
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -684,7 +725,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 309 (length invIds)
+  assertEqual "guard covers every catalog row" 268 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of

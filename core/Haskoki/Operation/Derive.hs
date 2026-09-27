@@ -7,9 +7,12 @@ effect whose concatenated answer 'finishWork' splits across the
 pending objects. Any invalid template — or a malformed frame —
 denies with zero objects published.
 
-Key derivation offers HKDF-Expand with HMAC-SHA-256 over the base
-key bytes (salt fixed empty, PRF fixed): the same base, context and
-lengths replay the same bytes on every backend offering HMAC-SHA-256.
+Key derivation offers HKDF with HMAC-SHA-256 (RFC 5869):
+expand-only over the base key bytes, or extract-then-expand with
+an explicit salt (empty salt extracts against HashLen zeros).
+The same base, salt, context and lengths replay the same bytes
+on every backend offering HMAC-SHA-256. Extract-only is refused:
+combine extract and expand.
 ECDH agreement (plain or cofactor, per the mechanism row) runs
 between the base EC key and the peer public key
 carried in the frame's info segment: the raw x-coordinate secret,
@@ -33,12 +36,15 @@ module Haskoki.Operation.Derive
   , maxDeriveInfo
   , encodeDeriveParams
   , decodeDeriveParams
+  , encodeHkdfInfo
+  , decodeHkdfInfo
   , planDerive
   ) where
 
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
+import Data.Word (Word8)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model (Model (..), ObjectState (..), SessionState)
@@ -160,6 +166,35 @@ decodeDeriveParams bs = do
       (rest, r2) <- takeTmpls (k - 1) r1
       pure (tmpl : rest, r2)
 
+-- | HKDF info segment: @mode:u8 saltLen:u16be salt context@.
+-- mode bit 0 selects extract, bit 1 selects expand; decoding
+-- fails closed on an empty stage set and on reserved bits.
+encodeHkdfInfo :: Word8 -> ByteString -> ByteString -> ByteString
+encodeHkdfInfo mode salt info =
+  BS.singleton mode <> u16be (BS.length salt) <> salt <> info
+  where
+    u16be n = BS.pack
+      [ fromIntegral (n `div` 256 `mod` 256)
+      , fromIntegral (n `mod` 256)
+      ]
+
+-- | Parse an HKDF info segment. Truncation, an overrun salt
+-- length, a missing stage and reserved mode bits all fail.
+decodeHkdfInfo :: ByteString -> Maybe (Word8, ByteString, ByteString)
+decodeHkdfInfo bs = do
+  (modeBs, r0) <- takeN 1 bs
+  (lenBs, r1) <- takeN 2 r0
+  let mode = BS.head modeBs
+      saltN = BS.foldl' (\acc x -> acc * 256 + fromIntegral x) 0 lenBs
+  if mode /= 0x01 && mode /= 0x02 && mode /= 0x03
+    then Nothing
+    else takeN saltN r1 >>= \(salt, ctx) -> Just (mode, salt, ctx)
+  where
+    takeN :: Int -> ByteString -> Maybe (ByteString, ByteString)
+    takeN n b
+      | BS.length b < n = Nothing
+      | otherwise = Just (BS.splitAt n b)
+
 -- | Plan one (possibly multi-key) derivation: the mechanism must be
 -- a derive mechanism (HKDF, ECDH, or KDF), the base handle must
 -- resolve to a visible key carrying the derive mark and stored
@@ -174,8 +209,9 @@ decodeDeriveParams bs = do
 -- base (a key-type contradiction outranks parameter shape); ECDH
 -- frames carry the agreement parameters ('ecdh-params/1') in the
 -- info segment and the derived total is capped by the base
--- curve's coordinate width; HKDF frames carry the context string,
--- capped by the HKDF-Expand ceiling. Admission gates with the
+-- curve's coordinate width; HKDF frames carry the mode/salt/context
+-- segment ('encodeHkdfInfo'), capped by the HKDF-Expand ceiling.
+-- Extract-only refuses; admission gates with the
 -- EXACT validated template count (post-validation: an
 -- unvalidated count could over-refuse).
 planDerive
@@ -185,12 +221,21 @@ planDerive rules model st mech baseH blob
   | mech == hkdfDeriveMech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      Just (info, tmpls) -> case resolveBase model st baseH of
-        Left deny -> KeyDenied deny
-        Right (ost, _) -> finish tmpls maxDerivedTotal
-          "derived total exceeds the HKDF-Expand ceiling"
-          (FxDerive mech (Just (osId ost)) BS.empty info)
-          Nothing
+      Just (infoSeg, tmpls) -> case decodeHkdfInfo infoSeg of
+        Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+          "malformed HKDF info segment")
+        Just (mode, salt, info)
+          | mode == 0x01 -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
+              "HKDF extract-only is not served; combine extract and expand")
+          | otherwise -> case resolveBase model st baseH of
+              Left deny -> KeyDenied deny
+              Right (ost, _) -> finish tmpls maxDerivedTotal
+                "derived total exceeds the HKDF-Expand ceiling"
+                (FxDerive mech (Just (osId ost)) (BS.singleton mode <> salt) info)
+                -- A missing length defaults to the SHA-256 hash
+                -- length: the mechanism doc says VALUE_LEN "should
+                -- be set" (non-mandatory), like the ECDH default.
+                (Just 32)
   | Just r <- ecdhRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -327,9 +372,10 @@ planDerive rules model st mech baseH blob
         -- agreement secret) default a missing length to that width
         -- (PKCS#11 v3.2 ECDH: "if it has one ... CKA_VALUE_LEN");
         -- the default is stamped so readback matches an explicit
-        -- template. Open-ended constructions (HKDF-Expand, PBKDF2)
-        -- and SHA-KDF over generic secrets keep INCOMPLETE (v3.2
-        -- SHA-KDF: generic secrets have no well-defined length).
+        -- template. Open-ended PBKDF2 and SHA-KDF over generic
+        -- secrets keep INCOMPLETE (v3.2 SHA-KDF: generic secrets
+        -- have no well-defined length); HKDF defaults to the hash
+        -- length (mechanism doc: VALUE_LEN "should be set").
         Nothing -> case defLen of
           Just n -> Right
             ( Map.insert AttrValueLen (ValULong (fromIntegral n)) attrs

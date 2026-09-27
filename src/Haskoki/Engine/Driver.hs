@@ -108,7 +108,8 @@ mechanism's ciphertext length); 'FxWrap'\/'FxUnwrap' run raw AES-CBC
 v1.5 takes empty parameters, OAEP the labeled params);
 'FxAuthWrap'\/'FxAuthUnwrap' compose AES-CBC
 with an HMAC-SHA-256 tag over @aad || ct@ under a domain-separated
-tag key; 'FxDerive' runs HKDF-Expand with HMAC-SHA-256 ('hkdfExpand')
+tag key; 'FxDerive' runs HKDF expand-only ('hkdfExpand') or
+extract-then-expand ('hkdfExtractExpand') with HMAC-SHA-256
 for the HKDF mechanism, backend ECDH agreement ('ecdhDerive',
 truncated to the planned length) for the ECDH mechanisms, digest
 ('runShaKd') for the SHA key-derivations, and the RFC 8018
@@ -162,7 +163,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
 import Control.Applicative ((<|>))
 import Control.Monad (guard)
-import Data.Bits ((.&.), (.|.), shiftL, shiftR, xor)
+import Data.Bits ((.&.), (.|.), popCount, shiftL, shiftR, xor)
 import Data.List (unsnoc)
 import Data.Word (Word64, Word8)
 import Data.Maybe (fromMaybe, isJust)
@@ -291,6 +292,47 @@ import Haskoki.Operation.KeyManagement
   , genericSecretKeyGenMech
   , hotpKeyGenMech
   , rsaKeyPairGenMech
+  , desKeyGenMech
+  , des2KeyGenMech
+  , cdmfKeyGenMech
+  , castKeyGenMech
+  , cast3KeyGenMech
+  , cast128KeyGenMech
+  , rc2KeyGenMech
+  , rc4KeyGenMech
+  , rc5KeyGenMech
+  , ideaKeyGenMech
+  , skipjackKeyGenMech
+  , batonKeyGenMech
+  , juniperKeyGenMech
+  , blowfishKeyGenMech
+  , twofishKeyGenMech
+  , gost28147KeyGenMech
+  , seedKeyGenMech
+  , ariaKeyGenMech
+  , camelliaKeyGenMech
+  , salsa20KeyGenMech
+  , poly1305KeyGenMech
+  , aesXtsKeyGenMech
+  , hkdfKeyGenMech
+  , sha1KeyGenMech
+  , sha224KeyGenMech
+  , sha256KeyGenMech
+  , sha384KeyGenMech
+  , sha512KeyGenMech
+  , sha512_224KeyGenMech
+  , sha512_256KeyGenMech
+  , sha512TKeyGenMech
+  , sha3_224KeyGenMech
+  , sha3_256KeyGenMech
+  , sha3_384KeyGenMech
+  , sha3_512KeyGenMech
+  , blake2b160KeyGenMech
+  , blake2b256KeyGenMech
+  , blake2b384KeyGenMech
+  , ssl3PremasterKeyGenMech
+  , tlsPremasterKeyGenMech
+  , wtlsPremasterKeyGenMech
   )
 import Haskoki.Operation.State (CipherDir (..))
 import Haskoki.Recipe.Cmac
@@ -1357,7 +1399,10 @@ runEffect env resolve fx = case fx of
   FxSignRecover {} -> pure (unsupported fx)
   FxVerifyRecover {} -> pure (unsupported fx)
   FxGenerateKey mech params input
-    | not (BS.null params) -> pure (GotCryptoError (CryptoFailed
+    | not (BS.null params)
+    , mech /= tlsPremasterKeyGenMech
+    , mech /= ssl3PremasterKeyGenMech
+    , mech /= wtlsPremasterKeyGenMech -> pure (GotCryptoError (CryptoFailed
         "driver: keygen takes no mechanism params"))
     | otherwise -> case decodeGenArgs input of
         Nothing -> pure (GotCryptoError (CryptoFailed
@@ -1379,6 +1424,18 @@ runEffect env resolve fx = case fx of
             toKeyPair <$> generateKey env (GenSym "ChaCha20" n)
           (m, GenBytes n) | m == genericSecretKeyGenMech ->
             toKeyPair <$> generateKey env (GenSym "GENERIC" n)
+          (m, GenBytes n) | Just label <- lookup m symKeygenLabels ->
+            toKeyPair <$> generateKey env (GenSym label n)
+          (m, GenParityBytes n) | Just label <- lookup m symKeygenLabels -> do
+            res <- generateKey env (GenSym label n)
+            pure (toParityPair res)
+          (m, GenTlsPremaster major minor)
+            | m == tlsPremasterKeyGenMech || m == ssl3PremasterKeyGenMech ->
+                toPrefixedPair (BS.pack [major, minor])
+                  <$> generateKey env (GenSym "TLS-PRE-MASTER" 46)
+          (m, GenWtlsPremaster ver n) | m == wtlsPremasterKeyGenMech ->
+            toPrefixedPair (BS.singleton ver)
+              <$> generateKey env (GenSym "WTLS-PRE-MASTER" (n - 1))
           (m, GenEc curve) | m == ecKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenEC (EcSpec (BC8.unpack curve) "DER"))
           (m, GenRsa bits e) | m == rsaKeyPairGenMech ->
@@ -1461,13 +1518,19 @@ runEffect env resolve fx = case fx of
           runAuthWrap False _mech key iv aad input
   FxDerive mech mkey params info outLen
     | mech == hkdfDeriveMech
-    , not (BS.null params) -> pure (GotCryptoError (CryptoFailed
-        "driver: derive takes no mechanism params"))
-    | mech == hkdfDeriveMech
     , outLen < 1 || outLen > 255 * 32 -> pure (GotCryptoError (CryptoFailed
         "driver: derive length out of range"))
     | mech == hkdfDeriveMech -> withKey mkey $ \key ->
-        toBytes <$> hkdfExpand env key info outLen
+        case BS.uncons params of
+          Just (mode, salt)
+            | mode == 0x02 || mode == 0x03 -> case key of
+                KeyBytes ikm
+                  | mode == 0x02 -> toBytes <$> hkdfExpand env key info outLen
+                  | otherwise -> toBytes <$> hkdfExtractExpand env ikm salt info outLen
+                _ -> pure (GotCryptoError (CryptoBadKey "driver"
+                  "HKDF base key is not byte material"))
+          _ -> pure (GotCryptoError (CryptoFailed
+            "driver: malformed HKDF mode/salt params"))
     | isEcdhMech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: ECDH derive takes no info string"))
@@ -2154,6 +2217,78 @@ cryptoToCore err = case err of
 -- | Keygen answers: the framed private half plus the optional public
 -- half. A backend reference (rather than owned material) cannot
 -- cross to the object store and fails loudly.
+--
+-- | Sweep keygens onto backend 'GenSym' labels (slice 11a): the
+-- planner admits lengths, the label only selects the backend's
+-- domain separation and bound mirror.
+symKeygenLabels :: [(MechanismId, String)]
+symKeygenLabels =
+  [ (desKeyGenMech, "DES")
+  , (des2KeyGenMech, "DES2")
+  , (cdmfKeyGenMech, "CDMF")
+  , (castKeyGenMech, "CAST")
+  , (cast3KeyGenMech, "CAST3")
+  , (cast128KeyGenMech, "CAST128")
+  , (rc2KeyGenMech, "RC2")
+  , (rc4KeyGenMech, "RC4")
+  , (rc5KeyGenMech, "RC5")
+  , (ideaKeyGenMech, "IDEA")
+  , (skipjackKeyGenMech, "SKIPJACK")
+  , (batonKeyGenMech, "BATON")
+  , (juniperKeyGenMech, "JUNIPER")
+  , (blowfishKeyGenMech, "BLOWFISH")
+  , (twofishKeyGenMech, "TWOFISH")
+  , (gost28147KeyGenMech, "GOST28147")
+  , (seedKeyGenMech, "SEED")
+  , (ariaKeyGenMech, "ARIA")
+  , (camelliaKeyGenMech, "CAMELLIA")
+  , (salsa20KeyGenMech, "SALSA20")
+  , (poly1305KeyGenMech, "POLY1305")
+  , (aesXtsKeyGenMech, "AES-XTS")
+  , (hkdfKeyGenMech, "HKDF")
+  , (sha1KeyGenMech, "SHA-1-HMAC")
+  , (sha224KeyGenMech, "SHA224-HMAC")
+  , (sha256KeyGenMech, "SHA256-HMAC")
+  , (sha384KeyGenMech, "SHA384-HMAC")
+  , (sha512KeyGenMech, "SHA512-HMAC")
+  , (sha512_224KeyGenMech, "SHA512-224-HMAC")
+  , (sha512_256KeyGenMech, "SHA512-256-HMAC")
+  , (sha512TKeyGenMech, "SHA512-T-HMAC")
+  , (sha3_224KeyGenMech, "SHA3-224-HMAC")
+  , (sha3_256KeyGenMech, "SHA3-256-HMAC")
+  , (sha3_384KeyGenMech, "SHA3-384-HMAC")
+  , (sha3_512KeyGenMech, "SHA3-512-HMAC")
+  , (blake2b160KeyGenMech, "BLAKE2B-160-HMAC")
+  , (blake2b256KeyGenMech, "BLAKE2B-256-HMAC")
+  , (blake2b384KeyGenMech, "BLAKE2B-384-HMAC")
+  ]
+
+-- | Parity keygen answers: the backend mints random bytes and the
+-- driver sets odd DES parity on the private half (FIPS 46-3),
+-- so both backends share one parity home.
+toParityPair :: EngineResult (KeyMaterial, Maybe KeyMaterial) -> CryptoResult
+toParityPair (EngineOk (priv, mPub)) = toKeyPair (EngineOk (parityMat priv, mPub))
+  where
+    parityMat (KeyBytes bs) = KeyBytes (setOddParity bs)
+    parityMat other = other
+toParityPair (EngineFail err) = GotCryptoError (toCryptoError err)
+
+-- | Set odd parity on every byte (DES key material).
+setOddParity :: ByteString -> ByteString
+setOddParity = BS.map setByte
+  where
+    setByte b
+      | odd (popCount b) = b
+      | otherwise = b `xor` 1
+
+-- | Prefixed keygen answers: the version bytes lead the
+-- backend-minted random tail (TLS/SSL3/WTLS pre-master).
+toPrefixedPair :: ByteString -> EngineResult (KeyMaterial, Maybe KeyMaterial) -> CryptoResult
+toPrefixedPair prefix (EngineOk (priv, mPub)) = toKeyPair (EngineOk (prefixMat priv, mPub))
+  where
+    prefixMat (KeyBytes bs) = KeyBytes (prefix <> bs)
+    prefixMat other = other
+toPrefixedPair _ (EngineFail err) = GotCryptoError (toCryptoError err)
 toKeyPair :: EngineResult (KeyMaterial, Maybe KeyMaterial) -> CryptoResult
 toKeyPair (EngineOk (priv, mPub)) = case (keyBytes priv, traverse keyBytes mPub) of
   (Just p, Just q) -> GotBytes (encodeKeyPair p q)
@@ -2243,6 +2378,21 @@ hkdfExpand env prk info outLen = go BS.empty 1 []
           case r of
             EngineFail err -> pure (EngineFail err)
             EngineOk t -> go t (ctr + 1) (t : acc)
+
+-- | HKDF extract-then-expand (RFC 5869) with HMAC-SHA-256: the
+-- base key bytes are the input keying material, an empty salt
+-- extracts against HashLen zeros (RFC 5869 section 2.2), and the
+-- extract output feeds 'hkdfExpand' over the context string.
+hkdfExtractExpand
+  :: CryptoBackend b
+  => BackendEnv b -> ByteString -> ByteString -> ByteString -> Int
+  -> IO (EngineResult ByteString)
+hkdfExtractExpand env ikm salt info outLen = do
+  let saltKey = KeyBytes (if BS.null salt then BS.replicate 32 0 else salt)
+  r <- macSign env hmacSpec saltKey ikm
+  case r of
+    EngineFail err -> pure (EngineFail err)
+    EngineOk prk -> hkdfExpand env (KeyBytes prk) info outLen
 
 -- | Verify-shaped answers: an authentication failure is a verdict,
 -- never a malfunction; any other backend failure keeps its

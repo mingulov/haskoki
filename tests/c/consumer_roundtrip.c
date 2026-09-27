@@ -1267,11 +1267,13 @@ int main(int argc, char **argv) {
       b2kg.ulParameterLen = 0;
       rv = f->C_GenerateKey(ssess, &b2kg, b2gtmpl, 6, &b2gkey);
       CHECKC(rv == CKR_OK && b2gkey != 0, "BLAKE2B-512 keygen ok");
+      /* HMAC keygens take a VALUE_LEN-sized key (slice 11a):
+       * 32 bytes mint where the old exact-64 arm refused. */
       b2vlen = 32;
       b2gkey = 0;
       rv = f->C_GenerateKey(ssess, &b2kg, b2gtmpl, 6, &b2gkey);
-      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT,
-             "BLAKE2B-512 keygen off-width refused");
+      CHECKC(rv == CKR_OK && b2gkey != 0,
+             "BLAKE2B-512 keygen short width ok");
       b2vlen = 64;
       rv = f->C_CreateObject(ssess, b2tmpl, 6, &b2h);
       CHECKC(rv == CKR_OK && b2h != 0, "BLAKE2B-512-HMAC key imports");
@@ -3014,7 +3016,10 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_OK && kwpUnwrapped != 0 && kwpUnwrapped != targetKey,
              "kwp unwrap mints a distinct key");
     }
-    /* HKDF-subset derive: expand-only, empty salt, SHA-256 PRF. */
+    /* HKDF derive: the PRF names the base hash (CKM_SHA256),
+     * expand-only and extract-and-expand served with NULL/DATA
+     * salt. Malformed calls refuse ARGUMENTS_BAD; well-formed but
+     * unserved profiles refuse MECHANISM_PARAM_INVALID. */
     {
       CK_ATTRIBUTE ktmpl[] = {
         { CKA_CLASS, &ckcls, sizeof(ckcls) },
@@ -3025,14 +3030,15 @@ int main(int argc, char **argv) {
       };
       CK_BYTE valA[32];
       CK_BYTE valB[32];
-      CK_BYTE saltByte = 0;
+      CK_BYTE valE[32];
+      CK_BYTE salt3[] = { 0x53, 0x41, 0x4C };
       CK_ATTRIBUTE get[1];
       dhkdf.mechanism = CKM_HKDF_DERIVE;
       dhkdf.pParameter = &hkdf;
       dhkdf.ulParameterLen = sizeof(hkdf);
       hkdf.bExtract = CK_FALSE;
       hkdf.bExpand = CK_TRUE;
-      hkdf.prfHashMechanism = CKM_SHA256_HMAC;
+      hkdf.prfHashMechanism = CKM_SHA256;
       hkdf.ulSaltType = CKF_HKDF_SALT_NULL;
       hkdf.pSalt = NULL_PTR;
       hkdf.ulSaltLen = 0;
@@ -3060,28 +3066,115 @@ int main(int argc, char **argv) {
       rv = f->C_GetAttributeValue(wsess, derived2, get, 1);
       CHECKC(rv == CKR_OK && memcmp(valA, valB, 32) != 0,
              "distinct infos derive distinct bytes");
+      /* Extract-and-expand with DATA salt is served. */
       hkdf.bExtract = CK_TRUE;
+      hkdf.ulSaltType = CKF_HKDF_SALT_DATA;
+      hkdf.pSalt = salt3;
+      hkdf.ulSaltLen = sizeof(salt3);
+      {
+        CK_OBJECT_HANDLE ext = 0;
+        rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &ext);
+        CHECKC(rv == CKR_OK && ext != 0, "extract-and-expand ok");
+        get[0].type = CKA_VALUE;
+        get[0].pValue = valE;
+        get[0].ulValueLen = sizeof(valE);
+        rv = f->C_GetAttributeValue(wsess, ext, get, 1);
+        CHECKC(rv == CKR_OK && memcmp(valB, valE, 32) != 0,
+               "extract changes the derived bytes");
+      }
+      /* Extract-and-expand against NULL salt (HashLen zeros). */
+      hkdf.ulSaltType = CKF_HKDF_SALT_NULL;
+      hkdf.pSalt = NULL_PTR;
+      hkdf.ulSaltLen = 0;
+      {
+        CK_OBJECT_HANDLE ext0 = 0;
+        rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &ext0);
+        CHECKC(rv == CKR_OK && ext0 != 0, "extract with NULL salt ok");
+      }
+      /* A missing length defaults to the hash length (32). */
+      {
+        CK_ATTRIBUTE noLen[] = {
+          { CKA_CLASS, &ckcls, sizeof(ckcls) },
+          { CKA_KEY_TYPE, &gkt, sizeof(gkt) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+          { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+        };
+        CK_OBJECT_HANDLE def = 0;
+        CK_BYTE valD[32];
+        rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, noLen, 4, &def);
+        CHECKC(rv == CKR_OK && def != 0, "missing length defaults ok");
+        get[0].type = CKA_VALUE;
+        get[0].pValue = valD;
+        get[0].ulValueLen = sizeof(valD);
+        rv = f->C_GetAttributeValue(wsess, def, get, 1);
+        CHECKC(rv == CKR_OK && get[0].ulValueLen == 32,
+               "defaulted VALUE reads 32 bytes");
+      }
+      /* Unserved profiles: HMAC PRF names the wrong kind. */
+      hkdf.bExtract = CK_FALSE;
+      hkdf.prfHashMechanism = CKM_SHA256_HMAC;
       {
         CK_OBJECT_HANDLE bad = 0;
         rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
-        CHECKC(rv == CKR_ARGUMENTS_BAD, "extract phase refused");
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "HMAC PRF refused typed");
         CHECKC(bad == 0, "refused derive writes no handle");
       }
-      hkdf.bExtract = CK_FALSE;
-      hkdf.prfHashMechanism = CKM_SHA512_HMAC;
+      hkdf.prfHashMechanism = CKM_SHA512;
       {
         CK_OBJECT_HANDLE bad = 0;
         rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
-        CHECKC(rv == CKR_ARGUMENTS_BAD, "non-SHA256 PRF refused");
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "non-SHA256 PRF refused typed");
       }
-      hkdf.prfHashMechanism = CKM_SHA256_HMAC;
-      hkdf.ulSaltType = CKF_HKDF_SALT_DATA;
-      hkdf.pSalt = &saltByte;
-      hkdf.ulSaltLen = 1;
+      /* Extract-only is a named unserved profile. */
+      hkdf.prfHashMechanism = CKM_SHA256;
+      hkdf.bExtract = CK_TRUE;
+      hkdf.bExpand = CK_FALSE;
       {
         CK_OBJECT_HANDLE bad = 0;
         rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
-        CHECKC(rv == CKR_ARGUMENTS_BAD, "non-empty salt refused");
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "extract-only refused typed");
+      }
+      /* Salt supplied as a key object is unserved. */
+      hkdf.bExpand = CK_TRUE;
+      hkdf.ulSaltType = CKF_HKDF_SALT_KEY;
+      hkdf.hSaltKey = sealedKey;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "salt-key refused typed");
+      }
+      hkdf.hSaltKey = 0;
+      /* Malformed calls stay ARGUMENTS_BAD. */
+      hkdf.ulSaltType = CKF_HKDF_SALT_NULL;
+      hkdf.bExtract = CK_FALSE;
+      hkdf.bExpand = CK_FALSE;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
+        CHECKC(rv == CKR_ARGUMENTS_BAD, "no stage selected refused");
+      }
+      hkdf.bExpand = CK_TRUE;
+      hkdf.ulSaltType = 0x99;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
+        CHECKC(rv == CKR_ARGUMENTS_BAD, "unknown salt type refused");
+      }
+      hkdf.ulSaltType = CKF_HKDF_SALT_DATA;
+      hkdf.pSalt = NULL_PTR;
+      hkdf.ulSaltLen = 3;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
+        /* The shim cannot marshal a dangling salt pointer, so it
+         * forwards empty salt and the empty-salt derive is served;
+         * direct callers see the malformed call refused. */
+        if (!isProxy) {
+          CHECKC(rv == CKR_ARGUMENTS_BAD, "NULL salt with length refused");
+        } else {
+          CHECKC(rv == CKR_OK && bad != 0,
+                 "proxied NULL salt arrives empty and derives");
+        }
       }
       decdh.mechanism = CKM_ECDH1_DERIVE;
       decdh.pParameter = NULL_PTR;

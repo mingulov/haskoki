@@ -169,6 +169,7 @@ spec = testGroup "Decoded requests"
   , testCase "Copy VALUE_LEN mismatch refuses" caseCopyValueLenMismatch
   , testCase "Modifiable data object flow" caseModifiableDataFlow
   , testCase "DecodedRequest Show redacts templates" caseShowRedacts
+  , testCase "Pre-master keygen forwards version params via C" casePremasterViaC
     ]
   , testGroup "async construction"
     [ testCase "Bytes job with FxDigestInit refused at submit" caseSubmitRefusesInit
@@ -765,9 +766,9 @@ caseRoRefusals = do
     rvDestroyT <- haskokiStdDestroyObject inst hRO (cuLongOf hT)
     assertEqual "RO token destroy" (CULong 0xB5) rvDestroyT
     -- Generate: session admits, token refuses.
-    rvGenS <- generateViaC inst hRO (MechanismId 0x1080) (frameOf aesGenTmpl)
+    rvGenS <- generateViaC inst hRO (MechanismId 0x1080) BS.empty (frameOf aesGenTmpl)
     assertEqual "RO session generate" (CULong 0) rvGenS
-    rvGenT <- generateViaC inst hRO (MechanismId 0x1080) (frameOf aesGenTokenTmpl)
+    rvGenT <- generateViaC inst hRO (MechanismId 0x1080) BS.empty (frameOf aesGenTokenTmpl)
     assertEqual "RO token generate" (CULong 0xB5) rvGenT
     -- Wrap is ungated (keys made over the RW session).
     (rvW, hW) <- createViaC inst hRW (frameOf wrapKeyTmpl)
@@ -995,7 +996,7 @@ caseSubmitAcceptsCoherent = do
     Right _ -> pure ()
     Left deny -> assertFailure ("coherent sign submit refused: " ++ show deny)
   st <- sessionOf m0 sid
-  (pw, fx) <- case planGenerateKey defaultRules m0 st aesKeyGenMech (aesTmpl 32) of
+  (pw, fx) <- case planGenerateKey defaultRules m0 st aesKeyGenMech BS.empty (aesTmpl 32) of
     KeyEffect pw0 fx0 -> pure (pw0, fx0)
     other -> assertFailure ("genkey is not an effect: " ++ show other)
   let keyJr = JobRequest
@@ -1111,7 +1112,7 @@ caseDriveRefusesMismatch = do
   (sid, m0) <- openSession defaultRules seeded
   enableAsyncSession table sid
   st <- sessionOf m0 sid
-  (pw, _) <- case planGenerateKey defaultRules m0 st aesKeyGenMech (aesTmpl 32) of
+  (pw, _) <- case planGenerateKey defaultRules m0 st aesKeyGenMech BS.empty (aesTmpl 32) of
     KeyEffect pw0 _ -> pure (pw0, ())
     other -> assertFailure ("genkey is not an effect: " ++ show other)
   -- Holdable (bytes-producing) but finisher-incoherent: a wrap
@@ -1161,7 +1162,7 @@ caseKeygenDoubleFault = do
   (sid, m1) <- openSession rulesB seeded
   mFull <- fillObjects rulesB sid 8 m1
   st <- sessionOf mFull sid
-  code <- denyCodeOf (planGenerateKey rulesB mFull st aesKeyGenMech contradictoryTmpl)
+  code <- denyCodeOf (planGenerateKey rulesB mFull st aesKeyGenMech BS.empty contradictoryTmpl)
   assertEqual "keygen double-fault code" CKR_TEMPLATE_INCONSISTENT code
 
 -- | Keypair generation at a full store refuses the validation
@@ -1300,18 +1301,46 @@ openRoSession inst slot =
     assertEqual "open RO rv" (CULong 0) rv
     peek phSession
 
+-- | Pre-master keygen through the C adapter: a 2-byte
+-- CK_VERSION parameter admits (TLS 0x374), a null parameter
+-- refuses PARAM_INVALID (0x71) — the funnel forwards params.
+casePremasterViaC :: IO ()
+casePremasterViaC = do
+  mTimed <- timeout 30000000 $ withManualInstance [slot0] $ \inst -> do
+    hRW <- openRwSession inst 0
+    rvOk <- generateViaC inst hRW (MechanismId 0x374)
+      (BS.pack [3, 3]) (frameOf premasterTmpl)
+    assertEqual "TLS pre-master via C" (CULong 0) rvOk
+    rvNull <- generateViaC inst hRW (MechanismId 0x374)
+      BS.empty (frameOf premasterTmpl)
+    assertEqual "TLS pre-master null params" (CULong 0x71) rvNull
+    rvStray <- generateViaC inst hRW (MechanismId 0x1080)
+      (BS.pack [3, 3]) (frameOf aesGenTmpl)
+    assertEqual "AES keygen stray params" (CULong 0x71) rvStray
+  case mTimed of
+    Nothing -> assertFailure "pre-master via C wedged (30s timeout)"
+    Just () -> pure ()
+  where
+    premasterTmpl =
+      [ (AttrClass, ValULong 4)
+      , (AttrKeyType, ValULong 0x10)
+      , (AttrValueLen, ValULong 48)
+      , (AttrToken, ValBool False)
+      ]
+
 -- | The C word behind an external handle.
 cuLongOf :: ExternalHandle -> CULong
 cuLongOf (ExternalHandle w) = CULong (fromIntegral w)
 
 -- | Generate one key through the C adapter; returns the CK_RV.
-generateViaC :: StablePtr StdInstance -> CULong -> MechanismId -> ByteString -> IO CULong
-generateViaC inst hSession (MechanismId mech) frame =
+generateViaC :: StablePtr StdInstance -> CULong -> MechanismId -> ByteString -> ByteString -> IO CULong
+generateViaC inst hSession (MechanismId mech) params frame =
   alloca $ \(phKey :: Ptr CULong) -> do
     poke phKey (CULong 0)
     BS.useAsCStringLen frame $ \(p, n) ->
-      haskokiStdGenerateKey inst hSession (CULong (fromIntegral mech))
-        (castPtr p) (fromIntegral n) phKey
+      BS.useAsCStringLen params $ \(pp, pn) ->
+        haskokiStdGenerateKey inst hSession (CULong (fromIntegral mech))
+          (castPtr p) (fromIntegral n) (castPtr pp) (fromIntegral pn) phKey
 
 -- | Wrap one key through the C adapter; returns the CK_RV.
 wrapViaC :: StablePtr StdInstance -> CULong -> MechanismId -> ByteString

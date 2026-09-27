@@ -244,6 +244,7 @@ import Haskoki.Operation.Cipher (cipherUpdateSplit)
 import Haskoki.Operation.Codec (encodeCancelInput, encodeVerifyInput)
 import Haskoki.Operation.Derive
   ( encodeDeriveParams
+  , encodeHkdfInfo
   , hkdfDeriveMech
   , planDerive
   )
@@ -2058,7 +2059,7 @@ haskokiStdDigestFinal ctx h pOut pLen =
 
 foreign export ccall "haskoki_std_generate_key" haskokiStdGenerateKey
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
-  -> Ptr CULong -> IO CULong
+  -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_generate_key_pair" haskokiStdGenerateKeyPair
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> Ptr CULong -> IO CULong
@@ -2125,26 +2126,28 @@ withSessionState inst (CULong h) k =
       Nothing -> pure (stdRvOf CKR_SESSION_HANDLE_INVALID)
       Just st -> k st
 
--- | Generate one secret key from a template frame. Keygen
--- mechanisms take no parameters (the planner builds
--- 'FxGenerateKey' with empty params), so the export carries the
--- mechanism id only.
+-- | Generate one secret key from a template frame. Only the
+-- pre-master keygens take mechanism parameters (the client
+-- version); the planner refuses params on every other keygen.
 haskokiStdGenerateKey
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
-  -> Ptr CULong -> IO CULong
-haskokiStdGenerateKey ctx h (CULong mech) pFrame (CULong frameLen) phKey =
+  -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
+haskokiStdGenerateKey ctx h (CULong mech) pFrame (CULong frameLen)
+    pParams (CULong paramsLen) phKey =
   withStdCtx ctx $ \inst ->
     if phKey == nullPtr
       then pure ckrArgsBad
       else withSessionState inst h $ \st -> do
         eTmpl <- readFrame pFrame (CULong frameLen)
-        case eTmpl of
-          Left ferr -> pure (frameErrorRV ferr)
-          Right entries -> do
+        eParams <- decodeInputBytes pParams paramsLen
+        case (eTmpl, eParams) of
+          (Left ferr, _) -> pure (frameErrorRV ferr)
+          (_, Left _) -> pure ckrArgsBad
+          (Right entries, Right params) -> do
             m <- snapshotModel (siEnv inst)
             eHs <- runKeyPlan inst m st
               (planGenerateKey (envRules (siEnv inst)) m st
-                (MechanismId (fromIntegral mech)) entries)
+                (MechanismId (fromIntegral mech)) params entries)
             case eHs of
               Left rv -> pure rv
               Right [oh] -> do
@@ -2781,7 +2784,8 @@ foreign export ccall "haskoki_std_unwrap_key" haskokiStdUnwrapKey
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_derive_hkdf" haskokiStdDeriveHkdf
-  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> CULong
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong
+  -> Ptr Word8 -> CULong -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_derive_opaque" haskokiStdDeriveOpaque
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
@@ -2971,22 +2975,25 @@ isOpaqueDeriveMech mid =
     Just r -> not (rkPbkd2 r)
     Nothing -> False
 
--- | HKDF-subset derive: the C side validates the Expand-only,
--- empty-salt, SHA-256-PRF subset and passes the info bytes; the
--- template frame carries the derived key shape (exactly one key).
+-- | HKDF derive: the C side classifies the parameters (served
+-- profiles only reach here) and passes the info bytes, the salt
+-- bytes and the stage mode; the template frame carries the
+-- derived key shape (exactly one key).
 haskokiStdDeriveHkdf
-  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> CULong
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong
+  -> Ptr Word8 -> CULong -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
-haskokiStdDeriveHkdf ctx h pInfo (CULong infoLen) (CULong baseH)
+haskokiStdDeriveHkdf ctx h pInfo (CULong infoLen)
+    pSalt (CULong saltLen) (CULong mode) (CULong baseH)
     pFrame (CULong frameLen) phKey =
   withStdCtx ctx $ \inst ->
     if phKey == nullPtr
       then pure ckrArgsBad
       else withSessionState inst h $ \st -> do
         eInfo <- decodeInputBytes pInfo infoLen
-        case eInfo of
-          Left _ -> pure ckrArgsBad
-          Right info -> do
+        eSalt <- decodeInputBytes pSalt saltLen
+        case (eInfo, eSalt) of
+          (Right info, Right salt) -> do
             eTmpl <- readFrame pFrame (CULong frameLen)
             case eTmpl of
               Left ferr -> pure (frameErrorRV ferr)
@@ -2995,8 +3002,10 @@ haskokiStdDeriveHkdf ctx h pInfo (CULong infoLen) (CULong baseH)
                 eHs <- runKeyPlan inst m st
                   (planDerive (envRules (siEnv inst)) m st hkdfDeriveMech
                     (ExternalHandle (fromIntegral baseH))
-                    (encodeDeriveParams info [entries]))
+                    (encodeDeriveParams
+                      (encodeHkdfInfo (fromIntegral mode) salt info) [entries]))
                 case eHs of
                   Left rv -> pure rv
                   Right [oh] -> poke phKey (CULong oh) >> pure ckrOk
                   Right _ -> pure ckrGeneralError
+          _ -> pure ckrArgsBad

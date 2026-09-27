@@ -523,7 +523,7 @@ caseSynthGenKey = withSynth $ \be -> do
   genA <- openLiveGen
   dcA <- mkDetached storeA
   mA <- snapshotModel (lgEnv genA)
-  (pw, fx) <- case planGenerateKey defaultRules mA (lgSession genA) aesKeyGenMech (aesTmpl 32) of
+  (pw, fx) <- case planGenerateKey defaultRules mA (lgSession genA) aesKeyGenMech BS.empty (aesTmpl 32) of
     KeyEffect pw0 fx0 -> pure (pw0, fx0)
     other -> assertFailure ("genkey is not an effect: " ++ show other)
   let reqA = JobRequest
@@ -733,7 +733,7 @@ caseNoAddresses = withSynth $ \be -> do
   jSign <- startPlannedCall gen JobSign F_Sign "Hi There" 32 1
   _ <- detachOk dc gen jSign JobSign
   m <- snapshotModel (lgEnv gen)
-  (pwK, fxK) <- case planGenerateKey defaultRules m (lgSession gen) aesKeyGenMech (aesTmpl 32) of
+  (pwK, fxK) <- case planGenerateKey defaultRules m (lgSession gen) aesKeyGenMech BS.empty (aesTmpl 32) of
     KeyEffect pw0 fx0 -> pure (pw0, fx0)
     other -> assertFailure ("genkey is not an effect: " ++ show other)
   let reqK = JobRequest

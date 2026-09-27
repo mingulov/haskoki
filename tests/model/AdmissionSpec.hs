@@ -24,7 +24,7 @@ import Haskoki.Model
   , lookupSession
   )
 import Haskoki.Object (decodeHandle, encodeTemplate)
-import Haskoki.Operation.Derive (encodeDeriveParams, hkdfDeriveMech, planDerive)
+import Haskoki.Operation.Derive (encodeDeriveParams, encodeHkdfInfo, hkdfDeriveMech, planDerive)
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
@@ -206,7 +206,7 @@ caseKeygenBound = do
   (sid, m1) <- openSession rulesB seeded
   mFull <- fillObjects rulesB sid 8 m1
   st <- sessionOf mFull sid
-  case planGenerateKey rulesB mFull st aesKeyGenMech (aesTmpl 32) of
+  case planGenerateKey rulesB mFull st aesKeyGenMech BS.empty (aesTmpl 32) of
     KeyDenied deny -> assertEqual "refusal code" CKR_HOST_MEMORY (kdCode deny)
     other -> assertFailure ("keygen planned at a full store: " ++ show other)
 
@@ -246,7 +246,7 @@ caseDeriveBound = do
   mFull <- fillObjects rulesB sid 7 m3
   assertEqual "filled to the bound" 8 (Map.size (mObjects mFull))
   st <- sessionOf mFull sid
-  let blob = encodeDeriveParams "derive-info" [soloTmpl]
+  let blob = encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "derive-info") [soloTmpl]
   case planDerive rulesB mFull st hkdfDeriveMech baseH blob of
     KeyDenied deny -> assertEqual "refusal code" CKR_HOST_MEMORY (kdCode deny)
     other -> assertFailure ("derive planned at a full store: " ++ show other)
@@ -289,7 +289,7 @@ caseDeriveHugeLength = do
   m2 <- loginAsUser rulesB m1 sid
   (baseH, m3) <- createBase m2 sid
   st <- sessionOf m3 sid
-  let blob = encodeDeriveParams "derive-info" [hugeTmpl]
+  let blob = encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "derive-info") [hugeTmpl]
   case planDerive rulesB m3 st hkdfDeriveMech baseH blob of
     KeyDenied deny -> do
       assertEqual "refusal code" CKR_TEMPLATE_INCONSISTENT (kdCode deny)

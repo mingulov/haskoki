@@ -279,8 +279,182 @@ no ECDH/HKDF counterpart test pins a different code).
 Currently xfail, asked upstream to accept
 `TEMPLATE_INCONSISTENT` or justify the narrower set.
 
+## P11C-005: BLAKE2B registry uses `CKK_GENERIC_SECRET` as the keygen template key type; 40 shared-mech legs xfail on correct `TEMPLATE_INCONSISTENT`
+
+**Severity**: medium (40 xfails per lane that should pass;
+masks real regressions in the shared mech files)
+**Component**: `src/pkcs11_check/testcases/mechanism_registry/_hmac.py`
+(BLAKE2b block) + keygen template construction in
+`src/pkcs11_check/testcases/mechanism_helpers.py`
+**Found**: 2026-09-27 (slice 11a keygen sweep, fast r44/r45)
+
+All 16 BLAKE2B registry entries carry
+`key_type=CKK_GENERIC_SECRET`:
+
+```python
+registry[CKM_BLAKE2B_512_HMAC] = MechConfig(
+    key_type=CKK_GENERIC_SECRET,
+    keygen_mech=CKM_BLAKE2B_512_KEY_GEN,
+    ...
+)
+registry[CKM_BLAKE2B_512_KEY_GEN] = MechConfig(
+    key_type=CKK_GENERIC_SECRET,
+    keygen_mech=CKM_BLAKE2B_512_KEY_GEN,
+    ...
+)
+```
+
+(and likewise for the 160/256/384 widths and the
+`_HMAC_GENERAL` / `_KEY_DERIVE` entries), while every
+SHA-family HMAC entry carries its typed `CKK_SHA*_HMAC`.
+The keygen path stamps the registry key type straight
+into the template (`mechanism_helpers.py`:
+
+```python
+key_type = config.key_type
+...
+if key_type is not None:
+    attrs[CKA_KEY_TYPE] = key_type
+```
+
+), so every shared-mech leg calls
+`C_GenerateKey(CKM_BLAKE2B_*_KEY_GEN)` with
+`CKA_KEY_TYPE=CKK_GENERIC_SECRET` in the template.
+
+Per the OASIS sources
+(`working/doc/spec/hash_based_message_authentication_codes.md`),
+`CKM_<hash>_KEY_GEN` "generates HMAC keys of key type
+**CKK_\<hash\>_HMAC**" and "contributes the **CKA_CLASS**,
+**CKA_KEY_TYPE**, and **CKA_VALUE** attributes to the new
+key" — a template-supplied `CKA_KEY_TYPE` that disagrees
+must fail with `CKR_TEMPLATE_INCONSISTENT`. Haskoki
+answers exactly that (uniform central keygen planner);
+the framework records it as a runtime-reject xfail:
+
+```text
+XFailed: BLAKE2B_512_KEY_GEN keygen rejected at runtime:
+CKR_TEMPLATE_INCONSISTENT
+```
+
+Affected legs (fast r45, 40 total, identical ids in
+r44): `test_mech_attribute.py` 16 (`test_key_type_matches_template`,
+`test_local_flag_on_generated_key`,
+`test_token_flag_matches_template`, `test_class_attribute`
+x 4 widths), `test_mech_keygen.py` 8
+(`test_generate_key`, `test_local_flag` x 4 widths),
+`test_mech_multipart.py` 4, `test_mech_negative.py` 8,
+`test_mech_sign.py` 4 (all keyed on the 512-bit HMAC
+entries, failing at the shared keygen step).
+
+Subtlety (recorded so the fix lands in the right
+place): generic-secret keys are NOT illegal for the
+HMAC operation itself — the same spec section says "The
+HMAC secret key shall correspond to the PKCS #11
+generic secret key type or the mechanism specific key
+types". The defect is only the *keygen template*: keys
+usable with `CKM_BLAKE2B_*_HMAC` cannot be *created*
+by `CKM_BLAKE2B_*_KEY_GEN` under a generic-secret
+`CKA_KEY_TYPE`.
+
+Expected: the four `CKM_BLAKE2B_*_KEY_GEN` registry
+entries (and the keygen step of the HMAC/HMAC_GENERAL
+entries, which generates via the typed keygen) request
+the typed `CKK_BLAKE2B_*_HMAC` key types, matching the
+SHA-family shape; the sign legs then run against typed
+keys, which the spec allows.
+
+Downstream handling: Haskoki triages these 40 as
+known-external (`docs/pkcs11-oracle-triage.md`, Round
+22) and confirms by test id that no other failure
+hides behind the count. No module-side change: the
+typed `CKK_BLAKE2B_*_HMAC` key types exist in the v3.2
+headers (0x3a–0x3d), Haskoki's keygen plan matches
+them, and the rejection code is the spec-mandated one.
+(The 6 remaining `test_blake2.py` xfails are separate
+Haskoki RV-choice/behavior notes, not part of this
+filing.)
+
+## P11C-006: WTLS pre-master keygen fixtures omit the required version parameter and encode `CK_BBOOL` attributes as 8-byte `CK_ULONG`; 3 HARD-FAILs
+
+**Severity**: high (3 failing tests in every lane since the
+WTLS keygen row was advertised; masks real regressions)
+**Component**: `src/pkcs11_check/testcases/test_wtls.py`
+(`TestWTLSPreMasterKeyGen`)
+**Found**: 2026-09-27 (slice 11a keygen sweep, fast r44/r45)
+
+All three keygen tests build the mechanism with
+`mech_simple` (NULL params, length 0 — `raw/pack.py:462`)
+and encode the four boolean template attributes with
+`attr_ulong` (8-byte `CK_ULONG` — `raw/pack.py:272`):
+
+```python
+mech = mech_simple(CKM_WTLS_PRE_MASTER_KEY_GEN)
+tmpl = template(
+    attr_ulong(CKA_KEY_TYPE, CKK_GENERIC_SECRET),
+    attr_ulong(CKA_VALUE_LEN, 20),
+    attr_ulong(CKA_CLASS, CKO_SECRET_KEY),
+    attr_ulong(CKA_DERIVE, 1),
+    attr_ulong(CKA_SENSITIVE, 0),
+    attr_ulong(CKA_EXTRACTABLE, 1),
+    attr_ulong(CKA_TOKEN, 0),
+)
+```
+
+(identical shape at lines 628, 722, 814). Two
+independent spec violations:
+
+1. `CKM_WTLS_PRE_MASTER_KEY_GEN` "has one parameter, a
+   **CK_BYTE**, which provides the client's WTLS
+   version" (OASIS `working/doc/spec/wtls.md:251).
+   The fixture passes no parameter at all.
+2. `CKA_DERIVE` / `CKA_SENSITIVE` / `CKA_EXTRACTABLE` /
+   `CKA_TOKEN` are `CK_BBOOL` (1 byte); the fixture
+   sends 8-byte `CK_ULONG` values. The framework's own
+   `attr_bool` (`raw/pack.py:261`) is the correct
+   encoder.
+
+Failure record (identical ids in r44/r45):
+
+```text
+test_wtls.py::TestWTLSPreMasterKeyGen::test_generate_pre_master_key
+test_wtls.py::TestWTLSPreMasterKeyGen::test_generate_yields_non_zero_material
+test_wtls.py::TestWTLSPreMasterKeyGen::test_two_generated_keys_differ
+CkrAssertionError: Unexpected CK_RV CKR_TEMPLATE_INCONSISTENT;
+expected one of: CKR_OK
+```
+
+Proof the module is correct and the fixtures are the
+defect: a corrected scratch fixture
+(`mech_bytes(CKM_WTLS_PRE_MASTER_KEY_GEN, b"\x01")` +
+`attr_bool` for the four flags) passes 4/4 against the
+*unmodified* release bundle
+(`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-wtls-fixed-r1.json`:
+4 passed / 0 failed). Haskoki's `TEMPLATE_INCONSISTENT`
+comes from its central template planner (the template
+carries undecodable attributes); the filing asserts the
+fixture malformation, proven by the corrected fixture
+passing — not that 0xD1 is the only valid code for the
+malformed call.
+
+Expected: the three tests pass the 1-byte version
+parameter and use `attr_bool` for the boolean
+attributes, after which they should pass against
+any compliant module.
+
+Downstream handling: Haskoki triages these 3 as
+known-external (`docs/pkcs11-oracle-triage.md`, Round
+22) and confirms by test id that no other failure
+hides behind the count. No module-side change.
+
 ## Observations (not issues)
 
+- **`mech_hkdf` docstring/comment says
+  `CKF_HKDF_SALT_KEY = 3`** (`raw/pack_mechanisms.py:707`
+  comment + docstring example); the real value is
+  `0x00000004` per the framework's own
+  `raw/types_std.py:2516` (bit flags 1/2/4). Comment-only:
+  no caller passes an explicit `salt_type` (all use the
+  correct 1/2 default), so zero lane impact. Not filed.
 - **Wycheproof XTS tc1–tc120 labeled "valid" with 1–15-byte
   tweaks**: inexpressible in PKCS#11 (the `CKM_AES_XTS` tweak
   parameter is fixed 16 bytes), so every compliant module must

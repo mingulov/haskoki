@@ -947,13 +947,13 @@ dDES3KeyGen = promotedDesc "CKM_DES3_KEY_GEN" allBaselines FamilyKeyGen
 
 -- | @CKM_BLAKE2B_512_KEY_GEN@: mechanism parameters are NULL;
 -- the length arrives via the @CKA_VALUE_LEN@ template attribute
--- (exactly 64 bytes, the digest width), not via pParameter.
--- Arrived in 3.0.
+-- (1-255 bytes: HMAC keygens take a VALUE_LEN-sized key per the
+-- standard, not the digest width). Arrived in 3.0.
 dBlake2b512KeyGen :: Descriptor
 dBlake2b512KeyGen = promotedDesc "CKM_BLAKE2B_512_KEY_GEN"
   [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyKeyGen
   noParams [synthRoute OpGenerateKey "CKM_BLAKE2B_512_KEY_GEN"]
-  KeyBits 512 512
+  KeyBits 8 2040
 
 -- | @CKM_CHACHA20_KEY_GEN@: mechanism parameters are NULL; the
 -- length arrives via the @CKA_VALUE_LEN@ template attribute
@@ -972,6 +972,76 @@ dGenericSecretKeyGen :: Descriptor
 dGenericSecretKeyGen = promotedDesc "CKM_GENERIC_SECRET_KEY_GEN" allBaselines FamilyKeyGen
   noParams [synthRoute OpGenerateKey "CKM_GENERIC_SECRET_KEY_GEN"]
   KeyBits 8 2040
+
+-- | The keygen sweep (slice 11a): one descriptor per reviewed
+-- fixed, discrete and ranged symmetric keygen. Mechanism
+-- parameters are NULL throughout; the length arrives via
+-- @CKA_VALUE_LEN@ (fixed sizes default when absent). Bounds are
+-- bits, mirroring the planner table.
+keygenSweepDescs :: [Descriptor]
+keygenSweepDescs = map mkSweep keygenSweepRows
+  where
+    mkSweep (name, baseline, lo, hi) = promotedDesc name baseline FamilyKeyGen
+      noParams [synthRoute OpGenerateKey name]
+      KeyBits lo hi
+    v3 = [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
+    keygenSweepRows =
+      [ ("CKM_DES_KEY_GEN", allBaselines, 64, 64)
+      , ("CKM_DES2_KEY_GEN", allBaselines, 128, 128)
+      , ("CKM_CDMF_KEY_GEN", allBaselines, 64, 64)
+      , ("CKM_IDEA_KEY_GEN", allBaselines, 128, 128)
+      , ("CKM_SEED_KEY_GEN", allBaselines, 128, 128)
+      , ("CKM_SKIPJACK_KEY_GEN", allBaselines, 96, 96)
+      , ("CKM_BATON_KEY_GEN", allBaselines, 320, 320)
+      , ("CKM_JUNIPER_KEY_GEN", allBaselines, 320, 320)
+      , ("CKM_GOST28147_KEY_GEN", allBaselines, 256, 256)
+      , ("CKM_SALSA20_KEY_GEN", v3, 256, 256)
+      , ("CKM_POLY1305_KEY_GEN", v3, 256, 256)
+      , ("CKM_ARIA_KEY_GEN", allBaselines, 128, 256)
+      , ("CKM_CAMELLIA_KEY_GEN", allBaselines, 128, 256)
+      , ("CKM_TWOFISH_KEY_GEN", allBaselines, 128, 256)
+      , ("CKM_AES_XTS_KEY_GEN", allBaselines, 256, 512)
+      , ("CKM_CAST_KEY_GEN", allBaselines, 8, 64)
+      , ("CKM_CAST3_KEY_GEN", allBaselines, 8, 64)
+      , ("CKM_CAST128_KEY_GEN", allBaselines, 8, 128)
+      , ("CKM_RC2_KEY_GEN", allBaselines, 8, 1024)
+      , ("CKM_RC4_KEY_GEN", allBaselines, 8, 2040)
+      , ("CKM_RC5_KEY_GEN", allBaselines, 8, 2040)
+      , ("CKM_BLOWFISH_KEY_GEN", allBaselines, 32, 448)
+      , ("CKM_HKDF_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA_1_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA224_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA256_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA384_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA512_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA512_224_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA512_256_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA512_T_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA3_224_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA3_256_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA3_384_KEY_GEN", v3, 8, 2040)
+      , ("CKM_SHA3_512_KEY_GEN", v3, 8, 2040)
+      , ("CKM_BLAKE2B_160_KEY_GEN", v3, 8, 2040)
+      , ("CKM_BLAKE2B_256_KEY_GEN", v3, 8, 2040)
+      , ("CKM_BLAKE2B_384_KEY_GEN", v3, 8, 2040)
+      ]
+
+-- | The pre-master keygens (slice 11a, phase 2): unlike the
+-- sweep, these take mechanism parameters (the client version:
+-- @CK_VERSION@ for TLS/SSL3, one @CK_BYTE@ for WTLS), and the
+-- version bytes lead the generic secret.
+premasterDescs :: [Descriptor]
+premasterDescs =
+  [ (promotedDesc "CKM_TLS_PRE_MASTER_KEY_GEN" allBaselines FamilyKeyGen
+      (ParameterCodec "ck-version" 1) [synthRoute OpGenerateKey "CKM_TLS_PRE_MASTER_KEY_GEN"]
+      KeyBits 384 384)
+  , (promotedDesc "CKM_SSL3_PRE_MASTER_KEY_GEN" allBaselines FamilyKeyGen
+      (ParameterCodec "ck-version" 1) [synthRoute OpGenerateKey "CKM_SSL3_PRE_MASTER_KEY_GEN"]
+      KeyBits 384 384)
+  , (promotedDesc "CKM_WTLS_PRE_MASTER_KEY_GEN" allBaselines FamilyKeyGen
+      (ParameterCodec "ck-byte" 1) [synthRoute OpGenerateKey "CKM_WTLS_PRE_MASTER_KEY_GEN"]
+      KeyBits 160 2040)
+  ]
 
 -- | The block-cipher behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from
@@ -1101,7 +1171,7 @@ dDsaParameterGen = promotedDesc "CKM_DSA_PARAMETER_GEN" allBaselines FamilyKeyGe
 dHkdfDerive :: Descriptor
 dHkdfDerive = promotedDesc "CKM_HKDF_DERIVE"
   [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyDerive
-  (ParameterCodec "hkdf-expand-params" 1)
+  (ParameterCodec "hkdf-params" 2)
   [mechRoute OpDerive "CKM_HKDF_DERIVE" ["A20", "A37", "A39"]]
   MechanismSpecific 0 0
 
@@ -1176,7 +1246,7 @@ curatedRegistry =
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160, dBLAKE2B_512
-        ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ rsaPkcs1Descs
+        ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
           ++ cmacDescs ++ des3macDescs ++ kdfDescs ++ tlsPrfDescs ++ otpDescs
       )

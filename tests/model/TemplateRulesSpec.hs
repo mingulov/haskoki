@@ -24,6 +24,7 @@ Template rules are data: @TEMPLATE_RULES@ in
 {-# LANGUAGE OverloadedStrings #-}
 module TemplateRulesSpec (spec) where
 
+import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import Data.Word (Word64)
 import Test.Tasty (TestTree, testGroup)
@@ -368,7 +369,7 @@ testSession = SessionState
 caseAesMissingLen :: IO ()
 caseAesMissingLen = do
   let tmpl = [(AttrClass, ValULong ckoSecretKey)]
-  case planGenerateKey defaultRules emptyModel testSession aesKeyGenMech tmpl of
+  case planGenerateKey defaultRules emptyModel testSession aesKeyGenMech BS.empty tmpl of
     KeyDenied (KeyDeny code reason) -> do
       assertEqual "incomplete code" CKR_TEMPLATE_INCOMPLETE code
       assertEqual "rule-citing reason"
@@ -460,7 +461,7 @@ casePairDisagree = do
 caseHotpMissingLen :: IO ()
 caseHotpMissingLen = do
   let tmpl = [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong ckkHotp)]
-  case planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech tmpl of
+  case planGenerateKey defaultRules emptyModel testSession hotpKeyGenMech BS.empty tmpl of
     KeyDenied (KeyDeny code reason) -> do
       assertEqual "incomplete code" CKR_TEMPLATE_INCOMPLETE code
       assertEqual "rule-citing reason"
@@ -514,7 +515,7 @@ caseClasslessAesKeygen = do
     Right attrs -> assertEqual "implied class"
       (Just (ValULong ckoSecretKey)) (Map.lookup AttrClass attrs)
     other -> assertFailure ("must accept, got: " ++ show other)
-  case planGenerateKey defaultRules emptyModel testSession aesKeyGenMech tmpl of
+  case planGenerateKey defaultRules emptyModel testSession aesKeyGenMech BS.empty tmpl of
     KeyEffect _ _ -> pure ()
     other -> assertFailure ("must plan, got: " ++ show other)
 

@@ -5644,14 +5644,28 @@
       "canonical_name": "CKM_RC2_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 1024
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL (effective-bits params live on the cipher ops, not keygen); the length arrives via CKA_VALUE_LEN (1-128 bytes). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000100",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-128-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_RC2_KEY_GEN",
@@ -5660,12 +5674,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -5812,14 +5857,28 @@
       "canonical_name": "CKM_RC4_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes: the ceiling is the one-byte GenBytes planner-driver frame). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000110",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_RC4_KEY_GEN",
@@ -5828,12 +5887,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -5868,14 +5958,28 @@
       "canonical_name": "CKM_DES_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 64,
+        "max_key_size": 64
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; fixed 8-byte CKK_DES keys with parity bits set per FIPS 46-3 (driver-side, both backends). Weak keys may mint (token-dependent per the standard). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000120",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-8-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES_KEY_GEN",
@@ -5884,12 +5988,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -6036,14 +6171,28 @@
       "canonical_name": "CKM_DES2_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 128,
+        "max_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; fixed 16-byte double-length CKK_DES2 keys with parity bits set per FIPS 46-3 (driver-side, both backends). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000130",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-16-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES2_KEY_GEN",
@@ -6052,12 +6201,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -6701,14 +6881,28 @@
       "canonical_name": "CKM_CDMF_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 64,
+        "max_key_size": 64
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; fixed 8-byte CKK_CDMF keys with parity bits set per FIPS 46-3 (driver-side, both backends). Weak keys may mint (token-dependent per the standard). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000140",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-8-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CDMF_KEY_GEN",
@@ -6717,12 +6911,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -9322,14 +9547,28 @@
       "canonical_name": "CKM_SHA3_256_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x000002b3",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA3_256_KEY_GEN",
@@ -9338,12 +9577,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -9587,14 +9857,28 @@
       "canonical_name": "CKM_SHA3_224_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x000002b8",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA3_224_KEY_GEN",
@@ -9603,12 +9887,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -9852,14 +10167,28 @@
       "canonical_name": "CKM_SHA3_384_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x000002c3",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA3_384_KEY_GEN",
@@ -9868,12 +10197,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -10117,14 +10477,28 @@
       "canonical_name": "CKM_SHA3_512_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x000002d3",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA3_512_KEY_GEN",
@@ -10133,26 +10507,71 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_CAST_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 64
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-8 bytes). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000300",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-8-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST_KEY_GEN",
@@ -10161,12 +10580,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -10313,14 +10763,28 @@
       "canonical_name": "CKM_CAST3_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 64
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-8 bytes). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000310",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-8-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST3_KEY_GEN",
@@ -10329,12 +10793,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -10483,14 +10978,28 @@
       "canonical_name": "CKM_CAST128_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-16 bytes). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000320",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-16-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST128_KEY_GEN",
@@ -10499,12 +11008,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [
@@ -10661,14 +11201,28 @@
       "canonical_name": "CKM_RC5_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL (wordsize/rounds params live on the cipher ops, not keygen); the length arrives via CKA_VALUE_LEN (1-255 bytes). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000330",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_RC5_KEY_GEN",
@@ -10677,12 +11231,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -10829,14 +11414,28 @@
       "canonical_name": "CKM_IDEA_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 128,
+        "max_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; fixed 16-byte CKK_IDEA keys. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000340",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-16-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_IDEA_KEY_GEN",
@@ -10845,12 +11444,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -11205,14 +11835,28 @@
       "canonical_name": "CKM_SSL3_PRE_MASTER_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 384,
+        "max_key_size": 384
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: the 2-byte CK_VERSION parameter is required and its bytes lead the 48-byte CKK_GENERIC_SECRET key; a missing CKA_VALUE_LEN defaults to 48 (mirrors TLS). Planner pinned (KeyManagementSpec caseTlsPremasterKeygen/caseSsl3PremasterKeygen/caseWtlsPremasterKeygen + DecodedRequestSpec casePremasterViaC); backends mint the random tail under TLS-PRE-MASTER/WTLS-PRE-MASTER labels (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000370",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-48-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "ck-version/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SSL3_PRE_MASTER_KEY_GEN",
@@ -11221,12 +11865,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -11317,14 +11992,28 @@
       "canonical_name": "CKM_TLS_PRE_MASTER_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 384,
+        "max_key_size": 384
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: the 2-byte CK_VERSION parameter is required and its bytes lead the 48-byte CKK_GENERIC_SECRET key; a missing CKA_VALUE_LEN defaults to 48. Planner pinned (KeyManagementSpec caseTlsPremasterKeygen/caseSsl3PremasterKeygen/caseWtlsPremasterKeygen + DecodedRequestSpec casePremasterViaC); backends mint the random tail under TLS-PRE-MASTER/WTLS-PRE-MASTER labels (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000374",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-48-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "ck-version/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS_PRE_MASTER_KEY_GEN",
@@ -11333,12 +12022,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -12886,14 +13606,28 @@
       "canonical_name": "CKM_WTLS_PRE_MASTER_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 160,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: the 1-byte version parameter is required and leads a variable-length (20-255 byte) CKK_GENERIC_SECRET key; CKA_VALUE_LEN is required. Planner pinned (KeyManagementSpec caseTlsPremasterKeygen/caseSsl3PremasterKeygen/caseWtlsPremasterKeygen + DecodedRequestSpec casePremasterViaC); backends mint the random tail under TLS-PRE-MASTER/WTLS-PRE-MASTER labels (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x000003d0",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-20-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "ck-byte/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_WTLS_PRE_MASTER_KEY_GEN",
@@ -12902,12 +13636,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -13502,14 +14267,28 @@
       "canonical_name": "CKM_CAMELLIA_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 128,
+        "max_key_size": 256
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (16/24/32 bytes). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000550",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-16-24-32-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAMELLIA_KEY_GEN",
@@ -13518,12 +14297,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -13886,14 +14696,28 @@
       "canonical_name": "CKM_ARIA_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 128,
+        "max_key_size": 256
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (16/24/32 bytes). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000560",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-16-24-32-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_ARIA_KEY_GEN",
@@ -13902,12 +14726,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -14242,14 +15097,28 @@
       "canonical_name": "CKM_SEED_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 128,
+        "max_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; fixed 16-byte CKK_SEED keys. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00000650",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-16-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SEED_KEY_GEN",
@@ -14258,12 +15127,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -14466,14 +15366,28 @@
       "canonical_name": "CKM_SKIPJACK_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 96,
+        "max_key_size": 96
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; fixed 12-byte CKK_SKIPJACK MEK per the key-object table (content opaque: cipher unserved). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00001000",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-12-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SKIPJACK_KEY_GEN",
@@ -14482,12 +15396,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -14886,14 +15831,28 @@
       "canonical_name": "CKM_BATON_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 320,
+        "max_key_size": 320
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; fixed 40-byte CKK_BATON MEK. The 160 checksum bits mint random: the checksum algorithm is not in the standard. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00001030",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-40-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BATON_KEY_GEN",
@@ -14902,12 +15861,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -16451,14 +17441,28 @@
       "canonical_name": "CKM_JUNIPER_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 320,
+        "max_key_size": 320
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; fixed 40-byte CKK_JUNIPER MEK. The 160 checksum bits mint random: the checksum algorithm is not in the standard. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00001060",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-40-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_JUNIPER_KEY_GEN",
@@ -16467,12 +17471,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -16741,14 +17776,28 @@
       "canonical_name": "CKM_AES_XTS_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 256,
+        "max_key_size": 512
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (32/64 bytes: double-length CKK_AES_XTS keys). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00001072",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-32-64-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_XTS_KEY_GEN",
@@ -16757,12 +17806,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17856,14 +18936,28 @@
       "canonical_name": "CKM_BLOWFISH_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 32,
+        "max_key_size": 448
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (4-56 bytes: 32-448 bits). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00001090",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-4-56-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BLOWFISH_KEY_GEN",
@@ -17872,12 +18966,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17912,14 +19037,28 @@
       "canonical_name": "CKM_TWOFISH_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 128,
+        "max_key_size": 256
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (16/24/32 bytes: the three Twofish key sizes). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00001092",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-16-24-32-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TWOFISH_KEY_GEN",
@@ -17928,12 +19067,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -18388,14 +19558,28 @@
       "canonical_name": "CKM_GOST28147_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 256,
+        "max_key_size": 256
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; fixed 32-byte CKK_GOST28147 keys (little-endian order per the key table). CKA_GOST28147_PARAMS is unserved. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00001220",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-32-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_GOST28147_KEY_GEN",
@@ -18404,12 +19588,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -18680,14 +19895,28 @@
       "canonical_name": "CKM_POLY1305_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 256,
+        "max_key_size": 256
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; fixed 32-byte CKK_POLY1305 keys (256 bits; no keygen prose in the standard beyond the key table). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00001227",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-32-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_POLY1305_KEY_GEN",
@@ -18696,12 +19925,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -19838,14 +21098,28 @@
       "canonical_name": "CKM_SHA_1_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00004003",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA_1_KEY_GEN",
@@ -19854,26 +21128,71 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SHA224_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00004004",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA224_KEY_GEN",
@@ -19882,26 +21201,71 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SHA256_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00004005",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA256_KEY_GEN",
@@ -19910,26 +21274,71 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SHA384_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00004006",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA384_KEY_GEN",
@@ -19938,26 +21347,71 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SHA512_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00004007",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA512_KEY_GEN",
@@ -19966,26 +21420,71 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SHA512_224_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00004008",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA512_224_KEY_GEN",
@@ -19994,26 +21493,71 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SHA512_256_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00004009",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA512_256_KEY_GEN",
@@ -20022,26 +21566,71 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SHA512_T_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x0000400a",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA512_T_KEY_GEN",
@@ -20050,12 +21639,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -20202,14 +21822,28 @@
       "canonical_name": "CKM_BLAKE2B_160_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: same output-length prose gap as the BLAKE2B digests; see source-issues.json GAP-BLAKE2B.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00004010",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BLAKE2B_160_KEY_GEN",
@@ -20218,12 +21852,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -20342,14 +22007,28 @@
       "canonical_name": "CKM_BLAKE2B_256_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: same output-length prose gap as the BLAKE2B digests; see source-issues.json GAP-BLAKE2B.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x00004015",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BLAKE2B_256_KEY_GEN",
@@ -20358,12 +22037,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -20482,14 +22192,28 @@
       "canonical_name": "CKM_BLAKE2B_384_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: same output-length prose gap as the BLAKE2B digests; see source-issues.json GAP-BLAKE2B.",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width. Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x0000401a",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BLAKE2B_384_KEY_GEN",
@@ -20498,12 +22222,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -20821,10 +22576,10 @@
           "CKF_GENERATE"
         ],
         "key_size_unit": "bits",
-        "max_key_size": 512,
-        "min_key_size": 512
+        "max_key_size": 2040,
+        "min_key_size": 8
       },
-      "notes": "BLAKE2B-512 HMAC keygen: mints CKK_BLAKE2B_512_HMAC keys at exactly 64 bytes via CKA_VALUE_LEN (the per-width keygen split fixes the size; other lengths are inconsistent, a missing length incomplete). Planner pinned (KeyManagementSpec).",
+      "notes": "Reviewed: mechanism parameters are NULL; the length arrives via CKA_VALUE_LEN (1-255 bytes). HMAC keygens take a VALUE_LEN-sized key per the standard, not the digest width (fixed-64 widened in slice 11a). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x0000401f",
       "routes": [
         {
@@ -20832,7 +22587,7 @@
             "A37"
           ],
           "key_constraints": [
-            "value-len-64-bytes"
+            "value-len-1-255-bytes"
           ],
           "operation": "generate-key",
           "output_rule": "synthetic-keygen/v1",
@@ -20855,13 +22610,23 @@
       "test_evidence": [
         {
           "artifact": "haskoki-model-tests/KeyManagementSpec",
-          "build_id": "blake2b-512",
+          "build_id": "keygen-sweep",
           "case_id": "A37"
         },
         {
           "artifact": "haskoki-model-tests/RegistrySpec",
-          "build_id": "blake2b-512",
+          "build_id": "keygen-sweep",
           "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
         },
         {
           "case_id": "A42",
@@ -21228,7 +22993,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "HKDF-Expand-SHA256 construction (salt fixed empty, PRF fixed; Derive.hs framing). Real KAT pinned by KeyManagementSpec caseRealHkdfVector (RFC 5869 A.1).",
+      "notes": "Reviewed: HKDF-SHA256 (RFC 5869) expand-only and extract-and-expand with NULL/DATA salt (empty salt extracts against HashLen zeros); the PRF names the base hash (CKM_SHA256). A missing CKA_VALUE_LEN defaults to the hash length (32), stamped like the ECDH default. Refused typed (CKR_MECHANISM_PARAM_INVALID): other PRFs, salt-as-key, extract-only. Malformed calls (no stage selected, unknown salt type, dangling salt/info pointers) refuse CKR_ARGUMENTS_BAD. Planner pinned (KeyManagementSpec caseHkdfInfoCodec/caseHkdfExtractOnlyRefused, RecipeEcdhSpec HKDF default); real KATs caseRealHkdfVector (A.1 expand) and caseRealHkdfExtractExpand (A.1/A.3 full); C-surface matrix in tests/c/consumer_roundtrip.c.",
       "numeric_id": "0x0000402a",
       "routes": [
         {
@@ -21238,11 +23003,11 @@
             "A39"
           ],
           "key_constraints": [
-            "hmac-sha256-empty-salt"
+            "hmac-sha256-salt-null-or-data"
           ],
           "operation": "derive",
-          "output_rule": "hkdf-expand-sha256/v1",
-          "parameter_codec": "hkdf-expand-params/1"
+          "output_rule": "hkdf-sha256/v2",
+          "parameter_codec": "hkdf-params/2"
         }
       ],
       "source_refs": [
@@ -21324,14 +23089,28 @@
       "canonical_name": "CKM_HKDF_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 8,
+        "max_key_size": 2040
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; CKA_VALUE_LEN is required (1-255 bytes). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x0000402c",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-1-255-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_HKDF_KEY_GEN",
@@ -21340,26 +23119,71 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SALSA20_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 256,
+        "max_key_size": 256
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Reviewed: mechanism parameters are NULL; fixed 32-byte CKK_SALSA20 keys (256 bits). Planner pinned (KeyManagementSpec caseKeygenSweep); backends mirror bounds (SyntheticSpec caseKeygen, OpenSSLSpec caseSymKeygen sweep legs). Real execution is libctx DRBG bytes; synthetic is the seeded PRF stream.",
       "numeric_id": "0x0000402d",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-32-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SALSA20_KEY_GEN",
@@ -21368,12 +23192,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "keygen-sweep",
+          "case_id": "A37"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

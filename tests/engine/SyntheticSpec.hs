@@ -662,6 +662,12 @@ caseKeygen = do
   (KeyBytes kc, Nothing) <- expectOk "gen chacha20" =<< generateKey envA (GenSym "ChaCha20" 32)
   assertEqual "chacha20 length" 32 (BS.length kc)
   expectBadParam "chacha20-16 rejected" =<< generateKey envA (GenSym "ChaCha20" 16)
+  -- BLAKE2B-512-HMAC widened to VALUE_LEN sizes (slice 11a).
+  (KeyBytes kb2, Nothing) <- expectOk "gen blake2b512-32" =<< generateKey envA (GenSym "BLAKE2B-512-HMAC" 32)
+  assertEqual "blake2b512-32 length" 32 (BS.length kb2)
+  expectBadParam "blake2b512-0 rejected" =<< generateKey envA (GenSym "BLAKE2B-512-HMAC" 0)
+  -- Sweep labels mint with planner-mirrored bounds (slice 11a).
+  mapM_ (checkSweepLabel envA) sweepLabelBounds
   expectUnsupported "hmac gen unsupported" =<< generateKey envA (GenSym "HMAC" 32)
   -- EC: P-256 pairs only. Fresh same-seed backends replaying the
   -- same call sequence agree bit-for-bit.
@@ -696,6 +702,62 @@ caseKeygen = do
   expectBadParam "rsa-1024 refused" =<< generateKey envF (GenRSA 1024 65537)
   expectBadParam "rsa even exponent refused" =<< generateKey envF (GenRSA 2048 4)
   mapM_ closeBackend [envA, envB, envC, envD, envE, envF, envG]
+
+-- | (label, good lengths, bad lengths) for the sweep keygens.
+sweepLabelBounds :: [(String, [Int], [Int])]
+sweepLabelBounds =
+  [ ("DES", [8], [0, 7, 9])
+  , ("DES2", [16], [0, 15, 17])
+  , ("CDMF", [8], [0, 7, 9])
+  , ("IDEA", [16], [0, 15, 17])
+  , ("SEED", [16], [0, 15, 17])
+  , ("SKIPJACK", [12], [0, 10, 13])
+  , ("BATON", [40], [0, 32, 41])
+  , ("JUNIPER", [40], [0, 32, 41])
+  , ("GOST28147", [32], [0, 16, 33])
+  , ("SALSA20", [32], [0, 16, 33])
+  , ("POLY1305", [32], [0, 16, 33])
+  , ("ARIA", [16, 24, 32], [0, 8, 20, 40])
+  , ("CAMELLIA", [16, 24, 32], [0, 8, 20, 40])
+  , ("TWOFISH", [16, 24, 32], [0, 8, 20, 40])
+  , ("AES-XTS", [32, 64], [0, 16, 48, 65])
+  , ("CAST", [1, 4, 8], [0, 9])
+  , ("CAST3", [1, 4, 8], [0, 9])
+  , ("CAST128", [1, 8, 16], [0, 17])
+  , ("RC2", [1, 64, 128], [0, 129])
+  , ("RC4", [1, 128, 255], [0, 256])
+  , ("RC5", [1, 128, 255], [0, 256])
+  , ("BLOWFISH", [4, 32, 56], [0, 3, 57])
+  , ("HKDF", [1, 128, 255], [0, 256])
+  , ("SHA-1-HMAC", [1, 32, 255], [0, 256])
+  , ("SHA224-HMAC", [1, 32, 255], [0, 256])
+  , ("SHA256-HMAC", [1, 32, 255], [0, 256])
+  , ("SHA384-HMAC", [1, 48, 255], [0, 256])
+  , ("SHA512-HMAC", [1, 64, 255], [0, 256])
+  , ("SHA512-224-HMAC", [1, 28, 255], [0, 256])
+  , ("SHA512-256-HMAC", [1, 32, 255], [0, 256])
+  , ("SHA512-T-HMAC", [1, 32, 255], [0, 256])
+  , ("SHA3-224-HMAC", [1, 28, 255], [0, 256])
+  , ("SHA3-256-HMAC", [1, 32, 255], [0, 256])
+  , ("SHA3-384-HMAC", [1, 48, 255], [0, 256])
+  , ("SHA3-512-HMAC", [1, 64, 255], [0, 256])
+  , ("BLAKE2B-160-HMAC", [1, 20, 255], [0, 256])
+  , ("BLAKE2B-256-HMAC", [1, 32, 255], [0, 256])
+  , ("BLAKE2B-384-HMAC", [1, 48, 255], [0, 256])
+  , ("TLS-PRE-MASTER", [46], [0, 45, 47])
+  , ("WTLS-PRE-MASTER", [19, 128, 254], [0, 18, 255])
+  ]
+
+checkSweepLabel :: BackendEnv Synthetic -> (String, [Int], [Int]) -> IO ()
+checkSweepLabel env (label, good, bad) = do
+  mapM_ mint good
+  mapM_ refuse bad
+  where
+    mint n = do
+      (KeyBytes ks, Nothing) <- expectOk ("gen " ++ label) =<< generateKey env (GenSym label n)
+      assertEqual (label ++ " length") n (BS.length ks)
+    refuse n = expectBadParam (label ++ "-" ++ show n ++ " rejected")
+      =<< generateKey env (GenSym label n)
 
 caseRegistry :: IO ()
 caseRegistry = withSynth "11" $ \env -> do

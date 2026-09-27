@@ -14,7 +14,7 @@ suite.
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagementSpec (spec) where
 
-import Data.Bits ((.&.), complement, shiftR)
+import Data.Bits ((.&.), complement, popCount, shiftR)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
@@ -81,7 +81,9 @@ import Haskoki.Operation
   )
 import Haskoki.Operation.Derive
   ( decodeDeriveParams
+  , decodeHkdfInfo
   , encodeDeriveParams
+  , encodeHkdfInfo
   , hkdfDeriveMech
   , planDerive
   )
@@ -120,6 +122,44 @@ import Haskoki.Operation.KeyManagement
   , ckkMlKem
   , ckkRsa
   , ckkX9_42Dh
+  , ckkAesXts
+  , ckkDes
+  , ckkDes2
+  , ckkCdmf
+  , ckkCast
+  , ckkCast3
+  , ckkCast128
+  , ckkRc2
+  , ckkRc4
+  , ckkRc5
+  , ckkIdea
+  , ckkSkipjack
+  , ckkBaton
+  , ckkJuniper
+  , ckkBlowfish
+  , ckkTwofish
+  , ckkGost28147
+  , ckkSeed
+  , ckkAria
+  , ckkCamellia
+  , ckkSalsa20
+  , ckkPoly1305
+  , ckkHkdf
+  , ckkSha1Hmac
+  , ckkSha224Hmac
+  , ckkSha256Hmac
+  , ckkSha384Hmac
+  , ckkSha512Hmac
+  , ckkSha512_224Hmac
+  , ckkSha512_256Hmac
+  , ckkSha512THmac
+  , ckkSha3_224Hmac
+  , ckkSha3_256Hmac
+  , ckkSha3_384Hmac
+  , ckkSha3_512Hmac
+  , ckkBlake2b160Hmac
+  , ckkBlake2b256Hmac
+  , ckkBlake2b384Hmac
   , ckoDomainParameters
   , ckoPrivateKey
   , ckoPublicKey
@@ -147,6 +187,47 @@ import Haskoki.Operation.KeyManagement
   , planAuthWrapKey
   , planGenerateKey
   , planGenerateKeyPair
+  , desKeyGenMech
+  , des2KeyGenMech
+  , cdmfKeyGenMech
+  , castKeyGenMech
+  , cast3KeyGenMech
+  , cast128KeyGenMech
+  , rc2KeyGenMech
+  , rc4KeyGenMech
+  , rc5KeyGenMech
+  , ideaKeyGenMech
+  , skipjackKeyGenMech
+  , batonKeyGenMech
+  , juniperKeyGenMech
+  , blowfishKeyGenMech
+  , twofishKeyGenMech
+  , gost28147KeyGenMech
+  , seedKeyGenMech
+  , ariaKeyGenMech
+  , camelliaKeyGenMech
+  , salsa20KeyGenMech
+  , poly1305KeyGenMech
+  , aesXtsKeyGenMech
+  , hkdfKeyGenMech
+  , sha1KeyGenMech
+  , sha224KeyGenMech
+  , sha256KeyGenMech
+  , sha384KeyGenMech
+  , sha512KeyGenMech
+  , sha512_224KeyGenMech
+  , sha512_256KeyGenMech
+  , sha512TKeyGenMech
+  , sha3_224KeyGenMech
+  , sha3_256KeyGenMech
+  , sha3_384KeyGenMech
+  , sha3_512KeyGenMech
+  , blake2b160KeyGenMech
+  , blake2b256KeyGenMech
+  , blake2b384KeyGenMech
+  , ssl3PremasterKeyGenMech
+  , tlsPremasterKeyGenMech
+  , wtlsPremasterKeyGenMech
   , planUnwrapKey
   , policyFromObject
   , planWrapKey
@@ -201,7 +282,11 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Short-buffer encaps creates no key" caseKemEncapsShort
   , testCase "AES keygen delivers one handle" caseAesKeygen
   , testCase "DES3 keygen delivers one handle" caseDes3Keygen
-  , testCase "BLAKE2B-512 keygen mints 64 bytes" caseBlake2b512Keygen
+  , testCase "BLAKE2B-512 keygen mints variable lengths" caseBlake2b512Keygen
+  , testCase "Keygen sweep mints typed material per table" caseKeygenSweep
+  , testCase "TLS pre-master keygen embeds the client version" caseTlsPremasterKeygen
+  , testCase "SSL3 pre-master keygen embeds the client version" caseSsl3PremasterKeygen
+  , testCase "WTLS pre-master keygen embeds the version byte" caseWtlsPremasterKeygen
   , testCase "ChaCha20 keygen mints 32 bytes" caseChacha20Keygen
   , testCase "AES keygen refuses PQC wrap flags" caseAesKeygenEncapsulate
   , testCase "Init enforces the allowed-mechanism list" caseInitAllowedMechanisms
@@ -237,6 +322,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Multi-key derive delivers N handles" caseDeriveMulti
   , testCase "Invalid additional template publishes zero objects" caseDeriveInvalidExtra
   , testCase "Derive codec round-trips and rejects malformed frames" caseDeriveCodec
+  , testCase "HKDF info codec round-trips mode/salt/context" caseHkdfInfoCodec
   , testCase "Decaps recovers the secret as one handle" caseKemDecaps
   , testCase "KEM key/ciphertext mismatches fail closed" caseKemMismatch
   , testCase "Wrap key/parameter mismatches fail closed" caseWrapMismatch
@@ -267,6 +353,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real P-521 keypair generates and signs" caseRealEcKeygen521
   , testCase "Real wrap matches SP 800-38A and round-trips" caseRealWrapVector
   , testCase "Real derive matches RFC 5869" caseRealHkdfVector
+  , testCase "Real derive extracts then expands (RFC 5869 A.1/A.3)" caseRealHkdfExtractExpand
+  , testCase "HKDF extract-only refuses mechanism-param-invalid" caseHkdfExtractOnlyRefused
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
   , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
   , testCase "KEM refuses wrong key types inconsistent" caseKemWrongKeyType
@@ -549,7 +637,7 @@ iv16 = "0123456789abcdef"
 genAesKey :: (Model -> CryptoEffect -> IO CryptoResult)
   -> Model -> SessionState -> [(AttributeType, AttributeValue)]
   -> IO (Model, ExternalHandle)
-genAesKey answer m st tmpl = case planGenerateKey defaultRules m st aesKeyGenMech tmpl of
+genAesKey answer m st tmpl = case planGenerateKey defaultRules m st aesKeyGenMech BS.empty tmpl of
   KeyEffect pw fx -> do
     res <- answer m fx
     c <- finishCommit m st pw res 1
@@ -575,7 +663,7 @@ aesTmpl n =
 genDes3Key :: (Model -> CryptoEffect -> IO CryptoResult)
   -> Model -> SessionState -> [(AttributeType, AttributeValue)]
   -> IO (Model, ExternalHandle)
-genDes3Key answer m st tmpl = case planGenerateKey defaultRules m st des3KeyGenMech tmpl of
+genDes3Key answer m st tmpl = case planGenerateKey defaultRules m st des3KeyGenMech BS.empty tmpl of
   KeyEffect pw fx -> do
     res <- answer m fx
     c <- finishCommit m st pw res 1
@@ -827,7 +915,7 @@ caseDes3Keygen = withSynth $ \answer -> do
   case keyBytesOf ost2 of
     Just mat2 -> assertEqual "DES3 two-key material" 16 (BS.length mat2)
     Nothing -> assertFailure "generated key lacks material"
-  case planGenerateKey defaultRules m2 st des3KeyGenMech (des3Tmpl 32) of
+  case planGenerateKey defaultRules m2 st des3KeyGenMech BS.empty (des3Tmpl 32) of
     KeyDenied deny -> assertEqual "bad length code"
       CKR_TEMPLATE_INCONSISTENT (kdCode deny)
     other -> assertFailure ("32-byte DES3 must refuse: " ++ show other)
@@ -849,13 +937,34 @@ caseBlake2b512Keygen = withSynth $ \answer -> do
   case keyBytesOf ost of
     Just mat -> assertEqual "BLAKE2B-512 material" 64 (BS.length mat)
     Nothing -> assertFailure "generated key lacks material"
-  -- Off-width refuses inconsistent; a missing length refuses
-  -- incomplete (exact-64, the HOTP explicit-length precedent).
-  case planGenerateKey defaultRules m1 st blake2b512KeyGenMech (blake2b512Tmpl 32) of
-    KeyDenied deny -> assertEqual "bad length code"
+  -- HMAC keygens take a VALUE_LEN-sized key (spec 6.x: "with a
+  -- particular length in bytes, as specified in CKA_VALUE_LEN"),
+  -- so 32 bytes mint; empty and over-frame refuse
+  -- inconsistent, and a missing length refuses incomplete.
+  (m2, h2) <- genBlake2b512Key answer m1 st (blake2b512Tmpl 32)
+  Just ost2 <- pure (resolveHandle m2 h2)
+  case keyBytesOf ost2 of
+    Just mat2 -> assertEqual "BLAKE2B-512 short material" 32 (BS.length mat2)
+    Nothing -> assertFailure "generated key lacks material"
+  (m3, h3) <- genBlake2b512Key answer m2 st (blake2b512Tmpl 1)
+  Just ost3 <- pure (resolveHandle m3 h3)
+  case keyBytesOf ost3 of
+    Just mat3 -> assertEqual "BLAKE2B-512 minimal material" 1 (BS.length mat3)
+    Nothing -> assertFailure "generated key lacks material"
+  (m4, h4) <- genBlake2b512Key answer m3 st (blake2b512Tmpl 255)
+  Just ost4 <- pure (resolveHandle m4 h4)
+  case keyBytesOf ost4 of
+    Just mat4 -> assertEqual "BLAKE2B-512 maximal material" 255 (BS.length mat4)
+    Nothing -> assertFailure "generated key lacks material"
+  case planGenerateKey defaultRules m4 st blake2b512KeyGenMech BS.empty (blake2b512Tmpl 0) of
+    KeyDenied deny -> assertEqual "empty length code"
       CKR_TEMPLATE_INCONSISTENT (kdCode deny)
-    other -> assertFailure ("32-byte BLAKE2B-512 must refuse: " ++ show other)
-  case planGenerateKey defaultRules m1 st blake2b512KeyGenMech
+    other -> assertFailure ("0-byte BLAKE2B-512 must refuse: " ++ show other)
+  case planGenerateKey defaultRules m4 st blake2b512KeyGenMech BS.empty (blake2b512Tmpl 256) of
+    KeyDenied deny -> assertEqual "over-frame length code"
+      CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure ("256-byte BLAKE2B-512 must refuse: " ++ show other)
+  case planGenerateKey defaultRules m4 st blake2b512KeyGenMech BS.empty
       [a | a@(t, _) <- blake2b512Tmpl 64, t /= AttrValueLen] of
     KeyDenied deny -> assertEqual "missing length code"
       CKR_TEMPLATE_INCOMPLETE (kdCode deny)
@@ -866,7 +975,7 @@ caseBlake2b512Keygen = withSynth $ \answer -> do
 genBlake2b512Key :: (Model -> CryptoEffect -> IO CryptoResult)
   -> Model -> SessionState -> [(AttributeType, AttributeValue)]
   -> IO (Model, ExternalHandle)
-genBlake2b512Key answer m st tmpl = case planGenerateKey defaultRules m st blake2b512KeyGenMech tmpl of
+genBlake2b512Key answer m st tmpl = case planGenerateKey defaultRules m st blake2b512KeyGenMech BS.empty tmpl of
   KeyEffect pw fx -> do
     res <- answer m fx
     c <- finishCommit m st pw res 1
@@ -898,11 +1007,11 @@ caseChacha20Keygen = withSynth $ \answer -> do
     Nothing -> assertFailure "generated key lacks material"
   -- Off-width refuses inconsistent; a missing length refuses
   -- incomplete (exact-32, the HOTP explicit-length precedent).
-  case planGenerateKey defaultRules m1 st chacha20KeyGenMech (chacha20Tmpl 16) of
+  case planGenerateKey defaultRules m1 st chacha20KeyGenMech BS.empty (chacha20Tmpl 16) of
     KeyDenied deny -> assertEqual "bad length code"
       CKR_TEMPLATE_INCONSISTENT (kdCode deny)
     other -> assertFailure ("16-byte ChaCha20 must refuse: " ++ show other)
-  case planGenerateKey defaultRules m1 st chacha20KeyGenMech
+  case planGenerateKey defaultRules m1 st chacha20KeyGenMech BS.empty
       [a | a@(t, _) <- chacha20Tmpl 32, t /= AttrValueLen] of
     KeyDenied deny -> assertEqual "missing length code"
       CKR_TEMPLATE_INCOMPLETE (kdCode deny)
@@ -912,7 +1021,7 @@ caseChacha20Keygen = withSynth $ \answer -> do
 genChacha20Key :: (Model -> CryptoEffect -> IO CryptoResult)
   -> Model -> SessionState -> [(AttributeType, AttributeValue)]
   -> IO (Model, ExternalHandle)
-genChacha20Key answer m st tmpl = case planGenerateKey defaultRules m st chacha20KeyGenMech tmpl of
+genChacha20Key answer m st tmpl = case planGenerateKey defaultRules m st chacha20KeyGenMech BS.empty tmpl of
   KeyEffect pw fx -> do
     res <- answer m fx
     c <- finishCommit m st pw res 1
@@ -931,11 +1040,306 @@ chacha20Tmpl n =
   , (AttrDecrypt, ValBool True)
   ]
 
+-- ---------------------------------------------------------------------------
+-- Keygen sweep (slice 11a)
+-- ---------------------------------------------------------------------------
+
+-- | Sweep length shapes: fixed sizes mint the headline length when
+-- @CKA_VALUE_LEN@ is absent; discrete and ranged shapes require it.
+data SweepLens
+  = SweepFixed Int
+  | SweepDiscrete [Int]
+  | SweepRange Int Int
+  deriving (Eq, Show)
+
+-- | (label, mechanism, key type, lengths, DES-parity?).
+keygenSweepTable :: [(String, MechanismId, Word64, SweepLens, Bool)]
+keygenSweepTable =
+  [ ("DES", desKeyGenMech, ckkDes, SweepFixed 8, True)
+  , ("DES2", des2KeyGenMech, ckkDes2, SweepFixed 16, True)
+  , ("CDMF", cdmfKeyGenMech, ckkCdmf, SweepFixed 8, True)
+  , ("IDEA", ideaKeyGenMech, ckkIdea, SweepFixed 16, False)
+  , ("SEED", seedKeyGenMech, ckkSeed, SweepFixed 16, False)
+  , ("SKIPJACK", skipjackKeyGenMech, ckkSkipjack, SweepFixed 12, False)
+  , ("BATON", batonKeyGenMech, ckkBaton, SweepFixed 40, False)
+  , ("JUNIPER", juniperKeyGenMech, ckkJuniper, SweepFixed 40, False)
+  , ("GOST28147", gost28147KeyGenMech, ckkGost28147, SweepFixed 32, False)
+  , ("SALSA20", salsa20KeyGenMech, ckkSalsa20, SweepFixed 32, False)
+  , ("POLY1305", poly1305KeyGenMech, ckkPoly1305, SweepFixed 32, False)
+  , ("ARIA", ariaKeyGenMech, ckkAria, SweepDiscrete [16, 24, 32], False)
+  , ("CAMELLIA", camelliaKeyGenMech, ckkCamellia, SweepDiscrete [16, 24, 32], False)
+  , ("TWOFISH", twofishKeyGenMech, ckkTwofish, SweepDiscrete [16, 24, 32], False)
+  , ("AES-XTS", aesXtsKeyGenMech, ckkAesXts, SweepDiscrete [32, 64], False)
+  , ("CAST", castKeyGenMech, ckkCast, SweepRange 1 8, False)
+  , ("CAST3", cast3KeyGenMech, ckkCast3, SweepRange 1 8, False)
+  , ("CAST128", cast128KeyGenMech, ckkCast128, SweepRange 1 16, False)
+  , ("RC2", rc2KeyGenMech, ckkRc2, SweepRange 1 128, False)
+  , ("RC4", rc4KeyGenMech, ckkRc4, SweepRange 1 255, False)
+  , ("RC5", rc5KeyGenMech, ckkRc5, SweepRange 1 255, False)
+  , ("BLOWFISH", blowfishKeyGenMech, ckkBlowfish, SweepRange 4 56, False)
+  , ("HKDF", hkdfKeyGenMech, ckkHkdf, SweepRange 1 255, False)
+  , ("SHA-1-HMAC", sha1KeyGenMech, ckkSha1Hmac, SweepRange 1 255, False)
+  , ("SHA224-HMAC", sha224KeyGenMech, ckkSha224Hmac, SweepRange 1 255, False)
+  , ("SHA256-HMAC", sha256KeyGenMech, ckkSha256Hmac, SweepRange 1 255, False)
+  , ("SHA384-HMAC", sha384KeyGenMech, ckkSha384Hmac, SweepRange 1 255, False)
+  , ("SHA512-HMAC", sha512KeyGenMech, ckkSha512Hmac, SweepRange 1 255, False)
+  , ("SHA512/224-HMAC", sha512_224KeyGenMech, ckkSha512_224Hmac, SweepRange 1 255, False)
+  , ("SHA512/256-HMAC", sha512_256KeyGenMech, ckkSha512_256Hmac, SweepRange 1 255, False)
+  , ("SHA512/t-HMAC", sha512TKeyGenMech, ckkSha512THmac, SweepRange 1 255, False)
+  , ("SHA3-224-HMAC", sha3_224KeyGenMech, ckkSha3_224Hmac, SweepRange 1 255, False)
+  , ("SHA3-256-HMAC", sha3_256KeyGenMech, ckkSha3_256Hmac, SweepRange 1 255, False)
+  , ("SHA3-384-HMAC", sha3_384KeyGenMech, ckkSha3_384Hmac, SweepRange 1 255, False)
+  , ("SHA3-512-HMAC", sha3_512KeyGenMech, ckkSha3_512Hmac, SweepRange 1 255, False)
+  , ("BLAKE2B-160-HMAC", blake2b160KeyGenMech, ckkBlake2b160Hmac, SweepRange 1 255, False)
+  , ("BLAKE2B-256-HMAC", blake2b256KeyGenMech, ckkBlake2b256Hmac, SweepRange 1 255, False)
+  , ("BLAKE2B-384-HMAC", blake2b384KeyGenMech, ckkBlake2b384Hmac, SweepRange 1 255, False)
+  ]
+
+-- | Good lengths, bad lengths, and the missing-length default (fixed
+-- sizes only) for one sweep shape.
+sweepLengths :: SweepLens -> ([Int], [Int], Maybe Int)
+sweepLengths (SweepFixed n) =
+  ([n], [x | x <- [n - 1, n + 1], x >= 0], Just n)
+sweepLengths (SweepDiscrete ns) =
+  (ns, filter (`notElem` ns) [0, 1, 8, 20, 48, 65], Nothing)
+sweepLengths (SweepRange lo hi) =
+  ([lo, (lo + hi) `div` 2, hi], [0] ++ [x | x <- [lo - 1, hi + 1], x > 0], Nothing)
+
+caseKeygenSweep :: IO ()
+caseKeygenSweep = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  go answer st m0 keygenSweepTable
+  where
+    go _ _ _m [] = pure ()
+    go answer st m (row : rows) = do
+      m' <- runSweepRow answer st m row
+      go answer st m' rows
+
+runSweepRow
+  :: (Model -> CryptoEffect -> IO CryptoResult)
+  -> SessionState -> Model
+  -> (String, MechanismId, Word64, SweepLens, Bool)
+  -> IO Model
+runSweepRow answer st m (label, mech, kt, lens, parity) = do
+  let (good, bad, defLen) = sweepLengths lens
+  case good of
+    [] -> assertFailure (label ++ " sweep has no good length") >> pure m
+    (g0 : _) -> do
+      m1 <- mintGood m good
+      mapM_ (refuseBad m1) bad
+      m2 <- missingLen m1 g0 defLen
+      case planGenerateKey defaultRules m2 st mech BS.empty (sweepTmpl ckkAes g0) of
+        KeyDenied deny -> assertEqual (label ++ " wrong type code")
+          CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+        other -> assertFailure (label ++ " wrong key type must refuse: " ++ show other)
+      pure m2
+  where
+    mintGood m' [] = pure m'
+    mintGood m' (n : ns) = do
+      (m'', h) <- genSweepKey answer m' st mech (sweepTmpl kt n)
+      Just ost <- pure (resolveHandle m'' h)
+      assertEqual (label ++ " class")
+        (Just (ValULong ckoSecretKey)) (Map.lookup AttrClass (osAttrs ost))
+      assertEqual (label ++ " type")
+        (Just (ValULong kt)) (Map.lookup AttrKeyType (osAttrs ost))
+      case keyBytesOf ost of
+        Just mat -> do
+          assertEqual (label ++ " material length") n (BS.length mat)
+          if parity
+            then assertBool (label ++ " odd parity") (BS.all oddParity mat)
+            else pure ()
+        Nothing -> assertFailure (label ++ " generated key lacks material")
+      mintGood m'' ns
+    refuseBad m' n = case planGenerateKey defaultRules m' st mech BS.empty (sweepTmpl kt n) of
+      KeyDenied deny -> assertEqual (label ++ " bad length code " ++ show n)
+        CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+      other -> assertFailure (label ++ " length " ++ show n ++ " must refuse: " ++ show other)
+    missingLen m' n (Just d) = do
+      (m'', h) <- genSweepKey answer m' st mech (dropValueLen (sweepTmpl kt n))
+      Just ost <- pure (resolveHandle m'' h)
+      case keyBytesOf ost of
+        Just mat -> assertEqual (label ++ " default material") d (BS.length mat)
+        Nothing -> assertFailure (label ++ " generated key lacks material")
+      pure m''
+    missingLen m' n Nothing =
+      case planGenerateKey defaultRules m' st mech BS.empty (dropValueLen (sweepTmpl kt n)) of
+        KeyDenied deny -> do
+          assertEqual (label ++ " missing length code")
+            CKR_TEMPLATE_INCOMPLETE (kdCode deny)
+          pure m'
+        other -> assertFailure (label ++ " missing length must refuse: " ++ show other)
+    dropValueLen tmpl = [a | a@(t, _) <- tmpl, t /= AttrValueLen]
+
+-- | Odd DES parity: every key byte carries an odd number of 1 bits.
+oddParity :: Word8 -> Bool
+oddParity b = odd (popCount b)
+
+-- | Generate one sweep key through the planner + synthetic backend.
+genSweepKey :: (Model -> CryptoEffect -> IO CryptoResult)
+  -> Model -> SessionState -> MechanismId
+  -> [(AttributeType, AttributeValue)]
+  -> IO (Model, ExternalHandle)
+genSweepKey answer m st mech tmpl = case planGenerateKey defaultRules m st mech BS.empty tmpl of
+  KeyEffect pw fx -> do
+    res <- answer m fx
+    c <- finishCommit m st pw res 1
+    h <- handleOf (pcOutputs c !! 0)
+    m' <- expectRight (publishDelta m (pcDelta c))
+    pure (m', h)
+  other -> assertFailure ("keygen plan is not an effect: " ++ show other) >> undefined
+
+sweepTmpl :: Word64 -> Int -> [(AttributeType, AttributeValue)]
+sweepTmpl kt n =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong kt)
+  , (AttrValueLen, ValULong (fromIntegral n))
+  , (AttrToken, ValBool False)
+  , (AttrSign, ValBool True)
+  ]
+
+-- ---------------------------------------------------------------------------
+-- Pre-master keygens (slice 11a, phase 2)
+-- ---------------------------------------------------------------------------
+
+-- | TLS/SSL3 pre-master: the 2-byte CK_VERSION parameter is
+-- required and its bytes lead the 48-byte generic secret.
+caseTlsPremasterKeygen :: IO ()
+caseTlsPremasterKeygen = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- genPremasterKey answer m0 st tlsPremasterKeyGenMech
+    (BS.pack [3, 3]) (premasterTmpl 48)
+  Just ost <- pure (resolveHandle m1 h)
+  assertEqual "key type"
+    (Just (ValULong ckkGenericSecret)) (Map.lookup AttrKeyType (osAttrs ost))
+  case keyBytesOf ost of
+    Just mat -> do
+      assertEqual "pre-master length" 48 (BS.length mat)
+      assertEqual "version prefix" (BS.pack [3, 3]) (BS.take 2 mat)
+    Nothing -> assertFailure "generated key lacks material"
+  -- A missing length defaults to 48; any other length refuses.
+  (m2, h2) <- genPremasterKey answer m1 st tlsPremasterKeyGenMech
+    (BS.pack [3, 1]) [a | a@(t, _) <- premasterTmpl 48, t /= AttrValueLen]
+  Just ost2 <- pure (resolveHandle m2 h2)
+  case keyBytesOf ost2 of
+    Just mat2 -> do
+      assertEqual "default length" 48 (BS.length mat2)
+      assertEqual "default version prefix" (BS.pack [3, 1]) (BS.take 2 mat2)
+    Nothing -> assertFailure "generated key lacks material"
+  case planGenerateKey defaultRules m2 st tlsPremasterKeyGenMech
+      (BS.pack [3, 3]) (premasterTmpl 16) of
+    KeyDenied deny -> assertEqual "bad length code"
+      CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure ("16-byte pre-master must refuse: " ++ show other)
+  -- The version parameter is required and exactly 2 bytes.
+  mapM_ (refuseParams m2 st tlsPremasterKeyGenMech)
+    [BS.empty, BS.singleton 3, BS.pack [3, 3, 3]]
+  -- A non-generic-secret key type refuses.
+  case planGenerateKey defaultRules m2 st tlsPremasterKeyGenMech
+      (BS.pack [3, 3]) (sweepTmpl ckkAes 48) of
+    KeyDenied deny -> assertEqual "wrong type code"
+      CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure ("AES-typed pre-master must refuse: " ++ show other)
+  where
+    refuseParams m st mech params =
+      case planGenerateKey defaultRules m st mech params (premasterTmpl 48) of
+        KeyDenied deny -> assertEqual ("params code " ++ show params)
+          CKR_MECHANISM_PARAM_INVALID (kdCode deny)
+        other -> assertFailure
+          ("params " ++ show params ++ " must refuse: " ++ show other)
+
+-- | SSL3 pre-master mirrors TLS (same parameter, same shape).
+caseSsl3PremasterKeygen :: IO ()
+caseSsl3PremasterKeygen = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- genPremasterKey answer m0 st ssl3PremasterKeyGenMech
+    (BS.pack [3, 0]) (premasterTmpl 48)
+  Just ost <- pure (resolveHandle m1 h)
+  case keyBytesOf ost of
+    Just mat -> do
+      assertEqual "pre-master length" 48 (BS.length mat)
+      assertEqual "version prefix" (BS.pack [3, 0]) (BS.take 2 mat)
+    Nothing -> assertFailure "generated key lacks material"
+  case planGenerateKey defaultRules m1 st ssl3PremasterKeyGenMech
+      BS.empty (premasterTmpl 48) of
+    KeyDenied deny -> assertEqual "null params code"
+      CKR_MECHANISM_PARAM_INVALID (kdCode deny)
+    other -> assertFailure ("null params must refuse: " ++ show other)
+
+-- | WTLS pre-master: a 1-byte version parameter leads a
+-- variable-length (20-255 byte) generic secret.
+caseWtlsPremasterKeygen :: IO ()
+caseWtlsPremasterKeygen = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- genPremasterKey answer m0 st wtlsPremasterKeyGenMech
+    (BS.singleton 1) (premasterTmpl 32)
+  Just ost <- pure (resolveHandle m1 h)
+  case keyBytesOf ost of
+    Just mat -> do
+      assertEqual "pre-master length" 32 (BS.length mat)
+      assertEqual "version prefix" (BS.singleton 1) (BS.take 1 mat)
+    Nothing -> assertFailure "generated key lacks material"
+  (m2, h2) <- genPremasterKey answer m1 st wtlsPremasterKeyGenMech
+    (BS.singleton 1) (premasterTmpl 20)
+  Just ost2 <- pure (resolveHandle m2 h2)
+  case keyBytesOf ost2 of
+    Just mat2 -> assertEqual "minimal length" 20 (BS.length mat2)
+    Nothing -> assertFailure "generated key lacks material"
+  mapM_ (refuseLen m2 st) [0, 19, 256]
+  case planGenerateKey defaultRules m2 st wtlsPremasterKeyGenMech
+      (BS.singleton 1) [a | a@(t, _) <- premasterTmpl 32, t /= AttrValueLen] of
+    KeyDenied deny -> assertEqual "missing length code"
+      CKR_TEMPLATE_INCOMPLETE (kdCode deny)
+    other -> assertFailure ("missing length must refuse: " ++ show other)
+  mapM_ (refuseParams m2 st) [BS.empty, BS.pack [1, 2]]
+  where
+    refuseLen m st n =
+      case planGenerateKey defaultRules m st wtlsPremasterKeyGenMech
+          (BS.singleton 1) (premasterTmpl n) of
+        KeyDenied deny -> assertEqual ("length code " ++ show n)
+          CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+        other -> assertFailure
+          ("length " ++ show n ++ " must refuse: " ++ show other)
+    refuseParams m st params =
+      case planGenerateKey defaultRules m st wtlsPremasterKeyGenMech
+          params (premasterTmpl 32) of
+        KeyDenied deny -> assertEqual ("params code " ++ show params)
+          CKR_MECHANISM_PARAM_INVALID (kdCode deny)
+        other -> assertFailure
+          ("params " ++ show params ++ " must refuse: " ++ show other)
+
+-- | Generate one pre-master key through the planner + synthetic backend.
+genPremasterKey :: (Model -> CryptoEffect -> IO CryptoResult)
+  -> Model -> SessionState -> MechanismId -> ByteString
+  -> [(AttributeType, AttributeValue)]
+  -> IO (Model, ExternalHandle)
+genPremasterKey answer m st mech params tmpl =
+  case planGenerateKey defaultRules m st mech params tmpl of
+    KeyEffect pw fx -> do
+      res <- answer m fx
+      c <- finishCommit m st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m (pcDelta c))
+      pure (m', h)
+    other -> assertFailure ("keygen plan is not an effect: " ++ show other) >> undefined
+
+premasterTmpl :: Int -> [(AttributeType, AttributeValue)]
+premasterTmpl n =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong ckkGenericSecret)
+  , (AttrValueLen, ValULong (fromIntegral n))
+  , (AttrToken, ValBool False)
+  , (AttrSign, ValBool True)
+  ]
+
 caseAesKeygenEncapsulate :: IO ()
 caseAesKeygenEncapsulate = withSynth $ \_answer -> do
   m0 <- seedModel
   st <- getSession m0
-  case planGenerateKey defaultRules m0 st aesKeyGenMech (aesTmpl 16 ++
+  case planGenerateKey defaultRules m0 st aesKeyGenMech BS.empty (aesTmpl 16 ++
       [(AttrEncapsulate, ValBool True)]) of
     KeyDenied deny -> assertEqual "encapsulate code"
       CKR_TEMPLATE_INCONSISTENT (kdCode deny)
@@ -1003,7 +1407,7 @@ genericTmpl n =
 genKeyWith :: (Model -> CryptoEffect -> IO CryptoResult)
   -> Model -> SessionState -> MechanismId -> [(AttributeType, AttributeValue)]
   -> IO (Model, ExternalHandle)
-genKeyWith answer m st mech tmpl = case planGenerateKey defaultRules m st mech tmpl of
+genKeyWith answer m st mech tmpl = case planGenerateKey defaultRules m st mech BS.empty tmpl of
   KeyEffect pw fx -> do
     res <- answer m fx
     c <- finishCommit m st pw res 1
@@ -1023,7 +1427,7 @@ caseGenericSecretKeygen = withSynth $ \answer -> do
     Just mat -> assertEqual "generic-256 material" 32 (BS.length mat)
     Nothing -> assertFailure "generated key lacks material"
   -- Bounds: the 1..255 window mints, edges refuse.
-  let plan n = planGenerateKey defaultRules m1 st genericSecretKeyGenMech (genericTmpl n)
+  let plan n = planGenerateKey defaultRules m1 st genericSecretKeyGenMech BS.empty (genericTmpl n)
   case plan genericSecretKeygenMinBytes of
     KeyEffect _ _ -> pure ()
     other -> assertFailure ("min length must plan: " ++ show (voidFx other))
@@ -1037,7 +1441,7 @@ caseGenericSecretKeygen = withSynth $ \answer -> do
     KeyDenied deny -> assertEqual "over length code" CKR_TEMPLATE_INCONSISTENT (kdCode deny)
     other -> assertFailure ("over length must refuse: " ++ show (voidFx other))
   -- A contradictory key type refuses.
-  case planGenerateKey defaultRules m1 st genericSecretKeyGenMech
+  case planGenerateKey defaultRules m1 st genericSecretKeyGenMech BS.empty
       [ (AttrClass, ValULong ckoSecretKey)
       , (AttrKeyType, ValULong ckkAes)
       , (AttrValueLen, ValULong 16)
@@ -1501,7 +1905,7 @@ caseDsaParamSizesPlanner = do
   m0 <- seedModel
   st <- getSession m0
   let argsOf tmpl =
-        case planGenerateKey defaultRules m0 st dsaParameterGenMech tmpl of
+        case planGenerateKey defaultRules m0 st dsaParameterGenMech BS.empty tmpl of
           KeyEffect _ (FxGenerateKey _ _ input) -> Right (decodeGenArgs input)
           KeyDenied (KeyDeny code _) -> Left code
           other -> error ("unexpected plan shape: " ++ show other)
@@ -2677,7 +3081,7 @@ caseDeriveSingle = withSynth $ \answer -> do
         , (AttrToken, ValBool False)
         , (AttrEncrypt, ValBool True)
         ]
-      blob = encodeDeriveParams "derive-info" [soloTmpl]
+      blob = encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "derive-info") [soloTmpl]
       before = Map.size (mObjects m1)
   mats <- case planDerive defaultRules m1 st hkdfDeriveMech baseH blob of
     KeyEffect pw fx -> do
@@ -2893,7 +3297,7 @@ caseDeriveMulti = withSynth $ \answer -> do
   (m1, baseH) <- deriveBase answer m0 st
   let before = Map.size (mObjects m1)
   (m2, [h1, h2, h3]) <- runDerive answer m1 st baseH
-    (encodeDeriveParams "multi-child" [childTmpl 16, childTmpl 24, childTmpl 32]) 3
+    (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "multi-child") [childTmpl 16, childTmpl 24, childTmpl 32]) 3
   assertEqual "three derived objects" (before + 3) (Map.size (mObjects m2))
   Just o1 <- pure (resolveHandle m2 h1)
   Just o2 <- pure (resolveHandle m2 h2)
@@ -2905,7 +3309,7 @@ caseDeriveMulti = withSynth $ \answer -> do
       assertEqual "third length" 32 (BS.length m32)
       -- The multi answer is the concatenation the finisher splits:
       -- a lone 16-byte derive replays the first child's bytes.
-      (mSolo, [hsolo]) <- runDerive answer m1 st baseH (encodeDeriveParams "multi-child" [childTmpl 16]) 1
+      (mSolo, [hsolo]) <- runDerive answer m1 st baseH (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "multi-child") [childTmpl 16]) 1
       Just osolo <- pure (resolveHandle mSolo hsolo)
       assertEqual "split matches lone derive" (Just m16) (keyBytesOf osolo)
     _ -> assertFailure "derived children lack material"
@@ -2924,13 +3328,13 @@ caseDeriveInvalidExtra = withSynth $ \answer -> do
         ]
   -- An invalid SECOND template denies the whole derive.
   case planDerive defaultRules m1 st hkdfDeriveMech baseH
-      (encodeDeriveParams "probe" [childTmpl 32, badClass]) of
+      (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "probe") [childTmpl 32, badClass]) of
     KeyDenied (KeyDeny code _) ->
       assertEqual "wrong class code" CKR_TEMPLATE_INCONSISTENT code
     other -> assertFailure ("bad additional template must deny, got: " ++ show other)
   -- An invalid THIRD template denies the whole derive.
   case planDerive defaultRules m1 st hkdfDeriveMech baseH
-      (encodeDeriveParams "probe" [childTmpl 16, childTmpl 16, badLen]) of
+      (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "probe") [childTmpl 16, childTmpl 16, badLen]) of
     KeyDenied (KeyDeny code _) ->
       assertEqual "zero length code" CKR_TEMPLATE_INCONSISTENT code
     other -> assertFailure ("bad additional template must deny, got: " ++ show other)
@@ -2956,6 +3360,22 @@ caseDeriveCodec = do
         , BS.concat (replicate 17 (BS.pack [0, 0, 0, 0]))
         ]
   assertEqual "fan-out bound" Nothing (decodeDeriveParams over)
+
+caseHkdfInfoCodec :: IO ()
+caseHkdfInfoCodec = do
+  let framed = encodeHkdfInfo 0x03 "salt" "context"
+  assertEqual "codec round-trips"
+    (Just (0x03, "salt", "context")) (decodeHkdfInfo framed)
+  assertEqual "expand-only round-trips"
+    (Just (0x02, BS.empty, "ctx")) (decodeHkdfInfo (encodeHkdfInfo 0x02 BS.empty "ctx"))
+  assertEqual "no stage selected" Nothing (decodeHkdfInfo (encodeHkdfInfo 0x00 BS.empty "ctx"))
+  assertEqual "reserved mode bit" Nothing (decodeHkdfInfo (encodeHkdfInfo 0x04 BS.empty "ctx"))
+  assertEqual "truncated frame" Nothing (decodeHkdfInfo (BS.take 2 framed))
+  -- The context takes the remainder by design; exact consumption
+  -- is the outer derive frame's job (pinned by caseDeriveCodec).
+  assertEqual "truncated salt" Nothing
+    (decodeHkdfInfo (BS.take 7 (encodeHkdfInfo 0x03 "salty" "context")))
+  assertEqual "empty blob" Nothing (decodeHkdfInfo BS.empty)
 
 -- ---------------------------------------------------------------------------
 -- Part 4
@@ -3358,7 +3778,7 @@ caseAttrsLand = withSynth $ \answer -> do
         , (AttrSign, ValBool True)
         , (AttrVerify, ValBool False)
         ]
-  (m5, [dh]) <- runDerive answer m4 st baseH (encodeDeriveParams "derive-attrs" [kid]) 1
+  (m5, [dh]) <- runDerive answer m4 st baseH (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "derive-attrs") [kid]) 1
   Just dost <- pure (resolveHandle m5 dh)
   assertEqual "sign landed" (Just (ValBool True)) (Map.lookup AttrSign (osAttrs dost))
   assertEqual "verify landed" (Just (ValBool False)) (Map.lookup AttrVerify (osAttrs dost))
@@ -3382,6 +3802,10 @@ rfcPrk, rfcInfo, rfcOkm :: ByteString
 rfcPrk = hex "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5"
 rfcInfo = hex "f0f1f2f3f4f5f6f7f8f9"
 rfcOkm = hex "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+rfcIkm, rfcSalt, rfcOkmZeroSalt :: ByteString
+rfcIkm = hex "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+rfcSalt = hex "000102030405060708090a0b0c"
+rfcOkmZeroSalt = hex "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8"
 
 caseRealEcKeygen :: IO ()
 caseRealEcKeygen = withRealEnv $ \env -> do
@@ -3461,7 +3885,7 @@ caseRealDsaParamgen = withRealEnv $ \env -> do
   m0 <- seedModel
   st <- getSession m0
   let answer = answerReal env
-  (m1, h) <- case planGenerateKey defaultRules m0 st dsaParameterGenMech (dsaParamsTmpl 1024) of
+  (m1, h) <- case planGenerateKey defaultRules m0 st dsaParameterGenMech BS.empty (dsaParamsTmpl 1024) of
     KeyEffect pw fx -> do
       res <- answer m0 fx
       c <- finishCommit m0 st pw res 1
@@ -3491,7 +3915,7 @@ caseRealDsaKeygen = withRealEnv $ \env -> do
   m0 <- seedModel
   st <- getSession m0
   let answer = answerReal env
-  (m1, ph) <- case planGenerateKey defaultRules m0 st dsaParameterGenMech (dsaParamsTmpl 1024) of
+  (m1, ph) <- case planGenerateKey defaultRules m0 st dsaParameterGenMech BS.empty (dsaParamsTmpl 1024) of
     KeyEffect pw fx -> do
       res <- answer m0 fx
       c <- finishCommit m0 st pw res 1
@@ -3720,7 +4144,7 @@ caseRealHkdfVector = withRealEnv $ \env -> do
         , (AttrValueLen, ValULong 42)
         , (AttrToken, ValBool False)
         ]
-  (m2, [h]) <- case planDerive defaultRules m1 st hkdfDeriveMech baseH (encodeDeriveParams rfcInfo [kid]) of
+  (m2, [h]) <- case planDerive defaultRules m1 st hkdfDeriveMech baseH (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty rfcInfo) [kid]) of
     KeyEffect pw fx -> do
       res <- answer m1 fx
       c <- finishCommit m1 st pw res 1
@@ -3733,7 +4157,7 @@ caseRealHkdfVector = withRealEnv $ \env -> do
   -- The synthetic construction is a different (test-only) MAC, so it
   -- must replay itself rather than the RFC vector.
   withSynth $ \sanswer -> do
-    let deriveOnce mm = case planDerive defaultRules mm st hkdfDeriveMech baseH (encodeDeriveParams rfcInfo [kid]) of
+    let deriveOnce mm = case planDerive defaultRules mm st hkdfDeriveMech baseH (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty rfcInfo) [kid]) of
           KeyEffect pw fx -> do
             res <- sanswer mm fx
             c <- finishCommit mm st pw res 1
@@ -3746,6 +4170,77 @@ caseRealHkdfVector = withRealEnv $ \env -> do
     Just os1 <- pure (resolveHandle ms1 hs1)
     Just os2 <- pure (resolveHandle ms2 hs2)
     assertEqual "synthetic derive replays" (keyBytesOf os1) (keyBytesOf os2)
+
+caseRealHkdfExtractExpand :: IO ()
+caseRealHkdfExtractExpand = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] rfcIkm
+  let kid =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong 42)
+        , (AttrToken, ValBool False)
+        ]
+      deriveWith salt info = case planDerive defaultRules m1 st hkdfDeriveMech baseH
+        (encodeDeriveParams (encodeHkdfInfo 0x03 salt info) [kid]) of
+          KeyEffect pw fx -> do
+            res <- answer m1 fx
+            c <- finishCommit m1 st pw res 1
+            hh <- handleOf (pcOutputs c !! 0)
+            m' <- expectRight (publishDelta m1 (pcDelta c))
+            pure (m', hh)
+          other -> assertFailure ("derive must plan: " ++ show other) >> undefined
+  (m2, h1) <- deriveWith rfcSalt rfcInfo
+  Just ost1 <- pure (resolveHandle m2 h1)
+  assertEqual "RFC 5869 A.1 OKM" (Just rfcOkm) (keyBytesOf ost1)
+  (m3, h3) <- deriveWith BS.empty BS.empty
+  Just ost3 <- pure (resolveHandle m3 h3)
+  assertEqual "RFC 5869 A.3 OKM (zero salt)" (Just rfcOkmZeroSalt) (keyBytesOf ost3)
+  -- Synthetic replays itself on the same extract profile.
+  withSynth $ \sanswer -> do
+    let once mm = case planDerive defaultRules mm st hkdfDeriveMech baseH
+          (encodeDeriveParams (encodeHkdfInfo 0x03 rfcSalt rfcInfo) [kid]) of
+            KeyEffect pw fx -> do
+              res <- sanswer mm fx
+              c <- finishCommit mm st pw res 1
+              hh <- handleOf (pcOutputs c !! 0)
+              m' <- expectRight (publishDelta mm (pcDelta c))
+              pure (m', hh)
+            _ -> assertFailure "derive must plan" >> undefined
+    (ms1, hs1) <- once m1
+    (ms2, hs2) <- once m1
+    Just os1 <- pure (resolveHandle ms1 hs1)
+    Just os2 <- pure (resolveHandle ms2 hs2)
+    assertEqual "synthetic extract replays" (keyBytesOf os1) (keyBytesOf os2)
+
+caseHkdfExtractOnlyRefused :: IO ()
+caseHkdfExtractOnlyRefused = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] rfcIkm
+  let kid =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong 32)
+        , (AttrToken, ValBool False)
+        ]
+      blob = encodeDeriveParams (encodeHkdfInfo 0x01 BS.empty BS.empty) [kid]
+  case planDerive defaultRules m1 st hkdfDeriveMech baseH blob of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "extract-only code" CKR_MECHANISM_PARAM_INVALID code
+    other -> assertFailure ("extract-only must deny, got: " ++ show other)
 
 caseRealAuthWrap :: IO ()
 caseRealAuthWrap = withRealEnv $ \env -> do
@@ -3813,7 +4308,7 @@ caseRealAesKem = withRealEnv $ \env -> do
     ] "not-a-real-kem-key"
   -- AES keygen: real via the native DRBG surface; one
   -- object lands carrying 32 fresh bytes.
-  case planGenerateKey defaultRules m1 st aesKeyGenMech (aesTmpl 32) of
+  case planGenerateKey defaultRules m1 st aesKeyGenMech BS.empty (aesTmpl 32) of
     KeyEffect pw fx -> do
       res <- answer m1 fx
       c <- finishCommit m1 st pw res 1

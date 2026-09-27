@@ -117,7 +117,8 @@ extern uint64_t haskoki_std_digest_final(void *instance, uint64_t h_session,
                                          uint8_t *p_out, uint64_t *p_len);
 extern uint64_t haskoki_std_generate_key(void *instance, uint64_t h_session,
                                          uint64_t mechanism, uint8_t *p_frame,
-                                         uint64_t frame_len, uint64_t *ph_key);
+                                         uint64_t frame_len, uint8_t *p_params,
+                                         uint64_t params_len, uint64_t *ph_key);
 extern uint64_t haskoki_std_generate_key_pair(void *instance, uint64_t h_session,
                                               uint64_t mechanism,
                                               uint8_t *p_pub_frame,
@@ -185,6 +186,8 @@ extern uint64_t haskoki_std_unwrap_key(void *instance, uint64_t h_session,
                                        uint64_t *ph_key);
 extern uint64_t haskoki_std_derive_hkdf(void *instance, uint64_t h_session,
                                         uint8_t *p_info, uint64_t info_len,
+                                        uint8_t *p_salt, uint64_t salt_len,
+                                        uint64_t hkdf_mode,
                                         uint64_t h_base, uint8_t *p_frame,
                                         uint64_t frame_len, uint64_t *ph_key);
 extern uint64_t haskoki_std_derive_opaque(void *instance, uint64_t h_session,
@@ -1311,9 +1314,10 @@ CK_RV std_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
     (void)haskoki_state_unlock();
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
-  rv = (CK_RV)haskoki_std_generate_key(inst, (uint64_t)hSession,
-                                       (uint64_t)pMechanism->mechanism, frame,
-                                       frameLen, (uint64_t *)phKey);
+  rv = (CK_RV)haskoki_std_generate_key(
+      inst, (uint64_t)hSession, (uint64_t)pMechanism->mechanism, frame,
+      frameLen, (uint8_t *)pMechanism->pParameter,
+      (uint64_t)pMechanism->ulParameterLen, (uint64_t *)phKey);
   (void)haskoki_state_unlock();
   free(frame);
   return rv;
@@ -2131,27 +2135,53 @@ CK_RV std_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism
   return rv;
 }
 
-/* The HKDF subset the engine executes: Expand-only, empty salt,
- * SHA-256 PRF. Anything else is ARGUMENTS_BAD (never silently
- * reinterpreted); non-HKDF derive mechanisms stay NOT_SUPPORTED. */
-static int hkdf_subset_ok(const CK_HKDF_PARAMS *hp) {
-  if (hp->bExtract != CK_FALSE || hp->bExpand == CK_FALSE) {
-    return 0;
-  }
-  if (hp->prfHashMechanism != CKM_SHA256_HMAC) {
-    return 0;
+/* HKDF parameter classes: the engine serves expand-only and
+ * extract-and-expand with the SHA-256 base-hash PRF and NULL/DATA
+ * salt. Malformed calls (bad pointers, unknown salt type, no
+ * stage selected) are ARGUMENTS_BAD; well-formed but unserved
+ * profiles (other PRFs, salt-as-key, extract-only) are
+ * MECHANISM_PARAM_INVALID. Nothing is silently reinterpreted. */
+typedef enum hkdf_class {
+  HKDF_SERVE = 0,
+  HKDF_MALFORMED = 1,
+  HKDF_UNSERVED = 2
+} hkdf_class_t;
+
+static hkdf_class_t hkdf_params_class(const CK_HKDF_PARAMS *hp) {
+  if (hp->bExtract == CK_FALSE && hp->bExpand == CK_FALSE) {
+    return HKDF_MALFORMED;
   }
   if (hp->ulSaltType != CKF_HKDF_SALT_NULL &&
-      hp->ulSaltType != CKF_HKDF_SALT_DATA) {
-    return 0;
+      hp->ulSaltType != CKF_HKDF_SALT_DATA &&
+      hp->ulSaltType != CKF_HKDF_SALT_KEY) {
+    return HKDF_MALFORMED;
   }
-  if (hp->ulSaltLen != 0 || hp->hSaltKey != 0) {
-    return 0;
+  if (hp->ulSaltType == CKF_HKDF_SALT_NULL && hp->ulSaltLen != 0) {
+    return HKDF_MALFORMED;
+  }
+  if (hp->ulSaltType == CKF_HKDF_SALT_DATA && hp->ulSaltLen > 0 &&
+      hp->pSalt == NULL_PTR) {
+    return HKDF_MALFORMED;
+  }
+  if (hp->ulSaltType == CKF_HKDF_SALT_KEY && hp->hSaltKey == 0) {
+    return HKDF_MALFORMED;
+  }
+  if (hp->ulSaltType != CKF_HKDF_SALT_KEY && hp->hSaltKey != 0) {
+    return HKDF_MALFORMED;
   }
   if (hp->ulInfoLen > 0 && hp->pInfo == NULL_PTR) {
-    return 0;
+    return HKDF_MALFORMED;
   }
-  return 1;
+  if (hp->prfHashMechanism != CKM_SHA256) {
+    return HKDF_UNSERVED;
+  }
+  if (hp->ulSaltType == CKF_HKDF_SALT_KEY) {
+    return HKDF_UNSERVED;
+  }
+  if (hp->bExtract != CK_FALSE && hp->bExpand == CK_FALSE) {
+    return HKDF_UNSERVED;
+  }
+  return HKDF_SERVE;
 }
 
 /* Derive mechanisms served through the opaque Haskell intake
@@ -2257,8 +2287,14 @@ CK_RV std_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
     return CKR_ARGUMENTS_BAD;
   }
   hp = (const CK_HKDF_PARAMS *)pMechanism->pParameter;
-  if (!hkdf_subset_ok(hp)) {
-    return CKR_ARGUMENTS_BAD;
+  {
+    hkdf_class_t cls = hkdf_params_class(hp);
+    if (cls == HKDF_MALFORMED) {
+      return CKR_ARGUMENTS_BAD;
+    }
+    if (cls == HKDF_UNSERVED) {
+      return CKR_MECHANISM_PARAM_INVALID;
+    }
   }
   if (ulAttributeCount > 0 && pTemplate == NULL_PTR) {
     return CKR_ARGUMENTS_BAD;
@@ -2278,11 +2314,18 @@ CK_RV std_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
     (void)haskoki_state_unlock();
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
-  rv = (CK_RV)haskoki_std_derive_hkdf(inst, (uint64_t)hSession,
-                                      (uint8_t *)hp->pInfo,
-                                      (uint64_t)hp->ulInfoLen,
-                                      (uint64_t)hBaseKey, frame, frameLen,
-                                      (uint64_t *)phKey);
+  {
+    uint64_t hkdfMode = (hp->bExtract == CK_FALSE ? 0ULL : 1ULL) |
+                        (hp->bExpand == CK_FALSE ? 0ULL : 2ULL);
+    rv = (CK_RV)haskoki_std_derive_hkdf(inst, (uint64_t)hSession,
+                                        (uint8_t *)hp->pInfo,
+                                        (uint64_t)hp->ulInfoLen,
+                                        (uint8_t *)hp->pSalt,
+                                        (uint64_t)hp->ulSaltLen,
+                                        hkdfMode,
+                                        (uint64_t)hBaseKey, frame, frameLen,
+                                        (uint64_t *)phKey);
+  }
   (void)haskoki_state_unlock();
   free(frame);
   return rv;

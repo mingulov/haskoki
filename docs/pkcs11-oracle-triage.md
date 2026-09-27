@@ -855,6 +855,86 @@ first lane proving all of them together.
   from the 10f stack (no in-stack fixes needed after the
   lanes).
 
+## Round 22: keygen-sweep slice 11a (fast r43→r44→r45 + KAT r22→r23)
+
+- r44: 3770 passed / 19 failed / 599 xfailed / 3288
+  skipped
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r44-results.json`).
+  r43→r44: +281 pass / +4 fail / +112 xfail / +341
+  skip (+738 collected: 41 new keygen rows × shared-mech
+  parametrization).
+- r45: 3775 passed / 18 failed / 595 xfailed / 3288
+  skipped
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r45-results.json`).
+  r44→r45: +5 pass / −1 fail / −4 xfail / +0 skip (the
+  in-slice HKDF widening; exact unit reconciliation
+  below). r43→r45: +286 / +3 / +108 / +341 with zero
+  pass→fail (`lane-testdiff.py`: regression count 0;
+  the 15 r43 failures persist by id, the 3 new failures
+  are newly-collected WTLS legs, 8 xfails flip to pass).
+- Movers r43→r44 (unit `counts`, exact): newly
+  advertised rows land `test_mech_attribute` +105 pass /
+  +59 xfail, `test_mech_keygen` +35 pass / +47 xfail,
+  `test_mech_flags` +82 pass / +287 skip,
+  `test_mech_negative` +6 pass / +6 xfail / −12 skip;
+  registration-only `test_mech_probe` +123 skip.
+  Dedicated behavior files unskip: aria +7, camellia
+  +7, des +4, twofish +3, blowfish +2, salsa20 +2,
+  blake2 +3, gost/seed/ssl3/tls12 +1 each,
+  `test_mech_encrypt` +5, `test_mech_multipart` +4,
+  `test_operation_termination` +4, `test_hkdf_extended`
+  +1 pass / +2 xfail / −3 skip.
+- The +4 fail r43→r44: 3 WTLS pre-master keygen legs
+  (newly collected, P11C-006 oracle fixtures — missing
+  required `CK_BYTE` version param + 8-byte `CK_ULONG`
+  bools) and `test_hkdf_to_aes_encrypt` in
+  `test_mech_lifecycle` (ours: HKDF expand-only /
+  empty-salt gap, fixed in-slice — see r44→r45).
+- Movers r44→r45 (exact): `test_mech_lifecycle` +1
+  pass / −1 fail (HKDF lifecycle leg),
+  `test_hkdf_extended`, `test_kdf`
+  (`test_hkdf_derive_basic`), `test_mech_derive` +1
+  pass / −1 xfail each (HKDF widening),
+  `test_public_session_private_creation` +1 / −1x
+  (auth-ordering leg now passes on the widened HKDF
+  path). The 18 r45 failures are 13 P11C-004 X9.42 +
+  2 P11C-001 HOTP (same ids as r43) + 3 P11C-006 WTLS.
+- Bonus hardening from the 11a stack (not HKDF):
+  `test_ffi_length_boundary` +6 pass / −6 xfail —
+  PBKDF2 nested 2^63 lengths now fail closed with a
+  reject RV instead of `CKR_OK` silent truncation.
+- Two new upstream filings (ours verified, module
+  proven correct): P11C-005 (BLAKE2B registry
+  `CKK_GENERIC_SECRET` keygen template vs spec-mandated
+  typed `CKK_BLAKE2B_*_HMAC` — 40 xfailed legs across
+  5 shared files) and P11C-006 (WTLS fixtures — 3
+  hard failures).
+- Corroborated by targeted reproofs:
+  `/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-hkdf-r2.json`
+  (19 pass / 0 fail / 1 xfail) and
+  `pkcs11-targeted-wtls-fixed-r1.json` (4/4 pass on the
+  corrected `mech_bytes` + `attr_bool` fixture against
+  the unmodified bundle).
+- KAT r22→r23: 78940→79310 passed (+370) / 21→24
+  failed (+3) / 4052→4076 xfailed (+24) /
+  30109→30450 skipped (+341)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r23-results.json`).
+  Zero pass→fail; the 21 r22 failures persist by id
+  (13 P11C-004 X9.42 + 2 P11C-001 HOTP + 6 P11C-003
+  SLH-DSA context legs) and the +3 are the newly
+  collected WTLS trio (P11C-006). Mover shape mirrors
+  the fast lane (same shared-mech deltas, incl.
+  `test_mech_flags` +82/+287s and `test_mech_probe`
+  +123s), plus KAT-only wins from the HKDF widening:
+  `test_wycheproof_hkdf` +83 pass / −83 xfail,
+  `test_wycheproof_pbkdf2` +1 / −1x; 92 xfail→pass
+  flips total, 116 newly collected xfails (59
+  attribute + 47 keygen incl. the P11C-005 BLAKE2B
+  legs).
+- Bundle note: r44/r45 run on a release bundle rebuilt
+  from the 11a+HKDF stack (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

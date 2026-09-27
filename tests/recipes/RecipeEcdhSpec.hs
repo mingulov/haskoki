@@ -42,7 +42,7 @@ import Haskoki.Model
   , emptyModel
   )
 import Haskoki.Operation (emptySessionOps)
-import Haskoki.Operation.Derive (encodeDeriveParams, planDerive)
+import Haskoki.Operation.Derive (encodeDeriveParams, encodeHkdfInfo, planDerive)
 import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
@@ -367,7 +367,7 @@ casePlan = do
     (planDerive defaultRules m testSession ecdhMech (ExternalHandle 999) (blob p256Pub [derivedTmpl 32]))
   -- HKDF still plans (ECDH extension changes nothing there).
   case planDerive defaultRules m testSession (MechanismId (ckm_HKDF_DERIVE))
-      baseHandle (encodeDeriveParams "info" [derivedTmpl 32]) of
+      baseHandle (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "info") [derivedTmpl 32]) of
     KeyEffect _ _ -> pure ()
     other -> assertFailure ("hkdf must still plan, got " ++ show other)
   -- Missing CKA_VALUE_LEN defaults to the full agreement secret
@@ -389,12 +389,18 @@ casePlan = do
         ecdhMech baseHandle (blob p256Pub [derivedTmplNoLen]) of
     KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "opaque default total" 72 total
     other -> assertFailure ("expected defaulted effect, got " ++ show other)
-  -- Open-ended constructions keep INCOMPLETE without a length
-  -- (v3.2: HKDF-Expand "should be set"; SHA-KDF generic secrets
-  -- have no well-defined length).
-  expectDeny "hkdf needs length" CKR_TEMPLATE_INCOMPLETE
-    (planDerive defaultRules m testSession (MechanismId (ckm_HKDF_DERIVE))
-      baseHandle (encodeDeriveParams "info" [derivedTmplNoLen]))
+  -- Open-ended SHA-KDF generic secrets have no well-defined
+  -- length, so they keep INCOMPLETE without one. HKDF instead
+  -- defaults to the hash length: the mechanism doc says VALUE_LEN
+  -- "should be set" (non-mandatory), and callers omit it.
+  case planDerive defaultRules m testSession (MechanismId (ckm_HKDF_DERIVE))
+      baseHandle (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "info") [derivedTmplNoLen]) of
+    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ total) -> do
+      assertEqual "hkdf default total" 32 total
+      assertEqual "hkdf default len" 32 n
+      assertEqual "hkdf default stamped" (Just (ValULong 32))
+        (Map.lookup AttrValueLen (poAttrs po))
+    other -> assertFailure ("hkdf must default the length, got " ++ show other)
   let gm = mkBaseModel ckkGenericSecret (BS.replicate 32 0x11) True
   expectDeny "sha-kdf generic needs length" CKR_TEMPLATE_INCOMPLETE
     (planDerive defaultRules gm testSession (MechanismId (ckm_SHA256_KEY_DERIVATION))

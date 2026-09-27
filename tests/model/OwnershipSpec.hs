@@ -705,7 +705,7 @@ caseKeygenDeliveryRetry = do
   enableAsyncSession table sid
   let pre = mNextHandle m0
       privMat = BS.replicate 32 0x4B
-  (pw, fx) <- case planGenerateKey defaultRules m0 st aesKeyGenMech (aesTmpl 32) of
+  (pw, fx) <- case planGenerateKey defaultRules m0 st aesKeyGenMech BS.empty (aesTmpl 32) of
     KeyEffect pw0 fx0 -> pure (pw0, fx0)
     other -> assertFailure ("genkey is not an effect: " ++ show other)
   let req = JobRequest

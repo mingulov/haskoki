@@ -612,7 +612,8 @@ instance CryptoBackend OpenSSL4 where
           Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   -- Symmetric keygen is libctx DRBG bytes (bounds mirror
   -- the key planner: AES 16/24/32, DES3 16/24, HOTP 16..64,
-  -- GENERIC 1..255, BLAKE2B-512-HMAC 64, ChaCha20 32).
+  -- GENERIC 1..255, BLAKE2B-512-HMAC 1..255, ChaCha20 32,
+  -- sweep labels per symKeygenBounds).
   generateKey be spec@(GenSym alg n) = runGuarded be "generateKey" (genSupported be spec) $ \env ->
     case symLenOk alg n of
       Just why -> pure (EngineFail (BackendBadParam "generateKey" why))
@@ -1486,6 +1487,8 @@ genSupported (OSSL4Backend env) spec
   , Set.member alg (kcAlgs (bcKems (osslCaps env))) = Nothing
   | GenSym alg _ <- spec
   , alg `elem` ["AES", "DES3", "HOTP", "GENERIC", "BLAKE2B-512-HMAC", "ChaCha20"] = Nothing
+  | GenSym alg _ <- spec
+  , alg `elem` map fst symKeygenBounds = Nothing
   | GenRSA {} <- spec
   , Set.member "RSA-PSS" (scSpecs (bcSigs (osslCaps env))) = Nothing
   | otherwise = Just ("keygen not in set: " ++ show spec)
@@ -1518,12 +1521,17 @@ symLenOk "GENERIC" n
   | n >= 1 && n <= 255 = Nothing
   | otherwise = Just ("generic-secret keygen length must be 1 to 255 bytes: " ++ show n)
 symLenOk "BLAKE2B-512-HMAC" n
-  | n == 64 = Nothing
-  | otherwise = Just ("BLAKE2B-512-HMAC keygen length must be 64 bytes: " ++ show n)
+  | n >= 1 && n <= 255 = Nothing
+  | otherwise = Just ("BLAKE2B-512-HMAC keygen length must be 1 to 255 bytes: " ++ show n)
 symLenOk "ChaCha20" n
   | n == 32 = Nothing
   | otherwise = Just ("ChaCha20 keygen length must be 32 bytes: " ++ show n)
-symLenOk alg _ = Just ("symmetric keygen not in set: " ++ alg)
+symLenOk alg n
+  | Just bound <- lookup alg symKeygenBounds
+  , symLenBoundOk bound n = Nothing
+  | Just bound <- lookup alg symKeygenBounds =
+      Just (alg ++ " keygen length out of range " ++ show bound ++ ": " ++ show n)
+  | otherwise = Just ("symmetric keygen not in set: " ++ alg)
 
 -- ---------------------------------------------------------------------------
 -- Execution helpers

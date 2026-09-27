@@ -756,7 +756,8 @@ static CK_RV on_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
  * (pre-init stays inside std_, as for every routed entry). */
 
 /* Wrap/unwrap/derive routed (std_WrapKey/std_UnwrapKey/
- * std_DeriveKey, HKDF-subset only for derive). */
+ * std_DeriveKey: HKDF expand-only plus extract-and-expand,
+ * opaque ECDH/DH/SHA-KDF/TLS-PRF arms). */
 
 /* ---------- non-slice stubs ---------- */
 

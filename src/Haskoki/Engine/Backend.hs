@@ -71,6 +71,9 @@ module Haskoki.Engine.Backend
   , KeyGenSpec (..)
   , KeyMaterial (..)
   , KeyRef (..)
+  , SymLenBound (..)
+  , symKeygenBounds
+  , symLenBoundOk
     -- * Class
   , CryptoBackend (..)
     -- * Random reseed bound
@@ -620,6 +623,65 @@ data KeyGenSpec
   | GenMLDSA { genSigAlg :: !PqcSigAlg }
   | GenSLHDSA { genSigAlg :: !PqcSigAlg }
   deriving (Eq, Show)
+
+-- | Sweep 'GenSym' label bounds (slice 11a): mirrors the planner
+-- table ('Haskoki.Operation.KeyManagement.keygenSweepSpecs') so
+-- both backends re-check lengths as defense in depth.
+data SymLenBound
+  = SymRange !Int !Int
+  | SymDiscrete ![Int]
+  deriving (Eq, Show)
+
+-- | Admit one symmetric length (bytes) against its bound.
+symLenBoundOk :: SymLenBound -> Int -> Bool
+symLenBoundOk (SymRange lo hi) n = n >= lo && n <= hi
+symLenBoundOk (SymDiscrete ns) n = n `elem` ns
+
+-- | Label bounds for the sweep keygens (fixed sizes are
+-- single-element discrete sets).
+symKeygenBounds :: [(String, SymLenBound)]
+symKeygenBounds =
+  [ ("DES", SymDiscrete [8])
+  , ("DES2", SymDiscrete [16])
+  , ("CDMF", SymDiscrete [8])
+  , ("IDEA", SymDiscrete [16])
+  , ("SEED", SymDiscrete [16])
+  , ("SKIPJACK", SymDiscrete [12])
+  , ("BATON", SymDiscrete [40])
+  , ("JUNIPER", SymDiscrete [40])
+  , ("GOST28147", SymDiscrete [32])
+  , ("SALSA20", SymDiscrete [32])
+  , ("POLY1305", SymDiscrete [32])
+  , ("ARIA", SymDiscrete [16, 24, 32])
+  , ("CAMELLIA", SymDiscrete [16, 24, 32])
+  , ("TWOFISH", SymDiscrete [16, 24, 32])
+  , ("AES-XTS", SymDiscrete [32, 64])
+  , ("CAST", SymRange 1 8)
+  , ("CAST3", SymRange 1 8)
+  , ("CAST128", SymRange 1 16)
+  , ("RC2", SymRange 1 128)
+  , ("RC4", SymRange 1 255)
+  , ("RC5", SymRange 1 255)
+  , ("BLOWFISH", SymRange 4 56)
+  , ("HKDF", SymRange 1 255)
+  , ("SHA-1-HMAC", SymRange 1 255)
+  , ("SHA224-HMAC", SymRange 1 255)
+  , ("SHA256-HMAC", SymRange 1 255)
+  , ("SHA384-HMAC", SymRange 1 255)
+  , ("SHA512-HMAC", SymRange 1 255)
+  , ("SHA512-224-HMAC", SymRange 1 255)
+  , ("SHA512-256-HMAC", SymRange 1 255)
+  , ("SHA512-T-HMAC", SymRange 1 255)
+  , ("SHA3-224-HMAC", SymRange 1 255)
+  , ("SHA3-256-HMAC", SymRange 1 255)
+  , ("SHA3-384-HMAC", SymRange 1 255)
+  , ("SHA3-512-HMAC", SymRange 1 255)
+  , ("BLAKE2B-160-HMAC", SymRange 1 255)
+  , ("BLAKE2B-256-HMAC", SymRange 1 255)
+  , ("BLAKE2B-384-HMAC", SymRange 1 255)
+  , ("TLS-PRE-MASTER", SymDiscrete [46])
+  , ("WTLS-PRE-MASTER", SymRange 19 254)
+  ]
 
 -- ---------------------------------------------------------------------------
 -- Capability reports

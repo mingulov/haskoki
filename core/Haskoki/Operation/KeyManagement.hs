@@ -59,6 +59,7 @@ module Haskoki.Operation.KeyManagement
   , ckkEcEdwards
   , ckkGenericSecret
   , ckkAes
+  , ckkAesXts
   , ckkDes3
   , ckkHotp
   , ckkBlake2b512Hmac
@@ -66,6 +67,43 @@ module Haskoki.Operation.KeyManagement
   , ckkMlKem
   , ckkMlDsa
   , ckkSlhDsa
+  , ckkDes
+  , ckkDes2
+  , ckkCdmf
+  , ckkCast
+  , ckkCast3
+  , ckkCast128
+  , ckkRc2
+  , ckkRc4
+  , ckkRc5
+  , ckkIdea
+  , ckkSkipjack
+  , ckkBaton
+  , ckkJuniper
+  , ckkBlowfish
+  , ckkTwofish
+  , ckkGost28147
+  , ckkSeed
+  , ckkAria
+  , ckkCamellia
+  , ckkSalsa20
+  , ckkPoly1305
+  , ckkHkdf
+  , ckkSha1Hmac
+  , ckkSha224Hmac
+  , ckkSha256Hmac
+  , ckkSha384Hmac
+  , ckkSha512Hmac
+  , ckkSha512_224Hmac
+  , ckkSha512_256Hmac
+  , ckkSha512THmac
+  , ckkSha3_224Hmac
+  , ckkSha3_256Hmac
+  , ckkSha3_384Hmac
+  , ckkSha3_512Hmac
+  , ckkBlake2b160Hmac
+  , ckkBlake2b256Hmac
+  , ckkBlake2b384Hmac
     -- * Mechanism ids (spec\/vendor\/pkcs11.h)
   , aesKeyGenMech
   , des3KeyGenMech
@@ -73,6 +111,47 @@ module Haskoki.Operation.KeyManagement
   , blake2b512KeyGenMech
   , chacha20KeyGenMech
   , genericSecretKeyGenMech
+  , desKeyGenMech
+  , des2KeyGenMech
+  , cdmfKeyGenMech
+  , castKeyGenMech
+  , cast3KeyGenMech
+  , cast128KeyGenMech
+  , rc2KeyGenMech
+  , rc4KeyGenMech
+  , rc5KeyGenMech
+  , ideaKeyGenMech
+  , skipjackKeyGenMech
+  , batonKeyGenMech
+  , juniperKeyGenMech
+  , blowfishKeyGenMech
+  , twofishKeyGenMech
+  , gost28147KeyGenMech
+  , seedKeyGenMech
+  , ariaKeyGenMech
+  , camelliaKeyGenMech
+  , salsa20KeyGenMech
+  , poly1305KeyGenMech
+  , aesXtsKeyGenMech
+  , hkdfKeyGenMech
+  , sha1KeyGenMech
+  , sha224KeyGenMech
+  , sha256KeyGenMech
+  , sha384KeyGenMech
+  , sha512KeyGenMech
+  , sha512_224KeyGenMech
+  , sha512_256KeyGenMech
+  , sha512TKeyGenMech
+  , sha3_224KeyGenMech
+  , sha3_256KeyGenMech
+  , sha3_384KeyGenMech
+  , sha3_512KeyGenMech
+  , blake2b160KeyGenMech
+  , blake2b256KeyGenMech
+  , blake2b384KeyGenMech
+  , ssl3PremasterKeyGenMech
+  , tlsPremasterKeyGenMech
+  , wtlsPremasterKeyGenMech
   , genericSecretKeygenMinBytes
   , genericSecretKeygenMaxBytes
   , ecKeyPairGenMech
@@ -199,6 +278,47 @@ import Haskoki.Registry.Generated
   , ckm_RSA_PKCS_KEY_PAIR_GEN
   , ckm_RSA_PKCS_OAEP
   , ckm_RSA_X_509
+  , ckm_DES_KEY_GEN
+  , ckm_DES2_KEY_GEN
+  , ckm_CDMF_KEY_GEN
+  , ckm_CAST_KEY_GEN
+  , ckm_CAST3_KEY_GEN
+  , ckm_CAST128_KEY_GEN
+  , ckm_RC2_KEY_GEN
+  , ckm_RC4_KEY_GEN
+  , ckm_RC5_KEY_GEN
+  , ckm_IDEA_KEY_GEN
+  , ckm_SKIPJACK_KEY_GEN
+  , ckm_BATON_KEY_GEN
+  , ckm_JUNIPER_KEY_GEN
+  , ckm_BLOWFISH_KEY_GEN
+  , ckm_TWOFISH_KEY_GEN
+  , ckm_GOST28147_KEY_GEN
+  , ckm_SEED_KEY_GEN
+  , ckm_ARIA_KEY_GEN
+  , ckm_CAMELLIA_KEY_GEN
+  , ckm_SALSA20_KEY_GEN
+  , ckm_POLY1305_KEY_GEN
+  , ckm_AES_XTS_KEY_GEN
+  , ckm_HKDF_KEY_GEN
+  , ckm_SHA_1_KEY_GEN
+  , ckm_SHA224_KEY_GEN
+  , ckm_SHA256_KEY_GEN
+  , ckm_SHA384_KEY_GEN
+  , ckm_SHA512_KEY_GEN
+  , ckm_SHA512_224_KEY_GEN
+  , ckm_SHA512_256_KEY_GEN
+  , ckm_SHA512_T_KEY_GEN
+  , ckm_SHA3_224_KEY_GEN
+  , ckm_SHA3_256_KEY_GEN
+  , ckm_SHA3_384_KEY_GEN
+  , ckm_SHA3_512_KEY_GEN
+  , ckm_BLAKE2B_160_KEY_GEN
+  , ckm_BLAKE2B_256_KEY_GEN
+  , ckm_BLAKE2B_384_KEY_GEN
+  , ckm_SSL3_PRE_MASTER_KEY_GEN
+  , ckm_TLS_PRE_MASTER_KEY_GEN
+  , ckm_WTLS_PRE_MASTER_KEY_GEN
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (Rules)
@@ -334,6 +454,170 @@ genericSecretKeygenMinBytes = 1
 genericSecretKeygenMaxBytes :: Int
 genericSecretKeygenMaxBytes = 255
 
+-- | @CKM_DES_KEY_GEN@ (generated id, resolved by name).
+desKeyGenMech :: MechanismId
+desKeyGenMech = MechanismId (ckm_DES_KEY_GEN)
+
+-- | @CKM_DES2_KEY_GEN@ (generated id, resolved by name).
+des2KeyGenMech :: MechanismId
+des2KeyGenMech = MechanismId (ckm_DES2_KEY_GEN)
+
+-- | @CKM_CDMF_KEY_GEN@ (generated id, resolved by name).
+cdmfKeyGenMech :: MechanismId
+cdmfKeyGenMech = MechanismId (ckm_CDMF_KEY_GEN)
+
+-- | @CKM_CAST_KEY_GEN@ (generated id, resolved by name).
+castKeyGenMech :: MechanismId
+castKeyGenMech = MechanismId (ckm_CAST_KEY_GEN)
+
+-- | @CKM_CAST3_KEY_GEN@ (generated id, resolved by name).
+cast3KeyGenMech :: MechanismId
+cast3KeyGenMech = MechanismId (ckm_CAST3_KEY_GEN)
+
+-- | @CKM_CAST128_KEY_GEN@ (generated id, resolved by name).
+cast128KeyGenMech :: MechanismId
+cast128KeyGenMech = MechanismId (ckm_CAST128_KEY_GEN)
+
+-- | @CKM_RC2_KEY_GEN@ (generated id, resolved by name).
+rc2KeyGenMech :: MechanismId
+rc2KeyGenMech = MechanismId (ckm_RC2_KEY_GEN)
+
+-- | @CKM_RC4_KEY_GEN@ (generated id, resolved by name).
+rc4KeyGenMech :: MechanismId
+rc4KeyGenMech = MechanismId (ckm_RC4_KEY_GEN)
+
+-- | @CKM_RC5_KEY_GEN@ (generated id, resolved by name).
+rc5KeyGenMech :: MechanismId
+rc5KeyGenMech = MechanismId (ckm_RC5_KEY_GEN)
+
+-- | @CKM_IDEA_KEY_GEN@ (generated id, resolved by name).
+ideaKeyGenMech :: MechanismId
+ideaKeyGenMech = MechanismId (ckm_IDEA_KEY_GEN)
+
+-- | @CKM_SKIPJACK_KEY_GEN@ (generated id, resolved by name).
+skipjackKeyGenMech :: MechanismId
+skipjackKeyGenMech = MechanismId (ckm_SKIPJACK_KEY_GEN)
+
+-- | @CKM_BATON_KEY_GEN@ (generated id, resolved by name).
+batonKeyGenMech :: MechanismId
+batonKeyGenMech = MechanismId (ckm_BATON_KEY_GEN)
+
+-- | @CKM_JUNIPER_KEY_GEN@ (generated id, resolved by name).
+juniperKeyGenMech :: MechanismId
+juniperKeyGenMech = MechanismId (ckm_JUNIPER_KEY_GEN)
+
+-- | @CKM_BLOWFISH_KEY_GEN@ (generated id, resolved by name).
+blowfishKeyGenMech :: MechanismId
+blowfishKeyGenMech = MechanismId (ckm_BLOWFISH_KEY_GEN)
+
+-- | @CKM_TWOFISH_KEY_GEN@ (generated id, resolved by name).
+twofishKeyGenMech :: MechanismId
+twofishKeyGenMech = MechanismId (ckm_TWOFISH_KEY_GEN)
+
+-- | @CKM_GOST28147_KEY_GEN@ (generated id, resolved by name).
+gost28147KeyGenMech :: MechanismId
+gost28147KeyGenMech = MechanismId (ckm_GOST28147_KEY_GEN)
+
+-- | @CKM_SEED_KEY_GEN@ (generated id, resolved by name).
+seedKeyGenMech :: MechanismId
+seedKeyGenMech = MechanismId (ckm_SEED_KEY_GEN)
+
+-- | @CKM_ARIA_KEY_GEN@ (generated id, resolved by name).
+ariaKeyGenMech :: MechanismId
+ariaKeyGenMech = MechanismId (ckm_ARIA_KEY_GEN)
+
+-- | @CKM_CAMELLIA_KEY_GEN@ (generated id, resolved by name).
+camelliaKeyGenMech :: MechanismId
+camelliaKeyGenMech = MechanismId (ckm_CAMELLIA_KEY_GEN)
+
+-- | @CKM_SALSA20_KEY_GEN@ (generated id, resolved by name).
+salsa20KeyGenMech :: MechanismId
+salsa20KeyGenMech = MechanismId (ckm_SALSA20_KEY_GEN)
+
+-- | @CKM_POLY1305_KEY_GEN@ (generated id, resolved by name).
+poly1305KeyGenMech :: MechanismId
+poly1305KeyGenMech = MechanismId (ckm_POLY1305_KEY_GEN)
+
+-- | @CKM_AES_XTS_KEY_GEN@ (generated id, resolved by name).
+aesXtsKeyGenMech :: MechanismId
+aesXtsKeyGenMech = MechanismId (ckm_AES_XTS_KEY_GEN)
+
+-- | @CKM_HKDF_KEY_GEN@ (generated id, resolved by name).
+hkdfKeyGenMech :: MechanismId
+hkdfKeyGenMech = MechanismId (ckm_HKDF_KEY_GEN)
+
+-- | @CKM_SHA_1_KEY_GEN@ (generated id, resolved by name).
+sha1KeyGenMech :: MechanismId
+sha1KeyGenMech = MechanismId (ckm_SHA_1_KEY_GEN)
+
+-- | @CKM_SHA224_KEY_GEN@ (generated id, resolved by name).
+sha224KeyGenMech :: MechanismId
+sha224KeyGenMech = MechanismId (ckm_SHA224_KEY_GEN)
+
+-- | @CKM_SHA256_KEY_GEN@ (generated id, resolved by name).
+sha256KeyGenMech :: MechanismId
+sha256KeyGenMech = MechanismId (ckm_SHA256_KEY_GEN)
+
+-- | @CKM_SHA384_KEY_GEN@ (generated id, resolved by name).
+sha384KeyGenMech :: MechanismId
+sha384KeyGenMech = MechanismId (ckm_SHA384_KEY_GEN)
+
+-- | @CKM_SHA512_KEY_GEN@ (generated id, resolved by name).
+sha512KeyGenMech :: MechanismId
+sha512KeyGenMech = MechanismId (ckm_SHA512_KEY_GEN)
+
+-- | @CKM_SHA512_224_KEY_GEN@ (generated id, resolved by name).
+sha512_224KeyGenMech :: MechanismId
+sha512_224KeyGenMech = MechanismId (ckm_SHA512_224_KEY_GEN)
+
+-- | @CKM_SHA512_256_KEY_GEN@ (generated id, resolved by name).
+sha512_256KeyGenMech :: MechanismId
+sha512_256KeyGenMech = MechanismId (ckm_SHA512_256_KEY_GEN)
+
+-- | @CKM_SHA512_T_KEY_GEN@ (generated id, resolved by name).
+sha512TKeyGenMech :: MechanismId
+sha512TKeyGenMech = MechanismId (ckm_SHA512_T_KEY_GEN)
+
+-- | @CKM_SHA3_224_KEY_GEN@ (generated id, resolved by name).
+sha3_224KeyGenMech :: MechanismId
+sha3_224KeyGenMech = MechanismId (ckm_SHA3_224_KEY_GEN)
+
+-- | @CKM_SHA3_256_KEY_GEN@ (generated id, resolved by name).
+sha3_256KeyGenMech :: MechanismId
+sha3_256KeyGenMech = MechanismId (ckm_SHA3_256_KEY_GEN)
+
+-- | @CKM_SHA3_384_KEY_GEN@ (generated id, resolved by name).
+sha3_384KeyGenMech :: MechanismId
+sha3_384KeyGenMech = MechanismId (ckm_SHA3_384_KEY_GEN)
+
+-- | @CKM_SHA3_512_KEY_GEN@ (generated id, resolved by name).
+sha3_512KeyGenMech :: MechanismId
+sha3_512KeyGenMech = MechanismId (ckm_SHA3_512_KEY_GEN)
+
+-- | @CKM_BLAKE2B_160_KEY_GEN@ (generated id, resolved by name).
+blake2b160KeyGenMech :: MechanismId
+blake2b160KeyGenMech = MechanismId (ckm_BLAKE2B_160_KEY_GEN)
+
+-- | @CKM_BLAKE2B_256_KEY_GEN@ (generated id, resolved by name).
+blake2b256KeyGenMech :: MechanismId
+blake2b256KeyGenMech = MechanismId (ckm_BLAKE2B_256_KEY_GEN)
+
+-- | @CKM_BLAKE2B_384_KEY_GEN@ (generated id, resolved by name).
+blake2b384KeyGenMech :: MechanismId
+blake2b384KeyGenMech = MechanismId (ckm_BLAKE2B_384_KEY_GEN)
+
+-- | @CKM_SSL3_PRE_MASTER_KEY_GEN@ (generated id, resolved by name).
+ssl3PremasterKeyGenMech :: MechanismId
+ssl3PremasterKeyGenMech = MechanismId (ckm_SSL3_PRE_MASTER_KEY_GEN)
+
+-- | @CKM_TLS_PRE_MASTER_KEY_GEN@ (generated id, resolved by name).
+tlsPremasterKeyGenMech :: MechanismId
+tlsPremasterKeyGenMech = MechanismId (ckm_TLS_PRE_MASTER_KEY_GEN)
+
+-- | @CKM_WTLS_PRE_MASTER_KEY_GEN@ (generated id, resolved by name).
+wtlsPremasterKeyGenMech :: MechanismId
+wtlsPremasterKeyGenMech = MechanismId (ckm_WTLS_PRE_MASTER_KEY_GEN)
+
 -- | @CKM_EC_KEY_PAIR_GEN@ (generated id, resolved by name).
 ecKeyPairGenMech :: MechanismId
 ecKeyPairGenMech = MechanismId (ckm_EC_KEY_PAIR_GEN)
@@ -369,6 +653,154 @@ mldsaKeyPairGenMech = MechanismId (ckm_ML_DSA_KEY_PAIR_GEN)
 -- | @CKK_SLH_DSA@ (generated id, resolved by name).
 ckkSlhDsa :: Word64
 ckkSlhDsa = mustKeyTypeId "CKK_SLH_DSA"
+
+-- | @CKK_DES@ (generated id, resolved by name).
+ckkDes :: Word64
+ckkDes = mustKeyTypeId "CKK_DES"
+
+-- | @CKK_DES2@ (generated id, resolved by name).
+ckkDes2 :: Word64
+ckkDes2 = mustKeyTypeId "CKK_DES2"
+
+-- | @CKK_CDMF@ (generated id, resolved by name).
+ckkCdmf :: Word64
+ckkCdmf = mustKeyTypeId "CKK_CDMF"
+
+-- | @CKK_CAST@ (generated id, resolved by name).
+ckkCast :: Word64
+ckkCast = mustKeyTypeId "CKK_CAST"
+
+-- | @CKK_CAST3@ (generated id, resolved by name).
+ckkCast3 :: Word64
+ckkCast3 = mustKeyTypeId "CKK_CAST3"
+
+-- | @CKK_CAST128@ (generated id, resolved by name).
+ckkCast128 :: Word64
+ckkCast128 = mustKeyTypeId "CKK_CAST128"
+
+-- | @CKK_RC2@ (generated id, resolved by name).
+ckkRc2 :: Word64
+ckkRc2 = mustKeyTypeId "CKK_RC2"
+
+-- | @CKK_RC4@ (generated id, resolved by name).
+ckkRc4 :: Word64
+ckkRc4 = mustKeyTypeId "CKK_RC4"
+
+-- | @CKK_RC5@ (generated id, resolved by name).
+ckkRc5 :: Word64
+ckkRc5 = mustKeyTypeId "CKK_RC5"
+
+-- | @CKK_IDEA@ (generated id, resolved by name).
+ckkIdea :: Word64
+ckkIdea = mustKeyTypeId "CKK_IDEA"
+
+-- | @CKK_SKIPJACK@ (generated id, resolved by name).
+ckkSkipjack :: Word64
+ckkSkipjack = mustKeyTypeId "CKK_SKIPJACK"
+
+-- | @CKK_BATON@ (generated id, resolved by name).
+ckkBaton :: Word64
+ckkBaton = mustKeyTypeId "CKK_BATON"
+
+-- | @CKK_JUNIPER@ (generated id, resolved by name).
+ckkJuniper :: Word64
+ckkJuniper = mustKeyTypeId "CKK_JUNIPER"
+
+-- | @CKK_BLOWFISH@ (generated id, resolved by name).
+ckkBlowfish :: Word64
+ckkBlowfish = mustKeyTypeId "CKK_BLOWFISH"
+
+-- | @CKK_TWOFISH@ (generated id, resolved by name).
+ckkTwofish :: Word64
+ckkTwofish = mustKeyTypeId "CKK_TWOFISH"
+
+-- | @CKK_GOST28147@ (generated id, resolved by name).
+ckkGost28147 :: Word64
+ckkGost28147 = mustKeyTypeId "CKK_GOST28147"
+
+-- | @CKK_SEED@ (generated id, resolved by name).
+ckkSeed :: Word64
+ckkSeed = mustKeyTypeId "CKK_SEED"
+
+-- | @CKK_ARIA@ (generated id, resolved by name).
+ckkAria :: Word64
+ckkAria = mustKeyTypeId "CKK_ARIA"
+
+-- | @CKK_CAMELLIA@ (generated id, resolved by name).
+ckkCamellia :: Word64
+ckkCamellia = mustKeyTypeId "CKK_CAMELLIA"
+
+-- | @CKK_SALSA20@ (generated id, resolved by name).
+ckkSalsa20 :: Word64
+ckkSalsa20 = mustKeyTypeId "CKK_SALSA20"
+
+-- | @CKK_POLY1305@ (generated id, resolved by name).
+ckkPoly1305 :: Word64
+ckkPoly1305 = mustKeyTypeId "CKK_POLY1305"
+
+-- | @CKK_HKDF@ (generated id, resolved by name).
+ckkHkdf :: Word64
+ckkHkdf = mustKeyTypeId "CKK_HKDF"
+
+-- | @CKK_SHA_1_HMAC@ (generated id, resolved by name).
+ckkSha1Hmac :: Word64
+ckkSha1Hmac = mustKeyTypeId "CKK_SHA_1_HMAC"
+
+-- | @CKK_SHA224_HMAC@ (generated id, resolved by name).
+ckkSha224Hmac :: Word64
+ckkSha224Hmac = mustKeyTypeId "CKK_SHA224_HMAC"
+
+-- | @CKK_SHA256_HMAC@ (generated id, resolved by name).
+ckkSha256Hmac :: Word64
+ckkSha256Hmac = mustKeyTypeId "CKK_SHA256_HMAC"
+
+-- | @CKK_SHA384_HMAC@ (generated id, resolved by name).
+ckkSha384Hmac :: Word64
+ckkSha384Hmac = mustKeyTypeId "CKK_SHA384_HMAC"
+
+-- | @CKK_SHA512_HMAC@ (generated id, resolved by name).
+ckkSha512Hmac :: Word64
+ckkSha512Hmac = mustKeyTypeId "CKK_SHA512_HMAC"
+
+-- | @CKK_SHA512_224_HMAC@ (generated id, resolved by name).
+ckkSha512_224Hmac :: Word64
+ckkSha512_224Hmac = mustKeyTypeId "CKK_SHA512_224_HMAC"
+
+-- | @CKK_SHA512_256_HMAC@ (generated id, resolved by name).
+ckkSha512_256Hmac :: Word64
+ckkSha512_256Hmac = mustKeyTypeId "CKK_SHA512_256_HMAC"
+
+-- | @CKK_SHA512_T_HMAC@ (generated id, resolved by name).
+ckkSha512THmac :: Word64
+ckkSha512THmac = mustKeyTypeId "CKK_SHA512_T_HMAC"
+
+-- | @CKK_SHA3_224_HMAC@ (generated id, resolved by name).
+ckkSha3_224Hmac :: Word64
+ckkSha3_224Hmac = mustKeyTypeId "CKK_SHA3_224_HMAC"
+
+-- | @CKK_SHA3_256_HMAC@ (generated id, resolved by name).
+ckkSha3_256Hmac :: Word64
+ckkSha3_256Hmac = mustKeyTypeId "CKK_SHA3_256_HMAC"
+
+-- | @CKK_SHA3_384_HMAC@ (generated id, resolved by name).
+ckkSha3_384Hmac :: Word64
+ckkSha3_384Hmac = mustKeyTypeId "CKK_SHA3_384_HMAC"
+
+-- | @CKK_SHA3_512_HMAC@ (generated id, resolved by name).
+ckkSha3_512Hmac :: Word64
+ckkSha3_512Hmac = mustKeyTypeId "CKK_SHA3_512_HMAC"
+
+-- | @CKK_BLAKE2B_160_HMAC@ (generated id, resolved by name).
+ckkBlake2b160Hmac :: Word64
+ckkBlake2b160Hmac = mustKeyTypeId "CKK_BLAKE2B_160_HMAC"
+
+-- | @CKK_BLAKE2B_256_HMAC@ (generated id, resolved by name).
+ckkBlake2b256Hmac :: Word64
+ckkBlake2b256Hmac = mustKeyTypeId "CKK_BLAKE2B_256_HMAC"
+
+-- | @CKK_BLAKE2B_384_HMAC@ (generated id, resolved by name).
+ckkBlake2b384Hmac :: Word64
+ckkBlake2b384Hmac = mustKeyTypeId "CKK_BLAKE2B_384_HMAC"
 
 -- | @CKM_SLH_DSA_KEY_PAIR_GEN@ (generated id, resolved by name).
 slhdsaKeyPairGenMech :: MechanismId
@@ -568,6 +1000,9 @@ keyPairCompatible (PwGenerateKey _) (FxGenerateKey _ _ input) =
   case decodeGenArgs input of
     Just (GenAes _) -> True
     Just (GenBytes _) -> True
+    Just (GenParityBytes _) -> True
+    Just (GenTlsPremaster _ _) -> True
+    Just (GenWtlsPremaster _ _) -> True
     Just (GenDsaParams _ _) -> True
     _ -> False
 keyPairCompatible (PwBlobOut _) (FxWrap _ _ _ _) = True
@@ -1171,6 +1606,9 @@ data GenArgs
   | GenMlDsa !Int
   | GenSlhDsa !Int
   | GenDhKeypair !ByteString
+  | GenParityBytes !Int
+  | GenTlsPremaster !Word8 !Word8
+  | GenWtlsPremaster !Word8 !Int
   deriving (Eq, Show)
 
 -- | Frame generation arguments: @tag:u8 ...@ with tag 0 AES
@@ -1180,7 +1618,10 @@ data GenArgs
 -- parameters (@len:u32be DER@), 7 Edwards keypair curve name
 -- (curve bytes), 8 ML-DSA parameter-set id (@ckp:u16be@),
 -- 9 SLH-DSA parameter-set id (@ckp:u16be@), 10 DH keypair domain
--- parameters (@len:u32be DER@).
+-- parameters (@len:u32be DER@), 11 odd-parity secret bytes
+-- (@len:u8@: DES/DES2/CDMF set parity per FIPS 46-3), 12
+-- TLS/SSL3 pre-master (@major:u8 minor:u8@, fixed 48 bytes),
+-- 13 WTLS pre-master (@ver:u8 len:u8@).
 encodeGenArgs :: GenArgs -> ByteString
 encodeGenArgs args = case args of
   GenAes n -> BS.singleton 0 <> BS.singleton (fromIntegral n)
@@ -1195,6 +1636,9 @@ encodeGenArgs args = case args of
   GenMlDsa ckp -> BS.singleton 8 <> u16be ckp
   GenSlhDsa ckp -> BS.singleton 9 <> u16be ckp
   GenDhKeypair der -> BS.singleton 10 <> u32be (BS.length der) <> der
+  GenParityBytes n -> BS.singleton 11 <> BS.singleton (fromIntegral n)
+  GenTlsPremaster major minor -> BS.singleton 12 <> BS.pack [major, minor]
+  GenWtlsPremaster ver n -> BS.singleton 13 <> BS.pack [ver, fromIntegral n]
 
 -- | Parse framed generation arguments. Short frames, unknown tags
 -- and trailing bytes all fail.
@@ -1247,6 +1691,15 @@ decodeGenArgs bs = case BS.uncons bs of
           then Just (GenDhKeypair der)
           else Nothing
     | otherwise -> Nothing
+  Just (11, rest) -> case BS.unpack rest of
+    [n] -> Just (GenParityBytes (fromIntegral n))
+    _ -> Nothing
+  Just (12, rest) -> case BS.unpack rest of
+    [major, minor] -> Just (GenTlsPremaster major minor)
+    _ -> Nothing
+  Just (13, rest) -> case BS.unpack rest of
+    [ver, n] -> Just (GenWtlsPremaster ver (fromIntegral n))
+    _ -> Nothing
   _ -> Nothing
 
 -- | 2-byte big-endian framing.
@@ -1863,22 +2316,178 @@ dhDomainOf wantQ pubA privA = do
     bound _ = 512
 
 -- ---------------------------------------------------------------------------
+-- Table-driven single-key generation (slice 11a sweep)
+-- ---------------------------------------------------------------------------
+
+-- | Sweep length shapes: fixed sizes mint the headline length when
+-- @CKA_VALUE_LEN@ is absent; discrete and ranged shapes require it.
+data KeygenLens
+  = KeygenFixed !Int
+  | KeygenDiscrete ![Int]
+  | KeygenRange !Int !Int
+  deriving (Eq, Show)
+
+-- | One sweep row: label (for refusal detail), key type,
+-- lengths, and whether the driver sets odd DES parity (FIPS
+-- 46-3: DES, DES2, CDMF only).
+keygenSweepSpecs :: [(MechanismId, (String, Word64, KeygenLens, Bool))]
+keygenSweepSpecs =
+  [ (desKeyGenMech, ("DES", ckkDes, KeygenFixed 8, True))
+  , (des2KeyGenMech, ("DES2", ckkDes2, KeygenFixed 16, True))
+  , (cdmfKeyGenMech, ("CDMF", ckkCdmf, KeygenFixed 8, True))
+  , (ideaKeyGenMech, ("IDEA", ckkIdea, KeygenFixed 16, False))
+  , (seedKeyGenMech, ("SEED", ckkSeed, KeygenFixed 16, False))
+  , (skipjackKeyGenMech, ("SKIPJACK", ckkSkipjack, KeygenFixed 12, False))
+  , (batonKeyGenMech, ("BATON", ckkBaton, KeygenFixed 40, False))
+  , (juniperKeyGenMech, ("JUNIPER", ckkJuniper, KeygenFixed 40, False))
+  , (gost28147KeyGenMech, ("GOST28147", ckkGost28147, KeygenFixed 32, False))
+  , (salsa20KeyGenMech, ("SALSA20", ckkSalsa20, KeygenFixed 32, False))
+  , (poly1305KeyGenMech, ("POLY1305", ckkPoly1305, KeygenFixed 32, False))
+  , (ariaKeyGenMech, ("ARIA", ckkAria, KeygenDiscrete [16, 24, 32], False))
+  , (camelliaKeyGenMech, ("CAMELLIA", ckkCamellia, KeygenDiscrete [16, 24, 32], False))
+  , (twofishKeyGenMech, ("TWOFISH", ckkTwofish, KeygenDiscrete [16, 24, 32], False))
+  , (aesXtsKeyGenMech, ("AES-XTS", ckkAesXts, KeygenDiscrete [32, 64], False))
+  , (castKeyGenMech, ("CAST", ckkCast, KeygenRange 1 8, False))
+  , (cast3KeyGenMech, ("CAST3", ckkCast3, KeygenRange 1 8, False))
+  , (cast128KeyGenMech, ("CAST128", ckkCast128, KeygenRange 1 16, False))
+  , (rc2KeyGenMech, ("RC2", ckkRc2, KeygenRange 1 128, False))
+  , (rc4KeyGenMech, ("RC4", ckkRc4, KeygenRange 1 255, False))
+  , (rc5KeyGenMech, ("RC5", ckkRc5, KeygenRange 1 255, False))
+  , (blowfishKeyGenMech, ("BLOWFISH", ckkBlowfish, KeygenRange 4 56, False))
+  , (hkdfKeyGenMech, ("HKDF", ckkHkdf, KeygenRange 1 255, False))
+  , (sha1KeyGenMech, ("SHA-1-HMAC", ckkSha1Hmac, KeygenRange 1 255, False))
+  , (sha224KeyGenMech, ("SHA224-HMAC", ckkSha224Hmac, KeygenRange 1 255, False))
+  , (sha256KeyGenMech, ("SHA256-HMAC", ckkSha256Hmac, KeygenRange 1 255, False))
+  , (sha384KeyGenMech, ("SHA384-HMAC", ckkSha384Hmac, KeygenRange 1 255, False))
+  , (sha512KeyGenMech, ("SHA512-HMAC", ckkSha512Hmac, KeygenRange 1 255, False))
+  , (sha512_224KeyGenMech, ("SHA512/224-HMAC", ckkSha512_224Hmac, KeygenRange 1 255, False))
+  , (sha512_256KeyGenMech, ("SHA512/256-HMAC", ckkSha512_256Hmac, KeygenRange 1 255, False))
+  , (sha512TKeyGenMech, ("SHA512/t-HMAC", ckkSha512THmac, KeygenRange 1 255, False))
+  , (sha3_224KeyGenMech, ("SHA3-224-HMAC", ckkSha3_224Hmac, KeygenRange 1 255, False))
+  , (sha3_256KeyGenMech, ("SHA3-256-HMAC", ckkSha3_256Hmac, KeygenRange 1 255, False))
+  , (sha3_384KeyGenMech, ("SHA3-384-HMAC", ckkSha3_384Hmac, KeygenRange 1 255, False))
+  , (sha3_512KeyGenMech, ("SHA3-512-HMAC", ckkSha3_512Hmac, KeygenRange 1 255, False))
+  , (blake2b160KeyGenMech, ("BLAKE2B-160-HMAC", ckkBlake2b160Hmac, KeygenRange 1 255, False))
+  , (blake2b256KeyGenMech, ("BLAKE2B-256-HMAC", ckkBlake2b256Hmac, KeygenRange 1 255, False))
+  , (blake2b384KeyGenMech, ("BLAKE2B-384-HMAC", ckkBlake2b384Hmac, KeygenRange 1 255, False))
+  , (blake2b512KeyGenMech, ("BLAKE2B-512-HMAC", ckkBlake2b512Hmac, KeygenRange 1 255, False))
+  ]
+
+-- | Plan one table-driven keygen: the template check fixes the
+-- class and key type, then the shape admits the length (fixed
+-- sizes default when absent, anything else needs @CKA_VALUE_LEN@).
+planSweepKeygen
+  :: SessionState -> MechanismId -> String -> Word64 -> KeygenLens -> Bool
+  -> [(AttributeType, AttributeValue)]
+  -> Either KeyDeny (PendingWork, CryptoEffect)
+planSweepKeygen st mech label kt lens parity tmpl =
+  case checkKeyTemplate ckoSecretKey kt tmpl of
+    Left deny -> Left deny
+    Right attrs -> case Map.lookup AttrValueLen attrs of
+      Just (ValULong n)
+        | lenOk lens (fromIntegral n) ->
+            Right (effect attrs (fromIntegral n))
+        | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            (label ++ " length must be " ++ lenDesc lens ++ ": " ++ show n))
+      Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        (label ++ " value length is malformed"))
+      Nothing -> case lens of
+        KeygenFixed d -> Right (effect attrs d)
+        _ -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+          (label ++ " keygen needs CKA_VALUE_LEN"))
+  where
+    effect attrs n =
+      ( PwGenerateKey (pendingFromAttrs st attrs)
+      , FxGenerateKey mech BS.empty (encodeGenArgs (args n))
+      )
+    args n
+      | parity = GenParityBytes n
+      | otherwise = GenBytes n
+
+-- | Admit one sweep length (bytes) against its shape.
+lenOk :: KeygenLens -> Int -> Bool
+lenOk (KeygenFixed d) n = n == d
+lenOk (KeygenDiscrete ns) n = n `elem` ns
+lenOk (KeygenRange lo hi) n = n >= lo && n <= hi
+
+-- | Refusal detail for one sweep shape.
+lenDesc :: KeygenLens -> String
+lenDesc (KeygenFixed d) = show d ++ " bytes"
+lenDesc (KeygenDiscrete ns) = "one of " ++ show ns ++ " bytes"
+lenDesc (KeygenRange lo hi) = show lo ++ " to " ++ show hi ++ " bytes"
+
+-- | Plan a TLS/SSL3 pre-master keygen: the 2-byte @CK_VERSION@
+-- parameter is required and its bytes lead the 48-byte generic
+-- secret. A missing length defaults to 48; the validated params
+-- ride the effect so async replays reproduce the version.
+planTlsPremaster
+  :: SessionState -> MechanismId -> ByteString
+  -> [(AttributeType, AttributeValue)]
+  -> Either KeyDeny (PendingWork, CryptoEffect)
+planTlsPremaster st mech params tmpl = case BS.unpack params of
+  [major, minor] -> case checkKeyTemplate ckoSecretKey ckkGenericSecret tmpl of
+    Left deny -> Left deny
+    Right attrs -> case Map.lookup AttrValueLen attrs of
+      Just (ValULong n)
+        | n == 48 -> Right (effect attrs major minor)
+        | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            ("pre-master length must be 48 bytes: " ++ show n))
+      Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        "pre-master value length is malformed")
+      Nothing -> Right (effect attrs major minor)
+  _ -> Left (KeyDeny CKR_MECHANISM_PARAM_INVALID
+    "TLS/SSL3 pre-master needs a 2-byte CK_VERSION")
+  where
+    effect attrs major minor =
+      ( PwGenerateKey (pendingFromAttrs st attrs)
+      , FxGenerateKey mech params (encodeGenArgs (GenTlsPremaster major minor))
+      )
+
+-- | Plan a WTLS pre-master keygen: the 1-byte version parameter
+-- is required and leads a variable-length (20-255 byte) generic
+-- secret. The validated params ride the effect for replays.
+planWtlsPremaster
+  :: SessionState -> MechanismId -> ByteString
+  -> [(AttributeType, AttributeValue)]
+  -> Either KeyDeny (PendingWork, CryptoEffect)
+planWtlsPremaster st mech params tmpl = case BS.unpack params of
+  [ver] -> case checkKeyTemplate ckoSecretKey ckkGenericSecret tmpl of
+    Left deny -> Left deny
+    Right attrs -> case Map.lookup AttrValueLen attrs of
+      Just (ValULong n)
+        | n >= 20 && n <= 255 -> Right (effect attrs ver (fromIntegral n))
+        | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            ("WTLS pre-master length must be 20 to 255 bytes: " ++ show n))
+      Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        "WTLS pre-master value length is malformed")
+      Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+        "WTLS pre-master keygen needs CKA_VALUE_LEN")
+  _ -> Left (KeyDeny CKR_MECHANISM_PARAM_INVALID
+    "WTLS pre-master needs a 1-byte version")
+  where
+    effect attrs ver n =
+      ( PwGenerateKey (pendingFromAttrs st attrs)
+      , FxGenerateKey mech params (encodeGenArgs (GenWtlsPremaster ver n))
+      )
+
+-- ---------------------------------------------------------------------------
 -- Single-key generation
 -- ---------------------------------------------------------------------------
 
 -- | Plan single-key generation: AES takes a 128\/192\/256-bit
 -- length via @AttrValueLen@ (bytes); HOTP takes any length in the
--- recipe's 16-64 byte window; DSA parameter generation takes the
--- @(L, N)@ size pair via @AttrPrimeBits@ (required) and
+-- recipe's 16-64 byte window; the sweep table serves the fixed,
+-- discrete and ranged symmetric keygens; DSA parameter generation
+-- takes the @(L, N)@ size pair via @AttrPrimeBits@ (required) and
 -- @AttrSubprimeBits@ (defaulted) and completes one pending
 -- domain-parameters object. The driver answer completes one
 -- pending object. Admission gates last (parse-first): mechanism,
 -- template, then the bound check just before the effect.
 planGenerateKey
-  :: Rules -> Model -> SessionState -> MechanismId
+  :: Rules -> Model -> SessionState -> MechanismId -> ByteString
   -> [(AttributeType, AttributeValue)]
   -> KeyPlan
-planGenerateKey rules model st mech tmpl =
+planGenerateKey rules model st mech params tmpl =
   case validated of
     Left deny -> KeyDenied deny
     Right (pw, fx) ->
@@ -1888,6 +2497,17 @@ planGenerateKey rules model st mech tmpl =
         Right () -> KeyEffect pw fx
   where
     validated
+      -- Only the pre-master keygens take mechanism parameters
+      -- (the client version); every other keygen refuses params.
+      | not (BS.null params)
+      , mech /= tlsPremasterKeyGenMech
+      , mech /= ssl3PremasterKeyGenMech
+      , mech /= wtlsPremasterKeyGenMech =
+          Left (KeyDeny CKR_MECHANISM_PARAM_INVALID
+            "keygen takes no mechanism params")
+      | mech == tlsPremasterKeyGenMech = planTlsPremaster st mech params tmpl
+      | mech == ssl3PremasterKeyGenMech = planTlsPremaster st mech params tmpl
+      | mech == wtlsPremasterKeyGenMech = planWtlsPremaster st mech params tmpl
       | mech == dsaParameterGenMech =
           case checkKeyTemplate ckoDomainParameters ckkDsa tmpl of
           Left deny -> Left deny
@@ -1951,20 +2571,12 @@ planGenerateKey rules model st mech tmpl =
       -- the size, so any other length is inconsistent and a
       -- missing length is incomplete (the HOTP explicit-length
       -- precedent, not the DES3 default).
-      | mech == blake2b512KeyGenMech = case checkKeyTemplate ckoSecretKey ckkBlake2b512Hmac tmpl of
-          Left deny -> Left deny
-          Right attrs -> case Map.lookup AttrValueLen attrs of
-            Just (ValULong n)
-              | n == 64 -> Right
-                  ( PwGenerateKey (pendingFromAttrs st attrs)
-                  , FxGenerateKey mech BS.empty (encodeGenArgs (GenBytes 64))
-                  )
-              | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-                  ("BLAKE2B-512 length must be 64 bytes: " ++ show n))
-            Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-              "BLAKE2B-512 value length is malformed")
-            Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
-              "BLAKE2B-512 keygen needs CKA_VALUE_LEN")
+      -- Table-driven sweep (slice 11a): one arm serves every
+      -- fixed, discrete and ranged symmetric keygen (HMAC keygens
+      -- take a VALUE_LEN-sized key per the standard, so the old
+      -- exact-64 BLAKE2B-512 arm moved into the table).
+      | Just (label, kt, lens, parity) <- lookup mech keygenSweepSpecs =
+          planSweepKeygen st mech label kt lens parity tmpl
       -- ChaCha20 keys mint at 256 bits only: the single-width
       -- keygen fixes the size, so any other length is
       -- inconsistent and a missing length is incomplete (the
