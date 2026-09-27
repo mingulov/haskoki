@@ -62,7 +62,7 @@ import Haskoki.Attribute
 import Haskoki.Attribute.Generated
   (classNameById, generatedTemplateRules, mustClassId, mustKeyTypeId)
 import Haskoki.Der
-  (curveCoordLen, curveOidOfParams, dsaPrivateDer, dsaPublicDer,
+  (curveCoordLen, curveOidOfParams, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaPrivateDer, dsaPublicDer, dsaSpkiFields,
    ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
    edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
    mldsaPrivateDer, mldsaPublicDer, mldsaWidthsOfOid,
@@ -423,6 +423,8 @@ ckoSecretKey = mustClassId "CKO_SECRET_KEY"
 ckkRsa = mustKeyTypeId "CKK_RSA"
 ckkEc = mustKeyTypeId "CKK_EC"
 ckkDsa = mustKeyTypeId "CKK_DSA"
+ckkDh = mustKeyTypeId "CKK_DH"
+ckkX9_42Dh = mustKeyTypeId "CKK_X9_42_DH"
 ckkEcEdwards = mustKeyTypeId "CKK_EC_EDWARDS"
 ckkMlDsa = mustKeyTypeId "CKK_ML_DSA"
 ckkSlhDsa = mustKeyTypeId "CKK_SLH_DSA"
@@ -442,7 +444,10 @@ ckkAes = mustKeyTypeId "CKK_AES"
 -- from the parameter set plus the raw key value (the public
 -- value, the private expanded key); a seed-only private
 -- template refuses — the pinned provider cannot expand a lone
--- seed. SLH-DSA halves assemble the same way (the public
+-- seed. DH halves assemble from prime/base plus the raw value
+-- (the public y, the private x); X9.42 additionally requires
+-- the subprime while a PKCS#3 template carrying one refuses
+-- inconsistent. SLH-DSA halves assemble the same way (the public
 -- value, the private 4n secret). Secret keys require the
 -- value, cohere it with an explicit value length, restrict AES to
 -- its fixed lengths, and stamp a derived value length when the
@@ -458,6 +463,8 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     | c == ckoPublicKey && k == ckkEc -> ecPublic
     | c == ckoPrivateKey && k == ckkDsa -> dsaPrivate
     | c == ckoPublicKey && k == ckkDsa -> dsaPublic
+    | c == ckoPrivateKey && (k == ckkDh || k == ckkX9_42Dh) -> dhPrivate k
+    | c == ckoPublicKey && (k == ckkDh || k == ckkX9_42Dh) -> dhPublic k
     | c == ckoPrivateKey && k == ckkEcEdwards -> eddsaPrivate
     | c == ckoPublicKey && k == ckkEcEdwards -> eddsaPublic
     | c == ckoPrivateKey && k == ckkMlDsa -> mldsaPrivate
@@ -544,6 +551,27 @@ importMaterial attrs = case (classOf, keyTypeOf) of
       y <- need AttrValue
       pure (Map.insert AttrValue
         (ValBytes (dsaPublicDer p q g y)) attrs)
+    dhPrivate k = do
+      p <- need AttrPrime
+      g <- need AttrBase
+      x <- need AttrValue
+      assemble k p g x
+    dhPublic k = do
+      p <- need AttrPrime
+      g <- need AttrBase
+      y <- need AttrValue
+      assemble k p g y
+    assemble k p g v
+      | k == ckkX9_42Dh = do
+          q <- need AttrSubprime
+          pure (Map.insert AttrValue
+            (ValBytes (if isPriv then dhPrivateDerQ p g q v else dhPublicDerQ p g q v)) attrs)
+      | Map.member AttrSubprime attrs =
+          Left (CKR_TEMPLATE_INCONSISTENT, "PKCS#3 DH takes no subprime")
+      | otherwise =
+          Right (Map.insert AttrValue
+            (ValBytes (if isPriv then dhPrivateDer p g v else dhPublicDer p g v)) attrs)
+      where isPriv = classOf == Just ckoPrivateKey
     eddsaPrivate = do
       params <- need AttrEcParams
       seed <- need AttrValue
@@ -991,6 +1019,33 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
 -- unavailable entry makes the whole outcome a rejection that STILL
 -- carries the readable values (error plus required effects in one
 -- outcome).
+-- | Public-component projection for reads: 'AttrValue' stores
+-- the SPKI DER (the engine's material shape), but PKCS#11 reads
+-- the DSA/DH public value @y@ through @CKA_VALUE@ — so a public
+-- DSA/DH object whose value parses as an SPKI reads @y@ instead
+-- of the DER. Anything else (private halves, secrets, opaque
+-- synthetic values, unparseable DER) passes through untouched;
+-- sealing still applies to the projected read (the projection
+-- runs before 'getAttributes', so a sealed flag redacts @y@
+-- exactly like the stored value).
+projectPublicValue :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+projectPublicValue attrs = case (classOf, keyTypeOf, Map.lookup AttrValue attrs) of
+  (Just c, Just k, Just (ValBytes der))
+    | c == ckoPublicKey && k == ckkDsa
+    , Just (_, _, _, y) <- dsaSpkiFields der ->
+        Map.insert AttrValue (ValBytes y) attrs
+    | c == ckoPublicKey && (k == ckkDh || k == ckkX9_42Dh)
+    , Just (_, _, _, y) <- dhSpkiFields der ->
+        Map.insert AttrValue (ValBytes y) attrs
+  _ -> attrs
+  where
+    classOf = case Map.lookup AttrClass attrs of
+      Just (ValULong c) -> Just c
+      _ -> Nothing
+    keyTypeOf = case Map.lookup AttrKeyType attrs of
+      Just (ValULong k) -> Just k
+      _ -> Nothing
+
 planGetAttributes
   :: Model -> SessionState -> ExternalHandle -> [AttributeType] -> PlanResult
 planGetAttributes model st h wanted = case resolveHandle model h of
@@ -999,7 +1054,7 @@ planGetAttributes model st h wanted = case resolveHandle model h of
     | not (objectVisible st ost) ->
         invalidHandle "object not visible to session"
     | otherwise ->
-    let PartialReads code results = getAttributes (osAttrs ost) wanted
+    let PartialReads code results = getAttributes (projectPublicValue (osAttrs ost)) wanted
         outs =
           [ NativeOutput (RegionBytes (show t) IntentNull) (encodeValue v)
           | (t, ResOk v) <- results

@@ -763,6 +763,63 @@ first lane proving all of them together.
   lanes). Only the triage doc changed afterwards, so no
   stale-bundle re-verify is needed this round.
 
+## Round 20: DH slice (fast r40→r41→r42 + KAT r20→r21)
+
+- r42: 3479 passed / 15 failed / 487 xfailed / 2912 skipped
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r42-results.json`).
+  r40→r42: +22 pass / +13 fail / +7 xfail / +28 skip. The
+  15 failures are the 13 P11C-004 X9.42 legs plus the same
+  2 HOTP externals, all confirmed by test id; zero
+  pass→fail. The intermediate r41 (3476 pass / 15 fail /
+  490 xfail / 2912 skip, pre-guard bundle, live file since
+  overwritten) differs from r42 only in the security file
+  (3 xfail→pass, see below) and the X9.42 failure code
+  (`GENERAL_ERROR`→typed).
+- Movers (unit `counts`, exact reconciliation):
+  `test_dh_key_agreement` +9 pass / +1 xfail / −10 skip —
+  the PKCS#3 file newly runs, 9 passing except the zero-length
+  `VALUE_LEN` leg (xfailed: token answers the central
+  `TEMPLATE_INCONSISTENT`, the file wants
+  `KEY_SIZE_RANGE`/`ATTRIBUTE_VALUE_INVALID`; open
+  question in P11C-004, no ECDH/HKDF counterpart pins the
+  narrower set); `security/test_dh_param_validation` +4
+  pass / −4 skip — prime=1, tiny-prime and generator=0
+  now refuse typed from the planner structural floor
+  (512 significant prime bits, 2 <= g < p; the 1024-bit
+  posture leg accepts either way and passes);
+  `test_field_size_boundary` +1 xfail / −1 skip — the new
+  DH oversized-`PRIME_BITS` leg lands on the P11C-002
+  wrong-tuple (recorded there);
+  `test_x942_dh` +13 fail / +5 xfail / −18 skip — the
+  P11C-004 cascade (corrupt 257-byte `X942_GEN` greater
+  than the prime; every leg raises from
+  `_generate_x942_keypair`'s `expect_rv(OK)`); the 5
+  import-based vector legs xfail on the runtime-reject
+  sets. Registration effects as the 4 DH mechanisms
+  advertise: `test_mech_flags` +8 pass / +28 skip,
+  `test_mech_probe` +12 skip, `test_mech_attribute` +8
+  skip, `test_mech_negative` +8 skip, `test_mech_keygen`
+  +4 skip, `test_mech_derive` +2 skip, `test_ckr_object`
+  +1 pass / −1 skip (per-test list unrecorded for that
+  unit; a DH-gated leg newly runs). Corroborated by the
+  targeted reproof
+  (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-dh-r2.json`:
+  PKCS#3 9/9 + 1 xfail, security 4/4, X9.42 13 failing by the
+  same ids) and a C-ABI probe (genuine RFC 5114 domain:
+  keygen `CKR_OK` + KAT-exact derive; corrupt `g` fails
+  closed typed with no handles; non-subgroup peer refused
+  `PARAM_INVALID`).
+- KAT r20→r21: 78908→78930 passed (+22) / 8→21 failed
+  (+13) / 4045→4052 xfailed / 30046→30074 skipped
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r21-results.json`).
+  Identical mover shape to the fast lane (same 11 units,
+  same deltas); the 21 failures are the r20 8 by id (6
+  P11C-003 + 2 HOTP externals, none gone) plus the same
+  13 P11C-004 legs; zero pass→fail.
+- Bundle note: r42/KAT-r21 run on a release bundle rebuilt
+  from the 10e stack including the structural floor (no
+  in-stack fixes needed after the lanes).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

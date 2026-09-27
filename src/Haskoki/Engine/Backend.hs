@@ -48,6 +48,7 @@ module Haskoki.Engine.Backend
   , slhdsaSigCap
   , slhdsaSets
   , ecdhCap
+  , dhCap
   , MacSpec (..)
   , CipherSpec (..)
   , cipherKeyLens
@@ -66,6 +67,7 @@ module Haskoki.Engine.Backend
   , PqcSigAlg (..)
   , KemSpec (..)
   , EcdhSpec (..)
+  , DhSpec (..)
   , KeyGenSpec (..)
   , KeyMaterial (..)
   , KeyRef (..)
@@ -337,6 +339,11 @@ ecdhCap :: EcdhSpec -> String
 ecdhCap EcdhPlain = "ECDH"
 ecdhCap EcdhCofactor = "ECDH-COFACTOR"
 
+-- | Capability string required by one DH spec: @DH@ (raw finite-field
+-- agreement; both rows agree identically).
+dhCap :: DhSpec -> String
+dhCap DhPlain = "DH"
+
 data MacSpec
   = MacHMAC { macDigest :: !DigestAlg, macTruncLen :: !(Maybe Int) }
   | MacCMAC { macCipher :: !CipherSpec }
@@ -546,6 +553,12 @@ data KemSpec = KemSpec
 data EcdhSpec = EcdhPlain | EcdhCofactor
   deriving (Eq, Ord, Show, Enum, Bounded)
 
+-- | Finite-field DH agreement shape: raw (@CKD_NULL@) secrets only.
+-- Both rows (PKCS#3, X9.42) agree identically; the row distinction
+-- gates the base key type at the planner, not the math here.
+data DhSpec = DhPlain
+  deriving (Eq, Ord, Show, Enum, Bounded)
+
 -- | PQC signatures: explicit parameter set incl. prehash/mu/context knobs.
 data PqcSigAlg
   = ML_DSA_44 | ML_DSA_65 | ML_DSA_87
@@ -590,6 +603,9 @@ data KeyGenSpec
   | GenDSAKeypair { genDsaParams :: !ByteString }
     -- ^ DSA keypair from DER domain parameters; answers the
     -- PKCS#8/SPKI DER halves.
+  | GenDHKeypair { genDhParams :: !ByteString }
+    -- ^ DH keypair from DER domain parameters (PKCS#3 or X9.42);
+    -- answers the PKCS#8/SPKI DER halves.
   | GenEdDSAKeypair { genEdwardsName :: !ByteString }
     -- ^ Edwards keypair from the engine curve name; answers the
     -- PKCS#8/SPKI DER halves.
@@ -738,6 +754,16 @@ class CryptoBackend b where
   -- width. The driver truncates to the planned length.
   ecdhDerive :: BackendEnv b -> EcdhSpec -> KeyMaterial -> KeyMaterial -> IO (EngineResult ByteString)
   -- ^ (base private, peer public) -> full secret.
+
+  -- DH agreement: the raw shared secret at the prime's byte width
+  -- (@CKD_NULL@ only — the recipe refuses every KDF selector). The
+  -- peer rides as bare big-endian bytes ('KeyDer'); the real
+  -- backend range-checks @1 < y < p - 1@ natively and refuses
+  -- out-of-range peers as parameter faults. Synthetic answers the
+  -- 512-byte max width deterministically. The driver truncates to
+  -- the planned length.
+  dhDerive :: BackendEnv b -> DhSpec -> KeyMaterial -> KeyMaterial -> IO (EngineResult ByteString)
+  -- ^ (base private, peer public value) -> full secret.
 
   -- Resource lifecycle for multipart/streaming contexts.
   snapshotResource :: BackendEnv b -> EngineResourceId -> IO (Either String ByteString)

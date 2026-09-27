@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 150
+#define HASKOKI_MECH_COUNT 154
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -43,8 +43,12 @@ static const struct haskoki_mech_row
   { 0x0000001BUL, 1024UL, 3072UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_DSA_SHA3_512 */
   { 0x0000001CUL, 1312UL, 2592UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_ML_DSA_KEY_PAIR_GEN */
   { 0x0000001DUL, 1312UL, 2592UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_ML_DSA */
+  { 0x00000020UL, 1024UL, 4096UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_DH_PKCS_KEY_PAIR_GEN */
+  { 0x00000021UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_DH_PKCS_DERIVE */
   { 0x0000002DUL, 32UL, 64UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_SLH_DSA_KEY_PAIR_GEN */
   { 0x0000002EUL, 32UL, 64UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SLH_DSA */
+  { 0x00000030UL, 1024UL, 4096UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_X9_42_DH_KEY_PAIR_GEN */
+  { 0x00000031UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_X9_42_DH_DERIVE */
   { 0x00000040UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA256_RSA_PKCS */
   { 0x00000041UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA384_RSA_PKCS */
   { 0x00000042UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA512_RSA_PKCS */

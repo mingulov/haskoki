@@ -23,19 +23,19 @@ import Test.Tasty.HUnit
 
 import Haskoki.Attribute
   (AttributeResult (..), AttributeType (..), AttributeValue (..),
-   PartialReads (..), getAttributes)
-import Haskoki.Der (curveCoordLen, curveOidOfParams, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, unwrapEcPoint, unwrapEdwardsPoint)
+   PartialReads (..), decodeValue, getAttributes)
+import Haskoki.Der (curveCoordLen, curveOidOfParams, dhPkcs8Fields, dhSpkiFields, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, unwrapEcPoint, unwrapEdwardsPoint)
 import Haskoki.Engine.Backend
-  (CryptoBackend (..), DigestAlg (..), EcSpec (..),
+  (CryptoBackend (..), DhSpec (..), DigestAlg (..), EcSpec (..),
    EngineResult (..), KemSpec (..), KeyMaterial (..), PqcKemAlg (..), PqcSigAlg (..), SigSpec (..))
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
 import Haskoki.FFI.Standard (ecParamsFromWire, ecParamsToWire)
 import Haskoki.Model
   (Model, ObjectState (..), SessionState, addToken, emptyModel,
    lookupSession)
-import Haskoki.Object (decodeHandle, planCreateObject, resolveHandle)
+import Haskoki.Object (decodeHandle, planCreateObject, planGetAttributes, resolveHandle)
 import Haskoki.Operation.KeyManagement
-  (ckoPrivateKey, ckoPublicKey, ckkDsa, ckkEc, ckkEcEdwards, ckkMlDsa, ckkMlKem, ckkRsa)
+  (ckoPrivateKey, ckoPublicKey, ckkDh, ckkDsa, ckkEc, ckkEcEdwards, ckkMlDsa, ckkMlKem, ckkRsa, ckkX9_42Dh)
 import Haskoki.Outcome
   (DeltaOp (..), NativeOutput (..), PlanResult (..),
    PreparedCommit (..), Rejection (..), StateDelta (..))
@@ -52,6 +52,14 @@ spec = testGroup "key import"
   , testCase "DSA private import assembles PKCS#8" caseDsaPrivate
   , testCase "DSA public import assembles SPKI" caseDsaPublic
   , testCase "DSA DER readers parse openssl goldens" caseDsaDerReaders
+  , testCase "DH private import assembles PKCS#8" caseDhPrivate
+  , testCase "DH public import assembles SPKI" caseDhPublic
+  , testCase "X9.42 DH import assembles both halves" caseDhX942
+  , testCase "DH DER readers parse openssl goldens" caseDhDerReaders
+  , testCase "partial DH import is incomplete" casePartialDh
+  , testCase "PKCS#3 subprime refuses inconsistent" caseBadDhSubprime
+  , testCase "public DH/DSA reads project the value" casePublicValueReads
+  , testCase "imported DH key agrees through the real backend" caseDhExecutes
   , testCase "EdDSA assembly matches openssl goldens" caseEddsaDerGoldens
   , testCase "EdDSA DER readers parse openssl goldens" caseEddsaDerReaders
   , testCase "EdDSA private import assembles PKCS#8" caseEddsaPrivate
@@ -297,6 +305,180 @@ dsaPubTmpl =
   , (AttrValue, ValBytes dsaY)
   ]
 
+-- | DH fixtures: one shim-minted 1024-bit PKCS#3 pair plus one
+-- X9.42 pair (openssl-emitted DER goldens, so golden equality is
+-- an independent cross-check of the assembly, not self-agreement).
+dhP :: ByteString
+dhP = hex $ concat
+  [ "ce7843fa444ba3e33dd4b2b08ab55fab98da8169a4fa0a685aec06862189bf58"
+  , "baf06dab132fe922953c8f86ed63595b3db745ddbc4a8a68669cdc3c4711ec67"
+  , "6a99de245bf5edd6a2367727e84f36a8defc2bc7b932e6619786b8853647aeb4"
+  , "f8bf6d2e4fee84be8e0a0ce60dfe6316b5e58c155cc85e3c7c2b78bf96f06e37"
+  ]
+
+dhG :: ByteString
+dhG = hex "02"
+
+dhY :: ByteString
+dhY = hex $ concat
+  [ "923db54b4889a8d61bf61df12e01179a81c035baf29061008e924b2268b71096"
+  , "f80c8df6a4f4defcf7eaf635f105531c8cae13c3581738f1f157d08069251d2a"
+  , "14ab389dec1a1dd32e6c46960ffbcef653c48b3181b0b060e7beaec98c7952a0"
+  , "e35e2481495ba65ddf617aa262a4a4fcb2d07fd8a260f7c83b4b59968843db1b"
+  ]
+
+dhX :: ByteString
+dhX = hex $ concat
+  [ "287b9f838bd97cca9580063359a16b18465c5cee4a09d49ba9d619d10c00d109"
+  , "d97fb09afaf33ec36948c8904730472aa91fbdb4c70ea232f1eaad9d5e67c4f5"
+  , "1920efc410bb73aa547494ee24b5151d1f736edaa4c7a10807d15d5125b7c7c9"
+  , "f625883a981b9e1b4ce47e92039646b5f70bccafcde06564c3fa58ac400f950f"
+  ]
+
+dhSpkiGold :: ByteString
+dhSpkiGold = hex $ concat
+  [ "3082012030819506092a864886f70d01030130818702818100ce7843fa444ba3"
+  , "e33dd4b2b08ab55fab98da8169a4fa0a685aec06862189bf58baf06dab132fe9"
+  , "22953c8f86ed63595b3db745ddbc4a8a68669cdc3c4711ec676a99de245bf5ed"
+  , "d6a2367727e84f36a8defc2bc7b932e6619786b8853647aeb4f8bf6d2e4fee84"
+  , "be8e0a0ce60dfe6316b5e58c155cc85e3c7c2b78bf96f06e3702010203818500"
+  , "02818100923db54b4889a8d61bf61df12e01179a81c035baf29061008e924b22"
+  , "68b71096f80c8df6a4f4defcf7eaf635f105531c8cae13c3581738f1f157d080"
+  , "69251d2a14ab389dec1a1dd32e6c46960ffbcef653c48b3181b0b060e7beaec9"
+  , "8c7952a0e35e2481495ba65ddf617aa262a4a4fcb2d07fd8a260f7c83b4b5996"
+  , "8843db1b"
+  ]
+
+dhP8Gold :: ByteString
+dhP8Gold = hex $ concat
+  [ "3082012102010030819506092a864886f70d01030130818702818100ce7843fa"
+  , "444ba3e33dd4b2b08ab55fab98da8169a4fa0a685aec06862189bf58baf06dab"
+  , "132fe922953c8f86ed63595b3db745ddbc4a8a68669cdc3c4711ec676a99de24"
+  , "5bf5edd6a2367727e84f36a8defc2bc7b932e6619786b8853647aeb4f8bf6d2e"
+  , "4fee84be8e0a0ce60dfe6316b5e58c155cc85e3c7c2b78bf96f06e3702010204"
+  , "8183028180287b9f838bd97cca9580063359a16b18465c5cee4a09d49ba9d619"
+  , "d10c00d109d97fb09afaf33ec36948c8904730472aa91fbdb4c70ea232f1eaad"
+  , "9d5e67c4f51920efc410bb73aa547494ee24b5151d1f736edaa4c7a10807d15d"
+  , "5125b7c7c9f625883a981b9e1b4ce47e92039646b5f70bccafcde06564c3fa58"
+  , "ac400f950f"
+  ]
+
+-- | Self-agreement KAT for the golden pair (pow dhY dhX dhP,
+-- computed independently in Python).
+dhSelfGold :: ByteString
+dhSelfGold = hex $ concat
+  [ "94e0da51ab4315a6904aca2317a288abb9e3905328f4dea72f901a6a7b04ab66"
+  , "b51e4a9ca1a460a800be3a811a8607d851e578dab29f6ce6af9bc1e8aa075e0f"
+  , "373d322fa5d73e5f95f83b8ab6e5d3b5a3e107179dc2774f2424b044767af5e1"
+  , "36cb3216ba5e4f072fd146aea7eabaccb9db57d943ed677c36c2b8b43d4258d9"
+  ]
+
+dhQP :: ByteString
+dhQP = hex $ concat
+  [ "ddc17b058e1ec15b51996f85eae0b678ea9bb72444159fe2fcd0f44f7be7e737"
+  , "eeebe94c47e751bcd826c53960d7e1af0f0f421f4f31104d07b13af401ed7656"
+  , "7b31d2ebf1eaac37c626698e60dff128c671f9055600740581508c100814444f"
+  , "fa21fada6af011260c1bc070a3d58f9a098607d92a938eff5a16fdc388e41e09"
+  ]
+
+dhQG :: ByteString
+dhQG = hex $ concat
+  [ "d1a4428b2e04060534ad2a284a7039276bf6306a88bfde2d92332a824da21782"
+  , "e30b3642625f08ca00c5997626d6733d00eafcc206afbbdafb0086ddf1d06d48"
+  , "87ff77e549937bdde181e6955cec0b29e710168d891687515c1ad3e03eee3f60"
+  , "f96a9063d540b7907cdb24b99dfd490e3cc447be9d47cdefde5aa30c857a9cfa"
+  ]
+
+dhQQ :: ByteString
+dhQQ = hex "fcbd52881b3c3975a661ce18c867832617b49b0dc2c467c10c264a67"
+
+dhQY :: ByteString
+dhQY = hex $ concat
+  [ "368c5da062e25de6b141f5dbebb9c92e89245d9450fcd298342cc5c19d605615"
+  , "5f5cee5b15d9d06828cbf6b1c67229c5264c32ce9db210e4453ee989ef2adf16"
+  , "a5c447d1b565a18eb79d815f0c13da8bf4f9b2f7771d1ffd7a2212ff577a07fc"
+  , "8f9b14759cc55e85dcc9c824aec6bf1b05edb5bb8eb4fb6e966fee1d35f0c075"
+  ]
+
+dhQX :: ByteString
+dhQX = hex "0d6273388a45982a65d5e8231c0f0bd12a410d2594fac66990f81a15"
+
+dhQSpkiGold :: ByteString
+dhQSpkiGold = hex $ concat
+  [ "308201bf3082013406072a8648ce3e02013082012702818100ddc17b058e1ec1"
+  , "5b51996f85eae0b678ea9bb72444159fe2fcd0f44f7be7e737eeebe94c47e751"
+  , "bcd826c53960d7e1af0f0f421f4f31104d07b13af401ed76567b31d2ebf1eaac"
+  , "37c626698e60dff128c671f9055600740581508c100814444ffa21fada6af011"
+  , "260c1bc070a3d58f9a098607d92a938eff5a16fdc388e41e0902818100d1a442"
+  , "8b2e04060534ad2a284a7039276bf6306a88bfde2d92332a824da21782e30b36"
+  , "42625f08ca00c5997626d6733d00eafcc206afbbdafb0086ddf1d06d4887ff77"
+  , "e549937bdde181e6955cec0b29e710168d891687515c1ad3e03eee3f60f96a90"
+  , "63d540b7907cdb24b99dfd490e3cc447be9d47cdefde5aa30c857a9cfa021d00"
+  , "fcbd52881b3c3975a661ce18c867832617b49b0dc2c467c10c264a6703818400"
+  , "028180368c5da062e25de6b141f5dbebb9c92e89245d9450fcd298342cc5c19d"
+  , "6056155f5cee5b15d9d06828cbf6b1c67229c5264c32ce9db210e4453ee989ef"
+  , "2adf16a5c447d1b565a18eb79d815f0c13da8bf4f9b2f7771d1ffd7a2212ff57"
+  , "7a07fc8f9b14759cc55e85dcc9c824aec6bf1b05edb5bb8eb4fb6e966fee1d35"
+  , "f0c075"
+  ]
+
+dhQP8Gold :: ByteString
+dhQP8Gold = hex $ concat
+  [ "3082015b0201003082013406072a8648ce3e02013082012702818100ddc17b05"
+  , "8e1ec15b51996f85eae0b678ea9bb72444159fe2fcd0f44f7be7e737eeebe94c"
+  , "47e751bcd826c53960d7e1af0f0f421f4f31104d07b13af401ed76567b31d2eb"
+  , "f1eaac37c626698e60dff128c671f9055600740581508c100814444ffa21fada"
+  , "6af011260c1bc070a3d58f9a098607d92a938eff5a16fdc388e41e0902818100"
+  , "d1a4428b2e04060534ad2a284a7039276bf6306a88bfde2d92332a824da21782"
+  , "e30b3642625f08ca00c5997626d6733d00eafcc206afbbdafb0086ddf1d06d48"
+  , "87ff77e549937bdde181e6955cec0b29e710168d891687515c1ad3e03eee3f60"
+  , "f96a9063d540b7907cdb24b99dfd490e3cc447be9d47cdefde5aa30c857a9cfa"
+  , "021d00fcbd52881b3c3975a661ce18c867832617b49b0dc2c467c10c264a6704"
+  , "1e021c0d6273388a45982a65d5e8231c0f0bd12a410d2594fac66990f81a15"
+  ]
+
+dhPrivTmpl :: [(AttributeType, AttributeValue)]
+dhPrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkDh)
+  , (AttrToken, ValBool False)
+  , (AttrPrime, ValBytes dhP)
+  , (AttrBase, ValBytes dhG)
+  , (AttrValue, ValBytes dhX)
+  ]
+
+dhPubTmpl :: [(AttributeType, AttributeValue)]
+dhPubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkDh)
+  , (AttrToken, ValBool False)
+  , (AttrPrime, ValBytes dhP)
+  , (AttrBase, ValBytes dhG)
+  , (AttrValue, ValBytes dhY)
+  ]
+
+dhX942PrivTmpl :: [(AttributeType, AttributeValue)]
+dhX942PrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkX9_42Dh)
+  , (AttrToken, ValBool False)
+  , (AttrPrime, ValBytes dhQP)
+  , (AttrSubprime, ValBytes dhQQ)
+  , (AttrBase, ValBytes dhQG)
+  , (AttrValue, ValBytes dhQX)
+  ]
+
+dhX942PubTmpl :: [(AttributeType, AttributeValue)]
+dhX942PubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkX9_42Dh)
+  , (AttrToken, ValBool False)
+  , (AttrPrime, ValBytes dhQP)
+  , (AttrSubprime, ValBytes dhQQ)
+  , (AttrBase, ValBytes dhQG)
+  , (AttrValue, ValBytes dhQY)
+  ]
+
 storedValue :: Map.Map AttributeType AttributeValue -> IO ByteString
 storedValue attrs = case Map.lookup AttrValue attrs of
   Just (ValBytes bs) -> pure bs
@@ -358,6 +540,124 @@ caseDsaPublic = do
   assertEqual "prime kept" (Just (ValBytes dsaP)) (Map.lookup AttrPrime attrs)
   assertEqual "subprime kept" (Just (ValBytes dsaQ)) (Map.lookup AttrSubprime attrs)
   assertEqual "base kept" (Just (ValBytes dsaG)) (Map.lookup AttrBase attrs)
+
+caseDhPrivate :: IO ()
+caseDhPrivate = do
+  m0 <- seedModel
+  st <- getSession m0
+  (_, _, attrs) <- doCreate m0 st dhPrivTmpl
+  der <- storedValue attrs
+  assertEqual "PKCS#8 golden" dhP8Gold der
+  assertEqual "prime kept" (Just (ValBytes dhP)) (Map.lookup AttrPrime attrs)
+  assertEqual "base kept" (Just (ValBytes dhG)) (Map.lookup AttrBase attrs)
+
+caseDhPublic :: IO ()
+caseDhPublic = do
+  m0 <- seedModel
+  st <- getSession m0
+  (_, _, attrs) <- doCreate m0 st dhPubTmpl
+  der <- storedValue attrs
+  assertEqual "SPKI golden" dhSpkiGold der
+  assertEqual "prime kept" (Just (ValBytes dhP)) (Map.lookup AttrPrime attrs)
+  assertEqual "base kept" (Just (ValBytes dhG)) (Map.lookup AttrBase attrs)
+
+caseDhX942 :: IO ()
+caseDhX942 = do
+  m0 <- seedModel
+  st <- getSession m0
+  (_, _, privAttrs) <- doCreate m0 st dhX942PrivTmpl
+  privDer <- storedValue privAttrs
+  assertEqual "X9.42 PKCS#8 golden" dhQP8Gold privDer
+  (m1, _, _) <- doCreate m0 st dhX942PrivTmpl
+  (_, _, pubAttrs) <- doCreate m1 st dhX942PubTmpl
+  pubDer <- storedValue pubAttrs
+  assertEqual "X9.42 SPKI golden" dhQSpkiGold pubDer
+  assertEqual "subprime kept" (Just (ValBytes dhQQ)) (Map.lookup AttrSubprime pubAttrs)
+
+caseDhDerReaders :: IO ()
+caseDhDerReaders = do
+  case dhSpkiFields dhSpkiGold of
+    Just (p, g, q, y) -> do
+      assertEqual "spki p" dhP p
+      assertEqual "spki g" dhG g
+      assertEqual "spki q" Nothing q
+      assertEqual "spki y" dhY y
+    Nothing -> assertFailure "SPKI golden failed to parse"
+  case dhPkcs8Fields dhP8Gold of
+    Just (p, g, q, x) -> do
+      assertEqual "p8 p" dhP p
+      assertEqual "p8 g" dhG g
+      assertEqual "p8 q" Nothing q
+      assertEqual "p8 x" dhX x
+    Nothing -> assertFailure "PKCS#8 golden failed to parse"
+  case dhSpkiFields dhQSpkiGold of
+    Just (p, g, q, y) -> do
+      assertEqual "x942 spki p" dhQP p
+      assertEqual "x942 spki g" dhQG g
+      assertEqual "x942 spki q" (Just dhQQ) q
+      assertEqual "x942 spki y" dhQY y
+    Nothing -> assertFailure "X9.42 SPKI golden failed to parse"
+  case dhPkcs8Fields dhQP8Gold of
+    Just (p, g, q, x) -> do
+      assertEqual "x942 p8 p" dhQP p
+      assertEqual "x942 p8 g" dhQG g
+      assertEqual "x942 p8 q" (Just dhQQ) q
+      assertEqual "x942 p8 x" dhQX x
+    Nothing -> assertFailure "X9.42 PKCS#8 golden failed to parse"
+
+casePartialDh :: IO ()
+casePartialDh = do
+  m0 <- seedModel
+  st <- getSession m0
+  let noG = filter ((/= AttrBase) . fst) dhPrivTmpl
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noG)
+  let noY = filter ((/= AttrValue) . fst) dhPubTmpl
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noY)
+  let noQ = filter ((/= AttrSubprime) . fst) dhX942PubTmpl
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noQ)
+
+caseBadDhSubprime :: IO ()
+caseBadDhSubprime = do
+  m0 <- seedModel
+  st <- getSession m0
+  let withQ = dhPubTmpl ++ [(AttrSubprime, ValBytes dhQQ)]
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st withQ)
+
+casePublicValueReads :: IO ()
+casePublicValueReads = do
+  m0 <- seedModel
+  st <- getSession m0
+  let readValue m h = case planGetAttributes m st h [AttrValue] of
+        Immediate c -> case pcOutputs c of
+          [o] -> pure (decodeValue AttrValue (outBytes o))
+          _ -> assertFailure "read outputs arity" >> undefined
+        Reject rej -> assertFailure ("read rejected: " ++ show (rejCode rej)) >> undefined
+        Execute _ _ -> assertFailure "read must not execute" >> undefined
+  (m1, hDh, _) <- doCreate m0 st dhPubTmpl
+  vDh <- readValue m1 hDh
+  assertEqual "DH pub reads y" (Just (ValBytes dhY)) vDh
+  (m2, hDsa, _) <- doCreate m1 st dsaPubTmpl
+  vDsa <- readValue m2 hDsa
+  assertEqual "DSA pub reads y" (Just (ValBytes dsaY)) vDsa
+  (m3, hPriv, _) <- doCreate m2 st dhPrivTmpl
+  vPriv <- readValue m3 hPriv
+  assertEqual "DH priv reads DER" (Just (ValBytes dhP8Gold)) vPriv
+
+caseDhExecutes :: IO ()
+caseDhExecutes = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, _, privAttrs) <- doCreate m0 st dhPrivTmpl
+  privDer <- storedValue privAttrs
+  (_, _, pubAttrs) <- doCreate m1 st dhPubTmpl
+  pubDer <- storedValue pubAttrs
+  y <- case dhSpkiFields pubDer of
+    Just (_, _, _, y') -> pure y'
+    Nothing -> assertFailure "imported SPKI failed to parse" >> undefined
+  rres <- dhDerive env DhPlain (KeyDer privDer) (KeyDer y)
+  case rres of
+    EngineOk s -> assertEqual "self-agreement KAT" dhSelfGold s
+    EngineFail err -> assertFailure ("imported DH agree failed: " ++ show err)
 
 -- | Edwards fixtures: CLI-generated Ed25519/Ed448 keys (pinned
 -- @openssl genpkey@); the DER goldens are openssl-emitted bytes,

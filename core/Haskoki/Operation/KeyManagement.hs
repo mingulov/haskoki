@@ -54,6 +54,8 @@ module Haskoki.Operation.KeyManagement
   , ckkRsa
   , ckkEc
   , ckkDsa
+  , ckkDh
+  , ckkX9_42Dh
   , ckkEcEdwards
   , ckkGenericSecret
   , ckkAes
@@ -77,6 +79,8 @@ module Haskoki.Operation.KeyManagement
   , rsaKeyPairGenMech
   , dsaKeyPairGenMech
   , dsaParameterGenMech
+  , dhKeyPairGenMech
+  , x9_42DhKeyPairGenMech
   , edwardsKeyPairGenMech
   , mldsaKeyPairGenMech
   , slhdsaKeyPairGenMech
@@ -133,7 +137,7 @@ import Haskoki.Attribute.Generated
   , mustClassId
   , mustKeyTypeId
   )
-import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaSpkiFields, edwardsNameOfOid, edwardsTable, mldsaPkcs8Fields, mldsaSpkiFields, mlkemPkcs8Fields, mlkemSpkiFields, parseDsaParams, parseRsaPrivate, parseRsaPublic, slhdsaPkcs8Fields, slhdsaSpkiFields, spkiPoint)
+import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaSpkiFields, edwardsNameOfOid, edwardsTable, mldsaPkcs8Fields, mldsaSpkiFields, mlkemPkcs8Fields, mlkemSpkiFields, parseDsaParams, parseRsaPrivate, parseRsaPublic, slhdsaPkcs8Fields, slhdsaSpkiFields, spkiPoint)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState (..))
 import Haskoki.Object
   ( RuleDeny (..)
@@ -180,6 +184,8 @@ import Haskoki.Registry.Generated
   , ckm_DES3_KEY_GEN
   , ckm_DSA_KEY_PAIR_GEN
   , ckm_DSA_PARAMETER_GEN
+  , ckm_DH_PKCS_KEY_PAIR_GEN
+  , ckm_X9_42_DH_KEY_PAIR_GEN
   , ckm_EC_EDWARDS_KEY_PAIR_GEN
   , ckm_EC_KEY_PAIR_GEN
   , ckm_GENERIC_SECRET_KEY_GEN
@@ -237,6 +243,14 @@ ckkEc = mustKeyTypeId "CKK_EC"
 -- | @CKK_DSA@ (generated id, resolved by name).
 ckkDsa :: Word64
 ckkDsa = mustKeyTypeId "CKK_DSA"
+
+-- | @CKK_DH@ (generated id, resolved by name).
+ckkDh :: Word64
+ckkDh = mustKeyTypeId "CKK_DH"
+
+-- | @CKK_X9_42_DH@ (generated id, resolved by name).
+ckkX9_42Dh :: Word64
+ckkX9_42Dh = mustKeyTypeId "CKK_X9_42_DH"
 
 -- | @CKK_EC_EDWARDS@ (generated id, resolved by name).
 ckkEcEdwards :: Word64
@@ -332,6 +346,14 @@ dsaKeyPairGenMech = MechanismId (ckm_DSA_KEY_PAIR_GEN)
 -- | @CKM_DSA_PARAMETER_GEN@ (generated id, resolved by name).
 dsaParameterGenMech :: MechanismId
 dsaParameterGenMech = MechanismId (ckm_DSA_PARAMETER_GEN)
+
+-- | @CKM_DH_PKCS_KEY_PAIR_GEN@ (generated id, resolved by name).
+dhKeyPairGenMech :: MechanismId
+dhKeyPairGenMech = MechanismId (ckm_DH_PKCS_KEY_PAIR_GEN)
+
+-- | @CKM_X9_42_DH_KEY_PAIR_GEN@ (generated id, resolved by name).
+x9_42DhKeyPairGenMech :: MechanismId
+x9_42DhKeyPairGenMech = MechanismId (ckm_X9_42_DH_KEY_PAIR_GEN)
 
 -- | @CKM_EC_EDWARDS_KEY_PAIR_GEN@ (generated id, resolved by name).
 edwardsKeyPairGenMech :: MechanismId
@@ -522,6 +544,7 @@ keyPairCompatible (PwGeneratePair _ _) (FxGenerateKey _ _ input) =
     Just (GenRsa _ _) -> True
     Just (GenMlKem _) -> True
     Just (GenDsaKeypair _) -> True
+    Just (GenDhKeypair _) -> True
     Just (GenEdwardsKeypair _) -> True
     Just (GenMlDsa _) -> True
     Just (GenSlhDsa _) -> True
@@ -728,6 +751,17 @@ stampPairComponents pub priv pubM privM
               let stamp a = Map.insert AttrPrime (ValBytes p)
                     (Map.insert AttrSubprime (ValBytes q)
                     (Map.insert AttrBase (ValBytes g) a))
+              in Just (pub { poAttrs = stamp (poAttrs pub) }
+                     , priv { poAttrs = stamp (poAttrs priv) })
+        _ -> Just (pub, priv)
+  | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkDh)
+    || Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkX9_42Dh) =
+      case (dhSpkiFields pubM, dhPkcs8Fields privM) of
+        (Just (p, g, q, _), Just (p', g', q', _))
+          | p' == p && g' == g && q' == q ->
+              let stamp a = Map.insert AttrPrime (ValBytes p)
+                    (Map.insert AttrBase (ValBytes g)
+                    (maybe id (\qb -> Map.insert AttrSubprime (ValBytes qb)) q a))
               in Just (pub { poAttrs = stamp (poAttrs pub) }
                      , priv { poAttrs = stamp (poAttrs priv) })
         _ -> Just (pub, priv)
@@ -1110,6 +1144,7 @@ data GenArgs
   | GenEdwardsKeypair !ByteString
   | GenMlDsa !Int
   | GenSlhDsa !Int
+  | GenDhKeypair !ByteString
   deriving (Eq, Show)
 
 -- | Frame generation arguments: @tag:u8 ...@ with tag 0 AES
@@ -1118,7 +1153,8 @@ data GenArgs
 -- parameter sizes (@L:u16be N:u16be@), 6 DSA keypair domain
 -- parameters (@len:u32be DER@), 7 Edwards keypair curve name
 -- (curve bytes), 8 ML-DSA parameter-set id (@ckp:u16be@),
--- 9 SLH-DSA parameter-set id (@ckp:u16be@).
+-- 9 SLH-DSA parameter-set id (@ckp:u16be@), 10 DH keypair domain
+-- parameters (@len:u32be DER@).
 encodeGenArgs :: GenArgs -> ByteString
 encodeGenArgs args = case args of
   GenAes n -> BS.singleton 0 <> BS.singleton (fromIntegral n)
@@ -1132,6 +1168,7 @@ encodeGenArgs args = case args of
   GenEdwardsKeypair curve -> BS.singleton 7 <> curve
   GenMlDsa ckp -> BS.singleton 8 <> u16be ckp
   GenSlhDsa ckp -> BS.singleton 9 <> u16be ckp
+  GenDhKeypair der -> BS.singleton 10 <> u32be (BS.length der) <> der
 
 -- | Parse framed generation arguments. Short frames, unknown tags
 -- and trailing bytes all fail.
@@ -1176,6 +1213,14 @@ decodeGenArgs bs = case BS.uncons bs of
   Just (9, rest) -> case BS.unpack rest of
     [hi, lo] -> Just (GenSlhDsa (fromIntegral hi * 256 + fromIntegral lo))
     _ -> Nothing
+  Just (10, rest)
+    | BS.length rest >= 4 ->
+        let (bLen, der) = BS.splitAt 4 rest
+            n = fromInteger (foldBE bLen)
+        in if BS.length der == n && n > 0
+          then Just (GenDhKeypair der)
+          else Nothing
+    | otherwise -> Nothing
   _ -> Nothing
 
 -- | 2-byte big-endian framing.
@@ -1338,6 +1383,14 @@ planGenerateKeyPair rules model st mech pubT privT =
           withPair st mech ckkDsa pubT privT $ \pubA privA -> do
             der <- dsaDomainOf pubA privA
             pure (GenDsaKeypair der, pubA, privA)
+      | mech == dhKeyPairGenMech =
+          withPair st mech ckkDh pubT privT $ \pubA privA -> do
+            der <- dhDomainOf False pubA privA
+            pure (GenDhKeypair der, pubA, privA)
+      | mech == x9_42DhKeyPairGenMech =
+          withPair st mech ckkX9_42Dh pubT privT $ \pubA privA -> do
+            der <- dhDomainOf True pubA privA
+            pure (GenDhKeypair der, pubA, privA)
       | mech == edwardsKeyPairGenMech =
           withPair st mech ckkEcEdwards pubT privT $ \pubA privA -> do
             curve <- edwardsCurveOf pubA privA
@@ -1681,6 +1734,105 @@ dsaDomainOf pubA privA = do
         ("DSA domain parameter is malformed: " ++ show t))
       Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
         "DSA keypair templates must carry p, q and g")
+    bound AttrSubprime = 64
+    bound _ = 512
+
+-- | DH domain parameters from keypair templates: @CKA_PRIME@ and
+-- @CKA_BASE@ always, @CKA_SUBPRIME@ exactly for X9.42
+-- (@wantQ@). Missing parameters are incomplete; malformed,
+-- empty, oversized, disagreeing, or structurally impossible
+-- parts are inconsistent, as is a subprime on a PKCS#3
+-- template (PKCS#3 has no q). Size hints are checked before
+-- the missing-parameters check runs (mirroring
+-- 'dsaDomainOf'); the backend, not the planner, owns the
+-- served-pair policy.
+--
+-- The structural floor (NIST SP 800-56A rev. 3 section
+-- 5.5.1): the prime carries at least 512 significant bits
+-- and the generator sits in @2..p-1@ (X9.42: the subprime
+-- in @2..p-1@ too). Values compare leading-zero-blind, so
+-- zero-padded degenerates refuse exactly like bare ones.
+-- Deeper checks (primality, @q | p-1@, @g^q = 1@) stay with
+-- the executing backend, which owns the crypto.
+dhDomainOf
+  :: Bool
+  -> Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+  -> Either KeyDeny ByteString
+dhDomainOf wantQ pubA privA = do
+  checkSizeBit AttrPrimeBits [1024, 2048, 3072, 4096] pubA
+  checkSizeBit AttrPrimeBits [1024, 2048, 3072, 4096] privA
+  checkSizeBit AttrSubprimeBits [160, 224, 256] pubA
+  checkSizeBit AttrSubprimeBits [160, 224, 256] privA
+  p <- component AttrPrime pubA privA
+  g <- component AttrBase pubA privA
+  case dhStructural p g of
+    Just msg -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT msg)
+    Nothing -> pure ()
+  case (wantQ, Map.lookup AttrSubprime pubA) of
+    (True, _) -> do
+      q <- component AttrSubprime pubA privA
+      case dhSubprime p q of
+        Just msg -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT msg)
+        Nothing -> pure (dhParamsDerQ p g q)
+    (False, Nothing) -> pure (dhParamsDer p g)
+    (False, Just _) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+      "PKCS#3 DH domain takes no subprime")
+  where
+    -- Significant bytes: leading zeros dropped (the empty
+    -- encoding is value zero).
+    sig :: ByteString -> ByteString
+    sig = BS.dropWhile (== 0)
+    -- Unsigned big-endian comparison, leading-zero-blind.
+    ltBE :: ByteString -> ByteString -> Bool
+    ltBE a b = case compare (BS.length a') (BS.length b') of
+      LT -> True
+      GT -> False
+      EQ -> a' < b'
+      where
+        a' = sig a
+        b' = sig b
+    -- The (p, g) structural floor: 512 significant prime
+    -- bits, @2 <= g < p@. 'Nothing' accepts.
+    dhStructural :: ByteString -> ByteString -> Maybe String
+    dhStructural p g
+      | BS.length (sig p) < 64 =
+          Just "DH prime under the 512-bit structural floor"
+      | BS.null (sig g) || sig g == BS.singleton 1 || not (ltBE g p) =
+          Just "DH generator outside 2 <= g < p"
+      | otherwise = Nothing
+    -- The X9.42 subprime range: @1 < q < p@. 'Nothing'
+    -- accepts.
+    dhSubprime :: ByteString -> ByteString -> Maybe String
+    dhSubprime p q
+      | BS.null (sig q) || sig q == BS.singleton 1 || not (ltBE q p) =
+          Just "X9.42 subprime outside 1 < q < p"
+      | otherwise = Nothing
+    checkSizeBit t served attrs = case Map.lookup t attrs of
+      Nothing -> Right ()
+      Just (ValULong n)
+        | n `elem` served -> Right ()
+        | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            ("DH size out of range: " ++ show t ++ "=" ++ show n))
+      Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("DH size attribute is malformed: " ++ show t))
+    component t pub priv = case Map.lookup t pub of
+      Just (ValBytes bs)
+        | BS.null bs -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            ("DH domain parameter is empty: " ++ show t))
+        | BS.length bs > bound t -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            ("DH domain parameter oversized: " ++ show t))
+        | otherwise -> case Map.lookup t priv of
+            Nothing -> Right bs
+            Just (ValBytes bs')
+              | bs' == bs -> Right bs
+              | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                  "keypair templates disagree on DH domain parameters")
+            Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "private DH domain parameter is malformed")
+      Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("DH domain parameter is malformed: " ++ show t))
+      Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+        "DH keypair templates must carry the domain parameters")
     bound AttrSubprime = 64
     bound _ = 512
 

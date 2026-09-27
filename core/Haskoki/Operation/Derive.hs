@@ -55,6 +55,13 @@ import Haskoki.Operation.KeyManagement
   , keyBytesOf
   , pendingFromAttrs
   )
+import Haskoki.Recipe.Dh
+  ( DhRecipe (..)
+  , decodeDhParams
+  , dhParamsValid
+  , dhRecipeFor
+  , dhSecretWidth
+  )
 import Haskoki.Recipe.Ecdh
   ( decodeEcdhParams
   , ecdhParamsValid
@@ -208,6 +215,29 @@ planDerive rules model st mech baseH blob
                     (Just (ecdhSecretWidth mat))
               _ -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
                 "ECDH mechanism parameters rejected by the recipe")
+  | Just r <- dhRecipeFor mech = case decodeDeriveParams blob of
+      Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "malformed derive arguments")
+      -- Same ordering as ECDH: the base resolves and must carry
+      -- the row's key type (CKK_DH vs CKK_X9_42_DH) before params
+      -- are examined. The peer is bare bytes (no domain framing
+      -- to compare), so range membership is enforced by the
+      -- executing backend, which owns the prime.
+      Just (dhBlob, tmpls) -> case resolveBase model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, mat)
+          | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong (dhKeyType r)) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "DH base key type mismatch for the mechanism row")
+          | not (dhParamsValid r dhBlob) -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
+              "DH mechanism parameters rejected by the recipe")
+          | otherwise -> case decodeDhParams dhBlob of
+              Just _ -> finish tmpls (dhSecretWidth mat)
+                "derived total exceeds the DH secret width"
+                (FxDerive mech (Just (osId ost)) dhBlob BS.empty)
+                (Just (dhSecretWidth mat))
+              _ -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
+                "DH mechanism parameters rejected by the recipe")
   | Just r <- kdfRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")

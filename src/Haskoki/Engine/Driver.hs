@@ -144,6 +144,7 @@ module Haskoki.Engine.Driver
   , mldsaLevelOfKey
   , slhdsaLevelOfKey
   , ecdhParamsFor
+  , dhParamsFor
   , cmacSpecFor
   , des3macSpecFor
   , hotpParamsFor
@@ -172,6 +173,7 @@ import Haskoki.Engine.Backend
   , CryptoBackend (..)
   , DigestAlg (..)
   , EcdhSpec (..)
+  , DhSpec (..)
   , EcSpec (..)
   , EngineResult (..)
   , digestOutLen
@@ -195,6 +197,11 @@ import Haskoki.Recipe.Cipher
   , cipherRecipeFor
   , ctrRecipeFor
   , decodeCtrParams
+  )
+import Haskoki.Recipe.Dh
+  ( decodeDhParams
+  , dhParamsValid
+  , dhRecipeFor
   )
 import Haskoki.Recipe.Ecdh
   ( EcdhRecipe (..)
@@ -268,12 +275,14 @@ import Haskoki.Operation.KeyManagement
   , aesKwpMech
   , decodeGenArgs
   , decodeWrapParams
+  , dhKeyPairGenMech
   , dsaKeyPairGenMech
   , dsaParameterGenMech
   , ecKeyPairGenMech
   , edwardsKeyPairGenMech
   , mldsaKeyPairGenMech
   , slhdsaKeyPairGenMech
+  , x9_42DhKeyPairGenMech
   , rsaPkcsMech
   , encodeKeyPair
   , genericSecretKeyGenMech
@@ -1080,6 +1089,23 @@ ecdhParamsFor mech params = do
 isEcdhMech :: MechanismId -> Bool
 isEcdhMech mech = isJust (ecdhRecipeFor mech)
 
+-- | DH agreement parameters for one covered (mechanism, params)
+-- pair: the backend spec plus the peer public value. 'Nothing'
+-- means uncovered (non-DH mechanism) or malformed parameters (a
+-- KDF selector included — the recipe serves the null KDF only).
+dhParamsFor :: MechanismId -> ByteString -> Maybe (DhSpec, ByteString)
+dhParamsFor mech params = do
+  r <- dhRecipeFor mech
+  guard (dhParamsValid r params)
+  (_, peer) <- decodeDhParams params
+  pure (DhPlain, peer)
+
+-- | A DH mechanism regardless of parameter validity (drives the
+-- parameter-refusal branch: malformed DH params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isDhMech :: MechanismId -> Bool
+isDhMech mech = isJust (dhRecipeFor mech)
+
 -- | Resolve a bound key object to backend key material. 'Nothing'
 -- means the object is unknown to the caller (reported as
 -- 'CryptoBadKey', never fabricated).
@@ -1312,6 +1338,9 @@ runEffect env resolve fx = case fx of
             toKeyPair <$> generateKey env (GenDSAParams p q)
           (m, GenDsaKeypair der) | m == dsaKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenDSAKeypair der)
+          (m, GenDhKeypair der)
+            | m == dhKeyPairGenMech || m == x9_42DhKeyPairGenMech ->
+            toKeyPair <$> generateKey env (GenDHKeypair der)
           (m, GenEdwardsKeypair curve) | m == edwardsKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenEdDSAKeypair curve)
           (m, GenMlDsa n) | m == mldsaKeyPairGenMech -> case mlDsaAlg n of
@@ -1323,7 +1352,7 @@ runEffect env resolve fx = case fx of
             Nothing -> pure (GotCryptoError (CryptoFailed
               ("driver: unknown SLH-DSA parameter set: " ++ show n)))
           _
-            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, chacha20KeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech] ->
+            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, chacha20KeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, dhKeyPairGenMech, x9_42DhKeyPairGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)
@@ -1393,6 +1422,13 @@ runEffect env resolve fx = case fx of
         runEcdh spec key peer outLen
     | isEcdhMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: ECDH mechanism parameters rejected by the recipe"))
+    | isDhMech mech
+    , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
+        "driver: DH derive takes no info string"))
+    | Just (spec, peer) <- dhParamsFor mech params -> withKey mkey $ \key ->
+        runDh spec key peer outLen
+    | isDhMech mech -> pure (GotCryptoError (CryptoFailed
+        "driver: DH mechanism parameters rejected by the recipe"))
     | isKdfShaMech mech
     , not (BS.null params) || not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: SHA key derivation takes empty params and info"))
@@ -1737,6 +1773,22 @@ runEffect env resolve fx = case fx of
               -- Truncation drops leading bytes (PKCS#11 v3.2 ECDH:
               -- "removes bytes from the leading end"); full width
               -- drops nothing.
+              | otherwise -> GotBytes
+                  (BS.drop (BS.length secret - outLen) secret)
+    -- | Classic DH agreement: the backend proves the full secret,
+    -- truncation drops leading bytes (PKCS#11 v3.2 DH derive
+    -- "removes bytes from the leading end", matching ECDH).
+    runDh :: DhSpec -> KeyMaterial -> ByteString -> Int -> IO CryptoResult
+    runDh spec key peer outLen
+      | outLen < 1 = pure (GotCryptoError (CryptoFailed
+          "driver: derive length out of range"))
+      | otherwise = do
+          r <- dhDerive env spec key (KeyDer peer)
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk secret
+              | BS.length secret < outLen -> GotCryptoError (CryptoFailed
+                  "driver: derive length exceeds the agreement secret")
               | otherwise -> GotBytes
                   (BS.drop (BS.length secret - outLen) secret)
     -- | SHA key-derivation effects: digest the base value,

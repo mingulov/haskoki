@@ -68,6 +68,8 @@ module Haskoki.FFI.OpenSSL4.Raw
   , mlkemDecaps
   , mlkemGen
   , ecdhDerive
+  , dhDerive
+  , dhGenKeypair
   , rsaSign
   , rsaVerify
   , rsaPssSign
@@ -245,6 +247,11 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mlkem_gen"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_ecdh_derive"
   c_ecdh_derive :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_dh_derive"
+  c_dh_derive :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_dh_gen_keypair"
+  c_dh_gen_keypair :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_sign"
   c_rsa_sign :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
@@ -775,6 +782,38 @@ ecdhDerive ctx propq privDer peerDer cofactor =
     withBytes privDer $ \(ppriv, npriv) ->
       withBytes peerDer $ \(ppeer, npeer) ->
         withOut (c_ecdh_derive ctx cpq ppriv npriv ppeer npeer (if cofactor then 1 else 0))
+
+-- | Finite-field DH agreement: the raw secret for (PKCS#8 base,
+-- bare peer public value). The shim range-checks the peer
+-- natively (@1 < y < p - 1@).
+dhDerive :: Ptr OsslLibCtx -> String -> ByteString -> ByteString -> IO (Either Int ByteString)
+dhDerive ctx propq privDer peerVal =
+  withCString propq $ \cpq ->
+    withBytes privDer $ \(ppriv, npriv) ->
+      withBytes peerVal $ \(ppeer, npeer) ->
+        withOut (c_dh_derive ctx cpq ppriv npriv ppeer npeer)
+
+-- | DH keypair from DER domain parameters (PKCS#3 or X9.42):
+-- PKCS#8 + SPKI halves.
+dhGenKeypair :: Ptr OsslLibCtx -> String -> ByteString -> IO (Either Int (ByteString, ByteString))
+dhGenKeypair ctx propq paramsDer =
+  withCString propq $ \cpq ->
+    withBytes paramsDer $ \(pparams, nparams) ->
+      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+        rc <- c_dh_gen_keypair ctx cpq pparams nparams ppriv npriv ppub npub
+        if rc /= 0
+          then pure (Left (fromIntegral rc))
+          else do
+            privp <- peek ppriv
+            privn <- peek npriv
+            pubp <- peek ppub
+            pubn <- peek npub
+            if privp == nullPtr || pubp == nullPtr
+              then pure (Left errNative)
+              else do
+                priv <- takeOwned privp (fromIntegral privn)
+                pub <- takeOwned pubp (fromIntegral pubn)
+                pure (Right (priv, pub))
 
 -- | RSA PKCS#1 v1.5 sign: digested hash-and-sign under @mdname@, or
 -- the raw block-type-1 operation when @isRaw@ (mdname ignored).

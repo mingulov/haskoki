@@ -26,12 +26,15 @@ import Test.Tasty.HUnit (assertEqual, testCase)
 import Haskoki.FFI.NativeParams
   ( chachaPolyNativeSize
   , chachaStreamNativeSize
+  , dhX942NativeSize
   , digestStemByCkm
   , ecdhNativeSize
   , eddsaNativeSize
   , gcmNativeSize
   , mgfStemByCkg
   , mldsaNativeSize
+  , normalizeDhPkcsParams
+  , normalizeDhX942Params
   , normalizeEcdhParams
   , normalizeMechParams
   , oaepNativeSize
@@ -43,6 +46,7 @@ import Haskoki.Recipe.Chacha20
   , encodeChachaPolyParams
   , encodeChachaStreamParams
   )
+import Haskoki.Recipe.Dh (dhParamsValid, dhRecipeFor, encodeDhParams)
 import Haskoki.Recipe.Ecdh (ecdhParamsValid, ecdhRecipeFor, encodeEcdhParams)
 import Haskoki.Recipe.Eddsa
   ( eddsaParamsValid
@@ -276,6 +280,85 @@ spec = testGroup "native mechanism params"
       out <- allocaBytes 8 $ \p -> do
         pokeByteOff p 0 (CULong 0x01 :: CULong)
         normalizeEcdhParams p 8
+      assertEqual "refused" Nothing out
+  , testCase "dh pkcs bare peer wraps canonical" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_DH_PKCS_DERIVE")
+          peer = BS.replicate 256 0x09
+          out = normalizeDhPkcsParams peer
+      assertEqual "canonical dh image" (Just (encodeDhParams 0 peer)) out
+      case (out, dhRecipeFor mid) of
+        (Just canon, Just r) ->
+          assertEqual "recipe accepts" True (dhParamsValid r canon)
+        _ -> fail "dh recipe or image missing"
+  , testCase "dh pkcs canonical image is idempotent" $ do
+      let canon = encodeDhParams 0 (BS.replicate 32 0x07)
+      assertEqual "idempotent" (Just canon) (normalizeDhPkcsParams canon)
+  , testCase "dh pkcs empty and overlong refuse" $ do
+      assertEqual "empty refused" Nothing (normalizeDhPkcsParams BS.empty)
+      assertEqual "overlong refused" Nothing
+        (normalizeDhPkcsParams (BS.replicate 4097 0x01))
+  , testCase "dh x942 native struct chases empty shared and peer" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_X9_42_DH_DERIVE")
+          peer = BS.replicate 128 0x04
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen peer $ \(pp, plen) ->
+        allocaBytes dhX942NativeSize $ \p -> do
+          pokeByteOff p 0 (CULong 0x01)
+          pokeByteOff p w (CULong 0)
+          pokeByteOff p (2 * w) (nullPtr :: Ptr Word8)
+          pokeByteOff p (2 * w + pw) (CULong (fromIntegral plen))
+          pokeByteOff p (3 * w + pw) (castPtr pp)
+          normalizeDhX942Params p (fromIntegral dhX942NativeSize)
+      let want = encodeDhParams 0 peer
+      assertEqual "canonical dh image" (Just want) out
+      case (out, dhRecipeFor mid) of
+        (Just canon, Just r) ->
+          assertEqual "recipe accepts" True (dhParamsValid r canon)
+        _ -> fail "dh recipe or image missing"
+  , testCase "dh x942 non-null kdf refuses" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+          peer = BS.replicate 128 0x04
+      out <- BS.useAsCStringLen peer $ \(pp, plen) ->
+        allocaBytes dhX942NativeSize $ \p -> do
+          pokeByteOff p 0 (CULong 0x02)
+          pokeByteOff p w (CULong 0)
+          pokeByteOff p (2 * w) (nullPtr :: Ptr Word8)
+          pokeByteOff p (2 * w + pw) (CULong (fromIntegral plen))
+          pokeByteOff p (3 * w + pw) (castPtr pp)
+          normalizeDhX942Params p (fromIntegral dhX942NativeSize)
+      assertEqual "refused" Nothing out
+  , testCase "dh x942 non-empty shared refuses" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+          shared = "shared-info" :: ByteString
+          peer = BS.replicate 128 0x04
+      out <- BS.useAsCStringLen shared $ \(sp, slen) ->
+        BS.useAsCStringLen peer $ \(pp, plen) ->
+          allocaBytes dhX942NativeSize $ \p -> do
+            pokeByteOff p 0 (CULong 0x01)
+            pokeByteOff p w (CULong (fromIntegral slen))
+            pokeByteOff p (2 * w) (castPtr sp)
+            pokeByteOff p (2 * w + pw) (CULong (fromIntegral plen))
+            pokeByteOff p (3 * w + pw) (castPtr pp)
+            normalizeDhX942Params p (fromIntegral dhX942NativeSize)
+      assertEqual "refused" Nothing out
+  , testCase "dh x942 null peer with length refuses" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes dhX942NativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 0x01)
+        pokeByteOff p w (CULong 0)
+        pokeByteOff p (2 * w) (nullPtr :: Ptr Word8)
+        pokeByteOff p (2 * w + pw) (CULong 128)
+        pokeByteOff p (3 * w + pw) (nullPtr :: Ptr Word8)
+        normalizeDhX942Params p (fromIntegral dhX942NativeSize)
+      assertEqual "refused" Nothing out
+  , testCase "dh x942 short image refuses" $ do
+      out <- allocaBytes 8 $ \p -> do
+        pokeByteOff p 0 (CULong 0x01 :: CULong)
+        normalizeDhX942Params p 8
       assertEqual "refused" Nothing out
   , testCase "eddsa pure native struct translates to canonical" $ do
       let mid = MechanismId (mustGeneratedId "CKM_EDDSA")

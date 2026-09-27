@@ -1125,6 +1125,8 @@ int hsk_ossl4_rsa_gen_keypair(OSSL_LIB_CTX *ctx, int bits,
     EVP_PKEY_CTX *pctx = NULL;
     EVP_PKEY *pkey = NULL;
     OSSL_PARAM params[3];
+    BIGNUM *ebn = NULL;
+    unsigned char ele[8];
     unsigned char *priv = NULL, *pub = NULL;
     int privlen = 0, publen = 0;
     int rc = HSK_OSSL4_ERR_NATIVE;
@@ -1144,8 +1146,14 @@ int hsk_ossl4_rsa_gen_keypair(OSSL_LIB_CTX *ctx, int bits,
     if (!EVP_PKEY_keygen_init(pctx))
         goto end;
     params[0] = OSSL_PARAM_construct_int(OSSL_PKEY_PARAM_RSA_BITS, &bits);
-    params[1] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_RSA_E,
-                                        (unsigned char *)e_be, e_len);
+    /* e arrives big-endian; OSSL_PARAM BN import reads
+     * native-endian (see the DH peer build), so convert. The
+     * stock 65537 is a byte-palindrome and masked this; a
+     * non-palindromic e silently minted the wrong exponent. */
+    ebn = BN_bin2bn(e_be, (int)e_len, NULL);
+    if (ebn == NULL || BN_bn2nativepad(ebn, ele, (int)e_len) <= 0)
+        goto end;
+    params[1] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_RSA_E, ele, e_len);
     params[2] = OSSL_PARAM_construct_end();
     if (!EVP_PKEY_CTX_set_params(pctx, params)) {
         rc = HSK_OSSL4_ERR_BADPARAM;
@@ -1176,6 +1184,7 @@ int hsk_ossl4_rsa_gen_keypair(OSSL_LIB_CTX *ctx, int bits,
     rc = HSK_OSSL4_OK;
 
 end:
+    BN_free(ebn);
     EVP_PKEY_free(pkey);
     EVP_PKEY_CTX_free(pctx);
     return rc;
@@ -3232,6 +3241,280 @@ end:
     EVP_PKEY_CTX_free(pctx);
     EVP_PKEY_free(peer);
     EVP_PKEY_free(priv);
+    return rc;
+}
+
+/* --- Finite-field DH agreement -------------------------------- */
+
+#define HSK_OSSL4_DH_PEER_MAX 4096
+
+long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
+                         const unsigned char *priv_der, size_t priv_len,
+                         const unsigned char *peer_val, size_t peer_len,
+                         unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *priv = NULL;
+    EVP_PKEY *peer = NULL;
+    EVP_PKEY_CTX *fromctx = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    BIGNUM *p = NULL, *g = NULL, *y = NULL, *pm1 = NULL, *q = NULL;
+    OSSL_PARAM *fromparams = NULL;
+    unsigned char *secret = NULL;
+    size_t secretlen = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (peer_val == NULL || peer_len == 0 || peer_len > HSK_OSSL4_DH_PEER_MAX)
+        return HSK_OSSL4_ERR_BADPEER;
+
+    priv = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
+    if (priv == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    if (EVP_PKEY_get_bn_param(priv, OSSL_PKEY_PARAM_FFC_P, &p) <= 0 ||
+        EVP_PKEY_get_bn_param(priv, OSSL_PKEY_PARAM_FFC_G, &g) <= 0) {
+        /* Not a finite-field DH base (EC/RSA/DSA DER, or DH
+         * without exportable domain parameters). */
+        rc = HSK_OSSL4_ERR_BADKEY;
+        goto end;
+    }
+    /* The optional X9.42 subgroup order rides along when present so
+     * a q-carrying base still matches its rebuilt peer; absence is
+     * normal for PKCS#3 bases, never an error. */
+    (void)EVP_PKEY_get_bn_param(priv, OSSL_PKEY_PARAM_FFC_Q, &q);
+    y = BN_bin2bn(peer_val, (int)peer_len, NULL);
+    pm1 = BN_dup(p);
+    if (y == NULL || pm1 == NULL || !BN_sub_word(pm1, 1)) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    /* Fail closed on the group: 1 < y < p - 1, before any
+     * exponentiation. */
+    if (BN_cmp(y, BN_value_one()) <= 0 || BN_cmp(y, pm1) >= 0) {
+        rc = HSK_OSSL4_ERR_BADPEER;
+        goto end;
+    }
+    fromparams = OPENSSL_malloc(5 * sizeof(*fromparams));
+    if (fromparams == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    /* Rebuild the peer on the base's domain: the peer key type
+     * follows the base (a DHX base needs a DHX peer — set_peer
+     * refuses a cross-type pair as mismatching domain
+     * parameters), and a named-group base needs a named-group
+     * peer (the decoder canonicalizes RFC 3526 params to
+     * ffdheNNNN, and set_peer compares group names). Only
+     * genuinely explicit params travel as p/g/q BIGNUMs,
+     * exported big-endian into one scratch buffer (BN limbs are
+     * host-order, unusable directly). */
+    {
+        unsigned char *pbuf = NULL, *gbuf = NULL, *ybuf = NULL, *qbuf = NULL;
+        char group[64];
+        size_t grouplen = 0;
+        const char *tname = EVP_PKEY_get0_type_name(priv);
+        const char *dhname =
+            (tname != NULL && strcmp(tname, "DHX") == 0) ? "DHX" : "DH";
+        int have_group;
+        int pn = BN_num_bytes(p), gn = BN_num_bytes(g), yn = BN_num_bytes(y);
+        int qn = (q == NULL) ? 0 : BN_num_bytes(q);
+        size_t total;
+        memset(group, 0, sizeof(group));
+        have_group =
+            EVP_PKEY_get_utf8_string_param(priv, OSSL_PKEY_PARAM_GROUP_NAME,
+                                           group, sizeof(group), &grouplen) > 0
+            && grouplen > 0 && grouplen < sizeof(group);
+        if (pn <= 0 || gn <= 0 || yn <= 0)
+            goto end;
+        if (have_group) {
+            /* Named group plus the public value; the provider
+             * supplies p/g/q from the group. Native byte order:
+             * OSSL_PARAM BN import reads native-endian, so
+             * big-endian bytes would store byte-reversed and
+             * derive a wrong (but plausible) secret — the KAT
+             * caught exactly that. */
+            pbuf = OPENSSL_malloc((size_t)yn);
+            if (pbuf == NULL) {
+                rc = HSK_OSSL4_ERR_NOMEM;
+                goto end;
+            }
+            total = (size_t)yn;
+            ybuf = pbuf;
+            if (BN_bn2nativepad(y, ybuf, yn) <= 0)
+                goto end;
+            fromparams[0] = OSSL_PARAM_construct_utf8_string(
+                OSSL_PKEY_PARAM_GROUP_NAME, group, 0);
+            fromparams[1] = OSSL_PARAM_construct_BN(
+                OSSL_PKEY_PARAM_PUB_KEY, ybuf, (size_t)yn);
+            fromparams[2] = OSSL_PARAM_construct_end();
+        } else {
+            total = (size_t)(pn + gn + yn + qn);
+            pbuf = OPENSSL_malloc(total);
+            if (pbuf == NULL) {
+                rc = HSK_OSSL4_ERR_NOMEM;
+                goto end;
+            }
+            gbuf = pbuf + pn;
+            ybuf = gbuf + gn;
+            qbuf = ybuf + yn;
+            /* Native order (see above): BE bytes would store
+             * byte-reversed. */
+            if (BN_bn2nativepad(p, pbuf, pn) <= 0 ||
+                BN_bn2nativepad(g, gbuf, gn) <= 0 ||
+                BN_bn2nativepad(y, ybuf, yn) <= 0)
+                goto end;
+            fromparams[0] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_FFC_P, pbuf, (size_t)pn);
+            fromparams[1] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_FFC_G, gbuf, (size_t)gn);
+            fromparams[2] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_PUB_KEY, ybuf, (size_t)yn);
+            if (qn > 0) {
+                if (BN_bn2nativepad(q, qbuf, qn) <= 0)
+                    goto end;
+                fromparams[3] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_FFC_Q, qbuf, (size_t)qn);
+                fromparams[4] = OSSL_PARAM_construct_end();
+            } else {
+                fromparams[3] = OSSL_PARAM_construct_end();
+            }
+        }
+        fromctx = EVP_PKEY_CTX_new_from_name(ctx, dhname, propq);
+        if (fromctx == NULL) {
+            OPENSSL_clear_free(pbuf, total);
+            goto end;
+        }
+        if (EVP_PKEY_fromdata_init(fromctx) <= 0 ||
+            EVP_PKEY_fromdata(fromctx, &peer, EVP_PKEY_PUBLIC_KEY, fromparams) <= 0) {
+            OPENSSL_clear_free(pbuf, total);
+            /* Well-formed but provider-rejected (e.g. small-subgroup
+             * policy): still the peer's fault. */
+            ERR_clear_error();
+            rc = HSK_OSSL4_ERR_BADPEER;
+            goto end;
+        }
+        OPENSSL_clear_free(pbuf, total);
+    }
+    OPENSSL_free(fromparams);
+    fromparams = NULL;
+    pctx = EVP_PKEY_CTX_new_from_pkey(ctx, priv, propq);
+    if (pctx == NULL)
+        goto end;
+    if (EVP_PKEY_derive_init(pctx) <= 0)
+        goto end;
+    if (EVP_PKEY_derive_set_peer(pctx, peer) <= 0) {
+        rc = HSK_OSSL4_ERR_BADPEER;
+        goto end;
+    }
+    if (EVP_PKEY_derive(pctx, NULL, &secretlen) <= 0)
+        goto end;
+    secret = OPENSSL_malloc(secretlen);
+    if (secret == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
+        OPENSSL_clear_free(secret, secretlen);
+        secret = NULL;
+        goto end;
+    }
+    *out = secret;
+    rc = (long)secretlen;
+    secret = NULL;
+
+end:
+    OPENSSL_free(fromparams);
+    EVP_PKEY_CTX_free(pctx);
+    EVP_PKEY_CTX_free(fromctx);
+    EVP_PKEY_free(peer);
+    EVP_PKEY_free(priv);
+    BN_clear_free(p);
+    BN_clear_free(g);
+    BN_clear_free(y);
+    BN_free(pm1);
+    BN_free(q);
+    return rc;
+}
+
+int hsk_ossl4_dh_gen_keypair(OSSL_LIB_CTX *ctx, const char *propq,
+                             const unsigned char *params_der,
+                             size_t params_len, unsigned char **priv_der,
+                             size_t *priv_len, unsigned char **pub_der,
+                             size_t *pub_len)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    OSSL_DECODER_CTX *dctx = NULL;
+    EVP_PKEY *params = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *pkey = NULL;
+    unsigned char *priv = NULL, *pub = NULL;
+    int privlen = 0, publen = 0;
+    int rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || params_der == NULL ||
+        params_len == 0 || params_len > (size_t)INT_MAX ||
+        priv_der == NULL || priv_len == NULL ||
+        pub_der == NULL || pub_len == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    /* Decode DER domain parameters into a provider key (libctx +
+     * propq bound): PKCS#3 SEQ{p, g} under "DH", X9.42 SEQ{p, g,
+     * q} under "DHX" (each decoder takes exactly its shape —
+     * proven by probe). Undecodable params are BADKEY. */
+    {
+        const char *kinds[2] = { "DH", "DHX" };
+        int i;
+        for (i = 0; i < 2 && params == NULL; i++) {
+            const unsigned char *p = params_der;
+            size_t len = params_len;
+            dctx = OSSL_DECODER_CTX_new_for_pkey(&params, "DER", NULL,
+                                                kinds[i],
+                                                OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS,
+                                                ctx, propq);
+            if (dctx == NULL)
+                goto end;
+            if (!OSSL_DECODER_from_data(dctx, &p, &len)) {
+                EVP_PKEY_free(params);
+                params = NULL;
+            }
+            OSSL_DECODER_CTX_free(dctx);
+            dctx = NULL;
+        }
+    }
+    if (params == NULL) {
+        rc = HSK_OSSL4_ERR_BADKEY;
+        goto end;
+    }
+    pctx = EVP_PKEY_CTX_new(params, NULL);
+    if (pctx == NULL)
+        goto end;
+    if (EVP_PKEY_keygen_init(pctx) <= 0 || EVP_PKEY_keygen(pctx, &pkey) <= 0)
+        goto end;
+    /* PKCS#8 explicitly: i2d_PrivateKey prefers the traditional
+     * encoding, but the house convention (and the keygen stamping
+     * that parses these bytes) is PKCS#8. Same quirk as the RSA
+     * and DSA keygens above. */
+    {
+        PKCS8_PRIV_KEY_INFO *p8 = EVP_PKEY2PKCS8(pkey);
+        if (p8 == NULL)
+            goto end;
+        privlen = i2d_PKCS8_PRIV_KEY_INFO(p8, &priv);
+        PKCS8_PRIV_KEY_INFO_free(p8);
+    }
+    publen = i2d_PUBKEY(pkey, &pub);
+    if (privlen <= 0 || publen <= 0) {
+        OPENSSL_free(priv);
+        OPENSSL_free(pub);
+        goto end;
+    }
+    *priv_der = priv;
+    *priv_len = (size_t)privlen;
+    *pub_der = pub;
+    *pub_len = (size_t)publen;
+    rc = HSK_OSSL4_OK;
+
+end:
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(pctx);
+    EVP_PKEY_free(params);
+    OSSL_DECODER_CTX_free(dctx);
     return rc;
 }
 

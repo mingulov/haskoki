@@ -34,6 +34,7 @@ import Haskoki.Engine.Backend
   , DigestAlg (..)
   , DigestCaps (..)
   , EcdhSpec (..)
+  , DhSpec (..)
   , EcSpec (..)
   , EngineResult (..)
   , KdfCaps (..)
@@ -67,6 +68,7 @@ import Haskoki.Engine.Synthetic
   , nextBytes
   , synthDigestLength
   , synthEcdhWidth
+  , synthDhWidth
   , synthKeyContextVersion
   , synthMacLength
   , synthSigLength
@@ -124,6 +126,7 @@ spec = testGroup "synthetic engine"
   , testCase "ML-DSA levels roundtrip" caseMldsaRoundtrip
   , testCase "SLH-DSA sets roundtrip" caseSlhdsaRoundtrip
   , testCase "ECDH agreements separate and replay" caseEcdh
+  , testCase "DH agreements separate and replay" caseDh
   , testCase "CMAC tags separate and truncate" caseCmac
   , testCase "3DES-MAC tags separate and truncate" caseDes3mac
   , testCase "KDF output separates and truncates" caseKdf
@@ -968,7 +971,7 @@ caseCapsFull = withSynth "11" $ \env -> do
     (Set.fromList ([ML_DSA_44, ML_DSA_65, ML_DSA_87] ++ slhdsaSets)) (scPqcSign (bcSigs caps))
   assertEqual "kem set"
     (Set.fromList [ML_KEM_512, ML_KEM_768, ML_KEM_1024]) (kcAlgs (bcKems caps))
-  assertEqual "kdf set" (Set.fromList ["ECDH", "ECDH-COFACTOR"]) (kcKdfs (bcKdfs caps))
+  assertEqual "kdf set" (Set.fromList ["DH", "ECDH", "ECDH-COFACTOR"]) (kcKdfs (bcKdfs caps))
 
 caseKemRoundtrip :: IO ()
 caseKemRoundtrip = withSynth "11" $ \env -> do
@@ -1656,6 +1659,33 @@ caseEcdh = withSynth "11" $ \env -> do
     ecdhDerive env EcdhPlain (KeyDer "priv-half") (KeyDer "pub-half")
   assertEqual "der width" synthEcdhWidth (BS.length sDer)
 
+-- | Agreements replay deterministically at the 512-byte max width
+-- and stay domain-separated across bases and peers (no cofactor
+-- dimension: both DH rows agree identically). Opaque key bytes
+-- are served (no key parsing in synthetic).
+caseDh :: IO ()
+caseDh = withSynth "11" $ \env -> do
+  let peer = KeyBytes "peer-public-value-0123456789abcdef"
+      other = KeyBytes "other-peer-value-0123456789abcdef"
+  s1 <- expectOk "derive" =<< dhDerive env DhPlain key32 peer
+  assertEqual "max width" synthDhWidth (BS.length s1)
+  s2 <- expectOk "rederive" =<< dhDerive env DhPlain key32 peer
+  assertEqual "deterministic" s1 s2
+  sPeer <- expectOk "other peer" =<< dhDerive env DhPlain key32 other
+  assertBool "peers separated" (s1 /= sPeer)
+  sBase <- expectOk "other base" =<< dhDerive env DhPlain otherKey32 peer
+  assertBool "bases separated" (s1 /= sBase)
+  sDer <- expectOk "der halves served" =<<
+    dhDerive env DhPlain (KeyDer "priv-half") (KeyDer "pub-half")
+  assertEqual "der width" synthDhWidth (BS.length sDer)
+  -- Keygen: opaque pairs mint from domain DER, halves derive.
+  (kpriv, mpub) <- expectOk "keygen" =<< generateKey env (GenDHKeypair "domain-der")
+  kpub <- case mpub of
+    Just p -> pure p
+    Nothing -> assertFailure "keygen must mint a pair" >> undefined
+  sK <- expectOk "genkey derive" =<< dhDerive env DhPlain kpriv kpub
+  assertEqual "genkey width" synthDhWidth (BS.length sK)
+
 -- ---------------------------------------------------------------------------
 -- CMAC composition
 -- ---------------------------------------------------------------------------
@@ -2122,7 +2152,13 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   -- the RoutingE2ESpec TLS-PRF KATs); empty GCM
   -- params still fail typed at the driver (CryptoFailed recipe
   -- refusal, pinned below).
-  refused "derive DH" (FxDerive (mech "CKM_DH_PKCS_DERIVE") (Just kOid) BS.empty BS.empty 32)
+  -- DH with empty params: mapped but recipe-refused (typed
+  -- 'CryptoFailed', never 'CryptoUnsupported', never success).
+  rDh <- runEffect env res
+    (FxDerive (mech "CKM_DH_PKCS_DERIVE") (Just kOid) BS.empty BS.empty 32)
+  case rDh of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("derive DH empty params: expected Failed, got: " ++ show other)
   -- Recovery effects refuse on synthetic exactly as on real.
   refused "sign-recover"
     (FxSignRecover (mech "CKM_SHA256_HMAC") (Just kOid) BS.empty BS.empty 4)

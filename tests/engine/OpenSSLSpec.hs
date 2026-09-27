@@ -36,6 +36,7 @@ import Haskoki.Engine.Backend
   , DigestAlg (..)
   , DigestCaps (..)
   , EcdhSpec (..)
+  , DhSpec (..)
   , EcSpec (..)
   , EngineResult (..)
   , KemCaps (..)
@@ -55,7 +56,7 @@ import Haskoki.Engine.Backend
   , generateRandomMaxBytes
   , seedRandomMaxBytes
   )
-import Haskoki.Der (mldsaPkcs8Fields, mldsaPrivateDer, mldsaSpkiFields, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPublicDer, mlkemSpkiFields, slhdsaPkcs8Fields, slhdsaSpkiFields)
+import Haskoki.Der (dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, integerToBE, mldsaPkcs8Fields, mldsaPrivateDer, mldsaSpkiFields, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPublicDer, mlkemSpkiFields, rsaSpkiFields, slhdsaPkcs8Fields, slhdsaSpkiFields)
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
 import Haskoki.Types (EngineResourceId (..))
 
@@ -98,6 +99,8 @@ spec = testGroup "openssl4 engine"
   , testCase "ML-KEM wycheproof KAT + roundtrips (512/768/1024)" caseMlkem
   , testCase "ML-KEM keygen mints usable pairs" caseRealMlkemKeygen
   , testCase "ECDH agreement KATs (CLI vectors)" caseEcdhVectors
+  , testCase "DH agreement KAT (CLI vectors)" caseDhAgree
+  , testCase "DH keygen mints agreeing pairs" caseDhKeygen
   , testCase "raw-vs-der encodings never convert silently" caseRawVsDer
   , testCase "Symmetric keygen (fresh random bytes)" caseSymKeygen
   , testCase "RSA keygen mints DER halves in bounds" caseRsaKeygen
@@ -985,6 +988,95 @@ ecdhPointE = hex $ concat
 ecdhSecretDE, ecdhSecretDEcof :: ByteString
 ecdhSecretDE = hex "01d8b812087d09360c6db7f56ebc9c9799348bf951571db0390a8fd5e696c1369aedb255"
 ecdhSecretDEcof = hex "07e629aca2075197a2a88ca5e4dc2c870bb32ae36a070c84bde114af867386b2a58879e4"
+
+-- | S10e DH KAT fixtures: two ffdhe2048 pairs (pinned-CLI genpkey);
+-- the secret is pinned-CLI @pkeyutl -derive@ output (A->B and B->A agree).
+dhPrivA, dhPrivB, dhPeerA, dhPeerB, dhSecretAB, dhPrime2048 :: ByteString
+dhPrivA = hex $ concat
+  [ "3082013f0201003082011706092a864886f70d010301308201080282010100ff"
+  , "ffffffffffffffadf85458a2bb4a9aafdc5620273d3cf1d8b9c583ce2d3695a9"
+  , "e13641146433fbcc939dce249b3ef97d2fe363630c75d8f681b202aec4617ad3"
+  , "df1ed5d5fd65612433f51f5f066ed0856365553ded1af3b557135e7f57c93598"
+  , "4f0c70e0e68b77e2a689daf3efe8721df158a136ade73530acca4f483a797abc"
+  , "0ab182b324fb61d108a94bb2c8e3fbb96adab760d7f4681d4f42a3de394df4ae"
+  , "56ede76372bb190b07a7c8ee0a6d709e02fce1cdf7e2ecc03404cd28342f6191"
+  , "72fe9ce98583ff8e4f1232eef28183c3fe3b1b4c6fad733bb5fcbc2ec22005c5"
+  , "8ef1837d1683b2c6f34a26c1b2effa886b423861285c97ffffffffffffffff02"
+  , "0102041f021d009fa3ef2b4c8dfa3c47df391c7a7bc8018609291f24a761a569"
+  , "699de1"
+  ]
+dhPrivB = hex $ concat
+  [ "3082013f0201003082011706092a864886f70d010301308201080282010100ff"
+  , "ffffffffffffffadf85458a2bb4a9aafdc5620273d3cf1d8b9c583ce2d3695a9"
+  , "e13641146433fbcc939dce249b3ef97d2fe363630c75d8f681b202aec4617ad3"
+  , "df1ed5d5fd65612433f51f5f066ed0856365553ded1af3b557135e7f57c93598"
+  , "4f0c70e0e68b77e2a689daf3efe8721df158a136ade73530acca4f483a797abc"
+  , "0ab182b324fb61d108a94bb2c8e3fbb96adab760d7f4681d4f42a3de394df4ae"
+  , "56ede76372bb190b07a7c8ee0a6d709e02fce1cdf7e2ecc03404cd28342f6191"
+  , "72fe9ce98583ff8e4f1232eef28183c3fe3b1b4c6fad733bb5fcbc2ec22005c5"
+  , "8ef1837d1683b2c6f34a26c1b2effa886b423861285c97ffffffffffffffff02"
+  , "0102041f021d0147586245374ff5bc320cfe03ca2049b8b46f5eb702c9c3b1e0"
+  , "5a5ca0"
+  ]
+dhPeerA = hex $ concat
+  [ "f738b2ecbdd1d53faa936e55572f1d5304d2a1b983454250848e463dbb125727"
+  , "c865d36944cd303ae8daf3855df44cedfc5352c47d090c96efeaed6f70e17bf3"
+  , "60aa2248c4c6664c8713d3aa7a53d711c883f7c1493cb69e8a72068af1ab5705"
+  , "097e538536523384cf237c576cc3d9acc47c26768162c1290687a596a7a6aa87"
+  , "33e04354594fabad2eb42797518dcc5220194a5106195bbdba6e9e7025dd33bf"
+  , "cfd1c95e8ad1efc97c0884b31079b794fba0d583fcb93096c76a17b4f8b3c067"
+  , "0477c56f1ff367b1ecdfeb90fc25f7b1dae5ebc377d059a3d7b7e66e9bc26c26"
+  , "5caee6fd5528c97b892eeb89842d666299c02e1344620662148952a1cc103fa2"
+  ]
+dhPeerB = hex $ concat
+  [ "c75ae3465dfd93b6a1b50841c679448a34ef087b30edfe7c25bd9d897d105e6d"
+  , "d943419867a2009eea2f0e931b1925e134468889a06d92c3a5251af1b39a4092"
+  , "ba99e124f795852a9de46f85b421f4d5232d73b0b2ba42f033609789f0ca2bc3"
+  , "16f79b7a64ad04f410dfb0443ebac1e8844485e9e1c3772ef0558623a9ef3476"
+  , "ff8549d3a259511e0490a7b4af4f8f0b73582e1cf2bafdc43486141631972039"
+  , "38e4c95ecbddf0bc638d09a12d473e5b1cc576831e43a0cb35f8561e40f5c264"
+  , "d66a58f3fcc14ed3bf9a71ac134810fca2da8a98c47c3db55f05d228a9efd4a3"
+  , "de7db7d1e45b79a0636fc3f6885efce43b24900b2341ef074543d54120dcd700"
+  ]
+dhSecretAB = hex $ concat
+  [ "96cbacbfc6da3d06a280605284b5729ccce84f1896870ece31468d38f3463c90"
+  , "98c303e4abc67edacbb6a78a074a869ea32e293f621ac0546214310932a024e9"
+  , "1f0f9f60ff8b329cf655734012a67fb37cc03a281522b56c52944f0332810ad2"
+  , "a7c4680ce64db5c13155153dfa9ece121622c9338b605441097d4a5c83da8d8d"
+  , "528ceb3b2550eb6b2dfdb2f76ffa8fbcb6aabf7e93495c84c395c9e2d2a2442b"
+  , "617f2af65ef63436ee5df3634b530b9373f3c985a91d4930995e1b05db29d82d"
+  , "95762e42025f58f59e08c805e65be03c131016f05c1cfec08c94a046ec053048"
+  , "5d3d8516e9de0a331e6ec041cc354c7b44950f1811dfe063242781d7a7fe0cc4"
+  ]
+dhPrime2048 = hex $ concat
+  [ "ffffffffffffffffadf85458a2bb4a9aafdc5620273d3cf1d8b9c583ce2d3695"
+  , "a9e13641146433fbcc939dce249b3ef97d2fe363630c75d8f681b202aec4617a"
+  , "d3df1ed5d5fd65612433f51f5f066ed0856365553ded1af3b557135e7f57c935"
+  , "984f0c70e0e68b77e2a689daf3efe8721df158a136ade73530acca4f483a797a"
+  , "bc0ab182b324fb61d108a94bb2c8e3fbb96adab760d7f4681d4f42a3de394df4"
+  , "ae56ede76372bb190b07a7c8ee0a6d709e02fce1cdf7e2ecc03404cd28342f61"
+  , "9172fe9ce98583ff8e4f1232eef28183c3fe3b1b4c6fad733bb5fcbc2ec22005"
+  , "c58ef1837d1683b2c6f34a26c1b2effa886b423861285c97ffffffffffffffff"
+  ]
+
+-- | X9.42 domain triple (1024-bit DSA paramgen output
+-- re-encoded as SEQ{p, g, q}; sign pads stripped).
+dhX942P, dhX942G, dhX942Q :: ByteString
+dhX942P = hex $ concat
+  [ "ddc17b058e1ec15b51996f85eae0b678ea9bb72444159fe2fcd0f44f7be7e7"
+  , "37eeebe94c47e751bcd826c53960d7e1af0f0f421f4f31104d07b13af401ed76"
+  , "567b31d2ebf1eaac37c626698e60dff128c671f9055600740581508c10081444"
+  , "4ffa21fada6af011260c1bc070a3d58f9a098607d92a938eff5a16fdc388e41e"
+  , "09"
+  ]
+dhX942G = hex $ concat
+  [ "d1a4428b2e04060534ad2a284a7039276bf6306a88bfde2d92332a824da217"
+  , "82e30b3642625f08ca00c5997626d6733d00eafcc206afbbdafb0086ddf1d06d"
+  , "4887ff77e549937bdde181e6955cec0b29e710168d891687515c1ad3e03eee3f"
+  , "60f96a9063d540b7907cdb24b99dfd490e3cc447be9d47cdefde5aa30c857a9c"
+  , "fa"
+  ]
+dhX942Q = hex "fcbd52881b3c3975a661ce18c867832617b49b0dc2c467c10c264a67"
 
 -- | Tiny DER ECDSA-signature parser: SEQUENCE { INTEGER r, INTEGER s }.
 -- Independent of the backend's own conversion; used to cross-check
@@ -3625,6 +3717,93 @@ caseEcdhVectors = withBackend $ \env -> do
   expectBadKey "off-curve priv refused" =<< ecdhDerive env EcdhPlain (KeyDer ecBp160Priv) qB
   expectMechParamInvalid "curve mismatch refused" =<< ecdhDerive env EcdhPlain pA qC
 
+caseDhAgree :: IO ()
+caseDhAgree = withBackend $ \env -> do
+  let pA = KeyDer dhPrivA
+      pB = KeyDer dhPrivB
+      qA = KeyDer dhPeerA
+      qB = KeyDer dhPeerB
+  -- Both directions agree with the pinned CLI secret at the
+  -- prime's byte width; the peer rides as bare bytes.
+  sAB <- expectOk "derive A->B" =<< dhDerive env DhPlain pA qB
+  assertEqual "KAT A->B" dhSecretAB sAB
+  assertEqual "prime width" 256 (BS.length sAB)
+  sBA <- expectOk "derive B->A" =<< dhDerive env DhPlain pB qA
+  assertEqual "commute" dhSecretAB sBA
+  -- Fault attribution mirrors ECDH: the base is the caller's
+  -- key (bad base stays a bad key) while the peer rides in
+  -- the mechanism parameters.
+  expectBadKey "garbage base refused" =<< dhDerive env DhPlain (KeyDer "bogus") qB
+  -- Any in-range integer is a legitimate DH peer (a short
+  -- "bogus" value derives); only structural violations refuse.
+  expectMechParamInvalid "over-max peer refused" =<<
+    dhDerive env DhPlain pA (KeyDer (BS.replicate 4097 1))
+  expectMechParamInvalid "peer 0 refused" =<< dhDerive env DhPlain pA (KeyDer (BS.replicate 256 0))
+  expectMechParamInvalid "peer 1 refused" =<<
+    dhDerive env DhPlain pA (KeyDer (BS.replicate 255 0 <> BS.singleton 1))
+  expectMechParamInvalid "peer p refused" =<< dhDerive env DhPlain pA (KeyDer dhPrime2048)
+  expectMechParamInvalid "peer over p refused" =<<
+    dhDerive env DhPlain pA (KeyDer (BS.replicate 257 0xff))
+  expectMechParamInvalid "empty peer refused" =<< dhDerive env DhPlain pA (KeyDer BS.empty)
+  -- A tampered peer still derives (in range) but to a
+  -- different secret — no silent KAT match.
+  sTam <- expectOk "derive tampered peer" =<<
+    dhDerive env DhPlain pA (KeyDer (BS.singleton 0x00 <> BS.drop 1 dhPeerB))
+  assertBool "tamper diverges" (sTam /= dhSecretAB)
+
+-- | DH keygen: PKCS#3 and X9.42 params mint parseable pairs
+-- whose halves carry the domain, and minted pairs on the same
+-- domain agree both directions at the prime width. Garbage
+-- params refuse as a bad key (DSA mirror).
+caseDhKeygen :: IO ()
+caseDhKeygen = withBackend $ \env -> do
+  let mint label params = do
+        (priv, mpub) <- expectOk label =<< generateKey env (GenDHKeypair params)
+        case (priv, mpub) of
+          (KeyDer privB, Just (KeyDer pubB)) -> pure (privB, pubB)
+          other -> assertFailure (label ++ ": halves are not DER: " ++ show other)
+      agree label w privA pubA privB pubB = do
+        yA <- case dhSpkiFields pubA of
+          Just (_, _, _, y) -> pure y
+          Nothing -> assertFailure (label ++ ": SPKI A failed to parse") >> undefined
+        yB <- case dhSpkiFields pubB of
+          Just (_, _, _, y) -> pure y
+          Nothing -> assertFailure (label ++ ": SPKI B failed to parse") >> undefined
+        sAB <- expectOk (label ++ " A->B") =<< dhDerive env DhPlain (KeyDer privA) (KeyDer yB)
+        sBA <- expectOk (label ++ " B->A") =<< dhDerive env DhPlain (KeyDer privB) (KeyDer yA)
+        assertEqual (label ++ " commutes") sAB sBA
+        assertEqual (label ++ " width") w (BS.length sAB)
+  -- PKCS#3 on ffdhe2048.
+  (privA, pubA) <- mint "pkcs mint A" (dhParamsDer dhPrime2048 (BS.singleton 2))
+  (privB, pubB) <- mint "pkcs mint B" (dhParamsDer dhPrime2048 (BS.singleton 2))
+  assertBool "pkcs halves differ" (privA /= pubA && privB /= pubB)
+  case dhSpkiFields pubA of
+    Just (p, g, q, _) -> do
+      assertEqual "pkcs p" dhPrime2048 p
+      assertEqual "pkcs g" (BS.singleton 2) g
+      assertEqual "pkcs no q" Nothing q
+    Nothing -> assertFailure "pkcs SPKI failed to parse"
+  case dhPkcs8Fields privA of
+    Just (p, g, q, _) -> do
+      assertEqual "pkcs8 p" dhPrime2048 p
+      assertEqual "pkcs8 g" (BS.singleton 2) g
+      assertEqual "pkcs8 no q" Nothing q
+    Nothing -> assertFailure "pkcs PKCS#8 failed to parse"
+  agree "pkcs" 256 privA pubA privB pubB
+  -- X9.42 on the embedded (p, g, q) domain.
+  let x942 = dhParamsDerQ dhX942P dhX942G dhX942Q
+  (privC, pubC) <- mint "x942 mint A" x942
+  (privD, pubD) <- mint "x942 mint B" x942
+  case dhSpkiFields pubC of
+    Just (p, g, q, _) -> do
+      assertEqual "x942 p" dhX942P p
+      assertEqual "x942 g" dhX942G g
+      assertEqual "x942 q" (Just dhX942Q) q
+    Nothing -> assertFailure "x942 SPKI failed to parse"
+  agree "x942" 128 privC pubC privD pubD
+  expectBadKey "garbage params refused" =<<
+    generateKey env (GenDHKeypair "bogus")
+
 caseRawVsDer :: IO ()
 caseRawVsDer = withBackend $ \env -> do
   let pub = KeyDer ecPubDer
@@ -3804,6 +3983,14 @@ caseRsaKeygen = withBackend $ \env -> do
   -- Bounds mirror the key planner (bad params, never silent).
   expectBadParam "rsa-1024 refused" =<< generateKey env (GenRSA 1024 65537)
   expectBadParam "rsa even exponent refused" =<< generateKey env (GenRSA 2048 4)
+  -- A non-palindromic exponent round-trips exactly: OSSL_PARAM
+  -- BN import reads native-endian, and the stock 65537 masked a
+  -- big-endian pass-through that minted mirrored exponents.
+  (KeyDer _, Just (KeyDer pub3)) <- expectOk "rsa odd-e mints" =<<
+    generateKey env (GenRSA 2048 65539)
+  case rsaSpkiFields pub3 of
+    Just (_, e3) -> assertEqual "minted exponent" (integerToBE 65539) e3
+    Nothing -> assertFailure "rsa odd-e SPKI failed to parse"
 
 -- | RFC 8439 section 2.4.2: key 00..1f, nonce
 -- 000000000000004a00000000, initial counter 1, the 114-byte
@@ -4103,7 +4290,7 @@ caseCaps = withBackend $ \env -> do
     ] ++ dsaNames ++ fipsDsaNames ++ eddsaNames ++ mldsaNames ++ slhdsaNames)) (scSpecs (bcSigs caps))
   assertEqual "curves" (Set.fromList dsaCurves) (scCurves (bcSigs caps))
   assertEqual "kem set" (Set.fromList [ML_KEM_512, ML_KEM_768, ML_KEM_1024]) (kcAlgs (bcKems caps))
-  assertEqual "kdf set" (Set.fromList ["ECDH", "ECDH-COFACTOR"]) (kcKdfs (bcKdfs caps))
+  assertEqual "kdf set" (Set.fromList ["DH", "ECDH", "ECDH-COFACTOR"]) (kcKdfs (bcKdfs caps))
 
 caseIsolation :: IO ()
 caseIsolation = do

@@ -35,10 +35,11 @@ import Haskoki.Attribute
   , getAttributes
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
-import Haskoki.Der (curveTable, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer, mlkemPkcs8Fields, mlkemSpkiFields, parseDsaParams, rsaPrivateDer, rsaPublicDer)
+import Haskoki.Der (curveTable, dhParamsDer, dhParamsDerQ, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer, mlkemPkcs8Fields, mlkemSpkiFields, parseDhParams, parseDsaParams, rsaPrivateDer, rsaPublicDer)
 import Haskoki.Engine.Backend
   ( BackendError (..)
   , CryptoBackend (..)
+  , DhSpec (..)
   , DigestAlg (..)
   , EcSpec (..)
   , EngineResult (..)
@@ -110,6 +111,7 @@ import Haskoki.Operation.KeyManagement
   , ckkBlake2b512Hmac
   , ckkChacha20
   , ckkDes3
+  , ckkDh
   , ckkDsa
   , ckkEc
   , ckkEcEdwards
@@ -117,6 +119,7 @@ import Haskoki.Operation.KeyManagement
   , ckkMlDsa
   , ckkMlKem
   , ckkRsa
+  , ckkX9_42Dh
   , ckoDomainParameters
   , ckoPrivateKey
   , ckoPublicKey
@@ -124,9 +127,11 @@ import Haskoki.Operation.KeyManagement
   , checkKeyTemplate
   , decodeGenArgs
   , des3KeyGenMech
+  , dhKeyPairGenMech
   , dsaKeyPairGenMech
   , dsaParameterGenMech
   , ecKeyPairGenMech
+  , x9_42DhKeyPairGenMech
   , edwardsKeyPairGenMech
   , encodeGenArgs
   , mldsaKeyPairGenMech
@@ -242,6 +247,10 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "DSA domain templates plan and refuse" caseDsaDomainPlanner
   , testCase "DSA GenArgs codec round-trips and rejects" caseDsaGenArgsCodec
   , testCase "DSA pending/effect pairs cohere" caseDsaCompatible
+  , testCase "DH domain templates plan and refuse" caseDhDomainPlanner
+  , testCase "DH GenArgs codec round-trips and rejects" caseDhGenArgsCodec
+  , testCase "DH pending/effect pairs cohere" caseDhCompatible
+  , testCase "DH halves stamp domain components" caseDhStamp
   , testCase "Edwards GenArgs codec round-trips and rejects" caseEdwardsGenArgsCodec
   , testCase "Edwards pair templates plan and refuse" caseEdwardsPairPlanner
   , testCase "Edwards pending/effect pairs cohere" caseEdwardsCompatible
@@ -249,6 +258,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "DSA components stamp, doubles pass through" caseDsaStamp
   , testCase "Real DSA params generate with readback" caseRealDsaParamgen
   , testCase "Real DSA keypair generates and signs" caseRealDsaKeygen
+  , testCase "Real DH keypairs generate and agree" caseRealDhKeygen
   , testCase "Keygen defaults absent usage flags true" caseKeygenUsageDefaults
   , testCase "Real P-384 keypair generates and signs" caseRealEcKeygen384
   , testCase "Real P-521 keypair generates and signs" caseRealEcKeygen521
@@ -675,6 +685,73 @@ dsaParamsTmpl l =
   , (AttrKeyType, ValULong ckkDsa)
   , (AttrPrimeBits, ValULong l)
   , (AttrToken, ValBool False)
+  ]
+
+-- Toy DH values (shaped: planners check presence and shape;
+-- the real test below mints on the RFC 3526 prime).
+dhP :: ByteString
+dhP = BS.pack (0x80 : replicate 255 1)
+
+dhG :: ByteString
+dhG = BS.singleton 2
+
+dhQ :: ByteString
+dhQ = BS.pack (0x80 : replicate 31 4)
+
+dhPubTmpl :: [(AttributeType, AttributeValue)]
+dhPubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkDh)
+  , (AttrPrime, ValBytes dhP)
+  , (AttrBase, ValBytes dhG)
+  , (AttrToken, ValBool False)
+  , (AttrDerive, ValBool True)
+  ]
+
+dhPrivTmpl :: [(AttributeType, AttributeValue)]
+dhPrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkDh)
+  , (AttrToken, ValBool False)
+  , (AttrPrivate, ValBool True)
+  , (AttrSensitive, ValBool True)
+  , (AttrExtractable, ValBool False)
+  , (AttrDerive, ValBool True)
+  ]
+
+dhX942PubTmpl :: [(AttributeType, AttributeValue)]
+dhX942PubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkX9_42Dh)
+  , (AttrPrime, ValBytes dhP)
+  , (AttrBase, ValBytes dhG)
+  , (AttrSubprime, ValBytes dhQ)
+  , (AttrToken, ValBool False)
+  , (AttrDerive, ValBool True)
+  ]
+
+dhX942PrivTmpl :: [(AttributeType, AttributeValue)]
+dhX942PrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkX9_42Dh)
+  , (AttrToken, ValBool False)
+  , (AttrPrivate, ValBool True)
+  , (AttrSensitive, ValBool True)
+  , (AttrExtractable, ValBool False)
+  , (AttrDerive, ValBool True)
+  ]
+
+-- | The RFC 3526 2048-bit MODP prime (real keygen domain).
+dhRealP :: ByteString
+dhRealP = hex $ concat
+  [ "ffffffffffffffffadf85458a2bb4a9aafdc5620273d3cf1d8b9c583ce2d3695a9"
+  , "e13641146433fbcc939dce249b3ef97d2fe363630c75d8f681b202aec4617ad3"
+  , "df1ed5d5fd65612433f51f5f066ed0856365553ded1af3b557135e7f57c93598"
+  , "4f0c70e0e68b77e2a689daf3efe8721df158a136ade73530acca4f483a797abc"
+  , "0ab182b324fb61d108a94bb2c8e3fbb96adab760d7f4681d4f42a3de394df4ae"
+  , "56ede76372bb190b07a7c8ee0a6d709e02fce1cdf7e2ecc03404cd28342f6191"
+  , "72fe9ce98583ff8e4f1232eef28183c3fe3b1b4c6fad733bb5fcbc2ec22005c5"
+  , "8ef1837d1683b2c6f34a26c1b2effa886b423861285c97ffffffffffffffff"
   ]
 
 -- Toy Edwards values (shaped: planners check presence and shape;
@@ -1599,6 +1676,189 @@ caseDsaStamp = do
         [(AttrClass, ValULong ckoSecretKey), (AttrToken, ValBool False)])
   assertEqual "secret untouched" (Just secret)
     (stampParamsObject secret mat)
+
+caseDhDomainPlanner :: IO ()
+caseDhDomainPlanner = do
+  m0 <- seedModel
+  st <- getSession m0
+  let argsOf mech pubT privT =
+        case planGenerateKeyPair defaultRules m0 st mech pubT privT of
+          KeyEffect _ (FxGenerateKey _ _ input) -> Right (decodeGenArgs input)
+          KeyDenied (KeyDeny code _) -> Left code
+          other -> error ("unexpected plan shape: " ++ show other)
+      dropT t = filter ((/= t) . fst)
+      withT tmpl t v = tmpl ++ [(t, v)]
+  -- Happy paths frame DER domain params (PKCS#3 without q,
+  -- X9.42 with q).
+  case argsOf dhKeyPairGenMech dhPubTmpl dhPrivTmpl of
+    Right (Just (GenDhKeypair der)) ->
+      assertEqual "PKCS#3 round-trips" (Just (dhP, dhG, Nothing)) (parseDhParams der)
+    other -> assertFailure ("DH pair must plan: " ++ show other)
+  case argsOf x9_42DhKeyPairGenMech dhX942PubTmpl dhX942PrivTmpl of
+    Right (Just (GenDhKeypair der)) ->
+      assertEqual "X9.42 round-trips" (Just (dhP, dhG, Just dhQ)) (parseDhParams der)
+    other -> assertFailure ("X9.42 pair must plan: " ++ show other)
+  -- Served size hints alongside the domain are accepted.
+  case argsOf dhKeyPairGenMech (withT dhPubTmpl AttrPrimeBits (ValULong 2048)) dhPrivTmpl of
+    Right (Just (GenDhKeypair _)) -> pure ()
+    other -> assertFailure ("served size hint must plan: " ++ show other)
+  -- Missing parameters are incomplete.
+  assertEqual "missing base" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf dhKeyPairGenMech (dropT AttrBase dhPubTmpl) dhPrivTmpl)
+  assertEqual "missing all" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf dhKeyPairGenMech [(AttrToken, ValBool False)] dhPrivTmpl)
+  assertEqual "x942 missing subprime" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf x9_42DhKeyPairGenMech (dropT AttrSubprime dhX942PubTmpl) dhX942PrivTmpl)
+  -- The field-size probe shape refuses inconsistent, never incomplete.
+  assertEqual "oversized prime bits" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      [(AttrPrimeBits, ValULong 4294968320), (AttrToken, ValBool False)]
+      [(AttrToken, ValBool False)])
+  assertEqual "unserved prime bits" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech (withT dhPubTmpl AttrPrimeBits (ValULong 512)) dhPrivTmpl)
+  assertEqual "unserved subprime bits" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf x9_42DhKeyPairGenMech
+      (withT dhX942PubTmpl AttrSubprimeBits (ValULong 128)) dhX942PrivTmpl)
+  -- PKCS#3 has no subprime: carrying one is inconsistent.
+  assertEqual "pkcs rejects subprime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      (withT dhPubTmpl AttrSubprime (ValBytes dhQ)) dhPrivTmpl)
+  -- Crossed key types refuse.
+  assertEqual "pkcs mech x942 templates" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech dhX942PubTmpl dhX942PrivTmpl)
+  assertEqual "x942 mech pkcs templates" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf x9_42DhKeyPairGenMech dhPubTmpl dhPrivTmpl)
+  -- Disagreement, empty, oversized and malformed parts refuse.
+  assertEqual "domain disagreement" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech dhPubTmpl (withT dhPrivTmpl AttrPrime (ValBytes "other")))
+  assertEqual "empty prime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      (withT (dropT AttrPrime dhPubTmpl) AttrPrime (ValBytes BS.empty)) dhPrivTmpl)
+  assertEqual "oversized prime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      (withT (dropT AttrPrime dhPubTmpl) AttrPrime (ValBytes (BS.replicate 513 1))) dhPrivTmpl)
+  assertEqual "malformed prime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      (withT (dropT AttrPrime dhPubTmpl) AttrPrime (ValULong 7)) dhPrivTmpl)
+  -- Private-side agreement plans.
+  case argsOf dhKeyPairGenMech dhPubTmpl (dhPrivTmpl ++
+      [(AttrPrime, ValBytes dhP), (AttrBase, ValBytes dhG)]) of
+    Right (Just (GenDhKeypair _)) -> pure ()
+    other -> assertFailure ("agreeing priv domain must plan: " ++ show other)
+  -- Structural floor (NIST SP 800-56A rev. 3 section 5.5.1;
+  -- the security suite probes prime=1, tiny prime and
+  -- generator=0): primes under 512 significant bits and
+  -- generators outside 2..p-1 refuse inconsistent, never
+  -- incomplete, and never plan.
+  assertEqual "prime one" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      (withT (dropT AttrPrime dhPubTmpl) AttrPrime (ValBytes "\x01")) dhPrivTmpl)
+  assertEqual "tiny prime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      (withT (dropT AttrPrime dhPubTmpl) AttrPrime (ValBytes "\x0f")) dhPrivTmpl)
+  assertEqual "zero generator" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      (withT (dropT AttrBase dhPubTmpl) AttrBase (ValBytes "\x00")) dhPrivTmpl)
+  assertEqual "generator one" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      (withT (dropT AttrBase dhPubTmpl) AttrBase (ValBytes "\x01")) dhPrivTmpl)
+  assertEqual "generator at prime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      (withT (dropT AttrBase dhPubTmpl) AttrBase (ValBytes dhP)) dhPrivTmpl)
+  assertEqual "short prime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      (withT (dropT AttrPrime dhPubTmpl) AttrPrime
+        (ValBytes (BS.pack (0x80 : replicate 62 1)))) dhPrivTmpl)
+  assertEqual "zero-padded tiny prime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf dhKeyPairGenMech
+      (withT (dropT AttrPrime dhPubTmpl) AttrPrime
+        (ValBytes (BS.replicate 63 0 <> "\x0f"))) dhPrivTmpl)
+  case argsOf dhKeyPairGenMech
+      (withT (dropT AttrPrime dhPubTmpl) AttrPrime
+        (ValBytes (BS.pack (0x80 : replicate 63 1)))) dhPrivTmpl of
+    Right (Just (GenDhKeypair _)) -> pure ()
+    other -> assertFailure ("512-bit floor prime must plan: " ++ show other)
+  assertEqual "x942 generator above prime" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf x9_42DhKeyPairGenMech
+      (withT (dropT AttrBase dhX942PubTmpl) AttrBase (ValBytes (dhP <> "\x01")))
+      dhX942PrivTmpl)
+  assertEqual "x942 subprime one" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf x9_42DhKeyPairGenMech
+      (withT (dropT AttrSubprime dhX942PubTmpl) AttrSubprime (ValBytes "\x01"))
+      dhX942PrivTmpl)
+
+caseDhGenArgsCodec :: IO ()
+caseDhGenArgsCodec = do
+  let rt args = assertEqual ("round-trip " ++ show args) (Just args)
+        (decodeGenArgs (encodeGenArgs args))
+  rt (GenDhKeypair (dhParamsDer dhP dhG))
+  rt (GenDhKeypair (dhParamsDerQ dhP dhG dhQ))
+  -- Tag byte is pinned (10 DH keypair domain DER).
+  assertEqual "keypair tag" (Just 10)
+    (fst <$> BS.uncons (encodeGenArgs (GenDhKeypair "d")))
+  -- Short frames, trailing bytes, empty DER and unknown tags fail.
+  assertEqual "short keypair" Nothing (decodeGenArgs (BS.pack [10, 0, 0]))
+  assertEqual "keypair trailing" Nothing
+    (decodeGenArgs (encodeGenArgs (GenDhKeypair "der") <> "x"))
+  assertEqual "empty keypair DER" Nothing
+    (decodeGenArgs (BS.pack [10, 0, 0, 0, 0]))
+  assertEqual "unknown tag" Nothing (decodeGenArgs (BS.pack [11, 1, 2, 3]))
+
+caseDhCompatible :: IO ()
+caseDhCompatible = do
+  m0 <- seedModel
+  st <- getSession m0
+  let pub = pendingFromAttrs st (Map.fromList dhPubTmpl)
+      priv = pendingFromAttrs st (Map.fromList dhPrivTmpl)
+      params = pendingFromAttrs st (Map.fromList (dsaParamsTmpl 2048))
+      fx args = FxGenerateKey dhKeyPairGenMech BS.empty (encodeGenArgs args)
+      fxP args = FxGenerateKey dsaParameterGenMech BS.empty (encodeGenArgs args)
+      der = dhParamsDer dhP dhG
+  assertBool "pair/keypair cohere"
+    (keyPairCompatible (PwGeneratePair pub priv) (fx (GenDhKeypair der)))
+  assertBool "single/keypair incoherent"
+    (not (keyPairCompatible (PwGenerateKey params) (fx (GenDhKeypair der))))
+  assertBool "pair/params incoherent"
+    (not (keyPairCompatible (PwGeneratePair pub priv) (fxP (GenDsaParams 2048 256))))
+
+caseDhStamp :: IO ()
+caseDhStamp = do
+  m0 <- seedModel
+  st <- getSession m0
+  let y = BS.pack (0x60 : replicate 255 4)
+      x = BS.pack (0x07 : replicate 31 5)
+      pubM = dhPublicDer dhP dhG y
+      privM = dhPrivateDer dhP dhG x
+      privM2 = dhPrivateDer dhQ dhG x
+      pubX = dhPublicDerQ dhP dhG dhQ y
+      privX = dhPrivateDerQ dhP dhG dhQ x
+      pub = pendingFromAttrs st (Map.fromList dhPubTmpl)
+      priv = pendingFromAttrs st (Map.fromList dhPrivTmpl)
+      pub9 = pendingFromAttrs st (Map.fromList dhX942PubTmpl)
+      priv9 = pendingFromAttrs st (Map.fromList dhX942PrivTmpl)
+  case stampPairComponents pub priv pubM privM of
+    Just (pub', priv') -> do
+      assertEqual "prime stamped"
+        (Just (ValBytes dhP)) (Map.lookup AttrPrime (poAttrs pub'))
+      assertEqual "base stamped"
+        (Just (ValBytes dhG)) (Map.lookup AttrBase (poAttrs pub'))
+      assertEqual "no subprime stamped"
+        Nothing (Map.lookup AttrSubprime (poAttrs pub'))
+      assertEqual "priv inherits prime"
+        (Just (ValBytes dhP)) (Map.lookup AttrPrime (poAttrs priv'))
+      assertEqual "priv inherits base"
+        (Just (ValBytes dhG)) (Map.lookup AttrBase (poAttrs priv'))
+    Nothing -> assertFailure "matching DH halves must stamp"
+  case stampPairComponents pub9 priv9 pubX privX of
+    Just (pub', _) ->
+      assertEqual "x942 subprime stamped"
+        (Just (ValBytes dhQ)) (Map.lookup AttrSubprime (poAttrs pub'))
+    Nothing -> assertFailure "matching X9.42 halves must stamp"
+  -- Disagreeing and opaque halves pass through unstamped.
+  assertEqual "mismatched halves pass through" (Just (pub, priv))
+    (stampPairComponents pub priv pubM privM2)
+  assertEqual "opaque halves pass through" (Just (pub, priv))
+    (stampPairComponents pub priv "HKS1pub" "HKS1priv")
 
 caseEdwardsGenArgsCodec :: IO ()
 caseEdwardsGenArgsCodec = do
@@ -3147,6 +3407,60 @@ caseRealDsaKeygen = withRealEnv $ \env -> do
         EngineOk () -> pure ()
         EngineFail err -> assertFailure ("real verify failed: " ++ show err)
     _ -> assertFailure "real DSA halves lack material"
+
+caseRealDhKeygen :: IO ()
+caseRealDhKeygen = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+      pubT =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkDh)
+        , (AttrPrime, ValBytes dhRealP)
+        , (AttrBase, ValBytes dhG)
+        , (AttrToken, ValBool False)
+        , (AttrDerive, ValBool True)
+        ]
+      mint m n = case planGenerateKeyPair defaultRules m st dhKeyPairGenMech pubT dhPrivTmpl of
+        KeyEffect pw fx -> do
+          res <- answer m fx
+          c <- finishCommit m st pw res n
+          h1 <- handleOf (pcOutputs c !! 0)
+          h2 <- handleOf (pcOutputs c !! 1)
+          m' <- expectRight (publishDelta m (pcDelta c))
+          pure (m', h1, h2)
+        other -> assertFailure ("DH plan is not an effect: " ++ show other) >> undefined
+  (m1, pubHA, privHA) <- mint m0 2
+  (m2, pubHB, privHB) <- mint m1 2
+  Just pubA <- pure (resolveHandle m2 pubHA)
+  Just privA <- pure (resolveHandle m2 privHA)
+  Just pubB <- pure (resolveHandle m2 pubHB)
+  Just privB <- pure (resolveHandle m2 privHB)
+  case (keyBytesOf pubA, keyBytesOf privA, keyBytesOf pubB, keyBytesOf privB) of
+    (Just pubBA, Just privBA, Just pubBB, Just privBB) -> do
+      assertBool "halves differ" (pubBA /= privBA)
+      assertEqual "priv inherits prime" (Just (ValBytes dhRealP))
+        (Map.lookup AttrPrime (osAttrs privA))
+      assertEqual "priv inherits base" (Just (ValBytes dhG))
+        (Map.lookup AttrBase (osAttrs privA))
+      -- The generated pairs really agree: cross-derive both ways.
+      yA <- case dhSpkiFields pubBA of
+        Just (_, _, _, y) -> pure y
+        Nothing -> assertFailure "SPKI A failed to parse" >> undefined
+      yB <- case dhSpkiFields pubBB of
+        Just (_, _, _, y) -> pure y
+        Nothing -> assertFailure "SPKI B failed to parse" >> undefined
+      rab <- dhDerive env DhPlain (KeyDer privBA) (KeyDer yB)
+      sAB <- case rab of
+        EngineOk s -> pure s
+        EngineFail err -> assertFailure ("real derive A->B failed: " ++ show err) >> undefined
+      rba <- dhDerive env DhPlain (KeyDer privBB) (KeyDer yA)
+      sBA <- case rba of
+        EngineOk s -> pure s
+        EngineFail err -> assertFailure ("real derive B->A failed: " ++ show err) >> undefined
+      assertEqual "agreement commutes" sAB sBA
+      assertEqual "prime width" 256 (BS.length sAB)
+    _ -> assertFailure "real DH halves lack material"
 
 caseRealEcKeygen384 :: IO ()
 caseRealEcKeygen384 = withRealEnv $ \env -> do

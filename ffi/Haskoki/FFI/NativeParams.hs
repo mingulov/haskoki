@@ -32,6 +32,17 @@ Covered structs (caller-native layout, offsets derived from
   recipe dimension); both byte strings chase under 'maxInputBytes'
   with the same null conventions, and the triple re-encodes with
   'encodeEcdhParams' (canonical null-KDF code 0).
+* DH PKCS#3: the parameter image is the bare big-endian peer value
+  (the PKCS#11 parameter form — no struct); 1..4096 bytes wrap with
+  'encodeDhParams' (canonical null-KDF code 0), while an image that
+  already parses as canonical passes through untouched (idempotent:
+  a bare peer that happens to parse as @(0, peer)@ carries the same
+  integer either way, since the parse only strips leading zeros).
+* DH X9.42 (@CK_X9_42_DH1_DERIVE_PARAMS@, the ECDH struct layout):
+  @kdf@ must be @CKD_NULL@ and the shared data must be empty (the
+  recipe has no shared slot — non-empty shared refuses rather than
+  dropping caller bytes); the peer chases under 'maxInputBytes'
+  and re-encodes with 'encodeDhParams'.
 * EdDSA (@CK_EDDSA_PARAMS@: phFlag, context length, context
   pointer): flags 0/1 translate (anything else passes through);
   the context chases under 'maxInputBytes' with the same null
@@ -74,12 +85,16 @@ pointer is undefined behavior, not a refusal.
 module Haskoki.FFI.NativeParams
   ( normalizeMechParams
   , normalizeEcdhParams
+  , normalizeDhPkcsParams
+  , normalizeDhX942Params
   , normalizeTlsPrfParams
   , tlsPrfStructToCanonical
   , tlsPrfNativeSize
   , pssStructToCanonical
   , oaepStructToCanonical
   , ecdhStructToCanonical
+  , dhPkcsStructToCanonical
+  , dhX942StructToCanonical
   , gcmStructToCanonical
   , ccmStructToCanonical
   , ctrStructToCanonical
@@ -93,6 +108,7 @@ module Haskoki.FFI.NativeParams
   , pssNativeSize
   , oaepNativeSize
   , ecdhNativeSize
+  , dhX942NativeSize
   , gcmNativeSize
   , ccmNativeSize
   , ctrNativeSize
@@ -118,6 +134,7 @@ import Foreign.Storable (alignment, peekByteOff, sizeOf)
 
 import Haskoki.FFI.Decode (maxInputBytes)
 import Haskoki.Recipe.Ccm (ccmRecipeFor, encodeCcmParams)
+import Haskoki.Recipe.Dh (decodeDhParams, encodeDhParams)
 import Haskoki.Recipe.Chacha20
   ( chachaName
   , chachaPolyTagLen
@@ -159,6 +176,12 @@ oaepNativeSize = 4 * wordSize + ptrSize
 -- (length, pointer) twice (shared data, peer public key).
 ecdhNativeSize :: Int
 ecdhNativeSize = 3 * wordSize + 2 * ptrSize
+
+-- | Native @CK_X9_42_DH1_DERIVE_PARAMS@ image size: the ECDH
+-- struct layout (kdf, shared length/pointer, public
+-- length/pointer).
+dhX942NativeSize :: Int
+dhX942NativeSize = 3 * wordSize + 2 * ptrSize
 
 -- | Native @CK_TLS_PRF_PARAMS@ image size: (pointer, length) for
 -- the seed, (pointer, length) for the label, then the output
@@ -300,6 +323,28 @@ ecdhStructToCanonical :: Word64 -> ByteString -> ByteString -> Maybe ByteString
 ecdhStructToCanonical kdf shared peer
   | kdf /= ckdNull = Nothing
   | otherwise = Just (encodeEcdhParams 0 shared peer)
+
+-- | Pure PKCS#3 DH translation: the bare peer image onto the
+-- canonical @dh-params/1@ image. An image that already parses as
+-- canonical passes through untouched (idempotent); any other
+-- 1..4096-byte image wraps as the null-KDF peer (the native
+-- @HSK_OSSL4_DH_PEER_MAX@ bound — longer images refuse
+-- downstream either way). Empty images refuse ('Nothing').
+dhPkcsStructToCanonical :: ByteString -> Maybe ByteString
+dhPkcsStructToCanonical raw = case decodeDhParams raw of
+  Just (0, _) -> Just raw
+  _ | BS.length raw >= 1 && BS.length raw <= 4096 -> Just (encodeDhParams 0 raw)
+    | otherwise -> Nothing
+
+-- | Pure X9.42 DH translation: the chased shared/peer pair onto
+-- the canonical @dh-params/1@ image. Non-null KDF selectors and
+-- non-empty shared data refuse ('Nothing' — the recipe has no
+-- shared slot, so caller bytes are never dropped silently).
+dhX942StructToCanonical :: Word64 -> ByteString -> ByteString -> Maybe ByteString
+dhX942StructToCanonical kdf shared peer
+  | kdf /= ckdNull = Nothing
+  | not (BS.null shared) = Nothing
+  | otherwise = Just (encodeDhParams 0 peer)
 
 -- | Pure TLS-PRF translation: the chased label and seed onto the
 -- canonical @tls-prf-params\/1@ image. The over-ceiling refusal
@@ -462,6 +507,33 @@ normalizeEcdhParams pParams paramsLen
       mShared <- chaseBytes pShared sharedLen
       mPub <- chaseBytes pPub pubLen
       pure (mShared >>= \shared -> mPub >>= ecdhStructToCanonical kdf shared)
+
+-- | Normalize one PKCS#3 DH parameter image: the bare peer value
+-- onto the canonical @dh-params/1@ image ('Just'), or 'Nothing'
+-- for an empty image (which passes through raw so the recipe
+-- refusal — and its @CKR@ — is exactly today's). Pure: no
+-- pointers chase (the image is already in hand).
+normalizeDhPkcsParams :: ByteString -> Maybe ByteString
+normalizeDhPkcsParams = dhPkcsStructToCanonical
+
+-- | Normalize one X9.42 DH agreement struct: the native
+-- @CK_X9_42_DH1_DERIVE_PARAMS@ image at @pParams@/@paramsLen@
+-- onto the canonical @dh-params/1@ image. Wrong-sized images,
+-- non-null KDF selectors, non-empty shared data, and
+-- null-with-length or over-bound shared/peer chases refuse
+-- ('Nothing').
+normalizeDhX942Params :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeDhX942Params pParams paramsLen
+  | paramsLen /= fromIntegral dhX942NativeSize = pure Nothing
+  | otherwise = do
+      CULong kdf <- peekByteOff pParams 0
+      CULong sharedLen <- peekByteOff pParams wordSize
+      pShared <- peekByteOff pParams (2 * wordSize)
+      CULong pubLen <- peekByteOff pParams (2 * wordSize + ptrSize)
+      pPub <- peekByteOff pParams (3 * wordSize + ptrSize)
+      mShared <- chaseBytes pShared sharedLen
+      mPub <- chaseBytes pPub pubLen
+      pure (mShared >>= \shared -> mPub >>= dhX942StructToCanonical kdf shared)
 
 -- | Normalize one TLS-PRF struct: the native @CK_TLS_PRF_PARAMS@
 -- image at @pParams@/@paramsLen@ onto the canonical

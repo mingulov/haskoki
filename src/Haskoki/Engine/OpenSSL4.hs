@@ -57,6 +57,7 @@ import Data.ByteString (ByteString)
 import Data.List (intercalate, isInfixOf)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
+import Data.Maybe (isNothing)
 import qualified Data.Set as Set
 import Data.Word (Word32)
 import Foreign.ForeignPtr (ForeignPtr, finalizeForeignPtr, newForeignPtr, withForeignPtr)
@@ -65,6 +66,7 @@ import Foreign.Ptr (Ptr, nullPtr)
 import qualified Haskoki.FFI.OpenSSL4.Raw as Raw
 import Haskoki.Der (coveredCurveNames, edwardsCurveNames, integerToBE)
 import Haskoki.Engine.Backend
+import Haskoki.Recipe.Dh (dhPrimeWidthOfDer)
 import Haskoki.Recipe.Ecdh (curveWidthOfName, ecdhPeerWidth)
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
 import Haskoki.Types (EngineResourceId (..))
@@ -512,6 +514,14 @@ instance CryptoBackend OpenSSL4 where
         | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "generateKey" "domain parameters DER rejected"))
         | otherwise -> nativeFail "generateKey" code
       Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
+  generateKey be spec@(GenDHKeypair params) = runGuarded be "generateKey" (genSupported be spec) $ \env -> do
+    r <- withForeignPtr (osslEnv env) $ \_ ->
+      Raw.dhGenKeypair (osslCtx env) (osslPropQ env) params
+    case r of
+      Left code
+        | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "generateKey" "domain parameters DER rejected"))
+        | otherwise -> nativeFail "generateKey" code
+      Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   generateKey be spec@(GenEdDSAKeypair name) = runGuarded be "generateKey" (genSupported be spec) $ \env -> do
     r <- withForeignPtr (osslEnv env) $ \_ ->
       Raw.edwardsGen (osslCtx env) (osslPropQ env) (eddsaFetchName name)
@@ -710,6 +720,36 @@ instance CryptoBackend OpenSSL4 where
             _ -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive"
               "ECDH peer is not on a covered curve"))
 
+  dhDerive be _ priv peer = runGuarded be "dhDerive" (dhSupported be DhPlain) $ \env -> do
+    mpriv <- resolveKeyBytes env priv
+    case mpriv of
+      EngineFail err -> pure (EngineFail err)
+      EngineOk privB -> do
+        mpeer <- resolveKeyBytes env peer
+        case mpeer of
+          EngineFail err -> pure (EngineFail err)
+          -- The base must scan as DH key DER (the OID gate keeps
+          -- EC/RSA/DSA halves out); the peer rides bare and is
+          -- range-checked natively by the shim. Fault attribution
+          -- mirrors ECDH: bad base stays a bad key, peer faults
+          -- answer mechanism-param-invalid at the edge.
+          EngineOk peerB
+            | isNothing (dhPrimeWidthOfDer privB) ->
+                pure (EngineFail (BackendBadKey "dhDerive"
+                  "DH base key is not DH key DER"))
+            | BS.null peerB ->
+                pure (EngineFail (BackendMechParamInvalid "dhDerive"
+                  "DH peer value is empty"))
+            | otherwise -> do
+                r <- withForeignPtr (osslEnv env) $ \_ ->
+                  Raw.dhDerive (osslCtx env) (osslPropQ env) privB peerB
+                case r of
+                  Left code
+                    | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "dhDerive" "DH base key rejected"))
+                    | code == Raw.errBadPeer -> pure (EngineFail (BackendMechParamInvalid "dhDerive" "DH peer rejected"))
+                    | otherwise -> nativeFail "dhDerive" code
+                  Right secret -> pure (EngineOk secret)
+
   snapshotResource _ _ = pure (Left "unsaveable: OpenSSL4 multipart contexts cannot be serialized")
   restoreResource _ _ = pure (EngineFail (BackendUnsupported "restoreResource" "no saveable resources in engine set"))
   resourceSaveability (OSSL4Backend env) rid = do
@@ -745,7 +785,7 @@ ossl4Caps version propq = BackendCaps
   , bcMacs = MacCaps { mcSpecs = osslMacSpecs t16DigestAlgs }
   , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs ++ osslEddsaSpecNames t16EdwardsCurves ++ osslMldsaSpecNames t16MldsaLevels ++ osslSlhdsaSpecNames t16SlhdsaSets), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.fromList (t16MldsaLevels ++ t16SlhdsaSets) }
   , bcKems = KemCaps { kcAlgs = Set.fromList t16MlkemSets }
-  , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR"] }
+  , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR", "DH"] }
   , bcParamNotes = Map.fromList
       ([ ("provider", "default only; propquery " ++ propq)
        ] ++ osslCipherNotes t16CipherSpecs
@@ -1189,6 +1229,11 @@ ecdhSupported (OSSL4Backend env) spec
   | Set.member (ecdhCap spec) (kcKdfs (bcKdfs (osslCaps env))) = Nothing
   | otherwise = Just ("ecdh not in supported set: " ++ show spec)
 
+dhSupported :: BackendEnv OpenSSL4 -> DhSpec -> Maybe String
+dhSupported (OSSL4Backend env) spec
+  | Set.member (dhCap spec) (kcKdfs (bcKdfs (osslCaps env))) = Nothing
+  | otherwise = Just ("dh not in supported set: " ++ show spec)
+
 -- | KEM availability: the probed ML-KEM set gates both
 -- encapsulation and decapsulation.
 kemSupported :: BackendEnv OpenSSL4 -> KemSpec -> Maybe String
@@ -1378,6 +1423,10 @@ genSupported (OSSL4Backend env) spec
   , (p, q) `elem` [(1024, 160), (2048, 224), (2048, 256), (3072, 256)] = Nothing
   | GenDSAKeypair {} <- spec
   , Set.member "DSA-RAW" (scSpecs (bcSigs (osslCaps env))) = Nothing
+  -- DH generation gates on the DH agreement probe ('DH' in the
+  -- KDF set): keygen is served exactly where agreement is.
+  | GenDHKeypair {} <- spec
+  , Set.member "DH" (kcKdfs (bcKdfs (osslCaps env))) = Nothing
   | GenEdDSAKeypair name <- spec
   , Set.member ("EDDSA-" ++ BC8.unpack name) (scSpecs (bcSigs (osslCaps env))) = Nothing
   | GenMLDSA alg <- spec

@@ -38,6 +38,7 @@ import qualified RecipeChacha20Spec
 import qualified RecipeCipherSpec
 import qualified RecipeCmacSpec
 import qualified RecipeDes3MacSpec
+import qualified RecipeDhSpec
 import qualified RecipeDigestSpec
 import qualified RecipeDsaSpec
 import qualified RecipeEcdhSpec
@@ -87,6 +88,7 @@ main = defaultMain $ testGroup "haskoki model + lifecycle"
   , RecipeCipherSpec.spec
   , RecipeCmacSpec.spec
   , RecipeDes3MacSpec.spec
+  , RecipeDhSpec.spec
   , RecipeDigestSpec.spec
   , RecipeDsaSpec.spec
   , RecipeEcdhSpec.spec

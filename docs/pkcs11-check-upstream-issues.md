@@ -76,11 +76,15 @@ provider-side code can pass: even a true `CKR_KEY_SIZE_RANGE`
 (0x62) is absent from the set.
 
 Affected ids (identical in targeted DSA r1; RSA/AES pre-date the
-DSA slice and xfail the same way):
+DSA slice and xfail the same way; DH joined in fast r41):
 
 - `TestRsaModulusBitsOversizedValue::test_rsa_modulus_bits_oversized_value`
 - `TestPrimeBitsOversizedValue::test_dsa_prime_bits_oversized_value`
 - `TestGenerateKeyValueLenTruncation::test_aes_keygen_value_len_truncation`
+- `test_dh_prime_bits_oversized_value` (DH slice fast r41:
+  `C_GenerateKeyPair(DH, CKA_PRIME_BITS=0x100000400)`,
+  got the intended `CKR_TEMPLATE_INCONSISTENT`, xfailed
+  against the wrong tuple)
 
 Expected: the tuple uses the symbolic `CKR_*` constants (or the
 corrected numbers), so correct refusals pass.
@@ -148,6 +152,132 @@ that no other failure hides behind the count. Module-side
 context-verify is proven independently by the committed ACVP KAT
 (OpenSSLSpec `caseSlhdsa`: tcId 266 under its 255-byte context,
 tcId 343 pure).
+
+## P11C-004: `test_x942_dh.py` fixtures contradict RFC 5114: corrupt generator + non-subgroup peer HARD-FAIL 13 tests
+
+**Severity**: high (13 failing tests in every lane running `test_x942_dh.py`; masks real regressions; no module-side fix is possible — the domain itself is invalid)
+**Component**: `src/pkcs11_check/testcases/test_x942_dh.py` (`X942_GEN`, `_X942_RFC5114_BOB_PUBLIC`, `_X942_RFC5114_EXPECTED_SECRET_32`)
+**Found**: 2026-09-27 (DH slice fast-lane triage)
+
+Two independent fixture defects, both verified byte-for-byte
+against RFC 5114 (fetched 2026-09-27; `X942_PRIME_2048` and
+`X942_SUBPRIME` in the same file verify byte-exact against
+RFC 5114 §2.3, so the file means to cite that group):
+
+**D1 — `X942_GEN` is not the RFC 5114 generator.** 257 bytes
+where §2.3 gives 256; the first 11 bytes match
+(`3fb32c9b73134d0b2e7750`) then byte 11 diverges (`0x62`
+vs RFC `0x66`) and the tails differ entirely
+(fw `...e4bf98b3a315b88d924b4c1eb4cf7113` vs RFC
+`...5e2327cfef98c582664b4c0f6cc41659`). Worse than a
+typo: the 257-byte value is **greater than the prime**,
+so it cannot generate anything — OpenSSL's provider
+rejects the explicit domain at import, and every
+`_generate_x942_keypair` call (which hard-asserts
+`CKR_OK`) fails. The genuine §2.3 `g` checks out fully:
+`g < p`, `q | p-1`, `g^q = 1 mod p`, and the Appendix A.3
+test data verifies under it (`yA = g^xA`, `yB = g^xB`,
+agreement holds) — the corruption is confined to this
+one constant.
+
+**D2 — `_X942_RFC5114_BOB_PUBLIC` is outside the order-`q`
+subgroup** (`y^q != 1 mod p` under the genuine
+parameters; also not the Appendix A.3 `yB`). Any
+`q`-validating provider — OpenSSL 4.0.2 included —
+rejects it at peer import, so the exact-vector tests
+cannot pass even after D1 is fixed. (The current
+`_X942_RFC5114_EXPECTED_SECRET_32` is self-consistent
+with the file's own `(alice, bob)` triple under the
+rightmost-32 convention the framework's passing PKCS#3
+truncation test also asserts — but it must be recomputed
+for a valid peer.)
+
+Failing ids (fast lane 2026-09-27; all raise from
+`_generate_x942_keypair`'s `expect_rv(rv, CKR_OK)`):
+
+- `TestX942DHKeyPairGen::test_keypair_generation`
+- `TestX942DHKeyPairGen::test_keypair_has_correct_key_type`
+- `TestX942DHKeyPairGen::test_keypair_prime_matches_params`
+- `TestX942DHKeyPairGen::test_keypair_subprime_matches_params`
+- `TestX942DHKeyPairGen::test_two_keypairs_have_different_public_values`
+- `TestX942DHDerive::test_derive_shared_secret`
+- `TestX942DHDerive::test_derived_key_encrypts`
+- `TestX942DHDerive::test_x942_derive_rejects_missing_peer_public_value`
+- `TestX942DHDerive::test_x942_derive_rejects_malformed_peer_public_value`
+- `TestX942DHDerive::test_x942_derive_rejects_ckd_null_other_info`
+- `TestX942DHDerive::test_x942_derive_rejects_asn1_kdf_missing_other_info`
+- `TestX942DHDerive::test_x942_derive_rejects_invalid_kdf`
+- `TestX942DHDerive::test_different_exchanges_produce_different_secrets`
+
+Failure record (identical shape each; the code changed
+when Haskoki added its DH structural floor — the tests
+still expect `CKR_OK` on the invalid domain, so they
+stay failing either way):
+
+```text
+r41 and earlier: CkrAssertionError: Unexpected CK_RV CKR_GENERAL_ERROR; expected one of: CKR_OK
+r42 onward:      CkrAssertionError: Unexpected CK_RV CKR_TEMPLATE_INCONSISTENT; expected one of: CKR_OK
+```
+
+(`CKR_TEMPLATE_INCONSISTENT` is the planner naming the
+defect: "DH generator outside 2 <= g < p".)
+
+Blocked-but-xfailed (not failing): `test_x942_dh_derive_rfc5114_exact_vector`,
+`test_x942_dh_derive_rfc5114_value_len_truncation`,
+`test_x942_dh_derive_rfc5114_rejects_zero_value_len`,
+`test_x942_dh_derive_concatenate_other_info`,
+`test_x942_dh_derive_asn1_other_info` — setup/derive
+xfails on the runtime-reject sets.
+
+Expected: `X942_GEN` is replaced with the RFC 5114 §2.3
+generator (256 bytes, `3fb32c9b73134d0b2e77506660edbd48...`
+`...5e2327cfef98c582664b4c0f6cc41659`), and the
+Alice/Bob fixtures become an in-subgroup pair with a
+matching expected secret. One verified replacement that
+reuses the file's own private scalars
+(`ALICE = bytes(range(0x01, 0x21))`,
+`BOB_PRIV = bytes(range(0x41, 0x61))`, the existing
+`_X942_EXTENDED_BOB_PRIVATE_1`) under the genuine group:
+
+```text
+BOB_PUBLIC = G^BOB_PRIV mod P =
+  411d7ef795062d5d056de20282c21e1be2c6a1ab9a2c4bf22ae2397
+  4141313d5b3453473a0372f719cfdc07a9b69bbc6efc9fe458f292f5
+  bffaff77dd7ef7c9b1366d96fecb9bbf7ad56157704c65455ddce8c1
+  40f62ac6ec94b52279e2f5795bd6268a4f4d26b7aca1e8e40a6cc34c
+  bf9c890feaca388a8dfc379e4e0d346a11a378805f0fa5360d34727d
+  da7361853526a431987e80197a58281d360b8f5d99f93a99cdf68f49
+  87f4673df20f047b5930c8b93056fe784022a560addf9eab56dc7e68
+  2dc2eb11bb598f30366ec6fa1551d2f4507e35532775cb9ca933719e
+  48adf59b9a4caf2d84d5214e3b297c8536dbf28e243355a983c7c079
+  3aa2208ff
+EXPECTED_SECRET_32 = trailing-32(BOB_PUBLIC^ALICE mod P) =
+  3f082dd9af91404c2bac1714cf1d7d8f16d910d272c356824737182a3ac0e273
+```
+
+(`y^q = 1` verified for the suggested peer.)
+
+Downstream handling: Haskoki triages these 13 as
+known-external in every round
+(`docs/pkcs11-oracle-triage.md`) and confirms by test id
+that no other failure hides behind the count. No
+module-side change: the token's behavior is proven
+correct by a C-ABI probe against the release bundle
+(genuine-domain keygen `CKR_OK` + KAT-exact derive,
+corrupt-`g` keygen fails closed with
+`CKR_TEMPLATE_INCONSISTENT` ("DH generator outside
+2 <= g < p") and no handles, non-subgroup peer refused
+`MECHANISM_PARAM_INVALID`) — the fixtures are the defect.
+
+**Open question (not a defect report): zero-length
+`CKA_VALUE_LEN`.** Both DH derive files expect
+`CKR_KEY_SIZE_RANGE`/`CKR_ATTRIBUTE_VALUE_INVALID` for
+`CKA_VALUE_LEN=0`; Haskoki answers
+`CKR_TEMPLATE_INCONSISTENT` from its central derive
+planning (uniform across HKDF/ECDH/SHA-KDF/PBKDF2/DH;
+no ECDH/HKDF counterpart test pins a different code).
+Currently xfail, asked upstream to accept
+`TEMPLATE_INCONSISTENT` or justify the narrower set.
 
 ## Observations (not issues)
 

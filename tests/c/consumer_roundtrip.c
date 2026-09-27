@@ -1435,6 +1435,124 @@ int main(int argc, char **argv) {
       rv = f->C_Verify(ssess, digest, sizeof(digest), sig, sigLen);
       CHECKC(rv == CKR_OK, "raw DSA verify ok");
     }
+    /* DH: two PKCS#3 pairs on ffdhe2048 agree both directions;
+     * keygen without CKA_BASE is INCOMPLETE, derive without the
+     * peer value is PARAM_INVALID. */
+    {
+      static const CK_BYTE ffdhe2048[256] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xad, 0xf8, 0x54, 0x58, 0xa2, 0xbb, 0x4a, 0x9a,
+        0xaf, 0xdc, 0x56, 0x20, 0x27, 0x3d, 0x3c, 0xf1, 0xd8, 0xb9, 0xc5, 0x83, 0xce, 0x2d, 0x36, 0x95,
+        0xa9, 0xe1, 0x36, 0x41, 0x14, 0x64, 0x33, 0xfb, 0xcc, 0x93, 0x9d, 0xce, 0x24, 0x9b, 0x3e, 0xf9,
+        0x7d, 0x2f, 0xe3, 0x63, 0x63, 0x0c, 0x75, 0xd8, 0xf6, 0x81, 0xb2, 0x02, 0xae, 0xc4, 0x61, 0x7a,
+        0xd3, 0xdf, 0x1e, 0xd5, 0xd5, 0xfd, 0x65, 0x61, 0x24, 0x33, 0xf5, 0x1f, 0x5f, 0x06, 0x6e, 0xd0,
+        0x85, 0x63, 0x65, 0x55, 0x3d, 0xed, 0x1a, 0xf3, 0xb5, 0x57, 0x13, 0x5e, 0x7f, 0x57, 0xc9, 0x35,
+        0x98, 0x4f, 0x0c, 0x70, 0xe0, 0xe6, 0x8b, 0x77, 0xe2, 0xa6, 0x89, 0xda, 0xf3, 0xef, 0xe8, 0x72,
+        0x1d, 0xf1, 0x58, 0xa1, 0x36, 0xad, 0xe7, 0x35, 0x30, 0xac, 0xca, 0x4f, 0x48, 0x3a, 0x79, 0x7a,
+        0xbc, 0x0a, 0xb1, 0x82, 0xb3, 0x24, 0xfb, 0x61, 0xd1, 0x08, 0xa9, 0x4b, 0xb2, 0xc8, 0xe3, 0xfb,
+        0xb9, 0x6a, 0xda, 0xb7, 0x60, 0xd7, 0xf4, 0x68, 0x1d, 0x4f, 0x42, 0xa3, 0xde, 0x39, 0x4d, 0xf4,
+        0xae, 0x56, 0xed, 0xe7, 0x63, 0x72, 0xbb, 0x19, 0x0b, 0x07, 0xa7, 0xc8, 0xee, 0x0a, 0x6d, 0x70,
+        0x9e, 0x02, 0xfc, 0xe1, 0xcd, 0xf7, 0xe2, 0xec, 0xc0, 0x34, 0x04, 0xcd, 0x28, 0x34, 0x2f, 0x61,
+        0x91, 0x72, 0xfe, 0x9c, 0xe9, 0x85, 0x83, 0xff, 0x8e, 0x4f, 0x12, 0x32, 0xee, 0xf2, 0x81, 0x83,
+        0xc3, 0xfe, 0x3b, 0x1b, 0x4c, 0x6f, 0xad, 0x73, 0x3b, 0xb5, 0xfc, 0xbc, 0x2e, 0xc2, 0x20, 0x05,
+        0xc5, 0x8e, 0xf1, 0x83, 0x7d, 0x16, 0x83, 0xb2, 0xc6, 0xf3, 0x4a, 0x26, 0xc1, 0xb2, 0xef, 0xfa,
+        0x88, 0x6b, 0x42, 0x38, 0x61, 0x28, 0x5c, 0x97, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+      };
+      static CK_BYTE dhg[1] = { 0x02 };
+      CK_KEY_TYPE dhkt = CKK_DH, dhgenkt = CKK_GENERIC_SECRET;
+      CK_OBJECT_CLASS dhseccls = CKO_SECRET_KEY;
+      CK_ULONG dhvlen = 256;
+      CK_OBJECT_HANDLE dhPubA = 0, dhPrivA = 0, dhPubB = 0, dhPrivB = 0;
+      CK_OBJECT_HANDLE dhS1 = 0, dhS2 = 0, dhBad = 0;
+      CK_MECHANISM dhkgm, dhdm;
+      CK_ATTRIBUTE dhPubT[6], dhPrivT[4], dhShortT[5];
+      CK_ATTRIBUTE dhDtmpl[] = {
+        { CKA_CLASS, &dhseccls, sizeof(dhseccls) },
+        { CKA_KEY_TYPE, &dhgenkt, sizeof(dhgenkt) },
+        { CKA_VALUE_LEN, &dhvlen, sizeof(dhvlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SENSITIVE, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) },
+      };
+      CK_BYTE dhYA[256], dhYB[256], dhSAB[256], dhSBA[256];
+      CK_ATTRIBUTE dhGY[1], dhGS[1];
+      dhPubT[0].type = CKA_CLASS;
+      dhPubT[0].pValue = &pcls;
+      dhPubT[0].ulValueLen = sizeof(pcls);
+      dhPubT[1].type = CKA_KEY_TYPE;
+      dhPubT[1].pValue = &dhkt;
+      dhPubT[1].ulValueLen = sizeof(dhkt);
+      dhPubT[2].type = CKA_PRIME;
+      dhPubT[2].pValue = (CK_VOID_PTR) ffdhe2048;
+      dhPubT[2].ulValueLen = sizeof(ffdhe2048);
+      dhPubT[3].type = CKA_BASE;
+      dhPubT[3].pValue = dhg;
+      dhPubT[3].ulValueLen = sizeof(dhg);
+      dhPubT[4].type = CKA_TOKEN;
+      dhPubT[4].pValue = &bFalse;
+      dhPubT[4].ulValueLen = sizeof(bFalse);
+      dhPubT[5].type = CKA_DERIVE;
+      dhPubT[5].pValue = &bTrue;
+      dhPubT[5].ulValueLen = sizeof(bTrue);
+      dhPrivT[0].type = CKA_CLASS;
+      dhPrivT[0].pValue = &scls;
+      dhPrivT[0].ulValueLen = sizeof(scls);
+      dhPrivT[1].type = CKA_KEY_TYPE;
+      dhPrivT[1].pValue = &dhkt;
+      dhPrivT[1].ulValueLen = sizeof(dhkt);
+      dhPrivT[2].type = CKA_TOKEN;
+      dhPrivT[2].pValue = &bFalse;
+      dhPrivT[2].ulValueLen = sizeof(bFalse);
+      dhPrivT[3].type = CKA_DERIVE;
+      dhPrivT[3].pValue = &bTrue;
+      dhPrivT[3].ulValueLen = sizeof(bTrue);
+      dhkgm.mechanism = CKM_DH_PKCS_KEY_PAIR_GEN;
+      dhkgm.pParameter = NULL_PTR;
+      dhkgm.ulParameterLen = 0;
+      rv = f->C_GenerateKeyPair(ssess, &dhkgm, dhPubT, 6, dhPrivT, 4,
+                                &dhPubA, &dhPrivA);
+      CHECKC(rv == CKR_OK && dhPubA != 0 && dhPrivA != 0, "DH pair A mints");
+      rv = f->C_GenerateKeyPair(ssess, &dhkgm, dhPubT, 6, dhPrivT, 4,
+                                &dhPubB, &dhPrivB);
+      CHECKC(rv == CKR_OK && dhPubB != 0 && dhPrivB != 0, "DH pair B mints");
+      dhGY[0].type = CKA_VALUE;
+      dhGY[0].pValue = dhYA;
+      dhGY[0].ulValueLen = sizeof(dhYA);
+      rv = f->C_GetAttributeValue(ssess, dhPubA, dhGY, 1);
+      CHECKC(rv == CKR_OK && dhGY[0].ulValueLen == 256, "DH pub A reads 256 bytes");
+      dhGY[0].pValue = dhYB;
+      dhGY[0].ulValueLen = sizeof(dhYB);
+      rv = f->C_GetAttributeValue(ssess, dhPubB, dhGY, 1);
+      CHECKC(rv == CKR_OK && dhGY[0].ulValueLen == 256, "DH pub B reads 256 bytes");
+      dhdm.mechanism = CKM_DH_PKCS_DERIVE;
+      dhdm.pParameter = dhYB;
+      dhdm.ulParameterLen = sizeof(dhYB);
+      rv = f->C_DeriveKey(ssess, &dhdm, dhPrivA, dhDtmpl, 6, &dhS1);
+      CHECKC(rv == CKR_OK && dhS1 != 0, "DH derive A->B ok");
+      dhdm.pParameter = dhYA;
+      rv = f->C_DeriveKey(ssess, &dhdm, dhPrivB, dhDtmpl, 6, &dhS2);
+      CHECKC(rv == CKR_OK && dhS2 != 0, "DH derive B->A ok");
+      dhGS[0].type = CKA_VALUE;
+      dhGS[0].pValue = dhSAB;
+      dhGS[0].ulValueLen = sizeof(dhSAB);
+      rv = f->C_GetAttributeValue(ssess, dhS1, dhGS, 1);
+      CHECKC(rv == CKR_OK && dhGS[0].ulValueLen == 256, "DH secret reads 256 bytes");
+      dhGS[0].pValue = dhSBA;
+      dhGS[0].ulValueLen = sizeof(dhSBA);
+      rv = f->C_GetAttributeValue(ssess, dhS2, dhGS, 1);
+      CHECKC(rv == CKR_OK && dhGS[0].ulValueLen == 256 &&
+                 memcmp(dhSAB, dhSBA, 256) == 0,
+             "DH agreement commutes");
+      dhdm.pParameter = NULL_PTR;
+      dhdm.ulParameterLen = 0;
+      rv = f->C_DeriveKey(ssess, &dhdm, dhPrivA, dhDtmpl, 6, &dhBad);
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && dhBad == 0,
+             "DH derive without peer refused typed");
+      memcpy(dhShortT, dhPubT, sizeof(dhPubT[0]) * 3);
+      memcpy(&dhShortT[3], &dhPubT[4], sizeof(dhPubT[0]) * 2);
+      rv = f->C_GenerateKeyPair(ssess, &dhkgm, dhShortT, 5, dhPrivT, 4,
+                                &dhBad, &dhS1);
+      CHECKC(rv == CKR_TEMPLATE_INCOMPLETE, "DH keygen without base is INCOMPLETE");
+    }
     /* EdDSA: Edwards keypair -> sign/verify. The struct is
      * required (OASIS pins CK_EDDSA_PARAMS; the oracle
      * registry marks it param_required): NULL refuses

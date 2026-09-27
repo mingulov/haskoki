@@ -25,6 +25,7 @@ import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Engine.Backend
   ( BackendEnv
   , CryptoBackend (..)
+  , DhSpec (..)
   , DigestAlg (..)
   , EcdhSpec (..)
   , EcSpec (..)
@@ -63,8 +64,10 @@ import Haskoki.Outcome
   , ResourceRelease (..)
   )
 import qualified Haskoki.Outcome as O
+import Haskoki.Der (dhParamsDer, dhSpkiFields)
 import Haskoki.Recipe.Ccm (encodeCcmParams)
 import Haskoki.Recipe.Chacha20 (encodeChachaPolyParams, encodeChachaStreamParams)
+import Haskoki.Recipe.Dh (encodeDhParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
@@ -105,6 +108,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: ccm roundtrip + datalen + tamper" caseDriverCcm
   , testCase "driver: ecdsa roundtrip both encodings" caseDriverEcdsa
   , testCase "driver: ecdh agree + truncate + refuse" caseDriverEcdh
+  , testCase "driver: dh agree + truncate + refuse" caseDriverDh
   , testCase "driver: cmac KATs + truncate + refuse" caseDriverCmac
   , testCase "driver: 3des-mac KATs + truncate + refuse" caseDriverDes3Mac
   , testCase "driver: kdf vectors + refuse" caseDriverKdf
@@ -176,6 +180,23 @@ ecdsaMech = MechanismId 0x1041
 ecdhMech, ecdhCofMech :: MechanismId
 ecdhMech = MechanismId 0x1050
 ecdhCofMech = MechanismId 0x1051
+
+dhMech, dhX942Mech :: MechanismId
+dhMech = MechanismId 0x21
+dhX942Mech = MechanismId 0x31
+
+-- | The RFC 3526 2048-bit MODP prime (DH keygen domain).
+dhP2048 :: ByteString
+dhP2048 = hex $ concat
+  [ "ffffffffffffffffadf85458a2bb4a9aafdc5620273d3cf1d8b9c583ce2d3695a9"
+  , "e13641146433fbcc939dce249b3ef97d2fe363630c75d8f681b202aec4617ad3"
+  , "df1ed5d5fd65612433f51f5f066ed0856365553ded1af3b557135e7f57c93598"
+  , "4f0c70e0e68b77e2a689daf3efe8721df158a136ade73530acca4f483a797abc"
+  , "0ab182b324fb61d108a94bb2c8e3fbb96adab760d7f4681d4f42a3de394df4ae"
+  , "56ede76372bb190b07a7c8ee0a6d709e02fce1cdf7e2ecc03404cd28342f6191"
+  , "72fe9ce98583ff8e4f1232eef28183c3fe3b1b4c6fad733bb5fcbc2ec22005c5"
+  , "8ef1837d1683b2c6f34a26c1b2effa886b423861285c97ffffffffffffffff"
+  ]
 
 cmacMech, cmacGenMech, cmac3Mech, cmac3GenMech :: MechanismId
 cmacMech = MechanismId 0x108a
@@ -364,6 +385,7 @@ instance CryptoBackend Counting where
   kemEncapsulate (CountingEnv be _) sp key = kemEncapsulate be sp key
   kemDecapsulate (CountingEnv be _) sp key ct = kemDecapsulate be sp key ct
   ecdhDerive (CountingEnv be _) sp priv peer = ecdhDerive be sp priv peer
+  dhDerive (CountingEnv be _) sp priv peer = dhDerive be sp priv peer
   snapshotResource (CountingEnv be _) rid = snapshotResource be rid
   restoreResource (CountingEnv be _) bs = restoreResource be bs
   releaseResource (CountingEnv be _) rid = releaseResource be rid
@@ -869,6 +891,64 @@ caseDriverEcdh = withBackend $ \env -> do
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   inf <- runEffect env res (FxDerive ecdhMech (Just aOid) (blob peerB) "info" 32)
+  case inf of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+caseDriverDh :: IO ()
+caseDriverDh = withBackend $ \env -> do
+  let params = dhParamsDer dhP2048 (BS.singleton 2)
+  genA <- generateKey env (GenDHKeypair params)
+  (privA, pubA) <- case genA of
+    EngineOk (p, Just q) -> pure (p, q)
+    other -> assertFailure ("keygen A failed: " ++ show other)
+  genB <- generateKey env (GenDHKeypair params)
+  (privB, pubB) <- case genB of
+    EngineOk (p, Just q) -> pure (p, q)
+    other -> assertFailure ("keygen B failed: " ++ show other)
+  peerB <- case pubB of
+    KeyDer bs -> case dhSpkiFields bs of
+      Just (_, _, _, y) -> pure y
+      Nothing -> assertFailure "SPKI B failed to parse"
+    other -> assertFailure ("peer B not DER: " ++ show other)
+  peerA <- case pubA of
+    KeyDer bs -> case dhSpkiFields bs of
+      Just (_, _, _, y) -> pure y
+      Nothing -> assertFailure "SPKI A failed to parse"
+    other -> assertFailure ("peer A not DER: " ++ show other)
+  let aOid = ObjectId 43
+      bOid = ObjectId 44
+      res oid
+        | oid == aOid = Just privA
+        | oid == bOid = Just privB
+        | otherwise = Nothing
+      blob y = encodeDhParams 0 y
+  directR <- dhDerive env DhPlain privA (KeyDer peerB)
+  direct <- case directR of
+    EngineOk s -> pure s
+    other -> assertFailure ("direct derive failed: " ++ show other)
+  full <- runEffect env res (FxDerive dhMech (Just aOid) (blob peerB) BS.empty 256)
+    >>= expectBytes
+  assertEqual "driver == direct" direct full
+  short <- runEffect env res (FxDerive dhMech (Just aOid) (blob peerB) BS.empty 128)
+    >>= expectBytes
+  assertEqual "truncation drops leading bytes" (BS.drop 128 direct) short
+  rev <- runEffect env res (FxDerive dhMech (Just bOid) (blob peerA) BS.empty 256)
+    >>= expectBytes
+  assertEqual "commutes" direct rev
+  x9 <- runEffect env res (FxDerive dhX942Mech (Just aOid) (blob peerB) BS.empty 256)
+    >>= expectBytes
+  assertEqual "x9.42 row agrees identically" direct x9
+  over <- runEffect env res (FxDerive dhMech (Just aOid) (blob peerB) BS.empty 257)
+  case over of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  kdf <- runEffect env res
+    (FxDerive dhMech (Just aOid) (encodeDhParams 1 peerB) BS.empty 256)
+  case kdf of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  inf <- runEffect env res (FxDerive dhMech (Just aOid) (blob peerB) "info" 256)
   case inf of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)

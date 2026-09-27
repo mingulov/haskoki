@@ -25,6 +25,7 @@ encoding half-understood structures.
 module Haskoki.Der
   ( rsaPrivateDer
   , rsaPublicDer
+  , rsaSpkiFields
   , ecPrivateDer
   , ecPublicDer
   , dsaParamsDer
@@ -33,6 +34,15 @@ module Haskoki.Der
   , parseDsaParams
   , dsaSpkiFields
   , dsaPkcs8Fields
+  , dhParamsDer
+  , dhParamsDerQ
+  , dhPrivateDer
+  , dhPublicDer
+  , dhPrivateDerQ
+  , dhPublicDerQ
+  , parseDhParams
+  , dhSpkiFields
+  , dhPkcs8Fields
   , eddsaPrivateDer
   , eddsaPublicDer
   , eddsaSpkiFields
@@ -546,6 +556,36 @@ rsaPublicDer n e =
   let pkcs1pub = derSeq [derInteger n, derInteger e]
   in derSeq [derSeq [oidRsaEncryption, derNull], derBitString pkcs1pub]
 
+-- | The modulus plus the public exponent from an RSA SPKI: outer
+-- SEQ of [algId, BIT STRING] where the algorithm is
+-- rsaEncryption with NULL parameters and the bit string (past
+-- its zero unused-bits octet) is the PKCS#1 SEQ of
+-- [INTEGER n, INTEGER e]. 'Nothing' on any framing, tag, or OID
+-- mismatch.
+rsaSpkiFields :: ByteString -> Maybe (ByteString, ByteString)
+rsaSpkiFields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [algId, bits] -> do
+      algParts <- whole 0x30 algId >>= seqTop
+      case algParts of
+        [oid, nullp] | oid == oidRsaEncryption && nullp == derNull -> do
+          content <- whole 0x03 bits
+          case BS.uncons content of
+            Just (0, pkcs1) -> do
+              body <- whole 0x30 pkcs1
+              parts1 <- seqTop body
+              case parts1 of
+                [nder, eder] -> do
+                  n <- derInt nder
+                  e <- derInt eder
+                  pure (n, e)
+                _ -> Nothing
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
 -- | PKCS#8 for an EC private key from the DER curve OID and the
 -- scalar. The SEC1 carries version + scalar only (no public point:
 -- scalar-only input cannot produce one; the curve rides the outer
@@ -581,6 +621,44 @@ dsaPrivateDer p q g x =
 dsaPublicDer :: ByteString -> ByteString -> ByteString -> ByteString -> ByteString
 dsaPublicDer p q g y =
   derSeq [derSeq [oidDsa, dsaParamsDer p q g], derBitString (derInteger y)]
+
+-- | DER PKCS#3 DH parameters: the SEQUENCE of p, g INTEGERs
+-- (minimal encoding). Shared by keypair-gen input assembly and
+-- SPKI/PKCS#8 assembly.
+dhParamsDer :: ByteString -> ByteString -> ByteString
+dhParamsDer p g = derSeq [derInteger p, derInteger g]
+
+-- | DER X9.42 DH domain parameters: the SEQUENCE of p, g, q
+-- INTEGERs (no cofactor/validation fields — the pinned decoder
+-- accepts the 3-field form, proven by probe).
+dhParamsDerQ :: ByteString -> ByteString -> ByteString -> ByteString
+dhParamsDerQ p g q = derSeq [derInteger p, derInteger g, derInteger q]
+
+-- | PKCS#8 (version 0, dhKeyAgreement OID 1.2.840.113549.1.3.1)
+-- for a PKCS#3 DH private key: parameters plus the OCTET-wrapped
+-- INTEGER x.
+dhPrivateDer :: ByteString -> ByteString -> ByteString -> ByteString
+dhPrivateDer p g x =
+  derSeq [derSmallInt 0, derSeq [oidDhKeyAgreement, dhParamsDer p g], derOctet (derInteger x)]
+
+-- | SPKI for a PKCS#3 DH public key: parameters plus the
+-- BIT-wrapped INTEGER y.
+dhPublicDer :: ByteString -> ByteString -> ByteString -> ByteString
+dhPublicDer p g y =
+  derSeq [derSeq [oidDhKeyAgreement, dhParamsDer p g], derBitString (derInteger y)]
+
+-- | PKCS#8 (version 0, dhpublicnumber OID 1.2.840.10046.2.1) for
+-- an X9.42 DH private key: parameters plus the OCTET-wrapped
+-- INTEGER x.
+dhPrivateDerQ :: ByteString -> ByteString -> ByteString -> ByteString -> ByteString
+dhPrivateDerQ p g q x =
+  derSeq [derSmallInt 0, derSeq [oidDhPublicNumber, dhParamsDerQ p g q], derOctet (derInteger x)]
+
+-- | SPKI for an X9.42 DH public key: parameters plus the
+-- BIT-wrapped INTEGER y.
+dhPublicDerQ :: ByteString -> ByteString -> ByteString -> ByteString -> ByteString
+dhPublicDerQ p g q y =
+  derSeq [derSeq [oidDhPublicNumber, dhParamsDerQ p g q], derBitString (derInteger y)]
 
 -- | PKCS#8 for an Edwards private key from the DER curve OID and
 -- the seed (RFC 8410 @OneAsymmetricKey@: the inner OCTET STRING
@@ -648,6 +726,17 @@ slhdsaPublicDer oid point =
 -- | DER OID 1.2.840.10040.4.1 (dsaEncryption).
 oidDsa :: ByteString
 oidDsa = BS.pack [0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x38, 0x04, 0x01]
+
+-- | DER OID 1.2.840.113549.1.3.1 (dhKeyAgreement, PKCS#3 keys —
+-- what OpenSSL emits for PKCS#3-param keygen).
+oidDhKeyAgreement :: ByteString
+oidDhKeyAgreement = BS.pack
+  [0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x03, 0x01]
+
+-- | DER OID 1.2.840.10046.2.1 (dhpublicnumber, X9.42 keys).
+oidDhPublicNumber :: ByteString
+oidDhPublicNumber = BS.pack
+  [0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3E, 0x02, 0x01]
 
 -- ---------------------------------------------------------------------------
 -- Parsing (total; 'Nothing' on any malformation)
@@ -836,6 +925,71 @@ dsaPkcs8Fields der = do
               xder <- whole 0x04 oct
               x <- derInt xder
               pure (p, q, g, x)
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | DH domain parameters: the SEQUENCE of exactly two (PKCS#3
+-- p, g) or three (X9.42 p, g, q) INTEGERs. Anything else is
+-- 'Nothing'.
+parseDhParams :: ByteString -> Maybe (ByteString, ByteString, Maybe ByteString)
+parseDhParams der = do
+  body <- whole 0x30 der
+  parts <- seqTop body
+  case parts of
+    [p, g] -> (,,) <$> derInt p <*> derInt g <*> pure Nothing
+    [p, g, q] -> (,,) <$> derInt p <*> derInt g <*> (Just <$> derInt q)
+    _ -> Nothing
+
+-- | DH domain plus the public value from an SPKI: outer SEQ of
+-- [algId, BIT STRING] where the algorithm is dhKeyAgreement
+-- with PKCS#3 parameters or dhpublicnumber with X9.42
+-- parameters, and the bit string (past its zero unused-bits
+-- octet) is the INTEGER y. 'Nothing' on any framing, tag, or
+-- OID mismatch.
+dhSpkiFields :: ByteString -> Maybe (ByteString, ByteString, Maybe ByteString, ByteString)
+dhSpkiFields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [algId, bits] -> do
+      algParts <- whole 0x30 algId >>= seqTop
+      case algParts of
+        [oid, params]
+          | oid == oidDhKeyAgreement || oid == oidDhPublicNumber -> do
+              (p, g, q) <- parseDhParams params
+              content <- whole 0x03 bits
+              case BS.uncons content of
+                Just (0, yder) -> do
+                  y <- derInt yder
+                  pure (p, g, q, y)
+                _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | DH domain plus the private scalar from a PKCS#8: outer SEQ
+-- of [version INTEGER 0, algId, OCTET STRING] where the
+-- algorithm is dhKeyAgreement with PKCS#3 parameters or
+-- dhpublicnumber with X9.42 parameters, and the octet string
+-- wraps the INTEGER x. 'Nothing' on any framing, tag, version,
+-- or OID mismatch.
+dhPkcs8Fields :: ByteString -> Maybe (ByteString, ByteString, Maybe ByteString, ByteString)
+dhPkcs8Fields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [ver, algId, oct] -> do
+      v <- derInt ver
+      case BS.uncons v of
+        Just (0, rest) | BS.null rest -> do
+          algParts <- whole 0x30 algId >>= seqTop
+          case algParts of
+            [oid, params]
+              | oid == oidDhKeyAgreement || oid == oidDhPublicNumber -> do
+                  (p, g, q) <- parseDhParams params
+                  xder <- whole 0x04 oct
+                  x <- derInt xder
+                  pure (p, g, q, x)
             _ -> Nothing
         _ -> Nothing
     _ -> Nothing

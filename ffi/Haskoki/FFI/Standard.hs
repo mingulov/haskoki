@@ -217,7 +217,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
-import Haskoki.FFI.NativeParams (normalizeEcdhParams, normalizeMechParams, normalizeTlsPrfParams)
+import Haskoki.FFI.NativeParams (normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeMechParams, normalizeTlsPrfParams)
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
@@ -247,6 +247,7 @@ import Haskoki.Operation.Derive
   , hkdfDeriveMech
   , planDerive
   )
+import Haskoki.Recipe.Dh (DhRecipe (..), dhRecipeFor)
 import Haskoki.Recipe.Ecdh (ecdhRecipeFor)
 import Haskoki.Recipe.Kdf (KdfRecipe (..), kdfRecipeFor)
 import Haskoki.Recipe.TlsPrf (tlsPrfRecipeFor)
@@ -2904,17 +2905,19 @@ haskokiStdUnwrapKey ctx h (CULong mech) pIv (CULong ivLen) (CULong wrapH)
                       Right [oh] -> poke phKey (CULong oh) >> pure ckrOk
                       Right _ -> pure ckrGeneralError
 
--- | Opaque derive for the ECDH, SHA-KDF, and TLS-PRF rows: the
--- C side forwards the mechanism id, the raw parameter image, and
--- the template frame. ECDH and TLS-PRF structs normalize here
--- ('normalizeEcdhParams', 'normalizeTlsPrfParams'); base
--- resolution and the key-type check run first inside 'planDerive',
--- so a wrong-typed base refuses before parameter shape is
--- examined. SHA rows take the image as the info segment (emptiness
--- enforced by 'planDerive'). Unmappable struct images pass through
--- raw so the recipe refusal (and its @CKR@) is unchanged. PBKD2 is
--- not served here (its native struct has no decoder yet) and
--- refuses @CKR_MECHANISM_INVALID@.
+-- | Opaque derive for the ECDH, DH, SHA-KDF, and TLS-PRF rows:
+-- the C side forwards the mechanism id, the raw parameter image,
+-- and the template frame. ECDH, DH, and TLS-PRF structs normalize
+-- here ('normalizeEcdhParams', 'normalizeDhPkcsParams' for the
+-- bare PKCS#3 peer, 'normalizeDhX942Params' for the X9.42 struct,
+-- 'normalizeTlsPrfParams'); base resolution and the key-type check
+-- run first inside 'planDerive', so a wrong-typed base refuses
+-- before parameter shape is examined. SHA rows take the image as
+-- the info segment (emptiness enforced by 'planDerive').
+-- Unmappable struct images pass through raw so the recipe refusal
+-- (and its @CKR@) is unchanged. PBKD2 is not served here (its
+-- native struct has no decoder yet) and refuses
+-- @CKR_MECHANISM_INVALID@.
 haskokiStdDeriveOpaque
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
@@ -2950,16 +2953,21 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
     deriveBlob mid raw
       | isJust (ecdhRecipeFor mid) =
           fromMaybe raw <$> normalizeEcdhParams pParams paramsLen
+      | Just r <- dhRecipeFor mid
+      , dhName r == "CKM_DH_PKCS_DERIVE" =
+          pure (fromMaybe raw (normalizeDhPkcsParams raw))
+      | isJust (dhRecipeFor mid) =
+          fromMaybe raw <$> normalizeDhX942Params pParams paramsLen
       | isJust (tlsPrfRecipeFor mid) =
           fromMaybe raw <$> normalizeTlsPrfParams pParams paramsLen
       | otherwise = pure raw
 
 -- | Mechanisms served by 'haskokiStdDeriveOpaque': the ECDH rows,
--- the SHA-KDF rows, and TLS-PRF (PBKD2 excluded: no native
--- decoder).
+-- the DH rows, the SHA-KDF rows, and TLS-PRF (PBKD2 excluded: no
+-- native decoder).
 isOpaqueDeriveMech :: MechanismId -> Bool
 isOpaqueDeriveMech mid =
-  isJust (ecdhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || case kdfRecipeFor mid of
+  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || case kdfRecipeFor mid of
     Just r -> not (rkPbkd2 r)
     Nothing -> False
 

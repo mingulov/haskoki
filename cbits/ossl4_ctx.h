@@ -474,6 +474,31 @@ long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
                            const unsigned char *peer_der, size_t peer_len,
                            int cofactor, unsigned char **out);
 
+/* --- Finite-field DH agreement -------------------------------- */
+
+/* priv_der: PKCS#8 DH DER. peer_val: the bare big-endian peer
+ * public value (the PKCS#11 parameter form, never DER-framed).
+ * The peer is range-checked natively (1 < y < p - 1) before any
+ * agreement; out-of-range, overlong (> 4 KiB input bound), or
+ * empty peers answer HSK_OSSL4_ERR_BADPEER. Returns the raw
+ * shared secret length (prime byte width, left-padded by the
+ * provider) with *out set, or a negative HSK_OSSL4_ERR_* code
+ * (bad base DER -> HSK_OSSL4_ERR_BADKEY). */
+long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
+                         const unsigned char *priv_der, size_t priv_len,
+                         const unsigned char *peer_val, size_t peer_len,
+                         unsigned char **out);
+
+/* params_der: DER domain parameters — PKCS#3 SEQ{p, g} or X9.42
+ * SEQ{p, g, q} — decoded under "DH" then "DHX". Answers the
+ * PKCS#8 private + SPKI public DER halves (HSK_OSSL4_OK);
+ * undecodable params are HSK_OSSL4_ERR_BADKEY. */
+int hsk_ossl4_dh_gen_keypair(OSSL_LIB_CTX *ctx, const char *propq,
+                             const unsigned char *params_der,
+                             size_t params_len, unsigned char **priv_der,
+                             size_t *priv_len, unsigned char **pub_der,
+                             size_t *pub_len);
+
 /* --- RSA PKCS#1 v1.5 sign/verify ------------------------------ */
 
 /* priv_der: PKCS#8 DER. raw: 0 = hash-and-sign via EVP_DigestSign

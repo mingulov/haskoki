@@ -44,6 +44,7 @@ module Haskoki.Engine.Synthetic
   , synthMacLength
   , synthSigLength
   , synthEcdhWidth
+  , synthDhWidth
   , synthKeyContextVersion
   ) where
 
@@ -80,6 +81,8 @@ import Haskoki.Engine.Backend
   , digestOutLen
   , ecdhCap
   , EcdhSpec (..)
+  , dhCap
+  , DhSpec (..)
   , ecdsaSigCap
   , dsaSigCap
   , eddsaSigCap
@@ -121,6 +124,7 @@ import Haskoki.Der
 import qualified Haskoki.Engine.Backend as B
 import Haskoki.Operation.KeyManagement
   (genericSecretKeygenMaxBytes, genericSecretKeygenMinBytes)
+import Haskoki.Recipe.Dh (dhSecretWidthMax)
 import Haskoki.Recipe.Ecdh (ecdhSecretWidthMax)
 import Haskoki.Recipe.Otp (hotpKeygenMaxBytes, hotpKeygenMinBytes)
 import Haskoki.Registry (MechanismId (..))
@@ -172,6 +176,14 @@ synthSigLength = 64
 -- planned length.
 synthEcdhWidth :: Int
 synthEcdhWidth = ecdhSecretWidthMax
+
+-- | Synthetic DH secret width (bytes): the maximum served prime
+-- width (the recipe's 'dhSecretWidthMax'). Synthetic keys are
+-- opaque bytes with no scannable prime, so agreements always
+-- emit the max width and the driver truncates to the planned
+-- length.
+synthDhWidth :: Int
+synthDhWidth = dhSecretWidthMax
 
 -- | Synthetic key-context format version (first context byte).
 synthKeyContextVersion :: Word8
@@ -549,6 +561,17 @@ instance CryptoBackend Synthetic where
           B.EngineOk peerB ->
             pure (B.EngineOk (classEcdh spec (signIdentity privB) peerB))
 
+  dhDerive be spec priv peer = runGuarded be "dhDerive" (dhSupported be spec) $ \env -> do
+    mpriv <- resolveKeyBytes env priv
+    case mpriv of
+      B.EngineFail err -> pure (B.EngineFail err)
+      B.EngineOk privB -> do
+        mpeer <- resolveKeyBytes env peer
+        case mpeer of
+          B.EngineFail err -> pure (B.EngineFail err)
+          B.EngineOk peerB ->
+            pure (B.EngineOk (classDh spec (signIdentity privB) peerB))
+
   generateKey be spec = runGuarded be "generateKey" (genSupported be spec) $ \env -> do
     ctr <- modifyMVar (seGenCtr env) $ \c -> pure (c + 1, c)
     seed <- readMVar (seSeed env)
@@ -598,6 +621,8 @@ instance CryptoBackend Synthetic where
       GenDSAParams p q ->
         pure (B.EngineOk (KeyDer (synthDsaParams seed ctr p q), Nothing))
       GenDSAKeypair {} ->
+        pure (B.EngineOk (genPair seed ctr))
+      GenDHKeypair {} ->
         pure (B.EngineOk (genPair seed ctr))
       GenEdDSAKeypair {} ->
         pure (B.EngineOk (genPair seed ctr))
@@ -744,7 +769,7 @@ synthCaps = BackendCaps
       , scPqcSign = Set.fromList ([ML_DSA_44, ML_DSA_65, ML_DSA_87] ++ slhdsaSets)
       }
   , bcKems = KemCaps { kcAlgs = Set.fromList [ML_KEM_512, ML_KEM_768, ML_KEM_1024] }
-  , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR"] }
+  , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR", "DH"] }
   , bcParamNotes = Map.fromList
       ([ ("open", "decimal Word64 seed string; nothing else opens")
        , ("AES-256-CBC", "length-preserving stream construction; key 32 bytes, iv 16 bytes")
@@ -753,7 +778,7 @@ synthCaps = BackendCaps
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 72-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym DES3 16/24 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenSym BLAKE2B-512-HMAC 64 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenSLHDSA opaque pairs; GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym DES3 16/24 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenSym BLAKE2B-512-HMAC 64 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenDHKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenSLHDSA opaque pairs; GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -954,6 +979,11 @@ ecdhSupported :: BackendEnv Synthetic -> EcdhSpec -> Maybe String
 ecdhSupported (SynthBackend env) spec
   | Set.member (ecdhCap spec) (kcKdfs (bcKdfs (seCaps env))) = Nothing
   | otherwise = Just ("ecdh not in synthetic set: " ++ show spec)
+
+dhSupported :: BackendEnv Synthetic -> DhSpec -> Maybe String
+dhSupported (SynthBackend env) spec
+  | Set.member (dhCap spec) (kcKdfs (bcKdfs (seCaps env))) = Nothing
+  | otherwise = Just ("dh not in synthetic set: " ++ show spec)
 
 -- | OAEP availability: fixed-width hash and MGF (XOFs refused),
 -- witnessed against the digest set; the label is always servable.
@@ -1203,6 +1233,7 @@ genSupported _ spec = case spec of
   GenDSAParams p q
     | (p, q) `elem` [(1024, 160), (2048, 224), (2048, 256), (3072, 256)] -> Nothing
   GenDSAKeypair {} -> Nothing
+  GenDHKeypair {} -> Nothing
   GenEdDSAKeypair name | BC8.unpack name `elem` edwardsCurveNames -> Nothing
   GenMLDSA alg | alg `elem` [ML_DSA_44, ML_DSA_65, ML_DSA_87] -> Nothing
   GenSLHDSA alg | alg `elem` slhdsaSets -> Nothing
@@ -1556,6 +1587,13 @@ classEcdh :: EcdhSpec -> ByteString -> ByteString -> ByteString
 classEcdh spec base peer = prfBytes
   (frame ["haskoki-synth/class-ecdh/v1", BC8.pack (show spec), base, peer])
   synthEcdhWidth
+
+-- | Synthetic DH agreement: the domain-framed PRF over the spec,
+-- the base identity, and the peer bytes at the max width.
+classDh :: DhSpec -> ByteString -> ByteString -> ByteString
+classDh spec base peer = prfBytes
+  (frame ["haskoki-synth/class-dh/v1", BC8.pack (show spec), base, peer])
+  synthDhWidth
 
 -- | Synthetic OAEP seal: deterministic, reversible, param-bound.
 -- The body is a keystream XOR over (identity, params, input); the
