@@ -24,7 +24,9 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, testCase)
 
 import Haskoki.FFI.NativeParams
-  ( digestStemByCkm
+  ( chachaPolyNativeSize
+  , chachaStreamNativeSize
+  , digestStemByCkm
   , ecdhNativeSize
   , eddsaNativeSize
   , gcmNativeSize
@@ -34,6 +36,12 @@ import Haskoki.FFI.NativeParams
   , normalizeMechParams
   , oaepNativeSize
   , pssNativeSize
+  )
+import Haskoki.Recipe.Chacha20
+  ( chachaParamsValid
+  , chachaRecipeFor
+  , encodeChachaPolyParams
+  , encodeChachaStreamParams
   )
 import Haskoki.Recipe.Ecdh (ecdhParamsValid, ecdhRecipeFor, encodeEcdhParams)
 import Haskoki.Recipe.Eddsa
@@ -444,6 +452,86 @@ spec = testGroup "native mechanism params"
           raw = BS.replicate 8 0
       out <- allocaBytes 8 $ \p -> do
         pokeByteOff p 0 (CULong 0 :: CULong)
+        normalizeMechParams mid p 8 raw
+      assertEqual "passthrough" raw out
+  , testCase "chacha stream struct chases counter and nonce" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_CHACHA20")
+          ctr = BS.pack [0x01, 0x00, 0x00, 0x00]
+          nonce = "0123456789ab" :: ByteString
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen ctr $ \(cp, _) ->
+        BS.useAsCStringLen nonce $ \(np, _) ->
+          allocaBytes chachaStreamNativeSize $ \p -> do
+            pokeByteOff p 0 (castPtr cp)
+            pokeByteOff p pw (CULong 32)
+            pokeByteOff p (pw + w) (castPtr np)
+            pokeByteOff p (2 * pw + w) (CULong 96)
+            raw <- BS.packCStringLen (castPtr p, chachaStreamNativeSize)
+            normalizeMechParams mid p (fromIntegral chachaStreamNativeSize) raw
+      assertEqual "canonical stream image"
+        (encodeChachaStreamParams 1 nonce) out
+      case chachaRecipeFor mid of
+        Nothing -> fail "chacha recipe missing"
+        Just r -> assertEqual "recipe accepts" True (chachaParamsValid r out)
+  , testCase "chacha stream ragged bits pass through" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_CHACHA20")
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      (raw, out) <- allocaBytes chachaStreamNativeSize $ \p -> do
+        pokeByteOff p 0 (nullPtr :: Ptr Word8)
+        pokeByteOff p pw (CULong 20)
+        pokeByteOff p (pw + w) (nullPtr :: Ptr Word8)
+        pokeByteOff p (2 * pw + w) (CULong 96)
+        raw <- BS.packCStringLen (castPtr p, chachaStreamNativeSize)
+        out <- normalizeMechParams mid p (fromIntegral chachaStreamNativeSize) raw
+        pure (raw, out)
+      assertEqual "passthrough" raw out
+  , testCase "chacha poly struct chases nonce and aad" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_CHACHA20_POLY1305")
+          nonce = "0123456789ab" :: ByteString
+          aad = "AD" :: ByteString
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen nonce $ \(np, nlen) ->
+        BS.useAsCStringLen aad $ \(ap, alen) ->
+          allocaBytes chachaPolyNativeSize $ \p -> do
+            pokeByteOff p 0 (castPtr np)
+            pokeByteOff p pw (CULong (fromIntegral nlen))
+            pokeByteOff p (pw + w) (castPtr ap)
+            pokeByteOff p (2 * pw + w) (CULong (fromIntegral alen))
+            raw <- BS.packCStringLen (castPtr p, chachaPolyNativeSize)
+            normalizeMechParams mid p (fromIntegral chachaPolyNativeSize) raw
+      assertEqual "canonical poly image"
+        (encodeChachaPolyParams nonce aad 16) out
+      case chachaRecipeFor mid of
+        Nothing -> fail "chacha recipe missing"
+        Just r -> assertEqual "recipe accepts" True (chachaParamsValid r out)
+  , testCase "chacha poly off-12 nonce translates, recipe refuses" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_CHACHA20_POLY1305")
+          nonce = "12345678" :: ByteString
+          aad = "AD" :: ByteString
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen nonce $ \(np, nlen) ->
+        BS.useAsCStringLen aad $ \(ap, alen) ->
+          allocaBytes chachaPolyNativeSize $ \p -> do
+            pokeByteOff p 0 (castPtr np)
+            pokeByteOff p pw (CULong (fromIntegral nlen))
+            pokeByteOff p (pw + w) (castPtr ap)
+            pokeByteOff p (2 * pw + w) (CULong (fromIntegral alen))
+            raw <- BS.packCStringLen (castPtr p, chachaPolyNativeSize)
+            normalizeMechParams mid p (fromIntegral chachaPolyNativeSize) raw
+      assertEqual "canonical poly image"
+        (encodeChachaPolyParams nonce aad 16) out
+      case chachaRecipeFor mid of
+        Nothing -> fail "chacha recipe missing"
+        Just r -> assertEqual "recipe refuses" False (chachaParamsValid r out)
+  , testCase "chacha short image passes through" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_CHACHA20")
+          raw = BS.replicate 8 0
+      out <- allocaBytes 8 $ \p -> do
+        pokeByteOff p 0 (nullPtr :: Ptr Word8)
         normalizeMechParams mid p 8 raw
       assertEqual "passthrough" raw out
   ]

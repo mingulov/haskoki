@@ -654,7 +654,9 @@ caseKeygen = do
   -- Length discipline: AES takes 16/24/32 bytes, nothing else.
   expectBadParam "aes-17 rejected" =<< genSym envA 17
   expectBadParam "aes-0 rejected" =<< genSym envA 0
-  expectUnsupported "chacha unsupported" =<< generateKey envA (GenSym "ChaCha20" 32)
+  (KeyBytes kc, Nothing) <- expectOk "gen chacha20" =<< generateKey envA (GenSym "ChaCha20" 32)
+  assertEqual "chacha20 length" 32 (BS.length kc)
+  expectBadParam "chacha20-16 rejected" =<< generateKey envA (GenSym "ChaCha20" 16)
   expectUnsupported "hmac gen unsupported" =<< generateKey envA (GenSym "HMAC" 32)
   -- EC: P-256 pairs only. Fresh same-seed backends replaying the
   -- same call sequence agree bit-for-bit.
@@ -890,10 +892,12 @@ caseCapsFull = withSynth "11" $ \env -> do
     , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
     , C_CAMELLIA128_CBC, C_CAMELLIA192_CBC, C_CAMELLIA256_CBC
     , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
+    , C_CHACHA20
     ]) (ccCiphers (bcCiphers caps))
   assertEqual "aead set" (Set.fromList
     [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
     , "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"
+    , "ChaCha20-Poly1305"
     ]) (ccAead (bcCiphers caps))
   assertEqual "mac set" (Set.fromList
     [ "HMAC-MD5", "HMAC-SHA1"

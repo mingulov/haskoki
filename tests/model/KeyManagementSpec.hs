@@ -105,8 +105,10 @@ import Haskoki.Operation.KeyManagement
   , aesKwPadMech
   , aesKwpMech
   , blake2b512KeyGenMech
+  , chacha20KeyGenMech
   , ckkAes
   , ckkBlake2b512Hmac
+  , ckkChacha20
   , ckkDes3
   , ckkDsa
   , ckkEc
@@ -194,6 +196,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "AES keygen delivers one handle" caseAesKeygen
   , testCase "DES3 keygen delivers one handle" caseDes3Keygen
   , testCase "BLAKE2B-512 keygen mints 64 bytes" caseBlake2b512Keygen
+  , testCase "ChaCha20 keygen mints 32 bytes" caseChacha20Keygen
   , testCase "AES keygen refuses PQC wrap flags" caseAesKeygenEncapsulate
   , testCase "Init enforces the allowed-mechanism list" caseInitAllowedMechanisms
   , testCase "Generic-secret keygen mints typed material in bounds" caseGenericSecretKeygen
@@ -800,6 +803,52 @@ blake2b512Tmpl n =
   , (AttrToken, ValBool False)
   , (AttrSign, ValBool True)
   , (AttrVerify, ValBool True)
+  ]
+
+caseChacha20Keygen :: IO ()
+caseChacha20Keygen = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- genChacha20Key answer m0 st (chacha20Tmpl 32)
+  Just ost <- pure (resolveHandle m1 h)
+  assertEqual "key class" (Just (ValULong ckoSecretKey)) (Map.lookup AttrClass (osAttrs ost))
+  assertEqual "key type" (Just (ValULong ckkChacha20)) (Map.lookup AttrKeyType (osAttrs ost))
+  case keyBytesOf ost of
+    Just mat -> assertEqual "ChaCha20 material" 32 (BS.length mat)
+    Nothing -> assertFailure "generated key lacks material"
+  -- Off-width refuses inconsistent; a missing length refuses
+  -- incomplete (exact-32, the HOTP explicit-length precedent).
+  case planGenerateKey defaultRules m1 st chacha20KeyGenMech (chacha20Tmpl 16) of
+    KeyDenied deny -> assertEqual "bad length code"
+      CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure ("16-byte ChaCha20 must refuse: " ++ show other)
+  case planGenerateKey defaultRules m1 st chacha20KeyGenMech
+      [a | a@(t, _) <- chacha20Tmpl 32, t /= AttrValueLen] of
+    KeyDenied deny -> assertEqual "missing length code"
+      CKR_TEMPLATE_INCOMPLETE (kdCode deny)
+    other -> assertFailure ("missing length must refuse: " ++ show other)
+
+-- | Generate one ChaCha20 key through the planner + synthetic backend.
+genChacha20Key :: (Model -> CryptoEffect -> IO CryptoResult)
+  -> Model -> SessionState -> [(AttributeType, AttributeValue)]
+  -> IO (Model, ExternalHandle)
+genChacha20Key answer m st tmpl = case planGenerateKey defaultRules m st chacha20KeyGenMech tmpl of
+  KeyEffect pw fx -> do
+    res <- answer m fx
+    c <- finishCommit m st pw res 1
+    h <- handleOf (pcOutputs c !! 0)
+    m' <- expectRight (publishDelta m (pcDelta c))
+    pure (m', h)
+  other -> assertFailure ("keygen plan is not an effect: " ++ show other) >> undefined
+
+chacha20Tmpl :: Int -> [(AttributeType, AttributeValue)]
+chacha20Tmpl n =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong ckkChacha20)
+  , (AttrValueLen, ValULong (fromIntegral n))
+  , (AttrToken, ValBool False)
+  , (AttrEncrypt, ValBool True)
+  , (AttrDecrypt, ValBool True)
   ]
 
 caseAesKeygenEncapsulate :: IO ()

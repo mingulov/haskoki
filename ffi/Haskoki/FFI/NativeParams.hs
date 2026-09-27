@@ -43,6 +43,21 @@ Covered structs (caller-native layout, offsets derived from
   'maxInputBytes' with the same null conventions, and the pair
   re-encodes with 'encodeMldsaParams' (overlong contexts refuse
   downstream at the recipe).
+* ChaCha20 (@CK_CHACHA20_PARAMS@: counter pointer, counter bits,
+  nonce pointer, nonce bits): the counter chases
+  counter-bits/8 bytes (whole bytes only) and decodes
+  little-endian — the OASIS text pins no byte order, so the
+  IETF/RFC 8439 state-word order is the documented
+  interpretation — and the nonce chases nonce-bits/8 bytes;
+  the pair re-encodes with 'encodeChachaStreamParams'
+  (non-IETF widths translate and refuse downstream at the
+  recipe, never a malformed struct).
+* ChaCha20-Poly1305 (@CK_SALSA20_CHACHA20_POLY1305_PARAMS@:
+  nonce pointer, nonce length, AAD pointer, AAD length): both
+  byte strings chase under 'maxInputBytes' with the same null
+  conventions and re-encode with 'encodeChachaPolyParams' at
+  the fixed 16-byte tag (the struct carries no tag width;
+  off-12 nonces refuse downstream at the recipe).
 
 Anything unmappable — wrong length, unknown ids, a bad source tag,
 a null-with-length or over-bound chase — passes the input bytes
@@ -71,6 +86,8 @@ module Haskoki.FFI.NativeParams
   , eddsaStructToCanonical
   , mldsaStructToCanonical
   , slhdsaStructToCanonical
+  , chachaStreamStructToCanonical
+  , chachaPolyStructToCanonical
   , digestStemByCkm
   , mgfStemByCkg
   , pssNativeSize
@@ -82,6 +99,8 @@ module Haskoki.FFI.NativeParams
   , eddsaNativeSize
   , mldsaNativeSize
   , slhdsaNativeSize
+  , chachaStreamNativeSize
+  , chachaPolyNativeSize
   ) where
 
 import Control.Monad (guard)
@@ -99,6 +118,13 @@ import Foreign.Storable (alignment, peekByteOff, sizeOf)
 
 import Haskoki.FFI.Decode (maxInputBytes)
 import Haskoki.Recipe.Ccm (ccmRecipeFor, encodeCcmParams)
+import Haskoki.Recipe.Chacha20
+  ( chachaName
+  , chachaPolyTagLen
+  , chachaRecipeFor
+  , encodeChachaPolyParams
+  , encodeChachaStreamParams
+  )
 import Haskoki.Recipe.Cipher (ctrRecipeFor, encodeCtrParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Eddsa (eddsaRecipeFor, encodeEddsaParams)
@@ -153,6 +179,18 @@ gcmNativeSize = 4 * wordSize + 2 * ptrSize
 -- MAC-length word. All lengths are BYTES (unlike GCM bits).
 ccmNativeSize :: Int
 ccmNativeSize = 4 * wordSize + 2 * ptrSize
+
+-- | Native @CK_CHACHA20_PARAMS@ image size: (pointer, bits) for
+-- the block counter, (pointer, bits) for the nonce. Both widths
+-- are BITS (the GCM convention, unlike CCM bytes).
+chachaStreamNativeSize :: Int
+chachaStreamNativeSize = 2 * wordSize + 2 * ptrSize
+
+-- | Native @CK_SALSA20_CHACHA20_POLY1305_PARAMS@ image size:
+-- (pointer, length) for the nonce, (pointer, length) for the
+-- AAD. Both lengths are BYTES (the CCM convention).
+chachaPolyNativeSize :: Int
+chachaPolyNativeSize = 2 * wordSize + 2 * ptrSize
 
 -- | Native @CK_AES_CTR_PARAMS@ image size: one counter-bits word
 -- plus the inline 16-byte counter block.
@@ -297,6 +335,49 @@ ccmStructToCanonical nonce aad dataLen nonceLen macLen = do
   dLen <- word64ToInt dataLen
   pure (encodeCcmParams nonce aad tagLen dLen)
 
+-- | Pure ChaCha20 translation: the chased counter and nonce plus
+-- the native bit widths onto the canonical @chacha20-params/1@
+-- image. Both widths must agree with the chased bytes; the
+-- counter decodes little-endian (the documented OASIS-gap
+-- interpretation — RFC 8439 state-word order) and must fit an
+-- 'Int'. Any width translates (even non-IETF ones: the recipe
+-- refuses downstream with the parameter CKR, never a malformed
+-- struct); only disagreement or an unrepresentable counter
+-- refuses here.
+chachaStreamStructToCanonical :: ByteString -> Word64 -> ByteString -> Word64 -> Maybe ByteString
+chachaStreamStructToCanonical ctr ctrBits nonce nonceBits = do
+  guard (fromIntegral (BS.length ctr) * 8 == ctrBits)
+  guard (fromIntegral (BS.length nonce) * 8 == nonceBits)
+  counter <- leWordToInt ctr
+  pure (encodeChachaStreamParams counter nonce)
+
+-- | Pure ChaCha20-Poly1305 translation: the chased nonce and AAD
+-- plus the native byte lengths onto the canonical
+-- @chacha20poly1305-params/1@ image at the fixed 16-byte tag.
+-- Both lengths must agree with the chased bytes; any width
+-- translates (off-12 nonces refuse downstream at the recipe).
+chachaPolyStructToCanonical :: ByteString -> Word64 -> ByteString -> Word64 -> Maybe ByteString
+chachaPolyStructToCanonical nonce nonceLen aad aadLen = do
+  guard (fromIntegral (BS.length nonce) == nonceLen)
+  guard (fromIntegral (BS.length aad) == aadLen)
+  pure (encodeChachaPolyParams nonce aad chachaPolyTagLen)
+
+-- | Decode a little-endian byte string (at most 8 bytes) onto an
+-- 'Int'; 'Nothing' on over-width or overflow (mirrors the
+-- recipe's LE IV framing, 'decodeChachaIv', generalized past 4
+-- bytes for the 64-bit counter width).
+leWordToInt :: ByteString -> Maybe Int
+leWordToInt bs
+  | BS.length bs > 8 = Nothing
+  | otherwise = word64ToInt (BS.foldr (\b a -> a * 256 + fromIntegral b) 0 bs)
+
+-- | Narrow a native bit width onto whole bytes; 'Nothing' on a
+-- ragged width (the struct cannot name a sub-byte chase).
+bitsToBytes :: Word64 -> Maybe Word64
+bitsToBytes b
+  | b `mod` 8 == 0 = Just (b `div` 8)
+  | otherwise = Nothing
+
 -- | Narrow one native word onto 'Int'; 'Nothing' when it does not
 -- fit (which cannot encode downstream).
 word64ToInt :: Word64 -> Maybe Int
@@ -417,6 +498,10 @@ normalizeMechParams mid pParams paramsLen raw
   | isJust (eddsaRecipeFor mid) = fromMaybe raw <$> decodeEddsaNative
   | isJust (mldsaRecipeFor mid) = fromMaybe raw <$> decodeMldsaNative
   | isJust (slhdsaRecipeFor mid) = fromMaybe raw <$> decodeSlhdsaNative
+  | Just r <- chachaRecipeFor mid, chachaName r == "CKM_CHACHA20" =
+      fromMaybe raw <$> decodeChachaStreamNative
+  | Just r <- chachaRecipeFor mid, chachaName r == "CKM_CHACHA20_POLY1305" =
+      fromMaybe raw <$> decodeChachaPolyNative
   | otherwise = pure raw
   where
     decodePssNative :: IO (Maybe ByteString)
@@ -501,3 +586,30 @@ normalizeMechParams mid pParams paramsLen raw
           CULong ctxLen <- peekByteOff pParams (wordSize + ptrSize)
           mCtx <- chaseBytes pCtx ctxLen
           pure (mCtx >>= slhdsaStructToCanonical hedge)
+    decodeChachaStreamNative :: IO (Maybe ByteString)
+    decodeChachaStreamNative
+      | paramsLen /= fromIntegral chachaStreamNativeSize = pure Nothing
+      | otherwise = do
+          pCtr <- peekByteOff pParams 0
+          CULong ctrBits <- peekByteOff pParams ptrSize
+          pNonce <- peekByteOff pParams (ptrSize + wordSize)
+          CULong nonceBits <- peekByteOff pParams (2 * ptrSize + wordSize)
+          case (bitsToBytes ctrBits, bitsToBytes nonceBits) of
+            (Just ctrLen, Just nonceLen) -> do
+              mCtr <- chaseBytes pCtr ctrLen
+              mNonce <- chaseBytes pNonce nonceLen
+              pure (mCtr >>= \ctr -> mNonce >>= \nonce ->
+                chachaStreamStructToCanonical ctr ctrBits nonce nonceBits)
+            _ -> pure Nothing
+    decodeChachaPolyNative :: IO (Maybe ByteString)
+    decodeChachaPolyNative
+      | paramsLen /= fromIntegral chachaPolyNativeSize = pure Nothing
+      | otherwise = do
+          pNonce <- peekByteOff pParams 0
+          CULong nonceLen <- peekByteOff pParams ptrSize
+          pAad <- peekByteOff pParams (ptrSize + wordSize)
+          CULong aadLen <- peekByteOff pParams (2 * ptrSize + wordSize)
+          mNonce <- chaseBytes pNonce nonceLen
+          mAad <- chaseBytes pAad aadLen
+          pure (mNonce >>= \nonce -> mAad >>= \aad ->
+            chachaPolyStructToCanonical nonce nonceLen aad aadLen)

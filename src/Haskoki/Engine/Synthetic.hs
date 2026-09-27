@@ -578,6 +578,11 @@ instance CryptoBackend Synthetic where
             pure (B.EngineOk (KeyBytes (genSymBytes seed ctr "BLAKE2B-512-HMAC" n), Nothing))
         | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
             "BLAKE2B-512-HMAC key length must be 64 bytes"))
+      GenSym "ChaCha20" n
+        | n == 32 ->
+            pure (B.EngineOk (KeyBytes (genSymBytes seed ctr "ChaCha20" n), Nothing))
+        | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
+            "ChaCha20 key length must be 32 bytes"))
       GenEC ec
         | genCurveOk (ecCurve ec) ->
             pure (B.EngineOk (genPair seed ctr))
@@ -731,7 +736,7 @@ synthCaps = BackendCaps
           ]
       , dcMultipart = True, dcXof = False }
   , bcCiphers = CipherCaps
-      { ccCiphers = Set.fromList synthCipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
+      { ccCiphers = Set.fromList synthCipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM", "ChaCha20-Poly1305"] }
   , bcMacs = MacCaps { mcSpecs = synthMacSpecs }
   , bcSigs = SigCaps
       { scSpecs = Set.fromList ("RSA-PSS" : synthRsaSpecNames ++ synthEcdsaSpecNames ++ synthDsaSpecNames ++ synthEddsaSpecNames ++ synthMldsaSpecNames ++ synthSlhdsaSpecNames)
@@ -985,6 +990,7 @@ synthCipherSpecs =
   , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
   , C_CAMELLIA128_CBC, C_CAMELLIA192_CBC, C_CAMELLIA256_CBC
   , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
+  , C_CHACHA20
   ]
 
 cipherSupported :: BackendEnv Synthetic -> CipherSpec -> Maybe String
@@ -1090,11 +1096,11 @@ aeadRun be op enc spec key iv aad input tag =
       | isCcmAlg (aeadAlg spec) = (7, 13)
       | otherwise = (1, 64)
 
--- | AEAD support: the three AES-GCM widths and the three
--- AES-CCM widths with sane nonce/tag lengths.
+-- | AEAD support: the three AES-GCM widths, the three
+-- AES-CCM widths, and ChaCha20-Poly1305, with sane nonce/tag lengths.
 aeadSupported :: BackendEnv Synthetic -> AeadSpec -> Maybe String
 aeadSupported _ spec
-  | aeadAlg spec `elem` ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] = Nothing
+  | aeadAlg spec `elem` ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM", "ChaCha20-Poly1305"] = Nothing
   | otherwise = Just ("aead not in synthetic set: " ++ show spec)
 
 -- | CCM algorithm names take the CCM bounds.
@@ -1102,10 +1108,11 @@ isCcmAlg :: String -> Bool
 isCcmAlg alg = alg `elem` ["AES-128-CCM", "AES-192-CCM", "AES-256-CCM"]
 
 -- | Approved tag widths per AEAD family (GCM: SP 800-38D; CCM:
--- SP 800-38C even widths).
+-- SP 800-38C even widths; Poly1305: the fixed 16).
 aeadTagSet :: String -> [Int]
 aeadTagSet alg
   | isCcmAlg alg = [4, 6, 8, 10, 12, 14, 16]
+  | alg == "ChaCha20-Poly1305" = [16]
   | otherwise = [4, 8, 12, 13, 14, 15, 16]
 
 -- | Key length in bytes for a supported AEAD algorithm name.
@@ -1190,6 +1197,7 @@ genSupported _ spec = case spec of
   GenSym "HOTP" _ -> Nothing
   GenSym "GENERIC" _ -> Nothing
   GenSym "BLAKE2B-512-HMAC" _ -> Nothing
+  GenSym "ChaCha20" _ -> Nothing
   GenEC ec | genCurveOk (ecCurve ec) -> Nothing
   GenRSA {} -> Nothing
   GenDSAParams p q

@@ -91,6 +91,7 @@ library haskoki-core
     Haskoki.Recipe.Ecdh
     Haskoki.Recipe.Eddsa
     Haskoki.Recipe.Gcm
+    Haskoki.Recipe.Chacha20
     Haskoki.Recipe.MlDsa
     Haskoki.Recipe.Otp
     Haskoki.Recipe.SlhDsa
@@ -372,6 +373,7 @@ test-suite haskoki-model-tests
     OwnershipSpec
     OutputSpec
     RecipeCcmSpec
+    RecipeChacha20Spec
     RecipeCipherSpec
     RecipeCmacSpec
     RecipeDes3MacSpec

@@ -564,7 +564,7 @@ instance CryptoBackend OpenSSL4 where
           Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   -- Symmetric keygen is libctx DRBG bytes (bounds mirror
   -- the key planner: AES 16/24/32, DES3 16/24, HOTP 16..64,
-  -- GENERIC 1..255).
+  -- GENERIC 1..255, BLAKE2B-512-HMAC 64, ChaCha20 32).
   generateKey be spec@(GenSym alg n) = runGuarded be "generateKey" (genSupported be spec) $ \env ->
     case symLenOk alg n of
       Just why -> pure (EngineFail (BackendBadParam "generateKey" why))
@@ -741,7 +741,7 @@ ossl4Caps version propq = BackendCaps
   { bcName = "openssl4"
   , bcVersion = version
   , bcDigests = DigestCaps { dcAlgs = Set.fromList t16DigestAlgs, dcMultipart = True, dcXof = False }
-  , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"] }
+  , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM", "ChaCha20-Poly1305"] }
   , bcMacs = MacCaps { mcSpecs = osslMacSpecs t16DigestAlgs }
   , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs ++ osslEddsaSpecNames t16EdwardsCurves ++ osslMldsaSpecNames t16MldsaLevels ++ osslSlhdsaSpecNames t16SlhdsaSets), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.fromList (t16MldsaLevels ++ t16SlhdsaSets) }
   , bcKems = KemCaps { kcAlgs = Set.fromList t16MlkemSets }
@@ -938,7 +938,8 @@ osslRsaNotes algs =
 -- | The cipher set: every backend spec the block-cipher
 -- recipe reaches (AES/ARIA/CAMELLIA CBC+ECB at three widths plus
 -- Triple-DES CBC+ECB, plus AES CTR, AES CTS, AES CFB128/CFB8/
--- CFB1/OFB and AES KW/KWP at three widths). Candidates that fail
+-- CFB1/OFB and AES KW/KWP at three widths, plus the ChaCha20
+-- stream). Candidates that fail
 -- the fetch probe are narrowed out of the advertised caps (never
 -- silently kept).
 t16CipherSpecs :: [CipherSpec]
@@ -959,6 +960,7 @@ t16CipherSpecs =
   , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
   , C_CAMELLIA128_CBC, C_CAMELLIA192_CBC, C_CAMELLIA256_CBC
   , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
+  , C_CHACHA20
   ]
 
 -- | Per-name cipher parameter notes for the capability report,
@@ -1387,7 +1389,7 @@ genSupported (OSSL4Backend env) spec
   | GenMLKEM alg <- spec
   , Set.member alg (kcAlgs (bcKems (osslCaps env))) = Nothing
   | GenSym alg _ <- spec
-  , alg `elem` ["AES", "DES3", "HOTP", "GENERIC", "BLAKE2B-512-HMAC"] = Nothing
+  , alg `elem` ["AES", "DES3", "HOTP", "GENERIC", "BLAKE2B-512-HMAC", "ChaCha20"] = Nothing
   | GenRSA {} <- spec
   , Set.member "RSA-PSS" (scSpecs (bcSigs (osslCaps env))) = Nothing
   | otherwise = Just ("keygen not in set: " ++ show spec)
@@ -1422,6 +1424,9 @@ symLenOk "GENERIC" n
 symLenOk "BLAKE2B-512-HMAC" n
   | n == 64 = Nothing
   | otherwise = Just ("BLAKE2B-512-HMAC keygen length must be 64 bytes: " ++ show n)
+symLenOk "ChaCha20" n
+  | n == 32 = Nothing
+  | otherwise = Just ("ChaCha20 keygen length must be 32 bytes: " ++ show n)
 symLenOk alg _ = Just ("symmetric keygen not in set: " ++ alg)
 
 -- ---------------------------------------------------------------------------
@@ -1499,6 +1504,7 @@ cipherFetchName spec = case spec of
   C_CAMELLIA128_ECB -> "CAMELLIA-128-ECB"
   C_CAMELLIA192_ECB -> "CAMELLIA-192-ECB"
   C_CAMELLIA256_ECB -> "CAMELLIA-256-ECB"
+  C_CHACHA20 -> "ChaCha20"
 
 -- | Block width in bytes per cipher spec: 8 for Triple-DES, 16 for
 -- the AES family (CBC alignment; ECB shares the width), 1 for the
@@ -1542,6 +1548,7 @@ cipherBlockLen spec = case spec of
   C_AES256_OFB -> 1
   C_AES128_XTS -> 1
   C_AES256_XTS -> 1
+  C_CHACHA20 -> 1
   _ -> 16
 
 -- | The CTS specs run the manual CBC-CS1 construction instead of
@@ -1580,8 +1587,10 @@ cipherProviderKey spec kb
 -- over its width-matched ECB primitive; KW/KWP run the shim's
 -- wrap entry over the fetched wrap cipher (no IV — already gated
 -- empty); XTS runs the shim's XTS entry over the fetched XTS
--- cipher (16-byte tweak as the IV); every other spec runs the
--- provider mode named by 'cipherFetchName'.
+-- cipher (16-byte tweak as the IV); ChaCha20 passes its 16-byte
+-- (counter, nonce) IV straight through (the counter rides the IV
+-- natively); every other spec runs the provider mode named by
+-- 'cipherFetchName'.
 cipherNative :: Ptr Raw.OsslLibCtx -> String -> Bool -> CipherSpec -> ByteString -> ByteString -> ByteString -> IO (Either Int ByteString)
 cipherNative ctx propq enc spec
   | isCtsSpec spec = Raw.cipherCts ctx (ctsEcbName spec) propq enc
@@ -1682,6 +1691,7 @@ aeadServedAlgs :: [String]
 aeadServedAlgs =
   [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
   , "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"
+  , "ChaCha20-Poly1305"
   ]
 
 -- | CCM algorithm names take the CCM shims and bounds.
@@ -1689,10 +1699,11 @@ isCcmAlg :: String -> Bool
 isCcmAlg alg = alg `elem` ["AES-128-CCM", "AES-192-CCM", "AES-256-CCM"]
 
 -- | Approved tag widths per AEAD family (GCM: SP 800-38D; CCM:
--- SP 800-38C even widths).
+-- SP 800-38C even widths; Poly1305: the fixed 16).
 aeadTagSet :: String -> [Int]
 aeadTagSet alg
   | isCcmAlg alg = [4, 6, 8, 10, 12, 14, 16]
+  | alg == "ChaCha20-Poly1305" = [16]
   | otherwise = [4, 8, 12, 13, 14, 15, 16]
 
 -- | Key length in bytes for a supported AEAD algorithm name.

@@ -64,6 +64,7 @@ import Haskoki.Outcome
   )
 import qualified Haskoki.Outcome as O
 import Haskoki.Recipe.Ccm (encodeCcmParams)
+import Haskoki.Recipe.Chacha20 (encodeChachaPolyParams, encodeChachaStreamParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
@@ -110,6 +111,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
   , testCase "driver: blake2b-512 digest/hmac/general + refuse" caseDriverBlake2b512
+  , testCase "driver: chacha20 KAT + poly KAT + tamper + refuse" caseDriverChacha
   , testCase "driver: message cipher/sign/verify" caseDriverMessage
   , testCase "driver: recovery is honestly unsupported" caseDriverRecover
   , testCase "driver: encodeResult mapping" caseEncodeResult
@@ -152,6 +154,18 @@ aes256Pt = hex "6bc1bee22e409f96e93d7e117393172a"
 
 aes256Ct :: ByteString
 aes256Ct = hex "f58c4c04d6e5f1ba779eabfb5f7bfbd6"
+
+chachaRfcKey, chachaPolyRfcKey :: ByteString
+chachaRfcKey = hex "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+chachaPolyRfcKey = hex "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
+
+chachaSunscreen :: ByteString
+chachaSunscreen =
+  "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it."
+
+chachaMech, chachaPolyMech :: MechanismId
+chachaMech = MechanismId 0x1226
+chachaPolyMech = MechanismId 0x4021
 
 sha256Mech, hmacMech, aesCbcMech, ecdsaMech :: MechanismId
 sha256Mech = MechanismId 0x250
@@ -207,14 +221,24 @@ hmacOid, aesOid :: ObjectId
 hmacOid = ObjectId 21
 aesOid = ObjectId 22
 
+chachaOid, chachaPolyOid :: ObjectId
+chachaOid = ObjectId 23
+chachaPolyOid = ObjectId 24
+
 hmacHandle, aesHandle :: ExternalHandle
 hmacHandle = ExternalHandle 201
 aesHandle = ExternalHandle 202
+
+chachaHandle, chachaPolyHandle :: ExternalHandle
+chachaHandle = ExternalHandle 203
+chachaPolyHandle = ExternalHandle 204
 
 resolver :: KeyResolver
 resolver oid
   | oid == hmacOid = Just (KeyBytes hmacKey1)
   | oid == aesOid = Just (KeyBytes aes256Key)
+  | oid == chachaOid = Just (KeyBytes chachaRfcKey)
+  | oid == chachaPolyOid = Just (KeyBytes chachaPolyRfcKey)
   | otherwise = Nothing
 
 mkObject :: ObjectId -> ObjectState
@@ -229,10 +253,15 @@ mkObject oid = ObjectState
 
 seedKeys :: Model -> Model
 seedKeys m = m
-  { mObjects = Map.fromList [(hmacOid, mkObject hmacOid), (aesOid, mkObject aesOid)]
+  { mObjects = Map.fromList
+      [ (hmacOid, mkObject hmacOid), (aesOid, mkObject aesOid)
+      , (chachaOid, mkObject chachaOid), (chachaPolyOid, mkObject chachaPolyOid)
+      ]
   , mHandles = Map.fromList
       [ (hmacHandle, HandleBinding hmacOid (Generation 1))
       , (aesHandle, HandleBinding aesOid (Generation 1))
+      , (chachaHandle, HandleBinding chachaOid (Generation 1))
+      , (chachaPolyHandle, HandleBinding chachaPolyOid (Generation 1))
       ]
   }
 
@@ -516,6 +545,77 @@ caseDriverBlake2b512 = withBackend $ \env -> do
   over <- runEffect env resolver (FxSign b2Gen (Just hmacOid)
     (encodeMacGeneral 65) hmacMsg1)
   case over of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- | Both ChaCha20 rows through the driver over the real backend:
+-- the RFC 8439 2.4.2 stream KAT (counter in the parameter image),
+-- the RFC 8439 2.8.2 AEAD KAT (nonce/AAD in the parameter image),
+-- tag tamper failing closed, and recipe refusals (never
+-- Unsupported) for off-spec parameter images.
+caseDriverChacha :: IO ()
+caseDriverChacha = withBackend $ \env -> do
+  let nonce = hex "000000000000004a00000000"
+      pt = chachaSunscreen
+      streamCt = hex $ concat
+        [ "6e2e359a2568f98041ba0728dd0d6981"
+        , "e97e7aec1d4360c20a27afccfd9fae0b"
+        , "f91b65c5524733ab8f593dabcd62b357"
+        , "1639d624e65152ab8f530c359f0861d8"
+        , "07ca0dbf500d6a6156a38e088a22b65e"
+        , "52bc514d16ccf806818ce91ab7793736"
+        , "5af90bbf74a35be6b40b8eedf2785e42"
+        , "874d"
+        ]
+  got <- runEffect env resolver (FxCipher DirEncrypt chachaMech
+    (Just chachaOid) (encodeChachaStreamParams 1 nonce) pt)
+    >>= expectBytes
+  assertEqual "stream rfc 2.4.2 ct" streamCt got
+  back <- runEffect env resolver (FxCipher DirDecrypt chachaMech
+    (Just chachaOid) (encodeChachaStreamParams 1 nonce) got)
+    >>= expectBytes
+  assertEqual "stream roundtrip" pt back
+  got0 <- runEffect env resolver (FxCipher DirEncrypt chachaMech
+    (Just chachaOid) (encodeChachaStreamParams 0 nonce) pt)
+    >>= expectBytes
+  assertBool "counters differentiate" (got0 /= got)
+  badStream <- runEffect env resolver (FxCipher DirEncrypt chachaMech
+    (Just chachaOid) BS.empty pt)
+  case badStream of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  -- The AEAD row: RFC 8439 2.8.2 key/nonce/AAD through the
+  -- parameter image; ciphertext plus the 16-byte tag in one answer.
+  let pnonce = hex "070000004041424344454647"
+      paad = hex "50515253c0c1c2c3c4c5c6c7"
+      pparams = encodeChachaPolyParams pnonce paad 16
+      polyCt = hex $ concat
+        [ "d31a8d34648e60db7b86afbc53ef7ec2"
+        , "a4aded51296e08fea9e2b5a736ee62d6"
+        , "3dbea45e8ca9671282fafb69da92728b"
+        , "1a71de0a9e060b2905d6a5b67ecd3b36"
+        , "92ddbd7f2d778b8c9803aee328091b58"
+        , "fab324e4fad675945585808b4831d7bc"
+        , "3ff4def08e4b7a9de576d26586cec64b"
+        , "6116"
+        ]
+      polyTag = hex "1ae10b594f09e26a7e902ecbd0600691"
+  sealed <- runEffect env resolver (FxCipher DirEncrypt chachaPolyMech
+    (Just chachaPolyOid) pparams pt)
+    >>= expectBytes
+  assertEqual "poly ct+tag" (polyCt <> polyTag) sealed
+  opened <- runEffect env resolver (FxCipher DirDecrypt chachaPolyMech
+    (Just chachaPolyOid) pparams sealed)
+    >>= expectBytes
+  assertEqual "poly roundtrip" pt opened
+  tampered <- runEffect env resolver (FxCipher DirDecrypt chachaPolyMech
+    (Just chachaPolyOid) pparams (polyCt <> BS.pack [0] <> BS.drop 1 polyTag))
+  case tampered of
+    GotCryptoError (CryptoAuthFailed _) -> pure ()
+    other -> assertFailure ("expected AuthFailed, got: " ++ show other)
+  badPoly <- runEffect env resolver (FxCipher DirEncrypt chachaPolyMech
+    (Just chachaPolyOid) (encodeChachaPolyParams pnonce paad 8) pt)
+  case badPoly of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
 

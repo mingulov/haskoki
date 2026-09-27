@@ -76,6 +76,8 @@ import Haskoki.Registry.Generated
   , ckm_DES3_CBC
   , ckm_DES3_ECB
   , ckm_RSA_PKCS_OAEP
+  , ckm_CHACHA20
+  , ckm_CHACHA20_POLY1305
   )
 
 -- ---------------------------------------------------------------------------
@@ -235,6 +237,8 @@ cipherShapeFor (MechanismId m)
   | m == ckm_RSA_PKCS_OAEP = Just (CipherSpec 16 False)
   | m == ckm_AES_GCM = Just (CipherSpec 1 False)
   | m == ckm_AES_CCM = Just (CipherSpec 1 False)
+  | m == ckm_CHACHA20 = Just (CipherSpec 1 False)
+  | m == ckm_CHACHA20_POLY1305 = Just (CipherSpec 1 False)
   | otherwise = Nothing
 
 -- ---------------------------------------------------------------------------

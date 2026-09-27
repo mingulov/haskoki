@@ -727,6 +727,42 @@ first lane proving all of them together.
   afterwards, so no stale-bundle re-verify is needed this
   round.
 
+## Round 19: ChaCha20-Poly1305 slice (fast r39→r40 + KAT r19→r20)
+
+- r40: 3457 passed / 2 failed / 480 xfailed / 2884 skipped
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r40-results.json`).
+  r39→r40: +31 pass / = fail / +10 xfail / +23 skip. The 2
+  failures are the HOTP externals by id; zero pass→fail.
+- KAT r19→r20: 78550→78908 passed (+358) / 8 failed (=) /
+  4035→4045 xfailed / 30350→30046 skipped
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r20-results.json`). The 8
+  failures are identical by id to r19 (6 P11C-003 + 2 HOTP
+  externals); zero pass→fail.
+- Movers (unit `counts`, exact reconciliation both lanes):
+  `test_wycheproof_chacha` 0→325 pass / 325→0 skip (KAT
+  only) — the 256 valid vectors decrypt to expected bytes and
+  the 69 invalid vectors reject with the tag/nonce CKR class
+  (decrypt-direction harness with a canonical-decrypt
+  operability guard, so the rejects are non-vacuous);
+  `test_salsa20` 0→4 pass / 11→7 skip (both lanes) — the raw
+  `CKM_CHACHA20` stream legs run while the Poly1305 legs keep
+  skipping (unserved, honest); registration effects as the 3
+  new mechanisms advertise: `test_mech_flags` +10 pass /
+  +17 skip, `test_mech_negative` +8 pass / +8 xfail,
+  `test_mech_attribute` +3 pass / +1 xfail,
+  `test_mech_keygen` +1 pass / +1 xfail,
+  `test_mech_encrypt` +3 pass / +1 skip, `test_mech_probe`
+  +9 skip, `test_mech_multipart` +1 pass,
+  `test_operation_termination` +1 pass, and (KAT only)
+  `test_output_length_truncation` +2 pass / −2 skip.
+  Corroborated by the targeted reproof
+  (`/tmp/pkcs11-ws/out/targeted/pkcs11-targeted-chacha20-10d.json`,
+  325/325 on the same bundle).
+- Bundle note: r40/KAT-r20 ran on a release bundle rebuilt
+  from the 10d stack (no in-stack fixes needed after the
+  lanes). Only the triage doc changed afterwards, so no
+  stale-bundle re-verify is needed this round.
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

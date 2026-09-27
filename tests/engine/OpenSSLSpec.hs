@@ -104,6 +104,8 @@ spec = testGroup "openssl4 engine"
   , testCase "AES-GCM matches the pinned vector and round-trips" caseAeadReal
   , testCase "AES-GCM empty plaintext with AAD round-trips (tc92)" caseAeadEmptyPlaintext
   , testCase "AES-CCM wycheproof KATs seal and open" caseAeadCcmReal
+  , testCase "ChaCha20 matches RFC 8439 2.4.2 (counter 1)" caseChachaReal
+  , testCase "ChaCha20-Poly1305 matches RFC 8439 2.8.2" caseChachaPolyReal
   , testCase "Random bytes (fresh DRBG output)" caseRandomBytes
   , testCase "seedRandom mixes, randomBytes unaffected" caseSeedRandomMix
   , testCase "Seed entropy estimate pinned at 0.0" caseSeedEntropyHonesty
@@ -3672,6 +3674,10 @@ caseSymKeygen = withBackend $ \env -> do
   assertEqual "des3-24 length" 24 (BS.length kd)
   (KeyBytes kd2, Nothing) <- expectOk "gen des3-16" =<< generateKey env (GenSym "DES3" 16)
   assertEqual "des3-16 length" 16 (BS.length kd2)
+  (KeyBytes kc, Nothing) <- expectOk "gen chacha20-32" =<< generateKey env (GenSym "ChaCha20" 32)
+  assertEqual "chacha20-32 length" 32 (BS.length kc)
+  (KeyBytes kc2, Nothing) <- expectOk "gen chacha20-32 again" =<< generateKey env (GenSym "ChaCha20" 32)
+  assertBool "chacha20-32 fresh" (kc /= kc2)
   -- Bounds are typed: off-window lengths are bad params, unknown
   -- algorithms are unsupported (never silent bytes).
   expectBadParam "aes-15 refused" =<< generateKey env (GenSym "AES" 15)
@@ -3682,6 +3688,8 @@ caseSymKeygen = withBackend $ \env -> do
   expectBadParam "hotp-65 refused" =<< generateKey env (GenSym "HOTP" 65)
   expectBadParam "generic-0 refused" =<< generateKey env (GenSym "GENERIC" 0)
   expectBadParam "generic-256 refused" =<< generateKey env (GenSym "GENERIC" 256)
+  expectBadParam "chacha20-16 refused" =<< generateKey env (GenSym "ChaCha20" 16)
+  expectBadParam "chacha20-0 refused" =<< generateKey env (GenSym "ChaCha20" 0)
   expectUnsupported "des keygen out" =<< generateKey env (GenSym "DES" 8)
   -- ML-KEM keygen is served (see caseRealMlkemKeygen).
 
@@ -3796,6 +3804,93 @@ caseRsaKeygen = withBackend $ \env -> do
   -- Bounds mirror the key planner (bad params, never silent).
   expectBadParam "rsa-1024 refused" =<< generateKey env (GenRSA 1024 65537)
   expectBadParam "rsa even exponent refused" =<< generateKey env (GenRSA 2048 4)
+
+-- | RFC 8439 section 2.4.2: key 00..1f, nonce
+-- 000000000000004a00000000, initial counter 1, the 114-byte
+-- Sunscreen plaintext. The counter rides the IV natively (4-byte
+-- LE counter plus the 12-byte nonce, the exact IV layout
+-- @EVP_chacha20@ takes).
+caseChachaReal :: IO ()
+caseChachaReal = withBackend $ \env -> do
+  let key = KeyBytes (hex "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+      nonce = hex "000000000000004a00000000"
+      pt = chachaSunscreen
+      iv1 = hex "01000000" <> nonce
+      ct = hex $ concat
+        [ "6e2e359a2568f98041ba0728dd0d6981"
+        , "e97e7aec1d4360c20a27afccfd9fae0b"
+        , "f91b65c5524733ab8f593dabcd62b357"
+        , "1639d624e65152ab8f530c359f0861d8"
+        , "07ca0dbf500d6a6156a38e088a22b65e"
+        , "52bc514d16ccf806818ce91ab7793736"
+        , "5af90bbf74a35be6b40b8eedf2785e42"
+        , "874d"
+        ]
+  got <- expectOk "rfc 2.4.2 encrypt" =<<
+    cipherEncrypt env C_CHACHA20 key iv1 pt
+  assertEqual "rfc 2.4.2 ct" ct got
+  back <- expectOk "rfc 2.4.2 decrypt" =<<
+    cipherDecrypt env C_CHACHA20 key iv1 got
+  assertEqual "rfc 2.4.2 roundtrip" pt back
+  -- Counter 0 differs (the framework's block-counter
+  -- independence leg); unaligned input preserves length.
+  let iv0 = hex "00000000" <> nonce
+  got0 <- expectOk "counter 0 encrypt" =<<
+    cipherEncrypt env C_CHACHA20 key iv0 pt
+  assertBool "counters differentiate" (got0 /= got)
+  ragged <- expectOk "unaligned encrypt" =<<
+    cipherEncrypt env C_CHACHA20 key iv0 "twenty bytes exactly!!"
+  assertEqual "length preserved" 22 (BS.length ragged)
+  -- Bounds: key exactly 32, framing exactly 20.
+  expectBadParam "short key" =<<
+    cipherEncrypt env C_CHACHA20 (KeyBytes "short") iv0 pt
+  expectBadParam "bare nonce" =<<
+    cipherEncrypt env C_CHACHA20 key nonce pt
+
+-- | RFC 8439 section 2.8.2: key 80..9f, nonce
+-- 070000004041424344454647, the 12-byte AAD, the Sunscreen
+-- plaintext, fixed 16-byte tag.
+caseChachaPolyReal :: IO ()
+caseChachaPolyReal = withBackend $ \env -> do
+  let key = KeyBytes (hex "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f")
+      nonce = hex "070000004041424344454647"
+      aad = hex "50515253c0c1c2c3c4c5c6c7"
+      pt = chachaSunscreen
+      spec = AeadSpec "ChaCha20-Poly1305" 12 16
+      ct = hex $ concat
+        [ "d31a8d34648e60db7b86afbc53ef7ec2"
+        , "a4aded51296e08fea9e2b5a736ee62d6"
+        , "3dbea45e8ca9671282fafb69da92728b"
+        , "1a71de0a9e060b2905d6a5b67ecd3b36"
+        , "92ddbd7f2d778b8c9803aee328091b58"
+        , "fab324e4fad675945585808b4831d7bc"
+        , "3ff4def08e4b7a9de576d26586cec64b"
+        , "6116"
+        ]
+      tag = hex "1ae10b594f09e26a7e902ecbd0600691"
+  (got, gotTag) <- expectOk "rfc 2.8.2 seal" =<<
+    aeadEncrypt env spec key nonce aad pt
+  assertEqual "rfc 2.8.2 ct" ct got
+  assertEqual "rfc 2.8.2 tag" tag gotTag
+  back <- expectOk "rfc 2.8.2 open" =<<
+    aeadDecrypt env spec key nonce aad got gotTag
+  assertEqual "rfc 2.8.2 roundtrip" pt back
+  -- Tampering anywhere fails closed.
+  let badTag = BS.pack [BS.head gotTag `xor` 1] <> BS.tail gotTag
+  expectAuthFailed "tag tamper" =<<
+    aeadDecrypt env spec key nonce aad got badTag
+  expectAuthFailed "aad tamper" =<<
+    aeadDecrypt env spec key nonce "tampered-aad!" got gotTag
+  -- Bounds: key exactly 32, tag exactly 16.
+  expectBadParam "short key" =<<
+    aeadEncrypt env spec (KeyBytes "short") nonce aad pt
+  expectBadParam "short tag" =<<
+    aeadEncrypt env (AeadSpec "ChaCha20-Poly1305" 12 8) key nonce aad pt
+
+-- | The RFC 8439 Sunscreen plaintext (114 bytes).
+chachaSunscreen :: ByteString
+chachaSunscreen =
+  "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it."
 
 caseRandomBytes :: IO ()
 caseRandomBytes = withBackend $ \env -> do
@@ -3934,10 +4029,12 @@ caseCaps = withBackend $ \env -> do
     , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
     , C_CAMELLIA128_CBC, C_CAMELLIA192_CBC, C_CAMELLIA256_CBC
     , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
+    , C_CHACHA20
     ]) (ccCiphers (bcCiphers caps))
   assertEqual "aead set" (Set.fromList
     [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
     , "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"
+    , "ChaCha20-Poly1305"
     ]) (ccAead (bcCiphers caps))
   assertEqual "mac set" (Set.fromList
     [ "HMAC-MD5", "HMAC-SHA1"

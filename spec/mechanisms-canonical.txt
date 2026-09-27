@@ -132,6 +132,8 @@ mech|0x00001088|CKM_AES_CCM||aead|ccm-params/1|bytes:16-32|decrypt:A16,A37,A39;e
 mech|0x00001089|CKM_AES_CTS||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x0000108A|CKM_AES_CMAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x0000108B|CKM_AES_CMAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
+mech|0x00001225|CKM_CHACHA20_KEY_GEN||keygen|no-params/1|bits:256-256|generate-key:A37
+mech|0x00001226|CKM_CHACHA20||cipher|chacha20-params/1|bytes:32-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00002000|CKM_DSA_PARAMETER_GEN||keygen|no-params/1|bits:1024-3072|generate-key:A37
 mech|0x00002104|CKM_AES_OFB||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00002106|CKM_AES_CFB8||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
@@ -145,6 +147,7 @@ mech|0x0000401C|CKM_BLAKE2B_512_HMAC||mac|no-params/1|mechanism-specific:0-0|sig
 mech|0x0000401D|CKM_BLAKE2B_512_HMAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x0000401E|CKM_BLAKE2B_512_KEY_DERIVE||derive|no-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x0000401F|CKM_BLAKE2B_512_KEY_GEN||keygen|no-params/1|bits:512-512|generate-key:A37
+mech|0x00004021|CKM_CHACHA20_POLY1305||aead|chacha20poly1305-params/1|bytes:32-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x0000402A|CKM_HKDF_DERIVE||derive|hkdf-expand-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 inv|0x00000002|CKM_RSA_9796||catalog-only
 inv|0x00000003|CKM_RSA_X_509||catalog-only
@@ -398,8 +401,6 @@ inv|0x00001221|CKM_GOST28147_ECB||catalog-only
 inv|0x00001222|CKM_GOST28147||catalog-only
 inv|0x00001223|CKM_GOST28147_MAC||catalog-only
 inv|0x00001224|CKM_GOST28147_KEY_WRAP||catalog-only
-inv|0x00001225|CKM_CHACHA20_KEY_GEN||catalog-only
-inv|0x00001226|CKM_CHACHA20||catalog-only
 inv|0x00001227|CKM_POLY1305_KEY_GEN||catalog-only
 inv|0x00001228|CKM_POLY1305||catalog-only
 inv|0x0000140B|CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS||catalog-only
@@ -437,7 +438,6 @@ inv|0x00004018|CKM_BLAKE2B_384_HMAC_GENERAL||catalog-only
 inv|0x00004019|CKM_BLAKE2B_384_KEY_DERIVE||catalog-only
 inv|0x0000401A|CKM_BLAKE2B_384_KEY_GEN||catalog-only
 inv|0x00004020|CKM_SALSA20||catalog-only
-inv|0x00004021|CKM_CHACHA20_POLY1305||catalog-only
 inv|0x00004022|CKM_SALSA20_POLY1305||catalog-only
 inv|0x00004023|CKM_X3DH_INITIALIZE||catalog-only
 inv|0x00004024|CKM_X3DH_RESPOND||catalog-only

@@ -87,6 +87,7 @@ import Haskoki.Recipe.Ecdsa (ecdsaParamsValid, ecdsaRecipeFor)
 import Haskoki.Recipe.Dsa (dsaParamsValid, dsaRecipeFor)
 import Haskoki.Recipe.Eddsa (eddsaParamsValid, eddsaRecipeFor)
 import Haskoki.Recipe.Gcm (gcmParamsValid, gcmRecipeFor)
+import Haskoki.Recipe.Chacha20 (chachaParamsValid, chachaRecipeFor)
 import Haskoki.Recipe.Hmac (hmacParamsValid, hmacRecipeFor)
 import Haskoki.Recipe.MlDsa (mldsaParamsValid, mldsaRecipeFor)
 import Haskoki.Recipe.SlhDsa (slhdsaParamsValid, slhdsaRecipeFor)
@@ -227,6 +228,9 @@ checkShape args = case (cipherDirOf (iaOp args), iaCipher args) of
     | csPad spec && isJust (ccmRecipeFor (iaMech args)) ->
         Left (mkDeny CKR_ARGUMENTS_BAD
           "AEAD cipher operation takes no padding spec")
+    | csPad spec && isJust (chachaRecipeFor (iaMech args)) ->
+        Left (mkDeny CKR_ARGUMENTS_BAD
+          "ChaCha20 cipher operation takes no padding spec")
     | otherwise -> checkRecover args (ShapeCipher spec)
   (Nothing, Just _) ->
     Left (mkDeny CKR_ARGUMENTS_BAD "non-cipher operation takes no cipher spec")
@@ -240,7 +244,7 @@ checkShape args = case (cipherDirOf (iaOp args), iaCipher args) of
 -- when it gets a cipher shape; today OAEP is the only asymmetric
 -- row that can hold a cipher slot.)
 isUnframedCipher :: MechanismId -> Bool
-isUnframedCipher m = isJust (rsaOaepRecipeFor m) || isJust (gcmRecipeFor m) || isJust (ccmRecipeFor m)
+isUnframedCipher m = isJust (rsaOaepRecipeFor m) || isJust (gcmRecipeFor m) || isJust (ccmRecipeFor m) || isJust (chachaRecipeFor m)
 
 -- | Ciphertext-stealing rows: @CKM_AES_CTS@ keeps the 16-byte shape
 -- but replaces block alignment with a length floor (input must
@@ -395,6 +399,10 @@ checkMechParams args
   , not (ccmParamsValid r (iaParams args)) =
       Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "CCM mechanism parameters rejected by the recipe")
+  | Just r <- chachaRecipeFor (iaMech args)
+  , not (chachaParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "ChaCha20 mechanism parameters rejected by the recipe")
   | otherwise = Right ()
 
 -- | Recovery shape check, preserving whatever the cipher check

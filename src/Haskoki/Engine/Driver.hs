@@ -235,6 +235,14 @@ import Haskoki.Recipe.SlhDsa
   , slhdsaRecipeFor
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
+import Haskoki.Recipe.Chacha20
+  ( Chacha20Recipe (..)
+  , chachaParamsValid
+  , chachaRecipeFor
+  , decodeChachaPolyParams
+  , decodeChachaStreamParams
+  , encodeChachaIv
+  )
 import Haskoki.Recipe.Gcm (decodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (decodeOaepParams, rsaOaepParamsValid, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPkcs1
@@ -255,6 +263,7 @@ import Haskoki.Operation.KeyManagement
   , aesKwMech
   , aesKwPadMech
   , blake2b512KeyGenMech
+  , chacha20KeyGenMech
   , des3KeyGenMech
   , aesKwpMech
   , decodeGenArgs
@@ -554,17 +563,35 @@ hmacDigest name
 -- below selects the width. 'Nothing' means uncovered (non-cipher
 -- mechanism) or a rejected triple.
 cipherSpecFor :: MechanismId -> Int -> ByteString -> Maybe CipherSpec
-cipherSpecFor mech keyLen params = do
-  r <- cipherRecipeFor mech
-  guard (cipherParamsValid r params)
-  guard (cipherKeyLenValid r keyLen)
-  cipherCtor (crName r) keyLen
+cipherSpecFor mech keyLen params =
+  blockParts <|> chachaParts
+  where
+    blockParts = do
+      r <- cipherRecipeFor mech
+      guard (cipherParamsValid r params)
+      guard (cipherKeyLenValid r keyLen)
+      cipherCtor (crName r) keyLen
+    -- The raw ChaCha20 stream row: 256-bit keys only; the recipe
+    -- validates the (counter, nonce) image.
+    chachaParts = do
+      r <- chachaRecipeFor mech
+      guard (chachaName r == "CKM_CHACHA20")
+      guard (chachaParamsValid r params)
+      guard (keyLen == 32)
+      pure C_CHACHA20
 
 -- | A cipher mechanism regardless of triple validity (drives the
 -- parameter-refusal branch: rejected triples are 'CryptoFailed',
 -- never 'CryptoUnsupported').
 isCipherMech :: MechanismId -> Bool
-isCipherMech mech = isJust (cipherRecipeFor mech)
+isCipherMech mech = isJust (cipherRecipeFor mech) || isChachaStreamMech mech
+
+-- | The raw ChaCha20 stream row regardless of triple validity
+-- (same refusal branch as the block ciphers).
+isChachaStreamMech :: MechanismId -> Bool
+isChachaStreamMech mech = case chachaRecipeFor mech of
+  Just r -> chachaName r == "CKM_CHACHA20"
+  Nothing -> False
 
 -- | AEAD dispatch: covered (mechanism, key length, params)
 -- triples to the backend spec plus the decoded (IV, AAD) (pinned
@@ -576,7 +603,7 @@ isCipherMech mech = isJust (cipherRecipeFor mech)
 -- triple.
 aeadPartsFor :: MechanismId -> Int -> ByteString -> Maybe (AeadSpec, ByteString, ByteString)
 aeadPartsFor mech keyLen params =
-  gcmParts <|> ccmParts
+  gcmParts <|> ccmParts <|> chachaParts
   where
     gcmParts = do
       r <- gcmRecipeFor mech
@@ -598,6 +625,15 @@ aeadPartsFor mech keyLen params =
         32 -> Just "AES-256-CCM"
         _ -> Nothing
       pure (AeadSpec alg (BS.length nonce) tagLen, nonce, aad)
+    -- ChaCha20-Poly1305: 256-bit keys only; the recipe pins the
+    -- fixed 16-byte tag and the 12-byte nonce.
+    chachaParts = do
+      r <- chachaRecipeFor mech
+      guard (chachaName r == "CKM_CHACHA20_POLY1305")
+      guard (chachaParamsValid r params)
+      (nonce, aad, tagLen) <- decodeChachaPolyParams params
+      guard (keyLen == 32)
+      pure (AeadSpec "ChaCha20-Poly1305" (BS.length nonce) tagLen, nonce, aad)
 
 -- | The backend spec of a covered AEAD triple ('aeadPartsFor'
 -- without the decoded parts).
@@ -629,6 +665,13 @@ isGcmMech mech = isJust (gcmRecipeFor mech)
 -- 'CryptoUnsupported').
 isCcmMech :: MechanismId -> Bool
 isCcmMech mech = isJust (ccmRecipeFor mech)
+
+-- | The ChaCha20-Poly1305 AEAD row regardless of triple validity
+-- (same refusal branch as GCM/CCM).
+isChachaPolyMech :: MechanismId -> Bool
+isChachaPolyMech mech = case chachaRecipeFor mech of
+  Just r -> chachaName r == "CKM_CHACHA20_POLY1305"
+  Nothing -> False
 
 -- | Recipe row + key length onto the backend width. @CKM_AES_CBC_PAD@
 -- shares the CBC specs (the planner pads before the effect input is
@@ -1140,6 +1183,8 @@ runEffect env resolve fx = case fx of
         runAead dir mech key params input
     | isCcmMech mech -> withKey mkey $ \key ->
         runAead dir mech key params input
+    | isChachaPolyMech mech -> withKey mkey $ \key ->
+        runAead dir mech key params input
     | isRsaOaepMech mech -> withKey mkey $ \key ->
         runOaep dir mech key params input
     | otherwise -> pure (unsupported fx)
@@ -1255,6 +1300,8 @@ runEffect env resolve fx = case fx of
             toKeyPair <$> generateKey env (GenSym "HOTP" n)
           (m, GenBytes n) | m == blake2b512KeyGenMech ->
             toKeyPair <$> generateKey env (GenSym "BLAKE2B-512-HMAC" n)
+          (m, GenBytes n) | m == chacha20KeyGenMech ->
+            toKeyPair <$> generateKey env (GenSym "ChaCha20" n)
           (m, GenBytes n) | m == genericSecretKeyGenMech ->
             toKeyPair <$> generateKey env (GenSym "GENERIC" n)
           (m, GenEc curve) | m == ecKeyPairGenMech ->
@@ -1276,7 +1323,7 @@ runEffect env resolve fx = case fx of
             Nothing -> pure (GotCryptoError (CryptoFailed
               ("driver: unknown SLH-DSA parameter set: " ++ show n)))
           _
-            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech] ->
+            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, chacha20KeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)
@@ -1547,20 +1594,26 @@ runEffect env resolve fx = case fx of
         -- CTR parameters are the canonical image, not the raw
         -- counter block: split the served 128-bit image (the recipe
         -- already validated it; a mistimed image fails closed).
-        Just spec -> case ctrImage iv of
+        -- ChaCha20 parameters split the same way into the backend
+        -- (counter, nonce) framing.
+        Just spec -> case cipherImage iv of
           Nothing -> pure (GotCryptoError (CryptoFailed
-            "driver: CTR parameter image rejected"))
+            "driver: cipher parameter image rejected"))
           Just cb -> case dir of
             DirEncrypt -> toBytes <$> cipherEncrypt env spec key cb input
             DirDecrypt -> toBytes <$> cipherDecrypt env spec key cb input
       _ -> pure (GotCryptoError (CryptoBadKey "driver"
         "block ciphers need raw symmetric key bytes"))
       where
-        ctrImage params = case ctrRecipeFor mech of
+        cipherImage params = case ctrRecipeFor mech of
           Just _ -> case decodeCtrParams params of
             Just (128, cb) -> Just cb
             _ -> Nothing
-          Nothing -> Just params
+          Nothing
+            | isChachaStreamMech mech -> case decodeChachaStreamParams params of
+                Just (counter, nonce) -> Just (encodeChachaIv counter nonce)
+                _ -> Nothing
+            | otherwise -> Just params
 
     -- | AEAD cipher effects: the @gcm-params/1@ image decodes to
     -- (IV, AAD, tag length); the key length selects the AES width.

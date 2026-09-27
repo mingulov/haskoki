@@ -32,6 +32,7 @@ import Data.Word (Word64)
 
 import Haskoki.Attribute.Generated (mustKeyTypeId)
 import Haskoki.Recipe.Ccm (CcmRecipe (..), ccmRecipes)
+import Haskoki.Recipe.Chacha20 (Chacha20Recipe (..), chachaRecipes)
 import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipes)
 import Haskoki.Recipe.Cmac (CmacRecipe (..), cmacRecipes)
 import Haskoki.Recipe.Des3Mac (Des3MacRecipe (..), des3macRecipes)
@@ -68,6 +69,8 @@ matrixTable = Map.fromList (concat
     | r <- gcmRecipes, o <- [OpEncrypt, OpDecrypt] ]
   , [ ((midOf (ccmName r), o), [ckkAes])
     | r <- ccmRecipes, o <- [OpEncrypt, OpDecrypt] ]
+  , [ ((midOf (chachaName r), o), [ckkChacha20])
+    | r <- chachaRecipes, o <- [OpEncrypt, OpDecrypt] ]
   , [ ((midOf (rcName r), o), [if rcDes3 r then ckkDes3 else ckkAes])
     | r <- cmacRecipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (rdmName r), o), [ckkDes3])
@@ -82,3 +85,4 @@ matrixTable = Map.fromList (concat
     ckkEc = mustKeyTypeId "CKK_EC"
     ckkAes = mustKeyTypeId "CKK_AES"
     ckkDes3 = mustKeyTypeId "CKK_DES3"
+    ckkChacha20 = mustKeyTypeId "CKK_CHACHA20"

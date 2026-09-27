@@ -361,6 +361,7 @@ data CipherSpec
   | C_ARIA128_ECB | C_ARIA192_ECB | C_ARIA256_ECB
   | C_CAMELLIA128_CBC | C_CAMELLIA192_CBC | C_CAMELLIA256_CBC
   | C_CAMELLIA128_ECB | C_CAMELLIA192_ECB | C_CAMELLIA256_ECB
+  | C_CHACHA20
   deriving (Eq, Ord, Show)
 
 -- | The AES key-wrap specs: KW runs RFC 3394 (input a multiple
@@ -445,11 +446,16 @@ cipherKeyLens spec = case spec of
   C_CAMELLIA128_ECB -> [16]
   C_CAMELLIA192_ECB -> [24]
   C_CAMELLIA256_ECB -> [32]
+  C_CHACHA20 -> [32]
 
 -- | IV length in bytes per cipher: the block width for CBC, CTS,
 -- CFB128, CFB8, CFB1 and OFB, 16 for CTR, 16 for the XTS tweak,
 -- 0 for ECB, KW and KWP (wraps use the fixed AIV, never a caller
--- IV). Both engines enforce this; RecipeCipherSpec pins it
+-- IV), 16 for ChaCha20 (the 4-byte little-endian initial block
+-- counter plus the 12-byte nonce — exactly the IV layout
+-- @EVP_chacha20@ takes; the driver splits the canonical image
+-- into this framing). Both
+-- engines enforce this; RecipeCipherSpec pins it
 -- against the recipe.
 cipherIvLen :: CipherSpec -> Int
 cipherIvLen spec = case spec of
@@ -499,6 +505,7 @@ cipherIvLen spec = case spec of
   C_CAMELLIA128_ECB -> 0
   C_CAMELLIA192_ECB -> 0
   C_CAMELLIA256_ECB -> 0
+  C_CHACHA20 -> 16
 
 -- | AEAD carries its own nonce/tag lengths; padding is never implicit.
 data AeadSpec = AeadSpec

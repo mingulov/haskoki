@@ -181,6 +181,22 @@
       "scope": "Specials batch; blocks the 9 listed rows only.",
       "tests": "N/A (no behavior claimed; the rows are pinned catalog-only by RegistrySpec and refusing by SyntheticSpec).",
       "blocks_completeness": true
+    },
+    {
+      "id": "GAP-CHACHA20-COUNTER",
+      "title": "CK_CHACHA20_PARAMS block-counter byte order is unspecified in the OASIS text",
+      "status": "open",
+      "sources": [
+        "S-PD-32 header (CK_CHACHA20_PARAMS shape only)",
+        "PKCS#11 chacha20.md working text (counter/nonce widths plus the IETF variant table; no byte-order sentence)",
+        "RFC 8439 section 2.3 (ChaCha20 state words serialize little-endian)"
+      ],
+      "inconsistency": "The OASIS text pins the counter widths (32/64 bits) and the IETF variant (96-bit nonce plus 32-bit counter) but never states the byte order of the pBlockCounter bytes. Counter value 1 as LE (01 00 00 00) vs BE (00 00 00 01) selects a different keystream, so the order is observable on the wire.",
+      "affected": "CKM_CHACHA20 native-struct intake only; the canonical chacha20-params/1 codec carries the counter as an integer and is unaffected.",
+      "decision": "Interpreted 2026-09-27: decode the counter little-endian (RFC 8439 state-word order), pinned by RecipeChacha20Spec LE tests and the RFC 8439 section 2.4.2 consumer KAT. If OASIS later pins big-endian, flip leWordToInt and the KAT counter bytes together.",
+      "scope": "Cipher group; blocks nothing (served under a documented interpretation).",
+      "tests": "RecipeChacha20Spec:caseNative (LE pin 0x1234); NativeParamsSpec (struct chase); consumer_roundtrip (RFC 8439 2.4.2 KAT).",
+      "blocks_completeness": false
     }
   ]
 }

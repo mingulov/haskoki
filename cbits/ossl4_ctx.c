@@ -769,7 +769,8 @@ long hsk_ossl4_aead_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
     if (cipher == NULL)
         goto end;
     if (keylen != (size_t)EVP_CIPHER_get_key_length(cipher) ||
-        EVP_CIPHER_get_mode(cipher) != EVP_CIPH_GCM_MODE) {
+        (EVP_CIPHER_get_mode(cipher) != EVP_CIPH_GCM_MODE &&
+         EVP_CIPHER_get_nid(cipher) != NID_chacha20_poly1305)) {
         rc = HSK_OSSL4_ERR_BADPARAM;
         goto end;
     }
@@ -777,7 +778,7 @@ long hsk_ossl4_aead_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
     if (cctx == NULL)
         goto end;
     if (!EVP_EncryptInit_ex(cctx, cipher, NULL, NULL, NULL) ||
-        !EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_SET_IVLEN, (int)ivlen, NULL) ||
+        !EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_AEAD_SET_IVLEN, (int)ivlen, NULL) ||
         !EVP_EncryptInit_ex(cctx, NULL, NULL, key, iv)) {
         rc = HSK_OSSL4_ERR_BADPARAM;
         goto end;
@@ -799,7 +800,7 @@ long hsk_ossl4_aead_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
         goto end;
     if (!EVP_EncryptFinal_ex(cctx, buf + outl1, &outl2))
         goto end;
-    if (!EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_GET_TAG, (int)taglen,
+    if (!EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_AEAD_GET_TAG, (int)taglen,
                              buf + outl1 + outl2))
         goto end;
     *out = buf;
@@ -839,7 +840,8 @@ long hsk_ossl4_aead_decrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
     if (cipher == NULL)
         goto end;
     if (keylen != (size_t)EVP_CIPHER_get_key_length(cipher) ||
-        EVP_CIPHER_get_mode(cipher) != EVP_CIPH_GCM_MODE) {
+        (EVP_CIPHER_get_mode(cipher) != EVP_CIPH_GCM_MODE &&
+         EVP_CIPHER_get_nid(cipher) != NID_chacha20_poly1305)) {
         rc = HSK_OSSL4_ERR_BADPARAM;
         goto end;
     }
@@ -847,12 +849,12 @@ long hsk_ossl4_aead_decrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
     if (cctx == NULL)
         goto end;
     if (!EVP_DecryptInit_ex(cctx, cipher, NULL, NULL, NULL) ||
-        !EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_SET_IVLEN, (int)ivlen, NULL) ||
+        !EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_AEAD_SET_IVLEN, (int)ivlen, NULL) ||
         !EVP_DecryptInit_ex(cctx, NULL, NULL, key, iv)) {
         rc = HSK_OSSL4_ERR_BADPARAM;
         goto end;
     }
-    if (!EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_SET_TAG, (int)taglen,
+    if (!EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_AEAD_SET_TAG, (int)taglen,
                              (void *)tag)) {
         rc = HSK_OSSL4_ERR_BADPARAM;
         goto end;

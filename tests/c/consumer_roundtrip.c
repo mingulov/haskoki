@@ -2282,6 +2282,189 @@ int main(int argc, char **argv) {
       rv = f->C_EncryptInit(esess, &gm, ekey);
       CHECKC(rv == CKR_ARGUMENTS_BAD, "GCM generated-IV refused");
     }
+    /* ChaCha20: keygen (exact-32) -> raw-stream KAT (RFC 8439
+     * 2.4.2) -> Poly1305 AEAD KAT (RFC 8439 2.8.2) + tamper
+     * closed. The full legs run in both topologies: the pinned
+     * shim forwards both chacha shapes byte-intact (probed
+     * direct==proxied on 0x1226), so no PARAM_INVALID branch. */
+    {
+      static const char csun[] = "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+      static const CK_BYTE c20ct[114] = {
+        0x6e, 0x2e, 0x35, 0x9a, 0x25, 0x68, 0xf9, 0x80, 0x41, 0xba,
+        0x07, 0x28, 0xdd, 0x0d, 0x69, 0x81, 0xe9, 0x7e, 0x7a, 0xec,
+        0x1d, 0x43, 0x60, 0xc2, 0x0a, 0x27, 0xaf, 0xcc, 0xfd, 0x9f,
+        0xae, 0x0b, 0xf9, 0x1b, 0x65, 0xc5, 0x52, 0x47, 0x33, 0xab,
+        0x8f, 0x59, 0x3d, 0xab, 0xcd, 0x62, 0xb3, 0x57, 0x16, 0x39,
+        0xd6, 0x24, 0xe6, 0x51, 0x52, 0xab, 0x8f, 0x53, 0x0c, 0x35,
+        0x9f, 0x08, 0x61, 0xd8, 0x07, 0xca, 0x0d, 0xbf, 0x50, 0x0d,
+        0x6a, 0x61, 0x56, 0xa3, 0x8e, 0x08, 0x8a, 0x22, 0xb6, 0x5e,
+        0x52, 0xbc, 0x51, 0x4d, 0x16, 0xcc, 0xf8, 0x06, 0x81, 0x8c,
+        0xe9, 0x1a, 0xb7, 0x79, 0x37, 0x36, 0x5a, 0xf9, 0x0b, 0xbf,
+        0x74, 0xa3, 0x5b, 0xe6, 0xb4, 0x0b, 0x8e, 0xed, 0xf2, 0x78,
+        0x5e, 0x42, 0x87, 0x4d
+      };
+      static const CK_BYTE c20pct[114] = {
+        0xd3, 0x1a, 0x8d, 0x34, 0x64, 0x8e, 0x60, 0xdb, 0x7b, 0x86,
+        0xaf, 0xbc, 0x53, 0xef, 0x7e, 0xc2, 0xa4, 0xad, 0xed, 0x51,
+        0x29, 0x6e, 0x08, 0xfe, 0xa9, 0xe2, 0xb5, 0xa7, 0x36, 0xee,
+        0x62, 0xd6, 0x3d, 0xbe, 0xa4, 0x5e, 0x8c, 0xa9, 0x67, 0x12,
+        0x82, 0xfa, 0xfb, 0x69, 0xda, 0x92, 0x72, 0x8b, 0x1a, 0x71,
+        0xde, 0x0a, 0x9e, 0x06, 0x0b, 0x29, 0x05, 0xd6, 0xa5, 0xb6,
+        0x7e, 0xcd, 0x3b, 0x36, 0x92, 0xdd, 0xbd, 0x7f, 0x2d, 0x77,
+        0x8b, 0x8c, 0x98, 0x03, 0xae, 0xe3, 0x28, 0x09, 0x1b, 0x58,
+        0xfa, 0xb3, 0x24, 0xe4, 0xfa, 0xd6, 0x75, 0x94, 0x55, 0x85,
+        0x80, 0x8b, 0x48, 0x31, 0xd7, 0xbc, 0x3f, 0xf4, 0xde, 0xf0,
+        0x8e, 0x4b, 0x7a, 0x9d, 0xe5, 0x76, 0xd2, 0x65, 0x86, 0xce,
+        0xc6, 0x4b, 0x61, 0x16
+      };
+      static const CK_BYTE c20tag[16] = {
+        0x1a, 0xe1, 0x0b, 0x59, 0x4f, 0x09, 0xe2, 0x6a,
+        0x7e, 0x90, 0x2e, 0xcb, 0xd0, 0x60, 0x06, 0x91
+      };
+      CK_OBJECT_CLASS ccls = CKO_SECRET_KEY;
+      CK_KEY_TYPE ckt = CKK_CHACHA20;
+      CK_BBOOL cFalse = CK_FALSE, cTrue = CK_TRUE;
+      CK_ULONG cvlen = 32;
+      CK_BYTE ckey[32] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+      };
+      CK_BYTE pkey[32] = {
+        0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+        0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
+        0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+        0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f
+      };
+      CK_BYTE ctr1[4] = { 0x01, 0x00, 0x00, 0x00 };
+      CK_BYTE ctr0[4] = { 0x00, 0x00, 0x00, 0x00 };
+      CK_BYTE cnonce[12] = {
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4a,
+        0x00, 0x00, 0x00, 0x00
+      };
+      CK_BYTE pnonce[12] = {
+        0x07, 0x00, 0x00, 0x00, 0x40, 0x41, 0x42, 0x43,
+        0x44, 0x45, 0x46, 0x47
+      };
+      CK_BYTE paad[12] = {
+        0x50, 0x51, 0x52, 0x53, 0xc0, 0xc1, 0xc2, 0xc3,
+        0xc4, 0xc5, 0xc6, 0xc7
+      };
+      CK_BYTE cct[130], cpt[130];
+      CK_ULONG cctLen, cptLen;
+      CK_OBJECT_HANDLE c20key = 0, c20pkey = 0, c20gkey = 0;
+      CK_MECHANISM c20kg, c20m, c20pm;
+      CK_CHACHA20_PARAMS c20p;
+      CK_SALSA20_CHACHA20_POLY1305_PARAMS c20pp;
+      CK_ATTRIBUTE ctmpl[] = {
+        { CKA_CLASS, &ccls, sizeof(ccls) },
+        { CKA_KEY_TYPE, &ckt, sizeof(ckt) },
+        { CKA_VALUE, ckey, sizeof(ckey) },
+        { CKA_TOKEN, &cFalse, sizeof(cFalse) },
+        { CKA_ENCRYPT, &cTrue, sizeof(cTrue) },
+        { CKA_DECRYPT, &cTrue, sizeof(cTrue) }
+      };
+      CK_ATTRIBUTE cptmpl[] = {
+        { CKA_CLASS, &ccls, sizeof(ccls) },
+        { CKA_KEY_TYPE, &ckt, sizeof(ckt) },
+        { CKA_VALUE, pkey, sizeof(pkey) },
+        { CKA_TOKEN, &cFalse, sizeof(cFalse) },
+        { CKA_ENCRYPT, &cTrue, sizeof(cTrue) },
+        { CKA_DECRYPT, &cTrue, sizeof(cTrue) }
+      };
+      CK_ATTRIBUTE cgtmpl[] = {
+        { CKA_CLASS, &ccls, sizeof(ccls) },
+        { CKA_KEY_TYPE, &ckt, sizeof(ckt) },
+        { CKA_VALUE_LEN, &cvlen, sizeof(cvlen) },
+        { CKA_TOKEN, &cFalse, sizeof(cFalse) },
+        { CKA_ENCRYPT, &cTrue, sizeof(cTrue) },
+        { CKA_DECRYPT, &cTrue, sizeof(cTrue) }
+      };
+      CK_ATTRIBUTE cgtmplNoLen[] = {
+        { CKA_CLASS, &ccls, sizeof(ccls) },
+        { CKA_KEY_TYPE, &ckt, sizeof(ckt) },
+        { CKA_TOKEN, &cFalse, sizeof(cFalse) },
+        { CKA_ENCRYPT, &cTrue, sizeof(cTrue) },
+        { CKA_DECRYPT, &cTrue, sizeof(cTrue) }
+      };
+      CHECKC(sizeof(csun) - 1 == 114, "sunscreen vector is 114 bytes");
+      c20kg.mechanism = CKM_CHACHA20_KEY_GEN;
+      c20kg.pParameter = NULL_PTR;
+      c20kg.ulParameterLen = 0;
+      rv = f->C_GenerateKey(esess, &c20kg, cgtmpl, 6, &c20gkey);
+      CHECKC(rv == CKR_OK && c20gkey != 0, "CHACHA20 keygen ok");
+      cvlen = 16;
+      c20gkey = 0;
+      rv = f->C_GenerateKey(esess, &c20kg, cgtmpl, 6, &c20gkey);
+      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT,
+             "CHACHA20 keygen off-width refused");
+      cvlen = 32;
+      rv = f->C_GenerateKey(esess, &c20kg, cgtmplNoLen, 5, &c20gkey);
+      CHECKC(rv == CKR_TEMPLATE_INCOMPLETE,
+             "CHACHA20 keygen missing length incomplete");
+      rv = f->C_CreateObject(esess, ctmpl, 6, &c20key);
+      CHECKC(rv == CKR_OK && c20key != 0, "CHACHA20 key imports");
+      rv = f->C_CreateObject(esess, cptmpl, 6, &c20pkey);
+      CHECKC(rv == CKR_OK && c20pkey != 0, "CHACHA20 poly key imports");
+      c20p.pBlockCounter = ctr1;
+      c20p.blockCounterBits = 32;
+      c20p.pNonce = cnonce;
+      c20p.ulNonceBits = 96;
+      c20m.mechanism = CKM_CHACHA20;
+      c20m.pParameter = &c20p;
+      c20m.ulParameterLen = sizeof(c20p);
+      rv = f->C_EncryptInit(esess, &c20m, c20key);
+      CHECKC(rv == CKR_OK, "CHACHA20 EncryptInit ok");
+      cctLen = sizeof(cct);
+      rv = f->C_Encrypt(esess, (CK_BYTE_PTR) csun, 114, cct, &cctLen);
+      CHECKC(rv == CKR_OK && cctLen == 114 &&
+             memcmp(cct, c20ct, 114) == 0, "CHACHA20 RFC 2.4.2 KAT");
+      rv = f->C_DecryptInit(esess, &c20m, c20key);
+      CHECKC(rv == CKR_OK, "CHACHA20 DecryptInit ok");
+      cptLen = sizeof(cpt);
+      rv = f->C_Decrypt(esess, cct, cctLen, cpt, &cptLen);
+      CHECKC(rv == CKR_OK && cptLen == 114 &&
+             memcmp(cpt, csun, 114) == 0, "CHACHA20 decrypt recovers");
+      c20p.pBlockCounter = ctr0;
+      rv = f->C_EncryptInit(esess, &c20m, c20key);
+      CHECKC(rv == CKR_OK, "CHACHA20 counter-0 init ok");
+      cctLen = sizeof(cct);
+      rv = f->C_Encrypt(esess, (CK_BYTE_PTR) csun, 114, cct, &cctLen);
+      CHECKC(rv == CKR_OK && cctLen == 114 &&
+             memcmp(cct, c20ct, 114) != 0,
+             "CHACHA20 counter 0 differs");
+      c20p.pBlockCounter = ctr1;
+      c20pp.pNonce = pnonce;
+      c20pp.ulNonceLen = sizeof(pnonce);
+      c20pp.pAAD = paad;
+      c20pp.ulAADLen = sizeof(paad);
+      c20pm.mechanism = CKM_CHACHA20_POLY1305;
+      c20pm.pParameter = &c20pp;
+      c20pm.ulParameterLen = sizeof(c20pp);
+      rv = f->C_EncryptInit(esess, &c20pm, c20pkey);
+      CHECKC(rv == CKR_OK, "CHACHA20-POLY1305 EncryptInit ok");
+      cctLen = sizeof(cct);
+      rv = f->C_Encrypt(esess, (CK_BYTE_PTR) csun, 114, cct, &cctLen);
+      CHECKC(rv == CKR_OK && cctLen == 130 &&
+             memcmp(cct, c20pct, 114) == 0 &&
+             memcmp(cct + 114, c20tag, 16) == 0,
+             "CHACHA20-POLY1305 RFC 2.8.2 KAT");
+      rv = f->C_DecryptInit(esess, &c20pm, c20pkey);
+      CHECKC(rv == CKR_OK, "CHACHA20-POLY1305 DecryptInit ok");
+      cptLen = sizeof(cpt);
+      rv = f->C_Decrypt(esess, cct, cctLen, cpt, &cptLen);
+      CHECKC(rv == CKR_OK && cptLen == 114 &&
+             memcmp(cpt, csun, 114) == 0,
+             "CHACHA20-POLY1305 decrypt recovers");
+      cct[cctLen - 1] ^= 0x01;
+      rv = f->C_DecryptInit(esess, &c20pm, c20pkey);
+      CHECKC(rv == CKR_OK, "CHACHA20-POLY1305 DecryptInit for tamper ok");
+      cptLen = sizeof(cpt);
+      rv = f->C_Decrypt(esess, cct, cctLen, cpt, &cptLen);
+      CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID,
+             "CHACHA20-POLY1305 tamper fails closed");
+    }
     /* Non-AES block ciphers route identically: an imported ARIA-256
      * key (typed CKK_ARIA, verbatim value) drives ARIA-256-CBC while
      * the AES key object is refused by the key-type matrix. Runs

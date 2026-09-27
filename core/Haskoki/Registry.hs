@@ -112,6 +112,11 @@ import Haskoki.Recipe.Ccm
   , ccmCodecFor
   , ccmRecipes
   )
+import Haskoki.Recipe.Chacha20
+  ( Chacha20Recipe (..)
+  , chachaCodecFor
+  , chachaRecipes
+  )
 import Haskoki.Recipe.Gcm
   ( GcmRecipe (..)
   , gcmCodecFor
@@ -907,6 +912,15 @@ dBlake2b512KeyGen = promotedDesc "CKM_BLAKE2B_512_KEY_GEN"
   noParams [synthRoute OpGenerateKey "CKM_BLAKE2B_512_KEY_GEN"]
   KeyBits 512 512
 
+-- | @CKM_CHACHA20_KEY_GEN@: mechanism parameters are NULL; the
+-- length arrives via the @CKA_VALUE_LEN@ template attribute
+-- (exactly 32 bytes / 256 bits). Arrived in 3.0.
+dChacha20KeyGen :: Descriptor
+dChacha20KeyGen = promotedDesc "CKM_CHACHA20_KEY_GEN"
+  [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyKeyGen
+  noParams [synthRoute OpGenerateKey "CKM_CHACHA20_KEY_GEN"]
+  KeyBits 256 256
+
 -- | @CKM_GENERIC_SECRET_KEY_GEN@: mechanism parameters are NULL;
 -- the length arrives via the @CKA_VALUE_LEN@ template attribute
 -- (1-255 bytes: the floor refuses empty secrets, the ceiling is
@@ -1068,6 +1082,27 @@ aeadDescs =
       KeyBytes 16 32
   | r <- ccmRecipes
   ]
+  ++
+  [ promotedDesc (chachaName r) [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyAead
+      (chachaCodecFor r)
+      [ mechRoute OpEncrypt (chachaName r) ["A16", "A37", "A39"]
+      , mechRoute OpDecrypt (chachaName r) ["A16", "A37", "A39"]
+      ]
+      KeyBytes 32 32
+  | r <- chachaRecipes, chachaName r == "CKM_CHACHA20_POLY1305"
+  ]
+
+-- | The raw ChaCha20 stream row (256-bit keys only).
+chachaStreamDescs :: [Descriptor]
+chachaStreamDescs =
+  [ promotedDesc (chachaName r) [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyCipher
+      (chachaCodecFor r)
+      [ mechRoute OpEncrypt (chachaName r) ["A16", "A37", "A39"]
+      , mechRoute OpDecrypt (chachaName r) ["A16", "A37", "A39"]
+      ]
+      KeyBytes 32 32
+  | r <- chachaRecipes, chachaName r == "CKM_CHACHA20"
+  ]
 
 -- | The curated population: 134 reviewed behavior descriptors
 -- with concrete rules, plus the full header inventory (464
@@ -1083,12 +1118,12 @@ curatedRegistry =
   where
     behaviorDescs :: [Descriptor]
     behaviorDescs =
-      ( [ dSHA256, dAESKeyGen, dDES3KeyGen, dHotpKeyGen, dGenericSecretKeyGen, dBlake2b512KeyGen
+      ( [ dSHA256, dAESKeyGen, dDES3KeyGen, dHotpKeyGen, dGenericSecretKeyGen, dBlake2b512KeyGen, dChacha20KeyGen
         , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dEdwardsKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dMlKem
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160, dBLAKE2B_512
-        ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ rsaPkcs1Descs
+        ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs
           ++ cmacDescs ++ des3macDescs ++ kdfDescs ++ tlsPrfDescs ++ otpDescs
       )

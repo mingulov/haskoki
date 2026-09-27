@@ -60,6 +60,7 @@ module Haskoki.Operation.KeyManagement
   , ckkDes3
   , ckkHotp
   , ckkBlake2b512Hmac
+  , ckkChacha20
   , ckkMlKem
   , ckkMlDsa
   , ckkSlhDsa
@@ -68,6 +69,7 @@ module Haskoki.Operation.KeyManagement
   , des3KeyGenMech
   , hotpKeyGenMech
   , blake2b512KeyGenMech
+  , chacha20KeyGenMech
   , genericSecretKeyGenMech
   , genericSecretKeygenMinBytes
   , genericSecretKeygenMaxBytes
@@ -174,6 +176,7 @@ import Haskoki.Registry.Generated
   , ckm_AES_KEY_WRAP_KWP
   , ckm_AES_KEY_WRAP_PAD
   , ckm_BLAKE2B_512_KEY_GEN
+  , ckm_CHACHA20_KEY_GEN
   , ckm_DES3_KEY_GEN
   , ckm_DSA_KEY_PAIR_GEN
   , ckm_DSA_PARAMETER_GEN
@@ -263,6 +266,10 @@ ckkHotp = mustKeyTypeId "CKK_HOTP"
 ckkBlake2b512Hmac :: Word64
 ckkBlake2b512Hmac = mustKeyTypeId "CKK_BLAKE2B_512_HMAC"
 
+-- | @CKK_CHACHA20@ (generated id, resolved by name).
+ckkChacha20 :: Word64
+ckkChacha20 = mustKeyTypeId "CKK_CHACHA20"
+
 -- | @CKK_ML_KEM@ (generated id, resolved by name).
 ckkMlKem :: Word64
 ckkMlKem = mustKeyTypeId "CKK_ML_KEM"
@@ -290,6 +297,10 @@ hotpKeyGenMech = MechanismId (ckm_HOTP_KEY_GEN)
 -- | @CKM_BLAKE2B_512_KEY_GEN@ (generated id, resolved by name).
 blake2b512KeyGenMech :: MechanismId
 blake2b512KeyGenMech = MechanismId (ckm_BLAKE2B_512_KEY_GEN)
+
+-- | @CKM_CHACHA20_KEY_GEN@ (generated id, resolved by name).
+chacha20KeyGenMech :: MechanismId
+chacha20KeyGenMech = MechanismId (ckm_CHACHA20_KEY_GEN)
 
 -- | @CKM_GENERIC_SECRET_KEY_GEN@ (generated id, resolved by name).
 genericSecretKeyGenMech :: MechanismId
@@ -1776,6 +1787,24 @@ planGenerateKey rules model st mech tmpl =
               "BLAKE2B-512 value length is malformed")
             Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
               "BLAKE2B-512 keygen needs CKA_VALUE_LEN")
+      -- ChaCha20 keys mint at 256 bits only: the single-width
+      -- keygen fixes the size, so any other length is
+      -- inconsistent and a missing length is incomplete (the
+      -- HOTP explicit-length precedent, not the DES3 default).
+      | mech == chacha20KeyGenMech = case checkKeyTemplate ckoSecretKey ckkChacha20 tmpl of
+          Left deny -> Left deny
+          Right attrs -> case Map.lookup AttrValueLen attrs of
+            Just (ValULong n)
+              | n == 32 -> Right
+                  ( PwGenerateKey (pendingFromAttrs st attrs)
+                  , FxGenerateKey mech BS.empty (encodeGenArgs (GenBytes 32))
+                  )
+              | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                  ("ChaCha20 length must be 32 bytes: " ++ show n))
+            Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "ChaCha20 value length is malformed")
+            Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+              "ChaCha20 keygen needs CKA_VALUE_LEN")
       | mech == genericSecretKeyGenMech =
           case checkKeyTemplate ckoSecretKey ckkGenericSecret tmpl of
           Left deny -> Left deny
