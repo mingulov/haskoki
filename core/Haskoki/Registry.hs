@@ -556,11 +556,15 @@ dSHA1 = digestDesc "CKM_SHA_1" allBaselines
 dMD5 = digestDesc "CKM_MD5" allBaselines
 dRIPEMD160 = digestDesc "CKM_RIPEMD160" allBaselines
 
--- | Baseline span for an HMAC recipe name (SHA-3 arrived in 3.0;
--- the rest, GENERAL rows included, are 2.40).
+dBLAKE2B_512 :: Descriptor
+dBLAKE2B_512 = digestDesc "CKM_BLAKE2B_512" [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
+
+-- | Baseline span for an HMAC recipe name (SHA-3 and BLAKE2B
+-- arrived in 3.0; the rest, GENERAL rows included, are 2.40).
 hmacBaselines :: MechanismName -> [Pkcs11Version]
 hmacBaselines name
   | "CKM_SHA3_" `T.isPrefixOf` name = [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
+  | "CKM_BLAKE2B_" `T.isPrefixOf` name = [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
   | otherwise = allBaselines
 
 -- | The HMAC behavior group, derived from the recipe table:
@@ -792,12 +796,18 @@ des3macDescs =
 -- | The KDF behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from 'kdfCodecFor',
 -- the derive route citing the planner case (A20), the synthetic
--- construction (A37), and the real vectors (A39). All rows predate
--- 2.40; key bounds are mechanism-specific (widths follow the
--- digest or the planned length).
+-- construction (A37), and the real vectors (A39). The SHA rows
+-- predate 2.40; the BLAKE2B row arrived in 3.0. Key bounds are
+-- mechanism-specific (widths follow the digest or the planned
+-- length).
+kdfBaselines :: MechanismName -> [Pkcs11Version]
+kdfBaselines name
+  | "CKM_BLAKE2B_" `T.isPrefixOf` name = [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
+  | otherwise = allBaselines
+
 kdfDescs :: [Descriptor]
 kdfDescs =
-  [ promotedDesc (rkName r) allBaselines FamilyDerive
+  [ promotedDesc (rkName r) (kdfBaselines (rkName r)) FamilyDerive
       (kdfCodecFor r)
       [ mechRoute OpDerive (rkName r) ["A20", "A37", "A39"]
       ]
@@ -886,6 +896,16 @@ dDES3KeyGen :: Descriptor
 dDES3KeyGen = promotedDesc "CKM_DES3_KEY_GEN" allBaselines FamilyKeyGen
   noParams [synthRoute OpGenerateKey "CKM_DES3_KEY_GEN"]
   KeyBits 128 192
+
+-- | @CKM_BLAKE2B_512_KEY_GEN@: mechanism parameters are NULL;
+-- the length arrives via the @CKA_VALUE_LEN@ template attribute
+-- (exactly 64 bytes, the digest width), not via pParameter.
+-- Arrived in 3.0.
+dBlake2b512KeyGen :: Descriptor
+dBlake2b512KeyGen = promotedDesc "CKM_BLAKE2B_512_KEY_GEN"
+  [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyKeyGen
+  noParams [synthRoute OpGenerateKey "CKM_BLAKE2B_512_KEY_GEN"]
+  KeyBits 512 512
 
 -- | @CKM_GENERIC_SECRET_KEY_GEN@: mechanism parameters are NULL;
 -- the length arrives via the @CKA_VALUE_LEN@ template attribute
@@ -1063,11 +1083,11 @@ curatedRegistry =
   where
     behaviorDescs :: [Descriptor]
     behaviorDescs =
-      ( [ dSHA256, dAESKeyGen, dDES3KeyGen, dHotpKeyGen, dGenericSecretKeyGen
+      ( [ dSHA256, dAESKeyGen, dDES3KeyGen, dHotpKeyGen, dGenericSecretKeyGen, dBlake2b512KeyGen
         , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dEdwardsKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dMlKem
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
-        , dSHA1, dMD5, dRIPEMD160
+        , dSHA1, dMD5, dRIPEMD160, dBLAKE2B_512
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs
           ++ cmacDescs ++ des3macDescs ++ kdfDescs ++ tlsPrfDescs ++ otpDescs

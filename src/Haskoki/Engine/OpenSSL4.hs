@@ -1137,6 +1137,7 @@ digestFetchName alg = case alg of
   D_RIPEMD160 -> Just "RIPEMD160"
   D_SHAKE128 -> Nothing
   D_SHAKE256 -> Nothing
+  D_BLAKE2B512 -> Just "BLAKE2B-512"
 
 -- | The digest set: every fixed-length 'DigestAlg' with a fetch
 -- name. Candidates that fail the fetch probe are narrowed out of the
@@ -1147,6 +1148,7 @@ t16DigestAlgs =
   , D_SHA512_224, D_SHA512_256
   , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
   , D_RIPEMD160
+  , D_BLAKE2B512
   ]
 
 -- | Slice a truncated tag off a sign answer (full tag on 'Nothing').
@@ -1385,7 +1387,7 @@ genSupported (OSSL4Backend env) spec
   | GenMLKEM alg <- spec
   , Set.member alg (kcAlgs (bcKems (osslCaps env))) = Nothing
   | GenSym alg _ <- spec
-  , alg `elem` ["AES", "DES3", "HOTP", "GENERIC"] = Nothing
+  , alg `elem` ["AES", "DES3", "HOTP", "GENERIC", "BLAKE2B-512-HMAC"] = Nothing
   | GenRSA {} <- spec
   , Set.member "RSA-PSS" (scSpecs (bcSigs (osslCaps env))) = Nothing
   | otherwise = Just ("keygen not in set: " ++ show spec)
@@ -1417,6 +1419,9 @@ symLenOk "HOTP" n
 symLenOk "GENERIC" n
   | n >= 1 && n <= 255 = Nothing
   | otherwise = Just ("generic-secret keygen length must be 1 to 255 bytes: " ++ show n)
+symLenOk "BLAKE2B-512-HMAC" n
+  | n == 64 = Nothing
+  | otherwise = Just ("BLAKE2B-512-HMAC keygen length must be 64 bytes: " ++ show n)
 symLenOk alg _ = Just ("symmetric keygen not in set: " ++ alg)
 
 -- ---------------------------------------------------------------------------

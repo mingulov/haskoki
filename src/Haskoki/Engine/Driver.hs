@@ -254,6 +254,7 @@ import Haskoki.Operation.KeyManagement
   , aesKeyGenMech
   , aesKwMech
   , aesKwPadMech
+  , blake2b512KeyGenMech
   , des3KeyGenMech
   , aesKwpMech
   , decodeGenArgs
@@ -307,7 +308,8 @@ import Haskoki.Recipe.TlsPrf
   )
 import Haskoki.Registry (MechanismId (..), MechanismName)
 import Haskoki.Registry.Generated
-  ( ckm_MD5
+  ( ckm_BLAKE2B_512
+  , ckm_MD5
   , ckm_RIPEMD160
   , ckm_SHA224
   , ckm_SHA256
@@ -329,6 +331,7 @@ import qualified Haskoki.Outcome as O
 -- table and the recipe can never drift silently).
 digestAlgFor :: MechanismId -> Maybe DigestAlg
 digestAlgFor mech
+  | mech == MechanismId (ckm_BLAKE2B_512) = Just D_BLAKE2B512
   | mech == MechanismId (ckm_SHA224) = Just D_SHA224
   | mech == MechanismId (ckm_SHA256) = Just D_SHA256
   | mech == MechanismId (ckm_SHA384) = Just D_SHA384
@@ -527,6 +530,7 @@ hmacDigest name
   where
     stemAlg :: MechanismName -> Maybe DigestAlg
     stemAlg stem
+      | stem == "CKM_BLAKE2B_512" = Just D_BLAKE2B512
       | stem == "CKM_SHA224" = Just D_SHA224
       | stem == "CKM_SHA256" = Just D_SHA256
       | stem == "CKM_SHA384" = Just D_SHA384
@@ -757,6 +761,7 @@ isAesKwWrapMech mech =
 -- | Recipe digest stem onto the backend digest.
 rsaDigest :: T.Text -> Maybe DigestAlg
 rsaDigest stem
+  | stem == "BLAKE2B_512" = Just D_BLAKE2B512
   | stem == "MD5" = Just D_MD5
   | stem == "RIPEMD160" = Just D_RIPEMD160
   | stem == "SHA_1" = Just D_SHA1
@@ -1248,6 +1253,8 @@ runEffect env resolve fx = case fx of
             toKeyPair <$> generateKey env (GenSym "DES3" n)
           (m, GenBytes n) | m == hotpKeyGenMech ->
             toKeyPair <$> generateKey env (GenSym "HOTP" n)
+          (m, GenBytes n) | m == blake2b512KeyGenMech ->
+            toKeyPair <$> generateKey env (GenSym "BLAKE2B-512-HMAC" n)
           (m, GenBytes n) | m == genericSecretKeyGenMech ->
             toKeyPair <$> generateKey env (GenSym "GENERIC" n)
           (m, GenEc curve) | m == ecKeyPairGenMech ->

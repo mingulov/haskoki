@@ -104,7 +104,9 @@ import Haskoki.Operation.KeyManagement
   , aesKwMech
   , aesKwPadMech
   , aesKwpMech
+  , blake2b512KeyGenMech
   , ckkAes
+  , ckkBlake2b512Hmac
   , ckkDes3
   , ckkDsa
   , ckkEc
@@ -191,6 +193,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Short-buffer encaps creates no key" caseKemEncapsShort
   , testCase "AES keygen delivers one handle" caseAesKeygen
   , testCase "DES3 keygen delivers one handle" caseDes3Keygen
+  , testCase "BLAKE2B-512 keygen mints 64 bytes" caseBlake2b512Keygen
   , testCase "AES keygen refuses PQC wrap flags" caseAesKeygenEncapsulate
   , testCase "Init enforces the allowed-mechanism list" caseInitAllowedMechanisms
   , testCase "Generic-secret keygen mints typed material in bounds" caseGenericSecretKeygen
@@ -751,6 +754,53 @@ caseDes3Keygen = withSynth $ \answer -> do
   case keyBytesOf ost3 of
     Just mat3 -> assertEqual "DES3 default material" 24 (BS.length mat3)
     Nothing -> assertFailure "generated key lacks material"
+
+caseBlake2b512Keygen :: IO ()
+caseBlake2b512Keygen = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- genBlake2b512Key answer m0 st (blake2b512Tmpl 64)
+  Just ost <- pure (resolveHandle m1 h)
+  assertEqual "key class" (Just (ValULong ckoSecretKey)) (Map.lookup AttrClass (osAttrs ost))
+  assertEqual "key type" (Just (ValULong ckkBlake2b512Hmac)) (Map.lookup AttrKeyType (osAttrs ost))
+  case keyBytesOf ost of
+    Just mat -> assertEqual "BLAKE2B-512 material" 64 (BS.length mat)
+    Nothing -> assertFailure "generated key lacks material"
+  -- Off-width refuses inconsistent; a missing length refuses
+  -- incomplete (exact-64, the HOTP explicit-length precedent).
+  case planGenerateKey defaultRules m1 st blake2b512KeyGenMech (blake2b512Tmpl 32) of
+    KeyDenied deny -> assertEqual "bad length code"
+      CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure ("32-byte BLAKE2B-512 must refuse: " ++ show other)
+  case planGenerateKey defaultRules m1 st blake2b512KeyGenMech
+      [a | a@(t, _) <- blake2b512Tmpl 64, t /= AttrValueLen] of
+    KeyDenied deny -> assertEqual "missing length code"
+      CKR_TEMPLATE_INCOMPLETE (kdCode deny)
+    other -> assertFailure ("missing length must refuse: " ++ show other)
+
+-- | Generate one BLAKE2B-512 HMAC key through the planner +
+-- synthetic backend.
+genBlake2b512Key :: (Model -> CryptoEffect -> IO CryptoResult)
+  -> Model -> SessionState -> [(AttributeType, AttributeValue)]
+  -> IO (Model, ExternalHandle)
+genBlake2b512Key answer m st tmpl = case planGenerateKey defaultRules m st blake2b512KeyGenMech tmpl of
+  KeyEffect pw fx -> do
+    res <- answer m fx
+    c <- finishCommit m st pw res 1
+    h <- handleOf (pcOutputs c !! 0)
+    m' <- expectRight (publishDelta m (pcDelta c))
+    pure (m', h)
+  other -> assertFailure ("keygen plan is not an effect: " ++ show other) >> undefined
+
+blake2b512Tmpl :: Int -> [(AttributeType, AttributeValue)]
+blake2b512Tmpl n =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong ckkBlake2b512Hmac)
+  , (AttrValueLen, ValULong (fromIntegral n))
+  , (AttrToken, ValBool False)
+  , (AttrSign, ValBool True)
+  , (AttrVerify, ValBool True)
+  ]
 
 caseAesKeygenEncapsulate :: IO ()
 caseAesKeygenEncapsulate = withSynth $ \_answer -> do

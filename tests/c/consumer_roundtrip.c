@@ -1209,6 +1209,95 @@ int main(int argc, char **argv) {
                "proxied HOTP params are PARAM_INVALID");
       }
     }
+    /* BLAKE2B-512: digest KAT, HMAC keygen (exact-64) ->
+     * sign/verify KAT, GENERAL truncation, typed refuses. */
+    {
+      static const CK_BYTE b2abc[64] = {
+        0xba, 0x80, 0xa5, 0x3f, 0x98, 0x1c, 0x4d, 0x0d, 0x6a, 0x27,
+        0x97, 0xb6, 0x9f, 0x12, 0xf6, 0xe9, 0x4c, 0x21, 0x2f, 0x14,
+        0x68, 0x5a, 0xc4, 0xb7, 0x4b, 0x12, 0xbb, 0x6f, 0xdb, 0xff,
+        0xa2, 0xd1, 0x7d, 0x87, 0xc5, 0x39, 0x2a, 0xab, 0x79, 0x2d,
+        0xc2, 0x52, 0xd5, 0xde, 0x45, 0x33, 0xcc, 0x95, 0x18, 0xd3,
+        0x8a, 0xa8, 0xdb, 0xf1, 0x92, 0x5a, 0xb9, 0x23, 0x86, 0xed,
+        0xd4, 0x00, 0x99, 0x23
+      };
+      static const CK_BYTE b2tc1[64] = {
+        0x35, 0x8a, 0x6a, 0x18, 0x49, 0x24, 0x89, 0x4f, 0xc3, 0x4b,
+        0xee, 0x56, 0x80, 0xee, 0xdf, 0x57, 0xd8, 0x4a, 0x37, 0xbb,
+        0x38, 0x83, 0x2f, 0x28, 0x8e, 0x3b, 0x27, 0xdc, 0x63, 0xa9,
+        0x8c, 0xc8, 0xc9, 0x1e, 0x76, 0xda, 0x47, 0x6b, 0x50, 0x8b,
+        0xc6, 0xb2, 0xd4, 0x08, 0xa2, 0x48, 0x85, 0x74, 0x52, 0x90,
+        0x6e, 0x4a, 0x20, 0xb4, 0x8c, 0x6b, 0x4b, 0x55, 0xd2, 0xdf,
+        0x0f, 0xe1, 0xdd, 0x24
+      };
+      CK_MECHANISM b2dm, b2hm, b2gm, b2kg;
+      CK_KEY_TYPE b2kt = CKK_BLAKE2B_512_HMAC;
+      CK_ULONG b2vlen = 64, b2trunc = 32;
+      CK_BYTE b2dig[64], b2key[20], b2hb[64], b2g[32];
+      CK_ULONG b2digLen, b2hbLen, b2gLen;
+      CK_OBJECT_HANDLE b2h = 0, b2gkey = 0;
+      CK_ATTRIBUTE b2tmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &b2kt, sizeof(b2kt) },
+        { CKA_VALUE, b2key, sizeof(b2key) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE b2gtmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &b2kt, sizeof(b2kt) },
+        { CKA_VALUE_LEN, &b2vlen, sizeof(b2vlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      memset(b2key, 0x0b, sizeof(b2key));
+      b2dm.mechanism = CKM_BLAKE2B_512;
+      b2dm.pParameter = NULL_PTR;
+      b2dm.ulParameterLen = 0;
+      rv = f->C_DigestInit(ssess, &b2dm);
+      CHECKC(rv == CKR_OK, "BLAKE2B-512 DigestInit ok");
+      b2digLen = sizeof(b2dig);
+      rv = f->C_Digest(ssess, (CK_BYTE_PTR) "abc", 3, b2dig, &b2digLen);
+      CHECKC(rv == CKR_OK && b2digLen == 64 &&
+             memcmp(b2dig, b2abc, 64) == 0, "BLAKE2B-512 digest KAT");
+      b2kg.mechanism = CKM_BLAKE2B_512_KEY_GEN;
+      b2kg.pParameter = NULL_PTR;
+      b2kg.ulParameterLen = 0;
+      rv = f->C_GenerateKey(ssess, &b2kg, b2gtmpl, 6, &b2gkey);
+      CHECKC(rv == CKR_OK && b2gkey != 0, "BLAKE2B-512 keygen ok");
+      b2vlen = 32;
+      b2gkey = 0;
+      rv = f->C_GenerateKey(ssess, &b2kg, b2gtmpl, 6, &b2gkey);
+      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT,
+             "BLAKE2B-512 keygen off-width refused");
+      b2vlen = 64;
+      rv = f->C_CreateObject(ssess, b2tmpl, 6, &b2h);
+      CHECKC(rv == CKR_OK && b2h != 0, "BLAKE2B-512-HMAC key imports");
+      b2hm.mechanism = CKM_BLAKE2B_512_HMAC;
+      b2hm.pParameter = NULL_PTR;
+      b2hm.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &b2hm, b2h);
+      CHECKC(rv == CKR_OK, "BLAKE2B-512-HMAC SignInit ok");
+      b2hbLen = sizeof(b2hb);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "Hi There", 8, b2hb, &b2hbLen);
+      CHECKC(rv == CKR_OK && b2hbLen == 64 &&
+             memcmp(b2hb, b2tc1, 64) == 0, "BLAKE2B-512-HMAC KAT");
+      rv = f->C_VerifyInit(ssess, &b2hm, b2h);
+      CHECKC(rv == CKR_OK, "BLAKE2B-512-HMAC VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "Hi There", 8, b2hb, b2hbLen);
+      CHECKC(rv == CKR_OK, "BLAKE2B-512-HMAC verify ok");
+      b2gm.mechanism = CKM_BLAKE2B_512_HMAC_GENERAL;
+      b2gm.pParameter = &b2trunc;
+      b2gm.ulParameterLen = sizeof(b2trunc);
+      rv = f->C_SignInit(ssess, &b2gm, b2h);
+      CHECKC(rv == CKR_OK, "BLAKE2B-512-HMAC-GENERAL SignInit ok");
+      b2gLen = sizeof(b2g);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "Hi There", 8, b2g, &b2gLen);
+      CHECKC(rv == CKR_OK && b2gLen == 32 &&
+             memcmp(b2g, b2tc1, 32) == 0, "GENERAL truncation is the prefix");
+    }
     gm.mechanism = CKM_SHA256_HMAC_GENERAL;
     gm.pParameter = &gpar;
     gm.ulParameterLen = sizeof(gpar);

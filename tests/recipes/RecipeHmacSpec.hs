@@ -100,6 +100,7 @@ groupShape =
   , ("SHA_1", 20, D_SHA1)
   , ("MD5", 16, D_MD5)
   , ("RIPEMD160", 20, D_RIPEMD160)
+  , ("BLAKE2B_512", 64, D_BLAKE2B512)
   ]
 
 plainName :: Text -> Text
@@ -110,7 +111,7 @@ generalName stem = "CKM_" <> stem <> "_HMAC_GENERAL"
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 26 (length hmacRecipes)
+  assertEqual "recipe count" 28 (length hmacRecipes)
   let find name =
         [ r | r <- hmacRecipes, hrName r == name ]
   mapM_ (\(stem, width, _alg) -> do

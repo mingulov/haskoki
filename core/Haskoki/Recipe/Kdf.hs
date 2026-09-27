@@ -156,6 +156,7 @@ kdfParamsValid r params
 -- 'Nothing' for PBKD2 (unbounded construction, shared ceiling).
 kdfShaWidth :: KdfRecipe -> Maybe Int
 kdfShaWidth r = case rkDigestStem r of
+  Just "BLAKE2B_512" -> Just 64
   Just "SHA_1" -> Just 20
   Just "SHA224" -> Just 28
   Just "SHA256" -> Just 32
@@ -169,10 +170,12 @@ kdfShaWidth r = case rkDigestStem r of
   Just "SHA3_512" -> Just 64
   _ -> Nothing
 
--- | All twelve covered mechanisms.
+-- | All thirteen covered mechanisms (eleven SHA rows, one
+-- BLAKE2B-512 row, PBKD2).
 kdfRecipes :: [KdfRecipe]
 kdfRecipes =
-  [ KdfRecipe "CKM_SHA1_KEY_DERIVATION" False (Just "SHA_1")
+  [ KdfRecipe "CKM_BLAKE2B_512_KEY_DERIVE" False (Just "BLAKE2B_512")
+  , KdfRecipe "CKM_SHA1_KEY_DERIVATION" False (Just "SHA_1")
   , KdfRecipe "CKM_SHA224_KEY_DERIVATION" False (Just "SHA224")
   , KdfRecipe "CKM_SHA256_KEY_DERIVATION" False (Just "SHA256")
   , KdfRecipe "CKM_SHA384_KEY_DERIVATION" False (Just "SHA384")

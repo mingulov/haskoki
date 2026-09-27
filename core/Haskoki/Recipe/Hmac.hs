@@ -111,8 +111,9 @@ hmacParamsValid r params
       Nothing -> False
   | otherwise = BS.null params
 
--- | All twenty-six covered mechanisms with their tag widths: each
--- of the thirteen digest algorithms in plain and GENERAL form.
+-- | All twenty-eight covered mechanisms with their tag widths:
+-- each of the fourteen digest algorithms in plain and GENERAL
+-- form (BLAKE2B-512 only — see 'Haskoki.Recipe.Digest').
 hmacRecipes :: [HmacRecipe]
 hmacRecipes = concatMap expand stems
   where
@@ -123,7 +124,8 @@ hmacRecipes = concatMap expand stems
       ]
     stems :: [(MechanismName, Int, MechanismName)]
     stems =
-      [ ("SHA224", 28, "CKK_SHA224_HMAC")
+      [ ("BLAKE2B_512", 64, "CKK_BLAKE2B_512_HMAC")
+      , ("SHA224", 28, "CKK_SHA224_HMAC")
       , ("SHA256", 32, "CKK_SHA256_HMAC")
       , ("SHA384", 48, "CKK_SHA384_HMAC")
       , ("SHA512", 64, "CKK_SHA512_HMAC")

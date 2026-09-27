@@ -59,6 +59,7 @@ module Haskoki.Operation.KeyManagement
   , ckkAes
   , ckkDes3
   , ckkHotp
+  , ckkBlake2b512Hmac
   , ckkMlKem
   , ckkMlDsa
   , ckkSlhDsa
@@ -66,6 +67,7 @@ module Haskoki.Operation.KeyManagement
   , aesKeyGenMech
   , des3KeyGenMech
   , hotpKeyGenMech
+  , blake2b512KeyGenMech
   , genericSecretKeyGenMech
   , genericSecretKeygenMinBytes
   , genericSecretKeygenMaxBytes
@@ -171,6 +173,7 @@ import Haskoki.Registry.Generated
   , ckm_AES_KEY_WRAP
   , ckm_AES_KEY_WRAP_KWP
   , ckm_AES_KEY_WRAP_PAD
+  , ckm_BLAKE2B_512_KEY_GEN
   , ckm_DES3_KEY_GEN
   , ckm_DSA_KEY_PAIR_GEN
   , ckm_DSA_PARAMETER_GEN
@@ -256,6 +259,10 @@ ckkAesXts = mustKeyTypeId "CKK_AES_XTS"
 ckkHotp :: Word64
 ckkHotp = mustKeyTypeId "CKK_HOTP"
 
+-- | @CKK_BLAKE2B_512_HMAC@ (generated id, resolved by name).
+ckkBlake2b512Hmac :: Word64
+ckkBlake2b512Hmac = mustKeyTypeId "CKK_BLAKE2B_512_HMAC"
+
 -- | @CKK_ML_KEM@ (generated id, resolved by name).
 ckkMlKem :: Word64
 ckkMlKem = mustKeyTypeId "CKK_ML_KEM"
@@ -279,6 +286,10 @@ des3KeyGenMech = MechanismId (ckm_DES3_KEY_GEN)
 -- | @CKM_HOTP_KEY_GEN@ (generated id, resolved by name).
 hotpKeyGenMech :: MechanismId
 hotpKeyGenMech = MechanismId (ckm_HOTP_KEY_GEN)
+
+-- | @CKM_BLAKE2B_512_KEY_GEN@ (generated id, resolved by name).
+blake2b512KeyGenMech :: MechanismId
+blake2b512KeyGenMech = MechanismId (ckm_BLAKE2B_512_KEY_GEN)
 
 -- | @CKM_GENERIC_SECRET_KEY_GEN@ (generated id, resolved by name).
 genericSecretKeyGenMech :: MechanismId
@@ -1746,6 +1757,25 @@ planGenerateKey rules model st mech tmpl =
               "HOTP value length is malformed")
             Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
               "HOTP keygen needs CKA_VALUE_LEN")
+      -- BLAKE2B-512 HMAC keys mint at the digest width only: the
+      -- per-width keygen split (160\/256\/384\/512) exists to fix
+      -- the size, so any other length is inconsistent and a
+      -- missing length is incomplete (the HOTP explicit-length
+      -- precedent, not the DES3 default).
+      | mech == blake2b512KeyGenMech = case checkKeyTemplate ckoSecretKey ckkBlake2b512Hmac tmpl of
+          Left deny -> Left deny
+          Right attrs -> case Map.lookup AttrValueLen attrs of
+            Just (ValULong n)
+              | n == 64 -> Right
+                  ( PwGenerateKey (pendingFromAttrs st attrs)
+                  , FxGenerateKey mech BS.empty (encodeGenArgs (GenBytes 64))
+                  )
+              | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                  ("BLAKE2B-512 length must be 64 bytes: " ++ show n))
+            Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "BLAKE2B-512 value length is malformed")
+            Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+              "BLAKE2B-512 keygen needs CKA_VALUE_LEN")
       | mech == genericSecretKeyGenMech =
           case checkKeyTemplate ckoSecretKey ckkGenericSecret tmpl of
           Left deny -> Left deny

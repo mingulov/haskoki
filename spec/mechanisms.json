@@ -20098,14 +20098,28 @@
       "canonical_name": "CKM_BLAKE2B_512",
       "family": "digest",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DIGEST"
+        ],
+        "key_size_unit": "not-applicable",
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: output-length parameter semantics need the base-spec prose (see source-issues.json GAP-BLAKE2B); truncation-by-slicing a full BLAKE2b output would be invented semantics.",
+      "notes": "BLAKE2B-512 digest (core/Haskoki/Recipe/Digest.hs row + D_BLAKE2B512 backend alg): plain BLAKE2b-512 (nn = 64, the full construction) via EVP BLAKE2b512 on the real backend, test construction on synthetic. One-shot + multipart. Vectors pinned (OpenSSLSpec BLAKE2B-512 KATs: the published empty/abc vectors + pinned-CLI cross-checks); the 160/256/384 widths stay planned (GAP-BLAKE2B: no output-length parameter on the EVP call, slicing would be invented semantics).",
       "numeric_id": "0x0000401b",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [],
+          "operation": "digest",
+          "output_rule": "synthetic-digest64/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BLAKE2B_512",
@@ -20114,26 +20128,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "blake2b-512",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "blake2b-512",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "blake2b-512",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "blake2b-512",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_BLAKE2B_512_HMAC",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: shares the GAP-BLAKE2B gap (HMAC output-length parameter semantics need the base-spec prose); truncation-by-slicing a full BLAKE2b output would be invented semantics. Stays planned: same output-length prose gap as the BLAKE2B digests; see source-issues.json GAP-BLAKE2B.",
+      "notes": "BLAKE2B-512 HMAC (HMAC recipe stem + D_BLAKE2B512): HMAC-BLAKE2B-512, full 64-byte tags; generic-secret and CKK_BLAKE2B_512_HMAC keys (init matrix). Vectors pinned (RoutingE2ESpec + OpenSSLSpec HMAC KATs vs the pinned CLI).",
       "numeric_id": "0x0000401c",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac64/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BLAKE2B_512_HMAC",
@@ -20142,26 +20215,80 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "blake2b-512",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "blake2b-512",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "blake2b-512",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_BLAKE2B_512_HMAC_GENERAL",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: shares the GAP-BLAKE2B gap (HMAC output-length parameter semantics need the base-spec prose); truncation-by-slicing a full BLAKE2b output would be invented semantics. Stays planned: same output-length prose gap as the BLAKE2B digests; see source-issues.json GAP-BLAKE2B.",
+      "notes": "BLAKE2B-512 HMAC-GENERAL: 1..64-byte tags via mac-general/1; same backend route as the plain row. Truncation pinned (RoutingE2ESpec + SyntheticSpec prefixes).",
       "numeric_id": "0x0000401d",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac64-trunc/v1",
+          "parameter_codec": "mac-general/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "mac-general/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BLAKE2B_512_HMAC_GENERAL",
@@ -20170,26 +20297,68 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "blake2b-512",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "blake2b-512",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "blake2b-512",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_BLAKE2B_512_KEY_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: same output-length prose gap as the BLAKE2B digests; see source-issues.json GAP-BLAKE2B.",
+      "notes": "BLAKE2B-512 key derivation (KDF recipe row, BLAKE2B_512 stem): hashes the generic-secret base with BLAKE2B-512, truncated to the planned length (64-byte ceiling); empty params. Vectors pinned (RoutingE2ESpec derive KATs).",
       "numeric_id": "0x0000401e",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "blake2b-512-kd/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BLAKE2B_512_KEY_DERIVE",
@@ -20198,26 +20367,66 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "blake2b-512",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "blake2b-512",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "blake2b-512",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_BLAKE2B_512_KEY_GEN",
       "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "max_key_size": 512,
+        "min_key_size": 512
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: same output-length prose gap as the BLAKE2B digests; see source-issues.json GAP-BLAKE2B.",
+      "notes": "BLAKE2B-512 HMAC keygen: mints CKK_BLAKE2B_512_HMAC keys at exactly 64 bytes via CKA_VALUE_LEN (the per-width keygen split fixes the size; other lengths are inconsistent, a missing length incomplete). Planner pinned (KeyManagementSpec).",
       "numeric_id": "0x0000401f",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "value-len-64-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BLAKE2B_512_KEY_GEN",
@@ -20226,12 +20435,33 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "blake2b-512",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "blake2b-512",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

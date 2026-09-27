@@ -109,6 +109,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: kdf vectors + refuse" caseDriverKdf
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
+  , testCase "driver: blake2b-512 digest/hmac/general + refuse" caseDriverBlake2b512
   , testCase "driver: message cipher/sign/verify" caseDriverMessage
   , testCase "driver: recovery is honestly unsupported" caseDriverRecover
   , testCase "driver: encodeResult mapping" caseEncodeResult
@@ -195,6 +196,7 @@ shaKdMechs =
   , (MechanismId 0x397, "SHA3-256", 32, "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")
   , (MechanismId 0x399, "SHA3-384", 48, "ec01498288516fc926459f58e2c6ad8df9b473cb0fc08c2596da7cf0e49be4b298d88cea927ac7f539f1edf228376d25")
   , (MechanismId 0x39a, "SHA3-512", 64, "b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0")
+  , (MechanismId 0x401e, "BLAKE2B-512", 64, "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923")
   ]
 
 -- ---------------------------------------------------------------------------
@@ -489,6 +491,33 @@ caseDriverHmac = withBackend $ \env -> do
   case ghost of
     GotCryptoError (CryptoBadKey _ _) -> pure ()
     other -> assertFailure ("expected BadKey, got: " ++ show other)
+
+-- | BLAKE2B-512 through the driver over real EVP BLAKE2b512:
+-- digest KAT, HMAC KAT (CLI-TC1), GENERAL truncation, verify
+-- verdicts, and a typed over-width refusal.
+caseDriverBlake2b512 :: IO ()
+caseDriverBlake2b512 = withBackend $ \env -> do
+  let b2Mech = MechanismId 0x401b
+      b2Hmac = MechanismId 0x401c
+      b2Gen = MechanismId 0x401d
+      kat = hex "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923"
+      hkat = hex "358a6a184924894fc34bee5680eedf57d84a37bb38832f288e3b27dc63a98cc8c91e76da476b508bc6b2d408a248857452906e4a20b48c6b4b55d2df0fe1dd24"
+  out <- runEffect env resolver (FxDigest b2Mech "abc") >>= expectBytes
+  assertEqual "blake2b-512 abc" kat out
+  tag <- runEffect env resolver (FxSign b2Hmac (Just hmacOid) BS.empty hmacMsg1)
+    >>= expectBytes
+  assertEqual "blake2b hmac TC1" hkat tag
+  good <- runEffect env resolver
+    (FxVerify b2Hmac (Just hmacOid) BS.empty hmacMsg1 tag)
+  assertEqual "valid verifies" (GotValid True) good
+  g32 <- runEffect env resolver (FxSign b2Gen (Just hmacOid)
+    (encodeMacGeneral 32) hmacMsg1) >>= expectBytes
+  assertEqual "general truncation" (BS.take 32 hkat) g32
+  over <- runEffect env resolver (FxSign b2Gen (Just hmacOid)
+    (encodeMacGeneral 65) hmacMsg1)
+  case over of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
 
 caseDriverGcm :: IO ()
 caseDriverGcm = withBackend $ \env -> do

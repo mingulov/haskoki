@@ -84,11 +84,12 @@ groupShape =
   , ("CKM_SHA_1", 20, D_SHA1)
   , ("CKM_MD5", 16, D_MD5)
   , ("CKM_RIPEMD160", 20, D_RIPEMD160)
+  , ("CKM_BLAKE2B_512", 64, D_BLAKE2B512)
   ]
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 13 (length digestRecipes)
+  assertEqual "recipe count" 14 (length digestRecipes)
   let widthOf name =
         [ drOutLen r | r <- digestRecipes, drName r == name ]
   mapM_ (\(name, width, _alg) ->

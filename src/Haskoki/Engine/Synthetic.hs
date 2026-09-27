@@ -155,6 +155,7 @@ synthDigestLengthFor alg = case alg of
   D_RIPEMD160 -> 20
   D_SHAKE128 -> 32
   D_SHAKE256 -> 64
+  D_BLAKE2B512 -> 64
 
 -- | Synthetic MAC output length (bytes).
 synthMacLength :: Int
@@ -572,6 +573,11 @@ instance CryptoBackend Synthetic where
             pure (B.EngineOk (KeyBytes (genSymBytes seed ctr "GENERIC" n), Nothing))
         | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
             "generic-secret key length must be 1 to 255 bytes"))
+      GenSym "BLAKE2B-512-HMAC" n
+        | n == 64 ->
+            pure (B.EngineOk (KeyBytes (genSymBytes seed ctr "BLAKE2B-512-HMAC" n), Nothing))
+        | otherwise -> pure (B.EngineFail (BackendBadParam "generateKey"
+            "BLAKE2B-512-HMAC key length must be 64 bytes"))
       GenEC ec
         | genCurveOk (ecCurve ec) ->
             pure (B.EngineOk (genPair seed ctr))
@@ -721,6 +727,7 @@ synthCaps = BackendCaps
           , D_SHA512_224, D_SHA512_256
           , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
           , D_RIPEMD160
+          , D_BLAKE2B512
           ]
       , dcMultipart = True, dcXof = False }
   , bcCiphers = CipherCaps
@@ -741,7 +748,7 @@ synthCaps = BackendCaps
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 72-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym DES3 16/24 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenSLHDSA opaque pairs; GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym DES3 16/24 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenSym BLAKE2B-512-HMAC 64 bytes; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenSLHDSA opaque pairs; GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -796,6 +803,7 @@ synthEcdsaSpecNames =
       , D_SHA512_224, D_SHA512_256
       , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
       , D_RIPEMD160
+      , D_BLAKE2B512
       ]
 
 -- | The DSA digest set: exactly the recipe's nine (same names as
@@ -1181,6 +1189,7 @@ genSupported _ spec = case spec of
   GenSym "DES3" _ -> Nothing
   GenSym "HOTP" _ -> Nothing
   GenSym "GENERIC" _ -> Nothing
+  GenSym "BLAKE2B-512-HMAC" _ -> Nothing
   GenEC ec | genCurveOk (ecCurve ec) -> Nothing
   GenRSA {} -> Nothing
   GenDSAParams p q
@@ -1442,6 +1451,7 @@ digestAlgByte alg = case alg of
   D_RIPEMD160 -> 13
   D_SHAKE128 -> 14
   D_SHAKE256 -> 15
+  D_BLAKE2B512 -> 16
 
 digestAlgFromByte :: Word8 -> Maybe DigestAlg
 digestAlgFromByte b = case b of
@@ -1460,6 +1470,7 @@ digestAlgFromByte b = case b of
   13 -> Just D_RIPEMD160
   14 -> Just D_SHAKE128
   15 -> Just D_SHAKE256
+  16 -> Just D_BLAKE2B512
   _ -> Nothing
 
 -- | Guard-then-run: the capability check answers FIRST (even on a
@@ -1711,3 +1722,4 @@ classDigest alg input = prfBytes
     encodeAlg D_RIPEMD160 = "RIPEMD160"
     encodeAlg D_SHAKE128 = "SHAKE128"
     encodeAlg D_SHAKE256 = "SHAKE256"
+    encodeAlg D_BLAKE2B512 = "BLAKE2B-512"

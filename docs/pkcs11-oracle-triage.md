@@ -697,6 +697,36 @@ first lane proving all of them together.
   r38/r18). Only the triage doc changed afterwards, so no
   stale-bundle re-verify is needed this round.
 
+## Round 18: BLAKE2B-512 slice (fast r38→r39 + KAT r18→r19)
+
+- r39: 3426 passed / 2 failed / 470 xfailed / 2861 skipped
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r39-results.json`).
+  r38→r39: +39 pass / = fail / +28 xfail / +38 skip. The 2
+  failures are the HOTP externals by id; zero pass→fail.
+- KAT r18→r19: 78511→78550 passed (+39) / 8 failed (=) /
+  4007→4035 xfailed / 30312→30350 skipped
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r19-results.json`). The 8
+  failures are identical by id to r18 (6 P11C-003 + 2 HOTP
+  externals); zero pass→fail.
+- Movers (identical in both lanes; vector units unchanged):
+  `test_blake2` 0→15 pass / 64 skip / 6 xfail — the new
+  BLAKE2B-512 legs run (digest/HMAC/GENERAL/derive/keygen
+  incl. the KAT comparisons against the framework's own
+  hashlib oracles) while the 160/256/384 widths skip;
+  `test_mech_flags` +15 pass / +30 skip and
+  `test_mech_negative` +4 pass / +8 xfail / +10 skip as the 5
+  new mechanisms register; `test_mech_sign` +4 xfail / +2 skip,
+  `test_mech_attribute` +4 xfail, `test_mech_keygen` +2 xfail
+  (new-mechanism parameterizations). `test_mech_multipart`
+  shows 0→167 pass but r38 captured an empty stdout for that
+  unit (runner artifact), so its true delta is folded into the
+  +39 rather than a +167 mover.
+- Bundle note: r39/KAT-r19 ran on a release bundle rebuilt
+  from the 10c stack after the in-stack proxy-override fix
+  (0x401D `mac_general` shape). Only the triage doc changed
+  afterwards, so no stale-bundle re-verify is needed this
+  round.
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

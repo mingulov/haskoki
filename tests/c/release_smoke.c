@@ -15,12 +15,12 @@
  *
  * Served-count provenance (measured, never assumed): at commit
  * 03ea925 a minimal size-query probe against the release artifact
- * reports size-query n=142, full-list n=142, sha256-member=1;
+ * reports size-query n=147, full-list n=147, sha256-member=1;
  * the count is the support.real == "tested"
- * projection of spec/mechanisms.json (142 rows) frozen into
- * cbits/mech_catalog.inc (HASKOKI_MECH_COUNT 142) and
+ * projection of spec/mechanisms.json (147 rows) frozen into
+ * cbits/mech_catalog.inc (HASKOKI_MECH_COUNT 147) and
  * independently pinned by tests/c/consumer_discovery.c (two "has
- * 142 rows" legs plus size-query and short-buffer legs).
+ * 147 rows" legs plus size-query and short-buffer legs).
  *
  * Bundled into the release artifact with the pinned 2.40 headers
  * (self-contained: cc release_smoke.c -Iinclude -ldl) and also
@@ -44,7 +44,7 @@
 #include <unistd.h>
 
 /* EXACT served mechanism count (provenance in the header above). */
-#define SMOKE_MECH_COUNT 142
+#define SMOKE_MECH_COUNT 147
 
 static int g_failures = 0;
 

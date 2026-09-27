@@ -56,10 +56,15 @@ digestCodec = ParameterCodec "no-params" 1
 digestParamsValid :: ByteString -> Bool
 digestParamsValid = BS.null
 
--- | All thirteen covered mechanisms with their output widths.
+-- | All fourteen covered mechanisms with their output widths.
+-- Only the full-width BLAKE2B-512 row is covered (the 160\/256\/384
+-- widths need an output-length parameter the provider does not
+-- offer, and slicing would be invented semantics — see
+-- @GAP-BLAKE2B@).
 digestRecipes :: [DigestRecipe]
 digestRecipes =
-  [ DigestRecipe "CKM_SHA224" 28
+  [ DigestRecipe "CKM_BLAKE2B_512" 64
+  , DigestRecipe "CKM_SHA224" 28
   , DigestRecipe "CKM_SHA256" 32
   , DigestRecipe "CKM_SHA384" 48
   , DigestRecipe "CKM_SHA512" 64

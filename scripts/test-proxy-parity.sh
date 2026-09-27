@@ -162,16 +162,23 @@ EOF
 # fail proxied while NULL-param legs pass. The override merges
 # per-mechanism over the embedded defaults (proxy
 # MechanismRegistry::merge_config: additive insert, existing
-# entries untouched), so this one mapping is the whole delta —
+# entries untouched), so these mappings are the whole delta —
 # no proxy rebuild, no re-pin. Upstream should gain 0x002E in
-# mechanism_params_default.toml next to 0x001D; until then this
-# file is the recorded extension point (extend here, never fork
+# mechanism_params_default.toml next to 0x001D, and 0x401D next
+# to the other *_HMAC_GENERAL rows; until then this file is the
+# recorded extension point (extend here, never fork
 # the pinned binaries).
 cat > "$TMPD/mechanisms-override.toml" <<'EOF'
 [[params]]
 shape = "sign_additional_context"
 mechanisms = [
     0x002E,  # CKM_SLH_DSA (optional -- hedge mode, same struct as ML-DSA)
+]
+
+[[params]]
+shape = "mac_general"
+mechanisms = [
+    0x401D,  # CKM_BLAKE2B_512_HMAC_GENERAL (CK_ULONG tag length, same shape as SHA*_HMAC_GENERAL)
 ]
 EOF
 

@@ -159,6 +159,7 @@ data DigestAlg
   | D_SHA512_224 | D_SHA512_256
   | D_SHA3_224 | D_SHA3_256 | D_SHA3_384 | D_SHA3_512
   | D_RIPEMD160 | D_SHAKE128 | D_SHAKE256
+  | D_BLAKE2B512
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Fixed output width in bytes of a digest algorithm. 'Nothing'
@@ -182,6 +183,7 @@ digestOutLen alg = case alg of
   D_RIPEMD160 -> Just 20
   D_SHAKE128 -> Nothing
   D_SHAKE256 -> Nothing
+  D_BLAKE2B512 -> Just 64
 
 -- | Short MAC capability stem per digest algorithm ('Nothing' for
 -- the XOFs, which never make fixed-width tags). Both engines derive
@@ -204,6 +206,7 @@ digestMacStem alg = case alg of
   D_RIPEMD160 -> Just "RIPEMD160"
   D_SHAKE128 -> Nothing
   D_SHAKE256 -> Nothing
+  D_BLAKE2B512 -> Just "BLAKE2B-512"
 
 -- | Capability string required by one MAC spec. 'Nothing' means the
 -- spec is never servable: a non-HMAC family, an XOF digest, or a

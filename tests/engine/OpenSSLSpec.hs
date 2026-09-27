@@ -816,6 +816,25 @@ ecSig384 = hex $ concat
   , "90846dda3abddd"
   ]
 
+-- | CLI ECDSA P-256/BLAKE2b-512 interop bytes ('openssl pkeyutl
+-- -sign -rawin -digest blake2b512', verified back through the CLI).
+ecMsgB2 :: ByteString
+ecMsgB2 = "ecdsa-blake2b-test-message"
+
+ecB2Pub :: ByteString
+ecB2Pub = hex $ concat
+  [ "3059301306072a8648ce3d020106082a8648ce3d03010703420004cd49ef94a0"
+  , "69a3e45c179d5dcfa51271c9c61b04e94838067cbfd351a1056b0c07d2690f20"
+  , "51acf535a3d672ae17613067c32f64517f84eb8ab6ca9a4eb7669d"
+  ]
+
+ecSigB2 :: ByteString
+ecSigB2 = hex $ concat
+  [ "3044022005f2b419c99f1dcd0f0ddd0982b8d643517b51002a169ad91641328ca"
+  , "c12253302207d5ca1f3b3d58bfeb3482238e0db956ea750a241e5da3ea3a76ab0"
+  , "0650d3fd00"
+  ]
+
 ecMsg521 :: ByteString
 ecMsg521 = "T16 S9 ECDSA P-521/SHA512 message"
 
@@ -1043,6 +1062,7 @@ digestKats =
   , (D_SHA3_384, "FIPS202", hex "ec01498288516fc926459f58e2c6ad8df9b473cb0fc08c2596da7cf0e49be4b298d88cea927ac7f539f1edf228376d25")
   , (D_SHA3_512, "FIPS202", hex "b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0")
   , (D_RIPEMD160, "RIPEMD160", hex "8eb208f7e05d987a9b044a8e98c6b087f15a0bfc")
+  , (D_BLAKE2B512, "RFC7693", hex "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923")
   ]
 
 caseDigestKats :: IO ()
@@ -1063,6 +1083,7 @@ caseSha384Multipart = withBackend $ \env -> do
     , D_SHA512_224, D_SHA512_256
     , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
     , D_RIPEMD160
+    , D_BLAKE2B512
     ]
   where
     checkAlg e alg = do
@@ -1111,6 +1132,7 @@ hmacKats =
   , (D_SHA3_384, "hashlib", hex "68d2dcf7fd4ddd0a2240c8a437305f61fb7334cfb5d0226e1bc27dc10a2e723a20d370b47743130e26ac7e3d532886bd")
   , (D_SHA3_512, "hashlib", hex "eb3fbd4b2eaab8f5c504bd3a41465aacec15770a7cabac531e482f860b5ec7ba47ccb2c6f2afce8f88d22b6dc61380f23a668fd3888bb80537c0a0b86407689e")
   , (D_RIPEMD160, "hashlib", hex "24cb4bd67d20fc1a5d2ed7732dcc39377f0a5668")
+  , (D_BLAKE2B512, "CLI-TC1", hex "358a6a184924894fc34bee5680eedf57d84a37bb38832f288e3b27dc63a98cc8c91e76da476b508bc6b2d408a248857452906e4a20b48c6b4b55d2df0fe1dd24")
   ]
 
 caseHmacKats :: IO ()
@@ -1133,6 +1155,9 @@ caseHmacGeneral = withBackend $ \env -> do
   trunc48 <- expectOk "ceiling sha384" =<< macSign env (MacHMAC D_SHA384 (Just 48)) key hmacMsg1
   f48 <- expectOk "full sha384" =<< macSign env (MacHMAC D_SHA384 Nothing) key hmacMsg1
   assertEqual "ceiling == full" f48 trunc48
+  b2full <- expectOk "full blake2b512" =<< macSign env (MacHMAC D_BLAKE2B512 Nothing) key hmacMsg1
+  b2t32 <- expectOk "truncated blake2b512" =<< macSign env (MacHMAC D_BLAKE2B512 (Just 32)) key hmacMsg1
+  assertEqual "blake2b truncation slices the KAT" (BS.take 32 b2full) b2t32
   -- Out-of-range lengths refuse without fallback.
   expectUnsupported "zero refused" =<< macSign env (MacHMAC D_SHA256 (Just 0)) key hmacMsg1
   expectUnsupported "over-width refused" =<< macSign env (MacHMAC D_SHA256 (Just 33)) key hmacMsg1
@@ -1681,6 +1706,12 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
     verify env sT283 (KeyDer ecT283Pub) ecMsgT283 ecSigT283
   expectAuthFailed "p384 tampered" =<<
     verify env s384 (KeyDer ecP384Pub) ecMsg384 (BS.init ecSig384 <> "X")
+  -- Interop on BLAKE2B-512: the CLI's P-256 bytes verify.
+  let sB2 = SigECDSA (mkEc "P-256" "DER") (Just D_BLAKE2B512)
+  expectOk "verify cli blake2b512" =<<
+    verify env sB2 (KeyDer ecB2Pub) ecMsgB2 ecSigB2
+  expectAuthFailed "blake2b512 tampered" =<<
+    verify env sB2 (KeyDer ecB2Pub) ecMsgB2 (BS.init ecSigB2 <> "X")
   expectAuthFailed "t283 tampered" =<<
     verify env sT283 (KeyDer ecT283Pub) ecMsgT283 (BS.init ecSigT283 <> "X")
   -- Raw interop: the CLI's raw P-256 bytes verify under the raw row.
@@ -1709,6 +1740,7 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
       , D_SHA512_224, D_SHA512_256
       , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
       , D_RIPEMD160
+      , D_BLAKE2B512
       ])
   mapM_ (roundtrip env p521 q521 "P-521" 132)
     [Nothing, Just D_SHA256, Just D_SHA512, Just D_SHA3_512]
@@ -3883,6 +3915,7 @@ caseCaps = withBackend $ \env -> do
     , D_SHA512_224, D_SHA512_256
     , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
     , D_RIPEMD160
+    , D_BLAKE2B512
     ]) (dcAlgs (bcDigests caps))
   assertEqual "cipher set" (Set.fromList
     [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
@@ -3912,6 +3945,7 @@ caseCaps = withBackend $ \env -> do
     , "HMAC-SHA512-224", "HMAC-SHA512-256"
     , "HMAC-SHA3-224", "HMAC-SHA3-256", "HMAC-SHA3-384", "HMAC-SHA3-512"
     , "HMAC-RIPEMD160"
+    , "HMAC-BLAKE2B-512"
     , "HMAC-MD5-GENERAL", "HMAC-SHA1-GENERAL"
     , "HMAC-SHA224-GENERAL", "HMAC-SHA256-GENERAL"
     , "HMAC-SHA384-GENERAL", "HMAC-SHA512-GENERAL"
@@ -3919,6 +3953,7 @@ caseCaps = withBackend $ \env -> do
     , "HMAC-SHA3-224-GENERAL", "HMAC-SHA3-256-GENERAL"
     , "HMAC-SHA3-384-GENERAL", "HMAC-SHA3-512-GENERAL"
     , "HMAC-RIPEMD160-GENERAL"
+    , "HMAC-BLAKE2B-512-GENERAL"
     ]) (mcSpecs (bcMacs caps))
   assertBool "ecdsa-p256-sha256 advertised"
     (Set.member "ECDSA-P-256-SHA256" (scSpecs (bcSigs caps)))
@@ -3937,7 +3972,7 @@ caseCaps = withBackend $ \env -> do
       dsaStems =
         [ "MD5", "SHA1", "SHA224", "SHA256", "SHA384", "SHA512"
         , "SHA512-224", "SHA512-256", "SHA3-224", "SHA3-256"
-        , "SHA3-384", "SHA3-512", "RIPEMD160"
+        , "SHA3-384", "SHA3-512", "RIPEMD160", "BLAKE2B-512"
         ]
       dsaNames =
         ["ECDSA-" ++ c ++ "-RAW" | c <- dsaCurves]

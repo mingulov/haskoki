@@ -144,8 +144,8 @@
         "PKCS#11 base-spec BLAKE2 digest prose (NOT vendored: output-length parameter semantics)"
       ],
       "inconsistency": "The four BLAKE2B_* mechanisms name output lengths (160/256/384/512 bits), but whether each is a fixed full construction (nn = length, requiring an output-length parameter on the EVP call) or truncatable output is defined in the base-spec prose, not the headers. Slicing a full 64-byte BLAKE2b-512 output to 20 bytes would produce a DIFFERENT value than a native 20-byte parameterization, so truncation-by-slicing would be invented semantics.",
-      "affected": "CKM_BLAKE2B_160/256/384/512 stay planned (all columns); the digest recipe covers the 13 fixed-width mechanisms only.",
-      "decision": "Leave planned with notes; vendor the BLAKE2 base-spec prose (or a byte-locked output-length table) to close. CKM_BLAKE2B_512 is the likely first follow-up (plain BLAKE2b-512 via EVP BLAKE2b512) once prose confirms.",
+      "affected": "CKM_BLAKE2B_160/256/384 stay planned (all columns); CKM_BLAKE2B_512 (digest, HMAC, HMAC_GENERAL, KEY_DERIVE, KEY_GEN) is served as the native full-width nn=64 construction via EVP BLAKE2b512, which carries no output-length ambiguity.",
+      "decision": "Narrowed 2026-09-27: the 512-bit row is the full construction and needs no parameterization prose. Leave 160/256/384 planned with notes; vendor the BLAKE2 base-spec prose (or a byte-locked output-length table) to close.",
       "scope": "Digest group; blocks BLAKE2B_* behavior only.",
       "tests": "N/A (no behavior claimed).",
       "blocks_completeness": true

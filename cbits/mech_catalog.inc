@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 142
+#define HASKOKI_MECH_COUNT 147
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -161,6 +161,11 @@ static const struct haskoki_mech_row
   { 0x00002109UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT | CKF_UNWRAP | CKF_WRAP) }, /* CKM_AES_KEY_WRAP */
   { 0x0000210AUL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT | CKF_UNWRAP | CKF_WRAP) }, /* CKM_AES_KEY_WRAP_PAD */
   { 0x0000210BUL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT | CKF_UNWRAP | CKF_WRAP) }, /* CKM_AES_KEY_WRAP_KWP */
+  { 0x0000401BUL, 0UL, 0UL, (unsigned long)(CKF_DIGEST) }, /* CKM_BLAKE2B_512 */
+  { 0x0000401CUL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_BLAKE2B_512_HMAC */
+  { 0x0000401DUL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_BLAKE2B_512_HMAC_GENERAL */
+  { 0x0000401EUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_BLAKE2B_512_KEY_DERIVE */
+  { 0x0000401FUL, 512UL, 512UL, (unsigned long)(CKF_GENERATE) }, /* CKM_BLAKE2B_512_KEY_GEN */
   { 0x0000402AUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_HKDF_DERIVE */
 };
 

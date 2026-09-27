@@ -117,6 +117,7 @@ shaShape =
   , ("SHA3_256_KEY_DERIVATION", "SHA3_256", 32)
   , ("SHA3_384_KEY_DERIVATION", "SHA3_384", 48)
   , ("SHA3_512_KEY_DERIVATION", "SHA3_512", 64)
+  , ("BLAKE2B_512_KEY_DERIVE", "BLAKE2B_512", 64)
   ]
 
 mechName :: Text -> Text
@@ -124,7 +125,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 12 (length kdfRecipes)
+  assertEqual "recipe count" 13 (length kdfRecipes)
   mapM_ (\(suffix, stem, _) -> do
     let name = mechName suffix
         found = [ r | r <- kdfRecipes, rkName r == name ]
