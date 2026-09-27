@@ -13,8 +13,9 @@ so reads serve them without a decode-on-read path.
 Scope is deliberately narrow: RSA PKCS#1/SPKI/PKCS#8, SEC1 EC
 keys on the 22 covered curves ('curveTable'), DSA DSS-Parms /
 SPKI / PKCS#8, Edwards SPKI / PKCS#8 on the 2 served curves
-('edwardsTable'), ML-DSA SPKI / flat-expanded PKCS#8 on the 3
-served levels ('mldsaTable'), and ML-KEM SPKI /
+('edwardsTable'), Montgomery SPKI / PKCS#8 on the 2 served
+curves ('montgomeryTable'), ML-DSA SPKI / flat-expanded PKCS#8
+on the 3 served levels ('mldsaTable'), and ML-KEM SPKI /
 provider-form PKCS#8 on the 3 served sets ('mlkemTable').
 Anything else refuses at the call site
 ('CKR_CURVE_NOT_SUPPORTED' for foreign curves,
@@ -80,6 +81,7 @@ module Haskoki.Der
   , slhdsaOidOfCkp
   , unwrapEcPoint
   , unwrapEdwardsPoint
+  , unwrapMontgomeryPoint
   , curveOidOfParams
   , curveCoordLen
   , curveTable
@@ -87,8 +89,17 @@ module Haskoki.Der
   , edwardsOidOfParams
   , edwardsNameOfOid
   , edwardsWidthsOfParams
+  , montgomeryTable
+  , montgomeryOidOfParams
+  , montgomeryNameOfOid
+  , montgomeryWidthOfParams
+  , montgomeryPrivateDer
+  , montgomeryPublicDer
+  , montgomerySpkiFields
+  , montgomeryPkcs8Fields
   , coveredCurveNames
   , edwardsCurveNames
+  , montgomeryCurveNames
   , integerToBE
   , RsaCrt (..)
   , parseRsaPrivate
@@ -253,6 +264,20 @@ coveredCurveNames = [BC8.unpack n | (n, _, _) <- curveTable]
 edwardsCurveNames :: [String]
 edwardsCurveNames = [BC8.unpack n | (n, _, _, _) <- edwardsTable]
 
+-- | Montgomery curves served by the ECDH recipe: (name, DER OID,
+-- coordinate width). Kept separate from 'curveTable' and
+-- 'edwardsTable' (Weierstrass ECDSA/ECDH and EdDSA must never
+-- resolve a Montgomery OID). OIDs are RFC 8410 1.3.101.110/111.
+montgomeryTable :: [(ByteString, ByteString, Int)]
+montgomeryTable =
+  [ ("X25519", BS.pack [0x06, 0x03, 0x2B, 0x65, 0x6E], 32)
+  , ("X448", BS.pack [0x06, 0x03, 0x2B, 0x65, 0x6F], 56)
+  ]
+
+-- | Served Montgomery engine names (the 'montgomeryTable' name column).
+montgomeryCurveNames :: [String]
+montgomeryCurveNames = [BC8.unpack n | (n, _, _) <- montgomeryTable]
+
 -- | Resolve engine curve names (@"P-256"@, …) or raw DER OIDs to the
 -- DER OID. Anything else is unsupported ('Nothing'). The OID table
 -- must agree with 'ecParamsToWire' (pinned by KeyImportSpec).
@@ -296,6 +321,32 @@ edwardsWidthsOfParams oid = case find hit edwardsTable of
   Nothing -> Nothing
   where
     hit (_, o, _, _) = oid == o
+
+-- | Resolve engine Montgomery names (@"X25519"@, …) or raw DER
+-- OIDs to the DER OID (the 'curveOidOfParams' precedent).
+montgomeryOidOfParams :: ByteString -> Maybe ByteString
+montgomeryOidOfParams bs = case find hit montgomeryTable of
+  Just (_, oid, _) -> Just oid
+  Nothing -> Nothing
+  where
+    hit (name, oid, _) = bs == name || bs == oid
+
+-- | The engine Montgomery name for a DER OID ('Nothing' for
+-- foreign OIDs).
+montgomeryNameOfOid :: ByteString -> Maybe ByteString
+montgomeryNameOfOid oid = case find hit montgomeryTable of
+  Just (name, _, _) -> Just name
+  Nothing -> Nothing
+  where
+    hit (_, o, _) = oid == o
+
+-- | Coordinate width in bytes for a DER Montgomery OID.
+montgomeryWidthOfParams :: ByteString -> Maybe Int
+montgomeryWidthOfParams oid = case find hit montgomeryTable of
+  Just (_, _, w) -> Just w
+  Nothing -> Nothing
+  where
+    hit (_, o, _) = oid == o
 
 -- | Resolve engine ML-DSA names (@"ML-DSA-44"@, …) or raw DER
 -- OIDs to the DER OID (the 'edwardsOidOfParams' precedent).
@@ -528,6 +579,19 @@ unwrapEdwardsPoint seedW bs
       body <- whole 0x04 bs
       if BS.length body == seedW then Just body else Nothing
 
+-- | Unwrap a @CKA_EC_POINT@ value for a @CKK_EC_MONTGOMERY@ key
+-- against the expected coordinate width. Raw RFC 7748 bytes
+-- (width-exact) pass through; a DER OCTET STRING wrapper
+-- unwraps (the Edwards precedent). The length decides —
+-- unambiguous, since a wrapped point is always longer than the
+-- coordinate width.
+unwrapMontgomeryPoint :: Int -> ByteString -> Maybe ByteString
+unwrapMontgomeryPoint w bs
+  | BS.length bs == w = Just bs
+  | otherwise = do
+      body <- whole 0x04 bs
+      if BS.length body == w then Just body else Nothing
+
 -- ---------------------------------------------------------------------------
 -- Assembly (total over any input bytes; validation is the caller's)
 -- ---------------------------------------------------------------------------
@@ -672,6 +736,20 @@ eddsaPrivateDer oid seed =
 -- SPKIs carry no parameters).
 eddsaPublicDer :: ByteString -> ByteString -> ByteString
 eddsaPublicDer oid point =
+  derSeq [derSeq [oid], derBitString point]
+
+-- | PKCS#8 for a Montgomery private key from the DER curve OID and
+-- the scalar (RFC 8410 @OneAsymmetricKey@: the inner OCTET STRING
+-- carries the scalar directly — the Edwards shape).
+montgomeryPrivateDer :: ByteString -> ByteString -> ByteString
+montgomeryPrivateDer oid scalar =
+  derSeq [derSmallInt 0, derSeq [oid], derOctet (derOctet scalar)]
+
+-- | SPKI for a Montgomery public key from the DER curve OID and
+-- the raw u-coordinate (the algorithm identifier is the bare OID —
+-- Montgomery SPKIs carry no parameters).
+montgomeryPublicDer :: ByteString -> ByteString -> ByteString
+montgomeryPublicDer oid point =
   derSeq [derSeq [oid], derBitString point]
 
 -- | PKCS#8 for an ML-DSA private key from the DER algorithm OID
@@ -1040,6 +1118,59 @@ eddsaPkcs8Fields der = do
               seed <- whole 0x04 inner
               if BS.length seed == seedW
                 then pure (oid, seed)
+                else Nothing
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | The curve OID plus the raw u-coordinate from a Montgomery
+-- SPKI: outer SEQ of [algId, BIT STRING] where the algorithm
+-- identifier is the bare OID (a served 'montgomeryTable' row)
+-- and the bit string (past its zero unused-bits octet) is the
+-- width-exact coordinate. 'Nothing' on any framing, tag, OID, or
+-- width mismatch.
+montgomerySpkiFields :: ByteString -> Maybe (ByteString, ByteString)
+montgomerySpkiFields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [algId, bits] -> do
+      algParts <- whole 0x30 algId >>= seqTop
+      case algParts of
+        [oid] -> do
+          w <- montgomeryWidthOfParams oid
+          content <- whole 0x03 bits
+          case BS.uncons content of
+            Just (0, point)
+              | BS.length point == w -> pure (oid, point)
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | The curve OID plus the scalar from a Montgomery PKCS#8: outer
+-- SEQ of [version INTEGER 0, algId, OCTET STRING] where the
+-- algorithm identifier is the bare OID (a served
+-- 'montgomeryTable' row) and the octet string wraps the
+-- width-exact scalar (RFC 8410 nested OCTET STRING — the Edwards
+-- shape). 'Nothing' on any framing, tag, version, OID, or width
+-- mismatch.
+montgomeryPkcs8Fields :: ByteString -> Maybe (ByteString, ByteString)
+montgomeryPkcs8Fields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [ver, algId, oct] -> do
+      v <- derInt ver
+      case BS.uncons v of
+        Just (0, rest) | BS.null rest -> do
+          algParts <- whole 0x30 algId >>= seqTop
+          case algParts of
+            [oid] -> do
+              w <- montgomeryWidthOfParams oid
+              inner <- whole 0x04 oct
+              scalar <- whole 0x04 inner
+              if BS.length scalar == w
+                then pure (oid, scalar)
                 else Nothing
             _ -> Nothing
         _ -> Nothing

@@ -1774,6 +1774,16 @@ caseEcdh = withSynth "11" $ \env -> do
   sDer <- expectOk "der halves served" =<<
     ecdhDerive env EcdhPlain (KeyDer "priv-half") (KeyDer "pub-half")
   assertEqual "der width" synthEcdhWidth (BS.length sDer)
+  -- Keygen: opaque Montgomery pairs mint per curve, halves derive.
+  (mpriv, mpub) <- expectOk "montgomery keygen" =<<
+    generateKey env (GenXDHKeypair "X25519")
+  mpubB <- case mpub of
+    Just p -> pure p
+    Nothing -> assertFailure "keygen must mint a pair" >> undefined
+  sM <- expectOk "genkey derive" =<< ecdhDerive env EcdhPlain mpriv mpubB
+  assertEqual "genkey width" synthEcdhWidth (BS.length sM)
+  expectUnsupported "off-set curve refused" =<<
+    generateKey env (GenXDHKeypair "P-256")
 
 -- | Agreements replay deterministically at the 512-byte max width
 -- and stay domain-separated across bases and peers (no cofactor

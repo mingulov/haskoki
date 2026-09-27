@@ -118,6 +118,7 @@ import Haskoki.Der
   , curveTable
   , edwardsCurveNames
   , integerToBE
+  , montgomeryCurveNames
   , parseRsaPrivate
   , parseRsaPublic
   , rsaPrivateDer
@@ -660,6 +661,8 @@ instance CryptoBackend Synthetic where
         pure (B.EngineOk (genPair seed ctr))
       GenEdDSAKeypair {} ->
         pure (B.EngineOk (genPair seed ctr))
+      GenXDHKeypair {} ->
+        pure (B.EngineOk (genPair seed ctr))
       GenMLDSA {} ->
         pure (B.EngineOk (genPair seed ctr))
       GenSLHDSA {} ->
@@ -812,7 +815,7 @@ synthCaps = BackendCaps
        , ("RSA-OAEP", "deterministic labeled envelope; 16-byte tag; label free")
        , ("ECDH", "deterministic test agreement; 72-byte max-width secrets")
        , ("ECDH-COFACTOR", "deterministic test agreement; cofactor bit in domain")
-       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym DES3 16/24 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenSym BLAKE2B-512-HMAC 1-255 bytes; GenSym sweep labels per symKeygenBounds; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenDHKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenMLDSA opaque pairs; GenSLHDSA opaque pairs; GenMLKEM pairs")
+       , ("keygen", "GenSym AES 16/24/32 bytes; GenSym DES3 16/24 bytes; GenSym HOTP 16-64 bytes; GenSym GENERIC 1-255 bytes; GenSym BLAKE2B-512-HMAC 1-255 bytes; GenSym sweep labels per symKeygenBounds; GenEC pairs on all 22 covered curves; GenRSA 2048/3072/4096-bit pairs (odd exponent 3..2^64-1); GenDSAParams approved (L,N) pairs; GenDSAKeypair opaque pairs; GenDHKeypair opaque pairs; GenEdDSAKeypair opaque pairs; GenXDHKeypair opaque pairs; GenMLDSA opaque pairs; GenSLHDSA opaque pairs; GenMLKEM pairs")
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
@@ -1275,6 +1278,7 @@ genSupported _ spec = case spec of
   GenDSAKeypair {} -> Nothing
   GenDHKeypair {} -> Nothing
   GenEdDSAKeypair name | BC8.unpack name `elem` edwardsCurveNames -> Nothing
+  GenXDHKeypair name | BC8.unpack name `elem` montgomeryCurveNames -> Nothing
   GenMLDSA alg | alg `elem` [ML_DSA_44, ML_DSA_65, ML_DSA_87] -> Nothing
   GenSLHDSA alg | alg `elem` slhdsaSets -> Nothing
   GenMLKEM _ -> Nothing

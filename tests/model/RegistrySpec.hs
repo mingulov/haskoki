@@ -313,6 +313,7 @@ caseCurated = do
     , MechanismId Gen.ckm_ECDH1_DERIVE
     , MechanismId Gen.ckm_ECDH1_COFACTOR_DERIVE
     , MechanismId Gen.ckm_EC_EDWARDS_KEY_PAIR_GEN
+    , MechanismId Gen.ckm_EC_MONTGOMERY_KEY_PAIR_GEN
     , MechanismId Gen.ckm_EDDSA
     , MechanismId Gen.ckm_JUNIPER_KEY_GEN
     , MechanismId Gen.ckm_AES_XTS
@@ -402,11 +403,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 196 behavior + 268 catalog-only + catalog line.
+  -- schema + 197 behavior + 267 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 196
+  assertEqual "behavior line count" 197
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 268
+  assertEqual "catalog-only line count" 267
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -727,7 +728,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 268 (length invIds)
+  assertEqual "guard covers every catalog row" 267 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of

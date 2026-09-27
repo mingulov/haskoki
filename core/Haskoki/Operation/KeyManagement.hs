@@ -57,6 +57,7 @@ module Haskoki.Operation.KeyManagement
   , ckkDh
   , ckkX9_42Dh
   , ckkEcEdwards
+  , ckkEcMontgomery
   , ckkGenericSecret
   , ckkAes
   , ckkAesXts
@@ -163,6 +164,7 @@ module Haskoki.Operation.KeyManagement
   , dhKeyPairGenMech
   , x9_42DhKeyPairGenMech
   , edwardsKeyPairGenMech
+  , montgomeryKeyPairGenMech
   , mldsaKeyPairGenMech
   , slhdsaKeyPairGenMech
   , aesCbcMech
@@ -219,7 +221,7 @@ import Haskoki.Attribute.Generated
   , mustClassId
   , mustKeyTypeId
   )
-import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaSpkiFields, edwardsNameOfOid, edwardsTable, mldsaPkcs8Fields, mldsaSpkiFields, mlkemPkcs8Fields, mlkemSpkiFields, parseDsaParams, parseRsaPrivate, parseRsaPublic, slhdsaPkcs8Fields, slhdsaSpkiFields, spkiPoint)
+import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaSpkiFields, edwardsNameOfOid, edwardsTable, mldsaPkcs8Fields, mldsaSpkiFields, mlkemPkcs8Fields, mlkemSpkiFields, montgomeryNameOfOid, montgomeryPkcs8Fields, montgomerySpkiFields, montgomeryTable, parseDsaParams, parseRsaPrivate, parseRsaPublic, slhdsaPkcs8Fields, slhdsaSpkiFields, spkiPoint)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState (..))
 import Haskoki.Object
   ( RuleDeny (..)
@@ -271,6 +273,7 @@ import Haskoki.Registry.Generated
   , ckm_DH_PKCS_KEY_PAIR_GEN
   , ckm_X9_42_DH_KEY_PAIR_GEN
   , ckm_EC_EDWARDS_KEY_PAIR_GEN
+  , ckm_EC_MONTGOMERY_KEY_PAIR_GEN
   , ckm_EC_KEY_PAIR_GEN
   , ckm_GENERIC_SECRET_KEY_GEN
   , ckm_HOTP_KEY_GEN
@@ -382,6 +385,10 @@ ckkX9_42Dh = mustKeyTypeId "CKK_X9_42_DH"
 -- | @CKK_EC_EDWARDS@ (generated id, resolved by name).
 ckkEcEdwards :: Word64
 ckkEcEdwards = mustKeyTypeId "CKK_EC_EDWARDS"
+
+-- | @CKK_EC_MONTGOMERY@ (generated id, resolved by name).
+ckkEcMontgomery :: Word64
+ckkEcMontgomery = mustKeyTypeId "CKK_EC_MONTGOMERY"
 
 -- | @CKK_GENERIC_SECRET@ (generated id, resolved by name).
 ckkGenericSecret :: Word64
@@ -662,6 +669,10 @@ x9_42DhKeyPairGenMech = MechanismId (ckm_X9_42_DH_KEY_PAIR_GEN)
 -- | @CKM_EC_EDWARDS_KEY_PAIR_GEN@ (generated id, resolved by name).
 edwardsKeyPairGenMech :: MechanismId
 edwardsKeyPairGenMech = MechanismId (ckm_EC_EDWARDS_KEY_PAIR_GEN)
+
+-- | @CKM_EC_MONTGOMERY_KEY_PAIR_GEN@ (generated id, resolved by name).
+montgomeryKeyPairGenMech :: MechanismId
+montgomeryKeyPairGenMech = MechanismId (ckm_EC_MONTGOMERY_KEY_PAIR_GEN)
 
 -- | @CKM_ML_DSA_KEY_PAIR_GEN@ (generated id, resolved by name).
 mldsaKeyPairGenMech :: MechanismId
@@ -1010,6 +1021,7 @@ keyPairCompatible (PwGeneratePair _ _) (FxGenerateKey _ _ input) =
     Just (GenDsaKeypair _) -> True
     Just (GenDhKeypair _) -> True
     Just (GenEdwardsKeypair _) -> True
+    Just (GenMontgomeryKeypair _) -> True
     Just (GenMlDsa _) -> True
     Just (GenSlhDsa _) -> True
     _ -> False
@@ -1205,7 +1217,9 @@ storeMaterial mat po = po { poAttrs = Map.insert AttrValue (ValBytes mat) (poAtt
 -- stamps the raw @CKA_EC_POINT@ on the public half and the
 -- agreed engine curve name as @CKA_EC_PARAMS@ on the private
 -- half (whose template lacks it); disagreeing or opaque halves
--- pass through unstamped. An ML-DSA pair stamps the @CKA_SEED@
+-- pass through unstamped. A Montgomery pair stamps the same way
+-- (the raw u-coordinate point, the agreed curve name). An ML-DSA
+-- pair stamps the @CKA_SEED@
 -- on the private half (parsed from the PKCS#8 half, whose seed
 -- the planner cannot know; the set rides both halves from the
 -- planner tag, and @AttrValue@ keeps the DER halves via
@@ -1268,6 +1282,15 @@ stampPairComponents pub priv pubM privM
         (Just (pubOid, pubPoint), Just (privOid, _seed))
           | pubOid == privOid
           , Just curve <- edwardsNameOfOid pubOid ->
+              let pubA = Map.insert AttrEcPoint (ValBytes pubPoint) (poAttrs pub)
+                  privA = Map.insert AttrEcParams (ValBytes curve) (poAttrs priv)
+              in Just (pub { poAttrs = pubA }, priv { poAttrs = privA })
+        _ -> Just (pub, priv)
+  | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkEcMontgomery) =
+      case (montgomerySpkiFields pubM, montgomeryPkcs8Fields privM) of
+        (Just (pubOid, pubPoint), Just (privOid, _scalar))
+          | pubOid == privOid
+          , Just curve <- montgomeryNameOfOid pubOid ->
               let pubA = Map.insert AttrEcPoint (ValBytes pubPoint) (poAttrs pub)
                   privA = Map.insert AttrEcParams (ValBytes curve) (poAttrs priv)
               in Just (pub { poAttrs = pubA }, priv { poAttrs = privA })
@@ -1609,7 +1632,8 @@ pendingFromAttrs st attrs = PendingObject
 -- ML-KEM parameter set (512\/768\/1024), an opaque secret length in
 -- bytes (HOTP), the DSA @(L, N)@ size pair (parameter generation),
 -- DER DSS-Parms (DSA keypair generation from domain parameters),
--- the Edwards curve name (Edwards keypair generation), or the
+-- the Edwards curve name (Edwards keypair generation), the
+-- Montgomery curve name (Montgomery keypair generation), or the
 -- ML-DSA parameter-set id (@CKP_ML_DSA_44\/65\/87@ = 1\/2\/3),
 -- or the SLH-DSA parameter-set id (@CKP_SLH_DSA_*@ = 1..12).
 data GenArgs
@@ -1621,6 +1645,7 @@ data GenArgs
   | GenDsaParams !Int !Int
   | GenDsaKeypair !ByteString
   | GenEdwardsKeypair !ByteString
+  | GenMontgomeryKeypair !ByteString
   | GenMlDsa !Int
   | GenSlhDsa !Int
   | GenDhKeypair !ByteString
@@ -1641,7 +1666,8 @@ data GenArgs
 -- (@len:u8@: DES/DES2/CDMF set parity per FIPS 46-3), 12
 -- TLS/SSL3 pre-master (@major:u8 minor:u8@, fixed 48 bytes),
 -- 13 WTLS pre-master (@ver:u8 len:u8@), 14 PBKD2 derived key
--- (@len:u16be@: the shared ceiling exceeds one byte).
+-- (@len:u16be@: the shared ceiling exceeds one byte), 15
+-- Montgomery keypair curve name (curve bytes).
 encodeGenArgs :: GenArgs -> ByteString
 encodeGenArgs args = case args of
   GenAes n -> BS.singleton 0 <> BS.singleton (fromIntegral n)
@@ -1653,6 +1679,7 @@ encodeGenArgs args = case args of
   GenDsaParams l n -> BS.singleton 5 <> u16be l <> u16be n
   GenDsaKeypair der -> BS.singleton 6 <> u32be (BS.length der) <> der
   GenEdwardsKeypair curve -> BS.singleton 7 <> curve
+  GenMontgomeryKeypair curve -> BS.singleton 15 <> curve
   GenMlDsa ckp -> BS.singleton 8 <> u16be ckp
   GenSlhDsa ckp -> BS.singleton 9 <> u16be ckp
   GenDhKeypair der -> BS.singleton 10 <> u32be (BS.length der) <> der
@@ -1724,6 +1751,9 @@ decodeGenArgs bs = case BS.uncons bs of
   Just (14, rest) -> case BS.unpack rest of
     [hi, lo] -> Just (GenPbkd2 (fromIntegral hi * 256 + fromIntegral lo))
     _ -> Nothing
+  Just (15, curve)
+    | not (BS.null curve) -> Just (GenMontgomeryKeypair curve)
+    | otherwise -> Nothing
   _ -> Nothing
 
 -- | 2-byte big-endian framing.
@@ -1898,6 +1928,10 @@ planGenerateKeyPair rules model st mech pubT privT =
           withPair st mech ckkEcEdwards pubT privT $ \pubA privA -> do
             curve <- edwardsCurveOf pubA privA
             pure (GenEdwardsKeypair curve, pubA, privA)
+      | mech == montgomeryKeyPairGenMech =
+          withPair st mech ckkEcMontgomery pubT privT $ \pubA privA -> do
+            curve <- montgomeryCurveOf pubA privA
+            pure (GenMontgomeryKeypair curve, pubA, privA)
       | mech == mldsaKeyPairGenMech =
           withPair st mech ckkMlDsa pubT privT $ \pubA privA -> do
             ckp <- mldsaSetOf pubA privA
@@ -2120,6 +2154,33 @@ edwardsCurveOf pubA privA = case Map.lookup AttrEcParams pubA of
     "public EC params are malformed")
   Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
     "Edwards keypair templates must name the curve")
+
+-- | The served Montgomery curve for a pair: the public template's
+-- @AttrEcParams@ (a 'montgomeryTable' engine name — the wire codec
+-- maps caller OIDs to names), which the private template inherits
+-- when absent and must agree with when present. Unknown curves
+-- (including Weierstrass and Edwards names — a caller mixing
+-- another mechanism's parameters into the Montgomery mechanism)
+-- refuse mechanism-invalid (the 'ecCurveOf' precedent).
+montgomeryCurveOf
+  :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+  -> Either KeyDeny ByteString
+montgomeryCurveOf pubA privA = case Map.lookup AttrEcParams pubA of
+  Just (ValBytes curve)
+    | curve `elem` [n | (n, _, _) <- montgomeryTable] -> case Map.lookup AttrEcParams privA of
+        Nothing -> Right curve
+        Just (ValBytes curve')
+          | curve' == curve -> Right curve
+          | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "keypair templates disagree on the curve")
+        Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          "private EC params are malformed")
+    | otherwise -> Left (KeyDeny CKR_MECHANISM_INVALID
+        ("unsupported curve: " ++ show curve))
+  Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+    "public EC params are malformed")
+  Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+    "Montgomery keypair templates must name the curve")
 
 -- | The RSA public exponent for a pair: the public template's
 -- @AttrPublicExponent@ when present (big-endian bytes, must decode

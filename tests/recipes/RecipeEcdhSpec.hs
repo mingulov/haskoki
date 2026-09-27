@@ -50,6 +50,7 @@ import Haskoki.Operation.KeyManagement
   , PendingObject (..)
   , PendingWork (..)
   , ckkEc
+  , ckkEcMontgomery
   , ckkGenericSecret
   , ckoSecretKey
   )
@@ -99,6 +100,8 @@ spec = testGroup "ECDH recipe"
   , testCase "secret width per curve" caseWidth
   , testCase "peer width resolves widths not curves" casePeerWidth
   , testCase "planDerive: ECDH accept and deny" casePlan
+  , testCase "secret width over Montgomery bases" caseWidthMontgomery
+  , testCase "planDerive: XDH accept and deny" casePlanMontgomery
   , testCase "driver maps mechanisms to specs" caseDriverMap
   ]
 
@@ -171,6 +174,17 @@ p256Priv = hex "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b02
 p256Pub = hex "3059301306072a8648ce3d020106082a8648ce3d03010703420004a348bab88ded75858acef31e9afa0ef8680ad8ec1196227b10083a630f029ecfc5503e37b76e2538f9ec2ceb6aa766cc7948071e6c39b9a93f0c54d5f7b12086"
 p384Pub = hex "3076301006072a8648ce3d020106052b8104002203620004467ab2e9c927f143e9f6151006e492da4d11c9e079e339f6086dfd988bd0cac51e25adf31d504a7c730a94c1c4b3bb880cffcceaf56ebc0c1a42e04051e8d11e409440f6a4924c1cfea44e8858601cd2a041d7340fe670712e91ca3ec5389a0c"
 p521Pub = hex "30819b301006072a8648ce3d020106052b810400230381860004019eed1a84c846d69d26a869d864b0d1bf557cc7320ce1d8018f22f3b963f6b4c136b38d44c8cb2e21218e96f93aa82459dfb186d80fe06db19cc3c49989e1da9c1701a6889745283941b46bb94ab6f59ad10786191c910aa0183b702b25cd18de9afa5731805cab4f7e3309226b19e397fbaed8b54a03e2e9e1e79ec3862f0ca47a1fc9"
+
+-- Montgomery fixtures: the openssl-emitted X25519/X448 PKCS#8
+-- halves (KeyImportSpec goldens, copied verbatim) plus raw
+-- RFC 7748 peers.
+x19P8, x48P8 :: BS.ByteString
+x19P8 = hex "302e020100300506032b656e04220420107c0296168df7ef1da8bf471f5ac2d793788e84eb8b34d86a2605b2424d0847"
+x48P8 = hex "3046020100300506032b656f043a0438f0b746caef9d715d94ecf3cc83b6b5caf0140402ff06b3043a56f2904b1594350ce4b7523116d8422a97365bb37c3f11f746e4765e71efad"
+
+x19Peer, x48Peer :: BS.ByteString
+x19Peer = hex "504a36999f489cd2fdbc08baff3d88fa00569ba986cba22548ffde80f9806829"
+x48Peer = hex "f8073fc01c8358362c08740c914b419847ef1e409f4e40d9440febc26f00551adb1c37c6c2a87d8283b8cb453e928a0d42793f72894e0f81"
 
 recipeOf :: Text -> EcdhRecipe
 recipeOf name =
@@ -414,6 +428,71 @@ casePlan = do
   expectDeny "sha-kdf generic needs length" CKR_TEMPLATE_INCOMPLETE
     (planDerive defaultRules gm testSession (MechanismId (ckm_SHA256_KEY_DERIVATION))
       baseHandle (encodeDeriveParams BS.empty [derivedTmplNoLen]))
+
+caseWidthMontgomery :: IO ()
+caseWidthMontgomery = do
+  assertEqual "X25519 width" 32 (ecdhSecretWidth x19P8)
+  assertEqual "X448 width" 56 (ecdhSecretWidth x48P8)
+  assertEqual "X25519 bare OID" 32 (ecdhSecretWidth (hex "06032b656e"))
+  assertEqual "X448 bare OID" 56 (ecdhSecretWidth (hex "06032b656f"))
+  -- Weierstrass widths are unchanged (no table cross-talk).
+  assertEqual "P-256 width still" 32 (ecdhSecretWidth p256Priv)
+
+casePlanMontgomery :: IO ()
+casePlanMontgomery = do
+  let m = mkBaseModel ckkEcMontgomery x19P8 True
+      blob peer = encodeDeriveParams (encodeEcdhParams 0 BS.empty peer)
+  -- Accepted: the raw 32-byte peer derives under the X25519 width.
+  case planDerive defaultRules m testSession ecdhMech baseHandle (blob x19Peer [derivedTmpl 32]) of
+    KeyEffect _ (FxDerive mech (Just oid) params info total) -> do
+      assertEqual "mech" ecdhMech mech
+      assertEqual "base" baseOid oid
+      assertEqual "params" (encodeEcdhParams 0 BS.empty x19Peer) params
+      assertEqual "info empty" BS.empty info
+      assertEqual "total" 32 total
+    other -> assertFailure ("expected effect, got " ++ show other)
+  -- X448 plans under its own width.
+  case planDerive defaultRules (mkBaseModel ckkEcMontgomery x48P8 True) testSession
+      ecdhMech baseHandle (blob x48Peer [derivedTmpl 56]) of
+    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "x448 total" 56 total
+    other -> assertFailure ("expected effect, got " ++ show other)
+  -- Missing CKA_VALUE_LEN defaults to the curve width, not the max.
+  case planDerive defaultRules m testSession ecdhMech baseHandle (blob x19Peer [derivedTmplNoLen]) of
+    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ total) -> do
+      assertEqual "default total" 32 total
+      assertEqual "default len" 32 n
+      assertEqual "default stamped" (Just (ValULong 32))
+        (Map.lookup AttrValueLen (poAttrs po))
+    other -> assertFailure ("expected defaulted effect, got " ++ show other)
+  -- Width ceiling: 33 bytes from a 32-byte secret denies.
+  expectDeny "over width" CKR_ARGUMENTS_BAD
+    (planDerive defaultRules m testSession ecdhMech baseHandle (blob x19Peer [derivedTmpl 33]))
+  -- Off-width peers deny as bad mechanism parameters (the
+  -- invalid-peer legs of the wycheproof XDH files).
+  mapM_ (\(label, peer) ->
+    expectDeny label CKR_MECHANISM_PARAM_INVALID
+      (planDerive defaultRules m testSession ecdhMech baseHandle (blob peer [derivedTmpl 32]))
+    ) [ ("short peer", BS.take 31 x19Peer)
+      , ("long peer", x19Peer <> BS.singleton 0)
+      , ("x448 peer on x25519", x48Peer)
+      , ("weierstrass peer", p256Pub)
+      ]
+  -- Unscannable Montgomery base (synthetic opaque bytes) plans
+  -- against the max width; the peer check cannot run and the
+  -- backend arbitrates (the Weierstrass opaque precedent).
+  case planDerive defaultRules (mkBaseModel ckkEcMontgomery (BS.replicate 32 0) True) testSession
+        ecdhMech baseHandle (blob x19Peer [derivedTmpl 72]) of
+    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "opaque total" 72 total
+    other -> assertFailure ("expected effect, got " ++ show other)
+  -- Cofactor derive over Montgomery curves is unserved (named
+  -- gap: clamping already clears the cofactor and the composed
+  -- operation has no PKCS#11 definition).
+  expectDeny "cofactor over montgomery" CKR_MECHANISM_PARAM_INVALID
+    (planDerive defaultRules m testSession ecdhCofMech baseHandle (blob x19Peer [derivedTmpl 32]))
+  -- A non-EC, non-Montgomery base still contradicts the key type.
+  expectDeny "generic base contradicts" CKR_KEY_TYPE_INCONSISTENT
+    (planDerive defaultRules (mkBaseModel ckkGenericSecret x19P8 True) testSession
+      ecdhMech baseHandle (blob x19Peer [derivedTmpl 32]))
 
 -- ---------------------------------------------------------------------------
 -- Driver mapping

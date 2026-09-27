@@ -65,6 +65,8 @@ import Haskoki.Der
   (curveCoordLen, curveOidOfParams, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaPrivateDer, dsaPublicDer, dsaSpkiFields,
    ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
    edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
+   montgomeryOidOfParams, montgomeryPrivateDer, montgomeryPublicDer,
+   montgomeryWidthOfParams, unwrapMontgomeryPoint,
    mldsaPrivateDer, mldsaPublicDer, mldsaWidthsOfOid,
    slhdsaOidOfCkp, slhdsaPrivateDer, slhdsaPublicDer,
    slhdsaWidthsOfOid,
@@ -426,6 +428,8 @@ ckkDsa = mustKeyTypeId "CKK_DSA"
 ckkDh = mustKeyTypeId "CKK_DH"
 ckkX9_42Dh = mustKeyTypeId "CKK_X9_42_DH"
 ckkEcEdwards = mustKeyTypeId "CKK_EC_EDWARDS"
+ckkEcMontgomery :: Word64
+ckkEcMontgomery = mustKeyTypeId "CKK_EC_MONTGOMERY"
 ckkMlDsa = mustKeyTypeId "CKK_ML_DSA"
 ckkSlhDsa = mustKeyTypeId "CKK_SLH_DSA"
 ckkMlKem = mustKeyTypeId "CKK_ML_KEM"
@@ -467,6 +471,8 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     | c == ckoPublicKey && (k == ckkDh || k == ckkX9_42Dh) -> dhPublic k
     | c == ckoPrivateKey && k == ckkEcEdwards -> eddsaPrivate
     | c == ckoPublicKey && k == ckkEcEdwards -> eddsaPublic
+    | c == ckoPrivateKey && k == ckkEcMontgomery -> xdhPrivate
+    | c == ckoPublicKey && k == ckkEcMontgomery -> xdhPublic
     | c == ckoPrivateKey && k == ckkMlDsa -> mldsaPrivate
     | c == ckoPublicKey && k == ckkMlDsa -> mldsaPublic
     | c == ckoPrivateKey && k == ckkSlhDsa -> slhdsaPrivate
@@ -599,6 +605,33 @@ importMaterial attrs = case (classOf, keyTypeOf) of
       oid <- edwardsOidOfParams params
       (seedW, sigW) <- edwardsWidthsOfParams oid
       pure (oid, seedW, sigW)
+    xdhPrivate = do
+      params <- need AttrEcParams
+      scalar <- need AttrValue
+      (oid, w) <- orReject
+        (CKR_CURVE_NOT_SUPPORTED, "unsupported Montgomery curve parameters")
+        (resolveMontgomery params)
+      scalar' <- orReject (CKR_TEMPLATE_INCONSISTENT,
+          "XDH scalar length does not match the curve")
+        (checkExact w scalar)
+      pure (Map.insert AttrValue
+        (ValBytes (montgomeryPrivateDer oid scalar')) attrs)
+    xdhPublic = do
+      params <- need AttrEcParams
+      point <- need AttrEcPoint
+      (oid, w) <- orReject
+        (CKR_CURVE_NOT_SUPPORTED, "unsupported Montgomery curve parameters")
+        (resolveMontgomery params)
+      raw <- orReject (CKR_TEMPLATE_INCONSISTENT,
+          "EC_POINT is not a raw or wrapped Montgomery point")
+        (unwrapMontgomeryPoint w point)
+      forbidValue
+      pure (Map.insert AttrValue
+        (ValBytes (montgomeryPublicDer oid raw)) attrs)
+    resolveMontgomery params = do
+      oid <- montgomeryOidOfParams params
+      w <- montgomeryWidthOfParams oid
+      pure (oid, w)
     mldsaPrivate = do
       (oid, _, privW, _) <- needMldsaSet
       expanded <- case Map.lookup AttrValue attrs of

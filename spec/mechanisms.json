@@ -17034,7 +17034,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "ECDH recipe (core/Haskoki/Recipe/Ecdh.hs): plain agreement. Null-KDF (raw x-coordinate) only; every other KDF selector is a typed refusal (deferred dimension). Curves: all 22 rows (base scans exactly, bare peers resolve widths since lengths collide; the shim agrees via EVP_PKEY_derive under the pinned libctx). Real KATs pinned (OpenSSLSpec caseEcdhVectors against the pinned libcrypto: P-256 both directions + cofactor, P-384, sect283k1 plain/cofactor); synthetic 72-byte max-width constructions pinned (SyntheticSpec caseEcdh); planner width ceiling + driver truncation pinned (RecipeEcdhSpec, RoutingE2ESpec caseDriverEcdh).",
+      "notes": "ECDH recipe (core/Haskoki/Recipe/Ecdh.hs): plain agreement. Null-KDF (raw x-coordinate) only; every other KDF selector is a typed refusal (deferred dimension). Curves: all 22 rows (base scans exactly, bare peers resolve widths since lengths collide; the shim agrees via EVP_PKEY_derive under the pinned libctx). Real KATs pinned (OpenSSLSpec caseEcdhVectors against the pinned libcrypto: P-256 both directions + cofactor, P-384, sect283k1 plain/cofactor); synthetic 72-byte max-width constructions pinned (SyntheticSpec caseEcdh); planner width ceiling + driver truncation pinned (RecipeEcdhSpec, RoutingE2ESpec caseDriverEcdh). Montgomery bases (CKK_EC_MONTGOMERY, X25519/X448): the peer is the raw u-coordinate at exactly the curve width (plan-time length rule; wrong lengths refuse CKR_MECHANISM_PARAM_INVALID), low-order peers attribute as parameter faults (the pinned provider fails zero-output derives), pinned by OpenSSLSpec caseXdhVectors (CLI commute pairs + wycheproof tc1 per curve) and RecipeEcdhSpec casePlanMontgomery.",
       "numeric_id": "0x00001050",
       "routes": [
         {
@@ -17114,7 +17114,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "ECDH recipe (core/Haskoki/Recipe/Ecdh.hs): cofactor-multiplied agreement (threaded to libcrypto; a no-op on h=1 curves, pinned equal to plain; sect283k1 KAT pins h=2 divergence). Null-KDF (raw x-coordinate) only; every other KDF selector is a typed refusal (deferred dimension). Curves: all 22 rows (base scans exactly, bare peers resolve widths since lengths collide; the shim agrees via EVP_PKEY_derive under the pinned libctx). Real KATs pinned (OpenSSLSpec caseEcdhVectors against the pinned libcrypto: P-256 both directions + cofactor, P-384, sect283k1 plain/cofactor); synthetic 72-byte max-width constructions pinned (SyntheticSpec caseEcdh); planner width ceiling + driver truncation pinned (RecipeEcdhSpec, RoutingE2ESpec caseDriverEcdh).",
+      "notes": "ECDH recipe (core/Haskoki/Recipe/Ecdh.hs): cofactor-multiplied agreement (threaded to libcrypto; a no-op on h=1 curves, pinned equal to plain; sect283k1 KAT pins h=2 divergence). Null-KDF (raw x-coordinate) only; every other KDF selector is a typed refusal (deferred dimension). Curves: all 22 rows (base scans exactly, bare peers resolve widths since lengths collide; the shim agrees via EVP_PKEY_derive under the pinned libctx). Real KATs pinned (OpenSSLSpec caseEcdhVectors against the pinned libcrypto: P-256 both directions + cofactor, P-384, sect283k1 plain/cofactor); synthetic 72-byte max-width constructions pinned (SyntheticSpec caseEcdh); planner width ceiling + driver truncation pinned (RecipeEcdhSpec, RoutingE2ESpec caseDriverEcdh). Named gap: cofactor derive over Montgomery curves refuses CKR_MECHANISM_PARAM_INVALID (clamping already clears the cofactor; the composed operation has no PKCS#11 definition), pinned by RecipeEcdhSpec casePlanMontgomery and OpenSSLSpec caseXdhVectors.",
       "numeric_id": "0x00001051",
       "routes": [
         {
@@ -17340,14 +17340,29 @@
       "canonical_name": "CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
       "family": "keypair",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE_KEY_PAIR"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 256,
+        "max_key_size": 448
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: no Montgomery keygen route in the backend surface; behavior/synthetic stay planned.",
+      "notes": "pairgen from the named Montgomery curve (public EC_PARAMS required via montgomeryCurveOf, private inherits; Weierstrass/Edwards/foreign curves refuse CKR_MECHANISM_INVALID (mirroring ecCurveOf); GenMontgomeryKeypair name frame). Components stamped by stampPairComponents (raw EC_POINT on the public half, agreed curve name as EC_PARAMS on the private half; opaque synthetic doubles pass through, mirroring EC). Real execution pinned by OpenSSLSpec caseRealMontgomeryKeygen (fresh pairs agree both directions at the curve width; no KAT possible for randomized generation). Bounds 256/448 bits (served coordinate window).",
       "numeric_id": "0x00001056",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37"
+          ],
+          "key_constraints": [
+            "xdh-curve-required"
+          ],
+          "operation": "generate-key-pair",
+          "output_rule": "synthetic-pair/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_EC_MONTGOMERY_KEY_PAIR_GEN",
@@ -17356,12 +17371,38 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "key-generation",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

@@ -618,6 +618,9 @@ data KeyGenSpec
   | GenEdDSAKeypair { genEdwardsName :: !ByteString }
     -- ^ Edwards keypair from the engine curve name; answers the
     -- PKCS#8/SPKI DER halves.
+  | GenXDHKeypair { genMontgomeryName :: !ByteString }
+    -- ^ Montgomery (XDH) keypair from the engine curve name;
+    -- answers the PKCS#8/SPKI DER halves.
   | GenSym { genAlg :: !String, genLen :: !Int } -- "AES", "ChaCha20", "HMAC", "HOTP", "GENERIC"
   | GenMLKEM { genKem :: !PqcKemAlg }
   | GenMLDSA { genSigAlg :: !PqcSigAlg }

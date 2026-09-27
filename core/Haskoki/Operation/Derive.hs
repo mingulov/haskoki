@@ -56,6 +56,7 @@ import Haskoki.Operation.KeyManagement
   , PendingWork (..)
   , checkKeyTemplateAny
   , ckkEc
+  , ckkEcMontgomery
   , ckkGenericSecret
   , ckoSecretKey
   , keyBytesOf
@@ -69,10 +70,12 @@ import Haskoki.Recipe.Dh
   , dhSecretWidth
   )
 import Haskoki.Recipe.Ecdh
-  ( decodeEcdhParams
+  ( EcdhRecipe (..)
+  , decodeEcdhParams
   , ecdhParamsValid
   , ecdhRecipeFor
   , ecdhSecretWidth
+  , xdhSecretWidth
   )
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
 import Haskoki.Recipe.Kdf
@@ -223,8 +226,9 @@ prfHashLen prf =
 -- v3.2: truncation applies "if it has one" a length). Check
 -- order: mechanism, frame, base, then templates in order; the
 -- first failure denies with zero objects.
--- ECDH arms resolve the base and require an EC key type before
--- examining parameters, and SHA-KDF arms require a generic-secret
+-- ECDH arms resolve the base and require an EC or Montgomery
+-- key type before examining parameters, and SHA-KDF arms require
+-- a generic-secret
 -- base (a key-type contradiction outranks parameter shape); ECDH
 -- frames carry the agreement parameters ('ecdh-params/1') in the
 -- info segment and the derived total is capped by the base
@@ -269,15 +273,20 @@ planDerive rules model st mech baseH blob
       Just (ecdhBlob, tmpls) -> case resolveBase model st baseH of
         Left deny -> KeyDenied deny
         Right (ost, mat)
-          | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkEc) ->
+          | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkEc)
+          , Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkEcMontgomery) ->
               KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
-                "ECDH base key is not an EC key")
+                "ECDH base key is not an EC or Montgomery key")
           | not (ecdhParamsValid r ecdhBlob) -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
               "ECDH mechanism parameters rejected by the recipe")
+          | rhCofactor r && isMontgomery ost -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
+              "cofactor derive is not served over Montgomery curves")
           | otherwise -> case decodeEcdhParams ecdhBlob of
               Just (_, _, peer)
                 | curvesDiffer mat peer -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
                     "ECDH base/peer curve mismatch")
+                | xdhPeerMismatched ost mat peer -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
+                    "ECDH Montgomery peer length mismatch")
                 | otherwise -> finish tmpls (ecdhSecretWidth mat)
                     "derived total exceeds the ECDH secret width"
                     (FxDerive mech (Just (osId ost)) ecdhBlob BS.empty)
@@ -435,3 +444,19 @@ curvesDiffer :: ByteString -> ByteString -> Bool
 curvesDiffer base peer = case (ecdsaCurveOfDer base, ecdsaCurveOfDer peer) of
   (Just a, Just b) -> a /= b
   _ -> False
+
+-- | A Montgomery base key (the XDH agreement shape).
+isMontgomery :: ObjectState -> Bool
+isMontgomery ost =
+  Map.lookup AttrKeyType (osAttrs ost) == Just (ValULong ckkEcMontgomery)
+
+-- | A Montgomery base whose scanned curve width disagrees with the
+-- raw peer length (the XDH peer is the bare RFC 7748 coordinate,
+-- never a wrapped point). Unscannable bases (synthetic opaque
+-- doubles) cannot be checked here — the backend arbitrates, the
+-- Weierstrass opaque precedent.
+xdhPeerMismatched :: ObjectState -> ByteString -> ByteString -> Bool
+xdhPeerMismatched ost mat peer =
+  isMontgomery ost && case xdhSecretWidth mat of
+    Just w -> BS.length peer /= w
+    Nothing -> False

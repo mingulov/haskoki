@@ -1157,6 +1157,11 @@ dEdwardsKeyPairGen = promotedDesc "CKM_EC_EDWARDS_KEY_PAIR_GEN" [Pkcs11_3_0, Pkc
   noParams [mechRoute OpGenerateKeyPair "CKM_EC_EDWARDS_KEY_PAIR_GEN" ["A20", "A37"]]
   KeyBits 256 456
 
+dMontgomeryKeyPairGen :: Descriptor
+dMontgomeryKeyPairGen = promotedDesc "CKM_EC_MONTGOMERY_KEY_PAIR_GEN" [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyKeyPair
+  noParams [mechRoute OpGenerateKeyPair "CKM_EC_MONTGOMERY_KEY_PAIR_GEN" ["A20", "A37"]]
+  KeyBits 256 448
+
 dMlDsaKeyPairGen :: Descriptor
 dMlDsaKeyPairGen = promotedDesc "CKM_ML_DSA_KEY_PAIR_GEN" [Pkcs11_3_2] FamilyKeyPair
   noParams [mechRoute OpGenerateKeyPair "CKM_ML_DSA_KEY_PAIR_GEN" ["A20", "A37"]]
@@ -1246,7 +1251,7 @@ curatedRegistry =
     behaviorDescs :: [Descriptor]
     behaviorDescs =
       ( [ dSHA256, dAESKeyGen, dDES3KeyGen, dHotpKeyGen, dGenericSecretKeyGen, dBlake2b512KeyGen, dChacha20KeyGen
-        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dDhKeyPairGen, dX9_42DhKeyPairGen, dEdwardsKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dMlKem
+        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dDhKeyPairGen, dX9_42DhKeyPairGen, dEdwardsKeyPairGen, dMontgomeryKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dMlKem
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160, dBLAKE2B_512

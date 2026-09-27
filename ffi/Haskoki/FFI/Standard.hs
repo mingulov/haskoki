@@ -196,7 +196,7 @@ import Haskoki.Attribute
   , shapeMatches
   )
 import Haskoki.Attribute.Generated (attributeNameById)
-import Haskoki.Der (curveTable, edwardsTable)
+import Haskoki.Der (curveTable, edwardsTable, montgomeryTable)
 import Haskoki.Engine.Backend
   ( BackendEnv
   , BackendError (..)
@@ -790,10 +790,11 @@ decodeULongLE bs
 -- | Map @CKA_EC_PARAMS@ wire bytes to the engine curve name: the
 -- DER object identifiers for the covered curves (RFC 5480 section
 -- 2.1.1 for the SEC curves, RFC 5639 for brainpool, RFC 8410 for
--- the Edwards curves) become engine names; anything else passes
--- through for the engine to refuse. Derived from the core
--- 'Haskoki.Der.curveTable' plus 'Haskoki.Der.edwardsTable'
--- (pinned both ways by KeyImportSpec).
+-- the Edwards and Montgomery curves) become engine names; anything
+-- else passes through for the engine to refuse. Derived from the
+-- core 'Haskoki.Der.curveTable' plus 'Haskoki.Der.edwardsTable'
+-- plus 'Haskoki.Der.montgomeryTable' (pinned both ways by
+-- KeyImportSpec).
 ecParamsFromWire :: ByteString -> ByteString
 ecParamsFromWire bs = case lookup bs oidToName of
   Just name -> name
@@ -801,6 +802,7 @@ ecParamsFromWire bs = case lookup bs oidToName of
   where
     oidToName = [(oid, name) | (name, oid, _) <- curveTable]
       ++ [(oid, name) | (name, oid, _, _) <- edwardsTable]
+      ++ [(oid, name) | (name, oid, _) <- montgomeryTable]
 
 -- | Map an engine curve name back to @CKA_EC_PARAMS@ wire bytes
 -- (the inverse of 'ecParamsFromWire' on the known curves;
@@ -812,6 +814,7 @@ ecParamsToWire bs = case lookup bs nameToOid of
   where
     nameToOid = [(name, oid) | (name, oid, _) <- curveTable]
       ++ [(name, oid) | (name, oid, _, _) <- edwardsTable]
+      ++ [(name, oid) | (name, oid, _) <- montgomeryTable]
 
 -- ---------------------------------------------------------------------------
 -- Scalar projections (pure)

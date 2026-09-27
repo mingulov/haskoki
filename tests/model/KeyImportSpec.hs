@@ -24,7 +24,7 @@ import Test.Tasty.HUnit
 import Haskoki.Attribute
   (AttributeResult (..), AttributeType (..), AttributeValue (..),
    PartialReads (..), decodeValue, getAttributes)
-import Haskoki.Der (curveCoordLen, curveOidOfParams, dhPkcs8Fields, dhSpkiFields, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, unwrapEcPoint, unwrapEdwardsPoint)
+import Haskoki.Der (curveCoordLen, curveOidOfParams, dhPkcs8Fields, dhSpkiFields, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, montgomeryNameOfOid, montgomeryOidOfParams, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomeryPublicDer, montgomerySpkiFields, montgomeryTable, montgomeryWidthOfParams, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, unwrapEcPoint, unwrapEdwardsPoint, unwrapMontgomeryPoint)
 import Haskoki.Engine.Backend
   (CryptoBackend (..), DhSpec (..), DigestAlg (..), EcSpec (..),
    EngineResult (..), KemSpec (..), KeyMaterial (..), PqcKemAlg (..), PqcSigAlg (..), SigSpec (..))
@@ -35,7 +35,7 @@ import Haskoki.Model
    lookupSession)
 import Haskoki.Object (decodeHandle, planCreateObject, planGetAttributes, resolveHandle)
 import Haskoki.Operation.KeyManagement
-  (ckoPrivateKey, ckoPublicKey, ckkDh, ckkDsa, ckkEc, ckkEcEdwards, ckkMlDsa, ckkMlKem, ckkRsa, ckkX9_42Dh)
+  (ckoPrivateKey, ckoPublicKey, ckkDh, ckkDsa, ckkEc, ckkEcEdwards, ckkEcMontgomery, ckkMlDsa, ckkMlKem, ckkRsa, ckkX9_42Dh)
 import Haskoki.Outcome
   (DeltaOp (..), NativeOutput (..), PlanResult (..),
    PreparedCommit (..), Rejection (..), StateDelta (..))
@@ -67,6 +67,13 @@ spec = testGroup "key import"
   , testCase "partial EdDSA import is incomplete" casePartialEddsa
   , testCase "bad EdDSA value refuses inconsistent" caseBadEddsaValue
   , testCase "Edwards OID table agrees with the FFI" caseEdwardsTableAgreement
+  , testCase "XDH private import assembles PKCS#8" caseXdhPrivate
+  , testCase "XDH public import assembles SPKI" caseXdhPublic
+  , testCase "partial XDH import is incomplete" casePartialXdh
+  , testCase "bad XDH value refuses inconsistent" caseBadXdhValue
+  , testCase "XDH assembly matches openssl goldens" caseMontgomeryDerGoldens
+  , testCase "XDH DER readers parse openssl goldens" caseMontgomeryDerReaders
+  , testCase "Montgomery OID table agrees with the FFI" caseMontgomeryTableAgreement
   , testCase "partial RSA import is incomplete" casePartialRsa
   , testCase "partial DSA import is incomplete" casePartialDsa
   , testCase "empty DSA component refuses inconsistent" caseBadDsaValue
@@ -1651,4 +1658,222 @@ caseMlkemExecutes = withRealEnv $ \env -> do
     EngineOk ss -> pure ss
     EngineFail err -> assertFailure ("imported ML-KEM decaps failed: " ++ show err) >> undefined
   assertEqual "roundtrip secret agrees" ss1 ss2
+
+-- | Montgomery fixtures: CLI-generated X25519/X448 keys (pinned
+-- @openssl genpkey@); the DER goldens are openssl-emitted bytes,
+-- so golden equality is an independent cross-check of the
+-- assembly, not self-agreement.
+x19Oid :: ByteString
+x19Oid = hex "06032b656e"
+
+x19Point :: ByteString
+x19Point = hex "684cd5fbe3473e3cb8dc7263ec9f0a837d770e5c9e2db619c8e9b0294b0e991d"
+
+x19Scalar :: ByteString
+x19Scalar = hex "107c0296168df7ef1da8bf471f5ac2d793788e84eb8b34d86a2605b2424d0847"
+
+x19SpkiGold :: ByteString
+x19SpkiGold = hex "302a300506032b656e032100684cd5fbe3473e3cb8dc7263ec9f0a837d770e5c9e2db619c8e9b0294b0e991d"
+
+x19P8Gold :: ByteString
+x19P8Gold = hex "302e020100300506032b656e04220420107c0296168df7ef1da8bf471f5ac2d793788e84eb8b34d86a2605b2424d0847"
+
+x48Oid :: ByteString
+x48Oid = hex "06032b656f"
+
+x48Point :: ByteString
+x48Point = hex $ concat
+  ["a661ed99e0dfbb6c4985d6affe9247682f0a809ffab3e351e1142820c636c30c6947fb4c"
+  ,"69833ba7e4ec2ec0638016f5ddbcd72e77ebf670"
+  ]
+
+x48Scalar :: ByteString
+x48Scalar = hex $ concat
+  ["f0b746caef9d715d94ecf3cc83b6b5caf0140402ff06b3043a56f2904b1594350ce4b752"
+  ,"3116d8422a97365bb37c3f11f746e4765e71efad"
+  ]
+
+x48SpkiGold :: ByteString
+x48SpkiGold = hex $ concat
+  ["3042300506032b656f033900a661ed99e0dfbb6c4985d6affe9247682f0a809ffab3e351"
+  ,"e1142820c636c30c6947fb4c69833ba7e4ec2ec0638016f5ddbcd72e77ebf670"
+  ]
+
+x48P8Gold :: ByteString
+x48P8Gold = hex $ concat
+  ["3046020100300506032b656f043a0438f0b746caef9d715d94ecf3cc83b6b5caf0140402"
+  ,"ff06b3043a56f2904b1594350ce4b7523116d8422a97365bb37c3f11f746e4765e71efad"
+  ]
+
+xdhPrivTmpl :: [(AttributeType, AttributeValue)]
+xdhPrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkEcMontgomery)
+  , (AttrToken, ValBool False)
+  , (AttrEcParams, ValBytes x19Oid)
+  , (AttrValue, ValBytes x19Scalar)
+  ]
+
+xdhPubTmpl :: [(AttributeType, AttributeValue)]
+xdhPubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkEcMontgomery)
+  , (AttrToken, ValBool False)
+  , (AttrEcParams, ValBytes x19Oid)
+  , (AttrEcPoint, ValBytes x19Point)
+  ]
+
+caseXdhPrivate :: IO ()
+caseXdhPrivate = do
+  m0 <- seedModel
+  st <- getSession m0
+  (_, _, attrs) <- doCreate m0 st xdhPrivTmpl
+  der <- storedValue attrs
+  assertEqual "X25519 PKCS#8 golden" x19P8Gold der
+  assertEqual "params kept" (Just (ValBytes x19Oid)) (Map.lookup AttrEcParams attrs)
+  -- X448 assembles its wider golden the same way.
+  let tmpl48 = map (\(t, v) -> case t of
+        AttrEcParams -> (t, ValBytes x48Oid)
+        AttrValue -> (t, ValBytes x48Scalar)
+        _ -> (t, v)) xdhPrivTmpl
+  (_, _, attrs48) <- doCreate m0 st tmpl48
+  der48 <- storedValue attrs48
+  assertEqual "X448 PKCS#8 golden" x48P8Gold der48
+  -- Engine-name params (the post-wire form) assemble identically.
+  let named = map (\(t, v) -> if t == AttrEcParams then (t, ValBytes "X25519") else (t, v)) xdhPrivTmpl
+  (_, _, attrsN) <- doCreate m0 st named
+  derN <- storedValue attrsN
+  assertEqual "named-params PKCS#8 golden" x19P8Gold derN
+
+caseXdhPublic :: IO ()
+caseXdhPublic = do
+  m0 <- seedModel
+  st <- getSession m0
+  (_, _, attrs) <- doCreate m0 st xdhPubTmpl
+  der <- storedValue attrs
+  assertEqual "X25519 SPKI golden" x19SpkiGold der
+  assertEqual "point kept" (Just (ValBytes x19Point)) (Map.lookup AttrEcPoint attrs)
+  -- A DER OCTET STRING wrapper around the point unwraps to the
+  -- same golden (the EdDSA precedent).
+  let wrapped = map (\(t, v) -> if t == AttrEcPoint
+        then (t, ValBytes (BS.pack [0x04, 0x20] <> x19Point)) else (t, v)) xdhPubTmpl
+  (_, _, attrsW) <- doCreate m0 st wrapped
+  derW <- storedValue attrsW
+  assertEqual "wrapped-point SPKI golden" x19SpkiGold derW
+
+casePartialXdh :: IO ()
+casePartialXdh = do
+  m0 <- seedModel
+  st <- getSession m0
+  let noParams = filter ((/= AttrEcParams) . fst) xdhPrivTmpl
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noParams)
+  let noScalar = filter ((/= AttrValue) . fst) xdhPrivTmpl
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noScalar)
+  let noPoint = filter ((/= AttrEcPoint) . fst) xdhPubTmpl
+  expectReject CKR_TEMPLATE_INCOMPLETE (planCreateObject m0 st noPoint)
+
+caseBadXdhValue :: IO ()
+caseBadXdhValue = do
+  m0 <- seedModel
+  st <- getSession m0
+  let setT tmpl t v = (t, v) : filter ((/= t) . fst) tmpl
+      p256 = hex "06082a8648ce3d030107"
+  -- Off-width scalar/point refuse inconsistent.
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT xdhPrivTmpl AttrValue (ValBytes (BS.take 31 x19Scalar))))
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT xdhPrivTmpl AttrValue (ValBytes (x19Scalar <> BS.singleton 0))))
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (setT xdhPubTmpl AttrEcPoint (ValBytes (BS.take 31 x19Point))))
+  -- A foreign curve refuses CURVE_NOT_SUPPORTED (the EC precedent).
+  expectReject CKR_CURVE_NOT_SUPPORTED (planCreateObject m0 st
+    (setT xdhPrivTmpl AttrEcParams (ValBytes p256)))
+  expectReject CKR_CURVE_NOT_SUPPORTED (planCreateObject m0 st
+    (setT xdhPubTmpl AttrEcParams (ValBytes p256)))
+  -- An explicit value next to public components contradicts.
+  expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
+    (xdhPubTmpl ++ [(AttrValue, ValBytes "x")]))
+
+caseMontgomeryDerGoldens :: IO ()
+caseMontgomeryDerGoldens = do
+  assertEqual "X25519 SPKI golden" x19SpkiGold
+    (montgomeryPublicDer x19Oid x19Point)
+  assertEqual "X448 SPKI golden" x48SpkiGold
+    (montgomeryPublicDer x48Oid x48Point)
+  assertEqual "X25519 PKCS#8 golden" x19P8Gold
+    (montgomeryPrivateDer x19Oid x19Scalar)
+  assertEqual "X448 PKCS#8 golden" x48P8Gold
+    (montgomeryPrivateDer x48Oid x48Scalar)
+  assertEqual "table rows" [("X25519", x19Oid, 32), ("X448", x48Oid, 56)]
+    montgomeryTable
+  assertEqual "X25519 width" (Just 32) (montgomeryWidthOfParams x19Oid)
+  assertEqual "X448 width" (Just 56) (montgomeryWidthOfParams x48Oid)
+  assertEqual "P-256 has no Montgomery width" Nothing
+    (montgomeryWidthOfParams (hex "06082a8648ce3d030107"))
+  assertEqual "Ed25519 has no Montgomery width" Nothing
+    (montgomeryWidthOfParams (hex "06032b6570"))
+  assertEqual "garbage has no Montgomery width" Nothing
+    (montgomeryWidthOfParams "nope")
+  -- Point unwrap: raw RFC 7748 bytes pass through; a DER OCTET
+  -- STRING wrapper unwraps; widths are enforced either way.
+  assertEqual "raw point passes" (Just x19Point)
+    (unwrapMontgomeryPoint 32 x19Point)
+  assertEqual "wrapped point unwraps" (Just x19Point)
+    (unwrapMontgomeryPoint 32 (BS.pack [0x04, 0x20] <> x19Point))
+  assertEqual "wrapped X448 unwraps" (Just x48Point)
+    (unwrapMontgomeryPoint 56 (BS.pack [0x04, 0x38] <> x48Point))
+  assertEqual "short raw refuses" Nothing
+    (unwrapMontgomeryPoint 32 (BS.take 31 x19Point))
+  assertEqual "long raw refuses" Nothing
+    (unwrapMontgomeryPoint 32 (x19Point <> BS.singleton 0x00))
+  assertEqual "wrong-width wrap refuses" Nothing
+    (unwrapMontgomeryPoint 32 (BS.pack [0x04, 0x38] <> x48Point))
+  assertEqual "truncated wrap refuses" Nothing
+    (unwrapMontgomeryPoint 32 (BS.pack [0x04, 0x20] <> BS.take 31 x19Point))
+  assertEqual "garbage refuses" Nothing
+    (unwrapMontgomeryPoint 32 "nope")
+
+caseMontgomeryDerReaders :: IO ()
+caseMontgomeryDerReaders = do
+  -- The openssl-emitted goldens parse back to the fixture
+  -- components (independent cross-check of the
+  -- keygen-stamping readers).
+  assertEqual "X25519 SPKI fields" (Just (x19Oid, x19Point))
+    (montgomerySpkiFields x19SpkiGold)
+  assertEqual "X448 SPKI fields" (Just (x48Oid, x48Point))
+    (montgomerySpkiFields x48SpkiGold)
+  assertEqual "X25519 PKCS#8 fields" (Just (x19Oid, x19Scalar))
+    (montgomeryPkcs8Fields x19P8Gold)
+  assertEqual "X448 PKCS#8 fields" (Just (x48Oid, x48Scalar))
+    (montgomeryPkcs8Fields x48P8Gold)
+  -- Malformed input refuses.
+  assertEqual "truncated SPKI" Nothing
+    (montgomerySpkiFields (BS.take (BS.length x19SpkiGold - 1) x19SpkiGold))
+  assertEqual "truncated PKCS#8" Nothing
+    (montgomeryPkcs8Fields (BS.take 10 x19P8Gold))
+  assertEqual "garbage SPKI" Nothing (montgomerySpkiFields "nope")
+  assertEqual "garbage PKCS#8" Nothing (montgomeryPkcs8Fields "nope")
+  assertEqual "wrong tag" Nothing
+    (montgomerySpkiFields (BS.cons 0x31 (BS.drop 1 x19SpkiGold)))
+  -- Foreign algorithms refuse (OID membership, not shape).
+  assertEqual "EC SPKI refuses" Nothing (montgomerySpkiFields ecSpkiGold)
+  assertEqual "Ed25519 SPKI refuses" Nothing (montgomerySpkiFields ed19SpkiGold)
+
+caseMontgomeryTableAgreement :: IO ()
+caseMontgomeryTableAgreement = do
+  -- The core Montgomery table and the FFI wire mapping agree both
+  -- ways (the Edwards agreement precedent); anything else passes
+  -- through untouched.
+  let curves =
+        [ ("X25519", "06032b656e", 32)
+        , ("X448", "06032b656f", 56)
+        ]
+  mapM_ (\(name, oid, w) -> do
+    assertEqual ("core resolves " ++ name) (Just (hex oid)) (montgomeryOidOfParams (BS8.pack name))
+    assertEqual ("core resolves DER " ++ name) (Just (hex oid)) (montgomeryOidOfParams (hex oid))
+    assertEqual ("core names " ++ name) (Just (BS8.pack name)) (montgomeryNameOfOid (hex oid))
+    assertEqual ("core width " ++ name) (Just w) (montgomeryWidthOfParams (hex oid))
+    assertEqual ("ffi emits " ++ name) (hex oid) (ecParamsToWire (BS8.pack name))
+    assertEqual ("ffi parses " ++ name) (BS8.pack name) (ecParamsFromWire (hex oid))
+    ) curves
 

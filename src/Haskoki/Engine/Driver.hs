@@ -284,6 +284,7 @@ import Haskoki.Operation.KeyManagement
   , dsaParameterGenMech
   , ecKeyPairGenMech
   , edwardsKeyPairGenMech
+  , montgomeryKeyPairGenMech
   , mldsaKeyPairGenMech
   , slhdsaKeyPairGenMech
   , x9_42DhKeyPairGenMech
@@ -1469,6 +1470,8 @@ runEffect env resolve fx = case fx of
             toKeyPair <$> generateKey env (GenDHKeypair der)
           (m, GenEdwardsKeypair curve) | m == edwardsKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenEdDSAKeypair curve)
+          (m, GenMontgomeryKeypair curve) | m == montgomeryKeyPairGenMech ->
+            toKeyPair <$> generateKey env (GenXDHKeypair curve)
           (m, GenMlDsa n) | m == mldsaKeyPairGenMech -> case mlDsaAlg n of
             Just alg -> toKeyPair <$> generateKey env (GenMLDSA alg)
             Nothing -> pure (GotCryptoError (CryptoFailed
@@ -1478,7 +1481,7 @@ runEffect env resolve fx = case fx of
             Nothing -> pure (GotCryptoError (CryptoFailed
               ("driver: unknown SLH-DSA parameter set: " ++ show n)))
           _
-            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, chacha20KeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, dhKeyPairGenMech, x9_42DhKeyPairGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech, pbkd2KeyGenMech] ->
+            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, chacha20KeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, dhKeyPairGenMech, x9_42DhKeyPairGenMech, edwardsKeyPairGenMech, montgomeryKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech, pbkd2KeyGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)

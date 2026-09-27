@@ -1118,6 +1118,74 @@ skipped (t7692)
   rebuilt post-fix (`dist-release/haskoki-0.3.0.0`,
   evidence 16/16).
 
+## Round 24: XDH-Montgomery slice 11c (fast r47→r48 + KAT r24→r25)
+
+- r48: 3799 passed / 18 failed / 591 xfailed /
+  3292 skipped (t7700)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r48-results.json`).
+  r47→r48: +12 pass / +0 fail / +2 xfail / +4
+  skip (+18 collected: the new Montgomery row's
+  shared-mech expansion).
+- Movers r47→r48 (unit `counts`, exact):
+  `test_ecdh_extended` 4/8s → 8/4s (Montgomery
+  legs newly served), `test_parameter_validation`
+  26/2s → 28/0s (Montgomery param legs incl.
+  low-order rejection), `test_mech_attribute`
+  t232→236 (+3 / +1x), `test_mech_flags`
+  612/1146s → 614/1153s (+2 / +7s),
+  `test_mech_keygen` t116→118 (+1 / +1x),
+  `test_mech_probe` 588s→591s (+3s). The 18
+  failures are identical by id to r47 (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS P11C-006).
+  The 2 new xfails are the CKA_LOCAL pair on
+  `EC_MONTGOMERY_KEY_PAIR_GEN` (module-wide
+  unserved attribute, same signature as 11a/11b).
+- r25: 82206 passed / 24 failed / 1200 xfailed /
+  30454 skipped (t113884)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r25-results.json`).
+  r24→r25: +1083 pass / +0 fail / −1069 xfail /
+  +4 skip (+18 collected).
+- The KAT mover is exactly the ranked prediction:
+  `wycheproof/test_wycheproof_x25519.py` 0/1071x →
+  1071/0x — all 1071 flip to pass, zero failures.
+  The 517 valid vectors KAT-match byte-exact
+  through the pinned provider (twist and
+  non-canonical edge vectors included); the 42
+  low-order vectors refuse `0x71` via the shim's
+  BADPEER attribution (the provider fails
+  zero-output derives); the overlong-peer
+  invalids refuse `0x71` via the plan-time width
+  rule. The 3091 skips are unchanged
+  (duplicates). The pre-lane ctypes probe
+  against the pinned libcrypto predicted this
+  flip exactly (457/457 edge match, 42 low-order
+  + 12 overlong provider-fails). Total +1083
+  accounted leg-for-leg (1071 flips + 12
+  shared-mech expansion).
+- Fast-lane units inside KAT repeat the fast r48
+  deltas exactly (cross-lane consistency check
+  passes).
+- KAT residuals, all dispositioned: the 24
+  failures are identical by id to r24 (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS P11C-006 +
+  6 SLH-DSA P11C-003); the CKA_LOCAL pair
+  (above).
+- Slice notes: the 1071-xfail source was the
+  Derive planner's `ckkEc`-only gate
+  (`KEY_TYPE_INCONSISTENT` at import-time for
+  every Montgomery vector). Cofactor derive over
+  Montgomery curves is a named gap (refuses
+  `0x71`; clamping already clears the cofactor
+  and the composed operation has no PKCS#11
+  definition). In-slice test fix (pre-existing
+  1/256 flake, no behavior change): the OAEP
+  tamper leg in `RoutingE2ESpec` now mutates a
+  guaranteed-differing byte instead of a literal
+  "X".
+- Bundle note: r48/r25 run on the 11c bundle
+  (`dist-release/haskoki-0.3.0.0`, evidence
+  16/16).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

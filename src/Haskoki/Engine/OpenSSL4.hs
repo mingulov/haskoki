@@ -64,10 +64,10 @@ import Foreign.ForeignPtr (ForeignPtr, finalizeForeignPtr, newForeignPtr, withFo
 import Foreign.Ptr (Ptr, nullPtr)
 
 import qualified Haskoki.FFI.OpenSSL4.Raw as Raw
-import Haskoki.Der (coveredCurveNames, edwardsCurveNames, integerToBE)
+import Haskoki.Der (coveredCurveNames, edwardsCurveNames, integerToBE, montgomeryCurveNames)
 import Haskoki.Engine.Backend
 import Haskoki.Recipe.Dh (dhPrimeWidthOfDer)
-import Haskoki.Recipe.Ecdh (curveWidthOfName, ecdhPeerWidth)
+import Haskoki.Recipe.Ecdh (curveWidthOfName, ecdhPeerWidth, xdhSecretWidth)
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
 import Haskoki.Types (EngineResourceId (..))
 
@@ -568,6 +568,14 @@ instance CryptoBackend OpenSSL4 where
         | code == Raw.errBadParam -> pure (EngineFail (BackendBadParam "generateKey" "unknown Edwards curve"))
         | otherwise -> nativeFail "generateKey" code
       Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
+  generateKey be spec@(GenXDHKeypair name) = runGuarded be "generateKey" (genSupported be spec) $ \env -> do
+    r <- withForeignPtr (osslEnv env) $ \_ ->
+      Raw.montgomeryGen (osslCtx env) (osslPropQ env) (BC8.unpack name)
+    case r of
+      Left code
+        | code == Raw.errBadParam -> pure (EngineFail (BackendBadParam "generateKey" "unknown Montgomery curve"))
+        | otherwise -> nativeFail "generateKey" code
+      Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   generateKey be spec@(GenMLDSA alg) = runGuarded be "generateKey" (genSupported be spec) $ \env ->
     case mldsaNativeAlg alg False of
       Nothing -> pure (EngineFail (BackendBadParam "generateKey"
@@ -731,33 +739,54 @@ instance CryptoBackend OpenSSL4 where
         mpeer <- resolveKeyBytes env peer
         case mpeer of
           EngineFail err -> pure (EngineFail err)
-          -- Width-based agreement gate: the base scans exactly (DER
-          -- always carries the OID) while a bare peer point resolves
-          -- a width, never a curve (lengths collide). Equal widths
-          -- proceed; the shim arbitrates on-curve membership
-          -- natively, so a same-width cross-curve peer still
-          -- refuses (as a parameter fault, never a wrong secret).
-          -- Fault attribution: the base is the caller's key (bad
-          -- base stays a bad key) while the peer rides in the
-          -- mechanism parameters (any peer fault answers
-          -- mechanism-param-invalid at the edge).
-          EngineOk peerB -> case (ecdsaCurveOfDer privB >>= curveWidthOfName, ecdhPeerWidth peerB) of
-            (Just w, Just pw)
-              | w == pw -> do
+          -- Montgomery bases (X25519/X448) take the XDH arm: the
+          -- peer is the raw u-coordinate at exactly the curve
+          -- width (checked before any native call), the cofactor
+          -- spec refuses (named gap: clamping already clears the
+          -- cofactor), and the shim attributes low-order peers as
+          -- parameter faults. Fault attribution mirrors ECDH.
+          EngineOk peerB -> case xdhSecretWidth privB of
+            Just w
+              | spec == EcdhCofactor -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive"
+                  "cofactor derive is not served over Montgomery curves"))
+              | BS.length peerB /= w -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive"
+                  "XDH peer length does not match the curve"))
+              | otherwise -> do
                   r <- withForeignPtr (osslEnv env) $ \_ ->
-                    Raw.ecdhDerive (osslCtx env) (osslPropQ env) privB peerB (spec == EcdhCofactor)
+                    Raw.xdhDerive (osslCtx env) (osslPropQ env) privB peerB
                   case r of
                     Left code
-                      | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "ecdhDerive" "ECDH base key rejected"))
-                      | code == Raw.errBadPeer -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive" "ECDH peer rejected"))
+                      | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "ecdhDerive" "XDH base key rejected"))
+                      | code == Raw.errBadPeer -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive" "XDH peer rejected"))
                       | otherwise -> nativeFail "ecdhDerive" code
                     Right secret -> pure (EngineOk secret)
-              | otherwise -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive"
-                  "base/peer curve mismatch"))
-            (Nothing, _) -> pure (EngineFail (BackendBadKey "ecdhDerive"
-              "ECDH base key is not on a covered curve"))
-            _ -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive"
-              "ECDH peer is not on a covered curve"))
+            -- Width-based agreement gate: the base scans exactly (DER
+            -- always carries the OID) while a bare peer point resolves
+            -- a width, never a curve (lengths collide). Equal widths
+            -- proceed; the shim arbitrates on-curve membership
+            -- natively, so a same-width cross-curve peer still
+            -- refuses (as a parameter fault, never a wrong secret).
+            -- Fault attribution: the base is the caller's key (bad
+            -- base stays a bad key) while the peer rides in the
+            -- mechanism parameters (any peer fault answers
+            -- mechanism-param-invalid at the edge).
+            Nothing -> case (ecdsaCurveOfDer privB >>= curveWidthOfName, ecdhPeerWidth peerB) of
+              (Just w, Just pw)
+                | w == pw -> do
+                    r <- withForeignPtr (osslEnv env) $ \_ ->
+                      Raw.ecdhDerive (osslCtx env) (osslPropQ env) privB peerB (spec == EcdhCofactor)
+                    case r of
+                      Left code
+                        | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "ecdhDerive" "ECDH base key rejected"))
+                        | code == Raw.errBadPeer -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive" "ECDH peer rejected"))
+                        | otherwise -> nativeFail "ecdhDerive" code
+                      Right secret -> pure (EngineOk secret)
+                | otherwise -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive"
+                    "base/peer curve mismatch"))
+              (Nothing, _) -> pure (EngineFail (BackendBadKey "ecdhDerive"
+                "ECDH base key is not on a covered curve"))
+              _ -> pure (EngineFail (BackendMechParamInvalid "ecdhDerive"
+                "ECDH peer is not on a covered curve"))
 
   dhDerive be _ priv peer = runGuarded be "dhDerive" (dhSupported be DhPlain) $ \env -> do
     mpriv <- resolveKeyBytes env priv
@@ -1477,6 +1506,12 @@ genSupported (OSSL4Backend env) spec
   , Set.member "DH" (kcKdfs (bcKdfs (osslCaps env))) = Nothing
   | GenEdDSAKeypair name <- spec
   , Set.member ("EDDSA-" ++ BC8.unpack name) (scSpecs (bcSigs (osslCaps env))) = Nothing
+  -- Montgomery generation gates on the ECDH agreement probe
+  -- ('ECDH' in the KDF set): keygen is served exactly where
+  -- agreement is (the DH precedent).
+  | GenXDHKeypair name <- spec
+  , BC8.unpack name `elem` montgomeryCurveNames
+  , Set.member "ECDH" (kcKdfs (bcKdfs (osslCaps env))) = Nothing
   | GenMLDSA alg <- spec
   , [Just name] <- [mldsaSigCap (SigMLDSA alg False BS.empty True)]
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing

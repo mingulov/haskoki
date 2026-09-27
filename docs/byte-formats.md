@@ -289,11 +289,19 @@ wire and engine curve names inside, in both directions
 | `06 08 2A 86 48 CE 3D 03 01 07` | `P-256` |
 | `06 05 2B 81 04 00 22` | `P-384` |
 | `06 05 2B 81 04 00 23` | `P-521` |
+| `06 03 2B 65 6E` | `X25519` |
+| `06 03 2B 65 6F` | `X448` |
 
-The OID bytes are an external standard (SEC2 prime curves in
-RFC 5480 §2.1.1 DER encoding), ruled the F8 way: haskoki pins
-only its own translation table, not the standard. Unknown
-inputs pass through both functions unchanged for the engine to
-refuse (only `P-256` executes). Pin: `EC params map both ways`
+The table shows the prime/Montgomery subset; the full mapping
+is the core `curveTable` plus `edwardsTable` plus
+`montgomeryTable` (`Haskoki.Der`). The OID bytes are an
+external standard (SEC2 prime curves in RFC 5480 §2.1.1 DER
+encoding, Montgomery curves in RFC 8410), ruled the F8 way:
+haskoki pins only its own translation table, not the standard.
+Unknown inputs pass through both functions unchanged for the
+engine to refuse (served curves execute; anything else the
+engine refuses). Pin: `EC params map both ways`
 (`caseEcParams`: all three curves each direction plus unknown
-pass-through).
+pass-through); the Montgomery rows pin both ways under
+`Montgomery OID table agrees with the FFI`
+(`caseMontgomeryTableAgreement`).

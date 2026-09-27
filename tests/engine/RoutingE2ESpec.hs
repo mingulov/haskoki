@@ -779,8 +779,12 @@ caseDriverRsaWrap = withBackend $ \env -> do
   assertEqual "oaep reversible" target po
   assertBool "padding domains separate" (c1 /= o1)
   -- Tampering fails closed with a verdict, never a wrong plaintext.
+  -- The tamper byte is guaranteed to differ (a literal "X" equals
+  -- the ciphertext tail with probability 1/256, unwrapping
+  -- successfully and flaking the verdict).
+  let tamperB = if BS.last o1 == 0x58 then 0x59 else 0x58
   tampered <- runEffect env res
-    (FxUnwrap rsaOaepWrapMech (Just privOid) oaep (BS.init o1 <> "X"))
+    (FxUnwrap rsaOaepWrapMech (Just privOid) oaep (BS.init o1 <> BS.singleton tamperB))
   case tampered of
     GotCryptoError (CryptoAuthFailed _) -> pure ()
     other -> assertFailure ("expected AuthFailed, got: " ++ show other)

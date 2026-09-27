@@ -2340,6 +2340,64 @@ end:
     return rc;
 }
 
+/* --- Montgomery keygen (X25519/X448, RFC 7748) ------------------- */
+
+/* Provider key type for an engine curve name ("X25519"/"X448",
+ * identical to the fetch spelling); NULL for anything else. */
+static const char *hsk_ossl4_montgomery_name(const char *curvename)
+{
+    if (curvename == NULL)
+        return NULL;
+    if (strcmp(curvename, "X25519") == 0 ||
+        strcmp(curvename, "X448") == 0)
+        return curvename;
+    return NULL;
+}
+
+int hsk_ossl4_montgomery_gen(OSSL_LIB_CTX *ctx, const char *propq,
+                             const char *curvename, unsigned char **priv_der,
+                             size_t *priv_len, unsigned char **pub_der,
+                             size_t *pub_len)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *pkey = NULL;
+    unsigned char *priv = NULL, *pub = NULL;
+    int privlen = 0, publen = 0;
+    int rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || priv_der == NULL ||
+        priv_len == NULL || pub_der == NULL || pub_len == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (hsk_ossl4_montgomery_name(curvename) == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pctx = EVP_PKEY_CTX_new_from_name(ctx, curvename, propq);
+    if (pctx == NULL)
+        goto end;
+    if (!EVP_PKEY_keygen_init(pctx))
+        goto end;
+    if (!EVP_PKEY_generate(pctx, &pkey))
+        goto end;
+    privlen = i2d_PrivateKey(pkey, &priv);
+    publen = i2d_PUBKEY(pkey, &pub);
+    if (privlen <= 0 || publen <= 0) {
+        OPENSSL_free(priv);
+        OPENSSL_free(pub);
+        goto end;
+    }
+    *priv_der = priv;
+    *priv_len = (size_t)privlen;
+    *pub_der = pub;
+    *pub_len = (size_t)publen;
+    rc = HSK_OSSL4_OK;
+
+end:
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(pctx);
+    return rc;
+}
+
 /* --- ML-DSA sign/verify/keygen (FIPS 204, pure + context) ---------- */
 
 /* Canonical level name ("ML-DSA-44"/"ML-DSA-65"/"ML-DSA-87",
@@ -3231,6 +3289,94 @@ long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
         OPENSSL_clear_free(secret, secretlen);
         secret = NULL;
+        goto end;
+    }
+    *out = secret;
+    rc = (long)secretlen;
+    secret = NULL;
+
+end:
+    EVP_PKEY_CTX_free(pctx);
+    EVP_PKEY_free(peer);
+    EVP_PKEY_free(priv);
+    return rc;
+}
+
+/* --- XDH agreement (X25519/X448, RFC 7748) ---------------------- */
+
+long hsk_ossl4_xdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
+                          const unsigned char *priv_der, size_t priv_len,
+                          const unsigned char *peer_raw, size_t peer_len,
+                          unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *priv = NULL;
+    EVP_PKEY *peer = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    unsigned char *secret = NULL;
+    size_t secretlen = 0;
+    size_t keylen = 0;
+    const char *keytype = NULL;
+    int base_id;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    priv = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
+    if (priv == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* Montgomery only: the peer width gates on the base type, and
+     * a non-Montgomery base here is a caller key fault (the
+     * Haskell gate routes Weierstrass bases to ECDH instead). */
+    base_id = EVP_PKEY_get_base_id(priv);
+    if (base_id == EVP_PKEY_X25519) {
+        keytype = "X25519";
+        keylen = 32;
+    } else if (base_id == EVP_PKEY_X448) {
+        keytype = "X448";
+        keylen = 56;
+    } else {
+        EVP_PKEY_free(priv);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+    /* The peer is the bare u-coordinate at exactly the curve
+     * width; it rides in the mechanism parameters, so a
+     * width fault is a parameter fault (BADPEER). */
+    if (peer_raw == NULL || peer_len != keylen) {
+        EVP_PKEY_free(priv);
+        return HSK_OSSL4_ERR_BADPEER;
+    }
+    peer = EVP_PKEY_new_raw_public_key_ex(ctx, keytype, propq,
+                                          peer_raw, peer_len);
+    if (peer == NULL) {
+        EVP_PKEY_free(priv);
+        return HSK_OSSL4_ERR_BADPEER;
+    }
+    pctx = EVP_PKEY_CTX_new_from_pkey(ctx, priv, propq);
+    if (pctx == NULL)
+        goto end;
+    if (EVP_PKEY_derive_init(pctx) <= 0)
+        goto end;
+    if (EVP_PKEY_derive_set_peer(pctx, peer) <= 0) {
+        rc = HSK_OSSL4_ERR_BADPEER;
+        goto end;
+    }
+    if (EVP_PKEY_derive(pctx, NULL, &secretlen) <= 0)
+        goto end;
+    secret = OPENSSL_malloc(secretlen);
+    if (secret == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
+        /* A low-order peer: the provider refuses zero-output
+         * derives. The clamped scalar is always valid, so on
+         * width-exact inputs no other failure mode exists —
+         * every derive failure attributes the peer. */
+        OPENSSL_clear_free(secret, secretlen);
+        secret = NULL;
+        rc = HSK_OSSL4_ERR_BADPEER;
         goto end;
     }
     *out = secret;

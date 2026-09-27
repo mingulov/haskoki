@@ -35,7 +35,7 @@ import Haskoki.Attribute
   , getAttributes
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
-import Haskoki.Der (curveTable, dhParamsDer, dhParamsDerQ, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer, mlkemPkcs8Fields, mlkemSpkiFields, parseDhParams, parseDsaParams, rsaPrivateDer, rsaPublicDer)
+import Haskoki.Der (curveTable, dhParamsDer, dhParamsDerQ, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer, mlkemPkcs8Fields, mlkemSpkiFields, montgomeryPrivateDer, montgomeryPublicDer, parseDhParams, parseDsaParams, rsaPrivateDer, rsaPublicDer)
 import Haskoki.Engine.Backend
   ( BackendError (..)
   , CryptoBackend (..)
@@ -118,6 +118,7 @@ import Haskoki.Operation.KeyManagement
   , ckkDsa
   , ckkEc
   , ckkEcEdwards
+  , ckkEcMontgomery
   , ckkGenericSecret
   , ckkMlDsa
   , ckkMlKem
@@ -174,6 +175,7 @@ import Haskoki.Operation.KeyManagement
   , ecKeyPairGenMech
   , x9_42DhKeyPairGenMech
   , edwardsKeyPairGenMech
+  , montgomeryKeyPairGenMech
   , encodeGenArgs
   , mldsaKeyPairGenMech
   , finishWork
@@ -348,6 +350,10 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Edwards pair templates plan and refuse" caseEdwardsPairPlanner
   , testCase "Edwards pending/effect pairs cohere" caseEdwardsCompatible
   , testCase "Edwards components stamp, doubles pass through" caseEdwardsStamp
+  , testCase "Montgomery GenArgs codec round-trips and rejects" caseMontgomeryGenArgsCodec
+  , testCase "Montgomery pair templates plan and refuse" caseMontgomeryPairPlanner
+  , testCase "Montgomery pending/effect pairs cohere" caseMontgomeryCompatible
+  , testCase "Montgomery components stamp, doubles pass through" caseMontgomeryStamp
   , testCase "DSA components stamp, doubles pass through" caseDsaStamp
   , testCase "Real DSA params generate with readback" caseRealDsaParamgen
   , testCase "Real DSA keypair generates and signs" caseRealDsaKeygen
@@ -882,6 +888,40 @@ edPrivTmpl =
   , (AttrSensitive, ValBool True)
   , (AttrExtractable, ValBool False)
   , (AttrSign, ValBool True)
+  ]
+
+-- Toy Montgomery values (shaped: planners check presence and
+-- shape; stamping parses real DER assembled from these parts).
+x19OidBytes :: ByteString
+x19OidBytes = hex "06032b656e"
+
+x48OidBytes :: ByteString
+x48OidBytes = hex "06032b656f"
+
+xPoint19 :: ByteString
+xPoint19 = BS.pack (0x68 : replicate 31 0x42)
+
+xScalar19 :: ByteString
+xScalar19 = BS.pack (0x10 : replicate 31 0x24)
+
+xdPubTmpl :: [(AttributeType, AttributeValue)]
+xdPubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkEcMontgomery)
+  , (AttrEcParams, ValBytes "X25519")
+  , (AttrToken, ValBool False)
+  , (AttrDerive, ValBool True)
+  ]
+
+xdPrivTmpl :: [(AttributeType, AttributeValue)]
+xdPrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkEcMontgomery)
+  , (AttrToken, ValBool False)
+  , (AttrPrivate, ValBool True)
+  , (AttrSensitive, ValBool True)
+  , (AttrExtractable, ValBool False)
+  , (AttrDerive, ValBool True)
   ]
 
 -- ---------------------------------------------------------------------------
@@ -2451,6 +2491,108 @@ caseEdwardsStamp = do
       assertEqual "priv inherits params"
         (Just (ValBytes "Ed25519")) (Map.lookup AttrEcParams (poAttrs priv'))
     Nothing -> assertFailure "matching Edwards halves must stamp"
+  -- Disagreeing and opaque halves pass through unstamped (EC mirror).
+  assertEqual "mismatched halves pass through" (Just (pub, priv))
+    (stampPairComponents pub priv pubM privM48)
+  assertEqual "opaque halves pass through" (Just (pub, priv))
+    (stampPairComponents pub priv "HKS1pub" "HKS1priv")
+
+caseMontgomeryGenArgsCodec :: IO ()
+caseMontgomeryGenArgsCodec = do
+  let rt args = assertEqual ("round-trip " ++ show args) (Just args)
+        (decodeGenArgs (encodeGenArgs args))
+  rt (GenMontgomeryKeypair "X25519")
+  rt (GenMontgomeryKeypair "X448")
+  -- Tag byte is pinned (15 Montgomery keypair curve name).
+  assertEqual "keypair tag" (Just 15)
+    (fst <$> BS.uncons (encodeGenArgs (GenMontgomeryKeypair "X25519")))
+  -- Short frames and empty names fail.
+  assertEqual "short keypair" Nothing (decodeGenArgs (BS.singleton 15))
+  assertEqual "unknown tag" Nothing (decodeGenArgs (BS.pack [16, 1, 2, 3]))
+
+caseMontgomeryPairPlanner :: IO ()
+caseMontgomeryPairPlanner = do
+  m0 <- seedModel
+  st <- getSession m0
+  let argsOf pubT privT =
+        case planGenerateKeyPair defaultRules m0 st montgomeryKeyPairGenMech pubT privT of
+          KeyEffect _ (FxGenerateKey _ _ input) -> Right (decodeGenArgs input)
+          KeyDenied (KeyDeny code _) -> Left code
+          other -> error ("unexpected plan shape: " ++ show other)
+      dropT t = filter ((/= t) . fst)
+      withT tmpl t v = tmpl ++ [(t, v)]
+      setParams tmpl curve =
+        withT (dropT AttrEcParams tmpl) AttrEcParams (ValBytes curve)
+  -- Happy path frames the curve name (both curves).
+  case argsOf xdPubTmpl xdPrivTmpl of
+    Right (Just (GenMontgomeryKeypair "X25519")) -> pure ()
+    other -> assertFailure ("X25519 pair must plan: " ++ show other)
+  case argsOf (setParams xdPubTmpl "X448") xdPrivTmpl of
+    Right (Just (GenMontgomeryKeypair "X448")) -> pure ()
+    other -> assertFailure ("X448 pair must plan: " ++ show other)
+  -- Missing curve is incomplete.
+  assertEqual "missing params" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf (dropT AttrEcParams xdPubTmpl) xdPrivTmpl)
+  assertEqual "missing all" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf [(AttrToken, ValBool False)] xdPrivTmpl)
+  -- Foreign curves refuse mechanism-invalid (the Edwards
+  -- precedent), never incomplete: the template names a curve
+  -- the mechanism cannot serve.
+  assertEqual "weierstrass refused" (Left CKR_MECHANISM_INVALID)
+    (argsOf (setParams xdPubTmpl "P-256") xdPrivTmpl)
+  assertEqual "edwards refused" (Left CKR_MECHANISM_INVALID)
+    (argsOf (setParams xdPubTmpl "Ed25519") xdPrivTmpl)
+  assertEqual "garbage refused" (Left CKR_MECHANISM_INVALID)
+    (argsOf (setParams xdPubTmpl "nope") xdPrivTmpl)
+  -- Disagreement and malformed parts refuse inconsistent.
+  assertEqual "curve disagreement" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf xdPubTmpl (withT xdPrivTmpl AttrEcParams (ValBytes "X448")))
+  assertEqual "malformed params" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withT (dropT AttrEcParams xdPubTmpl) AttrEcParams (ValULong 7)) xdPrivTmpl)
+  assertEqual "malformed priv params" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf xdPubTmpl (withT xdPrivTmpl AttrEcParams (ValULong 7)))
+  -- Private-side agreement plans; key-type contradiction refuses.
+  case argsOf xdPubTmpl (withT xdPrivTmpl AttrEcParams (ValBytes "X25519")) of
+    Right (Just (GenMontgomeryKeypair "X25519")) -> pure ()
+    other -> assertFailure ("agreeing priv curve must plan: " ++ show other)
+  assertEqual "key-type contradiction" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (withT (dropT AttrKeyType xdPubTmpl) AttrKeyType (ValULong ckkEc)) xdPrivTmpl)
+
+caseMontgomeryCompatible :: IO ()
+caseMontgomeryCompatible = do
+  m0 <- seedModel
+  st <- getSession m0
+  let pub = pendingFromAttrs st (Map.fromList xdPubTmpl)
+      priv = pendingFromAttrs st (Map.fromList xdPrivTmpl)
+      fx args = FxGenerateKey montgomeryKeyPairGenMech BS.empty (encodeGenArgs args)
+  assertBool "pair/montgomery cohere"
+    (keyPairCompatible (PwGeneratePair pub priv) (fx (GenMontgomeryKeypair "X25519")))
+  assertBool "single/montgomery incoherent"
+    (not (keyPairCompatible (PwGenerateKey pub) (fx (GenMontgomeryKeypair "X25519"))))
+  -- Coherence is shape-level: any pair-shaped args cohere with a pair.
+  assertBool "pair/RSA coherent"
+    (keyPairCompatible (PwGeneratePair pub priv) (fx (GenRsa 2048 65537)))
+  assertBool "pair/AES incoherent"
+    (not (keyPairCompatible (PwGeneratePair pub priv) (fx (GenAes 16))))
+
+caseMontgomeryStamp :: IO ()
+caseMontgomeryStamp = do
+  m0 <- seedModel
+  st <- getSession m0
+  let pubM = montgomeryPublicDer x19OidBytes xPoint19
+      privM = montgomeryPrivateDer x19OidBytes xScalar19
+      privM48 = montgomeryPrivateDer x48OidBytes (BS.replicate 56 9)
+      pub = pendingFromAttrs st (Map.fromList xdPubTmpl)
+      priv = pendingFromAttrs st (Map.fromList xdPrivTmpl)
+  case stampPairComponents pub priv pubM privM of
+    Just (pub', priv') -> do
+      assertEqual "point stamped raw"
+        (Just (ValBytes xPoint19)) (Map.lookup AttrEcPoint (poAttrs pub'))
+      assertEqual "pub params kept"
+        (Just (ValBytes "X25519")) (Map.lookup AttrEcParams (poAttrs pub'))
+      assertEqual "priv inherits params"
+        (Just (ValBytes "X25519")) (Map.lookup AttrEcParams (poAttrs priv'))
+    Nothing -> assertFailure "matching Montgomery halves must stamp"
   -- Disagreeing and opaque halves pass through unstamped (EC mirror).
   assertEqual "mismatched halves pass through" (Just (pub, priv))
     (stampPairComponents pub priv pubM privM48)

@@ -58,6 +58,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , eddsaSign
   , eddsaVerify
   , edwardsGen
+  , montgomeryGen
   , mldsaSign
   , mldsaVerify
   , mldsaGen
@@ -68,6 +69,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , mlkemDecaps
   , mlkemGen
   , ecdhDerive
+  , xdhDerive
   , dhDerive
   , dhGenKeypair
   , rsaSign
@@ -222,6 +224,9 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_eddsa_verify"
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_edwards_gen"
   c_edwards_gen :: Ptr OsslLibCtx -> CString -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
 
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_montgomery_gen"
+  c_montgomery_gen :: Ptr OsslLibCtx -> CString -> CString -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO CInt
+
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mldsa_sign"
   c_mldsa_sign :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
 
@@ -251,6 +256,9 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_mlkem_gen"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_ecdh_derive"
   c_ecdh_derive :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_xdh_derive"
+  c_xdh_derive :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_dh_derive"
   c_dh_derive :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
@@ -653,6 +661,27 @@ edwardsGen ctx propq curvename =
                 pub <- takeOwned pubp (fromIntegral pubn)
                 pure (Right (priv, pub))
 
+-- | Montgomery keypair for a curve name: PKCS#8 + SPKI halves.
+montgomeryGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, ByteString))
+montgomeryGen ctx propq curvename =
+  withCString propq $ \cpq ->
+    withCString curvename $ \ccurve ->
+      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+        rc <- c_montgomery_gen ctx cpq ccurve ppriv npriv ppub npub
+        if rc /= 0
+          then pure (Left (fromIntegral rc))
+          else do
+            privp <- peek ppriv
+            privn <- peek npriv
+            pubp <- peek ppub
+            pubn <- peek npub
+            if privp == nullPtr || pubp == nullPtr
+              then pure (Left errNative)
+              else do
+                priv <- takeOwned privp (fromIntegral privn)
+                pub <- takeOwned pubp (fromIntegral pubn)
+                pure (Right (priv, pub))
+
 -- | ML-DSA sign: the raw signature for (level name, PKCS#8,
 -- message, optional context, deterministic flag); @Nothing@
 -- context is pure mode. @True@ selects FIPS 204 deterministic
@@ -798,6 +827,17 @@ ecdhDerive ctx propq privDer peerDer cofactor =
     withBytes privDer $ \(ppriv, npriv) ->
       withBytes peerDer $ \(ppeer, npeer) ->
         withOut (c_ecdh_derive ctx cpq ppriv npriv ppeer npeer (if cofactor then 1 else 0))
+
+-- | XDH agreement (X25519/X448): the raw secret for (PKCS#8
+-- Montgomery base, bare peer u-coordinate). The shim gates the
+-- peer width on the base type and attributes low-order peers as
+-- 'errBadPeer'.
+xdhDerive :: Ptr OsslLibCtx -> String -> ByteString -> ByteString -> IO (Either Int ByteString)
+xdhDerive ctx propq privDer peerRaw =
+  withCString propq $ \cpq ->
+    withBytes privDer $ \(ppriv, npriv) ->
+      withBytes peerRaw $ \(ppeer, npeer) ->
+        withOut (c_xdh_derive ctx cpq ppriv npriv ppeer npeer)
 
 -- | Finite-field DH agreement: the raw secret for (PKCS#8 base,
 -- bare peer public value). The shim range-checks the peer

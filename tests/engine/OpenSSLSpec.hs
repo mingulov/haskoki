@@ -56,7 +56,7 @@ import Haskoki.Engine.Backend
   , generateRandomMaxBytes
   , seedRandomMaxBytes
   )
-import Haskoki.Der (dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, integerToBE, mldsaPkcs8Fields, mldsaPrivateDer, mldsaSpkiFields, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPublicDer, mlkemSpkiFields, rsaSpkiFields, slhdsaPkcs8Fields, slhdsaSpkiFields)
+import Haskoki.Der (dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, integerToBE, mldsaPkcs8Fields, mldsaPrivateDer, mldsaSpkiFields, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPublicDer, mlkemSpkiFields, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomerySpkiFields, rsaSpkiFields, slhdsaPkcs8Fields, slhdsaSpkiFields)
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
 import Haskoki.Types (EngineResourceId (..))
 
@@ -100,6 +100,8 @@ spec = testGroup "openssl4 engine"
   , testCase "ML-KEM wycheproof KAT + roundtrips (512/768/1024)" caseMlkem
   , testCase "ML-KEM keygen mints usable pairs" caseRealMlkemKeygen
   , testCase "ECDH agreement KATs (CLI vectors)" caseEcdhVectors
+  , testCase "XDH agreement KATs (CLI + wycheproof tc1)" caseXdhVectors
+  , testCase "Montgomery keygen mints agreeing pairs" caseRealMontgomeryKeygen
   , testCase "DH agreement KAT (CLI vectors)" caseDhAgree
   , testCase "DH keygen mints agreeing pairs" caseDhKeygen
   , testCase "raw-vs-der encodings never convert silently" caseRawVsDer
@@ -987,6 +989,58 @@ ecdhPubC = hex $ concat
   ]
 ecdhSecretAB = hex "9671ac43cbf5d68893022679b588483c63cdd6e370ae62c81d4ce95d9eae7b05"
 ecdhSecretCC = hex "6c0636f7c3858a26c97f7215f27f7a5a952ac99513c70ee3ea54386dad9ff3e50f9eb0004242035779c505284316e9c0"
+
+-- | XDH KAT fixtures: two fresh CLI pairs per curve (pinned-CLI
+-- genpkey; the A halves are the KeyImportSpec goldens) with
+-- pinned-CLI @pkeyutl -derive@ secrets (A->B and B->A agree),
+-- plus the wycheproof tc1 exchange vectors per curve (external
+-- KATs; the tc1 bases assemble through 'montgomeryPrivateDer',
+-- whose framing the import goldens pin independently).
+xdhPrivA, xdhPrivB, xdhSecretAB :: ByteString
+xdhPrivA = hex "302e020100300506032b656e04220420107c0296168df7ef1da8bf471f5ac2d793788e84eb8b34d86a2605b2424d0847"
+xdhPrivB = hex "302e020100300506032b656e04220420202ea3672e47f763457157ae6915e4ac327f6120a8c1551ae73813d3b3c92175"
+xdhSecretAB = hex "a52e5f55676e562a916a32f95cfc05671e85f17bd5975647dcb09eec6418073c"
+
+xdhPointA, xdhPointB :: ByteString
+xdhPointA = hex "684cd5fbe3473e3cb8dc7263ec9f0a837d770e5c9e2db619c8e9b0294b0e991d"
+xdhPointB = hex "67d790586fcaf48d1628ec7ea2be1281c6cf1e599fffbd059ece5c521143ab7c"
+
+xdh48PrivA, xdh48PrivB, xdh48SecretAB :: ByteString
+xdh48PrivA = hex $ concat
+  ["3046020100300506032b656f043a0438f0b746caef9d715d94ecf3cc83b6b5caf0140402"
+  ,"ff06b3043a56f2904b1594350ce4b7523116d8422a97365bb37c3f11f746e4765e71efad"
+  ]
+xdh48PrivB = hex $ concat
+  ["3046020100300506032b656f043a0438d89fb4cb38f9a4196b39873961f8349f729865ac"
+  ,"74ab6f4fee94ed46a668c8b19f38cb4b936dcb68253ebec18a7a4a16565f60b86e5d18cf"
+  ]
+xdh48SecretAB = hex "d361d60928257b80eb3709a87502c6b5a1d0959533690a29d3af730824a55f3bfb749afe176ca5e4c62dd16a0c17f283dc46ace3047aee2a"
+
+xdh48PointA, xdh48PointB :: ByteString
+xdh48PointA = hex $ concat
+  ["a661ed99e0dfbb6c4985d6affe9247682f0a809ffab3e351e1142820c636c30c6947fb4c"
+  ,"69833ba7e4ec2ec0638016f5ddbcd72e77ebf670"
+  ]
+xdh48PointB = hex "20ae62a605737b5568b8423ebc0f1479b088c8bb1c2d10de702ea71b179e694d1e87c51ca1b2817e05387e4ca918ae13499e64493bb99c27"
+
+xdhTc1Priv, xdhTc1Pub, xdhTc1Shared :: ByteString
+xdhTc1Priv = hex "c8a9d5a91091ad851c668b0736c1c9a02936c0d3ad62670858088047ba057475"
+xdhTc1Pub = hex "504a36999f489cd2fdbc08baff3d88fa00569ba986cba22548ffde80f9806829"
+xdhTc1Shared = hex "436a2c040cf45fea9b29a0cb81b1f41458f863d0d61b453d0a982720d6d61320"
+
+xdh48Tc1Priv, xdh48Tc1Pub, xdh48Tc1Shared :: ByteString
+xdh48Tc1Priv = hex $ concat
+  ["e41c63d5159c89de12163fde9d04cf1f430f346b8b2c1f2a4b1f5aee63d17aec29d4b1de"
+  ,"bf8b6457e7809d2b15ff9779c97becb04b824efa"
+  ]
+xdh48Tc1Pub = hex $ concat
+  ["f8073fc01c8358362c08740c914b419847ef1e409f4e40d9440febc26f00551adb1c37c6c"
+  ,"2a87d8283b8cb453e928a0d42793f72894e0f81"
+  ]
+xdh48Tc1Shared = hex $ concat
+  ["acd496ceb5f68bf9c267196b405f59701a40ec88744b7e5e60bf8f81e8b13df448efe4020"
+  ,"01750edb0b695a0512f08c572a2e356493d170b"
+  ]
 
 -- | sect283k1 ECDH KAT (pinned CLI): plain and cofactor (h=2, so
 -- the two secrets differ) plus the bare peer point.
@@ -3814,6 +3868,91 @@ caseEcdhVectors = withBackend $ \env -> do
   expectMechParamInvalid "garbage peer refused" =<< ecdhDerive env EcdhPlain pA (KeyDer "bogus")
   expectBadKey "off-curve priv refused" =<< ecdhDerive env EcdhPlain (KeyDer ecBp160Priv) qB
   expectMechParamInvalid "curve mismatch refused" =<< ecdhDerive env EcdhPlain pA qC
+
+-- | XDH agreement: CLI cross-checked KATs in both directions per
+-- curve, wycheproof tc1 exchange KATs, and typed peer refusals
+-- (low-order, off-width, cofactor spec).
+caseXdhVectors :: IO ()
+caseXdhVectors = withBackend $ \env -> do
+  let pA = KeyDer xdhPrivA
+      pB = KeyDer xdhPrivB
+      qA = KeyBytes xdhPointA
+      qB = KeyBytes xdhPointB
+  sAB <- expectOk "derive X25519 A->B" =<< ecdhDerive env EcdhPlain pA qB
+  assertEqual "KAT X25519" xdhSecretAB sAB
+  assertEqual "X25519 width" 32 (BS.length sAB)
+  sBA <- expectOk "derive X25519 B->A" =<< ecdhDerive env EcdhPlain pB qA
+  assertEqual "commute X25519" xdhSecretAB sBA
+  let p48A = KeyDer xdh48PrivA
+      p48B = KeyDer xdh48PrivB
+      q48A = KeyBytes xdh48PointA
+      q48B = KeyBytes xdh48PointB
+  s48AB <- expectOk "derive X448 A->B" =<< ecdhDerive env EcdhPlain p48A q48B
+  assertEqual "KAT X448" xdh48SecretAB s48AB
+  assertEqual "X448 width" 56 (BS.length s48AB)
+  s48BA <- expectOk "derive X448 B->A" =<< ecdhDerive env EcdhPlain p48B q48A
+  assertEqual "commute X448" xdh48SecretAB s48BA
+  -- Wycheproof tc1 exchange KATs (external vectors).
+  let t19 = KeyDer (montgomeryPrivateDer (hex "06032b656e") xdhTc1Priv)
+  sT19 <- expectOk "derive wycheproof X25519 tc1" =<< ecdhDerive env EcdhPlain t19 (KeyBytes xdhTc1Pub)
+  assertEqual "KAT wycheproof X25519 tc1" xdhTc1Shared sT19
+  let t48 = KeyDer (montgomeryPrivateDer (hex "06032b656f") xdh48Tc1Priv)
+  sT48 <- expectOk "derive wycheproof X448 tc1" =<< ecdhDerive env EcdhPlain t48 (KeyBytes xdh48Tc1Pub)
+  assertEqual "KAT wycheproof X448 tc1" xdh48Tc1Shared sT48
+  -- Low-order peers (u=0, the wycheproof tc32 shape) refuse as
+  -- mechanism-param-invalid: the pinned provider fails
+  -- zero-output derives and the shim attributes the peer.
+  expectMechParamInvalid "low-order X25519 peer refused" =<<
+    ecdhDerive env EcdhPlain pA (KeyBytes (BS.replicate 32 0))
+  expectMechParamInvalid "low-order X448 peer refused" =<<
+    ecdhDerive env EcdhPlain p48A (KeyBytes (BS.replicate 56 0))
+  -- Off-width peers refuse before any native call.
+  expectMechParamInvalid "short peer refused" =<<
+    ecdhDerive env EcdhPlain pA (KeyBytes (BS.take 31 xdhPointB))
+  expectMechParamInvalid "long peer refused" =<<
+    ecdhDerive env EcdhPlain pA (KeyBytes (xdhPointB <> BS.singleton 0))
+  expectMechParamInvalid "cross-curve peer refused" =<<
+    ecdhDerive env EcdhPlain pA (KeyBytes xdh48PointB)
+  -- Cofactor derive over Montgomery curves is unserved (named gap).
+  expectMechParamInvalid "cofactor over montgomery refused" =<<
+    ecdhDerive env EcdhCofactor pA qB
+
+-- | Montgomery keygen: both curves mint parseable DER halves
+-- whose halves agree both directions at the curve width (no KAT
+-- possible for randomized generation). Off-set curves refuse
+-- unsupported.
+caseRealMontgomeryKeygen :: IO ()
+caseRealMontgomeryKeygen = withBackend $ \env -> do
+  let mint label curve = do
+        (priv, mpub) <- expectOk label =<< generateKey env (GenXDHKeypair curve)
+        case (priv, mpub) of
+          (KeyDer privB, Just (KeyDer pubB)) -> pure (privB, pubB)
+          other -> assertFailure (label ++ ": halves are not DER: " ++ show other)
+      agree label w privA pubA privB pubB = do
+        pointA <- case montgomerySpkiFields pubA of
+          Just (_, pt) -> pure pt
+          Nothing -> assertFailure (label ++ ": SPKI A failed to parse") >> undefined
+        pointB <- case montgomerySpkiFields pubB of
+          Just (_, pt) -> pure pt
+          Nothing -> assertFailure (label ++ ": SPKI B failed to parse") >> undefined
+        case montgomeryPkcs8Fields privA of
+          Just _ -> pure ()
+          Nothing -> assertFailure (label ++ ": PKCS#8 A failed to parse")
+        sAB <- expectOk (label ++ " A->B") =<<
+          ecdhDerive env EcdhPlain (KeyDer privA) (KeyBytes pointB)
+        sBA <- expectOk (label ++ " B->A") =<<
+          ecdhDerive env EcdhPlain (KeyDer privB) (KeyBytes pointA)
+        assertEqual (label ++ " commutes") sAB sBA
+        assertEqual (label ++ " width") w (BS.length sAB)
+  (privA, pubA) <- mint "x25519 mint A" "X25519"
+  (privB, pubB) <- mint "x25519 mint B" "X25519"
+  assertBool "x25519 halves differ" (privA /= pubA && privB /= pubB)
+  agree "x25519" 32 privA pubA privB pubB
+  (privC, pubC) <- mint "x448 mint A" "X448"
+  (privD, pubD) <- mint "x448 mint B" "X448"
+  agree "x448" 56 privC pubC privD pubD
+  expectUnsupported "unknown curve refused" =<<
+    generateKey env (GenXDHKeypair "P-256")
 
 caseDhAgree :: IO ()
 caseDhAgree = withBackend $ \env -> do

@@ -9,6 +9,13 @@ refused, never silently downgraded. Shared data is accepted and
 ignored under the null KDF (documented). The cofactor flag comes
 from the mechanism row, not the parameters.
 
+Montgomery bases (@CKK_EC_MONTGOMERY@, X25519/X448) agree under
+the plain mechanism only: the peer is the raw RFC 7748
+u-coordinate at exactly the curve width, and the secret is the
+curve-width agreement output. Cofactor derive over Montgomery
+curves is a named gap (clamping already clears the cofactor and
+the composed operation has no PKCS#11 definition).
+
 This module owns the group's canonical codec, parameter
 validation, secret-width rule, and mechanism table. Pure core only.
 
@@ -47,6 +54,8 @@ module Haskoki.Recipe.Ecdh
   , ecdhSecretWidthMax
   , ecdhPeerWidth
   , curveWidthOfName
+  , xdhCurveOfDer
+  , xdhSecretWidth
   ) where
 
 import Data.Bits ((.&.), shiftL, shiftR)
@@ -57,7 +66,7 @@ import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 import Data.Word (Word8)
 
-import Haskoki.Der (curveTable)
+import Haskoki.Der (curveTable, montgomeryTable)
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
@@ -142,13 +151,43 @@ curveWidthOfName name = case find hit curveTable of
 ecdhSecretWidthMax :: Int
 ecdhSecretWidthMax = maximum [w | (_, _, w) <- curveTable]
 
--- | Raw-secret width in bytes for a base-key material: the curve's
--- coordinate width when the DER curve OID scans, else the maximum
--- (see 'ecdhSecretWidthMax').
+-- | The Montgomery curve for DER key bytes: the first
+-- 'Haskoki.Der.montgomeryTable' OID found as a substring, table
+-- order (the ECDSA precedent: 'ecdsaCurveOfDer'). 'Nothing' for
+-- Weierstrass, Edwards, opaque, or garbage bytes.
+xdhCurveOfDer :: ByteString -> Maybe Text
+xdhCurveOfDer der = case find hit montgomeryTable of
+  Just (name, _, _) -> Just (TE.decodeUtf8 name)
+  Nothing -> Nothing
+  where
+    hit (_, oid, _) = oid `BS.isInfixOf` der
+
+-- | Coordinate width in bytes for a Montgomery curve name
+-- ('Nothing' for anything off-table).
+xdhWidthOfName :: Text -> Maybe Int
+xdhWidthOfName name = case find hit montgomeryTable of
+  Just (_, _, w) -> Just w
+  Nothing -> Nothing
+  where
+    hit (n, _, _) = TE.encodeUtf8 name == n
+
+-- | Raw-secret width in bytes for a Montgomery base-key
+-- material: the curve's coordinate width when the DER curve OID
+-- scans, else 'Nothing' (the caller falls back to the maximum
+-- for unscannable opaque doubles — see 'ecdhSecretWidth').
+xdhSecretWidth :: ByteString -> Maybe Int
+xdhSecretWidth mat = xdhCurveOfDer mat >>= xdhWidthOfName
+
+-- | Raw-secret width in bytes for a base-key material: the
+-- Montgomery width when a Montgomery OID scans, else the
+-- Weierstrass curve's coordinate width when its DER curve OID
+-- scans, else the maximum (see 'ecdhSecretWidthMax').
 ecdhSecretWidth :: ByteString -> Int
-ecdhSecretWidth mat = case ecdsaCurveOfDer mat >>= curveWidthOfName of
+ecdhSecretWidth mat = case xdhSecretWidth mat of
   Just w -> w
-  Nothing -> ecdhSecretWidthMax
+  Nothing -> case ecdsaCurveOfDer mat >>= curveWidthOfName of
+    Just w -> w
+    Nothing -> ecdhSecretWidthMax
 
 -- | Peer width for the agreement: the DER OID scan first (SPKI
 -- peers resolve exactly), else the raw uncompressed-point length

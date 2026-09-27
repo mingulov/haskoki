@@ -350,6 +350,13 @@ int hsk_ossl4_edwards_gen(OSSL_LIB_CTX *ctx, const char *propq,
                           const char *curvename, unsigned char **priv_der,
                           size_t *priv_len, unsigned char **pub_der,
                           size_t *pub_len);
+/* Mints a Montgomery pair and answers the PKCS#8 private + SPKI
+ * public DER halves (HSK_OSSL4_OK); an unknown curve name is
+ * BADPARAM. */
+int hsk_ossl4_montgomery_gen(OSSL_LIB_CTX *ctx, const char *propq,
+                             const char *curvename, unsigned char **priv_der,
+                             size_t *priv_len, unsigned char **pub_der,
+                             size_t *pub_len);
 
 /* --- ML-DSA sign/verify/keygen (FIPS 204, pure + context) --------- */
 /* algname: "ML-DSA-44", "ML-DSA-65", or "ML-DSA-87" (anything
@@ -473,6 +480,25 @@ long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
                            const unsigned char *priv_der, size_t priv_len,
                            const unsigned char *peer_der, size_t peer_len,
                            int cofactor, unsigned char **out);
+
+/* --- XDH agreement (X25519/X448, RFC 7748) ---------------------- */
+
+/* priv_der: PKCS#8 Montgomery DER base key (X25519/X448 only; any
+ * other key type -> HSK_OSSL4_ERR_BADKEY). peer_raw: the bare
+ * RFC 7748 u-coordinate at exactly the curve width (32/56);
+ * anything else answers HSK_OSSL4_ERR_BADPEER. A low-order peer
+ * (the provider refuses zero-output derives) answers
+ * HSK_OSSL4_ERR_BADPEER as well: the peer rides in the mechanism
+ * parameters, so it is a parameter fault, not a key fault. (The
+ * final derive has no other failure mode on width-exact inputs —
+ * the clamped scalar is always valid — so every derive failure
+ * attributes the peer.) Returns the raw shared secret length
+ * (curve width) with *out set, or a negative HSK_OSSL4_ERR_*
+ * code. */
+long hsk_ossl4_xdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
+                          const unsigned char *priv_der, size_t priv_len,
+                          const unsigned char *peer_raw, size_t peer_len,
+                          unsigned char **out);
 
 /* --- Finite-field DH agreement -------------------------------- */
 
