@@ -3,11 +3,14 @@
 Twelve header mechanisms share the derive shape — eleven
 @CKM_SHA*_KEY_DERIVATION@ rows (hash the base value, truncate to
 the digest width; empty parameters, @no-params\/1@) plus
-@CKM_PKCS5_PBKD2@ (@pbkd2-params\/1@: @prf:u64be
-iters:u64be saltLen:u64be salt@). The PBKD2 PRF is any servable
-HMAC (engine-local codes 1..13 over the fixed-width digests);
-iterations cap at 'maxPbkd2Iters' (a documented CPU ceiling —
-unbounded work from a small input is a typed refusal, not a hang).
+@CKM_PKCS5_PBKD2@ (@pbkd2-params\/2@: @prf:u64be
+iters:u64be saltLen:u64be salt pwdLen:u64be pwd@). The PBKD2 PRF
+is any servable HMAC (engine-local codes 1..13 over the
+fixed-width digests); iterations cap at 'maxPbkd2Iters' (a
+documented CPU ceiling — unbounded work from a small input is
+a typed refusal, not a hang). The derive route pins the
+password segment empty (the password rides the base key); the
+keygen route carries it inline per @CK_PKCS5_PBKD2_PARAMS2@.
 
 This module owns the group's canonical codecs, parameter
 validation, width and iteration rules, and mechanism table. Pure
@@ -45,6 +48,7 @@ module Haskoki.Recipe.Kdf
   , kdfParamsValid
   , kdfShaWidth
   , kdfCodeDigest
+  , kdfDigestWidth
   , maxPbkd2Iters
   ) where
 
@@ -69,9 +73,11 @@ data KdfRecipe = KdfRecipe
 kdfPlainCodec :: ParameterCodec
 kdfPlainCodec = ParameterCodec "no-params" 1
 
--- | PBKD2 takes the PRF\/iterations\/salt frame.
+-- | PBKD2 takes the PRF\/iterations\/salt\/password frame
+-- (one shape for both routes; the derive route pins the
+-- password segment empty).
 kdfPbkd2Codec :: ParameterCodec
-kdfPbkd2Codec = ParameterCodec "pbkd2-params" 1
+kdfPbkd2Codec = ParameterCodec "pbkd2-params" 2
 
 -- | The codec for one recipe row.
 kdfCodecFor :: KdfRecipe -> ParameterCodec
@@ -84,6 +90,27 @@ kdfCodecFor r
 -- small input refuse typed instead of hanging the engine).
 maxPbkd2Iters :: Int
 maxPbkd2Iters = 10000000
+
+-- | Digest stems onto output widths in bytes. The domain is
+-- exactly the 'kdfCodeDigest' range (pinned by RecipeKdfSpec):
+-- HKDF defaults and ceilings derive from the PRF through this
+-- table, never from a hardcoded hash.
+kdfDigestWidth :: Text -> Maybe Int
+kdfDigestWidth stem
+  | stem == "MD5" = Just 16
+  | stem == "SHA_1" = Just 20
+  | stem == "SHA224" = Just 28
+  | stem == "SHA256" = Just 32
+  | stem == "SHA384" = Just 48
+  | stem == "SHA512" = Just 64
+  | stem == "SHA512_224" = Just 28
+  | stem == "SHA512_256" = Just 32
+  | stem == "SHA3_224" = Just 28
+  | stem == "SHA3_256" = Just 32
+  | stem == "SHA3_384" = Just 48
+  | stem == "SHA3_512" = Just 64
+  | stem == "RIPEMD160" = Just 20
+  | otherwise = Nothing
 
 -- | Engine-local PRF codes over the fixed-width digests (the
 -- driver's HMAC selector; the driver additionally requires the
@@ -119,16 +146,19 @@ decodeWord64 bs
   | BS.length bs /= 8 = Nothing
   | otherwise = Just (BS.foldl' (\a b -> a `shiftL` 8 + fromIntegral b) 0 bs)
 
--- | Encode PBKD2 parameters (total; validation is strict).
-encodePbkd2Params :: Int -> Int -> ByteString -> ByteString
-encodePbkd2Params prf iters salt =
+-- | Encode PBKD2 parameters (total; validation is strict):
+-- @prf:u64be iters:u64be saltLen:u64be salt pwdLen:u64be pwd@.
+encodePbkd2Params :: Int -> Int -> ByteString -> ByteString -> ByteString
+encodePbkd2Params prf iters salt pwd =
   encodeWord64 prf <> encodeWord64 iters
     <> encodeWord64 (BS.length salt) <> salt
+    <> encodeWord64 (BS.length pwd) <> pwd
 
--- | Decode PBKD2 parameters to (PRF stem, iterations, salt):
--- unknown PRF codes, truncation, overrun lengths, and trailing
--- bytes all fail (never a crash, never a partial read).
-decodePbkd2Params :: ByteString -> Maybe (Text, Int, ByteString)
+-- | Decode PBKD2 parameters to (PRF stem, iterations, salt,
+-- password): unknown PRF codes, truncation, overrun lengths,
+-- and trailing bytes all fail (never a crash, never a partial
+-- read).
+decodePbkd2Params :: ByteString -> Maybe (Text, Int, ByteString, ByteString)
 decodePbkd2Params bs = do
   let (w0, r0) = BS.splitAt 8 bs
       (w1, r1) = BS.splitAt 8 r0
@@ -137,18 +167,24 @@ decodePbkd2Params bs = do
   iters <- decodeWord64 w1
   sLen <- decodeWord64 w2
   stem <- kdfCodeDigest c0
-  let (salt, rest) = BS.splitAt sLen r2
-  if BS.length salt /= sLen || not (BS.null rest)
+  let (salt, r3) = BS.splitAt sLen r2
+  (w3, pwd) <- if BS.length salt /= sLen then Nothing else Just (BS.splitAt 8 r3)
+  pLen <- decodeWord64 w3
+  let (pwb, rest) = BS.splitAt pLen pwd
+  if BS.length pwb /= pLen || not (BS.null rest)
     then Nothing
-    else pure (stem, iters, salt)
+    else pure (stem, iters, salt, pwb)
 
--- | KDF parameter validation: SHA rows take empty parameters only;
--- PBKD2 takes a known PRF with @1..'maxPbkd2Iters'@ iterations
--- (any salt, empty included).
+-- | KDF parameter validation (derive route): SHA rows take empty
+-- parameters only; PBKD2 takes a known PRF with
+-- @1..'maxPbkd2Iters'@ iterations, any salt (empty included),
+-- and an empty password segment (the password rides the base
+-- key — the keygen route carries it inline instead).
 kdfParamsValid :: KdfRecipe -> ByteString -> Bool
 kdfParamsValid r params
   | rkPbkd2 r = case decodePbkd2Params params of
-      Just (_, iters, _) -> iters >= 1 && iters <= maxPbkd2Iters
+      Just (_, iters, _, pwd) ->
+        iters >= 1 && iters <= maxPbkd2Iters && BS.null pwd
       Nothing -> False
   | otherwise = BS.null params
 

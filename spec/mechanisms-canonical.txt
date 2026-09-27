@@ -122,7 +122,7 @@ mech|0x00000397|CKM_SHA3_256_KEY_DERIVATION|CKM_SHA3_256_KEY_DERIVE|derive|no-pa
 mech|0x00000398|CKM_SHA3_224_KEY_DERIVATION|CKM_SHA3_224_KEY_DERIVE|derive|no-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x00000399|CKM_SHA3_384_KEY_DERIVATION|CKM_SHA3_384_KEY_DERIVE|derive|no-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x0000039A|CKM_SHA3_512_KEY_DERIVATION|CKM_SHA3_512_KEY_DERIVE|derive|no-params/1|mechanism-specific:0-0|derive:A20,A37,A39
-mech|0x000003B0|CKM_PKCS5_PBKD2||derive|pbkd2-params/1|mechanism-specific:0-0|derive:A20,A37,A39
+mech|0x000003B0|CKM_PKCS5_PBKD2||derive|pbkd2-params/2|mechanism-specific:0-0|derive:A20,A37,A39;generate-key:A20,A37,A39
 mech|0x000003D0|CKM_WTLS_PRE_MASTER_KEY_GEN||keygen|ck-byte/1|bits:160-2040|generate-key:A37
 mech|0x00000550|CKM_CAMELLIA_KEY_GEN||keygen|no-params/1|bits:128-256|generate-key:A37
 mech|0x00000551|CKM_CAMELLIA_ECB||cipher|no-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
@@ -192,7 +192,7 @@ mech|0x0000401D|CKM_BLAKE2B_512_HMAC_GENERAL||mac|mac-general/1|mechanism-specif
 mech|0x0000401E|CKM_BLAKE2B_512_KEY_DERIVE||derive|no-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x0000401F|CKM_BLAKE2B_512_KEY_GEN||keygen|no-params/1|bits:8-2040|generate-key:A37
 mech|0x00004021|CKM_CHACHA20_POLY1305||aead|chacha20poly1305-params/1|bytes:32-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
-mech|0x0000402A|CKM_HKDF_DERIVE||derive|hkdf-params/2|mechanism-specific:0-0|derive:A20,A37,A39
+mech|0x0000402A|CKM_HKDF_DERIVE||derive|hkdf-params/3|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x0000402C|CKM_HKDF_KEY_GEN||keygen|no-params/1|bits:8-2040|generate-key:A37
 mech|0x0000402D|CKM_SALSA20_KEY_GEN||keygen|no-params/1|bits:256-256|generate-key:A37
 inv|0x00000002|CKM_RSA_9796||catalog-only

@@ -109,7 +109,7 @@ v1.5 takes empty parameters, OAEP the labeled params);
 'FxAuthWrap'\/'FxAuthUnwrap' compose AES-CBC
 with an HMAC-SHA-256 tag over @aad || ct@ under a domain-separated
 tag key; 'FxDerive' runs HKDF expand-only ('hkdfExpand') or
-extract-then-expand ('hkdfExtractExpand') with HMAC-SHA-256
+extract-then-expand ('hkdfExtractExpand') with the PRF HMAC
 for the HKDF mechanism, backend ECDH agreement ('ecdhDerive',
 truncated to the planned length) for the ECDH mechanisms, digest
 ('runShaKd') for the SHA key-derivations, and the RFC 8018
@@ -333,6 +333,8 @@ import Haskoki.Operation.KeyManagement
   , ssl3PremasterKeyGenMech
   , tlsPremasterKeyGenMech
   , wtlsPremasterKeyGenMech
+  , pbkd2KeyGenMech
+  , pbkd2KeygenMaxBytes
   )
 import Haskoki.Operation.State (CipherDir (..))
 import Haskoki.Recipe.Cmac
@@ -354,6 +356,7 @@ import Haskoki.Recipe.Hmac
 import Haskoki.Recipe.Kdf
   ( KdfRecipe (..)
   , decodePbkd2Params
+  , kdfCodeDigest
   , kdfParamsValid
   , kdfRecipeFor
   )
@@ -535,7 +538,7 @@ pbkd2ParamsFor :: MechanismId -> ByteString -> Maybe Pbkd2Params
 pbkd2ParamsFor mech params = do
   r <- kdfRecipeFor mech
   guard (rkPbkd2 r && kdfParamsValid r params)
-  (stem, iters, salt) <- decodePbkd2Params params
+  (stem, iters, salt, _) <- decodePbkd2Params params
   alg <- rsaDigest stem
   pure (Pbkd2Params alg iters salt)
 
@@ -1402,7 +1405,8 @@ runEffect env resolve fx = case fx of
     | not (BS.null params)
     , mech /= tlsPremasterKeyGenMech
     , mech /= ssl3PremasterKeyGenMech
-    , mech /= wtlsPremasterKeyGenMech -> pure (GotCryptoError (CryptoFailed
+    , mech /= wtlsPremasterKeyGenMech
+    , mech /= pbkd2KeyGenMech -> pure (GotCryptoError (CryptoFailed
         "driver: keygen takes no mechanism params"))
     | otherwise -> case decodeGenArgs input of
         Nothing -> pure (GotCryptoError (CryptoFailed
@@ -1436,6 +1440,22 @@ runEffect env resolve fx = case fx of
           (m, GenWtlsPremaster ver n) | m == wtlsPremasterKeyGenMech ->
             toPrefixedPair (BS.singleton ver)
               <$> generateKey env (GenSym "WTLS-PRE-MASTER" (n - 1))
+          (m, GenPbkd2 n) | m == pbkd2KeyGenMech ->
+            case decodePbkd2Params params of
+              Just (stem, iters, salt, pwd) -> case rsaDigest stem of
+                Just alg
+                  | n >= 1 && n <= pbkd2KeygenMaxBytes -> do
+                      r <- pbkdf2 alg iters salt (KeyBytes pwd) n
+                      pure $ case r of
+                        EngineFail err -> GotCryptoError (toCryptoError err)
+                        EngineOk dk -> toKeyPair
+                          (EngineOk (KeyBytes (BS.take n dk), Nothing))
+                  | otherwise -> pure (GotCryptoError (CryptoFailed
+                      "driver: PBKD2 length out of range"))
+                Nothing -> pure (GotCryptoError (CryptoFailed
+                  "driver: PBKD2 PRF stem is not servable"))
+              Nothing -> pure (GotCryptoError (CryptoFailed
+                "driver: malformed PBKD2 keygen params"))
           (m, GenEc curve) | m == ecKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenEC (EcSpec (BC8.unpack curve) "DER"))
           (m, GenRsa bits e) | m == rsaKeyPairGenMech ->
@@ -1458,7 +1478,7 @@ runEffect env resolve fx = case fx of
             Nothing -> pure (GotCryptoError (CryptoFailed
               ("driver: unknown SLH-DSA parameter set: " ++ show n)))
           _
-            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, chacha20KeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, dhKeyPairGenMech, x9_42DhKeyPairGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech] ->
+            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, chacha20KeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, dhKeyPairGenMech, x9_42DhKeyPairGenMech, edwardsKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech, pbkd2KeyGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)
@@ -1517,20 +1537,19 @@ runEffect env resolve fx = case fx of
         Just (iv, aad) -> withKey mkey $ \key ->
           runAuthWrap False _mech key iv aad input
   FxDerive mech mkey params info outLen
-    | mech == hkdfDeriveMech
-    , outLen < 1 || outLen > 255 * 32 -> pure (GotCryptoError (CryptoFailed
-        "driver: derive length out of range"))
-    | mech == hkdfDeriveMech -> withKey mkey $ \key ->
-        case BS.uncons params of
-          Just (mode, salt)
-            | mode == 0x02 || mode == 0x03 -> case key of
-                KeyBytes ikm
-                  | mode == 0x02 -> toBytes <$> hkdfExpand env key info outLen
-                  | otherwise -> toBytes <$> hkdfExtractExpand env ikm salt info outLen
-                _ -> pure (GotCryptoError (CryptoBadKey "driver"
-                  "HKDF base key is not byte material"))
-          _ -> pure (GotCryptoError (CryptoFailed
-            "driver: malformed HKDF mode/salt params"))
+    | mech == hkdfDeriveMech -> case hkdfParamsFor params of
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: malformed HKDF prf/mode/salt params"))
+        Just (alg, hashLen, mode, salt)
+          | outLen < 1 || outLen > 255 * hashLen -> pure (GotCryptoError (CryptoFailed
+              "driver: derive length out of range"))
+          | otherwise -> withKey mkey $ \key -> case key of
+              KeyBytes ikm
+                | mode == 0x02 -> toBytes <$> hkdfExpand env spec key info outLen
+                | otherwise -> toBytes <$> hkdfExtractExpand env spec hashLen ikm salt info outLen
+              _ -> pure (GotCryptoError (CryptoBadKey "driver"
+                "HKDF base key is not byte material"))
+          where spec = MacHMAC alg Nothing
     | isEcdhMech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: ECDH derive takes no info string"))
@@ -2359,13 +2378,29 @@ hmacSpec = MacHMAC D_SHA256 Nothing
 authWrapDomain :: ByteString
 authWrapDomain = "HASKOKI-AUTHWRAP-MAC-V1"
 
--- | HKDF-Expand (RFC 5869) with HMAC-SHA-256 over the base key
+-- | HKDF effect params (@prf:u8 mode:u8 salt@) onto the
+-- backend digest, its hash length, the stage mode, and the salt.
+-- The PRF code resolves through 'kdfCodeDigest' and the stem
+-- through 'rsaDigest' (unservable HMACs refuse); the mode must
+-- select expand (extract-only never reaches the driver — the
+-- planner refuses it first).
+hkdfParamsFor :: ByteString -> Maybe (DigestAlg, Int, Word8, ByteString)
+hkdfParamsFor params = do
+  (prf, r0) <- BS.uncons params
+  (mode, salt) <- BS.uncons r0
+  guard (mode == 0x02 || mode == 0x03)
+  stem <- kdfCodeDigest (fromIntegral prf)
+  alg <- rsaDigest stem
+  hashLen <- digestOutLen alg
+  pure (alg, hashLen, mode, salt)
+
+-- | HKDF-Expand (RFC 5869) with the PRF HMAC over the base key
 -- bytes: @T(i) = HMAC(prk, T(i-1) || info || i)@, truncated to the
 -- requested length. The caller bounds the length at 255 blocks.
 hkdfExpand
   :: CryptoBackend b
-  => BackendEnv b -> KeyMaterial -> ByteString -> Int -> IO (EngineResult ByteString)
-hkdfExpand env prk info outLen = go BS.empty 1 []
+  => BackendEnv b -> MacSpec -> KeyMaterial -> ByteString -> Int -> IO (EngineResult ByteString)
+hkdfExpand env spec prk info outLen = go BS.empty 1 []
   where
     go :: ByteString -> Int -> [ByteString] -> IO (EngineResult ByteString)
     go prev ctr acc
@@ -2374,25 +2409,25 @@ hkdfExpand env prk info outLen = go BS.empty 1 []
       | ctr > 255 = pure (EngineFail
           (BackendBadParam "derive" "HKDF-Expand counter overflow"))
       | otherwise = do
-          r <- macSign env hmacSpec prk (prev <> info <> BS.singleton (fromIntegral ctr))
+          r <- macSign env spec prk (prev <> info <> BS.singleton (fromIntegral ctr))
           case r of
             EngineFail err -> pure (EngineFail err)
             EngineOk t -> go t (ctr + 1) (t : acc)
 
--- | HKDF extract-then-expand (RFC 5869) with HMAC-SHA-256: the
+-- | HKDF extract-then-expand (RFC 5869) with the PRF HMAC: the
 -- base key bytes are the input keying material, an empty salt
 -- extracts against HashLen zeros (RFC 5869 section 2.2), and the
 -- extract output feeds 'hkdfExpand' over the context string.
 hkdfExtractExpand
   :: CryptoBackend b
-  => BackendEnv b -> ByteString -> ByteString -> ByteString -> Int
+  => BackendEnv b -> MacSpec -> Int -> ByteString -> ByteString -> ByteString -> Int
   -> IO (EngineResult ByteString)
-hkdfExtractExpand env ikm salt info outLen = do
-  let saltKey = KeyBytes (if BS.null salt then BS.replicate 32 0 else salt)
-  r <- macSign env hmacSpec saltKey ikm
+hkdfExtractExpand env spec hashLen ikm salt info outLen = do
+  let saltKey = KeyBytes (if BS.null salt then BS.replicate hashLen 0 else salt)
+  r <- macSign env spec saltKey ikm
   case r of
     EngineFail err -> pure (EngineFail err)
-    EngineOk prk -> hkdfExpand env (KeyBytes prk) info outLen
+    EngineOk prk -> hkdfExpand env spec (KeyBytes prk) info outLen
 
 -- | Verify-shaped answers: an authentication failure is a verdict,
 -- never a malfunction; any other backend failure keeps its

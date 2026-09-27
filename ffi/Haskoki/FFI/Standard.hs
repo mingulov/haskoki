@@ -217,7 +217,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
-import Haskoki.FFI.NativeParams (normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeMechParams, normalizeTlsPrfParams)
+import Haskoki.FFI.NativeParams (normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeMechParams, normalizePbkd2Params2, normalizeTlsPrfParams)
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
@@ -2126,9 +2126,12 @@ withSessionState inst (CULong h) k =
       Nothing -> pure (stdRvOf CKR_SESSION_HANDLE_INVALID)
       Just st -> k st
 
--- | Generate one secret key from a template frame. Only the
--- pre-master keygens take mechanism parameters (the client
--- version); the planner refuses params on every other keygen.
+-- | Generate one secret key from a template frame. The
+-- pre-master keygens take raw version bytes and PBKD2 takes the
+-- native @CK_PKCS5_PBKD2_PARAMS2@ struct (normalized onto
+-- @pbkd2-params\/2@ here; unmappable images pass through raw so
+-- the recipe refusal is unchanged); the planner refuses params
+-- on every other keygen.
 haskokiStdGenerateKey
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
@@ -2143,11 +2146,15 @@ haskokiStdGenerateKey ctx h (CULong mech) pFrame (CULong frameLen)
         case (eTmpl, eParams) of
           (Left ferr, _) -> pure (frameErrorRV ferr)
           (_, Left _) -> pure ckrArgsBad
-          (Right entries, Right params) -> do
+          (Right entries, Right raw) -> do
+            let mid = MechanismId (fromIntegral mech)
+            params <- case kdfRecipeFor mid of
+              Just r | rkPbkd2 r ->
+                fromMaybe raw <$> normalizePbkd2Params2 pParams paramsLen
+              _ -> pure raw
             m <- snapshotModel (siEnv inst)
             eHs <- runKeyPlan inst m st
-              (planGenerateKey (envRules (siEnv inst)) m st
-                (MechanismId (fromIntegral mech)) params entries)
+              (planGenerateKey (envRules (siEnv inst)) m st mid params entries)
             case eHs of
               Left rv -> pure rv
               Right [oh] -> do
@@ -2785,7 +2792,7 @@ foreign export ccall "haskoki_std_unwrap_key" haskokiStdUnwrapKey
   -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_derive_hkdf" haskokiStdDeriveHkdf
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong
-  -> Ptr Word8 -> CULong -> CULong -> CULong
+  -> Ptr Word8 -> CULong -> CULong -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_derive_opaque" haskokiStdDeriveOpaque
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
@@ -2981,10 +2988,10 @@ isOpaqueDeriveMech mid =
 -- derived key shape (exactly one key).
 haskokiStdDeriveHkdf
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong
-  -> Ptr Word8 -> CULong -> CULong -> CULong
+  -> Ptr Word8 -> CULong -> CULong -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
 haskokiStdDeriveHkdf ctx h pInfo (CULong infoLen)
-    pSalt (CULong saltLen) (CULong mode) (CULong baseH)
+    pSalt (CULong saltLen) (CULong mode) (CULong prf) (CULong baseH)
     pFrame (CULong frameLen) phKey =
   withStdCtx ctx $ \inst ->
     if phKey == nullPtr
@@ -3003,7 +3010,7 @@ haskokiStdDeriveHkdf ctx h pInfo (CULong infoLen)
                   (planDerive (envRules (siEnv inst)) m st hkdfDeriveMech
                     (ExternalHandle (fromIntegral baseH))
                     (encodeDeriveParams
-                      (encodeHkdfInfo (fromIntegral mode) salt info) [entries]))
+                      (encodeHkdfInfo (fromIntegral prf) (fromIntegral mode) salt info) [entries]))
                 case eHs of
                   Left rv -> pure rv
                   Right [oh] -> poke phKey (CULong oh) >> pure ckrOk

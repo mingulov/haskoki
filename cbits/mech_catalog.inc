@@ -143,7 +143,7 @@ static const struct haskoki_mech_row
   { 0x00000398UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHA3_224_KEY_DERIVATION */
   { 0x00000399UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHA3_384_KEY_DERIVATION */
   { 0x0000039AUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHA3_512_KEY_DERIVATION */
-  { 0x000003B0UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_PKCS5_PBKD2 */
+  { 0x000003B0UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE | CKF_GENERATE) }, /* CKM_PKCS5_PBKD2 */
   { 0x000003D0UL, 160UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_WTLS_PRE_MASTER_KEY_GEN */
   { 0x00000550UL, 128UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_CAMELLIA_KEY_GEN */
   { 0x00000551UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_CAMELLIA_ECB */

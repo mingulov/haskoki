@@ -13504,13 +13504,14 @@
       "family": "derive",
       "mechanism_info": {
         "flags": [
-          "CKF_DERIVE"
+          "CKF_DERIVE",
+          "CKF_GENERATE"
         ],
         "key_size_unit": "mechanism-specific",
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "KDF recipe (core/Haskoki/Recipe/Kdf.hs): RFC 8018 PBKDF2 with any servable HMAC PRF (engine-local codes 1..13), iterations capped at 10M (documented CPU ceiling), salt free. The driver iterates over the MAC route. Vectors pinned (RoutingE2ESpec caseDriverKdf: RFC 6070 SHA-1 + hashlib/CLI SHA-256 incl. multi-block + CLI SHA-512); planner + params pinned (RecipeKdfSpec, SyntheticSpec caseKdf).",
+      "notes": "KDF recipe (core/Haskoki/Recipe/Kdf.hs): RFC 8018 PBKDF2 with any servable HMAC PRF (engine-local codes 1..13), iterations capped at 10M (documented CPU ceiling), salt free, pbkd2-params/2 frame (password segment empty on derive where the password rides the base key, inline on keygen per CK_PKCS5_PBKD2_PARAMS2 with CKP-mapped PRFs and SPECIFIED-only salt). The driver iterates over the MAC route. Vectors pinned (RoutingE2ESpec caseDriverKdf: RFC 6070 SHA-1 + hashlib/CLI SHA-256 incl. multi-block + CLI SHA-512; caseDriverPbkd2Gen: RFC 6070 c=1 on the gen path); planner + params pinned (RecipeKdfSpec incl. PARAMS2 mapping, KeyManagementSpec casePbkd2Keygen, SyntheticSpec caseKdf).",
       "numeric_id": "0x000003b0",
       "routes": [
         {
@@ -13524,7 +13525,20 @@
           ],
           "operation": "derive",
           "output_rule": "pbkdf2/v1",
-          "parameter_codec": "pbkd2-params/1"
+          "parameter_codec": "pbkd2-params/2"
+        },
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "value-len-1-8160-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "pbkdf2/v1",
+          "parameter_codec": "pbkd2-params/2"
         }
       ],
       "source_refs": [
@@ -22993,7 +23007,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Reviewed: HKDF-SHA256 (RFC 5869) expand-only and extract-and-expand with NULL/DATA salt (empty salt extracts against HashLen zeros); the PRF names the base hash (CKM_SHA256). A missing CKA_VALUE_LEN defaults to the hash length (32), stamped like the ECDH default. Refused typed (CKR_MECHANISM_PARAM_INVALID): other PRFs, salt-as-key, extract-only. Malformed calls (no stage selected, unknown salt type, dangling salt/info pointers) refuse CKR_ARGUMENTS_BAD. Planner pinned (KeyManagementSpec caseHkdfInfoCodec/caseHkdfExtractOnlyRefused, RecipeEcdhSpec HKDF default); real KATs caseRealHkdfVector (A.1 expand) and caseRealHkdfExtractExpand (A.1/A.3 full); C-surface matrix in tests/c/consumer_roundtrip.c.",
+      "notes": "Reviewed: HKDF over the SHA-2 PRF class (RFC 5869; SHA-1/SHA-224/SHA-256/SHA-384/SHA-512/SHA-512/224/SHA-512/256) expand-only and extract-and-expand with NULL/DATA salt (empty salt extracts against HashLen zeros); the PRF rides the hkdf-params/3 frame and defaults/ceilings follow HashLen. A missing CKA_VALUE_LEN defaults to the hash length, stamped like the ECDH default. Refused typed (CKR_MECHANISM_PARAM_INVALID): non-SHA-2 PRFs, salt-as-key, extract-only. Malformed calls (no stage selected, unknown salt type, dangling salt/info pointers) refuse CKR_ARGUMENTS_BAD. Planner pinned (KeyManagementSpec caseHkdfInfoCodec/caseHkdfExtractOnlyRefused/caseRealHkdfMultiPrf, RecipeEcdhSpec HKDF defaults incl. SHA-512/64); real KATs caseRealHkdfVector (A.1 expand) and caseRealHkdfExtractExpand (A.1/A.3 full); C-surface matrix in tests/c/consumer_roundtrip.c.",
       "numeric_id": "0x0000402a",
       "routes": [
         {
@@ -23003,11 +23017,11 @@
             "A39"
           ],
           "key_constraints": [
-            "hmac-sha256-salt-null-or-data"
+            "hmac-sha2-salt-null-or-data"
           ],
           "operation": "derive",
-          "output_rule": "hkdf-sha256/v2",
-          "parameter_codec": "hkdf-params/2"
+          "output_rule": "hkdf-sha2/v3",
+          "parameter_codec": "hkdf-params/3"
         }
       ],
       "source_refs": [

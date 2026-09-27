@@ -77,6 +77,8 @@ import Haskoki.Recipe.Ecdh
 import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
 import Haskoki.Recipe.Kdf
   ( KdfRecipe (..)
+  , kdfCodeDigest
+  , kdfDigestWidth
   , kdfParamsValid
   , kdfRecipeFor
   , kdfShaWidth
@@ -166,34 +168,51 @@ decodeDeriveParams bs = do
       (rest, r2) <- takeTmpls (k - 1) r1
       pure (tmpl : rest, r2)
 
--- | HKDF info segment: @mode:u8 saltLen:u16be salt context@.
--- mode bit 0 selects extract, bit 1 selects expand; decoding
--- fails closed on an empty stage set and on reserved bits.
-encodeHkdfInfo :: Word8 -> ByteString -> ByteString -> ByteString
-encodeHkdfInfo mode salt info =
-  BS.singleton mode <> u16be (BS.length salt) <> salt <> info
+-- | HKDF info segment: @prf:u8 mode:u8 saltLen:u16be salt
+-- context@. The PRF is an engine-local digest code
+-- ('kdfCodeDigest'); mode bit 0 selects extract, bit 1 selects
+-- expand; decoding fails closed on an unknown PRF, an empty
+-- stage set, and on reserved bits.
+encodeHkdfInfo :: Word8 -> Word8 -> ByteString -> ByteString -> ByteString
+encodeHkdfInfo prf mode salt info =
+  BS.singleton prf <> BS.singleton mode
+    <> u16be (BS.length salt) <> salt <> info
   where
     u16be n = BS.pack
       [ fromIntegral (n `div` 256 `mod` 256)
       , fromIntegral (n `mod` 256)
       ]
 
--- | Parse an HKDF info segment. Truncation, an overrun salt
--- length, a missing stage and reserved mode bits all fail.
-decodeHkdfInfo :: ByteString -> Maybe (Word8, ByteString, ByteString)
+-- | Parse an HKDF info segment. An unknown PRF, truncation, an
+-- overrun salt length, a missing stage and reserved mode bits
+-- all fail.
+decodeHkdfInfo :: ByteString -> Maybe (Word8, Word8, ByteString, ByteString)
 decodeHkdfInfo bs = do
-  (modeBs, r0) <- takeN 1 bs
-  (lenBs, r1) <- takeN 2 r0
-  let mode = BS.head modeBs
+  (prfBs, r0) <- takeN 1 bs
+  (modeBs, r1) <- takeN 1 r0
+  (lenBs, r2) <- takeN 2 r1
+  let prf = BS.head prfBs
+      mode = BS.head modeBs
       saltN = BS.foldl' (\acc x -> acc * 256 + fromIntegral x) 0 lenBs
-  if mode /= 0x01 && mode /= 0x02 && mode /= 0x03
-    then Nothing
-    else takeN saltN r1 >>= \(salt, ctx) -> Just (mode, salt, ctx)
+  case kdfCodeDigest (fromIntegral prf) of
+    Nothing -> Nothing
+    Just _ ->
+      if mode /= 0x01 && mode /= 0x02 && mode /= 0x03
+        then Nothing
+        else takeN saltN r2 >>= \(salt, ctx) -> Just (prf, mode, salt, ctx)
   where
     takeN :: Int -> ByteString -> Maybe (ByteString, ByteString)
     takeN n b
       | BS.length b < n = Nothing
       | otherwise = Just (BS.splitAt n b)
+
+-- | PRF code onto its hash length: the decode-validated code
+-- resolves through 'kdfCodeDigest' and the width through
+-- 'kdfDigestWidth' (the two tables share their domain, so this
+-- is total on decoded frames; 'Nothing' is defense in depth).
+prfHashLen :: Word8 -> Maybe Int
+prfHashLen prf =
+  kdfCodeDigest (fromIntegral prf) >>= kdfDigestWidth
 
 -- | Plan one (possibly multi-key) derivation: the mechanism must be
 -- a derive mechanism (HKDF, ECDH, or KDF), the base handle must
@@ -209,8 +228,9 @@ decodeHkdfInfo bs = do
 -- base (a key-type contradiction outranks parameter shape); ECDH
 -- frames carry the agreement parameters ('ecdh-params/1') in the
 -- info segment and the derived total is capped by the base
--- curve's coordinate width; HKDF frames carry the mode/salt/context
--- segment ('encodeHkdfInfo'), capped by the HKDF-Expand ceiling.
+-- curve's coordinate width; HKDF frames carry the
+-- prf/mode/salt/context segment ('encodeHkdfInfo'), capped by the
+-- PRF's HKDF-Expand ceiling (255 x HashLen).
 -- Extract-only refuses; admission gates with the
 -- EXACT validated template count (post-validation: an
 -- unvalidated count could over-refuse).
@@ -224,18 +244,22 @@ planDerive rules model st mech baseH blob
       Just (infoSeg, tmpls) -> case decodeHkdfInfo infoSeg of
         Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
           "malformed HKDF info segment")
-        Just (mode, salt, info)
+        Just (prf, mode, salt, info)
           | mode == 0x01 -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
               "HKDF extract-only is not served; combine extract and expand")
-          | otherwise -> case resolveBase model st baseH of
-              Left deny -> KeyDenied deny
-              Right (ost, _) -> finish tmpls maxDerivedTotal
-                "derived total exceeds the HKDF-Expand ceiling"
-                (FxDerive mech (Just (osId ost)) (BS.singleton mode <> salt) info)
-                -- A missing length defaults to the SHA-256 hash
-                -- length: the mechanism doc says VALUE_LEN "should
-                -- be set" (non-mandatory), like the ECDH default.
-                (Just 32)
+          | otherwise -> case prfHashLen prf of
+              Nothing -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
+                "HKDF PRF has no servable hash length")
+              Just hashLen -> case resolveBase model st baseH of
+                Left deny -> KeyDenied deny
+                Right (ost, _) -> finish tmpls (255 * hashLen)
+                  "derived total exceeds the HKDF-Expand ceiling"
+                  (FxDerive mech (Just (osId ost))
+                    (BS.singleton prf <> BS.singleton mode <> salt) info)
+                  -- A missing length defaults to the PRF hash
+                  -- length: the mechanism doc says VALUE_LEN "should
+                  -- be set" (non-mandatory), like the ECDH default.
+                  (Just hashLen)
   | Just r <- ecdhRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")

@@ -3016,10 +3016,11 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_OK && kwpUnwrapped != 0 && kwpUnwrapped != targetKey,
              "kwp unwrap mints a distinct key");
     }
-    /* HKDF derive: the PRF names the base hash (CKM_SHA256),
-     * expand-only and extract-and-expand served with NULL/DATA
-     * salt. Malformed calls refuse ARGUMENTS_BAD; well-formed but
-     * unserved profiles refuse MECHANISM_PARAM_INVALID. */
+    /* HKDF derive: the PRF names a SHA-2 hash (SHA-1 through
+     * SHA-512/224), expand-only and extract-and-expand served
+     * with NULL/DATA salt. Malformed calls refuse ARGUMENTS_BAD;
+     * well-formed but unserved profiles refuse
+     * MECHANISM_PARAM_INVALID. */
     {
       CK_ATTRIBUTE ktmpl[] = {
         { CKA_CLASS, &ckcls, sizeof(ckcls) },
@@ -3121,9 +3122,22 @@ int main(int argc, char **argv) {
       }
       hkdf.prfHashMechanism = CKM_SHA512;
       {
+        CK_OBJECT_HANDLE h512 = 0;
+        CK_BYTE val512[32];
+        rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &h512);
+        CHECKC(rv == CKR_OK && h512 != 0, "SHA-512 PRF served");
+        get[0].type = CKA_VALUE;
+        get[0].pValue = val512;
+        get[0].ulValueLen = sizeof(val512);
+        rv = f->C_GetAttributeValue(wsess, h512, get, 1);
+        CHECKC(rv == CKR_OK && memcmp(valA, val512, 32) != 0,
+               "SHA-512 derives distinct bytes");
+      }
+      hkdf.prfHashMechanism = CKM_SHA3_256;
+      {
         CK_OBJECT_HANDLE bad = 0;
         rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
-        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "non-SHA256 PRF refused typed");
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "SHA-3 PRF refused typed");
       }
       /* Extract-only is a named unserved profile. */
       hkdf.prfHashMechanism = CKM_SHA256;
@@ -3176,6 +3190,117 @@ int main(int argc, char **argv) {
                  "proxied NULL salt arrives empty and derives");
         }
       }
+    /* PBKD2 keygen: the PARAMS2 struct carries the password
+     * inline; the derived key matches RFC 6070. Malformed
+     * selectors and counts refuse PARAM_INVALID; the length is
+     * required, positive, and capped by the shared ceiling. */
+      CK_MECHANISM gpbkd2;
+      CK_PKCS5_PBKD2_PARAMS2 p2;
+      CK_BYTE salt[] = { 's', 'a', 'l', 't' };
+      CK_BYTE pwd[] = { 'p', 'a', 's', 's', 'w', 'o', 'r', 'd' };
+      CK_BYTE rfc[20] = { 0x0c, 0x60, 0xc8, 0x0f, 0x96, 0x1f, 0x0e, 0x71,
+                          0xf3, 0xa9, 0xb5, 0x24, 0xaf, 0x60, 0x12, 0x06,
+                          0x2f, 0xe0, 0x37, 0xa6 };
+      CK_BYTE got[20];
+      CK_BYTE got2[20];
+      CK_ULONG klen = 20;
+      CK_ULONG zeroLen = 0;
+      CK_ULONG bigLen = 8161;
+      CK_ATTRIBUTE ptmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &gkt, sizeof(gkt) },
+        { CKA_VALUE_LEN, &klen, sizeof(klen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE pget[1];
+      CK_OBJECT_HANDLE dk = 0, dk2 = 0;
+      gpbkd2.mechanism = CKM_PKCS5_PBKD2;
+      gpbkd2.pParameter = &p2;
+      gpbkd2.ulParameterLen = sizeof(p2);
+      p2.saltSource = CKZ_SALT_SPECIFIED;
+      p2.pSaltSourceData = salt;
+      p2.ulSaltSourceDataLen = sizeof(salt);
+      p2.iterations = 1;
+      p2.prf = CKP_PKCS5_PBKD2_HMAC_SHA1;
+      p2.pPrfData = NULL_PTR;
+      p2.ulPrfDataLen = 0;
+      p2.pPassword = pwd;
+      p2.ulPasswordLen = sizeof(pwd);
+      rv = f->C_GenerateKey(wsess, &gpbkd2, ptmpl, 5, &dk);
+      CHECKC(rv == CKR_OK && dk != 0, "PBKD2 keygen ok");
+      pget[0].type = CKA_VALUE;
+      pget[0].pValue = got;
+      pget[0].ulValueLen = sizeof(got);
+      rv = f->C_GetAttributeValue(wsess, dk, pget, 1);
+      CHECKC(rv == CKR_OK && pget[0].ulValueLen == 20 &&
+             memcmp(got, rfc, 20) == 0, "PBKD2 matches RFC 6070 c=1");
+      rv = f->C_GenerateKey(wsess, &gpbkd2, ptmpl, 5, &dk2);
+      CHECKC(rv == CKR_OK && dk2 != 0 && dk2 != dk,
+             "second PBKD2 mints distinct key");
+      pget[0].type = CKA_VALUE;
+      pget[0].pValue = got2;
+      pget[0].ulValueLen = sizeof(got2);
+      rv = f->C_GetAttributeValue(wsess, dk2, pget, 1);
+      CHECKC(rv == CKR_OK && memcmp(got, got2, 20) == 0,
+             "PBKD2 material deterministic");
+      p2.prf = 0;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_GenerateKey(wsess, &gpbkd2, ptmpl, 5, &bad);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "bad PRF refused typed");
+        CHECKC(bad == 0, "refused PBKD2 writes no handle");
+      }
+      p2.prf = CKP_PKCS5_PBKD2_HMAC_GOSTR3411;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_GenerateKey(wsess, &gpbkd2, ptmpl, 5, &bad);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "GOST PRF refused typed");
+      }
+      p2.prf = CKP_PKCS5_PBKD2_HMAC_SHA1;
+      p2.iterations = 0;
+      {
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_GenerateKey(wsess, &gpbkd2, ptmpl, 5, &bad);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "zero iters refused");
+      }
+      p2.iterations = 1;
+      {
+        CK_ATTRIBUTE noLen[] = {
+          { CKA_CLASS, &ckcls, sizeof(ckcls) },
+          { CKA_KEY_TYPE, &gkt, sizeof(gkt) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+          { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+        };
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_GenerateKey(wsess, &gpbkd2, noLen, 4, &bad);
+        CHECKC(rv == CKR_TEMPLATE_INCOMPLETE, "missing length refused");
+      }
+      {
+        CK_ATTRIBUTE zeroTmpl[] = {
+          { CKA_CLASS, &ckcls, sizeof(ckcls) },
+          { CKA_KEY_TYPE, &gkt, sizeof(gkt) },
+          { CKA_VALUE_LEN, &zeroLen, sizeof(zeroLen) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+          { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+        };
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_GenerateKey(wsess, &gpbkd2, zeroTmpl, 5, &bad);
+        CHECKC(rv == CKR_TEMPLATE_INCONSISTENT, "zero length refused");
+      }
+      {
+        CK_ATTRIBUTE bigTmpl[] = {
+          { CKA_CLASS, &ckcls, sizeof(ckcls) },
+          { CKA_KEY_TYPE, &gkt, sizeof(gkt) },
+          { CKA_VALUE_LEN, &bigLen, sizeof(bigLen) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+          { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+        };
+        CK_OBJECT_HANDLE bad = 0;
+        rv = f->C_GenerateKey(wsess, &gpbkd2, bigTmpl, 5, &bad);
+        CHECKC(rv == CKR_TEMPLATE_INCONSISTENT, "over-ceiling refused");
+      }
+      /* (PBKD2 block ends: the ECDH legs below reuse ktmpl.) */
       decdh.mechanism = CKM_ECDH1_DERIVE;
       decdh.pParameter = NULL_PTR;
       decdh.ulParameterLen = 0;

@@ -1965,21 +1965,21 @@ caseKdf = withSynth "11" $ \env -> do
         runEffect env res (FxDerive mech (Just oid) params BS.empty outLen)
           >>= expectBytes
       prfSha256 = 4
-  d1 <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 2 "salt") 32
+  d1 <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 2 "salt" BS.empty) 32
   assertEqual "dk length" 32 (BS.length d1)
-  d2 <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 2 "salt") 32
+  d2 <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 2 "salt" BS.empty) 32
   assertEqual "deterministic" d1 d2
-  dSalt <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 2 "pepper") 32
+  dSalt <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 2 "pepper" BS.empty) 32
   assertBool "salts separated" (d1 /= dSalt)
-  dPw <- derive otherOid pbkd2 (encodePbkd2Params prfSha256 2 "salt") 32
+  dPw <- derive otherOid pbkd2 (encodePbkd2Params prfSha256 2 "salt" BS.empty) 32
   assertBool "passwords separated" (d1 /= dPw)
-  dIt <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 3 "salt") 32
+  dIt <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 3 "salt" BS.empty) 32
   assertBool "iterations separated" (d1 /= dIt)
-  dPrf <- derive pwOid pbkd2 (encodePbkd2Params 6 2 "salt") 32
+  dPrf <- derive pwOid pbkd2 (encodePbkd2Params 6 2 "salt" BS.empty) 32
   assertBool "prfs separated" (d1 /= dPrf)
-  dBig <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 2 "salt") 48
+  dBig <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 2 "salt" BS.empty) 48
   assertEqual "multi-block prefix" d1 (BS.take 32 dBig)
-  trunc16 <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 2 "salt") 16
+  trunc16 <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 2 "salt" BS.empty) 16
   assertEqual "truncation prefix" (BS.take 16 d1) trunc16
   -- SHA-KD rows at digest width.
   s32 <- derive pwOid sha256kd BS.empty 32
@@ -1990,7 +1990,7 @@ caseKdf = withSynth "11" $ \env -> do
   assertEqual "sha512/224 width" 28 (BS.length u28)
   -- Typed refusals.
   badPrf <- runEffect env res
-    (FxDerive pbkd2 (Just pwOid) (encodePbkd2Params 99 1 "s") BS.empty 32)
+    (FxDerive pbkd2 (Just pwOid) (encodePbkd2Params 99 1 "s" BS.empty) BS.empty 32)
   case badPrf of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)

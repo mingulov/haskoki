@@ -85,6 +85,7 @@ import Haskoki.Operation.Derive
   , encodeDeriveParams
   , encodeHkdfInfo
   , hkdfDeriveMech
+  , maxDerivedTotal
   , planDerive
   )
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoError (..), CryptoResult (..))
@@ -251,12 +252,14 @@ import Haskoki.Outcome
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
 import Haskoki.Registry (MechanismId (..), Operation (..), curatedRegistry, mkCapabilities)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
+import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Registry.Generated
   ( ckm_AES_CCM
   , ckm_DES3_MAC
   , ckm_DES3_MAC_GENERAL
   , ckm_ECDH1_DERIVE
+  , ckm_PKCS5_PBKD2
   , ckm_SHA256
   , ckm_SHA256_HMAC
   , ckm_SHA256_KEY_DERIVATION
@@ -287,6 +290,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "TLS pre-master keygen embeds the client version" caseTlsPremasterKeygen
   , testCase "SSL3 pre-master keygen embeds the client version" caseSsl3PremasterKeygen
   , testCase "WTLS pre-master keygen embeds the version byte" caseWtlsPremasterKeygen
+  , testCase "PBKD2 keygen derives deterministic material" casePbkd2Keygen
   , testCase "ChaCha20 keygen mints 32 bytes" caseChacha20Keygen
   , testCase "AES keygen refuses PQC wrap flags" caseAesKeygenEncapsulate
   , testCase "Init enforces the allowed-mechanism list" caseInitAllowedMechanisms
@@ -354,6 +358,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real wrap matches SP 800-38A and round-trips" caseRealWrapVector
   , testCase "Real derive matches RFC 5869" caseRealHkdfVector
   , testCase "Real derive extracts then expands (RFC 5869 A.1/A.3)" caseRealHkdfExtractExpand
+  , testCase "Real derive serves SHA-1/SHA-512 PRFs" caseRealHkdfMultiPrf
   , testCase "HKDF extract-only refuses mechanism-param-invalid" caseHkdfExtractOnlyRefused
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
   , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
@@ -1334,6 +1339,91 @@ premasterTmpl n =
   , (AttrToken, ValBool False)
   , (AttrSign, ValBool True)
   ]
+
+-- | PBKD2 keygen (slice 11b): the v2 frame carries the password
+-- inline and the planner mints deterministic generic-secret
+-- material through the synthetic backend.
+casePbkd2Keygen :: IO ()
+casePbkd2Keygen = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let mech = MechanismId ckm_PKCS5_PBKD2
+      frame = encodePbkd2Params 4 4096 "salt" "password"
+  (m1, h) <- genPremasterKey answer m0 st mech frame (premasterTmpl 32)
+  Just ost <- pure (resolveHandle m1 h)
+  mat1 <- case keyBytesOf ost of
+    Just mat -> do
+      assertEqual "derived length" 32 (BS.length mat)
+      pure mat
+    Nothing -> assertFailure "generated key lacks material" >> undefined
+  (m2, h2) <- genPremasterKey answer m1 st mech frame (premasterTmpl 32)
+  Just ost2 <- pure (resolveHandle m2 h2)
+  case keyBytesOf ost2 of
+    Just mat2 -> assertEqual "deterministic material" mat1 mat2
+    Nothing -> assertFailure "generated key lacks material"
+  -- Typed secret targets (fast r46 `test_derive_aes_key`): AES-256
+  -- plans and mints 32 bytes stamped CKK_AES; off-domain AES
+  -- lengths refuse. DES3/XTS serve their fixed domains; unlisted
+  -- types refuse closed.
+  (mAes, hAes) <- genPremasterKey answer m2 st mech frame (aesTmpl 32)
+  Just ostAes <- pure (resolveHandle mAes hAes)
+  assertEqual "aes keytype" (Just (ValULong ckkAes))
+    (Map.lookup AttrKeyType (osAttrs ostAes))
+  case keyBytesOf ostAes of
+    Just matAes -> assertEqual "aes length" 32 (BS.length matAes)
+    Nothing -> assertFailure "AES target lacks material"
+  case planGenerateKey defaultRules mAes st mech frame (aesTmpl 20) of
+    KeyDenied deny -> assertEqual "aes-20 code"
+      CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure ("AES-20 must refuse: " ++ show other)
+  case planGenerateKey defaultRules mAes st mech frame (typedTmpl ckkDes3 24) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("DES3-24 must plan: " ++ show (voidFx other))
+  case planGenerateKey defaultRules mAes st mech frame (typedTmpl ckkAesXts 64) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("XTS-64 must plan: " ++ show (voidFx other))
+  case planGenerateKey defaultRules mAes st mech frame (typedTmpl ckkSha256Hmac 32) of
+    KeyDenied deny -> assertEqual "hmac code"
+      CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+    other -> assertFailure ("HMAC target must refuse: " ++ show (voidFx other))
+  -- A missing length refuses; zero and over-ceiling refuse.
+  case planGenerateKey defaultRules m2 st mech frame
+      [a | a@(t, _) <- premasterTmpl 32, t /= AttrValueLen] of
+    KeyDenied deny -> assertEqual "missing length code"
+      CKR_TEMPLATE_INCOMPLETE (kdCode deny)
+    other -> assertFailure ("missing length must refuse: " ++ show other)
+  mapM_ (refuseLen m2 st mech frame) [0, maxDerivedTotal + 1]
+  -- Malformed frames refuse with the parameter code.
+  mapM_ (refuseParams m2 st mech)
+    [ BS.empty
+    , BS.take 30 frame
+    , encodePbkd2Params 4 0 "salt" "password"
+    , encodePbkd2Params 4 (maxPbkd2Iters + 1) "salt" "password"
+    , encodePbkd2Params 99 1 "salt" "password"
+    ]
+  where
+    refuseLen m st mech frame n =
+      case planGenerateKey defaultRules m st mech frame (premasterTmpl n) of
+        KeyDenied deny -> assertEqual ("length code " ++ show n)
+          CKR_TEMPLATE_INCONSISTENT (kdCode deny)
+        other -> assertFailure
+          ("length " ++ show n ++ " must refuse: " ++ show other)
+    refuseParams m st mech params =
+      case planGenerateKey defaultRules m st mech params (premasterTmpl 32) of
+        KeyDenied deny -> assertEqual ("params code " ++ show params)
+          CKR_MECHANISM_PARAM_INVALID (kdCode deny)
+        other -> assertFailure
+          ("params " ++ show params ++ " must refuse: " ++ show other)
+    typedTmpl k n =
+      [ (AttrClass, ValULong ckoSecretKey)
+      , (AttrKeyType, ValULong k)
+      , (AttrValueLen, ValULong (fromIntegral n))
+      , (AttrToken, ValBool False)
+      ]
+    voidFx :: KeyPlan -> String
+    voidFx (KeyDenied deny) = "denied: " ++ show (kdCode deny)
+    voidFx (KeyImmediate _) = "immediate"
+    voidFx (KeyEffect _ _) = "effect"
 
 caseAesKeygenEncapsulate :: IO ()
 caseAesKeygenEncapsulate = withSynth $ \_answer -> do
@@ -3081,7 +3171,7 @@ caseDeriveSingle = withSynth $ \answer -> do
         , (AttrToken, ValBool False)
         , (AttrEncrypt, ValBool True)
         ]
-      blob = encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "derive-info") [soloTmpl]
+      blob = encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "derive-info") [soloTmpl]
       before = Map.size (mObjects m1)
   mats <- case planDerive defaultRules m1 st hkdfDeriveMech baseH blob of
     KeyEffect pw fx -> do
@@ -3297,7 +3387,7 @@ caseDeriveMulti = withSynth $ \answer -> do
   (m1, baseH) <- deriveBase answer m0 st
   let before = Map.size (mObjects m1)
   (m2, [h1, h2, h3]) <- runDerive answer m1 st baseH
-    (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "multi-child") [childTmpl 16, childTmpl 24, childTmpl 32]) 3
+    (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "multi-child") [childTmpl 16, childTmpl 24, childTmpl 32]) 3
   assertEqual "three derived objects" (before + 3) (Map.size (mObjects m2))
   Just o1 <- pure (resolveHandle m2 h1)
   Just o2 <- pure (resolveHandle m2 h2)
@@ -3309,7 +3399,7 @@ caseDeriveMulti = withSynth $ \answer -> do
       assertEqual "third length" 32 (BS.length m32)
       -- The multi answer is the concatenation the finisher splits:
       -- a lone 16-byte derive replays the first child's bytes.
-      (mSolo, [hsolo]) <- runDerive answer m1 st baseH (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "multi-child") [childTmpl 16]) 1
+      (mSolo, [hsolo]) <- runDerive answer m1 st baseH (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "multi-child") [childTmpl 16]) 1
       Just osolo <- pure (resolveHandle mSolo hsolo)
       assertEqual "split matches lone derive" (Just m16) (keyBytesOf osolo)
     _ -> assertFailure "derived children lack material"
@@ -3328,13 +3418,13 @@ caseDeriveInvalidExtra = withSynth $ \answer -> do
         ]
   -- An invalid SECOND template denies the whole derive.
   case planDerive defaultRules m1 st hkdfDeriveMech baseH
-      (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "probe") [childTmpl 32, badClass]) of
+      (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "probe") [childTmpl 32, badClass]) of
     KeyDenied (KeyDeny code _) ->
       assertEqual "wrong class code" CKR_TEMPLATE_INCONSISTENT code
     other -> assertFailure ("bad additional template must deny, got: " ++ show other)
   -- An invalid THIRD template denies the whole derive.
   case planDerive defaultRules m1 st hkdfDeriveMech baseH
-      (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "probe") [childTmpl 16, childTmpl 16, badLen]) of
+      (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "probe") [childTmpl 16, childTmpl 16, badLen]) of
     KeyDenied (KeyDeny code _) ->
       assertEqual "zero length code" CKR_TEMPLATE_INCONSISTENT code
     other -> assertFailure ("bad additional template must deny, got: " ++ show other)
@@ -3363,18 +3453,25 @@ caseDeriveCodec = do
 
 caseHkdfInfoCodec :: IO ()
 caseHkdfInfoCodec = do
-  let framed = encodeHkdfInfo 0x03 "salt" "context"
+  let framed = encodeHkdfInfo 4 0x03 "salt" "context"
   assertEqual "codec round-trips"
-    (Just (0x03, "salt", "context")) (decodeHkdfInfo framed)
+    (Just (4, 0x03, "salt", "context")) (decodeHkdfInfo framed)
   assertEqual "expand-only round-trips"
-    (Just (0x02, BS.empty, "ctx")) (decodeHkdfInfo (encodeHkdfInfo 0x02 BS.empty "ctx"))
-  assertEqual "no stage selected" Nothing (decodeHkdfInfo (encodeHkdfInfo 0x00 BS.empty "ctx"))
-  assertEqual "reserved mode bit" Nothing (decodeHkdfInfo (encodeHkdfInfo 0x04 BS.empty "ctx"))
+    (Just (4, 0x02, BS.empty, "ctx")) (decodeHkdfInfo (encodeHkdfInfo 4 0x02 BS.empty "ctx"))
+  assertEqual "sha512 prf round-trips"
+    (Just (6, 0x03, "salt", "context"))
+    (decodeHkdfInfo (encodeHkdfInfo 6 0x03 "salt" "context"))
+  assertEqual "unknown prf refused" Nothing
+    (decodeHkdfInfo (encodeHkdfInfo 99 0x03 "salt" "context"))
+  assertEqual "zero prf refused" Nothing
+    (decodeHkdfInfo (encodeHkdfInfo 0 0x03 "salt" "context"))
+  assertEqual "no stage selected" Nothing (decodeHkdfInfo (encodeHkdfInfo 4 0x00 BS.empty "ctx"))
+  assertEqual "reserved mode bit" Nothing (decodeHkdfInfo (encodeHkdfInfo 4 0x04 BS.empty "ctx"))
   assertEqual "truncated frame" Nothing (decodeHkdfInfo (BS.take 2 framed))
   -- The context takes the remainder by design; exact consumption
   -- is the outer derive frame's job (pinned by caseDeriveCodec).
   assertEqual "truncated salt" Nothing
-    (decodeHkdfInfo (BS.take 7 (encodeHkdfInfo 0x03 "salty" "context")))
+    (decodeHkdfInfo (BS.take 8 (encodeHkdfInfo 4 0x03 "salty" "context")))
   assertEqual "empty blob" Nothing (decodeHkdfInfo BS.empty)
 
 -- ---------------------------------------------------------------------------
@@ -3778,7 +3875,7 @@ caseAttrsLand = withSynth $ \answer -> do
         , (AttrSign, ValBool True)
         , (AttrVerify, ValBool False)
         ]
-  (m5, [dh]) <- runDerive answer m4 st baseH (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "derive-attrs") [kid]) 1
+  (m5, [dh]) <- runDerive answer m4 st baseH (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "derive-attrs") [kid]) 1
   Just dost <- pure (resolveHandle m5 dh)
   assertEqual "sign landed" (Just (ValBool True)) (Map.lookup AttrSign (osAttrs dost))
   assertEqual "verify landed" (Just (ValBool False)) (Map.lookup AttrVerify (osAttrs dost))
@@ -4144,7 +4241,7 @@ caseRealHkdfVector = withRealEnv $ \env -> do
         , (AttrValueLen, ValULong 42)
         , (AttrToken, ValBool False)
         ]
-  (m2, [h]) <- case planDerive defaultRules m1 st hkdfDeriveMech baseH (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty rfcInfo) [kid]) of
+  (m2, [h]) <- case planDerive defaultRules m1 st hkdfDeriveMech baseH (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty rfcInfo) [kid]) of
     KeyEffect pw fx -> do
       res <- answer m1 fx
       c <- finishCommit m1 st pw res 1
@@ -4157,7 +4254,7 @@ caseRealHkdfVector = withRealEnv $ \env -> do
   -- The synthetic construction is a different (test-only) MAC, so it
   -- must replay itself rather than the RFC vector.
   withSynth $ \sanswer -> do
-    let deriveOnce mm = case planDerive defaultRules mm st hkdfDeriveMech baseH (encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty rfcInfo) [kid]) of
+    let deriveOnce mm = case planDerive defaultRules mm st hkdfDeriveMech baseH (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty rfcInfo) [kid]) of
           KeyEffect pw fx -> do
             res <- sanswer mm fx
             c <- finishCommit mm st pw res 1
@@ -4189,7 +4286,7 @@ caseRealHkdfExtractExpand = withRealEnv $ \env -> do
         , (AttrToken, ValBool False)
         ]
       deriveWith salt info = case planDerive defaultRules m1 st hkdfDeriveMech baseH
-        (encodeDeriveParams (encodeHkdfInfo 0x03 salt info) [kid]) of
+        (encodeDeriveParams (encodeHkdfInfo 4 0x03 salt info) [kid]) of
           KeyEffect pw fx -> do
             res <- answer m1 fx
             c <- finishCommit m1 st pw res 1
@@ -4206,7 +4303,7 @@ caseRealHkdfExtractExpand = withRealEnv $ \env -> do
   -- Synthetic replays itself on the same extract profile.
   withSynth $ \sanswer -> do
     let once mm = case planDerive defaultRules mm st hkdfDeriveMech baseH
-          (encodeDeriveParams (encodeHkdfInfo 0x03 rfcSalt rfcInfo) [kid]) of
+          (encodeDeriveParams (encodeHkdfInfo 4 0x03 rfcSalt rfcInfo) [kid]) of
             KeyEffect pw fx -> do
               res <- sanswer mm fx
               c <- finishCommit mm st pw res 1
@@ -4219,6 +4316,45 @@ caseRealHkdfExtractExpand = withRealEnv $ \env -> do
     Just os1 <- pure (resolveHandle ms1 hs1)
     Just os2 <- pure (resolveHandle ms2 hs2)
     assertEqual "synthetic extract replays" (keyBytesOf os1) (keyBytesOf os2)
+
+-- | Multi-PRF HKDF over the real backend: the A.1 inputs
+-- under SHA-1 and SHA-512. RFC 5869 pins SHA-256 only; these
+-- references were computed programmatically (a python hmac
+-- one-off) and cross-check the PRF threading, not the RFC.
+caseRealHkdfMultiPrf :: IO ()
+caseRealHkdfMultiPrf = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] rfcIkm
+  let kid =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong 42)
+        , (AttrToken, ValBool False)
+        ]
+      deriveWith prf = case planDerive defaultRules m1 st hkdfDeriveMech baseH
+        (encodeDeriveParams (encodeHkdfInfo prf 0x03 rfcSalt rfcInfo) [kid]) of
+          KeyEffect pw fx -> do
+            res <- answer m1 fx
+            c <- finishCommit m1 st pw res 1
+            hh <- handleOf (pcOutputs c !! 0)
+            m' <- expectRight (publishDelta m1 (pcDelta c))
+            pure (m', hh)
+          other -> assertFailure ("derive must plan: " ++ show other) >> undefined
+      sha1Okm = hex "d6000ffb5b50bd3970b260017798fb9c8df9ce2e2c16b6cd709cca07dc3cf9cf26d6c6d750d0aaf5ac94"
+      sha512Okm = hex "832390086cda71fb47625bb5ceb168e4c8e26a1a16ed34d9fc7fe92c1481579338da362cb8d9f925d7cb"
+  (m2, h1) <- deriveWith 2
+  Just ost1 <- pure (resolveHandle m2 h1)
+  assertEqual "HKDF-SHA-1 OKM" (Just sha1Okm) (keyBytesOf ost1)
+  (m3, h2) <- deriveWith 6
+  Just ost2 <- pure (resolveHandle m3 h2)
+  assertEqual "HKDF-SHA-512 OKM" (Just sha512Okm) (keyBytesOf ost2)
 
 caseHkdfExtractOnlyRefused :: IO ()
 caseHkdfExtractOnlyRefused = do
@@ -4236,7 +4372,7 @@ caseHkdfExtractOnlyRefused = do
         , (AttrValueLen, ValULong 32)
         , (AttrToken, ValBool False)
         ]
-      blob = encodeDeriveParams (encodeHkdfInfo 0x01 BS.empty BS.empty) [kid]
+      blob = encodeDeriveParams (encodeHkdfInfo 4 0x01 BS.empty BS.empty) [kid]
   case planDerive defaultRules m1 st hkdfDeriveMech baseH blob of
     KeyDenied (KeyDeny code _) ->
       assertEqual "extract-only code" CKR_MECHANISM_PARAM_INVALID code

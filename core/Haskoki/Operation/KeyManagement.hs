@@ -152,6 +152,8 @@ module Haskoki.Operation.KeyManagement
   , ssl3PremasterKeyGenMech
   , tlsPremasterKeyGenMech
   , wtlsPremasterKeyGenMech
+  , pbkd2KeyGenMech
+  , pbkd2KeygenMaxBytes
   , genericSecretKeygenMinBytes
   , genericSecretKeygenMaxBytes
   , ecKeyPairGenMech
@@ -243,6 +245,7 @@ import Haskoki.Outcome
   , Rejection (..)
   , StateDelta (..)
   )
+import Haskoki.Recipe.Kdf (decodePbkd2Params, maxPbkd2Iters)
 import Haskoki.Recipe.Otp (hotpKeygenMaxBytes, hotpKeygenMinBytes)
 import Haskoki.Recipe.RsaOaep
   ( decodeOaepParams
@@ -319,6 +322,7 @@ import Haskoki.Registry.Generated
   , ckm_SSL3_PRE_MASTER_KEY_GEN
   , ckm_TLS_PRE_MASTER_KEY_GEN
   , ckm_WTLS_PRE_MASTER_KEY_GEN
+  , ckm_PKCS5_PBKD2
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (Rules)
@@ -617,6 +621,19 @@ tlsPremasterKeyGenMech = MechanismId (ckm_TLS_PRE_MASTER_KEY_GEN)
 -- | @CKM_WTLS_PRE_MASTER_KEY_GEN@ (generated id, resolved by name).
 wtlsPremasterKeyGenMech :: MechanismId
 wtlsPremasterKeyGenMech = MechanismId (ckm_WTLS_PRE_MASTER_KEY_GEN)
+
+-- | @CKM_PKCS5_PBKD2@ (generated id, resolved by name): the PBKDF2
+-- key-generation mechanism (the v2 frame carries the password
+-- inline per @CK_PKCS5_PBKD2_PARAMS2@).
+pbkd2KeyGenMech :: MechanismId
+pbkd2KeyGenMech = MechanismId (ckm_PKCS5_PBKD2)
+
+-- | PBKD2 keygen ceiling: the shared derived-total ceiling (the
+-- value mirrors 'Haskoki.Operation.Derive.maxDerivedTotal',
+-- which this module cannot import — Derive depends on
+-- KeyManagement — pinned equal by the PBKD2 keygen case).
+pbkd2KeygenMaxBytes :: Int
+pbkd2KeygenMaxBytes = 8160
 
 -- | @CKM_EC_KEY_PAIR_GEN@ (generated id, resolved by name).
 ecKeyPairGenMech :: MechanismId
@@ -1003,6 +1020,7 @@ keyPairCompatible (PwGenerateKey _) (FxGenerateKey _ _ input) =
     Just (GenParityBytes _) -> True
     Just (GenTlsPremaster _ _) -> True
     Just (GenWtlsPremaster _ _) -> True
+    Just (GenPbkd2 _) -> True
     Just (GenDsaParams _ _) -> True
     _ -> False
 keyPairCompatible (PwBlobOut _) (FxWrap _ _ _ _) = True
@@ -1609,6 +1627,7 @@ data GenArgs
   | GenParityBytes !Int
   | GenTlsPremaster !Word8 !Word8
   | GenWtlsPremaster !Word8 !Int
+  | GenPbkd2 !Int
   deriving (Eq, Show)
 
 -- | Frame generation arguments: @tag:u8 ...@ with tag 0 AES
@@ -1621,7 +1640,8 @@ data GenArgs
 -- parameters (@len:u32be DER@), 11 odd-parity secret bytes
 -- (@len:u8@: DES/DES2/CDMF set parity per FIPS 46-3), 12
 -- TLS/SSL3 pre-master (@major:u8 minor:u8@, fixed 48 bytes),
--- 13 WTLS pre-master (@ver:u8 len:u8@).
+-- 13 WTLS pre-master (@ver:u8 len:u8@), 14 PBKD2 derived key
+-- (@len:u16be@: the shared ceiling exceeds one byte).
 encodeGenArgs :: GenArgs -> ByteString
 encodeGenArgs args = case args of
   GenAes n -> BS.singleton 0 <> BS.singleton (fromIntegral n)
@@ -1639,6 +1659,7 @@ encodeGenArgs args = case args of
   GenParityBytes n -> BS.singleton 11 <> BS.singleton (fromIntegral n)
   GenTlsPremaster major minor -> BS.singleton 12 <> BS.pack [major, minor]
   GenWtlsPremaster ver n -> BS.singleton 13 <> BS.pack [ver, fromIntegral n]
+  GenPbkd2 n -> BS.singleton 14 <> u16be n
 
 -- | Parse framed generation arguments. Short frames, unknown tags
 -- and trailing bytes all fail.
@@ -1699,6 +1720,9 @@ decodeGenArgs bs = case BS.uncons bs of
     _ -> Nothing
   Just (13, rest) -> case BS.unpack rest of
     [ver, n] -> Just (GenWtlsPremaster ver (fromIntegral n))
+    _ -> Nothing
+  Just (14, rest) -> case BS.unpack rest of
+    [hi, lo] -> Just (GenPbkd2 (fromIntegral hi * 256 + fromIntegral lo))
     _ -> Nothing
   _ -> Nothing
 
@@ -2470,6 +2494,69 @@ planWtlsPremaster st mech params tmpl = case BS.unpack params of
       , FxGenerateKey mech params (encodeGenArgs (GenWtlsPremaster ver n))
       )
 
+-- | Plan a PBKD2 keygen: the @pbkd2-params\/2@ frame (PRF code,
+-- iterations, salt, inline password) is required and validated
+-- before the template; the derived length is required and checked
+-- against the target key type's domain (generic-secret: 1 to the
+-- shared ceiling; AES: 16\/24\/32; DES3: 24; XTS: 32\/64 — the
+-- unwrap coherence table). Unlisted target types refuse closed:
+-- minting an unknown fixed-length type would poison the object
+-- store. The validated frame rides the effect so async replays
+-- reproduce the derived material bit-for-bit.
+planPbkd2Gen
+  :: SessionState -> MechanismId -> ByteString
+  -> [(AttributeType, AttributeValue)]
+  -> Either KeyDeny (PendingWork, CryptoEffect)
+planPbkd2Gen st mech params tmpl = case decodePbkd2Params params of
+  Nothing -> Left (KeyDeny CKR_MECHANISM_PARAM_INVALID
+    "PBKD2 keygen needs a pbkd2-params/2 frame")
+  Just (_, iters, _, _)
+    | iters < 1 || iters > maxPbkd2Iters -> Left (KeyDeny CKR_MECHANISM_PARAM_INVALID
+        ("PBKD2 iterations must be 1 to " ++ show maxPbkd2Iters ++ ": " ++ show iters))
+    | otherwise -> case targetKey of
+        Nothing -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          ("PBKD2 target key type is not served: " ++ show targetRaw))
+        Just wantKey -> case checkKeyTemplate ckoSecretKey wantKey tmpl of
+          Left deny -> Left deny
+          Right attrs -> case Map.lookup AttrValueLen attrs of
+            Just (ValULong n)
+              | lenOk wantKey n -> Right (effect attrs (fromIntegral n))
+              | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                  ("PBKD2 length " ++ show n ++ " is outside " ++ lenDesc wantKey))
+            Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "PBKD2 value length is malformed")
+            Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+              "PBKD2 keygen needs CKA_VALUE_LEN")
+  where
+    targetRaw = lookup AttrKeyType tmpl
+    -- Absent defaults to generic-secret (the strict check stamps
+    -- it); listed fixed types dispatch to their own strict check
+    -- (class, generated rules, usage defaults); anything else —
+    -- including malformed shapes — refuses closed.
+    targetKey = case targetRaw of
+      Nothing -> Just ckkGenericSecret
+      Just (ValULong k)
+        | k == ckkGenericSecret -> Just ckkGenericSecret
+        | k == ckkAes -> Just ckkAes
+        | k == ckkDes3 -> Just ckkDes3
+        | k == ckkAesXts -> Just ckkAesXts
+        | otherwise -> Nothing
+      Just _ -> Nothing
+    lenOk wantKey n
+      | wantKey == ckkAes = n `elem` [16, 24, 32]
+      | wantKey == ckkDes3 = n == 24
+      | wantKey == ckkAesXts = n `elem` [32, 64]
+      | otherwise = n >= 1 && n <= fromIntegral pbkd2KeygenMaxBytes
+    lenDesc wantKey
+      | wantKey == ckkAes = "the AES 16/24/32 domain"
+      | wantKey == ckkDes3 = "the DES3 24-byte domain"
+      | wantKey == ckkAesXts = "the XTS 32/64 domain"
+      | otherwise = "1 to " ++ show pbkd2KeygenMaxBytes ++ " bytes"
+    effect attrs n =
+      ( PwGenerateKey (pendingFromAttrs st attrs)
+      , FxGenerateKey mech params (encodeGenArgs (GenPbkd2 n))
+      )
+
 -- ---------------------------------------------------------------------------
 -- Single-key generation
 -- ---------------------------------------------------------------------------
@@ -2497,17 +2584,20 @@ planGenerateKey rules model st mech params tmpl =
         Right () -> KeyEffect pw fx
   where
     validated
-      -- Only the pre-master keygens take mechanism parameters
-      -- (the client version); every other keygen refuses params.
+      -- Only the pre-master keygens (the client version) and
+      -- PBKD2 (the v2 frame) take mechanism parameters; every
+      -- other keygen refuses params.
       | not (BS.null params)
       , mech /= tlsPremasterKeyGenMech
       , mech /= ssl3PremasterKeyGenMech
-      , mech /= wtlsPremasterKeyGenMech =
+      , mech /= wtlsPremasterKeyGenMech
+      , mech /= pbkd2KeyGenMech =
           Left (KeyDeny CKR_MECHANISM_PARAM_INVALID
             "keygen takes no mechanism params")
       | mech == tlsPremasterKeyGenMech = planTlsPremaster st mech params tmpl
       | mech == ssl3PremasterKeyGenMech = planTlsPremaster st mech params tmpl
       | mech == wtlsPremasterKeyGenMech = planWtlsPremaster st mech params tmpl
+      | mech == pbkd2KeyGenMech = planPbkd2Gen st mech params tmpl
       | mech == dsaParameterGenMech =
           case checkKeyTemplate ckoDomainParameters ckkDsa tmpl of
           Left deny -> Left deny

@@ -113,6 +113,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: cmac KATs + truncate + refuse" caseDriverCmac
   , testCase "driver: 3des-mac KATs + truncate + refuse" caseDriverDes3Mac
   , testCase "driver: kdf vectors + refuse" caseDriverKdf
+  , testCase "driver: pbkd2 keygen vector" caseDriverPbkd2Gen
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
   , testCase "driver: blake2b-512 digest/hmac/general + refuse" caseDriverBlake2b512
@@ -1166,30 +1167,30 @@ caseDriverKdf = withBackend $ \env -> do
       prfSha256 = 4
       prfSha512 = 6
   -- RFC 6070 PBKDF2-HMAC-SHA1 (also hashlib cross-checked).
-  d1 <- derive pbkd2Mech (encodePbkd2Params prfSha1 1 "salt") 20
+  d1 <- derive pbkd2Mech (encodePbkd2Params prfSha1 1 "salt" "") 20
   assertEqual "rfc6070 c1" (hex "0c60c80f961f0e71f3a9b524af6012062fe037a6") d1
-  d2 <- derive pbkd2Mech (encodePbkd2Params prfSha1 2 "salt") 20
+  d2 <- derive pbkd2Mech (encodePbkd2Params prfSha1 2 "salt" "") 20
   assertEqual "rfc6070 c2" (hex "ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957") d2
-  d3 <- derive pbkd2Mech (encodePbkd2Params prfSha1 4096 "salt") 20
+  d3 <- derive pbkd2Mech (encodePbkd2Params prfSha1 4096 "salt" "") 20
   assertEqual "rfc6070 c4096" (hex "4b007901b765489abead49d926f721d065a429c1") d3
   -- SHA-256 (hashlib + pinned CLI).
-  full32 <- derive pbkd2Mech (encodePbkd2Params prfSha256 1 "salt") 32
+  full32 <- derive pbkd2Mech (encodePbkd2Params prfSha256 1 "salt" "") 32
   assertEqual "sha256 c1"
     (hex "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b") full32
-  s2 <- derive pbkd2Mech (encodePbkd2Params prfSha256 4096 "salt") 32
+  s2 <- derive pbkd2Mech (encodePbkd2Params prfSha256 4096 "salt" "") 32
   assertEqual "sha256 c4096"
     (hex "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a") s2
   -- Multi-block output (dkLen 48 > hLen 32; long password/salt).
   m48 <- deriveAs pw2Oid pbkd2Mech
-    (encodePbkd2Params prfSha256 2 "saltSALTsaltSALTsaltSALT") 48
+    (encodePbkd2Params prfSha256 2 "saltSALTsaltSALTsaltSALT" "") 48
   assertEqual "sha256 multi-block"
     (hex "75e097216ced1e94c12662c52666a1420f6958a1f882144451770fd697eaca751d932d69a5b45cccaed0c84d91f219c9") m48
   -- SHA-512 (pinned CLI).
-  h1 <- derive pbkd2Mech (encodePbkd2Params prfSha512 1 "salt") 64
+  h1 <- derive pbkd2Mech (encodePbkd2Params prfSha512 1 "salt" "") 64
   assertEqual "sha512 c1"
     (hex "867f70cf1ade02cff3752599a3a53dc4af34c7a669815ae5d513554e1c8cf252c02d470a285a0501bad999bfe943c08f050235d7d68b1da55e63f73b60a57fce") h1
   -- Truncation is the prefix.
-  trunc16 <- derive pbkd2Mech (encodePbkd2Params prfSha256 1 "salt") 16
+  trunc16 <- derive pbkd2Mech (encodePbkd2Params prfSha256 1 "salt" "") 16
   assertEqual "truncation prefix" (BS.take 16 full32) trunc16
   -- SHA-KD rows: full-width derive equals digest("abc") and
   -- truncation takes the prefix (digests cross-checked against
@@ -1213,18 +1214,39 @@ caseDriverKdf = withBackend $ \env -> do
     ) shaKdMechs
   -- Typed refusals.
   badPrf <- runEffect env res
-    (FxDerive pbkd2Mech (Just pwOid) (encodePbkd2Params 99 1 "s") BS.empty 32)
+    (FxDerive pbkd2Mech (Just pwOid) (encodePbkd2Params 99 1 "s" "") BS.empty 32)
   case badPrf of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badInfo <- runEffect env res
-    (FxDerive pbkd2Mech (Just pwOid) (encodePbkd2Params prfSha256 1 "s") "x" 32)
+    (FxDerive pbkd2Mech (Just pwOid) (encodePbkd2Params prfSha256 1 "s" "") "x" 32)
   case badInfo of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badLen <- runEffect env res
     (FxDerive (MechanismId 0x393) (Just pwOid) BS.empty BS.empty 33)
   case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- | PBKD2 keygen through the driver over real HMAC: the v2 frame
+-- carries the password inline and the derived key lands framed
+-- as lone material. RFC 6070 c=1 plus a malformed-frame refusal.
+caseDriverPbkd2Gen :: IO ()
+caseDriverPbkd2Gen = withBackend $ \env -> do
+  let res _ = Nothing
+      gen frame n =
+        runEffect env res
+          (FxGenerateKey pbkd2Mech frame (encodeGenArgs (GenPbkd2 n)))
+  kg <- gen (encodePbkd2Params 2 1 "salt" "password") 20
+  case kg of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Nothing) -> assertEqual "rfc6070 c1 gen"
+        (hex "0c60c80f961f0e71f3a9b524af6012062fe037a6") mat
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
+  badFrame <- gen BS.empty 20
+  case badFrame of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
 

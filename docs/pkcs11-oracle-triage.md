@@ -935,6 +935,189 @@ first lane proving all of them together.
   from the 11a+HKDF stack (`dist-release/haskoki-0.3.0.0`,
   evidence 16/16).
 
+## rc1 validation: pkcs11-check 0.2.2rc1 fast lane (2026-09-27)
+
+Bundle built from the same 11a+HKDF stack (pre-11b);
+strict A/B against r45 unproven (separate bundle
+build). 3782 passed / 4 failed / 620 xfailed / 3286
+skipped (t7692)
+(`/tmp/pkcs11-ws/out/fast-rc1/pkcs11-fast-rc1-results.json`).
+
+- P11C-001 (HOTP `key_type=None`): FIXED — both
+  hard fails gone. Residual `HOTP_KEY_GEN` keygen legs
+  xfail as not-operational on TEMPLATE_INCONSISTENT
+  (template-shape, same class as P11C-005; key-type
+  read still pending).
+- P11C-002 (key-size reject RV codes): ADDRESSED
+  oracle-side (now expects CKR_KEY_SIZE_RANGE); our
+  over-max refusals still return TEMPLATE_INCONSISTENT
+  — xfail-level RV precision gap, ours.
+- P11C-003 (SLH-DSA context): PROVEN —
+  `test_acvp_slhdsa.py` goes 78 pass / 6 fail → 84
+  pass / 0 fail on the same 84 collected (the 6
+  base failures are genuine "rejected VALID
+  signature" crypto assertions spanning
+  SHA2/SHAKE × 128f/192f/256f/192s; the harness
+  omits pass records, so the proof is unit-count
+  resolution — see KAT verdicts below).
+- P11C-004 (X9.42 fixtures): FIXED — the 13 hard
+  fails collapse to 15 pass; the 1 remaining x942
+  failure is the encrypt residual below (new
+  information, not the fixture bug).
+- P11C-005 (BLAKE2B generic-secret template): STILL
+  OPEN — same xfail shape (`BLAKE2B_*_KEY_GEN keygen
+  rejected at runtime: CKR_TEMPLATE_INCONSISTENT`).
+- P11C-006 (WTLS fixtures): STILL OPEN — fixture
+  byte-identical to pinned (`mech_simple`, no version
+  byte, `attr_ulong` bools, `test_wtls.py:628-636`);
+  the same trio fails on our TEMPLATE_INCONSISTENT.
+  Our path stays proven via the fixed-fixture 4/4
+  reproof.
+- New finding 1 (ours — EdDSA NULL stance): rc1
+  probes EdDSA with NULL params first; 17+ Ed25519
+  legs xfail on our PARAM_INVALID. OASIS Table 42
+  (v3.0 §2.3.14, carried into v3.2): Ed25519 pure
+  param "Not Required" — NULL-means-pure is
+  spec-correct and our struct-required gate is
+  non-compliant for Ed25519. Tracked as the
+  EdDSA-NULL follow-up slice (recipe + SignInit +
+  tests); the slice also corrects the overclaiming
+  `mechanisms.json` EdDSA note ("NULL params ...
+  both serve" — false today). Ed448-pure keeps the
+  Required param; rc1's Ed448 legs need re-read at
+  slice time.
+- New finding 2 (shared — x942 missing-LEN default):
+  `test_derived_key_encrypts` fails at the C_Encrypt
+  size query with GENERAL_ERROR. Oracle half:
+  `_x942_derive_aes` omits CKA_VALUE_LEN where its
+  PKCS#3 twin pins `CKA_VALUE_LEN: 16`
+  (`test_dh_key_agreement.py` vs `test_x942_dh.py:967`)
+  — helper asymmetry, P11C-007 candidate. Our half:
+  missing VALUE_LEN defaults to the full DH prime
+  width (`Derive.hs` DH arm, `Just (dhSecretWidth
+  mat)`), storing a 384-byte "AES" key that EVP
+  refuses late. The honest fix is derive-time
+  length-domain validation (TEMPLATE_INCONSISTENT
+  instead of a poisoned object + late GENERAL_ERROR);
+  the leg itself can only go green via the oracle
+  helper fix. Tracked as the x942-hardening
+  follow-up slice — it cannot ride 11b (the pinned
+  oracle never reaches the path, so lane proof there
+  would be vacuous).
+- KAT-rc1: 78484 passed / 4 failed / 4870 xfailed /
+  30518 skipped (t113876)
+  (`/tmp/pkcs11-ws/out/kat-rc1/pkcs11-kat-results.json`),
+  vs r23 79310/24/4076/30450. Zero pass→fail
+  (`lane-testdiff.py`: regression count 0). The 4
+  failures are the same WTLS trio (P11C-006) +
+  x942-encrypt residual as the fast lane.
+- The pass-count drop (−826) is one unit:
+  `test_cctv_ed25519.py` goes 914 pass → 914 xfail.
+  Precise mechanism (source-compared, not inferred):
+  the test file, the `_signature_policy.py`
+  classifier, and the CCTV vectors are byte-identical
+  between 0.2.1 and rc1; the only delta on this path
+  is `raw/recipes.py::_resolve_mech`. 0.2.1 carried
+  an EdDSA special-case ("always use mech_eddsa()
+  with pure mode ... since some modules require
+  explicit params even for pure EdDSA") that silently
+  substituted a pure struct for omitted params —
+  masking our non-compliance. rc1 deletes it
+  ("Omitted parameters always mean NULL/zero fields,
+  including CKM_EDDSA"; changelog l65-67: "Pure RFC
+  8032 sign/verify pass explicit NULL params ...
+  replacing the single implicit encoding"). So the
+  914 passes were workaround-assisted and the 914
+  xfails ("non-clean CKR: PARAM_INVALID") are the
+  true signal of our struct-required gate vs Table
+  42 NULL-means-pure. Not a regression — newly
+  effective coverage of our EdDSA-NULL gap, fully
+  recoverable by the stance slice (the biggest
+  single KAT win on the board, +914 plus the 17
+  `test_eddsa` / 7 `test_acvp_eddsa` / 6 wycheproof
+  legs).
+- Oracle-side wins in our favor (same bundle):
+  98 xfail→pass (`test_ccm` +88 with identical 8398
+  collected, x942 +3, field-size +3, +1 each
+  access/attribute/dh/v30) plus 71 xfail→skip
+  reclassifications (ML-DSA +70, field-size +1) —
+  rc1 expectation fixes, not root-caused per leg.
+  Lane-wide +16 collected are pure additions (eddsa
+  +7 NULL-probe legs, negative +4, message +2,
+  ffi_alignment +2, param_validation +1); no unit
+  loses legs, xpassed stays 0.
+- Adoption: do NOT pin rc1 yet — conditional on the
+  EdDSA stance slice and the x942 residual
+  disposition (P11C-003 proof now in hand).
+  11b lanes stay on the pinned oracle.
+
+## Round 23: KDF-matrix slice 11b (fast r45→r46→r47 + KAT r23→r24)
+
+- r46: 3786 passed / 18 failed / 590 xfailed /
+  3288 skipped (t7682)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r46-results.json`).
+  r45→r46: +11 pass / +0 fail / −5 xfail / +0
+  skip (+6 collected: newly operational PBKD2
+  keygen legs).
+- r47: 3787 passed / 18 failed / 589 xfailed /
+  3288 skipped
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r47-results.json`).
+  The only r46→r47 transition is
+  `test_derive_aes_key` xfail→pass (the in-slice
+  typed-target fix); `test_pbe` stands 8 pass / 0
+  fail / 25 skip / 0 xfail.
+- Movers r45→r47 (unit `counts`, exact):
+  `test_pbe` 1/7x → 8/0x (6 generic PBKD2-gen legs
+  + the AES-256 leg), `test_mech_flags` 611/7x →
+  612/6x (PBKD2 `CKF_GENERATE`),
+  `test_mech_attribute` t228→232 (+3 pass / +1
+  xfail), `test_mech_keygen` t114→116 (+1 / +1x).
+  The 18 failures are identical by id to r45 (13
+  P11C-004 X9.42 + 2 P11C-001 HOTP + 3 P11C-006
+  WTLS). Zero pass→fail.
+- One real in-slice fix (ours): PBKD2 keygen pinned
+  the target to generic-secret, so the AES-256 leg
+  refused with TEMPLATE_INCONSISTENT. The planner
+  now dispatches typed secret targets with
+  per-type length domains (AES 16/24/32, DES3 24,
+  XTS 32/64 — the unwrap coherence table) through
+  the strict template check; unlisted types refuse
+  closed. RED (`template key type 31 is not 16`) →
+  GREEN in `casePbkd2Keygen`, all 6 host suites +
+  consumers + evidence green, lane reproof r47.
+- Two new xfails, no action: the PBKD2 CKA_LOCAL
+  pair (`attribute unavailable`) carries the
+  generic module-wide unserved-attribute signature
+  (identical for AES, ARIA, DES, ...) — a
+  cross-cutting attribute gap, not a PBKD2 defect.
+- KAT r23→r24: 79310→81123 passed (+1813) / 24
+  failed (same ids: 13 + 2 + 3 + 6 SLH-DSA
+  P11C-003) / 4076→2269 xfailed (−1807) /
+  30450 skipped (+0)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r24-results.json`).
+  Zero pass→fail (`lane-testdiff.py`: regression
+  count 0; all flips unit-count grounded at
+  identical collection).
+- KAT movers (exact): `test_wycheproof_pbes2`
+  0/1260x → 1260/0x (the entire file),
+  `test_wycheproof_pbkdf2` 1/298x → 298/1x,
+  `test_wycheproof_hkdf` 83/256x → 327/12x, plus
+  the fast-lane `test_pbe`/flags/attribute/keygen
+  shape. Total +1813 pass accounted leg-for-leg
+  (1260 + 297 + 244 + 7 + 1 + 3 + 1).
+- KAT residuals, all dispositioned: the 12 HKDF
+  invalid-L legs (expected KEY_SIZE_RANGE, kept
+  uniform ARGUMENTS_BAD per the pre-lane slice
+  decision); `pbkdf2_hmacsha1 tc4-valid` (RFC
+  6070, 2^24 iterations — refuses under the
+  documented 10^7 CPU guard, `maxPbkd2Iters`,
+  enforced at the FFI boundary for both derive
+  and gen; policy xfail by design); the CKA_LOCAL
+  pair (above).
+- Bundle note: r46/r47/r24 run on the 11b bundle
+  rebuilt post-fix (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

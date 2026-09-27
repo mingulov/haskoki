@@ -3,8 +3,9 @@
 The KDF group: 12 header mechanisms sharing the derive shape —
 eleven @CKM_SHA*_KEY_DERIVATION@ rows (hash the base value,
 truncate to the digest width; empty parameters) plus
-@CKM_PKCS5_PBKD2@ (@pbkd2-params\/1@: PRF code, iteration count,
-salt; the PRF is any servable HMAC). Iterations cap at a
+@CKM_PKCS5_PBKD2@ (@pbkd2-params\/2@: PRF code, iteration count,
+salt, password; the PRF is any servable HMAC; the derive route
+pins the password empty). Iterations cap at a
 documented ceiling; derived totals cap at the construction width.
 
 'Haskoki.Recipe.Kdf' owns the group's canonical codecs, parameter
@@ -27,9 +28,11 @@ import qualified Data.Text as T
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
+import Data.Word (Word64)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Engine.Backend (DigestAlg (..))
 import Haskoki.Engine.Driver (Pbkd2Params (..), kdfShaFor, pbkd2ParamsFor)
+import Haskoki.FFI.NativeParams (pbkd2Params2StructToCanonical)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -55,6 +58,8 @@ import Haskoki.Recipe.Kdf
   , decodePbkd2Params
   , encodePbkd2Params
   , kdfCodecFor
+  , kdfCodeDigest
+  , kdfDigestWidth
   , kdfParamsValid
   , kdfPbkd2Codec
   , kdfPlainCodec
@@ -90,10 +95,13 @@ import qualified Data.Map.Strict as Map
 
 spec :: TestTree
 spec = testGroup "KDF recipe"
-  [ testCase "table: twelve rows, kinds" caseTable
+  [ testCase "digest widths agree with PRF codes" caseDigestWidths
+  , testCase "table: twelve rows, kinds" caseTable
   , testCase "lookup: ids resolve, others do not" caseLookup
   , testCase "codec identity" caseCodec
   , testCase "params: valid and refused shapes" caseParams
+  , testCase "pbkd2-params/2: password frame codec" casePbkd2GenCodec
+  , testCase "PARAMS2 struct mapping" casePbkd2Params2Struct
   , testCase "planDerive: SHA-KD accept and deny" casePlanSha
   , testCase "planDerive: PBKD2 accept and deny" casePlanPbkd2
   , testCase "driver maps mechanisms to digests" caseDriverMap
@@ -164,7 +172,7 @@ caseLookup = do
 caseCodec :: IO ()
 caseCodec = do
   assertEqual "plain codec" (ParameterCodec "no-params" 1) kdfPlainCodec
-  assertEqual "pbkd2 codec" (ParameterCodec "pbkd2-params" 1) kdfPbkd2Codec
+  assertEqual "pbkd2 codec" (ParameterCodec "pbkd2-params" 2) kdfPbkd2Codec
   mapM_ (\(suffix, _, _) ->
     case kdfRecipeFor (MechanismId (mustGeneratedId (mechName suffix))) of
       Nothing -> assertFailure ("unresolved " ++ T.unpack suffix)
@@ -186,6 +194,23 @@ recipeOf name =
     Nothing -> error ("test recipe missing: " ++ T.unpack name)
 
 -- | Engine-local PRF codes (documented in the recipe).
+caseDigestWidths :: IO ()
+caseDigestWidths = do
+  -- Every PRF code resolves to a stem with a known width; the
+  -- two tables share their domain, so HKDF defaults can never
+  -- dangle. Widths are the FIPS/RFC digest sizes.
+  let widths =
+        [ (1, 16), (2, 20), (3, 28), (4, 32), (5, 48), (6, 64)
+        , (7, 28), (8, 32), (9, 28), (10, 32), (11, 48), (12, 64)
+        , (13, 20)
+        ]
+  mapM_ (\(c, w) -> case kdfCodeDigest c of
+    Nothing -> assertFailure ("unmapped code " ++ show c)
+    Just stem -> assertEqual ("width " ++ show c) (Just w) (kdfDigestWidth stem)
+    ) widths
+  mapM_ (\c -> assertEqual ("code refused " ++ show c) Nothing (kdfCodeDigest c))
+    [0, 14, 99]
+
 prfSha1, prfSha256 :: Int
 prfSha1 = 2
 prfSha256 = 4
@@ -194,20 +219,22 @@ caseParams :: IO ()
 caseParams = do
   let sha = recipeOf "CKM_SHA256_KEY_DERIVATION"
       pbkd2 = recipeOf "CKM_PKCS5_PBKD2"
-      good = encodePbkd2Params prfSha256 4096 "salt"
+      good = encodePbkd2Params prfSha256 4096 "salt" BS.empty
   assertBool "sha empty valid" (kdfParamsValid sha BS.empty)
   assertBool "sha nonempty refused" (not (kdfParamsValid sha "x"))
   assertEqual "pbkd2 roundtrip"
-    (Just ("SHA256", 4096, "salt")) (decodePbkd2Params good)
+    (Just ("SHA256", 4096, "salt", BS.empty)) (decodePbkd2Params good)
   assertBool "pbkd2 valid" (kdfParamsValid pbkd2 good)
   assertBool "pbkd2 empty salt valid"
-    (kdfParamsValid pbkd2 (encodePbkd2Params prfSha1 1 BS.empty))
+    (kdfParamsValid pbkd2 (encodePbkd2Params prfSha1 1 BS.empty BS.empty))
   assertBool "pbkd2 max iters valid"
-    (kdfParamsValid pbkd2 (encodePbkd2Params prfSha1 maxPbkd2Iters "s"))
+    (kdfParamsValid pbkd2 (encodePbkd2Params prfSha1 maxPbkd2Iters "s" BS.empty))
+  assertBool "pbkd2 inline password refused on derive"
+    (not (kdfParamsValid pbkd2 (encodePbkd2Params prfSha256 1 "s" "p")))
   mapM_ (\c -> assertBool ("prf refused: " ++ show c)
-    (not (kdfParamsValid pbkd2 (encodePbkd2Params c 1 "s")))) [0, 14, 99]
+    (not (kdfParamsValid pbkd2 (encodePbkd2Params c 1 "s" BS.empty)))) [0, 14, 99]
   mapM_ (\n -> assertBool ("iters refused: " ++ show n)
-    (not (kdfParamsValid pbkd2 (encodePbkd2Params prfSha256 n "s"))))
+    (not (kdfParamsValid pbkd2 (encodePbkd2Params prfSha256 n "s" BS.empty))))
     [0, -1, maxPbkd2Iters + 1]
   assertBool "truncated refused"
     (not (kdfParamsValid pbkd2 (BS.take 20 good)))
@@ -220,6 +247,59 @@ caseParams = do
       (kdfShaWidth (recipeOf (mechName suffix)))
     ) shaShape
   assertEqual "pbkd2 has no sha width" Nothing (kdfShaWidth pbkd2)
+
+-- | CKP_PKCS5_PBKD2_HMAC_* selector to digest stem (v3.2 §2.5.2
+-- table; GOSTR3411 has no servable HMAC and stays unmapped).
+ckpShape :: [(Word64, Text)]
+ckpShape =
+  [ (1, "SHA_1")
+  , (3, "SHA224")
+  , (4, "SHA256")
+  , (5, "SHA384")
+  , (6, "SHA512")
+  , (7, "SHA512_224")
+  , (8, "SHA512_256")
+  ]
+
+casePbkd2GenCodec :: IO ()
+casePbkd2GenCodec = do
+  let good = encodePbkd2Params prfSha256 4096 "salt" "password"
+  assertEqual "password roundtrip"
+    (Just ("SHA256", 4096, "salt", "password")) (decodePbkd2Params good)
+  assertBool "empty password roundtrips" $
+    decodePbkd2Params (encodePbkd2Params prfSha1 1 "s" BS.empty)
+      == Just ("SHA_1", 1, "s", BS.empty)
+  assertEqual "truncated refused" Nothing
+    (decodePbkd2Params (BS.take 30 good))
+  assertEqual "trailing refused" Nothing
+    (decodePbkd2Params (good <> "x"))
+  assertEqual "password overrun refused" Nothing
+    (decodePbkd2Params (BS.take (BS.length good - 2) good))
+  assertEqual "unknown prf refused" Nothing
+    (decodePbkd2Params (encodePbkd2Params 99 1 "s" "p"))
+
+casePbkd2Params2Struct :: IO ()
+casePbkd2Params2Struct = do
+  mapM_ (\(ckp, stem) ->
+    case pbkd2Params2StructToCanonical 1 "salt" 4096 ckp BS.empty "password" of
+      Nothing -> assertFailure ("unmapped CKP " ++ show ckp)
+      Just frame -> assertEqual ("CKP " ++ show ckp)
+        (Just (stem, 4096, "salt", "password")) (decodePbkd2Params frame)
+    ) ckpShape
+  let badPrf prf = pbkd2Params2StructToCanonical 1 "s" 1 prf BS.empty "p"
+  mapM_ (\prf -> assertEqual ("prf refused: " ++ show prf) Nothing (badPrf prf))
+    [0, 2, 9, 0xFF]
+  let badSource src =
+        pbkd2Params2StructToCanonical src "s" 1 4 BS.empty "p"
+  mapM_ (\src -> assertEqual ("source refused: " ++ show src) Nothing (badSource src))
+    [0, 2, 3]
+  assertEqual "prfData refused" Nothing
+    (pbkd2Params2StructToCanonical 1 "s" 1 4 "x" "p")
+  assertEqual "zero iters refused" Nothing
+    (pbkd2Params2StructToCanonical 1 "s" 0 4 BS.empty "p")
+  assertEqual "over-ceiling iters refused" Nothing
+    (pbkd2Params2StructToCanonical 1 "s"
+      (fromIntegral (maxPbkd2Iters + 1)) 4 BS.empty "p")
 
 -- ---------------------------------------------------------------------------
 -- planDerive pins (light model harness: one secret base key + handle)
@@ -326,7 +406,7 @@ casePlanSha = do
 casePlanPbkd2 :: IO ()
 casePlanPbkd2 = do
   let m = mkBaseModel "password" True
-      blob = encodePbkd2Params prfSha256 4096 "salt"
+      blob = encodePbkd2Params prfSha256 4096 "salt" BS.empty
   -- Accepted; the blob travels as mechanism params.
   case planDerive defaultRules m testSession pbkd2Mech baseHandle
       (encodeDeriveParams blob [derivedTmpl 32]) of
@@ -348,10 +428,10 @@ casePlanPbkd2 = do
   -- Bad blobs deny at the frame.
   expectDeny "bad prf" CKR_ARGUMENTS_BAD
     (planDerive defaultRules m testSession pbkd2Mech baseHandle
-      (encodeDeriveParams (encodePbkd2Params 99 1 "s") [derivedTmpl 32]))
+      (encodeDeriveParams (encodePbkd2Params 99 1 "s" BS.empty) [derivedTmpl 32]))
   expectDeny "zero iters" CKR_ARGUMENTS_BAD
     (planDerive defaultRules m testSession pbkd2Mech baseHandle
-      (encodeDeriveParams (encodePbkd2Params prfSha256 0 "s") [derivedTmpl 32]))
+      (encodeDeriveParams (encodePbkd2Params prfSha256 0 "s" BS.empty) [derivedTmpl 32]))
   expectDeny "malformed blob" CKR_ARGUMENTS_BAD
     (planDerive defaultRules m testSession pbkd2Mech baseHandle "truncated")
   expectDeny "no templates" CKR_ARGUMENTS_BAD
@@ -379,7 +459,7 @@ caseDriverMap = do
   assertEqual "pbkd2 is not a sha row" Nothing (kdfShaFor pbkd2Mech)
   assertEqual "hkdf uncovered" Nothing
     (kdfShaFor (MechanismId (ckm_HKDF_DERIVE)))
-  let good = encodePbkd2Params prfSha256 4096 "salt"
+  let good = encodePbkd2Params prfSha256 4096 "salt" BS.empty
   case pbkd2ParamsFor pbkd2Mech good of
     Just pp -> do
       assertEqual "prf" D_SHA256 (ppPrf pp)
@@ -387,9 +467,9 @@ caseDriverMap = do
       assertEqual "salt" "salt" (ppSalt pp)
     Nothing -> assertFailure "pbkd2 must map"
   assertEqual "bad prf refused" Nothing
-    (pbkd2ParamsFor pbkd2Mech (encodePbkd2Params 99 1 "s"))
+    (pbkd2ParamsFor pbkd2Mech (encodePbkd2Params 99 1 "s" BS.empty))
   assertEqual "zero iters refused" Nothing
-    (pbkd2ParamsFor pbkd2Mech (encodePbkd2Params prfSha256 0 "s"))
+    (pbkd2ParamsFor pbkd2Mech (encodePbkd2Params prfSha256 0 "s" BS.empty))
   assertEqual "truncated refused" Nothing
     (pbkd2ParamsFor pbkd2Mech (BS.take 20 good))
   assertEqual "sha row takes no pbkd2" Nothing

@@ -69,6 +69,15 @@ Covered structs (caller-native layout, offsets derived from
   conventions and re-encode with 'encodeChachaPolyParams' at
   the fixed 16-byte tag (the struct carries no tag width;
   off-12 nonces refuse downstream at the recipe).
+* PBKD2 (@CK_PKCS5_PBKD2_PARAMS2@: salt source, salt
+  pointer/length, iterations, PRF, PRF-data pointer/length,
+  password pointer/length): the source must be
+  @CKZ_SALT_SPECIFIED@, the PRF-data chase must be empty, the
+  PRF maps through 'ckpCodeByPrf' (GOSTR3411 unmapped), and
+  iterations fit @1..maxPbkd2Iters@; the salt and password
+  chase under 'maxInputBytes' with the same null conventions
+  (null-with-zero is the empty string) and re-encode with
+  'encodePbkd2Params'.
 
 Anything unmappable — wrong length, unknown ids, a bad source tag,
 a null-with-length or over-bound chase — passes the input bytes
@@ -88,6 +97,8 @@ module Haskoki.FFI.NativeParams
   , normalizeDhPkcsParams
   , normalizeDhX942Params
   , normalizeTlsPrfParams
+  , normalizePbkd2Params2
+  , pbkd2Params2NativeSize
   , tlsPrfStructToCanonical
   , tlsPrfNativeSize
   , pssStructToCanonical
@@ -103,6 +114,8 @@ module Haskoki.FFI.NativeParams
   , slhdsaStructToCanonical
   , chachaStreamStructToCanonical
   , chachaPolyStructToCanonical
+  , pbkd2Params2StructToCanonical
+  , ckpCodeByPrf
   , digestStemByCkm
   , mgfStemByCkg
   , pssNativeSize
@@ -149,6 +162,7 @@ import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.MlDsa (encodeMldsaParams, hedgeOfWord, mldsaRecipeFor)
 import Haskoki.Recipe.SlhDsa (encodeSlhdsaParams, slhdsaRecipeFor)
 import qualified Haskoki.Recipe.SlhDsa as SlhDsa
+import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
@@ -189,6 +203,17 @@ dhX942NativeSize = 3 * wordSize + 2 * ptrSize
 -- the derived object).
 tlsPrfNativeSize :: Int
 tlsPrfNativeSize = 2 * wordSize + 4 * ptrSize
+
+-- | Native @CK_PKCS5_PBKD2_PARAMS2@ image size: the salt-source
+-- word, (pointer, length) for the salt, the iterations and PRF
+-- words, (pointer, length) for the PRF data, (pointer, length)
+-- for the password. Nine words, no padding. The v1 struct
+-- (@CK_PKCS5_PBKD2_PARAMS@) is layout-identical but reads its
+-- password length through a pointer — a v1 image misparsed here
+-- carries a wild length and fails the chase bounds, never
+-- silently mistranslating.
+pbkd2Params2NativeSize :: Int
+pbkd2Params2NativeSize = 6 * wordSize + 3 * ptrSize
 
 -- | Native @CK_GCM_PARAMS@ image size: (pointer, length, bits) for
 -- the IV, then (pointer, length) for the AAD, then the tag-bits
@@ -292,6 +317,27 @@ ckzDataSpecified = 0x01
 -- KDF selector (canonical code 0).
 ckdNull :: Word64
 ckdNull = 0x01
+
+-- | @CKZ_SALT_SPECIFIED@ (@spec/vendor/pkcs11.h:1227@): the only
+-- served PBKD2 salt source (the salt bytes ride the struct).
+ckzSaltSpecified :: Word64
+ckzSaltSpecified = 0x01
+
+-- | Native @CKP_PKCS5_PBKD2_HMAC_*@ ids onto engine-local PRF
+-- codes ('Haskoki.Recipe.Kdf.kdfCodeDigest'). @CKP_*@ has no
+-- generated vocabulary; the ids are numeric literals cited to
+-- @spec/vendor/pkcs11.h:1049-1056@. GOSTR3411 (0x02) has no
+-- servable HMAC and stays unmapped.
+ckpCodeByPrf :: Map Word64 Int
+ckpCodeByPrf = Map.fromList
+  [ (0x01, 2)
+  , (0x03, 3)
+  , (0x04, 4)
+  , (0x05, 5)
+  , (0x06, 6)
+  , (0x07, 7)
+  , (0x08, 8)
+  ]
 
 -- | Pure PSS translation: native (hashAlg, mgf, sLen) words onto the
 -- canonical @pss-params/1@ image. Unknown ids and unrepresentable
@@ -406,6 +452,25 @@ chachaPolyStructToCanonical nonce nonceLen aad aadLen = do
   guard (fromIntegral (BS.length nonce) == nonceLen)
   guard (fromIntegral (BS.length aad) == aadLen)
   pure (encodeChachaPolyParams nonce aad chachaPolyTagLen)
+
+-- | Pure PBKD2 translation: the chased salt and password plus
+-- the native @CK_PKCS5_PBKD2_PARAMS2@ scalars onto the canonical
+-- @pbkd2-params/2@ image. The salt source must be
+-- @CKZ_SALT_SPECIFIED@, the PRF data must be empty (no PRF
+-- parameters are served), the PRF must map through
+-- 'ckpCodeByPrf', and iterations must fit
+-- @1..'maxPbkd2Iters'@. Anything else refuses ('Nothing');
+-- the recipe bounds the rest.
+pbkd2Params2StructToCanonical
+  :: Word64 -> ByteString -> Word64 -> Word64 -> ByteString -> ByteString
+  -> Maybe ByteString
+pbkd2Params2StructToCanonical saltSource salt iters prf prfData password = do
+  guard (saltSource == ckzSaltSpecified)
+  guard (BS.null prfData)
+  code <- Map.lookup prf ckpCodeByPrf
+  nIters <- word64ToInt iters
+  guard (nIters >= 1 && nIters <= maxPbkd2Iters)
+  pure (encodePbkd2Params code nIters salt password)
 
 -- | Decode a little-endian byte string (at most 8 bytes) onto an
 -- 'Int'; 'Nothing' on over-width or overflow (mirrors the
@@ -552,6 +617,30 @@ normalizeTlsPrfParams pParams paramsLen
       mSeed <- chaseBytes pSeed seedLen
       mLabel <- chaseBytes pLabel labelLen
       pure (mSeed >>= \seed -> mLabel >>= \lab -> tlsPrfStructToCanonical lab seed)
+
+-- | Normalize one PBKD2 generation struct: the native
+-- @CK_PKCS5_PBKD2_PARAMS2@ image at @pParams@/@paramsLen@ onto
+-- the canonical @pbkd2-params\/2@ image. Wrong-sized images and
+-- null-with-length or over-bound salt\/PRF-data\/password chases
+-- refuse ('Nothing'); the pure translator bounds the rest.
+normalizePbkd2Params2 :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizePbkd2Params2 pParams paramsLen
+  | paramsLen /= fromIntegral pbkd2Params2NativeSize = pure Nothing
+  | otherwise = do
+      CULong saltSource <- peekByteOff pParams 0
+      pSalt <- peekByteOff pParams wordSize
+      CULong saltLen <- peekByteOff pParams (wordSize + ptrSize)
+      CULong iters <- peekByteOff pParams (2 * wordSize + ptrSize)
+      CULong prf <- peekByteOff pParams (3 * wordSize + ptrSize)
+      pPrfData <- peekByteOff pParams (4 * wordSize + ptrSize)
+      CULong prfDataLen <- peekByteOff pParams (4 * wordSize + 2 * ptrSize)
+      pPassword <- peekByteOff pParams (5 * wordSize + 2 * ptrSize)
+      CULong pwdLen <- peekByteOff pParams (5 * wordSize + 3 * ptrSize)
+      mSalt <- chaseBytes pSalt saltLen
+      mPrfData <- chaseBytes pPrfData prfDataLen
+      mPwd <- chaseBytes pPassword pwdLen
+      pure (mSalt >>= \salt -> mPrfData >>= \prfData -> mPwd >>= \pwd ->
+        pbkd2Params2StructToCanonical saltSource salt iters prf prfData pwd)
 
 -- | Normalize one call's mechanism parameters: struct mechanisms
 -- translate from the live caller image at @pParams@/@paramsLen@

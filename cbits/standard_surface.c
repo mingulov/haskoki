@@ -187,7 +187,7 @@ extern uint64_t haskoki_std_unwrap_key(void *instance, uint64_t h_session,
 extern uint64_t haskoki_std_derive_hkdf(void *instance, uint64_t h_session,
                                         uint8_t *p_info, uint64_t info_len,
                                         uint8_t *p_salt, uint64_t salt_len,
-                                        uint64_t hkdf_mode,
+                                        uint64_t hkdf_mode, uint64_t hkdf_prf,
                                         uint64_t h_base, uint8_t *p_frame,
                                         uint64_t frame_len, uint64_t *ph_key);
 extern uint64_t haskoki_std_derive_opaque(void *instance, uint64_t h_session,
@@ -2147,6 +2147,31 @@ typedef enum hkdf_class {
   HKDF_UNSERVED = 2
 } hkdf_class_t;
 
+/* Native PRF hash mechanism onto the engine-local digest code
+ * (core/Haskoki/Recipe/Kdf.hs kdfCodeDigest): the served class is
+ * the seven SHA-2 hashes. Anything else (SHA-3, MD5, HMAC
+ * mechanisms, unknown ids) maps to 0 and refuses UNSERVED. */
+static uint64_t hkdf_prf_code(CK_MECHANISM_TYPE prf) {
+  switch (prf) {
+  case CKM_SHA_1:
+    return 2ULL;
+  case CKM_SHA224:
+    return 3ULL;
+  case CKM_SHA256:
+    return 4ULL;
+  case CKM_SHA384:
+    return 5ULL;
+  case CKM_SHA512:
+    return 6ULL;
+  case CKM_SHA512_224:
+    return 7ULL;
+  case CKM_SHA512_256:
+    return 8ULL;
+  default:
+    return 0ULL;
+  }
+}
+
 static hkdf_class_t hkdf_params_class(const CK_HKDF_PARAMS *hp) {
   if (hp->bExtract == CK_FALSE && hp->bExpand == CK_FALSE) {
     return HKDF_MALFORMED;
@@ -2172,7 +2197,7 @@ static hkdf_class_t hkdf_params_class(const CK_HKDF_PARAMS *hp) {
   if (hp->ulInfoLen > 0 && hp->pInfo == NULL_PTR) {
     return HKDF_MALFORMED;
   }
-  if (hp->prfHashMechanism != CKM_SHA256) {
+  if (hkdf_prf_code(hp->prfHashMechanism) == 0ULL) {
     return HKDF_UNSERVED;
   }
   if (hp->ulSaltType == CKF_HKDF_SALT_KEY) {
@@ -2317,12 +2342,13 @@ CK_RV std_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   {
     uint64_t hkdfMode = (hp->bExtract == CK_FALSE ? 0ULL : 1ULL) |
                         (hp->bExpand == CK_FALSE ? 0ULL : 2ULL);
+    uint64_t hkdfPrf = hkdf_prf_code(hp->prfHashMechanism);
     rv = (CK_RV)haskoki_std_derive_hkdf(inst, (uint64_t)hSession,
                                         (uint8_t *)hp->pInfo,
                                         (uint64_t)hp->ulInfoLen,
                                         (uint8_t *)hp->pSalt,
                                         (uint64_t)hp->ulSaltLen,
-                                        hkdfMode,
+                                        hkdfMode, hkdfPrf,
                                         (uint64_t)hBaseKey, frame, frameLen,
                                         (uint64_t *)phKey);
   }

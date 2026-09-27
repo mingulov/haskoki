@@ -16,6 +16,25 @@ proving PKCS#11 v3.2 coverage. Each entry names the exact test ids,
 shows the failure record, and states the downstream handling, so it
 can be reported verbatim. Severity is downstream lane impact.
 
+## Validation against 0.2.2rc1 (2026-09-27, fast lane)
+
+From `/tmp/pkcs11-ws/out/fast-rc1/pkcs11-fast-rc1-results.json`
+(3782 passed / 4 failed / 620 xfailed / 3286 skipped):
+
+- P11C-001: FIXED (both HOTP hard fails gone).
+- P11C-002: ADDRESSED oracle-side (expects
+  CKR_KEY_SIZE_RANGE now); our over-max RV stays
+  TEMPLATE_INCONSISTENT (ours, xfail-level).
+- P11C-003: PROVEN in KAT-rc1 (`test_acvp_slhdsa`
+  78/6f → 84/0f, same 84 collected; unit-count
+  resolution — the harness omits pass records).
+- P11C-004: FIXED (13 hard fails → 15 pass).
+- P11C-005: STILL OPEN (same xfail shape).
+- P11C-006: STILL OPEN (fixture byte-identical:
+  `test_wtls.py:628-636`).
+- New candidate P11C-007 below (x942 helper omits
+  CKA_VALUE_LEN).
+
 ## P11C-001: HOTP registry entry has key_type=None; wrong-key-type tests HARD-FAIL every lane
 
 **Severity**: medium (2 red tests in every fast/KAT lane; masks real regressions)
@@ -445,6 +464,40 @@ Downstream handling: Haskoki triages these 3 as
 known-external (`docs/pkcs11-oracle-triage.md`, Round
 22) and confirms by test id that no other failure
 hides behind the count. No module-side change.
+
+## P11C-007 (candidate): `_x942_derive_aes` omits `CKA_VALUE_LEN`; its PKCS#3 twin pins 16
+
+**Severity**: low (1 red test in the rc1 fast lane)
+**Component**: `src/pkcs11_check/testcases/test_x942_dh.py`
+(`_x942_derive_aes`) vs `test_dh_key_agreement.py`
+**Found**: 2026-09-27 (rc1 validation)
+
+`_x942_derive_aes` (`test_x942_dh.py:967`) derives a
+`CKK_AES` key with CLASS/KEY_TYPE/SENSITIVE/
+EXTRACTABLE/TOKEN only — no `CKA_VALUE_LEN`. The
+equivalent PKCS#3 helper pins `CKA_VALUE_LEN: 16`.
+A module that defaults a missing length to the full
+DH secret width stores an unusable oversized "AES"
+key, and the leg fails downstream at `C_Encrypt`
+instead of at derive time:
+
+```text
+test_x942_dh.py::TestX942DHDerive::test_derived_key_encrypts:
+C_Encrypt size query: Unexpected CK_RV CKR_GENERAL_ERROR;
+expected one of: CKR_OK, CKR_BUFFER_TOO_SMALL
+```
+
+Suggested fix: pin `CKA_VALUE_LEN: 16` in
+`_x942_derive_aes` like the PKCS#3 twin.
+
+Downstream handling: Haskoki hardens its own side
+separately (derive-time length-domain validation so
+a missing length on a fixed-length target refuses
+with TEMPLATE_INCONSISTENT instead of producing a
+poisoned object); the leg itself needs the helper
+fix. Tracked in `docs/pkcs11-oracle-triage.md` (rc1
+validation). No module-side change for the oracle
+half.
 
 ## Observations (not issues)
 

@@ -246,7 +246,7 @@ caseDeriveBound = do
   mFull <- fillObjects rulesB sid 7 m3
   assertEqual "filled to the bound" 8 (Map.size (mObjects mFull))
   st <- sessionOf mFull sid
-  let blob = encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "derive-info") [soloTmpl]
+  let blob = encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "derive-info") [soloTmpl]
   case planDerive rulesB mFull st hkdfDeriveMech baseH blob of
     KeyDenied deny -> assertEqual "refusal code" CKR_HOST_MEMORY (kdCode deny)
     other -> assertFailure ("derive planned at a full store: " ++ show other)
@@ -289,7 +289,7 @@ caseDeriveHugeLength = do
   m2 <- loginAsUser rulesB m1 sid
   (baseH, m3) <- createBase m2 sid
   st <- sessionOf m3 sid
-  let blob = encodeDeriveParams (encodeHkdfInfo 0x02 BS.empty "derive-info") [hugeTmpl]
+  let blob = encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "derive-info") [hugeTmpl]
   case planDerive rulesB m3 st hkdfDeriveMech baseH blob of
     KeyDenied deny -> do
       assertEqual "refusal code" CKR_TEMPLATE_INCONSISTENT (kdCode deny)

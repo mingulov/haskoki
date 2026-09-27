@@ -669,23 +669,25 @@ caseCmacPromoted = do
 caseKdfPromoted :: IO ()
 caseKdfPromoted = do
   -- S12: the 12 KDF behaviors resolve with the derive route and
-  -- execute under caps.
-  let mids = map MechanismId
-        [0x4b, 0x4f, 0x392, 0x393, 0x394, 0x395
-        , 0x396, 0x397, 0x398, 0x399, 0x39a, 0x3b0
-        ]
-  mapM_ checkOne mids
+  -- execute under caps; PBKD2 carries a second, generate-key
+  -- route over the same frame.
+  mapM_ checkOne
+    ([ (MechanismId mid, [OpDerive])
+     | mid <- [0x4b, 0x4f, 0x392, 0x393, 0x394, 0x395
+              , 0x396, 0x397, 0x398, 0x399, 0x39a
+              ]
+     ] ++ [(MechanismId 0x3b0, [OpDerive, OpGenerateKey])])
   where
-    checkOne mid = do
+    checkOne (mid, ops) = do
       let reg = curatedRegistry
       assertEqual ("supported " ++ show mid) StatusSupported (describeStatus reg mid)
       case lookupBehavior reg mid of
         Nothing -> assertFailure ("behavior must resolve " ++ show mid)
-        Just d -> assertEqual ("kdf routes " ++ show mid) [OpDerive]
+        Just d -> assertEqual ("kdf routes " ++ show mid) ops
           (map routeOperation (descRoutes d))
       mapM_ (\op -> assertBool ("executable " ++ show mid ++ " " ++ show op)
         (isExecutable reg (mkCapabilities [(mid, op)]) mid op))
-        [OpDerive]
+        ops
 
 caseOtpPromoted :: IO ()
 caseOtpPromoted = do

@@ -834,7 +834,9 @@ des3macDescs =
 -- | The KDF behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from 'kdfCodecFor',
 -- the derive route citing the planner case (A20), the synthetic
--- construction (A37), and the real vectors (A39). The SHA rows
+-- construction (A37), and the real vectors (A39). PBKD2 carries
+-- a second, generate-key route over the same frame (the
+-- password rides inline instead of the base key). The SHA rows
 -- predate 2.40; the BLAKE2B row arrived in 3.0. Key bounds are
 -- mechanism-specific (widths follow the digest or the planned
 -- length).
@@ -847,8 +849,10 @@ kdfDescs :: [Descriptor]
 kdfDescs =
   [ promotedDesc (rkName r) (kdfBaselines (rkName r)) FamilyDerive
       (kdfCodecFor r)
-      [ mechRoute OpDerive (rkName r) ["A20", "A37", "A39"]
-      ]
+      (mechRoute OpDerive (rkName r) ["A20", "A37", "A39"]
+        : [ mechRoute OpGenerateKey (rkName r) ["A20", "A37", "A39"]
+          | rkPbkd2 r
+          ])
       MechanismSpecific 0 0
   | r <- kdfRecipes
   ]
@@ -1171,7 +1175,7 @@ dDsaParameterGen = promotedDesc "CKM_DSA_PARAMETER_GEN" allBaselines FamilyKeyGe
 dHkdfDerive :: Descriptor
 dHkdfDerive = promotedDesc "CKM_HKDF_DERIVE"
   [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyDerive
-  (ParameterCodec "hkdf-params" 2)
+  (ParameterCodec "hkdf-params" 3)
   [mechRoute OpDerive "CKM_HKDF_DERIVE" ["A20", "A37", "A39"]]
   MechanismSpecific 0 0
 

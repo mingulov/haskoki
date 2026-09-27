@@ -132,7 +132,7 @@ in `spec/mechanisms.json` routes and `dumpRegistry`):
 | `iv-bytes/1` | exactly `crIvBytes` raw bytes (CBC: one block; ECB: empty) | block-cipher rows |
 | `oaep-params/1` | 2× 8-byte big-endian table codes (digest, MGF) + label bytes (possibly empty) | `CKM_RSA_PKCS_OAEP` |
 | `hotp-params/1` | 2× 8-byte big-endian: counter, digit count (digits 6–8) | `CKM_HOTP` |
-| `ecdh-params/1`, `pbkd2-params/1`, `hkdf-params/2` | family params for derive ops (non-classic; never cross classic init) | KDF/ECDH rows |
+| `ecdh-params/1`, `pbkd2-params/2`, `hkdf-params/3` | family params for derive ops (non-classic; never cross classic init) | KDF/ECDH rows |
 
 Digest wire codes (PSS/OAEP shared convention): 1 MD5, 2 SHA_1, 3
 SHA224, 4 SHA256, 5 SHA384, 6 SHA512, 7 SHA3_224, 8 SHA3_256, 9
