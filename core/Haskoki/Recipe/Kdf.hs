@@ -1,9 +1,11 @@
 {- | KDF recipe: the tenth shape-group recipe.
 
-Sixteen header mechanisms share the derive shape — eleven
-@CKM_SHA*_KEY_DERIVATION@ rows and four @CKM_BLAKE2B_*_KEY_DERIVE@
-rows (hash the base value, truncate to the digest width; empty
-parameters, @no-params\/1@) plus
+Nineteen header mechanisms share the derive shape — twelve
+@CKM_SHA*_KEY_DERIVATION@ rows (MD5 included), four
+@CKM_BLAKE2B_*_KEY_DERIVE@ rows, and two @CKM_SHAKE_*_KEY_DERIVATION@
+XOF rows (hash the base value, truncate to the digest width —
+or to the template length for XOF rows; empty parameters,
+@no-params\/1@) plus
 @CKM_PKCS5_PBKD2@ (@pbkd2-params\/2@: @prf:u64be
 iters:u64be saltLen:u64be salt pwdLen:u64be pwd@). The PBKD2 PRF
 is any servable HMAC (engine-local codes 1..13 over the
@@ -23,7 +25,7 @@ Consumers:
   'kdfCodecFor' (never a re-typed codec literal);
 * 'Haskoki.Operation.Derive.planDerive' accepts KDF frames via
   'kdfRecipeFor' + 'kdfParamsValid', capped by 'kdfShaWidth' (SHA
-  rows) or the shared ceiling (PBKD2);
+  rows), 'maxXofTotal' (XOF rows), or the shared ceiling (PBKD2);
 * 'Haskoki.Engine.Driver.kdfShaFor' maps SHA rows to digests and
   'Haskoki.Engine.Driver.pbkd2ParamsFor' maps PBKD2 params;
   RecipeKdfSpec pins both against this table;
@@ -32,9 +34,11 @@ Consumers:
   RoutingE2ESpec vectors and SyntheticSpec constructions.
 
 Deferred family members (not recipes, named gaps): the TLS\/SSL
-protocol KDFs (a later protocol-specials slice), @CKM_HKDF_DATA@
-and @CKM_HKDF_KEY_GEN@ (object-typed HKDF affordances, later) —
-see mechanisms.json honesty notes.
+protocol KDFs (a later protocol-specials slice) and
+@CKM_HKDF_KEY_GEN@ (a keygen affordance, later) — see
+mechanisms.json honesty notes. @CKM_HKDF_DATA@ is served by the
+HKDF-DATA arm of 'Haskoki.Operation.Derive.planDerive' (same KDF
+as HKDF-DERIVE, data-object outputs), not by this recipe.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Kdf
@@ -48,6 +52,7 @@ module Haskoki.Recipe.Kdf
   , decodePbkd2Params
   , kdfParamsValid
   , kdfShaWidth
+  , kdfXofStem
   , kdfCodeDigest
   , kdfDigestWidth
   , maxPbkd2Iters
@@ -189,14 +194,26 @@ kdfParamsValid r params
       Nothing -> False
   | otherwise = BS.null params
 
+-- | The XOF stem for a SHAKE-KD row ('Nothing' for every other
+-- row, including PBKD2). The planner routes XOF rows to the
+-- variable-length entry point with the template length; the
+-- driver maps them via 'kdfXofFor'.
+kdfXofStem :: KdfRecipe -> Maybe Text
+kdfXofStem r = case rkDigestStem r of
+  Just "SHAKE_128" -> Just "SHAKE_128"
+  Just "SHAKE_256" -> Just "SHAKE_256"
+  _ -> Nothing
+
 -- | SHA-row digest width in bytes (the derived-total ceiling);
--- 'Nothing' for PBKD2 (unbounded construction, shared ceiling).
+-- 'Nothing' for PBKD2 (unbounded construction, shared ceiling)
+-- and the SHAKE XOF rows (width rides the template length).
 kdfShaWidth :: KdfRecipe -> Maybe Int
 kdfShaWidth r = case rkDigestStem r of
   Just "BLAKE2B_512" -> Just 64
   Just "BLAKE2B_160" -> Just 20
   Just "BLAKE2B_256" -> Just 32
   Just "BLAKE2B_384" -> Just 48
+  Just "MD5" -> Just 16
   Just "SHA_1" -> Just 20
   Just "SHA224" -> Just 28
   Just "SHA256" -> Just 32
@@ -210,11 +227,14 @@ kdfShaWidth r = case rkDigestStem r of
   Just "SHA3_512" -> Just 64
   _ -> Nothing
 
--- | All sixteen covered mechanisms (eleven SHA rows, four
--- BLAKE2B rows, PBKD2).
+-- | All nineteen covered mechanisms (twelve SHA rows, four
+-- BLAKE2B rows, two SHAKE XOF rows, PBKD2).
 kdfRecipes :: [KdfRecipe]
 kdfRecipes =
-  [ KdfRecipe "CKM_BLAKE2B_512_KEY_DERIVE" False (Just "BLAKE2B_512")
+  [ KdfRecipe "CKM_MD5_KEY_DERIVATION" False (Just "MD5")
+  , KdfRecipe "CKM_SHAKE_128_KEY_DERIVATION" False (Just "SHAKE_128")
+  , KdfRecipe "CKM_SHAKE_256_KEY_DERIVATION" False (Just "SHAKE_256")
+  , KdfRecipe "CKM_BLAKE2B_512_KEY_DERIVE" False (Just "BLAKE2B_512")
   , KdfRecipe "CKM_BLAKE2B_160_KEY_DERIVE" False (Just "BLAKE2B_160")
   , KdfRecipe "CKM_BLAKE2B_256_KEY_DERIVE" False (Just "BLAKE2B_256")
   , KdfRecipe "CKM_BLAKE2B_384_KEY_DERIVE" False (Just "BLAKE2B_384")

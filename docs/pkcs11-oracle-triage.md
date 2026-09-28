@@ -1435,6 +1435,81 @@ skipped (t7692)
   11f bundle (`dist-release/haskoki-0.3.0.0`,
   evidence 16/16).
 
+## Round 28: KDF-tail-core slice 11g (fast r53→r54→r55 + KAT r29→r30)
+
+- r54: 4181 passed / 18 failed / 661
+  xfailed / 3606 skipped (t8466)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r54-results.json`).
+  r53→r54: +12 pass / +0 fail / +4 xfail /
+  +32 skip (+48 collected).
+- Movers r53→r54 (unit `counts`, exact):
+  `test_hkdf_data_kat` 0/1s → 1 (the
+  HKDF_DATA KAT passes through the C
+  surface — FFI mech pass-through plus
+  the DATA commit, verified end to end);
+  `test_hkdf_extended` 2/3s/1x →
+  5/0s/1x; `test_kdf` 16/4s → 20/0s
+  (MD5/XOF legs); `test_mech_flags`
+  719/1343s/8x → 723/1371s/12x;
+  `test_mech_probe` skips 690 → 702.
+- In-slice fix (lane-found, r54→r55):
+  the 4 served catalog rows shipped
+  mechanism-info flags `0UL` (the flip
+  script set routes/support/notes but
+  missed `mechanism_info.flags`), so the
+  4 `test_expected_flags_present` legs
+  xfailed. Flags set to `CKF_DERIVE` on
+  the 4 rows + catalog regen; recipe,
+  planner, driver, and tests untouched.
+- r55: 4190 passed / 18 failed / 663
+  xfailed / 3615 skipped (t8486)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r55-results.json`):
+  +9 pass / +0 fail / +2 xfail / +9 skip
+  (+20). The flags fix flips exactly
+  (`test_mech_flags` 723/1371s/12x →
+  727/1371s/8x); `test_mech_derive`
+  20/9s/1x → 23/10s/1x;
+  `test_mech_negative` 261/2f/667s/288x
+  → 263/2f/675s/294x.
+- New-xfail attribution (6, all
+  classified): SHAKE BadParameters ×4 +
+  MissingPermission ×2, every one
+  "keygen rejected at runtime:
+  CKR_MECHANISM_INVALID" — the oracle
+  setups `C_GenerateKey` with the derive
+  mechanism itself, and our refusal is
+  the spec-correct RV. Identical legs
+  xfail for the long-served SHA3_256_KD
+  row (oracle `_kdf.py` overrides the
+  registry with `param_required=True` on
+  these NULL-param mechanisms). No
+  module change.
+- Failures identical by id (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS
+  P11C-006). Zero pass→nonpass.
+- r30: 82627 passed / 24 failed / 1686
+  xfailed / 30333 skipped (t114670)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r30-results.json`).
+  r29→r30: +21 pass / +0 fail / +6 xfail /
+  +41 skip (+68) — the fast-matrix units
+  repeat r53→r55 exactly
+  (hkdf_data_kat, hkdf_extended, kdf,
+  mech_derive, mech_flags, mech_negative,
+  mech_probe — same counts); zero
+  KAT-only delta (no vector suite covers
+  the new rows beyond the matrix units).
+- KAT residuals, all dispositioned: the 24
+  failures are identical by id to r29
+  (13 X9.42 P11C-004 + 2 HOTP P11C-001 +
+  3 WTLS P11C-006 + 6 SLH-DSA P11C-003).
+- Bundle note: r55/r30 run on the final
+  11g tree (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16); r54 ran on the same
+  tree minus the flags fix (behavior
+  delta: mechanism-info flags only —
+  the Haddock comment fix is
+  behavior-free).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

@@ -191,6 +191,17 @@ instance CryptoBackend OpenSSL4 where
           `onException` (withForeignPtr (osslEnv env) $ \_ -> Raw.digestFree h)
         nativeOut "digestFinal" r
 
+  digestXof be alg msg outLen = runGuarded be "digestXof" (xofSupported be alg) $ \env ->
+    case xofFetchName alg of
+      -- Unreachable post-guard (the guard admits XOF algs only,
+      -- all of which fetch); typed, never a crash.
+      Nothing -> pure (EngineFail (BackendUnsupported "digestXof"
+        ("no fetch name: " ++ show alg)))
+      Just mdname -> do
+        r <- withForeignPtr (osslEnv env) $ \_ ->
+          Raw.digestXof (osslCtx env) mdname (osslPropQ env) msg outLen
+        nativeOut "digestXof" r
+
   macSign be spec key msg = runGuarded be "mac" (macSupported be spec) $ \env ->
     case spec of
       MacHMAC alg trunc -> do
@@ -856,7 +867,7 @@ ossl4Caps :: String -> String -> BackendCaps
 ossl4Caps version propq = BackendCaps
   { bcName = "openssl4"
   , bcVersion = version
-  , bcDigests = DigestCaps { dcAlgs = Set.fromList t16DigestAlgs, dcMultipart = True, dcXof = False }
+  , bcDigests = DigestCaps { dcAlgs = Set.fromList t16DigestAlgs, dcMultipart = True, dcXof = True }
   , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM", "ChaCha20-Poly1305"] }
   , bcMacs = MacCaps { mcSpecs = osslMacSpecs t16DigestAlgs }
   , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs ++ osslEddsaSpecNames t16EdwardsCurves ++ osslMldsaSpecNames t16MldsaLevels ++ osslSlhdsaSpecNames t16SlhdsaSets), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.fromList (t16MldsaLevels ++ t16SlhdsaSets) }
@@ -1133,6 +1144,8 @@ osslMacNotes algs =
 probeCaps :: OSSL4Env -> IO BackendCaps
 probeCaps env = do
   mdAlgs <- probeDigests
+  shake128Ok <- probe1 "md" "SHAKE-128"
+  shake256Ok <- probe1 "md" "SHAKE-256"
   macOk <- probe1 "mac" "HMAC"
   ciphers <- probeCiphers
   pkeyOk <- probe1 "pkey" "EC"
@@ -1162,7 +1175,10 @@ probeCaps env = do
       rsaAlgs = filter (`elem` mdAlgs) t16RsaAlgs
       dsaAlgs = filter (`elem` mdAlgs) t16DsaAlgs
   pure base
-    { bcDigests = (bcDigests base) { dcAlgs = Set.fromList mdAlgs }
+    { bcDigests = (bcDigests base)
+        { dcAlgs = Set.fromList mdAlgs
+        , dcXof = shake128Ok && shake256Ok
+        }
     , bcCiphers = (bcCiphers base) { ccCiphers = Set.fromList ciphers }
     -- Per-algorithm HMAC caps over the probed digests (the
     -- HMAC path fetches the same digest the "md" probe tests, plus
@@ -1234,6 +1250,9 @@ digestSupported :: BackendEnv OpenSSL4 -> DigestAlg -> Maybe String
 digestSupported (OSSL4Backend env) alg
   | Set.member alg (dcAlgs (bcDigests (osslCaps env))) = Nothing
   | otherwise = Just ("digest not in probed set: " ++ show alg)
+
+xofSupported :: BackendEnv OpenSSL4 -> DigestAlg -> Maybe String
+xofSupported (OSSL4Backend env) alg = xofServable (osslCaps env) alg
 
 -- | Provider fetch names per digest algorithm, verified by
 -- executing the OpenSSLSpec KATs against the pinned libcrypto. XOFs

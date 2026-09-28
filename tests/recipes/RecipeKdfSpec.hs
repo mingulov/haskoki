@@ -31,7 +31,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 import Data.Word (Word64)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Engine.Backend (DigestAlg (..))
-import Haskoki.Engine.Driver (Pbkd2Params (..), kdfShaFor, pbkd2ParamsFor)
+import Haskoki.Engine.Driver (Pbkd2Params (..), kdfShaFor, kdfXofFor, pbkd2ParamsFor)
 import Haskoki.FFI.NativeParams (pbkd2Params2StructToCanonical)
 import Haskoki.Model
   ( HandleBinding (..)
@@ -67,6 +67,7 @@ import Haskoki.Recipe.Kdf
   , kdfRecipeFor
   , kdfRecipes
   , kdfShaWidth
+  , kdfXofStem
   , maxPbkd2Iters
   )
 import Haskoki.Registry (MechanismId (..))
@@ -74,10 +75,13 @@ import Haskoki.Registry.Generated
   ( mustGeneratedId
   , ckm_ECDH1_DERIVE
   , ckm_HKDF_DERIVE
+  , ckm_MD5_KEY_DERIVATION
   , ckm_PKCS5_PBKD2
   , ckm_SHA1_KEY_DERIVATION
   , ckm_SHA256_KEY_DERIVATION
   , ckm_SHA512_224_KEY_DERIVATION
+  , ckm_SHAKE_128_KEY_DERIVATION
+  , ckm_SHAKE_256_KEY_DERIVATION
   , ckm_TLS12_KDF
   )
 import Haskoki.Registry.Types (ParameterCodec (..))
@@ -131,6 +135,16 @@ shaShape =
   , ("BLAKE2B_160_KEY_DERIVE", "BLAKE2B_160", 20)
   , ("BLAKE2B_256_KEY_DERIVE", "BLAKE2B_256", 32)
   , ("BLAKE2B_384_KEY_DERIVE", "BLAKE2B_384", 48)
+  , ("MD5_KEY_DERIVATION", "MD5", 16)
+  ]
+
+-- | (suffix, XOF stem). The SHAKE rows take empty parameters and
+-- hash the base value, but their width rides the template length
+-- (variable XOF output), so they sit outside 'shaShape'.
+xofShape :: [(Text, Text)]
+xofShape =
+  [ ("SHAKE_128_KEY_DERIVATION", "SHAKE_128")
+  , ("SHAKE_256_KEY_DERIVATION", "SHAKE_256")
   ]
 
 mechName :: Text -> Text
@@ -138,7 +152,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 16 (length kdfRecipes)
+  assertEqual "recipe count" 19 (length kdfRecipes)
   mapM_ (\(suffix, stem, _) -> do
     let name = mechName suffix
         found = [ r | r <- kdfRecipes, rkName r == name ]
@@ -153,6 +167,16 @@ caseTable = do
       assertBool "pbkd2 flag" (rkPbkd2 r)
       assertEqual "no stem" Nothing (rkDigestStem r)
     rs -> assertFailure ("pbkd2 rows: " ++ show (length rs))
+  mapM_ (\(suffix, stem) -> do
+    let name = mechName suffix
+        found = [ r | r <- kdfRecipes, rkName r == name ]
+    case found of
+      [r] -> do
+        assertBool ("not pbkd2 " ++ T.unpack name) (not (rkPbkd2 r))
+        assertEqual ("stem " ++ T.unpack name) (Just stem) (rkDigestStem r)
+        assertEqual ("xof stem " ++ T.unpack name) (Just stem) (kdfXofStem r)
+      rs -> assertFailure ("rows " ++ T.unpack name ++ ": " ++ show (length rs))
+    ) xofShape
 
 caseLookup :: IO ()
 caseLookup = do
@@ -162,6 +186,12 @@ caseLookup = do
       Nothing -> assertFailure ("unresolved " ++ T.unpack name)
       Just r -> assertEqual ("lookup " ++ T.unpack name) name (rkName r)
     ) shaShape
+  mapM_ (\(suffix, _) -> do
+    let name = mechName suffix
+    case kdfRecipeFor (MechanismId (mustGeneratedId name)) of
+      Nothing -> assertFailure ("unresolved " ++ T.unpack name)
+      Just r -> assertEqual ("lookup " ++ T.unpack name) name (rkName r)
+    ) xofShape
   case kdfRecipeFor (MechanismId (ckm_PKCS5_PBKD2)) of
     Nothing -> assertFailure "unresolved CKM_PKCS5_PBKD2"
     Just r -> assertEqual "lookup pbkd2" "CKM_PKCS5_PBKD2" (rkName r)
@@ -184,6 +214,12 @@ caseCodec = do
       Just r -> assertEqual ("codec " ++ T.unpack suffix) kdfPlainCodec
         (kdfCodecFor r)
     ) shaShape
+  mapM_ (\(suffix, _) ->
+    case kdfRecipeFor (MechanismId (mustGeneratedId (mechName suffix))) of
+      Nothing -> assertFailure ("unresolved " ++ T.unpack suffix)
+      Just r -> assertEqual ("codec " ++ T.unpack suffix) kdfPlainCodec
+        (kdfCodecFor r)
+    ) xofShape
   case kdfRecipeFor (MechanismId (ckm_PKCS5_PBKD2)) of
     Nothing -> assertFailure "unresolved pbkd2"
     Just r -> assertEqual "pbkd2 codec" kdfPbkd2Codec (kdfCodecFor r)
@@ -252,6 +288,14 @@ caseParams = do
       (kdfShaWidth (recipeOf (mechName suffix)))
     ) shaShape
   assertEqual "pbkd2 has no sha width" Nothing (kdfShaWidth pbkd2)
+  mapM_ (\(suffix, _) ->
+    assertEqual ("xof has no fixed width " ++ T.unpack suffix) Nothing
+      (kdfShaWidth (recipeOf (mechName suffix)))
+    ) xofShape
+  mapM_ (\(suffix, _, _) ->
+    assertEqual ("fixed row is not xof " ++ T.unpack suffix) Nothing
+      (kdfXofStem (recipeOf (mechName suffix)))
+    ) shaShape
 
 -- | CKP_PKCS5_PBKD2_HMAC_* selector to digest stem (v3.2 §2.5.2
 -- table; GOSTR3411 has no servable HMAC and stays unmapped).
@@ -522,6 +566,19 @@ caseDriverMap = do
       Just _ -> pure ()
       Nothing -> assertFailure ("unmapped " ++ T.unpack suffix)
     ) shaShape
+  assertEqual "md5 maps" (Just D_MD5)
+    (kdfShaFor (MechanismId (ckm_MD5_KEY_DERIVATION)))
+  assertEqual "shake128 xof maps" (Just D_SHAKE128)
+    (kdfXofFor (MechanismId (ckm_SHAKE_128_KEY_DERIVATION)))
+  assertEqual "shake256 xof maps" (Just D_SHAKE256)
+    (kdfXofFor (MechanismId (ckm_SHAKE_256_KEY_DERIVATION)))
+  assertEqual "sha256 is not xof" Nothing (kdfXofFor sha256Mech)
+  assertEqual "md5 is not xof" Nothing
+    (kdfXofFor (MechanismId (ckm_MD5_KEY_DERIVATION)))
+  assertEqual "shake128 is not sha" Nothing
+    (kdfShaFor (MechanismId (ckm_SHAKE_128_KEY_DERIVATION)))
+  assertEqual "shake256 is not sha" Nothing
+    (kdfShaFor (MechanismId (ckm_SHAKE_256_KEY_DERIVATION)))
   assertEqual "sha256 maps" (Just D_SHA256) (kdfShaFor sha256Mech)
   assertEqual "sha1 maps" (Just D_SHA1) (kdfShaFor sha1Mech)
   assertEqual "sha512_224 maps" (Just D_SHA512_224)

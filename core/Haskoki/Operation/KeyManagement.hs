@@ -177,6 +177,7 @@ module Haskoki.Operation.KeyManagement
     -- * Shared template checks
   , checkKeyTemplate
   , checkKeyTemplateAny
+  , checkDataTemplate
   , pendingFromAttrs
     -- * Generation frames (planner \<-\> driver contract)
   , GenArgs (..)
@@ -1605,6 +1606,33 @@ checkKeyTemplateAny wantClass defaultKey tmpl =
           Just (ValULong _) -> Right attrs
           Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
             "template key type is malformed")
+    _ -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE "template is missing the class")
+
+-- | Check one data-object template for data-output derivations
+-- (@CKM_HKDF_DATA@): contradictions and wrong shapes reject, a
+-- missing class defaults to the mechanism-implied @CKO_DATA@, a
+-- class that is present but wrong is a key-type contradiction
+-- (the operation derives data objects, never keys), and a
+-- @CKA_KEY_TYPE@ attribute is inconsistent (data objects carry
+-- no key type).
+checkDataTemplate
+  :: Word64 -> [(AttributeType, AttributeValue)]
+  -> Either KeyDeny (Map AttributeType AttributeValue)
+checkDataTemplate wantData tmpl =
+  case validateTemplate (ensureTemplateClass wantData tmpl) of
+  Left (TemplateContradiction t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+    ("contradictory attribute: " ++ show t))
+  Left (TemplateWrongType t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+    ("wrong shape for attribute: " ++ show t))
+  Left TemplateIncomplete -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+    "template is missing the class")
+  Right attrs -> case Map.lookup AttrClass attrs of
+    Just (ValULong c)
+      | c /= wantData -> Left (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+          ("template class " ++ show c ++ " is not a data object"))
+      | Map.member AttrKeyType attrs -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          "data template must not carry CKA_KEY_TYPE")
+      | otherwise -> Right attrs
     _ -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE "template is missing the class")
 
 -- | Pending object from validated template attributes: the token

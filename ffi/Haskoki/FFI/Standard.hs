@@ -245,6 +245,7 @@ import Haskoki.Operation.Codec (encodeCancelInput, encodeVerifyInput)
 import Haskoki.Operation.Derive
   ( encodeDeriveParams
   , encodeHkdfInfo
+  , hkdfDataMech
   , hkdfDeriveMech
   , planDerive
   )
@@ -2795,7 +2796,7 @@ foreign export ccall "haskoki_std_unwrap_key" haskokiStdUnwrapKey
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_derive_hkdf" haskokiStdDeriveHkdf
-  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> Ptr Word8 -> CULong -> CULong -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_derive_opaque" haskokiStdDeriveOpaque
@@ -2999,14 +3000,15 @@ isOpaqueDeriveMech mid =
     Nothing -> False
 
 -- | HKDF derive: the C side classifies the parameters (served
--- profiles only reach here) and passes the info bytes, the salt
--- bytes and the stage mode; the template frame carries the
--- derived key shape (exactly one key).
+-- profiles only reach here) and passes the mechanism id, the
+-- info bytes, the salt bytes and the stage mode; the template
+-- frame carries the derived shape (exactly one key for
+-- HKDF-DERIVE, exactly one data object for HKDF-DATA).
 haskokiStdDeriveHkdf
-  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> Ptr Word8 -> CULong -> CULong -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
-haskokiStdDeriveHkdf ctx h pInfo (CULong infoLen)
+haskokiStdDeriveHkdf ctx h (CULong mech) pInfo (CULong infoLen)
     pSalt (CULong saltLen) (CULong mode) (CULong prf) (CULong baseH)
     pFrame (CULong frameLen) phKey =
   withStdCtx ctx $ \inst ->
@@ -3022,13 +3024,19 @@ haskokiStdDeriveHkdf ctx h pInfo (CULong infoLen)
               Left ferr -> pure (frameErrorRV ferr)
               Right entries -> do
                 m <- snapshotModel (siEnv inst)
-                eHs <- runKeyPlan inst m st
-                  (planDerive (envRules (siEnv inst)) m st hkdfDeriveMech
-                    (ExternalHandle (fromIntegral baseH))
-                    (encodeDeriveParams
-                      (encodeHkdfInfo (fromIntegral prf) (fromIntegral mode) salt info) [entries]))
-                case eHs of
-                  Left rv -> pure rv
-                  Right [oh] -> poke phKey (CULong oh) >> pure ckrOk
-                  Right _ -> pure ckrGeneralError
+                let mid = MechanismId (fromIntegral mech)
+                -- Defense in depth: the C arm only forwards the
+                -- two HKDF mechanisms; anything else refuses here.
+                if mid /= hkdfDeriveMech && mid /= hkdfDataMech
+                  then pure (stdRvOf CKR_MECHANISM_INVALID)
+                  else do
+                    eHs <- runKeyPlan inst m st
+                      (planDerive (envRules (siEnv inst)) m st mid
+                        (ExternalHandle (fromIntegral baseH))
+                        (encodeDeriveParams
+                          (encodeHkdfInfo (fromIntegral prf) (fromIntegral mode) salt info) [entries]))
+                    case eHs of
+                      Left rv -> pure rv
+                      Right [oh] -> poke phKey (CULong oh) >> pure ckrOk
+                      Right _ -> pure ckrGeneralError
           _ -> pure ckrArgsBad

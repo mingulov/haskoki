@@ -31,7 +31,9 @@ the digest width and the shared ceiling respectively.
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Operation.Derive
   ( hkdfDeriveMech
+  , hkdfDataMech
   , maxDerivedTotal
+  , maxXofTotal
   , maxDeriveKeys
   , maxDeriveInfo
   , encodeDeriveParams
@@ -54,10 +56,12 @@ import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
   , PendingWork (..)
+  , checkDataTemplate
   , checkKeyTemplateAny
   , ckkEc
   , ckkEcMontgomery
   , ckkGenericSecret
+  , ckoData
   , ckoSecretKey
   , keyBytesOf
   , pendingFromAttrs
@@ -92,6 +96,7 @@ import Haskoki.Recipe.Kdf
   , kdfParamsValid
   , kdfRecipeFor
   , kdfShaWidth
+  , kdfXofStem
   )
 import Haskoki.Recipe.TlsPrf
   ( maxTlsPrfOutput
@@ -99,7 +104,7 @@ import Haskoki.Recipe.TlsPrf
   , tlsPrfRecipeFor
   )
 import Haskoki.Registry (MechanismId (..))
-import Haskoki.Registry.Generated (ckm_HKDF_DERIVE)
+import Haskoki.Registry.Generated (ckm_HKDF_DATA, ckm_HKDF_DERIVE)
 import Haskoki.Rules (Rules)
 import Haskoki.Session (admitCode, admitObjects)
 import Haskoki.Types (ExternalHandle, ReturnCode (..))
@@ -107,6 +112,17 @@ import Haskoki.Types (ExternalHandle, ReturnCode (..))
 -- | @CKM_HKDF_DERIVE@ (generated id, resolved by name).
 hkdfDeriveMech :: MechanismId
 hkdfDeriveMech = MechanismId (ckm_HKDF_DERIVE)
+
+-- | @CKM_HKDF_DATA@ (generated id, resolved by name): the same KDF
+-- as 'hkdfDeriveMech' with raw-byte output into @CKO_DATA@
+-- objects (any derive-marked base; key-class templates deny).
+hkdfDataMech :: MechanismId
+hkdfDataMech = MechanismId (ckm_HKDF_DATA)
+
+-- | SHAKE XOF output ceiling in bytes: 64 KiB bounds the largest
+-- sane derived object while template lengths below it pass through.
+maxXofTotal :: Int
+maxXofTotal = 65536
 
 -- | HKDF-Expand-SHA256 output ceiling: 255 blocks of 32 bytes.
 maxDerivedTotal :: Int
@@ -230,7 +246,9 @@ prfHashLen prf =
 -- material, and EVERY template must describe a secret key with a
 -- positive length — except ECDH templates, where a missing
 -- CKA_VALUE_LEN defaults to the full agreement secret (PKCS#11
--- v3.2: truncation applies "if it has one" a length). Check
+-- v3.2: truncation applies "if it has one" a length), and
+-- HKDF-DATA templates, which describe data objects (CKO_DATA
+-- with CKA_VALUE_LEN, never keys). Check
 -- order: mechanism, frame, base, then templates in order; the
 -- first failure denies with zero objects.
 -- ECDH arms resolve the base and require an EC or Montgomery
@@ -249,6 +267,29 @@ planDerive
   :: Rules -> Model -> SessionState -> MechanismId -> ExternalHandle
   -> ByteString -> KeyPlan
 planDerive rules model st mech baseH blob
+  | mech == hkdfDataMech = case decodeDeriveParams blob of
+      Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "malformed derive arguments")
+      -- The same KDF as 'hkdfDeriveMech' (same base acceptance:
+      -- any visible key with the derive mark and stored
+      -- material); only the output class differs (data objects,
+      -- never keys) and data templates take no length default.
+      Just (infoSeg, tmpls) -> case decodeHkdfInfo infoSeg of
+        Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+          "malformed HKDF info segment")
+        Just (prf, mode, salt, info)
+          | mode == 0x01 -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
+              "HKDF extract-only is not served; combine extract and expand")
+          | otherwise -> case prfHashLen prf of
+              Nothing -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
+                "HKDF PRF has no servable hash length")
+              Just hashLen -> case resolveBase model st baseH of
+                Left deny -> KeyDenied deny
+                Right (ost, _) -> finishData tmpls (255 * hashLen)
+                  "derived total exceeds the HKDF-Expand ceiling"
+                  (FxDerive mech (Just (osId ost))
+                    (BS.singleton prf <> BS.singleton mode <> salt) info)
+                  CKR_ARGUMENTS_BAD
   | mech == hkdfDeriveMech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -354,8 +395,18 @@ planDerive rules model st mech baseH blob
                 (FxDerive mech (Just (osId ost)) BS.empty BS.empty)
                 (blakeDefaultLen r w)
                 CKR_KEY_SIZE_RANGE
-              Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
-                "KDF row without a digest width")
+              -- SHAKE XOF rows: no fixed width — the output
+              -- length rides the template lengths, capped by
+              -- 'maxXofTotal'; a missing length stays
+              -- INCOMPLETE (no natural width to default to).
+              Nothing -> case kdfXofStem r of
+                Just _ -> finish tmpls maxXofTotal
+                  "derived total exceeds the XOF output ceiling"
+                  (FxDerive mech (Just (osId ost)) BS.empty BS.empty)
+                  Nothing
+                  CKR_KEY_SIZE_RANGE
+                Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                  "KDF row without a digest width")
   | Just r <- tlsPrfRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -478,6 +529,44 @@ planDerive rules model st mech baseH blob
                 "variable-length target needs CKA_VALUE_LEN")
           Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
             "derived template needs CKA_VALUE_LEN")
+    -- | 'finish' for data-output derivations: every template must
+    -- describe a data object with a positive length (no
+    -- length default — data objects have no natural width).
+    finishData tmpls ceilingN ceilingMsg fx ceilingCode =
+      case mapM checkDataOne tmpls of
+        Left deny -> KeyDenied deny
+        Right keyed
+          | null keyed -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              "derive needs at least one template")
+          | sum (map snd keyed) > ceilingN ->
+              KeyDenied (KeyDeny ceilingCode ceilingMsg)
+          | Left deny <- admitObjects rules (Map.size (mObjects model))
+              (length keyed) ->
+              KeyDenied (KeyDeny (admitCode deny)
+                ("admission denied: " ++ show deny))
+          | otherwise ->
+              let (pos, lens) = unzip
+                    [(pendingFromAttrs st attrs, n) | (attrs, n) <- keyed]
+              in KeyEffect (PwDerive pos lens) (fx (sum lens))
+    checkDataOne
+      :: [(AttributeType, AttributeValue)]
+      -> Either KeyDeny (Map.Map AttributeType AttributeValue, Int)
+    checkDataOne tmpl = case checkDataTemplate ckoData tmpl of
+      Left deny -> Left deny
+      Right attrs
+        | Map.member AttrValue attrs -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            "derived template must not supply CKA_VALUE")
+        | otherwise -> case Map.lookup AttrValueLen attrs of
+        Just (ValULong n)
+          | n < 1 -> Left (KeyDeny CKR_KEY_SIZE_RANGE
+              "derived length must be positive")
+          | n > fromIntegral (maxBound :: Int) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "derived length exceeds the platform range")
+          | otherwise -> Right (attrs, fromIntegral n)
+        Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          "derived length is malformed")
+        Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+          "derived data template needs CKA_VALUE_LEN")
 
 -- | Resolve the base key: known handle, session-visible, derive
 -- mark set, stored material present. Shared by the HKDF and ECDH

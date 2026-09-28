@@ -90,6 +90,7 @@ import Haskoki.Types (EngineResourceId (..), ObjectId (..), ReturnCode (..))
 spec :: TestTree
 spec = testGroup "synthetic engine"
   [ testCase "digest fixed bytes through class" caseDigestClass
+  , testCase "XOF output at the requested length" caseDigestXof
   , testCase "open seeds and capability report" caseOpenCaps
   , testCase "not-yet-migrated surface answers Unsupported" caseUnsupportedRest
   , testCase "closed backend keeps guard order" caseClosedGuards
@@ -234,6 +235,22 @@ caseDigestClass = withSynth "11" $ \env -> do
   assertBool "empty differs from abc" (dEmpty /= d1)
   dTampered <- expectOk "digest abd" =<< digestOneShot env D_SHA256 "abd"
   assertBool "data change detected" (dTampered /= d1)
+
+caseDigestXof :: IO ()
+caseDigestXof = withSynth "11" $ \env -> do
+  x32 <- expectOk "xof128 abc/32" =<< digestXof env D_SHAKE128 "abc" 32
+  assertEqual "xof128 length" 32 (BS.length x32)
+  x64 <- expectOk "xof128 abc/64" =<< digestXof env D_SHAKE128 "abc" 64
+  assertEqual "xof128 prefix" x32 (BS.take 32 x64)
+  x32b <- expectOk "xof128 abc/32 again" =<< digestXof env D_SHAKE128 "abc" 32
+  assertEqual "xof deterministic" x32 x32b
+  y32 <- expectOk "xof256 abc/32" =<< digestXof env D_SHAKE256 "abc" 32
+  assertBool "algs separate" (y32 /= x32)
+  xabd <- expectOk "xof128 abd/32" =<< digestXof env D_SHAKE128 "abd" 32
+  assertBool "input separates" (xabd /= x32)
+  x1 <- expectOk "xof128 abc/1" =<< digestXof env D_SHAKE128 "abc" 1
+  assertEqual "unit prefix" (BS.take 1 x32) x1
+  expectUnsupported "fixed alg refuses xof" =<< digestXof env D_SHA256 "abc" 32
 
 caseOpenCaps :: IO ()
 caseOpenCaps = do
@@ -952,7 +969,7 @@ caseCapsFull = withSynth "11" $ \env -> do
     , D_BLAKE2B384
     ]) (dcAlgs (bcDigests caps))
   assertBool "multipart digest" (dcMultipart (bcDigests caps))
-  assertBool "no xof" (not (dcXof (bcDigests caps)))
+  assertBool "xof advertised" (dcXof (bcDigests caps))
   assertEqual "cipher set" (Set.fromList
     [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
     , C_AES128_CTR, C_AES192_CTR, C_AES256_CTR

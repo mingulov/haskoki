@@ -185,6 +185,7 @@ extern uint64_t haskoki_std_unwrap_key(void *instance, uint64_t h_session,
                                        uint8_t *p_frame, uint64_t frame_len,
                                        uint64_t *ph_key);
 extern uint64_t haskoki_std_derive_hkdf(void *instance, uint64_t h_session,
+                                        uint64_t mechanism,
                                         uint8_t *p_info, uint64_t info_len,
                                         uint8_t *p_salt, uint64_t salt_len,
                                         uint64_t hkdf_mode, uint64_t hkdf_prf,
@@ -2232,6 +2233,9 @@ static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   case CKM_ECDH1_COFACTOR_DERIVE:
   case CKM_DH_PKCS_DERIVE:
   case CKM_X9_42_DH_DERIVE:
+  case CKM_MD5_KEY_DERIVATION:
+  case CKM_SHAKE_128_KEY_DERIVATION:
+  case CKM_SHAKE_256_KEY_DERIVATION:
   case CKM_SHA1_KEY_DERIVATION:
   case CKM_SHA224_KEY_DERIVATION:
   case CKM_SHA256_KEY_DERIVATION:
@@ -2311,7 +2315,8 @@ CK_RV std_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   if (pMechanism == NULL_PTR || phKey == NULL_PTR) {
     return CKR_ARGUMENTS_BAD;
   }
-  if (pMechanism->mechanism != CKM_HKDF_DERIVE) {
+  if (pMechanism->mechanism != CKM_HKDF_DERIVE &&
+      pMechanism->mechanism != CKM_HKDF_DATA) {
     if (!derive_opaque_ok(pMechanism->mechanism)) {
       return CKR_FUNCTION_NOT_SUPPORTED;
     }
@@ -2355,6 +2360,7 @@ CK_RV std_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                         (hp->bExpand == CK_FALSE ? 0ULL : 2ULL);
     uint64_t hkdfPrf = hkdf_prf_code(hp->prfHashMechanism);
     rv = (CK_RV)haskoki_std_derive_hkdf(inst, (uint64_t)hSession,
+                                        (uint64_t)pMechanism->mechanism,
                                         (uint8_t *)hp->pInfo,
                                         (uint64_t)hp->ulInfoLen,
                                         (uint8_t *)hp->pSalt,

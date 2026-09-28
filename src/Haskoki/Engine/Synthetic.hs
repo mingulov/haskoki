@@ -79,6 +79,7 @@ import Haskoki.Engine.Backend
   , DigestCaps (..)
   , digestMacStem
   , digestOutLen
+  , xofServable
   , ecdhCap
   , EcdhSpec (..)
   , dhCap
@@ -442,6 +443,10 @@ instance CryptoBackend Synthetic where
       -- SHA-256, which only SHA-256 inits could reach).
       Just (alg, prev) -> pure (B.EngineOk (classDigest alg prev))
 
+  digestXof be alg msg outLen =
+    runGuarded be "digestXof" (xofSupported be alg) $ \_ ->
+      pure (B.EngineOk (classXof alg msg outLen))
+
   macSign be spec key msg = runGuarded be "macSign" (macSupported be spec) $ \env -> do
     mkey <- resolveKeyBytes env key
     case mkey of
@@ -802,7 +807,7 @@ synthCaps = BackendCaps
           , D_BLAKE2B256
           , D_BLAKE2B384
           ]
-      , dcMultipart = True, dcXof = False }
+      , dcMultipart = True, dcXof = True }
   , bcCiphers = CipherCaps
       { ccCiphers = Set.fromList synthCipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM", "ChaCha20-Poly1305"] }
   , bcMacs = MacCaps { mcSpecs = synthMacSpecs }
@@ -830,6 +835,9 @@ digestSupported :: BackendEnv Synthetic -> DigestAlg -> Maybe String
 digestSupported (SynthBackend env) alg
   | Set.member alg (dcAlgs (bcDigests (seCaps env))) = Nothing
   | otherwise = Just ("digest not in synthetic set: " ++ show alg)
+
+xofSupported :: BackendEnv Synthetic -> DigestAlg -> Maybe String
+xofSupported (SynthBackend env) alg = xofServable (seCaps env) alg
 
 -- | The synthetic MAC set: plain and GENERAL names for
 -- every fixed-width digest (derived through 'hmacSpecCap', so the
@@ -1831,6 +1839,18 @@ classStream kb iv n = prfBytes
 -- retired record digest, only key generation is seed-keyed). Output
 -- width follows 'synthDigestLengthFor'; SHA-256 output is
 -- byte-identical to the original construction.
+-- | Synthetic XOF output: the same labeled PRF stream as
+-- 'classDigest' under a distinct domain, at the requested
+-- length (non-positive lengths yield empty; callers range-check).
+classXof :: DigestAlg -> ByteString -> Int -> ByteString
+classXof alg input n = prfBytes
+  (frame ["haskoki-synth/class-xof/v1", encodeAlg alg, input]) n
+  where
+    encodeAlg :: DigestAlg -> ByteString
+    encodeAlg D_SHAKE128 = "SHAKE128"
+    encodeAlg D_SHAKE256 = "SHAKE256"
+    encodeAlg other = "NOT-XOF:" <> BS.pack (map (fromIntegral . fromEnum) (show other))
+
 classDigest :: DigestAlg -> ByteString -> ByteString
 classDigest alg input = prfBytes
   (frame ["haskoki-synth/class-digest/v1", encodeAlg alg, input])

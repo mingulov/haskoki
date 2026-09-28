@@ -156,6 +156,7 @@ module Haskoki.Engine.Driver
   , hotpParamsFor
   , Pbkd2Params (..)
   , kdfShaFor
+  , kdfXofFor
   , pbkd2ParamsFor
   , encryptDataPartsFor
   , TlsPrfParams (..)
@@ -170,7 +171,7 @@ import Control.Monad (guard)
 import Data.Bits ((.&.), (.|.), popCount, shiftL, shiftR, xor)
 import Data.List (unsnoc)
 import Data.Word (Word64, Word8)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import qualified Data.Text as T
 
 import Haskoki.Engine.Backend
@@ -195,7 +196,7 @@ import Haskoki.Engine.Backend
   , PssParams (..)
   , SigSpec (..)
   )
-import Haskoki.Operation.Derive (hkdfDeriveMech, maxDerivedTotal)
+import Haskoki.Operation.Derive (hkdfDataMech, hkdfDeriveMech, maxDerivedTotal, maxXofTotal)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoError (..), CryptoResult (..))
 import Haskoki.Recipe.Cipher
   ( BlockCipherRecipe (..)
@@ -372,6 +373,7 @@ import Haskoki.Recipe.Kdf
   , kdfCodeDigest
   , kdfParamsValid
   , kdfRecipeFor
+  , kdfXofStem
   )
 import Haskoki.Recipe.EncryptData
   ( EncryptDataRecipe (..)
@@ -646,6 +648,18 @@ kdfShaFor mech = do
   stem <- rkDigestStem r
   rsaDigest stem
 
+-- | SHAKE-KD dispatch: covered XOF mechanisms to the backend
+-- digest algorithm (pinned against 'kdfXofStem' by
+-- RecipeKdfSpec). The output length rides the 'FxDerive' total.
+kdfXofFor :: MechanismId -> Maybe DigestAlg
+kdfXofFor mech = do
+  r <- kdfRecipeFor mech
+  stem <- kdfXofStem r
+  case stem of
+    "SHAKE_128" -> Just D_SHAKE128
+    "SHAKE_256" -> Just D_SHAKE256
+    _ -> Nothing
+
 -- | KDF dispatch, PBKD2: the covered (mechanism, params) pair to
 -- decoded parameters (pinned by RecipeKdfSpec). The PRF
 -- stem must map to a servable digest. 'Nothing' means uncovered
@@ -680,11 +694,19 @@ encryptDataPartsFor mech keyLen params = do
 isEncryptDataMech :: MechanismId -> Bool
 isEncryptDataMech mech = isJust (encryptDataRecipeFor mech)
 
--- | A SHA key-derivation mechanism (drives the parameter-refusal
--- branch).
+-- | A fixed-width SHA key-derivation mechanism (drives the
+-- parameter-refusal branch; XOF rows answer through
+-- 'isKdfXofMech' instead).
 isKdfShaMech :: MechanismId -> Bool
 isKdfShaMech mech = case kdfRecipeFor mech of
-  Just r -> not (rkPbkd2 r)
+  Just r -> not (rkPbkd2 r) && isNothing (kdfXofStem r)
+  Nothing -> False
+
+-- | A SHAKE XOF key-derivation mechanism (drives the
+-- parameter-refusal branch).
+isKdfXofMech :: MechanismId -> Bool
+isKdfXofMech mech = case kdfRecipeFor mech of
+  Just r -> isJust (kdfXofStem r)
   Nothing -> False
 
 -- | The PBKD2 mechanism (drives the parameter-refusal branch).
@@ -1715,7 +1737,10 @@ runEffect env resolve fx = case fx of
         Just (iv, aad) -> withKey mkey $ \key ->
           runAuthWrap False _mech key iv aad input
   FxDerive mech mkey params info outLen
-    | mech == hkdfDeriveMech -> case hkdfParamsFor params of
+    -- HKDF-DATA executes the same KDF as HKDF-DERIVE (the planner
+    -- owns the output-class difference); the effect carries the
+    -- HKDF frame either way.
+    | mech == hkdfDeriveMech || mech == hkdfDataMech -> case hkdfParamsFor params of
         Nothing -> pure (GotCryptoError (CryptoFailed
           "driver: malformed HKDF prf/mode/salt params"))
         Just (alg, hashLen, mode, salt)
@@ -1747,6 +1772,11 @@ runEffect env resolve fx = case fx of
         "driver: SHA key derivation takes empty params and info"))
     | Just alg <- kdfShaFor mech -> withKey mkey $ \key ->
         runShaKd alg key outLen
+    | isKdfXofMech mech
+    , not (BS.null params) || not (BS.null info) -> pure (GotCryptoError (CryptoFailed
+        "driver: SHAKE key derivation takes empty params and info"))
+    | Just alg <- kdfXofFor mech -> withKey mkey $ \key ->
+        runXofKd alg key outLen
     | Just pp <- pbkd2ParamsFor mech params
     , BS.null info -> withKey mkey $ \key ->
         runPbkd2 pp key outLen
@@ -2298,6 +2328,21 @@ runEffect env resolve fx = case fx of
                 EngineOk d -> GotBytes (BS.take outLen d)
         _ -> pure (GotCryptoError (CryptoFailed
           "driver: derive length out of range"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "key derivation needs raw secret bytes"))
+    -- | SHAKE XOF key-derivation effects: XOF output at the planned
+    -- length (capped by 'maxXofTotal' — the planner caps honestly,
+    -- so over-ceiling fires only for hand-built effects).
+    runXofKd :: DigestAlg -> KeyMaterial -> Int -> IO CryptoResult
+    runXofKd alg key outLen = case key of
+      KeyBytes kb
+        | outLen >= 1 && outLen <= maxXofTotal -> do
+            r <- digestXof env alg kb outLen
+            pure $ case r of
+              EngineFail err -> GotCryptoError (toCryptoError err)
+              EngineOk d -> GotBytes d
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: XOF derive length out of range"))
       _ -> pure (GotCryptoError (CryptoBadKey "driver"
         "key derivation needs raw secret bytes"))
     -- | Encrypt-data derive: single-shot cipher encryption of the

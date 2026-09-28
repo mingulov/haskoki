@@ -33,6 +33,7 @@ module Haskoki.FFI.OpenSSL4.Raw
     -- * Fetch+run helpers (owned outputs)
   , digest
   , digestSized
+  , digestXof
   , digestInit
   , digestInitSized
   , digestUpdate
@@ -149,6 +150,9 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_sized"
   c_digest_sized :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_xof"
+  c_digest_xof :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_init"
   c_digest_init :: Ptr OsslLibCtx -> CString -> CString -> IO (Ptr DigestHandle)
@@ -402,6 +406,13 @@ digestSized ctx mdname propq msg outsize =
     withCString propq $ \cpq ->
       withBytes msg $ \(pmsg, nmsg) ->
         withOut (c_digest_sized ctx cmd cpq pmsg nmsg (fromIntegral outsize))
+
+digestXof :: Ptr OsslLibCtx -> String -> String -> ByteString -> Int -> IO (Either Int ByteString)
+digestXof ctx mdname propq msg outsize =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      withBytes msg $ \(pmsg, nmsg) ->
+        withOut (c_digest_xof ctx cmd cpq pmsg nmsg (fromIntegral outsize))
 
 digestInit :: Ptr OsslLibCtx -> String -> String -> IO (Ptr DigestHandle)
 digestInit ctx mdname propq =

@@ -281,6 +281,56 @@ end:
     return rc;
 }
 
+/* --- XOF one-shot digest --------------------------------------------- */
+
+/* 1 MiB malloc sanity bound: allocation safety only, never policy
+ * (the planner and driver own the 64 KiB XOF output ceiling). */
+#define HSK_OSSL4_XOF_MAX 1048576
+
+long hsk_ossl4_digest_xof(OSSL_LIB_CTX *ctx, const char *mdname,
+                          const char *propq, const unsigned char *msg,
+                          size_t msglen, int outsize,
+                          unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_MD *md = NULL;
+    EVP_MD_CTX *mctx = NULL;
+    unsigned char *buf = NULL;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || mdname == NULL || propq == NULL || out == NULL ||
+        (msg == NULL && msglen > 0) || outsize < 1 ||
+        outsize > HSK_OSSL4_XOF_MAX)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    md = EVP_MD_fetch(ctx, mdname, propq);
+    if (md == NULL)
+        goto end;
+    mctx = EVP_MD_CTX_new();
+    if (mctx == NULL)
+        goto end;
+    if (!EVP_DigestInit_ex2(mctx, md, NULL))
+        goto end;
+    if (msglen > 0 && !EVP_DigestUpdate(mctx, msg, msglen))
+        goto end;
+    buf = OPENSSL_malloc((size_t)outsize);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (!EVP_DigestFinalXOF(mctx, buf, (size_t)outsize)) {
+        OPENSSL_clear_free(buf, (size_t)outsize);
+        goto end;
+    }
+    *out = buf;
+    rc = (long)outsize;
+
+end:
+    EVP_MD_CTX_free(mctx);
+    EVP_MD_free(md);
+    return rc;
+}
+
 /* --- multipart digest ------------------------------------------------ */
 
 hsk_ossl4_md_t *hsk_ossl4_digest_init(OSSL_LIB_CTX *ctx, const char *mdname,

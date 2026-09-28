@@ -53,6 +53,7 @@ import Haskoki.Operation
   , activeSlots
   )
 import Haskoki.Operation.Codec (encodeInitInput, encodeVerifyInput)
+import Haskoki.Operation.Derive (maxXofTotal)
 import Haskoki.Operation.KeyManagement
   (GenArgs (..), decodeKeyPair, encodeGenArgs, hotpKeyGenMech)
 import Haskoki.Outcome
@@ -261,6 +262,7 @@ shaKdMechs =
   , (MechanismId 0x399, "SHA3-384", 48, "ec01498288516fc926459f58e2c6ad8df9b473cb0fc08c2596da7cf0e49be4b298d88cea927ac7f539f1edf228376d25")
   , (MechanismId 0x39a, "SHA3-512", 64, "b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0")
   , (MechanismId 0x401e, "BLAKE2B-512", 64, "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923")
+  , (MechanismId 0x390, "MD5", 16, "900150983cd24fb0d6963f7d28e17f72")
   ]
 
 -- ---------------------------------------------------------------------------
@@ -389,6 +391,7 @@ instance CryptoBackend Counting where
     atomicModifyIORef' ref (\n -> (n + 1, ()))
     digestUpdate be rid msg
   digestFinal (CountingEnv be _) rid = digestFinal be rid
+  digestXof (CountingEnv be _) alg msg n = digestXof be alg msg n
   macSign (CountingEnv be _) sp key msg = macSign be sp key msg
   macVerify (CountingEnv be _) sp key msg tag = macVerify be sp key msg tag
   sign (CountingEnv be _) sp key msg = sign be sp key msg
@@ -1615,6 +1618,22 @@ caseDriverKdf = withBackend $ \env -> do
       GotCryptoError (CryptoFailed _) -> pure ()
       other -> assertFailure ("expected Failed " ++ label ++ ", got: " ++ show other)
     ) shaKdMechs
+  -- SHAKE XOF rows: the output length rides the request (hashlib
+  -- cross-checked); truncation is the prefix; over-ceiling
+  -- requests refuse typed.
+  x128 <- deriveAbc (MechanismId 0x39b) 32
+  assertEqual "shake128 abc/32"
+    (hex "5881092dd818bf5cf8a3ddb793fbcba74097d5c526a6d35f97b83351940f2cc8") x128
+  x256 <- deriveAbc (MechanismId 0x39c) 64
+  assertEqual "shake256 abc/64"
+    (hex "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739d5a15bef186a5386c75744c0527e1faa9f8726e462a12a4feb06bd8801e751e4") x256
+  xshort <- deriveAbc (MechanismId 0x39b) 8
+  assertEqual "shake trunc" (BS.take 8 x128) xshort
+  xover <- runEffect env resAbc
+    (FxDerive (MechanismId 0x39b) (Just abcOid) BS.empty BS.empty (maxXofTotal + 1))
+  case xover of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed shake128, got: " ++ show other)
   -- Typed refusals.
   badPrf <- runEffect env res
     (FxDerive pbkd2Mech (Just pwOid) (encodePbkd2Params 99 1 "s" "") BS.empty 32)

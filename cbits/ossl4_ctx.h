@@ -98,6 +98,14 @@ long hsk_ossl4_digest_sized(OSSL_LIB_CTX *ctx, const char *mdname,
                             size_t msglen, int outsize,
                             unsigned char **out);
 
+/* XOF one-shot digest: like 'hsk_ossl4_digest' but finalizes with
+ * EVP_DigestFinalXOF at the requested length (outsize within
+ * 1..1MiB; non-XOF digests fail NATIVE with *out untouched). */
+long hsk_ossl4_digest_xof(OSSL_LIB_CTX *ctx, const char *mdname,
+                          const char *propq, const unsigned char *msg,
+                          size_t msglen, int outsize,
+                          unsigned char **out);
+
 /* --- multipart digest ------------------------------------------------ */
 
 hsk_ossl4_md_t *hsk_ossl4_digest_init(OSSL_LIB_CTX *ctx, const char *mdname,

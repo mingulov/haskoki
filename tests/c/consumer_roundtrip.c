@@ -3556,6 +3556,46 @@ int main(int argc, char **argv) {
                  "proxied NULL salt arrives empty and derives");
         }
       }
+      /* 11g HKDF-DATA: the same KDF with data-object outputs. */
+      {
+        CK_OBJECT_CLASS datcls = CKO_DATA;
+        CK_ULONG datLen = 32;
+        CK_ATTRIBUTE dattmpl[] = {
+          { CKA_CLASS, &datcls, sizeof(datcls) },
+          { CKA_VALUE_LEN, &datLen, sizeof(datLen) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        };
+        CK_MECHANISM ddat;
+        CK_OBJECT_HANDLE dobj = 0, bad = 0;
+        CK_BYTE datVal[32];
+        CK_OBJECT_CLASS gotcls = 0;
+        CK_ATTRIBUTE gdat[] = { { CKA_VALUE, datVal, sizeof(datVal) } };
+        CK_ATTRIBUTE gcls[] = { { CKA_CLASS, &gotcls, sizeof(gotcls) } };
+        ddat.mechanism = CKM_HKDF_DATA;
+        ddat.pParameter = &hkdf;
+        ddat.ulParameterLen = sizeof(hkdf);
+        hkdf.bExtract = CK_FALSE;
+        hkdf.bExpand = CK_TRUE;
+        hkdf.prfHashMechanism = CKM_SHA256;
+        hkdf.ulSaltType = CKF_HKDF_SALT_NULL;
+        hkdf.pSalt = NULL_PTR;
+        hkdf.ulSaltLen = 0;
+        hkdf.hSaltKey = 0;
+        hkdf.pInfo = infoA;
+        hkdf.ulInfoLen = sizeof(infoA);
+        rv = f->C_DeriveKey(wsess, &ddat, sealedKey, dattmpl, 3, &dobj);
+        CHECKC(rv == CKR_OK && dobj != 0, "HKDF-DATA derive ok");
+        rv = f->C_GetAttributeValue(wsess, dobj, gdat, 1);
+        CHECKC(rv == CKR_OK && gdat[0].ulValueLen == 32,
+               "HKDF-DATA value reads 32 bytes");
+        rv = f->C_GetAttributeValue(wsess, dobj, gcls, 1);
+        CHECKC(rv == CKR_OK && gotcls == CKO_DATA,
+               "HKDF-DATA class reads DATA");
+        /* Key-class templates deny typed. */
+        rv = f->C_DeriveKey(wsess, &ddat, sealedKey, ktmpl, 5, &bad);
+        CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT && bad == 0,
+               "HKDF-DATA with key template refused typed");
+      }
     /* PBKD2 keygen: the PARAMS2 struct carries the password
      * inline; the derived key matches RFC 6070. Malformed
      * selectors and counts refuse PARAM_INVALID; the length is
@@ -4220,6 +4260,80 @@ int main(int argc, char **argv) {
           rv = f->C_Digest(sess, genval, sizeof(genval), dgst, &dgstLen);
           CHECKC(rv == CKR_OK && dgstLen == 32 && memcmp(dgst, kd1, 32) == 0,
                  "SHA3-256 derived equals token digest");
+          /* 11g MD5-KD: digest-width derive through the opaque intake. */
+          {
+            CK_ULONG vlen16 = 16;
+            CK_ATTRIBUTE mdtmpl[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_VALUE_LEN, &vlen16, sizeof(vlen16) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_SENSITIVE, &no, sizeof(no) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+            };
+            CK_MECHANISM mdm;
+            CK_OBJECT_HANDLE md1 = 0, md2 = 0;
+            CK_BYTE mdv1[16], mdv2[16];
+            CK_ATTRIBUTE gmd[] = { { CKA_VALUE, mdv1, sizeof(mdv1) } };
+            CK_ATTRIBUTE gmd2[] = { { CKA_VALUE, mdv2, sizeof(mdv2) } };
+            mdm.mechanism = CKM_MD5_KEY_DERIVATION;
+            mdm.pParameter = NULL_PTR;
+            mdm.ulParameterLen = 0;
+            rv = f->C_DeriveKey(sess, &mdm, genBase, mdtmpl, 6, &md1);
+            CHECKC(rv == CKR_OK && md1 != 0, "MD5 derive ok");
+            rv = f->C_GetAttributeValue(sess, md1, gmd, 1);
+            CHECKC(rv == CKR_OK && gmd[0].ulValueLen == 16,
+                   "MD5 derived value reads 16 bytes");
+            rv = f->C_DeriveKey(sess, &mdm, genBase, mdtmpl, 6, &md2);
+            CHECKC(rv == CKR_OK && md2 != 0, "MD5 derive replays");
+            rv = f->C_GetAttributeValue(sess, md2, gmd2, 1);
+            CHECKC(rv == CKR_OK && memcmp(mdv1, mdv2, 16) == 0,
+                   "MD5 derived value deterministic");
+          }
+          /* 11g SHAKE-KD: variable-length XOF derive; the length
+           * rides the template, truncation is the prefix, and the
+           * over-ceiling request refuses typed. */
+          {
+            CK_ULONG vlen64b = 64, vlenHuge = 65537;
+            CK_ATTRIBUTE xtmpl[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_VALUE_LEN, &vlen64b, sizeof(vlen64b) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_SENSITIVE, &no, sizeof(no) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+            };
+            CK_ATTRIBUTE xhuge[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_VALUE_LEN, &vlenHuge, sizeof(vlenHuge) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_SENSITIVE, &no, sizeof(no) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+            };
+            CK_MECHANISM xm;
+            CK_OBJECT_HANDLE x1 = 0, x2 = 0, xbad = 0;
+            CK_BYTE xv1[32], xv2[64];
+            CK_ATTRIBUTE gx[] = { { CKA_VALUE, xv1, sizeof(xv1) } };
+            CK_ATTRIBUTE gx2[] = { { CKA_VALUE, xv2, sizeof(xv2) } };
+            xm.mechanism = CKM_SHAKE_128_KEY_DERIVATION;
+            xm.pParameter = NULL_PTR;
+            xm.ulParameterLen = 0;
+            rv = f->C_DeriveKey(sess, &xm, genBase, dtmpl, 6, &x1);
+            CHECKC(rv == CKR_OK && x1 != 0, "SHAKE-128 derive ok");
+            rv = f->C_GetAttributeValue(sess, x1, gx, 1);
+            CHECKC(rv == CKR_OK && gx[0].ulValueLen == 32,
+                   "SHAKE-128 derived value reads 32 bytes");
+            rv = f->C_DeriveKey(sess, &xm, genBase, xtmpl, 6, &x2);
+            CHECKC(rv == CKR_OK && x2 != 0, "SHAKE-128 derive at 64 ok");
+            rv = f->C_GetAttributeValue(sess, x2, gx2, 1);
+            CHECKC(rv == CKR_OK && gx2[0].ulValueLen == 64 &&
+                       memcmp(xv1, xv2, 32) == 0,
+                   "SHAKE-128 truncation is the prefix");
+            rv = f->C_DeriveKey(sess, &xm, genBase, xhuge, 6, &xbad);
+            CHECKC(rv == CKR_KEY_SIZE_RANGE && xbad == 0,
+                   "SHAKE-128 over-ceiling refused typed");
+          }
           /* TLS-PRF: C-surface KAT (libcrypto-oracle bytes), replay,
            * and typed refusals. */
           {

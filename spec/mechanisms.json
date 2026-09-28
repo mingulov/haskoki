@@ -4869,7 +4869,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Parameterized-truncation sibling of the SHA-KD rows (t parameter selects the width); deferred with its digest/HMAC T siblings (later truncation-params slice). Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Parameterized-truncation sibling of the SHA-KD rows (t parameter selects the width); deferred with its digest/HMAC T siblings (later truncation-params slice). Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own KD rows) (extends the CKM_SHA512_T_HMAC stance; supersedes the truncation-params deferral for this row).",
       "numeric_id": "0x00000053",
       "routes": [],
       "source_refs": [
@@ -4880,9 +4880,9 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
+        "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
       "test_evidence": []
@@ -12346,14 +12346,30 @@
       "canonical_name": "CKM_MD5_KEY_DERIVATION",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "KDF recipe (core/Haskoki/Recipe/Kdf.hs): hash the base value with MD5, truncate to the 16-byte digest width (empty parameters). The driver executes over the digest route (real digests on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverKdf: hashlib cross-checked digests of \"abc\" per row); planner ceilings pinned (RecipeKdfSpec).",
       "numeric_id": "0x00000390",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "sha-kdf/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_MD5_KEY_DERIVATION",
@@ -12362,12 +12378,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "kdf",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "kdf",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "kdf",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeKdfSpec",
+          "build_id": "kdf",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -12379,7 +12426,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: MD2 absent from the default provider (extends the CKM_MD2 precedent); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: MD2 absent from the default provider (extends the CKM_MD2 precedent); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no MD2-KD route exists (extends the CKM_MD2_HMAC stance).",
       "numeric_id": "0x00000391",
       "routes": [],
       "source_refs": [
@@ -12390,8 +12437,8 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
@@ -13087,14 +13134,30 @@
       "canonical_name": "CKM_SHAKE_128_KEY_DERIVATION",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: XOF key derivation present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "KDF recipe (core/Haskoki/Recipe/Kdf.hs): XOF the base value with SHAKE-128; the output length rides the template lengths (empty parameters), capped by maxXofTotal (65536 bytes) \u2014 a missing CKA_VALUE_LEN stays TEMPLATE_INCOMPLETE (no natural width). The driver executes over the digestXof route (EVP_DigestFinalXOF on the real backend, the labeled PRF stream on synthetic). Vectors pinned (RoutingE2ESpec caseDriverKdf: hashlib cross-checked XOF of \"abc\" at 32/64 bytes plus truncation and the over-ceiling refusal); planner ceilings pinned (RecipeKdfSpec).",
       "numeric_id": "0x0000039b",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "xof-kdf/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHAKE_128_KEY_DERIVATION",
@@ -13103,12 +13166,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "kdf",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "kdf",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "kdf",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeKdfSpec",
+          "build_id": "kdf",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [
@@ -13117,14 +13211,30 @@
       "canonical_name": "CKM_SHAKE_256_KEY_DERIVATION",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: XOF key derivation present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "KDF recipe (core/Haskoki/Recipe/Kdf.hs): XOF the base value with SHAKE-256; the output length rides the template lengths (empty parameters), capped by maxXofTotal (65536 bytes) \u2014 a missing CKA_VALUE_LEN stays TEMPLATE_INCOMPLETE (no natural width). The driver executes over the digestXof route (EVP_DigestFinalXOF on the real backend, the labeled PRF stream on synthetic). Vectors pinned (RoutingE2ESpec caseDriverKdf: hashlib cross-checked XOF of \"abc\" at 32/64 bytes plus truncation and the over-ceiling refusal); planner ceilings pinned (RecipeKdfSpec).",
       "numeric_id": "0x0000039c",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "xof-kdf/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHAKE_256_KEY_DERIVATION",
@@ -13133,12 +13243,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "kdf",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "kdf",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "kdf",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeKdfSpec",
+          "build_id": "kdf",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -14268,7 +14409,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: KIP draft flow (CK_KIP_PARAMS wrapping session with a KIP server); no OpenSSL primitive backs it (extends the CKM_KIP_MAC stance).",
       "numeric_id": "0x00000510",
       "routes": [],
       "source_refs": [
@@ -14279,8 +14420,8 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
@@ -20710,7 +20851,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine), so no GOSTR3410-DERIVE route exists (extends the GOST family stance).",
       "numeric_id": "0x00001204",
       "routes": [],
       "source_refs": [
@@ -20721,8 +20862,8 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
@@ -20923,7 +21064,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no GOST 28147 cipher, so no GOST-MAC route exists (extends the GOST family stance; supersedes the recipe-slice deferral for this row).",
       "numeric_id": "0x00001223",
       "routes": [],
       "source_refs": [
@@ -20934,8 +21075,8 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
@@ -24892,14 +25033,30 @@
       "canonical_name": "CKM_HKDF_DATA",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: HKDF present in 4.0.2 but the HKDF-data profile unmapped in Raw; behavior/synthetic stay planned.",
+      "notes": "Reviewed: the same KDF as CKM_HKDF_DERIVE (HKDF over the SHA-2 PRF class, RFC 5869; expand-only and extract-and-expand with NULL/DATA salt) with data-object outputs (CKO_DATA with CKA_VALUE_LEN, never keys): key-class templates deny CKR_KEY_TYPE_INCONSISTENT, any derive-marked base plans (mirroring HKDF-DERIVE), and a missing length stays TEMPLATE_INCOMPLETE (no default). Refused typed (CKR_MECHANISM_PARAM_INVALID): extract-only, non-SHA-2 PRFs, salt-as-key. Planner pinned (KeyManagementSpec caseHkdfDataPlans); real KAT caseRealHkdfDataVector (A.1 expand, data-class readback) plus the synthetic replay; C-surface matrix in tests/c/consumer_roundtrip.c.",
       "numeric_id": "0x0000402b",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "hmac-sha2-salt-null-or-data"
+          ],
+          "operation": "derive",
+          "output_rule": "hkdf-sha2/v3",
+          "parameter_codec": "hkdf-params/3"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_HKDF_DATA",
@@ -24908,12 +25065,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "key-generation",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

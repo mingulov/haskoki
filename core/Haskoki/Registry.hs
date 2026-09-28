@@ -907,12 +907,13 @@ gmacDescs =
 -- construction (A37), and the real vectors (A39). PBKD2 carries
 -- a second, generate-key route over the same frame (the
 -- password rides inline instead of the base key). The SHA rows
--- predate 2.40; the BLAKE2B row arrived in 3.0. Key bounds are
--- mechanism-specific (widths follow the digest or the planned
--- length).
+-- predate 2.40; the BLAKE2B and SHAKE rows arrived in 3.0. Key
+-- bounds are mechanism-specific (widths follow the digest or the
+-- planned length).
 kdfBaselines :: MechanismName -> [Pkcs11Version]
 kdfBaselines name
   | "CKM_BLAKE2B_" `T.isPrefixOf` name = [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
+  | "CKM_SHAKE_" `T.isPrefixOf` name = [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
   | otherwise = allBaselines
 
 kdfDescs :: [Descriptor]
@@ -1271,6 +1272,13 @@ dHkdfDerive = promotedDesc "CKM_HKDF_DERIVE"
   [mechRoute OpDerive "CKM_HKDF_DERIVE" ["A20", "A37", "A39"]]
   MechanismSpecific 0 0
 
+dHkdfData :: Descriptor
+dHkdfData = promotedDesc "CKM_HKDF_DATA"
+  [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyDerive
+  (ParameterCodec "hkdf-params" 3)
+  [mechRoute OpDerive "CKM_HKDF_DATA" ["A20", "A37", "A39"]]
+  MechanismSpecific 0 0
+
 dMlKem :: Descriptor
 dMlKem = promotedDesc "CKM_ML_KEM" [Pkcs11_3_2] FamilyKem
   noParams
@@ -1338,7 +1346,7 @@ curatedRegistry =
     behaviorDescs :: [Descriptor]
     behaviorDescs =
       ( [ dSHA256, dAESKeyGen, dDES3KeyGen, dHotpKeyGen, dGenericSecretKeyGen, dBlake2b512KeyGen, dChacha20KeyGen
-        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dDhKeyPairGen, dX9_42DhKeyPairGen, dEdwardsKeyPairGen, dMontgomeryKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dMlKem
+        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dDhKeyPairGen, dX9_42DhKeyPairGen, dEdwardsKeyPairGen, dMontgomeryKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dHkdfData, dMlKem
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160, dBLAKE2B_512

@@ -280,6 +280,7 @@ caseCurated = do
     , MechanismId Gen.ckm_SSL3_PRE_MASTER_KEY_GEN
     , MechanismId Gen.ckm_TLS_PRE_MASTER_KEY_GEN
     , MechanismId Gen.ckm_TLS_PRF
+    , MechanismId Gen.ckm_MD5_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA1_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA256_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA384_KEY_DERIVATION
@@ -289,6 +290,8 @@ caseCurated = do
     , MechanismId Gen.ckm_SHA3_224_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA3_384_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA3_512_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHAKE_128_KEY_DERIVATION
+    , MechanismId Gen.ckm_SHAKE_256_KEY_DERIVATION
     , MechanismId Gen.ckm_PKCS5_PBKD2
     , MechanismId Gen.ckm_WTLS_PRE_MASTER_KEY_GEN
     , MechanismId Gen.ckm_CAMELLIA_KEY_GEN
@@ -393,6 +396,7 @@ caseCurated = do
     , MechanismId Gen.ckm_BLAKE2B_512_KEY_GEN
     , MechanismId Gen.ckm_CHACHA20_POLY1305
     , MechanismId Gen.ckm_HKDF_DERIVE
+    , MechanismId Gen.ckm_HKDF_DATA
     , MechanismId Gen.ckm_HKDF_KEY_GEN
     , MechanismId Gen.ckm_SALSA20_KEY_GEN
     ]
@@ -436,11 +440,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 230 behavior + 234 catalog-only + catalog line.
+  -- schema + 234 behavior + 230 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 230
+  assertEqual "behavior line count" 234
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 234
+  assertEqual "catalog-only line count" 230
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -765,7 +769,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 234 (length invIds)
+  assertEqual "guard covers every catalog row" 230 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of

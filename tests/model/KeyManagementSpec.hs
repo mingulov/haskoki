@@ -84,6 +84,7 @@ import Haskoki.Operation.Derive
   , decodeHkdfInfo
   , encodeDeriveParams
   , encodeHkdfInfo
+  , hkdfDataMech
   , hkdfDeriveMech
   , maxDerivedTotal
   , planDerive
@@ -162,6 +163,7 @@ import Haskoki.Operation.KeyManagement
   , ckkBlake2b160Hmac
   , ckkBlake2b256Hmac
   , ckkBlake2b384Hmac
+  , ckoData
   , ckoDomainParameters
   , ckoPrivateKey
   , ckoPublicKey
@@ -366,6 +368,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real derive extracts then expands (RFC 5869 A.1/A.3)" caseRealHkdfExtractExpand
   , testCase "Real derive serves SHA-1/SHA-512 PRFs" caseRealHkdfMultiPrf
   , testCase "HKDF extract-only refuses mechanism-param-invalid" caseHkdfExtractOnlyRefused
+  , testCase "HKDF-DATA plans data outputs, refuses key shapes" caseHkdfDataPlans
+  , testCase "Real HKDF-DATA derive matches RFC 5869" caseRealHkdfDataVector
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
   , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
   , testCase "KEM refuses wrong key types inconsistent" caseKemWrongKeyType
@@ -4519,6 +4523,111 @@ caseHkdfExtractOnlyRefused = do
     KeyDenied (KeyDeny code _) ->
       assertEqual "extract-only code" CKR_MECHANISM_PARAM_INVALID code
     other -> assertFailure ("extract-only must deny, got: " ++ show other)
+
+caseHkdfDataPlans :: IO ()
+caseHkdfDataPlans = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] rfcIkm
+  (m2, hkdfH) <- plantKey m1 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkHkdf)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] rfcIkm
+  let frame = encodeHkdfInfo 4 0x03 BS.empty rfcInfo
+      dat = [ (AttrClass, ValULong ckoData)
+            , (AttrValueLen, ValULong 42)
+            , (AttrToken, ValBool False)
+            ]
+      key = [ (AttrClass, ValULong ckoSecretKey)
+            , (AttrKeyType, ValULong ckkGenericSecret)
+            , (AttrValueLen, ValULong 42)
+            , (AttrToken, ValBool False)
+            ]
+      noLen = [ (AttrClass, ValULong ckoData)
+              , (AttrToken, ValBool False)
+              ]
+  case planDerive defaultRules m2 st hkdfDataMech baseH
+      (encodeDeriveParams frame [dat]) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("data output must plan, got: " ++ show other)
+  case planDerive defaultRules m2 st hkdfDataMech baseH
+      (encodeDeriveParams frame [key]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "key-class code" CKR_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("key output must deny, got: " ++ show other)
+  -- Base acceptance mirrors HKDF-DERIVE (any derive-marked
+  -- base): only the output class differs.
+  case planDerive defaultRules m2 st hkdfDataMech hkdfH
+      (encodeDeriveParams frame [dat]) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("hkdf base must plan, got: " ++ show other)
+  case planDerive defaultRules m2 st hkdfDataMech baseH
+      (encodeDeriveParams frame [noLen]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "missing length code" CKR_TEMPLATE_INCOMPLETE code
+    other -> assertFailure ("missing length must deny, got: " ++ show other)
+  case planDerive defaultRules m2 st hkdfDataMech baseH
+      (encodeDeriveParams (encodeHkdfInfo 4 0x01 BS.empty BS.empty) [dat]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "extract-only code" CKR_MECHANISM_PARAM_INVALID code
+    other -> assertFailure ("extract-only must deny, got: " ++ show other)
+
+caseRealHkdfDataVector :: IO ()
+caseRealHkdfDataVector = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+  -- The A.1 shape, mirrored from caseRealHkdfVector: the base
+  -- carries the RFC PRK, expand-only, and the derived 42 bytes
+  -- must equal the RFC OKM — the same KDF as HKDF-DERIVE, only
+  -- the output class differs.
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] rfcPrk
+  let dat =
+        [ (AttrClass, ValULong ckoData)
+        , (AttrValueLen, ValULong 42)
+        , (AttrToken, ValBool False)
+        ]
+      frame = encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty rfcInfo) [dat]
+  (m2, [h]) <- case planDerive defaultRules m1 st hkdfDataMech baseH frame of
+    KeyEffect pw fx -> do
+      res <- answer m1 fx
+      c <- finishCommit m1 st pw res 1
+      hh <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m1 (pcDelta c))
+      pure (m', [hh])
+    other -> assertFailure ("derive must plan: " ++ show other) >> undefined
+  Just ost <- pure (resolveHandle m2 h)
+  assertEqual "RFC 5869 A.1 OKM" (Just rfcOkm) (keyBytesOf ost)
+  assertEqual "data class" (Just (ValULong ckoData))
+    (Map.lookup AttrClass (osAttrs ost))
+  -- The synthetic construction replays itself on the data-output
+  -- arm (same determinism bar as the key-output arm).
+  withSynth $ \sanswer -> do
+    let deriveOnce mm = case planDerive defaultRules mm st hkdfDataMech baseH frame of
+          KeyEffect pw fx -> do
+            res <- sanswer mm fx
+            c <- finishCommit mm st pw res 1
+            hh <- handleOf (pcOutputs c !! 0)
+            m' <- expectRight (publishDelta mm (pcDelta c))
+            pure (m', hh)
+          _ -> assertFailure "derive must plan" >> undefined
+    (ms1, hs1) <- deriveOnce m1
+    (ms2, hs2) <- deriveOnce m1
+    Just os1 <- pure (resolveHandle ms1 hs1)
+    Just os2 <- pure (resolveHandle ms2 hs2)
+    assertEqual "synthetic data derive replays" (keyBytesOf os1) (keyBytesOf os2)
 
 caseRealAuthWrap :: IO ()
 caseRealAuthWrap = withRealEnv $ \env -> do

@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 230
+#define HASKOKI_MECH_COUNT 234
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -135,6 +135,7 @@ static const struct haskoki_mech_row
   { 0x00000370UL, 384UL, 384UL, (unsigned long)(CKF_GENERATE) }, /* CKM_SSL3_PRE_MASTER_KEY_GEN */
   { 0x00000374UL, 384UL, 384UL, (unsigned long)(CKF_GENERATE) }, /* CKM_TLS_PRE_MASTER_KEY_GEN */
   { 0x00000378UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_TLS_PRF */
+  { 0x00000390UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_MD5_KEY_DERIVATION */
   { 0x00000392UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHA1_KEY_DERIVATION */
   { 0x00000393UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHA256_KEY_DERIVATION */
   { 0x00000394UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHA384_KEY_DERIVATION */
@@ -144,6 +145,8 @@ static const struct haskoki_mech_row
   { 0x00000398UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHA3_224_KEY_DERIVATION */
   { 0x00000399UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHA3_384_KEY_DERIVATION */
   { 0x0000039AUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHA3_512_KEY_DERIVATION */
+  { 0x0000039BUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHAKE_128_KEY_DERIVATION */
+  { 0x0000039CUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHAKE_256_KEY_DERIVATION */
   { 0x000003B0UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE | CKF_GENERATE) }, /* CKM_PKCS5_PBKD2 */
   { 0x000003D0UL, 160UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_WTLS_PRE_MASTER_KEY_GEN */
   { 0x00000550UL, 128UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_CAMELLIA_KEY_GEN */
@@ -248,6 +251,7 @@ static const struct haskoki_mech_row
   { 0x0000401FUL, 8UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_BLAKE2B_512_KEY_GEN */
   { 0x00004021UL, 32UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_CHACHA20_POLY1305 */
   { 0x0000402AUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_HKDF_DERIVE */
+  { 0x0000402BUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_HKDF_DATA */
   { 0x0000402CUL, 8UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_HKDF_KEY_GEN */
   { 0x0000402DUL, 256UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_SALSA20_KEY_GEN */
 };

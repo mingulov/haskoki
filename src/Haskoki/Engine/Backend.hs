@@ -38,6 +38,9 @@ module Haskoki.Engine.Backend
   , DigestAlg (..)
   , digestOutLen
   , digestSizedOut
+  , isXofAlg
+  , xofFetchName
+  , xofServable
   , digestMacStem
   , hmacSpecCap
   , rsaSigCap
@@ -195,6 +198,32 @@ digestOutLen alg = case alg of
   D_BLAKE2B160 -> Just 20
   D_BLAKE2B256 -> Just 32
   D_BLAKE2B384 -> Just 48
+
+-- | The SHAKE XOF algorithms (variable output; the only
+-- 'digestXof' inputs).
+isXofAlg :: DigestAlg -> Bool
+isXofAlg D_SHAKE128 = True
+isXofAlg D_SHAKE256 = True
+isXofAlg _ = False
+
+-- | Provider fetch names for the XOF algorithms ('Nothing' for
+-- every fixed-width digest, which fetches through
+-- 'digestFetchName' instead).
+xofFetchName :: DigestAlg -> Maybe String
+xofFetchName D_SHAKE128 = Just "SHAKE-128"
+xofFetchName D_SHAKE256 = Just "SHAKE-256"
+xofFetchName _ = Nothing
+
+-- | XOF guard over advertised capabilities: 'Nothing' serves (the
+-- backend advertises 'dcXof' and the algorithm is an XOF),
+-- 'Just' names the refusal. Both engines guard 'digestXof'
+-- through this, so the advertised flag and the entry point can
+-- never disagree.
+xofServable :: BackendCaps -> DigestAlg -> Maybe String
+xofServable caps alg
+  | not (dcXof (bcDigests caps)) = Just "backend does not serve XOF output"
+  | not (isXofAlg alg) = Just ("not an XOF algorithm: " ++ show alg)
+  | otherwise = Nothing
 
 -- | The native output-size parameter for sized digests: 'Just' nn
 -- for the nn-parameterized BLAKE2b rows (the provider's
@@ -805,6 +834,9 @@ class CryptoBackend b where
   digestInit :: BackendEnv b -> DigestAlg -> IO (EngineResult EngineResourceId)
   digestUpdate :: BackendEnv b -> EngineResourceId -> ByteString -> IO (EngineResult ())
   digestFinal :: BackendEnv b -> EngineResourceId -> IO (EngineResult ByteString)
+  -- XOF one-shot with an explicit output length (the SHAKE
+  -- key-derivation rows; guarded by 'xofServable').
+  digestXof :: BackendEnv b -> DigestAlg -> ByteString -> Int -> IO (EngineResult ByteString)
 
   -- MAC authenticate / verify (constant-time compare inside backend).
   macSign :: BackendEnv b -> MacSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
