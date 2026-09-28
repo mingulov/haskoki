@@ -260,12 +260,17 @@ import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
+import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Registry.Generated
   ( ckm_AES_CCM
   , ckm_DES3_MAC
   , ckm_DES3_MAC_GENERAL
   , ckm_ECDH1_DERIVE
+  , ckm_IKE1_EXTENDED_DERIVE
+  , ckm_IKE1_PRF_DERIVE
+  , ckm_IKE2_PRF_PLUS_DERIVE
+  , ckm_IKE_PRF_DERIVE
   , ckm_PKCS5_PBKD2
   , ckm_SHA256
   , ckm_SHA256_HMAC
@@ -387,6 +392,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real SP800-108 derive matches the KAT" caseRealSp800Vector
   , testCase "TLS-KDF plans rows, refuses bad shapes" caseTlsKdfPlans
   , testCase "Real TLS-KDF derives match the KATs" caseRealTlsKdfVector
+  , testCase "IKE plans rows, refuses bad shapes" caseIkePlans
+  , testCase "Real IKE derives match the KATs" caseRealIkeVector
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
   , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
   , testCase "KEM refuses wrong key types inconsistent" caseKemWrongKeyType
@@ -4754,7 +4761,7 @@ caseSp800Plans = do
   -- All three modes plan with a VALUE_LEN template.
   case planDerive defaultRules m1 st sp800CounterMech baseH
       (encodeDeriveParams counter [kid 16]) of
-    KeyEffect _ (FxDerive mech _ params info total) -> do
+    KeyEffect _ (FxDerive mech _ _ params info total) -> do
       assertEqual "counter mech" sp800CounterMech mech
       assertEqual "counter params" counter params
       assertEqual "counter info empty" BS.empty info
@@ -4882,7 +4889,7 @@ caseTlsKdfPlans = do
   mapM_ (\(mech, frame, n) ->
     case planDerive defaultRules m1 st mech baseH
         (encodeDeriveParams frame [kid n]) of
-      KeyEffect _ (FxDerive _ _ _ _ total) ->
+      KeyEffect _ (FxDerive _ _ _ _ _ total) ->
         assertEqual ("total " ++ show mech) n total
       other -> assertFailure ("must plan, got: " ++ show other))
     [ (tlsKdfMasterMech, master, 48)
@@ -4960,6 +4967,139 @@ caseRealTlsKdfVector = withRealEnv $ \env -> do
     (encodeTlsKdfParams 4 "extended master secret" tlsKdfSess32 BS.empty) 48
   assertEqual "extended master KAT"
     (Just (hex "c3d5ea08b472cbb67e205711e5006647e2b8cb5f6b2a20847780122bdb78cf874a37fb5aa6ae0e3ce513256f888efa1b")) gotExt
+
+ikePlusMech, ikePrfMech, ike1Mech, ikeExtMech :: MechanismId
+ikePlusMech = MechanismId ckm_IKE2_PRF_PLUS_DERIVE
+ikePrfMech = MechanismId ckm_IKE_PRF_DERIVE
+ike1Mech = MechanismId ckm_IKE1_PRF_DERIVE
+ikeExtMech = MechanismId ckm_IKE1_EXTENDED_DERIVE
+
+ikeNi, ikeNr, ikeSeed32 :: BS.ByteString
+ikeNi = BS.pack (replicate 16 1)
+ikeNr = BS.pack (replicate 16 2)
+ikeSeed32 = ikeNi <> ikeNr
+
+caseIkePlans :: IO ()
+caseIkePlans = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 31])
+  (m2, auxH) <- plantKey m1 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [32 .. 63])
+  let auxN = fromIntegral (unExternalHandle auxH)
+      kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      fPlus = encodeIkeParams 4 0 0 0 ikeSeed32 BS.empty
+      fPrf = encodeIkeParams 4 1 0 0 ikeNi ikeNr
+      fIke1 = encodeIkeParams 4 0 7 auxN ikeNi ikeNr
+      fExt = encodeIkeParams 4 0 0 auxN ikeSeed32 BS.empty
+  -- Each row plans with its frame; the two-key rows bind fxKey2.
+  mapM_ (\(mech, frame, n, needsAux) ->
+    case planDerive defaultRules m2 st mech baseH
+        (encodeDeriveParams frame [kid n]) of
+      KeyEffect _ (FxDerive _ _ mAux _ _ total) -> do
+        assertEqual ("total " ++ show mech) n total
+        assertEqual ("aux " ++ show mech) needsAux (mAux /= Nothing)
+      other -> assertFailure ("must plan, got: " ++ show other))
+    [ (ikePlusMech, fPlus, 32, False)
+    , (ikePrfMech, fPrf, 32, False)
+    , (ike1Mech, fIke1, 32, True)
+    , (ikeExtMech, fExt, 32, True)
+    ]
+  -- A wrong-row frame refuses typed.
+  case planDerive defaultRules m2 st ike1Mech baseH
+      (encodeDeriveParams fPlus [kid 32]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "wrong-row code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("wrong row must deny, got: " ++ show other)
+  -- The reserved PRF code denies with the spec-exact code.
+  case planDerive defaultRules m2 st ikePrfMech baseH
+      (encodeDeriveParams (encodeIkeParams 0 1 0 0 ikeNi ikeNr) [kid 32]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "prf code" CKR_MECHANISM_PARAM_INVALID code
+    other -> assertFailure ("prf 0 must deny, got: " ++ show other)
+  -- An unknown aux handle denies typed.
+  case planDerive defaultRules m2 st ike1Mech baseH
+      (encodeDeriveParams (encodeIkeParams 4 0 7 999999 ikeNi ikeNr) [kid 32]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "aux code" CKR_KEY_HANDLE_INVALID code
+    other -> assertFailure ("bad aux must deny, got: " ++ show other)
+  -- Output past the ceiling refuses typed.
+  case planDerive defaultRules m2 st ikePlusMech baseH
+      (encodeDeriveParams fPlus [kid (fromIntegral (maxIkeOutput + 1))]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "ceiling code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("over-ceiling must deny, got: " ++ show other)
+
+caseRealIkeVector :: IO ()
+caseRealIkeVector = withRealEnv $ \env -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 31])
+  (m2, auxH) <- plantKey m1 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [32 .. 63])
+  let auxN = fromIntegral (unExternalHandle auxH)
+      kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      derive mech frame n = do
+        (m', [h]) <- case planDerive defaultRules m2 st mech baseH
+            (encodeDeriveParams frame [kid n]) of
+          KeyEffect pw fx -> do
+            res <- answer m2 fx
+            c <- finishCommit m2 st pw res 1
+            hh <- handleOf (pcOutputs c !! 0)
+            m' <- expectRight (publishDelta m2 (pcDelta c))
+            pure (m', [hh])
+          other -> assertFailure ("derive must plan: " ++ show other) >> undefined
+        Just ost <- pure (resolveHandle m' h)
+        pure (keyBytesOf ost)
+      fPlus = encodeIkeParams 4 0 0 0 ikeSeed32 BS.empty
+      fPrfDk = encodeIkeParams 4 1 0 0 ikeNi ikeNr
+      fPrfK = encodeIkeParams 4 0 0 0 ikeNi ikeNr
+      fIke1 = encodeIkeParams 4 0 7 auxN ikeNi ikeNr
+      fExt = encodeIkeParams 4 0 0 auxN ikeSeed32 BS.empty
+  gotPlus <- derive ikePlusMech fPlus 32
+  assertEqual "ike prf+ KAT"
+    (Just (hex "e3703ee905295e6c0141c98f382e17e9df07a5d0e7fb5d1d5eb45e117022cbb1")) gotPlus
+  gotPrfDk <- derive ikePrfMech fPrfDk 32
+  assertEqual "ike prf data-as-key KAT"
+    (Just (hex "909be39279fec3ad8b16546a956974ee435bb4acfa8f0c9167f0f019ff977f45")) gotPrfDk
+  gotPrfK <- derive ikePrfMech fPrfK 32
+  assertEqual "ike prf key order KAT"
+    (Just (hex "df53a0de91b1e3a8d1523ea225bbc6814065bbe96203108f45501f20467046fb")) gotPrfK
+  gotIke1 <- derive ike1Mech fIke1 32
+  assertEqual "ike1 prf KAT"
+    (Just (hex "612802ecc378ea82898f416865a51c36ade29e1acfbe2bceb19033c95a702f5a")) gotIke1
+  gotExt <- derive ikeExtMech fExt 32
+  assertEqual "ike extended KAT"
+    (Just (hex "1c81c4b9c9083605362e98bed89e4eef320559270ae273a55ed90710e74e6951")) gotExt
 
 caseRealAuthWrap :: IO ()
 caseRealAuthWrap = withRealEnv $ \env -> do

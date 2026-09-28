@@ -1662,6 +1662,61 @@ skipped (t7692)
   fix — behavior delta confined to the
   0x2002 missing-subprime refusal).
 
+## Round 31: IKE protocol-KDF slice 11j (fast r59→r60 + KAT r32→r33)
+
+- r60: 4298 passed / 19 failed / 663
+  xfailed / 3779 skipped (t8759)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r60-results.json`).
+  r59→r60: +41 pass / +0 fail / +0 xfail /
+  +27 skip (+68 collected).
+- Movers r59→r60 (unit `counts`, exact):
+  `test_ike` 0p/33s → 33p/0s (every IKE
+  leg derives and passes — prf+, PRF
+  both role orders, v1 PRF, extended,
+  plus the invalid-shape refusals; zero
+  failures); `test_mech_flags`
+  751p/1455s/8x → 759p/1483s/8x (the
+  flags matrix over the new rows
+  passes); `test_mech_derive`,
+  `test_mech_negative`, `test_mech_probe`
+  grow skips only (+4/+16/+12
+  non-applicable matrix instances).
+  +41 = 33 + 8; skips −33 + 28 + 4 +
+  16 + 12 = +27.
+- Zero regressions: the 19 failures are
+  identical by id to r59 (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS
+  P11C-006 + 1 SP800 multi-output scope
+  gap).
+- r33: 82737 passed / 25 failed / 1687
+  xfailed / 30494 skipped (t114943)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r33-results.json`).
+  r32→r33: +41 pass / +0 fail / +0 xfail /
+  +27 skip (+68 — the fast-matrix
+  units repeat r59→r60 exactly; no
+  KAT-only delta: IKE carries no
+  `@pytest.mark.slow` legs beyond
+  fast's). The 25 failures are
+  identical by id to r32.
+- Proxy note (consumer parity, not the
+  oracle lanes): the pinned proxy
+  daemon virtualizes object handles per
+  client session and translates
+  top-level handles only — the
+  param-embedded `hKeygxy` passes
+  through untranslated, so the first
+  proxied session coincides and later
+  sessions fail `KEY_HANDLE_INVALID`
+  (nondeterministic by daemon state).
+  The two keygxy-carrying consumer legs
+  run direct-only with the gap cited
+  in-tree; the handle-free legs
+  (prf+, PRF, garbage-image) run in
+  both topologies and parity holds.
+- Bundle note: r60/r33 run on the final
+  11j tree (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

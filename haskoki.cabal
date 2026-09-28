@@ -85,6 +85,7 @@ library haskoki-core
     Haskoki.Recipe.Digest
     Haskoki.Recipe.Dsa
     Haskoki.Recipe.Hmac
+    Haskoki.Recipe.Ike
     Haskoki.Recipe.Kdf
     Haskoki.Recipe.RsaOaep
     Haskoki.Recipe.RsaPkcs1
@@ -396,6 +397,7 @@ test-suite haskoki-model-tests
     RecipeGcmSpec
     RecipeGmacSpec
     RecipeHmacSpec
+    RecipeIkeSpec
     RecipeKdfSpec
     RecipeMlDsaSpec
     RecipeOaepSpec

@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 246
+#define HASKOKI_MECH_COUNT 250
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -266,6 +266,10 @@ static const struct haskoki_mech_row
   { 0x0000402BUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_HKDF_DATA */
   { 0x0000402CUL, 8UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_HKDF_KEY_GEN */
   { 0x0000402DUL, 256UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_SALSA20_KEY_GEN */
+  { 0x0000402EUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_IKE2_PRF_PLUS_DERIVE */
+  { 0x0000402FUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_IKE_PRF_DERIVE */
+  { 0x00004030UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_IKE1_PRF_DERIVE */
+  { 0x00004031UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_IKE1_EXTENDED_DERIVE */
 };
 
 #endif /* HASKOKI_MECH_CATALOG_INC */

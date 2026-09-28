@@ -42,6 +42,14 @@ import Haskoki.FFI.NativeParams
   , normalizeEncryptDataCbcParams
   , normalizeEncryptDataEcbParams
   , normalizeMechParams
+  , normalizeIke1ExtParams
+  , normalizeIke1PrfParams
+  , normalizeIkePrfParams
+  , normalizeIkePrfPlusParams
+  , ike1ExtNativeSize
+  , ike1PrfNativeSize
+  , ikePrfNativeSize
+  , ikePrfPlusNativeSize
   , oaepNativeSize
   , pssNativeSize
   )
@@ -60,6 +68,7 @@ import Haskoki.Recipe.Eddsa
   , encodeEddsaParams
   )
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmParamsValid, gcmRecipeFor)
+import Haskoki.Recipe.Ike (encodeIkeParams, ikeParamsValid, ikeRecipeFor)
 import Haskoki.Recipe.Gmac (gmacParamsValid, gmacRecipeFor)
 import Haskoki.Recipe.MlDsa
   ( MldsaHedge (..)
@@ -716,4 +725,150 @@ spec = testGroup "native mechanism params"
         pokeByteOff p 0 (nullPtr :: Ptr Word8)
         normalizeMechParams mid p 8 raw
       assertEqual "passthrough" raw out
+  , testCase "ike native structs translate to canonical" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+          prf = mustGeneratedId "CKM_SHA256_HMAC"
+          seed = BS.pack [1 .. 32]
+          ni = BS.replicate 16 1
+          nr = BS.replicate 16 2
+          ckyi = BS.replicate 8 3
+          ckyr = BS.replicate 8 4
+          extra = BS.pack [5 .. 20]
+          check name mid got want = do
+            assertEqual ("canonical " ++ name) (Just want) got
+            case (got, ikeRecipeFor mid) of
+              (Just canon, Just r) ->
+                assertEqual ("recipe accepts " ++ name) True (ikeParamsValid r canon)
+              _ -> fail ("ike recipe or image missing: " ++ name)
+          plusMid = MechanismId (mustGeneratedId "CKM_IKE2_PRF_PLUS_DERIVE")
+          prfMid = MechanismId (mustGeneratedId "CKM_IKE_PRF_DERIVE")
+          ike1Mid = MechanismId (mustGeneratedId "CKM_IKE1_PRF_DERIVE")
+          extMid = MechanismId (mustGeneratedId "CKM_IKE1_EXTENDED_DERIVE")
+      outPlus <- BS.useAsCStringLen seed $ \(sp, slen) ->
+        allocaBytes ikePrfPlusNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong prf)
+          pokeByteOff p w (0 :: Word8)
+          pokeByteOff p (2 * w) (CULong 0)
+          pokeByteOff p (3 * w) (castPtr sp)
+          pokeByteOff p (3 * w + pw) (CULong (fromIntegral slen))
+          normalizeIkePrfPlusParams p (fromIntegral ikePrfPlusNativeSize)
+      check "prf+" plusMid outPlus (encodeIkeParams 4 0 0 0 seed BS.empty)
+      outPrf <- BS.useAsCStringLen ni $ \(ip, ilen) ->
+        BS.useAsCStringLen nr $ \(rp, rlen) ->
+          allocaBytes ikePrfNativeSize $ \p -> do
+            pokeByteOff p 0 (CULong prf)
+            pokeByteOff p w (1 :: Word8)
+            pokeByteOff p (w + 1) (0 :: Word8)
+            pokeByteOff p (2 * w) (castPtr ip)
+            pokeByteOff p (3 * w) (CULong (fromIntegral ilen))
+            pokeByteOff p (3 * w + pw) (castPtr rp)
+            pokeByteOff p (4 * w + pw) (CULong (fromIntegral rlen))
+            pokeByteOff p (5 * w + pw) (CULong 0)
+            normalizeIkePrfParams p (fromIntegral ikePrfNativeSize)
+      check "prf" prfMid outPrf (encodeIkeParams 4 1 0 0 ni nr)
+      outIke1 <- BS.useAsCStringLen ckyi $ \(ip, ilen) ->
+        BS.useAsCStringLen ckyr $ \(rp, rlen) ->
+          allocaBytes ike1PrfNativeSize $ \p -> do
+            pokeByteOff p 0 (CULong prf)
+            pokeByteOff p w (0 :: Word8)
+            pokeByteOff p (2 * w) (CULong 405)
+            pokeByteOff p (3 * w) (CULong 0)
+            pokeByteOff p (4 * w) (castPtr ip)
+            pokeByteOff p (5 * w) (CULong (fromIntegral ilen))
+            pokeByteOff p (5 * w + pw) (castPtr rp)
+            pokeByteOff p (6 * w + pw) (CULong (fromIntegral rlen))
+            pokeByteOff p (8 * w) (7 :: Word8)
+            normalizeIke1PrfParams p (fromIntegral ike1PrfNativeSize)
+      check "ike1" ike1Mid outIke1 (encodeIkeParams 4 0 7 405 ckyi ckyr)
+      outExt <- BS.useAsCStringLen extra $ \(ep, elen) ->
+        allocaBytes ike1ExtNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong prf)
+          pokeByteOff p w (1 :: Word8)
+          pokeByteOff p (2 * w) (CULong 405)
+          pokeByteOff p (3 * w) (castPtr ep)
+          pokeByteOff p (3 * w + pw) (CULong (fromIntegral elen))
+          normalizeIke1ExtParams p (fromIntegral ike1ExtNativeSize)
+      check "ext" extMid outExt (encodeIkeParams 4 0 0 405 extra BS.empty)
+  , testCase "ike key-carrying legs refuse" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+          prf = mustGeneratedId "CKM_SHA256_HMAC"
+          seed = BS.pack [1 .. 32]
+          lbl name got = assertEqual ("refused " ++ name) Nothing got
+      seedKey <- BS.useAsCStringLen seed $ \(sp, slen) ->
+        allocaBytes ikePrfPlusNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong prf)
+          pokeByteOff p w (1 :: Word8)
+          pokeByteOff p (2 * w) (CULong 9)
+          pokeByteOff p (3 * w) (castPtr sp)
+          pokeByteOff p (3 * w + pw) (CULong (fromIntegral slen))
+          normalizeIkePrfPlusParams p (fromIntegral ikePrfPlusNativeSize)
+      lbl "seed-key" seedKey
+      rekey <- BS.useAsCStringLen seed $ \(sp, slen) ->
+        allocaBytes ikePrfNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong prf)
+          pokeByteOff p w (0 :: Word8)
+          pokeByteOff p (w + 1) (1 :: Word8)
+          pokeByteOff p (2 * w) (castPtr sp)
+          pokeByteOff p (3 * w) (CULong (fromIntegral slen))
+          pokeByteOff p (3 * w + pw) (castPtr sp)
+          pokeByteOff p (4 * w + pw) (CULong (fromIntegral slen))
+          pokeByteOff p (5 * w + pw) (CULong 7)
+          normalizeIkePrfParams p (fromIntegral ikePrfNativeSize)
+      lbl "rekey" rekey
+      prev <- BS.useAsCStringLen seed $ \(sp, slen) ->
+        allocaBytes ike1PrfNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong prf)
+          pokeByteOff p w (1 :: Word8)
+          pokeByteOff p (2 * w) (CULong 405)
+          pokeByteOff p (3 * w) (CULong 9)
+          pokeByteOff p (4 * w) (castPtr sp)
+          pokeByteOff p (5 * w) (CULong (fromIntegral slen))
+          pokeByteOff p (5 * w + pw) (castPtr sp)
+          pokeByteOff p (6 * w + pw) (CULong (fromIntegral slen))
+          pokeByteOff p (8 * w) (1 :: Word8)
+          normalizeIke1PrfParams p (fromIntegral ike1PrfNativeSize)
+      lbl "prevkey" prev
+      noKeygxy <- BS.useAsCStringLen seed $ \(sp, slen) ->
+        allocaBytes ike1PrfNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong prf)
+          pokeByteOff p w (0 :: Word8)
+          pokeByteOff p (2 * w) (CULong 0)
+          pokeByteOff p (3 * w) (CULong 0)
+          pokeByteOff p (4 * w) (castPtr sp)
+          pokeByteOff p (5 * w) (CULong (fromIntegral slen))
+          pokeByteOff p (5 * w + pw) (castPtr sp)
+          pokeByteOff p (6 * w + pw) (CULong (fromIntegral slen))
+          pokeByteOff p (8 * w) (1 :: Word8)
+          normalizeIke1PrfParams p (fromIntegral ike1PrfNativeSize)
+      lbl "missing-keygxy" noKeygxy
+      mismatch <- BS.useAsCStringLen seed $ \(sp, slen) ->
+        allocaBytes ike1ExtNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong prf)
+          pokeByteOff p w (0 :: Word8)
+          pokeByteOff p (2 * w) (CULong 405)
+          pokeByteOff p (3 * w) (castPtr sp)
+          pokeByteOff p (3 * w + pw) (CULong (fromIntegral slen))
+          normalizeIke1ExtParams p (fromIntegral ike1ExtNativeSize)
+      lbl "flag-handle-mismatch" mismatch
+  , testCase "ike non-0/1 flag byte refuses" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+          prf = mustGeneratedId "CKM_SHA256_HMAC"
+          seed = BS.pack [1 .. 32]
+      out <- BS.useAsCStringLen seed $ \(sp, slen) ->
+        allocaBytes ikePrfPlusNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong prf)
+          pokeByteOff p w (2 :: Word8)
+          pokeByteOff p (2 * w) (CULong 0)
+          pokeByteOff p (3 * w) (castPtr sp)
+          pokeByteOff p (3 * w + pw) (CULong (fromIntegral slen))
+          normalizeIkePrfPlusParams p (fromIntegral ikePrfPlusNativeSize)
+      assertEqual "refused" Nothing out
+  , testCase "ike short image refuses" $ do
+      out <- allocaBytes 8 $ \p -> do
+        pokeByteOff p 0 (CULong 0x251 :: CULong)
+        normalizeIkePrfPlusParams p 8
+      assertEqual "refused" Nothing out
   ]

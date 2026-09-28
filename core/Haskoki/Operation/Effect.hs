@@ -301,6 +301,10 @@ data CryptoEffect
   | FxDerive
       { fxMech :: !MechanismId
       , fxKey :: !(Maybe ObjectId)
+      -- | The aux input key for two-key derives (the IKE
+      -- keygxy/prevkey handle resolved by the planner);
+      -- 'Nothing' on every single-key row.
+      , fxKey2 :: !(Maybe ObjectId)
       , fxParams :: !ByteString
       , fxInput :: !ByteString
       , fxLen :: !Int
@@ -394,8 +398,9 @@ instance Show CryptoEffect where
     [ ("fxMech", show mech), ("fxKey", show key)
     , ("fxParams", show params), ("fxInput", show input)
     ]
-  show (FxDerive mech key params input len) = showFx "FxDerive"
+  show (FxDerive mech key key2 params input len) = showFx "FxDerive"
     [ ("fxMech", show mech), ("fxKey", show key)
+    , ("fxKey2", show key2)
     , ("fxParams", show params), ("fxInput", show input)
     , ("fxLen", show len)
     ]

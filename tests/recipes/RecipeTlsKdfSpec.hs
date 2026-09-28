@@ -274,7 +274,7 @@ casePlan = do
   -- Accepted: the master frame plus a VALUE_LEN template.
   case planDerive defaultRules m testSession masterMech baseHandle
       (encodeDeriveParams masterFrame [derivedTmpl 48]) of
-    KeyEffect _ (FxDerive mech (Just oid) params info total) -> do
+    KeyEffect _ (FxDerive mech (Just oid) Nothing params info total) -> do
       assertEqual "mech" masterMech mech
       assertEqual "base" baseOid oid
       assertEqual "params" masterFrame params
@@ -284,7 +284,7 @@ casePlan = do
   -- Accepted: the free frame plus a VALUE_LEN template.
   case planDerive defaultRules m testSession kdfMech baseHandle
       (encodeDeriveParams kdfFrame [derivedTmpl 32]) of
-    KeyEffect _ (FxDerive mech (Just oid) params info total) -> do
+    KeyEffect _ (FxDerive mech (Just oid) Nothing params info total) -> do
       assertEqual "mech" kdfMech mech
       assertEqual "base" baseOid oid
       assertEqual "params" kdfFrame params

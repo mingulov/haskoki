@@ -146,6 +146,18 @@ module Haskoki.FFI.NativeParams
   , tlsKdfTls12MasterNativeSize
   , tlsKdfExtNativeSize
   , tlsKdfFreeNativeSize
+  , ikePrfPlusStructToCanonical
+  , ikePrfStructToCanonical
+  , ike1PrfStructToCanonical
+  , ike1ExtStructToCanonical
+  , normalizeIkePrfPlusParams
+  , normalizeIkePrfParams
+  , normalizeIke1PrfParams
+  , normalizeIke1ExtParams
+  , ikePrfPlusNativeSize
+  , ikePrfNativeSize
+  , ike1PrfNativeSize
+  , ike1ExtNativeSize
   , pssStructToCanonical
   , oaepStructToCanonical
   , ecdhStructToCanonical
@@ -216,6 +228,7 @@ import Haskoki.Recipe.Sp800108
 import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
+import Haskoki.Recipe.Ike (encodeIkeParams, ikePrfCodeFor)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, tlsKdfPrfCodeFor)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Registry.Generated (mustGeneratedId)
@@ -284,6 +297,35 @@ tlsKdfExtNativeSize = 2 * wordSize + 2 * ptrSize
 -- for the context.
 tlsKdfFreeNativeSize :: Int
 tlsKdfFreeNativeSize = 5 * wordSize + 4 * ptrSize
+
+-- | Native @CK_IKE2_PRF_PLUS_DERIVE_PARAMS@ image size: the PRF
+-- id, the seed-key flag (padded to a word), the seed-key
+-- handle, (pointer, length) for the seed data
+-- (@spec\\/vendor\\/pkcs11.h:1682-1688@; 40 bytes on LP64).
+ikePrfPlusNativeSize :: Int
+ikePrfPlusNativeSize = 4 * wordSize + ptrSize
+
+-- | Native @CK_IKE_PRF_DERIVE_PARAMS@ image size: the PRF id,
+-- the two flag bytes (padded to a word), (pointer, length)
+-- for each nonce, the rekey handle
+-- (@spec\\/vendor\\/pkcs11.h:1651-1660@; 56 bytes on LP64).
+ikePrfNativeSize :: Int
+ikePrfNativeSize = 5 * wordSize + 2 * ptrSize
+
+-- | Native @CK_IKE1_PRF_DERIVE_PARAMS@ image size: the PRF id,
+-- the prev-key flag (padded to a word), the keygxy and
+-- prev-key handles, (pointer, length) for each cookie, the
+-- key-number byte (padded to a word;
+-- @spec\\/vendor\\/pkcs11.h:1670-1680@; 72 bytes on LP64).
+ike1PrfNativeSize :: Int
+ike1PrfNativeSize = 7 * wordSize + 2 * ptrSize
+
+-- | Native @CK_IKE1_EXTENDED_DERIVE_PARAMS@ image size: the
+-- PRF id, the keygxy flag (padded to a word), the keygxy
+-- handle, (pointer, length) for the extra data
+-- (@spec\\/vendor\\/pkcs11.h:1662-1668@; 40 bytes on LP64).
+ike1ExtNativeSize :: Int
+ike1ExtNativeSize = 4 * wordSize + ptrSize
 
 -- | Native @CK_PKCS5_PBKD2_PARAMS2@ image size: the salt-source
 -- word, (pointer, length) for the salt, the iterations and PRF
@@ -423,6 +465,50 @@ ckpCodeByPrf = Map.fromList
 -- | Pure PSS translation: native (hashAlg, mgf, sLen) words onto the
 -- canonical @pss-params/1@ image. Unknown ids and unrepresentable
 -- salt lengths refuse ('Nothing'); the recipe bounds the rest.
+-- | Pure IKEv2 prf+ translation: the native PRF id plus
+-- the chased seed bytes onto the canonical @ike-params\/1@
+-- image. The PRF id maps through 'ikePrfCodeFor'; an
+-- unmapped selector marks the reserved code 0 (structurally
+-- valid — the planner denies it with the spec code). The
+-- seed-key leg refuses upstream (the IO normalizer sees the
+-- flag\/handle before this runs).
+ikePrfPlusStructToCanonical :: Word64 -> ByteString -> Maybe ByteString
+ikePrfPlusStructToCanonical prf seed =
+  Just (encodeIkeParams (prfCode prf) 0 0 0 seed BS.empty)
+
+-- | Pure IKE-PRF translation: flags, nonces, and the rekey
+-- handle onto the canonical image. Rekey (flag or handle)
+-- refuses ('Nothing' — the struct image passes through raw
+-- so the recipe refusal is exactly the planner's); the
+-- data-as-key flag rides bit 0.
+ikePrfStructToCanonical :: Word64 -> Bool -> Bool -> ByteString -> ByteString -> Word64 -> Maybe ByteString
+ikePrfStructToCanonical prf dataAsKey rekey ni nr hNew = do
+  guard (not rekey && hNew == 0)
+  Just (encodeIkeParams (prfCode prf) (if dataAsKey then 1 else 0) 0 0 ni nr)
+
+-- | Pure IKEv1-PRF translation: the PRF id, the keygxy
+-- handle, the cookies, and the key number onto the
+-- canonical image. A missing keygxy or any prevkey (flag
+-- or handle) refuses.
+ike1PrfStructToCanonical :: Word64 -> Bool -> Word64 -> Word64 -> ByteString -> ByteString -> Word8 -> Maybe ByteString
+ike1PrfStructToCanonical prf hasPrev hKeygxy hPrev ckyi ckyr keynum = do
+  guard (hKeygxy /= 0 && not hasPrev && hPrev == 0)
+  Just (encodeIkeParams (prfCode prf) 0 keynum hKeygxy ckyi ckyr)
+
+-- | Pure IKEv1-extended translation: the PRF id, the
+-- optional keygxy handle, and the extra bytes onto the
+-- canonical image. Flag and handle must agree (both absent
+-- or both present).
+ike1ExtStructToCanonical :: Word64 -> Bool -> Word64 -> ByteString -> Maybe ByteString
+ike1ExtStructToCanonical prf hasKeygxy hKeygxy extra = do
+  guard (hasKeygxy == (hKeygxy /= 0))
+  Just (encodeIkeParams (prfCode prf) 0 0 hKeygxy extra BS.empty)
+
+-- | The native PRF id onto the frame code: served HMAC
+-- selectors map, everything else marks the reserved 0.
+prfCode :: Word64 -> Word8
+prfCode prf = fromMaybe 0 (ikePrfCodeFor (MechanismId (fromIntegral prf)))
+
 pssStructToCanonical :: Word64 -> Word64 -> Word64 -> Maybe ByteString
 pssStructToCanonical hashId mgfId salt = do
   d <- Map.lookup hashId digestStemByCkm
@@ -903,6 +989,100 @@ normalizeTlsKdfFreeParams pParams paramsLen
   where
     randOff = 2 * wordSize + ptrSize
     ctxPtrOff = randOff + ssl3RandomSize
+
+-- | One native @CK_BBOOL@ byte onto 'Bool'; only 0\/1
+-- translate (any other byte refuses — the EdDSA flag
+-- convention, shared by the four IKE flag fields).
+asBool :: Word8 -> Maybe Bool
+asBool 0 = Just False
+asBool 1 = Just True
+asBool _ = Nothing
+
+-- | Normalize one IKEv2 prf+ struct: the native
+-- @CK_IKE2_PRF_PLUS_DERIVE_PARAMS@ image at
+-- @pParams@/@paramsLen@ onto the canonical @ike-params\\/1@
+-- image. Wrong-sized images, non-0\/1 flag bytes, the
+-- seed-key leg (flag or handle), and refused seed chases
+-- refuse ('Nothing').
+normalizeIkePrfPlusParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeIkePrfPlusParams pParams paramsLen
+  | paramsLen /= fromIntegral ikePrfPlusNativeSize = pure Nothing
+  | otherwise = do
+      CULong prf <- peekByteOff pParams 0
+      hasSeed <- peekByteOff pParams wordSize
+      CULong hSeed <- peekByteOff pParams (2 * wordSize)
+      pSeed <- peekByteOff pParams (3 * wordSize)
+      CULong seedLen <- peekByteOff pParams (3 * wordSize + ptrSize)
+      mSeed <- chaseBytes pSeed seedLen
+      pure (asBool hasSeed >>= \has ->
+        if has || hSeed /= 0 then Nothing
+        else mSeed >>= ikePrfPlusStructToCanonical prf)
+
+-- | Normalize one IKE-PRF struct: the native
+-- @CK_IKE_PRF_DERIVE_PARAMS@ image at @pParams@/@paramsLen@
+-- onto the canonical @ike-params\\/1@ image. Wrong-sized
+-- images, non-0\/1 flag bytes, the rekey leg, and refused
+-- nonce chases refuse ('Nothing').
+normalizeIkePrfParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeIkePrfParams pParams paramsLen
+  | paramsLen /= fromIntegral ikePrfNativeSize = pure Nothing
+  | otherwise = do
+      CULong prf <- peekByteOff pParams 0
+      dataAsKey <- peekByteOff pParams wordSize
+      rekey <- peekByteOff pParams (wordSize + 1)
+      pNi <- peekByteOff pParams (2 * wordSize)
+      CULong niLen <- peekByteOff pParams (3 * wordSize)
+      pNr <- peekByteOff pParams (3 * wordSize + ptrSize)
+      CULong nrLen <- peekByteOff pParams (4 * wordSize + ptrSize)
+      CULong hNew <- peekByteOff pParams (5 * wordSize + ptrSize)
+      mNi <- chaseBytes pNi niLen
+      mNr <- chaseBytes pNr nrLen
+      pure (asBool dataAsKey >>= \dk -> asBool rekey >>= \rk ->
+        mNi >>= \ni -> mNr >>= \nr ->
+          ikePrfStructToCanonical prf dk rk ni nr hNew)
+
+-- | Normalize one IKEv1-PRF struct: the native
+-- @CK_IKE1_PRF_DERIVE_PARAMS@ image at @pParams@/@paramsLen@
+-- onto the canonical @ike-params\\/1@ image. Wrong-sized
+-- images, non-0\/1 flag bytes, a missing keygxy, any
+-- prevkey, and refused cookie chases refuse ('Nothing').
+normalizeIke1PrfParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeIke1PrfParams pParams paramsLen
+  | paramsLen /= fromIntegral ike1PrfNativeSize = pure Nothing
+  | otherwise = do
+      CULong prf <- peekByteOff pParams 0
+      hasPrev <- peekByteOff pParams wordSize
+      CULong hKeygxy <- peekByteOff pParams (2 * wordSize)
+      CULong hPrev <- peekByteOff pParams (3 * wordSize)
+      pCkyi <- peekByteOff pParams (4 * wordSize)
+      CULong ckyiLen <- peekByteOff pParams (5 * wordSize)
+      pCkyr <- peekByteOff pParams (5 * wordSize + ptrSize)
+      CULong ckyrLen <- peekByteOff pParams (6 * wordSize + ptrSize)
+      keynum <- peekByteOff pParams (8 * wordSize)
+      mCkyi <- chaseBytes pCkyi ckyiLen
+      mCkyr <- chaseBytes pCkyr ckyrLen
+      pure (asBool hasPrev >>= \hp ->
+        mCkyi >>= \ckyi -> mCkyr >>= \ckyr ->
+          ike1PrfStructToCanonical prf hp hKeygxy hPrev ckyi ckyr keynum)
+
+-- | Normalize one IKEv1-extended struct: the native
+-- @CK_IKE1_EXTENDED_DERIVE_PARAMS@ image at
+-- @pParams@/@paramsLen@ onto the canonical @ike-params\\/1@
+-- image. Wrong-sized images, non-0\/1 flag bytes, a
+-- flag\/handle mismatch, and refused extra-data chases
+-- refuse ('Nothing').
+normalizeIke1ExtParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeIke1ExtParams pParams paramsLen
+  | paramsLen /= fromIntegral ike1ExtNativeSize = pure Nothing
+  | otherwise = do
+      CULong prf <- peekByteOff pParams 0
+      hasKeygxy <- peekByteOff pParams wordSize
+      CULong hKeygxy <- peekByteOff pParams (2 * wordSize)
+      pExtra <- peekByteOff pParams (3 * wordSize)
+      CULong extraLen <- peekByteOff pParams (3 * wordSize + ptrSize)
+      mExtra <- chaseBytes pExtra extraLen
+      pure (asBool hasKeygxy >>= \has ->
+        mExtra >>= ike1ExtStructToCanonical prf has hKeygxy)
 
 -- | Native @CK_*_CBC_ENCRYPT_DATA_PARAMS@ image size for one IV
 -- width: the inline IV plus (pointer, length) for the data (the

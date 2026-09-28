@@ -1050,7 +1050,7 @@ keyPairCompatible (PwUnwrapRaw _) (FxUnwrap _ _ _ _) = True
 keyPairCompatible (PwUnwrapTail _ _ _) (FxUnwrap _ _ _ _) = True
 keyPairCompatible (PwEncaps _ _ _) (FxKemEncaps _ _ _ _) = True
 keyPairCompatible (PwDecaps _) (FxKemDecaps _ _ _ _) = True
-keyPairCompatible (PwDerive _ _) (FxDerive _ _ _ _ _) = True
+keyPairCompatible (PwDerive _ _) (FxDerive _ _ _ _ _ _) = True
 keyPairCompatible _ _ = False
 
 -- | Finish planned work against the driver's answer. On bytes the

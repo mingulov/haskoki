@@ -73,6 +73,7 @@ import Haskoki.Recipe.Dh (encodeDhParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
+import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
@@ -123,6 +124,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: kdf vectors + refuse" caseDriverKdf
   , testCase "driver: sp800-108 vectors + refuse" caseDriverSp800
   , testCase "driver: tls-kdf vectors + refuse" caseDriverTlsKdf
+  , testCase "driver: ike vectors + refuse" caseDriverIke
   , testCase "driver: pbkd2 keygen vector" caseDriverPbkd2Gen
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
@@ -903,7 +905,7 @@ caseDriverEncryptData = withBackend $ \env -> do
         | oid == kD3 = Just (KeyBytes edKey24)
         | otherwise = Nothing
       derive oid mech params outLen =
-        runEffect env res (FxDerive mech (Just oid) params BS.empty outLen)
+        runEffect env res (FxDerive mech (Just oid) Nothing params BS.empty outLen)
           >>= expectBytes
       cbc = edIv16 <> edData32
       d3cbc = edIv8 <> edData16
@@ -927,7 +929,7 @@ caseDriverEncryptData = withBackend $ \env -> do
   assertEqual "des3-ecb full" (hex "534c0b5cdcb62ea80cfcfab978042851") d3ecb
   -- Refusals: ragged frames and bad key lengths fail closed.
   ragged <- runEffect env res
-    (FxDerive aesCbcEdMech (Just kAes) (edIv16 <> BS.replicate 20 0) BS.empty 16)
+    (FxDerive aesCbcEdMech (Just kAes) Nothing (edIv16 <> BS.replicate 20 0) BS.empty 16)
   case ragged of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
@@ -935,7 +937,7 @@ caseDriverEncryptData = withBackend $ \env -> do
         | oid == kAes = Just (KeyBytes (BS.take 15 edKey128))
         | otherwise = Nothing
   badKey <- runEffect env badLenKey
-    (FxDerive aesCbcEdMech (Just kAes) cbc BS.empty 32)
+    (FxDerive aesCbcEdMech (Just kAes) Nothing cbc BS.empty 32)
   case badKey of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
@@ -1126,28 +1128,28 @@ caseDriverEcdh = withBackend $ \env -> do
   direct <- case directR of
     EngineOk s -> pure s
     other -> assertFailure ("direct derive failed: " ++ show other)
-  full <- runEffect env res (FxDerive ecdhMech (Just aOid) (blob peerB) BS.empty 32)
+  full <- runEffect env res (FxDerive ecdhMech (Just aOid) Nothing (blob peerB) BS.empty 32)
     >>= expectBytes
   assertEqual "driver == direct" direct full
-  short <- runEffect env res (FxDerive ecdhMech (Just aOid) (blob peerB) BS.empty 16)
+  short <- runEffect env res (FxDerive ecdhMech (Just aOid) Nothing (blob peerB) BS.empty 16)
     >>= expectBytes
   assertEqual "truncation drops leading bytes" (BS.drop 16 direct) short
-  rev <- runEffect env res (FxDerive ecdhMech (Just bOid) (blob peerA) BS.empty 32)
+  rev <- runEffect env res (FxDerive ecdhMech (Just bOid) Nothing (blob peerA) BS.empty 32)
     >>= expectBytes
   assertEqual "commutes" direct rev
-  cof <- runEffect env res (FxDerive ecdhCofMech (Just aOid) (blob peerB) BS.empty 32)
+  cof <- runEffect env res (FxDerive ecdhCofMech (Just aOid) Nothing (blob peerB) BS.empty 32)
     >>= expectBytes
   assertEqual "cofactor agrees" direct cof
-  over <- runEffect env res (FxDerive ecdhMech (Just aOid) (blob peerB) BS.empty 33)
+  over <- runEffect env res (FxDerive ecdhMech (Just aOid) Nothing (blob peerB) BS.empty 33)
   case over of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   kdf <- runEffect env res
-    (FxDerive ecdhMech (Just aOid) (encodeEcdhParams 1 BS.empty peerB) BS.empty 32)
+    (FxDerive ecdhMech (Just aOid) Nothing (encodeEcdhParams 1 BS.empty peerB) BS.empty 32)
   case kdf of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
-  inf <- runEffect env res (FxDerive ecdhMech (Just aOid) (blob peerB) "info" 32)
+  inf <- runEffect env res (FxDerive ecdhMech (Just aOid) Nothing (blob peerB) "info" 32)
   case inf of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
@@ -1184,28 +1186,28 @@ caseDriverDh = withBackend $ \env -> do
   direct <- case directR of
     EngineOk s -> pure s
     other -> assertFailure ("direct derive failed: " ++ show other)
-  full <- runEffect env res (FxDerive dhMech (Just aOid) (blob peerB) BS.empty 256)
+  full <- runEffect env res (FxDerive dhMech (Just aOid) Nothing (blob peerB) BS.empty 256)
     >>= expectBytes
   assertEqual "driver == direct" direct full
-  short <- runEffect env res (FxDerive dhMech (Just aOid) (blob peerB) BS.empty 128)
+  short <- runEffect env res (FxDerive dhMech (Just aOid) Nothing (blob peerB) BS.empty 128)
     >>= expectBytes
   assertEqual "truncation drops leading bytes" (BS.drop 128 direct) short
-  rev <- runEffect env res (FxDerive dhMech (Just bOid) (blob peerA) BS.empty 256)
+  rev <- runEffect env res (FxDerive dhMech (Just bOid) Nothing (blob peerA) BS.empty 256)
     >>= expectBytes
   assertEqual "commutes" direct rev
-  x9 <- runEffect env res (FxDerive dhX942Mech (Just aOid) (blob peerB) BS.empty 256)
+  x9 <- runEffect env res (FxDerive dhX942Mech (Just aOid) Nothing (blob peerB) BS.empty 256)
     >>= expectBytes
   assertEqual "x9.42 row agrees identically" direct x9
-  over <- runEffect env res (FxDerive dhMech (Just aOid) (blob peerB) BS.empty 257)
+  over <- runEffect env res (FxDerive dhMech (Just aOid) Nothing (blob peerB) BS.empty 257)
   case over of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   kdf <- runEffect env res
-    (FxDerive dhMech (Just aOid) (encodeDhParams 1 peerB) BS.empty 256)
+    (FxDerive dhMech (Just aOid) Nothing (encodeDhParams 1 peerB) BS.empty 256)
   case kdf of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
-  inf <- runEffect env res (FxDerive dhMech (Just aOid) (blob peerB) "info" 256)
+  inf <- runEffect env res (FxDerive dhMech (Just aOid) Nothing (blob peerB) "info" 256)
   case inf of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
@@ -1565,7 +1567,7 @@ caseDriverSp800 = withBackend $ \env -> do
         | oid == kiOid = Just (KeyBytes (BS.pack [0 .. 31]))
         | otherwise = Nothing
       derive mech params outLen =
-        runEffect env res (FxDerive mech (Just kiOid) params BS.empty outLen)
+        runEffect env res (FxDerive mech (Just kiOid) Nothing params BS.empty outLen)
           >>= expectBytes
       fixed = "SP800-108 test label" <> "\x00" <> "SP800-108 test context"
       counter = encodeSp800Params 4 32 32 BS.empty fixed
@@ -1590,21 +1592,21 @@ caseDriverSp800 = withBackend $ \env -> do
     (hex "865126a55ca1386cd245a4b2ba4c29ec21a7d46d4b74c26e899fcc5a39f68b65") d32
   -- Typed refusals: junk params, a non-empty info string, and
   -- an over-ceiling length.
-  junk <- runEffect env res (FxDerive ctrMech (Just kiOid) "junk" BS.empty 16)
+  junk <- runEffect env res (FxDerive ctrMech (Just kiOid) Nothing "junk" BS.empty 16)
   case junk of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed sp800 junk, got: " ++ show other)
-  withInfo <- runEffect env res (FxDerive ctrMech (Just kiOid) counter "x" 16)
+  withInfo <- runEffect env res (FxDerive ctrMech (Just kiOid) Nothing counter "x" 16)
   case withInfo of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed sp800 info, got: " ++ show other)
   over <- runEffect env res
-    (FxDerive ctrMech (Just kiOid) counter BS.empty (maxSp800Total + 1))
+    (FxDerive ctrMech (Just kiOid) Nothing counter BS.empty (maxSp800Total + 1))
   case over of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed sp800 length, got: " ++ show other)
   let short = encodeSp800Params 4 8 32 BS.empty fixed
-  overCtr <- runEffect env res (FxDerive ctrMech (Just kiOid) short BS.empty 8192)
+  overCtr <- runEffect env res (FxDerive ctrMech (Just kiOid) Nothing short BS.empty 8192)
   case overCtr of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed sp800 counter, got: " ++ show other)
@@ -1621,7 +1623,7 @@ caseDriverTlsKdf = withBackend $ \env -> do
         | oid == dhOid = Just (KeyBytes (BS.pack [0 .. 31]))
         | otherwise = Nothing
       deriveAs oid mech params outLen =
-        runEffect env res (FxDerive mech (Just oid) params BS.empty outLen)
+        runEffect env res (FxDerive mech (Just oid) Nothing params BS.empty outLen)
           >>= expectBytes
       cr = BS.pack [0 .. 31]
       sr = BS.pack [32 .. 63]
@@ -1661,19 +1663,95 @@ caseDriverTlsKdf = withBackend $ \env -> do
   assertEqual "tls kdf legacy" (hex "023d49a0cea8ad8071bf64519dc8f45bd302c1db3e33d39d1f21c548d05194aa") g32
   -- Typed refusals: junk params, a non-empty info string, and
   -- an over-ceiling length.
-  junk <- runEffect env res (FxDerive m10 (Just pmsOid) "junk" BS.empty 48)
+  junk <- runEffect env res (FxDerive m10 (Just pmsOid) Nothing "junk" BS.empty 48)
   case junk of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed tlskdf junk, got: " ++ show other)
-  withInfo <- runEffect env res (FxDerive m10 (Just pmsOid) f10 "x" 48)
+  withInfo <- runEffect env res (FxDerive m10 (Just pmsOid) Nothing f10 "x" 48)
   case withInfo of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed tlskdf info, got: " ++ show other)
   over <- runEffect env res
-    (FxDerive m10 (Just pmsOid) f10 BS.empty (maxTlsKdfOutput + 1))
+    (FxDerive m10 (Just pmsOid) Nothing f10 BS.empty (maxTlsKdfOutput + 1))
   case over of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed tlskdf length, got: " ++ show other)
+
+caseDriverIke :: IO ()
+caseDriverIke = withBackend $ \env -> do
+  let baseOid = ObjectId 84
+      auxOid = ObjectId 85
+      res oid
+        | oid == baseOid = Just (KeyBytes (BS.pack [0 .. 31]))
+        | oid == auxOid = Just (KeyBytes (BS.pack [32 .. 63]))
+        | otherwise = Nothing
+      -- The frame aux number is planner-bound (onto fxKey2);
+      -- the driver resolves the effect field, so these pass
+      -- the external 405 in-frame and bind fxKey2 directly.
+      deriveAs mAux mech params outLen =
+        runEffect env res (FxDerive mech (Just baseOid) mAux params BS.empty outLen)
+          >>= expectBytes
+      ni = BS.pack (replicate 16 1)
+      nr = BS.pack (replicate 16 2)
+      seed32 = ni <> nr
+      plus = MechanismId 0x402e
+      prf = MechanismId 0x402f
+      ike1 = MechanismId 0x4030
+      ext = MechanismId 0x4031
+      fPlus = encodeIkeParams 4 0 0 0 seed32 BS.empty
+      fPrfDk = encodeIkeParams 4 1 0 0 ni nr
+      fPrfK = encodeIkeParams 4 0 0 0 ni nr
+      fIke1 = encodeIkeParams 4 0 7 405 ni nr
+      fExt = encodeIkeParams 4 0 0 405 seed32 BS.empty
+      fExtNox = encodeIkeParams 4 0 0 0 BS.empty BS.empty
+  p32 <- deriveAs Nothing plus fPlus 32
+  assertEqual "ike prf+" (hex "e3703ee905295e6c0141c98f382e17e9df07a5d0e7fb5d1d5eb45e117022cbb1") p32
+  p48 <- deriveAs Nothing plus fPlus 48
+  assertEqual "ike prf+ long" (hex "e3703ee905295e6c0141c98f382e17e9df07a5d0e7fb5d1d5eb45e117022cbb1c5710476207a417af1bc594f29830d68") p48
+  dk32 <- deriveAs Nothing prf fPrfDk 32
+  assertEqual "ike prf data-as-key" (hex "909be39279fec3ad8b16546a956974ee435bb4acfa8f0c9167f0f019ff977f45") dk32
+  k32 <- deriveAs Nothing prf fPrfK 32
+  assertEqual "ike prf key order" (hex "df53a0de91b1e3a8d1523ea225bbc6814065bbe96203108f45501f20467046fb") k32
+  s32 <- deriveAs (Just auxOid) ike1 fIke1 32
+  assertEqual "ike1 prf" (hex "612802ecc378ea82898f416865a51c36ade29e1acfbe2bceb19033c95a702f5a") s32
+  e32 <- deriveAs (Just auxOid) ext fExt 32
+  assertEqual "ike extended" (hex "1c81c4b9c9083605362e98bed89e4eef320559270ae273a55ed90710e74e6951") e32
+  e48 <- deriveAs (Just auxOid) ext fExt 48
+  assertEqual "ike extended long" (hex "1c81c4b9c9083605362e98bed89e4eef320559270ae273a55ed90710e74e6951b39e23e7bba290a013caca808ea6af06") e48
+  t16 <- deriveAs Nothing ext fExtNox 16
+  assertEqual "ike extended truncates base" (hex "000102030405060708090a0b0c0d0e0f") t16
+  -- Typed refusals: junk params, a non-empty info string, an
+  -- over-ceiling length, the missing aux key, past-counter
+  -- prf+, and a single shot past its digest.
+  junk <- runEffect env res (FxDerive plus (Just baseOid) Nothing "junk" BS.empty 32)
+  case junk of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed ike junk, got: " ++ show other)
+  withInfo <- runEffect env res (FxDerive plus (Just baseOid) Nothing fPlus "x" 32)
+  case withInfo of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed ike info, got: " ++ show other)
+  over <- runEffect env res
+    (FxDerive plus (Just baseOid) Nothing fPlus BS.empty (maxIkeOutput + 1))
+  case over of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed ike length, got: " ++ show other)
+  noAux <- runEffect env res (FxDerive ike1 (Just baseOid) Nothing fIke1 BS.empty 32)
+  case noAux of
+    GotCryptoError (CryptoBadKey _ _) -> pure ()
+    other -> assertFailure ("expected BadKey ike no-aux, got: " ++ show other)
+  cap <- runEffect env res (FxDerive plus (Just baseOid) Nothing fPlus BS.empty 8161)
+  case cap of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed ike counter cap, got: " ++ show other)
+  wide <- runEffect env res (FxDerive prf (Just baseOid) Nothing fPrfK BS.empty 33)
+  case wide of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed ike digest cap, got: " ++ show other)
+  trunc <- runEffect env res (FxDerive ext (Just baseOid) Nothing fExtNox BS.empty 48)
+  case trunc of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed ike trunc cap, got: " ++ show other)
 
 -- SHA-1 vectors plus hashlib\/CLI cross-checked SHA-256\/512
 -- vectors, multi-block output, truncation, SHA-KD rows, and typed
@@ -1687,10 +1765,10 @@ caseDriverKdf = withBackend $ \env -> do
         | oid == pw2Oid = Just (KeyBytes "passwordPASSWORDpassword")
         | otherwise = Nothing
       derive mech params outLen =
-        runEffect env res (FxDerive mech (Just pwOid) params BS.empty outLen)
+        runEffect env res (FxDerive mech (Just pwOid) Nothing params BS.empty outLen)
           >>= expectBytes
       deriveAs oid mech params outLen =
-        runEffect env res (FxDerive mech (Just oid) params BS.empty outLen)
+        runEffect env res (FxDerive mech (Just oid) Nothing params BS.empty outLen)
           >>= expectBytes
       -- Engine-local PRF codes (recipe documents the table).
       prfSha1 = 2
@@ -1730,14 +1808,14 @@ caseDriverKdf = withBackend $ \env -> do
         | oid == abcOid = Just (KeyBytes "abc")
         | otherwise = Nothing
       deriveAbc mech outLen =
-        runEffect env resAbc (FxDerive mech (Just abcOid) BS.empty BS.empty outLen)
+        runEffect env resAbc (FxDerive mech (Just abcOid) Nothing BS.empty BS.empty outLen)
           >>= expectBytes
   mapM_ (\(mech, label, width, dgst) -> do
     full <- deriveAbc mech width
     assertEqual ("digest " ++ label) (hex dgst) full
     short <- deriveAbc mech 8
     assertEqual ("trunc " ++ label) (BS.take 8 full) short
-    over <- runEffect env resAbc (FxDerive mech (Just abcOid) BS.empty BS.empty (width + 1))
+    over <- runEffect env resAbc (FxDerive mech (Just abcOid) Nothing BS.empty BS.empty (width + 1))
     case over of
       GotCryptoError (CryptoFailed _) -> pure ()
       other -> assertFailure ("expected Failed " ++ label ++ ", got: " ++ show other)
@@ -1754,23 +1832,23 @@ caseDriverKdf = withBackend $ \env -> do
   xshort <- deriveAbc (MechanismId 0x39b) 8
   assertEqual "shake trunc" (BS.take 8 x128) xshort
   xover <- runEffect env resAbc
-    (FxDerive (MechanismId 0x39b) (Just abcOid) BS.empty BS.empty (maxXofTotal + 1))
+    (FxDerive (MechanismId 0x39b) (Just abcOid) Nothing BS.empty BS.empty (maxXofTotal + 1))
   case xover of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed shake128, got: " ++ show other)
   -- Typed refusals.
   badPrf <- runEffect env res
-    (FxDerive pbkd2Mech (Just pwOid) (encodePbkd2Params 99 1 "s" "") BS.empty 32)
+    (FxDerive pbkd2Mech (Just pwOid) Nothing (encodePbkd2Params 99 1 "s" "") BS.empty 32)
   case badPrf of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badInfo <- runEffect env res
-    (FxDerive pbkd2Mech (Just pwOid) (encodePbkd2Params prfSha256 1 "s" "") "x" 32)
+    (FxDerive pbkd2Mech (Just pwOid) Nothing (encodePbkd2Params prfSha256 1 "s" "") "x" 32)
   case badInfo of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badLen <- runEffect env res
-    (FxDerive (MechanismId 0x393) (Just pwOid) BS.empty BS.empty 33)
+    (FxDerive (MechanismId 0x393) (Just pwOid) Nothing BS.empty BS.empty 33)
   case badLen of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
@@ -1815,7 +1893,7 @@ caseDriverTlsPrf = withBackend $ \env -> do
         | oid == oddOid = Just (KeyBytes sec47)
         | otherwise = Nothing
       deriveAs oid params outLen =
-        runEffect env res (FxDerive tlsPrf (Just oid) params BS.empty outLen)
+        runEffect env res (FxDerive tlsPrf (Just oid) Nothing params BS.empty outLen)
           >>= expectBytes
       params = encodeTlsPrfParams "test label" "0123456789abcdef"
   full48 <- deriveAs evenOid params 48
@@ -1834,17 +1912,17 @@ caseDriverTlsPrf = withBackend $ \env -> do
   assertBool "seeds separated" (otherSeed /= full48)
   -- Typed refusals.
   badParams <- runEffect env res
-    (FxDerive tlsPrf (Just evenOid) "junk" BS.empty 48)
+    (FxDerive tlsPrf (Just evenOid) Nothing "junk" BS.empty 48)
   case badParams of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badInfo <- runEffect env res
-    (FxDerive tlsPrf (Just evenOid) params "x" 48)
+    (FxDerive tlsPrf (Just evenOid) Nothing params "x" 48)
   case badInfo of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badLen <- runEffect env res
-    (FxDerive tlsPrf (Just evenOid) params BS.empty 0)
+    (FxDerive tlsPrf (Just evenOid) Nothing params BS.empty 0)
   case badLen of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)

@@ -245,6 +245,10 @@ mech|0x0000402A|CKM_HKDF_DERIVE||derive|hkdf-params/3|mechanism-specific:0-0|der
 mech|0x0000402B|CKM_HKDF_DATA||derive|hkdf-params/3|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x0000402C|CKM_HKDF_KEY_GEN||keygen|no-params/1|bits:8-2040|generate-key:A37
 mech|0x0000402D|CKM_SALSA20_KEY_GEN||keygen|no-params/1|bits:256-256|generate-key:A37
+mech|0x0000402E|CKM_IKE2_PRF_PLUS_DERIVE||derive|ike-params/1|mechanism-specific:0-0|derive:A20,A37,A39
+mech|0x0000402F|CKM_IKE_PRF_DERIVE||derive|ike-params/1|mechanism-specific:0-0|derive:A20,A37,A39
+mech|0x00004030|CKM_IKE1_PRF_DERIVE||derive|ike-params/1|mechanism-specific:0-0|derive:A20,A37,A39
+mech|0x00004031|CKM_IKE1_EXTENDED_DERIVE||derive|ike-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 inv|0x00000002|CKM_RSA_9796||catalog-only
 inv|0x00000004|CKM_MD2_RSA_PKCS||catalog-only
 inv|0x00000007|CKM_RIPEMD128_RSA_PKCS||catalog-only
@@ -449,10 +453,6 @@ inv|0x00004026|CKM_X2RATCHET_RESPOND||catalog-only
 inv|0x00004027|CKM_X2RATCHET_ENCRYPT||catalog-only
 inv|0x00004028|CKM_X2RATCHET_DECRYPT||catalog-only
 inv|0x00004029|CKM_XEDDSA||catalog-only
-inv|0x0000402E|CKM_IKE2_PRF_PLUS_DERIVE||catalog-only
-inv|0x0000402F|CKM_IKE_PRF_DERIVE||catalog-only
-inv|0x00004030|CKM_IKE1_PRF_DERIVE||catalog-only
-inv|0x00004031|CKM_IKE1_EXTENDED_DERIVE||catalog-only
 inv|0x00004032|CKM_HSS_KEY_PAIR_GEN||catalog-only
 inv|0x00004033|CKM_HSS||catalog-only
 inv|0x00004034|CKM_XMSS_KEY_PAIR_GEN||catalog-only

@@ -25861,14 +25861,30 @@
       "canonical_name": "CKM_IKE2_PRF_PLUS_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: IKE PRF/KDF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "IKE recipe (core/Haskoki/Recipe/Ike.hs): the IKEv2 prf+ expansion prf(S, seed)[1] .. prf(S, Ti-1 ++ seed ++ i)[i] over the served HMAC space (RFC 7296 section 2.13). Parameters are the canonical frame (ike-params/1: PRF code, flags, key number, aux handle, two blobs); the native CK_IKE2_PRF_PLUS_DERIVE_PARAMS struct decodes in the FFI (seed-data chase only, the seed-key leg refuses). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 16320-byte counter ceiling. The driver iterates HMAC over the digest route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverIke: oracle-reference cross-checked); planner and native-profile pins (RecipeIkeSpec); synthetic construction (SyntheticSpec caseIke); real KATs (KeyManagementSpec caseRealIkeVector).",
       "numeric_id": "0x0000402e",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "ike/v1",
+          "parameter_codec": "ike-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_IKE2_PRF_PLUS_DERIVE",
@@ -25877,26 +25893,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "ike",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "ike",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "ike",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeIkeSpec",
+          "build_id": "ike",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_IKE_PRF_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: IKE PRF/KDF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "IKE recipe (core/Haskoki/Recipe/Ike.hs): the single-shot IKE PRF prf(key, Ni ++ Nr) over the served HMAC space, with the data-as-key flag selecting which input keys the HMAC. Parameters are the canonical frame (ike-params/1); the native CK_IKE_PRF_DERIVE_PARAMS struct decodes in the FFI (the rekey leg refuses). The output length arrives via the derived template CKA_VALUE_LEN, capped at the PRF digest width. Vectors pinned (RoutingE2ESpec caseDriverIke: oracle-reference cross-checked, both role orders); planner and native-profile pins (RecipeIkeSpec); synthetic construction (SyntheticSpec caseIke); real KATs (KeyManagementSpec caseRealIkeVector).",
       "numeric_id": "0x0000402f",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "ike/v1",
+          "parameter_codec": "ike-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_IKE_PRF_DERIVE",
@@ -25905,26 +25973,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "ike",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "ike",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "ike",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeIkeSpec",
+          "build_id": "ike",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_IKE1_PRF_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: IKE PRF/KDF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "IKE recipe (core/Haskoki/Recipe/Ike.hs): the IKEv1 PRF prf(keygxy, CkY-i ++ CkY-r ++ key-number) over the served HMAC space, binding the second key through the fxKey2 effect field. Parameters are the canonical frame (ike-params/1); the native CK_IKE1_PRF_DERIVE_PARAMS struct decodes in the FFI (keygxy required, any prevkey refuses). The output length arrives via the derived template CKA_VALUE_LEN, capped at the PRF digest width. Vectors pinned (RoutingE2ESpec caseDriverIke: oracle-reference cross-checked); planner and native-profile pins (RecipeIkeSpec); synthetic construction (SyntheticSpec caseIke); real KATs (KeyManagementSpec caseRealIkeVector).",
       "numeric_id": "0x00004030",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "ike/v1",
+          "parameter_codec": "ike-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_IKE1_PRF_DERIVE",
@@ -25933,26 +26053,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "ike",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "ike",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "ike",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeIkeSpec",
+          "build_id": "ike",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_IKE1_EXTENDED_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: IKE PRF/KDF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "IKE recipe (core/Haskoki/Recipe/Ike.hs): the IKEv1 extended derive, prf+ expansion over (base, keygxy, extra-data) that truncates the base when neither aux key nor extra data is present (the oracle reference rule). Parameters are the canonical frame (ike-params/1); the native CK_IKE1_EXTENDED_DERIVE_PARAMS struct decodes in the FFI (keygxy flag and handle must agree). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 16320-byte counter ceiling (the base length when truncating). Vectors pinned (RoutingE2ESpec caseDriverIke: oracle-reference cross-checked, aux + truncate legs); planner and native-profile pins (RecipeIkeSpec); synthetic construction (SyntheticSpec caseIke); real KATs (KeyManagementSpec caseRealIkeVector).",
       "numeric_id": "0x00004031",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "ike/v1",
+          "parameter_codec": "ike-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_IKE1_EXTENDED_DERIVE",
@@ -25961,12 +26133,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "ike",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "ike",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "ike",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeIkeSpec",
+          "build_id": "ike",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

@@ -268,7 +268,7 @@ casePlan = do
   -- Accepted: single key under the prime width; the effect carries
   -- the DH blob as mechanism params with empty info.
   case planDerive defaultRules m testSession dhMech baseHandle (blob dhPeerB [derivedTmpl 32]) of
-    KeyEffect _ (FxDerive mech (Just oid) params info total) -> do
+    KeyEffect _ (FxDerive mech (Just oid) Nothing params info total) -> do
       assertEqual "mech" dhMech mech
       assertEqual "base" baseOid oid
       assertEqual "params" (encodeDhParams 0 dhPeerB) params
@@ -278,7 +278,7 @@ casePlan = do
   -- X9.42 row accepts against a CKK_X9_42_DH base.
   let mx = mkBaseModel ckkX9_42Dh dhPrivA True
   case planDerive defaultRules mx testSession x942Mech baseHandle (blob dhPeerB [derivedTmpl 64]) of
-    KeyEffect _ (FxDerive mech _ _ _ total) -> do
+    KeyEffect _ (FxDerive mech _ _ _ _ total) -> do
       assertEqual "x942 mech" x942Mech mech
       assertEqual "x942 total" 64 total
     other -> assertFailure ("expected x942 effect, got " ++ show other)
@@ -296,7 +296,7 @@ casePlan = do
   -- Opaque material plans against the max width.
   case planDerive defaultRules (mkBaseModel ckkDh (BS.replicate 40 0) True) testSession
     dhMech baseHandle (blob dhPeerB [derivedTmpl 512]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "opaque total" 512 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "opaque total" 512 total
     other -> assertFailure ("expected opaque effect, got " ++ show other)
   -- Truncated frames and empty templates refuse.
   expectDeny "malformed blob" CKR_ARGUMENTS_BAD
@@ -307,7 +307,7 @@ casePlan = do
   -- (PKCS#11 v3.2: "if it has one" a length); the default is
   -- stamped on the pending object so readback matches explicit.
   case planDerive defaultRules m testSession dhMech baseHandle (blob dhPeerB [derivedTmplNoLen]) of
-    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ total) -> do
+    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ _ total) -> do
       assertEqual "default total" 256 total
       assertEqual "default len" 256 n
       assertEqual "default stamped" (Just (ValULong 256))
@@ -316,7 +316,7 @@ casePlan = do
   -- Unscannable base material defaults to the max width.
   case planDerive defaultRules (mkBaseModel ckkDh (BS.replicate 40 0) True) testSession
         dhMech baseHandle (blob dhPeerB [derivedTmplNoLen]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "opaque default total" 512 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "opaque default total" 512 total
     other -> assertFailure ("expected defaulted effect, got " ++ show other)
   -- Base must permit derivation; handle must resolve.
   expectDeny "derive mark" CKR_KEY_FUNCTION_NOT_PERMITTED

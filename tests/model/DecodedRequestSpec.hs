@@ -1069,7 +1069,7 @@ caseHoldableBattery = do
         , FxUnwrap (MechanismId 0x1082) Nothing BS.empty "blob-blob-blob!!"
         , FxAuthWrap (MechanismId 0x1082) Nothing BS.empty "padded-material!!"
         , FxAuthUnwrap (MechanismId 0x1082) Nothing BS.empty "blob"
-        , FxDerive (MechanismId 0x1082) Nothing BS.empty BS.empty 32
+        , FxDerive (MechanismId 0x1082) Nothing Nothing BS.empty BS.empty 32
         , FxKemEncaps (MechanismId 0x1082) Nothing BS.empty BS.empty
         , FxKemDecaps (MechanismId 0x1082) Nothing BS.empty BS.empty
         ]
@@ -1096,7 +1096,7 @@ casePairBattery = do
         , (PwUnwrap po, FxAuthUnwrap (MechanismId 0x1082) Nothing BS.empty "b")
         , (PwEncaps po 8 32, FxKemEncaps (MechanismId 0x1082) Nothing BS.empty "i")
         , (PwDecaps po, FxKemDecaps (MechanismId 0x1082) Nothing BS.empty "c")
-        , (PwDerive [po] [32], FxDerive (MechanismId 0x1082) Nothing BS.empty "i" 32)
+        , (PwDerive [po] [32], FxDerive (MechanismId 0x1082) Nothing Nothing BS.empty "i" 32)
         ]
       no =
         [ (PwGenerateKey po, FxDigestInit sha256Mech)

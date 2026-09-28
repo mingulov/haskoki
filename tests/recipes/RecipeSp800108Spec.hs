@@ -363,7 +363,7 @@ casePlan = do
   -- Accepted: the oracle-profile frame plus a VALUE_LEN template.
   case planDerive defaultRules m testSession counterMech baseHandle
       (encodeDeriveParams oracleFrame [derivedTmpl 16]) of
-    KeyEffect _ (FxDerive mech (Just oid) params info total) -> do
+    KeyEffect _ (FxDerive mech (Just oid) Nothing params info total) -> do
       assertEqual "mech" counterMech mech
       assertEqual "base" baseOid oid
       assertEqual "params" oracleFrame params

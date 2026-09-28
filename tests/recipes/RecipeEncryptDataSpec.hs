@@ -336,7 +336,7 @@ casePlan = do
         (encodeDeriveParams params [tmpl])
   -- Accepted at full data width; the frame travels as params.
   case derive aesBase aesCbcMech frame (derivedTmpl 32) of
-    KeyEffect _ (FxDerive mech (Just oid) params info total) -> do
+    KeyEffect _ (FxDerive mech (Just oid) Nothing params info total) -> do
       assertEqual "mech" aesCbcMech mech
       assertEqual "base" baseOid oid
       assertEqual "params" frame params
@@ -345,16 +345,16 @@ casePlan = do
     other -> assertFailure ("expected effect, got " ++ show other)
   -- Truncated totals plan.
   case derive aesBase aesCbcMech frame (derivedTmpl 16) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "total" 16 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "total" 16 total
     other -> assertFailure ("expected effect, got " ++ show other)
   -- Default templates succeed at the full data width.
   case derive aesBase aesCbcMech frame defaultTmpl of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "default total" 32 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "default total" 32 total
     other -> assertFailure ("default must plan: " ++ show other)
   -- Length-only under the width succeeds; overlong and zero deny
   -- KEY_SIZE_RANGE.
   case derive aesBase aesCbcMech frame (lengthOnlyTmpl 12) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "length-only total" 12 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "length-only total" 12 total
     other -> assertFailure ("length-only must plan: " ++ show other)
   expectDeny "length-only overlong" CKR_KEY_SIZE_RANGE
     (derive aesBase aesCbcMech frame (lengthOnlyTmpl 33))
@@ -364,7 +364,7 @@ casePlan = do
     (derive aesBase aesCbcMech frame (lengthOnlyTmpl 0))
   -- ECB accepts raw data with an AES base.
   case derive aesBase aesEcbMech (BS.replicate 32 0xda) (derivedTmpl 32) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "ecb total" 32 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "ecb total" 32 total
     other -> assertFailure ("ecb must plan: " ++ show other)
   -- Malformed frames deny PARAM_INVALID (recipe shape).
   expectDeny "ragged cbc data" CKR_MECHANISM_PARAM_INVALID
@@ -384,12 +384,12 @@ casePlan = do
     (derive aesBase ariaCbcMech frame (derivedTmpl 32))
   let ariaBase = mkBaseModel ckkAria (BS.replicate 16 0x11) True
   case derive ariaBase ariaCbcMech frame (derivedTmpl 32) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "aria total" 32 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "aria total" 32 total
     other -> assertFailure ("aria must plan: " ++ show other)
   let d3Base = mkBaseModel ckkDes3 (BS.replicate 24 0x11) True
       d3frame = BS.replicate 8 0xcb <> BS.replicate 16 0xda
   case derive d3Base d3CbcMech d3frame (derivedTmpl 16) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "des3 total" 16 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "des3 total" 16 total
     other -> assertFailure ("des3 must plan: " ++ show other)
   expectDeny "no derive mark" CKR_KEY_FUNCTION_NOT_PERMITTED
     (derive (mkBaseModel ckkAes (BS.replicate 16 0x11) False) aesCbcMech frame (derivedTmpl 32))

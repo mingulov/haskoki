@@ -216,7 +216,7 @@ casePlan = do
   -- Accepted: label + seed frame plus a VALUE_LEN template.
   case planDerive defaultRules m testSession tlsPrfMech baseHandle
       (encodeDeriveParams good [derivedTmpl 48]) of
-    KeyEffect _ (FxDerive mech (Just oid) params info total) -> do
+    KeyEffect _ (FxDerive mech (Just oid) Nothing params info total) -> do
       assertEqual "mech" tlsPrfMech mech
       assertEqual "base" baseOid oid
       assertEqual "params" good params

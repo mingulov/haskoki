@@ -46,7 +46,7 @@ module Haskoki.Operation.Derive
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
-import Data.Word (Word8)
+import Data.Word (Word64, Word8)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model (Model (..), ObjectState (..), SessionState)
@@ -107,6 +107,15 @@ import Haskoki.Recipe.Sp800108
   , sp800ParamsValid
   , sp800RecipeFor
   )
+import Haskoki.Recipe.Ike
+  ( IkeKind (..)
+  , IkeRecipe (..)
+  , decodeIkeParams
+  , ikeBaseKeyOk
+  , ikeParamsValid
+  , ikeRecipeFor
+  , maxIkeOutput
+  )
 import Haskoki.Recipe.TlsKdf
   ( maxTlsKdfOutput
   , tlsKdfParamsValid
@@ -121,7 +130,7 @@ import Haskoki.Registry (MechanismId (..))
 import Haskoki.Registry.Generated (ckm_HKDF_DATA, ckm_HKDF_DERIVE)
 import Haskoki.Rules (Rules)
 import Haskoki.Session (admitCode, admitObjects)
-import Haskoki.Types (ExternalHandle, ReturnCode (..))
+import Haskoki.Types (ExternalHandle (..), ObjectId, ReturnCode (..))
 
 -- | @CKM_HKDF_DERIVE@ (generated id, resolved by name).
 hkdfDeriveMech :: MechanismId
@@ -321,7 +330,7 @@ planDerive rules model st mech baseH blob
                 Left deny -> KeyDenied deny
                 Right (ost, _) -> finishData tmpls (255 * hashLen)
                   "derived total exceeds the HKDF-Expand ceiling"
-                  (FxDerive mech (Just (osId ost))
+                  (FxDerive mech (Just (osId ost)) Nothing
                     (BS.singleton prf <> BS.singleton mode <> salt) info)
                   CKR_ARGUMENTS_BAD
   | mech == hkdfDeriveMech = case decodeDeriveParams blob of
@@ -340,7 +349,7 @@ planDerive rules model st mech baseH blob
                 Left deny -> KeyDenied deny
                 Right (ost, _) -> finish tmpls (255 * hashLen)
                   "derived total exceeds the HKDF-Expand ceiling"
-                  (FxDerive mech (Just (osId ost))
+                  (FxDerive mech (Just (osId ost)) Nothing
                     (BS.singleton prf <> BS.singleton mode <> salt) info)
                   -- A missing length defaults to the PRF hash
                   -- length: the mechanism doc says VALUE_LEN "should
@@ -372,7 +381,7 @@ planDerive rules model st mech baseH blob
                     "ECDH Montgomery peer length mismatch")
                 | otherwise -> finish tmpls (ecdhSecretWidth mat)
                     "derived total exceeds the ECDH secret width"
-                    (FxDerive mech (Just (osId ost)) ecdhBlob BS.empty)
+                    (FxDerive mech (Just (osId ost)) Nothing ecdhBlob BS.empty)
                     (Just (ecdhSecretWidth mat))
                     CKR_ARGUMENTS_BAD
               _ -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
@@ -396,7 +405,7 @@ planDerive rules model st mech baseH blob
           | otherwise -> case decodeDhParams dhBlob of
               Just _ -> finish tmpls (dhSecretWidth mat)
                 "derived total exceeds the DH secret width"
-                (FxDerive mech (Just (osId ost)) dhBlob BS.empty)
+                (FxDerive mech (Just (osId ost)) Nothing dhBlob BS.empty)
                 (Just (dhSecretWidth mat))
                 CKR_ARGUMENTS_BAD
               _ -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
@@ -420,13 +429,13 @@ planDerive rules model st mech baseH blob
               "SHA key derivation takes empty info")
           | rkPbkd2 r -> finish tmpls maxDerivedTotal
               "derived total exceeds the derive ceiling"
-              (FxDerive mech (Just (osId ost)) info BS.empty)
+              (FxDerive mech (Just (osId ost)) Nothing info BS.empty)
               Nothing
               CKR_ARGUMENTS_BAD
           | otherwise -> case kdfShaWidth r of
               Just w -> finish tmpls w
                 "derived total exceeds the digest width"
-                (FxDerive mech (Just (osId ost)) BS.empty BS.empty)
+                (FxDerive mech (Just (osId ost)) Nothing BS.empty BS.empty)
                 (blakeDefaultLen r w)
                 CKR_KEY_SIZE_RANGE
               -- SHAKE XOF rows: no fixed width — the output
@@ -436,7 +445,7 @@ planDerive rules model st mech baseH blob
               Nothing -> case kdfXofStem r of
                 Just _ -> finish tmpls maxXofTotal
                   "derived total exceeds the XOF output ceiling"
-                  (FxDerive mech (Just (osId ost)) BS.empty BS.empty)
+                  (FxDerive mech (Just (osId ost)) Nothing BS.empty BS.empty)
                   Nothing
                   CKR_KEY_SIZE_RANGE
                 Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
@@ -458,7 +467,7 @@ planDerive rules model st mech baseH blob
               "TLS-PRF mechanism parameters rejected by the recipe")
           | otherwise -> finish tmpls maxTlsPrfOutput
               "derived total exceeds the TLS-PRF ceiling"
-              (FxDerive mech (Just (osId ost)) prfBlob BS.empty)
+              (FxDerive mech (Just (osId ost)) Nothing prfBlob BS.empty)
               Nothing
               CKR_ARGUMENTS_BAD
   | Just r <- tlsKdfRecipeFor mech = case decodeDeriveParams blob of
@@ -478,9 +487,46 @@ planDerive rules model st mech baseH blob
               "TLS-KDF mechanism parameters rejected by the recipe")
           | otherwise -> finish tmpls maxTlsKdfOutput
               "derived total exceeds the TLS-KDF ceiling"
-              (FxDerive mech (Just (osId ost)) kdfBlob BS.empty)
+              (FxDerive mech (Just (osId ost)) Nothing kdfBlob BS.empty)
               Nothing
               CKR_ARGUMENTS_BAD
+  | Just r <- ikeRecipeFor mech = case decodeDeriveParams blob of
+      Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "malformed derive arguments")
+      Just (ikeBlob, tmpls) -> case resolveBase model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, _)
+          -- IKE rows derive from generic-secret or HMAC bases;
+          -- the key-type contradiction outranks parameter shape
+          -- (the Init-matrix ordering, shared with the TLS-KDF
+          -- arm).
+          | not (ikeBaseOk ost) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "IKE base key is not a generic secret or HMAC key")
+          | not (ikeParamsValid r ikeBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              "IKE mechanism parameters rejected by the recipe")
+          | otherwise -> case decodeIkeParams ikeBlob of
+              -- Unreachable post-validation; typed, never a crash.
+              Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                "IKE frame rejected after validation")
+              Just (prf, _, _, auxN, _, _)
+                -- The reserved code marks an unmapped PRF
+                -- selector: the spec-exact denial (the oracle's
+                -- invalid-PRF legs accept it).
+                | prf == 0 -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
+                    "IKE PRF mechanism is not a served HMAC")
+                | otherwise -> case resolveAuxKey model st auxN of
+                    Left deny -> KeyDenied deny
+                    Right mAux -> case ikeCeiling (ikKind r) prf of
+                      -- Unreachable post-validation (codes 1..13
+                      -- map); typed, never a crash.
+                      Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                        "IKE PRF code without a digest width")
+                      Just ceilingN -> finish tmpls ceilingN
+                        "derived total exceeds the IKE ceiling"
+                        (FxDerive mech (Just (osId ost)) mAux ikeBlob BS.empty)
+                        Nothing
+                        CKR_ARGUMENTS_BAD
   | Just r <- sp800RecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -516,7 +562,7 @@ planDerive rules model st mech baseH blob
                   | sp800LengthFits (rsMode r) (spLengthBits p)
                       (spCounterBits p) h tmpls -> finish tmpls maxSp800Total
                       "derived total exceeds the SP800-108 ceiling"
-                      (FxDerive mech (Just (osId ost)) spBlob BS.empty)
+                      (FxDerive mech (Just (osId ost)) Nothing spBlob BS.empty)
                       Nothing
                       CKR_ARGUMENTS_BAD
                   | otherwise -> KeyDenied (KeyDeny CKR_KEY_SIZE_RANGE
@@ -538,7 +584,7 @@ planDerive rules model st mech baseH blob
           | otherwise -> case encryptDataOutputLen r edBlob of
               Just w -> finish tmpls w
                 "derived total exceeds the encrypted data width"
-                (FxDerive mech (Just (osId ost)) edBlob BS.empty)
+                (FxDerive mech (Just (osId ost)) Nothing edBlob BS.empty)
                 (Just w)
                 CKR_KEY_SIZE_RANGE
               Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
@@ -681,6 +727,50 @@ resolveBase model st baseH = case resolveHandle model baseH of
         Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
           "base key lacks material")
         Just mat -> Right (ost, mat)
+
+-- | An IKE base\/aux object: generic-secret or HMAC type (the
+-- recipe rule; a missing or mistyped key type denies).
+ikeBaseOk :: ObjectState -> Bool
+ikeBaseOk ost = case Map.lookup AttrKeyType (osAttrs ost) of
+  Just (ValULong kty) -> ikeBaseKeyOk kty
+  _ -> False
+
+-- | Resolve the IKE aux handle (0 = absent): the params-carried
+-- keygxy input, held to the same visibility, type, permission,
+-- and material rules as the base key.
+resolveAuxKey
+  :: Model -> SessionState -> Word64
+  -> Either KeyDeny (Maybe ObjectId)
+resolveAuxKey _ _ 0 = Right Nothing
+resolveAuxKey model st auxN = case resolveHandle model (ExternalHandle (fromIntegral auxN)) of
+  Nothing -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
+    "unknown or destroyed aux-key handle")
+  Just ost
+    | not (objectVisible st ost) -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
+        "aux key not visible in this session")
+    | not (ikeBaseOk ost) -> Left (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+        "IKE aux key is not a generic secret or HMAC key")
+    | Map.lookup AttrDerive (osAttrs ost) /= Just (ValBool True) ->
+        Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+          "aux key does not permit derivation")
+    | otherwise -> case keyBytesOf ost of
+        Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
+          "aux key lacks material")
+        Just _ -> Right (Just (osId ost))
+
+-- | The output ceiling by kind: the single-shot rows cap at
+-- their PRF width (truncation serves the AES legs); the
+-- iterating rows cap at the prf+ counter capacity.
+ikeCeiling :: IkeKind -> Word8 -> Maybe Int
+ikeCeiling kind prf = case kind of
+  Ike2PrfPlus -> Just maxIkeOutput
+  Ike1Extended -> Just maxIkeOutput
+  IkePrf -> digestWidth
+  Ike1Prf -> digestWidth
+  where
+    digestWidth = do
+      stem <- kdfCodeDigest (fromIntegral prf)
+      kdfDigestWidth stem
 
 -- | Base/peer curve agreement: a mismatch denies only when BOTH
 -- sides scan as DER EC keys on different curves. Unscannable sides

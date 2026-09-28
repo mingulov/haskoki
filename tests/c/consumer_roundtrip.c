@@ -4711,6 +4711,187 @@ int main(int argc, char **argv) {
             rv = f->C_DestroyObject(sess, td5);
             CHECKC(rv == CKR_OK, "second TLS-KDF secret destroyed");
           }
+          {
+            /* IKE through the native derive structs: prf+,
+             * single-shot PRF (data-as-key order), IKEv1 PRF
+             * with a keygxy handle, and the extended derive
+             * with keygxy + extra data. Outputs are the 16-byte
+             * prefixes of the committed KATs (base 0..31, aux
+             * 32..63, Ni 16x01, Nr 16x02); plus replay
+             * determinism and typed refusals. */
+            CK_BYTE ksec[32], kaux[32], kni[16], knr[16], kseed[32];
+            CK_BYTE kgot0[16], kgot1[16], kgot2[16], kgot3[16], kgot0b[16];
+            CK_OBJECT_HANDLE kbase = 0, kauxh = 0, kd0 = 0, kd1 = 0, kd2 = 0, kd3 = 0, kd0b = 0;
+            CK_IKE2_PRF_PLUS_DERIVE_PARAMS kplus;
+            CK_IKE_PRF_DERIVE_PARAMS kprf;
+            CK_IKE1_PRF_DERIVE_PARAMS kike1;
+            CK_IKE1_EXTENDED_DERIVE_PARAMS kext;
+            CK_MECHANISM km0, km1, km2, km3, kbad;
+            CK_BYTE kwant0[16] = {
+              0xe3,0x70,0x3e,0xe9,0x05,0x29,0x5e,0x6c,
+              0x01,0x41,0xc9,0x8f,0x38,0x2e,0x17,0xe9
+            };
+            CK_BYTE kwant1[16] = {
+              0x90,0x9b,0xe3,0x92,0x79,0xfe,0xc3,0xad,
+              0x8b,0x16,0x54,0x6a,0x95,0x69,0x74,0xee
+            };
+            CK_BYTE kwant2[16] = {
+              0x61,0x28,0x02,0xec,0xc3,0x78,0xea,0x82,
+              0x89,0x8f,0x41,0x68,0x65,0xa5,0x1c,0x36
+            };
+            CK_BYTE kwant3[16] = {
+              0x1c,0x81,0xc4,0xb9,0xc9,0x08,0x36,0x05,
+              0x36,0x2e,0x98,0xbe,0xd8,0x9e,0x4e,0xef
+            };
+            CK_ULONG kvlen = 16;
+            CK_ATTRIBUTE kbaseT[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_DERIVE, &yes, sizeof(yes) },
+              { CKA_VALUE, ksec, sizeof(ksec) },
+            };
+            CK_ATTRIBUTE kauxT[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_DERIVE, &yes, sizeof(yes) },
+              { CKA_VALUE, kaux, sizeof(kaux) },
+            };
+            CK_ATTRIBUTE kdtmpl[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_VALUE_LEN, &kvlen, sizeof(kvlen) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_SENSITIVE, &no, sizeof(no) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+            };
+            CK_ATTRIBUTE kg0[] = { { CKA_VALUE, kgot0, sizeof(kgot0) } };
+            CK_ATTRIBUTE kg1[] = { { CKA_VALUE, kgot1, sizeof(kgot1) } };
+            CK_ATTRIBUTE kg2[] = { { CKA_VALUE, kgot2, sizeof(kgot2) } };
+            CK_ATTRIBUTE kg3[] = { { CKA_VALUE, kgot3, sizeof(kgot3) } };
+            CK_ATTRIBUTE kg0b[] = { { CKA_VALUE, kgot0b, sizeof(kgot0b) } };
+            int ki;
+            for (ki = 0; ki < 32; ki++) ksec[ki] = (CK_BYTE)ki;
+            for (ki = 0; ki < 32; ki++) kaux[ki] = (CK_BYTE)(ki + 32);
+            for (ki = 0; ki < 16; ki++) kni[ki] = 1;
+            for (ki = 0; ki < 16; ki++) knr[ki] = 2;
+            for (ki = 0; ki < 16; ki++) kseed[ki] = 1;
+            for (ki = 0; ki < 16; ki++) kseed[ki + 16] = 2;
+            rv = f->C_CreateObject(sess, kbaseT, 5, &kbase);
+            CHECKC(rv == CKR_OK && kbase != 0, "IKE base imports");
+            rv = f->C_CreateObject(sess, kauxT, 5, &kauxh);
+            CHECKC(rv == CKR_OK && kauxh != 0, "IKE aux imports");
+            kplus.prfMechanism = CKM_SHA256_HMAC;
+            kplus.bHasSeedKey = CK_FALSE;
+            kplus.hSeedKey = 0;
+            kplus.pSeedData = kseed;
+            kplus.ulSeedDataLen = sizeof(kseed);
+            km0.mechanism = CKM_IKE2_PRF_PLUS_DERIVE;
+            km0.pParameter = &kplus;
+            km0.ulParameterLen = sizeof(kplus);
+            rv = f->C_DeriveKey(sess, &km0, kbase, kdtmpl, 6, &kd0);
+            CHECKC(rv == CKR_OK && kd0 != 0, "IKE prf+ derive ok");
+            kg0[0].ulValueLen = sizeof(kgot0);
+            rv = f->C_GetAttributeValue(sess, kd0, kg0, 1);
+            CHECKC(rv == CKR_OK && kg0[0].ulValueLen == 16 &&
+                       memcmp(kgot0, kwant0, 16) == 0,
+                   "IKE prf+ matches KAT bytes");
+            kprf.prfMechanism = CKM_SHA256_HMAC;
+            kprf.bDataAsKey = CK_TRUE;
+            kprf.bRekey = CK_FALSE;
+            kprf.pNi = kni;
+            kprf.ulNiLen = sizeof(kni);
+            kprf.pNr = knr;
+            kprf.ulNrLen = sizeof(knr);
+            kprf.hNewKey = 0;
+            km1.mechanism = CKM_IKE_PRF_DERIVE;
+            km1.pParameter = &kprf;
+            km1.ulParameterLen = sizeof(kprf);
+            rv = f->C_DeriveKey(sess, &km1, kbase, kdtmpl, 6, &kd1);
+            CHECKC(rv == CKR_OK && kd1 != 0, "IKE PRF derive ok");
+            kg1[0].ulValueLen = sizeof(kgot1);
+            rv = f->C_GetAttributeValue(sess, kd1, kg1, 1);
+            CHECKC(rv == CKR_OK && kg1[0].ulValueLen == 16 &&
+                       memcmp(kgot1, kwant1, 16) == 0,
+                   "IKE PRF matches KAT bytes");
+            /* The keygxy-carrying legs (IKEv1 PRF, extended)
+             * run direct-only: the pinned proxy daemon
+             * virtualizes object handles per client session
+             * (context_manager.rs object_handles HandleMap)
+             * and translates top-level handles, but the
+             * param-embedded hKeygxy passes through
+             * untranslated — the first proxied session
+             * coincides (virtual == backend, rv OK) and every
+             * later session fails KEY_HANDLE_INVALID
+             * (nondeterministic by daemon state, so no stable
+             * proxied expectation exists). Upstream gap, not a
+             * backend refusal: direct derives both legs. */
+            if (!isProxy) {
+              kike1.prfMechanism = CKM_SHA256_HMAC;
+              kike1.bHasPrevKey = CK_FALSE;
+              kike1.hKeygxy = kauxh;
+              kike1.hPrevKey = 0;
+              kike1.pCKYi = kni;
+              kike1.ulCKYiLen = sizeof(kni);
+              kike1.pCKYr = knr;
+              kike1.ulCKYrLen = sizeof(knr);
+              kike1.keyNumber = 7;
+              km2.mechanism = CKM_IKE1_PRF_DERIVE;
+              km2.pParameter = &kike1;
+              km2.ulParameterLen = sizeof(kike1);
+              rv = f->C_DeriveKey(sess, &km2, kbase, kdtmpl, 6, &kd2);
+              CHECKC(rv == CKR_OK && kd2 != 0, "IKEv1 PRF derive ok");
+              kg2[0].ulValueLen = sizeof(kgot2);
+              rv = f->C_GetAttributeValue(sess, kd2, kg2, 1);
+              CHECKC(rv == CKR_OK && kg2[0].ulValueLen == 16 &&
+                         memcmp(kgot2, kwant2, 16) == 0,
+                     "IKEv1 PRF matches KAT bytes");
+              kext.prfMechanism = CKM_SHA256_HMAC;
+              kext.bHasKeygxy = CK_TRUE;
+              kext.hKeygxy = kauxh;
+              kext.pExtraData = kseed;
+              kext.ulExtraDataLen = sizeof(kseed);
+              km3.mechanism = CKM_IKE1_EXTENDED_DERIVE;
+              km3.pParameter = &kext;
+              km3.ulParameterLen = sizeof(kext);
+              rv = f->C_DeriveKey(sess, &km3, kbase, kdtmpl, 6, &kd3);
+              CHECKC(rv == CKR_OK && kd3 != 0, "IKE extended derive ok");
+              kg3[0].ulValueLen = sizeof(kgot3);
+              rv = f->C_GetAttributeValue(sess, kd3, kg3, 1);
+              CHECKC(rv == CKR_OK && kg3[0].ulValueLen == 16 &&
+                         memcmp(kgot3, kwant3, 16) == 0,
+                     "IKE extended matches KAT bytes");
+            } else {
+              printf("crypto: skip: IKE keygxy legs need embedded-handle translation the pinned proxy lacks\n");
+            }
+            rv = f->C_DeriveKey(sess, &km0, kbase, kdtmpl, 6, &kd0b);
+            CHECKC(rv == CKR_OK && kd0b != 0, "IKE prf+ derive replays");
+            kg0b[0].ulValueLen = sizeof(kgot0b);
+            rv = f->C_GetAttributeValue(sess, kd0b, kg0b, 1);
+            CHECKC(rv == CKR_OK && kg0b[0].ulValueLen == 16 &&
+                       memcmp(kgot0, kgot0b, 16) == 0,
+                   "IKE prf+ derived deterministic");
+            rv = f->C_DeriveKey(sess, &km0, ecBase, kdtmpl, 6, &kd0b);
+            CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+                   "IKE prf+ with EC base refused typed");
+            kbad.mechanism = CKM_IKE1_PRF_DERIVE;
+            kbad.pParameter = garbage;
+            kbad.ulParameterLen = sizeof(garbage);
+            rv = f->C_DeriveKey(sess, &kbad, kbase, kdtmpl, 6, &kd0b);
+            if (!isProxy) {
+              CHECKC(rv == CKR_ARGUMENTS_BAD,
+                     "IKE with garbage params refused typed");
+            } else {
+              /* The shim sends the undersized image (65 < 72) as
+               * unmodeled Raw bytes, refused at the FFI boundary
+               * (same Raw arm as the TLS-KDF leg above). */
+              CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                     "proxied undersized IKE image refused at shim");
+            }
+            rv = f->C_DestroyObject(sess, kd0b);
+            CHECKC(rv == CKR_OK, "replay IKE secret destroyed");
+          }
         }
       }
       {

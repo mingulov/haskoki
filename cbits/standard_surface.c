@@ -2258,6 +2258,10 @@ static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   case CKM_SHA3_256_KEY_DERIVATION:
   case CKM_SHA3_384_KEY_DERIVATION:
   case CKM_SHA3_512_KEY_DERIVATION:
+  case CKM_IKE2_PRF_PLUS_DERIVE:
+  case CKM_IKE_PRF_DERIVE:
+  case CKM_IKE1_PRF_DERIVE:
+  case CKM_IKE1_EXTENDED_DERIVE:
     return 1;
   default:
     return 0;

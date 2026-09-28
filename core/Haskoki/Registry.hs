@@ -178,6 +178,11 @@ import Haskoki.Recipe.TlsKdf
   , tlsKdfCodecFor
   , tlsKdfRecipes
   )
+import Haskoki.Recipe.Ike
+  ( IkeRecipe (..)
+  , ikeCodecFor
+  , ikeRecipes
+  )
 import Haskoki.Recipe.TlsPrf
   ( TlsPrfRecipe (..)
   , tlsPrfCodecFor
@@ -999,6 +1004,22 @@ tlsKdfDescs =
   | r <- tlsKdfRecipes
   ]
 
+-- | The IKE behavior group, derived from the recipe table: one
+-- descriptor per recipe row, codec from 'ikeCodecFor', the
+-- derive route citing the planner case (A20), the synthetic
+-- construction (A37), and the real vectors (A39). The four rows
+-- arrived in v3.0; key bounds are mechanism-specific (the
+-- planned length, capped by the per-kind ceiling).
+ikeDescs :: [Descriptor]
+ikeDescs =
+  [ promotedDesc (ikName r) [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyDerive
+      (ikeCodecFor r)
+      [ mechRoute OpDerive (ikName r) ["A20", "A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- ikeRecipes
+  ]
+
 -- | The encrypt-data behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from
 -- 'encryptDataCodecFor', the derive route citing the planner case
@@ -1394,8 +1415,8 @@ chachaStreamDescs =
 -- | The curated population: 134 reviewed behavior descriptors
 -- with concrete rules, plus the full header inventory (464
 -- canonical rows covering all 480 header CKM names) folded in from
--- the generated table. Catalog-only rows (332: everything but the
--- 132 behavior ids) stay in the coverage denominator but never
+-- the generated table. Catalog-only rows (214: everything but the
+-- 250 behavior ids) stay in the coverage denominator but never
 -- become executable. The catalog covers the full inventory.
 curatedRegistry :: Registry
 curatedRegistry =
@@ -1413,7 +1434,7 @@ curatedRegistry =
         , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
-          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ otpDescs ++ encryptDataDescs
+          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ otpDescs ++ encryptDataDescs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

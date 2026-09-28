@@ -440,7 +440,7 @@ casePlanBlake2 = do
         (encodeDeriveParams BS.empty [tmpl])
   -- Default templates succeed at full digest width (generic secret).
   mapM_ (\(mech, w) -> case derive mech defaultTmpl of
-    KeyEffect _ (FxDerive _ _ _ _ total) ->
+    KeyEffect _ (FxDerive _ _ _ _ _ total) ->
       assertEqual ("default total " ++ show mech) w total
     other -> assertFailure ("default must plan: " ++ show other))
     [ (blake2b160Mech, 20), (blake2b256Mech, 32)
@@ -448,7 +448,7 @@ casePlanBlake2 = do
     ]
   -- Length-only templates succeed under the width.
   case derive blake2b512Mech (lengthOnlyTmpl 12) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "length-only total" 12 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "length-only total" 12 total
     other -> assertFailure ("length-only must plan: " ++ show other)
   -- Overlong outputs deny KEY_SIZE_RANGE (typed and length-only).
   expectDeny "length-only overlong" CKR_KEY_SIZE_RANGE
@@ -481,7 +481,7 @@ casePlanSha = do
   -- Accepted at full width and truncated; empty params/info.
   case planDerive defaultRules m testSession sha256Mech baseHandle
       (encodeDeriveParams BS.empty [derivedTmpl 32]) of
-    KeyEffect _ (FxDerive mech (Just oid) params info total) -> do
+    KeyEffect _ (FxDerive mech (Just oid) Nothing params info total) -> do
       assertEqual "mech" sha256Mech mech
       assertEqual "base" baseOid oid
       assertEqual "params" BS.empty params
@@ -490,7 +490,7 @@ casePlanSha = do
     other -> assertFailure ("expected effect, got " ++ show other)
   case planDerive defaultRules m testSession sha256Mech baseHandle
       (encodeDeriveParams BS.empty [derivedTmpl 16, derivedTmpl 16]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "total" 32 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "total" 32 total
     other -> assertFailure ("expected effect, got " ++ show other)
   -- Width ceiling per digest.
   expectDeny "over sha256 width" CKR_KEY_SIZE_RANGE
@@ -498,7 +498,7 @@ casePlanSha = do
       (encodeDeriveParams BS.empty [derivedTmpl 33]))
   case planDerive defaultRules m testSession sha1Mech baseHandle
       (encodeDeriveParams BS.empty [derivedTmpl 20]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "total" 20 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "total" 20 total
     other -> assertFailure ("expected effect, got " ++ show other)
   expectDeny "over sha1 width" CKR_KEY_SIZE_RANGE
     (planDerive defaultRules m testSession sha1Mech baseHandle
@@ -524,7 +524,7 @@ casePlanPbkd2 = do
   -- Accepted; the blob travels as mechanism params.
   case planDerive defaultRules m testSession pbkd2Mech baseHandle
       (encodeDeriveParams blob [derivedTmpl 32]) of
-    KeyEffect _ (FxDerive mech (Just oid) params info total) -> do
+    KeyEffect _ (FxDerive mech (Just oid) Nothing params info total) -> do
       assertEqual "mech" pbkd2Mech mech
       assertEqual "base" baseOid oid
       assertEqual "params" blob params
@@ -534,7 +534,7 @@ casePlanPbkd2 = do
   -- Multi-block totals plan (PBKDF2 output is unbounded).
   case planDerive defaultRules m testSession pbkd2Mech baseHandle
       (encodeDeriveParams blob [derivedTmpl 64, derivedTmpl 64]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "total" 128 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "total" 128 total
     other -> assertFailure ("expected effect, got " ++ show other)
   expectDeny "over ceiling" CKR_ARGUMENTS_BAD
     (planDerive defaultRules m testSession pbkd2Mech baseHandle

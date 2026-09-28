@@ -82,6 +82,7 @@ import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
+import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Recipe.Otp (encodeHotpParams)
@@ -141,6 +142,7 @@ spec = testGroup "synthetic engine"
   , testCase "KDF output separates and truncates" caseKdf
   , testCase "TLS-PRF output separates and truncates" caseTlsPrf
   , testCase "TLS-KDF rows separate and refuse" caseTlsKdf
+  , testCase "IKE rows separate and refuse" caseIke
   , testCase "SP800-108 modes separate, length bound" caseSp800
   , testCase "HOTP codes separate, keygen lengths" caseHotp
   , testCase "Specials refuse explicitly" caseSpecialsRefuse
@@ -2185,7 +2187,7 @@ caseKdf = withSynth "11" $ \env -> do
         | oid == otherOid = Just (KeyBytes "otherpass")
         | otherwise = Nothing
       derive oid mech params outLen =
-        runEffect env res (FxDerive mech (Just oid) params BS.empty outLen)
+        runEffect env res (FxDerive mech (Just oid) Nothing params BS.empty outLen)
           >>= expectBytes
       prfSha256 = 4
   d1 <- derive pwOid pbkd2 (encodePbkd2Params prfSha256 2 "salt" BS.empty) 32
@@ -2213,17 +2215,17 @@ caseKdf = withSynth "11" $ \env -> do
   assertEqual "sha512/224 width" 28 (BS.length u28)
   -- Typed refusals.
   badPrf <- runEffect env res
-    (FxDerive pbkd2 (Just pwOid) (encodePbkd2Params 99 1 "s" BS.empty) BS.empty 32)
+    (FxDerive pbkd2 (Just pwOid) Nothing (encodePbkd2Params 99 1 "s" BS.empty) BS.empty 32)
   case badPrf of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badLen <- runEffect env res
-    (FxDerive sha256kd (Just pwOid) BS.empty BS.empty 33)
+    (FxDerive sha256kd (Just pwOid) Nothing BS.empty BS.empty 33)
   case badLen of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badInfo <- runEffect env res
-    (FxDerive sha256kd (Just pwOid) BS.empty "x" 32)
+    (FxDerive sha256kd (Just pwOid) Nothing BS.empty "x" 32)
   case badInfo of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
@@ -2243,7 +2245,7 @@ caseTlsPrf = withSynth "11" $ \env -> do
         | oid == oddOid = Just (KeyBytes (BS.pack [0 .. 46]))
         | otherwise = Nothing
       deriveAs oid params outLen =
-        runEffect env res (FxDerive tlsPrf (Just oid) params BS.empty outLen)
+        runEffect env res (FxDerive tlsPrf (Just oid) Nothing params BS.empty outLen)
           >>= expectBytes
       params = encodeTlsPrfParams "test label" "0123456789abcdef"
   d1 <- deriveAs secOid params 48
@@ -2262,17 +2264,17 @@ caseTlsPrf = withSynth "11" $ \env -> do
   assertEqual "multi-block prefix" d1 (BS.take 48 dBig)
   -- Typed refusals.
   badParams <- runEffect env res
-    (FxDerive tlsPrf (Just secOid) "junk" BS.empty 48)
+    (FxDerive tlsPrf (Just secOid) Nothing "junk" BS.empty 48)
   case badParams of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badInfo <- runEffect env res
-    (FxDerive tlsPrf (Just secOid) params "x" 48)
+    (FxDerive tlsPrf (Just secOid) Nothing params "x" 48)
   case badInfo of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badLen <- runEffect env res
-    (FxDerive tlsPrf (Just secOid) params BS.empty 0)
+    (FxDerive tlsPrf (Just secOid) Nothing params BS.empty 0)
   case badLen of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
@@ -2298,7 +2300,7 @@ caseSp800 = withSynth "11" $ \env -> do
       fixed = "SP800-108 test label" <> "\x00" <> "SP800-108 test context"
       frame iv = encodeSp800Params 4 32 32 iv fixed
       deriveAs mech oid params outLen =
-        runEffect env res (FxDerive mech (Just oid) params BS.empty outLen)
+        runEffect env res (FxDerive mech (Just oid) Nothing params BS.empty outLen)
           >>= expectBytes
       expectFailed label fx = do
         r <- runEffect env res fx
@@ -2324,15 +2326,15 @@ caseSp800 = withSynth "11" $ \env -> do
   assertBool "length binds the output" (s16a /= BS.take 16 c1)
   -- Typed refusals.
   expectFailed "junk params"
-    (FxDerive ctr (Just secOid) "junk" BS.empty 48)
+    (FxDerive ctr (Just secOid) Nothing "junk" BS.empty 48)
   expectFailed "info string"
-    (FxDerive ctr (Just secOid) (frame BS.empty) "x" 48)
+    (FxDerive ctr (Just secOid) Nothing (frame BS.empty) "x" 48)
   expectFailed "zero length"
-    (FxDerive ctr (Just secOid) (frame BS.empty) BS.empty 0)
+    (FxDerive ctr (Just secOid) Nothing (frame BS.empty) BS.empty 0)
   expectFailed "over ceiling"
-    (FxDerive ctr (Just secOid) (frame BS.empty) BS.empty (maxSp800Total + 1))
+    (FxDerive ctr (Just secOid) Nothing (frame BS.empty) BS.empty (maxSp800Total + 1))
   expectFailed "counter does not fit"
-    (FxDerive ctr (Just secOid) (encodeSp800Params 4 8 32 BS.empty fixed) BS.empty 8192)
+    (FxDerive ctr (Just secOid) Nothing (encodeSp800Params 4 8 32 BS.empty fixed) BS.empty 8192)
 
 -- | TLS-KDF through the driver over synthetic HMAC: deterministic
 -- output, separated across rows, secrets, labels, seeds, and the
@@ -2360,7 +2362,7 @@ caseTlsKdf = withSynth "11" $ \env -> do
       fKdf = encodeTlsKdfParams 4 "key expansion" seed64 BS.empty
       fGen = encodeTlsKdfParams 0 "key expansion" seed64 BS.empty
       deriveAs mech oid params outLen =
-        runEffect env res (FxDerive mech (Just oid) params BS.empty outLen)
+        runEffect env res (FxDerive mech (Just oid) Nothing params BS.empty outLen)
           >>= expectBytes
       expectFailed label fx = do
         r <- runEffect env res fx
@@ -2385,15 +2387,74 @@ caseTlsKdf = withSynth "11" $ \env -> do
   assertBool "contexts separated" (k1 /= cCtx)
   -- Typed refusals.
   expectFailed "junk params"
-    (FxDerive m10 (Just secOid) "junk" BS.empty 48)
+    (FxDerive m10 (Just secOid) Nothing "junk" BS.empty 48)
   expectFailed "info string"
-    (FxDerive m10 (Just secOid) f10 "x" 48)
+    (FxDerive m10 (Just secOid) Nothing f10 "x" 48)
   expectFailed "zero length"
-    (FxDerive m10 (Just secOid) f10 BS.empty 0)
+    (FxDerive m10 (Just secOid) Nothing f10 BS.empty 0)
   expectFailed "over ceiling"
-    (FxDerive m10 (Just secOid) f10 BS.empty (maxTlsKdfOutput + 1))
+    (FxDerive m10 (Just secOid) Nothing f10 BS.empty (maxTlsKdfOutput + 1))
   expectFailed "wrong-row frame"
-    (FxDerive m10 (Just secOid) f12 BS.empty 48)
+    (FxDerive m10 (Just secOid) Nothing f12 BS.empty 48)
+
+caseIke :: IO ()
+caseIke = withSynth "11" $ \env -> do
+  let plus = MechanismId 0x402e
+      prf = MechanismId 0x402f
+      ike1 = MechanismId 0x4030
+      ext = MechanismId 0x4031
+      secOid = ObjectId 74
+      auxOid = ObjectId 76
+      oddOid = ObjectId 75
+      res oid
+        | oid == secOid = Just (KeyBytes (BS.pack [0 .. 31]))
+        | oid == auxOid = Just (KeyBytes (BS.pack [32 .. 63]))
+        | oid == oddOid = Just (KeyBytes (BS.pack [0 .. 30]))
+        | otherwise = Nothing
+      ni = BS.pack (replicate 16 1)
+      nr = BS.pack (replicate 16 2)
+      seed32 = ni <> nr
+      fPlus = encodeIkeParams 4 0 0 0 seed32 BS.empty
+      fPrf = encodeIkeParams 4 1 0 0 ni nr
+      fIke1 = encodeIkeParams 4 0 7 405 ni nr
+      fExt = encodeIkeParams 4 0 0 405 seed32 BS.empty
+      deriveAs mech oid mAux params outLen =
+        runEffect env res (FxDerive mech (Just oid) mAux params BS.empty outLen)
+          >>= expectBytes
+      expectFailed label fx = do
+        r <- runEffect env res fx
+        case r of
+          GotCryptoError (CryptoFailed _) -> pure ()
+          other -> assertFailure ("expected Failed " ++ label ++ ", got: " ++ show other)
+  a1 <- deriveAs plus secOid Nothing fPlus 32
+  assertEqual "output length" 32 (BS.length a1)
+  a2 <- deriveAs plus secOid Nothing fPlus 32
+  assertEqual "deterministic" a1 a2
+  b1 <- deriveAs prf secOid Nothing fPrf 32
+  c1 <- deriveAs ike1 secOid (Just auxOid) fIke1 32
+  e1 <- deriveAs ext secOid (Just auxOid) fExt 32
+  assertBool "rows separated" (a1 /= b1 && a1 /= c1 && a1 /= e1 && b1 /= c1 && c1 /= e1)
+  cOdd <- deriveAs plus oddOid Nothing fPlus 32
+  assertBool "secrets separated" (a1 /= cOdd)
+  cSeed <- deriveAs plus secOid Nothing (encodeIkeParams 4 0 0 0 (BS.pack [9 .. 40]) BS.empty) 32
+  assertBool "seeds separated" (a1 /= cSeed)
+  cOrd <- deriveAs prf secOid Nothing (encodeIkeParams 4 0 0 0 ni nr) 32
+  assertBool "role order separated" (b1 /= cOrd)
+  cNum <- deriveAs ike1 secOid (Just auxOid) (encodeIkeParams 4 0 8 405 ni nr) 32
+  assertBool "key numbers separated" (c1 /= cNum)
+  -- Typed refusals.
+  expectFailed "junk params"
+    (FxDerive plus (Just secOid) Nothing "junk" BS.empty 32)
+  expectFailed "info string"
+    (FxDerive plus (Just secOid) Nothing fPlus "x" 32)
+  expectFailed "zero length"
+    (FxDerive plus (Just secOid) Nothing fPlus BS.empty 0)
+  expectFailed "over ceiling"
+    (FxDerive plus (Just secOid) Nothing fPlus BS.empty (maxIkeOutput + 1))
+  expectFailed "wrong-row frame"
+    (FxDerive ike1 (Just secOid) (Just auxOid) fPlus BS.empty 32)
+  expectFailed "counter cap"
+    (FxDerive plus (Just secOid) Nothing fPlus BS.empty 8161)
 
 -- ---------------------------------------------------------------------------
 -- OTP constructions
@@ -2612,7 +2673,7 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   -- DH with empty params: mapped but recipe-refused (typed
   -- 'CryptoFailed', never 'CryptoUnsupported', never success).
   rDh <- runEffect env res
-    (FxDerive (mech "CKM_DH_PKCS_DERIVE") (Just kOid) BS.empty BS.empty 32)
+    (FxDerive (mech "CKM_DH_PKCS_DERIVE") (Just kOid) Nothing BS.empty BS.empty 32)
   case rDh of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("derive DH empty params: expected Failed, got: " ++ show other)

@@ -335,7 +335,7 @@ casePlan = do
   -- Accepted: single key under the P-256 width; the effect carries
   -- the ECDH blob as mechanism params with empty info.
   case planDerive defaultRules m testSession ecdhMech baseHandle (blob p256Pub [derivedTmpl 32]) of
-    KeyEffect _ (FxDerive mech (Just oid) params info total) -> do
+    KeyEffect _ (FxDerive mech (Just oid) Nothing params info total) -> do
       assertEqual "mech" ecdhMech mech
       assertEqual "base" baseOid oid
       assertEqual "params" (encodeEcdhParams 0 BS.empty p256Pub) params
@@ -344,11 +344,11 @@ casePlan = do
     other -> assertFailure ("expected effect, got " ++ show other)
   -- Multi-template fan-out sums under the width.
   case planDerive defaultRules m testSession ecdhMech baseHandle (blob p256Pub [derivedTmpl 16, derivedTmpl 16]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "total" 32 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "total" 32 total
     other -> assertFailure ("expected effect, got " ++ show other)
   -- The cofactor row plans identically (flag is mechanism-side).
   case planDerive defaultRules m testSession ecdhCofMech baseHandle (blob p256Pub [derivedTmpl 32]) of
-    KeyEffect _ (FxDerive mech _ _ _ _) -> assertEqual "mech" ecdhCofMech mech
+    KeyEffect _ (FxDerive mech _ _ _ _ _) -> assertEqual "mech" ecdhCofMech mech
     other -> assertFailure ("expected effect, got " ++ show other)
   -- Width ceiling: 33 bytes from a 32-byte secret denies, zero objects.
   expectDeny "over width" CKR_ARGUMENTS_BAD
@@ -356,7 +356,7 @@ casePlan = do
   -- Unscannable base (synthetic opaque bytes) plans against the max width.
   case planDerive defaultRules (mkBaseModel ckkEc (BS.replicate 32 0) True) testSession
         ecdhMech baseHandle (blob p256Pub [derivedTmpl 72]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "total" 72 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "total" 72 total
     other -> assertFailure ("expected effect, got " ++ show other)
   expectDeny "over max width" CKR_ARGUMENTS_BAD
     (planDerive defaultRules (mkBaseModel ckkEc (BS.replicate 32 0) True) testSession
@@ -388,7 +388,7 @@ casePlan = do
   -- (PKCS#11 v3.2 ECDH: "if it has one" a length); the default is
   -- stamped on the pending object so readback matches explicit.
   case planDerive defaultRules m testSession ecdhMech baseHandle (blob p256Pub [derivedTmplNoLen]) of
-    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ total) -> do
+    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ _ total) -> do
       assertEqual "default total" 32 total
       assertEqual "default len" 32 n
       assertEqual "default stamped" (Just (ValULong 32))
@@ -396,12 +396,12 @@ casePlan = do
     other -> assertFailure ("expected defaulted effect, got " ++ show other)
   -- The cofactor row defaults identically.
   case planDerive defaultRules m testSession ecdhCofMech baseHandle (blob p256Pub [derivedTmplNoLen]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "cofactor default total" 32 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "cofactor default total" 32 total
     other -> assertFailure ("expected defaulted effect, got " ++ show other)
   -- Unscannable base material defaults to the max width.
   case planDerive defaultRules (mkBaseModel ckkEc (BS.replicate 32 0) True) testSession
         ecdhMech baseHandle (blob p256Pub [derivedTmplNoLen]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "opaque default total" 72 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "opaque default total" 72 total
     other -> assertFailure ("expected defaulted effect, got " ++ show other)
   -- Open-ended SHA-KDF generic secrets have no well-defined
   -- length, so they keep INCOMPLETE without one. HKDF instead
@@ -409,7 +409,7 @@ casePlan = do
   -- "should be set" (non-mandatory), and callers omit it.
   case planDerive defaultRules m testSession (MechanismId (ckm_HKDF_DERIVE))
       baseHandle (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "info") [derivedTmplNoLen]) of
-    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ total) -> do
+    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ _ total) -> do
       assertEqual "hkdf default total" 32 total
       assertEqual "hkdf default len" 32 n
       assertEqual "hkdf default stamped" (Just (ValULong 32))
@@ -418,7 +418,7 @@ casePlan = do
   -- The default follows the PRF hash length, not SHA-256.
   case planDerive defaultRules m testSession (MechanismId (ckm_HKDF_DERIVE))
       baseHandle (encodeDeriveParams (encodeHkdfInfo 6 0x02 BS.empty "info") [derivedTmplNoLen]) of
-    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ total) -> do
+    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ _ total) -> do
       assertEqual "hkdf512 default total" 64 total
       assertEqual "hkdf512 default len" 64 n
       assertEqual "hkdf512 default stamped" (Just (ValULong 64))
@@ -444,7 +444,7 @@ casePlanMontgomery = do
       blob peer = encodeDeriveParams (encodeEcdhParams 0 BS.empty peer)
   -- Accepted: the raw 32-byte peer derives under the X25519 width.
   case planDerive defaultRules m testSession ecdhMech baseHandle (blob x19Peer [derivedTmpl 32]) of
-    KeyEffect _ (FxDerive mech (Just oid) params info total) -> do
+    KeyEffect _ (FxDerive mech (Just oid) Nothing params info total) -> do
       assertEqual "mech" ecdhMech mech
       assertEqual "base" baseOid oid
       assertEqual "params" (encodeEcdhParams 0 BS.empty x19Peer) params
@@ -454,11 +454,11 @@ casePlanMontgomery = do
   -- X448 plans under its own width.
   case planDerive defaultRules (mkBaseModel ckkEcMontgomery x48P8 True) testSession
       ecdhMech baseHandle (blob x48Peer [derivedTmpl 56]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "x448 total" 56 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "x448 total" 56 total
     other -> assertFailure ("expected effect, got " ++ show other)
   -- Missing CKA_VALUE_LEN defaults to the curve width, not the max.
   case planDerive defaultRules m testSession ecdhMech baseHandle (blob x19Peer [derivedTmplNoLen]) of
-    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ total) -> do
+    KeyEffect (PwDerive [po] [n]) (FxDerive _ _ _ _ _ total) -> do
       assertEqual "default total" 32 total
       assertEqual "default len" 32 n
       assertEqual "default stamped" (Just (ValULong 32))
@@ -482,7 +482,7 @@ casePlanMontgomery = do
   -- backend arbitrates (the Weierstrass opaque precedent).
   case planDerive defaultRules (mkBaseModel ckkEcMontgomery (BS.replicate 32 0) True) testSession
         ecdhMech baseHandle (blob x19Peer [derivedTmpl 72]) of
-    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "opaque total" 72 total
+    KeyEffect _ (FxDerive _ _ _ _ _ total) -> assertEqual "opaque total" 72 total
     other -> assertFailure ("expected effect, got " ++ show other)
   -- Cofactor derive over Montgomery curves is unserved (named
   -- gap: clamping already clears the cofactor and the composed

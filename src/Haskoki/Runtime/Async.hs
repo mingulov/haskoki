@@ -345,7 +345,7 @@ effectHoldable (FxWrap _ _ _ _) = True
 effectHoldable (FxUnwrap _ _ _ _) = True
 effectHoldable (FxAuthWrap _ _ _ _) = True
 effectHoldable (FxAuthUnwrap _ _ _ _) = True
-effectHoldable (FxDerive _ _ _ _ _) = True
+effectHoldable (FxDerive _ _ _ _ _ _) = True
 effectHoldable (FxKemEncaps _ _ _ _) = True
 effectHoldable (FxKemDecaps _ _ _ _) = True
 
@@ -1522,7 +1522,7 @@ effectMech fx = case fx of
   FxUnwrap m _ _ _ -> Just m
   FxAuthWrap m _ _ _ -> Just m
   FxAuthUnwrap m _ _ _ -> Just m
-  FxDerive m _ _ _ _ -> Just m
+  FxDerive m _ _ _ _ _ -> Just m
   FxKemEncaps m _ _ _ -> Just m
   FxKemDecaps m _ _ _ -> Just m
 
