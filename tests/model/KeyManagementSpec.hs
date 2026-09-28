@@ -260,13 +260,18 @@ import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
+import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
 import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Registry.Generated
   ( ckm_AES_CCM
   , ckm_DES3_MAC
   , ckm_DES3_MAC_GENERAL
+  , ckm_CONCATENATE_BASE_AND_DATA
+  , ckm_CONCATENATE_BASE_AND_KEY
+  , ckm_CONCATENATE_DATA_AND_BASE
   , ckm_ECDH1_DERIVE
+  , ckm_EXTRACT_KEY_FROM_KEY
   , ckm_IKE1_EXTENDED_DERIVE
   , ckm_IKE1_PRF_DERIVE
   , ckm_IKE2_PRF_PLUS_DERIVE
@@ -283,6 +288,7 @@ import Haskoki.Registry.Generated
   , ckm_TLS12_MASTER_KEY_DERIVE
   , ckm_TLS12_EXTENDED_MASTER_KEY_DERIVE
   , ckm_TLS_KDF
+  , ckm_XOR_BASE_AND_DATA
   )
 import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
@@ -394,6 +400,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real TLS-KDF derives match the KATs" caseRealTlsKdfVector
   , testCase "IKE plans rows, refuses bad shapes" caseIkePlans
   , testCase "Real IKE derives match the KATs" caseRealIkeVector
+  , testCase "Byte-op plans rows, refuses bad shapes" caseByteOpsPlans
+  , testCase "Real byte-op derives match the KATs" caseRealByteOpsVector
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
   , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
   , testCase "KEM refuses wrong key types inconsistent" caseKemWrongKeyType
@@ -5100,6 +5108,164 @@ caseRealIkeVector = withRealEnv $ \env -> do
   gotExt <- derive ikeExtMech fExt 32
   assertEqual "ike extended KAT"
     (Just (hex "1c81c4b9c9083605362e98bed89e4eef320559270ae273a55ed90710e74e6951")) gotExt
+
+concatKeyMech, concatDataMech, dataConcatMech, xorMech, extractMech :: MechanismId
+concatKeyMech = MechanismId ckm_CONCATENATE_BASE_AND_KEY
+concatDataMech = MechanismId ckm_CONCATENATE_BASE_AND_DATA
+dataConcatMech = MechanismId ckm_CONCATENATE_DATA_AND_BASE
+xorMech = MechanismId ckm_XOR_BASE_AND_DATA
+extractMech = MechanismId ckm_EXTRACT_KEY_FROM_KEY
+
+byteOpsD16 :: BS.ByteString
+byteOpsD16 = BS.pack (replicate 16 1)
+
+caseByteOpsPlans :: IO ()
+caseByteOpsPlans = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 31])
+  (m2, auxH) <- plantKey m1 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [32 .. 63])
+  let auxN = fromIntegral (unExternalHandle auxH)
+      kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      kidNoLen =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        ]
+      fKey = encodeByteOpsParams auxN 0 BS.empty
+      fBD = encodeByteOpsParams 0 0 byteOpsD16
+      fXor = encodeByteOpsParams 0 0 (BS.pack [0 .. 31])
+      fExt = encodeByteOpsParams 0 0 BS.empty
+  -- Each row plans with its frame; concat-key binds fxKey2.
+  mapM_ (\(mech, frame, n, needsAux) ->
+    case planDerive defaultRules m2 st mech baseH
+        (encodeDeriveParams frame [kid n]) of
+      KeyEffect _ (FxDerive _ _ mAux _ _ total) -> do
+        assertEqual ("total " ++ show mech) n total
+        assertEqual ("aux " ++ show mech) needsAux (mAux /= Nothing)
+      other -> assertFailure ("must plan, got: " ++ show other))
+    [ (concatKeyMech, fKey, 64, True)
+    , (concatDataMech, fBD, 16, False)
+    , (dataConcatMech, fBD, 16, False)
+    , (xorMech, fXor, 16, False)
+    , (extractMech, fExt, 16, False)
+    ]
+  -- Concat rows default a missing length to the full width.
+  case planDerive defaultRules m2 st concatDataMech baseH
+      (encodeDeriveParams fBD [kidNoLen]) of
+    KeyEffect _ (FxDerive _ _ _ _ _ total) ->
+      assertEqual "natural total" 48 total
+    other -> assertFailure ("must default, got: " ++ show other)
+  -- A wrong-row frame refuses typed.
+  case planDerive defaultRules m2 st concatKeyMech baseH
+      (encodeDeriveParams fBD [kid 16]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "wrong-row code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("wrong row must deny, got: " ++ show other)
+  -- Output past the natural width refuses typed.
+  case planDerive defaultRules m2 st concatDataMech baseH
+      (encodeDeriveParams fBD [kid 49]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "natural code" CKR_KEY_SIZE_RANGE code
+    other -> assertFailure ("over-natural must deny, got: " ++ show other)
+  -- XOR over mismatched lengths refuses typed.
+  case planDerive defaultRules m2 st xorMech baseH
+      (encodeDeriveParams fBD [kid 16]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "xor code" CKR_DATA_LEN_RANGE code
+    other -> assertFailure ("xor mismatch must deny, got: " ++ show other)
+  -- EXTRACT without a template length refuses typed.
+  case planDerive defaultRules m2 st extractMech baseH
+      (encodeDeriveParams fExt [kidNoLen]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "extract code" CKR_TEMPLATE_INCOMPLETE code
+    other -> assertFailure ("extract no-len must deny, got: " ++ show other)
+  -- EXTRACT past the base end refuses typed.
+  case planDerive defaultRules m2 st extractMech baseH
+      (encodeDeriveParams (encodeByteOpsParams 0 248 BS.empty) [kid 16]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "overrun code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("overrun must deny, got: " ++ show other)
+  -- An unknown second handle denies typed.
+  case planDerive defaultRules m2 st concatKeyMech baseH
+      (encodeDeriveParams (encodeByteOpsParams 999999 0 BS.empty) [kid 64]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "aux code" CKR_KEY_HANDLE_INVALID code
+    other -> assertFailure ("bad aux must deny, got: " ++ show other)
+
+caseRealByteOpsVector :: IO ()
+caseRealByteOpsVector = withRealEnv $ \env -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 31])
+  (m2, auxH) <- plantKey m1 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [32 .. 63])
+  let auxN = fromIntegral (unExternalHandle auxH)
+      kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      derive mech frame n = do
+        (m', [h]) <- case planDerive defaultRules m2 st mech baseH
+            (encodeDeriveParams frame [kid n]) of
+          KeyEffect pw fx -> do
+            res <- answer m2 fx
+            c <- finishCommit m2 st pw res 1
+            hh <- handleOf (pcOutputs c !! 0)
+            m' <- expectRight (publishDelta m2 (pcDelta c))
+            pure (m', [hh])
+          other -> assertFailure ("derive must plan: " ++ show other) >> undefined
+        Just ost <- pure (resolveHandle m' h)
+        pure (keyBytesOf ost)
+      fKey = encodeByteOpsParams auxN 0 BS.empty
+      fBD = encodeByteOpsParams 0 0 byteOpsD16
+      fXor = encodeByteOpsParams 0 0 (BS.pack (replicate 32 0x0f))
+      fExt = encodeByteOpsParams 0 0 BS.empty
+      fExt4 = encodeByteOpsParams 0 4 BS.empty
+  gotKey <- derive concatKeyMech fKey 64
+  assertEqual "concat-key KAT"
+    (Just (hex "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f")) gotKey
+  gotBD <- derive concatDataMech fBD 48
+  assertEqual "concat-data KAT"
+    (Just (hex "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f01010101010101010101010101010101")) gotBD
+  gotDB <- derive dataConcatMech fBD 48
+  assertEqual "data-concat KAT"
+    (Just (hex "01010101010101010101010101010101000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")) gotDB
+  gotXor <- derive xorMech fXor 32
+  assertEqual "xor KAT"
+    (Just (hex "0f0e0d0c0b0a090807060504030201001f1e1d1c1b1a19181716151413121110")) gotXor
+  gotExt <- derive extractMech fExt 16
+  assertEqual "extract KAT"
+    (Just (hex "000102030405060708090a0b0c0d0e0f")) gotExt
+  gotExt4 <- derive extractMech fExt4 2
+  assertEqual "extract sub-byte KAT" (Just (hex "0010")) gotExt4
 
 caseRealAuthWrap :: IO ()
 caseRealAuthWrap = withRealEnv $ \env -> do

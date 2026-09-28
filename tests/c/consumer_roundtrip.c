@@ -4892,6 +4892,154 @@ int main(int argc, char **argv) {
             rv = f->C_DestroyObject(sess, kd0b);
             CHECKC(rv == CKR_OK, "replay IKE secret destroyed");
           }
+          {
+            /* Byte-op derives through the native params: the bare
+             * second handle (concat-key), the string-data struct
+             * (both concat-data directions + XOR), and the bare
+             * bit offset (extract). Bases 0..31 / 32..63; data
+             * 16x01; XOR data 32x0f. Outputs are exact bytes
+             * (full and truncated), plus typed refusals. */
+            CK_BYTE bsec[32], baux[32], bdat[16], bxor[32];
+            CK_BYTE bgot0[64], bgot1[16], bgot2[16], bgot3[16], bgot4[2];
+            CK_OBJECT_HANDLE bbase = 0, bauxh = 0, bd0 = 0, bd1 = 0, bd2 = 0, bd3 = 0, bd4 = 0;
+            CK_KEY_DERIVATION_STRING_DATA bsd, bsx;
+            CK_OBJECT_HANDLE bsecond;
+            CK_ULONG boff0 = 0, boff4 = 4;
+            CK_MECHANISM bm0, bm1, bm2, bm3, bm4;
+            CK_BYTE bwant3[16] = {
+              0x0f,0x0e,0x0d,0x0c,0x0b,0x0a,0x09,0x08,
+              0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00
+            };
+            CK_BYTE bwant4[2] = { 0x00, 0x10 };
+            CK_ULONG bv64 = 64, bv16 = 16, bv2 = 2;
+            CK_ATTRIBUTE bbaseT[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_DERIVE, &yes, sizeof(yes) },
+              { CKA_VALUE, bsec, sizeof(bsec) },
+            };
+            CK_ATTRIBUTE bauxT[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_DERIVE, &yes, sizeof(yes) },
+              { CKA_VALUE, baux, sizeof(baux) },
+            };
+            CK_ATTRIBUTE bdtmpl[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_VALUE_LEN, &bv64, sizeof(bv64) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_SENSITIVE, &no, sizeof(no) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+            };
+            CK_ATTRIBUTE bg0[] = { { CKA_VALUE, bgot0, sizeof(bgot0) } };
+            CK_ATTRIBUTE bg1[] = { { CKA_VALUE, bgot1, sizeof(bgot1) } };
+            CK_ATTRIBUTE bg2[] = { { CKA_VALUE, bgot2, sizeof(bgot2) } };
+            CK_ATTRIBUTE bg3[] = { { CKA_VALUE, bgot3, sizeof(bgot3) } };
+            CK_ATTRIBUTE bg4[] = { { CKA_VALUE, bgot4, sizeof(bgot4) } };
+            int bi, bok0, bok1, bok2;
+            for (bi = 0; bi < 32; bi++) bsec[bi] = (CK_BYTE)bi;
+            for (bi = 0; bi < 32; bi++) baux[bi] = (CK_BYTE)(bi + 32);
+            for (bi = 0; bi < 16; bi++) bdat[bi] = 1;
+            for (bi = 0; bi < 32; bi++) bxor[bi] = 0x0f;
+            rv = f->C_CreateObject(sess, bbaseT, 5, &bbase);
+            CHECKC(rv == CKR_OK && bbase != 0, "byte-op base imports");
+            rv = f->C_CreateObject(sess, bauxT, 5, &bauxh);
+            CHECKC(rv == CKR_OK && bauxh != 0, "byte-op aux imports");
+            bsecond = bauxh;
+            if (!isProxy) {
+              /* Direct-only: the pinned proxy daemon passes
+               * param-embedded object handles through
+               * untranslated (same HandleMap gap as the IKE
+               * keygxy legs, cited there). */
+              bm0.mechanism = CKM_CONCATENATE_BASE_AND_KEY;
+              bm0.pParameter = &bsecond;
+              bm0.ulParameterLen = sizeof(bsecond);
+              rv = f->C_DeriveKey(sess, &bm0, bbase, bdtmpl, 6, &bd0);
+              CHECKC(rv == CKR_OK && bd0 != 0, "concat-key derive ok");
+              bg0[0].ulValueLen = sizeof(bgot0);
+              rv = f->C_GetAttributeValue(sess, bd0, bg0, 1);
+              bok0 = 1;
+              for (bi = 0; bi < 64; bi++)
+                if (bgot0[bi] != (CK_BYTE)bi) bok0 = 0;
+              CHECKC(rv == CKR_OK && bg0[0].ulValueLen == 64 && bok0,
+                     "concat-key matches bytes");
+            } else {
+              printf("crypto: skip: concat-key needs embedded-handle translation the pinned proxy lacks\n");
+            }
+            bsd.pData = bdat;
+            bsd.ulLen = sizeof(bdat);
+            bdtmpl[2].pValue = &bv16;
+            bm1.mechanism = CKM_CONCATENATE_BASE_AND_DATA;
+            bm1.pParameter = &bsd;
+            bm1.ulParameterLen = sizeof(bsd);
+            rv = f->C_DeriveKey(sess, &bm1, bbase, bdtmpl, 6, &bd1);
+            CHECKC(rv == CKR_OK && bd1 != 0, "concat-data derive ok");
+            bg1[0].ulValueLen = sizeof(bgot1);
+            rv = f->C_GetAttributeValue(sess, bd1, bg1, 1);
+            bok1 = 1;
+            for (bi = 0; bi < 16; bi++)
+              if (bgot1[bi] != (CK_BYTE)bi) bok1 = 0;
+            CHECKC(rv == CKR_OK && bg1[0].ulValueLen == 16 && bok1,
+                   "concat-data truncates to base prefix");
+            bm2.mechanism = CKM_CONCATENATE_DATA_AND_BASE;
+            bm2.pParameter = &bsd;
+            bm2.ulParameterLen = sizeof(bsd);
+            rv = f->C_DeriveKey(sess, &bm2, bbase, bdtmpl, 6, &bd2);
+            CHECKC(rv == CKR_OK && bd2 != 0, "data-concat derive ok");
+            bg2[0].ulValueLen = sizeof(bgot2);
+            rv = f->C_GetAttributeValue(sess, bd2, bg2, 1);
+            bok2 = 1;
+            for (bi = 0; bi < 16; bi++)
+              if (bgot2[bi] != 1) bok2 = 0;
+            CHECKC(rv == CKR_OK && bg2[0].ulValueLen == 16 && bok2,
+                   "data-concat truncates to data");
+            bsx.pData = bxor;
+            bsx.ulLen = sizeof(bxor);
+            bm3.mechanism = CKM_XOR_BASE_AND_DATA;
+            bm3.pParameter = &bsx;
+            bm3.ulParameterLen = sizeof(bsx);
+            rv = f->C_DeriveKey(sess, &bm3, bbase, bdtmpl, 6, &bd3);
+            CHECKC(rv == CKR_OK && bd3 != 0, "xor derive ok");
+            bg3[0].ulValueLen = sizeof(bgot3);
+            rv = f->C_GetAttributeValue(sess, bd3, bg3, 1);
+            CHECKC(rv == CKR_OK && bg3[0].ulValueLen == 16 &&
+                       memcmp(bgot3, bwant3, 16) == 0,
+                   "xor matches bytes");
+            bm4.mechanism = CKM_EXTRACT_KEY_FROM_KEY;
+            bm4.pParameter = &boff0;
+            bm4.ulParameterLen = sizeof(boff0);
+            rv = f->C_DeriveKey(sess, &bm4, bbase, bdtmpl, 6, &bd4);
+            CHECKC(rv == CKR_OK && bd4 != 0, "extract derive ok");
+            bdtmpl[2].pValue = &bv2;
+            bm4.pParameter = &boff4;
+            rv = f->C_DeriveKey(sess, &bm4, bbase, bdtmpl, 6, &bd4);
+            CHECKC(rv == CKR_OK && bd4 != 0, "extract sub-byte derive ok");
+            bg4[0].ulValueLen = sizeof(bgot4);
+            rv = f->C_GetAttributeValue(sess, bd4, bg4, 1);
+            CHECKC(rv == CKR_OK && bg4[0].ulValueLen == 2 &&
+                       memcmp(bgot4, bwant4, 2) == 0,
+                   "extract sub-byte matches bytes");
+            bdtmpl[2].pValue = &bv16;
+            bm1.pParameter = garbage;
+            bm1.ulParameterLen = 8;
+            rv = f->C_DeriveKey(sess, &bm1, bbase, bdtmpl, 6, &bd4);
+            if (!isProxy) {
+              CHECKC(rv == CKR_ARGUMENTS_BAD,
+                     "concat-data with short params refused typed");
+            } else {
+              /* The shim sends the undersized image (8 < 16)
+               * as unmodeled Raw bytes, refused at the FFI
+               * boundary (an oversized image would read as a
+               * struct prefix instead). */
+              CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                     "proxied undersized byte-op image refused at shim");
+            }
+            rv = f->C_DestroyObject(sess, bd4);
+            CHECKC(rv == CKR_OK, "byte-op secret destroyed");
+          }
         }
       }
       {

@@ -42,6 +42,11 @@ import Haskoki.FFI.NativeParams
   , normalizeEncryptDataCbcParams
   , normalizeEncryptDataEcbParams
   , normalizeMechParams
+  , normalizeByteOpsConcatKeyParams
+  , normalizeByteOpsStringDataParams
+  , normalizeByteOpsExtractParams
+  , byteOpsUlongNativeSize
+  , byteOpsStringDataNativeSize
   , normalizeIke1ExtParams
   , normalizeIke1PrfParams
   , normalizeIkePrfParams
@@ -68,6 +73,7 @@ import Haskoki.Recipe.Eddsa
   , encodeEddsaParams
   )
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmParamsValid, gcmRecipeFor)
+import Haskoki.Recipe.ByteOps (encodeByteOpsParams, byteOpsParamsValid, byteOpsRecipeFor)
 import Haskoki.Recipe.Ike (encodeIkeParams, ikeParamsValid, ikeRecipeFor)
 import Haskoki.Recipe.Gmac (gmacParamsValid, gmacRecipeFor)
 import Haskoki.Recipe.MlDsa
@@ -871,4 +877,56 @@ spec = testGroup "native mechanism params"
         pokeByteOff p 0 (CULong 0x251 :: CULong)
         normalizeIkePrfPlusParams p 8
       assertEqual "refused" Nothing out
+  , testCase "byte-op native params translate to canonical" $ do
+      let pw = sizeOf (undefined :: Ptr Word8)
+          blob = BS.pack [1 .. 16]
+          check name mid got want = do
+            assertEqual ("canonical " ++ name) (Just want) got
+            case (got, byteOpsRecipeFor mid) of
+              (Just canon, Just r) ->
+                assertEqual ("recipe accepts " ++ name) True (byteOpsParamsValid r canon)
+              _ -> fail ("byte-op recipe or image missing: " ++ name)
+          keyMid = MechanismId (mustGeneratedId "CKM_CONCATENATE_BASE_AND_KEY")
+          bdMid = MechanismId (mustGeneratedId "CKM_CONCATENATE_BASE_AND_DATA")
+          extMid = MechanismId (mustGeneratedId "CKM_EXTRACT_KEY_FROM_KEY")
+      outKey <- allocaBytes byteOpsUlongNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 405)
+        normalizeByteOpsConcatKeyParams p (fromIntegral byteOpsUlongNativeSize)
+      check "concat-key" keyMid outKey (encodeByteOpsParams 405 0 BS.empty)
+      outBD <- BS.useAsCStringLen blob $ \(dp, dlen) ->
+        allocaBytes byteOpsStringDataNativeSize $ \p -> do
+          pokeByteOff p 0 (castPtr dp)
+          pokeByteOff p pw (CULong (fromIntegral dlen))
+          normalizeByteOpsStringDataParams p (fromIntegral byteOpsStringDataNativeSize)
+      check "concat-data" bdMid outBD (encodeByteOpsParams 0 0 blob)
+      outExt <- allocaBytes byteOpsUlongNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 128)
+        normalizeByteOpsExtractParams p (fromIntegral byteOpsUlongNativeSize)
+      check "extract" extMid outExt (encodeByteOpsParams 0 128 BS.empty)
+  , testCase "byte-op bad native params refuse" $ do
+      let pw = sizeOf (undefined :: Ptr Word8)
+          blob = BS.pack [1 .. 16]
+      zeroKey <- allocaBytes byteOpsUlongNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 0)
+        normalizeByteOpsConcatKeyParams p (fromIntegral byteOpsUlongNativeSize)
+      assertEqual "zero handle refused" Nothing zeroKey
+      shortKey <- allocaBytes 4 $ \p -> do
+        pokeByteOff p 0 (CULong 405)
+        normalizeByteOpsConcatKeyParams p 4
+      assertEqual "short handle refused" Nothing shortKey
+      shortSD <- BS.useAsCStringLen blob $ \(dp, dlen) ->
+        allocaBytes byteOpsStringDataNativeSize $ \p -> do
+          pokeByteOff p 0 (castPtr dp)
+          pokeByteOff p pw (CULong (fromIntegral dlen))
+          normalizeByteOpsStringDataParams p 8
+      assertEqual "short struct refused" Nothing shortSD
+      nullSD <- allocaBytes byteOpsStringDataNativeSize $ \p -> do
+        pokeByteOff p 0 (nullPtr :: Ptr Word8)
+        pokeByteOff p pw (CULong 16)
+        normalizeByteOpsStringDataParams p (fromIntegral byteOpsStringDataNativeSize)
+      assertEqual "null data refused" Nothing nullSD
+      shortExt <- allocaBytes 4 $ \p -> do
+        pokeByteOff p 0 (CULong 0)
+        normalizeByteOpsExtractParams p 4
+      assertEqual "short offset refused" Nothing shortExt
   ]

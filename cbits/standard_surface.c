@@ -2262,6 +2262,11 @@ static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   case CKM_IKE_PRF_DERIVE:
   case CKM_IKE1_PRF_DERIVE:
   case CKM_IKE1_EXTENDED_DERIVE:
+  case CKM_CONCATENATE_BASE_AND_KEY:
+  case CKM_CONCATENATE_BASE_AND_DATA:
+  case CKM_CONCATENATE_DATA_AND_BASE:
+  case CKM_XOR_BASE_AND_DATA:
+  case CKM_EXTRACT_KEY_FROM_KEY:
     return 1;
   default:
     return 0;

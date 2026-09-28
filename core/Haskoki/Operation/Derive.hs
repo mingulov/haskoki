@@ -116,6 +116,15 @@ import Haskoki.Recipe.Ike
   , ikeRecipeFor
   , maxIkeOutput
   )
+import Haskoki.Recipe.ByteOps
+  ( ByteOpsKind (..)
+  , ByteOpsRecipe (..)
+  , byteOpsBaseKeyOk
+  , byteOpsParamsValid
+  , byteOpsRecipeFor
+  , decodeByteOpsParams
+  , maxByteOpsOutput
+  )
 import Haskoki.Recipe.TlsKdf
   ( maxTlsKdfOutput
   , tlsKdfParamsValid
@@ -515,7 +524,7 @@ planDerive rules model st mech baseH blob
                 -- invalid-PRF legs accept it).
                 | prf == 0 -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
                     "IKE PRF mechanism is not a served HMAC")
-                | otherwise -> case resolveAuxKey model st auxN of
+                | otherwise -> case resolveAuxKey ikeBaseOk "IKE" model st auxN of
                     Left deny -> KeyDenied deny
                     Right mAux -> case ikeCeiling (ikKind r) prf of
                       -- Unreachable post-validation (codes 1..13
@@ -527,6 +536,30 @@ planDerive rules model st mech baseH blob
                         (FxDerive mech (Just (osId ost)) mAux ikeBlob BS.empty)
                         Nothing
                         CKR_ARGUMENTS_BAD
+  | Just r <- byteOpsRecipeFor mech = case decodeDeriveParams blob of
+      Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "malformed derive arguments")
+      Just (boBlob, tmpls) -> case resolveBase model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, mat)
+          -- Byte-op rows derive from generic-secret bases only;
+          -- the key-type contradiction outranks parameter shape
+          -- (the Init-matrix ordering, shared with the TLS-KDF
+          -- arm).
+          | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkGenericSecret) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "byte-op base key is not a generic secret")
+          | not (byteOpsParamsValid r boBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              "byte-op mechanism parameters rejected by the recipe")
+          | otherwise -> case decodeByteOpsParams boBlob of
+              -- Unreachable post-validation; typed, never a crash.
+              Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                "byte-op frame rejected after validation")
+              Just (auxN, offN, blob) ->
+                case resolveAuxKey byteOpsBaseOkState "byte-op" model st auxN of
+                  Left deny -> KeyDenied deny
+                  Right mAux -> byteOpsFinish r mat mAux offN blob
+                    mech ost boBlob tmpls
   | Just r <- sp800RecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -609,6 +642,58 @@ planDerive rules model st mech baseH blob
               let (pos, lens) = unzip
                     [(pendingFromAttrs st attrs, n) | (attrs, n) <- keyed]
               in KeyEffect (PwDerive pos lens) (fx (sum lens))
+    -- | Byte-op admission after the frame and aux resolve: the
+    -- natural output width per kind drives 'finish' (concat
+    -- and XOR default a missing template length to the full
+    -- width, ECDH-style; EXTRACT has no natural width so a
+    -- missing length stays INCOMPLETE). Over-width requests
+    -- refuse @CKR_KEY_SIZE_RANGE@ (the SHA-KDF\/encrypt-data
+    -- ceiling code); an XOR length mismatch refuses
+    -- @CKR_DATA_LEN_RANGE@; an EXTRACT overrun refuses
+    -- @CKR_ARGUMENTS_BAD@.
+    byteOpsFinish r mat mAux offN blob mech ost boBlob tmpls =
+      case boKind r of
+        ConcatBaseAndKey -> case mAux of
+          -- Unreachable: validation forces a nonzero aux
+          -- handle, which resolves or denies above.
+          Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+            "concat-key aux vanished after resolution")
+          Just auxOid -> case Map.lookup auxOid (mObjects model) >>= keyBytesOf of
+            -- Unreachable: the aux carried material at
+            -- resolution.
+            Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+              "concat-key aux lost its material")
+            Just auxMat -> natural (BS.length mat + BS.length auxMat)
+        ConcatBaseAndData -> natural (BS.length mat + BS.length blob)
+        ConcatDataAndBase -> natural (BS.length blob + BS.length mat)
+        XorBaseAndData
+          | BS.length mat /= BS.length blob -> KeyDenied (KeyDeny CKR_DATA_LEN_RANGE
+              "XOR data length differs from the base length")
+          | otherwise -> natural (BS.length mat)
+        ExtractKeyFromKey ->
+          let baseBits = toInteger (BS.length mat) * 8
+              remaining = (baseBits - toInteger offN) `div` 8
+              -- The whole-byte window at the offset, capped by
+              -- the byte-ops ceiling; a past-the-end offset
+              -- leaves no window, so every positive request
+              -- overruns.
+              window = max 0 (min (toInteger maxByteOpsOutput) remaining)
+          in finish tmpls (fromInteger window)
+            "EXTRACT window exceeds the base key"
+            (FxDerive mech (Just (osId ost)) mAux boBlob BS.empty)
+            Nothing
+            CKR_ARGUMENTS_BAD
+      where
+        fx = FxDerive mech (Just (osId ost)) mAux boBlob BS.empty
+        natural n
+          | n < 1 = KeyDenied (KeyDeny CKR_KEY_SIZE_RANGE
+              "byte-op natural output is empty")
+          | n > maxByteOpsOutput = KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              "byte-op natural output exceeds the ceiling")
+          | otherwise = finish tmpls n
+              "derived total exceeds the byte-op natural width"
+              fx (Just n)
+              CKR_KEY_SIZE_RANGE
     checkAll
       :: Maybe Int -> [[(AttributeType, AttributeValue)]]
       -> Either KeyDeny [(Map.Map AttributeType AttributeValue, Int)]
@@ -735,28 +820,38 @@ ikeBaseOk ost = case Map.lookup AttrKeyType (osAttrs ost) of
   Just (ValULong kty) -> ikeBaseKeyOk kty
   _ -> False
 
--- | Resolve the IKE aux handle (0 = absent): the params-carried
--- keygxy input, held to the same visibility, type, permission,
--- and material rules as the base key.
+-- | Resolve a params-carried aux handle (0 = absent),
+-- held to the same visibility, type, permission, and
+-- material rules as the base key; the type check and its
+-- label ride per family (IKE: generic or HMAC; byte-ops:
+-- generic only).
 resolveAuxKey
-  :: Model -> SessionState -> Word64
+  :: (ObjectState -> Bool) -> String
+  -> Model -> SessionState -> Word64
   -> Either KeyDeny (Maybe ObjectId)
-resolveAuxKey _ _ 0 = Right Nothing
-resolveAuxKey model st auxN = case resolveHandle model (ExternalHandle (fromIntegral auxN)) of
-  Nothing -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
-    "unknown or destroyed aux-key handle")
-  Just ost
-    | not (objectVisible st ost) -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
-        "aux key not visible in this session")
-    | not (ikeBaseOk ost) -> Left (KeyDeny CKR_KEY_TYPE_INCONSISTENT
-        "IKE aux key is not a generic secret or HMAC key")
-    | Map.lookup AttrDerive (osAttrs ost) /= Just (ValBool True) ->
-        Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
-          "aux key does not permit derivation")
-    | otherwise -> case keyBytesOf ost of
-        Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
-          "aux key lacks material")
-        Just _ -> Right (Just (osId ost))
+resolveAuxKey _ _ _ _ 0 = Right Nothing
+resolveAuxKey typeOk label model st auxN =
+  case resolveHandle model (ExternalHandle (fromIntegral auxN)) of
+    Nothing -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
+      "unknown or destroyed aux-key handle")
+    Just ost
+      | not (objectVisible st ost) -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
+          "aux key not visible in this session")
+      | not (typeOk ost) -> Left (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+          (label ++ " aux key has the wrong key type"))
+      | Map.lookup AttrDerive (osAttrs ost) /= Just (ValBool True) ->
+          Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+            "aux key does not permit derivation")
+      | otherwise -> case keyBytesOf ost of
+          Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
+            "aux key lacks material")
+          Just _ -> Right (Just (osId ost))
+
+-- | Byte-op base\/aux type check over object state.
+byteOpsBaseOkState :: ObjectState -> Bool
+byteOpsBaseOkState ost = case Map.lookup AttrKeyType (osAttrs ost) of
+  Just (ValULong kty) -> byteOpsBaseKeyOk kty
+  _ -> False
 
 -- | The output ceiling by kind: the single-shot rows cap at
 -- their PRF width (truncation serves the AES legs); the

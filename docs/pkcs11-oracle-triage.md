@@ -1717,6 +1717,91 @@ skipped (t7692)
   11j tree (`dist-release/haskoki-0.3.0.0`,
   evidence 16/16).
 
+## Round 32: byte-op derive slice 11k (fast r60→r61 + KAT r33→r34)
+
+- r61: 4329 passed / 19 failed / 683
+  xfailed / 3813 skipped (t8844)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r61-results.json`).
+  r60→r61: +31 pass / +0 fail / +20 xfail /
+  +34 skip (+85 collected).
+- Movers r60→r61 (unit `counts`, exact):
+  `test_misc_kdf` 0p/12s → 9p/3x (the
+  byte-op unit goes live: all concat
+  and XOR KAT legs pass; the 3 EXTRACT
+  legs xfail on the token's
+  `CKR_TEMPLATE_INCOMPLETE` — the
+  oracle passes no `CKA_VALUE_LEN`
+  and lists that code in its own
+  tolerated `_DERIVE_ERROR_RVS` set,
+  matching SoftHSM which refuses the
+  length-less extract the same way);
+  `test_mech_derive` 23p/25s/1x →
+  27p/25s/2x (the new +1 xfail is the
+  generic XOR probe: base 32 bytes vs
+  16-byte data trips the equal-lengths
+  `CKR_DATA_LEN_RANGE` rule, which the
+  oracle classifies "advertised but not
+  operational"); `test_mech_negative`
+  263p/735s/294x → 267p/735s/310x
+  (the 16 new xfails are the 5-row
+  malformed/missing-param and
+  without-flag matrix legs joining the
+  pre-existing "keygen rejected at
+  runtime: `CKR_MECHANISM_INVALID`"
+  population — the oracle's setup
+  generates the second key via
+  `C_GenerateKey` with the derive-only
+  mechanism, which the token
+  spec-correctly refuses — plus the
+  lone concat-key wrong-key-type leg,
+  same setup shape);
+  `test_mech_flags`
+  759p/1483s/8x → 769p/1518s/8x;
+  `test_mech_probe` +15 skips;
+  `test_arithmetic_overflow` +3p/−3s
+  and `test_ffi_length_boundary`
+  +1p/−1s (new-row security probes
+  pass). +31 = 9 + 4 + 4 + 10 + 3 + 1;
+  skips −12 + 35 + 15 − 3 − 1 = +34;
+  xfails +3 + 1 + 16 = +20. Every new
+  xfail is a new byte-op matrix leg
+  (previously uncollected); no outcome
+  moves pass→xfail or xfail→fail.
+- Zero regressions: the 19 failures are
+  identical by id to r60 (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS
+  P11C-006 + 1 SP800 multi-output scope
+  gap).
+- r34: 82768 passed / 25 failed / 1707
+  xfailed / 30528 skipped (t115028)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r34-results.json`).
+  r33→r34: +31 pass / +0 fail / +20 xfail /
+  +34 skip (+85 — the fast-matrix
+  units repeat r60→r61 exactly; no
+  KAT-only delta: byte-ops carry no
+  `@pytest.mark.slow` legs beyond
+  fast's). The 25 failures are
+  identical by id to r33.
+- Proxy note (consumer parity, not the
+  oracle lanes): the pinned shim
+  models the string-data shape, so the
+  three string-data consumer legs run
+  in both topologies and parity holds;
+  the concat-key leg (param-embedded
+  handle, same HandleMap gap as 11j's
+  keygxy) runs direct-only with the
+  gap cited in-tree. The garbage-image
+  leg uses an undersized (8-byte)
+  image: the shim forwards sub-shape
+  images as unmodeled Raw (refused
+  `CKR_MECHANISM_PARAM_INVALID` at
+  the FFI boundary), while an
+  oversized image would read as a
+  struct prefix instead (probed).
+- Bundle note: r61/r34 run on the final
+  11k tree (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

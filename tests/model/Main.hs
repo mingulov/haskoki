@@ -33,6 +33,7 @@ import qualified ObjectSpec
 import qualified OperationSpec
 import qualified OwnershipSpec
 import qualified OutputSpec
+import qualified RecipeByteOpsSpec
 import qualified RecipeCbcMacSpec
 import qualified RecipeCcmSpec
 import qualified RecipeChacha20Spec
@@ -91,6 +92,7 @@ main = defaultMain $ testGroup "haskoki model + lifecycle"
   , OperationSpec.spec
   , OwnershipSpec.spec
   , OutputSpec.spec
+  , RecipeByteOpsSpec.spec
   , RecipeCbcMacSpec.spec
   , RecipeCcmSpec.spec
   , RecipeChacha20Spec.spec

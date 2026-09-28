@@ -158,6 +158,14 @@ module Haskoki.FFI.NativeParams
   , ikePrfNativeSize
   , ike1PrfNativeSize
   , ike1ExtNativeSize
+  , byteOpsConcatKeyStructToCanonical
+  , byteOpsStringDataStructToCanonical
+  , byteOpsExtractStructToCanonical
+  , normalizeByteOpsConcatKeyParams
+  , normalizeByteOpsStringDataParams
+  , normalizeByteOpsExtractParams
+  , byteOpsUlongNativeSize
+  , byteOpsStringDataNativeSize
   , pssStructToCanonical
   , oaepStructToCanonical
   , ecdhStructToCanonical
@@ -203,6 +211,7 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (alignment, peekByteOff, sizeOf)
 
 import Haskoki.FFI.Decode (maxInputBytes)
+import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
 import Haskoki.Recipe.Ccm (ccmRecipeFor, encodeCcmParams)
 import Haskoki.Recipe.Dh (decodeDhParams, encodeDhParams)
 import Haskoki.Recipe.Chacha20
@@ -311,6 +320,19 @@ ikePrfPlusNativeSize = 4 * wordSize + ptrSize
 -- (@spec\\/vendor\\/pkcs11.h:1651-1660@; 56 bytes on LP64).
 ikePrfNativeSize :: Int
 ikePrfNativeSize = 5 * wordSize + 2 * ptrSize
+
+-- | Native bare-@CK_ULONG@ image size: the second-key handle
+-- (@CKM_CONCATENATE_BASE_AND_KEY@) or the bit offset
+-- (@CKM_EXTRACT_KEY_FROM_KEY@).
+byteOpsUlongNativeSize :: Int
+byteOpsUlongNativeSize = wordSize
+
+-- | Native @CK_KEY_DERIVATION_STRING_DATA@ image size:
+-- (pointer, length) for the data bytes (the two data-concat
+-- rows and the XOR row;
+-- @spec\/vendor\/pkcs11.h:1699-1702@; 16 bytes on LP64).
+byteOpsStringDataNativeSize :: Int
+byteOpsStringDataNativeSize = ptrSize + wordSize
 
 -- | Native @CK_IKE1_PRF_DERIVE_PARAMS@ image size: the PRF id,
 -- the prev-key flag (padded to a word), the keygxy and
@@ -1071,6 +1093,65 @@ normalizeIke1PrfParams pParams paramsLen
 -- image. Wrong-sized images, non-0\/1 flag bytes, a
 -- flag\/handle mismatch, and refused extra-data chases
 -- refuse ('Nothing').
+-- | The bare second-key handle of
+-- @CKM_CONCATENATE_BASE_AND_KEY@ onto the canonical
+-- @byteops-params\/1@ image (a zero handle refuses: no
+-- second key to concatenate).
+byteOpsConcatKeyStructToCanonical :: Word64 -> Maybe ByteString
+byteOpsConcatKeyStructToCanonical h = do
+  guard (h /= 0)
+  Just (encodeByteOpsParams h 0 BS.empty)
+
+-- | One @CK_KEY_DERIVATION_STRING_DATA@ payload onto the
+-- canonical @byteops-params\/1@ image (shared by the two
+-- data-concat rows and the XOR row).
+byteOpsStringDataStructToCanonical :: ByteString -> Maybe ByteString
+byteOpsStringDataStructToCanonical blob =
+  Just (encodeByteOpsParams 0 0 blob)
+
+-- | The bare bit offset of @CKM_EXTRACT_KEY_FROM_KEY@ onto
+-- the canonical @byteops-params\/1@ image (range is checked
+-- against the base length downstream).
+byteOpsExtractStructToCanonical :: Word64 -> Maybe ByteString
+byteOpsExtractStructToCanonical off =
+  Just (encodeByteOpsParams 0 off BS.empty)
+
+-- | Normalize one bare second-key handle: the native
+-- @CK_ULONG@ image at @pParams@/@paramsLen@ onto the
+-- canonical @byteops-params\/1@ image. Wrong-sized images
+-- and the zero handle refuse ('Nothing').
+normalizeByteOpsConcatKeyParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeByteOpsConcatKeyParams pParams paramsLen
+  | paramsLen /= fromIntegral byteOpsUlongNativeSize = pure Nothing
+  | otherwise = do
+      CULong h <- peekByteOff pParams 0
+      pure (byteOpsConcatKeyStructToCanonical (fromIntegral h))
+
+-- | Normalize one string-data struct: the native
+-- @CK_KEY_DERIVATION_STRING_DATA@ image at
+-- @pParams@/@paramsLen@ onto the canonical @byteops-params\/1@
+-- image. Wrong-sized images and refused data chases refuse
+-- ('Nothing').
+normalizeByteOpsStringDataParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeByteOpsStringDataParams pParams paramsLen
+  | paramsLen /= fromIntegral byteOpsStringDataNativeSize = pure Nothing
+  | otherwise = do
+      pData <- peekByteOff pParams 0
+      CULong dataLen <- peekByteOff pParams ptrSize
+      mData <- chaseBytes pData dataLen
+      pure (mData >>= byteOpsStringDataStructToCanonical)
+
+-- | Normalize one bare bit offset: the native @CK_ULONG@
+-- image at @pParams@/@paramsLen@ onto the canonical
+-- @byteops-params\/1@ image. Wrong-sized images refuse
+-- ('Nothing').
+normalizeByteOpsExtractParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeByteOpsExtractParams pParams paramsLen
+  | paramsLen /= fromIntegral byteOpsUlongNativeSize = pure Nothing
+  | otherwise = do
+      CULong off <- peekByteOff pParams 0
+      pure (byteOpsExtractStructToCanonical (fromIntegral off))
+
 normalizeIke1ExtParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
 normalizeIke1ExtParams pParams paramsLen
   | paramsLen /= fromIntegral ike1ExtNativeSize = pure Nothing

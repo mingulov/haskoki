@@ -74,6 +74,7 @@ import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
+import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
@@ -125,6 +126,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: sp800-108 vectors + refuse" caseDriverSp800
   , testCase "driver: tls-kdf vectors + refuse" caseDriverTlsKdf
   , testCase "driver: ike vectors + refuse" caseDriverIke
+  , testCase "driver: byte-op vectors + refuse" caseDriverByteOps
   , testCase "driver: pbkd2 keygen vector" caseDriverPbkd2Gen
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
@@ -1752,6 +1754,76 @@ caseDriverIke = withBackend $ \env -> do
   case trunc of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed ike trunc cap, got: " ++ show other)
+
+caseDriverByteOps :: IO ()
+caseDriverByteOps = withBackend $ \env -> do
+  let baseOid = ObjectId 84
+      auxOid = ObjectId 85
+      res oid
+        | oid == baseOid = Just (KeyBytes (BS.pack [0 .. 31]))
+        | oid == auxOid = Just (KeyBytes (BS.pack [32 .. 63]))
+        | otherwise = Nothing
+      deriveAs mAux mech params outLen =
+        runEffect env res (FxDerive mech (Just baseOid) mAux params BS.empty outLen)
+          >>= expectBytes
+      d16 = BS.pack (replicate 16 1)
+      xd = BS.pack (replicate 32 0x0f)
+      ck = MechanismId 0x360
+      cbd = MechanismId 0x362
+      cdb = MechanismId 0x363
+      xx = MechanismId 0x364
+      xt = MechanismId 0x365
+      fKey = encodeByteOpsParams 405 0 BS.empty
+      fBD = encodeByteOpsParams 0 0 d16
+      fDB = encodeByteOpsParams 0 0 d16
+      fXor = encodeByteOpsParams 0 0 xd
+      fExt0 = encodeByteOpsParams 0 0 BS.empty
+      fExt128 = encodeByteOpsParams 0 128 BS.empty
+      fExt4 = encodeByteOpsParams 0 4 BS.empty
+  k64 <- deriveAs (Just auxOid) ck fKey 64
+  assertEqual "concat-key" (hex "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f") k64
+  k16 <- deriveAs (Just auxOid) ck fKey 16
+  assertEqual "concat-key truncates" (hex "000102030405060708090a0b0c0d0e0f") k16
+  b48 <- deriveAs Nothing cbd fBD 48
+  assertEqual "concat-data" (hex "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f01010101010101010101010101010101") b48
+  d48 <- deriveAs Nothing cdb fDB 48
+  assertEqual "data-concat" (hex "01010101010101010101010101010101000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f") d48
+  x32 <- deriveAs Nothing xx fXor 32
+  assertEqual "xor" (hex "0f0e0d0c0b0a090807060504030201001f1e1d1c1b1a19181716151413121110") x32
+  e16 <- deriveAs Nothing xt fExt0 16
+  assertEqual "extract aligned" (hex "000102030405060708090a0b0c0d0e0f") e16
+  e16b <- deriveAs Nothing xt fExt128 16
+  assertEqual "extract offset" (hex "101112131415161718191a1b1c1d1e1f") e16b
+  e2 <- deriveAs Nothing xt fExt4 2
+  assertEqual "extract sub-byte" (hex "0010") e2
+  -- Typed refusals: junk params, a non-empty info string, an
+  -- over-natural length, the missing aux key, the XOR
+  -- mismatch, and the EXTRACT overrun.
+  junk <- runEffect env res (FxDerive cbd (Just baseOid) Nothing "junk" BS.empty 16)
+  case junk of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed byteop junk, got: " ++ show other)
+  withInfo <- runEffect env res (FxDerive cbd (Just baseOid) Nothing fBD "x" 16)
+  case withInfo of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed byteop info, got: " ++ show other)
+  over <- runEffect env res (FxDerive cbd (Just baseOid) Nothing fBD BS.empty 49)
+  case over of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed byteop length, got: " ++ show other)
+  noAux <- runEffect env res (FxDerive ck (Just baseOid) Nothing fKey BS.empty 64)
+  case noAux of
+    GotCryptoError (CryptoBadKey _ _) -> pure ()
+    other -> assertFailure ("expected BadKey byteop no-aux, got: " ++ show other)
+  mismatch <- runEffect env res (FxDerive xx (Just baseOid) Nothing fBD BS.empty 16)
+  case mismatch of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed byteop xor mismatch, got: " ++ show other)
+  overrun <- runEffect env res
+    (FxDerive xt (Just baseOid) Nothing (encodeByteOpsParams 0 248 BS.empty) BS.empty 16)
+  case overrun of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed byteop extract overrun, got: " ++ show other)
 
 -- SHA-1 vectors plus hashlib\/CLI cross-checked SHA-256\/512
 -- vectors, multi-block output, truncation, SHA-KD rows, and typed

@@ -113,6 +113,11 @@ mech|0x00000320|CKM_CAST128_KEY_GEN|CKM_CAST5_KEY_GEN|keygen|no-params/1|bits:8-
 mech|0x00000330|CKM_RC5_KEY_GEN||keygen|no-params/1|bits:8-2040|generate-key:A37
 mech|0x00000340|CKM_IDEA_KEY_GEN||keygen|no-params/1|bits:128-128|generate-key:A37
 mech|0x00000350|CKM_GENERIC_SECRET_KEY_GEN||keygen|no-params/1|bits:8-2040|generate-key:A37
+mech|0x00000360|CKM_CONCATENATE_BASE_AND_KEY||derive|byteops-params/1|mechanism-specific:0-0|derive:A20,A37,A39
+mech|0x00000362|CKM_CONCATENATE_BASE_AND_DATA||derive|byteops-params/1|mechanism-specific:0-0|derive:A20,A37,A39
+mech|0x00000363|CKM_CONCATENATE_DATA_AND_BASE||derive|byteops-params/1|mechanism-specific:0-0|derive:A20,A37,A39
+mech|0x00000364|CKM_XOR_BASE_AND_DATA||derive|byteops-params/1|mechanism-specific:0-0|derive:A20,A37,A39
+mech|0x00000365|CKM_EXTRACT_KEY_FROM_KEY||derive|byteops-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x00000370|CKM_SSL3_PRE_MASTER_KEY_GEN||keygen|ck-version/1|bits:384-384|generate-key:A37
 mech|0x00000374|CKM_TLS_PRE_MASTER_KEY_GEN||keygen|ck-version/1|bits:384-384|generate-key:A37
 mech|0x00000375|CKM_TLS_MASTER_KEY_DERIVE||derive|tls-kdf-params/1|mechanism-specific:0-0|derive:A20,A37,A39
@@ -338,11 +343,6 @@ inv|0x00000342|CKM_IDEA_CBC||catalog-only
 inv|0x00000343|CKM_IDEA_MAC||catalog-only
 inv|0x00000344|CKM_IDEA_MAC_GENERAL||catalog-only
 inv|0x00000345|CKM_IDEA_CBC_PAD||catalog-only
-inv|0x00000360|CKM_CONCATENATE_BASE_AND_KEY||catalog-only
-inv|0x00000362|CKM_CONCATENATE_BASE_AND_DATA||catalog-only
-inv|0x00000363|CKM_CONCATENATE_DATA_AND_BASE||catalog-only
-inv|0x00000364|CKM_XOR_BASE_AND_DATA||catalog-only
-inv|0x00000365|CKM_EXTRACT_KEY_FROM_KEY||catalog-only
 inv|0x00000371|CKM_SSL3_MASTER_KEY_DERIVE||catalog-only
 inv|0x00000372|CKM_SSL3_KEY_AND_MAC_DERIVE||catalog-only
 inv|0x00000373|CKM_SSL3_MASTER_KEY_DERIVE_DH||catalog-only

@@ -11863,16 +11863,32 @@
     {
       "aliases": [],
       "canonical_name": "CKM_CONCATENATE_BASE_AND_KEY",
-      "family": "special",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Byte-op recipe (core/Haskoki/Recipe/ByteOps.hs): output is base value ++ second-key value over generic secrets, truncated to the derived template CKA_VALUE_LEN (a missing length defaults to the full natural output, ECDH-style). The second handle arrives as a bare CK_ULONG param, resolved onto fxKey2 under the same visibility/type/permission/material rules as the base. Output past the natural width refuses CKR_KEY_SIZE_RANGE. Vectors pinned (RoutingE2ESpec caseDriverByteOps); planner pins (RecipeByteOpsSpec); synthetic separation (SyntheticSpec caseByteOps); real KATs (KeyManagementSpec caseRealByteOpsVector).",
       "numeric_id": "0x00000360",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "byteops/v1",
+          "parameter_codec": "byteops-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CONCATENATE_BASE_AND_KEY",
@@ -11881,26 +11897,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "byteops",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "byteops",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "byteops",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeByteOpsSpec",
+          "build_id": "byteops",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_CONCATENATE_BASE_AND_DATA",
-      "family": "special",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Byte-op recipe (core/Haskoki/Recipe/ByteOps.hs): output is base value ++ parameter data over a generic-secret base, truncated to the derived template CKA_VALUE_LEN (a missing length defaults to the full natural output, ECDH-style). Parameters are the CK_KEY_DERIVATION_STRING_DATA struct (data chase, NULL/empty allowed); output past the natural width refuses CKR_KEY_SIZE_RANGE. Vectors pinned (RoutingE2ESpec caseDriverByteOps); planner pins (RecipeByteOpsSpec); synthetic separation (SyntheticSpec caseByteOps); real KATs (KeyManagementSpec caseRealByteOpsVector).",
       "numeric_id": "0x00000362",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "byteops/v1",
+          "parameter_codec": "byteops-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CONCATENATE_BASE_AND_DATA",
@@ -11909,26 +11977,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "byteops",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "byteops",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "byteops",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeByteOpsSpec",
+          "build_id": "byteops",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_CONCATENATE_DATA_AND_BASE",
-      "family": "special",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Byte-op recipe (core/Haskoki/Recipe/ByteOps.hs): output is parameter data ++ base value over a generic-secret base, truncated to the derived template CKA_VALUE_LEN (a missing length defaults to the full natural output, ECDH-style). Parameters are the CK_KEY_DERIVATION_STRING_DATA struct (data chase, NULL/empty allowed); output past the natural width refuses CKR_KEY_SIZE_RANGE. Vectors pinned (RoutingE2ESpec caseDriverByteOps); planner pins (RecipeByteOpsSpec); synthetic separation (SyntheticSpec caseByteOps); real KATs (KeyManagementSpec caseRealByteOpsVector).",
       "numeric_id": "0x00000363",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "byteops/v1",
+          "parameter_codec": "byteops-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CONCATENATE_DATA_AND_BASE",
@@ -11937,26 +12057,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "byteops",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "byteops",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "byteops",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeByteOpsSpec",
+          "build_id": "byteops",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_XOR_BASE_AND_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Byte-op recipe (core/Haskoki/Recipe/ByteOps.hs): output is base value XOR parameter data over a generic-secret base. Parameters are the CK_KEY_DERIVATION_STRING_DATA struct (data chase); base and data must have equal length or the plan refuses CKR_DATA_LEN_RANGE (SoftHSM cross-check: equal-length matrix only). A missing template length defaults to the full natural width. Vectors pinned (RoutingE2ESpec caseDriverByteOps); planner pins (RecipeByteOpsSpec); synthetic separation (SyntheticSpec caseByteOps); real KATs (KeyManagementSpec caseRealByteOpsVector).",
       "numeric_id": "0x00000364",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "byteops/v1",
+          "parameter_codec": "byteops-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_XOR_BASE_AND_DATA",
@@ -11965,26 +12137,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "byteops",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "byteops",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "byteops",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeByteOpsSpec",
+          "build_id": "byteops",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_EXTRACT_KEY_FROM_KEY",
-      "family": "special",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Byte-op recipe (core/Haskoki/Recipe/ByteOps.hs): output is the bit-exact slice of a generic-secret base at the CK_EXTRACT_PARAMS bit offset (MSB-first sub-byte extraction). The derived template MUST carry CKA_VALUE_LEN or the plan refuses CKR_TEMPLATE_INCOMPLETE (SoftHSM cross-check); a slice past the base end refuses CKR_ARGUMENTS_BAD. Vectors pinned (RoutingE2ESpec caseDriverByteOps); planner pins (RecipeByteOpsSpec); synthetic separation (SyntheticSpec caseByteOps); real KATs (KeyManagementSpec caseRealByteOpsVector).",
       "numeric_id": "0x00000365",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "byteops/v1",
+          "parameter_codec": "byteops-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_EXTRACT_KEY_FROM_KEY",
@@ -11993,12 +12217,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "byteops",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "byteops",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "byteops",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeByteOpsSpec",
+          "build_id": "byteops",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

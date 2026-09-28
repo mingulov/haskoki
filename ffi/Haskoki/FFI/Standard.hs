@@ -217,7 +217,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
-import Haskoki.FFI.NativeParams (normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsPrfParams)
+import Haskoki.FFI.NativeParams (normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsPrfParams)
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
@@ -255,6 +255,7 @@ import Haskoki.Recipe.EncryptData (EncryptDataRecipe (..), encryptDataRecipeFor)
 import Haskoki.Recipe.Kdf (KdfRecipe (..), kdfRecipeFor)
 import Haskoki.Recipe.Sp800108 (Sp800Recipe (..), sp800RecipeFor)
 import Haskoki.Recipe.TlsKdf (TlsKdfKind (..), TlsKdfRecipe (..), tlsKdfRecipeFor)
+import Haskoki.Recipe.ByteOps (ByteOpsKind (..), ByteOpsRecipe (..), byteOpsRecipeFor)
 import Haskoki.Recipe.Ike (IkeKind (..), IkeRecipe (..), ikeRecipeFor)
 import Haskoki.Recipe.TlsPrf (tlsPrfRecipeFor)
 import Haskoki.Operation.KeyManagement
@@ -2925,15 +2926,16 @@ haskokiStdUnwrapKey ctx h (CULong mech) pIv (CULong ivLen) (CULong wrapH)
                       Right _ -> pure ckrGeneralError
 
 -- | Opaque derive for the ECDH, DH, SHA-KDF, TLS-PRF,
--- SP 800-108, TLS-KDF, and IKE rows: the C side forwards the
--- mechanism id, the raw parameter image, and the template
--- frame. ECDH, DH, TLS-PRF, SP 800-108, TLS-KDF, and IKE structs
--- normalize here ('normalizeEcdhParams',
+-- SP 800-108, TLS-KDF, IKE, and byte-op rows: the C side
+-- forwards the mechanism id, the raw parameter image, and the
+-- template frame. ECDH, DH, TLS-PRF, SP 800-108, TLS-KDF, IKE,
+-- and byte-op structs normalize here ('normalizeEcdhParams',
 -- 'normalizeDhPkcsParams' for the bare PKCS#3 peer,
 -- 'normalizeDhX942Params' for the X9.42 struct,
 -- 'normalizeTlsPrfParams', 'normalizeSp800KdfParams', the
 -- four 'normalizeTlsKdf*' normalizers dispatched by row kind,
--- and the four 'normalizeIke*' normalizers likewise);
+-- the four 'normalizeIke*' normalizers likewise, and the
+-- three 'normalizeByteOps*' normalizers by param shape);
 -- base resolution and the key-type check
 -- run first inside 'planDerive', so a wrong-typed base refuses
 -- before parameter shape is examined. SHA rows take the image as
@@ -3004,6 +3006,17 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
             fromMaybe raw <$> normalizeIke1PrfParams pParams paramsLen
           Ike1Extended ->
             fromMaybe raw <$> normalizeIke1ExtParams pParams paramsLen
+      | Just r <- byteOpsRecipeFor mid = case boKind r of
+          ConcatBaseAndKey ->
+            fromMaybe raw <$> normalizeByteOpsConcatKeyParams pParams paramsLen
+          ConcatBaseAndData ->
+            fromMaybe raw <$> normalizeByteOpsStringDataParams pParams paramsLen
+          ConcatDataAndBase ->
+            fromMaybe raw <$> normalizeByteOpsStringDataParams pParams paramsLen
+          XorBaseAndData ->
+            fromMaybe raw <$> normalizeByteOpsStringDataParams pParams paramsLen
+          ExtractKeyFromKey ->
+            fromMaybe raw <$> normalizeByteOpsExtractParams pParams paramsLen
       -- Encrypt-data rows normalize their native structs (CBC:
       -- the @iv||data@ frame; ECB: the string-data chase onto the
       -- raw data bytes). A refused chase poisons to the empty
@@ -3020,11 +3033,11 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
 
 -- | Mechanisms served by 'haskokiStdDeriveOpaque': the ECDH rows,
 -- the DH rows, the SHA-KDF rows, TLS-PRF, the SP 800-108 rows,
--- the TLS-KDF rows, the IKE rows, and the encrypt-data rows
--- (PBKD2 excluded: no native decoder).
+-- the TLS-KDF rows, the IKE rows, the byte-op rows, and the
+-- encrypt-data rows (PBKD2 excluded: no native decoder).
 isOpaqueDeriveMech :: MechanismId -> Bool
 isOpaqueDeriveMech mid =
-  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || isJust (sp800RecipeFor mid) || isJust (tlsKdfRecipeFor mid) || isJust (ikeRecipeFor mid) || isJust (encryptDataRecipeFor mid) || case kdfRecipeFor mid of
+  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || isJust (sp800RecipeFor mid) || isJust (tlsKdfRecipeFor mid) || isJust (ikeRecipeFor mid) || isJust (byteOpsRecipeFor mid) || isJust (encryptDataRecipeFor mid) || case kdfRecipeFor mid of
     Just r -> not (rkPbkd2 r)
     Nothing -> False
 

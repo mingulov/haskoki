@@ -85,6 +85,7 @@ library haskoki-core
     Haskoki.Recipe.Digest
     Haskoki.Recipe.Dsa
     Haskoki.Recipe.Hmac
+    Haskoki.Recipe.ByteOps
     Haskoki.Recipe.Ike
     Haskoki.Recipe.Kdf
     Haskoki.Recipe.RsaOaep
@@ -381,6 +382,7 @@ test-suite haskoki-model-tests
     OperationSpec
     OwnershipSpec
     OutputSpec
+    RecipeByteOpsSpec
     RecipeCbcMacSpec
     RecipeCcmSpec
     RecipeChacha20Spec

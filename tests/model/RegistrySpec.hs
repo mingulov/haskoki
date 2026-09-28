@@ -70,6 +70,7 @@ spec = testGroup "descriptor registry"
   , testCase "SP800-108 mechs promoted to behavior" caseSp800Promoted
   , testCase "TLS-KDF mechs promoted to behavior" caseTlsKdfPromoted
   , testCase "IKE mechs promoted to behavior" caseIkePromoted
+  , testCase "byte-op mechs promoted to behavior" caseByteOpsPromoted
   , testCase "Catalog-only rows never execute" caseCatalogOnlyNeverExecutes
   , testCase "Specials stay catalog-only" caseSpecialsCatalogOnly
   ]
@@ -282,6 +283,11 @@ caseCurated = do
     , MechanismId Gen.ckm_RC5_KEY_GEN
     , MechanismId Gen.ckm_IDEA_KEY_GEN
     , MechanismId Gen.ckm_GENERIC_SECRET_KEY_GEN
+    , MechanismId Gen.ckm_CONCATENATE_BASE_AND_KEY
+    , MechanismId Gen.ckm_CONCATENATE_BASE_AND_DATA
+    , MechanismId Gen.ckm_CONCATENATE_DATA_AND_BASE
+    , MechanismId Gen.ckm_XOR_BASE_AND_DATA
+    , MechanismId Gen.ckm_EXTRACT_KEY_FROM_KEY
     , MechanismId Gen.ckm_SSL3_PRE_MASTER_KEY_GEN
     , MechanismId Gen.ckm_TLS_PRE_MASTER_KEY_GEN
     , MechanismId Gen.ckm_TLS_MASTER_KEY_DERIVE
@@ -459,11 +465,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 250 behavior + 214 catalog-only + catalog line.
+  -- schema + 255 behavior + 209 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 250
+  assertEqual "behavior line count" 255
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 214
+  assertEqual "catalog-only line count" 209
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -844,6 +850,30 @@ caseIkePromoted = do
         (isExecutable reg (mkCapabilities [(mid, op)]) mid op))
         ops
 
+caseByteOpsPromoted :: IO ()
+caseByteOpsPromoted = do
+  -- S14: the 5 byte-op behaviors (concat-key, the two
+  -- data concats, XOR, EXTRACT) resolve with the derive
+  -- route and execute under caps.
+  mapM_ checkOne
+    [ (MechanismId 0x360, [OpDerive])
+    , (MechanismId 0x362, [OpDerive])
+    , (MechanismId 0x363, [OpDerive])
+    , (MechanismId 0x364, [OpDerive])
+    , (MechanismId 0x365, [OpDerive])
+    ]
+  where
+    checkOne (mid, ops) = do
+      let reg = curatedRegistry
+      assertEqual ("supported " ++ show mid) StatusSupported (describeStatus reg mid)
+      case lookupBehavior reg mid of
+        Nothing -> assertFailure ("behavior must resolve " ++ show mid)
+        Just d -> assertEqual ("byte-op routes " ++ show mid) ops
+          (map routeOperation (descRoutes d))
+      mapM_ (\op -> assertBool ("executable " ++ show mid ++ " " ++ show op)
+        (isExecutable reg (mkCapabilities [(mid, op)]) mid op))
+        ops
+
 caseCatalogOnlyNeverExecutes :: IO ()
 caseCatalogOnlyNeverExecutes = do
   -- S15 honesty guard: every catalog-only id from the canonical
@@ -861,7 +891,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 214 (length invIds)
+  assertEqual "guard covers every catalog row" 209 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of

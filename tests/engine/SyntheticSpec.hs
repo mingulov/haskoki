@@ -82,6 +82,7 @@ import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
+import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
 import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
@@ -143,6 +144,7 @@ spec = testGroup "synthetic engine"
   , testCase "TLS-PRF output separates and truncates" caseTlsPrf
   , testCase "TLS-KDF rows separate and refuse" caseTlsKdf
   , testCase "IKE rows separate and refuse" caseIke
+  , testCase "byte-op rows separate and refuse" caseByteOps
   , testCase "SP800-108 modes separate, length bound" caseSp800
   , testCase "HOTP codes separate, keygen lengths" caseHotp
   , testCase "Specials refuse explicitly" caseSpecialsRefuse
@@ -2455,6 +2457,70 @@ caseIke = withSynth "11" $ \env -> do
     (FxDerive ike1 (Just secOid) (Just auxOid) fPlus BS.empty 32)
   expectFailed "counter cap"
     (FxDerive plus (Just secOid) Nothing fPlus BS.empty 8161)
+
+caseByteOps :: IO ()
+caseByteOps = withSynth "11" $ \env -> do
+  let ck = MechanismId 0x360
+      cbd = MechanismId 0x362
+      cdb = MechanismId 0x363
+      xx = MechanismId 0x364
+      xt = MechanismId 0x365
+      secOid = ObjectId 74
+      auxOid = ObjectId 76
+      oddOid = ObjectId 75
+      res oid
+        | oid == secOid = Just (KeyBytes (BS.pack [0 .. 31]))
+        | oid == auxOid = Just (KeyBytes (BS.pack [32 .. 63]))
+        | oid == oddOid = Just (KeyBytes (BS.pack [0 .. 30]))
+        | otherwise = Nothing
+      d16 = BS.pack (replicate 16 1)
+      xd = BS.pack (replicate 32 0x0f)
+      fKey = encodeByteOpsParams 405 0 BS.empty
+      fBD = encodeByteOpsParams 0 0 d16
+      fXor = encodeByteOpsParams 0 0 xd
+      fExt0 = encodeByteOpsParams 0 0 BS.empty
+      deriveAs mech oid mAux params outLen =
+        runEffect env res (FxDerive mech (Just oid) mAux params BS.empty outLen)
+          >>= expectBytes
+      expectFailed label fx = do
+        r <- runEffect env res fx
+        case r of
+          GotCryptoError (CryptoFailed _) -> pure ()
+          other -> assertFailure ("expected Failed " ++ label ++ ", got: " ++ show other)
+      -- Byte-ops are pure byte manipulation: identical on both
+      -- backends, so the synthetic case pins exact bytes too.
+  a1 <- deriveAs ck secOid (Just auxOid) fKey 64
+  assertEqual "concat-key bytes" (BS.pack [0 .. 63]) a1
+  a2 <- deriveAs ck secOid (Just auxOid) fKey 64
+  assertEqual "deterministic" a1 a2
+  b1 <- deriveAs cbd secOid Nothing fBD 48
+  c1 <- deriveAs cdb secOid Nothing fBD 48
+  x1 <- deriveAs xx secOid Nothing fXor 32
+  e1 <- deriveAs xt secOid Nothing fExt0 16
+  assertEqual "concat-data bytes" (BS.pack [0 .. 31] <> d16) b1
+  assertEqual "data-concat bytes" (d16 <> BS.pack [0 .. 31]) c1
+  assertBool "rows separated" (a1 /= b1 && b1 /= c1 && a1 /= x1 && x1 /= e1)
+  cOdd <- deriveAs cbd oddOid Nothing fBD 47
+  assertBool "secrets separated" (b1 /= cOdd)
+  cDat <- deriveAs cbd secOid Nothing (encodeByteOpsParams 0 0 (BS.pack [9 .. 24])) 48
+  assertBool "data separated" (b1 /= cDat)
+  cOrd <- deriveAs cdb secOid Nothing (encodeByteOpsParams 0 0 (BS.pack [9 .. 24])) 48
+  assertBool "directions separated" (b1 /= c1 && cDat /= cOrd)
+  -- Typed refusals.
+  expectFailed "junk params"
+    (FxDerive cbd (Just secOid) Nothing "junk" BS.empty 16)
+  expectFailed "info string"
+    (FxDerive cbd (Just secOid) Nothing fBD "x" 16)
+  expectFailed "zero length"
+    (FxDerive cbd (Just secOid) Nothing fBD BS.empty 0)
+  expectFailed "over natural"
+    (FxDerive cbd (Just secOid) Nothing fBD BS.empty 49)
+  expectFailed "wrong-row frame"
+    (FxDerive ck (Just auxOid) (Just auxOid) fBD BS.empty 32)
+  expectFailed "xor mismatch"
+    (FxDerive xx (Just secOid) Nothing fBD BS.empty 16)
+  expectFailed "extract overrun"
+    (FxDerive xt (Just secOid) Nothing (encodeByteOpsParams 0 248 BS.empty) BS.empty 16)
 
 -- ---------------------------------------------------------------------------
 -- OTP constructions
