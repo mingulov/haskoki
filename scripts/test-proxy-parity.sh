@@ -189,6 +189,13 @@ shape = "gcm"
 mechanisms = [
     0x108E,  # CKM_AES_GMAC (CK_GCM_PARAMS, same struct as AES-GCM) (11f)
 ]
+
+[[params]]
+shape = "ssl3_master_key_derive"
+mechanisms = [
+    0x0375,  # CKM_TLS_MASTER_KEY_DERIVE (CK_SSL3_MASTER_KEY_DERIVE_PARAMS, same struct as the SSL3 rows) (11i)
+    0x0377,  # CKM_TLS_MASTER_KEY_DERIVE_DH (same struct) (11i)
+]
 EOF
 
 compile_scenario() {

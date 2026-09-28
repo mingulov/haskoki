@@ -3101,7 +3101,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the hybrid derive needs the MQV two-key agreement plus a second derive leg; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000032",
       "routes": [],
       "source_refs": [
@@ -3112,8 +3112,8 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
@@ -3129,7 +3129,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000033",
       "routes": [],
       "source_refs": [
@@ -3140,8 +3140,8 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
@@ -4892,14 +4892,30 @@
       "canonical_name": "CKM_TLS12_EXTENDED_MASTER_KEY_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: TLS PRF/KDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.2 extended master secret P_hash with the selected hash over \"extended master secret\" ++ session_hash (RFC 7627). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
       "numeric_id": "0x00000056",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "tls-kdf/v1",
+          "parameter_codec": "tls-kdf-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS12_EXTENDED_MASTER_KEY_DERIVE",
@@ -4908,26 +4924,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "tls-kdf",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeTlsKdfSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_TLS12_EXTENDED_MASTER_KEY_DERIVE_DH",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: TLS PRF/KDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.2 extended master secret P_hash with the selected hash over \"extended master secret\" ++ session_hash (RFC 7627); the DH leg takes the same pre-master input shape (own vectors \u2014 the oracle probes availability only). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
       "numeric_id": "0x00000057",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "tls-kdf/v1",
+          "parameter_codec": "tls-kdf-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS12_EXTENDED_MASTER_KEY_DERIVE_DH",
@@ -4936,12 +5004,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "tls-kdf",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeTlsKdfSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -12131,14 +12235,30 @@
       "canonical_name": "CKM_TLS_MASTER_KEY_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: TLS PRF/KDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.0 master secret PRF(pms, \"master secret\", client_random ++ server_random) over the legacy MD5/SHA-1 construction (RFC 2246 section 5). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
       "numeric_id": "0x00000375",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "tls-kdf/v1",
+          "parameter_codec": "tls-kdf-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS_MASTER_KEY_DERIVE",
@@ -12147,12 +12267,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "tls-kdf",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeTlsKdfSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -12187,14 +12343,30 @@
       "canonical_name": "CKM_TLS_MASTER_KEY_DERIVE_DH",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: TLS PRF/KDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.0 master secret PRF(pms, \"master secret\", client_random ++ server_random) over the legacy MD5/SHA-1 construction (RFC 2246 section 5); the DH leg takes the same pre-master input shape (own vectors \u2014 the oracle probes availability only). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
       "numeric_id": "0x00000377",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "tls-kdf/v1",
+          "parameter_codec": "tls-kdf-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS_MASTER_KEY_DERIVE_DH",
@@ -12203,12 +12375,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "tls-kdf",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeTlsKdfSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -14280,14 +14488,30 @@
       "canonical_name": "CKM_TLS12_KDF",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: TLS PRF/KDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.2 KDF P_hash (or the legacy PRF when the selector names CKM_TLS_PRF) over label ++ client_random ++ server_random plus optional RFC 5705 context data. Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
       "numeric_id": "0x000003d9",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "tls-kdf/v1",
+          "parameter_codec": "tls-kdf-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS12_KDF",
@@ -14296,26 +14520,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "tls-kdf",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeTlsKdfSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_TLS12_MASTER_KEY_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: TLS PRF/KDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.2 master secret P_hash with the selected hash over \"master secret\" ++ client_random ++ server_random (RFC 5246 section 5). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
       "numeric_id": "0x000003e0",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "tls-kdf/v1",
+          "parameter_codec": "tls-kdf-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS12_MASTER_KEY_DERIVE",
@@ -14324,12 +14600,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "tls-kdf",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeTlsKdfSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -14364,14 +14676,30 @@
       "canonical_name": "CKM_TLS12_MASTER_KEY_DERIVE_DH",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: TLS PRF/KDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.2 master secret P_hash with the selected hash over \"master secret\" ++ client_random ++ server_random (RFC 5246 section 5); the DH leg takes the same pre-master input shape (own vectors \u2014 the oracle probes availability only). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
       "numeric_id": "0x000003e2",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "tls-kdf/v1",
+          "parameter_codec": "tls-kdf-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS12_MASTER_KEY_DERIVE_DH",
@@ -14380,12 +14708,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "tls-kdf",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeTlsKdfSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -14448,14 +14812,30 @@
       "canonical_name": "CKM_TLS_KDF",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: TLS PRF/KDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the generic TLS KDF P_hash (or the legacy PRF when the selector names CKM_TLS_PRF) over label ++ client_random ++ server_random plus optional RFC 5705 context data. Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
       "numeric_id": "0x000003e5",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "tls-kdf/v1",
+          "parameter_codec": "tls-kdf-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS_KDF",
@@ -14464,12 +14844,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "tls-kdf",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeTlsKdfSpec",
+          "build_id": "tls-kdf",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -18182,7 +18598,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MQV key agreement in the pinned OpenSSL 4.0.2 provider API); behavior stays planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MQV key agreement in the pinned OpenSSL 4.0.2 provider API); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: the EC MQV derive needs the MQV two-key agreement on EC keys; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00001052",
       "routes": [],
       "source_refs": [
@@ -18193,8 +18609,8 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
@@ -21641,16 +22057,30 @@
     {
       "aliases": [],
       "canonical_name": "CKM_X9_42_DH_PARAMETER_GEN",
-      "family": "derive",
+      "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "paramgen (CKA_PRIME_BITS required via dhParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA; CKA_SUBPRIME_BITS required (TEMPLATE_INCOMPLETE when absent: the oracle requires it, unlike the DSA per-L default); GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_X9_42_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (the provider DH paramgen emits P+G only, no Q in any mode \u2014 CLI- and EVP-probed). Real execution pinned by KeyManagementSpec caseRealX942Paramgen (no KAT possible for randomized generation); planner pins caseX942ParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00002002",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "prime-bits-required"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_X9_42_DH_PARAMETER_GEN",
@@ -21659,12 +22089,33 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "registry-seed",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [

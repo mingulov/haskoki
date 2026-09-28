@@ -173,6 +173,11 @@ import Haskoki.Recipe.Sp800108
   , sp800CodecFor
   , sp800Recipes
   )
+import Haskoki.Recipe.TlsKdf
+  ( TlsKdfRecipe (..)
+  , tlsKdfCodecFor
+  , tlsKdfRecipes
+  )
 import Haskoki.Recipe.TlsPrf
   ( TlsPrfRecipe (..)
   , tlsPrfCodecFor
@@ -966,6 +971,34 @@ sp800Descs =
   | r <- sp800Recipes
   ]
 
+-- | Baseline span for a TLS-KDF recipe name: the TLS 1.0 and
+-- 1.2 master rows (0x375\/0x377\/0x3d9\/0x3e0\/0x3e2) are 2.40
+-- (the 1.0 rows older still); the extended-master rows
+-- (0x56\/0x57, RFC 7627 postdates v2.40) and the generic
+-- @CKM_TLS_KDF@ row (0x3e5, the TLS-1.3-era free row) arrived
+-- in 3.0.
+tlsKdfBaselines :: MechanismName -> [Pkcs11Version]
+tlsKdfBaselines name
+  | name == "CKM_TLS_KDF" = [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
+  | "CKM_TLS12_EXTENDED_MASTER_KEY_DERIVE" `T.isPrefixOf` name = [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
+  | otherwise = allBaselines
+
+-- | The TLS-KDF behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from 'tlsKdfCodecFor',
+-- the derive route citing the planner case (A20), the synthetic
+-- construction (A37), and the real vectors (A39). Key bounds
+-- are mechanism-specific (the planned length, capped by the
+-- TLS-KDF ceiling).
+tlsKdfDescs :: [Descriptor]
+tlsKdfDescs =
+  [ promotedDesc (tkName r) (tlsKdfBaselines (tkName r)) FamilyDerive
+      (tlsKdfCodecFor r)
+      [ mechRoute OpDerive (tkName r) ["A20", "A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- tlsKdfRecipes
+  ]
+
 -- | The encrypt-data behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from
 -- 'encryptDataCodecFor', the derive route citing the planner case
@@ -1287,6 +1320,11 @@ dDsaParameterGen = promotedDesc "CKM_DSA_PARAMETER_GEN" allBaselines FamilyKeyGe
   noParams [synthRoute OpGenerateKey "CKM_DSA_PARAMETER_GEN"]
   KeyBits 1024 3072
 
+dX9_42DhParameterGen :: Descriptor
+dX9_42DhParameterGen = promotedDesc "CKM_X9_42_DH_PARAMETER_GEN" allBaselines FamilyKeyGen
+  noParams [synthRoute OpGenerateKey "CKM_X9_42_DH_PARAMETER_GEN"]
+  KeyBits 1024 3072
+
 dHkdfDerive :: Descriptor
 dHkdfDerive = promotedDesc "CKM_HKDF_DERIVE"
   [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyDerive
@@ -1368,14 +1406,14 @@ curatedRegistry =
     behaviorDescs :: [Descriptor]
     behaviorDescs =
       ( [ dSHA256, dAESKeyGen, dDES3KeyGen, dHotpKeyGen, dGenericSecretKeyGen, dBlake2b512KeyGen, dChacha20KeyGen
-        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dDhKeyPairGen, dX9_42DhKeyPairGen, dEdwardsKeyPairGen, dMontgomeryKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dHkdfData, dMlKem
+        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dDhKeyPairGen, dX9_42DhKeyPairGen, dX9_42DhParameterGen, dEdwardsKeyPairGen, dMontgomeryKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dHkdfData, dMlKem
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160, dBLAKE2B_512
         , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
-          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ otpDescs ++ encryptDataDescs
+          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ otpDescs ++ encryptDataDescs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

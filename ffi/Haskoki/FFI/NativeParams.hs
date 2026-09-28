@@ -78,6 +78,30 @@ Covered structs (caller-native layout, offsets derived from
   chase under 'maxInputBytes' with the same null conventions
   (null-with-zero is the empty string) and re-encode with
   'encodePbkd2Params'.
+* TLS 1.0 master (@CK_SSL3_MASTER_KEY_DERIVE_PARAMS@: the
+  inline @CK_SSL3_RANDOM_DATA@ plus @pVersion@): both randoms
+  chase under 'maxInputBytes' (exact 32 bytes each — the
+  canonical profile) and re-encode at the legacy PRF with the
+  fixed @"master secret"@ label; @pVersion@ is NULL-or-live
+  (never written back — the oracle never asserts it), so the
+  pointer is not even read.
+* TLS 1.2 master (@CK_TLS12_MASTER_KEY_DERIVE_PARAMS@: the
+  randoms, @pVersion@, the PRF hash id): as above, with the
+  PRF id mapping through 'tlsKdfPrfCodeFor' onto a hash code
+  (the legacy code refuses — TLS 1.2 rows are hash-only).
+* TLS 1.2 extended master
+  (@CK_TLS12_EXTENDED_MASTER_KEY_DERIVE_PARAMS@: the PRF hash
+  id, the session hash pointer\/length, @pVersion@): the hash
+  code maps as above and the session hash chases under
+  'maxInputBytes' (16..64 bytes — a real hash output), with
+  the fixed @"extended master secret"@ label.
+* TLS KDF (@CK_TLS_KDF_PARAMS@: the PRF id, the label
+  pointer\/length, the randoms, the context pointer\/length):
+  the PRF id maps through 'tlsKdfPrfCodeFor' (legacy or hash),
+  the label must be non-empty, the randoms are exact 32 bytes
+  each, and the context chases under 'maxInputBytes' (empty
+  unless a hash PRF — the legacy construction has no context
+  input).
 
 Anything unmappable — wrong length, unknown ids, a bad source tag,
 a null-with-length or over-bound chase — passes the input bytes
@@ -109,6 +133,19 @@ module Haskoki.FFI.NativeParams
   , sp800NativeSize
   , tlsPrfStructToCanonical
   , tlsPrfNativeSize
+  , normalizeTlsKdfMasterParams
+  , normalizeTlsKdfTls12MasterParams
+  , normalizeTlsKdfExtParams
+  , normalizeTlsKdfFreeParams
+  , tlsKdfMasterStructToCanonical
+  , tlsKdfTls12MasterStructToCanonical
+  , tlsKdfExtStructToCanonical
+  , tlsKdfFreeStructToCanonical
+  , ssl3RandomSize
+  , tlsKdfMasterNativeSize
+  , tlsKdfTls12MasterNativeSize
+  , tlsKdfExtNativeSize
+  , tlsKdfFreeNativeSize
   , pssStructToCanonical
   , oaepStructToCanonical
   , ecdhStructToCanonical
@@ -179,6 +216,7 @@ import Haskoki.Recipe.Sp800108
 import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
+import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, tlsKdfPrfCodeFor)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..))
@@ -217,6 +255,35 @@ dhX942NativeSize = 3 * wordSize + 2 * ptrSize
 -- the derived object).
 tlsPrfNativeSize :: Int
 tlsPrfNativeSize = 2 * wordSize + 4 * ptrSize
+
+-- | Native @CK_SSL3_RANDOM_DATA@ image size: (pointer, length)
+-- for the client random, (pointer, length) for the server
+-- random — inline in the three master-derive structs and the
+-- TLS-KDF struct alike (@spec\/vendor\/pkcs11.h:2024-2029@).
+ssl3RandomSize :: Int
+ssl3RandomSize = 2 * wordSize + 2 * ptrSize
+
+-- | Native @CK_SSL3_MASTER_KEY_DERIVE_PARAMS@ image size: the
+-- inline randoms plus the @pVersion@ pointer.
+tlsKdfMasterNativeSize :: Int
+tlsKdfMasterNativeSize = ssl3RandomSize + ptrSize
+
+-- | Native @CK_TLS12_MASTER_KEY_DERIVE_PARAMS@ image size: the
+-- inline randoms, the @pVersion@ pointer, the PRF hash id.
+tlsKdfTls12MasterNativeSize :: Int
+tlsKdfTls12MasterNativeSize = ssl3RandomSize + ptrSize + wordSize
+
+-- | Native @CK_TLS12_EXTENDED_MASTER_KEY_DERIVE_PARAMS@ image
+-- size: the PRF hash id, (pointer, length) for the session
+-- hash, the @pVersion@ pointer.
+tlsKdfExtNativeSize :: Int
+tlsKdfExtNativeSize = 2 * wordSize + 2 * ptrSize
+
+-- | Native @CK_TLS_KDF_PARAMS@ image size: the PRF id, (pointer,
+-- length) for the label, the inline randoms, (pointer, length)
+-- for the context.
+tlsKdfFreeNativeSize :: Int
+tlsKdfFreeNativeSize = 5 * wordSize + 4 * ptrSize
 
 -- | Native @CK_PKCS5_PBKD2_PARAMS2@ image size: the salt-source
 -- word, (pointer, length) for the salt, the iterations and PRF
@@ -412,6 +479,59 @@ dhX942StructToCanonical kdf shared peer
 -- chase bounds plus that check fail the shape closed.
 tlsPrfStructToCanonical :: ByteString -> ByteString -> Maybe ByteString
 tlsPrfStructToCanonical lab seed = Just (encodeTlsPrfParams lab seed)
+
+-- | Pure TLS 1.0 master translation: the chased client\/server
+-- randoms onto the canonical @tls-kdf-params\/1@ image at the
+-- legacy PRF (code 0) with the fixed @"master secret"@ label.
+-- Both randoms must be exactly 32 bytes (the canonical
+-- profile); anything else refuses ('Nothing' — the struct
+-- image passes through raw so the recipe refusal is exactly
+-- the planner's).
+tlsKdfMasterStructToCanonical :: ByteString -> ByteString -> Maybe ByteString
+tlsKdfMasterStructToCanonical cli srv = do
+  guard (BS.length cli == 32 && BS.length srv == 32)
+  Just (encodeTlsKdfParams 0 "master secret" (cli <> srv) BS.empty)
+
+-- | Pure TLS 1.2 master translation: the native PRF hash id
+-- plus the chased randoms onto the canonical image with the
+-- fixed @"master secret"@ label. The PRF id maps through
+-- 'tlsKdfPrfCodeFor' onto a hash code (the legacy code refuses
+-- — TLS 1.2 rows are hash-only); the randoms are exact 32
+-- bytes each.
+tlsKdfTls12MasterStructToCanonical :: Word64 -> ByteString -> ByteString -> Maybe ByteString
+tlsKdfTls12MasterStructToCanonical prf cli srv = do
+  code <- tlsKdfPrfCodeFor (MechanismId (fromIntegral prf))
+  guard (code /= 0)
+  guard (BS.length cli == 32 && BS.length srv == 32)
+  Just (encodeTlsKdfParams code "master secret" (cli <> srv) BS.empty)
+
+-- | Pure TLS 1.2 extended-master translation: the native PRF
+-- hash id plus the chased session hash onto the canonical
+-- image with the fixed @"extended master secret"@ label. The
+-- PRF code maps hash-only as above; the session hash is 16..64
+-- bytes (a real hash output — the recipe rule, enforced here
+-- so off-profile images pass through raw).
+tlsKdfExtStructToCanonical :: Word64 -> ByteString -> Maybe ByteString
+tlsKdfExtStructToCanonical prf sess = do
+  code <- tlsKdfPrfCodeFor (MechanismId (fromIntegral prf))
+  guard (code /= 0)
+  guard (let n = BS.length sess in n >= 16 && n <= 64)
+  Just (encodeTlsKdfParams code "extended master secret" sess BS.empty)
+
+-- | Pure TLS-KDF translation: the native PRF id plus the
+-- chased label, randoms, and context onto the canonical
+-- image. The PRF id maps through 'tlsKdfPrfCodeFor' (legacy
+-- or hash); the label must be non-empty, the randoms exact 32
+-- bytes each, and the context empty unless a hash PRF (the
+-- legacy construction has no context input).
+tlsKdfFreeStructToCanonical
+  :: Word64 -> ByteString -> ByteString -> ByteString -> ByteString -> Maybe ByteString
+tlsKdfFreeStructToCanonical prf lab cli srv ctx = do
+  code <- tlsKdfPrfCodeFor (MechanismId (fromIntegral prf))
+  guard (not (BS.null lab))
+  guard (BS.length cli == 32 && BS.length srv == 32)
+  guard (code /= 0 || BS.null ctx)
+  Just (encodeTlsKdfParams code lab (cli <> srv) ctx)
 
 -- | Pure GCM translation: the chased IV and AAD plus the native
 -- bit/tag widths onto the canonical @gcm-params/1@ image. The bit
@@ -705,6 +825,84 @@ normalizeTlsPrfParams pParams paramsLen
       mSeed <- chaseBytes pSeed seedLen
       mLabel <- chaseBytes pLabel labelLen
       pure (mSeed >>= \seed -> mLabel >>= \lab -> tlsPrfStructToCanonical lab seed)
+
+-- | Chase one inline @CK_SSL3_RANDOM_DATA@ image: the client
+-- and server randoms under 'maxInputBytes' with the
+-- 'decodeInputBytes' null conventions (zero length never
+-- dereferences, null-with-length and over-bound lengths
+-- refuse).
+chaseSsl3Random :: Ptr Word8 -> IO (Maybe (ByteString, ByteString))
+chaseSsl3Random pRand = do
+  pCli <- peekByteOff pRand 0
+  CULong cliLen <- peekByteOff pRand ptrSize
+  pSrv <- peekByteOff pRand (ptrSize + wordSize)
+  CULong srvLen <- peekByteOff pRand (2 * ptrSize + wordSize)
+  mCli <- chaseBytes pCli cliLen
+  mSrv <- chaseBytes pSrv srvLen
+  pure ((,) <$> mCli <*> mSrv)
+
+-- | Normalize one TLS 1.0 master struct: the native
+-- @CK_SSL3_MASTER_KEY_DERIVE_PARAMS@ image at
+-- @pParams@/@paramsLen@ onto the canonical @tls-kdf-params\/1@
+-- image. Wrong-sized images and refused random chases refuse
+-- ('Nothing'); @pVersion@ (NULL-or-live, never written back)
+-- is not even read.
+normalizeTlsKdfMasterParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeTlsKdfMasterParams pParams paramsLen
+  | paramsLen /= fromIntegral tlsKdfMasterNativeSize = pure Nothing
+  | otherwise = do
+      mRand <- chaseSsl3Random pParams
+      pure (mRand >>= uncurry tlsKdfMasterStructToCanonical)
+
+-- | Normalize one TLS 1.2 master struct: the native
+-- @CK_TLS12_MASTER_KEY_DERIVE_PARAMS@ image at
+-- @pParams@/@paramsLen@ onto the canonical image. Wrong-sized
+-- images, refused chases, and unmapped PRF ids refuse
+-- ('Nothing').
+normalizeTlsKdfTls12MasterParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeTlsKdfTls12MasterParams pParams paramsLen
+  | paramsLen /= fromIntegral tlsKdfTls12MasterNativeSize = pure Nothing
+  | otherwise = do
+      CULong prf <- peekByteOff pParams (ssl3RandomSize + ptrSize)
+      mRand <- chaseSsl3Random pParams
+      pure (mRand >>= \(cli, srv) -> tlsKdfTls12MasterStructToCanonical prf cli srv)
+
+-- | Normalize one TLS 1.2 extended-master struct: the native
+-- @CK_TLS12_EXTENDED_MASTER_KEY_DERIVE_PARAMS@ image at
+-- @pParams@/@paramsLen@ onto the canonical image. Wrong-sized
+-- images, refused chases, and unmapped PRF ids refuse
+-- ('Nothing').
+normalizeTlsKdfExtParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeTlsKdfExtParams pParams paramsLen
+  | paramsLen /= fromIntegral tlsKdfExtNativeSize = pure Nothing
+  | otherwise = do
+      CULong prf <- peekByteOff pParams 0
+      pSess <- peekByteOff pParams wordSize
+      CULong sessLen <- peekByteOff pParams (wordSize + ptrSize)
+      mSess <- chaseBytes pSess sessLen
+      pure (mSess >>= tlsKdfExtStructToCanonical prf)
+
+-- | Normalize one TLS-KDF struct: the native
+-- @CK_TLS_KDF_PARAMS@ image at @pParams@/@paramsLen@ onto the
+-- canonical image. Wrong-sized images, refused chases, and
+-- unmapped PRF ids refuse ('Nothing').
+normalizeTlsKdfFreeParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeTlsKdfFreeParams pParams paramsLen
+  | paramsLen /= fromIntegral tlsKdfFreeNativeSize = pure Nothing
+  | otherwise = do
+      CULong prf <- peekByteOff pParams 0
+      pLabel <- peekByteOff pParams wordSize
+      CULong labLen <- peekByteOff pParams (wordSize + ptrSize)
+      mLabel <- chaseBytes pLabel labLen
+      mRand <- chaseSsl3Random (pParams `plusPtr` randOff)
+      pCtx <- peekByteOff pParams ctxPtrOff
+      CULong ctxLen <- peekByteOff pParams (ctxPtrOff + ptrSize)
+      mCtx <- chaseBytes pCtx ctxLen
+      pure (mLabel >>= \lab -> mRand >>= \(cli, srv) -> mCtx >>= \ctx ->
+        tlsKdfFreeStructToCanonical prf lab cli srv ctx)
+  where
+    randOff = 2 * wordSize + ptrSize
+    ctxPtrOff = randOff + ssl3RandomSize
 
 -- | Native @CK_*_CBC_ENCRYPT_DATA_PARAMS@ image size for one IV
 -- width: the inline IV plus (pointer, length) for the data (the

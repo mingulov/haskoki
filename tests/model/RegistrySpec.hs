@@ -68,6 +68,7 @@ spec = testGroup "descriptor registry"
   , testCase "KDF mechs promoted to behavior" caseKdfPromoted
   , testCase "OTP mechs promoted to behavior" caseOtpPromoted
   , testCase "SP800-108 mechs promoted to behavior" caseSp800Promoted
+  , testCase "TLS-KDF mechs promoted to behavior" caseTlsKdfPromoted
   , testCase "Catalog-only rows never execute" caseCatalogOnlyNeverExecutes
   , testCase "Specials stay catalog-only" caseSpecialsCatalogOnly
   ]
@@ -212,6 +213,8 @@ caseCurated = do
     , MechanismId Gen.ckm_SHA512_256_HMAC
     , MechanismId Gen.ckm_SHA512_256_HMAC_GENERAL
     , MechanismId Gen.ckm_SHA512_256_KEY_DERIVATION
+    , MechanismId Gen.ckm_TLS12_EXTENDED_MASTER_KEY_DERIVE
+    , MechanismId Gen.ckm_TLS12_EXTENDED_MASTER_KEY_DERIVE_DH
     , MechanismId Gen.ckm_SHA3_256_RSA_PKCS
     , MechanismId Gen.ckm_SHA3_384_RSA_PKCS
     , MechanismId Gen.ckm_SHA3_512_RSA_PKCS
@@ -280,6 +283,8 @@ caseCurated = do
     , MechanismId Gen.ckm_GENERIC_SECRET_KEY_GEN
     , MechanismId Gen.ckm_SSL3_PRE_MASTER_KEY_GEN
     , MechanismId Gen.ckm_TLS_PRE_MASTER_KEY_GEN
+    , MechanismId Gen.ckm_TLS_MASTER_KEY_DERIVE
+    , MechanismId Gen.ckm_TLS_MASTER_KEY_DERIVE_DH
     , MechanismId Gen.ckm_TLS_PRF
     , MechanismId Gen.ckm_MD5_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA1_KEY_DERIVATION
@@ -298,6 +303,10 @@ caseCurated = do
     , MechanismId Gen.ckm_SP800_108_DOUBLE_PIPELINE_KDF
     , MechanismId Gen.ckm_PKCS5_PBKD2
     , MechanismId Gen.ckm_WTLS_PRE_MASTER_KEY_GEN
+    , MechanismId Gen.ckm_TLS12_KDF
+    , MechanismId Gen.ckm_TLS12_MASTER_KEY_DERIVE
+    , MechanismId Gen.ckm_TLS12_MASTER_KEY_DERIVE_DH
+    , MechanismId Gen.ckm_TLS_KDF
     , MechanismId Gen.ckm_CAMELLIA_KEY_GEN
     , MechanismId Gen.ckm_CAMELLIA_ECB
     , MechanismId Gen.ckm_CAMELLIA_CBC
@@ -363,6 +372,7 @@ caseCurated = do
     , MechanismId Gen.ckm_CHACHA20
     , MechanismId Gen.ckm_POLY1305_KEY_GEN
     , MechanismId Gen.ckm_DSA_PARAMETER_GEN
+    , MechanismId Gen.ckm_X9_42_DH_PARAMETER_GEN
     , MechanismId Gen.ckm_AES_OFB
     , MechanismId Gen.ckm_AES_CFB8
     , MechanismId Gen.ckm_AES_CFB128
@@ -444,11 +454,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 237 behavior + 227 catalog-only + catalog line.
+  -- schema + 246 behavior + 218 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 237
+  assertEqual "behavior line count" 246
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 227
+  assertEqual "catalog-only line count" 218
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -518,6 +528,7 @@ caseKeyMgmtPromoted = do
         , (MechanismId 0x0f, "CKM_ML_KEM_KEY_PAIR_GEN", [OpGenerateKeyPair])
         , (MechanismId 0x10, "CKM_DSA_KEY_PAIR_GEN", [OpGenerateKeyPair])
         , (MechanismId 0x2000, "CKM_DSA_PARAMETER_GEN", [OpGenerateKey])
+        , (MechanismId 0x2002, "CKM_X9_42_DH_PARAMETER_GEN", [OpGenerateKey])
         , (MechanismId 0x402a, "CKM_HKDF_DERIVE", [OpDerive])
         , (MechanismId 0x17, "CKM_ML_KEM", [OpEncapsulate, OpDecapsulate])
         ]
@@ -778,6 +789,33 @@ caseSp800Promoted = do
         (isExecutable reg (mkCapabilities [(mid, op)]) mid op))
         ops
 
+caseTlsKdfPromoted :: IO ()
+caseTlsKdfPromoted = do
+  -- S14: the 8 TLS-KDF behaviors (TLS 1.0 master pair, TLS 1.2
+  -- master pair, extended-master pair, free-label pair) resolve
+  -- with the derive route and execute under caps.
+  mapM_ checkOne
+    [ (MechanismId 0x375, [OpDerive])
+    , (MechanismId 0x377, [OpDerive])
+    , (MechanismId 0x3e0, [OpDerive])
+    , (MechanismId 0x3e2, [OpDerive])
+    , (MechanismId 0x56, [OpDerive])
+    , (MechanismId 0x57, [OpDerive])
+    , (MechanismId 0x3d9, [OpDerive])
+    , (MechanismId 0x3e5, [OpDerive])
+    ]
+  where
+    checkOne (mid, ops) = do
+      let reg = curatedRegistry
+      assertEqual ("supported " ++ show mid) StatusSupported (describeStatus reg mid)
+      case lookupBehavior reg mid of
+        Nothing -> assertFailure ("behavior must resolve " ++ show mid)
+        Just d -> assertEqual ("tls-kdf routes " ++ show mid) ops
+          (map routeOperation (descRoutes d))
+      mapM_ (\op -> assertBool ("executable " ++ show mid ++ " " ++ show op)
+        (isExecutable reg (mkCapabilities [(mid, op)]) mid op))
+        ops
+
 caseCatalogOnlyNeverExecutes :: IO ()
 caseCatalogOnlyNeverExecutes = do
   -- S15 honesty guard: every catalog-only id from the canonical
@@ -795,7 +833,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 227 (length invIds)
+  assertEqual "guard covers every catalog row" 218 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of
@@ -825,7 +863,7 @@ caseSpecialsCatalogOnly = do
         , ("CKM_RC4", OpEncrypt)
         , ("CKM_DSA_PROBABILISTIC_PARAMETER_GEN", OpGenerateKey)
         , ("CKM_HASH_ML_DSA", OpSign)
-        , ("CKM_TLS_MASTER_KEY_DERIVE", OpDerive)
+        , ("CKM_TLS_KEY_AND_MAC_DERIVE", OpDerive)
         , ("CKM_AES_KEY_WRAP_PKCS7", OpWrap)
         , ("CKM_RSA_X9_31_KEY_PAIR_GEN", OpGenerateKeyPair)
         , ("CKM_NULL", OpDigest)

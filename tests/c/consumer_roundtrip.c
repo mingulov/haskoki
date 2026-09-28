@@ -4551,6 +4551,166 @@ int main(int argc, char **argv) {
             rv = f->C_DestroyObject(sess, kd2);
             CHECKC(rv == CKR_OK, "second SP800 secret destroyed");
           }
+          {
+            /* TLS-KDF through the native derive structs: the TLS
+             * 1.0 master, TLS 1.2 master, extended master, and
+             * free-label KDF (RFC 5705 context) shapes. Outputs
+             * are the 16-byte prefixes of the committed KATs
+             * (base 0..47, client random 0..31, server random
+             * 32..63, session hash 0..31); plus replay
+             * determinism and typed refusals. The DH legs share
+             * these intakes (pinned in Haskell). */
+            CK_BYTE tsec[48];
+            CK_BYTE tcli[32], tsrv[32], tsess[32];
+            CK_BYTE got10[16], got12[16], gotx[16], gotk[16], gotk2[16];
+            CK_OBJECT_HANDLE tbase = 0, td1 = 0, td2 = 0, td3 = 0, td4 = 0, td5 = 0;
+            CK_VERSION tver;
+            CK_SSL3_MASTER_KEY_DERIVE_PARAMS m10;
+            CK_TLS12_MASTER_KEY_DERIVE_PARAMS m12;
+            CK_TLS12_EXTENDED_MASTER_KEY_DERIVE_PARAMS mx;
+            CK_TLS_KDF_PARAMS mk;
+            CK_MECHANISM mm10, mm12, mmx, mmk, badkm;
+            CK_BYTE tlabel[] = "key expansion";
+            CK_BYTE tctx[] = "context-info";
+            CK_BYTE want10[16] = {
+              0x53,0x93,0x91,0x82,0x8d,0x1d,0x13,0x16,
+              0x78,0x64,0x61,0x80,0xc5,0xbd,0xa5,0xc9
+            };
+            CK_BYTE want12[16] = {
+              0x2b,0x7c,0xcc,0xb6,0xd4,0x8a,0xdb,0x86,
+              0x92,0xdf,0x64,0x0b,0x92,0x52,0x50,0x2f
+            };
+            CK_BYTE wantx[16] = {
+              0xc3,0xd5,0xea,0x08,0xb4,0x72,0xcb,0xb6,
+              0x7e,0x20,0x57,0x11,0xe5,0x00,0x66,0x47
+            };
+            CK_BYTE wantk[16] = {
+              0x5c,0x01,0x25,0xc5,0xf2,0x81,0x48,0x8f,
+              0x68,0x13,0x49,0x49,0x9f,0x25,0x2d,0xf0
+            };
+            CK_ULONG vlen16 = 16;
+            CK_ATTRIBUTE tbaseT[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_DERIVE, &yes, sizeof(yes) },
+              { CKA_VALUE, tsec, sizeof(tsec) },
+            };
+            CK_ATTRIBUTE ttmpl[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_VALUE_LEN, &vlen16, sizeof(vlen16) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_SENSITIVE, &no, sizeof(no) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+            };
+            CK_ATTRIBUTE gt10[] = { { CKA_VALUE, got10, sizeof(got10) } };
+            CK_ATTRIBUTE gt12[] = { { CKA_VALUE, got12, sizeof(got12) } };
+            CK_ATTRIBUTE gtx[] = { { CKA_VALUE, gotx, sizeof(gotx) } };
+            CK_ATTRIBUTE gtk[] = { { CKA_VALUE, gotk, sizeof(gotk) } };
+            CK_ATTRIBUTE gtk2[] = { { CKA_VALUE, gotk2, sizeof(gotk2) } };
+            int i;
+            for (i = 0; i < 48; i++) tsec[i] = (CK_BYTE)i;
+            for (i = 0; i < 32; i++) tcli[i] = (CK_BYTE)i;
+            for (i = 0; i < 32; i++) tsrv[i] = (CK_BYTE)(i + 32);
+            for (i = 0; i < 32; i++) tsess[i] = (CK_BYTE)i;
+            tver.major = 3;
+            tver.minor = 3;
+            rv = f->C_CreateObject(sess, tbaseT, 5, &tbase);
+            CHECKC(rv == CKR_OK && tbase != 0, "TLS-KDF base imports");
+            m10.RandomInfo.pClientRandom = tcli;
+            m10.RandomInfo.ulClientRandomLen = sizeof(tcli);
+            m10.RandomInfo.pServerRandom = tsrv;
+            m10.RandomInfo.ulServerRandomLen = sizeof(tsrv);
+            m10.pVersion = &tver;
+            mm10.mechanism = CKM_TLS_MASTER_KEY_DERIVE;
+            mm10.pParameter = &m10;
+            mm10.ulParameterLen = sizeof(m10);
+            rv = f->C_DeriveKey(sess, &mm10, tbase, ttmpl, 6, &td1);
+            CHECKC(rv == CKR_OK && td1 != 0, "TLS 1.0 master derive ok");
+            gt10[0].ulValueLen = sizeof(got10);
+            rv = f->C_GetAttributeValue(sess, td1, gt10, 1);
+            CHECKC(rv == CKR_OK && gt10[0].ulValueLen == 16 &&
+                       memcmp(got10, want10, 16) == 0,
+                   "TLS 1.0 master matches KAT bytes");
+            m12.RandomInfo.pClientRandom = tcli;
+            m12.RandomInfo.ulClientRandomLen = sizeof(tcli);
+            m12.RandomInfo.pServerRandom = tsrv;
+            m12.RandomInfo.ulServerRandomLen = sizeof(tsrv);
+            m12.pVersion = &tver;
+            m12.prfHashMechanism = CKM_SHA256;
+            mm12.mechanism = CKM_TLS12_MASTER_KEY_DERIVE;
+            mm12.pParameter = &m12;
+            mm12.ulParameterLen = sizeof(m12);
+            rv = f->C_DeriveKey(sess, &mm12, tbase, ttmpl, 6, &td2);
+            CHECKC(rv == CKR_OK && td2 != 0, "TLS 1.2 master derive ok");
+            gt12[0].ulValueLen = sizeof(got12);
+            rv = f->C_GetAttributeValue(sess, td2, gt12, 1);
+            CHECKC(rv == CKR_OK && gt12[0].ulValueLen == 16 &&
+                       memcmp(got12, want12, 16) == 0,
+                   "TLS 1.2 master matches KAT bytes");
+            mx.prfHashMechanism = CKM_SHA256;
+            mx.pSessionHash = tsess;
+            mx.ulSessionHashLen = sizeof(tsess);
+            mx.pVersion = &tver;
+            mmx.mechanism = CKM_TLS12_EXTENDED_MASTER_KEY_DERIVE;
+            mmx.pParameter = &mx;
+            mmx.ulParameterLen = sizeof(mx);
+            rv = f->C_DeriveKey(sess, &mmx, tbase, ttmpl, 6, &td3);
+            CHECKC(rv == CKR_OK && td3 != 0, "TLS extended master derive ok");
+            gtx[0].ulValueLen = sizeof(gotx);
+            rv = f->C_GetAttributeValue(sess, td3, gtx, 1);
+            CHECKC(rv == CKR_OK && gtx[0].ulValueLen == 16 &&
+                       memcmp(gotx, wantx, 16) == 0,
+                   "TLS extended master matches KAT bytes");
+            mk.prfMechanism = CKM_SHA256;
+            mk.pLabel = tlabel;
+            mk.ulLabelLength = sizeof(tlabel) - 1;
+            mk.RandomInfo.pClientRandom = tcli;
+            mk.RandomInfo.ulClientRandomLen = sizeof(tcli);
+            mk.RandomInfo.pServerRandom = tsrv;
+            mk.RandomInfo.ulServerRandomLen = sizeof(tsrv);
+            mk.pContextData = tctx;
+            mk.ulContextDataLength = sizeof(tctx) - 1;
+            mmk.mechanism = CKM_TLS12_KDF;
+            mmk.pParameter = &mk;
+            mmk.ulParameterLen = sizeof(mk);
+            rv = f->C_DeriveKey(sess, &mmk, tbase, ttmpl, 6, &td4);
+            CHECKC(rv == CKR_OK && td4 != 0, "TLS KDF derive ok");
+            gtk[0].ulValueLen = sizeof(gotk);
+            rv = f->C_GetAttributeValue(sess, td4, gtk, 1);
+            CHECKC(rv == CKR_OK && gtk[0].ulValueLen == 16 &&
+                       memcmp(gotk, wantk, 16) == 0,
+                   "TLS KDF matches KAT bytes");
+            rv = f->C_DeriveKey(sess, &mmk, tbase, ttmpl, 6, &td5);
+            CHECKC(rv == CKR_OK && td5 != 0, "TLS KDF derive replays");
+            gtk2[0].ulValueLen = sizeof(gotk2);
+            rv = f->C_GetAttributeValue(sess, td5, gtk2, 1);
+            CHECKC(rv == CKR_OK && gtk2[0].ulValueLen == 16 &&
+                       memcmp(gotk, gotk2, 16) == 0,
+                   "TLS KDF derived deterministic");
+            rv = f->C_DeriveKey(sess, &mmk, ecBase, ttmpl, 6, &td5);
+            CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+                   "TLS KDF with EC base refused typed");
+            badkm.mechanism = CKM_TLS12_KDF;
+            badkm.pParameter = garbage;
+            badkm.ulParameterLen = sizeof(garbage);
+            rv = f->C_DeriveKey(sess, &badkm, tbase, ttmpl, 6, &td5);
+            if (!isProxy) {
+              CHECKC(rv == CKR_ARGUMENTS_BAD,
+                     "TLS KDF with garbage params refused typed");
+            } else {
+              /* The shim sends the undersized image (65 < 72) as
+               * unmodeled Raw bytes, which the daemon rejects at
+               * the FFI boundary (proxy ffi_conversion.rs: the
+               * Raw arm errors MECHANISM_PARAM_INVALID so stale
+               * client pointers never dereference). */
+              CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                     "proxied undersized TLS-KDF image refused at shim");
+            }
+            rv = f->C_DestroyObject(sess, td5);
+            CHECKC(rv == CKR_OK, "second TLS-KDF secret destroyed");
+          }
         }
       }
       {

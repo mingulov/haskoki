@@ -1590,6 +1590,78 @@ skipped (t7692)
   admits the NULL/0 iteration variable
   outside counter mode).
 
+## Round 30: TLS protocol-KDF slice 11i (fast r57→r59 + KAT r31→r32)
+
+- r59: 4257 passed / 19 failed / 663
+  xfailed / 3752 skipped (t8691)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r59-results.json`).
+  r57→r59: +42 pass / +0 fail / +0 xfail /
+  +112 skip (+154 collected; r58 was the
+  reverted EdDSA-NULL experiment
+  snapshot, never a slice baseline).
+- Movers r57→r59 (unit `counts`, exact):
+  `test_tls12` 3p/34s → 22p/15s (the new
+  rows derive and pass — master, DH,
+  extended, free-label legs, zero
+  failures); `test_ffi_length_boundary`
+  75p/50s → 80p/45s (boundary legs over
+  the new rows pass); `test_mech_flags`
+  733p/1392s/8x → 751p/1455s/8x (the
+  flags matrix over the new rows
+  passes); `test_mech_attribute`,
+  `test_mech_derive`, `test_mech_keygen`,
+  `test_mech_negative`, `test_mech_probe`
+  grow skips only (new-matrix instances
+  that do not apply). +42 = 19 + 5 + 18.
+- Zero regressions: the 19 failures are
+  identical by id to r57 (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS
+  P11C-006 + 1 SP800 multi-output scope
+  gap). `test_x942_dh` does not move in
+  fast (the paramgen legs are
+  `@pytest.mark.slow` — KAT only).
+- In-slice fix (recon-found, pre-lane):
+  the KAT oracle requires
+  `CKA_SUBPRIME_BITS` on the X9.42
+  paramgen template
+  (`test_parameter_gen_rejects_missing_subprime_bits`
+  classifies `CKR_OK` as
+  accepted-invalid), while the DSA arm
+  defaults it per L (no DSA oracle leg
+  probes the missing shape, so the
+  default survives there). The shared
+  size worker now takes a
+  subprime-required flag: DSA defaults,
+  X9.42 refuses `CKR_TEMPLATE_INCOMPLETE`
+  (committed planner pin; JSON notes
+  updated). No lane re-run was needed
+  for the fix (fast carries no slow
+  legs; DSA behavior byte-identical).
+- r32: 82696 passed / 25 failed / 1687
+  xfailed / 30467 skipped (t114875)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r32-results.json`).
+  r31→r32: +44 pass / +0 fail / +1 xfail /
+  +109 skip (+154 — the fast-matrix
+  units repeat r57→r59 exactly).
+- KAT-only delta (`test_x942_dh`
+  1p/13f/21s/4x → 3p/13f/18s/5x): the two
+  paramgen legs newly pass (generate +
+  readback at 2048/256;
+  missing-subprime refuses
+  `CKR_TEMPLATE_INCOMPLETE`), and
+  `test_generated_params_produce_valid_derive`
+  runs to xfail inside the known
+  P11C-004 area ("derive from generated
+  params is not operational"), not in
+  paramgen. The 25 failures are
+  identical by id to r31.
+- Bundle note: r59/r32 run on the final
+  11i tree (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16; r32 on the bundle
+  rebuilt after the subprime-required
+  fix — behavior delta confined to the
+  0x2002 missing-subprime refusal).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

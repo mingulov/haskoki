@@ -176,6 +176,7 @@ import Haskoki.Operation.KeyManagement
   , dsaParameterGenMech
   , ecKeyPairGenMech
   , x9_42DhKeyPairGenMech
+  , x9_42DhParameterGenMech
   , edwardsKeyPairGenMech
   , montgomeryKeyPairGenMech
   , encodeGenArgs
@@ -258,6 +259,7 @@ import Haskoki.Registry (MechanismId (..), Operation (..), curatedRegistry, mkCa
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
+import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Registry.Generated
   ( ckm_AES_CCM
@@ -271,6 +273,11 @@ import Haskoki.Registry.Generated
   , ckm_SP800_108_COUNTER_KDF
   , ckm_SP800_108_DOUBLE_PIPELINE_KDF
   , ckm_SP800_108_FEEDBACK_KDF
+  , ckm_TLS_MASTER_KEY_DERIVE
+  , ckm_TLS12_KDF
+  , ckm_TLS12_MASTER_KEY_DERIVE
+  , ckm_TLS12_EXTENDED_MASTER_KEY_DERIVE
+  , ckm_TLS_KDF
   )
 import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
@@ -344,6 +351,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Usage attributes land on unwrap/derive children" caseAttrsLand
   , testCase "Real EC keypair generates and signs" caseRealEcKeygen
   , testCase "Real RSA keypair generates and signs" caseRealRsaKeygen
+  , testCase "X9.42 DH param sizes plan and refuse" caseX942ParamSizesPlanner
   , testCase "DSA param sizes plan and refuse" caseDsaParamSizesPlanner
   , testCase "DSA domain templates plan and refuse" caseDsaDomainPlanner
   , testCase "DSA GenArgs codec round-trips and rejects" caseDsaGenArgsCodec
@@ -361,6 +369,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Montgomery pending/effect pairs cohere" caseMontgomeryCompatible
   , testCase "Montgomery components stamp, doubles pass through" caseMontgomeryStamp
   , testCase "DSA components stamp, doubles pass through" caseDsaStamp
+  , testCase "Real X9.42 DH params generate with readback" caseRealX942Paramgen
   , testCase "Real DSA params generate with readback" caseRealDsaParamgen
   , testCase "Real DSA keypair generates and signs" caseRealDsaKeygen
   , testCase "Real DH keypairs generate and agree" caseRealDhKeygen
@@ -376,6 +385,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real HKDF-DATA derive matches RFC 5869" caseRealHkdfDataVector
   , testCase "SP800-108 plans the three modes, refuses bad shapes" caseSp800Plans
   , testCase "Real SP800-108 derive matches the KAT" caseRealSp800Vector
+  , testCase "TLS-KDF plans rows, refuses bad shapes" caseTlsKdfPlans
+  , testCase "Real TLS-KDF derives match the KATs" caseRealTlsKdfVector
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
   , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
   , testCase "KEM refuses wrong key types inconsistent" caseKemWrongKeyType
@@ -796,6 +807,15 @@ dsaParamsTmpl l =
   [ (AttrClass, ValULong ckoDomainParameters)
   , (AttrKeyType, ValULong ckkDsa)
   , (AttrPrimeBits, ValULong l)
+  , (AttrToken, ValBool False)
+  ]
+
+x942ParamsTmpl :: Word64 -> Word64 -> [(AttributeType, AttributeValue)]
+x942ParamsTmpl l n =
+  [ (AttrClass, ValULong ckoDomainParameters)
+  , (AttrKeyType, ValULong ckkX9_42Dh)
+  , (AttrPrimeBits, ValULong l)
+  , (AttrSubprimeBits, ValULong n)
   , (AttrToken, ValBool False)
   ]
 
@@ -2039,6 +2059,43 @@ caseRsaStampMismatch = do
       ecPriv = pendingFromAttrs st (Map.fromList ecPrivTmpl)
   assertEqual "EC opaque passthrough" (Just (ecPub, ecPriv))
     (stampPairComponents ecPub ecPriv "pub" "priv")
+
+caseX942ParamSizesPlanner :: IO ()
+caseX942ParamSizesPlanner = do
+  m0 <- seedModel
+  st <- getSession m0
+  let argsOf tmpl =
+        case planGenerateKey defaultRules m0 st x9_42DhParameterGenMech BS.empty tmpl of
+          KeyEffect _ (FxGenerateKey _ _ input) -> Right (decodeGenArgs input)
+          KeyDenied (KeyDeny code _) -> Left code
+          other -> error ("unexpected plan shape: " ++ show other)
+  -- Explicit served pairs plan (the DSA frame: the driver
+  -- runs the DSA FIPS 186-4 entry point).
+  assertEqual "explicit (1024, 160)" (Right (Just (GenDsaParams 1024 160)))
+    (argsOf (x942ParamsTmpl 1024 160))
+  assertEqual "explicit (2048, 224)" (Right (Just (GenDsaParams 2048 224)))
+    (argsOf (x942ParamsTmpl 2048 224))
+  assertEqual "explicit (2048, 256)" (Right (Just (GenDsaParams 2048 256)))
+    (argsOf (x942ParamsTmpl 2048 256))
+  -- A missing subprime is incomplete (the oracle requires it;
+  -- DSA keeps the per-L default).
+  assertEqual "missing subprime bits" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf (filter ((/= AttrSubprimeBits) . fst) (x942ParamsTmpl 2048 256)))
+  -- The oracle's minimal template (no class, no key type) plans.
+  assertEqual "oracle minimal plans" (Right (Just (GenDsaParams 2048 256)))
+    (argsOf [(AttrPrimeBits, ValULong 2048), (AttrSubprimeBits, ValULong 256),
+             (AttrToken, ValBool False)])
+  -- A DSA-typed template contradicts the mechanism.
+  assertEqual "DSA key type refused" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (dsaParamsTmpl 1024))
+  -- Missing prime bits are incomplete.
+  assertEqual "missing prime bits" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf [(AttrToken, ValBool False)])
+  -- Unserved sizes and pairs are inconsistent.
+  assertEqual "unserved L" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (x942ParamsTmpl 512 160))
+  assertEqual "unserved pair" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (x942ParamsTmpl 2048 160))
 
 caseDsaParamSizesPlanner :: IO ()
 caseDsaParamSizesPlanner = do
@@ -4129,6 +4186,36 @@ caseRealRsaKeygen = withRealEnv $ \env -> do
         EngineFail err -> assertFailure ("real verify failed: " ++ show err)
     _ -> assertFailure "real RSA halves lack material"
 
+caseRealX942Paramgen :: IO ()
+caseRealX942Paramgen = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, h) <- case planGenerateKey defaultRules m0 st x9_42DhParameterGenMech BS.empty (x942ParamsTmpl 1024 160) of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 1
+      h' <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      pure (m', h')
+    other -> assertFailure ("X9.42 paramgen plan is not an effect: " ++ show other) >> undefined
+  Just ost <- pure (resolveHandle m1 h)
+  assertEqual "params class" (Just (ValULong ckoDomainParameters))
+    (Map.lookup AttrClass (osAttrs ost))
+  assertEqual "params key type" (Just (ValULong ckkX9_42Dh))
+    (Map.lookup AttrKeyType (osAttrs ost))
+  case (Map.lookup AttrPrime (osAttrs ost), Map.lookup AttrSubprime (osAttrs ost),
+      Map.lookup AttrBase (osAttrs ost)) of
+    (Just (ValBytes p), Just (ValBytes q), Just (ValBytes g)) -> do
+      assertEqual "prime width" 128 (BS.length p)
+      assertEqual "subprime width" 20 (BS.length q)
+      assertEqual "base width" 128 (BS.length g)
+      assertEqual "prime bits" (Just (ValULong 1024))
+        (Map.lookup AttrPrimeBits (osAttrs ost))
+      assertEqual "subprime bits" (Just (ValULong 160))
+        (Map.lookup AttrSubprimeBits (osAttrs ost))
+    other -> assertFailure ("real params lack components: " ++ show other)
+
 caseRealDsaParamgen :: IO ()
 caseRealDsaParamgen = withRealEnv $ \env -> do
   m0 <- seedModel
@@ -4759,6 +4846,120 @@ caseRealSp800Vector = withRealEnv $ \env -> do
   -- oracle reference, and the provider KBKDF CLI agree.
   assertEqual "SP800-108 counter AES-128 KAT"
     (Just (hex "caff7a6a35ca9b35afcc64fa658d8bc2")) (keyBytesOf ost)
+
+tlsKdfMasterMech, tlsKdfTls12Mech, tlsKdfExtMech, tlsKdfFreeMech, tlsKdfGenMech :: MechanismId
+tlsKdfMasterMech = MechanismId ckm_TLS_MASTER_KEY_DERIVE
+tlsKdfTls12Mech = MechanismId ckm_TLS12_MASTER_KEY_DERIVE
+tlsKdfExtMech = MechanismId ckm_TLS12_EXTENDED_MASTER_KEY_DERIVE
+tlsKdfFreeMech = MechanismId ckm_TLS12_KDF
+tlsKdfGenMech = MechanismId ckm_TLS_KDF
+
+tlsKdfSeed64 :: BS.ByteString
+tlsKdfSeed64 = BS.pack [0 .. 63]
+
+tlsKdfSess32 :: BS.ByteString
+tlsKdfSess32 = BS.pack [0 .. 31]
+
+caseTlsKdfPlans :: IO ()
+caseTlsKdfPlans = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 47])
+  let kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      master = encodeTlsKdfParams 0 "master secret" tlsKdfSeed64 BS.empty
+      kdf = encodeTlsKdfParams 4 "key expansion" tlsKdfSeed64 BS.empty
+  -- Each row plans with its frame.
+  mapM_ (\(mech, frame, n) ->
+    case planDerive defaultRules m1 st mech baseH
+        (encodeDeriveParams frame [kid n]) of
+      KeyEffect _ (FxDerive _ _ _ _ total) ->
+        assertEqual ("total " ++ show mech) n total
+      other -> assertFailure ("must plan, got: " ++ show other))
+    [ (tlsKdfMasterMech, master, 48)
+    , (tlsKdfTls12Mech, encodeTlsKdfParams 4 "master secret" tlsKdfSeed64 BS.empty, 48)
+    , (tlsKdfExtMech, encodeTlsKdfParams 4 "extended master secret" tlsKdfSess32 BS.empty, 48)
+    , (tlsKdfFreeMech, kdf, 32)
+    , (tlsKdfGenMech, encodeTlsKdfParams 0 "key expansion" tlsKdfSeed64 BS.empty, 32)
+    ]
+  -- A wrong-row frame refuses typed.
+  case planDerive defaultRules m1 st tlsKdfMasterMech baseH
+      (encodeDeriveParams kdf [kid 32]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "wrong-row code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("wrong row must deny, got: " ++ show other)
+  -- A missing length stays INCOMPLETE (no natural width).
+  let noLen =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        ]
+  case planDerive defaultRules m1 st tlsKdfMasterMech baseH
+      (encodeDeriveParams master [noLen]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "no-length code" CKR_TEMPLATE_INCOMPLETE code
+    other -> assertFailure ("missing length must deny, got: " ++ show other)
+  -- Output past the ceiling refuses typed.
+  case planDerive defaultRules m1 st tlsKdfFreeMech baseH
+      (encodeDeriveParams kdf [kid (fromIntegral (maxTlsKdfOutput + 1))]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "ceiling code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("over-ceiling must deny, got: " ++ show other)
+
+caseRealTlsKdfVector :: IO ()
+caseRealTlsKdfVector = withRealEnv $ \env -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 47])
+  let kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      derive mech frame n = do
+        (m', [h]) <- case planDerive defaultRules m1 st mech baseH
+            (encodeDeriveParams frame [kid n]) of
+          KeyEffect pw fx -> do
+            res <- answer m1 fx
+            c <- finishCommit m1 st pw res 1
+            hh <- handleOf (pcOutputs c !! 0)
+            m' <- expectRight (publishDelta m1 (pcDelta c))
+            pure (m', [hh])
+          other -> assertFailure ("derive must plan: " ++ show other) >> undefined
+        Just ost <- pure (resolveHandle m' h)
+        pure (keyBytesOf ost)
+  gotM10 <- derive tlsKdfMasterMech
+    (encodeTlsKdfParams 0 "master secret" tlsKdfSeed64 BS.empty) 48
+  assertEqual "TLS master KAT"
+    (Just (hex "539391828d1d131678646180c5bda5c9a2eb62382c8cfb9440545cae85c8c205b93e0d22161e06be1189235aefca7570")) gotM10
+  gotM12 <- derive tlsKdfTls12Mech
+    (encodeTlsKdfParams 4 "master secret" tlsKdfSeed64 BS.empty) 48
+  assertEqual "TLS12 master KAT"
+    (Just (hex "2b7cccb6d48adb8692df640b9252502fb000fd68fb2dc4b6a8cd67d870492f38e4c5dd509ba7c4863c003c07d23f9a3b")) gotM12
+  gotKdf <- derive tlsKdfFreeMech
+    (encodeTlsKdfParams 4 "key expansion" tlsKdfSeed64 "context-info") 32
+  assertEqual "TLS12 KDF ctx KAT"
+    (Just (hex "5c0125c5f281488f681349499f252df0d29934469aabc15136b0a6a78a4b39d7")) gotKdf
+  gotExt <- derive tlsKdfExtMech
+    (encodeTlsKdfParams 4 "extended master secret" tlsKdfSess32 BS.empty) 48
+  assertEqual "extended master KAT"
+    (Just (hex "c3d5ea08b472cbb67e205711e5006647e2b8cb5f6b2a20847780122bdb78cf874a37fb5aa6ae0e3ce513256f888efa1b")) gotExt
 
 caseRealAuthWrap :: IO ()
 caseRealAuthWrap = withRealEnv $ \env -> do

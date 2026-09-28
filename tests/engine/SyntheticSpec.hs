@@ -82,6 +82,7 @@ import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
+import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Recipe.Otp (encodeHotpParams)
 import Haskoki.Registry (MechanismId (..))
@@ -139,6 +140,7 @@ spec = testGroup "synthetic engine"
   , testCase "GMAC tags separate over synthetic GCM" caseGmac
   , testCase "KDF output separates and truncates" caseKdf
   , testCase "TLS-PRF output separates and truncates" caseTlsPrf
+  , testCase "TLS-KDF rows separate and refuse" caseTlsKdf
   , testCase "SP800-108 modes separate, length bound" caseSp800
   , testCase "HOTP codes separate, keygen lengths" caseHotp
   , testCase "Specials refuse explicitly" caseSpecialsRefuse
@@ -2331,6 +2333,67 @@ caseSp800 = withSynth "11" $ \env -> do
     (FxDerive ctr (Just secOid) (frame BS.empty) BS.empty (maxSp800Total + 1))
   expectFailed "counter does not fit"
     (FxDerive ctr (Just secOid) (encodeSp800Params 4 8 32 BS.empty fixed) BS.empty 8192)
+
+-- | TLS-KDF through the driver over synthetic HMAC: deterministic
+-- output, separated across rows, secrets, labels, seeds, and the
+-- RFC 5705 context, and typed refusals. (The synthetic MAC
+-- stream differs from real HMAC by design; exact KAT bytes live
+-- on the real backend.)
+caseTlsKdf :: IO ()
+caseTlsKdf = withSynth "11" $ \env -> do
+  let m10 = MechanismId 0x375
+      m12 = MechanismId 0x3e0
+      ext = MechanismId 0x56
+      kdf = MechanismId 0x3d9
+      gen = MechanismId 0x3e5
+      secOid = ObjectId 74
+      oddOid = ObjectId 75
+      res oid
+        | oid == secOid = Just (KeyBytes (BS.pack [0 .. 47]))
+        | oid == oddOid = Just (KeyBytes (BS.pack [0 .. 46]))
+        | otherwise = Nothing
+      seed64 = BS.pack [0 .. 63]
+      sess32 = BS.pack [0 .. 31]
+      f10 = encodeTlsKdfParams 0 "master secret" seed64 BS.empty
+      f12 = encodeTlsKdfParams 4 "master secret" seed64 BS.empty
+      fExt = encodeTlsKdfParams 4 "extended master secret" sess32 BS.empty
+      fKdf = encodeTlsKdfParams 4 "key expansion" seed64 BS.empty
+      fGen = encodeTlsKdfParams 0 "key expansion" seed64 BS.empty
+      deriveAs mech oid params outLen =
+        runEffect env res (FxDerive mech (Just oid) params BS.empty outLen)
+          >>= expectBytes
+      expectFailed label fx = do
+        r <- runEffect env res fx
+        case r of
+          GotCryptoError (CryptoFailed _) -> pure ()
+          other -> assertFailure ("expected Failed " ++ label ++ ", got: " ++ show other)
+  a1 <- deriveAs m10 secOid f10 48
+  assertEqual "output length" 48 (BS.length a1)
+  a2 <- deriveAs m10 secOid f10 48
+  assertEqual "deterministic" a1 a2
+  b1 <- deriveAs m12 secOid f12 48
+  e1 <- deriveAs ext secOid fExt 48
+  k1 <- deriveAs kdf secOid fKdf 32
+  g1 <- deriveAs gen secOid fGen 32
+  assertBool "rows separated"
+    (a1 /= b1 && a1 /= e1 && BS.take 32 a1 /= k1 && b1 /= e1 && k1 /= g1)
+  cOdd <- deriveAs m10 oddOid f10 48
+  assertBool "secrets separated" (a1 /= cOdd)
+  cLab <- deriveAs kdf secOid (encodeTlsKdfParams 4 "other label" seed64 BS.empty) 32
+  assertBool "labels separated" (k1 /= cLab)
+  cCtx <- deriveAs kdf secOid (encodeTlsKdfParams 4 "key expansion" seed64 "ctx") 32
+  assertBool "contexts separated" (k1 /= cCtx)
+  -- Typed refusals.
+  expectFailed "junk params"
+    (FxDerive m10 (Just secOid) "junk" BS.empty 48)
+  expectFailed "info string"
+    (FxDerive m10 (Just secOid) f10 "x" 48)
+  expectFailed "zero length"
+    (FxDerive m10 (Just secOid) f10 BS.empty 0)
+  expectFailed "over ceiling"
+    (FxDerive m10 (Just secOid) f10 BS.empty (maxTlsKdfOutput + 1))
+  expectFailed "wrong-row frame"
+    (FxDerive m10 (Just secOid) f12 BS.empty 48)
 
 -- ---------------------------------------------------------------------------
 -- OTP constructions

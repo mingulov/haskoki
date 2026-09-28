@@ -2211,15 +2211,23 @@ static hkdf_class_t hkdf_params_class(const CK_HKDF_PARAMS *hp) {
 }
 
 /* Derive mechanisms served through the opaque Haskell intake
- * (ECDH + DH + SHA-KDF rows + TLS-PRF + SP 800-108 rows; mirrors
- * the Haskoki.Recipe.Ecdh/Dh/Kdf/TlsPrf/Sp800108 tables —
- * Haskell re-checks membership before planning). */
+ * (ECDH + DH + SHA-KDF rows + TLS-PRF + SP 800-108 rows + TLS-KDF
+ * rows; mirrors the Haskoki.Recipe.Ecdh/Dh/Kdf/TlsPrf/Sp800108/TlsKdf
+ * tables — Haskell re-checks membership before planning). */
 static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   switch (mech) {
   case CKM_TLS_PRF:
   case CKM_SP800_108_COUNTER_KDF:
   case CKM_SP800_108_FEEDBACK_KDF:
   case CKM_SP800_108_DOUBLE_PIPELINE_KDF:
+  case CKM_TLS_MASTER_KEY_DERIVE:
+  case CKM_TLS_MASTER_KEY_DERIVE_DH:
+  case CKM_TLS12_MASTER_KEY_DERIVE:
+  case CKM_TLS12_MASTER_KEY_DERIVE_DH:
+  case CKM_TLS12_EXTENDED_MASTER_KEY_DERIVE:
+  case CKM_TLS12_EXTENDED_MASTER_KEY_DERIVE_DH:
+  case CKM_TLS12_KDF:
+  case CKM_TLS_KDF:
   case CKM_BLAKE2B_160_KEY_DERIVE:
   case CKM_BLAKE2B_256_KEY_DERIVE:
   case CKM_BLAKE2B_384_KEY_DERIVE:

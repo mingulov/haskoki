@@ -107,6 +107,11 @@ import Haskoki.Recipe.Sp800108
   , sp800ParamsValid
   , sp800RecipeFor
   )
+import Haskoki.Recipe.TlsKdf
+  ( maxTlsKdfOutput
+  , tlsKdfParamsValid
+  , tlsKdfRecipeFor
+  )
 import Haskoki.Recipe.TlsPrf
   ( maxTlsPrfOutput
   , tlsPrfParamsValid
@@ -454,6 +459,26 @@ planDerive rules model st mech baseH blob
           | otherwise -> finish tmpls maxTlsPrfOutput
               "derived total exceeds the TLS-PRF ceiling"
               (FxDerive mech (Just (osId ost)) prfBlob BS.empty)
+              Nothing
+              CKR_ARGUMENTS_BAD
+  | Just r <- tlsKdfRecipeFor mech = case decodeDeriveParams blob of
+      Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "malformed derive arguments")
+      Just (kdfBlob, tmpls) -> case resolveBase model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, _)
+          -- TLS-KDF rows derive from generic-secret bases only;
+          -- the key-type contradiction outranks parameter shape
+          -- (the Init-matrix ordering, shared with the TLS-PRF
+          -- arm).
+          | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkGenericSecret) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "TLS-KDF base key is not a generic secret")
+          | not (tlsKdfParamsValid r kdfBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              "TLS-KDF mechanism parameters rejected by the recipe")
+          | otherwise -> finish tmpls maxTlsKdfOutput
+              "derived total exceeds the TLS-KDF ceiling"
+              (FxDerive mech (Just (osId ost)) kdfBlob BS.empty)
               Nothing
               CKR_ARGUMENTS_BAD
   | Just r <- sp800RecipeFor mech = case decodeDeriveParams blob of

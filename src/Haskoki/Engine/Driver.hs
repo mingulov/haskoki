@@ -163,6 +163,8 @@ module Haskoki.Engine.Driver
   , tlsPrfParamsFor
   , Sp800Exec (..)
   , sp800ParamsFor
+  , TlsKdfExec (..)
+  , tlsKdfParamsFor
   ) where
 
 import qualified Data.ByteString as BS
@@ -295,6 +297,7 @@ import Haskoki.Operation.KeyManagement
   , mldsaKeyPairGenMech
   , slhdsaKeyPairGenMech
   , x9_42DhKeyPairGenMech
+  , x9_42DhParameterGenMech
   , rsaPkcsMech
   , encodeKeyPair
   , genericSecretKeyGenMech
@@ -403,6 +406,14 @@ import Haskoki.Recipe.Sp800108
   , maxSp800Total
   , sp800ParamsValid
   , sp800RecipeFor
+  )
+import Haskoki.Recipe.TlsKdf
+  ( TlsKdfKind (..)
+  , TlsKdfRecipe (..)
+  , decodeTlsKdfParams
+  , maxTlsKdfOutput
+  , tlsKdfParamsValid
+  , tlsKdfRecipeFor
   )
 import Haskoki.Recipe.TlsPrf
   ( decodeTlsPrfParams
@@ -774,6 +785,42 @@ sp800ParamsFor mech params = do
 -- branches).
 isSp800Mech :: MechanismId -> Bool
 isSp800Mech mech = case sp800RecipeFor mech of
+  Just _ -> True
+  Nothing -> False
+
+-- | TLS-KDF execution tuple: the row kind, the legacy flag
+-- (the TLS 1.0 construction when set, @P_hash@ over the
+-- digest otherwise), the label, the seed, and the RFC 5705
+-- context (free rows only).
+data TlsKdfExec = TlsKdfExec
+  { teKind :: !TlsKdfKind
+  , teLegacy :: !Bool
+  , teAlg :: !(Maybe DigestAlg)
+  , teLabel :: !ByteString
+  , teSeed :: !ByteString
+  , teContext :: !ByteString
+  } deriving (Eq, Show)
+
+-- | TLS-KDF dispatch: the covered (mechanism, params) pair to
+-- its execution tuple (pinned by RecipeTlsKdfSpec).
+-- 'Nothing' means uncovered (non-TLS-KDF mechanism) or
+-- malformed parameters.
+tlsKdfParamsFor :: MechanismId -> ByteString -> Maybe TlsKdfExec
+tlsKdfParamsFor mech params = do
+  r <- tlsKdfRecipeFor mech
+  guard (tlsKdfParamsValid r params)
+  (prf, lab, seed, ctx) <- decodeTlsKdfParams params
+  if prf == 0
+    then pure (TlsKdfExec (tkKind r) True Nothing lab seed ctx)
+    else do
+      stem <- kdfCodeDigest (fromIntegral prf)
+      alg <- rsaDigest stem
+      pure (TlsKdfExec (tkKind r) False (Just alg) lab seed ctx)
+
+-- | A TLS-KDF mechanism (drives the parameter-refusal
+-- branches).
+isTlsKdfMech :: MechanismId -> Bool
+isTlsKdfMech mech = case tlsKdfRecipeFor mech of
   Just _ -> True
   Nothing -> False
 
@@ -1706,6 +1753,13 @@ runEffect env resolve fx = case fx of
             toKeyPair <$> generateKey env (GenRSA bits e)
           (m, GenDsaParams p q) | m == dsaParameterGenMech ->
             toKeyPair <$> generateKey env (GenDSAParams p q)
+          -- X9.42 DH parameter generation runs the DSA FIPS
+          -- 186-4 entry point (the provider's DH paramgen
+          -- emits P+G only, no Q in any mode); the (P, Q, G)
+          -- triple publishes as X9.42 DH domain parameters
+          -- through the shared DSS-Parms finisher.
+          (m, GenDsaParams p q) | m == x9_42DhParameterGenMech ->
+            toKeyPair <$> generateKey env (GenDSAParams p q)
           (m, GenDsaKeypair der) | m == dsaKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenDSAKeypair der)
           (m, GenDhKeypair der)
@@ -1724,7 +1778,7 @@ runEffect env resolve fx = case fx of
             Nothing -> pure (GotCryptoError (CryptoFailed
               ("driver: unknown SLH-DSA parameter set: " ++ show n)))
           _
-            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, chacha20KeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, dhKeyPairGenMech, x9_42DhKeyPairGenMech, edwardsKeyPairGenMech, montgomeryKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech, pbkd2KeyGenMech] ->
+            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, chacha20KeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, dhKeyPairGenMech, x9_42DhKeyPairGenMech, x9_42DhParameterGenMech, edwardsKeyPairGenMech, montgomeryKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech, pbkd2KeyGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)
@@ -1839,6 +1893,14 @@ runEffect env resolve fx = case fx of
         "driver: SP800-108 derive takes no info string"))
     | isSp800Mech mech -> pure (GotCryptoError (CryptoFailed
         "driver: SP800-108 mechanism parameters rejected by the recipe"))
+    | Just ex <- tlsKdfParamsFor mech params
+    , BS.null info -> withKey mkey $ \key ->
+        runTlsKdf ex key outLen
+    | isTlsKdfMech mech
+    , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
+        "driver: TLS-KDF derive takes no info string"))
+    | isTlsKdfMech mech -> pure (GotCryptoError (CryptoFailed
+        "driver: TLS-KDF mechanism parameters rejected by the recipe"))
     | Just prf <- tlsPrfParamsFor mech params
     , BS.null info -> withKey mkey $ \key ->
         runTlsPrf prf key outLen
@@ -2546,6 +2608,35 @@ runEffect env resolve fx = case fx of
             "driver: derive length out of range"))
       _ -> pure (GotCryptoError (CryptoBadKey "driver"
         "key derivation needs raw secret bytes"))
+    -- | TLS-KDF effects: the legacy RFC 2246 expansion or
+    -- @P_hash@ over the selected digest, with the RFC 5705
+    -- context suffix (2-byte big-endian length plus context)
+    -- when present. Off-range lengths are 'CryptoFailed'; a
+    -- non-bytes key is 'CryptoBadKey'.
+    runTlsKdf :: TlsKdfExec -> KeyMaterial -> Int -> IO CryptoResult
+    runTlsKdf ex key outLen = case key of
+      KeyBytes kb
+        | outLen >= 1 && outLen <= maxTlsKdfOutput -> do
+            let seedFull = teLabel ex <> teSeed ex <> ctxSuffix (teContext ex)
+            r <- case (teLegacy ex, teAlg ex) of
+              (True, _) -> tlsPrfExpand kb seedFull outLen
+              (False, Just alg) -> pHash alg (KeyBytes kb) seedFull outLen
+              (False, Nothing) -> pure (EngineFail (BackendBadParam "runTlsKdf"
+                "TLS-KDF hash PRF without a digest"))
+            pure $ case r of
+              EngineFail err -> GotCryptoError (toCryptoError err)
+              EngineOk ok -> GotBytes (BS.take outLen ok)
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: derive length out of range"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "key derivation needs raw secret bytes"))
+    -- | RFC 5705 context suffix: empty without context, else the
+    -- 2-byte big-endian length plus the context.
+    ctxSuffix :: ByteString -> ByteString
+    ctxSuffix ctx
+      | BS.null ctx = BS.empty
+      | otherwise = BS.pack [fromIntegral (n `div` 256), fromIntegral (n `mod` 256)] <> ctx
+      where n = BS.length ctx
     -- | TLS 1.0\/1.1 PRF: P_MD5 over the first secret half XOR
     -- P_SHA-1 over the second (RFC 2246 §5; the halves share the
     -- middle byte on odd lengths).

@@ -163,6 +163,7 @@ module Haskoki.Operation.KeyManagement
   , dsaParameterGenMech
   , dhKeyPairGenMech
   , x9_42DhKeyPairGenMech
+  , x9_42DhParameterGenMech
   , edwardsKeyPairGenMech
   , montgomeryKeyPairGenMech
   , mldsaKeyPairGenMech
@@ -273,6 +274,7 @@ import Haskoki.Registry.Generated
   , ckm_DSA_PARAMETER_GEN
   , ckm_DH_PKCS_KEY_PAIR_GEN
   , ckm_X9_42_DH_KEY_PAIR_GEN
+  , ckm_X9_42_DH_PARAMETER_GEN
   , ckm_EC_EDWARDS_KEY_PAIR_GEN
   , ckm_EC_MONTGOMERY_KEY_PAIR_GEN
   , ckm_EC_KEY_PAIR_GEN
@@ -666,6 +668,10 @@ dhKeyPairGenMech = MechanismId (ckm_DH_PKCS_KEY_PAIR_GEN)
 -- | @CKM_X9_42_DH_KEY_PAIR_GEN@ (generated id, resolved by name).
 x9_42DhKeyPairGenMech :: MechanismId
 x9_42DhKeyPairGenMech = MechanismId (ckm_X9_42_DH_KEY_PAIR_GEN)
+
+-- | @CKM_X9_42_DH_PARAMETER_GEN@ (generated id, resolved by name).
+x9_42DhParameterGenMech :: MechanismId
+x9_42DhParameterGenMech = MechanismId (ckm_X9_42_DH_PARAMETER_GEN)
 
 -- | @CKM_EC_EDWARDS_KEY_PAIR_GEN@ (generated id, resolved by name).
 edwardsKeyPairGenMech :: MechanismId
@@ -2653,9 +2659,10 @@ planPbkd2Gen st mech params tmpl = case decodePbkd2Params params of
 -- | Plan single-key generation: AES takes a 128\/192\/256-bit
 -- length via @AttrValueLen@ (bytes); HOTP takes any length in the
 -- recipe's 16-64 byte window; the sweep table serves the fixed,
--- discrete and ranged symmetric keygens; DSA parameter generation
--- takes the @(L, N)@ size pair via @AttrPrimeBits@ (required) and
--- @AttrSubprimeBits@ (defaulted) and completes one pending
+-- discrete and ranged symmetric keygens; DSA and X9.42 DH
+-- parameter generation take the @(L, N)@ size pair via
+-- @AttrPrimeBits@ (required) and @AttrSubprimeBits@ (defaulted
+-- for DSA, required for X9.42 DH) and complete one pending
 -- domain-parameters object. The driver answer completes one
 -- pending object. Admission gates last (parse-first): mechanism,
 -- template, then the bound check just before the effect.
@@ -2691,6 +2698,22 @@ planGenerateKey rules model st mech params tmpl =
           case checkKeyTemplate ckoDomainParameters ckkDsa tmpl of
           Left deny -> Left deny
           Right attrs -> case dsaParamSizes attrs of
+            Left deny -> Left deny
+            Right (l, n) -> Right
+              ( PwGenerateKey (pendingFromAttrs st attrs)
+              , FxGenerateKey mech BS.empty (encodeGenArgs (GenDsaParams l n))
+              )
+      -- X9.42 DH parameter generation frames the same FIPS
+      -- 186-4 (L, N) pair as DSA (the provider's DH paramgen
+      -- emits P+G only, no Q in any mode, so the driver runs
+      -- the DSA paramgen entry point and the (P, Q, G) triple
+      -- publishes as X9.42 DH domain parameters — the same
+      -- FIPS 186 math, the same DER DSS-Parms framing the
+      -- finisher stamps).
+      | mech == x9_42DhParameterGenMech =
+          case checkKeyTemplate ckoDomainParameters ckkX9_42Dh tmpl of
+          Left deny -> Left deny
+          Right attrs -> case dhParamSizes attrs of
             Left deny -> Left deny
             Right (l, n) -> Right
               ( PwGenerateKey (pendingFromAttrs st attrs)
@@ -2800,30 +2823,45 @@ planGenerateKey rules model st mech params tmpl =
 -- 186-4 (L, N) set the backends approve — (1024, 160), (2048,
 -- 224), (2048, 256), (3072, 256) — anything else is inconsistent,
 -- mirroring 'rsaBitsOf' (unserved keygen sizes refuse as
--- inconsistent, never silently substituted).
-dsaParamSizes :: Map AttributeType AttributeValue -> Either KeyDeny (Int, Int)
-dsaParamSizes attrs = case Map.lookup AttrPrimeBits attrs of
+-- inconsistent, never silently substituted). Shared by DSA and
+-- X9.42 DH parameter generation (the same FIPS 186 math); the
+-- label names the mechanism in refusal strings. A missing
+-- @CKA_SUBPRIME_BITS@ defaults per L for DSA (the headline
+-- sizes) but is incomplete for X9.42 DH (the oracle requires
+-- it: @test_parameter_gen_rejects_missing_subprime_bits@).
+fips186ParamSizes
+  :: String -> Bool -> Map AttributeType AttributeValue -> Either KeyDeny (Int, Int)
+fips186ParamSizes label requireSub attrs = case Map.lookup AttrPrimeBits attrs of
   Just (ValULong l)
     | l == 1024 || l == 2048 || l == 3072 -> case Map.lookup AttrSubprimeBits attrs of
-        Nothing -> Right (fromIntegral l, dflt (fromIntegral l))
+        Nothing
+          | requireSub -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+              (label ++ " parameter generation needs CKA_SUBPRIME_BITS"))
+          | otherwise -> Right (fromIntegral l, dflt (fromIntegral l))
         Just (ValULong n)
           | (fromIntegral l, fromIntegral n) `elem` served ->
               Right (fromIntegral l, fromIntegral n)
           | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-              ("DSA (L, N) pair out of range: " ++ show (l, n)))
+              (label ++ " (L, N) pair out of range: " ++ show (l, n)))
         Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-          "DSA subprime bits are malformed")
+          (label ++ " subprime bits are malformed"))
     | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-        ("DSA prime size out of range: " ++ show l))
+        (label ++ " prime size out of range: " ++ show l))
   Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-    "DSA prime bits are malformed")
+    (label ++ " prime bits are malformed"))
   Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
-    "DSA parameter generation needs CKA_PRIME_BITS")
+    (label ++ " parameter generation needs CKA_PRIME_BITS"))
   where
     served = [(1024, 160), (2048, 224), (2048, 256), (3072, 256)]
     dflt 1024 = 160
     dflt 2048 = 256
     dflt _ = 256
+
+dsaParamSizes :: Map AttributeType AttributeValue -> Either KeyDeny (Int, Int)
+dsaParamSizes = fips186ParamSizes "DSA" False
+
+dhParamSizes :: Map AttributeType AttributeValue -> Either KeyDeny (Int, Int)
+dhParamSizes = fips186ParamSizes "X9.42 DH" True
 
 -- ---------------------------------------------------------------------------
 -- Wrap and unwrap

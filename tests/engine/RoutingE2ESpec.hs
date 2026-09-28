@@ -75,6 +75,7 @@ import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
+import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.Otp (encodeHotpParams)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
@@ -121,6 +122,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: gmac KATs + refuse" caseDriverGmac
   , testCase "driver: kdf vectors + refuse" caseDriverKdf
   , testCase "driver: sp800-108 vectors + refuse" caseDriverSp800
+  , testCase "driver: tls-kdf vectors + refuse" caseDriverTlsKdf
   , testCase "driver: pbkd2 keygen vector" caseDriverPbkd2Gen
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
@@ -1606,6 +1608,72 @@ caseDriverSp800 = withBackend $ \env -> do
   case overCtr of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed sp800 counter, got: " ++ show other)
+
+-- | TLS-KDF vectors (triple-verified: independent python, the
+-- oracle reference, the provider TLS1-PRF CLI — DH legs are
+-- own vectors) plus typed refusals.
+caseDriverTlsKdf :: IO ()
+caseDriverTlsKdf = withBackend $ \env -> do
+  let pmsOid = ObjectId 82
+      dhOid = ObjectId 83
+      res oid
+        | oid == pmsOid = Just (KeyBytes (BS.pack [0 .. 47]))
+        | oid == dhOid = Just (KeyBytes (BS.pack [0 .. 31]))
+        | otherwise = Nothing
+      deriveAs oid mech params outLen =
+        runEffect env res (FxDerive mech (Just oid) params BS.empty outLen)
+          >>= expectBytes
+      cr = BS.pack [0 .. 31]
+      sr = BS.pack [32 .. 63]
+      seed64 = cr <> sr
+      sess = BS.pack [0 .. 31]
+      m10 = MechanismId 0x375
+      m10dh = MechanismId 0x377
+      m12 = MechanismId 0x3e0
+      m12dh = MechanismId 0x3e2
+      ext = MechanismId 0x56
+      extdh = MechanismId 0x57
+      kdf = MechanismId 0x3d9
+      gen = MechanismId 0x3e5
+      f10 = encodeTlsKdfParams 0 "master secret" seed64 BS.empty
+      f12 = encodeTlsKdfParams 4 "master secret" seed64 BS.empty
+      fExt = encodeTlsKdfParams 4 "extended master secret" sess BS.empty
+      fKdf = encodeTlsKdfParams 4 "key expansion" seed64 BS.empty
+      fKdfCtx = encodeTlsKdfParams 4 "key expansion" seed64 "context-info"
+      fGen = encodeTlsKdfParams 0 "key expansion" seed64 BS.empty
+  m48 <- deriveAs pmsOid m10 f10 48
+  assertEqual "tls master" (hex "539391828d1d131678646180c5bda5c9a2eb62382c8cfb9440545cae85c8c205b93e0d22161e06be1189235aefca7570") m48
+  m48dh <- deriveAs dhOid m10dh f10 48
+  assertEqual "tls master dh" (hex "38b5ba7767c6c68bb2c74a70ac3406dd204997e375684d5a190b265360fbb62202053fb60f77c4733be5a97f29b856e0") m48dh
+  t48 <- deriveAs pmsOid m12 f12 48
+  assertEqual "tls12 master" (hex "2b7cccb6d48adb8692df640b9252502fb000fd68fb2dc4b6a8cd67d870492f38e4c5dd509ba7c4863c003c07d23f9a3b") t48
+  t48dh <- deriveAs dhOid m12dh f12 48
+  assertEqual "tls12 master dh" (hex "2f759d1b14d26737622ba106d6321958f3913a545a502a34073d305f2c90fe73d184bf43c4352b4b83e1b58072a47eb8") t48dh
+  k32 <- deriveAs pmsOid kdf fKdf 32
+  assertEqual "tls12 kdf" (hex "4ac38c4d46e5ff44538c63cd6644009fd1aa1b19a81b76452615cb3f94ce61ea") k32
+  kc32 <- deriveAs pmsOid kdf fKdfCtx 32
+  assertEqual "tls12 kdf ctx" (hex "5c0125c5f281488f681349499f252df0d29934469aabc15136b0a6a78a4b39d7") kc32
+  e48 <- deriveAs pmsOid ext fExt 48
+  assertEqual "extended master" (hex "c3d5ea08b472cbb67e205711e5006647e2b8cb5f6b2a20847780122bdb78cf874a37fb5aa6ae0e3ce513256f888efa1b") e48
+  e48dh <- deriveAs dhOid extdh fExt 48
+  assertEqual "extended master dh" (hex "48cf0bec47fd85bf9c0ed067a961a5b0bae70feef18b231d32e11c6155c49959f333fa7c155d455e67cf44cd295e3f0a") e48dh
+  g32 <- deriveAs pmsOid gen fGen 32
+  assertEqual "tls kdf legacy" (hex "023d49a0cea8ad8071bf64519dc8f45bd302c1db3e33d39d1f21c548d05194aa") g32
+  -- Typed refusals: junk params, a non-empty info string, and
+  -- an over-ceiling length.
+  junk <- runEffect env res (FxDerive m10 (Just pmsOid) "junk" BS.empty 48)
+  case junk of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed tlskdf junk, got: " ++ show other)
+  withInfo <- runEffect env res (FxDerive m10 (Just pmsOid) f10 "x" 48)
+  case withInfo of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed tlskdf info, got: " ++ show other)
+  over <- runEffect env res
+    (FxDerive m10 (Just pmsOid) f10 BS.empty (maxTlsKdfOutput + 1))
+  case over of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed tlskdf length, got: " ++ show other)
 
 -- SHA-1 vectors plus hashlib\/CLI cross-checked SHA-256\/512
 -- vectors, multi-block output, truncation, SHA-KD rows, and typed
