@@ -32,11 +32,14 @@ module Haskoki.FFI.OpenSSL4.Raw
   , probe
     -- * Fetch+run helpers (owned outputs)
   , digest
+  , digestSized
   , digestInit
+  , digestInitSized
   , digestUpdate
   , digestFinal
   , digestFree
   , hmac
+  , hmacSized
   , cipherCbc
   , cipherCts
   , cipherWrap
@@ -144,8 +147,14 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_probe"
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest"
   c_digest :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
 
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_sized"
+  c_digest_sized :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_init"
   c_digest_init :: Ptr OsslLibCtx -> CString -> CString -> IO (Ptr DigestHandle)
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_init_sized"
+  c_digest_init_sized :: Ptr OsslLibCtx -> CString -> CString -> CInt -> IO (Ptr DigestHandle)
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_update"
   c_digest_update :: Ptr DigestHandle -> Ptr CUChar -> CSize -> IO CInt
@@ -161,6 +170,9 @@ foreign import ccall safe "ossl4_ctx.h &hsk_ossl4_digest_free"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_hmac"
   c_hmac :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_hmac_sized"
+  c_hmac_sized :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_cbc"
   c_cipher_cbc :: Ptr OsslLibCtx -> CString -> CString -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
@@ -384,11 +396,24 @@ digest ctx mdname propq msg =
       withBytes msg $ \(pmsg, nmsg) ->
         withOut (c_digest ctx cmd cpq pmsg nmsg)
 
+digestSized :: Ptr OsslLibCtx -> String -> String -> ByteString -> Int -> IO (Either Int ByteString)
+digestSized ctx mdname propq msg outsize =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      withBytes msg $ \(pmsg, nmsg) ->
+        withOut (c_digest_sized ctx cmd cpq pmsg nmsg (fromIntegral outsize))
+
 digestInit :: Ptr OsslLibCtx -> String -> String -> IO (Ptr DigestHandle)
 digestInit ctx mdname propq =
   withCString mdname $ \cmd ->
     withCString propq $ \cpq ->
       c_digest_init ctx cmd cpq
+
+digestInitSized :: Ptr OsslLibCtx -> String -> String -> Int -> IO (Ptr DigestHandle)
+digestInitSized ctx mdname propq outsize =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      c_digest_init_sized ctx cmd cpq (fromIntegral outsize)
 
 digestUpdate :: Ptr DigestHandle -> ByteString -> IO Int
 digestUpdate h msg =
@@ -408,6 +433,14 @@ hmac ctx mdname propq key msg =
       withBytes key $ \(pkey, nkey) ->
         withBytes msg $ \(pmsg, nmsg) ->
           withOut (c_hmac ctx cmd cpq pkey nkey pmsg nmsg)
+
+hmacSized :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> Int -> IO (Either Int ByteString)
+hmacSized ctx mdname propq key msg outsize =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      withBytes key $ \(pkey, nkey) ->
+        withBytes msg $ \(pmsg, nmsg) ->
+          withOut (c_hmac_sized ctx cmd cpq pkey nkey pmsg nmsg (fromIntegral outsize))
 
 cipherCbc :: Ptr OsslLibCtx -> String -> String -> Bool -> ByteString -> ByteString -> ByteString -> IO (Either Int ByteString)
 cipherCbc ctx ciphername propq enc key iv input =

@@ -50,6 +50,7 @@ import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
+  , ckkAes
   , ckkGenericSecret
   , ckoSecretKey
   )
@@ -103,6 +104,7 @@ spec = testGroup "KDF recipe"
   , testCase "pbkd2-params/2: password frame codec" casePbkd2GenCodec
   , testCase "PARAMS2 struct mapping" casePbkd2Params2Struct
   , testCase "planDerive: SHA-KD accept and deny" casePlanSha
+  , testCase "planDerive: BLAKE2B-KD template semantics" casePlanBlake2
   , testCase "planDerive: PBKD2 accept and deny" casePlanPbkd2
   , testCase "driver maps mechanisms to digests" caseDriverMap
   ]
@@ -126,6 +128,9 @@ shaShape =
   , ("SHA3_384_KEY_DERIVATION", "SHA3_384", 48)
   , ("SHA3_512_KEY_DERIVATION", "SHA3_512", 64)
   , ("BLAKE2B_512_KEY_DERIVE", "BLAKE2B_512", 64)
+  , ("BLAKE2B_160_KEY_DERIVE", "BLAKE2B_160", 20)
+  , ("BLAKE2B_256_KEY_DERIVE", "BLAKE2B_256", 32)
+  , ("BLAKE2B_384_KEY_DERIVE", "BLAKE2B_384", 48)
   ]
 
 mechName :: Text -> Text
@@ -133,7 +138,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 13 (length kdfRecipes)
+  assertEqual "recipe count" 16 (length kdfRecipes)
   mapM_ (\(suffix, stem, _) -> do
     let name = mechName suffix
         found = [ r | r <- kdfRecipes, rkName r == name ]
@@ -356,6 +361,71 @@ sha256Mech = MechanismId (ckm_SHA256_KEY_DERIVATION)
 sha1Mech = MechanismId (ckm_SHA1_KEY_DERIVATION)
 pbkd2Mech = MechanismId (ckm_PKCS5_PBKD2)
 
+blake2b160Mech, blake2b256Mech, blake2b384Mech, blake2b512Mech :: MechanismId
+blake2b160Mech = MechanismId (mustGeneratedId "CKM_BLAKE2B_160_KEY_DERIVE")
+blake2b256Mech = MechanismId (mustGeneratedId "CKM_BLAKE2B_256_KEY_DERIVE")
+blake2b384Mech = MechanismId (mustGeneratedId "CKM_BLAKE2B_384_KEY_DERIVE")
+blake2b512Mech = MechanismId (mustGeneratedId "CKM_BLAKE2B_512_KEY_DERIVE")
+
+-- | A default derive template: booleans only, no class, key type, or
+-- length (the lane's test_blake2 default-template shape).
+defaultTmpl :: [(AttributeType, AttributeValue)]
+defaultTmpl =
+  [ (AttrToken, ValBool False)
+  , (AttrSensitive, ValBool False)
+  , (AttrExtractable, ValBool True)
+  ]
+
+-- | A length-only template: VALUE_LEN plus booleans, no key type.
+lengthOnlyTmpl :: Int -> [(AttributeType, AttributeValue)]
+lengthOnlyTmpl n = (AttrValueLen, ValULong (fromIntegral n)) : defaultTmpl
+
+-- | A typed template naming an AES output of the given length.
+aesTmpl :: Int -> [(AttributeType, AttributeValue)]
+aesTmpl n =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong ckkAes)
+  , (AttrValueLen, ValULong (fromIntegral n))
+  , (AttrToken, ValBool False)
+  ]
+
+casePlanBlake2 :: IO ()
+casePlanBlake2 = do
+  let m = mkBaseModel "password" True
+      derive mech tmpl = planDerive defaultRules m testSession mech baseHandle
+        (encodeDeriveParams BS.empty [tmpl])
+  -- Default templates succeed at full digest width (generic secret).
+  mapM_ (\(mech, w) -> case derive mech defaultTmpl of
+    KeyEffect _ (FxDerive _ _ _ _ total) ->
+      assertEqual ("default total " ++ show mech) w total
+    other -> assertFailure ("default must plan: " ++ show other))
+    [ (blake2b160Mech, 20), (blake2b256Mech, 32)
+    , (blake2b384Mech, 48), (blake2b512Mech, 64)
+    ]
+  -- Length-only templates succeed under the width.
+  case derive blake2b512Mech (lengthOnlyTmpl 12) of
+    KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "length-only total" 12 total
+    other -> assertFailure ("length-only must plan: " ++ show other)
+  -- Overlong outputs deny KEY_SIZE_RANGE (typed and length-only).
+  expectDeny "length-only overlong" CKR_KEY_SIZE_RANGE
+    (derive blake2b512Mech (lengthOnlyTmpl 65))
+  expectDeny "typed overlong AES-256 via 160" CKR_KEY_SIZE_RANGE
+    (derive blake2b160Mech (aesTmpl 32))
+  -- A variable-length target without a length stays incomplete.
+  expectDeny "AES without length" CKR_TEMPLATE_INCOMPLETE
+    (derive blake2b256Mech
+      [ (AttrClass, ValULong ckoSecretKey)
+      , (AttrKeyType, ValULong ckkAes)
+      , (AttrToken, ValBool False)
+      ])
+  -- Zero length denies KEY_SIZE_RANGE, never silently mints empty.
+  expectDeny "length-only zero" CKR_KEY_SIZE_RANGE
+    (derive blake2b512Mech (lengthOnlyTmpl 0))
+  -- Caller-supplied CKA_VALUE in a derive template is rejected.
+  expectDeny "value injection" CKR_TEMPLATE_INCONSISTENT
+    (derive blake2b512Mech
+      (derivedTmpl 64 ++ [(AttrValue, ValBytes (BS.replicate 64 0xa5))]))
+
 expectDeny :: String -> ReturnCode -> KeyPlan -> IO ()
 expectDeny label code plan = case plan of
   KeyDenied (KeyDeny c _) -> assertEqual ("deny " ++ label) code c
@@ -379,14 +449,14 @@ casePlanSha = do
     KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "total" 32 total
     other -> assertFailure ("expected effect, got " ++ show other)
   -- Width ceiling per digest.
-  expectDeny "over sha256 width" CKR_ARGUMENTS_BAD
+  expectDeny "over sha256 width" CKR_KEY_SIZE_RANGE
     (planDerive defaultRules m testSession sha256Mech baseHandle
       (encodeDeriveParams BS.empty [derivedTmpl 33]))
   case planDerive defaultRules m testSession sha1Mech baseHandle
       (encodeDeriveParams BS.empty [derivedTmpl 20]) of
     KeyEffect _ (FxDerive _ _ _ _ total) -> assertEqual "total" 20 total
     other -> assertFailure ("expected effect, got " ++ show other)
-  expectDeny "over sha1 width" CKR_ARGUMENTS_BAD
+  expectDeny "over sha1 width" CKR_KEY_SIZE_RANGE
     (planDerive defaultRules m testSession sha1Mech baseHandle
       (encodeDeriveParams BS.empty [derivedTmpl 21]))
   -- Non-empty info denies (no parameters).

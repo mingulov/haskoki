@@ -264,6 +264,7 @@ planDerive rules model st mech baseH blob
                   -- length: the mechanism doc says VALUE_LEN "should
                   -- be set" (non-mandatory), like the ECDH default.
                   (Just hashLen)
+                  CKR_ARGUMENTS_BAD
   | Just r <- ecdhRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -291,6 +292,7 @@ planDerive rules model st mech baseH blob
                     "derived total exceeds the ECDH secret width"
                     (FxDerive mech (Just (osId ost)) ecdhBlob BS.empty)
                     (Just (ecdhSecretWidth mat))
+                    CKR_ARGUMENTS_BAD
               _ -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
                 "ECDH mechanism parameters rejected by the recipe")
   | Just r <- dhRecipeFor mech = case decodeDeriveParams blob of
@@ -314,6 +316,7 @@ planDerive rules model st mech baseH blob
                 "derived total exceeds the DH secret width"
                 (FxDerive mech (Just (osId ost)) dhBlob BS.empty)
                 (Just (dhSecretWidth mat))
+                CKR_ARGUMENTS_BAD
               _ -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
                 "DH mechanism parameters rejected by the recipe")
   | Just r <- kdfRecipeFor mech = case decodeDeriveParams blob of
@@ -337,11 +340,13 @@ planDerive rules model st mech baseH blob
               "derived total exceeds the derive ceiling"
               (FxDerive mech (Just (osId ost)) info BS.empty)
               Nothing
+              CKR_ARGUMENTS_BAD
           | otherwise -> case kdfShaWidth r of
               Just w -> finish tmpls w
                 "derived total exceeds the digest width"
                 (FxDerive mech (Just (osId ost)) BS.empty BS.empty)
-                Nothing
+                (blakeDefaultLen r w)
+                CKR_KEY_SIZE_RANGE
               Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
                 "KDF row without a digest width")
   | Just r <- tlsPrfRecipeFor mech = case decodeDeriveParams blob of
@@ -363,18 +368,19 @@ planDerive rules model st mech baseH blob
               "derived total exceeds the TLS-PRF ceiling"
               (FxDerive mech (Just (osId ost)) prfBlob BS.empty)
               Nothing
+              CKR_ARGUMENTS_BAD
   | otherwise =
       KeyDenied (KeyDeny CKR_MECHANISM_INVALID
         ("not a derive mechanism: " ++ show mech))
   where
-    finish tmpls ceilingN ceilingMsg fx defLen =
+    finish tmpls ceilingN ceilingMsg fx defLen ceilingCode =
       case checkAll defLen tmpls of
         Left deny -> KeyDenied deny
         Right keyed
           | null keyed -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
               "derive needs at least one template")
           | sum (map snd keyed) > ceilingN ->
-              KeyDenied (KeyDeny CKR_ARGUMENTS_BAD ceilingMsg)
+              KeyDenied (KeyDeny ceilingCode ceilingMsg)
           | Left deny <- admitObjects rules (Map.size (mObjects model))
               (length keyed) ->
               KeyDenied (KeyDeny (admitCode deny)
@@ -387,14 +393,34 @@ planDerive rules model st mech baseH blob
       :: Maybe Int -> [[(AttributeType, AttributeValue)]]
       -> Either KeyDeny [(Map.Map AttributeType AttributeValue, Int)]
     checkAll defLen = mapM (checkOne defLen)
+    -- | BLAKE2B-KDF rows default a missing length to the digest
+    -- width (the lane's default-template legs derive full-width
+    -- generic secrets); SHA rows keep INCOMPLETE (v3.2 SHA-KDF:
+    -- generic secrets have no well-defined length).
+    blakeDefaultLen :: KdfRecipe -> Int -> Maybe Int
+    blakeDefaultLen r w = case rkDigestStem r of
+      Just s
+        | s == "BLAKE2B_160" || s == "BLAKE2B_256"
+        || s == "BLAKE2B_384" || s == "BLAKE2B_512" -> Just w
+      _ -> Nothing
+    -- | A derive template targets a generic secret when the key
+    -- type is absent (the mechanism default) or explicitly generic.
+    targetGeneric :: [(AttributeType, AttributeValue)] -> Bool
+    targetGeneric t = case lookup AttrKeyType t of
+      Nothing -> True
+      Just (ValULong k) -> k == ckkGenericSecret
+      Just _ -> False
     checkOne
       :: Maybe Int -> [(AttributeType, AttributeValue)]
       -> Either KeyDeny (Map.Map AttributeType AttributeValue, Int)
     checkOne defLen tmpl = case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
       Left deny -> Left deny
-      Right attrs -> case Map.lookup AttrValueLen attrs of
+      Right attrs
+        | Map.member AttrValue attrs -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            "derived template must not supply CKA_VALUE")
+        | otherwise -> case Map.lookup AttrValueLen attrs of
         Just (ValULong n)
-          | n < 1 -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          | n < 1 -> Left (KeyDeny CKR_KEY_SIZE_RANGE
               "derived length must be positive")
           | n > fromIntegral (maxBound :: Int) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
               "derived length exceeds the platform range")
@@ -402,18 +428,25 @@ planDerive rules model st mech baseH blob
         Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
           "derived length is malformed")
         -- Constructions with a natural output width (ECDH: the
-        -- agreement secret) default a missing length to that width
-        -- (PKCS#11 v3.2 ECDH: "if it has one ... CKA_VALUE_LEN");
-        -- the default is stamped so readback matches an explicit
-        -- template. Open-ended PBKDF2 and SHA-KDF over generic
-        -- secrets keep INCOMPLETE (v3.2 SHA-KDF: generic secrets
-        -- have no well-defined length); HKDF defaults to the hash
-        -- length (mechanism doc: VALUE_LEN "should be set").
+        -- agreement secret; BLAKE2B-KDF: the digest width) default
+        -- a missing length to that width (PKCS#11 v3.2 ECDH: "if
+        -- it has one ... CKA_VALUE_LEN"); the default is stamped
+        -- so readback matches an explicit template. The default
+        -- covers generic-secret targets only (absent or generic
+        -- key type): an explicit variable-length target (AES)
+        -- without a length stays INCOMPLETE. Open-ended PBKDF2
+        -- and SHA-KDF over generic secrets keep INCOMPLETE
+        -- (v3.2 SHA-KDF: generic secrets have no well-defined
+        -- length); HKDF defaults to the hash length (mechanism
+        -- doc: VALUE_LEN "should be set").
         Nothing -> case defLen of
-          Just n -> Right
-            ( Map.insert AttrValueLen (ValULong (fromIntegral n)) attrs
-            , n
-            )
+          Just n
+            | targetGeneric tmpl -> Right
+                ( Map.insert AttrValueLen (ValULong (fromIntegral n)) attrs
+                , n
+                )
+            | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+                "variable-length target needs CKA_VALUE_LEN")
           Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
             "derived template needs CKA_VALUE_LEN")
 

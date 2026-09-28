@@ -343,7 +343,7 @@ checkMechParams args
         "digest operation takes empty mechanism parameters")
   | Just r <- hmacRecipeFor (iaMech args)
   , not (hmacParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "HMAC mechanism parameters rejected by the recipe")
   | Just r <- cipherRecipeFor (iaMech args)
   , not (cipherParamsValid r (iaParams args)) =

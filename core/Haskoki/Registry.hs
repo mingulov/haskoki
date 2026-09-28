@@ -574,6 +574,11 @@ dRIPEMD160 = digestDesc "CKM_RIPEMD160" allBaselines
 dBLAKE2B_512 :: Descriptor
 dBLAKE2B_512 = digestDesc "CKM_BLAKE2B_512" [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
 
+dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384 :: Descriptor
+dBLAKE2B_160 = digestDesc "CKM_BLAKE2B_160" [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
+dBLAKE2B_256 = digestDesc "CKM_BLAKE2B_256" [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
+dBLAKE2B_384 = digestDesc "CKM_BLAKE2B_384" [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
+
 -- | Baseline span for an HMAC recipe name (SHA-3 and BLAKE2B
 -- arrived in 3.0; the rest, GENERAL rows included, are 2.40).
 hmacBaselines :: MechanismName -> [Pkcs11Version]
@@ -1255,6 +1260,7 @@ curatedRegistry =
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160, dBLAKE2B_512
+        , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
           ++ cmacDescs ++ des3macDescs ++ kdfDescs ++ tlsPrfDescs ++ otpDescs

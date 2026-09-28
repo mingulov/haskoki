@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 197
+#define HASKOKI_MECH_COUNT 209
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -205,8 +205,20 @@ static const struct haskoki_mech_row
   { 0x00004008UL, 8UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_SHA512_224_KEY_GEN */
   { 0x00004009UL, 8UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_SHA512_256_KEY_GEN */
   { 0x0000400AUL, 8UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_SHA512_T_KEY_GEN */
+  { 0x0000400CUL, 0UL, 0UL, (unsigned long)(CKF_DIGEST) }, /* CKM_BLAKE2B_160 */
+  { 0x0000400DUL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_BLAKE2B_160_HMAC */
+  { 0x0000400EUL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_BLAKE2B_160_HMAC_GENERAL */
+  { 0x0000400FUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_BLAKE2B_160_KEY_DERIVE */
   { 0x00004010UL, 8UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_BLAKE2B_160_KEY_GEN */
+  { 0x00004011UL, 0UL, 0UL, (unsigned long)(CKF_DIGEST) }, /* CKM_BLAKE2B_256 */
+  { 0x00004012UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_BLAKE2B_256_HMAC */
+  { 0x00004013UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_BLAKE2B_256_HMAC_GENERAL */
+  { 0x00004014UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_BLAKE2B_256_KEY_DERIVE */
   { 0x00004015UL, 8UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_BLAKE2B_256_KEY_GEN */
+  { 0x00004016UL, 0UL, 0UL, (unsigned long)(CKF_DIGEST) }, /* CKM_BLAKE2B_384 */
+  { 0x00004017UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_BLAKE2B_384_HMAC */
+  { 0x00004018UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_BLAKE2B_384_HMAC_GENERAL */
+  { 0x00004019UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_BLAKE2B_384_KEY_DERIVE */
   { 0x0000401AUL, 8UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_BLAKE2B_384_KEY_GEN */
   { 0x0000401BUL, 0UL, 0UL, (unsigned long)(CKF_DIGEST) }, /* CKM_BLAKE2B_512 */
   { 0x0000401CUL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_BLAKE2B_512_HMAC */

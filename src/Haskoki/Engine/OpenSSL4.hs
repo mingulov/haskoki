@@ -139,7 +139,9 @@ instance CryptoBackend OpenSSL4 where
         ("XOF needs an explicit output length: " ++ show alg)))
       Just mdname -> do
         r <- withForeignPtr (osslEnv env) $ \_ ->
-          Raw.digest (osslCtx env) mdname (osslPropQ env) msg
+          case digestSizedOut alg of
+            Just nn -> Raw.digestSized (osslCtx env) mdname (osslPropQ env) msg nn
+            Nothing -> Raw.digest (osslCtx env) mdname (osslPropQ env) msg
         nativeOut "digest" r
 
   digestInit be alg = runGuarded be "digestInit" (digestSupported be alg) $ \env ->
@@ -151,7 +153,9 @@ instance CryptoBackend OpenSSL4 where
       -- leaking it, and no kill can land between the two steps.
       Just mdname -> mask_ $ do
         h <- withForeignPtr (osslEnv env) $ \_ ->
-          Raw.digestInit (osslCtx env) mdname (osslPropQ env)
+          case digestSizedOut alg of
+            Just nn -> Raw.digestInitSized (osslCtx env) mdname (osslPropQ env) nn
+            Nothing -> Raw.digestInit (osslCtx env) mdname (osslPropQ env)
         if h == nullPtr
           then do
             detail <- Raw.lastError
@@ -201,7 +205,9 @@ instance CryptoBackend OpenSSL4 where
               ("no fetch name: " ++ show alg)))
             Just mdname -> do
               r <- withForeignPtr (osslEnv env) $ \_ ->
-                Raw.hmac (osslCtx env) mdname (osslPropQ env) kb msg
+                case digestSizedOut alg of
+                  Just nn -> Raw.hmacSized (osslCtx env) mdname (osslPropQ env) kb msg nn
+                  Nothing -> Raw.hmac (osslCtx env) mdname (osslPropQ env) kb msg
               takeTag trunc <$> nativeOut "mac" r
       _ -> pure (EngineFail (BackendUnsupported "mac"
         ("non-HMAC spec: " ++ show spec)))
@@ -217,7 +223,9 @@ instance CryptoBackend OpenSSL4 where
               ("no fetch name: " ++ show alg)))
             Just mdname -> do
               r <- withForeignPtr (osslEnv env) $ \_ ->
-                Raw.hmac (osslCtx env) mdname (osslPropQ env) kb msg
+                case digestSizedOut alg of
+                  Just nn -> Raw.hmacSized (osslCtx env) mdname (osslPropQ env) kb msg nn
+                  Nothing -> Raw.hmac (osslCtx env) mdname (osslPropQ env) kb msg
               case r of
                 Left code -> nativeFail "macVerify" code
                 Right good ->
@@ -1249,6 +1257,9 @@ digestFetchName alg = case alg of
   D_SHAKE128 -> Nothing
   D_SHAKE256 -> Nothing
   D_BLAKE2B512 -> Just "BLAKE2B-512"
+  D_BLAKE2B160 -> Just "BLAKE2B-512"
+  D_BLAKE2B256 -> Just "BLAKE2B-512"
+  D_BLAKE2B384 -> Just "BLAKE2B-512"
 
 -- | The digest set: every fixed-length 'DigestAlg' with a fetch
 -- name. Candidates that fail the fetch probe are narrowed out of the
@@ -1260,6 +1271,9 @@ t16DigestAlgs =
   , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
   , D_RIPEMD160
   , D_BLAKE2B512
+  , D_BLAKE2B160
+  , D_BLAKE2B256
+  , D_BLAKE2B384
   ]
 
 -- | Slice a truncated tag off a sign answer (full tag on 'Nothing').

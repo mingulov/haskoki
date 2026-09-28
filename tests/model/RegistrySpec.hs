@@ -350,8 +350,20 @@ caseCurated = do
     , MechanismId Gen.ckm_SHA512_224_KEY_GEN
     , MechanismId Gen.ckm_SHA512_256_KEY_GEN
     , MechanismId Gen.ckm_SHA512_T_KEY_GEN
+    , MechanismId Gen.ckm_BLAKE2B_160
+    , MechanismId Gen.ckm_BLAKE2B_160_HMAC
+    , MechanismId Gen.ckm_BLAKE2B_160_HMAC_GENERAL
+    , MechanismId Gen.ckm_BLAKE2B_160_KEY_DERIVE
     , MechanismId Gen.ckm_BLAKE2B_160_KEY_GEN
+    , MechanismId Gen.ckm_BLAKE2B_256
+    , MechanismId Gen.ckm_BLAKE2B_256_HMAC
+    , MechanismId Gen.ckm_BLAKE2B_256_HMAC_GENERAL
+    , MechanismId Gen.ckm_BLAKE2B_256_KEY_DERIVE
     , MechanismId Gen.ckm_BLAKE2B_256_KEY_GEN
+    , MechanismId Gen.ckm_BLAKE2B_384
+    , MechanismId Gen.ckm_BLAKE2B_384_HMAC
+    , MechanismId Gen.ckm_BLAKE2B_384_HMAC_GENERAL
+    , MechanismId Gen.ckm_BLAKE2B_384_KEY_DERIVE
     , MechanismId Gen.ckm_BLAKE2B_384_KEY_GEN
     , MechanismId Gen.ckm_BLAKE2B_512
     , MechanismId Gen.ckm_BLAKE2B_512_HMAC
@@ -403,11 +415,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 197 behavior + 267 catalog-only + catalog line.
+  -- schema + 209 behavior + 255 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 197
+  assertEqual "behavior line count" 209
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 267
+  assertEqual "catalog-only line count" 255
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -517,13 +529,16 @@ caseAesCbcWrap = do
 caseDigestPromoted :: IO ()
 caseDigestPromoted = do
   -- The 12 new digest behaviors resolve with the digest route
-  -- and execute under caps. (SHA-256 was in the seed set.)
+  -- and execute under caps. (SHA-256 was in the seed set.) The
+  -- four BLAKE2B rows resolve the same way.
   let mids =
         [ MechanismId 0x48, MechanismId 0x4c
         , MechanismId 0x210, MechanismId 0x220, MechanismId 0x240
         , MechanismId 0x255, MechanismId 0x260, MechanismId 0x270
         , MechanismId 0x2b0, MechanismId 0x2b5
         , MechanismId 0x2c0, MechanismId 0x2d0
+        , MechanismId 0x400c, MechanismId 0x4011
+        , MechanismId 0x4016, MechanismId 0x401b
         ]
   mapM_ checkOne mids
   where
@@ -669,13 +684,14 @@ caseCmacPromoted = do
 
 caseKdfPromoted :: IO ()
 caseKdfPromoted = do
-  -- S12: the 12 KDF behaviors resolve with the derive route and
-  -- execute under caps; PBKD2 carries a second, generate-key
-  -- route over the same frame.
+  -- S12: the 16 KDF behaviors (11 SHA, 4 BLAKE2B, PBKD2)
+  -- resolve with the derive route and execute under caps; PBKD2
+  -- carries a second, generate-key route over the same frame.
   mapM_ checkOne
     ([ (MechanismId mid, [OpDerive])
      | mid <- [0x4b, 0x4f, 0x392, 0x393, 0x394, 0x395
               , 0x396, 0x397, 0x398, 0x399, 0x39a
+              , 0x400f, 0x4014, 0x4019, 0x401e
               ]
      ] ++ [(MechanismId 0x3b0, [OpDerive, OpGenerateKey])])
   where
@@ -728,7 +744,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 267 (length invIds)
+  assertEqual "guard covers every catalog row" 255 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of

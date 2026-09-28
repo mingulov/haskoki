@@ -60,7 +60,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "Digest recipe"
-  [ testCase "recipe table covers 13 mechanisms with widths" caseTable
+  [ testCase "recipe table covers 17 mechanisms with widths" caseTable
   , testCase "recipe lookup resolves by id" caseLookup
   , testCase "digest codec is no-params/1" caseCodec
   , testCase "empty params valid, non-empty refused" caseParams
@@ -85,11 +85,14 @@ groupShape =
   , ("CKM_MD5", 16, D_MD5)
   , ("CKM_RIPEMD160", 20, D_RIPEMD160)
   , ("CKM_BLAKE2B_512", 64, D_BLAKE2B512)
+  , ("CKM_BLAKE2B_160", 20, D_BLAKE2B160)
+  , ("CKM_BLAKE2B_256", 32, D_BLAKE2B256)
+  , ("CKM_BLAKE2B_384", 48, D_BLAKE2B384)
   ]
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 14 (length digestRecipes)
+  assertEqual "recipe count" 17 (length digestRecipes)
   let widthOf name =
         [ drOutLen r | r <- digestRecipes, drName r == name ]
   mapM_ (\(name, width, _alg) ->

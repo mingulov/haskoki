@@ -89,10 +89,25 @@ long hsk_ossl4_digest(OSSL_LIB_CTX *ctx, const char *mdname, const char *propq,
                       const unsigned char *msg, size_t msglen,
                       unsigned char **out);
 
+/* Sized one-shot digest: like 'hsk_ossl4_digest' but the init carries
+ * OSSL_DIGEST_PARAM_SIZE (native nn parameterization for BLAKE2b;
+ * outsize must be within 1..64). Unknown sizes or digests that
+ * reject the parameter fail NATIVE with *out untouched. */
+long hsk_ossl4_digest_sized(OSSL_LIB_CTX *ctx, const char *mdname,
+                            const char *propq, const unsigned char *msg,
+                            size_t msglen, int outsize,
+                            unsigned char **out);
+
 /* --- multipart digest ------------------------------------------------ */
 
 hsk_ossl4_md_t *hsk_ossl4_digest_init(OSSL_LIB_CTX *ctx, const char *mdname,
                                      const char *propq);
+
+/* Sized multipart init: like 'hsk_ossl4_digest_init' with the
+ * OSSL_DIGEST_PARAM_SIZE init parameter (outsize within 1..64). */
+hsk_ossl4_md_t *hsk_ossl4_digest_init_sized(OSSL_LIB_CTX *ctx,
+                                           const char *mdname,
+                                           const char *propq, int outsize);
 int hsk_ossl4_digest_update(hsk_ossl4_md_t *h, const unsigned char *msg,
                             size_t msglen);
 /* Finalizes and frees the handle; returns output length with *out set,
@@ -106,6 +121,16 @@ long hsk_ossl4_hmac(OSSL_LIB_CTX *ctx, const char *mdname, const char *propq,
                     const unsigned char *key, size_t keylen,
                     const unsigned char *msg, size_t msglen,
                     unsigned char **out);
+
+/* Sized HMAC: the RFC 2104 two-pass construction over the sized
+ * digest (EVP_MAC HMAC takes no output-size parameter, so a sized
+ * tag cannot go through it). The block size comes from the fetched
+ * digest; outsize must be within 1..64. */
+long hsk_ossl4_hmac_sized(OSSL_LIB_CTX *ctx, const char *mdname,
+                          const char *propq, const unsigned char *key,
+                          size_t keylen, const unsigned char *msg,
+                          size_t msglen, int outsize,
+                          unsigned char **out);
 
 /* --- AES-CBC without padding (input must be block-aligned) ----------- */
 

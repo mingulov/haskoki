@@ -1,6 +1,6 @@
 {- | Digest-shape recipe: the first shape-group recipe.
 
-Thirteen header mechanisms share the no-params digest shape: empty
+Seventeen header mechanisms share the no-params digest shape: empty
 mechanism parameters, one-shot plus multipart init\/update\/final,
 and a fixed output width per algorithm. This module owns the group's
 canonical codec, parameter validation, output widths, and mechanism
@@ -22,8 +22,9 @@ Deferred family members (not recipes, named gaps): @CKM_SHA512_T@
 (t-parameter codec pending, stays planned), @CKM_MD2@ and
 @CKM_RIPEMD128@ (no EVP in the pinned provider), @CKM_GOSTR3411@
 (needs an engine, no provider), @CKM_FASTHASH@ (vendor mechanism, no
-public algorithm), @CKM_BLAKE2B_*@ (output-length parameter
-semantics need the base-spec prose; see source-issues.json GAP-BLAKE2B).
+public algorithm). The @CKM_BLAKE2B_*@ widths are covered as native
+nn-parameterized BLAKE2b (the provider's @size@ context parameter;
+GAP-BLAKE2B closed: slicing is never used).
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Digest
@@ -56,14 +57,15 @@ digestCodec = ParameterCodec "no-params" 1
 digestParamsValid :: ByteString -> Bool
 digestParamsValid = BS.null
 
--- | All fourteen covered mechanisms with their output widths.
--- Only the full-width BLAKE2B-512 row is covered (the 160\/256\/384
--- widths need an output-length parameter the provider does not
--- offer, and slicing would be invented semantics — see
--- @GAP-BLAKE2B@).
+-- | All seventeen covered mechanisms with their output widths.
+-- The BLAKE2B-160\/256\/384 rows are native nn-parameterized
+-- BLAKE2b (nn = 20\/32\/48), never truncated BLAKE2b-512.
 digestRecipes :: [DigestRecipe]
 digestRecipes =
   [ DigestRecipe "CKM_BLAKE2B_512" 64
+  , DigestRecipe "CKM_BLAKE2B_160" 20
+  , DigestRecipe "CKM_BLAKE2B_256" 32
+  , DigestRecipe "CKM_BLAKE2B_384" 48
   , DigestRecipe "CKM_SHA224" 28
   , DigestRecipe "CKM_SHA256" 32
   , DigestRecipe "CKM_SHA384" 48

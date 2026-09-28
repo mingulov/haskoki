@@ -2216,6 +2216,9 @@ static hkdf_class_t hkdf_params_class(const CK_HKDF_PARAMS *hp) {
 static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   switch (mech) {
   case CKM_TLS_PRF:
+  case CKM_BLAKE2B_160_KEY_DERIVE:
+  case CKM_BLAKE2B_256_KEY_DERIVE:
+  case CKM_BLAKE2B_384_KEY_DERIVE:
   case CKM_BLAKE2B_512_KEY_DERIVE:
   case CKM_ECDH1_DERIVE:
   case CKM_ECDH1_COFACTOR_DERIVE:

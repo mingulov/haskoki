@@ -73,7 +73,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "HMAC recipe"
-  [ testCase "recipe table covers 26 mechanisms with widths" caseTable
+  [ testCase "recipe table covers 34 mechanisms with widths" caseTable
   , testCase "recipe lookup resolves by id" caseLookup
   , testCase "plain codec is no-params/1, general is mac-general/1" caseCodec
   , testCase "params: plain empty-only, general length-in-range" caseParams
@@ -101,6 +101,9 @@ groupShape =
   , ("MD5", 16, D_MD5)
   , ("RIPEMD160", 20, D_RIPEMD160)
   , ("BLAKE2B_512", 64, D_BLAKE2B512)
+  , ("BLAKE2B_160", 20, D_BLAKE2B160)
+  , ("BLAKE2B_256", 32, D_BLAKE2B256)
+  , ("BLAKE2B_384", 48, D_BLAKE2B384)
   ]
 
 plainName :: Text -> Text
@@ -111,7 +114,7 @@ generalName stem = "CKM_" <> stem <> "_HMAC_GENERAL"
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 28 (length hmacRecipes)
+  assertEqual "recipe count" 34 (length hmacRecipes)
   let find name =
         [ r | r <- hmacRecipes, hrName r == name ]
   mapM_ (\(stem, width, _alg) -> do
@@ -233,17 +236,17 @@ runInit args = ioCode (snd (initOperation testEnv emptySessionOps testSession ar
 
 caseInitParams :: IO ()
 caseInitParams = do
-  assertEqual "plain non-empty refused" CKR_ARGUMENTS_BAD
+  assertEqual "plain non-empty refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign plainMech "x" (Just badKey) Nothing Nothing))
   assertEqual "plain empty passes params" CKR_OBJECT_HANDLE_INVALID
     (runInit (InitArgs OpSign plainMech BS.empty (Just badKey) Nothing Nothing))
-  assertEqual "general empty refused" CKR_ARGUMENTS_BAD
+  assertEqual "general empty refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign generalMech BS.empty (Just badKey) Nothing Nothing))
   assertEqual "general valid passes params" CKR_OBJECT_HANDLE_INVALID
     (runInit (InitArgs OpSign generalMech (encodeMacGeneral 16) (Just badKey) Nothing Nothing))
-  assertEqual "general zero refused" CKR_ARGUMENTS_BAD
+  assertEqual "general zero refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign generalMech (encodeMacGeneral 0) (Just badKey) Nothing Nothing))
-  assertEqual "general over-width refused" CKR_ARGUMENTS_BAD
+  assertEqual "general over-width refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign generalMech (encodeMacGeneral 33) (Just badKey) Nothing Nothing))
 
 caseDriverMap :: IO ()

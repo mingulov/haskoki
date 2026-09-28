@@ -3568,7 +3568,7 @@ caseDeriveInvalidExtra = withSynth $ \answer -> do
   case planDerive defaultRules m1 st hkdfDeriveMech baseH
       (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "probe") [childTmpl 16, childTmpl 16, badLen]) of
     KeyDenied (KeyDeny code _) ->
-      assertEqual "zero length code" CKR_TEMPLATE_INCONSISTENT code
+      assertEqual "zero length code" CKR_KEY_SIZE_RANGE code
     other -> assertFailure ("bad additional template must deny, got: " ++ show other)
   -- A malformed frame denies too.
   case planDerive defaultRules m1 st hkdfDeriveMech baseH "truncated" of

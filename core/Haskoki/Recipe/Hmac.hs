@@ -1,7 +1,7 @@
 {- | HMAC-shape recipe: the second shape-group recipe.
 
-Twenty-six header mechanisms share two parameter shapes over the
-thirteen digest algorithms: plain @CKM_*_HMAC@ (empty mechanism
+Thirty-four header mechanisms share two parameter shapes over the
+seventeen digest algorithms: plain @CKM_*_HMAC@ (empty mechanism
 parameters, full-width tag) and @CKM_*_HMAC_GENERAL@
 (@CK_MAC_GENERAL_PARAMS@: the desired tag length in bytes, tag
 truncated to that length). This module owns the group's canonical
@@ -29,9 +29,7 @@ Consumers:
 * the synthetic backend's per-algorithm widths and the libcrypto
   KATs execute the widths pinned here (SyntheticSpec, OpenSSLSpec).
 
-Deferred family members (not recipes, named gaps): @CKM_BLAKE2B_*@
-(output-length parameter semantics need the base-spec prose; see
-source-issues.json GAP-BLAKE2B, shared with the digest holdouts),
+Deferred family members (not recipes, named gaps):
 @CKM_MD2_HMAC@\/@CKM_MD2_HMAC_GENERAL@ and
 @CKM_RIPEMD128_HMAC@\/@CKM_RIPEMD128_HMAC_GENERAL@ (no EVP in the
 pinned provider), @CKM_GOSTR3411_HMAC@ (needs an engine, no
@@ -111,9 +109,10 @@ hmacParamsValid r params
       Nothing -> False
   | otherwise = BS.null params
 
--- | All twenty-eight covered mechanisms with their tag widths:
--- each of the fourteen digest algorithms in plain and GENERAL
--- form (BLAKE2B-512 only — see 'Haskoki.Recipe.Digest').
+-- | All thirty-four covered mechanisms with their tag widths:
+-- each of the seventeen digest algorithms in plain and GENERAL
+-- form (the BLAKE2B-160\/256\/384 tags are native
+-- nn-parameterized HMAC, never truncated HMAC-BLAKE2b-512).
 hmacRecipes :: [HmacRecipe]
 hmacRecipes = concatMap expand stems
   where
@@ -125,6 +124,9 @@ hmacRecipes = concatMap expand stems
     stems :: [(MechanismName, Int, MechanismName)]
     stems =
       [ ("BLAKE2B_512", 64, "CKK_BLAKE2B_512_HMAC")
+      , ("BLAKE2B_160", 20, "CKK_BLAKE2B_160_HMAC")
+      , ("BLAKE2B_256", 32, "CKK_BLAKE2B_256_HMAC")
+      , ("BLAKE2B_384", 48, "CKK_BLAKE2B_384_HMAC")
       , ("SHA224", 28, "CKK_SHA224_HMAC")
       , ("SHA256", 32, "CKK_SHA256_HMAC")
       , ("SHA384", 48, "CKK_SHA384_HMAC")

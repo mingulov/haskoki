@@ -138,17 +138,18 @@
     {
       "id": "GAP-BLAKE2B",
       "title": "BLAKE2B output-length semantics need the base-spec prose",
-      "status": "open",
+      "status": "resolved",
       "sources": [
         "S-PD-32 header (CKM_BLAKE2B_160/256/384/512 identity only)",
-        "PKCS#11 base-spec BLAKE2 digest prose (NOT vendored: output-length parameter semantics)"
+        "OpenSSL 4.0.2 provider: BLAKE2b settable ctx param OSSL_DIGEST_PARAM_SIZE (native nn parameterization)",
+        "pkcs11-check test_blake2.py reference: hashlib.blake2b(digest_size=nn) + hmac.new over it (independent byte oracle)"
       ],
       "inconsistency": "The four BLAKE2B_* mechanisms name output lengths (160/256/384/512 bits), but whether each is a fixed full construction (nn = length, requiring an output-length parameter on the EVP call) or truncatable output is defined in the base-spec prose, not the headers. Slicing a full 64-byte BLAKE2b-512 output to 20 bytes would produce a DIFFERENT value than a native 20-byte parameterization, so truncation-by-slicing would be invented semantics.",
-      "affected": "CKM_BLAKE2B_160/256/384 stay planned (all columns); CKM_BLAKE2B_512 (digest, HMAC, HMAC_GENERAL, KEY_DERIVE, KEY_GEN) is served as the native full-width nn=64 construction via EVP BLAKE2b512, which carries no output-length ambiguity.",
-      "decision": "Narrowed 2026-09-27: the 512-bit row is the full construction and needs no parameterization prose. Leave 160/256/384 planned with notes; vendor the BLAKE2 base-spec prose (or a byte-locked output-length table) to close.",
+      "affected": "All four BLAKE2B widths served (digest, HMAC, HMAC_GENERAL, KEY_DERIVE, KEY_GEN): the 160/256/384 rows run the native nn=20/32/48 parameterization via OSSL_DIGEST_PARAM_SIZE (digests + KEY_DERIVE) and an RFC 2104 two-pass HMAC over the sized digest (EVP_MAC HMAC takes no size parameter). Slicing is never used.",
+      "decision": "Resolved 2026-09-27 (slice 11d): the provider exposes the output-length parameter the gap asked for, and the lane's hashlib reference independently confirms native-nn semantics byte-for-byte. No invented truncation.",
       "scope": "Digest group; blocks BLAKE2B_* behavior only.",
-      "tests": "N/A (no behavior claimed).",
-      "blocks_completeness": true
+      "tests": "OpenSSLSpec sized digest/HMAC KATs vs hashlib; RoutingE2ESpec sized driver case; RecipeKdfSpec BLAKE2B-KD template semantics; lane test_blake2.py legs.",
+      "blocks_completeness": false
     },
     {
       "id": "GAP-OTP-STATEFUL",

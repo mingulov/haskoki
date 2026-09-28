@@ -117,6 +117,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
   , testCase "driver: blake2b-512 digest/hmac/general + refuse" caseDriverBlake2b512
+  , testCase "driver: blake2b-256 digest/hmac/general + refuse" caseDriverBlake2b256
   , testCase "driver: chacha20 KAT + poly KAT + tamper + refuse" caseDriverChacha
   , testCase "driver: message cipher/sign/verify" caseDriverMessage
   , testCase "driver: recovery is honestly unsupported" caseDriverRecover
@@ -569,8 +570,35 @@ caseDriverBlake2b512 = withBackend $ \env -> do
   over <- runEffect env resolver (FxSign b2Gen (Just hmacOid)
     (encodeMacGeneral 65) hmacMsg1)
   case over of
-    GotCryptoError (CryptoFailed _) -> pure ()
-    other -> assertFailure ("expected Failed, got: " ++ show other)
+    GotCryptoError (CryptoMechParamInvalid _ _) -> pure ()
+    other -> assertFailure ("expected MechParamInvalid, got: " ++ show other)
+
+-- | BLAKE2B-256 through the driver over the sized EVP path:
+-- digest KAT, HMAC KAT (hashlib TC1), GENERAL truncation, verify
+-- verdicts, and a typed over-width refusal.
+caseDriverBlake2b256 :: IO ()
+caseDriverBlake2b256 = withBackend $ \env -> do
+  let b2Mech = MechanismId 0x4011
+      b2Hmac = MechanismId 0x4012
+      b2Gen = MechanismId 0x4013
+      kat = hex "bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319"
+      hkat = hex "b6996ecae165cdb17a02becfbf442b5dee41c5075ded9a5763185cd68bd261d0"
+  out <- runEffect env resolver (FxDigest b2Mech "abc") >>= expectBytes
+  assertEqual "blake2b-256 abc" kat out
+  tag <- runEffect env resolver (FxSign b2Hmac (Just hmacOid) BS.empty hmacMsg1)
+    >>= expectBytes
+  assertEqual "blake2b hmac TC1" hkat tag
+  good <- runEffect env resolver
+    (FxVerify b2Hmac (Just hmacOid) BS.empty hmacMsg1 tag)
+  assertEqual "valid verifies" (GotValid True) good
+  g12 <- runEffect env resolver (FxSign b2Gen (Just hmacOid)
+    (encodeMacGeneral 12) hmacMsg1) >>= expectBytes
+  assertEqual "general truncation" (BS.take 12 hkat) g12
+  over <- runEffect env resolver (FxSign b2Gen (Just hmacOid)
+    (encodeMacGeneral 33) hmacMsg1)
+  case over of
+    GotCryptoError (CryptoMechParamInvalid _ _) -> pure ()
+    other -> assertFailure ("expected MechParamInvalid, got: " ++ show other)
 
 -- | Both ChaCha20 rows through the driver over the real backend:
 -- the RFC 8439 2.4.2 stream KAT (counter in the parameter image),

@@ -1186,6 +1186,79 @@ skipped (t7692)
   (`dist-release/haskoki-0.3.0.0`, evidence
   16/16).
 
+## Round 25: BLAKE2B-sized slice 11d (fast r48→r49 + KAT r25→r26)
+
+- r49: 3960 passed / 18 failed / 605 xfailed /
+  3378 skipped (t7961)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r49-results.json`).
+  r48→r49: +161 pass / +0 fail / +14 xfail /
+  +86 skip (+261 collected: the 12 new rows'
+  shared-mech expansion).
+- Movers r48→r49 (unit `counts`, exact):
+  `test_blake2` 18/61s/6x → 85/0s/0x (the
+  slice: every leg served, zero skips, zero
+  xfails), `test_mech_negative` 182/587s/245x
+  → 220/617s/243x (B1 PARAM_INVALID flips +
+  new legs), `test_mech_flags` 614/1153s →
+  653/1222s (flag matrix over the new mechs),
+  `test_mech_digest` 53/3s → 62/6s,
+  `test_mech_multipart` 172/21s/4x →
+  178/21s/16x, `test_mech_sign`
+  157/81s/5x → 157/87s/17x (new HMAC legs;
+  xfails are P11C-005 registry-keygen
+  victims), `test_mech_derive` +3s,
+  `test_mech_probe` +36s. The 18 failures
+  are identical by id to r48 (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS
+  P11C-006). Zero pass→nonpass regressions.
+- xfail→pass flips (34, exact): the 6
+  `test_blake2` 512 legs (GENERAL invalid
+  lengths, default-template, overlong, zero,
+  value-injection), 26 registry
+  missing-required-param legs (all
+  HMAC_GENERAL widths, sign + verify — the
+  B1 bonus), plus `test_dh_key_agreement`
+  zero-length and `test_x942_dh` rfc5114
+  zero-length (the B4 shared fix).
+- The 48 new xfails are all keygen-setup
+  victims on the new widths (registry sends
+  CKK_GENERIC_SECRET per P11C-005; the
+  without_flag setup quirk matches the 512
+  pattern exactly).
+- In-slice fixes (lane-found, both
+  root-caused): the C `derive_opaque_ok`
+  allowlist missed the 3 new KEY_DERIVE
+  mechs (FUNCTION_NOT_SUPPORTED), and the
+  new `CKR_KEY_SIZE_RANGE` was mapped to
+  0x30 (DEVICE_ERROR) instead of 0x62 —
+  fixed, the full 47-entry CKR table
+  cross-checked against the vendored header
+  (0 mismatches), and a boundary-map test
+  pins 0x62.
+- r26: 82367 passed / 24 failed / 1214 xfailed /
+  30540 skipped (t114145)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r26-results.json`).
+  r25→r26: +161 pass / +0 fail / +14 xfail /
+  +86 skip (+261 collected) — exactly the fast
+  r49 delta, as predicted (no sized-BLAKE2 KAT
+  vector suites exist; ACVP/wycheproof HMAC
+  already fully pass with no sized legs).
+- Cross-lane consistency check passes at full
+  strength: the 34 xfail→pass flips and the 48
+  new xfails are ID-identical to fast r48→r49,
+  and every unit mover repeats the fast counts
+  exactly (`test_blake2` 85/0s/0x, the mech_*
+  matrix legs, the dh zero-length pair). No
+  KAT-vector unit moved. Zero pass→nonpass
+  regressions.
+- KAT residuals, all dispositioned: the 24
+  failures are identical by id to r25 (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS P11C-006 +
+  6 SLH-DSA P11C-003).
+- Bundle note: r49/r26 run on the 11d bundle
+  (`dist-release/haskoki-0.3.0.0`, evidence
+  16/16).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

@@ -37,6 +37,7 @@ module Haskoki.Engine.Backend
     -- * Parameter descriptors (explicit, no defaults-by-magic)
   , DigestAlg (..)
   , digestOutLen
+  , digestSizedOut
   , digestMacStem
   , hmacSpecCap
   , rsaSigCap
@@ -85,6 +86,7 @@ module Haskoki.Engine.Backend
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Map.Strict (Map)
+import Data.Maybe (isJust)
 import Data.Set (Set)
 
 import Haskoki.Der (coveredCurveNames, edwardsCurveNames)
@@ -165,6 +167,7 @@ data DigestAlg
   | D_SHA3_224 | D_SHA3_256 | D_SHA3_384 | D_SHA3_512
   | D_RIPEMD160 | D_SHAKE128 | D_SHAKE256
   | D_BLAKE2B512
+  | D_BLAKE2B160 | D_BLAKE2B256 | D_BLAKE2B384
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Fixed output width in bytes of a digest algorithm. 'Nothing'
@@ -189,6 +192,22 @@ digestOutLen alg = case alg of
   D_SHAKE128 -> Nothing
   D_SHAKE256 -> Nothing
   D_BLAKE2B512 -> Just 64
+  D_BLAKE2B160 -> Just 20
+  D_BLAKE2B256 -> Just 32
+  D_BLAKE2B384 -> Just 48
+
+-- | The native output-size parameter for sized digests: 'Just' nn
+-- for the nn-parameterized BLAKE2b rows (the provider's
+-- OSSL_DIGEST_PARAM_SIZE value), 'Nothing' for full-width digests
+-- (and the XOFs, which never take a fixed size). The OpenSSL4
+-- entry points branch on this: sized algorithms run the sized
+-- shim calls, never a truncated full-width digest.
+digestSizedOut :: DigestAlg -> Maybe Int
+digestSizedOut alg = case alg of
+  D_BLAKE2B160 -> Just 20
+  D_BLAKE2B256 -> Just 32
+  D_BLAKE2B384 -> Just 48
+  _ -> Nothing
 
 -- | Short MAC capability stem per digest algorithm ('Nothing' for
 -- the XOFs, which never make fixed-width tags). Both engines derive
@@ -212,6 +231,9 @@ digestMacStem alg = case alg of
   D_SHAKE128 -> Nothing
   D_SHAKE256 -> Nothing
   D_BLAKE2B512 -> Just "BLAKE2B-512"
+  D_BLAKE2B160 -> Just "BLAKE2B-160"
+  D_BLAKE2B256 -> Just "BLAKE2B-256"
+  D_BLAKE2B384 -> Just "BLAKE2B-384"
 
 -- | Capability string required by one MAC spec. 'Nothing' means the
 -- spec is never servable: a non-HMAC family, an XOF digest, or a
@@ -260,7 +282,12 @@ ecdsaSigCap (SigECDSA (EcSpec curve enc) digest)
   | curve `elem` coveredCurveNames
   , enc == "DER" || enc == "RAW" = case digest of
       Nothing -> Just ("ECDSA-" ++ curve ++ "-RAW")
-      Just alg -> (("ECDSA-" ++ curve ++ "-") ++) <$> digestMacStem alg
+      -- Sized digests are never ECDSA hash-and-sign rows: the
+      -- native ECDSA call takes no output-size parameter, so a
+      -- sized row would hash full-width behind a sized label.
+      Just alg
+        | isJust (digestSizedOut alg) -> Nothing
+        | otherwise -> (("ECDSA-" ++ curve ++ "-") ++) <$> digestMacStem alg
 ecdsaSigCap _ = Nothing
 
 -- | Capability string required by one DSA spec: @DSA-RAW@ for the

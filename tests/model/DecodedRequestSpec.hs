@@ -161,6 +161,7 @@ spec = testGroup "Decoded requests"
   , testCase "Writability is one pure admission" casePureAdmission
   , testCase "Read-only code maps everywhere" caseCodeMaps
   , testCase "Param-invalid code maps everywhere" caseParamInvalidMaps
+  , testCase "Key-size-range code maps everywhere" caseKeySizeRangeMaps
   , testCase "Read-only sessions enforce the owner dimension" caseRoRefusals
   , testCase "Session objects admitted on read-only sessions" caseRoTokenDimension
   , testCase "Read-only sessions read and compute" caseRoAllowed
@@ -727,6 +728,21 @@ caseParamInvalidMaps = do
   assertEqual "denial category"
     (StepDeny CKR_MECHANISM_PARAM_INVALID (DenyBadParams "w"))
     (mkDeny CKR_MECHANISM_PARAM_INVALID "w")
+
+-- | The key-size-range code maps identically at every boundary:
+-- the C value (locked header @CKR_KEY_SIZE_RANGE = 0x62@), the
+-- stored document name, and the denial category (range, like the
+-- data-length code).
+caseKeySizeRangeMaps :: IO ()
+caseKeySizeRangeMaps = do
+  assertEqual "C value" 0x62 (returnCodeToRV CKR_KEY_SIZE_RANGE)
+  assertEqual "stored name" "CKR_KEY_SIZE_RANGE"
+    (encodeReturnCode CKR_KEY_SIZE_RANGE)
+  assertEqual "stored round-trip" (Just CKR_KEY_SIZE_RANGE)
+    (decodeReturnCode "CKR_KEY_SIZE_RANGE")
+  assertEqual "denial category"
+    (StepDeny CKR_KEY_SIZE_RANGE (DenyRange "w"))
+    (mkDeny CKR_KEY_SIZE_RANGE "w")
 
 -- | Read-only sessions enforce the owner dimension through the C
 -- adapter (§5.7.1-5.7.3): session-object create, copy,

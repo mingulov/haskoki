@@ -232,6 +232,55 @@ end:
     return rc;
 }
 
+/* --- sized one-shot digest ------------------------------------------- */
+
+long hsk_ossl4_digest_sized(OSSL_LIB_CTX *ctx, const char *mdname,
+                            const char *propq, const unsigned char *msg,
+                            size_t msglen, int outsize,
+                            unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_MD *md = NULL;
+    EVP_MD_CTX *mctx = NULL;
+    OSSL_PARAM params[2];
+    unsigned char *buf = NULL;
+    unsigned int outlen = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || mdname == NULL || propq == NULL || out == NULL ||
+        (msg == NULL && msglen > 0) || outsize < 1 || outsize > 64)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    md = EVP_MD_fetch(ctx, mdname, propq);
+    if (md == NULL)
+        goto end;
+    mctx = EVP_MD_CTX_new();
+    if (mctx == NULL)
+        goto end;
+    params[0] = OSSL_PARAM_construct_int(OSSL_DIGEST_PARAM_SIZE, &outsize);
+    params[1] = OSSL_PARAM_construct_end();
+    if (!EVP_DigestInit_ex2(mctx, md, params))
+        goto end;
+    if (msglen > 0 && !EVP_DigestUpdate(mctx, msg, msglen))
+        goto end;
+    buf = OPENSSL_malloc(EVP_MAX_MD_SIZE);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (!EVP_DigestFinal_ex(mctx, buf, &outlen)) {
+        OPENSSL_clear_free(buf, EVP_MAX_MD_SIZE);
+        goto end;
+    }
+    *out = buf;
+    rc = (long)outlen;
+
+end:
+    EVP_MD_CTX_free(mctx);
+    EVP_MD_free(md);
+    return rc;
+}
+
 /* --- multipart digest ------------------------------------------------ */
 
 hsk_ossl4_md_t *hsk_ossl4_digest_init(OSSL_LIB_CTX *ctx, const char *mdname,
@@ -252,6 +301,38 @@ hsk_ossl4_md_t *hsk_ossl4_digest_init(OSSL_LIB_CTX *ctx, const char *mdname,
     if (h->mctx == NULL)
         goto fail;
     if (!EVP_DigestInit_ex2(h->mctx, h->md, NULL))
+        goto fail;
+    return h;
+fail:
+    EVP_MD_CTX_free(h->mctx);
+    EVP_MD_free(h->md);
+    OPENSSL_free(h);
+    return NULL;
+}
+
+hsk_ossl4_md_t *hsk_ossl4_digest_init_sized(OSSL_LIB_CTX *ctx,
+                                           const char *mdname,
+                                           const char *propq, int outsize)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    hsk_ossl4_md_t *h = NULL;
+    OSSL_PARAM params[2];
+    if (ctx == NULL || mdname == NULL || propq == NULL ||
+        outsize < 1 || outsize > 64)
+        return NULL;
+    h = OPENSSL_malloc(sizeof(*h));
+    if (h == NULL)
+        return NULL;
+    h->mctx = NULL;
+    h->md = EVP_MD_fetch(ctx, mdname, propq);
+    if (h->md == NULL)
+        goto fail;
+    h->mctx = EVP_MD_CTX_new();
+    if (h->mctx == NULL)
+        goto fail;
+    params[0] = OSSL_PARAM_construct_int(OSSL_DIGEST_PARAM_SIZE, &outsize);
+    params[1] = OSSL_PARAM_construct_end();
+    if (!EVP_DigestInit_ex2(h->mctx, h->md, params))
         goto fail;
     return h;
 fail:
@@ -353,6 +434,113 @@ long hsk_ossl4_hmac(OSSL_LIB_CTX *ctx, const char *mdname, const char *propq,
 end:
     EVP_MAC_CTX_free(mctx);
     EVP_MAC_free(mac);
+    return rc;
+}
+
+/* --- sized HMAC (RFC 2104 two-pass over the sized digest) ------------ */
+
+/* One sized digest over two parts; returns 1 on success. */
+static int sized_digest_2(EVP_MD *md, int outsize,
+                          const unsigned char *a, size_t alen,
+                          const unsigned char *b, size_t blen,
+                          unsigned char *out, unsigned int *outlen)
+{
+    EVP_MD_CTX *mctx = NULL;
+    OSSL_PARAM params[2];
+    int ok = 0;
+    mctx = EVP_MD_CTX_new();
+    if (mctx == NULL)
+        return 0;
+    params[0] = OSSL_PARAM_construct_int(OSSL_DIGEST_PARAM_SIZE, &outsize);
+    params[1] = OSSL_PARAM_construct_end();
+    if (!EVP_DigestInit_ex2(mctx, md, params))
+        goto end;
+    if (alen > 0 && !EVP_DigestUpdate(mctx, a, alen))
+        goto end;
+    if (blen > 0 && !EVP_DigestUpdate(mctx, b, blen))
+        goto end;
+    if (!EVP_DigestFinal_ex(mctx, out, outlen))
+        goto end;
+    ok = 1;
+end:
+    EVP_MD_CTX_free(mctx);
+    return ok;
+}
+
+long hsk_ossl4_hmac_sized(OSSL_LIB_CTX *ctx, const char *mdname,
+                          const char *propq, const unsigned char *key,
+                          size_t keylen, const unsigned char *msg,
+                          size_t msglen, int outsize,
+                          unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_MD *md = NULL;
+    unsigned char *kbuf = NULL, *pad = NULL, *buf = NULL;
+    unsigned char inner[EVP_MAX_MD_SIZE];
+    unsigned int innerlen = 0, outlen = 0;
+    int block = 0;
+    size_t i;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || mdname == NULL || propq == NULL || out == NULL ||
+        (key == NULL && keylen > 0) || (msg == NULL && msglen > 0) ||
+        outsize < 1 || outsize > 64)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    md = EVP_MD_fetch(ctx, mdname, propq);
+    if (md == NULL)
+        goto end;
+    block = EVP_MD_get_block_size(md);
+    if (block <= 0 || block > 1024)
+        goto end;
+    kbuf = OPENSSL_malloc((size_t)block);
+    pad = OPENSSL_malloc((size_t)block);
+    if (kbuf == NULL || pad == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    memset(kbuf, 0, (size_t)block);
+    if (keylen > (size_t)block) {
+        unsigned int hashed = 0;
+        unsigned char kh[EVP_MAX_MD_SIZE];
+        if (!sized_digest_2(md, outsize, key, keylen, NULL, 0, kh, &hashed))
+            goto end;
+        if (hashed > (unsigned int)block)
+            goto end;
+        memcpy(kbuf, kh, hashed);
+        OPENSSL_cleanse(kh, sizeof(kh));
+    } else if (keylen > 0) {
+        memcpy(kbuf, key, keylen);
+    }
+    /* Inner pass: digest(ipad || msg). */
+    for (i = 0; i < (size_t)block; i++)
+        pad[i] = (unsigned char)(kbuf[i] ^ 0x36);
+    if (!sized_digest_2(md, outsize, pad, (size_t)block,
+                        msg, msglen, inner, &innerlen))
+        goto end;
+    /* Outer pass: digest(opad || inner). */
+    for (i = 0; i < (size_t)block; i++)
+        pad[i] = (unsigned char)(kbuf[i] ^ 0x5c);
+    buf = OPENSSL_malloc(EVP_MAX_MD_SIZE);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (!sized_digest_2(md, outsize, pad, (size_t)block,
+                        inner, innerlen, buf, &outlen)) {
+        OPENSSL_clear_free(buf, EVP_MAX_MD_SIZE);
+        goto end;
+    }
+    *out = buf;
+    rc = (long)outlen;
+
+end:
+    if (kbuf != NULL)
+        OPENSSL_clear_free(kbuf, block > 0 ? (size_t)block : 0);
+    if (pad != NULL)
+        OPENSSL_clear_free(pad, block > 0 ? (size_t)block : 0);
+    OPENSSL_cleanse(inner, sizeof(inner));
+    EVP_MD_free(md);
     return rc;
 }
 

@@ -124,6 +124,7 @@ detailFor code why = case code of
   CKR_CRYPTOKI_ALREADY_INITIALIZED -> DenyOpState why
   CKR_STATE_UNSAVEABLE -> DenyOpState why
   CKR_SAVED_STATE_INVALID -> DenyOpState why
+  CKR_KEY_SIZE_RANGE -> DenyRange why
   CKR_DATA_LEN_RANGE -> DenyRange why
   CKR_ENCRYPTED_DATA_LEN_RANGE -> DenyRange why
   CKR_BUFFER_TOO_SMALL -> DenyRange why

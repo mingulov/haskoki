@@ -357,6 +357,7 @@ caseDigestStreamAll = withSynth "11" $ \env -> do
     , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
     , D_RIPEMD160
     , D_BLAKE2B512
+    , D_BLAKE2B160, D_BLAKE2B256, D_BLAKE2B384
     ]
   where
     check env full a b alg = do
@@ -377,6 +378,7 @@ caseDigestWidths = withSynth "11" $ \env -> do
         , (D_SHA3_224, 28), (D_SHA3_256, 32), (D_SHA3_384, 48), (D_SHA3_512, 64)
         , (D_MD5, 16), (D_SHA1, 20), (D_RIPEMD160, 20)
         , (D_BLAKE2B512, 64)
+        , (D_BLAKE2B160, 20), (D_BLAKE2B256, 32), (D_BLAKE2B384, 48)
         ]
   outs <- mapM (\(alg, w) -> do
     d <- expectOk ("digest " ++ show alg) =<< digestOneShot env alg "abc"
@@ -400,6 +402,7 @@ caseMultipartAlg = withSynth "11" $ \env -> do
     , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
     , D_RIPEMD160
     , D_BLAKE2B512
+    , D_BLAKE2B160, D_BLAKE2B256, D_BLAKE2B384
     ]
   where
     checkAlg e alg = do
@@ -434,6 +437,7 @@ hmacWidths =
   , (D_SHA3_224, 28), (D_SHA3_256, 32), (D_SHA3_384, 48), (D_SHA3_512, 64)
   , (D_MD5, 16), (D_SHA1, 20), (D_RIPEMD160, 20)
   , (D_BLAKE2B512, 64)
+  , (D_BLAKE2B160, 20), (D_BLAKE2B256, 32), (D_BLAKE2B384, 48)
   ]
 
 caseHmacWidths :: IO ()
@@ -939,6 +943,9 @@ caseCapsFull = withSynth "11" $ \env -> do
     , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
     , D_RIPEMD160
     , D_BLAKE2B512
+    , D_BLAKE2B160
+    , D_BLAKE2B256
+    , D_BLAKE2B384
     ]) (dcAlgs (bcDigests caps))
   assertBool "multipart digest" (dcMultipart (bcDigests caps))
   assertBool "no xof" (not (dcXof (bcDigests caps)))
@@ -973,6 +980,7 @@ caseCapsFull = withSynth "11" $ \env -> do
     , "HMAC-SHA3-224", "HMAC-SHA3-256", "HMAC-SHA3-384", "HMAC-SHA3-512"
     , "HMAC-RIPEMD160"
     , "HMAC-BLAKE2B-512"
+    , "HMAC-BLAKE2B-160", "HMAC-BLAKE2B-256", "HMAC-BLAKE2B-384"
     , "HMAC-MD5-GENERAL", "HMAC-SHA1-GENERAL"
     , "HMAC-SHA224-GENERAL", "HMAC-SHA256-GENERAL"
     , "HMAC-SHA384-GENERAL", "HMAC-SHA512-GENERAL"
@@ -981,6 +989,7 @@ caseCapsFull = withSynth "11" $ \env -> do
     , "HMAC-SHA3-384-GENERAL", "HMAC-SHA3-512-GENERAL"
     , "HMAC-RIPEMD160-GENERAL"
     , "HMAC-BLAKE2B-512-GENERAL"
+    , "HMAC-BLAKE2B-160-GENERAL", "HMAC-BLAKE2B-256-GENERAL", "HMAC-BLAKE2B-384-GENERAL"
     ]) (mcSpecs (bcMacs caps))
   assertBool "ecdsa-p256-sha256 advertised"
     (Set.member "ECDSA-P-256-SHA256" (scSpecs (bcSigs caps)))

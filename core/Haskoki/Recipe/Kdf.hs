@@ -1,8 +1,9 @@
 {- | KDF recipe: the tenth shape-group recipe.
 
-Twelve header mechanisms share the derive shape — eleven
-@CKM_SHA*_KEY_DERIVATION@ rows (hash the base value, truncate to
-the digest width; empty parameters, @no-params\/1@) plus
+Sixteen header mechanisms share the derive shape — eleven
+@CKM_SHA*_KEY_DERIVATION@ rows and four @CKM_BLAKE2B_*_KEY_DERIVE@
+rows (hash the base value, truncate to the digest width; empty
+parameters, @no-params\/1@) plus
 @CKM_PKCS5_PBKD2@ (@pbkd2-params\/2@: @prf:u64be
 iters:u64be saltLen:u64be salt pwdLen:u64be pwd@). The PBKD2 PRF
 is any servable HMAC (engine-local codes 1..13 over the
@@ -193,6 +194,9 @@ kdfParamsValid r params
 kdfShaWidth :: KdfRecipe -> Maybe Int
 kdfShaWidth r = case rkDigestStem r of
   Just "BLAKE2B_512" -> Just 64
+  Just "BLAKE2B_160" -> Just 20
+  Just "BLAKE2B_256" -> Just 32
+  Just "BLAKE2B_384" -> Just 48
   Just "SHA_1" -> Just 20
   Just "SHA224" -> Just 28
   Just "SHA256" -> Just 32
@@ -206,11 +210,14 @@ kdfShaWidth r = case rkDigestStem r of
   Just "SHA3_512" -> Just 64
   _ -> Nothing
 
--- | All thirteen covered mechanisms (eleven SHA rows, one
--- BLAKE2B-512 row, PBKD2).
+-- | All sixteen covered mechanisms (eleven SHA rows, four
+-- BLAKE2B rows, PBKD2).
 kdfRecipes :: [KdfRecipe]
 kdfRecipes =
   [ KdfRecipe "CKM_BLAKE2B_512_KEY_DERIVE" False (Just "BLAKE2B_512")
+  , KdfRecipe "CKM_BLAKE2B_160_KEY_DERIVE" False (Just "BLAKE2B_160")
+  , KdfRecipe "CKM_BLAKE2B_256_KEY_DERIVE" False (Just "BLAKE2B_256")
+  , KdfRecipe "CKM_BLAKE2B_384_KEY_DERIVE" False (Just "BLAKE2B_384")
   , KdfRecipe "CKM_SHA1_KEY_DERIVATION" False (Just "SHA_1")
   , KdfRecipe "CKM_SHA224_KEY_DERIVATION" False (Just "SHA224")
   , KdfRecipe "CKM_SHA256_KEY_DERIVATION" False (Just "SHA256")

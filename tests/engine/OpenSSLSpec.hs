@@ -1245,6 +1245,9 @@ digestKats =
   , (D_SHA3_512, "FIPS202", hex "b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0")
   , (D_RIPEMD160, "RIPEMD160", hex "8eb208f7e05d987a9b044a8e98c6b087f15a0bfc")
   , (D_BLAKE2B512, "RFC7693", hex "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923")
+  , (D_BLAKE2B160, "hashlib-nn20", hex "384264f676f39536840523f284921cdc68b6846b")
+  , (D_BLAKE2B256, "hashlib-nn32", hex "bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319")
+  , (D_BLAKE2B384, "hashlib-nn48", hex "6f56a82c8e7ef526dfe182eb5212f7db9df1317e57815dbda46083fc30f54ee6c66ba83be64b302d7cba6ce15bb556f4")
   ]
 
 caseDigestKats :: IO ()
@@ -1266,6 +1269,9 @@ caseSha384Multipart = withBackend $ \env -> do
     , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
     , D_RIPEMD160
     , D_BLAKE2B512
+    , D_BLAKE2B160
+    , D_BLAKE2B256
+    , D_BLAKE2B384
     ]
   where
     checkAlg e alg = do
@@ -1315,6 +1321,9 @@ hmacKats =
   , (D_SHA3_512, "hashlib", hex "eb3fbd4b2eaab8f5c504bd3a41465aacec15770a7cabac531e482f860b5ec7ba47ccb2c6f2afce8f88d22b6dc61380f23a668fd3888bb80537c0a0b86407689e")
   , (D_RIPEMD160, "hashlib", hex "24cb4bd67d20fc1a5d2ed7732dcc39377f0a5668")
   , (D_BLAKE2B512, "CLI-TC1", hex "358a6a184924894fc34bee5680eedf57d84a37bb38832f288e3b27dc63a98cc8c91e76da476b508bc6b2d408a248857452906e4a20b48c6b4b55d2df0fe1dd24")
+  , (D_BLAKE2B160, "hashlib-TC1-nn20", hex "8e52620843a0942dc68ff03ef437d379a361175e")
+  , (D_BLAKE2B256, "hashlib-TC1-nn32", hex "b6996ecae165cdb17a02becfbf442b5dee41c5075ded9a5763185cd68bd261d0")
+  , (D_BLAKE2B384, "hashlib-TC1-nn48", hex "948364b074f4739bb1be6e7f8c918405f1f06c7a18a125534618269d57e337b67750ba54bd3d6456a59b6b9bb39a7601")
   ]
 
 caseHmacKats :: IO ()
@@ -1340,6 +1349,9 @@ caseHmacGeneral = withBackend $ \env -> do
   b2full <- expectOk "full blake2b512" =<< macSign env (MacHMAC D_BLAKE2B512 Nothing) key hmacMsg1
   b2t32 <- expectOk "truncated blake2b512" =<< macSign env (MacHMAC D_BLAKE2B512 (Just 32)) key hmacMsg1
   assertEqual "blake2b truncation slices the KAT" (BS.take 32 b2full) b2t32
+  s2full <- expectOk "full blake2b256" =<< macSign env (MacHMAC D_BLAKE2B256 Nothing) key hmacMsg1
+  s2t12 <- expectOk "truncated blake2b256" =<< macSign env (MacHMAC D_BLAKE2B256 (Just 12)) key hmacMsg1
+  assertEqual "sized truncation slices the KAT" (BS.take 12 s2full) s2t12
   -- Out-of-range lengths refuse without fallback.
   expectUnsupported "zero refused" =<< macSign env (MacHMAC D_SHA256 (Just 0)) key hmacMsg1
   expectUnsupported "over-width refused" =<< macSign env (MacHMAC D_SHA256 (Just 33)) key hmacMsg1
@@ -4498,6 +4510,9 @@ caseCaps = withBackend $ \env -> do
     , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
     , D_RIPEMD160
     , D_BLAKE2B512
+    , D_BLAKE2B160
+    , D_BLAKE2B256
+    , D_BLAKE2B384
     ]) (dcAlgs (bcDigests caps))
   assertEqual "cipher set" (Set.fromList
     [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
@@ -4530,6 +4545,7 @@ caseCaps = withBackend $ \env -> do
     , "HMAC-SHA3-224", "HMAC-SHA3-256", "HMAC-SHA3-384", "HMAC-SHA3-512"
     , "HMAC-RIPEMD160"
     , "HMAC-BLAKE2B-512"
+    , "HMAC-BLAKE2B-160", "HMAC-BLAKE2B-256", "HMAC-BLAKE2B-384"
     , "HMAC-MD5-GENERAL", "HMAC-SHA1-GENERAL"
     , "HMAC-SHA224-GENERAL", "HMAC-SHA256-GENERAL"
     , "HMAC-SHA384-GENERAL", "HMAC-SHA512-GENERAL"
@@ -4538,6 +4554,7 @@ caseCaps = withBackend $ \env -> do
     , "HMAC-SHA3-384-GENERAL", "HMAC-SHA3-512-GENERAL"
     , "HMAC-RIPEMD160-GENERAL"
     , "HMAC-BLAKE2B-512-GENERAL"
+    , "HMAC-BLAKE2B-160-GENERAL", "HMAC-BLAKE2B-256-GENERAL", "HMAC-BLAKE2B-384-GENERAL"
     ]) (mcSpecs (bcMacs caps))
   assertBool "ecdsa-p256-sha256 advertised"
     (Set.member "ECDSA-P-256-SHA256" (scSpecs (bcSigs caps)))

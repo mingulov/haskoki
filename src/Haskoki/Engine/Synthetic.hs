@@ -164,6 +164,9 @@ synthDigestLengthFor alg = case alg of
   D_SHAKE128 -> 32
   D_SHAKE256 -> 64
   D_BLAKE2B512 -> 64
+  D_BLAKE2B160 -> 20
+  D_BLAKE2B256 -> 32
+  D_BLAKE2B384 -> 48
 
 -- | Synthetic MAC output length (bytes).
 synthMacLength :: Int
@@ -795,6 +798,9 @@ synthCaps = BackendCaps
           , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
           , D_RIPEMD160
           , D_BLAKE2B512
+          , D_BLAKE2B160
+          , D_BLAKE2B256
+          , D_BLAKE2B384
           ]
       , dcMultipart = True, dcXof = False }
   , bcCiphers = CipherCaps
@@ -871,6 +877,9 @@ synthEcdsaSpecNames =
       , D_SHA3_224, D_SHA3_256, D_SHA3_384, D_SHA3_512
       , D_RIPEMD160
       , D_BLAKE2B512
+      , D_BLAKE2B160
+      , D_BLAKE2B256
+      , D_BLAKE2B384
       ]
 
 -- | The DSA digest set: exactly the recipe's nine (same names as
@@ -1535,6 +1544,9 @@ digestAlgByte alg = case alg of
   D_SHAKE128 -> 14
   D_SHAKE256 -> 15
   D_BLAKE2B512 -> 16
+  D_BLAKE2B160 -> 17
+  D_BLAKE2B256 -> 18
+  D_BLAKE2B384 -> 19
 
 digestAlgFromByte :: Word8 -> Maybe DigestAlg
 digestAlgFromByte b = case b of
@@ -1554,6 +1566,9 @@ digestAlgFromByte b = case b of
   14 -> Just D_SHAKE128
   15 -> Just D_SHAKE256
   16 -> Just D_BLAKE2B512
+  17 -> Just D_BLAKE2B160
+  18 -> Just D_BLAKE2B256
+  19 -> Just D_BLAKE2B384
   _ -> Nothing
 
 -- | Guard-then-run: the capability check answers FIRST (even on a
@@ -1837,3 +1852,6 @@ classDigest alg input = prfBytes
     encodeAlg D_SHAKE128 = "SHAKE128"
     encodeAlg D_SHAKE256 = "SHAKE256"
     encodeAlg D_BLAKE2B512 = "BLAKE2B-512"
+    encodeAlg D_BLAKE2B160 = "BLAKE2B-160"
+    encodeAlg D_BLAKE2B256 = "BLAKE2B-256"
+    encodeAlg D_BLAKE2B384 = "BLAKE2B-384"

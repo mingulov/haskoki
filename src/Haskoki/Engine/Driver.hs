@@ -375,7 +375,10 @@ import Haskoki.Recipe.TlsPrf
   )
 import Haskoki.Registry (MechanismId (..), MechanismName)
 import Haskoki.Registry.Generated
-  ( ckm_BLAKE2B_512
+  ( ckm_BLAKE2B_160
+  , ckm_BLAKE2B_256
+  , ckm_BLAKE2B_384
+  , ckm_BLAKE2B_512
   , ckm_MD5
   , ckm_RIPEMD160
   , ckm_SHA224
@@ -399,6 +402,9 @@ import qualified Haskoki.Outcome as O
 digestAlgFor :: MechanismId -> Maybe DigestAlg
 digestAlgFor mech
   | mech == MechanismId (ckm_BLAKE2B_512) = Just D_BLAKE2B512
+  | mech == MechanismId (ckm_BLAKE2B_160) = Just D_BLAKE2B160
+  | mech == MechanismId (ckm_BLAKE2B_256) = Just D_BLAKE2B256
+  | mech == MechanismId (ckm_BLAKE2B_384) = Just D_BLAKE2B384
   | mech == MechanismId (ckm_SHA224) = Just D_SHA224
   | mech == MechanismId (ckm_SHA256) = Just D_SHA256
   | mech == MechanismId (ckm_SHA384) = Just D_SHA384
@@ -598,6 +604,9 @@ hmacDigest name
     stemAlg :: MechanismName -> Maybe DigestAlg
     stemAlg stem
       | stem == "CKM_BLAKE2B_512" = Just D_BLAKE2B512
+      | stem == "CKM_BLAKE2B_160" = Just D_BLAKE2B160
+      | stem == "CKM_BLAKE2B_256" = Just D_BLAKE2B256
+      | stem == "CKM_BLAKE2B_384" = Just D_BLAKE2B384
       | stem == "CKM_SHA224" = Just D_SHA224
       | stem == "CKM_SHA256" = Just D_SHA256
       | stem == "CKM_SHA384" = Just D_SHA384
@@ -863,6 +872,9 @@ isAesKwWrapMech mech =
 rsaDigest :: T.Text -> Maybe DigestAlg
 rsaDigest stem
   | stem == "BLAKE2B_512" = Just D_BLAKE2B512
+  | stem == "BLAKE2B_160" = Just D_BLAKE2B160
+  | stem == "BLAKE2B_256" = Just D_BLAKE2B256
+  | stem == "BLAKE2B_384" = Just D_BLAKE2B384
   | stem == "MD5" = Just D_MD5
   | stem == "RIPEMD160" = Just D_RIPEMD160
   | stem == "SHA_1" = Just D_SHA1
@@ -1200,7 +1212,7 @@ runEffect env resolve fx = case fx of
   FxSign mech mkey params input
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
         toBytes <$> macSign env spec key input
-    | isHmacMech mech -> pure (GotCryptoError (CryptoFailed
+    | isHmacMech mech -> pure (GotCryptoError (CryptoMechParamInvalid "hmac"
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
     | isCmacMech mech -> withKey mkey $ \key ->
         runCmacSign mech params key input
@@ -1244,7 +1256,7 @@ runEffect env resolve fx = case fx of
   FxVerify mech mkey params input sig
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
         toVerifyBool <$> macVerify env spec key input sig
-    | isHmacMech mech -> pure (GotCryptoError (CryptoFailed
+    | isHmacMech mech -> pure (GotCryptoError (CryptoMechParamInvalid "hmac"
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
     | isCmacMech mech -> withKey mkey $ \key ->
         runCmacVerify mech params key input sig
@@ -1315,7 +1327,7 @@ runEffect env resolve fx = case fx of
   FxMessageSign mech mkey params input
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
         toBytes <$> macSign env spec key input
-    | isHmacMech mech -> pure (GotCryptoError (CryptoFailed
+    | isHmacMech mech -> pure (GotCryptoError (CryptoMechParamInvalid "hmac"
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
     | isCmacMech mech -> withKey mkey $ \key ->
         runCmacSign mech params key input
@@ -1359,7 +1371,7 @@ runEffect env resolve fx = case fx of
   FxMessageVerify mech mkey params input sig
     | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
         toVerifyBool <$> macVerify env spec key input sig
-    | isHmacMech mech -> pure (GotCryptoError (CryptoFailed
+    | isHmacMech mech -> pure (GotCryptoError (CryptoMechParamInvalid "hmac"
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
     | isCmacMech mech -> withKey mkey $ \key ->
         runCmacVerify mech params key input sig

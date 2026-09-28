@@ -1314,7 +1314,7 @@ int main(int argc, char **argv) {
     CHECKC(rv == CKR_OK, "HMAC-GENERAL verify ok");
     gm.ulParameterLen = 0;
     rv = f->C_SignInit(ssess, &gm, hmkey);
-    CHECKC(rv == CKR_ARGUMENTS_BAD, "HMAC-GENERAL empty params refused");
+    CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "HMAC-GENERAL empty params refused");
     /* DSA: paramgen(1024) -> keypair -> sign/verify + raw floor. */
     {
       CK_OBJECT_CLASS dpcls = CKO_DOMAIN_PARAMETERS;
