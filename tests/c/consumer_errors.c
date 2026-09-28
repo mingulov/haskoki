@@ -27,6 +27,12 @@
  *     own forwarding behavior, so these pins assert our module's
  *     contract and stay out of the parity transcript (crypto: /
  *     invent: scoped, isProxy-gated).
+ *   - C_OpenSession accepts a non-NULL Notify (no
+ *     callback-refusal code exists in the spec return list);
+ *     the session is usable and the callback never fires
+ *     (the module generates no notification events) —
+ *     direct-only (a function pointer cannot cross the
+ *     proxy).
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
  * libhaskoki shared module and drives it through the pinned 3.2
@@ -109,6 +115,21 @@ static int g_failures = 0;
 
 static char g_cfg_path[256];
 
+/* Session-notification probe: the module accepts a non-NULL
+ * Notify (no callback-refusal code exists in the C_OpenSession
+ * return list) but generates no notification events, so this
+ * must never fire. */
+static int g_notify_calls = 0;
+
+static CK_RV err_notify_cb(CK_SESSION_HANDLE hSession, CK_NOTIFICATION event,
+                           CK_VOID_PTR pApplication) {
+  (void)hSession;
+  (void)event;
+  (void)pApplication;
+  g_notify_calls++;
+  return CKR_OK;
+}
+
 static void write_config(void) {
   static const char body[] = "schema_version = 1\n"
                              "profile = \"real-crypto\"\n"
@@ -159,6 +180,35 @@ static void write_config(void) {
     bogus.ulParameterLen = 0;                                              \
     prv = open_session_on((T), &sess);                                     \
     CHECKC(prv == CKR_OK && sess != 0, "%s: session opens", tag);            \
+    /* Notify acceptance (direct-only: a function pointer cannot */         \
+    /* cross the proxy). A supplied callback opens OK and the */            \
+    /* session is usable; the callback never fires (the module */           \
+    /* generates no notification events). */                                \
+    if (!isProxy) {                                                        \
+      CK_SESSION_HANDLE nsess = 0;                                         \
+      CK_SESSION_INFO ninfo;                                               \
+      g_notify_calls = 0;                                                  \
+      prv = (T)->C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION,     \
+                               &g_notify_calls, err_notify_cb, &nsess);    \
+      if (prv == CKR_SLOT_ID_INVALID) {                                    \
+        CK_SLOT_ID nsl[8];                                                 \
+        CK_ULONG npn = 8;                                                  \
+        if ((T)->C_GetSlotList(0, nsl, &npn) == CKR_OK && npn >= 1) {       \
+          prv = (T)->C_OpenSession(nsl[0],                                \
+                                   CKF_SERIAL_SESSION | CKF_RW_SESSION,    \
+                                   &g_notify_calls, err_notify_cb, &nsess); \
+        }                                                                  \
+      }                                                                    \
+      CHECKC(prv == CKR_OK && nsess != 0,                                  \
+             "%s: notify session opens", tag);                                \
+      if (prv == CKR_OK && nsess != 0) {                                   \
+        prv = (T)->C_GetSessionInfo(nsess, &ninfo);                        \
+        CHECKC(prv == CKR_OK, "%s: notify session info", tag);               \
+        prv = (T)->C_CloseSession(nsess);                                  \
+        CHECKC(prv == CKR_OK, "%s: notify session closes", tag);             \
+      }                                                                    \
+      CHECKC(g_notify_calls == 0, "%s: notify never fires", tag);            \
+    }                                                                      \
     /* bad mechanism */                                                    \
     prv = (T)->C_DigestInit(sess, &bogus);                                 \
     CHECKC(prv == CKR_MECHANISM_INVALID, "%s: bogus init refused", tag);     \

@@ -12575,14 +12575,30 @@
       "canonical_name": "CKM_TLS_KEY_AND_MAC_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: TLS PRF/KDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Key-material recipe (core/Haskoki/Recipe/TlsKeyMat.hs): the TLS 1.0 PRF expands the master secret over 'key expansion' ++ server_random ++ client_random (RFC 2246 S6.3) and the block splits client-MAC, server-MAC, client-key, server-key, client-IV, server-IV. MAC keys force CKK_GENERIC_SECRET; cipher keys keep the template type; the single template applies to every output and its SENSITIVE/EXTRACTABLE must match the base (v3.2 S6.39.6) or the plan refuses CKR_TEMPLATE_INCONSISTENT; CKA_VALUE_LEN refuses (lengths come from params); export refuses. Multi-output write-back (handles + IVs) into CK_SSL3_KEY_MAT_OUT. Vectors pinned (RoutingE2ESpec caseDriverKeyMat); planner pins (RecipeTlsKeyMatSpec); real KATs (KeyManagementSpec caseRealKeyMatVector).",
       "numeric_id": "0x00000376",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "keymat/v1",
+          "parameter_codec": "keymat-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS_KEY_AND_MAC_DERIVE",
@@ -12591,12 +12607,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keymat",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "keymat",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keymat",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeTlsKeyMatSpec",
+          "build_id": "keymat",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -14908,14 +14960,30 @@
       "canonical_name": "CKM_TLS12_KEY_AND_MAC_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: TLS PRF/KDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Key-material recipe (core/Haskoki/Recipe/TlsKeyMat.hs): the TLS 1.2 PRF (hash-selected) expands the master secret over 'key expansion' ++ server_random ++ client_random (RFC 5246 S6.3) and the block splits client-MAC, server-MAC, client-key, server-key, client-IV, server-IV. MAC keys force CKK_GENERIC_SECRET; cipher keys keep the template type; the single template applies to every output and its SENSITIVE/EXTRACTABLE must match the base (v3.2 S6.40.6) or the plan refuses CKR_TEMPLATE_INCONSISTENT; CKA_VALUE_LEN refuses (lengths come from params); export refuses. Multi-output write-back (handles + IVs) into CK_TLS12_KEY_MAT_PARAMS out-struct. Vectors pinned (RoutingE2ESpec caseDriverKeyMat); planner pins (RecipeTlsKeyMatSpec); real KATs (KeyManagementSpec caseRealKeyMatVector).",
       "numeric_id": "0x000003e1",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "keymat/v1",
+          "parameter_codec": "keymat-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS12_KEY_AND_MAC_DERIVE",
@@ -14924,12 +14992,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keymat",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "keymat",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keymat",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeTlsKeyMatSpec",
+          "build_id": "keymat",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -15016,14 +15120,30 @@
       "canonical_name": "CKM_TLS12_KEY_SAFE_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: TLS PRF/KDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Key-material recipe (core/Haskoki/Recipe/TlsKeyMat.hs): identical to CKM_TLS12_KEY_AND_MAC_DERIVE except IVs are never produced (v3.2 S6.40.7: ulIvSizeInBits is ignored and treated as 0); the block holds keys only. Same struct, same split, same template rules. Vectors pinned (RoutingE2ESpec caseDriverKeyMat); planner pins (RecipeTlsKeyMatSpec); real KATs (KeyManagementSpec caseRealKeyMatVector).",
       "numeric_id": "0x000003e3",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "keymat/v1",
+          "parameter_codec": "keymat-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_TLS12_KEY_SAFE_DERIVE",
@@ -15032,12 +15152,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "keymat",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "keymat",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "keymat",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeTlsKeyMatSpec",
+          "build_id": "keymat",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

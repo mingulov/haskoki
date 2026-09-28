@@ -35,6 +35,17 @@ fell behind re-syncs via the reentrant snapshot), `DropNewest`
 selectable per queue. Both increment the dropped counter. Named and
 tested in `EventsSpec`.
 
+## Session notification callbacks
+
+`C_OpenSession` accepts a non-NULL `Notify` (the v3.2 §5.6.1
+return list carries no callback-refusal code, so refusing
+would invent one). The callback is retained nowhere and
+never invoked: the module generates no notification
+events (no surrender/device callbacks on any path). Pinned
+by the `consumer_errors` per-table Notify leg (open OK +
+usable session + zero invocations; direct-only — a
+function pointer cannot cross the proxy).
+
 ## The one reentrant query
 
 `reentrantSlotSnapshot` (token presence per slot) is the single query

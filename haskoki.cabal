@@ -87,6 +87,7 @@ library haskoki-core
     Haskoki.Recipe.Hmac
     Haskoki.Recipe.ByteOps
     Haskoki.Recipe.Ike
+    Haskoki.Recipe.TlsKeyMat
     Haskoki.Recipe.Kdf
     Haskoki.Recipe.RsaOaep
     Haskoki.Recipe.RsaPkcs1
@@ -409,6 +410,7 @@ test-suite haskoki-model-tests
     RecipeSlhDsaSpec
     RecipeSp800108Spec
     RecipeTlsKdfSpec
+    RecipeTlsKeyMatSpec
     RecipeTlsPrfSpec
     RecipeX509Spec
     RecipeXcbcMacSpec

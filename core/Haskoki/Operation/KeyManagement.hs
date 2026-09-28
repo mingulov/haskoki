@@ -946,6 +946,11 @@ data PendingWork
       { pwKeys :: ![PendingObject]
       , pwLens :: ![Int]
       }
+  | PwDeriveIv
+      { pwKeys :: ![PendingObject]
+      , pwLens :: ![Int]
+      , pwIvLens :: !(Int, Int)
+      }
   deriving (Eq, Show)
 
 -- | Writability over the objects a key plan will create: read-only
@@ -984,6 +989,7 @@ pendingObjects pw = case pw of
   PwUnwrapRaw k -> [k]
   PwUnwrapTail k _ _ -> [k]
   PwDerive pos _ -> pos
+  PwDeriveIv pos _ _ -> pos
 
 -- | Publish pending objects as one atomic delta: every object
 -- validates before any id or handle is allocated, so a bad entry
@@ -1051,6 +1057,7 @@ keyPairCompatible (PwUnwrapTail _ _ _) (FxUnwrap _ _ _ _) = True
 keyPairCompatible (PwEncaps _ _ _) (FxKemEncaps _ _ _ _) = True
 keyPairCompatible (PwDecaps _) (FxKemDecaps _ _ _ _) = True
 keyPairCompatible (PwDerive _ _) (FxDerive _ _ _ _ _ _) = True
+keyPairCompatible (PwDeriveIv _ _ _) (FxDerive _ _ _ _ _ _) = True
 keyPairCompatible _ _ = False
 
 -- | Finish planned work against the driver's answer. On bytes the
@@ -1134,6 +1141,34 @@ finishWork model st pw res = case (pw, res) of
           , pcReleases = []
           , pcReasons = ["derived " ++ show (length pos) ++ " keys"]
           }
+  -- Key-material answers append the two IVs after the key
+  -- bytes (TLS key-block order): keys publish as objects,
+  -- IVs ride byte outputs for the FFI write-back. Empty IVs
+  -- (a zero size) emit no output.
+  (PwDeriveIv pos lens (ivCLen, ivSLen), GotBytes bs)
+    | BS.length bs /= sum lens + ivCLen + ivSLen -> internal
+        ("keymat answer length " ++ show (BS.length bs)
+          ++ " mismatches " ++ show (sum lens + ivCLen + ivSLen))
+    | otherwise -> case publishPending model st
+        [storeMaterial mat po | (po, mat) <- zip pos (splitLens lens keyBs)] of
+        Left deny -> rejectOf deny
+        Right (delta, hs) -> Immediate PreparedCommit
+          { pcCode = CKR_OK
+          , pcDelta = delta
+          , pcPersist = []
+          , pcOutputs =
+              [ NativeOutput (RegionHandle "key")
+                  (encodeValue (ValULong (fromIntegral (unExternalHandle h))))
+              | h <- hs
+              ] ++ ivOut "iv-client" ivC ++ ivOut "iv-server" ivS
+          , pcReleases = []
+          , pcReasons = ["derived " ++ show (length pos) ++ " keys + ivs"]
+          }
+    where
+      (keyBs, ivBs) = BS.splitAt (sum lens) bs
+      (ivC, ivS) = BS.splitAt ivCLen ivBs
+      ivOut _ out | BS.null out = []
+      ivOut region out = [NativeOutput (RegionBytes region IntentNull) out]
   (_, GotValid _) -> internal "verdict answer to key management"
   (_, GotResource _) -> internal "resource answer to key management"
   -- A feed answer never reaches a key finisher; loud on

@@ -612,11 +612,16 @@ CK_RV std_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags,
   if (phSession == NULL_PTR) {
     return CKR_ARGUMENTS_BAD;
   }
-  if (Notify != NULL_PTR) {
-    /* Async callbacks are not modeled: refuse loudly rather than
-     * accept a callback that would never fire. */
-    return CKR_FUNCTION_NOT_SUPPORTED;
-  }
+  /* A supplied Notify is accepted, never refused: the
+   * C_OpenSession return list (v3.2 §5.6.1) carries no
+   * callback-refusal code, so refusing would invent one
+   * (rc2's callback matrix pins accept-or-SESSION_COUNT).
+   * The module generates no notification events (no
+   * surrender/device callbacks), so the callback is
+   * retained nowhere and never invoked; see
+   * docs/operations-notes.md ("Session notification
+   * callbacks"). */
+  (void)Notify;
   if ((flags & CKF_SERIAL_SESSION) == 0) {
     return CKR_SESSION_PARALLEL_NOT_SUPPORTED;
   }
@@ -2267,10 +2272,22 @@ static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   case CKM_CONCATENATE_DATA_AND_BASE:
   case CKM_XOR_BASE_AND_DATA:
   case CKM_EXTRACT_KEY_FROM_KEY:
+  case CKM_TLS_KEY_AND_MAC_DERIVE:
+  case CKM_TLS12_KEY_AND_MAC_DERIVE:
+  case CKM_TLS12_KEY_SAFE_DERIVE:
     return 1;
   default:
     return 0;
   }
+}
+
+/* The key-material trio accepts a NULL phKey: its outputs live in
+ * the mechanism params (v3.2 §6.39.6/§6.40.6: phKey "should be a
+ * NULL_PTR"). Every other row still demands the slot. */
+static int derive_null_phkey_ok(CK_MECHANISM_TYPE mech) {
+  return mech == CKM_TLS_KEY_AND_MAC_DERIVE ||
+         mech == CKM_TLS12_KEY_AND_MAC_DERIVE ||
+         mech == CKM_TLS12_KEY_SAFE_DERIVE;
 }
 
 /* Opaque derive arm: pack the template frame and forward the
@@ -2332,7 +2349,10 @@ CK_RV std_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   uint64_t frameLen = 0;
   CK_RV lr = 0;
   CK_RV rv = 0;
-  if (pMechanism == NULL_PTR || phKey == NULL_PTR) {
+  if (pMechanism == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (phKey == NULL_PTR && !derive_null_phkey_ok(pMechanism->mechanism)) {
     return CKR_ARGUMENTS_BAD;
   }
   if (pMechanism->mechanism != CKM_HKDF_DERIVE &&

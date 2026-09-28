@@ -19,6 +19,8 @@ module Haskoki.Attribute
   , decodeValue
   , maxAttributeBytes
   , attributeTypeByName
+  , Shape (..)
+  , shapeOf
   , shapeMatches
   , hasTextContract
   , decodeTextAttribute

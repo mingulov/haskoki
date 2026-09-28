@@ -75,6 +75,7 @@ import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
+import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
@@ -127,6 +128,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: tls-kdf vectors + refuse" caseDriverTlsKdf
   , testCase "driver: ike vectors + refuse" caseDriverIke
   , testCase "driver: byte-op vectors + refuse" caseDriverByteOps
+  , testCase "driver: key-material vectors + refuse" caseDriverKeyMat
   , testCase "driver: pbkd2 keygen vector" caseDriverPbkd2Gen
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
@@ -1824,6 +1826,59 @@ caseDriverByteOps = withBackend $ \env -> do
   case overrun of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed byteop extract overrun, got: " ++ show other)
+
+-- TLS key-block vectors (master secret bytes 0..47, client
+-- random 0..31, server random 32..63; oracle-cross-checked
+-- PRF outputs, RFC 2246 §6.3 layout) plus typed refusals.
+caseDriverKeyMat :: IO ()
+caseDriverKeyMat = withBackend $ \env -> do
+  let baseOid = ObjectId 86
+      res oid
+        | oid == baseOid = Just (KeyBytes (BS.pack [0 .. 47]))
+        | otherwise = Nothing
+      deriveAs mech params outLen =
+        runEffect env res (FxDerive mech (Just baseOid) Nothing params BS.empty outLen)
+          >>= expectBytes
+      cr = BS.pack [0 .. 31]
+      sr = BS.pack [32 .. 63]
+      k10 = MechanismId 0x376
+      k12 = MechanismId 0x3e1
+      kSafe = MechanismId 0x3e3
+      f10 = encodeTlsKeyMatParams 0 0 16 16 cr sr
+      f10m = encodeTlsKeyMatParams 0 20 16 16 cr sr
+      f12 = encodeTlsKeyMatParams 4 0 16 16 cr sr
+      f12m = encodeTlsKeyMatParams 4 20 16 16 cr sr
+      f12b = encodeTlsKeyMatParams 6 0 16 16 cr sr
+  b64 <- deriveAs k10 f10 64
+  assertEqual "tls10 key block" (hex "f3771f99cf91858748dc50ed540edc39efb06a256dcd4d9ffdf87298f72cf700f5585f14e9db80e3af1a7ccc2c218d42b36aa1a7584498f75edaca5bf8f86328") b64
+  b104 <- deriveAs k10 f10m 104
+  assertEqual "tls10 key block mac160" (hex "f3771f99cf91858748dc50ed540edc39efb06a256dcd4d9ffdf87298f72cf700f5585f14e9db80e3af1a7ccc2c218d42b36aa1a7584498f75edaca5bf8f86328bfd1fa7577fd88c0ffb682e2db691a4273d72711a70f82d180e78fbda5f5d14e01b717cf0173305e") b104
+  b12 <- deriveAs k12 f12 64
+  assertEqual "tls12-sha256 key block" (hex "fbe0dbb71e9097fcfe644317a16d334fac721a5f822730468a366a4ef2f2206848092b65ca8b00c356742cd5bae70ed8ac35e70945a53033866a9b3abca98806") b12
+  b12m <- deriveAs k12 f12m 104
+  assertEqual "tls12-sha256 key block mac160" (hex "fbe0dbb71e9097fcfe644317a16d334fac721a5f822730468a366a4ef2f2206848092b65ca8b00c356742cd5bae70ed8ac35e70945a53033866a9b3abca98806f6ba1048b7cd53eb2f2584955a68b87c9d198ce2c55c204f053dddc6f5ce4f96c242e8bb758cd5fa") b12m
+  b12b <- deriveAs k12 f12b 64
+  assertEqual "tls12-sha512 key block" (hex "5a6f3c22b22f1f29cbc4444ace696a20a4fa4fd868068e2e8cefd0c39b4b70948490ff3b47621ec6161df962702a7f620a95dc96dd49f8aee772047ff4dd305f") b12b
+  bSafe <- deriveAs kSafe f12 32
+  assertEqual "safe shares the tls12 prefix" (BS.take 32 b12) bSafe
+  -- Typed refusals: junk params, a non-empty info string, and
+  -- out-of-range lengths.
+  junk <- runEffect env res (FxDerive k12 (Just baseOid) Nothing "junk" BS.empty 64)
+  case junk of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed keymat junk, got: " ++ show other)
+  withInfo <- runEffect env res (FxDerive k12 (Just baseOid) Nothing f12 "x" 64)
+  case withInfo of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed keymat info, got: " ++ show other)
+  zero <- runEffect env res (FxDerive k12 (Just baseOid) Nothing f12 BS.empty 0)
+  case zero of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed keymat zero, got: " ++ show other)
+  over <- runEffect env res (FxDerive k12 (Just baseOid) Nothing f12 BS.empty 65537)
+  case over of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed keymat over-ceiling, got: " ++ show other)
 
 -- SHA-1 vectors plus hashlib\/CLI cross-checked SHA-256\/512
 -- vectors, multi-block output, truncation, SHA-KD rows, and typed

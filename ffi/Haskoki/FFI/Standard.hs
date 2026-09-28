@@ -162,7 +162,7 @@ import Control.Exception
   , throwIO
   , try
   )
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, when, zipWithM_)
 import Data.Bits (shiftL, shiftR, xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -217,7 +217,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
-import Haskoki.FFI.NativeParams (normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsPrfParams)
+import Haskoki.FFI.NativeParams (DerivedKeySlot (..), KeyMatSlots (..), normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsKeyMatParams, normalizeTls12KeyMatParams, normalizeTls12KeySafeParams, normalizeTlsPrfParams)
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
@@ -256,6 +256,7 @@ import Haskoki.Recipe.Kdf (KdfRecipe (..), kdfRecipeFor)
 import Haskoki.Recipe.Sp800108 (Sp800Recipe (..), sp800RecipeFor)
 import Haskoki.Recipe.TlsKdf (TlsKdfKind (..), TlsKdfRecipe (..), tlsKdfRecipeFor)
 import Haskoki.Recipe.ByteOps (ByteOpsKind (..), ByteOpsRecipe (..), byteOpsRecipeFor)
+import Haskoki.Recipe.TlsKeyMat (TlsKeyMatKind (..), TlsKeyMatRecipe (tkmKind), tlsKeyMatRecipeFor)
 import Haskoki.Recipe.Ike (IkeKind (..), IkeRecipe (..), ikeRecipeFor)
 import Haskoki.Recipe.TlsPrf (tlsPrfRecipeFor)
 import Haskoki.Operation.KeyManagement
@@ -2092,6 +2093,23 @@ publishKeyResult inst pr = case pr of
           | otherwise -> pure (Left (stdRvOf (pcCode pc)))
   Execute _ _ -> pure (Left ckrGeneralError)
 
+-- | Publish one key-plan result with full outputs (the
+-- key-material path: handles plus IV bytes, which
+-- 'decodeHandles' cannot carry).
+publishKeyResultFull :: StdInstance -> PlanResult -> IO (Either CULong [NativeOutput])
+publishKeyResultFull inst pr = case pr of
+  Reject rej -> do
+    publishRejection inst rej
+    pure (Left (stdRvOf (rejCode rej)))
+  Immediate pc -> do
+    ePub <- publishCommit inst pc
+    case ePub of
+      Left _ -> pure (Left ckrGeneralError)
+      Right ()
+        | pcCode pc == CKR_OK -> pure (Right (pcOutputs pc))
+        | otherwise -> pure (Left (stdRvOf (pcCode pc)))
+  Execute _ _ -> pure (Left ckrGeneralError)
+
 -- | Execute one key-management plan: denials report their code;
 -- effects run through the instance backend with snapshot keys and
 -- finish against a fresh snapshot; immediate commits publish.
@@ -2120,6 +2138,62 @@ runKeyPlan inst m st kp = case kp of
         case finishEffect (envRules (siEnv inst)) m3 res' (encodeResult res2) of
           Left rej -> publishKeyResult inst (Reject rej)
           Right pc -> publishKeyResult inst (Immediate pc)
+
+-- | Execute one key-management plan with full outputs (the
+-- key-material path): the 'runKeyPlan' flow, returning the
+-- native outputs instead of decoded handles.
+runKeyPlanFull
+  :: StdInstance -> Model -> SessionState -> KeyPlan -> IO (Either CULong [NativeOutput])
+runKeyPlanFull inst m st kp = case kp of
+  KeyDenied deny -> pure (Left (stdRvOf (kdCode deny)))
+  KeyImmediate pr -> publishKeyResultFull inst pr
+  KeyEffect pw fx
+    | not (keyPairCompatible pw fx) -> pure (Left (stdRvOf CKR_GENERAL_ERROR))
+    | Left deny <- admitPending st pw -> pure (Left (stdRvOf (kdCode deny)))
+    | otherwise -> do
+    res <- runEffect (siBackend inst) (stdResolver m) fx
+    m2 <- snapshotModel (siEnv inst)
+    case finishWork m2 st pw res of
+      Immediate pc -> publishKeyResultFull inst (Immediate pc)
+      Reject rej -> publishKeyResultFull inst (Reject rej)
+      Execute res' (EffectCrypto fx') -> do
+        res2 <- runEffect (siBackend inst) (stdResolver m2) fx'
+        m3 <- snapshotModel (siEnv inst)
+        case finishEffect (envRules (siEnv inst)) m3 res' (encodeResult res2) of
+          Left rej -> publishKeyResultFull inst (Reject rej)
+          Right pc -> publishKeyResultFull inst (Immediate pc)
+
+-- | Publish one key-material result: handles into the ordered
+-- slots, IV bytes into the sized buffers (zero-length IVs
+-- write nothing), and an invalid primary when the caller
+-- passed a handle slot (the trio returns no primary key).
+-- Anything off-shape fails closed with zero partial writes
+-- past the failing point (slots poke in order; a shape
+-- mismatch refuses before any poke).
+publishKeyMat :: KeyMatSlots -> [NativeOutput] -> Ptr CULong -> IO CULong
+publishKeyMat slots outs phKey =
+  case (mapM handleOf handleOuts, ivOf "iv-client", ivOf "iv-server") of
+    (Just hs, Just ivC, Just ivS)
+      | length hs == length (kmsHandles slots)
+      , BS.length ivC == kmsIvCLen slots
+      , BS.length ivS == kmsIvSLen slots -> do
+          zipWithM_ poke (kmsHandles slots) (map CULong hs)
+          pokeIv (kmsIvC slots) ivC
+          pokeIv (kmsIvS slots) ivS
+          when (phKey /= nullPtr) (poke phKey (CULong 0))
+          pure ckrOk
+    _ -> pure ckrGeneralError
+  where
+    handleOuts = [bs | NativeOutput (RegionHandle "key") bs <- outs]
+    ivOf name = case [bs | NativeOutput (RegionBytes n _) bs <- outs, n == name] of
+      [bs] -> Just bs
+      [] -> Just BS.empty
+      _ -> Nothing
+    handleOf = beWord64
+    pokeIv _ iv | BS.null iv = pure ()
+    pokeIv ptr iv =
+      BSU.unsafeUseAsCString iv $ \src ->
+        copyBytes (castPtr ptr) src (BS.length iv)
 
 -- | Resolve a session and run a key-path continuation with its
 -- state (unknown handles refuse exactly as planning would).
@@ -2926,31 +3000,37 @@ haskokiStdUnwrapKey ctx h (CULong mech) pIv (CULong ivLen) (CULong wrapH)
                       Right _ -> pure ckrGeneralError
 
 -- | Opaque derive for the ECDH, DH, SHA-KDF, TLS-PRF,
--- SP 800-108, TLS-KDF, IKE, and byte-op rows: the C side
--- forwards the mechanism id, the raw parameter image, and the
--- template frame. ECDH, DH, TLS-PRF, SP 800-108, TLS-KDF, IKE,
--- and byte-op structs normalize here ('normalizeEcdhParams',
--- 'normalizeDhPkcsParams' for the bare PKCS#3 peer,
--- 'normalizeDhX942Params' for the X9.42 struct,
--- 'normalizeTlsPrfParams', 'normalizeSp800KdfParams', the
--- four 'normalizeTlsKdf*' normalizers dispatched by row kind,
--- the four 'normalizeIke*' normalizers likewise, and the
--- three 'normalizeByteOps*' normalizers by param shape);
--- base resolution and the key-type check
+-- SP 800-108, TLS-KDF, IKE, byte-op, and key-material rows: the
+-- C side forwards the mechanism id, the raw parameter image,
+-- and the template frame. ECDH, DH, TLS-PRF, SP 800-108,
+-- TLS-KDF, IKE, byte-op, and key-material structs normalize
+-- here ('normalizeEcdhParams', 'normalizeDhPkcsParams' for the
+-- bare PKCS#3 peer, 'normalizeDhX942Params' for the X9.42
+-- struct, 'normalizeTlsPrfParams', 'normalizeSp800KdfParams',
+-- the four 'normalizeTlsKdf*' normalizers dispatched by row
+-- kind, the four 'normalizeIke*' normalizers likewise, the
+-- three 'normalizeByteOps*' normalizers by param shape, and
+-- the two key-material normalizers by struct shape); base
+-- resolution and the key-type check
 -- run first inside 'planDerive', so a wrong-typed base refuses
 -- before parameter shape is examined. SHA rows take the image as
 -- the info segment (emptiness enforced by 'planDerive').
 -- Unmappable struct images pass through raw so the recipe refusal
 -- (and its @CKR@) is unchanged. PBKD2 is not served here (its
 -- native struct has no decoder yet) and refuses
--- @CKR_MECHANISM_INVALID@.
+-- @CKR_MECHANISM_INVALID@. Multi-output rows (SP 800-108 with
+-- additional keys, the key-material trio) pack
+-- params-embedded templates and write handles (plus IVs) back
+-- into caller memory on success only; the trio accepts a NULL
+-- @phKey@ (v3.2: it "should be a NULL_PTR").
 haskokiStdDeriveOpaque
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
 haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
     (CULong baseH) pFrame (CULong frameLen) phKey =
   withStdCtx ctx $ \inst ->
-    if phKey == nullPtr
+    let mid = MechanismId (fromIntegral mech)
+    in if phKey == nullPtr && not (isKeyMatTrio mid)
       then pure ckrArgsBad
       else withSessionState inst h $ \st -> do
         eParams <- decodeInputBytes pParams paramsLen
@@ -2960,22 +3040,54 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
             eTmpl <- readFrame pFrame (CULong frameLen)
             case eTmpl of
               Left ferr -> pure (frameErrorRV ferr)
-              Right entries -> do
-                let mid = MechanismId (fromIntegral mech)
+              Right entries ->
                 if not (isOpaqueDeriveMech mid)
                   then pure (stdRvOf CKR_MECHANISM_INVALID)
                   else do
-                    blob <- deriveBlob mid raw
+                    (blob, extraTmpls, wb) <- deriveBlobEx mid raw
                     m <- snapshotModel (siEnv inst)
-                    eHs <- runKeyPlan inst m st
-                      (planDerive (envRules (siEnv inst)) m st mid
-                        (ExternalHandle (fromIntegral baseH))
-                        (encodeDeriveParams blob [entries]))
-                    case eHs of
-                      Left rv -> pure rv
-                      Right [oh] -> poke phKey (CULong oh) >> pure ckrOk
-                      Right _ -> pure ckrGeneralError
+                    let plan = planDerive (envRules (siEnv inst)) m st mid
+                          (ExternalHandle (fromIntegral baseH))
+                          (encodeDeriveParams blob ([entries] ++ extraTmpls))
+                    case wb of
+                      WbKeyMat slots -> do
+                        eOut <- runKeyPlanFull inst m st plan
+                        case eOut of
+                          Left rv -> pure rv
+                          Right outs -> publishKeyMat slots outs phKey
+                      _ -> do
+                        eHs <- runKeyPlan inst m st plan
+                        case eHs of
+                          Left rv -> pure rv
+                          Right hs -> publish wb hs
   where
+    publish phun hs = case (phun, hs) of
+      (WbNone, [oh]) -> poke phKey (CULong oh) >> pure ckrOk
+      (WbSp800 slots, oh : rest)
+        | length rest == length slots -> do
+            zipWithM_ poke slots (map CULong rest)
+            poke phKey (CULong oh) >> pure ckrOk
+      _ -> pure ckrGeneralError
+    deriveBlobEx mid raw = case multiIntake mid of
+      Just intake -> do
+        mOut <- intake
+        pure (fromMaybe (raw, [], WbNone) mOut)
+      Nothing -> do
+        blob <- deriveBlob mid raw
+        pure (blob, [], WbNone)
+    multiIntake mid
+      | Just r <- sp800RecipeFor mid = Just $ do
+          mMulti <- normalizeSp800KdfParams (rsMode r) pParams paramsLen
+          pure $ case mMulti of
+            Just (b, slots) ->
+              Just (b, map dksTemplate slots, WbSp800 (map dksOut slots))
+            Nothing -> Nothing
+      | Just r <- tlsKeyMatRecipeFor mid = Just $ do
+          mKm <- keyMatNormalizer (tkmKind r) pParams paramsLen
+          pure $ case mKm of
+            Just (b, slots) -> Just (b, [], WbKeyMat slots)
+            Nothing -> Nothing
+      | otherwise = Nothing
     deriveBlob mid raw
       | isJust (ecdhRecipeFor mid) =
           fromMaybe raw <$> normalizeEcdhParams pParams paramsLen
@@ -2986,8 +3098,6 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
           fromMaybe raw <$> normalizeDhX942Params pParams paramsLen
       | isJust (tlsPrfRecipeFor mid) =
           fromMaybe raw <$> normalizeTlsPrfParams pParams paramsLen
-      | Just r <- sp800RecipeFor mid =
-          fromMaybe raw <$> normalizeSp800KdfParams (rsMode r) pParams paramsLen
       | Just r <- tlsKdfRecipeFor mid = case tkKind r of
           TlsMaster10 ->
             fromMaybe raw <$> normalizeTlsKdfMasterParams pParams paramsLen
@@ -3033,13 +3143,37 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
 
 -- | Mechanisms served by 'haskokiStdDeriveOpaque': the ECDH rows,
 -- the DH rows, the SHA-KDF rows, TLS-PRF, the SP 800-108 rows,
--- the TLS-KDF rows, the IKE rows, the byte-op rows, and the
--- encrypt-data rows (PBKD2 excluded: no native decoder).
+-- the TLS-KDF rows, the IKE rows, the byte-op rows, the
+-- key-material rows, and the encrypt-data rows (PBKD2 excluded:
+-- no native decoder).
 isOpaqueDeriveMech :: MechanismId -> Bool
 isOpaqueDeriveMech mid =
-  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || isJust (sp800RecipeFor mid) || isJust (tlsKdfRecipeFor mid) || isJust (ikeRecipeFor mid) || isJust (byteOpsRecipeFor mid) || isJust (encryptDataRecipeFor mid) || case kdfRecipeFor mid of
+  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || isJust (sp800RecipeFor mid) || isJust (tlsKdfRecipeFor mid) || isJust (ikeRecipeFor mid) || isJust (byteOpsRecipeFor mid) || isJust (tlsKeyMatRecipeFor mid) || isJust (encryptDataRecipeFor mid) || case kdfRecipeFor mid of
     Just r -> not (rkPbkd2 r)
     Nothing -> False
+
+-- | The key-material trio (the only opaque rows whose outputs
+-- live in the mechanism params, so a NULL @phKey@ is legal).
+isKeyMatTrio :: MechanismId -> Bool
+isKeyMatTrio = isJust . tlsKeyMatRecipeFor
+
+-- | Key-material struct normalizer by row kind: the TLS 1.0
+-- shape, the TLS 1.2 shape, or the key-safe shape (which
+-- ignores the IV size, matching the planner's suppression).
+keyMatNormalizer :: TlsKeyMatKind -> Ptr Word8 -> Word64 -> IO (Maybe (ByteString, KeyMatSlots))
+keyMatNormalizer KeyMatTls10 = normalizeTlsKeyMatParams
+keyMatNormalizer KeyMatTls12Safe = normalizeTls12KeySafeParams
+keyMatNormalizer _ = normalizeTls12KeyMatParams
+
+-- | Caller write-back targets for one multi-output derive: no
+-- extras (the single-handle rows), SP 800-108 additional
+-- handle slots (plan order past the primary), or the
+-- key-material slots.
+data DeriveWriteBack
+  = WbNone
+  | WbSp800 ![Ptr CULong]
+  | WbKeyMat !KeyMatSlots
+  deriving (Eq, Show)
 
 -- | HKDF derive: the C side classifies the parameters (served
 -- profiles only reach here) and passes the mechanism id, the

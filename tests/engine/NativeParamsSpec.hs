@@ -19,7 +19,7 @@ import Data.Word (Word8)
 import Foreign.C.Types (CULong (..))
 import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Marshal.Utils (copyBytes)
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (alignment, pokeByteOff, sizeOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, testCase)
@@ -47,6 +47,14 @@ import Haskoki.FFI.NativeParams
   , normalizeByteOpsExtractParams
   , byteOpsUlongNativeSize
   , byteOpsStringDataNativeSize
+  , normalizeSp800KdfParams
+  , normalizeTlsKeyMatParams
+  , normalizeTls12KeyMatParams
+  , normalizeTls12KeySafeParams
+  , tlsKeyMatNativeSize
+  , tls12KeyMatNativeSize
+  , KeyMatSlots (..)
+  , DerivedKeySlot (..)
   , normalizeIke1ExtParams
   , normalizeIke1PrfParams
   , normalizeIkePrfParams
@@ -75,6 +83,9 @@ import Haskoki.Recipe.Eddsa
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams, byteOpsParamsValid, byteOpsRecipeFor)
 import Haskoki.Recipe.Ike (encodeIkeParams, ikeParamsValid, ikeRecipeFor)
+import Haskoki.Recipe.Sp800108 (Sp800Mode (..), decodeSp800Params)
+import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams, tlsKeyMatParamsValid, tlsKeyMatRecipeFor)
+import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Recipe.Gmac (gmacParamsValid, gmacRecipeFor)
 import Haskoki.Recipe.MlDsa
   ( MldsaHedge (..)
@@ -929,4 +940,240 @@ spec = testGroup "native mechanism params"
         pokeByteOff p 0 (CULong 0)
         normalizeByteOpsExtractParams p 4
       assertEqual "short offset refused" Nothing shortExt
+  , testCase "key-material native structs translate to canonical" $ do
+      let w = sizeOf (undefined :: CULong)
+          cr = BS.pack [0 .. 31]
+          sr = BS.pack [32 .. 63]
+          sha256 = mustGeneratedId "CKM_SHA256"
+          k10 = MechanismId (mustGeneratedId "CKM_TLS_KEY_AND_MAC_DERIVE")
+          k12 = MechanismId (mustGeneratedId "CKM_TLS12_KEY_AND_MAC_DERIVE")
+          check name mid got want nHandles ivLen = case got of
+            Just (canon, slots) -> do
+              assertEqual ("canonical " ++ name) want canon
+              case tlsKeyMatRecipeFor mid of
+                Just r -> assertEqual ("recipe accepts " ++ name) True
+                  (tlsKeyMatParamsValid r canon)
+                Nothing -> fail ("keymat recipe missing: " ++ name)
+              assertEqual ("handles " ++ name) nHandles (length (kmsHandles slots))
+              assertEqual ("ivc " ++ name) ivLen (kmsIvCLen slots)
+              assertEqual ("ivs " ++ name) ivLen (kmsIvSLen slots)
+            Nothing -> fail ("keymat struct refused: " ++ name)
+          withOut ivLen action =
+            allocaBytes 48 $ \out ->
+              allocaBytes ivLen $ \ivc ->
+                allocaBytes ivLen $ \ivs -> do
+                  pokeByteOff out 0 (CULong 0)
+                  pokeByteOff out w (CULong 0)
+                  pokeByteOff out (2 * w) (CULong 0)
+                  pokeByteOff out (3 * w) (CULong 0)
+                  pokeByteOff out (4 * w) (castPtr ivc :: Ptr Word8)
+                  pokeByteOff out (5 * w) (castPtr ivs :: Ptr Word8)
+                  action out
+      out10 <- BS.useAsCStringLen cr $ \(cp, _) ->
+        BS.useAsCStringLen sr $ \(sp, _) ->
+          withOut 16 $ \out ->
+            allocaBytes tlsKeyMatNativeSize $ \p -> do
+              pokeByteOff p 0 (CULong 0)
+              pokeByteOff p w (CULong 128)
+              pokeByteOff p (2 * w) (CULong 128)
+              pokeByteOff p (3 * w) (0 :: Word8)
+              pokeByteOff p (4 * w) (castPtr cp :: Ptr Word8)
+              pokeByteOff p (5 * w) (CULong 32)
+              pokeByteOff p (6 * w) (castPtr sp :: Ptr Word8)
+              pokeByteOff p (7 * w) (CULong 32)
+              pokeByteOff p (8 * w) (castPtr out :: Ptr Word8)
+              normalizeTlsKeyMatParams p (fromIntegral tlsKeyMatNativeSize)
+      check "tls10" k10 out10 (encodeTlsKeyMatParams 0 0 16 16 cr sr) 2 16
+      out12 <- BS.useAsCStringLen cr $ \(cp, _) ->
+        BS.useAsCStringLen sr $ \(sp, _) ->
+          withOut 16 $ \out ->
+            allocaBytes tls12KeyMatNativeSize $ \p -> do
+              pokeByteOff p 0 (CULong 160)
+              pokeByteOff p w (CULong 128)
+              pokeByteOff p (2 * w) (CULong 128)
+              pokeByteOff p (3 * w) (0 :: Word8)
+              pokeByteOff p (4 * w) (castPtr cp :: Ptr Word8)
+              pokeByteOff p (5 * w) (CULong 32)
+              pokeByteOff p (6 * w) (castPtr sp :: Ptr Word8)
+              pokeByteOff p (7 * w) (CULong 32)
+              pokeByteOff p (8 * w) (castPtr out :: Ptr Word8)
+              pokeByteOff p tlsKeyMatNativeSize (CULong sha256)
+              normalizeTls12KeyMatParams p (fromIntegral tls12KeyMatNativeSize)
+      check "tls12" k12 out12 (encodeTlsKeyMatParams 4 20 16 16 cr sr) 4 16
+  , testCase "key-material bad native structs refuse" $ do
+      let w = sizeOf (undefined :: CULong)
+          cr = BS.pack [0 .. 31]
+          sr = BS.pack [32 .. 63]
+          sha256 = mustGeneratedId "CKM_SHA256"
+          build action =
+            BS.useAsCStringLen cr $ \(cp, _) ->
+              BS.useAsCStringLen sr $ \(sp, _) ->
+                allocaBytes 48 $ \out ->
+                  allocaBytes 16 $ \ivc ->
+                    allocaBytes 16 $ \ivs -> do
+                      pokeByteOff out (4 * w) (castPtr ivc :: Ptr Word8)
+                      pokeByteOff out (5 * w) (castPtr ivs :: Ptr Word8)
+                      allocaBytes tls12KeyMatNativeSize $ \p -> do
+                        pokeByteOff p 0 (CULong 0)
+                        pokeByteOff p w (CULong 128)
+                        pokeByteOff p (2 * w) (CULong 128)
+                        pokeByteOff p (3 * w) (0 :: Word8)
+                        pokeByteOff p (4 * w) (castPtr cp :: Ptr Word8)
+                        pokeByteOff p (5 * w) (CULong 32)
+                        pokeByteOff p (6 * w) (castPtr sp :: Ptr Word8)
+                        pokeByteOff p (7 * w) (CULong 32)
+                        pokeByteOff p (8 * w) (castPtr out :: Ptr Word8)
+                        pokeByteOff p tlsKeyMatNativeSize (CULong sha256)
+                        action p out
+      short <- build $ \p _ -> normalizeTls12KeyMatParams p 40
+      assertEqual "short image refused" Nothing short
+      nullOut <- build $ \p _ -> do
+        pokeByteOff p (8 * w) (nullPtr :: Ptr Word8)
+        normalizeTls12KeyMatParams p (fromIntegral tls12KeyMatNativeSize)
+      assertEqual "null out refused" Nothing nullOut
+      nullIv <- build $ \p out -> do
+        pokeByteOff out (4 * w) (nullPtr :: Ptr Word8)
+        normalizeTls12KeyMatParams p (fromIntegral tls12KeyMatNativeSize)
+      assertEqual "null iv refused" Nothing nullIv
+      exp <- build $ \p _ -> do
+        pokeByteOff p (3 * w) (1 :: Word8)
+        normalizeTls12KeyMatParams p (fromIntegral tls12KeyMatNativeSize)
+      assertEqual "export refused" Nothing exp
+      ragged <- build $ \p _ -> do
+        pokeByteOff p (2 * w) (CULong 127)
+        normalizeTls12KeyMatParams p (fromIntegral tls12KeyMatNativeSize)
+      assertEqual "ragged size refused" Nothing ragged
+      wildPrf <- build $ \p _ -> do
+        pokeByteOff p tlsKeyMatNativeSize (CULong 0x999)
+        normalizeTls12KeyMatParams p (fromIntegral tls12KeyMatNativeSize)
+      assertEqual "wild prf refused" Nothing wildPrf
+  , testCase "key-safe native struct ignores the IV size" $ do
+      let w = sizeOf (undefined :: CULong)
+          cr = BS.pack [0 .. 31]
+          sr = BS.pack [32 .. 63]
+          sha256 = mustGeneratedId "CKM_SHA256"
+          kSafe = MechanismId (mustGeneratedId "CKM_TLS12_KEY_SAFE_DERIVE")
+          build action =
+            BS.useAsCStringLen cr $ \(cp, _) ->
+              BS.useAsCStringLen sr $ \(sp, _) ->
+                allocaBytes 48 $ \out ->
+                  allocaBytes 16 $ \ivc ->
+                    allocaBytes 16 $ \ivs -> do
+                      pokeByteOff out (4 * w) (castPtr ivc :: Ptr Word8)
+                      pokeByteOff out (5 * w) (castPtr ivs :: Ptr Word8)
+                      allocaBytes tls12KeyMatNativeSize $ \p -> do
+                        pokeByteOff p 0 (CULong 0)
+                        pokeByteOff p w (CULong 128)
+                        pokeByteOff p (2 * w) (CULong 128)
+                        pokeByteOff p (3 * w) (0 :: Word8)
+                        pokeByteOff p (4 * w) (castPtr cp :: Ptr Word8)
+                        pokeByteOff p (5 * w) (CULong 32)
+                        pokeByteOff p (6 * w) (castPtr sp :: Ptr Word8)
+                        pokeByteOff p (7 * w) (CULong 32)
+                        pokeByteOff p (8 * w) (castPtr out :: Ptr Word8)
+                        pokeByteOff p tlsKeyMatNativeSize (CULong sha256)
+                        action p out
+          check name got = case got of
+            Just (canon, slots) -> do
+              assertEqual ("canonical " ++ name)
+                (encodeTlsKeyMatParams 4 0 16 16 cr sr) canon
+              case tlsKeyMatRecipeFor kSafe of
+                Just r -> assertEqual ("recipe accepts " ++ name) True
+                  (tlsKeyMatParamsValid r canon)
+                Nothing -> fail "key-safe recipe missing"
+              assertEqual ("ivc " ++ name) 0 (kmsIvCLen slots)
+              assertEqual ("ivs " ++ name) 0 (kmsIvSLen slots)
+            Nothing -> fail ("key-safe struct refused: " ++ name)
+      buffered <- build $ \p _ ->
+        normalizeTls12KeySafeParams p (fromIntegral tls12KeyMatNativeSize)
+      check "buffered iv128" buffered
+      unbuffered <- build $ \p out -> do
+        pokeByteOff out (4 * w) (nullPtr :: Ptr Word8)
+        pokeByteOff out (5 * w) (nullPtr :: Ptr Word8)
+        normalizeTls12KeySafeParams p (fromIntegral tls12KeyMatNativeSize)
+      check "null iv128" unbuffered
+  , testCase "sp800 additional-keys chase feeds templates plus slots" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+          prf = mustGeneratedId "CKM_SHA256_HMAC"
+          attrSize = 3 * w
+          dkSize = 2 * pw + w
+          dpSize = 2 * w + pw
+          -- CLASS=secret, KEY_TYPE=generic, VALUE_LEN=16.
+          pokeAttr base vp i typ val = do
+            pokeByteOff vp 0 (CULong val)
+            let el = base `plusPtr` (i * attrSize)
+            pokeByteOff el 0 (CULong typ)
+            pokeByteOff el pw (castPtr vp :: Ptr Word8)
+            pokeByteOff el (2 * w) (CULong (fromIntegral w))
+          -- The minimal counter profile: an 8-bit counter plus
+          -- the sum-of-keys DKM length (the chase needs at
+          -- least the iteration/DKM-length pair).
+          withProfile action =
+            allocaBytes 16 $ \cfmt ->
+              allocaBytes 24 $ \lfmt ->
+                allocaBytes (2 * dpSize) $ \dps -> do
+                  pokeByteOff cfmt 0 (0 :: Word8)
+                  pokeByteOff cfmt 8 (CULong 8)
+                  pokeByteOff lfmt 0 (CULong 1)
+                  pokeByteOff lfmt 8 (0 :: Word8)
+                  pokeByteOff lfmt 16 (CULong 32)
+                  pokeByteOff dps 0 (CULong 1)
+                  pokeByteOff dps w (castPtr cfmt :: Ptr Word8)
+                  pokeByteOff dps (w + pw) (CULong 16)
+                  let el1 = dps `plusPtr` dpSize
+                  pokeByteOff el1 0 (CULong 3)
+                  pokeByteOff el1 w (castPtr lfmt :: Ptr Word8)
+                  pokeByteOff el1 (w + pw) (CULong 24)
+                  action dps
+      got <- allocaBytes w $ \v0 ->
+        allocaBytes w $ \v1 ->
+          allocaBytes w $ \v2 ->
+            allocaBytes (3 * attrSize) $ \attrs ->
+              allocaBytes dkSize $ \dk ->
+                allocaBytes w $ \phKey ->
+                  withProfile $ \dps ->
+                    allocaBytes 40 $ \p -> do
+                      pokeAttr attrs v0 0 0x0 0x4
+                      pokeAttr attrs v1 1 0x100 0x10
+                      pokeAttr attrs v2 2 0x161 16
+                      pokeByteOff dk 0 (castPtr attrs :: Ptr Word8)
+                      pokeByteOff dk pw (CULong 3)
+                      pokeByteOff dk (pw + w) (castPtr phKey :: Ptr CULong)
+                      pokeByteOff p 0 (CULong prf)
+                      pokeByteOff p w (CULong 2)
+                      pokeByteOff p (2 * w) (castPtr dps :: Ptr Word8)
+                      pokeByteOff p (2 * w + pw) (CULong 1)
+                      pokeByteOff p (3 * w + pw) (castPtr dk :: Ptr Word8)
+                      normalizeSp800KdfParams Sp800Counter p 40
+      case got of
+        Just (blob, [slot]) -> do
+          assertEqual "frame decodes" True
+            (case decodeSp800Params blob of Just _ -> True; Nothing -> False)
+          assertEqual "template" [(AttrClass, ValULong 0x4), (AttrKeyType, ValULong 0x10), (AttrValueLen, ValULong 16)]
+            (dksTemplate slot)
+        other -> fail ("additional chase refused: " ++ show (fmap (const ()) other))
+      -- Zero count with a dangling pointer refuses (spec: NULL).
+      dangling <- withProfile $ \dps ->
+        allocaBytes dkSize $ \dk ->
+          allocaBytes 40 $ \p -> do
+            pokeByteOff p 0 (CULong prf)
+            pokeByteOff p w (CULong 2)
+            pokeByteOff p (2 * w) (castPtr dps :: Ptr Word8)
+            pokeByteOff p (2 * w + pw) (CULong 0)
+            pokeByteOff p (3 * w + pw) (castPtr dk :: Ptr Word8)
+            normalizeSp800KdfParams Sp800Counter p 40
+      assertEqual "dangling refused" Nothing dangling
+      -- Zero count with NULL chases clean with no slots.
+      clean <- withProfile $ \dps ->
+        allocaBytes 40 $ \p -> do
+          pokeByteOff p 0 (CULong prf)
+          pokeByteOff p w (CULong 2)
+          pokeByteOff p (2 * w) (castPtr dps :: Ptr Word8)
+          pokeByteOff p (2 * w + pw) (CULong 0)
+          pokeByteOff p (3 * w + pw) (nullPtr :: Ptr Word8)
+          normalizeSp800KdfParams Sp800Counter p 40
+      case clean of
+        Just (_, []) -> pure ()
+        other -> fail ("clean chase off-shape: " ++ show (fmap (const ()) other))
   ]

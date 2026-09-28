@@ -130,6 +130,15 @@ import Haskoki.Recipe.TlsKdf
   , tlsKdfParamsValid
   , tlsKdfRecipeFor
   )
+import Haskoki.Recipe.TlsKeyMat
+  ( TlsKeyMatKind (..)
+  , TlsKeyMatRecipe (..)
+  , TlsKeyMatRole (..)
+  , decodeTlsKeyMatParams
+  , tlsKeyMatLayout
+  , tlsKeyMatParamsValid
+  , tlsKeyMatRecipeFor
+  )
 import Haskoki.Recipe.TlsPrf
   ( maxTlsPrfOutput
   , tlsPrfParamsValid
@@ -499,6 +508,27 @@ planDerive rules model st mech baseH blob
               (FxDerive mech (Just (osId ost)) Nothing kdfBlob BS.empty)
               Nothing
               CKR_ARGUMENTS_BAD
+  | Just r <- tlsKeyMatRecipeFor mech = case decodeDeriveParams blob of
+      Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "malformed derive arguments")
+      Just (kmBlob, tmpls) -> case resolveBase model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, _)
+          -- Key-material rows derive from generic-secret bases
+          -- only; the key-type contradiction outranks parameter
+          -- shape (the Init-matrix ordering, shared with the
+          -- TLS-KDF arm).
+          | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkGenericSecret) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "key-material base key is not a generic secret")
+          | not (tlsKeyMatParamsValid r kmBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              "key-material mechanism parameters rejected by the recipe")
+          | otherwise -> case decodeTlsKeyMatParams kmBlob of
+              -- Unreachable post-validation; typed, never a crash.
+              Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                "key-material frame rejected after validation")
+              Just (_, mac, key, iv, _, _) -> keyMatFinish r ost tmpls
+                mech kmBlob mac key iv
   | Just r <- ikeRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -694,6 +724,74 @@ planDerive rules model st mech baseH blob
               "derived total exceeds the byte-op natural width"
               fx (Just n)
               CKR_KEY_SIZE_RANGE
+    -- | Key-material admission after the frame validates: the
+    -- single template applies to every output (v3.2 §6.39.6\/
+    -- §6.40.6). Per-output lengths come from params, so a
+    -- template @CKA_VALUE_LEN@ refuses @CKR_TEMPLATE_INCONSISTENT@
+    -- (like the @CKA_VALUE@ rule); protection attributes present
+    -- in the template must match the base key's
+    -- (@CKR_TEMPLATE_INCONSISTENT@ on conflict — the oracle's
+    -- template-conflict leg). MAC outputs force
+    -- @CKK_GENERIC_SECRET@; cipher keys keep the template type.
+    -- KEY_SAFE suppresses IVs (v3.2 §6.40.7: the size is
+    -- treated as 0).
+    keyMatFinish r ost tmpls mech kmBlob mac key iv = case tmpls of
+      [tmpl] -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
+        Left deny -> KeyDenied deny
+        Right attrs
+          | Map.member AttrValue attrs -> KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "derived template must not supply CKA_VALUE")
+          | Map.member AttrValueLen attrs -> KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "key-material lengths come from params, not CKA_VALUE_LEN")
+          | Just msg <- protectionMismatch (osAttrs ost) attrs ->
+              KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT msg)
+          | Left deny <- admitObjects rules (Map.size (mObjects model))
+              (length (outsFor attrs)) ->
+              KeyDenied (KeyDeny (admitCode deny)
+                ("admission denied: " ++ show deny))
+          | otherwise ->
+              let (pos, lens) = unzip
+                    [(pendingFromAttrs st outAttrs, n) | (outAttrs, n) <- outsFor attrs]
+              in KeyEffect (PwDeriveIv pos lens (ivEff, ivEff))
+                (FxDerive mech (Just (osId ost)) Nothing kmBlob BS.empty total)
+      _ -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "key-material derive needs exactly one template")
+      where
+        ivEff = case tkmKind r of KeyMatTls12Safe -> 0; _ -> iv
+        total = 2 * mac + 2 * key + 2 * ivEff
+        outsFor attrs =
+          [ ( Map.insert AttrValueLen (ValULong (fromIntegral n))
+                (Map.insert AttrKeyType (ValULong (outType role)) attrs)
+            , n
+            )
+          | (role, n) <- tlsKeyMatLayout mac key ivEff
+          , isKeyRole role
+          ]
+          where
+            outType role
+              | role == KeyMatMacClient || role == KeyMatMacServer = ckkGenericSecret
+              | otherwise = case Map.lookup AttrKeyType attrs of
+                  Just (ValULong k) -> k
+                  -- Unreachable: the template check defaults the
+                  -- key type.
+                  _ -> ckkGenericSecret
+        isKeyRole KeyMatIvClient = False
+        isKeyRole KeyMatIvServer = False
+        isKeyRole _ = True
+    protectionMismatch baseAttrs attrs =
+      mismatch AttrSensitive "CKA_SENSITIVE" baseAttrs attrs
+        `orElse` mismatch AttrExtractable "CKA_EXTRACTABLE" baseAttrs attrs
+      where
+        orElse (Just m) _ = Just m
+        orElse Nothing x = x
+        mismatch at label b a = case Map.lookup at a of
+          Just (ValBool t)
+            | t /= baseBool at b -> Just
+                ("template " ++ label ++ " differs from the base key")
+          _ -> Nothing
+        baseBool at b = case Map.lookup at b of
+          Just (ValBool x) -> x
+          _ -> False
     checkAll
       :: Maybe Int -> [[(AttributeType, AttributeValue)]]
       -> Either KeyDeny [(Map.Map AttributeType AttributeValue, Int)]

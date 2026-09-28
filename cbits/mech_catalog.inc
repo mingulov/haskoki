@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 255
+#define HASKOKI_MECH_COUNT 258
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -142,6 +142,7 @@ static const struct haskoki_mech_row
   { 0x00000370UL, 384UL, 384UL, (unsigned long)(CKF_GENERATE) }, /* CKM_SSL3_PRE_MASTER_KEY_GEN */
   { 0x00000374UL, 384UL, 384UL, (unsigned long)(CKF_GENERATE) }, /* CKM_TLS_PRE_MASTER_KEY_GEN */
   { 0x00000375UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_TLS_MASTER_KEY_DERIVE */
+  { 0x00000376UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_TLS_KEY_AND_MAC_DERIVE */
   { 0x00000377UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_TLS_MASTER_KEY_DERIVE_DH */
   { 0x00000378UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_TLS_PRF */
   { 0x00000390UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_MD5_KEY_DERIVATION */
@@ -163,7 +164,9 @@ static const struct haskoki_mech_row
   { 0x000003D0UL, 160UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_WTLS_PRE_MASTER_KEY_GEN */
   { 0x000003D9UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_TLS12_KDF */
   { 0x000003E0UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_TLS12_MASTER_KEY_DERIVE */
+  { 0x000003E1UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_TLS12_KEY_AND_MAC_DERIVE */
   { 0x000003E2UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_TLS12_MASTER_KEY_DERIVE_DH */
+  { 0x000003E3UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_TLS12_KEY_SAFE_DERIVE */
   { 0x000003E5UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_TLS_KDF */
   { 0x00000550UL, 128UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_CAMELLIA_KEY_GEN */
   { 0x00000551UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_CAMELLIA_ECB */

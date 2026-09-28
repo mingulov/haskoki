@@ -161,6 +161,17 @@ module Haskoki.FFI.NativeParams
   , byteOpsConcatKeyStructToCanonical
   , byteOpsStringDataStructToCanonical
   , byteOpsExtractStructToCanonical
+  , tlsKeyMatStructToCanonical
+  , tls12KeyMatStructToCanonical
+  , normalizeTlsKeyMatParams
+  , normalizeTls12KeyMatParams
+  , normalizeTls12KeySafeParams
+  , tlsKeyMatNativeSize
+  , tls12KeyMatNativeSize
+  , KeyMatSlots (..)
+  , DerivedKeySlot (..)
+  , chaseAttrTemplate
+  , maxSp800AdditionalKeys
   , normalizeByteOpsConcatKeyParams
   , normalizeByteOpsStringDataParams
   , normalizeByteOpsExtractParams
@@ -239,6 +250,17 @@ import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
 import Haskoki.Recipe.Ike (encodeIkeParams, ikePrfCodeFor)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, tlsKdfPrfCodeFor)
+import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
+import Haskoki.Attribute
+  ( AttributeType (..)
+  , AttributeValue (..)
+  , Shape (..)
+  , attributeTypeByName
+  , decodeValue
+  , shapeOf
+  )
+import Haskoki.Attribute.Generated (generatedAttributes)
+import Haskoki.Object (maxTemplateEntries)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..))
@@ -815,6 +837,13 @@ data Sp800DataParam
 sp800StructToCanonical :: Sp800Mode -> Word64 -> [Sp800DataParam] -> ByteString -> Word64 -> Maybe ByteString
 sp800StructToCanonical mode prf params iv additional = do
   guard (additional == 0)
+  sp800StructToCanonicalProfile mode prf params iv
+
+-- | The profile half of 'sp800StructToCanonical' (no
+-- additional-keys gate): the multi-output normalizer chases
+-- the array itself and calls this once the chase succeeds.
+sp800StructToCanonicalProfile :: Sp800Mode -> Word64 -> [Sp800DataParam] -> ByteString -> Maybe ByteString
+sp800StructToCanonicalProfile mode prf params iv = do
   code <- sp800PrfCodeFor (MechanismId (fromIntegral prf))
   guard (mode == Sp800Feedback || BS.null iv)
   (r, l, fixed) <- sp800ProfileSegments mode params
@@ -1109,6 +1138,229 @@ byteOpsStringDataStructToCanonical :: ByteString -> Maybe ByteString
 byteOpsStringDataStructToCanonical blob =
   Just (encodeByteOpsParams 0 0 blob)
 
+-- | TLS 1.0 key-material sizes (bits), the export flag, and the
+-- chased randoms onto the canonical @keymat-params\/1@ image.
+-- The legacy PRF is fixed (code 0); non-multiple-of-8 sizes
+-- and the export variant refuse ('Nothing').
+tlsKeyMatStructToCanonical :: Word64 -> Word64 -> Word64 -> Bool -> ByteString -> ByteString -> Maybe ByteString
+tlsKeyMatStructToCanonical macBits keyBits ivBits isExport cr sr = do
+  guard (not isExport)
+  mac <- bitsToBytesInt macBits
+  key <- bitsToBytesInt keyBits
+  iv <- bitsToBytesInt ivBits
+  pure (encodeTlsKeyMatParams 0 mac key iv cr sr)
+
+-- | TLS 1.2 key-material sizes (bits), the export flag, the PRF
+-- mechanism id, and the chased randoms onto the canonical
+-- @keymat-params\/1@ image. Non-multiple-of-8 sizes, the
+-- export variant, and unserved PRFs refuse ('Nothing').
+tls12KeyMatStructToCanonical :: Word64 -> Word64 -> Word64 -> Bool -> Word64 -> ByteString -> ByteString -> Maybe ByteString
+tls12KeyMatStructToCanonical macBits keyBits ivBits isExport prfMech cr sr = do
+  guard (not isExport)
+  mac <- bitsToBytesInt macBits
+  key <- bitsToBytesInt keyBits
+  iv <- bitsToBytesInt ivBits
+  prf <- tlsKdfPrfCodeFor (MechanismId (fromIntegral prfMech))
+  guard (prf /= 0)
+  pure (encodeTlsKeyMatParams prf mac key iv cr sr)
+
+-- | A bit size onto whole 'Int' bytes ('Nothing' on a ragged
+-- width or an unnarrowable word).
+bitsToBytesInt :: Word64 -> Maybe Int
+bitsToBytesInt bits = bitsToBytes bits >>= word64ToInt
+
+-- ---------------------------------------------------------------------------
+-- Multi-output derives: params-embedded templates + write-back slots
+-- ---------------------------------------------------------------------------
+
+-- | Native @CK_SSL3_KEY_MAT_PARAMS@ image size: three size
+-- words, the export byte (+ pad), the 32-byte random info, and
+-- the out-struct pointer.
+tlsKeyMatNativeSize :: Int
+tlsKeyMatNativeSize = 3 * wordSize + 8 + 4 * wordSize + ptrSize
+
+-- | Native @CK_TLS12_KEY_MAT_PARAMS@ image size: the TLS 1.0
+-- shape plus the PRF mechanism word.
+tls12KeyMatNativeSize :: Int
+tls12KeyMatNativeSize = tlsKeyMatNativeSize + wordSize
+
+-- | Write-back slots for one key-material call: the ordered
+-- handle slots (two, or four when MACs are sized — plan
+-- order) plus the IV buffers with their byte lengths (a zero
+-- length ignores its pointer).
+data KeyMatSlots = KeyMatSlots
+  { kmsHandles :: ![Ptr CULong]
+  , kmsIvC :: !(Ptr Word8)
+  , kmsIvCLen :: !Int
+  , kmsIvS :: !(Ptr Word8)
+  , kmsIvSLen :: !Int
+  } deriving (Eq, Show)
+
+-- | One chased @CK_DERIVED_KEY@: its template plus the
+-- caller handle slot.
+data DerivedKeySlot = DerivedKeySlot
+  { dksTemplate :: ![(AttributeType, AttributeValue)]
+  , dksOut :: !(Ptr CULong)
+  } deriving (Eq, Show)
+
+-- | Additional-keys bound: the 16-key fan-out minus the
+-- primary (deeper arrays refuse).
+maxSp800AdditionalKeys :: Word64
+maxSp800AdditionalKeys = 15
+
+-- | A native attribute id onto its model type ('Nothing' for
+-- unmapped ids, which refuse the chase).
+attrTypeByNativeId :: Word64 -> Maybe AttributeType
+attrTypeByNativeId w =
+  lookup w [(i, n) | (i, n, _) <- generatedAttributes] >>= attributeTypeByName
+
+-- | Native @CK_ATTRIBUTE@ image size: type word, value
+-- pointer, length word.
+ckAttrSize :: Int
+ckAttrSize = 3 * wordSize
+
+-- | Chase a native attribute array into a template: over-long
+-- arrays, null arrays, unmapped ids, refused value chases,
+-- and cross-shape values refuse ('Nothing'). Entries chase in
+-- order and short-circuit on the first refusal. Native words
+-- decode little-endian (caller layout); bytes and bools ride
+-- the canonical value decoder.
+chaseAttrTemplate :: Ptr Word8 -> Word64 -> IO (Maybe [(AttributeType, AttributeValue)])
+chaseAttrTemplate pAttrs n
+  | n > fromIntegral maxTemplateEntries = pure Nothing
+  | n == 0 = pure (Just [])
+  | pAttrs == nullPtr = pure Nothing
+  | otherwise = go 0
+  where
+    go :: Word64 -> IO (Maybe [(AttributeType, AttributeValue)])
+    go i
+      | i >= n = pure (Just [])
+      | otherwise = do
+          let el = pAttrs `plusPtr` (fromIntegral i * ckAttrSize)
+          CULong typ <- peekByteOff el 0
+          pVal <- peekByteOff el wordSize
+          CULong vlen <- peekByteOff el (2 * wordSize)
+          mOne <- case attrTypeByNativeId typ of
+            Nothing -> pure Nothing
+            Just t -> do
+              mBs <- chaseBytes pVal vlen
+              pure $ do
+                bs <- mBs
+                v <- case shapeOf t of
+                  ShapeULong -> ValULong . fromIntegral <$> leWordToInt bs
+                  _ -> decodeValue t bs
+                pure (t, v)
+          case mOne of
+            Nothing -> pure Nothing
+            Just one -> (fmap . fmap) (one :) (go (i + 1))
+
+-- | Native @CK_DERIVED_KEY@ image size: template pointer,
+-- count word, handle-slot pointer.
+ckDerivedKeySize :: Int
+ckDerivedKeySize = 2 * ptrSize + wordSize
+
+-- | Chase the @CK_DERIVED_KEY@ array into slots: over-bound
+-- counts, null arrays, refused templates, and null handle
+-- slots refuse ('Nothing').
+chaseDerivedKeys :: Ptr Word8 -> Word64 -> IO (Maybe [DerivedKeySlot])
+chaseDerivedKeys pArr n
+  | n > maxSp800AdditionalKeys = pure Nothing
+  | n == 0 = pure (Just [])
+  | pArr == nullPtr = pure Nothing
+  | otherwise = go 0
+  where
+    go :: Word64 -> IO (Maybe [DerivedKeySlot])
+    go i
+      | i >= n = pure (Just [])
+      | otherwise = do
+          let el = pArr `plusPtr` (fromIntegral i * ckDerivedKeySize)
+          pTmpl <- peekByteOff el 0
+          CULong tcount <- peekByteOff el ptrSize
+          phKey <- peekByteOff el (ptrSize + wordSize)
+          mTmpl <- chaseAttrTemplate pTmpl tcount
+          case (mTmpl, phKey == (nullPtr :: Ptr CULong)) of
+            (Just t, False) ->
+              (fmap . fmap) (DerivedKeySlot t phKey :) (go (i + 1))
+            _ -> pure Nothing
+
+-- | Normalize one TLS 1.0 key-material struct: the canonical
+-- frame plus the caller write-back slots. Wrong-sized
+-- images, null out-structs, null IV buffers under a nonzero
+-- IV size, refused random chases, and off-profile sizes
+-- refuse ('Nothing').
+normalizeTlsKeyMatParams :: Ptr Word8 -> Word64 -> IO (Maybe (ByteString, KeyMatSlots))
+normalizeTlsKeyMatParams pParams paramsLen
+  | paramsLen /= fromIntegral tlsKeyMatNativeSize = pure Nothing
+  | otherwise = normalizeKeyMatCommon pParams Nothing False
+
+-- | Normalize one TLS 1.2 key-material struct (the AND_MAC
+-- row): like 'normalizeTlsKeyMatParams' plus the PRF word.
+normalizeTls12KeyMatParams :: Ptr Word8 -> Word64 -> IO (Maybe (ByteString, KeyMatSlots))
+normalizeTls12KeyMatParams pParams paramsLen
+  | paramsLen /= fromIntegral tls12KeyMatNativeSize = pure Nothing
+  | otherwise = do
+      CULong prf <- peekByteOff pParams (tlsKeyMatNativeSize)
+      normalizeKeyMatCommon pParams (Just prf) False
+
+-- | Normalize one TLS 1.2 key-safe struct: like
+-- 'normalizeTls12KeyMatParams', except the IV size is ignored
+-- and treated as 0 (v3.2 §6.40.7) — null IV pointers accept
+-- and the slots carry zero IV lengths, matching the planner's
+-- suppression.
+normalizeTls12KeySafeParams :: Ptr Word8 -> Word64 -> IO (Maybe (ByteString, KeyMatSlots))
+normalizeTls12KeySafeParams pParams paramsLen
+  | paramsLen /= fromIntegral tls12KeyMatNativeSize = pure Nothing
+  | otherwise = do
+      CULong prf <- peekByteOff pParams (tlsKeyMatNativeSize)
+      normalizeKeyMatCommon pParams (Just prf) True
+
+-- | Shared key-material chase: sizes, the export byte, the
+-- random info, and the out-struct slots; the pure translator
+-- (legacy or hash-selected) builds the frame. The key-safe
+-- row ignores the IV size (treated as 0).
+normalizeKeyMatCommon :: Ptr Word8 -> Maybe Word64 -> Bool -> IO (Maybe (ByteString, KeyMatSlots))
+normalizeKeyMatCommon pParams mPrf ignoreIv = do
+  CULong macBits <- peekByteOff pParams 0
+  CULong keyBits <- peekByteOff pParams wordSize
+  CULong ivBits <- peekByteOff pParams (2 * wordSize)
+  exportByte <- peekByteOff pParams (3 * wordSize)
+  pCr <- peekByteOff pParams (4 * wordSize)
+  CULong crLen <- peekByteOff pParams (5 * wordSize)
+  pSr <- peekByteOff pParams (6 * wordSize)
+  CULong srLen <- peekByteOff pParams (7 * wordSize)
+  pOut <- peekByteOff pParams (8 * wordSize)
+  mCr <- chaseBytes pCr crLen
+  mSr <- chaseBytes pSr srLen
+  case (mCr, mSr, pOut == (nullPtr :: Ptr Word8)) of
+    (Just cr, Just sr, False) -> do
+      pIvC <- peekByteOff pOut (4 * wordSize)
+      pIvS <- peekByteOff pOut (5 * wordSize)
+      let ivOk = ignoreIv || ivBits == 0
+            || (pIvC /= (nullPtr :: Ptr Word8) && pIvS /= (nullPtr :: Ptr Word8))
+          isExport = (exportByte :: Word8) /= 0
+          mFrame = case mPrf of
+            Nothing -> tlsKeyMatStructToCanonical macBits keyBits ivBits isExport cr sr
+            Just prf -> tls12KeyMatStructToCanonical macBits keyBits ivBits isExport prf cr sr
+      case (ivOk, mFrame) of
+        (True, Just frame) -> case (bitsToBytesInt macBits, bitsToBytesInt ivBits) of
+          (Just mac, Just iv) -> do
+            let slot :: Int -> IO (Ptr CULong)
+                slot o = pure (castPtr (pOut `plusPtr` o))
+            s0 <- slot 0
+            s1 <- slot wordSize
+            s2 <- slot (2 * wordSize)
+            s3 <- slot (3 * wordSize)
+            pure (Just (frame, KeyMatSlots
+              { kmsHandles = if mac > 0 then [s0, s1, s2, s3] else [s2, s3]
+              , kmsIvC = pIvC
+              , kmsIvCLen = if ignoreIv then 0 else iv
+              , kmsIvS = pIvS
+              , kmsIvSLen = if ignoreIv then 0 else iv
+              }))
+          _ -> pure Nothing
+        _ -> pure Nothing
+    _ -> pure Nothing
+
 -- | The bare bit offset of @CKM_EXTRACT_KEY_FROM_KEY@ onto
 -- the canonical @byteops-params\/1@ image (range is checked
 -- against the base length downstream).
@@ -1248,26 +1500,38 @@ sp800NativeSize _ = 3 * wordSize + 2 * ptrSize
 -- arrays, refused chases, and off-profile parameters refuse
 -- ('Nothing'), which passes through raw so the recipe refusal
 -- is exactly the planner's.
-normalizeSp800KdfParams :: Sp800Mode -> Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeSp800KdfParams :: Sp800Mode -> Ptr Word8 -> Word64 -> IO (Maybe (ByteString, [DerivedKeySlot]))
 normalizeSp800KdfParams mode pParams paramsLen
   | paramsLen /= fromIntegral (sp800NativeSize mode) = pure Nothing
   | otherwise = do
       CULong prf <- peekByteOff pParams 0
       CULong nParams <- peekByteOff pParams wordSize
       pDataParams <- peekByteOff pParams (2 * wordSize)
-      (ivLen, pIv, additional) <- case mode of
+      (ivLen, pIv, additional, pAdditional) <- case mode of
         Sp800Feedback -> do
           CULong il <- peekByteOff pParams (2 * wordSize + ptrSize)
           piv <- peekByteOff pParams (3 * wordSize + ptrSize)
           CULong ad <- peekByteOff pParams (3 * wordSize + 2 * ptrSize)
-          pure (il, piv, ad)
+          pAd <- peekByteOff pParams (4 * wordSize + 2 * ptrSize)
+          pure (il, piv, ad, pAd)
         _ -> do
           CULong ad <- peekByteOff pParams (2 * wordSize + ptrSize)
-          pure (0, nullPtr, ad)
+          pAd <- peekByteOff pParams (3 * wordSize + ptrSize)
+          pure (0, nullPtr, ad, pAd)
       mParams <- chaseSp800DataParams pDataParams nParams
       mIv <- chaseBytes pIv ivLen
-      pure (mParams >>= \ps -> mIv >>= \iv ->
-        sp800StructToCanonical mode prf ps iv additional)
+      mSlots <- chaseSp800Additional additional pAdditional
+      pure (mParams >>= \ps -> mIv >>= \iv -> mSlots >>= \slots ->
+        fmap (\b -> (b, slots)) (sp800StructToCanonicalProfile mode prf ps iv))
+
+-- | Chase the additional-keys array: a zero count demands a
+-- NULL pointer (v3.2: "must be set to NULL_PTR"); a nonzero
+-- count chases that many entries ('chaseDerivedKeys').
+chaseSp800Additional :: Word64 -> Ptr Word8 -> IO (Maybe [DerivedKeySlot])
+chaseSp800Additional additional pAdditional
+  | additional == 0 =
+      if pAdditional == nullPtr then pure (Just []) else pure Nothing
+  | otherwise = chaseDerivedKeys pAdditional additional
 
 -- | Native @CK_PRF_DATA_PARAM@ image size: one type word, one
 -- pointer, one length word.

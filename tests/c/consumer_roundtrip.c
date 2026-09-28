@@ -5043,6 +5043,400 @@ int main(int argc, char **argv) {
         }
       }
       {
+        /* TLS key-material trio + SP800 additional keys. PMS
+         * bytes 0..47, client random 0..31, server random
+         * 32..63 (the oracle's constants); expected blocks are
+         * the oracle-cross-checked PRF outputs. */
+        CK_BYTE kpms[48], kcr[32], ksr[32];
+        CK_BYTE kivc[16], kivs[16];
+        CK_BYTE kgot[20];
+        int ki, kok;
+        CK_OBJECT_HANDLE kbase = 0;
+        CK_OBJECT_CLASS kseccls = CKO_SECRET_KEY;
+        CK_KEY_TYPE kgenkt = CKK_GENERIC_SECRET;
+        CK_OBJECT_HANDLE kcm = 0, ksm = 0, kck = 0, ksk = 0;
+        CK_OBJECT_HANDLE kph = 0;
+        CK_MECHANISM km;
+        CK_ATTRIBUTE kbaseT[] = {
+          { CKA_CLASS, &kseccls, sizeof(kseccls) },
+          { CKA_KEY_TYPE, &kgenkt, sizeof(kgenkt) },
+          { CKA_TOKEN, &no, sizeof(no) },
+          { CKA_DERIVE, &yes, sizeof(yes) },
+          { CKA_SENSITIVE, &no, sizeof(no) },
+          { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+          { CKA_VALUE, kpms, sizeof(kpms) },
+        };
+        CK_ATTRIBUTE kdtmpl[] = {
+          { CKA_CLASS, &kseccls, sizeof(kseccls) },
+          { CKA_KEY_TYPE, &kgenkt, sizeof(kgenkt) },
+          { CKA_TOKEN, &no, sizeof(no) },
+          { CKA_SENSITIVE, &no, sizeof(no) },
+          { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+        };
+        CK_ATTRIBUTE kg[] = { { CKA_VALUE, kgot, sizeof(kgot) } };
+        static const CK_BYTE k10ck[16] = { 0xf3, 0x77, 0x1f, 0x99, 0xcf, 0x91, 0x85, 0x87, 0x48, 0xdc, 0x50, 0xed, 0x54, 0x0e, 0xdc, 0x39 };
+        static const CK_BYTE k10sk[16] = { 0xef, 0xb0, 0x6a, 0x25, 0x6d, 0xcd, 0x4d, 0x9f, 0xfd, 0xf8, 0x72, 0x98, 0xf7, 0x2c, 0xf7, 0x00 };
+        static const CK_BYTE k10ivc[16] = { 0xf5, 0x58, 0x5f, 0x14, 0xe9, 0xdb, 0x80, 0xe3, 0xaf, 0x1a, 0x7c, 0xcc, 0x2c, 0x21, 0x8d, 0x42 };
+        static const CK_BYTE k10ivs[16] = { 0xb3, 0x6a, 0xa1, 0xa7, 0x58, 0x44, 0x98, 0xf7, 0x5e, 0xda, 0xca, 0x5b, 0xf8, 0xf8, 0x63, 0x28 };
+        static const CK_BYTE k12cm[20] = { 0xfb, 0xe0, 0xdb, 0xb7, 0x1e, 0x90, 0x97, 0xfc, 0xfe, 0x64, 0x43, 0x17, 0xa1, 0x6d, 0x33, 0x4f, 0xac, 0x72, 0x1a, 0x5f };
+        static const CK_BYTE k12sm[20] = { 0x82, 0x27, 0x30, 0x46, 0x8a, 0x36, 0x6a, 0x4e, 0xf2, 0xf2, 0x20, 0x68, 0x48, 0x09, 0x2b, 0x65, 0xca, 0x8b, 0x00, 0xc3 };
+        static const CK_BYTE k12ck[16] = { 0x56, 0x74, 0x2c, 0xd5, 0xba, 0xe7, 0x0e, 0xd8, 0xac, 0x35, 0xe7, 0x09, 0x45, 0xa5, 0x30, 0x33 };
+        static const CK_BYTE k12ivc[16] = { 0x2f, 0x25, 0x84, 0x95, 0x5a, 0x68, 0xb8, 0x7c, 0x9d, 0x19, 0x8c, 0xe2, 0xc5, 0x5c, 0x20, 0x4f };
+        static const CK_BYTE k12ivs[16] = { 0x05, 0x3d, 0xdd, 0xc6, 0xf5, 0xce, 0x4f, 0x96, 0xc2, 0x42, 0xe8, 0xbb, 0x75, 0x8c, 0xd5, 0xfa };
+        static const CK_BYTE kSafeCk[16] = { 0xfb, 0xe0, 0xdb, 0xb7, 0x1e, 0x90, 0x97, 0xfc, 0xfe, 0x64, 0x43, 0x17, 0xa1, 0x6d, 0x33, 0x4f };
+        static const CK_BYTE kSafeSk[16] = { 0xac, 0x72, 0x1a, 0x5f, 0x82, 0x27, 0x30, 0x46, 0x8a, 0x36, 0x6a, 0x4e, 0xf2, 0xf2, 0x20, 0x68 };
+        for (ki = 0; ki < 48; ki++) kpms[ki] = (CK_BYTE)ki;
+        for (ki = 0; ki < 32; ki++) kcr[ki] = (CK_BYTE)ki;
+        for (ki = 0; ki < 32; ki++) ksr[ki] = (CK_BYTE)(ki + 32);
+        rv = f->C_CreateObject(sess, kbaseT, 7, &kbase);
+        CHECKC(rv == CKR_OK && kbase != 0, "keymat base imports");
+        if (!isProxy) {
+          CK_SSL3_RANDOM_DATA ri10 = { kcr, 32, ksr, 32 };
+          CK_SSL3_KEY_MAT_OUT out10;
+          CK_SSL3_KEY_MAT_PARAMS p10;
+          memset(&out10, 0, sizeof(out10));
+          out10.pIVClient = kivc;
+          out10.pIVServer = kivs;
+          p10.ulMacSizeInBits = 0;
+          p10.ulKeySizeInBits = 128;
+          p10.ulIVSizeInBits = 128;
+          p10.bIsExport = CK_FALSE;
+          p10.RandomInfo = ri10;
+          p10.pReturnedKeyMaterial = &out10;
+          km.mechanism = CKM_TLS_KEY_AND_MAC_DERIVE;
+          km.pParameter = &p10;
+          km.ulParameterLen = sizeof(p10);
+          rv = f->C_DeriveKey(sess, &km, kbase, kdtmpl, 5, NULL);
+          CHECKC(rv == CKR_OK, "tls10 keymat derives with NULL phKey");
+          CHECKC(out10.hClientKey != 0 && out10.hServerKey != 0, "tls10 keys returned");
+          CHECKC(out10.hClientMacSecret == 0 && out10.hServerMacSecret == 0, "tls10 mac0 creates no macs");
+          kck = out10.hClientKey;
+          ksk = out10.hServerKey;
+          kg[0].pValue = kgot;
+          kg[0].ulValueLen = sizeof(kgot);
+          rv = f->C_GetAttributeValue(sess, kck, kg, 1);
+          kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, k10ck, 16) == 0;
+          CHECKC(kok, "tls10 client key matches KAT");
+          kg[0].ulValueLen = sizeof(kgot);
+          rv = f->C_GetAttributeValue(sess, ksk, kg, 1);
+          kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, k10sk, 16) == 0;
+          CHECKC(kok, "tls10 server key matches KAT");
+          CHECKC(memcmp(kivc, k10ivc, 16) == 0, "tls10 client IV matches KAT");
+          CHECKC(memcmp(kivs, k10ivs, 16) == 0, "tls10 server IV matches KAT");
+          /* A non-NULL phKey is accepted and zeroed (no
+           * primary key exists for these rows). */
+          kph = 99;
+          memset(&out10, 0, sizeof(out10));
+          out10.pIVClient = kivc;
+          out10.pIVServer = kivs;
+          rv = f->C_DeriveKey(sess, &km, kbase, kdtmpl, 5, &kph);
+          CHECKC(rv == CKR_OK && kph == 0, "tls10 non-NULL phKey zeroed");
+          f->C_DestroyObject(sess, out10.hClientKey);
+          f->C_DestroyObject(sess, out10.hServerKey);
+          /* Template VALUE_LEN refuses: lengths come from
+           * params. */
+          {
+            CK_ULONG klen = 8;
+            CK_ATTRIBUTE kbad[] = {
+              { CKA_CLASS, &kseccls, sizeof(kseccls) },
+              { CKA_KEY_TYPE, &kgenkt, sizeof(kgenkt) },
+              { CKA_VALUE_LEN, &klen, sizeof(klen) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_SENSITIVE, &no, sizeof(no) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+            };
+            memset(&out10, 0, sizeof(out10));
+            out10.pIVClient = kivc;
+            out10.pIVServer = kivs;
+            rv = f->C_DeriveKey(sess, &km, kbase, kbad, 6, NULL);
+            CHECKC(rv == CKR_TEMPLATE_INCONSISTENT, "keymat template length refused");
+          }
+          /* Protection differing from the base refuses (the
+           * oracle's template-conflict leg). */
+          {
+            CK_ATTRIBUTE kconf[] = {
+              { CKA_CLASS, &kseccls, sizeof(kseccls) },
+              { CKA_KEY_TYPE, &kgenkt, sizeof(kgenkt) },
+              { CKA_SENSITIVE, &yes, sizeof(yes) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+              { CKA_TOKEN, &no, sizeof(no) },
+            };
+            memset(&out10, 0, sizeof(out10));
+            out10.pIVClient = kivc;
+            out10.pIVServer = kivs;
+            rv = f->C_DeriveKey(sess, &km, kbase, kconf, 5, NULL);
+            CHECKC(rv == CKR_TEMPLATE_INCONSISTENT, "keymat protection conflict refused");
+          }
+          /* Export refuses typed. */
+          p10.bIsExport = CK_TRUE;
+          memset(&out10, 0, sizeof(out10));
+          out10.pIVClient = kivc;
+          out10.pIVServer = kivs;
+          rv = f->C_DeriveKey(sess, &km, kbase, kdtmpl, 5, NULL);
+          CHECKC(rv == CKR_ARGUMENTS_BAD, "keymat export refused");
+          rv = f->C_DestroyObject(sess, kck);
+          CHECKC(rv == CKR_OK, "tls10 client key destroyed");
+          rv = f->C_DestroyObject(sess, ksk);
+          CHECKC(rv == CKR_OK, "tls10 server key destroyed");
+        } else {
+          /* The pinned shim models ssl3_key_mat for 0x3e1 /
+           * 0x3e3 only: 0x376 has no entry (mechanism_
+           * params_default.toml) and arrives as unmodeled
+           * Raw, refused at the FFI boundary. The dummy
+           * phKey is load-bearing: the shim rejects a NULL
+           * phKey with ARGUMENTS_BAD before modeling
+           * params, so only a non-NULL slot observes the
+           * 0x71 refusal. */
+          CK_SSL3_RANDOM_DATA ri10 = { kcr, 32, ksr, 32 };
+          CK_SSL3_KEY_MAT_OUT out10;
+          CK_SSL3_KEY_MAT_PARAMS p10;
+          memset(&out10, 0, sizeof(out10));
+          out10.pIVClient = kivc;
+          out10.pIVServer = kivs;
+          p10.ulMacSizeInBits = 0;
+          p10.ulKeySizeInBits = 128;
+          p10.ulIVSizeInBits = 128;
+          p10.bIsExport = CK_FALSE;
+          p10.RandomInfo = ri10;
+          p10.pReturnedKeyMaterial = &out10;
+          km.mechanism = CKM_TLS_KEY_AND_MAC_DERIVE;
+          km.pParameter = &p10;
+          km.ulParameterLen = sizeof(p10);
+          kph = 0;
+          rv = f->C_DeriveKey(sess, &km, kbase, kdtmpl, 5, &kph);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "proxied tls10 keymat refused at shim");
+        }
+        {
+          /* TLS 1.2 rows in both topologies: the shim models
+           * the key-mat shape for 0x3e1/0x3e3. */
+          CK_SSL3_RANDOM_DATA ri12 = { kcr, 32, ksr, 32 };
+          CK_SSL3_KEY_MAT_OUT out12;
+          CK_TLS12_KEY_MAT_PARAMS p12;
+          memset(&out12, 0, sizeof(out12));
+          out12.pIVClient = kivc;
+          out12.pIVServer = kivs;
+          p12.ulMacSizeInBits = 160;
+          p12.ulKeySizeInBits = 128;
+          p12.ulIVSizeInBits = 128;
+          p12.bIsExport = CK_FALSE;
+          p12.RandomInfo = ri12;
+          p12.pReturnedKeyMaterial = &out12;
+          p12.prfHashMechanism = CKM_SHA256;
+          km.mechanism = CKM_TLS12_KEY_AND_MAC_DERIVE;
+          km.pParameter = &p12;
+          km.ulParameterLen = sizeof(p12);
+          rv = f->C_DeriveKey(sess, &km, kbase, kdtmpl, 5, isProxy ? &kph : NULL);
+          CHECKC(rv == CKR_OK, "tls12 keymat derives");
+          kcm = out12.hClientMacSecret;
+          ksm = out12.hServerMacSecret;
+          kck = out12.hClientKey;
+          ksk = out12.hServerKey;
+          CHECKC(kcm != 0 && ksm != 0 && kck != 0 && ksk != 0, "tls12 four keys returned");
+          if (!isProxy) {
+            kg[0].pValue = kgot;
+            kg[0].ulValueLen = sizeof(kgot);
+            rv = f->C_GetAttributeValue(sess, kcm, kg, 1);
+            kok = rv == CKR_OK && kg[0].ulValueLen == 20 && memcmp(kgot, k12cm, 20) == 0;
+            CHECKC(kok, "tls12 client mac matches KAT");
+            kg[0].ulValueLen = sizeof(kgot);
+            rv = f->C_GetAttributeValue(sess, ksm, kg, 1);
+            kok = rv == CKR_OK && kg[0].ulValueLen == 20 && memcmp(kgot, k12sm, 20) == 0;
+            CHECKC(kok, "tls12 server mac matches KAT");
+            kg[0].ulValueLen = sizeof(kgot);
+            rv = f->C_GetAttributeValue(sess, kck, kg, 1);
+            kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, k12ck, 16) == 0;
+            CHECKC(kok, "tls12 client key matches KAT");
+          } else {
+            /* Proxied, the derive succeeds and the IVs are
+             * KAT-exact, but the OUT-struct embedded
+             * handles never enter the proxy's handle map
+             * (unlike template-chased additional keys,
+             * which survive): reads refuse 0x82. Pinned
+             * as a proxy limitation, not a backend bug. */
+            CHECKC(memcmp(kivc, k12ivc, 16) == 0, "proxied tls12 client IV matches KAT");
+            CHECKC(memcmp(kivs, k12ivs, 16) == 0, "proxied tls12 server IV matches KAT");
+            kg[0].pValue = kgot;
+            kg[0].ulValueLen = sizeof(kgot);
+            rv = f->C_GetAttributeValue(sess, kcm, kg, 1);
+            CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "proxied tls12 embedded handle unmapped");
+          }
+          /* KEY_SAFE: same keys, no IVs produced. */
+          {
+            CK_SSL3_KEY_MAT_OUT outs;
+            CK_TLS12_KEY_MAT_PARAMS ps;
+            memset(&outs, 0, sizeof(outs));
+            ps.ulMacSizeInBits = 0;
+            ps.ulKeySizeInBits = 128;
+            ps.ulIVSizeInBits = 0;
+            ps.bIsExport = CK_FALSE;
+            ps.RandomInfo = ri12;
+            ps.pReturnedKeyMaterial = &outs;
+            ps.prfHashMechanism = CKM_SHA256;
+            km.mechanism = CKM_TLS12_KEY_SAFE_DERIVE;
+            km.pParameter = &ps;
+            km.ulParameterLen = sizeof(ps);
+            rv = f->C_DeriveKey(sess, &km, kbase, kdtmpl, 5, isProxy ? &kph : NULL);
+            CHECKC(rv == CKR_OK, "key-safe derives");
+            CHECKC(outs.hClientKey != 0 && outs.hServerKey != 0, "key-safe keys returned");
+            if (!isProxy) {
+              kg[0].pValue = kgot;
+              kg[0].ulValueLen = sizeof(kgot);
+              rv = f->C_GetAttributeValue(sess, outs.hClientKey, kg, 1);
+              kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, kSafeCk, 16) == 0;
+              CHECKC(kok, "key-safe client key matches KAT");
+              kg[0].ulValueLen = sizeof(kgot);
+              rv = f->C_GetAttributeValue(sess, outs.hServerKey, kg, 1);
+              kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, kSafeSk, 16) == 0;
+              CHECKC(kok, "key-safe server key matches KAT");
+              f->C_DestroyObject(sess, outs.hClientKey);
+              f->C_DestroyObject(sess, outs.hServerKey);
+            } else {
+              kg[0].pValue = kgot;
+              kg[0].ulValueLen = sizeof(kgot);
+              rv = f->C_GetAttributeValue(sess, outs.hClientKey, kg, 1);
+              CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "proxied key-safe embedded handle unmapped");
+            }
+          }
+          /* KEY_SAFE with a nonzero IV size: the size is
+           * ignored (v3.2 §6.40.7) — the derive succeeds and
+           * the IV buffers keep their sentinels. */
+          {
+            CK_BYTE ksivc[16], ksivs[16];
+            CK_BYTE wantc[16], wants[16];
+            CK_SSL3_KEY_MAT_OUT outs;
+            CK_TLS12_KEY_MAT_PARAMS ps;
+            memset(ksivc, 0xA5, sizeof(ksivc));
+            memset(ksivs, 0x5A, sizeof(ksivs));
+            memset(wantc, 0xA5, sizeof(wantc));
+            memset(wants, 0x5A, sizeof(wants));
+            memset(&outs, 0, sizeof(outs));
+            outs.pIVClient = ksivc;
+            outs.pIVServer = ksivs;
+            ps.ulMacSizeInBits = 0;
+            ps.ulKeySizeInBits = 128;
+            ps.ulIVSizeInBits = 128;
+            ps.bIsExport = CK_FALSE;
+            ps.RandomInfo = ri12;
+            ps.pReturnedKeyMaterial = &outs;
+            ps.prfHashMechanism = CKM_SHA256;
+            km.mechanism = CKM_TLS12_KEY_SAFE_DERIVE;
+            km.pParameter = &ps;
+            km.ulParameterLen = sizeof(ps);
+            rv = f->C_DeriveKey(sess, &km, kbase, kdtmpl, 5, isProxy ? &kph : NULL);
+            CHECKC(rv == CKR_OK, "key-safe ignores iv size");
+            CHECKC(outs.hClientKey != 0 && outs.hServerKey != 0, "key-safe iv128 keys returned");
+            CHECKC(memcmp(ksivc, wantc, 16) == 0, "key-safe client IV untouched");
+            CHECKC(memcmp(ksivs, wants, 16) == 0, "key-safe server IV untouched");
+            if (!isProxy) {
+              kg[0].pValue = kgot;
+              kg[0].ulValueLen = sizeof(kgot);
+              rv = f->C_GetAttributeValue(sess, outs.hClientKey, kg, 1);
+              kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, kSafeCk, 16) == 0;
+              CHECKC(kok, "key-safe iv128 client key matches KAT");
+              f->C_DestroyObject(sess, outs.hClientKey);
+              f->C_DestroyObject(sess, outs.hServerKey);
+            }
+          }
+          if (!isProxy) {
+            rv = f->C_DestroyObject(sess, kcm);
+            CHECKC(rv == CKR_OK, "tls12 mac destroyed");
+            f->C_DestroyObject(sess, ksm);
+            f->C_DestroyObject(sess, kck);
+            f->C_DestroyObject(sess, ksk);
+          } else {
+            rv = f->C_DestroyObject(sess, kcm);
+            CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "proxied tls12 embedded destroy unmapped");
+          }
+        }
+        {
+          /* SP800-108 counter with one additional key: the
+           * primary and the additional handle both land,
+           * splitting the DKM in order. */
+          CK_BYTE klabel[8] = { 'l', 'a', 'b', 'e', 'l', 0, 0, 0 };
+          CK_SP800_108_KDF_PARAMS sp;
+          CK_PRF_DATA_PARAM sdp[5];
+          CK_SP800_108_COUNTER_FORMAT scf;
+          CK_SP800_108_DKM_LENGTH_FORMAT sdf;
+          CK_BYTE ssep = 0;
+          CK_BYTE sctx[8] = { 'c', 'o', 'n', 't', 'e', 'x', 't', 'x' };
+          CK_ATTRIBUTE sattr[6];
+          CK_ULONG sclass = CKO_SECRET_KEY;
+          CK_KEY_TYPE saes = CKK_AES;
+          CK_ULONG svlen = 16;
+          CK_DERIVED_KEY sdk;
+          CK_OBJECT_HANDLE spri = 0, sadd = 0;
+          CK_BYTE saddv[16];
+          CK_ATTRIBUTE saddg[] = { { CKA_VALUE, saddv, sizeof(saddv) } };
+          CK_ATTRIBUTE spri_t[] = {
+            { CKA_CLASS, &kseccls, sizeof(kseccls) },
+            { CKA_KEY_TYPE, &kgenkt, sizeof(kgenkt) },
+            { CKA_VALUE_LEN, &svlen, sizeof(svlen) },
+            { CKA_TOKEN, &no, sizeof(no) },
+            { CKA_SENSITIVE, &no, sizeof(no) },
+            { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+          };
+          scf.bLittleEndian = CK_FALSE;
+          scf.ulWidthInBits = 32;
+          sdf.dkmLengthMethod = CK_SP800_108_DKM_LENGTH_SUM_OF_KEYS;
+          sdf.bLittleEndian = CK_FALSE;
+          sdf.ulWidthInBits = 32;
+          sdp[0].type = CK_SP800_108_ITERATION_VARIABLE;
+          sdp[0].pValue = &scf;
+          sdp[0].ulValueLen = sizeof(scf);
+          sdp[1].type = CK_SP800_108_BYTE_ARRAY;
+          sdp[1].pValue = klabel;
+          sdp[1].ulValueLen = sizeof(klabel);
+          sdp[2].type = CK_SP800_108_BYTE_ARRAY;
+          sdp[2].pValue = &ssep;
+          sdp[2].ulValueLen = sizeof(ssep);
+          sdp[3].type = CK_SP800_108_BYTE_ARRAY;
+          sdp[3].pValue = sctx;
+          sdp[3].ulValueLen = sizeof(sctx);
+          sdp[4].type = CK_SP800_108_DKM_LENGTH;
+          sdp[4].pValue = &sdf;
+          sdp[4].ulValueLen = sizeof(sdf);
+          sp.prfType = CKM_SHA256_HMAC;
+          sp.ulNumberOfDataParams = 5;
+          sp.pDataParams = sdp;
+          sp.ulAdditionalDerivedKeys = 1;
+          sp.pAdditionalDerivedKeys = &sdk;
+          sattr[0].type = CKA_CLASS;
+          sattr[0].pValue = &sclass;
+          sattr[0].ulValueLen = sizeof(sclass);
+          sattr[1].type = CKA_KEY_TYPE;
+          sattr[1].pValue = &saes;
+          sattr[1].ulValueLen = sizeof(saes);
+          sattr[2].type = CKA_VALUE_LEN;
+          sattr[2].pValue = &svlen;
+          sattr[2].ulValueLen = sizeof(svlen);
+          sattr[3].type = CKA_SENSITIVE;
+          sattr[3].pValue = &no;
+          sattr[3].ulValueLen = sizeof(no);
+          sattr[4].type = CKA_EXTRACTABLE;
+          sattr[4].pValue = &yes;
+          sattr[4].ulValueLen = sizeof(yes);
+          sattr[5].type = CKA_TOKEN;
+          sattr[5].pValue = &no;
+          sattr[5].ulValueLen = sizeof(no);
+          sdk.pTemplate = sattr;
+          sdk.ulAttributeCount = 6;
+          sdk.phKey = &sadd;
+          km.mechanism = CKM_SP800_108_COUNTER_KDF;
+          km.pParameter = &sp;
+          km.ulParameterLen = sizeof(sp);
+          rv = f->C_DeriveKey(sess, &km, kbase, spri_t, 6, &spri);
+          CHECKC(rv == CKR_OK && spri != 0 && sadd != 0, "sp800 additional handle lands");
+          saddg[0].ulValueLen = sizeof(saddv);
+          rv = f->C_GetAttributeValue(sess, sadd, saddg, 1);
+          kok = rv == CKR_OK && saddg[0].ulValueLen == 16;
+          CHECKC(kok, "sp800 additional key reads 16 bytes");
+          f->C_DestroyObject(sess, spri);
+          f->C_DestroyObject(sess, sadd);
+        }
+        rv = f->C_DestroyObject(sess, kbase);
+        CHECKC(rv == CKR_OK, "keymat base destroyed");
+      }
+      {
         CK_ATTRIBUTE ptmpl[] = {
           { CKA_CLASS, &prvcls, sizeof(prvcls) },
           { CKA_KEY_TYPE, &eckt, sizeof(eckt) },

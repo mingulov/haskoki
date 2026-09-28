@@ -183,6 +183,11 @@ import Haskoki.Recipe.TlsKdf
   , tlsKdfCodecFor
   , tlsKdfRecipes
   )
+import Haskoki.Recipe.TlsKeyMat
+  ( TlsKeyMatRecipe (..)
+  , tlsKeyMatCodecFor
+  , tlsKeyMatRecipes
+  )
 import Haskoki.Recipe.Ike
   ( IkeRecipe (..)
   , ikeCodecFor
@@ -1042,6 +1047,29 @@ byteOpsDescs =
   | r <- byteOpsRecipes
   ]
 
+-- | Baselines for the key-material rows: the TLS 1.0 row is
+-- v2-era; the TLS 1.2 rows arrived in v3.0.
+tlsKeyMatBaselines :: MechanismName -> [Pkcs11Version]
+tlsKeyMatBaselines name
+  | name == "CKM_TLS_KEY_AND_MAC_DERIVE" = allBaselines
+  | otherwise = [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
+
+-- | The key-material behavior group, derived from the recipe
+-- table: one descriptor per recipe row, codec from
+-- 'tlsKeyMatCodecFor', the derive route citing the planner
+-- case (A20), the synthetic separation (A37), and the real
+-- vectors (A39). Key bounds are mechanism-specific (the
+-- planned block, split per params).
+tlsKeyMatDescs :: [Descriptor]
+tlsKeyMatDescs =
+  [ promotedDesc (tkmName r) (tlsKeyMatBaselines (tkmName r)) FamilyDerive
+      (tlsKeyMatCodecFor r)
+      [ mechRoute OpDerive (tkmName r) ["A20", "A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- tlsKeyMatRecipes
+  ]
+
 -- | The encrypt-data behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from
 -- 'encryptDataCodecFor', the derive route citing the planner case
@@ -1456,7 +1484,7 @@ curatedRegistry =
         , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
-          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ byteOpsDescs ++ otpDescs ++ encryptDataDescs
+          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ byteOpsDescs ++ tlsKeyMatDescs ++ otpDescs ++ encryptDataDescs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

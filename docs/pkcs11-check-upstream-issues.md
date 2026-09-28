@@ -35,6 +35,115 @@ From `/tmp/pkcs11-ws/out/fast-rc1/pkcs11-fast-rc1-results.json`
 - New candidate P11C-007 below (x942 helper omits
   CKA_VALUE_LEN).
 
+## Validation against 0.2.2rc2 (2026-09-28, fast lane)
+
+Sdist `pkcs11_check-0.2.2rc2.tar.gz` (TestPyPI,
+sha256 `9fbebe45…7a0`) unpacked to
+`/tmp/pkcs11-ws/pkcs11-check-0.2.2rc2`, lane via
+scratch `run-lane-rc2.sh` (rc1-script pattern, outputs
+under `/tmp/pkcs11-ws/out-rc2/`). Bundle: 11l release
+with the Notify fix below (258 rows). Result
+(`out-rc2/fast/pkcs11-fast-results.json`): 4602 passed
+/ 0 failed / 481 xfailed / 3846 skipped (first run:
+4600/2, the 2 reds being the new callback-matrix legs
+against our pre-fix 0x54 refusal; xfail/skip counts
+identical across the re-run, so the fix regressed
+nothing).
+
+Per-filing verdicts (source check + lane evidence;
+the harness omits pass records, so absence from the
+non-pass set with the row collected means PASS):
+
+- P11C-001: FIXED. Registry carries `CKK_HOTP` /
+  `CKK_SECURID` / `CKK_ACTI` (`_misc.py:461-503`); the
+  two legs run and xfail only on our RV stance
+  (`KEY_TYPE_INCONSISTENT` expected, we answer
+  `ARGUMENTS_BAD` — ours, xfail-level, uniform with
+  the other sign/verify wrong-key legs).
+- P11C-002: FIXED. `_KEY_SIZE_REJECT_RVS` is symbolic
+  (`ATTRIBUTE_VALUE_INVALID`, `TEMPLATE_INCONSISTENT`,
+  `ARGUMENTS_BAD`) and all four legs (RSA/DSA/AES/DH)
+  pass with our uniform `TEMPLATE_INCONSISTENT`. Note:
+  `CKR_KEY_SIZE_RANGE` left the set (rc1 expected it);
+  no leg needs it now.
+- P11C-004: FIXED. Fixtures verified independently:
+  256-byte `g` (`3fb32c9b…cc41659`, matches the filing's
+  expected head/tail), `g < p`, `q | p-1`, `g^q = 1`,
+  Bob `y^q = 1`, `y = g^xB` for `xB = 0x81..0xA0`,
+  trailing-32 secret matches. All 13 legs pass; the 2
+  remaining xfails (`concatenate`/`asn1` other-info)
+  are our unserved X9.42 KDF variants (module
+  coverage note, future slice).
+- P11C-005: FIXED. All 16 entries typed
+  (`CKK_BLAKE2B_*_HMAC`); 32 of the 40 legs pass, the
+  8 remaining xfails are the generic `CKA_LOCAL`
+  readback gap (49+ legs across every keygen row —
+  pre-existing ours, not BLAKE2B-specific).
+- P11C-006: FIXED. Fixtures pass the 1-byte version
+  (`mech_bytes` + `_WTLS_PRE_MASTER_VERSION`) with
+  `attr_bool` flags; all 3 legs pass. (One
+  `mech_simple` call remains at `test_wtls.py:958` —
+  kept deliberately for the NULL-params negative leg.)
+- P11C-007: FIXED. `_x942_derive_aes` pins
+  `CKA_VALUE_LEN: 16`; `test_derived_key_encrypts`
+  passes.
+- P11C-008: FIXED. `ParamRecipe("ctr",
+  {"counter_bits": 128})` added; the 5 filed legs
+  pass. The 2 `missing_required_param` negative legs
+  xfail on our uniform `ARGUMENTS_BAD`-for-missing-
+  params stance (expected `MECHANISM_PARAM_INVALID`)
+  — ours, xfail-level, shared with AES_CBC.
+- P11C-009: FIXED in source (`param_required=False`).
+  No lane impact (row still unadvertised); the fix
+  unblocks serving `CKM_POLY1305` in a future slice.
+- P11C-003: FIXED (source + runtime). Loader
+  carries `context`, `mech_sign_context` wired; the
+  rc2 KAT lane shows zero SLH-DSA non-pass records
+  and zero failures overall.
+- P11C-010: FIXED (correction of the first static
+  read). The `mech_bytes` at `test_wycheproof_aes.py:717`
+  is now only the 2.40-interface leg; 3.x sends a
+  proper `mech_gcm` struct with `tag_bits` from the
+  vector, and the test was rewritten to the
+  C_Verify direction (the old C_Sign direction could
+  never reject an invalid vector). All 414 GMAC
+  vectors (324 invalid + 90 valid) run and pass
+  against the 11l bundle (wycheproof_aes unit:
+  1566 passed / 0 failed; the +414 pass delta vs
+  rc1 is exactly the GMAC set). Precision note: the
+  filing's "414 xfails" were 414 *skips* — every
+  vector skipped at the `has_mechanism` gate in rc1
+  (report.jsonl call-records), so the raw-bytes path
+  was never exercised there.
+
+KAT lane (`out-rc2/kat/pkcs11-kat-results.json`):
+82995 passed / 0 failed / 1741 xfailed / 30751
+skipped (rc1: 78484 / 4 / 4870). The 4 rc1 fails
+were the same 3 WTLS + 1 x942 legs as fast (006,
+007) — all pass now. Remaining xfails are our-side
+classifications (RV stances such as AES-KW unwrap
+codes, the generic `CKA_LOCAL` readback gap,
+unserved OAEP label hashes / edwards-curveName
+keygen); a scan for `accepted_invalid` /
+`wrong_result` / crash / timeout hits only 3
+benign xfail-level RV notes, no crypto breaks and
+no new framework defects.
+
+New from rc2 (module-side, NOT a P11C filing): the new
+`test_open_session_callback_matrix` (4 legs) failed
+its 2 callback legs against our `C_OpenSession`
+refusal of non-NULL `Notify` with
+`CKR_FUNCTION_NOT_SUPPORTED`. Spec check: v3.2 §5.6.1
+lists no callback-refusal code for `C_OpenSession`,
+so 0x54 was ours to fix, not upstream's to accept.
+Fixed module-side (`cbits/standard_surface.c` accepts
+`Notify`, retained nowhere, never invoked — the
+module generates no notification events), pinned by a
+per-table `consumer_errors` leg (open OK + usable +
+zero invocations, direct-only), documented in
+`docs/operations-notes.md`. Post-fix re-run: the 2
+legs pass, 0 failed overall.
+
 ## P11C-001: HOTP registry entry has key_type=None; wrong-key-type tests HARD-FAIL every lane
 
 **Severity**: medium (2 red tests in every fast/KAT lane; masks real regressions)
@@ -569,7 +678,10 @@ module change.
 
 ## P11C-010 (candidate): wycheproof GMAC sends raw IV bytes instead of `CK_GCM_PARAMS`
 
-**Severity**: low (414 xfail legs in the KAT lane)
+**Severity**: low (414 legs affected in the KAT lane)
+**Status**: FIXED in 0.2.2rc2 (struct on 3.x +
+C_Verify direction; all 414 pass — see the rc2
+validation section)
 **Component**: `src/pkcs11_check/testcases/wycheproof/test_wycheproof_aes.py`
 (`test_aes_gmac`, line ~700) vs
 `src/pkcs11_check/testcases/acvp/aes/test_gcm.py`
@@ -582,9 +694,15 @@ ACVP sibling test for the same mechanism sends the OASIS
 `CK_GCM_PARAMS` struct. OASIS v3.2 §6.13.6 defines GMAC
 parameters as `CK_GCM_PARAMS` (tag length by `ulTagBits`, IV
 by `ulIvLen`); raw bytes are not a conformant shape, so a
-strict module refuses them and all 414 legs xfail as
-"advertised but not operational" — including 90 valid
-vectors the module would otherwise verify.
+strict module refuses them, so no vector in the group
+can exercise genuine verification — including 90
+valid vectors the module would otherwise verify.
+(Precision: in the rc1 lane these 414 showed as
+*skips*, not xfails — every vector skipped at the
+`has_mechanism` gate (report.jsonl call-records:
+414 skipped / 0 run), so the raw-bytes path was
+never exercised there. The source defect was real
+regardless.)
 
 Suggested fix: build the `CK_GCM_PARAMS` struct (as the
 ACVP test does), with `ulTagBits` from each vector's tag
@@ -619,3 +737,13 @@ speculation.)
 - **AES_XTS registry without-flag legs self-xfail** when XTS
   keygen is absent (`CKM_AES_XTS_KEY_GEN` catalog-only): by
   design. Not a gap.
+- **Pinned-framework fast r62 (2026-09-28, 11l/258 rows):
+  no new upstream findings.** 4345 passed / 18 failed; all
+  18 fail identically in r61 (HOTP wrong-key-type x2,
+  WTLS x3, X9.42 x13 — pinned-framework behavior already
+  covered by P11C-001/004/006/007, fixed in rc2). The
+  trio unlocked 10 `test_tls12` legs (9 pass); the 1 new
+  xfail (`test_key_safe_derive_ignores_iv_size_request`)
+  was our `CKR_GENERAL_ERROR` on nonzero
+  `ulIvSizeInBits`, fixed in-slice (§6.40.7: the size is
+  ignored and treated as 0). Nothing to file.

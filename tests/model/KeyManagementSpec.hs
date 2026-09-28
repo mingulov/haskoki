@@ -261,6 +261,7 @@ import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
+import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
 import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Registry.Generated
@@ -284,6 +285,9 @@ import Haskoki.Registry.Generated
   , ckm_SP800_108_DOUBLE_PIPELINE_KDF
   , ckm_SP800_108_FEEDBACK_KDF
   , ckm_TLS_MASTER_KEY_DERIVE
+  , ckm_TLS_KEY_AND_MAC_DERIVE
+  , ckm_TLS12_KEY_AND_MAC_DERIVE
+  , ckm_TLS12_KEY_SAFE_DERIVE
   , ckm_TLS12_KDF
   , ckm_TLS12_MASTER_KEY_DERIVE
   , ckm_TLS12_EXTENDED_MASTER_KEY_DERIVE
@@ -402,6 +406,9 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real IKE derives match the KATs" caseRealIkeVector
   , testCase "Byte-op plans rows, refuses bad shapes" caseByteOpsPlans
   , testCase "Real byte-op derives match the KATs" caseRealByteOpsVector
+  , testCase "Key-material plans rows, refuses bad shapes" caseKeyMatPlans
+  , testCase "Real key-material derives match the KATs" caseRealKeyMatVector
+  , testCase "SP800 plans primary plus additional keys" caseSp800MultiPlans
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
   , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
   , testCase "KEM refuses wrong key types inconsistent" caseKemWrongKeyType
@@ -5266,6 +5273,174 @@ caseRealByteOpsVector = withRealEnv $ \env -> do
     (Just (hex "000102030405060708090a0b0c0d0e0f")) gotExt
   gotExt4 <- derive extractMech fExt4 2
   assertEqual "extract sub-byte KAT" (Just (hex "0010")) gotExt4
+
+keyMat10Mech, keyMat12Mech, keyMatSafeMech :: MechanismId
+keyMat10Mech = MechanismId ckm_TLS_KEY_AND_MAC_DERIVE
+keyMat12Mech = MechanismId ckm_TLS12_KEY_AND_MAC_DERIVE
+keyMatSafeMech = MechanismId ckm_TLS12_KEY_SAFE_DERIVE
+
+keyMatCr, keyMatSr :: BS.ByteString
+keyMatCr = BS.pack [0 .. 31]
+keyMatSr = BS.pack [32 .. 63]
+
+-- | The single key-material template: protection matching an
+-- extractable non-sensitive base, no length (lengths come
+-- from params).
+keyMatKid :: [(AttributeType, AttributeValue)]
+keyMatKid =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong ckkGenericSecret)
+  , (AttrSensitive, ValBool False)
+  , (AttrExtractable, ValBool True)
+  , (AttrToken, ValBool False)
+  ]
+
+caseKeyMatPlans :: IO ()
+caseKeyMatPlans = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
+    ] (BS.pack [0 .. 47])
+  let f10 = encodeTlsKeyMatParams 0 0 16 16 keyMatCr keyMatSr
+      f12 = encodeTlsKeyMatParams 4 0 16 16 keyMatCr keyMatSr
+      f12m = encodeTlsKeyMatParams 4 20 16 16 keyMatCr keyMatSr
+  -- Each row plans its key/IV shape with the block total.
+  mapM_ (\(mech, frame, lens, ivs, total) ->
+    case planDerive defaultRules m1 st mech baseH
+        (encodeDeriveParams frame [keyMatKid]) of
+      KeyEffect (PwDeriveIv _ gotLens gotIvs) (FxDerive _ _ _ _ _ gotTotal) -> do
+        assertEqual ("lens " ++ show mech) lens gotLens
+        assertEqual ("ivs " ++ show mech) ivs gotIvs
+        assertEqual ("total " ++ show mech) total gotTotal
+      other -> assertFailure ("must plan, got: " ++ show other))
+    [ (keyMat10Mech, f10, [16, 16], (16, 16), 64)
+    , (keyMat12Mech, f12, [16, 16], (16, 16), 64)
+    , (keyMat12Mech, f12m, [20, 20, 16, 16], (16, 16), 104)
+    , (keyMatSafeMech, f12, [16, 16], (0, 0), 32)
+    ]
+  -- A template length refuses: lengths come from params.
+  case planDerive defaultRules m1 st keyMat12Mech baseH
+      (encodeDeriveParams f12 [keyMatKid ++ [(AttrValueLen, ValULong 16)]]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "vlen code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("vlen must deny, got: " ++ show other)
+  -- Protection differing from the base refuses (the oracle's
+  -- template-conflict leg).
+  let conflict =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrSensitive, ValBool True)
+        , (AttrExtractable, ValBool True)
+        , (AttrToken, ValBool False)
+        ]
+  case planDerive defaultRules m1 st keyMat10Mech baseH
+      (encodeDeriveParams f10 [conflict]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "conflict code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("conflict must deny, got: " ++ show other)
+  -- A wrong-row frame refuses typed.
+  case planDerive defaultRules m1 st keyMat10Mech baseH
+      (encodeDeriveParams f12 [keyMatKid]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "wrong-row code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("wrong row must deny, got: " ++ show other)
+
+caseRealKeyMatVector :: IO ()
+caseRealKeyMatVector = withRealEnv $ \env -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
+    ] (BS.pack [0 .. 47])
+  let derive mech frame nKeys = do
+        (m', hs, ivs) <- case planDerive defaultRules m1 st mech baseH
+            (encodeDeriveParams frame [keyMatKid]) of
+          KeyEffect pw fx -> do
+            res <- answer m1 fx
+            c <- finishCommit m1 st pw res nKeys
+            let outs = pcOutputs c
+            hs <- mapM handleOf [o | o@(NativeOutput (RegionHandle "key") _) <- outs]
+            let iv n = case [bs | NativeOutput (RegionBytes m _) bs <- outs, m == n] of
+                  [bs] -> bs
+                  _ -> BS.empty
+            m' <- expectRight (publishDelta m1 (pcDelta c))
+            pure (m', hs, (iv "iv-client", iv "iv-server"))
+          other -> assertFailure ("derive must plan: " ++ show other) >> undefined
+        mats <- mapM (\h -> case resolveHandle m' h of
+          Just ost -> pure (keyBytesOf ost)
+          Nothing -> assertFailure "derived key must resolve" >> undefined) hs
+        pure (mats, ivs)
+      f10 = encodeTlsKeyMatParams 0 0 16 16 keyMatCr keyMatSr
+      f12m = encodeTlsKeyMatParams 4 20 16 16 keyMatCr keyMatSr
+      fSafe = encodeTlsKeyMatParams 4 0 16 0 keyMatCr keyMatSr
+  (tls10Keys, (tls10Ivc, tls10Ivs)) <- derive keyMat10Mech f10 2
+  assertEqual "tls10 keys"
+    [ Just (hex "f3771f99cf91858748dc50ed540edc39")
+    , Just (hex "efb06a256dcd4d9ffdf87298f72cf700")
+    ] tls10Keys
+  assertEqual "tls10 ivc" (hex "f5585f14e9db80e3af1a7ccc2c218d42") tls10Ivc
+  assertEqual "tls10 ivs" (hex "b36aa1a7584498f75edaca5bf8f86328") tls10Ivs
+  (tls12Keys, (tls12Ivc, tls12Ivs)) <- derive keyMat12Mech f12m 4
+  assertEqual "tls12 keys"
+    [ Just (hex "fbe0dbb71e9097fcfe644317a16d334fac721a5f")
+    , Just (hex "822730468a366a4ef2f2206848092b65ca8b00c3")
+    , Just (hex "56742cd5bae70ed8ac35e70945a53033")
+    , Just (hex "866a9b3abca98806f6ba1048b7cd53eb")
+    ] tls12Keys
+  assertEqual "tls12 ivc" (hex "2f2584955a68b87c9d198ce2c55c204f") tls12Ivc
+  assertEqual "tls12 ivs" (hex "053dddc6f5ce4f96c242e8bb758cd5fa") tls12Ivs
+  (safeKeys, (safeIvc, safeIvs)) <- derive keyMatSafeMech fSafe 2
+  assertEqual "safe keys"
+    [ Just (hex "fbe0dbb71e9097fcfe644317a16d334f")
+    , Just (hex "ac721a5f822730468a366a4ef2f22068")
+    ] safeKeys
+  assertEqual "safe writes no ivs" (BS.empty, BS.empty) (safeIvc, safeIvs)
+
+caseSp800MultiPlans :: IO ()
+caseSp800MultiPlans = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 31])
+  let kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrValueLen, ValULong n)
+        , (AttrToken, ValBool False)
+        ]
+      counter = encodeSp800Params 4 32 32 BS.empty sp800Fixed
+  -- Primary plus one additional template plans two keys
+  -- with the summed total (the frame-level multi path the
+  -- FFI additional-keys chase feeds).
+  case planDerive defaultRules m1 st sp800CounterMech baseH
+      (encodeDeriveParams counter [kid 16, kid 16]) of
+    KeyEffect (PwDerive _ lens) (FxDerive mech _ _ _ _ total) -> do
+      assertEqual "mech" sp800CounterMech mech
+      assertEqual "lens" [16, 16] lens
+      assertEqual "total" 32 total
+    other -> assertFailure ("multi must plan: " ++ show other)
+  -- Over the fan-out the frame refuses typed.
+  case planDerive defaultRules m1 st sp800CounterMech baseH
+      (encodeDeriveParams counter (replicate 17 (kid 16))) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "fanout code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("fanout must deny, got: " ++ show other)
 
 caseRealAuthWrap :: IO ()
 caseRealAuthWrap = withRealEnv $ \env -> do

@@ -83,6 +83,7 @@ import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
+import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
 import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
@@ -145,6 +146,7 @@ spec = testGroup "synthetic engine"
   , testCase "TLS-KDF rows separate and refuse" caseTlsKdf
   , testCase "IKE rows separate and refuse" caseIke
   , testCase "byte-op rows separate and refuse" caseByteOps
+  , testCase "key-material rows separate and refuse" caseKeyMat
   , testCase "SP800-108 modes separate, length bound" caseSp800
   , testCase "HOTP codes separate, keygen lengths" caseHotp
   , testCase "Specials refuse explicitly" caseSpecialsRefuse
@@ -2521,6 +2523,66 @@ caseByteOps = withSynth "11" $ \env -> do
     (FxDerive xx (Just secOid) Nothing fBD BS.empty 16)
   expectFailed "extract overrun"
     (FxDerive xt (Just secOid) Nothing (encodeByteOpsParams 0 248 BS.empty) BS.empty 16)
+
+-- | Key-material blocks over the synthetic backend: widths,
+-- determinism, separation across rows\/secrets\/randoms\/PRFs,
+-- and typed refusals. (The synthetic PRF stream differs from
+-- real TLS by design; exact KAT bytes live on the real
+-- backend in RoutingE2ESpec.)
+caseKeyMat :: IO ()
+caseKeyMat = withSynth "14" $ \env -> do
+  let k10 = MechanismId 0x376
+      k12 = MechanismId 0x3e1
+      kSafe = MechanismId 0x3e3
+      secOid = ObjectId 90
+      oddOid = ObjectId 91
+      res oid
+        | oid == secOid = Just (KeyBytes (BS.pack [0 .. 47]))
+        | oid == oddOid = Just (KeyBytes (BS.pack [1 .. 48]))
+        | otherwise = Nothing
+      cr = BS.pack [0 .. 31]
+      sr = BS.pack [32 .. 63]
+      cr2 = BS.pack [1 .. 32]
+      f10 = encodeTlsKeyMatParams 0 0 16 16 cr sr
+      f12 = encodeTlsKeyMatParams 4 0 16 16 cr sr
+      f12m = encodeTlsKeyMatParams 4 20 16 16 cr sr
+      f12b = encodeTlsKeyMatParams 6 0 16 16 cr sr
+      deriveAs mech oid params outLen =
+        runEffect env res (FxDerive mech (Just oid) Nothing params BS.empty outLen)
+          >>= expectBytes
+      expectFailed label fx = do
+        r <- runEffect env res fx
+        case r of
+          GotCryptoError (CryptoFailed _) -> pure ()
+          other -> assertFailure ("expected Failed " ++ label ++ ", got: " ++ show other)
+  b10 <- deriveAs k10 secOid f10 64
+  assertEqual "tls10 width" 64 (BS.length b10)
+  b10b <- deriveAs k10 secOid f10 64
+  assertEqual "deterministic" b10 b10b
+  b12 <- deriveAs k12 secOid f12 64
+  b12m <- deriveAs k12 secOid f12m 104
+  b12b <- deriveAs k12 secOid f12b 64
+  bSafe <- deriveAs kSafe secOid f12 32
+  assertEqual "safe shares the prefix" (BS.take 32 b12) bSafe
+  assertEqual "mac block width" 104 (BS.length b12m)
+  -- Same PRF stream, longer block: the mac160 block extends
+  -- the mac0 block (sizes shape the plan, not the stream).
+  assertEqual "stream prefix" b12 (BS.take 64 b12m)
+  assertBool "rows separated" (b10 /= b12)
+  assertBool "prfs separated" (b12 /= b12b)
+  bOdd <- deriveAs k12 oddOid f12 64
+  assertBool "secrets separated" (b12 /= bOdd)
+  bCr <- deriveAs k12 secOid (encodeTlsKeyMatParams 4 0 16 16 cr2 sr) 64
+  assertBool "randoms separated" (b12 /= bCr)
+  -- Typed refusals.
+  expectFailed "junk params"
+    (FxDerive k12 (Just secOid) Nothing "junk" BS.empty 64)
+  expectFailed "info string"
+    (FxDerive k12 (Just secOid) Nothing f12 "x" 64)
+  expectFailed "zero length"
+    (FxDerive k12 (Just secOid) Nothing f12 BS.empty 0)
+  expectFailed "wrong-row frame"
+    (FxDerive k10 (Just secOid) Nothing f12 BS.empty 64)
 
 -- ---------------------------------------------------------------------------
 -- OTP constructions

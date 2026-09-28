@@ -169,6 +169,8 @@ module Haskoki.Engine.Driver
   , ikeParamsFor
   , ByteOpsExec (..)
   , byteOpsParamsFor
+  , KeyMatExec (..)
+  , keyMatParamsFor
   ) where
 
 import qualified Data.ByteString as BS
@@ -263,6 +265,15 @@ import Haskoki.Recipe.ByteOps
   , byteOpsParamsValid
   , byteOpsRecipeFor
   , decodeByteOpsParams
+  )
+import Haskoki.Recipe.TlsKeyMat
+  ( TlsKeyMatKind (..)
+  , TlsKeyMatRecipe (tkmKind)
+  , decodeTlsKeyMatParams
+  , maxTlsKeyMatBlock
+  , tlsKeyMatLabel
+  , tlsKeyMatParamsValid
+  , tlsKeyMatRecipeFor
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
 import Haskoki.Recipe.Chacha20
@@ -915,6 +926,36 @@ byteOpsParamsFor mech params = do
   guard (byteOpsParamsValid r params)
   (aux, off, blob) <- decodeByteOpsParams params
   pure (ByteOpsExec (boKind r) aux off blob)
+
+-- | One decoded key-material execution: the row kind, the PRF
+-- code, the MAC\/key\/IV byte sizes, and the two randoms
+-- (RED stub: always 'Nothing' until GREEN).
+data KeyMatExec = KeyMatExec
+  { kmeKind :: !TlsKeyMatKind
+  , kmePrf :: !Word8
+  , kmeMac :: !Int
+  , kmeKey :: !Int
+  , kmeIv :: !Int
+  , kmeCr :: !ByteString
+  , kmeSr :: !ByteString
+  } deriving (Eq, Show)
+
+-- | Key-material dispatch: the covered (mechanism, params)
+-- pair to its execution tuple (pinned by
+-- RecipeTlsKeyMatSpec).
+keyMatParamsFor :: MechanismId -> ByteString -> Maybe KeyMatExec
+keyMatParamsFor mech params = do
+  r <- tlsKeyMatRecipeFor mech
+  guard (tlsKeyMatParamsValid r params)
+  (prf, mac, key, iv, cr, sr) <- decodeTlsKeyMatParams params
+  pure (KeyMatExec (tkmKind r) prf mac key iv cr sr)
+
+-- | A key-material mechanism (drives the parameter-refusal
+-- branches).
+isKeyMatMech :: MechanismId -> Bool
+isKeyMatMech mech = case tlsKeyMatRecipeFor mech of
+  Just _ -> True
+  Nothing -> False
 
 -- | TLS-PRF secret split (RFC 2246 §5): the first
 -- @ceiling(len\/2)@ bytes and the last @ceiling(len\/2)@ bytes; the
@@ -2019,6 +2060,14 @@ runEffect env resolve fx = case fx of
         "driver: byte-op derive takes no info string"))
     | isByteOpsMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: byte-op mechanism parameters rejected by the recipe"))
+    | Just ex <- keyMatParamsFor mech params
+    , BS.null info -> withKey mkey $ \key ->
+        runKeyMat ex key outLen
+    | isKeyMatMech mech
+    , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
+        "driver: key-material derive takes no info string"))
+    | isKeyMatMech mech -> pure (GotCryptoError (CryptoFailed
+        "driver: key-material mechanism parameters rejected by the recipe"))
     | Just prf <- tlsPrfParamsFor mech params
     , BS.null info -> withKey mkey $ \key ->
         runTlsPrf prf key outLen
@@ -2741,6 +2790,31 @@ runEffect env resolve fx = case fx of
               (False, Just alg) -> pHash alg (KeyBytes kb) seedFull outLen
               (False, Nothing) -> pure (EngineFail (BackendBadParam "runTlsKdf"
                 "TLS-KDF hash PRF without a digest"))
+            pure $ case r of
+              EngineFail err -> GotCryptoError (toCryptoError err)
+              EngineOk ok -> GotBytes (BS.take outLen ok)
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: derive length out of range"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "key derivation needs raw secret bytes"))
+    -- | Key-material effects: the TLS PRF ("key expansion"
+    -- over server ++ client randoms, RFC 2246 §6.3) expanded to
+    -- the planned block length — legacy for TLS 1.0, P_hash
+    -- over the selected digest for TLS 1.2. The planner sizes
+    -- the block (KEY_SAFE excludes IVs); the finisher splits it
+    -- into keys + IVs. Off-range lengths are 'CryptoFailed'; a
+    -- non-bytes key is 'CryptoBadKey'.
+    runKeyMat :: KeyMatExec -> KeyMaterial -> Int -> IO CryptoResult
+    runKeyMat ex key outLen = case key of
+      KeyBytes kb
+        | outLen >= 1 && outLen <= maxTlsKeyMatBlock -> do
+            let seedFull = tlsKeyMatLabel <> kmeSr ex <> kmeCr ex
+            r <- if kmePrf ex == 0
+              then tlsPrfExpand kb seedFull outLen
+              else case kdfCodeDigest (fromIntegral (kmePrf ex)) >>= rsaDigest of
+                Just alg -> pHash alg (KeyBytes kb) seedFull outLen
+                Nothing -> pure (EngineFail (BackendBadParam "runKeyMat"
+                  "key-material hash PRF without a digest"))
             pure $ case r of
               EngineFail err -> GotCryptoError (toCryptoError err)
               EngineOk ok -> GotBytes (BS.take outLen ok)
