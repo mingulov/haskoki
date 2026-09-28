@@ -4422,6 +4422,135 @@ int main(int argc, char **argv) {
             rv = f->C_DestroyObject(sess, pd2);
             CHECKC(rv == CKR_OK, "second TLS-PRF secret destroyed");
           }
+          {
+            /* SP 800-108 through the native KDF structs
+             * (HMAC-SHA256 PRF, oracle-profile data params):
+             * counter + feedback KAT bytes, replay
+             * determinism, and typed refusals. */
+            CK_BYTE kmat[32];
+            CK_BYTE gotc[16], gotc2[16], gotf[16];
+            CK_OBJECT_HANDLE kbase = 0, kd1 = 0, kd2 = 0, kd3 = 0;
+            CK_SP800_108_COUNTER_FORMAT cf;
+            CK_SP800_108_DKM_LENGTH_FORMAT dlf;
+            CK_PRF_DATA_PARAM dps[5];
+            CK_PRF_DATA_PARAM dpsFb[5];
+            CK_SP800_108_KDF_PARAMS kp;
+            CK_SP800_108_FEEDBACK_KDF_PARAMS fp;
+            CK_MECHANISM km, fm, badkm;
+            CK_BYTE slabel[] = "SP800-108 test label";
+            CK_BYTE sctx[] = "SP800-108 test context";
+            CK_BYTE ssep[] = { 0x00 };
+            CK_BYTE siv[16];
+            CK_BYTE wantc[16] = {
+              0xca,0xff,0x7a,0x6a,0x35,0xca,0x9b,0x35,
+              0xaf,0xcc,0x64,0xfa,0x65,0x8d,0x8b,0xc2
+            };
+            CK_BYTE wantf[16] = {
+              0x6e,0x5e,0x3e,0x70,0x4d,0x68,0x2f,0x4c,
+              0x42,0x06,0x81,0xf6,0x0d,0x46,0xda,0x54
+            };
+            CK_ULONG vlen16 = 16;
+            CK_ATTRIBUTE kbaseT[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_DERIVE, &yes, sizeof(yes) },
+              { CKA_VALUE, kmat, sizeof(kmat) },
+            };
+            CK_ATTRIBUTE ktmpl[] = {
+              { CKA_CLASS, &seccls, sizeof(seccls) },
+              { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
+              { CKA_VALUE_LEN, &vlen16, sizeof(vlen16) },
+              { CKA_TOKEN, &no, sizeof(no) },
+              { CKA_SENSITIVE, &no, sizeof(no) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
+            };
+            CK_ATTRIBUTE gkc[] = { { CKA_VALUE, gotc, sizeof(gotc) } };
+            CK_ATTRIBUTE gkc2[] = { { CKA_VALUE, gotc2, sizeof(gotc2) } };
+            CK_ATTRIBUTE gkf[] = { { CKA_VALUE, gotf, sizeof(gotf) } };
+            int i;
+            for (i = 0; i < 32; i++) kmat[i] = (CK_BYTE)i;
+            for (i = 0; i < 16; i++) siv[i] = (CK_BYTE)i;
+            rv = f->C_CreateObject(sess, kbaseT, 5, &kbase);
+            CHECKC(rv == CKR_OK && kbase != 0, "SP800 base imports");
+            cf.bLittleEndian = CK_FALSE;
+            cf.ulWidthInBits = 32;
+            dlf.dkmLengthMethod = CK_SP800_108_DKM_LENGTH_SUM_OF_KEYS;
+            dlf.bLittleEndian = CK_FALSE;
+            dlf.ulWidthInBits = 32;
+            dps[0].type = CK_SP800_108_ITERATION_VARIABLE;
+            dps[0].pValue = &cf;
+            dps[0].ulValueLen = sizeof(cf);
+            dps[1].type = CK_SP800_108_BYTE_ARRAY;
+            dps[1].pValue = slabel;
+            dps[1].ulValueLen = sizeof(slabel) - 1;
+            dps[2].type = CK_SP800_108_BYTE_ARRAY;
+            dps[2].pValue = ssep;
+            dps[2].ulValueLen = sizeof(ssep);
+            dps[3].type = CK_SP800_108_BYTE_ARRAY;
+            dps[3].pValue = sctx;
+            dps[3].ulValueLen = sizeof(sctx) - 1;
+            dps[4].type = CK_SP800_108_DKM_LENGTH;
+            dps[4].pValue = &dlf;
+            dps[4].ulValueLen = sizeof(dlf);
+            kp.prfType = CKM_SHA256_HMAC;
+            kp.ulNumberOfDataParams = 5;
+            kp.pDataParams = dps;
+            kp.ulAdditionalDerivedKeys = 0;
+            kp.pAdditionalDerivedKeys = NULL_PTR;
+            km.mechanism = CKM_SP800_108_COUNTER_KDF;
+            km.pParameter = &kp;
+            km.ulParameterLen = sizeof(kp);
+            rv = f->C_DeriveKey(sess, &km, kbase, ktmpl, 6, &kd1);
+            CHECKC(rv == CKR_OK && kd1 != 0, "SP800 counter derive ok");
+            gkc[0].ulValueLen = sizeof(gotc);
+            rv = f->C_GetAttributeValue(sess, kd1, gkc, 1);
+            CHECKC(rv == CKR_OK && gkc[0].ulValueLen == 16 &&
+                       memcmp(gotc, wantc, 16) == 0,
+                   "SP800 counter matches KAT bytes");
+            rv = f->C_DeriveKey(sess, &km, kbase, ktmpl, 6, &kd2);
+            CHECKC(rv == CKR_OK && kd2 != 0, "SP800 counter replays");
+            gkc2[0].ulValueLen = sizeof(gotc2);
+            rv = f->C_GetAttributeValue(sess, kd2, gkc2, 1);
+            CHECKC(rv == CKR_OK && gkc2[0].ulValueLen == 16 &&
+                       memcmp(gotc, gotc2, 16) == 0,
+                   "SP800 counter deterministic");
+            /* Feedback callers send the iteration variable as
+             * NULL/0 (no counter in this mode); the frame
+             * records width 32. */
+            dpsFb[0].type = CK_SP800_108_ITERATION_VARIABLE;
+            dpsFb[0].pValue = NULL_PTR;
+            dpsFb[0].ulValueLen = 0;
+            for (i = 1; i < 5; i++) dpsFb[i] = dps[i];
+            fp.prfType = CKM_SHA256_HMAC;
+            fp.ulNumberOfDataParams = 5;
+            fp.pDataParams = dpsFb;
+            fp.ulIVLen = sizeof(siv);
+            fp.pIV = siv;
+            fp.ulAdditionalDerivedKeys = 0;
+            fp.pAdditionalDerivedKeys = NULL_PTR;
+            fm.mechanism = CKM_SP800_108_FEEDBACK_KDF;
+            fm.pParameter = &fp;
+            fm.ulParameterLen = sizeof(fp);
+            rv = f->C_DeriveKey(sess, &fm, kbase, ktmpl, 6, &kd3);
+            CHECKC(rv == CKR_OK && kd3 != 0, "SP800 feedback derive ok");
+            gkf[0].ulValueLen = sizeof(gotf);
+            rv = f->C_GetAttributeValue(sess, kd3, gkf, 1);
+            CHECKC(rv == CKR_OK && gkf[0].ulValueLen == 16 &&
+                       memcmp(gotf, wantf, 16) == 0,
+                   "SP800 feedback matches KAT bytes");
+            rv = f->C_DeriveKey(sess, &km, ecBase, ktmpl, 6, &kd3);
+            CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+                   "SP800 with EC base refused typed");
+            badkm.mechanism = CKM_SP800_108_COUNTER_KDF;
+            badkm.pParameter = garbage;
+            badkm.ulParameterLen = sizeof(garbage);
+            rv = f->C_DeriveKey(sess, &badkm, kbase, ktmpl, 6, &kd3);
+            CHECKC(rv == CKR_ARGUMENTS_BAD,
+                   "SP800 with garbage params refused typed");
+            rv = f->C_DestroyObject(sess, kd2);
+            CHECKC(rv == CKR_OK, "second SP800 secret destroyed");
+          }
         }
       }
       {

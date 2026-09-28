@@ -168,6 +168,11 @@ import Haskoki.Recipe.Otp
   , hotpCodecFor
   , hotpRecipes
   )
+import Haskoki.Recipe.Sp800108
+  ( Sp800Recipe (..)
+  , sp800CodecFor
+  , sp800Recipes
+  )
 import Haskoki.Recipe.TlsPrf
   ( TlsPrfRecipe (..)
   , tlsPrfCodecFor
@@ -944,6 +949,23 @@ tlsPrfDescs =
   | r <- tlsPrfRecipes
   ]
 
+-- | The SP 800-108 behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from 'sp800CodecFor',
+-- the derive route citing the planner case (A20), the synthetic
+-- construction (A37), and the real vectors (A39). The three rows
+-- arrived in v3.0; key bounds are mechanism-specific (the planned
+-- length, capped by the SP 800-108 ceiling with the L-fit
+-- check).
+sp800Descs :: [Descriptor]
+sp800Descs =
+  [ promotedDesc (rsName r) [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyDerive
+      (sp800CodecFor r)
+      [ mechRoute OpDerive (rsName r) ["A20", "A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- sp800Recipes
+  ]
+
 -- | The encrypt-data behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from
 -- 'encryptDataCodecFor', the derive route citing the planner case
@@ -1353,7 +1375,7 @@ curatedRegistry =
         , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
-          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ otpDescs ++ encryptDataDescs
+          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ otpDescs ++ encryptDataDescs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

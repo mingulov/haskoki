@@ -74,6 +74,7 @@ import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
+import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.Otp (encodeHotpParams)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
@@ -119,6 +120,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: xcbc KATs + refuse" caseDriverXcbc
   , testCase "driver: gmac KATs + refuse" caseDriverGmac
   , testCase "driver: kdf vectors + refuse" caseDriverKdf
+  , testCase "driver: sp800-108 vectors + refuse" caseDriverSp800
   , testCase "driver: pbkd2 keygen vector" caseDriverPbkd2Gen
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
@@ -1551,6 +1553,60 @@ caseDriverGmac = withBackend $ \env -> do
     other -> assertFailure ("expected Failed, got: " ++ show other)
 
 -- | PBKDF2 through the driver over real HMAC — RFC 6070
+-- SP 800-108 vectors (triple-verified: independent python,
+-- the oracle reference, the provider KBKDF CLI) plus typed
+-- refusals.
+caseDriverSp800 :: IO ()
+caseDriverSp800 = withBackend $ \env -> do
+  let kiOid = ObjectId 81
+      res oid
+        | oid == kiOid = Just (KeyBytes (BS.pack [0 .. 31]))
+        | otherwise = Nothing
+      derive mech params outLen =
+        runEffect env res (FxDerive mech (Just kiOid) params BS.empty outLen)
+          >>= expectBytes
+      fixed = "SP800-108 test label" <> "\x00" <> "SP800-108 test context"
+      counter = encodeSp800Params 4 32 32 BS.empty fixed
+      feedbackIv = encodeSp800Params 4 32 32 (BS.pack [0 .. 15]) fixed
+      feedback = encodeSp800Params 4 32 32 BS.empty fixed
+      ctrMech = MechanismId 0x3ac
+      fbMech = MechanismId 0x3ad
+      dpMech = MechanismId 0x3ae
+  c16 <- derive ctrMech counter 16
+  assertEqual "counter aes128" (hex "caff7a6a35ca9b35afcc64fa658d8bc2") c16
+  c32 <- derive ctrMech counter 32
+  assertEqual "counter aes256"
+    (hex "b88f2b0575ec7271d57a76d5dc05355edbb56652e0a19e1788661f2b473e35a3") c32
+  f16 <- derive fbMech feedback 16
+  assertEqual "feedback aes128" (hex "0eb73e600b11c4474e6fb84c226c8b1a") f16
+  fi16 <- derive fbMech feedbackIv 16
+  assertEqual "feedback iv aes128" (hex "6e5e3e704d682f4c420681f60d46da54") fi16
+  d16 <- derive dpMech counter 16
+  assertEqual "double-pipeline aes128" (hex "12a1627e163bbff00bf9d3daf7eddf92") d16
+  d32 <- derive dpMech counter 32
+  assertEqual "double-pipeline aes256"
+    (hex "865126a55ca1386cd245a4b2ba4c29ec21a7d46d4b74c26e899fcc5a39f68b65") d32
+  -- Typed refusals: junk params, a non-empty info string, and
+  -- an over-ceiling length.
+  junk <- runEffect env res (FxDerive ctrMech (Just kiOid) "junk" BS.empty 16)
+  case junk of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed sp800 junk, got: " ++ show other)
+  withInfo <- runEffect env res (FxDerive ctrMech (Just kiOid) counter "x" 16)
+  case withInfo of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed sp800 info, got: " ++ show other)
+  over <- runEffect env res
+    (FxDerive ctrMech (Just kiOid) counter BS.empty (maxSp800Total + 1))
+  case over of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed sp800 length, got: " ++ show other)
+  let short = encodeSp800Params 4 8 32 BS.empty fixed
+  overCtr <- runEffect env res (FxDerive ctrMech (Just kiOid) short BS.empty 8192)
+  case overCtr of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed sp800 counter, got: " ++ show other)
+
 -- SHA-1 vectors plus hashlib\/CLI cross-checked SHA-256\/512
 -- vectors, multi-block output, truncation, SHA-KD rows, and typed
 -- refusals.

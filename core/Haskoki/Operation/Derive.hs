@@ -98,6 +98,15 @@ import Haskoki.Recipe.Kdf
   , kdfShaWidth
   , kdfXofStem
   )
+import Haskoki.Recipe.Sp800108
+  ( Sp800Mode (..)
+  , Sp800Params (..)
+  , Sp800Recipe (..)
+  , decodeSp800Params
+  , maxSp800Total
+  , sp800ParamsValid
+  , sp800RecipeFor
+  )
 import Haskoki.Recipe.TlsPrf
   ( maxTlsPrfOutput
   , tlsPrfParamsValid
@@ -239,6 +248,26 @@ decodeHkdfInfo bs = do
 prfHashLen :: Word8 -> Maybe Int
 prfHashLen prf =
   kdfCodeDigest (fromIntegral prf) >>= kdfDigestWidth
+
+-- | SP 800-108 hash length for a frame PRF code (the
+-- 'kdfCodeDigest' space onto 'kdfDigestWidth').
+sp800HashLen :: Word8 -> Maybe Int
+sp800HashLen code = do
+  stem <- kdfCodeDigest (fromIntegral code)
+  kdfDigestWidth stem
+
+-- | SP 800-108 width pre-check: the planned total's bit-length
+-- must fit the DKM-length width, and counter mode must fit its
+-- iterations in @2^r - 1@ (never wraps). Only well-formed
+-- lengths contribute; malformed or missing lengths fall
+-- through to 'finish', which reports them with the precise
+-- code.
+sp800LengthFits :: Sp800Mode -> Int -> Int -> Int -> [[(AttributeType, AttributeValue)]] -> Bool
+sp800LengthFits mode lBits rBits hashLen tmpls =
+  let total = sum [fromIntegral n | t <- tmpls, (AttrValueLen, ValULong n) <- t] :: Integer
+      n = (total + toInteger hashLen - 1) `div` toInteger hashLen
+  in total * 8 < 2 ^ lBits
+    && (mode /= Sp800Counter || n <= 2 ^ rBits - 1)
 
 -- | Plan one (possibly multi-key) derivation: the mechanism must be
 -- a derive mechanism (HKDF, ECDH, or KDF), the base handle must
@@ -427,6 +456,46 @@ planDerive rules model st mech baseH blob
               (FxDerive mech (Just (osId ost)) prfBlob BS.empty)
               Nothing
               CKR_ARGUMENTS_BAD
+  | Just r <- sp800RecipeFor mech = case decodeDeriveParams blob of
+      Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "malformed derive arguments")
+      Just (spBlob, tmpls) -> case resolveBase model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, _)
+          -- SP 800-108 derives from generic-secret bases only;
+          -- the key-type contradiction outranks parameter shape
+          -- (the Init-matrix ordering, shared with the ECDH,
+          -- SHA-KDF, and TLS-PRF arms).
+          | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkGenericSecret) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "SP800-108 base key is not a generic secret")
+          | not (sp800ParamsValid r spBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              "SP800-108 mechanism parameters rejected by the recipe")
+          | otherwise -> case decodeSp800Params spBlob of
+              -- Unreachable post-validation (the recipe just
+              -- accepted); typed, never a crash.
+              Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                "SP800-108 frame rejected after validation")
+              -- The DKM length L is the derived bit-length, so
+              -- it must fit its width, and counter mode must
+              -- fit its iterations in @2^r - 1@; malformed or
+              -- missing lengths fall through to 'finish' (which
+              -- reports them).
+              Just p -> case sp800HashLen (spPrf p) of
+                -- Unreachable post-validation (the frame's PRF
+                -- code maps by construction); typed, never a
+                -- crash.
+                Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                  "SP800-108 PRF has no servable hash length")
+                Just h
+                  | sp800LengthFits (rsMode r) (spLengthBits p)
+                      (spCounterBits p) h tmpls -> finish tmpls maxSp800Total
+                      "derived total exceeds the SP800-108 ceiling"
+                      (FxDerive mech (Just (osId ost)) spBlob BS.empty)
+                      Nothing
+                      CKR_ARGUMENTS_BAD
+                  | otherwise -> KeyDenied (KeyDeny CKR_KEY_SIZE_RANGE
+                      "derived length does not fit the counter/length widths")
   | Just r <- encryptDataRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")

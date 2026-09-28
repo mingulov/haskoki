@@ -161,6 +161,8 @@ module Haskoki.Engine.Driver
   , encryptDataPartsFor
   , TlsPrfParams (..)
   , tlsPrfParamsFor
+  , Sp800Exec (..)
+  , sp800ParamsFor
   ) where
 
 import qualified Data.ByteString as BS
@@ -392,6 +394,15 @@ import Haskoki.Recipe.XcbcMac
   ( XcbcRecipe (..)
   , xcbcOutLen
   , xcbcRecipeFor
+  )
+import Haskoki.Recipe.Sp800108
+  ( Sp800Mode (..)
+  , Sp800Params (..)
+  , Sp800Recipe (..)
+  , decodeSp800Params
+  , maxSp800Total
+  , sp800ParamsValid
+  , sp800RecipeFor
   )
 import Haskoki.Recipe.TlsPrf
   ( decodeTlsPrfParams
@@ -730,6 +741,41 @@ tlsPrfParamsFor mech params = do
   guard (tlsPrfParamsValid r params)
   (lab, seed) <- decodeTlsPrfParams params
   pure (TlsPrfParams lab seed)
+
+-- | SP 800-108 execution tuple: the mode, the HMAC digest plus
+-- its width, the counter and length widths, the IV, and the
+-- flattened fixed input.
+data Sp800Exec = Sp800Exec
+  { seMode :: !Sp800Mode
+  , seAlg :: !DigestAlg
+  , seHashLen :: !Int
+  , seCounterBits :: !Int
+  , seLengthBits :: !Int
+  , seIv :: !ByteString
+  , seFixed :: !ByteString
+  } deriving (Eq, Show)
+
+-- | SP 800-108 dispatch: the covered (mechanism, params) pair to
+-- its execution tuple (pinned by RecipeSp800108Spec).
+-- 'Nothing' means uncovered (non-SP-800-108 mechanism) or
+-- malformed parameters.
+sp800ParamsFor :: MechanismId -> ByteString -> Maybe Sp800Exec
+sp800ParamsFor mech params = do
+  r <- sp800RecipeFor mech
+  guard (sp800ParamsValid r params)
+  p <- decodeSp800Params params
+  stem <- kdfCodeDigest (fromIntegral (spPrf p))
+  alg <- rsaDigest stem
+  hashLen <- digestOutLen alg
+  pure (Sp800Exec (rsMode r) alg hashLen
+    (spCounterBits p) (spLengthBits p) (spIv p) (spFixed p))
+
+-- | An SP 800-108 mechanism (drives the parameter-refusal
+-- branches).
+isSp800Mech :: MechanismId -> Bool
+isSp800Mech mech = case sp800RecipeFor mech of
+  Just _ -> True
+  Nothing -> False
 
 -- | TLS-PRF secret split (RFC 2246 §5): the first
 -- @ceiling(len\/2)@ bytes and the last @ceiling(len\/2)@ bytes; the
@@ -1785,6 +1831,14 @@ runEffect env resolve fx = case fx of
         "driver: PBKDF2 derive takes no info string"))
     | isPbkd2Mech mech -> pure (GotCryptoError (CryptoFailed
         "driver: PBKDF2 mechanism parameters rejected by the recipe"))
+    | Just ex <- sp800ParamsFor mech params
+    , BS.null info -> withKey mkey $ \key ->
+        runSp800 ex key outLen
+    | isSp800Mech mech
+    , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
+        "driver: SP800-108 derive takes no info string"))
+    | isSp800Mech mech -> pure (GotCryptoError (CryptoFailed
+        "driver: SP800-108 mechanism parameters rejected by the recipe"))
     | Just prf <- tlsPrfParamsFor mech params
     , BS.null info -> withKey mkey $ \key ->
         runTlsPrf prf key outLen
@@ -2408,6 +2462,75 @@ runEffect env resolve fx = case fx of
             EngineFail err -> pure (EngineFail err)
             EngineOk u' -> mix (k - 1) (acc `xorB` u') u'
         prfOf msg = macSign env (MacHMAC prf Nothing) pwd msg
+    -- | SP 800-108 effects: the mode expansion over the HMAC
+    -- route, truncated to the planned length (capped by
+    -- 'maxSp800Total' with the L-fit check — the planner caps
+    -- honestly, so off-range fires only for hand-built
+    -- effects). A non-bytes key is 'CryptoBadKey'.
+    runSp800 :: Sp800Exec -> KeyMaterial -> Int -> IO CryptoResult
+    runSp800 ex key outLen = case key of
+      KeyBytes kb
+        | outLen >= 1 && outLen <= maxSp800Total
+        , toInteger outLen * 8 < 2 ^ seLengthBits ex
+        , seMode ex /= Sp800Counter
+          || toInteger ((outLen + seHashLen ex - 1) `div` seHashLen ex)
+             <= 2 ^ seCounterBits ex - 1 -> do
+            r <- sp800Expand ex kb outLen
+            pure $ case r of
+              EngineFail err -> GotCryptoError (toCryptoError err)
+              EngineOk d -> GotBytes (BS.take outLen d)
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: SP800-108 length out of range or widths do not fit"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "key derivation needs raw secret bytes"))
+    -- | SP 800-108 expansion (NIST SP 800-108 §5.1\/5.2\/5.3)
+    -- over the HMAC route: counter @K(i) = PRF(KI, [i]_r ||
+    -- fixed || [L]_l)@, feedback @K(i) = PRF(KI, K(i-1) ||
+    -- fixed || [L]_l)@ with @K(0) = IV@, double-pipeline @A(i)
+    -- = PRF(KI, A(i-1))@, @K(i) = PRF(KI, A(i) || fixed ||
+    -- [L]_l)@ with @A(0) = fixed || [L]_l@. L is the derived
+    -- bit-length by construction; counter mode refuses past
+    -- @2^r - 1@ iterations (never wraps).
+    sp800Expand :: Sp800Exec -> ByteString -> Int -> IO (EngineResult ByteString)
+    sp800Expand ex kb outLen
+      | seMode ex == Sp800Counter
+      , toInteger n > 2 ^ seCounterBits ex - 1 = pure (EngineFail (BackendBadParam "sp800Expand"
+          "iteration count exceeds the counter width"))
+      | otherwise = case seMode ex of
+          Sp800Counter -> goCounter 1 []
+          Sp800Feedback -> goFeedback n (seIv ex) []
+          Sp800DoublePipeline -> goPipeline n suffix []
+      where
+        spec = MacHMAC (seAlg ex) Nothing
+        key = KeyBytes kb
+        h = seHashLen ex
+        n = (outLen + h - 1) `div` h
+        suffix = seFixed ex <> encodeW (seLengthBits ex `div` 8) (outLen * 8)
+        rBytes = seCounterBits ex `div` 8
+        encodeW w v = BS.pack [fromIntegral ((v `div` 256 ^ i) `mod` 256) | i <- [w - 1, w - 2 .. 0]]
+        goCounter i acc
+          | i > n = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
+          | otherwise = do
+              t <- macSign env spec key (encodeW rBytes i <> suffix)
+              case t of
+                EngineFail err -> pure (EngineFail err)
+                EngineOk blk -> goCounter (i + 1) (blk : acc)
+        goFeedback 0 _ acc = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
+        goFeedback k prev acc = do
+          t <- macSign env spec key (prev <> suffix)
+          case t of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk blk -> goFeedback (k - 1) blk (blk : acc)
+        goPipeline 0 _ acc = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
+        goPipeline k aPrev acc = do
+          aNext <- macSign env spec key aPrev
+          case aNext of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk a -> do
+              p <- macSign env spec key (a <> suffix)
+              case p of
+                EngineFail err -> pure (EngineFail err)
+                EngineOk blk -> goPipeline (k - 1) a (blk : acc)
     -- | TLS-PRF effects: the RFC 2246 expansion over the backend
     -- HMAC-MD5\/SHA-1 routes. Off-range lengths are 'CryptoFailed';
     -- a non-bytes key is 'CryptoBadKey'.

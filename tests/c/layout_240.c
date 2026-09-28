@@ -320,7 +320,7 @@ int main(int argc, char **argv) {
         (unsigned long)rv, (unsigned long)count);
   count = 0;
   rv = p11->C_GetMechanismList(0, NULL, &count);
-  CHECK(rv == CKR_OK && count == 234,
+  CHECK(rv == CKR_OK && count == 237,
         "C_GetMechanismList post-init rv=%lu n=%lu",
         (unsigned long)rv, (unsigned long)count);
   rv = p11->C_GetMechanismList(99, NULL, &count);

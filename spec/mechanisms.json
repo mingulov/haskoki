@@ -13626,14 +13626,30 @@
       "canonical_name": "CKM_SP800_108_COUNTER_KDF",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SP 800-108 KBKDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "SP 800-108 counter KDF (core/Haskoki/Recipe/Sp800108.hs): K(i) = PRF(KI, [i]_r || Label || 0x00 || Context || [L]_l) (NIST SP 800-108 section 5.1 over an HMAC PRF); the native CK_SP800_108_KDF_PARAMS struct carries no IV. Parameters are the canonical frame (sp800-params/1: PRF code, counter/length widths, IV, flattened fixed input); the native struct decodes in the FFI (canonical profile only: HMAC PRF with a frame code, iteration variable first (big-endian width, or the NULL/0 placeholder outside counter mode), byte arrays flattened in order, DKM length last with SUM_OF_KEYS, zero additional keys). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 64KiB ceiling with the L-fit check and the counter-fit check (past 2^r - 1 iterations refuses; the counter never wraps). The driver composes the mode over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverSp800: HMAC-SHA256 KATs triple-verified against the oracle reference and the provider KBKDF CLI); planner, profile, and PRF-code pins (RecipeSp800108Spec); synthetic construction (SyntheticSpec caseSp800).",
       "numeric_id": "0x000003ac",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "sp800-108/v1",
+          "parameter_codec": "sp800-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SP800_108_COUNTER_KDF",
@@ -13642,26 +13658,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "sp800-108",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "sp800-108",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "sp800-108",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeSp800108Spec",
+          "build_id": "sp800-108",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SP800_108_FEEDBACK_KDF",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SP 800-108 KBKDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "SP 800-108 feedback KDF (core/Haskoki/Recipe/Sp800108.hs): K(i) = PRF(KI, K(i-1) || Label || 0x00 || Context || [L]_l) with K(0) = IV (NIST SP 800-108 section 5.2 over an HMAC PRF); the native CK_SP800_108_FEEDBACK_KDF_PARAMS struct carries the IV (an empty IV is the zero IV). Parameters are the canonical frame (sp800-params/1: PRF code, counter/length widths, IV, flattened fixed input); the native struct decodes in the FFI (canonical profile only: HMAC PRF with a frame code, iteration variable first (big-endian width, or the NULL/0 placeholder outside counter mode), byte arrays flattened in order, DKM length last with SUM_OF_KEYS, zero additional keys). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 64KiB ceiling with the L-fit check and the counter-fit check (past 2^r - 1 iterations refuses; the counter never wraps). The driver composes the mode over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverSp800: HMAC-SHA256 KATs triple-verified against the oracle reference and the provider KBKDF CLI); planner, profile, and PRF-code pins (RecipeSp800108Spec); synthetic construction (SyntheticSpec caseSp800).",
       "numeric_id": "0x000003ad",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "sp800-108/v1",
+          "parameter_codec": "sp800-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SP800_108_FEEDBACK_KDF",
@@ -13670,26 +13738,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "sp800-108",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "sp800-108",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "sp800-108",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeSp800108Spec",
+          "build_id": "sp800-108",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SP800_108_DOUBLE_PIPELINE_KDF",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SP 800-108 KBKDF present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "SP 800-108 double-pipeline KDF (core/Haskoki/Recipe/Sp800108.hs): A(i) = PRF(KI, A(i-1)), K(i) = PRF(KI, A(i) || Label || 0x00 || Context || [L]_l) with A(0) = fixed || [L]_l (NIST SP 800-108 section 5.3 over an HMAC PRF); the native CK_SP800_108_KDF_PARAMS struct carries no IV. Parameters are the canonical frame (sp800-params/1: PRF code, counter/length widths, IV, flattened fixed input); the native struct decodes in the FFI (canonical profile only: HMAC PRF with a frame code, iteration variable first (big-endian width, or the NULL/0 placeholder outside counter mode), byte arrays flattened in order, DKM length last with SUM_OF_KEYS, zero additional keys). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 64KiB ceiling with the L-fit check and the counter-fit check (past 2^r - 1 iterations refuses; the counter never wraps). The driver composes the mode over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverSp800: HMAC-SHA256 KATs triple-verified against the oracle reference and the provider KBKDF CLI); planner, profile, and PRF-code pins (RecipeSp800108Spec); synthetic construction (SyntheticSpec caseSp800).",
       "numeric_id": "0x000003ae",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "sp800-108/v1",
+          "parameter_codec": "sp800-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SP800_108_DOUBLE_PIPELINE_KDF",
@@ -13698,12 +13818,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "sp800-108",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "sp800-108",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "sp800-108",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeSp800108Spec",
+          "build_id": "sp800-108",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

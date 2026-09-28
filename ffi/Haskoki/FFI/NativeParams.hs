@@ -103,6 +103,10 @@ module Haskoki.FFI.NativeParams
   , encryptDataEcbNativeSize
   , normalizePbkd2Params2
   , pbkd2Params2NativeSize
+  , Sp800DataParam (..)
+  , sp800StructToCanonical
+  , normalizeSp800KdfParams
+  , sp800NativeSize
   , tlsPrfStructToCanonical
   , tlsPrfNativeSize
   , pssStructToCanonical
@@ -167,12 +171,17 @@ import Haskoki.Recipe.Gmac (gmacRecipeFor)
 import Haskoki.Recipe.MlDsa (encodeMldsaParams, hedgeOfWord, mldsaRecipeFor)
 import Haskoki.Recipe.SlhDsa (encodeSlhdsaParams, slhdsaRecipeFor)
 import qualified Haskoki.Recipe.SlhDsa as SlhDsa
+import Haskoki.Recipe.Sp800108
+  ( Sp800Mode (..)
+  , encodeSp800Params
+  , sp800PrfCodeFor
+  )
 import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Registry.Generated (mustGeneratedId)
-import Haskoki.Registry.Types (MechanismId)
+import Haskoki.Registry.Types (MechanismId (..))
 
 -- | Width of one @CK_ULONG@ word on this build.
 wordSize :: Int
@@ -547,6 +556,80 @@ slhdsaStructToCanonical hedge ctx
       Just h -> Just (encodeSlhdsaParams h ctx)
       Nothing -> Nothing
 
+-- | One chased SP 800-108 data parameter: the iteration
+-- variable (little-endian flag, width in bits), its absence
+-- (the NULL\/0 placeholder feedback and double-pipeline callers
+-- send — those modes have no counter), a byte-array
+-- fixed-input segment, or the DKM-length trailer (method,
+-- little-endian flag, width in bits). The IO normalizer parses
+-- the native @CK_PRF_DATA_PARAM@ array into these; the pure
+-- translator below enforces the canonical profile.
+data Sp800DataParam
+  = Sp800Iter !Bool !Word64
+  | Sp800IterAbsent
+  | Sp800Bytes !ByteString
+  | Sp800DkmLen !Word64 !Bool !Word64
+  deriving (Eq, Show)
+
+-- | Pure SP 800-108 translation: the mode, the native PRF
+-- mechanism id, the chased data parameters, the chased IV, and
+-- the additional-keys count onto the canonical
+-- @sp800-params\/1@ image. Only the canonical profile
+-- translates: an HMAC PRF with a frame code, the iteration
+-- variable first (big-endian, width 8\/16\/24\/32 — or the
+-- NULL\/0 placeholder outside counter mode, which records
+-- width 32), byte arrays in the middle (flattened in order),
+-- the DKM length last (@SUM_OF_KEYS@, big-endian, width
+-- 8\/16\/24\/32), an empty IV unless feedback mode, and zero
+-- additional keys. Anything else refuses ('Nothing'), which
+-- passes through raw so the recipe refusal (and its @CKR@) is
+-- unchanged.
+sp800StructToCanonical :: Sp800Mode -> Word64 -> [Sp800DataParam] -> ByteString -> Word64 -> Maybe ByteString
+sp800StructToCanonical mode prf params iv additional = do
+  guard (additional == 0)
+  code <- sp800PrfCodeFor (MechanismId (fromIntegral prf))
+  guard (mode == Sp800Feedback || BS.null iv)
+  (r, l, fixed) <- sp800ProfileSegments mode params
+  Just (encodeSp800Params code r l iv fixed)
+
+-- | The canonical data-parameter profile: the iteration
+-- variable leads (big-endian, width 8\/16\/24\/32), byte
+-- arrays fill the middle (flattened in order), and the DKM
+-- length trails (@SUM_OF_KEYS@, big-endian, width
+-- 8\/16\/24\/32). Outside counter mode the lead may be the
+-- NULL\/0 placeholder (those modes have no counter); the frame
+-- records width 32, inert downstream (planner and driver read
+-- the counter width in counter mode only). The width check
+-- runs on the 'Word64' before narrowing (the ML-DSA
+-- precedent), so no wrap-around can smuggle a width.
+-- 'Nothing' means off-profile.
+sp800ProfileSegments :: Sp800Mode -> [Sp800DataParam] -> Maybe (Int, Int, ByteString)
+sp800ProfileSegments mode (lead : rest) = do
+  r <- case lead of
+    Sp800Iter False w | w `elem` [8, 16, 24, 32] -> Just (fromIntegral w)
+    Sp800IterAbsent | mode /= Sp800Counter -> Just 32
+    _ -> Nothing
+  (mid, Sp800DkmLen m False l) <- splitSp800Last rest
+  guard (m == 1)
+  guard (l `elem` [8, 16, 24, 32])
+  segs <- traverse sp800SegBytes mid
+  Just (r, fromIntegral l, BS.concat segs)
+sp800ProfileSegments _ _ = Nothing
+
+-- | Split a non-empty list into its init and its last element
+-- ('Nothing' on empty — the profile needs at least the
+-- iteration\/DKM-length pair).
+splitSp800Last :: [a] -> Maybe ([a], a)
+splitSp800Last [] = Nothing
+splitSp800Last xs = Just (init xs, last xs)
+
+-- | One middle segment flattens only when it is a byte array
+-- (a second iteration variable or DKM length off-profile
+-- refuses).
+sp800SegBytes :: Sp800DataParam -> Maybe ByteString
+sp800SegBytes (Sp800Bytes b) = Just b
+sp800SegBytes _ = Nothing
+
 -- | Chase one bounded byte string from caller memory under the
 -- 'decodeInputBytes' null conventions: zero length never
 -- dereferences, null-with-length and over-bound lengths refuse.
@@ -690,6 +773,102 @@ normalizePbkd2Params2 pParams paramsLen
       mPwd <- chaseBytes pPassword pwdLen
       pure (mSalt >>= \salt -> mPrfData >>= \prfData -> mPwd >>= \pwd ->
         pbkd2Params2StructToCanonical saltSource salt iters prf prfData pwd)
+
+-- | Native SP 800-108 KDF params image size: three words
+-- plus two pointers for counter and double-pipeline mode
+-- (@CK_SP800_108_KDF_PARAMS@, 40 bytes), four words plus three
+-- pointers for feedback mode (@CK_SP800_108_FEEDBACK_KDF_PARAMS@,
+-- 56 bytes).
+sp800NativeSize :: Sp800Mode -> Int
+sp800NativeSize Sp800Feedback = 4 * wordSize + 3 * ptrSize
+sp800NativeSize _ = 3 * wordSize + 2 * ptrSize
+
+-- | Normalize one SP 800-108 KDF struct: the native image at
+-- @pParams@/@paramsLen@ onto the canonical @sp800-params\/1@
+-- image. Wrong-sized images, null or over-long data-parameter
+-- arrays, refused chases, and off-profile parameters refuse
+-- ('Nothing'), which passes through raw so the recipe refusal
+-- is exactly the planner's.
+normalizeSp800KdfParams :: Sp800Mode -> Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeSp800KdfParams mode pParams paramsLen
+  | paramsLen /= fromIntegral (sp800NativeSize mode) = pure Nothing
+  | otherwise = do
+      CULong prf <- peekByteOff pParams 0
+      CULong nParams <- peekByteOff pParams wordSize
+      pDataParams <- peekByteOff pParams (2 * wordSize)
+      (ivLen, pIv, additional) <- case mode of
+        Sp800Feedback -> do
+          CULong il <- peekByteOff pParams (2 * wordSize + ptrSize)
+          piv <- peekByteOff pParams (3 * wordSize + ptrSize)
+          CULong ad <- peekByteOff pParams (3 * wordSize + 2 * ptrSize)
+          pure (il, piv, ad)
+        _ -> do
+          CULong ad <- peekByteOff pParams (2 * wordSize + ptrSize)
+          pure (0, nullPtr, ad)
+      mParams <- chaseSp800DataParams pDataParams nParams
+      mIv <- chaseBytes pIv ivLen
+      pure (mParams >>= \ps -> mIv >>= \iv ->
+        sp800StructToCanonical mode prf ps iv additional)
+
+-- | Native @CK_PRF_DATA_PARAM@ image size: one type word, one
+-- pointer, one length word.
+sp800DataParamSize :: Int
+sp800DataParamSize = 2 * wordSize + ptrSize
+
+-- | Data-parameter array bound (the oracle sends five; the
+-- content ceilings live in the recipe): longer arrays refuse.
+maxSp800DataParams :: Word64
+maxSp800DataParams = 32
+
+-- | Chase the native data-parameter array into 'Sp800DataParam'
+-- values. Arrays shorter than the iteration\/DKM-length pair,
+-- longer than 'maxSp800DataParams', null, or holding an
+-- unchased element refuse ('Nothing'). Elements chase in
+-- order and short-circuit on the first refusal.
+chaseSp800DataParams :: Ptr Word8 -> Word64 -> IO (Maybe [Sp800DataParam])
+chaseSp800DataParams pData n
+  | n < 2 || n > maxSp800DataParams = pure Nothing
+  | pData == nullPtr = pure Nothing
+  | otherwise = go 0
+  where
+    go :: Word64 -> IO (Maybe [Sp800DataParam])
+    go i
+      | i >= n = pure (Just [])
+      | otherwise = do
+          let el = pData `plusPtr` (fromIntegral i * sp800DataParamSize)
+          CULong typ <- peekByteOff el 0
+          pVal <- peekByteOff el wordSize
+          CULong vlen <- peekByteOff el (wordSize + ptrSize)
+          mOne <- chaseSp800One typ pVal vlen
+          case mOne of
+            Nothing -> pure Nothing
+            Just one -> (fmap . fmap) (one :) (go (i + 1))
+
+-- | Chase one data parameter: the iteration variable and the
+-- DKM length dereference their native format structs
+-- (@CK_SP800_108_COUNTER_FORMAT@, 16 bytes: flag plus width;
+-- @CK_SP800_108_DKM_LENGTH_FORMAT@, 24 bytes: method plus
+-- flag plus width — @spec\/vendor\/pkcs11.h:1881-1890@), byte
+-- arrays chase as bytes. A NULL\/0 iteration variable chases
+-- as the counterless placeholder (the translator admits it
+-- outside counter mode only); half-absent shapes (null with
+-- length, zero length with a live pointer), wrong-sized
+-- format images, and unknown parameter types refuse
+-- ('Nothing').
+chaseSp800One :: Word64 -> Ptr Word8 -> Word64 -> IO (Maybe Sp800DataParam)
+chaseSp800One typ pVal vlen = case typ of
+  1 | pVal == nullPtr && vlen == 0 -> pure (Just Sp800IterAbsent)
+  1 | vlen == 16 && pVal /= nullPtr -> do
+    le <- (peekByteOff pVal 0 :: IO Word8)
+    CULong w <- peekByteOff pVal 8
+    pure (Just (Sp800Iter (le /= 0) w))
+  3 | vlen == 24 && pVal /= nullPtr -> do
+    CULong m <- peekByteOff pVal 0
+    le <- (peekByteOff pVal 8 :: IO Word8)
+    CULong w <- peekByteOff pVal 16
+    pure (Just (Sp800DkmLen m (le /= 0) w))
+  4 -> (fmap . fmap) Sp800Bytes (chaseBytes pVal vlen)
+  _ -> pure Nothing
 
 -- | Normalize one call's mechanism parameters: struct mechanisms
 -- translate from the live caller image at @pParams@/@paramsLen@

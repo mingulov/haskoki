@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 234
+#define HASKOKI_MECH_COUNT 237
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -147,6 +147,9 @@ static const struct haskoki_mech_row
   { 0x0000039AUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHA3_512_KEY_DERIVATION */
   { 0x0000039BUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHAKE_128_KEY_DERIVATION */
   { 0x0000039CUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHAKE_256_KEY_DERIVATION */
+  { 0x000003ACUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SP800_108_COUNTER_KDF */
+  { 0x000003ADUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SP800_108_FEEDBACK_KDF */
+  { 0x000003AEUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SP800_108_DOUBLE_PIPELINE_KDF */
   { 0x000003B0UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE | CKF_GENERATE) }, /* CKM_PKCS5_PBKD2 */
   { 0x000003D0UL, 160UL, 2040UL, (unsigned long)(CKF_GENERATE) }, /* CKM_WTLS_PRE_MASTER_KEY_GEN */
   { 0x00000550UL, 128UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_CAMELLIA_KEY_GEN */

@@ -1510,6 +1510,86 @@ skipped (t7692)
   the Haddock comment fix is
   behavior-free).
 
+## Round 29: SP 800-108 slice 11h (fast r55→r56→r57 + KAT r30→r31)
+
+- r56: 4208 passed / 26 failed / 663
+  xfailed / 3640 skipped (t8537)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r56-results.json`).
+  r55→r56: +18 pass / +8 fail / +0 xfail /
+  +25 skip (+51 collected).
+- Movers r55→r56 (unit `counts`, exact):
+  `test_sp800_108_kdf` 15s → 7p/8f (the
+  new unit executes: counter derives
+  pass, feedback/double-pipeline refuse);
+  `test_ffi_length_boundary` 70p/55s →
+  75p/50s (boundary legs over the new
+  rows pass); `test_mech_flags`
+  727p/1371s/8x → 733p/1392s/8x;
+  `test_mech_derive` skips 10 → 13;
+  `test_mech_negative` skips 675 → 687;
+  `test_mech_probe` skips 702 → 711.
+- In-slice fix (lane-found, r56→r57):
+  the oracle sends the iteration
+  variable as NULL/0 (no format struct)
+  in feedback and double-pipeline modes
+  — only counter mode attaches the
+  `CK_SP800_108_COUNTER_FORMAT` — and
+  the FFI decoder required the struct in
+  all modes, so 7 derives refused
+  `CKR_ARGUMENTS_BAD`. The chaser now
+  admits the NULL/0 placeholder (half-
+  absent shapes still refuse) and the
+  translator maps it to width 32 outside
+  counter mode (inert downstream:
+  planner and driver read the counter
+  width in counter mode only); counter
+  mode still refuses the placeholder.
+  Recipe, planner, driver untouched;
+  committed tests added (translator
+  pins, NULL/0 consumer leg).
+- r57: 4215 passed / 19 failed / 663
+  xfailed / 3640 skipped (t8537)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r57-results.json`):
+  +7 pass / −7 fail. The fix flips
+  exactly (`test_sp800_108_kdf` 7p/8f →
+  14p/1f — the only moving unit); zero
+  pass→nonpass.
+- The 1 remaining SP800 failure is the
+  defined scope edge, not a bug:
+  `TestSP800108CounterKDF::test_additional_derived_key_handles`
+  requires multi-output derive
+  (`ulAdditionalDerivedKeys != 0`), and
+  11h serves single-output only (the
+  decoder refuses nonzero additional
+  counts). Queued for a later slice;
+  the other 18 failures are identical
+  by id to r55 (13 X9.42 P11C-004 + 2
+  HOTP P11C-001 + 3 WTLS P11C-006).
+- r31: 82652 passed / 25 failed / 1686
+  xfailed / 30358 skipped (t114721)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r31-results.json`).
+  r30→r31: +25 pass / +1 fail / +0 xfail /
+  +25 skip (+51) — the fast-matrix units
+  repeat r55→r57 exactly
+  (ffi_length_boundary, mech_derive,
+  mech_flags, mech_negative, mech_probe,
+  sp800_108_kdf at 14p/1f); zero
+  KAT-only delta (no vector suite covers
+  the new rows beyond the matrix units).
+- KAT residuals, all dispositioned: the
+  25 failures are the r30 24 identical
+  by id (13 X9.42 P11C-004 + 2 HOTP
+  P11C-001 + 3 WTLS P11C-006 + 6 SLH-DSA
+  P11C-003) plus the multi-output scope
+  gap above.
+- Bundle note: r57/r31 run on the final
+  11h tree (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16); r56 ran on the same
+  tree minus the absent-iter fix
+  (behavior delta: the FFI decoder
+  admits the NULL/0 iteration variable
+  outside counter mode).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

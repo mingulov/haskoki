@@ -81,6 +81,7 @@ import qualified Haskoki.Outcome as O
 import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
+import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Recipe.Otp (encodeHotpParams)
 import Haskoki.Registry (MechanismId (..))
@@ -138,6 +139,7 @@ spec = testGroup "synthetic engine"
   , testCase "GMAC tags separate over synthetic GCM" caseGmac
   , testCase "KDF output separates and truncates" caseKdf
   , testCase "TLS-PRF output separates and truncates" caseTlsPrf
+  , testCase "SP800-108 modes separate, length bound" caseSp800
   , testCase "HOTP codes separate, keygen lengths" caseHotp
   , testCase "Specials refuse explicitly" caseSpecialsRefuse
   , testCase "Random bytes deterministic on seed" caseRandomBytes
@@ -2272,6 +2274,63 @@ caseTlsPrf = withSynth "11" $ \env -> do
   case badLen of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- | SP 800-108 through the driver over synthetic HMAC-SHA256:
+-- deterministic output, separated across modes, secrets, fixed
+-- inputs, and feedback IVs, the derived length binds the output
+-- (the DKM length rides the PRF input, so shorter derivations
+-- are not prefixes of longer ones), and typed refusals. (The
+-- synthetic MAC stream differs from real HMAC by design; exact
+-- KAT bytes live on the real backend.)
+caseSp800 :: IO ()
+caseSp800 = withSynth "11" $ \env -> do
+  let ctr = MechanismId 0x3ac
+      fb = MechanismId 0x3ad
+      dp = MechanismId 0x3ae
+      secOid = ObjectId 74
+      oddOid = ObjectId 75
+      res oid
+        | oid == secOid = Just (KeyBytes (BS.pack [0 .. 47]))
+        | oid == oddOid = Just (KeyBytes (BS.pack [0 .. 46]))
+        | otherwise = Nothing
+      fixed = "SP800-108 test label" <> "\x00" <> "SP800-108 test context"
+      frame iv = encodeSp800Params 4 32 32 iv fixed
+      deriveAs mech oid params outLen =
+        runEffect env res (FxDerive mech (Just oid) params BS.empty outLen)
+          >>= expectBytes
+      expectFailed label fx = do
+        r <- runEffect env res fx
+        case r of
+          GotCryptoError (CryptoFailed _) -> pure ()
+          other -> assertFailure ("expected Failed " ++ label ++ ", got: " ++ show other)
+  c1 <- deriveAs ctr secOid (frame BS.empty) 48
+  assertEqual "output length" 48 (BS.length c1)
+  c2 <- deriveAs ctr secOid (frame BS.empty) 48
+  assertEqual "deterministic" c1 c2
+  f1 <- deriveAs fb secOid (frame BS.empty) 48
+  p1 <- deriveAs dp secOid (frame BS.empty) 48
+  assertBool "modes separated" (c1 /= f1 && c1 /= p1 && f1 /= p1)
+  cOdd <- deriveAs ctr oddOid (frame BS.empty) 48
+  assertBool "secrets separated" (c1 /= cOdd)
+  cFix <- deriveAs ctr secOid (encodeSp800Params 4 32 32 BS.empty "other fixed") 48
+  assertBool "fixed inputs separated" (c1 /= cFix)
+  fIv <- deriveAs fb secOid (frame (BS.pack [0 .. 15])) 48
+  assertBool "feedback ivs separated" (f1 /= fIv)
+  s16a <- deriveAs ctr secOid (frame BS.empty) 16
+  s16b <- deriveAs ctr secOid (frame BS.empty) 16
+  assertEqual "deterministic at 16" s16a s16b
+  assertBool "length binds the output" (s16a /= BS.take 16 c1)
+  -- Typed refusals.
+  expectFailed "junk params"
+    (FxDerive ctr (Just secOid) "junk" BS.empty 48)
+  expectFailed "info string"
+    (FxDerive ctr (Just secOid) (frame BS.empty) "x" 48)
+  expectFailed "zero length"
+    (FxDerive ctr (Just secOid) (frame BS.empty) BS.empty 0)
+  expectFailed "over ceiling"
+    (FxDerive ctr (Just secOid) (frame BS.empty) BS.empty (maxSp800Total + 1))
+  expectFailed "counter does not fit"
+    (FxDerive ctr (Just secOid) (encodeSp800Params 4 8 32 BS.empty fixed) BS.empty 8192)
 
 -- ---------------------------------------------------------------------------
 -- OTP constructions

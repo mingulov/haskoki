@@ -101,6 +101,7 @@ library haskoki-core
     Haskoki.Recipe.MlDsa
     Haskoki.Recipe.Otp
     Haskoki.Recipe.SlhDsa
+    Haskoki.Recipe.Sp800108
     Haskoki.Recipe.TlsPrf
   hs-source-dirs:     core
   build-depends:
@@ -401,6 +402,7 @@ test-suite haskoki-model-tests
     RecipePssSpec
     RecipeRsaSpec
     RecipeSlhDsaSpec
+    RecipeSp800108Spec
     RecipeTlsPrfSpec
     RecipeX509Spec
     RecipeXcbcMacSpec

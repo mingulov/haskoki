@@ -257,6 +257,7 @@ import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
 import Haskoki.Registry (MechanismId (..), Operation (..), curatedRegistry, mkCapabilities)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
+import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
 import Haskoki.Registry.Generated
   ( ckm_AES_CCM
@@ -267,6 +268,9 @@ import Haskoki.Registry.Generated
   , ckm_SHA256
   , ckm_SHA256_HMAC
   , ckm_SHA256_KEY_DERIVATION
+  , ckm_SP800_108_COUNTER_KDF
+  , ckm_SP800_108_DOUBLE_PIPELINE_KDF
+  , ckm_SP800_108_FEEDBACK_KDF
   )
 import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
@@ -370,6 +374,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "HKDF extract-only refuses mechanism-param-invalid" caseHkdfExtractOnlyRefused
   , testCase "HKDF-DATA plans data outputs, refuses key shapes" caseHkdfDataPlans
   , testCase "Real HKDF-DATA derive matches RFC 5869" caseRealHkdfDataVector
+  , testCase "SP800-108 plans the three modes, refuses bad shapes" caseSp800Plans
+  , testCase "Real SP800-108 derive matches the KAT" caseRealSp800Vector
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
   , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
   , testCase "KEM refuses wrong key types inconsistent" caseKemWrongKeyType
@@ -4628,6 +4634,131 @@ caseRealHkdfDataVector = withRealEnv $ \env -> do
     Just os1 <- pure (resolveHandle ms1 hs1)
     Just os2 <- pure (resolveHandle ms2 hs2)
     assertEqual "synthetic data derive replays" (keyBytesOf os1) (keyBytesOf os2)
+
+-- | The oracle-profile fixed input: label, 0x00 separator,
+-- context (the DKM length rides execution, never the frame).
+sp800Fixed :: BS.ByteString
+sp800Fixed = "SP800-108 test label" <> "\x00" <> "SP800-108 test context"
+
+sp800CounterMech, sp800FeedbackMech, sp800DoubleMech :: MechanismId
+sp800CounterMech = MechanismId ckm_SP800_108_COUNTER_KDF
+sp800FeedbackMech = MechanismId ckm_SP800_108_FEEDBACK_KDF
+sp800DoubleMech = MechanismId ckm_SP800_108_DOUBLE_PIPELINE_KDF
+
+caseSp800Plans :: IO ()
+caseSp800Plans = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 31])
+  let kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrValueLen, ValULong n)
+        , (AttrToken, ValBool False)
+        ]
+      counter = encodeSp800Params 4 32 32 BS.empty sp800Fixed
+      feedback = encodeSp800Params 4 32 32 (BS.pack [0 .. 15]) sp800Fixed
+      dbl = encodeSp800Params 4 32 32 BS.empty sp800Fixed
+  -- All three modes plan with a VALUE_LEN template.
+  case planDerive defaultRules m1 st sp800CounterMech baseH
+      (encodeDeriveParams counter [kid 16]) of
+    KeyEffect _ (FxDerive mech _ params info total) -> do
+      assertEqual "counter mech" sp800CounterMech mech
+      assertEqual "counter params" counter params
+      assertEqual "counter info empty" BS.empty info
+      assertEqual "counter total" 16 total
+    other -> assertFailure ("counter must plan: " ++ show other)
+  case planDerive defaultRules m1 st sp800FeedbackMech baseH
+      (encodeDeriveParams feedback [kid 16]) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("feedback must plan: " ++ show other)
+  case planDerive defaultRules m1 st sp800DoubleMech baseH
+      (encodeDeriveParams dbl [kid 32]) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("double-pipeline must plan: " ++ show other)
+  -- Junk frames refuse typed.
+  case planDerive defaultRules m1 st sp800CounterMech baseH
+      (encodeDeriveParams "junk" [kid 16]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "junk code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("junk must deny, got: " ++ show other)
+  -- An IV on a counter frame refuses typed (mode/IV
+  -- consistency).
+  case planDerive defaultRules m1 st sp800CounterMech baseH
+      (encodeDeriveParams feedback [kid 16]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "counter-iv code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("counter iv must deny, got: " ++ show other)
+  -- A missing length stays INCOMPLETE (no natural width).
+  let noLen =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrToken, ValBool False)
+        ]
+  case planDerive defaultRules m1 st sp800CounterMech baseH
+      (encodeDeriveParams counter [noLen]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "no-length code" CKR_TEMPLATE_INCOMPLETE code
+    other -> assertFailure ("missing length must deny, got: " ++ show other)
+  -- Output past the ceiling refuses typed.
+  case planDerive defaultRules m1 st sp800CounterMech baseH
+      (encodeDeriveParams counter [kid (fromIntegral (maxSp800Total + 1))]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "ceiling code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("over-ceiling must deny, got: " ++ show other)
+  -- L must fit its width (320 bits need more than 8).
+  let narrow = encodeSp800Params 4 32 8 BS.empty sp800Fixed
+  case planDerive defaultRules m1 st sp800CounterMech baseH
+      (encodeDeriveParams narrow [kid 40]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "L-fit code" CKR_KEY_SIZE_RANGE code
+    other -> assertFailure ("L misfit must deny, got: " ++ show other)
+  -- Counter mode past 2^r - 1 iterations refuses typed (256
+  -- blocks need more than 8 counter bits).
+  let short = encodeSp800Params 4 8 32 BS.empty sp800Fixed
+  case planDerive defaultRules m1 st sp800CounterMech baseH
+      (encodeDeriveParams short [kid 8192]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "counter-fit code" CKR_KEY_SIZE_RANGE code
+    other -> assertFailure ("counter misfit must deny, got: " ++ show other)
+
+caseRealSp800Vector :: IO ()
+caseRealSp800Vector = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 31])
+  let kid =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrValueLen, ValULong 16)
+        , (AttrToken, ValBool False)
+        ]
+      frame = encodeSp800Params 4 32 32 BS.empty sp800Fixed
+  (m2, [h]) <- case planDerive defaultRules m1 st sp800CounterMech baseH
+      (encodeDeriveParams frame [kid]) of
+    KeyEffect pw fx -> do
+      res <- answer m1 fx
+      c <- finishCommit m1 st pw res 1
+      hh <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m1 (pcDelta c))
+      pure (m', [hh])
+    other -> assertFailure ("derive must plan: " ++ show other) >> undefined
+  Just ost <- pure (resolveHandle m2 h)
+  -- Triple-verified: independent python construction, the
+  -- oracle reference, and the provider KBKDF CLI agree.
+  assertEqual "SP800-108 counter AES-128 KAT"
+    (Just (hex "caff7a6a35ca9b35afcc64fa658d8bc2")) (keyBytesOf ost)
 
 caseRealAuthWrap :: IO ()
 caseRealAuthWrap = withRealEnv $ \env -> do
