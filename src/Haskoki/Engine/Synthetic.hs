@@ -1050,9 +1050,9 @@ x509Supported :: BackendEnv Synthetic -> Maybe String
 x509Supported _ = Nothing
 
 -- | The cipher set: every backend spec the block-cipher
--- recipe reaches (AES/ARIA/CAMELLIA CBC+ECB at three widths plus
--- Triple-DES CBC+ECB). The CTR specs stay out until the streaming
--- slice wires them to a mechanism.
+-- recipe reaches (AES CBC/ECB/CTR/CTS/CFB/OFB/WRAP/XTS at three
+-- widths, ARIA/CAMELLIA CBC+ECB+CTR at three widths, Triple-DES
+-- CBC+ECB, ChaCha20).
 synthCipherSpecs :: [CipherSpec]
 synthCipherSpecs =
   [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
@@ -1071,6 +1071,7 @@ synthCipherSpecs =
   , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
   , C_CAMELLIA128_CBC, C_CAMELLIA192_CBC, C_CAMELLIA256_CBC
   , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
+  , C_CAMELLIA128_CTR, C_CAMELLIA192_CTR, C_CAMELLIA256_CTR
   , C_CHACHA20
   ]
 

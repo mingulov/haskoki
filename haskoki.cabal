@@ -92,6 +92,7 @@ library haskoki-core
     Haskoki.Recipe.Ecdsa
     Haskoki.Recipe.Ecdh
     Haskoki.Recipe.Eddsa
+    Haskoki.Recipe.EncryptData
     Haskoki.Recipe.Gcm
     Haskoki.Recipe.Chacha20
     Haskoki.Recipe.MlDsa
@@ -385,6 +386,7 @@ test-suite haskoki-model-tests
     RecipeEcdsaSpec
     RecipeEcdhSpec
     RecipeEddsaSpec
+    RecipeEncryptDataSpec
     RecipeGcmSpec
     RecipeHmacSpec
     RecipeKdfSpec

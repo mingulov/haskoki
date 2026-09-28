@@ -67,6 +67,7 @@ import qualified Haskoki.Outcome as O
 import Haskoki.Der (dhParamsDer, dhSpkiFields)
 import Haskoki.Recipe.Ccm (encodeCcmParams)
 import Haskoki.Recipe.Chacha20 (encodeChachaPolyParams, encodeChachaStreamParams)
+import Haskoki.Recipe.Cipher (encodeCtrParams)
 import Haskoki.Recipe.Dh (encodeDhParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
@@ -119,6 +120,8 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: blake2b-512 digest/hmac/general + refuse" caseDriverBlake2b512
   , testCase "driver: blake2b-256 digest/hmac/general + refuse" caseDriverBlake2b256
   , testCase "driver: chacha20 KAT + poly KAT + tamper + refuse" caseDriverChacha
+  , testCase "driver: camellia-ctr KAT + stream + refuse" caseDriverCamelliaCtr
+  , testCase "driver: encrypt-data goldens + truncate + refuse" caseDriverEncryptData
   , testCase "driver: message cipher/sign/verify" caseDriverMessage
   , testCase "driver: recovery is honestly unsupported" caseDriverRecover
   , testCase "driver: encodeResult mapping" caseEncodeResult
@@ -756,6 +759,154 @@ caseDriverAes = withBackend $ \env -> do
   badIv <- runEffect env resolver
     (FxCipher DirEncrypt aesCbcMech (Just aesOid) "short" aes256Pt)
   case badIv of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+camCtrMech :: MechanismId
+camCtrMech = MechanismId 0x558
+
+-- RFC 5528 TV#1/#4/#7 (single-block Camellia-CTR at 128/192/256;
+-- counter block drives the 16-byte IV directly).
+camCtr128Key, camCtr128Icb, camCtrPt, camCtr128Ct :: ByteString
+camCtr128Key = hex "ae6852f8121067cc4bf7a5765577f39e"
+camCtr128Icb = hex "00000030000000000000000000000001"
+camCtrPt = hex "53696e676c6520626c6f636b206d7367"
+camCtr128Ct = hex "d09dc29a8214619a20877c76db1f0b3f"
+
+camCtr192Key, camCtr192Icb, camCtr192Ct :: ByteString
+camCtr192Key = hex "16af5b145fc9f579c175f93e3bfb0eed863d06ccfdb78515"
+camCtr192Icb = hex "0000004836733c147d6d93cb00000001"
+camCtr192Ct = hex "2379399e8a8d2b2b16702fc78b9e9696"
+
+camCtr256Key, camCtr256Icb, camCtr256Ct :: ByteString
+camCtr256Key = hex "776beff2851db06f4c8a0542c8696f6c6a81af1eec96b4d37fc1d689e6c1c104"
+camCtr256Icb = hex "00000060db5672c97aa8f0b200000001"
+camCtr256Ct = hex "3401f9c8247effcebd6994714c1bbb11"
+
+caseDriverCamelliaCtr :: IO ()
+caseDriverCamelliaCtr = withBackend $ \env -> do
+  let c128 = ObjectId 81
+      c192 = ObjectId 82
+      c256 = ObjectId 83
+      res oid
+        | oid == c128 = Just (KeyBytes camCtr128Key)
+        | oid == c192 = Just (KeyBytes camCtr192Key)
+        | oid == c256 = Just (KeyBytes camCtr256Key)
+        | otherwise = Nothing
+      enc oid icb pt =
+        runEffect env res (FxCipher DirEncrypt camCtrMech (Just oid)
+          (encodeCtrParams 128 icb) pt) >>= expectBytes
+      dec oid icb ct =
+        runEffect env res (FxCipher DirDecrypt camCtrMech (Just oid)
+          (encodeCtrParams 128 icb) ct) >>= expectBytes
+  ct128 <- enc c128 camCtr128Icb camCtrPt
+  assertEqual "rfc5528 tv1" camCtr128Ct ct128
+  ct192 <- enc c192 camCtr192Icb camCtrPt
+  assertEqual "rfc5528 tv4" camCtr192Ct ct192
+  ct256 <- enc c256 camCtr256Icb camCtrPt
+  assertEqual "rfc5528 tv7" camCtr256Ct ct256
+  pt128 <- dec c128 camCtr128Icb ct128
+  assertEqual "decrypt recovers" camCtrPt pt128
+  -- CTR streams unaligned input.
+  ragged <- enc c128 camCtr128Icb "twenty bytes exactly!!"
+  assertEqual "stream length" 22 (BS.length ragged)
+  back <- dec c128 camCtr128Icb ragged
+  assertEqual "stream roundtrip" "twenty bytes exactly!!" back
+  -- Refusals: off-width images and bad key lengths fail closed.
+  badWidth <- runEffect env res (FxCipher DirEncrypt camCtrMech (Just c128)
+    (encodeCtrParams 64 camCtr128Icb) camCtrPt)
+  case badWidth of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  let badLenKey oid
+        | oid == c128 = Just (KeyBytes (BS.take 15 camCtr128Key))
+        | otherwise = Nothing
+  badKey <- runEffect env badLenKey (FxCipher DirEncrypt camCtrMech (Just c128)
+    (encodeCtrParams 128 camCtr128Icb) camCtrPt)
+  case badKey of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- Encrypt-data derive mechs (header ids at spec/vendor/pkcs11.h).
+aesCbcEdMech, aesEcbEdMech :: MechanismId
+aesCbcEdMech = MechanismId 0x1105
+aesEcbEdMech = MechanismId 0x1104
+
+ariaCbcEdMech, ariaEcbEdMech :: MechanismId
+ariaCbcEdMech = MechanismId 0x567
+ariaEcbEdMech = MechanismId 0x566
+
+camCbcEdMech, camEcbEdMech :: MechanismId
+camCbcEdMech = MechanismId 0x557
+camEcbEdMech = MechanismId 0x556
+
+d3CbcEdMech, d3EcbEdMech :: MechanismId
+d3CbcEdMech = MechanismId 0x1103
+d3EcbEdMech = MechanismId 0x1102
+
+-- Shared fixtures: 128-bit key/IV plus two distinct data blocks
+-- (CBC chaining and ECB confusion both visible); 3DES takes a
+-- 24-byte three-key key, 8-byte IV, two 8-byte blocks. Goldens are
+-- python-cryptography output, decrypt-verified under the pinned
+-- OpenSSL 4.0.2 CLI (AES-ECB block one is NIST F.1.1; ARIA-CBC
+-- block one repeats the committed ARIA fixture).
+edKey128, edIv16, edData32 :: ByteString
+edKey128 = hex "000102030405060708090a0b0c0d0e0f"
+edIv16 = hex "000102030405060708090a0b0c0d0e0f"
+edData32 = hex "00112233445566778899aabbccddeeff" <> hex "ffeeddccbbaa99887766554433221100"
+
+edKey24, edIv8, edData16 :: ByteString
+edKey24 = hex "0123456789abcdeff0e1d2c3b4a596870123456789abcdef"
+edIv8 = hex "0001020304050607"
+edData16 = hex "00112233445566778899aabbccddeeff"
+
+caseDriverEncryptData :: IO ()
+caseDriverEncryptData = withBackend $ \env -> do
+  let kAes = ObjectId 91
+      kAria = ObjectId 92
+      kCam = ObjectId 93
+      kD3 = ObjectId 94
+      res oid
+        | oid == kAes = Just (KeyBytes edKey128)
+        | oid == kAria = Just (KeyBytes edKey128)
+        | oid == kCam = Just (KeyBytes edKey128)
+        | oid == kD3 = Just (KeyBytes edKey24)
+        | otherwise = Nothing
+      derive oid mech params outLen =
+        runEffect env res (FxDerive mech (Just oid) params BS.empty outLen)
+          >>= expectBytes
+      cbc = edIv16 <> edData32
+      d3cbc = edIv8 <> edData16
+  full <- derive kAes aesCbcEdMech cbc 32
+  assertEqual "aes-cbc full" (hex "76d0627da1d290436e21a4af7fca94b730cdf5479769414250df6cf5d3fcae8e") full
+  trunc <- derive kAes aesCbcEdMech cbc 16
+  assertEqual "truncation prefix" (BS.take 16 full) trunc
+  ecb <- derive kAes aesEcbEdMech edData32 32
+  assertEqual "aes-ecb full" (hex "69c4e0d86a7b0430d8cdb78070b4c55a1b872378795f4ffd772855fc87ca964d") ecb
+  ariaCbc <- derive kAria ariaCbcEdMech cbc 32
+  assertEqual "aria-cbc full" (hex "d87ae512c018266fcd74ddf801efabf92b8636eb88dd8d019510238ff02804d7") ariaCbc
+  ariaEcb <- derive kAria ariaEcbEdMech edData32 32
+  assertEqual "aria-ecb full" (hex "d718fbd6ab644c739da95f3be6451778385de1969edfa82817cb70d63530f634") ariaEcb
+  camCbc <- derive kCam camCbcEdMech cbc 32
+  assertEqual "camellia-cbc full" (hex "94887caa8b90cd132d9aa972db3e52bbd31bfa4ec4d6392631742a8ad4cf91a6") camCbc
+  camEcb <- derive kCam camEcbEdMech edData32 32
+  assertEqual "camellia-ecb full" (hex "77cf412067af8270613529149919546f460efad46fc3bf49c3b66d8bff668492") camEcb
+  d3cbc <- derive kD3 d3CbcEdMech d3cbc 16
+  assertEqual "des3-cbc full" (hex "a78cd104d767ee1a17dfe53c25fb97d3") d3cbc
+  d3ecb <- derive kD3 d3EcbEdMech edData16 16
+  assertEqual "des3-ecb full" (hex "534c0b5cdcb62ea80cfcfab978042851") d3ecb
+  -- Refusals: ragged frames and bad key lengths fail closed.
+  ragged <- runEffect env res
+    (FxDerive aesCbcEdMech (Just kAes) (edIv16 <> BS.replicate 20 0) BS.empty 16)
+  case ragged of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  let badLenKey oid
+        | oid == kAes = Just (KeyBytes (BS.take 15 edKey128))
+        | otherwise = Nothing
+  badKey <- runEffect env badLenKey
+    (FxDerive aesCbcEdMech (Just kAes) cbc BS.empty 32)
+  case badKey of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
 

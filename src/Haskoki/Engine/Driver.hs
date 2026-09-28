@@ -154,6 +154,7 @@ module Haskoki.Engine.Driver
   , Pbkd2Params (..)
   , kdfShaFor
   , pbkd2ParamsFor
+  , encryptDataPartsFor
   , TlsPrfParams (..)
   , tlsPrfParamsFor
   ) where
@@ -361,6 +362,13 @@ import Haskoki.Recipe.Kdf
   , kdfParamsValid
   , kdfRecipeFor
   )
+import Haskoki.Recipe.EncryptData
+  ( EncryptDataRecipe (..)
+  , decodeEncryptDataParams
+  , encryptDataKeyLenValid
+  , encryptDataParamsValid
+  , encryptDataRecipeFor
+  )
 import Haskoki.Recipe.Otp
   ( decodeHotpParams
   , encodeHotpCounter
@@ -548,6 +556,28 @@ pbkd2ParamsFor mech params = do
   (stem, iters, salt, _) <- decodePbkd2Params params
   alg <- rsaDigest stem
   pure (Pbkd2Params alg iters salt)
+
+-- | Encrypt-data dispatch: the covered (mechanism, base-key
+-- length, canonical frame) triple to its backend cipher spec plus
+-- the split IV and data (empty IV for ECB rows). The row name
+-- strips to its cipher row (@CKM_AES_CBC_ENCRYPT_DATA@ onto
+-- @CKM_AES_CBC@), so width selection and the Triple-DES collapse
+-- reuse 'cipherCtor' (pinned by RecipeEncryptDataSpec).
+encryptDataPartsFor :: MechanismId -> Int -> ByteString -> Maybe (CipherSpec, ByteString, ByteString)
+encryptDataPartsFor mech keyLen params = do
+  r <- encryptDataRecipeFor mech
+  guard (encryptDataParamsValid r params)
+  guard (encryptDataKeyLenValid r keyLen)
+  base <- T.stripSuffix "_ENCRYPT_DATA" (erName r)
+  spec <- cipherCtor base keyLen
+  (iv, dat) <- decodeEncryptDataParams r params
+  pure (spec, iv, dat)
+
+-- | An encrypt-data mechanism regardless of triple validity
+-- (drives the derive parameter-refusal branch: rejected triples
+-- are 'CryptoFailed', never 'CryptoUnsupported').
+isEncryptDataMech :: MechanismId -> Bool
+isEncryptDataMech mech = isJust (encryptDataRecipeFor mech)
 
 -- | A SHA key-derivation mechanism (drives the parameter-refusal
 -- branch).
@@ -740,11 +770,12 @@ isChachaPolyMech mech = case chachaRecipeFor mech of
   Just r -> chachaName r == "CKM_CHACHA20_POLY1305"
   Nothing -> False
 
--- | Recipe row + key length onto the backend width. @CKM_AES_CBC_PAD@
--- shares the CBC specs (the planner pads before the effect input is
--- fixed); @CKM_AES_CTR@ maps its three widths (the counter block is
--- split from the parameter image in 'runCipher'); Triple-DES widths
--- collapse (the engines expand two-key material to @K1||K2||K1@).
+-- | Recipe row + key length onto the backend width. The CBC_PAD
+-- rows share the CBC specs (the planner pads before the effect
+-- input is fixed); the CTR rows map their three widths (the
+-- counter block is split from the parameter image in 'runCipher');
+-- Triple-DES widths collapse (the engines expand two-key material
+-- to @K1||K2||K1@).
 cipherCtor :: MechanismName -> Int -> Maybe CipherSpec
 cipherCtor name keyLen
   | name == "CKM_AES_CBC" || name == "CKM_AES_CBC_PAD" = aesCbc keyLen
@@ -759,14 +790,16 @@ cipherCtor name keyLen
   | name == "CKM_AES_KEY_WRAP_KWP" = aesKwp keyLen
   | name == "CKM_AES_KEY_WRAP_PAD" = aesKwp keyLen
   | name == "CKM_AES_XTS" = aesXts keyLen
-  | name == "CKM_DES3_CBC" = des3 C_DES3_CBC
+  | name == "CKM_DES3_CBC" || name == "CKM_DES3_CBC_PAD" = des3 C_DES3_CBC
   | name == "CKM_DES3_ECB" = des3 C_DES3_ECB
-  | name == "CKM_ARIA_CBC" = aria C_ARIA128_CBC C_ARIA192_CBC C_ARIA256_CBC
+  | name == "CKM_ARIA_CBC" || name == "CKM_ARIA_CBC_PAD" =
+      aria C_ARIA128_CBC C_ARIA192_CBC C_ARIA256_CBC
   | name == "CKM_ARIA_ECB" = aria C_ARIA128_ECB C_ARIA192_ECB C_ARIA256_ECB
-  | name == "CKM_CAMELLIA_CBC" =
+  | name == "CKM_CAMELLIA_CBC" || name == "CKM_CAMELLIA_CBC_PAD" =
       aria C_CAMELLIA128_CBC C_CAMELLIA192_CBC C_CAMELLIA256_CBC
   | name == "CKM_CAMELLIA_ECB" =
       aria C_CAMELLIA128_ECB C_CAMELLIA192_ECB C_CAMELLIA256_ECB
+  | name == "CKM_CAMELLIA_CTR" = camCtr keyLen
   | otherwise = Nothing
   where
     aesCbc n = case n of
@@ -778,6 +811,11 @@ cipherCtor name keyLen
       16 -> Just C_AES128_CTR
       24 -> Just C_AES192_CTR
       32 -> Just C_AES256_CTR
+      _ -> Nothing
+    camCtr n = case n of
+      16 -> Just C_CAMELLIA128_CTR
+      24 -> Just C_CAMELLIA192_CTR
+      32 -> Just C_CAMELLIA256_CTR
       _ -> Nothing
     aesEcb n = case n of
       16 -> Just C_AES128_ECB
@@ -1600,6 +1638,11 @@ runEffect env resolve fx = case fx of
         "driver: TLS-PRF derive takes no info string"))
     | isTlsPrfMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: TLS-PRF mechanism parameters rejected by the recipe"))
+    | isEncryptDataMech mech
+    , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
+        "driver: encrypt-data derive takes no info string"))
+    | isEncryptDataMech mech -> withKey mkey $ \key ->
+        runEncryptData mech key params outLen
     | otherwise -> pure (unsupported fx)
   where
     withKey :: Maybe ObjectId -> (KeyMaterial -> IO CryptoResult) -> IO CryptoResult
@@ -1972,6 +2015,26 @@ runEffect env resolve fx = case fx of
           "driver: derive length out of range"))
       _ -> pure (GotCryptoError (CryptoBadKey "driver"
         "key derivation needs raw secret bytes"))
+    -- | Encrypt-data derive: single-shot cipher encryption of the
+    -- framed data under the base key, truncated to the planned
+    -- length (the planner caps at the data width; an out-of-range
+    -- request fails closed here too). Off-geometry triples are
+    -- 'CryptoFailed'; a non-bytes key is 'CryptoBadKey'.
+    runEncryptData :: MechanismId -> KeyMaterial -> ByteString -> Int -> IO CryptoResult
+    runEncryptData mech key params outLen = case key of
+      KeyBytes kb -> case encryptDataPartsFor mech (BS.length kb) params of
+        Just (spec, iv, dat)
+          | outLen >= 1 && outLen <= BS.length dat -> do
+              r <- cipherEncrypt env spec key iv dat
+              pure $ case r of
+                EngineFail err -> GotCryptoError (toCryptoError err)
+                EngineOk d -> GotBytes (BS.take outLen d)
+          | otherwise -> pure (GotCryptoError (CryptoFailed
+              "driver: derive length out of range"))
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: encrypt-data (mechanism, key length, params) rejected by the recipe"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "encrypt-data base key is not byte material"))
     -- | PBKDF2 effects: the RFC 8018 iteration over the HMAC PRF,
     -- truncated to the planned length (capped by the shared
     -- ceiling).

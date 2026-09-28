@@ -70,10 +70,14 @@ import Haskoki.Registry.Generated
   , ckm_AES_XTS
   , ckm_AES_GCM
   , ckm_ARIA_CBC
+  , ckm_ARIA_CBC_PAD
   , ckm_ARIA_ECB
   , ckm_CAMELLIA_CBC
+  , ckm_CAMELLIA_CBC_PAD
+  , ckm_CAMELLIA_CTR
   , ckm_CAMELLIA_ECB
   , ckm_DES3_CBC
+  , ckm_DES3_CBC_PAD
   , ckm_DES3_ECB
   , ckm_RSA_PKCS_OAEP
   , ckm_RSA_X_509
@@ -233,10 +237,14 @@ cipherShapeFor (MechanismId m)
   | m == ckm_AES_ECB = Just (CipherSpec 16 False)
   | m == ckm_DES3_CBC = Just (CipherSpec 8 False)
   | m == ckm_DES3_ECB = Just (CipherSpec 8 False)
+  | m == ckm_DES3_CBC_PAD = Just (CipherSpec 8 True)
   | m == ckm_ARIA_CBC = Just (CipherSpec 16 False)
   | m == ckm_ARIA_ECB = Just (CipherSpec 16 False)
+  | m == ckm_ARIA_CBC_PAD = Just (CipherSpec 16 True)
   | m == ckm_CAMELLIA_CBC = Just (CipherSpec 16 False)
   | m == ckm_CAMELLIA_ECB = Just (CipherSpec 16 False)
+  | m == ckm_CAMELLIA_CBC_PAD = Just (CipherSpec 16 True)
+  | m == ckm_CAMELLIA_CTR = Just (CipherSpec 1 False)
   | m == ckm_RSA_PKCS_OAEP = Just (CipherSpec 16 False)
   | m == ckm_RSA_X_509 = Just (CipherSpec 16 False)
   | m == ckm_AES_GCM = Just (CipherSpec 1 False)

@@ -966,8 +966,10 @@ caseCapsFull = withSynth "11" $ \env -> do
     , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
     , C_CAMELLIA128_CBC, C_CAMELLIA192_CBC, C_CAMELLIA256_CBC
     , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
+    , C_CAMELLIA128_CTR, C_CAMELLIA192_CTR, C_CAMELLIA256_CTR
     , C_CHACHA20
     ]) (ccCiphers (bcCiphers caps))
+  assertEqual "cipher set size" 50 (Set.size (ccCiphers (bcCiphers caps)))
   assertEqual "aead set" (Set.fromList
     [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
     , "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"
@@ -1194,6 +1196,11 @@ caseCipherSpecs = withSynth "11" $ \env -> do
   ariaEcb <- expectOk "aria128-ecb" =<<
     cipherEncrypt env C_ARIA128_ECB k16 BS.empty "sixteen bytes xx"
   assertBool "ecb algs separated" (aesEcb /= ariaEcb)
+  aesCtr <- expectOk "aes128-ctr" =<<
+    cipherEncrypt env C_AES128_CTR k16 iv16 "sixteen bytes xx"
+  camCtr <- expectOk "camellia128-ctr" =<<
+    cipherEncrypt env C_CAMELLIA128_CTR k16 iv16 "sixteen bytes xx"
+  assertBool "ctr algs separated" (aesCtr /= camCtr)
   where
     cipherSpecSet :: [CipherSpec]
     cipherSpecSet =
@@ -1205,6 +1212,8 @@ caseCipherSpecs = withSynth "11" $ \env -> do
       , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
       , C_CAMELLIA128_CBC, C_CAMELLIA192_CBC, C_CAMELLIA256_CBC
       , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
+      , C_CAMELLIA128_CTR, C_CAMELLIA192_CTR, C_CAMELLIA256_CTR
+      , C_AES128_CTR, C_AES192_CTR, C_AES256_CTR
       , C_AES128_XTS, C_AES256_XTS
       ]
     xtsFloor env = do

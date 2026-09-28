@@ -62,12 +62,19 @@ import Haskoki.Operation.KeyManagement
   , keyBytesOf
   , pendingFromAttrs
   )
+import Haskoki.Attribute.Generated (mustKeyTypeId)
 import Haskoki.Recipe.Dh
   ( DhRecipe (..)
   , decodeDhParams
   , dhParamsValid
   , dhRecipeFor
   , dhSecretWidth
+  )
+import Haskoki.Recipe.EncryptData
+  ( EncryptDataRecipe (..)
+  , encryptDataOutputLen
+  , encryptDataParamsValid
+  , encryptDataRecipeFor
   )
 import Haskoki.Recipe.Ecdh
   ( EcdhRecipe (..)
@@ -369,6 +376,28 @@ planDerive rules model st mech baseH blob
               (FxDerive mech (Just (osId ost)) prfBlob BS.empty)
               Nothing
               CKR_ARGUMENTS_BAD
+  | Just r <- encryptDataRecipeFor mech = case decodeDeriveParams blob of
+      Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "malformed derive arguments")
+      -- Same ordering as ECDH: the base resolves and must carry
+      -- the row's cipher key type before params are examined.
+      Just (edBlob, tmpls) -> case resolveBase model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, _)
+          | Map.lookup AttrKeyType (osAttrs ost)
+              /= Just (ValULong (mustKeyTypeId (erKeyType r))) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "encrypt-data base key type mismatch for the mechanism row")
+          | not (encryptDataParamsValid r edBlob) -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
+              "encrypt-data mechanism parameters rejected by the recipe")
+          | otherwise -> case encryptDataOutputLen r edBlob of
+              Just w -> finish tmpls w
+                "derived total exceeds the encrypted data width"
+                (FxDerive mech (Just (osId ost)) edBlob BS.empty)
+                (Just w)
+                CKR_KEY_SIZE_RANGE
+              Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                "encrypt-data frame without an output width")
   | otherwise =
       KeyDenied (KeyDeny CKR_MECHANISM_INVALID
         ("not a derive mechanism: " ++ show mech))

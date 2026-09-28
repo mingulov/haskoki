@@ -1,10 +1,11 @@
 {- | block-cipher-shape recipe tests.
 
-The CBC/ECB group: 19 header mechanisms sharing one parameter shape
+The CBC/ECB group: 23 header mechanisms sharing one parameter shape
 over four algorithm families — CBC takes the IV as mechanism
 parameters (one block: 16 bytes for AES/ARIA/CAMELLIA, 8 for
-Triple-DES), ECB takes empty parameters, @CKM_AES_CTR@ takes the
-canonical counter image, @CKM_AES_CTS@ takes the raw IV like CBC
+Triple-DES), ECB takes empty parameters, @CKM_AES_CTR@ and
+@CKM_CAMELLIA_CTR@ take the canonical counter image,
+@CKM_AES_CTS@ takes the raw IV like CBC
 (the stealing floor replaces alignment in the planners),
 @CKM_AES_CFB128@/@CFB8@/@CFB1@/@OFB@ take the raw IV with any
 input length (length-preserving streams), @CKM_AES_KEY_WRAP@/
@@ -12,9 +13,10 @@ input length (length-preserving streams), @CKM_AES_KEY_WRAP@/
 wrap quantum (KW: multiple-of-8 input >= 16; KWP: any length >= 1;
 output expands by the wrap framing), @CKM_AES_XTS@ takes the
 16-byte tweak like a CBC IV on double-width keys (data units
->= 16 bytes, any length above), and @CKM_AES_CBC_PAD@
-adds PKCS#7 framing (decided in the pure planner, never the
-backend). 'Haskoki.Recipe.Cipher' owns the group's canonical
+>= 16 bytes, any length above), and the CBC_PAD rows
+(@CKM_AES_CBC_PAD@, @CKM_ARIA_CBC_PAD@, @CKM_CAMELLIA_CBC_PAD@,
+@CKM_DES3_CBC_PAD@) add PKCS#7 framing (decided in the pure
+planner, never the backend). 'Haskoki.Recipe.Cipher' owns the group's canonical
 codecs, parameter validation, block/key/IV geometry, and mechanism
 table; these tests pin the recipe and its three consumers:
 
@@ -70,7 +72,11 @@ import Haskoki.Engine.Backend
     , C_AES256_XTS
     , C_AES256_ECB
     , C_ARIA256_CBC
+    , C_CAMELLIA128_CBC
+    , C_CAMELLIA128_CTR
     , C_CAMELLIA128_ECB
+    , C_CAMELLIA192_CTR
+    , C_CAMELLIA256_CTR
     , C_DES3_CBC
     )
   , cipherIvLen
@@ -122,7 +128,11 @@ import Haskoki.Registry.Generated
   , ckm_AES_KEY_WRAP_PAD
   , ckm_AES_OFB
   , ckm_AES_XTS
+  , ckm_ARIA_CBC_PAD
+  , ckm_CAMELLIA_CBC_PAD
+  , ckm_CAMELLIA_CTR
   , ckm_DES3_CBC
+  , ckm_DES3_CBC_PAD
   , ckm_SHA256
   , ckm_SHA256_HMAC
   )
@@ -138,7 +148,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "Block-cipher recipe"
-  [ testCase "recipe table covers 19 mechanisms with geometry" caseTable
+  [ testCase "recipe table covers 23 mechanisms with geometry" caseTable
   , testCase "recipe lookup resolves by id" caseLookup
   , testCase "ECB is no-params/1, CBC is iv-bytes/1" caseCodec
   , testCase "params: IV length or empty-only" caseParams
@@ -170,14 +180,19 @@ groupShape =
   , ("ARIA_ECB", 16, [16, 24, 32], 0, False)
   , ("CAMELLIA_CBC", 16, [16, 24, 32], 16, False)
   , ("CAMELLIA_ECB", 16, [16, 24, 32], 0, False)
+  , ("ARIA_CBC_PAD", 16, [16, 24, 32], 16, True)
+  , ("CAMELLIA_CBC_PAD", 16, [16, 24, 32], 16, True)
+  , ("DES3_CBC_PAD", 8, [16, 24], 8, True)
+  , ("CAMELLIA_CTR", 16, [16, 24, 32], 16, False)
   ]
 
--- | Valid mechanism parameters per row: the CTR row takes the
+-- | Valid mechanism parameters per row: the CTR rows take the
 -- canonical image (128-bit width over a zero block), every other
 -- row the zero IV of its length.
 validParams :: Text -> Int -> BS.ByteString
 validParams suffix iv
-  | suffix == "AES_CTR" = encodeCtrParams 128 (BS.replicate 16 0)
+  | suffix `elem` (["AES_CTR", "CAMELLIA_CTR"] :: [Text]) =
+      encodeCtrParams 128 (BS.replicate 16 0)
   | otherwise = BS.replicate iv 0
 
 mechName :: Text -> Text
@@ -185,7 +200,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 19 (length cipherRecipes)
+  assertEqual "recipe count" 23 (length cipherRecipes)
   mapM_ (\(suffix, block, keys, iv, pad) -> do
     let name = mechName suffix
         found = [ r | r <- cipherRecipes, crName r == name ]
@@ -223,7 +238,7 @@ caseCodec = do
   mapM_ (\(suffix, _, _, iv, _) -> do
     let name = mechName suffix
         want
-          | suffix == "AES_CTR" = cipherCtrCodec
+          | suffix `elem` (["AES_CTR", "CAMELLIA_CTR"] :: [Text]) = cipherCtrCodec
           | iv == 0 = cipherPlainCodec
           | otherwise = cipherIvCodec
     case cipherRecipeFor (MechanismId (mustGeneratedId name)) of
@@ -309,6 +324,27 @@ caseParams = do
     (not (cipherParamsValid ctr (BS.replicate 20 0)))
   assertBool "ctr raw iv refused"
     (not (cipherParamsValid ctr (BS.replicate 16 0)))
+  let ariaPad = recipeOf "CKM_ARIA_CBC_PAD"
+  assertBool "aria-pad 16 valid" (cipherParamsValid ariaPad (BS.replicate 16 0))
+  assertBool "aria-pad empty refused" (not (cipherParamsValid ariaPad BS.empty))
+  assertBool "aria-pad 8 refused"
+    (not (cipherParamsValid ariaPad (BS.replicate 8 0)))
+  let camPad = recipeOf "CKM_CAMELLIA_CBC_PAD"
+  assertBool "camellia-pad 16 valid" (cipherParamsValid camPad (BS.replicate 16 0))
+  assertBool "camellia-pad empty refused" (not (cipherParamsValid camPad BS.empty))
+  let d3Pad = recipeOf "CKM_DES3_CBC_PAD"
+  assertBool "des3-pad 8 valid" (cipherParamsValid d3Pad (BS.replicate 8 0))
+  assertBool "des3-pad 16 refused"
+    (not (cipherParamsValid d3Pad (BS.replicate 16 0)))
+  assertBool "des3-pad empty refused" (not (cipherParamsValid d3Pad BS.empty))
+  let camCtr = recipeOf "CKM_CAMELLIA_CTR"
+      camCtrGood = encodeCtrParams 128 (BS.replicate 16 0xcb)
+  assertBool "camellia-ctr 128-bit image valid"
+    (cipherParamsValid camCtr camCtrGood)
+  assertBool "camellia-ctr 64-bit refused"
+    (not (cipherParamsValid camCtr (encodeCtrParams 64 (BS.replicate 16 0))))
+  assertBool "camellia-ctr raw iv refused"
+    (not (cipherParamsValid camCtr (BS.replicate 16 0)))
   -- Counter advance: big-endian block steps with carry and wrap.
   let cb0 = BS.replicate 16 0
       img0 = encodeCtrParams 128 cb0
@@ -366,10 +402,14 @@ testSession = SessionState
   , ssOps = emptySessionOps
   }
 
-cbcMech, ecbMech, d3Mech, ctrMech, ctsMech, cfb128Mech, cfb8Mech, cfb1Mech, ofbMech, kwMech, kwPadMech, kwpMech, xtsMech :: MechanismId
+cbcMech, ecbMech, d3Mech, ctrMech, ctsMech, cfb128Mech, cfb8Mech, cfb1Mech, ofbMech, kwMech, kwPadMech, kwpMech, xtsMech, ariaPadMech, camPadMech, d3PadMech, camCtrMech :: MechanismId
 cbcMech = MechanismId (ckm_AES_CBC)
 ecbMech = MechanismId (ckm_AES_ECB)
 d3Mech = MechanismId (ckm_DES3_CBC)
+ariaPadMech = MechanismId (ckm_ARIA_CBC_PAD)
+camPadMech = MechanismId (ckm_CAMELLIA_CBC_PAD)
+d3PadMech = MechanismId (ckm_DES3_CBC_PAD)
+camCtrMech = MechanismId (ckm_CAMELLIA_CTR)
 ctrMech = MechanismId (ckm_AES_CTR)
 ctsMech = MechanismId (ckm_AES_CTS)
 cfb128Mech = MechanismId (ckm_AES_CFB128)
@@ -391,6 +431,8 @@ testEnv = OpEnv
       , (cfb1Mech, OpEncrypt), (ofbMech, OpEncrypt)
       , (kwMech, OpEncrypt), (kwPadMech, OpEncrypt), (kwpMech, OpEncrypt)
       , (xtsMech, OpEncrypt)
+      , (ariaPadMech, OpEncrypt), (camPadMech, OpEncrypt)
+      , (d3PadMech, OpEncrypt), (camCtrMech, OpEncrypt)
       ]
   , oeModel = emptyModel
   }
@@ -469,6 +511,24 @@ caseInitParams = do
     (runInit (mkArgs xtsMech BS.empty))
   assertEqual "xts valid tweak passes params" CKR_OBJECT_HANDLE_INVALID
     (runInit (mkArgs xtsMech (BS.replicate 16 0)))
+  assertEqual "aria-pad ragged iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs ariaPadMech (BS.replicate 8 0)))
+  assertEqual "aria-pad valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs ariaPadMech (BS.replicate 16 0)))
+  assertEqual "camellia-pad empty refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs camPadMech BS.empty))
+  assertEqual "camellia-pad valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs camPadMech (BS.replicate 16 0)))
+  assertEqual "des3-pad 16-byte iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs d3PadMech (BS.replicate 16 0)))
+  assertEqual "des3-pad 8-byte iv passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs d3PadMech (BS.replicate 8 0)))
+  assertEqual "camellia-ctr 128-bit image passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs camCtrMech (encodeCtrParams 128 (BS.replicate 16 0))))
+  assertEqual "camellia-ctr 64-bit refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs camCtrMech (encodeCtrParams 64 (BS.replicate 16 0))))
+  assertEqual "camellia-ctr raw iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs camCtrMech (BS.replicate 16 0)))
 
 caseDriverMap :: IO ()
 caseDriverMap = do
@@ -601,6 +661,35 @@ caseDriverMap = do
     (cipherSpecFor xtsMech 16 iv16)
   assertEqual "aes-xts rejects bad tweak" Nothing
     (cipherSpecFor xtsMech 32 iv8)
+  -- PAD rows share the CBC specs (the planner pads before the
+  -- effect input is fixed).
+  assertEqual "aria-pad-256" (Just C_ARIA256_CBC)
+    (cipherSpecFor ariaPadMech 32 iv16)
+  assertEqual "aria-pad rejects bad iv" Nothing
+    (cipherSpecFor ariaPadMech 32 iv8)
+  assertEqual "camellia-pad-128" (Just C_CAMELLIA128_CBC)
+    (cipherSpecFor camPadMech 16 iv16)
+  assertEqual "camellia-pad rejects bad keylen" Nothing
+    (cipherSpecFor camPadMech 15 iv16)
+  assertEqual "des3-pad-24" (Just C_DES3_CBC)
+    (cipherSpecFor d3PadMech 24 iv8)
+  assertEqual "des3-pad rejects 16-iv" Nothing
+    (cipherSpecFor d3PadMech 24 iv16)
+  -- CAMELLIA-CTR: the canonical image maps each width; off-width
+  -- and raw-IV parameters refuse.
+  let camCtrGood = encodeCtrParams 128 iv16
+  assertEqual "camellia-ctr-128" (Just C_CAMELLIA128_CTR)
+    (cipherSpecFor camCtrMech 16 camCtrGood)
+  assertEqual "camellia-ctr-192" (Just C_CAMELLIA192_CTR)
+    (cipherSpecFor camCtrMech 24 camCtrGood)
+  assertEqual "camellia-ctr-256" (Just C_CAMELLIA256_CTR)
+    (cipherSpecFor camCtrMech 32 camCtrGood)
+  assertEqual "camellia-ctr rejects bad keylen" Nothing
+    (cipherSpecFor camCtrMech 15 camCtrGood)
+  assertEqual "camellia-ctr rejects 64-bit" Nothing
+    (cipherSpecFor camCtrMech 16 (encodeCtrParams 64 iv16))
+  assertEqual "camellia-ctr rejects raw iv" Nothing
+    (cipherSpecFor camCtrMech 16 iv16)
   assertEqual "non-cipher uncovered" Nothing
     (cipherSpecFor (MechanismId (ckm_SHA256)) 32 iv16)
   -- Whole-table agreement: every (recipe, key length) triple maps.
@@ -661,3 +750,7 @@ caseGeometryLaw = do
   assertEqual "des3 iv" 8 (cipherIvLen C_DES3_CBC)
   assertEqual "aria key" [32] (cipherKeyLens C_ARIA256_CBC)
   assertEqual "camellia-ecb iv" 0 (cipherIvLen C_CAMELLIA128_ECB)
+  assertEqual "camellia128-ctr key" [16] (cipherKeyLens C_CAMELLIA128_CTR)
+  assertEqual "camellia192-ctr key" [24] (cipherKeyLens C_CAMELLIA192_CTR)
+  assertEqual "camellia256-ctr key" [32] (cipherKeyLens C_CAMELLIA256_CTR)
+  assertEqual "camellia-ctr iv" 16 (cipherIvLen C_CAMELLIA256_CTR)

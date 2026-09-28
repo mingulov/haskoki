@@ -1259,6 +1259,99 @@ skipped (t7692)
   (`dist-release/haskoki-0.3.0.0`, evidence
   16/16).
 
+## Round 26: cipher-tail slice 11e (fast r49→r50→r51 + KAT r26→r27)
+
+- r51: 4048 passed / 18 failed / 631 xfailed /
+  3496 skipped (t8193)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r51-results.json`).
+  r49→r51: +88 pass / +0 fail / +26 xfail /
+  +118 skip (+232 collected: the 12 new rows'
+  shared-mech expansion).
+- Movers r49→r51 (unit `counts`, exact):
+  `test_aes_kdf` 0/9s → 9/0s (new
+  ENCRYPT_DATA legs green); `test_aria` 7/7s →
+  11/3s; `test_camellia` 7/9s → 12/3s/1x;
+  `test_des` 16/17s → 20/13s;
+  `test_des_kdf` 0/2s → 1/1s;
+  `test_ffi_length_boundary` 68/57s → 70/55s
+  (malformed legs green after the fix);
+  `test_mech_derive` 14/8s → 20/9s/1x;
+  `test_mech_encrypt` 39/5s → 45/6s/1x;
+  `test_mech_flags` 653/1222s/6x →
+  683/1298s/8x; `test_mech_multipart`
+  178/21s/16x → 181/21s/17x;
+  `test_mech_negative` 220/2f/617s/243x →
+  235/2f/647s/262x; `test_mech_probe` skips
+  627 → 663 (new rows' probe legs);
+  `test_operation_termination` 28/1s/1x →
+  31/1s/2x.
+- In-slice fix (lane-found, r50→r51): r50
+  (4045/22/630/3496) showed 4 failures on the
+  new surface — ECB non-determinism plus a
+  32-byte `KEY_SIZE_RANGE` (`test_aes_kdf`)
+  and 2 accepted-malformed CBC structs
+  (`test_ffi_length_boundary`). Root cause,
+  ours: ECB takes
+  `CK_KEY_DERIVATION_STRING_DATA` (OASIS
+  struct), not raw bytes — the opaque path
+  read pointer bytes as data; and a refused
+  struct chase passed raw bytes through that
+  could satisfy the unframed recipe. Fix: an
+  ECB struct-chase normalizer plus fail-closed
+  poison (empty blob) on any refused chase,
+  pinned by NativeParamsSpec and consumer
+  malformed legs. r50→r51: 4 failed → pass,
+  the 18 known failures identical, 0
+  regressions. The 1 new xfail is honest
+  coverage, not fallout: `DES3_ECB derive`
+  passed r50 vacuously (16 struct bytes read
+  as data) and now xfails correctly (oracle
+  template asks `VALUE_LEN` 16 from 8 data
+  bytes — our `KEY_SIZE_RANGE` is the
+  spec-correct ceiling).
+- New-xfail attribution (26, all
+  classified): 8 missing-required-param
+  (expected `PARAM_INVALID`, got
+  `ARGUMENTS_BAD`) — same as every cipher
+  row incl. AES_CBC (pre-existing class); 9
+  setup victims (8 without-flag keygen + 1
+  derive-without-flag, P11C-005 class); 6
+  CAMELLIA_CTR (5 NULL-params from the
+  missing registry `param_recipe` → P11C-008;
+  1 deliberate bits=32 probe refused under
+  the documented 128-only CTR stance shared
+  with AES_CTR); 2 PAD wrap-flag gaps (same
+  as the ARIA/Camellia base rows); 1
+  DES3_ECB derive probe (above).
+- Failures identical by id (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS
+  P11C-006). Zero pass→nonpass.
+- r27: 82455 passed / 24 failed / 1240
+  xfailed / 30658 skipped (t114377)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r27-results.json`).
+  r26→r27: +88 pass / +0 fail / +26 xfail /
+  +118 skip (+232 collected) — exactly the
+  fast r49→r51 delta, as predicted (no
+  PAD/CTR/ENCRYPT_DATA KAT vector suites
+  exist; the new rows only add mech-matrix
+  legs).
+- Cross-lane consistency check passes at full
+  strength: the 26 new xfails are ID-identical
+  to fast r49→r51 (8 TestBadParameters
+  missing-required-param, 9
+  TestMissingPermission setup victims, 6
+  CAMELLIA_CTR incl. the P11C-008 five, 2
+  flags, 1 DES3_ECB derive probe). No
+  KAT-vector unit moved. Zero pass→nonpass
+  regressions, zero xfail→pass flips.
+- KAT residuals, all dispositioned: the 24
+  failures are identical by id to r26
+  (13 X9.42 P11C-004 + 2 HOTP P11C-001 +
+  3 WTLS P11C-006 + 6 SLH-DSA P11C-003).
+- Bundle note: r50/r51/r27 run on the 11e
+  bundle (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

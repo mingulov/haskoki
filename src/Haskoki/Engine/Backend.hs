@@ -399,6 +399,7 @@ data CipherSpec
   | C_ARIA128_ECB | C_ARIA192_ECB | C_ARIA256_ECB
   | C_CAMELLIA128_CBC | C_CAMELLIA192_CBC | C_CAMELLIA256_CBC
   | C_CAMELLIA128_ECB | C_CAMELLIA192_ECB | C_CAMELLIA256_ECB
+  | C_CAMELLIA128_CTR | C_CAMELLIA192_CTR | C_CAMELLIA256_CTR
   | C_CHACHA20
   deriving (Eq, Ord, Show)
 
@@ -484,6 +485,9 @@ cipherKeyLens spec = case spec of
   C_CAMELLIA128_ECB -> [16]
   C_CAMELLIA192_ECB -> [24]
   C_CAMELLIA256_ECB -> [32]
+  C_CAMELLIA128_CTR -> [16]
+  C_CAMELLIA192_CTR -> [24]
+  C_CAMELLIA256_CTR -> [32]
   C_CHACHA20 -> [32]
 
 -- | IV length in bytes per cipher: the block width for CBC, CTS,
@@ -543,6 +547,9 @@ cipherIvLen spec = case spec of
   C_CAMELLIA128_ECB -> 0
   C_CAMELLIA192_ECB -> 0
   C_CAMELLIA256_ECB -> 0
+  C_CAMELLIA128_CTR -> 16
+  C_CAMELLIA192_CTR -> 16
+  C_CAMELLIA256_CTR -> 16
   C_CHACHA20 -> 16
 
 -- | AEAD carries its own nonce/tag lengths; padding is never implicit.

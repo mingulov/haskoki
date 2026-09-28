@@ -499,6 +499,39 @@ fix. Tracked in `docs/pkcs11-oracle-triage.md` (rc1
 validation). No module-side change for the oracle
 half.
 
+## P11C-008 (candidate): `CKM_CAMELLIA_CTR` registry entry lacks `param_recipe`; generic probes send NULL
+
+**Severity**: low (5 xfail legs in the fast lane)
+**Component**: `src/pkcs11_check/testcases/mechanism_registry/_ciphers.py`
+(`registry[CKM_CAMELLIA_CTR]`) vs `_aes.py`
+(`registry[CKM_AES_CTR]`)
+**Found**: 2026-09-28 (11e fast r51 triage)
+
+`registry[CKM_CAMELLIA_CTR]` (`_ciphers.py:238`) sets
+`param_required=True` but no `param_recipe`, so the default
+`ParamRecipe(style="none")` applies and every generic probe
+(roundtrip, multipart, termination, wrong-key-type ×2) sends
+NULL params. The module correctly refuses with
+`CKR_ARGUMENTS_BAD` (missing required params — the same code it
+returns for every cipher row, e.g. AES_CBC); the legs xfail as
+"advertised but not operational". The AES_CTR twin carries
+`param_recipe=ParamRecipe("ctr", {"counter_bits": 128})`
+(`_aes.py:217`) and its legs pass.
+
+Suggested fix: add
+`param_recipe=ParamRecipe("ctr", {"counter_bits": 128})` to the
+CAMELLIA_CTR entry.
+
+Note: `test_camellia.py::TestCamelliaCTR::`
+`test_camellia_ctr_different_nonces` is NOT this issue — it
+deliberately sends `bits=32`, which the module refuses under
+its documented 128-bit-only CTR stance (shared with AES_CTR;
+see the `CKM_CAMELLIA_CTR` row note in
+`spec/mechanisms.json`).
+
+Downstream handling: none needed module-side; the 5 legs
+xfail honestly until the registry fix. No module change.
+
 ## Observations (not issues)
 
 - **`mech_hkdf` docstring/comment says

@@ -97,6 +97,10 @@ module Haskoki.FFI.NativeParams
   , normalizeDhPkcsParams
   , normalizeDhX942Params
   , normalizeTlsPrfParams
+  , normalizeEncryptDataCbcParams
+  , encryptDataCbcNativeSize
+  , normalizeEncryptDataEcbParams
+  , encryptDataEcbNativeSize
   , normalizePbkd2Params2
   , pbkd2Params2NativeSize
   , tlsPrfStructToCanonical
@@ -617,6 +621,50 @@ normalizeTlsPrfParams pParams paramsLen
       mSeed <- chaseBytes pSeed seedLen
       mLabel <- chaseBytes pLabel labelLen
       pure (mSeed >>= \seed -> mLabel >>= \lab -> tlsPrfStructToCanonical lab seed)
+
+-- | Native @CK_*_CBC_ENCRYPT_DATA_PARAMS@ image size for one IV
+-- width: the inline IV plus (pointer, length) for the data (the
+-- four family structs share this layout; only the IV width
+-- differs: 16 for AES/ARIA/Camellia, 8 for Triple-DES).
+encryptDataCbcNativeSize :: Int -> Int
+encryptDataCbcNativeSize iv = iv + ptrSize + wordSize
+
+-- | Normalize one CBC-encrypt-data struct: the native image at
+-- @pParams@/@paramsLen@ onto the canonical @iv||data@ frame.
+-- Wrong-sized images and null-with-length or over-bound data
+-- chases refuse ('Nothing', which passes through raw so the
+-- recipe refusal is exactly the planner's).
+normalizeEncryptDataCbcParams :: Int -> Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeEncryptDataCbcParams iv pParams paramsLen
+  | paramsLen /= fromIntegral (encryptDataCbcNativeSize iv) = pure Nothing
+  | otherwise = do
+      pData <- peekByteOff pParams iv
+      CULong dataLen <- peekByteOff pParams (iv + ptrSize)
+      mData <- chaseBytes pData dataLen
+      case mData of
+        Nothing -> pure Nothing
+        Just dat -> do
+          ivBytes <- BS.packCStringLen (castPtr pParams, iv)
+          pure (Just (ivBytes <> dat))
+
+-- | Native @CK_KEY_DERIVATION_STRING_DATA@ image size: (pointer,
+-- length) for the data (the ECB encrypt-data rows take this
+-- struct, not the raw data bytes).
+encryptDataEcbNativeSize :: Int
+encryptDataEcbNativeSize = ptrSize + wordSize
+
+-- | Normalize one ECB-encrypt-data struct: chase the string-data
+-- struct at @pParams@/@paramsLen@ onto the canonical raw data
+-- bytes. Wrong-sized images and null-with-length or over-bound
+-- data chases refuse ('Nothing', which the derive blob poisons
+-- so the recipe refusal is exactly the planner's).
+normalizeEncryptDataEcbParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeEncryptDataEcbParams pParams paramsLen
+  | paramsLen /= fromIntegral encryptDataEcbNativeSize = pure Nothing
+  | otherwise = do
+      pData <- peekByteOff pParams 0
+      CULong dataLen <- peekByteOff pParams ptrSize
+      chaseBytes pData dataLen
 
 -- | Normalize one PBKD2 generation struct: the native
 -- @CK_PKCS5_PBKD2_PARAMS2@ image at @pParams@/@paramsLen@ onto

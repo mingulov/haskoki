@@ -6679,14 +6679,44 @@
       "canonical_name": "CKM_DES3_CBC_PAD",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "max_key_size": 24,
+        "min_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, keys 16 two-key or 24 three-key bytes. PKCS#7 framing is decided in the pure planner (block 8); the backend runs raw CBC. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: Triple-DES CBC rows at two-key/three-key via the shared CBC specs (planner pads)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000136",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES3_CBC_PAD",
@@ -6695,12 +6725,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -14598,14 +14664,44 @@
       "canonical_name": "CKM_CAMELLIA_CBC_PAD",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "max_key_size": 32,
+        "min_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, keys 16/24/32 bytes. PKCS#7 framing is decided in the pure planner (block 16); the backend runs raw CBC. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: Camellia CBC rows at 128/192/256 via the shared CBC specs (planner pads)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000555",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAMELLIA_CBC_PAD",
@@ -14614,26 +14710,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_CAMELLIA_ECB_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_CAMELLIA key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_CAMELLIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00000556",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-ecb/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAMELLIA_ECB_ENCRYPT_DATA",
@@ -14642,26 +14790,73 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_CAMELLIA_CBC_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_CAMELLIA key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_CAMELLIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00000557",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-cbc/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAMELLIA_CBC_ENCRYPT_DATA",
@@ -14670,26 +14865,87 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_CAMELLIA_CTR",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "max_key_size": 32,
+        "min_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: the stream/block mode present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): ctr-params/1 canonical image (counter width u64be plus the 16-byte counter block; 128-bit counter width only), keys 16/24/32 bytes, unaligned stream input. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: RFC 5528 TV#1/#4/#7 at 128/192/256; RoutingE2ESpec caseDriverCamelliaCtr stream roundtrip plus refusals); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000558",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "ctr-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "ctr-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAMELLIA_CTR",
@@ -14698,12 +14954,53 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -15027,14 +15324,44 @@
       "canonical_name": "CKM_ARIA_CBC_PAD",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "max_key_size": 32,
+        "min_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, keys 16/24/32 bytes. PKCS#7 framing is decided in the pure planner (block 16); the backend runs raw CBC. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: ARIA CBC rows at 128/192/256 via the shared CBC specs (planner pads)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000565",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_ARIA_CBC_PAD",
@@ -15043,26 +15370,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_ARIA_ECB_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_ARIA key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_ARIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00000566",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-ecb/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_ARIA_ECB_ENCRYPT_DATA",
@@ -15071,26 +15450,73 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_ARIA_CBC_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_ARIA key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_ARIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00000567",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-cbc/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_ARIA_CBC_ENCRYPT_DATA",
@@ -15099,12 +15525,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -19303,16 +19760,32 @@
     {
       "aliases": [],
       "canonical_name": "CKM_DES3_ECB_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_DES3 key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_DES3 (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00001102",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-ecb/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES3_ECB_ENCRYPT_DATA",
@@ -19321,26 +19794,73 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DES3_CBC_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_DES3 key (CBC with the 8-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_DES3 (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00001103",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-cbc/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES3_CBC_ENCRYPT_DATA",
@@ -19349,26 +19869,73 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_AES_ECB_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_AES key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_AES (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00001104",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-ecb/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_ECB_ENCRYPT_DATA",
@@ -19377,26 +19944,73 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_AES_CBC_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_AES key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_AES (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00001105",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-cbc/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_CBC_ENCRYPT_DATA",
@@ -19405,12 +20019,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "cipher-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "cipher-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -20383,7 +21028,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: provider 4.0.2 has no AES CFB64 mode (fetch probe: only CFB/CFB8/CFB1/OFB); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: provider 4.0.2 has no AES CFB64 mode (fetch probe: only CFB/CFB8/CFB1/OFB); behavior/synthetic stay planned. Behavior/synthetic unsupported-with-reason (named gap): no fallback construction (slicing CFB128 output is not CFB64 feedback); the Cipher recipe docstring declares the gap.",
       "numeric_id": "0x00002105",
       "routes": [],
       "source_refs": [
@@ -20394,8 +21039,8 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },

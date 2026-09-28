@@ -1,16 +1,18 @@
 {- | Block-cipher CBC/ECB/CTR recipe: the third shape-group recipe.
 
-Ten header mechanisms share one parameter shape over four
-algorithm families: CBC takes the IV as mechanism parameters (one
-block: 16 bytes for AES/ARIA/CAMELLIA, 8 for Triple-DES), ECB
-takes empty parameters, and @CKM_AES_CBC_PAD@ adds PKCS#7 framing
-(decided in the pure planner from the recipe's 'crPad' flag, never
-in the backend). @CKM_AES_CTR@ takes the canonical @ctr-params/1@
-image (counter width u64be plus the 16-byte counter block); only
-the 128-bit counter width is served. Key length selects the
-cipher width (16\/24\/32 bytes for the AES family; 16 two-key or
-24 three-key bytes for Triple-DES, where the engines expand
-@K1||K2@ to @K1||K2||K1@).
+Twenty-three header mechanisms share one parameter shape over
+four algorithm families: CBC takes the IV as mechanism parameters
+(one block: 16 bytes for AES/ARIA/CAMELLIA, 8 for Triple-DES),
+ECB takes empty parameters, and the CBC_PAD rows
+(@CKM_AES_CBC_PAD@, @CKM_ARIA_CBC_PAD@, @CKM_CAMELLIA_CBC_PAD@,
+@CKM_DES3_CBC_PAD@) add PKCS#7 framing (decided in the pure
+planner from the recipe's 'crPad' flag, never in the backend).
+@CKM_AES_CTR@ and @CKM_CAMELLIA_CTR@ take the canonical
+@ctr-params/1@ image (counter width u64be plus the 16-byte
+counter block); only the 128-bit counter width is served. Key
+length selects the cipher width (16\/24\/32 bytes for the AES
+family; 16 two-key or 24 three-key bytes for Triple-DES, where
+the engines expand @K1||K2@ to @K1||K2||K1@).
 
 This module owns the group's canonical codecs, parameter/key
 validation, block/key/IV geometry, and mechanism table. Pure core
@@ -29,15 +31,17 @@ Consumers:
   KATs execute the geometry pinned here (SyntheticSpec,
   OpenSSLSpec).
 
+The @CKM_*_ENCRYPT_DATA@ single-part data shape is its own
+recipe ('Haskoki.Recipe.EncryptData'), not a row here.
+
 Deferred family members (not recipes, named gaps): @CKM_AES_CFB64@
 (provider 4.0.2 has no CFB64 mode for AES),
 @CKM_*_GCM@\/@CCM@ (AEAD shape, needs its
-own nonce\/tag recipe), @CKM_*_ENCRYPT_DATA@ (single-part data
-shape), the PBE constructors, and every legacy-only or
-provider-absent cipher (single DES, RC2\/RC4\/RC5, IDEA, CAST,
-SEED, Blowfish, SKIPJACK, BATON, JUNIPER, GOST, KASUMI, TWOFISH —
-see mechanisms.json honesty notes and the pinned-provider probe
-record).
+own nonce\/tag recipe), the PBE constructors, and every
+legacy-only or provider-absent cipher (single DES, RC2\/RC4\/RC5,
+IDEA, CAST, SEED, Blowfish, SKIPJACK, BATON, JUNIPER, GOST,
+KASUMI, TWOFISH — see mechanisms.json honesty notes and the
+pinned-provider probe record).
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Cipher
@@ -101,23 +105,25 @@ cipherCtrCodec = ParameterCodec "ctr-params" 1
 -- | The codec for one recipe row.
 cipherCodecFor :: BlockCipherRecipe -> ParameterCodec
 cipherCodecFor r
-  | crName r == ctrName = cipherCtrCodec
+  | crName r `elem` ctrNames = cipherCtrCodec
   | crIvBytes r == 0 = cipherPlainCodec
   | otherwise = cipherIvCodec
 
 -- | Cipher parameter validation: exactly the recipe's IV length
--- (empty-only for ECB rows). The CTR row decodes the canonical
--- image and serves only the 128-bit counter width.
+-- (empty-only for ECB rows). The CTR rows decode the canonical
+-- image and serve only the 128-bit counter width.
 cipherParamsValid :: BlockCipherRecipe -> ByteString -> Bool
 cipherParamsValid r params
-  | crName r == ctrName = case decodeCtrParams params of
+  | crName r `elem` ctrNames = case decodeCtrParams params of
       Just (bits, cb) -> bits == 128 && BS.length cb == 16
       Nothing -> False
   | otherwise = BS.length params == crIvBytes r
 
--- | This group's CTR row name (the only streaming row).
-ctrName :: MechanismName
-ctrName = "CKM_AES_CTR"
+-- | This group's CTR row names (the streaming rows): AES and
+-- Camellia share the canonical counter image and the 128-bit-only
+-- rule (the native structs are layout-identical).
+ctrNames :: [MechanismName]
+ctrNames = ["CKM_AES_CTR", "CKM_CAMELLIA_CTR"]
 
 -- | The CTS mechanism name. CTS keeps the CBC IV geometry but the
 -- planners replace block alignment with the stealing floor (see
@@ -209,12 +215,12 @@ ctrNextImage bs n = case decodeCtrParams bs of
 cipherKeyLenValid :: BlockCipherRecipe -> Int -> Bool
 cipherKeyLenValid r n = n `elem` crKeyLens r
 
--- | All nineteen covered mechanisms with their geometry. The CTR row
--- carries the counter-block width as its block geometry and IV
--- length (agreeing with the backend 'cipherIvLen' law); the
--- canonical parameter image is wider (width word plus block) and
--- the stream itself takes unaligned input (the operation shape is
--- @CipherSpec 1@, set in
+-- | All twenty-three covered mechanisms with their geometry. The
+-- CTR rows carry the counter-block width as their block geometry
+-- and IV length (agreeing with the backend 'cipherIvLen' law);
+-- the canonical parameter image is wider (width word plus block)
+-- and the stream itself takes unaligned input (the operation shape
+-- is @CipherSpec 1@, set in
 -- 'Haskoki.Operation.Codec.cipherShapeFor').
 cipherRecipes :: [BlockCipherRecipe]
 cipherRecipes =
@@ -247,10 +253,14 @@ cipherRecipes =
   , BlockCipherRecipe "CKM_AES_XTS" 16 [32, 64] 16 False "CKK_AES_XTS"
   , BlockCipherRecipe "CKM_DES3_CBC" 8 [16, 24] 8 False "CKK_DES3"
   , BlockCipherRecipe "CKM_DES3_ECB" 8 [16, 24] 0 False "CKK_DES3"
+  , BlockCipherRecipe "CKM_DES3_CBC_PAD" 8 [16, 24] 8 True "CKK_DES3"
   , BlockCipherRecipe "CKM_ARIA_CBC" 16 [16, 24, 32] 16 False "CKK_ARIA"
   , BlockCipherRecipe "CKM_ARIA_ECB" 16 [16, 24, 32] 0 False "CKK_ARIA"
+  , BlockCipherRecipe "CKM_ARIA_CBC_PAD" 16 [16, 24, 32] 16 True "CKK_ARIA"
   , BlockCipherRecipe "CKM_CAMELLIA_CBC" 16 [16, 24, 32] 16 False "CKK_CAMELLIA"
   , BlockCipherRecipe "CKM_CAMELLIA_ECB" 16 [16, 24, 32] 0 False "CKK_CAMELLIA"
+  , BlockCipherRecipe "CKM_CAMELLIA_CBC_PAD" 16 [16, 24, 32] 16 True "CKK_CAMELLIA"
+  , BlockCipherRecipe "CKM_CAMELLIA_CTR" 16 [16, 24, 32] 16 False "CKK_CAMELLIA"
   ]
 
 -- | Resolve a mechanism id to its block-cipher recipe, if covered.
@@ -261,10 +271,10 @@ cipherRecipeFor mid =
     (r : _) -> Just r
     [] -> Nothing
 
--- | Resolve a mechanism id to the CTR recipe row, if it is the
--- CTR mechanism (drives the FFI struct translation and the driver
+-- | Resolve a mechanism id to its CTR recipe row, if it is a CTR
+-- mechanism (drives the FFI struct translation and the driver
 -- image split).
 ctrRecipeFor :: MechanismId -> Maybe BlockCipherRecipe
 ctrRecipeFor mid = case cipherRecipeFor mid of
-  Just r | crName r == ctrName -> Just r
+  Just r | crName r `elem` ctrNames -> Just r
   _ -> Nothing

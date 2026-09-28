@@ -2215,6 +2215,228 @@ int main(int argc, char **argv) {
       rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "short", 5, xtct, &xtctLen);
       CHECKC(rv == CKR_DATA_LEN_RANGE, "xts short unit refused");
     }
+    /* Cipher-tail slice: ARIA-CBC-PAD pads unaligned input,
+     * CAMELLIA-CTR streams it, AES-CBC-ENCRYPT_DATA derives from
+     * it. */
+    {
+      CK_OBJECT_CLASS adcls = CKO_SECRET_KEY;
+      CK_KEY_TYPE adkt = CKK_ARIA;
+      CK_BYTE adval[16] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+      };
+      CK_ATTRIBUTE adtmpl[] = {
+        { CKA_CLASS, &adcls, sizeof(adcls) },
+        { CKA_KEY_TYPE, &adkt, sizeof(adkt) },
+        { CKA_VALUE, adval, sizeof(adval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_ENCRYPT, &bTrue, sizeof(bTrue) },
+        { CKA_DECRYPT, &bTrue, sizeof(bTrue) }
+      };
+      CK_OBJECT_HANDLE adkey = 0;
+      CK_BYTE adiv[16] = {
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+      };
+      CK_MECHANISM adm, ddm;
+      CK_BYTE adct[32], adpt[32];
+      CK_ULONG adctLen, adptLen;
+      rv = f->C_CreateObject(esess, adtmpl, 6, &adkey);
+      CHECKC(rv == CKR_OK && adkey != 0, "aria key imports");
+      adm.mechanism = CKM_ARIA_CBC_PAD;
+      adm.pParameter = adiv;
+      adm.ulParameterLen = sizeof(adiv);
+      ddm.mechanism = CKM_ARIA_CBC_PAD;
+      ddm.pParameter = adiv;
+      ddm.ulParameterLen = sizeof(adiv);
+      rv = f->C_EncryptInit(esess, &adm, adkey);
+      CHECKC(rv == CKR_OK, "aria-pad EncryptInit ok");
+      adctLen = sizeof(adct);
+      rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "abc", 3, adct, &adctLen);
+      CHECKC(rv == CKR_OK && adctLen == 16, "aria-pad one-shot yields 16 bytes");
+      rv = f->C_DecryptInit(esess, &ddm, adkey);
+      CHECKC(rv == CKR_OK, "aria-pad DecryptInit ok");
+      adptLen = sizeof(adpt);
+      rv = f->C_Decrypt(esess, adct, adctLen, adpt, &adptLen);
+      CHECKC(rv == CKR_OK && adptLen == 3 && memcmp(adpt, "abc", 3) == 0,
+             "aria-pad decrypt recovers abc");
+    }
+    {
+      CK_OBJECT_CLASS ctcls = CKO_SECRET_KEY;
+      CK_KEY_TYPE ctkt = CKK_CAMELLIA;
+      CK_BYTE ctval[16] = {
+        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
+        0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c
+      };
+      CK_ATTRIBUTE cttmpl[] = {
+        { CKA_CLASS, &ctcls, sizeof(ctcls) },
+        { CKA_KEY_TYPE, &ctkt, sizeof(ctkt) },
+        { CKA_VALUE, ctval, sizeof(ctval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_ENCRYPT, &bTrue, sizeof(bTrue) },
+        { CKA_DECRYPT, &bTrue, sizeof(bTrue) }
+      };
+      CK_OBJECT_HANDLE ctkey = 0;
+      CK_CAMELLIA_CTR_PARAMS ctpar;
+      CK_MECHANISM ctm, dtm;
+      CK_BYTE ctct[64], ctpt[64];
+      CK_ULONG ctctLen, ctptLen;
+      CK_BYTE cticb[16] = {
+        0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7,
+        0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff
+      };
+      rv = f->C_CreateObject(esess, cttmpl, 6, &ctkey);
+      CHECKC(rv == CKR_OK && ctkey != 0, "camellia key imports");
+      ctpar.ulCounterBits = 128;
+      memcpy(ctpar.cb, cticb, sizeof(cticb));
+      ctm.mechanism = CKM_CAMELLIA_CTR;
+      ctm.pParameter = &ctpar;
+      ctm.ulParameterLen = sizeof(ctpar);
+      dtm.mechanism = CKM_CAMELLIA_CTR;
+      dtm.pParameter = &ctpar;
+      dtm.ulParameterLen = sizeof(ctpar);
+      rv = f->C_EncryptInit(esess, &ctm, ctkey);
+      CHECKC(rv == CKR_OK, "camellia-ctr EncryptInit ok");
+      ctctLen = sizeof(ctct);
+      rv = f->C_Encrypt(esess, (CK_BYTE_PTR) "ragged stream input!!", 21, ctct, &ctctLen);
+      CHECKC(rv == CKR_OK && ctctLen == 21, "camellia-ctr streams 21 bytes");
+      rv = f->C_DecryptInit(esess, &dtm, ctkey);
+      CHECKC(rv == CKR_OK, "camellia-ctr DecryptInit ok");
+      ctptLen = sizeof(ctpt);
+      rv = f->C_Decrypt(esess, ctct, ctctLen, ctpt, &ctptLen);
+      CHECKC(rv == CKR_OK && ctptLen == 21
+             && memcmp(ctpt, "ragged stream input!!", 21) == 0,
+             "camellia-ctr decrypt recovers");
+    }
+    {
+      CK_OBJECT_CLASS edcls = CKO_SECRET_KEY;
+      CK_KEY_TYPE edkt = CKK_AES;
+      CK_BYTE edval[16] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+      };
+      CK_ATTRIBUTE edtmpl[] = {
+        { CKA_CLASS, &edcls, sizeof(edcls) },
+        { CKA_KEY_TYPE, &edkt, sizeof(edkt) },
+        { CKA_VALUE, edval, sizeof(edval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_DERIVE, &bTrue, sizeof(bTrue) }
+      };
+      CK_OBJECT_HANDLE edkey = 0;
+      CK_BYTE ediv[16] = {
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+      };
+      CK_BYTE eddata[32] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88,
+        0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00
+      };
+      CK_AES_CBC_ENCRYPT_DATA_PARAMS edpar;
+      CK_MECHANISM edm;
+      CK_OBJECT_CLASS eddcls = CKO_SECRET_KEY;
+      CK_KEY_TYPE eddkt = CKK_GENERIC_SECRET;
+      CK_ULONG edlen = 32;
+      CK_ATTRIBUTE eddtmpl[] = {
+        { CKA_CLASS, &eddcls, sizeof(eddcls) },
+        { CKA_KEY_TYPE, &eddkt, sizeof(eddkt) },
+        { CKA_VALUE_LEN, &edlen, sizeof(edlen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) },
+        { CKA_SENSITIVE, &bFalse, sizeof(bFalse) }
+      };
+      CK_OBJECT_HANDLE edderived = 0;
+      CK_BYTE edgot[32];
+      CK_ATTRIBUTE edget[] = {
+        { CKA_VALUE, edgot, sizeof(edgot) }
+      };
+      rv = f->C_CreateObject(esess, edtmpl, 5, &edkey);
+      CHECKC(rv == CKR_OK && edkey != 0, "encrypt-data base imports");
+      memcpy(edpar.iv, ediv, sizeof(ediv));
+      edpar.pData = eddata;
+      edpar.length = sizeof(eddata);
+      edm.mechanism = CKM_AES_CBC_ENCRYPT_DATA;
+      edm.pParameter = &edpar;
+      edm.ulParameterLen = sizeof(edpar);
+      rv = f->C_DeriveKey(esess, &edm, edkey, eddtmpl, 6, &edderived);
+      CHECKC(rv == CKR_OK && edderived != 0, "encrypt-data derives");
+      edget[0].ulValueLen = sizeof(edgot);
+      rv = f->C_GetAttributeValue(esess, edderived, edget, 1);
+      CHECKC(rv == CKR_OK && edget[0].ulValueLen == 32,
+             "derived value spans the data width");
+      /* Malformed frames fail closed (never accepted). */
+      edpar.pData = NULL_PTR;
+      edpar.length = sizeof(eddata);
+      edderived = 0;
+      rv = f->C_DeriveKey(esess, &edm, edkey, eddtmpl, 6, &edderived);
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && edderived == 0,
+             "null data with length refused");
+      edpar.pData = eddata;
+      edpar.length = 20;
+      rv = f->C_DeriveKey(esess, &edm, edkey, eddtmpl, 6, &edderived);
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && edderived == 0,
+             "ragged data refused");
+    }
+    {
+      CK_OBJECT_CLASS eecls = CKO_SECRET_KEY;
+      CK_KEY_TYPE eekt = CKK_AES;
+      CK_BYTE eeval[16] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+      };
+      CK_ATTRIBUTE eetmpl[] = {
+        { CKA_CLASS, &eecls, sizeof(eecls) },
+        { CKA_KEY_TYPE, &eekt, sizeof(eekt) },
+        { CKA_VALUE, eeval, sizeof(eeval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_DERIVE, &bTrue, sizeof(bTrue) }
+      };
+      CK_OBJECT_HANDLE eekey = 0;
+      CK_BYTE eedata[32] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88,
+        0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00
+      };
+      CK_KEY_DERIVATION_STRING_DATA eepar;
+      CK_MECHANISM eem;
+      CK_OBJECT_CLASS eedcls = CKO_SECRET_KEY;
+      CK_KEY_TYPE eedkt = CKK_GENERIC_SECRET;
+      CK_ULONG eelen = 32;
+      CK_ATTRIBUTE eedtmpl[] = {
+        { CKA_CLASS, &eedcls, sizeof(eedcls) },
+        { CKA_KEY_TYPE, &eedkt, sizeof(eedkt) },
+        { CKA_VALUE_LEN, &eelen, sizeof(eelen) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) },
+        { CKA_SENSITIVE, &bFalse, sizeof(bFalse) }
+      };
+      CK_OBJECT_HANDLE eederived = 0;
+      CK_BYTE eegot[32];
+      CK_ATTRIBUTE eeget[] = {
+        { CKA_VALUE, eegot, sizeof(eegot) }
+      };
+      rv = f->C_CreateObject(esess, eetmpl, 5, &eekey);
+      CHECKC(rv == CKR_OK && eekey != 0, "ecb base imports");
+      eepar.pData = eedata;
+      eepar.ulLen = sizeof(eedata);
+      eem.mechanism = CKM_AES_ECB_ENCRYPT_DATA;
+      eem.pParameter = &eepar;
+      eem.ulParameterLen = sizeof(eepar);
+      rv = f->C_DeriveKey(esess, &eem, eekey, eedtmpl, 6, &eederived);
+      CHECKC(rv == CKR_OK && eederived != 0, "ecb derives");
+      eeget[0].ulValueLen = sizeof(eegot);
+      rv = f->C_GetAttributeValue(esess, eederived, eeget, 1);
+      CHECKC(rv == CKR_OK && eeget[0].ulValueLen == 32,
+             "ecb value spans the data width");
+      eepar.pData = NULL_PTR;
+      eepar.ulLen = sizeof(eedata);
+      eederived = 0;
+      rv = f->C_DeriveKey(esess, &eem, eekey, eedtmpl, 6, &eederived);
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && eederived == 0,
+             "ecb null data with length refused");
+    }
     /* Multipart (sub-block updates buffer; final emits). */
     rv = f->C_EncryptUpdate(esess, (CK_BYTE_PTR) "a", 1, ct, &partLen);
     CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,

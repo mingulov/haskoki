@@ -57,7 +57,10 @@ import Haskoki.Engine.Backend
   , seedRandomMaxBytes
   )
 import Haskoki.Der (dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, integerToBE, mldsaPkcs8Fields, mldsaPrivateDer, mldsaSpkiFields, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPublicDer, mlkemSpkiFields, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomerySpkiFields, rsaSpkiFields, slhdsaPkcs8Fields, slhdsaSpkiFields)
+import Haskoki.Engine.Driver (cipherSpecFor)
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
+import Haskoki.Recipe.Cipher (encodeCtrParams)
+import Haskoki.Registry (MechanismId (..))
 import Haskoki.Types (EngineResourceId (..))
 
 spec :: TestTree
@@ -574,6 +577,28 @@ cam192CbcCt = hex "a0a022e9de176eaaec0bcab1ad5f6e9d"
 cam192EcbCt = hex "b22f3c36b72d31329eee8addc2906c68"
 cam256CbcCt = hex "cd3f05325b834e2bd83510993ca53afb"
 cam256EcbCt = hex "2edf1f3418d53b88841fc8985fb1ecf2"
+
+-- CAMELLIA-CTR rows: RFC 5528 TV#1/#4/#7 (single block each;
+-- counter block drives the 16-byte IV directly), verified under
+-- the pinned 4.0.2 CLI before embedding; independent of this
+-- backend's fetch path.
+camCtrPt :: ByteString
+camCtrPt = hex "53696e676c6520626c6f636b206d7367"
+
+camCtr128Key, camCtr128Icb, camCtr128Ct :: ByteString
+camCtr128Key = hex "ae6852f8121067cc4bf7a5765577f39e"
+camCtr128Icb = hex "00000030000000000000000000000001"
+camCtr128Ct = hex "d09dc29a8214619a20877c76db1f0b3f"
+
+camCtr192Key, camCtr192Icb, camCtr192Ct :: ByteString
+camCtr192Key = hex "16af5b145fc9f579c175f93e3bfb0eed863d06ccfdb78515"
+camCtr192Icb = hex "0000004836733c147d6d93cb00000001"
+camCtr192Ct = hex "2379399e8a8d2b2b16702fc78b9e9696"
+
+camCtr256Key, camCtr256Icb, camCtr256Ct :: ByteString
+camCtr256Key = hex "776beff2851db06f4c8a0542c8696f6c6a81af1eec96b4d37fc1d689e6c1c104"
+camCtr256Icb = hex "00000060db5672c97aa8f0b200000001"
+camCtr256Ct = hex "3401f9c8247effcebd6994714c1bbb11"
 
 -- ECDSA P-256/SHA-256 fixed vector (system openssl CLI 3.5.5, Verified OK
 -- there before embedding; independent of this backend).
@@ -1428,6 +1453,12 @@ caseCipherKats = withBackend $ \env -> do
   katEcb env "camellia-192-ecb" C_CAMELLIA192_ECB ariaKey192 ariaPt cam192EcbCt
   katCbc env "camellia-256-cbc" C_CAMELLIA256_CBC ariaKey256 ariaIv ariaPt cam256CbcCt
   katEcb env "camellia-256-ecb" C_CAMELLIA256_ECB ariaKey256 ariaPt cam256EcbCt
+  -- CAMELLIA-CTR: the RFC 5528 rows at all widths, resolved through
+  -- the driver map (the spec constructors land with the backend
+  -- slice; the map-plus-fetch agreement stays pinned here).
+  katCtrMapped env "camellia-128-ctr" 16 camCtr128Key camCtr128Icb camCtrPt camCtr128Ct
+  katCtrMapped env "camellia-192-ctr" 24 camCtr192Key camCtr192Icb camCtrPt camCtr192Ct
+  katCtrMapped env "camellia-256-ctr" 32 camCtr256Key camCtr256Icb camCtrPt camCtr256Ct
   -- Geometry refusals stay typed on the new specs.
   expectBadParam "ecb rejects iv" =<<
     cipherEncrypt env C_AES128_ECB (KeyBytes aes128Key) aes256Iv aes256Pt
@@ -1457,6 +1488,10 @@ caseCipherKats = withBackend $ \env -> do
       pt' <- expectOk (label ++ " decrypt")
         =<< cipherDecrypt env cipher (KeyBytes key) icb want
       assertEqual (label ++ " inverts") pt pt'
+    katCtrMapped env label keyLen key icb pt want =
+      case cipherSpecFor (MechanismId 0x558) keyLen (encodeCtrParams 128 icb) of
+        Nothing -> assertFailure (label ++ " unmapped")
+        Just cipher -> katCtr env label cipher key icb pt want
 
 -- AES-CTS (CBC-CS1): ACVP encrypt vectors plus geometry/KAT-edge negatives.
 caseAesCts :: IO ()
@@ -4531,8 +4566,10 @@ caseCaps = withBackend $ \env -> do
     , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
     , C_CAMELLIA128_CBC, C_CAMELLIA192_CBC, C_CAMELLIA256_CBC
     , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
+    , C_CAMELLIA128_CTR, C_CAMELLIA192_CTR, C_CAMELLIA256_CTR
     , C_CHACHA20
     ]) (ccCiphers (bcCiphers caps))
+  assertEqual "cipher set size" 50 (Set.size (ccCiphers (bcCiphers caps)))
   assertEqual "aead set" (Set.fromList
     [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
     , "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"

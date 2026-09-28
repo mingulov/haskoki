@@ -138,6 +138,11 @@ import Haskoki.Recipe.SlhDsa
   , slhdsaCodecFor
   , slhdsaRecipes
   )
+import Haskoki.Recipe.EncryptData
+  ( EncryptDataRecipe (..)
+  , encryptDataCodecFor
+  , encryptDataRecipes
+  )
 import Haskoki.Recipe.Kdf
   ( KdfRecipe (..)
   , kdfCodecFor
@@ -878,6 +883,23 @@ tlsPrfDescs =
   | r <- tlsPrfRecipes
   ]
 
+-- | The encrypt-data behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from
+-- 'encryptDataCodecFor', the derive route citing the planner case
+-- (A20), the synthetic construction (A37), and the real vectors
+-- (A39). All eight rows predate 2.40; key bounds are
+-- mechanism-specific (widths follow the planned length, capped by
+-- the encrypted data width).
+encryptDataDescs :: [Descriptor]
+encryptDataDescs =
+  [ promotedDesc (erName r) allBaselines FamilyDerive
+      (encryptDataCodecFor r)
+      [ mechRoute OpDerive (erName r) ["A20", "A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- encryptDataRecipes
+  ]
+
 -- | The OTP behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from 'hotpCodecFor',
 -- the sign and verify routes citing the synthetic construction
@@ -1057,10 +1079,10 @@ premasterDescs =
 -- 'cipherCodecFor', encrypt and decrypt routes citing the verified
 -- multipart (A16), synthetic (A37), and real-KAT (A39) cases. This
 -- replaces the hand-written AES-CBC descriptor (same id,
--- completed routes); the other 8 rows are new promotions. AES-CBC
--- keeps its tested wrap/unwrap/authenticated routes (same
--- 16-byte-IV parameter shape); key bounds follow the recipe's key
--- set (DES3 16..24, the AES family 16..32).
+-- completed routes). AES-CBC keeps its tested
+-- wrap/unwrap/authenticated routes (same 16-byte-IV parameter
+-- shape); key bounds follow the recipe's key set (DES3 16..24,
+-- the AES/ARIA/Camellia families 16..32).
 cipherDescs :: [Descriptor]
 cipherDescs =
   [ promotedDesc (crName r) allBaselines FamilyCipher
@@ -1263,7 +1285,7 @@ curatedRegistry =
         , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
-          ++ cmacDescs ++ des3macDescs ++ kdfDescs ++ tlsPrfDescs ++ otpDescs
+          ++ cmacDescs ++ des3macDescs ++ kdfDescs ++ tlsPrfDescs ++ otpDescs ++ encryptDataDescs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

@@ -217,7 +217,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
-import Haskoki.FFI.NativeParams (normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeMechParams, normalizePbkd2Params2, normalizeTlsPrfParams)
+import Haskoki.FFI.NativeParams (normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeMechParams, normalizePbkd2Params2, normalizeTlsPrfParams)
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
@@ -250,6 +250,7 @@ import Haskoki.Operation.Derive
   )
 import Haskoki.Recipe.Dh (DhRecipe (..), dhRecipeFor)
 import Haskoki.Recipe.Ecdh (ecdhRecipeFor)
+import Haskoki.Recipe.EncryptData (EncryptDataRecipe (..), encryptDataRecipeFor)
 import Haskoki.Recipe.Kdf (KdfRecipe (..), kdfRecipeFor)
 import Haskoki.Recipe.TlsPrf (tlsPrfRecipeFor)
 import Haskoki.Operation.KeyManagement
@@ -2974,14 +2975,26 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
           fromMaybe raw <$> normalizeDhX942Params pParams paramsLen
       | isJust (tlsPrfRecipeFor mid) =
           fromMaybe raw <$> normalizeTlsPrfParams pParams paramsLen
+      -- Encrypt-data rows normalize their native structs (CBC:
+      -- the @iv||data@ frame; ECB: the string-data chase onto the
+      -- raw data bytes). A refused chase poisons to the empty
+      -- blob, never the raw struct bytes: the canonical frame is
+      -- unframed, so raw struct bytes could otherwise satisfy the
+      -- recipe and accept malformed input.
+      | Just r <- encryptDataRecipeFor mid
+      , erIvBytes r /= 0 =
+          fromMaybe BS.empty <$> normalizeEncryptDataCbcParams (erIvBytes r) pParams paramsLen
+      | Just r <- encryptDataRecipeFor mid
+      , erIvBytes r == 0 =
+          fromMaybe BS.empty <$> normalizeEncryptDataEcbParams pParams paramsLen
       | otherwise = pure raw
 
 -- | Mechanisms served by 'haskokiStdDeriveOpaque': the ECDH rows,
--- the DH rows, the SHA-KDF rows, and TLS-PRF (PBKD2 excluded: no
--- native decoder).
+-- the DH rows, the SHA-KDF rows, TLS-PRF, and the encrypt-data
+-- rows (PBKD2 excluded: no native decoder).
 isOpaqueDeriveMech :: MechanismId -> Bool
 isOpaqueDeriveMech mid =
-  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || case kdfRecipeFor mid of
+  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || isJust (encryptDataRecipeFor mid) || case kdfRecipeFor mid of
     Just r -> not (rkPbkd2 r)
     Nothing -> False
 

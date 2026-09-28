@@ -18,6 +18,7 @@ import Data.ByteString (ByteString)
 import Data.Word (Word8)
 import Foreign.C.Types (CULong (..))
 import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (alignment, pokeByteOff, sizeOf)
 import Test.Tasty (TestTree, testGroup)
@@ -36,6 +37,10 @@ import Haskoki.FFI.NativeParams
   , normalizeDhPkcsParams
   , normalizeDhX942Params
   , normalizeEcdhParams
+  , encryptDataCbcNativeSize
+  , encryptDataEcbNativeSize
+  , normalizeEncryptDataCbcParams
+  , normalizeEncryptDataEcbParams
   , normalizeMechParams
   , oaepNativeSize
   , pssNativeSize
@@ -48,6 +53,7 @@ import Haskoki.Recipe.Chacha20
   )
 import Haskoki.Recipe.Dh (dhParamsValid, dhRecipeFor, encodeDhParams)
 import Haskoki.Recipe.Ecdh (ecdhParamsValid, ecdhRecipeFor, encodeEcdhParams)
+import Haskoki.Recipe.EncryptData (encryptDataParamsValid, encryptDataRecipeFor)
 import Haskoki.Recipe.Eddsa
   ( eddsaParamsValid
   , eddsaRecipeFor
@@ -280,6 +286,78 @@ spec = testGroup "native mechanism params"
       out <- allocaBytes 8 $ \p -> do
         pokeByteOff p 0 (CULong 0x01 :: CULong)
         normalizeEcdhParams p 8
+      assertEqual "refused" Nothing out
+  , testCase "encrypt-data cbc-16 struct chases iv and data" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_AES_CBC_ENCRYPT_DATA")
+          iv = BS.replicate 16 0xcb
+          dat = BS.replicate 32 0xda
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen dat $ \(dp, dlen) ->
+        BS.useAsCStringLen iv $ \(ip, _) ->
+          allocaBytes (encryptDataCbcNativeSize 16) $ \p -> do
+            copyBytes p ip 16
+            pokeByteOff p 16 (castPtr dp :: Ptr Word8)
+            pokeByteOff p (16 + pw) (CULong (fromIntegral dlen))
+            normalizeEncryptDataCbcParams 16 (castPtr p)
+              (fromIntegral (encryptDataCbcNativeSize 16))
+      assertEqual "canonical frame" (Just (iv <> dat)) out
+      case (out, encryptDataRecipeFor mid) of
+        (Just canon, Just r) ->
+          assertEqual "recipe accepts" True (encryptDataParamsValid r canon)
+        _ -> fail "encrypt-data recipe or frame missing"
+  , testCase "encrypt-data cbc-8 struct chases iv and data" $ do
+      let iv = BS.replicate 8 0xcb
+          dat = BS.replicate 16 0xda
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen dat $ \(dp, dlen) ->
+        BS.useAsCStringLen iv $ \(ip, _) ->
+          allocaBytes (encryptDataCbcNativeSize 8) $ \p -> do
+            copyBytes p ip 8
+            pokeByteOff p 8 (castPtr dp :: Ptr Word8)
+            pokeByteOff p (8 + pw) (CULong (fromIntegral dlen))
+            normalizeEncryptDataCbcParams 8 (castPtr p)
+              (fromIntegral (encryptDataCbcNativeSize 8))
+      assertEqual "canonical frame" (Just (iv <> dat)) out
+  , testCase "encrypt-data null data with length refuses" $ do
+      let pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes (encryptDataCbcNativeSize 16) $ \p -> do
+        pokeByteOff p 16 (nullPtr :: Ptr Word8)
+        pokeByteOff p (16 + pw) (CULong 32)
+        normalizeEncryptDataCbcParams 16 (castPtr p)
+          (fromIntegral (encryptDataCbcNativeSize 16))
+      assertEqual "refused" Nothing out
+  , testCase "encrypt-data short image refuses" $ do
+      out <- allocaBytes 8 $ \p -> do
+        pokeByteOff p 0 (CULong 0x01 :: CULong)
+        normalizeEncryptDataCbcParams 16 (castPtr p) 8
+      assertEqual "refused" Nothing out
+  , testCase "encrypt-data ecb struct chases the data" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_AES_ECB_ENCRYPT_DATA")
+          dat = BS.replicate 32 0xda
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen dat $ \(dp, dlen) ->
+        allocaBytes encryptDataEcbNativeSize $ \p -> do
+          pokeByteOff p 0 (castPtr dp :: Ptr Word8)
+          pokeByteOff p pw (CULong (fromIntegral dlen))
+          normalizeEncryptDataEcbParams (castPtr p)
+            (fromIntegral encryptDataEcbNativeSize)
+      assertEqual "canonical data" (Just dat) out
+      case (out, encryptDataRecipeFor mid) of
+        (Just canon, Just r) ->
+          assertEqual "recipe accepts" True (encryptDataParamsValid r canon)
+        _ -> fail "encrypt-data recipe or data missing"
+  , testCase "encrypt-data ecb null data with length refuses" $ do
+      let pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes encryptDataEcbNativeSize $ \p -> do
+        pokeByteOff p 0 (nullPtr :: Ptr Word8)
+        pokeByteOff p pw (CULong 32)
+        normalizeEncryptDataEcbParams (castPtr p)
+          (fromIntegral encryptDataEcbNativeSize)
+      assertEqual "refused" Nothing out
+  , testCase "encrypt-data ecb short image refuses" $ do
+      out <- allocaBytes 8 $ \p -> do
+        pokeByteOff p 0 (CULong 0x01 :: CULong)
+        normalizeEncryptDataEcbParams (castPtr p) 8
       assertEqual "refused" Nothing out
   , testCase "dh pkcs bare peer wraps canonical" $ do
       let mid = MechanismId (mustGeneratedId "CKM_DH_PKCS_DERIVE")
