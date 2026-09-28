@@ -78,6 +78,7 @@ import Haskoki.Operation.KeyManagement
   (GenArgs (..), decodeKeyPair, encodeGenArgs, hotpKeyGenMech)
 import Haskoki.Operation.State (CipherDir (..))
 import qualified Haskoki.Outcome as O
+import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
@@ -131,6 +132,9 @@ spec = testGroup "synthetic engine"
   , testCase "DH agreements separate and replay" caseDh
   , testCase "CMAC tags separate and truncate" caseCmac
   , testCase "3DES-MAC tags separate and truncate" caseDes3mac
+  , testCase "CBC-MAC tags separate and truncate" caseCbcMac
+  , testCase "XCBC-MAC tags separate, 128-only" caseXcbc
+  , testCase "GMAC tags separate over synthetic GCM" caseGmac
   , testCase "KDF output separates and truncates" caseKdf
   , testCase "TLS-PRF output separates and truncates" caseTlsPrf
   , testCase "HOTP codes separate, keygen lengths" caseHotp
@@ -1971,6 +1975,176 @@ caseDes3mac = withSynth "11" $ \env -> do
   -- Two-key path serves at the half width.
   tagHalf <- signAs macMech k2Oid BS.empty msg
   assertEqual "two-key width" 4 (BS.length tagHalf)
+
+-- | CBC-MAC through the driver over synthetic ECB: deterministic
+-- 8-byte half-block tags on the plain rows, GENERAL truncation is
+-- the prefix, keys/messages/ciphers separate, verify verdicts,
+-- and off-geometry triples refuse typed.
+caseCbcMac :: IO ()
+caseCbcMac = withSynth "11" $ \env -> do
+  let aesMech = MechanismId 0x1083
+      aesGen = MechanismId 0x1084
+      ariaMech = MechanismId 0x563
+      camMech = MechanismId 0x553
+      kOid = ObjectId 61
+      badOid = ObjectId 62
+      k16Oid = ObjectId 63
+      shortOid = ObjectId 64
+      res oid
+        | oid == kOid = Just key32
+        | oid == badOid = Just otherKey32
+        | oid == k16Oid = Just (KeyBytes "0123456789abcdef")
+        | oid == shortOid = Just (KeyBytes "fifteen bytes!!")
+        | otherwise = Nothing
+      signAs mech oid params msg =
+        runEffect env res (FxSign mech (Just oid) params msg) >>= expectBytes
+      -- Three blocks: the synthetic XOR-stream keystream cancels at
+      -- even block counts (e2 = m1^m2), so separation needs odd.
+      msg = "0123456789abcdef0123456789abcdef0123456789abcdef"
+  t1 <- signAs aesMech kOid BS.empty msg
+  assertEqual "plain half width" 8 (BS.length t1)
+  t2 <- signAs aesMech kOid BS.empty msg
+  assertEqual "deterministic" t1 t2
+  tOther <- signAs aesMech badOid BS.empty msg
+  assertBool "keys separated" (t1 /= tOther)
+  tMsg <- signAs aesMech kOid BS.empty "1123456789abcdef0123456789abcdef0123456789abcdef"
+  assertBool "messages separated" (t1 /= tMsg)
+  tAria <- signAs ariaMech kOid BS.empty msg
+  assertBool "ciphers separated" (t1 /= tAria)
+  tCam <- signAs camMech kOid BS.empty msg
+  assertBool "camellia separated" (t1 /= tCam)
+  tEmpty <- signAs aesMech kOid BS.empty BS.empty
+  assertEqual "empty width" 8 (BS.length tEmpty)
+  -- GENERAL truncation is the tag prefix; bounds enforced.
+  g16 <- signAs aesGen kOid (encodeMacGeneral 16) msg
+  assertEqual "truncation width" 16 (BS.length g16)
+  assertEqual "half is the prefix" t1 (BS.take 8 g16)
+  vGen <- runEffect env res (FxVerify aesGen (Just kOid) (encodeMacGeneral 16)
+    msg g16)
+  assertEqual "general verifies" (GotValid True) vGen
+  badLen <- runEffect env res (FxSign aesGen (Just kOid) (encodeMacGeneral 17)
+    msg)
+  case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  -- Verify verdicts.
+  vGood <- runEffect env res (FxVerify aesMech (Just kOid) BS.empty msg t1)
+  assertEqual "verifies" (GotValid True) vGood
+  vBad <- runEffect env res (FxVerify aesMech (Just kOid) BS.empty msg
+    (BS.map (255 -) t1))
+  assertEqual "tamper rejects" (GotValid False) vBad
+  -- Off-geometry triples refuse typed; 128-bit keys serve.
+  badParams <- runEffect env res (FxSign aesMech (Just kOid) "x" msg)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badKey <- runEffect env res (FxSign aesMech (Just shortOid) BS.empty msg)
+  case badKey of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  t16 <- signAs aesMech k16Oid BS.empty msg
+  assertEqual "128-bit width" 8 (BS.length t16)
+
+-- | XCBC-MAC through the driver over synthetic AES-128-ECB:
+-- deterministic 16-byte tags (12 for _96), keys/messages
+-- separate, verify verdicts, and 192\/256-bit keys plus
+-- non-empty params refuse typed (XCBC is 128-bit-only).
+caseXcbc :: IO ()
+caseXcbc = withSynth "11" $ \env -> do
+  let xcbcMech = MechanismId 0x108c
+      xcbc96 = MechanismId 0x108d
+      kOid = ObjectId 61
+      badOid = ObjectId 62
+      k32Oid = ObjectId 63
+      res oid
+        | oid == kOid = Just (KeyBytes "0123456789abcdef")
+        | oid == badOid = Just (KeyBytes "fedcba9876543210")
+        | oid == k32Oid = Just key32
+        | otherwise = Nothing
+      signAs mech oid params msg =
+        runEffect env res (FxSign mech (Just oid) params msg) >>= expectBytes
+      msg = "thirty-two bytes of input here!!"
+  t1 <- signAs xcbcMech kOid BS.empty msg
+  assertEqual "plain width" 16 (BS.length t1)
+  t2 <- signAs xcbcMech kOid BS.empty msg
+  assertEqual "deterministic" t1 t2
+  tOther <- signAs xcbcMech badOid BS.empty msg
+  assertBool "keys separated" (t1 /= tOther)
+  tMsg <- signAs xcbcMech kOid BS.empty "thirty-two bytes of input here!?"
+  assertBool "messages separated" (t1 /= tMsg)
+  n12 <- signAs xcbc96 kOid BS.empty msg
+  assertEqual "96 width" 12 (BS.length n12)
+  assertEqual "96 is the prefix" n12 (BS.take 12 t1)
+  v96 <- runEffect env res (FxVerify xcbc96 (Just kOid) BS.empty msg n12)
+  assertEqual "96 verifies" (GotValid True) v96
+  -- Verify verdicts.
+  vGood <- runEffect env res (FxVerify xcbcMech (Just kOid) BS.empty msg t1)
+  assertEqual "verifies" (GotValid True) vGood
+  vBad <- runEffect env res (FxVerify xcbcMech (Just kOid) BS.empty msg
+    (BS.map (255 -) t1))
+  assertEqual "tamper rejects" (GotValid False) vBad
+  -- 256-bit keys and non-empty params refuse typed.
+  badLen <- runEffect env res (FxSign xcbcMech (Just k32Oid) BS.empty msg)
+  case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badParams <- runEffect env res (FxSign xcbcMech (Just kOid) "x" msg)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- | GMAC through the driver over synthetic AES-GCM: the message
+-- travels as AAD with empty plaintext, deterministic 16-byte
+-- tags, keys/messages/IVs separate, verify verdicts, and
+-- off-geometry triples refuse typed.
+caseGmac :: IO ()
+caseGmac = withSynth "11" $ \env -> do
+  let gmacMech = MechanismId 0x108e
+      kOid = ObjectId 61
+      badOid = ObjectId 62
+      shortOid = ObjectId 63
+      res oid
+        | oid == kOid = Just key32
+        | oid == badOid = Just otherKey32
+        | oid == shortOid = Just (KeyBytes "fifteen bytes!!")
+        | otherwise = Nothing
+      nonce = "0123456789ab"
+      good = encodeGcmParams nonce BS.empty 16
+      signAs oid params msg =
+        runEffect env res (FxSign gmacMech (Just oid) params msg) >>= expectBytes
+      msg = "gmac message bytes"
+  t1 <- signAs kOid good msg
+  assertEqual "tag width" 16 (BS.length t1)
+  t2 <- signAs kOid good msg
+  assertEqual "deterministic" t1 t2
+  tOther <- signAs badOid good msg
+  assertBool "keys separated" (t1 /= tOther)
+  tMsg <- signAs kOid good "gmac message bytez"
+  assertBool "messages separated" (t1 /= tMsg)
+  tIv <- signAs kOid (encodeGcmParams "0123456789ac" BS.empty 16) msg
+  assertBool "ivs separated" (t1 /= tIv)
+  t4 <- signAs kOid (encodeGcmParams nonce BS.empty 4) msg
+  assertEqual "truncated width" 4 (BS.length t4)
+  -- Verify verdicts.
+  vGood <- runEffect env res (FxVerify gmacMech (Just kOid) good msg t1)
+  assertEqual "verifies" (GotValid True) vGood
+  vBad <- runEffect env res (FxVerify gmacMech (Just kOid) good msg
+    (BS.map (255 -) t1))
+  assertEqual "tamper rejects" (GotValid False) vBad
+  -- Off-geometry triples refuse typed.
+  badKey <- runEffect env res (FxSign gmacMech (Just shortOid) good msg)
+  case badKey of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badParams <- runEffect env res (FxSign gmacMech (Just kOid) BS.empty msg)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badTag <- runEffect env res
+    (FxSign gmacMech (Just kOid) (encodeGcmParams nonce BS.empty 5) msg)
+  case badTag of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- KDF constructions

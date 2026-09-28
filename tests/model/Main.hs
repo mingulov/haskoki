@@ -33,6 +33,7 @@ import qualified ObjectSpec
 import qualified OperationSpec
 import qualified OwnershipSpec
 import qualified OutputSpec
+import qualified RecipeCbcMacSpec
 import qualified RecipeCcmSpec
 import qualified RecipeChacha20Spec
 import qualified RecipeCipherSpec
@@ -46,6 +47,7 @@ import qualified RecipeEcdsaSpec
 import qualified RecipeEddsaSpec
 import qualified RecipeEncryptDataSpec
 import qualified RecipeGcmSpec
+import qualified RecipeGmacSpec
 import qualified RecipeHmacSpec
 import qualified RecipeKdfSpec
 import qualified RecipeMlDsaSpec
@@ -56,6 +58,7 @@ import qualified RecipeRsaSpec
 import qualified RecipeSlhDsaSpec
 import qualified RecipeTlsPrfSpec
 import qualified RecipeX509Spec
+import qualified RecipeXcbcMacSpec
 import qualified RegistrySpec
 import qualified RoutingSpec
 import qualified SecretsSpec
@@ -85,6 +88,7 @@ main = defaultMain $ testGroup "haskoki model + lifecycle"
   , OperationSpec.spec
   , OwnershipSpec.spec
   , OutputSpec.spec
+  , RecipeCbcMacSpec.spec
   , RecipeCcmSpec.spec
   , RecipeChacha20Spec.spec
   , RecipeCipherSpec.spec
@@ -98,6 +102,7 @@ main = defaultMain $ testGroup "haskoki model + lifecycle"
   , RecipeEddsaSpec.spec
   , RecipeEncryptDataSpec.spec
   , RecipeGcmSpec.spec
+  , RecipeGmacSpec.spec
   , RecipeHmacSpec.spec
   , RecipeKdfSpec.spec
   , RecipeMlDsaSpec.spec
@@ -108,6 +113,7 @@ main = defaultMain $ testGroup "haskoki model + lifecycle"
   , RecipeSlhDsaSpec.spec
   , RecipeTlsPrfSpec.spec
   , RecipeX509Spec.spec
+  , RecipeXcbcMacSpec.spec
   , RegistrySpec.spec
   , MechanismExhaustivenessSpec.spec
   , RoutingSpec.spec

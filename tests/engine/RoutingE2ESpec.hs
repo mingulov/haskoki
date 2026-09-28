@@ -70,6 +70,7 @@ import Haskoki.Recipe.Chacha20 (encodeChachaPolyParams, encodeChachaStreamParams
 import Haskoki.Recipe.Cipher (encodeCtrParams)
 import Haskoki.Recipe.Dh (encodeDhParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
+import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Otp (encodeHotpParams)
@@ -113,6 +114,9 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: dh agree + truncate + refuse" caseDriverDh
   , testCase "driver: cmac KATs + truncate + refuse" caseDriverCmac
   , testCase "driver: 3des-mac KATs + truncate + refuse" caseDriverDes3Mac
+  , testCase "driver: cbc-mac KATs + truncate + refuse" caseDriverCbcMac
+  , testCase "driver: xcbc KATs + refuse" caseDriverXcbc
+  , testCase "driver: gmac KATs + refuse" caseDriverGmac
   , testCase "driver: kdf vectors + refuse" caseDriverKdf
   , testCase "driver: pbkd2 keygen vector" caseDriverPbkd2Gen
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
@@ -213,6 +217,25 @@ cmac3GenMech = MechanismId 0x137
 des3macMech, des3macGenMech :: MechanismId
 des3macMech = MechanismId 0x134
 des3macGenMech = MechanismId 0x135
+
+aesMacMech, aesMacGenMech :: MechanismId
+aesMacMech = MechanismId 0x1083
+aesMacGenMech = MechanismId 0x1084
+
+ariaMacMech, ariaMacGenMech :: MechanismId
+ariaMacMech = MechanismId 0x563
+ariaMacGenMech = MechanismId 0x564
+
+camMacMech, camMacGenMech :: MechanismId
+camMacMech = MechanismId 0x553
+camMacGenMech = MechanismId 0x554
+
+xcbcMech, xcbc96Mech :: MechanismId
+xcbcMech = MechanismId 0x108c
+xcbc96Mech = MechanismId 0x108d
+
+gmacMech :: MechanismId
+gmacMech = MechanismId 0x108e
 
 aesGcmMech :: MechanismId
 aesGcmMech = MechanismId 0x1087
@@ -1324,6 +1347,203 @@ caseDriverDes3Mac = withBackend $ \env -> do
   badGen <- runEffect env res (FxSign des3macGenMech (Just o3)
     (encodeMacGeneral 9) m18)
   case badGen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- | CBC-MAC through the driver over real AES\/ARIA\/Camellia ECB:
+-- single-block anchors (FIPS-197 AES, the oracle's ARIA\/Camellia
+-- MAC vectors), CLI+pinned-python chaining vectors (two-block and
+-- ragged zero-padded), GENERAL truncation, verify verdicts, and
+-- typed refusals. Plain rows emit the first 8 of the final
+-- 16-byte CBC-MAC block (the OASIS half-block rule).
+caseDriverCbcMac :: IO ()
+caseDriverCbcMac = withBackend $ \env -> do
+  let kAes = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")
+      kAria = KeyBytes (hex "6de74ebf339ee34b1abaf3fbab7feee5")
+      kCam = KeyBytes (hex "fac1358c3c30f3869337eea6e9a92fbd")
+      kBad = KeyBytes (hex "00112233445566778899aabbccddee")
+      b1 = hex "00112233445566778899aabbccddeeff"
+      b2 = hex "000102030405060708090a0b0c0d0e0f"
+      tail4 = hex "00112233"
+      mAria = hex "f7a6894b0a98a691101659f3225c28ea"
+      mCam = hex "33b0b9ba525a3abe3489a3a600c295eb"
+      oAes = ObjectId 71
+      oAria = ObjectId 72
+      oCam = ObjectId 73
+      oBad = ObjectId 74
+      res oid
+        | oid == oAes = Just kAes
+        | oid == oAria = Just kAria
+        | oid == oCam = Just kCam
+        | oid == oBad = Just kBad
+        | otherwise = Nothing
+      tag mech oid params msg =
+        runEffect env res (FxSign mech (Just oid) params msg) >>= expectBytes
+  -- AES anchors: FIPS-197 single block, CLI two-block + ragged.
+  tAes <- tag aesMacMech oAes BS.empty b1
+  assertEqual "aes half block" (hex "69c4e0d86a7b0430") tAes
+  gAes <- tag aesMacGenMech oAes (encodeMacGeneral 16) b1
+  assertEqual "aes full block" (hex "69c4e0d86a7b0430d8cdb78070b4c55a") gAes
+  tAes2 <- tag aesMacMech oAes BS.empty (b1 <> b2)
+  assertEqual "aes chained" (hex "2ee702bbfb7d094b") tAes2
+  tAesR <- tag aesMacMech oAes BS.empty (b1 <> tail4)
+  assertEqual "aes ragged padded" (hex "c9ad3c49c43db7a7") tAesR
+  -- ARIA: oracle one-block vector plus CLI chaining vectors.
+  tAria <- tag ariaMacMech oAria BS.empty mAria
+  assertEqual "aria half block" (hex "b5c11c1494615dc7") tAria
+  gAria <- tag ariaMacGenMech oAria (encodeMacGeneral 16) mAria
+  assertEqual "aria full block" (hex "b5c11c1494615dc7d4bcd3aecf6852e4") gAria
+  tAria2 <- tag ariaMacMech oAria BS.empty (b1 <> b2)
+  assertEqual "aria chained" (hex "1bb011c67c340573") tAria2
+  tAriaR <- tag ariaMacMech oAria BS.empty (b1 <> tail4)
+  assertEqual "aria ragged padded" (hex "7aee0eb59a1238d4") tAriaR
+  -- Camellia: oracle one-block vector plus CLI chaining vectors.
+  tCam <- tag camMacMech oCam BS.empty mCam
+  assertEqual "camellia half block" (hex "f96073b123ee5bdd") tCam
+  gCam <- tag camMacGenMech oCam (encodeMacGeneral 16) mCam
+  assertEqual "camellia full block" (hex "f96073b123ee5bdd75675f790362a798") gCam
+  tCam2 <- tag camMacMech oCam BS.empty (b1 <> b2)
+  assertEqual "camellia chained" (hex "bd81119019ddfeb1") tCam2
+  tCamR <- tag camMacMech oCam BS.empty (b1 <> tail4)
+  assertEqual "camellia ragged padded" (hex "4cc5169549b3803a") tCamR
+  -- GENERAL truncation is the prefix.
+  g5 <- tag aesMacGenMech oAes (encodeMacGeneral 5) b1
+  assertEqual "general prefix" (BS.take 5 gAes) g5
+  -- Verify verdicts.
+  vGood <- runEffect env res (FxVerify aesMacMech (Just oAes) BS.empty b1 tAes)
+  assertEqual "verifies" (GotValid True) vGood
+  vBad <- runEffect env res (FxVerify aesMacMech (Just oAes) BS.empty b1
+    (BS.map (255 -) tAes))
+  assertEqual "tamper rejects" (GotValid False) vBad
+  vGen <- runEffect env res (FxVerify ariaMacGenMech (Just oAria)
+    (encodeMacGeneral 16) mAria gAria)
+  assertEqual "general verifies" (GotValid True) vGen
+  -- Typed refusals: bad key length, bad params, bad GENERAL length.
+  badLen <- runEffect env res (FxSign camMacMech (Just oBad) BS.empty b1)
+  case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badParams <- runEffect env res (FxSign aesMacMech (Just oAes) "x" b1)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badGen <- runEffect env res (FxSign aesMacGenMech (Just oAes)
+    (encodeMacGeneral 17) b1)
+  case badGen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- | AES-XCBC-MAC through the driver over real AES-128-ECB: RFC
+-- 3566 test cases (empty, short, block-aligned, ragged), the _96
+-- truncation, verify verdicts, and typed refusals (192\/256-bit
+-- keys and non-empty params refuse: XCBC is 128-bit-only).
+caseDriverXcbc :: IO ()
+caseDriverXcbc = withBackend $ \env -> do
+  let k128 = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")
+      k192 = KeyBytes (hex "000102030405060708090a0b0c0d0e0f1011121314151617")
+      m0 = BS.empty
+      m3 = hex "000102"
+      m16 = hex "000102030405060708090a0b0c0d0e0f"
+      m20 = hex "000102030405060708090a0b0c0d0e0f10111213"
+      o128 = ObjectId 71
+      o192 = ObjectId 72
+      res oid
+        | oid == o128 = Just k128
+        | oid == o192 = Just k192
+        | otherwise = Nothing
+      tag mech oid params msg =
+        runEffect env res (FxSign mech (Just oid) params msg) >>= expectBytes
+  -- RFC 3566 test cases #1-#4 (plain + _96).
+  t1 <- tag xcbcMech o128 BS.empty m0
+  assertEqual "rfc3566 #1" (hex "75f0251d528ac01c4573dfd584d79f29") t1
+  n1 <- tag xcbc96Mech o128 BS.empty m0
+  assertEqual "rfc3566 #1 96" (hex "75f0251d528ac01c4573dfd5") n1
+  t2 <- tag xcbcMech o128 BS.empty m3
+  assertEqual "rfc3566 #2" (hex "5b376580ae2f19afe7219ceef172756f") t2
+  n2 <- tag xcbc96Mech o128 BS.empty m3
+  assertEqual "rfc3566 #2 96" (hex "5b376580ae2f19afe7219cee") n2
+  t3 <- tag xcbcMech o128 BS.empty m16
+  assertEqual "rfc3566 #3" (hex "d2a246fa349b68a79998a4394ff7a263") t3
+  n3 <- tag xcbc96Mech o128 BS.empty m16
+  assertEqual "rfc3566 #3 96" (hex "d2a246fa349b68a79998a439") n3
+  t4 <- tag xcbcMech o128 BS.empty m20
+  assertEqual "rfc3566 #4" (hex "47f51b4564966215b8985c63055ed308") t4
+  -- _96 truncation is the prefix.
+  assertEqual "96 prefix" (BS.take 12 t4)
+    =<< tag xcbc96Mech o128 BS.empty m20
+  -- Verify verdicts.
+  vGood <- runEffect env res (FxVerify xcbcMech (Just o128) BS.empty m16 t3)
+  assertEqual "verifies" (GotValid True) vGood
+  vBad <- runEffect env res (FxVerify xcbcMech (Just o128) BS.empty m16
+    (BS.map (255 -) t3))
+  assertEqual "tamper rejects" (GotValid False) vBad
+  v96 <- runEffect env res (FxVerify xcbc96Mech (Just o128) BS.empty m3 n2)
+  assertEqual "96 verifies" (GotValid True) v96
+  -- Typed refusals: 192-bit key, non-empty params.
+  badLen <- runEffect env res (FxSign xcbcMech (Just o192) BS.empty m16)
+  case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badParams <- runEffect env res (FxSign xcbcMech (Just o128) "x" m16)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- | AES-GMAC through the driver over the real GCM route: the
+-- message travels as GCM AAD with empty plaintext (pinned tags
+-- from Python cryptography AESGCM, the AEAD oracle root, plus
+-- the ACVP tc16 32-bit tag), verify verdicts, and typed refusals
+-- (GMAC takes gcm-params with an approved tag width and a caller
+-- IV; OASIS v3.2 §6.13.6 determines the length by @ulTagBits@).
+caseDriverGmac :: IO ()
+caseDriverGmac = withBackend $ \env -> do
+  let k128 = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")
+      kAcvp = KeyBytes (hex "E3F49ACE9713B2EC43B5AA9D0E0CF119")
+      kBad = KeyBytes (hex "00112233445566778899aabbccddee")
+      nonce = hex "000102030405060708090a0b"
+      msg = "aad-data"
+      o128 = ObjectId 71
+      oBad = ObjectId 72
+      oAcvp = ObjectId 73
+      res oid
+        | oid == o128 = Just k128
+        | oid == oBad = Just kBad
+        | oid == oAcvp = Just kAcvp
+        | otherwise = Nothing
+      good = encodeGcmParams nonce BS.empty 16
+      tag oid params input =
+        runEffect env res (FxSign gmacMech (Just oid) params input) >>= expectBytes
+  t1 <- tag o128 good msg
+  assertEqual "gmac tag" (hex "e01312146176abd643fcee9d4a640184") t1
+  t0 <- tag o128 good BS.empty
+  assertEqual "gmac empty" (hex "435b9ba12d75a4be8a977ea3cd011890") t0
+  -- ACVP tc16: 32-bit tag over empty AAD.
+  t32 <- runEffect env res (FxSign gmacMech (Just oAcvp)
+    (encodeGcmParams (hex "CE5AD159921FCB89FB95BF7A") BS.empty 4) BS.empty)
+    >>= expectBytes
+  assertEqual "gmac acvp tc16" (hex "DDF76017") t32
+  -- The params AAD field carries no meaning on the sign path: the
+  -- message is the sign input only.
+  tAad <- tag o128 (encodeGcmParams nonce "ignored-aad" 16) msg
+  assertEqual "params aad ignored" t1 tAad
+  -- Verify verdicts.
+  vGood <- runEffect env res (FxVerify gmacMech (Just o128) good msg t1)
+  assertEqual "verifies" (GotValid True) vGood
+  vBad <- runEffect env res (FxVerify gmacMech (Just o128) good msg
+    (BS.map (255 -) t1))
+  assertEqual "tamper rejects" (GotValid False) vBad
+  -- Typed refusals: bad key length, empty params, unapproved width.
+  badLen <- runEffect env res (FxSign gmacMech (Just oBad) good msg)
+  case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badParams <- runEffect env res (FxSign gmacMech (Just o128) BS.empty msg)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badTag <- runEffect env res
+    (FxSign gmacMech (Just o128) (encodeGcmParams nonce BS.empty 5) msg)
+  case badTag of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
 

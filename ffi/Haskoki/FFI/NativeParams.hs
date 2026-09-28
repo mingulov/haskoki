@@ -163,6 +163,7 @@ import Haskoki.Recipe.Cipher (ctrRecipeFor, encodeCtrParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Eddsa (eddsaRecipeFor, encodeEddsaParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
+import Haskoki.Recipe.Gmac (gmacRecipeFor)
 import Haskoki.Recipe.MlDsa (encodeMldsaParams, hedgeOfWord, mldsaRecipeFor)
 import Haskoki.Recipe.SlhDsa (encodeSlhdsaParams, slhdsaRecipeFor)
 import qualified Haskoki.Recipe.SlhDsa as SlhDsa
@@ -702,6 +703,7 @@ normalizeMechParams mid pParams paramsLen raw
   | isJust (rsaPssRecipeFor mid) = fromMaybe raw <$> decodePssNative
   | isJust (rsaOaepRecipeFor mid) = fromMaybe raw <$> decodeOaepNative
   | isJust (gcmRecipeFor mid) = fromMaybe raw <$> decodeGcmNative
+  | isJust (gmacRecipeFor mid) = fromMaybe raw <$> decodeGcmNative
   | isJust (ccmRecipeFor mid) = fromMaybe raw <$> decodeCcmNative
   | isJust (ctrRecipeFor mid) = fromMaybe raw <$> decodeCtrNative
   | isJust (eddsaRecipeFor mid) = fromMaybe raw <$> decodeEddsaNative

@@ -150,6 +150,9 @@ module Haskoki.Engine.Driver
   , dhParamsFor
   , cmacSpecFor
   , des3macSpecFor
+  , cbcmacSpecFor
+  , xcbcSpecFor
+  , gmacSpecFor
   , hotpParamsFor
   , Pbkd2Params (..)
   , kdfShaFor
@@ -339,6 +342,13 @@ import Haskoki.Operation.KeyManagement
   , pbkd2KeygenMaxBytes
   )
 import Haskoki.Operation.State (CipherDir (..))
+import Haskoki.Recipe.CbcMac
+  ( CbcMacCipher (..)
+  , CbcMacRecipe (..)
+  , cbcmacBlockLen
+  , cbcmacPlainOutLen
+  , cbcmacRecipeFor
+  )
 import Haskoki.Recipe.Cmac
   ( CmacRecipe (..)
   , cmacBlockLen
@@ -350,6 +360,7 @@ import Haskoki.Recipe.Des3Mac
   , des3macPlainOutLen
   , des3macRecipeFor
   )
+import Haskoki.Recipe.Gmac (gmacParamsValid, gmacRecipeFor)
 import Haskoki.Recipe.Hmac
   ( HmacRecipe (..)
   , decodeMacGeneral
@@ -374,6 +385,11 @@ import Haskoki.Recipe.Otp
   , encodeHotpCounter
   , hotpRecipeFor
   , hotpTruncate
+  )
+import Haskoki.Recipe.XcbcMac
+  ( XcbcRecipe (..)
+  , xcbcOutLen
+  , xcbcRecipeFor
   )
 import Haskoki.Recipe.TlsPrf
   ( decodeTlsPrfParams
@@ -511,6 +527,91 @@ des3macSpecFor mech params keyLen = do
 -- 'CryptoFailed', never 'CryptoUnsupported').
 isDes3MacMech :: MechanismId -> Bool
 isDes3MacMech mech = isJust (des3macRecipeFor mech)
+
+-- | CBC-MAC dispatch: covered (mechanism, params, key length)
+-- triples map to the ECB cipher spec plus the output width (8
+-- for the plain half-block rows, the decoded length for GENERAL
+-- rows). The cipher binds by recipe and key length (AES\/ARIA\/
+-- Camellia 128\/192\/256). 'Nothing' means uncovered
+-- (non-CBC-MAC mechanism), malformed parameters, or an
+-- off-geometry key length.
+cbcmacSpecFor :: MechanismId -> ByteString -> Int -> Maybe (CipherSpec, Maybe Int)
+cbcmacSpecFor mech params keyLen = do
+  r <- cbcmacRecipeFor mech
+  spec <- cbcmacCipher r keyLen
+  if cbmGeneral r
+    then do
+      n <- decodeMacGeneral params
+      guard (n >= 1 && n <= cbcmacBlockLen r)
+      pure (spec, Just n)
+    else do
+      guard (BS.null params)
+      pure (spec, Just (cbcmacPlainOutLen r))
+  where
+    cbcmacCipher r n = case cbmCipher r of
+      CbcAes
+        | n == 16 -> Just C_AES128_ECB
+        | n == 24 -> Just C_AES192_ECB
+        | n == 32 -> Just C_AES256_ECB
+        | otherwise -> Nothing
+      CbcAria
+        | n == 16 -> Just C_ARIA128_ECB
+        | n == 24 -> Just C_ARIA192_ECB
+        | n == 32 -> Just C_ARIA256_ECB
+        | otherwise -> Nothing
+      CbcCamellia
+        | n == 16 -> Just C_CAMELLIA128_ECB
+        | n == 24 -> Just C_CAMELLIA192_ECB
+        | n == 32 -> Just C_CAMELLIA256_ECB
+        | otherwise -> Nothing
+
+-- | A CBC-MAC mechanism regardless of parameter validity (drives
+-- the parameter-refusal branch: malformed MAC params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isCbcMacMech :: MechanismId -> Bool
+isCbcMacMech mech = isJust (cbcmacRecipeFor mech)
+
+-- | XCBC-MAC dispatch: covered (mechanism, params, key length)
+-- triples map to AES-128-ECB plus the output width (16 plain,
+-- 12 for _96). Keys are 128-bit only. 'Nothing' means uncovered
+-- (non-XCBC mechanism), malformed parameters, or an off-geometry
+-- key length.
+xcbcSpecFor :: MechanismId -> ByteString -> Int -> Maybe (CipherSpec, Maybe Int)
+xcbcSpecFor mech params keyLen = do
+  r <- xcbcRecipeFor mech
+  guard (keyLen == 16)
+  guard (BS.null params)
+  pure (C_AES128_ECB, Just (xcbcOutLen r))
+
+-- | An XCBC-MAC mechanism regardless of parameter validity (drives
+-- the parameter-refusal branch: malformed MAC params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isXcbcMech :: MechanismId -> Bool
+isXcbcMech mech = isJust (xcbcRecipeFor mech)
+
+-- | GMAC dispatch: covered (mechanism, params, key length) triples
+-- map to the backend AES-GCM spec plus the IV. The tag width is
+-- fixed at 16 (GMAC has no truncation variant); the key binds by
+-- length (AES-128\/192\/256). 'Nothing' means uncovered
+-- (non-GMAC mechanism), malformed parameters, or an off-geometry
+-- key length.
+gmacSpecFor :: MechanismId -> ByteString -> Int -> Maybe (AeadSpec, ByteString)
+gmacSpecFor mech params keyLen = do
+  r <- gmacRecipeFor mech
+  guard (gmacParamsValid r params)
+  (iv, _, tagLen) <- decodeGcmParams params
+  alg <- case keyLen of
+    16 -> Just "AES-128-GCM"
+    24 -> Just "AES-192-GCM"
+    32 -> Just "AES-256-GCM"
+    _ -> Nothing
+  pure (AeadSpec alg (BS.length iv) tagLen, iv)
+
+-- | A GMAC mechanism regardless of parameter validity (drives the
+-- parameter-refusal branch: malformed GMAC params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isGmacMech :: MechanismId -> Bool
+isGmacMech mech = isJust (gmacRecipeFor mech)
 
 -- | HOTP dispatch: a covered mechanism with valid @hotp-params\/1@
 -- parameters to (counter, digits) (pinned against
@@ -1256,6 +1357,12 @@ runEffect env resolve fx = case fx of
         runCmacSign mech params key input
     | isDes3MacMech mech -> withKey mkey $ \key ->
         runDes3MacSign mech params key input
+    | isCbcMacMech mech -> withKey mkey $ \key ->
+        runCbcMacSign mech params key input
+    | isXcbcMech mech -> withKey mkey $ \key ->
+        runXcbcSign mech params key input
+    | isGmacMech mech -> withKey mkey $ \key ->
+        runGmacSign mech params key input
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpSign mech params key input
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
@@ -1300,6 +1407,12 @@ runEffect env resolve fx = case fx of
         runCmacVerify mech params key input sig
     | isDes3MacMech mech -> withKey mkey $ \key ->
         runDes3MacVerify mech params key input sig
+    | isCbcMacMech mech -> withKey mkey $ \key ->
+        runCbcMacVerify mech params key input sig
+    | isXcbcMech mech -> withKey mkey $ \key ->
+        runXcbcVerify mech params key input sig
+    | isGmacMech mech -> withKey mkey $ \key ->
+        runGmacVerify mech params key input sig
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpVerify mech params key input sig
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
@@ -1371,6 +1484,12 @@ runEffect env resolve fx = case fx of
         runCmacSign mech params key input
     | isDes3MacMech mech -> withKey mkey $ \key ->
         runDes3MacSign mech params key input
+    | isCbcMacMech mech -> withKey mkey $ \key ->
+        runCbcMacSign mech params key input
+    | isXcbcMech mech -> withKey mkey $ \key ->
+        runXcbcSign mech params key input
+    | isGmacMech mech -> withKey mkey $ \key ->
+        runGmacSign mech params key input
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpSign mech params key input
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
@@ -1415,6 +1534,12 @@ runEffect env resolve fx = case fx of
         runCmacVerify mech params key input sig
     | isDes3MacMech mech -> withKey mkey $ \key ->
         runDes3MacVerify mech params key input sig
+    | isCbcMacMech mech -> withKey mkey $ \key ->
+        runCbcMacVerify mech params key input sig
+    | isXcbcMech mech -> withKey mkey $ \key ->
+        runXcbcVerify mech params key input sig
+    | isGmacMech mech -> withKey mkey $ \key ->
+        runGmacVerify mech params key input sig
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpVerify mech params key input sig
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
@@ -1719,6 +1844,109 @@ runEffect env resolve fx = case fx of
           "driver: 3DES-MAC (mechanism, key length, params) rejected by the recipe"))
       _ -> pure (GotCryptoError (CryptoBadKey "driver"
         "3DES-MAC needs raw symmetric key bytes"))
+    -- | CBC-MAC sign effects: CBC-MAC chaining over the backend
+    -- ECB route, truncated to the half block (plain) or the
+    -- decoded length (GENERAL). Off-geometry (mechanism, key
+    -- length, params) triples are 'CryptoFailed'; a non-bytes key
+    -- is 'CryptoBadKey'.
+    runCbcMacSign :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
+    runCbcMacSign mech params key input = case key of
+      KeyBytes kb -> case cbcmacSpecFor mech params (BS.length kb) of
+        Just (spec, trunc) -> do
+          r <- cbcmacTag spec key input
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk tag -> GotBytes (maybe tag (`BS.take` tag) trunc)
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: CBC-MAC (mechanism, key length, params) rejected by the recipe"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "CBC-MAC needs raw symmetric key bytes"))
+    -- | CBC-MAC verify effects: recompute, truncate,
+    -- constant-time compare. A mismatch is the 'False' verdict,
+    -- never a malfunction.
+    runCbcMacVerify :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runCbcMacVerify mech params key input tag = case key of
+      KeyBytes kb -> case cbcmacSpecFor mech params (BS.length kb) of
+        Just (spec, trunc) -> do
+          r <- cbcmacTag spec key input
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk full
+              | driverCtEq want tag -> GotValid True
+              | otherwise -> GotValid False
+              where want = maybe full (`BS.take` full) trunc
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: CBC-MAC (mechanism, key length, params) rejected by the recipe"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "CBC-MAC needs raw symmetric key bytes"))
+    -- | XCBC-MAC sign effects: the RFC 3566 composition over the
+    -- backend AES-128-ECB route, truncated for the _96 row.
+    -- Off-geometry (mechanism, key length, params) triples are
+    -- 'CryptoFailed'; a non-bytes key is 'CryptoBadKey'.
+    runXcbcSign :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
+    runXcbcSign mech params key input = case key of
+      KeyBytes kb -> case xcbcSpecFor mech params (BS.length kb) of
+        Just (spec, trunc) -> do
+          r <- xcbcTag spec key input
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk tag -> GotBytes (maybe tag (`BS.take` tag) trunc)
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: XCBC-MAC (mechanism, key length, params) rejected by the recipe"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "XCBC-MAC needs raw symmetric key bytes"))
+    -- | XCBC-MAC verify effects: recompute, truncate,
+    -- constant-time compare. A mismatch is the 'False' verdict,
+    -- never a malfunction.
+    runXcbcVerify :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runXcbcVerify mech params key input tag = case key of
+      KeyBytes kb -> case xcbcSpecFor mech params (BS.length kb) of
+        Just (spec, trunc) -> do
+          r <- xcbcTag spec key input
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk full
+              | driverCtEq want tag -> GotValid True
+              | otherwise -> GotValid False
+              where want = maybe full (`BS.take` full) trunc
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: XCBC-MAC (mechanism, key length, params) rejected by the recipe"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "XCBC-MAC needs raw symmetric key bytes"))
+    -- | GMAC sign effects: the message travels as GCM AAD with
+    -- empty plaintext over the backend AES-GCM route; the tag is
+    -- the GCM authentication tag. Off-geometry (mechanism, key
+    -- length, params) triples are 'CryptoFailed'; a non-bytes key
+    -- is 'CryptoBadKey'.
+    runGmacSign :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
+    runGmacSign mech params key input = case key of
+      KeyBytes kb -> case gmacSpecFor mech params (BS.length kb) of
+        Just (spec, iv) -> do
+          r <- aeadEncrypt env spec key iv input BS.empty
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk (_, tag) -> GotBytes tag
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: GMAC (mechanism, key length, params) rejected by the recipe"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "GMAC needs raw symmetric key bytes"))
+    -- | GMAC verify effects: recompute over the GCM route,
+    -- constant-time compare. A mismatch is the 'False' verdict,
+    -- never a malfunction.
+    runGmacVerify :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runGmacVerify mech params key input tag = case key of
+      KeyBytes kb -> case gmacSpecFor mech params (BS.length kb) of
+        Just (spec, iv) -> do
+          r <- aeadEncrypt env spec key iv input BS.empty
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk (_, want)
+              | driverCtEq want tag -> GotValid True
+              | otherwise -> GotValid False
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: GMAC (mechanism, key length, params) rejected by the recipe"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "GMAC needs raw symmetric key bytes"))
     -- | HOTP sign effects: HMAC-SHA1 over the counter, then RFC
     -- 4226 dynamic truncation to ASCII digits. The input is always
     -- empty (HOTP signs the counter only); anything else is a
@@ -1815,6 +2043,63 @@ runEffect env resolve fx = case fx of
           case e of
             EngineFail err -> pure (EngineFail err)
             EngineOk x' -> chain x' ms
+    -- | The CBC-MAC tag over a 128-bit-block cipher: zero IV,
+    -- input zero-padded to the 16-byte block, chaining over
+    -- single-block ECB calls. Full width; truncation is the
+    -- caller's call.
+    cbcmacTag :: CipherSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
+    cbcmacTag spec key input
+      | spec `notElem` served = pure (EngineFail (BackendBadParam "cbcmac"
+          "CBC-MAC needs an AES, ARIA, or Camellia ECB cipher spec"))
+      | otherwise = chain (BS.replicate blk 0) (zeroPad blk input)
+      where
+        blk = 16
+        served =
+          [ C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
+          , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
+          , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
+          ]
+        enc b = cipherEncrypt env spec key BS.empty b
+        chain x [] = pure (EngineOk x)
+        chain x (m : ms) = do
+          e <- enc (x `xorB` m)
+          case e of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk x' -> chain x' ms
+    -- | The RFC 3566 XCBC-MAC tag: subkeys K1\/K2\/K3 from the
+    -- 128-bit key over AES-128-ECB, 10* padding when the final
+    -- block is short (K3) or K2 when full, chaining under K1 over
+    -- single-block ECB calls. Full 16-byte width; truncation is
+    -- the caller's call.
+    xcbcTag :: CipherSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
+    xcbcTag spec key input
+      | spec /= C_AES128_ECB = pure (EngineFail (BackendBadParam "xcbc"
+          "XCBC-MAC needs the AES-128 ECB cipher spec"))
+      | otherwise = do
+          k1 <- encKey key (BS.replicate blk 0x01)
+          k2 <- encKey key (BS.replicate blk 0x02)
+          k3 <- encKey key (BS.replicate blk 0x03)
+          case (k1, k2, k3) of
+            (EngineOk s1, EngineOk s2, EngineOk s3) ->
+              let blks = chunksOf blk input
+                  (front, lastM) = case unsnoc blks of
+                    Nothing -> ([], padBlock blk BS.empty `xorB` s3)
+                    Just (pre, lst)
+                      | BS.length lst == blk -> (pre, lst `xorB` s2)
+                      | otherwise -> (pre, padBlock blk lst `xorB` s3)
+              in chain (KeyBytes s1) (BS.replicate blk 0) (front ++ [lastM])
+            (EngineFail err, _, _) -> pure (EngineFail err)
+            (_, EngineFail err, _) -> pure (EngineFail err)
+            (_, _, EngineFail err) -> pure (EngineFail err)
+      where
+        blk = 16
+        encKey k b = cipherEncrypt env spec k BS.empty b
+        chain _ x [] = pure (EngineOk x)
+        chain k x (m : ms) = do
+          e <- encKey k (x `xorB` m)
+          case e of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk x' -> chain k x' ms
     runCipher :: CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
     runCipher dir mech key iv input = case key of
       KeyBytes kb -> case cipherSpecFor mech (BS.length kb) iv of

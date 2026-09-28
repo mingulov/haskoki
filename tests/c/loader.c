@@ -465,7 +465,7 @@ static int _case_ok(void) { return g_failures == g_case_failures_at_start; }
 #define DUMMY_SESSION 0UL
 /* Routed mechanism-catalog row count (pinned exactly here and in
  * consumer_discovery; the generator is scripts/mech_catalog.py). */
-#define ROUTED_MECH_COUNT 221UL
+#define ROUTED_MECH_COUNT 230UL
 
 /* ---------- A05 mutex-callback fixtures ---------- */
 

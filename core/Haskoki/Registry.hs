@@ -81,10 +81,25 @@ import Haskoki.Recipe.Cmac
   , cmacCodecFor
   , cmacRecipes
   )
+import Haskoki.Recipe.CbcMac
+  ( CbcMacRecipe (..)
+  , cbcmacCodecFor
+  , cbcmacRecipes
+  )
 import Haskoki.Recipe.Des3Mac
   ( Des3MacRecipe (..)
   , des3macCodecFor
   , des3macRecipes
+  )
+import Haskoki.Recipe.Gmac
+  ( GmacRecipe (..)
+  , gmacCodecFor
+  , gmacRecipes
+  )
+import Haskoki.Recipe.XcbcMac
+  ( XcbcRecipe (..)
+  , xcbcCodecFor
+  , xcbcRecipes
   )
 import Haskoki.Recipe.Digest (digestCodec)
 import Haskoki.Recipe.Dh
@@ -841,6 +856,51 @@ des3macDescs =
   | r <- des3macRecipes
   ]
 
+-- | The CBC-MAC behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from 'cbcmacCodecFor',
+-- sign and verify routes citing synthetic A37 and real-KAT A39 (no
+-- A16: the driver offers one-shot MAC only).
+cbcmacDescs :: [Descriptor]
+cbcmacDescs =
+  [ promotedDesc (cbmName r) allBaselines FamilyMac
+      (cbcmacCodecFor r)
+      [ mechRoute OpSign (cbmName r) ["A37", "A39"]
+      , mechRoute OpVerify (cbmName r) ["A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- cbcmacRecipes
+  ]
+
+-- | The XCBC-MAC behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from 'xcbcCodecFor',
+-- sign and verify routes citing synthetic A37 and real-KAT A39 (no
+-- A16: the driver offers one-shot MAC only).
+xcbcDescs :: [Descriptor]
+xcbcDescs =
+  [ promotedDesc (xcbName r) allBaselines FamilyMac
+      (xcbcCodecFor r)
+      [ mechRoute OpSign (xcbName r) ["A37", "A39"]
+      , mechRoute OpVerify (xcbName r) ["A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- xcbcRecipes
+  ]
+
+-- | The GMAC behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from 'gmacCodecFor',
+-- sign and verify routes citing synthetic A37 and real-KAT A39 (no
+-- A16: the driver offers one-shot MAC only).
+gmacDescs :: [Descriptor]
+gmacDescs =
+  [ promotedDesc (gmName r) allBaselines FamilyMac
+      (gmacCodecFor r)
+      [ mechRoute OpSign (gmName r) ["A37", "A39"]
+      , mechRoute OpVerify (gmName r) ["A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- gmacRecipes
+  ]
+
 -- | The KDF behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from 'kdfCodecFor',
 -- the derive route citing the planner case (A20), the synthetic
@@ -1285,7 +1345,7 @@ curatedRegistry =
         , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
-          ++ cmacDescs ++ des3macDescs ++ kdfDescs ++ tlsPrfDescs ++ otpDescs ++ encryptDataDescs
+          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ otpDescs ++ encryptDataDescs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

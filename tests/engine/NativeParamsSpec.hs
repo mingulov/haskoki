@@ -60,6 +60,7 @@ import Haskoki.Recipe.Eddsa
   , encodeEddsaParams
   )
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmParamsValid, gcmRecipeFor)
+import Haskoki.Recipe.Gmac (gmacParamsValid, gmacRecipeFor)
 import Haskoki.Recipe.MlDsa
   ( MldsaHedge (..)
   , encodeMldsaParams
@@ -148,6 +149,26 @@ spec = testGroup "native mechanism params"
       case gcmRecipeFor mid of
         Nothing -> fail "gcm recipe missing"
         Just r -> assertEqual "recipe accepts" True (gcmParamsValid r out)
+  , testCase "gmac native struct shares the gcm chase" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_AES_GMAC")
+          iv = "0123456789ab" :: ByteString
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen iv $ \(ivp, ivlen) ->
+          allocaBytes gcmNativeSize $ \p -> do
+            pokeByteOff p 0 (castPtr ivp)
+            pokeByteOff p pw (CULong (fromIntegral ivlen))
+            pokeByteOff p (pw + w) (CULong (fromIntegral (ivlen * 8)))
+            pokeByteOff p (pw + 2 * w) (nullPtr :: Ptr Word8)
+            pokeByteOff p (2 * pw + 2 * w) (CULong 0)
+            pokeByteOff p (2 * pw + 3 * w) (CULong 128)
+            raw <- BS.packCStringLen (castPtr p, gcmNativeSize)
+            normalizeMechParams mid p (fromIntegral gcmNativeSize) raw
+      let want = encodeGcmParams iv BS.empty 16
+      assertEqual "canonical gmac image" want out
+      case gmacRecipeFor mid of
+        Nothing -> fail "gmac recipe missing"
+        Just r -> assertEqual "recipe accepts" True (gmacParamsValid r out)
   , testCase "gcm generated-iv convention passes through" $ do
       let mid = MechanismId (mustGeneratedId "CKM_AES_GCM")
           w = sizeOf (undefined :: CULong)

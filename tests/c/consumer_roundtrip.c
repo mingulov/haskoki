@@ -1209,6 +1209,150 @@ int main(int argc, char **argv) {
                "proxied HOTP params are PARAM_INVALID");
       }
     }
+    /* 11f MAC slice: AES-MAC half-block KAT, GENERAL
+     * truncation, XCBC/XCBC-96 RFC 3566 KATs, GMAC over
+     * CK_GCM_PARAMS, and the ARIA matrix row. */
+    {
+      CK_KEY_TYPE makt = CKK_AES;
+      CK_BYTE maval[16] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+      };
+      CK_OBJECT_HANDLE makey = 0;
+      CK_ATTRIBUTE matmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &makt, sizeof(makt) },
+        { CKA_VALUE, maval, sizeof(maval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      CK_MECHANISM mam;
+      CK_ULONG maglen = 12;
+      CK_BYTE mab1[16] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff
+      };
+      CK_BYTE ma8[8] = { 0x69, 0xc4, 0xe0, 0xd8, 0x6a, 0x7b, 0x04, 0x30 };
+      CK_BYTE mx16[16] = {
+        0xd2, 0xa2, 0x46, 0xfa, 0x34, 0x9b, 0x68, 0xa7,
+        0x99, 0x98, 0xa4, 0x39, 0x4f, 0xf7, 0xa2, 0x63
+      };
+      CK_BYTE mx96[12] = {
+        0xd2, 0xa2, 0x46, 0xfa, 0x34, 0x9b, 0x68, 0xa7,
+        0x99, 0x98, 0xa4, 0x39
+      };
+      CK_BYTE mgiv[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+      CK_AES_GCM_PARAMS mgp;
+      CK_BYTE mg16[16] = {
+        0xe0, 0x13, 0x12, 0x14, 0x61, 0x76, 0xab, 0xd6,
+        0x43, 0xfc, 0xee, 0x9d, 0x4a, 0x64, 0x01, 0x84
+      };
+      CK_KEY_TYPE markt = CKK_ARIA;
+      CK_BYTE marval[16] = {
+        0x6d, 0xe7, 0x4e, 0xbf, 0x33, 0x9e, 0xe3, 0x4b,
+        0x1a, 0xba, 0xf3, 0xfb, 0xab, 0x7f, 0xee, 0xe5
+      };
+      CK_OBJECT_HANDLE markey = 0;
+      CK_ATTRIBUTE martmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &markt, sizeof(markt) },
+        { CKA_VALUE, marval, sizeof(marval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      CK_BYTE mar1[16] = {
+        0xf7, 0xa6, 0x89, 0x4b, 0x0a, 0x98, 0xa6, 0x91,
+        0x10, 0x16, 0x59, 0xf3, 0x22, 0x5c, 0x28, 0xea
+      };
+      CK_BYTE mar8[8] = { 0xb5, 0xc1, 0x1c, 0x14, 0x94, 0x61, 0x5d, 0xc7 };
+      rv = f->C_CreateObject(ssess, matmpl, 6, &makey);
+      CHECKC(rv == CKR_OK && makey != 0, "mac AES key imports");
+      /* AES-MAC: FIPS-197 block emits the half-block tag. */
+      mam.mechanism = CKM_AES_MAC;
+      mam.pParameter = NULL_PTR;
+      mam.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &mam, makey);
+      CHECKC(rv == CKR_OK, "aes-mac SignInit ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, mab1, sizeof(mab1), sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen == 8 && memcmp(sig, ma8, 8) == 0,
+             "aes-mac yields the half-block KAT");
+      rv = f->C_VerifyInit(ssess, &mam, makey);
+      CHECKC(rv == CKR_OK, "aes-mac VerifyInit ok");
+      rv = f->C_Verify(ssess, mab1, sizeof(mab1), sig, sigLen);
+      CHECKC(rv == CKR_OK, "aes-mac verify ok");
+      /* GENERAL truncation. */
+      mam.mechanism = CKM_AES_MAC_GENERAL;
+      mam.pParameter = &maglen;
+      mam.ulParameterLen = sizeof(maglen);
+      rv = f->C_SignInit(ssess, &mam, makey);
+      CHECKC(rv == CKR_OK, "aes-mac-general SignInit ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, mab1, sizeof(mab1), sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen == 12, "aes-mac-general yields 12 bytes");
+      rv = f->C_VerifyInit(ssess, &mam, makey);
+      CHECKC(rv == CKR_OK, "aes-mac-general VerifyInit ok");
+      rv = f->C_Verify(ssess, mab1, sizeof(mab1), sig, sigLen);
+      CHECKC(rv == CKR_OK, "aes-mac-general verify ok");
+      /* XCBC + XCBC-96: RFC 3566 case #3. */
+      mam.mechanism = CKM_AES_XCBC_MAC;
+      mam.pParameter = NULL_PTR;
+      mam.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &mam, makey);
+      CHECKC(rv == CKR_OK, "xcbc SignInit ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, maval, sizeof(maval), sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen == 16 && memcmp(sig, mx16, 16) == 0,
+             "xcbc yields RFC 3566 case 3");
+      rv = f->C_VerifyInit(ssess, &mam, makey);
+      CHECKC(rv == CKR_OK, "xcbc VerifyInit ok");
+      rv = f->C_Verify(ssess, maval, sizeof(maval), sig, sigLen);
+      CHECKC(rv == CKR_OK, "xcbc verify ok");
+      mam.mechanism = CKM_AES_XCBC_MAC_96;
+      rv = f->C_SignInit(ssess, &mam, makey);
+      CHECKC(rv == CKR_OK, "xcbc-96 SignInit ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, maval, sizeof(maval), sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen == 12 && memcmp(sig, mx96, 12) == 0,
+             "xcbc-96 yields the 96-bit prefix");
+      /* GMAC over CK_GCM_PARAMS (message as AAD). */
+      mgp.pIv = mgiv;
+      mgp.ulIvLen = sizeof(mgiv);
+      mgp.ulIvBits = sizeof(mgiv) * 8;
+      mgp.pAAD = NULL_PTR;
+      mgp.ulAADLen = 0;
+      mgp.ulTagBits = 128;
+      mam.mechanism = CKM_AES_GMAC;
+      mam.pParameter = &mgp;
+      mam.ulParameterLen = sizeof(mgp);
+      rv = f->C_SignInit(ssess, &mam, makey);
+      CHECKC(rv == CKR_OK, "gmac SignInit ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "aad-data", 8, sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen == 16 && memcmp(sig, mg16, 16) == 0,
+             "gmac yields the pinned tag");
+      rv = f->C_VerifyInit(ssess, &mam, makey);
+      CHECKC(rv == CKR_OK, "gmac VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "aad-data", 8, sig, sigLen);
+      CHECKC(rv == CKR_OK, "gmac verify ok");
+      /* ARIA matrix row: AES keys refuse, ARIA keys serve. */
+      rv = f->C_CreateObject(ssess, martmpl, 6, &markey);
+      CHECKC(rv == CKR_OK && markey != 0, "mac ARIA key imports");
+      mam.mechanism = CKM_ARIA_MAC;
+      mam.pParameter = NULL_PTR;
+      mam.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &mam, makey);
+      CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+             "aria-mac SignInit with AES key refused");
+      rv = f->C_SignInit(ssess, &mam, markey);
+      CHECKC(rv == CKR_OK, "aria-mac SignInit with ARIA key ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, mar1, sizeof(mar1), sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen == 8 && memcmp(sig, mar8, 8) == 0,
+             "aria-mac yields the oracle KAT");
+    }
     /* BLAKE2B-512: digest KAT, HMAC keygen (exact-64) ->
      * sign/verify KAT, GENERAL truncation, typed refuses. */
     {

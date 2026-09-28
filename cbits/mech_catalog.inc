@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 221
+#define HASKOKI_MECH_COUNT 230
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -149,6 +149,8 @@ static const struct haskoki_mech_row
   { 0x00000550UL, 128UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_CAMELLIA_KEY_GEN */
   { 0x00000551UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_CAMELLIA_ECB */
   { 0x00000552UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_CAMELLIA_CBC */
+  { 0x00000553UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_CAMELLIA_MAC */
+  { 0x00000554UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_CAMELLIA_MAC_GENERAL */
   { 0x00000555UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_CAMELLIA_CBC_PAD */
   { 0x00000556UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_CAMELLIA_ECB_ENCRYPT_DATA */
   { 0x00000557UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_CAMELLIA_CBC_ENCRYPT_DATA */
@@ -156,6 +158,8 @@ static const struct haskoki_mech_row
   { 0x00000560UL, 128UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_ARIA_KEY_GEN */
   { 0x00000561UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_ARIA_ECB */
   { 0x00000562UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_ARIA_CBC */
+  { 0x00000563UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_ARIA_MAC */
+  { 0x00000564UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_ARIA_MAC_GENERAL */
   { 0x00000565UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_ARIA_CBC_PAD */
   { 0x00000566UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_ARIA_ECB_ENCRYPT_DATA */
   { 0x00000567UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_ARIA_CBC_ENCRYPT_DATA */
@@ -184,6 +188,8 @@ static const struct haskoki_mech_row
   { 0x00001080UL, 128UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_AES_KEY_GEN */
   { 0x00001081UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_AES_ECB */
   { 0x00001082UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT | CKF_UNWRAP | CKF_WRAP) }, /* CKM_AES_CBC */
+  { 0x00001083UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_AES_MAC */
+  { 0x00001084UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_AES_MAC_GENERAL */
   { 0x00001085UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_AES_CBC_PAD */
   { 0x00001086UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_AES_CTR */
   { 0x00001087UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_AES_GCM */
@@ -191,6 +197,9 @@ static const struct haskoki_mech_row
   { 0x00001089UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_AES_CTS */
   { 0x0000108AUL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_AES_CMAC */
   { 0x0000108BUL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_AES_CMAC_GENERAL */
+  { 0x0000108CUL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_AES_XCBC_MAC */
+  { 0x0000108DUL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_AES_XCBC_MAC_96 */
+  { 0x0000108EUL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_AES_GMAC */
   { 0x00001090UL, 32UL, 448UL, (unsigned long)(CKF_GENERATE) }, /* CKM_BLOWFISH_KEY_GEN */
   { 0x00001092UL, 128UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_TWOFISH_KEY_GEN */
   { 0x00001102UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_DES3_ECB_ENCRYPT_DATA */

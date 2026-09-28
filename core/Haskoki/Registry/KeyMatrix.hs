@@ -16,7 +16,9 @@ RSA v1.5\/PSS sign\/verify and RSA-OAEP
 encrypt\/decrypt want @CKK_RSA@; ECDSA sign\/verify wants @CKK_EC@;
 block-cipher encrypt\/decrypt wants the recipe row's key type;
 CMAC sign\/verify wants @CKK_AES@ (@CKK_DES3@ for the DES3 rows);
-3DES-MAC sign\/verify wants @CKK_DES3@;
+3DES-MAC sign\/verify wants @CKK_DES3@; CBC-MAC sign\/verify
+wants the row's cipher key type (@CKK_AES@\/@CKK_ARIA@\/
+@CKK_CAMELLIA@); XCBC-MAC and GMAC sign\/verify want @CKK_AES@;
 HOTP sign\/verify wants @CKK_HOTP@.
 Derive, wrap\/unwrap, KEM, and message-family framing have their
 own planners and gates and are not matrix rows; digest is unkeyed.
@@ -31,6 +33,7 @@ import qualified Data.Map.Strict as Map
 import Data.Word (Word64)
 
 import Haskoki.Attribute.Generated (mustKeyTypeId)
+import Haskoki.Recipe.CbcMac (CbcMacCipher (..), CbcMacRecipe (..), cbcmacRecipes)
 import Haskoki.Recipe.Ccm (CcmRecipe (..), ccmRecipes)
 import Haskoki.Recipe.Chacha20 (Chacha20Recipe (..), chachaRecipes)
 import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipes)
@@ -38,12 +41,14 @@ import Haskoki.Recipe.Cmac (CmacRecipe (..), cmacRecipes)
 import Haskoki.Recipe.Des3Mac (Des3MacRecipe (..), des3macRecipes)
 import Haskoki.Recipe.Ecdsa (EcdsaRecipe (..), ecdsaRecipes)
 import Haskoki.Recipe.Gcm (GcmRecipe (..), gcmRecipes)
+import Haskoki.Recipe.Gmac (GmacRecipe (..), gmacRecipes)
 import Haskoki.Recipe.Hmac (HmacRecipe (..), hmacRecipes)
 import Haskoki.Recipe.Otp (OtpRecipe (..), hotpRecipes)
 import Haskoki.Recipe.RsaOaep (RsaOaepRecipe (..), rsaOaepRecipes)
 import Haskoki.Recipe.RsaPkcs1 (RsaPkcs1Recipe (..), rsaPkcs1Recipes)
 import Haskoki.Recipe.RsaPss (RsaPssRecipe (..), rsaPssRecipes)
 import Haskoki.Recipe.RsaX509 (RsaX509Recipe (..), rsaX509Recipes)
+import Haskoki.Recipe.XcbcMac (XcbcRecipe (..), xcbcRecipes)
 import Haskoki.Registry (Operation (..))
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..))
@@ -77,6 +82,12 @@ matrixTable = Map.fromList (concat
     | r <- cmacRecipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (rdmName r), o), [ckkDes3])
     | r <- des3macRecipes, o <- [OpSign, OpVerify] ]
+  , [ ((midOf (cbmName r), o), [cbmKeyType r])
+    | r <- cbcmacRecipes, o <- [OpSign, OpVerify] ]
+  , [ ((midOf (xcbName r), o), [ckkAes])
+    | r <- xcbcRecipes, o <- [OpSign, OpVerify] ]
+  , [ ((midOf (gmName r), o), [ckkAes])
+    | r <- gmacRecipes, o <- [OpSign, OpVerify] ]
   , [ ((midOf (otpName r), o), [mustKeyTypeId (otpKeyType r)])
     | r <- hotpRecipes, o <- [OpSign, OpVerify] ]
   ])
@@ -87,4 +98,10 @@ matrixTable = Map.fromList (concat
     ckkEc = mustKeyTypeId "CKK_EC"
     ckkAes = mustKeyTypeId "CKK_AES"
     ckkDes3 = mustKeyTypeId "CKK_DES3"
+    ckkAria = mustKeyTypeId "CKK_ARIA"
+    ckkCamellia = mustKeyTypeId "CKK_CAMELLIA"
     ckkChacha20 = mustKeyTypeId "CKK_CHACHA20"
+    cbmKeyType r = case cbmCipher r of
+      CbcAes -> ckkAes
+      CbcAria -> ckkAria
+      CbcCamellia -> ckkCamellia

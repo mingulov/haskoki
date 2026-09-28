@@ -76,6 +76,7 @@ library haskoki-core
     Haskoki.Registry.Generated
     Haskoki.Registry.KeyMatrix
     Haskoki.Registry.Types
+    Haskoki.Recipe.CbcMac
     Haskoki.Recipe.Ccm
     Haskoki.Recipe.Cipher
     Haskoki.Recipe.Cmac
@@ -94,6 +95,8 @@ library haskoki-core
     Haskoki.Recipe.Eddsa
     Haskoki.Recipe.EncryptData
     Haskoki.Recipe.Gcm
+    Haskoki.Recipe.Gmac
+    Haskoki.Recipe.XcbcMac
     Haskoki.Recipe.Chacha20
     Haskoki.Recipe.MlDsa
     Haskoki.Recipe.Otp
@@ -375,6 +378,7 @@ test-suite haskoki-model-tests
     OperationSpec
     OwnershipSpec
     OutputSpec
+    RecipeCbcMacSpec
     RecipeCcmSpec
     RecipeChacha20Spec
     RecipeCipherSpec
@@ -388,6 +392,7 @@ test-suite haskoki-model-tests
     RecipeEddsaSpec
     RecipeEncryptDataSpec
     RecipeGcmSpec
+    RecipeGmacSpec
     RecipeHmacSpec
     RecipeKdfSpec
     RecipeMlDsaSpec
@@ -398,6 +403,7 @@ test-suite haskoki-model-tests
     RecipeSlhDsaSpec
     RecipeTlsPrfSpec
     RecipeX509Spec
+    RecipeXcbcMacSpec
     RegistrySpec
     RoutingSpec
     SimBridgeSpec

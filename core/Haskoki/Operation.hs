@@ -80,8 +80,11 @@ import Haskoki.Output
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor)
 import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, kwpNames, ofbName, streamNames, wrapNames, xtsName)
+import Haskoki.Recipe.CbcMac (cbcmacParamsValid, cbcmacRecipeFor)
 import Haskoki.Recipe.Cmac (cmacParamsValid, cmacRecipeFor)
 import Haskoki.Recipe.Des3Mac (des3macParamsValid, des3macRecipeFor)
+import Haskoki.Recipe.Gmac (gmacParamsValid, gmacRecipeFor)
+import Haskoki.Recipe.XcbcMac (xcbcParamsValid, xcbcRecipeFor)
 import Haskoki.Recipe.Digest (digestParamsValid)
 import Haskoki.Recipe.Ecdsa (ecdsaParamsValid, ecdsaRecipeFor)
 import Haskoki.Recipe.Dsa (dsaParamsValid, dsaRecipeFor)
@@ -397,6 +400,18 @@ checkMechParams args
   , not (des3macParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD
         "3DES-MAC mechanism parameters rejected by the recipe")
+  | Just r <- cbcmacRecipeFor (iaMech args)
+  , not (cbcmacParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "CBC-MAC mechanism parameters rejected by the recipe")
+  | Just r <- xcbcRecipeFor (iaMech args)
+  , not (xcbcParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "XCBC-MAC mechanism parameters rejected by the recipe")
+  | Just r <- gmacRecipeFor (iaMech args)
+  , not (gmacParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "GMAC mechanism parameters rejected by the recipe")
   | Just r <- hotpRecipeFor (iaMech args)
   , not (hotpParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD

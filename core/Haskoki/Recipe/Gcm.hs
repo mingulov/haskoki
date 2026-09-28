@@ -17,6 +17,7 @@ module Haskoki.Recipe.Gcm
   , encodeGcmParams
   , decodeGcmParams
   , gcmParamsValid
+  , gcmTagLens
   ) where
 
 import Data.Bits (shiftL, shiftR, (.&.))

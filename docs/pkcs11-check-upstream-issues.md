@@ -532,6 +532,70 @@ see the `CKM_CAMELLIA_CTR` row note in
 Downstream handling: none needed module-side; the 5 legs
 xfail honestly until the registry fix. No module change.
 
+## P11C-009 (candidate): `CKM_POLY1305` registry entry is self-contradictory (`param_required=True` with a `none` recipe)
+
+**Severity**: low (no current lane impact — the row is
+unadvertised so the legs skip; blocks serving the row)
+**Component**: `src/pkcs11_check/testcases/mechanism_registry/_ciphers.py`
+(`registry[CKM_POLY1305]`, line 171) +
+`test_mech_negative.py` +
+`testcases/conftest.py::classify_negative_rv`
+**Found**: 2026-09-28 (11f ranking)
+
+The entry sets `param_required=True` with
+`param_recipe=ParamRecipe("none")` and the note "requires
+nonce param". But the OASIS header defines no
+`CK_POLY1305_PARAMS` (`spec/vendor/pkcs11.h`: only the
+`CKM_POLY1305` / `CKK_POLY1305` / `CKM_POLY1305_KEY_GEN`
+ids; the only Poly1305 param structs are the AEAD
+`CK_SALSA20_CHACHA20_POLY1305_*`): standalone
+`CKM_POLY1305` takes no parameters (RFC 8439 one-time
+authenticator: 32-byte key, no nonce). The entry's own
+roundtrip recipe (`none`) agrees.
+
+Consequence: no module behavior passes both legs. Accept
+NULL params → the sign+verify missing-required-param legs
+**fail** (`accepted_invalid`: `CKR_OK` where a reject was
+expected). Refuse NULL → the roundtrip and KAT legs xfail
+as not-operational while the negative legs pass. Either
+way the lane misreports a correct module.
+
+Suggested fix: `param_required=False` (and drop "requires
+nonce param" from the note).
+
+Downstream handling: `CKM_POLY1305` stays `planned`
+(deferred, not a stance) until the entry is fixed. No
+module change.
+
+## P11C-010 (candidate): wycheproof GMAC sends raw IV bytes instead of `CK_GCM_PARAMS`
+
+**Severity**: low (414 xfail legs in the KAT lane)
+**Component**: `src/pkcs11_check/testcases/wycheproof/test_wycheproof_aes.py`
+(`test_aes_gmac`, line ~700) vs
+`src/pkcs11_check/testcases/acvp/aes/test_gcm.py`
+(`test_acvp_aes_gmac`)
+**Found**: 2026-09-28 (11f KAT r28 triage)
+
+The wycheproof GMAC test passes the IV as raw mechanism
+bytes (`mech_param=mech_bytes(CKM_AES_GMAC, iv)`), while the
+ACVP sibling test for the same mechanism sends the OASIS
+`CK_GCM_PARAMS` struct. OASIS v3.2 §6.13.6 defines GMAC
+parameters as `CK_GCM_PARAMS` (tag length by `ulTagBits`, IV
+by `ulIvLen`); raw bytes are not a conformant shape, so a
+strict module refuses them and all 414 legs xfail as
+"advertised but not operational" — including 90 valid
+vectors the module would otherwise verify.
+
+Suggested fix: build the `CK_GCM_PARAMS` struct (as the
+ACVP test does), with `ulTagBits` from each vector's tag
+length.
+
+Downstream handling: none needed module-side; the legs
+xfail honestly until the test is fixed. No module change.
+(Raw-IV tolerance was considered and rejected: OASIS
+mandates the struct, and a second shape would be unpinned
+speculation.)
+
 ## Observations (not issues)
 
 - **`mech_hkdf` docstring/comment says

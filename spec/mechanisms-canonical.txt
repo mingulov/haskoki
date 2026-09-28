@@ -128,6 +128,8 @@ mech|0x000003D0|CKM_WTLS_PRE_MASTER_KEY_GEN||keygen|ck-byte/1|bits:160-2040|gene
 mech|0x00000550|CKM_CAMELLIA_KEY_GEN||keygen|no-params/1|bits:128-256|generate-key:A37
 mech|0x00000551|CKM_CAMELLIA_ECB||cipher|no-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00000552|CKM_CAMELLIA_CBC||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
+mech|0x00000553|CKM_CAMELLIA_MAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
+mech|0x00000554|CKM_CAMELLIA_MAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x00000555|CKM_CAMELLIA_CBC_PAD||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00000556|CKM_CAMELLIA_ECB_ENCRYPT_DATA||derive|encrypt-data-ecb/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x00000557|CKM_CAMELLIA_CBC_ENCRYPT_DATA||derive|encrypt-data-cbc/1|mechanism-specific:0-0|derive:A20,A37,A39
@@ -135,6 +137,8 @@ mech|0x00000558|CKM_CAMELLIA_CTR||cipher|ctr-params/1|bytes:16-32|decrypt:A16,A3
 mech|0x00000560|CKM_ARIA_KEY_GEN||keygen|no-params/1|bits:128-256|generate-key:A37
 mech|0x00000561|CKM_ARIA_ECB||cipher|no-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00000562|CKM_ARIA_CBC||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
+mech|0x00000563|CKM_ARIA_MAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
+mech|0x00000564|CKM_ARIA_MAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x00000565|CKM_ARIA_CBC_PAD||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00000566|CKM_ARIA_ECB_ENCRYPT_DATA||derive|encrypt-data-ecb/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x00000567|CKM_ARIA_CBC_ENCRYPT_DATA||derive|encrypt-data-cbc/1|mechanism-specific:0-0|derive:A20,A37,A39
@@ -163,6 +167,8 @@ mech|0x00001072|CKM_AES_XTS_KEY_GEN||keygen|no-params/1|bits:256-512|generate-ke
 mech|0x00001080|CKM_AES_KEY_GEN||keygen|no-params/1|bits:128-256|generate-key:A37
 mech|0x00001081|CKM_AES_ECB||cipher|no-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00001082|CKM_AES_CBC||cipher|iv-bytes/1|bytes:16-32|authenticated-unwrap:A23,A37;authenticated-wrap:A23,A37;decrypt:A16,A37,A39;encrypt:A16,A37,A39;unwrap:A20,A37,A39;wrap:A20,A37,A39
+mech|0x00001083|CKM_AES_MAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
+mech|0x00001084|CKM_AES_MAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x00001085|CKM_AES_CBC_PAD||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00001086|CKM_AES_CTR||cipher|ctr-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00001087|CKM_AES_GCM||aead|gcm-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
@@ -170,6 +176,9 @@ mech|0x00001088|CKM_AES_CCM||aead|ccm-params/1|bytes:16-32|decrypt:A16,A37,A39;e
 mech|0x00001089|CKM_AES_CTS||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x0000108A|CKM_AES_CMAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x0000108B|CKM_AES_CMAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
+mech|0x0000108C|CKM_AES_XCBC_MAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
+mech|0x0000108D|CKM_AES_XCBC_MAC_96||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
+mech|0x0000108E|CKM_AES_GMAC||mac|gcm-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x00001090|CKM_BLOWFISH_KEY_GEN||keygen|no-params/1|bits:32-448|generate-key:A37
 mech|0x00001092|CKM_TWOFISH_KEY_GEN||keygen|no-params/1|bits:128-256|generate-key:A37
 mech|0x00001102|CKM_DES3_ECB_ENCRYPT_DATA||derive|encrypt-data-ecb/1|mechanism-specific:0-0|derive:A20,A37,A39
@@ -365,10 +374,6 @@ inv|0x00000500|CKM_CMS_SIG||catalog-only
 inv|0x00000510|CKM_KIP_DERIVE||catalog-only
 inv|0x00000511|CKM_KIP_WRAP||catalog-only
 inv|0x00000512|CKM_KIP_MAC||catalog-only
-inv|0x00000553|CKM_CAMELLIA_MAC||catalog-only
-inv|0x00000554|CKM_CAMELLIA_MAC_GENERAL||catalog-only
-inv|0x00000563|CKM_ARIA_MAC||catalog-only
-inv|0x00000564|CKM_ARIA_MAC_GENERAL||catalog-only
 inv|0x00000651|CKM_SEED_ECB||catalog-only
 inv|0x00000652|CKM_SEED_CBC||catalog-only
 inv|0x00000653|CKM_SEED_MAC||catalog-only
@@ -405,11 +410,6 @@ inv|0x00001063|CKM_JUNIPER_COUNTER||catalog-only
 inv|0x00001064|CKM_JUNIPER_SHUFFLE||catalog-only
 inv|0x00001065|CKM_JUNIPER_WRAP||catalog-only
 inv|0x00001070|CKM_FASTHASH||catalog-only
-inv|0x00001083|CKM_AES_MAC||catalog-only
-inv|0x00001084|CKM_AES_MAC_GENERAL||catalog-only
-inv|0x0000108C|CKM_AES_XCBC_MAC||catalog-only
-inv|0x0000108D|CKM_AES_XCBC_MAC_96||catalog-only
-inv|0x0000108E|CKM_AES_GMAC||catalog-only
 inv|0x00001091|CKM_BLOWFISH_CBC||catalog-only
 inv|0x00001093|CKM_TWOFISH_CBC||catalog-only
 inv|0x00001094|CKM_BLOWFISH_CBC_PAD||catalog-only

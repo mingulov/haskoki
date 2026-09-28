@@ -4813,7 +4813,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
       "numeric_id": "0x00000051",
       "routes": [],
       "source_refs": [
@@ -4824,10 +4824,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "unsupported-with-reason",
+        "real": "unsupported-with-reason",
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -4841,7 +4841,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
       "numeric_id": "0x00000052",
       "routes": [],
       "source_refs": [
@@ -4852,10 +4852,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "unsupported-with-reason",
+        "real": "unsupported-with-reason",
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -5778,7 +5778,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000103",
       "routes": [],
       "source_refs": [
@@ -5789,10 +5789,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -5806,7 +5806,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000104",
       "routes": [],
       "source_refs": [
@@ -5817,10 +5817,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -6092,7 +6092,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000123",
       "routes": [],
       "source_refs": [
@@ -6103,10 +6103,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -6120,7 +6120,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000124",
       "routes": [],
       "source_refs": [
@@ -6131,10 +6131,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -7081,7 +7081,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000143",
       "routes": [],
       "source_refs": [
@@ -7092,10 +7092,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -7109,7 +7109,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000144",
       "routes": [],
       "source_refs": [
@@ -7120,10 +7120,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -7305,7 +7305,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
       "numeric_id": "0x00000201",
       "routes": [],
       "source_refs": [
@@ -7316,10 +7316,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -7333,7 +7333,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
       "numeric_id": "0x00000202",
       "routes": [],
       "source_refs": [
@@ -7344,10 +7344,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -7863,7 +7863,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
       "numeric_id": "0x00000231",
       "routes": [],
       "source_refs": [
@@ -7874,10 +7874,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -7891,7 +7891,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
       "numeric_id": "0x00000232",
       "routes": [],
       "source_refs": [
@@ -7902,10 +7902,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -10750,7 +10750,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000303",
       "routes": [],
       "source_refs": [
@@ -10761,10 +10761,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -10778,7 +10778,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000304",
       "routes": [],
       "source_refs": [
@@ -10789,10 +10789,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -10963,7 +10963,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000313",
       "routes": [],
       "source_refs": [
@@ -10974,10 +10974,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -10991,7 +10991,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000314",
       "routes": [],
       "source_refs": [
@@ -11002,10 +11002,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -11184,7 +11184,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000323",
       "routes": [],
       "source_refs": [
@@ -11195,10 +11195,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -11214,7 +11214,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000324",
       "routes": [],
       "source_refs": [
@@ -11225,10 +11225,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -11401,7 +11401,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000333",
       "routes": [],
       "source_refs": [
@@ -11412,10 +11412,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -11429,7 +11429,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000334",
       "routes": [],
       "source_refs": [
@@ -11440,10 +11440,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -11614,7 +11614,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000343",
       "routes": [],
       "source_refs": [
@@ -11625,10 +11625,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -11642,7 +11642,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000344",
       "routes": [],
       "source_refs": [
@@ -11653,10 +11653,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -13904,7 +13904,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
       "numeric_id": "0x000003d6",
       "routes": [],
       "source_refs": [
@@ -13915,10 +13915,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -13932,7 +13932,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
       "numeric_id": "0x000003d7",
       "routes": [],
       "source_refs": [
@@ -13943,10 +13943,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -13960,7 +13960,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
       "numeric_id": "0x000003d8",
       "routes": [],
       "source_refs": [
@@ -13971,10 +13971,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -14128,7 +14128,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
       "numeric_id": "0x000003e4",
       "routes": [],
       "source_refs": [
@@ -14139,10 +14139,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -14324,7 +14324,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: KEA KIP per-message MAC; protocol-adjacent constructor, needs its own recipe; synthetic unbuilt. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: KEA KIP per-message MAC; protocol-adjacent constructor, needs its own recipe; synthetic unbuilt. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: KIP draft flow (CK_KIP_PARAMS wrapping session with a KIP server); no OpenSSL primitive backs it.",
       "numeric_id": "0x00000512",
       "routes": [],
       "source_refs": [
@@ -14335,10 +14335,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -14608,14 +14608,42 @@
       "canonical_name": "CKM_CAMELLIA_MAC",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice.",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_CAMELLIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend CAMELLIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real Camellia on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: oracle camellia_mac vector; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00000553",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac8/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAMELLIA_MAC",
@@ -14624,26 +14652,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "mac-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "mac-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCbcMacSpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_CAMELLIA_MAC_GENERAL",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice.",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): GENERAL row, mac-general/1 tag length 1..16, first bytes of the final CBC-MAC block; keys 128/192/256-bit CKK_CAMELLIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend CAMELLIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real Camellia on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00000554",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac16-trunc/v1",
+          "parameter_codec": "mac-general/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "mac-general/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAMELLIA_MAC_GENERAL",
@@ -14652,12 +14739,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "mac-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "mac-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCbcMacSpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -15268,14 +15386,42 @@
       "canonical_name": "CKM_ARIA_MAC",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice.",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_ARIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend ARIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real ARIA on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: oracle aria_mac vector; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00000563",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac8/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_ARIA_MAC",
@@ -15284,26 +15430,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "mac-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "mac-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCbcMacSpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_ARIA_MAC_GENERAL",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice.",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): GENERAL row, mac-general/1 tag length 1..16, first bytes of the final CBC-MAC block; keys 128/192/256-bit CKK_ARIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend ARIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real ARIA on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00000564",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac16-trunc/v1",
+          "parameter_codec": "mac-general/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "mac-general/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_ARIA_MAC_GENERAL",
@@ -15312,12 +15517,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "mac-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "mac-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCbcMacSpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -15702,7 +15938,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000653",
       "routes": [],
       "source_refs": [
@@ -15713,10 +15949,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -15730,7 +15966,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000654",
       "routes": [],
       "source_refs": [
@@ -15741,10 +15977,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },
@@ -18679,14 +18915,42 @@
       "canonical_name": "CKM_AES_MAC",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice.",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_AES (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend AES-128/192/256-ECB route (single-block calls, zero IV) \u2014 real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: FIPS-197 anchor; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00001083",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac8/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_MAC",
@@ -18695,26 +18959,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "mac-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "mac-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCbcMacSpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_AES_MAC_GENERAL",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice.",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): GENERAL row, mac-general/1 tag length 1..16, first bytes of the final CBC-MAC block; keys 128/192/256-bit CKK_AES (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend AES-128/192/256-ECB route (single-block calls, zero IV) \u2014 real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00001084",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac16-trunc/v1",
+          "parameter_codec": "mac-general/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "mac-general/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_MAC_GENERAL",
@@ -18723,12 +19046,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "mac-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "mac-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCbcMacSpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -19364,14 +19718,42 @@
       "canonical_name": "CKM_AES_XCBC_MAC",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: needs the XCBC-MAC subkey schedule over AES-ECB (unmapped composition); behavior/synthetic stay planned.",
+      "notes": "XCBC-MAC recipe (core/Haskoki/Recipe/XcbcMac.hs, RFC 3566): empty params, 128-bit AES keys only, full 16-byte tag. The driver composes the RFC 3566 subkey schedule (K1/K2/K3 via AES-128-ECB) plus CBC-MAC chaining with 10* padding over the backend AES-128-ECB route \u2014 real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverXcbc: RFC 3566 cases #1-#4); constructions pinned (SyntheticSpec caseXcbc); params/init/map pinned (RecipeXcbcMacSpec).",
       "numeric_id": "0x0000108c",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac16/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_XCBC_MAC",
@@ -19380,26 +19762,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "mac-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "mac-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeXcbcMacSpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_AES_XCBC_MAC_96",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: needs the XCBC-MAC subkey schedule over AES-ECB (unmapped composition); behavior/synthetic stay planned.",
+      "notes": "XCBC-MAC recipe (core/Haskoki/Recipe/XcbcMac.hs, RFC 3566): empty params, 128-bit AES keys only, first 12 bytes of the 16-byte tag. The driver composes the RFC 3566 subkey schedule (K1/K2/K3 via AES-128-ECB) plus CBC-MAC chaining with 10* padding over the backend AES-128-ECB route \u2014 real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverXcbc: RFC 3566 cases #1-#4); constructions pinned (SyntheticSpec caseXcbc); params/init/map pinned (RecipeXcbcMacSpec).",
       "numeric_id": "0x0000108d",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac12/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_XCBC_MAC_96",
@@ -19408,26 +19849,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "mac-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "mac-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeXcbcMacSpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_AES_GMAC",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "max_key_size": 0,
+        "min_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: the MAC primitive present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "GMAC recipe (core/Haskoki/Recipe/Gmac.hs): gcm-params/1 image (tag width from the SP 800-38D approved set per OASIS v3.2 S6.13.6, caller IV 1..64 bytes); keys 128/192/256-bit CKK_AES. The message travels as the GCM AAD with empty plaintext (the params AAD field carries no meaning on the sign path and is ignored); the tag is the GCM authentication tag. The driver executes over the backend AES-GCM route \u2014 real AES-GCM on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverGmac: Python-cryptography AESGCM tags, the AEAD oracle root); constructions pinned (SyntheticSpec caseGmac); params/init/map pinned (RecipeGmacSpec).",
       "numeric_id": "0x0000108e",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac16-trunc/v1",
+          "parameter_codec": "gcm-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "gcm-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_GMAC",
@@ -19436,12 +19936,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "mac-tail",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "mac-tail",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeGmacSpec",
+          "build_id": "mac-tail",
+          "case_id": "A40"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -20235,7 +20766,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); same probe, 2026-09-21); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); same probe, 2026-09-21); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no GOST R 34.11-94 digest, so no HMAC-GOST route exists.",
       "numeric_id": "0x00001211",
       "routes": [],
       "source_refs": [
@@ -20246,10 +20777,10 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
         "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "recovery": "not-applicable",
+        "synthetic": "unsupported-with-reason"
       },
       "test_evidence": []
     },

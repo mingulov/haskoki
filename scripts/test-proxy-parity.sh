@@ -179,6 +179,15 @@ mechanisms = [
 shape = "mac_general"
 mechanisms = [
     0x401D,  # CKM_BLAKE2B_512_HMAC_GENERAL (CK_ULONG tag length, same shape as SHA*_HMAC_GENERAL)
+    0x1084,  # CKM_AES_MAC_GENERAL (11f)
+    0x0564,  # CKM_ARIA_MAC_GENERAL (11f)
+    0x0554,  # CKM_CAMELLIA_MAC_GENERAL (11f)
+]
+
+[[params]]
+shape = "gcm"
+mechanisms = [
+    0x108E,  # CKM_AES_GMAC (CK_GCM_PARAMS, same struct as AES-GCM) (11f)
 ]
 EOF
 

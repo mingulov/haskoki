@@ -1352,6 +1352,89 @@ skipped (t7692)
   bundle (`dist-release/haskoki-0.3.0.0`,
   evidence 16/16).
 
+## Round 27: MAC slice 11f (fast r51→r52→r53 + KAT r27→r28→r29)
+
+- r52: 4169 passed / 18 failed / 657 xfailed /
+  3574 skipped (t8418)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r52-results.json`).
+  r51→r52: +121 pass / +0 fail / +26 xfail /
+  +78 skip (+225 collected: the 9 new rows'
+  shared-mech expansion, incl. 4 sign-KAT
+  vector legs).
+- Movers r51→r52 (unit `counts`, exact):
+  `test_aes_modes` 13/17s → 26/4s (AES-MAC
+  3 + MACGeneral 7 + XCBC 3, all green);
+  `test_aria` 11/3s → 14/0s;
+  `test_camellia` 12/3s/1x → 15/0s/1x;
+  `test_mech_flags` 683/1298s/8x →
+  719/1343s/8x; `test_mech_multipart`
+  181/21s/17x → 199/21s/17x;
+  `test_mech_negative` 235/2f/647s/262x →
+  261/2f/667s/288x; `test_mech_probe` skips
+  663 → 690 (new rows' probe legs);
+  `test_mech_sign` 157/87s/17x →
+  179/92s/17x (incl. the 4 ARIA/Camellia
+  MAC KAT legs, all green).
+- New-xfail attribution (26, all
+  classified): 8 missing-required-param
+  (expected `PARAM_INVALID`, got
+  `ARGUMENTS_BAD`) on GMAC + the 3 GENERAL
+  rows × sign/verify — same as every other
+  row (pre-existing class); 18
+  without-flag setup victims (9 mechs ×
+  sign/verify, keygen rejected at runtime —
+  P11C-005 class). No MAC row shows a new
+  failure class: the XCBC verify path
+  accepts CKK_AES (no `_XCBC_VERIFY_XFAIL`
+  leg fired), and every KAT leg passes.
+- Failures identical by id (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS
+  P11C-006). Zero pass→nonpass.
+- r53 (GMAC-width reproof): ID-identical to
+  r52 (675/675 non-pass outcomes, zero
+  transitions) — the width fix touches only
+  KAT ACVP legs, as predicted.
+- r28: 82591 passed / 24 failed / 1695
+  xfailed / 30292 skipped (t114602)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r28-results.json`).
+  r27→r28: +136 pass / +0 fail / +455 xfail /
+  −366 skip (+225 collected).
+- Fast-matrix units repeat r52 exactly
+  (aes_modes, aria, camellia, flags,
+  multipart, negative, probe, sign — same
+  counts); the KAT-only delta is two GMAC
+  suites: `test_gcm` 80/150s → 95/120s/15x
+  (15 ACVP 128-bit GMAC legs pass — the
+  GCM-route reduction verified against
+  vectors — while 15 truncated legs xfail)
+  and `test_wycheproof_aes` 1152/414s/253x →
+  1152/0s/667x (414 GMAC legs xfail: the
+  suite sends raw IV bytes, not the OASIS
+  struct → P11C-010).
+- In-slice fix (lane-found, r28→r29): OASIS
+  v3.2 §6.13.6 determines the GMAC tag
+  length by `ulTagBits`, so the fixed-128
+  stance was wrong — GMAC now serves the SP
+  800-38D approved widths (shared
+  `gcmTagLens`, threaded through the
+  existing AEAD spec; no driver change).
+  Recipe, tests (ACVP tc16 pinned,
+  unapproved widths refuse), and catalog
+  note corrected.
+- r29: 82606 passed / 24 failed / 1680
+  xfailed / 30292 skipped (t114602)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r29-results.json`):
+  +15 pass / −15 xfail, exactly the
+  `AES-enc-tc16`–`tc30` legs xfail→pass;
+  24 failures identical; 0 regressions.
+- KAT residuals, all dispositioned: the 24
+  failures are identical by id to r27
+  (13 X9.42 P11C-004 + 2 HOTP P11C-001 +
+  3 WTLS P11C-006 + 6 SLH-DSA P11C-003).
+- Bundle note: r52/r53/r28/r29 run on the
+  11f bundle (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at
