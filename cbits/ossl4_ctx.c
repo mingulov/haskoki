@@ -1256,6 +1256,10 @@ long hsk_ossl4_aead_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
         goto end;
     if (!EVP_EncryptFinal_ex(cctx, buf + outl1, &outl2))
         goto end;
+    /* Bound the provider's emitted length before the tag append: buf
+     * holds inlen + taglen, so over-emit is a provider fault. */
+    if (outl1 + outl2 > (int)inlen)
+        goto end;
     if (!EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_AEAD_GET_TAG, (int)taglen,
                              buf + outl1 + outl2))
         goto end;
@@ -1338,6 +1342,10 @@ long hsk_ossl4_aead_decrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
         rc = HSK_OSSL4_ERR_AUTHFAIL;
         goto end;
     }
+    /* Bound the provider's emitted length: buf holds inlen bytes, so
+     * over-emit is a provider fault (not an auth verdict). */
+    if (outl1 + outl2 > (int)inlen)
+        goto end;
     *out = buf;
     rc = (long)(outl1 + outl2);
 
@@ -1418,6 +1426,10 @@ long hsk_ossl4_aead_ccm_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
         !EVP_EncryptUpdate(cctx, buf, &outl1, in, (int)inlen))
         goto end;
     if (!EVP_EncryptFinal_ex(cctx, buf + outl1, &outl2))
+        goto end;
+    /* Bound the provider's emitted length before the tag append: buf
+     * holds inlen + taglen, so over-emit is a provider fault. */
+    if (outl1 + outl2 > (int)inlen)
         goto end;
     if (!EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_CCM_GET_TAG, (int)taglen,
                              buf + outl1 + outl2))
@@ -1505,6 +1517,10 @@ long hsk_ossl4_aead_ccm_decrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
         rc = HSK_OSSL4_ERR_AUTHFAIL;
         goto end;
     }
+    /* Bound the provider's emitted length: buf holds inlen bytes, so
+     * over-emit is a provider fault (not an auth verdict). */
+    if (outl1 + outl2 > (int)inlen)
+        goto end;
     *out = buf;
     rc = (long)(outl1 + outl2);
 
@@ -3904,7 +3920,7 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     BIGNUM *p = NULL, *g = NULL, *y = NULL, *pm1 = NULL, *q = NULL;
     OSSL_PARAM *fromparams = NULL;
     unsigned char *secret = NULL;
-    size_t secretlen = 0;
+    size_t secretlen = 0, secretalloc = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
     if (ctx == NULL || propq == NULL || out == NULL)
@@ -3984,8 +4000,10 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
             }
             total = (size_t)yn;
             ybuf = pbuf;
-            if (BN_bn2nativepad(y, ybuf, yn) <= 0)
+            if (BN_bn2nativepad(y, ybuf, yn) <= 0) {
+                OPENSSL_clear_free(pbuf, total);
                 goto end;
+            }
             fromparams[0] = OSSL_PARAM_construct_utf8_string(
                 OSSL_PKEY_PARAM_GROUP_NAME, group, 0);
             fromparams[1] = OSSL_PARAM_construct_BN(
@@ -4005,14 +4023,18 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
              * byte-reversed. */
             if (BN_bn2nativepad(p, pbuf, pn) <= 0 ||
                 BN_bn2nativepad(g, gbuf, gn) <= 0 ||
-                BN_bn2nativepad(y, ybuf, yn) <= 0)
+                BN_bn2nativepad(y, ybuf, yn) <= 0) {
+                OPENSSL_clear_free(pbuf, total);
                 goto end;
+            }
             fromparams[0] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_FFC_P, pbuf, (size_t)pn);
             fromparams[1] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_FFC_G, gbuf, (size_t)gn);
             fromparams[2] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_PUB_KEY, ybuf, (size_t)yn);
             if (qn > 0) {
-                if (BN_bn2nativepad(q, qbuf, qn) <= 0)
+                if (BN_bn2nativepad(q, qbuf, qn) <= 0) {
+                    OPENSSL_clear_free(pbuf, total);
                     goto end;
+                }
                 fromparams[3] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_FFC_Q, qbuf, (size_t)qn);
                 fromparams[4] = OSSL_PARAM_construct_end();
             } else {
@@ -4053,8 +4075,11 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
+    /* The failed derive below may mutate secretlen: cleanse with the
+     * allocation length, never the out-param. */
+    secretalloc = secretlen;
     if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
-        OPENSSL_clear_free(secret, secretlen);
+        OPENSSL_clear_free(secret, secretalloc);
         secret = NULL;
         goto end;
     }

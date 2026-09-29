@@ -6,7 +6,7 @@
 # per-driver logs plus a MANIFEST.txt. Passing here (invoked as the
 # final step of scripts/run-gates.sh) means a passing release story.
 #
-# Layout (13 container drivers + release build + host install):
+# Layout (15 container drivers + release build + host install):
 #   * each test-*.sh except test-release-install.sh runs INSIDE the
 #     pinned toolchain container (per its header recipe), with the
 #     standing hard rules (timeout -s KILL + --network host);
@@ -35,10 +35,10 @@ STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 EVIDENCE_DIR="${HASKOKI_EVIDENCE_DIR:-$PWD/dist-release-evidence/$STAMP}"
 DRIVER_TIMEOUT=1800
 
-# The 14 container drivers, in dependency-light order (loader first:
+# The 15 container drivers, in dependency-light order (loader first:
 # it is the cheapest failure signal; proxy-parity last: it needs the
 # daemon + shim mount).
-CONTAINER_DRIVERS="test-loader.sh test-c-abi.sh test-c-output.sh test-c-mutexes.sh test-consumers.sh test-client.sh test-crypto-routed.sh test-sim-threaded.sh test-finalize-race.sh test-async-attached.sh test-async-detached.sh test-control-events.sh test-lifecycle.sh test-proxy-parity.sh"
+CONTAINER_DRIVERS="test-loader.sh test-c-abi.sh test-c-output.sh test-c-mutexes.sh test-consumers.sh test-client.sh test-crypto-routed.sh test-ossl4-bounds.sh test-sim-threaded.sh test-finalize-race.sh test-async-attached.sh test-async-detached.sh test-control-events.sh test-lifecycle.sh test-proxy-parity.sh"
 
 fail() {
   echo "FAIL: $1"

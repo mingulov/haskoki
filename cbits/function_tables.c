@@ -635,13 +635,19 @@ static CK_RV on_Finalize(CK_VOID_PTR pReserved) {
     pthread_mutex_unlock(&g_init_lock);
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
-  /* Liveness-first teardown: clear liveness FIRST so fresh
-   * entrants fail fast on live_interval(), then take-and-hold the
-   * state lock across the whole teardown below. In-flight holders
-   * drain (the acquisition waits them out); stale entrants that
-   * passed the liveness gate block, then resolve a NULL instance
-   * under the lock and report NOT_INITIALIZED. Either way no
-   * entrant observes dead Haskell state. Lock order stays globally
+  /* Liveness-first teardown under the harness join discipline
+   * (header contract: join all threads before finalizing): clear
+   * liveness FIRST so fresh entrants fail fast on live_interval(),
+   * then take-and-hold the state lock across the whole teardown
+   * below. In-flight holders drain (the acquisition waits them
+   * out); stale entrants that passed the liveness gate block, then
+   * resolve a NULL instance under the lock and report
+   * NOT_INITIALIZED. Either way no entrant observes dead Haskell
+   * state — provided no fresh entrant is concurrently blocked in
+   * LockMutex: with app-provided mutex callbacks a racing fresh
+   * entrant is out of contract (DestroyMutex below can race its
+   * wake onto a destroyed mutex), so the join discipline is
+   * load-bearing there. Lock order stays globally
    * g_init_lock-then-state_lock (entries take only the latter), so
    * this cannot deadlock; C_WaitForSlotEvent still never holds the
    * state lock while blocking (on_WaitForSlotEvent below, plus the

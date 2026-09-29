@@ -445,6 +445,13 @@ static void *live_std(void) {
 static CK_RV refuse_null_arg(CK_SESSION_HANDLE hSession, uint64_t slot) {
   CK_RV lr = 0;
   void *inst = 0;
+  /* Liveness peek before the lock, like every other routed body: a
+   * fork child that inherited a held state lock fails fast here
+   * instead of deadlocking on it (NOT_INITIALIZED keeps
+   * precedence over the NULL-arg refusal). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
     return CKR_ARGUMENTS_BAD;

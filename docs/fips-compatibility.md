@@ -334,16 +334,16 @@ security-relevant file in the artifact is the one file the
 evidence never mentions.
 
 **Release-evidence impact.** `scripts/release-evidence.sh`
-writes per-driver logs + `MANIFEST.txt` for 14 container
+writes per-driver logs + `MANIFEST.txt` for 15 container
 drivers + release build + host install (:6-40, :116). The
 flavor adds: (a) the module-stage build log + Policy-conformance
-checklist to the evidence dir; (b) a 15th driver (PROPOSED)
+checklist to the evidence dir; (b) a 16th driver (PROPOSED)
 that installs the sidecar in a clean container, runs
 `fipsinstall`, asserts provider `version: 3.1.2, status:
 active` and a `fips=yes`-pinned digest, and asserts startup
 REFUSES when the sidecar/config is absent (no silent fallback);
 (c) the sidecar + transcript hashes in `MANIFEST.txt`. The
-existing 14 drivers and the manifest's current rows are
+existing 15 drivers and the manifest's current rows are
 untouched.
 
 ## §4 — code touchpoints (PROPOSED diff plan)
