@@ -1258,7 +1258,7 @@ long hsk_ossl4_aead_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
         goto end;
     /* Bound the provider's emitted length before the tag append: buf
      * holds inlen + taglen, so over-emit is a provider fault. */
-    if (outl1 + outl2 > (int)inlen)
+    if ((long)outl1 + (long)outl2 > (long)inlen)
         goto end;
     if (!EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_AEAD_GET_TAG, (int)taglen,
                              buf + outl1 + outl2))
@@ -1344,7 +1344,7 @@ long hsk_ossl4_aead_decrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
     }
     /* Bound the provider's emitted length: buf holds inlen bytes, so
      * over-emit is a provider fault (not an auth verdict). */
-    if (outl1 + outl2 > (int)inlen)
+    if ((long)outl1 + (long)outl2 > (long)inlen)
         goto end;
     *out = buf;
     rc = (long)(outl1 + outl2);
@@ -1429,7 +1429,7 @@ long hsk_ossl4_aead_ccm_encrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
         goto end;
     /* Bound the provider's emitted length before the tag append: buf
      * holds inlen + taglen, so over-emit is a provider fault. */
-    if (outl1 + outl2 > (int)inlen)
+    if ((long)outl1 + (long)outl2 > (long)inlen)
         goto end;
     if (!EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_CCM_GET_TAG, (int)taglen,
                              buf + outl1 + outl2))
@@ -1519,7 +1519,7 @@ long hsk_ossl4_aead_ccm_decrypt(OSSL_LIB_CTX *ctx, const char *ciphername,
     }
     /* Bound the provider's emitted length: buf holds inlen bytes, so
      * over-emit is a provider fault (not an auth verdict). */
-    if (outl1 + outl2 > (int)inlen)
+    if ((long)outl1 + (long)outl2 > (long)inlen)
         goto end;
     *out = buf;
     rc = (long)(outl1 + outl2);
