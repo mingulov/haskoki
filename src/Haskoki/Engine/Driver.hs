@@ -286,7 +286,7 @@ import Haskoki.Recipe.TlsKeyMat
   , tlsKeyMatRecipeFor
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
-import Haskoki.Recipe.Pbe (PbeRecipe (pbeKind), decodePbeParams, maxPbeIters, pbeDesParity, pbeIvLen, pbeKeyLen, pbeNeedsParity, pbeRecipeFor)
+import Haskoki.Recipe.Pbe (PbeKdf (..), PbeRecipe (pbeKind), decodePbeParams, maxPbeIters, pbeDesParity, pbeIvLen, pbeKdf, pbeKeyLen, pbeNeedsParity, pbeRecipeFor)
 import Haskoki.Recipe.Ssl3
   ( Ssl3Kind (..)
   , Ssl3Recipe (ssl3Kind)
@@ -398,6 +398,10 @@ import Haskoki.Operation.KeyManagement
   , pbeSha1Rc4_40KeyGenMech
   , pbeSha1Rc2_128KeyGenMech
   , pbeSha1Rc2_40KeyGenMech
+  , pbeMd5DesKeyGenMech
+  , pbeMd5CastKeyGenMech
+  , pbeMd5Cast3KeyGenMech
+  , pbeMd5Cast128KeyGenMech
   , pbkd2KeygenMaxBytes
   )
 import Haskoki.Operation.State (CipherDir (..))
@@ -2047,7 +2051,11 @@ runEffect env resolve fx = case fx of
     , mech /= pbeSha1Rc4_128KeyGenMech
     , mech /= pbeSha1Rc4_40KeyGenMech
     , mech /= pbeSha1Rc2_128KeyGenMech
-    , mech /= pbeSha1Rc2_40KeyGenMech -> pure (GotCryptoError (CryptoFailed
+    , mech /= pbeSha1Rc2_40KeyGenMech
+    , mech /= pbeMd5DesKeyGenMech
+    , mech /= pbeMd5CastKeyGenMech
+    , mech /= pbeMd5Cast3KeyGenMech
+    , mech /= pbeMd5Cast128KeyGenMech -> pure (GotCryptoError (CryptoFailed
         "driver: keygen takes no mechanism params"))
     | otherwise -> case decodeGenArgs input of
         Nothing -> pure (GotCryptoError (CryptoFailed
@@ -2102,13 +2110,18 @@ runEffect env resolve fx = case fx of
             , m == pbeDes3KeyGenMech || m == pbeDes2KeyGenMech
               || m == pbeSha1Cast128KeyGenMech || m == pbeSha1Rc4_128KeyGenMech
               || m == pbeSha1Rc4_40KeyGenMech || m == pbeSha1Rc2_128KeyGenMech
-              || m == pbeSha1Rc2_40KeyGenMech ->
+              || m == pbeSha1Rc2_40KeyGenMech || m == pbeMd5DesKeyGenMech
+              || m == pbeMd5CastKeyGenMech || m == pbeMd5Cast3KeyGenMech
+              || m == pbeMd5Cast128KeyGenMech ->
                 case decodePbeParams params of
                   Just (iters, pw, salt)
                     | iters >= 1 && iters <= fromIntegral maxPbeIters
                     , n == pbeKeyLen (pbeKind r) ->
-                        runPbe iters pw salt n
-                          (pbeNeedsParity (pbeKind r)) (pbeIvLen (pbeKind r))
+                        case pbeKdf (pbeKind r) of
+                          PbePkcs12Sha1 -> runPbe iters pw salt n
+                            (pbeNeedsParity (pbeKind r)) (pbeIvLen (pbeKind r))
+                          PbePbkdf1Md5 -> runPbkdf1 iters pw salt n
+                            (pbeNeedsParity (pbeKind r))
                     | otherwise -> pure (GotCryptoError (CryptoFailed
                         "driver: PBE iterations or length out of range"))
                   Nothing -> pure (GotCryptoError (CryptoFailed
@@ -3008,6 +3021,36 @@ runEffect env resolve fx = case fx of
             beBytes len v =
               BS.pack [fromIntegral ((v `div` (256 ^ i)) `mod` 256)
                       | i <- [len - 1, len - 2 .. 0]]
+    -- | MD5 D-chain: @D1 = MD5^c(P||S)@ (the provider-PBKDF1
+    -- root, byte-exact), @D{i+1} = MD5^c(Di||P||S)@ past the
+    -- 16-byte PBKDF1 cap; key = stream[0:keyLen], IV =
+    -- stream[keyLen:keyLen+8]. Digests run through the
+    -- provider. The answer frames the key\/IV pair.
+    runPbkdf1 :: Word64 -> ByteString -> ByteString -> Int -> Bool -> IO CryptoResult
+    runPbkdf1 iters pw salt keyLen parity = do
+      r <- chain (keyLen + 8) BS.empty []
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk stream ->
+          let (k, v) = BS.splitAt keyLen (BS.take (keyLen + 8) stream)
+          in GotBytes (encodeKeyPair (finish k) (Just v))
+      where
+        finish = if parity then pbeDesParity else id
+        chain :: Int -> ByteString -> [ByteString] -> IO (EngineResult ByteString)
+        chain remaining prev acc
+          | remaining <= 0 = pure (EngineOk (BS.concat (reverse acc)))
+          | otherwise = do
+              r <- hashTimes (fromIntegral iters) (prev <> pw <> salt)
+              case r of
+                EngineFail err -> pure (EngineFail err)
+                EngineOk d -> chain (remaining - 16) d (d : acc)
+        hashTimes :: Int -> ByteString -> IO (EngineResult ByteString)
+        hashTimes 0 msg = pure (EngineOk msg)
+        hashTimes k msg = do
+          r <- digestOneShot env D_MD5 msg
+          case r of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk d -> hashTimes (k - 1) d
     -- | SP 800-108 effects: the mode expansion over the HMAC
     -- route, truncated to the planned length (capped by
     -- 'maxSp800Total' with the L-fit check — the planner caps

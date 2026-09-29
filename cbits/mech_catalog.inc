@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 300
+#define HASKOKI_MECH_COUNT 304
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -180,6 +180,10 @@ static const struct haskoki_mech_row
   { 0x0000039AUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHA3_512_KEY_DERIVATION */
   { 0x0000039BUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHAKE_128_KEY_DERIVATION */
   { 0x0000039CUL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_SHAKE_256_KEY_DERIVATION */
+  { 0x000003A1UL, 64UL, 64UL, (unsigned long)(CKF_GENERATE) }, /* CKM_PBE_MD5_DES_CBC */
+  { 0x000003A2UL, 40UL, 40UL, (unsigned long)(CKF_GENERATE) }, /* CKM_PBE_MD5_CAST_CBC */
+  { 0x000003A3UL, 80UL, 80UL, (unsigned long)(CKF_GENERATE) }, /* CKM_PBE_MD5_CAST3_CBC */
+  { 0x000003A4UL, 128UL, 128UL, (unsigned long)(CKF_GENERATE) }, /* CKM_PBE_MD5_CAST128_CBC */
   { 0x000003A5UL, 128UL, 128UL, (unsigned long)(CKF_GENERATE) }, /* CKM_PBE_SHA1_CAST128_CBC */
   { 0x000003A6UL, 128UL, 128UL, (unsigned long)(CKF_GENERATE) }, /* CKM_PBE_SHA1_RC4_128 */
   { 0x000003A7UL, 40UL, 40UL, (unsigned long)(CKF_GENERATE) }, /* CKM_PBE_SHA1_RC4_40 */

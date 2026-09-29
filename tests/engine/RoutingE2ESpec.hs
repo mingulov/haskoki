@@ -2184,6 +2184,38 @@ caseDriverPbe = withBackend $ \env -> do
         assertEqual "rc2-40 iv" (hex "f7eb3b1c7d9ce2a0") iv
       other -> assertFailure ("gen misframed, got: " ++ show other)
     other -> assertFailure ("expected key bytes, got: " ++ show other)
+  kgd <- gen (MechanismId 0x3a1) frame 8
+  case kgd of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Just iv) -> do
+        assertEqual "md5-des key" (hex "fed54f04efa44a7a") mat
+        assertEqual "md5-des iv" (hex "f3a2adee8fa98e67") iv
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
+  kgc <- gen (MechanismId 0x3a2) frame 5
+  case kgc of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Just iv) -> do
+        assertEqual "md5-cast key" (hex "ffd54e05ee") mat
+        assertEqual "md5-cast iv" (hex "a44b7bf3a2adee8f") iv
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
+  kg3c <- gen (MechanismId 0x3a3) frame 10
+  case kg3c of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Just iv) -> do
+        assertEqual "md5-cast3 key" (hex "ffd54e05eea44b7bf3a2") mat
+        assertEqual "md5-cast3 iv" (hex "adee8fa98e6769fb") iv
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
+  kgc128 <- gen (MechanismId 0x3a4) frame 16
+  case kgc128 of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Just iv) -> do
+        assertEqual "md5-cast128 key" (hex "ffd54e05eea44b7bf3a2adee8fa98e67") mat
+        assertEqual "md5-cast128 iv" (hex "69fba8ad294fa220") iv
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
   badFrame <- gen des3 BS.empty 24
   case badFrame of
     GotCryptoError (CryptoFailed _) -> pure ()

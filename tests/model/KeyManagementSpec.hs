@@ -304,6 +304,10 @@ import Haskoki.Registry.Generated
   , ckm_PBE_SHA1_RC4_40
   , ckm_PBE_SHA1_RC2_128_CBC
   , ckm_PBE_SHA1_RC2_40_CBC
+  , ckm_PBE_MD5_DES_CBC
+  , ckm_PBE_MD5_CAST_CBC
+  , ckm_PBE_MD5_CAST3_CBC
+  , ckm_PBE_MD5_CAST128_CBC
   , ckm_SSL3_MASTER_KEY_DERIVE
   , ckm_SSL3_MASTER_KEY_DERIVE_DH
   , ckm_SSL3_KEY_AND_MAC_DERIVE
@@ -430,6 +434,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "PBE plans rows, refuses bad shapes" casePbePlans
   , testCase "Real PBE keygens match the KATs" caseRealPbeVector
   , testCase "Real SHA1 PBE keygens match the KATs" caseRealPbeSha1Vector
+  , testCase "Real MD5 PBE keygens match the KATs" caseRealPbeMd5Vector
   , testCase "SP800 plans primary plus additional keys" caseSp800MultiPlans
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
   , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
@@ -6094,6 +6099,12 @@ pbeSha1Rc4_40Mech = MechanismId ckm_PBE_SHA1_RC4_40
 pbeSha1Rc2_128Mech, pbeSha1Rc2_40Mech :: MechanismId
 pbeSha1Rc2_128Mech = MechanismId ckm_PBE_SHA1_RC2_128_CBC
 pbeSha1Rc2_40Mech = MechanismId ckm_PBE_SHA1_RC2_40_CBC
+pbeMd5DesMech, pbeMd5CastMech :: MechanismId
+pbeMd5DesMech = MechanismId ckm_PBE_MD5_DES_CBC
+pbeMd5CastMech = MechanismId ckm_PBE_MD5_CAST_CBC
+pbeMd5Cast3Mech, pbeMd5Cast128Mech :: MechanismId
+pbeMd5Cast3Mech = MechanismId ckm_PBE_MD5_CAST3_CBC
+pbeMd5Cast128Mech = MechanismId ckm_PBE_MD5_CAST128_CBC
 
 pbePw, pbeSalt :: BS.ByteString
 pbePw = "TestPassword123!"
@@ -6138,6 +6149,10 @@ casePbePlans = do
     , (pbeSha1Rc4_40Mech, ckkRc4, 5, False)
     , (pbeSha1Rc2_128Mech, ckkRc2, 16, True)
     , (pbeSha1Rc2_40Mech, ckkRc2, 5, True)
+    , (pbeMd5DesMech, ckkDes, 8, True)
+    , (pbeMd5CastMech, ckkCast, 5, True)
+    , (pbeMd5Cast3Mech, ckkCast3, 10, True)
+    , (pbeMd5Cast128Mech, ckkCast128, 16, True)
     ]
   -- A present length must match the fixed width.
   case planGenerateKey defaultRules m0 st pbeDes3Mech frame
@@ -6239,3 +6254,39 @@ caseRealPbeSha1Vector = withRealEnv $ \env -> do
   assertEqual "rc2-40 iv" (hex "f7eb3b1c7d9ce2a0") ivb
   kb <- keyOf mb "RC2-40"
   assertEqual "rc2-40 key" (hex "72b93bb1f7") kb
+
+caseRealPbeMd5Vector :: IO ()
+caseRealPbeMd5Vector = withRealEnv $ \env -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let answer = answerReal env
+      frame = encodePbeParams 1024 pbePw pbeSalt
+      gen mech tmpl = case planGenerateKey defaultRules m0 st mech frame tmpl of
+        KeyEffect pw fx -> do
+          res <- answer m0 fx
+          c <- finishCommit m0 st pw res 1
+          let iv = case [bs | NativeOutput (RegionBytes m _) bs <- pcOutputs c, m == "iv"] of
+                [bs] -> bs
+                _ -> BS.empty
+          m' <- expectRight (publishDelta m0 (pcDelta c))
+          pure (m', iv)
+        other -> assertFailure ("PBE must plan: " ++ show other) >> undefined
+      keyOf m' label = case [mat | (_, ost) <- Map.toList (mObjects m'), Just mat <- [keyBytesOf ost]] of
+        [mat] -> pure mat
+        _ -> assertFailure (label ++ " must mint exactly one key") >> undefined
+  (m1, iv1) <- gen pbeMd5DesMech (pbeTmpl ckkDes)
+  assertEqual "md5-des iv" (hex "f3a2adee8fa98e67") iv1
+  k1 <- keyOf m1 "MD5-DES"
+  assertEqual "md5-des key" (hex "fed54f04efa44a7a") k1
+  (m2, iv2) <- gen pbeMd5CastMech (pbeTmpl ckkCast ++ [(AttrValueLen, ValULong 5)])
+  assertEqual "md5-cast iv" (hex "a44b7bf3a2adee8f") iv2
+  k2 <- keyOf m2 "MD5-CAST"
+  assertEqual "md5-cast key" (hex "ffd54e05ee") k2
+  (m3, iv3) <- gen pbeMd5Cast3Mech (pbeTmpl ckkCast3 ++ [(AttrValueLen, ValULong 10)])
+  assertEqual "md5-cast3 iv" (hex "adee8fa98e6769fb") iv3
+  k3 <- keyOf m3 "MD5-CAST3"
+  assertEqual "md5-cast3 key" (hex "ffd54e05eea44b7bf3a2") k3
+  (m4, iv4) <- gen pbeMd5Cast128Mech (pbeTmpl ckkCast128 ++ [(AttrValueLen, ValULong 16)])
+  assertEqual "md5-cast128 iv" (hex "69fba8ad294fa220") iv4
+  k4 <- keyOf m4 "MD5-CAST128"
+  assertEqual "md5-cast128 key" (hex "ffd54e05eea44b7bf3a2adee8fa98e67") k4

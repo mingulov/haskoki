@@ -20,9 +20,22 @@ in the section prose):
 * @CKM_PBE_SHA1_RC2_40_CBC@ (0x3ab): 5-byte @CKK_RC2@
   key plus 8-byte IV.
 
-DES3\/DES2 key bytes get DES odd-parity adjustment (FIPS
-46-3); every other row takes raw KDF bytes. The IV is raw
-KDF output. The canonical frame (@pbe-params\/1@) is the
+The MD5 rows run the D-chain (@D1 = MD5^c(P||S)@, the
+provider-PBKDF1 root, extended @D{i+1} = MD5^c(Di||P||S)@
+past the 16-byte PBKDF1 cap):
+
+* @CKM_PBE_MD5_DES_CBC@ (0x3a1): 8-byte @CKK_DES@ key
+  (parity-adjusted) plus 8-byte IV;
+* @CKM_PBE_MD5_CAST_CBC@ (0x3a2): 5-byte @CKK_CAST@ key
+  plus 8-byte IV;
+* @CKM_PBE_MD5_CAST3_CBC@ (0x3a3): 10-byte @CKK_CAST3@ key
+  plus 8-byte IV;
+* @CKM_PBE_MD5_CAST128_CBC@ (0x3a4): 16-byte @CKK_CAST128@
+  key plus 8-byte IV.
+
+DES3\/DES2\/DES key bytes get DES odd-parity adjustment
+(FIPS 46-3); every other row takes raw KDF bytes. The IV is
+raw KDF output. The canonical frame (@pbe-params\/1@) is the
 iteration count (@u64be@) plus the length-prefixed password
 and salt.
 -}
@@ -40,6 +53,8 @@ module Haskoki.Recipe.Pbe
   , pbeKeyLen
   , pbeIvLen
   , pbeNeedsParity
+  , PbeKdf (..)
+  , pbeKdf
   , pbeDesParity
   , maxPbeIters
   , maxPbeMaterial
@@ -53,7 +68,7 @@ import Data.Word (Word64)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
 
--- | The served PKCS#12 PBE rows.
+-- | The served PBE rows.
 data PbeKind
   = PbeDes3
   | PbeDes2
@@ -62,6 +77,15 @@ data PbeKind
   | PbeSha1Rc4_40
   | PbeSha1Rc2_128
   | PbeSha1Rc2_40
+  | PbeMd5Des
+  | PbeMd5Cast
+  | PbeMd5Cast3
+  | PbeMd5Cast128
+  deriving (Eq, Show)
+
+-- | The KDF behind a row: PKCS#12 over SHA-1, or the MD5
+-- D-chain (PBKDF1 root plus chaining past 16 bytes).
+data PbeKdf = PbePkcs12Sha1 | PbePbkdf1Md5
   deriving (Eq, Show)
 
 -- | One PBE recipe: the mechanism name and its shape.
@@ -88,6 +112,10 @@ pbeRecipes =
   , PbeRecipe "CKM_PBE_SHA1_RC4_40" PbeSha1Rc4_40
   , PbeRecipe "CKM_PBE_SHA1_RC2_128_CBC" PbeSha1Rc2_128
   , PbeRecipe "CKM_PBE_SHA1_RC2_40_CBC" PbeSha1Rc2_40
+  , PbeRecipe "CKM_PBE_MD5_DES_CBC" PbeMd5Des
+  , PbeRecipe "CKM_PBE_MD5_CAST_CBC" PbeMd5Cast
+  , PbeRecipe "CKM_PBE_MD5_CAST3_CBC" PbeMd5Cast3
+  , PbeRecipe "CKM_PBE_MD5_CAST128_CBC" PbeMd5Cast128
   ]
 
 -- | Resolve a mechanism id to its PBE recipe, if covered.
@@ -107,6 +135,10 @@ pbeKeyLen PbeSha1Rc4_128 = 16
 pbeKeyLen PbeSha1Rc4_40 = 5
 pbeKeyLen PbeSha1Rc2_128 = 16
 pbeKeyLen PbeSha1Rc2_40 = 5
+pbeKeyLen PbeMd5Des = 8
+pbeKeyLen PbeMd5Cast = 5
+pbeKeyLen PbeMd5Cast3 = 10
+pbeKeyLen PbeMd5Cast128 = 16
 
 -- | The IV is one block (8 bytes) for the CBC rows; the RC4
 -- rows derive no IV (0).
@@ -115,11 +147,20 @@ pbeIvLen PbeSha1Rc4_128 = 0
 pbeIvLen PbeSha1Rc4_40 = 0
 pbeIvLen _ = 8
 
--- | Only the DES3\/DES2 rows parity-adjust the key bytes.
+-- | Only the DES3\/DES2\/DES rows parity-adjust the key bytes.
 pbeNeedsParity :: PbeKind -> Bool
 pbeNeedsParity PbeDes3 = True
 pbeNeedsParity PbeDes2 = True
+pbeNeedsParity PbeMd5Des = True
 pbeNeedsParity _ = False
+
+-- | The KDF behind a row.
+pbeKdf :: PbeKind -> PbeKdf
+pbeKdf PbeMd5Des = PbePbkdf1Md5
+pbeKdf PbeMd5Cast = PbePbkdf1Md5
+pbeKdf PbeMd5Cast3 = PbePbkdf1Md5
+pbeKdf PbeMd5Cast128 = PbePbkdf1Md5
+pbeKdf _ = PbePkcs12Sha1
 
 -- | Iteration ceiling (the PBKD2 DoS bound, shared).
 maxPbeIters :: Int

@@ -3925,6 +3925,106 @@ int main(int argc, char **argv) {
           f->C_DestroyObject(wsess, ka);
           f->C_DestroyObject(wsess, kb);
         }
+        /* 11q MD5 rows: the D-chain over MD5 (D1 is the provider
+         * PBKDF1 root); DES takes parity-adjusted bytes, the CAST
+         * rows raw bytes, each with its 8-byte IV. */
+        {
+          CK_BYTE md5DesKey[] = { 0xfe, 0xd5, 0x4f, 0x04, 0xef, 0xa4, 0x4a, 0x7a };
+          CK_BYTE md5DesIv[] = { 0xf3, 0xa2, 0xad, 0xee, 0x8f, 0xa9, 0x8e, 0x67 };
+          CK_BYTE md5CastKey[] = { 0xff, 0xd5, 0x4e, 0x05, 0xee };
+          CK_BYTE md5CastIv[] = { 0xa4, 0x4b, 0x7b, 0xf3, 0xa2, 0xad, 0xee, 0x8f };
+          CK_BYTE md5Cast3Key[] = { 0xff, 0xd5, 0x4e, 0x05, 0xee, 0xa4, 0x4b, 0x7b, 0xf3, 0xa2 };
+          CK_BYTE md5Cast3Iv[] = { 0xad, 0xee, 0x8f, 0xa9, 0x8e, 0x67, 0x69, 0xfb };
+          CK_BYTE md5C128Key[] = { 0xff, 0xd5, 0x4e, 0x05, 0xee, 0xa4, 0x4b, 0x7b,
+                                   0xf3, 0xa2, 0xad, 0xee, 0x8f, 0xa9, 0x8e, 0x67 };
+          CK_BYTE md5C128Iv[] = { 0x69, 0xfb, 0xa8, 0xad, 0x29, 0x4f, 0xa2, 0x20 };
+          CK_KEY_TYPE dkt = CKK_DES, ckt = CKK_CAST, c3kt = CKK_CAST3, c8kt = CKK_CAST128;
+          CK_ULONG len5b = 5, len10 = 10, len16 = 16;
+          CK_ATTRIBUTE td[] = {
+            { CKA_CLASS, &ckcls, sizeof(ckcls) },
+            { CKA_KEY_TYPE, &dkt, sizeof(dkt) },
+            { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+            { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+          };
+          CK_ATTRIBUTE tc[] = {
+            { CKA_CLASS, &ckcls, sizeof(ckcls) },
+            { CKA_KEY_TYPE, &ckt, sizeof(ckt) },
+            { CKA_VALUE_LEN, &len5b, sizeof(len5b) },
+            { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+            { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+          };
+          CK_ATTRIBUTE t3[] = {
+            { CKA_CLASS, &ckcls, sizeof(ckcls) },
+            { CKA_KEY_TYPE, &c3kt, sizeof(c3kt) },
+            { CKA_VALUE_LEN, &len10, sizeof(len10) },
+            { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+            { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+          };
+          CK_ATTRIBUTE t8[] = {
+            { CKA_CLASS, &ckcls, sizeof(ckcls) },
+            { CKA_KEY_TYPE, &c8kt, sizeof(c8kt) },
+            { CKA_VALUE_LEN, &len16, sizeof(len16) },
+            { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+            { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+          };
+          CK_OBJECT_HANDLE kd = 0, kc = 0, k3c = 0, k8 = 0;
+          gpbe.mechanism = CKM_PBE_MD5_DES_CBC;
+          memset(pbeIv, 0, sizeof(pbeIv));
+          rv = f->C_GenerateKey(wsess, &gpbe, td, 4, &kd);
+          CHECKC(rv == CKR_OK && kd != 0, "PBE-MD5-DES keygen ok");
+          if (!isProxy) {
+            CHECKC(memcmp(pbeIv, md5DesIv, 8) == 0, "PBE-MD5-DES IV matches KAT");
+          }
+          pbeGet[0].type = CKA_VALUE;
+          pbeGet[0].pValue = pbeGot;
+          pbeGet[0].ulValueLen = sizeof(pbeGot);
+          rv = f->C_GetAttributeValue(wsess, kd, pbeGet, 1);
+          CHECKC(rv == CKR_OK && pbeGet[0].ulValueLen == 8 &&
+                 memcmp(pbeGot, md5DesKey, 8) == 0, "PBE-MD5-DES key matches KAT");
+          gpbe.mechanism = CKM_PBE_MD5_CAST_CBC;
+          memset(pbeIv, 0, sizeof(pbeIv));
+          rv = f->C_GenerateKey(wsess, &gpbe, tc, 5, &kc);
+          CHECKC(rv == CKR_OK && kc != 0, "PBE-MD5-CAST keygen ok");
+          if (!isProxy) {
+            CHECKC(memcmp(pbeIv, md5CastIv, 8) == 0, "PBE-MD5-CAST IV matches KAT");
+          }
+          pbeGet[0].type = CKA_VALUE;
+          pbeGet[0].pValue = pbeGot;
+          pbeGet[0].ulValueLen = sizeof(pbeGot);
+          rv = f->C_GetAttributeValue(wsess, kc, pbeGet, 1);
+          CHECKC(rv == CKR_OK && pbeGet[0].ulValueLen == 5 &&
+                 memcmp(pbeGot, md5CastKey, 5) == 0, "PBE-MD5-CAST key matches KAT");
+          gpbe.mechanism = CKM_PBE_MD5_CAST3_CBC;
+          memset(pbeIv, 0, sizeof(pbeIv));
+          rv = f->C_GenerateKey(wsess, &gpbe, t3, 5, &k3c);
+          CHECKC(rv == CKR_OK && k3c != 0, "PBE-MD5-CAST3 keygen ok");
+          if (!isProxy) {
+            CHECKC(memcmp(pbeIv, md5Cast3Iv, 8) == 0, "PBE-MD5-CAST3 IV matches KAT");
+          }
+          pbeGet[0].type = CKA_VALUE;
+          pbeGet[0].pValue = pbeGot;
+          pbeGet[0].ulValueLen = sizeof(pbeGot);
+          rv = f->C_GetAttributeValue(wsess, k3c, pbeGet, 1);
+          CHECKC(rv == CKR_OK && pbeGet[0].ulValueLen == 10 &&
+                 memcmp(pbeGot, md5Cast3Key, 10) == 0, "PBE-MD5-CAST3 key matches KAT");
+          gpbe.mechanism = CKM_PBE_MD5_CAST128_CBC;
+          memset(pbeIv, 0, sizeof(pbeIv));
+          rv = f->C_GenerateKey(wsess, &gpbe, t8, 5, &k8);
+          CHECKC(rv == CKR_OK && k8 != 0, "PBE-MD5-CAST128 keygen ok");
+          if (!isProxy) {
+            CHECKC(memcmp(pbeIv, md5C128Iv, 8) == 0, "PBE-MD5-CAST128 IV matches KAT");
+          }
+          pbeGet[0].type = CKA_VALUE;
+          pbeGet[0].pValue = pbeGot;
+          pbeGet[0].ulValueLen = sizeof(pbeGot);
+          rv = f->C_GetAttributeValue(wsess, k8, pbeGet, 1);
+          CHECKC(rv == CKR_OK && pbeGet[0].ulValueLen == 16 &&
+                 memcmp(pbeGot, md5C128Key, 16) == 0, "PBE-MD5-CAST128 key matches KAT");
+          f->C_DestroyObject(wsess, kd);
+          f->C_DestroyObject(wsess, kc);
+          f->C_DestroyObject(wsess, k3c);
+          f->C_DestroyObject(wsess, k8);
+        }
         f->C_DestroyObject(wsess, k3);
         f->C_DestroyObject(wsess, k2);
       }

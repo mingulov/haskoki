@@ -27,6 +27,14 @@ Slice 11q adds the five SHA1 rows over the same KDF outputs
 * 0x3a7 RC4-40 key: 72b93bb1f7
 * 0x3aa RC2-128 key: 72b93bb1f796b464f6d80317b27e0fe8
 * 0x3ab RC2-40 key: 72b93bb1f7
+
+The MD5 rows run the D-chain (@D1@ is the provider-PBKDF1
+root @ffd54e05...@, @D2 = 69fba8ad...@):
+
+* 0x3a1 DES key (parity-adjusted): fed54f04efa44a7a, IV f3a2adee8fa98e67
+* 0x3a2 CAST key: ffd54e05ee, IV a44b7bf3a2adee8f
+* 0x3a3 CAST3 key: ffd54e05eea44b7bf3a2, IV adee8fa98e6769fb
+* 0x3a4 CAST128 key: ffd54e05eea44b7bf3a2adee8fa98e67, IV 69fba8ad294fa220
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module RecipePbeSpec (spec) where
@@ -38,7 +46,8 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 
 import Haskoki.Recipe.Pbe
-  ( PbeKind (..)
+  ( PbeKdf (..)
+  , PbeKind (..)
   , PbeRecipe (..)
   , decodePbeParams
   , encodePbeParams
@@ -47,6 +56,7 @@ import Haskoki.Recipe.Pbe
   , pbeCodec
   , pbeDesParity
   , pbeIvLen
+  , pbeKdf
   , pbeKeyLen
   , pbeNeedsParity
   , pbeParamsValid
@@ -58,13 +68,15 @@ import Haskoki.Registry.Types (MechanismId (..), ParameterCodec (..))
 
 spec :: TestTree
 spec = testGroup "RecipePbeSpec"
-  [ testCase "table carries the seven PBE rows" $ do
+  [ testCase "table carries the eleven PBE rows" $ do
       let names = map pbeName pbeRecipes
       assertEqual "rows"
         [ "CKM_PBE_SHA1_DES3_EDE_CBC", "CKM_PBE_SHA1_DES2_EDE_CBC"
         , "CKM_PBE_SHA1_CAST128_CBC", "CKM_PBE_SHA1_RC4_128"
         , "CKM_PBE_SHA1_RC4_40", "CKM_PBE_SHA1_RC2_128_CBC"
-        , "CKM_PBE_SHA1_RC2_40_CBC"
+        , "CKM_PBE_SHA1_RC2_40_CBC", "CKM_PBE_MD5_DES_CBC"
+        , "CKM_PBE_MD5_CAST_CBC", "CKM_PBE_MD5_CAST3_CBC"
+        , "CKM_PBE_MD5_CAST128_CBC"
         ] names
       assertEqual "codec" (ParameterCodec "pbe-params" 1) pbeCodec
   , testCase "id resolution matches the table" $ do
@@ -82,6 +94,14 @@ spec = testGroup "RecipePbeSpec"
       assertEqual "rc4-40 kind" (Just PbeSha1Rc4_40) (pbeKind <$> pbeRecipeFor rc4s)
       assertEqual "rc2-128 kind" (Just PbeSha1Rc2_128) (pbeKind <$> pbeRecipeFor rc2b)
       assertEqual "rc2-40 kind" (Just PbeSha1Rc2_40) (pbeKind <$> pbeRecipeFor rc2s)
+      let md5d = MechanismId (mustGeneratedId "CKM_PBE_MD5_DES_CBC")
+          md5c = MechanismId (mustGeneratedId "CKM_PBE_MD5_CAST_CBC")
+          md53 = MechanismId (mustGeneratedId "CKM_PBE_MD5_CAST3_CBC")
+          md5c128 = MechanismId (mustGeneratedId "CKM_PBE_MD5_CAST128_CBC")
+      assertEqual "md5-des kind" (Just PbeMd5Des) (pbeKind <$> pbeRecipeFor md5d)
+      assertEqual "md5-cast kind" (Just PbeMd5Cast) (pbeKind <$> pbeRecipeFor md5c)
+      assertEqual "md5-cast3 kind" (Just PbeMd5Cast3) (pbeKind <$> pbeRecipeFor md53)
+      assertEqual "md5-cast128 kind" (Just PbeMd5Cast128) (pbeKind <$> pbeRecipeFor md5c128)
       assertEqual "wild misses" Nothing
         (pbeRecipeFor (MechanismId 0x999 :: MechanismId))
   , testCase "key and IV lengths are fixed per row" $ do
@@ -106,6 +126,24 @@ spec = testGroup "RecipePbeSpec"
       assertEqual "rc4-40 raw" False (pbeNeedsParity PbeSha1Rc4_40)
       assertEqual "rc2-128 raw" False (pbeNeedsParity PbeSha1Rc2_128)
       assertEqual "rc2-40 raw" False (pbeNeedsParity PbeSha1Rc2_40)
+      assertEqual "md5-des key" 8 (pbeKeyLen PbeMd5Des)
+      assertEqual "md5-cast key" 5 (pbeKeyLen PbeMd5Cast)
+      assertEqual "md5-cast3 key" 10 (pbeKeyLen PbeMd5Cast3)
+      assertEqual "md5-cast128 key" 16 (pbeKeyLen PbeMd5Cast128)
+      assertEqual "md5-des iv" 8 (pbeIvLen PbeMd5Des)
+      assertEqual "md5-cast iv" 8 (pbeIvLen PbeMd5Cast)
+      assertEqual "md5-cast3 iv" 8 (pbeIvLen PbeMd5Cast3)
+      assertEqual "md5-cast128 iv" 8 (pbeIvLen PbeMd5Cast128)
+      assertEqual "md5-des parity" True (pbeNeedsParity PbeMd5Des)
+      assertEqual "md5-cast raw" False (pbeNeedsParity PbeMd5Cast)
+      assertEqual "md5-cast3 raw" False (pbeNeedsParity PbeMd5Cast3)
+      assertEqual "md5-cast128 raw" False (pbeNeedsParity PbeMd5Cast128)
+      assertEqual "des3 kdf" PbePkcs12Sha1 (pbeKdf PbeDes3)
+      assertEqual "rc4-40 kdf" PbePkcs12Sha1 (pbeKdf PbeSha1Rc4_40)
+      assertEqual "md5-des kdf" PbePbkdf1Md5 (pbeKdf PbeMd5Des)
+      assertEqual "md5-cast kdf" PbePbkdf1Md5 (pbeKdf PbeMd5Cast)
+      assertEqual "md5-cast3 kdf" PbePbkdf1Md5 (pbeKdf PbeMd5Cast3)
+      assertEqual "md5-cast128 kdf" PbePbkdf1Md5 (pbeKdf PbeMd5Cast128)
   , testCase "frame round-trips the lane fixtures" $ do
       let frame = encodePbeParams 1024 pw salt
       case decodePbeParams frame of
@@ -156,6 +194,14 @@ spec = testGroup "RecipePbeSpec"
       assertEqual "rc4-40 key" "72b93bb1f7" (hex rc4_40Key)
       assertEqual "rc2-128 key" "72b93bb1f796b464f6d80317b27e0fe8" (hex rc2_128Key)
       assertEqual "rc2-40 key" "72b93bb1f7" (hex rc2_40Key)
+      assertEqual "md5-des key" "fed54f04efa44a7a" (hex md5DesKey)
+      assertEqual "md5-des iv" "f3a2adee8fa98e67" (hex md5DesIv)
+      assertEqual "md5-cast key" "ffd54e05ee" (hex md5CastKey)
+      assertEqual "md5-cast iv" "a44b7bf3a2adee8f" (hex md5CastIv)
+      assertEqual "md5-cast3 key" "ffd54e05eea44b7bf3a2" (hex md5Cast3Key)
+      assertEqual "md5-cast3 iv" "adee8fa98e6769fb" (hex md5Cast3Iv)
+      assertEqual "md5-cast128 key" "ffd54e05eea44b7bf3a2adee8fa98e67" (hex md5Cast128Key)
+      assertEqual "md5-cast128 iv" "69fba8ad294fa220" (hex md5Cast128Iv)
   ]
   where
     pw = "TestPassword123!" :: BS.ByteString
@@ -177,6 +223,23 @@ spec = testGroup "RecipePbeSpec"
     rc4_40Key = BS.take 5 des3PreParity
     rc2_128Key = BS.take 16 des3PreParity
     rc2_40Key = BS.take 5 des3PreParity
+    md5d1 = BS.pack
+      [ 0xff, 0xd5, 0x4e, 0x05, 0xee, 0xa4, 0x4b, 0x7b
+      , 0xf3, 0xa2, 0xad, 0xee, 0x8f, 0xa9, 0x8e, 0x67
+      ]
+    md5d2 = BS.pack
+      [ 0x69, 0xfb, 0xa8, 0xad, 0x29, 0x4f, 0xa2, 0x20
+      , 0xd9, 0x6d, 0xc7, 0x4e, 0xb7, 0xcc, 0xb2, 0x02
+      ]
+    md5stream = md5d1 <> md5d2
+    md5DesKey = pbeDesParity (BS.take 8 md5stream)
+    md5DesIv = BS.take 8 (BS.drop 8 md5stream)
+    md5CastKey = BS.take 5 md5stream
+    md5CastIv = BS.take 8 (BS.drop 5 md5stream)
+    md5Cast3Key = BS.take 10 md5stream
+    md5Cast3Iv = BS.take 8 (BS.drop 10 md5stream)
+    md5Cast128Key = BS.take 16 md5stream
+    md5Cast128Iv = BS.take 8 (BS.drop 16 md5stream)
     hex = concatMap (flip showHex2 "") . BS.unpack
     showHex2 w rest =
       let hi = "0123456789abcdef" !! fromIntegral (w `div` 16)
