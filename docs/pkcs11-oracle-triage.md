@@ -100,6 +100,41 @@ KAT lane (same bundle, rc2): 116611 tests — 83491 passed,
 (`/tmp/pkcs11-ws/out-rc2/kat/pkcs11-kat-results.json`;
 `incomplete: false`). No new findings.
 
+## 11s-1 fast lane (rc2 oracle, 2026-09-29)
+
+Bundle `dist-release/haskoki-0.3.0.0` at `ddabbe4` (11s-1
+AES-KW-PKCS7 wrap row, 311/464), oracle pkcs11-check
+0.2.2rc2 (`/tmp/pkcs11-ws/run-lane-rc2.sh fast`, results
+`/tmp/pkcs11-ws/out-rc2/fast/pkcs11-fast-results.json`).
+
+Single run: 10077 tests — 5104 passed, 0 failed,
+640 xfailed, 4333 skipped, 0 crashed. Delta vs 11r:
++9 passed, +5 xfailed, +10 skipped, +24 total, zero
+failures (aes_modes +2 passed/-2 skipped; mech_flags
++4 passed/+5 skipped; mech_negative +2 passed/+5
+xfailed/+4 skipped; mech_probe +3 skipped; mech_wrap
++1 passed). The 5 new xfails are PKCS7 negative legs
+in standing oracle buckets: 4x keygen-harness setup
+rejects (CKR_MECHANISM_INVALID — a non-keygen
+mechanism cannot provision the keygen-based negative
+setup, the file-wide pattern), 1x wrap_without_flag
+(the oracle's expected-RV set is empty —
+`_NO_SPECIFIC_WRAP_PERMISSION_RVS = ()` — so any
+honest refusal xfails "for later investigation"; our
+CKR_KEY_FUNCTION_NOT_PERMITTED matches the 4 served
+siblings AES_CBC/KW/KWP/PAD exactly). No new
+oracle-side findings: no upstream filing from this
+round. Independent KAT evidence for the new row lives
+in-repo: provider-cross-checked vectors
+(caseAesWrapPkcs7) plus consumer_roundtrip C legs
+incl. wrong-IV-fails-closed.
+
+KAT lane (same bundle, rc2): 116635 tests — 83500
+passed, 0 failed, 0 crashed, 1900 xfailed, 31235
+skipped (`/tmp/pkcs11-ws/out-rc2/kat/pkcs11-kat-results.json`;
+`incomplete: false`). Per-file delta identical to
+fast. No new findings.
+
 ## Round 1: template-count bound, class defaulting, class range
 
 - `C_GetAttributeValue` refuses template counts above the 64-entry bound
