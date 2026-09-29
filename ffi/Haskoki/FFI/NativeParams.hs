@@ -171,6 +171,7 @@ module Haskoki.FFI.NativeParams
   , ssl3MasterNativeSize
   , pbeStructToCanonical
   , normalizePbeParams
+  , normalizePbeParamsMaybeIv
   , pbeParamsNativeSize
   , tlsKeyMatNativeSize
   , tls12KeyMatNativeSize
@@ -1585,7 +1586,20 @@ pbeStructToCanonical iters pw salt = Just (encodePbeParams iters pw salt)
 -- output for the served rows), and null-with-length or
 -- over-bound password\/salt chases refuse ('Nothing').
 normalizePbeParams :: Ptr Word8 -> Word64 -> IO (Maybe (ByteString, Ptr Word8))
-normalizePbeParams pParams paramsLen
+normalizePbeParams pParams paramsLen = do
+  m <- normalizePbeParamsMaybeIv pParams paramsLen
+  pure $ case m of
+    Just (b, Just slot) -> Just (b, slot)
+    _ -> Nothing
+
+-- | Normalize one PBE keygen struct, accepting a null IV
+-- buffer for the no-IV rows (RC4): the canonical image plus
+-- the IV slot when present ('Nothing' slot with canonical
+-- bytes for the null-IV shape). Wrong-sized images and
+-- null-with-length or over-bound password\/salt chases
+-- refuse ('Nothing').
+normalizePbeParamsMaybeIv :: Ptr Word8 -> Word64 -> IO (Maybe (ByteString, Maybe (Ptr Word8)))
+normalizePbeParamsMaybeIv pParams paramsLen
   | paramsLen /= fromIntegral pbeParamsNativeSize = pure Nothing
   | otherwise = do
       pIv <- peekByteOff pParams 0
@@ -1598,7 +1612,9 @@ normalizePbeParams pParams paramsLen
       mSalt <- chaseBytes pSalt saltLen
       case (mPw, mSalt, pIv == (nullPtr :: Ptr Word8)) of
         (Just pw, Just salt, False) ->
-          pure ((, pIv) <$> pbeStructToCanonical iters pw salt)
+          pure ((, Just pIv) <$> pbeStructToCanonical iters pw salt)
+        (Just pw, Just salt, True) ->
+          pure ((, Nothing) <$> pbeStructToCanonical iters pw salt)
         _ -> pure Nothing
 
 -- | Normalize one SP 800-108 KDF struct: the native image at

@@ -286,7 +286,7 @@ import Haskoki.Recipe.TlsKeyMat
   , tlsKeyMatRecipeFor
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
-import Haskoki.Recipe.Pbe (decodePbeParams, maxPbeIters, pbeDesParity)
+import Haskoki.Recipe.Pbe (PbeRecipe (pbeKind), decodePbeParams, maxPbeIters, pbeDesParity, pbeIvLen, pbeKeyLen, pbeNeedsParity, pbeRecipeFor)
 import Haskoki.Recipe.Ssl3
   ( Ssl3Kind (..)
   , Ssl3Recipe (ssl3Kind)
@@ -393,6 +393,11 @@ import Haskoki.Operation.KeyManagement
   , pbkd2KeyGenMech
   , pbeDes3KeyGenMech
   , pbeDes2KeyGenMech
+  , pbeSha1Cast128KeyGenMech
+  , pbeSha1Rc4_128KeyGenMech
+  , pbeSha1Rc4_40KeyGenMech
+  , pbeSha1Rc2_128KeyGenMech
+  , pbeSha1Rc2_40KeyGenMech
   , pbkd2KeygenMaxBytes
   )
 import Haskoki.Operation.State (CipherDir (..))
@@ -2037,7 +2042,12 @@ runEffect env resolve fx = case fx of
     , mech /= wtlsPremasterKeyGenMech
     , mech /= pbkd2KeyGenMech
     , mech /= pbeDes3KeyGenMech
-    , mech /= pbeDes2KeyGenMech -> pure (GotCryptoError (CryptoFailed
+    , mech /= pbeDes2KeyGenMech
+    , mech /= pbeSha1Cast128KeyGenMech
+    , mech /= pbeSha1Rc4_128KeyGenMech
+    , mech /= pbeSha1Rc4_40KeyGenMech
+    , mech /= pbeSha1Rc2_128KeyGenMech
+    , mech /= pbeSha1Rc2_40KeyGenMech -> pure (GotCryptoError (CryptoFailed
         "driver: keygen takes no mechanism params"))
     | otherwise -> case decodeGenArgs input of
         Nothing -> pure (GotCryptoError (CryptoFailed
@@ -2088,11 +2098,17 @@ runEffect env resolve fx = case fx of
               Nothing -> pure (GotCryptoError (CryptoFailed
                 "driver: malformed PBKD2 keygen params"))
           (m, GenPbe n)
-            | m == pbeDes3KeyGenMech || m == pbeDes2KeyGenMech ->
+            | Just r <- pbeRecipeFor m
+            , m == pbeDes3KeyGenMech || m == pbeDes2KeyGenMech
+              || m == pbeSha1Cast128KeyGenMech || m == pbeSha1Rc4_128KeyGenMech
+              || m == pbeSha1Rc4_40KeyGenMech || m == pbeSha1Rc2_128KeyGenMech
+              || m == pbeSha1Rc2_40KeyGenMech ->
                 case decodePbeParams params of
                   Just (iters, pw, salt)
                     | iters >= 1 && iters <= fromIntegral maxPbeIters
-                    , n == 16 || n == 24 -> runPbe iters pw salt n
+                    , n == pbeKeyLen (pbeKind r) ->
+                        runPbe iters pw salt n
+                          (pbeNeedsParity (pbeKind r)) (pbeIvLen (pbeKind r))
                     | otherwise -> pure (GotCryptoError (CryptoFailed
                         "driver: PBE iterations or length out of range"))
                   Nothing -> pure (GotCryptoError (CryptoFailed
@@ -2931,19 +2947,27 @@ runEffect env resolve fx = case fx of
         prfOf msg = macSign env (MacHMAC prf Nothing) pwd msg
     -- | PBE keygen effects: the §6.38 PKCS#12 construction over
     -- SHA-1 (u = 20, v = 64): ID 1 derives the key
-    -- (parity-adjusted), ID 2 the 8-byte IV. Digests run
-    -- through the provider; the B-feedback addition is pure
-    -- byte arithmetic. The answer frames the key\/IV pair.
-    runPbe :: Word64 -> ByteString -> ByteString -> Int -> IO CryptoResult
-    runPbe iters pw salt keyLen = do
+    -- (parity-adjusted for the DES rows only), ID 2 the IV.
+    -- Digests run through the provider; the B-feedback
+    -- addition is pure byte arithmetic. IV rows answer the
+    -- framed key\/IV pair; no-IV rows (RC4) answer the lone
+    -- key.
+    runPbe :: Word64 -> ByteString -> ByteString -> Int -> Bool -> Int -> IO CryptoResult
+    runPbe iters pw salt keyLen parity ivLen = do
       rK <- pbeKdf 1 keyLen
-      rV <- pbeKdf 2 8
-      pure $ case (rK, rV) of
-        (EngineOk k, EngineOk v) ->
-          GotBytes (encodeKeyPair (pbeDesParity k) (Just v))
-        (EngineFail err, _) -> GotCryptoError (toCryptoError err)
-        (_, EngineFail err) -> GotCryptoError (toCryptoError err)
+      if ivLen > 0
+        then do
+          rV <- pbeKdf 2 ivLen
+          pure $ case (rK, rV) of
+            (EngineOk k, EngineOk v) ->
+              GotBytes (encodeKeyPair (finish k) (Just v))
+            (EngineFail err, _) -> GotCryptoError (toCryptoError err)
+            (_, EngineFail err) -> GotCryptoError (toCryptoError err)
+        else pure $ case rK of
+          EngineOk k -> toKeyPair (EngineOk (KeyBytes (finish k), Nothing))
+          EngineFail err -> GotCryptoError (toCryptoError err)
       where
+        finish = if parity then pbeDesParity else id
         pbeKdf :: Word8 -> Int -> IO (EngineResult ByteString)
         pbeKdf ident n = loop n (expand salt <> expand pw) []
           where

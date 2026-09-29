@@ -2146,6 +2146,44 @@ caseDriverPbe = withBackend $ \env -> do
         assertEqual "des2 iv" (hex "f7eb3b1c7d9ce2a0") iv
       other -> assertFailure ("gen misframed, got: " ++ show other)
     other -> assertFailure ("expected key bytes, got: " ++ show other)
+  kg5 <- gen (MechanismId 0x3a5) frame 16
+  case kg5 of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Just iv) -> do
+        assertEqual "cast128 key" (hex "72b93bb1f796b464f6d80317b27e0fe8") mat
+        assertEqual "cast128 iv" (hex "f7eb3b1c7d9ce2a0") iv
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
+  kg6 <- gen (MechanismId 0x3a6) frame 16
+  case kg6 of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Nothing) ->
+        assertEqual "rc4-128 key" (hex "72b93bb1f796b464f6d80317b27e0fe8") mat
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
+  kg7 <- gen (MechanismId 0x3a7) frame 5
+  case kg7 of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Nothing) ->
+        assertEqual "rc4-40 key" (hex "72b93bb1f7") mat
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
+  kga <- gen (MechanismId 0x3aa) frame 16
+  case kga of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Just iv) -> do
+        assertEqual "rc2-128 key" (hex "72b93bb1f796b464f6d80317b27e0fe8") mat
+        assertEqual "rc2-128 iv" (hex "f7eb3b1c7d9ce2a0") iv
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
+  kgb <- gen (MechanismId 0x3ab) frame 5
+  case kgb of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Just iv) -> do
+        assertEqual "rc2-40 key" (hex "72b93bb1f7") mat
+        assertEqual "rc2-40 iv" (hex "f7eb3b1c7d9ce2a0") iv
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
   badFrame <- gen des3 BS.empty 24
   case badFrame of
     GotCryptoError (CryptoFailed _) -> pure ()

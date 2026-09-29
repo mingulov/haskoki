@@ -331,8 +331,13 @@ caseCurated = do
     , MechanismId Gen.ckm_SHA3_512_KEY_DERIVATION
     , MechanismId Gen.ckm_SHAKE_128_KEY_DERIVATION
     , MechanismId Gen.ckm_SHAKE_256_KEY_DERIVATION
+    , MechanismId Gen.ckm_PBE_SHA1_CAST128_CBC
+    , MechanismId Gen.ckm_PBE_SHA1_RC4_128
+    , MechanismId Gen.ckm_PBE_SHA1_RC4_40
     , MechanismId Gen.ckm_PBE_SHA1_DES3_EDE_CBC
     , MechanismId Gen.ckm_PBE_SHA1_DES2_EDE_CBC
+    , MechanismId Gen.ckm_PBE_SHA1_RC2_128_CBC
+    , MechanismId Gen.ckm_PBE_SHA1_RC2_40_CBC
     , MechanismId Gen.ckm_SP800_108_COUNTER_KDF
     , MechanismId Gen.ckm_SP800_108_FEEDBACK_KDF
     , MechanismId Gen.ckm_SP800_108_DOUBLE_PIPELINE_KDF
@@ -507,11 +512,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 295 behavior + 169 catalog-only + catalog line.
+  -- schema + 300 behavior + 164 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 295
+  assertEqual "behavior line count" 300
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 169
+  assertEqual "catalog-only line count" 164
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -871,11 +876,16 @@ caseTlsKdfPromoted = do
 
 casePbePromoted :: IO ()
 casePbePromoted = do
-  -- S14: the 2 PBE behaviors (DES3, DES2) resolve with the
-  -- generate-key route and execute under caps.
+  -- S14: the 7 PBE behaviors (DES3, DES2, SHA1 CAST128/RC4/RC2)
+  -- resolve with the generate-key route and execute under caps.
   mapM_ checkOne
     [ (MechanismId 0x3a8, [OpGenerateKey])
     , (MechanismId 0x3a9, [OpGenerateKey])
+    , (MechanismId 0x3a5, [OpGenerateKey])
+    , (MechanismId 0x3a6, [OpGenerateKey])
+    , (MechanismId 0x3a7, [OpGenerateKey])
+    , (MechanismId 0x3aa, [OpGenerateKey])
+    , (MechanismId 0x3ab, [OpGenerateKey])
     ]
   where
     checkOne (mid, ops) = do
@@ -975,7 +985,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 169 (length invIds)
+  assertEqual "guard covers every catalog row" 164 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of

@@ -18,6 +18,15 @@ agrees too):
 * 0x3a8 DES3 key (parity-adjusted): 73b93bb0...
 * 0x3a8 IV: f7eb3b1c7d9ce2a0
 * 0x3a9 DES2 key (parity-adjusted): 73b93bb0... (16 bytes)
+
+Slice 11q adds the five SHA1 rows over the same KDF outputs
+(raw bytes, no parity; RC4 rows derive no IV):
+
+* 0x3a5 CAST128 key: 72b93bb1f796b464f6d80317b27e0fe8
+* 0x3a6 RC4-128 key: 72b93bb1f796b464f6d80317b27e0fe8
+* 0x3a7 RC4-40 key: 72b93bb1f7
+* 0x3aa RC2-128 key: 72b93bb1f796b464f6d80317b27e0fe8
+* 0x3ab RC2-40 key: 72b93bb1f7
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module RecipePbeSpec (spec) where
@@ -39,6 +48,7 @@ import Haskoki.Recipe.Pbe
   , pbeDesParity
   , pbeIvLen
   , pbeKeyLen
+  , pbeNeedsParity
   , pbeParamsValid
   , pbeRecipeFor
   , pbeRecipes
@@ -48,22 +58,54 @@ import Haskoki.Registry.Types (MechanismId (..), ParameterCodec (..))
 
 spec :: TestTree
 spec = testGroup "RecipePbeSpec"
-  [ testCase "table carries the two PBE rows" $ do
+  [ testCase "table carries the seven PBE rows" $ do
       let names = map pbeName pbeRecipes
-      assertEqual "rows" ["CKM_PBE_SHA1_DES3_EDE_CBC", "CKM_PBE_SHA1_DES2_EDE_CBC"] names
+      assertEqual "rows"
+        [ "CKM_PBE_SHA1_DES3_EDE_CBC", "CKM_PBE_SHA1_DES2_EDE_CBC"
+        , "CKM_PBE_SHA1_CAST128_CBC", "CKM_PBE_SHA1_RC4_128"
+        , "CKM_PBE_SHA1_RC4_40", "CKM_PBE_SHA1_RC2_128_CBC"
+        , "CKM_PBE_SHA1_RC2_40_CBC"
+        ] names
       assertEqual "codec" (ParameterCodec "pbe-params" 1) pbeCodec
   , testCase "id resolution matches the table" $ do
       let des3 = MechanismId (mustGeneratedId "CKM_PBE_SHA1_DES3_EDE_CBC")
           des2 = MechanismId (mustGeneratedId "CKM_PBE_SHA1_DES2_EDE_CBC")
+          cast5 = MechanismId (mustGeneratedId "CKM_PBE_SHA1_CAST128_CBC")
+          rc4b = MechanismId (mustGeneratedId "CKM_PBE_SHA1_RC4_128")
+          rc4s = MechanismId (mustGeneratedId "CKM_PBE_SHA1_RC4_40")
+          rc2b = MechanismId (mustGeneratedId "CKM_PBE_SHA1_RC2_128_CBC")
+          rc2s = MechanismId (mustGeneratedId "CKM_PBE_SHA1_RC2_40_CBC")
       assertEqual "des3 kind" (Just PbeDes3) (pbeKind <$> pbeRecipeFor des3)
       assertEqual "des2 kind" (Just PbeDes2) (pbeKind <$> pbeRecipeFor des2)
+      assertEqual "cast128 kind" (Just PbeSha1Cast128) (pbeKind <$> pbeRecipeFor cast5)
+      assertEqual "rc4-128 kind" (Just PbeSha1Rc4_128) (pbeKind <$> pbeRecipeFor rc4b)
+      assertEqual "rc4-40 kind" (Just PbeSha1Rc4_40) (pbeKind <$> pbeRecipeFor rc4s)
+      assertEqual "rc2-128 kind" (Just PbeSha1Rc2_128) (pbeKind <$> pbeRecipeFor rc2b)
+      assertEqual "rc2-40 kind" (Just PbeSha1Rc2_40) (pbeKind <$> pbeRecipeFor rc2s)
       assertEqual "wild misses" Nothing
         (pbeRecipeFor (MechanismId 0x999 :: MechanismId))
   , testCase "key and IV lengths are fixed per row" $ do
       assertEqual "des3 key" 24 (pbeKeyLen PbeDes3)
       assertEqual "des2 key" 16 (pbeKeyLen PbeDes2)
+      assertEqual "cast128 key" 16 (pbeKeyLen PbeSha1Cast128)
+      assertEqual "rc4-128 key" 16 (pbeKeyLen PbeSha1Rc4_128)
+      assertEqual "rc4-40 key" 5 (pbeKeyLen PbeSha1Rc4_40)
+      assertEqual "rc2-128 key" 16 (pbeKeyLen PbeSha1Rc2_128)
+      assertEqual "rc2-40 key" 5 (pbeKeyLen PbeSha1Rc2_40)
       assertEqual "des3 iv" 8 (pbeIvLen PbeDes3)
       assertEqual "des2 iv" 8 (pbeIvLen PbeDes2)
+      assertEqual "cast128 iv" 8 (pbeIvLen PbeSha1Cast128)
+      assertEqual "rc4-128 iv" 0 (pbeIvLen PbeSha1Rc4_128)
+      assertEqual "rc4-40 iv" 0 (pbeIvLen PbeSha1Rc4_40)
+      assertEqual "rc2-128 iv" 8 (pbeIvLen PbeSha1Rc2_128)
+      assertEqual "rc2-40 iv" 8 (pbeIvLen PbeSha1Rc2_40)
+      assertEqual "des3 parity" True (pbeNeedsParity PbeDes3)
+      assertEqual "des2 parity" True (pbeNeedsParity PbeDes2)
+      assertEqual "cast128 raw" False (pbeNeedsParity PbeSha1Cast128)
+      assertEqual "rc4-128 raw" False (pbeNeedsParity PbeSha1Rc4_128)
+      assertEqual "rc4-40 raw" False (pbeNeedsParity PbeSha1Rc4_40)
+      assertEqual "rc2-128 raw" False (pbeNeedsParity PbeSha1Rc2_128)
+      assertEqual "rc2-40 raw" False (pbeNeedsParity PbeSha1Rc2_40)
   , testCase "frame round-trips the lane fixtures" $ do
       let frame = encodePbeParams 1024 pw salt
       case decodePbeParams frame of
@@ -109,6 +151,11 @@ spec = testGroup "RecipePbeSpec"
       assertEqual "des3 iv" "f7eb3b1c7d9ce2a0" (hex des3Iv)
       assertEqual "des2 key" "73b93bb0f797b564f7d90216b37f0ee9" (hex des2Key)
       assertEqual "des2 iv" "f7eb3b1c7d9ce2a0" (hex des3Iv)
+      assertEqual "cast128 key" "72b93bb1f796b464f6d80317b27e0fe8" (hex cast128Key)
+      assertEqual "rc4-128 key" "72b93bb1f796b464f6d80317b27e0fe8" (hex rc4_128Key)
+      assertEqual "rc4-40 key" "72b93bb1f7" (hex rc4_40Key)
+      assertEqual "rc2-128 key" "72b93bb1f796b464f6d80317b27e0fe8" (hex rc2_128Key)
+      assertEqual "rc2-40 key" "72b93bb1f7" (hex rc2_40Key)
   ]
   where
     pw = "TestPassword123!" :: BS.ByteString
@@ -125,6 +172,11 @@ spec = testGroup "RecipePbeSpec"
       ]
     des3Iv = BS.pack [0xf7, 0xeb, 0x3b, 0x1c, 0x7d, 0x9c, 0xe2, 0xa0]
     des2Key = BS.take 16 des3Key
+    cast128Key = BS.take 16 des3PreParity
+    rc4_128Key = BS.take 16 des3PreParity
+    rc4_40Key = BS.take 5 des3PreParity
+    rc2_128Key = BS.take 16 des3PreParity
+    rc2_40Key = BS.take 5 des3PreParity
     hex = concatMap (flip showHex2 "") . BS.unpack
     showHex2 w rest =
       let hi = "0123456789abcdef" !! fromIntegral (w `div` 16)

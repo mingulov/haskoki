@@ -3822,6 +3822,109 @@ int main(int argc, char **argv) {
         CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && bad == 0,
                "PBE null IV refused typed");
         pp.pInitVector = pbeIv;
+        /* 11q SHA1 rows: CAST128/RC2 take raw KDF bytes plus the
+         * IV; RC4 rows take raw bytes with a NULL IV and publish
+         * handle-only. A present IV on an RC4 row refuses typed. */
+        {
+          CK_BYTE pbeWantRaw16[] = { 0x72, 0xb9, 0x3b, 0xb1, 0xf7, 0x96, 0xb4, 0x64,
+                                     0xf6, 0xd8, 0x03, 0x17, 0xb2, 0x7e, 0x0f, 0xe8 };
+          CK_BYTE pbeWantRaw5[] = { 0x72, 0xb9, 0x3b, 0xb1, 0xf7 };
+          CK_KEY_TYPE c5kt = CKK_CAST128, r4kt = CKK_RC4, r2kt = CKK_RC2;
+          CK_ULONG len5 = 5;
+          CK_ATTRIBUTE t5[] = {
+            { CKA_CLASS, &ckcls, sizeof(ckcls) },
+            { CKA_KEY_TYPE, &c5kt, sizeof(c5kt) },
+            { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+            { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+          };
+          CK_ATTRIBUTE t6[] = {
+            { CKA_CLASS, &ckcls, sizeof(ckcls) },
+            { CKA_KEY_TYPE, &r4kt, sizeof(r4kt) },
+            { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+            { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+          };
+          CK_ATTRIBUTE ta[] = {
+            { CKA_CLASS, &ckcls, sizeof(ckcls) },
+            { CKA_KEY_TYPE, &r2kt, sizeof(r2kt) },
+            { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+            { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+          };
+          CK_ATTRIBUTE tb[] = {
+            { CKA_CLASS, &ckcls, sizeof(ckcls) },
+            { CKA_KEY_TYPE, &r2kt, sizeof(r2kt) },
+            { CKA_VALUE_LEN, &len5, sizeof(len5) },
+            { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+            { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+          };
+          CK_OBJECT_HANDLE k5 = 0, k6 = 0, k7 = 0, ka = 0, kb = 0;
+          gpbe.mechanism = CKM_PBE_SHA1_CAST128_CBC;
+          memset(pbeIv, 0, sizeof(pbeIv));
+          rv = f->C_GenerateKey(wsess, &gpbe, t5, 4, &k5);
+          CHECKC(rv == CKR_OK && k5 != 0, "PBE-CAST128 keygen ok");
+          if (!isProxy) {
+            CHECKC(memcmp(pbeIv, pbeWantIv, 8) == 0, "PBE-CAST128 IV matches KAT");
+          }
+          pbeGet[0].type = CKA_VALUE;
+          pbeGet[0].pValue = pbeGot;
+          pbeGet[0].ulValueLen = sizeof(pbeGot);
+          rv = f->C_GetAttributeValue(wsess, k5, pbeGet, 1);
+          CHECKC(rv == CKR_OK && pbeGet[0].ulValueLen == 16 &&
+                 memcmp(pbeGot, pbeWantRaw16, 16) == 0, "PBE-CAST128 key matches KAT");
+          gpbe.mechanism = CKM_PBE_SHA1_RC4_128;
+          pp.pInitVector = NULL_PTR;
+          rv = f->C_GenerateKey(wsess, &gpbe, t6, 4, &k6);
+          CHECKC(rv == CKR_OK && k6 != 0, "PBE-RC4-128 null-IV keygen ok");
+          pbeGet[0].type = CKA_VALUE;
+          pbeGet[0].pValue = pbeGot;
+          pbeGet[0].ulValueLen = sizeof(pbeGot);
+          rv = f->C_GetAttributeValue(wsess, k6, pbeGet, 1);
+          CHECKC(rv == CKR_OK && pbeGet[0].ulValueLen == 16 &&
+                 memcmp(pbeGot, pbeWantRaw16, 16) == 0, "PBE-RC4-128 key matches KAT");
+          gpbe.mechanism = CKM_PBE_SHA1_RC4_40;
+          rv = f->C_GenerateKey(wsess, &gpbe, t6, 4, &k7);
+          CHECKC(rv == CKR_OK && k7 != 0, "PBE-RC4-40 null-IV keygen ok");
+          pbeGet[0].type = CKA_VALUE;
+          pbeGet[0].pValue = pbeGot;
+          pbeGet[0].ulValueLen = sizeof(pbeGot);
+          rv = f->C_GetAttributeValue(wsess, k7, pbeGet, 1);
+          CHECKC(rv == CKR_OK && pbeGet[0].ulValueLen == 5 &&
+                 memcmp(pbeGot, pbeWantRaw5, 5) == 0, "PBE-RC4-40 key matches KAT");
+          pp.pInitVector = pbeIv;
+          rv = f->C_GenerateKey(wsess, &gpbe, t6, 4, &bad);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && bad == 0,
+                 "PBE-RC4 IV refused typed");
+          gpbe.mechanism = CKM_PBE_SHA1_RC2_128_CBC;
+          memset(pbeIv, 0, sizeof(pbeIv));
+          rv = f->C_GenerateKey(wsess, &gpbe, ta, 4, &ka);
+          CHECKC(rv == CKR_OK && ka != 0, "PBE-RC2-128 keygen ok");
+          if (!isProxy) {
+            CHECKC(memcmp(pbeIv, pbeWantIv, 8) == 0, "PBE-RC2-128 IV matches KAT");
+          }
+          pbeGet[0].type = CKA_VALUE;
+          pbeGet[0].pValue = pbeGot;
+          pbeGet[0].ulValueLen = sizeof(pbeGot);
+          rv = f->C_GetAttributeValue(wsess, ka, pbeGet, 1);
+          CHECKC(rv == CKR_OK && pbeGet[0].ulValueLen == 16 &&
+                 memcmp(pbeGot, pbeWantRaw16, 16) == 0, "PBE-RC2-128 key matches KAT");
+          gpbe.mechanism = CKM_PBE_SHA1_RC2_40_CBC;
+          memset(pbeIv, 0, sizeof(pbeIv));
+          rv = f->C_GenerateKey(wsess, &gpbe, tb, 5, &kb);
+          CHECKC(rv == CKR_OK && kb != 0, "PBE-RC2-40 keygen ok");
+          if (!isProxy) {
+            CHECKC(memcmp(pbeIv, pbeWantIv, 8) == 0, "PBE-RC2-40 IV matches KAT");
+          }
+          pbeGet[0].type = CKA_VALUE;
+          pbeGet[0].pValue = pbeGot;
+          pbeGet[0].ulValueLen = sizeof(pbeGot);
+          rv = f->C_GetAttributeValue(wsess, kb, pbeGet, 1);
+          CHECKC(rv == CKR_OK && pbeGet[0].ulValueLen == 5 &&
+                 memcmp(pbeGot, pbeWantRaw5, 5) == 0, "PBE-RC2-40 key matches KAT");
+          f->C_DestroyObject(wsess, k5);
+          f->C_DestroyObject(wsess, k6);
+          f->C_DestroyObject(wsess, k7);
+          f->C_DestroyObject(wsess, ka);
+          f->C_DestroyObject(wsess, kb);
+        }
         f->C_DestroyObject(wsess, k3);
         f->C_DestroyObject(wsess, k2);
       }

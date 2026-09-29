@@ -55,6 +55,7 @@ import Haskoki.FFI.NativeParams
   , normalizeSsl3KeyMatParams
   , ssl3MasterNativeSize
   , normalizePbeParams
+  , normalizePbeParamsMaybeIv
   , pbeParamsNativeSize
   , tlsKeyMatNativeSize
   , tls12KeyMatNativeSize
@@ -1310,6 +1311,29 @@ spec = testGroup "native mechanism params"
         pokeByteOff p psz (nullPtr :: Ptr Word8)
         normalizePbeParams p (fromIntegral pbeParamsNativeSize)
       assertEqual "null password refused" Nothing nullPw
+  , testCase "pbe null-iv struct canonicalizes without a slot" $ do
+      let w = sizeOf (undefined :: CULong)
+          psz = sizeOf (undefined :: Ptr Word8)
+          pw = "TestPassword123!" :: BS.ByteString
+          salt = BS.pack [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]
+          mid = MechanismId (mustGeneratedId "CKM_PBE_SHA1_RC4_128")
+      got <- BS.useAsCStringLen pw $ \(pp, _) ->
+        BS.useAsCStringLen salt $ \(sp, _) ->
+          allocaBytes pbeParamsNativeSize $ \p -> do
+            pokeByteOff p 0 (nullPtr :: Ptr Word8)
+            pokeByteOff p psz (castPtr pp :: Ptr Word8)
+            pokeByteOff p (psz + w) (CULong 16)
+            pokeByteOff p (psz + 2 * w) (castPtr sp :: Ptr Word8)
+            pokeByteOff p (psz + 3 * w) (CULong 8)
+            pokeByteOff p (psz + 4 * w) (CULong 1024)
+            normalizePbeParamsMaybeIv p (fromIntegral pbeParamsNativeSize)
+      case got of
+        Just (canon, Nothing) -> do
+          assertEqual "canonical" (encodePbeParams 1024 pw salt) canon
+          case pbeRecipeFor mid of
+            Just r -> assertEqual "recipe accepts" True (pbeParamsValid r canon)
+            Nothing -> fail "pbe recipe missing"
+        other -> fail ("null-iv shape refused: " ++ show (fmap fst other))
   , testCase "sp800 additional-keys chase feeds templates plus slots" $ do
       let w = sizeOf (undefined :: CULong)
           pw = sizeOf (undefined :: Ptr Word8)

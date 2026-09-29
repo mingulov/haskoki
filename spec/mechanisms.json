@@ -830,7 +830,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11o): unsupported-with-reason. X9.31 keygen constrains prime selection (p-1/p+1 divisibility criteria); the pinned provider exposes no X9.31 keygen parameter through the modern provider API \u2014 only the deprecated low-level RSA_X931_generate_key_ex, which this codebase bans (provider-based EVP_PKEY only). The X9.31 sign rows served in this slice run on ordinary RSA keys.",
+      "notes": "Stance (slice 11o): unsupported-with-reason. X9.31 keygen constrains prime selection (p-1/p+1 divisibility criteria); the pinned provider exposes no X9.31 keygen parameter through the modern provider API — only the deprecated low-level RSA_X931_generate_key_ex, which this codebase bans (provider-based EVP_PKEY only). The X9.31 sign rows served in this slice run on ordinary RSA keys.",
       "numeric_id": "0x0000000a",
       "routes": [],
       "source_refs": [
@@ -877,7 +877,7 @@
         "min_key_size": 512,
         "max_key_size": 4096
       },
-      "notes": "RSA-X9.31 recipe (core/Haskoki/Recipe/RsaX931.hs): the raw row signs caller-hashed digests over no-params/1; the input length selects the X9.31 hash id (20/32/48/64 bytes map to SHA-1/SHA-256/SHA-384/SHA-512, anything else refuses \u2014 the pinned provider has no hash id for it, proven by probe). The provider needs the digest set before the pad mode. Real execution pinned (OpenSSLSpec caseRsaX931Vectors: deterministic CLI interop vector replayed byte-exact plus per-length roundtrips); synthetic per-shape constructions pinned (SyntheticSpec caseX931Roundtrip); init enforces empty params (OperationSpec caseX931InitParams, RecipeRsaX931Spec).",
+      "notes": "RSA-X9.31 recipe (core/Haskoki/Recipe/RsaX931.hs): the raw row signs caller-hashed digests over no-params/1; the input length selects the X9.31 hash id (20/32/48/64 bytes map to SHA-1/SHA-256/SHA-384/SHA-512, anything else refuses — the pinned provider has no hash id for it, proven by probe). The provider needs the digest set before the pad mode. Real execution pinned (OpenSSLSpec caseRsaX931Vectors: deterministic CLI interop vector replayed byte-exact plus per-length roundtrips); synthetic per-shape constructions pinned (SyntheticSpec caseX931Roundtrip); init enforces empty params (OperationSpec caseX931InitParams, RecipeRsaX931Spec).",
       "numeric_id": "0x0000000b",
       "routes": [
         {
@@ -2473,7 +2473,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
       "numeric_id": "0x0000001f",
       "routes": [],
       "source_refs": [
@@ -2650,7 +2650,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000023",
       "routes": [],
       "source_refs": [
@@ -2678,7 +2678,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000024",
       "routes": [],
       "source_refs": [
@@ -2706,7 +2706,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000025",
       "routes": [],
       "source_refs": [
@@ -2734,7 +2734,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000026",
       "routes": [],
       "source_refs": [
@@ -2762,7 +2762,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000027",
       "routes": [],
       "source_refs": [
@@ -2790,7 +2790,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000028",
       "routes": [],
       "source_refs": [
@@ -2818,7 +2818,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000029",
       "routes": [],
       "source_refs": [
@@ -2846,7 +2846,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
       "numeric_id": "0x0000002a",
       "routes": [],
       "source_refs": [
@@ -2874,7 +2874,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
       "numeric_id": "0x0000002b",
       "routes": [],
       "source_refs": [
@@ -2902,7 +2902,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for ML-DSA operations, and DIY domain separation outside the provider would not be HashML-DSA, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
       "numeric_id": "0x0000002c",
       "routes": [],
       "source_refs": [
@@ -3235,7 +3235,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the hybrid derive needs the MQV two-key agreement plus a second derive leg; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the hybrid derive needs the MQV two-key agreement plus a second derive leg; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only — `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000032",
       "routes": [],
       "source_refs": [
@@ -3263,7 +3263,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only — `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000033",
       "routes": [],
       "source_refs": [
@@ -3291,7 +3291,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000034",
       "routes": [],
       "source_refs": [
@@ -3319,7 +3319,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000036",
       "routes": [],
       "source_refs": [
@@ -3347,7 +3347,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000037",
       "routes": [],
       "source_refs": [
@@ -3375,7 +3375,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000038",
       "routes": [],
       "source_refs": [
@@ -3403,7 +3403,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
       "numeric_id": "0x00000039",
       "routes": [],
       "source_refs": [
@@ -3431,7 +3431,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
       "numeric_id": "0x0000003a",
       "routes": [],
       "source_refs": [
@@ -3459,7 +3459,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
       "numeric_id": "0x0000003b",
       "routes": [],
       "source_refs": [
@@ -3487,7 +3487,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
       "numeric_id": "0x0000003c",
       "routes": [],
       "source_refs": [
@@ -3515,7 +3515,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
       "numeric_id": "0x0000003d",
       "routes": [],
       "source_refs": [
@@ -3543,7 +3543,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
       "numeric_id": "0x0000003e",
       "routes": [],
       "source_refs": [
@@ -3571,7 +3571,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path \u2014 the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no provider path — the pinned libcrypto refuses an explicit digest for SLH-DSA operations (probed: OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING/DigestSign with a pre-hashed input fails), and DIY domain separation outside the provider would not be HashSLH-DSA, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
       "numeric_id": "0x0000003f",
       "routes": [],
       "source_refs": [
@@ -5129,7 +5129,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.2 extended master secret P_hash with the selected hash over \"extended master secret\" ++ session_hash (RFC 7627); the DH leg takes the same pre-master input shape (own vectors \u2014 the oracle probes availability only). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
+      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.2 extended master secret P_hash with the selected hash over \"extended master secret\" ++ session_hash (RFC 7627); the DH leg takes the same pre-master input shape (own vectors — the oracle probes availability only). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
       "numeric_id": "0x00000057",
       "routes": [
         {
@@ -7229,7 +7229,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "3DES-MAC recipe (core/Haskoki/Recipe/Des3Mac.hs): plain row, empty params, first 4 bytes of the final CBC-MAC block (the OASIS half-block rule); keys two-key/three-key 3DES (16/24 bytes); input zero-pads to the 8-byte block. The driver executes CBC-MAC chaining over the backend ECB route (single-block calls, zero IV) \u2014 real 3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverDes3Mac: lane des3_mac vectors); constructions pinned (SyntheticSpec caseDes3mac); params/init/map pinned (RecipeDes3MacSpec).",
+      "notes": "3DES-MAC recipe (core/Haskoki/Recipe/Des3Mac.hs): plain row, empty params, first 4 bytes of the final CBC-MAC block (the OASIS half-block rule); keys two-key/three-key 3DES (16/24 bytes); input zero-pads to the 8-byte block. The driver executes CBC-MAC chaining over the backend ECB route (single-block calls, zero IV) — real 3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverDes3Mac: lane des3_mac vectors); constructions pinned (SyntheticSpec caseDes3mac); params/init/map pinned (RecipeDes3MacSpec).",
       "numeric_id": "0x00000134",
       "routes": [
         {
@@ -7316,7 +7316,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "3DES-MAC recipe (core/Haskoki/Recipe/Des3Mac.hs): GENERAL truncation 1..8. The driver executes CBC-MAC chaining over the backend ECB route (single-block calls, zero IV) \u2014 real 3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverDes3Mac: lane des3_mac_general vectors); constructions pinned (SyntheticSpec caseDes3mac); params/init/map pinned (RecipeDes3MacSpec).",
+      "notes": "3DES-MAC recipe (core/Haskoki/Recipe/Des3Mac.hs): GENERAL truncation 1..8. The driver executes CBC-MAC chaining over the backend ECB route (single-block calls, zero IV) — real 3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverDes3Mac: lane des3_mac_general vectors); constructions pinned (SyntheticSpec caseDes3mac); params/init/map pinned (RecipeDes3MacSpec).",
       "numeric_id": "0x00000135",
       "routes": [
         {
@@ -7497,7 +7497,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CMAC recipe (core/Haskoki/Recipe/Cmac.hs): 3DES rows, GENERAL truncation 1..8. The driver executes the SP 800-38B composition over the backend ECB route (single-block calls; Rb 0x87/0x1b by block width) \u2014 real AES/3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCmac: RFC 4494 AES-128 vectors + pinned-CLI AES-192/256 and 3DES vectors); constructions pinned (SyntheticSpec caseCmac); params/init/map pinned (RecipeCmacSpec).",
+      "notes": "CMAC recipe (core/Haskoki/Recipe/Cmac.hs): 3DES rows, GENERAL truncation 1..8. The driver executes the SP 800-38B composition over the backend ECB route (single-block calls; Rb 0x87/0x1b by block width) — real AES/3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCmac: RFC 4494 AES-128 vectors + pinned-CLI AES-192/256 and 3DES vectors); constructions pinned (SyntheticSpec caseCmac); params/init/map pinned (RecipeCmacSpec).",
       "numeric_id": "0x00000137",
       "routes": [
         {
@@ -7584,7 +7584,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CMAC recipe (core/Haskoki/Recipe/Cmac.hs): 3DES rows, full 8-byte tag. The driver executes the SP 800-38B composition over the backend ECB route (single-block calls; Rb 0x87/0x1b by block width) \u2014 real AES/3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCmac: RFC 4494 AES-128 vectors + pinned-CLI AES-192/256 and 3DES vectors); constructions pinned (SyntheticSpec caseCmac); params/init/map pinned (RecipeCmacSpec).",
+      "notes": "CMAC recipe (core/Haskoki/Recipe/Cmac.hs): 3DES rows, full 8-byte tag. The driver executes the SP 800-38B composition over the backend ECB route (single-block calls; Rb 0x87/0x1b by block width) — real AES/3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCmac: RFC 4494 AES-128 vectors + pinned-CLI AES-192/256 and 3DES vectors); constructions pinned (SyntheticSpec caseCmac); params/init/map pinned (RecipeCmacSpec).",
       "numeric_id": "0x00000138",
       "routes": [
         {
@@ -13707,7 +13707,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SSL3 master derive (RFC 6101 section 6.1): MD5(pre_master + SHA1(pad + pre_master + CR + SR)) over pads A, BB, CCC; fixed 48-byte CKK_GENERIC_SECRET output from a generic-secret base (CKA_VALUE_LEN must be 48). Parameters are the canonical frame (ssl3-master-params/1: length-prefixed randoms, no fixed width \u2014 the oracle sends 28-byte randoms); the native struct decodes in the FFI (NULL-or-live pVersion is never written back). Stance revoked in slice 11n: the 'obsolete SSL3' non-implementation note confused the dead protocol with its KDF, which is a pure MD5/SHA-1 composition fully defined by RFC 6101 and backed by the pinned provider. Real execution pinned by KeyManagementSpec caseRealSsl3Vector (master48 KAT-exact vs hashlib). Synthetic execution is deterministic around the synthetic digest stream.",
+      "notes": "SSL3 master derive (RFC 6101 section 6.1): MD5(pre_master + SHA1(pad + pre_master + CR + SR)) over pads A, BB, CCC; fixed 48-byte CKK_GENERIC_SECRET output from a generic-secret base (CKA_VALUE_LEN must be 48). Parameters are the canonical frame (ssl3-master-params/1: length-prefixed randoms, no fixed width — the oracle sends 28-byte randoms); the native struct decodes in the FFI (NULL-or-live pVersion is never written back). Stance revoked in slice 11n: the 'obsolete SSL3' non-implementation note confused the dead protocol with its KDF, which is a pure MD5/SHA-1 composition fully defined by RFC 6101 and backed by the pinned provider. Real execution pinned by KeyManagementSpec caseRealSsl3Vector (master48 KAT-exact vs hashlib). Synthetic execution is deterministic around the synthetic digest stream.",
       "numeric_id": "0x00000371",
       "routes": [
         {
@@ -14180,7 +14180,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.0 master secret PRF(pms, \"master secret\", client_random ++ server_random) over the legacy MD5/SHA-1 construction (RFC 2246 section 5); the DH leg takes the same pre-master input shape (own vectors \u2014 the oracle probes availability only). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
+      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.0 master secret PRF(pms, \"master secret\", client_random ++ server_random) over the legacy MD5/SHA-1 construction (RFC 2246 section 5); the DH leg takes the same pre-master input shape (own vectors — the oracle probes availability only). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
       "numeric_id": "0x00000377",
       "routes": [
         {
@@ -15297,7 +15297,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "KDF recipe (core/Haskoki/Recipe/Kdf.hs): XOF the base value with SHAKE-128; the output length rides the template lengths (empty parameters), capped by maxXofTotal (65536 bytes) \u2014 a missing CKA_VALUE_LEN stays TEMPLATE_INCOMPLETE (no natural width). The driver executes over the digestXof route (EVP_DigestFinalXOF on the real backend, the labeled PRF stream on synthetic). Vectors pinned (RoutingE2ESpec caseDriverKdf: hashlib cross-checked XOF of \"abc\" at 32/64 bytes plus truncation and the over-ceiling refusal); planner ceilings pinned (RecipeKdfSpec).",
+      "notes": "KDF recipe (core/Haskoki/Recipe/Kdf.hs): XOF the base value with SHAKE-128; the output length rides the template lengths (empty parameters), capped by maxXofTotal (65536 bytes) — a missing CKA_VALUE_LEN stays TEMPLATE_INCOMPLETE (no natural width). The driver executes over the digestXof route (EVP_DigestFinalXOF on the real backend, the labeled PRF stream on synthetic). Vectors pinned (RoutingE2ESpec caseDriverKdf: hashlib cross-checked XOF of \"abc\" at 32/64 bytes plus truncation and the over-ceiling refusal); planner ceilings pinned (RecipeKdfSpec).",
       "numeric_id": "0x0000039b",
       "routes": [
         {
@@ -15374,7 +15374,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "KDF recipe (core/Haskoki/Recipe/Kdf.hs): XOF the base value with SHAKE-256; the output length rides the template lengths (empty parameters), capped by maxXofTotal (65536 bytes) \u2014 a missing CKA_VALUE_LEN stays TEMPLATE_INCOMPLETE (no natural width). The driver executes over the digestXof route (EVP_DigestFinalXOF on the real backend, the labeled PRF stream on synthetic). Vectors pinned (RoutingE2ESpec caseDriverKdf: hashlib cross-checked XOF of \"abc\" at 32/64 bytes plus truncation and the over-ceiling refusal); planner ceilings pinned (RecipeKdfSpec).",
+      "notes": "KDF recipe (core/Haskoki/Recipe/Kdf.hs): XOF the base value with SHAKE-256; the output length rides the template lengths (empty parameters), capped by maxXofTotal (65536 bytes) — a missing CKA_VALUE_LEN stays TEMPLATE_INCOMPLETE (no natural width). The driver executes over the digestXof route (EVP_DigestFinalXOF on the real backend, the labeled PRF stream on synthetic). Vectors pinned (RoutingE2ESpec caseDriverKdf: hashlib cross-checked XOF of \"abc\" at 32/64 bytes plus truncation and the over-ceiling refusal); planner ceilings pinned (RecipeKdfSpec).",
       "numeric_id": "0x0000039c",
       "routes": [
         {
@@ -15584,16 +15584,32 @@
         "CKM_PBE_SHA1_CAST5_CBC"
       ],
       "canonical_name": "CKM_PBE_SHA1_CAST128_CBC",
-      "family": "cipher",
+      "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 128,
+        "max_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: the underlying PBE cipher absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "PBE keygen (CK_PBE_PARAMS: password+salt chase, iteration count; 8-byte IV written back into pInitVector on success): the PKCS#12 construction over SHA-1 with raw password bytes (ID 1 derives the 16-byte CKK_CAST128 key as raw KDF bytes, ID 2 the IV); fixed key type and length with a DES3-keygen-style default when CKA_VALUE_LEN is absent. Real execution pinned by KeyManagementSpec caseRealPbeSha1Vector and RoutingE2ESpec caseDriverPbe (lane fixtures password/salt/1024: key/IV KAT-exact vs the pinned provider PKCS12KDF). Synthetic execution is deterministic around the synthetic digest stream.",
       "numeric_id": "0x000003a5",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "value-len-16-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "pbe/v1",
+          "parameter_codec": "pbe-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_PBE_SHA1_CAST128_CBC",
@@ -15602,26 +15618,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "pbe",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "pbe",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipePbeSpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_PBE_SHA1_RC4_128",
-      "family": "cipher",
+      "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 128,
+        "max_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: the underlying PBE cipher absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "PBE keygen (CK_PBE_PARAMS: password+salt chase, iteration count; no IV — NULL pInitVector accepted, handle-only publish): the PKCS#12 construction over SHA-1 with raw password bytes (ID 1 derives the 16-byte CKK_RC4 key as raw KDF bytes); fixed key type and length with a DES3-keygen-style default when CKA_VALUE_LEN is absent. Real execution pinned by KeyManagementSpec caseRealPbeSha1Vector and RoutingE2ESpec caseDriverPbe (lane fixtures password/salt/1024: key KAT-exact vs the pinned provider PKCS12KDF). Synthetic execution is deterministic around the synthetic digest stream.",
       "numeric_id": "0x000003a6",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "value-len-16-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "pbe/v1",
+          "parameter_codec": "pbe-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_PBE_SHA1_RC4_128",
@@ -15630,26 +15698,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "pbe",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "pbe",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipePbeSpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_PBE_SHA1_RC4_40",
-      "family": "cipher",
+      "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 40,
+        "max_key_size": 40
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: the underlying PBE cipher absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "PBE keygen (CK_PBE_PARAMS: password+salt chase, iteration count; no IV — NULL pInitVector accepted, handle-only publish): the PKCS#12 construction over SHA-1 with raw password bytes (ID 1 derives the 5-byte CKK_RC4 key as raw KDF bytes); fixed key type and length with a DES3-keygen-style default when CKA_VALUE_LEN is absent. Real execution pinned by KeyManagementSpec caseRealPbeSha1Vector and RoutingE2ESpec caseDriverPbe (lane fixtures password/salt/1024: key KAT-exact vs the pinned provider PKCS12KDF). Synthetic execution is deterministic around the synthetic digest stream.",
       "numeric_id": "0x000003a7",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "value-len-5-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "pbe/v1",
+          "parameter_codec": "pbe-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_PBE_SHA1_RC4_40",
@@ -15658,12 +15778,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "pbe",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "pbe",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipePbeSpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -15828,16 +15984,32 @@
     {
       "aliases": [],
       "canonical_name": "CKM_PBE_SHA1_RC2_128_CBC",
-      "family": "cipher",
+      "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 128,
+        "max_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: the underlying PBE cipher absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "PBE keygen (CK_PBE_PARAMS: password+salt chase, iteration count; 8-byte IV written back into pInitVector on success): the PKCS#12 construction over SHA-1 with raw password bytes (ID 1 derives the 16-byte CKK_RC2 key as raw KDF bytes, ID 2 the IV); fixed key type and length with a DES3-keygen-style default when CKA_VALUE_LEN is absent. Effective bits stay a use-time cipher parameter (R2 guard). Real execution pinned by KeyManagementSpec caseRealPbeSha1Vector and RoutingE2ESpec caseDriverPbe (lane fixtures password/salt/1024: key/IV KAT-exact vs the pinned provider PKCS12KDF). Synthetic execution is deterministic around the synthetic digest stream.",
       "numeric_id": "0x000003aa",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "value-len-16-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "pbe/v1",
+          "parameter_codec": "pbe-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_PBE_SHA1_RC2_128_CBC",
@@ -15846,26 +16018,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "pbe",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "pbe",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipePbeSpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_PBE_SHA1_RC2_40_CBC",
-      "family": "cipher",
+      "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 40,
+        "max_key_size": 40
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: the underlying PBE cipher absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "PBE keygen (CK_PBE_PARAMS: password+salt chase, iteration count; 8-byte IV written back into pInitVector on success): the PKCS#12 construction over SHA-1 with raw password bytes (ID 1 derives the 5-byte CKK_RC2 key as raw KDF bytes, ID 2 the IV); fixed key type and length with a DES3-keygen-style default when CKA_VALUE_LEN is absent. Effective bits stay a use-time cipher parameter (R2 guard). Real execution pinned by KeyManagementSpec caseRealPbeSha1Vector and RoutingE2ESpec caseDriverPbe (lane fixtures password/salt/1024: key/IV KAT-exact vs the pinned provider PKCS12KDF). Synthetic execution is deterministic around the synthetic digest stream.",
       "numeric_id": "0x000003ab",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "value-len-5-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "pbe/v1",
+          "parameter_codec": "pbe-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_PBE_SHA1_RC2_40_CBC",
@@ -15874,12 +16098,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "pbe",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "pbe",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipePbeSpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -16787,7 +17047,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.2 master secret P_hash with the selected hash over \"master secret\" ++ client_random ++ server_random (RFC 5246 section 5); the DH leg takes the same pre-master input shape (own vectors \u2014 the oracle probes availability only). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
+      "notes": "TLS-KDF recipe (core/Haskoki/Recipe/TlsKdf.hs): the TLS 1.2 master secret P_hash with the selected hash over \"master secret\" ++ client_random ++ server_random (RFC 5246 section 5); the DH leg takes the same pre-master input shape (own vectors — the oracle probes availability only). Parameters are the canonical frame (tls-kdf-params/1: PRF code, label, seed, context); the native struct decodes in the FFI (canonical profile only: exact-32-byte randoms, NULL-or-live pVersion which is never written back, hash PRFs from the served HMAC space). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 8160-byte ceiling. The driver executes the legacy construction or P_hash over the HMAC route (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsKdf: triple-verified against the oracle reference and the provider TLS1-PRF CLI); planner and native-profile pins (RecipeTlsKdfSpec); synthetic construction (SyntheticSpec caseTlsKdf); real KATs (KeyManagementSpec caseRealTlsKdfVector).",
       "numeric_id": "0x000003e2",
       "routes": [
         {
@@ -17485,7 +17745,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_CAMELLIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend CAMELLIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real Camellia on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: oracle camellia_mac vector; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_CAMELLIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend CAMELLIA-128/192/256-ECB route (single-block calls, zero IV) — real Camellia on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: oracle camellia_mac vector; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00000553",
       "routes": [
         {
@@ -17572,7 +17832,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): GENERAL row, mac-general/1 tag length 1..16, first bytes of the final CBC-MAC block; keys 128/192/256-bit CKK_CAMELLIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend CAMELLIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real Camellia on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): GENERAL row, mac-general/1 tag length 1..16, first bytes of the final CBC-MAC block; keys 128/192/256-bit CKK_CAMELLIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend CAMELLIA-128/192/256-ECB route (single-block calls, zero IV) — real Camellia on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00000554",
       "routes": [
         {
@@ -18263,7 +18523,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_ARIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend ARIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real ARIA on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: oracle aria_mac vector; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_ARIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend ARIA-128/192/256-ECB route (single-block calls, zero IV) — real ARIA on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: oracle aria_mac vector; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00000563",
       "routes": [
         {
@@ -18350,7 +18610,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): GENERAL row, mac-general/1 tag length 1..16, first bytes of the final CBC-MAC block; keys 128/192/256-bit CKK_ARIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend ARIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real ARIA on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): GENERAL row, mac-general/1 tag length 1..16, first bytes of the final CBC-MAC block; keys 128/192/256-bit CKK_ARIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend ARIA-128/192/256-ECB route (single-block calls, zero IV) — real ARIA on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00000564",
       "routes": [
         {
@@ -21217,7 +21477,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MQV key agreement in the pinned OpenSSL 4.0.2 provider API); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: the EC MQV derive needs the MQV two-key agreement on EC keys; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MQV key agreement in the pinned OpenSSL 4.0.2 provider API); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: the EC MQV derive needs the MQV two-key agreement on EC keys; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only — `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00001052",
       "routes": [],
       "source_refs": [
@@ -21813,7 +22073,7 @@
         "min_key_size": 32,
         "max_key_size": 64
       },
-      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte tweak as the raw mechanism parameter like a CBC IV; double-width keys (data + tweak halves, 32/64 bytes; no 192 width \u2014 the provider has no AES-192-XTS); IEEE 1619 tweakable encryption over data units >= 16 bytes, any length above (stealing covers ragged tails, length-preserving). Multipart never streams (the whole unit buffers to the final: within-call tweak evolution is GF doubling per block). Real execution is the provider AES-XTS mode (shim hsk_ossl4_cipher_xts), pinned by OpenSSLSpec caseAesXts (ACVP-AES-XTS-2.0 vectors, cross-checked against the `cryptography` oracle) against the pinned libcrypto; synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte tweak as the raw mechanism parameter like a CBC IV; double-width keys (data + tweak halves, 32/64 bytes; no 192 width — the provider has no AES-192-XTS); IEEE 1619 tweakable encryption over data units >= 16 bytes, any length above (stealing covers ragged tails, length-preserving). Multipart never streams (the whole unit buffers to the final: within-call tweak evolution is GF doubling per block). Real execution is the provider AES-XTS mode (shim hsk_ossl4_cipher_xts), pinned by OpenSSLSpec caseAesXts (ACVP-AES-XTS-2.0 vectors, cross-checked against the `cryptography` oracle) against the pinned libcrypto; synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00001071",
       "routes": [
         {
@@ -22298,7 +22558,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_AES (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend AES-128/192/256-ECB route (single-block calls, zero IV) \u2014 real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: FIPS-197 anchor; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_AES (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend AES-128/192/256-ECB route (single-block calls, zero IV) — real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: FIPS-197 anchor; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00001083",
       "routes": [
         {
@@ -22385,7 +22645,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): GENERAL row, mac-general/1 tag length 1..16, first bytes of the final CBC-MAC block; keys 128/192/256-bit CKK_AES (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend AES-128/192/256-ECB route (single-block calls, zero IV) \u2014 real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): GENERAL row, mac-general/1 tag length 1..16, first bytes of the final CBC-MAC block; keys 128/192/256-bit CKK_AES (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend AES-128/192/256-ECB route (single-block calls, zero IV) — real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00001084",
       "routes": [
         {
@@ -22927,7 +23187,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CMAC recipe (core/Haskoki/Recipe/Cmac.hs): AES rows, full 16-byte tag. The driver executes the SP 800-38B composition over the backend ECB route (single-block calls; Rb 0x87/0x1b by block width) \u2014 real AES/3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCmac: RFC 4494 AES-128 vectors + pinned-CLI AES-192/256 and 3DES vectors); constructions pinned (SyntheticSpec caseCmac); params/init/map pinned (RecipeCmacSpec).",
+      "notes": "CMAC recipe (core/Haskoki/Recipe/Cmac.hs): AES rows, full 16-byte tag. The driver executes the SP 800-38B composition over the backend ECB route (single-block calls; Rb 0x87/0x1b by block width) — real AES/3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCmac: RFC 4494 AES-128 vectors + pinned-CLI AES-192/256 and 3DES vectors); constructions pinned (SyntheticSpec caseCmac); params/init/map pinned (RecipeCmacSpec).",
       "numeric_id": "0x0000108a",
       "routes": [
         {
@@ -23014,7 +23274,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CMAC recipe (core/Haskoki/Recipe/Cmac.hs): AES rows, GENERAL truncation 1..16. The driver executes the SP 800-38B composition over the backend ECB route (single-block calls; Rb 0x87/0x1b by block width) \u2014 real AES/3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCmac: RFC 4494 AES-128 vectors + pinned-CLI AES-192/256 and 3DES vectors); constructions pinned (SyntheticSpec caseCmac); params/init/map pinned (RecipeCmacSpec).",
+      "notes": "CMAC recipe (core/Haskoki/Recipe/Cmac.hs): AES rows, GENERAL truncation 1..16. The driver executes the SP 800-38B composition over the backend ECB route (single-block calls; Rb 0x87/0x1b by block width) — real AES/3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCmac: RFC 4494 AES-128 vectors + pinned-CLI AES-192/256 and 3DES vectors); constructions pinned (SyntheticSpec caseCmac); params/init/map pinned (RecipeCmacSpec).",
       "numeric_id": "0x0000108b",
       "routes": [
         {
@@ -23101,7 +23361,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "XCBC-MAC recipe (core/Haskoki/Recipe/XcbcMac.hs, RFC 3566): empty params, 128-bit AES keys only, full 16-byte tag. The driver composes the RFC 3566 subkey schedule (K1/K2/K3 via AES-128-ECB) plus CBC-MAC chaining with 10* padding over the backend AES-128-ECB route \u2014 real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverXcbc: RFC 3566 cases #1-#4); constructions pinned (SyntheticSpec caseXcbc); params/init/map pinned (RecipeXcbcMacSpec).",
+      "notes": "XCBC-MAC recipe (core/Haskoki/Recipe/XcbcMac.hs, RFC 3566): empty params, 128-bit AES keys only, full 16-byte tag. The driver composes the RFC 3566 subkey schedule (K1/K2/K3 via AES-128-ECB) plus CBC-MAC chaining with 10* padding over the backend AES-128-ECB route — real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverXcbc: RFC 3566 cases #1-#4); constructions pinned (SyntheticSpec caseXcbc); params/init/map pinned (RecipeXcbcMacSpec).",
       "numeric_id": "0x0000108c",
       "routes": [
         {
@@ -23188,7 +23448,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "XCBC-MAC recipe (core/Haskoki/Recipe/XcbcMac.hs, RFC 3566): empty params, 128-bit AES keys only, first 12 bytes of the 16-byte tag. The driver composes the RFC 3566 subkey schedule (K1/K2/K3 via AES-128-ECB) plus CBC-MAC chaining with 10* padding over the backend AES-128-ECB route \u2014 real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverXcbc: RFC 3566 cases #1-#4); constructions pinned (SyntheticSpec caseXcbc); params/init/map pinned (RecipeXcbcMacSpec).",
+      "notes": "XCBC-MAC recipe (core/Haskoki/Recipe/XcbcMac.hs, RFC 3566): empty params, 128-bit AES keys only, first 12 bytes of the 16-byte tag. The driver composes the RFC 3566 subkey schedule (K1/K2/K3 via AES-128-ECB) plus CBC-MAC chaining with 10* padding over the backend AES-128-ECB route — real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverXcbc: RFC 3566 cases #1-#4); constructions pinned (SyntheticSpec caseXcbc); params/init/map pinned (RecipeXcbcMacSpec).",
       "numeric_id": "0x0000108d",
       "routes": [
         {
@@ -23275,7 +23535,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "GMAC recipe (core/Haskoki/Recipe/Gmac.hs): gcm-params/1 image (tag width from the SP 800-38D approved set per OASIS v3.2 S6.13.6, caller IV 1..64 bytes); keys 128/192/256-bit CKK_AES. The message travels as the GCM AAD with empty plaintext (the params AAD field carries no meaning on the sign path and is ignored); the tag is the GCM authentication tag. The driver executes over the backend AES-GCM route \u2014 real AES-GCM on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverGmac: Python-cryptography AESGCM tags, the AEAD oracle root); constructions pinned (SyntheticSpec caseGmac); params/init/map pinned (RecipeGmacSpec).",
+      "notes": "GMAC recipe (core/Haskoki/Recipe/Gmac.hs): gcm-params/1 image (tag width from the SP 800-38D approved set per OASIS v3.2 S6.13.6, caller IV 1..64 bytes); keys 128/192/256-bit CKK_AES. The message travels as the GCM AAD with empty plaintext (the params AAD field carries no meaning on the sign path and is ignored); the tag is the GCM authentication tag. The driver executes over the backend AES-GCM route — real AES-GCM on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverGmac: Python-cryptography AESGCM tags, the AEAD oracle root); constructions pinned (SyntheticSpec caseGmac); params/init/map pinned (RecipeGmacSpec).",
       "numeric_id": "0x0000108e",
       "routes": [
         {
@@ -24646,7 +24906,7 @@
         "max_key_size": 256,
         "min_key_size": 256
       },
-      "notes": "ChaCha20 keygen mints exact-32-byte (256-bit) CKK_CHACHA20 keys; the length arrives via CKA_VALUE_LEN (any other length is inconsistent, a missing length incomplete \u2014 the HOTP explicit-length precedent).",
+      "notes": "ChaCha20 keygen mints exact-32-byte (256-bit) CKK_CHACHA20 keys; the length arrives via CKA_VALUE_LEN (any other length is inconsistent, a missing length incomplete — the HOTP explicit-length precedent).",
       "numeric_id": "0x00001225",
       "routes": [
         {
@@ -24958,7 +25218,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "pairgen: plans exactly like CKM_EC_KEY_PAIR_GEN (same templates, GenEc) \u2014 the FIPS 186-5 B.4.2 extra-bits method is unobservable from the outside (keys are uniform in range either way), so the backend draws full-entropy keys identically. Planner equivalence pinned (KeyManagementSpec caseEcExtraBitsPlanner). Bounds 0/0 unspecified (curve-dependent).",
+      "notes": "pairgen: plans exactly like CKM_EC_KEY_PAIR_GEN (same templates, GenEc) — the FIPS 186-5 B.4.2 extra-bits method is unobservable from the outside (keys are uniform in range either way), so the backend draws full-entropy keys identically. Planner equivalence pinned (KeyManagementSpec caseEcExtraBitsPlanner). Bounds 0/0 unspecified (curve-dependent).",
       "numeric_id": "0x0000140b",
       "routes": [
         {
@@ -25090,7 +25350,7 @@
         "min_key_size": 1024,
         "max_key_size": 3072
       },
-      "notes": "paramgen (CKA_PRIME_BITS via dhPkcsParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA/X9.42; CKA_SUBPRIME_BITS defaults from L (the oracle sends CKA_PRIME_BITS only and expects CKR_OK), unlike X9.42; GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (the provider DH paramgen emits P+G only, no Q in any mode \u2014 CLI- and EVP-probed, as for X9.42). Real execution pinned by KeyManagementSpec caseRealDhPkcsParamgen (no KAT possible for randomized generation); planner pins caseDhPkcsParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
+      "notes": "paramgen (CKA_PRIME_BITS via dhPkcsParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA/X9.42; CKA_SUBPRIME_BITS defaults from L (the oracle sends CKA_PRIME_BITS only and expects CKR_OK), unlike X9.42; GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (the provider DH paramgen emits P+G only, no Q in any mode — CLI- and EVP-probed, as for X9.42). Real execution pinned by KeyManagementSpec caseRealDhPkcsParamgen (no KAT possible for randomized generation); planner pins caseDhPkcsParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00002001",
       "routes": [
         {
@@ -25153,7 +25413,7 @@
         "min_key_size": 1024,
         "max_key_size": 3072
       },
-      "notes": "paramgen (CKA_PRIME_BITS required via dhParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA; CKA_SUBPRIME_BITS required (TEMPLATE_INCOMPLETE when absent: the oracle requires it, unlike the DSA per-L default); GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_X9_42_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (the provider DH paramgen emits P+G only, no Q in any mode \u2014 CLI- and EVP-probed). Real execution pinned by KeyManagementSpec caseRealX942Paramgen (no KAT possible for randomized generation); planner pins caseX942ParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
+      "notes": "paramgen (CKA_PRIME_BITS required via dhParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA; CKA_SUBPRIME_BITS required (TEMPLATE_INCOMPLETE when absent: the oracle requires it, unlike the DSA per-L default); GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_X9_42_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (the provider DH paramgen emits P+G only, no Q in any mode — CLI- and EVP-probed). Real execution pinned by KeyManagementSpec caseRealX942Paramgen (no KAT possible for randomized generation); planner pins caseX942ParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00002002",
       "routes": [
         {

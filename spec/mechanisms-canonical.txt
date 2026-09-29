@@ -159,8 +159,13 @@ mech|0x00000399|CKM_SHA3_384_KEY_DERIVATION|CKM_SHA3_384_KEY_DERIVE|derive|no-pa
 mech|0x0000039A|CKM_SHA3_512_KEY_DERIVATION|CKM_SHA3_512_KEY_DERIVE|derive|no-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x0000039B|CKM_SHAKE_128_KEY_DERIVATION|CKM_SHAKE_128_KEY_DERIVE|derive|no-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x0000039C|CKM_SHAKE_256_KEY_DERIVATION|CKM_SHAKE_256_KEY_DERIVE|derive|no-params/1|mechanism-specific:0-0|derive:A20,A37,A39
+mech|0x000003A5|CKM_PBE_SHA1_CAST128_CBC|CKM_PBE_SHA1_CAST5_CBC|keygen|pbe-params/1|bits:128-128|generate-key:A20,A37,A39
+mech|0x000003A6|CKM_PBE_SHA1_RC4_128||keygen|pbe-params/1|bits:128-128|generate-key:A20,A37,A39
+mech|0x000003A7|CKM_PBE_SHA1_RC4_40||keygen|pbe-params/1|bits:40-40|generate-key:A20,A37,A39
 mech|0x000003A8|CKM_PBE_SHA1_DES3_EDE_CBC||keygen|pbe-params/1|bits:192-192|generate-key:A20,A37,A39
 mech|0x000003A9|CKM_PBE_SHA1_DES2_EDE_CBC||keygen|pbe-params/1|bits:128-128|generate-key:A20,A37,A39
+mech|0x000003AA|CKM_PBE_SHA1_RC2_128_CBC||keygen|pbe-params/1|bits:128-128|generate-key:A20,A37,A39
+mech|0x000003AB|CKM_PBE_SHA1_RC2_40_CBC||keygen|pbe-params/1|bits:40-40|generate-key:A20,A37,A39
 mech|0x000003AC|CKM_SP800_108_COUNTER_KDF||derive|sp800-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x000003AD|CKM_SP800_108_FEEDBACK_KDF||derive|sp800-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x000003AE|CKM_SP800_108_DOUBLE_PIPELINE_KDF||derive|sp800-params/1|mechanism-specific:0-0|derive:A20,A37,A39
@@ -371,11 +376,6 @@ inv|0x000003A1|CKM_PBE_MD5_DES_CBC||catalog-only
 inv|0x000003A2|CKM_PBE_MD5_CAST_CBC||catalog-only
 inv|0x000003A3|CKM_PBE_MD5_CAST3_CBC||catalog-only
 inv|0x000003A4|CKM_PBE_MD5_CAST128_CBC|CKM_PBE_MD5_CAST5_CBC|catalog-only
-inv|0x000003A5|CKM_PBE_SHA1_CAST128_CBC|CKM_PBE_SHA1_CAST5_CBC|catalog-only
-inv|0x000003A6|CKM_PBE_SHA1_RC4_128||catalog-only
-inv|0x000003A7|CKM_PBE_SHA1_RC4_40||catalog-only
-inv|0x000003AA|CKM_PBE_SHA1_RC2_128_CBC||catalog-only
-inv|0x000003AB|CKM_PBE_SHA1_RC2_40_CBC||catalog-only
 inv|0x000003C0|CKM_PBA_SHA1_WITH_SHA1_HMAC||catalog-only
 inv|0x000003D1|CKM_WTLS_MASTER_KEY_DERIVE||catalog-only
 inv|0x000003D2|CKM_WTLS_MASTER_KEY_DERIVE_DH_ECC||catalog-only

@@ -156,6 +156,11 @@ module Haskoki.Operation.KeyManagement
   , pbkd2KeyGenMech
   , pbeDes3KeyGenMech
   , pbeDes2KeyGenMech
+  , pbeSha1Cast128KeyGenMech
+  , pbeSha1Rc4_128KeyGenMech
+  , pbeSha1Rc4_40KeyGenMech
+  , pbeSha1Rc2_128KeyGenMech
+  , pbeSha1Rc2_40KeyGenMech
   , pbkd2KeygenMaxBytes
   , genericSecretKeygenMinBytes
   , genericSecretKeygenMaxBytes
@@ -338,6 +343,11 @@ import Haskoki.Registry.Generated
   , ckm_PKCS5_PBKD2
   , ckm_PBE_SHA1_DES3_EDE_CBC
   , ckm_PBE_SHA1_DES2_EDE_CBC
+  , ckm_PBE_SHA1_CAST128_CBC
+  , ckm_PBE_SHA1_RC4_128
+  , ckm_PBE_SHA1_RC4_40
+  , ckm_PBE_SHA1_RC2_128_CBC
+  , ckm_PBE_SHA1_RC2_40_CBC
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (Rules)
@@ -651,6 +661,13 @@ pbkd2KeyGenMech = MechanismId (ckm_PKCS5_PBKD2)
 pbeDes3KeyGenMech, pbeDes2KeyGenMech :: MechanismId
 pbeDes3KeyGenMech = MechanismId (ckm_PBE_SHA1_DES3_EDE_CBC)
 pbeDes2KeyGenMech = MechanismId (ckm_PBE_SHA1_DES2_EDE_CBC)
+pbeSha1Cast128KeyGenMech, pbeSha1Rc4_128KeyGenMech, pbeSha1Rc4_40KeyGenMech :: MechanismId
+pbeSha1Cast128KeyGenMech = MechanismId (ckm_PBE_SHA1_CAST128_CBC)
+pbeSha1Rc4_128KeyGenMech = MechanismId (ckm_PBE_SHA1_RC4_128)
+pbeSha1Rc4_40KeyGenMech = MechanismId (ckm_PBE_SHA1_RC4_40)
+pbeSha1Rc2_128KeyGenMech, pbeSha1Rc2_40KeyGenMech :: MechanismId
+pbeSha1Rc2_128KeyGenMech = MechanismId (ckm_PBE_SHA1_RC2_128_CBC)
+pbeSha1Rc2_40KeyGenMech = MechanismId (ckm_PBE_SHA1_RC2_40_CBC)
 
 -- | PBKD2 keygen ceiling: the shared derived-total ceiling (the
 -- value mirrors 'Haskoki.Operation.Derive.maxDerivedTotal',
@@ -1077,6 +1094,7 @@ keyPairCompatible (PwGenerateKey _) (FxGenerateKey _ _ input) =
     Just (GenWtlsPremaster _ _) -> True
     Just (GenPbkd2 _) -> True
     Just (GenDsaParams _ _) -> True
+    Just (GenPbe _) -> True
     _ -> False
 keyPairCompatible (PwGenerateKeyIv _ _) (FxGenerateKey _ _ input) =
   case decodeGenArgs input of
@@ -2743,11 +2761,11 @@ planPbkd2Gen st mech params tmpl = case decodePbkd2Params params of
 
 -- | Plan a PBE keygen: the @pbe-params\/1@ frame (iterations,
 -- password, salt) is required and validated before the
--- template; the key type and length are fixed per row (DES3:
--- 24 bytes; DES2: 16 bytes) with a DES3-keygen-style default
--- when @CKA_VALUE_LEN@ is absent. The validated frame rides
--- the effect so async replays reproduce the key and IV
--- bit-for-bit.
+-- template; the key type and length are fixed per row (see
+-- 'pbeKeyLen') with a DES3-keygen-style default when
+-- @CKA_VALUE_LEN@ is absent. The validated frame rides the
+-- effect so async replays reproduce the key and IV
+-- bit-for-bit. The RC4 rows complete key-only (no IV).
 planPbeGen
   :: SessionState -> MechanismId -> ByteString
   -> [(AttributeType, AttributeValue)]
@@ -2772,11 +2790,21 @@ planPbeGen st mech params tmpl = case pbeRecipeFor mech of
       wantKey = case pbeKind r of
         PbeDes3 -> ckkDes3
         PbeDes2 -> ckkDes2
+        PbeSha1Cast128 -> ckkCast128
+        PbeSha1Rc4_128 -> ckkRc4
+        PbeSha1Rc4_40 -> ckkRc4
+        PbeSha1Rc2_128 -> ckkRc2
+        PbeSha1Rc2_40 -> ckkRc2
       keyLen = pbeKeyLen (pbeKind r)
-      effect attrs =
-        ( PwGenerateKeyIv (pendingFromAttrs st attrs) keyLen
-        , FxGenerateKey mech params (encodeGenArgs (GenPbe keyLen))
-        )
+      effect attrs
+        | pbeIvLen (pbeKind r) > 0 =
+            ( PwGenerateKeyIv (pendingFromAttrs st attrs) keyLen
+            , FxGenerateKey mech params (encodeGenArgs (GenPbe keyLen))
+            )
+        | otherwise =
+            ( PwGenerateKey (pendingFromAttrs st attrs)
+            , FxGenerateKey mech params (encodeGenArgs (GenPbe keyLen))
+            )
 
 -- ---------------------------------------------------------------------------
 -- Single-key generation
@@ -2816,7 +2844,12 @@ planGenerateKey rules model st mech params tmpl =
       , mech /= wtlsPremasterKeyGenMech
       , mech /= pbkd2KeyGenMech
       , mech /= pbeDes3KeyGenMech
-      , mech /= pbeDes2KeyGenMech =
+      , mech /= pbeDes2KeyGenMech
+      , mech /= pbeSha1Cast128KeyGenMech
+      , mech /= pbeSha1Rc4_128KeyGenMech
+      , mech /= pbeSha1Rc4_40KeyGenMech
+      , mech /= pbeSha1Rc2_128KeyGenMech
+      , mech /= pbeSha1Rc2_40KeyGenMech =
           Left (KeyDeny CKR_MECHANISM_PARAM_INVALID
             "keygen takes no mechanism params")
       | mech == tlsPremasterKeyGenMech = planTlsPremaster st mech params tmpl
@@ -2825,6 +2858,11 @@ planGenerateKey rules model st mech params tmpl =
       | mech == pbkd2KeyGenMech = planPbkd2Gen st mech params tmpl
       | mech == pbeDes3KeyGenMech = planPbeGen st mech params tmpl
       | mech == pbeDes2KeyGenMech = planPbeGen st mech params tmpl
+      | mech == pbeSha1Cast128KeyGenMech = planPbeGen st mech params tmpl
+      | mech == pbeSha1Rc4_128KeyGenMech = planPbeGen st mech params tmpl
+      | mech == pbeSha1Rc4_40KeyGenMech = planPbeGen st mech params tmpl
+      | mech == pbeSha1Rc2_128KeyGenMech = planPbeGen st mech params tmpl
+      | mech == pbeSha1Rc2_40KeyGenMech = planPbeGen st mech params tmpl
       | mech == dsaParameterGenMech =
           case checkKeyTemplate ckoDomainParameters ckkDsa tmpl of
           Left deny -> Left deny

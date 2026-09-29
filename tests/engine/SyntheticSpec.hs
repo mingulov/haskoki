@@ -2756,15 +2756,21 @@ caseKeyMat = withSynth "14" $ \env -> do
     (FxDerive k10 (Just secOid) Nothing f12 BS.empty 64)
 
 -- | PBE keygen through the driver over synthetic SHA-1: framed
--- key\/IV pairs at the fixed widths, deterministic output
--- separated across passwords\/salts\/iterations, parity-shaped
--- keys, and typed refusals. (The synthetic digest stream
--- differs from real SHA-1 by design; exact KAT bytes live on
--- the real backend.)
+-- key\/IV pairs at the fixed widths (key-only for the RC4
+-- rows), deterministic output separated across
+-- passwords\/salts\/iterations, parity-shaped DES keys, and
+-- typed refusals. (The synthetic digest stream differs from
+-- real SHA-1 by design; exact KAT bytes live on the real
+-- backend.)
 casePbe :: IO ()
 casePbe = withSynth "14" $ \env -> do
   let des3 = MechanismId 0x3a8
       des2 = MechanismId 0x3a9
+      cast5 = MechanismId 0x3a5
+      rc4b = MechanismId 0x3a6
+      rc4s = MechanismId 0x3a7
+      rc2b = MechanismId 0x3aa
+      rc2s = MechanismId 0x3ab
       res _ = Nothing
       f = encodePbeParams 16 "pw" "salt"
       gen mech frame n =
@@ -2774,6 +2780,13 @@ casePbe = withSynth "14" $ \env -> do
         case r of
           GotBytes bs -> case decodeKeyPair bs of
             Just (mat, Just iv) -> pure (mat, iv)
+            other -> assertFailure (label ++ " misframed: " ++ show other) >> undefined
+          other -> assertFailure (label ++ " failed: " ++ show other) >> undefined
+      singleOf label fx = do
+        r <- runEffect env res fx
+        case r of
+          GotBytes bs -> case decodeKeyPair bs of
+            Just (mat, Nothing) -> pure mat
             other -> assertFailure (label ++ " misframed: " ++ show other) >> undefined
           other -> assertFailure (label ++ " failed: " ++ show other) >> undefined
       isOddParity = BS.all (\w -> odd (popCount w))
@@ -2787,6 +2800,19 @@ casePbe = withSynth "14" $ \env -> do
   assertEqual "des2 key width" 16 (BS.length k2)
   assertEqual "des2 iv width" 8 (BS.length v2)
   assertBool "des2 odd parity" (isOddParity k2)
+  (k5, v5) <- pairOf "cast128" (FxGenerateKey cast5 f (encodeGenArgs (GenPbe 16)))
+  assertEqual "cast128 key width" 16 (BS.length k5)
+  assertEqual "cast128 iv width" 8 (BS.length v5)
+  k6 <- singleOf "rc4-128" (FxGenerateKey rc4b f (encodeGenArgs (GenPbe 16)))
+  assertEqual "rc4-128 key width" 16 (BS.length k6)
+  k7 <- singleOf "rc4-40" (FxGenerateKey rc4s f (encodeGenArgs (GenPbe 5)))
+  assertEqual "rc4-40 key width" 5 (BS.length k7)
+  (ka, va) <- pairOf "rc2-128" (FxGenerateKey rc2b f (encodeGenArgs (GenPbe 16)))
+  assertEqual "rc2-128 key width" 16 (BS.length ka)
+  assertEqual "rc2-128 iv width" 8 (BS.length va)
+  (kb, vb) <- pairOf "rc2-40" (FxGenerateKey rc2s f (encodeGenArgs (GenPbe 5)))
+  assertEqual "rc2-40 key width" 5 (BS.length kb)
+  assertEqual "rc2-40 iv width" 8 (BS.length vb)
   (kPw, _) <- pairOf "pw" (FxGenerateKey des3 (encodePbeParams 16 "pw2" "salt") (encodeGenArgs (GenPbe 24)))
   assertBool "passwords separated" (k3 /= kPw)
   (kSalt, _) <- pairOf "salt" (FxGenerateKey des3 (encodePbeParams 16 "pw" "pepper") (encodeGenArgs (GenPbe 24)))

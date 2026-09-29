@@ -217,7 +217,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
-import Haskoki.FFI.NativeParams (DerivedKeySlot (..), KeyMatSlots (..), normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsKeyMatParams, normalizeTls12KeyMatParams, normalizeTls12KeySafeParams, normalizeSsl3MasterParams, normalizeSsl3KeyMatParams, normalizeTlsPrfParams, normalizePbeParams)
+import Haskoki.FFI.NativeParams (DerivedKeySlot (..), KeyMatSlots (..), normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsKeyMatParams, normalizeTls12KeyMatParams, normalizeTls12KeySafeParams, normalizeSsl3MasterParams, normalizeSsl3KeyMatParams, normalizeTlsPrfParams, normalizePbeParams, normalizePbeParamsMaybeIv)
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
@@ -258,7 +258,7 @@ import Haskoki.Recipe.TlsKdf (TlsKdfKind (..), TlsKdfRecipe (..), tlsKdfRecipeFo
 import Haskoki.Recipe.ByteOps (ByteOpsKind (..), ByteOpsRecipe (..), byteOpsRecipeFor)
 import Haskoki.Recipe.Ssl3 (Ssl3Kind (..), Ssl3Recipe (ssl3Kind), ssl3RecipeFor)
 import Haskoki.Recipe.TlsKeyMat (TlsKeyMatKind (..), TlsKeyMatRecipe (tkmKind), tlsKeyMatRecipeFor)
-import Haskoki.Recipe.Pbe (pbeRecipeFor)
+import Haskoki.Recipe.Pbe (PbeKind, PbeRecipe (pbeKind), pbeIvLen, pbeRecipeFor)
 import Haskoki.Recipe.Ike (IkeKind (..), IkeRecipe (..), ikeRecipeFor)
 import Haskoki.Recipe.TlsPrf (tlsPrfRecipeFor)
 import Haskoki.Operation.KeyManagement
@@ -2238,11 +2238,11 @@ haskokiStdGenerateKey ctx h (CULong mech) pFrame (CULong frameLen)
             (params, mIvSlot) <- case kdfRecipeFor mid of
               Just r | rkPbkd2 r ->
                 (, Nothing) . fromMaybe raw <$> normalizePbkd2Params2 pParams paramsLen
-              _ | Just _ <- pbeRecipeFor mid -> do
-                mPbe <- normalizePbeParams pParams paramsLen
+              _ | Just r <- pbeRecipeFor mid -> do
+                mPbe <- normalizePbeParamsMaybeIv pParams paramsLen
                 pure $ case mPbe of
-                  Just (b, slot) -> (b, Just slot)
-                  Nothing -> (raw, Nothing)
+                  Just (b, slot) | pbeSlotOk (pbeKind r) slot -> (b, slot)
+                  _ -> (raw, Nothing)
               _ -> pure (raw, Nothing)
             m <- snapshotModel (siEnv inst)
             case mIvSlot of
@@ -2261,6 +2261,13 @@ haskokiStdGenerateKey ctx h (CULong mech) pFrame (CULong frameLen)
                     poke phKey (CULong oh)
                     pure ckrOk
                   Right _ -> pure ckrGeneralError
+
+-- | A PBE IV slot matches its row: IV rows require the
+-- caller buffer, no-IV rows (RC4) require its absence.
+-- Anything off-shape fails closed upstream (raw params).
+pbeSlotOk :: PbeKind -> Maybe (Ptr Word8) -> Bool
+pbeSlotOk kind (Just _) = pbeIvLen kind > 0
+pbeSlotOk kind Nothing = pbeIvLen kind == 0
 
 -- | Publish one PBE keygen result: the handle into the caller
 -- slot and the 8 IV bytes into the params-embedded buffer.
