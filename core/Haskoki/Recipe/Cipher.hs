@@ -79,6 +79,7 @@ module Haskoki.Recipe.Cipher
   , wrapNames
   , kwpNames
   , xtsName
+  , rc4Name
   ) where
 
 import Data.Bits (shiftL, shiftR, (.&.))
@@ -208,6 +209,12 @@ kwpNames = ["CKM_AES_KEY_WRAP_PAD", "CKM_AES_KEY_WRAP_KWP"]
 -- are double-width (data + tweak halves, 32/64 bytes).
 xtsName :: MechanismName
 xtsName = "CKM_AES_XTS"
+
+-- | The RC4 row: a pure stream cipher with no chaining state,
+-- so multipart updates never stream (only the final runs the
+-- whole buffer one-shot; see 'Haskoki.Operation.isRc4Mech').
+rc4Name :: MechanismName
+rc4Name = "CKM_RC4"
 
 -- | Encode one 8-byte big-endian word.
 encodeWord64 :: Int -> ByteString

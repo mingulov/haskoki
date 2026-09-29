@@ -949,7 +949,8 @@ caseUpdateSplitTable = do
     ) [(0, (0, 0)), (15, (0, 15)), (16, (0, 16)), (20, (0, 20)), (32, (0, 32))]
   -- DES CFB64/CFB8 stream full 8-byte chunks like unpadded CBC;
   -- DES-OFB64 buffers everything (same register reason as AES
-  -- OFB); RC4 (unit block) streams every byte both directions.
+  -- OFB); RC4 buffers everything too (no chaining state: every
+  -- streamed chunk would restart the keystream).
   let des8 = CipherSpec 8 False
       desCfb64Mech = MechanismId 0x0152
       desCfb8Mech = MechanismId 0x0153
@@ -977,7 +978,7 @@ caseUpdateSplitTable = do
         (cipherUpdateSplit rc4Mech rc4shape DirEncrypt total)
       assertEqual ("rc4 dec " ++ show total) want
         (cipherUpdateSplit rc4Mech rc4shape DirDecrypt total)
-    ) [(0, (0, 0)), (1, (1, 0)), (7, (7, 0)), (8, (8, 0)), (19, (19, 0))]
+    ) [(0, (0, 0)), (1, (0, 1)), (7, (0, 7)), (8, (0, 8)), (19, (0, 19))]
   -- XTS never streams: within-call tweak evolution is GF doubling
   -- per block, so every update buffers and only the final runs the
   -- effect over the whole data unit.

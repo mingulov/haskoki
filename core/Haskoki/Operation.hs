@@ -60,6 +60,7 @@ module Haskoki.Operation
   , isKwpMech
   , isOfbMech
   , isXtsMech
+  , isRc4Mech
     -- * Buffer bound for the per-kind lifecycles
   , maxBuffered
   , appendBuffered
@@ -80,7 +81,7 @@ import Haskoki.Output
   , planOneShot
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor)
-import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, desOfbName, desStreamNames, kwpNames, ofbName, streamNames, wrapNames, xtsName)
+import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, desOfbName, desStreamNames, kwpNames, ofbName, rc4Name, streamNames, wrapNames, xtsName)
 import Haskoki.Recipe.CbcMac (cbcmacParamsValid, cbcmacRecipeFor)
 import Haskoki.Recipe.Cmac (cmacParamsValid, cmacRecipeFor)
 import Haskoki.Recipe.Des3Mac (des3macParamsValid, des3macRecipeFor)
@@ -334,6 +335,15 @@ isKwpMech m = case cipherRecipeFor m of
 isXtsMech :: MechanismId -> Bool
 isXtsMech m = case cipherRecipeFor m of
   Just r -> crName r == xtsName
+  Nothing -> False
+
+-- | RC4 (@CKM_RC4@): a pure stream cipher with no IV and no
+-- chaining state, so multipart updates never stream (only the
+-- final runs the whole buffer one-shot, like OFB/XTS). The
+-- planners consult this alongside 'isUnframedCipher'.
+isRc4Mech :: MechanismId -> Bool
+isRc4Mech m = case cipherRecipeFor m of
+  Just r -> crName r == rc4Name
   Nothing -> False
 
 -- | Mechanism-parameter check (recipe-backed mechanisms):

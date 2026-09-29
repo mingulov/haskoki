@@ -52,6 +52,7 @@ import Haskoki.Operation
   , isCtsMech
   , isKwpMech
   , isOfbMech
+  , isRc4Mech
   , isUnframedCipher
   , isXtsMech
   , mkDeny
@@ -216,6 +217,7 @@ cipherUpdateSplit mech spec dir total
   | isOfbMech mech = (0, total)
   | isAesWrapMech mech = (0, total)
   | isXtsMech mech = (0, total)
+  | isRc4Mech mech = (0, total)
   | isEcb = (total - total `mod` block, total `mod` block)
   | csPad spec = case dir of
       DirEncrypt
