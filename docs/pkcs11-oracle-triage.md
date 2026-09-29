@@ -76,6 +76,30 @@ KAT lane (same bundle, rc2): 116467 tests — 83426 passed,
 `incomplete: false`). PBE legs identical to fast (28/0/5).
 No new findings.
 
+## 11r fast lane (rc2 oracle, 2026-09-29)
+
+Bundle `dist-release/haskoki-0.3.0.0` at `dc3bb51` (11r
+CAST/CAST3 cipher sextet, 310/464), oracle pkcs11-check
+0.2.2rc2 (`/tmp/pkcs11-ws/run-lane-rc2.sh fast`, results
+`/tmp/pkcs11-ws/out-rc2/fast/pkcs11-fast-results.json`).
+
+Single run, first-try green: 10053 tests — 5095 passed,
+0 failed, 635 xfailed, 4323 skipped, 0 crashed. The six
+new rows (CKM_CAST_ECB/CBC, CKM_CAST3_ECB/CBC, keygens)
+pass inside the oracle's mechanism matrices (CAST_* appear
+throughout the probe/flags/attribute/keygen/multipart legs;
+the PAD variants stay catalog-only and skip). No new
+oracle-side findings: no upstream filing from this round.
+Independent KAT evidence for the new rows lives in-repo:
+RFC 2144 Appendix B ECB anchors plus CBC vectors
+cross-checked against the pinned provider
+(RecipeCipherSpec, consumer_roundtrip C legs).
+
+KAT lane (same bundle, rc2): 116611 tests — 83491 passed,
+0 failed, 0 crashed, 1895 xfailed, 31225 skipped
+(`/tmp/pkcs11-ws/out-rc2/kat/pkcs11-kat-results.json`;
+`incomplete: false`). No new findings.
+
 ## Round 1: template-count bound, class defaulting, class range
 
 - `C_GetAttributeValue` refuses template counts above the 64-entry bound
