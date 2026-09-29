@@ -200,7 +200,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. ISO 9796-1 padding; the provider offers RSA_X931_PADDING but no shim/recipe wires it; stays planned (named gap). Real unsupported-with-reason: the RSA padding scheme present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (reviewed 11s-1): ISO/IEC 9796-1 signatures with message recovery (SIG+SIGR, input <= floor(k/2)). ANSI X9.31 is a DISTINCT mechanism (CKM_RSA_X9_31, served via core/Haskoki/Recipe/RsaX931.hs over the provider RSA_X931_PADDING path, digest-first ordering) \u2014 not a 9796-1 substitute. No 9796-1 provider path exists in pinned OpenSSL 4.0.2 (provider signature list carries no 9796 entry; X9.31 sign/verify confirmed working 2026-09-29 for the X9.31 rows only), and DIY 9796-1 padding plus recovery framing outside the provider would not be provider-backed execution. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned.",
       "numeric_id": "0x00000002",
       "routes": [],
       "source_refs": [
@@ -26942,16 +26942,74 @@
     {
       "aliases": [],
       "canonical_name": "CKM_AES_KEY_WRAP_PKCS7",
-      "family": "wrap",
+      "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT",
+          "CKF_UNWRAP",
+          "CKF_WRAP"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 16,
+        "max_key_size": 32
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: AES key wrap present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): empty parameters (default RFC 3394 section 4.3 AIV) or the raw 8-byte alternate IV; KEK 16/24/32 bytes; PKCS#7-pad to the 8-byte wrap quantum (always padding, output longer than input) then RFC 3394 section 6.2 key wrap, serving BOTH raw encrypt/decrypt and key-object wrap/unwrap. Raw input any length >= 8 bytes (shorter pads below the 16-byte KW minimum and refuses); output is the padded length plus the 8-byte IV. Multipart never streams (one-shot integrity over the whole buffer). Real execution is the provider AES-WRAP mode with caller IV (shim hsk_ossl4_cipher_wrap), pinned by OpenSSLSpec caseAesWrapPkcs7 (RFC 3394 section 4 cross-check plus custom-IV round-trip) against the pinned libcrypto; synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); object path pinned by KeyManagementSpec (A20); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x0000210c",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-wrap/v1",
+          "parameter_codec": "optional-wrap-iv/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-wrap/v1",
+          "parameter_codec": "optional-wrap-iv/1"
+        },
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "wrapping-key"
+          ],
+          "operation": "wrap",
+          "output_rule": "synthetic-wrap/v1",
+          "parameter_codec": "optional-wrap-iv/1"
+        },
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "unwrapping-key"
+          ],
+          "operation": "unwrap",
+          "output_rule": "synthetic-wrap/v1",
+          "parameter_codec": "optional-wrap-iv/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_AES_KEY_WRAP_PKCS7",
@@ -26960,12 +27018,53 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "classic-ops",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "block-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "block-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

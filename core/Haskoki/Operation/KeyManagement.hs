@@ -185,6 +185,7 @@ module Haskoki.Operation.KeyManagement
   , aesKwMech
   , aesKwPadMech
   , aesKwpMech
+  , aesKwp7Mech
   , rsaPkcsMech
   , rsaOaepMech
   , rsaX509Mech
@@ -281,6 +282,7 @@ import Haskoki.Registry.Generated
   , ckm_AES_KEY_WRAP
   , ckm_AES_KEY_WRAP_KWP
   , ckm_AES_KEY_WRAP_PAD
+  , ckm_AES_KEY_WRAP_PKCS7
   , ckm_BLAKE2B_512_KEY_GEN
   , ckm_CHACHA20_KEY_GEN
   , ckm_DES3_KEY_GEN
@@ -920,6 +922,13 @@ aesKwPadMech = MechanismId (ckm_AES_KEY_WRAP_PAD)
 aesKwpMech :: MechanismId
 aesKwpMech = MechanismId (ckm_AES_KEY_WRAP_KWP)
 
+-- | @CKM_AES_KEY_WRAP_PKCS7@ (PKCS#7-pad to the 8-byte quantum,
+-- always padding, then RFC 3394: raw payload >= 8 bytes, the blob
+-- is the padded length plus the 8-byte IV; empty or 8-byte-IV
+-- parameters; generated id, resolved by name).
+aesKwp7Mech :: MechanismId
+aesKwp7Mech = MechanismId (ckm_AES_KEY_WRAP_PKCS7)
+
 -- | @CKM_RSA_PKCS@ (the v1.5 wrap mechanism: empty parameters,
 -- the payload travels raw, the blob is modulus-wide).
 rsaPkcsMech :: MechanismId
@@ -997,6 +1006,9 @@ data PendingWork
   | PwUnwrapRaw
       { pwKey :: !PendingObject
       }
+  | PwUnwrapPad8
+      { pwKey :: !PendingObject
+      }
   | PwUnwrapTail
       { pwKey :: !PendingObject
       , pwWidth :: !Int
@@ -1048,6 +1060,7 @@ pendingObjects pw = case pw of
   PwBlobOut _ -> []
   PwUnwrap k -> [k]
   PwUnwrapRaw k -> [k]
+  PwUnwrapPad8 k -> [k]
   PwUnwrapTail k _ _ -> [k]
   PwDerive pos _ -> pos
   PwDeriveIv pos _ _ -> pos
@@ -1119,6 +1132,7 @@ keyPairCompatible (PwBlobOut _) (FxAuthWrap _ _ _ _) = True
 keyPairCompatible (PwUnwrap _) (FxUnwrap _ _ _ _) = True
 keyPairCompatible (PwUnwrap _) (FxAuthUnwrap _ _ _ _) = True
 keyPairCompatible (PwUnwrapRaw _) (FxUnwrap _ _ _ _) = True
+keyPairCompatible (PwUnwrapPad8 _) (FxUnwrap _ _ _ _) = True
 keyPairCompatible (PwUnwrapTail _ _ _) (FxUnwrap _ _ _ _) = True
 keyPairCompatible (PwEncaps _ _ _) (FxKemEncaps _ _ _ _) = True
 keyPairCompatible (PwDecaps _) (FxKemDecaps _ _ _ _) = True
@@ -1195,6 +1209,18 @@ finishWork model st pw res = case (pw, res) of
   -- is consumed by the backend): no PKCS#7 framing to strip.
   (PwUnwrapRaw po, GotBytes bs) ->
     publishUnwrap bs po
+  -- KW-PKCS7 answers the padded image: strip the 8-quantum
+  -- framing (a corrupt pad is ENCRYPTED_DATA_INVALID, like the
+  -- CBC path, and publishes nothing).
+  (PwUnwrapPad8 po, GotBytes bs) -> case unpadPkcs7 8 bs of
+    Just mat -> publishUnwrap mat po
+    Nothing -> Reject Rejection
+      { rejCode = CKR_ENCRYPTED_DATA_INVALID
+      , rejOutputs = []
+      , rejDelta = StateDelta []
+      , rejReleases = []
+      , rejReasons = ["unwrap padding check failed"]
+      }
   -- X.509 unwrap answers a full k-block; the key is the trailing
   -- value_len bytes (the length the unwrap template named).
   (PwUnwrapTail po k n, GotBytes bs) -> case x509Tail k n bs of
@@ -3177,7 +3203,8 @@ withWrapTarget model st h = case resolveHandle model h of
           "target carries no key material")
 
 -- | Plan one wrap: AES-CBC pads through 'planAesWrapKey', the
--- AES key-wrap rows expand through 'planAesKwWrapKey', the RSA
+-- AES key-wrap rows expand through 'planAesKwWrapKey', KW-PKCS7
+-- pads plus wraps through 'planAesKwPkcs7WrapKey', the RSA
 -- mechanisms travel raw through 'planRsaWrapKey'.
 planWrapKey
   :: Model -> SessionState -> MechanismId -> ByteString
@@ -3187,6 +3214,8 @@ planWrapKey model st mech params wrapH targetH intent
   | mech == aesCbcMech = planAesWrapKey model st mech params wrapH targetH intent
   | mech == aesKwMech || mech == aesKwPadMech || mech == aesKwpMech =
       planAesKwWrapKey model st mech params wrapH targetH intent
+  | mech == aesKwp7Mech =
+      planAesKwPkcs7WrapKey model st mech params wrapH targetH intent
   | mech == rsaPkcsMech || mech == rsaOaepMech || mech == rsaX509Mech =
       planRsaWrapKey model st mech params wrapH targetH intent
   | otherwise =
@@ -3311,8 +3340,10 @@ planAesWrapKey model st mech iv wrapH targetH intent
                     (FxWrap mech (Just wrapOid) iv padded)
 
 -- | Plan one unwrap: AES-CBC aligns through 'planAesUnwrapKey',
--- the AES key-wrap rows frame through 'planAesKwUnwrapKey', the
--- RSA mechanisms measure modulus-wide through 'planRsaUnwrapKey'.
+-- the AES key-wrap rows frame through 'planAesKwUnwrapKey',
+-- KW-PKCS7 frames plus strips through
+-- 'planAesKwPkcs7UnwrapKey', the RSA mechanisms measure
+-- modulus-wide through 'planRsaUnwrapKey'.
 planUnwrapKey
   :: Rules -> Model -> SessionState -> MechanismId -> ByteString
   -> ExternalHandle -> ByteString -> [(AttributeType, AttributeValue)]
@@ -3321,6 +3352,8 @@ planUnwrapKey rules model st mech params wrapH blob tmpl
   | mech == aesCbcMech = planAesUnwrapKey rules model st mech params wrapH blob tmpl
   | mech == aesKwMech || mech == aesKwPadMech || mech == aesKwpMech =
       planAesKwUnwrapKey rules model st mech params wrapH blob tmpl
+  | mech == aesKwp7Mech =
+      planAesKwPkcs7UnwrapKey rules model st mech params wrapH blob tmpl
   | mech == rsaPkcsMech || mech == rsaOaepMech || mech == rsaX509Mech =
       planRsaUnwrapKey rules model st mech params wrapH blob tmpl
   | otherwise =
@@ -3514,13 +3547,103 @@ planAesKwUnwrapKey rules model st mech params wrapH blob tmpl =
 
 -- | Wrapped-blob framing check: KW blobs are multiple-of-8 >= 24
 -- (16-byte minimum plaintext plus IV); KWP blobs under either
--- name are multiple-of-8 >= 16.
+-- name are multiple-of-8 >= 16; KW-PKCS7 frames like KW (the
+-- padded image is the KW plaintext).
 kwBlobFramed :: MechanismId -> Int -> Bool
 kwBlobFramed mech n
   | mech == aesKwMech = n >= 24 && n `mod` 8 == 0
+  | mech == aesKwp7Mech = n >= 24 && n `mod` 8 == 0
   | mech == aesKwPadMech || mech == aesKwpMech =
       n >= 16 && n `mod` 8 == 0
   | otherwise = False
+
+-- | Plan one KW-PKCS7 wrap: the wrapping key needs the wrap mark
+-- (AES secret), parameters are empty (default AIV) or the 8-byte
+-- alternate IV, the target must be extractable, and the raw
+-- material needs >= 8 bytes (shorter pads below the 16-byte KW
+-- minimum). Length queries and short buffers answer the padded
+-- length plus 8 and plan no crypto; a sufficient buffer plans one
+-- wrap effect over the padded material.
+planAesKwPkcs7WrapKey
+  :: Model -> SessionState -> MechanismId -> ByteString
+  -> ExternalHandle -> ExternalHandle -> OutputIntent
+  -> KeyPlan
+planAesKwPkcs7WrapKey model st mech params wrapH targetH intent
+  | not (BS.null params) && BS.length params /= 8 =
+      KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "AES-KW-PKCS7 wrap takes empty or 8-byte-IV mechanism parameters")
+  | otherwise = case withWrappingKey model st AttrWrap "wrapping" wrapH of
+      Left deny -> KeyDenied deny
+      Right (wrapOid, _) -> case withWrapTarget model st targetH of
+        Left deny -> KeyDenied deny
+        Right mat -> case padPkcs7 8 mat of
+          Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+            "wrap payload escapes the PKCS#7 range")
+          Just padded
+            | BS.length padded < 16 -> KeyDenied (KeyDeny CKR_DATA_LEN_RANGE
+                "wrap payload pads below the 16-byte key-wrap minimum")
+            | otherwise ->
+                let blobLen = BS.length padded + 8
+                    lenOut = NativeOutput (RegionBytes "wrapped" intent)
+                      (encodeValue (ValULong (fromIntegral blobLen)))
+                in case intent of
+                  IntentNull -> KeyImmediate (Immediate PreparedCommit
+                    { pcCode = CKR_OK
+                    , pcDelta = StateDelta []
+                    , pcPersist = []
+                    , pcOutputs = [lenOut]
+                    , pcReleases = []
+                    , pcReasons = ["wrap length query"]
+                    })
+                  IntentBuffer cap
+                    | cap < fromIntegral blobLen -> KeyImmediate (Reject Rejection
+                        { rejCode = CKR_BUFFER_TOO_SMALL
+                        , rejOutputs = [lenOut]
+                        , rejDelta = StateDelta []
+                        , rejReleases = []
+                        , rejReasons = ["short buffer"]
+                        })
+                    | otherwise -> KeyEffect (PwBlobOut "wrapped")
+                        (FxWrap mech (Just wrapOid) params padded)
+
+-- | Plan one KW-PKCS7 unwrap: parameters are empty (default AIV)
+-- or the 8-byte alternate IV, the blob frames like KW
+-- (multiple-of-8 >= 24), the wrapping key needs the unwrap mark
+-- (AES secret), and the template must name the new key's class
+-- and key type explicitly (the blob carries no header). Admission
+-- gates last (parse-first). The pending work strips the 8-quantum
+-- PKCS#7 framing ('PwUnwrapPad8').
+planAesKwPkcs7UnwrapKey
+  :: Rules -> Model -> SessionState -> MechanismId -> ByteString
+  -> ExternalHandle -> ByteString -> [(AttributeType, AttributeValue)]
+  -> KeyPlan
+planAesKwPkcs7UnwrapKey rules model st mech params wrapH blob tmpl =
+  case validated of
+    Left deny -> KeyDenied deny
+    Right (pw, fx) ->
+      case admitObjects rules (Map.size (mObjects model)) 1 of
+        Left deny -> KeyDenied (KeyDeny (admitCode deny)
+          ("admission denied: " ++ show deny))
+        Right () -> KeyEffect pw fx
+  where
+    validated
+      | not (BS.null params) && BS.length params /= 8 =
+          Left (KeyDeny CKR_ARGUMENTS_BAD
+            "AES-KW-PKCS7 unwrap takes empty or 8-byte-IV mechanism parameters")
+      | not (kwBlobFramed mech (BS.length blob)) =
+          Left (KeyDeny CKR_ARGUMENTS_BAD
+            "wrapped blob violates key-wrap framing")
+      | not (any ((== AttrKeyType) . fst) tmpl) =
+          Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+            "unwrap template must name the key type")
+      | otherwise = case withWrappingKey model st AttrUnwrap "unwrapping" wrapH of
+          Left deny -> Left deny
+          Right (wrapOid, _) -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
+            Left deny -> Left deny
+            Right attrs -> Right
+              ( PwUnwrapPad8 (pendingFromAttrs st attrs)
+              , FxUnwrap mech (Just wrapOid) params blob
+              )
 
 -- | Plan one authenticated wrap: like 'planWrapKey', but the blob
 -- binds associated data under a 32-byte tag, so the answered length

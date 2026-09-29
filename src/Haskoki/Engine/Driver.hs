@@ -330,6 +330,7 @@ import Haskoki.Operation.KeyManagement
   , chacha20KeyGenMech
   , des3KeyGenMech
   , aesKwpMech
+  , aesKwp7Mech
   , decodeGenArgs
   , decodeWrapParams
   , dhKeyPairGenMech
@@ -1263,6 +1264,10 @@ cipherCtor name keyLen
   | name == "CKM_AES_KEY_WRAP" = aesKw keyLen
   | name == "CKM_AES_KEY_WRAP_KWP" = aesKwp keyLen
   | name == "CKM_AES_KEY_WRAP_PAD" = aesKwp keyLen
+  -- KW-PKCS7 pads in the pure layer and executes the plain KW
+  -- spec (the optional caller IV rides the params, empty means
+  -- the default AIV).
+  | name == "CKM_AES_KEY_WRAP_PKCS7" = aesKw keyLen
   | name == "CKM_AES_XTS" = aesXts keyLen
   | name == "CKM_DES3_CBC" || name == "CKM_DES3_CBC_PAD" = des3 C_DES3_CBC
   | name == "CKM_DES3_ECB" = des3 C_DES3_ECB
@@ -1408,12 +1413,13 @@ isRsaPkcs1Mech mech = isJust (rsaPkcs1RecipeFor mech)
 isRsaPkcsWrapMech :: MechanismId -> Bool
 isRsaPkcsWrapMech mech = mech == rsaPkcsMech
 
--- | The AES key-wrap rows (KW plus the two KWP names): the
--- planner frames the payload raw (no padding) and 'runCipher'
+-- | The AES key-wrap rows (KW plus the two KWP names, plus
+-- KW-PKCS7 whose planner pads first): the planner frames the
+-- payload (raw, or PKCS#7-padded for PKCS7) and 'runCipher'
 -- executes the wrap backend spec selected by 'cipherCtor'.
 isAesKwWrapMech :: MechanismId -> Bool
 isAesKwWrapMech mech =
-  mech == aesKwMech || mech == aesKwPadMech || mech == aesKwpMech
+  mech == aesKwMech || mech == aesKwPadMech || mech == aesKwpMech || mech == aesKwp7Mech
 
 -- | Recipe digest stem onto the backend digest.
 rsaDigest :: T.Text -> Maybe DigestAlg

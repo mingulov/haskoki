@@ -80,6 +80,7 @@ spec = testGroup "openssl4 engine"
   , testCase "aes cfb/ofb known answers (ACVP)" caseAesCfbOfb
   , testCase "Legacy-cipher KATs (oracle/FIPS/RFC)" caseLegacyKats
   , testCase "aes-kw/kwp known answers (ACVP)" caseAesWrapKwp
+  , testCase "aes-kw caller IV + kw-pkcs7 framing (provider)" caseAesWrapPkcs7
   , testCase "aes-xts known answers (ACVP)" caseAesXts
   , testCase "RSA v1.5 KATs (CLI vectors)" caseRsaKats
   , testCase "RSA-PSS interop (CLI vector)" caseRsaPssVectors
@@ -1995,6 +1996,71 @@ caseAesWrapKwp = withBackend $ \env -> do
       pt' <- expectOk (label ++ " decrypt")
         =<< cipherDecrypt env cipher (KeyBytes key) BS.empty want
       assertEqual (label ++ " inverts") pt pt'
+    corrupt bs = case BS.uncons bs of
+      Nothing -> bs
+      Just (b, rest) -> BS.cons (b `xor` 0x01) rest
+
+-- KW-PKCS7 backend legs: the PKCS#7 framing itself is pure-layer
+-- (Operation/Cipher), so these legs pin what the backend owns:
+-- plain-KW encryption of padded images under the default AIV and
+-- under a caller 8-byte IV, plus the KWP 4-byte-IV geometry the
+-- shim accepts. Ciphertexts below are pinned-provider outputs
+-- (compute record /tmp/kwp7vec.c, 2026-09-29); the raw16 image
+-- reuses the RFC 3394 section 4 key/plaintext above.
+kwp7_iv8, kwp7_pad24, kwp7_ct_default, kwp7_ct_iv8 :: ByteString
+kwp7_iv8 = hex "deadbeef00112233"
+kwp7_pad24 = kw128_16_pt <> BS.replicate 8 8
+kwp7_ct_default = hex "ef396379694a053b17db8e6a5370ee86ff17cf6ca7ba13dfdd7fb619c504f657"
+kwp7_ct_iv8 = hex "b4cabb493c3bec3d5b0b82ec908a36dc913bc7ca3f5e050fd929b2159085a308"
+kwp7_pad20raw, kwp7_pad20, kwp7_ct_raw20 :: ByteString
+kwp7_pad20raw = kw128_16_pt <> hex "aabbccdd"
+kwp7_pad20 = kwp7_pad20raw <> BS.replicate 4 4
+kwp7_ct_raw20 = hex "8ec9cf063015a788404dcac6013f7d912e9588d8f99b5b74d366a4449f1cdf58"
+kwp_iv4, kwp_iv4_ct :: ByteString
+kwp_iv4 = hex "deadbeef"
+kwp_iv4_ct = hex "dab104833b678215a9a94db94422e5ef"
+
+caseAesWrapPkcs7 :: IO ()
+caseAesWrapPkcs7 = withBackend $ \env -> do
+  let key = KeyBytes kw128_16_key
+  -- Default AIV: padded images wrap to the pinned vectors.
+  ct0 <- expectOk "pkcs7 default-iv encrypt" =<<
+    cipherEncrypt env C_AES128_KW key BS.empty kwp7_pad24
+  assertEqual "pkcs7 default-iv kat" kwp7_ct_default ct0
+  assertEqual "pkcs7 expands by 8" 32 (BS.length ct0)
+  pt0 <- expectOk "pkcs7 default-iv decrypt" =<<
+    cipherDecrypt env C_AES128_KW key BS.empty kwp7_ct_default
+  assertEqual "pkcs7 default-iv inverts" kwp7_pad24 pt0
+  ct20 <- expectOk "pkcs7 raw20 encrypt" =<<
+    cipherEncrypt env C_AES128_KW key BS.empty kwp7_pad20
+  assertEqual "pkcs7 raw20 kat" kwp7_ct_raw20 ct20
+  -- Caller 8-byte IV: distinct pinned vector, inverts only
+  -- under the same IV (wrong/default IV is an integrity
+  -- failure, never wrong plaintext).
+  ct8 <- expectOk "pkcs7 iv8 encrypt" =<<
+    cipherEncrypt env C_AES128_KW key kwp7_iv8 kwp7_pad24
+  assertEqual "pkcs7 iv8 kat" kwp7_ct_iv8 ct8
+  assertBool "pkcs7 iv8 differs from default" (ct8 /= kwp7_ct_default)
+  pt8 <- expectOk "pkcs7 iv8 decrypt" =<<
+    cipherDecrypt env C_AES128_KW key kwp7_iv8 kwp7_ct_iv8
+  assertEqual "pkcs7 iv8 inverts" kwp7_pad24 pt8
+  expectAuthFailed "pkcs7 iv8 ct under default iv" =<<
+    cipherDecrypt env C_AES128_KW key BS.empty kwp7_ct_iv8
+  expectAuthFailed "pkcs7 corrupt ct" =<<
+    cipherDecrypt env C_AES128_KW key kwp7_iv8 (corrupt kwp7_ct_iv8)
+  -- IV-width geometry: KW takes 0/8 only; KWP takes 0/4 only.
+  expectBadParam "kw rejects 4-byte iv" =<<
+    cipherEncrypt env C_AES128_KW key (BS.take 4 kwp7_iv8) kwp7_pad24
+  expectBadParam "kwp rejects 8-byte iv" =<<
+    cipherEncrypt env C_AES128_KWP (KeyBytes kwp128_1_key) kwp7_iv8 kwp128_1_pt
+  kwp4 <- expectOk "kwp iv4 encrypt" =<<
+    cipherEncrypt env C_AES128_KWP (KeyBytes kwp128_1_key) kwp_iv4 kwp_iv4_pt
+  assertEqual "kwp iv4 kat" kwp_iv4_ct kwp4
+  kwp4pt <- expectOk "kwp iv4 decrypt" =<<
+    cipherDecrypt env C_AES128_KWP (KeyBytes kwp128_1_key) kwp_iv4 kwp_iv4_ct
+  assertEqual "kwp iv4 inverts" kwp_iv4_pt kwp4pt
+  where
+    kwp_iv4_pt = BS.pack [1, 2, 3, 4, 5, 6, 7]
     corrupt bs = case BS.uncons bs of
       Nothing -> bs
       Just (b, rest) -> BS.cons (b `xor` 0x01) rest

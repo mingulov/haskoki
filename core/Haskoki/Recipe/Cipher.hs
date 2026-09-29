@@ -60,6 +60,7 @@ module Haskoki.Recipe.Cipher
   , cipherPlainCodec
   , cipherIvCodec
   , cipherCtrCodec
+  , cipherKwPkcs7Codec
   , cipherCodecFor
   , cipherParamsValid
   , cipherKeyLenValid
@@ -78,6 +79,7 @@ module Haskoki.Recipe.Cipher
   , desOfbName
   , wrapNames
   , kwpNames
+  , kwPkcs7Name
   , xtsName
   , rc4Name
   ) where
@@ -118,6 +120,11 @@ cipherIvCodec = ParameterCodec "iv-bytes" 1
 cipherCtrCodec :: ParameterCodec
 cipherCtrCodec = ParameterCodec "ctr-params" 1
 
+-- | The KW-PKCS7 parameter codec: empty (default §4.3 AIV) or the
+-- raw 8-byte alternate initial value, never a struct.
+cipherKwPkcs7Codec :: ParameterCodec
+cipherKwPkcs7Codec = ParameterCodec "optional-wrap-iv" 1
+
 -- | The RC2 parameter codec: the canonical image below, not raw
 -- IV bytes (the native structs carry the effective-bits word too).
 cipherRc2Codec :: ParameterCodec
@@ -128,6 +135,7 @@ cipherCodecFor :: BlockCipherRecipe -> ParameterCodec
 cipherCodecFor r
   | crName r `elem` ctrNames = cipherCtrCodec
   | crName r `elem` rc2Names = cipherRc2Codec
+  | crName r == kwPkcs7Name = cipherKwPkcs7Codec
   | crIvBytes r == 0 = cipherPlainCodec
   | otherwise = cipherIvCodec
 
@@ -148,6 +156,8 @@ cipherParamsValid r params
               then BS.null iv
               else BS.length iv == 8
       _ -> False
+  | crName r == kwPkcs7Name =
+      BS.null params || BS.length params == 8
   | otherwise = BS.length params == crIvBytes r
 
 -- | This group's CTR row names (the streaming rows): AES and
@@ -193,7 +203,8 @@ desOfbName = "CKM_DES_OFB64"
 -- | The AES key-wrap rows: KW (RFC 3394) plus the two KWP names
 -- (see 'Haskoki.Operation.isAesWrapMech'). Wraps never stream
 -- multipart updates (one-shot integrity over the whole buffer)
--- and take empty parameters like ECB.
+-- and take empty parameters like ECB (KW-PKCS7 is the exception:
+-- optional 8-byte IV, see 'kwPkcs7Name').
 wrapNames :: [MechanismName]
 wrapNames = ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_AES_KEY_WRAP_KWP"]
 
@@ -202,6 +213,13 @@ wrapNames = ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_AES_KEY_WRAP_KWP"]
 -- 'Haskoki.Operation.isKwpMech').
 kwpNames :: [MechanismName]
 kwpNames = ["CKM_AES_KEY_WRAP_PAD", "CKM_AES_KEY_WRAP_KWP"]
+
+-- | The KW-PKCS7 row: PKCS#7-pad to the 8-byte wrap quantum
+-- (always padding, output longer than input) then RFC 3394 §6.2
+-- over the plain KW backend specs; empty or 8-byte-IV parameters
+-- (see 'Haskoki.Operation.isKwPkcs7Mech').
+kwPkcs7Name :: MechanismName
+kwPkcs7Name = "CKM_AES_KEY_WRAP_PKCS7"
 
 -- | The XTS row: IEEE 1619 tweakable encryption over data units of
 -- >= 16 bytes (see 'Haskoki.Operation.isXtsMech'). The 16-byte
@@ -325,6 +343,12 @@ cipherRecipes =
   , BlockCipherRecipe "CKM_AES_KEY_WRAP" 8 [16, 24, 32] 0 False "CKK_AES"
   , BlockCipherRecipe "CKM_AES_KEY_WRAP_PAD" 8 [16, 24, 32] 0 False "CKK_AES"
   , BlockCipherRecipe "CKM_AES_KEY_WRAP_KWP" 8 [16, 24, 32] 0 False "CKK_AES"
+  -- KW-PKCS7 pads in the pure layer like a CBC_PAD row (crPad, 8-byte
+  -- quantum) but executes over the plain KW specs with an optional
+  -- caller IV (empty = default AIV); the planners enforce the >= 8
+  -- raw floor (padded input must reach the 16-byte KW minimum) and
+  -- never stream (see 'Haskoki.Operation.isKwPkcs7Mech').
+  , BlockCipherRecipe "CKM_AES_KEY_WRAP_PKCS7" 8 [16, 24, 32] 0 True "CKK_AES"
   -- XTS takes the 16-byte tweak as the raw parameter like a CBC IV
   -- on double-width keys (no 192 width: the provider has no
   -- AES-192-XTS); the planners enforce the >= 16 floor and never

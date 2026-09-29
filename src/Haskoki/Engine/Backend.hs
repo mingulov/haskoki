@@ -59,6 +59,7 @@ module Haskoki.Engine.Backend
   , CipherSpec (..)
   , cipherKeyLens
   , cipherIvLen
+  , cipherIvLenOk
   , cipherSpecCanon
   , rc2BitsOf
   , isKwSpec
@@ -589,11 +590,11 @@ cipherKeyLens spec = case spec of
 
 -- | IV length in bytes per cipher: the block width for CBC, CTS,
 -- CFB128, CFB8, CFB1 and OFB, 16 for CTR, 16 for the XTS tweak,
--- 0 for ECB, KW and KWP (wraps use the fixed AIV, never a caller
--- IV), 16 for ChaCha20 (the 4-byte little-endian initial block
--- counter plus the 12-byte nonce — exactly the IV layout
--- @EVP_chacha20@ takes; the driver splits the canonical image
--- into this framing). Both
+-- 0 for ECB, KW and KWP (wraps default to the fixed AIV; the
+-- caller-IV widths ride 'cipherIvLenOk'), 16 for ChaCha20 (the
+-- 4-byte little-endian initial block counter plus the 12-byte
+-- nonce — exactly the IV layout @EVP_chacha20@ takes; the driver
+-- splits the canonical image into this framing). Both
 -- engines enforce this; RecipeCipherSpec pins it
 -- against the recipe.
 cipherIvLen :: CipherSpec -> Int
@@ -667,6 +668,16 @@ cipherIvLen spec = case spec of
   C_CAMELLIA192_CTR -> 16
   C_CAMELLIA256_CTR -> 16
   C_CHACHA20 -> 16
+
+-- | Accepted IV widths per spec: 'cipherIvLen' everywhere except
+-- the wraps, where the caller may pass the alternate initial
+-- value (KW: 0/8, KWP: 0/4 — spec geometry, provider-proven).
+-- Both engines gate on this; OpenSSLSpec pins the wrap widths.
+cipherIvLenOk :: CipherSpec -> Int -> Bool
+cipherIvLenOk spec n
+  | isKwSpec spec = n == 0 || n == 8
+  | isKwpSpec spec = n == 0 || n == 4
+  | otherwise = n == cipherIvLen spec
 
 -- | AEAD carries its own nonce/tag lengths; padding is never implicit.
 data AeadSpec = AeadSpec

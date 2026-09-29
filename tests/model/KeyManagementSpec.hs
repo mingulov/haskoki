@@ -109,6 +109,7 @@ import Haskoki.Operation.KeyManagement
   , aesKwMech
   , aesKwPadMech
   , aesKwpMech
+  , aesKwp7Mech
   , blake2b512KeyGenMech
   , chacha20KeyGenMech
   , ckkAes
@@ -358,6 +359,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Wrap length query then wrap/unwrap roundtrip" caseWrapRoundtrip
   , testCase "AES-KW wrap/unwrap roundtrips with +8 expansion" caseAesKwWrapRoundtrip
   , testCase "AES-KWP wrap/unwrap roundtrips ragged (PAD alias)" caseAesKwpWrapRoundtrip
+  , testCase "AES-KW-PKCS7 wrap/unwrap pads, IVs, fails closed" caseAesKwPkcs7WrapRoundtrip
   , testCase "unwrap commits refuse type/length confusion" caseUnwrapKeyTypeLength
   , testCase "RSA wrap/unwrap roundtrips modulus-wide" caseRsaWrapRoundtrip
   , testCase "RSA wrap key/parameter/length mismatches fail closed" caseRsaWrapMismatch
@@ -3047,6 +3049,81 @@ caseAesKwpWrapRoundtrip = withSynth $ \answer -> do
   case planUnwrapKey defaultRules m2 st aesKwpMech BS.empty wrapH (BS.replicate 10 0) tmpl of
     KeyDenied d -> assertEqual "blob code" CKR_ARGUMENTS_BAD (kdCode d)
     other -> assertFailure ("ragged blob accepted, got: " ++ show other)
+
+-- | KW-PKCS7 pads the target to the 8-byte quantum (always
+-- padding) and wraps with RFC 3394 under the default AIV or a
+-- caller 8-byte IV: a 20-byte target queries 32 (24 padded + 8),
+-- wraps/unwraps end to end under the same IV, and fails closed
+-- (reject, nothing published) under the wrong IV.
+caseAesKwPkcs7WrapRoundtrip :: IO ()
+caseAesKwPkcs7WrapRoundtrip = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, wrapH) <- genAesKey answer m0 st wrapKeyTmpl
+  (m2, targetH) <- genKeyWith answer m1 st genericSecretKeyGenMech (secretTmplN 20)
+  Just target <- pure (resolveHandle m2 targetH)
+  Just targetMat <- pure (keyBytesOf target)
+  assertEqual "target length" 20 (BS.length targetMat)
+  let iv8 = BS.pack [0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33]
+      queryLen params = case planWrapKey m2 st aesKwp7Mech params wrapH targetH IntentNull of
+        KeyImmediate (Immediate c) -> pure (pcOutputs c)
+        other -> assertFailure ("pkcs7 query is not an Immediate commit: " ++ show other) >> undefined
+  -- Length query: pad 20 -> 24, + 8 wrap = 32 (same under
+  -- either IV: the IV is not part of the blob).
+  assertEqual "pkcs7 query length default iv"
+    [NativeOutput (RegionBytes "wrapped" IntentNull) (encodeValue (ValULong 32))]
+    =<< queryLen BS.empty
+  assertEqual "pkcs7 query length caller iv"
+    [NativeOutput (RegionBytes "wrapped" IntentNull) (encodeValue (ValULong 32))]
+    =<< queryLen iv8
+  -- A 4-byte IV is neither empty nor 8: refused.
+  case planWrapKey m2 st aesKwp7Mech (BS.replicate 4 0) wrapH targetH IntentNull of
+    KeyDenied d -> assertEqual "iv code" CKR_ARGUMENTS_BAD (kdCode d)
+    other -> assertFailure ("ragged iv accepted, got: " ++ show other)
+  -- Wrap under the caller IV, unwrap under the same IV.
+  blob <- case planWrapKey m2 st aesKwp7Mech iv8 wrapH targetH (IntentBuffer 32) of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      case finishWork m2 st pw res of
+        Immediate c -> case pcOutputs c of
+          [NativeOutput (RegionBytes "wrapped" _) bs] -> pure bs
+          o -> assertFailure ("wrap outputs one blob, got: " ++ show o) >> undefined
+        other -> assertFailure ("wrap finish must commit, got: " ++ show other) >> undefined
+    other -> assertFailure ("pkcs7 plan is not an effect: " ++ show other) >> undefined
+  assertEqual "wrapped length" 32 (BS.length blob)
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        ]
+  case planUnwrapKey defaultRules m2 st aesKwp7Mech iv8 wrapH blob tmpl of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      c <- finishCommit m2 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m3 <- expectRight (publishDelta m2 (pcDelta c))
+      Just ost <- pure (resolveHandle m3 h)
+      assertEqual "unwrapped material" (Just targetMat) (keyBytesOf ost)
+    other -> assertFailure ("pkcs7 unwrap plan is not an effect: " ++ show other)
+  -- Unwrap under the WRONG (empty) IV plans, then the driver
+  -- answers AuthFailed and the finish rejects with nothing
+  -- published (fail closed, never wrong plaintext).
+  case planUnwrapKey defaultRules m2 st aesKwp7Mech BS.empty wrapH blob tmpl of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      case finishWork m2 st pw res of
+        Reject r -> assertEqual "wrong iv publishes nothing" (StateDelta []) (rejDelta r)
+        other -> assertFailure ("wrong-iv unwrap committed, got: " ++ show other)
+    other -> assertFailure ("wrong-iv unwrap plan is not an effect: " ++ show other)
+  -- A 7-byte target is below the floor (pads to 8 < 16).
+  (m4, shortH) <- genKeyWith answer m2 st genericSecretKeyGenMech (secretTmplN 7)
+  case planWrapKey m4 st aesKwp7Mech BS.empty wrapH shortH IntentNull of
+    KeyDenied d -> assertEqual "floor code" CKR_DATA_LEN_RANGE (kdCode d)
+    other -> assertFailure ("short target accepted, got: " ++ show other)
+  -- A 16-byte blob is not PKCS7 framing (multiple of 8, >= 24).
+  case planUnwrapKey defaultRules m2 st aesKwp7Mech BS.empty wrapH (BS.replicate 16 0) tmpl of
+    KeyDenied d -> assertEqual "blob code" CKR_ARGUMENTS_BAD (kdCode d)
+    other -> assertFailure ("short blob accepted, got: " ++ show other)
 
 -- | Unwrap commits measure the answered material against the
 -- template key type (Tookan §3.2 key-type confusion: a 16-byte

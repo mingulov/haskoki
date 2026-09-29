@@ -3382,6 +3382,79 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_OK && kwpUnwrapped != 0 && kwpUnwrapped != targetKey,
              "kwp unwrap mints a distinct key");
     }
+    /* AES-KW-PKCS7 object path: the 16-byte target pads to 24 and
+     * wraps to 32 (+8 IV) under a caller IV; unwrap under the same
+     * IV mints a distinct key, under the default AIV fails closed.
+     * The raw path round-trips 20 bytes to 32 and back. */
+    {
+      CK_ATTRIBUTE kw7dtmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) },
+        { CKA_ENCRYPT, &bTrue, sizeof(bTrue) },
+        { CKA_DECRYPT, &bTrue, sizeof(bTrue) }
+      };
+      CK_MECHANISM kw7m;
+      CK_MECHANISM kw7um;
+      CK_MECHANISM kw7noiv;
+      CK_BYTE kw7iv[8] = { 0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33 };
+      CK_BYTE kw7iv4[4] = { 0x01, 0x02, 0x03, 0x04 };
+      CK_OBJECT_HANDLE kw7Unwrapped = 0;
+      CK_OBJECT_HANDLE kw7bad = 0;
+      CK_BYTE kw7blob[64];
+      CK_ULONG kw7blobLen = 0;
+      kw7m.mechanism = CKM_AES_KEY_WRAP_PKCS7;
+      kw7m.pParameter = kw7iv;
+      kw7m.ulParameterLen = sizeof(kw7iv);
+      kw7um = kw7m;
+      rv = f->C_WrapKey(wsess, &kw7m, wrapKey, targetKey, NULL_PTR, &kw7blobLen);
+      CHECKC(rv == CKR_OK && kw7blobLen == 32, "kw-pkcs7 size query reports 32");
+      kw7m.pParameter = kw7iv4;
+      kw7m.ulParameterLen = sizeof(kw7iv4);
+      kw7blobLen = sizeof(kw7blob);
+      rv = f->C_WrapKey(wsess, &kw7m, wrapKey, targetKey, kw7blob, &kw7blobLen);
+      CHECKC(rv == CKR_ARGUMENTS_BAD, "kw-pkcs7 ragged iv refused");
+      kw7m.pParameter = kw7iv;
+      kw7m.ulParameterLen = sizeof(kw7iv);
+      kw7blobLen = sizeof(kw7blob);
+      rv = f->C_WrapKey(wsess, &kw7m, wrapKey, targetKey, kw7blob, &kw7blobLen);
+      CHECKC(rv == CKR_OK && kw7blobLen == 32, "kw-pkcs7 wrap yields 32 bytes");
+      rv = f->C_UnwrapKey(wsess, &kw7um, wrapKey, kw7blob, kw7blobLen,
+                          kw7dtmpl, 6, &kw7Unwrapped);
+      CHECKC(rv == CKR_OK && kw7Unwrapped != 0 && kw7Unwrapped != targetKey,
+             "kw-pkcs7 unwrap mints a distinct key");
+      kw7noiv.mechanism = CKM_AES_KEY_WRAP_PKCS7;
+      kw7noiv.pParameter = NULL_PTR;
+      kw7noiv.ulParameterLen = 0;
+      rv = f->C_UnwrapKey(wsess, &kw7noiv, wrapKey, kw7blob, kw7blobLen,
+                          kw7dtmpl, 6, &kw7bad);
+      CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "kw-pkcs7 wrong iv fails closed");
+      CHECKC(kw7bad == 0, "wrong-iv unwrap writes no handle");
+      {
+        CK_MECHANISM cem;
+        CK_BYTE rawpt[20];
+        CK_BYTE rawct[64];
+        CK_BYTE rawback[64];
+        CK_ULONG rawctl = sizeof(rawct);
+        CK_ULONG rawbackl = sizeof(rawback);
+        unsigned ui;
+        for (ui = 0; ui < sizeof(rawpt); ui++) rawpt[ui] = (CK_BYTE)(0x40 + ui);
+        cem.mechanism = CKM_AES_KEY_WRAP_PKCS7;
+        cem.pParameter = NULL_PTR;
+        cem.ulParameterLen = 0;
+        rv = f->C_EncryptInit(wsess, &cem, targetKey);
+        CHECKC(rv == CKR_OK, "kw-pkcs7 raw encrypt inits");
+        rv = f->C_Encrypt(wsess, rawpt, sizeof(rawpt), rawct, &rawctl);
+        CHECKC(rv == CKR_OK && rawctl == 32, "kw-pkcs7 raw encrypt yields 32");
+        rv = f->C_DecryptInit(wsess, &cem, targetKey);
+        CHECKC(rv == CKR_OK, "kw-pkcs7 raw decrypt inits");
+        rv = f->C_Decrypt(wsess, rawct, rawctl, rawback, &rawbackl);
+        CHECKC(rv == CKR_OK && rawbackl == 20 &&
+                   memcmp(rawback, rawpt, 20) == 0,
+               "kw-pkcs7 raw decrypt inverts");
+      }
+    }
     /* HKDF derive: the PRF names a SHA-2 hash (SHA-1 through
      * SHA-512/224), expand-only and extract-and-expand served
      * with NULL/DATA salt. Malformed calls refuse ARGUMENTS_BAD;

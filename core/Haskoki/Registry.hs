@@ -1401,6 +1401,7 @@ cipherDescs =
       [ "CKM_AES_KEY_WRAP"
       , "CKM_AES_KEY_WRAP_PAD"
       , "CKM_AES_KEY_WRAP_KWP"
+      , "CKM_AES_KEY_WRAP_PKCS7"
       ]
 
 -- | Aliases for one inventoried id, resolved through the generated

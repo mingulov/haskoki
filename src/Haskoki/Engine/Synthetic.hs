@@ -69,7 +69,7 @@ import Haskoki.Engine.Backend
   , BackendError (..)
   , CipherCaps (..)
   , CipherSpec (..)
-  , cipherIvLen
+  , cipherIvLenOk
   , cipherKeyLens
   , cipherSpecCanon
   , rc2BitsOf
@@ -1111,7 +1111,7 @@ cipherSupported (SynthBackend env) spec
   | otherwise = Just ("cipher not in synthetic set: " ++ show spec)
 
 -- | Shared encrypt/decrypt path: guard, key resolution, per-spec
--- shape checks ('cipherKeyLens' / 'cipherIvLen'), then the
+-- shape checks ('cipherKeyLens' / 'cipherIvLenOk'), then the
 -- length-preserving stream construction (XOR, so encrypt and
 -- decrypt are one function).
 cipherRun :: BackendEnv Synthetic -> String -> CipherSpec -> KeyMaterial
@@ -1126,7 +1126,7 @@ cipherRun be op spec key iv input =
             pure (B.EngineFail (BackendBadParam op
               ("key length " ++ show (BS.length kb)
                 ++ " not accepted by " ++ show spec)))
-        | BS.length iv /= cipherIvLen spec ->
+        | not (cipherIvLenOk spec (BS.length iv)) ->
             pure (B.EngineFail (BackendBadParam op
               ("iv length " ++ show (BS.length iv)
                 ++ " not accepted by " ++ show spec)))
@@ -1157,7 +1157,7 @@ wrapRun be op enc spec key iv input =
             pure (B.EngineFail (BackendBadParam op
               ("key length " ++ show (BS.length kb)
                 ++ " not accepted by " ++ show spec)))
-        | BS.length iv /= cipherIvLen spec ->
+        | not (cipherIvLenOk spec (BS.length iv)) ->
             pure (B.EngineFail (BackendBadParam op
               ("iv length " ++ show (BS.length iv)
                 ++ " not accepted by " ++ show spec)))
@@ -1175,8 +1175,8 @@ wrapRun be op enc spec key iv input =
           && (BS.length input < 16 || BS.length input `mod` 8 /= 0) ->
             pure (B.EngineFail (BackendBadParam op
               ("KWP ciphertext must be a multiple of 8, at least 16 bytes")))
-        | enc -> pure (B.EngineOk (synthWrapSeal spec kb input))
-        | otherwise -> case synthWrapOpen spec kb input of
+        | enc -> pure (B.EngineOk (synthWrapSeal spec kb iv input))
+        | otherwise -> case synthWrapOpen spec kb iv input of
             Just pt -> pure (B.EngineOk pt)
             Nothing -> pure (B.EngineFail (BackendAuthFailed op))
 
@@ -1827,16 +1827,18 @@ classCipherFor spec kb iv input =
 -- | Synthetic wrap seal (test construction, NOT RFC 3394/5649):
 -- the input is zero-padded to a multiple of 8, XORed with the
 -- spec-keyed stream, and prefixed with an 8-byte keyed tag
--- (@\"HSKW\" <> u32be(length)@ XOR the wrap-tag stream). Output
--- expands exactly like the real thing (KW: inlen + 8; KWP:
+-- (@\"HSKW\" <> u32be(length)@ XOR the wrap-tag stream). The IV
+-- (empty for the fixed-AIV rows) mixes into the tag key and the
+-- body stream, so alternate-IV seals differ deterministically.
+-- Output expands exactly like the real thing (KW: inlen + 8; KWP:
 -- ceil8(inlen) + 8) so shape-level parity holds.
-synthWrapSeal :: CipherSpec -> ByteString -> ByteString -> ByteString
-synthWrapSeal spec kb input =
+synthWrapSeal :: CipherSpec -> ByteString -> ByteString -> ByteString -> ByteString
+synthWrapSeal spec kb iv input =
   let n = BS.length input
       pad = (8 - n `mod` 8) `mod` 8
-      body = classCipherFor spec kb BS.empty (input <> BS.replicate pad 0)
+      body = classCipherFor spec kb iv (input <> BS.replicate pad 0)
       tag = BS.packZipWith xor
-        (classStream (wrapTagKey spec kb) BS.empty 8)
+        (classStream (wrapTagKey spec kb <> iv) BS.empty 8)
         ("HSKW" <> word32BE n)
   in tag <> body
 
@@ -1844,16 +1846,16 @@ synthWrapSeal spec kb input =
 -- canonical zero padding) and returns the original bytes.
 -- 'Nothing' (reported as AuthFailed) covers wrong keys,
 -- corruption, truncation, and non-canonical padding.
-synthWrapOpen :: CipherSpec -> ByteString -> ByteString -> Maybe ByteString
-synthWrapOpen spec kb ct = do
+synthWrapOpen :: CipherSpec -> ByteString -> ByteString -> ByteString -> Maybe ByteString
+synthWrapOpen spec kb iv ct = do
   let (tag, body) = BS.splitAt 8 ct
   guard (BS.length tag == 8 && BS.length body >= 8 && BS.length body `mod` 8 == 0)
   let clear = BS.packZipWith xor
-        (classStream (wrapTagKey spec kb) BS.empty 8) tag
+        (classStream (wrapTagKey spec kb <> iv) BS.empty 8) tag
   guard (BS.take 4 clear == "HSKW")
   let n = unword32BE (BS.drop 4 clear)
   guard (n <= BS.length body)
-  let padded = classCipherFor spec kb BS.empty body
+  let padded = classCipherFor spec kb iv body
       (pt, rest) = BS.splitAt n padded
   guard (BS.length rest == (8 - n `mod` 8) `mod` 8)
   guard (BS.all (== 0) rest)

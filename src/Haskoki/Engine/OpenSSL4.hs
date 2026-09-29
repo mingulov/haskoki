@@ -1163,8 +1163,12 @@ osslCipherNotes specs =
   where
     cipherNote spec =
       "no padding; key " ++ keyNote spec
-        ++ ", iv " ++ show (cipherIvLen spec) ++ " bytes, input "
+        ++ ", iv " ++ ivNote spec ++ ", input "
         ++ cipherLenNote spec
+    ivNote spec
+      | isKwSpec spec = "0 or 8 bytes (alternate initial value)"
+      | isKwpSpec spec = "0 or 4 bytes (alternate initial value)"
+      | otherwise = show (cipherIvLen spec) ++ " bytes"
     cipherLenNote spec
       | isCtsSpec spec = "any length >= 1 block, length preserved (manual CBC-CS1 over provider ECB)"
       | isKwSpec spec = "multiple of 8, >= 16 bytes, expands by 8 (RFC 3394)"
@@ -1896,17 +1900,17 @@ cipherProviderKey spec kb
 
 -- | The native entry per spec: CTS runs the shim's manual CBC-CS1
 -- over its width-matched ECB primitive; KW/KWP run the shim's
--- wrap entry over the fetched wrap cipher (no IV — already gated
--- empty); XTS runs the shim's XTS entry over the fetched XTS
--- cipher (16-byte tweak as the IV); ChaCha20 passes its 16-byte
--- (counter, nonce) IV straight through (the counter rides the IV
--- natively); every other spec runs the provider mode named by
--- 'cipherFetchName'.
+-- wrap entry over the fetched wrap cipher (the alternate IV
+-- rides through, empty selects the fixed AIV); XTS runs the
+-- shim's XTS entry over the fetched XTS cipher (16-byte tweak as
+-- the IV); ChaCha20 passes its 16-byte (counter, nonce) IV
+-- straight through (the counter rides the IV natively); every
+-- other spec runs the provider mode named by 'cipherFetchName'.
 cipherNative :: Ptr Raw.OsslLibCtx -> String -> Bool -> CipherSpec -> ByteString -> ByteString -> ByteString -> IO (Either Int ByteString)
 cipherNative ctx propq enc spec
   | isCtsSpec spec = Raw.cipherCts ctx (ctsEcbName spec) propq enc
-  | isWrapSpec spec = \key _iv input ->
-      Raw.cipherWrap ctx (cipherFetchName spec) propq enc (isKwpSpec spec) key input
+  | isWrapSpec spec = \key iv input ->
+      Raw.cipherWrap ctx (cipherFetchName spec) propq enc (isKwpSpec spec) key iv input
   | isXtsSpec spec = \key tweak input ->
       Raw.cipherXts ctx (cipherFetchName spec) propq enc key tweak input
   | isLegacySpec spec = \key iv input ->
@@ -1968,7 +1972,7 @@ cipherRun be op enc spec key iv input =
             pure (EngineFail (BackendBadParam op
               ("key length " ++ show (BS.length kb)
                 ++ " not accepted by " ++ show spec)))
-        | BS.length iv /= cipherIvLen spec ->
+        | not (cipherIvLenOk spec (BS.length iv)) ->
             pure (EngineFail (BackendBadParam op
               ("iv length " ++ show (BS.length iv)
                 ++ " not accepted by " ++ show spec)))

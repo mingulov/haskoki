@@ -123,6 +123,7 @@ spec = testGroup "synthetic engine"
   , testCase "HMAC widths per algorithm" caseHmacWidths
   , testCase "HMAC truncation honored and bounded" caseHmacTrunc
   , testCase "Block-cipher specs roundtrip per geometry" caseCipherSpecs
+  , testCase "Wrap specs thread the caller IV" caseWrapIv
   , testCase "Legacy-cipher specs roundtrip per width" caseLegacyCipherSpecs
   , testCase "RSA v1.5 specs roundtrip per digest" caseRsaRoundtrip
   , testCase "RSA-PSS specs roundtrip per salt" casePssRoundtrip
@@ -1284,6 +1285,39 @@ caseCipherSpecs = withSynth "11" $ \env -> do
       assertEqual ("reversible " ++ label) plain pt
       expectBadParam ("short key " ++ label) =<<
         cipherEncrypt env cspec (KeyBytes "short") iv plain
+
+-- | The synthetic wrap construction threads the alternate IV
+-- (empty = fixed AIV rows): alternate-IV seals roundtrip, differ
+-- from fixed-AIV seals, and open only under the sealing IV
+-- (wrong-IV open is AuthFailed, never wrong plaintext). Widths
+-- mirror the real backend (KW 0/8, KWP 0/4).
+caseWrapIv :: IO ()
+caseWrapIv = withSynth "11" $ \env -> do
+  let key = KeyBytes "0123456789abcdef"
+      iv8b = BS.pack [0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33]
+      pt = "sixteen bytes xx" -- 16 bytes: the KW minimum
+  seal0 <- expectOk "kw fixed-aiv seal" =<<
+    cipherEncrypt env C_AES128_KW key BS.empty pt
+  seal8 <- expectOk "kw iv8 seal" =<<
+    cipherEncrypt env C_AES128_KW key iv8b pt
+  assertBool "iv8 seal differs" (seal8 /= seal0)
+  assertEqual "kw expands by 8" 24 (BS.length seal8)
+  open8 <- expectOk "kw iv8 open" =<<
+    cipherDecrypt env C_AES128_KW key iv8b seal8
+  assertEqual "kw iv8 inverts" pt open8
+  expectAuthFailed "kw iv8 seal under fixed aiv" =<<
+    cipherDecrypt env C_AES128_KW key BS.empty seal8
+  expectAuthFailed "kw fixed seal under iv8" =<<
+    cipherDecrypt env C_AES128_KW key iv8b seal0
+  expectBadParam "kw rejects 4-byte iv" =<<
+    cipherEncrypt env C_AES128_KW key (BS.take 4 iv8b) pt
+  expectBadParam "kwp rejects 8-byte iv" =<<
+    cipherEncrypt env C_AES128_KWP key iv8b "odd-length input"
+  kwp4 <- expectOk "kwp iv4 seal" =<<
+    cipherEncrypt env C_AES128_KWP key (BS.take 4 iv8b) "odd-length input"
+  kwp4pt <- expectOk "kwp iv4 open" =<<
+    cipherDecrypt env C_AES128_KWP key (BS.take 4 iv8b) kwp4
+  assertEqual "kwp iv4 inverts" "odd-length input" kwp4pt
 
 des3Key24 :: KeyMaterial
 des3Key24 = KeyBytes "0123456789abcdef01234567"

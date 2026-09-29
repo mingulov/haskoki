@@ -116,6 +116,7 @@ import Haskoki.Operation.Codec (cipherShapeFor)
 import Haskoki.Recipe.Cipher
   ( BlockCipherRecipe (..)
   , cipherCodecFor
+  , cipherKwPkcs7Codec
   , cipherCtrCodec
   , cipherIvCodec
   , cipherKeyLenValid
@@ -150,6 +151,7 @@ import Haskoki.Registry.Generated
   , ckm_AES_KEY_WRAP
   , ckm_AES_KEY_WRAP_KWP
   , ckm_AES_KEY_WRAP_PAD
+  , ckm_AES_KEY_WRAP_PKCS7
   , ckm_AES_OFB
   , ckm_AES_XTS
   , ckm_ARIA_CBC_PAD
@@ -226,6 +228,7 @@ groupShape =
   , ("AES_KEY_WRAP", 8, [16, 24, 32], 0, False)
   , ("AES_KEY_WRAP_PAD", 8, [16, 24, 32], 0, False)
   , ("AES_KEY_WRAP_KWP", 8, [16, 24, 32], 0, False)
+  , ("AES_KEY_WRAP_PKCS7", 8, [16, 24, 32], 0, True)
   , ("AES_XTS", 16, [32, 64], 16, False)
   , ("DES3_CBC", 8, [16, 24], 8, False)
   , ("DES3_ECB", 8, [16, 24], 0, False)
@@ -283,7 +286,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 50 (length cipherRecipes)
+  assertEqual "recipe count" 51 (length cipherRecipes)
   mapM_ (\(suffix, block, keys, iv, pad) -> do
     let name = mechName suffix
         found = [ r | r <- cipherRecipes, crName r == name ]
@@ -324,6 +327,7 @@ caseCodec = do
         want
           | suffix `elem` (["AES_CTR", "CAMELLIA_CTR"] :: [Text]) = cipherCtrCodec
           | suffix `elem` (["RC2_ECB", "RC2_CBC", "RC2_CBC_PAD"] :: [Text]) = cipherRc2Codec
+          | suffix == "AES_KEY_WRAP_PKCS7" = cipherKwPkcs7Codec
           | iv == 0 = cipherPlainCodec
           | otherwise = cipherIvCodec
     case cipherRecipeFor (MechanismId (mustGeneratedId name)) of
@@ -381,6 +385,11 @@ caseParams = do
   let kwpad = recipeOf "CKM_AES_KEY_WRAP_PAD"
   assertBool "kwpad empty valid" (cipherParamsValid kwpad BS.empty)
   assertBool "kwpad 16 refused" (not (cipherParamsValid kwpad (BS.replicate 16 0)))
+  let kwp7 = recipeOf "CKM_AES_KEY_WRAP_PKCS7"
+  assertBool "kwpkcs7 empty valid" (cipherParamsValid kwp7 BS.empty)
+  assertBool "kwpkcs7 8 valid" (cipherParamsValid kwp7 (BS.replicate 8 0))
+  assertBool "kwpkcs7 4 refused" (not (cipherParamsValid kwp7 (BS.replicate 4 0)))
+  assertBool "kwpkcs7 16 refused" (not (cipherParamsValid kwp7 (BS.replicate 16 0)))
   let xts = recipeOf "CKM_AES_XTS"
   assertBool "xts tweak 16 valid" (cipherParamsValid xts (BS.replicate 16 0))
   assertBool "xts empty refused" (not (cipherParamsValid xts BS.empty))
@@ -567,6 +576,8 @@ ofbMech = MechanismId (ckm_AES_OFB)
 kwMech = MechanismId (ckm_AES_KEY_WRAP)
 kwPadMech = MechanismId (ckm_AES_KEY_WRAP_PAD)
 kwpMech = MechanismId (ckm_AES_KEY_WRAP_KWP)
+kwp7Mech :: MechanismId
+kwp7Mech = MechanismId (ckm_AES_KEY_WRAP_PKCS7)
 xtsMech = MechanismId (ckm_AES_XTS)
 
 testEnv :: OpEnv
@@ -578,6 +589,7 @@ testEnv = OpEnv
       , (cfb128Mech, OpEncrypt), (cfb8Mech, OpEncrypt)
       , (cfb1Mech, OpEncrypt), (ofbMech, OpEncrypt)
       , (kwMech, OpEncrypt), (kwPadMech, OpEncrypt), (kwpMech, OpEncrypt)
+      , (kwp7Mech, OpEncrypt)
       , (xtsMech, OpEncrypt)
       , (ariaPadMech, OpEncrypt), (camPadMech, OpEncrypt)
       , (d3PadMech, OpEncrypt), (camCtrMech, OpEncrypt)
@@ -653,6 +665,14 @@ caseInitParams = do
     (runInit (mkArgs kwpMech (BS.replicate 16 0)))
   assertEqual "kwp empty passes params" CKR_OBJECT_HANDLE_INVALID
     (runInit (mkArgs kwpMech BS.empty))
+  assertEqual "kwpkcs7 4-byte iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs kwp7Mech (BS.replicate 4 0)))
+  assertEqual "kwpkcs7 16-byte iv refused" CKR_ARGUMENTS_BAD
+    (runInit (mkArgs kwp7Mech (BS.replicate 16 0)))
+  assertEqual "kwpkcs7 empty passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs kwp7Mech BS.empty))
+  assertEqual "kwpkcs7 8-byte iv passes params" CKR_OBJECT_HANDLE_INVALID
+    (runInit (mkArgs kwp7Mech (BS.replicate 8 0)))
   assertEqual "xts ragged tweak refused" CKR_ARGUMENTS_BAD
     (runInit (mkArgs xtsMech (BS.replicate 8 0)))
   assertEqual "xts empty refused" CKR_ARGUMENTS_BAD

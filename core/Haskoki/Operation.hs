@@ -58,6 +58,7 @@ module Haskoki.Operation
   , isDesStreamMech
   , isAesWrapMech
   , isKwpMech
+  , isKwPkcs7Mech
   , isOfbMech
   , isXtsMech
   , isRc4Mech
@@ -81,7 +82,7 @@ import Haskoki.Output
   , planOneShot
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor)
-import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, desOfbName, desStreamNames, kwpNames, ofbName, rc4Name, streamNames, wrapNames, xtsName)
+import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, desOfbName, desStreamNames, kwPkcs7Name, kwpNames, ofbName, rc4Name, streamNames, wrapNames, xtsName)
 import Haskoki.Recipe.CbcMac (cbcmacParamsValid, cbcmacRecipeFor)
 import Haskoki.Recipe.Cmac (cmacParamsValid, cmacRecipeFor)
 import Haskoki.Recipe.Des3Mac (des3macParamsValid, des3macRecipeFor)
@@ -324,6 +325,16 @@ isAesWrapMech m = case cipherRecipeFor m of
 isKwpMech :: MechanismId -> Bool
 isKwpMech m = case cipherRecipeFor m of
   Just r -> crName r `elem` kwpNames
+  Nothing -> False
+
+-- | The KW-PKCS7 row (@CKM_AES_KEY_WRAP_PKCS7@): PKCS#7-pad to the
+-- 8-byte wrap quantum (always padding) then RFC 3394 §6.2 over
+-- the plain KW specs. Raw input needs >= 8 bytes (shorter pads
+-- below the 16-byte KW minimum); like the KW rows it never
+-- streams (one-shot integrity over the whole padded buffer).
+isKwPkcs7Mech :: MechanismId -> Bool
+isKwPkcs7Mech m = case cipherRecipeFor m of
+  Just r -> crName r == kwPkcs7Name
   Nothing -> False
 
 -- | The XTS row (@CKM_AES_XTS@): IEEE 1619 tweakable encryption

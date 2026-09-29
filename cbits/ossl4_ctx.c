@@ -859,6 +859,7 @@ end:
 long hsk_ossl4_cipher_wrap(OSSL_LIB_CTX *ctx, const char *ciphername,
                            const char *propq, int enc, int kwp,
                            const unsigned char *key, size_t keylen,
+                           const unsigned char *iv, size_t ivlen,
                            const unsigned char *in, size_t inlen,
                            unsigned char **out)
 {
@@ -872,6 +873,19 @@ long hsk_ossl4_cipher_wrap(OSSL_LIB_CTX *ctx, const char *ciphername,
 
     if (ctx == NULL || ciphername == NULL || propq == NULL || out == NULL ||
         key == NULL || (in == NULL && inlen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+    /* Alternate initial value: empty selects the fixed AIV; KW
+     * takes 8 bytes, KWP 4 (spec geometry; probe record:
+     * AES-128-WRAP + 8-byte IV and AES-128-WRAP-PAD + 4-byte IV
+     * round-trip on the pinned provider). */
+    if (kwp) {
+        if (ivlen != 0 && ivlen != 4)
+            return HSK_OSSL4_ERR_BADPARAM;
+    } else {
+        if (ivlen != 0 && ivlen != 8)
+            return HSK_OSSL4_ERR_BADPARAM;
+    }
+    if (ivlen > 0 && iv == NULL)
         return HSK_OSSL4_ERR_BADPARAM;
 
     cipher = EVP_CIPHER_fetch(ctx, ciphername, propq);
@@ -896,15 +910,18 @@ long hsk_ossl4_cipher_wrap(OSSL_LIB_CTX *ctx, const char *ciphername,
     if (cctx == NULL)
         goto end;
     /* Direction-specific init (probe record: NULL IV works; wraps
-     * use the fixed AIV). Padding disabled: KW/KWP frame the
-     * input themselves. */
+     * use the fixed AIV unless the caller passes the alternate
+     * value). Padding disabled: KW/KWP frame the input
+     * themselves. */
     if (enc) {
-        if (!EVP_EncryptInit_ex(cctx, cipher, NULL, key, NULL)) {
+        if (!EVP_EncryptInit_ex(cctx, cipher, NULL, key,
+                                ivlen == 0 ? NULL : iv)) {
             rc = HSK_OSSL4_ERR_BADPARAM;
             goto end;
         }
     } else {
-        if (!EVP_DecryptInit_ex(cctx, cipher, NULL, key, NULL)) {
+        if (!EVP_DecryptInit_ex(cctx, cipher, NULL, key,
+                                ivlen == 0 ? NULL : iv)) {
             rc = HSK_OSSL4_ERR_BADPARAM;
             goto end;
         }

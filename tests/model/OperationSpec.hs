@@ -988,6 +988,16 @@ caseUpdateSplitTable = do
       assertEqual ("xts dec " ++ show total) want
         (cipherUpdateSplit aesXtsMech plain DirDecrypt total)
     ) [(0, (0, 0)), (15, (0, 15)), (16, (0, 16)), (20, (0, 20)), (32, (0, 32))]
+  -- KW-PKCS7 never streams despite its padded shape: one-shot
+  -- integrity covers the whole padded buffer like the KW rows.
+  let kwp7 = MechanismId 0x210C
+      kwp7shape = CipherSpec 8 True
+  mapM_ (\(total, want) -> do
+      assertEqual ("kwpkcs7 enc " ++ show total) want
+        (cipherUpdateSplit kwp7 kwp7shape DirEncrypt total)
+      assertEqual ("kwpkcs7 dec " ++ show total) want
+        (cipherUpdateSplit kwp7 kwp7shape DirDecrypt total)
+    ) [(0, (0, 0)), (7, (0, 7)), (8, (0, 8)), (16, (0, 16)), (24, (0, 24))]
 
 caseUpdateShortNoConsume :: IO ()
 caseUpdateShortNoConsume = do

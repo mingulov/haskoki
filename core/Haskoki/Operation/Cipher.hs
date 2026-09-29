@@ -51,6 +51,7 @@ import Haskoki.Operation
   , isAesWrapMech
   , isCtsMech
   , isKwpMech
+  , isKwPkcs7Mech
   , isOfbMech
   , isRc4Mech
   , isUnframedCipher
@@ -149,7 +150,9 @@ withCipherSlot ops kind = do
 -- ('isAesWrapMech') enforce the wrap floors: KW needs
 -- multiple-of-8 input >= 16 bytes, KWP ('isKwpMech') any length
 -- >= 1 (the provider answers empty KWP with a vacuous success,
--- refused here).
+-- refused here). KW-PKCS7 ('isKwPkcs7Mech') needs raw input >= 8
+-- bytes (shorter pads below the 16-byte KW minimum); the 'csPad'
+-- arm below applies the PKCS#7 framing.
 encryptInput :: MechanismId -> CipherSpec -> ByteString -> Either StepDeny ByteString
 encryptInput mech spec buf
   | isUnframedCipher mech = Right buf
@@ -167,6 +170,9 @@ encryptInput mech spec buf
   , not (BS.null buf) = Right buf
   | isKwpMech mech = Left (mkDeny CKR_DATA_LEN_RANGE
       "kwp encrypt needs non-empty input")
+  | isKwPkcs7Mech mech
+  , BS.length buf < 8 = Left (mkDeny CKR_DATA_LEN_RANGE
+      "kw-pkcs7 encrypt needs at least 8 bytes of input")
   | isAesWrapMech mech
   , BS.length buf >= 16 && BS.length buf `mod` 8 == 0 = Right buf
   | isAesWrapMech mech = Left (mkDeny CKR_DATA_LEN_RANGE
@@ -193,7 +199,8 @@ encryptInput mech spec buf
 -- the final (which sees the whole buffer) runs the effect. OFB
 -- never streams either: its register evolves through the block
 -- cipher, underivable from the answer tail. Wraps never stream
--- either: one-shot integrity covers the whole buffer. XTS never
+-- either: one-shot integrity covers the whole buffer (KW-PKCS7
+-- joins them despite its padded shape). XTS never
 -- streams either: within-call tweak evolution is GF doubling per
 -- block, unadvanceable from the answer tail, so the whole data
 -- unit buffers to the final.
@@ -216,6 +223,7 @@ cipherUpdateSplit mech spec dir total
   | isCtsMech mech = (0, total)
   | isOfbMech mech = (0, total)
   | isAesWrapMech mech = (0, total)
+  | isKwPkcs7Mech mech = (0, total)
   | isXtsMech mech = (0, total)
   | isRc4Mech mech = (0, total)
   | isEcb = (total - total `mod` block, total `mod` block)

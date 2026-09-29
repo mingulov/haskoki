@@ -201,8 +201,10 @@ long hsk_ossl4_cipher_cts(OSSL_LIB_CTX *ctx, const char *ecbname,
  * 1 = KWP (ciphername AES-*-WRAP-PAD). The provider implements both
  * (fetch probe record: AES-{128,192,256}-WRAP{,-PAD} fetch from the
  * default provider); the shim runs the fetched cipher one-shot with
- * padding disabled and no IV (wraps use the fixed AIV). Key length
- * must match the fetched cipher. Geometry (provider-proven):
+ * padding disabled. iv/ivlen carry the alternate initial value:
+ * empty selects the fixed AIV; KW takes 8 bytes, KWP 4 (any other
+ * width is HSK_OSSL4_ERR_BADPARAM). Key length must match the
+ * fetched cipher. Geometry (provider-proven):
  * KW input is a multiple of 8 bytes and >= 16 (shorter or
  * unaligned input returns HSK_OSSL4_ERR_BADPARAM); KWP input is
  * >= 1 byte (empty input is HSK_OSSL4_ERR_BADPARAM — the provider
@@ -215,6 +217,7 @@ long hsk_ossl4_cipher_cts(OSSL_LIB_CTX *ctx, const char *ecbname,
 long hsk_ossl4_cipher_wrap(OSSL_LIB_CTX *ctx, const char *ciphername,
                            const char *propq, int enc, int kwp,
                            const unsigned char *key, size_t keylen,
+                           const unsigned char *iv, size_t ivlen,
                            const unsigned char *in, size_t inlen,
                            unsigned char **out);
 
