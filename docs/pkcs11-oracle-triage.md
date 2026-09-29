@@ -45,6 +45,31 @@ the per-test records list interesting outcomes only (see Method).
 | r24 (AES-CTS slice) | 2998 | 2 | 354 | 2580 | 0 |
 | r25 (CFB/OFB slice + C_SessionCancel) | 3055 | 2 | 370 | 2603 | 0 |
 
+## 11q fast lane (rc2 oracle, 2026-09-29)
+
+Bundle `dist-release/haskoki-0.3.0.0` at `7619426` (11q-1 SHA1
+PBE rows, 11q-2 MD5 PBE rows, RC4 multipart fix), oracle
+pkcs11-check 0.2.2rc2 (`/tmp/pkcs11-ws/run-lane-rc2.sh fast`,
+results `/tmp/pkcs11-ws/out-rc2/fast/pkcs11-fast-results.json`).
+
+First run: 9909 tests — 5029 passed, 1 failed, 612 xfailed,
+4267 skipped, 0 crashed. The failure was ours:
+`test_mech_multipart.py::TestMultipartEncrypt::test_streaming_equals_single[RC4]`
+— multipart ciphertext diverged from single-part at byte 16.
+Root cause: CKM_RC4 streamed every update chunk as an
+independent one-shot, restarting the keystream per chunk (no
+IV, no chaining state). Fixed by buffering RC4 multipart
+updates and running the final one-shot (`isRc4Mech` in
+`cipherUpdateSplit`, `7619426`; regression pinned in
+OperationSpec). Rerun after bundle rebuild: 5030 passed,
+0 failed, 612 xfailed, 4267 skipped, 0 crashed.
+
+PBE legs (`test_pbe.py`): 28 passed, 0 failed, 5 skipped —
+all 9 new rows (0x3a1–0x3a7, 0x3aa–0x3ab) pass their
+`TestLegacyPBEVariants::test_generate_key` legs; the MD2 row
+skips (unadvertised). No new oracle-side findings: no
+upstream filing from this round.
+
 ## Round 1: template-count bound, class defaulting, class range
 
 - `C_GetAttributeValue` refuses template counts above the 64-entry bound
