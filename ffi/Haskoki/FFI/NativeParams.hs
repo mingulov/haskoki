@@ -617,15 +617,17 @@ ecdhStructToCanonical kdf shared peer
 
 -- | Pure wrap-composition ECDH translation: the native KDF word,
 -- shared data, and AES-strength word onto the canonical
--- @wrapcomp-ecdh-params\/1@ image. Only @CKD_NULL@ translates
--- (canonical code 0); every other selector refuses ('Nothing').
--- The strength word translates verbatim and is refused downstream
--- by the recipe when off-set (invalid parameters, not a malformed
--- struct).
+-- @wrapcomp-ecdh-params\/1@ image. @CKD_NULL@ translates to
+-- canonical code 0; the zero word is not a valid selector and
+-- refuses ('Nothing', malformed). Every other selector
+-- translates VERBATIM and is refused downstream by the recipe
+-- (an unserved KDF is invalid parameters, never a malformed
+-- struct — the KDF enum is open).
 wrapCompEcdhStructToCanonical :: Word64 -> ByteString -> Word64 -> Maybe ByteString
 wrapCompEcdhStructToCanonical kdf shared aesBits
-  | kdf /= ckdNull = Nothing
-  | otherwise = Just (encodeWrapCompEcdhParams 0 shared (fromIntegral aesBits))
+  | kdf == ckdNull = Just (encodeWrapCompEcdhParams 0 shared (fromIntegral aesBits))
+  | kdf == 0 = Nothing
+  | otherwise = Just (encodeWrapCompEcdhParams (fromIntegral kdf) shared (fromIntegral aesBits))
 
 -- | Pure PKCS#3 DH translation: the bare peer image onto the
 -- canonical @dh-params/1@ image. An image that already parses as

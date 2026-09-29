@@ -61,6 +61,8 @@ module Haskoki.Recipe.WrapComp
   , encodeWrapCompEcdhParams
   , decodeWrapCompEcdhParams
   , wrapCompEcdhParamsValid
+  , wrapCompEcdhParamsWellFormed
+  , wrapCompEcdhKdfServed
   , wrapCompEcdhKeyOk
   , wrapCompAesBytes
   , wrapCompDomain
@@ -68,6 +70,7 @@ module Haskoki.Recipe.WrapComp
   , wrapCompTransportPrefix
   , wrapCompSplitBlob
   , wrapCompAgreePeer
+  , wrapCompPubPeer
   , opaqueTransportLen
   ) where
 
@@ -175,8 +178,24 @@ wrapCompAesBitsSet = [128, 192, 256]
 -- the null KDF (the ECDH1 rule). Every nonzero KDF selector and
 -- every off-set strength is refused, never silently downgraded.
 wrapCompEcdhParamsValid :: WrapCompEcdhRecipe -> ByteString -> Bool
-wrapCompEcdhParamsValid _ params = case decodeWrapCompEcdhParams params of
-  Just (0, _, bits) -> bits `elem` wrapCompAesBitsSet
+wrapCompEcdhParamsValid _ params =
+  wrapCompEcdhParamsWellFormed params && wrapCompEcdhKdfServed params
+
+-- | Structural well-formedness: decodable with a served AES
+-- strength (any KDF selector). Malformed frames refuse as
+-- argument errors; well-formed frames with an unserved KDF
+-- refuse as parameter errors (the KDF enum is open — a nonzero
+-- selector is an unserved feature, not a malformed struct).
+wrapCompEcdhParamsWellFormed :: ByteString -> Bool
+wrapCompEcdhParamsWellFormed params = case decodeWrapCompEcdhParams params of
+  Just (_, _, bits) -> bits `elem` wrapCompAesBitsSet
+  _ -> False
+
+-- | The null-KDF selector (code 0) is the only served KDF,
+-- mirroring the served @CKM_ECDH1_DERIVE@ stance.
+wrapCompEcdhKdfServed :: ByteString -> Bool
+wrapCompEcdhKdfServed params = case decodeWrapCompEcdhParams params of
+  Just (0, _, _) -> True
   _ -> False
 
 -- | The KEK length in bytes for validated parameters ('Nothing'
@@ -275,6 +294,16 @@ wrapCompAgreePeer r dom prefix = case (wceName r, dom) of
   ("CKM_ECDH_COF_AES_KEY_WRAP", DomainWeierstrass _ w) ->
     unwrapEcPoint w prefix
   _ -> Just prefix
+
+-- | The wrap-side agreement peer from wrapping PUBLIC key
+-- material: the raw u-coordinate out of a Montgomery SPKI (the
+-- XDH entry takes raw coordinates), the material itself
+-- everywhere else (Weierstrass SPKI scans at the backend,
+-- opaque halves pass through).
+wrapCompPubPeer :: WrapCompDomain -> ByteString -> Maybe ByteString
+wrapCompPubPeer (DomainMontgomery _ _) pub =
+  snd <$> montgomerySpkiFields pub
+wrapCompPubPeer _ pub = Just pub
 
 -- | Parse one DER OCTET STRING prefix holding an uncompressed
 -- X9.62 point at the expected coordinate width: answers the

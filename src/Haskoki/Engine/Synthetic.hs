@@ -600,7 +600,8 @@ instance CryptoBackend Synthetic where
         case mpeer of
           B.EngineFail err -> pure (B.EngineFail err)
           B.EngineOk peerB ->
-            pure (B.EngineOk (classEcdh spec (signIdentity privB) peerB))
+            let (agreeBase, agreePeer) = ecdhAgreeInputs privB peerB
+            in pure (B.EngineOk (classEcdh spec agreeBase agreePeer))
 
   dhDerive be spec priv peer = runGuarded be "dhDerive" (dhSupported be spec) $ \env -> do
     mpriv <- resolveKeyBytes env priv
@@ -1689,6 +1690,17 @@ classSignFor spec@(SigRSA_X931 _) identity input =
   classSign (BC8.pack (show spec)) identity input
 classSignFor spec identity input =
   classSign (BC8.pack (fromMaybe (show spec) (rsaSigCap spec))) identity input
+
+-- | Synthetic ECDH agreement inputs. Generated opaque halves
+-- agree commutatively: either half of pair A against either half
+-- of pair B lands on the ordered pair identity, so composition
+-- wrap (transport-priv x recipient-pub) and composition unwrap
+-- (recipient-priv x transport-pub) agree like real DH.
+-- Everything else keeps the (base identity, peer bytes) framing.
+ecdhAgreeInputs :: ByteString -> ByteString -> (ByteString, ByteString)
+ecdhAgreeInputs base peer = case (pairIdOf base, pairIdOf peer) of
+  (Just a, Just b) -> (min a b, max a b)
+  _ -> (signIdentity base, peer)
 
 -- | Synthetic ECDH agreement: the domain-framed PRF over the spec,
 -- the base identity, and the peer bytes at the max width. The

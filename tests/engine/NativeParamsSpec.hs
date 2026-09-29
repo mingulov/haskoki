@@ -87,7 +87,9 @@ import Haskoki.Recipe.Dh (dhParamsValid, dhRecipeFor, encodeDhParams)
 import Haskoki.Recipe.Ecdh (ecdhParamsValid, ecdhRecipeFor, encodeEcdhParams)
 import Haskoki.Recipe.WrapComp
   ( encodeWrapCompEcdhParams
+  , wrapCompEcdhKdfServed
   , wrapCompEcdhParamsValid
+  , wrapCompEcdhParamsWellFormed
   , wrapCompEcdhRecipeFor
   )
 import Haskoki.Recipe.EncryptData (encryptDataParamsValid, encryptDataRecipeFor)
@@ -401,12 +403,30 @@ spec = testGroup "native mechanism params"
         (Just canon, Just r) ->
           assertEqual "recipe accepts" True (wrapCompEcdhParamsValid r canon)
         _ -> fail "comp recipe or image missing"
-  , testCase "wrapcomp non-null kdf refuses" $ do
-      let w = sizeOf (undefined :: CULong)
+  , testCase "wrapcomp non-null kdf translates, recipe refuses" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_ECDH_AES_KEY_WRAP")
+          w = sizeOf (undefined :: CULong)
           pw = sizeOf (undefined :: Ptr Word8)
       out <- allocaBytes wrapCompEcdhNativeSize $ \p -> do
         pokeByteOff p 0 (CULong 128)
         pokeByteOff p w (CULong 0x02)
+        pokeByteOff p (2 * w) (CULong 0)
+        pokeByteOff p (2 * w + pw) (nullPtr :: Ptr Word8)
+        normalizeWrapCompEcdhParams p (fromIntegral wrapCompEcdhNativeSize)
+      assertEqual "verbatim selector"
+        (Just (encodeWrapCompEcdhParams 2 BS.empty 128)) out
+      case (out, wrapCompEcdhRecipeFor mid) of
+        (Just canon, Just r) -> do
+          assertEqual "recipe refuses" False (wrapCompEcdhParamsValid r canon)
+          assertEqual "well-formed" True (wrapCompEcdhParamsWellFormed canon)
+          assertEqual "kdf unserved" False (wrapCompEcdhKdfServed canon)
+        _ -> fail "comp recipe or image missing"
+  , testCase "wrapcomp zero kdf refuses" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes wrapCompEcdhNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 128)
+        pokeByteOff p w (CULong 0)
         pokeByteOff p (2 * w) (CULong 0)
         pokeByteOff p (2 * w + pw) (nullPtr :: Ptr Word8)
         normalizeWrapCompEcdhParams p (fromIntegral wrapCompEcdhNativeSize)

@@ -31,7 +31,10 @@ import Haskoki.Recipe.WrapComp
   , opaqueTransportLen
   , wrapCompAesBytes
   , wrapCompAgreePeer
+  , wrapCompPubPeer
   , wrapCompDomain
+  , wrapCompEcdhKdfServed
+  , wrapCompEcdhParamsWellFormed
   , wrapCompEcdhKeyOk
   , wrapCompEcdhParamsValid
   , wrapCompEcdhRecipeFor
@@ -109,12 +112,20 @@ caseParams = do
     (wrapCompEcdhParamsValid plainR (encodeWrapCompEcdhParams 0 "shared" 192))
   assertBool "rows share validation"
     (wrapCompEcdhParamsValid cofR good && wrapCompEcdhParamsValid xR good)
-  -- Every nonzero KDF selector is refused.
+  -- Every nonzero KDF selector is refused — but stays
+  -- well-formed (open enum: unserved feature, refused as a
+  -- parameter error downstream, not a malformed struct).
   mapM_ (\k ->
     assertBool ("kdf refused: " ++ show k)
       (not (wrapCompEcdhParamsValid plainR (encodeWrapCompEcdhParams k BS.empty 128))
+        && wrapCompEcdhParamsWellFormed (encodeWrapCompEcdhParams k BS.empty 128)
+        && not (wrapCompEcdhKdfServed (encodeWrapCompEcdhParams k BS.empty 128))
         && wrapCompAesBytes (encodeWrapCompEcdhParams k BS.empty 128) == Nothing)
     ) [1, 2, 3, 9]
+  assertBool "null kdf served"
+    (wrapCompEcdhKdfServed (encodeWrapCompEcdhParams 0 BS.empty 128))
+  assertBool "garbage not well-formed"
+    (not (wrapCompEcdhParamsWellFormed "junk"))
   -- Off-set strengths are refused.
   mapM_ (\b ->
     assertBool ("strength refused: " ++ show b)
@@ -285,3 +296,13 @@ caseSplit = do
     (wrapCompAgreePeer plainR DomainOpaque opaquePub)
   assertEqual "cof garbage refused" Nothing
     (wrapCompAgreePeer cofR domP256 "not-an-image")
+  -- Wrap-side peers: Montgomery SPKI unwraps to raw u, the rest
+  -- passes through.
+  assertEqual "montgomery pub peer" (Just (BS.drop (BS.length x19Spki - 32) x19Spki))
+    (wrapCompPubPeer domX19 x19Spki)
+  assertEqual "weierstrass pub peer" (Just p256Pub)
+    (wrapCompPubPeer domP256 p256Pub)
+  assertEqual "opaque pub peer" (Just opaquePub)
+    (wrapCompPubPeer DomainOpaque opaquePub)
+  assertEqual "montgomery garbage refused" Nothing
+    (wrapCompPubPeer domX19 "not-an-spki")

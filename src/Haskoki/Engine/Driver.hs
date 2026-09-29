@@ -244,6 +244,7 @@ import Haskoki.Recipe.WrapComp
   , wrapCompAgreePeer
   , wrapCompDomain
   , wrapCompEcdhRecipeFor
+  , wrapCompPubPeer
   , wrapCompSplitBlob
   , wrapCompTransportLen
   , wrapCompTransportPrefix
@@ -2892,8 +2893,9 @@ runEffect env resolve fx = case fx of
               | otherwise -> GotBytes
                   (BS.drop (BS.length secret - outLen) secret)
     -- | ECDH-composition wrap: ephemeral transport keygen on
-    -- the wrapping key's domain, ECDH agreement against the
-    -- transport public half, the FIRST agreement bytes as the AES
+    -- the wrapping (recipient PUBLIC) key's domain, ECDH
+    -- agreement of the transport private half against the
+    -- wrapping public half, the FIRST agreement bytes as the AES
     -- KEK (NOT the derive truncation, which drops leading bytes),
     -- KWP seal of the target, blob = transport-pub || kwp-blob.
     -- Served primitives only (generateKey, ecdhDerive, the KWP
@@ -2910,35 +2912,34 @@ runEffect env resolve fx = case fx of
           "driver: malformed wrap-composition parameters"))
         Just aesBytes ->
           let dom = wrapCompDomain wrapB
-          in do
-            g <- generateKey env (transportGen dom)
-            case g of
-              EngineFail err -> pure (GotCryptoError (toCryptoError err))
-              EngineOk (KeyDer _, Just (KeyDer tpub)) ->
-                case ( wrapCompTransportPrefix r dom tpub
-                     , wrapCompTransportLen r dom ) of
-                  (Just prefix, Just preLen)
-                    | BS.length prefix == preLen ->
-                        case wrapCompAgreePeer r dom prefix of
-                          Nothing -> pure (GotCryptoError (CryptoFailed
-                            "driver: transport peer rejected"))
-                          Just peer -> do
-                            s <- ecdhDerive env (compSpec r) wrapKey (KeyDer peer)
-                            case s of
-                              EngineFail err -> pure (GotCryptoError (toCryptoError err))
-                              EngineOk secret
-                                | BS.length secret < aesBytes -> pure (GotCryptoError (CryptoFailed
-                                    "driver: agreement secret shorter than the KEK"))
-                                | otherwise -> do
-                                    sealed <- runCipher DirEncrypt aesKwpMech
-                                      (KeyBytes (BS.take aesBytes secret)) BS.empty target
-                                    case sealed of
-                                      GotBytes ct -> pure (GotBytes (prefix <> ct))
-                                      other -> pure other
-                  _ -> pure (GotCryptoError (CryptoFailed
-                    "driver: transport framing failed"))
-              _ -> pure (GotCryptoError (CryptoFailed
-                "driver: transport keygen shape rejected"))
+          in case wrapCompPubPeer dom wrapB of
+            Nothing -> pure (GotCryptoError (CryptoFailed
+              "driver: wrapping public peer rejected"))
+            Just recipPub -> do
+              g <- generateKey env (transportGen dom)
+              case g of
+                EngineFail err -> pure (GotCryptoError (toCryptoError err))
+                EngineOk (KeyDer tpriv, Just (KeyDer tpub)) ->
+                  case ( wrapCompTransportPrefix r dom tpub
+                       , wrapCompTransportLen r dom ) of
+                    (Just prefix, Just preLen)
+                      | BS.length prefix == preLen -> do
+                          s <- ecdhDerive env (compSpec r) (KeyDer tpriv) (KeyDer recipPub)
+                          case s of
+                            EngineFail err -> pure (GotCryptoError (toCryptoError err))
+                            EngineOk secret
+                              | BS.length secret < aesBytes -> pure (GotCryptoError (CryptoFailed
+                                  "driver: agreement secret shorter than the KEK"))
+                              | otherwise -> do
+                                  sealed <- runCipher DirEncrypt aesKwpMech
+                                    (KeyBytes (BS.take aesBytes secret)) BS.empty target
+                                  case sealed of
+                                    GotBytes ct -> pure (GotBytes (prefix <> ct))
+                                    other -> pure other
+                    _ -> pure (GotCryptoError (CryptoFailed
+                      "driver: transport framing failed"))
+                _ -> pure (GotCryptoError (CryptoFailed
+                  "driver: transport keygen shape rejected"))
       where
         transportGen DomainOpaque = GenEC (EcSpec "P-256" "DER")
         transportGen (DomainWeierstrass name _) =

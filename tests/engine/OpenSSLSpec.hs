@@ -4486,45 +4486,54 @@ caseEcdhCompWrap = withBackend $ \env -> do
       oid = Just (ObjectId 7)
       params bits = encodeWrapCompEcdhParams 0 BS.empty bits
   -- Plain over P-256: 65-byte bare point + 24-byte KWP tail.
-  (priv, _) <- expectOk "gen p-256" =<< generateKey env (GenEC (mkEc "P-256" "DER"))
-  let resolve _ = Just priv
+  -- Wrap resolves the recipient PUBLIC half, unwrap the private.
+  (priv, mpub) <- expectOk "gen p-256" =<< generateKey env (GenEC (mkEc "P-256" "DER"))
+  pub <- case mpub of
+    Just p -> pure p
+    Nothing -> assertFailure "gen p-256 must mint a pair" >> undefined
+  let wrapResolve _ = Just pub
+      unwrapResolve _ = Just priv
   blob <- expectBytes "plain wrap" =<<
-    runEffect env resolve (FxWrap (MechanismId 0x1053) oid (params 128) target)
+    runEffect env wrapResolve (FxWrap (MechanismId 0x1053) oid (params 128) target)
   assertEqual "plain blob length" 89 (BS.length blob)
   assertEqual "bare point tag" 0x04 (BS.index blob 0)
   pt <- expectBytes "plain unwrap" =<<
-    runEffect env resolve (FxUnwrap (MechanismId 0x1053) oid (params 128) blob)
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1053) oid (params 128) blob)
   assertEqual "plain roundtrip" target pt
   -- Tampered tail and tampered prefix both fail closed.
   expectCryptoError "tampered tail fails closed" =<<
-    runEffect env resolve (FxUnwrap (MechanismId 0x1053) oid (params 128) (corruptAt 80 blob))
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1053) oid (params 128) (corruptAt 80 blob))
   expectCryptoError "tampered prefix fails closed" =<<
-    runEffect env resolve (FxUnwrap (MechanismId 0x1053) oid (params 128) (corruptAt 10 blob))
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1053) oid (params 128) (corruptAt 10 blob))
   -- Strength separation: wrap@128 opens only under 128.
   expectCryptoError "cross-strength unwrap fails closed" =<<
-    runEffect env resolve (FxUnwrap (MechanismId 0x1053) oid (params 256) blob)
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1053) oid (params 256) blob)
   blob256 <- expectBytes "plain wrap 256" =<<
-    runEffect env resolve (FxWrap (MechanismId 0x1053) oid (params 256) target)
+    runEffect env wrapResolve (FxWrap (MechanismId 0x1053) oid (params 256) target)
   assertEqual "plain 256 length" 89 (BS.length blob256)
   pt256 <- expectBytes "plain unwrap 256" =<<
-    runEffect env resolve (FxUnwrap (MechanismId 0x1053) oid (params 256) blob256)
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1053) oid (params 256) blob256)
   assertEqual "plain 256 roundtrip" target pt256
   -- Cofactor over P-256: 67-byte OCTET image + 24-byte tail.
   coBlob <- expectBytes "cof wrap" =<<
-    runEffect env resolve (FxWrap (MechanismId 0x4039) oid (params 128) target)
+    runEffect env wrapResolve (FxWrap (MechanismId 0x4039) oid (params 128) target)
   assertEqual "cof blob length" 91 (BS.length coBlob)
   assertEqual "cof octet header" (BS.pack [0x04, 0x41]) (BS.take 2 coBlob)
   coPt <- expectBytes "cof unwrap" =<<
-    runEffect env resolve (FxUnwrap (MechanismId 0x4039) oid (params 128) coBlob)
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x4039) oid (params 128) coBlob)
   assertEqual "cof roundtrip" target coPt
   -- X over X25519: 32-byte raw coordinate + 24-byte tail.
-  (xpriv, _) <- expectOk "gen x25519" =<< generateKey env (GenXDHKeypair "X25519")
-  let xresolve _ = Just xpriv
+  (xpriv, mxpub) <- expectOk "gen x25519" =<< generateKey env (GenXDHKeypair "X25519")
+  xpub <- case mxpub of
+    Just p -> pure p
+    Nothing -> assertFailure "gen x25519 must mint a pair" >> undefined
+  let xWrapResolve _ = Just xpub
+      xUnwrapResolve _ = Just xpriv
   xBlob <- expectBytes "x wrap" =<<
-    runEffect env xresolve (FxWrap (MechanismId 0x4038) oid (params 128) target)
+    runEffect env xWrapResolve (FxWrap (MechanismId 0x4038) oid (params 128) target)
   assertEqual "x blob length" 56 (BS.length xBlob)
   xPt <- expectBytes "x unwrap" =<<
-    runEffect env xresolve (FxUnwrap (MechanismId 0x4038) oid (params 128) xBlob)
+    runEffect env xUnwrapResolve (FxUnwrap (MechanismId 0x4038) oid (params 128) xBlob)
   assertEqual "x roundtrip" target xPt
   -- Garbage wrapping keys refuse typed, never wrong bytes.
   let badResolve _ = Just (KeyDer "bogus")

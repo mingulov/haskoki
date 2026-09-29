@@ -3472,7 +3472,8 @@ int main(int argc, char **argv) {
         { CKA_CLASS, &cpubcls, sizeof(cpubcls) },
         { CKA_KEY_TYPE, &cekt, sizeof(cekt) },
         { CKA_EC_PARAMS, (CK_VOID_PTR) cp256oid, sizeof(cp256oid) },
-        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_WRAP, &bTrue, sizeof(bTrue) }
       };
       CK_ATTRIBUTE cprivT[] = {
         { CKA_CLASS, &cprvcls, sizeof(cprvcls) },
@@ -3494,7 +3495,7 @@ int main(int argc, char **argv) {
       ckgm.mechanism = CKM_EC_KEY_PAIR_GEN;
       ckgm.pParameter = NULL_PTR;
       ckgm.ulParameterLen = 0;
-      rv = f->C_GenerateKeyPair(wsess, &ckgm, cpubT, 4, cprivT, 5,
+      rv = f->C_GenerateKeyPair(wsess, &ckgm, cpubT, 5, cprivT, 5,
                                 &cecPub, &cecPriv);
       CHECKC(rv == CKR_OK && cecPub != 0 && cecPriv != 0,
              "comp EC pair mints");
@@ -3507,11 +3508,17 @@ int main(int argc, char **argv) {
       cwm.mechanism = CKM_ECDH_AES_KEY_WRAP;
       cwm.pParameter = &cwp128;
       cwm.ulParameterLen = sizeof(cwp128);
-      rv = f->C_WrapKey(wsess, &cwm, cecPriv, targetKey, NULL_PTR, &cblobLen);
+      rv = f->C_WrapKey(wsess, &cwm, cecPub, targetKey, NULL_PTR, &cblobLen);
       CHECKC(rv == CKR_OK && cblobLen == 89, "comp plain size query reports 89");
       cblobLen = sizeof(cblob);
-      rv = f->C_WrapKey(wsess, &cwm, cecPriv, targetKey, cblob, &cblobLen);
+      rv = f->C_WrapKey(wsess, &cwm, cecPub, targetKey, cblob, &cblobLen);
       CHECKC(rv == CKR_OK && cblobLen == 89, "comp plain wrap yields 89");
+      { CK_ULONG savedLen = cblobLen;
+        cblobLen = sizeof(cblob);
+        rv = f->C_WrapKey(wsess, &cwm, cecPriv, targetKey, cblob, &cblobLen);
+        CHECKC(rv == CKR_WRAPPING_KEY_TYPE_INCONSISTENT, "comp private-half wrap refused");
+        cblobLen = savedLen;
+      }
       cum = cwm;
       rv = f->C_UnwrapKey(wsess, &cum, cecPriv, cblob, cblobLen,
                           cdtmpl, 3, &cUnwrapped);
@@ -3526,7 +3533,7 @@ int main(int argc, char **argv) {
       ccm.pParameter = &cwp128;
       ccm.ulParameterLen = sizeof(cwp128);
       cblobLen = sizeof(cblob);
-      rv = f->C_WrapKey(wsess, &ccm, cecPriv, targetKey, cblob, &cblobLen);
+      rv = f->C_WrapKey(wsess, &ccm, cecPub, targetKey, cblob, &cblobLen);
       CHECKC(rv == CKR_OK && cblobLen == 91, "comp cof wrap yields 91");
       cUnwrapped = 0;
       rv = f->C_UnwrapKey(wsess, &ccm, cecPriv, cblob, cblobLen,
@@ -3536,7 +3543,7 @@ int main(int argc, char **argv) {
       cxc.pParameter = &cwp128;
       cxc.ulParameterLen = sizeof(cwp128);
       cblobLen = sizeof(cblob);
-      rv = f->C_WrapKey(wsess, &cxc, cecPriv, targetKey, cblob, &cblobLen);
+      rv = f->C_WrapKey(wsess, &cxc, cecPub, targetKey, cblob, &cblobLen);
       CHECKC(rv == CKR_WRAPPING_KEY_TYPE_INCONSISTENT, "comp X over EC refused");
     }
     {
@@ -3548,7 +3555,8 @@ int main(int argc, char **argv) {
         { CKA_CLASS, &xpubcls, sizeof(xpubcls) },
         { CKA_KEY_TYPE, &xkt, sizeof(xkt) },
         { CKA_EC_PARAMS, xcurve, sizeof(xcurve) },
-        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_WRAP, &bTrue, sizeof(bTrue) }
       };
       CK_ATTRIBUTE xprivT[] = {
         { CKA_CLASS, &xprvcls, sizeof(xprvcls) },
@@ -3570,7 +3578,7 @@ int main(int argc, char **argv) {
       xkgm.mechanism = CKM_EC_MONTGOMERY_KEY_PAIR_GEN;
       xkgm.pParameter = NULL_PTR;
       xkgm.ulParameterLen = 0;
-      rv = f->C_GenerateKeyPair(wsess, &xkgm, xpubT, 4, xprivT, 5,
+      rv = f->C_GenerateKeyPair(wsess, &xkgm, xpubT, 5, xprivT, 5,
                                 &xPub, &xPriv);
       CHECKC(rv == CKR_OK && xPub != 0 && xPriv != 0,
              "comp Montgomery pair mints");
@@ -3581,7 +3589,7 @@ int main(int argc, char **argv) {
       xwm.mechanism = CKM_ECDH_X_AES_KEY_WRAP;
       xwm.pParameter = &xwp;
       xwm.ulParameterLen = sizeof(xwp);
-      rv = f->C_WrapKey(wsess, &xwm, xPriv, targetKey, xblob, &xblobLen);
+      rv = f->C_WrapKey(wsess, &xwm, xPub, targetKey, xblob, &xblobLen);
       CHECKC(rv == CKR_OK && xblobLen == 56, "comp X wrap yields 56");
       rv = f->C_UnwrapKey(wsess, &xwm, xPriv, xblob, xblobLen,
                           xdtmpl, 3, &xUnwrapped);

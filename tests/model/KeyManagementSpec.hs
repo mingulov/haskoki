@@ -3134,16 +3134,19 @@ caseEcdhCompWrapRoundtrip :: IO ()
 caseEcdhCompWrapRoundtrip = withSynth $ \answer -> do
   m0 <- seedModel >>= loginUser
   st <- getSession m0
-  -- EC wrapping key with the marks (synthetic opaque material:
-  -- transport prefix 69, agreement secret 72).
-  let ecWrapTmpl = ecPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
-  (m1, privH) <- case planGenerateKeyPair defaultRules m0 st ecKeyPairGenMech ecPubTmpl ecWrapTmpl of
+  -- EC recipient pair with the marks (synthetic opaque material:
+  -- transport prefix 69, agreement secret 72). Composition wrap
+  -- takes the PUBLIC half, unwrap takes the private half.
+  let ecPubWrapTmpl = ecPubTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
+      ecPrivWrapTmpl = ecPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
+  (m1, pubH, privH) <- case planGenerateKeyPair defaultRules m0 st ecKeyPairGenMech ecPubWrapTmpl ecPrivWrapTmpl of
     KeyEffect pw fx -> do
       res <- answer m0 fx
       c <- finishCommit m0 st pw res 2
-      h <- handleOf (pcOutputs c !! 1)
+      pub <- handleOf (pcOutputs c !! 0)
+      priv <- handleOf (pcOutputs c !! 1)
       m' <- expectRight (publishDelta m0 (pcDelta c))
-      pure (m', h)
+      pure (m', pub, priv)
     other -> assertFailure ("EC keypair plan is not an effect: " ++ show other) >> undefined
   (m2, targetH) <- genAesKey answer m1 st (aesTmpl 16)
   Just target <- pure (resolveHandle m2 targetH)
@@ -3155,9 +3158,9 @@ caseEcdhCompWrapRoundtrip = withSynth $ \answer -> do
   -- Length query: opaque transport 69 + KWP(16) 24 = 93.
   assertEqual "comp query length"
     [NativeOutput (RegionBytes "wrapped" IntentNull) (encodeValue (ValULong 93))]
-    =<< queryLen m2 privH ecdhAesKwMech params128
+    =<< queryLen m2 pubH ecdhAesKwMech params128
   -- Short buffer answers the length and refuses.
-  case planWrapKey m2 st ecdhAesKwMech params128 privH targetH (IntentBuffer 92) of
+  case planWrapKey m2 st ecdhAesKwMech params128 pubH targetH (IntentBuffer 92) of
     KeyImmediate (Reject r) -> do
       assertEqual "short code" CKR_BUFFER_TOO_SMALL (rejCode r)
       assertEqual "short length"
@@ -3165,7 +3168,7 @@ caseEcdhCompWrapRoundtrip = withSynth $ \answer -> do
         (rejOutputs r)
     other -> assertFailure ("short buffer accepted, got: " ++ show other)
   -- Full wrap: 93 bytes, opaque transport prefix + KWP tail.
-  blob <- case planWrapKey m2 st ecdhAesKwMech params128 privH targetH (IntentBuffer 93) of
+  blob <- case planWrapKey m2 st ecdhAesKwMech params128 pubH targetH (IntentBuffer 93) of
     KeyEffect pw fx -> do
       res <- answer m2 fx
       case finishWork m2 st pw res of
@@ -3202,22 +3205,24 @@ caseEcdhCompWrapRoundtrip = withSynth $ \answer -> do
         Reject r -> assertEqual "tamper publishes nothing" (StateDelta []) (rejDelta r)
         other -> assertFailure ("tampered unwrap committed, got: " ++ show other)
     other -> assertFailure ("tampered unwrap plan is not an effect: " ++ show other)
-  -- Bad parameters refuse argument-bad (wrap convention).
-  case planWrapKey m2 st ecdhAesKwMech (encodeWrapCompEcdhParams 1 BS.empty 128) privH targetH IntentNull of
-    KeyDenied d -> assertEqual "kdf code" CKR_ARGUMENTS_BAD (kdCode d)
+  -- Bad parameters: off-set strengths refuse argument-bad
+  -- (malformed), unserved KDFs refuse parameter-invalid (the open
+  -- KDF enum is a feature refusal, not a malformed struct).
+  case planWrapKey m2 st ecdhAesKwMech (encodeWrapCompEcdhParams 1 BS.empty 128) pubH targetH IntentNull of
+    KeyDenied d -> assertEqual "kdf code" CKR_MECHANISM_PARAM_INVALID (kdCode d)
     other -> assertFailure ("non-null kdf accepted, got: " ++ show other)
-  case planWrapKey m2 st ecdhAesKwMech (encodeWrapCompEcdhParams 0 BS.empty 512) privH targetH IntentNull of
+  case planWrapKey m2 st ecdhAesKwMech (encodeWrapCompEcdhParams 0 BS.empty 512) pubH targetH IntentNull of
     KeyDenied d -> assertEqual "strength code" CKR_ARGUMENTS_BAD (kdCode d)
     other -> assertFailure ("off-set strength accepted, got: " ++ show other)
-  -- Foreign wrapping keys refuse type-inconsistent (AES secret,
-  -- RSA private half, the EC public half: agreement needs the
-  -- private half).
+  -- Foreign wrapping keys refuse type-inconsistent: an AES
+  -- secret, an RSA public half, and the EC PRIVATE half (wrap
+  -- takes the public half; the swapped-roles regression pin).
   (m3, aesH) <- genAesKey answer m2 st wrapKeyTmpl
   case planWrapKey m3 st ecdhAesKwMech params128 aesH targetH IntentNull of
     KeyDenied d -> assertEqual "aes code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT (kdCode d)
     other -> assertFailure ("AES wrapping accepted, got: " ++ show other)
   (m4, rsaH) <- plantKey m3 st
-    [ (AttrClass, ValULong ckoPrivateKey)
+    [ (AttrClass, ValULong ckoPublicKey)
     , (AttrKeyType, ValULong ckkRsa)
     , (AttrToken, ValBool False)
     , (AttrWrap, ValBool True)
@@ -3226,26 +3231,33 @@ caseEcdhCompWrapRoundtrip = withSynth $ \answer -> do
   case planWrapKey m4 st ecdhAesKwMech params128 rsaH targetH IntentNull of
     KeyDenied d -> assertEqual "rsa code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT (kdCode d)
     other -> assertFailure ("RSA wrapping accepted, got: " ++ show other)
+  case planWrapKey m4 st ecdhAesKwMech params128 privH targetH IntentNull of
+    KeyDenied d -> assertEqual "priv-half code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT (kdCode d)
+    other -> assertFailure ("private-half wrapping accepted, got: " ++ show other)
+  case planUnwrapKey defaultRules m4 st ecdhAesKwMech params128 pubH blob tmpl of
+    KeyDenied d -> assertEqual "pub-half unwrap code" CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT (kdCode d)
+    other -> assertFailure ("public-half unwrap accepted, got: " ++ show other)
   -- Row gates: X refuses the EC key, cofactor refuses Montgomery.
-  case planWrapKey m2 st ecdhXAesKwMech params128 privH targetH IntentNull of
+  case planWrapKey m2 st ecdhXAesKwMech params128 pubH targetH IntentNull of
     KeyDenied d -> assertEqual "x/ec code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT (kdCode d)
     other -> assertFailure ("X over EC accepted, got: " ++ show other)
-  (m5, montH) <- case planGenerateKeyPair defaultRules m4 st montgomeryKeyPairGenMech xdPubTmpl
-      (xdPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]) of
+  (m5, montPubH) <- case planGenerateKeyPair defaultRules m4 st montgomeryKeyPairGenMech
+      (xdPubTmpl ++ [(AttrWrap, ValBool True)])
+      (xdPrivTmpl ++ [(AttrUnwrap, ValBool True)]) of
     KeyEffect pw fx -> do
       res <- answer m4 fx
       c <- finishCommit m4 st pw res 2
-      h <- handleOf (pcOutputs c !! 1)
+      h <- handleOf (pcOutputs c !! 0)
       m' <- expectRight (publishDelta m4 (pcDelta c))
       pure (m', h)
     other -> assertFailure ("Montgomery keypair plan is not an effect: " ++ show other) >> undefined
-  case planWrapKey m5 st ecdhCofAesKwMech params128 montH targetH IntentNull of
+  case planWrapKey m5 st ecdhCofAesKwMech params128 montPubH targetH IntentNull of
     KeyDenied d -> assertEqual "cof/mont code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT (kdCode d)
     other -> assertFailure ("cofactor over Montgomery accepted, got: " ++ show other)
   -- Plain over Montgomery plans (opaque 69 + KWP 24 = 93).
   assertEqual "plain/mont query length"
     [NativeOutput (RegionBytes "wrapped" IntentNull) (encodeValue (ValULong 93))]
-    =<< queryLen m5 montH ecdhAesKwMech params128
+    =<< queryLen m5 montPubH ecdhAesKwMech params128
   -- Blob framing: short and ragged tails refuse argument-bad.
   case planUnwrapKey defaultRules m2 st ecdhAesKwMech params128 privH (BS.replicate 80 0) tmpl of
     KeyDenied d -> assertEqual "short blob code" CKR_ARGUMENTS_BAD (kdCode d)
@@ -3257,7 +3269,7 @@ caseEcdhCompWrapRoundtrip = withSynth $ \answer -> do
   -- AES-256 but serves AES-128 (49 + 24 = 73).
   let p192oid = BS.pack [0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x01]
   (m6, p192H) <- plantKey m5 st
-    [ (AttrClass, ValULong ckoPrivateKey)
+    [ (AttrClass, ValULong ckoPublicKey)
     , (AttrKeyType, ValULong ckkEc)
     , (AttrToken, ValBool False)
     , (AttrWrap, ValBool True)

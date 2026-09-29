@@ -283,8 +283,10 @@ import Haskoki.Recipe.WrapComp
   , WrapCompEcdhRecipe
   , wrapCompAesBytes
   , wrapCompDomain
+  , wrapCompEcdhKdfServed
   , wrapCompEcdhKeyOk
   , wrapCompEcdhParamsValid
+  , wrapCompEcdhParamsWellFormed
   , wrapCompEcdhRecipeFor
   , wrapCompSplitBlob
   , wrapCompTransportLen
@@ -3221,10 +3223,13 @@ withRsaWrappingKey model st usage label wantClass h =
             "wrapping key lacks modulus material")
 
 -- | Resolve an ECDH-composition wrapping key: the handle resolves
--- to a visible private key carrying the usage mark, whose class
--- is private and whose key type the composition row admits (plain:
--- EC or Montgomery; cofactor: EC; X: Montgomery). Answers the
--- object id, the key material, and its transport domain.
+-- to a visible key carrying the usage mark, whose class matches
+-- the direction (wrap takes the recipient PUBLIC key — the
+-- agreement runs against an ephemeral transport pair; unwrap
+-- takes the PRIVATE key) and whose key type the composition row
+-- admits (plain: EC or Montgomery; cofactor: EC; X:
+-- Montgomery). Answers the object id, the key material, and its
+-- transport domain.
 withEcCompWrappingKey
   :: Model -> SessionState -> AttributeType -> String -> WrapCompEcdhRecipe
   -> ExternalHandle -> Either KeyDeny (ObjectId, ByteString, WrapCompDomain)
@@ -3238,21 +3243,21 @@ withEcCompWrappingKey model st usage label r h =
       | Map.lookup usage (osAttrs ost) /= Just (ValBool True) ->
           Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
             ("wrapping key does not permit " ++ label))
-      | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong ckoPrivateKey) ->
-          Left (KeyDeny (if usage == AttrWrap
-                          then CKR_WRAPPING_KEY_TYPE_INCONSISTENT
-                          else CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT)
-            ("wrapping key is not a private key: " ++ label))
+      | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong wantClass) ->
+          Left (KeyDeny typeCode
+            ("wrapping key has the wrong class for " ++ label))
       | otherwise -> case Map.lookup AttrKeyType (osAttrs ost) of
           Just (ValULong kty)
             | wrapCompEcdhKeyOk r kty -> case keyBytesOf ost of
                 Just mat -> Right (osId ost, mat, wrapCompDomain mat)
                 Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
                   "wrapping key lacks material")
-          _ -> Left (KeyDeny (if usage == AttrWrap
-                               then CKR_WRAPPING_KEY_TYPE_INCONSISTENT
-                               else CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT)
+          _ -> Left (KeyDeny typeCode
             ("wrapping key type rejected by the composition row: " ++ label))
+  where
+    (wantClass, typeCode)
+      | usage == AttrWrap = (ckoPublicKey, CKR_WRAPPING_KEY_TYPE_INCONSISTENT)
+      | otherwise = (ckoPrivateKey, CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT)
 
 -- | Resolve a wrap target: the handle resolves to a visible
 -- extractable object carrying stored material.
@@ -3722,15 +3727,17 @@ planAesKwPkcs7UnwrapKey rules model st mech params wrapH blob tmpl =
               )
 
 -- | Plan one ECDH-composition wrap: parameters validate against
--- the composition recipe (null KDF, served AES strength), the
--- wrapping key is a private EC\/Montgomery key admitted by the
--- row, the target must be extractable, the agreement secret must
--- cover the KEK (short curves refuse the wide strengths), and the
--- answered length is the transport prefix plus the KWP expansion
--- over the target material. Length queries and short buffers
--- answer that length and plan no crypto; a sufficient buffer
--- plans one wrap effect over the raw material (the driver derives
--- the ephemeral KEK and KWP-seals).
+-- the composition recipe (malformed frames refuse argument-bad;
+-- well-formed frames with an unserved KDF refuse parameter-invalid
+-- — the KDF enum is open), the wrapping key is the recipient
+-- PUBLIC EC\/Montgomery key admitted by the row, the target must
+-- be extractable, the agreement secret must cover the KEK (short
+-- curves refuse the wide strengths), and the answered length is
+-- the transport prefix plus the KWP expansion over the target
+-- material. Length queries and short buffers answer that length
+-- and plan no crypto; a sufficient buffer plans one wrap effect
+-- over the raw material (the driver mints the ephemeral
+-- transport pair, derives the KEK, and KWP-seals).
 planEcdhCompWrapKey
   :: Model -> SessionState -> MechanismId -> ByteString
   -> ExternalHandle -> ExternalHandle -> OutputIntent
@@ -3740,9 +3747,12 @@ planEcdhCompWrapKey model st mech params wrapH targetH intent =
     Nothing -> KeyDenied (KeyDeny CKR_MECHANISM_INVALID
       ("not a wrap mechanism: " ++ show mech))
     Just r
-      | not (wrapCompEcdhParamsValid r params) ->
+      | not (wrapCompEcdhParamsWellFormed params) ->
           KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
-            "ECDH wrap takes null-KDF parameters with a served AES strength")
+            "ECDH wrap takes framed parameters with a served AES strength")
+      | not (wrapCompEcdhKdfServed params) ->
+          KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
+            "ECDH wrap serves the null KDF only")
       | otherwise -> case withEcCompWrappingKey model st AttrWrap "wrapping" r wrapH of
           Left deny -> KeyDenied deny
           Right (wrapOid, mat, dom) -> case withWrapTarget model st targetH of
@@ -3782,13 +3792,15 @@ planEcdhCompWrapKey model st mech params wrapH targetH intent =
                 "wrapping key domain contradicts the composition row")
 
 -- | Plan one ECDH-composition unwrap: parameters validate against
--- the composition recipe, the blob splits into a transport prefix
--- plus a KWP-shaped tail, the unwrapping key is a private
--- EC\/Montgomery key admitted by the row whose agreement secret
--- covers the KEK, and the template must name the new key's class
--- and key type explicitly (the blob carries no header). Admission
--- gates last (parse-first). The pending work is raw (the backend
--- answers exact target plaintext, consumed framing).
+-- the composition recipe (malformed frames refuse argument-bad;
+-- unserved KDFs refuse parameter-invalid), the blob splits into a
+-- transport prefix plus a KWP-shaped tail, the unwrapping key is
+-- the recipient PRIVATE EC\/Montgomery key admitted by the row
+-- whose agreement secret covers the KEK, and the template must
+-- name the new key's class and key type explicitly (the blob
+-- carries no header). Admission gates last (parse-first). The
+-- pending work is raw (the backend answers exact target
+-- plaintext, consumed framing).
 planEcdhCompUnwrapKey
   :: Rules -> Model -> SessionState -> MechanismId -> ByteString
   -> ExternalHandle -> ByteString -> [(AttributeType, AttributeValue)]
@@ -3806,9 +3818,12 @@ planEcdhCompUnwrapKey rules model st mech params wrapH blob tmpl =
       Nothing -> Left (KeyDeny CKR_MECHANISM_INVALID
         ("not a wrap mechanism: " ++ show mech))
       Just r
-        | not (wrapCompEcdhParamsValid r params) ->
+        | not (wrapCompEcdhParamsWellFormed params) ->
             Left (KeyDeny CKR_ARGUMENTS_BAD
-              "ECDH unwrap takes null-KDF parameters with a served AES strength")
+              "ECDH unwrap takes framed parameters with a served AES strength")
+        | not (wrapCompEcdhKdfServed params) ->
+            Left (KeyDeny CKR_MECHANISM_PARAM_INVALID
+              "ECDH unwrap serves the null KDF only")
         | not (any ((== AttrKeyType) . fst) tmpl) ->
             Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
               "unwrap template must name the key type")
