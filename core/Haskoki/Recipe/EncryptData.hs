@@ -71,10 +71,12 @@ encryptDataCodecFor r
   | erIvBytes r == 0 = encryptDataEcbCodec
   | otherwise = encryptDataCbcCodec
 
--- | All eight covered mechanisms with their geometry: AES, ARIA
+-- | All twelve covered mechanisms with their geometry: AES, ARIA
 -- and Camellia take 16/24/32-byte keys on 16-byte blocks, Triple-DES
 -- takes 16 two-key or 24 three-key bytes on 8-byte blocks (the engines
--- expand @K1||K2@ to @K1||K2||K1@, shared with the Cipher recipe).
+-- expand @K1||K2@ to @K1||K2||K1@, shared with the Cipher recipe),
+-- single DES takes 8-byte keys on 8-byte blocks and SEED 16-byte
+-- keys on 16-byte blocks.
 encryptDataRecipes :: [EncryptDataRecipe]
 encryptDataRecipes =
   [ EncryptDataRecipe "CKM_AES_CBC_ENCRYPT_DATA" 16 [16, 24, 32] 16 "CKK_AES"
@@ -85,6 +87,10 @@ encryptDataRecipes =
   , EncryptDataRecipe "CKM_CAMELLIA_ECB_ENCRYPT_DATA" 16 [16, 24, 32] 0 "CKK_CAMELLIA"
   , EncryptDataRecipe "CKM_DES3_CBC_ENCRYPT_DATA" 8 [16, 24] 8 "CKK_DES3"
   , EncryptDataRecipe "CKM_DES3_ECB_ENCRYPT_DATA" 8 [16, 24] 0 "CKK_DES3"
+  , EncryptDataRecipe "CKM_DES_CBC_ENCRYPT_DATA" 8 [8] 8 "CKK_DES"
+  , EncryptDataRecipe "CKM_DES_ECB_ENCRYPT_DATA" 8 [8] 0 "CKK_DES"
+  , EncryptDataRecipe "CKM_SEED_CBC_ENCRYPT_DATA" 16 [16] 16 "CKK_SEED"
+  , EncryptDataRecipe "CKM_SEED_ECB_ENCRYPT_DATA" 16 [16] 0 "CKK_SEED"
   ]
 
 -- | Resolve a mechanism id to its encrypt-data recipe, if covered.

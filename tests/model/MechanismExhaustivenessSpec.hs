@@ -5,7 +5,7 @@ A42: every catalog id in @spec/mechanisms-canonical.txt@ (the
 source of truth) routes through 'initOperation' — the classic-init
 planning funnel — to its cataloged disposition:
 
-* allowed ids (the 270 @mech|@ rows): the curated descriptor
+* allowed ids (the 295 @mech|@ rows): the curated descriptor
   matches the cataloged name and routes exactly, every cataloged
   classic route initializes to @CKR_OK@ under full caps with
   valid parameters, and every cataloged NON-classic route
@@ -79,7 +79,7 @@ import Haskoki.Recipe.Chacha20
   , encodeChachaPolyParams
   , encodeChachaStreamParams
   )
-import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipeFor, encodeCtrParams)
+import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipeFor, encodeCtrParams, encodeRc2CbcParams)
 import Haskoki.Recipe.Eddsa (encodeEddsaParams)
 import Haskoki.Recipe.MlDsa (MldsaHedge (..), encodeMldsaParams)
 import Haskoki.Recipe.SlhDsa (SlhdsaHedge (..), encodeSlhdsaParams)
@@ -120,7 +120,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "mechanism exhaustiveness (A42)"
-  [ testCase "catalog coverage: 464 ids, 270 allowed + 194 refused" caseCoverage
+  [ testCase "catalog coverage: 464 ids, 295 allowed + 169 refused" caseCoverage
   , testCase "allowed ids: descriptors match catalog routes" caseDescriptors
   , testCase "allowed routes: classic init OK, non-classic exact refusal" caseInitRouting
   , testCase "allowed classic routes: caps miss refuses exactly" caseCapsStage
@@ -324,6 +324,9 @@ paramsFor codec mid = case codec of
   "ctr-params/1" -> case cipherRecipeFor mid of
     Just r -> Right (encodeCtrParams 128 (BS.replicate (crIvBytes r) 0))
     Nothing -> Left ("no cipher recipe for " ++ show mid)
+  "rc2-params/1" -> case cipherRecipeFor mid of
+    Just r -> Right (encodeRc2CbcParams 128 (BS.replicate (crIvBytes r) 0))
+    Nothing -> Left ("no cipher recipe for " ++ show mid)
   "oaep-params/1" -> Right (encodeOaepParams "SHA_1" "SHA_1" BS.empty)
   "hotp-params/1" -> Right (encodeHotpParams 0 6)
   "gcm-params/1" -> Right (encodeGcmParams "0123456789ab" "AD" 16)
@@ -403,10 +406,10 @@ caseCoverage = guarded "coverage" $ do
       allIds = sort (mechIds ++ invIds)
       mm =
         parseBad
-        ++ ["allowed count: want 270, got " ++ show (length mechs)
-           | length mechs /= 270]
-        ++ ["refused count: want 194, got " ++ show (length invs)
-           | length invs /= 194]
+        ++ ["allowed count: want 295, got " ++ show (length mechs)
+           | length mechs /= 295]
+        ++ ["refused count: want 169, got " ++ show (length invs)
+           | length invs /= 169]
         ++ ["catalog count: want 464, got " ++ show (length catIds)
            | length catIds /= 464]
         ++ ["mech/inv overlap: "

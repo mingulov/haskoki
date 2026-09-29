@@ -105,21 +105,33 @@ instance CryptoBackend OpenSSL4 where
             detail <- Raw.lastError
             pure (EngineFail (BackendNative "open" loadRc ("load default provider: " ++ detail)))
           else do
-            version <- Raw.libVersion
-            if not ("4.0.2" `isInfixOf` version)
+            -- The legacy provider carries single DES, RC2/RC4,
+            -- CAST-128, IDEA, SEED and Blowfish (fetch probes prove
+            -- them legacy-only in the pinned build). Missing legacy
+            -- fails the open: silently serving 25 fewer rows would
+            -- be worse than refusing to start.
+            legacyRc <- Raw.envLoad envp "legacy"
+            if legacyRc /= 0
               then do
                 Raw.envFree envp
-                pure (EngineFail (BackendNative "open" (-1) ("libcrypto pin mismatch, want 4.0.2, got " ++ version)))
-              else do
-                ctx <- Raw.envCtx envp
-                fenv <- newForeignPtr Raw.envFreeFinalizer envp
-                digests <- newMVar Map.empty
-                keys <- newMVar Map.empty
-                nextId <- newMVar 1
-                closed <- newMVar False
-                let env = OSSL4Env fenv ctx propq (ossl4Caps version propq) digests keys nextId closed
-                caps <- probeCaps env
-                pure (EngineOk (OSSL4Backend env { osslCaps = caps }))
+                detail <- Raw.lastError
+                pure (EngineFail (BackendNative "open" legacyRc ("load legacy provider: " ++ detail)))
+                  else do
+                version <- Raw.libVersion
+                if not ("4.0.2" `isInfixOf` version)
+                  then do
+                    Raw.envFree envp
+                    pure (EngineFail (BackendNative "open" (-1) ("libcrypto pin mismatch, want 4.0.2, got " ++ version)))
+                  else do
+                    ctx <- Raw.envCtx envp
+                    fenv <- newForeignPtr Raw.envFreeFinalizer envp
+                    digests <- newMVar Map.empty
+                    keys <- newMVar Map.empty
+                    nextId <- newMVar 1
+                    closed <- newMVar False
+                    let env = OSSL4Env fenv ctx propq (ossl4Caps version propq) digests keys nextId closed
+                    caps <- probeCaps env
+                    pure (EngineOk (OSSL4Backend env { osslCaps = caps }))
 
   closeBackend (OSSL4Backend env) = modifyMVar (osslClosed env) $ \wasClosed ->
     if wasClosed
@@ -1132,6 +1144,13 @@ t16CipherSpecs =
   , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
   , C_CAMELLIA128_CTR, C_CAMELLIA192_CTR, C_CAMELLIA256_CTR
   , C_CHACHA20
+  , C_DES_ECB, C_DES_CBC, C_DES_OFB64, C_DES_CFB64, C_DES_CFB8
+  , C_CAST128_ECB, C_CAST128_CBC
+  , C_IDEA_ECB, C_IDEA_CBC
+  , C_SEED_ECB, C_SEED_CBC
+  , C_BLOWFISH_CBC
+  , C_RC2_ECB 0, C_RC2_CBC 0
+  , C_RC4
   ]
 
 -- | Per-name cipher parameter notes for the capability report,
@@ -1287,7 +1306,8 @@ probeCaps env = do
       Nothing -> pure False
       Just mdname -> probe1 "md" mdname
     probeCiphers = filterM probeCipher t16CipherSpecs
-    probeCipher spec = probe1 "cipher" (cipherProbeName spec)
+    probeCipher spec = withForeignPtr (osslEnv env) $ \_ ->
+      (== 1) <$> Raw.probe (osslCtx env) "cipher" (cipherProbeName spec) (cipherPropQ env spec)
     keep True s = s
     keep False _ = Set.empty
 
@@ -1580,7 +1600,7 @@ verifyRc op badParamMsg rc = case rc of
 
 cipherSupported :: BackendEnv OpenSSL4 -> CipherSpec -> Maybe String
 cipherSupported (OSSL4Backend env) spec
-  | Set.member spec (ccCiphers (bcCiphers (osslCaps env))) = Nothing
+  | Set.member (cipherSpecCanon spec) (ccCiphers (bcCiphers (osslCaps env))) = Nothing
   | otherwise = Just ("cipher not in engine set: " ++ show spec)
 
 -- | OpenSSL group name for an engine curve name: identical except
@@ -1734,6 +1754,21 @@ cipherFetchName spec = case spec of
   C_AES256_XTS -> "AES-256-XTS"
   C_DES3_CBC -> "DES-EDE3-CBC"
   C_DES3_ECB -> "DES-EDE3"
+  C_DES_ECB -> "DES-ECB"
+  C_DES_CBC -> "DES-CBC"
+  C_DES_OFB64 -> "DES-OFB"
+  C_DES_CFB64 -> "DES-CFB"
+  C_DES_CFB8 -> "DES-CFB8"
+  C_CAST128_ECB -> "CAST5-ECB"
+  C_CAST128_CBC -> "CAST5-CBC"
+  C_IDEA_ECB -> "IDEA-ECB"
+  C_IDEA_CBC -> "IDEA-CBC"
+  C_SEED_ECB -> "SEED-ECB"
+  C_SEED_CBC -> "SEED-CBC"
+  C_BLOWFISH_CBC -> "BF-CBC"
+  C_RC2_ECB _ -> "RC2-ECB"
+  C_RC2_CBC _ -> "RC2-CBC"
+  C_RC4 -> "RC4"
   C_ARIA128_CBC -> "ARIA-128-CBC"
   C_ARIA192_CBC -> "ARIA-192-CBC"
   C_ARIA256_CBC -> "ARIA-256-CBC"
@@ -1797,6 +1832,24 @@ cipherBlockLen spec = case spec of
   C_CAMELLIA192_CTR -> 1
   C_CAMELLIA256_CTR -> 1
   C_CHACHA20 -> 1
+  -- Legacy rows: 8-byte blocks, except SEED (16) and the DES
+  -- stream modes plus RC4 (the provider reports block size 1
+  -- for CFB/OFB/RC4, so the shim takes any input length).
+  C_DES_ECB -> 8
+  C_DES_CBC -> 8
+  C_DES_OFB64 -> 1
+  C_DES_CFB64 -> 1
+  C_DES_CFB8 -> 1
+  C_CAST128_ECB -> 8
+  C_CAST128_CBC -> 8
+  C_IDEA_ECB -> 8
+  C_IDEA_CBC -> 8
+  C_SEED_ECB -> 16
+  C_SEED_CBC -> 16
+  C_BLOWFISH_CBC -> 8
+  C_RC2_ECB _ -> 8
+  C_RC2_CBC _ -> 8
+  C_RC4 -> 1
   _ -> 16
 
 -- | The CTS specs run the manual CBC-CS1 construction instead of
@@ -1846,7 +1899,49 @@ cipherNative ctx propq enc spec
       Raw.cipherWrap ctx (cipherFetchName spec) propq enc (isKwpSpec spec) key input
   | isXtsSpec spec = \key tweak input ->
       Raw.cipherXts ctx (cipherFetchName spec) propq enc key tweak input
+  | isLegacySpec spec = \key iv input ->
+      Raw.cipherLegacy ctx (cipherFetchName spec) propq enc key (cipherKeyBits spec) iv input
   | otherwise = Raw.cipherCbc ctx (cipherFetchName spec) propq enc
+
+-- | Legacy-provider specs (single DES, CAST-128, IDEA, SEED,
+-- Blowfish, RC2, RC4): variable key lengths need the two-step
+-- init, and RC2 needs the effective-bits control. Everything else
+-- keeps the fixed-length single-step entry untouched.
+isLegacySpec :: CipherSpec -> Bool
+isLegacySpec C_DES_ECB = True
+isLegacySpec C_DES_CBC = True
+isLegacySpec C_DES_OFB64 = True
+isLegacySpec C_DES_CFB64 = True
+isLegacySpec C_DES_CFB8 = True
+isLegacySpec C_CAST128_ECB = True
+isLegacySpec C_CAST128_CBC = True
+isLegacySpec C_IDEA_ECB = True
+isLegacySpec C_IDEA_CBC = True
+isLegacySpec C_SEED_ECB = True
+isLegacySpec C_SEED_CBC = True
+isLegacySpec C_BLOWFISH_CBC = True
+isLegacySpec (C_RC2_ECB _) = True
+isLegacySpec (C_RC2_CBC _) = True
+isLegacySpec C_RC4 = True
+isLegacySpec _ = False
+
+-- | The fetch property query per spec: legacy-provider rows pin
+-- @provider=legacy@ (fetch probes prove them legacy-only in the
+-- pinned build, so the environment query would drop them from
+-- the probed set and fail every runtime fetch); everything else
+-- keeps the environment query. Both the capability probe and the
+-- execution path route through here.
+cipherPropQ :: OSSL4Env -> CipherSpec -> String
+cipherPropQ env spec
+  | isLegacySpec spec = "provider=legacy"
+  | otherwise = osslPropQ env
+
+-- | The RC2 effective-bits word for the FFI key-bits control;
+-- 0 (no control) for every other spec.
+cipherKeyBits :: CipherSpec -> Int
+cipherKeyBits (C_RC2_ECB bits) = bits
+cipherKeyBits (C_RC2_CBC bits) = bits
+cipherKeyBits _ = 0
 
 cipherRun :: BackendEnv OpenSSL4 -> String -> Bool -> CipherSpec -> KeyMaterial -> ByteString -> ByteString -> IO (EngineResult ByteString)
 cipherRun be op enc spec key iv input =
@@ -1867,6 +1962,10 @@ cipherRun be op enc spec key iv input =
             pure (EngineFail (BackendBadParam op
               ("input length must be a multiple of "
                 ++ show (cipherBlockLen spec) ++ " (no padding)")))
+        | Just bits <- rc2BitsOf spec, bits < 1 || bits > 1024 ->
+            pure (EngineFail (BackendBadParam op
+              ("RC2 effective bits " ++ show bits
+                ++ " outside 1..1024 (R2 fail-closed)")))
         | isKwSpec spec && BS.length input < 16 ->
             pure (EngineFail (BackendBadParam op
               ("KW input must be at least 16 bytes (RFC 3394)")))
@@ -1885,7 +1984,7 @@ cipherRun be op enc spec key iv input =
               ("XTS input must be at least 16 bytes (IEEE 1619 data unit)")))
         | otherwise -> do
             r <- withForeignPtr (osslEnv env) $ \_ ->
-              cipherNative (osslCtx env) (osslPropQ env) enc spec
+              cipherNative (osslCtx env) (cipherPropQ env spec) enc spec
                 (cipherProviderKey spec kb) iv input
             nativeOut op r
 

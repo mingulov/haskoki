@@ -78,6 +78,7 @@ spec = testGroup "openssl4 engine"
   , testCase "Block-cipher KATs (NIST/RFC/CLI)" caseCipherKats
   , testCase "aes-cts known answers (ACVP CBC-CS1)" caseAesCts
   , testCase "aes cfb/ofb known answers (ACVP)" caseAesCfbOfb
+  , testCase "Legacy-cipher KATs (oracle/FIPS/RFC)" caseLegacyKats
   , testCase "aes-kw/kwp known answers (ACVP)" caseAesWrapKwp
   , testCase "aes-xts known answers (ACVP)" caseAesXts
   , testCase "RSA v1.5 KATs (CLI vectors)" caseRsaKats
@@ -1456,6 +1457,119 @@ caseAesRoundtrip = withBackend $ \env -> do
   expectBadParam "bad key length" =<< cipherEncrypt env C_AES256_CBC (KeyBytes "short") aes256Iv aes256Pt
   expectBadParam "bad iv length" =<< cipherEncrypt env C_AES256_CBC key "short" aes256Pt
 
+-- Pinned-oracle legacy vectors (pkcs11-check
+-- mechanism_vectors/*.json): every one reproduced byte-identical
+-- on the pinned 4.0.2 provider before transcription. DES-CFB64,
+-- DES-CFB8 and DES-OFB64 have no oracle vector file, so those
+-- pins are cross-checked between the pinned provider and the
+-- system 3.5.5 CLI instead (CFB64/OFB first blocks also equal
+-- ECB_K(IV) xored with the plaintext by construction).
+desEcbKey, desEcbPt, desEcbCt :: ByteString
+desEcbKey = hex "ae7a5bff9a66ccd4"
+desEcbPt = hex "6614a40c7202bad03f5b8b962d7c6435"
+desEcbCt = hex "795b284fe8a856259daa3e683e85cf12"
+
+desCbcKey, desCbcIv, desCbcPt, desCbcCt :: ByteString
+desCbcKey = hex "540b316b5cd417e5"
+desCbcIv = hex "0552d668d3319583"
+desCbcPt = hex "c687007ed5972de9e31b5aa7745368b9"
+desCbcCt = hex "ccfec8fe28d5828eb8fce5dbd0029d7f"
+
+-- FIPS 46-3 A.1 ECB and FIPS 81 CBC (first block) anchors.
+desFipsKey, desFipsPt, desFipsCt :: ByteString
+desFipsKey = hex "133457799BBCDFF1"
+desFipsPt = hex "0123456789ABCDEF"
+desFipsCt = hex "85E813540F0AB405"
+
+desCbc1Key, desCbc1Iv, desNow, desCbc1Ct :: ByteString
+desCbc1Key = hex "0123456789abcdef"
+desCbc1Iv = hex "1234567890abcdef"
+desNow = "Now is t"
+desCbc1Ct = hex "e5c7cdde872bf27c"
+
+desCfb64Ct, desCfb8Ct, desOfbCt :: ByteString
+desCfb64Ct = hex "f3096249c7f46e51"
+desCfb8Ct = hex "f31fda07011462ee"
+desOfbCt = hex "f3096249c7f46e51"
+
+-- Oracle rc2_ecb.json / rc2_cbc.json (OpenSSL-legacy generated,
+-- effective bits 128).
+rc2Key, rc2EcbPt, rc2EcbCt :: ByteString
+rc2Key = hex "000102030405060708090a0b0c0d0e0f"
+rc2EcbPt = hex "0123456789abcdef"
+rc2EcbCt = hex "c1de66972a5efb2b"
+
+rc2Iv, rc2CbcPt, rc2CbcCt :: ByteString
+rc2Iv = hex "0102030405060708"
+rc2CbcPt = hex "0123456789abcdeffedcba9876543210"
+rc2CbcCt = hex "5dc06db7afa1896aa2c26c096309b4bf"
+
+-- Oracle cast128_ecb.json (RFC 2144 Appendix A) and
+-- cast128_cbc.json (same keying, two blocks).
+castKey, castEcbPt, castEcbCt :: ByteString
+castKey = hex "0123456712345678234567893456789a"
+castEcbPt = hex "0123456789abcdef"
+castEcbCt = hex "238b4fe5847e44b2"
+
+castIv, castCbcPt, castCbcCt :: ByteString
+castIv = hex "0102030405060708"
+castCbcPt = hex "0123456789abcdeffedcba9876543210"
+castCbcCt = hex "c5aa82a2a6c97d5cf5c5b2354db7e71f"
+
+-- 8-byte CAST key pin: the pinned provider only (no RFC row at
+-- this width), kept because it pins the two-step key-length flow
+-- against the single-step regression (which answers 85126c3b...).
+castKey8, castEcb8Ct :: ByteString
+castKey8 = hex "0123456789abcdef"
+castEcb8Ct = hex "2be46102b438604c"
+
+-- Oracle rc4.json (RFC 6229 section 2, offset 0) at 128 and 256
+-- key bits, plus the RSA "Key"/"Plaintext" anchor.
+rc4Key128, rc4Zero32, rc4Ct128 :: ByteString
+rc4Key128 = hex "0102030405060708090a0b0c0d0e0f10"
+rc4Zero32 = BS.replicate 32 0
+rc4Ct128 = hex "9ac7cc9a609d1ef7b2932899cde41b975248c4959014126a6e8a84f11d1a9e1c"
+
+rc4Key256, rc4Ct256 :: ByteString
+rc4Key256 = hex "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+rc4Ct256 = hex "eaa6bd25880bf93d3f5d1e4ca2611d91cfa45c9f7e714b54bdfa80027cb14380"
+
+rc4RsaCt :: ByteString
+rc4RsaCt = hex "BBF316E8D940AF0AD3"
+
+-- Oracle blowfish_cbc.json (Schneier zero key/IV/block): every
+-- all-zero Blowfish key shares one schedule, so the 8-byte pin
+-- below also governs the 16/56-byte zero keys.
+bfKey8z, bfIv8z, bfPt8z, bfCt8z :: ByteString
+bfKey8z = BS.replicate 8 0
+bfIv8z = BS.replicate 8 0
+bfPt8z = BS.replicate 8 0
+bfCt8z = hex "4ef997456198dd78"
+
+-- Oracle idea_ecb.json (NESSIE count 0 via pyca) and
+-- idea_cbc.json (pyca vector).
+ideaNessieKey, ideaNessieCt :: ByteString
+ideaNessieKey = hex "80000000000000000000000000000000"
+ideaNessieCt = hex "b1f5f7f87901370f"
+
+ideaCbcKey, ideaCbcIv, ideaCbcPt, ideaCbcCt :: ByteString
+ideaCbcKey = hex "1f8e4973953f3fb0bd6b16662e9a3c17"
+ideaCbcIv = hex "2fe2b333ceda8f98"
+ideaCbcPt = hex "45cf12964fc824ab76616ae2f4bf0822"
+ideaCbcCt = hex "2cb10d22ac22a375c0021ab6732936c1"
+
+-- Oracle seed_ecb.json / seed_cbc.json (generated).
+seedEcbKey, seedEcbPt, seedEcbCt :: ByteString
+seedEcbKey = hex "630097850757e0a64b1d385a7c30a5f7"
+seedEcbPt = hex "9406e50d3ae6de268202d2754f45e9d1"
+seedEcbCt = hex "f353f89ce52d7929a1df5e2a37fdbf5b"
+
+seedCbcKey, seedCbcIv, seedCbcPt, seedCbcCt :: ByteString
+seedCbcKey = hex "428347c5863bd4348f1e9e2fec808513"
+seedCbcIv = hex "8622f0291038b9f34217732a92697c8e"
+seedCbcPt = hex "ae96f55be2bf3caeef848dda2e200a84"
+seedCbcCt = hex "abe7139abb5ef24d59602b356726fb85"
+
 caseCipherKats :: IO ()
 caseCipherKats = withBackend $ \env -> do
   -- AES widths: NIST rows (CBC shares the F.2 IV/PT; ECB is empty-IV).
@@ -1532,6 +1646,160 @@ caseCipherKats = withBackend $ \env -> do
       case cipherSpecFor (MechanismId 0x558) keyLen (encodeCtrParams 128 icb) of
         Nothing -> assertFailure (label ++ " unmapped")
         Just cipher -> katCtr env label cipher key icb pt want
+
+-- Legacy ciphers (DES/RC2/RC4/CAST-128/IDEA/SEED/Blowfish):
+-- pinned-oracle KATs plus FIPS/RFC anchors, variable-keylen and
+-- RC2-bits coverage, and typed geometry refusals. CBC_PAD rows
+-- have no engine spec (the Operation layer pads onto these CBC
+-- specs); their oracle vectors land in the C-consumer suite.
+caseLegacyKats :: IO ()
+caseLegacyKats = withBackend $ \env -> do
+  -- DES: oracle two-block rows plus the FIPS anchors.
+  katEcb env "des-ecb" C_DES_ECB desEcbKey desEcbPt desEcbCt
+  katCbc env "des-cbc" C_DES_CBC desCbcKey desCbcIv desCbcPt desCbcCt
+  katEcb env "des-ecb-fips" C_DES_ECB desFipsKey desFipsPt desFipsCt
+  katCbc env "des-cbc-fips81" C_DES_CBC desCbc1Key desCbc1Iv desNow desCbc1Ct
+  -- DES stream modes: exact pins plus unaligned legs (the
+  -- provider reports block size 1, so any length encrypts).
+  katStream env "des-cfb64" C_DES_CFB64 desCbc1Key desCbc1Iv desNow desCfb64Ct
+  katStream env "des-cfb8" C_DES_CFB8 desCbc1Key desCbc1Iv desNow desCfb8Ct
+  katStream env "des-ofb64" C_DES_OFB64 desCbc1Key desCbc1Iv desNow desOfbCt
+  raggedCfb <- expectOk "cfb64 unaligned encrypt" =<<
+    cipherEncrypt env C_DES_CFB64 (KeyBytes desCbc1Key) desCbc1Iv "eleven bytes"
+  assertEqual "cfb64 length preserved" 12 (BS.length raggedCfb)
+  raggedBack <- expectOk "cfb64 unaligned decrypt" =<<
+    cipherDecrypt env C_DES_CFB64 (KeyBytes desCbc1Key) desCbc1Iv raggedCfb
+  assertEqual "cfb64 unaligned inverts" "eleven bytes" raggedBack
+  raggedOfb <- expectOk "ofb64 unaligned encrypt" =<<
+    cipherEncrypt env C_DES_OFB64 (KeyBytes desCbc1Key) desCbc1Iv "eleven bytes"
+  assertEqual "ofb64 length preserved" 12 (BS.length raggedOfb)
+  -- OFB and CFB64 share the first block (ECB_K(IV) ^ P0).
+  assertEqual "ofb==cfb64 at one block" desCfb64Ct desOfbCt
+  -- RC2: oracle rows at 128 bits; other widths stay
+  -- sensitivity-checked (never pinned to single-impl bytes).
+  katEcbBits env "rc2-ecb-128" 128 rc2Key rc2EcbPt rc2EcbCt
+  katCbcBits env "rc2-cbc-128" 128 rc2Key rc2Iv rc2CbcPt rc2CbcCt
+  ct64 <- expectOk "rc2-ecb-64 encrypt" =<<
+    cipherEncrypt env (C_RC2_ECB 64) (KeyBytes rc2Key) BS.empty rc2EcbPt
+  assertBool "rc2 bits separate 64/128" (ct64 /= rc2EcbCt)
+  pt64 <- expectOk "rc2-ecb-64 decrypt" =<<
+    cipherDecrypt env (C_RC2_ECB 64) (KeyBytes rc2Key) BS.empty ct64
+  assertEqual "rc2-64 inverts" rc2EcbPt pt64
+  ct40 <- expectOk "rc2-ecb-40 encrypt" =<<
+    cipherEncrypt env (C_RC2_ECB 40) (KeyBytes rc2Key) BS.empty rc2EcbPt
+  assertBool "rc2 bits separate 40/128" (ct40 /= rc2EcbCt)
+  assertBool "rc2 bits separate 40/64" (ct40 /= ct64)
+  -- RC2 bits range: 1 and 1024 execute, 0 and 1025 refuse (R2).
+  rt1 <- expectOk "rc2 bits 1 encrypt" =<<
+    cipherEncrypt env (C_RC2_ECB 1) (KeyBytes rc2Key) BS.empty rc2EcbPt
+  pt1 <- expectOk "rc2 bits 1 decrypt" =<<
+    cipherDecrypt env (C_RC2_ECB 1) (KeyBytes rc2Key) BS.empty rt1
+  assertEqual "rc2 bits 1 inverts" rc2EcbPt pt1
+  rt1024 <- expectOk "rc2 bits 1024 encrypt" =<<
+    cipherEncrypt env (C_RC2_CBC 1024) (KeyBytes rc2Key) rc2Iv rc2CbcPt
+  pt1024 <- expectOk "rc2 bits 1024 decrypt" =<<
+    cipherDecrypt env (C_RC2_CBC 1024) (KeyBytes rc2Key) rc2Iv rt1024
+  assertEqual "rc2 bits 1024 inverts" rc2CbcPt pt1024
+  expectBadParam "rc2 bits 0 refused" =<<
+    cipherEncrypt env (C_RC2_ECB 0) (KeyBytes rc2Key) BS.empty rc2EcbPt
+  expectBadParam "rc2 bits 1025 refused" =<<
+    cipherEncrypt env (C_RC2_CBC 1025) (KeyBytes rc2Key) rc2Iv rc2CbcPt
+  -- RC4: RFC 6229 rows plus the RSA anchor; any length streams.
+  katStream env "rc4-128" C_RC4 rc4Key128 BS.empty rc4Zero32 rc4Ct128
+  katStream env "rc4-256" C_RC4 rc4Key256 BS.empty rc4Zero32 rc4Ct256
+  katStream env "rc4-rsa" C_RC4 "Key" BS.empty "Plaintext" rc4RsaCt
+  rtRc4 <- expectOk "rc4 1-byte key encrypt" =<<
+    cipherEncrypt env C_RC4 (KeyBytes "K") BS.empty "seven!!"
+  ptRc4 <- expectOk "rc4 1-byte key decrypt" =<<
+    cipherDecrypt env C_RC4 (KeyBytes "K") BS.empty rtRc4
+  assertEqual "rc4 1-byte key inverts" "seven!!" ptRc4
+  let key255 = BS.replicate 255 0xA5
+  rt255 <- expectOk "rc4 255-byte key encrypt" =<<
+    cipherEncrypt env C_RC4 (KeyBytes key255) BS.empty "sixteen bytes xx"
+  pt255 <- expectOk "rc4 255-byte key decrypt" =<<
+    cipherDecrypt env C_RC4 (KeyBytes key255) BS.empty rt255
+  assertEqual "rc4 255-byte key inverts" "sixteen bytes xx" pt255
+  -- CAST-128: RFC 2144 row, oracle CBC row, short-key pin.
+  katEcb env "cast128-ecb" C_CAST128_ECB castKey castEcbPt castEcbCt
+  katCbc env "cast128-cbc" C_CAST128_CBC castKey castIv castCbcPt castCbcCt
+  katEcb env "cast128-ecb-8byte-key" C_CAST128_ECB castKey8 bfPt8z castEcb8Ct
+  rtCast1 <- expectOk "cast128 1-byte key encrypt" =<<
+    cipherEncrypt env C_CAST128_ECB (KeyBytes "K") BS.empty castEcbPt
+  ptCast1 <- expectOk "cast128 1-byte key decrypt" =<<
+    cipherDecrypt env C_CAST128_ECB (KeyBytes "K") BS.empty rtCast1
+  assertEqual "cast128 1-byte key inverts" castEcbPt ptCast1
+  -- Blowfish: oracle zero row; all-zero keys share one schedule.
+  katCbc env "blowfish-cbc" C_BLOWFISH_CBC bfKey8z bfIv8z bfPt8z bfCt8z
+  ct16z <- expectOk "blowfish 16-byte zero key" =<<
+    cipherEncrypt env C_BLOWFISH_CBC (KeyBytes (BS.replicate 16 0)) bfIv8z bfPt8z
+  assertEqual "blowfish zero keys agree" bfCt8z ct16z
+  ct56z <- expectOk "blowfish 56-byte zero key" =<<
+    cipherEncrypt env C_BLOWFISH_CBC (KeyBytes (BS.replicate 56 0)) bfIv8z bfPt8z
+  assertEqual "blowfish zero keys agree at ceiling" bfCt8z ct56z
+  rtBf <- expectOk "blowfish 4-byte key encrypt" =<<
+    cipherEncrypt env C_BLOWFISH_CBC (KeyBytes "key!") bfIv8z bfPt8z
+  ptBf <- expectOk "blowfish 4-byte key decrypt" =<<
+    cipherDecrypt env C_BLOWFISH_CBC (KeyBytes "key!") bfIv8z rtBf
+  assertEqual "blowfish floor key inverts" bfPt8z ptBf
+  -- IDEA: NESSIE row and oracle CBC row.
+  katEcb env "idea-ecb-nessie" C_IDEA_ECB ideaNessieKey bfPt8z ideaNessieCt
+  katCbc env "idea-cbc" C_IDEA_CBC ideaCbcKey ideaCbcIv ideaCbcPt ideaCbcCt
+  -- SEED: oracle rows (16-byte blocks).
+  katEcb env "seed-ecb" C_SEED_ECB seedEcbKey seedEcbPt seedEcbCt
+  katCbc env "seed-cbc" C_SEED_CBC seedCbcKey seedCbcIv seedCbcPt seedCbcCt
+  -- Geometry refusals stay typed on the legacy specs.
+  expectBadParam "des rejects 7-byte key" =<<
+    cipherEncrypt env C_DES_CBC (KeyBytes "1234567") desCbcIv desCbcPt
+  expectBadParam "des-cbc rejects misaligned input" =<<
+    cipherEncrypt env C_DES_CBC (KeyBytes desCbcKey) desCbcIv "eleven bytes"
+  expectBadParam "des-ecb rejects iv" =<<
+    cipherEncrypt env C_DES_ECB (KeyBytes desEcbKey) desCbcIv desEcbPt
+  expectBadParam "cast rejects 17-byte key" =<<
+    cipherEncrypt env C_CAST128_ECB (KeyBytes (BS.replicate 17 0)) BS.empty castEcbPt
+  -- Empty keys reach the length check here (BadParam); the
+  -- synthetic backend refuses them earlier with BadKey.
+  expectBadParam "cast rejects empty key" =<<
+    cipherEncrypt env C_CAST128_ECB (KeyBytes BS.empty) BS.empty castEcbPt
+  expectBadParam "bf rejects 3-byte key" =<<
+    cipherEncrypt env C_BLOWFISH_CBC (KeyBytes "key") bfIv8z bfPt8z
+  expectBadParam "bf rejects 57-byte key" =<<
+    cipherEncrypt env C_BLOWFISH_CBC (KeyBytes (BS.replicate 57 0)) bfIv8z bfPt8z
+  expectBadParam "idea rejects 8-byte key" =<<
+    cipherEncrypt env C_IDEA_ECB (KeyBytes bfPt8z) BS.empty bfPt8z
+  expectBadParam "seed rejects 8-byte key" =<<
+    cipherEncrypt env C_SEED_ECB (KeyBytes bfPt8z) BS.empty seedEcbPt
+  expectBadParam "rc2 rejects 129-byte key" =<<
+    cipherEncrypt env (C_RC2_ECB 128) (KeyBytes (BS.replicate 129 0)) BS.empty rc2EcbPt
+  expectBadParam "rc4 rejects empty key" =<<
+    cipherEncrypt env C_RC4 (KeyBytes BS.empty) BS.empty "seven!!"
+  expectBadParam "rc4 rejects 256-byte key" =<<
+    cipherEncrypt env C_RC4 (KeyBytes (BS.replicate 256 0)) BS.empty "seven!!"
+  where
+    katCbc env label cipher key iv pt want = do
+      ct <- expectOk (label ++ " encrypt")
+        =<< cipherEncrypt env cipher (KeyBytes key) iv pt
+      assertEqual (label ++ " kat") want ct
+      pt' <- expectOk (label ++ " decrypt")
+        =<< cipherDecrypt env cipher (KeyBytes key) iv want
+      assertEqual (label ++ " inverts") pt pt'
+    katEcb env label cipher key pt want = do
+      ct <- expectOk (label ++ " encrypt")
+        =<< cipherEncrypt env cipher (KeyBytes key) BS.empty pt
+      assertEqual (label ++ " kat") want ct
+      pt' <- expectOk (label ++ " decrypt")
+        =<< cipherDecrypt env cipher (KeyBytes key) BS.empty want
+      assertEqual (label ++ " inverts") pt pt'
+    katStream env label cipher key iv pt want = do
+      ct <- expectOk (label ++ " encrypt")
+        =<< cipherEncrypt env cipher (KeyBytes key) iv pt
+      assertEqual (label ++ " kat") want ct
+      pt' <- expectOk (label ++ " decrypt")
+        =<< cipherDecrypt env cipher (KeyBytes key) iv want
+      assertEqual (label ++ " inverts") pt pt'
+    katEcbBits env label bits key pt want =
+      katEcb env label (C_RC2_ECB bits) key pt want
+    katCbcBits env label bits key iv pt want =
+      katCbc env label (C_RC2_CBC bits) key iv pt want
 
 -- AES-CTS (CBC-CS1): ACVP encrypt vectors plus geometry/KAT-edge negatives.
 caseAesCts :: IO ()
@@ -4676,8 +4944,15 @@ caseCaps = withBackend $ \env -> do
     , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
     , C_CAMELLIA128_CTR, C_CAMELLIA192_CTR, C_CAMELLIA256_CTR
     , C_CHACHA20
+    , C_DES_ECB, C_DES_CBC, C_DES_OFB64, C_DES_CFB64, C_DES_CFB8
+    , C_CAST128_ECB, C_CAST128_CBC
+    , C_IDEA_ECB, C_IDEA_CBC
+    , C_SEED_ECB, C_SEED_CBC
+    , C_BLOWFISH_CBC
+    , C_RC2_ECB 0, C_RC2_CBC 0
+    , C_RC4
     ]) (ccCiphers (bcCiphers caps))
-  assertEqual "cipher set size" 50 (Set.size (ccCiphers (bcCiphers caps)))
+  assertEqual "cipher set size" 65 (Set.size (ccCiphers (bcCiphers caps)))
   assertEqual "aead set" (Set.fromList
     [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
     , "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"

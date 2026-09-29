@@ -5879,6 +5879,311 @@ int main(int argc, char **argv) {
           f->C_DestroyObject(sess, oepriv);
         }
         {
+          /* 11p legacy serve set, both topologies: RC2 rows through
+           * the native CK_RC2_PARAMS / CK_RC2_CBC_PARAMS structs
+           * (effective-bits word translated LE->canonical at the
+           * FFI); DES-ECB FIPS anchor; RC4 RSA anchor; DES-CFB8
+           * cross-checked pin; and the six CBC_PAD oracle vectors
+           * (pad framing over the shared CBC specs). Bad RC2
+           * effective bits and mistimed images refuse
+           * CKR_ARGUMENTS_BAD at init. */
+          CK_OBJECT_CLASS qckcls = CKO_SECRET_KEY;
+          CK_KEY_TYPE qdes = CKK_DES, qrc2 = CKK_RC2, qrc4 = CKK_RC4;
+          CK_KEY_TYPE qcast = CKK_CAST128, qidea = CKK_IDEA;
+          CK_KEY_TYPE qseed = CKK_SEED, qbf = CKK_BLOWFISH;
+          CK_BBOOL qyes = CK_TRUE, qno = CK_FALSE;
+          CK_OBJECT_HANDLE qdesF = 0, qdesP = 0, qrc2k = 0, qrc4k = 0;
+          CK_OBJECT_HANDLE qcastk = 0, qideak = 0, qseedk = 0, qbfk = 0;
+          CK_OBJECT_HANDLE qdesC = 0;
+          CK_MECHANISM qm;
+          CK_ULONG qlen;
+          CK_BYTE qout[64];
+          CK_BYTE qdesFipsK[8] = { 0x13,0x34,0x57,0x79,0x9b,0xbc,0xdf,0xf1 };
+          CK_BYTE qdesFipsP[8] = { 0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef };
+          CK_BYTE qdesFipsC[8] = { 0x85,0xe8,0x13,0x54,0x0f,0x0a,0xb4,0x05 };
+          CK_BYTE qdesPadK[8] = { 0x54,0x0b,0x31,0x6b,0x5c,0xd4,0x17,0xe5 };
+          CK_BYTE qdesPadI[8] = { 0x05,0x52,0xd6,0x68,0xd3,0x31,0x95,0x83 };
+          CK_BYTE qdesPadP[15] = { 0xc6,0x87,0x00,0x7e,0xd5,0x97,0x2d,0xe9,
+                                   0xe3,0x1b,0x5a,0xa7,0x74,0x53,0x68 };
+          CK_BYTE qdesPadC[16] = { 0xcc,0xfe,0xc8,0xfe,0x28,0xd5,0x82,0x8e,
+                                   0x52,0x34,0x0c,0x1a,0xa4,0x45,0xfc,0x61 };
+          CK_BYTE qrc2K[16] = { 0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+                                0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f };
+          CK_BYTE qrc2I[8] = { 0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08 };
+          CK_BYTE qrc2EcbP[8] = { 0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef };
+          CK_BYTE qrc2EcbC[8] = { 0xc1,0xde,0x66,0x97,0x2a,0x5e,0xfb,0x2b };
+          CK_BYTE qrc2CbcP[16] = { 0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,
+                                   0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10 };
+          CK_BYTE qrc2CbcC[16] = { 0x5d,0xc0,0x6d,0xb7,0xaf,0xa1,0x89,0x6a,
+                                   0xa2,0xc2,0x6c,0x09,0x63,0x09,0xb4,0xbf };
+          CK_BYTE qrc2PadP[9] = { 0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,0x00 };
+          CK_BYTE qrc2PadC[16] = { 0x5d,0xc0,0x6d,0xb7,0xaf,0xa1,0x89,0x6a,
+                                   0xd3,0x8f,0xbf,0xa9,0xfe,0x21,0x5a,0xb3 };
+          CK_BYTE qrc4P[] = "Plaintext";
+          CK_BYTE qrc4C[9] = { 0xbb,0xf3,0x16,0xe8,0xd9,0x40,0xaf,0x0a,0xd3 };
+          CK_BYTE qcastK[16] = { 0x01,0x23,0x45,0x67,0x12,0x34,0x56,0x78,
+                                 0x23,0x45,0x67,0x89,0x34,0x56,0x78,0x9a };
+          CK_BYTE qcastI[8] = { 0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08 };
+          CK_BYTE qcastP[9] = { 0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,0x00 };
+          CK_BYTE qcastC[16] = { 0xc5,0xaa,0x82,0xa2,0xa6,0xc9,0x7d,0x5c,
+                                 0xe4,0x8c,0x18,0xe4,0xfb,0xda,0x3d,0x5d };
+          CK_BYTE qideaK[16] = { 0x1f,0x8e,0x49,0x73,0x95,0x3f,0x3f,0xb0,
+                                 0xbd,0x6b,0x16,0x66,0x2e,0x9a,0x3c,0x17 };
+          CK_BYTE qideaI[8] = { 0x2f,0xe2,0xb3,0x33,0xce,0xda,0x8f,0x98 };
+          CK_BYTE qideaP[15] = { 0x45,0xcf,0x12,0x96,0x4f,0xc8,0x24,0xab,
+                                 0x76,0x61,0x6a,0xe2,0xf4,0xbf,0x08 };
+          CK_BYTE qideaC[16] = { 0x2c,0xb1,0x0d,0x22,0xac,0x22,0xa3,0x75,
+                                 0x55,0x03,0x2f,0x85,0xbc,0x5d,0x38,0x06 };
+          CK_BYTE qseedK[16] = { 0x42,0x83,0x47,0xc5,0x86,0x3b,0xd4,0x34,
+                                 0x8f,0x1e,0x9e,0x2f,0xec,0x80,0x85,0x13 };
+          CK_BYTE qseedI[16] = { 0x86,0x22,0xf0,0x29,0x10,0x38,0xb9,0xf3,
+                                 0x42,0x17,0x73,0x2a,0x92,0x69,0x7c,0x8e };
+          CK_BYTE qseedP[15] = { 0xae,0x96,0xf5,0x5b,0xe2,0xbf,0x3c,0xae,
+                                 0xef,0x84,0x8d,0xda,0x2e,0x20,0x0a };
+          CK_BYTE qseedC[16] = { 0x19,0x9c,0xa4,0x2d,0xab,0x51,0x8b,0xf9,
+                                 0xf9,0x60,0x5f,0x89,0x2c,0x3d,0x56,0x7a };
+          CK_BYTE qbfK[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
+          CK_BYTE qbfI[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
+          CK_BYTE qbfP[7] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
+          CK_BYTE qbfC[8] = { 0x64,0xed,0x06,0x57,0x57,0x51,0x1f,0xa7 };
+          CK_BYTE qcfbK[8] = { 0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef };
+          CK_BYTE qcfbI[8] = { 0x12,0x34,0x56,0x78,0x90,0xab,0xcd,0xef };
+          CK_BYTE qcfbP[8] = { 'N','o','w',' ','i','s',' ','t' };
+          CK_BYTE qcfbC[8] = { 0xf3,0x1f,0xda,0x07,0x01,0x14,0x62,0xee };
+          CK_RC2_CBC_PARAMS qrc2cb;
+          CK_RC2_PARAMS qrc2ecb = 128;
+          CK_RC2_CBC_PARAMS qrc2bad;
+          CK_ATTRIBUTE qdesFT[] = {
+            { CKA_CLASS, &qckcls, sizeof(qckcls) },
+            { CKA_KEY_TYPE, &qdes, sizeof(qdes) },
+            { CKA_TOKEN, &qno, sizeof(qno) },
+            { CKA_ENCRYPT, &qyes, sizeof(qyes) },
+            { CKA_DECRYPT, &qyes, sizeof(qyes) },
+            { CKA_VALUE, qdesFipsK, sizeof(qdesFipsK) }
+          };
+          CK_ATTRIBUTE qdesPT[] = {
+            { CKA_CLASS, &qckcls, sizeof(qckcls) },
+            { CKA_KEY_TYPE, &qdes, sizeof(qdes) },
+            { CKA_TOKEN, &qno, sizeof(qno) },
+            { CKA_ENCRYPT, &qyes, sizeof(qyes) },
+            { CKA_DECRYPT, &qyes, sizeof(qyes) },
+            { CKA_VALUE, qdesPadK, sizeof(qdesPadK) }
+          };
+          CK_ATTRIBUTE qrc2T[] = {
+            { CKA_CLASS, &qckcls, sizeof(qckcls) },
+            { CKA_KEY_TYPE, &qrc2, sizeof(qrc2) },
+            { CKA_TOKEN, &qno, sizeof(qno) },
+            { CKA_ENCRYPT, &qyes, sizeof(qyes) },
+            { CKA_DECRYPT, &qyes, sizeof(qyes) },
+            { CKA_VALUE, qrc2K, sizeof(qrc2K) }
+          };
+          CK_ATTRIBUTE qrc4T[] = {
+            { CKA_CLASS, &qckcls, sizeof(qckcls) },
+            { CKA_KEY_TYPE, &qrc4, sizeof(qrc4) },
+            { CKA_TOKEN, &qno, sizeof(qno) },
+            { CKA_ENCRYPT, &qyes, sizeof(qyes) },
+            { CKA_DECRYPT, &qyes, sizeof(qyes) },
+            { CKA_VALUE, "Key", 3 }
+          };
+          CK_ATTRIBUTE qcastT[] = {
+            { CKA_CLASS, &qckcls, sizeof(qckcls) },
+            { CKA_KEY_TYPE, &qcast, sizeof(qcast) },
+            { CKA_TOKEN, &qno, sizeof(qno) },
+            { CKA_ENCRYPT, &qyes, sizeof(qyes) },
+            { CKA_DECRYPT, &qyes, sizeof(qyes) },
+            { CKA_VALUE, qcastK, sizeof(qcastK) }
+          };
+          CK_ATTRIBUTE qideaT[] = {
+            { CKA_CLASS, &qckcls, sizeof(qckcls) },
+            { CKA_KEY_TYPE, &qidea, sizeof(qidea) },
+            { CKA_TOKEN, &qno, sizeof(qno) },
+            { CKA_ENCRYPT, &qyes, sizeof(qyes) },
+            { CKA_DECRYPT, &qyes, sizeof(qyes) },
+            { CKA_VALUE, qideaK, sizeof(qideaK) }
+          };
+          CK_ATTRIBUTE qseedT[] = {
+            { CKA_CLASS, &qckcls, sizeof(qckcls) },
+            { CKA_KEY_TYPE, &qseed, sizeof(qseed) },
+            { CKA_TOKEN, &qno, sizeof(qno) },
+            { CKA_ENCRYPT, &qyes, sizeof(qyes) },
+            { CKA_DECRYPT, &qyes, sizeof(qyes) },
+            { CKA_VALUE, qseedK, sizeof(qseedK) }
+          };
+          CK_ATTRIBUTE qbfT[] = {
+            { CKA_CLASS, &qckcls, sizeof(qckcls) },
+            { CKA_KEY_TYPE, &qbf, sizeof(qbf) },
+            { CKA_TOKEN, &qno, sizeof(qno) },
+            { CKA_ENCRYPT, &qyes, sizeof(qyes) },
+            { CKA_DECRYPT, &qyes, sizeof(qyes) },
+            { CKA_VALUE, qbfK, sizeof(qbfK) }
+          };
+          CK_ATTRIBUTE qcfbT[] = {
+            { CKA_CLASS, &qckcls, sizeof(qckcls) },
+            { CKA_KEY_TYPE, &qdes, sizeof(qdes) },
+            { CKA_TOKEN, &qno, sizeof(qno) },
+            { CKA_ENCRYPT, &qyes, sizeof(qyes) },
+            { CKA_DECRYPT, &qyes, sizeof(qyes) },
+            { CKA_VALUE, qcfbK, sizeof(qcfbK) }
+          };
+          rv = f->C_CreateObject(sess, qdesFT, 6, &qdesF);
+          CHECKC(rv == CKR_OK && qdesF != 0, "des key imports");
+          rv = f->C_CreateObject(sess, qdesPT, 6, &qdesP);
+          CHECKC(rv == CKR_OK && qdesP != 0, "des pad key imports");
+          rv = f->C_CreateObject(sess, qrc2T, 6, &qrc2k);
+          CHECKC(rv == CKR_OK && qrc2k != 0, "rc2 key imports");
+          rv = f->C_CreateObject(sess, qrc4T, 6, &qrc4k);
+          CHECKC(rv == CKR_OK && qrc4k != 0, "rc4 key imports");
+          rv = f->C_CreateObject(sess, qcastT, 6, &qcastk);
+          CHECKC(rv == CKR_OK && qcastk != 0, "cast128 key imports");
+          rv = f->C_CreateObject(sess, qideaT, 6, &qideak);
+          CHECKC(rv == CKR_OK && qideak != 0, "idea key imports");
+          rv = f->C_CreateObject(sess, qseedT, 6, &qseedk);
+          CHECKC(rv == CKR_OK && qseedk != 0, "seed key imports");
+          rv = f->C_CreateObject(sess, qbfT, 6, &qbfk);
+          CHECKC(rv == CKR_OK && qbfk != 0, "blowfish key imports");
+          rv = f->C_CreateObject(sess, qcfbT, 6, &qdesC);
+          CHECKC(rv == CKR_OK && qdesC != 0, "des cfb key imports");
+          qm.mechanism = CKM_DES_ECB;
+          qm.pParameter = NULL_PTR;
+          qm.ulParameterLen = 0;
+          rv = f->C_EncryptInit(sess, &qm, qdesF);
+          CHECKC(rv == CKR_OK, "des-ecb init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qdesFipsP, sizeof(qdesFipsP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 8 && memcmp(qout, qdesFipsC, 8) == 0,
+                 "des-ecb FIPS KAT");
+          qm.mechanism = CKM_DES_CBC_PAD;
+          qm.pParameter = qdesPadI;
+          qm.ulParameterLen = sizeof(qdesPadI);
+          rv = f->C_EncryptInit(sess, &qm, qdesP);
+          CHECKC(rv == CKR_OK, "des-cbc-pad init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qdesPadP, sizeof(qdesPadP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 16 && memcmp(qout, qdesPadC, 16) == 0,
+                 "des-cbc-pad oracle KAT");
+          rv = f->C_DecryptInit(sess, &qm, qdesP);
+          CHECKC(rv == CKR_OK, "des-cbc-pad decrypt-init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Decrypt(sess, qdesPadC, sizeof(qdesPadC), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 15 && memcmp(qout, qdesPadP, 15) == 0,
+                 "des-cbc-pad decrypt recovers");
+          qm.mechanism = CKM_DES_CFB8;
+          qm.pParameter = qcfbI;
+          qm.ulParameterLen = sizeof(qcfbI);
+          rv = f->C_EncryptInit(sess, &qm, qdesC);
+          CHECKC(rv == CKR_OK, "des-cfb8 init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qcfbP, sizeof(qcfbP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 8 && memcmp(qout, qcfbC, 8) == 0,
+                 "des-cfb8 cross-checked KAT");
+          qrc2cb.ulEffectiveBits = 128;
+          memcpy(qrc2cb.iv, qrc2I, 8);
+          qm.mechanism = CKM_RC2_CBC;
+          qm.pParameter = &qrc2cb;
+          qm.ulParameterLen = sizeof(qrc2cb);
+          rv = f->C_EncryptInit(sess, &qm, qrc2k);
+          CHECKC(rv == CKR_OK, "rc2-cbc init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qrc2CbcP, sizeof(qrc2CbcP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 16 && memcmp(qout, qrc2CbcC, 16) == 0,
+                 "rc2-cbc oracle KAT");
+          rv = f->C_DecryptInit(sess, &qm, qrc2k);
+          CHECKC(rv == CKR_OK, "rc2-cbc decrypt-init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Decrypt(sess, qrc2CbcC, sizeof(qrc2CbcC), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 16 && memcmp(qout, qrc2CbcP, 16) == 0,
+                 "rc2-cbc decrypt recovers");
+          qm.mechanism = CKM_RC2_ECB;
+          qm.pParameter = &qrc2ecb;
+          qm.ulParameterLen = sizeof(qrc2ecb);
+          rv = f->C_EncryptInit(sess, &qm, qrc2k);
+          CHECKC(rv == CKR_OK, "rc2-ecb init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qrc2EcbP, sizeof(qrc2EcbP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 8 && memcmp(qout, qrc2EcbC, 8) == 0,
+                 "rc2-ecb oracle KAT");
+          qm.mechanism = CKM_RC2_CBC_PAD;
+          qm.pParameter = &qrc2cb;
+          qm.ulParameterLen = sizeof(qrc2cb);
+          rv = f->C_EncryptInit(sess, &qm, qrc2k);
+          CHECKC(rv == CKR_OK, "rc2-cbc-pad init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qrc2PadP, sizeof(qrc2PadP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 16 && memcmp(qout, qrc2PadC, 16) == 0,
+                 "rc2-cbc-pad oracle KAT");
+          qrc2bad.ulEffectiveBits = 0;
+          memcpy(qrc2bad.iv, qrc2I, 8);
+          qm.mechanism = CKM_RC2_CBC;
+          qm.pParameter = &qrc2bad;
+          qm.ulParameterLen = sizeof(qrc2bad);
+          rv = f->C_EncryptInit(sess, &qm, qrc2k);
+          CHECKC(rv == CKR_ARGUMENTS_BAD, "rc2 zero bits refused");
+          qm.pParameter = &qrc2ecb;
+          qm.ulParameterLen = sizeof(qrc2ecb);
+          rv = f->C_EncryptInit(sess, &qm, qrc2k);
+          if (!isProxy) {
+            CHECKC(rv == CKR_ARGUMENTS_BAD, "rc2-cbc word-only image refused");
+          } else {
+            /* The shim translates init param errors to PARAM_INVALID. */
+            CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                   "proxied rc2-cbc word-only image is PARAM_INVALID");
+          }
+          qm.mechanism = CKM_RC4;
+          qm.pParameter = NULL_PTR;
+          qm.ulParameterLen = 0;
+          rv = f->C_EncryptInit(sess, &qm, qrc4k);
+          CHECKC(rv == CKR_OK, "rc4 init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qrc4P, sizeof(qrc4P) - 1, qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 9 && memcmp(qout, qrc4C, 9) == 0,
+                 "rc4 RSA KAT");
+          qm.mechanism = CKM_CAST128_CBC_PAD;
+          qm.pParameter = qcastI;
+          qm.ulParameterLen = sizeof(qcastI);
+          rv = f->C_EncryptInit(sess, &qm, qcastk);
+          CHECKC(rv == CKR_OK, "cast128-cbc-pad init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qcastP, sizeof(qcastP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 16 && memcmp(qout, qcastC, 16) == 0,
+                 "cast128-cbc-pad oracle KAT");
+          qm.mechanism = CKM_IDEA_CBC_PAD;
+          qm.pParameter = qideaI;
+          qm.ulParameterLen = sizeof(qideaI);
+          rv = f->C_EncryptInit(sess, &qm, qideak);
+          CHECKC(rv == CKR_OK, "idea-cbc-pad init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qideaP, sizeof(qideaP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 16 && memcmp(qout, qideaC, 16) == 0,
+                 "idea-cbc-pad oracle KAT");
+          qm.mechanism = CKM_SEED_CBC_PAD;
+          qm.pParameter = qseedI;
+          qm.ulParameterLen = sizeof(qseedI);
+          rv = f->C_EncryptInit(sess, &qm, qseedk);
+          CHECKC(rv == CKR_OK, "seed-cbc-pad init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qseedP, sizeof(qseedP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 16 && memcmp(qout, qseedC, 16) == 0,
+                 "seed-cbc-pad oracle KAT");
+          qm.mechanism = CKM_BLOWFISH_CBC_PAD;
+          qm.pParameter = qbfI;
+          qm.ulParameterLen = sizeof(qbfI);
+          rv = f->C_EncryptInit(sess, &qm, qbfk);
+          CHECKC(rv == CKR_OK, "blowfish-cbc-pad init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qbfP, sizeof(qbfP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 8 && memcmp(qout, qbfC, 8) == 0,
+                 "blowfish-cbc-pad oracle KAT");
+          f->C_DestroyObject(sess, qdesF);
+          f->C_DestroyObject(sess, qdesP);
+          f->C_DestroyObject(sess, qdesC);
+          f->C_DestroyObject(sess, qrc2k);
+          f->C_DestroyObject(sess, qrc4k);
+          f->C_DestroyObject(sess, qcastk);
+          f->C_DestroyObject(sess, qideak);
+          f->C_DestroyObject(sess, qseedk);
+          f->C_DestroyObject(sess, qbfk);
+        }
+        {
           /* SP800-108 counter with one additional key: the
            * primary and the additional handle both land,
            * splitting the DKM in order. */

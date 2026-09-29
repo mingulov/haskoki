@@ -59,6 +59,8 @@ module Haskoki.Engine.Backend
   , CipherSpec (..)
   , cipherKeyLens
   , cipherIvLen
+  , cipherSpecCanon
+  , rc2BitsOf
   , isKwSpec
   , isKwpSpec
   , isWrapSpec
@@ -444,6 +446,13 @@ data CipherSpec
   | C_AES128_KWP | C_AES192_KWP | C_AES256_KWP
   | C_AES128_XTS | C_AES256_XTS
   | C_DES3_CBC | C_DES3_ECB
+  | C_DES_ECB | C_DES_CBC | C_DES_OFB64 | C_DES_CFB64 | C_DES_CFB8
+  | C_CAST128_ECB | C_CAST128_CBC
+  | C_IDEA_ECB | C_IDEA_CBC
+  | C_SEED_ECB | C_SEED_CBC
+  | C_BLOWFISH_CBC
+  | C_RC2_ECB Int | C_RC2_CBC Int
+  | C_RC4
   | C_ARIA128_CBC | C_ARIA192_CBC | C_ARIA256_CBC
   | C_ARIA128_ECB | C_ARIA192_ECB | C_ARIA256_ECB
   | C_CAMELLIA128_CBC | C_CAMELLIA192_CBC | C_CAMELLIA256_CBC
@@ -486,6 +495,24 @@ isXtsSpec _ = False
 -- 16 two-key (@K1||K2@, expanded to @K1||K2||K1@) or 24 three-key
 -- bytes; every other spec takes exactly its width. Both engines
 -- enforce this; RecipeCipherSpec pins it against the recipe.
+-- | Capability-canonical form: RC2 specs carry per-operation
+-- effective bits, but capability sets are keyed by constructor.
+-- The canonical 0-bits form never escapes: membership checks
+-- normalize both sides, and execution always sees the original
+-- spec (the recipe gates 1..1024 before the driver builds it).
+cipherSpecCanon :: CipherSpec -> CipherSpec
+cipherSpecCanon (C_RC2_ECB _) = C_RC2_ECB 0
+cipherSpecCanon (C_RC2_CBC _) = C_RC2_CBC 0
+cipherSpecCanon spec = spec
+
+-- | The RC2 effective bits carried by a spec, if it is an RC2
+-- spec. Both engines refuse 0 (the recipe's R2 fail-closed: no
+-- silent provider default) and anything above 1024 before FFI.
+rc2BitsOf :: CipherSpec -> Maybe Int
+rc2BitsOf (C_RC2_ECB bits) = Just bits
+rc2BitsOf (C_RC2_CBC bits) = Just bits
+rc2BitsOf _ = Nothing
+
 cipherKeyLens :: CipherSpec -> [Int]
 cipherKeyLens spec = case spec of
   C_AES128_CBC -> [16]
@@ -522,6 +549,21 @@ cipherKeyLens spec = case spec of
   C_AES256_XTS -> [64]
   C_DES3_CBC -> [16, 24]
   C_DES3_ECB -> [16, 24]
+  C_DES_ECB -> [8]
+  C_DES_CBC -> [8]
+  C_DES_OFB64 -> [8]
+  C_DES_CFB64 -> [8]
+  C_DES_CFB8 -> [8]
+  C_CAST128_ECB -> [1 .. 16]
+  C_CAST128_CBC -> [1 .. 16]
+  C_IDEA_ECB -> [16]
+  C_IDEA_CBC -> [16]
+  C_SEED_ECB -> [16]
+  C_SEED_CBC -> [16]
+  C_BLOWFISH_CBC -> [4 .. 56]
+  C_RC2_ECB _ -> [1 .. 128]
+  C_RC2_CBC _ -> [1 .. 128]
+  C_RC4 -> [1 .. 255]
   C_ARIA128_CBC -> [16]
   C_ARIA192_CBC -> [24]
   C_ARIA256_CBC -> [32]
@@ -584,6 +626,21 @@ cipherIvLen spec = case spec of
   C_AES256_XTS -> 16
   C_DES3_CBC -> 8
   C_DES3_ECB -> 0
+  C_DES_ECB -> 0
+  C_DES_CBC -> 8
+  C_DES_OFB64 -> 8
+  C_DES_CFB64 -> 8
+  C_DES_CFB8 -> 8
+  C_CAST128_ECB -> 0
+  C_CAST128_CBC -> 8
+  C_IDEA_ECB -> 0
+  C_IDEA_CBC -> 8
+  C_SEED_ECB -> 0
+  C_SEED_CBC -> 16
+  C_BLOWFISH_CBC -> 8
+  C_RC2_ECB _ -> 0
+  C_RC2_CBC _ -> 8
+  C_RC4 -> 0
   C_ARIA128_CBC -> 16
   C_ARIA192_CBC -> 16
   C_ARIA256_CBC -> 16

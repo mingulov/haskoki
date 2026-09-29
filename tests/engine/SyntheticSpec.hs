@@ -123,6 +123,7 @@ spec = testGroup "synthetic engine"
   , testCase "HMAC widths per algorithm" caseHmacWidths
   , testCase "HMAC truncation honored and bounded" caseHmacTrunc
   , testCase "Block-cipher specs roundtrip per geometry" caseCipherSpecs
+  , testCase "Legacy-cipher specs roundtrip per width" caseLegacyCipherSpecs
   , testCase "RSA v1.5 specs roundtrip per digest" caseRsaRoundtrip
   , testCase "RSA-PSS specs roundtrip per salt" casePssRoundtrip
   , testCase "RSA-OAEP envelopes bind params" caseOaepRoundtrip
@@ -1005,8 +1006,15 @@ caseCapsFull = withSynth "11" $ \env -> do
     , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
     , C_CAMELLIA128_CTR, C_CAMELLIA192_CTR, C_CAMELLIA256_CTR
     , C_CHACHA20
+    , C_DES_ECB, C_DES_CBC, C_DES_OFB64, C_DES_CFB64, C_DES_CFB8
+    , C_CAST128_ECB, C_CAST128_CBC
+    , C_IDEA_ECB, C_IDEA_CBC
+    , C_SEED_ECB, C_SEED_CBC
+    , C_BLOWFISH_CBC
+    , C_RC2_ECB 0, C_RC2_CBC 0
+    , C_RC4
     ]) (ccCiphers (bcCiphers caps))
-  assertEqual "cipher set size" 50 (Set.size (ccCiphers (bcCiphers caps)))
+  assertEqual "cipher set size" 65 (Set.size (ccCiphers (bcCiphers caps)))
   assertEqual "aead set" (Set.fromList
     [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
     , "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"
@@ -1283,6 +1291,99 @@ des3Key24b = KeyBytes "0123456789abcdef01234566"
 
 des3Key16 :: KeyMaterial
 des3Key16 = KeyBytes "0123456789abcdef"
+
+-- ---------------------------------------------------------------------------
+-- The legacy block-cipher set (variable key lengths need their own
+-- roundtrip: floor/mid/ceiling widths, out-of-range refusals, and
+-- the RC2 effective-bits range shared with the real backend)
+-- ---------------------------------------------------------------------------
+
+caseLegacyCipherSpecs :: IO ()
+caseLegacyCipherSpecs = withSynth "11" $ \env -> do
+  mapM_ (uncurry (roundtripWidths env)) legacySpecWidths
+  -- Out-of-range key lengths refuse typed.
+  -- Empty key material is rejected at key resolution (BadKey),
+  -- before any length check runs.
+  expectBadKey "cast rejects empty key" =<<
+    cipherEncrypt env C_CAST128_ECB (KeyBytes BS.empty) BS.empty plain
+  expectBadParam "cast rejects 17-byte key" =<<
+    cipherEncrypt env C_CAST128_ECB (KeyBytes (BS.replicate 17 0x4b)) BS.empty plain
+  expectBadParam "bf rejects 3-byte key" =<<
+    cipherEncrypt env C_BLOWFISH_CBC (KeyBytes "key") iv8 plain
+  expectBadParam "bf rejects 57-byte key" =<<
+    cipherEncrypt env C_BLOWFISH_CBC (KeyBytes (BS.replicate 57 0x4b)) iv8 plain
+  expectBadParam "rc2 rejects 129-byte key" =<<
+    cipherEncrypt env (C_RC2_ECB 128) (KeyBytes (BS.replicate 129 0x4b)) BS.empty plain
+  expectBadKey "rc4 rejects empty key" =<<
+    cipherEncrypt env C_RC4 (KeyBytes BS.empty) BS.empty plain
+  expectBadParam "rc4 rejects 256-byte key" =<<
+    cipherEncrypt env C_RC4 (KeyBytes (BS.replicate 256 0x4b)) BS.empty plain
+  expectBadParam "des rejects 7-byte key" =<<
+    cipherEncrypt env C_DES_CBC (KeyBytes "1234567") iv8 plain
+  expectBadParam "idea rejects 8-byte key" =<<
+    cipherEncrypt env C_IDEA_ECB (KeyBytes iv8) BS.empty plain
+  expectBadParam "seed rejects 8-byte key" =<<
+    cipherEncrypt env C_SEED_ECB (KeyBytes iv8) BS.empty plain
+  -- RC2 effective bits: the R2 range is enforced here too, and
+  -- distinct widths domain-separate like distinct algorithms.
+  expectBadParam "rc2 bits 0 refused" =<<
+    cipherEncrypt env (C_RC2_ECB 0) (KeyBytes iv8) BS.empty plain
+  expectBadParam "rc2 bits 1025 refused" =<<
+    cipherEncrypt env (C_RC2_CBC 1025) (KeyBytes iv8) iv8 plain
+  bits1 <- expectOk "rc2 bits 1 accepted" =<<
+    cipherEncrypt env (C_RC2_ECB 1) (KeyBytes iv8) BS.empty plain
+  bits1024 <- expectOk "rc2 bits 1024 accepted" =<<
+    cipherEncrypt env (C_RC2_ECB 1024) (KeyBytes iv8) BS.empty plain
+  assertBool "rc2 edge bits separate" (bits1 /= bits1024)
+  bits64 <- expectOk "rc2-ecb-64" =<<
+    cipherEncrypt env (C_RC2_ECB 64) (KeyBytes iv8) BS.empty plain
+  bits128 <- expectOk "rc2-ecb-128" =<<
+    cipherEncrypt env (C_RC2_ECB 128) (KeyBytes iv8) BS.empty plain
+  assertBool "rc2 bits separate" (bits64 /= bits128)
+  -- ECB takes empty IV only; CBC takes its block.
+  expectBadParam "des-ecb rejects iv" =<<
+    cipherEncrypt env C_DES_ECB (KeyBytes iv8) iv8 plain
+  expectBadParam "bf-cbc rejects empty iv" =<<
+    cipherEncrypt env C_BLOWFISH_CBC (KeyBytes (BS.replicate 16 0x4b)) BS.empty plain
+  expectBadParam "rc4 rejects iv" =<<
+    cipherEncrypt env C_RC4 (KeyBytes iv8) iv8 plain
+  -- Domain separation: single-DES vs triple-DES, and the two
+  -- 16-byte-key 8-byte-block ECB rows, never share test bytes.
+  let k8 = KeyBytes iv8
+  desCt <- expectOk "des-cbc" =<< cipherEncrypt env C_DES_CBC k8 iv8 plain
+  des3Ct <- expectOk "des3-cbc" =<<
+    cipherEncrypt env C_DES3_CBC (KeyBytes (BS.replicate 24 0x4b)) iv8 plain
+  assertBool "des/des3 separated" (desCt /= des3Ct)
+  let k16 = KeyBytes (BS.replicate 16 0x4b)
+  castEcb <- expectOk "cast-ecb" =<< cipherEncrypt env C_CAST128_ECB k16 BS.empty plain
+  ideaEcb <- expectOk "idea-ecb" =<< cipherEncrypt env C_IDEA_ECB k16 BS.empty plain
+  assertBool "cast/idea separated" (castEcb /= ideaEcb)
+  where
+    plain = "odd-length plaintext, no padding"
+    iv8 = BS.replicate 8 0x77
+    legacySpecWidths :: [(CipherSpec, [Int])]
+    legacySpecWidths =
+      [ (C_DES_ECB, [8]), (C_DES_CBC, [8])
+      , (C_DES_OFB64, [8]), (C_DES_CFB64, [8]), (C_DES_CFB8, [8])
+      , (C_CAST128_ECB, [1, 8, 16]), (C_CAST128_CBC, [1, 8, 16])
+      , (C_IDEA_ECB, [16]), (C_IDEA_CBC, [16])
+      , (C_SEED_ECB, [16]), (C_SEED_CBC, [16])
+      , (C_BLOWFISH_CBC, [4, 16, 56])
+      , (C_RC2_ECB 128, [1, 8, 16, 128]), (C_RC2_CBC 128, [1, 8, 16, 128])
+      , (C_RC4, [1, 16, 255])
+      ]
+    roundtripWidths env cspec keyLens =
+      mapM_ (roundtripOne env cspec) keyLens
+    roundtripOne env cspec keyLen = do
+      let key = KeyBytes (BS.replicate keyLen 0x4b)
+          iv = BS.replicate (cipherIvLen cspec) 0x77
+          label = show cspec ++ "/" ++ show keyLen
+      ct <- expectOk ("encrypt " ++ label) =<<
+        cipherEncrypt env cspec key iv plain
+      assertEqual ("length-preserving " ++ label) (BS.length plain) (BS.length ct)
+      pt <- expectOk ("decrypt " ++ label) =<<
+        cipherDecrypt env cspec key iv ct
+      assertEqual ("reversible " ++ label) plain pt
 
 -- ---------------------------------------------------------------------------
 -- The RSA v1.5 spec set
@@ -2982,9 +3083,17 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   refused "digest FASTHASH" (FxDigest (mech "CKM_FASTHASH") BS.empty)
   refused "digest NULL" (FxDigest (mech "CKM_NULL") BS.empty)
   refused "digest VENDOR" (FxDigest (mech "CKM_VENDOR_DEFINED") BS.empty)
-  -- Absent-provider primitives (pinned-CLI survey).
-  refused "cipher DES" (FxCipher DirEncrypt (mech "CKM_DES_CBC") (Just kOid) BS.empty BS.empty)
-  refused "cipher RC4" (FxCipher DirEncrypt (mech "CKM_RC4") (Just kOid) BS.empty BS.empty)
+  -- Absent-provider primitives (pinned-CLI survey). DES, RC2,
+  -- RC4, CAST-128, IDEA, SEED and Blowfish left this group when
+  -- the legacy-provider survey landed (see caseLegacyCipherSpecs
+  -- and the OpenSSLSpec legacy KATs): the default-provider
+  -- survey still shows them absent; the legacy provider carries
+  -- them. DES-CBC with empty params stays recipe-refused below.
+  rDes <- runEffect env res
+    (FxCipher DirEncrypt (mech "CKM_DES_CBC") (Just kOid) BS.empty BS.empty)
+  case rDes of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("cipher DES empty params: expected Failed, got: " ++ show other)
   -- Present-but-unmapped surfaces (needs a Raw entry point).
   -- GCM left this group when the AEAD entry points landed (see
   -- caseAeadRoundtrip); AES-KW left it when the wrap entry point

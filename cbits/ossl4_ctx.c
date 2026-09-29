@@ -12,11 +12,17 @@
  * OPENSSL_cleanup, OPENSSL_atexit.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "ossl4_ctx.h"
 
+#include <dlfcn.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
@@ -56,9 +62,71 @@ struct hsk_ossl4_env {
 
 /* --- private context lifecycle -------------------------------------- */
 
+/* Anchor the provider search path off the loaded object when the
+ * release layout is present. R1 loads the "legacy" provider at open
+ * and the legacy cipher module is a separate .so resolved through
+ * the libctx search path (default: the pinned build's baked
+ * MODULESDIR under /opt, absent on install hosts). The release
+ * artifact ships its own legacy.so (lib/ossl-modules, plus the
+ * lib/libcrypto.so.4 it binds on module builds), so point the fresh
+ * context at the sibling modules dir when it exists; otherwise keep
+ * the baked default (dev tree resolves /opt as before). The second
+ * suffix covers the artifact's bin/haskoki-ctl, which is a separate
+ * image with the same cbits linked in. Best effort only: any failure
+ * keeps the default path, and the R1 load verdict (fail closed when
+ * legacy is truly absent) is unchanged. */
+static void hsk_ossl4_anchor_providers(OSSL_LIB_CTX *ctx)
+{
+    static const char *const suffixes[] = {
+        "/ossl-modules",
+        "/../lib/ossl-modules",
+    };
+    Dl_info info;
+    char self[PATH_MAX];
+    char dir[PATH_MAX];
+    char cand[PATH_MAX];
+    char probe[PATH_MAX];
+    char *slash;
+    size_t i;
+    int n;
+
+    if (ctx == NULL)
+        return;
+    if (dladdr((const void *)&hsk_ossl4_new_ctx, &info) == 0)
+        return;
+    if (info.dli_fname == NULL)
+        return;
+    /* dli_fname tracks how the object was loaded (possibly a relative
+     * path); absolutize so the anchor survives later chdirs. */
+    if (realpath(info.dli_fname, self) == NULL)
+        return;
+    n = snprintf(dir, sizeof(dir), "%s", self);
+    if (n < 0 || (size_t)n >= sizeof(dir))
+        return;
+    slash = strrchr(dir, '/');
+    if (slash == NULL)
+        return;
+    *slash = '\0';
+    for (i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
+        n = snprintf(cand, sizeof(cand), "%s%s", dir, suffixes[i]);
+        if (n < 0 || (size_t)n >= sizeof(cand))
+            continue;
+        n = snprintf(probe, sizeof(probe), "%s/legacy.so", cand);
+        if (n < 0 || (size_t)n >= sizeof(probe))
+            continue;
+        if (access(probe, F_OK) != 0)
+            continue;
+        OSSL_PROVIDER_set_default_search_path(ctx, cand);
+        return;
+    }
+}
+
 OSSL_LIB_CTX *hsk_ossl4_new_ctx(void)
 {
-    return OSSL_LIB_CTX_new();
+    OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
+    if (ctx != NULL)
+        hsk_ossl4_anchor_providers(ctx);
+    return ctx;
 }
 
 OSSL_PROVIDER *hsk_ossl4_load_provider(OSSL_LIB_CTX *ctx, const char *name)
@@ -677,6 +745,93 @@ long hsk_ossl4_cipher_cbc(OSSL_LIB_CTX *ctx, const char *ciphername,
     if (!EVP_CipherInit_ex2(cctx, cipher, key, iv, enc, NULL)) {
         rc = HSK_OSSL4_ERR_BADPARAM;
         goto end;
+    }
+    EVP_CIPHER_CTX_set_padding(cctx, 0);
+    buf = OPENSSL_malloc(inlen > 0 ? inlen : 1);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (inlen > 0 && !EVP_CipherUpdate(cctx, buf, &outl1, in, (int)inlen))
+        goto end;
+    if (!EVP_CipherFinal_ex(cctx, buf + outl1, &outl2))
+        goto end;
+    *out = buf;
+    rc = (long)(outl1 + outl2);
+
+end:
+    EVP_CIPHER_CTX_free(cctx);
+    EVP_CIPHER_free(cipher);
+    if (rc < 0 && buf != NULL)
+        OPENSSL_clear_free(buf, inlen > 0 ? inlen : 1);
+    return rc;
+}
+
+/* --- legacy-provider ciphers (variable key length + RC2 key bits) - */
+
+long hsk_ossl4_cipher_legacy(OSSL_LIB_CTX *ctx, const char *ciphername,
+                             const char *propq, int enc,
+                             const unsigned char *key, size_t keylen, int keybits,
+                             const unsigned char *iv, size_t ivlen,
+                             const unsigned char *in, size_t inlen,
+                             unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_CIPHER *cipher = NULL;
+    EVP_CIPHER_CTX *cctx = NULL;
+    unsigned char *buf = NULL;
+    int outl1 = 0, outl2 = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || ciphername == NULL || propq == NULL || out == NULL ||
+        key == NULL || iv == NULL || (in == NULL && inlen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+    if (keybits < 0 || keybits > 1024)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    cipher = EVP_CIPHER_fetch(ctx, ciphername, propq);
+    if (cipher == NULL)
+        goto end;
+    if (ivlen != (size_t)EVP_CIPHER_get_iv_length(cipher)) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    if (inlen % (size_t)EVP_CIPHER_get_block_size(cipher) != 0) {
+        rc = HSK_OSSL4_ERR_BADPARAM;
+        goto end;
+    }
+    cctx = EVP_CIPHER_CTX_new();
+    if (cctx == NULL)
+        goto end;
+    if (keylen == (size_t)EVP_CIPHER_get_key_length(cipher) && keybits == 0) {
+        /* Default length, no key-bits control: the single-step
+         * init, identical to cipher_cbc (fixed-length rows keep
+         * byte-identical behavior). */
+        if (!EVP_CipherInit_ex2(cctx, cipher, key, iv, enc, NULL)) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+    } else {
+        /* Off-default length and/or RC2 key bits: cipher-only
+         * init, then the key length, then the effective-bits
+         * control, then the key (EVP ordering: both controls
+         * precede the key schedule). */
+        if (!EVP_CipherInit_ex2(cctx, cipher, NULL, NULL, enc, NULL)) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+        if (keylen != (size_t)EVP_CIPHER_get_key_length(cipher) &&
+            !EVP_CIPHER_CTX_set_key_length(cctx, (int)keylen)) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
+        if (keybits > 0 &&
+            !EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_SET_RC2_KEY_BITS, keybits, NULL))
+            goto end;
+        if (!EVP_CipherInit_ex2(cctx, NULL, key, iv, enc, NULL)) {
+            rc = HSK_OSSL4_ERR_BADPARAM;
+            goto end;
+        }
     }
     EVP_CIPHER_CTX_set_padding(cctx, 0);
     buf = OPENSSL_malloc(inlen > 0 ? inlen : 1);

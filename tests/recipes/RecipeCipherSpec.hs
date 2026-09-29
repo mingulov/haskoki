@@ -1,7 +1,7 @@
 {- | block-cipher-shape recipe tests.
 
-The CBC/ECB group: 23 header mechanisms sharing one parameter shape
-over four algorithm families — CBC takes the IV as mechanism
+The CBC/ECB group: 44 header mechanisms sharing one parameter shape
+over eleven algorithm families — CBC takes the IV as mechanism
 parameters (one block: 16 bytes for AES/ARIA/CAMELLIA, 8 for
 Triple-DES), ECB takes empty parameters, @CKM_AES_CTR@ and
 @CKM_CAMELLIA_CTR@ take the canonical counter image,
@@ -72,12 +72,27 @@ import Haskoki.Engine.Backend
     , C_AES256_XTS
     , C_AES256_ECB
     , C_ARIA256_CBC
+    , C_BLOWFISH_CBC
     , C_CAMELLIA128_CBC
     , C_CAMELLIA128_CTR
     , C_CAMELLIA128_ECB
     , C_CAMELLIA192_CTR
     , C_CAMELLIA256_CTR
+    , C_CAST128_CBC
+    , C_CAST128_ECB
     , C_DES3_CBC
+    , C_DES_CBC
+    , C_DES_CFB64
+    , C_DES_CFB8
+    , C_DES_ECB
+    , C_DES_OFB64
+    , C_IDEA_CBC
+    , C_IDEA_ECB
+    , C_RC2_CBC
+    , C_RC2_ECB
+    , C_RC4
+    , C_SEED_CBC
+    , C_SEED_ECB
     )
   , cipherIvLen
   , cipherKeyLens
@@ -93,6 +108,7 @@ import Haskoki.Operation
   , emptySessionOps
   , initOperation
   )
+import Haskoki.Operation.Codec (cipherShapeFor)
 import Haskoki.Recipe.Cipher
   ( BlockCipherRecipe (..)
   , cipherCodecFor
@@ -101,11 +117,15 @@ import Haskoki.Recipe.Cipher
   , cipherKeyLenValid
   , cipherParamsValid
   , cipherPlainCodec
+  , cipherRc2Codec
   , cipherRecipeFor
   , cipherRecipes
   , ctrNextImage
   , decodeCtrParams
+  , decodeRc2Params
   , encodeCtrParams
+  , encodeRc2CbcParams
+  , encodeRc2EcbParams
   )
 import Haskoki.Registry
   ( MechanismId (..)
@@ -133,6 +153,27 @@ import Haskoki.Registry.Generated
   , ckm_CAMELLIA_CTR
   , ckm_DES3_CBC
   , ckm_DES3_CBC_PAD
+  , ckm_DES_ECB
+  , ckm_DES_CBC
+  , ckm_DES_CBC_PAD
+  , ckm_DES_OFB64
+  , ckm_DES_CFB64
+  , ckm_DES_CFB8
+  , ckm_RC2_ECB
+  , ckm_RC2_CBC
+  , ckm_RC2_CBC_PAD
+  , ckm_RC4
+  , ckm_CAST128_ECB
+  , ckm_CAST128_CBC
+  , ckm_CAST128_CBC_PAD
+  , ckm_IDEA_ECB
+  , ckm_IDEA_CBC
+  , ckm_IDEA_CBC_PAD
+  , ckm_SEED_ECB
+  , ckm_SEED_CBC
+  , ckm_SEED_CBC_PAD
+  , ckm_BLOWFISH_CBC
+  , ckm_BLOWFISH_CBC_PAD
   , ckm_SHA256
   , ckm_SHA256_HMAC
   )
@@ -148,14 +189,16 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "Block-cipher recipe"
-  [ testCase "recipe table covers 23 mechanisms with geometry" caseTable
+  [ testCase "recipe table covers 44 mechanisms with geometry" caseTable
   , testCase "recipe lookup resolves by id" caseLookup
   , testCase "ECB is no-params/1, CBC is iv-bytes/1" caseCodec
   , testCase "params: IV length or empty-only" caseParams
+  , testCase "RC2 struct params: bits range + shape per row" caseRc2Params
   , testCase "key lengths: AES-family 16/24/32, DES3 16/24, XTS 32/64" caseKeyLens
   , testCase "init enforces per-mechanism cipher params" caseInitParams
   , testCase "driver maps every triple to its CipherSpec" caseDriverMap
   , testCase "engine geometry agrees with the recipe" caseGeometryLaw
+  , testCase "legacy rows resolve their operation shapes" caseLegacyShapes
   ]
 
 -- | (Name suffix, block bytes, key lengths, IV bytes, padded).
@@ -184,6 +227,27 @@ groupShape =
   , ("CAMELLIA_CBC_PAD", 16, [16, 24, 32], 16, True)
   , ("DES3_CBC_PAD", 8, [16, 24], 8, True)
   , ("CAMELLIA_CTR", 16, [16, 24, 32], 16, False)
+  , ("DES_ECB", 8, [8], 0, False)
+  , ("DES_CBC", 8, [8], 8, False)
+  , ("DES_CBC_PAD", 8, [8], 8, True)
+  , ("DES_OFB64", 8, [8], 8, False)
+  , ("DES_CFB64", 8, [8], 8, False)
+  , ("DES_CFB8", 8, [8], 8, False)
+  , ("CAST128_ECB", 8, [1 .. 16], 0, False)
+  , ("CAST128_CBC", 8, [1 .. 16], 8, False)
+  , ("CAST128_CBC_PAD", 8, [1 .. 16], 8, True)
+  , ("IDEA_ECB", 8, [16], 0, False)
+  , ("IDEA_CBC", 8, [16], 8, False)
+  , ("IDEA_CBC_PAD", 8, [16], 8, True)
+  , ("SEED_ECB", 16, [16], 0, False)
+  , ("SEED_CBC", 16, [16], 16, False)
+  , ("SEED_CBC_PAD", 16, [16], 16, True)
+  , ("BLOWFISH_CBC", 8, [4 .. 56], 8, False)
+  , ("BLOWFISH_CBC_PAD", 8, [4 .. 56], 8, True)
+  , ("RC2_ECB", 8, [1 .. 128], 0, False)
+  , ("RC2_CBC", 8, [1 .. 128], 8, False)
+  , ("RC2_CBC_PAD", 8, [1 .. 128], 8, True)
+  , ("RC4", 1, [1 .. 255], 0, False)
   ]
 
 -- | Valid mechanism parameters per row: the CTR rows take the
@@ -193,6 +257,9 @@ validParams :: Text -> Int -> BS.ByteString
 validParams suffix iv
   | suffix `elem` (["AES_CTR", "CAMELLIA_CTR"] :: [Text]) =
       encodeCtrParams 128 (BS.replicate 16 0)
+  | suffix == "RC2_ECB" = encodeRc2EcbParams 128
+  | suffix `elem` (["RC2_CBC", "RC2_CBC_PAD"] :: [Text]) =
+      encodeRc2CbcParams 128 (BS.replicate 8 0)
   | otherwise = BS.replicate iv 0
 
 mechName :: Text -> Text
@@ -200,7 +267,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 23 (length cipherRecipes)
+  assertEqual "recipe count" 44 (length cipherRecipes)
   mapM_ (\(suffix, block, keys, iv, pad) -> do
     let name = mechName suffix
         found = [ r | r <- cipherRecipes, crName r == name ]
@@ -235,10 +302,12 @@ caseCodec = do
   assertEqual "plain codec" (ParameterCodec "no-params" 1) cipherPlainCodec
   assertEqual "iv codec" (ParameterCodec "iv-bytes" 1) cipherIvCodec
   assertEqual "ctr codec" (ParameterCodec "ctr-params" 1) cipherCtrCodec
+  assertEqual "rc2 codec" (ParameterCodec "rc2-params" 1) cipherRc2Codec
   mapM_ (\(suffix, _, _, iv, _) -> do
     let name = mechName suffix
         want
           | suffix `elem` (["AES_CTR", "CAMELLIA_CTR"] :: [Text]) = cipherCtrCodec
+          | suffix `elem` (["RC2_ECB", "RC2_CBC", "RC2_CBC_PAD"] :: [Text]) = cipherRc2Codec
           | iv == 0 = cipherPlainCodec
           | otherwise = cipherIvCodec
     case cipherRecipeFor (MechanismId (mustGeneratedId name)) of
@@ -368,6 +437,39 @@ caseParams = do
       (not (cipherParamsValid r (BS.replicate (iv + 1) 0)))
     ) groupShape
 
+caseRc2Params :: IO ()
+caseRc2Params = do
+  let ecb = recipeOf "CKM_RC2_ECB"
+      cbc = recipeOf "CKM_RC2_CBC"
+      pad = recipeOf "CKM_RC2_CBC_PAD"
+      iv0 = BS.replicate 8 0
+  assertEqual "ecb image roundtrips" (Just (128, BS.empty))
+    (decodeRc2Params (encodeRc2EcbParams 128))
+  assertEqual "cbc image roundtrips" (Just (128, iv0))
+    (decodeRc2Params (encodeRc2CbcParams 128 iv0))
+  assertBool "ecb 128 valid"
+    (cipherParamsValid ecb (encodeRc2EcbParams 128))
+  assertBool "cbc 128 valid"
+    (cipherParamsValid cbc (encodeRc2CbcParams 128 iv0))
+  assertBool "pad 40 valid"
+    (cipherParamsValid pad (encodeRc2CbcParams 40 iv0))
+  assertBool "ecb bits 0 refused"
+    (not (cipherParamsValid ecb (encodeRc2EcbParams 0)))
+  assertBool "cbc bits 0 refused"
+    (not (cipherParamsValid cbc (encodeRc2CbcParams 0 iv0)))
+  assertBool "cbc bits 1025 refused"
+    (not (cipherParamsValid cbc (encodeRc2CbcParams 1025 iv0)))
+  assertBool "ecb cbc-image refused"
+    (not (cipherParamsValid ecb (encodeRc2CbcParams 128 iv0)))
+  assertBool "cbc ecb-image refused"
+    (not (cipherParamsValid cbc (encodeRc2EcbParams 128)))
+  assertBool "cbc truncated refused"
+    (not (cipherParamsValid cbc (BS.replicate 12 0)))
+  assertBool "cbc raw iv refused"
+    (not (cipherParamsValid cbc iv0))
+  assertBool "ecb empty refused"
+    (not (cipherParamsValid ecb BS.empty))
+
 caseKeyLens :: IO ()
 caseKeyLens = do
   let aes = recipeOf "CKM_AES_CBC"
@@ -385,6 +487,26 @@ caseKeyLens = do
     [32, 64]
   mapM_ (\n -> assertBool ("xts key refused " ++ show n)
     (not (cipherKeyLenValid xts n))) [0, 16, 24, 31, 33, 48, 63, 65]
+  let rc2 = recipeOf "CKM_RC2_CBC"
+  mapM_ (\n -> assertBool ("rc2 key " ++ show n) (cipherKeyLenValid rc2 n))
+    [1, 5, 16, 128]
+  mapM_ (\n -> assertBool ("rc2 key refused " ++ show n)
+    (not (cipherKeyLenValid rc2 n))) [0, 129, 256]
+  let rc4 = recipeOf "CKM_RC4"
+  mapM_ (\n -> assertBool ("rc4 key " ++ show n) (cipherKeyLenValid rc4 n))
+    [1, 5, 16, 255]
+  mapM_ (\n -> assertBool ("rc4 key refused " ++ show n)
+    (not (cipherKeyLenValid rc4 n))) [0, 256]
+  let bf = recipeOf "CKM_BLOWFISH_CBC"
+  mapM_ (\n -> assertBool ("bf key " ++ show n) (cipherKeyLenValid bf n))
+    [4, 16, 56]
+  mapM_ (\n -> assertBool ("bf key refused " ++ show n)
+    (not (cipherKeyLenValid bf n))) [0, 3, 57]
+  let c5 = recipeOf "CKM_CAST128_CBC"
+  mapM_ (\n -> assertBool ("cast128 key " ++ show n) (cipherKeyLenValid c5 n))
+    [1, 5, 16]
+  mapM_ (\n -> assertBool ("cast128 key refused " ++ show n)
+    (not (cipherKeyLenValid c5 n))) [0, 17]
   mapM_ (\(suffix, _, keys, _, _) -> do
     let r = recipeOf (mechName suffix)
     mapM_ (\n -> assertBool ("key ok " ++ T.unpack suffix ++ "/" ++ show n)
@@ -692,6 +814,55 @@ caseDriverMap = do
     (cipherSpecFor camCtrMech 16 iv16)
   assertEqual "non-cipher uncovered" Nothing
     (cipherSpecFor (MechanismId (ckm_SHA256)) 32 iv16)
+  -- Legacy rows: exact specs, PAD sharing the CBC ctor.
+  let legacy mech = MechanismId (mustGeneratedId mech)
+  assertEqual "des-ecb" (Just C_DES_ECB)
+    (cipherSpecFor (legacy "CKM_DES_ECB") 8 BS.empty)
+  assertEqual "des-cbc" (Just C_DES_CBC)
+    (cipherSpecFor (legacy "CKM_DES_CBC") 8 iv8)
+  assertEqual "des-cbc-pad shares CBC" (Just C_DES_CBC)
+    (cipherSpecFor (legacy "CKM_DES_CBC_PAD") 8 iv8)
+  assertEqual "des-ofb64" (Just C_DES_OFB64)
+    (cipherSpecFor (legacy "CKM_DES_OFB64") 8 iv8)
+  assertEqual "des-cfb64" (Just C_DES_CFB64)
+    (cipherSpecFor (legacy "CKM_DES_CFB64") 8 iv8)
+  assertEqual "des-cfb8" (Just C_DES_CFB8)
+    (cipherSpecFor (legacy "CKM_DES_CFB8") 8 iv8)
+  assertEqual "des rejects 7-byte key" Nothing
+    (cipherSpecFor (legacy "CKM_DES_CBC") 7 iv8)
+  assertEqual "cast128-cbc-5" (Just C_CAST128_CBC)
+    (cipherSpecFor (legacy "CKM_CAST128_CBC") 5 iv8)
+  assertEqual "cast128-ecb-16" (Just C_CAST128_ECB)
+    (cipherSpecFor (legacy "CKM_CAST128_ECB") 16 BS.empty)
+  assertEqual "idea-cbc" (Just C_IDEA_CBC)
+    (cipherSpecFor (legacy "CKM_IDEA_CBC") 16 iv8)
+  assertEqual "idea-ecb" (Just C_IDEA_ECB)
+    (cipherSpecFor (legacy "CKM_IDEA_ECB") 16 BS.empty)
+  assertEqual "idea rejects 8-byte key" Nothing
+    (cipherSpecFor (legacy "CKM_IDEA_CBC") 8 iv8)
+  assertEqual "seed-cbc" (Just C_SEED_CBC)
+    (cipherSpecFor (legacy "CKM_SEED_CBC") 16 iv16)
+  assertEqual "seed-ecb" (Just C_SEED_ECB)
+    (cipherSpecFor (legacy "CKM_SEED_ECB") 16 BS.empty)
+  assertEqual "bf-cbc-56" (Just C_BLOWFISH_CBC)
+    (cipherSpecFor (legacy "CKM_BLOWFISH_CBC") 56 iv8)
+  assertEqual "bf rejects 3-byte key" Nothing
+    (cipherSpecFor (legacy "CKM_BLOWFISH_CBC") 3 iv8)
+  assertEqual "rc4-16" (Just C_RC4)
+    (cipherSpecFor (legacy "CKM_RC4") 16 BS.empty)
+  assertEqual "rc4 rejects params" Nothing
+    (cipherSpecFor (legacy "CKM_RC4") 16 iv8)
+  let rc2cbc = encodeRc2CbcParams 128 iv8
+  assertEqual "rc2-ecb-128" (Just (C_RC2_ECB 128))
+    (cipherSpecFor (legacy "CKM_RC2_ECB") 16 (encodeRc2EcbParams 128))
+  assertEqual "rc2-cbc-128" (Just (C_RC2_CBC 128))
+    (cipherSpecFor (legacy "CKM_RC2_CBC") 16 rc2cbc)
+  assertEqual "rc2-pad shares CBC" (Just (C_RC2_CBC 40))
+    (cipherSpecFor (legacy "CKM_RC2_CBC_PAD") 5 (encodeRc2CbcParams 40 iv8))
+  assertEqual "rc2 rejects bits 0" Nothing
+    (cipherSpecFor (legacy "CKM_RC2_CBC") 16 (encodeRc2CbcParams 0 iv8))
+  assertEqual "rc2 rejects raw iv" Nothing
+    (cipherSpecFor (legacy "CKM_RC2_CBC") 16 iv8)
   -- Whole-table agreement: every (recipe, key length) triple maps.
   mapM_ (\(suffix, _, keys, iv, _) -> do
     let mech = MechanismId (mustGeneratedId (mechName suffix))
@@ -754,3 +925,37 @@ caseGeometryLaw = do
   assertEqual "camellia192-ctr key" [24] (cipherKeyLens C_CAMELLIA192_CTR)
   assertEqual "camellia256-ctr key" [32] (cipherKeyLens C_CAMELLIA256_CTR)
   assertEqual "camellia-ctr iv" 16 (cipherIvLen C_CAMELLIA256_CTR)
+
+caseLegacyShapes :: IO ()
+caseLegacyShapes = do
+  -- The planner gates classic inits on this shape; without it init
+  -- refuses CKR_MECHANISM_INVALID before the driver is reached (the
+  -- 11p consumer gap: served + importable, not executable).
+  mapM_ check legacyShapes
+  where
+    check (name, mid, want) =
+      assertEqual ("legacy cipher shape " ++ name) (Just want)
+        (cipherShapeFor (MechanismId mid))
+    legacyShapes =
+      [ ("CKM_DES_ECB", ckm_DES_ECB, CipherSpec 8 False)
+      , ("CKM_DES_CBC", ckm_DES_CBC, CipherSpec 8 False)
+      , ("CKM_DES_CBC_PAD", ckm_DES_CBC_PAD, CipherSpec 8 True)
+      , ("CKM_DES_OFB64", ckm_DES_OFB64, CipherSpec 8 False)
+      , ("CKM_DES_CFB64", ckm_DES_CFB64, CipherSpec 8 False)
+      , ("CKM_DES_CFB8", ckm_DES_CFB8, CipherSpec 8 False)
+      , ("CKM_RC2_ECB", ckm_RC2_ECB, CipherSpec 8 False)
+      , ("CKM_RC2_CBC", ckm_RC2_CBC, CipherSpec 8 False)
+      , ("CKM_RC2_CBC_PAD", ckm_RC2_CBC_PAD, CipherSpec 8 True)
+      , ("CKM_RC4", ckm_RC4, CipherSpec 1 False)
+      , ("CKM_CAST128_ECB", ckm_CAST128_ECB, CipherSpec 8 False)
+      , ("CKM_CAST128_CBC", ckm_CAST128_CBC, CipherSpec 8 False)
+      , ("CKM_CAST128_CBC_PAD", ckm_CAST128_CBC_PAD, CipherSpec 8 True)
+      , ("CKM_IDEA_ECB", ckm_IDEA_ECB, CipherSpec 8 False)
+      , ("CKM_IDEA_CBC", ckm_IDEA_CBC, CipherSpec 8 False)
+      , ("CKM_IDEA_CBC_PAD", ckm_IDEA_CBC_PAD, CipherSpec 8 True)
+      , ("CKM_SEED_ECB", ckm_SEED_ECB, CipherSpec 16 False)
+      , ("CKM_SEED_CBC", ckm_SEED_CBC, CipherSpec 16 False)
+      , ("CKM_SEED_CBC_PAD", ckm_SEED_CBC_PAD, CipherSpec 16 True)
+      , ("CKM_BLOWFISH_CBC", ckm_BLOWFISH_CBC, CipherSpec 8 False)
+      , ("CKM_BLOWFISH_CBC_PAD", ckm_BLOWFISH_CBC_PAD, CipherSpec 8 True)
+      ]

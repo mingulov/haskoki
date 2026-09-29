@@ -947,6 +947,37 @@ caseUpdateSplitTable = do
       assertEqual ("ofb dec " ++ show total) want
         (cipherUpdateSplit aesOfbMech plain DirDecrypt total)
     ) [(0, (0, 0)), (15, (0, 15)), (16, (0, 16)), (20, (0, 20)), (32, (0, 32))]
+  -- DES CFB64/CFB8 stream full 8-byte chunks like unpadded CBC;
+  -- DES-OFB64 buffers everything (same register reason as AES
+  -- OFB); RC4 (unit block) streams every byte both directions.
+  let des8 = CipherSpec 8 False
+      desCfb64Mech = MechanismId 0x0152
+      desCfb8Mech = MechanismId 0x0153
+      desOfb64Mech = MechanismId 0x0150
+      rc4Mech = MechanismId 0x0111
+      rc4shape = CipherSpec 1 False
+  mapM_ (\(total, want) -> do
+      assertEqual ("des-cfb64 enc " ++ show total) want
+        (cipherUpdateSplit desCfb64Mech des8 DirEncrypt total)
+      assertEqual ("des-cfb64 dec " ++ show total) want
+        (cipherUpdateSplit desCfb64Mech des8 DirDecrypt total)
+      assertEqual ("des-cfb8 enc " ++ show total) want
+        (cipherUpdateSplit desCfb8Mech des8 DirEncrypt total)
+      assertEqual ("des-cfb8 dec " ++ show total) want
+        (cipherUpdateSplit desCfb8Mech des8 DirDecrypt total)
+    ) [(0, (0, 0)), (7, (0, 7)), (8, (8, 0)), (10, (8, 2)), (16, (16, 0)), (19, (16, 3))]
+  mapM_ (\(total, want) -> do
+      assertEqual ("des-ofb64 enc " ++ show total) want
+        (cipherUpdateSplit desOfb64Mech des8 DirEncrypt total)
+      assertEqual ("des-ofb64 dec " ++ show total) want
+        (cipherUpdateSplit desOfb64Mech des8 DirDecrypt total)
+    ) [(0, (0, 0)), (7, (0, 7)), (8, (0, 8)), (10, (0, 10)), (16, (0, 16))]
+  mapM_ (\(total, want) -> do
+      assertEqual ("rc4 enc " ++ show total) want
+        (cipherUpdateSplit rc4Mech rc4shape DirEncrypt total)
+      assertEqual ("rc4 dec " ++ show total) want
+        (cipherUpdateSplit rc4Mech rc4shape DirDecrypt total)
+    ) [(0, (0, 0)), (1, (1, 0)), (7, (7, 0)), (8, (8, 0)), (19, (19, 0))]
   -- XTS never streams: within-call tweak evolution is GF doubling
   -- per block, so every update buffers and only the final runs the
   -- effect over the whole data unit.

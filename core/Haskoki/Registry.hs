@@ -1572,11 +1572,11 @@ chachaStreamDescs =
   | r <- chachaRecipes, chachaName r == "CKM_CHACHA20"
   ]
 
--- | The curated population: 134 reviewed behavior descriptors
+-- | The curated population: 295 reviewed behavior descriptors
 -- with concrete rules, plus the full header inventory (464
 -- canonical rows covering all 480 header CKM names) folded in from
--- the generated table. Catalog-only rows (209: everything but the
--- 255 behavior ids) stay in the coverage denominator but never
+-- the generated table. Catalog-only rows (169: everything but the
+-- 295 behavior ids) stay in the coverage denominator but never
 -- become executable. The catalog covers the full inventory.
 curatedRegistry :: Registry
 curatedRegistry =

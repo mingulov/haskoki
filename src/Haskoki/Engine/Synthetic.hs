@@ -71,6 +71,8 @@ import Haskoki.Engine.Backend
   , CipherSpec (..)
   , cipherIvLen
   , cipherKeyLens
+  , cipherSpecCanon
+  , rc2BitsOf
   , isKwSpec
   , isKwpSpec
   , isWrapSpec
@@ -1070,7 +1072,8 @@ x509Supported _ = Nothing
 -- | The cipher set: every backend spec the block-cipher
 -- recipe reaches (AES CBC/ECB/CTR/CTS/CFB/OFB/WRAP/XTS at three
 -- widths, ARIA/CAMELLIA CBC+ECB+CTR at three widths, Triple-DES
--- CBC+ECB, ChaCha20).
+-- CBC+ECB, ChaCha20, single-DES/CAST-128/IDEA/SEED/Blowfish/RC4,
+-- RC2 in canonical 0-bits form — membership normalizes).
 synthCipherSpecs :: [CipherSpec]
 synthCipherSpecs =
   [ C_AES128_CBC, C_AES192_CBC, C_AES256_CBC
@@ -1091,11 +1094,18 @@ synthCipherSpecs =
   , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
   , C_CAMELLIA128_CTR, C_CAMELLIA192_CTR, C_CAMELLIA256_CTR
   , C_CHACHA20
+  , C_DES_ECB, C_DES_CBC, C_DES_OFB64, C_DES_CFB64, C_DES_CFB8
+  , C_CAST128_ECB, C_CAST128_CBC
+  , C_IDEA_ECB, C_IDEA_CBC
+  , C_SEED_ECB, C_SEED_CBC
+  , C_BLOWFISH_CBC
+  , C_RC2_ECB 0, C_RC2_CBC 0
+  , C_RC4
   ]
 
 cipherSupported :: BackendEnv Synthetic -> CipherSpec -> Maybe String
 cipherSupported (SynthBackend env) spec
-  | Set.member spec (ccCiphers (bcCiphers (seCaps env))) = Nothing
+  | Set.member (cipherSpecCanon spec) (ccCiphers (bcCiphers (seCaps env))) = Nothing
   | otherwise = Just ("cipher not in synthetic set: " ++ show spec)
 
 -- | Shared encrypt/decrypt path: guard, key resolution, per-spec
@@ -1118,6 +1128,10 @@ cipherRun be op spec key iv input =
             pure (B.EngineFail (BackendBadParam op
               ("iv length " ++ show (BS.length iv)
                 ++ " not accepted by " ++ show spec)))
+        | Just bits <- rc2BitsOf spec, bits < 1 || bits > 1024 ->
+            pure (B.EngineFail (BackendBadParam op
+              ("RC2 effective bits " ++ show bits
+                ++ " outside 1..1024 (R2 fail-closed)")))
         | isXtsSpec spec && BS.length input < 16 ->
             pure (B.EngineFail (BackendBadParam op
               ("XTS input must be at least 16 bytes (IEEE 1619 data unit)")))

@@ -55,6 +55,7 @@ module Haskoki.Operation
   , isUnframedCipher
   , isCtsMech
   , isAesStreamMech
+  , isDesStreamMech
   , isAesWrapMech
   , isKwpMech
   , isOfbMech
@@ -79,7 +80,7 @@ import Haskoki.Output
   , planOneShot
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor)
-import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, kwpNames, ofbName, streamNames, wrapNames, xtsName)
+import Haskoki.Recipe.Cipher (BlockCipherRecipe (crName), cipherParamsValid, cipherRecipeFor, ctsName, desOfbName, desStreamNames, kwpNames, ofbName, streamNames, wrapNames, xtsName)
 import Haskoki.Recipe.CbcMac (cbcmacParamsValid, cbcmacRecipeFor)
 import Haskoki.Recipe.Cmac (cmacParamsValid, cmacRecipeFor)
 import Haskoki.Recipe.Des3Mac (des3macParamsValid, des3macRecipeFor)
@@ -285,13 +286,24 @@ isAesStreamMech m = case cipherRecipeFor m of
   Just r -> crName r `elem` streamNames
   Nothing -> False
 
+-- | Length-preserving single-DES stream rows (@CKM_DES_CFB64@,
+-- @CKM_DES_CFB8@, @CKM_DES_OFB64@): same contract as the AES
+-- stream rows — any input length round-trips length-preserved,
+-- ciphertext-tail chaining. (@CKM_DES_OFB64@ additionally joins
+-- 'isOfbMech' and never streams multipart updates.)
+isDesStreamMech :: MechanismId -> Bool
+isDesStreamMech m = case cipherRecipeFor m of
+  Just r -> crName r `elem` desStreamNames
+  Nothing -> False
+
 -- | OFB never streams multipart updates: its register evolves
 -- through the block cipher, so the planner cannot derive the next
 -- register from the answer tail — only the final (which sees the
--- whole buffer) runs the effect. CFB128/CFB8/CFB1 stream like CBC.
+-- whole buffer) runs the effect. CFB128/CFB8/CFB1 (and DES
+-- CFB64/CFB8) stream like CBC.
 isOfbMech :: MechanismId -> Bool
 isOfbMech m = case cipherRecipeFor m of
-  Just r -> crName r == ofbName
+  Just r -> crName r == ofbName || crName r == desOfbName
   Nothing -> False
 
 -- | AES key-wrap rows (@CKM_AES_KEY_WRAP@, @CKM_AES_KEY_WRAP_PAD@,

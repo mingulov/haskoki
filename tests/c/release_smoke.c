@@ -10,17 +10,18 @@
  * discovery, init, metadata, token presence, the EXACT served
  * mechanism catalog (count + CKM_SHA256 membership), two REAL
  * session lifecycles each yielding REAL SHA-256 one-shot
- * FIPS 180-4 "abc" bytes, finalize. Exit 0 + SMOKE-OK iff every
- * check passes.
+ * FIPS 180-4 "abc" bytes, one REAL DES-ECB FIPS 81 one-shot KAT
+ * (proves the shipped legacy provider executes, not just loads),
+ * finalize. Exit 0 + SMOKE-OK iff every check passes.
  *
  * Served-count provenance (measured, never assumed): at the RSA-X.509
  * slice a minimal size-query probe against the release artifact
- * reports size-query n=270, full-list n=270, sha256-member=1;
+ * reports size-query n=295, full-list n=295, sha256-member=1;
  * the count is the support.real == "tested"
- * projection of spec/mechanisms.json (270 rows) frozen into
- * cbits/mech_catalog.inc (HASKOKI_MECH_COUNT 270) and
+ * projection of spec/mechanisms.json (295 rows) frozen into
+ * cbits/mech_catalog.inc (HASKOKI_MECH_COUNT 295) and
  * independently pinned by tests/c/consumer_discovery.c (two XX
- * 270 rows" legs plus size-query and short-buffer legs).
+ * 295 rows" legs plus size-query and short-buffer legs).
  *
  * Bundled into the release artifact with the pinned 2.40 headers
  * (self-contained: cc release_smoke.c -Iinclude -ldl) and also
@@ -44,7 +45,7 @@
 #include <unistd.h>
 
 /* EXACT served mechanism count (provenance in the header above). */
-#define SMOKE_MECH_COUNT 270
+#define SMOKE_MECH_COUNT 295
 
 static int g_failures = 0;
 
@@ -66,6 +67,18 @@ static const CK_BYTE kWant[32] = {
   0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde,
   0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
   0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
+};
+
+/* FIPS 81 A.1 DES-ECB KAT (same vector as the roundtrip consumer's
+ * des-ecb leg): key 133457799BBCDFF1, pt 0123456789ABCDEF. */
+static const CK_BYTE kDesK[8] = {
+  0x13, 0x34, 0x57, 0x79, 0x9b, 0xbc, 0xdf, 0xf1
+};
+static const CK_BYTE kDesP[8] = {
+  0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef
+};
+static const CK_BYTE kDesC[8] = {
+  0x85, 0xe8, 0x13, 0x54, 0x0f, 0x0a, 0xb4, 0x05
 };
 
 static char g_cfg_path[256];
@@ -119,6 +132,11 @@ int main(int argc, char **argv) {
   CK_ULONG q = 0;
   CK_ULONG i = 0;
   int have256 = 0;
+  CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+  CK_KEY_TYPE deskt = CKK_DES;
+  CK_BBOOL no = CK_FALSE;
+  CK_BBOOL yes = CK_TRUE;
+  CK_OBJECT_HANDLE deskey = 0;
 
   if (argc != 2) {
     fprintf(stderr, "usage: %s <libhaskoki.so>\n", argv[0]);
@@ -196,6 +214,36 @@ int main(int argc, char **argv) {
   rv = f->C_CloseSession(sess2);
   CHECK(rv == CKR_OK, "second session closes");
   sess2 = 0;
+  /* Legacy-provider execution proof: DES-ECB lives in the shipped
+   * legacy.so (R1 loads it at open); a real one-shot KAT here proves
+   * the provider executes in the minimal container, not just loads. */
+  {
+    CK_ATTRIBUTE destmpl[] = {
+      { CKA_CLASS, &ckcls, sizeof(ckcls) },
+      { CKA_KEY_TYPE, &deskt, sizeof(deskt) },
+      { CKA_TOKEN, &no, sizeof(no) },
+      { CKA_ENCRYPT, &yes, sizeof(yes) },
+      { CKA_DECRYPT, &yes, sizeof(yes) },
+      { CKA_VALUE, (CK_VOID_PTR)kDesK, sizeof(kDesK) }
+    };
+    rv = f->C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION,
+                          NULL_PTR, NULL_PTR, &sess);
+    CHECK(rv == CKR_OK && sess != 0, "third session opens (legacy leg)");
+    rv = f->C_CreateObject(sess, destmpl, 6, &deskey);
+    CHECK(rv == CKR_OK && deskey != 0, "DES key imports");
+    mech.mechanism = CKM_DES_ECB;
+    mech.pParameter = NULL_PTR;
+    mech.ulParameterLen = 0;
+    rv = f->C_EncryptInit(sess, &mech, deskey);
+    CHECK(rv == CKR_OK, "DES-ECB init ok");
+    outLen = sizeof(out);
+    rv = f->C_Encrypt(sess, (CK_BYTE_PTR)kDesP, sizeof(kDesP), out, &outLen);
+    CHECK(rv == CKR_OK && outLen == 8 && memcmp(out, kDesC, 8) == 0,
+          "DES-ECB one-shot matches the FIPS 81 vector");
+    rv = f->C_CloseSession(sess);
+    CHECK(rv == CKR_OK, "third session closes");
+    sess = 0;
+  }
   rv = f->C_Finalize(NULL_PTR);
   CHECK(rv == CKR_OK, "C_Finalize ok");
 

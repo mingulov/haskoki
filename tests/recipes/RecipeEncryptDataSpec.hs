@@ -91,7 +91,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "Encrypt-data recipe"
-  [ testCase "table: eight rows with geometry" caseTable
+  [ testCase "table: twelve rows with geometry" caseTable
   , testCase "lookup: ids resolve, others do not" caseLookup
   , testCase "codecs: cbc frame vs ecb bytes" caseCodec
   , testCase "params: iv||data and raw-data shapes" caseParams
@@ -112,6 +112,10 @@ groupShape =
   , ("CAMELLIA_ECB_ENCRYPT_DATA", 16, [16, 24, 32], 0, "CKK_CAMELLIA")
   , ("DES3_CBC_ENCRYPT_DATA", 8, [16, 24], 8, "CKK_DES3")
   , ("DES3_ECB_ENCRYPT_DATA", 8, [16, 24], 0, "CKK_DES3")
+  , ("DES_CBC_ENCRYPT_DATA", 8, [8], 8, "CKK_DES")
+  , ("DES_ECB_ENCRYPT_DATA", 8, [8], 0, "CKK_DES")
+  , ("SEED_CBC_ENCRYPT_DATA", 16, [16], 16, "CKK_SEED")
+  , ("SEED_ECB_ENCRYPT_DATA", 16, [16], 0, "CKK_SEED")
   ]
 
 mechName :: Text -> Text
@@ -119,7 +123,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 8 (length encryptDataRecipes)
+  assertEqual "recipe count" 12 (length encryptDataRecipes)
   mapM_ (\(suffix, block, keys, iv, kty) -> do
     let name = mechName suffix
         found = [ r | r <- encryptDataRecipes, erName r == name ]

@@ -43,6 +43,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , hmacSized
   , poly1305
   , cipherCbc
+  , cipherLegacy
   , cipherCts
   , cipherWrap
   , cipherXts
@@ -186,6 +187,9 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_poly1305"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_cbc"
   c_cipher_cbc :: Ptr OsslLibCtx -> CString -> CString -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_legacy"
+  c_cipher_legacy :: Ptr OsslLibCtx -> CString -> CString -> CInt -> Ptr CUChar -> CSize -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_cts"
   c_cipher_cts :: Ptr OsslLibCtx -> CString -> CString -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
@@ -482,6 +486,18 @@ cipherCbc ctx ciphername propq enc key iv input =
         withBytes iv $ \(piv, niv) ->
           withBytes input $ \(pin, nin) ->
             withOut (c_cipher_cbc ctx cc cpq (if enc then 1 else 0) pkey nkey piv niv pin nin)
+
+-- | Legacy-provider ciphers: @keybits@ > 0 runs the RC2
+-- effective-bits control (range 1..1024 enforced in the shim);
+-- 0 skips it. Off-default key lengths take the two-step init.
+cipherLegacy :: Ptr OsslLibCtx -> String -> String -> Bool -> ByteString -> Int -> ByteString -> ByteString -> IO (Either Int ByteString)
+cipherLegacy ctx ciphername propq enc key keybits iv input =
+  withCString ciphername $ \cc ->
+    withCString propq $ \cpq ->
+      withBytes key $ \(pkey, nkey) ->
+        withBytes iv $ \(piv, niv) ->
+          withBytes input $ \(pin, nin) ->
+            withOut (c_cipher_legacy ctx cc cpq (if enc then 1 else 0) pkey nkey (fromIntegral keybits) piv niv pin nin)
 
 -- | AES-CTS (CBC-CS1): @ecbname@ is the fetched ECB primitive the
 -- shim builds the stealing construction over. Output length always

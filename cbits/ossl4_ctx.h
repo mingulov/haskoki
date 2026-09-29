@@ -158,6 +158,25 @@ long hsk_ossl4_cipher_cbc(OSSL_LIB_CTX *ctx, const char *ciphername,
                           const unsigned char *in, size_t inlen,
                           unsigned char **out);
 
+/* --- legacy-provider ciphers (variable key length + RC2 key bits) ------ */
+
+/* enc: 1 = encrypt, 0 = decrypt. Same one-shot shape as cipher_cbc,
+ * plus: (a) key lengths other than the fetched default take the
+ * two-step init (set_key_length before the key; provider refusal is
+ * HSK_OSSL4_ERR_BADPARAM); (b) keybits > 0 runs the RC2
+ * effective-bits control before the key (range 1..1024 enforced
+ * here — the control itself validates nothing, probe record — so
+ * out-of-range bits are HSK_OSSL4_ERR_BADPARAM, never silent).
+ * keybits == 0 skips the control. Stream modes (provider block
+ * size 1: CFB/OFB/RC4) accept any input length through the same
+ * block-multiple check. Padding disabled, like cipher_cbc. */
+long hsk_ossl4_cipher_legacy(OSSL_LIB_CTX *ctx, const char *ciphername,
+                             const char *propq, int enc,
+                             const unsigned char *key, size_t keylen, int keybits,
+                             const unsigned char *iv, size_t ivlen,
+                             const unsigned char *in, size_t inlen,
+                             unsigned char **out);
+
 /* --- AES-CTS (CBC-CS1 over the fetched ECB primitive) ------------------ */
 
 /* enc: 1 = encrypt, 0 = decrypt. The provider has no CTS mode (fetch

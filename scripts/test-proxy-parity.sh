@@ -184,6 +184,14 @@ mechanisms = [
     0x0554,  # CKM_CAMELLIA_MAC_GENERAL (11f)
     0x0380,  # CKM_SSL3_MD5_MAC (CK_ULONG bit length, same shape; embedded lists these two rows under NULL params, and the override wins: dropping these two lines fails the proxied MAC legs) (11n)
     0x0381,  # CKM_SSL3_SHA1_MAC (CK_ULONG bit length, same shape; see 0x0380) (11n)
+    0x0101,  # CKM_RC2_ECB (bare CK_ULONG effective-bits, same layout; embedded lists it parameterless with no shape so the shim rejects the word-carrying init with PARAM_INVALID, and the override wins: dropping this line fails the proxied leg) (11p)
+]
+
+[[params]]
+shape = "iv"
+mechanisms = [
+    0x0153,  # CKM_DES_CFB8 (raw IV, same shape as DES_CBC; embedded lists the other DES rows but not the CFB8/OFB64/CFB64 streams) (11p)
+    0x1094,  # CKM_BLOWFISH_CBC_PAD (raw IV, same shape as DES_CBC_PAD; embedded lists no Blowfish rows) (11p)
 ]
 
 [[params]]

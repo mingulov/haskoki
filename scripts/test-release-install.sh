@@ -8,10 +8,15 @@
 #      CLEAN environment (LD_LIBRARY_PATH unset — the module's
 #      $ORIGIN RUNPATH resolves the bundled closure, and every
 #      libHS* must resolve INSIDE $ART/lib, never from the host)
-#   2. haskoki-ctl --version runs
-#   3. release_smoke (compiled in-container from the artifact's own
+#   2. the shipped legacy provider (ossl-modules/legacy.so, plus
+#      libcrypto.so.4 on module builds) resolves with zero
+#      "not found" and binds inside /art/lib (no /opt on the
+#      bare image)
+#   3. haskoki-ctl --version runs
+#   4. release_smoke (compiled in-container from the artifact's own
 #      smoke/ sources with the in-container gcc) reports SMOKE-OK:
-#      dlopen + init + metadata + REAL FIPS digest + finalize
+#      dlopen + init + metadata + REAL FIPS digest + DES-ECB legacy
+#      KAT (proves the shipped provider executes) + finalize
 #
 # Usage (from haskoki/, on the HOST — this script drives docker):
 #   scripts/test-release-install.sh [artifact-dir] [image]
@@ -79,6 +84,22 @@ timeout -s KILL 300 docker run --rm --network host \
       exit 1
     fi
     echo "closure: all libHS* resolve inside /art/lib"
+    echo "--- provider closure check (shipped legacy module, no /opt):"
+    [ -f /art/lib/ossl-modules/legacy.so ] || { echo "FAIL: shipped legacy.so missing from artifact"; exit 1; }
+    if ldd /art/lib/ossl-modules/legacy.so | grep "not found"; then
+      echo "FAIL: unresolved libs in shipped provider closure"
+      exit 1
+    fi
+    if ldd /art/lib/ossl-modules/legacy.so | grep -q "libcrypto"; then
+      [ -f /art/lib/libcrypto.so.4 ] || { echo "FAIL: shipped libcrypto.so.4 missing from artifact"; exit 1; }
+      if ldd /art/lib/ossl-modules/legacy.so | grep "libcrypto.*=>" | grep -v "/art/lib/"; then
+        echo "FAIL: shipped legacy.so binds libcrypto outside the artifact"
+        exit 1
+      fi
+      echo "provider closure: legacy.so binds libcrypto inside /art/lib"
+    else
+      echo "provider closure: legacy.so self-contained (no libcrypto dep)"
+    fi
     echo "--- haskoki-ctl:"
     /art/bin/haskoki-ctl --version || exit 1
     echo "--- compiling bundled smoke:"

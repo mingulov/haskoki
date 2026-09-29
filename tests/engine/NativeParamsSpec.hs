@@ -70,6 +70,8 @@ import Haskoki.FFI.NativeParams
   , ikePrfPlusNativeSize
   , oaepNativeSize
   , pssNativeSize
+  , rc2EcbNativeSize
+  , rc2CbcNativeSize
   )
 import Haskoki.Recipe.Chacha20
   ( chachaParamsValid
@@ -77,6 +79,7 @@ import Haskoki.Recipe.Chacha20
   , encodeChachaPolyParams
   , encodeChachaStreamParams
   )
+import Haskoki.Recipe.Cipher (cipherParamsValid, cipherRecipeFor, encodeRc2CbcParams)
 import Haskoki.Recipe.Dh (dhParamsValid, dhRecipeFor, encodeDhParams)
 import Haskoki.Recipe.Ecdh (ecdhParamsValid, ecdhRecipeFor, encodeEcdhParams)
 import Haskoki.Recipe.EncryptData (encryptDataParamsValid, encryptDataRecipeFor)
@@ -288,6 +291,37 @@ spec = testGroup "native mechanism params"
       out <- BS.useAsCStringLen raw $ \(p, _) ->
         normalizeMechParams mid (castPtr p) (fromIntegral (BS.length raw)) raw
       assertEqual "identity" raw out
+  , testCase "rc2-cbc native struct translates to canonical" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_RC2_CBC")
+          w = sizeOf (undefined :: CULong)
+          iv = BS.pack [1, 2, 3, 4, 5, 6, 7, 8]
+      out <- allocaBytes rc2CbcNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 128)
+        BS.useAsCStringLen iv $ \(cp, _) -> copyBytes (p `plusPtr` w) cp 8
+        raw <- BS.packCStringLen (castPtr p, rc2CbcNativeSize)
+        normalizeMechParams mid p (fromIntegral rc2CbcNativeSize) raw
+      let want = encodeRc2CbcParams 128 iv
+      assertEqual "canonical rc2 image" want out
+      case cipherRecipeFor mid of
+        Nothing -> fail "rc2 recipe missing"
+        Just r -> assertEqual "recipe accepts" True (cipherParamsValid r out)
+  , testCase "rc2-ecb word-only struct translates to canonical" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_RC2_ECB")
+      out <- allocaBytes rc2EcbNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 64)
+        raw <- BS.packCStringLen (castPtr p, rc2EcbNativeSize)
+        normalizeMechParams mid p (fromIntegral rc2EcbNativeSize) raw
+      let want = encodeRc2CbcParams 64 BS.empty
+      assertEqual "canonical rc2 image" want out
+      case cipherRecipeFor mid of
+        Nothing -> fail "rc2 recipe missing"
+        Just r -> assertEqual "recipe accepts" True (cipherParamsValid r out)
+  , testCase "rc2 mistimed image passes through" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_RC2_CBC")
+          raw = BS.replicate 12 0
+      out <- BS.useAsCStringLen raw $ \(p, _) ->
+        normalizeMechParams mid (castPtr p) 12 raw
+      assertEqual "passthrough" raw out
   , testCase "id tables cover the recipe stems" $ do
       assertEqual "ckm table size" 11 (length digestStemByCkm)
       assertEqual "ckg table size" 9 (length mgfStemByCkg)

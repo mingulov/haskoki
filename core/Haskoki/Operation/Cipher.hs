@@ -47,6 +47,7 @@ import Haskoki.Operation
   , interpretError
   , denyOutcome
   , isAesStreamMech
+  , isDesStreamMech
   , isAesWrapMech
   , isCtsMech
   , isKwpMech
@@ -140,7 +141,8 @@ withCipherSlot ops kind = do
 -- backend owns their length bound. CTS rows ('isCtsMech') replace
 -- alignment with the stealing floor: >= 1 block, any length above.
 -- AES stream rows ('isAesStreamMech') accept any length outright
--- (length-preserving, empty included). XTS ('isXtsMech') replaces
+-- (length-preserving, empty included), as do the DES stream rows
+-- ('isDesStreamMech'). XTS ('isXtsMech') replaces
 -- alignment with the data-unit floor: >= 16 bytes, any length
 -- above (stealing covers ragged tails). Wrap rows
 -- ('isAesWrapMech') enforce the wrap floors: KW needs
@@ -151,6 +153,7 @@ encryptInput :: MechanismId -> CipherSpec -> ByteString -> Either StepDeny ByteS
 encryptInput mech spec buf
   | isUnframedCipher mech = Right buf
   | isAesStreamMech mech = Right buf
+  | isDesStreamMech mech = Right buf
   | isCtsMech mech
   , BS.length buf >= csBlock spec = Right buf
   | isCtsMech mech = Left (mkDeny CKR_DATA_LEN_RANGE
@@ -423,6 +426,7 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
           DirDecrypt
             | isUnframedCipher (commonMech sc) -> stageRaw raw
             | isAesStreamMech (commonMech sc) -> stageRaw raw
+            | isDesStreamMech (commonMech sc) -> stageRaw raw
             | isAesWrapMech (commonMech sc) -> stageRaw raw
             | isCtsMech (commonMech sc)
             , BS.length raw >= csBlock spec -> stageRaw raw

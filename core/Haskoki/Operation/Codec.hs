@@ -79,6 +79,27 @@ import Haskoki.Registry.Generated
   , ckm_DES3_CBC
   , ckm_DES3_CBC_PAD
   , ckm_DES3_ECB
+  , ckm_DES_ECB
+  , ckm_DES_CBC
+  , ckm_DES_CBC_PAD
+  , ckm_DES_OFB64
+  , ckm_DES_CFB64
+  , ckm_DES_CFB8
+  , ckm_RC2_ECB
+  , ckm_RC2_CBC
+  , ckm_RC2_CBC_PAD
+  , ckm_RC4
+  , ckm_CAST128_ECB
+  , ckm_CAST128_CBC
+  , ckm_CAST128_CBC_PAD
+  , ckm_IDEA_ECB
+  , ckm_IDEA_CBC
+  , ckm_IDEA_CBC_PAD
+  , ckm_SEED_ECB
+  , ckm_SEED_CBC
+  , ckm_SEED_CBC_PAD
+  , ckm_BLOWFISH_CBC
+  , ckm_BLOWFISH_CBC_PAD
   , ckm_RSA_PKCS_OAEP
   , ckm_RSA_X_509
   , ckm_CHACHA20
@@ -220,6 +241,13 @@ decodeInitInput bs = do
 -- frames bytes (the 'allocateSingle' ShapePlain fallback convention).
 -- RSA-X.509 shares the unpadded vestigial width (same rationale:
 -- modulus-width bound, backend-owned).
+-- The legacy block ciphers follow the same contract at their own
+-- widths: single-DES/RC2/CAST128/IDEA/Blowfish take the unpadded
+-- 8-byte block (PAD rows share the CBC block with planner-side
+-- PKCS#7), SEED the 16-byte block, RC4 the unit-width stream shape.
+-- The DES stream rows (CFB64/CFB8/OFB64) carry the block width but
+-- accept any length through 'isDesStreamMech'; OFB additionally
+-- never streams multipart updates ('isOfbMech').
 cipherShapeFor :: MechanismId -> Maybe CipherSpec
 cipherShapeFor (MechanismId m)
   | m == ckm_AES_CBC = Just (CipherSpec 16 False)
@@ -251,6 +279,27 @@ cipherShapeFor (MechanismId m)
   | m == ckm_AES_CCM = Just (CipherSpec 1 False)
   | m == ckm_CHACHA20 = Just (CipherSpec 1 False)
   | m == ckm_CHACHA20_POLY1305 = Just (CipherSpec 1 False)
+  | m == ckm_DES_ECB = Just (CipherSpec 8 False)
+  | m == ckm_DES_CBC = Just (CipherSpec 8 False)
+  | m == ckm_DES_CBC_PAD = Just (CipherSpec 8 True)
+  | m == ckm_DES_OFB64 = Just (CipherSpec 8 False)
+  | m == ckm_DES_CFB64 = Just (CipherSpec 8 False)
+  | m == ckm_DES_CFB8 = Just (CipherSpec 8 False)
+  | m == ckm_RC2_ECB = Just (CipherSpec 8 False)
+  | m == ckm_RC2_CBC = Just (CipherSpec 8 False)
+  | m == ckm_RC2_CBC_PAD = Just (CipherSpec 8 True)
+  | m == ckm_RC4 = Just (CipherSpec 1 False)
+  | m == ckm_CAST128_ECB = Just (CipherSpec 8 False)
+  | m == ckm_CAST128_CBC = Just (CipherSpec 8 False)
+  | m == ckm_CAST128_CBC_PAD = Just (CipherSpec 8 True)
+  | m == ckm_IDEA_ECB = Just (CipherSpec 8 False)
+  | m == ckm_IDEA_CBC = Just (CipherSpec 8 False)
+  | m == ckm_IDEA_CBC_PAD = Just (CipherSpec 8 True)
+  | m == ckm_SEED_ECB = Just (CipherSpec 16 False)
+  | m == ckm_SEED_CBC = Just (CipherSpec 16 False)
+  | m == ckm_SEED_CBC_PAD = Just (CipherSpec 16 True)
+  | m == ckm_BLOWFISH_CBC = Just (CipherSpec 8 False)
+  | m == ckm_BLOWFISH_CBC_PAD = Just (CipherSpec 8 True)
   | otherwise = Nothing
 
 -- ---------------------------------------------------------------------------

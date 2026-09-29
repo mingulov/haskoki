@@ -223,6 +223,8 @@ import Haskoki.Recipe.Cipher
   , cipherRecipeFor
   , ctrRecipeFor
   , decodeCtrParams
+  , decodeRc2Params
+  , rc2Names
   )
 import Haskoki.Recipe.Dh
   ( decodeDhParams
@@ -1117,7 +1119,15 @@ cipherSpecFor mech keyLen params =
       r <- cipherRecipeFor mech
       guard (cipherParamsValid r params)
       guard (cipherKeyLenValid r keyLen)
-      cipherCtor (crName r) keyLen
+      -- RC2 carries the effective-bits word in the spec (the FFI
+      -- key-bits control needs it); the recipe already validated
+      -- the range and the row shape.
+      if crName r `elem` rc2Names then rc2Parts r else cipherCtor (crName r) keyLen
+    rc2Parts r = do
+      (bits, _) <- decodeRc2Params params
+      case crName r of
+        "CKM_RC2_ECB" -> pure (C_RC2_ECB bits)
+        _ -> pure (C_RC2_CBC bits)
     -- The raw ChaCha20 stream row: 256-bit keys only; the recipe
     -- validates the (counter, nonce) image.
     chachaParts = do
@@ -1138,6 +1148,11 @@ isCipherMech mech = isJust (cipherRecipeFor mech) || isChachaStreamMech mech
 isChachaStreamMech :: MechanismId -> Bool
 isChachaStreamMech mech = case chachaRecipeFor mech of
   Just r -> chachaName r == "CKM_CHACHA20"
+  Nothing -> False
+
+isRc2Mech :: MechanismId -> Bool
+isRc2Mech mech = case cipherRecipeFor mech of
+  Just r -> crName r `elem` rc2Names
   Nothing -> False
 
 -- | AEAD dispatch: covered (mechanism, key length, params)
@@ -1242,6 +1257,19 @@ cipherCtor name keyLen
   | name == "CKM_AES_XTS" = aesXts keyLen
   | name == "CKM_DES3_CBC" || name == "CKM_DES3_CBC_PAD" = des3 C_DES3_CBC
   | name == "CKM_DES3_ECB" = des3 C_DES3_ECB
+  | name == "CKM_DES_ECB" = des1 C_DES_ECB
+  | name == "CKM_DES_CBC" || name == "CKM_DES_CBC_PAD" = des1 C_DES_CBC
+  | name == "CKM_DES_OFB64" = des1 C_DES_OFB64
+  | name == "CKM_DES_CFB64" = des1 C_DES_CFB64
+  | name == "CKM_DES_CFB8" = des1 C_DES_CFB8
+  | name == "CKM_CAST128_ECB" = cast128 C_CAST128_ECB
+  | name == "CKM_CAST128_CBC" || name == "CKM_CAST128_CBC_PAD" = cast128 C_CAST128_CBC
+  | name == "CKM_IDEA_ECB" = idea16 C_IDEA_ECB
+  | name == "CKM_IDEA_CBC" || name == "CKM_IDEA_CBC_PAD" = idea16 C_IDEA_CBC
+  | name == "CKM_SEED_ECB" = idea16 C_SEED_ECB
+  | name == "CKM_SEED_CBC" || name == "CKM_SEED_CBC_PAD" = idea16 C_SEED_CBC
+  | name == "CKM_BLOWFISH_CBC" || name == "CKM_BLOWFISH_CBC_PAD" = blowfish C_BLOWFISH_CBC
+  | name == "CKM_RC4" = rc4any C_RC4
   | name == "CKM_ARIA_CBC" || name == "CKM_ARIA_CBC_PAD" =
       aria C_ARIA128_CBC C_ARIA192_CBC C_ARIA256_CBC
   | name == "CKM_ARIA_ECB" = aria C_ARIA128_ECB C_ARIA192_ECB C_ARIA256_ECB
@@ -1317,6 +1345,21 @@ cipherCtor name keyLen
       _ -> Nothing
     des3 spec
       | keyLen == 16 || keyLen == 24 = Just spec
+      | otherwise = Nothing
+    des1 spec
+      | keyLen == 8 = Just spec
+      | otherwise = Nothing
+    cast128 spec
+      | keyLen >= 1 && keyLen <= 16 = Just spec
+      | otherwise = Nothing
+    idea16 spec
+      | keyLen == 16 = Just spec
+      | otherwise = Nothing
+    blowfish spec
+      | keyLen >= 4 && keyLen <= 56 = Just spec
+      | otherwise = Nothing
+    rc4any spec
+      | keyLen >= 1 && keyLen <= 255 = Just spec
       | otherwise = Nothing
     aria c128 c192 c256 = case keyLen of
       16 -> Just c128
@@ -2627,6 +2670,13 @@ runEffect env resolve fx = case fx of
           Nothing
             | isChachaStreamMech mech -> case decodeChachaStreamParams params of
                 Just (counter, nonce) -> Just (encodeChachaIv counter nonce)
+                _ -> Nothing
+            -- RC2 parameters are the canonical image, not the raw
+            -- IV: split off the effective-bits word (the recipe
+            -- already validated the range and the row shape; the
+            -- spec carries the bits to the FFI control).
+            | isRc2Mech mech -> case decodeRc2Params params of
+                Just (_, splitIv) -> Just splitIv
                 _ -> Nothing
             | otherwise -> Just params
 

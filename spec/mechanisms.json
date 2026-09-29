@@ -5971,14 +5971,44 @@
       "canonical_name": "CKM_RC2_ECB",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 1,
+        "max_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): canonical RC2 image parameters (u64 effective bits, word-only for ECB), variable 1..128-byte keys over the legacy provider (RC2-ECB fetch plus the key-bits control). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: pinned-oracle rc2_ecb vector at 128 effective bits; bits-sensitivity (64/40 separate) and 1/1024 edge legs); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000101",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "rc2-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "rc2-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_RC2_ECB",
@@ -5987,26 +6017,92 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_RC2_CBC",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 1,
+        "max_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): canonical RC2 image parameters (u64 effective bits plus 8-byte IV), variable 1..128-byte keys over the legacy provider (RC2-CBC fetch plus the key-bits control). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: pinned-oracle rc2_cbc two-block vector at 128 effective bits; driver routing splits the canonical image (RoutingE2ESpec caseDriverLegacy RC2-CBC oracle KAT plus bit/shape refusals)); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000102",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "rc2-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "rc2-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_RC2_CBC",
@@ -6015,12 +6111,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -6083,14 +6215,44 @@
       "canonical_name": "CKM_RC2_CBC_PAD",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 1,
+        "max_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): canonical RC2 image parameters (u64 effective bits plus 8-byte IV), variable 1..128-byte keys; PKCS#7 framing over the legacy provider (RC2-CBC fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: shared RC2-CBC spec (oracle rc2_cbc_pad vector lands in the C-consumer suite); PKCS#7 framing in the Operation layer over pkcs7 unit pins); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000105",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "rc2-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "rc2-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_RC2_CBC_PAD",
@@ -6099,12 +6261,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -6184,14 +6382,44 @@
       "canonical_name": "CKM_RC4",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 1,
+        "max_key_size": 255
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: RC4 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): no mechanism parameters, variable 1..255-byte keys, any input length over the legacy provider (RC4 fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: RFC 6229 section-2 rows at 128/256 key bits plus the RSA Key/Plaintext anchor; 1-byte and 255-byte key legs; multipart update-split legs (OperationSpec)); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000111",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_RC4",
@@ -6200,12 +6428,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -6285,14 +6549,44 @@
       "canonical_name": "CKM_DES_ECB",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 8,
+        "max_key_size": 8
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): no mechanism parameters, fixed 8-byte keys, 8-byte blocks over the legacy provider (DES-ECB fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: pinned-oracle des_ecb two-block vector plus the FIPS 46-3 A.1 anchor); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000121",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES_ECB",
@@ -6301,26 +6595,92 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DES_CBC",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 8,
+        "max_key_size": 8
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, fixed 8-byte keys, 8-byte blocks over the legacy provider (DES-CBC fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: pinned-oracle des_cbc two-block vector plus the FIPS 81 first block); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec); driver routing through the raw-IV path (RoutingE2ESpec caseDriverLegacy DES-CBC oracle KAT); multipart update-split legs (OperationSpec).",
       "numeric_id": "0x00000122",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES_CBC",
@@ -6329,12 +6689,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -6397,14 +6793,44 @@
       "canonical_name": "CKM_DES_CBC_PAD",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 8,
+        "max_key_size": 8
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, fixed 8-byte keys; PKCS#7 framing over the legacy provider (DES-CBC fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: shared DES-CBC spec (oracle des_cbc_pad vector lands in the C-consumer suite); PKCS#7 framing in the Operation layer over pkcs7 unit pins); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000125",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES_CBC_PAD",
@@ -6413,12 +6839,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -7279,7 +7741,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no CDMF primitive in the pinned OpenSSL 4.0.2 build (CDMF-ECB/CDMF-CBC fetch-absent in the default+legacy providers); IBM proprietary cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00000141",
       "routes": [],
       "source_refs": [
@@ -7290,12 +7752,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -7307,7 +7785,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no CDMF primitive in the pinned OpenSSL 4.0.2 build (CDMF-ECB/CDMF-CBC fetch-absent in the default+legacy providers); IBM proprietary cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00000142",
       "routes": [],
       "source_refs": [
@@ -7318,12 +7796,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -7391,7 +7885,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no CDMF primitive in the pinned OpenSSL 4.0.2 build (CDMF-ECB/CDMF-CBC fetch-absent in the default+legacy providers); IBM proprietary cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00000145",
       "routes": [],
       "source_refs": [
@@ -7402,26 +7896,72 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DES_OFB64",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 8,
+        "max_key_size": 8
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, fixed 8-byte keys; length-preserving 64-bit OFB over the legacy provider (DES-OFB fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: cross-checked pin (pinned provider plus system 3.5.5 CLI agree); first block equals ECB_K(IV)^P by construction; unaligned legs prove the stream); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000150",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES_OFB64",
@@ -7430,12 +7970,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -7447,7 +8023,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no 8-bit DES OFB in the pinned OpenSSL 4.0.2 build (DES-OFB8 fetch-absent in the default+legacy providers; DES-OFB serves 64-bit feedback as CKM_DES_OFB64 and DES-CFB8 covers 8-bit CFB).",
       "numeric_id": "0x00000151",
       "routes": [],
       "source_refs": [
@@ -7458,26 +8034,72 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DES_CFB64",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 8,
+        "max_key_size": 8
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, fixed 8-byte keys; length-preserving 64-bit CFB over the legacy provider (DES-CFB fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: cross-checked pin (pinned provider plus system 3.5.5 CLI agree); unaligned legs prove the stream; multipart update-split legs (OperationSpec)); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000152",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES_CFB64",
@@ -7486,26 +8108,92 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DES_CFB8",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 8,
+        "max_key_size": 8
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, fixed 8-byte keys; length-preserving 8-bit CFB over the legacy provider (DES-CFB8 fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: cross-checked pin (pinned provider plus system 3.5.5 CLI agree); byte-stream legs); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000153",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES_CFB8",
@@ -7514,12 +8202,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -10992,7 +11716,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
       "numeric_id": "0x00000301",
       "routes": [],
       "source_refs": [
@@ -11005,7 +11729,7 @@
         "abi": "planned",
         "behavior": "planned",
         "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "real": "planned",
         "recovery": "not-applicable"
       },
       "test_evidence": []
@@ -11020,7 +11744,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
       "numeric_id": "0x00000302",
       "routes": [],
       "source_refs": [
@@ -11033,7 +11757,7 @@
         "abi": "planned",
         "behavior": "planned",
         "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "real": "planned",
         "recovery": "not-applicable"
       },
       "test_evidence": []
@@ -11104,7 +11828,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
       "numeric_id": "0x00000305",
       "routes": [],
       "source_refs": [
@@ -11117,7 +11841,7 @@
         "abi": "planned",
         "behavior": "planned",
         "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "real": "planned",
         "recovery": "not-applicable"
       },
       "test_evidence": []
@@ -11205,7 +11929,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
       "numeric_id": "0x00000311",
       "routes": [],
       "source_refs": [
@@ -11218,7 +11942,7 @@
         "abi": "planned",
         "behavior": "planned",
         "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "real": "planned",
         "recovery": "not-applicable"
       },
       "test_evidence": []
@@ -11233,7 +11957,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
       "numeric_id": "0x00000312",
       "routes": [],
       "source_refs": [
@@ -11246,7 +11970,7 @@
         "abi": "planned",
         "behavior": "planned",
         "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "real": "planned",
         "recovery": "not-applicable"
       },
       "test_evidence": []
@@ -11317,7 +12041,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
       "numeric_id": "0x00000315",
       "routes": [],
       "source_refs": [
@@ -11330,7 +12054,7 @@
         "abi": "planned",
         "behavior": "planned",
         "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "real": "planned",
         "recovery": "not-applicable"
       },
       "test_evidence": []
@@ -11417,14 +12141,44 @@
       "canonical_name": "CKM_CAST128_ECB",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 1,
+        "max_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): no mechanism parameters, variable 1..16-byte keys, 8-byte blocks over the legacy provider (CAST5-ECB fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: RFC 2144 appendix A row plus the 8-byte-key two-step-flow pin); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000321",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST128_ECB",
@@ -11433,12 +12187,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [
@@ -11447,14 +12237,44 @@
       "canonical_name": "CKM_CAST128_CBC",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 1,
+        "max_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, variable 1..16-byte keys over the legacy provider (CAST5-CBC fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: pinned-oracle cast128_cbc two-block vector); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000322",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST128_CBC",
@@ -11463,12 +12283,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [
@@ -11537,14 +12393,44 @@
       "canonical_name": "CKM_CAST128_CBC_PAD",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 1,
+        "max_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, variable 1..16-byte keys; PKCS#7 framing over the legacy provider (CAST5-CBC fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: shared CAST128-CBC spec (oracle cast128_cbc_pad vector lands in the C-consumer suite); PKCS#7 framing in the Operation layer over pkcs7 unit pins); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000325",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST128_CBC_PAD",
@@ -11553,12 +12439,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -11643,7 +12565,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no RC5 primitive in the pinned OpenSSL 4.0.2 build (RC5-ECB/RC5-CBC fetch-absent in the default+legacy providers); the parameterized (rounds/word-size/effective-bits) rows would need a struct codec on top of a primitive that does not exist.",
       "numeric_id": "0x00000331",
       "routes": [],
       "source_refs": [
@@ -11654,12 +12576,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -11671,7 +12609,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no RC5 primitive in the pinned OpenSSL 4.0.2 build (RC5-ECB/RC5-CBC fetch-absent in the default+legacy providers); the parameterized (rounds/word-size/effective-bits) rows would need a struct codec on top of a primitive that does not exist.",
       "numeric_id": "0x00000332",
       "routes": [],
       "source_refs": [
@@ -11682,12 +12620,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -11755,7 +12709,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no RC5 primitive in the pinned OpenSSL 4.0.2 build (RC5-ECB/RC5-CBC fetch-absent in the default+legacy providers); the parameterized (rounds/word-size/effective-bits) rows would need a struct codec on top of a primitive that does not exist.",
       "numeric_id": "0x00000335",
       "routes": [],
       "source_refs": [
@@ -11766,12 +12720,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -11851,14 +12821,44 @@
       "canonical_name": "CKM_IDEA_ECB",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 16,
+        "max_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): no mechanism parameters, fixed 16-byte keys, 8-byte blocks over the legacy provider (IDEA-ECB fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: NESSIE count-0 vector via the pinned oracle); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000341",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_IDEA_ECB",
@@ -11867,26 +12867,92 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_IDEA_CBC",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 16,
+        "max_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, fixed 16-byte keys over the legacy provider (IDEA-CBC fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: pinned-oracle idea_cbc pyca vector); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000342",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_IDEA_CBC",
@@ -11895,12 +12961,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -11963,14 +13065,44 @@
       "canonical_name": "CKM_IDEA_CBC_PAD",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 16,
+        "max_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, fixed 16-byte keys; PKCS#7 framing over the legacy provider (IDEA-CBC fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: shared IDEA-CBC spec (oracle idea_cbc_pad vector lands in the C-consumer suite); PKCS#7 framing in the Operation layer over pkcs7 unit pins); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000345",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_IDEA_CBC_PAD",
@@ -11979,12 +13111,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17578,14 +18746,44 @@
       "canonical_name": "CKM_SEED_ECB",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 16,
+        "max_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): no mechanism parameters, fixed 16-byte keys, 16-byte blocks over the legacy provider (SEED-ECB fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: pinned-oracle seed_ecb vector (16-byte blocks)); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000651",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SEED_ECB",
@@ -17594,26 +18792,92 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SEED_CBC",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 16,
+        "max_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, fixed 16-byte keys, 16-byte blocks over the legacy provider (SEED-CBC fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: pinned-oracle seed_cbc vector (16-byte blocks)); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000652",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SEED_CBC",
@@ -17622,12 +18886,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17690,14 +18990,44 @@
       "canonical_name": "CKM_SEED_CBC_PAD",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 16,
+        "max_key_size": 16
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, fixed 16-byte keys; PKCS#7 framing over the legacy provider (SEED-CBC fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: shared SEED-CBC spec (oracle seed_cbc_pad vector lands in the C-consumer suite); PKCS#7 framing in the Operation layer over pkcs7 unit pins); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000655",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SEED_CBC_PAD",
@@ -17706,26 +19036,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SEED_ECB_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes with the base CKK_SEED key (ECB, no padding), output truncated to the planned length. Base key must be CKK_SEED (planner key-type gate). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: pinned-oracle seed_ecb vector as the derive golden).",
       "numeric_id": "0x00000656",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-ecb/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SEED_ECB_ENCRYPT_DATA",
@@ -17734,26 +19116,73 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SEED_CBC_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes with the base CKK_SEED key (CBC with the framed IV), output truncated to the planned length. Base key must be CKK_SEED (planner key-type gate). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: pinned-oracle seed_cbc vector as the derive golden).",
       "numeric_id": "0x00000657",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-cbc/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SEED_CBC_ENCRYPT_DATA",
@@ -17762,12 +19191,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17852,7 +19312,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001001",
       "routes": [],
       "source_refs": [
@@ -17863,12 +19323,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17880,7 +19356,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001002",
       "routes": [],
       "source_refs": [
@@ -17891,12 +19367,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17908,7 +19400,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001003",
       "routes": [],
       "source_refs": [
@@ -17919,12 +19411,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17936,7 +19444,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001004",
       "routes": [],
       "source_refs": [
@@ -17947,12 +19455,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17964,7 +19488,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001005",
       "routes": [],
       "source_refs": [
@@ -17975,12 +19499,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17992,7 +19532,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001006",
       "routes": [],
       "source_refs": [
@@ -18003,12 +19543,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -18020,7 +19576,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001007",
       "routes": [],
       "source_refs": [
@@ -18031,12 +19587,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -18328,7 +19900,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no BATON primitive in the pinned OpenSSL 4.0.2 build (BATON-ECB/BATON-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001031",
       "routes": [],
       "source_refs": [
@@ -18339,12 +19911,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -18356,7 +19944,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no BATON primitive in the pinned OpenSSL 4.0.2 build (BATON-ECB/BATON-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001032",
       "routes": [],
       "source_refs": [
@@ -18367,12 +19955,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -18384,7 +19988,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no BATON primitive in the pinned OpenSSL 4.0.2 build (BATON-ECB/BATON-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001033",
       "routes": [],
       "source_refs": [
@@ -18395,12 +19999,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -19979,7 +21599,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no JUNIPER primitive in the pinned OpenSSL 4.0.2 build (JUNIPER-ECB/JUNIPER-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001061",
       "routes": [],
       "source_refs": [
@@ -19990,12 +21610,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -20007,7 +21643,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no JUNIPER primitive in the pinned OpenSSL 4.0.2 build (JUNIPER-ECB/JUNIPER-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001062",
       "routes": [],
       "source_refs": [
@@ -20018,12 +21654,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -21775,14 +23427,44 @@
       "canonical_name": "CKM_BLOWFISH_CBC",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 4,
+        "max_key_size": 56
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Blowfish absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, variable 4..56-byte keys over the legacy provider (BF-CBC fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: pinned-oracle Schneier zero row plus all-zero-schedule agreement (8/16/56-byte zero keys) and the 4-byte floor key); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00001091",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BLOWFISH_CBC",
@@ -21791,12 +23473,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -21881,7 +23599,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Twofish absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no Twofish primitive in OpenSSL (never shipped; TWOFISH/TWOFISH-ECB/TWOFISH-CBC fetch-absent in the default+legacy providers); engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001093",
       "routes": [],
       "source_refs": [
@@ -21892,26 +23610,72 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_BLOWFISH_CBC_PAD",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 4,
+        "max_key_size": 56
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Blowfish absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 8-byte IV mechanism parameters, variable 4..56-byte keys; PKCS#7 framing over the legacy provider (BF-CBC fetch). Real execution pinned (OpenSSLSpec caseLegacyKats against the pinned libcrypto legacy provider: shared Blowfish-CBC spec (oracle blowfish_cbc_pad vector lands in the C-consumer suite); PKCS#7 framing in the Operation layer over pkcs7 unit pins); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00001094",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_BLOWFISH_CBC_PAD",
@@ -21920,12 +23684,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -21937,7 +23737,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Twofish absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no Twofish primitive in OpenSSL (never shipped; TWOFISH/TWOFISH-ECB/TWOFISH-CBC fetch-absent in the default+legacy providers); engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001095",
       "routes": [],
       "source_refs": [
@@ -21948,26 +23748,58 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DES_ECB_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes with the base CKK_DES key (ECB, no padding), output truncated to the planned length. Base key must be CKK_DES (planner key-type gate). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: pinned-oracle des_ecb vector as the derive golden).",
       "numeric_id": "0x00001100",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-ecb/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES_ECB_ENCRYPT_DATA",
@@ -21976,26 +23808,73 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_DES_CBC_ENCRYPT_DATA",
-      "family": "cipher",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes with the base CKK_DES key (CBC with the framed IV), output truncated to the planned length. Base key must be CKK_DES (planner key-type gate). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: pinned-oracle des_cbc vector as the derive golden).",
       "numeric_id": "0x00001101",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "cipher-base-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "encrypt-data/v1",
+          "parameter_codec": "encrypt-data-cbc/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DES_CBC_ENCRYPT_DATA",
@@ -22004,12 +23883,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeEncryptDataSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -22590,7 +24500,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no GOST 28147-89 primitive in the pinned OpenSSL 4.0.2 build (GOST28147/GOST28147-ECB/GOST28147-CBC fetch-absent in the default+legacy providers; only an out-of-tree engine provides it, which is not pinned).",
       "numeric_id": "0x00001221",
       "routes": [],
       "source_refs": [
@@ -22601,12 +24511,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -22618,7 +24544,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no GOST 28147-89 primitive in the pinned OpenSSL 4.0.2 build (GOST28147/GOST28147-ECB/GOST28147-CBC fetch-absent in the default+legacy providers; only an out-of-tree engine provides it, which is not pinned).",
       "numeric_id": "0x00001222",
       "routes": [],
       "source_refs": [
@@ -22629,12 +24555,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -26374,7 +28316,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Salsa20 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no Salsa20 primitive in the pinned OpenSSL 4.0.2 build (SALSA20 fetch-absent in the default+legacy providers, which ship only ChaCha20); engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00004020",
       "routes": [],
       "source_refs": [
@@ -26385,12 +28327,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],

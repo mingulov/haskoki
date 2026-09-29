@@ -191,6 +191,7 @@ module Haskoki.FFI.NativeParams
   , gcmStructToCanonical
   , ccmStructToCanonical
   , ctrStructToCanonical
+  , rc2StructToCanonical
   , eddsaStructToCanonical
   , mldsaStructToCanonical
   , slhdsaStructToCanonical
@@ -207,6 +208,8 @@ module Haskoki.FFI.NativeParams
   , gcmNativeSize
   , ccmNativeSize
   , ctrNativeSize
+  , rc2EcbNativeSize
+  , rc2CbcNativeSize
   , eddsaNativeSize
   , mldsaNativeSize
   , slhdsaNativeSize
@@ -238,7 +241,7 @@ import Haskoki.Recipe.Chacha20
   , encodeChachaPolyParams
   , encodeChachaStreamParams
   )
-import Haskoki.Recipe.Cipher (ctrRecipeFor, encodeCtrParams)
+import Haskoki.Recipe.Cipher (ctrRecipeFor, encodeCtrParams, encodeRc2CbcParams, rc2RecipeFor)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Eddsa (eddsaRecipeFor, encodeEddsaParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
@@ -425,6 +428,13 @@ chachaPolyNativeSize = 2 * wordSize + 2 * ptrSize
 -- plus the inline 16-byte counter block.
 ctrNativeSize :: Int
 ctrNativeSize = wordSize + 16
+
+-- | Native RC2 image sizes (@spec\/vendor\/pkcs11.h@: @CK_RC2_PARAMS@
+-- is one effective-bits word; @CK_RC2_CBC_PARAMS@ appends the
+-- inline 8-byte IV).
+rc2EcbNativeSize, rc2CbcNativeSize :: Int
+rc2EcbNativeSize = wordSize
+rc2CbcNativeSize = wordSize + 8
 
 -- | Offset of @ulContextDataLen@ in a native @CK_EDDSA_PARAMS@
 -- image: the @CK_BBOOL@ flag byte plus padding to the word
@@ -783,6 +793,17 @@ ctrStructToCanonical bits cb
   | bits > fromIntegral (maxBound :: Int) = Nothing
   | BS.length cb /= 16 = Nothing
   | otherwise = Just (encodeCtrParams (fromIntegral bits) cb)
+
+-- | Pure RC2 translation: the native effective-bits word plus the
+-- inline IV (empty for the word-only @CK_RC2_PARAMS@ shape) onto
+-- the canonical @rc2-params/1@ image. Any width translates (the
+-- recipe enforces 1..1024 downstream with the parameter CKR);
+-- only an unrepresentable width or a mistimed IV refuses here.
+rc2StructToCanonical :: Word64 -> ByteString -> Maybe ByteString
+rc2StructToCanonical bits iv
+  | bits > fromIntegral (maxBound :: Int) = Nothing
+  | BS.length iv /= 0 && BS.length iv /= 8 = Nothing
+  | otherwise = Just (encodeRc2CbcParams (fromIntegral bits) iv)
 
 -- | Pure EdDSA translation: the native @CK_BBOOL@ prehash flag
 -- plus the chased context bytes onto the canonical
@@ -1694,6 +1715,7 @@ normalizeMechParams mid pParams paramsLen raw
   | isJust (gmacRecipeFor mid) = fromMaybe raw <$> decodeGcmNative
   | isJust (ccmRecipeFor mid) = fromMaybe raw <$> decodeCcmNative
   | isJust (ctrRecipeFor mid) = fromMaybe raw <$> decodeCtrNative
+  | isJust (rc2RecipeFor mid) = fromMaybe raw <$> decodeRc2Native
   | isJust (eddsaRecipeFor mid) = fromMaybe raw <$> decodeEddsaNative
   | isJust (mldsaRecipeFor mid) = fromMaybe raw <$> decodeMldsaNative
   | isJust (slhdsaRecipeFor mid) = fromMaybe raw <$> decodeSlhdsaNative
@@ -1758,6 +1780,16 @@ normalizeMechParams mid pParams paramsLen raw
           CULong bits <- peekByteOff pParams 0
           cb <- BS.packCStringLen (castPtr (pParams `plusPtr` wordSize), 16)
           pure (ctrStructToCanonical bits cb)
+    decodeRc2Native :: IO (Maybe ByteString)
+    decodeRc2Native
+      | paramsLen == fromIntegral rc2EcbNativeSize = do
+          CULong bits <- peekByteOff pParams 0
+          pure (rc2StructToCanonical bits BS.empty)
+      | paramsLen == fromIntegral rc2CbcNativeSize = do
+          CULong bits <- peekByteOff pParams 0
+          iv <- BS.packCStringLen (castPtr (pParams `plusPtr` wordSize), 8)
+          pure (rc2StructToCanonical bits iv)
+      | otherwise = pure Nothing
     decodeEddsaNative :: IO (Maybe ByteString)
     decodeEddsaNative
       | paramsLen /= fromIntegral eddsaNativeSize = pure Nothing

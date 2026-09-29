@@ -1,18 +1,23 @@
 {- | Block-cipher CBC/ECB/CTR recipe: the third shape-group recipe.
 
-Twenty-three header mechanisms share one parameter shape over
-four algorithm families: CBC takes the IV as mechanism parameters
-(one block: 16 bytes for AES/ARIA/CAMELLIA, 8 for Triple-DES),
-ECB takes empty parameters, and the CBC_PAD rows
-(@CKM_AES_CBC_PAD@, @CKM_ARIA_CBC_PAD@, @CKM_CAMELLIA_CBC_PAD@,
-@CKM_DES3_CBC_PAD@) add PKCS#7 framing (decided in the pure
-planner from the recipe's 'crPad' flag, never in the backend).
+Forty-four header mechanisms share one parameter shape over
+eleven algorithm families: CBC takes the IV as mechanism parameters
+(one block: 16 bytes for AES/ARIA/CAMELLIA/SEED, 8 for
+Triple-DES/single-DES/CAST-128/IDEA/Blowfish/RC2),
+ECB takes empty parameters, and the CBC_PAD rows add PKCS#7
+framing (decided in the pure planner from the recipe's 'crPad'
+flag, never in the backend).
 @CKM_AES_CTR@ and @CKM_CAMELLIA_CTR@ take the canonical
 @ctr-params/1@ image (counter width u64be plus the 16-byte
-counter block); only the 128-bit counter width is served. Key
+counter block); only the 128-bit counter width is served. The
+RC2 rows take the canonical @rc2-params/1@ image
+(effective-bits u64be, plus the 8-byte IV for CBC rows); only
+effective-bits 1..1024 are served. Key
 length selects the cipher width (16\/24\/32 bytes for the AES
 family; 16 two-key or 24 three-key bytes for Triple-DES, where
-the engines expand @K1||K2@ to @K1||K2||K1@).
+the engines expand @K1||K2@ to @K1||K2||K1@; variable ranges
+for the legacy rows: RC2 1..128, RC4 1..255, Blowfish 4..56,
+CAST-128 1..16).
 
 This module owns the group's canonical codecs, parameter/key
 validation, block/key/IV geometry, and mechanism table. Pure core
@@ -37,11 +42,13 @@ recipe ('Haskoki.Recipe.EncryptData'), not a row here.
 Deferred family members (not recipes, named gaps): @CKM_AES_CFB64@
 (provider 4.0.2 has no CFB64 mode for AES),
 @CKM_*_GCM@\/@CCM@ (AEAD shape, needs its
-own nonce\/tag recipe), the PBE constructors, and every
-legacy-only or provider-absent cipher (single DES, RC2\/RC4\/RC5,
-IDEA, CAST, SEED, Blowfish, SKIPJACK, BATON, JUNIPER, GOST,
-KASUMI, TWOFISH — see mechanisms.json honesty notes and the
-pinned-provider probe record).
+own nonce\/tag recipe), the PBE constructors, @CKM_DES_OFB8@
+(no 8-bit OFB for DES in the provider), and every
+provider-absent cipher (RC5, CAST, CAST3, CDMF, SKIPJACK, BATON,
+JUNIPER, GOST, KASUMI, TWOFISH, SALSA20 — see mechanisms.json
+honesty notes and the pinned-provider probe record). Single
+DES, RC2, RC4, CAST-128, IDEA, SEED and Blowfish ride the
+@legacy@ provider (loaded alongside @default@ since 11p).
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Cipher
@@ -49,6 +56,7 @@ module Haskoki.Recipe.Cipher
   , cipherRecipes
   , cipherRecipeFor
   , ctrRecipeFor
+  , rc2RecipeFor
   , cipherPlainCodec
   , cipherIvCodec
   , cipherCtrCodec
@@ -58,9 +66,16 @@ module Haskoki.Recipe.Cipher
   , encodeCtrParams
   , decodeCtrParams
   , ctrNextImage
+  , cipherRc2Codec
+  , encodeRc2EcbParams
+  , encodeRc2CbcParams
+  , decodeRc2Params
+  , rc2Names
   , ctsName
   , streamNames
+  , desStreamNames
   , ofbName
+  , desOfbName
   , wrapNames
   , kwpNames
   , xtsName
@@ -102,21 +117,36 @@ cipherIvCodec = ParameterCodec "iv-bytes" 1
 cipherCtrCodec :: ParameterCodec
 cipherCtrCodec = ParameterCodec "ctr-params" 1
 
+-- | The RC2 parameter codec: the canonical image below, not raw
+-- IV bytes (the native structs carry the effective-bits word too).
+cipherRc2Codec :: ParameterCodec
+cipherRc2Codec = ParameterCodec "rc2-params" 1
+
 -- | The codec for one recipe row.
 cipherCodecFor :: BlockCipherRecipe -> ParameterCodec
 cipherCodecFor r
   | crName r `elem` ctrNames = cipherCtrCodec
+  | crName r `elem` rc2Names = cipherRc2Codec
   | crIvBytes r == 0 = cipherPlainCodec
   | otherwise = cipherIvCodec
 
 -- | Cipher parameter validation: exactly the recipe's IV length
 -- (empty-only for ECB rows). The CTR rows decode the canonical
--- image and serve only the 128-bit counter width.
+-- image and serve only the 128-bit counter width. The RC2 rows
+-- decode the canonical RC2 image and serve effective-bits 1..1024
+-- with the row's shape (word-only for ECB, word+IV otherwise).
 cipherParamsValid :: BlockCipherRecipe -> ByteString -> Bool
 cipherParamsValid r params
   | crName r `elem` ctrNames = case decodeCtrParams params of
       Just (bits, cb) -> bits == 128 && BS.length cb == 16
       Nothing -> False
+  | crName r `elem` rc2Names = case decodeRc2Params params of
+      Just (bits, iv)
+        | bits >= 1 && bits <= 1024 ->
+            if crName r == "CKM_RC2_ECB"
+              then BS.null iv
+              else BS.length iv == 8
+      _ -> False
   | otherwise = BS.length params == crIvBytes r
 
 -- | This group's CTR row names (the streaming rows): AES and
@@ -124,6 +154,13 @@ cipherParamsValid r params
 -- rule (the native structs are layout-identical).
 ctrNames :: [MechanismName]
 ctrNames = ["CKM_AES_CTR", "CKM_CAMELLIA_CTR"]
+
+-- | The RC2 row names: ECB takes the word-only image
+-- (@CK_RC2_PARAMS@), CBC/CBC_PAD the word+IV image
+-- (@CK_RC2_CBC_PARAMS@); the driver splits the image for the FFI
+-- key-bits control.
+rc2Names :: [MechanismName]
+rc2Names = ["CKM_RC2_ECB", "CKM_RC2_CBC", "CKM_RC2_CBC_PAD"]
 
 -- | The CTS mechanism name. CTS keeps the CBC IV geometry but the
 -- planners replace block alignment with the stealing floor (see
@@ -140,6 +177,17 @@ streamNames = ["CKM_AES_CFB128", "CKM_AES_CFB8", "CKM_AES_CFB1", "CKM_AES_OFB"]
 -- 'Haskoki.Operation.isOfbMech').
 ofbName :: MechanismName
 ofbName = "CKM_AES_OFB"
+
+-- | Length-preserving single-DES stream rows: CFB64/CFB8 chain
+-- like CBC (the ciphertext tail is the next register); OFB64
+-- takes any length too but never streams (register evolves
+-- through the block cipher — 'desOfbName' excludes it from
+-- streaming, mirroring the AES row).
+desStreamNames :: [MechanismName]
+desStreamNames = ["CKM_DES_CFB64", "CKM_DES_CFB8", "CKM_DES_OFB64"]
+
+desOfbName :: MechanismName
+desOfbName = "CKM_DES_OFB64"
 
 -- | The AES key-wrap rows: KW (RFC 3394) plus the two KWP names
 -- (see 'Haskoki.Operation.isAesWrapMech'). Wraps never stream
@@ -189,6 +237,30 @@ decodeCtrParams bs = do
     then Nothing
     else Just (bits, cb)
 
+-- | Encode RC2 ECB parameters: the effective-bits word only.
+encodeRc2EcbParams :: Int -> ByteString
+encodeRc2EcbParams bits = encodeWord64 bits
+
+-- | Encode RC2 CBC parameters: the effective-bits word plus the
+-- 8-byte IV.
+encodeRc2CbcParams :: Int -> ByteString -> ByteString
+encodeRc2CbcParams bits iv = encodeWord64 bits <> iv
+
+-- | Decode RC2 parameters: @(effectiveBits, iv)@, length-dispatched
+-- (8 bytes word-only, 16 bytes word+IV). Structural only: the
+-- range (1..1024) and the row shape are enforced by
+-- 'cipherParamsValid', mirroring the CTR split.
+decodeRc2Params :: ByteString -> Maybe (Int, ByteString)
+decodeRc2Params bs = case BS.length bs of
+  8 -> do
+    bits <- decodeWord64 bs
+    if bits < 0 then Nothing else Just (bits, BS.empty)
+  16 -> do
+    let (w, iv) = BS.splitAt 8 bs
+    bits <- decodeWord64 w
+    if bits < 0 then Nothing else Just (bits, iv)
+  _ -> Nothing
+
 -- | Advance a CTR parameter image by a whole number of counter
 -- blocks: the 128-bit counter block increments big-endian (PKCS#11
 -- counts the low @ulCounterBits@ bits; only the full width is
@@ -215,7 +287,7 @@ ctrNextImage bs n = case decodeCtrParams bs of
 cipherKeyLenValid :: BlockCipherRecipe -> Int -> Bool
 cipherKeyLenValid r n = n `elem` crKeyLens r
 
--- | All twenty-three covered mechanisms with their geometry. The
+-- | All forty-four covered mechanisms with their geometry. The
 -- CTR rows carry the counter-block width as their block geometry
 -- and IV length (agreeing with the backend 'cipherIvLen' law);
 -- the canonical parameter image is wider (width word plus block)
@@ -261,6 +333,44 @@ cipherRecipes =
   , BlockCipherRecipe "CKM_CAMELLIA_ECB" 16 [16, 24, 32] 0 False "CKK_CAMELLIA"
   , BlockCipherRecipe "CKM_CAMELLIA_CBC_PAD" 16 [16, 24, 32] 16 True "CKK_CAMELLIA"
   , BlockCipherRecipe "CKM_CAMELLIA_CTR" 16 [16, 24, 32] 16 False "CKK_CAMELLIA"
+  -- Single DES: fixed 8-byte keys (parity-adjusted at keygen);
+  -- CFB/OFB take the raw 8-byte IV and accept any input length
+  -- (length-preserving; planners allow unaligned input via
+  -- 'Haskoki.Operation.isDesStreamMech'). No OFB8 row: the
+  -- provider has no 8-bit OFB for DES.
+  , BlockCipherRecipe "CKM_DES_ECB" 8 [8] 0 False "CKK_DES"
+  , BlockCipherRecipe "CKM_DES_CBC" 8 [8] 8 False "CKK_DES"
+  , BlockCipherRecipe "CKM_DES_CBC_PAD" 8 [8] 8 True "CKK_DES"
+  , BlockCipherRecipe "CKM_DES_OFB64" 8 [8] 8 False "CKK_DES"
+  , BlockCipherRecipe "CKM_DES_CFB64" 8 [8] 8 False "CKK_DES"
+  , BlockCipherRecipe "CKM_DES_CFB8" 8 [8] 8 False "CKK_DES"
+  -- CAST-128: variable 1..16-byte keys; plain ECB/CBC geometry.
+  , BlockCipherRecipe "CKM_CAST128_ECB" 8 [1 .. 16] 0 False "CKK_CAST128"
+  , BlockCipherRecipe "CKM_CAST128_CBC" 8 [1 .. 16] 8 False "CKK_CAST128"
+  , BlockCipherRecipe "CKM_CAST128_CBC_PAD" 8 [1 .. 16] 8 True "CKK_CAST128"
+  -- IDEA: fixed 16-byte keys; plain ECB/CBC geometry.
+  , BlockCipherRecipe "CKM_IDEA_ECB" 8 [16] 0 False "CKK_IDEA"
+  , BlockCipherRecipe "CKM_IDEA_CBC" 8 [16] 8 False "CKK_IDEA"
+  , BlockCipherRecipe "CKM_IDEA_CBC_PAD" 8 [16] 8 True "CKK_IDEA"
+  -- SEED: fixed 16-byte keys on 16-byte blocks.
+  , BlockCipherRecipe "CKM_SEED_ECB" 16 [16] 0 False "CKK_SEED"
+  , BlockCipherRecipe "CKM_SEED_CBC" 16 [16] 16 False "CKK_SEED"
+  , BlockCipherRecipe "CKM_SEED_CBC_PAD" 16 [16] 16 True "CKK_SEED"
+  -- Blowfish: variable 4..56-byte keys; no ECB row exists.
+  , BlockCipherRecipe "CKM_BLOWFISH_CBC" 8 [4 .. 56] 8 False "CKK_BLOWFISH"
+  , BlockCipherRecipe "CKM_BLOWFISH_CBC_PAD" 8 [4 .. 56] 8 True "CKK_BLOWFISH"
+  -- RC2: variable 1..128-byte keys; parameters are the canonical
+  -- RC2 image (effective-bits word, plus the IV for CBC rows),
+  -- never raw IV bytes. The crIvBytes holds the IV length (0 for
+  -- ECB, 8 for CBC rows); 'cipherParamsValid' enforces the struct
+  -- shape.
+  , BlockCipherRecipe "CKM_RC2_ECB" 8 [1 .. 128] 0 False "CKK_RC2"
+  , BlockCipherRecipe "CKM_RC2_CBC" 8 [1 .. 128] 8 False "CKK_RC2"
+  , BlockCipherRecipe "CKM_RC2_CBC_PAD" 8 [1 .. 128] 8 True "CKK_RC2"
+  -- RC4: stream cipher; empty parameters, any input length, keys
+  -- 1..255 bytes (planners allow unaligned input via
+  -- 'Haskoki.Operation.isRc4Mech').
+  , BlockCipherRecipe "CKM_RC4" 1 [1 .. 255] 0 False "CKK_RC4"
   ]
 
 -- | Resolve a mechanism id to its block-cipher recipe, if covered.
@@ -277,4 +387,12 @@ cipherRecipeFor mid =
 ctrRecipeFor :: MechanismId -> Maybe BlockCipherRecipe
 ctrRecipeFor mid = case cipherRecipeFor mid of
   Just r | crName r `elem` ctrNames -> Just r
+  _ -> Nothing
+
+-- | Resolve a mechanism id to its RC2 recipe row, if it is an RC2
+-- mechanism (drives the FFI struct translation; the driver image
+-- split keys off 'rc2Names' through 'isRc2Mech').
+rc2RecipeFor :: MechanismId -> Maybe BlockCipherRecipe
+rc2RecipeFor mid = case cipherRecipeFor mid of
+  Just r | crName r `elem` rc2Names -> Just r
   _ -> Nothing

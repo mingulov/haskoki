@@ -68,7 +68,7 @@ import qualified Haskoki.Outcome as O
 import Haskoki.Der (dhParamsDer, dhSpkiFields)
 import Haskoki.Recipe.Ccm (encodeCcmParams)
 import Haskoki.Recipe.Chacha20 (encodeChachaPolyParams, encodeChachaStreamParams)
-import Haskoki.Recipe.Cipher (encodeCtrParams)
+import Haskoki.Recipe.Cipher (encodeCtrParams, encodeRc2CbcParams)
 import Haskoki.Recipe.Dh (encodeDhParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams)
@@ -141,6 +141,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: blake2b-256 digest/hmac/general + refuse" caseDriverBlake2b256
   , testCase "driver: chacha20 KAT + poly KAT + tamper + refuse" caseDriverChacha
   , testCase "driver: camellia-ctr KAT + stream + refuse" caseDriverCamelliaCtr
+  , testCase "driver: legacy KAT + rc2 params + refuse" caseDriverLegacy
   , testCase "driver: encrypt-data goldens + truncate + refuse" caseDriverEncryptData
   , testCase "driver: message cipher/sign/verify" caseDriverMessage
   , testCase "driver: recovery is honestly unsupported" caseDriverRecover
@@ -868,6 +869,72 @@ caseDriverCamelliaCtr = withBackend $ \env -> do
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
 
+-- Legacy driver routing: DES-CBC through the raw-IV path and
+-- RC2-CBC through the canonical-image path (oracle KATs), plus
+-- RC2 parameter refusals. IDs at core/Haskoki/Registry/Generated.
+desCbcMech, rc2CbcMech :: MechanismId
+desCbcMech = MechanismId 0x122
+rc2CbcMech = MechanismId 0x102
+
+drvDesKey, drvDesIv, drvDesPt, drvDesCt :: ByteString
+drvDesKey = hex "540b316b5cd417e5"
+drvDesIv = hex "0552d668d3319583"
+drvDesPt = hex "c687007ed5972de9e31b5aa7745368b9"
+drvDesCt = hex "ccfec8fe28d5828eb8fce5dbd0029d7f"
+
+drvRc2Key, drvRc2Iv, drvRc2Pt, drvRc2Ct :: ByteString
+drvRc2Key = hex "000102030405060708090a0b0c0d0e0f"
+drvRc2Iv = hex "0102030405060708"
+drvRc2Pt = hex "0123456789abcdeffedcba9876543210"
+drvRc2Ct = hex "5dc06db7afa1896aa2c26c096309b4bf"
+
+caseDriverLegacy :: IO ()
+caseDriverLegacy = withBackend $ \env -> do
+  let dOid = ObjectId 84
+      rOid = ObjectId 85
+      res oid
+        | oid == dOid = Just (KeyBytes drvDesKey)
+        | oid == rOid = Just (KeyBytes drvRc2Key)
+        | otherwise = Nothing
+  ct <- runEffect env res
+      (FxCipher DirEncrypt desCbcMech (Just dOid) drvDesIv drvDesPt)
+    >>= expectBytes
+  assertEqual "des-cbc oracle kat" drvDesCt ct
+  pt <- runEffect env res
+      (FxCipher DirDecrypt desCbcMech (Just dOid) drvDesIv ct)
+    >>= expectBytes
+  assertEqual "des-cbc decrypt recovers" drvDesPt pt
+  let rc2Params = encodeRc2CbcParams 128 drvRc2Iv
+  ct2 <- runEffect env res
+      (FxCipher DirEncrypt rc2CbcMech (Just rOid) rc2Params drvRc2Pt)
+    >>= expectBytes
+  assertEqual "rc2-cbc oracle kat" drvRc2Ct ct2
+  pt2 <- runEffect env res
+      (FxCipher DirDecrypt rc2CbcMech (Just rOid) rc2Params ct2)
+    >>= expectBytes
+  assertEqual "rc2-cbc decrypt recovers" drvRc2Pt pt2
+  -- RC2 parameter refusals fail closed at the recipe: zero
+  -- effective bits and mistimed images never reach the backend.
+  badBits <- runEffect env res (FxCipher DirEncrypt rc2CbcMech (Just rOid)
+    (encodeRc2CbcParams 0 drvRc2Iv) drvRc2Pt)
+  case badBits of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badShape <- runEffect env res (FxCipher DirEncrypt rc2CbcMech (Just rOid)
+    "short" drvRc2Pt)
+  case badShape of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  -- A 7-byte DES key is a recipe refusal, never Unsupported.
+  let badLenKey oid
+        | oid == dOid = Just (KeyBytes (BS.take 7 drvDesKey))
+        | otherwise = Nothing
+  badKey <- runEffect env badLenKey (FxCipher DirEncrypt desCbcMech (Just dOid)
+    drvDesIv drvDesPt)
+  case badKey of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
 -- Encrypt-data derive mechs (header ids at spec/vendor/pkcs11.h).
 aesCbcEdMech, aesEcbEdMech :: MechanismId
 aesCbcEdMech = MechanismId 0x1105
@@ -885,6 +952,12 @@ d3CbcEdMech, d3EcbEdMech :: MechanismId
 d3CbcEdMech = MechanismId 0x1103
 d3EcbEdMech = MechanismId 0x1102
 
+desCbcEdMech, desEcbEdMech, seedCbcEdMech, seedEcbEdMech :: MechanismId
+desCbcEdMech = MechanismId 0x1101
+desEcbEdMech = MechanismId 0x1100
+seedCbcEdMech = MechanismId 0x657
+seedEcbEdMech = MechanismId 0x656
+
 -- Shared fixtures: 128-bit key/IV plus two distinct data blocks
 -- (CBC chaining and ECB confusion both visible); 3DES takes a
 -- 24-byte three-key key, 8-byte IV, two 8-byte blocks. Goldens are
@@ -901,17 +974,44 @@ edKey24 = hex "0123456789abcdeff0e1d2c3b4a596870123456789abcdef"
 edIv8 = hex "0001020304050607"
 edData16 = hex "00112233445566778899aabbccddeeff"
 
+-- Legacy encrypt-data goldens are pinned-oracle vectors
+-- (mechanism_vectors/des_ecb.json, des_cbc.json, seed_ecb.json,
+-- seed_cbc.json; DES-CBC reuses the drvDes fixtures above).
+edDesEcbKey, edDesEcbData, edDesEcbCt :: ByteString
+edDesEcbKey = hex "ae7a5bff9a66ccd4"
+edDesEcbData = hex "6614a40c7202bad03f5b8b962d7c6435"
+edDesEcbCt = hex "795b284fe8a856259daa3e683e85cf12"
+
+edSeedCbcKey, edSeedCbcIv, edSeedCbcData, edSeedCbcCt :: ByteString
+edSeedCbcKey = hex "428347c5863bd4348f1e9e2fec808513"
+edSeedCbcIv = hex "8622f0291038b9f34217732a92697c8e"
+edSeedCbcData = hex "ae96f55be2bf3caeef848dda2e200a84"
+edSeedCbcCt = hex "abe7139abb5ef24d59602b356726fb85"
+
+edSeedEcbKey, edSeedEcbData, edSeedEcbCt :: ByteString
+edSeedEcbKey = hex "630097850757e0a64b1d385a7c30a5f7"
+edSeedEcbData = hex "9406e50d3ae6de268202d2754f45e9d1"
+edSeedEcbCt = hex "f353f89ce52d7929a1df5e2a37fdbf5b"
+
 caseDriverEncryptData :: IO ()
 caseDriverEncryptData = withBackend $ \env -> do
   let kAes = ObjectId 91
       kAria = ObjectId 92
       kCam = ObjectId 93
       kD3 = ObjectId 94
+      kDesCbc = ObjectId 95
+      kDesEcb = ObjectId 96
+      kSeedCbc = ObjectId 97
+      kSeedEcb = ObjectId 98
       res oid
         | oid == kAes = Just (KeyBytes edKey128)
         | oid == kAria = Just (KeyBytes edKey128)
         | oid == kCam = Just (KeyBytes edKey128)
         | oid == kD3 = Just (KeyBytes edKey24)
+        | oid == kDesCbc = Just (KeyBytes drvDesKey)
+        | oid == kDesEcb = Just (KeyBytes edDesEcbKey)
+        | oid == kSeedCbc = Just (KeyBytes edSeedCbcKey)
+        | oid == kSeedEcb = Just (KeyBytes edSeedEcbKey)
         | otherwise = Nothing
       derive oid mech params outLen =
         runEffect env res (FxDerive mech (Just oid) Nothing params BS.empty outLen)
@@ -936,6 +1036,16 @@ caseDriverEncryptData = withBackend $ \env -> do
   assertEqual "des3-cbc full" (hex "a78cd104d767ee1a17dfe53c25fb97d3") d3cbc
   d3ecb <- derive kD3 d3EcbEdMech edData16 16
   assertEqual "des3-ecb full" (hex "534c0b5cdcb62ea80cfcfab978042851") d3ecb
+  desCbc <- derive kDesCbc desCbcEdMech (drvDesIv <> drvDesPt) 16
+  assertEqual "des-cbc full" drvDesCt desCbc
+  desTrunc <- derive kDesCbc desCbcEdMech (drvDesIv <> drvDesPt) 8
+  assertEqual "des-cbc truncation prefix" (BS.take 8 drvDesCt) desTrunc
+  desEcb <- derive kDesEcb desEcbEdMech edDesEcbData 16
+  assertEqual "des-ecb full" edDesEcbCt desEcb
+  seedCbc <- derive kSeedCbc seedCbcEdMech (edSeedCbcIv <> edSeedCbcData) 16
+  assertEqual "seed-cbc full" edSeedCbcCt seedCbc
+  seedEcb <- derive kSeedEcb seedEcbEdMech edSeedEcbData 16
+  assertEqual "seed-ecb full" edSeedEcbCt seedEcb
   -- Refusals: ragged frames and bad key lengths fail closed.
   ragged <- runEffect env res
     (FxDerive aesCbcEdMech (Just kAes) Nothing (edIv16 <> BS.replicate 20 0) BS.empty 16)

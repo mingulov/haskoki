@@ -230,8 +230,15 @@ caseCurated = do
     , MechanismId Gen.ckm_SHA3_224_RSA_PKCS
     , MechanismId Gen.ckm_SHA3_224_RSA_PKCS_PSS
     , MechanismId Gen.ckm_RC2_KEY_GEN
+    , MechanismId Gen.ckm_RC2_ECB
+    , MechanismId Gen.ckm_RC2_CBC
+    , MechanismId Gen.ckm_RC2_CBC_PAD
     , MechanismId Gen.ckm_RC4_KEY_GEN
+    , MechanismId Gen.ckm_RC4
     , MechanismId Gen.ckm_DES_KEY_GEN
+    , MechanismId Gen.ckm_DES_ECB
+    , MechanismId Gen.ckm_DES_CBC
+    , MechanismId Gen.ckm_DES_CBC_PAD
     , MechanismId Gen.ckm_DES2_KEY_GEN
     , MechanismId Gen.ckm_DES3_KEY_GEN
     , MechanismId Gen.ckm_DES3_ECB
@@ -242,6 +249,9 @@ caseCurated = do
     , MechanismId Gen.ckm_DES3_CMAC_GENERAL
     , MechanismId Gen.ckm_DES3_CMAC
     , MechanismId Gen.ckm_CDMF_KEY_GEN
+    , MechanismId Gen.ckm_DES_OFB64
+    , MechanismId Gen.ckm_DES_CFB64
+    , MechanismId Gen.ckm_DES_CFB8
     , MechanismId Gen.ckm_MD5
     , MechanismId Gen.ckm_MD5_HMAC
     , MechanismId Gen.ckm_MD5_HMAC_GENERAL
@@ -284,8 +294,14 @@ caseCurated = do
     , MechanismId Gen.ckm_CAST_KEY_GEN
     , MechanismId Gen.ckm_CAST3_KEY_GEN
     , MechanismId Gen.ckm_CAST128_KEY_GEN
+    , MechanismId Gen.ckm_CAST128_ECB
+    , MechanismId Gen.ckm_CAST128_CBC
+    , MechanismId Gen.ckm_CAST128_CBC_PAD
     , MechanismId Gen.ckm_RC5_KEY_GEN
     , MechanismId Gen.ckm_IDEA_KEY_GEN
+    , MechanismId Gen.ckm_IDEA_ECB
+    , MechanismId Gen.ckm_IDEA_CBC
+    , MechanismId Gen.ckm_IDEA_CBC_PAD
     , MechanismId Gen.ckm_GENERIC_SECRET_KEY_GEN
     , MechanismId Gen.ckm_CONCATENATE_BASE_AND_KEY
     , MechanismId Gen.ckm_CONCATENATE_BASE_AND_DATA
@@ -346,6 +362,11 @@ caseCurated = do
     , MechanismId Gen.ckm_ARIA_ECB_ENCRYPT_DATA
     , MechanismId Gen.ckm_ARIA_CBC_ENCRYPT_DATA
     , MechanismId Gen.ckm_SEED_KEY_GEN
+    , MechanismId Gen.ckm_SEED_ECB
+    , MechanismId Gen.ckm_SEED_CBC
+    , MechanismId Gen.ckm_SEED_CBC_PAD
+    , MechanismId Gen.ckm_SEED_ECB_ENCRYPT_DATA
+    , MechanismId Gen.ckm_SEED_CBC_ENCRYPT_DATA
     , MechanismId Gen.ckm_SKIPJACK_KEY_GEN
     , MechanismId Gen.ckm_BATON_KEY_GEN
     , MechanismId Gen.ckm_EC_KEY_PAIR_GEN
@@ -383,7 +404,11 @@ caseCurated = do
     , MechanismId Gen.ckm_AES_XCBC_MAC_96
     , MechanismId Gen.ckm_AES_GMAC
     , MechanismId Gen.ckm_BLOWFISH_KEY_GEN
+    , MechanismId Gen.ckm_BLOWFISH_CBC
     , MechanismId Gen.ckm_TWOFISH_KEY_GEN
+    , MechanismId Gen.ckm_BLOWFISH_CBC_PAD
+    , MechanismId Gen.ckm_DES_ECB_ENCRYPT_DATA
+    , MechanismId Gen.ckm_DES_CBC_ENCRYPT_DATA
     , MechanismId Gen.ckm_DES3_ECB_ENCRYPT_DATA
     , MechanismId Gen.ckm_DES3_CBC_ENCRYPT_DATA
     , MechanismId Gen.ckm_AES_ECB_ENCRYPT_DATA
@@ -482,11 +507,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 270 behavior + 194 catalog-only + catalog line.
+  -- schema + 295 behavior + 169 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 270
+  assertEqual "behavior line count" 295
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 194
+  assertEqual "catalog-only line count" 169
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -950,7 +975,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 194 (length invIds)
+  assertEqual "guard covers every catalog row" 169 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of
@@ -969,7 +994,9 @@ caseSpecialsCatalogOnly = do
   -- granted caps (the exhaustive guard above covers all 314;
   -- this table documents the groups for humans). The 11n
   -- vendor stances pin in full: both rows per OTP vendor plus
-  -- the FASTHASH digest row.
+  -- the FASTHASH digest row. DES/RC4 left when the legacy
+  -- provider landed (11p); the 11p fetch-absent stances pin one
+  -- cipher row per absent family.
   let reg = curatedRegistry
       reps =
         [ ("CKM_ACTI", OpSign)
@@ -981,8 +1008,15 @@ caseSpecialsCatalogOnly = do
         , ("CKM_FASTHASH", OpDigest)
         , ("CKM_CMS_SIG", OpSign)
         , ("CKM_FORTEZZA_TIMESTAMP", OpSign)
-        , ("CKM_DES_CBC", OpEncrypt)
-        , ("CKM_RC4", OpEncrypt)
+        , ("CKM_RC5_CBC", OpEncrypt)
+        , ("CKM_CDMF_CBC", OpEncrypt)
+        , ("CKM_SKIPJACK_CBC64", OpEncrypt)
+        , ("CKM_BATON_CBC128", OpEncrypt)
+        , ("CKM_JUNIPER_CBC128", OpEncrypt)
+        , ("CKM_TWOFISH_CBC", OpEncrypt)
+        , ("CKM_GOST28147_ECB", OpEncrypt)
+        , ("CKM_DES_OFB8", OpEncrypt)
+        , ("CKM_SALSA20", OpEncrypt)
         , ("CKM_DSA_PROBABILISTIC_PARAMETER_GEN", OpGenerateKey)
         , ("CKM_HASH_ML_DSA", OpSign)
         , ("CKM_AES_KEY_WRAP_PKCS7", OpWrap)
