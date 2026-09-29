@@ -77,6 +77,7 @@ import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
+import Haskoki.Recipe.Pbe (encodePbeParams)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.Otp (encodeHotpParams)
@@ -130,6 +131,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: byte-op vectors + refuse" caseDriverByteOps
   , testCase "driver: key-material vectors + refuse" caseDriverKeyMat
   , testCase "driver: pbkd2 keygen vector" caseDriverPbkd2Gen
+  , testCase "driver: pbe keygen vectors" caseDriverPbe
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
   , testCase "driver: blake2b-512 digest/hmac/general + refuse" caseDriverBlake2b512
@@ -1998,6 +2000,45 @@ caseDriverPbkd2Gen = withBackend $ \env -> do
     other -> assertFailure ("expected key bytes, got: " ++ show other)
   badFrame <- gen BS.empty 20
   case badFrame of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- | PBE keygen through the driver over real SHA-1: the v1 frame
+-- carries password\/salt\/iterations and the key\/IV pair lands
+-- framed (parity-adjusted key, raw IV). Lane fixtures c=1024
+-- plus malformed-frame and off-geometry refusals.
+caseDriverPbe :: IO ()
+caseDriverPbe = withBackend $ \env -> do
+  let res _ = Nothing
+      des3 = MechanismId 0x3a8
+      des2 = MechanismId 0x3a9
+      frame = encodePbeParams 1024 "TestPassword123!"
+        (BS.pack [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe])
+      gen mech f n =
+        runEffect env res (FxGenerateKey mech f (encodeGenArgs (GenPbe n)))
+  kg3 <- gen des3 frame 24
+  case kg3 of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Just iv) -> do
+        assertEqual "des3 key"
+          (hex "73b93bb0f797b564f7d90216b37f0ee9e9bc8004021fd39d") mat
+        assertEqual "des3 iv" (hex "f7eb3b1c7d9ce2a0") iv
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
+  kg2 <- gen des2 frame 16
+  case kg2 of
+    GotBytes bs -> case decodeKeyPair bs of
+      Just (mat, Just iv) -> do
+        assertEqual "des2 key" (hex "73b93bb0f797b564f7d90216b37f0ee9") mat
+        assertEqual "des2 iv" (hex "f7eb3b1c7d9ce2a0") iv
+      other -> assertFailure ("gen misframed, got: " ++ show other)
+    other -> assertFailure ("expected key bytes, got: " ++ show other)
+  badFrame <- gen des3 BS.empty 24
+  case badFrame of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badLen <- gen des3 frame 20
+  case badLen of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
 

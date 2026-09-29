@@ -9,7 +9,7 @@ on a closed backend.
 {-# LANGUAGE OverloadedStrings #-}
 module SyntheticSpec (spec) where
 
-import Data.Bits (complement)
+import Data.Bits (complement, popCount)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
@@ -81,6 +81,7 @@ import qualified Haskoki.Outcome as O
 import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
+import Haskoki.Recipe.Pbe (encodePbeParams)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
@@ -147,6 +148,7 @@ spec = testGroup "synthetic engine"
   , testCase "IKE rows separate and refuse" caseIke
   , testCase "byte-op rows separate and refuse" caseByteOps
   , testCase "key-material rows separate and refuse" caseKeyMat
+  , testCase "PBE rows separate and refuse" casePbe
   , testCase "SP800-108 modes separate, length bound" caseSp800
   , testCase "HOTP codes separate, keygen lengths" caseHotp
   , testCase "Specials refuse explicitly" caseSpecialsRefuse
@@ -2583,6 +2585,53 @@ caseKeyMat = withSynth "14" $ \env -> do
     (FxDerive k12 (Just secOid) Nothing f12 BS.empty 0)
   expectFailed "wrong-row frame"
     (FxDerive k10 (Just secOid) Nothing f12 BS.empty 64)
+
+-- | PBE keygen through the driver over synthetic SHA-1: framed
+-- key\/IV pairs at the fixed widths, deterministic output
+-- separated across passwords\/salts\/iterations, parity-shaped
+-- keys, and typed refusals. (The synthetic digest stream
+-- differs from real SHA-1 by design; exact KAT bytes live on
+-- the real backend.)
+casePbe :: IO ()
+casePbe = withSynth "14" $ \env -> do
+  let des3 = MechanismId 0x3a8
+      des2 = MechanismId 0x3a9
+      res _ = Nothing
+      f = encodePbeParams 16 "pw" "salt"
+      gen mech frame n =
+        runEffect env res (FxGenerateKey mech frame (encodeGenArgs (GenPbe n)))
+      pairOf label fx = do
+        r <- runEffect env res fx
+        case r of
+          GotBytes bs -> case decodeKeyPair bs of
+            Just (mat, Just iv) -> pure (mat, iv)
+            other -> assertFailure (label ++ " misframed: " ++ show other) >> undefined
+          other -> assertFailure (label ++ " failed: " ++ show other) >> undefined
+      isOddParity = BS.all (\w -> odd (popCount w))
+  (k3, v3) <- pairOf "des3" (FxGenerateKey des3 f (encodeGenArgs (GenPbe 24)))
+  assertEqual "des3 key width" 24 (BS.length k3)
+  assertEqual "des3 iv width" 8 (BS.length v3)
+  assertBool "des3 odd parity" (isOddParity k3)
+  (k3b, _) <- pairOf "des3b" (FxGenerateKey des3 f (encodeGenArgs (GenPbe 24)))
+  assertEqual "deterministic" k3 k3b
+  (k2, v2) <- pairOf "des2" (FxGenerateKey des2 f (encodeGenArgs (GenPbe 16)))
+  assertEqual "des2 key width" 16 (BS.length k2)
+  assertEqual "des2 iv width" 8 (BS.length v2)
+  assertBool "des2 odd parity" (isOddParity k2)
+  (kPw, _) <- pairOf "pw" (FxGenerateKey des3 (encodePbeParams 16 "pw2" "salt") (encodeGenArgs (GenPbe 24)))
+  assertBool "passwords separated" (k3 /= kPw)
+  (kSalt, _) <- pairOf "salt" (FxGenerateKey des3 (encodePbeParams 16 "pw" "pepper") (encodeGenArgs (GenPbe 24)))
+  assertBool "salts separated" (k3 /= kSalt)
+  (kIt, _) <- pairOf "iters" (FxGenerateKey des3 (encodePbeParams 17 "pw" "salt") (encodeGenArgs (GenPbe 24)))
+  assertBool "iterations separated" (k3 /= kIt)
+  badFrame <- gen des3 BS.empty 24
+  case badFrame of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("junk params: expected Failed, got: " ++ show other)
+  badLen <- gen des3 f 20
+  case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("off width: expected Failed, got: " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- OTP constructions

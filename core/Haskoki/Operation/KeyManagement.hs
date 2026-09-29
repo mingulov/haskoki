@@ -154,6 +154,8 @@ module Haskoki.Operation.KeyManagement
   , tlsPremasterKeyGenMech
   , wtlsPremasterKeyGenMech
   , pbkd2KeyGenMech
+  , pbeDes3KeyGenMech
+  , pbeDes2KeyGenMech
   , pbkd2KeygenMaxBytes
   , genericSecretKeygenMinBytes
   , genericSecretKeygenMaxBytes
@@ -250,6 +252,7 @@ import Haskoki.Outcome
   , StateDelta (..)
   )
 import Haskoki.Recipe.Kdf (decodePbkd2Params, maxPbkd2Iters)
+import Haskoki.Recipe.Pbe (PbeKind (..), PbeRecipe (pbeKind), decodePbeParams, pbeIvLen, pbeKeyLen, pbeParamsValid, pbeRecipeFor)
 import Haskoki.Recipe.Otp (hotpKeygenMaxBytes, hotpKeygenMinBytes)
 import Haskoki.Recipe.RsaOaep
   ( decodeOaepParams
@@ -329,6 +332,8 @@ import Haskoki.Registry.Generated
   , ckm_TLS_PRE_MASTER_KEY_GEN
   , ckm_WTLS_PRE_MASTER_KEY_GEN
   , ckm_PKCS5_PBKD2
+  , ckm_PBE_SHA1_DES3_EDE_CBC
+  , ckm_PBE_SHA1_DES2_EDE_CBC
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (Rules)
@@ -638,6 +643,11 @@ wtlsPremasterKeyGenMech = MechanismId (ckm_WTLS_PRE_MASTER_KEY_GEN)
 pbkd2KeyGenMech :: MechanismId
 pbkd2KeyGenMech = MechanismId (ckm_PKCS5_PBKD2)
 
+-- | The PBE keygen rows (generated ids, resolved by name).
+pbeDes3KeyGenMech, pbeDes2KeyGenMech :: MechanismId
+pbeDes3KeyGenMech = MechanismId (ckm_PBE_SHA1_DES3_EDE_CBC)
+pbeDes2KeyGenMech = MechanismId (ckm_PBE_SHA1_DES2_EDE_CBC)
+
 -- | PBKD2 keygen ceiling: the shared derived-total ceiling (the
 -- value mirrors 'Haskoki.Operation.Derive.maxDerivedTotal',
 -- which this module cannot import — Derive depends on
@@ -920,6 +930,10 @@ data PendingWork
   | PwGenerateKey
       { pwKey :: !PendingObject
       }
+  | PwGenerateKeyIv
+      { pwKey :: !PendingObject
+      , pwKeyLen :: !Int
+      }
   | PwEncaps
       { pwSecret :: !PendingObject
       , pwCtLen :: !Int
@@ -982,6 +996,7 @@ pendingObjects :: PendingWork -> [PendingObject]
 pendingObjects pw = case pw of
   PwGeneratePair pub priv -> [pub, priv]
   PwGenerateKey k -> [k]
+  PwGenerateKeyIv k _ -> [k]
   PwEncaps s _ _ -> [s]
   PwDecaps s -> [s]
   PwBlobOut _ -> []
@@ -1048,6 +1063,10 @@ keyPairCompatible (PwGenerateKey _) (FxGenerateKey _ _ input) =
     Just (GenPbkd2 _) -> True
     Just (GenDsaParams _ _) -> True
     _ -> False
+keyPairCompatible (PwGenerateKeyIv _ _) (FxGenerateKey _ _ input) =
+  case decodeGenArgs input of
+    Just (GenPbe _) -> True
+    _ -> False
 keyPairCompatible (PwBlobOut _) (FxWrap _ _ _ _) = True
 keyPairCompatible (PwBlobOut _) (FxAuthWrap _ _ _ _) = True
 keyPairCompatible (PwUnwrap _) (FxUnwrap _ _ _ _) = True
@@ -1094,6 +1113,20 @@ finishWork model st pw res = case (pw, res) of
         [paramsReason po']
       Nothing -> internal "params answer material fails component decode"
     _ -> internal "single-key answer is not lone material"
+  -- PBE answers frame the key/IV pair: the key publishes as
+  -- the object, the IV rides a byte output for the FFI
+  -- write-back.
+  (PwGenerateKeyIv po keyLen, GotBytes bs) -> case decodeKeyPair bs of
+    Just (mat, Just iv)
+      | BS.length mat == keyLen && BS.length iv == 8 -> case stampParamsObject po mat of
+          Just po' -> publish1 (storeMaterial mat po')
+            [NativeOutput (RegionBytes "iv" IntentNull) iv]
+            ["pbe key plus iv"]
+          Nothing -> internal "pbe answer material fails component decode"
+      | otherwise -> internal
+          ("pbe answer lengths " ++ show (BS.length mat) ++ "+"
+            ++ show (BS.length iv) ++ " mismatch " ++ show keyLen ++ "+8")
+    _ -> internal "pbe answer is not a key/iv pair"
   (PwBlobOut region, GotBytes bs) -> Immediate PreparedCommit
     { pcCode = CKR_OK
     , pcDelta = StateDelta []
@@ -1722,6 +1755,7 @@ data GenArgs
   | GenTlsPremaster !Word8 !Word8
   | GenWtlsPremaster !Word8 !Int
   | GenPbkd2 !Int
+  | GenPbe !Int
   deriving (Eq, Show)
 
 -- | Frame generation arguments: @tag:u8 ...@ with tag 0 AES
@@ -1736,7 +1770,8 @@ data GenArgs
 -- TLS/SSL3 pre-master (@major:u8 minor:u8@, fixed 48 bytes),
 -- 13 WTLS pre-master (@ver:u8 len:u8@), 14 PBKD2 derived key
 -- (@len:u16be@: the shared ceiling exceeds one byte), 15
--- Montgomery keypair curve name (curve bytes).
+-- Montgomery keypair curve name (curve bytes), 16 PBE derived
+-- key (@len:u8@: fixed 16\/24 widths).
 encodeGenArgs :: GenArgs -> ByteString
 encodeGenArgs args = case args of
   GenAes n -> BS.singleton 0 <> BS.singleton (fromIntegral n)
@@ -1756,6 +1791,7 @@ encodeGenArgs args = case args of
   GenTlsPremaster major minor -> BS.singleton 12 <> BS.pack [major, minor]
   GenWtlsPremaster ver n -> BS.singleton 13 <> BS.pack [ver, fromIntegral n]
   GenPbkd2 n -> BS.singleton 14 <> u16be n
+  GenPbe n -> BS.singleton 16 <> BS.singleton (fromIntegral n)
 
 -- | Parse framed generation arguments. Short frames, unknown tags
 -- and trailing bytes all fail.
@@ -1819,6 +1855,9 @@ decodeGenArgs bs = case BS.uncons bs of
     _ -> Nothing
   Just (14, rest) -> case BS.unpack rest of
     [hi, lo] -> Just (GenPbkd2 (fromIntegral hi * 256 + fromIntegral lo))
+    _ -> Nothing
+  Just (16, rest) -> case BS.unpack rest of
+    [n] -> Just (GenPbe (fromIntegral n))
     _ -> Nothing
   Just (15, curve)
     | not (BS.null curve) -> Just (GenMontgomeryKeypair curve)
@@ -2687,6 +2726,43 @@ planPbkd2Gen st mech params tmpl = case decodePbkd2Params params of
       , FxGenerateKey mech params (encodeGenArgs (GenPbkd2 n))
       )
 
+-- | Plan a PBE keygen: the @pbe-params\/1@ frame (iterations,
+-- password, salt) is required and validated before the
+-- template; the key type and length are fixed per row (DES3:
+-- 24 bytes; DES2: 16 bytes) with a DES3-keygen-style default
+-- when @CKA_VALUE_LEN@ is absent. The validated frame rides
+-- the effect so async replays reproduce the key and IV
+-- bit-for-bit.
+planPbeGen
+  :: SessionState -> MechanismId -> ByteString
+  -> [(AttributeType, AttributeValue)]
+  -> Either KeyDeny (PendingWork, CryptoEffect)
+planPbeGen st mech params tmpl = case pbeRecipeFor mech of
+  Nothing -> Left (KeyDeny CKR_MECHANISM_INVALID
+    "PBE keygen needs a PBE mechanism")
+  Just r
+    | not (pbeParamsValid r params) -> Left (KeyDeny CKR_MECHANISM_PARAM_INVALID
+        "PBE keygen needs a valid pbe-params/1 frame")
+    | otherwise -> case checkKeyTemplate ckoSecretKey wantKey tmpl of
+        Left deny -> Left deny
+        Right attrs -> case Map.lookup AttrValueLen attrs of
+          Just (ValULong n)
+            | fromIntegral n == keyLen -> Right (effect attrs)
+            | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                ("PBE length must be " ++ show keyLen ++ " bytes: " ++ show n))
+          Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            "PBE value length is malformed")
+          Nothing -> Right (effect attrs)
+    where
+      wantKey = case pbeKind r of
+        PbeDes3 -> ckkDes3
+        PbeDes2 -> ckkDes2
+      keyLen = pbeKeyLen (pbeKind r)
+      effect attrs =
+        ( PwGenerateKeyIv (pendingFromAttrs st attrs) keyLen
+        , FxGenerateKey mech params (encodeGenArgs (GenPbe keyLen))
+        )
+
 -- ---------------------------------------------------------------------------
 -- Single-key generation
 -- ---------------------------------------------------------------------------
@@ -2715,20 +2791,25 @@ planGenerateKey rules model st mech params tmpl =
         Right () -> KeyEffect pw fx
   where
     validated
-      -- Only the pre-master keygens (the client version) and
-      -- PBKD2 (the v2 frame) take mechanism parameters; every
-      -- other keygen refuses params.
+      -- Only the pre-master keygens (the client version),
+      -- PBKD2 (the v2 frame), and PBE (the v1 frame) take
+      -- mechanism parameters; every other keygen refuses
+      -- params.
       | not (BS.null params)
       , mech /= tlsPremasterKeyGenMech
       , mech /= ssl3PremasterKeyGenMech
       , mech /= wtlsPremasterKeyGenMech
-      , mech /= pbkd2KeyGenMech =
+      , mech /= pbkd2KeyGenMech
+      , mech /= pbeDes3KeyGenMech
+      , mech /= pbeDes2KeyGenMech =
           Left (KeyDeny CKR_MECHANISM_PARAM_INVALID
             "keygen takes no mechanism params")
       | mech == tlsPremasterKeyGenMech = planTlsPremaster st mech params tmpl
       | mech == ssl3PremasterKeyGenMech = planTlsPremaster st mech params tmpl
       | mech == wtlsPremasterKeyGenMech = planWtlsPremaster st mech params tmpl
       | mech == pbkd2KeyGenMech = planPbkd2Gen st mech params tmpl
+      | mech == pbeDes3KeyGenMech = planPbeGen st mech params tmpl
+      | mech == pbeDes2KeyGenMech = planPbeGen st mech params tmpl
       | mech == dsaParameterGenMech =
           case checkKeyTemplate ckoDomainParameters ckkDsa tmpl of
           Left deny -> Left deny

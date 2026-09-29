@@ -3706,6 +3706,125 @@ int main(int argc, char **argv) {
         rv = f->C_GenerateKey(wsess, &gpbkd2, bigTmpl, 5, &bad);
         CHECKC(rv == CKR_TEMPLATE_INCONSISTENT, "over-ceiling refused");
       }
+    /* PBE keygen: CK_PBE_PARAMS carries password/salt/iters;
+     * the 8-byte IV lands in pInitVector and the key matches
+     * the section 6.38 KAT (parity-adjusted). Fixed key type
+     * and length per row; type/length/param violations refuse
+     * typed with no writes. */
+      {
+        CK_MECHANISM gpbe;
+        CK_PBE_PARAMS pp;
+        CK_BYTE pbePw[] = { 'T', 'e', 's', 't', 'P', 'a', 's', 's', 'w', 'o',
+                            'r', 'd', '1', '2', '3', '!' };
+        CK_BYTE pbeSalt[] = { 0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe };
+        CK_BYTE pbeIv[8];
+        CK_BYTE pbeWantIv[] = { 0xf7, 0xeb, 0x3b, 0x1c, 0x7d, 0x9c, 0xe2, 0xa0 };
+        CK_BYTE pbeWant3[] = { 0x73, 0xb9, 0x3b, 0xb0, 0xf7, 0x97, 0xb5, 0x64,
+                              0xf7, 0xd9, 0x02, 0x16, 0xb3, 0x7f, 0x0e, 0xe9,
+                              0xe9, 0xbc, 0x80, 0x04, 0x02, 0x1f, 0xd3, 0x9d };
+        CK_BYTE pbeWant2[] = { 0x73, 0xb9, 0x3b, 0xb0, 0xf7, 0x97, 0xb5, 0x64,
+                              0xf7, 0xd9, 0x02, 0x16, 0xb3, 0x7f, 0x0e, 0xe9 };
+        CK_BYTE pbeGot[24];
+        CK_KEY_TYPE d3kt = CKK_DES3, d2kt = CKK_DES2;
+        CK_ULONG len24 = 24, len16 = 16;
+        CK_ATTRIBUTE t3[] = {
+          { CKA_CLASS, &ckcls, sizeof(ckcls) },
+          { CKA_KEY_TYPE, &d3kt, sizeof(d3kt) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+          { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+        };
+        CK_ATTRIBUTE t2[] = {
+          { CKA_CLASS, &ckcls, sizeof(ckcls) },
+          { CKA_KEY_TYPE, &d2kt, sizeof(d2kt) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+          { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+        };
+        CK_ATTRIBUTE t3len[] = {
+          { CKA_CLASS, &ckcls, sizeof(ckcls) },
+          { CKA_KEY_TYPE, &d3kt, sizeof(d3kt) },
+          { CKA_VALUE_LEN, &len16, sizeof(len16) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+          { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+        };
+        CK_ATTRIBUTE t2len[] = {
+          { CKA_CLASS, &ckcls, sizeof(ckcls) },
+          { CKA_KEY_TYPE, &d2kt, sizeof(d2kt) },
+          { CKA_VALUE_LEN, &len24, sizeof(len24) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+          { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
+        };
+        CK_ATTRIBUTE pbeGet[1];
+        CK_OBJECT_HANDLE k3 = 0, k2 = 0, bad = 0;
+        gpbe.mechanism = CKM_PBE_SHA1_DES3_EDE_CBC;
+        gpbe.pParameter = &pp;
+        gpbe.ulParameterLen = sizeof(pp);
+        pp.pInitVector = pbeIv;
+        pp.pPassword = pbePw;
+        pp.ulPasswordLen = sizeof(pbePw);
+        pp.pSalt = pbeSalt;
+        pp.ulSaltLen = sizeof(pbeSalt);
+        pp.ulIteration = 1024;
+        memset(pbeIv, 0, sizeof(pbeIv));
+        rv = f->C_GenerateKey(wsess, &gpbe, t3, 4, &k3);
+        CHECKC(rv == CKR_OK && k3 != 0, "PBE-DES3 keygen ok");
+        /* The pinned shim models the PBE shape but drops the
+         * embedded OUT IV (keygen still succeeds); direct-only
+         * KAT, proxied pins the untouched buffer. */
+        if (!isProxy) {
+          CHECKC(memcmp(pbeIv, pbeWantIv, 8) == 0, "PBE-DES3 IV matches KAT");
+        } else {
+          CK_BYTE z8[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+          CHECKC(memcmp(pbeIv, z8, 8) == 0, "proxied PBE IV unwritten");
+        }
+        pbeGet[0].type = CKA_VALUE;
+        pbeGet[0].pValue = pbeGot;
+        pbeGet[0].ulValueLen = sizeof(pbeGot);
+        rv = f->C_GetAttributeValue(wsess, k3, pbeGet, 1);
+        CHECKC(rv == CKR_OK && pbeGet[0].ulValueLen == 24 &&
+               memcmp(pbeGot, pbeWant3, 24) == 0, "PBE-DES3 key matches KAT");
+        gpbe.mechanism = CKM_PBE_SHA1_DES2_EDE_CBC;
+        memset(pbeIv, 0, sizeof(pbeIv));
+        rv = f->C_GenerateKey(wsess, &gpbe, t2, 4, &k2);
+        CHECKC(rv == CKR_OK && k2 != 0 && k2 != k3, "PBE-DES2 keygen ok");
+        if (!isProxy) {
+          CHECKC(memcmp(pbeIv, pbeWantIv, 8) == 0, "PBE-DES2 IV matches KAT");
+        } else {
+          CK_BYTE z8b[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+          CHECKC(memcmp(pbeIv, z8b, 8) == 0, "proxied PBE-DES2 IV unwritten");
+        }
+        pbeGet[0].type = CKA_VALUE;
+        pbeGet[0].pValue = pbeGot;
+        pbeGet[0].ulValueLen = sizeof(pbeGot);
+        rv = f->C_GetAttributeValue(wsess, k2, pbeGet, 1);
+        CHECKC(rv == CKR_OK && pbeGet[0].ulValueLen == 16 &&
+               memcmp(pbeGot, pbeWant2, 16) == 0, "PBE-DES2 key matches KAT");
+        gpbe.mechanism = CKM_PBE_SHA1_DES3_EDE_CBC;
+        rv = f->C_GenerateKey(wsess, &gpbe, t3len, 5, &bad);
+        CHECKC(rv == CKR_TEMPLATE_INCONSISTENT && bad == 0,
+               "PBE-DES3 wrong length refused typed");
+        gpbe.mechanism = CKM_PBE_SHA1_DES2_EDE_CBC;
+        rv = f->C_GenerateKey(wsess, &gpbe, t2len, 5, &bad);
+        CHECKC(rv == CKR_TEMPLATE_INCONSISTENT && bad == 0,
+               "PBE-DES2 wrong length refused typed");
+        gpbe.mechanism = CKM_PBE_SHA1_DES3_EDE_CBC;
+        pp.ulIteration = 0;
+        memset(pbeIv, 0xA5, sizeof(pbeIv));
+        rv = f->C_GenerateKey(wsess, &gpbe, t3, 4, &bad);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && bad == 0,
+               "PBE zero iters refused typed");
+        {
+          CK_BYTE sent[8] = { 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5 };
+          CHECKC(memcmp(pbeIv, sent, 8) == 0, "PBE refusal writes no IV");
+        }
+        pp.ulIteration = 1024;
+        pp.pInitVector = NULL_PTR;
+        rv = f->C_GenerateKey(wsess, &gpbe, t3, 4, &bad);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && bad == 0,
+               "PBE null IV refused typed");
+        pp.pInitVector = pbeIv;
+        f->C_DestroyObject(wsess, k3);
+        f->C_DestroyObject(wsess, k2);
+      }
       /* (PBKD2 block ends: the ECDH legs below reuse ktmpl.) */
       decdh.mechanism = CKM_ECDH1_DERIVE;
       decdh.pParameter = NULL_PTR;

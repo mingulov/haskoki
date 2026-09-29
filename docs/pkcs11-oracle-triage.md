@@ -1802,6 +1802,139 @@ skipped (t7692)
   11k tree (`dist-release/haskoki-0.3.0.0`,
   evidence 16/16).
 
+## Round 33: TLS key-material trio slice 11l (fast r61→r62 + KAT r34→r35)
+
+- r62: 4345 passed / 18 failed / 684
+  xfailed / 3848 skipped (t8895)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r62-results.json`).
+  r61→r62: +16 pass / −1 fail / +1 xfail /
+  +35 skip (+51 collected).
+- Movers r61→r62 (unit `counts`, exact):
+  `test_sp800_108_kdf` 14p/1f → 15p/0f (the
+  11l multi-output fix closes the
+  `test_additional_derived_key_handles`
+  scope gap — the only failure that
+  moves, and it moves fail→pass);
+  `test_tls12` 22p/15s/1x → 31p/5s/2x
+  (the trio goes live: +9p/−10s; the
+  new +1 xfail is the key-safe
+  iv-ignore leg: the r62 bundle refused
+  nonzero `ulIvSizeInBits` with
+  `CKR_GENERAL_ERROR`, a genuine
+  token-side miss at lane time, fixed
+  in-slice before commit (§6.40.7: the
+  size is ignored and treated as 0 —
+  `normalizeTls12KeySafeParams`, pinned
+  by `key-safe native struct ignores
+  the IV size`);
+  `test_mech_flags` 769p/1518s/8x →
+  775p/1539s/8x; `test_mech_probe` +9
+  skips; `test_mech_derive` +3 skips;
+  `test_mech_negative`
+  267p/2f/735s/310x → 267p/2f/747s/310x
+  (new-row matrix legs join as skips;
+  the 2 failures stay put). +16 = 1 +
+  9 + 6; skips −10 + 21 + 9 + 3 + 12
+  = +35; xfails +1 (key-safe only). No
+  outcome moves pass→xfail or
+  xfail→fail.
+- Zero regressions: the 18 failures are
+  the r61 set minus the fixed sp800
+  leg (13 X9.42 P11C-004 + 2 HOTP
+  P11C-001 + 3 WTLS P11C-006, all
+  identical by id to r61).
+- r35: 82785 passed / 24 failed / 1707
+  xfailed / 30563 skipped (t115079)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r35-results.json`).
+  r34→r35: +17 pass / −1 fail / +0 xfail /
+  +35 skip (+51 — the same unit movers
+  as fast, except `test_tls12` goes
+  +10p/−10s/+0x: KAT r35 ran on the
+  rebuilt bundle with the in-slice
+  key-safe fix, so the iv-ignore leg
+  passes there). The 24 failures
+  are the 18 fast failures (identical
+  by id) plus the 6 pre-existing
+  KAT-only `test_acvp_slhdsa` legs.
+- Bundle note: r62 ran on the 11l tree
+  before the in-slice key-safe fix;
+  r35 ran on the rebuilt final tree
+  (`00559cc`,
+  `dist-release/haskoki-0.3.0.0`).
+
+## Round 34: PBE keygen pair slice 11m (fast r62→r63 + KAT r35→r36)
+
+- r63: 4369 passed / 18 failed / 693
+  xfailed / 3851 skipped (t8931)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r63-results.json`).
+  r62→r63: +24 pass / +0 fail / +9 xfail /
+  +3 skip (+36 collected).
+- Movers r62→r63 (unit `counts`, exact):
+  `test_pbe` 8p/25s → 19p/14s (the pair
+  goes live: the 6 DES3 + 5 DES2
+  "not supported" skips become passes;
+  the remaining 14 skips are the
+  unserved MD2/MD5/CAST/RC2/RC4/PBA
+  rows); `test_ffi_length_boundary`
+  81p/44s → 89p/36s (the 4+4 PBE
+  security probes pass);
+  `test_tls12` 31p/5s/2x → 32p/5s/1x
+  (the key-safe iv-ignore leg flips
+  xfail→pass: the 11l in-slice §6.40.7
+  fix, first confirmed on a
+  fresh-bundle fast lane — not an 11m
+  code effect, and the 11m diff
+  provably does not touch the DeriveKey
+  path); `test_mech_flags`
+  775p/1539s/8x → 779p/1553s/8x;
+  `test_mech_probe` +6 skips;
+  `test_mech_attribute` 141p/21s/78x →
+  141p/23s/84x and `test_mech_keygen`
+  47p/10s/63x → 47p/10s/67x (the 10 new
+  xfails are all PBE matrix entries —
+  2 generate, 4 local-flag, 2
+  token-flag, 2 class — xfailed "keygen
+  rejected at runtime:
+  CKR_MECHANISM_PARAM_INVALID": the
+  oracle setup generates without PBE
+  params, which the token
+  spec-correctly refuses, joining the
+  pre-existing pre-master population).
+  +24 = 11 + 8 + 1 + 4; skips −11 −8
+  +14 +6 +2 = +3; xfails −1 + 6 + 4 =
+  +9. No outcome moves pass→xfail or
+  xfail→fail.
+- Zero regressions: the 18 failures are
+  identical by id to r62 (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS
+  P11C-006).
+- r36: 82808 passed / 24 failed / 1717
+  xfailed / 30566 skipped (t115115)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r36-results.json`).
+  r35→r36: +23 pass / +0 fail / +10 xfail /
+  +3 skip (+36 — the fast-matrix units
+  repeat r62→r63 exactly, minus the
+  tls12 flip which KAT already carries:
+  pbe +11p/−11s, ffi-boundary +8p/−8s,
+  flags +4p/+14s, probe +6s, attribute
+  +2s/+6x, keygen +4x; no KAT-only
+  delta, PBE carries no `@slow` legs
+  beyond fast's). The 24 failures are
+  identical by id to r35 (the 18 fast
+  failures plus the 6 pre-existing
+  KAT-only `test_acvp_slhdsa` legs).
+- Proxy note (consumer parity, not the
+  oracle lanes): the pinned shim models
+  the `pbe` param shape but drops the
+  OUT IV, so the PBE roundtrip leg runs
+  direct-only (KAT-exact) with a
+  proxied-IV-unwritten pin, the same
+  shape as 11k's embedded-handle
+  limitation.
+- Bundle note: r63/r36 run on the final
+  11m tree (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

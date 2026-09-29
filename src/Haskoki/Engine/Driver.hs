@@ -276,6 +276,7 @@ import Haskoki.Recipe.TlsKeyMat
   , tlsKeyMatRecipeFor
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
+import Haskoki.Recipe.Pbe (decodePbeParams, maxPbeIters, pbeDesParity)
 import Haskoki.Recipe.Chacha20
   ( Chacha20Recipe (..)
   , chachaParamsValid
@@ -367,6 +368,8 @@ import Haskoki.Operation.KeyManagement
   , tlsPremasterKeyGenMech
   , wtlsPremasterKeyGenMech
   , pbkd2KeyGenMech
+  , pbeDes3KeyGenMech
+  , pbeDes2KeyGenMech
   , pbkd2KeygenMaxBytes
   )
 import Haskoki.Operation.State (CipherDir (..))
@@ -1830,7 +1833,9 @@ runEffect env resolve fx = case fx of
     , mech /= tlsPremasterKeyGenMech
     , mech /= ssl3PremasterKeyGenMech
     , mech /= wtlsPremasterKeyGenMech
-    , mech /= pbkd2KeyGenMech -> pure (GotCryptoError (CryptoFailed
+    , mech /= pbkd2KeyGenMech
+    , mech /= pbeDes3KeyGenMech
+    , mech /= pbeDes2KeyGenMech -> pure (GotCryptoError (CryptoFailed
         "driver: keygen takes no mechanism params"))
     | otherwise -> case decodeGenArgs input of
         Nothing -> pure (GotCryptoError (CryptoFailed
@@ -1880,6 +1885,16 @@ runEffect env resolve fx = case fx of
                   "driver: PBKD2 PRF stem is not servable"))
               Nothing -> pure (GotCryptoError (CryptoFailed
                 "driver: malformed PBKD2 keygen params"))
+          (m, GenPbe n)
+            | m == pbeDes3KeyGenMech || m == pbeDes2KeyGenMech ->
+                case decodePbeParams params of
+                  Just (iters, pw, salt)
+                    | iters >= 1 && iters <= fromIntegral maxPbeIters
+                    , n == 16 || n == 24 -> runPbe iters pw salt n
+                    | otherwise -> pure (GotCryptoError (CryptoFailed
+                        "driver: PBE iterations or length out of range"))
+                  Nothing -> pure (GotCryptoError (CryptoFailed
+                    "driver: malformed PBE keygen params"))
           (m, GenEc curve) | m == ecKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenEC (EcSpec (BC8.unpack curve) "DER"))
           (m, GenRsa bits e) | m == rsaKeyPairGenMech ->
@@ -2691,6 +2706,61 @@ runEffect env resolve fx = case fx of
             EngineFail err -> pure (EngineFail err)
             EngineOk u' -> mix (k - 1) (acc `xorB` u') u'
         prfOf msg = macSign env (MacHMAC prf Nothing) pwd msg
+    -- | PBE keygen effects: the §6.38 PKCS#12 construction over
+    -- SHA-1 (u = 20, v = 64): ID 1 derives the key
+    -- (parity-adjusted), ID 2 the 8-byte IV. Digests run
+    -- through the provider; the B-feedback addition is pure
+    -- byte arithmetic. The answer frames the key\/IV pair.
+    runPbe :: Word64 -> ByteString -> ByteString -> Int -> IO CryptoResult
+    runPbe iters pw salt keyLen = do
+      rK <- pbeKdf 1 keyLen
+      rV <- pbeKdf 2 8
+      pure $ case (rK, rV) of
+        (EngineOk k, EngineOk v) ->
+          GotBytes (encodeKeyPair (pbeDesParity k) (Just v))
+        (EngineFail err, _) -> GotCryptoError (toCryptoError err)
+        (_, EngineFail err) -> GotCryptoError (toCryptoError err)
+      where
+        pbeKdf :: Word8 -> Int -> IO (EngineResult ByteString)
+        pbeKdf ident n = loop n (expand salt <> expand pw) []
+          where
+            d = BS.replicate 64 ident
+            expand s
+              | BS.null s = BS.empty
+              | otherwise =
+                  let target = 64 * ((BS.length s + 63) `div` 64)
+                      copies = target `div` BS.length s + 1
+                  in BS.take target (BS.concat (replicate copies s))
+            loop remaining i acc
+              | remaining <= 0 =
+                  pure (EngineOk (BS.take n (BS.concat (reverse acc))))
+              | otherwise = do
+                  r <- hashTimes (fromIntegral iters) (d <> i)
+                  case r of
+                    EngineFail err -> pure (EngineFail err)
+                    EngineOk a -> loop (remaining - 20) (feedback a i) (a : acc)
+            feedback a i = BS.concat (map (addBlock bInt) (chunks i))
+              where
+                b = BS.take 64 (BS.concat (replicate 4 a))
+                bInt = beInt b
+                chunks x
+                  | BS.null x = []
+                  | otherwise = let (h, t) = BS.splitAt 64 x in h : chunks t
+                addBlock bi blk =
+                  beBytes 64 ((beInt blk + bi + 1) `mod` (2 ^ (512 :: Int)))
+            hashTimes :: Int -> ByteString -> IO (EngineResult ByteString)
+            hashTimes 0 msg = pure (EngineOk msg)
+            hashTimes k msg = do
+              r <- digestOneShot env D_SHA1 msg
+              case r of
+                EngineFail err -> pure (EngineFail err)
+                EngineOk d -> hashTimes (k - 1) d
+            beInt :: ByteString -> Integer
+            beInt = BS.foldl' (\a w -> a * 256 + fromIntegral w) 0
+            beBytes :: Int -> Integer -> ByteString
+            beBytes len v =
+              BS.pack [fromIntegral ((v `div` (256 ^ i)) `mod` 256)
+                      | i <- [len - 1, len - 2 .. 0]]
     -- | SP 800-108 effects: the mode expansion over the HMAC
     -- route, truncated to the planned length (capped by
     -- 'maxSp800Total' with the L-fit check — the planner caps

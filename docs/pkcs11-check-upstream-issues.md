@@ -747,3 +747,21 @@ speculation.)
   was our `CKR_GENERAL_ERROR` on nonzero
   `ulIvSizeInBits`, fixed in-slice (§6.40.7: the size is
   ignored and treated as 0). Nothing to file.
+- **Pinned-framework fast r63 + KAT r36 (2026-09-29,
+  11m/260 rows): no new upstream findings.** Fast 4369
+  passed / 18 failed, KAT 82808 passed / 24 failed; all
+  failures identical by id to r62/r35 (HOTP
+  wrong-key-type x2, WTLS x3, X9.42 x13, KAT-only
+  ACVP SLH-DSA x6 — pinned-framework behavior already
+  covered by P11C-001/003/004/006, fixed in rc2). The
+  PBE pair unlocked 11 `test_pbe` legs (all pass) plus
+  8 `test_ffi_length_boundary` probes; the 10 new
+  xfails are PBE keygen-matrix legs whose setup
+  generates without PBE params (correct
+  `CKR_MECHANISM_PARAM_INVALID`, joining the
+  pre-existing pre-master population — same setup
+  shape as P11C-006, but the token refusal is the
+  spec-correct verdict, not an oracle bug). The
+  key-safe iv-ignore leg flips xfail→pass on the
+  fresh bundle (11l in-slice fix confirmed). Nothing
+  to file.

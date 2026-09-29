@@ -166,6 +166,9 @@ module Haskoki.FFI.NativeParams
   , normalizeTlsKeyMatParams
   , normalizeTls12KeyMatParams
   , normalizeTls12KeySafeParams
+  , pbeStructToCanonical
+  , normalizePbeParams
+  , pbeParamsNativeSize
   , tlsKeyMatNativeSize
   , tls12KeyMatNativeSize
   , KeyMatSlots (..)
@@ -251,6 +254,7 @@ import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
 import Haskoki.Recipe.Ike (encodeIkeParams, ikePrfCodeFor)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, tlsKdfPrfCodeFor)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
+import Haskoki.Recipe.Pbe (encodePbeParams)
 import Haskoki.Attribute
   ( AttributeType (..)
   , AttributeValue (..)
@@ -1493,6 +1497,40 @@ normalizePbkd2Params2 pParams paramsLen
 sp800NativeSize :: Sp800Mode -> Int
 sp800NativeSize Sp800Feedback = 4 * wordSize + 3 * ptrSize
 sp800NativeSize _ = 3 * wordSize + 2 * ptrSize
+
+-- | Native @CK_PBE_PARAMS@ image size: the IV and password
+-- pointers, the password length, the salt pointer and length,
+-- and the iteration count.
+pbeParamsNativeSize :: Int
+pbeParamsNativeSize = 2 * ptrSize + 4 * wordSize
+
+-- | Password, salt, and the iteration count onto the canonical
+-- @pbe-params\/1@ image (bounds are the recipe's).
+pbeStructToCanonical :: Word64 -> ByteString -> ByteString -> Maybe ByteString
+pbeStructToCanonical iters pw salt = Just (encodePbeParams iters pw salt)
+
+-- | Normalize one PBE keygen struct: the native
+-- @CK_PBE_PARAMS@ image at @pParams@/@paramsLen@ onto the
+-- canonical @pbe-params\/1@ image plus the caller IV slot.
+-- Wrong-sized images, a null IV buffer (the IV is required
+-- output for the served rows), and null-with-length or
+-- over-bound password\/salt chases refuse ('Nothing').
+normalizePbeParams :: Ptr Word8 -> Word64 -> IO (Maybe (ByteString, Ptr Word8))
+normalizePbeParams pParams paramsLen
+  | paramsLen /= fromIntegral pbeParamsNativeSize = pure Nothing
+  | otherwise = do
+      pIv <- peekByteOff pParams 0
+      pPw <- peekByteOff pParams ptrSize
+      CULong pwLen <- peekByteOff pParams (ptrSize + wordSize)
+      pSalt <- peekByteOff pParams (ptrSize + 2 * wordSize)
+      CULong saltLen <- peekByteOff pParams (ptrSize + 3 * wordSize)
+      CULong iters <- peekByteOff pParams (ptrSize + 4 * wordSize)
+      mPw <- chaseBytes pPw pwLen
+      mSalt <- chaseBytes pSalt saltLen
+      case (mPw, mSalt, pIv == (nullPtr :: Ptr Word8)) of
+        (Just pw, Just salt, False) ->
+          pure ((, pIv) <$> pbeStructToCanonical iters pw salt)
+        _ -> pure Nothing
 
 -- | Normalize one SP 800-108 KDF struct: the native image at
 -- @pParams@/@paramsLen@ onto the canonical @sp800-params\/1@

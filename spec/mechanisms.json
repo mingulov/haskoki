@@ -4785,7 +4785,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: t-parameter (truncation length) codec pending; not a fixed-width digest. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS.",
+      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: t-parameter (truncation length) codec pending; not a fixed-width digest. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real unsupported-with-reason: SHA-512/t needs per-t FIPS 180-4 IVs, inexpressible via the provider EVP_Digest surface (only the fixed 224/256 truncations exist); behavior/synthetic stay planned. Stance recorded in slice 11m.",
       "numeric_id": "0x00000050",
       "routes": [],
       "source_refs": [
@@ -14032,16 +14032,32 @@
     {
       "aliases": [],
       "canonical_name": "CKM_PBE_SHA1_DES3_EDE_CBC",
-      "family": "cipher",
+      "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 192,
+        "max_key_size": 192
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "PBE keygen (CK_PBE_PARAMS: password+salt chase, iteration count; 8-byte IV written back into pInitVector on success): the section 6.38 PKCS#12 construction over SHA-1 with raw password bytes (ID 1 derives the 24-byte CKK_DES3 key with DES odd-parity adjustment per FIPS 46-3, ID 2 the IV); fixed key type and length per row with a DES3-keygen-style default when CKA_VALUE_LEN is absent. Real execution pinned by KeyManagementSpec caseRealPbeVector (lane fixtures password/salt/1024: key/IV KAT-exact vs a Python implementation of the section prose, the pinned provider PKCS12KDF, and DES_set_odd_parity). Synthetic execution is deterministic around the synthetic digest stream.",
       "numeric_id": "0x000003a8",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "value-len-24-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "pbe/v1",
+          "parameter_codec": "pbe-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_PBE_SHA1_DES3_EDE_CBC",
@@ -14050,26 +14066,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "pbe",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "pbe",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipePbeSpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_PBE_SHA1_DES2_EDE_CBC",
-      "family": "cipher",
+      "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 128,
+        "max_key_size": 128
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json.",
+      "notes": "PBE keygen (CK_PBE_PARAMS: password+salt chase, iteration count; 8-byte IV written back into pInitVector on success): the section 6.38 PKCS#12 construction over SHA-1 with raw password bytes (ID 1 derives the 16-byte CKK_DES2 key with DES odd-parity adjustment per FIPS 46-3, ID 2 the IV); fixed key type and length per row with a DES3-keygen-style default when CKA_VALUE_LEN is absent. Real execution pinned by KeyManagementSpec caseRealPbeVector (lane fixtures password/salt/1024: key/IV KAT-exact vs a Python implementation of the section prose, the pinned provider PKCS12KDF, and DES_set_odd_parity). Synthetic execution is deterministic around the synthetic digest stream.",
       "numeric_id": "0x000003a9",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "value-len-16-bytes"
+          ],
+          "operation": "generate-key",
+          "output_rule": "pbe/v1",
+          "parameter_codec": "pbe-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_PBE_SHA1_DES2_EDE_CBC",
@@ -14078,12 +14146,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "pbe",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "pbe",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipePbeSpec",
+          "build_id": "pbe",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "pbe",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],

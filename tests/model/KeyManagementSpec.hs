@@ -261,6 +261,7 @@ import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
+import Haskoki.Recipe.Pbe (encodePbeParams, maxPbeIters)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
 import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
@@ -293,6 +294,8 @@ import Haskoki.Registry.Generated
   , ckm_TLS12_EXTENDED_MASTER_KEY_DERIVE
   , ckm_TLS_KDF
   , ckm_XOR_BASE_AND_DATA
+  , ckm_PBE_SHA1_DES3_EDE_CBC
+  , ckm_PBE_SHA1_DES2_EDE_CBC
   )
 import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
@@ -408,6 +411,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real byte-op derives match the KATs" caseRealByteOpsVector
   , testCase "Key-material plans rows, refuses bad shapes" caseKeyMatPlans
   , testCase "Real key-material derives match the KATs" caseRealKeyMatVector
+  , testCase "PBE plans rows, refuses bad shapes" casePbePlans
+  , testCase "Real PBE keygens match the KATs" caseRealPbeVector
   , testCase "SP800 plans primary plus additional keys" caseSp800MultiPlans
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
   , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
@@ -5803,3 +5808,104 @@ caseKeyInputDecode = do
   assertEqual "oversize rejects" (Left (KeyOutputTooLarge (maxInputBytes + 1))) tooLarge
   empty <- decodeWrappedInput nullPtr 0
   assertEqual "null empty" (Right BS.empty) empty
+
+pbeDes3Mech, pbeDes2Mech :: MechanismId
+pbeDes3Mech = MechanismId ckm_PBE_SHA1_DES3_EDE_CBC
+pbeDes2Mech = MechanismId ckm_PBE_SHA1_DES2_EDE_CBC
+
+pbePw, pbeSalt :: BS.ByteString
+pbePw = "TestPassword123!"
+pbeSalt = BS.pack [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]
+
+-- | The lane's PBE template: fixed key type, usable secret,
+-- no length (fixed widths default).
+pbeTmpl :: Word64 -> [(AttributeType, AttributeValue)]
+pbeTmpl k =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong k)
+  , (AttrSensitive, ValBool False)
+  , (AttrExtractable, ValBool True)
+  , (AttrEncrypt, ValBool True)
+  , (AttrDecrypt, ValBool True)
+  , (AttrToken, ValBool False)
+  ]
+
+casePbePlans :: IO ()
+casePbePlans = do
+  m0 <- seedModel
+  st <- getSession m0
+  let frame = encodePbeParams 1024 pbePw pbeSalt
+  -- Each row plans its fixed key type and length; the frame
+  -- rides the effect and the pair stays coherent.
+  mapM_ (\(mech, wantKey, wantLen) ->
+    case planGenerateKey defaultRules m0 st mech frame (pbeTmpl wantKey) of
+      KeyEffect pw fx@(FxGenerateKey _ gotFrame gotArgs) -> do
+        assertEqual ("frame " ++ show mech) frame gotFrame
+        assertEqual ("args " ++ show mech) (Just (GenPbe wantLen)) (decodeGenArgs gotArgs)
+        case pw of
+          PwGenerateKeyIv _ gotLen ->
+            assertEqual ("iv keylen " ++ show mech) wantLen gotLen
+          _ -> assertFailure ("PBE must plan key+iv work, got: " ++ show pw)
+        assertBool ("coherent " ++ show mech) (keyPairCompatible pw fx)
+      other -> assertFailure ("PBE must plan, got: " ++ show other))
+    [(pbeDes3Mech, ckkDes3, 24), (pbeDes2Mech, ckkDes2, 16)]
+  -- A present length must match the fixed width.
+  case planGenerateKey defaultRules m0 st pbeDes3Mech frame
+      (pbeTmpl ckkDes3 ++ [(AttrValueLen, ValULong 16)]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "des3-16 code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("DES3-16 must deny, got: " ++ show other)
+  case planGenerateKey defaultRules m0 st pbeDes3Mech frame
+      (pbeTmpl ckkDes3 ++ [(AttrValueLen, ValULong 24)]) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("DES3-24 must plan, got: " ++ show other)
+  case planGenerateKey defaultRules m0 st pbeDes2Mech frame
+      (pbeTmpl ckkDes2 ++ [(AttrValueLen, ValULong 24)]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "des2-24 code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("DES2-24 must deny, got: " ++ show other)
+  -- A foreign key type refuses.
+  case planGenerateKey defaultRules m0 st pbeDes3Mech frame (pbeTmpl ckkAes) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "aes-type code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("AES type must deny, got: " ++ show other)
+  -- Malformed frames refuse with the parameter code.
+  mapM_ (\params ->
+    case planGenerateKey defaultRules m0 st pbeDes3Mech params (pbeTmpl ckkDes3) of
+      KeyDenied (KeyDeny code _) ->
+        assertEqual ("params code " ++ show params) CKR_MECHANISM_PARAM_INVALID code
+      other -> assertFailure ("params must deny, got: " ++ show other))
+    [ BS.empty
+    , BS.take 10 frame
+    , encodePbeParams 0 pbePw pbeSalt
+    , encodePbeParams (fromIntegral maxPbeIters + 1) pbePw pbeSalt
+    ]
+
+caseRealPbeVector :: IO ()
+caseRealPbeVector = withRealEnv $ \env -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let answer = answerReal env
+      frame = encodePbeParams 1024 pbePw pbeSalt
+      gen mech tmpl = case planGenerateKey defaultRules m0 st mech frame tmpl of
+        KeyEffect pw fx -> do
+          res <- answer m0 fx
+          c <- finishCommit m0 st pw res 1
+          let iv = case [bs | NativeOutput (RegionBytes m _) bs <- pcOutputs c, m == "iv"] of
+                [bs] -> bs
+                _ -> BS.empty
+          m' <- expectRight (publishDelta m0 (pcDelta c))
+          pure (m', iv)
+        other -> assertFailure ("PBE must plan: " ++ show other) >> undefined
+  (m1, iv3) <- gen pbeDes3Mech (pbeTmpl ckkDes3)
+  assertEqual "des3 iv" (hex "f7eb3b1c7d9ce2a0") iv3
+  case [ost | (_, ost) <- Map.toList (mObjects m1), keyBytesOf ost /= Nothing] of
+    [ost] -> assertEqual "des3 key"
+      (Just (hex "73b93bb0f797b564f7d90216b37f0ee9e9bc8004021fd39d"))
+      (keyBytesOf ost)
+    _ -> assertFailure "DES3 keygen must mint exactly one key"
+  (m2, iv2) <- gen pbeDes2Mech (pbeTmpl ckkDes2)
+  assertEqual "des2 iv" (hex "f7eb3b1c7d9ce2a0") iv2
+  case [mat | (_, ost) <- Map.toList (mObjects m2), Just mat <- [keyBytesOf ost]] of
+    [mat] -> assertEqual "des2 key" (hex "73b93bb0f797b564f7d90216b37f0ee9") mat
+    _ -> assertFailure "DES2 keygen must mint exactly one key"

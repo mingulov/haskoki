@@ -217,7 +217,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
-import Haskoki.FFI.NativeParams (DerivedKeySlot (..), KeyMatSlots (..), normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsKeyMatParams, normalizeTls12KeyMatParams, normalizeTls12KeySafeParams, normalizeTlsPrfParams)
+import Haskoki.FFI.NativeParams (DerivedKeySlot (..), KeyMatSlots (..), normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsKeyMatParams, normalizeTls12KeyMatParams, normalizeTls12KeySafeParams, normalizeTlsPrfParams, normalizePbeParams)
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
@@ -257,6 +257,7 @@ import Haskoki.Recipe.Sp800108 (Sp800Recipe (..), sp800RecipeFor)
 import Haskoki.Recipe.TlsKdf (TlsKdfKind (..), TlsKdfRecipe (..), tlsKdfRecipeFor)
 import Haskoki.Recipe.ByteOps (ByteOpsKind (..), ByteOpsRecipe (..), byteOpsRecipeFor)
 import Haskoki.Recipe.TlsKeyMat (TlsKeyMatKind (..), TlsKeyMatRecipe (tkmKind), tlsKeyMatRecipeFor)
+import Haskoki.Recipe.Pbe (pbeRecipeFor)
 import Haskoki.Recipe.Ike (IkeKind (..), IkeRecipe (..), ikeRecipeFor)
 import Haskoki.Recipe.TlsPrf (tlsPrfRecipeFor)
 import Haskoki.Operation.KeyManagement
@@ -2210,11 +2211,13 @@ withSessionState inst (CULong h) k =
       Just st -> k st
 
 -- | Generate one secret key from a template frame. The
--- pre-master keygens take raw version bytes and PBKD2 takes the
+-- pre-master keygens take raw version bytes, PBKD2 takes the
 -- native @CK_PKCS5_PBKD2_PARAMS2@ struct (normalized onto
 -- @pbkd2-params\/2@ here; unmappable images pass through raw so
--- the recipe refusal is unchanged); the planner refuses params
--- on every other keygen.
+-- the recipe refusal is unchanged), and PBE takes the native
+-- @CK_PBE_PARAMS@ struct (normalized onto @pbe-params\/1@
+-- plus the caller IV slot, written on success only); the
+-- planner refuses params on every other keygen.
 haskokiStdGenerateKey
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> Ptr Word8 -> CULong -> Ptr CULong -> IO CULong
@@ -2231,19 +2234,48 @@ haskokiStdGenerateKey ctx h (CULong mech) pFrame (CULong frameLen)
           (_, Left _) -> pure ckrArgsBad
           (Right entries, Right raw) -> do
             let mid = MechanismId (fromIntegral mech)
-            params <- case kdfRecipeFor mid of
+            (params, mIvSlot) <- case kdfRecipeFor mid of
               Just r | rkPbkd2 r ->
-                fromMaybe raw <$> normalizePbkd2Params2 pParams paramsLen
-              _ -> pure raw
+                (, Nothing) . fromMaybe raw <$> normalizePbkd2Params2 pParams paramsLen
+              _ | Just _ <- pbeRecipeFor mid -> do
+                mPbe <- normalizePbeParams pParams paramsLen
+                pure $ case mPbe of
+                  Just (b, slot) -> (b, Just slot)
+                  Nothing -> (raw, Nothing)
+              _ -> pure (raw, Nothing)
             m <- snapshotModel (siEnv inst)
-            eHs <- runKeyPlan inst m st
-              (planGenerateKey (envRules (siEnv inst)) m st mid params entries)
-            case eHs of
-              Left rv -> pure rv
-              Right [oh] -> do
-                poke phKey (CULong oh)
-                pure ckrOk
-              Right _ -> pure ckrGeneralError
+            case mIvSlot of
+              Just slot -> do
+                eOut <- runKeyPlanFull inst m st
+                  (planGenerateKey (envRules (siEnv inst)) m st mid params entries)
+                case eOut of
+                  Left rv -> pure rv
+                  Right outs -> publishPbeKey slot outs phKey
+              Nothing -> do
+                eHs <- runKeyPlan inst m st
+                  (planGenerateKey (envRules (siEnv inst)) m st mid params entries)
+                case eHs of
+                  Left rv -> pure rv
+                  Right [oh] -> do
+                    poke phKey (CULong oh)
+                    pure ckrOk
+                  Right _ -> pure ckrGeneralError
+
+-- | Publish one PBE keygen result: the handle into the caller
+-- slot and the 8 IV bytes into the params-embedded buffer.
+-- Anything off-shape fails closed with zero partial writes.
+publishPbeKey :: Ptr Word8 -> [NativeOutput] -> Ptr CULong -> IO CULong
+publishPbeKey slot outs phKey =
+  case (handles, ivs) of
+    ([h], [iv]) | BS.length iv == 8 -> do
+      poke phKey (CULong h)
+      BSU.unsafeUseAsCString iv $ \src ->
+        copyBytes (castPtr slot) src 8
+      pure ckrOk
+    _ -> pure ckrGeneralError
+  where
+    handles = [w | NativeOutput (RegionHandle "key") bs <- outs, Just w <- [beWord64 bs]]
+    ivs = [bs | NativeOutput (RegionBytes n _) bs <- outs, n == "iv"]
 
 -- | Generate a key pair from public/private template frames.
 haskokiStdGenerateKeyPair

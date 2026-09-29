@@ -188,6 +188,12 @@ import Haskoki.Recipe.TlsKeyMat
   , tlsKeyMatCodecFor
   , tlsKeyMatRecipes
   )
+import Haskoki.Recipe.Pbe
+  ( PbeRecipe (..)
+  , pbeCodecFor
+  , pbeKeyLen
+  , pbeRecipes
+  )
 import Haskoki.Recipe.Ike
   ( IkeRecipe (..)
   , ikeCodecFor
@@ -1070,6 +1076,23 @@ tlsKeyMatDescs =
   | r <- tlsKeyMatRecipes
   ]
 
+-- | The PBE behavior group, derived from the recipe table: one
+-- descriptor per recipe row, codec from 'pbeCodecFor', the
+-- generate-key route citing the planner case (A20), the
+-- synthetic construction (A37), and the real vectors (A39).
+-- Both rows predate 2.40; key bounds are the fixed widths in
+-- bits (DES2: 128, DES3: 192).
+pbeDescs :: [Descriptor]
+pbeDescs =
+  [ promotedDesc (pbeName r) allBaselines FamilyKeyGen
+      (pbeCodecFor r)
+      [ mechRoute OpGenerateKey (pbeName r) ["A20", "A37", "A39"]
+      ]
+      KeyBits (fromIntegral bits) (fromIntegral bits)
+  | r <- pbeRecipes
+  , let bits = 8 * pbeKeyLen (pbeKind r)
+  ]
+
 -- | The encrypt-data behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from
 -- 'encryptDataCodecFor', the derive route citing the planner case
@@ -1484,7 +1507,7 @@ curatedRegistry =
         , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
-          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ byteOpsDescs ++ tlsKeyMatDescs ++ otpDescs ++ encryptDataDescs
+          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ byteOpsDescs ++ tlsKeyMatDescs ++ pbeDescs ++ otpDescs ++ encryptDataDescs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

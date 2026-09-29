@@ -22,7 +22,7 @@ import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (alignment, pokeByteOff, sizeOf)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertEqual, testCase)
+import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 
 import Haskoki.FFI.NativeParams
   ( chachaPolyNativeSize
@@ -51,6 +51,8 @@ import Haskoki.FFI.NativeParams
   , normalizeTlsKeyMatParams
   , normalizeTls12KeyMatParams
   , normalizeTls12KeySafeParams
+  , normalizePbeParams
+  , pbeParamsNativeSize
   , tlsKeyMatNativeSize
   , tls12KeyMatNativeSize
   , KeyMatSlots (..)
@@ -85,6 +87,7 @@ import Haskoki.Recipe.ByteOps (encodeByteOpsParams, byteOpsParamsValid, byteOpsR
 import Haskoki.Recipe.Ike (encodeIkeParams, ikeParamsValid, ikeRecipeFor)
 import Haskoki.Recipe.Sp800108 (Sp800Mode (..), decodeSp800Params)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams, tlsKeyMatParamsValid, tlsKeyMatRecipeFor)
+import Haskoki.Recipe.Pbe (encodePbeParams, pbeParamsValid, pbeRecipeFor)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Recipe.Gmac (gmacParamsValid, gmacRecipeFor)
 import Haskoki.Recipe.MlDsa
@@ -1092,6 +1095,58 @@ spec = testGroup "native mechanism params"
         pokeByteOff out (5 * w) (nullPtr :: Ptr Word8)
         normalizeTls12KeySafeParams p (fromIntegral tls12KeyMatNativeSize)
       check "null iv128" unbuffered
+  , testCase "pbe native struct translates to canonical plus iv slot" $ do
+      let w = sizeOf (undefined :: CULong)
+          psz = sizeOf (undefined :: Ptr Word8)
+          pw = "TestPassword123!" :: BS.ByteString
+          salt = BS.pack [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]
+          mid = MechanismId (mustGeneratedId "CKM_PBE_SHA1_DES3_EDE_CBC")
+      got <- BS.useAsCStringLen pw $ \(pp, _) ->
+        BS.useAsCStringLen salt $ \(sp, _) ->
+          allocaBytes 8 $ \iv ->
+            allocaBytes pbeParamsNativeSize $ \p -> do
+              pokeByteOff p 0 (castPtr iv :: Ptr Word8)
+              pokeByteOff p psz (castPtr pp :: Ptr Word8)
+              pokeByteOff p (psz + w) (CULong 16)
+              pokeByteOff p (psz + 2 * w) (castPtr sp :: Ptr Word8)
+              pokeByteOff p (psz + 3 * w) (CULong 8)
+              pokeByteOff p (psz + 4 * w) (CULong 1024)
+              normalizePbeParams p (fromIntegral pbeParamsNativeSize)
+      case got of
+        Just (canon, slot) -> do
+          assertEqual "canonical" (encodePbeParams 1024 pw salt) canon
+          case pbeRecipeFor mid of
+            Just r -> assertEqual "recipe accepts" True (pbeParamsValid r canon)
+            Nothing -> fail "pbe recipe missing"
+          assertBool "iv slot live" (slot /= nullPtr)
+        Nothing -> fail "pbe struct refused"
+  , testCase "pbe bad native structs refuse" $ do
+      let w = sizeOf (undefined :: CULong)
+          psz = sizeOf (undefined :: Ptr Word8)
+          pw = "TestPassword123!" :: BS.ByteString
+          salt = BS.pack [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]
+          build action =
+            BS.useAsCStringLen pw $ \(pp, _) ->
+              BS.useAsCStringLen salt $ \(sp, _) ->
+                allocaBytes 8 $ \iv ->
+                  allocaBytes pbeParamsNativeSize $ \p -> do
+                    pokeByteOff p 0 (castPtr iv :: Ptr Word8)
+                    pokeByteOff p psz (castPtr pp :: Ptr Word8)
+                    pokeByteOff p (psz + w) (CULong 16)
+                    pokeByteOff p (psz + 2 * w) (castPtr sp :: Ptr Word8)
+                    pokeByteOff p (psz + 3 * w) (CULong 8)
+                    pokeByteOff p (psz + 4 * w) (CULong 1024)
+                    action p
+      short <- build $ \p -> normalizePbeParams p 40
+      assertEqual "short image refused" Nothing short
+      nullIv <- build $ \p -> do
+        pokeByteOff p 0 (nullPtr :: Ptr Word8)
+        normalizePbeParams p (fromIntegral pbeParamsNativeSize)
+      assertEqual "null iv refused" Nothing nullIv
+      nullPw <- build $ \p -> do
+        pokeByteOff p psz (nullPtr :: Ptr Word8)
+        normalizePbeParams p (fromIntegral pbeParamsNativeSize)
+      assertEqual "null password refused" Nothing nullPw
   , testCase "sp800 additional-keys chase feeds templates plus slots" $ do
       let w = sizeOf (undefined :: CULong)
           pw = sizeOf (undefined :: Ptr Word8)
