@@ -217,7 +217,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
-import Haskoki.FFI.NativeParams (DerivedKeySlot (..), KeyMatSlots (..), normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsKeyMatParams, normalizeTls12KeyMatParams, normalizeTls12KeySafeParams, normalizeTlsPrfParams, normalizePbeParams)
+import Haskoki.FFI.NativeParams (DerivedKeySlot (..), KeyMatSlots (..), normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsKeyMatParams, normalizeTls12KeyMatParams, normalizeTls12KeySafeParams, normalizeSsl3MasterParams, normalizeSsl3KeyMatParams, normalizeTlsPrfParams, normalizePbeParams)
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
@@ -256,6 +256,7 @@ import Haskoki.Recipe.Kdf (KdfRecipe (..), kdfRecipeFor)
 import Haskoki.Recipe.Sp800108 (Sp800Recipe (..), sp800RecipeFor)
 import Haskoki.Recipe.TlsKdf (TlsKdfKind (..), TlsKdfRecipe (..), tlsKdfRecipeFor)
 import Haskoki.Recipe.ByteOps (ByteOpsKind (..), ByteOpsRecipe (..), byteOpsRecipeFor)
+import Haskoki.Recipe.Ssl3 (Ssl3Kind (..), Ssl3Recipe (ssl3Kind), ssl3RecipeFor)
 import Haskoki.Recipe.TlsKeyMat (TlsKeyMatKind (..), TlsKeyMatRecipe (tkmKind), tlsKeyMatRecipeFor)
 import Haskoki.Recipe.Pbe (pbeRecipeFor)
 import Haskoki.Recipe.Ike (IkeKind (..), IkeRecipe (..), ikeRecipeFor)
@@ -3062,7 +3063,7 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
     (CULong baseH) pFrame (CULong frameLen) phKey =
   withStdCtx ctx $ \inst ->
     let mid = MechanismId (fromIntegral mech)
-    in if phKey == nullPtr && not (isKeyMatTrio mid)
+    in if phKey == nullPtr && not (isKeyMatMulti mid)
       then pure ckrArgsBad
       else withSessionState inst h $ \st -> do
         eParams <- decodeInputBytes pParams paramsLen
@@ -3119,6 +3120,12 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
           pure $ case mKm of
             Just (b, slots) -> Just (b, [], WbKeyMat slots)
             Nothing -> Nothing
+      | Just r <- ssl3RecipeFor mid
+      , ssl3Kind r == Ssl3KeyMat = Just $ do
+          mKm <- normalizeSsl3KeyMatParams pParams paramsLen
+          pure $ case mKm of
+            Just (b, slots) -> Just (b, [], WbKeyMat slots)
+            Nothing -> Nothing
       | otherwise = Nothing
     deriveBlob mid raw
       | isJust (ecdhRecipeFor mid) =
@@ -3130,6 +3137,9 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
           fromMaybe raw <$> normalizeDhX942Params pParams paramsLen
       | isJust (tlsPrfRecipeFor mid) =
           fromMaybe raw <$> normalizeTlsPrfParams pParams paramsLen
+      | Just r <- ssl3RecipeFor mid
+      , ssl3Kind r == Ssl3Master || ssl3Kind r == Ssl3MasterDh =
+          fromMaybe raw <$> normalizeSsl3MasterParams pParams paramsLen
       | Just r <- tlsKdfRecipeFor mid = case tkKind r of
           TlsMaster10 ->
             fromMaybe raw <$> normalizeTlsKdfMasterParams pParams paramsLen
@@ -3176,18 +3186,29 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
 -- | Mechanisms served by 'haskokiStdDeriveOpaque': the ECDH rows,
 -- the DH rows, the SHA-KDF rows, TLS-PRF, the SP 800-108 rows,
 -- the TLS-KDF rows, the IKE rows, the byte-op rows, the
--- key-material rows, and the encrypt-data rows (PBKD2 excluded:
--- no native decoder).
+-- key-material rows, the SSL3 derive rows, and the
+-- encrypt-data rows (PBKD2 excluded: no native decoder).
 isOpaqueDeriveMech :: MechanismId -> Bool
 isOpaqueDeriveMech mid =
-  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || isJust (sp800RecipeFor mid) || isJust (tlsKdfRecipeFor mid) || isJust (ikeRecipeFor mid) || isJust (byteOpsRecipeFor mid) || isJust (tlsKeyMatRecipeFor mid) || isJust (encryptDataRecipeFor mid) || case kdfRecipeFor mid of
+  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || isJust (sp800RecipeFor mid) || isJust (tlsKdfRecipeFor mid) || isJust (ikeRecipeFor mid) || isJust (byteOpsRecipeFor mid) || isJust (tlsKeyMatRecipeFor mid) || isJust (encryptDataRecipeFor mid) || isSsl3DeriveMech mid || case kdfRecipeFor mid of
     Just r -> not (rkPbkd2 r)
     Nothing -> False
+  where
+    isSsl3DeriveMech m = case ssl3RecipeFor m of
+      Just r -> case ssl3Kind r of
+        Ssl3Master -> True
+        Ssl3MasterDh -> True
+        Ssl3KeyMat -> True
+        _ -> False
+      Nothing -> False
 
--- | The key-material trio (the only opaque rows whose outputs
--- live in the mechanism params, so a NULL @phKey@ is legal).
-isKeyMatTrio :: MechanismId -> Bool
-isKeyMatTrio = isJust . tlsKeyMatRecipeFor
+-- | The key-material multi-output rows (the only opaque rows
+-- whose outputs live in the mechanism params, so a NULL
+-- @phKey@ is legal): the TLS trio plus the SSL3 row.
+isKeyMatMulti :: MechanismId -> Bool
+isKeyMatMulti mid = isJust (tlsKeyMatRecipeFor mid) || case ssl3RecipeFor mid of
+  Just r -> ssl3Kind r == Ssl3KeyMat
+  Nothing -> False
 
 -- | Key-material struct normalizer by row kind: the TLS 1.0
 -- shape, the TLS 1.2 shape, or the key-safe shape (which

@@ -1935,6 +1935,79 @@ skipped (t7692)
   11m tree (`dist-release/haskoki-0.3.0.0`,
   evidence 16/16).
 
+## Round 35: SSL3 quintet slice 11n (fast r63→r64 + KAT r36→r37)
+
+- r64: 4413 passed / 18 failed / 709
+  xfailed / 3892 skipped (t9032)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r64-results.json`).
+  r63→r64: +44 pass / +0 fail / +16 xfail /
+  +41 skip (+101 collected).
+- Movers r63→r64 (unit `counts`, exact):
+  `test_ssl3` 1p/20s/2x → 21p/2x (the
+  quintet goes live: all 20 mechanism-gated
+  skips flip to pass; the 2 xfails are the
+  unchanged pre-master template legs);
+  `test_crypto_weakness` 23p/4s → 25p/2s
+  (the two SSL3 MAC deprecated-mechanism
+  legs flip skip→pass, honestly flagged
+  POODLE CRITICAL in the compliance notes);
+  `test_mech_flags` 779p/1553s/8x →
+  793p/1584s/8x; `test_mech_probe` 780s →
+  795s; `test_mech_derive` +3s;
+  `test_mech_negative` 267p/2f/747s/310x →
+  275p/2f/759s/318x; `test_mech_multipart`
+  +4x; `test_mech_sign` +2s/+4x.
+  +44 = 20 + 2 + 14 + 8; skips −20 −2 + 31
+  + 15 + 3 + 12 + 2 = +41; xfails +8 + 4 +
+  4 = +16. No outcome moves pass→xfail or
+  xfail→fail.
+- The 16 new xfails are one population with
+  one cause: the SSL3 MAC registry entries
+  carry no `param_recipe` (default style
+  `"none"`), so the generic sign/verify,
+  multipart, and registry-negative matrix
+  legs send NULL params, which the token
+  spec-correctly refuses with
+  `CKR_MECHANISM_PARAM_INVALID` — the same
+  refusal the HMAC_GENERAL rows give NULL
+  params. The oracle records these as
+  "advertised but not operational" (sign,
+  multipart) and wrong-key-type
+  PARAM_INVALID-before-key-type-check plus
+  MAC-row keygen rejection (negative).
+  The dedicated `test_ssl3` MAC legs pass
+  real bit-length params (128/160) and go
+  20/20 green, grounding the BITS reading
+  of `CK_MAC_GENERAL_PARAMS` for these two
+  rows.
+- Zero regressions: the 18 failures are
+  identical by id to r63 (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS
+  P11C-006).
+- r37: 82852 passed / 24 failed / 1733
+  xfailed / 30607 skipped (t115216)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r37-results.json`).
+  r36→r37: +44 pass / +0 fail / +16 xfail /
+  +41 skip (+101 — the fast-matrix units
+  repeat r63→r64 exactly, unit for unit: no
+  KAT-only delta, SSL3 carries no `@slow`
+  legs beyond fast's). The 24 failures are
+  identical by id to r36 (the 18 fast
+  failures plus the 6 pre-existing
+  KAT-only `test_acvp_slhdsa` legs).
+- Proxy note (consumer parity, not the
+  oracle lanes): the pinned shim models
+  the 0x372 keymat shape natively (TLS1.2
+  pattern, dummy phKey + 0x82
+  embedded-handle pin), so only the
+  `mac_general` override is load-bearing
+  for the MAC rows (proven by negative
+  control); master-row override dupes
+  removed.
+- Bundle note: r64/r37 run on the final
+  11n tree (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

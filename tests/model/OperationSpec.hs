@@ -110,6 +110,7 @@ import Haskoki.Outcome (ResourceRelease (..))
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
 import Haskoki.Recipe.Ccm (encodeCcmParams)
 import Haskoki.Recipe.Eddsa (encodeEddsaParams)
+import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.MlDsa (MldsaHedge (..), encodeMldsaParams)
 import Haskoki.Registry
   ( Descriptor (..)
@@ -182,6 +183,7 @@ spec = testGroup "operation lifecycles"
   , testCase "sign short buffer retry; failure terminates" caseSignShortFail
   , testCase "raw DSA digest floor refuses short input" caseRawDsaFloor
   , testCase "EdDSA init requires explicit pure, refuses rest" caseEddsaParams
+  , testCase "SSL3 MAC init takes whole-byte bit lengths" caseSsl3MacParams
   , testCase "ML-DSA init admits empty, refuses bad hedge/overlong" caseMldsaParams
   , testCase "recover roundtrip" caseRecoverRoundtrip
   , testCase "recover oversize data fails terminally" caseRecoverOversize
@@ -241,6 +243,12 @@ dsaSha256Mech = MechanismId 0x14
 
 eddsaMech :: MechanismId
 eddsaMech = MechanismId 0x1057
+
+ssl3Md5Mech :: MechanismId
+ssl3Md5Mech = MechanismId 0x380
+
+ssl3Sha1Mech :: MechanismId
+ssl3Sha1Mech = MechanismId 0x381
 
 mldsaMech :: MechanismId
 mldsaMech = MechanismId 0x1D
@@ -1445,6 +1453,42 @@ caseEddsaParams = do
         (InitArgs OpVerify eddsaMech (encodeEddsaParams True BS.empty)
           (Just signKey) Nothing Nothing)
   assertEqual "eddsa verify prehash refused" CKR_ARGUMENTS_BAD (ioCode i4)
+
+ssl3MacSignEnv :: OpEnv
+ssl3MacSignEnv = testEnv
+  { oeCaps = mkCapabilities
+      [ (ssl3Md5Mech, OpSign), (ssl3Md5Mech, OpVerify)
+      , (ssl3Sha1Mech, OpSign), (ssl3Sha1Mech, OpVerify)
+      ]
+  }
+
+caseSsl3MacParams :: IO ()
+caseSsl3MacParams = do
+  -- NULL params refuse: the length is required (PARAM_INVALID, exact).
+  let (_, i0) = initOperation ssl3MacSignEnv emptySessionOps testSession
+        (InitArgs OpSign ssl3Md5Mech BS.empty (Just signKey) Nothing Nothing)
+  assertEqual "ssl3 NULL refused" CKR_MECHANISM_PARAM_INVALID (ioCode i0)
+  let (_, i0v) = initOperation ssl3MacSignEnv emptySessionOps testSession
+        (InitArgs OpVerify ssl3Md5Mech BS.empty (Just signKey) Nothing Nothing)
+  assertEqual "ssl3 verify NULL refused" CKR_MECHANISM_PARAM_INVALID (ioCode i0v)
+  -- Whole-byte bit lengths admit.
+  let (_, i1) = initOperation ssl3MacSignEnv emptySessionOps testSession
+        (InitArgs OpSign ssl3Md5Mech (encodeMacGeneral 128)
+          (Just signKey) Nothing Nothing)
+  assertEqual "ssl3 md5 128 admits" CKR_OK (ioCode i1)
+  let (_, i2) = initOperation ssl3MacSignEnv emptySessionOps testSession
+        (InitArgs OpSign ssl3Sha1Mech (encodeMacGeneral 160)
+          (Just signKey) Nothing Nothing)
+  assertEqual "ssl3 sha1 160 admits" CKR_OK (ioCode i2)
+  -- Fractional bytes and over-width refuse with the recipe code.
+  let (_, i3) = initOperation ssl3MacSignEnv emptySessionOps testSession
+        (InitArgs OpSign ssl3Md5Mech (encodeMacGeneral 129)
+          (Just signKey) Nothing Nothing)
+  assertEqual "ssl3 md5 129 refused" CKR_MECHANISM_PARAM_INVALID (ioCode i3)
+  let (_, i4) = initOperation ssl3MacSignEnv emptySessionOps testSession
+        (InitArgs OpSign ssl3Sha1Mech (encodeMacGeneral 168)
+          (Just signKey) Nothing Nothing)
+  assertEqual "ssl3 sha1 168 refused" CKR_MECHANISM_PARAM_INVALID (ioCode i4)
 
 mldsaSignEnv :: OpEnv
 mldsaSignEnv = testEnv

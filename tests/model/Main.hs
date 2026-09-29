@@ -60,6 +60,7 @@ import qualified RecipePssSpec
 import qualified RecipeRsaSpec
 import qualified RecipeSlhDsaSpec
 import qualified RecipeSp800108Spec
+import qualified RecipeSsl3Spec
 import qualified RecipeTlsKdfSpec
 import qualified RecipeTlsKeyMatSpec
 import qualified RecipeTlsPrfSpec
@@ -120,6 +121,7 @@ main = defaultMain $ testGroup "haskoki model + lifecycle"
   , RecipePssSpec.spec
   , RecipeRsaSpec.spec
   , RecipeSlhDsaSpec.spec
+  , RecipeSsl3Spec.spec
   , RecipeSp800108Spec.spec
   , RecipeTlsKdfSpec.spec
   , RecipeTlsKeyMatSpec.spec

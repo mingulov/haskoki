@@ -92,6 +92,12 @@ import Haskoki.Recipe.Eddsa (eddsaParamsValid, eddsaRecipeFor)
 import Haskoki.Recipe.Gcm (gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.Chacha20 (chachaParamsValid, chachaRecipeFor)
 import Haskoki.Recipe.Hmac (hmacParamsValid, hmacRecipeFor)
+import Haskoki.Recipe.Ssl3
+  ( Ssl3Kind (..)
+  , Ssl3Recipe (..)
+  , ssl3ParamsValid
+  , ssl3RecipeFor
+  )
 import Haskoki.Recipe.MlDsa (mldsaParamsValid, mldsaRecipeFor)
 import Haskoki.Recipe.SlhDsa (slhdsaParamsValid, slhdsaRecipeFor)
 import Haskoki.Recipe.Otp (hotpParamsValid, hotpRecipeFor)
@@ -348,6 +354,11 @@ checkMechParams args
   , not (hmacParamsValid r (iaParams args)) =
       Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "HMAC mechanism parameters rejected by the recipe")
+  | Just r <- ssl3RecipeFor (iaMech args)
+  , ssl3Kind r == Ssl3Md5Mac || ssl3Kind r == Ssl3Sha1Mac
+  , not (ssl3ParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
+        "SSL3 MAC mechanism parameters rejected by the recipe")
   | Just r <- cipherRecipeFor (iaMech args)
   , not (cipherParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD

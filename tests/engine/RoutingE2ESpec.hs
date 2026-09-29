@@ -132,6 +132,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: key-material vectors + refuse" caseDriverKeyMat
   , testCase "driver: pbkd2 keygen vector" caseDriverPbkd2Gen
   , testCase "driver: pbe keygen vectors" caseDriverPbe
+  , testCase "driver: ssl3 mac vectors + refuse" caseDriverSsl3Mac
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
   , testCase "driver: blake2b-512 digest/hmac/general + refuse" caseDriverBlake2b512
@@ -2039,6 +2040,50 @@ caseDriverPbe = withBackend $ \env -> do
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badLen <- gen des3 frame 20
   case badLen of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+-- | SSL3 MACs through the driver over real MD5\/SHA-1: full-width
+-- RFC 6101 vectors (hashlib-checked), bit truncation as the tag
+-- prefix, verify verdicts, and typed refusals.
+caseDriverSsl3Mac :: IO ()
+caseDriverSsl3Mac = withBackend $ \env -> do
+  let md5 = MechanismId 0x380
+      sha1 = MechanismId 0x381
+      secOid = ObjectId 95
+      res oid
+        | oid == secOid = Just (KeyBytes (BS.pack [0 .. 15]))
+        | otherwise = Nothing
+      msg = "test handshake data"
+      signAs mech params =
+        runEffect env res (FxSign mech (Just secOid) params msg)
+  t16 <- signAs md5 (encodeMacGeneral 128)
+  case t16 of
+    GotBytes bs -> assertEqual "md5 vector"
+      (hex "f8adc4aa2994ad2296ec759d1a321b0b") bs
+    other -> assertFailure ("expected tag bytes, got: " ++ show other)
+  t20 <- signAs sha1 (encodeMacGeneral 160)
+  case t20 of
+    GotBytes bs -> assertEqual "sha1 vector"
+      (hex "d50aeadef9ad7678028f4188d05989fc869e57ca") bs
+    other -> assertFailure ("expected tag bytes, got: " ++ show other)
+  t8 <- signAs md5 (encodeMacGeneral 64)
+  case (t16, t8) of
+    (GotBytes full, GotBytes short) ->
+      assertEqual "truncation is the prefix" (BS.take 8 full) short
+    other -> assertFailure ("expected tag bytes, got: " ++ show other)
+  vOk <- runEffect env res (FxVerify md5 (Just secOid) (encodeMacGeneral 128)
+    msg (hex "f8adc4aa2994ad2296ec759d1a321b0b"))
+  assertEqual "mac verifies" (GotValid True) vOk
+  vBad <- runEffect env res (FxVerify md5 (Just secOid) (encodeMacGeneral 128)
+    msg (hex "f8adc4aa2994ad2296ec759d1a321b0c"))
+  assertEqual "tamper refuses" (GotValid False) vBad
+  badBits <- signAs md5 (encodeMacGeneral 129)
+  case badBits of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  badWidth <- signAs sha1 (encodeMacGeneral 168)
+  case badWidth of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
 

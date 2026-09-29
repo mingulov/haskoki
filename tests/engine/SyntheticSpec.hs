@@ -82,6 +82,7 @@ import Haskoki.Recipe.Gcm (encodeGcmParams)
 import Haskoki.Recipe.Hmac (encodeMacGeneral)
 import Haskoki.Recipe.Kdf (encodePbkd2Params)
 import Haskoki.Recipe.Pbe (encodePbeParams)
+import Haskoki.Recipe.Ssl3 (encodeSsl3KeyMatParams, encodeSsl3MasterParams)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
@@ -149,6 +150,7 @@ spec = testGroup "synthetic engine"
   , testCase "byte-op rows separate and refuse" caseByteOps
   , testCase "key-material rows separate and refuse" caseKeyMat
   , testCase "PBE rows separate and refuse" casePbe
+  , testCase "SSL3 rows separate and refuse" caseSsl3
   , testCase "SP800-108 modes separate, length bound" caseSp800
   , testCase "HOTP codes separate, keygen lengths" caseHotp
   , testCase "Specials refuse explicitly" caseSpecialsRefuse
@@ -2632,6 +2634,90 @@ casePbe = withSynth "14" $ \env -> do
   case badLen of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("off width: expected Failed, got: " ++ show other)
+
+-- | SSL3 through the driver over the synthetic digest stream:
+-- master width, key-block width, determinism, separation
+-- across rows/randoms/keys, MAC bit widths plus truncation
+-- prefixes, verify verdicts, and typed refusals. (Exact KAT
+-- bytes live on the real backend.)
+caseSsl3 :: IO ()
+caseSsl3 = withSynth "14" $ \env -> do
+  let mst = MechanismId 0x371
+      mstDh = MechanismId 0x373
+      kmat = MechanismId 0x372
+      md5 = MechanismId 0x380
+      sha1 = MechanismId 0x381
+      secOid = ObjectId 92
+      oddOid = ObjectId 93
+      res oid
+        | oid == secOid = Just (KeyBytes (BS.pack [0 .. 47]))
+        | oid == oddOid = Just (KeyBytes (BS.pack [1 .. 48]))
+        | otherwise = Nothing
+      cr = BS.pack [0 .. 27]
+      sr = BS.pack [28 .. 55]
+      cr2 = BS.pack [1 .. 28]
+      fm = encodeSsl3MasterParams cr sr
+      fm2 = encodeSsl3MasterParams cr2 sr
+      fk = encodeSsl3KeyMatParams 16 16 16 cr sr
+      deriveAs mech oid params outLen =
+        runEffect env res (FxDerive mech (Just oid) Nothing params BS.empty outLen)
+          >>= expectBytes
+      signAs mech oid params input =
+        runEffect env res (FxSign mech (Just oid) params input)
+          >>= expectBytes
+      expectFailed label fx = do
+        r <- runEffect env res fx
+        case r of
+          GotCryptoError (CryptoFailed _) -> pure ()
+          other -> assertFailure ("expected Failed " ++ label ++ ", got: " ++ show other)
+  m48 <- deriveAs mst secOid fm 48
+  assertEqual "master width" 48 (BS.length m48)
+  m48b <- deriveAs mst secOid fm 48
+  assertEqual "master deterministic" m48 m48b
+  mDh <- deriveAs mstDh secOid fm 48
+  assertEqual "dh shares the construction" m48 mDh
+  mKey <- deriveAs mst oddOid fm 48
+  assertBool "keys separated" (m48 /= mKey)
+  mRnd <- deriveAs mst secOid fm2 48
+  assertBool "randoms separated" (m48 /= mRnd)
+  blk <- deriveAs kmat secOid fk 96
+  assertEqual "block width" 96 (BS.length blk)
+  blk0 <- deriveAs kmat secOid (encodeSsl3KeyMatParams 0 16 0 cr sr) 32
+  assertEqual "key-only width" 32 (BS.length blk0)
+  t16 <- signAs md5 secOid (encodeMacGeneral 128) "test handshake data"
+  assertEqual "md5 width" 16 (BS.length t16)
+  t16b <- signAs md5 secOid (encodeMacGeneral 128) "test handshake data"
+  assertEqual "mac deterministic" t16 t16b
+  t8 <- signAs md5 secOid (encodeMacGeneral 64) "test handshake data"
+  assertEqual "truncation is the prefix" (BS.take 8 t16) t8
+  t20 <- signAs sha1 secOid (encodeMacGeneral 160) "test handshake data"
+  assertEqual "sha1 width" 20 (BS.length t20)
+  assertBool "hashes separated" (BS.take 16 t20 /= t16)
+  tKey <- signAs md5 oddOid (encodeMacGeneral 128) "test handshake data"
+  assertBool "mac keys separated" (t16 /= tKey)
+  vOk <- runEffect env res (FxVerify md5 (Just secOid) (encodeMacGeneral 128)
+    "test handshake data" t16)
+  assertEqual "mac verifies" (GotValid True) vOk
+  vBad <- runEffect env res (FxVerify md5 (Just secOid) (encodeMacGeneral 128)
+    "test handshake data" (BS.map succ t16))
+  assertEqual "tamper refuses" (GotValid False) vBad
+  expectFailed "junk master frame"
+    (FxDerive mst (Just secOid) Nothing BS.empty BS.empty 48)
+  expectFailed "zero key frame"
+    (FxDerive kmat (Just secOid) Nothing
+      (encodeSsl3KeyMatParams 16 0 16 cr sr) BS.empty 64)
+  expectFailed "past-191-round block"
+    (FxDerive kmat (Just secOid) Nothing
+      (encodeSsl3KeyMatParams 2000 16 16 cr sr) BS.empty 96)
+  expectFailed "fractional mac bits"
+    (FxSign md5 (Just secOid) (encodeMacGeneral 129) "test handshake data")
+  expectFailed "over-width mac bits"
+    (FxSign sha1 (Just secOid) (encodeMacGeneral 168) "test handshake data")
+  noKey <- runEffect env res
+    (FxDerive mst (Just (ObjectId 94)) Nothing fm BS.empty 48)
+  case noKey of
+    GotCryptoError (CryptoBadKey _ _) -> pure ()
+    other -> assertFailure ("missing key: expected BadKey, got: " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- OTP constructions

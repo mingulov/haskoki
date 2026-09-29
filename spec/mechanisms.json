@@ -9213,7 +9213,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): proprietary RSA SecurID; no public semantics, will not implement.",
+      "notes": "Catalog-only: RSA SecurID key generation (pkcs11-curr 2.53.8.2) mints keys for the proprietary RSA SecurID time-based OTP algorithm (CKO_OTP_KEY/CKK_SECURID objects, CKA_OTP_* attributes) -- no public construction, no OpenSSL 4.0.2 primitive, and the provider implements no OTP object framework, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42 pins the classic funnel; native GenerateKey probed 0x70 in 11n).",
       "numeric_id": "0x00000280",
       "routes": [],
       "source_refs": [
@@ -9229,7 +9229,18 @@
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -9241,7 +9252,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): proprietary RSA SecurID; no public semantics, will not implement.",
+      "notes": "Catalog-only: RSA SecurID OTP retrieval/verification (pkcs11-curr 2.53.8.3) runs the proprietary RSA SecurID algorithm over token clock state via C_Sign/C_Verify with CK_OTP_PARAMS (pData NULL) -- no public construction, no OpenSSL 4.0.2 primitive, no OTP object support, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native SignInit probed 0x70 in 11n).",
       "numeric_id": "0x00000282",
       "routes": [],
       "source_refs": [
@@ -9257,7 +9268,18 @@
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -9429,7 +9451,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): identifier-only in all vendored header sets (no params struct, no prose; 3.2 marks CKK_ACTI Historical); see source-issues.json GAP-OTP-STATEFUL.",
+      "notes": "Catalog-only: ActivIdentity ACTI OTP retrieval/verification (pkcs11-curr 2.53.10.3) runs the proprietary ACTI algorithm via C_Sign/C_Verify with CK_OTP_PARAMS -- same position as SecurID: no public construction, no OpenSSL 4.0.2 primitive, no OTP object support, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native SignInit and VerifyInit probed 0x70 in 11n).",
       "numeric_id": "0x000002a0",
       "routes": [],
       "source_refs": [
@@ -9445,7 +9467,18 @@
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -9457,7 +9490,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): identifier-only in all vendored header sets (no params struct, no prose; 3.2 marks CKK_ACTI Historical); see source-issues.json GAP-OTP-STATEFUL.",
+      "notes": "Catalog-only: ActivIdentity ACTI key generation (pkcs11-curr 2.53.10.2) mints keys for the proprietary ACTI OTP algorithm (CKO_OTP_KEY/CKK_ACTI objects) -- no public construction, no OpenSSL 4.0.2 primitive, and the provider implements no OTP object framework, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42 pins the classic funnel; native GenerateKey probed 0x70 in 11n).",
       "numeric_id": "0x000002a1",
       "routes": [],
       "source_refs": [
@@ -9473,7 +9506,18 @@
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -12338,14 +12382,30 @@
       "canonical_name": "CKM_SSL3_MASTER_KEY_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete SSL3; will not implement.",
+      "notes": "SSL3 master derive (RFC 6101 section 6.1): MD5(pre_master + SHA1(pad + pre_master + CR + SR)) over pads A, BB, CCC; fixed 48-byte CKK_GENERIC_SECRET output from a generic-secret base (CKA_VALUE_LEN must be 48). Parameters are the canonical frame (ssl3-master-params/1: length-prefixed randoms, no fixed width \u2014 the oracle sends 28-byte randoms); the native struct decodes in the FFI (NULL-or-live pVersion is never written back). Stance revoked in slice 11n: the 'obsolete SSL3' non-implementation note confused the dead protocol with its KDF, which is a pure MD5/SHA-1 composition fully defined by RFC 6101 and backed by the pinned provider. Real execution pinned by KeyManagementSpec caseRealSsl3Vector (master48 KAT-exact vs hashlib). Synthetic execution is deterministic around the synthetic digest stream.",
       "numeric_id": "0x00000371",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "ssl3-master/v1",
+          "parameter_codec": "ssl3-master-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SSL3_MASTER_KEY_DERIVE",
@@ -12354,26 +12414,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "unsupported-with-reason",
-        "synthetic": "unsupported-with-reason",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "ssl3",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "ssl3",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "ssl3",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeSsl3Spec",
+          "build_id": "ssl3",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "ssl3",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "ssl3",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SSL3_KEY_AND_MAC_DERIVE",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete SSL3; will not implement.",
+      "notes": "SSL3 key-and-mac derive (RFC 6101 section 6.2.2): MD5(master + SHA1(pad + master + SR + CR)) iterated, pad i is byte (0x41 + i - 1) repeated i times, split client MAC, server MAC, client key, server key, client IV, server IV; the single template applies to every output with lengths from params (191-round construction bound: past round 191 the pad byte is undefined, so blocks over 3056 bytes refuse). The export variant refuses (the export key expansion is not served). Parameters are the canonical frame (ssl3-keymat-params/1); the native struct shares the TLS keymat geometry and decodes through the shared FFI chase; handles plus IV bytes write back into caller memory on success only (NULL phKey legal). Proxied, the pinned shim carries no entry for 0x372, so the struct arrives as unmodeled Raw and refuses at the FFI boundary (pinned consumer leg, like TLS 1.0 keymat). Stance revoked in slice 11n (see CKM_SSL3_MASTER_KEY_DERIVE). Real execution pinned by KeyManagementSpec caseRealSsl3Vector (96-byte block split KAT-exact vs hashlib).",
       "numeric_id": "0x00000372",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "ssl3-keymat/v1",
+          "parameter_codec": "ssl3-keymat-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SSL3_KEY_AND_MAC_DERIVE",
@@ -12382,26 +12494,78 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "unsupported-with-reason",
-        "synthetic": "unsupported-with-reason",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "ssl3",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "ssl3",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "ssl3",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeSsl3Spec",
+          "build_id": "ssl3",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "ssl3",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "ssl3",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SSL3_MASTER_KEY_DERIVE_DH",
       "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete SSL3; will not implement.",
+      "notes": "SSL3 DH master derive (RFC 6101 section 6.1 over a DH-derived base): same construction and 48-byte output as CKM_SSL3_MASTER_KEY_DERIVE; the DH variant tolerates a NULL pVersion. Stance revoked in slice 11n (see CKM_SSL3_MASTER_KEY_DERIVE). Real execution pinned by KeyManagementSpec caseRealSsl3Vector (masterDH32 KAT-exact vs hashlib).",
       "numeric_id": "0x00000373",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "base-secret-derive-mark"
+          ],
+          "operation": "derive",
+          "output_rule": "ssl3-master/v1",
+          "parameter_codec": "ssl3-master-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SSL3_MASTER_KEY_DERIVE_DH",
@@ -12410,12 +12574,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "unsupported-with-reason",
-        "synthetic": "unsupported-with-reason",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "ssl3",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "ssl3",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "ssl3",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeSsl3Spec",
+          "build_id": "ssl3",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "ssl3",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "ssl3",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -12810,14 +13010,42 @@
       "canonical_name": "CKM_SSL3_MD5_MAC",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Unsupported-with-reason (all columns): obsolete SSL3; will not implement.",
+      "notes": "SSL3 MD5 MAC (RFC 6101: H(secret + pad2 + H(secret + pad1 + data)), 48-byte 0x36/0x5c pads, truncated to the requested length): one-shot sign/verify over generic-secret keys; the length parameter is in BITS (whole bytes within the 16-byte width) via the shared mac-general/1 codec, passed through raw at the FFI. Stance revoked in slice 11n (see CKM_SSL3_MASTER_KEY_DERIVE). Real execution pinned by RoutingE2ESpec caseDriverSsl3Mac (full-width vector KAT-exact vs hashlib, truncation is the tag prefix).",
       "numeric_id": "0x00000380",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac16-trunc/v1",
+          "parameter_codec": "mac-general/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "mac-general/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SSL3_MD5_MAC",
@@ -12826,26 +13054,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "unsupported-with-reason",
-        "synthetic": "unsupported-with-reason",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "ssl3",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "ssl3",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "ssl3",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeSsl3Spec",
+          "build_id": "ssl3",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "ssl3",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "ssl3",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SSL3_SHA1_MAC",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Unsupported-with-reason (all columns): obsolete SSL3; will not implement.",
+      "notes": "SSL3 SHA-1 MAC (RFC 6101: H(secret + pad2 + H(secret + pad1 + data)), 40-byte 0x36/0x5c pads, truncated to the requested length): one-shot sign/verify over generic-secret keys; the length parameter is in BITS (whole bytes within the 20-byte width) via the shared mac-general/1 codec, passed through raw at the FFI. Stance revoked in slice 11n (see CKM_SSL3_MASTER_KEY_DERIVE). Real execution pinned by RoutingE2ESpec caseDriverSsl3Mac (full-width vector KAT-exact vs hashlib).",
       "numeric_id": "0x00000381",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac20-trunc/v1",
+          "parameter_codec": "mac-general/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "mac-general/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SSL3_SHA1_MAC",
@@ -12854,12 +13141,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "unsupported-with-reason",
-        "synthetic": "unsupported-with-reason",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "ssl3",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/RoutingE2ESpec",
+          "build_id": "ssl3",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "ssl3",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeSsl3Spec",
+          "build_id": "ssl3",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "ssl3",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "ssl3",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -17748,7 +18066,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): historical hardware timestamp; no usable source.",
+      "notes": "Catalog-only: FORTEZZA timestamp (pkcs11-hist 2.2) produces single-part DSA signatures over (hash, current time) for FORTEZZA card tokens -- hardware-bound (FORTEZZA CIPG), needs DSA keys (an unserved family) and trusted wall-clock semantics no software backend reproduces honestly, and OpenSSL 4.0.2 offers no such primitive, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native SignInit probed 0x70 in 11n).",
       "numeric_id": "0x00001020",
       "routes": [],
       "source_refs": [
@@ -17764,7 +18082,18 @@
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -19640,7 +19969,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported: vendor mechanism, no public algorithm; cannot model or execute honestly. Identifier-only in all vendored header sets; no usable semantics; see source-issues.json GAP-SPECIALS.",
+      "notes": "Catalog-only: FASTHASH digest (pkcs11-hist 2.13) follows MISSI's unpublished U.S. government message-digest algorithm (40-byte output, no parameter) -- no public construction, no OpenSSL 4.0.2 primitive, no test vectors, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native DigestInit probed 0x70 in 11n).",
       "numeric_id": "0x00001070",
       "routes": [],
       "source_refs": [
@@ -19656,7 +19985,18 @@
         "recovery": "not-applicable",
         "synthetic": "unsupported-with-reason"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

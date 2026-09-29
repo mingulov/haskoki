@@ -2217,7 +2217,7 @@ static hkdf_class_t hkdf_params_class(const CK_HKDF_PARAMS *hp) {
 
 /* Derive mechanisms served through the opaque Haskell intake
  * (ECDH + DH + SHA-KDF rows + TLS-PRF + SP 800-108 rows + TLS-KDF
- * rows; mirrors the Haskoki.Recipe.Ecdh/Dh/Kdf/TlsPrf/Sp800108/TlsKdf
+ * rows; mirrors the Haskoki.Recipe.Ecdh/Dh/Kdf/TlsPrf/Sp800108/TlsKdf/Ssl3
  * tables — Haskell re-checks membership before planning). */
 static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   switch (mech) {
@@ -2275,19 +2275,23 @@ static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   case CKM_TLS_KEY_AND_MAC_DERIVE:
   case CKM_TLS12_KEY_AND_MAC_DERIVE:
   case CKM_TLS12_KEY_SAFE_DERIVE:
+  case CKM_SSL3_MASTER_KEY_DERIVE:
+  case CKM_SSL3_MASTER_KEY_DERIVE_DH:
+  case CKM_SSL3_KEY_AND_MAC_DERIVE:
     return 1;
   default:
     return 0;
   }
 }
 
-/* The key-material trio accepts a NULL phKey: its outputs live in
+/* The key-material quartet accepts a NULL phKey: its outputs live in
  * the mechanism params (v3.2 §6.39.6/§6.40.6: phKey "should be a
  * NULL_PTR"). Every other row still demands the slot. */
 static int derive_null_phkey_ok(CK_MECHANISM_TYPE mech) {
   return mech == CKM_TLS_KEY_AND_MAC_DERIVE ||
          mech == CKM_TLS12_KEY_AND_MAC_DERIVE ||
-         mech == CKM_TLS12_KEY_SAFE_DERIVE;
+         mech == CKM_TLS12_KEY_SAFE_DERIVE ||
+         mech == CKM_SSL3_KEY_AND_MAC_DERIVE;
 }
 
 /* Opaque derive arm: pack the template frame and forward the

@@ -130,6 +130,15 @@ import Haskoki.Recipe.TlsKdf
   , tlsKdfParamsValid
   , tlsKdfRecipeFor
   )
+import Haskoki.Recipe.Ssl3
+  ( Ssl3KeyMatRole (..)
+  , Ssl3Kind (..)
+  , Ssl3Recipe (..)
+  , decodeSsl3KeyMatParams
+  , ssl3KeyMatLayout
+  , ssl3ParamsValid
+  , ssl3RecipeFor
+  )
 import Haskoki.Recipe.TlsKeyMat
   ( TlsKeyMatKind (..)
   , TlsKeyMatRecipe (..)
@@ -529,6 +538,50 @@ planDerive rules model st mech baseH blob
                 "key-material frame rejected after validation")
               Just (_, mac, key, iv, _, _) -> keyMatFinish r ost tmpls
                 mech kmBlob mac key iv
+  | Just r <- ssl3RecipeFor mech
+  , ssl3Kind r == Ssl3Master || ssl3Kind r == Ssl3MasterDh =
+      case decodeDeriveParams blob of
+        Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+          "malformed derive arguments")
+        Just (mBlob, tmpls) -> case resolveBase model st baseH of
+          Left deny -> KeyDenied deny
+          Right (ost, _)
+            -- SSL3 master rows derive from generic-secret
+            -- bases only; the key-type contradiction outranks
+            -- parameter shape (the Init-matrix ordering,
+            -- shared with the TLS-KDF arm).
+            | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkGenericSecret) ->
+                KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                  "SSL3 master base key is not a generic secret")
+            | not (ssl3ParamsValid r mBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+                "SSL3 master mechanism parameters rejected by the recipe")
+            | otherwise -> finish tmpls 48
+                "derived total exceeds the 48-byte SSL3 master width"
+                (FxDerive mech (Just (osId ost)) Nothing mBlob BS.empty)
+                Nothing
+                CKR_ARGUMENTS_BAD
+  | Just r <- ssl3RecipeFor mech
+  , ssl3Kind r == Ssl3KeyMat = case decodeDeriveParams blob of
+      Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "malformed derive arguments")
+      Just (kmBlob, tmpls) -> case resolveBase model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, _)
+          -- The SSL3 keymat row derives from generic-secret
+          -- bases only; the key-type contradiction outranks
+          -- parameter shape (the Init-matrix ordering,
+          -- shared with the TLS-KDF arm).
+          | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkGenericSecret) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "SSL3 key-material base key is not a generic secret")
+          | not (ssl3ParamsValid r kmBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+              "SSL3 key-material mechanism parameters rejected by the recipe")
+          | otherwise -> case decodeSsl3KeyMatParams kmBlob of
+              -- Unreachable post-validation; typed, never a crash.
+              Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                "SSL3 key-material frame rejected after validation")
+              Just (mac, key, iv, _, _) -> ssl3KeyMatFinish ost tmpls
+                mech kmBlob mac key iv
   | Just r <- ikeRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -777,6 +830,57 @@ planDerive rules model st mech baseH blob
                   _ -> ckkGenericSecret
         isKeyRole KeyMatIvClient = False
         isKeyRole KeyMatIvServer = False
+        isKeyRole _ = True
+    -- | SSL3 key-material admission after the frame validates:
+    -- the single template applies to every output (v3.2
+    -- §6.36.3). Per-output lengths come from params, so a
+    -- template @CKA_VALUE_LEN@ refuses @CKR_TEMPLATE_INCONSISTENT@
+    -- (like the @CKA_VALUE@ rule); protection attributes present
+    -- in the template must match the base key's
+    -- (@CKR_TEMPLATE_INCONSISTENT@ on conflict — the oracle's
+    -- template-conflict leg). MAC outputs force
+    -- @CKK_GENERIC_SECRET@; cipher keys keep the template type.
+    ssl3KeyMatFinish ost tmpls mech kmBlob mac key iv = case tmpls of
+      [tmpl] -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
+        Left deny -> KeyDenied deny
+        Right attrs
+          | Map.member AttrValue attrs -> KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "derived template must not supply CKA_VALUE")
+          | Map.member AttrValueLen attrs -> KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              "SSL3 key-material lengths come from params, not CKA_VALUE_LEN")
+          | Just msg <- protectionMismatch (osAttrs ost) attrs ->
+              KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT msg)
+          | Left deny <- admitObjects rules (Map.size (mObjects model))
+              (length (outsFor attrs)) ->
+              KeyDenied (KeyDeny (admitCode deny)
+                ("admission denied: " ++ show deny))
+          | otherwise ->
+              let (pos, lens) = unzip
+                    [(pendingFromAttrs st outAttrs, n) | (outAttrs, n) <- outsFor attrs]
+              in KeyEffect (PwDeriveIv pos lens (iv, iv))
+                (FxDerive mech (Just (osId ost)) Nothing kmBlob BS.empty total)
+      _ -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "SSL3 key-material derive needs exactly one template")
+      where
+        total = 2 * mac + 2 * key + 2 * iv
+        outsFor attrs =
+          [ ( Map.insert AttrValueLen (ValULong (fromIntegral n))
+                (Map.insert AttrKeyType (ValULong (outType role)) attrs)
+            , n
+            )
+          | (role, n) <- ssl3KeyMatLayout mac key iv
+          , isKeyRole role
+          ]
+          where
+            outType role
+              | role == Ssl3MacClient || role == Ssl3MacServer = ckkGenericSecret
+              | otherwise = case Map.lookup AttrKeyType attrs of
+                  Just (ValULong k) -> k
+                  -- Unreachable: the template check defaults the
+                  -- key type.
+                  _ -> ckkGenericSecret
+        isKeyRole Ssl3IvClient = False
+        isKeyRole Ssl3IvServer = False
         isKeyRole _ = True
     protectionMismatch baseAttrs attrs =
       mismatch AttrSensitive "CKA_SENSITIVE" baseAttrs attrs

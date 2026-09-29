@@ -182,6 +182,8 @@ mechanisms = [
     0x1084,  # CKM_AES_MAC_GENERAL (11f)
     0x0564,  # CKM_ARIA_MAC_GENERAL (11f)
     0x0554,  # CKM_CAMELLIA_MAC_GENERAL (11f)
+    0x0380,  # CKM_SSL3_MD5_MAC (CK_ULONG bit length, same shape; embedded lists these two rows under NULL params, and the override wins: dropping these two lines fails the proxied MAC legs) (11n)
+    0x0381,  # CKM_SSL3_SHA1_MAC (CK_ULONG bit length, same shape; see 0x0380) (11n)
 ]
 
 [[params]]
@@ -195,6 +197,8 @@ shape = "ssl3_master_key_derive"
 mechanisms = [
     0x0375,  # CKM_TLS_MASTER_KEY_DERIVE (CK_SSL3_MASTER_KEY_DERIVE_PARAMS, same struct as the SSL3 rows) (11i)
     0x0377,  # CKM_TLS_MASTER_KEY_DERIVE_DH (same struct) (11i)
+    # 0x371/0x373 need no entry: the embedded table already maps the
+    # SSL3-native rows to this shape (11n, verified via strings).
 ]
 EOF
 

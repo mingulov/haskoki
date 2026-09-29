@@ -5468,6 +5468,251 @@ int main(int argc, char **argv) {
           }
         }
         {
+          /* SSL3 quintet (11n): master rows derive KAT-exact in
+           * both topologies (the shim models
+           * ssl3_master_key_derive natively for 0x371/0x373);
+           * keymat derives KAT-exact in both topologies (the
+           * shim models ssl3_key_mat natively for 0x372):
+           * direct with NULL phKey, proxied with a dummy
+           * slot; proxied, the IVs are KAT-exact but the
+           * OUT-struct embedded handles never enter the
+           * proxy's handle map (reads refuse 0x82, the same
+           * pinned proxy limitation as TLS 1.2 keymat).
+           * MACs sign KAT-exact in both topologies
+           * (mac_general override, bit lengths; embedded
+           * lists 0x380/0x381 under NULL params). */
+          CK_BYTE spms[48], sdh[32], scr[28], ssr[28];
+          CK_BYTE sgot[48], skgot[32];
+          CK_OBJECT_CLASS sseccls = CKO_SECRET_KEY;
+          CK_KEY_TYPE sgenkt = CKK_GENERIC_SECRET;
+          CK_BBOOL syes = CK_TRUE, sno = CK_FALSE;
+          CK_ULONG sv48 = 48;
+          CK_VERSION sver;
+          CK_OBJECT_HANDLE sbase = 0, sdhb = 0, smst = 0, smdh = 0;
+          CK_MECHANISM smm;
+          CK_SSL3_MASTER_KEY_DERIVE_PARAMS smp;
+          CK_SSL3_RANDOM_DATA sri;
+          CK_BYTE smwant[48] = {
+            0xfa,0xf3,0xf2,0x03,0x43,0xe5,0x3b,0xd6,
+            0xb6,0xd8,0x1b,0x36,0x42,0xa2,0xf7,0x8a,
+            0x64,0xe1,0xb5,0x83,0x7a,0xac,0xe5,0xb9,
+            0xce,0x41,0xe8,0xe1,0x4f,0xf1,0x14,0x0d,
+            0x39,0x08,0xba,0xc0,0x2e,0x5a,0xfe,0x34,
+            0x65,0x26,0x44,0xa9,0x0d,0xbb,0x5f,0x59
+          };
+          CK_BYTE smdhwant[48] = {
+            0x15,0x9c,0xe4,0x6f,0xa9,0x01,0xe7,0x0e,
+            0x79,0xd3,0x51,0x59,0x9f,0xd2,0x4c,0xdc,
+            0x5e,0x98,0xc7,0xdb,0x79,0x21,0x97,0x2a,
+            0xa8,0xc6,0x71,0x51,0x65,0x7a,0xa8,0x92,
+            0x32,0xe3,0xb0,0x1d,0x3f,0xb0,0x95,0x84,
+            0xbf,0xd6,0x78,0xb5,0x2b,0x31,0xe3,0x02
+          };
+          CK_ATTRIBUTE sbaseT[] = {
+            { CKA_CLASS, &sseccls, sizeof(sseccls) },
+            { CKA_KEY_TYPE, &sgenkt, sizeof(sgenkt) },
+            { CKA_TOKEN, &sno, sizeof(sno) },
+            { CKA_DERIVE, &syes, sizeof(syes) },
+            { CKA_VALUE, spms, sizeof(spms) },
+          };
+          CK_ATTRIBUTE sdhT[] = {
+            { CKA_CLASS, &sseccls, sizeof(sseccls) },
+            { CKA_KEY_TYPE, &sgenkt, sizeof(sgenkt) },
+            { CKA_TOKEN, &sno, sizeof(sno) },
+            { CKA_DERIVE, &syes, sizeof(syes) },
+            { CKA_VALUE, sdh, sizeof(sdh) },
+          };
+          CK_ATTRIBUTE smtmpl[] = {
+            { CKA_CLASS, &sseccls, sizeof(sseccls) },
+            { CKA_KEY_TYPE, &sgenkt, sizeof(sgenkt) },
+            { CKA_VALUE_LEN, &sv48, sizeof(sv48) },
+            { CKA_TOKEN, &sno, sizeof(sno) },
+            { CKA_SENSITIVE, &sno, sizeof(sno) },
+            { CKA_EXTRACTABLE, &syes, sizeof(syes) },
+            { CKA_DERIVE, &syes, sizeof(syes) },
+          };
+          CK_ATTRIBUTE smget[] = { { CKA_VALUE, sgot, sizeof(sgot) } };
+          int si;
+          for (si = 0; si < 48; si++) spms[si] = (CK_BYTE)si;
+          spms[0] = 0x03; spms[1] = 0x00;
+          for (si = 0; si < 32; si++) sdh[si] = (CK_BYTE)si;
+          for (si = 0; si < 28; si++) scr[si] = (CK_BYTE)si;
+          for (si = 0; si < 28; si++) ssr[si] = (CK_BYTE)(si + 28);
+          sver.major = 3; sver.minor = 0;
+          rv = f->C_CreateObject(sess, sbaseT, 5, &sbase);
+          CHECKC(rv == CKR_OK && sbase != 0, "ssl3 base imports");
+          rv = f->C_CreateObject(sess, sdhT, 5, &sdhb);
+          CHECKC(rv == CKR_OK && sdhb != 0, "ssl3 dh base imports");
+          sri.pClientRandom = scr;
+          sri.ulClientRandomLen = sizeof(scr);
+          sri.pServerRandom = ssr;
+          sri.ulServerRandomLen = sizeof(ssr);
+          smp.RandomInfo = sri;
+          smp.pVersion = &sver;
+          smm.mechanism = CKM_SSL3_MASTER_KEY_DERIVE;
+          smm.pParameter = &smp;
+          smm.ulParameterLen = sizeof(smp);
+          rv = f->C_DeriveKey(sess, &smm, sbase, smtmpl, 7, &smst);
+          CHECKC(rv == CKR_OK && smst != 0, "ssl3 master derives");
+          smget[0].ulValueLen = sizeof(sgot);
+          rv = f->C_GetAttributeValue(sess, smst, smget, 1);
+          CHECKC(rv == CKR_OK && smget[0].ulValueLen == 48 &&
+                     memcmp(sgot, smwant, 48) == 0,
+                 "ssl3 master matches KAT bytes");
+          smp.pVersion = NULL;
+          smm.mechanism = CKM_SSL3_MASTER_KEY_DERIVE_DH;
+          rv = f->C_DeriveKey(sess, &smm, sdhb, smtmpl, 7, &smdh);
+          CHECKC(rv == CKR_OK && smdh != 0, "ssl3 dh master derives");
+          smget[0].ulValueLen = sizeof(sgot);
+          rv = f->C_GetAttributeValue(sess, smdh, smget, 1);
+          CHECKC(rv == CKR_OK && smget[0].ulValueLen == 48 &&
+                     memcmp(sgot, smdhwant, 48) == 0,
+                 "ssl3 dh master matches KAT bytes");
+          f->C_DestroyObject(sess, smdh);
+          {
+            CK_BYTE scm[16] = {
+              0x69,0x8e,0x32,0x65,0x82,0x53,0x26,0xfd,
+              0xf5,0x74,0x44,0xe2,0xb1,0xe4,0x50,0x64
+            };
+            CK_BYTE ssm[16] = {
+              0xcc,0xeb,0x12,0x67,0xb8,0x4f,0x81,0xe1,
+              0x4a,0x1c,0xe6,0xc2,0xd9,0x69,0x60,0x31
+            };
+            CK_BYTE sck[16] = {
+              0xf9,0xef,0xaf,0x9d,0x8e,0x27,0x95,0x5f,
+              0x63,0x8b,0xda,0x4d,0x0d,0xf1,0xd6,0xab
+            };
+            CK_BYTE ssk[16] = {
+              0x0e,0xca,0x6d,0xcc,0xab,0xd2,0x9f,0xdf,
+              0xf2,0x01,0xda,0x98,0x98,0x70,0xbc,0xea
+            };
+            CK_BYTE svc[16] = {
+              0x08,0x3e,0xa2,0xe0,0x73,0x85,0xc9,0x58,
+              0x0f,0x7c,0xf0,0x1d,0xb3,0x5d,0x0a,0x20
+            };
+            CK_BYTE svs[16] = {
+              0xe6,0x01,0x71,0x9a,0x5c,0x2a,0x08,0x8b,
+              0xd3,0x47,0x84,0x36,0xd4,0x2f,0xe5,0x69
+            };
+            CK_BYTE skivc[16], skivs[16];
+            CK_SSL3_KEY_MAT_OUT sout;
+            CK_SSL3_KEY_MAT_PARAMS skp;
+            CK_MECHANISM skm;
+            CK_OBJECT_HANDLE skph = 0;
+            CK_ATTRIBUTE skdtmpl[] = {
+              { CKA_CLASS, &sseccls, sizeof(sseccls) },
+              { CKA_KEY_TYPE, &sgenkt, sizeof(sgenkt) },
+              { CKA_TOKEN, &sno, sizeof(sno) },
+              { CKA_SENSITIVE, &sno, sizeof(sno) },
+              { CKA_EXTRACTABLE, &syes, sizeof(syes) },
+            };
+            CK_ATTRIBUTE skg[] = { { CKA_VALUE, skgot, sizeof(skgot) } };
+            int sok;
+            memset(&sout, 0, sizeof(sout));
+            sout.pIVClient = skivc;
+            sout.pIVServer = skivs;
+            skp.ulMacSizeInBits = 128;
+            skp.ulKeySizeInBits = 128;
+            skp.ulIVSizeInBits = 128;
+            skp.bIsExport = CK_FALSE;
+            skp.RandomInfo = sri;
+            skp.pReturnedKeyMaterial = &sout;
+            skm.mechanism = CKM_SSL3_KEY_AND_MAC_DERIVE;
+            skm.pParameter = &skp;
+            skm.ulParameterLen = sizeof(skp);
+            rv = f->C_DeriveKey(sess, &skm, smst, skdtmpl, 5, isProxy ? &skph : NULL);
+            CHECKC(rv == CKR_OK, "ssl3 keymat derives");
+            CHECKC(sout.hClientMacSecret != 0 && sout.hServerMacSecret != 0 &&
+                       sout.hClientKey != 0 && sout.hServerKey != 0,
+                   "ssl3 four keys returned");
+            if (!isProxy) {
+              skg[0].ulValueLen = sizeof(skgot);
+              rv = f->C_GetAttributeValue(sess, sout.hClientMacSecret, skg, 1);
+              sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
+                    memcmp(skgot, scm, 16) == 0;
+              CHECKC(sok, "ssl3 client mac matches KAT");
+              skg[0].ulValueLen = sizeof(skgot);
+              rv = f->C_GetAttributeValue(sess, sout.hServerMacSecret, skg, 1);
+              sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
+                    memcmp(skgot, ssm, 16) == 0;
+              CHECKC(sok, "ssl3 server mac matches KAT");
+              skg[0].ulValueLen = sizeof(skgot);
+              rv = f->C_GetAttributeValue(sess, sout.hClientKey, skg, 1);
+              sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
+                    memcmp(skgot, sck, 16) == 0;
+              CHECKC(sok, "ssl3 client key matches KAT");
+              skg[0].ulValueLen = sizeof(skgot);
+              rv = f->C_GetAttributeValue(sess, sout.hServerKey, skg, 1);
+              sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
+                    memcmp(skgot, ssk, 16) == 0;
+              CHECKC(sok, "ssl3 server key matches KAT");
+              CHECKC(memcmp(skivc, svc, 16) == 0, "ssl3 client IV matches KAT");
+              CHECKC(memcmp(skivs, svs, 16) == 0, "ssl3 server IV matches KAT");
+              f->C_DestroyObject(sess, sout.hClientMacSecret);
+              f->C_DestroyObject(sess, sout.hServerMacSecret);
+              f->C_DestroyObject(sess, sout.hClientKey);
+              f->C_DestroyObject(sess, sout.hServerKey);
+            } else {
+              CHECKC(memcmp(skivc, svc, 16) == 0, "proxied ssl3 client IV matches KAT");
+              CHECKC(memcmp(skivs, svs, 16) == 0, "proxied ssl3 server IV matches KAT");
+              skg[0].ulValueLen = sizeof(skgot);
+              rv = f->C_GetAttributeValue(sess, sout.hClientMacSecret, skg, 1);
+              CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
+                     "proxied ssl3 embedded handle unmapped");
+            }
+          }
+          {
+            CK_BYTE smkey[16], smmsg[] = "test handshake data";
+            CK_ULONG smbits;
+            CK_MECHANISM smec;
+            CK_BYTE smout[20];
+            CK_ULONG smoutlen;
+            CK_BYTE smd5[16] = {
+              0xf8,0xad,0xc4,0xaa,0x29,0x94,0xad,0x22,
+              0x96,0xec,0x75,0x9d,0x1a,0x32,0x1b,0x0b
+            };
+            CK_BYTE smsha[20] = {
+              0xd5,0x0a,0xea,0xde,0xf9,0xad,0x76,0x78,
+              0x02,0x8f,0x41,0x88,0xd0,0x59,0x89,0xfc,
+              0x86,0x9e,0x57,0xca
+            };
+            CK_OBJECT_HANDLE smkeyh = 0;
+            CK_ATTRIBUTE smkeyT[] = {
+              { CKA_CLASS, &sseccls, sizeof(sseccls) },
+              { CKA_KEY_TYPE, &sgenkt, sizeof(sgenkt) },
+              { CKA_TOKEN, &sno, sizeof(sno) },
+              { CKA_SIGN, &syes, sizeof(syes) },
+              { CKA_VERIFY, &syes, sizeof(syes) },
+              { CKA_VALUE, smkey, sizeof(smkey) },
+            };
+            for (si = 0; si < 16; si++) smkey[si] = (CK_BYTE)si;
+            rv = f->C_CreateObject(sess, smkeyT, 6, &smkeyh);
+            CHECKC(rv == CKR_OK && smkeyh != 0, "ssl3 mac key imports");
+            smbits = 128;
+            smec.mechanism = CKM_SSL3_MD5_MAC;
+            smec.pParameter = &smbits;
+            smec.ulParameterLen = sizeof(smbits);
+            rv = f->C_SignInit(sess, &smec, smkeyh);
+            CHECKC(rv == CKR_OK, "ssl3 md5 init ok");
+            smoutlen = sizeof(smout);
+            rv = f->C_Sign(sess, smmsg, sizeof(smmsg) - 1, smout, &smoutlen);
+            CHECKC(rv == CKR_OK && smoutlen == 16 && memcmp(smout, smd5, 16) == 0,
+                   "ssl3 md5 matches KAT bytes");
+            smbits = 160;
+            smec.mechanism = CKM_SSL3_SHA1_MAC;
+            rv = f->C_SignInit(sess, &smec, smkeyh);
+            CHECKC(rv == CKR_OK, "ssl3 sha1 init ok");
+            smoutlen = sizeof(smout);
+            rv = f->C_Sign(sess, smmsg, sizeof(smmsg) - 1, smout, &smoutlen);
+            CHECKC(rv == CKR_OK && smoutlen == 20 && memcmp(smout, smsha, 20) == 0,
+                   "ssl3 sha1 matches KAT bytes");
+            f->C_DestroyObject(sess, smkeyh);
+          }
+          f->C_DestroyObject(sess, sbase);
+          f->C_DestroyObject(sess, sdhb);
+          f->C_DestroyObject(sess, smst);
+        }
+        {
           /* SP800-108 counter with one additional key: the
            * primary and the additional handle both land,
            * splitting the DKM in order. */

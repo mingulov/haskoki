@@ -5,7 +5,7 @@
 # CLI, and drives the C ABI end to end through the in-repo Haskell
 # client (a genuine foreign client, independent of the C consumers):
 #   slots     library + slot/token discovery
-#   mechs     mechanism list is non-empty (260 served rows)
+#   mechs     mechanism list is non-empty (265 served rows)
 #   digest    SHA-256 of a fixture agrees with sha256sum, and
 #             single-part agrees with multipart (checked in-CLI)
 #   rand      16 bytes out for 16 bytes asked
@@ -49,7 +49,7 @@ echo "$SLOTS_OUT" | grep -q 'label="haskoki-demo"' || fail "demo token label mis
 
 MECHS_OUT=$("$CLI" "$SO" mechs) || fail "mechs refused"
 echo "$MECHS_OUT" | head -2
-echo "$MECHS_OUT" | grep -q "mechanisms on slot 0: 260" || fail "expected 260 served mechanisms"
+echo "$MECHS_OUT" | grep -q "mechanisms on slot 0: 265" || fail "expected 265 served mechanisms"
 
 # 4. Digest agrees with the system sha256sum (multipart agreement is
 # asserted inside the CLI itself).

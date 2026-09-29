@@ -262,6 +262,7 @@ import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
 import Haskoki.Recipe.Pbe (encodePbeParams, maxPbeIters)
+import Haskoki.Recipe.Ssl3 (encodeSsl3KeyMatParams, encodeSsl3MasterParams)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
 import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
@@ -296,6 +297,9 @@ import Haskoki.Registry.Generated
   , ckm_XOR_BASE_AND_DATA
   , ckm_PBE_SHA1_DES3_EDE_CBC
   , ckm_PBE_SHA1_DES2_EDE_CBC
+  , ckm_SSL3_MASTER_KEY_DERIVE
+  , ckm_SSL3_MASTER_KEY_DERIVE_DH
+  , ckm_SSL3_KEY_AND_MAC_DERIVE
   )
 import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
@@ -411,6 +415,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real byte-op derives match the KATs" caseRealByteOpsVector
   , testCase "Key-material plans rows, refuses bad shapes" caseKeyMatPlans
   , testCase "Real key-material derives match the KATs" caseRealKeyMatVector
+  , testCase "SSL3 plans rows, refuses bad shapes" caseSsl3DerivePlans
+  , testCase "Real SSL3 derives match the KATs" caseRealSsl3Vector
   , testCase "PBE plans rows, refuses bad shapes" casePbePlans
   , testCase "Real PBE keygens match the KATs" caseRealPbeVector
   , testCase "SP800 plans primary plus additional keys" caseSp800MultiPlans
@@ -5299,6 +5305,177 @@ keyMatKid =
   , (AttrExtractable, ValBool True)
   , (AttrToken, ValBool False)
   ]
+
+ssl3MasterMech, ssl3MasterDhMech, ssl3KeyMatMech :: MechanismId
+ssl3MasterMech = MechanismId ckm_SSL3_MASTER_KEY_DERIVE
+ssl3MasterDhMech = MechanismId ckm_SSL3_MASTER_KEY_DERIVE_DH
+ssl3KeyMatMech = MechanismId ckm_SSL3_KEY_AND_MAC_DERIVE
+
+-- | The oracle's 28-byte randoms (SSL3 randoms carry
+-- explicit lengths; no fixed 32).
+ssl3Cr, ssl3Sr :: BS.ByteString
+ssl3Cr = BS.pack [0 .. 27]
+ssl3Sr = BS.pack [28 .. 55]
+
+-- | The SSL3 master template: the oracle's shape (48-byte
+-- generic secret, protection matching the base).
+ssl3MasterKid :: [(AttributeType, AttributeValue)]
+ssl3MasterKid =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong ckkGenericSecret)
+  , (AttrValueLen, ValULong 48)
+  , (AttrSensitive, ValBool False)
+  , (AttrExtractable, ValBool True)
+  , (AttrToken, ValBool False)
+  , (AttrDerive, ValBool True)
+  ]
+
+caseSsl3DerivePlans :: IO ()
+caseSsl3DerivePlans = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
+    ] (BS.pack [0 .. 47])
+  let fm = encodeSsl3MasterParams ssl3Cr ssl3Sr
+      fk = encodeSsl3KeyMatParams 16 16 16 ssl3Cr ssl3Sr
+  -- Master rows plan the fixed 48-byte output.
+  mapM_ (\mech ->
+    case planDerive defaultRules m1 st mech baseH
+        (encodeDeriveParams fm [ssl3MasterKid]) of
+      KeyEffect (PwDerive _ [48]) (FxDerive _ _ _ _ _ 48) -> pure ()
+      other -> assertFailure ("master must plan, got: " ++ show other))
+    [ssl3MasterMech, ssl3MasterDhMech]
+  -- The keymat row plans its key/IV shape with the block total.
+  case planDerive defaultRules m1 st ssl3KeyMatMech baseH
+      (encodeDeriveParams fk [keyMatKid]) of
+    KeyEffect (PwDeriveIv _ [16, 16, 16, 16] (16, 16)) (FxDerive _ _ _ _ _ 96) ->
+      pure ()
+    other -> assertFailure ("keymat must plan, got: " ++ show other)
+  -- A non-generic base refuses (the key-type gate outranks shape).
+  (m2, aesH) <- plantKey m1 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkAes)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
+    ] (BS.pack [0 .. 15])
+  case planDerive defaultRules m2 st ssl3MasterMech aesH
+      (encodeDeriveParams fm [ssl3MasterKid]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "base code" CKR_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("AES base must deny, got: " ++ show other)
+  -- A template length on keymat refuses: lengths come from params.
+  case planDerive defaultRules m1 st ssl3KeyMatMech baseH
+      (encodeDeriveParams fk [keyMatKid ++ [(AttrValueLen, ValULong 16)]]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "vlen code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("vlen must deny, got: " ++ show other)
+  -- Protection differing from the base refuses (the oracle's
+  -- template-conflict leg).
+  let conflict =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrSensitive, ValBool True)
+        , (AttrExtractable, ValBool True)
+        , (AttrToken, ValBool False)
+        ]
+  case planDerive defaultRules m1 st ssl3KeyMatMech baseH
+      (encodeDeriveParams fk [conflict]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "conflict code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("conflict must deny, got: " ++ show other)
+  -- A malformed frame refuses typed.
+  case planDerive defaultRules m1 st ssl3MasterMech baseH
+      (encodeDeriveParams (BS.take 10 fm) [ssl3MasterKid]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "shape code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("bad shape must deny, got: " ++ show other)
+
+caseRealSsl3Vector :: IO ()
+caseRealSsl3Vector = withRealEnv $ \env -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
+    ] (BS.pack [3, 0] <> BS.pack [2 .. 47])
+  (m2, dhH) <- plantKey m1 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
+    ] (BS.pack [0 .. 31])
+  let fm = encodeSsl3MasterParams ssl3Cr ssl3Sr
+      deriveOne mech base tmpl = do
+        (m', mat) <- case planDerive defaultRules m2 st mech base
+            (encodeDeriveParams fm [tmpl]) of
+          KeyEffect pw fx -> do
+            res <- answer m2 fx
+            c <- finishCommit m2 st pw res 1
+            let outs = pcOutputs c
+            hs <- mapM handleOf [o | o@(NativeOutput (RegionHandle "key") _) <- outs]
+            m' <- expectRight (publishDelta m2 (pcDelta c))
+            mats <- mapM (\h -> case resolveHandle m' h of
+              Just ost -> pure (keyBytesOf ost)
+              Nothing -> assertFailure "derived key must resolve" >> undefined) hs
+            pure (m', mats)
+          other -> assertFailure ("derive must plan: " ++ show other) >> undefined
+        pure mat
+  [master48] <- deriveOne ssl3MasterMech baseH ssl3MasterKid
+  assertEqual "master48"
+    (Just (hex "faf3f20343e53bd6b6d81b3642a2f78a64e1b5837aace5b9ce41e8e14ff1140d3908bac02e5afe34652644a90dbb5f59"))
+    master48
+  [masterDh] <- deriveOne ssl3MasterDhMech dhH ssl3MasterKid
+  assertEqual "masterDH32"
+    (Just (hex "159ce46fa901e70e79d351599fd24cdc5e98c7db7921972aa8c67151657aa89232e3b01d3fb09584bfd678b52b31e302"))
+    masterDh
+  (m3, msH) <- plantKey m2 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
+    ] (hex "faf3f20343e53bd6b6d81b3642a2f78a64e1b5837aace5b9ce41e8e14ff1140d3908bac02e5afe34652644a90dbb5f59")
+  let fk = encodeSsl3KeyMatParams 16 16 16 ssl3Cr ssl3Sr
+  (mats, (ivc, ivs)) <- case planDerive defaultRules m3 st ssl3KeyMatMech msH
+      (encodeDeriveParams fk [keyMatKid]) of
+    KeyEffect pw fx -> do
+      res <- answer m3 fx
+      c <- finishCommit m3 st pw res 4
+      let outs = pcOutputs c
+      hs <- mapM handleOf [o | o@(NativeOutput (RegionHandle "key") _) <- outs]
+      let iv n = case [bs | NativeOutput (RegionBytes m _) bs <- outs, m == n] of
+            [bs] -> bs
+            _ -> BS.empty
+      m' <- expectRight (publishDelta m3 (pcDelta c))
+      mats <- mapM (\h -> case resolveHandle m' h of
+        Just ost -> pure (keyBytesOf ost)
+        Nothing -> assertFailure "derived key must resolve" >> undefined) hs
+      pure (mats, (iv "iv-client", iv "iv-server"))
+    other -> assertFailure ("keymat must plan: " ++ show other) >> undefined
+  assertEqual "keymat keys"
+    [ Just (hex "698e3265825326fdf57444e2b1e45064")
+    , Just (hex "cceb1267b84f81e14a1ce6c2d9696031")
+    , Just (hex "f9efaf9d8e27955f638bda4d0df1d6ab")
+    , Just (hex "0eca6dccabd29fdff201da989870bcea")
+    ] mats
+  assertEqual "keymat ivc" (hex "083ea2e07385c9580f7cf01db35d0a20") ivc
+  assertEqual "keymat ivs" (hex "e601719a5c2a088bd3478436d42fe569") ivs
 
 caseKeyMatPlans :: IO ()
 caseKeyMatPlans = do

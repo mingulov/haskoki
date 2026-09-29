@@ -51,6 +51,9 @@ import Haskoki.FFI.NativeParams
   , normalizeTlsKeyMatParams
   , normalizeTls12KeyMatParams
   , normalizeTls12KeySafeParams
+  , normalizeSsl3MasterParams
+  , normalizeSsl3KeyMatParams
+  , ssl3MasterNativeSize
   , normalizePbeParams
   , pbeParamsNativeSize
   , tlsKeyMatNativeSize
@@ -86,6 +89,7 @@ import Haskoki.Recipe.Gcm (encodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams, byteOpsParamsValid, byteOpsRecipeFor)
 import Haskoki.Recipe.Ike (encodeIkeParams, ikeParamsValid, ikeRecipeFor)
 import Haskoki.Recipe.Sp800108 (Sp800Mode (..), decodeSp800Params)
+import Haskoki.Recipe.Ssl3 (encodeSsl3KeyMatParams, encodeSsl3MasterParams, ssl3ParamsValid, ssl3RecipeFor)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams, tlsKeyMatParamsValid, tlsKeyMatRecipeFor)
 import Haskoki.Recipe.Pbe (encodePbeParams, pbeParamsValid, pbeRecipeFor)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
@@ -1095,6 +1099,131 @@ spec = testGroup "native mechanism params"
         pokeByteOff out (5 * w) (nullPtr :: Ptr Word8)
         normalizeTls12KeySafeParams p (fromIntegral tls12KeyMatNativeSize)
       check "null iv128" unbuffered
+  , testCase "ssl3 native structs translate to canonical" $ do
+      let w = sizeOf (undefined :: CULong)
+          cr = BS.pack [0 .. 27]
+          sr = BS.pack [28 .. 55]
+          mst = MechanismId (mustGeneratedId "CKM_SSL3_MASTER_KEY_DERIVE")
+          mstDh = MechanismId (mustGeneratedId "CKM_SSL3_MASTER_KEY_DERIVE_DH")
+          kmat = MechanismId (mustGeneratedId "CKM_SSL3_KEY_AND_MAC_DERIVE")
+          checkMaster name mid got = case got of
+            Just canon -> do
+              assertEqual ("canonical " ++ name)
+                (encodeSsl3MasterParams cr sr) canon
+              case ssl3RecipeFor mid of
+                Just r -> assertEqual ("recipe accepts " ++ name) True
+                  (ssl3ParamsValid r canon)
+                Nothing -> fail ("ssl3 recipe missing: " ++ name)
+            Nothing -> fail ("ssl3 master struct refused: " ++ name)
+          withOut ivLen action =
+            allocaBytes 48 $ \out ->
+              allocaBytes ivLen $ \ivc ->
+                allocaBytes ivLen $ \ivs -> do
+                  pokeByteOff out 0 (CULong 0)
+                  pokeByteOff out w (CULong 0)
+                  pokeByteOff out (2 * w) (CULong 0)
+                  pokeByteOff out (3 * w) (CULong 0)
+                  pokeByteOff out (4 * w) (castPtr ivc :: Ptr Word8)
+                  pokeByteOff out (5 * w) (castPtr ivs :: Ptr Word8)
+                  action out
+      ver <- BS.useAsCStringLen cr $ \(cp, _) ->
+        BS.useAsCStringLen sr $ \(sp, _) ->
+          allocaBytes 2 $ \ver ->
+            allocaBytes ssl3MasterNativeSize $ \p -> do
+              pokeByteOff p 0 (castPtr cp :: Ptr Word8)
+              pokeByteOff p w (CULong 28)
+              pokeByteOff p (2 * w) (castPtr sp :: Ptr Word8)
+              pokeByteOff p (3 * w) (CULong 28)
+              pokeByteOff p (4 * w) (castPtr ver :: Ptr Word8)
+              normalizeSsl3MasterParams p (fromIntegral ssl3MasterNativeSize)
+      checkMaster "versioned" mst ver
+      noVer <- BS.useAsCStringLen cr $ \(cp, _) ->
+        BS.useAsCStringLen sr $ \(sp, _) ->
+          allocaBytes ssl3MasterNativeSize $ \p -> do
+            pokeByteOff p 0 (castPtr cp :: Ptr Word8)
+            pokeByteOff p w (CULong 28)
+            pokeByteOff p (2 * w) (castPtr sp :: Ptr Word8)
+            pokeByteOff p (3 * w) (CULong 28)
+            pokeByteOff p (4 * w) (nullPtr :: Ptr Word8)
+            normalizeSsl3MasterParams p (fromIntegral ssl3MasterNativeSize)
+      checkMaster "null version (dh)" mstDh noVer
+      outKm <- BS.useAsCStringLen cr $ \(cp, _) ->
+        BS.useAsCStringLen sr $ \(sp, _) ->
+          withOut 16 $ \out ->
+            allocaBytes tlsKeyMatNativeSize $ \p -> do
+              pokeByteOff p 0 (CULong 128)
+              pokeByteOff p w (CULong 128)
+              pokeByteOff p (2 * w) (CULong 128)
+              pokeByteOff p (3 * w) (0 :: Word8)
+              pokeByteOff p (4 * w) (castPtr cp :: Ptr Word8)
+              pokeByteOff p (5 * w) (CULong 28)
+              pokeByteOff p (6 * w) (castPtr sp :: Ptr Word8)
+              pokeByteOff p (7 * w) (CULong 28)
+              pokeByteOff p (8 * w) (castPtr out :: Ptr Word8)
+              normalizeSsl3KeyMatParams p (fromIntegral tlsKeyMatNativeSize)
+      case outKm of
+        Just (canon, slots) -> do
+          assertEqual "canonical keymat"
+            (encodeSsl3KeyMatParams 16 16 16 cr sr) canon
+          case ssl3RecipeFor kmat of
+            Just r -> assertEqual "recipe accepts keymat" True
+              (ssl3ParamsValid r canon)
+            Nothing -> fail "ssl3 keymat recipe missing"
+          assertEqual "handles keymat" 4 (length (kmsHandles slots))
+          assertEqual "ivc keymat" 16 (kmsIvCLen slots)
+          assertEqual "ivs keymat" 16 (kmsIvSLen slots)
+        Nothing -> fail "ssl3 keymat struct refused"
+  , testCase "ssl3 bad native structs refuse" $ do
+      let w = sizeOf (undefined :: CULong)
+          cr = BS.pack [0 .. 27]
+          sr = BS.pack [28 .. 55]
+          build action =
+            BS.useAsCStringLen cr $ \(cp, _) ->
+              BS.useAsCStringLen sr $ \(sp, _) ->
+                allocaBytes 48 $ \out ->
+                  allocaBytes 16 $ \ivc ->
+                    allocaBytes 16 $ \ivs -> do
+                      pokeByteOff out (4 * w) (castPtr ivc :: Ptr Word8)
+                      pokeByteOff out (5 * w) (castPtr ivs :: Ptr Word8)
+                      allocaBytes tlsKeyMatNativeSize $ \p -> do
+                        pokeByteOff p 0 (CULong 128)
+                        pokeByteOff p w (CULong 128)
+                        pokeByteOff p (2 * w) (CULong 128)
+                        pokeByteOff p (3 * w) (0 :: Word8)
+                        pokeByteOff p (4 * w) (castPtr cp :: Ptr Word8)
+                        pokeByteOff p (5 * w) (CULong 28)
+                        pokeByteOff p (6 * w) (castPtr sp :: Ptr Word8)
+                        pokeByteOff p (7 * w) (CULong 28)
+                        pokeByteOff p (8 * w) (castPtr out :: Ptr Word8)
+                        action p out
+      short <- BS.useAsCStringLen cr $ \(cp, _) ->
+        BS.useAsCStringLen sr $ \(sp, _) ->
+          allocaBytes ssl3MasterNativeSize $ \p -> do
+            pokeByteOff p 0 (castPtr cp :: Ptr Word8)
+            pokeByteOff p w (CULong 28)
+            pokeByteOff p (2 * w) (castPtr sp :: Ptr Word8)
+            pokeByteOff p (3 * w) (CULong 28)
+            pokeByteOff p (4 * w) (nullPtr :: Ptr Word8)
+            normalizeSsl3MasterParams p 32
+      assertEqual "short master refused" Nothing short
+      shortKm <- build $ \p _ -> normalizeSsl3KeyMatParams p 40
+      assertEqual "short keymat refused" Nothing shortKm
+      nullOut <- build $ \p _ -> do
+        pokeByteOff p (8 * w) (nullPtr :: Ptr Word8)
+        normalizeSsl3KeyMatParams p (fromIntegral tlsKeyMatNativeSize)
+      assertEqual "null out refused" Nothing nullOut
+      nullIv <- build $ \p out -> do
+        pokeByteOff out (4 * w) (nullPtr :: Ptr Word8)
+        normalizeSsl3KeyMatParams p (fromIntegral tlsKeyMatNativeSize)
+      assertEqual "null iv refused" Nothing nullIv
+      exported <- build $ \p _ -> do
+        pokeByteOff p (3 * w) (1 :: Word8)
+        normalizeSsl3KeyMatParams p (fromIntegral tlsKeyMatNativeSize)
+      assertEqual "export refused" Nothing exported
+      ragged <- build $ \p _ -> do
+        pokeByteOff p (2 * w) (CULong 127)
+        normalizeSsl3KeyMatParams p (fromIntegral tlsKeyMatNativeSize)
+      assertEqual "ragged size refused" Nothing ragged
   , testCase "pbe native struct translates to canonical plus iv slot" $ do
       let w = sizeOf (undefined :: CULong)
           psz = sizeOf (undefined :: Ptr Word8)

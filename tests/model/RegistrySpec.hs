@@ -291,11 +291,16 @@ caseCurated = do
     , MechanismId Gen.ckm_XOR_BASE_AND_DATA
     , MechanismId Gen.ckm_EXTRACT_KEY_FROM_KEY
     , MechanismId Gen.ckm_SSL3_PRE_MASTER_KEY_GEN
+    , MechanismId Gen.ckm_SSL3_MASTER_KEY_DERIVE
+    , MechanismId Gen.ckm_SSL3_KEY_AND_MAC_DERIVE
+    , MechanismId Gen.ckm_SSL3_MASTER_KEY_DERIVE_DH
     , MechanismId Gen.ckm_TLS_PRE_MASTER_KEY_GEN
     , MechanismId Gen.ckm_TLS_MASTER_KEY_DERIVE
     , MechanismId Gen.ckm_TLS_KEY_AND_MAC_DERIVE
     , MechanismId Gen.ckm_TLS_MASTER_KEY_DERIVE_DH
     , MechanismId Gen.ckm_TLS_PRF
+    , MechanismId Gen.ckm_SSL3_MD5_MAC
+    , MechanismId Gen.ckm_SSL3_SHA1_MAC
     , MechanismId Gen.ckm_MD5_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA1_KEY_DERIVATION
     , MechanismId Gen.ckm_SHA256_KEY_DERIVATION
@@ -472,11 +477,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 260 behavior + 204 catalog-only + catalog line.
+  -- schema + 265 behavior + 199 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 260
+  assertEqual "behavior line count" 265
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 204
+  assertEqual "catalog-only line count" 199
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -940,7 +945,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 204 (length invIds)
+  assertEqual "guard covers every catalog row" 199 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of
@@ -957,13 +962,18 @@ caseSpecialsCatalogOnly = do
   -- S15: one named representative per reviewed gap group stays
   -- catalog-only with its headline operation refused under
   -- granted caps (the exhaustive guard above covers all 314;
-  -- this table documents the groups for humans).
+  -- this table documents the groups for humans). The 11n
+  -- vendor stances pin in full: both rows per OTP vendor plus
+  -- the FASTHASH digest row.
   let reg = curatedRegistry
       reps =
         [ ("CKM_ACTI", OpSign)
+        , ("CKM_ACTI_KEY_GEN", OpGenerateKey)
         , ("CKM_XMSS", OpSign)
         , ("CKM_HSS", OpSign)
         , ("CKM_SECURID", OpSign)
+        , ("CKM_SECURID_KEY_GEN", OpGenerateKey)
+        , ("CKM_FASTHASH", OpDigest)
         , ("CKM_CMS_SIG", OpSign)
         , ("CKM_FORTEZZA_TIMESTAMP", OpSign)
         , ("CKM_DES_CBC", OpEncrypt)

@@ -194,6 +194,12 @@ import Haskoki.Recipe.Pbe
   , pbeKeyLen
   , pbeRecipes
   )
+import Haskoki.Recipe.Ssl3
+  ( Ssl3Kind (..)
+  , Ssl3Recipe (..)
+  , ssl3CodecFor
+  , ssl3Recipes
+  )
 import Haskoki.Recipe.Ike
   ( IkeRecipe (..)
   , ikeCodecFor
@@ -1093,6 +1099,35 @@ pbeDescs =
   , let bits = 8 * pbeKeyLen (pbeKind r)
   ]
 
+-- | The SSL3 behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from 'ssl3CodecFor'.
+-- The three derive rows cite the planner case (A20), the
+-- synthetic construction (A37), and the real vectors (A39);
+-- the two MAC rows cite sign and verify routes (A37, A39 —
+-- no A16: one-shot MAC only). All five rows predate 2.40;
+-- key bounds are mechanism-specific.
+ssl3Descs :: [Descriptor]
+ssl3Descs =
+  [ promotedDesc (ssl3Name r) allBaselines (ssl3Family r)
+      (ssl3CodecFor r)
+      (ssl3Routes r)
+      MechanismSpecific 0 0
+  | r <- ssl3Recipes
+  ]
+  where
+    ssl3Family r = case ssl3Kind r of
+      Ssl3Md5Mac -> FamilyMac
+      Ssl3Sha1Mac -> FamilyMac
+      _ -> FamilyDerive
+    ssl3Routes r = case ssl3Kind r of
+      Ssl3Md5Mac -> macRoutes (ssl3Name r)
+      Ssl3Sha1Mac -> macRoutes (ssl3Name r)
+      _ -> [mechRoute OpDerive (ssl3Name r) ["A20", "A37", "A39"]]
+    macRoutes name =
+      [ mechRoute OpSign name ["A37", "A39"]
+      , mechRoute OpVerify name ["A37", "A39"]
+      ]
+
 -- | The encrypt-data behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from
 -- 'encryptDataCodecFor', the derive route citing the planner case
@@ -1507,7 +1542,7 @@ curatedRegistry =
         , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
-          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ byteOpsDescs ++ tlsKeyMatDescs ++ pbeDescs ++ otpDescs ++ encryptDataDescs
+          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ byteOpsDescs ++ tlsKeyMatDescs ++ pbeDescs ++ ssl3Descs ++ otpDescs ++ encryptDataDescs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

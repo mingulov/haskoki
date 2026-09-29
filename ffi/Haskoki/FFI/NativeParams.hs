@@ -166,6 +166,9 @@ module Haskoki.FFI.NativeParams
   , normalizeTlsKeyMatParams
   , normalizeTls12KeyMatParams
   , normalizeTls12KeySafeParams
+  , normalizeSsl3MasterParams
+  , normalizeSsl3KeyMatParams
+  , ssl3MasterNativeSize
   , pbeStructToCanonical
   , normalizePbeParams
   , pbeParamsNativeSize
@@ -253,6 +256,7 @@ import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
 import Haskoki.Recipe.Ike (encodeIkeParams, ikePrfCodeFor)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, tlsKdfPrfCodeFor)
+import Haskoki.Recipe.Ssl3 (encodeSsl3KeyMatParams, encodeSsl3MasterParams)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
 import Haskoki.Recipe.Pbe (encodePbeParams)
 import Haskoki.Attribute
@@ -315,6 +319,12 @@ ssl3RandomSize = 2 * wordSize + 2 * ptrSize
 -- inline randoms plus the @pVersion@ pointer.
 tlsKdfMasterNativeSize :: Int
 tlsKdfMasterNativeSize = ssl3RandomSize + ptrSize
+
+-- | Native @CK_SSL3_MASTER_KEY_DERIVE_PARAMS@ image size for
+-- the SSL3 rows: the same geometry as the TLS-KDF master
+-- struct (aliased so the row reads on its own name).
+ssl3MasterNativeSize :: Int
+ssl3MasterNativeSize = ssl3RandomSize + ptrSize
 
 -- | Native @CK_TLS12_MASTER_KEY_DERIVE_PARAMS@ image size: the
 -- inline randoms, the @pVersion@ pointer, the PRF hash id.
@@ -1154,6 +1164,19 @@ tlsKeyMatStructToCanonical macBits keyBits ivBits isExport cr sr = do
   iv <- bitsToBytesInt ivBits
   pure (encodeTlsKeyMatParams 0 mac key iv cr sr)
 
+-- | SSL3 key-material sizes (bits), the export flag, and the
+-- chased randoms onto the canonical @ssl3-keymat-params\/1@
+-- image. Non-multiple-of-8 sizes and the export variant
+-- refuse ('Nothing'; the export key expansion is not
+-- served).
+ssl3KeyMatStructToCanonical :: Word64 -> Word64 -> Word64 -> Bool -> ByteString -> ByteString -> Maybe ByteString
+ssl3KeyMatStructToCanonical macBits keyBits ivBits isExport cr sr = do
+  guard (not isExport)
+  mac <- bitsToBytesInt macBits
+  key <- bitsToBytesInt keyBits
+  iv <- bitsToBytesInt ivBits
+  pure (encodeSsl3KeyMatParams mac key iv cr sr)
+
 -- | TLS 1.2 key-material sizes (bits), the export flag, the PRF
 -- mechanism id, and the chased randoms onto the canonical
 -- @keymat-params\/1@ image. Non-multiple-of-8 sizes, the
@@ -1295,7 +1318,32 @@ chaseDerivedKeys pArr n
 normalizeTlsKeyMatParams :: Ptr Word8 -> Word64 -> IO (Maybe (ByteString, KeyMatSlots))
 normalizeTlsKeyMatParams pParams paramsLen
   | paramsLen /= fromIntegral tlsKeyMatNativeSize = pure Nothing
-  | otherwise = normalizeKeyMatCommon pParams Nothing False
+  | otherwise = normalizeKeyMatCommon pParams tlsKeyMatStructToCanonical False
+
+-- | Normalize one SSL3 key-material struct: the
+-- @CK_SSL3_KEY_MAT_PARAMS@ geometry matches
+-- @CK_TLS_KEY_MAT_PARAMS@ exactly, so the shared chase runs
+-- with the SSL3 frame translator. Wrong-sized images, null
+-- out-structs, null IV buffers under a nonzero IV size,
+-- refused random chases, and off-profile sizes refuse
+-- ('Nothing').
+normalizeSsl3KeyMatParams :: Ptr Word8 -> Word64 -> IO (Maybe (ByteString, KeyMatSlots))
+normalizeSsl3KeyMatParams pParams paramsLen
+  | paramsLen /= fromIntegral tlsKeyMatNativeSize = pure Nothing
+  | otherwise = normalizeKeyMatCommon pParams ssl3KeyMatStructToCanonical False
+
+-- | Normalize one SSL3 master struct: the native
+-- @CK_SSL3_MASTER_KEY_DERIVE_PARAMS@ image at
+-- @pParams@/@paramsLen@ onto the canonical
+-- @ssl3-master-params\/1@ image. Wrong-sized images and
+-- refused random chases refuse ('Nothing'); @pVersion@
+-- (NULL-or-live, never written back) is not even read.
+normalizeSsl3MasterParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeSsl3MasterParams pParams paramsLen
+  | paramsLen /= fromIntegral ssl3MasterNativeSize = pure Nothing
+  | otherwise = do
+      mRand <- chaseSsl3Random pParams
+      pure (uncurry encodeSsl3MasterParams <$> mRand)
 
 -- | Normalize one TLS 1.2 key-material struct (the AND_MAC
 -- row): like 'normalizeTlsKeyMatParams' plus the PRF word.
@@ -1304,7 +1352,8 @@ normalizeTls12KeyMatParams pParams paramsLen
   | paramsLen /= fromIntegral tls12KeyMatNativeSize = pure Nothing
   | otherwise = do
       CULong prf <- peekByteOff pParams (tlsKeyMatNativeSize)
-      normalizeKeyMatCommon pParams (Just prf) False
+      normalizeKeyMatCommon pParams
+        (\m k i e cr sr -> tls12KeyMatStructToCanonical m k i e prf cr sr) False
 
 -- | Normalize one TLS 1.2 key-safe struct: like
 -- 'normalizeTls12KeyMatParams', except the IV size is ignored
@@ -1316,14 +1365,15 @@ normalizeTls12KeySafeParams pParams paramsLen
   | paramsLen /= fromIntegral tls12KeyMatNativeSize = pure Nothing
   | otherwise = do
       CULong prf <- peekByteOff pParams (tlsKeyMatNativeSize)
-      normalizeKeyMatCommon pParams (Just prf) True
+      normalizeKeyMatCommon pParams
+        (\m k i e cr sr -> tls12KeyMatStructToCanonical m k i e prf cr sr) True
 
 -- | Shared key-material chase: sizes, the export byte, the
 -- random info, and the out-struct slots; the pure translator
 -- (legacy or hash-selected) builds the frame. The key-safe
 -- row ignores the IV size (treated as 0).
-normalizeKeyMatCommon :: Ptr Word8 -> Maybe Word64 -> Bool -> IO (Maybe (ByteString, KeyMatSlots))
-normalizeKeyMatCommon pParams mPrf ignoreIv = do
+normalizeKeyMatCommon :: Ptr Word8 -> (Word64 -> Word64 -> Word64 -> Bool -> ByteString -> ByteString -> Maybe ByteString) -> Bool -> IO (Maybe (ByteString, KeyMatSlots))
+normalizeKeyMatCommon pParams structToCanonical ignoreIv = do
   CULong macBits <- peekByteOff pParams 0
   CULong keyBits <- peekByteOff pParams wordSize
   CULong ivBits <- peekByteOff pParams (2 * wordSize)
@@ -1342,9 +1392,7 @@ normalizeKeyMatCommon pParams mPrf ignoreIv = do
       let ivOk = ignoreIv || ivBits == 0
             || (pIvC /= (nullPtr :: Ptr Word8) && pIvS /= (nullPtr :: Ptr Word8))
           isExport = (exportByte :: Word8) /= 0
-          mFrame = case mPrf of
-            Nothing -> tlsKeyMatStructToCanonical macBits keyBits ivBits isExport cr sr
-            Just prf -> tls12KeyMatStructToCanonical macBits keyBits ivBits isExport prf cr sr
+          mFrame = structToCanonical macBits keyBits ivBits isExport cr sr
       case (ivOk, mFrame) of
         (True, Just frame) -> case (bitsToBytesInt macBits, bitsToBytesInt ivBits) of
           (Just mac, Just iv) -> do

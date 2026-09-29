@@ -277,6 +277,15 @@ import Haskoki.Recipe.TlsKeyMat
   )
 import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
 import Haskoki.Recipe.Pbe (decodePbeParams, maxPbeIters, pbeDesParity)
+import Haskoki.Recipe.Ssl3
+  ( Ssl3Kind (..)
+  , Ssl3Recipe (ssl3Kind)
+  , decodeSsl3KeyMatParams
+  , decodeSsl3MasterParams
+  , maxSsl3KeyBlock
+  , ssl3ParamsValid
+  , ssl3RecipeFor
+  )
 import Haskoki.Recipe.Chacha20
   ( Chacha20Recipe (..)
   , chachaParamsValid
@@ -525,6 +534,31 @@ hmacSpecFor mech params = do
 -- 'CryptoFailed', never 'CryptoUnsupported').
 isHmacMech :: MechanismId -> Bool
 isHmacMech mech = isJust (hmacRecipeFor mech)
+
+-- | SSL3-MAC dispatch: covered (mechanism, params) pairs to the
+-- digest plus the whole-byte tag length (pinned against
+-- 'Haskoki.Recipe.Ssl3' by RecipeSsl3Spec). 'Nothing' means
+-- uncovered (non-SSL3-MAC mechanism) or malformed parameters.
+ssl3MacSpecFor :: MechanismId -> ByteString -> Maybe (DigestAlg, Int)
+ssl3MacSpecFor mech params = do
+  r <- ssl3RecipeFor mech
+  alg <- case ssl3Kind r of
+    Ssl3Md5Mac -> Just D_MD5
+    Ssl3Sha1Mac -> Just D_SHA1
+    _ -> Nothing
+  guard (ssl3ParamsValid r params)
+  n <- decodeMacGeneral params
+  pure (alg, n `div` 8)
+
+-- | An SSL3-MAC mechanism regardless of parameter validity
+-- (drives the parameter-refusal branch).
+isSsl3MacMech :: MechanismId -> Bool
+isSsl3MacMech mech = case ssl3RecipeFor mech of
+  Just r -> case ssl3Kind r of
+    Ssl3Md5Mac -> True
+    Ssl3Sha1Mac -> True
+    _ -> False
+  Nothing -> False
 
 -- | CMAC dispatch: covered (mechanism, params, key length) triples
 -- to the backend ECB cipher spec plus the GENERAL truncation (pinned
@@ -958,6 +992,41 @@ keyMatParamsFor mech params = do
 isKeyMatMech :: MechanismId -> Bool
 isKeyMatMech mech = case tlsKeyMatRecipeFor mech of
   Just _ -> True
+  Nothing -> False
+
+-- | One decoded SSL3-derive execution: master rows carry the
+-- two randoms; the keymat row carries the MAC\/key\/IV byte
+-- sizes plus the two randoms.
+data Ssl3Exec
+  = Ssl3MasterExec !ByteString !ByteString
+  | Ssl3KeyMatExec !Int !Int !Int !ByteString !ByteString
+  deriving (Eq, Show)
+
+-- | SSL3-derive dispatch: the covered (mechanism, params)
+-- pair to its execution tuple (pinned by RecipeSsl3Spec).
+-- MAC rows never resolve here (they execute on the sign
+-- path).
+ssl3ParamsFor :: MechanismId -> ByteString -> Maybe Ssl3Exec
+ssl3ParamsFor mech params = do
+  r <- ssl3RecipeFor mech
+  guard (ssl3ParamsValid r params)
+  case ssl3Kind r of
+    Ssl3Master -> uncurry Ssl3MasterExec <$> decodeSsl3MasterParams params
+    Ssl3MasterDh -> uncurry Ssl3MasterExec <$> decodeSsl3MasterParams params
+    Ssl3KeyMat -> do
+      (mac, key, iv, cr, sr) <- decodeSsl3KeyMatParams params
+      pure (Ssl3KeyMatExec mac key iv cr sr)
+    _ -> Nothing
+
+-- | An SSL3-derive mechanism regardless of parameter
+-- validity (drives the parameter-refusal branch).
+isSsl3Mech :: MechanismId -> Bool
+isSsl3Mech mech = case ssl3RecipeFor mech of
+  Just r -> case ssl3Kind r of
+    Ssl3Master -> True
+    Ssl3MasterDh -> True
+    Ssl3KeyMat -> True
+    _ -> False
   Nothing -> False
 
 -- | TLS-PRF secret split (RFC 2246 §5): the first
@@ -1616,6 +1685,10 @@ runEffect env resolve fx = case fx of
         runGmacSign mech params key input
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpSign mech params key input
+    | Just (alg, n) <- ssl3MacSpecFor mech params -> withKey mkey $ \key ->
+        runSsl3MacSign alg n key input
+    | isSsl3MacMech mech -> pure (GotCryptoError (CryptoFailed
+        "driver: SSL3 MAC takes a whole-byte bit length within the hash width"))
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
         toBytes <$> sign env spec key input
     | isRsaPkcs1Mech mech -> pure (GotCryptoError (CryptoFailed
@@ -1666,6 +1739,10 @@ runEffect env resolve fx = case fx of
         runGmacVerify mech params key input sig
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpVerify mech params key input sig
+    | Just (alg, n) <- ssl3MacSpecFor mech params -> withKey mkey $ \key ->
+        runSsl3MacVerify alg n key input sig
+    | isSsl3MacMech mech -> pure (GotCryptoError (CryptoFailed
+        "driver: SSL3 MAC takes a whole-byte bit length within the hash width"))
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
         toVerifyUnit <$> verify env spec key input sig
     | isRsaPkcs1Mech mech -> pure (GotCryptoError (CryptoFailed
@@ -2083,6 +2160,14 @@ runEffect env resolve fx = case fx of
         "driver: key-material derive takes no info string"))
     | isKeyMatMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: key-material mechanism parameters rejected by the recipe"))
+    | Just ex <- ssl3ParamsFor mech params
+    , BS.null info -> withKey mkey $ \key ->
+        runSsl3 ex key outLen
+    | isSsl3Mech mech
+    , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
+        "driver: SSL3 derive takes no info string"))
+    | isSsl3Mech mech -> pure (GotCryptoError (CryptoFailed
+        "driver: SSL3 mechanism parameters rejected by the recipe"))
     | Just prf <- tlsPrfParamsFor mech params
     , BS.null info -> withKey mkey $ \key ->
         runTlsPrf prf key outLen
@@ -2892,6 +2977,112 @@ runEffect env resolve fx = case fx of
             "driver: derive length out of range"))
       _ -> pure (GotCryptoError (CryptoBadKey "driver"
         "key derivation needs raw secret bytes"))
+    -- | SSL3 derive effects: the RFC 6101 constructions over
+    -- provider MD5\/SHA-1. Master rows emit the fixed 48-byte
+    -- §6.1 secret; the keymat row emits the §6.2.2 block
+    -- (pad bytes @A@..@0xFF@: past round 191 the
+    -- construction is undefined, so over-bound blocks fail
+    -- typed even when called past the planner).
+    runSsl3 :: Ssl3Exec -> KeyMaterial -> Int -> IO CryptoResult
+    runSsl3 ex key outLen = case key of
+      KeyBytes kb
+        | outLen >= 1 && outLen <= maxSsl3KeyBlock -> case ex of
+            Ssl3MasterExec cr sr -> do
+              r <- ssl3Master kb cr sr
+              pure $ case r of
+                EngineFail err -> GotCryptoError (toCryptoError err)
+                EngineOk ok -> GotBytes (BS.take outLen ok)
+            Ssl3KeyMatExec mac k iv cr sr ->
+              let total = 2 * mac + 2 * k + 2 * iv
+              in if total < 1 || total > maxSsl3KeyBlock
+                then pure (GotCryptoError (CryptoFailed
+                  "driver: SSL3 key block past the 191-round construction bound"))
+                else do
+                  r <- ssl3Block kb cr sr total
+                  pure $ case r of
+                    EngineFail err -> GotCryptoError (toCryptoError err)
+                    EngineOk ok -> GotBytes (BS.take outLen ok)
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: derive length out of range"))
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "key derivation needs raw secret bytes"))
+    -- | RFC 6101 §6.1: @MD5(secret + SHA1(pad + secret + CR
+    -- + SR))@ over pads @A@, @BB@, @CCC@.
+    ssl3Master :: ByteString -> ByteString -> ByteString -> IO (EngineResult ByteString)
+    ssl3Master secret cr sr = go pads []
+      where
+        pads = [BS.singleton 65, BS.pack [66, 66], BS.pack [67, 67, 67]]
+        go [] acc = pure (EngineOk (BS.concat (reverse acc)))
+        go (pad : rest) acc = do
+          rSha <- digestOneShot env D_SHA1 (pad <> secret <> cr <> sr)
+          case rSha of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk sha -> do
+              rMd5 <- digestOneShot env D_MD5 (secret <> sha)
+              case rMd5 of
+                EngineFail err -> pure (EngineFail err)
+                EngineOk d -> go rest (d : acc)
+    -- | RFC 6101 §6.2.2: @MD5(secret + SHA1(pad + secret + SR
+    -- + CR))@ iterated, pad @i@ is byte @(0x41 + i - 1)@
+    -- repeated @i@ times (note server random first).
+    ssl3Block :: ByteString -> ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
+    ssl3Block secret cr sr total = go 1 []
+      where
+        go i acc
+          | length acc * 16 >= total = pure (EngineOk (BS.take total (BS.concat (reverse acc))))
+          | i > 191 = pure (EngineFail (BackendBadParam "ssl3Block"
+              "SSL3 key block past the 191-round construction bound"))
+          | otherwise = do
+              let pad = BS.replicate i (65 + fromIntegral i - 1)
+              rSha <- digestOneShot env D_SHA1 (pad <> secret <> sr <> cr)
+              case rSha of
+                EngineFail err -> pure (EngineFail err)
+                EngineOk sha -> do
+                  rMd5 <- digestOneShot env D_MD5 (secret <> sha)
+                  case rMd5 of
+                    EngineFail err -> pure (EngineFail err)
+                    EngineOk d -> go (i + 1) (d : acc)
+    -- | SSL3 MAC sign effects: @H(secret + pad2 + H(secret +
+    -- pad1 + data))@ truncated to the requested whole-byte
+    -- length (pads 48 bytes MD5, 40 bytes SHA-1).
+    runSsl3MacSign :: DigestAlg -> Int -> KeyMaterial -> ByteString -> IO CryptoResult
+    runSsl3MacSign alg n key input = case key of
+      KeyBytes kb -> do
+        r <- ssl3Mac alg kb input
+        pure $ case r of
+          EngineFail err -> GotCryptoError (toCryptoError err)
+          EngineOk full -> GotBytes (BS.take n full)
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "SSL3 MAC needs raw symmetric key bytes"))
+    -- | SSL3 MAC verify effects: recompute, truncate,
+    -- constant-time compare. A mismatch is the 'False'
+    -- verdict, never a malfunction.
+    runSsl3MacVerify :: DigestAlg -> Int -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runSsl3MacVerify alg n key input tag = case key of
+      KeyBytes kb -> do
+        r <- ssl3Mac alg kb input
+        pure $ case r of
+          EngineFail err -> GotCryptoError (toCryptoError err)
+          EngineOk full
+            | driverCtEq (BS.take n full) tag -> GotValid True
+            | otherwise -> GotValid False
+      _ -> pure (GotCryptoError (CryptoBadKey "driver"
+        "SSL3 MAC needs raw symmetric key bytes"))
+    -- | The RFC 6101 MAC core over the resolved digest.
+    ssl3Mac :: DigestAlg -> ByteString -> ByteString -> IO (EngineResult ByteString)
+    ssl3Mac alg secret input = case alg of
+      D_MD5 -> macWith 48
+      D_SHA1 -> macWith 40
+      _ -> pure (EngineFail (BackendBadParam "ssl3Mac"
+        "SSL3 MAC needs MD5 or SHA-1"))
+      where
+        macWith padLen = do
+          let pad1 = BS.replicate padLen 0x36
+              pad2 = BS.replicate padLen 0x5c
+          rInner <- digestOneShot env alg (secret <> pad1 <> input)
+          case rInner of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk inner -> digestOneShot env alg (secret <> pad2 <> inner)
     -- | RFC 5705 context suffix: empty without context, else the
     -- 2-byte big-endian length plus the context.
     ctxSuffix :: ByteString -> ByteString
