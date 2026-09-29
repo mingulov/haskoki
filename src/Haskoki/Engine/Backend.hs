@@ -43,8 +43,10 @@ module Haskoki.Engine.Backend
   , xofServable
   , digestMacStem
   , hmacSpecCap
+  , poly1305SpecCap
   , rsaSigCap
   , rsaPssCap
+  , rsaX931Cap
   , ecdsaSigCap
   , dsaSigCap
   , eddsaSigCap
@@ -279,6 +281,12 @@ hmacSpecCap (MacHMAC alg trunc) = do
       | otherwise -> Nothing
 hmacSpecCap _ = Nothing
 
+-- | Capability string required by standalone Poly1305: the single
+-- @POLY1305@ name. 'Nothing' means a non-Poly1305 family.
+poly1305SpecCap :: MacSpec -> Maybe String
+poly1305SpecCap MacPoly1305 = Just "POLY1305"
+poly1305SpecCap _ = Nothing
+
 -- | Capability string required by one RSA PKCS#1 v1.5 spec.
 -- 'Nothing' means the spec is never servable: a non-RSA family or
 -- an XOF digest (v1.5 needs a fixed-width hash). Reuses the digest
@@ -299,6 +307,15 @@ rsaPssCap (SigRSA_PSS (PssParams h m s))
   , Just _ <- digestMacStem m
   , s >= 0 && s <= 64 = Just "RSA-PSS"
 rsaPssCap _ = Nothing
+
+-- | Capability string required by one RSA-X9.31 spec: the single
+-- @RSA-X931@ name for the raw row (the input length gates at op
+-- time) and for fixed-width digests. 'Nothing' means the spec is
+-- never servable (an XOF digest).
+rsaX931Cap :: SigSpec -> Maybe String
+rsaX931Cap (SigRSA_X931 Nothing) = Just "RSA-X931"
+rsaX931Cap (SigRSA_X931 (Just alg)) = "RSA-X931" <$ digestMacStem alg
+rsaX931Cap _ = Nothing
 
 -- | Capability string required by one ECDSA spec:
 -- @ECDSA-<curve>-<digest stem>@ for hash-and-sign,
@@ -407,6 +424,9 @@ dhCap DhPlain = "DH"
 data MacSpec
   = MacHMAC { macDigest :: !DigestAlg, macTruncLen :: !(Maybe Int) }
   | MacCMAC { macCipher :: !CipherSpec }
+  | MacPoly1305
+    -- ^ Standalone Poly1305 (CKM_POLY1305): 32-byte one-time key,
+    -- 16-byte tag, no parameters.
   | MacKMAC128 { macOutLen :: !Int, macCustom :: !ByteString }
   | MacKMAC256 { macOutLen :: !Int, macCustom :: !ByteString }
   deriving (Eq, Show)
@@ -646,6 +666,11 @@ data SigSpec
     -- ^ Raw RSA (CKM_RSA_X_509): short inputs left-pad with zero
     -- bytes to the modulus width, no padding, no hashing.
   | SigRSA_PSS { sigPss :: !PssParams }
+  | SigRSA_X931 { sigX931Digest :: !(Maybe DigestAlg) }
+    -- ^ X9.31 padding (ANSI X9.31): Nothing = raw (caller hashed;
+    -- the input length selects the hash id — 20/32/48/64 bytes map
+    -- to SHA-1/SHA-256/SHA-384/SHA-512, anything else refuses);
+    -- Just d = digest-then-sign with d.
   | SigECDSA { sigEc :: !EcSpec, sigEcDigest :: !(Maybe DigestAlg) }
     -- ^ Nothing = raw (caller hashed); Just d = digested input.
   | SigDSA { sigDsaEncoding :: !String, sigDsaDigest :: !(Maybe DigestAlg) }

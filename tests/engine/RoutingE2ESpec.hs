@@ -12,7 +12,7 @@ randomized) plus the keyed sign\/verify path through
 {-# LANGUAGE TypeFamilies #-}
 module RoutingE2ESpec (spec) where
 
-import Data.Bits ((.&.), shiftR)
+import Data.Bits (complement, (.&.), shiftR)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
@@ -133,6 +133,8 @@ spec = testGroup "Routed end-to-end"
   , testCase "driver: pbkd2 keygen vector" caseDriverPbkd2Gen
   , testCase "driver: pbe keygen vectors" caseDriverPbe
   , testCase "driver: ssl3 mac vectors + refuse" caseDriverSsl3Mac
+  , testCase "driver: x931 vectors + refuse" caseDriverX931
+  , testCase "driver: poly1305 vector + refuse" caseDriverPoly1305
   , testCase "driver: tls-prf vectors + refuse" caseDriverTlsPrf
   , testCase "driver: hotp vectors + refuse" caseDriverHotp
   , testCase "driver: blake2b-512 digest/hmac/general + refuse" caseDriverBlake2b512
@@ -2084,6 +2086,68 @@ caseDriverSsl3Mac = withBackend $ \env -> do
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badWidth <- signAs sha1 (encodeMacGeneral 168)
   case badWidth of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+
+caseDriverX931 :: IO ()
+caseDriverX931 = withBackend $ \env -> do
+  gen <- generateKey env (GenRSA 2048 65537)
+  (priv, pub) <- case gen of
+    EngineOk (p, Just q) -> pure (p, q)
+    other -> assertFailure ("keygen failed: " ++ show other)
+  let raw = MechanismId 0xb
+      sha1 = MechanismId 0xc
+      pubOid = ObjectId 96
+      privOid = ObjectId 97
+      res oid
+        | oid == pubOid = Just pub
+        | oid == privOid = Just priv
+        | otherwise = Nothing
+      d32 = BS.pack [0 .. 31]
+  s1 <- runEffect env res (FxSign raw (Just privOid) BS.empty d32)
+    >>= expectBytes
+  assertEqual "raw sig length" 256 (BS.length s1)
+  vOk <- runEffect env res (FxVerify raw (Just pubOid) BS.empty d32 s1)
+  assertEqual "raw verifies" (GotValid True) vOk
+  vBad <- runEffect env res
+    (FxVerify raw (Just pubOid) BS.empty d32 (BS.map complement s1))
+  assertEqual "tamper refuses" (GotValid False) vBad
+  badLen <- runEffect env res
+    (FxSign raw (Just privOid) BS.empty (BS.replicate 28 0xAA))
+  case badLen of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
+  badParams <- runEffect env res
+    (FxSign raw (Just privOid) (BS.pack [0]) d32)
+  case badParams of
+    GotCryptoError (CryptoFailed _) -> pure ()
+    other -> assertFailure ("expected Failed, got: " ++ show other)
+  s2 <- runEffect env res (FxSign sha1 (Just privOid) BS.empty "message")
+    >>= expectBytes
+  assertEqual "sha1 sig length" 256 (BS.length s2)
+  v2 <- runEffect env res (FxVerify sha1 (Just pubOid) BS.empty "message" s2)
+  assertEqual "sha1 verifies" (GotValid True) v2
+
+caseDriverPoly1305 :: IO ()
+caseDriverPoly1305 = withBackend $ \env -> do
+  let poly = MechanismId 0x1228
+      keyOid = ObjectId 98
+      res oid
+        | oid == keyOid = Just (KeyBytes (hex "60ae20bd9302aea34cafbc620011e17b7774e97764b9bb6e035ffb2b8b63be9f"))
+        | otherwise = Nothing
+      msg = "Poly1305 KAT message, second vector"
+  t1 <- runEffect env res (FxSign poly (Just keyOid) BS.empty msg)
+    >>= expectBytes
+  assertEqual "poly vector" (hex "f70a350ed794a7e0660bba7638f5a6d2") t1
+  vOk <- runEffect env res
+    (FxVerify poly (Just keyOid) BS.empty msg (hex "f70a350ed794a7e0660bba7638f5a6d2"))
+  assertEqual "poly verifies" (GotValid True) vOk
+  vBad <- runEffect env res
+    (FxVerify poly (Just keyOid) BS.empty msg (hex "f70a350ed794a7e0660bba7638f5a6d3"))
+  assertEqual "tamper refuses" (GotValid False) vBad
+  badParams <- runEffect env res
+    (FxSign poly (Just keyOid) (BS.pack [0]) msg)
+  case badParams of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
 

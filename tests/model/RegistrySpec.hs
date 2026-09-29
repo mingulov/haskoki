@@ -178,6 +178,8 @@ caseCurated = do
     , MechanismId Gen.ckm_SHA1_RSA_PKCS
     , MechanismId Gen.ckm_RIPEMD160_RSA_PKCS
     , MechanismId Gen.ckm_RSA_PKCS_OAEP
+    , MechanismId Gen.ckm_RSA_X9_31
+    , MechanismId Gen.ckm_SHA1_RSA_X9_31
     , MechanismId Gen.ckm_RSA_PKCS_PSS
     , MechanismId Gen.ckm_SHA1_RSA_PKCS_PSS
     , MechanismId Gen.ckm_ML_KEM_KEY_PAIR_GEN
@@ -390,7 +392,10 @@ caseCurated = do
     , MechanismId Gen.ckm_CHACHA20_KEY_GEN
     , MechanismId Gen.ckm_CHACHA20
     , MechanismId Gen.ckm_POLY1305_KEY_GEN
+    , MechanismId Gen.ckm_POLY1305
+    , MechanismId Gen.ckm_EC_KEY_PAIR_GEN_W_EXTRA_BITS
     , MechanismId Gen.ckm_DSA_PARAMETER_GEN
+    , MechanismId Gen.ckm_DH_PKCS_PARAMETER_GEN
     , MechanismId Gen.ckm_X9_42_DH_PARAMETER_GEN
     , MechanismId Gen.ckm_AES_OFB
     , MechanismId Gen.ckm_AES_CFB8
@@ -477,11 +482,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 265 behavior + 199 catalog-only + catalog line.
+  -- schema + 270 behavior + 194 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 265
+  assertEqual "behavior line count" 270
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 199
+  assertEqual "catalog-only line count" 194
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -945,7 +950,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 199 (length invIds)
+  assertEqual "guard covers every catalog row" 194 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of
@@ -982,6 +987,7 @@ caseSpecialsCatalogOnly = do
         , ("CKM_HASH_ML_DSA", OpSign)
         , ("CKM_AES_KEY_WRAP_PKCS7", OpWrap)
         , ("CKM_RSA_X9_31_KEY_PAIR_GEN", OpGenerateKeyPair)
+        , ("CKM_SHA512_T", OpDigest)
         , ("CKM_NULL", OpDigest)
         , ("CKM_VENDOR_DEFINED", OpDigest)
         ]

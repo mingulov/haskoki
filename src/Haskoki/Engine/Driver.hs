@@ -36,6 +36,12 @@ table by @CKM_*@ name; no hand-typed numerics):
   'CryptoUnsupported'.
 * RSA-PSS runs the recipe 'SigSpec' ('rsaPssSpecFor'): the
   @pss-params\/1@ encoding carries hash, MGF1 hash, and salt length.
+* RSA-X9.31 runs the recipe 'SigSpec' ('rsaX931SigFor'): the raw
+  row signs caller digests (the input length selects the hash id),
+  the SHA-1 row hashes inside the backend; every mechanism takes
+  empty parameters.
+* Poly1305 runs the recipe 'MacSpec' ('poly1305MacFor'): the
+  16-byte tag under the 32-byte key; empty parameters only.
 * RSA-OAEP cipher effects route to the asymmetric backend entry
   points ('rsaOaepParamsFor'): the effect parameters carry the
   @oaep-params\/1@ encoding (hash, MGF1 hash, label).
@@ -137,6 +143,8 @@ module Haskoki.Engine.Driver
   , rsaOaepParamsFor
   , rsaX509SigFor
   , rsaX509CipherFor
+  , rsaX931SigFor
+  , poly1305MacFor
   , ecdsaSpecFor
   , dsaSpecFor
   , eddsaSpecFor
@@ -296,7 +304,9 @@ import Haskoki.Recipe.Chacha20
   )
 import Haskoki.Recipe.Gcm (decodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (decodeOaepParams, rsaOaepParamsValid, rsaOaepRecipeFor)
+import Haskoki.Recipe.Poly1305 (poly1305ParamsValid, poly1305RecipeFor)
 import Haskoki.Recipe.RsaX509 (rsaX509ParamsValid, rsaX509RecipeFor)
+import Haskoki.Recipe.RsaX931 (rsaX931ParamsValid, rsaX931RecipeFor, rx931Name)
 import Haskoki.Recipe.RsaPkcs1
   ( RsaPkcs1Recipe (..)
   , rsaPkcs1ParamsValid
@@ -321,8 +331,10 @@ import Haskoki.Operation.KeyManagement
   , decodeGenArgs
   , decodeWrapParams
   , dhKeyPairGenMech
+  , dhPkcsParameterGenMech
   , dsaKeyPairGenMech
   , dsaParameterGenMech
+  , ecExtraBitsKeyPairGenMech
   , ecKeyPairGenMech
   , edwardsKeyPairGenMech
   , montgomeryKeyPairGenMech
@@ -534,6 +546,23 @@ hmacSpecFor mech params = do
 -- 'CryptoFailed', never 'CryptoUnsupported').
 isHmacMech :: MechanismId -> Bool
 isHmacMech mech = isJust (hmacRecipeFor mech)
+
+-- | Poly1305 dispatch: the covered (mechanism, params) pair to
+-- its backend spec (pinned against
+-- 'Haskoki.Recipe.Poly1305' by RecipePoly1305Spec). 'Nothing'
+-- means uncovered (non-Poly1305 mechanism) or malformed
+-- parameters.
+poly1305MacFor :: MechanismId -> ByteString -> Maybe MacSpec
+poly1305MacFor mech params = do
+  r <- poly1305RecipeFor mech
+  guard (poly1305ParamsValid r params)
+  pure MacPoly1305
+
+-- | A Poly1305 mechanism regardless of parameter validity (drives
+-- the parameter-refusal branch: malformed Poly1305 params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isPoly1305Mech :: MechanismId -> Bool
+isPoly1305Mech mech = isJust (poly1305RecipeFor mech)
 
 -- | SSL3-MAC dispatch: covered (mechanism, params) pairs to the
 -- digest plus the whole-byte tag length (pinned against
@@ -1415,6 +1444,27 @@ rsaX509CipherFor mech params = do
 isRsaX509Mech :: MechanismId -> Bool
 isRsaX509Mech mech = isJust (rsaX509RecipeFor mech)
 
+-- | RSA-X9.31 dispatch: the covered (mechanism, params) pair to
+-- its sign/verify backend spec (pinned against
+-- 'Haskoki.Recipe.RsaX931' by RecipeRsaX931Spec). The raw row
+-- maps to the prehash spec (the input length selects the hash id
+-- at op time); the SHA-1 row maps to the digested spec.
+-- 'Nothing' means uncovered (non-X9.31 mechanism) or malformed
+-- parameters.
+rsaX931SigFor :: MechanismId -> ByteString -> Maybe SigSpec
+rsaX931SigFor mech params = do
+  r <- rsaX931RecipeFor mech
+  guard (rsaX931ParamsValid r params)
+  case rx931Name r of
+    "CKM_SHA1_RSA_X9_31" -> pure (SigRSA_X931 (Just D_SHA1))
+    _ -> pure (SigRSA_X931 Nothing)
+
+-- | An X9.31 mechanism regardless of parameter validity (drives the
+-- parameter-refusal branch: malformed X9.31 params are
+-- 'CryptoFailed', never 'CryptoUnsupported').
+isRsaX931Mech :: MechanismId -> Bool
+isRsaX931Mech mech = isJust (rsaX931RecipeFor mech)
+
 -- | ECDSA dispatch: covered (mechanism, params, key) triples to
 -- backend specs (pinned against
 -- 'Haskoki.Recipe.Ecdsa' by RecipeEcdsaSpec). The recipe binds the
@@ -1685,6 +1735,10 @@ runEffect env resolve fx = case fx of
         runGmacSign mech params key input
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpSign mech params key input
+    | Just spec <- poly1305MacFor mech params -> withKey mkey $ \key ->
+        toBytes <$> macSign env spec key input
+    | isPoly1305Mech mech -> pure (GotCryptoError (CryptoFailed
+        "Poly1305 takes empty mechanism parameters"))
     | Just (alg, n) <- ssl3MacSpecFor mech params -> withKey mkey $ \key ->
         runSsl3MacSign alg n key input
     | isSsl3MacMech mech -> pure (GotCryptoError (CryptoFailed
@@ -1701,6 +1755,10 @@ runEffect env resolve fx = case fx of
         toBytes <$> sign env spec key input
     | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X.509 takes empty mechanism parameters"))
+    | Just spec <- rsaX931SigFor mech params -> withKey mkey $ \key ->
+        toBytes <$> sign env spec key input
+    | isRsaX931Mech mech -> pure (GotCryptoError (CryptoFailed
+        "RSA-X9.31 takes empty mechanism parameters"))
     | isEcdsaMech mech -> withKey mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
@@ -1739,6 +1797,10 @@ runEffect env resolve fx = case fx of
         runGmacVerify mech params key input sig
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpVerify mech params key input sig
+    | Just spec <- poly1305MacFor mech params -> withKey mkey $ \key ->
+        toVerifyBool <$> macVerify env spec key input sig
+    | isPoly1305Mech mech -> pure (GotCryptoError (CryptoFailed
+        "Poly1305 takes empty mechanism parameters"))
     | Just (alg, n) <- ssl3MacSpecFor mech params -> withKey mkey $ \key ->
         runSsl3MacVerify alg n key input sig
     | isSsl3MacMech mech -> pure (GotCryptoError (CryptoFailed
@@ -1755,6 +1817,10 @@ runEffect env resolve fx = case fx of
         toVerifyUnit <$> verify env spec key input sig
     | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X.509 takes empty mechanism parameters"))
+    | Just spec <- rsaX931SigFor mech params -> withKey mkey $ \key ->
+        toVerifyUnit <$> verify env spec key input sig
+    | isRsaX931Mech mech -> pure (GotCryptoError (CryptoFailed
+        "RSA-X9.31 takes empty mechanism parameters"))
     | isEcdsaMech mech -> withKey mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
@@ -1820,6 +1886,10 @@ runEffect env resolve fx = case fx of
         runGmacSign mech params key input
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpSign mech params key input
+    | Just spec <- poly1305MacFor mech params -> withKey mkey $ \key ->
+        toBytes <$> macSign env spec key input
+    | isPoly1305Mech mech -> pure (GotCryptoError (CryptoFailed
+        "Poly1305 takes empty mechanism parameters"))
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
         toBytes <$> sign env spec key input
     | isRsaPkcs1Mech mech -> pure (GotCryptoError (CryptoFailed
@@ -1832,6 +1902,10 @@ runEffect env resolve fx = case fx of
         toBytes <$> sign env spec key input
     | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X.509 takes empty mechanism parameters"))
+    | Just spec <- rsaX931SigFor mech params -> withKey mkey $ \key ->
+        toBytes <$> sign env spec key input
+    | isRsaX931Mech mech -> pure (GotCryptoError (CryptoFailed
+        "RSA-X9.31 takes empty mechanism parameters"))
     | isEcdsaMech mech -> withKey mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
@@ -1870,6 +1944,10 @@ runEffect env resolve fx = case fx of
         runGmacVerify mech params key input sig
     | isHotpMech mech -> withKey mkey $ \key ->
         runHotpVerify mech params key input sig
+    | Just spec <- poly1305MacFor mech params -> withKey mkey $ \key ->
+        toVerifyBool <$> macVerify env spec key input sig
+    | isPoly1305Mech mech -> pure (GotCryptoError (CryptoFailed
+        "Poly1305 takes empty mechanism parameters"))
     | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
         toVerifyUnit <$> verify env spec key input sig
     | isRsaPkcs1Mech mech -> pure (GotCryptoError (CryptoFailed
@@ -1882,6 +1960,10 @@ runEffect env resolve fx = case fx of
         toVerifyUnit <$> verify env spec key input sig
     | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X.509 takes empty mechanism parameters"))
+    | Just spec <- rsaX931SigFor mech params -> withKey mkey $ \key ->
+        toVerifyUnit <$> verify env spec key input sig
+    | isRsaX931Mech mech -> pure (GotCryptoError (CryptoFailed
+        "RSA-X9.31 takes empty mechanism parameters"))
     | isEcdsaMech mech -> withKey mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
@@ -1972,7 +2054,7 @@ runEffect env resolve fx = case fx of
                         "driver: PBE iterations or length out of range"))
                   Nothing -> pure (GotCryptoError (CryptoFailed
                     "driver: malformed PBE keygen params"))
-          (m, GenEc curve) | m == ecKeyPairGenMech ->
+          (m, GenEc curve) | m == ecKeyPairGenMech || m == ecExtraBitsKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenEC (EcSpec (BC8.unpack curve) "DER"))
           (m, GenRsa bits e) | m == rsaKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenRSA bits e)
@@ -1984,6 +2066,12 @@ runEffect env resolve fx = case fx of
           -- triple publishes as X9.42 DH domain parameters
           -- through the shared DSS-Parms finisher.
           (m, GenDsaParams p q) | m == x9_42DhParameterGenMech ->
+            toKeyPair <$> generateKey env (GenDSAParams p q)
+          -- DH PKCS parameter generation runs the same DSA FIPS
+          -- 186-4 entry point (P+G-only provider DH paramgen, as
+          -- for X9.42); the pending attrs stamped by the planner
+          -- publish it as PKCS#3 DH domain parameters.
+          (m, GenDsaParams p q) | m == dhPkcsParameterGenMech ->
             toKeyPair <$> generateKey env (GenDSAParams p q)
           (m, GenDsaKeypair der) | m == dsaKeyPairGenMech ->
             toKeyPair <$> generateKey env (GenDSAKeypair der)
@@ -2003,7 +2091,7 @@ runEffect env resolve fx = case fx of
             Nothing -> pure (GotCryptoError (CryptoFailed
               ("driver: unknown SLH-DSA parameter set: " ++ show n)))
           _
-            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, chacha20KeyGenMech, ecKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, dhKeyPairGenMech, x9_42DhKeyPairGenMech, x9_42DhParameterGenMech, edwardsKeyPairGenMech, montgomeryKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech, pbkd2KeyGenMech] ->
+            | mech `elem` [aesKeyGenMech, des3KeyGenMech, hotpKeyGenMech, genericSecretKeyGenMech, chacha20KeyGenMech, ecKeyPairGenMech, ecExtraBitsKeyPairGenMech, rsaKeyPairGenMech, mlKemKeyPairGenMech, dsaKeyPairGenMech, dsaParameterGenMech, dhKeyPairGenMech, dhPkcsParameterGenMech, x9_42DhKeyPairGenMech, x9_42DhParameterGenMech, edwardsKeyPairGenMech, montgomeryKeyPairGenMech, mldsaKeyPairGenMech, slhdsaKeyPairGenMech, pbkd2KeyGenMech] ->
                 pure (GotCryptoError (CryptoFailed
                   "driver: keygen args mismatch the mechanism"))
             | otherwise -> pure (unsupported fx)

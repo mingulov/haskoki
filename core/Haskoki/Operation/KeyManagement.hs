@@ -160,10 +160,12 @@ module Haskoki.Operation.KeyManagement
   , genericSecretKeygenMinBytes
   , genericSecretKeygenMaxBytes
   , ecKeyPairGenMech
+  , ecExtraBitsKeyPairGenMech
   , rsaKeyPairGenMech
   , dsaKeyPairGenMech
   , dsaParameterGenMech
   , dhKeyPairGenMech
+  , dhPkcsParameterGenMech
   , x9_42DhKeyPairGenMech
   , x9_42DhParameterGenMech
   , edwardsKeyPairGenMech
@@ -276,11 +278,13 @@ import Haskoki.Registry.Generated
   , ckm_DSA_KEY_PAIR_GEN
   , ckm_DSA_PARAMETER_GEN
   , ckm_DH_PKCS_KEY_PAIR_GEN
+  , ckm_DH_PKCS_PARAMETER_GEN
   , ckm_X9_42_DH_KEY_PAIR_GEN
   , ckm_X9_42_DH_PARAMETER_GEN
   , ckm_EC_EDWARDS_KEY_PAIR_GEN
   , ckm_EC_MONTGOMERY_KEY_PAIR_GEN
   , ckm_EC_KEY_PAIR_GEN
+  , ckm_EC_KEY_PAIR_GEN_W_EXTRA_BITS
   , ckm_GENERIC_SECRET_KEY_GEN
   , ckm_HOTP_KEY_GEN
   , ckm_ML_KEM_KEY_PAIR_GEN
@@ -659,6 +663,13 @@ pbkd2KeygenMaxBytes = 8160
 ecKeyPairGenMech :: MechanismId
 ecKeyPairGenMech = MechanismId (ckm_EC_KEY_PAIR_GEN)
 
+-- | @CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS@ (generated id, resolved by
+-- name). The FIPS 186-5 B.4.2 extra-bits method is unobservable
+-- from the outside (keys are uniform in range either way), so it
+-- plans exactly like plain EC keygen.
+ecExtraBitsKeyPairGenMech :: MechanismId
+ecExtraBitsKeyPairGenMech = MechanismId (ckm_EC_KEY_PAIR_GEN_W_EXTRA_BITS)
+
 -- | @CKM_RSA_PKCS_KEY_PAIR_GEN@ (generated id, resolved by name).
 rsaKeyPairGenMech :: MechanismId
 rsaKeyPairGenMech = MechanismId (ckm_RSA_PKCS_KEY_PAIR_GEN)
@@ -682,6 +693,10 @@ x9_42DhKeyPairGenMech = MechanismId (ckm_X9_42_DH_KEY_PAIR_GEN)
 -- | @CKM_X9_42_DH_PARAMETER_GEN@ (generated id, resolved by name).
 x9_42DhParameterGenMech :: MechanismId
 x9_42DhParameterGenMech = MechanismId (ckm_X9_42_DH_PARAMETER_GEN)
+
+-- | @CKM_DH_PKCS_PARAMETER_GEN@ (generated id, resolved by name).
+dhPkcsParameterGenMech :: MechanismId
+dhPkcsParameterGenMech = MechanismId (ckm_DH_PKCS_PARAMETER_GEN)
 
 -- | @CKM_EC_EDWARDS_KEY_PAIR_GEN@ (generated id, resolved by name).
 edwardsKeyPairGenMech :: MechanismId
@@ -2011,7 +2026,7 @@ planGenerateKeyPair rules model st mech pubT privT =
                 tag = Map.insert AttrKemAlg (ValULong (fromIntegral alg))
                   . Map.insert AttrParameterSet (ValULong (fromIntegral ckp))
             pure (GenMlKem alg, tag pubA', tag privA')
-      | mech == ecKeyPairGenMech =
+      | mech == ecKeyPairGenMech || mech == ecExtraBitsKeyPairGenMech =
           withPair st mech ckkEc pubT privT $ \pubA privA -> do
             curve <- ecCurveOf pubA privA
             pure (GenEc curve, pubA, privA)
@@ -2835,6 +2850,20 @@ planGenerateKey rules model st mech params tmpl =
               ( PwGenerateKey (pendingFromAttrs st attrs)
               , FxGenerateKey mech BS.empty (encodeGenArgs (GenDsaParams l n))
               )
+      -- DH PKCS parameter generation frames the same FIPS 186-4
+      -- (L, N) pair as X9.42 (same driver entry point, same DER
+      -- DSS-Parms framing), published as PKCS#3 DH domain
+      -- parameters — but the subprime size defaults from L (the
+      -- oracle sends CKA_PRIME_BITS only and expects CKR_OK).
+      | mech == dhPkcsParameterGenMech =
+          case checkKeyTemplate ckoDomainParameters ckkDh tmpl of
+          Left deny -> Left deny
+          Right attrs -> case dhPkcsParamSizes attrs of
+            Left deny -> Left deny
+            Right (l, n) -> Right
+              ( PwGenerateKey (pendingFromAttrs st attrs)
+              , FxGenerateKey mech BS.empty (encodeGenArgs (GenDsaParams l n))
+              )
       | mech == aesKeyGenMech = case checkKeyTemplate ckoSecretKey ckkAes tmpl of
           Left deny -> Left deny
           Right attrs -> case Map.lookup AttrValueLen attrs of
@@ -2978,6 +3007,9 @@ dsaParamSizes = fips186ParamSizes "DSA" False
 
 dhParamSizes :: Map AttributeType AttributeValue -> Either KeyDeny (Int, Int)
 dhParamSizes = fips186ParamSizes "X9.42 DH" True
+
+dhPkcsParamSizes :: Map AttributeType AttributeValue -> Either KeyDeny (Int, Int)
+dhPkcsParamSizes = fips186ParamSizes "DH PKCS" False
 
 -- ---------------------------------------------------------------------------
 -- Wrap and unwrap

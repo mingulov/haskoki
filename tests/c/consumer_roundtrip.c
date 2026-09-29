@@ -5713,6 +5713,172 @@ int main(int argc, char **argv) {
           f->C_DestroyObject(sess, smst);
         }
         {
+          /* 11o serve quintet, both topologies: RSA-X9.31 raw and
+           * SHA-1 rows roundtrip over a generated RSA-2048 pair
+           * (off-rule digest lengths refuse
+           * CKR_MECHANISM_INVALID); Poly1305 tags KAT-exact;
+           * DH-PKCS parameter generation lands readable domain
+           * parameters; EC extra-bits keygen mints a signing
+           * pair. */
+          CK_OBJECT_CLASS opcls = CKO_PUBLIC_KEY;
+          CK_OBJECT_CLASS oscls = CKO_PRIVATE_KEY;
+          CK_OBJECT_CLASS ockcls = CKO_SECRET_KEY;
+          CK_OBJECT_CLASS odcls = CKO_DOMAIN_PARAMETERS;
+          CK_KEY_TYPE orkt = CKK_RSA;
+          CK_KEY_TYPE oect = CKK_EC;
+          CK_KEY_TYPE opkt = CKK_POLY1305;
+          CK_KEY_TYPE odht = CKK_DH;
+          CK_ULONG obits = 2048;
+          CK_ULONG oprm = 1024;
+          CK_ULONG osub = 160;
+          CK_BBOOL oyes = CK_TRUE, ono = CK_FALSE;
+          CK_OBJECT_HANDLE opub = 0, opriv = 0, omkey = 0, oparm = 0;
+          CK_OBJECT_HANDLE oepub = 0, oepriv = 0;
+          CK_MECHANISM omm;
+          CK_ULONG osiglen;
+          CK_BYTE osig[512];
+          CK_BYTE odig[32];
+          CK_BYTE odig28[28];
+          CK_BYTE opmsg[] = "Poly1305 KAT message, second vector";
+          CK_BYTE opkey[32] = {
+            0x60,0xae,0x20,0xbd,0x93,0x02,0xae,0xa3,0x4c,0xaf,0xbc,0x62,0x00,0x11,0xe1,0x7b,
+            0x77,0x74,0xe9,0x77,0x64,0xb9,0xbb,0x6e,0x03,0x5f,0xfb,0x2b,0x8b,0x63,0xbe,0x9f
+          };
+          CK_BYTE optag[16] = {
+            0xf7,0x0a,0x35,0x0e,0xd7,0x94,0xa7,0xe0,0x66,0x0b,0xba,0x76,0x38,0xf5,0xa6,0xd2
+          };
+          CK_BYTE ogot[16];
+          CK_ATTRIBUTE opubT[] = {
+            { CKA_CLASS, &opcls, sizeof(opcls) },
+            { CKA_KEY_TYPE, &orkt, sizeof(orkt) },
+            { CKA_MODULUS_BITS, &obits, sizeof(obits) },
+            { CKA_TOKEN, &ono, sizeof(ono) },
+            { CKA_VERIFY, &oyes, sizeof(oyes) }
+          };
+          CK_ATTRIBUTE oprivT[] = {
+            { CKA_CLASS, &oscls, sizeof(oscls) },
+            { CKA_KEY_TYPE, &orkt, sizeof(orkt) },
+            { CKA_TOKEN, &ono, sizeof(ono) },
+            { CKA_SIGN, &oyes, sizeof(oyes) }
+          };
+          CK_ATTRIBUTE omkT[] = {
+            { CKA_CLASS, &ockcls, sizeof(ockcls) },
+            { CKA_KEY_TYPE, &opkt, sizeof(opkt) },
+            { CKA_TOKEN, &ono, sizeof(ono) },
+            { CKA_SIGN, &oyes, sizeof(oyes) },
+            { CKA_VERIFY, &oyes, sizeof(oyes) },
+            { CKA_VALUE, opkey, sizeof(opkey) }
+          };
+          CK_ATTRIBUTE oparT[] = {
+            { CKA_CLASS, &odcls, sizeof(odcls) },
+            { CKA_KEY_TYPE, &odht, sizeof(odht) },
+            { CKA_PRIME_BITS, &oprm, sizeof(oprm) },
+            { CKA_SUBPRIME_BITS, &osub, sizeof(osub) },
+            { CKA_TOKEN, &ono, sizeof(ono) }
+          };
+          CK_BYTE oprime[128];
+          CK_ATTRIBUTE oget[] = { { CKA_PRIME, oprime, sizeof(oprime) } };
+          static const CK_BYTE op256[] = {
+            0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07
+          };
+          CK_ATTRIBUTE oepubT[] = {
+            { CKA_CLASS, &opcls, sizeof(opcls) },
+            { CKA_KEY_TYPE, &oect, sizeof(oect) },
+            { CKA_EC_PARAMS, (CK_VOID_PTR)op256, sizeof(op256) },
+            { CKA_TOKEN, &ono, sizeof(ono) },
+            { CKA_VERIFY, &oyes, sizeof(oyes) }
+          };
+          CK_ATTRIBUTE oeprivT[] = {
+            { CKA_CLASS, &oscls, sizeof(oscls) },
+            { CKA_KEY_TYPE, &oect, sizeof(oect) },
+            { CKA_TOKEN, &ono, sizeof(ono) },
+            { CKA_SIGN, &oyes, sizeof(oyes) }
+          };
+          int oi;
+          for (oi = 0; oi < 32; oi++) odig[oi] = (CK_BYTE)(oi * 7 + 1);
+          for (oi = 0; oi < 28; oi++) odig28[oi] = (CK_BYTE)oi;
+          omm.mechanism = CKM_RSA_PKCS_KEY_PAIR_GEN;
+          omm.pParameter = NULL_PTR;
+          omm.ulParameterLen = 0;
+          rv = f->C_GenerateKeyPair(sess, &omm, opubT, 5, oprivT, 4, &opub, &opriv);
+          CHECKC(rv == CKR_OK && opub != 0 && opriv != 0, "x931 RSA pair mints");
+          omm.mechanism = CKM_RSA_X9_31;
+          omm.pParameter = NULL_PTR;
+          omm.ulParameterLen = 0;
+          rv = f->C_SignInit(sess, &omm, opriv);
+          CHECKC(rv == CKR_OK, "x931 raw init ok");
+          osiglen = sizeof(osig);
+          rv = f->C_Sign(sess, odig, sizeof(odig), osig, &osiglen);
+          CHECKC(rv == CKR_OK && osiglen == 256, "x931 raw signs 256 bytes");
+          rv = f->C_VerifyInit(sess, &omm, opub);
+          CHECKC(rv == CKR_OK, "x931 raw verify-init ok");
+          rv = f->C_Verify(sess, odig, sizeof(odig), osig, osiglen);
+          CHECKC(rv == CKR_OK, "x931 raw roundtrips");
+          osig[0] ^= 0x01;
+          rv = f->C_VerifyInit(sess, &omm, opub);
+          CHECKC(rv == CKR_OK, "x931 tampered verify-init ok");
+          rv = f->C_Verify(sess, odig, sizeof(odig), osig, osiglen);
+          CHECKC(rv == CKR_SIGNATURE_INVALID, "x931 tampered fails");
+          osig[0] ^= 0x01;
+          rv = f->C_SignInit(sess, &omm, opriv);
+          CHECKC(rv == CKR_OK, "x931 28-byte init ok");
+          osiglen = sizeof(osig);
+          rv = f->C_Sign(sess, odig28, sizeof(odig28), osig, &osiglen);
+          CHECKC(rv == CKR_MECHANISM_INVALID, "x931 28-byte digest refused");
+          omm.mechanism = CKM_SHA1_RSA_X9_31;
+          rv = f->C_SignInit(sess, &omm, opriv);
+          CHECKC(rv == CKR_OK, "x931 sha1 init ok");
+          osiglen = sizeof(osig);
+          rv = f->C_Sign(sess, odig, sizeof(odig), osig, &osiglen);
+          CHECKC(rv == CKR_OK && osiglen == 256, "x931 sha1 signs");
+          rv = f->C_VerifyInit(sess, &omm, opub);
+          CHECKC(rv == CKR_OK, "x931 sha1 verify-init ok");
+          rv = f->C_Verify(sess, odig, sizeof(odig), osig, osiglen);
+          CHECKC(rv == CKR_OK, "x931 sha1 roundtrips");
+          rv = f->C_CreateObject(sess, omkT, 6, &omkey);
+          CHECKC(rv == CKR_OK && omkey != 0, "poly1305 key imports");
+          omm.mechanism = CKM_POLY1305; /* NULL params: P11C-009 pins accept */
+          rv = f->C_SignInit(sess, &omm, omkey);
+          CHECKC(rv == CKR_OK, "poly1305 init ok");
+          osiglen = sizeof(osig);
+          rv = f->C_Sign(sess, opmsg, sizeof(opmsg) - 1, osig, &osiglen);
+          CHECKC(rv == CKR_OK && osiglen == 16 && memcmp(osig, optag, 16) == 0,
+                 "poly1305 matches KAT bytes");
+          rv = f->C_VerifyInit(sess, &omm, omkey);
+          CHECKC(rv == CKR_OK, "poly1305 verify-init ok");
+          rv = f->C_Verify(sess, opmsg, sizeof(opmsg) - 1, optag, 16);
+          CHECKC(rv == CKR_OK, "poly1305 verifies KAT");
+          ogot[0] = optag[0] ^ 0x01;
+          memcpy(ogot + 1, optag + 1, 15);
+          rv = f->C_VerifyInit(sess, &omm, omkey);
+          CHECKC(rv == CKR_OK, "poly1305 tampered verify-init ok");
+          rv = f->C_Verify(sess, opmsg, sizeof(opmsg) - 1, ogot, 16);
+          CHECKC(rv == CKR_SIGNATURE_INVALID, "poly1305 tampered fails");
+          omm.mechanism = CKM_DH_PKCS_PARAMETER_GEN;
+          rv = f->C_GenerateKey(sess, &omm, oparT, 5, &oparm);
+          CHECKC(rv == CKR_OK && oparm != 0, "dh-pkcs params mint");
+          oget[0].ulValueLen = sizeof(oprime);
+          rv = f->C_GetAttributeValue(sess, oparm, oget, 1);
+          CHECKC(rv == CKR_OK && oget[0].ulValueLen == 128,
+                 "dh-pkcs prime reads 128 bytes");
+          omm.mechanism = CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS;
+          rv = f->C_GenerateKeyPair(sess, &omm, oepubT, 5, oeprivT, 4, &oepub, &oepriv);
+          CHECKC(rv == CKR_OK && oepub != 0 && oepriv != 0 && oepub != oepriv,
+                 "ec extra-bits pair mints");
+          omm.mechanism = CKM_ECDSA_SHA256;
+          rv = f->C_SignInit(sess, &omm, oepriv);
+          CHECKC(rv == CKR_OK, "ec extra-bits signs");
+          osiglen = sizeof(osig);
+          rv = f->C_Sign(sess, odig, sizeof(odig), osig, &osiglen);
+          CHECKC(rv == CKR_OK && osiglen == 64, "ec extra-bits sig length");
+          f->C_DestroyObject(sess, opub);
+          f->C_DestroyObject(sess, opriv);
+          f->C_DestroyObject(sess, omkey);
+          f->C_DestroyObject(sess, oparm);
+          f->C_DestroyObject(sess, oepub);
+          f->C_DestroyObject(sess, oepriv);
+        }
+        {
           /* SP800-108 counter with one additional key: the
            * primary and the additional handle both land,
            * splitting the DKM in order. */

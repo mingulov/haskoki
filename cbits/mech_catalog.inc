@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 265
+#define HASKOKI_MECH_COUNT 270
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -27,6 +27,8 @@ static const struct haskoki_mech_row
   { 0x00000006UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA1_RSA_PKCS */
   { 0x00000008UL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_RIPEMD160_RSA_PKCS */
   { 0x00000009UL, 512UL, 4096UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT | CKF_UNWRAP | CKF_WRAP) }, /* CKM_RSA_PKCS_OAEP */
+  { 0x0000000BUL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_RSA_X9_31 */
+  { 0x0000000CUL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA1_RSA_X9_31 */
   { 0x0000000DUL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_RSA_PKCS_PSS */
   { 0x0000000EUL, 512UL, 4096UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_SHA1_RSA_PKCS_PSS */
   { 0x0000000FUL, 800UL, 1568UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_ML_KEM_KEY_PAIR_GEN */
@@ -239,7 +241,10 @@ static const struct haskoki_mech_row
   { 0x00001225UL, 256UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_CHACHA20_KEY_GEN */
   { 0x00001226UL, 32UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_CHACHA20 */
   { 0x00001227UL, 256UL, 256UL, (unsigned long)(CKF_GENERATE) }, /* CKM_POLY1305_KEY_GEN */
+  { 0x00001228UL, 0UL, 0UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_POLY1305 */
+  { 0x0000140BUL, 0UL, 0UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS */
   { 0x00002000UL, 1024UL, 3072UL, (unsigned long)(CKF_GENERATE) }, /* CKM_DSA_PARAMETER_GEN */
+  { 0x00002001UL, 1024UL, 3072UL, (unsigned long)(CKF_GENERATE) }, /* CKM_DH_PKCS_PARAMETER_GEN */
   { 0x00002002UL, 1024UL, 3072UL, (unsigned long)(CKF_GENERATE) }, /* CKM_X9_42_DH_PARAMETER_GEN */
   { 0x00002104UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_AES_OFB */
   { 0x00002106UL, 16UL, 32UL, (unsigned long)(CKF_DECRYPT | CKF_ENCRYPT) }, /* CKM_AES_CFB8 */

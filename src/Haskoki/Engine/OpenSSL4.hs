@@ -220,8 +220,16 @@ instance CryptoBackend OpenSSL4 where
                   Just nn -> Raw.hmacSized (osslCtx env) mdname (osslPropQ env) kb msg nn
                   Nothing -> Raw.hmac (osslCtx env) mdname (osslPropQ env) kb msg
               takeTag trunc <$> nativeOut "mac" r
+      MacPoly1305 -> do
+        mkey <- resolveKeyBytes env key
+        case mkey of
+          EngineFail err -> pure (EngineFail err)
+          EngineOk kb -> do
+            r <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.poly1305 (osslCtx env) (osslPropQ env) kb msg
+            nativeOut "mac" r
       _ -> pure (EngineFail (BackendUnsupported "mac"
-        ("non-HMAC spec: " ++ show spec)))
+        ("non-HMAC/Poly1305 spec: " ++ show spec)))
 
   macVerify be spec key msg tag = runGuarded be "macVerify" (macSupported be spec) $ \env ->
     case spec of
@@ -246,8 +254,21 @@ instance CryptoBackend OpenSSL4 where
                   in if ctEq want tag
                     then pure (EngineOk True)
                     else pure (EngineFail (BackendAuthFailed "macVerify"))
+      MacPoly1305 -> do
+        mkey <- resolveKeyBytes env key
+        case mkey of
+          EngineFail err -> pure (EngineFail err)
+          EngineOk kb -> do
+            r <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.poly1305 (osslCtx env) (osslPropQ env) kb msg
+            case r of
+              Left code -> nativeFail "macVerify" code
+              Right good ->
+                if ctEq good tag
+                  then pure (EngineOk True)
+                  else pure (EngineFail (BackendAuthFailed "macVerify"))
       _ -> pure (EngineFail (BackendUnsupported "macVerify"
-        ("non-HMAC spec: " ++ show spec)))
+        ("non-HMAC/Poly1305 spec: " ++ show spec)))
 
   sign be spec key msg = runGuarded be "sign" (sigSupported be spec) $ \env -> do
     mkey <- resolveKeyBytes env key
@@ -367,6 +388,19 @@ instance CryptoBackend OpenSSL4 where
                 Right sig -> pure (EngineOk sig)
             _ -> pure (EngineFail (BackendUnsupported "sign"
               ("no fetch name: " ++ show spec)))
+        SigRSA_X931 mdigest -> case x931NativeDigest mdigest msg of
+          -- Unreachable post-guard for covered rows (the driver
+          -- admits the raw row and SHA-1 only); typed, never a crash.
+          Nothing -> pure (EngineFail (BackendUnsupported "sign"
+            ("no X9.31 hash id: " ++ show spec)))
+          Just (mdname, prehash) -> do
+            r <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.rsaX931Sign (osslCtx env) mdname (osslPropQ env) kb msg prehash
+            case r of
+              Left code
+                | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "sign" "private key DER rejected"))
+                | otherwise -> nativeFail "sign" code
+              Right sig -> pure (EngineOk sig)
         _ -> pure (EngineFail (BackendUnsupported "sign"
           ("non-RSA/ECDSA/DSA spec: " ++ show spec)))
 
@@ -439,6 +473,13 @@ instance CryptoBackend OpenSSL4 where
               verifyRc "verify" "malformed RSA signature" rc
             _ -> pure (EngineFail (BackendUnsupported "verify"
               ("no fetch name: " ++ show spec)))
+        SigRSA_X931 mdigest -> case x931NativeDigest mdigest msg of
+          Nothing -> pure (EngineFail (BackendUnsupported "verify"
+            ("no X9.31 hash id: " ++ show spec)))
+          Just (mdname, prehash) -> do
+            rc <- withForeignPtr (osslEnv env) $ \_ ->
+              Raw.rsaX931Verify (osslCtx env) mdname (osslPropQ env) kb msg sig prehash
+            verifyRc "verify" "malformed RSA signature" rc
         _ -> pure (EngineFail (BackendUnsupported "verify"
           ("non-RSA/ECDSA/DSA spec: " ++ show spec)))
 
@@ -869,7 +910,7 @@ ossl4Caps version propq = BackendCaps
   , bcVersion = version
   , bcDigests = DigestCaps { dcAlgs = Set.fromList t16DigestAlgs, dcMultipart = True, dcXof = True }
   , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM", "ChaCha20-Poly1305"] }
-  , bcMacs = MacCaps { mcSpecs = osslMacSpecs t16DigestAlgs }
+  , bcMacs = MacCaps { mcSpecs = Set.insert "POLY1305" (osslMacSpecs t16DigestAlgs) }
   , bcSigs = SigCaps { scSpecs = Set.fromList ("RSA-PSS" : osslRsaSpecNames t16RsaAlgs ++ osslEcdsaSpecNames t16EcdsaCurves t16DigestAlgs ++ osslDsaSpecNames t16DsaAlgs ++ osslEddsaSpecNames t16EdwardsCurves ++ osslMldsaSpecNames t16MldsaLevels ++ osslSlhdsaSpecNames t16SlhdsaSets), scCurves = Set.fromList t16EcdsaCurves, scPqcSign = Set.fromList (t16MldsaLevels ++ t16SlhdsaSets) }
   , bcKems = KemCaps { kcAlgs = Set.fromList t16MlkemSets }
   , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR", "DH"] }
@@ -1047,7 +1088,7 @@ t16RsaAlgs =
 -- digest plus the raw and X.509 rows. The pre-probe caps cover
 -- 't16RsaAlgs'; 'probeCaps' re-derives over the probed subset.
 osslRsaSpecNames :: [DigestAlg] -> [String]
-osslRsaSpecNames algs = "RSA-RAW" : "RSA-X509" :
+osslRsaSpecNames algs = "RSA-RAW" : "RSA-X509" : "RSA-X931" :
   [ name
   | alg <- algs
   , Just name <- [rsaSigCap (SigRSA_PKCS1v15 alg)]
@@ -1058,6 +1099,7 @@ osslRsaNotes :: [DigestAlg] -> [(String, String)]
 osslRsaNotes algs =
   ("RSA-RAW", "raw block-type-1 operation, no hashing") :
   ("RSA-X509", "raw modular exponentiation, no padding") :
+  ("RSA-X931", "X9.31 padding, prehash (20/32/48/64-byte digests) or hash-and-sign") :
   [ (name, "PKCS#1 v1.5 hash-and-sign")
   | alg <- algs
   , Just name <- [rsaSigCap (SigRSA_PKCS1v15 alg)]
@@ -1126,6 +1168,7 @@ osslMacSpecs algs = Set.fromList
 -- | Per-name MAC parameter notes for the capability report.
 osslMacNotes :: [DigestAlg] -> [(String, String)]
 osslMacNotes algs =
+  ("POLY1305", "standalone 16-byte tag, 32-byte one-time key") :
   [ note
   | alg <- algs
   , Just stem <- [digestMacStem alg]
@@ -1147,6 +1190,7 @@ probeCaps env = do
   shake128Ok <- probe1 "md" "SHAKE-128"
   shake256Ok <- probe1 "md" "SHAKE-256"
   macOk <- probe1 "mac" "HMAC"
+  polyOk <- probe1 "mac" "POLY1305"
   ciphers <- probeCiphers
   pkeyOk <- probe1 "pkey" "EC"
   rsaOk <- probe1 "pkey" "RSA"
@@ -1185,7 +1229,8 @@ probeCaps env = do
     -- the EVP_MAC "HMAC" gate above): a missing provider algorithm
     -- narrows both the digest and the HMAC sets, never silently kept.
     , bcMacs = (bcMacs base)
-        { mcSpecs = if macOk then osslMacSpecs mdAlgs else Set.empty }
+        { mcSpecs = (if macOk then osslMacSpecs mdAlgs else Set.empty)
+            `Set.union` (if polyOk then Set.singleton "POLY1305" else Set.empty) }
     , bcSigs = (bcSigs base)
         { scSpecs = Set.unions
             [ keep pkeyOk (Set.fromList (osslEcdsaSpecNames t16EcdsaCurves mdAlgs))
@@ -1306,6 +1351,8 @@ macSupported :: BackendEnv OpenSSL4 -> MacSpec -> Maybe String
 macSupported (OSSL4Backend env) spec
   | Just name <- hmacSpecCap spec
   , Set.member name (mcSpecs (bcMacs (osslCaps env))) = Nothing
+  | Just name <- poly1305SpecCap spec
+  , Set.member name (mcSpecs (bcMacs (osslCaps env))) = Nothing
   | otherwise = Just ("mac not in probed set: " ++ show spec)
 
 sigSupported :: BackendEnv OpenSSL4 -> SigSpec -> Maybe String
@@ -1323,6 +1370,8 @@ sigSupported (OSSL4Backend env) spec
   | Just name <- rsaSigCap spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | Just name <- rsaPssCap spec
+  , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
+  | Just name <- rsaX931Cap spec
   , Set.member name (scSpecs (bcSigs (osslCaps env))) = Nothing
   | otherwise = Just ("signature not in supported set: " ++ show spec)
 
@@ -1373,6 +1422,26 @@ ecdsaNativeDigest (Just alg) = (, False) <$> digestFetchName alg
 dsaNativeDigest :: Maybe DigestAlg -> Maybe (String, Bool)
 dsaNativeDigest Nothing = Just ("", True)
 dsaNativeDigest (Just alg) = (, False) <$> digestFetchName alg
+
+-- | Native digest selection for one X9.31 spec: the fetch name plus
+-- the prehash flag. Raw inputs map by length onto the provider's
+-- X9.31 hash-id set (20\/32\/48\/64 bytes); digested inputs admit
+-- the same four digests only (the provider has no X9.31 id for
+-- SHA-224, the SHA-512\/t rows, SHA-3, or the XOFs — proven by
+-- probe). 'Nothing' means unservable.
+x931NativeDigest :: Maybe DigestAlg -> ByteString -> Maybe (String, Bool)
+x931NativeDigest (Just alg) _
+  | alg == D_SHA1 = Just ("SHA1", False)
+  | alg == D_SHA256 = Just ("SHA2-256", False)
+  | alg == D_SHA384 = Just ("SHA2-384", False)
+  | alg == D_SHA512 = Just ("SHA2-512", False)
+  | otherwise = Nothing
+x931NativeDigest Nothing msg = case BS.length msg of
+  20 -> Just ("SHA1", True)
+  32 -> Just ("SHA2-256", True)
+  48 -> Just ("SHA2-384", True)
+  64 -> Just ("SHA2-512", True)
+  _ -> Nothing
 
 -- | Native curve selection for one EdDSA spec: the provider fetch
 -- name, pure specs only (RAW encoding, empty context).

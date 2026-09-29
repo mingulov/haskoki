@@ -129,6 +129,8 @@ spec = testGroup "synthetic engine"
   , testCase "RSA PKCS#1 v1.5 envelopes roundtrip, never cross-open" casePkcs1Roundtrip
   , testCase "RSA-X.509 k-blocks roundtrip, pad left" caseX509Roundtrip
   , testCase "RSA-X.509 signatures roundtrip per key" caseX509Sign
+  , testCase "RSA-X9.31 specs roundtrip per digest" caseX931Roundtrip
+  , testCase "Poly1305 tags roundtrip at 16 bytes" casePoly1305Roundtrip
   , testCase "synthetic AEAD seals deterministically" caseAeadRoundtrip
   , testCase "synthetic CCM seals deterministically" caseAeadCcmRoundtrip
   , testCase "ECDSA curves and digests roundtrip" caseEcdsaCurves
@@ -1027,6 +1029,7 @@ caseCapsFull = withSynth "11" $ \env -> do
     , "HMAC-RIPEMD160-GENERAL"
     , "HMAC-BLAKE2B-512-GENERAL"
     , "HMAC-BLAKE2B-160-GENERAL", "HMAC-BLAKE2B-256-GENERAL", "HMAC-BLAKE2B-384-GENERAL"
+    , "POLY1305"
     ]) (mcSpecs (bcMacs caps))
   assertBool "ecdsa-p256-sha256 advertised"
     (Set.member "ECDSA-P-256-SHA256" (scSpecs (bcSigs caps)))
@@ -1070,6 +1073,7 @@ caseCapsFull = withSynth "11" $ \env -> do
     ([ "RSA-PSS"
     , "RSA-RAW"
     , "RSA-X509"
+    , "RSA-X931"
     , "RSA-PKCS1v15-MD5", "RSA-PKCS1v15-SHA1"
     , "RSA-PKCS1v15-SHA224", "RSA-PKCS1v15-SHA256"
     , "RSA-PKCS1v15-SHA384", "RSA-PKCS1v15-SHA512"
@@ -1367,6 +1371,68 @@ casePssRoundtrip = withSynth "11" $ \env -> do
         verify env sspec key32 "msg" (BS.map complement sig)
       expectAuthFailed ("wrong key " ++ label) =<<
         verify env sspec otherKey32 "msg" sig
+
+-- | Every X9.31 shape roundtrips (raw 20/32/48/64-byte digests
+-- plus digested SHA-1/256/384/512), tampering and cross-shape
+-- verifies fail, and off-rule lengths/digests refuse typed (the
+-- real backend's provider rule, mirrored).
+caseX931Roundtrip :: IO ()
+caseX931Roundtrip = withSynth "11" $ \env -> do
+  mapM_ (rawRoundtrip env) [20, 32, 48, 64]
+  mapM_ (digRoundtrip env) [D_SHA1, D_SHA256, D_SHA384, D_SHA512]
+  -- Separation: raw and digested never share a test signature.
+  sraw <- expectOk "sign raw" =<<
+    sign env (SigRSA_X931 Nothing) key32 (BS.replicate 32 0x41)
+  sdig <- expectOk "sign digested" =<<
+    sign env (SigRSA_X931 (Just D_SHA256)) key32 (BS.replicate 32 0x41)
+  assertBool "raw/digested separated" (sraw /= sdig)
+  expectAuthFailed "digested sig under raw rejected" =<<
+    verify env (SigRSA_X931 Nothing) key32 (BS.replicate 32 0x41) sdig
+  -- Floors: off-rule lengths and digests refuse typed.
+  expectBadParam "raw 28-byte refused" =<<
+    sign env (SigRSA_X931 Nothing) key32 (BS.replicate 28 0xAA)
+  expectBadParam "raw empty refused" =<<
+    sign env (SigRSA_X931 Nothing) key32 BS.empty
+  expectBadParam "digested SHA-224 refused" =<<
+    sign env (SigRSA_X931 (Just D_SHA224)) key32 "message"
+  where
+    rawRoundtrip env n = do
+      let d = BS.pack (take n (cycle [0x31, 0xA7, 0xE2, 0x09]))
+          spec' = SigRSA_X931 Nothing
+          label = show n ++ "-byte"
+      sig <- expectOk ("sign " ++ label) =<< sign env spec' key32 d
+      assertEqual ("sig length " ++ label) synthSigLength (BS.length sig)
+      expectOk ("verify " ++ label) =<< verify env spec' key32 d sig
+      expectAuthFailed ("tampered " ++ label) =<<
+        verify env spec' key32 d (BS.map complement sig)
+      expectAuthFailed ("wrong key " ++ label) =<<
+        verify env spec' otherKey32 d sig
+    digRoundtrip env alg = do
+      let spec' = SigRSA_X931 (Just alg)
+          label = show alg
+      sig <- expectOk ("sign " ++ label) =<< sign env spec' key32 "message"
+      assertEqual ("sig length " ++ label) synthSigLength (BS.length sig)
+      expectOk ("verify " ++ label) =<< verify env spec' key32 "message" sig
+      expectAuthFailed ("tampered " ++ label) =<<
+        verify env spec' key32 "message" (BS.map complement sig)
+
+-- | Poly1305 tags roundtrip at 16 bytes, bind key and message,
+-- and separate from HMAC tags over the same inputs.
+casePoly1305Roundtrip :: IO ()
+casePoly1305Roundtrip = withSynth "11" $ \env -> do
+  tag <- expectOk "mac poly1305" =<< macSign env MacPoly1305 key32 "hello"
+  assertEqual "tag width" 16 (BS.length tag)
+  tag2 <- expectOk "remac poly1305" =<< macSign env MacPoly1305 key32 "hello"
+  assertEqual "deterministic" tag tag2
+  ok <- expectOk "verify poly1305" =<< macVerify env MacPoly1305 key32 "hello" tag
+  assertBool "roundtrip" ok
+  expectAuthFailed "tampered tag" =<<
+    macVerify env MacPoly1305 key32 "hello" (BS.map complement tag)
+  expectAuthFailed "wrong key" =<<
+    macVerify env MacPoly1305 otherKey32 "hello" tag
+  hmac <- expectOk "mac hmac-sha256" =<<
+    macSign env (MacHMAC D_SHA256 Nothing) key32 "hello"
+  assertBool "poly/hmac separated" (BS.take 16 hmac /= tag)
 
 -- | OAEP envelopes roundtrip, bind the label/hash/MGF/key, and stay
 -- unsupported for XOF hashes.

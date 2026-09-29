@@ -175,6 +175,8 @@ import Haskoki.Operation.KeyManagement
   , dsaKeyPairGenMech
   , dsaParameterGenMech
   , ecKeyPairGenMech
+  , ecExtraBitsKeyPairGenMech
+  , dhPkcsParameterGenMech
   , x9_42DhKeyPairGenMech
   , x9_42DhParameterGenMech
   , edwardsKeyPairGenMech
@@ -374,6 +376,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real EC keypair generates and signs" caseRealEcKeygen
   , testCase "Real RSA keypair generates and signs" caseRealRsaKeygen
   , testCase "X9.42 DH param sizes plan and refuse" caseX942ParamSizesPlanner
+  , testCase "DH PKCS param sizes plan and refuse" caseDhPkcsParamSizesPlanner
+  , testCase "EC extra-bits keygen plans like EC keygen" caseEcExtraBitsPlanner
   , testCase "DSA param sizes plan and refuse" caseDsaParamSizesPlanner
   , testCase "DSA domain templates plan and refuse" caseDsaDomainPlanner
   , testCase "DSA GenArgs codec round-trips and rejects" caseDsaGenArgsCodec
@@ -392,6 +396,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Montgomery components stamp, doubles pass through" caseMontgomeryStamp
   , testCase "DSA components stamp, doubles pass through" caseDsaStamp
   , testCase "Real X9.42 DH params generate with readback" caseRealX942Paramgen
+  , testCase "Real DH PKCS params generate with readback" caseRealDhPkcsParamgen
   , testCase "Real DSA params generate with readback" caseRealDsaParamgen
   , testCase "Real DSA keypair generates and signs" caseRealDsaKeygen
   , testCase "Real DH keypairs generate and agree" caseRealDhKeygen
@@ -847,6 +852,15 @@ x942ParamsTmpl :: Word64 -> Word64 -> [(AttributeType, AttributeValue)]
 x942ParamsTmpl l n =
   [ (AttrClass, ValULong ckoDomainParameters)
   , (AttrKeyType, ValULong ckkX9_42Dh)
+  , (AttrPrimeBits, ValULong l)
+  , (AttrSubprimeBits, ValULong n)
+  , (AttrToken, ValBool False)
+  ]
+
+dhPkcsParamsTmpl :: Word64 -> Word64 -> [(AttributeType, AttributeValue)]
+dhPkcsParamsTmpl l n =
+  [ (AttrClass, ValULong ckoDomainParameters)
+  , (AttrKeyType, ValULong ckkDh)
   , (AttrPrimeBits, ValULong l)
   , (AttrSubprimeBits, ValULong n)
   , (AttrToken, ValBool False)
@@ -2129,6 +2143,54 @@ caseX942ParamSizesPlanner = do
     (argsOf (x942ParamsTmpl 512 160))
   assertEqual "unserved pair" (Left CKR_TEMPLATE_INCONSISTENT)
     (argsOf (x942ParamsTmpl 2048 160))
+
+caseDhPkcsParamSizesPlanner :: IO ()
+caseDhPkcsParamSizesPlanner = do
+  m0 <- seedModel
+  st <- getSession m0
+  let argsOf tmpl =
+        case planGenerateKey defaultRules m0 st dhPkcsParameterGenMech BS.empty tmpl of
+          KeyEffect _ (FxGenerateKey _ _ input) -> Right (decodeGenArgs input)
+          KeyDenied (KeyDeny code _) -> Left code
+          other -> error ("unexpected plan shape: " ++ show other)
+  -- Explicit served pairs plan (the DSA frame: the driver
+  -- runs the DSA FIPS 186-4 entry point, as for X9.42).
+  assertEqual "explicit (1024, 160)" (Right (Just (GenDsaParams 1024 160)))
+    (argsOf (dhPkcsParamsTmpl 1024 160))
+  assertEqual "explicit (2048, 256)" (Right (Just (GenDsaParams 2048 256)))
+    (argsOf (dhPkcsParamsTmpl 2048 256))
+  -- A missing subprime defaults from L (the oracle sends
+  -- CKA_PRIME_BITS only and expects CKR_OK — unlike X9.42,
+  -- which requires the subprime).
+  assertEqual "missing subprime defaults" (Right (Just (GenDsaParams 2048 256)))
+    (argsOf (filter ((/= AttrSubprimeBits) . fst) (dhPkcsParamsTmpl 2048 256)))
+  -- The oracle's minimal template (PRIME_BITS only) plans.
+  assertEqual "oracle minimal plans" (Right (Just (GenDsaParams 2048 256)))
+    (argsOf [(AttrPrimeBits, ValULong 2048), (AttrToken, ValBool False)])
+  -- An X9.42-typed template contradicts the mechanism.
+  assertEqual "X9.42 key type refused" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (x942ParamsTmpl 1024 160))
+  -- Missing prime bits are incomplete.
+  assertEqual "missing prime bits" (Left CKR_TEMPLATE_INCOMPLETE)
+    (argsOf [(AttrToken, ValBool False)])
+  -- Unserved sizes and pairs are inconsistent.
+  assertEqual "unserved L" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (dhPkcsParamsTmpl 512 160))
+  assertEqual "unserved pair" (Left CKR_TEMPLATE_INCONSISTENT)
+    (argsOf (dhPkcsParamsTmpl 2048 160))
+
+caseEcExtraBitsPlanner :: IO ()
+caseEcExtraBitsPlanner = do
+  m0 <- seedModel
+  st <- getSession m0
+  let argsOf mech = case planGenerateKeyPair defaultRules m0 st mech ecPubTmpl ecPrivTmpl of
+        KeyEffect _ (FxGenerateKey _ _ input) -> Right (decodeGenArgs input)
+        KeyDenied (KeyDeny code _) -> Left code
+        other -> error ("unexpected plan shape: " ++ show other)
+  -- The extra-bits mechanism plans exactly like plain EC keygen
+  -- (the FIPS 186-5 B.4.2 method is unobservable from outside).
+  assertEqual "extra-bits plans like EC"
+    (argsOf ecKeyPairGenMech) (argsOf ecExtraBitsKeyPairGenMech)
 
 caseDsaParamSizesPlanner :: IO ()
 caseDsaParamSizesPlanner = do
@@ -4236,6 +4298,36 @@ caseRealX942Paramgen = withRealEnv $ \env -> do
   assertEqual "params class" (Just (ValULong ckoDomainParameters))
     (Map.lookup AttrClass (osAttrs ost))
   assertEqual "params key type" (Just (ValULong ckkX9_42Dh))
+    (Map.lookup AttrKeyType (osAttrs ost))
+  case (Map.lookup AttrPrime (osAttrs ost), Map.lookup AttrSubprime (osAttrs ost),
+      Map.lookup AttrBase (osAttrs ost)) of
+    (Just (ValBytes p), Just (ValBytes q), Just (ValBytes g)) -> do
+      assertEqual "prime width" 128 (BS.length p)
+      assertEqual "subprime width" 20 (BS.length q)
+      assertEqual "base width" 128 (BS.length g)
+      assertEqual "prime bits" (Just (ValULong 1024))
+        (Map.lookup AttrPrimeBits (osAttrs ost))
+      assertEqual "subprime bits" (Just (ValULong 160))
+        (Map.lookup AttrSubprimeBits (osAttrs ost))
+    other -> assertFailure ("real params lack components: " ++ show other)
+
+caseRealDhPkcsParamgen :: IO ()
+caseRealDhPkcsParamgen = withRealEnv $ \env -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let answer = answerReal env
+  (m1, h) <- case planGenerateKey defaultRules m0 st dhPkcsParameterGenMech BS.empty (dhPkcsParamsTmpl 1024 160) of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 1
+      h' <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      pure (m', h')
+    other -> assertFailure ("DH PKCS paramgen plan is not an effect: " ++ show other) >> undefined
+  Just ost <- pure (resolveHandle m1 h)
+  assertEqual "params class" (Just (ValULong ckoDomainParameters))
+    (Map.lookup AttrClass (osAttrs ost))
+  assertEqual "params key type" (Just (ValULong ckkDh))
     (Map.lookup AttrKeyType (osAttrs ost))
   case (Map.lookup AttrPrime (osAttrs ost), Map.lookup AttrSubprime (osAttrs ost),
       Map.lookup AttrBase (osAttrs ost)) of

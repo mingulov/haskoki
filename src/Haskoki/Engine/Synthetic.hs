@@ -48,6 +48,7 @@ module Haskoki.Engine.Synthetic
   , synthKeyContextVersion
   ) where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
 import Control.Monad (guard)
 import Data.Bits ((.|.), shiftL, shiftR, xor)
@@ -92,6 +93,7 @@ import Haskoki.Engine.Backend
   , slhdsaSets
   , EcSpec (..)
   , hmacSpecCap
+  , poly1305SpecCap
   , KdfCaps (..)
   , KemCaps (..)
   , KemSpec (..)
@@ -109,6 +111,7 @@ import Haskoki.Engine.Backend
   , ResourceSaveability (..)
   , rsaSigCap
   , rsaPssCap
+  , rsaX931Cap
   , SigCaps (..)
   , SigSpec (..)
   , UnsaveableReason (..)
@@ -463,7 +466,7 @@ instance CryptoBackend Synthetic where
           else pure (B.EngineFail (BackendAuthFailed "macVerify"))
 
   sign be spec key msg = runGuarded be "sign" (sigSupported be spec) $ \env ->
-    case dsaFloor spec msg of
+    case dsaFloor spec msg <|> x931Floor spec msg of
       Just why -> pure (B.EngineFail (BackendBadParam "sign" why))
       Nothing -> do
         mkey <- resolveKeyBytes env key
@@ -476,7 +479,7 @@ instance CryptoBackend Synthetic where
     mkey <- resolveKeyBytes env key
     case mkey of
       B.EngineFail err -> pure (B.EngineFail err)
-      B.EngineOk kb -> case dsaFloor spec msg of
+      B.EngineOk kb -> case dsaFloor spec msg <|> x931Floor spec msg of
         Just why -> pure (B.EngineFail (BackendBadParam "verify" why))
         Nothing ->
           if ctEq (classSignFor spec (signIdentity kb) msg) sig
@@ -844,11 +847,13 @@ xofSupported (SynthBackend env) alg = xofServable (seCaps env) alg
 -- advertised set and the guard can never disagree).
 synthMacSpecs :: Set.Set String
 synthMacSpecs = Set.fromList
-  [ name
-  | alg <- [minBound .. maxBound]
-  , spec <- [MacHMAC alg Nothing, MacHMAC alg (Just 1)]
-  , Just name <- [hmacSpecCap spec]
-  ]
+  ( [ name
+    | alg <- [minBound .. maxBound]
+    , spec <- [MacHMAC alg Nothing, MacHMAC alg (Just 1)]
+    , Just name <- [hmacSpecCap spec]
+    ]
+    ++ [ name | Just name <- [poly1305SpecCap MacPoly1305] ]
+  )
 
 -- | The RSA names: one PKCS#1 v1.5 name per recipe digest
 -- plus the raw and X.509 rows (exactly the OpenSSL4 pre-probe
@@ -859,6 +864,7 @@ synthRsaSpecNames =
   | spec <- SigRSA_Raw : SigRSA_X509 : map SigRSA_PKCS1v15 synthRsaAlgs
   , Just name <- [rsaSigCap spec]
   ]
+  ++ [ name | Just name <- [rsaX931Cap (SigRSA_X931 Nothing)] ]
   where
     synthRsaAlgs =
       [ D_MD5, D_SHA1, D_SHA224, D_SHA256, D_SHA384, D_SHA512
@@ -1008,6 +1014,8 @@ macSupported :: BackendEnv Synthetic -> MacSpec -> Maybe String
 macSupported (SynthBackend env) spec
   | Just name <- hmacSpecCap spec
   , Set.member name (mcSpecs (bcMacs (seCaps env))) = Nothing
+  | Just name <- poly1305SpecCap spec
+  , Set.member name (mcSpecs (bcMacs (seCaps env))) = Nothing
   | otherwise = Just ("mac not in synthetic set: " ++ show spec)
 
 sigSupported :: BackendEnv Synthetic -> SigSpec -> Maybe String
@@ -1025,6 +1033,8 @@ sigSupported (SynthBackend env) spec
   | Just name <- rsaSigCap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
   | Just name <- rsaPssCap spec
+  , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
+  | Just name <- rsaX931Cap spec
   , Set.member name (scSpecs (bcSigs (seCaps env))) = Nothing
   | otherwise = Just ("signature not in synthetic set: " ++ show spec)
 
@@ -1255,6 +1265,19 @@ dsaFloor :: SigSpec -> ByteString -> Maybe String
 dsaFloor (SigDSA _ Nothing) msg
   | BS.length msg < 20 = Just "DSA raw digest shorter than 20 bytes"
 dsaFloor _ _ = Nothing
+
+-- | X9.31 floor: raw inputs must hit the hash-id length set
+-- (20\/32\/48\/64 bytes); digested inputs must name one of the
+-- same four digests (the real backend's provider rule, mirrored
+-- so both engines refuse identically).
+x931Floor :: SigSpec -> ByteString -> Maybe String
+x931Floor (SigRSA_X931 Nothing) msg
+  | BS.length msg `elem` [20, 32, 48, 64] = Nothing
+  | otherwise = Just "X9.31 raw digest outside the 20/32/48/64-byte hash-id set"
+x931Floor (SigRSA_X931 (Just alg)) _
+  | alg `elem` [D_SHA1, D_SHA256, D_SHA384, D_SHA512] = Nothing
+  | otherwise = Just "X9.31 digest outside the SHA-1/256/384/512 hash-id set"
+x931Floor _ _ = Nothing
 
 -- | Resolve key material to owned bytes: empty material is BadKey
 -- (as with the retired record's prepare), registry references look
@@ -1607,6 +1630,8 @@ classMac (MacHMAC alg trunc) kb input =
         (frame ["haskoki-synth/class-mac/v1", kb, BC8.pack ("HMAC-" ++ stem), input])
         w)
     _ -> BS.empty
+classMac MacPoly1305 kb input =
+  prfBytes (frame ["haskoki-synth/class-mac/v1", kb, "POLY1305", input]) 16
 classMac _ _ _ = BS.empty
 
 -- | Class-interface signature: 64-byte domain-separated expansion
@@ -1628,7 +1653,7 @@ classSign enc identity input = prfBytes
 -- with their capability name (PSS tags with its full parameters,
 -- salt included) — so curves, digests, encodings, levels,
 -- contexts, and families never share a test signature over one
--- identity.
+-- identity. (X9.31 tags with its full parameters like PSS.)
 classSignFor :: SigSpec -> ByteString -> ByteString -> ByteString
 classSignFor spec@(SigECDSA (EcSpec "P-256" _) (Just D_SHA256)) identity input =
   classSign (sigEncoding spec) identity input
@@ -1643,6 +1668,8 @@ classSignFor spec@(SigMLDSA _ _ _ _) identity input =
 classSignFor spec@(SigSLHDSA _ _ _) identity input =
   classSign (BC8.pack (show spec)) identity input
 classSignFor spec@(SigRSA_PSS _) identity input =
+  classSign (BC8.pack (show spec)) identity input
+classSignFor spec@(SigRSA_X931 _) identity input =
   classSign (BC8.pack (show spec)) identity input
 classSignFor spec identity input =
   classSign (BC8.pack (fromMaybe (show spec) (rsaSigCap spec))) identity input

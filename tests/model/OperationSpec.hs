@@ -184,6 +184,8 @@ spec = testGroup "operation lifecycles"
   , testCase "raw DSA digest floor refuses short input" caseRawDsaFloor
   , testCase "EdDSA init requires explicit pure, refuses rest" caseEddsaParams
   , testCase "SSL3 MAC init takes whole-byte bit lengths" caseSsl3MacParams
+  , testCase "X9.31 init takes empty params only" caseX931InitParams
+  , testCase "Poly1305 init takes empty params only" casePoly1305InitParams
   , testCase "ML-DSA init admits empty, refuses bad hedge/overlong" caseMldsaParams
   , testCase "recover roundtrip" caseRecoverRoundtrip
   , testCase "recover oversize data fails terminally" caseRecoverOversize
@@ -249,6 +251,15 @@ ssl3Md5Mech = MechanismId 0x380
 
 ssl3Sha1Mech :: MechanismId
 ssl3Sha1Mech = MechanismId 0x381
+
+x931Mech :: MechanismId
+x931Mech = MechanismId 0xb
+
+x931Sha1Mech :: MechanismId
+x931Sha1Mech = MechanismId 0xc
+
+poly1305Mech :: MechanismId
+poly1305Mech = MechanismId 0x1228
 
 mldsaMech :: MechanismId
 mldsaMech = MechanismId 0x1D
@@ -1489,6 +1500,55 @@ caseSsl3MacParams = do
         (InitArgs OpSign ssl3Sha1Mech (encodeMacGeneral 168)
           (Just signKey) Nothing Nothing)
   assertEqual "ssl3 sha1 168 refused" CKR_MECHANISM_PARAM_INVALID (ioCode i4)
+
+x931SignEnv :: OpEnv
+x931SignEnv = testEnv
+  { oeCaps = mkCapabilities
+      [ (x931Mech, OpSign), (x931Mech, OpVerify)
+      , (x931Sha1Mech, OpSign), (x931Sha1Mech, OpVerify)
+      ]
+  }
+
+caseX931InitParams :: IO ()
+caseX931InitParams = do
+  -- Empty params admit on both rows, sign and verify.
+  let (_, i0) = initOperation x931SignEnv emptySessionOps testSession
+        (InitArgs OpSign x931Mech BS.empty (Just signKey) Nothing Nothing)
+  assertEqual "x931 NULL admits" CKR_OK (ioCode i0)
+  let (_, i0v) = initOperation x931SignEnv emptySessionOps testSession
+        (InitArgs OpVerify x931Mech BS.empty (Just signKey) Nothing Nothing)
+  assertEqual "x931 verify NULL admits" CKR_OK (ioCode i0v)
+  let (_, i1) = initOperation x931SignEnv emptySessionOps testSession
+        (InitArgs OpSign x931Sha1Mech BS.empty (Just signKey) Nothing Nothing)
+  assertEqual "x931 sha1 NULL admits" CKR_OK (ioCode i1)
+  -- Non-empty params refuse with the recipe code.
+  let (_, i2) = initOperation x931SignEnv emptySessionOps testSession
+        (InitArgs OpSign x931Mech (BS.pack [0]) (Just signKey) Nothing Nothing)
+  assertEqual "x931 params refused" CKR_ARGUMENTS_BAD (ioCode i2)
+  let (_, i3) = initOperation x931SignEnv emptySessionOps testSession
+        (InitArgs OpVerify x931Sha1Mech (BS.pack [0]) (Just signKey) Nothing Nothing)
+  assertEqual "x931 sha1 verify params refused" CKR_ARGUMENTS_BAD (ioCode i3)
+
+poly1305SignEnv :: OpEnv
+poly1305SignEnv = testEnv
+  { oeCaps = mkCapabilities
+      [ (poly1305Mech, OpSign), (poly1305Mech, OpVerify)
+      ]
+  }
+
+casePoly1305InitParams :: IO ()
+casePoly1305InitParams = do
+  -- Empty params admit, sign and verify.
+  let (_, i0) = initOperation poly1305SignEnv emptySessionOps testSession
+        (InitArgs OpSign poly1305Mech BS.empty (Just signKey) Nothing Nothing)
+  assertEqual "poly1305 NULL admits" CKR_OK (ioCode i0)
+  let (_, i0v) = initOperation poly1305SignEnv emptySessionOps testSession
+        (InitArgs OpVerify poly1305Mech BS.empty (Just signKey) Nothing Nothing)
+  assertEqual "poly1305 verify NULL admits" CKR_OK (ioCode i0v)
+  -- Non-empty params refuse with the recipe code.
+  let (_, i1) = initOperation poly1305SignEnv emptySessionOps testSession
+        (InitArgs OpSign poly1305Mech (BS.pack [0]) (Just signKey) Nothing Nothing)
+  assertEqual "poly1305 params refused" CKR_ARGUMENTS_BAD (ioCode i1)
 
 mldsaSignEnv :: OpEnv
 mldsaSignEnv = testEnv

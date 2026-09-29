@@ -55,8 +55,8 @@ caseCapabilities = do
   -- behaviors (OpenSSL included: every behavior runs on real
   -- libcrypto since the KEM pair went real); both cover the
   -- 464-mechanism baseline exactly once.
-  checkCatalog (ceOut r2) 265 199 "synthetic"
-  checkCatalog out 265 199 "openssl"
+  checkCatalog (ceOut r2) 270 194 "synthetic"
+  checkCatalog out 270 194 "openssl"
   where
     reportLine prefix text =
       case [drop (length prefix) ln | ln <- lines text, prefix `isInfixOf` ln] of

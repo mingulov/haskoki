@@ -41,6 +41,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , digestFree
   , hmac
   , hmacSized
+  , poly1305
   , cipherCbc
   , cipherCts
   , cipherWrap
@@ -80,6 +81,8 @@ module Haskoki.FFI.OpenSSL4.Raw
   , rsaVerify
   , rsaPssSign
   , rsaPssVerify
+  , rsaX931Sign
+  , rsaX931Verify
   , rsaOaepEncrypt
   , rsaOaepDecrypt
   , rsaPkcs1Encrypt
@@ -177,6 +180,9 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_hmac"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_hmac_sized"
   c_hmac_sized :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_poly1305"
+  c_poly1305 :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_cipher_cbc"
   c_cipher_cbc :: Ptr OsslLibCtx -> CString -> CString -> CInt -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
@@ -292,6 +298,12 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_pss_sign"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_pss_verify"
   c_rsa_pss_verify :: Ptr OsslLibCtx -> CString -> CString -> CInt -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> IO CInt
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_x931_sign"
+  c_rsa_x931_sign :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_x931_verify"
+  c_rsa_x931_verify :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> CInt -> IO CInt
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_oaep_encrypt"
   c_rsa_oaep_encrypt :: Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
@@ -452,6 +464,15 @@ hmacSized ctx mdname propq key msg outsize =
       withBytes key $ \(pkey, nkey) ->
         withBytes msg $ \(pmsg, nmsg) ->
           withOut (c_hmac_sized ctx cmd cpq pkey nkey pmsg nmsg (fromIntegral outsize))
+
+-- | Poly1305 one-shot: 32-byte key, 16-byte tag (the provider
+-- refuses any other key length at init).
+poly1305 :: Ptr OsslLibCtx -> String -> ByteString -> ByteString -> IO (Either Int ByteString)
+poly1305 ctx propq key msg =
+  withCString propq $ \cpq ->
+    withBytes key $ \(pkey, nkey) ->
+      withBytes msg $ \(pmsg, nmsg) ->
+        withOut (c_poly1305 ctx cpq pkey nkey pmsg nmsg)
 
 cipherCbc :: Ptr OsslLibCtx -> String -> String -> Bool -> ByteString -> ByteString -> ByteString -> IO (Either Int ByteString)
 cipherCbc ctx ciphername propq enc key iv input =
@@ -953,6 +974,25 @@ rsaPssVerify ctx mdname mgfname saltlen propq pubDer msg sig =
           withBytes msg $ \(pmsg, nmsg) ->
             withBytes sig $ \(psig, nsig) ->
               fromIntegral <$> c_rsa_pss_verify ctx cmd cmgf (fromIntegral saltlen) cpq ppub npub pmsg nmsg psig nsig
+
+-- | RSA-X9.31 sign/verify: @prehash@ selects caller-digest mode
+-- (the md only names the X9.31 hash id) over hash-inside mode.
+rsaX931Sign :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> Bool -> IO (Either Int ByteString)
+rsaX931Sign ctx mdname propq privDer msg prehash =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      withBytes privDer $ \(ppriv, npriv) ->
+        withBytes msg $ \(pmsg, nmsg) ->
+          withOut (c_rsa_x931_sign ctx cmd cpq ppriv npriv pmsg nmsg (if prehash then 1 else 0))
+
+rsaX931Verify :: Ptr OsslLibCtx -> String -> String -> ByteString -> ByteString -> ByteString -> Bool -> IO Int
+rsaX931Verify ctx mdname propq pubDer msg sig prehash =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      withBytes pubDer $ \(ppub, npub) ->
+        withBytes msg $ \(pmsg, nmsg) ->
+          withBytes sig $ \(psig, nsig) ->
+            fromIntegral <$> c_rsa_x931_verify ctx cmd cpq ppub npub pmsg nmsg psig nsig (if prehash then 1 else 0)
 
 -- | RSA-OAEP encrypt/decrypt with explicit hash, MGF1 digest, and
 -- label (empty label selects the default).

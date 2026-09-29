@@ -487,6 +487,52 @@ end:
     return rc;
 }
 
+/* --- Poly1305 one-shot (EVP_MAC, 32-byte key, 16-byte tag) ----------- */
+
+long hsk_ossl4_poly1305(OSSL_LIB_CTX *ctx, const char *propq,
+                        const unsigned char *key, size_t keylen,
+                        const unsigned char *msg, size_t msglen,
+                        unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_MAC *mac = NULL;
+    EVP_MAC_CTX *mctx = NULL;
+    unsigned char *buf = NULL;
+    size_t outlen = 16;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || propq == NULL || out == NULL ||
+        (key == NULL && keylen > 0) || (msg == NULL && msglen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    mac = EVP_MAC_fetch(ctx, "POLY1305", propq);
+    if (mac == NULL)
+        goto end;
+    mctx = EVP_MAC_CTX_new(mac);
+    if (mctx == NULL)
+        goto end;
+    if (!EVP_MAC_init(mctx, key, keylen, NULL))
+        goto end;
+    if (msglen > 0 && !EVP_MAC_update(mctx, msg, msglen))
+        goto end;
+    buf = OPENSSL_malloc(16);
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
+        goto end;
+    }
+    if (!EVP_MAC_final(mctx, buf, &outlen, 16)) {
+        OPENSSL_clear_free(buf, 16);
+        goto end;
+    }
+    *out = buf;
+    rc = (long)outlen;
+
+end:
+    EVP_MAC_CTX_free(mctx);
+    EVP_MAC_free(mac);
+    return rc;
+}
+
 /* --- sized HMAC (RFC 2104 two-pass over the sized digest) ------------ */
 
 /* One sized digest over two parts; returns 1 on success. */
@@ -4152,6 +4198,155 @@ int hsk_ossl4_rsa_pss_verify(OSSL_LIB_CTX *ctx, const char *mdname,
     ERR_clear_error();
 
 end:
+    EVP_MD_CTX_free(mctx);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+/* --- RSA-X9.31 sign/verify --------------------------------------- */
+
+/* X9.31 needs the digest set before the pad mode (the provider
+ * rejects pad-first with "invalid x931 digest"); prehash mode
+ * signs the caller digest directly (the md only selects the hash
+ * id), digested mode hashes inside the provider. */
+long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
+                             const char *propq, const unsigned char *priv_der,
+                             size_t priv_len, const unsigned char *msg,
+                             size_t msglen, int prehash, unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_MD_CTX *mctx = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY_CTX *sctx = NULL;
+    EVP_MD *md = NULL;
+    unsigned char *buf = NULL;
+    size_t buflen = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || mdname == NULL || propq == NULL || out == NULL ||
+        (msg == NULL && msglen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    if (prehash) {
+        sctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
+        if (sctx == NULL)
+            goto end;
+        if (!EVP_PKEY_sign_init(sctx))
+            goto end;
+        md = EVP_MD_fetch(ctx, mdname, propq);
+        if (md == NULL)
+            goto end;
+        if (!EVP_PKEY_CTX_set_signature_md(sctx, md))
+            goto end;
+        if (!EVP_PKEY_CTX_set_rsa_padding(sctx, RSA_X931_PADDING))
+            goto end;
+        if (!EVP_PKEY_sign(sctx, NULL, &buflen, msg, msglen))
+            goto end;
+        buf = OPENSSL_malloc(buflen);
+        if (buf == NULL) {
+            rc = HSK_OSSL4_ERR_NOMEM;
+            goto end;
+        }
+        if (!EVP_PKEY_sign(sctx, buf, &buflen, msg, msglen)) {
+            OPENSSL_clear_free(buf, buflen);
+            buf = NULL;
+            goto end;
+        }
+    } else {
+        mctx = EVP_MD_CTX_new();
+        if (mctx == NULL)
+            goto end;
+        if (!EVP_DigestSignInit_ex(mctx, &pctx, mdname, ctx, propq, pkey, NULL))
+            goto end;
+        if (!EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_X931_PADDING))
+            goto end;
+        if (!EVP_DigestSign(mctx, NULL, &buflen, msg, msglen))
+            goto end;
+        buf = OPENSSL_malloc(buflen);
+        if (buf == NULL) {
+            rc = HSK_OSSL4_ERR_NOMEM;
+            goto end;
+        }
+        if (!EVP_DigestSign(mctx, buf, &buflen, msg, msglen)) {
+            OPENSSL_clear_free(buf, buflen);
+            buf = NULL;
+            goto end;
+        }
+    }
+    *out = buf;
+    buf = NULL;
+    rc = (long)buflen;
+
+end:
+    if (buf != NULL)
+        OPENSSL_clear_free(buf, buflen);
+    EVP_MD_free(md);
+    EVP_PKEY_CTX_free(sctx);
+    EVP_MD_CTX_free(mctx);
+    EVP_PKEY_free(pkey);
+    return rc;
+}
+
+int hsk_ossl4_rsa_x931_verify(OSSL_LIB_CTX *ctx, const char *mdname,
+                              const char *propq, const unsigned char *pub_der,
+                              size_t pub_len, const unsigned char *msg,
+                              size_t msglen, const unsigned char *sig,
+                              size_t siglen, int prehash)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *pkey = NULL;
+    EVP_MD_CTX *mctx = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY_CTX *vctx = NULL;
+    EVP_MD *md = NULL;
+    int rc = HSK_OSSL4_ERR_NATIVE;
+
+    if (ctx == NULL || mdname == NULL || propq == NULL || sig == NULL ||
+        (msg == NULL && msglen > 0))
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
+    if (pkey == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    if (prehash) {
+        vctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
+        if (vctx == NULL)
+            goto end;
+        if (!EVP_PKEY_verify_init(vctx))
+            goto end;
+        md = EVP_MD_fetch(ctx, mdname, propq);
+        if (md == NULL)
+            goto end;
+        if (!EVP_PKEY_CTX_set_signature_md(vctx, md))
+            goto end;
+        if (!EVP_PKEY_CTX_set_rsa_padding(vctx, RSA_X931_PADDING))
+            goto end;
+        rc = EVP_PKEY_verify(vctx, sig, siglen, msg, msglen);
+    } else {
+        mctx = EVP_MD_CTX_new();
+        if (mctx == NULL)
+            goto end;
+        if (!EVP_DigestVerifyInit_ex(mctx, &pctx, mdname, ctx, propq, pkey, NULL))
+            goto end;
+        if (!EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_X931_PADDING))
+            goto end;
+        rc = EVP_DigestVerify(mctx, sig, siglen, msg, msglen);
+    }
+    if (rc < 0) {
+        /* Internal error (not a plain mismatch); keep the queue clean. */
+        rc = HSK_OSSL4_ERR_NATIVE;
+        goto end;
+    }
+    /* rc is 1 (valid) or 0 (bad signature) here. */
+    ERR_clear_error();
+
+end:
+    EVP_MD_free(md);
+    EVP_PKEY_CTX_free(vctx);
     EVP_MD_CTX_free(mctx);
     EVP_PKEY_free(pkey);
     return rc;

@@ -85,6 +85,8 @@ spec = testGroup "openssl4 engine"
   , testCase "RSA-OAEP interop (CLI vectors)" caseRsaOaepVectors
   , testCase "RSA PKCS#1 v1.5 interop (CLI vector)" caseRsaPkcs1Vectors
   , testCase "RSA-X.509 interop (CLI vectors)" caseRsaX509Vectors
+  , testCase "RSA-X9.31 interop (CLI vectors)" caseRsaX931Vectors
+  , testCase "Poly1305 KAT (CLI + pyca vector)" casePoly1305Vector
   , testCase "ecdsa fixed-vector verify (DER and RAW)" caseEcdsaKat
   , testCase "ecdsa sign/verify roundtrip, both encodings" caseEcdsaRoundtrip
   , testCase "ECDSA curves/digests/raw (CLI vectors)" caseEcdsaCurvesVectors
@@ -178,6 +180,11 @@ expectMechParamInvalid :: Show a => String -> EngineResult a -> IO ()
 expectMechParamInvalid label r = case r of
   EngineFail (BackendMechParamInvalid _ _) -> pure ()
   other -> assertFailure (label ++ ": expected BackendMechParamInvalid, got " ++ show other)
+
+expectNative :: Show a => String -> EngineResult a -> IO ()
+expectNative label r = case r of
+  EngineFail (BackendNative _ _ _) -> pure ()
+  other -> assertFailure (label ++ ": expected BackendNative, got " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- Known-answer fixtures (independent oracles, see module header)
@@ -805,6 +812,39 @@ x509Sig = hex $ concat
   , "d2b287d34a706b196c8b21f3d8a421360b4e811e5a399ab5b994b426a5bc9d8a"
   , "8627519be535674cb4a09d02eede177143a5e7fde37b1ecdb2a9efd1ac20048a"
   ]
+
+-- X9.31 interop vectors (pinned 4.0.2 CLI, same RSA-2048 key as the
+-- v1.5 vectors; X9.31 is deterministic, so the backend replays the
+-- CLI's bytes). The digest is SHA-256 over "T16 S7 X9.31 KAT
+-- digest input"; the signature is `pkeyutl -sign -pkeyopt
+-- digest:sha256 -pkeyopt rsa_padding_mode:x931` output, CLI-verified
+-- before embedding.
+x931Digest :: ByteString
+x931Digest = hex "0281e0bf4eddce53c3ebe418aaef70f85fdbd3fbb7b736683ea4b6acdbdeb0c0"
+
+x931Sig :: ByteString
+x931Sig = hex $ concat
+  [ "456576fa9624988d3210f3fa2ef1d859e469e742852f0861caddaed79eda5b10"
+  , "099db855968d2a894e79b8260ed42d3da606a383fe88579b31d41dae5d258d18"
+  , "1a62811e34250f9a0c25ae65ae760948b829cab8fbc054472f91ed02b9f8c1fd"
+  , "cfaf68ade709d3f3a1312bf8cf4b9e35f9f2d0e15cf0cb84cc8e1ad40800b619"
+  , "185dd6e9749f157e2e4a5ef666633a5e4d31ee60cae1941205c1e8deed18494d"
+  , "c17dd63f0dac58fdc03863a900a568b877f9693e689d6649285419d34fbc6ca1"
+  , "ecd808dd9f404e38da6275905867f80f7fc08c2b35ee6c3717426e48bf28c3c5"
+  , "0b1cb683efa07322a713d1e7a0371ae78450c1390df6f95760c9e50fd225e400"
+  ]
+
+-- Poly1305 KAT (pinned 4.0.2 CLI `openssl mac POLY1305` and
+-- python-cryptography agreeing byte for byte, independent of this
+-- backend).
+polyKey :: ByteString
+polyKey = hex "60ae20bd9302aea34cafbc620011e17b7774e97764b9bb6e035ffb2b8b63be9f"
+
+polyMsg :: ByteString
+polyMsg = "Poly1305 KAT message, second vector"
+
+polyTag :: ByteString
+polyTag = hex "f70a350ed794a7e0660bba7638f5a6d2"
 
 -- P-384/SHA-384, P-521/SHA-512, and raw-P-256 interop
 -- vectors (pinned 4.0.2 CLI; the raw vector reuses the P-256 key from
@@ -1946,6 +1986,74 @@ caseRsaX509Vectors = withBackend $ \env -> do
     sign env SigRSA_X509 (KeyDer "bogus") x509Msg
   expectBadKey "x509 verify garbage pub" =<<
     verify env SigRSA_X509 (KeyDer "bogus") x509Msg x509Sig
+
+caseRsaX931Vectors :: IO ()
+caseRsaX931Vectors = withBackend $ \env -> do
+  let priv = KeyDer rsaPrivDer
+      pub = KeyDer rsaPubDer
+      raw = SigRSA_X931 Nothing
+      sha1 = SigRSA_X931 (Just D_SHA1)
+  -- Interop: the backend replays the CLI's deterministic bytes and
+  -- verifies the CLI's vector (same RSA-2048 key as v1.5).
+  s1 <- expectOk "x931 sign kat" =<< sign env raw priv x931Digest
+  assertEqual "x931 kat" x931Sig s1
+  s2 <- expectOk "x931 resign" =<< sign env raw priv x931Digest
+  assertEqual "x931 deterministic" s1 s2
+  expectOk "x931 verify kat" =<< verify env raw pub x931Digest x931Sig
+  expectAuthFailed "x931 tampered sig rejected" =<<
+    verify env raw pub x931Digest (BS.init x931Sig <> "X")
+  expectAuthFailed "x931 wrong digest rejected" =<<
+    verify env raw pub (BS.replicate 32 0x55) x931Sig
+  -- Every other hash-id length roundtrips (20/48/64 bytes).
+  mapM_ (rawRoundtrip env priv pub) [20, 48, 64]
+  -- Off-rule lengths refuse typed (28-byte SHA-224 has no X9.31
+  -- hash id — the provider rejects it, proven by probe).
+  expectUnsupported "x931 28-byte refused" =<<
+    sign env raw priv (BS.replicate 28 0xAA)
+  expectUnsupported "x931 16-byte refused" =<<
+    sign env raw priv (BS.replicate 16 0xAA)
+  expectUnsupported "x931 empty refused" =<< sign env raw priv BS.empty
+  -- The SHA-1 row hashes inside the backend and roundtrips.
+  msig <- expectOk "x931-sha1 sign" =<< sign env sha1 priv "SHA1 X9.31 interop message"
+  assertEqual "x931-sha1 sig length" 256 (BS.length msig)
+  expectOk "x931-sha1 verify" =<< verify env sha1 pub "SHA1 X9.31 interop message" msig
+  expectAuthFailed "x931-sha1 wrong msg rejected" =<<
+    verify env sha1 pub "tampered message" msig
+  -- Off-rule digested rows refuse; garbage DER is a bad key.
+  expectUnsupported "x931-sha224 digested refused" =<<
+    sign env (SigRSA_X931 (Just D_SHA224)) priv "message"
+  expectBadKey "x931 sign garbage priv" =<< sign env raw (KeyDer "bogus") x931Digest
+  expectBadKey "x931 verify garbage pub" =<<
+    verify env raw (KeyDer "bogus") x931Digest x931Sig
+  where
+    rawRoundtrip env priv pub n = do
+      let d = BS.pack (take n (cycle [0x31, 0xA7, 0xE2, 0x09]))
+          label = show n ++ "-byte"
+      s <- expectOk ("x931 sign " ++ label) =<< sign env (SigRSA_X931 Nothing) priv d
+      assertEqual ("x931 sig length " ++ label) 256 (BS.length s)
+      expectOk ("x931 verify " ++ label) =<< verify env (SigRSA_X931 Nothing) pub d s
+
+casePoly1305Vector :: IO ()
+casePoly1305Vector = withBackend $ \env -> do
+  let key = KeyBytes polyKey
+  -- KAT: the backend tags the CLI/pyca bytes exactly.
+  tag <- expectOk "poly1305 kat" =<< macSign env MacPoly1305 key polyMsg
+  assertEqual "poly1305 tag" polyTag tag
+  assertEqual "poly1305 tag length" 16 (BS.length tag)
+  expectOk "poly1305 verify kat" =<< macVerify env MacPoly1305 key polyMsg polyTag
+  expectAuthFailed "poly1305 tampered rejected" =<<
+    macVerify env MacPoly1305 key polyMsg (BS.init polyTag <> "X")
+  expectAuthFailed "poly1305 wrong msg rejected" =<<
+    macVerify env MacPoly1305 key "tampered message" polyTag
+  -- Key independence: a second key tags differently.
+  tag2 <- expectOk "poly1305 second key" =<<
+    macSign env MacPoly1305 (KeyBytes (BS.replicate 32 0x11)) polyMsg
+  assertBool "poly1305 keys differ" (tag2 /= tag)
+  -- Off-length keys refuse at the provider (native error, never a tag).
+  expectNative "poly1305 short key refused" =<<
+    macSign env MacPoly1305 (KeyBytes (BS.replicate 16 0x11)) polyMsg
+  expectNative "poly1305 long key refused" =<<
+    macSign env MacPoly1305 (KeyBytes (BS.replicate 64 0x11)) polyMsg
 
 caseEcdsaKat :: IO ()
 caseEcdsaKat = withBackend $ \env -> do
@@ -4592,6 +4700,7 @@ caseCaps = withBackend $ \env -> do
     , "HMAC-RIPEMD160-GENERAL"
     , "HMAC-BLAKE2B-512-GENERAL"
     , "HMAC-BLAKE2B-160-GENERAL", "HMAC-BLAKE2B-256-GENERAL", "HMAC-BLAKE2B-384-GENERAL"
+    , "POLY1305"
     ]) (mcSpecs (bcMacs caps))
   assertBool "ecdsa-p256-sha256 advertised"
     (Set.member "ECDSA-P-256-SHA256" (scSpecs (bcSigs caps)))
@@ -4636,6 +4745,7 @@ caseCaps = withBackend $ \env -> do
     ([ "RSA-PSS"
     , "RSA-RAW"
     , "RSA-X509"
+    , "RSA-X931"
     , "RSA-PKCS1v15-MD5", "RSA-PKCS1v15-SHA1"
     , "RSA-PKCS1v15-SHA224", "RSA-PKCS1v15-SHA256"
     , "RSA-PKCS1v15-SHA384", "RSA-PKCS1v15-SHA512"

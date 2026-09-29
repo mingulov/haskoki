@@ -230,6 +230,16 @@ import Haskoki.Recipe.RsaX509
   , rsaX509CodecFor
   , rsaX509Recipes
   )
+import Haskoki.Recipe.RsaX931
+  ( RsaX931Recipe (..)
+  , rsaX931CodecFor
+  , rsaX931Recipes
+  )
+import Haskoki.Recipe.Poly1305
+  ( Poly1305Recipe (..)
+  , poly1305CodecFor
+  , poly1305Recipes
+  )
 import Haskoki.Registry.Generated (generatedInventory, mustGeneratedId)
 import Haskoki.Registry.Types
 import Haskoki.Types (Pkcs11Version (..))
@@ -1128,6 +1138,37 @@ ssl3Descs =
       , mechRoute OpVerify name ["A37", "A39"]
       ]
 
+-- | The RSA-X9.31 behavior group, derived from the recipe table:
+-- one descriptor per recipe row, codec from 'rsaX931CodecFor',
+-- sign and verify routes citing synthetic A37 and real-KAT A39 (no
+-- A16: the backends offer one-shot sign only). Both rows predate
+-- 2.40; key bounds are the de-facto vendor range 512..4096 bits.
+rsaX931Descs :: [Descriptor]
+rsaX931Descs =
+  [ promotedDesc (rx931Name r) allBaselines FamilyRsa
+      (rsaX931CodecFor r)
+      [ mechRoute OpSign (rx931Name r) ["A37", "A39"]
+      , mechRoute OpVerify (rx931Name r) ["A37", "A39"]
+      ]
+      KeyBits 512 4096
+  | r <- rsaX931Recipes
+  ]
+
+-- | The Poly1305 behavior descriptor, derived from the recipe
+-- table: sign and verify routes citing synthetic A37 and real-KAT
+-- A39 (no A16: one-shot MAC only). The row arrived in 3.0; key
+-- bounds are mechanism-specific (the 32-byte one-time key).
+poly1305Descs :: [Descriptor]
+poly1305Descs =
+  [ promotedDesc (polyName r) [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyMac
+      (poly1305CodecFor r)
+      [ mechRoute OpSign (polyName r) ["A37", "A39"]
+      , mechRoute OpVerify (polyName r) ["A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- poly1305Recipes
+  ]
+
 -- | The encrypt-data behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from
 -- 'encryptDataCodecFor', the derive route citing the planner case
@@ -1399,6 +1440,12 @@ dECKeyPairGen = promotedDesc "CKM_EC_KEY_PAIR_GEN" allBaselines FamilyKeyPair
   noParams [mechRoute OpGenerateKeyPair "CKM_EC_KEY_PAIR_GEN" ["A20", "A37"]]
   KeyBits 0 0
 
+dECExtraBitsKeyPairGen :: Descriptor
+dECExtraBitsKeyPairGen = promotedDesc "CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS"
+  [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyKeyPair
+  noParams [mechRoute OpGenerateKeyPair "CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS" ["A20", "A37"]]
+  KeyBits 0 0
+
 dRsaPkcsKeyPairGen :: Descriptor
 dRsaPkcsKeyPairGen = promotedDesc "CKM_RSA_PKCS_KEY_PAIR_GEN" allBaselines FamilyKeyPair
   noParams [mechRoute OpGenerateKeyPair "CKM_RSA_PKCS_KEY_PAIR_GEN" ["A20", "A37"]]
@@ -1452,6 +1499,11 @@ dDsaParameterGen = promotedDesc "CKM_DSA_PARAMETER_GEN" allBaselines FamilyKeyGe
 dX9_42DhParameterGen :: Descriptor
 dX9_42DhParameterGen = promotedDesc "CKM_X9_42_DH_PARAMETER_GEN" allBaselines FamilyKeyGen
   noParams [synthRoute OpGenerateKey "CKM_X9_42_DH_PARAMETER_GEN"]
+  KeyBits 1024 3072
+
+dDhPkcsParameterGen :: Descriptor
+dDhPkcsParameterGen = promotedDesc "CKM_DH_PKCS_PARAMETER_GEN" allBaselines FamilyKeyGen
+  noParams [synthRoute OpGenerateKey "CKM_DH_PKCS_PARAMETER_GEN"]
   KeyBits 1024 3072
 
 dHkdfDerive :: Descriptor
@@ -1535,14 +1587,14 @@ curatedRegistry =
     behaviorDescs :: [Descriptor]
     behaviorDescs =
       ( [ dSHA256, dAESKeyGen, dDES3KeyGen, dHotpKeyGen, dGenericSecretKeyGen, dBlake2b512KeyGen, dChacha20KeyGen
-        , dECKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dDhKeyPairGen, dX9_42DhKeyPairGen, dX9_42DhParameterGen, dEdwardsKeyPairGen, dMontgomeryKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dHkdfData, dMlKem
+        , dECKeyPairGen, dECExtraBitsKeyPairGen, dRsaPkcsKeyPairGen, dMlKemKeyPairGen, dDsaKeyPairGen, dDsaParameterGen, dDhKeyPairGen, dDhPkcsParameterGen, dX9_42DhKeyPairGen, dX9_42DhParameterGen, dEdwardsKeyPairGen, dMontgomeryKeyPairGen, dMlDsaKeyPairGen, dSlhDsaKeyPairGen, dHkdfDerive, dHkdfData, dMlKem
         , dSHA224, dSHA384, dSHA512, dSHA512_224, dSHA512_256
         , dSHA3_224, dSHA3_256, dSHA3_384, dSHA3_512
         , dSHA1, dMD5, dRIPEMD160, dBLAKE2B_512
         , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
-          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ byteOpsDescs ++ tlsKeyMatDescs ++ pbeDescs ++ ssl3Descs ++ otpDescs ++ encryptDataDescs
+          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ byteOpsDescs ++ tlsKeyMatDescs ++ pbeDescs ++ ssl3Descs ++ otpDescs ++ encryptDataDescs ++ rsaX931Descs ++ poly1305Descs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

@@ -94,6 +94,8 @@ library haskoki-core
     Haskoki.Recipe.RsaPkcs1
     Haskoki.Recipe.RsaPss
     Haskoki.Recipe.RsaX509
+    Haskoki.Recipe.RsaX931
+    Haskoki.Recipe.Poly1305
     Haskoki.Recipe.Ecdsa
     Haskoki.Recipe.Ecdh
     Haskoki.Recipe.Eddsa
@@ -408,8 +410,10 @@ test-suite haskoki-model-tests
     RecipeOaepSpec
     RecipeOtpSpec
     RecipePbeSpec
+    RecipePoly1305Spec
     RecipePssSpec
     RecipeRsaSpec
+    RecipeRsaX931Spec
     RecipeSlhDsaSpec
     RecipeSsl3Spec
     RecipeSp800108Spec

@@ -6,6 +6,8 @@ mech|0x00000005|CKM_MD5_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;ver
 mech|0x00000006|CKM_SHA1_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x00000008|CKM_RIPEMD160_RSA_PKCS||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x00000009|CKM_RSA_PKCS_OAEP||rsa|oaep-params/1|bits:512-4096|decrypt:A16,A37,A39;encrypt:A16,A37,A39;unwrap:A20,A37,A39;wrap:A20,A37,A39
+mech|0x0000000B|CKM_RSA_X9_31||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
+mech|0x0000000C|CKM_SHA1_RSA_X9_31||rsa|no-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x0000000D|CKM_RSA_PKCS_PSS||rsa|pss-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x0000000E|CKM_SHA1_RSA_PKCS_PSS||rsa|pss-params/1|bits:512-4096|sign:A37,A39;verify:A37,A39
 mech|0x0000000F|CKM_ML_KEM_KEY_PAIR_GEN||keypair|no-params/1|bytes:800-1568|generate-key-pair:A20,A37
@@ -218,7 +220,10 @@ mech|0x00001220|CKM_GOST28147_KEY_GEN||keygen|no-params/1|bits:256-256|generate-
 mech|0x00001225|CKM_CHACHA20_KEY_GEN||keygen|no-params/1|bits:256-256|generate-key:A37
 mech|0x00001226|CKM_CHACHA20||cipher|chacha20-params/1|bytes:32-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00001227|CKM_POLY1305_KEY_GEN||keygen|no-params/1|bits:256-256|generate-key:A37
+mech|0x00001228|CKM_POLY1305||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
+mech|0x0000140B|CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS||keypair|no-params/1|bits:0-0|generate-key-pair:A20,A37
 mech|0x00002000|CKM_DSA_PARAMETER_GEN||keygen|no-params/1|bits:1024-3072|generate-key:A37
+mech|0x00002001|CKM_DH_PKCS_PARAMETER_GEN||keygen|no-params/1|bits:1024-3072|generate-key:A37
 mech|0x00002002|CKM_X9_42_DH_PARAMETER_GEN||keygen|no-params/1|bits:1024-3072|generate-key:A37
 mech|0x00002104|CKM_AES_OFB||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
 mech|0x00002106|CKM_AES_CFB8||cipher|iv-bytes/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39
@@ -268,8 +273,6 @@ inv|0x00000002|CKM_RSA_9796||catalog-only
 inv|0x00000004|CKM_MD2_RSA_PKCS||catalog-only
 inv|0x00000007|CKM_RIPEMD128_RSA_PKCS||catalog-only
 inv|0x0000000A|CKM_RSA_X9_31_KEY_PAIR_GEN||catalog-only
-inv|0x0000000B|CKM_RSA_X9_31||catalog-only
-inv|0x0000000C|CKM_SHA1_RSA_X9_31||catalog-only
 inv|0x0000001F|CKM_HASH_ML_DSA||catalog-only
 inv|0x00000023|CKM_HASH_ML_DSA_SHA224||catalog-only
 inv|0x00000024|CKM_HASH_ML_DSA_SHA256||catalog-only
@@ -433,9 +436,6 @@ inv|0x00001221|CKM_GOST28147_ECB||catalog-only
 inv|0x00001222|CKM_GOST28147||catalog-only
 inv|0x00001223|CKM_GOST28147_MAC||catalog-only
 inv|0x00001224|CKM_GOST28147_KEY_WRAP||catalog-only
-inv|0x00001228|CKM_POLY1305||catalog-only
-inv|0x0000140B|CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS||catalog-only
-inv|0x00002001|CKM_DH_PKCS_PARAMETER_GEN||catalog-only
 inv|0x00002003|CKM_DSA_PROBABILISTIC_PARAMETER_GEN|CKM_DSA_PROBABLISTIC_PARAMETER_GEN|catalog-only
 inv|0x00002004|CKM_DSA_SHAWE_TAYLOR_PARAMETER_GEN||catalog-only
 inv|0x00002005|CKM_DSA_FIPS_G_GEN||catalog-only

@@ -2008,6 +2008,82 @@ skipped (t7692)
   11n tree (`dist-release/haskoki-0.3.0.0`,
   evidence 16/16).
 
+## Round 36: X9.31/POLY1305/EC-extra/DH-PKCS slice 11o (fast r64→r65 + KAT r37→r38)
+
+- r65: 4357 passed / 20 failed / 3953
+  skipped / 811 xfailed (t9141)
+  (`/tmp/pkcs11-ws/out/fast/pkcs11-fast-r65-results.json`).
+  r64→r65: −56 pass / +2 fail / +102
+  xfail / +61 skip (+109 collected).
+- Genuine 11o wins (all skip→pass, unit
+  totals unchanged): `test_rsa_extended`
+  0p/14s → 4p/10s (X9.31 legs live);
+  `test_salsa20` 6p/5s → 9p/2s (3 flips
+  on POLY1305 live); `test_remaining_gaps`
+  +1p/−1s; `test_mech_multipart` +4p;
+  `test_mech_sign` +4p; `test_mech_flags`
+  +16p; `test_mech_attribute` +3p;
+  `test_mech_keygen` +1p; `test_mech_probe`
+  +15s (new-row probes).
+- P11C-009 (now lane-active, oracle-side;
+  filed statically in 11f, predicted this
+  exact failure): the framework models
+  `CKM_POLY1305` as `param_required=True`
+  ("requires nonce param",
+  `_ciphers.py:171-180`), but PKCS#11 v3.2
+  gives POLY1305 no parameters. The token
+  honestly accepts NULL (pinned:
+  `casePoly1305InitParams` NULL-admit +
+  `consumer_roundtrip.c` "poly1305 init
+  ok" KAT) → 2 new fails
+  (`test_registry_{sign,verify}_missing_required_param[POLY1305]`).
+  Second oracle half: sign/verify legs
+  lack digest's
+  `_finish_digest_after_unexpected_ok`
+  cleanup, so the unexpected-OK leaves an
+  active op on the module-scoped session —
+  94 cascade xfails report "got
+  `CKR_OPERATION_ACTIVE`" (timestamp order
+  proves the POLY1305 fail runs first).
+  +2 POLY1305 `without_flag` xfails
+  (keygen correctly refused:
+  `CKR_MECHANISM_INVALID`, no
+  `CKM_POLY1305_KEY_GEN` served).
+- P11C-011 (new, oracle-side): the 2
+  `test_mech_sign` `RSA_X9_31` xfails
+  ("advertised but not operational") —
+  the entry lacks the sibling-PSS
+  `input_constraint="prehash"`, so the
+  raw-digest row is fed 44-byte messages.
+  +2 EC-extra matrix xfails
+  (`CKA_LOCAL` readback gap, ours-class,
+  pre-existing shape). Full +102 xfail
+  accounting: 96 cascade + 2 POLY1305
+  without_flag + 2 X9.31 + 2 EC-extra
+  `CKA_LOCAL`.
+- Zero shared-nodeid moves; the 18 old
+  failures identical by id (13 X9.42
+  P11C-004 + 2 HOTP P11C-001 + 3 WTLS
+  P11C-006). The pass-count drop is 100%
+  cascade noise + collection accounting,
+  not behavior loss.
+- r38: 82799 passed / 26 failed / 30665
+  skipped / 1835 xfailed (t115325)
+  (`/tmp/pkcs11-ws/out/kat/pkcs11-kat-r38-results.json`).
+  r37→r38: −53 pass / +2 fail / +102
+  xfail / +58 skip (+109 collected).
+  KAT-only delta: `test_dh_key_agreement`
+  10p/3s → 13p (DH-PKCS paramgen flips 3
+  skips to pass); no KAT-vector unit
+  moved. Cross-lane consistency at full
+  strength: the 100 new non-passing
+  negative legs are ID-identical to fast,
+  and the 24 old failures are identical
+  by id (18 fast + 6 SLH-DSA P11C-003).
+- Bundle note: r65/r38 run on the final
+  11o tree (`dist-release/haskoki-0.3.0.0`,
+  evidence 16/16).
+
 ## Remaining fast-lane failures (r28: 2), by cluster
 
 Fully root-caused from failure records plus the oracle sources at

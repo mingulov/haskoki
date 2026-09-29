@@ -672,9 +672,30 @@ way the lane misreports a correct module.
 Suggested fix: `param_required=False` (and drop "requires
 nonce param" from the note).
 
-Downstream handling: `CKM_POLY1305` stays `planned`
-(deferred, not a stance) until the entry is fixed. No
-module change.
+**Lane activation (11o, fast r65 + KAT r38)**:
+`CKM_POLY1305` is now served, and the pinned framework
+still carries the entry, so the predicted failure
+occurred verbatim — 2 fails, ID-identical in both
+lanes:
+`TestBadParameters::test_registry_sign_missing_required_param[POLY1305]`
+and the verify twin (`accepted_invalid`: `CKR_OK`
+where a reject was expected; the token is correct —
+standalone POLY1305 takes no parameters, pinned by
+`casePoly1305InitParams` NULL-admit and the
+`consumer_roundtrip.c` "poly1305 init ok" KAT).
+Second oracle half, same event: the sign/verify legs
+lack digest's `_finish_digest_after_unexpected_ok`
+cleanup, so the unexpected-OK leaves an active op on
+the module-scoped session and 94 following legs xfail
+with "got `CKR_OPERATION_ACTIVE`" (timestamp order
+proves the POLY1305 fail runs first; the 100 new
+non-passing negative legs are ID-identical across
+lanes). rc2 fixed the entry in source, but lanes run
+the pinned framework, where it is still live.
+
+Downstream handling: triaged as known-external in
+Round 36; no module change (accepting NULL params is
+the spec-correct behavior).
 
 ## P11C-010 (candidate): wycheproof GMAC sends raw IV bytes instead of `CK_GCM_PARAMS`
 
@@ -713,6 +734,51 @@ xfail honestly until the test is fixed. No module change.
 (Raw-IV tolerance was considered and rejected: OASIS
 mandates the struct, and a second shape would be unpinned
 speculation.)
+
+## P11C-011 (candidate): `CKM_RSA_X9_31` registry entry lacks `input_constraint="prehash"`; raw-digest row fed 44-byte messages
+
+**Severity**: low (2 xfails per lane that should pass;
+the SHA-1 message row is unaffected)
+**Component**: `src/pkcs11_check/testcases/mechanism_registry/_rsa.py`
+(`registry[CKM_RSA_X9_31]`, line 169) vs
+`test_mech_sign.py::test_roundtrip` (line 201)
+**Found**: 2026-09-29 (11o fast r65 triage)
+
+The entry's own note says "RSA X9.31 sign/verify with
+pre-hash", but unlike the sibling raw-PSS entry
+(`registry[CKM_RSA_PKCS_PSS]`, line 143, which carries
+`input_constraint="prehash"`), it sets no input
+constraint. `test_roundtrip` therefore feeds the raw
+row the default 44-byte message (`b"hello pkcs11 sign
+test" * 2`) instead of a digest. Raw X9.31 signs
+digests only (20/32/48/64 bytes select the hash id),
+so any correct module refuses, and the legs xfail:
+
+```text
+test_roundtrip[RSA_X9_31]: RSA_X9_31:sign: advertised but
+  not operational (CKR_MECHANISM_INVALID)
+test_tampered_data_fails_verify[RSA_X9_31]: same
+```
+
+(ID-identical in fast r65 and KAT r38; the
+`CKM_SHA1_RSA_X9_31` message row shows no non-pass
+records — it hashes inside, so 44-byte input is
+correct for it.)
+
+Suggested fix: `input_constraint="prehash"` on
+`registry[CKM_RSA_X9_31]` (the leg then feeds 32-byte
+SHA-256 digests, which the row signs).
+
+Downstream handling: triaged as known-external in
+Round 36. Token-side note (ours, scheduled, not in
+11o — lanes already ran): a digest-size violation is
+a DATA problem, but the token answers
+`CKR_MECHANISM_INVALID` (length-map miss surfaces as
+`BackendUnsupported`); the spec-plausible code is
+`CKR_DATA_LEN_RANGE`. Fixing the RV does not un-xfail
+the legs (the input stays 44 bytes until the entry
+gains `prehash`), so the framework entry is the
+blocking half.
 
 ## Observations (not issues)
 
@@ -765,3 +831,28 @@ speculation.)
   key-safe iv-ignore leg flips xfail→pass on the
   fresh bundle (11l in-slice fix confirmed). Nothing
   to file.
+- **Pinned-framework fast r65 + KAT r38 (2026-09-29,
+  11o/270 rows): 11o-mechanism coverage census.**
+  `CKM_DH_PKCS_PARAMETER_GEN`: covered — dedicated
+  `has_mechanism`-gated legs in
+  `test_dh_key_agreement.py:1266` flip 3 skips to
+  pass in KAT. `CKM_RSA_X9_31` /
+  `CKM_SHA1_RSA_X9_31`: covered by `test_rsa_extended`
+  (4 skip→pass) plus the sign matrix; the 2
+  `RSA_X9_31` roundtrip xfails are P11C-011 (missing
+  `prehash` input constraint), not missing coverage.
+  `CKM_POLY1305`: covered by the negative/keygen/
+  attribute matrix; the 2 fails are the activated
+  P11C-009, not missing coverage.
+  `CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS`: availability
+  leg (`test_ec_key_pair_gen_w_extra_bits_availability`)
+  plus the generic keygen/flags/probe/attribute
+  matrix only — no functional legs exist, but none
+  can: the row's sole distinction over
+  `CKM_EC_KEY_PAIR_GEN` is keygen-internal
+  randomness (FIPS 186-5 B.4.2), unobservable
+  black-box. The 2 matrix xfails are the generic
+  `CKA_LOCAL` readback gap (ours-class,
+  pre-existing). Not filed: matrix exercise is the
+  achievable ceiling, and our planner pin
+  (`caseEcExtraBitsPlanner`) covers the plan shape.

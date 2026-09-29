@@ -830,7 +830,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: no RSA X9.31 keygen route in the backend surface; behavior/synthetic stay planned.",
+      "notes": "Stance (slice 11o): unsupported-with-reason. X9.31 keygen constrains prime selection (p-1/p+1 divisibility criteria); the pinned provider exposes no X9.31 keygen parameter through the modern provider API \u2014 only the deprecated low-level RSA_X931_generate_key_ex, which this codebase bans (provider-based EVP_PKEY only). The X9.31 sign rows served in this slice run on ordinary RSA keys.",
       "numeric_id": "0x0000000a",
       "routes": [],
       "source_refs": [
@@ -841,26 +841,70 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
         "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "x931-poly1305",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_RSA_X9_31",
       "family": "rsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 512,
+        "max_key_size": 4096
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. X9.31 padding; the provider offers RSA_X931_PADDING but no shim/recipe wires it; stays planned (named gap). Real unsupported-with-reason: the RSA padding scheme present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "RSA-X9.31 recipe (core/Haskoki/Recipe/RsaX931.hs): the raw row signs caller-hashed digests over no-params/1; the input length selects the X9.31 hash id (20/32/48/64 bytes map to SHA-1/SHA-256/SHA-384/SHA-512, anything else refuses \u2014 the pinned provider has no hash id for it, proven by probe). The provider needs the digest set before the pad mode. Real execution pinned (OpenSSLSpec caseRsaX931Vectors: deterministic CLI interop vector replayed byte-exact plus per-length roundtrips); synthetic per-shape constructions pinned (SyntheticSpec caseX931Roundtrip); init enforces empty params (OperationSpec caseX931InitParams, RecipeRsaX931Spec).",
       "numeric_id": "0x0000000b",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_RSA_X9_31",
@@ -869,26 +913,85 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "x931-poly1305",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "x931-poly1305",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "x931-poly1305",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeRsaX931Spec",
+          "build_id": "x931-poly1305",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_SHA1_RSA_X9_31",
       "family": "rsa",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 512,
+        "max_key_size": 4096
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. X9.31 padding; the provider offers RSA_X931_PADDING but no shim/recipe wires it; stays planned (named gap). Real unsupported-with-reason: the RSA padding scheme present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "RSA-X9.31 recipe (core/Haskoki/Recipe/RsaX931.hs): the SHA-1 row hashes the message inside the backend, then signs with X9.31 padding over no-params/1 (see CKM_RSA_X9_31 for the provider ordering rule). Real execution pinned (OpenSSLSpec caseRsaX931Vectors: SHA-1 roundtrip plus CLI-verified DigestSign interop); synthetic construction pinned (SyntheticSpec caseX931Roundtrip); init enforces empty params (OperationSpec caseX931InitParams, RecipeRsaX931Spec).",
       "numeric_id": "0x0000000c",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_SHA1_RSA_X9_31",
@@ -897,12 +1000,43 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "x931-poly1305",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "x931-poly1305",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "x931-poly1305",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeRsaX931Spec",
+          "build_id": "x931-poly1305",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -4785,7 +4919,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: t-parameter (truncation length) codec pending; not a fixed-width digest. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real unsupported-with-reason: SHA-512/t needs per-t FIPS 180-4 IVs, inexpressible via the provider EVP_Digest surface (only the fixed 224/256 truncations exist); behavior/synthetic stay planned. Stance recorded in slice 11m.",
+      "notes": "Stance (slice 11o): unsupported-with-reason. CKM_SHA512_T needs per-t initial values (FIPS 180-4 SHA-512/t is NOT truncation of SHA-512); the pinned provider exposes only the fixed SHA-512/224 and SHA-512/256 digests (already served as their own rows) and no general-t primitive. Implementing the compression function in-house would violate the engine-backed rule.",
       "numeric_id": "0x00000050",
       "routes": [],
       "source_refs": [
@@ -4796,12 +4930,28 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "unsupported-with-reason",
+        "synthetic": "unsupported-with-reason",
+        "real": "unsupported-with-reason",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "x931-poly1305",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -22772,14 +22922,42 @@
       "canonical_name": "CKM_POLY1305",
       "family": "mac",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_SIGN",
+          "CKF_VERIFY"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: one-time authenticator; per-message key discipline unmodeled, needs its own recipe; synthetic unbuilt. Real unsupported-with-reason: the MAC primitive present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "Poly1305 recipe (core/Haskoki/Recipe/Poly1305.hs): one-shot standalone 16-byte tag under a 32-byte CKK_POLY1305 key (keygen rides the served CKM_POLY1305_KEY_GEN; the provider refuses off-length keys) over no-params/1. Real execution pinned (OpenSSLSpec casePoly1305Vector: CLI/pyca cross-checked KAT); synthetic construction pinned (SyntheticSpec casePoly1305Roundtrip); init enforces empty params (OperationSpec casePoly1305InitParams, RecipePoly1305Spec).",
       "numeric_id": "0x00001228",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign",
+          "output_rule": "synthetic-mac16-trunc/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify",
+          "output_rule": "synthetic-verify/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_POLY1305",
@@ -22788,26 +22966,72 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "x931-poly1305",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "x931-poly1305",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "x931-poly1305",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipePoly1305Spec",
+          "build_id": "x931-poly1305",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS",
       "family": "keypair",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
+        "flags": [
+          "CKF_GENERATE_KEY_PAIR"
+        ],
+        "key_size_unit": "bits",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: no extra-bits EC keygen route in the backend surface; behavior/synthetic stay planned.",
+      "notes": "pairgen: plans exactly like CKM_EC_KEY_PAIR_GEN (same templates, GenEc) \u2014 the FIPS 186-5 B.4.2 extra-bits method is unobservable from the outside (keys are uniform in range either way), so the backend draws full-entropy keys identically. Planner equivalence pinned (KeyManagementSpec caseEcExtraBitsPlanner). Bounds 0/0 unspecified (curve-dependent).",
       "numeric_id": "0x0000140b",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37"
+          ],
+          "key_constraints": [
+            "nist-curves-p256-p384-p521"
+          ],
+          "operation": "generate-key-pair",
+          "output_rule": "synthetic-pair/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS",
@@ -22816,12 +23040,38 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "key-generation",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -22889,16 +23139,30 @@
     {
       "aliases": [],
       "canonical_name": "CKM_DH_PKCS_PARAMETER_GEN",
-      "family": "special",
+      "family": "keygen",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_GENERATE"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 1024,
+        "max_key_size": 3072
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned.",
+      "notes": "paramgen (CKA_PRIME_BITS via dhPkcsParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA/X9.42; CKA_SUBPRIME_BITS defaults from L (the oracle sends CKA_PRIME_BITS only and expects CKR_OK), unlike X9.42; GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (the provider DH paramgen emits P+G only, no Q in any mode \u2014 CLI- and EVP-probed, as for X9.42). Real execution pinned by KeyManagementSpec caseRealDhPkcsParamgen (no KAT possible for randomized generation); planner pins caseDhPkcsParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00002001",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A37"
+          ],
+          "key_constraints": [
+            "prime-bits-required"
+          ],
+          "operation": "generate-key",
+          "output_rule": "synthetic-keygen/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_DH_PKCS_PARAMETER_GEN",
@@ -22907,12 +23171,33 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "registry-seed",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],

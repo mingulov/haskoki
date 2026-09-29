@@ -103,7 +103,9 @@ import Haskoki.Recipe.SlhDsa (slhdsaParamsValid, slhdsaRecipeFor)
 import Haskoki.Recipe.Otp (hotpParamsValid, hotpRecipeFor)
 import Haskoki.Recipe.RsaOaep (rsaOaepParamsValid, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPkcs1 (rsaPkcs1ParamsValid, rsaPkcs1RecipeFor)
+import Haskoki.Recipe.Poly1305 (poly1305ParamsValid, poly1305RecipeFor)
 import Haskoki.Recipe.RsaX509 (rsaX509ParamsValid, rsaX509RecipeFor)
+import Haskoki.Recipe.RsaX931 (rsaX931ParamsValid, rsaX931RecipeFor)
 import Haskoki.Recipe.RsaPss (rsaPssParamsValid, rsaPssRecipeFor)
 import Haskoki.Registry
   ( EngineCapabilities
@@ -379,6 +381,14 @@ checkMechParams args
   , not (rsaX509ParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD
         "RSA-X.509 mechanism parameters rejected by the recipe")
+  | Just r <- rsaX931RecipeFor (iaMech args)
+  , not (rsaX931ParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "RSA-X9.31 mechanism parameters rejected by the recipe")
+  | Just r <- poly1305RecipeFor (iaMech args)
+  , not (poly1305ParamsValid r (iaParams args)) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "Poly1305 mechanism parameters rejected by the recipe")
   | Just r <- ecdsaRecipeFor (iaMech args)
   , not (ecdsaParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD

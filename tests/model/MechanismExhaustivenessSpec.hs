@@ -5,7 +5,7 @@ A42: every catalog id in @spec/mechanisms-canonical.txt@ (the
 source of truth) routes through 'initOperation' — the classic-init
 planning funnel — to its cataloged disposition:
 
-* allowed ids (the 265 @mech|@ rows): the curated descriptor
+* allowed ids (the 270 @mech|@ rows): the curated descriptor
   matches the cataloged name and routes exactly, every cataloged
   classic route initializes to @CKR_OK@ under full caps with
   valid parameters, and every cataloged NON-classic route
@@ -120,7 +120,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "mechanism exhaustiveness (A42)"
-  [ testCase "catalog coverage: 464 ids, 265 allowed + 199 refused" caseCoverage
+  [ testCase "catalog coverage: 464 ids, 270 allowed + 194 refused" caseCoverage
   , testCase "allowed ids: descriptors match catalog routes" caseDescriptors
   , testCase "allowed routes: classic init OK, non-classic exact refusal" caseInitRouting
   , testCase "allowed classic routes: caps miss refuses exactly" caseCapsStage
@@ -403,10 +403,10 @@ caseCoverage = guarded "coverage" $ do
       allIds = sort (mechIds ++ invIds)
       mm =
         parseBad
-        ++ ["allowed count: want 265, got " ++ show (length mechs)
-           | length mechs /= 265]
-        ++ ["refused count: want 199, got " ++ show (length invs)
-           | length invs /= 199]
+        ++ ["allowed count: want 270, got " ++ show (length mechs)
+           | length mechs /= 270]
+        ++ ["refused count: want 194, got " ++ show (length invs)
+           | length invs /= 194]
         ++ ["catalog count: want 464, got " ++ show (length catIds)
            | length catIds /= 464]
         ++ ["mech/inv overlap: "

@@ -140,6 +140,14 @@ long hsk_ossl4_hmac_sized(OSSL_LIB_CTX *ctx, const char *mdname,
                           size_t msglen, int outsize,
                           unsigned char **out);
 
+/* Poly1305 one-shot: 32-byte key, 16-byte tag. Returns the tag
+ * length (16) or HSK_OSSL4_ERR_* (a non-32-byte key fails in the
+ * provider init). */
+long hsk_ossl4_poly1305(OSSL_LIB_CTX *ctx, const char *propq,
+                        const unsigned char *key, size_t keylen,
+                        const unsigned char *msg, size_t msglen,
+                        unsigned char **out);
+
 /* --- AES-CBC without padding (input must be block-aligned) ----------- */
 
 /* enc: 1 = encrypt, 0 = decrypt. Key/iv lengths are checked against
@@ -599,6 +607,26 @@ int hsk_ossl4_rsa_pss_verify(OSSL_LIB_CTX *ctx, const char *mdname,
                              size_t pub_len, const unsigned char *msg,
                              size_t msglen, const unsigned char *sig,
                              size_t siglen);
+
+/* --- RSA-X9.31 sign/verify -------------------------------------- */
+
+/* prehash: 1 = sign the caller digest directly (mdname selects the
+ * X9.31 hash id only), 0 = hash the message with mdname inside the
+ * provider. Sign returns the signature length or HSK_OSSL4_ERR_*. */
+long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
+                             const char *propq, const unsigned char *priv_der,
+                             size_t priv_len, const unsigned char *msg,
+                             size_t msglen, int prehash,
+                             unsigned char **out);
+
+/* pub_der: SPKI DER. Returns 1 (valid), 0 (bad signature),
+ * HSK_OSSL4_ERR_BADKEY (bad DER key), or HSK_OSSL4_ERR_* on other
+ * failures. */
+int hsk_ossl4_rsa_x931_verify(OSSL_LIB_CTX *ctx, const char *mdname,
+                              const char *propq, const unsigned char *pub_der,
+                              size_t pub_len, const unsigned char *msg,
+                              size_t msglen, const unsigned char *sig,
+                              size_t siglen, int prehash);
 
 /* --- RSA-OAEP encrypt/decrypt ---------------------------------- */
 
