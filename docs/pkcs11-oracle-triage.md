@@ -70,6 +70,12 @@ all 9 new rows (0x3a1–0x3a7, 0x3aa–0x3ab) pass their
 skips (unadvertised). No new oracle-side findings: no
 upstream filing from this round.
 
+KAT lane (same bundle, rc2): 116467 tests — 83426 passed,
+0 failed, 0 crashed, 1872 xfailed, 31169 skipped
+(`/tmp/pkcs11-ws/out-rc2/kat/pkcs11-kat-results.json`;
+`incomplete: false`). PBE legs identical to fast (28/0/5).
+No new findings.
+
 ## Round 1: template-count bound, class defaulting, class range
 
 - `C_GetAttributeValue` refuses template counts above the 64-entry bound
