@@ -76,6 +76,59 @@ KAT lane (same bundle, rc2): 116467 tests — 83426 passed,
 `incomplete: false`). PBE legs identical to fast (28/0/5).
 No new findings.
 
+## 11s-2 fast lane (rc2 oracle, 2026-09-29)
+
+Bundle `dist-release/haskoki-0.3.0.0` at `d2fbd7e` (11s-2
+ECDH wrap compositions x3 + lane-triage fix, 314/464),
+oracle pkcs11-check 0.2.2rc2
+(`/tmp/pkcs11-ws/run-lane-rc2.sh fast`, results
+`/tmp/pkcs11-ws/out-rc2/fast/pkcs11-fast-results.json`,
+backup `/tmp/pkcs11-fast-r11s2-results.json`).
+
+First run at `fc118ce` failed 6 legs, all ours
+(`TestEcdhAesKeyWrap` roundtrip + bit-flip x 3 rows,
+size query refused `CKR_ARGUMENTS_BAD`): the roles were
+swapped (we wrapped with the private half; the oracle
+wraps with the recipient PUBLIC key per the v3.2
+composition construction) and the oracle's
+`CKD_SHA256_KDF` legs died as malformed instead of
+unserved. The fix (`d2fbd7e`) swaps the roles
+(public-wrap/private-unwrap, pinned in the planner spec
+and the consumer C legs), splits the params gate
+(malformed → `CKR_ARGUMENTS_BAD`, unserved KDF →
+`CKR_MECHANISM_PARAM_INVALID`, which sits in the
+oracle's `_WRAP_RUNTIME_REJECT_RVS`), and teaches the
+FFI translator to carry nonzero KDF selectors through
+verbatim — the first fix attempt still failed
+identically because the FFI refusal passed raw struct
+bytes that the planner read as garbage before the
+split gate could answer.
+
+Second run green: 10149 tests — 5110 passed, 0
+failed, 647 xfailed, 4392 skipped, 0 crashed. Delta
+vs 11s-1: +6 passed (all `test_mech_flags`, the 3 new
+rows), +7 xfailed, +59 skipped, +72 total, zero
+failures. The 7 new xfails: the 6 oracle ECDH legs,
+now honestly `CKR_MECHANISM_PARAM_INVALID` on the
+unserved SHA256 KDF (skip → xfail as the rows became
+served-but-KDF-gated), plus 1 compressed-public-key
+buffer-guard leg whose setup rejects the compressed
+import with `CKR_TEMPLATE_INCONSISTENT` (standing
+uncompressed-only stance). No new oracle-side
+findings: no upstream filing from this round.
+Independent KAT evidence for the corrected direction
+lives in-repo: provider roundtrips resolving the
+public half for wrap (89/91/56-byte blobs), tamper
+and cross-strength fail-closed, Montgomery wire
+shape through the consumer C legs.
+
+KAT lane (same bundle, rc2): 116707 tests — 83506
+passed, 0 failed, 0 crashed, 1907 xfailed, 31294
+skipped (`/tmp/pkcs11-ws/out-rc2/kat/pkcs11-kat-results.json`,
+backup `/tmp/pkcs11-kat-r11s2-results.json`;
+`incomplete: false`). Delta shape identical to fast
+(+6p/+7x/+59s). No new findings.
+
 ## 11r fast lane (rc2 oracle, 2026-09-29)
 
 Bundle `dist-release/haskoki-0.3.0.0` at `dc3bb51` (11r
