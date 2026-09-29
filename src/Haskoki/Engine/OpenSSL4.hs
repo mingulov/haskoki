@@ -1146,6 +1146,8 @@ t16CipherSpecs =
   , C_CHACHA20
   , C_DES_ECB, C_DES_CBC, C_DES_OFB64, C_DES_CFB64, C_DES_CFB8
   , C_CAST128_ECB, C_CAST128_CBC
+  , C_CAST_ECB, C_CAST_CBC
+  , C_CAST3_ECB, C_CAST3_CBC
   , C_IDEA_ECB, C_IDEA_CBC
   , C_SEED_ECB, C_SEED_CBC
   , C_BLOWFISH_CBC
@@ -1761,6 +1763,10 @@ cipherFetchName spec = case spec of
   C_DES_CFB8 -> "DES-CFB8"
   C_CAST128_ECB -> "CAST5-ECB"
   C_CAST128_CBC -> "CAST5-CBC"
+  C_CAST_ECB -> "CAST5-ECB"
+  C_CAST_CBC -> "CAST5-CBC"
+  C_CAST3_ECB -> "CAST5-ECB"
+  C_CAST3_CBC -> "CAST5-CBC"
   C_IDEA_ECB -> "IDEA-ECB"
   C_IDEA_CBC -> "IDEA-CBC"
   C_SEED_ECB -> "SEED-ECB"
@@ -1842,6 +1848,10 @@ cipherBlockLen spec = case spec of
   C_DES_CFB8 -> 1
   C_CAST128_ECB -> 8
   C_CAST128_CBC -> 8
+  C_CAST_ECB -> 8
+  C_CAST_CBC -> 8
+  C_CAST3_ECB -> 8
+  C_CAST3_CBC -> 8
   C_IDEA_ECB -> 8
   C_IDEA_CBC -> 8
   C_SEED_ECB -> 16
@@ -1915,6 +1925,10 @@ isLegacySpec C_DES_CFB64 = True
 isLegacySpec C_DES_CFB8 = True
 isLegacySpec C_CAST128_ECB = True
 isLegacySpec C_CAST128_CBC = True
+isLegacySpec C_CAST_ECB = True
+isLegacySpec C_CAST_CBC = True
+isLegacySpec C_CAST3_ECB = True
+isLegacySpec C_CAST3_CBC = True
 isLegacySpec C_IDEA_ECB = True
 isLegacySpec C_IDEA_CBC = True
 isLegacySpec C_SEED_ECB = True

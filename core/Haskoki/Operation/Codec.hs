@@ -92,6 +92,12 @@ import Haskoki.Registry.Generated
   , ckm_CAST128_ECB
   , ckm_CAST128_CBC
   , ckm_CAST128_CBC_PAD
+  , ckm_CAST_ECB
+  , ckm_CAST_CBC
+  , ckm_CAST_CBC_PAD
+  , ckm_CAST3_ECB
+  , ckm_CAST3_CBC
+  , ckm_CAST3_CBC_PAD
   , ckm_IDEA_ECB
   , ckm_IDEA_CBC
   , ckm_IDEA_CBC_PAD
@@ -292,6 +298,12 @@ cipherShapeFor (MechanismId m)
   | m == ckm_CAST128_ECB = Just (CipherSpec 8 False)
   | m == ckm_CAST128_CBC = Just (CipherSpec 8 False)
   | m == ckm_CAST128_CBC_PAD = Just (CipherSpec 8 True)
+  | m == ckm_CAST_ECB = Just (CipherSpec 8 False)
+  | m == ckm_CAST_CBC = Just (CipherSpec 8 False)
+  | m == ckm_CAST_CBC_PAD = Just (CipherSpec 8 True)
+  | m == ckm_CAST3_ECB = Just (CipherSpec 8 False)
+  | m == ckm_CAST3_CBC = Just (CipherSpec 8 False)
+  | m == ckm_CAST3_CBC_PAD = Just (CipherSpec 8 True)
   | m == ckm_IDEA_ECB = Just (CipherSpec 8 False)
   | m == ckm_IDEA_CBC = Just (CipherSpec 8 False)
   | m == ckm_IDEA_CBC_PAD = Just (CipherSpec 8 True)

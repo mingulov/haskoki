@@ -1008,13 +1008,15 @@ caseCapsFull = withSynth "11" $ \env -> do
     , C_CHACHA20
     , C_DES_ECB, C_DES_CBC, C_DES_OFB64, C_DES_CFB64, C_DES_CFB8
     , C_CAST128_ECB, C_CAST128_CBC
+    , C_CAST_ECB, C_CAST_CBC
+    , C_CAST3_ECB, C_CAST3_CBC
     , C_IDEA_ECB, C_IDEA_CBC
     , C_SEED_ECB, C_SEED_CBC
     , C_BLOWFISH_CBC
     , C_RC2_ECB 0, C_RC2_CBC 0
     , C_RC4
     ]) (ccCiphers (bcCiphers caps))
-  assertEqual "cipher set size" 65 (Set.size (ccCiphers (bcCiphers caps)))
+  assertEqual "cipher set size" 69 (Set.size (ccCiphers (bcCiphers caps)))
   assertEqual "aead set" (Set.fromList
     [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
     , "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"
@@ -1308,6 +1310,14 @@ caseLegacyCipherSpecs = withSynth "11" $ \env -> do
     cipherEncrypt env C_CAST128_ECB (KeyBytes BS.empty) BS.empty plain
   expectBadParam "cast rejects 17-byte key" =<<
     cipherEncrypt env C_CAST128_ECB (KeyBytes (BS.replicate 17 0x4b)) BS.empty plain
+  expectBadParam "cast40 rejects 4-byte key" =<<
+    cipherEncrypt env C_CAST_ECB (KeyBytes "1234") BS.empty plain
+  expectBadParam "cast40 rejects 6-byte key" =<<
+    cipherEncrypt env C_CAST_CBC (KeyBytes "123456") iv8 plain
+  expectBadParam "cast80 rejects 9-byte key" =<<
+    cipherEncrypt env C_CAST3_ECB (KeyBytes "123456789") BS.empty plain
+  expectBadParam "cast80 rejects 11-byte key" =<<
+    cipherEncrypt env C_CAST3_CBC (KeyBytes "12345678901") iv8 plain
   expectBadParam "bf rejects 3-byte key" =<<
     cipherEncrypt env C_BLOWFISH_CBC (KeyBytes "key") iv8 plain
   expectBadParam "bf rejects 57-byte key" =<<
@@ -1366,6 +1376,8 @@ caseLegacyCipherSpecs = withSynth "11" $ \env -> do
       [ (C_DES_ECB, [8]), (C_DES_CBC, [8])
       , (C_DES_OFB64, [8]), (C_DES_CFB64, [8]), (C_DES_CFB8, [8])
       , (C_CAST128_ECB, [1, 8, 16]), (C_CAST128_CBC, [1, 8, 16])
+      , (C_CAST_ECB, [5]), (C_CAST_CBC, [5])
+      , (C_CAST3_ECB, [10]), (C_CAST3_CBC, [10])
       , (C_IDEA_ECB, [16]), (C_IDEA_CBC, [16])
       , (C_SEED_ECB, [16]), (C_SEED_CBC, [16])
       , (C_BLOWFISH_CBC, [4, 16, 56])

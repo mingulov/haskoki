@@ -1523,6 +1523,18 @@ castKey8, castEcb8Ct :: ByteString
 castKey8 = hex "0123456789abcdef"
 castEcb8Ct = hex "2be46102b438604c"
 
+-- RFC 2144 Appendix B short-key rows (same plaintext): the
+-- 40-bit and 80-bit schedules (12 rounds) over zero-padded
+-- key bytes. Verified against the pinned provider out of band
+-- (/tmp/castkat.c).
+castKey40, castEcb40Ct :: ByteString
+castKey40 = hex "0123456712"
+castEcb40Ct = hex "7ac816d16e9b302e"
+
+castKey80, castEcb80Ct :: ByteString
+castKey80 = hex "01234567123456782345"
+castEcb80Ct = hex "eb6a711a2c02271b"
+
 -- Oracle rc4.json (RFC 6229 section 2, offset 0) at 128 and 256
 -- key bits, plus the RSA "Key"/"Plaintext" anchor.
 rc4Key128, rc4Zero32, rc4Ct128 :: ByteString
@@ -1728,6 +1740,19 @@ caseLegacyKats = withBackend $ \env -> do
   ptCast1 <- expectOk "cast128 1-byte key decrypt" =<<
     cipherDecrypt env C_CAST128_ECB (KeyBytes "K") BS.empty rtCast1
   assertEqual "cast128 1-byte key inverts" castEcbPt ptCast1
+  -- CAST/CAST3: the RFC 2144 short-key rows (fixed key lengths).
+  katEcb env "cast-ecb-40" C_CAST_ECB castKey40 castEcbPt castEcb40Ct
+  katEcb env "cast3-ecb-80" C_CAST3_ECB castKey80 castEcbPt castEcb80Ct
+  rtCast40 <- expectOk "cast 5-byte key encrypt" =<<
+    cipherEncrypt env C_CAST_CBC (KeyBytes castKey40) castIv castCbcPt
+  ptCast40 <- expectOk "cast 5-byte key decrypt" =<<
+    cipherDecrypt env C_CAST_CBC (KeyBytes castKey40) castIv rtCast40
+  assertEqual "cast 5-byte key inverts" castCbcPt ptCast40
+  rtCast80 <- expectOk "cast3 10-byte key encrypt" =<<
+    cipherEncrypt env C_CAST3_CBC (KeyBytes castKey80) castIv castCbcPt
+  ptCast80 <- expectOk "cast3 10-byte key decrypt" =<<
+    cipherDecrypt env C_CAST3_CBC (KeyBytes castKey80) castIv rtCast80
+  assertEqual "cast3 10-byte key inverts" castCbcPt ptCast80
   -- Blowfish: oracle zero row; all-zero keys share one schedule.
   katCbc env "blowfish-cbc" C_BLOWFISH_CBC bfKey8z bfIv8z bfPt8z bfCt8z
   ct16z <- expectOk "blowfish 16-byte zero key" =<<
@@ -1760,6 +1785,10 @@ caseLegacyKats = withBackend $ \env -> do
   -- synthetic backend refuses them earlier with BadKey.
   expectBadParam "cast rejects empty key" =<<
     cipherEncrypt env C_CAST128_ECB (KeyBytes BS.empty) BS.empty castEcbPt
+  expectBadParam "cast40 rejects 16-byte key" =<<
+    cipherEncrypt env C_CAST_ECB (KeyBytes castKey) BS.empty castEcbPt
+  expectBadParam "cast80 rejects 5-byte key" =<<
+    cipherEncrypt env C_CAST3_ECB (KeyBytes castKey40) BS.empty castEcbPt
   expectBadParam "bf rejects 3-byte key" =<<
     cipherEncrypt env C_BLOWFISH_CBC (KeyBytes "key") bfIv8z bfPt8z
   expectBadParam "bf rejects 57-byte key" =<<
@@ -4946,13 +4975,15 @@ caseCaps = withBackend $ \env -> do
     , C_CHACHA20
     , C_DES_ECB, C_DES_CBC, C_DES_OFB64, C_DES_CFB64, C_DES_CFB8
     , C_CAST128_ECB, C_CAST128_CBC
+    , C_CAST_ECB, C_CAST_CBC
+    , C_CAST3_ECB, C_CAST3_CBC
     , C_IDEA_ECB, C_IDEA_CBC
     , C_SEED_ECB, C_SEED_CBC
     , C_BLOWFISH_CBC
     , C_RC2_ECB 0, C_RC2_CBC 0
     , C_RC4
     ]) (ccCiphers (bcCiphers caps))
-  assertEqual "cipher set size" 65 (Set.size (ccCiphers (bcCiphers caps)))
+  assertEqual "cipher set size" 69 (Set.size (ccCiphers (bcCiphers caps)))
   assertEqual "aead set" (Set.fromList
     [ "AES-128-GCM", "AES-192-GCM", "AES-256-GCM"
     , "AES-128-CCM", "AES-192-CCM", "AES-256-CCM"

@@ -11711,14 +11711,44 @@
       "canonical_name": "CKM_CAST_ECB",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 5,
+        "max_key_size": 5
       },
-      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): the CAST-128 identity at fixed 5-byte CKK_CAST keys over the legacy provider (CAST5-ECB fetch, set_key_length 5, RFC 2144 12-round short-key schedule). Real execution pinned (OpenSSLSpec caseLegacyKats: RFC 2144 Appendix B vectors; CBC inversion round-trips); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000301",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST_ECB",
@@ -11727,26 +11757,92 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_CAST_CBC",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 5,
+        "max_key_size": 5
       },
-      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): the CAST-128 identity at fixed 5-byte CKK_CAST keys over the legacy provider (CAST5-CBC fetch, set_key_length 5, RFC 2144 12-round short-key schedule). Real execution pinned (OpenSSLSpec caseLegacyKats: RFC 2144 Appendix B vectors; CBC inversion round-trips); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000302",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST_CBC",
@@ -11755,12 +11851,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -11823,14 +11955,44 @@
       "canonical_name": "CKM_CAST_CBC_PAD",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 5,
+        "max_key_size": 5
       },
-      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): the CAST-128 identity at fixed 5-byte CKK_CAST keys over the legacy provider (CAST5-CBC fetch, set_key_length 5, RFC 2144 12-round short-key schedule). Real execution pinned (OpenSSLSpec caseLegacyKats: RFC 2144 Appendix B vectors; CBC inversion round-trips); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000305",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST_CBC_PAD",
@@ -11839,12 +12001,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -11924,14 +12122,44 @@
       "canonical_name": "CKM_CAST3_ECB",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 10,
+        "max_key_size": 10
       },
-      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): the CAST-128 identity at fixed 10-byte CKK_CAST3 keys over the legacy provider (CAST5-ECB fetch, set_key_length 10, RFC 2144 12-round short-key schedule). Real execution pinned (OpenSSLSpec caseLegacyKats: RFC 2144 Appendix B vectors; CBC inversion round-trips); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000311",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST3_ECB",
@@ -11940,26 +12168,92 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
       "canonical_name": "CKM_CAST3_CBC",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 10,
+        "max_key_size": 10
       },
-      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): the CAST-128 identity at fixed 10-byte CKK_CAST3 keys over the legacy provider (CAST5-CBC fetch, set_key_length 10, RFC 2144 12-round short-key schedule). Real execution pinned (OpenSSLSpec caseLegacyKats: RFC 2144 Appendix B vectors; CBC inversion round-trips); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000312",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST3_CBC",
@@ -11968,12 +12262,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -12036,14 +12366,44 @@
       "canonical_name": "CKM_CAST3_CBC_PAD",
       "family": "cipher",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_DECRYPT",
+          "CKF_ENCRYPT"
+        ],
+        "key_size_unit": "bytes",
+        "min_key_size": 10,
+        "max_key_size": 10
       },
-      "notes": "Slice 11p finding: servable, deferred (stays planned, NOT unsupported). CKM_CAST_* and CKM_CAST3_* denote CAST-128 with constrained keys: the pinned oracle treats them as RFC 2144 appendix B.1 rows (40-bit CAST vector 7ac816d16e9b302e, 80-bit CAST3 vector eb6a711a2c02271b), both reproduced byte-identical on the pinned CAST5-ECB fetch, and the provider CAST-CBC name aliases CAST5-CBC. Serving needs recipe rows with reviewed key constraints plus CKK_CAST/CKK_CAST3 key-type plumbing; queued as a CAST-identity follow-up slice.",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): the CAST-128 identity at fixed 10-byte CKK_CAST3 keys over the legacy provider (CAST5-CBC fetch, set_key_length 10, RFC 2144 12-round short-key schedule). Real execution pinned (OpenSSLSpec caseLegacyKats: RFC 2144 Appendix B vectors; CBC inversion round-trips); synthetic per-width geometry pinned (SyntheticSpec caseLegacyCipherSpecs); recipe map and geometry refusals pinned (RecipeCipherSpec).",
       "numeric_id": "0x00000315",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "encryption-key"
+          ],
+          "operation": "encrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        },
+        {
+          "acceptance_cases": [
+            "A16",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "decryption-key"
+          ],
+          "operation": "decrypt",
+          "output_rule": "synthetic-stream/v1",
+          "parameter_codec": "iv-bytes/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_CAST3_CBC_PAD",
@@ -12052,12 +12412,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "planned",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/OperationSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A16"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeCipherSpec",
+          "build_id": "legacy-ciphers",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        },
+        {
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec",
+          "build_id": "exhaustiveness",
+          "case_id": "A42"
+        }
+      ]
     },
     {
       "aliases": [

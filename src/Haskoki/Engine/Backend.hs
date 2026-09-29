@@ -448,6 +448,8 @@ data CipherSpec
   | C_DES3_CBC | C_DES3_ECB
   | C_DES_ECB | C_DES_CBC | C_DES_OFB64 | C_DES_CFB64 | C_DES_CFB8
   | C_CAST128_ECB | C_CAST128_CBC
+  | C_CAST_ECB | C_CAST_CBC
+  | C_CAST3_ECB | C_CAST3_CBC
   | C_IDEA_ECB | C_IDEA_CBC
   | C_SEED_ECB | C_SEED_CBC
   | C_BLOWFISH_CBC
@@ -556,6 +558,10 @@ cipherKeyLens spec = case spec of
   C_DES_CFB8 -> [8]
   C_CAST128_ECB -> [1 .. 16]
   C_CAST128_CBC -> [1 .. 16]
+  C_CAST_ECB -> [5]
+  C_CAST_CBC -> [5]
+  C_CAST3_ECB -> [10]
+  C_CAST3_CBC -> [10]
   C_IDEA_ECB -> [16]
   C_IDEA_CBC -> [16]
   C_SEED_ECB -> [16]
@@ -633,6 +639,10 @@ cipherIvLen spec = case spec of
   C_DES_CFB8 -> 8
   C_CAST128_ECB -> 0
   C_CAST128_CBC -> 8
+  C_CAST_ECB -> 0
+  C_CAST_CBC -> 8
+  C_CAST3_ECB -> 0
+  C_CAST3_CBC -> 8
   C_IDEA_ECB -> 0
   C_IDEA_CBC -> 8
   C_SEED_ECB -> 0

@@ -1273,6 +1273,10 @@ cipherCtor name keyLen
   | name == "CKM_DES_CFB8" = des1 C_DES_CFB8
   | name == "CKM_CAST128_ECB" = cast128 C_CAST128_ECB
   | name == "CKM_CAST128_CBC" || name == "CKM_CAST128_CBC_PAD" = cast128 C_CAST128_CBC
+  | name == "CKM_CAST_ECB" = castN 5 C_CAST_ECB
+  | name == "CKM_CAST_CBC" || name == "CKM_CAST_CBC_PAD" = castN 5 C_CAST_CBC
+  | name == "CKM_CAST3_ECB" = castN 10 C_CAST3_ECB
+  | name == "CKM_CAST3_CBC" || name == "CKM_CAST3_CBC_PAD" = castN 10 C_CAST3_CBC
   | name == "CKM_IDEA_ECB" = idea16 C_IDEA_ECB
   | name == "CKM_IDEA_CBC" || name == "CKM_IDEA_CBC_PAD" = idea16 C_IDEA_CBC
   | name == "CKM_SEED_ECB" = idea16 C_SEED_ECB
@@ -1360,6 +1364,9 @@ cipherCtor name keyLen
       | otherwise = Nothing
     cast128 spec
       | keyLen >= 1 && keyLen <= 16 = Just spec
+      | otherwise = Nothing
+    castN n spec
+      | keyLen == n = Just spec
       | otherwise = Nothing
     idea16 spec
       | keyLen == 16 = Just spec

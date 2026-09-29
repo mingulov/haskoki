@@ -355,6 +355,15 @@ cipherRecipes =
   , BlockCipherRecipe "CKM_CAST128_ECB" 8 [1 .. 16] 0 False "CKK_CAST128"
   , BlockCipherRecipe "CKM_CAST128_CBC" 8 [1 .. 16] 8 False "CKK_CAST128"
   , BlockCipherRecipe "CKM_CAST128_CBC_PAD" 8 [1 .. 16] 8 True "CKK_CAST128"
+  -- CAST/CAST3: the CAST-128 identity at fixed 40/80-bit keys
+  -- (RFC 2144 short-key schedules); same geometry, keytypes
+  -- CKK_CAST/CKK_CAST3.
+  , BlockCipherRecipe "CKM_CAST_ECB" 8 [5] 0 False "CKK_CAST"
+  , BlockCipherRecipe "CKM_CAST_CBC" 8 [5] 8 False "CKK_CAST"
+  , BlockCipherRecipe "CKM_CAST_CBC_PAD" 8 [5] 8 True "CKK_CAST"
+  , BlockCipherRecipe "CKM_CAST3_ECB" 8 [10] 0 False "CKK_CAST3"
+  , BlockCipherRecipe "CKM_CAST3_CBC" 8 [10] 8 False "CKK_CAST3"
+  , BlockCipherRecipe "CKM_CAST3_CBC_PAD" 8 [10] 8 True "CKK_CAST3"
   -- IDEA: fixed 16-byte keys; plain ECB/CBC geometry.
   , BlockCipherRecipe "CKM_IDEA_ECB" 8 [16] 0 False "CKK_IDEA"
   , BlockCipherRecipe "CKM_IDEA_CBC" 8 [16] 8 False "CKK_IDEA"

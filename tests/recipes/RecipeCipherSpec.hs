@@ -1,6 +1,6 @@
 {- | block-cipher-shape recipe tests.
 
-The CBC/ECB group: 44 header mechanisms sharing one parameter shape
+The CBC/ECB group: 50 header mechanisms sharing one parameter shape
 over eleven algorithm families — CBC takes the IV as mechanism
 parameters (one block: 16 bytes for AES/ARIA/CAMELLIA, 8 for
 Triple-DES), ECB takes empty parameters, @CKM_AES_CTR@ and
@@ -80,6 +80,10 @@ import Haskoki.Engine.Backend
     , C_CAMELLIA256_CTR
     , C_CAST128_CBC
     , C_CAST128_ECB
+    , C_CAST_CBC
+    , C_CAST_ECB
+    , C_CAST3_CBC
+    , C_CAST3_ECB
     , C_DES3_CBC
     , C_DES_CBC
     , C_DES_CFB64
@@ -166,6 +170,12 @@ import Haskoki.Registry.Generated
   , ckm_CAST128_ECB
   , ckm_CAST128_CBC
   , ckm_CAST128_CBC_PAD
+  , ckm_CAST_ECB
+  , ckm_CAST_CBC
+  , ckm_CAST_CBC_PAD
+  , ckm_CAST3_ECB
+  , ckm_CAST3_CBC
+  , ckm_CAST3_CBC_PAD
   , ckm_IDEA_ECB
   , ckm_IDEA_CBC
   , ckm_IDEA_CBC_PAD
@@ -189,7 +199,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "Block-cipher recipe"
-  [ testCase "recipe table covers 44 mechanisms with geometry" caseTable
+  [ testCase "recipe table covers 50 mechanisms with geometry" caseTable
   , testCase "recipe lookup resolves by id" caseLookup
   , testCase "ECB is no-params/1, CBC is iv-bytes/1" caseCodec
   , testCase "params: IV length or empty-only" caseParams
@@ -236,6 +246,12 @@ groupShape =
   , ("CAST128_ECB", 8, [1 .. 16], 0, False)
   , ("CAST128_CBC", 8, [1 .. 16], 8, False)
   , ("CAST128_CBC_PAD", 8, [1 .. 16], 8, True)
+  , ("CAST_ECB", 8, [5], 0, False)
+  , ("CAST_CBC", 8, [5], 8, False)
+  , ("CAST_CBC_PAD", 8, [5], 8, True)
+  , ("CAST3_ECB", 8, [10], 0, False)
+  , ("CAST3_CBC", 8, [10], 8, False)
+  , ("CAST3_CBC_PAD", 8, [10], 8, True)
   , ("IDEA_ECB", 8, [16], 0, False)
   , ("IDEA_CBC", 8, [16], 8, False)
   , ("IDEA_CBC_PAD", 8, [16], 8, True)
@@ -267,7 +283,7 @@ mechName suffix = "CKM_" <> suffix
 
 caseTable :: IO ()
 caseTable = do
-  assertEqual "recipe count" 44 (length cipherRecipes)
+  assertEqual "recipe count" 50 (length cipherRecipes)
   mapM_ (\(suffix, block, keys, iv, pad) -> do
     let name = mechName suffix
         found = [ r | r <- cipherRecipes, crName r == name ]
@@ -507,6 +523,16 @@ caseKeyLens = do
     [1, 5, 16]
   mapM_ (\n -> assertBool ("cast128 key refused " ++ show n)
     (not (cipherKeyLenValid c5 n))) [0, 17]
+  let c40 = recipeOf "CKM_CAST_CBC"
+  mapM_ (\n -> assertBool ("cast key " ++ show n) (cipherKeyLenValid c40 n))
+    [5]
+  mapM_ (\n -> assertBool ("cast key refused " ++ show n)
+    (not (cipherKeyLenValid c40 n))) [0, 4, 6, 10, 16]
+  let c80 = recipeOf "CKM_CAST3_CBC"
+  mapM_ (\n -> assertBool ("cast3 key " ++ show n) (cipherKeyLenValid c80 n))
+    [10]
+  mapM_ (\n -> assertBool ("cast3 key refused " ++ show n)
+    (not (cipherKeyLenValid c80 n))) [0, 5, 9, 11, 16]
   mapM_ (\(suffix, _, keys, _, _) -> do
     let r = recipeOf (mechName suffix)
     mapM_ (\n -> assertBool ("key ok " ++ T.unpack suffix ++ "/" ++ show n)
@@ -834,6 +860,22 @@ caseDriverMap = do
     (cipherSpecFor (legacy "CKM_CAST128_CBC") 5 iv8)
   assertEqual "cast128-ecb-16" (Just C_CAST128_ECB)
     (cipherSpecFor (legacy "CKM_CAST128_ECB") 16 BS.empty)
+  assertEqual "cast-ecb-5" (Just C_CAST_ECB)
+    (cipherSpecFor (legacy "CKM_CAST_ECB") 5 BS.empty)
+  assertEqual "cast-cbc-5" (Just C_CAST_CBC)
+    (cipherSpecFor (legacy "CKM_CAST_CBC") 5 iv8)
+  assertEqual "cast-pad shares CBC" (Just C_CAST_CBC)
+    (cipherSpecFor (legacy "CKM_CAST_CBC_PAD") 5 iv8)
+  assertEqual "cast rejects 16-byte key" Nothing
+    (cipherSpecFor (legacy "CKM_CAST_CBC") 16 iv8)
+  assertEqual "cast3-ecb-10" (Just C_CAST3_ECB)
+    (cipherSpecFor (legacy "CKM_CAST3_ECB") 10 BS.empty)
+  assertEqual "cast3-cbc-10" (Just C_CAST3_CBC)
+    (cipherSpecFor (legacy "CKM_CAST3_CBC") 10 iv8)
+  assertEqual "cast3-pad shares CBC" (Just C_CAST3_CBC)
+    (cipherSpecFor (legacy "CKM_CAST3_CBC_PAD") 10 iv8)
+  assertEqual "cast3 rejects 5-byte key" Nothing
+    (cipherSpecFor (legacy "CKM_CAST3_CBC") 5 iv8)
   assertEqual "idea-cbc" (Just C_IDEA_CBC)
     (cipherSpecFor (legacy "CKM_IDEA_CBC") 16 iv8)
   assertEqual "idea-ecb" (Just C_IDEA_ECB)
@@ -950,6 +992,12 @@ caseLegacyShapes = do
       , ("CKM_CAST128_ECB", ckm_CAST128_ECB, CipherSpec 8 False)
       , ("CKM_CAST128_CBC", ckm_CAST128_CBC, CipherSpec 8 False)
       , ("CKM_CAST128_CBC_PAD", ckm_CAST128_CBC_PAD, CipherSpec 8 True)
+      , ("CKM_CAST_ECB", ckm_CAST_ECB, CipherSpec 8 False)
+      , ("CKM_CAST_CBC", ckm_CAST_CBC, CipherSpec 8 False)
+      , ("CKM_CAST_CBC_PAD", ckm_CAST_CBC_PAD, CipherSpec 8 True)
+      , ("CKM_CAST3_ECB", ckm_CAST3_ECB, CipherSpec 8 False)
+      , ("CKM_CAST3_CBC", ckm_CAST3_CBC, CipherSpec 8 False)
+      , ("CKM_CAST3_CBC_PAD", ckm_CAST3_CBC_PAD, CipherSpec 8 True)
       , ("CKM_IDEA_ECB", ckm_IDEA_ECB, CipherSpec 8 False)
       , ("CKM_IDEA_CBC", ckm_IDEA_CBC, CipherSpec 8 False)
       , ("CKM_IDEA_CBC_PAD", ckm_IDEA_CBC_PAD, CipherSpec 8 True)

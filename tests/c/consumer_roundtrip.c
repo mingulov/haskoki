@@ -6094,9 +6094,11 @@ int main(int argc, char **argv) {
           CK_KEY_TYPE qdes = CKK_DES, qrc2 = CKK_RC2, qrc4 = CKK_RC4;
           CK_KEY_TYPE qcast = CKK_CAST128, qidea = CKK_IDEA;
           CK_KEY_TYPE qseed = CKK_SEED, qbf = CKK_BLOWFISH;
+          CK_KEY_TYPE qc40 = CKK_CAST, qc80 = CKK_CAST3;
           CK_BBOOL qyes = CK_TRUE, qno = CK_FALSE;
           CK_OBJECT_HANDLE qdesF = 0, qdesP = 0, qrc2k = 0, qrc4k = 0;
           CK_OBJECT_HANDLE qcastk = 0, qideak = 0, qseedk = 0, qbfk = 0;
+          CK_OBJECT_HANDLE qc40k = 0, qc80k = 0;
           CK_OBJECT_HANDLE qdesC = 0;
           CK_MECHANISM qm;
           CK_ULONG qlen;
@@ -6145,6 +6147,18 @@ int main(int argc, char **argv) {
                                  0xef,0x84,0x8d,0xda,0x2e,0x20,0x0a };
           CK_BYTE qseedC[16] = { 0x19,0x9c,0xa4,0x2d,0xab,0x51,0x8b,0xf9,
                                  0xf9,0x60,0x5f,0x89,0x2c,0x3d,0x56,0x7a };
+          CK_BYTE qc40K[5] = { 0x01,0x23,0x45,0x67,0x12 };
+          CK_BYTE qc40EcbP[8] = { 0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef };
+          CK_BYTE qc40EcbC[8] = { 0x7a,0xc8,0x16,0xd1,0x6e,0x9b,0x30,0x2e };
+          CK_BYTE qc40I[8] = { 0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08 };
+          CK_BYTE qc40CbcP[16] = { 0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,
+                                   0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10 };
+          CK_BYTE qc40CbcC[16] = { 0x43,0x60,0xa2,0xe6,0xae,0x5a,0x42,0x92,
+                                   0xdb,0x4e,0xd4,0x77,0x76,0xa1,0x38,0x28 };
+          CK_BYTE qc80K[10] = { 0x01,0x23,0x45,0x67,0x12,0x34,0x56,0x78,0x23,0x45 };
+          CK_BYTE qc80EcbC[8] = { 0xeb,0x6a,0x71,0x1a,0x2c,0x02,0x27,0x1b };
+          CK_BYTE qc80CbcC[16] = { 0x1f,0xad,0x40,0xc9,0x5b,0x8a,0x7e,0xa6,
+                                   0x98,0xf2,0x76,0xf3,0x0c,0x2b,0x92,0x2a };
           CK_BYTE qbfK[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
           CK_BYTE qbfI[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
           CK_BYTE qbfP[7] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
@@ -6204,6 +6218,22 @@ int main(int argc, char **argv) {
             { CKA_DECRYPT, &qyes, sizeof(qyes) },
             { CKA_VALUE, qideaK, sizeof(qideaK) }
           };
+          CK_ATTRIBUTE qc40T[] = {
+            { CKA_CLASS, &qckcls, sizeof(qckcls) },
+            { CKA_KEY_TYPE, &qc40, sizeof(qc40) },
+            { CKA_TOKEN, &qno, sizeof(qno) },
+            { CKA_ENCRYPT, &qyes, sizeof(qyes) },
+            { CKA_DECRYPT, &qyes, sizeof(qyes) },
+            { CKA_VALUE, qc40K, sizeof(qc40K) }
+          };
+          CK_ATTRIBUTE qc80T[] = {
+            { CKA_CLASS, &qckcls, sizeof(qckcls) },
+            { CKA_KEY_TYPE, &qc80, sizeof(qc80) },
+            { CKA_TOKEN, &qno, sizeof(qno) },
+            { CKA_ENCRYPT, &qyes, sizeof(qyes) },
+            { CKA_DECRYPT, &qyes, sizeof(qyes) },
+            { CKA_VALUE, qc80K, sizeof(qc80K) }
+          };
           CK_ATTRIBUTE qseedT[] = {
             { CKA_CLASS, &qckcls, sizeof(qckcls) },
             { CKA_KEY_TYPE, &qseed, sizeof(qseed) },
@@ -6238,6 +6268,10 @@ int main(int argc, char **argv) {
           CHECKC(rv == CKR_OK && qrc4k != 0, "rc4 key imports");
           rv = f->C_CreateObject(sess, qcastT, 6, &qcastk);
           CHECKC(rv == CKR_OK && qcastk != 0, "cast128 key imports");
+          rv = f->C_CreateObject(sess, qc40T, 6, &qc40k);
+          CHECKC(rv == CKR_OK && qc40k != 0, "cast key imports");
+          rv = f->C_CreateObject(sess, qc80T, 6, &qc80k);
+          CHECKC(rv == CKR_OK && qc80k != 0, "cast3 key imports");
           rv = f->C_CreateObject(sess, qideaT, 6, &qideak);
           CHECKC(rv == CKR_OK && qideak != 0, "idea key imports");
           rv = f->C_CreateObject(sess, qseedT, 6, &qseedk);
@@ -6349,6 +6383,44 @@ int main(int argc, char **argv) {
           rv = f->C_Encrypt(sess, qcastP, sizeof(qcastP), qout, &qlen);
           CHECKC(rv == CKR_OK && qlen == 16 && memcmp(qout, qcastC, 16) == 0,
                  "cast128-cbc-pad oracle KAT");
+          /* 11r CAST/CAST3: RFC 2144 Appendix B ECB anchors plus
+           * CBC vectors cross-checked against the pinned provider. */
+          qm.mechanism = CKM_CAST_ECB;
+          qm.pParameter = NULL_PTR;
+          qm.ulParameterLen = 0;
+          rv = f->C_EncryptInit(sess, &qm, qc40k);
+          CHECKC(rv == CKR_OK, "cast-ecb init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qc40EcbP, sizeof(qc40EcbP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 8 && memcmp(qout, qc40EcbC, 8) == 0,
+                 "cast-ecb RFC 2144 KAT");
+          qm.mechanism = CKM_CAST_CBC;
+          qm.pParameter = qc40I;
+          qm.ulParameterLen = sizeof(qc40I);
+          rv = f->C_EncryptInit(sess, &qm, qc40k);
+          CHECKC(rv == CKR_OK, "cast-cbc init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qc40CbcP, sizeof(qc40CbcP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 16 && memcmp(qout, qc40CbcC, 16) == 0,
+                 "cast-cbc provider KAT");
+          qm.mechanism = CKM_CAST3_ECB;
+          qm.pParameter = NULL_PTR;
+          qm.ulParameterLen = 0;
+          rv = f->C_EncryptInit(sess, &qm, qc80k);
+          CHECKC(rv == CKR_OK, "cast3-ecb init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qc40EcbP, sizeof(qc40EcbP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 8 && memcmp(qout, qc80EcbC, 8) == 0,
+                 "cast3-ecb RFC 2144 KAT");
+          qm.mechanism = CKM_CAST3_CBC;
+          qm.pParameter = qc40I;
+          qm.ulParameterLen = sizeof(qc40I);
+          rv = f->C_EncryptInit(sess, &qm, qc80k);
+          CHECKC(rv == CKR_OK, "cast3-cbc init ok");
+          qlen = sizeof(qout);
+          rv = f->C_Encrypt(sess, qc40CbcP, sizeof(qc40CbcP), qout, &qlen);
+          CHECKC(rv == CKR_OK && qlen == 16 && memcmp(qout, qc80CbcC, 16) == 0,
+                 "cast3-cbc provider KAT");
           qm.mechanism = CKM_IDEA_CBC_PAD;
           qm.pParameter = qideaI;
           qm.ulParameterLen = sizeof(qideaI);
@@ -6382,6 +6454,8 @@ int main(int argc, char **argv) {
           f->C_DestroyObject(sess, qrc2k);
           f->C_DestroyObject(sess, qrc4k);
           f->C_DestroyObject(sess, qcastk);
+          f->C_DestroyObject(sess, qc40k);
+          f->C_DestroyObject(sess, qc80k);
           f->C_DestroyObject(sess, qideak);
           f->C_DestroyObject(sess, qseedk);
           f->C_DestroyObject(sess, qbfk);

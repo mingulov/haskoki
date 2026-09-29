@@ -78,7 +78,7 @@ _Static_assert(offsetof(CK_TOKEN_INFO, ulRwSessionCount) == 128, "token.rw");
 _Static_assert(offsetof(CK_TOKEN_INFO, ulMaxPinLen) == 136, "token.maxpin");
 _Static_assert(offsetof(CK_TOKEN_INFO, ulMinPinLen) == 144, "token.minpin");
 _Static_assert(offsetof(CK_TOKEN_INFO, ulTotalPublicMemory) == 152, "token.totpub");
-_Static_assert(offsetof(CK_TOKEN_INFO, ulFreePublicMemory) == 160, "token.freepub");
+_Static_assert(offsetof(CK_TOKEN_INFO, ulFreePublicMemory) == 154, "token.freepub");
 _Static_assert(offsetof(CK_TOKEN_INFO, ulTotalPrivateMemory) == 168, "token.totpriv");
 _Static_assert(offsetof(CK_TOKEN_INFO, ulFreePrivateMemory) == 176, "token.freepriv");
 _Static_assert(offsetof(CK_TOKEN_INFO, hardwareVersion) == 184, "token.hw");
@@ -320,7 +320,7 @@ int main(int argc, char **argv) {
         (unsigned long)rv, (unsigned long)count);
   count = 0;
   rv = p11->C_GetMechanismList(0, NULL, &count);
-  CHECK(rv == CKR_OK && count == 304,
+  CHECK(rv == CKR_OK && count == 310,
         "C_GetMechanismList post-init rv=%lu n=%lu",
         (unsigned long)rv, (unsigned long)count);
   rv = p11->C_GetMechanismList(99, NULL, &count);
