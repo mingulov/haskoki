@@ -57,11 +57,13 @@ import Haskoki.Engine.Backend
   , seedRandomMaxBytes
   )
 import Haskoki.Der (dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, integerToBE, mldsaPkcs8Fields, mldsaPrivateDer, mldsaSpkiFields, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPublicDer, mlkemSpkiFields, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomerySpkiFields, rsaSpkiFields, slhdsaPkcs8Fields, slhdsaSpkiFields)
-import Haskoki.Engine.Driver (cipherSpecFor)
+import Haskoki.Engine.Driver (cipherSpecFor, runEffect)
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
+import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Recipe.Cipher (encodeCtrParams)
+import Haskoki.Recipe.WrapComp (encodeWrapCompEcdhParams)
 import Haskoki.Registry (MechanismId (..))
-import Haskoki.Types (EngineResourceId (..))
+import Haskoki.Types (EngineResourceId (..), ObjectId (..))
 
 spec :: TestTree
 spec = testGroup "openssl4 engine"
@@ -108,6 +110,7 @@ spec = testGroup "openssl4 engine"
   , testCase "ML-KEM keygen mints usable pairs" caseRealMlkemKeygen
   , testCase "ECDH agreement KATs (CLI vectors)" caseEcdhVectors
   , testCase "XDH agreement KATs (CLI + wycheproof tc1)" caseXdhVectors
+  , testCase "ECDH wrap compositions roundtrip (provider)" caseEcdhCompWrap
   , testCase "Montgomery keygen mints agreeing pairs" caseRealMontgomeryKeygen
   , testCase "DH agreement KAT (CLI vectors)" caseDhAgree
   , testCase "DH keygen mints agreeing pairs" caseDhKeygen
@@ -4471,6 +4474,74 @@ caseRealMontgomeryKeygen = withBackend $ \env -> do
   agree "x448" 56 privC pubC privD pubD
   expectUnsupported "unknown curve refused" =<<
     generateKey env (GenXDHKeypair "P-256")
+
+-- ECDH wrap compositions through the driver bridge: ephemeral
+-- transport keygen on the wrapping key's domain, first-bytes KEK,
+-- KWP seal. Transport is ephemeral, so blobs are unpinned —
+-- framing geometry, roundtrips, strength separation, and
+-- fail-closed tamper legs pin the behavior instead.
+caseEcdhCompWrap :: IO ()
+caseEcdhCompWrap = withBackend $ \env -> do
+  let target = "sixteen bytes xx" :: BS.ByteString
+      oid = Just (ObjectId 7)
+      params bits = encodeWrapCompEcdhParams 0 BS.empty bits
+  -- Plain over P-256: 65-byte bare point + 24-byte KWP tail.
+  (priv, _) <- expectOk "gen p-256" =<< generateKey env (GenEC (mkEc "P-256" "DER"))
+  let resolve _ = Just priv
+  blob <- expectBytes "plain wrap" =<<
+    runEffect env resolve (FxWrap (MechanismId 0x1053) oid (params 128) target)
+  assertEqual "plain blob length" 89 (BS.length blob)
+  assertEqual "bare point tag" 0x04 (BS.index blob 0)
+  pt <- expectBytes "plain unwrap" =<<
+    runEffect env resolve (FxUnwrap (MechanismId 0x1053) oid (params 128) blob)
+  assertEqual "plain roundtrip" target pt
+  -- Tampered tail and tampered prefix both fail closed.
+  expectCryptoError "tampered tail fails closed" =<<
+    runEffect env resolve (FxUnwrap (MechanismId 0x1053) oid (params 128) (corruptAt 80 blob))
+  expectCryptoError "tampered prefix fails closed" =<<
+    runEffect env resolve (FxUnwrap (MechanismId 0x1053) oid (params 128) (corruptAt 10 blob))
+  -- Strength separation: wrap@128 opens only under 128.
+  expectCryptoError "cross-strength unwrap fails closed" =<<
+    runEffect env resolve (FxUnwrap (MechanismId 0x1053) oid (params 256) blob)
+  blob256 <- expectBytes "plain wrap 256" =<<
+    runEffect env resolve (FxWrap (MechanismId 0x1053) oid (params 256) target)
+  assertEqual "plain 256 length" 89 (BS.length blob256)
+  pt256 <- expectBytes "plain unwrap 256" =<<
+    runEffect env resolve (FxUnwrap (MechanismId 0x1053) oid (params 256) blob256)
+  assertEqual "plain 256 roundtrip" target pt256
+  -- Cofactor over P-256: 67-byte OCTET image + 24-byte tail.
+  coBlob <- expectBytes "cof wrap" =<<
+    runEffect env resolve (FxWrap (MechanismId 0x4039) oid (params 128) target)
+  assertEqual "cof blob length" 91 (BS.length coBlob)
+  assertEqual "cof octet header" (BS.pack [0x04, 0x41]) (BS.take 2 coBlob)
+  coPt <- expectBytes "cof unwrap" =<<
+    runEffect env resolve (FxUnwrap (MechanismId 0x4039) oid (params 128) coBlob)
+  assertEqual "cof roundtrip" target coPt
+  -- X over X25519: 32-byte raw coordinate + 24-byte tail.
+  (xpriv, _) <- expectOk "gen x25519" =<< generateKey env (GenXDHKeypair "X25519")
+  let xresolve _ = Just xpriv
+  xBlob <- expectBytes "x wrap" =<<
+    runEffect env xresolve (FxWrap (MechanismId 0x4038) oid (params 128) target)
+  assertEqual "x blob length" 56 (BS.length xBlob)
+  xPt <- expectBytes "x unwrap" =<<
+    runEffect env xresolve (FxUnwrap (MechanismId 0x4038) oid (params 128) xBlob)
+  assertEqual "x roundtrip" target xPt
+  -- Garbage wrapping keys refuse typed, never wrong bytes.
+  let badResolve _ = Just (KeyDer "bogus")
+  expectCryptoError "garbage wrapping key fails closed" =<<
+    runEffect env badResolve (FxWrap (MechanismId 0x1053) oid (params 128) target)
+  where
+    expectBytes label r = case r of
+      GotBytes b -> pure b
+      other -> assertFailure (label ++ ": expected bytes, got " ++ show other)
+    expectCryptoError label r = case r of
+      GotCryptoError _ -> pure ()
+      other -> assertFailure (label ++ ": expected crypto error, got " ++ show other)
+    corruptAt i bs =
+      let (pre, rest) = BS.splitAt i bs
+      in case BS.uncons rest of
+        Just (b, post) -> pre <> BS.singleton (b `xor` 0x01) <> post
+        Nothing -> bs
 
 caseDhAgree :: IO ()
 caseDhAgree = withBackend $ \env -> do

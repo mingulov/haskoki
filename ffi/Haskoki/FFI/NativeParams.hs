@@ -118,6 +118,7 @@ pointer is undefined behavior, not a refusal.
 module Haskoki.FFI.NativeParams
   ( normalizeMechParams
   , normalizeEcdhParams
+  , normalizeWrapCompEcdhParams
   , normalizeDhPkcsParams
   , normalizeDhX942Params
   , normalizeTlsPrfParams
@@ -187,6 +188,7 @@ module Haskoki.FFI.NativeParams
   , pssStructToCanonical
   , oaepStructToCanonical
   , ecdhStructToCanonical
+  , wrapCompEcdhStructToCanonical
   , dhPkcsStructToCanonical
   , dhX942StructToCanonical
   , gcmStructToCanonical
@@ -205,6 +207,7 @@ module Haskoki.FFI.NativeParams
   , pssNativeSize
   , oaepNativeSize
   , ecdhNativeSize
+  , wrapCompEcdhNativeSize
   , dhX942NativeSize
   , gcmNativeSize
   , ccmNativeSize
@@ -244,6 +247,7 @@ import Haskoki.Recipe.Chacha20
   )
 import Haskoki.Recipe.Cipher (ctrRecipeFor, encodeCtrParams, encodeRc2CbcParams, rc2RecipeFor)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
+import Haskoki.Recipe.WrapComp (encodeWrapCompEcdhParams, wrapCompEcdhRecipeFor)
 import Haskoki.Recipe.Eddsa (eddsaRecipeFor, encodeEddsaParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.Gmac (gmacRecipeFor)
@@ -298,6 +302,11 @@ oaepNativeSize = 4 * wordSize + ptrSize
 -- (length, pointer) twice (shared data, peer public key).
 ecdhNativeSize :: Int
 ecdhNativeSize = 3 * wordSize + 2 * ptrSize
+
+-- | Native @CK_ECDH_AES_KEY_WRAP_PARAMS@ image size: one KDF word,
+-- (length, pointer) for the shared data, one AES-strength word.
+wrapCompEcdhNativeSize :: Int
+wrapCompEcdhNativeSize = 3 * wordSize + ptrSize
 
 -- | Native @CK_X9_42_DH1_DERIVE_PARAMS@ image size: the ECDH
 -- struct layout (kdf, shared length/pointer, public
@@ -605,6 +614,18 @@ ecdhStructToCanonical :: Word64 -> ByteString -> ByteString -> Maybe ByteString
 ecdhStructToCanonical kdf shared peer
   | kdf /= ckdNull = Nothing
   | otherwise = Just (encodeEcdhParams 0 shared peer)
+
+-- | Pure wrap-composition ECDH translation: the native KDF word,
+-- shared data, and AES-strength word onto the canonical
+-- @wrapcomp-ecdh-params\/1@ image. Only @CKD_NULL@ translates
+-- (canonical code 0); every other selector refuses ('Nothing').
+-- The strength word translates verbatim and is refused downstream
+-- by the recipe when off-set (invalid parameters, not a malformed
+-- struct).
+wrapCompEcdhStructToCanonical :: Word64 -> ByteString -> Word64 -> Maybe ByteString
+wrapCompEcdhStructToCanonical kdf shared aesBits
+  | kdf /= ckdNull = Nothing
+  | otherwise = Just (encodeWrapCompEcdhParams 0 shared (fromIntegral aesBits))
 
 -- | Pure PKCS#3 DH translation: the bare peer image onto the
 -- canonical @dh-params/1@ image. An image that already parses as
@@ -953,6 +974,25 @@ normalizeEcdhParams pParams paramsLen
       mShared <- chaseBytes pShared sharedLen
       mPub <- chaseBytes pPub pubLen
       pure (mShared >>= \shared -> mPub >>= ecdhStructToCanonical kdf shared)
+
+-- | Normalize one wrap-composition ECDH parameter image: the
+-- native @CK_ECDH_AES_KEY_WRAP_PARAMS@ image at
+-- @pParams@/@paramsLen@ onto the canonical
+-- @wrapcomp-ecdh-params\/1@ image. Wrong-sized images, non-null
+-- KDF selectors, and null-with-length or over-bound shared-data
+-- chases refuse ('Nothing').
+normalizeWrapCompEcdhParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeWrapCompEcdhParams pParams paramsLen
+  | paramsLen /= fromIntegral wrapCompEcdhNativeSize = pure Nothing
+  | otherwise = do
+      -- Native field order leads with the strength word
+      -- (ulAESKeyBits, kdf, ulSharedDataLen, pSharedData).
+      CULong aesBits <- peekByteOff pParams 0
+      CULong kdf <- peekByteOff pParams wordSize
+      CULong sharedLen <- peekByteOff pParams (2 * wordSize)
+      pShared <- peekByteOff pParams (2 * wordSize + ptrSize)
+      mShared <- chaseBytes pShared sharedLen
+      pure (mShared >>= \shared -> wrapCompEcdhStructToCanonical kdf shared aesBits)
 
 -- | Normalize one PKCS#3 DH parameter image: the bare peer value
 -- onto the canonical @dh-params/1@ image ('Just'), or 'Nothing'
@@ -1739,6 +1779,8 @@ normalizeMechParams mid pParams paramsLen raw
       fromMaybe raw <$> decodeChachaStreamNative
   | Just r <- chachaRecipeFor mid, chachaName r == "CKM_CHACHA20_POLY1305" =
       fromMaybe raw <$> decodeChachaPolyNative
+  | isJust (wrapCompEcdhRecipeFor mid) =
+      fromMaybe raw <$> normalizeWrapCompEcdhParams pParams paramsLen
   | otherwise = pure raw
   where
     decodePssNative :: IO (Maybe ByteString)

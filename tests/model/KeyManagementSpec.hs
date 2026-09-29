@@ -14,7 +14,7 @@ suite.
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagementSpec (spec) where
 
-import Data.Bits ((.&.), complement, popCount, shiftR)
+import Data.Bits ((.&.), complement, popCount, shiftR, xor)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
@@ -110,6 +110,9 @@ import Haskoki.Operation.KeyManagement
   , aesKwPadMech
   , aesKwpMech
   , aesKwp7Mech
+  , ecdhAesKwMech
+  , ecdhCofAesKwMech
+  , ecdhXAesKwMech
   , blake2b512KeyGenMech
   , chacha20KeyGenMech
   , ckkAes
@@ -269,6 +272,7 @@ import Haskoki.Recipe.Ssl3 (encodeSsl3KeyMatParams, encodeSsl3MasterParams)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
 import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams)
+import Haskoki.Recipe.WrapComp (encodeWrapCompEcdhParams)
 import Haskoki.Registry.Generated
   ( ckm_AES_CCM
   , ckm_DES3_MAC
@@ -360,6 +364,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "AES-KW wrap/unwrap roundtrips with +8 expansion" caseAesKwWrapRoundtrip
   , testCase "AES-KWP wrap/unwrap roundtrips ragged (PAD alias)" caseAesKwpWrapRoundtrip
   , testCase "AES-KW-PKCS7 wrap/unwrap pads, IVs, fails closed" caseAesKwPkcs7WrapRoundtrip
+  , testCase "ECDH wrap/unwrap composes transport + KWP, gates rows" caseEcdhCompWrapRoundtrip
   , testCase "unwrap commits refuse type/length confusion" caseUnwrapKeyTypeLength
   , testCase "RSA wrap/unwrap roundtrips modulus-wide" caseRsaWrapRoundtrip
   , testCase "RSA wrap key/parameter/length mismatches fail closed" caseRsaWrapMismatch
@@ -3124,6 +3129,149 @@ caseAesKwPkcs7WrapRoundtrip = withSynth $ \answer -> do
   case planUnwrapKey defaultRules m2 st aesKwp7Mech BS.empty wrapH (BS.replicate 16 0) tmpl of
     KeyDenied d -> assertEqual "blob code" CKR_ARGUMENTS_BAD (kdCode d)
     other -> assertFailure ("short blob accepted, got: " ++ show other)
+
+caseEcdhCompWrapRoundtrip :: IO ()
+caseEcdhCompWrapRoundtrip = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  -- EC wrapping key with the marks (synthetic opaque material:
+  -- transport prefix 69, agreement secret 72).
+  let ecWrapTmpl = ecPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
+  (m1, privH) <- case planGenerateKeyPair defaultRules m0 st ecKeyPairGenMech ecPubTmpl ecWrapTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 2
+      h <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      pure (m', h)
+    other -> assertFailure ("EC keypair plan is not an effect: " ++ show other) >> undefined
+  (m2, targetH) <- genAesKey answer m1 st (aesTmpl 16)
+  Just target <- pure (resolveHandle m2 targetH)
+  Just targetMat <- pure (keyBytesOf target)
+  let params128 = encodeWrapCompEcdhParams 0 BS.empty 128
+      queryLen m wh mech ps = case planWrapKey m st mech ps wh targetH IntentNull of
+        KeyImmediate (Immediate c) -> pure (pcOutputs c)
+        other -> assertFailure ("comp query is not an Immediate commit: " ++ show other) >> undefined
+  -- Length query: opaque transport 69 + KWP(16) 24 = 93.
+  assertEqual "comp query length"
+    [NativeOutput (RegionBytes "wrapped" IntentNull) (encodeValue (ValULong 93))]
+    =<< queryLen m2 privH ecdhAesKwMech params128
+  -- Short buffer answers the length and refuses.
+  case planWrapKey m2 st ecdhAesKwMech params128 privH targetH (IntentBuffer 92) of
+    KeyImmediate (Reject r) -> do
+      assertEqual "short code" CKR_BUFFER_TOO_SMALL (rejCode r)
+      assertEqual "short length"
+        [NativeOutput (RegionBytes "wrapped" (IntentBuffer 92)) (encodeValue (ValULong 93))]
+        (rejOutputs r)
+    other -> assertFailure ("short buffer accepted, got: " ++ show other)
+  -- Full wrap: 93 bytes, opaque transport prefix + KWP tail.
+  blob <- case planWrapKey m2 st ecdhAesKwMech params128 privH targetH (IntentBuffer 93) of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      case finishWork m2 st pw res of
+        Immediate c -> case pcOutputs c of
+          [NativeOutput (RegionBytes "wrapped" _) bs] -> pure bs
+          o -> assertFailure ("wrap outputs one blob, got: " ++ show o) >> undefined
+        other -> assertFailure ("wrap finish must commit, got: " ++ show other) >> undefined
+    other -> assertFailure ("comp plan is not an effect: " ++ show other) >> undefined
+  assertEqual "wrapped length" 93 (BS.length blob)
+  assertEqual "opaque prefix tag" "HKS1" (BS.take 4 blob)
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrToken, ValBool False)
+        ]
+  -- Unwrap roundtrip recovers the target material.
+  case planUnwrapKey defaultRules m2 st ecdhAesKwMech params128 privH blob tmpl of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      c <- finishCommit m2 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      mu <- expectRight (publishDelta m2 (pcDelta c))
+      Just ost <- pure (resolveHandle mu h)
+      assertEqual "unwrapped material" (Just targetMat) (keyBytesOf ost)
+    other -> assertFailure ("comp unwrap plan is not an effect: " ++ show other)
+  -- Tampered KWP tail plans, then the driver answers AuthFailed
+  -- and the finish rejects with nothing published (fail closed).
+  let (pre, tailB) = BS.splitAt 69 blob
+      badTail = BS.pack [BS.index tailB 0 `xor` 0x01] <> BS.drop 1 tailB
+  case planUnwrapKey defaultRules m2 st ecdhAesKwMech params128 privH (pre <> badTail) tmpl of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      case finishWork m2 st pw res of
+        Reject r -> assertEqual "tamper publishes nothing" (StateDelta []) (rejDelta r)
+        other -> assertFailure ("tampered unwrap committed, got: " ++ show other)
+    other -> assertFailure ("tampered unwrap plan is not an effect: " ++ show other)
+  -- Bad parameters refuse argument-bad (wrap convention).
+  case planWrapKey m2 st ecdhAesKwMech (encodeWrapCompEcdhParams 1 BS.empty 128) privH targetH IntentNull of
+    KeyDenied d -> assertEqual "kdf code" CKR_ARGUMENTS_BAD (kdCode d)
+    other -> assertFailure ("non-null kdf accepted, got: " ++ show other)
+  case planWrapKey m2 st ecdhAesKwMech (encodeWrapCompEcdhParams 0 BS.empty 512) privH targetH IntentNull of
+    KeyDenied d -> assertEqual "strength code" CKR_ARGUMENTS_BAD (kdCode d)
+    other -> assertFailure ("off-set strength accepted, got: " ++ show other)
+  -- Foreign wrapping keys refuse type-inconsistent (AES secret,
+  -- RSA private half, the EC public half: agreement needs the
+  -- private half).
+  (m3, aesH) <- genAesKey answer m2 st wrapKeyTmpl
+  case planWrapKey m3 st ecdhAesKwMech params128 aesH targetH IntentNull of
+    KeyDenied d -> assertEqual "aes code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT (kdCode d)
+    other -> assertFailure ("AES wrapping accepted, got: " ++ show other)
+  (m4, rsaH) <- plantKey m3 st
+    [ (AttrClass, ValULong ckoPrivateKey)
+    , (AttrKeyType, ValULong ckkRsa)
+    , (AttrToken, ValBool False)
+    , (AttrWrap, ValBool True)
+    ]
+    (BS.replicate 32 0x43)
+  case planWrapKey m4 st ecdhAesKwMech params128 rsaH targetH IntentNull of
+    KeyDenied d -> assertEqual "rsa code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT (kdCode d)
+    other -> assertFailure ("RSA wrapping accepted, got: " ++ show other)
+  -- Row gates: X refuses the EC key, cofactor refuses Montgomery.
+  case planWrapKey m2 st ecdhXAesKwMech params128 privH targetH IntentNull of
+    KeyDenied d -> assertEqual "x/ec code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT (kdCode d)
+    other -> assertFailure ("X over EC accepted, got: " ++ show other)
+  (m5, montH) <- case planGenerateKeyPair defaultRules m4 st montgomeryKeyPairGenMech xdPubTmpl
+      (xdPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]) of
+    KeyEffect pw fx -> do
+      res <- answer m4 fx
+      c <- finishCommit m4 st pw res 2
+      h <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m4 (pcDelta c))
+      pure (m', h)
+    other -> assertFailure ("Montgomery keypair plan is not an effect: " ++ show other) >> undefined
+  case planWrapKey m5 st ecdhCofAesKwMech params128 montH targetH IntentNull of
+    KeyDenied d -> assertEqual "cof/mont code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT (kdCode d)
+    other -> assertFailure ("cofactor over Montgomery accepted, got: " ++ show other)
+  -- Plain over Montgomery plans (opaque 69 + KWP 24 = 93).
+  assertEqual "plain/mont query length"
+    [NativeOutput (RegionBytes "wrapped" IntentNull) (encodeValue (ValULong 93))]
+    =<< queryLen m5 montH ecdhAesKwMech params128
+  -- Blob framing: short and ragged tails refuse argument-bad.
+  case planUnwrapKey defaultRules m2 st ecdhAesKwMech params128 privH (BS.replicate 80 0) tmpl of
+    KeyDenied d -> assertEqual "short blob code" CKR_ARGUMENTS_BAD (kdCode d)
+    other -> assertFailure ("short blob accepted, got: " ++ show other)
+  case planUnwrapKey defaultRules m2 st ecdhAesKwMech params128 privH (BS.replicate 69 0 <> BS.replicate 20 0) tmpl of
+    KeyDenied d -> assertEqual "ragged code" CKR_ARGUMENTS_BAD (kdCode d)
+    other -> assertFailure ("ragged tail accepted, got: " ++ show other)
+  -- The secret-width rule: a P-192 key (24-byte secret) refuses
+  -- AES-256 but serves AES-128 (49 + 24 = 73).
+  let p192oid = BS.pack [0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x01]
+  (m6, p192H) <- plantKey m5 st
+    [ (AttrClass, ValULong ckoPrivateKey)
+    , (AttrKeyType, ValULong ckkEc)
+    , (AttrToken, ValBool False)
+    , (AttrWrap, ValBool True)
+    ]
+    ("junk" <> p192oid <> "junk")
+  case planWrapKey m6 st ecdhAesKwMech (encodeWrapCompEcdhParams 0 BS.empty 256) p192H targetH IntentNull of
+    KeyDenied d -> assertEqual "width code" CKR_MECHANISM_PARAM_INVALID (kdCode d)
+    other -> assertFailure ("P-192 x AES-256 accepted, got: " ++ show other)
+  case planWrapKey m6 st ecdhAesKwMech params128 p192H targetH IntentNull of
+    KeyImmediate (Immediate c) ->
+      assertEqual "P-192 x AES-128 length"
+        [NativeOutput (RegionBytes "wrapped" IntentNull) (encodeValue (ValULong 73))]
+        (pcOutputs c)
+    other -> assertFailure ("P-192 x AES-128 refused, got: " ++ show other)
 
 -- | Unwrap commits measure the answered material against the
 -- template key type (Tookan §3.2 key-type confusion: a 16-byte

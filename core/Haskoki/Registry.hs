@@ -112,6 +112,11 @@ import Haskoki.Recipe.Ecdh
   , ecdhCodecFor
   , ecdhRecipes
   )
+import Haskoki.Recipe.WrapComp
+  ( WrapCompEcdhRecipe (..)
+  , wrapCompEcdhCodecFor
+  , wrapCompEcdhRecipes
+  )
 import Haskoki.Recipe.Ecdsa
   ( EcdsaRecipe (..)
   , ecdsaCodecFor
@@ -1229,6 +1234,24 @@ dhDescs =
   | r <- dhRecipes
   ]
 
+-- | The ECDH wrap-composition behavior group, derived from the
+-- recipe table: one descriptor per composition row, codec from
+-- 'wrapCompEcdhCodecFor', wrap and unwrap routes citing the
+-- key-management (A20), synthetic (A37), and real-KAT (A39)
+-- cases. Key bounds are the covered curve range 192..571 bits
+-- (any covered curve can wrap; the KEK strength gates against
+-- the agreement width at the planner, not here).
+wrapCompDescs :: [Descriptor]
+wrapCompDescs =
+  [ promotedDesc (wceName r) allBaselines FamilyWrap
+      (wrapCompEcdhCodecFor r)
+      [ mechRoute OpWrap (wceName r) ["A20", "A37", "A39"]
+      , mechRoute OpUnwrap (wceName r) ["A20", "A37", "A39"]
+      ]
+      KeyBits 192 571
+  | r <- wrapCompEcdhRecipes
+  ]
+
 dAESKeyGen :: Descriptor
 dAESKeyGen = Descriptor
   { descId = MechanismId 0x1080
@@ -1594,7 +1617,7 @@ curatedRegistry =
         , dSHA1, dMD5, dRIPEMD160, dBLAKE2B_512
         , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
-          ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs
+          ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs ++ wrapCompDescs
           ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ byteOpsDescs ++ tlsKeyMatDescs ++ pbeDescs ++ ssl3Descs ++ otpDescs ++ encryptDataDescs ++ rsaX931Descs ++ poly1305Descs
       )
     behaviorIds0 :: [Word64]

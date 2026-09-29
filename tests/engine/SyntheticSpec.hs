@@ -9,7 +9,7 @@ on a closed backend.
 {-# LANGUAGE OverloadedStrings #-}
 module SyntheticSpec (spec) where
 
-import Data.Bits (complement, popCount)
+import Data.Bits (complement, popCount, xor)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
@@ -86,6 +86,7 @@ import Haskoki.Recipe.Ssl3 (encodeSsl3KeyMatParams, encodeSsl3MasterParams)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
+import Haskoki.Recipe.WrapComp (encodeWrapCompEcdhParams)
 import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
@@ -124,6 +125,7 @@ spec = testGroup "synthetic engine"
   , testCase "HMAC truncation honored and bounded" caseHmacTrunc
   , testCase "Block-cipher specs roundtrip per geometry" caseCipherSpecs
   , testCase "Wrap specs thread the caller IV" caseWrapIv
+  , testCase "ECDH wrap compositions roundtrip (opaque)" caseEcdhCompWrap
   , testCase "Legacy-cipher specs roundtrip per width" caseLegacyCipherSpecs
   , testCase "RSA v1.5 specs roundtrip per digest" caseRsaRoundtrip
   , testCase "RSA-PSS specs roundtrip per salt" casePssRoundtrip
@@ -1318,6 +1320,53 @@ caseWrapIv = withSynth "11" $ \env -> do
   kwp4pt <- expectOk "kwp iv4 open" =<<
     cipherDecrypt env C_AES128_KWP key (BS.take 4 iv8b) kwp4
   assertEqual "kwp iv4 inverts" "odd-length input" kwp4pt
+
+-- ECDH wrap compositions over opaque doubles through the driver
+-- bridge: 69-byte opaque transport prefix + KWP tail on every row,
+-- fresh transport per call (like the real backend), roundtrips,
+-- tamper fail-closed. Geometry (69/72) is the pinned structural
+-- contract with the planner.
+caseEcdhCompWrap :: IO ()
+caseEcdhCompWrap = withSynth "11" $ \env -> do
+  let wrapKey = KeyDer ("HKS1" <> BS.replicate 32 0xA5 <> BS.singleton 0 <> BS.replicate 32 0x5A)
+      resolve _ = Just wrapKey
+      oid = Just (ObjectId 7)
+      target = "sixteen bytes xx" :: BS.ByteString
+      params = encodeWrapCompEcdhParams 0 BS.empty 128
+  mapM_ (roundtrip env resolve oid params target)
+    [ (0x1053, "plain"), (0x4038, "x"), (0x4039, "cof") ]
+  where
+    roundtrip env resolve oid params target (mech, label) = do
+      blob <- expectLabeledBytes (label ++ " wrap") =<<
+        runEffect env resolve (FxWrap (MechanismId mech) oid params target)
+      assertEqual (label ++ " opaque blob length") 93 (BS.length blob)
+      assertEqual (label ++ " opaque prefix tag") "HKS1" (BS.take 4 blob)
+      pt <- expectLabeledBytes (label ++ " unwrap") =<<
+        runEffect env resolve (FxUnwrap (MechanismId mech) oid params blob)
+      assertEqual (label ++ " roundtrip") target pt
+      -- Fresh transport per call (like the real backend's random
+      -- ephemeral key): resealing differs, and still unwraps.
+      blob2 <- expectLabeledBytes (label ++ " wrap again") =<<
+        runEffect env resolve (FxWrap (MechanismId mech) oid params target)
+      assertBool (label ++ " fresh transport") (blob2 /= blob)
+      pt2 <- expectLabeledBytes (label ++ " unwrap again") =<<
+        runEffect env resolve (FxUnwrap (MechanismId mech) oid params blob2)
+      assertEqual (label ++ " second roundtrip") target pt2
+      -- Tampered tag fails closed (auth fault); tampered body
+      -- decrypts malleably (the synthetic seal checks tag plus
+      -- padding only, like the CBC precedent — the real backend
+      -- pins true integrity).
+      let flipAt i = BS.take i blob <> BS.pack [BS.index blob i `xor` 0x01] <> BS.drop (i + 1) blob
+      r <- runEffect env resolve (FxUnwrap (MechanismId mech) oid params (flipAt 69))
+      case r of
+        GotCryptoError _ -> pure ()
+        other -> assertFailure (label ++ " tag tamper must fail closed, got " ++ show other)
+      malleable <- expectLabeledBytes (label ++ " body tamper") =<<
+        runEffect env resolve (FxUnwrap (MechanismId mech) oid params (flipAt 80))
+      assertBool (label ++ " body change detected") (malleable /= target)
+    expectLabeledBytes label r = case r of
+      GotBytes b -> pure b
+      other -> assertFailure (label ++ ": expected bytes, got " ++ show other)
 
 des3Key24 :: KeyMaterial
 des3Key24 = KeyBytes "0123456789abcdef01234567"

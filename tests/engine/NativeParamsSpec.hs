@@ -37,6 +37,8 @@ import Haskoki.FFI.NativeParams
   , normalizeDhPkcsParams
   , normalizeDhX942Params
   , normalizeEcdhParams
+  , normalizeWrapCompEcdhParams
+  , wrapCompEcdhNativeSize
   , encryptDataCbcNativeSize
   , encryptDataEcbNativeSize
   , normalizeEncryptDataCbcParams
@@ -83,6 +85,11 @@ import Haskoki.Recipe.Chacha20
 import Haskoki.Recipe.Cipher (cipherParamsValid, cipherRecipeFor, encodeRc2CbcParams)
 import Haskoki.Recipe.Dh (dhParamsValid, dhRecipeFor, encodeDhParams)
 import Haskoki.Recipe.Ecdh (ecdhParamsValid, ecdhRecipeFor, encodeEcdhParams)
+import Haskoki.Recipe.WrapComp
+  ( encodeWrapCompEcdhParams
+  , wrapCompEcdhParamsValid
+  , wrapCompEcdhRecipeFor
+  )
 import Haskoki.Recipe.EncryptData (encryptDataParamsValid, encryptDataRecipeFor)
 import Haskoki.Recipe.Eddsa
   ( eddsaParamsValid
@@ -376,6 +383,63 @@ spec = testGroup "native mechanism params"
         pokeByteOff p 0 (CULong 0x01 :: CULong)
         normalizeEcdhParams p 8
       assertEqual "refused" Nothing out
+  , testCase "wrapcomp native struct chases shared, keeps strength" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_ECDH_AES_KEY_WRAP")
+          shared = "shared-info" :: ByteString
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen shared $ \(sp, slen) ->
+        allocaBytes wrapCompEcdhNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong 192)
+          pokeByteOff p w (CULong 0x01)
+          pokeByteOff p (2 * w) (CULong (fromIntegral slen))
+          pokeByteOff p (2 * w + pw) (castPtr sp)
+          normalizeWrapCompEcdhParams p (fromIntegral wrapCompEcdhNativeSize)
+      let want = encodeWrapCompEcdhParams 0 shared 192
+      assertEqual "canonical comp image" (Just want) out
+      case (out, wrapCompEcdhRecipeFor mid) of
+        (Just canon, Just r) ->
+          assertEqual "recipe accepts" True (wrapCompEcdhParamsValid r canon)
+        _ -> fail "comp recipe or image missing"
+  , testCase "wrapcomp non-null kdf refuses" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes wrapCompEcdhNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 128)
+        pokeByteOff p w (CULong 0x02)
+        pokeByteOff p (2 * w) (CULong 0)
+        pokeByteOff p (2 * w + pw) (nullPtr :: Ptr Word8)
+        normalizeWrapCompEcdhParams p (fromIntegral wrapCompEcdhNativeSize)
+      assertEqual "refused" Nothing out
+  , testCase "wrapcomp null shared with length refuses" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes wrapCompEcdhNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 128)
+        pokeByteOff p w (CULong 0x01)
+        pokeByteOff p (2 * w) (CULong 9)
+        pokeByteOff p (2 * w + pw) (nullPtr :: Ptr Word8)
+        normalizeWrapCompEcdhParams p (fromIntegral wrapCompEcdhNativeSize)
+      assertEqual "refused" Nothing out
+  , testCase "wrapcomp short image refuses" $ do
+      out <- allocaBytes 8 $ \p -> do
+        pokeByteOff p 0 (CULong 0x01 :: CULong)
+        normalizeWrapCompEcdhParams p 8
+      assertEqual "refused" Nothing out
+  , testCase "wrapcomp off-set strength translates, recipe refuses" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_ECDH_COF_AES_KEY_WRAP")
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes wrapCompEcdhNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 512)
+        pokeByteOff p w (CULong 0x01)
+        pokeByteOff p (2 * w) (CULong 0)
+        pokeByteOff p (2 * w + pw) (nullPtr :: Ptr Word8)
+        normalizeWrapCompEcdhParams p (fromIntegral wrapCompEcdhNativeSize)
+      case (out, wrapCompEcdhRecipeFor mid) of
+        (Just canon, Just r) ->
+          assertEqual "recipe refuses" False (wrapCompEcdhParamsValid r canon)
+        _ -> fail "comp recipe or image missing"
   , testCase "encrypt-data cbc-16 struct chases iv and data" $ do
       let mid = MechanismId (mustGeneratedId "CKM_AES_CBC_ENCRYPT_DATA")
           iv = BS.replicate 16 0xcb

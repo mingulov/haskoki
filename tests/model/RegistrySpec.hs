@@ -397,6 +397,7 @@ caseCurated = do
     , MechanismId Gen.ckm_ECDSA_SHA3_512
     , MechanismId Gen.ckm_ECDH1_DERIVE
     , MechanismId Gen.ckm_ECDH1_COFACTOR_DERIVE
+    , MechanismId Gen.ckm_ECDH_AES_KEY_WRAP
     , MechanismId Gen.ckm_EC_EDWARDS_KEY_PAIR_GEN
     , MechanismId Gen.ckm_EC_MONTGOMERY_KEY_PAIR_GEN
     , MechanismId Gen.ckm_EDDSA
@@ -482,6 +483,8 @@ caseCurated = do
     , MechanismId Gen.ckm_IKE_PRF_DERIVE
     , MechanismId Gen.ckm_IKE1_PRF_DERIVE
     , MechanismId Gen.ckm_IKE1_EXTENDED_DERIVE
+    , MechanismId Gen.ckm_ECDH_X_AES_KEY_WRAP
+    , MechanismId Gen.ckm_ECDH_COF_AES_KEY_WRAP
     ]
     (behaviorIds reg)
   -- The full header inventory (464 canonical ids) is folded in
@@ -523,11 +526,11 @@ caseJsonProjection = do
   -- verbatim (the AES-CBC pin extends to the promoted routes).
   mapM_ (\line -> assertBool ("reviewed line present: " ++ T.unpack line)
     (line `elem` dumpLines)) expectedHead
-  -- schema + 311 behavior + 153 catalog-only + catalog line.
+  -- schema + 314 behavior + 150 catalog-only + catalog line.
   assertEqual "dump line count" 466 (length dumpLines)
-  assertEqual "behavior line count" 311
+  assertEqual "behavior line count" 314
     (length (filter ("mech|" `T.isPrefixOf`) dumpLines))
-  assertEqual "catalog-only line count" 153
+  assertEqual "catalog-only line count" 150
     (length (filter ("inv|" `T.isPrefixOf`) dumpLines))
   catalogLine <- case reverse dumpLines of
     (c : _) -> pure c
@@ -1001,7 +1004,7 @@ caseCatalogOnlyNeverExecutes = do
         ]
       allOps = [minBound .. maxBound] :: [Operation]
       reg = curatedRegistry
-  assertEqual "guard covers every catalog row" 153 (length invIds)
+  assertEqual "guard covers every catalog row" 150 (length invIds)
   mapM_ (checkOne reg allOps) invIds
   where
     parseHex w = case reads (T.unpack w) :: [(Word, String)] of

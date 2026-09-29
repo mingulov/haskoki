@@ -237,6 +237,17 @@ import Haskoki.Recipe.Ecdh
   , ecdhParamsValid
   , ecdhRecipeFor
   )
+import Haskoki.Recipe.WrapComp
+  ( WrapCompDomain (..)
+  , WrapCompEcdhRecipe (..)
+  , wrapCompAesBytes
+  , wrapCompAgreePeer
+  , wrapCompDomain
+  , wrapCompEcdhRecipeFor
+  , wrapCompSplitBlob
+  , wrapCompTransportLen
+  , wrapCompTransportPrefix
+  )
 import Haskoki.Recipe.Ecdsa
   ( EcdsaRecipe (..)
   , ecdsaCurveOfDer
@@ -2207,6 +2218,8 @@ runEffect env resolve fx = case fx of
         runPkcs1 DirEncrypt _mech key params input
     | isRsaX509Mech _mech -> withKey mkey $ \key ->
         runX509 DirEncrypt _mech key params input
+    | Just r <- wrapCompEcdhRecipeFor _mech -> withKey mkey $ \key ->
+        runEcdhCompWrap r key params input
     | otherwise -> pure (unsupported fx)
   FxUnwrap _mech mkey params input
     | _mech == aesCbcMech -> withKey mkey $ \key ->
@@ -2219,6 +2232,8 @@ runEffect env resolve fx = case fx of
         runPkcs1 DirDecrypt _mech key params input
     | isRsaX509Mech _mech -> withKey mkey $ \key ->
         runX509 DirDecrypt _mech key params input
+    | Just r <- wrapCompEcdhRecipeFor _mech -> withKey mkey $ \key ->
+        runEcdhCompUnwrap r key params input
     | otherwise -> pure (unsupported fx)
   FxAuthWrap _mech mkey params input
     | _mech /= aesCbcMech -> pure (unsupported fx)
@@ -2876,6 +2891,100 @@ runEffect env resolve fx = case fx of
                   "driver: derive length exceeds the agreement secret")
               | otherwise -> GotBytes
                   (BS.drop (BS.length secret - outLen) secret)
+    -- | ECDH-composition wrap: ephemeral transport keygen on
+    -- the wrapping key's domain, ECDH agreement against the
+    -- transport public half, the FIRST agreement bytes as the AES
+    -- KEK (NOT the derive truncation, which drops leading bytes),
+    -- KWP seal of the target, blob = transport-pub || kwp-blob.
+    -- Served primitives only (generateKey, ecdhDerive, the KWP
+    -- cipher entry); the ephemeral key never persists. Opaque
+    -- doubles transport on a fixed P-256 request (synthetic pairs
+    -- are curve-independent opaque halves, so the row's curve
+    -- family is immaterial there); real keys always scan.
+    runEcdhCompWrap :: WrapCompEcdhRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runEcdhCompWrap r wrapKey params target = case keyBytesOf wrapKey of
+      Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
+        "composition wrapping key has no bytes"))
+      Just wrapB -> case wrapCompAesBytes params of
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: malformed wrap-composition parameters"))
+        Just aesBytes ->
+          let dom = wrapCompDomain wrapB
+          in do
+            g <- generateKey env (transportGen dom)
+            case g of
+              EngineFail err -> pure (GotCryptoError (toCryptoError err))
+              EngineOk (KeyDer _, Just (KeyDer tpub)) ->
+                case ( wrapCompTransportPrefix r dom tpub
+                     , wrapCompTransportLen r dom ) of
+                  (Just prefix, Just preLen)
+                    | BS.length prefix == preLen ->
+                        case wrapCompAgreePeer r dom prefix of
+                          Nothing -> pure (GotCryptoError (CryptoFailed
+                            "driver: transport peer rejected"))
+                          Just peer -> do
+                            s <- ecdhDerive env (compSpec r) wrapKey (KeyDer peer)
+                            case s of
+                              EngineFail err -> pure (GotCryptoError (toCryptoError err))
+                              EngineOk secret
+                                | BS.length secret < aesBytes -> pure (GotCryptoError (CryptoFailed
+                                    "driver: agreement secret shorter than the KEK"))
+                                | otherwise -> do
+                                    sealed <- runCipher DirEncrypt aesKwpMech
+                                      (KeyBytes (BS.take aesBytes secret)) BS.empty target
+                                    case sealed of
+                                      GotBytes ct -> pure (GotBytes (prefix <> ct))
+                                      other -> pure other
+                  _ -> pure (GotCryptoError (CryptoFailed
+                    "driver: transport framing failed"))
+              _ -> pure (GotCryptoError (CryptoFailed
+                "driver: transport keygen shape rejected"))
+      where
+        transportGen DomainOpaque = GenEC (EcSpec "P-256" "DER")
+        transportGen (DomainWeierstrass name _) =
+          GenEC (EcSpec (T.unpack name) "DER")
+        transportGen (DomainMontgomery name _) =
+          GenXDHKeypair (BC8.pack (T.unpack name))
+    -- | ECDH-composition unwrap: split the transport prefix,
+    -- re-derive the KEK against it, KWP-open the tail. KWP-open
+    -- failures propagate as authentication faults (fail closed,
+    -- never wrong plaintext).
+    runEcdhCompUnwrap :: WrapCompEcdhRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runEcdhCompUnwrap r unwrapKey params blob = case keyBytesOf unwrapKey of
+      Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
+        "composition unwrapping key has no bytes"))
+      Just wrapB -> case wrapCompAesBytes params of
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: malformed wrap-composition parameters"))
+        Just aesBytes ->
+          let dom = wrapCompDomain wrapB
+          in case wrapCompSplitBlob r dom blob of
+            Nothing -> pure (GotCryptoError (CryptoFailed
+              "driver: composition blob framing rejected"))
+            Just (prefix, kwpBlob) ->
+              case wrapCompAgreePeer r dom prefix of
+                Nothing -> pure (GotCryptoError (CryptoFailed
+                  "driver: composition transport peer rejected"))
+                Just peer -> do
+                  s <- ecdhDerive env (compSpec r) unwrapKey (KeyDer peer)
+                  case s of
+                    EngineFail err -> pure (GotCryptoError (toCryptoError err))
+                    EngineOk secret
+                      | BS.length secret < aesBytes -> pure (GotCryptoError (CryptoFailed
+                          "driver: agreement secret shorter than the KEK"))
+                      | otherwise ->
+                          runCipher DirDecrypt aesKwpMech
+                            (KeyBytes (BS.take aesBytes secret)) BS.empty kwpBlob
+    -- | The agreement spec for a composition row: cofactor from
+    -- the row (COF over EC only; X over Montgomery is plain).
+    compSpec :: WrapCompEcdhRecipe -> EcdhSpec
+    compSpec r = if wceCofactor r then EcdhCofactor else EcdhPlain
+    -- | Raw bytes out of key material (DER halves and byte seeds;
+    -- backend references carry no bytes here).
+    keyBytesOf :: KeyMaterial -> Maybe ByteString
+    keyBytesOf (KeyBytes b) = Just b
+    keyBytesOf (KeyDer b) = Just b
+    keyBytesOf _ = Nothing
     -- | SHA key-derivation effects: digest the base value,
     -- truncate to the planned length (capped by the digest width —
     -- the planner caps honestly, so over-width fires only for

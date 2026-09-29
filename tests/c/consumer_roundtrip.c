@@ -3455,6 +3455,139 @@ int main(int argc, char **argv) {
                "kw-pkcs7 raw decrypt inverts");
       }
     }
+    /* ECDH wrap compositions: the private EC key agrees against
+     * an ephemeral transport pair, first ulAESKeyBits bits seal
+     * the target under KWP. Plain P-256 blobs are 65+24, cofactor
+     * 67+24 (OCTET framing), X25519 56 (32+24). Strength mismatch
+     * fails closed; the X row refuses EC keys. The params ride the
+     * true header struct (aes-bits-first field order). */
+    {
+      static const CK_BYTE cp256oid[] = {
+        0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07
+      };
+      CK_OBJECT_CLASS cpubcls = CKO_PUBLIC_KEY;
+      CK_OBJECT_CLASS cprvcls = CKO_PRIVATE_KEY;
+      CK_KEY_TYPE cekt = CKK_EC;
+      CK_ATTRIBUTE cpubT[] = {
+        { CKA_CLASS, &cpubcls, sizeof(cpubcls) },
+        { CKA_KEY_TYPE, &cekt, sizeof(cekt) },
+        { CKA_EC_PARAMS, (CK_VOID_PTR) cp256oid, sizeof(cp256oid) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_ATTRIBUTE cprivT[] = {
+        { CKA_CLASS, &cprvcls, sizeof(cprvcls) },
+        { CKA_KEY_TYPE, &cekt, sizeof(cekt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_WRAP, &bTrue, sizeof(bTrue) },
+        { CKA_UNWRAP, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE cdtmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_MECHANISM ckgm, cwm, cum, ccm, cxc;
+      CK_ECDH_AES_KEY_WRAP_PARAMS cwp128, cwp256;
+      CK_OBJECT_HANDLE cecPub = 0, cecPriv = 0, cUnwrapped = 0, cBad = 0;
+      CK_BYTE cblob[256];
+      CK_ULONG cblobLen = 0;
+      ckgm.mechanism = CKM_EC_KEY_PAIR_GEN;
+      ckgm.pParameter = NULL_PTR;
+      ckgm.ulParameterLen = 0;
+      rv = f->C_GenerateKeyPair(wsess, &ckgm, cpubT, 4, cprivT, 5,
+                                &cecPub, &cecPriv);
+      CHECKC(rv == CKR_OK && cecPub != 0 && cecPriv != 0,
+             "comp EC pair mints");
+      cwp128.ulAESKeyBits = 128;
+      cwp128.kdf = CKD_NULL;
+      cwp128.ulSharedDataLen = 0;
+      cwp128.pSharedData = NULL_PTR;
+      cwp256 = cwp128;
+      cwp256.ulAESKeyBits = 256;
+      cwm.mechanism = CKM_ECDH_AES_KEY_WRAP;
+      cwm.pParameter = &cwp128;
+      cwm.ulParameterLen = sizeof(cwp128);
+      rv = f->C_WrapKey(wsess, &cwm, cecPriv, targetKey, NULL_PTR, &cblobLen);
+      CHECKC(rv == CKR_OK && cblobLen == 89, "comp plain size query reports 89");
+      cblobLen = sizeof(cblob);
+      rv = f->C_WrapKey(wsess, &cwm, cecPriv, targetKey, cblob, &cblobLen);
+      CHECKC(rv == CKR_OK && cblobLen == 89, "comp plain wrap yields 89");
+      cum = cwm;
+      rv = f->C_UnwrapKey(wsess, &cum, cecPriv, cblob, cblobLen,
+                          cdtmpl, 3, &cUnwrapped);
+      CHECKC(rv == CKR_OK && cUnwrapped != 0 && cUnwrapped != targetKey,
+             "comp plain unwrap mints a distinct key");
+      cum.pParameter = &cwp256;
+      rv = f->C_UnwrapKey(wsess, &cum, cecPriv, cblob, cblobLen,
+                          cdtmpl, 3, &cBad);
+      CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "comp cross-strength fails closed");
+      CHECKC(cBad == 0, "cross-strength unwrap writes no handle");
+      ccm.mechanism = CKM_ECDH_COF_AES_KEY_WRAP;
+      ccm.pParameter = &cwp128;
+      ccm.ulParameterLen = sizeof(cwp128);
+      cblobLen = sizeof(cblob);
+      rv = f->C_WrapKey(wsess, &ccm, cecPriv, targetKey, cblob, &cblobLen);
+      CHECKC(rv == CKR_OK && cblobLen == 91, "comp cof wrap yields 91");
+      cUnwrapped = 0;
+      rv = f->C_UnwrapKey(wsess, &ccm, cecPriv, cblob, cblobLen,
+                          cdtmpl, 3, &cUnwrapped);
+      CHECKC(rv == CKR_OK && cUnwrapped != 0, "comp cof unwrap mints");
+      cxc.mechanism = CKM_ECDH_X_AES_KEY_WRAP;
+      cxc.pParameter = &cwp128;
+      cxc.ulParameterLen = sizeof(cwp128);
+      cblobLen = sizeof(cblob);
+      rv = f->C_WrapKey(wsess, &cxc, cecPriv, targetKey, cblob, &cblobLen);
+      CHECKC(rv == CKR_WRAPPING_KEY_TYPE_INCONSISTENT, "comp X over EC refused");
+    }
+    {
+      CK_OBJECT_CLASS xpubcls = CKO_PUBLIC_KEY;
+      CK_OBJECT_CLASS xprvcls = CKO_PRIVATE_KEY;
+      CK_KEY_TYPE xkt = CKK_EC_MONTGOMERY;
+      CK_BYTE xcurve[] = { 'X', '2', '5', '5', '1', '9' };
+      CK_ATTRIBUTE xpubT[] = {
+        { CKA_CLASS, &xpubcls, sizeof(xpubcls) },
+        { CKA_KEY_TYPE, &xkt, sizeof(xkt) },
+        { CKA_EC_PARAMS, xcurve, sizeof(xcurve) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_ATTRIBUTE xprivT[] = {
+        { CKA_CLASS, &xprvcls, sizeof(xprvcls) },
+        { CKA_KEY_TYPE, &xkt, sizeof(xkt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_WRAP, &bTrue, sizeof(bTrue) },
+        { CKA_UNWRAP, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE xdtmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_MECHANISM xkgm, xwm;
+      CK_ECDH_AES_KEY_WRAP_PARAMS xwp;
+      CK_OBJECT_HANDLE xPub = 0, xPriv = 0, xUnwrapped = 0;
+      CK_BYTE xblob[256];
+      CK_ULONG xblobLen = sizeof(xblob);
+      xkgm.mechanism = CKM_EC_MONTGOMERY_KEY_PAIR_GEN;
+      xkgm.pParameter = NULL_PTR;
+      xkgm.ulParameterLen = 0;
+      rv = f->C_GenerateKeyPair(wsess, &xkgm, xpubT, 4, xprivT, 5,
+                                &xPub, &xPriv);
+      CHECKC(rv == CKR_OK && xPub != 0 && xPriv != 0,
+             "comp Montgomery pair mints");
+      xwp.ulAESKeyBits = 128;
+      xwp.kdf = CKD_NULL;
+      xwp.ulSharedDataLen = 0;
+      xwp.pSharedData = NULL_PTR;
+      xwm.mechanism = CKM_ECDH_X_AES_KEY_WRAP;
+      xwm.pParameter = &xwp;
+      xwm.ulParameterLen = sizeof(xwp);
+      rv = f->C_WrapKey(wsess, &xwm, xPriv, targetKey, xblob, &xblobLen);
+      CHECKC(rv == CKR_OK && xblobLen == 56, "comp X wrap yields 56");
+      rv = f->C_UnwrapKey(wsess, &xwm, xPriv, xblob, xblobLen,
+                          xdtmpl, 3, &xUnwrapped);
+      CHECKC(rv == CKR_OK && xUnwrapped != 0 && xUnwrapped != targetKey,
+             "comp X unwrap mints a distinct key");
+    }
     /* HKDF derive: the PRF names a SHA-2 hash (SHA-1 through
      * SHA-512/224), expand-only and extract-and-expand served
      * with NULL/DATA salt. Malformed calls refuse ARGUMENTS_BAD;
