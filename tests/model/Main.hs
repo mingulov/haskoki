@@ -29,6 +29,7 @@ import qualified MechanismExhaustivenessSpec
 import qualified MessageSpec
 import qualified MultiSessionSpec
 import qualified MultiTokenSpec
+import qualified NotificationsSpec
 import qualified ObjectSpec
 import qualified OperationSpec
 import qualified OwnershipSpec
@@ -96,6 +97,7 @@ main = defaultMain $ testGroup "haskoki model + lifecycle"
   , MessageSpec.spec
   , MultiSessionSpec.spec
   , MultiTokenSpec.spec
+  , NotificationsSpec.spec
   , ObjectSpec.spec
   , OperationSpec.spec
   , OwnershipSpec.spec

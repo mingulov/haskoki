@@ -148,6 +148,7 @@ library
     Haskoki.Runtime.Detached
     Haskoki.Runtime.Events
     Haskoki.Runtime.Lifecycle
+    Haskoki.Runtime.SlotEvents
     Haskoki.Runtime.Storage
     Haskoki.Runtime.Storage.Memory
     Haskoki.Runtime.Storage.SQLite
@@ -223,6 +224,7 @@ foreign-library haskoki
     Haskoki.Runtime.Detached
     Haskoki.Runtime.Events
     Haskoki.Runtime.Lifecycle
+    Haskoki.Runtime.SlotEvents
     Haskoki.Runtime.Storage
     Haskoki.Runtime.Storage.Memory
     Haskoki.Runtime.Storage.SQLite
@@ -386,6 +388,7 @@ test-suite haskoki-model-tests
     MessageSpec
     MultiSessionSpec
     MultiTokenSpec
+    NotificationsSpec
     ObjectSpec
     OperationSpec
     OwnershipSpec
@@ -447,6 +450,7 @@ test-suite haskoki-model-tests
     filepath    >= 1.4  && < 1.6,
     haskoki,
     haskoki:haskoki-core,
+    stm         >= 2.5  && < 2.6,
     tasty       >= 1.4  && < 1.6,
     tasty-hunit >= 0.10 && < 0.11,
     text        >= 1.2  && < 2.2
