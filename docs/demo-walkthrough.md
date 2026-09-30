@@ -96,6 +96,16 @@ scripts/test-consumers.sh
   message cap), 20 MiB past the 16 MiB bound (KAT-checked; only
   the streamed path completes it), and a close-mid-stream abort
   after which a fresh digest works.
+- `message_routed`: all twenty message-family entries through the actual
+  3.0, 3.1, and 3.2 tables, with fixed AES-CBC and SHA-256 HMAC bytes;
+  multipart end signals, two messages per outer init, lifecycle and argument
+  precedence, query and repeated-query recall, output canaries, empty
+  CBC-PAD output, padding refusal, classic/message collisions, and sibling
+  session-slot isolation. Direct-only in the parity driver: the pinned
+  proxy cannot transport v3 message calls (see
+  mingulov/pkcs11-proxy-ng#23); the explicitly labeled 16 MiB
+  input/accumulation probes likewise run directly because the pinned
+  proxy has its own smaller request limit.
 
 Random (`C_GenerateRandom` / `C_SeedRandom`, live on 2.40 +
 3.0/3.1/3.2 via one legacy-table entry re-homed by name):
@@ -179,6 +189,18 @@ and per-mechanism tables with evidence case ids, generated
 limitations, 12 source issues — plus the release-scope boundary
 (in-process proofs vs the 130-row C surface). Known
 limitations and host support: `SUPPORTED-HOSTS.md`.
+
+**2026-09-30 message routing:** The 130-row C-surface boundary note above is
+historical. At the inspected revision, the `support.real == "tested"`
+projection in `spec/mechanisms.json` and `HASKOKI_MECH_COUNT` in
+`cbits/mech_catalog.inc` both contain 316 mechanisms. This change routes
+20 functions through the existing message planner; it changes neither
+that catalog nor any mechanism flags and advertises no new
+`CKF_MESSAGE_*` or `CKF_MULTI_MESSAGE` capability. The consumer demonstrates
+function-level CBC/HMAC reachability on interfaces 3.0, 3.1, and 3.2,
+without making a general v3.0 conformance claim. The function contracts
+retain their planner-scoped `planned-with-behavior` label and add the
+executed C consumer as evidence.
 
 ## 6. Token provisioning record
 

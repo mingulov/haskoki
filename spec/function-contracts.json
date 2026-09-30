@@ -1815,6 +1815,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -1838,6 +1842,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -1861,6 +1869,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -1884,6 +1896,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -1907,6 +1923,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -1930,6 +1950,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -1953,6 +1977,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -1976,6 +2004,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -1999,6 +2031,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -2022,6 +2058,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -2045,6 +2085,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -2068,6 +2112,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -2091,6 +2139,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -2114,6 +2166,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -2137,6 +2193,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -2160,6 +2220,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -2183,6 +2247,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -2206,6 +2274,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -2229,6 +2301,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },
@@ -2252,6 +2328,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/MessageSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/message_routed.c"
         }
       ]
     },

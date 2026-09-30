@@ -11,13 +11,14 @@
  * The 68 legacy entries of each table are the original implementations,
  * re-homed by NAME through haskoki_legacy_fns() in generated 2.40 order
  * (no cross-TU layout assumption: function_tables.c publishes designators,
- * this TU assigns designators). The 24 + 12 post-2.40 entries come from the
- * generated cbits/abi_stubs.inc (exact pinned prototypes). C_GetInterfaceList
- * and C_GetInterface are real globals (dlsym-able discovery, callable
- * before C_Initialize); C_SessionCancel is a routed definition
- * (std_SessionCancel in standard_surface.c); every other post-2.40
- * entry is a lifecycle-aware stub (NOT_INITIALIZED pre-init,
- * NOT_SUPPORTED once live).
+ * this TU assigns designators).
+ * The generated cbits/abi_stubs.inc preserves exact pinned prototypes
+ * and table order. C_GetInterfaceList and C_GetInterface remain discovery
+ * globals callable before initialization. C_SessionCancel and all twenty
+ * message-family entries use standard_surface.c bodies in every 3.x
+ * table; C_EncapsulateKey and C_DecapsulateKey retain their existing 3.2
+ * routes. The remaining generated entries retain lifecycle-aware stubs.
+ * Message routing changes function reachability, not mechanism advertising.
  *
  * Discovery data (interface array, tables) is static and needs no Haskell
  * entry. Tables are filled once via pthread_once on first 3.x discovery.
