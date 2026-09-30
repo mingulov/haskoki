@@ -48,6 +48,9 @@ import Haskoki.FFI.Standard
   , StdInstance (..)
   , openStdInstance
   , haskokiStdClose
+  , haskokiStdAsyncComplete
+  , haskokiStdAsyncGetId
+  , haskokiStdAsyncJoin
   , haskokiStdOpenSession
   , haskokiStdCreateObject
   , haskokiStdEncryptInit
@@ -110,6 +113,7 @@ spec = testGroup "Standard surface"
   , testCase "PIN comparison is exact" casePins
   , testCase "caseAsyncFunctionNames" caseAsyncFunctionNames
   , testCase "caseAsyncBindingLookup" caseAsyncBindingLookup
+  , testCase "caseAsyncSurfaceSessionOrder" caseAsyncSurfaceSessionOrder
   , testCase "message exports and session precedence" caseMessageExports
   , testCase "message cipher continuation query preserves snapshot" caseMessageContinuationQuery
   , testCase "message staged query short and exact" caseMessageStagedQuery
@@ -146,6 +150,34 @@ caseAsyncFunctionNames = do
     decodeBytes bytes = allocaBytes (BS.length bytes) $ \ptr -> do
       pokeArray ptr (BS.unpack bytes)
       decodeAsyncFunctionName ptr
+
+-- These are the Haskell stages of the boundary; C structural/liveness
+-- precedence is deliberately left to the separate C routing task.
+caseAsyncSurfaceSessionOrder :: IO ()
+caseAsyncSurfaceSessionOrder = bracket (openStdInstance defaultConfig) haskokiStdClose $ \ctx ->
+  alloca $ \pSession -> alloca $ \pId -> allocaBytes 40 $ \pResult ->
+  allocaBytes 32 $ \pData -> do
+    assertBool "instance opened" (castStablePtrToPtr ctx /= nullPtr)
+    haskokiStdOpenSession ctx 0 0 pSession >>= assertEqual "open" (stdRvOf CKR_OK)
+    session <- peek pSession
+    forM_ [("", CKR_ARGUMENTS_BAD), (BS.replicate 32 120, CKR_ARGUMENTS_BAD),
+           ("C_Digest", CKR_OPERATION_NOT_INITIALIZED), ("C_Sign", CKR_OPERATION_NOT_INITIALIZED)] $
+      \(name, expected) -> BS.useAsCString name $ \pName -> do
+        pokeArray (castPtr pResult) (replicate 40 (0xa5 :: Word8))
+        pokeArray pData (replicate 32 0xa5)
+        poke pId 0xa5a5a5a5a5a5a5a5
+        let complete h = haskokiStdAsyncComplete ctx h (castPtr pName) pResult
+            getId h = haskokiStdAsyncGetId ctx h (castPtr pName) pId
+            join h = haskokiStdAsyncJoin ctx h (castPtr pName) 999 pData 0
+        forM_ [complete, getId, join] $ \call ->
+          call 999999 >>= assertEqual "CKR_SESSION_HANDLE_INVALID before name/capacity" (stdRvOf CKR_SESSION_HANDLE_INVALID)
+        complete session >>= assertEqual "exact Complete binding" (stdRvOf expected)
+        getId session >>= assertEqual "exact GetID binding" (stdRvOf expected)
+        join session >>= assertEqual "Join needs no source binding" (stdRvOf
+          (if expected == CKR_ARGUMENTS_BAD then CKR_ARGUMENTS_BAD else CKR_GENERAL_ERROR))
+        peek pId >>= assertEqual "early GetID preserves all sentinel bits" 0xa5a5a5a5a5a5a5a5
+        peekArray 40 (castPtr pResult :: Ptr Word8) >>= assertEqual "early Complete preserves all bytes" (replicate 40 0xa5)
+        peekArray 32 pData >>= assertEqual "Join never writes payload" (replicate 32 0xa5)
 
 caseAsyncBindingLookup :: IO ()
 caseAsyncBindingLookup = do

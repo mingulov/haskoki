@@ -70,6 +70,12 @@ import Haskoki.FFI.Standard
   , StdInstance (..)
   , StdStore (..)
   , haskokiStdClose
+  , haskokiStdAsyncComplete
+  , haskokiStdAsyncGetId
+  , haskokiStdAsyncJoin
+  , haskokiStdSessionCancel
+  , haskokiStdTerminateSlot
+  , stdRvOf
   , haskokiStdCloseAllSessions
   , haskokiStdCloseSession
   , haskokiStdDigest
@@ -123,9 +129,13 @@ import Haskoki.Runtime.Async
   , Delivery (..)
   , JobFunction (..)
   , JobRequest (..)
+  , JobView (..)
   , AsyncWork (..)
   , PollOutcome (..)
   , completeJob
+  , deliveredCount
+  , inspectJob
+  , sessionJobs
   , enableAsyncSession
   , isAsyncSession
   , newAsyncTable
@@ -176,6 +186,9 @@ spec envLock = testGroup "Async engine"
   , testCase "struct sink writes all three shapes exactly" caseSinkShapes
   , testCase "caseAsyncBorrowedOwnership" (caseAsyncBorrowedOwnership envLock)
   , testCase "caseAsyncAdmissionWidths" (caseAsyncAdmissionWidths envLock)
+  , testCase "caseAsyncPublicCompletion" (caseAsyncPublicCompletion envLock)
+  , testCase "caseAsyncEpochSurface" (caseAsyncEpochSurface envLock)
+  , testCase "caseAsyncCleanupSurface" (caseAsyncCleanupSurface envLock)
   ]
 
 hex :: String -> ByteString
@@ -731,7 +744,7 @@ caseSinkShapes = do
 
 stdAsyncConfig :: MVar () -> String -> Bool -> IO Config
 stdAsyncConfig envLock tag sqlite = withEnvLock envLock $ do
-  let dir = "dist-release-evidence/async-routing/task-2/fixtures"
+  let dir = "dist-release-evidence/async-routing/task-3/fixtures"
       path = dir ++ "/" ++ tag ++ ".toml"
   createDirectoryIfMissing True dir
   writeFile path $ unlines $
@@ -1179,3 +1192,235 @@ caseAsyncAdmissionWidths envLock = do
       `finally` writeIORef (siAsyncBindings inst) Map.empty
     tableStats (siAsyncTable inst) >>= assertEqual "allocated job canceled before unwind" (0, 1, 1)
     assertStdEmpty inst
+
+-- Task 3 public transactions. All ordering is logical; no scheduler sleeps.
+withAsyncName :: ByteString -> (Ptr Word8 -> IO a) -> IO a
+withAsyncName name action = BS.useAsCString name (action . castPtr)
+
+expectAsync :: String -> ReturnCode -> IO CULong -> IO ()
+expectAsync label code action = action >>= assertEqual (label ++ ": " ++ show code) (stdRvOf code)
+
+startPublicDigest :: StablePtr StdInstance -> CULong -> Ptr Word8 -> Word64 -> IO ()
+startPublicDigest ctx h pOut cap = do
+  initStdDigest ctx h
+  alloca $ \pLen -> do
+    poke pLen (CULong cap)
+    expectAsync "admit" CKR_PENDING (stdDigestCall ctx h pOut pLen)
+    peek pLen >>= assertEqual "submission length preserved" (CULong cap)
+
+assertNoBinding :: StdInstance -> CULong -> IO ()
+assertNoBinding inst h = do
+  bindings <- readIORef (siAsyncBindings inst)
+  assertBool "no binding or old output address" (isNothing (lookupStdAsyncBinding (stdSessionId h) JobDigest bindings))
+
+caseAsyncPublicCompletion :: MVar () -> IO ()
+caseAsyncPublicCompletion envLock = do
+  cfg <- stdAsyncConfig envLock "public-complete" False
+  -- Every byte starts canary; independently try all-canary, null/zero, and
+  -- a different valid allocation as the incoming (ignored) destination.
+  forM_ [0 :: Int, 1, 2] $ \shape -> withStdAsync cfg $ \ctx inst ->
+    allocaBytes 64 $ \bound -> allocaBytes 64 $ \other -> allocaBytes 40 $ \result ->
+    withAsyncName "C_Digest" $ \name -> do
+      h <- openStdAsyncSession ctx 0 True
+      pokeArray bound (replicate 64 0xa5)
+      pokeArray other (replicate 64 0xa5)
+      pokeArray (castPtr result) (replicate 40 (0xa5 :: Word8))
+      when (shape == 1) $ do
+        pokeByteOff result 8 (nullPtr :: Ptr Word8)
+        pokeByteOff result 16 (0 :: CULong)
+      when (shape == 2) $ do
+        pokeByteOff result 8 other
+        pokeByteOff result 16 (64 :: CULong)
+      before <- peekArray 40 (castPtr result :: Ptr Word8)
+      startPublicDigest ctx h bound 64
+      (_, c) <- stdAsyncView inst h
+      binding <- stdDigestBinding inst h
+      alloca $ \pId -> do
+        poke pId 0xa5a5a5a5a5a5a5a5
+        expectAsync "public no-store" CKR_GENERAL_ERROR (haskokiStdAsyncGetId ctx h name pId)
+        peek pId >>= assertEqual "worker refusal zeros scalar" 0
+        asyncLiveHandles c >>= assertEqual "no-store keeps job" 1
+      expectAsync "first Complete" CKR_PENDING (haskokiStdAsyncComplete ctx h name result)
+      peekArray 40 (castPtr result :: Ptr Word8) >>= assertEqual "all 40 pending bytes" before
+      assertCanaryBuf "pending bound allocation" bound 64
+      expectAsync "second Complete" CKR_OK (haskokiStdAsyncComplete ctx h name result)
+      readBytes bound 32 >>= assertEqual "public SHA-256 abc" sha256Abc
+      assertCanaryBuf "only result extent written" (bound `plusPtr` 32) 32
+      assertCanaryBuf "incoming destination never used" other 64
+      peekByteOff result 8 >>= assertEqual "public bound pointer" bound
+      forM_ [(0, 0), (16, 32), (24, 0), (32, 0)] $ \(offset, value) ->
+        readField result offset >>= assertEqual "public version/length/objects" value
+      assertNoBinding inst h
+      asyncLiveHandles c >>= assertEqual "private handle freed" 0
+      deliveredCount (siAsyncTable inst) >>= assertEqual "delivered once" 1
+      after <- peekArray 40 (castPtr result :: Ptr Word8)
+      expectAsync "repeat Complete" CKR_OPERATION_NOT_INITIALIZED (haskokiStdAsyncComplete ctx h name result)
+      peekArray 40 (castPtr result :: Ptr Word8) >>= assertEqual "repeat preserves struct" after
+      -- Stale token membership is safe; never dereference it.
+      (view, _) <- stdAsyncView inst h
+      expectAsync "released private token" CKR_ARGUMENTS_BAD (haskokiAsyncPoll view (sabHandle binding) 2)
+
+  -- Both worker-owned release and a terminal refusal with a still-live handle.
+  forM_ [False, True] $ \liveError -> withStdAsync cfg $ \ctx inst ->
+    allocaBytes 32 $ \bound -> allocaBytes 40 $ \result ->
+    withAsyncName "C_Digest" $ \name -> do
+      h <- openStdAsyncSession ctx 0 True
+      pokeArray bound (replicate 32 0xa5)
+      pokeArray (castPtr result) (replicate 40 (0xa5 :: Word8))
+      startPublicDigest ctx h bound 32
+      (_, c) <- stdAsyncView inst h
+      if liveError
+        then modifyIORef' (siAsyncBindings inst) (Map.adjust
+          (\b -> b { sabFunction = JobSign }) (stdSessionId h, JobDigest))
+        else do
+          invalidateSession (siEnv inst) (stdSessionId h)
+          expectAsync "countdown before stale drive" CKR_PENDING (haskokiStdAsyncComplete ctx h name result)
+      expectAsync "terminal worker refusal" (if liveError then CKR_ARGUMENTS_BAD else CKR_GENERAL_ERROR)
+        (haskokiStdAsyncComplete ctx h name result)
+      peekByteOff result 8 >>= assertEqual "error returns bound address" bound
+      forM_ [0, 16, 24, 32] $ \offset ->
+        readField result offset >>= assertEqual "error leaves other fields" 0xa5a5a5a5a5a5a5a5
+      assertCanaryBuf "error payload unchanged" bound 32
+      asyncLiveHandles c >>= assertEqual "error reconciles/cancels handle" 0
+      assertNoBinding inst h
+      tableStats (siAsyncTable inst) >>= assertEqual "error tombstone" (0, 1, 1)
+
+  -- Deliberately corrupt only the adapter's private sink capacity. Ordinary
+  -- admitted widths above must never reach this defensive short branch.
+  withStdAsync cfg $ \ctx inst -> allocaBytes 32 $ \bound -> allocaBytes 40 $ \result ->
+    withAsyncName "C_Digest" $ \name -> do
+      h <- openStdAsyncSession ctx 0 True
+      pokeArray bound (replicate 32 0xa5)
+      pokeArray (castPtr result) (replicate 40 (0xa5 :: Word8))
+      startPublicDigest ctx h bound 32
+      modifyIORef' (siAsyncBindings inst) (Map.adjust (\b -> b { sabCapacity = 31 }) (stdSessionId h, JobDigest))
+      expectAsync "short fixture first poll" CKR_PENDING (haskokiStdAsyncComplete ctx h name result)
+      expectAsync "private sink short" CKR_BUFFER_TOO_SMALL (haskokiStdAsyncComplete ctx h name result)
+      peekByteOff result 8 >>= assertEqual "short pointer" bound
+      readField result 16 >>= assertEqual "short need" 32
+      forM_ [0, 24, 32] $ \offset ->
+        readField result offset >>= assertEqual "short leaves unrelated fields" 0xa5a5a5a5a5a5a5a5
+      assertCanaryBuf "short payload" bound 32
+      stdDigestBinding inst h >>= assertEqual "no capacity enlargement" 31 . sabCapacity
+      (_, c) <- stdAsyncView inst h
+      asyncLiveHandles c >>= assertEqual "short retains handle" 1
+      deliveredCount (siAsyncTable inst) >>= assertEqual "short not delivered" 0
+
+caseAsyncEpochSurface :: MVar () -> IO ()
+caseAsyncEpochSurface envLock = do
+  cfg <- stdAsyncConfig envLock "epochs" False
+  withStdAsync cfg $ \ctx inst -> allocaBytes 32 $ \bound -> allocaBytes 40 $ \result ->
+    withAsyncName "C_Digest" $ \name -> withAsyncName "C_Sign" $ \signName -> do
+      h <- openStdAsyncSession ctx 0 True
+      free <- openStdAsyncSession ctx 0 True
+      pokeArray bound (replicate 32 0xa5)
+      pokeArray (castPtr result) (replicate 40 (0xa5 :: Word8))
+      startPublicDigest ctx h bound 32
+      ids <- sessionJobs (siAsyncTable inst) (stdSessionId h)
+      jid <- case ids of [j] -> pure j; _ -> assertFailure "expected fresh single job"
+      let epoch n ticks = inspectJob (siAsyncTable inst) jid >>= assertEqual "epoch/ticks" (Just (JobView n ticks))
+      epoch 0 (Just 2)
+      tableStats (siAsyncTable inst) >>= assertEqual "initial table" (1, 0, 1)
+      alloca $ \pId -> do
+        poke pId 0xa5a5a5a5a5a5a5a5
+        forM_ [(h, signName), (free, name)] $ \(s, selector) -> do
+          expectAsync "different exact binding Complete" CKR_OPERATION_NOT_INITIALIZED (haskokiStdAsyncComplete ctx s selector result)
+          expectAsync "different exact binding GetID" CKR_OPERATION_NOT_INITIALIZED (haskokiStdAsyncGetId ctx s selector pId)
+        peek pId >>= assertEqual "missing binding id sentinel" 0xa5a5a5a5a5a5a5a5
+      epoch 0 (Just 2)
+      peekArray 40 (castPtr result :: Ptr Word8) >>= assertEqual "refusals preserve whole struct" (replicate 40 0xa5)
+      expectAsync "public countdown" CKR_PENDING (haskokiStdAsyncComplete ctx h name result)
+      epoch 0 (Just 1)
+      (view, _) <- stdAsyncView inst h
+      binding <- stdDigestBinding inst h
+      expectAsync "private ready barrier" CKR_OK (haskokiAsyncPoll view (sabHandle binding) 2)
+      epoch 1 Nothing
+      -- Preserve the original proof API's query/short dialogues and pin their
+      -- state effects without rewriting the retained private tests.
+      forM_ [(nullPtr, 0, 2, CKR_OK), (bound, 31, 2, CKR_BUFFER_TOO_SMALL),
+             (bound, 32, 1, CKR_ARGUMENTS_BAD)] $ \(out, cap, fn, code) -> do
+        pokeByteOff result 8 out
+        pokeByteOff result 16 (cap :: CULong)
+        expectAsync "private refusal/query" code (haskokiAsyncComplete view (sabHandle binding) fn result)
+        epoch 1 Nothing
+        deliveredCount (siAsyncTable inst) >>= assertEqual "refusal delivery count" 0
+        assertCanaryBuf "private refusal bytes" bound 32
+      expectAsync "public delivery" CKR_OK (haskokiStdAsyncComplete ctx h name result)
+      epoch 2 Nothing
+      deliveredCount (siAsyncTable inst) >>= assertEqual "one delivery" 1
+      tableStats (siAsyncTable inst) >>= assertEqual "delivered tombstone" (0, 1, 1)
+      readBytes bound 32 >>= assertEqual "epoch fixture KAT" sha256Abc
+      expectAsync "cancel after delivery" CKR_OK (haskokiStdSessionCancel ctx h 0)
+      epoch 2 Nothing
+      readBytes bound 32 >>= assertEqual "cancel cannot undo delivery" sha256Abc
+      deliveredCount (siAsyncTable inst) >>= assertEqual "cancel cannot deliver twice" 1
+      expectAsync "no-store Join independent of bindings" CKR_GENERAL_ERROR (haskokiStdAsyncJoin ctx free name 1 bound 32)
+
+caseAsyncCleanupSurface :: MVar () -> IO ()
+caseAsyncCleanupSurface envLock = do
+  cfg <- stdAsyncConfig envLock "cleanup" False
+  withStdAsync cfg $ \ctx inst -> allocaBytes 32 $ \bound -> allocaBytes 40 $ \result ->
+    alloca $ \pLen -> withAsyncName "C_Digest" $ \name -> do
+      h <- openStdAsyncSession ctx 0 True
+      pokeArray bound (replicate 32 0xa5)
+      pokeArray (castPtr result) (replicate 40 (0xa5 :: Word8))
+      startPublicDigest ctx h bound 32
+      binding <- stdDigestBinding inst h
+      poke pLen 32
+      forM_
+        [ stdDigestCall ctx h bound pLen
+        , stdDigestCall ctx h nullPtr pLen
+        , haskokiStdDigestInit ctx h 0x250 nullPtr 0
+        , haskokiStdDigestUpdate ctx h nullPtr 0
+        , haskokiStdDigestFinal ctx h bound pLen
+        , haskokiStdDigestFinal ctx h nullPtr pLen
+        ] $ expectAsync "occupied Digest slot" CKR_OPERATION_ACTIVE
+      after <- stdDigestBinding inst h
+      assertBool "occupied calls preserve exact handle" (sabHandle binding == sabHandle after)
+      tableStats (siAsyncTable inst) >>= assertEqual "no replacement" (1, 0, 1)
+      -- The existing planner is lenient on unknown mask bits, treating them
+      -- as unselected. Preserve that policy and pin that these invalid-only
+      -- masks, unrelated selectors, and invalid sessions do not retire jobs.
+      forM_ [0x800, 0x40, 1, 0x80000000] $ \flags ->
+        expectAsync "unselected cancel" CKR_OK (haskokiStdSessionCancel ctx h flags)
+      expectAsync "invalid cancel session" CKR_SESSION_HANDLE_INVALID (haskokiStdSessionCancel ctx 999999 0)
+      tableStats (siAsyncTable inst) >>= assertEqual "unselected masks preserve job" (1, 0, 1)
+      ids <- sessionJobs (siAsyncTable inst) (stdSessionId h)
+      jid <- case ids of [j] -> pure j; _ -> assertFailure "expected one pending job"
+      expectAsync "selected Digest cancel" CKR_OK (haskokiStdSessionCancel ctx h 0x400)
+      inspectJob (siAsyncTable inst) jid >>= assertEqual "pending cancel epoch 0 to 1" (Just (JobView 1 Nothing))
+      assertStdEmpty inst
+      expectAsync "cancel wins" CKR_OPERATION_NOT_INITIALIZED (haskokiStdAsyncComplete ctx h name result)
+      assertCanaryBuf "cancel writes no bytes" bound 32
+      peekArray 40 (castPtr result :: Ptr Word8) >>= assertEqual "cancel-first result untouched" (replicate 40 0xa5)
+      forM_ [0 :: Int, 1, 2, 3] $ \mode -> do
+        startPublicDigest ctx h bound 32
+        case mode of
+          0 -> expectAsync "cancel-all" CKR_OK (haskokiStdSessionCancel ctx h 0)
+          1 -> expectAsync "classic bad input" CKR_ARGUMENTS_BAD (haskokiStdDigest ctx h nullPtr 1 bound pLen)
+          2 -> expectAsync "classic bad length output" CKR_ARGUMENTS_BAD (stdDigestCall ctx h bound nullPtr)
+          _ -> expectAsync "C refusal termination hook" CKR_OK (haskokiStdTerminateSlot ctx h 0)
+        assertStdEmpty inst
+        expectAsync "terminated operation" CKR_OPERATION_NOT_INITIALIZED (haskokiStdDigestFinal ctx h bound pLen)
+        assertCanaryBuf "termination writes nothing" bound 32
+
+  -- Close selection and finalization across sessions and slots.
+  allocaBytes 32 $ \bound -> do
+    pokeArray bound (replicate 32 0xa5)
+    (inst, remaining) <- bracket (openStdInstance cfg) haskokiStdClose $ \ctx -> do
+      inst <- deRefStablePtr ctx
+      a <- openStdAsyncSession ctx 0 True
+      b <- openStdAsyncSession ctx 0 True
+      c <- openStdAsyncSession ctx 1 True
+      forM_ [a,b,c] $ \h -> startPublicDigest ctx h bound 32
+      views <- mapM (fmap snd . stdAsyncView inst) [a,b,c]
+      expectAsync "close one" CKR_OK (haskokiStdCloseSession ctx a)
+      mapM asyncLiveHandles views >>= assertEqual "close only its session" [0,1,1]
+      expectAsync "close slot zero" CKR_OK (haskokiStdCloseAllSessions ctx 0)
+      mapM asyncLiveHandles views >>= assertEqual "close only its slot" [0,0,1]
+      assertEqual "other-slot binding remains" [(stdSessionId c, JobDigest)] . Map.keys =<< readIORef (siAsyncBindings inst)
+      pure (inst, views)
+    mapM asyncLiveHandles remaining >>= assertEqual "finalize cancels remaining attachments" [0,0,0]
+    assertStdEmpty inst
+    tableStats (siAsyncTable inst) >>= assertEqual "three canceled tombstones" (0,3,3)
+    assertCanaryBuf "close/finalize writes nothing" bound 32

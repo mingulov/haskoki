@@ -6,27 +6,30 @@ unsaveable outcome, and the SQLite file store survives close\/reopen.
 module DetachedEngineSpec (spec) where
 
 import Control.Concurrent.MVar (MVar)
+import Control.Exception (bracket, finally)
+import Control.Monad (forM_, replicateM, when)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.IORef (IORef, newIORef, modifyIORef', readIORef)
+import Data.IORef (IORef, newIORef, modifyIORef', readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.List (isInfixOf)
 import Data.Word (Word64, Word8)
 import EnvLock (withEnvLock)
 import Foreign.C.Types (CULong (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
-import Foreign.Marshal.Array (peekArray)
+import Foreign.Marshal.Array (peekArray, pokeArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
-import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr)
-import Foreign.Storable (peek, poke, pokeByteOff)
+import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, newStablePtr, freeStablePtr)
+import Foreign.Storable (peek, poke, peekByteOff, pokeByteOff)
 import System.Directory
   ( createDirectory
+  , createDirectoryIfMissing
   , doesDirectoryExist
   , getTemporaryDirectory
   , removeDirectoryRecursive
   )
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Engine.Backend
@@ -57,6 +60,13 @@ import Haskoki.FFI.Async
   , haskokiAsyncStart
   , haskokiAsyncStoreClose
   , haskokiAsyncStoreOpen
+  )
+import Haskoki.FFI.Standard
+  ( StdAcquisition (..), StdAsyncBinding (..), StdInstance (..), StdStore (..)
+  , haskokiStdAsyncComplete, haskokiStdAsyncGetId, haskokiStdAsyncJoin
+  , haskokiStdClose, haskokiStdCloseSession, haskokiStdSessionCancel
+  , haskokiStdDigest, haskokiStdDigestInit, haskokiStdOpenSessionWithAsync
+  , lookupStdAsyncBinding, openStdInstanceWith, stdAcquisition, stdRvOf
   )
 import Haskoki.Model
   ( Model (..)
@@ -111,10 +121,14 @@ import Haskoki.Runtime.Async
   , JobRequest (..)
   , PollOutcome (..)
   , enableAsyncSession
+  , deliveredCount
+  , sessionJobs
+  , tableStats
   , newAsyncTable
   , pollJob
   , startJob
   )
+import Haskoki.Runtime.Config (resolveFrom)
 import Haskoki.Runtime.Detached
   ( AttachmentView (..)
   , DetachCtx
@@ -147,6 +161,7 @@ import Haskoki.Runtime.Storage
   , JobRecord (..)
   , ObjectRecord (..)
   , Store (..)
+  , StoreError (..)
   , StoreDelta (..)
   , StoredDoc (..)
   , TokenRecord (..)
@@ -159,7 +174,7 @@ import Haskoki.Runtime.Storage.Memory
   , openMemoryStore
   )
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
-import Haskoki.Session (tokenAuthNew)
+import Haskoki.Session (ActiveLogin (..), TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition (finishEffect, planCall)
 import Haskoki.Types
   ( EngineResourceId (..)
@@ -188,6 +203,9 @@ spec envLock = testGroup "Detached engine"
   , testCase "FFI detach: get_id, close, reopen, join, KAT" (caseFfiDetachRejoin envLock)
   , testCase "FFI detach without a store fails typed" (caseFfiNoStore envLock)
   , testCase "FFI join refusals are typed" (caseFfiJoinRefusals envLock)
+  , testCase "caseAsyncJoinBoundary" (caseAsyncJoinBoundary envLock)
+  , testCase "caseAsyncReadyJoinCapacity" (caseAsyncReadyJoinCapacity envLock)
+  , testCase "caseAsyncOpaqueSurface" (caseAsyncOpaqueSurface envLock)
   , testCase "restoreStoreState reloads tokens and objects" caseRestoreStoreState
   ]
 
@@ -1006,3 +1024,481 @@ caseRestoreStoreState = do
       assertEqual "home slot" slotHome (osSlot ost)
       assertEqual "revision kept" (Revision 5) (osRevision ost)
   assertEqual "id space reserved" 22 (mNextObject m)
+
+-- Standard detached transactions on its owned SQLite store. Fault wrappers
+-- affect only this fixture's Store value; runtime policy is not replaced.
+withSurfaceStore :: MVar () -> String -> (Store -> Store)
+  -> (StablePtr StdInstance -> StdInstance -> Store -> DetachCtx -> IO a) -> IO a
+withSurfaceStore envLock tag wrap action = do
+  cfg <- withEnvLock envLock $ do
+    let dir = "dist-release-evidence/async-routing/task-3/fixtures/detached-" ++ tag
+        path = dir ++ "/config.toml"
+    exists <- doesDirectoryExist dir
+    when exists (removeDirectoryRecursive dir)
+    createDirectoryIfMissing True dir
+    writeFile path $ unlines
+      [ "schema_version = 1", "profile = \"demo-maximal\""
+      , "[tokens]", "labels = [\"haskoki-demo\", \"other\"]"
+      , "so_pins = [\"5678\", \"6789\"]", "user_pins = [\"1234\", \"2345\"]"
+      , "[storage]", "kind = \"sqlite\"", "path = \"" ++ dir ++ "/jobs.db\""
+      ]
+    resolveFrom (Just path) Nothing >>= either (assertFailure . show) pure
+  let acquisition = stdAcquisition { saOpenStore = \env config -> do
+        result <- saOpenStore stdAcquisition env config
+        pure $ fmap (fmap (\ss -> ss { stdStore = wrap (stdStore ss) })) result }
+  bracket (openStdInstanceWith acquisition cfg) haskokiStdClose $ \ctx -> do
+    assertBool "Standard SQLite opened" (isLiveStable ctx)
+    inst <- deRefStablePtr ctx
+    ss <- maybe (assertFailure "missing Standard store") pure (siStore inst)
+    dc <- maybe (assertFailure "missing Standard detach context") pure (siDetach inst)
+    action ctx inst (stdStore ss) dc
+
+surfaceName :: ByteString -> (Ptr Word8 -> IO a) -> IO a
+surfaceName name action = BS.useAsCString name (action . castPtr)
+
+surfaceRV :: String -> ReturnCode -> IO CULong -> IO ()
+surfaceRV label code call = call >>= assertEqual (label ++ ": " ++ show code) (stdRvOf code)
+
+surfaceOpen :: StablePtr StdInstance -> CULong -> Bool -> IO CULong
+surfaceOpen ctx slot async = alloca $ \p -> do
+  surfaceRV "open" CKR_OK (haskokiStdOpenSessionWithAsync ctx slot 0 (if async then 1 else 0) p)
+  peek p
+
+surfaceInit :: StablePtr StdInstance -> CULong -> IO ()
+surfaceInit ctx h = surfaceRV "matching DigestInit" CKR_OK (haskokiStdDigestInit ctx h 0x250 nullPtr 0)
+
+surfaceStart :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> IO ()
+surfaceStart ctx h out cap = do
+  surfaceInit ctx h
+  alloca $ \len -> BS.useAsCString "abc" $ \input -> do
+    poke len cap
+    surfaceRV "start" CKR_PENDING (haskokiStdDigest ctx h (castPtr input) 3 out len)
+    peek len >>= assertEqual "start preserves capacity word" cap
+
+surfaceSid :: CULong -> SessionId
+surfaceSid = SessionId . fromIntegral
+
+surfaceView :: StdInstance -> CULong -> IO (StablePtr AsyncCtx, AsyncCtx)
+surfaceView inst h = do
+  views <- readIORef (siAsyncViews inst)
+  view <- maybe (assertFailure "missing view") pure (Map.lookup (surfaceSid h) views)
+  (view,) <$> deRefStablePtr view
+
+surfaceBinding :: StdInstance -> CULong -> IO StdAsyncBinding
+surfaceBinding inst h = do
+  bindings <- readIORef (siAsyncBindings inst)
+  maybe (assertFailure "missing binding") pure (lookupStdAsyncBinding (surfaceSid h) JobDigest bindings)
+
+surfaceEmpty :: StdInstance -> CULong -> IO ()
+surfaceEmpty inst h = do
+  bindings <- readIORef (siAsyncBindings inst)
+  assertBool "no binding/output address" (Map.notMember (surfaceSid h, JobDigest) bindings)
+  (_, c) <- surfaceView inst h
+  asyncLiveHandles c >>= assertEqual "no private handle" 0
+
+surfaceDetach :: StablePtr StdInstance -> StdInstance -> CULong -> IO CULong
+surfaceDetach ctx inst h = surfaceName "C_Digest" $ \name -> alloca $ \pid -> do
+  old <- surfaceBinding inst h
+  (view, _) <- surfaceView inst h
+  poke pid 0xa5a5a5a5a5a5a5a5
+  surfaceRV "durable GetID" CKR_OK (haskokiStdAsyncGetId ctx h name pid)
+  value <- peek pid
+  assertBool "nonzero persistent scalar" (value /= 0 && value /= 0xa5a5a5a5a5a5a5a5)
+  surfaceEmpty inst h
+  surfaceRV "revoked native handle" CKR_ARGUMENTS_BAD (haskokiAsyncPoll view (sabHandle old) 2)
+  allocaBytes 40 $ \result -> do
+    pokeArray (castPtr result) (replicate 40 (0xa5 :: Word8))
+    surfaceRV "Complete after detach" CKR_OPERATION_NOT_INITIALIZED (haskokiStdAsyncComplete ctx h name result)
+    peekArray 40 (castPtr result :: Ptr Word8) >>= assertEqual "revoked result untouched" (replicate 40 0xa5)
+  poke pid 0xa5a5a5a5a5a5a5a5
+  surfaceRV "GetID after detach" CKR_OPERATION_NOT_INITIALIZED (haskokiStdAsyncGetId ctx h name pid)
+  peek pid >>= assertEqual "revoked GetID preserves sentinel" 0xa5a5a5a5a5a5a5a5
+  pure value
+
+surfaceJoin :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> IO CULong
+surfaceJoin ctx h pid out cap = surfaceName "C_Digest" $ \name -> haskokiStdAsyncJoin ctx h name pid out cap
+
+surfaceComplete :: StablePtr StdInstance -> CULong -> Ptr Word8 -> IO ()
+surfaceComplete ctx h out = surfaceName "C_Digest" $ \name -> allocaBytes 40 $ \result -> do
+  pokeArray (castPtr result) (replicate 40 (0xa5 :: Word8))
+  first <- haskokiStdAsyncComplete ctx h name result
+  if first == stdRvOf CKR_PENDING
+    then surfaceRV "second completion" CKR_OK (haskokiStdAsyncComplete ctx h name result)
+    else assertEqual "ready completion" (stdRvOf CKR_OK) first
+  peekByteOff result 8 >>= assertEqual "joined output address" out
+  (peekByteOff result 0 :: IO CULong) >>= assertEqual "public version" 0
+  (peekByteOff result 16 :: IO CULong) >>= assertEqual "public length" 32
+  peekArray 32 out >>= assertEqual "joined SHA-256 abc" (BS.unpack sha256Abc)
+
+surfaceCanary :: Ptr Word8 -> Int -> IO ()
+surfaceCanary ptr len = peekArray len ptr >>= assertEqual "entire payload remains canary" (replicate len 0xa5)
+
+putRecord :: Store -> JobRecord -> IO ()
+putRecord store rec = storeCommit store emptyDelta { sdPutJobs = [rec] } >>= assertEqual "seed controlled record" Committed
+
+-- Normative spec section 4.2 (verbatim):
+-- | Join condition after the applicable earlier checks | Existing result |
+-- |---|---|
+-- | Unknown id, unknown record/recipe version, or stale token generation | `CKR_SAVED_STATE_INVALID` |
+-- | Known idle id for another function | `CKR_ARGUMENTS_BAD` |
+-- | Same persistent id already attached | `CKR_OPERATION_ACTIVE` |
+-- | Delivered persistent record | `CKR_ARGUMENTS_BAD` |
+-- | Canceled persistent record | `CKR_FUNCTION_CANCELED` |
+-- | Failed persistent record or store failure | `CKR_GENERAL_ERROR` |
+-- | Invalid/wrong-slot target session | `CKR_SESSION_HANDLE_INVALID` |
+-- | Target session not enabled for async | `CKR_SESSION_ASYNC_NOT_SUPPORTED` |
+-- | Existing token/session authentication check refuses | `CKR_USER_NOT_LOGGED_IN` |
+-- | Matching operation not initialized, or replay does not reproduce the effect | `CKR_OPERATION_NOT_INITIALIZED` |
+-- | Capacity zero or above `maxOutputBytes` | `CKR_ARGUMENTS_BAD` |
+-- | Positive capacity smaller than need | `CKR_BUFFER_TOO_SMALL` |
+-- | Live table at capacity | `CKR_HOST_MEMORY` |
+caseAsyncJoinBoundary :: MVar () -> IO ()
+caseAsyncJoinBoundary envLock = do
+  staleGeneration <- newIORef False
+  authRequired <- newIORef False
+  let generationFault store = store { storeLoadTokens = do
+        stale <- readIORef staleGeneration
+        auth <- readIORef authRequired
+        loaded <- storeLoadTokens store
+        pure $ fmap (map (\(tok, objects) ->
+          (tok { trGeneration = if stale then Generation 999 else trGeneration tok
+               , trAuth = if auth then (trAuth tok) { taLogin = Just AuthUser } else trAuth tok
+               }, objects))) loaded }
+  withSurfaceStore envLock "join-table" generationFault $ \ctx inst store dc ->
+    allocaBytes 64 $ \old -> allocaBytes 64 $ \out -> do
+      pokeArray old (replicate 64 0xa5)
+      pokeArray out (replicate 64 0xa5)
+      source <- surfaceOpen ctx 0 True
+      target <- surfaceOpen ctx 0 True
+      ordinary <- surfaceOpen ctx 0 False
+      wrongSlot <- surfaceOpen ctx 1 True
+      surfaceStart ctx source old 32
+      pid <- surfaceDetach ctx inst source
+      jobs <- loadJobs store
+      original <- case jobs of [j] -> pure j; _ -> assertFailure "one fresh durable record"
+      let refuse label h name ident cap code = do
+            before <- tableStats (siAsyncTable inst)
+            records <- loadJobs store
+            surfaceName name $ \pName -> surfaceRV label code (haskokiStdAsyncJoin ctx h pName ident out cap)
+            tableStats (siAsyncTable inst) >>= assertEqual (label ++ " allocates no job id") before
+            when (h /= 999999) (surfaceEmpty inst h)
+            loadJobs store >>= assertEqual (label ++ " preserves durable records") records
+            surfaceCanary out 64
+      surfaceInit ctx target
+      refuse "unknown id" target "C_Digest" 999999 32 CKR_SAVED_STATE_INVALID
+      refuse "unknown id before zero capacity" target "C_Digest" 999999 0 CKR_SAVED_STATE_INVALID
+      refuse "idle other function" target "C_Sign" pid 32 CKR_ARGUMENTS_BAD
+      forM_ [0,16777217] $ \cap -> refuse "invalid capacity" target "C_Digest" pid cap CKR_ARGUMENTS_BAD
+      refuse "positive short" target "C_Digest" pid 31 CKR_BUFFER_TOO_SMALL
+      refuse "invalid standard session" 999999 "C_Digest" pid 32 CKR_SESSION_HANDLE_INVALID
+      refuse "ordinary session" ordinary "C_Digest" pid 32 CKR_SESSION_ASYNC_NOT_SUPPORTED
+      refuse "ordinary non-home view has no store" wrongSlot "C_Digest" pid 32 CKR_GENERAL_ERROR
+      writeIORef staleGeneration True
+      refuse "stale token generation" target "C_Digest" pid 32 CKR_SAVED_STATE_INVALID
+      writeIORef staleGeneration False
+      -- Reach the worker's wrong-slot validation using a store-bound view,
+      -- without changing Standard's home-slot binding rule.
+      (_, wc) <- surfaceView inst wrongSlot
+      let borrowed = wc { acDetach = Just dc }
+      bracket (newStablePtr borrowed) freeStablePtr $ \v ->
+        alloca $ \handle -> alloca $ \need -> do
+          surfaceRV "wrong-slot worker validation" CKR_SESSION_HANDLE_INVALID
+            (haskokiAsyncJoin v pid 2 wrongSlot 32 handle need)
+          peek handle >>= assertBool "wrong-slot creates no handle" . not . isLiveStable
+      (tv, _) <- surfaceView inst target
+      alloca $ \handle -> alloca $ \need -> do
+        surfaceRV "invalid-session worker validation" CKR_SESSION_HANDLE_INVALID
+          (haskokiAsyncJoin tv pid 2 999999 32 handle need)
+        peek handle >>= assertBool "invalid session creates no handle" . not . isLiveStable
+      missing <- surfaceOpen ctx 0 True
+      refuse "matching init mandatory" missing "C_Digest" pid 32 CKR_OPERATION_NOT_INITIALIZED
+      surfaceRV "wrong replay init" CKR_OK (haskokiStdDigestInit ctx missing 0x270 nullPtr 0)
+      refuse "replay effect mismatch" missing "C_Digest" pid 32 CKR_OPERATION_NOT_INITIALIZED
+      -- Fresh ids avoid the context's terminal attachment cache. Unknown
+      -- function/recipe/result versions are real store rows. A stale token
+      -- generation uses the read wrapper above because commit correctly
+      -- refuses to introduce a mismatched job/token generation pair.
+      let variants =
+            [ (original { jrPersistentId = 100, jrFunction = "future-function/v99" }, CKR_SAVED_STATE_INVALID)
+            , (original { jrPersistentId = 101, jrBody = JobPending "future-recipe/v99" BS.empty }, CKR_SAVED_STATE_INVALID)
+            , (original { jrPersistentId = 102, jrBody = JobResult CKR_OK "future-result/v99" }, CKR_SAVED_STATE_INVALID)
+            , (original { jrPersistentId = 103, jrState = JobDelivered }, CKR_ARGUMENTS_BAD)
+            , (original { jrPersistentId = 104, jrState = JobCanceled }, CKR_FUNCTION_CANCELED)
+            , (original { jrPersistentId = 105, jrState = JobFailed }, CKR_GENERAL_ERROR)
+            ]
+      forM_ variants $ \(rec, code) -> do
+        putRecord store rec
+        refuse "controlled record disposition" target "C_Digest" (fromIntegral (jrPersistentId rec)) 32 code
+      -- Read-side auth fixture avoids replacing SQLite's token row (which
+      -- can cascade removal of its jobs) just to reach the auth check.
+      writeIORef authRequired True
+      refuse "existing auth rule" target "C_Digest" pid 32 CKR_USER_NOT_LOGGED_IN
+      writeIORef authRequired False
+      surfaceRV "retry attaches with public OK" CKR_OK (surfaceJoin ctx target pid out 32)
+      surfaceCanary out 64
+      competitor <- surfaceOpen ctx 0 True
+      surfaceInit ctx competitor
+      refuse "active id before wrong function" competitor "C_Sign" pid 32 CKR_OPERATION_ACTIVE
+      refuse "active id before short capacity" competitor "C_Digest" pid 1 CKR_OPERATION_ACTIVE
+      before <- tableStats (siAsyncTable inst)
+      surfaceRV "occupied target before allocation" CKR_OPERATION_ACTIVE (surfaceJoin ctx target 999999 out 32)
+      tableStats (siAsyncTable inst) >>= assertEqual "occupied target allocates no second handle" before
+      (_, attached) <- surfaceView inst target
+      asyncLiveHandles attached >>= assertEqual "one attached handle" 1
+      -- Source cancel and close after revocation cannot resolve the new job.
+      surfaceRV "source cancel after detach" CKR_OK (haskokiStdSessionCancel ctx source 0)
+      surfaceRV "source close after detach" CKR_OK (haskokiStdCloseSession ctx source)
+      surfaceCanary old 64
+      surfaceRV "joined cancel" CKR_OK (haskokiStdSessionCancel ctx target 0x400)
+      inspectAttachment dc (fromIntegral pid) >>= assertEqual "cancelJoined terminal fate" (Just (AvTerminal JobCanceled))
+      refuse "later Join after cancel" competitor "C_Digest" pid 32 CKR_FUNCTION_CANCELED
+      surfaceCanary out 64
+
+  withSurfaceStore envLock "join-capacity-eight" id $ \ctx inst _ _ ->
+    allocaBytes 32 $ \out -> do
+      source <- surfaceOpen ctx 0 True
+      surfaceStart ctx source out 32
+      pid <- surfaceDetach ctx inst source
+      target <- surfaceOpen ctx 0 True
+      surfaceInit ctx target
+      hs <- replicateM 8 (surfaceOpen ctx 0 True)
+      forM_ hs $ \h -> surfaceStart ctx h out 32
+      tableStats (siAsyncTable inst) >>= assertEqual "eight live jobs" (8,0,9)
+      surfaceRV "full live table" CKR_HOST_MEMORY (surfaceJoin ctx target pid out 32)
+      surfaceEmpty inst target
+      tableStats (siAsyncTable inst) >>= assertEqual "refusal does not allocate" (8,0,9)
+      first <- case hs of h:_ -> pure h; [] -> assertFailure "eight sessions required"
+      surfaceRV "free one" CKR_OK (haskokiStdSessionCancel ctx first 0)
+      surfaceRV "capacity refusal preserves retry" CKR_OK (surfaceJoin ctx target pid out 32)
+
+  -- Store failure must reach the worker, and preserve the idle record.
+  failLoad <- newIORef False
+  let loadFault store = store { storeLoadJobs = do
+        failing <- readIORef failLoad
+        if failing then pure (Left (StoreIO "Join load injection")) else storeLoadJobs store }
+  withSurfaceStore envLock "join-load-failure" loadFault $ \ctx inst store dc ->
+    allocaBytes 32 $ \out -> do
+      source <- surfaceOpen ctx 0 True
+      surfaceStart ctx source out 32
+      pid <- surfaceDetach ctx inst source
+      target <- surfaceOpen ctx 0 True
+      surfaceInit ctx target
+      records <- loadJobs store
+      writeIORef failLoad True
+      surfaceRV "store failure" CKR_GENERAL_ERROR (surfaceJoin ctx target pid out 32)
+      writeIORef failLoad False
+      surfaceEmpty inst target
+      loadJobs store >>= assertEqual "failure preserves durable record" records
+      inspectAttachment dc (fromIntegral pid) >>= assertEqual "failure remains idle" (Just AvIdle)
+      surfaceRV "store retry" CKR_OK (surfaceJoin ctx target pid out 32)
+
+  -- Inject only after Join's precheck, while its store load is in flight.
+  -- The ensuing private handle must be canceled if publication throws.
+  publishTarget <- newIORef Nothing
+  inject <- newIORef False
+  let publicationFault store = store { storeLoadJobs = do
+        enabled <- readIORef inject
+        when enabled $ do
+          writeIORef inject False
+          readIORef publishTarget >>= mapM_ (\inst -> writeIORef (siAsyncBindings inst) (error "post-Join publication injection"))
+        storeLoadJobs store }
+  withSurfaceStore envLock "join-publication-failure" publicationFault $ \ctx inst _ dc ->
+    allocaBytes 32 $ \out -> do
+      source <- surfaceOpen ctx 0 True
+      pokeArray out (replicate 32 0xa5)
+      surfaceStart ctx source out 32
+      pid <- surfaceDetach ctx inst source
+      target <- surfaceOpen ctx 0 True
+      surfaceInit ctx target
+      writeIORef publishTarget (Just inst)
+      writeIORef inject True
+      surfaceRV "post-Join failure fenced" CKR_GENERAL_ERROR (surfaceJoin ctx target pid out 32)
+        `finally` writeIORef (siAsyncBindings inst) Map.empty
+      surfaceEmpty inst target
+      tableStats (siAsyncTable inst) >>= assertEqual "joined job canceled before unwind" (0,1,2)
+      inspectAttachment dc (fromIntegral pid) >>= assertEqual "failed publication cancels durable attachment" (Just (AvTerminal JobCanceled))
+      surfaceCanary out 32
+
+caseAsyncReadyJoinCapacity :: MVar () -> IO ()
+caseAsyncReadyJoinCapacity envLock = do
+  forM_ [False, True] $ \ready ->
+    withSurfaceStore envLock (if ready then "ready-capacity" else "pending-capacity") id $ \ctx inst _ dc ->
+    allocaBytes 64 $ \old -> allocaBytes 64 $ \out -> do
+      pokeArray old (replicate 64 0xa5)
+      pokeArray out (replicate 64 0xa5)
+      source <- surfaceOpen ctx 0 True
+      surfaceStart ctx source old 64
+      when ready $ do
+        (view, _) <- surfaceView inst source
+        binding <- surfaceBinding inst source
+        surfaceRV "first ready barrier" CKR_PENDING (haskokiAsyncPoll view (sabHandle binding) 2)
+        surfaceRV "second ready barrier" CKR_OK (haskokiAsyncPoll view (sabHandle binding) 2)
+      pid <- surfaceDetach ctx inst source
+      surfaceRV "post-detach cancel" CKR_OK (haskokiStdSessionCancel ctx source 0)
+      surfaceRV "post-detach close" CKR_OK (haskokiStdCloseSession ctx source)
+      inspectAttachment dc (fromIntegral pid) >>= assertEqual "idle record survives source cleanup" (Just AvIdle)
+      target <- surfaceOpen ctx 0 True
+      surfaceInit ctx target
+      let need = if ready then 32 else 64
+          short = if ready then 31 else 32
+      surfaceRV "public short capacity" CKR_BUFFER_TOO_SMALL (surfaceJoin ctx target pid out short)
+      surfaceEmpty inst target
+      (view, _) <- surfaceView inst target
+      alloca $ \handle -> alloca $ \pNeed -> do
+        poke pNeed 0xa5a5a5a5a5a5a5a5
+        surfaceRV "private need evidence" CKR_BUFFER_TOO_SMALL (haskokiAsyncJoin view pid 2 target short handle pNeed)
+        peek pNeed >>= assertEqual "pending capacity versus ready length" (fromIntegral need :: Word64)
+        peek handle >>= assertBool "short has no handle" . not . isLiveStable
+      surfaceEmpty inst target
+      surfaceCanary out 64
+      surfaceCanary old 64
+      inspectAttachment dc (fromIntegral pid) >>= assertEqual "short preserves retryable idle" (Just AvIdle)
+      surfaceRV "exact retry public OK" CKR_OK (surfaceJoin ctx target pid out need)
+      binding <- surfaceBinding inst target
+      assertEqual "capacity bound by value" (fromIntegral need) (sabCapacity binding)
+      assertEqual "fresh output bound" out (sabOutput binding)
+      surfaceCanary out 64
+      surfaceComplete ctx target out
+      surfaceEmpty inst target
+      surfaceCanary (out `plusPtr` 32) 32
+      surfaceCanary old 64
+      deliveredCount (siAsyncTable inst) >>= assertEqual "joined delivered exactly once" 1
+      surfaceRV "cancel after successful completion" CKR_OK (haskokiStdSessionCancel ctx target 0)
+      surfaceRV "delivered cannot rejoin" CKR_ARGUMENTS_BAD (surfaceJoin ctx target pid out need)
+      peekArray 32 out >>= assertEqual "cancel cannot undo joined bytes" (BS.unpack sha256Abc)
+
+  -- Finalize an attached job while leaving an idle durable record intact.
+  saved <- newIORef Nothing
+  withSurfaceStore envLock "idle-finalize" id $ \ctx inst store dc -> allocaBytes 32 $ \out -> do
+    source <- surfaceOpen ctx 0 True
+    surfaceStart ctx source out 32
+    pid <- surfaceDetach ctx inst source
+    source2 <- surfaceOpen ctx 0 True
+    surfaceStart ctx source2 out 32
+    attachedPid <- surfaceDetach ctx inst source2
+    target <- surfaceOpen ctx 0 True
+    surfaceInit ctx target
+    surfaceRV "join before finalize" CKR_OK (surfaceJoin ctx target attachedPid out 32)
+    (_, c) <- surfaceView inst target
+    -- Retain diagnostics, then reopen only the store after Standard closes
+    -- to inspect durable cleanup. This is not the separate-process proof.
+    writeIORef saved (Just (inst, c, dc, pid, attachedPid))
+    loadJobs store >>= assertEqual "two durable records before finalize" 2 . length
+  readIORef saved >>= \case
+    Nothing -> assertFailure "missing finalize fixture"
+    Just (inst, c, dc, idle, active) -> do
+      asyncLiveHandles c >>= assertEqual "finalize frees joined handle" 0
+      inspectAttachment dc (fromIntegral idle) >>= assertEqual "finalize preserves idle attachment" (Just AvIdle)
+      inspectAttachment dc (fromIntegral active) >>= assertEqual "finalize cancels active attachment" (Just (AvTerminal JobCanceled))
+      assertEqual "finalize clears all public bindings" 0 . Map.size =<< readIORef (siAsyncBindings inst)
+      reopened <- openSQLiteStore "dist-release-evidence/async-routing/task-3/fixtures/detached-idle-finalize/jobs.db"
+        >>= either (assertFailure . show) pure
+      bracket (pure reopened) storeClose $ \store -> do
+        jobs <- loadJobs store
+        assertEqual "finalize durably preserves idle and cancels joined record"
+          [(fromIntegral idle, JobQueued), (fromIntegral active, JobCanceled)]
+          [(jrPersistentId rec, jrState rec) | rec <- jobs]
+
+  -- Delivery-mark failure is distinct from successful SQLite recovery. The
+  -- direct wrapper exposes jcMarkError; the public path preserves its existing
+  -- verdict and in-memory once-only behavior, never a crash-safety guarantee.
+  forM_ [False, True] $ \public -> do
+    failMark <- newIORef False
+    errors <- newIORef (0 :: Int)
+    let markError = StoreIO "durable delivery mark injection"
+        markFault store = store { storeCommit = \delta -> do
+          enabled <- readIORef failMark
+          if enabled && any ((== JobDelivered) . jrState) (sdPutJobs delta)
+            then modifyIORef' errors (+ 1) >> pure (NotCommitted markError)
+            else storeCommit store delta }
+    withSurfaceStore envLock (if public then "public-mark-failure" else "jc-mark-failure") markFault $ \ctx inst store dc ->
+      allocaBytes 32 $ \out -> do
+        source <- surfaceOpen ctx 0 True
+        surfaceStart ctx source out 32
+        pid <- surfaceDetach ctx inst source
+        target <- surfaceOpen ctx 0 True
+        surfaceInit ctx target
+        surfaceRV "join for mark failure" CKR_OK (surfaceJoin ctx target pid out 32)
+        (view, _) <- surfaceView inst target
+        binding <- surfaceBinding inst target
+        surfaceRV "mark fixture countdown" CKR_PENDING (haskokiAsyncPoll view (sabHandle binding) 2)
+        surfaceRV "mark fixture ready" CKR_OK (haskokiAsyncPoll view (sabHandle binding) 2)
+        ids <- sessionJobs (siAsyncTable inst) (surfaceSid target)
+        jid <- case ids of [j] -> pure j; _ -> assertFailure "single joined runtime id"
+        writeIORef failMark True
+        if public then surfaceComplete ctx target out else do
+          (sink, writes) <- newCapture 32
+          jc <- completeJoined dc (siEnv inst) (siAsyncTable inst) JobDigest jid sink (drainOne (siBackend inst))
+          assertEqual "jcMarkError recorded" (Just markError) (jcMarkError jc)
+          assertEqual "delivery survives failed mark" (CompleteDelivered (CompBytes sha256Abc)) (jcOutcome jc)
+          assertEqual "one in-memory payload write" 1 . length =<< readIORef writes
+          putStrLn ("Task 3 fault evidence: jcMarkError=" ++ show (jcMarkError jc) ++ "; no crash-safety claim")
+        readIORef errors >>= assertEqual "failed mark attempted once" 1
+        deliveredCount (siAsyncTable inst) >>= assertEqual "one in-memory delivery" 1
+        inspectAttachment dc (fromIntegral pid) >>= assertEqual "memory terminal despite mark failure" (Just (AvTerminal JobDelivered))
+        records <- loadJobs store
+        assertEqual "durable mark still queued" [JobQueued] (map jrState records)
+        surfaceRV "in-memory terminal prevents repeat Join" CKR_ARGUMENTS_BAD (surfaceJoin ctx source pid out 32)
+        when public $ surfaceName "C_Digest" $ \name -> allocaBytes 40 $ \result ->
+          surfaceRV "repeat public completion" CKR_OPERATION_NOT_INITIALIZED (haskokiStdAsyncComplete ctx target name result)
+        writeIORef failMark False
+
+caseAsyncOpaqueSurface :: MVar () -> IO ()
+caseAsyncOpaqueSurface envLock = do
+  withSurfaceStore envLock "opaque" id $ \ctx inst store dc -> allocaBytes 32 $ \out -> do
+    pokeArray out (replicate 32 0xa5)
+    source <- surfaceOpen ctx 0 True
+    surfaceStart ctx source out 32
+    binding <- surfaceBinding inst source
+    (view, c) <- surfaceView inst source
+    alloca $ \pid -> do
+      forM_ [1, 999] $ \function -> do
+        poke pid 0xa5a5a5a5a5a5a5a5
+        surfaceRV "private numeric wrong-function GetID" CKR_ARGUMENTS_BAD (haskokiAsyncGetId view (sabHandle binding) function pid)
+        peek pid >>= assertEqual "numeric refusal zeros id" (0 :: Word64)
+        asyncLiveHandles c >>= assertEqual "numeric refusal retains live job" 1
+    -- Obtain the runtime id only through sessionJobs. Never cast or inspect
+    -- the opaque native handle's representation, even while it is live.
+    ids <- sessionJobs (siAsyncTable inst) (surfaceSid source)
+    jid <- case ids of [j] -> pure j; _ -> assertFailure "fresh single-job session required"
+    markJobOpaque dc jid "opaque native adapter fixture"
+    surfaceName "C_Digest" $ \name -> alloca $ \pid -> do
+      poke pid 0xa5a5a5a5a5a5a5a5
+      surfaceRV "opaque public GetID" CKR_STATE_UNSAVEABLE (haskokiStdAsyncGetId ctx source name pid)
+      peek pid >>= assertEqual "unsaveable id zero" 0
+    loadJobs store >>= assertEqual "zero new durable records" []
+    asyncLiveHandles c >>= assertEqual "opaque refusal keeps handle" 1
+    after <- surfaceBinding inst source
+    assertBool "opaque binding unchanged" ((sabHandle binding, sabOutput binding, sabCapacity binding)
+      == (sabHandle after, sabOutput after, sabCapacity after))
+    surfaceCanary out 32
+    surfaceComplete ctx source out
+
+  forM_ [False, True] $ \missingHome -> do
+    inject <- newIORef False
+    let failure store = store
+          { storeLoadTokens = do
+              active <- readIORef inject
+              if active && missingHome then pure (Right []) else storeLoadTokens store
+          , storeCommit = \delta -> do
+              active <- readIORef inject
+              if active && not missingHome && not (null (sdPutJobs delta))
+                then pure (NotCommitted (StoreIO "GetID commit injection"))
+                else storeCommit store delta
+          }
+    withSurfaceStore envLock (if missingHome then "missing-home" else "detach-store-failure") failure $ \ctx inst store _ ->
+      allocaBytes 32 $ \out -> surfaceName "C_Digest" (\name -> do
+        source <- surfaceOpen ctx 0 True
+        surfaceStart ctx source out 32
+        binding <- surfaceBinding inst source
+        writeIORef inject True
+        alloca $ \pid -> do
+          poke pid 0xa5a5a5a5a5a5a5a5
+          surfaceRV "GetID store refusal" (if missingHome then CKR_TOKEN_NOT_PRESENT else CKR_GENERAL_ERROR)
+            (haskokiStdAsyncGetId ctx source name pid)
+          peek pid >>= assertEqual "store refusal zeros id" 0
+        writeIORef inject False
+        after <- surfaceBinding inst source
+        assertBool "store refusal preserves live binding" (sabHandle binding == sabHandle after)
+        loadJobs store >>= assertEqual "failure creates no durable record" []
+        surfaceComplete ctx source out)

@@ -84,6 +84,10 @@ module Haskoki.FFI.Standard
   , pinsMatch
     -- * Async binding lookup (pure)
   , lookupStdAsyncBinding
+  , haskokiStdAsyncComplete
+  , haskokiStdAsyncGetId
+  , haskokiStdAsyncJoin
+  , haskokiStdTerminateSlot
     -- * slot list, sessions, session info, token liveness
   , haskokiStdGetSlotList
   , haskokiStdOpenSession
@@ -215,9 +219,9 @@ import Foreign.StablePtr
   , newStablePtr
   )
 import Foreign.Marshal.Array (pokeArray)
-import Foreign.Marshal.Alloc (alloca)
-import Foreign.Marshal.Utils (copyBytes)
-import Foreign.Storable (peek, poke)
+import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
+import Foreign.Marshal.Utils (copyBytes, fillBytes)
+import Foreign.Storable (alignment, sizeOf, peek, poke, peekByteOff, pokeByteOff)
 
 import Haskoki.Attribute
   ( AttributeType (..)
@@ -241,9 +245,16 @@ import Haskoki.Engine.Driver (KeyResolver, drainReleases, encodeResult, runEffec
 import Haskoki.Engine.OpenSSL4 (OpenSSL4)
 import Haskoki.FFI.Async
   ( AsyncCtx (..)
+  , AsyncData
   , JobHandle
+  , decodeAsyncFunctionName
   , haskokiAsyncCancel
+  , haskokiAsyncComplete
+  , haskokiAsyncGetId
+  , haskokiAsyncJoin
+  , haskokiAsyncPoll
   , haskokiAsyncStart
+  , jobFunctionCode
   )
 import Haskoki.FFI.Decode (decodeInputBytes)
 import Haskoki.FFI.Encode
@@ -1000,6 +1011,144 @@ lookupStdAsyncBinding
   :: SessionId -> JobFunction -> Map (SessionId, JobFunction) a -> Maybe a
 lookupStdAsyncBinding sid function = Map.lookup (sid, function)
 
+foreign export ccall "haskoki_std_async_complete" haskokiStdAsyncComplete
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> Ptr AsyncData -> IO CULong
+foreign export ccall "haskoki_std_async_get_id" haskokiStdAsyncGetId
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
+foreign export ccall "haskoki_std_async_join" haskokiStdAsyncJoin
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong
+  -> Ptr Word8 -> CULong -> IO CULong
+
+-- The C state lock serializes these transactions. Resolve the authoritative
+-- session before reading the bounded selector; never infer a function from a
+-- different binding or persistent record.
+withStdAsyncFunction
+  :: StablePtr StdInstance -> CULong -> Ptr Word8
+  -> (StdInstance -> SessionId -> JobFunction -> IO CULong) -> IO CULong
+withStdAsyncFunction ctx h name action =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    decoded <- decodeAsyncFunctionName name
+    either (pure . stdRvOf) (action inst sid) decoded
+
+withStdAsyncBinding
+  :: StdInstance -> SessionId -> JobFunction
+  -> (StablePtr AsyncCtx -> StdAsyncBinding -> IO CULong) -> IO CULong
+withStdAsyncBinding inst sid function action = do
+  bindings <- readIORef (siAsyncBindings inst)
+  case lookupStdAsyncBinding sid function bindings of
+    Nothing -> pure (stdRvOf CKR_OPERATION_NOT_INITIALIZED)
+    Just binding -> do
+      views <- readIORef (siAsyncViews inst)
+      maybe (pure ckrGeneralError) (\view -> action view binding) (Map.lookup sid views)
+
+removeStdAsyncBinding :: StdInstance -> SessionId -> JobFunction -> IO ()
+removeStdAsyncBinding inst sid function =
+  atomicModifyIORef' (siAsyncBindings inst) $ \bindings ->
+    (Map.delete (sid, function) bindings, ())
+
+-- A worker may already have freed its opaque token. Membership is the only
+-- permitted liveness test; cancellation goes through the worker (including
+-- cancelJoined), never a native-token dereference in this adapter.
+cancelStdAsyncHandle :: StablePtr AsyncCtx -> StablePtr JobHandle -> IO ()
+cancelStdAsyncHandle view handle = do
+  c <- deRefStablePtr view
+  live <- readIORef (acLive c)
+  when (Set.member (castStablePtrToPtr handle) live) $ do
+    _ <- haskokiAsyncCancel view handle
+    pure ()
+
+cancelStdAsyncBinding :: StdInstance -> SessionId -> JobFunction -> IO ()
+cancelStdAsyncBinding inst sid function = mask_ $ do
+  _ <- withStdAsyncBinding inst sid function $ \view binding -> do
+    cancelStdAsyncHandle view (sabHandle binding)
+    pure ckrOk
+  removeStdAsyncBinding inst sid function
+
+haskokiStdAsyncComplete
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> Ptr AsyncData -> IO CULong
+haskokiStdAsyncComplete ctx h name result =
+  withStdAsyncFunction ctx h name $ \inst sid function ->
+    withStdAsyncBinding inst sid function $ \view binding -> mask_ $
+      if result == nullPtr then pure ckrArgsBad else
+      allocaBytesAligned 40 (alignment (undefined :: CULong)) $ \private -> do
+        fillBytes private 0 40
+        pokeByteOff private 8 (sabOutput binding)
+        pokeByteOff private 16 (CULong (sabCapacity binding))
+        let handle = sabHandle binding
+            code = CULong (jobFunctionCode (sabFunction binding))
+            retire = do
+              cancelStdAsyncHandle view handle
+              removeStdAsyncBinding inst sid function
+            terminal rv = do
+              retire
+              pokeByteOff result 8 (sabOutput binding)
+              pure rv
+        polled <- haskokiAsyncPoll view handle code
+        if polled == stdRvOf CKR_PENDING then pure polled
+        else if polled /= ckrOk then terminal polled
+        else do
+          completed <- haskokiAsyncComplete view handle code private
+          if completed == ckrOk then do
+            -- Every public field is output-only. The private worker's version
+            -- one is deliberately translated to the public ABI version zero.
+            copyBytes result private 40
+            pokeByteOff result 0 (0 :: CULong)
+            removeStdAsyncBinding inst sid function
+            pure ckrOk
+          else if completed == ckrBufferTooSmall then do
+            need <- peekByteOff private 16 :: IO CULong
+            pokeByteOff result 8 (sabOutput binding)
+            pokeByteOff result 16 need
+            pure completed
+          else if completed == stdRvOf CKR_PENDING then pure completed
+          else terminal completed
+
+haskokiStdAsyncGetId
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
+haskokiStdAsyncGetId ctx h name pId =
+  withStdAsyncFunction ctx h name $ \inst sid function ->
+    withStdAsyncBinding inst sid function $ \view binding -> mask_ $
+      -- Supported ABI is LP64; never silently narrow a persistent scalar id.
+      if sizeOf (undefined :: CULong) /= sizeOf (undefined :: Word64)
+        then pure ckrGeneralError
+        else do
+          rv <- haskokiAsyncGetId view (sabHandle binding)
+            (CULong (jobFunctionCode (sabFunction binding))) (castPtr pId)
+          when (rv == ckrOk) (removeStdAsyncBinding inst sid function)
+          pure rv
+
+haskokiStdAsyncJoin
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong
+  -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdAsyncJoin ctx h name pid output capacity =
+  withStdAsyncFunction ctx h name $ \inst sid function -> mask_ $ do
+    bindings <- readIORef (siAsyncBindings inst)
+    case lookupStdAsyncBinding sid function bindings of
+      Just _ -> pure (stdRvOf CKR_OPERATION_ACTIVE)
+      Nothing -> do
+        views <- readIORef (siAsyncViews inst)
+        case Map.lookup sid views of
+          Nothing -> pure ckrGeneralError
+          Just view -> alloca $ \pHandle -> alloca $ \pNeed -> do
+            poke pHandle (castPtrToStablePtr nullPtr)
+            poke pNeed (0 :: Word64)
+            rv <- haskokiAsyncJoin view pid (CULong (jobFunctionCode function)) h capacity pHandle pNeed
+            handle <- peek pHandle
+            c <- deRefStablePtr view
+            live <- readIORef (acLive c)
+            let isLive = Set.member (castStablePtrToPtr handle) live
+                cancel = cancelStdAsyncHandle view handle
+            if rv /= stdRvOf CKR_PENDING then cancel >> pure rv
+            else if not isLive then pure ckrGeneralError
+            else (do
+              -- Reread after the worker: installation itself may fail. A
+              -- failed handoff must not leave an untracked live attachment.
+              current <- readIORef (siAsyncBindings inst)
+              installed <- evaluate (Map.insert (sid, function)
+                (StdAsyncBinding function handle output (fromIntegral capacity)) current)
+              writeIORef (siAsyncBindings inst) installed
+              pure ckrOk) `onException` cancel
+
 -- ---------------------------------------------------------------------------
 -- Publication
 -- ---------------------------------------------------------------------------
@@ -1299,6 +1448,9 @@ haskokiStdSessionCancel ctx (CULong h) (CULong flags) =
           Nothing (encodeCancelInput (fromIntegral flags)) []
     case planCall (envRules (siEnv inst)) m0 req of
       Immediate pc -> do
+        -- CKF_DIGEST is 0x400 in the pinned header; zero selects all slots.
+        when (pcCode pc == CKR_OK && (flags == 0 || flags .&. 0x400 /= 0)) $
+          cancelStdAsyncBinding inst sid JobDigest
         pr <- publishCommit inst pc
         case pr of
           Left _ -> pure ckrGeneralError
@@ -2146,6 +2298,7 @@ withStdSession inst (CULong h) k = do
 -- slot), so the FFI publishes the termination itself.
 terminateSlot :: StdInstance -> SessionId -> SlotKind -> IO ()
 terminateSlot inst sid kind = do
+  when (kind == SlotDigest) (cancelStdAsyncBinding inst sid JobDigest)
   m <- snapshotModel (siEnv inst)
   case lookupSession m sid of
     Nothing -> pure ()
@@ -2192,6 +2345,19 @@ haskokiStdTerminateSlot ctx (CULong h) (CULong slot) =
 -- digest
 -- ---------------------------------------------------------------------------
 
+-- Look at the borrowed view's live set before running a classic Digest plan.
+-- This also permits a Haskell proof caller to finish its private worker before
+-- the next classic operation, without consulting a possibly freed token.
+withStdDigestIdle :: StdInstance -> SessionId -> IO CULong -> IO CULong
+withStdDigestIdle inst sid action = do
+  views <- readIORef (siAsyncViews inst)
+  busy <- case Map.lookup sid views of
+    Nothing -> pure False
+    Just view -> do
+      c <- deRefStablePtr view
+      not . Set.null <$> readIORef (acLive c)
+  if busy then pure (stdRvOf CKR_OPERATION_ACTIVE) else action
+
 foreign export ccall "haskoki_std_digest_init" haskokiStdDigestInit
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> IO CULong
@@ -2212,7 +2378,7 @@ haskokiStdDigestInit ctx h (CULong mech) pParams (CULong paramsLen) =
     eParams <- decodeInputBytes pParams paramsLen
     case eParams of
       Left _ -> pure ckrArgsBad
-      Right params -> do
+      Right params -> withStdDigestIdle inst sid $ do
         let mid = MechanismId (fromIntegral mech)
             -- Decoded init arguments straight to the
             -- planner (no init frame to re-parse).
@@ -2232,10 +2398,10 @@ haskokiStdDigest ctx h pData (CULong dataLen) pOut pLen =
         eInput <- decodeInputBytes pData dataLen
         case eInput of
           Left _ -> refuseArgsTerminate inst sid SlotDigest
-          Right input
-            | pOut == nullPtr -> runCryptoQuery inst sid SlotDigest F_Digest
+          Right input -> withStdDigestIdle inst sid $
+            if pOut == nullPtr then runCryptoQuery inst sid SlotDigest F_Digest
                 input "digest" pLen
-            | otherwise -> do
+            else do
                 CULong cap <- peek pLen
                 runStdDigestBuffered inst sid input pOut pLen cap
 
@@ -2310,7 +2476,7 @@ haskokiStdDigestUpdate ctx h pData (CULong dataLen) =
     eInput <- decodeInputBytes pData dataLen
     case eInput of
       Left _ -> refuseArgsTerminate inst sid SlotDigest
-      Right input -> do
+      Right input -> withStdDigestIdle inst sid $ do
         let req = Request Pkcs11_3_2 F_DigestUpdate (Just sid) Nothing input []
         runCryptoSilent inst req
 
@@ -2354,7 +2520,7 @@ haskokiStdDigestFinal ctx h pOut pLen =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
     if pLen == nullPtr
       then refuseArgsTerminate inst sid SlotDigest
-      else
+      else withStdDigestIdle inst sid $
         if pOut == nullPtr
           then runCryptoQuery inst sid SlotDigest F_DigestFinal BS.empty
             "digest" pLen
