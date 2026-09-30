@@ -2,12 +2,12 @@
 
 One header mechanism, @CKM_EDDSA@, with the pure-EdDSA
 parameter shape — @eddsa-params\/1@: a prehash flag plus a
-context string. The struct is required (OASIS pins
-@CK_EDDSA_PARAMS@ on the mechanism; the oracle registry marks
-it @param_required@): missing parameters refuse
-@CKR_MECHANISM_PARAM_INVALID@ at init, and of the explicit
-combinations only pure (phFlag clear, empty context — the
-only combination the pinned provider serves) validates.
+context string. The struct is optional (OASIS Table 42:
+pure params Not Required; the rc2 oracle registry marks
+@param_required=False@): missing parameters decode to pure,
+and of the explicit combinations only pure (phFlag clear,
+empty context — the only combination the pinned provider
+serves) validates.
 Non-pure combinations translate to the canonical image and
 refuse at the recipe (@CKR_ARGUMENTS_BAD@ at init);
 @CKM_XEDDSA@ is not a recipe (no provider equivalent — a
@@ -101,14 +101,13 @@ encodeEddsaParams ph ctx =
   encodeWord64 (if ph then 1 else 0)
     <> encodeWord64 (BS.length ctx) <> ctx
 
--- | Decode EdDSA parameters: empty fails (the struct is
--- required — missing parameters refuse downstream, never
--- decode to pure); truncation, overrun lengths, non-0/1 flag
--- words, and trailing bytes all fail (never a crash, never a
--- partial read).
+-- | Decode EdDSA parameters: empty decodes to pure (NULL
+-- means pure per OASIS Table 42); truncation, overrun
+-- lengths, non-0/1 flag words, and trailing bytes all fail
+-- (never a crash, never a partial read).
 decodeEddsaParams :: ByteString -> Maybe (Bool, ByteString)
 decodeEddsaParams bs
-  | BS.null bs = Nothing
+  | BS.null bs = Just (False, BS.empty)
   | otherwise = do
       let (w0, r0) = BS.splitAt 8 bs
           (w1, r1) = BS.splitAt 8 r0
@@ -122,10 +121,9 @@ decodeEddsaParams bs
             then Nothing
             else pure (ph == 1, ctx)
 
--- | EdDSA parameter validation: pure explicit only (flag
--- clear, empty context). Missing parameters fail here too
--- (empty never decodes); prehash and context are honest
--- refusals — the pinned provider serves neither.
+-- | EdDSA parameter validation: pure only (flag clear,
+-- empty context), explicit or NULL. Prehash and context are
+-- honest refusals — the pinned provider serves neither.
 eddsaParamsValid :: EddsaRecipe -> ByteString -> Bool
 eddsaParamsValid _ params = case decodeEddsaParams params of
   Just (False, ctx) -> BS.null ctx

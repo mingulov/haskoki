@@ -182,7 +182,7 @@ spec = testGroup "operation lifecycles"
   , testCase "sign one-shot after update rejected" caseSignOneShotAfterUpdate
   , testCase "sign short buffer retry; failure terminates" caseSignShortFail
   , testCase "raw DSA digest floor refuses short input" caseRawDsaFloor
-  , testCase "EdDSA init requires explicit pure, refuses rest" caseEddsaParams
+  , testCase "EdDSA init admits NULL as pure, refuses rest" caseEddsaParams
   , testCase "SSL3 MAC init takes whole-byte bit lengths" caseSsl3MacParams
   , testCase "X9.31 init takes empty params only" caseX931InitParams
   , testCase "Poly1305 init takes empty params only" casePoly1305InitParams
@@ -1479,13 +1479,14 @@ eddsaSignEnv = testEnv
 
 caseEddsaParams :: IO ()
 caseEddsaParams = do
-  -- NULL params refuse: the struct is required (PARAM_INVALID, exact).
+  -- NULL params admit as pure (OASIS Table 42; rc2 registry
+  -- param_required=False).
   let (_, i0) = initOperation eddsaSignEnv emptySessionOps testSession
         (InitArgs OpSign eddsaMech BS.empty (Just signKey) Nothing Nothing)
-  assertEqual "eddsa NULL refused" CKR_MECHANISM_PARAM_INVALID (ioCode i0)
+  assertEqual "eddsa NULL admits" CKR_OK (ioCode i0)
   let (_, i0v) = initOperation eddsaSignEnv emptySessionOps testSession
         (InitArgs OpVerify eddsaMech BS.empty (Just signKey) Nothing Nothing)
-  assertEqual "eddsa verify NULL refused" CKR_MECHANISM_PARAM_INVALID (ioCode i0v)
+  assertEqual "eddsa verify NULL admits" CKR_OK (ioCode i0v)
   -- Pure explicit struct admits.
   let (_, i1) = initOperation eddsaSignEnv emptySessionOps testSession
         (InitArgs OpSign eddsaMech (encodeEddsaParams False BS.empty)

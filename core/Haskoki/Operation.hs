@@ -430,10 +430,6 @@ checkMechParams args
   , not (dsaParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD
         "DSA mechanism parameters rejected by the recipe")
-  | isJust (eddsaRecipeFor (iaMech args))
-  , BS.null (iaParams args) =
-      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
-        "EdDSA requires explicit mechanism parameters")
   | Just r <- eddsaRecipeFor (iaMech args)
   , not (eddsaParamsValid r (iaParams args)) =
       Left (mkDeny CKR_ARGUMENTS_BAD

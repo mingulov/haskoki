@@ -1700,9 +1700,9 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_TEMPLATE_INCOMPLETE, "DH keygen without base is INCOMPLETE");
     }
     /* EdDSA: Edwards keypair -> sign/verify. The struct is
-     * required (OASIS pins CK_EDDSA_PARAMS; the oracle
-     * registry marks it param_required): NULL refuses
-     * PARAM_INVALID exactly. The shim maps CKM_EDDSA both
+     * optional (OASIS Table 42: pure params Not Required; the
+     * rc2 oracle registry marks param_required=False): NULL
+     * serves pure. The shim maps CKM_EDDSA both
      * parameterless and as the eddsa shape, so both forms
      * forward transparently in both topologies (no
      * ECDSA-DER-style proxy branch needed). */
@@ -1789,13 +1789,20 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_ARGUMENTS_BAD,
              "EdDSA prehash struct refused");
       rv = f->C_SignInit(ssess, &enm, epriv);
-      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
-             "EdDSA NULL-params SignInit refused");
+      CHECKC(rv == CKR_OK,
+             "EdDSA NULL-params SignInit ok");
+      sigLen = sizeof(sig);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "eddsa-consumer", 14, sig, &sigLen);
+      CHECKC(rv == CKR_OK && sigLen == 64,
+             "EdDSA NULL-params sign yields 64 bytes");
       rv = f->C_VerifyInit(ssess, &enm, epub);
-      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
-             "EdDSA NULL-params VerifyInit refused");
-      /* Tamper under the struct params (sig still holds the
-       * 64 struct-signed bytes; the refusals started no op). */
+      CHECKC(rv == CKR_OK,
+             "EdDSA NULL-params VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "eddsa-consumer", 14, sig, sigLen);
+      CHECKC(rv == CKR_OK,
+             "EdDSA NULL-params verify ok");
+      /* Tamper under the struct params (sig holds 64 valid
+       * bytes; re-init for tamper). */
       rv = f->C_VerifyInit(ssess, &esm, epub);
       CHECKC(rv == CKR_OK, "EdDSA re-init for tamper");
       sig[sigLen - 1] ^= 0xFF;
@@ -1805,8 +1812,8 @@ int main(int argc, char **argv) {
     /* ML-DSA: keypair (the set rides the public template; the
      * mechanism takes no parameter) -> sign/verify. The struct
      * is OPTIONAL (OASIS v3.2: absent means hedge-preferred,
-     * empty context): NULL params serve pure — the opposite of
-     * EdDSA. Hedge 0/1/2 serve; anything else refuses
+     * empty context): NULL params serve — same as EdDSA.
+     * Hedge 0/1/2 serve; anything else refuses
      * ARGUMENTS_BAD. */
     {
       CK_KEY_TYPE mkt = CKK_ML_DSA;

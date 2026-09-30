@@ -129,7 +129,7 @@ caseCodec = do
     Just r -> assertEqual "codec row" eddsaCodec (eddsaCodecFor r)
   assertEqual "pure encodes to two zero words" pureImage
     (encodeEddsaParams False BS.empty)
-  assertEqual "empty fails (struct required)" Nothing
+  assertEqual "empty decodes to pure (NULL means pure)" (Just (False, BS.empty))
     (decodeEddsaParams BS.empty)
   assertEqual "pure image decodes" (Just (False, BS.empty))
     (decodeEddsaParams pureImage)
@@ -151,7 +151,7 @@ word64 n = BS.pack [fromIntegral ((n `div` (256 ^ s)) `mod` 256) | s <- [7, 6 ..
 caseParams :: IO ()
 caseParams = do
   let r = recipeOf "CKM_EDDSA"
-  assertBool "empty refused (struct required)" (not (eddsaParamsValid r BS.empty))
+  assertBool "empty valid (NULL means pure)" (eddsaParamsValid r BS.empty)
   assertBool "pure image valid" (eddsaParamsValid r pureImage)
   assertBool "encoded pure valid"
     (eddsaParamsValid r (encodeEddsaParams False BS.empty))
@@ -222,7 +222,7 @@ caseInitParams = do
     (runInit (InitArgs OpSign eddsaMech "PEM" (Just badKey) Nothing Nothing))
   assertEqual "pure passes params" CKR_OBJECT_HANDLE_INVALID
     (runInit (InitArgs OpSign eddsaMech pureImage (Just badKey) Nothing Nothing))
-  assertEqual "empty refused" CKR_MECHANISM_PARAM_INVALID
+  assertEqual "empty passes params" CKR_OBJECT_HANDLE_INVALID
     (runInit (InitArgs OpSign eddsaMech BS.empty (Just badKey) Nothing Nothing))
 
 hex :: String -> BS.ByteString
@@ -257,7 +257,7 @@ caseDriverMap = do
   assertEqual "Ed25519 PKCS#8"
     (Just (SigEdDSA (EcSpec "Ed25519" "RAW") ""))
     (eddsaSpecFor eddsa pureImage ed19Priv)
-  assertEqual "empty refused" Nothing
+  assertEqual "empty maps to pure" (Just (SigEdDSA (EcSpec "Ed25519" "RAW") ""))
     (eddsaSpecFor eddsa BS.empty ed19Pub)
   assertEqual "prehash refused" Nothing
     (eddsaSpecFor eddsa (encodeEddsaParams True BS.empty) ed19Pub)
