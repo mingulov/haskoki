@@ -76,6 +76,35 @@ KAT lane (same bundle, rc2): 116467 tests — 83426 passed,
 `incomplete: false`). PBE legs identical to fast (28/0/5).
 No new findings.
 
+## 11s-4 fast lane (rc2 oracle, 2026-09-30)
+
+Bundle `dist-release/haskoki-0.3.0.0` at `5ac4611` (11s-4
+pub-from-priv derive row, 316/464), oracle pkcs11-check
+0.2.2rc2 (`/tmp/pkcs11-ws/run-lane-rc2.sh fast`, results
+`/tmp/pkcs11-ws/out-rc2/fast/pkcs11-fast-results.json`,
+backup `/tmp/pkcs11-fast-11s4.json`).
+
+Single run, zero failures: 10190 tests — 5118 passed, 0
+failed, 647 xfailed, 4425 skipped, 0 crashed. Delta
+vs 11s-3: +17 total, +3 passed, +0 xfailed, +14 skipped.
+Per-unit: derive +1 passed, flags +2 passed +7 skipped,
+negative +4 skipped, probe +3 skipped. The skip side is
+exact in `skip_reasons`: flags skips the seven non-DERIVE
+probes (CKF_DERIVE only, as advertised), negative records
+params-not-required (+2) and the secret-key-keygen
+permission skip (+2), probe lists the row as registered
+(+3). The +3 passes are unattributed at test level (kept
+per-test records are sampled); every observed movement is
+pass/skip-side with zero failures. No new oracle-side
+findings: no upstream filing from this round.
+
+KAT lane (same bundle, rc2): 116748 tests — 83514
+passed, 0 failed, 0 crashed, 1907 xfailed, 31327
+skipped (`/tmp/pkcs11-ws/out-rc2/kat/pkcs11-kat-results.json`,
+backup `/tmp/pkcs11-kat-11s4.json`;
+`incomplete: false`). Delta shape identical to fast
+(+3p/+0x/+14s) with the same row census. No new findings.
+
 ## 11s-3 fast lane (rc2 oracle, 2026-09-30)
 
 Bundle `dist-release/haskoki-0.3.0.0` at `55d4cc2` (11s-3 RSA wrap
