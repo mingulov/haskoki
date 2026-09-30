@@ -116,9 +116,11 @@ def main() -> int:
         gen_inc, re.DOTALL)]
     # Floor history: 20 before message routing; 11 after the twenty
     # message-family entries left the stub generator for real bodies
-    # (2026-09-30). Lower deliberately with the routing commit cited.
+    # (2026-09-30); 8 after the three async entries registered to
+    # std_Async* bodies (routing commit 577a015, 2026-09-30).
+    # Lower deliberately with the routing commit cited.
     check("STUB-UNIFORM-INC",
-          len(inc_bodies) >= 11 and all(
+          len(inc_bodies) >= 8 and all(
               body_voids_only(b, ("return x_live_check();",))
               for _, b in inc_bodies),
           f"all {len(inc_bodies)} generated stubs void args")
