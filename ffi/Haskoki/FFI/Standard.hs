@@ -217,7 +217,7 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
-import Haskoki.FFI.NativeParams (DerivedKeySlot (..), KeyMatSlots (..), normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsKeyMatParams, normalizeTls12KeyMatParams, normalizeTls12KeySafeParams, normalizeSsl3MasterParams, normalizeSsl3KeyMatParams, normalizeTlsPrfParams, normalizePbeParams, normalizePbeParamsMaybeIv)
+import Haskoki.FFI.NativeParams (DerivedKeySlot (..), KeyMatSlots (..), normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsKeyMatParams, normalizeTls12KeyMatParams, normalizeTls12KeySafeParams, normalizeSsl3MasterParams, normalizeSsl3KeyMatParams, normalizeTlsPrfParams, normalizePbeParamsMaybeIv)
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
@@ -228,8 +228,7 @@ import Haskoki.Model
   )
 import Haskoki.Object (maxTemplateEntries, objectVisible, resolveHandle)
 import Haskoki.Operation
-  ( CipherDir (..)
-  , CryptoEffect (..)
+  ( CryptoEffect (..)
   , SlotKind (..)
   , StagedOutput (..)
   , activeCipher
@@ -3099,9 +3098,9 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
                         eHs <- runKeyPlan inst m st plan
                         case eHs of
                           Left rv -> pure rv
-                          Right hs -> publish wb hs
+                          Right hs -> publishHandles wb hs
   where
-    publish phun hs = case (phun, hs) of
+    publishHandles phun hs = case (phun, hs) of
       (WbNone, [oh]) -> poke phKey (CULong oh) >> pure ckrOk
       (WbSp800 slots, oh : rest)
         | length rest == length slots -> do
