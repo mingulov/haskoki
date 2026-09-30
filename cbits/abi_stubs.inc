@@ -17,200 +17,6 @@ static CK_DECLARE_FUNCTION(CK_RV, x30_C_LoginUser)
   return x_live_check();
 }
 
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_MessageEncryptInit)
-(CK_SESSION_HANDLE p0, CK_MECHANISM * p1, CK_OBJECT_HANDLE p2) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_EncryptMessage)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2, CK_BYTE * p3, CK_ULONG p4, CK_BYTE * p5, CK_ULONG p6, CK_BYTE * p7, CK_ULONG * p8) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  (void)p5;
-  (void)p6;
-  (void)p7;
-  (void)p8;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_EncryptMessageBegin)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2, CK_BYTE * p3, CK_ULONG p4) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_EncryptMessageNext)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2, CK_BYTE * p3, CK_ULONG p4, CK_BYTE * p5, CK_ULONG * p6, CK_FLAGS p7) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  (void)p5;
-  (void)p6;
-  (void)p7;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_MessageEncryptFinal)
-(CK_SESSION_HANDLE p0) {
-  (void)p0;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_MessageDecryptInit)
-(CK_SESSION_HANDLE p0, CK_MECHANISM * p1, CK_OBJECT_HANDLE p2) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_DecryptMessage)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2, CK_BYTE * p3, CK_ULONG p4, CK_BYTE * p5, CK_ULONG p6, CK_BYTE * p7, CK_ULONG * p8) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  (void)p5;
-  (void)p6;
-  (void)p7;
-  (void)p8;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_DecryptMessageBegin)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2, CK_BYTE * p3, CK_ULONG p4) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_DecryptMessageNext)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2, CK_BYTE * p3, CK_ULONG p4, CK_BYTE * p5, CK_ULONG * p6, CK_FLAGS p7) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  (void)p5;
-  (void)p6;
-  (void)p7;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_MessageDecryptFinal)
-(CK_SESSION_HANDLE p0) {
-  (void)p0;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_MessageSignInit)
-(CK_SESSION_HANDLE p0, CK_MECHANISM * p1, CK_OBJECT_HANDLE p2) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_SignMessage)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2, CK_BYTE * p3, CK_ULONG p4, CK_BYTE * p5, CK_ULONG * p6) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  (void)p5;
-  (void)p6;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_SignMessageBegin)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_SignMessageNext)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2, CK_BYTE * p3, CK_ULONG p4, CK_BYTE * p5, CK_ULONG * p6) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  (void)p5;
-  (void)p6;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_MessageSignFinal)
-(CK_SESSION_HANDLE p0) {
-  (void)p0;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_MessageVerifyInit)
-(CK_SESSION_HANDLE p0, CK_MECHANISM * p1, CK_OBJECT_HANDLE p2) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_VerifyMessage)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2, CK_BYTE * p3, CK_ULONG p4, CK_BYTE * p5, CK_ULONG p6) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  (void)p5;
-  (void)p6;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_VerifyMessageBegin)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_VerifyMessageNext)
-(CK_SESSION_HANDLE p0, void * p1, CK_ULONG p2, CK_BYTE * p3, CK_ULONG p4, CK_BYTE * p5, CK_ULONG p6) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  (void)p5;
-  (void)p6;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x30_C_MessageVerifyFinal)
-(CK_SESSION_HANDLE p0) {
-  (void)p0;
-  return x_live_check();
-}
-
 static CK_DECLARE_FUNCTION(CK_RV, x32_C_VerifySignatureInit)
 (CK_SESSION_HANDLE p0, CK_MECHANISM * p1, CK_OBJECT_HANDLE p2, CK_BYTE * p3, CK_ULONG p4) {
   (void)p0;
@@ -312,26 +118,26 @@ static CK_DECLARE_FUNCTION(CK_RV, x32_C_UnwrapKeyAuthenticated)
     (T)->C_GetInterface = C_GetInterface; \
     (T)->C_LoginUser = x30_C_LoginUser; \
     (T)->C_SessionCancel = std_SessionCancel; \
-    (T)->C_MessageEncryptInit = x30_C_MessageEncryptInit; \
-    (T)->C_EncryptMessage = x30_C_EncryptMessage; \
-    (T)->C_EncryptMessageBegin = x30_C_EncryptMessageBegin; \
-    (T)->C_EncryptMessageNext = x30_C_EncryptMessageNext; \
-    (T)->C_MessageEncryptFinal = x30_C_MessageEncryptFinal; \
-    (T)->C_MessageDecryptInit = x30_C_MessageDecryptInit; \
-    (T)->C_DecryptMessage = x30_C_DecryptMessage; \
-    (T)->C_DecryptMessageBegin = x30_C_DecryptMessageBegin; \
-    (T)->C_DecryptMessageNext = x30_C_DecryptMessageNext; \
-    (T)->C_MessageDecryptFinal = x30_C_MessageDecryptFinal; \
-    (T)->C_MessageSignInit = x30_C_MessageSignInit; \
-    (T)->C_SignMessage = x30_C_SignMessage; \
-    (T)->C_SignMessageBegin = x30_C_SignMessageBegin; \
-    (T)->C_SignMessageNext = x30_C_SignMessageNext; \
-    (T)->C_MessageSignFinal = x30_C_MessageSignFinal; \
-    (T)->C_MessageVerifyInit = x30_C_MessageVerifyInit; \
-    (T)->C_VerifyMessage = x30_C_VerifyMessage; \
-    (T)->C_VerifyMessageBegin = x30_C_VerifyMessageBegin; \
-    (T)->C_VerifyMessageNext = x30_C_VerifyMessageNext; \
-    (T)->C_MessageVerifyFinal = x30_C_MessageVerifyFinal; \
+    (T)->C_MessageEncryptInit = std_MessageEncryptInit; \
+    (T)->C_EncryptMessage = std_EncryptMessage; \
+    (T)->C_EncryptMessageBegin = std_EncryptMessageBegin; \
+    (T)->C_EncryptMessageNext = std_EncryptMessageNext; \
+    (T)->C_MessageEncryptFinal = std_MessageEncryptFinal; \
+    (T)->C_MessageDecryptInit = std_MessageDecryptInit; \
+    (T)->C_DecryptMessage = std_DecryptMessage; \
+    (T)->C_DecryptMessageBegin = std_DecryptMessageBegin; \
+    (T)->C_DecryptMessageNext = std_DecryptMessageNext; \
+    (T)->C_MessageDecryptFinal = std_MessageDecryptFinal; \
+    (T)->C_MessageSignInit = std_MessageSignInit; \
+    (T)->C_SignMessage = std_SignMessage; \
+    (T)->C_SignMessageBegin = std_SignMessageBegin; \
+    (T)->C_SignMessageNext = std_SignMessageNext; \
+    (T)->C_MessageSignFinal = std_MessageSignFinal; \
+    (T)->C_MessageVerifyInit = std_MessageVerifyInit; \
+    (T)->C_VerifyMessage = std_VerifyMessage; \
+    (T)->C_VerifyMessageBegin = std_VerifyMessageBegin; \
+    (T)->C_VerifyMessageNext = std_VerifyMessageNext; \
+    (T)->C_MessageVerifyFinal = std_MessageVerifyFinal; \
   } while (0)
 
 /* HASKOKI_FILL_320_NEW(T): assign post-2.40 entries of table pointer (T) in pinned order. */

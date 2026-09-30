@@ -434,7 +434,29 @@ def main():
     # A routed entry leaves the stub generator (no x30_/x32_ body) and
     # the fill macro wires the table slot to its implementation; the
     # implementation TU owns the exact pinned prototype.
-    routed300 = {"C_SessionCancel": "std_SessionCancel"}
+    routed300 = {
+        "C_SessionCancel": "std_SessionCancel",
+        "C_MessageEncryptInit": "std_MessageEncryptInit",
+        "C_EncryptMessage": "std_EncryptMessage",
+        "C_EncryptMessageBegin": "std_EncryptMessageBegin",
+        "C_EncryptMessageNext": "std_EncryptMessageNext",
+        "C_MessageEncryptFinal": "std_MessageEncryptFinal",
+        "C_MessageDecryptInit": "std_MessageDecryptInit",
+        "C_DecryptMessage": "std_DecryptMessage",
+        "C_DecryptMessageBegin": "std_DecryptMessageBegin",
+        "C_DecryptMessageNext": "std_DecryptMessageNext",
+        "C_MessageDecryptFinal": "std_MessageDecryptFinal",
+        "C_MessageSignInit": "std_MessageSignInit",
+        "C_SignMessage": "std_SignMessage",
+        "C_SignMessageBegin": "std_SignMessageBegin",
+        "C_SignMessageNext": "std_SignMessageNext",
+        "C_MessageSignFinal": "std_MessageSignFinal",
+        "C_MessageVerifyInit": "std_MessageVerifyInit",
+        "C_VerifyMessage": "std_VerifyMessage",
+        "C_VerifyMessageBegin": "std_VerifyMessageBegin",
+        "C_VerifyMessageNext": "std_VerifyMessageNext",
+        "C_MessageVerifyFinal": "std_MessageVerifyFinal",
+    }
     routed320 = {"C_EncapsulateKey": "std_EncapsulateKey",
                  "C_DecapsulateKey": "std_DecapsulateKey"}
     discrete300, discrete320 = [], []
