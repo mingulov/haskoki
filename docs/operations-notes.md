@@ -96,6 +96,78 @@ one event per token into the `ssQuarantines` stat
 SQLite `:666-670`). Quarantine and stats are live-handle
 properties — fresh handles start clean (Memory header `:14-15`).
 
+## Public 3.2 async routing
+
+The standard table exposes `C_AsyncComplete`, `C_AsyncGetID`, and
+`C_AsyncJoin` on interface 3.2. A fresh full-buffer one-shot `C_Digest`
+after `C_DigestInit` on an explicit `CKF_ASYNC_SESSION` is the public
+producer. Ordinary sessions, queries, short buffers, and staged recalls
+retain the synchronous dialogue. Sign, message operations, multipart
+Digest, and key generation gain no async submission path.
+
+Keep the output allocation passed to the pending Digest or successful
+Join live and writable while that binding exists: until terminal
+completion retires it, successful GetID revokes it, or cancellation,
+session close, close-all for its slot, or finalization retires it.
+Refused calls that preserve the binding do not release the allocation.
+Submission copies the input and retains neither its pointer nor the
+original output-length pointer. Complete uses the bound allocation;
+incoming `CK_ASYNC_DATA` version, `pValue`, `ulValue`, and handle fields
+are ignored. A present result with incoming null `pValue` is allowed
+and is not a query. A pending Complete leaves the entire result and
+bound bytes untouched; successful delivery reports public version `0`
+and the bound pointer and length. A repeat Complete sees no operation.
+
+GetID takes an exact function name and a scalar id output; successful
+detach revokes the old output address. Join identifies the persistent
+id and target session/function, accepts byte capacity **by value**, and
+returns `CKR_OK` only after installing the new output binding. There is
+no need output and no successful length-query form. Null/zero and
+present/zero buffers for an otherwise joinable byte record return
+`CKR_ARGUMENTS_BAD`; a positive short capacity returns
+`CKR_BUFFER_TOO_SMALL`, preserves the record for retry, and leaves the
+buffer untouched. A pending record can require its original effective
+capacity (for example 64 bytes), while a ready SHA-256 record needs 32.
+Before joining a pending Digest, the target needs a matching
+`C_DigestInit` so the existing planner can replan the work. A selector
+of `C_Sign` does not substitute for `C_Digest`.
+
+One async table of capacity `8` belongs to each standard instance;
+borrowed session views share its environment, backend, and table.
+The adapter uses a fixed two-poll submission policy, with one existing
+poll per valid Complete and completion when ready. Scenario-runner
+`async.enabled` and `async.pending_polls` do not configure this native
+policy. There are no new threads, timers, or configuration semantics.
+
+Standard memory mode keeps `siStore = Nothing`: attached execution
+works, but GetID for a resolved live job and Join on a view without a
+store retain `CKR_GENERAL_ERROR`. SQLite uses the existing store and
+one detached context for the home token. Non-home sessions have no
+detached context and retain the same no-store behavior; they must not
+detach under the home token's identity. The private proof API's owned
+memory store and its close/reopen proof are separate from standard
+memory sessions. Private exports continue to own their context/job
+tokens, publish version `1`, return `CKR_PENDING` on successful Join,
+and support their existing query/short-buffer and optional-need dialogue.
+
+At proxy pin `a48b60ba54b0163f4999c1e4fc0514bf7dc01681`,
+`async_routed` is explicitly `DIRECT-ONLY` in the parity driver under
+[proxy issue 24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24).
+The pinned transport returns fixed GetID/Join refusals and cannot
+preserve the required output ownership/capacity. Direct async success
+and this exclusion are separate evidence; no async proxy parity is
+claimed. The issue is distinct from message-transport issue 23.
+
+The existing `completeJoined` writes the payload before marking durable
+delivery. A failed mark recorded by `jcMarkError` cannot undo delivered
+bytes; the completion verdict and terminal in-memory attachment remain.
+There is no crash-safe exactly-once guarantee across a failed durable
+mark. Fault-injection coverage in `tests/engine/DetachedEngineSpec.hs`
+is separate from the successful-store SQLite restart proof in
+`tests/c/async_routed.c`. Runtime policy and D1-D12 are unchanged.
+See the [reviewed async qualification](pkcs11-oracle-triage.md#async-routing-verification-2026-09-30)
+for measured source and artifact pins; final-revision verification is pending.
+
 ## Async expiry/GC
 
 Job tombstones are UNBOUNDED until reaped: no count/age cap, the

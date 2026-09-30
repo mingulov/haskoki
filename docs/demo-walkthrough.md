@@ -106,6 +106,19 @@ scripts/test-consumers.sh
   mingulov/pkcs11-proxy-ng#23); the explicitly labeled 16 MiB
   input/accumulation probes likewise run directly because the pinned
   proxy has its own smaller request limit.
+- `async_routed`: `C_AsyncComplete`, `C_AsyncGetID`, and `C_AsyncJoin`
+  through the actual 3.2 table. An explicit `CKF_ASYNC_SESSION` admits
+  a fresh full-buffer one-shot `C_Digest`; SHA-256 of `abc` returns
+  `CKR_PENDING`, then Complete delivers the fixed FIPS bytes into the
+  original allocation. An ordinary session provides the synchronous
+  `CKR_OK` control. Queries, short buffers, and their staged recalls
+  remain synchronous. The SQLite home-token legs detach, revoke the old
+  allocation with `PROT_NONE`, join into new storage, and separately
+  execute restart children using only the persistent id. The direct
+  proof is recorded for source `415278fd23053d0150f7b13a18b373139236c891`
+  in [reviewed consumer evidence](../dist-release-evidence/async-routing/reviewed/gates/test-consumers.sh.log).
+  The parity driver labels this scenario `DIRECT-ONLY` under
+  [proxy issue 24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24).
 
 Random (`C_GenerateRandom` / `C_SeedRandom`, live on 2.40 +
 3.0/3.1/3.2 via one legacy-table entry re-homed by name):
@@ -201,6 +214,20 @@ function-level CBC/HMAC reachability on interfaces 3.0, 3.1, and 3.2,
 without making a general v3.0 conformance claim. The function contracts
 retain their planner-scoped `planned-with-behavior` label and add the
 executed C consumer as evidence.
+
+**2026-09-30 async routing:** The three async entries are live only in
+the 3.2 table; the older layouts remain unchanged. Public submission is
+Digest-only and requires a fresh full-buffer call on an explicit async
+session. Recognizing the `C_Sign` selector preserves identity checks;
+it does not admit async Sign, message, multipart, or key-generation work.
+The 316 mechanisms and their flags are unchanged; async session/token
+capability bits do not add mechanisms. The three contracts remain
+`planned-with-behavior`, within the unchanged 104 functions / 70 planned /
+32 unsupported / 2 not-applicable catalog. This is function-level byte-job
+evidence, with no broader async or PKCS #11 conformance claim. The
+[oracle qualification record](pkcs11-oracle-triage.md#async-routing-verification-2026-09-30)
+cites measured reviewed artifacts; verification of the final revision
+and acceptance remain pending.
 
 ## 6. Token provisioning record
 

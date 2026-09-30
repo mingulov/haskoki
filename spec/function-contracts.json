@@ -2480,6 +2480,14 @@
         {
           "suite": "haskoki-engine-tests",
           "spec": "tests/engine/DetachedEngineSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/async_routed.c"
+        },
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/StandardSurfaceSpec.hs"
         }
       ]
     },
@@ -2502,6 +2510,18 @@
         {
           "suite": "haskoki-engine-tests",
           "spec": "tests/engine/DetachedEngineSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/async_routed.c"
+        },
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/StandardSurfaceSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/AsyncEngineSpec.hs"
         }
       ]
     },
@@ -2524,6 +2544,18 @@
         {
           "suite": "haskoki-engine-tests",
           "spec": "tests/engine/DetachedEngineSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/async_routed.c"
+        },
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/StandardSurfaceSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/AsyncEngineSpec.hs"
         }
       ]
     },

@@ -40,6 +40,22 @@ acceptance test named.
   revocation, join errors, token reset, unsaveable natives)
   has an implemented site or a C proof.
 
+Scope clarification (2026-09-30): the three proofs above retain their
+private context/job-token API, completion version `1`, pending Join,
+and query/short-buffer dialogue. `tests/c/async_routed.c` separately
+exercises the actual 3.2 Complete/GetID/Join table entries through
+standard session/function bindings: public version `0`, successful Join
+`CKR_OK`, and submission/Join-bound output ownership. Public admission
+is a fresh full-buffer one-shot Digest on an explicit async session;
+ordinary sessions and staged recalls remain synchronous. Standard memory
+and non-home views have no detached store; public detach/restart proof
+uses the SQLite home token. Its successful-store evidence does not
+remove the existing failed-durable-mark limitation. Measured evidence
+for `415278fd23053d0150f7b13a18b373139236c891` is linked in the
+[async qualification record](pkcs11-oracle-triage.md#async-routing-verification-2026-09-30).
+This routing slice leaves the scheduler, detached policy, and every
+D1-D12 item below unchanged; final-revision verification remains pending.
+
 ### Configuration (43 keys, honesty-dispositioned)
 
 `src/Haskoki/Runtime/Config.hs` plus

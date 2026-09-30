@@ -230,11 +230,19 @@ PLANNED = {
                    ("test-consumers.sh", "tests/c/consumer_roundtrip.c")]),
     "C_AsyncComplete": ("haskoki-export:haskoki_hs_async_complete",
                         [("haskoki-engine-tests", "tests/engine/AsyncEngineSpec.hs"),
-                         ("haskoki-engine-tests", "tests/engine/DetachedEngineSpec.hs")]),
+                         ("haskoki-engine-tests", "tests/engine/DetachedEngineSpec.hs"),
+                         ("test-consumers.sh", "tests/c/async_routed.c"),
+                         ("haskoki-model-tests", "tests/model/StandardSurfaceSpec.hs")]),
     "C_AsyncGetID": ("haskoki-export:haskoki_hs_async_get_id",
-                     [("haskoki-engine-tests", "tests/engine/DetachedEngineSpec.hs")]),
+                     [("haskoki-engine-tests", "tests/engine/DetachedEngineSpec.hs"),
+                      ("test-consumers.sh", "tests/c/async_routed.c"),
+                      ("haskoki-model-tests", "tests/model/StandardSurfaceSpec.hs"),
+                      ("haskoki-engine-tests", "tests/engine/AsyncEngineSpec.hs")]),
     "C_AsyncJoin": ("haskoki-export:haskoki_hs_async_join",
-                    [("haskoki-engine-tests", "tests/engine/DetachedEngineSpec.hs")]),
+                    [("haskoki-engine-tests", "tests/engine/DetachedEngineSpec.hs"),
+                     ("test-consumers.sh", "tests/c/async_routed.c"),
+                     ("haskoki-model-tests", "tests/model/StandardSurfaceSpec.hs"),
+                     ("haskoki-engine-tests", "tests/engine/AsyncEngineSpec.hs")]),
 }
 
 # name -> exact-gap reason (no behavior claim without tests).

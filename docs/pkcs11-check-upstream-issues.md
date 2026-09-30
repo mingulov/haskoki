@@ -2444,3 +2444,292 @@ the full direct leg must pass, and the driver must print its explicit
 exclusion. Eligible scenarios retain normal parity; no `async:` lines are
 filtered. Exclusion is not async transport equivalence. This records Task 8
 evidence for coordinator review; no acceptance is claimed.
+
+## Async routing verification (2026-09-30)
+
+This entry records **MEASURED reviewed artifacts** for source
+`415278fd23053d0150f7b13a18b373139236c891`, collected before these Task 11
+documentation and contract-evidence edits. Earlier records above remain
+historical evidence. No final-revision verification is claimed here.
+No acceptance claimed; coordinator review and final-revision evidence remain
+pending. Both oracle documents carry this same qualification entry.
+
+The reviewed gate run was
+`HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng bash scripts/run-gates.sh`:
+18 static gates, forced build, all six Cabal suites (1,926 tests, plus the
+separate one-test funnel check), 14 container drivers, release build, and
+installation check passed. `gates/MANIFEST.txt` records 16 successful steps,
+zero misses, and this exact source revision. The retained private proofs
+record 43 attached checks, 22 detached checks, and restart processes with
+9 and 11 checks. These are reviewed-source measurements, not reruns of
+the documentation patch.
+
+Measured pins (SHA-256 unless identified as a Git revision):
+
+| Identity | Value |
+|---|---|
+| Reviewed source revision | `415278fd23053d0150f7b13a18b373139236c891` |
+| Runtime/ABI invariant baseline | `170c679c268dcfbd254202953b3508d146fad6b1` |
+| Release bundle `dist-release/haskoki-0.3.0.0` | `9b9b7ed12b387895be2910bcf113334949929e13f1553c94e4d9e846f74dcd98` |
+| Loaded release `lib/libhaskoki.so` | `6a62ee678ed6e5400cb25ad712263bf0a0914492e4a51b05e537ca1811328330` |
+| Measured `haskoki-dev:ghc-9.10.3` image id | `sha256:ba329f78938e1cef9ed163f86c1d7ac01db047259ec556d2e0027077b8ea41be` |
+| Latchset header Git pin | `c5e61990c5621a9b955fc208644fe8145ac0a75d` |
+| `spec/vendor/pkcs11.h` | `61e0b3f996fa9f095859d7d3b8e361d0b982de69fc8b6a4bf10291afbe7e24d8` |
+| Oracle `pkcs11-check==0.2.2rc2`, 519 Python files | `b7b5327c4294a892fcf21f351717bb240b2505621ce842c182b33cf6685bad23` |
+| Proxy Git pin | `a48b60ba54b0163f4999c1e4fc0514bf7dc01681` |
+| Proxy daemon `/opt/pkcs11-proxy-ng/pkcs11-proxy-ng` | `260cb245981561291eab4d29a16cb6a4d6f00dca3431f3d583d35364fab0c9e5` |
+| Proxy shim `/opt/pkcs11-proxy-ng/libpkcs11_proxy_ng_shim.so` | `8ea85073ce8436ebdc8ee99bce99e70a6d8c34473c28b5a45567c8a26aba1690` |
+| Pinned proxy `crates/shim/src/dispatch/general/async_ops.rs` | `cf1239e40f482755006bb1d1988b9d083f8f36312ad4d9543160e9c31c40ca72` |
+| `src/Haskoki/Runtime/Async.hs` (unchanged) | `313a3feb21064b821e97e4ea9efdd6155c8585dc195c390bd232403e6e9a2eab` |
+| `src/Haskoki/Runtime/Detached.hs` (unchanged) | `801b7b67044ec75f687969d4f539c4a7e427dc45c2703647f60bb973ce3cc2b6` |
+| `spec/mechanisms.json` (unchanged) | `40090818ed79093380959ecf47f8b24d12e0661541bf9f9c07124fbae12265e6` |
+| `cbits/mech_catalog.inc` (unchanged) | `5e209f36551177cb8e1cfdaa2380a47d70c9caa9eba60adbb4512ca182bfac63` |
+
+The full oracle source pin hashes sorted oracle-relative UTF-8 paths, NUL,
+original bytes, and NUL for each of the 519 Python files under `src`.
+The release name and digest identify this non-Git source tree. The bundle
+uses the same path/content framing over its 35 regular files. The image id
+above is measured; the historical `toolchain.lock` image id is not substituted.
+Before/after lane receipts agree on source, module, bundle, and oracle hashes.
+
+Source applicability and source-definition counts: AST parsing of the
+original bytes counts every `test_` function/method in each file. These are
+not runtime totals and do not expand parametrized cases. Paths below are
+relative to `/tmp/pkcs11-ws/pkcs11-check-0.2.2rc2/src/pkcs11_check/testcases`.
+
+| Source | All test definitions | Async-specific definitions | SHA-256 |
+|---|---:|---:|---|
+| `test_remaining_gaps.py` | 29 | 4 | `56ca76211694ac5c8fe8142cc550d8415d91ee39da830240db0cf0a5c9a9a33f` |
+| `ckr/test_ckr_v32_raw.py` | 8 | 1 | `278d32b6509e556746c4fb3ef688315c1f21c701cdc8a2bfddcaa7bda3eafcb1` |
+| `_probes/ckr_v32_raw.py` | 0 | 0 | `3167748a0ff6336d457b36f442f3156c8c6cc71892c70e58a16f70b89bb5819e` |
+| `ckr/_ckr_spec.py` | 0 | 0 | `79c590d8f81c0f6bbf0b437e19a234e91411a6dd684dd98741a2210f8ca03136` |
+| `ckr/_ckr_spec_tables.py` | 0 | 0 | `3df59974adfcb4e3112db1851676ce7b11f91c34d3c001458c38a5096d2aaba2` |
+
+The five async conditions in `_ckr_spec_tables.py`, imported by
+`_ckr_spec.py`, are expectation declarations, not five executable tests.
+The pinned header has 68/92/92/104 entries for 2.40/3.0/3.1/3.2;
+the async slots are 3.2 ordinals 100/101/102 and are absent from the older
+tables. `CK_ASYNC_DATA` is 40 bytes at offsets 0/8/16/24/32 on this LP64 ABI.
+
+The exact lane commands were `bash /tmp/pkcs11-ws/run-lane-rc2.sh fast`,
+then inspection/disposition review, then
+`bash /tmp/pkcs11-ws/run-lane-rc2.sh kat`, then inspection/disposition review.
+`kat-run.json` retains the before-kat fast review receipts. Previous outputs
+were archived before each wrapper run. Both wrappers exited 0 while both
+oracles exited 1; the wrapper accepts findings and does not certify a clean
+lane. Verbatim runtime summaries:
+
+| Lane | Wrapper exit | Oracle exit | Summary total | Passed | Failed | Skipped | Xfailed |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| fast | 0 | 1 | 10190 | 5138 | 4 | 4413 | 635 |
+| kat | 0 | 1 | 116748 | 84455 | 4 | 31315 | 974 |
+
+Both summaries report zero xpasses, errors, crashes, timeouts, crash-limited
+cases, child crashes and child timeouts, and `incomplete=false`.
+`reported_collected` and `reported_executed` are null in both inspections;
+the summary total is not relabeled as either count. In each lane the raw
+CKR unit reports 8 collected, 4 passed / 3 skipped / 1 xfailed; the
+remaining-gaps unit reports 29 collected, 11 passed / 14 skipped / 4 xfailed.
+Those whole-file unit results do not count successful async lifecycles.
+
+Each inspection retains 27 async-related trace records, including collection
+and setup/call/teardown phases. Its eight call-phase records are three
+`test_interface_negotiation.py::TestInterfaceVersion::test_selected_function_table_entry`
+parameters `[C_AsyncComplete]`, `[C_AsyncGetID]`, `[C_AsyncJoin]` (passed),
+the four `TestAsyncLifecycle` nodes below (passed), and the raw GetID node
+(xfailed; raw pytest call outcome `skipped` with `wasxfail`). These records provide no successful lifecycle evidence from those
+availability/defined-refusal passes.
+
+The wrapper emitted `report.jsonl`, with no native `trace.jsonl` or provider
+C-call trace. Each archived `trace.jsonl` is an explicitly labeled,
+byte-identical alias of that oracle report, described by `trace-origin.json`.
+The first fast capture helper exited 1 on the absent native trace; capture
+recovery reused its completed wrapper output without rerunning the lane.
+This limitation remains visible in `fast-run.json`.
+
+Complete dispositions are retained in the linked, hashed `dispositions.json`
+and duplicated in each lane's inspection. Every record carries its exact
+node/parameter suffix, input shape, actual/expected result, source location
+and hash, independent or preserved-baseline comparison, classification,
+status, and issue URL where applicable. Classification counts include each
+lane's extra source-only version-attribution finding:
+
+| Lane | provider | oracle | capability | Dispositions |
+|---|---:|---:|---:|---:|
+| fast | 252 | 7 | 381 | 640 |
+| kat | 553 | 7 | 419 | 979 |
+
+All 1,619 dispositions have completed review status. This preserves existing
+provider/capability findings; it does not declare them fixed or grant async
+credit. The seven oracle records per lane are the selector defect, five
+previous message/CBC records linked to
+[pkcs11-check #34](https://github.com/mingulov/pkcs11-check/issues/34),
+and the source-only version defect. The four runtime failures remain the
+previous message findings. The newly exposed async result is the GetID
+capability skip becoming an oracle xfail in both lanes; no new async provider
+defect was identified by the reviewed comparisons. Kat also has the separately
+reviewed signature-prefix variance described below.
+
+**Oracle selector defect — [pkcs11-check #35](https://github.com/mingulov/pkcs11-check/issues/35).**
+Status `OPEN` in `oracle-selector-issue.json`; applies to pinned version
+`0.2.2rc2`, with no fixed version established by this record. Exact node:
+`src/pkcs11_check/testcases/ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation`;
+parameters: none. The live open session has no job. The child passes a
+zero-filled 256-byte allocation as `pFunctionName` and `c_ulong(256)` as
+the scalar id output (misnamed `id_len`). Actual `CKR_ARGUMENTS_BAD` (`0x7`)
+is classified xfail by the oracle, which expects
+`CKR_OPERATION_NOT_INITIALIZED` (`0x91`). The selector is empty, so the
+expected no-job code applies only after substituting valid `C_Digest`.
+
+Independent comparison: the pinned-header C reproduction discovers the
+actual 3.2 table, opens session 1 on slot 0, and performs both GetID calls
+without a job. Empty selector returns `0x7`; `C_Digest` returns `0x91`.
+Both leave the `0xa5a5a5a5a5a5a5a5` id sentinel unchanged; failures=0.
+The C source is `/tmp/haskoki-async-routing/oracle-getid.c`, SHA-256
+`5460d057f1a847ab84708411acc4be9dac2e46f6a7f549fc5709fbd3ac737df7`;
+`oracle-getid-runtime-command.json` records its exact C11/warnings-as-error
+compile and same-image release-module load. The initial prescribed launcher
+exited 127 because the image lacked `python3`; the recorded scratch-runtime
+retry exited 0. Applicable source: `_probes/ckr_v32_raw.py:142–148`,
+`ckr/test_ckr_v32_raw.py:99–132,462–469`, and pinned header prototypes
+at 2479–2483. Classification: **oracle**; retain bounded name validation,
+with no widened success set or successful lifecycle credit.
+
+**Oracle version/coverage defect — [pkcs11-check #36](https://github.com/mingulov/pkcs11-check/issues/36).**
+Status `OPEN` in `oracle-version-issue.json`; applies to pinned version
+`0.2.2rc2`, with no fixed version established by this record. Node prefix:
+`src/pkcs11_check/testcases/test_remaining_gaps.py::TestAsyncLifecycle::`;
+each node has no parameters:
+
+| Node suffix | Exact input shape | Observed scope / expected interpretation |
+|---|---|---|
+| `test_async_function_availability` | List available names; no async call | Passed presence check; membership starts at 3.2, not the docstring's 3.0 |
+| `test_async_complete_no_active_operation` | `C_AsyncComplete(session, NULL, NULL)` | Passed defined-CKR check; malformed selector, no submitted job |
+| `test_async_join_no_active_operation` | `C_AsyncJoin(session, NULL, 0, NULL, 0)` | Passed defined-CKR check; no pending id or result allocation |
+| `test_async_get_id_no_active_operation` | `C_AsyncGetID(session, NULL, &id)`, scalar id initially 0 | Passed defined-CKR check; no detach |
+
+The oracle records pass outcomes here without recording the exact numeric
+refusal; no numeric provider trace is invented. For these null selectors,
+the independent consumer's live standard-table guard cases require and
+observe `CKR_ARGUMENTS_BAD` (`0x7`). `oracle-version-source.log` compares
+the original AST and pinned header: the 92-entry 3.0 layout has no async
+members, while the 104-entry 3.2 layout has all three. Applicable source:
+`test_remaining_gaps.py:1252–1303` and defined-code helper 211–220;
+header 2494–2600 and 2602–2696. Classification: **oracle**. The four tests
+submit no work and establish no pending progress, bytes, revocation,
+restart, or competing Join success; the source docstring is not a runtime
+coverage result.
+
+**Existing capability variance (kat only).** Exact node:
+`src/pkcs11_check/testcases/test_cctv_rfc6979.py::test_rfc6979_ecdsa_sign_deterministic`.
+The source sets curve `secp256r1`, imports the fixed P-256 vector private
+key, and signs its fixed message via `CKM_ECDSA_SHA256`. Both preserved
+baseline and reviewed run are xfailed because deterministic RFC 6979 bytes
+are not supplied. Recorded actual signature prefixes changed from
+`af81f2668c30d2146840d60407cb3840...` to
+`5ca34bf3708a910d31fd1f41118d64fe...`; expected prefix stayed
+`efd9073b652e76da1b5a019c0e4a2e3f...`. The independent baseline comparison
+in `kat-rfc6979-variance.json` finds only that actual prefix different;
+original records remain intact. Applicable source lines 215–267 have
+SHA-256 `baa326478fc33e67ef104b2da8777ef7216a389346f2046d0eea0f29bfa33c61`.
+Classification: **capability**, completed review of an existing finding;
+no new filing, signature-validity claim, fix, or async success is inferred.
+
+**Proxy transport — [pkcs11-proxy-ng #24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24).**
+This is the distinct async transport filing, separate from message issue 23.
+Status `OPEN` in `proxy/issue.json`; applicability is the measured proxy
+Git pin and daemon/shim hashes above, with no fixed version established.
+The retained Task 8 reproduction/command records identify provider source
+`5d9bff35cc1c29027907cd08d6118de088cb60dd`; its module hash equals the
+reviewed module above. The earlier full direct Task 7 transcript identifies
+`81b5bc145be8b4389f65d8d2a640fb960f8db44d`. Neither is relabeled as a
+new execution. The reviewed `415278fd` gate independently reran the direct
+consumer and parity driver and recorded the issue-backed exclusion.
+
+Exact probe shape: public 3.2 table, live proxy session 1/slot 1 with
+serial/RW/async flags; `C_AsyncGetID(session, "C_Digest", &id)` returned
+`CKR_STATE_UNSAVEABLE` (`0x180`), with scalar sentinel
+`0xa5a5a5a5a5a5a5a5` unchanged. `C_AsyncJoin(session, "C_Digest",
+18446744073709551615UL, buffer, 32)` returned
+`CKR_SAVED_STATE_INVALID` (`0x160`), leaving 32 `0xa5` bytes and adjacent
+canaries unchanged. Null name/output/both variants and invalid session
+`18446744073709551615UL` returned those same fixed refusals: 16 calls,
+zero probe failures. These expected probe refusals reproduce the transport
+limitation; they are not successful detached lifecycle evidence.
+
+Source comparison at the pinned shim: GetID lines 72–78 and Join 84–92
+ignore arguments unconditionally. Complete lines 34–37 omit caller capacity
+from the RPC; lines 41–61 copy only the smaller of response length and
+incoming caller capacity and return success, using incoming storage rather
+than the submission/Join binding. Complete transport was **not executed**
+by this probe. Its mismatch is a source observation. Classification:
+**provider (proxy transport)**, separate from Haskoki provider/oracle lane
+findings. Disposition: `async_routed` is `DIRECT-ONLY`; eligible scenarios
+retain normal parity and the driver prints the exact issue URL. No async
+transport equivalence is claimed.
+
+The independent Haskoki comparison is `tests/c/async_routed.c`, compiled
+against the pinned header and called through the actual table slots.
+At the reviewed source its 1,281 assertions report zero failures, including
+restart-write, restart-read, and restart-delivered children, each exit 0.
+Input is SHA-256 `abc` (3 bytes, no mechanism parameters): explicit async
+submission returns `CKR_PENDING` without changing output/length canaries;
+Complete returns pending then `CKR_OK`, version 0, the bound pointer, and
+32 bytes `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`.
+The ordinary synchronous session returns `CKR_OK` and the same fixed bytes.
+SQLite GetID revokes the original allocation before protected-page testing;
+matching DigestInit and Join bind fresh storage, including across executed
+restart children. These direct legs supply the successful lifecycle
+evidence absent from the oracle. The existing payload-before-durable-mark
+limit remains: `jcMarkError` cannot undo bytes, so a failed mark provides
+no crash-safe exactly-once guarantee. Successful-store restart and the
+separate `DetachedEngineSpec` fault-injection evidence remain distinct.
+
+Measured artifact index (repository-relative links; full command, input,
+result, trace-origin, source applicability, and disposition records):
+
+| Artifact | SHA-256 |
+|---|---|
+| [reviewed/pins.json](../dist-release-evidence/async-routing/reviewed/pins.json) | `156480e7d12cf1609c43637705fd524a44d3bef076741704c0e5e8eeef00c500` |
+| [reviewed/gates/MANIFEST.txt](../dist-release-evidence/async-routing/reviewed/gates/MANIFEST.txt) | `bfd83d566de8676523dbe9f18b0bca3cbc0b328b3477159b2ec8498f6ff7791c` |
+| [reviewed/gates-command.json](../dist-release-evidence/async-routing/reviewed/gates-command.json) | `b4135c3145f9064483bfdb14d9035dcf037fba37b8c64dcf7b07c095fbba5052` |
+| [reviewed/gates.log](../dist-release-evidence/async-routing/reviewed/gates.log) | `19d9a3ccb6e57049ab503c270ef7921b06bd34196f6f96be67ea1ae3ee6e3ced` |
+| [reviewed/gates/test-consumers.sh.log](../dist-release-evidence/async-routing/reviewed/gates/test-consumers.sh.log) | `825ee5d7458235e6e47a8243f66992277c5c883d53065a7cc987f0fa13805e03` |
+| [reviewed/gates/test-proxy-parity.sh.log](../dist-release-evidence/async-routing/reviewed/gates/test-proxy-parity.sh.log) | `29a300a5e9be895f1f5354997c9347b744bec90cde3b056b2e5efefe13baaac7` |
+| [reviewed/dispositions.json](../dist-release-evidence/async-routing/reviewed/dispositions.json) | `9af733a909b84e862451ec0deaae00d95d8ec4b7a9de9837383e142798219c86` |
+| [reviewed/oracle-getid-runtime-command.json](../dist-release-evidence/async-routing/reviewed/oracle-getid-runtime-command.json) | `d1fff05cc613f9268a71c10a0c49e6d2a2960059b5bec55df6be388aaca00d88` |
+| [reviewed/oracle-getid-runtime.log](../dist-release-evidence/async-routing/reviewed/oracle-getid-runtime.log) | `d00855bd3f7f2f5233b0b9e052d890cba097e606f415b21eddd8aab8faba6add` |
+| [reviewed/oracle-version-source.log](../dist-release-evidence/async-routing/reviewed/oracle-version-source.log) | `b078e31967a013b777f62bf8801054d9e062b68d2e00253a17259d4db4fffa57` |
+| [reviewed/oracle-selector-issue.json](../dist-release-evidence/async-routing/reviewed/oracle-selector-issue.json) | `a92d5b28a89e84d1caa12ac60d577957afc6c9e3ab5a2eb398d25d492cbb8c9a` |
+| [reviewed/oracle-version-issue.json](../dist-release-evidence/async-routing/reviewed/oracle-version-issue.json) | `4bf86d6b17ac65b055446dd45c1a8644416d75ff588a0d8b4cafee483410a4ad` |
+| [reviewed/kat-rfc6979-variance.json](../dist-release-evidence/async-routing/reviewed/kat-rfc6979-variance.json) | `059009ff0d5112f52afbd8fc3eba808123c19f63192987e95ce2f574f3f8cbdf` |
+| [reviewed/fast-command.json](../dist-release-evidence/async-routing/reviewed/fast-command.json) | `041ce1765f5b950580847a1ee94f2c75ff5e9439a5158d936ce0f3149944ea8c` |
+| [reviewed/fast-run.json](../dist-release-evidence/async-routing/reviewed/fast-run.json) | `52b4f5a1d0d5061cb86fb7771457f65ef03ed2c0e0ae55308faff27bbebc91aa` |
+| [reviewed/fast-inspection.json](../dist-release-evidence/async-routing/reviewed/fast-inspection.json) | `3a5470ecc3b3823d0864fe1b8929fd35f71dc047fb509bbd8c60c4e86108b283` |
+| [reviewed/fast.log](../dist-release-evidence/async-routing/reviewed/fast.log) | `336eb78dc1553adb87d53f7686dae538aaef9adafae38467c9a43fea94f5a719` |
+| [reviewed/fast/pkcs11-fast-results.json](../dist-release-evidence/async-routing/reviewed/fast/pkcs11-fast-results.json) | `eaa4a48291de19f047b65996154ce5a371ae62c69d47891f70911982d62e4e50` |
+| [reviewed/fast/trace.jsonl](../dist-release-evidence/async-routing/reviewed/fast/trace.jsonl) | `889c5b074326443af69ba9d57bb67eaa0d8fedc08eb2c5f9ebeaaeba34eb05de` |
+| [reviewed/fast/trace-origin.json](../dist-release-evidence/async-routing/reviewed/fast/trace-origin.json) | `7358c2d6261ef4c9d01f5e3536ada981c3027209015567d4464b8830e01bddcd` |
+| [reviewed/kat-command.json](../dist-release-evidence/async-routing/reviewed/kat-command.json) | `6b2c28e20d5ee491807ef63e0286a342900cf7df135529dfed5717ff1e5da938` |
+| [reviewed/kat-run.json](../dist-release-evidence/async-routing/reviewed/kat-run.json) | `753c637b2110360121e88de184979915fa6d51ae1ec3454c3efa444829299472` |
+| [reviewed/kat-inspection.json](../dist-release-evidence/async-routing/reviewed/kat-inspection.json) | `af359143eed606826add05c90fade3063800a766b31340d31dba7aab62768219` |
+| [reviewed/kat.log](../dist-release-evidence/async-routing/reviewed/kat.log) | `e69170c74e9f9e8d5e6a7b8a87a63e9147fa77eb55523bd76af525cdc5381748` |
+| [reviewed/kat/pkcs11-kat-results.json](../dist-release-evidence/async-routing/reviewed/kat/pkcs11-kat-results.json) | `d0dc330c055428415381742cda7048f64341cb9a7ce08db5bee15ce7219e59d7` |
+| [reviewed/kat/trace.jsonl](../dist-release-evidence/async-routing/reviewed/kat/trace.jsonl) | `e934fd8e29feeccfe0560c9e0670834310bd97f4fd6d67e0afbac8e2bcd34af5` |
+| [reviewed/kat/trace-origin.json](../dist-release-evidence/async-routing/reviewed/kat/trace-origin.json) | `52d2344f3f6774ad8fe31ea7a1c4ac34f508052f68b50c2a72e5a04a676b8181` |
+| [proxy/issue.json](../dist-release-evidence/async-routing/proxy/issue.json) | `a0e03753f7c68ad5f8f5daf439328668e9335ab6e1523c3a7ab84d033bb6f7ec` |
+| [proxy/reproduction-result.json](../dist-release-evidence/async-routing/proxy/reproduction-result.json) | `355f6e7ef0472f018de528370b336d99c65795a51419aaffb81417f95ae60ade` |
+| [proxy/probe.log](../dist-release-evidence/async-routing/proxy/probe.log) | `8fe7eb3d9b180a699680b7f277a4c0e457af3829f551e556c4c8106ce312a0e3` |
+| [proxy/source-lines.txt](../dist-release-evidence/async-routing/proxy/source-lines.txt) | `10f386f206b4095a5f6fbf26529fbc80b32acb97c2b5b465103e682c0cf3f6cb` |
+| [proxy/direct-happy-path.log](../dist-release-evidence/async-routing/proxy/direct-happy-path.log) | `a9fea64f810273ee1d443ebdf66762f6a527567a30c2a5351920baa592d0da02` |
+| [proxy/parity-command.json](../dist-release-evidence/async-routing/proxy/parity-command.json) | `e01fbe9e89847afe5549545c3a9f8eb43f006c73762fbcbb59ebb22c21160896` |
+| [proxy/reproduction-command.json](../dist-release-evidence/async-routing/proxy/reproduction-command.json) | `84faeeb933dcaeb3674ae0e9159fe6ce0d7355ce73c1fd73e2bed815ab40c610` |
+| [proxy/readback-command.json](../dist-release-evidence/async-routing/proxy/readback-command.json) | `969fc71eedee428f834596bb99eb7dba8100d423ed0724e0853bd3cdbdd8974b` |
+| [proxy/direct-task7-command.json](../dist-release-evidence/async-routing/proxy/direct-task7-command.json) | `ee580956944e059e11c985e987809bea95e7970159d1863963a00c5973f3f985` |
+
+The three async contracts retain their original entries, ordinals, layouts,
+acceptance ids, and `planned-with-behavior` classification; only executed
+consumer/model/engine evidence is appended. Catalog totals remain
+104/70/32/2. Mechanism count/flags, the runtime pins, and D1-D12 remain
+unchanged. This entry supports the bounded routing review; it makes no
+general asynchronous-operation or PKCS #11 conformance claim.

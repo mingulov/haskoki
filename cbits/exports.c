@@ -17,8 +17,14 @@
  * globals callable before initialization. C_SessionCancel and all twenty
  * message-family entries use standard_surface.c bodies in every 3.x
  * table; C_EncapsulateKey and C_DecapsulateKey retain their existing 3.2
- * routes. The remaining generated entries retain lifecycle-aware stubs.
- * Message routing changes function reachability, not mechanism advertising.
+ * routes. C_AsyncComplete, C_AsyncGetID and C_AsyncJoin also route through
+ * standard_surface.c in the 3.2 table only. Their adapter resolves the
+ * session/function identity, retains submission/Join-bound output storage,
+ * publishes completion version 0, and returns CKR_OK after successful
+ * Join binding installation. Private proof exports retain context/job-token
+ * ownership, version 1, pending Join and their query/short-buffer dialogue.
+ * The remaining generated entries retain lifecycle-aware stubs. Message
+ * and async routing leave mechanism advertising unchanged.
  *
  * Discovery data (interface array, tables) is static and needs no Haskell
  * entry. Tables are filled once via pthread_once on first 3.x discovery.
