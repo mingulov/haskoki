@@ -47,6 +47,13 @@
 /* Routed post-2.40 definitions (exact pinned prototypes; the fill
  * macros in abi_stubs.inc wire these table slots to them). */
 extern CK_RV std_SessionCancel(CK_SESSION_HANDLE hSession, CK_FLAGS flags);
+extern CK_RV std_AsyncComplete(CK_SESSION_HANDLE hSession,
+    CK_UTF8CHAR *pFunctionName, CK_ASYNC_DATA *pResult);
+extern CK_RV std_AsyncGetID(CK_SESSION_HANDLE hSession,
+    CK_UTF8CHAR *pFunctionName, CK_ULONG *pulID);
+extern CK_RV std_AsyncJoin(CK_SESSION_HANDLE hSession,
+    CK_UTF8CHAR *pFunctionName, CK_ULONG ulID,
+    CK_BYTE *pData, CK_ULONG ulData);
 extern CK_RV std_EncapsulateKey(CK_SESSION_HANDLE hSession,
                                 CK_MECHANISM_PTR pMechanism,
                                 CK_OBJECT_HANDLE hPublicKey,

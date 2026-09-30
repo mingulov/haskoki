@@ -67,6 +67,13 @@ extern uint64_t haskoki_std_close_session(void *instance, uint64_t h_session);
 extern uint64_t haskoki_std_close_all_sessions(void *instance, uint64_t slot);
 extern uint64_t haskoki_std_session_cancel(void *instance, uint64_t h_session,
                                            uint64_t flags);
+unsigned long haskoki_std_async_complete(void *instance,
+    unsigned long session, unsigned char *functionName, void *result);
+unsigned long haskoki_std_async_get_id(void *instance,
+    unsigned long session, unsigned char *functionName, unsigned long *id);
+unsigned long haskoki_std_async_join(void *instance,
+    unsigned long session, unsigned char *functionName, unsigned long id,
+    unsigned char *data, unsigned long capacity);
 extern uint64_t haskoki_std_get_session_info(void *instance, uint64_t h_session,
                                              uint64_t *p_slot, uint64_t *p_ro,
                                              uint64_t *p_login,
@@ -542,7 +549,8 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   snprintf(serial16, sizeof(serial16), "%016u", (unsigned)slotID + 1u);
   memcpy(tmp.serialNumber, serial16, sizeof(tmp.serialNumber));
   tmp.flags = (CK_FLAGS)(CKF_RNG | CKF_LOGIN_REQUIRED |
-                         CKF_USER_PIN_INITIALIZED | CKF_TOKEN_INITIALIZED);
+                         CKF_USER_PIN_INITIALIZED | CKF_TOKEN_INITIALIZED |
+                         CKF_ASYNC_SESSION_SUPPORTED);
   if (uLock != 0) {
     tmp.flags |= CKF_USER_PIN_LOCKED;
   } else if (uRem == 1) {
@@ -691,7 +699,7 @@ CK_RV std_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags,
   if ((flags & CKF_SERIAL_SESSION) == 0) {
     return CKR_SESSION_PARALLEL_NOT_SUPPORTED;
   }
-  if ((flags & ~(CKF_SERIAL_SESSION | CKF_RW_SESSION)) != 0) {
+  if ((flags & ~(CKF_SERIAL_SESSION | CKF_RW_SESSION | CKF_ASYNC_SESSION)) != 0) {
     return CKR_ARGUMENTS_BAD;
   }
   lr = haskoki_state_lock();
@@ -836,8 +844,101 @@ CK_RV std_GetSessionInfo(CK_SESSION_HANDLE hSession,
   if (ro == 0) {
     pInfo->flags |= CKF_RW_SESSION;
   }
+  if (async != 0) {
+    pInfo->flags |= CKF_ASYNC_SESSION;
+  }
   pInfo->ulDeviceError = (CK_ULONG)devErr;
   return CKR_OK;
+}
+
+/* ---------- routed bodies: async byte jobs ---------- */
+
+CK_RV std_AsyncComplete(CK_SESSION_HANDLE hSession,
+    CK_UTF8CHAR *pFunctionName, CK_ASYNC_DATA *pResult) {
+  void *inst = 0;
+  /* The initial peek preserves lifecycle precedence; live_std() under
+   * the state lock is authoritative, as for the classic bodies. */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pFunctionName == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (pResult == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_async_complete(inst, hSession, pFunctionName, pResult);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_AsyncGetID(CK_SESSION_HANDLE hSession,
+    CK_UTF8CHAR *pFunctionName, CK_ULONG *pulID) {
+  void *inst = 0;
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pFunctionName == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (pulID == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_async_get_id(inst, hSession, pFunctionName, pulID);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_AsyncJoin(CK_SESSION_HANDLE hSession,
+    CK_UTF8CHAR *pFunctionName, CK_ULONG ulID,
+    CK_BYTE *pData, CK_ULONG ulData) {
+  void *inst = 0;
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pFunctionName == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (pData == NULL_PTR && ulData > 0) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_async_join(inst, hSession, pFunctionName, ulID,
+                                    pData, ulData);
+  (void)haskoki_state_unlock();
+  return rv;
 }
 
 /* ---------- routed bodies: objects ---------- */
