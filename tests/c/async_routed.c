@@ -1,5 +1,5 @@
-/* Independent PKCS #11 3.2 async table consumer. Task 6 covers attached
- * execution and per-entry behavior; restart/revocation belong to Task 7.
+/* Independent PKCS #11 3.2 async table consumer: attached execution,
+ * per-entry behavior, allocation revocation, and executed SQLite recovery.
  * Only discovery is resolved by symbol name. No provider header, generated
  * layout, private trampoline, or numeric handle serves as an oracle.
  */
@@ -12,13 +12,18 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 _Static_assert(sizeof(CK_ULONG) == 8, "independent LP64 CK_ULONG");
@@ -69,6 +74,9 @@ static unsigned failures, assertions;
 static int initialized;
 static void *module;
 static char fixture_dir[256];
+static int fixture_owns_dir;
+static pid_t fixture_child = -1;
+static volatile sig_atomic_t interrupted;
 static const CK_BYTE sha256_abc[32] = {
   0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
   0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
@@ -90,6 +98,12 @@ static void fixture_cleanup(void);
 static CK_BYTE *fixture_pages(size_t *page_size);
 static void fixture_unmap(CK_BYTE *pages, size_t page_size);
 static void fixture_race(Race *race);
+static void fixture_fail(const char *what);
+static void fixture_borrow_directory(const char *path);
+static void fixture_write_id(CK_ULONG id);
+static CK_ULONG fixture_read_id(void);
+static int fixture_run_child(const char *path, const char *mode);
+static void fixture_supervisor(void);
 static void reset_output(Output *output, CK_ULONG capacity);
 static void reset_result(Result *result, CK_BYTE *incoming);
 
@@ -461,6 +475,7 @@ done:
 }
 
 static void attached_fields(void) {
+  unsigned before = failures;
   for (unsigned alternate = 0; alternate < 2; ++alternate) {
     const char *leg = alternate ? "public-alternate-zero-capacity" : "public-null-zero";
     CK_SESSION_HANDLE session = fixture_session(1);
@@ -485,6 +500,7 @@ static void attached_fields(void) {
     }
     fixture_close(session);
   }
+  check("attached", "completion", failures == before);
 }
 
 static void synchronous_controls(void) {
@@ -905,15 +921,114 @@ static void joined_cancellation(void) {
   }
 }
 
-int main(int argc, char **argv) {
-  if (argc != 2) {
-    fprintf(stderr, "usage: async_routed <module>\n");
-    return 2;
+/* This allocation is independent of selector_pages(): every old byte,
+ * including the payload's prefix/tail and page slack, starts as 0xa5. The
+ * length out-parameter is outside it so the whole page has one canary. */
+static void protected_rejoin(void) {
+  unsigned before = failures;
+  long measured = sysconf(_SC_PAGESIZE);
+  if (measured < 64) fixture_fail("revocation-page-size");
+  size_t size = (size_t)measured;
+  CK_BYTE *old = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (old == MAP_FAILED) fixture_fail("revocation-allocation");
+  memset(old, 0xa5, size);
+  int protected = 0;
+  fixture_initialize("revocation-source");
+  CK_SESSION_HANDLE source = fixture_session(1);
+  CK_BYTE input[] = {'a', 'b', 'c'};
+  CK_ULONG length = 32, id = ID_SENTINEL;
+  if (!digest_init(source, "revocation-source")) goto done;
+  if (!expect_rv("C_Digest", "revocation-source",
+                 api->C_Digest(source, input, sizeof(input), old + 16, &length),
+                 CKR_PENDING)) goto done;
+  volatile CK_BYTE *overwrite = input;
+  for (size_t i = 0; i < sizeof(input); ++i) overwrite[i] = 0xa5;
+  check("revocation", "submission-canary", length == 32 && all_a5(old, size));
+  if (!expect_rv("C_AsyncGetID", "revocation-detach",
+                 api->C_AsyncGetID(source, digest_name, &id), CKR_OK)) goto done;
+  check("revocation", "detached-canary-and-id",
+        all_a5(old, size) && id != 0 && id != ID_SENTINEL);
+  if (failures != before) goto done;
+  if (mprotect(old, size, PROT_NONE) != 0) fixture_fail("revocation-protect");
+  protected = 1;
+  /* No handler catches a protection fault. The supervisor records the fatal
+   * child exit and removes its owned files. Keep the page inaccessible through
+   * both finalizations as well as reopen, Join, and completion. */
+  fixture_finalize("revocation-source");
+  fixture_initialize("revocation-same-sqlite-path");
+  CK_SESSION_HANDLE target = fixture_session(1);
+  Output fresh;
+  Result result;
+  reset_output(&fresh, 32);
+  if (digest_init(target, "revocation-fresh-target")) {
+    join_ok(target, id, &fresh, 32, "revocation-fresh-allocation");
+    reset_result(&result, NULL);
+    complete_pair(target, &fresh, &result, "revocation-delivery");
   }
-  if (setvbuf(stdout, NULL, _IOLBF, 0) != 0) return 2;
-  if (atexit(fixture_cleanup) != 0) return 2;
+  fixture_close(target);
+done:
+  fixture_finalize("revocation-cleanup");
+  if (protected && mprotect(old, size, PROT_READ) != 0)
+    fixture_fail("revocation-restore-read");
+  check("revocation", "entire-old-allocation-canary", all_a5(old, size));
+  if (munmap(old, size) != 0) fixture_fail("revocation-release");
+  check("revocation", "rejoin", protected && failures == before);
+}
+
+static void restart_write(void) {
+  unsigned before = failures;
+  fixture_initialize("restart-write");
+  CK_SESSION_HANDLE source = fixture_session(1);
+  CK_SESSION_HANDLE abandoned = fixture_session(1);
+  Output old, pending;
+  reset_output(&old, 32);
+  reset_output(&pending, 32);
+  if (submit(source, &old, 32, "restart-write-source")) {
+    CK_ULONG id = detach(source, &old, ID_SENTINEL, "restart-write-detach");
+    if (failures == before) fixture_write_id(id);
+  }
+  /* Leave this binding and both sessions open: Finalize must cancel the
+   * non-detached job, while the detached idle record survives the process. */
+  submit(abandoned, &pending, 32, "restart-write-finalize-cancellation");
+  fixture_finalize("restart-write");
+  clean_output("restart", "write-detached-not-delivered", &old, 32);
+  clean_output("restart", "write-attached-canceled-without-delivery", &pending, 32);
+  check("restart", "write", failures == before);
+}
+
+static void restart_read(int delivered_id) {
+  unsigned before = failures;
+  const char *leg = delivered_id ? "restart-delivered" : "restart-read";
+  CK_ULONG id = fixture_read_id();
+  fixture_initialize(leg);
+  CK_SESSION_HANDLE target = fixture_session(1);
+  Output fresh;
+  Result result;
+  reset_output(&fresh, 32);
+  if (digest_init(target, leg)) {
+    check("restart", "never-issued-id-distinct", id != UNKNOWN_ID);
+    refuse_join(target, digest_name, UNKNOWN_ID, fresh.bytes, 32,
+                CKR_SAVED_STATE_INVALID, &fresh, "restart-never-issued-id");
+    if (delivered_id) {
+      refuse_join(target, digest_name, id, fresh.bytes, 32,
+                  CKR_ARGUMENTS_BAD, &fresh, "restart-delivered-id");
+      refuse_complete(target, digest_name, CKR_OPERATION_NOT_INITIALIZED,
+                      &fresh, "restart-delivered-no-attachment");
+    } else {
+      join_ok(target, id, &fresh, 32, "restart-read-fresh-allocation");
+      reset_result(&result, NULL);
+      complete_pair(target, &fresh, &result, "restart-read-delivery");
+    }
+  }
+  fixture_close(target);
+  fixture_finalize(leg);
+  check("restart", delivered_id ? "delivered-refused" : "delivery", failures == before);
+}
+
+static int table_proofs(const char *path) {
   fixture_configure(0);
-  if (!discovery(fixture_load(argv[1]))) return 1;
+  if (!discovery(fixture_load(path))) return 1;
   lifecycle("memory-before-init");
   fixture_initialize("memory");
   guards_and_names();
@@ -934,8 +1049,49 @@ int main(int argc, char **argv) {
   joined_cancellation();
   fixture_finalize("sqlite");
   lifecycle("sqlite-after-finalize");
+  protected_rejoin();
+  fixture_cleanup();
   printf("async:summary/assertions/3.2 assertions=%u failures=%u\n", assertions, failures);
   return failures ? 1 : 0;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2 && (argc != 4 ||
+      (strcmp(argv[2], "restart-write") != 0 &&
+       strcmp(argv[2], "restart-read") != 0 &&
+       strcmp(argv[2], "restart-delivered") != 0))) {
+    fprintf(stderr, "usage: async_routed <module> [restart-write|restart-read|restart-delivered <directory>]\n");
+    return 2;
+  }
+  if (setvbuf(stdout, NULL, _IOLBF, 0) != 0) return 2;
+  if (atexit(fixture_cleanup) != 0) return 2;
+  if (argc == 4) {
+    fixture_borrow_directory(argv[3]);
+    fixture_configure(1);
+    if (!discovery(fixture_load(argv[1]))) return 1;
+    if (strcmp(argv[2], "restart-write") == 0) restart_write();
+    else restart_read(strcmp(argv[2], "restart-delivered") == 0);
+    fixture_cleanup();
+    printf("async:summary/%s/3.2 assertions=%u failures=%u\n", argv[2], assertions, failures);
+    return failures ? 1 : 0;
+  }
+
+  /* The supervisor never loads the module, so fork never copies a live RTS,
+   * session or worker. All files belong to this one mkdtemp directory. */
+  fixture_supervisor();
+  fixture_configure(0);
+  fixture_configure(1);
+  if (!fixture_run_child(argv[1], "table-proofs")) goto done;
+  if (!fixture_run_child(argv[1], "restart-write")) goto done;
+  if (!fixture_run_child(argv[1], "restart-read")) goto done;
+  fixture_run_child(argv[1], "restart-delivered");
+done:
+  fixture_cleanup();
+  printf("async:summary/coordinator/3.2 assertions=%u failures=%u\n", assertions, failures);
+  if (interrupted) return 128 + interrupted;
+  if (failures) return 1;
+  puts("PASS: async_routed (attached, revocation, executed SQLite restart)");
+  return 0;
 }
 
 /* Fixture helpers are added only after the recorded missing-helper build. */
@@ -963,10 +1119,19 @@ static void fixture_configure(int sqlite) {
     char pattern[] = "/tmp/haskoki-async-routing/consumer-XXXXXX";
     if (!mkdtemp(pattern)) fixture_fail("temporary-directory");
     snprintf(fixture_dir, sizeof(fixture_dir), "%s", pattern);
+    fixture_owns_dir = 1;
   }
   char path[512];
   snprintf(path, sizeof(path), "%s/%s.toml",
            fixture_dir, sqlite ? "sqlite" : "memory");
+  if (!fixture_owns_dir) {
+    /* Executed children reuse their parent's configuration verbatim. */
+    struct stat info;
+    if (lstat(path, &info) != 0 || !S_ISREG(info.st_mode) ||
+        info.st_uid != geteuid()) fixture_fail("borrowed-config");
+    if (setenv("HASKOKI_CONFIG", path, 1) != 0) fixture_fail("config-environment");
+    return;
+  }
   FILE *file = fopen(path, "w");
   if (!file) fixture_fail("config-open");
   int written = fprintf(file,
@@ -991,6 +1156,119 @@ static void fixture_configure(int sqlite) {
   if (written < 0 || path_written < 0 || engine_written < 0 || closed != 0)
     fixture_fail("config-write");
   if (setenv("HASKOKI_CONFIG", path, 1) != 0) fixture_fail("config-environment");
+}
+
+static void fixture_borrow_directory(const char *path) {
+  struct stat info;
+  if (strlen(path) >= sizeof(fixture_dir) || lstat(path, &info) != 0 ||
+      !S_ISDIR(info.st_mode) || info.st_uid != geteuid() ||
+      (info.st_mode & 0777) != 0700) fixture_fail("borrowed-directory");
+  snprintf(fixture_dir, sizeof(fixture_dir), "%s", path);
+  fixture_owns_dir = 0;
+}
+
+static void fixture_write_id(CK_ULONG id) {
+  char path[512];
+  snprintf(path, sizeof(path), "%s/id", fixture_dir);
+  int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (fd < 0) fixture_fail("handoff-create");
+  FILE *file = fdopen(fd, "w");
+  if (!file) {
+    close(fd);
+    fixture_fail("handoff-stream");
+  }
+  /* Only the decimal persistent scalar and a line terminator cross exec. */
+  int written = fprintf(file, "%lu\n", id);
+  int closed = fclose(file);
+  if (written < 0 || closed != 0) fixture_fail("handoff-write");
+}
+
+static CK_ULONG fixture_read_id(void) {
+  char path[512], text[32];
+  snprintf(path, sizeof(path), "%s/id", fixture_dir);
+  int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) fixture_fail("handoff-open");
+  FILE *file = fdopen(fd, "r");
+  if (!file) {
+    close(fd);
+    fixture_fail("handoff-stream");
+  }
+  size_t size = fread(text, 1, sizeof(text), file);
+  int error = ferror(file);
+  int closed = fclose(file);
+  if (error || closed != 0 || size < 2 || size >= sizeof(text) ||
+      text[size - 1] != '\n') fixture_fail("handoff-read");
+  for (size_t i = 0; i < size - 1; ++i)
+    if (text[i] < '0' || text[i] > '9') fixture_fail("handoff-non-decimal");
+  text[size - 1] = '\0';
+  errno = 0;
+  char *end;
+  CK_ULONG id = strtoul(text, &end, 10);
+  if (errno || *end || id == 0) fixture_fail("handoff-invalid-id");
+  return id;
+}
+
+static void fixture_interrupted(int signo) {
+  interrupted = signo;
+}
+
+static void fixture_supervisor(void) {
+  /* Faulting children must fail, without leaving a core file in the caller's
+   * directory. No protection-fault handler is installed in any process. */
+  const struct rlimit limit = {0, 0};
+  if (setrlimit(RLIMIT_CORE, &limit) != 0) fixture_fail("disable-core-files");
+  struct sigaction action = {0};
+  action.sa_handler = fixture_interrupted;
+  sigemptyset(&action.sa_mask);
+  if (sigaction(SIGINT, &action, NULL) != 0 ||
+      sigaction(SIGTERM, &action, NULL) != 0 ||
+      sigaction(SIGHUP, &action, NULL) != 0) fixture_fail("supervisor-signals");
+}
+
+static int fixture_run_child(const char *path, const char *mode) {
+  if (interrupted) {
+    check("child", mode, 0);
+    return 0;
+  }
+  if (fflush(NULL) != 0) fixture_fail("child-flush");
+  fixture_child = fork();
+  if (fixture_child < 0) fixture_fail("child-fork");
+  if (fixture_child == 0) {
+    fixture_child = -1;
+    fixture_owns_dir = 0;
+    struct sigaction action = {0};
+    action.sa_handler = SIG_DFL;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGINT, &action, NULL) != 0 ||
+        sigaction(SIGTERM, &action, NULL) != 0 ||
+        sigaction(SIGHUP, &action, NULL) != 0) _Exit(2);
+    if (strcmp(mode, "table-proofs") == 0) exit(table_proofs(path));
+    execl("/proc/self/exe", "async_routed", path, mode, fixture_dir, (char *)NULL);
+    fixture_fail("child-exec");
+  }
+  int status;
+  for (;;) {
+    if (interrupted && kill(fixture_child, SIGKILL) != 0 && errno != ESRCH)
+      fixture_fail("child-interrupt");
+    pid_t waited = waitpid(fixture_child, &status, WNOHANG);
+    if (waited == fixture_child) break;
+    if (waited < 0 && errno != EINTR) {
+      if (errno == ECHILD) fixture_child = -1;
+      fixture_fail("child-wait");
+    }
+    /* A bounded sleep closes the flag-before-wait signal race; it also lets
+     * the supervisor cancel/reap just its own child on interruption. */
+    const struct timespec pause = {0, 10000000};
+    nanosleep(&pause, NULL);
+  }
+  fixture_child = -1;
+  if (WIFEXITED(status))
+    printf("async:child/%s/3.2 exit=%d\n", mode, WEXITSTATUS(status));
+  else if (WIFSIGNALED(status))
+    printf("async:child/%s/3.2 signal=%d\n", mode, WTERMSIG(status));
+  int good = !interrupted && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  check("child", mode, good);
+  return good;
 }
 
 static CK_C_GetInterface fixture_load(const char *path) {
@@ -1078,6 +1356,15 @@ static void fixture_finalize(const char *leg) {
 
 static void fixture_cleanup(void) {
   int failed = 0;
+  if (fixture_child > 0) {
+    if (kill(fixture_child, SIGKILL) != 0 && errno != ESRCH) failed = 1;
+    pid_t waited;
+    do {
+      waited = waitpid(fixture_child, NULL, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited != fixture_child) failed = 1;
+    fixture_child = -1;
+  }
   /* Normal paths close sessions while their caller allocations remain live.
    * This is the setup-failure unwind; no fixture exits with running threads. */
   if (initialized && api) {
@@ -1088,10 +1375,10 @@ static void fixture_cleanup(void) {
     if (dlclose(module) != 0) failed = 1;
     module = NULL;
   }
-  if (fixture_dir[0]) {
+  if (fixture_owns_dir && fixture_dir[0]) {
     static const char *const files[] = {
       "memory.toml", "sqlite.toml", "jobs.db", "jobs.db-wal",
-      "jobs.db-shm", "jobs.db-journal"
+      "jobs.db-shm", "jobs.db-journal", "jobs.db.lock", "id"
     };
     for (size_t i = 0; i < ARRAY_COUNT(files); ++i) {
       char path[512];

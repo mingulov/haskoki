@@ -88,14 +88,17 @@ fail() {
 }
 
 [ -f tests/c/message_routed.c ] || fail "message consumer missing"
+[ -f tests/c/async_routed.c ] || fail "async consumer missing"
 SCEN_LIST=$(
-  for scen in tests/c/consumer_*.c tests/c/message_routed.c; do
+  for scen in tests/c/consumer_*.c tests/c/message_routed.c tests/c/async_routed.c; do
     [ -f "$scen" ] && printf '%s\n' "$scen"
   done | LC_ALL=C sort -u
 )
 [ -n "$SCEN_LIST" ] || fail "consumer scenario list empty"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/message_routed.c')" -eq 1 ] \
   || fail "message consumer must occur exactly once"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/async_routed.c')" -eq 1 ] \
+  || fail "async consumer must occur exactly once"
 for scen in $SCEN_LIST; do
   if grep -nE 'abi_generated|abi_stubs|abi-inventory' "$scen"; then
     fail "consumer independence violated: $scen"
