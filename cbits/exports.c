@@ -73,6 +73,63 @@ static CK_RV x_live_check(void) {
   return CKR_FUNCTION_NOT_SUPPORTED;
 }
 
+extern CK_RV std_MessageEncryptInit(CK_SESSION_HANDLE hSession,
+    CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey);
+extern CK_RV std_EncryptMessage(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen,
+    CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen,
+    CK_BYTE *pPlaintext, CK_ULONG ulPlaintextLen,
+    CK_BYTE *pCiphertext, CK_ULONG *pulCiphertextLen);
+extern CK_RV std_EncryptMessageBegin(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen,
+    CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen);
+extern CK_RV std_EncryptMessageNext(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen,
+    CK_BYTE *pPlaintextPart, CK_ULONG ulPlaintextPartLen,
+    CK_BYTE *pCiphertextPart, CK_ULONG *pulCiphertextPartLen, CK_FLAGS flags);
+extern CK_RV std_MessageEncryptFinal(CK_SESSION_HANDLE hSession);
+extern CK_RV std_MessageDecryptInit(CK_SESSION_HANDLE hSession,
+    CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey);
+extern CK_RV std_DecryptMessage(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen,
+    CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen,
+    CK_BYTE *pCiphertext, CK_ULONG ulCiphertextLen,
+    CK_BYTE *pPlaintext, CK_ULONG *pulPlaintextLen);
+extern CK_RV std_DecryptMessageBegin(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen,
+    CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen);
+extern CK_RV std_DecryptMessageNext(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen,
+    CK_BYTE *pCiphertextPart, CK_ULONG ulCiphertextPartLen,
+    CK_BYTE *pPlaintextPart, CK_ULONG *pulPlaintextPartLen, CK_FLAGS flags);
+extern CK_RV std_MessageDecryptFinal(CK_SESSION_HANDLE hSession);
+extern CK_RV std_MessageSignInit(CK_SESSION_HANDLE hSession,
+    CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey);
+extern CK_RV std_SignMessage(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen,
+    CK_BYTE *pData, CK_ULONG ulDataLen,
+    CK_BYTE *pSignature, CK_ULONG *pulSignatureLen);
+extern CK_RV std_SignMessageBegin(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen);
+extern CK_RV std_SignMessageNext(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen,
+    CK_BYTE *pDataPart, CK_ULONG ulDataPartLen,
+    CK_BYTE *pSignature, CK_ULONG *pulSignatureLen);
+extern CK_RV std_MessageSignFinal(CK_SESSION_HANDLE hSession);
+extern CK_RV std_MessageVerifyInit(CK_SESSION_HANDLE hSession,
+    CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey);
+extern CK_RV std_VerifyMessage(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen,
+    CK_BYTE *pData, CK_ULONG ulDataLen,
+    CK_BYTE *pSignature, CK_ULONG ulSignatureLen);
+extern CK_RV std_VerifyMessageBegin(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen);
+extern CK_RV std_VerifyMessageNext(CK_SESSION_HANDLE hSession,
+    void *pParameter, CK_ULONG ulParameterLen,
+    CK_BYTE *pDataPart, CK_ULONG ulDataPartLen,
+    CK_BYTE *pSignature, CK_ULONG ulSignatureLen);
+extern CK_RV std_MessageVerifyFinal(CK_SESSION_HANDLE hSession);
+
 /* Generated post-2.40 stubs (exact pinned prototypes) + fill macros. */
 #include "abi_stubs.inc"
 

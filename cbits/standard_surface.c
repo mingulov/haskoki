@@ -208,6 +208,70 @@ extern uint64_t haskoki_std_decapsulate_key(void *instance, uint64_t h_session,
                                             uint8_t *p_ct, uint64_t ct_len,
                                             uint8_t *p_frame, uint64_t frame_len,
                                             uint64_t *ph_key);
+
+unsigned long haskoki_std_message_encrypt_init(void *ctx, unsigned long session,
+    unsigned long mechanism, unsigned char *params, unsigned long paramsLen,
+    unsigned long key);
+unsigned long haskoki_std_message_encrypt(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen,
+    unsigned char *aad, unsigned long aadLen,
+    unsigned char *input, unsigned long inputLen,
+    unsigned char *output, unsigned long *outputLen);
+unsigned long haskoki_std_message_encrypt_begin(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen,
+    unsigned char *aad, unsigned long aadLen);
+unsigned long haskoki_std_message_encrypt_next(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen,
+    unsigned char *part, unsigned long partLen,
+    unsigned char *output, unsigned long *outputLen, unsigned long end);
+unsigned long haskoki_std_message_encrypt_final(void *ctx, unsigned long session);
+
+unsigned long haskoki_std_message_decrypt_init(void *ctx, unsigned long session,
+    unsigned long mechanism, unsigned char *params, unsigned long paramsLen,
+    unsigned long key);
+unsigned long haskoki_std_message_decrypt(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen,
+    unsigned char *aad, unsigned long aadLen,
+    unsigned char *input, unsigned long inputLen,
+    unsigned char *output, unsigned long *outputLen);
+unsigned long haskoki_std_message_decrypt_begin(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen,
+    unsigned char *aad, unsigned long aadLen);
+unsigned long haskoki_std_message_decrypt_next(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen,
+    unsigned char *part, unsigned long partLen,
+    unsigned char *output, unsigned long *outputLen, unsigned long end);
+unsigned long haskoki_std_message_decrypt_final(void *ctx, unsigned long session);
+
+unsigned long haskoki_std_message_sign_init(void *ctx, unsigned long session,
+    unsigned long mechanism, unsigned char *params, unsigned long paramsLen,
+    unsigned long key);
+unsigned long haskoki_std_message_sign(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen,
+    unsigned char *input, unsigned long inputLen,
+    unsigned char *signature, unsigned long *signatureLen);
+unsigned long haskoki_std_message_sign_begin(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen);
+unsigned long haskoki_std_message_sign_next(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen,
+    unsigned char *part, unsigned long partLen,
+    unsigned char *signature, unsigned long *signatureLen);
+unsigned long haskoki_std_message_sign_final(void *ctx, unsigned long session);
+
+unsigned long haskoki_std_message_verify_init(void *ctx, unsigned long session,
+    unsigned long mechanism, unsigned char *params, unsigned long paramsLen,
+    unsigned long key);
+unsigned long haskoki_std_message_verify(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen,
+    unsigned char *input, unsigned long inputLen,
+    unsigned char *signature, unsigned long signatureLen);
+unsigned long haskoki_std_message_verify_begin(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen);
+unsigned long haskoki_std_message_verify_next(void *ctx, unsigned long session,
+    unsigned char *params, unsigned long paramsLen,
+    unsigned char *part, unsigned long partLen,
+    unsigned char *signature, unsigned long signatureLen);
+unsigned long haskoki_std_message_verify_final(void *ctx, unsigned long session);
 #endif
 
 /* C interval state lock (cbits/function_tables.c): every routed
@@ -2417,6 +2481,367 @@ CK_RV std_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   }
   (void)haskoki_state_unlock();
   free(frame);
+  return rv;
+}
+
+CK_RV std_MessageEncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pMechanism == NULL) return CKR_ARGUMENTS_BAD;
+  if (pMechanism->pParameter == NULL && pMechanism->ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_encrypt_init(inst, hSession, pMechanism->mechanism, (unsigned char *)pMechanism->pParameter, pMechanism->ulParameterLen, hKey);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_EncryptMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen, CK_BYTE *pPlaintext, CK_ULONG ulPlaintextLen, CK_BYTE *pCiphertext, CK_ULONG *pulCiphertextLen) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pulCiphertextLen == NULL) return CKR_ARGUMENTS_BAD;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pAssociatedData == NULL && ulAssociatedDataLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pPlaintext == NULL && ulPlaintextLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_encrypt(inst, hSession, (unsigned char *)pParameter, ulParameterLen, pAssociatedData, ulAssociatedDataLen, pPlaintext, ulPlaintextLen, pCiphertext, pulCiphertextLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_EncryptMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pAssociatedData == NULL && ulAssociatedDataLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_encrypt_begin(inst, hSession, (unsigned char *)pParameter, ulParameterLen, pAssociatedData, ulAssociatedDataLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_EncryptMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pPlaintextPart, CK_ULONG ulPlaintextPartLen, CK_BYTE *pCiphertextPart, CK_ULONG *pulCiphertextPartLen, CK_FLAGS flags) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pulCiphertextPartLen == NULL) return CKR_ARGUMENTS_BAD;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pPlaintextPart == NULL && ulPlaintextPartLen > 0) return CKR_ARGUMENTS_BAD;
+  if ((flags & ~CKF_END_OF_MESSAGE) != 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_encrypt_next(inst, hSession, (unsigned char *)pParameter, ulParameterLen, pPlaintextPart, ulPlaintextPartLen, pCiphertextPart, pulCiphertextPartLen, (flags & CKF_END_OF_MESSAGE) ? 1UL : 0UL);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_MessageEncryptFinal(CK_SESSION_HANDLE hSession) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_encrypt_final(inst, hSession);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_MessageDecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pMechanism == NULL) return CKR_ARGUMENTS_BAD;
+  if (pMechanism->pParameter == NULL && pMechanism->ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_decrypt_init(inst, hSession, pMechanism->mechanism, (unsigned char *)pMechanism->pParameter, pMechanism->ulParameterLen, hKey);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_DecryptMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen, CK_BYTE *pCiphertext, CK_ULONG ulCiphertextLen, CK_BYTE *pPlaintext, CK_ULONG *pulPlaintextLen) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pulPlaintextLen == NULL) return CKR_ARGUMENTS_BAD;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pAssociatedData == NULL && ulAssociatedDataLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pCiphertext == NULL && ulCiphertextLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_decrypt(inst, hSession, (unsigned char *)pParameter, ulParameterLen, pAssociatedData, ulAssociatedDataLen, pCiphertext, ulCiphertextLen, pPlaintext, pulPlaintextLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_DecryptMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pAssociatedData == NULL && ulAssociatedDataLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_decrypt_begin(inst, hSession, (unsigned char *)pParameter, ulParameterLen, pAssociatedData, ulAssociatedDataLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_DecryptMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pCiphertextPart, CK_ULONG ulCiphertextPartLen, CK_BYTE *pPlaintextPart, CK_ULONG *pulPlaintextPartLen, CK_FLAGS flags) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pulPlaintextPartLen == NULL) return CKR_ARGUMENTS_BAD;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pCiphertextPart == NULL && ulCiphertextPartLen > 0) return CKR_ARGUMENTS_BAD;
+  if ((flags & ~CKF_END_OF_MESSAGE) != 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_decrypt_next(inst, hSession, (unsigned char *)pParameter, ulParameterLen, pCiphertextPart, ulCiphertextPartLen, pPlaintextPart, pulPlaintextPartLen, (flags & CKF_END_OF_MESSAGE) ? 1UL : 0UL);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_MessageDecryptFinal(CK_SESSION_HANDLE hSession) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_decrypt_final(inst, hSession);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_MessageSignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pMechanism == NULL) return CKR_ARGUMENTS_BAD;
+  if (pMechanism->pParameter == NULL && pMechanism->ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_sign_init(inst, hSession, pMechanism->mechanism, (unsigned char *)pMechanism->pParameter, pMechanism->ulParameterLen, hKey);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_SignMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pData, CK_ULONG ulDataLen, CK_BYTE *pSignature, CK_ULONG *pulSignatureLen) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pulSignatureLen == NULL) return CKR_ARGUMENTS_BAD;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pData == NULL && ulDataLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_sign(inst, hSession, (unsigned char *)pParameter, ulParameterLen, pData, ulDataLen, pSignature, pulSignatureLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_SignMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_sign_begin(inst, hSession, (unsigned char *)pParameter, ulParameterLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_SignMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pDataPart, CK_ULONG ulDataPartLen, CK_BYTE *pSignature, CK_ULONG *pulSignatureLen) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pDataPart == NULL && ulDataPartLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_sign_next(inst, hSession, (unsigned char *)pParameter, ulParameterLen, pDataPart, ulDataPartLen, pSignature, pulSignatureLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_MessageSignFinal(CK_SESSION_HANDLE hSession) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_sign_final(inst, hSession);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_MessageVerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pMechanism == NULL) return CKR_ARGUMENTS_BAD;
+  if (pMechanism->pParameter == NULL && pMechanism->ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_verify_init(inst, hSession, pMechanism->mechanism, (unsigned char *)pMechanism->pParameter, pMechanism->ulParameterLen, hKey);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_VerifyMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pData, CK_ULONG ulDataLen, CK_BYTE *pSignature, CK_ULONG ulSignatureLen) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pData == NULL && ulDataLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pSignature == NULL && ulSignatureLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_verify(inst, hSession, (unsigned char *)pParameter, ulParameterLen, pData, ulDataLen, pSignature, ulSignatureLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_VerifyMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_verify_begin(inst, hSession, (unsigned char *)pParameter, ulParameterLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_VerifyMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pDataPart, CK_ULONG ulDataPartLen, CK_BYTE *pSignature, CK_ULONG ulSignatureLen) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  if (pParameter == NULL && ulParameterLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pDataPart == NULL && ulDataPartLen > 0) return CKR_ARGUMENTS_BAD;
+  if (pSignature == NULL && ulSignatureLen > 0) return CKR_ARGUMENTS_BAD;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_verify_next(inst, hSession, (unsigned char *)pParameter, ulParameterLen, pDataPart, ulDataPartLen, pSignature, ulSignatureLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_MessageVerifyFinal(CK_SESSION_HANDLE hSession) {
+  void *inst;
+  CK_RV lr, rv;
+  if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) return lr;
+  inst = live_std();
+  if (inst == NULL) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_message_verify_final(inst, hSession);
+  (void)haskoki_state_unlock();
   return rv;
 }
 
