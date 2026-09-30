@@ -146,7 +146,7 @@ legs pass, 0 failed overall.
 
 ## P11C-001: HOTP registry entry has key_type=None; wrong-key-type tests HARD-FAIL every lane
 
-**Severity**: medium (2 red tests in every fast/KAT lane; masks real regressions)
+**Severity**: medium (2 failing tests in every fast/KAT lane; masks real regressions)
 **Component**: `src/pkcs11_check/testcases/test_mech_negative.py` (`TestWrongKeyType`) + mechanism registry (`MechConfig`)
 **Found**: 2026-09-25 (first full-lane triage); still present 2026-09-26
 
@@ -169,7 +169,7 @@ AssertionError: assert None is not None
 ```
 
 Expected: the HOTP registry entry gains its key type (or the tests
-skip/xfail when the entry is incomplete), so the lane is green and
+skip/xfail when the entry is incomplete), so the lane is clean and
 a future real wrong-key-type regression is visible.
 
 Downstream handling: Haskoki triages these 2 as known-external in
@@ -178,7 +178,7 @@ that no other failure hides behind the count.
 
 ## P11C-002: `_KEY_SIZE_REJECT_RVS` carries wrong numeric CKR codes; correct refusals xfail
 
-**Severity**: low (3 xfails per lane that should pass; masks nothing red)
+**Severity**: low (3 xfails per lane that should pass; masks no failures)
 **Component**: `src/pkcs11_check/testcases/security/test_field_size_boundary.py`
 **Found**: 2026-09-26 (DSA slice targeted r1)
 
@@ -225,7 +225,7 @@ triages these xfails as framework-bug in
 
 ## P11C-003: ACVP SLH-DSA sigver drops the vector context; valid context-bound signatures HARD-FAIL
 
-**Severity**: medium (6 red tests in every lane running `test_acvp_slhdsa.py`; masks real regressions)
+**Severity**: medium (6 failing tests in every lane running `test_acvp_slhdsa.py`; masks real regressions)
 **Component**: `src/pkcs11_check/testcases/acvp/test_acvp_slhdsa.py` (`_load_sigver_vectors` + `test_slhdsa_sigver`)
 **Found**: 2026-09-26 (SLH-DSA slice targeted-slhdsa-r1)
 
@@ -576,7 +576,7 @@ hides behind the count. No module-side change.
 
 ## P11C-007 (candidate): `_x942_derive_aes` omits `CKA_VALUE_LEN`; its PKCS#3 twin pins 16
 
-**Severity**: low (1 red test in the rc1 fast lane)
+**Severity**: low (1 failing test in the rc1 fast lane)
 **Component**: `src/pkcs11_check/testcases/test_x942_dh.py`
 (`_x942_derive_aes`) vs `test_dh_key_agreement.py`
 **Found**: 2026-09-27 (rc1 validation)

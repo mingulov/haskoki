@@ -9,15 +9,6 @@ the table: the table shape, id resolution, codec identity, the
 per-kind parameter matrix (aux\/offset\/blob slot rules,
 ceilings), the base key types, one planDerive accept\/deny set,
 and the driver mapping.
-
-Reference vectors (computed byte results; bases are bytes
-0..31 unless noted):
-
-* 0x360 concat-key\/48: filled at GREEN time
-* 0x362 concat-data\/48: filled at GREEN time
-* 0x363 data-concat\/48: filled at GREEN time
-* 0x364 xor\/16: filled at GREEN time
-* 0x365 extract\/16: filled at GREEN time
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module RecipeByteOpsSpec (spec) where

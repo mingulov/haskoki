@@ -19,7 +19,7 @@ agrees too):
 * 0x3a8 IV: f7eb3b1c7d9ce2a0
 * 0x3a9 DES2 key (parity-adjusted): 73b93bb0... (16 bytes)
 
-Slice 11q adds the five SHA1 rows over the same KDF outputs
+The five SHA1 rows ride over the same KDF outputs
 (raw bytes, no parity; RC4 rows derive no IV):
 
 * 0x3a5 CAST128 key: 72b93bb1f796b464f6d80317b27e0fe8

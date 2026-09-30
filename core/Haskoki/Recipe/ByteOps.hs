@@ -1,4 +1,4 @@
-{- | Byte-operation derive recipes (RED skeleton).
+{- | Byte-operation derive recipes.
 
 The five byte-op rows derive by pure byte manipulation over
 secret values (no provider crypto):

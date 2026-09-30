@@ -14496,7 +14496,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Key-material recipe (core/Haskoki/Recipe/TlsKeyMat.hs): the TLS 1.0 PRF expands the master secret over 'key expansion' ++ server_random ++ client_random (RFC 2246 S6.3) and the block splits client-MAC, server-MAC, client-key, server-key, client-IV, server-IV. MAC keys force CKK_GENERIC_SECRET; cipher keys keep the template type; the single template applies to every output and its SENSITIVE/EXTRACTABLE must match the base (v3.2 S6.39.6) or the plan refuses CKR_TEMPLATE_INCONSISTENT; CKA_VALUE_LEN refuses (lengths come from params); export refuses. Multi-output write-back (handles + IVs) into CK_SSL3_KEY_MAT_OUT. Vectors pinned (RoutingE2ESpec caseDriverKeyMat); planner pins (RecipeTlsKeyMatSpec); real KATs (KeyManagementSpec caseRealKeyMatVector).",
+      "notes": "Key-material recipe (core/Haskoki/Recipe/TlsKeyMat.hs): the TLS 1.0 PRF expands the master secret over 'key expansion' ++ server_random ++ client_random (RFC 2246 section 6.3) and the block splits client-MAC, server-MAC, client-key, server-key, client-IV, server-IV. MAC keys force CKK_GENERIC_SECRET; cipher keys keep the template type; the single template applies to every output and its SENSITIVE/EXTRACTABLE must match the base (v3.2 section 6.39.6) or the plan refuses CKR_TEMPLATE_INCONSISTENT; CKA_VALUE_LEN refuses (lengths come from params); export refuses. Multi-output write-back (handles + IVs) into CK_SSL3_KEY_MAT_OUT. Vectors pinned (RoutingE2ESpec caseDriverKeyMat); planner pins (RecipeTlsKeyMatSpec); real KATs (KeyManagementSpec caseRealKeyMatVector).",
       "numeric_id": "0x00000376",
       "routes": [
         {
@@ -17571,7 +17571,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Key-material recipe (core/Haskoki/Recipe/TlsKeyMat.hs): the TLS 1.2 PRF (hash-selected) expands the master secret over 'key expansion' ++ server_random ++ client_random (RFC 5246 S6.3) and the block splits client-MAC, server-MAC, client-key, server-key, client-IV, server-IV. MAC keys force CKK_GENERIC_SECRET; cipher keys keep the template type; the single template applies to every output and its SENSITIVE/EXTRACTABLE must match the base (v3.2 S6.40.6) or the plan refuses CKR_TEMPLATE_INCONSISTENT; CKA_VALUE_LEN refuses (lengths come from params); export refuses. Multi-output write-back (handles + IVs) into CK_TLS12_KEY_MAT_PARAMS out-struct. Vectors pinned (RoutingE2ESpec caseDriverKeyMat); planner pins (RecipeTlsKeyMatSpec); real KATs (KeyManagementSpec caseRealKeyMatVector).",
+      "notes": "Key-material recipe (core/Haskoki/Recipe/TlsKeyMat.hs): the TLS 1.2 PRF (hash-selected) expands the master secret over 'key expansion' ++ server_random ++ client_random (RFC 5246 section 6.3) and the block splits client-MAC, server-MAC, client-key, server-key, client-IV, server-IV. MAC keys force CKK_GENERIC_SECRET; cipher keys keep the template type; the single template applies to every output and its SENSITIVE/EXTRACTABLE must match the base (v3.2 section 6.40.6) or the plan refuses CKR_TEMPLATE_INCONSISTENT; CKA_VALUE_LEN refuses (lengths come from params); export refuses. Multi-output write-back (handles + IVs) into CK_TLS12_KEY_MAT_PARAMS out-struct. Vectors pinned (RoutingE2ESpec caseDriverKeyMat); planner pins (RecipeTlsKeyMatSpec); real KATs (KeyManagementSpec caseRealKeyMatVector).",
       "numeric_id": "0x000003e1",
       "routes": [
         {
@@ -17731,7 +17731,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Key-material recipe (core/Haskoki/Recipe/TlsKeyMat.hs): identical to CKM_TLS12_KEY_AND_MAC_DERIVE except IVs are never produced (v3.2 S6.40.7: ulIvSizeInBits is ignored and treated as 0); the block holds keys only. Same struct, same split, same template rules. Vectors pinned (RoutingE2ESpec caseDriverKeyMat); planner pins (RecipeTlsKeyMatSpec); real KATs (KeyManagementSpec caseRealKeyMatVector).",
+      "notes": "Key-material recipe (core/Haskoki/Recipe/TlsKeyMat.hs): identical to CKM_TLS12_KEY_AND_MAC_DERIVE except IVs are never produced (v3.2 section 6.40.7: ulIvSizeInBits is ignored and treated as 0); the block holds keys only. Same struct, same split, same template rules. Vectors pinned (RoutingE2ESpec caseDriverKeyMat); planner pins (RecipeTlsKeyMatSpec); real KATs (KeyManagementSpec caseRealKeyMatVector).",
       "numeric_id": "0x000003e3",
       "routes": [
         {
@@ -24271,7 +24271,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "GMAC recipe (core/Haskoki/Recipe/Gmac.hs): gcm-params/1 image (tag width from the SP 800-38D approved set per OASIS v3.2 S6.13.6, caller IV 1..64 bytes); keys 128/192/256-bit CKK_AES. The message travels as the GCM AAD with empty plaintext (the params AAD field carries no meaning on the sign path and is ignored); the tag is the GCM authentication tag. The driver executes over the backend AES-GCM route \u2014 real AES-GCM on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverGmac: Python-cryptography AESGCM tags, the AEAD oracle root); constructions pinned (SyntheticSpec caseGmac); params/init/map pinned (RecipeGmacSpec).",
+      "notes": "GMAC recipe (core/Haskoki/Recipe/Gmac.hs): gcm-params/1 image (tag width from the SP 800-38D approved set per OASIS v3.2 section 6.13.6, caller IV 1..64 bytes); keys 128/192/256-bit CKK_AES. The message travels as the GCM AAD with empty plaintext (the params AAD field carries no meaning on the sign path and is ignored); the tag is the GCM authentication tag. The driver executes over the backend AES-GCM route \u2014 real AES-GCM on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverGmac: Python-cryptography AESGCM tags, the AEAD oracle root); constructions pinned (SyntheticSpec caseGmac); params/init/map pinned (RecipeGmacSpec).",
       "numeric_id": "0x0000108e",
       "routes": [
         {

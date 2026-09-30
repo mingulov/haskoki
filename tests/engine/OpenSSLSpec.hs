@@ -1692,7 +1692,7 @@ caseLegacyKats = withBackend $ \env -> do
   raggedOfb <- expectOk "ofb64 unaligned encrypt" =<<
     cipherEncrypt env C_DES_OFB64 (KeyBytes desCbc1Key) desCbc1Iv "eleven bytes"
   assertEqual "ofb64 length preserved" 12 (BS.length raggedOfb)
-  -- OFB and CFB64 share the first block (ECB_K(IV) ^ P0).
+  -- OFB and CFB64 share the first block (ECB_K(IV) xored with plaintext block 0).
   assertEqual "ofb==cfb64 at one block" desCfb64Ct desOfbCt
   -- RC2: oracle rows at 128 bits; other widths stay
   -- sensitivity-checked (never pinned to single-impl bytes).
@@ -4417,11 +4417,11 @@ caseXdhVectors = withBackend $ \env -> do
   s48BA <- expectOk "derive X448 B->A" =<< ecdhDerive env EcdhPlain p48B q48A
   assertEqual "commute X448" xdh48SecretAB s48BA
   -- Wycheproof tc1 exchange KATs (external vectors).
-  let t19 = KeyDer (montgomeryPrivateDer (hex "06032b656e") xdhTc1Priv)
-  sT19 <- expectOk "derive wycheproof X25519 tc1" =<< ecdhDerive env EcdhPlain t19 (KeyBytes xdhTc1Pub)
+  let priv19w = KeyDer (montgomeryPrivateDer (hex "06032b656e") xdhTc1Priv)
+  sT19 <- expectOk "derive wycheproof X25519 tc1" =<< ecdhDerive env EcdhPlain priv19w (KeyBytes xdhTc1Pub)
   assertEqual "KAT wycheproof X25519 tc1" xdhTc1Shared sT19
-  let t48 = KeyDer (montgomeryPrivateDer (hex "06032b656f") xdh48Tc1Priv)
-  sT48 <- expectOk "derive wycheproof X448 tc1" =<< ecdhDerive env EcdhPlain t48 (KeyBytes xdh48Tc1Pub)
+  let priv48w = KeyDer (montgomeryPrivateDer (hex "06032b656f") xdh48Tc1Priv)
+  sT48 <- expectOk "derive wycheproof X448 tc1" =<< ecdhDerive env EcdhPlain priv48w (KeyBytes xdh48Tc1Pub)
   assertEqual "KAT wycheproof X448 tc1" xdh48Tc1Shared sT48
   -- Low-order peers (u=0, the wycheproof tc32 shape) refuse as
   -- mechanism-param-invalid: the pinned provider fails

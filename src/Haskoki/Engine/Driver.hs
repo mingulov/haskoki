@@ -1028,8 +1028,7 @@ byteOpsParamsFor mech params = do
   pure (ByteOpsExec (boKind r) aux off blob)
 
 -- | One decoded key-material execution: the row kind, the PRF
--- code, the MAC\/key\/IV byte sizes, and the two randoms
--- (RED stub: always 'Nothing' until GREEN).
+-- code, the MAC\/key\/IV byte sizes, and the two randoms.
 data KeyMatExec = KeyMatExec
   { kmeKind :: !TlsKeyMatKind
   , kmePrf :: !Word8

@@ -10,14 +10,6 @@ per-kind parameter matrix (aux rules, flags, key number, PRF
 range, ceilings), the PRF mechanism map (HMAC selectors only),
 the base key types, one planDerive accept\/deny set, and the
 driver mapping.
-
-Reference vectors (oracle test_ike.py references; bases are
-bytes 0..31, nonces 0x01*16\/0x02*16):
-
-* 0x402e prf+\/32: filled at GREEN time
-* 0x402f prf\/32: filled at GREEN time
-* 0x4030 ike1\/32: filled at GREEN time
-* 0x4031 ext\/32: filled at GREEN time
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module RecipeIkeSpec (spec) where

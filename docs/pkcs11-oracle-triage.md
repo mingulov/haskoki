@@ -197,7 +197,7 @@ identically because the FFI refusal passed raw struct
 bytes that the planner read as garbage before the
 split gate could answer.
 
-Second run green: 10149 tests — 5110 passed, 0
+Second run clean: 10149 tests — 5110 passed, 0
 failed, 647 xfailed, 4392 skipped, 0 crashed. Delta
 vs 11s-1: +6 passed (all `test_mech_flags`, the 3 new
 rows), +7 xfailed, +59 skipped, +72 total, zero
@@ -229,7 +229,7 @@ CAST/CAST3 cipher sextet, 310/464), oracle pkcs11-check
 0.2.2rc2 (`/tmp/pkcs11-ws/run-lane-rc2.sh fast`, results
 `/tmp/pkcs11-ws/out-rc2/fast/pkcs11-fast-results.json`).
 
-Single run, first-try green: 10053 tests — 5095 passed,
+Single run, first-try clean: 10053 tests — 5095 passed,
 0 failed, 635 xfailed, 4323 skipped, 0 crashed. The six
 new rows (CKM_CAST_ECB/CBC, CKM_CAST3_ECB/CBC, keygens)
 pass inside the oracle's mechanism matrices (CAST_* appear
@@ -1235,7 +1235,7 @@ skipped (t7692)
   refuses late. The honest fix is derive-time
   length-domain validation (TEMPLATE_INCONSISTENT
   instead of a poisoned object + late GENERAL_ERROR);
-  the leg itself can only go green via the oracle
+  the leg itself can only pass via the oracle
   helper fix. Tracked as the x942-hardening
   follow-up slice — it cannot ride 11b (the pinned
   oracle never reaches the path, so lane proof there
@@ -1318,9 +1318,9 @@ skipped (t7692)
   per-type length domains (AES 16/24/32, DES3 24,
   XTS 32/64 — the unwrap coherence table) through
   the strict template check; unlisted types refuse
-  closed. RED (`template key type 31 is not 16`) →
-  GREEN in `casePbkd2Keygen`, all 6 host suites +
-  consumers + evidence green, lane reproof r47.
+  closed. Failing (`template key type 31 is not 16`) →
+  passing in `casePbkd2Keygen`, all 6 host suites +
+  consumers + evidence clean, lane reproof r47.
 - Two new xfails, no action: the PBKD2 CKA_LOCAL
   pair (`attribute unavailable`) carries the
   generic module-wide unserved-attribute signature
@@ -1505,12 +1505,12 @@ skipped (t7692)
   shared-mech expansion).
 - Movers r49→r51 (unit `counts`, exact):
   `test_aes_kdf` 0/9s → 9/0s (new
-  ENCRYPT_DATA legs green); `test_aria` 7/7s →
+  ENCRYPT_DATA legs passing); `test_aria` 7/7s →
   11/3s; `test_camellia` 7/9s → 12/3s/1x;
   `test_des` 16/17s → 20/13s;
   `test_des_kdf` 0/2s → 1/1s;
   `test_ffi_length_boundary` 68/57s → 70/55s
-  (malformed legs green after the fix);
+  (malformed legs passing after the fix);
   `test_mech_derive` 14/8s → 20/9s/1x;
   `test_mech_encrypt` 39/5s → 45/6s/1x;
   `test_mech_flags` 653/1222s/6x →
@@ -1599,7 +1599,7 @@ skipped (t7692)
   vector legs).
 - Movers r51→r52 (unit `counts`, exact):
   `test_aes_modes` 13/17s → 26/4s (AES-MAC
-  3 + MACGeneral 7 + XCBC 3, all green);
+  3 + MACGeneral 7 + XCBC 3, all passing);
   `test_aria` 11/3s → 14/0s;
   `test_camellia` 12/3s/1x → 15/0s/1x;
   `test_mech_flags` 683/1298s/8x →
@@ -1610,7 +1610,7 @@ skipped (t7692)
   663 → 690 (new rows' probe legs);
   `test_mech_sign` 157/87s/17x →
   179/92s/17x (incl. the 4 ARIA/Camellia
-  MAC KAT legs, all green).
+  MAC KAT legs, all passing).
 - New-xfail attribution (26, all
   classified): 8 missing-required-param
   (expected `PARAM_INVALID`, got
@@ -2213,7 +2213,7 @@ skipped (t7692)
   MAC-row keygen rejection (negative).
   The dedicated `test_ssl3` MAC legs pass
   real bit-length params (128/160) and go
-  20/20 green, grounding the BITS reading
+  20/20 passing, grounding the BITS reading
   of `CK_MAC_GENERAL_PARAMS` for these two
   rows.
 - Zero regressions: the 18 failures are

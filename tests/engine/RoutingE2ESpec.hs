@@ -1647,10 +1647,10 @@ caseDriverGmac = withBackend $ \env -> do
   t0 <- tag o128 good BS.empty
   assertEqual "gmac empty" (hex "435b9ba12d75a4be8a977ea3cd011890") t0
   -- ACVP tc16: 32-bit tag over empty AAD.
-  t32 <- runEffect env res (FxSign gmacMech (Just oAcvp)
+  tag32 <- runEffect env res (FxSign gmacMech (Just oAcvp)
     (encodeGcmParams (hex "CE5AD159921FCB89FB95BF7A") BS.empty 4) BS.empty)
     >>= expectBytes
-  assertEqual "gmac acvp tc16" (hex "DDF76017") t32
+  assertEqual "gmac acvp tc16" (hex "DDF76017") tag32
   -- The params AAD field carries no meaning on the sign path: the
   -- message is the sign input only.
   tAad <- tag o128 (encodeGcmParams nonce "ignored-aad" 16) msg
@@ -1767,8 +1767,8 @@ caseDriverTlsKdf = withBackend $ \env -> do
   assertEqual "tls master" (hex "539391828d1d131678646180c5bda5c9a2eb62382c8cfb9440545cae85c8c205b93e0d22161e06be1189235aefca7570") m48
   m48dh <- deriveAs dhOid m10dh f10 48
   assertEqual "tls master dh" (hex "38b5ba7767c6c68bb2c74a70ac3406dd204997e375684d5a190b265360fbb62202053fb60f77c4733be5a97f29b856e0") m48dh
-  t48 <- deriveAs pmsOid m12 f12 48
-  assertEqual "tls12 master" (hex "2b7cccb6d48adb8692df640b9252502fb000fd68fb2dc4b6a8cd67d870492f38e4c5dd509ba7c4863c003c07d23f9a3b") t48
+  mast48 <- deriveAs pmsOid m12 f12 48
+  assertEqual "tls12 master" (hex "2b7cccb6d48adb8692df640b9252502fb000fd68fb2dc4b6a8cd67d870492f38e4c5dd509ba7c4863c003c07d23f9a3b") mast48
   t48dh <- deriveAs dhOid m12dh f12 48
   assertEqual "tls12 master dh" (hex "2f759d1b14d26737622ba106d6321958f3913a545a502a34073d305f2c90fe73d184bf43c4352b4b83e1b58072a47eb8") t48dh
   k32 <- deriveAs pmsOid kdf fKdf 32
@@ -1838,8 +1838,8 @@ caseDriverIke = withBackend $ \env -> do
   assertEqual "ike extended" (hex "1c81c4b9c9083605362e98bed89e4eef320559270ae273a55ed90710e74e6951") e32
   e48 <- deriveAs (Just auxOid) ext fExt 48
   assertEqual "ike extended long" (hex "1c81c4b9c9083605362e98bed89e4eef320559270ae273a55ed90710e74e6951b39e23e7bba290a013caca808ea6af06") e48
-  t16 <- deriveAs Nothing ext fExtNox 16
-  assertEqual "ike extended truncates base" (hex "000102030405060708090a0b0c0d0e0f") t16
+  trunc16 <- deriveAs Nothing ext fExtNox 16
+  assertEqual "ike extended truncates base" (hex "000102030405060708090a0b0c0d0e0f") trunc16
   -- Typed refusals: junk params, a non-empty info string, an
   -- over-ceiling length, the missing aux key, past-counter
   -- prf+, and a single shot past its digest.
@@ -2240,18 +2240,18 @@ caseDriverSsl3Mac = withBackend $ \env -> do
       msg = "test handshake data"
       signAs mech params =
         runEffect env res (FxSign mech (Just secOid) params msg)
-  t16 <- signAs md5 (encodeMacGeneral 128)
-  case t16 of
+  mac16 <- signAs md5 (encodeMacGeneral 128)
+  case mac16 of
     GotBytes bs -> assertEqual "md5 vector"
       (hex "f8adc4aa2994ad2296ec759d1a321b0b") bs
     other -> assertFailure ("expected tag bytes, got: " ++ show other)
-  t20 <- signAs sha1 (encodeMacGeneral 160)
-  case t20 of
+  mac20 <- signAs sha1 (encodeMacGeneral 160)
+  case mac20 of
     GotBytes bs -> assertEqual "sha1 vector"
       (hex "d50aeadef9ad7678028f4188d05989fc869e57ca") bs
     other -> assertFailure ("expected tag bytes, got: " ++ show other)
-  t8 <- signAs md5 (encodeMacGeneral 64)
-  case (t16, t8) of
+  mac8 <- signAs md5 (encodeMacGeneral 64)
+  case (mac16, mac8) of
     (GotBytes full, GotBytes short) ->
       assertEqual "truncation is the prefix" (BS.take 8 full) short
     other -> assertFailure ("expected tag bytes, got: " ++ show other)

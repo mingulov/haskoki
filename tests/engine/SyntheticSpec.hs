@@ -2397,8 +2397,8 @@ caseCbcMac = withSynth "11" $ \env -> do
   case badKey of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
-  t16 <- signAs aesMech k16Oid BS.empty msg
-  assertEqual "128-bit width" 8 (BS.length t16)
+  tag16 <- signAs aesMech k16Oid BS.empty msg
+  assertEqual "128-bit width" 8 (BS.length tag16)
 
 -- | XCBC-MAC through the driver over synthetic AES-128-ECB:
 -- deterministic 16-byte tags (12 for _96), keys/messages
@@ -3047,22 +3047,22 @@ caseSsl3 = withSynth "14" $ \env -> do
   assertEqual "block width" 96 (BS.length blk)
   blk0 <- deriveAs kmat secOid (encodeSsl3KeyMatParams 0 16 0 cr sr) 32
   assertEqual "key-only width" 32 (BS.length blk0)
-  t16 <- signAs md5 secOid (encodeMacGeneral 128) "test handshake data"
-  assertEqual "md5 width" 16 (BS.length t16)
-  t16b <- signAs md5 secOid (encodeMacGeneral 128) "test handshake data"
-  assertEqual "mac deterministic" t16 t16b
-  t8 <- signAs md5 secOid (encodeMacGeneral 64) "test handshake data"
-  assertEqual "truncation is the prefix" (BS.take 8 t16) t8
-  t20 <- signAs sha1 secOid (encodeMacGeneral 160) "test handshake data"
-  assertEqual "sha1 width" 20 (BS.length t20)
-  assertBool "hashes separated" (BS.take 16 t20 /= t16)
-  tKey <- signAs md5 oddOid (encodeMacGeneral 128) "test handshake data"
-  assertBool "mac keys separated" (t16 /= tKey)
+  mac16 <- signAs md5 secOid (encodeMacGeneral 128) "test handshake data"
+  assertEqual "md5 width" 16 (BS.length mac16)
+  mac16b <- signAs md5 secOid (encodeMacGeneral 128) "test handshake data"
+  assertEqual "mac deterministic" mac16 mac16b
+  mac8 <- signAs md5 secOid (encodeMacGeneral 64) "test handshake data"
+  assertEqual "truncation is the prefix" (BS.take 8 mac16) mac8
+  mac20 <- signAs sha1 secOid (encodeMacGeneral 160) "test handshake data"
+  assertEqual "sha1 width" 20 (BS.length mac20)
+  assertBool "hashes separated" (BS.take 16 mac20 /= mac16)
+  macKey <- signAs md5 oddOid (encodeMacGeneral 128) "test handshake data"
+  assertBool "mac keys separated" (mac16 /= macKey)
   vOk <- runEffect env res (FxVerify md5 (Just secOid) (encodeMacGeneral 128)
-    "test handshake data" t16)
+    "test handshake data" mac16)
   assertEqual "mac verifies" (GotValid True) vOk
   vBad <- runEffect env res (FxVerify md5 (Just secOid) (encodeMacGeneral 128)
-    "test handshake data" (BS.map succ t16))
+    "test handshake data" (BS.map succ mac16))
   assertEqual "tamper refuses" (GotValid False) vBad
   expectFailed "junk master frame"
     (FxDerive mst (Just secOid) Nothing BS.empty BS.empty 48)
