@@ -87,6 +87,36 @@ fail() {
   exit 1
 }
 
+[ -f tests/c/message_routed.c ] || fail "message consumer missing"
+SCEN_LIST=$(
+  for scen in tests/c/consumer_*.c tests/c/message_routed.c; do
+    [ -f "$scen" ] && printf '%s\n' "$scen"
+  done | LC_ALL=C sort -u
+)
+[ -n "$SCEN_LIST" ] || fail "consumer scenario list empty"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/message_routed.c')" -eq 1 ] \
+  || fail "message consumer must occur exactly once"
+for scen in $SCEN_LIST; do
+  if grep -nE 'abi_generated|abi_stubs|abi-inventory' "$scen"; then
+    fail "consumer independence violated: $scen"
+  fi
+done
+
+# Direct-only scenarios: the pinned proxy cannot transport these calls, so
+# the direct leg runs and must pass while the proxied leg and transcript
+# diff are skipped with a loud notice. Each entry is base:upstream-issue-URL;
+# an entry without a URL, or naming no listed scenario, fails the driver.
+# message_routed: proxy rejects raw IV params, clobbers output state on
+# errors, erases NULL/nonzero shapes, and orders session checks first.
+DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23"
+for entry in $DIRECT_ONLY; do
+  dname="${entry%%:*}"; durl="${entry#*:}"
+  [ -n "$durl" ] && [ "$durl" != "$entry" ] \
+    || fail "direct-only entry without issue URL: $entry"
+  [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx "tests/c/$dname.c")" -eq 1 ] \
+    || fail "direct-only entry not in scenario list: $dname"
+done
+
 [ -x "$SERVER_BIN" ] || fail "proxy daemon missing/not executable: $SERVER_BIN (build per header recipe into HASKOKI_PROXY_DIR)"
 [ -f "$SHIM_SO" ] || fail "proxy shim missing: $SHIM_SO (build per header recipe into HASKOKI_PROXY_DIR)"
 echo "proxy commit (recorded): $PROXY_COMMIT"
@@ -114,11 +144,6 @@ if [ "$SO_COUNT" -ne 1 ]; then
 fi
 SO="$SO_LIST"
 echo "module under test: $SO"
-
-SCEN_LIST=$(ls tests/c/consumer_*.c 2>/dev/null | sort)
-if [ -z "$SCEN_LIST" ]; then
-  fail "no consumer scenarios found (expected tests/c/consumer_*.c)"
-fi
 
 TMPD="${TMPDIR:-/tmp}/haskoki-parity"
 mkdir -p "$TMPD" || fail "cannot create $TMPD"
@@ -286,6 +311,12 @@ run_parity() {
   env -u HASKOKI_CONSUMER_TOPOLOGY "$BIN" "$SO" >"$DLOG" 2>&1 \
     || { echo "--- direct log:"; cat "$DLOG"; fail "$base FAILED direct"; }
   echo "direct exit 0"
+  for entry in $DIRECT_ONLY; do
+    if [ "${entry%%:*}" = "$base" ]; then
+      echo "DIRECT-ONLY: $base (proxied leg skipped, see ${entry#*:})"
+      return 0
+    fi
+  done
   HASKOKI_CONSUMER_TOPOLOGY=proxy PKCS11_PROXY_ENDPOINT="$ENDPOINT" \
     PKCS11_PROXY_MECHANISMS="$TMPD/mechanisms-override.toml" \
     "$BIN" "$SHIM_SO" >"$PLOG" 2>&1 \

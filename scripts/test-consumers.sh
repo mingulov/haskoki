@@ -36,14 +36,23 @@ fail() {
   exit 1
 }
 
-cabal build all || fail "cabal build all failed"
-
-# 0. Independence guard: consumer scenarios must never consume
-#    provider-generated orderings; they use pinned vendor headers only.
-if grep -rn "abi_generated\|abi_stubs\|abi-inventory" tests/c/consumer_*.c 2>/dev/null; then
-  fail "consumer independence violated (see grep hits above)"
-fi
+[ -f tests/c/message_routed.c ] || fail "message consumer missing"
+SCEN_LIST=$(
+  for scen in tests/c/consumer_*.c tests/c/message_routed.c; do
+    [ -f "$scen" ] && printf '%s\n' "$scen"
+  done | LC_ALL=C sort -u
+)
+[ -n "$SCEN_LIST" ] || fail "consumer scenario list empty"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/message_routed.c')" -eq 1 ] \
+  || fail "message consumer must occur exactly once"
+for scen in $SCEN_LIST; do
+  if grep -nE 'abi_generated|abi_stubs|abi-inventory' "$scen"; then
+    fail "consumer independence violated: $scen"
+  fi
+done
 echo "STATIC: consumer scenarios do not include provider-generated artifacts"
+
+cabal build all || fail "cabal build all failed"
 
 # 1. Locate exactly one built shared module.
 SO_LIST=$(find dist-newstyle -name 'libhaskoki*.so' 2>/dev/null | sort)
@@ -59,11 +68,7 @@ fi
 SO="$SO_LIST"
 echo "module under test: $SO"
 
-# 2. At least one consumer scenario must exist (no harness = FAIL).
-SCEN_LIST=$(ls tests/c/consumer_*.c 2>/dev/null | sort)
-if [ -z "$SCEN_LIST" ]; then
-  fail "no consumer scenarios found (expected tests/c/consumer_*.c)"
-fi
+# 2. Display the complete consumer scenario list.
 echo "consumer scenarios:"
 echo "$SCEN_LIST"
 
