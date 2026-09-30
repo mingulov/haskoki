@@ -8,14 +8,16 @@ next, end-next, one-shot, finish, short-buffer retry, outer final).
 {-# LANGUAGE OverloadedStrings #-}
 module MessageSpec (spec) where
 
+import Control.Monad (forM_)
 import qualified Data.ByteString as BS
 import Data.Bits (xor)
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word64, Word8)
+import Foreign.C.Types (CULong)
 import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Marshal.Array (peekArray, pokeArray)
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
@@ -57,11 +59,21 @@ import Haskoki.FFI.MessageParams
   ( MsgParamError (..)
   , MsgParams (..)
   , decodeMessageParams
+  , decodeMessageInitFrame
+  , decodeMessageBeginFrame
+  , decodeMessageCipherFrame
+  , decodeMessageSignFrame
+  , decodeMessageVerifyFrame
+  , decodeMessageCipherNextFrame
+  , decodeMessageSignNextFrame
+  , decodeMessageVerifyNextFrame
   , planNonceWriteback
   , planTagWriteback
   , splitTag
   )
 import Haskoki.Operation.Cipher (finishCipher, planCipherOneShot, planCipherUpdate)
+import Haskoki.Operation.Codec (decodeInitInput, decodeMsgBegin, decodeMsgNext, decodeMsgOneShot)
+import Haskoki.Outcome (PlanResult (..), PreparedCommit (..), Rejection (..))
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
 import Haskoki.Operation.Message
   ( MsgBegin (..)
@@ -82,12 +94,15 @@ import Haskoki.Registry
   , curatedRegistry
   , mkCapabilities
   )
-import Haskoki.Request (OutputIntent (..))
+import Haskoki.Request (FunctionId (..), Request (..), OutputIntent (..), OutputRegion (..))
+import Haskoki.Rules (defaultRules)
 import Haskoki.Session (SessionLogin (..))
+import Haskoki.Transition (planCall, publishDelta)
 import Haskoki.Types
   ( ExternalHandle (..)
   , Generation (..)
   , ObjectId (..)
+  , Pkcs11Version (..)
   , ReturnCode (..)
   , Revision (..)
   , SessionId (..)
@@ -113,6 +128,13 @@ spec = testGroup "message operations"
   , testCase "nonce writeback through nested regions" caseNonceWriteback
   , testCase "tag split and writeback" caseTagSplitWriteback
   , testCase "toy aead binds nonce aad and tag" caseToyAeadEndToEnd
+  , testCase "message boundary init frames" caseMessageInitFrames
+  , testCase "message boundary begin frames" caseMessageBeginFrames
+  , testCase "message boundary one-shot frames" caseMessageOneShotFrames
+  , testCase "message boundary next frames" caseMessageNextFrames
+  , testCase "message boundary decode bounds" caseMessageDecodeBounds
+  , testCase "message boundary owned frames" caseMessageOwnedFrames
+  , testCase "message boundary request regions" caseMessageRequestRegions
   ]
 
 -- ---------------------------------------------------------------------------
@@ -1106,3 +1128,247 @@ caseToyAeadEndToEnd = do
       assertBool "tag differs under changed nonce"
         (toyAeadTag nonce aad ctBytes /= toyAeadTag (BS.pack [9 .. 20]) aad ctBytes)
     other -> assertFailure ("expected one effect, got " ++ show other)
+
+frameRight :: Either MsgParamError ByteString -> IO ByteString
+frameRight = either (fail . show) pure
+
+caseMessageInitFrames :: IO ()
+caseMessageInitFrames = do
+  withInputBytes [0..15] $ \p n -> do
+    e <- decodeMessageInitFrame MsgEncrypt 0x1082 p n >>= frameRight
+    d <- decodeMessageInitFrame MsgDecrypt 0x1082 p n >>= frameRight
+    assertEqual "encrypt init byte order" (BS.pack [0,0,0,0,0,0,16,130,0,4,0] <> BS.pack [0..15]) e
+    assertEqual "decrypt init byte order" (BS.pack [0,0,0,0,0,0,16,130,0,8,0] <> BS.pack [0..15]) d
+    assertEqual "encrypt init" (Just (aesCbcMech, [OpEncrypt], False, BS.pack [0..15])) (decodeInitInput e)
+    assertEqual "decrypt init" (Just (aesCbcMech, [OpDecrypt], False, BS.pack [0..15])) (decodeInitInput d)
+  s <- decodeMessageInitFrame MsgSign 0x251 nullPtr 0 >>= frameRight
+  v <- decodeMessageInitFrame MsgVerify 0x251 nullPtr 0 >>= frameRight
+  assertEqual "sign init byte order" (BS.pack [0,0,0,0,0,0,2,81,0,1,0]) s
+  assertEqual "verify init byte order" (BS.pack [0,0,0,0,0,0,2,81,0,2,0]) v
+  assertEqual "sign init" (Just (hmacMech, [OpSign], False, BS.empty)) (decodeInitInput s)
+  assertEqual "verify init" (Just (hmacMech, [OpVerify], False, BS.empty)) (decodeInitInput v)
+
+caseMessageBeginFrames :: IO ()
+caseMessageBeginFrames = withInputBytes [17] $ \p pn ->
+  withInputBytes [33,34] $ \a an -> do
+    e <- decodeMessageBeginFrame MsgEncrypt p pn a an >>= frameRight
+    d <- decodeMessageBeginFrame MsgDecrypt p pn a an >>= frameRight
+    s <- decodeMessageBeginFrame MsgSign p pn nullPtr 0 >>= frameRight
+    v <- decodeMessageBeginFrame MsgVerify p pn nullPtr 0 >>= frameRight
+    assertEqual "encrypt layout" (BS.pack [0,0,0,1,17,33,34]) e
+    assertEqual "decrypt layout" (BS.pack [0,0,0,1,17,33,34]) d
+    assertEqual "sign layout" (BS.pack [0,0,0,1,17]) s
+    assertEqual "verify layout" (BS.pack [0,0,0,1,17]) v
+    assertEqual "cipher begin" (Just (MsgBegin (BS.pack [17]) (BS.pack [33,34]))) (decodeMsgBegin e)
+    assertEqual "signature begin" (Just (MsgBegin (BS.pack [17]) BS.empty)) (decodeMsgBegin s)
+    assertEqual "truncated prefix" Nothing (decodeMsgBegin (BS.pack [0,0,0]))
+
+caseMessageOneShotFrames :: IO ()
+caseMessageOneShotFrames = withInputBytes [17] $ \p pn ->
+  withInputBytes [33,34] $ \a an ->
+  withInputBytes [49,50,51] $ \d dn ->
+  withInputBytes [65,66] $ \w wn -> do
+    e <- decodeMessageCipherFrame MsgEncrypt p pn a an d dn >>= frameRight
+    c <- decodeMessageCipherFrame MsgDecrypt p pn a an d dn >>= frameRight
+    s <- decodeMessageSignFrame p pn d dn >>= frameRight
+    v <- decodeMessageVerifyFrame p pn d dn w wn >>= frameRight
+    assertEqual "cipher bytes" (BS.pack [0,0,0,0,1,17,0,0,0,2,33,34,49,50,51]) e
+    assertEqual "decrypt bytes" e c
+    assertEqual "sign bytes" (BS.pack [1,0,0,0,1,17,49,50,51]) s
+    assertEqual "verify witness before data" (BS.pack [2,0,0,0,1,17,0,0,0,2,65,66,49,50,51]) v
+    assertEqual "encrypt decode" (Just (MsgOneShotCipher (BS.pack [17]) (BS.pack [33,34]) (BS.pack [49,50,51]))) (decodeMsgOneShot MsgEncrypt e)
+    assertEqual "decrypt decode" (Just (MsgOneShotCipher (BS.pack [17]) (BS.pack [33,34]) (BS.pack [49,50,51]))) (decodeMsgOneShot MsgDecrypt c)
+    assertEqual "sign decode" (Just (MsgOneShotSign (BS.pack [17]) (BS.pack [49,50,51]))) (decodeMsgOneShot MsgSign s)
+    assertEqual "verify decode" (Just (MsgOneShotVerify (BS.pack [17]) (BS.pack [49,50,51]) (BS.pack [65,66]))) (decodeMsgOneShot MsgVerify v)
+    assertEqual "wrong family" Nothing (decodeMsgOneShot MsgSign e)
+    assertEqual "wrong witness family" Nothing (decodeMsgOneShot MsgEncrypt v)
+    assertEqual "truncated witness" Nothing (decodeMsgOneShot MsgVerify (BS.take 11 v))
+    unit <- decodeMessageCipherFrame MsgEncrypt p 1 a 1 d 1 >>= frameRight
+    assertEqual "single byte fields" (BS.pack [0,0,0,0,1,17,0,0,0,1,33,49]) unit
+    unitV <- decodeMessageVerifyFrame p 1 d 1 w 1 >>= frameRight
+    assertEqual "single byte witness" (BS.pack [2,0,0,0,1,17,0,0,0,1,65,49]) unitV
+
+caseMessageNextFrames :: IO ()
+caseMessageNextFrames = withInputBytes [17] $ \p pn ->
+  withInputBytes [49,50,51] $ \d dn ->
+  withInputBytes [65,66] $ \w wn -> do
+    forM_ [False, True] $ \end -> do
+      e <- decodeMessageCipherNextFrame MsgEncrypt p pn d dn end >>= frameRight
+      c <- decodeMessageCipherNextFrame MsgDecrypt p pn d dn end >>= frameRight
+      s <- decodeMessageSignNextFrame p pn d dn end >>= frameRight
+      let flag = if end then 1 else 0
+      assertEqual "encrypt next bytes" (BS.pack [0,0,0,0,1,17,flag,49,50,51]) e
+      assertEqual "decrypt next bytes" e c
+      assertEqual "sign next bytes" (BS.pack [1,0,0,0,1,17,flag,49,50,51]) s
+      assertEqual "cipher next" (Just (MsgNextCipher (BS.pack [17]) (BS.pack [49,50,51]) end)) (decodeMsgNext MsgDecrypt c)
+      assertEqual "sign next" (Just (MsgNextSign (BS.pack [17]) (BS.pack [49,50,51]) end)) (decodeMsgNext MsgSign s)
+    absent <- decodeMessageVerifyNextFrame p pn d dn nullPtr 0 >>= frameRight
+    empty <- decodeMessageVerifyNextFrame p pn d dn w 0 >>= frameRight
+    witness <- decodeMessageVerifyNextFrame p pn d dn w wn >>= frameRight
+    assertEqual "absent bytes" (BS.pack [2,0,0,0,1,17,0,49,50,51]) absent
+    assertEqual "present empty bytes" (BS.pack [2,0,0,0,1,17,1,0,0,0,0,49,50,51]) empty
+    assertEqual "present witness bytes" (BS.pack [2,0,0,0,1,17,1,0,0,0,2,65,66,49,50,51]) witness
+    assertEqual "absent witness" (Just (MsgNextVerify (BS.pack [17]) (BS.pack [49,50,51]) Nothing)) (decodeMsgNext MsgVerify absent)
+    assertEqual "empty witness" (Just (MsgNextVerify (BS.pack [17]) (BS.pack [49,50,51]) (Just BS.empty))) (decodeMsgNext MsgVerify empty)
+    assertEqual "witness" (Just (MsgNextVerify (BS.pack [17]) (BS.pack [49,50,51]) (Just (BS.pack [65,66])))) (decodeMsgNext MsgVerify witness)
+    assertEqual "bad cipher end" Nothing (decodeMsgNext MsgEncrypt (BS.pack [0,0,0,0,0,2]))
+    assertEqual "bad sign end" Nothing (decodeMsgNext MsgSign (BS.pack [1,0,0,0,0,2]))
+    assertEqual "bad witness presence" Nothing (decodeMsgNext MsgVerify (BS.pack [2,0,0,0,0,2]))
+    assertEqual "wrong next family" Nothing (decodeMsgNext MsgVerify (BS.pack [1,0,0,0,0,0]))
+
+boundaryComponents :: [(String, Ptr Word8 -> Word64 -> IO (Either MsgParamError ByteString))]
+boundaryComponents =
+  [ ("Encrypt init parameter", \p n -> decodeMessageInitFrame MsgEncrypt 0x1082 p n)
+  , ("Decrypt init parameter", \p n -> decodeMessageInitFrame MsgDecrypt 0x1082 p n)
+  , ("Sign init parameter", \p n -> decodeMessageInitFrame MsgSign 0x251 p n)
+  , ("Verify init parameter", \p n -> decodeMessageInitFrame MsgVerify 0x251 p n)
+  , ("Encrypt begin parameter", \p n -> decodeMessageBeginFrame MsgEncrypt p n nullPtr 0)
+  , ("Encrypt begin aad", \p n -> decodeMessageBeginFrame MsgEncrypt nullPtr 0 p n)
+  , ("Decrypt begin parameter", \p n -> decodeMessageBeginFrame MsgDecrypt p n nullPtr 0)
+  , ("Decrypt begin aad", \p n -> decodeMessageBeginFrame MsgDecrypt nullPtr 0 p n)
+  , ("Sign begin parameter", \p n -> decodeMessageBeginFrame MsgSign p n nullPtr 0)
+  , ("Sign begin aad", \p n -> decodeMessageBeginFrame MsgSign nullPtr 0 p n)
+  , ("Verify begin parameter", \p n -> decodeMessageBeginFrame MsgVerify p n nullPtr 0)
+  , ("Verify begin aad", \p n -> decodeMessageBeginFrame MsgVerify nullPtr 0 p n)
+  , ("Encrypt one parameter", \p n -> decodeMessageCipherFrame MsgEncrypt p n nullPtr 0 nullPtr 0)
+  , ("Encrypt one aad", \p n -> decodeMessageCipherFrame MsgEncrypt nullPtr 0 p n nullPtr 0)
+  , ("Encrypt one input", \p n -> decodeMessageCipherFrame MsgEncrypt nullPtr 0 nullPtr 0 p n)
+  , ("Decrypt one parameter", \p n -> decodeMessageCipherFrame MsgDecrypt p n nullPtr 0 nullPtr 0)
+  , ("Decrypt one aad", \p n -> decodeMessageCipherFrame MsgDecrypt nullPtr 0 p n nullPtr 0)
+  , ("Decrypt one input", \p n -> decodeMessageCipherFrame MsgDecrypt nullPtr 0 nullPtr 0 p n)
+  , ("Sign one component 1", \p n -> decodeMessageSignFrame p n nullPtr 0)
+  , ("Sign one component 2", \p n -> decodeMessageSignFrame nullPtr 0 p n)
+  , ("Verify one component 1", \p n -> decodeMessageVerifyFrame p n nullPtr 0 nullPtr 0)
+  , ("Verify one component 2", \p n -> decodeMessageVerifyFrame nullPtr 0 p n nullPtr 0)
+  , ("Verify one component 3", \p n -> decodeMessageVerifyFrame nullPtr 0 nullPtr 0 p n)
+  , ("Encrypt next parameter", \p n -> decodeMessageCipherNextFrame MsgEncrypt p n nullPtr 0 False)
+  , ("Encrypt next part", \p n -> decodeMessageCipherNextFrame MsgEncrypt nullPtr 0 p n False)
+  , ("Decrypt next parameter", \p n -> decodeMessageCipherNextFrame MsgDecrypt p n nullPtr 0 False)
+  , ("Decrypt next part", \p n -> decodeMessageCipherNextFrame MsgDecrypt nullPtr 0 p n False)
+  , ("Sign next component 1", \p n -> decodeMessageSignNextFrame p n nullPtr 0 False)
+  , ("Sign next component 2", \p n -> decodeMessageSignNextFrame nullPtr 0 p n False)
+  , ("Verify next component 1", \p n -> decodeMessageVerifyNextFrame p n nullPtr 0 nullPtr 0)
+  , ("Verify next component 2", \p n -> decodeMessageVerifyNextFrame nullPtr 0 p n nullPtr 0)
+  , ("Verify next component 3", \p n -> decodeMessageVerifyNextFrame nullPtr 0 nullPtr 0 p n)
+  ]
+
+caseMessageDecodeBounds :: IO ()
+caseMessageDecodeBounds = withInputBytes [7] $ \tiny _ -> do
+  forM_ boundaryComponents $ \(label, decode) -> do
+    emptyNull <- decode nullPtr 0
+    emptyPresent <- decode tiny 0
+    assertBool (label ++ " empty null") (either (const False) (const True) emptyNull)
+    assertBool (label ++ " empty present") (either (const False) (const True) emptyPresent)
+    decode nullPtr 1 >>= assertEqual (label ++ " null nonzero") (Left (MsgParamBadPointer 1))
+    decode tiny (maxInputBytes + 1) >>= assertEqual (label ++ " oversize tiny") (Left (MsgParamTooLarge (maxInputBytes + 1)))
+  let large = BS.replicate (fromIntegral maxInputBytes) 97
+  BS.useAsCStringLen large $ \(raw, n) -> do
+    frame <- decodeMessageSignFrame nullPtr 0 (castPtr raw) (fromIntegral n) >>= frameRight
+    assertEqual "legal component plus framing" (fromIntegral maxInputBytes + 5) (BS.length frame)
+    cipherFrame <- decodeMessageCipherFrame MsgEncrypt (castPtr raw) (fromIntegral n) (castPtr raw) (fromIntegral n) (castPtr raw) (fromIntegral n) >>= frameRight
+    assertEqual "three legal cipher components" (3 * fromIntegral maxInputBytes + 9) (BS.length cipherFrame)
+    verifyFrame <- decodeMessageVerifyFrame (castPtr raw) (fromIntegral n) (castPtr raw) (fromIntegral n) (castPtr raw) (fromIntegral n) >>= frameRight
+    assertEqual "three legal verify components" (3 * fromIntegral maxInputBytes + 9) (BS.length verifyFrame)
+
+caseMessageOwnedFrames :: IO ()
+caseMessageOwnedFrames = withInputBytes [17] $ \p pn ->
+  withInputBytes [33,34] $ \a an ->
+  withInputBytes [49,50,51] $ \d dn ->
+  withInputBytes [65,66] $ \w wn -> do
+    frames <- sequence
+      [ decodeMessageInitFrame MsgSign 0x251 p pn
+      , decodeMessageBeginFrame MsgEncrypt p pn a an
+      , decodeMessageCipherFrame MsgDecrypt p pn a an d dn
+      , decodeMessageSignFrame p pn d dn
+      , decodeMessageVerifyFrame p pn d dn w wn
+      , decodeMessageCipherNextFrame MsgEncrypt p pn d dn False
+      , decodeMessageSignNextFrame p pn d dn True
+      , decodeMessageVerifyNextFrame p pn d dn w wn
+      ] >>= traverse frameRight
+    let copies = map BS.copy frames
+    forM_ copies $ \b -> BS.length b `seq` pure ()
+    pokeArray p [255]
+    pokeArray a [255,255]
+    pokeArray d [255,255,255]
+    pokeArray w [255,255]
+    assertEqual "caller overwrite cannot alter owned frames" copies frames
+
+commitFrame :: Model -> Request -> IO Model
+commitFrame m req = case planCall defaultRules m req of
+  Immediate pc -> do
+    assertEqual "immediate code" CKR_OK (pcCode pc)
+    either (fail . show) pure (publishDelta m (pcDelta pc))
+  other -> fail ("expected immediate: " ++ show other)
+
+caseMessageRequestRegions :: IO ()
+caseMessageRequestRegions = withInputBytes [0..15] $ \iv ivn ->
+  withInputBytes [1..16] $ \d dn ->
+  withInputBytes [9] $ \w wn -> do
+    let m = modelWithKey { mSessions = Map.singleton (SessionId 1) testSession }
+        request fid frame regions = Request Pkcs11_3_2 fid (Just (SessionId 1)) Nothing frame regions
+        checkRefusal req state = case planCall defaultRules state req of
+          Reject r -> assertEqual "region omission" CKR_ARGUMENTS_BAD (rejCode r)
+          other -> assertFailure ("expected region refusal: " ++ show other)
+        checkAccepted req state = case planCall defaultRules state req of
+          Reject r -> assertFailure ("unexpected refusal: " ++ show (rejCode r))
+          _ -> pure ()
+    encryptInit <- decodeMessageInitFrame MsgEncrypt 0x1082 iv ivn >>= frameRight
+    let encryptInitReq = (request F_MessageEncryptInit encryptInit []) { reqHandle = Just (ExternalHandle 3) }
+    assertEqual "Encrypt key outside frame" (Just (ExternalHandle 3)) (reqHandle encryptInitReq)
+    assertEqual "Encrypt init route" F_MessageEncryptInit (reqFunction encryptInitReq)
+    encryptIdle <- commitFrame m encryptInitReq
+    encryptOne <- decodeMessageCipherFrame MsgEncrypt iv ivn nullPtr 0 d dn >>= frameRight
+    checkRefusal (request F_EncryptMessage encryptOne []) encryptIdle
+    checkAccepted (request F_EncryptMessage encryptOne [RegionBytes "message-encrypt" (IntentBuffer 64)]) encryptIdle
+    encryptBegin <- decodeMessageBeginFrame MsgEncrypt iv ivn nullPtr 0 >>= frameRight
+    encryptOpen <- commitFrame encryptIdle (request F_EncryptMessageBegin encryptBegin [])
+    encryptNext <- decodeMessageCipherNextFrame MsgEncrypt nullPtr 0 d dn False >>= frameRight
+    checkRefusal (request F_EncryptMessageNext encryptNext []) encryptOpen
+    checkAccepted (request F_EncryptMessageNext encryptNext [RegionBytes "message-encrypt" (IntentBuffer 0)]) encryptOpen
+    encryptDone <- commitFrame encryptIdle (request F_MessageEncryptFinal BS.empty [])
+    assertEqual "Encrypt final removes idle context" [] (activeSlots (ssOps ((mSessions encryptDone) Map.! SessionId 1)))
+    decryptInit <- decodeMessageInitFrame MsgDecrypt 0x1082 iv ivn >>= frameRight
+    let decryptInitReq = (request F_MessageDecryptInit decryptInit []) { reqHandle = Just (ExternalHandle 3) }
+    assertEqual "Decrypt key outside frame" (Just (ExternalHandle 3)) (reqHandle decryptInitReq)
+    assertEqual "Decrypt init route" F_MessageDecryptInit (reqFunction decryptInitReq)
+    decryptIdle <- commitFrame m decryptInitReq
+    decryptOne <- decodeMessageCipherFrame MsgDecrypt iv ivn nullPtr 0 d dn >>= frameRight
+    checkRefusal (request F_DecryptMessage decryptOne []) decryptIdle
+    checkAccepted (request F_DecryptMessage decryptOne [RegionBytes "message-decrypt" (IntentBuffer 64)]) decryptIdle
+    decryptBegin <- decodeMessageBeginFrame MsgDecrypt iv ivn nullPtr 0 >>= frameRight
+    decryptOpen <- commitFrame decryptIdle (request F_DecryptMessageBegin decryptBegin [])
+    decryptNext <- decodeMessageCipherNextFrame MsgDecrypt nullPtr 0 d dn False >>= frameRight
+    checkRefusal (request F_DecryptMessageNext decryptNext []) decryptOpen
+    checkAccepted (request F_DecryptMessageNext decryptNext [RegionBytes "message-decrypt" (IntentBuffer 0)]) decryptOpen
+    decryptDone <- commitFrame decryptIdle (request F_MessageDecryptFinal BS.empty [])
+    assertEqual "Decrypt final removes idle context" [] (activeSlots (ssOps ((mSessions decryptDone) Map.! SessionId 1)))
+    signInit <- decodeMessageInitFrame MsgSign 0x251 nullPtr 0 >>= frameRight
+    let signInitReq = (request F_MessageSignInit signInit []) { reqHandle = Just (ExternalHandle 3) }
+    assertEqual "Sign key outside frame" (Just (ExternalHandle 3)) (reqHandle signInitReq)
+    assertEqual "Sign init route" F_MessageSignInit (reqFunction signInitReq)
+    signIdle <- commitFrame m signInitReq
+    signOne <- decodeMessageSignFrame nullPtr 0 d dn >>= frameRight
+    checkRefusal (request F_SignMessage signOne []) signIdle
+    checkAccepted (request F_SignMessage signOne [RegionBytes "message-sign" (IntentBuffer 64)]) signIdle
+    signBegin <- decodeMessageBeginFrame MsgSign nullPtr 0 nullPtr 0 >>= frameRight
+    signOpen <- commitFrame signIdle (request F_SignMessageBegin signBegin [])
+    signNext <- decodeMessageSignNextFrame nullPtr 0 d dn False >>= frameRight
+    checkRefusal (request F_SignMessageNext signNext []) signOpen
+    checkAccepted (request F_SignMessageNext signNext [RegionBytes "message-sign" (IntentBuffer 0)]) signOpen
+    signDone <- commitFrame signIdle (request F_MessageSignFinal BS.empty [])
+    assertEqual "Sign final removes idle context" [] (activeSlots (ssOps ((mSessions signDone) Map.! SessionId 1)))
+    verifyInit <- decodeMessageInitFrame MsgVerify 0x251 nullPtr 0 >>= frameRight
+    let verifyInitReq = (request F_MessageVerifyInit verifyInit []) { reqHandle = Just (ExternalHandle 3) }
+    assertEqual "Verify key outside frame" (Just (ExternalHandle 3)) (reqHandle verifyInitReq)
+    assertEqual "Verify init route" F_MessageVerifyInit (reqFunction verifyInitReq)
+    verifyIdle <- commitFrame m verifyInitReq
+    verifyOne <- decodeMessageVerifyFrame nullPtr 0 d dn w wn >>= frameRight
+    checkRefusal (request F_VerifyMessage verifyOne []) verifyIdle
+    checkAccepted (request F_VerifyMessage verifyOne [RegionBytes "message-verify" (IntentBuffer 64)]) verifyIdle
+    verifyBegin <- decodeMessageBeginFrame MsgVerify nullPtr 0 nullPtr 0 >>= frameRight
+    verifyOpen <- commitFrame verifyIdle (request F_VerifyMessageBegin verifyBegin [])
+    verifyNext <- decodeMessageVerifyNextFrame nullPtr 0 d dn nullPtr 0 >>= frameRight
+    checkRefusal (request F_VerifyMessageNext verifyNext []) verifyOpen
+    checkAccepted (request F_VerifyMessageNext verifyNext [RegionBytes "message-verify" (IntentBuffer 0)]) verifyOpen
+    verifyDone <- commitFrame verifyIdle (request F_MessageVerifyFinal BS.empty [])
+    assertEqual "Verify final removes idle context" [] (activeSlots (ssOps ((mSessions verifyDone) Map.! SessionId 1)))

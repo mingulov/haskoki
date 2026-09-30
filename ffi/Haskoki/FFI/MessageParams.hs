@@ -19,6 +19,14 @@ module Haskoki.FFI.MessageParams
   ( MsgParams (..)
   , MsgParamError (..)
   , decodeMessageParams
+  , decodeMessageInitFrame
+  , decodeMessageBeginFrame
+  , decodeMessageCipherFrame
+  , decodeMessageSignFrame
+  , decodeMessageVerifyFrame
+  , decodeMessageCipherNextFrame
+  , decodeMessageSignNextFrame
+  , decodeMessageVerifyNextFrame
   , splitTag
   , planNonceWriteback
   , planTagWriteback
@@ -27,11 +35,15 @@ module Haskoki.FFI.MessageParams
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Word (Word8, Word64)
-import Foreign.Ptr (Ptr)
+import Foreign.C.Types (CULong)
+import Foreign.Ptr (Ptr, nullPtr)
 
 import Haskoki.FFI.Decode (DecodeError (..), decodeInputBytes)
+import Haskoki.FFI.NativeParams (normalizeMechParams)
 import Haskoki.Operation (MsgFamily (..))
-import Haskoki.Operation.Message (familyAad)
+import Haskoki.Operation.Codec (encodeInitInput, encodeMsgBegin, encodeMsgOneShot, encodeMsgNext)
+import Haskoki.Operation.Message (MsgBegin (..), MsgOneShot (..), MsgNext (..), familyAad)
+import Haskoki.Operation.State (msgFamilyOp)
 import Haskoki.Output
   ( DataSource (..)
   , OpDisposition (..)
@@ -40,6 +52,7 @@ import Haskoki.Output
   , ResultDisposition (..)
   , planOutputs
   )
+import Haskoki.Registry (MechanismId (..))
 import Haskoki.Request (OutputIntent, OutputRegion (..))
 import Haskoki.Types (ReturnCode (..))
 
@@ -80,6 +93,62 @@ decodeMessageParams fam pPtr pLen aPtr aLen = do
     (Right params, Right aad)
       | not (familyAad fam) && not (BS.null aad) -> Left MsgParamAadRejected
       | otherwise -> Right (MsgParams params aad)
+
+copyMessageBytes :: Ptr Word8 -> Word64 -> IO (Either MsgParamError ByteString)
+copyMessageBytes p n = fmap (either (Left . fromDecode) Right) (decodeInputBytes p n)
+
+bindMessage :: IO (Either MsgParamError a) -> (a -> IO (Either MsgParamError b)) -> IO (Either MsgParamError b)
+bindMessage action next = action >>= either (pure . Left) next
+
+decodeMessageInitFrame :: MsgFamily -> CULong -> Ptr Word8 -> Word64 -> IO (Either MsgParamError ByteString)
+decodeMessageInitFrame fam mech p n = bindMessage (copyMessageBytes p n) $ \raw -> do
+  let mid = MechanismId (fromIntegral mech)
+  params <- normalizeMechParams mid p n raw
+  pure (Right (encodeInitInput mid [msgFamilyOp fam] False params))
+
+decodeMessageBeginFrame :: MsgFamily -> Ptr Word8 -> Word64 -> Ptr Word8 -> Word64 -> IO (Either MsgParamError ByteString)
+decodeMessageBeginFrame fam p pn a an =
+  bindMessage (decodeMessageParams fam p pn a an) $ \mp ->
+    pure (Right (encodeMsgBegin (MsgBegin (mpParams mp) (mpAad mp))))
+
+decodeMessageCipherFrame :: MsgFamily -> Ptr Word8 -> Word64 -> Ptr Word8 -> Word64 -> Ptr Word8 -> Word64 -> IO (Either MsgParamError ByteString)
+decodeMessageCipherFrame fam p pn a an d dn =
+  bindMessage (decodeMessageParams fam p pn a an) $ \mp ->
+  bindMessage (copyMessageBytes d dn) $ \input ->
+    pure (Right (encodeMsgOneShot (MsgOneShotCipher (mpParams mp) (mpAad mp) input)))
+
+decodeMessageSignFrame :: Ptr Word8 -> Word64 -> Ptr Word8 -> Word64 -> IO (Either MsgParamError ByteString)
+decodeMessageSignFrame p pn d dn =
+  bindMessage (decodeMessageParams MsgSign p pn nullPtr 0) $ \mp ->
+  bindMessage (copyMessageBytes d dn) $ \input ->
+    pure (Right (encodeMsgOneShot (MsgOneShotSign (mpParams mp) input)))
+
+decodeMessageVerifyFrame :: Ptr Word8 -> Word64 -> Ptr Word8 -> Word64 -> Ptr Word8 -> Word64 -> IO (Either MsgParamError ByteString)
+decodeMessageVerifyFrame p pn d dn w wn =
+  bindMessage (decodeMessageParams MsgVerify p pn nullPtr 0) $ \mp ->
+  bindMessage (copyMessageBytes d dn) $ \input ->
+  bindMessage (copyMessageBytes w wn) $ \witness ->
+    pure (Right (encodeMsgOneShot (MsgOneShotVerify (mpParams mp) input witness)))
+
+decodeMessageCipherNextFrame :: MsgFamily -> Ptr Word8 -> Word64 -> Ptr Word8 -> Word64 -> Bool -> IO (Either MsgParamError ByteString)
+decodeMessageCipherNextFrame fam p pn d dn end =
+  bindMessage (decodeMessageParams fam p pn nullPtr 0) $ \mp ->
+  bindMessage (copyMessageBytes d dn) $ \part ->
+    pure (Right (encodeMsgNext (MsgNextCipher (mpParams mp) part end)))
+
+decodeMessageSignNextFrame :: Ptr Word8 -> Word64 -> Ptr Word8 -> Word64 -> Bool -> IO (Either MsgParamError ByteString)
+decodeMessageSignNextFrame p pn d dn end =
+  bindMessage (decodeMessageParams MsgSign p pn nullPtr 0) $ \mp ->
+  bindMessage (copyMessageBytes d dn) $ \part ->
+    pure (Right (encodeMsgNext (MsgNextSign (mpParams mp) part end)))
+
+decodeMessageVerifyNextFrame :: Ptr Word8 -> Word64 -> Ptr Word8 -> Word64 -> Ptr Word8 -> Word64 -> IO (Either MsgParamError ByteString)
+decodeMessageVerifyNextFrame p pn d dn w wn =
+  bindMessage (decodeMessageParams MsgVerify p pn nullPtr 0) $ \mp ->
+  bindMessage (copyMessageBytes d dn) $ \part ->
+  bindMessage (copyMessageBytes w wn) $ \bytes ->
+    let witness = if w == nullPtr then Nothing else Just bytes
+    in pure (Right (encodeMsgNext (MsgNextVerify (mpParams mp) part witness)))
 
 -- | Split a trailing tag off a @ciphertext \|\| tag@ blob. The
 -- comparison runs in 'Integer' so a gigantic tag length rejects
