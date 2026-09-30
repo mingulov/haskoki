@@ -192,7 +192,15 @@ shape = "iv"
 mechanisms = [
     0x0153,  # CKM_DES_CFB8 (raw IV, same shape as DES_CBC; embedded lists the other DES rows but not the CFB8/OFB64/CFB64 streams) (11p)
     0x1094,  # CKM_BLOWFISH_CBC_PAD (raw IV, same shape as DES_CBC_PAD; embedded lists no Blowfish rows) (11p)
+    0x210C,  # CKM_AES_KEY_WRAP_PKCS7 (raw IV; embedded declares it parameterless with no shape so the shim refuses IV-carrying calls, and the override wins) (post-11s)
     0x403A,  # CKM_PUB_KEY_FROM_PRIV_KEY (paramless row: the byte image forwards raw so the backend's ARGUMENTS_BAD survives; no struct to model, never forwarded on success since success takes NULL params) (11s-4)
+]
+
+[[params]]
+shape = "ecdh_aes_key_wrap"
+mechanisms = [
+    0x4038,  # CKM_ECDH_X_AES_KEY_WRAP (CK_ECDH_AES_KEY_WRAP_PARAMS, same struct as the embedded 0x1053 row) (post-11s)
+    0x4039,  # CKM_ECDH_COF_AES_KEY_WRAP (CK_ECDH_AES_KEY_WRAP_PARAMS, same struct as the embedded 0x1053 row) (post-11s)
 ]
 
 [[params]]
