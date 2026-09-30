@@ -856,3 +856,1540 @@ blocking half.
   pre-existing). Not filed: matrix exercise is the
   achievable ceiling, and our planner pin
   (`caseEcExtraBitsPlanner`) covers the plan shape.
+
+## Message routing verification (2026-09-30)
+
+The source definition counts are pins; runtime dispositions and oracle findings remain separate. Routing adds no mechanism capability.
+
+```json
+{
+  "source_revision": "6610ca8426b4fecb6600be523894fef9ec55d860",
+  "oracle_release": "0.2.2rc2",
+  "oracle_source_sha256": "b7b5327c4294a892fcf21f351717bb240b2505621ce842c182b33cf6685bad23",
+  "source_test_definitions": {
+    "test_mech_message.py": 26,
+    "test_message_crypto.py": 13
+  },
+  "oracle_test_source_sha256": {
+    "test_mech_message.py": "9ca83808f62e627a3525bc89c70e5bc869dadcb682965f61ab4adae3b7c8fa8c",
+    "test_message_crypto.py": "8cb53777a320ead60bb385297d29f3e7773ed8585b48067e48808e335fec3234"
+  },
+  "protected_sha256": {
+    "spec/vendor/pkcs11.h": "61e0b3f996fa9f095859d7d3b8e361d0b982de69fc8b6a4bf10291afbe7e24d8",
+    "spec/sources.lock.json": "ec5d02a83c1523a79f8da9c65e6f258b8927410febe20501b5327815c87422ad",
+    "spec/mechanisms.json": "40090818ed79093380959ecf47f8b24d12e0661541bf9f9c07124fbae12265e6",
+    "cbits/mech_catalog.inc": "5e209f36551177cb8e1cfdaa2380a47d70c9caa9eba60adbb4512ca182bfac63"
+  },
+  "toolchain_image": "sha256:ba329f78938e1cef9ed163f86c1d7ac01db047259ec556d2e0027077b8ea41be",
+  "scope": "function routing; unchanged 316-mechanism catalog",
+  "proxy_message_scenario": {
+    "mode": "DIRECT-ONLY",
+    "reason_url": "https://github.com/mingulov/pkcs11-proxy-ng/issues/23",
+    "decision": "coordinator override; message transport unavailable in pinned proxy",
+    "notice_observed": true
+  },
+  "comparison_inputs": {
+    "fast": {
+      "path": "dist-release-evidence/message-routing/fast-before-pkcs11-fast-results.json",
+      "sha256": "c36238b7af6f229c65e6d21a3a2f086e13d7b6b1c7c6484794a9d85697e700ab",
+      "documented_record": "docs/pkcs11-oracle-triage.md: EdDSA-NULL fast lane (rc2 oracle, 2026-09-30)",
+      "documented_source_revision": "a7090869cf679658720fe41ebc7867f2be82502e",
+      "documented_backup": "/tmp/pkcs11-fast-eddsa.json",
+      "backup_byte_identical": true,
+      "provenance": {
+        "framework": {
+          "version": "0.2.2rc2",
+          "dirty": false,
+          "source": "package"
+        },
+        "test_data": [
+          {
+            "name": "wycheproof",
+            "repo": "C2SP/wycheproof",
+            "commit": "3fa63dd0344abb611f1fb1d77e119938603ea230",
+            "archive_sha256": "5dc00fae83575135c3147bfd4a04ee8889b1f0482ac6ca21aa486a8abccf2260",
+            "present": true
+          },
+          {
+            "name": "cctv",
+            "repo": "C2SP/CCTV",
+            "commit": "4448f2097b2daa812c91a26141f9f36c2096b9ca",
+            "archive_sha256": "3994978c6882b41afdaa8173fd33785680ea29a0cab680ea7834a915cae68578",
+            "present": true
+          },
+          {
+            "name": "acvp",
+            "repo": "usnistgov/ACVP-Server",
+            "commit": "975de31eb83d87039ec88934fdc47d8c312b892d",
+            "archive_sha256": "028f0d06f49d0f6cd7f69ae693623f93fc7d2edf29d2fa11465bc865dad6f278",
+            "present": true
+          },
+          {
+            "name": "x509-limbo",
+            "repo": "C2SP/x509-limbo",
+            "commit": "118721335e675edde10015df89b138cf292d7554",
+            "archive_sha256": "fe020e2b35fadabf7dd693bb4d49790454925f9165e1588d73d3e97b2041541b",
+            "present": true
+          }
+        ],
+        "environment": {
+          "interface": "3.2",
+          "slots": 1,
+          "mechanisms": 316
+        }
+      },
+      "summary": {
+        "passed": 5133,
+        "failed": 0,
+        "skipped": 4424,
+        "xfailed": 633,
+        "xpassed": 0,
+        "error": 0,
+        "crashed": 0,
+        "timeout": 0,
+        "crash_limited": 0,
+        "total": 10190,
+        "child_crash": 0,
+        "child_timeout": 0,
+        "incomplete": false
+      },
+      "old_trace_available": false,
+      "old_module_digest_available": false,
+      "use": "comparison only; no artifact-bound acceptance inferred"
+    },
+    "kat": {
+      "path": "dist-release-evidence/message-routing/kat-before-pkcs11-kat-results.json",
+      "sha256": "c0e06346937be547f81f4d60993e24718cbe4f68de57c7ed33f1aa3ff9476b8b",
+      "documented_record": "docs/pkcs11-oracle-triage.md: EdDSA-NULL fast lane (rc2 oracle, 2026-09-30)",
+      "documented_source_revision": "a7090869cf679658720fe41ebc7867f2be82502e",
+      "documented_backup": "/tmp/pkcs11-kat-eddsa.json",
+      "backup_byte_identical": true,
+      "provenance": {
+        "framework": {
+          "version": "0.2.2rc2",
+          "dirty": false,
+          "source": "package"
+        },
+        "test_data": [
+          {
+            "name": "wycheproof",
+            "repo": "C2SP/wycheproof",
+            "commit": "3fa63dd0344abb611f1fb1d77e119938603ea230",
+            "archive_sha256": "5dc00fae83575135c3147bfd4a04ee8889b1f0482ac6ca21aa486a8abccf2260",
+            "present": true
+          },
+          {
+            "name": "cctv",
+            "repo": "C2SP/CCTV",
+            "commit": "4448f2097b2daa812c91a26141f9f36c2096b9ca",
+            "archive_sha256": "3994978c6882b41afdaa8173fd33785680ea29a0cab680ea7834a915cae68578",
+            "present": true
+          },
+          {
+            "name": "acvp",
+            "repo": "usnistgov/ACVP-Server",
+            "commit": "975de31eb83d87039ec88934fdc47d8c312b892d",
+            "archive_sha256": "028f0d06f49d0f6cd7f69ae693623f93fc7d2edf29d2fa11465bc865dad6f278",
+            "present": true
+          },
+          {
+            "name": "x509-limbo",
+            "repo": "C2SP/x509-limbo",
+            "commit": "118721335e675edde10015df89b138cf292d7554",
+            "archive_sha256": "fe020e2b35fadabf7dd693bb4d49790454925f9165e1588d73d3e97b2041541b",
+            "present": true
+          }
+        ],
+        "environment": {
+          "interface": "3.2",
+          "slots": 1,
+          "mechanisms": 316
+        }
+      },
+      "summary": {
+        "passed": 84450,
+        "failed": 0,
+        "skipped": 31326,
+        "xfailed": 972,
+        "xpassed": 0,
+        "error": 0,
+        "crashed": 0,
+        "timeout": 0,
+        "crash_limited": 0,
+        "total": 116748,
+        "child_crash": 0,
+        "child_timeout": 0,
+        "incomplete": false
+      },
+      "old_trace_available": false,
+      "old_module_digest_available": false,
+      "use": "comparison only; no artifact-bound acceptance inferred"
+    }
+  },
+  "clean_build_verification": {
+    "clean_command_record": "dist-release-evidence/message-routing/clean-build-command.json",
+    "module_path": "dist-newstyle/build/x86_64-linux/ghc-9.10.3/haskoki-0.3.0.0/f/haskoki/build/haskoki/libhaskoki.so",
+    "module_sha256": "28071ccee1e0aa956cbae91b7c896554222af2b2a7b9cf83b0c4ca005747b173",
+    "module_mtime_ns": 1790768333802900443,
+    "table_registration_revision": "c05d7d81c260e16858d06cb868e6387885ca45cf",
+    "table_registration_commit_timestamp": 1790763740,
+    "module_newer_than_table_registration": true,
+    "message_symbol_count": 20,
+    "message_symbols": [
+      "std_DecryptMessage",
+      "std_DecryptMessageBegin",
+      "std_DecryptMessageNext",
+      "std_EncryptMessage",
+      "std_EncryptMessageBegin",
+      "std_EncryptMessageNext",
+      "std_MessageDecryptFinal",
+      "std_MessageDecryptInit",
+      "std_MessageEncryptFinal",
+      "std_MessageEncryptInit",
+      "std_MessageSignFinal",
+      "std_MessageSignInit",
+      "std_MessageVerifyFinal",
+      "std_MessageVerifyInit",
+      "std_SignMessage",
+      "std_SignMessageBegin",
+      "std_SignMessageNext",
+      "std_VerifyMessage",
+      "std_VerifyMessageBegin",
+      "std_VerifyMessageNext"
+    ],
+    "symbols_log": "dist-release-evidence/message-routing/clean-module-symbols.log"
+  },
+  "direct_entry_happy_legs": {
+    "3.0": {
+      "C_MessageEncryptInit": [
+        "init-cbc",
+        "multipart-init",
+        "recall-init",
+        "pad-init",
+        "sibling-init",
+        "close-open-init"
+      ],
+      "C_EncryptMessage": [
+        "one-cbc-query",
+        "one-cbc-repeat-query",
+        "one-cbc-exact",
+        "second-message",
+        "recall-stage",
+        "recall-after-malformed",
+        "pad-abc",
+        "pad-empty-null",
+        "pad-empty-present",
+        "sibling-one"
+      ],
+      "C_EncryptMessageBegin": [
+        "begin-iv",
+        "after-one-byte-refusal",
+        "empty-parameter-aad",
+        "replacement-iv-begin",
+        "close-open-begin"
+      ],
+      "C_EncryptMessageNext": [
+        "non-ending-query",
+        "part-cbc",
+        "terminal-query",
+        "terminal-repeat-query",
+        "terminal-exact",
+        "repair-alignment",
+        "supply-iv-at-end",
+        "replace-iv-at-end"
+      ],
+      "C_MessageEncryptFinal": [
+        "final-idle",
+        "multipart-final-idle",
+        "last-final-idle",
+        "pad-final",
+        "sibling-release"
+      ],
+      "C_MessageDecryptInit": [
+        "init-cbc",
+        "multipart-init",
+        "recall-init",
+        "pad-init",
+        "next-pad-context",
+        "next-pad-context",
+        "next-pad-context",
+        "sibling-init"
+      ],
+      "C_DecryptMessage": [
+        "one-cbc-query",
+        "one-cbc-repeat-query",
+        "one-cbc-exact",
+        "second-message",
+        "recall-stage",
+        "recall-after-malformed",
+        "pad-abc",
+        "empty-query",
+        "empty-query-repeat",
+        "pad-empty-null",
+        "empty-query",
+        "empty-query-repeat",
+        "pad-empty-present",
+        "valid-after-padding-failure",
+        "sibling-one",
+        "sibling-survives"
+      ],
+      "C_DecryptMessageBegin": [
+        "begin-iv",
+        "empty-parameter-aad",
+        "replacement-iv-begin"
+      ],
+      "C_DecryptMessageNext": [
+        "non-ending-query",
+        "part-cbc",
+        "terminal-query",
+        "terminal-repeat-query",
+        "terminal-exact",
+        "supply-iv-at-end",
+        "replace-iv-at-end"
+      ],
+      "C_MessageDecryptFinal": [
+        "final-idle",
+        "multipart-final-idle",
+        "last-final-idle",
+        "after-delivery",
+        "after-delivery",
+        "after-delivery",
+        "pad-final",
+        "sibling-release"
+      ],
+      "C_MessageSignInit": [
+        "init-hmac",
+        "multipart-init",
+        "empty-init"
+      ],
+      "C_SignMessage": [
+        "one-hmac-query",
+        "one-hmac-repeat-query",
+        "one-hmac-exact",
+        "second-message",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_SignMessageBegin": [
+        "begin-hmac",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_SignMessageNext": [
+        "absent-output-and-length",
+        "ignored-present-output",
+        "part-hmac-query",
+        "part-hmac-repeat-query",
+        "part-hmac-exact",
+        "empty-null",
+        "empty-terminal",
+        "empty-present",
+        "empty-terminal"
+      ],
+      "C_MessageSignFinal": [
+        "final-idle",
+        "multipart-final-idle",
+        "empty-final"
+      ],
+      "C_MessageVerifyInit": [
+        "init-hmac",
+        "multipart-init",
+        "empty-init"
+      ],
+      "C_VerifyMessage": [
+        "one-hmac",
+        "valid-after-invalid",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_VerifyMessageBegin": [
+        "begin-hmac",
+        "begin-again",
+        "begin-after-empty-mismatch",
+        "begin-after-flipped-mismatch",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_VerifyMessageNext": [
+        "absent-empty-witness",
+        "part-hmac",
+        "recovered-verdict",
+        "empty-null",
+        "empty-terminal",
+        "empty-present",
+        "empty-terminal"
+      ],
+      "C_MessageVerifyFinal": [
+        "final-idle-after-invalid",
+        "final-idle",
+        "empty-final"
+      ]
+    },
+    "3.1": {
+      "C_MessageEncryptInit": [
+        "init-cbc",
+        "multipart-init",
+        "recall-init",
+        "pad-init",
+        "sibling-init",
+        "close-open-init"
+      ],
+      "C_EncryptMessage": [
+        "one-cbc-query",
+        "one-cbc-repeat-query",
+        "one-cbc-exact",
+        "second-message",
+        "recall-stage",
+        "recall-after-malformed",
+        "pad-abc",
+        "pad-empty-null",
+        "pad-empty-present",
+        "sibling-one"
+      ],
+      "C_EncryptMessageBegin": [
+        "begin-iv",
+        "after-one-byte-refusal",
+        "empty-parameter-aad",
+        "replacement-iv-begin",
+        "close-open-begin"
+      ],
+      "C_EncryptMessageNext": [
+        "non-ending-query",
+        "part-cbc",
+        "terminal-query",
+        "terminal-repeat-query",
+        "terminal-exact",
+        "repair-alignment",
+        "supply-iv-at-end",
+        "replace-iv-at-end"
+      ],
+      "C_MessageEncryptFinal": [
+        "final-idle",
+        "multipart-final-idle",
+        "last-final-idle",
+        "pad-final",
+        "sibling-release"
+      ],
+      "C_MessageDecryptInit": [
+        "init-cbc",
+        "multipart-init",
+        "recall-init",
+        "pad-init",
+        "next-pad-context",
+        "next-pad-context",
+        "next-pad-context",
+        "sibling-init"
+      ],
+      "C_DecryptMessage": [
+        "one-cbc-query",
+        "one-cbc-repeat-query",
+        "one-cbc-exact",
+        "second-message",
+        "recall-stage",
+        "recall-after-malformed",
+        "pad-abc",
+        "empty-query",
+        "empty-query-repeat",
+        "pad-empty-null",
+        "empty-query",
+        "empty-query-repeat",
+        "pad-empty-present",
+        "valid-after-padding-failure",
+        "sibling-one",
+        "sibling-survives"
+      ],
+      "C_DecryptMessageBegin": [
+        "begin-iv",
+        "empty-parameter-aad",
+        "replacement-iv-begin"
+      ],
+      "C_DecryptMessageNext": [
+        "non-ending-query",
+        "part-cbc",
+        "terminal-query",
+        "terminal-repeat-query",
+        "terminal-exact",
+        "supply-iv-at-end",
+        "replace-iv-at-end"
+      ],
+      "C_MessageDecryptFinal": [
+        "final-idle",
+        "multipart-final-idle",
+        "last-final-idle",
+        "after-delivery",
+        "after-delivery",
+        "after-delivery",
+        "pad-final",
+        "sibling-release"
+      ],
+      "C_MessageSignInit": [
+        "init-hmac",
+        "multipart-init",
+        "empty-init"
+      ],
+      "C_SignMessage": [
+        "one-hmac-query",
+        "one-hmac-repeat-query",
+        "one-hmac-exact",
+        "second-message",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_SignMessageBegin": [
+        "begin-hmac",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_SignMessageNext": [
+        "absent-output-and-length",
+        "ignored-present-output",
+        "part-hmac-query",
+        "part-hmac-repeat-query",
+        "part-hmac-exact",
+        "empty-null",
+        "empty-terminal",
+        "empty-present",
+        "empty-terminal"
+      ],
+      "C_MessageSignFinal": [
+        "final-idle",
+        "multipart-final-idle",
+        "empty-final"
+      ],
+      "C_MessageVerifyInit": [
+        "init-hmac",
+        "multipart-init",
+        "empty-init"
+      ],
+      "C_VerifyMessage": [
+        "one-hmac",
+        "valid-after-invalid",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_VerifyMessageBegin": [
+        "begin-hmac",
+        "begin-again",
+        "begin-after-empty-mismatch",
+        "begin-after-flipped-mismatch",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_VerifyMessageNext": [
+        "absent-empty-witness",
+        "part-hmac",
+        "recovered-verdict",
+        "empty-null",
+        "empty-terminal",
+        "empty-present",
+        "empty-terminal"
+      ],
+      "C_MessageVerifyFinal": [
+        "final-idle-after-invalid",
+        "final-idle",
+        "empty-final"
+      ]
+    },
+    "3.2": {
+      "C_MessageEncryptInit": [
+        "init-cbc",
+        "multipart-init",
+        "recall-init",
+        "pad-init",
+        "sibling-init",
+        "close-open-init"
+      ],
+      "C_EncryptMessage": [
+        "one-cbc-query",
+        "one-cbc-repeat-query",
+        "one-cbc-exact",
+        "second-message",
+        "recall-stage",
+        "recall-after-malformed",
+        "pad-abc",
+        "pad-empty-null",
+        "pad-empty-present",
+        "sibling-one"
+      ],
+      "C_EncryptMessageBegin": [
+        "begin-iv",
+        "after-one-byte-refusal",
+        "empty-parameter-aad",
+        "replacement-iv-begin",
+        "close-open-begin"
+      ],
+      "C_EncryptMessageNext": [
+        "non-ending-query",
+        "part-cbc",
+        "terminal-query",
+        "terminal-repeat-query",
+        "terminal-exact",
+        "repair-alignment",
+        "supply-iv-at-end",
+        "replace-iv-at-end"
+      ],
+      "C_MessageEncryptFinal": [
+        "final-idle",
+        "multipart-final-idle",
+        "last-final-idle",
+        "pad-final",
+        "sibling-release"
+      ],
+      "C_MessageDecryptInit": [
+        "init-cbc",
+        "multipart-init",
+        "recall-init",
+        "pad-init",
+        "next-pad-context",
+        "next-pad-context",
+        "next-pad-context",
+        "sibling-init"
+      ],
+      "C_DecryptMessage": [
+        "one-cbc-query",
+        "one-cbc-repeat-query",
+        "one-cbc-exact",
+        "second-message",
+        "recall-stage",
+        "recall-after-malformed",
+        "pad-abc",
+        "empty-query",
+        "empty-query-repeat",
+        "pad-empty-null",
+        "empty-query",
+        "empty-query-repeat",
+        "pad-empty-present",
+        "valid-after-padding-failure",
+        "sibling-one",
+        "sibling-survives"
+      ],
+      "C_DecryptMessageBegin": [
+        "begin-iv",
+        "empty-parameter-aad",
+        "replacement-iv-begin"
+      ],
+      "C_DecryptMessageNext": [
+        "non-ending-query",
+        "part-cbc",
+        "terminal-query",
+        "terminal-repeat-query",
+        "terminal-exact",
+        "supply-iv-at-end",
+        "replace-iv-at-end"
+      ],
+      "C_MessageDecryptFinal": [
+        "final-idle",
+        "multipart-final-idle",
+        "last-final-idle",
+        "after-delivery",
+        "after-delivery",
+        "after-delivery",
+        "pad-final",
+        "sibling-release"
+      ],
+      "C_MessageSignInit": [
+        "init-hmac",
+        "multipart-init",
+        "empty-init"
+      ],
+      "C_SignMessage": [
+        "one-hmac-query",
+        "one-hmac-repeat-query",
+        "one-hmac-exact",
+        "second-message",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_SignMessageBegin": [
+        "begin-hmac",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_SignMessageNext": [
+        "absent-output-and-length",
+        "ignored-present-output",
+        "part-hmac-query",
+        "part-hmac-repeat-query",
+        "part-hmac-exact",
+        "empty-null",
+        "empty-terminal",
+        "empty-present",
+        "empty-terminal"
+      ],
+      "C_MessageSignFinal": [
+        "final-idle",
+        "multipart-final-idle",
+        "empty-final"
+      ],
+      "C_MessageVerifyInit": [
+        "init-hmac",
+        "multipart-init",
+        "empty-init"
+      ],
+      "C_VerifyMessage": [
+        "one-hmac",
+        "valid-after-invalid",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_VerifyMessageBegin": [
+        "begin-hmac",
+        "begin-again",
+        "begin-after-empty-mismatch",
+        "begin-after-flipped-mismatch",
+        "empty-null",
+        "empty-present"
+      ],
+      "C_VerifyMessageNext": [
+        "absent-empty-witness",
+        "part-hmac",
+        "recovered-verdict",
+        "empty-null",
+        "empty-terminal",
+        "empty-present",
+        "empty-terminal"
+      ],
+      "C_MessageVerifyFinal": [
+        "final-idle-after-invalid",
+        "final-idle",
+        "empty-final"
+      ]
+    }
+  },
+  "focused_verification": {
+    "message-model": {
+      "command": [
+        "timeout",
+        "-s",
+        "KILL",
+        "2400",
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "host",
+        "-v",
+        "/home/user/src/m/haskoki-ws/haskoki:/work",
+        "-w",
+        "/work",
+        "haskoki-dev:ghc-9.10.3",
+        "cabal",
+        "test",
+        "haskoki-model-tests",
+        "--test-option=--pattern=message operations"
+      ],
+      "exit": 0,
+      "log": "dist-release-evidence/message-routing/message-model.log",
+      "log_sha256": "f7289598a5c6007f68895eead9fea8402c472dad869a6c4d3d6e6aaf86375327",
+      "passed_cases": 24
+    },
+    "standard-surface": {
+      "command": [
+        "timeout",
+        "-s",
+        "KILL",
+        "2400",
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "host",
+        "-v",
+        "/home/user/src/m/haskoki-ws/haskoki:/work",
+        "-w",
+        "/work",
+        "haskoki-dev:ghc-9.10.3",
+        "cabal",
+        "test",
+        "haskoki-model-tests",
+        "--test-option=--pattern=Standard surface"
+      ],
+      "exit": 0,
+      "log": "dist-release-evidence/message-routing/standard-surface.log",
+      "log_sha256": "d204b39918d0771bb7b4f7bb4d0fbbb53cf09f2f711cd537fb69b73741d6e286",
+      "passed_cases": 16
+    },
+    "direct-consumers": {
+      "command": [
+        "timeout",
+        "-s",
+        "KILL",
+        "2400",
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "host",
+        "-v",
+        "/home/user/src/m/haskoki-ws/haskoki:/work",
+        "-w",
+        "/work",
+        "haskoki-dev:ghc-9.10.3",
+        "scripts/test-consumers.sh"
+      ],
+      "exit": 0,
+      "log": "dist-release-evidence/message-routing/direct-consumers.log",
+      "log_sha256": "631afd17f0a7bf9efa7578e7ac7441cd9327fb24fcaae902b25ea34f7f6e0948"
+    },
+    "proxy-parity": {
+      "command": [
+        "timeout",
+        "-s",
+        "KILL",
+        "2400",
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "host",
+        "-v",
+        "/home/user/src/m/haskoki-ws/haskoki:/work",
+        "-w",
+        "/work",
+        "-v",
+        "/opt/pkcs11-proxy-ng:/opt/pkcs11-proxy-ng:ro",
+        "haskoki-dev:ghc-9.10.3",
+        "sh",
+        "-c",
+        "HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng scripts/test-proxy-parity.sh"
+      ],
+      "exit": 0,
+      "log": "dist-release-evidence/message-routing/proxy-parity.log",
+      "log_sha256": "daef99d64ac6341fac316414cc0e3575aa91d111f19f615796db8a51fcaa5d4b"
+    }
+  },
+  "gate_attempts": [
+    {
+      "command": "HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng bash scripts/run-gates.sh",
+      "exit": 1,
+      "log": "dist-release-evidence/message-routing/gates-initial.log",
+      "manifest": "dist-release-evidence/message-routing/gates-initial/MANIFEST.txt",
+      "finding_count": 2,
+      "finding_text": [
+        "DH pub B reads 256 bytes",
+        "DH agreement commutes"
+      ],
+      "source_review": {
+        "consumer": "tests/c/consumer_roundtrip.c:1666-1688 asserts full-width public values and passes buffer capacity to derive",
+        "provider": "core/Haskoki/Object.hs:1072 and core/Haskoki/Der.hs:865-876 expose the minimal unsigned DH integer",
+        "preexisting_at_revision": "a7090869cf679658720fe41ebc7867f2be82502e",
+        "diagnosis": "consumer assumes a fixed public-value width; source supports variable width; original failure did not print the actual CKR or byte length",
+        "action": "preserve this failure; rerun the complete unchanged gate sequence; leave the consumer source for coordinator follow-up"
+      }
+    },
+    {
+      "command": "HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng bash scripts/run-gates.sh",
+      "exit": 0,
+      "log": "dist-release-evidence/message-routing/gates.log"
+    }
+  ],
+  "lane_trace_configuration": {
+    "producer": "pkcs11-check raw report stream with --rv-trace",
+    "trace_format": "pytest reportlog JSONL containing pkcs11_rv_trace user_properties",
+    "trace_materialization": "byte-identical copy of the completed report.jsonl to trace.jsonl",
+    "provider_runtime_trace_emitted": false,
+    "raw_call_observer": "pkcs11_check.raw.api.RawPKCS11._call",
+    "trace_option": "--rv-trace",
+    "compact_window": null,
+    "shim_path": "/tmp/haskoki-message-verification/lane-docker/docker",
+    "shim_sha256": "552b1a3be28f1dda00154f7d8488ce458439dd754039cf3fee0b201cdc1b73be",
+    "wrapper_path": "/tmp/pkcs11-ws/run-lane-rc2.sh",
+    "wrapper_sha256": "baede328be08eddbeac51d325b8b6432655bd1d6aaa138e7e92555096b1c49b1",
+    "native_trace_diagnostic_attempt": {
+      "source_path": "scripts/ci-backend.toml",
+      "source_sha256": "3028b238d51723516afe745210b201df211e4159199c3db633d851bb1faeae89",
+      "runtime_path": "dist-release-evidence/message-routing/trace-backend.toml",
+      "runtime_sha256": "df32ba06339b77a678e0a0a10793e2e52dbcc0eb57e96e57de04271f68530b79",
+      "config_in_container": "/repo/dist-release-evidence/message-routing/trace-backend.toml",
+      "shim_path": "/tmp/haskoki-message-verification/lane-docker/docker",
+      "shim_sha256": "9c0e34451f384a6ba62bce6f03f401ff359ac40df5bd21b2267e3d1d80c5a9d9",
+      "wrapper_path": "/tmp/pkcs11-ws/run-lane-rc2.sh",
+      "wrapper_sha256": "baede328be08eddbeac51d325b8b6432655bd1d6aaa138e7e92555096b1c49b1",
+      "reason": "canonical backend disables tracing; trace environment variable only overrides the path. Local Docker argv adapter enables a copied runtime config without editing tracked files or the lane wrapper.",
+      "outcome": "Standard surface has no native trace emitter; no trace file was produced"
+    },
+    "effective_commands_path": "dist-release-evidence/message-routing/effective-lane-docker-commands.jsonl"
+  },
+  "gate_manifest": {
+    "path": "dist-release-evidence/message-routing/gates/MANIFEST.txt",
+    "sha256": "e97e1936b92433d859cfdebc4336ad83c6bc28d60f6cb798fa23825e9d4fe2e1",
+    "steps_passed": 16,
+    "steps_missed": 0,
+    "drivers_passed": 14
+  },
+  "bundle_path": "/home/user/src/m/haskoki-ws/haskoki/dist-release/haskoki-0.3.0.0",
+  "bundle_sha256": "6c629bf0d82d936b32cf3aa09d5ec5f73d0e2b19755081b3573339527f6abea8",
+  "module_sha256": "28071ccee1e0aa956cbae91b7c896554222af2b2a7b9cf83b0c4ca005747b173",
+  "release_module_verification": {
+    "module_mtime_ns": 1790769067725113164,
+    "module_newer_than_table_registration": true,
+    "message_symbol_count": 20,
+    "matches_clean_build_module": true
+  },
+  "lane_attempts": {
+    "fast": [
+      {
+        "command": "bash /tmp/pkcs11-ws/run-lane-rc2.sh fast",
+        "environment": {
+          "PATH_prefix": "/tmp/haskoki-message-verification/lane-docker",
+          "effective_HASKOKI_CONFIG": "/repo/dist-release-evidence/message-routing/trace-backend.toml"
+        },
+        "exit": 0,
+        "log": "dist-release-evidence/message-routing/fast-initial.log",
+        "summary": {
+          "passed": 5138,
+          "failed": 4,
+          "skipped": 4414,
+          "xfailed": 634,
+          "xpassed": 0,
+          "error": 0,
+          "crashed": 0,
+          "timeout": 0,
+          "crash_limited": 0,
+          "total": 10190,
+          "child_crash": 0,
+          "child_timeout": 0,
+          "incomplete": false
+        },
+        "trace_present": false,
+        "result_archive": "dist-release-evidence/message-routing/fast-initial/pkcs11-fast-results.json",
+        "raw_report_archive": "dist-release-evidence/message-routing/fast-initial/report.jsonl"
+      },
+      {
+        "command": "bash /tmp/pkcs11-ws/run-lane-rc2.sh fast",
+        "environment": {
+          "PATH_prefix": "/tmp/haskoki-message-verification/lane-docker",
+          "PKCS11_CHECK_EXTRA_ARGS": "--rv-trace"
+        },
+        "exit": 0,
+        "log": "dist-release-evidence/message-routing/fast.log"
+      }
+    ],
+    "kat": [
+      {
+        "command": "bash /tmp/pkcs11-ws/run-lane-rc2.sh kat",
+        "environment": {
+          "PATH_prefix": "/tmp/haskoki-message-verification/lane-docker",
+          "PKCS11_CHECK_EXTRA_ARGS": "--rv-trace"
+        },
+        "exit": 0,
+        "log": "dist-release-evidence/message-routing/kat.log"
+      }
+    ]
+  },
+  "routing_source_checks": {
+    "generated_message_stub_bodies_absent": 20,
+    "table_assignments_to_standard_bodies": 20,
+    "original_model_case_names_unchanged": [
+      "two messages under one outer context, then outer final",
+      "message init conflicts and arg shape",
+      "invalid ordering rejected without mutation",
+      "message error keeps the outer context",
+      "oversize part aborts the message only",
+      "unpadded lengths keep or skip the message",
+      "auth gate consumes at first begin",
+      "aad bound into cipher effects, refused for sign",
+      "classic and message calls do not mix",
+      "decrypt vertical with pad checks",
+      "sign vertical: multipart equals one-shot",
+      "verify vertical: verdicts end the message",
+      "family and codec mismatch rejected",
+      "message params decode with family aad rule",
+      "nonce writeback through nested regions",
+      "tag split and writeback",
+      "toy aead binds nonce aad and tag"
+    ],
+    "original_model_cases": 17,
+    "new_decoder_cases": 7,
+    "standard_message_dialogue_cases": 5,
+    "catalog_sha256_unchanged": true,
+    "original_model_body_definitions_byte_identical": true,
+    "original_model_body_definition_count": 47,
+    "registration_change": "test group adds seven decoder cases; original seventeen case names and all old case/helper bodies are retained"
+  },
+  "lane_review_details": {
+    "fast": {
+      "counts": {
+        "collected_selected": 10190,
+        "executed_non_skip_outcomes": 5776,
+        "passed": 5138,
+        "skipped": 4414,
+        "expected_failures": 634,
+        "actual_failures": 4,
+        "unexpected_passes": 0
+      },
+      "finding_count": 638,
+      "new_finding_count": 5,
+      "removed_previous_findings": 0,
+      "message_units": [
+        {
+          "target": "/fw/src/pkcs11_check/testcases/test_mech_message.py",
+          "counts": {
+            "passed": 0,
+            "failed": 0,
+            "skipped": 26,
+            "xfailed": 0,
+            "xpassed": 0,
+            "error": 0,
+            "crashed": 0,
+            "timeout": 0,
+            "crash_limited": 0
+          },
+          "skip_reasons": {
+            "No mechanism catalog": 20,
+            "CKM_AES_GCM does not advertise CKF_MESSAGE_ENCRYPT": 4,
+            "CKM_AES_CCM does not advertise CKF_MESSAGE_ENCRYPT": 1,
+            "CKM_AES_GMAC does not advertise CKF_MESSAGE_SIGN": 1
+          }
+        },
+        {
+          "target": "/fw/src/pkcs11_check/testcases/test_message_crypto.py",
+          "counts": {
+            "passed": 1,
+            "failed": 4,
+            "skipped": 7,
+            "xfailed": 1,
+            "xpassed": 0,
+            "error": 0,
+            "crashed": 0,
+            "timeout": 0,
+            "crash_limited": 0
+          },
+          "skip_reasons": {
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_SIGN for single message sign": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_VERIFY for single message verify": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_SIGN for single message sign cross-verification": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_SIGN for multipart message sign": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_VERIFY for single message verify bad signature": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_VERIFY for multipart message verify": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_VERIFY for multipart message verify bad signature": 1
+          }
+        }
+      ],
+      "trace_review": {
+        "format": "pytest reportlog raw JSONL with pkcs11_rv_trace",
+        "raw_report_byte_identical": true,
+        "jsonl_records": 33713,
+        "reports_with_call_observations": 5327,
+        "call_observations_across_report_phases": 88092,
+        "dropped_call_observations": 0,
+        "sha256": "070f344e5227cdb8d9abf37097212890e849eb27cd3c0fb89230661b6d6200ca"
+      },
+      "source_classification": "All five newly exposed CBC findings were reduced with matching AES-256/NULL-IV inputs and grouped into one measured oracle fixture disposition. IV-supplied controls establish successful encryption/classic decryption and separately isolate the source input placement. Capability skips remain separate; no unresolved new routed provider defect."
+    },
+    "kat": {
+      "counts": {
+        "collected_selected": 116748,
+        "executed_non_skip_outcomes": 85432,
+        "passed": 84455,
+        "skipped": 31316,
+        "expected_failures": 973,
+        "actual_failures": 4,
+        "unexpected_passes": 0
+      },
+      "finding_count": 977,
+      "new_finding_count": 5,
+      "removed_previous_findings": 0,
+      "raw_new_tuple_count": 6,
+      "raw_removed_tuple_count": 1,
+      "explained_volatile_finding_changes": [
+        {
+          "nodeid": "src/pkcs11_check/testcases/test_cctv_rfc6979.py::test_rfc6979_ecdsa_sign_deterministic",
+          "previous": {
+            "nodeid": "src/pkcs11_check/testcases/test_cctv_rfc6979.py::test_rfc6979_ecdsa_sign_deterministic",
+            "outcome": "xfailed",
+            "duration": 0.0018780739992507733,
+            "start": 1790747192.0746505,
+            "wasxfail": "Module does not use RFC 6979 deterministic k (got 8d64c1691aeb2eed58570c999d4c597d..., expected efd9073b652e76da1b5a019c0e4a2e3f...)",
+            "longrepr": "_pytest.outcomes.XFailed: Module does not use RFC 6979 deterministic k (got 8d64c1691aeb2eed58570c999d4c597d..., expected efd9073b652e76da1b5a019c0e4a2e3f...)",
+            "location": [
+              "src/pkcs11_check/testcases/test_cctv_rfc6979.py",
+              214,
+              "test_rfc6979_ecdsa_sign_deterministic"
+            ]
+          },
+          "actual": {
+            "nodeid": "src/pkcs11_check/testcases/test_cctv_rfc6979.py::test_rfc6979_ecdsa_sign_deterministic",
+            "outcome": "xfailed",
+            "duration": 0.0016919299960136414,
+            "start": 1790771140.6635258,
+            "wasxfail": "Module does not use RFC 6979 deterministic k (got 7a0e9c4cb403359ca917eb822a1cca26..., expected efd9073b652e76da1b5a019c0e4a2e3f...)",
+            "longrepr": "_pytest.outcomes.XFailed: Module does not use RFC 6979 deterministic k (got 7a0e9c4cb403359ca917eb822a1cca26..., expected efd9073b652e76da1b5a019c0e4a2e3f...)",
+            "location": [
+              "src/pkcs11_check/testcases/test_cctv_rfc6979.py",
+              214,
+              "test_rfc6979_ecdsa_sign_deterministic"
+            ]
+          },
+          "classification": "existing expected failure with randomized signature bytes",
+          "source": "test_cctv_rfc6979.py:215-264 explicitly classifies ordinary nondeterministic ECDSA signing as an honest deviation",
+          "review": "only the observed 32-hex-digit signature prefix differs; node, outcome, expected prefix and surrounding reason are identical"
+        }
+      ],
+      "message_units": [
+        {
+          "target": "/fw/src/pkcs11_check/testcases/test_mech_message.py",
+          "counts": {
+            "passed": 0,
+            "failed": 0,
+            "skipped": 26,
+            "xfailed": 0,
+            "xpassed": 0,
+            "error": 0,
+            "crashed": 0,
+            "timeout": 0,
+            "crash_limited": 0
+          },
+          "skip_reasons": {
+            "No mechanism catalog": 20,
+            "CKM_AES_GCM does not advertise CKF_MESSAGE_ENCRYPT": 4,
+            "CKM_AES_CCM does not advertise CKF_MESSAGE_ENCRYPT": 1,
+            "CKM_AES_GMAC does not advertise CKF_MESSAGE_SIGN": 1
+          }
+        },
+        {
+          "target": "/fw/src/pkcs11_check/testcases/test_message_crypto.py",
+          "counts": {
+            "passed": 1,
+            "failed": 4,
+            "skipped": 7,
+            "xfailed": 1,
+            "xpassed": 0,
+            "error": 0,
+            "crashed": 0,
+            "timeout": 0,
+            "crash_limited": 0
+          },
+          "skip_reasons": {
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_SIGN for single message sign": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_VERIFY for single message verify": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_SIGN for single message sign cross-verification": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_SIGN for multipart message sign": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_VERIFY for single message verify bad signature": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_VERIFY for multipart message verify": 1,
+            "SHA256_RSA_PKCS does not advertise CKF_MESSAGE_VERIFY for multipart message verify bad signature": 1
+          }
+        }
+      ],
+      "trace_review": {
+        "format": "pytest reportlog raw JSONL with pkcs11_rv_trace",
+        "raw_report_byte_identical": true,
+        "jsonl_records": 352087,
+        "reports_with_call_observations": 76024,
+        "call_observations_across_report_phases": 3444128,
+        "dropped_call_observations": 0,
+        "sha256": "f49983e50d5424ff9ce397089d3f440e410812b1bfc935027febdca0ae45dba4"
+      },
+      "source_classification": "All five newly exposed CBC findings were reduced with matching AES-256/NULL-IV inputs and grouped into one measured oracle fixture disposition. IV-supplied controls establish successful encryption/classic decryption and separately isolate the source input placement. Capability skips remain separate; no unresolved new routed provider defect."
+    }
+  },
+  "independent_reproductions": {
+    "oracle-repro": {
+      "source": "dist-release-evidence/message-routing/reproductions/oracle-repro.c",
+      "source_sha256": "a1c4c1171e96ee3820514bc7199161c802565b04b4970f396235b0c80057c3aa",
+      "compile": {
+        "command": [
+          "cc",
+          "-std=c11",
+          "-O2",
+          "-g",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-Ispec/vendor",
+          "-I/home/user/src/m/haskoki-ws/haskoki",
+          "/tmp/haskoki-message-verification/oracle-repro.c",
+          "-ldl",
+          "-lpthread",
+          "-o",
+          "/tmp/haskoki-message-verification/oracle-repro"
+        ],
+        "exit": 0,
+        "log": "dist-release-evidence/message-routing/oracle-cbc-compile.log"
+      },
+      "run": {
+        "command": [
+          "/tmp/haskoki-message-verification/oracle-repro",
+          "/home/user/src/m/haskoki-ws/haskoki/dist-release/haskoki-0.3.0.0/lib/libhaskoki.so"
+        ],
+        "exit": 0,
+        "log": "dist-release-evidence/message-routing/oracle-cbc-reproduction.log"
+      },
+      "observed_output": "message:C_MessageEncryptInit/slot-present/3.2 check=ok\nmessage:C_EncryptMessage/slot-present/3.2 check=ok\nmessage:C_EncryptMessageBegin/slot-present/3.2 check=ok\nmessage:C_EncryptMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageEncryptFinal/slot-present/3.2 check=ok\nmessage:C_MessageDecryptInit/slot-present/3.2 check=ok\nmessage:C_DecryptMessage/slot-present/3.2 check=ok\nmessage:C_DecryptMessageBegin/slot-present/3.2 check=ok\nmessage:C_DecryptMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageDecryptFinal/slot-present/3.2 check=ok\nmessage:C_MessageSignInit/slot-present/3.2 check=ok\nmessage:C_SignMessage/slot-present/3.2 check=ok\nmessage:C_SignMessageBegin/slot-present/3.2 check=ok\nmessage:C_SignMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageSignFinal/slot-present/3.2 check=ok\nmessage:C_MessageVerifyInit/slot-present/3.2 check=ok\nmessage:C_VerifyMessage/slot-present/3.2 check=ok\nmessage:C_VerifyMessageBegin/slot-present/3.2 check=ok\nmessage:C_VerifyMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageVerifyFinal/slot-present/3.2 check=ok\nmessage:fixture/open/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nprobe: CBC init without IV rv=0x7\nmessage:fixture/close/3.2 rv=0x0 expected=0x0\nmessage:C_Finalize/probe-cleanup/3.2 rv=0x0 expected=0x0\n"
+    },
+    "oracle-shape-repro": {
+      "source": "dist-release-evidence/message-routing/reproductions/oracle-shape-repro.c",
+      "source_sha256": "af0af972f5e63f20acee1b3d076c51cb2f4a397ff339ee16deeec09509c256b4",
+      "compile": {
+        "command": [
+          "cc",
+          "-std=c11",
+          "-O2",
+          "-g",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-Ispec/vendor",
+          "-I/home/user/src/m/haskoki-ws/haskoki",
+          "/tmp/haskoki-message-verification/oracle-shape-repro.c",
+          "-ldl",
+          "-lpthread",
+          "-o",
+          "/tmp/haskoki-message-verification/oracle-shape-repro"
+        ],
+        "exit": 0,
+        "log": "dist-release-evidence/message-routing/oracle-shape-compile.log"
+      },
+      "run": {
+        "command": [
+          "/tmp/haskoki-message-verification/oracle-shape-repro",
+          "/home/user/src/m/haskoki-ws/haskoki/dist-release/haskoki-0.3.0.0/lib/libhaskoki.so"
+        ],
+        "exit": 0,
+        "log": "dist-release-evidence/message-routing/oracle-shape-reproduction.log"
+      },
+      "observed_output": "message:C_MessageEncryptInit/slot-present/3.2 check=ok\nmessage:C_EncryptMessage/slot-present/3.2 check=ok\nmessage:C_EncryptMessageBegin/slot-present/3.2 check=ok\nmessage:C_EncryptMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageEncryptFinal/slot-present/3.2 check=ok\nmessage:C_MessageDecryptInit/slot-present/3.2 check=ok\nmessage:C_DecryptMessage/slot-present/3.2 check=ok\nmessage:C_DecryptMessageBegin/slot-present/3.2 check=ok\nmessage:C_DecryptMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageDecryptFinal/slot-present/3.2 check=ok\nmessage:C_MessageSignInit/slot-present/3.2 check=ok\nmessage:C_SignMessage/slot-present/3.2 check=ok\nmessage:C_SignMessageBegin/slot-present/3.2 check=ok\nmessage:C_SignMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageSignFinal/slot-present/3.2 check=ok\nmessage:C_MessageVerifyInit/slot-present/3.2 check=ok\nmessage:C_VerifyMessage/slot-present/3.2 check=ok\nmessage:C_VerifyMessageBegin/slot-present/3.2 check=ok\nmessage:C_VerifyMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageVerifyFinal/slot-present/3.2 check=ok\nshape: AES_CBC mechanism-info rv=0x0 flags=0x60300 message-encrypt=0 message-decrypt=0 multi-message=0\nmessage:fixture/open/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nshape: test_message_encrypt_single AES-256 initial-mechanism-parameter=NULL/0 plaintext-length=32 primary-call=C_MessageEncryptInit rv=0x7\nmessage:fixture/close/3.2 rv=0x0 expected=0x0\nmessage:fixture/open/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nshape: test_message_decrypt_single AES-256 initial-mechanism-parameter=NULL/0 plaintext-length=32 primary-call=C_MessageEncryptInit rv=0x7\nmessage:fixture/close/3.2 rv=0x0 expected=0x0\nmessage:fixture/open/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nshape: test_message_encrypt_multipart AES-256 initial-mechanism-parameter=NULL/0 plaintext-length=32 primary-call=C_MessageEncryptInit rv=0x7\nmessage:fixture/close/3.2 rv=0x0 expected=0x0\nmessage:fixture/open/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nshape: test_message_decrypt_multipart AES-256 initial-mechanism-parameter=NULL/0 plaintext-length=32 primary-call=C_MessageEncryptInit rv=0x7\nmessage:fixture/close/3.2 rv=0x0 expected=0x0\nmessage:fixture/open/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nshape: test_message_encrypt_decrypt_roundtrip AES-256 initial-mechanism-parameter=NULL/0 plaintext-length=32 primary-call=C_MessageEncryptInit rv=0x7\nmessage:fixture/close/3.2 rv=0x0 expected=0x0\nmessage:fixture/open/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:C_MessageEncryptInit/control-valid-iv/3.2 rv=0x0 expected=0x0\ncontrol: supplied init/message IV single encryption rv=0x0 length=32\nmessage:C_EncryptMessage/control-valid-iv/3.2 rv=0x0 expected=0x0\nmessage:C_MessageEncryptFinal/control-valid-iv/3.2 rv=0x0 expected=0x0\nmessage:C_DecryptInit/control-classic-iv/3.2 rv=0x0 expected=0x0\ncontrol: classic decrypt with same IV rv=0x0 length=32 matches-32-A=1\nmessage:C_Decrypt/control-classic-iv/3.2 rv=0x0 expected=0x0\nmessage:C_Decrypt/control-plaintext/3.2 check=ok\nmessage:C_MessageEncryptInit/control-no-message-iv/3.2 rv=0x0 expected=0x0\ncontrol: supplied init IV but oracle NULL/0 message parameter rv=0x5 length=64\nmessage:fixture/close/3.2 rv=0x0 expected=0x0\nmessage:fixture/open/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:C_MessageEncryptInit/control-multipart-iv/3.2 rv=0x0 expected=0x0\ncontrol: IV supplied; oracle plaintext placed only in Begin AAD rv=0x0\ncontrol: IV supplied; oracle empty terminal plaintext rv=0x70 length=64\nmessage:C_MessageEncryptFinal/control-aad-only/3.2 rv=0x0 expected=0x0\nmessage:fixture/close/3.2 rv=0x0 expected=0x0\nmessage:fixture/open/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:C_MessageDecryptInit/control-multipart-iv/3.2 rv=0x0 expected=0x0\ncontrol: IV supplied; oracle ciphertext placed only in Begin AAD rv=0x0\ncontrol: IV supplied; oracle empty terminal ciphertext rv=0x70 length=64 matches-32-A=0\nmessage:C_MessageDecryptFinal/control-aad-only/3.2 rv=0x0 expected=0x0\nmessage:fixture/close/3.2 rv=0x0 expected=0x0\nmessage:C_Finalize/shape-cleanup/3.2 rv=0x0 expected=0x0\n"
+    }
+  },
+  "new_cbc_affected_nodes": [
+    {
+      "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_single",
+      "outcome": "failed",
+      "mechanism": "CKM_AES_CBC (0x1082)",
+      "key_bits": 256,
+      "initial_parameter": "NULL/0",
+      "per_message_parameter": "NULL/0",
+      "plaintext": "b'A' * 32",
+      "primary_call": "C_MessageEncryptInit",
+      "actual_rv": "CKR_ARGUMENTS_BAD (0x7)",
+      "oracle_expected_rv": "CKR_OK (0x0)"
+    },
+    {
+      "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_single",
+      "outcome": "failed",
+      "mechanism": "CKM_AES_CBC (0x1082)",
+      "key_bits": 256,
+      "initial_parameter": "NULL/0",
+      "per_message_parameter": "NULL/0",
+      "plaintext": "b'A' * 32",
+      "primary_call": "C_MessageEncryptInit",
+      "actual_rv": "CKR_ARGUMENTS_BAD (0x7)",
+      "oracle_expected_rv": "CKR_OK (0x0)"
+    },
+    {
+      "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_multipart",
+      "outcome": "xfailed",
+      "mechanism": "CKM_AES_CBC (0x1082)",
+      "key_bits": 256,
+      "initial_parameter": "NULL/0",
+      "per_message_parameter": "NULL/0",
+      "plaintext": "b'A' * 32",
+      "primary_call": "C_MessageEncryptInit",
+      "actual_rv": "CKR_ARGUMENTS_BAD (0x7)",
+      "oracle_expected_rv": "CKR_OK (0x0)"
+    },
+    {
+      "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_multipart",
+      "outcome": "failed",
+      "mechanism": "CKM_AES_CBC (0x1082)",
+      "key_bits": 256,
+      "initial_parameter": "NULL/0",
+      "per_message_parameter": "NULL/0",
+      "plaintext": "b'A' * 32",
+      "primary_call": "C_MessageEncryptInit",
+      "actual_rv": "CKR_ARGUMENTS_BAD (0x7)",
+      "oracle_expected_rv": "CKR_OK (0x0)"
+    },
+    {
+      "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_decrypt_roundtrip",
+      "outcome": "failed",
+      "mechanism": "CKM_AES_CBC (0x1082)",
+      "key_bits": 256,
+      "initial_parameter": "NULL/0",
+      "per_message_parameter": "NULL/0",
+      "plaintext": "b'cross-verify test data padding!!'",
+      "primary_call": "C_MessageEncryptInit",
+      "actual_rv": "CKR_ARGUMENTS_BAD (0x7)",
+      "oracle_expected_rv": "CKR_OK (0x0)"
+    }
+  ],
+  "upstream_filings": [
+    {
+      "url": "https://github.com/mingulov/pkcs11-check/issues/34",
+      "state": "OPEN",
+      "body_file": "/tmp/haskoki-message-verification/upstream-issue-1.md",
+      "body_sha256": "8048a3019f328b3792c25cd5f451e90b5975e1a7a3f90c05698fff7d58b51bfb",
+      "exact_generated_body_verified": true
+    }
+  ],
+  "qualification_boundary": {
+    "tested_source_revision": "6610ca8426b4fecb6600be523894fef9ec55d860",
+    "documentation_commit_owner": "coordinator",
+    "documentation_commit_created": false,
+    "post_commit_gate_and_lane_checks": "pending coordinator documentation commit and review; current record qualifies the implementation revision only"
+  },
+  "task_execution_deviations": [
+    {
+      "topic": "container identity",
+      "observation": "Actual image digest differs from toolchain.lock; exact GHC/Cabal/OpenSSL versions match; recorded actual digest under coordinator override."
+    },
+    {
+      "topic": "build freshness",
+      "observation": "Cleaned pinned Cabal tree before qualifying; plain forced build in run-gates is incremental. Verified module newer than table-registration commit and all twenty std message symbols."
+    },
+    {
+      "topic": "proxy topology",
+      "observation": "message_routed is direct-only by coordinator decision; canonical proxy transcript exits zero and names the existing proxy issue reason. The task original parity expectation omits this block.",
+      "url": "https://github.com/mingulov/pkcs11-proxy-ng/issues/23"
+    },
+    {
+      "topic": "gate manifest",
+      "observation": "Eighteen static checks passed. Release manifest has sixteen entries: fourteen evidence drivers, release build and clean installation."
+    },
+    {
+      "topic": "initial consumer gate",
+      "observation": "First full gates exit one with two legacy DH width/commutativity assertions. Source review and exact failure retained. Complete unchanged rerun passed. Actual failed-call CKR/length was not printed, so the width diagnosis remains source-supported rather than measured."
+    },
+    {
+      "topic": "lane native tracing",
+      "observation": "Original lane config disables tracing. Enabling an evidence-only copy still produces no native Standard trace, as Standard has no trace emitter. Preserved absent-trace failure and reran fast/kat with the existing oracle raw-call observer, copying completed raw report bytes unchanged to trace.jsonl. Producer and effective invocation are explicit."
+    },
+    {
+      "topic": "strict finding comparison",
+      "observation": "A pre-existing expected failure displays randomized ECDSA signature bytes. Kat raw tuple comparison changed one signature-prefix tuple; source review narrowed the explanation to that node and exactly its observed 32-hex-digit prefix. Both raw records remain visible; all other tuples were compared exactly."
+    },
+    {
+      "topic": "commit dependency",
+      "observation": "Explicit user override prohibits this worker from staging or committing. Post-commit gates, bundle binding, lanes and final manifest depend on the coordinator commit and remain pending at that ordered boundary."
+    }
+  ],
+  "commands": {
+    "gates": {
+      "command": "HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng bash scripts/run-gates.sh",
+      "exit": 0,
+      "log": "dist-release-evidence/message-routing/gates.log"
+    },
+    "fast": {
+      "command": "bash /tmp/pkcs11-ws/run-lane-rc2.sh fast",
+      "environment": {
+        "PATH_prefix": "/tmp/haskoki-message-verification/lane-docker",
+        "PKCS11_CHECK_EXTRA_ARGS": "--rv-trace"
+      },
+      "exit": 0,
+      "log": "dist-release-evidence/message-routing/fast.log"
+    },
+    "kat": {
+      "command": "bash /tmp/pkcs11-ws/run-lane-rc2.sh kat",
+      "environment": {
+        "PATH_prefix": "/tmp/haskoki-message-verification/lane-docker",
+        "PKCS11_CHECK_EXTRA_ARGS": "--rv-trace"
+      },
+      "exit": 0,
+      "log": "dist-release-evidence/message-routing/kat.log"
+    }
+  },
+  "lanes": {
+    "fast": {
+      "result_path": "/tmp/pkcs11-ws/out-rc2/fast/pkcs11-fast-results.json",
+      "trace_path": "/tmp/pkcs11-ws/out-rc2/fast/trace.jsonl",
+      "result_archive": "dist-release-evidence/message-routing/reviewed/fast/pkcs11-fast-results.json",
+      "trace_archive": "dist-release-evidence/message-routing/reviewed/fast/trace.jsonl",
+      "result_sha256": "71572d14ae33f310e5c7fcd0cba239481f3f1325d060bc1162ab2bc825b122b4",
+      "trace_sha256": "070f344e5227cdb8d9abf37097212890e849eb27cd3c0fb89230661b6d6200ca",
+      "summary": {
+        "passed": 5138,
+        "failed": 4,
+        "skipped": 4414,
+        "xfailed": 634,
+        "xpassed": 0,
+        "error": 0,
+        "crashed": 0,
+        "timeout": 0,
+        "crash_limited": 0,
+        "total": 10190,
+        "child_crash": 0,
+        "child_timeout": 0,
+        "incomplete": false
+      },
+      "reviewed": true,
+      "unexplained_new_findings": 0,
+      "provider_defects": 0,
+      "runtime_dispositions": [
+        {
+          "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_single",
+          "outcome": "failed",
+          "duration": 0.0018361379916314036,
+          "start": 1790770042.4686792,
+          "longrepr": "pkcs11_check.raw.rv.CkrAssertionError: Unexpected CK_RV CKR_ARGUMENTS_BAD; expected one of: CKR_OK",
+          "location": [
+            "src/pkcs11_check/testcases/test_message_crypto.py",
+            364,
+            "TestMessageEncryptDecrypt.test_message_encrypt_single"
+          ]
+        },
+        {
+          "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_single",
+          "outcome": "failed",
+          "duration": 0.0013415670109679922,
+          "start": 1790770042.582716,
+          "longrepr": "pkcs11_check.raw.rv.CkrAssertionError: Unexpected CK_RV CKR_ARGUMENTS_BAD; expected one of: CKR_OK",
+          "location": [
+            "src/pkcs11_check/testcases/test_message_crypto.py",
+            387,
+            "TestMessageEncryptDecrypt.test_message_decrypt_single"
+          ]
+        },
+        {
+          "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_multipart",
+          "outcome": "xfailed",
+          "duration": 0.0016788020002422854,
+          "start": 1790770042.6410701,
+          "wasxfail": "C_MessageEncryptInit rejected advertised message operation: CKR_ARGUMENTS_BAD",
+          "longrepr": "_pytest.outcomes.XFailed: C_MessageEncryptInit rejected advertised message operation: CKR_ARGUMENTS_BAD",
+          "location": [
+            "src/pkcs11_check/testcases/test_message_crypto.py",
+            424,
+            "TestMessageEncryptDecrypt.test_message_encrypt_multipart"
+          ]
+        },
+        {
+          "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_multipart",
+          "outcome": "failed",
+          "duration": 0.0010359909938415512,
+          "start": 1790770042.6653728,
+          "longrepr": "pkcs11_check.raw.rv.CkrAssertionError: Unexpected CK_RV CKR_ARGUMENTS_BAD; expected one of: CKR_OK",
+          "location": [
+            "src/pkcs11_check/testcases/test_message_crypto.py",
+            462,
+            "TestMessageEncryptDecrypt.test_message_decrypt_multipart"
+          ]
+        },
+        {
+          "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_decrypt_roundtrip",
+          "outcome": "failed",
+          "duration": 0.0012130240065744147,
+          "start": 1790770042.7205765,
+          "longrepr": "pkcs11_check.raw.rv.CkrAssertionError: Unexpected CK_RV CKR_ARGUMENTS_BAD; expected one of: CKR_OK",
+          "location": [
+            "src/pkcs11_check/testcases/test_message_crypto.py",
+            517,
+            "TestMessageEncryptDecrypt.test_message_encrypt_decrypt_roundtrip"
+          ]
+        }
+      ]
+    },
+    "kat": {
+      "result_path": "/tmp/pkcs11-ws/out-rc2/kat/pkcs11-kat-results.json",
+      "trace_path": "/tmp/pkcs11-ws/out-rc2/kat/trace.jsonl",
+      "result_archive": "dist-release-evidence/message-routing/reviewed/kat/pkcs11-kat-results.json",
+      "trace_archive": "dist-release-evidence/message-routing/reviewed/kat/trace.jsonl",
+      "result_sha256": "78ae6333a8b91189c37918b0240d1b57d4dcbaed830d3e0de3206aad8a26b70d",
+      "trace_sha256": "f49983e50d5424ff9ce397089d3f440e410812b1bfc935027febdca0ae45dba4",
+      "summary": {
+        "passed": 84455,
+        "failed": 4,
+        "skipped": 31316,
+        "xfailed": 973,
+        "xpassed": 0,
+        "error": 0,
+        "crashed": 0,
+        "timeout": 0,
+        "crash_limited": 0,
+        "total": 116748,
+        "child_crash": 0,
+        "child_timeout": 0,
+        "incomplete": false
+      },
+      "reviewed": true,
+      "unexplained_new_findings": 0,
+      "provider_defects": 0,
+      "runtime_dispositions": [
+        {
+          "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_single",
+          "outcome": "failed",
+          "duration": 0.0016682459972798824,
+          "start": 1790771231.4002435,
+          "longrepr": "pkcs11_check.raw.rv.CkrAssertionError: Unexpected CK_RV CKR_ARGUMENTS_BAD; expected one of: CKR_OK",
+          "location": [
+            "src/pkcs11_check/testcases/test_message_crypto.py",
+            364,
+            "TestMessageEncryptDecrypt.test_message_encrypt_single"
+          ]
+        },
+        {
+          "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_single",
+          "outcome": "failed",
+          "duration": 0.0006446859915740788,
+          "start": 1790771231.4847124,
+          "longrepr": "pkcs11_check.raw.rv.CkrAssertionError: Unexpected CK_RV CKR_ARGUMENTS_BAD; expected one of: CKR_OK",
+          "location": [
+            "src/pkcs11_check/testcases/test_message_crypto.py",
+            387,
+            "TestMessageEncryptDecrypt.test_message_decrypt_single"
+          ]
+        },
+        {
+          "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_multipart",
+          "outcome": "xfailed",
+          "duration": 0.0009611030109226704,
+          "start": 1790771231.5185883,
+          "wasxfail": "C_MessageEncryptInit rejected advertised message operation: CKR_ARGUMENTS_BAD",
+          "longrepr": "_pytest.outcomes.XFailed: C_MessageEncryptInit rejected advertised message operation: CKR_ARGUMENTS_BAD",
+          "location": [
+            "src/pkcs11_check/testcases/test_message_crypto.py",
+            424,
+            "TestMessageEncryptDecrypt.test_message_encrypt_multipart"
+          ]
+        },
+        {
+          "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_multipart",
+          "outcome": "failed",
+          "duration": 0.0006261509988689795,
+          "start": 1790771231.535933,
+          "longrepr": "pkcs11_check.raw.rv.CkrAssertionError: Unexpected CK_RV CKR_ARGUMENTS_BAD; expected one of: CKR_OK",
+          "location": [
+            "src/pkcs11_check/testcases/test_message_crypto.py",
+            462,
+            "TestMessageEncryptDecrypt.test_message_decrypt_multipart"
+          ]
+        },
+        {
+          "nodeid": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_decrypt_roundtrip",
+          "outcome": "failed",
+          "duration": 0.0006912840035511181,
+          "start": 1790771231.5716004,
+          "longrepr": "pkcs11_check.raw.rv.CkrAssertionError: Unexpected CK_RV CKR_ARGUMENTS_BAD; expected one of: CKR_OK",
+          "location": [
+            "src/pkcs11_check/testcases/test_message_crypto.py",
+            517,
+            "TestMessageEncryptDecrypt.test_message_encrypt_decrypt_roundtrip"
+          ]
+        }
+      ]
+    }
+  },
+  "dispositions": [
+    {
+      "node_parameter": "src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_single [AES_CBC; AES-256; IV=NULL/0]",
+      "actual": "Both fast and kat expose four failures and one expected failure with the same primary C_MessageEncryptInit result CKR_ARGUMENTS_BAD (0x7). AES_CBC mechanism-info flags are 0x60300: no CKF_MESSAGE_ENCRYPT, CKF_MESSAGE_DECRYPT or CKF_MULTI_MESSAGE. The five affected nodes and exact parameters are [{\"actual_rv\": \"CKR_ARGUMENTS_BAD (0x7)\", \"initial_parameter\": \"NULL/0\", \"key_bits\": 256, \"mechanism\": \"CKM_AES_CBC (0x1082)\", \"nodeid\": \"src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_single\", \"oracle_expected_rv\": \"CKR_OK (0x0)\", \"outcome\": \"failed\", \"per_message_parameter\": \"NULL/0\", \"plaintext\": \"b'A' * 32\", \"primary_call\": \"C_MessageEncryptInit\"}, {\"actual_rv\": \"CKR_ARGUMENTS_BAD (0x7)\", \"initial_parameter\": \"NULL/0\", \"key_bits\": 256, \"mechanism\": \"CKM_AES_CBC (0x1082)\", \"nodeid\": \"src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_single\", \"oracle_expected_rv\": \"CKR_OK (0x0)\", \"outcome\": \"failed\", \"per_message_parameter\": \"NULL/0\", \"plaintext\": \"b'A' * 32\", \"primary_call\": \"C_MessageEncryptInit\"}, {\"actual_rv\": \"CKR_ARGUMENTS_BAD (0x7)\", \"initial_parameter\": \"NULL/0\", \"key_bits\": 256, \"mechanism\": \"CKM_AES_CBC (0x1082)\", \"nodeid\": \"src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_multipart\", \"oracle_expected_rv\": \"CKR_OK (0x0)\", \"outcome\": \"xfailed\", \"per_message_parameter\": \"NULL/0\", \"plaintext\": \"b'A' * 32\", \"primary_call\": \"C_MessageEncryptInit\"}, {\"actual_rv\": \"CKR_ARGUMENTS_BAD (0x7)\", \"initial_parameter\": \"NULL/0\", \"key_bits\": 256, \"mechanism\": \"CKM_AES_CBC (0x1082)\", \"nodeid\": \"src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_multipart\", \"oracle_expected_rv\": \"CKR_OK (0x0)\", \"outcome\": \"failed\", \"per_message_parameter\": \"NULL/0\", \"plaintext\": \"b'A' * 32\", \"primary_call\": \"C_MessageEncryptInit\"}, {\"actual_rv\": \"CKR_ARGUMENTS_BAD (0x7)\", \"initial_parameter\": \"NULL/0\", \"key_bits\": 256, \"mechanism\": \"CKM_AES_CBC (0x1082)\", \"nodeid\": \"src/pkcs11_check/testcases/test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_decrypt_roundtrip\", \"oracle_expected_rv\": \"CKR_OK (0x0)\", \"outcome\": \"failed\", \"per_message_parameter\": \"NULL/0\", \"plaintext\": \"b'cross-verify test data padding!!'\", \"primary_call\": \"C_MessageEncryptInit\"}]. The decryption nodes fail in their preceding message encryption helper; their decrypt calls were not executed. The original multipart Begin/Next calls were not executed. The independent source-shape probe and AES-256 reductions all report init 0x7. Separate controls supplying both required IV blocks successfully encrypt and classic-decrypt 32 bytes. IV-supplied controls isolating the source placement of plaintext/ciphertext in Begin AAD and an empty terminal Next return 0x70 (CKR_MECHANISM_INVALID); their unchanged output-capacity value 64 is not a produced length. A control omitting the per-message IV after a valid Init returns 0x5 (CKR_GENERAL_ERROR). Those modified controls are diagnostic observations, not results of the original oracle sequence.",
+      "expected": "Gate the CBC tests using the appropriate message flags, including encryption needed for decrypt setup and CKF_MULTI_MESSAGE for multipart calls. A classic AES_CBC catalog entry and non-null function pointers do not advertise a message capability. For any deliberately opted-in recipe probe, provide its documented IV inputs and send CBC plaintext/ciphertext through Next, leaving non-AEAD AAD NULL/0. The oracle currently expects Init CKR_OK (0x0), nonempty multipart ciphertext and the original plaintext from multipart decrypt despite the recorded inputs. This provider routing task retains its existing opaque/raw 16-byte IV recipe and does not add standardized native message parameter structures or capability flags; the controls do not assert a normative CKR for unsupported shapes.",
+      "reproduction": "Run from the haskoki source checkout at revision 6610ca8426b4fecb6600be523894fef9ec55d860 with the pinned module at /home/user/src/m/haskoki-ws/haskoki/dist-release/haskoki-0.3.0.0/lib/libhaskoki.so. This command materializes both full C sources using the independent consumer fixture and discovery functions, compiles without diagnostics, then runs them: python3 -c 'from pathlib import Path; Path('\"'\"'/tmp/haskoki-message-verification/oracle-repro.c'\"'\"').write_text('\"'\"'#define main message_consumer_main\\n#include \"tests/c/message_routed.c\"\\n#undef main\\nint main(int argc,char **argv) {\\n  if (argc!=2) return 2;\\n  configure();\\n  void *module=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);\\n  if (!module) return 2;\\n  CK_C_GetInterface get=(CK_C_GetInterface)dlsym(module,\"C_GetInterface\");\\n  CK_VERSION version={3,2}; CK_INTERFACE_PTR interface=NULL;\\n  if (!get || get(NULL,&version,&interface,0)!=CKR_OK) return 2;\\n  minor=2;\\n  MessageApi a=read_newest((CK_FUNCTION_LIST_3_2 *)interface->pFunctionList);\\n  if (a.C_Initialize(NULL)!=CKR_OK) return 2;\\n  CK_SLOT_ID slots[16]; CK_ULONG count=16;\\n  if (a.C_GetSlotList(CK_TRUE,slots,&count)!=CKR_OK || count==0 || count>16) return 2;\\n  tokenSlot=slots[0];\\n  Fixture f=fixture(&a);\\n  CK_MECHANISM missingIv={CKM_AES_CBC,NULL,0};\\n  CK_RV init=a.C_MessageEncryptInit(f.session,&missingIv,f.aes);\\n  printf(\"probe: CBC init without IV rv=0x%lx\\\\n\",init);\\n  if (init==CKR_OK) {\\n    CK_RV begin=a.C_EncryptMessageBegin(f.session,NULL,0,plain,16);\\n    printf(\"probe: Begin with plaintext as AAD rv=0x%lx\\\\n\",begin);\\n    if (begin==CKR_OK) {\\n      Output o; reset_output(&o,64);\\n      CK_RV next=a.C_EncryptMessageNext(f.session,NULL,0,NULL,0,o.bytes+1,&o.length,CKF_END_OF_MESSAGE);\\n      printf(\"probe: empty terminal part rv=0x%lx length=%lu\\\\n\",next,o.length);\\n    }\\n  }\\n  close_fixture(&a,f);\\n  rv(\"C_Finalize\",\"probe-cleanup\",a.C_Finalize(NULL),CKR_OK);\\n  dlclose(module); unlink(configPath);\\n  return failures ? 1 : 0;\\n}\\n'\"'\"'); Path('\"'\"'/tmp/haskoki-message-verification/oracle-shape-repro.c'\"'\"').write_text('\"'\"'#define main message_consumer_main\\n#include \"tests/c/message_routed.c\"\\n#undef main\\n\\nstatic Fixture aes256_fixture(MessageApi *a) {\\n  Fixture f=fixture(a);\\n  CK_BYTE key[32];\\n  for (size_t i=0;i<sizeof(key);++i) key[i]=(CK_BYTE)i;\\n  f.aes=make_key(a,f.session,CKK_AES,key,sizeof(key),CK_TRUE,CK_TRUE,CK_FALSE,CK_FALSE);\\n  return f;\\n}\\n\\nint main(int argc,char **argv) {\\n  if (argc!=2) return 2;\\n  configure();\\n  void *module=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);\\n  if (!module) return 2;\\n  CK_C_GetInterface get=(CK_C_GetInterface)dlsym(module,\"C_GetInterface\");\\n  CK_VERSION version={3,2}; CK_INTERFACE_PTR interface=NULL;\\n  if (!get || get(NULL,&version,&interface,0)!=CKR_OK) return 2;\\n  minor=2;\\n  CK_FUNCTION_LIST_3_2 *table=(CK_FUNCTION_LIST_3_2 *)interface->pFunctionList;\\n  MessageApi a=read_newest(table);\\n  if (a.C_Initialize(NULL)!=CKR_OK) return 2;\\n  CK_SLOT_ID slots[16]; CK_ULONG count=16;\\n  if (a.C_GetSlotList(CK_TRUE,slots,&count)!=CKR_OK || count==0 || count>16) return 2;\\n  tokenSlot=slots[0];\\n  CK_MECHANISM_INFO info={0};\\n  CK_RV result=table->C_GetMechanismInfo(tokenSlot,CKM_AES_CBC,&info);\\n  printf(\"shape: AES_CBC mechanism-info rv=0x%lx flags=0x%lx message-encrypt=%d message-decrypt=%d multi-message=%d\\\\n\",\\n         result,info.flags,!!(info.flags&CKF_MESSAGE_ENCRYPT),!!(info.flags&CKF_MESSAGE_DECRYPT),!!(info.flags&CKF_MULTI_MESSAGE));\\n  if (result!=CKR_OK) return 2;\\n  CK_BYTE data[32]; memset(data,\\'\"'\"'A\\'\"'\"',sizeof(data));\\n  CK_BYTE cross[]=\"cross-verify test data padding!!\";\\n  CK_MECHANISM missingIv={CKM_AES_CBC,NULL,0};\\n  const char *nodes[]={\"test_message_encrypt_single\",\"test_message_decrypt_single\",\"test_message_encrypt_multipart\",\"test_message_decrypt_multipart\",\"test_message_encrypt_decrypt_roundtrip\"};\\n  for (size_t i=0;i<sizeof(nodes)/sizeof(nodes[0]);++i) {\\n    Fixture f=aes256_fixture(&a);\\n    CK_ULONG inputLength=i==4 ? sizeof(cross)-1 : sizeof(data);\\n    result=a.C_MessageEncryptInit(f.session,&missingIv,f.aes);\\n    printf(\"shape: %s AES-256 initial-mechanism-parameter=NULL/0 plaintext-length=%lu primary-call=C_MessageEncryptInit rv=0x%lx\\\\n\",nodes[i],inputLength,result);\\n    close_fixture(&a,f);\\n  }\\n\\n  Fixture f=aes256_fixture(&a);\\n  rv(\"C_MessageEncryptInit\",\"control-valid-iv\",a.C_MessageEncryptInit(f.session,&cbc,f.aes),CKR_OK);\\n  Output encrypted; reset_output(&encrypted,64);\\n  result=a.C_EncryptMessage(f.session,iv,sizeof(iv),NULL,0,data,sizeof(data),encrypted.bytes+1,&encrypted.length);\\n  printf(\"control: supplied init/message IV single encryption rv=0x%lx length=%lu\\\\n\",result,encrypted.length);\\n  rv(\"C_EncryptMessage\",\"control-valid-iv\",result,CKR_OK);\\n  rv(\"C_MessageEncryptFinal\",\"control-valid-iv\",a.C_MessageEncryptFinal(f.session),CKR_OK);\\n  rv(\"C_DecryptInit\",\"control-classic-iv\",a.C_DecryptInit(f.session,&cbc,f.aes),CKR_OK);\\n  Output decrypted; reset_output(&decrypted,64);\\n  result=a.C_Decrypt(f.session,encrypted.bytes+1,encrypted.length,decrypted.bytes+1,&decrypted.length);\\n  printf(\"control: classic decrypt with same IV rv=0x%lx length=%lu matches-32-A=%d\\\\n\",result,decrypted.length,decrypted.length==sizeof(data) && memcmp(decrypted.bytes+1,data,sizeof(data))==0);\\n  rv(\"C_Decrypt\",\"control-classic-iv\",result,CKR_OK);\\n  check(\"C_Decrypt\",\"control-plaintext\",decrypted.length==sizeof(data) && memcmp(decrypted.bytes+1,data,sizeof(data))==0);\\n\\n  rv(\"C_MessageEncryptInit\",\"control-no-message-iv\",a.C_MessageEncryptInit(f.session,&cbc,f.aes),CKR_OK);\\n  Output noIv; reset_output(&noIv,64);\\n  result=a.C_EncryptMessage(f.session,NULL,0,NULL,0,data,sizeof(data),noIv.bytes+1,&noIv.length);\\n  printf(\"control: supplied init IV but oracle NULL/0 message parameter rv=0x%lx length=%lu\\\\n\",result,noIv.length);\\n  close_fixture(&a,f);\\n\\n  f=aes256_fixture(&a);\\n  rv(\"C_MessageEncryptInit\",\"control-multipart-iv\",a.C_MessageEncryptInit(f.session,&cbc,f.aes),CKR_OK);\\n  result=a.C_EncryptMessageBegin(f.session,iv,sizeof(iv),data,sizeof(data));\\n  printf(\"control: IV supplied; oracle plaintext placed only in Begin AAD rv=0x%lx\\\\n\",result);\\n  if (result==CKR_OK) {\\n    Output empty; reset_output(&empty,64);\\n    result=a.C_EncryptMessageNext(f.session,NULL,0,NULL,0,empty.bytes+1,&empty.length,CKF_END_OF_MESSAGE);\\n    printf(\"control: IV supplied; oracle empty terminal plaintext rv=0x%lx length=%lu\\\\n\",result,empty.length);\\n    rv(\"C_MessageEncryptFinal\",\"control-aad-only\",a.C_MessageEncryptFinal(f.session),CKR_OK);\\n  }\\n  close_fixture(&a,f);\\n\\n  f=aes256_fixture(&a);\\n  rv(\"C_MessageDecryptInit\",\"control-multipart-iv\",a.C_MessageDecryptInit(f.session,&cbc,f.aes),CKR_OK);\\n  result=a.C_DecryptMessageBegin(f.session,iv,sizeof(iv),encrypted.bytes+1,encrypted.length);\\n  printf(\"control: IV supplied; oracle ciphertext placed only in Begin AAD rv=0x%lx\\\\n\",result);\\n  if (result==CKR_OK) {\\n    Output empty; reset_output(&empty,64);\\n    result=a.C_DecryptMessageNext(f.session,NULL,0,NULL,0,empty.bytes+1,&empty.length,CKF_END_OF_MESSAGE);\\n    printf(\"control: IV supplied; oracle empty terminal ciphertext rv=0x%lx length=%lu matches-32-A=%d\\\\n\",result,empty.length,empty.length==sizeof(data) && memcmp(empty.bytes+1,data,sizeof(data))==0);\\n    rv(\"C_MessageDecryptFinal\",\"control-aad-only\",a.C_MessageDecryptFinal(f.session),CKR_OK);\\n  }\\n  close_fixture(&a,f);\\n  rv(\"C_Finalize\",\"shape-cleanup\",a.C_Finalize(NULL),CKR_OK);\\n  dlclose(module); unlink(configPath);\\n  return failures ? 1 : 0;\\n}\\n'\"'\"')' && cc -std=c11 -O2 -g -Wall -Wextra -Werror -Ispec/vendor -I. /tmp/haskoki-message-verification/oracle-repro.c -ldl -lpthread -o /tmp/haskoki-message-verification/oracle-repro && /tmp/haskoki-message-verification/oracle-repro /home/user/src/m/haskoki-ws/haskoki/dist-release/haskoki-0.3.0.0/lib/libhaskoki.so && cc -std=c11 -O2 -g -Wall -Wextra -Werror -Ispec/vendor -I. /tmp/haskoki-message-verification/oracle-shape-repro.c -ldl -lpthread -o /tmp/haskoki-message-verification/oracle-shape-repro && /tmp/haskoki-message-verification/oracle-shape-repro /home/user/src/m/haskoki-ws/haskoki/dist-release/haskoki-0.3.0.0/lib/libhaskoki.so ; observed exit=0, output: probe: CBC init without IV rv=0x7 | shape: AES_CBC mechanism-info rv=0x0 flags=0x60300 message-encrypt=0 message-decrypt=0 multi-message=0 | shape: test_message_encrypt_single AES-256 initial-mechanism-parameter=NULL/0 plaintext-length=32 primary-call=C_MessageEncryptInit rv=0x7 | shape: test_message_decrypt_single AES-256 initial-mechanism-parameter=NULL/0 plaintext-length=32 primary-call=C_MessageEncryptInit rv=0x7 | shape: test_message_encrypt_multipart AES-256 initial-mechanism-parameter=NULL/0 plaintext-length=32 primary-call=C_MessageEncryptInit rv=0x7 | shape: test_message_decrypt_multipart AES-256 initial-mechanism-parameter=NULL/0 plaintext-length=32 primary-call=C_MessageEncryptInit rv=0x7 | shape: test_message_encrypt_decrypt_roundtrip AES-256 initial-mechanism-parameter=NULL/0 plaintext-length=32 primary-call=C_MessageEncryptInit rv=0x7 | control: supplied init/message IV single encryption rv=0x0 length=32 | control: classic decrypt with same IV rv=0x0 length=32 matches-32-A=1 | control: supplied init IV but oracle NULL/0 message parameter rv=0x5 length=64 | control: IV supplied; oracle plaintext placed only in Begin AAD rv=0x0 | control: IV supplied; oracle empty terminal plaintext rv=0x70 length=64 | control: IV supplied; oracle ciphertext placed only in Begin AAD rv=0x0 | control: IV supplied; oracle empty terminal ciphertext rv=0x70 length=64 matches-32-A=0",
+      "normative_source": "OASIS PKCS#11 Base v3.0 section 3.5, Table 8 distinguishes message flags from classic flags; sections 5.9.2-5.9.4 and 5.11.2-5.11.4 put IV/nonce in message parameters, reserve AAD for AEAD and put plaintext/ciphertext in Message/Next input: https://docs.oasis-open.org/pkcs11/pkcs11-base/v3.0/os/pkcs11-base-v3.0-os.html . Current Mechanisms v3.0 section 2.10.5 specifies the CBC 16-byte IV: https://docs.oasis-open.org/pkcs11/pkcs11-curr/v3.0/os/pkcs11-curr-v3.0-os.html . Local routing scope is docs/superpowers/specs/2026-09-30-message-routing-design.md sections 3.2 and 5.2, retaining the pre-existing IV-at-Init and per-message opaque IV recipe. The observed init code is a local recipe result, not proof of general message conformance.",
+      "classification": "oracle",
+      "status": "OPEN",
+      "url": "https://github.com/mingulov/pkcs11-check/issues/34"
+    },
+    {
+      "node_parameter": "test_mech_message.py: 26 selected nodes; test_message_crypto.py: seven SHA256_RSA_PKCS message sign/verify nodes; both fast and kat",
+      "actual": "Each lane has 33 message capability skips: 20 parameter sentinels with reason No mechanism catalog because no matching message-flag entries exist, four AES_GCM MESSAGE_ENCRYPT skips, one AES_CCM MESSAGE_ENCRYPT skip, one AES_GMAC MESSAGE_SIGN skip and seven SHA256_RSA_PKCS MESSAGE_SIGN/VERIFY/MULTI_MESSAGE skips. Doctor reports the unchanged 316-entry mechanism catalog. The remaining message records are one function-availability pass and the five classified CBC findings. No skipped node supplies a successful routed call.",
+      "expected": "Keep capability skips and function-availability checks separate from executed crypto success. Source definition pins 26 and 13 are not execution totals. The independent message_routed consumer provides successful happy legs for all 20 entries on versions 3.0, 3.1 and 3.2 without changing mechanism flags.",
+      "reproduction": "python3 /tmp/haskoki-message-verification/review-message-dispositions.py ; observed exit=0, output: fast: {\"failed\": 4, \"xfailed\": 1} | kat: {\"failed\": 4, \"xfailed\": 1} ; independent flags command: /tmp/haskoki-message-verification/oracle-shape-repro /home/user/src/m/haskoki-ws/haskoki/dist-release/haskoki-0.3.0.0/lib/libhaskoki.so ; observed AES_CBC flags=0x60300 message-encrypt=0 message-decrypt=0 multi-message=0",
+      "normative_source": "OASIS PKCS#11 Base v3.0 section 3.5 Table 8 defines CKF_MESSAGE_ENCRYPT, CKF_MESSAGE_DECRYPT, CKF_MESSAGE_SIGN, CKF_MESSAGE_VERIFY and CKF_MULTI_MESSAGE separately from classic operations: https://docs.oasis-open.org/pkcs11/pkcs11-base/v3.0/os/pkcs11-base-v3.0-os.html . Routing design sections 1 and 6 preserve the 316-mechanism catalog and keep flag-based skips separate from the independent twenty-entry, three-version proof.",
+      "classification": "capability coverage",
+      "status": "capability coverage; not a successful routed provider test",
+      "url": ""
+    }
+  ],
+  "oracle_cbc_probe": "message:C_MessageEncryptInit/slot-present/3.2 check=ok\nmessage:C_EncryptMessage/slot-present/3.2 check=ok\nmessage:C_EncryptMessageBegin/slot-present/3.2 check=ok\nmessage:C_EncryptMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageEncryptFinal/slot-present/3.2 check=ok\nmessage:C_MessageDecryptInit/slot-present/3.2 check=ok\nmessage:C_DecryptMessage/slot-present/3.2 check=ok\nmessage:C_DecryptMessageBegin/slot-present/3.2 check=ok\nmessage:C_DecryptMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageDecryptFinal/slot-present/3.2 check=ok\nmessage:C_MessageSignInit/slot-present/3.2 check=ok\nmessage:C_SignMessage/slot-present/3.2 check=ok\nmessage:C_SignMessageBegin/slot-present/3.2 check=ok\nmessage:C_SignMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageSignFinal/slot-present/3.2 check=ok\nmessage:C_MessageVerifyInit/slot-present/3.2 check=ok\nmessage:C_VerifyMessage/slot-present/3.2 check=ok\nmessage:C_VerifyMessageBegin/slot-present/3.2 check=ok\nmessage:C_VerifyMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageVerifyFinal/slot-present/3.2 check=ok\nmessage:fixture/open/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nprobe: CBC init without IV rv=0x7\nmessage:fixture/close/3.2 rv=0x0 expected=0x0\nmessage:C_Finalize/probe-cleanup/3.2 rv=0x0 expected=0x0\n"
+}
+```
