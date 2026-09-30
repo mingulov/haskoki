@@ -14,14 +14,22 @@ Pins the pure boundary contracts the C surface relies on:
 {-# LANGUAGE OverloadedStrings #-}
 module StandardSurfaceSpec (spec) where
 
+import Control.Exception (bracket)
+import Control.Monad (forM_)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Word (Word64, Word8)
 import Foreign.C.Types (CULong (..))
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Marshal.Array (peekArray, pokeArray)
+import Foreign.Ptr (Ptr, nullPtr, castPtr)
+import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr)
+import Foreign.Storable (peek, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, assertBool, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.FFI.Decode (maxInputBytes)
 import Haskoki.FFI.Standard
   ( FrameError (..)
   , ecParamsFromWire
@@ -34,18 +42,51 @@ import Haskoki.FFI.Standard
   , provisionedUserPin
   , sessionScalars
   , tokenScalars
+  , StdInstance (..)
+  , openStdInstance
+  , haskokiStdClose
+  , haskokiStdOpenSession
+  , haskokiStdCreateObject
+  , haskokiStdEncryptInit
+  , haskokiStdEncrypt
+  , stdRvOf
+  , haskokiStdMessageEncryptInit
+  , haskokiStdMessageEncrypt
+  , haskokiStdMessageEncryptBegin
+  , haskokiStdMessageEncryptNext
+  , haskokiStdMessageEncryptFinal
+  , haskokiStdMessageDecryptInit
+  , haskokiStdMessageDecrypt
+  , haskokiStdMessageDecryptBegin
+  , haskokiStdMessageDecryptNext
+  , haskokiStdMessageDecryptFinal
+  , haskokiStdMessageSignInit
+  , haskokiStdMessageSign
+  , haskokiStdMessageSignBegin
+  , haskokiStdMessageSignNext
+  , haskokiStdMessageSignFinal
+  , haskokiStdMessageVerifyInit
+  , haskokiStdMessageVerify
+  , haskokiStdMessageVerifyBegin
+  , haskokiStdMessageVerifyNext
+  , haskokiStdMessageVerifyFinal
   )
 import Haskoki.Model
   ( SessionState (..)
   , addToken
   , emptyModel
+  , lookupSession
   )
-import Haskoki.Operation (emptySessionOps)
+import Haskoki.Operation (emptySessionOps, MsgState(..), MsgFamily(..), SlotKind(..), stagedOf)
+import Haskoki.Operation.Message (lookupMessage, messageBuffered)
 import Haskoki.Rules (Rules (..), defaultRules)
+import Haskoki.Runtime.Config (defaultConfig)
+import Haskoki.Runtime.Lifecycle (snapshotModel)
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( Generation (..)
   , Revision (..)
+  , ReturnCode (..)
   , SessionId (..)
   , SlotId (..)
   )
@@ -63,6 +104,11 @@ spec = testGroup "Standard surface"
   , testCase "session scalars project" caseSessionScalars
   , testCase "token scalars project" caseTokenScalars
   , testCase "PIN comparison is exact" casePins
+  , testCase "message exports and session precedence" caseMessageExports
+  , testCase "message cipher continuation query preserves snapshot" caseMessageContinuationQuery
+  , testCase "message staged query short and exact" caseMessageStagedQuery
+  , testCase "message empty staged output" caseMessageEmptyQuery
+  , testCase "message verify presence and sign continuation" caseMessageSignals
   ]
 
 word :: Word64 -> ByteString
@@ -216,3 +262,222 @@ casePins = do
   assertBool "both empty" (pinsMatch "" "")
   assertBool "high bytes equal" (pinsMatch "\255\0" "\255\0")
   assertBool "high bytes differ" (not (pinsMatch "a\255" "a\254"))
+
+expectMessageRv :: String -> ReturnCode -> IO CULong -> IO ()
+expectMessageRv label expected call = call >>= assertEqual label (stdRvOf expected)
+
+withMessageBytes :: ByteString -> (Ptr Word8 -> CULong -> IO a) -> IO a
+withMessageBytes bytes action = BS.useAsCStringLen bytes $ \(raw, n) -> action (castPtr raw) (fromIntegral n)
+
+createMessageKey :: StablePtr StdInstance -> CULong -> Word64 -> ByteString -> [Word64] -> IO CULong
+createMessageKey ctx session keyType bytes usages = do
+  let attrs = [(0,word 4),(1,BS.singleton 0),(2,BS.singleton 0),(0x100,word keyType),(0x11,bytes)]
+        ++ [(u,BS.singleton 1) | u <- usages]
+      frame = word (fromIntegral (length attrs)) <> mconcat [attr t v | (t,v) <- attrs]
+  withMessageBytes frame $ \p n -> alloca $ \key -> do
+    expectMessageRv "create key" CKR_OK (haskokiStdCreateObject ctx session p n key)
+    peek key
+
+withMessageFixture :: (StablePtr StdInstance -> StdInstance -> CULong -> CULong -> CULong -> IO ()) -> IO ()
+withMessageFixture action = bracket (openStdInstance defaultConfig) haskokiStdClose $ \ctx -> do
+  assertBool "live Standard instance" (castStablePtrToPtr ctx /= nullPtr)
+  inst <- deRefStablePtr ctx
+  alloca $ \outSession -> do
+    expectMessageRv "open session" CKR_OK (haskokiStdOpenSession ctx 0 0 outSession)
+    session <- peek outSession
+    aes <- createMessageKey ctx session 0x1f (BS.pack [0x2b,0x7e,0x15,0x16,0x28,0xae,0xd2,0xa6,0xab,0xf7,0x15,0x88,0x09,0xcf,0x4f,0x3c]) [0x104,0x105]
+    mac <- createMessageKey ctx session 0x10 (BS.replicate 20 0x0b) [0x108,0x10a]
+    action ctx inst session aes mac
+
+messageState :: StdInstance -> CULong -> SlotKind -> IO MsgState
+messageState inst session slot = do
+  m <- snapshotModel (siEnv inst)
+  case lookupSession m (SessionId (fromIntegral session)) >>= \st -> lookupMessage (ssOps st) slot of
+    Nothing -> fail "message state absent"
+    Just st -> pure st
+
+messagePlain, messageCipher, messageMac, messageIv :: ByteString
+messagePlain = BS.pack [0x6b,0xc1,0xbe,0xe2,0x2e,0x40,0x9f,0x96,0xe9,0x3d,0x7e,0x11,0x73,0x93,0x17,0x2a]
+messageCipher = BS.pack [0x76,0x49,0xab,0xac,0x81,0x19,0xb2,0x46,0xce,0xe9,0x8e,0x9b,0x12,0xe9,0x19,0x7d]
+messageMac = BS.pack [0xb0,0x34,0x4c,0x61,0xd8,0xdb,0x38,0x53,0x5c,0xa8,0xaf,0xce,0xaf,0x0b,0xf1,0x2b,0x88,0x1d,0xc2,0x00,0xc9,0x83,0x3d,0xa7,0x26,0xe9,0x37,0x6c,0x2e,0x32,0xcf,0xf7]
+messageIv = BS.pack [0..15]
+
+caseMessageExports :: IO ()
+caseMessageExports = withMessageFixture $ \ctx _ session aes mac ->
+  withMessageBytes messageIv $ \iv ivn ->
+  withMessageBytes messagePlain $ \plain pn ->
+  withMessageBytes messageCipher $ \cipher cn ->
+  withMessageBytes "Hi There" $ \input inputn ->
+  withMessageBytes messageMac $ \witness wn ->
+  allocaBytes 40 $ \out -> alloca $ \len -> do
+    let invalid = maxBound :: CULong
+    expectMessageRv "EncryptInit invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageEncryptInit ctx invalid 0x1082 iv ivn aes)
+    expectMessageRv "Encrypt invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageEncrypt ctx invalid iv ivn nullPtr 0 plain pn out len)
+    expectMessageRv "EncryptBegin invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageEncryptBegin ctx invalid iv ivn nullPtr 0)
+    expectMessageRv "EncryptNext invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageEncryptNext ctx invalid nullPtr 0 plain pn out len 1)
+    expectMessageRv "EncryptFinal invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageEncryptFinal ctx invalid)
+    expectMessageRv "DecryptInit invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageDecryptInit ctx invalid 0x1082 iv ivn aes)
+    expectMessageRv "Decrypt invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageDecrypt ctx invalid iv ivn nullPtr 0 cipher cn out len)
+    expectMessageRv "DecryptBegin invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageDecryptBegin ctx invalid iv ivn nullPtr 0)
+    expectMessageRv "DecryptNext invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageDecryptNext ctx invalid nullPtr 0 cipher cn out len 1)
+    expectMessageRv "DecryptFinal invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageDecryptFinal ctx invalid)
+    expectMessageRv "SignInit invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageSignInit ctx invalid 0x251 nullPtr 0 mac)
+    expectMessageRv "Sign invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageSign ctx invalid nullPtr 0 input inputn out len)
+    expectMessageRv "SignBegin invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageSignBegin ctx invalid nullPtr 0)
+    expectMessageRv "SignNext invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageSignNext ctx invalid nullPtr 0 input inputn out len)
+    expectMessageRv "SignFinal invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageSignFinal ctx invalid)
+    expectMessageRv "VerifyInit invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageVerifyInit ctx invalid 0x251 nullPtr 0 mac)
+    expectMessageRv "Verify invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageVerify ctx invalid nullPtr 0 input inputn witness wn)
+    expectMessageRv "VerifyBegin invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageVerifyBegin ctx invalid nullPtr 0)
+    expectMessageRv "VerifyNext invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageVerifyNext ctx invalid nullPtr 0 input inputn witness wn)
+    expectMessageRv "VerifyFinal invalid session" CKR_SESSION_HANDLE_INVALID (haskokiStdMessageVerifyFinal ctx invalid)
+    expectMessageRv "Encrypt init" CKR_OK (haskokiStdMessageEncryptInit ctx session 0x1082 iv ivn aes)
+    poke len 40
+    expectMessageRv "Encrypt one" CKR_OK (haskokiStdMessageEncrypt ctx session iv ivn nullPtr 0 plain pn out len)
+    peek len >>= assertEqual "Encrypt one length" 16
+    peekArray 16 out >>= assertEqual "Encrypt fixed bytes" (BS.unpack messageCipher)
+    expectMessageRv "Encrypt begin" CKR_OK (haskokiStdMessageEncryptBegin ctx session iv ivn nullPtr 0)
+    poke len 40
+    expectMessageRv "Encrypt next" CKR_OK (haskokiStdMessageEncryptNext ctx session nullPtr 0 plain pn out len 1)
+    peekArray 16 out >>= assertEqual "Encrypt multipart bytes" (BS.unpack messageCipher)
+    expectMessageRv "Encrypt final" CKR_OK (haskokiStdMessageEncryptFinal ctx session)
+    expectMessageRv "Decrypt init" CKR_OK (haskokiStdMessageDecryptInit ctx session 0x1082 iv ivn aes)
+    poke len 40
+    expectMessageRv "Decrypt one" CKR_OK (haskokiStdMessageDecrypt ctx session iv ivn nullPtr 0 cipher cn out len)
+    peek len >>= assertEqual "Decrypt one length" 16
+    peekArray 16 out >>= assertEqual "Decrypt fixed bytes" (BS.unpack messagePlain)
+    expectMessageRv "Decrypt begin" CKR_OK (haskokiStdMessageDecryptBegin ctx session iv ivn nullPtr 0)
+    poke len 40
+    expectMessageRv "Decrypt next" CKR_OK (haskokiStdMessageDecryptNext ctx session nullPtr 0 cipher cn out len 1)
+    peekArray 16 out >>= assertEqual "Decrypt multipart bytes" (BS.unpack messagePlain)
+    expectMessageRv "Decrypt final" CKR_OK (haskokiStdMessageDecryptFinal ctx session)
+    expectMessageRv "Sign init" CKR_OK (haskokiStdMessageSignInit ctx session 0x251 nullPtr 0 mac)
+    poke len 40
+    expectMessageRv "Sign one" CKR_OK (haskokiStdMessageSign ctx session nullPtr 0 input inputn out len)
+    peek len >>= assertEqual "Sign one length" 32
+    peekArray 32 out >>= assertEqual "Sign fixed bytes" (BS.unpack messageMac)
+    expectMessageRv "Sign begin" CKR_OK (haskokiStdMessageSignBegin ctx session nullPtr 0)
+    poke len 40
+    expectMessageRv "Sign next" CKR_OK (haskokiStdMessageSignNext ctx session nullPtr 0 input inputn out len)
+    peekArray 32 out >>= assertEqual "Sign multipart bytes" (BS.unpack messageMac)
+    expectMessageRv "Sign final" CKR_OK (haskokiStdMessageSignFinal ctx session)
+    expectMessageRv "Verify init" CKR_OK (haskokiStdMessageVerifyInit ctx session 0x251 nullPtr 0 mac)
+    expectMessageRv "Verify one" CKR_OK (haskokiStdMessageVerify ctx session nullPtr 0 input inputn witness wn)
+    expectMessageRv "Verify begin" CKR_OK (haskokiStdMessageVerifyBegin ctx session nullPtr 0)
+    expectMessageRv "Verify next" CKR_OK (haskokiStdMessageVerifyNext ctx session nullPtr 0 input inputn witness wn)
+    expectMessageRv "Verify final" CKR_OK (haskokiStdMessageVerifyFinal ctx session)
+    expectMessageRv "session beats oversize" CKR_SESSION_HANDLE_INVALID
+      (haskokiStdMessageSignNext ctx invalid nullPtr 0 input (fromIntegral maxInputBytes + 1) nullPtr nullPtr)
+    expectMessageRv "cipher end scalar" CKR_ARGUMENTS_BAD
+      (haskokiStdMessageEncryptNext ctx session nullPtr 0 plain pn out len 2)
+
+caseMessageContinuationQuery :: IO ()
+caseMessageContinuationQuery = withMessageFixture $ \ctx inst session aes _ ->
+  withMessageBytes messageIv $ \iv ivn ->
+  withMessageBytes (BS.take 7 messagePlain) $ \part n ->
+  allocaBytes 1 $ \out -> alloca $ \len -> do
+    expectMessageRv "init" CKR_OK (haskokiStdMessageEncryptInit ctx session 0x1082 iv ivn aes)
+    expectMessageRv "begin" CKR_OK (haskokiStdMessageEncryptBegin ctx session iv ivn nullPtr 0)
+    before <- snapshotModel (siEnv inst)
+    poke len 887
+    expectMessageRv "continuation query" CKR_OK (haskokiStdMessageEncryptNext ctx session nullPtr 0 part n nullPtr len 0)
+    peek len >>= assertEqual "zero query length" 0
+    after <- snapshotModel (siEnv inst)
+    assertEqual "query preserves session and auth" (lookupSession before (SessionId (fromIntegral session))) (lookupSession after (SessionId (fromIntegral session)))
+    expectMessageRv "outer final while open" CKR_OPERATION_ACTIVE (haskokiStdMessageEncryptFinal ctx session)
+    poke len 0
+    pokeArray out [165]
+    expectMessageRv "present zero continues" CKR_OK (haskokiStdMessageEncryptNext ctx session nullPtr 0 part n out len 0)
+    peek len >>= assertEqual "continuation reports zero" 0
+    peekArray 1 out >>= assertEqual "continuation canary" [165]
+    m <- snapshotModel (siEnv inst)
+    assertEqual "part appended once" (Just (Just 7)) (fmap (\st -> messageBuffered (ssOps st) SlotEncrypt) (lookupSession m (SessionId (fromIntegral session))))
+
+caseMessageStagedQuery :: IO ()
+caseMessageStagedQuery = withMessageFixture $ \ctx inst session _ mac ->
+  withMessageBytes "Hi There" $ \input n ->
+  allocaBytes 34 $ \out -> alloca $ \len -> do
+    expectMessageRv "init" CKR_OK (haskokiStdMessageSignInit ctx session 0x251 nullPtr 0 mac)
+    pokeArray out (replicate 34 165)
+    poke len 919
+    expectMessageRv "first query" CKR_OK (haskokiStdMessageSign ctx session nullPtr 0 input n nullPtr len)
+    peek len >>= assertEqual "query length" 32
+    expectMessageRv "query keeps outer busy" CKR_OPERATION_ACTIVE (haskokiStdMessageSignFinal ctx session)
+    before <- messageState inst session SlotSign
+    assertEqual "no query delivery" 0 (msMessages before)
+    poke len 1
+    expectMessageRv "repeated query different input" CKR_OK (haskokiStdMessageSign ctx session nullPtr 0 input 1 nullPtr len)
+    peek len >>= assertEqual "repeated required length" 32
+    messageState inst session SlotSign >>= assertEqual "repeated query unchanged" before
+    expectMessageRv "repeat keeps outer busy" CKR_OPERATION_ACTIVE (haskokiStdMessageSignFinal ctx session)
+    poke len 31
+    expectMessageRv "short recall" CKR_BUFFER_TOO_SMALL (haskokiStdMessageSign ctx session nullPtr 0 input n out len)
+    peek len >>= assertEqual "short required length" 32
+    peekArray 34 out >>= assertEqual "short untouched" (replicate 34 165)
+    staged <- messageState inst session SlotSign
+    assertEqual "short keeps bytes" (stagedOf (msCommon before)) (stagedOf (msCommon staged))
+    expectMessageRv "short keeps outer busy" CKR_OPERATION_ACTIVE (haskokiStdMessageSignFinal ctx session)
+    poke len 771
+    expectMessageRv "malformed recall" CKR_ARGUMENTS_BAD (haskokiStdMessageSign ctx session nullPtr 0 nullPtr 1 out len)
+    peek len >>= assertEqual "malformed length untouched" 771
+    messageState inst session SlotSign >>= assertEqual "malformed keeps stage" staged
+    poke len 32
+    expectMessageRv "exact recall" CKR_OK (haskokiStdMessageSign ctx session nullPtr 0 input n out len)
+    peekArray 34 out >>= assertEqual "exact span only" (BS.unpack messageMac ++ [165,165])
+    delivered <- messageState inst session SlotSign
+    assertEqual "one delivery" 1 (msMessages delivered)
+    assertEqual "stage removed" Nothing (stagedOf (msCommon delivered))
+    expectMessageRv "outer final after delivery" CKR_OK (haskokiStdMessageSignFinal ctx session)
+
+caseMessageEmptyQuery :: IO ()
+caseMessageEmptyQuery = withMessageFixture $ \ctx inst session aes _ ->
+  withMessageBytes messageIv $ \iv ivn -> allocaBytes 32 $ \cipher ->
+  allocaBytes 1 $ \out -> alloca $ \len -> do
+    expectMessageRv "classic padded init" CKR_OK (haskokiStdEncryptInit ctx session 0x1085 iv ivn aes)
+    poke len 32
+    expectMessageRv "classic empty encryption" CKR_OK (haskokiStdEncrypt ctx session nullPtr 0 cipher len)
+    cipherLen <- peek len
+    expectMessageRv "message decrypt init" CKR_OK (haskokiStdMessageDecryptInit ctx session 0x1085 iv ivn aes)
+    poke len 55
+    expectMessageRv "empty query" CKR_OK (haskokiStdMessageDecrypt ctx session iv ivn nullPtr 0 cipher cipherLen nullPtr len)
+    peek len >>= assertEqual "empty query length" 0
+    expectMessageRv "empty query staged" CKR_OPERATION_ACTIVE (haskokiStdMessageDecryptFinal ctx session)
+    before <- messageState inst session SlotDecrypt
+    assertEqual "empty not delivered" 0 (msMessages before)
+    poke len 999
+    expectMessageRv "empty repeat" CKR_OK (haskokiStdMessageDecrypt ctx session iv ivn nullPtr 0 cipher cipherLen nullPtr len)
+    peek len >>= assertEqual "empty repeat length" 0
+    messageState inst session SlotDecrypt >>= assertEqual "empty stage unchanged" before
+    expectMessageRv "repeat still staged" CKR_OPERATION_ACTIVE (haskokiStdMessageDecryptFinal ctx session)
+    poke len 0
+    pokeArray out [165]
+    expectMessageRv "accept empty present buffer" CKR_OK (haskokiStdMessageDecrypt ctx session iv ivn nullPtr 0 cipher cipherLen out len)
+    peekArray 1 out >>= assertEqual "empty untouched canary" [165]
+    after <- messageState inst session SlotDecrypt
+    assertEqual "empty delivered exactly once" 1 (msMessages after)
+    expectMessageRv "empty final" CKR_OK (haskokiStdMessageDecryptFinal ctx session)
+
+caseMessageSignals :: IO ()
+caseMessageSignals = withMessageFixture $ \ctx inst session _ mac ->
+  withMessageBytes "Hi " $ \first firstn ->
+  withMessageBytes "There" $ \lastPart lastn ->
+  withMessageBytes messageMac $ \witness wn ->
+  allocaBytes 32 $ \out -> alloca $ \len -> do
+    expectMessageRv "sign init" CKR_OK (haskokiStdMessageSignInit ctx session 0x251 nullPtr 0 mac)
+    expectMessageRv "sign begin" CKR_OK (haskokiStdMessageSignBegin ctx session nullPtr 0)
+    pokeArray out (replicate 32 165)
+    expectMessageRv "ignored output on sign continue" CKR_OK (haskokiStdMessageSignNext ctx session nullPtr 0 first firstn out nullPtr)
+    peekArray 32 out >>= assertEqual "ignored bytes untouched" (replicate 32 165)
+    poke len 32
+    expectMessageRv "sign terminal" CKR_OK (haskokiStdMessageSignNext ctx session nullPtr 0 lastPart lastn out len)
+    peekArray 32 out >>= assertEqual "split signature" (BS.unpack messageMac)
+    expectMessageRv "verify init" CKR_OK (haskokiStdMessageVerifyInit ctx session 0x251 nullPtr 0 mac)
+    expectMessageRv "verify begin" CKR_OK (haskokiStdMessageVerifyBegin ctx session nullPtr 0)
+    expectMessageRv "absent witness continues" CKR_OK (haskokiStdMessageVerifyNext ctx session nullPtr 0 first firstn nullPtr 0)
+    expectMessageRv "present witness ends" CKR_OK (haskokiStdMessageVerifyNext ctx session nullPtr 0 lastPart lastn witness wn)
+    expectMessageRv "verify begin again" CKR_OK (haskokiStdMessageVerifyBegin ctx session nullPtr 0)
+    expectMessageRv "present empty witness ends" CKR_SIGNATURE_INVALID (haskokiStdMessageVerifyNext ctx session nullPtr 0 first firstn witness 0)
+    expectMessageRv "begin after mismatch" CKR_OK (haskokiStdMessageVerifyBegin ctx session nullPtr 0)
+    before <- messageState inst session SlotVerify
+    expectMessageRv "absent nonempty witness refuses" CKR_ARGUMENTS_BAD (haskokiStdMessageVerifyNext ctx session nullPtr 0 first firstn nullPtr 1)
+    messageState inst session SlotVerify >>= assertEqual "decode refusal unchanged" before

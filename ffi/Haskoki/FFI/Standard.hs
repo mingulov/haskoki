@@ -131,6 +131,27 @@ module Haskoki.FFI.Standard
   , haskokiStdVerify
   , haskokiStdVerifyUpdate
   , haskokiStdVerifyFinal
+    -- * message operations
+  , haskokiStdMessageEncryptInit
+  , haskokiStdMessageEncrypt
+  , haskokiStdMessageEncryptBegin
+  , haskokiStdMessageEncryptNext
+  , haskokiStdMessageEncryptFinal
+  , haskokiStdMessageDecryptInit
+  , haskokiStdMessageDecrypt
+  , haskokiStdMessageDecryptBegin
+  , haskokiStdMessageDecryptNext
+  , haskokiStdMessageDecryptFinal
+  , haskokiStdMessageSignInit
+  , haskokiStdMessageSign
+  , haskokiStdMessageSignBegin
+  , haskokiStdMessageSignNext
+  , haskokiStdMessageSignFinal
+  , haskokiStdMessageVerifyInit
+  , haskokiStdMessageVerify
+  , haskokiStdMessageVerifyBegin
+  , haskokiStdMessageVerifyNext
+  , haskokiStdMessageVerifyFinal
     -- * encrypt/decrypt
   , runCryptoUpdateBuffered
   , runCryptoUpdateQuery
@@ -217,6 +238,16 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
+import Haskoki.FFI.MessageParams
+  ( decodeMessageInitFrame
+  , decodeMessageBeginFrame
+  , decodeMessageCipherFrame
+  , decodeMessageSignFrame
+  , decodeMessageVerifyFrame
+  , decodeMessageCipherNextFrame
+  , decodeMessageSignNextFrame
+  , decodeMessageVerifyNextFrame
+  )
 import Haskoki.FFI.NativeParams (DerivedKeySlot (..), KeyMatSlots (..), normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsKeyMatParams, normalizeTls12KeyMatParams, normalizeTls12KeySafeParams, normalizeSsl3MasterParams, normalizeSsl3KeyMatParams, normalizeTlsPrfParams, normalizePbeParamsMaybeIv)
 import Haskoki.Model
   ( Model (..)
@@ -229,6 +260,8 @@ import Haskoki.Model
 import Haskoki.Object (maxTemplateEntries, objectVisible, resolveHandle)
 import Haskoki.Operation
   ( CryptoEffect (..)
+  , MsgFamily (..)
+  , MsgState (..)
   , SlotKind (..)
   , StagedOutput (..)
   , activeCipher
@@ -236,11 +269,13 @@ import Haskoki.Operation
   , commonMech
   , commonOf
   , lookupSingle
+  , msgFamilyKind
   , removeSingle
   , stagedOf
   )
 import Haskoki.Operation.Cipher (cipherUpdateSplit)
-import Haskoki.Operation.Codec (encodeCancelInput, encodeVerifyInput)
+import Haskoki.Operation.Codec (decodeMsgNext, encodeCancelInput, encodeVerifyInput)
+import Haskoki.Operation.Message (MsgNext (..), lookupMessage)
 import Haskoki.Operation.Derive
   ( encodeDeriveParams
   , encodeHkdfInfo
@@ -1893,6 +1928,78 @@ runCryptoQuery inst sid kind func input regionName pLen = do
       | pcCode pc == CKR_BUFFER_TOO_SMALL -> reportCryptoQuery inst sid kind pLen
       | otherwise -> pure (stdRvOf (pcCode pc))
 
+messageRegion :: MsgFamily -> String
+messageRegion MsgEncrypt = "message-encrypt"
+messageRegion MsgDecrypt = "message-decrypt"
+messageRegion MsgSign = "message-sign"
+messageRegion MsgVerify = "message-verify"
+
+matchingMessageLength :: MsgFamily -> Model -> SessionId -> Maybe Word64
+matchingMessageLength fam m sid = do
+  st <- lookupSession m sid
+  msg <- lookupMessage (ssOps st) (msgFamilyKind fam)
+  if msFamily msg /= fam then Nothing else do
+    staged <- stagedOf (msCommon msg)
+    pure (fromIntegral (BS.length (stBytes staged)))
+
+messageContinuation :: MsgFamily -> FunctionId -> ByteString -> Bool
+messageContinuation fam func input = case (fam, func, decodeMsgNext fam input) of
+  (MsgEncrypt, F_EncryptMessageNext, Just (MsgNextCipher _ _ False)) -> True
+  (MsgDecrypt, F_DecryptMessageNext, Just (MsgNextCipher _ _ False)) -> True
+  _ -> False
+
+runMessageBuffered :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr Word8 -> Ptr CULong -> Word64 -> IO CULong
+runMessageBuffered inst sid fam func input pOut pLen cap = do
+  m <- snapshotModel (siEnv inst)
+  let kind = msgFamilyKind fam
+      req = Request Pkcs11_3_2 func (Just sid) Nothing input
+        [RegionBytes (messageRegion fam) (IntentBuffer cap)]
+  result <- runCryptoPlan inst m req
+  case result of
+    Left rv
+      | rv == ckrBufferTooSmall -> reportShortLength inst sid kind pLen
+      | otherwise -> pure rv
+    Right pc
+      | pcCode pc == CKR_OK && null (pcOutputs pc) -> do
+          _ <- encodeLength pLen 0
+          pure ckrOk
+      | otherwise -> encodeCryptoCommit inst sid kind pOut pLen cap pc
+
+runMessageQuery :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr CULong -> IO CULong
+runMessageQuery inst sid fam func input pLen = do
+  m <- snapshotModel (siEnv inst)
+  let kind = msgFamilyKind fam
+      req = Request Pkcs11_3_2 func (Just sid) Nothing input
+        [RegionBytes (messageRegion fam) IntentNull]
+      planned = planCall (envRules (siEnv inst)) m req
+      report n = encodeLength pLen n >> pure ckrOk
+      execute = do
+        result <- runCryptoPlanOn inst m planned
+        case result of
+          Left rv
+            | rv == ckrBufferTooSmall -> reportCryptoQuery inst sid kind pLen
+            | otherwise -> pure rv
+          Right pc
+            | pcCode pc == CKR_BUFFER_TOO_SMALL -> reportCryptoQuery inst sid kind pLen
+            | pcCode pc /= CKR_OK -> pure (stdRvOf (pcCode pc))
+            | otherwise -> pure ckrGeneralError
+  case planned of
+    Reject _ -> execute
+    Execute _ _ -> execute
+    Immediate pc
+      | pcCode pc /= CKR_OK -> pure (stdRvOf (pcCode pc))
+      | Just n <- matchingMessageLength fam m sid -> report n
+      | messageContinuation fam func input -> report 0
+      | otherwise -> pure ckrGeneralError
+
+messageBytes :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr Word8 -> Ptr CULong -> IO CULong
+messageBytes inst sid fam func frame pOut pLen
+  | pLen == nullPtr = pure ckrArgsBad
+  | pOut == nullPtr = runMessageQuery inst sid fam func frame pLen
+  | otherwise = do
+      cap <- fromIntegral <$> peek pLen
+      runMessageBuffered inst sid fam func frame pOut pLen cap
+
 -- | Resolve a session for the crypto dialogues (unknown handles
 -- refuse exactly as planning would).
 withStdSession :: StdInstance -> CULong -> (SessionId -> IO CULong) -> IO CULong
@@ -2479,6 +2586,222 @@ haskokiStdVerifyFinal ctx h pSig (CULong sigLen) =
         let req = Request Pkcs11_3_2 F_VerifyFinal (Just sid) Nothing sig
               [RegionBytes "verify" (IntentBuffer 0)]
         runCryptoSilent inst req
+
+-- ---------------------------------------------------------------------------
+-- message operations
+-- ---------------------------------------------------------------------------
+
+foreign export ccall "haskoki_std_message_encrypt_init" haskokiStdMessageEncryptInit
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong -> IO CULong
+haskokiStdMessageEncryptInit :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong -> IO CULong
+haskokiStdMessageEncryptInit ctx h mech p pn key =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageInitFrame MsgEncrypt mech p (fromIntegral pn)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> runCryptoSilent inst
+        (Request Pkcs11_3_2 F_MessageEncryptInit (Just sid)
+          (Just (ExternalHandle (fromIntegral key))) input [])
+
+foreign export ccall "haskoki_std_message_encrypt" haskokiStdMessageEncrypt
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
+haskokiStdMessageEncrypt :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
+haskokiStdMessageEncrypt ctx h p pn a an d dn out len =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageCipherFrame MsgEncrypt p (fromIntegral pn) a (fromIntegral an) d (fromIntegral dn)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> messageBytes inst sid MsgEncrypt F_EncryptMessage input out len
+
+foreign export ccall "haskoki_std_message_encrypt_begin" haskokiStdMessageEncryptBegin
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageEncryptBegin :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageEncryptBegin ctx h p pn a an =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageBeginFrame MsgEncrypt p (fromIntegral pn) a (fromIntegral an)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> runCryptoSilent inst
+        (Request Pkcs11_3_2 F_EncryptMessageBegin (Just sid) Nothing input [])
+
+foreign export ccall "haskoki_std_message_encrypt_next" haskokiStdMessageEncryptNext
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> CULong -> IO CULong
+haskokiStdMessageEncryptNext :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> CULong -> IO CULong
+haskokiStdMessageEncryptNext ctx h p pn d dn out len end =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    if end /= 0 && end /= 1 then pure ckrArgsBad else do
+      frame <- decodeMessageCipherNextFrame MsgEncrypt p (fromIntegral pn) d (fromIntegral dn) (end == 1)
+      case frame of
+        Left _ -> pure ckrArgsBad
+        Right input -> messageBytes inst sid MsgEncrypt F_EncryptMessageNext input out len
+
+foreign export ccall "haskoki_std_message_encrypt_final" haskokiStdMessageEncryptFinal
+  :: StablePtr StdInstance -> CULong -> IO CULong
+haskokiStdMessageEncryptFinal :: StablePtr StdInstance -> CULong -> IO CULong
+haskokiStdMessageEncryptFinal ctx h =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    runCryptoSilent inst
+      (Request Pkcs11_3_2 F_MessageEncryptFinal (Just sid) Nothing BS.empty [])
+
+foreign export ccall "haskoki_std_message_decrypt_init" haskokiStdMessageDecryptInit
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong -> IO CULong
+haskokiStdMessageDecryptInit :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong -> IO CULong
+haskokiStdMessageDecryptInit ctx h mech p pn key =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageInitFrame MsgDecrypt mech p (fromIntegral pn)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> runCryptoSilent inst
+        (Request Pkcs11_3_2 F_MessageDecryptInit (Just sid)
+          (Just (ExternalHandle (fromIntegral key))) input [])
+
+foreign export ccall "haskoki_std_message_decrypt" haskokiStdMessageDecrypt
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
+haskokiStdMessageDecrypt :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
+haskokiStdMessageDecrypt ctx h p pn a an d dn out len =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageCipherFrame MsgDecrypt p (fromIntegral pn) a (fromIntegral an) d (fromIntegral dn)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> messageBytes inst sid MsgDecrypt F_DecryptMessage input out len
+
+foreign export ccall "haskoki_std_message_decrypt_begin" haskokiStdMessageDecryptBegin
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageDecryptBegin :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageDecryptBegin ctx h p pn a an =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageBeginFrame MsgDecrypt p (fromIntegral pn) a (fromIntegral an)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> runCryptoSilent inst
+        (Request Pkcs11_3_2 F_DecryptMessageBegin (Just sid) Nothing input [])
+
+foreign export ccall "haskoki_std_message_decrypt_next" haskokiStdMessageDecryptNext
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> CULong -> IO CULong
+haskokiStdMessageDecryptNext :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> CULong -> IO CULong
+haskokiStdMessageDecryptNext ctx h p pn d dn out len end =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    if end /= 0 && end /= 1 then pure ckrArgsBad else do
+      frame <- decodeMessageCipherNextFrame MsgDecrypt p (fromIntegral pn) d (fromIntegral dn) (end == 1)
+      case frame of
+        Left _ -> pure ckrArgsBad
+        Right input -> messageBytes inst sid MsgDecrypt F_DecryptMessageNext input out len
+
+foreign export ccall "haskoki_std_message_decrypt_final" haskokiStdMessageDecryptFinal
+  :: StablePtr StdInstance -> CULong -> IO CULong
+haskokiStdMessageDecryptFinal :: StablePtr StdInstance -> CULong -> IO CULong
+haskokiStdMessageDecryptFinal ctx h =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    runCryptoSilent inst
+      (Request Pkcs11_3_2 F_MessageDecryptFinal (Just sid) Nothing BS.empty [])
+
+foreign export ccall "haskoki_std_message_sign_init" haskokiStdMessageSignInit
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong -> IO CULong
+haskokiStdMessageSignInit :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong -> IO CULong
+haskokiStdMessageSignInit ctx h mech p pn key =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageInitFrame MsgSign mech p (fromIntegral pn)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> runCryptoSilent inst
+        (Request Pkcs11_3_2 F_MessageSignInit (Just sid)
+          (Just (ExternalHandle (fromIntegral key))) input [])
+
+foreign export ccall "haskoki_std_message_sign" haskokiStdMessageSign
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
+haskokiStdMessageSign :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
+haskokiStdMessageSign ctx h p pn d dn out len =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageSignFrame p (fromIntegral pn) d (fromIntegral dn)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> messageBytes inst sid MsgSign F_SignMessage input out len
+
+foreign export ccall "haskoki_std_message_sign_begin" haskokiStdMessageSignBegin
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageSignBegin :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageSignBegin ctx h p pn =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageBeginFrame MsgSign p (fromIntegral pn) nullPtr 0
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> runCryptoSilent inst
+        (Request Pkcs11_3_2 F_SignMessageBegin (Just sid) Nothing input [])
+
+foreign export ccall "haskoki_std_message_sign_next" haskokiStdMessageSignNext
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
+haskokiStdMessageSignNext :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
+haskokiStdMessageSignNext ctx h p pn d dn out len =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageSignNextFrame p (fromIntegral pn) d (fromIntegral dn) (len /= nullPtr)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input
+        | len == nullPtr -> runCryptoSilent inst
+            (Request Pkcs11_3_2 F_SignMessageNext (Just sid) Nothing input
+              [RegionBytes "message-sign" (IntentBuffer 0)])
+        | otherwise -> messageBytes inst sid MsgSign F_SignMessageNext input out len
+
+foreign export ccall "haskoki_std_message_sign_final" haskokiStdMessageSignFinal
+  :: StablePtr StdInstance -> CULong -> IO CULong
+haskokiStdMessageSignFinal :: StablePtr StdInstance -> CULong -> IO CULong
+haskokiStdMessageSignFinal ctx h =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    runCryptoSilent inst
+      (Request Pkcs11_3_2 F_MessageSignFinal (Just sid) Nothing BS.empty [])
+
+foreign export ccall "haskoki_std_message_verify_init" haskokiStdMessageVerifyInit
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong -> IO CULong
+haskokiStdMessageVerifyInit :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong -> IO CULong
+haskokiStdMessageVerifyInit ctx h mech p pn key =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageInitFrame MsgVerify mech p (fromIntegral pn)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> runCryptoSilent inst
+        (Request Pkcs11_3_2 F_MessageVerifyInit (Just sid)
+          (Just (ExternalHandle (fromIntegral key))) input [])
+
+foreign export ccall "haskoki_std_message_verify" haskokiStdMessageVerify
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageVerify :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageVerify ctx h p pn d dn out wn =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageVerifyFrame p (fromIntegral pn) d (fromIntegral dn) out (fromIntegral wn)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> runCryptoSilent inst (Request Pkcs11_3_2 F_VerifyMessage (Just sid) Nothing input [RegionBytes "message-verify" (IntentBuffer 0)])
+
+foreign export ccall "haskoki_std_message_verify_begin" haskokiStdMessageVerifyBegin
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageVerifyBegin :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageVerifyBegin ctx h p pn =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageBeginFrame MsgVerify p (fromIntegral pn) nullPtr 0
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> runCryptoSilent inst
+        (Request Pkcs11_3_2 F_VerifyMessageBegin (Just sid) Nothing input [])
+
+foreign export ccall "haskoki_std_message_verify_next" haskokiStdMessageVerifyNext
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageVerifyNext :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> IO CULong
+haskokiStdMessageVerifyNext ctx h p pn d dn out wn =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    frame <- decodeMessageVerifyNextFrame p (fromIntegral pn) d (fromIntegral dn) out (fromIntegral wn)
+    case frame of
+      Left _ -> pure ckrArgsBad
+      Right input -> runCryptoSilent inst
+        (Request Pkcs11_3_2 F_VerifyMessageNext (Just sid) Nothing input
+          [RegionBytes "message-verify" (IntentBuffer 0)])
+
+foreign export ccall "haskoki_std_message_verify_final" haskokiStdMessageVerifyFinal
+  :: StablePtr StdInstance -> CULong -> IO CULong
+haskokiStdMessageVerifyFinal :: StablePtr StdInstance -> CULong -> IO CULong
+haskokiStdMessageVerifyFinal ctx h =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
+    runCryptoSilent inst
+      (Request Pkcs11_3_2 F_MessageVerifyFinal (Just sid) Nothing BS.empty [])
 
 -- ---------------------------------------------------------------------------
 -- encrypt/decrypt
