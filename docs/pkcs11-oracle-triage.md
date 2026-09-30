@@ -76,6 +76,34 @@ KAT lane (same bundle, rc2): 116467 tests — 83426 passed,
 `incomplete: false`). PBE legs identical to fast (28/0/5).
 No new findings.
 
+## EdDSA-NULL fast lane (rc2 oracle, 2026-09-30)
+
+Bundle `dist-release/haskoki-0.3.0.0` at `a709086` (EdDSA-NULL
+re-attempt: NULL params serve pure, 316/464), oracle
+pkcs11-check 0.2.2rc2 (`/tmp/pkcs11-ws/run-lane-rc2.sh fast`,
+results `/tmp/pkcs11-ws/out-rc2/fast/pkcs11-fast-results.json`,
+backup `/tmp/pkcs11-fast-eddsa.json`).
+
+Single run, zero failures: 10190 tests — 5133 passed, 0
+failed, 633 xfailed, 4424 skipped, 0 crashed. Delta
+vs 11s-4: +0 total, +15 passed, -14 xfailed, -1 skipped.
+Per-unit: eddsa +10/-10x, mech_sign +3/-3x, mech_multipart
++2/-2x (NULL-acceptance legs flipping to pass),
+ckr_verify -1s/+1x (`test_eddsa_signature_wrong_length`
+newly runs and lands on the pre-existing LEN_RANGE xfail
+our verify shares with ECDSA/HMAC — oracle-tolerated).
+No new oracle-side findings: no upstream filing from
+this round.
+
+KAT lane (same bundle, rc2): 116748 tests — 84450
+passed, 0 failed, 0 crashed, 972 xfailed, 31326
+skipped (`/tmp/pkcs11-ws/out-rc2/kat/pkcs11-kat-results.json`,
+backup `/tmp/pkcs11-kat-eddsa.json`;
+`incomplete: false`). Delta vs 11s-4: +936 passed,
+-935 xfailed, -1 skipped: CCTV Ed25519 +914/-914x (as
+projected in the experiment note), ACVP EdDSA +7/-7x,
+plus the fast-lane units. No new findings.
+
 ## 11s-4 fast lane (rc2 oracle, 2026-09-30)
 
 Bundle `dist-release/haskoki-0.3.0.0` at `5ac4611` (11s-4
