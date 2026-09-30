@@ -87,6 +87,7 @@ import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
 import Haskoki.Recipe.WrapComp (encodeWrapCompEcdhParams)
+import Haskoki.Recipe.WrapCompRsa (encodeWrapCompRsaParams)
 import Haskoki.Recipe.Ike (encodeIkeParams, maxIkeOutput)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
@@ -126,6 +127,7 @@ spec = testGroup "synthetic engine"
   , testCase "Block-cipher specs roundtrip per geometry" caseCipherSpecs
   , testCase "Wrap specs thread the caller IV" caseWrapIv
   , testCase "ECDH wrap compositions roundtrip (opaque)" caseEcdhCompWrap
+  , testCase "RSA wrap composition roundtrips (synthetic)" caseRsaCompWrap
   , testCase "Legacy-cipher specs roundtrip per width" caseLegacyCipherSpecs
   , testCase "RSA v1.5 specs roundtrip per digest" caseRsaRoundtrip
   , testCase "RSA-PSS specs roundtrip per salt" casePssRoundtrip
@@ -1364,6 +1366,50 @@ caseEcdhCompWrap = withSynth "11" $ \env -> do
       malleable <- expectLabeledBytes (label ++ " body tamper") =<<
         runEffect env resolve (FxUnwrap (MechanismId mech) oid params (flipAt 80))
       assertBool (label ++ " body change detected") (malleable /= target)
+    expectLabeledBytes label r = case r of
+      GotBytes b -> pure b
+      other -> assertFailure (label ++ ": expected bytes, got " ++ show other)
+
+caseRsaCompWrap :: IO ()
+caseRsaCompWrap = withSynth "11" $ \env -> do
+  let oid = Just (ObjectId 7)
+      target = "sixteen bytes xx" :: BS.ByteString
+      params = encodeWrapCompRsaParams "SHA256" "SHA256" BS.empty 256
+  -- Synthetic RSA halves are DER with a shared modulus: the
+  -- 48-byte tag-sized seal frames modulus-wide (256 + 24).
+  (priv, mpub) <- expectOk "gen rsa-2048" =<< generateKey env (GenRSA 2048 65537)
+  pub <- case mpub of
+    Just p -> pure p
+    Nothing -> assertFailure "gen rsa-2048 must mint a pair" >> undefined
+  let wrapResolve _ = Just pub
+      unwrapResolve _ = Just priv
+  blob <- expectLabeledBytes "rsa wrap" =<<
+    runEffect env wrapResolve (FxWrap (MechanismId 0x1054) oid params target)
+  assertEqual "synthetic blob length" 280 (BS.length blob)
+  pt <- expectLabeledBytes "rsa unwrap" =<<
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1054) oid params blob)
+  assertEqual "synthetic roundtrip" target pt
+  -- Fresh KEK per wrap; tampered head and tail fail closed.
+  blob2 <- expectLabeledBytes "rsa wrap again" =<<
+    runEffect env wrapResolve (FxWrap (MechanismId 0x1054) oid params target)
+  assertBool "fresh KEK" (BS.take 256 blob2 /= BS.take 256 blob)
+  rHead <- runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1054) oid params (flipAt 0 blob))
+  case rHead of
+    GotCryptoError _ -> pure ()
+    other -> assertFailure ("head tamper must fail closed, got " ++ show other)
+  rTail <- runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1054) oid params (flipAt 256 blob))
+  case rTail of
+    GotCryptoError _ -> pure ()
+    other -> assertFailure ("tail tamper must fail closed, got " ++ show other)
+  -- Cross-strength opens fail closed.
+  let params128 = encodeWrapCompRsaParams "SHA256" "SHA256" BS.empty 128
+  rCross <- runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1054) oid params128 blob)
+  case rCross of
+    GotCryptoError _ -> pure ()
+    other -> assertFailure ("cross-strength must fail closed, got " ++ show other)
+  where
+    flipAt i bs =
+      BS.take i bs <> BS.pack [BS.index bs i `xor` 0x01] <> BS.drop (i + 1) bs
     expectLabeledBytes label r = case r of
       GotBytes b -> pure b
       other -> assertFailure (label ++ ": expected bytes, got " ++ show other)

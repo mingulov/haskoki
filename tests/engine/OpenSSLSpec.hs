@@ -62,6 +62,7 @@ import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Recipe.Cipher (encodeCtrParams)
 import Haskoki.Recipe.WrapComp (encodeWrapCompEcdhParams)
+import Haskoki.Recipe.WrapCompRsa (encodeWrapCompRsaParams)
 import Haskoki.Registry (MechanismId (..))
 import Haskoki.Types (EngineResourceId (..), ObjectId (..))
 
@@ -111,6 +112,7 @@ spec = testGroup "openssl4 engine"
   , testCase "ECDH agreement KATs (CLI vectors)" caseEcdhVectors
   , testCase "XDH agreement KATs (CLI + wycheproof tc1)" caseXdhVectors
   , testCase "ECDH wrap compositions roundtrip (provider)" caseEcdhCompWrap
+  , testCase "RSA wrap composition roundtrips (provider)" caseRsaCompWrap
   , testCase "Montgomery keygen mints agreeing pairs" caseRealMontgomeryKeygen
   , testCase "DH agreement KAT (CLI vectors)" caseDhAgree
   , testCase "DH keygen mints agreeing pairs" caseDhKeygen
@@ -4539,6 +4541,68 @@ caseEcdhCompWrap = withBackend $ \env -> do
   let badResolve _ = Just (KeyDer "bogus")
   expectCryptoError "garbage wrapping key fails closed" =<<
     runEffect env badResolve (FxWrap (MechanismId 0x1053) oid (params 128) target)
+  where
+    expectBytes label r = case r of
+      GotBytes b -> pure b
+      other -> assertFailure (label ++ ": expected bytes, got " ++ show other)
+    expectCryptoError label r = case r of
+      GotCryptoError _ -> pure ()
+      other -> assertFailure (label ++ ": expected crypto error, got " ++ show other)
+    corruptAt i bs =
+      let (pre, rest) = BS.splitAt i bs
+      in case BS.uncons rest of
+        Just (b, post) -> pre <> BS.singleton (b `xor` 0x01) <> post
+        Nothing -> bs
+
+caseRsaCompWrap :: IO ()
+caseRsaCompWrap = withBackend $ \env -> do
+  let target = "sixteen bytes xx" :: BS.ByteString
+      oid = Just (ObjectId 7)
+      params = encodeWrapCompRsaParams "SHA256" "SHA256" BS.empty 256
+  -- RSA-2048: 256-byte OAEP head + 24-byte KWP tail. Wrap
+  -- resolves the recipient PUBLIC half, unwrap the private.
+  (priv, mpub) <- expectOk "gen rsa-2048" =<< generateKey env (GenRSA 2048 65537)
+  pub <- case mpub of
+    Just p -> pure p
+    Nothing -> assertFailure "gen rsa-2048 must mint a pair" >> undefined
+  let wrapResolve _ = Just pub
+      unwrapResolve _ = Just priv
+  blob <- expectBytes "rsa wrap" =<<
+    runEffect env wrapResolve (FxWrap (MechanismId 0x1054) oid params target)
+  assertEqual "rsa blob length" 280 (BS.length blob)
+  pt <- expectBytes "rsa unwrap" =<<
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1054) oid params blob)
+  assertEqual "rsa roundtrip" target pt
+  -- Fresh random KEK per wrap: heads differ, both unwrap.
+  blob2 <- expectBytes "rsa wrap again" =<<
+    runEffect env wrapResolve (FxWrap (MechanismId 0x1054) oid params target)
+  assertBool "fresh KEK" (BS.take 256 blob2 /= BS.take 256 blob)
+  pt2 <- expectBytes "rsa unwrap again" =<<
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1054) oid params blob2)
+  assertEqual "second roundtrip" target pt2
+  -- Tampered head and tampered tail both fail closed.
+  expectCryptoError "tampered head fails closed" =<<
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1054) oid params (corruptAt 10 blob))
+  expectCryptoError "tampered tail fails closed" =<<
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1054) oid params (corruptAt 270 blob))
+  -- Strength separation: wrap@256 opens only under 256.
+  let params128 = encodeWrapCompRsaParams "SHA256" "SHA256" BS.empty 128
+  expectCryptoError "cross-strength unwrap fails closed" =<<
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1054) oid params128 blob)
+  -- Labels ride the OAEP frame: labeled seals open labeled,
+  -- and refuse unlabeled (the label binds the KEK envelope).
+  let labeled = encodeWrapCompRsaParams "SHA256" "SHA256" "tag" 256
+  blobL <- expectBytes "labeled wrap" =<<
+    runEffect env wrapResolve (FxWrap (MechanismId 0x1054) oid labeled target)
+  ptL <- expectBytes "labeled unwrap" =<<
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1054) oid labeled blobL)
+  assertEqual "labeled roundtrip" target ptL
+  expectCryptoError "label mismatch fails closed" =<<
+    runEffect env unwrapResolve (FxUnwrap (MechanismId 0x1054) oid params blobL)
+  -- Garbage wrapping keys refuse typed, never wrong bytes.
+  let badResolve _ = Just (KeyDer "bogus")
+  expectCryptoError "garbage wrapping key fails closed" =<<
+    runEffect env badResolve (FxWrap (MechanismId 0x1054) oid params target)
   where
     expectBytes label r = case r of
       GotBytes b -> pure b

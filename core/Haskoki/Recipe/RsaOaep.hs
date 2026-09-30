@@ -36,6 +36,8 @@ module Haskoki.Recipe.RsaOaep
   , encodeOaepParams
   , decodeOaepParams
   , rsaOaepParamsValid
+  , oaepDigestCode
+  , oaepCodeDigest
   , oaepDigestWidth
   ) where
 

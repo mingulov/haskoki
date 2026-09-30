@@ -318,6 +318,16 @@ import Haskoki.Recipe.Chacha20
   )
 import Haskoki.Recipe.Gcm (decodeGcmParams, gcmParamsValid, gcmRecipeFor)
 import Haskoki.Recipe.RsaOaep (decodeOaepParams, rsaOaepParamsValid, rsaOaepRecipeFor)
+import Haskoki.Recipe.WrapCompRsa
+  ( WrapCompRsaRecipe (..)
+  , wrapCompRsaAesBytes
+  , wrapCompRsaFrameHead
+  , wrapCompRsaModulusBytes
+  , wrapCompRsaOaep
+  , wrapCompRsaRecipeFor
+  , wrapCompRsaSplitBlob
+  , wrapCompRsaUnframeHead
+  )
 import Haskoki.Recipe.Poly1305 (poly1305ParamsValid, poly1305RecipeFor)
 import Haskoki.Recipe.RsaX509 (rsaX509ParamsValid, rsaX509RecipeFor)
 import Haskoki.Recipe.RsaX931 (rsaX931ParamsValid, rsaX931RecipeFor, rx931Name)
@@ -2221,6 +2231,8 @@ runEffect env resolve fx = case fx of
         runX509 DirEncrypt _mech key params input
     | Just r <- wrapCompEcdhRecipeFor _mech -> withKey mkey $ \key ->
         runEcdhCompWrap r key params input
+    | Just r <- wrapCompRsaRecipeFor _mech -> withKey mkey $ \key ->
+        runRsaCompWrap r key params input
     | otherwise -> pure (unsupported fx)
   FxUnwrap _mech mkey params input
     | _mech == aesCbcMech -> withKey mkey $ \key ->
@@ -2235,6 +2247,8 @@ runEffect env resolve fx = case fx of
         runX509 DirDecrypt _mech key params input
     | Just r <- wrapCompEcdhRecipeFor _mech -> withKey mkey $ \key ->
         runEcdhCompUnwrap r key params input
+    | Just r <- wrapCompRsaRecipeFor _mech -> withKey mkey $ \key ->
+        runRsaCompUnwrap r key params input
     | otherwise -> pure (unsupported fx)
   FxAuthWrap _mech mkey params input
     | _mech /= aesCbcMech -> pure (unsupported fx)
@@ -2980,6 +2994,76 @@ runEffect env resolve fx = case fx of
     -- the row (COF over EC only; X over Montgomery is plain).
     compSpec :: WrapCompEcdhRecipe -> EcdhSpec
     compSpec r = if wceCofactor r then EcdhCofactor else EcdhPlain
+    -- | RSA-composition wrap: mint a random temp KEK at the
+    -- requested strength, OAEP-seal it under the recipient
+    -- PUBLIC key, KWP-seal the target under the KEK, answer the
+    -- modulus-wide OAEP head plus the KWP tail. Served
+    -- primitives only (generateKey, pkeyEncrypt, the KWP cipher
+    -- entry); the KEK never persists. Tag-sized synthetic seals
+    -- frame modulus-wide through the recipe (exact-k real seals
+    -- pass through).
+    runRsaCompWrap :: WrapCompRsaRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runRsaCompWrap _ wrapKey params target = case keyBytesOf wrapKey of
+      Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
+        "composition wrapping key has no bytes"))
+      Just wrapB ->
+        case (wrapCompRsaModulusBytes wrapB, wrapCompRsaAesBytes params, wrapCompRsaOaep params) of
+          (Just k, Just aesBytes, Just (d, m, label)) -> case (rsaDigest d, rsaDigest m) of
+            (Just dh, Just mh) -> do
+              g <- generateKey env (GenSym "AES" aesBytes)
+              case g of
+                EngineOk (KeyBytes kek, _)
+                  | BS.length kek == aesBytes -> do
+                      s <- pkeyEncrypt env (RsaOaep (OaepParams dh mh label)) wrapKey kek
+                      case s of
+                        EngineFail err -> pure (GotCryptoError (toCryptoError err))
+                        EngineOk raw -> case wrapCompRsaFrameHead k (aesBytes + 16) raw of
+                          Nothing -> pure (GotCryptoError (CryptoFailed
+                            "driver: OAEP head escapes the modulus width"))
+                          Just framed -> do
+                            sealed <- runCipher DirEncrypt aesKwpMech
+                              (KeyBytes kek) BS.empty target
+                            case sealed of
+                              GotBytes ct -> pure (GotBytes (framed <> ct))
+                              other -> pure other
+                EngineOk _ -> pure (GotCryptoError (CryptoFailed
+                  "driver: temp KEK keygen shape rejected"))
+                EngineFail err -> pure (GotCryptoError (toCryptoError err))
+            _ -> pure (GotCryptoError (CryptoFailed
+              "driver: OAEP digest stems rejected"))
+          _ -> pure (GotCryptoError (CryptoFailed
+            "driver: malformed wrap-composition parameters"))
+    -- | RSA-composition unwrap: split the modulus-wide head,
+    -- OAEP-open the KEK with the PRIVATE key (length-tripwired),
+    -- KWP-open the tail. Open failures propagate as
+    -- authentication faults (fail closed, never wrong
+    -- plaintext).
+    runRsaCompUnwrap :: WrapCompRsaRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+    runRsaCompUnwrap _ unwrapKey params blob = case keyBytesOf unwrapKey of
+      Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
+        "composition unwrapping key has no bytes"))
+      Just wrapB ->
+        case (wrapCompRsaModulusBytes wrapB, wrapCompRsaAesBytes params, wrapCompRsaOaep params) of
+          (Just k, Just aesBytes, Just (d, m, label)) ->
+            case wrapCompRsaSplitBlob k blob of
+              Nothing -> pure (GotCryptoError (CryptoFailed
+                "driver: composition blob framing rejected"))
+              Just (framed, kwpBlob) -> case (rsaDigest d, rsaDigest m) of
+                (Just dh, Just mh) -> do
+                  let inner = wrapCompRsaUnframeHead k (aesBytes + 16) framed
+                  o <- pkeyDecrypt env (RsaOaep (OaepParams dh mh label)) unwrapKey inner
+                  case o of
+                    EngineFail err -> pure (GotCryptoError (toCryptoError err))
+                    EngineOk kek
+                      | BS.length kek == aesBytes ->
+                          runCipher DirDecrypt aesKwpMech
+                            (KeyBytes kek) BS.empty kwpBlob
+                      | otherwise -> pure (GotCryptoError (CryptoFailed
+                          "driver: opened KEK escapes the requested strength"))
+                _ -> pure (GotCryptoError (CryptoFailed
+                  "driver: OAEP digest stems rejected"))
+          _ -> pure (GotCryptoError (CryptoFailed
+            "driver: malformed wrap-composition parameters"))
     -- | Raw bytes out of key material (DER halves and byte seeds;
     -- backend references carry no bytes here).
     keyBytesOf :: KeyMaterial -> Maybe ByteString

@@ -38,7 +38,9 @@ import Haskoki.FFI.NativeParams
   , normalizeDhX942Params
   , normalizeEcdhParams
   , normalizeWrapCompEcdhParams
+  , normalizeWrapCompRsaParams
   , wrapCompEcdhNativeSize
+  , wrapCompRsaNativeSize
   , encryptDataCbcNativeSize
   , encryptDataEcbNativeSize
   , normalizeEncryptDataCbcParams
@@ -91,6 +93,11 @@ import Haskoki.Recipe.WrapComp
   , wrapCompEcdhParamsValid
   , wrapCompEcdhParamsWellFormed
   , wrapCompEcdhRecipeFor
+  )
+import Haskoki.Recipe.WrapCompRsa
+  ( encodeWrapCompRsaParams
+  , wrapCompRsaParamsValid
+  , wrapCompRsaRecipeFor
   )
 import Haskoki.Recipe.EncryptData (encryptDataParamsValid, encryptDataRecipeFor)
 import Haskoki.Recipe.Eddsa
@@ -460,6 +467,76 @@ spec = testGroup "native mechanism params"
         (Just canon, Just r) ->
           assertEqual "recipe refuses" False (wrapCompEcdhParamsValid r canon)
         _ -> fail "comp recipe or image missing"
+  , testCase "wrapcomp-rsa native struct chases nested oaep, keeps strength" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_RSA_AES_KEY_WRAP")
+          hash = mustGeneratedId "CKM_SHA256"
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes oaepNativeSize $ \po -> do
+        pokeByteOff po 0 (CULong hash)
+        pokeByteOff po w (CULong 0x02)
+        pokeByteOff po (2 * w) (CULong 0x01)
+        pokeByteOff po (3 * w) (nullPtr :: Ptr Word8)
+        pokeByteOff po (3 * w + pw) (CULong 0)
+        allocaBytes wrapCompRsaNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong 256)
+          pokeByteOff p w (castPtr po)
+          normalizeWrapCompRsaParams p (fromIntegral wrapCompRsaNativeSize)
+      let want = encodeWrapCompRsaParams "SHA256" "SHA256" BS.empty 256
+      assertEqual "canonical comp image" (Just want) out
+      case (out, wrapCompRsaRecipeFor mid) of
+        (Just canon, Just r) ->
+          assertEqual "recipe accepts" True (wrapCompRsaParamsValid r canon)
+        _ -> fail "comp recipe or image missing"
+  , testCase "wrapcomp-rsa labeled struct chases the label" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_RSA_AES_KEY_WRAP")
+          hash = mustGeneratedId "CKM_SHA_1"
+          label = "tag" :: ByteString
+          w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- BS.useAsCStringLen label $ \(lp, llen) ->
+        allocaBytes oaepNativeSize $ \po -> do
+          pokeByteOff po 0 (CULong hash)
+          pokeByteOff po w (CULong 0x01)
+          pokeByteOff po (2 * w) (CULong 0x01)
+          pokeByteOff po (3 * w) (castPtr lp)
+          pokeByteOff po (3 * w + pw) (CULong (fromIntegral llen))
+          allocaBytes wrapCompRsaNativeSize $ \p -> do
+            pokeByteOff p 0 (CULong 128)
+            pokeByteOff p w (castPtr po)
+            normalizeWrapCompRsaParams p (fromIntegral wrapCompRsaNativeSize)
+      let want = encodeWrapCompRsaParams "SHA_1" "SHA_1" label 128
+      assertEqual "canonical comp image" (Just want) out
+      case (out, wrapCompRsaRecipeFor mid) of
+        (Just canon, Just r) ->
+          assertEqual "recipe accepts" True (wrapCompRsaParamsValid r canon)
+        _ -> fail "comp recipe or image missing"
+  , testCase "wrapcomp-rsa null nested pointer refuses" $ do
+      let w = sizeOf (undefined :: CULong)
+      out <- allocaBytes wrapCompRsaNativeSize $ \p -> do
+        pokeByteOff p 0 (CULong 256)
+        pokeByteOff p w (nullPtr :: Ptr Word8)
+        normalizeWrapCompRsaParams p (fromIntegral wrapCompRsaNativeSize)
+      assertEqual "refused" Nothing out
+  , testCase "wrapcomp-rsa short image refuses" $ do
+      out <- allocaBytes 8 $ \p -> do
+        pokeByteOff p 0 (CULong 256 :: CULong)
+        normalizeWrapCompRsaParams p 8
+      assertEqual "refused" Nothing out
+  , testCase "wrapcomp-rsa unknown oaep hash refuses" $ do
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+      out <- allocaBytes oaepNativeSize $ \po -> do
+        pokeByteOff po 0 (CULong 0x99)
+        pokeByteOff po w (CULong 0x02)
+        pokeByteOff po (2 * w) (CULong 0x01)
+        pokeByteOff po (3 * w) (nullPtr :: Ptr Word8)
+        pokeByteOff po (3 * w + pw) (CULong 0)
+        allocaBytes wrapCompRsaNativeSize $ \p -> do
+          pokeByteOff p 0 (CULong 256)
+          pokeByteOff p w (castPtr po)
+          normalizeWrapCompRsaParams p (fromIntegral wrapCompRsaNativeSize)
+      assertEqual "refused" Nothing out
   , testCase "encrypt-data cbc-16 struct chases iv and data" $ do
       let mid = MechanismId (mustGeneratedId "CKM_AES_CBC_ENCRYPT_DATA")
           iv = BS.replicate 16 0xcb

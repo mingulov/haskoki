@@ -117,6 +117,11 @@ import Haskoki.Recipe.WrapComp
   , wrapCompEcdhCodecFor
   , wrapCompEcdhRecipes
   )
+import Haskoki.Recipe.WrapCompRsa
+  ( WrapCompRsaRecipe (..)
+  , wrapCompRsaCodecFor
+  , wrapCompRsaRecipes
+  )
 import Haskoki.Recipe.Ecdsa
   ( EcdsaRecipe (..)
   , ecdsaCodecFor
@@ -1250,6 +1255,14 @@ wrapCompDescs =
       ]
       KeyBits 192 571
   | r <- wrapCompEcdhRecipes
+  ] ++
+  [ promotedDesc (wcrName r) allBaselines FamilyWrap
+      (wrapCompRsaCodecFor r)
+      [ mechRoute OpWrap (wcrName r) ["A20", "A37", "A39"]
+      , mechRoute OpUnwrap (wcrName r) ["A20", "A37", "A39"]
+      ]
+      KeyBits 512 4096
+  | r <- wrapCompRsaRecipes
   ]
 
 dAESKeyGen :: Descriptor

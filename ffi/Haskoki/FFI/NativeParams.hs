@@ -119,6 +119,7 @@ module Haskoki.FFI.NativeParams
   ( normalizeMechParams
   , normalizeEcdhParams
   , normalizeWrapCompEcdhParams
+  , normalizeWrapCompRsaParams
   , normalizeDhPkcsParams
   , normalizeDhX942Params
   , normalizeTlsPrfParams
@@ -208,6 +209,7 @@ module Haskoki.FFI.NativeParams
   , oaepNativeSize
   , ecdhNativeSize
   , wrapCompEcdhNativeSize
+  , wrapCompRsaNativeSize
   , dhX942NativeSize
   , gcmNativeSize
   , ccmNativeSize
@@ -248,6 +250,7 @@ import Haskoki.Recipe.Chacha20
 import Haskoki.Recipe.Cipher (ctrRecipeFor, encodeCtrParams, encodeRc2CbcParams, rc2RecipeFor)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.WrapComp (encodeWrapCompEcdhParams, wrapCompEcdhRecipeFor)
+import Haskoki.Recipe.WrapCompRsa (encodeWrapCompRsaParams, wrapCompRsaRecipeFor)
 import Haskoki.Recipe.Eddsa (eddsaRecipeFor, encodeEddsaParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.Gmac (gmacRecipeFor)
@@ -260,7 +263,7 @@ import Haskoki.Recipe.Sp800108
   , sp800PrfCodeFor
   )
 import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
-import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
+import Haskoki.Recipe.RsaOaep (decodeOaepParams, encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPss (encodePssParams, rsaPssRecipeFor)
 import Haskoki.Recipe.Ike (encodeIkeParams, ikePrfCodeFor)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, tlsKdfPrfCodeFor)
@@ -307,6 +310,11 @@ ecdhNativeSize = 3 * wordSize + 2 * ptrSize
 -- (length, pointer) for the shared data, one AES-strength word.
 wrapCompEcdhNativeSize :: Int
 wrapCompEcdhNativeSize = 3 * wordSize + ptrSize
+
+-- | Native @CK_RSA_AES_KEY_WRAP_PARAMS@ image size: one
+-- AES-strength word plus the nested OAEP pointer.
+wrapCompRsaNativeSize :: Int
+wrapCompRsaNativeSize = wordSize + ptrSize
 
 -- | Native @CK_X9_42_DH1_DERIVE_PARAMS@ image size: the ECDH
 -- struct layout (kdf, shared length/pointer, public
@@ -995,6 +1003,38 @@ normalizeWrapCompEcdhParams pParams paramsLen
       pShared <- peekByteOff pParams (2 * wordSize + ptrSize)
       mShared <- chaseBytes pShared sharedLen
       pure (mShared >>= \shared -> wrapCompEcdhStructToCanonical kdf shared aesBits)
+
+-- | Normalize one RSA composition struct: the native
+-- @CK_RSA_AES_KEY_WRAP_PARAMS@ image at @pParams@/@paramsLen@
+-- (strength word, nested OAEP pointer) onto the canonical
+-- @wrapcomp-rsa-params\/1@ image. Wrong-sized images, a null
+-- nested pointer, a non-data-specified OAEP source, unknown
+-- OAEP hash\/MGF ids, and null-with-length or over-bound
+-- label chases refuse ('Nothing').
+normalizeWrapCompRsaParams :: Ptr Word8 -> Word64 -> IO (Maybe ByteString)
+normalizeWrapCompRsaParams pParams paramsLen
+  | paramsLen /= fromIntegral wrapCompRsaNativeSize = pure Nothing
+  | otherwise = do
+      CULong aesBits <- peekByteOff pParams 0
+      pOaep <- peekByteOff pParams wordSize
+      if pOaep == nullPtr
+        then pure Nothing
+        else do
+          CULong hashId <- peekByteOff pOaep 0
+          CULong mgfId <- peekByteOff pOaep wordSize
+          CULong source <- peekByteOff pOaep (2 * wordSize)
+          pLabel <- peekByteOff pOaep (3 * wordSize)
+          CULong labelLen <- peekByteOff pOaep (3 * wordSize + ptrSize)
+          if source /= ckzDataSpecified
+            then pure Nothing
+            else do
+              mLabel <- chaseBytes pLabel labelLen
+              pure (mLabel >>= \label -> case oaepStructToCanonical hashId mgfId label of
+                Nothing -> Nothing
+                Just oaep -> case decodeOaepParams oaep of
+                  Just (d, m, l) ->
+                    Just (encodeWrapCompRsaParams d m l (fromIntegral aesBits))
+                  Nothing -> Nothing)
 
 -- | Normalize one PKCS#3 DH parameter image: the bare peer value
 -- onto the canonical @dh-params/1@ image ('Just'), or 'Nothing'
@@ -1783,6 +1823,8 @@ normalizeMechParams mid pParams paramsLen raw
       fromMaybe raw <$> decodeChachaPolyNative
   | isJust (wrapCompEcdhRecipeFor mid) =
       fromMaybe raw <$> normalizeWrapCompEcdhParams pParams paramsLen
+  | isJust (wrapCompRsaRecipeFor mid) =
+      fromMaybe raw <$> normalizeWrapCompRsaParams pParams paramsLen
   | otherwise = pure raw
   where
     decodePssNative :: IO (Maybe ByteString)

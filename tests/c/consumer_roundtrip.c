@@ -3596,6 +3596,79 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_OK && xUnwrapped != 0 && xUnwrapped != targetKey,
              "comp X unwrap mints a distinct key");
     }
+    /* RSA composition: a random temp KEK at ulAESKeyBits,
+     * OAEP-sealed under the recipient PUBLIC key, KWP-seals the
+     * target. RSA-2048/SHA-256 blobs are 256+24. Wrap takes the
+     * public half, unwrap the private; the OAEP frame rides a
+     * nested struct (empty label here). Strength mismatch fails
+     * closed; the private half refuses as a wrapping key. */
+    {
+      CK_OBJECT_CLASS rpubcls = CKO_PUBLIC_KEY;
+      CK_OBJECT_CLASS rprvcls = CKO_PRIVATE_KEY;
+      CK_KEY_TYPE rkt = CKK_RSA;
+      CK_ULONG rbits = 2048;
+      CK_ATTRIBUTE rpubT[] = {
+        { CKA_CLASS, &rpubcls, sizeof(rpubcls) },
+        { CKA_KEY_TYPE, &rkt, sizeof(rkt) },
+        { CKA_MODULUS_BITS, &rbits, sizeof(rbits) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_WRAP, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE rprivT[] = {
+        { CKA_CLASS, &rprvcls, sizeof(rprvcls) },
+        { CKA_KEY_TYPE, &rkt, sizeof(rkt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_UNWRAP, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE rdtmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &akt, sizeof(akt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_MECHANISM rkgm, rwm, rum;
+      CK_RSA_PKCS_OAEP_PARAMS roaep;
+      CK_RSA_AES_KEY_WRAP_PARAMS rwp;
+      CK_OBJECT_HANDLE rPub = 0, rPriv = 0, rUnwrapped = 0;
+      CK_BYTE rblob[512];
+      CK_ULONG rblobLen = 0;
+      rkgm.mechanism = CKM_RSA_PKCS_KEY_PAIR_GEN;
+      rkgm.pParameter = NULL_PTR;
+      rkgm.ulParameterLen = 0;
+      rv = f->C_GenerateKeyPair(wsess, &rkgm, rpubT, 5, rprivT, 4,
+                                &rPub, &rPriv);
+      CHECKC(rv == CKR_OK && rPub != 0 && rPriv != 0,
+             "comp RSA pair mints");
+      roaep.hashAlg = CKM_SHA256;
+      roaep.mgf = CKG_MGF1_SHA256;
+      roaep.source = CKZ_DATA_SPECIFIED;
+      roaep.pSourceData = NULL_PTR;
+      roaep.ulSourceDataLen = 0;
+      rwp.ulAESKeyBits = 256;
+      rwp.pOAEPParams = &roaep;
+      rwm.mechanism = CKM_RSA_AES_KEY_WRAP;
+      rwm.pParameter = &rwp;
+      rwm.ulParameterLen = sizeof(rwp);
+      rv = f->C_WrapKey(wsess, &rwm, rPub, targetKey, NULL_PTR, &rblobLen);
+      CHECKC(rv == CKR_OK && rblobLen == 280, "comp RSA size query reports 280");
+      rblobLen = sizeof(rblob);
+      rv = f->C_WrapKey(wsess, &rwm, rPub, targetKey, rblob, &rblobLen);
+      CHECKC(rv == CKR_OK && rblobLen == 280, "comp RSA wrap yields 280");
+      { CK_ULONG savedLen = rblobLen;
+        rblobLen = sizeof(rblob);
+        rv = f->C_WrapKey(wsess, &rwm, rPriv, targetKey, rblob, &rblobLen);
+        CHECKC(rv == CKR_WRAPPING_KEY_TYPE_INCONSISTENT, "comp RSA private-half wrap refused");
+        rblobLen = savedLen;
+      }
+      rum = rwm;
+      rv = f->C_UnwrapKey(wsess, &rum, rPriv, rblob, rblobLen,
+                          rdtmpl, 3, &rUnwrapped);
+      CHECKC(rv == CKR_OK && rUnwrapped != 0 && rUnwrapped != targetKey,
+             "comp RSA unwrap mints a distinct key");
+      rwp.ulAESKeyBits = 128;
+      rv = f->C_UnwrapKey(wsess, &rum, rPriv, rblob, rblobLen,
+                          rdtmpl, 3, &rUnwrapped);
+      CHECKC(rv == CKR_GENERAL_ERROR, "comp RSA cross-strength fails closed");
+    }
     /* HKDF derive: the PRF names a SHA-2 hash (SHA-1 through
      * SHA-512/224), expand-only and extract-and-expand served
      * with NULL/DATA salt. Malformed calls refuse ARGUMENTS_BAD;

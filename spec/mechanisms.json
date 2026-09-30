@@ -22112,7 +22112,7 @@
         "min_key_size": 192,
         "max_key_size": 571
       },
-      "notes": "Wrap-composition recipe (core/Haskoki/Recipe/WrapComp.hs): null-KDF ECDH agreement of the private wrapping key (EC or Montgomery) against an ephemeral transport keypair generated on its domain; the FIRST ulAESKeyBits bits (128/192/256) of the raw secret become the AES KEK (not the derive truncation, which drops leading bytes); KWP-wrap of the target; blob is transport-pub followed by the KWP blob (bare X9.62 point over Weierstrass, raw u-coordinate over Montgomery, the 69-byte opaque half over test doubles). Curves whose secret is shorter than the KEK refuse. Deprecated in PKCS#11 v3.2 but served. Real execution composes served provider primitives (EC/XDH keygen, ECDH/XDH agreement, AES-KWP) with no new C entry; object path pinned by KeyManagementSpec (A20); init enforces mechanism parameters (RecipeWrapCompSpec); engines pin both backends (SyntheticSpec/OpenSSLSpec A37/A39).",
+      "notes": "Wrap-composition recipe (core/Haskoki/Recipe/WrapComp.hs): null-KDF ECDH agreement of an ephemeral transport keypair against the recipient PUBLIC wrapping key (EC or Montgomery); the FIRST ulAESKeyBits bits (128/192/256) of the raw secret become the AES KEK (not the derive truncation, which drops leading bytes); KWP-wrap of the target; blob is transport-pub followed by the KWP blob (bare X9.62 point over Weierstrass, raw u-coordinate over Montgomery, the 69-byte opaque half over test doubles). Curves whose secret is shorter than the KEK refuse. Deprecated in PKCS#11 v3.2 but served. Real execution composes served provider primitives (EC/XDH keygen, ECDH/XDH agreement, AES-KWP) with no new C entry; object path pinned by KeyManagementSpec (A20); init enforces mechanism parameters (RecipeWrapCompSpec); engines pin both backends (SyntheticSpec/OpenSSLSpec A37/A39).",
       "numeric_id": "0x00001053",
       "routes": [
         {
@@ -22198,14 +22198,44 @@
       "canonical_name": "CKM_RSA_AES_KEY_WRAP",
       "family": "wrap",
       "mechanism_info": {
-        "flags": [],
-        "key_size_unit": "mechanism-specific",
-        "min_key_size": 0,
-        "max_key_size": 0
+        "flags": [
+          "CKF_UNWRAP",
+          "CKF_WRAP"
+        ],
+        "key_size_unit": "bits",
+        "min_key_size": 512,
+        "max_key_size": 4096
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: wrap composition unmapped (needs an AES-KW Raw entry plus a composition slice); behavior/synthetic stay planned.",
+      "notes": "Wrap-composition recipe (core/Haskoki/Recipe/WrapCompRsa.hs): a random temp KEK at ulAESKeyBits (128/192/256), RSA-OAEP-sealed under the recipient PUBLIC key (any OAEP hash/MGF the CKM_RSA_PKCS_OAEP row serves, labels ride); KWP-wrap of the target; blob is the modulus-wide OAEP head plus the KWP tail (tag-sized synthetic seals frame modulus-wide). Moduli whose OAEP input bound (k - 2*hLen - 2) is shorter than the KEK refuse. Real execution composes served provider primitives (AES keygen, RSA-OAEP seal/open, AES-KWP) with no new C entry; object path pinned by KeyManagementSpec (A20); init enforces mechanism parameters (RecipeWrapCompRsaSpec); engines pin both backends (SyntheticSpec/OpenSSLSpec A37/A39).",
       "numeric_id": "0x00001054",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "wrapping-key"
+          ],
+          "operation": "wrap",
+          "output_rule": "synthetic-wrap/v1",
+          "parameter_codec": "wrapcomp-rsa-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "unwrapping-key"
+          ],
+          "operation": "unwrap",
+          "output_rule": "synthetic-wrap/v1",
+          "parameter_codec": "wrapcomp-rsa-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_RSA_AES_KEY_WRAP",
@@ -22214,12 +22244,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
-        "recovery": "not-applicable"
+        "behavior": "tested",
+        "real": "tested",
+        "recovery": "not-applicable",
+        "synthetic": "tested"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "wrap-compositions",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "wrap-compositions",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "wrap-compositions",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipeWrapCompRsaSpec",
+          "build_id": "wrap-compositions",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],
@@ -30489,7 +30555,7 @@
         "min_key_size": 192,
         "max_key_size": 571
       },
-      "notes": "Wrap-composition recipe (core/Haskoki/Recipe/WrapComp.hs): null-KDF ECDH agreement of the private wrapping key (Montgomery keys only) against an ephemeral transport keypair generated on its domain; the FIRST ulAESKeyBits bits (128/192/256) of the raw secret become the AES KEK; KWP-wrap of the target; blob is the raw RFC 7748 u-coordinate followed by the KWP blob. Plain agreement (no cofactor). Real execution composes served provider primitives (XDH keygen/agreement, AES-KWP) with no new C entry; object path pinned by KeyManagementSpec (A20); init enforces mechanism parameters (RecipeWrapCompSpec); engines pin both backends (SyntheticSpec/OpenSSLSpec A37/A39).",
+      "notes": "Wrap-composition recipe (core/Haskoki/Recipe/WrapComp.hs): null-KDF ECDH agreement of an ephemeral transport keypair against the recipient PUBLIC wrapping key (Montgomery keys only); the FIRST ulAESKeyBits bits (128/192/256) of the raw secret become the AES KEK; KWP-wrap of the target; blob is the raw RFC 7748 u-coordinate followed by the KWP blob. Plain agreement (no cofactor). Real execution composes served provider primitives (XDH keygen/agreement, AES-KWP) with no new C entry; object path pinned by KeyManagementSpec (A20); init enforces mechanism parameters (RecipeWrapCompSpec); engines pin both backends (SyntheticSpec/OpenSSLSpec A37/A39).",
       "numeric_id": "0x00004038",
       "routes": [
         {
@@ -30583,7 +30649,7 @@
         "min_key_size": 192,
         "max_key_size": 571
       },
-      "notes": "Wrap-composition recipe (core/Haskoki/Recipe/WrapComp.hs): cofactor ECDH agreement of the private wrapping key (EC keys only) against an ephemeral transport keypair generated on its domain; the FIRST ulAESKeyBits bits (128/192/256) of the raw secret become the AES KEK; KWP-wrap of the target; blob is the DER OCTET STRING of the X9.62 point (self-delimiting split) followed by the KWP blob. Real execution composes served provider primitives (EC keygen, cofactor ECDH, AES-KWP) with no new C entry; object path pinned by KeyManagementSpec (A20); init enforces mechanism parameters (RecipeWrapCompSpec); engines pin both backends (SyntheticSpec/OpenSSLSpec A37/A39).",
+      "notes": "Wrap-composition recipe (core/Haskoki/Recipe/WrapComp.hs): cofactor ECDH agreement of an ephemeral transport keypair against the recipient PUBLIC wrapping key (EC keys only); the FIRST ulAESKeyBits bits (128/192/256) of the raw secret become the AES KEK; KWP-wrap of the target; blob is the DER OCTET STRING of the X9.62 point (self-delimiting split) followed by the KWP blob. Real execution composes served provider primitives (EC keygen, cofactor ECDH, AES-KWP) with no new C entry; object path pinned by KeyManagementSpec (A20); init enforces mechanism parameters (RecipeWrapCompSpec); engines pin both backends (SyntheticSpec/OpenSSLSpec A37/A39).",
       "numeric_id": "0x00004039",
       "routes": [
         {

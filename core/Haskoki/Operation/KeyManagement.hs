@@ -189,6 +189,7 @@ module Haskoki.Operation.KeyManagement
   , ecdhAesKwMech
   , ecdhCofAesKwMech
   , ecdhXAesKwMech
+  , rsaAesKwMech
   , rsaPkcsMech
   , rsaOaepMech
   , rsaX509Mech
@@ -278,6 +279,14 @@ import Haskoki.Recipe.RsaOaep
   )
 import Haskoki.Recipe.RsaPkcs1 (rsaPkcs1ParamsValid, rsaPkcs1RecipeFor)
 import Haskoki.Recipe.RsaX509 (rsaX509ParamsValid, rsaX509RecipeFor, x509Tail)
+import Haskoki.Recipe.WrapCompRsa
+  ( wrapCompRsaAesBytes
+  , wrapCompRsaKekFits
+  , wrapCompRsaOaep
+  , wrapCompRsaParamsValid
+  , wrapCompRsaRecipeFor
+  , wrapCompRsaSplitBlob
+  )
 import Haskoki.Recipe.WrapComp
   ( WrapCompDomain
   , WrapCompEcdhRecipe
@@ -321,6 +330,7 @@ import Haskoki.Registry.Generated
   , ckm_ML_KEM_KEY_PAIR_GEN
   , ckm_ML_DSA_KEY_PAIR_GEN
   , ckm_SLH_DSA_KEY_PAIR_GEN
+  , ckm_RSA_AES_KEY_WRAP
   , ckm_RSA_PKCS
   , ckm_RSA_PKCS_KEY_PAIR_GEN
   , ckm_RSA_PKCS_OAEP
@@ -966,6 +976,13 @@ ecdhCofAesKwMech = MechanismId (ckm_ECDH_COF_AES_KEY_WRAP)
 -- generated id, resolved by name).
 ecdhXAesKwMech :: MechanismId
 ecdhXAesKwMech = MechanismId (ckm_ECDH_X_AES_KEY_WRAP)
+
+-- | @CKM_RSA_AES_KEY_WRAP@ (the RSA composition: a random
+-- temp KEK at the requested strength, OAEP-sealed under the
+-- recipient public key, KWP-seals the target; generated id,
+-- resolved by name).
+rsaAesKwMech :: MechanismId
+rsaAesKwMech = MechanismId (ckm_RSA_AES_KEY_WRAP)
 
 -- | @CKM_RSA_PKCS@ (the v1.5 wrap mechanism: empty parameters,
 -- the payload travels raw, the blob is modulus-wide).
@@ -3294,6 +3311,8 @@ planWrapKey model st mech params wrapH targetH intent
       planAesKwPkcs7WrapKey model st mech params wrapH targetH intent
   | mech == ecdhAesKwMech || mech == ecdhCofAesKwMech || mech == ecdhXAesKwMech =
       planEcdhCompWrapKey model st mech params wrapH targetH intent
+  | mech == rsaAesKwMech =
+      planRsaCompWrapKey model st mech params wrapH targetH intent
   | mech == rsaPkcsMech || mech == rsaOaepMech || mech == rsaX509Mech =
       planRsaWrapKey model st mech params wrapH targetH intent
   | otherwise =
@@ -3421,7 +3440,8 @@ planAesWrapKey model st mech iv wrapH targetH intent
 -- the AES key-wrap rows frame through 'planAesKwUnwrapKey',
 -- KW-PKCS7 frames plus strips through
 -- 'planAesKwPkcs7UnwrapKey', the ECDH compositions split through
--- 'planEcdhCompUnwrapKey', the RSA mechanisms measure
+-- 'planEcdhCompUnwrapKey', the RSA composition splits through
+-- 'planRsaCompUnwrapKey', the RSA mechanisms measure
 -- modulus-wide through 'planRsaUnwrapKey'.
 planUnwrapKey
   :: Rules -> Model -> SessionState -> MechanismId -> ByteString
@@ -3435,6 +3455,8 @@ planUnwrapKey rules model st mech params wrapH blob tmpl
       planAesKwPkcs7UnwrapKey rules model st mech params wrapH blob tmpl
   | mech == ecdhAesKwMech || mech == ecdhCofAesKwMech || mech == ecdhXAesKwMech =
       planEcdhCompUnwrapKey rules model st mech params wrapH blob tmpl
+  | mech == rsaAesKwMech =
+      planRsaCompUnwrapKey rules model st mech params wrapH blob tmpl
   | mech == rsaPkcsMech || mech == rsaOaepMech || mech == rsaX509Mech =
       planRsaUnwrapKey rules model st mech params wrapH blob tmpl
   | otherwise =
@@ -3845,6 +3867,121 @@ planEcdhCompUnwrapKey rules model st mech params wrapH blob tmpl =
                         )
               _ -> Left (KeyDeny CKR_ARGUMENTS_BAD
                 "ECDH unwrap takes null-KDF parameters with a served AES strength")
+
+-- | Plan one RSA-composition wrap: parameters validate against
+-- the composition recipe (framed OAEP plus a served AES
+-- strength), the wrapping key is the recipient PUBLIC RSA key,
+-- the target must be extractable, the temp KEK must fit the
+-- OAEP input bound over the modulus (short moduli refuse the
+-- wide strengths with the length range), and the answered
+-- length is the modulus width plus the KWP expansion over the
+-- target material. Length queries and short buffers answer
+-- that length and plan no crypto; a sufficient buffer plans
+-- one wrap effect over the raw material (the driver mints the
+-- random temp KEK, OAEP-seals it, and KWP-seals the target).
+planRsaCompWrapKey
+  :: Model -> SessionState -> MechanismId -> ByteString
+  -> ExternalHandle -> ExternalHandle -> OutputIntent
+  -> KeyPlan
+planRsaCompWrapKey model st mech params wrapH targetH intent =
+  case wrapCompRsaRecipeFor mech of
+    Nothing -> KeyDenied (KeyDeny CKR_MECHANISM_INVALID
+      ("not a wrap mechanism: " ++ show mech))
+    Just r
+      | not (wrapCompRsaParamsValid r params) ->
+          KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+            "RSA wrap takes framed OAEP parameters with a served AES strength")
+      | otherwise -> case withRsaWrappingKey model st AttrWrap "wrapping" ckoPublicKey wrapH of
+          Left deny -> KeyDenied deny
+          Right (wrapOid, k) -> case withWrapTarget model st targetH of
+            Left deny -> KeyDenied deny
+            Right tmat -> case (wrapCompRsaOaep params, wrapCompRsaAesBytes params) of
+              (Just (d, _, _), Just aesBytes)
+                | not (wrapCompRsaKekFits k d aesBytes) ->
+                    KeyDenied (KeyDeny CKR_DATA_LEN_RANGE
+                      "temp KEK escapes the OAEP input bound")
+                | otherwise -> case kwBlobLen aesKwpMech (BS.length tmat) of
+                    Nothing -> KeyDenied (KeyDeny CKR_DATA_LEN_RANGE
+                      "wrap payload escapes the key-wrap length rules")
+                    Just kwpLen ->
+                      let blobLen = k + kwpLen
+                          lenOut = NativeOutput (RegionBytes "wrapped" intent)
+                            (encodeValue (ValULong (fromIntegral blobLen)))
+                      in case intent of
+                        IntentNull -> KeyImmediate (Immediate PreparedCommit
+                          { pcCode = CKR_OK
+                          , pcDelta = StateDelta []
+                          , pcPersist = []
+                          , pcOutputs = [lenOut]
+                          , pcReleases = []
+                          , pcReasons = ["wrap length query"]
+                          })
+                        IntentBuffer cap
+                          | cap < fromIntegral blobLen -> KeyImmediate (Reject Rejection
+                              { rejCode = CKR_BUFFER_TOO_SMALL
+                              , rejOutputs = [lenOut]
+                              , rejDelta = StateDelta []
+                              , rejReleases = []
+                              , rejReasons = ["short buffer"]
+                              })
+                          | otherwise -> KeyEffect (PwBlobOut "wrapped")
+                              (FxWrap mech (Just wrapOid) params tmat)
+              -- Unreachable post-validation (both projections are
+              -- 'Just' exactly when the recipe validates); typed,
+              -- never a crash.
+              _ -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+                "RSA wrap takes framed OAEP parameters with a served AES strength")
+
+-- | Plan one RSA-composition unwrap: parameters validate against
+-- the composition recipe, the blob splits into a modulus-wide
+-- OAEP head plus a KWP-shaped tail, the unwrapping key is the
+-- recipient PRIVATE RSA key whose modulus fits the temp KEK,
+-- and the template must name the new key's class and key type
+-- explicitly (the blob carries no header). Admission gates
+-- last (parse-first). The pending work is raw (the backend
+-- answers exact target plaintext, consumed framing).
+planRsaCompUnwrapKey
+  :: Rules -> Model -> SessionState -> MechanismId -> ByteString
+  -> ExternalHandle -> ByteString -> [(AttributeType, AttributeValue)]
+  -> KeyPlan
+planRsaCompUnwrapKey rules model st mech params wrapH blob tmpl =
+  case validated of
+    Left deny -> KeyDenied deny
+    Right (pw, fx) ->
+      case admitObjects rules (Map.size (mObjects model)) 1 of
+        Left deny -> KeyDenied (KeyDeny (admitCode deny)
+          ("admission denied: " ++ show deny))
+        Right () -> KeyEffect pw fx
+  where
+    validated = case wrapCompRsaRecipeFor mech of
+      Nothing -> Left (KeyDeny CKR_MECHANISM_INVALID
+        ("not a wrap mechanism: " ++ show mech))
+      Just r
+        | not (wrapCompRsaParamsValid r params) ->
+            Left (KeyDeny CKR_ARGUMENTS_BAD
+              "RSA unwrap takes framed OAEP parameters with a served AES strength")
+        | not (any ((== AttrKeyType) . fst) tmpl) ->
+            Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+              "unwrap template must name the key type")
+        | otherwise -> case withRsaWrappingKey model st AttrUnwrap "unwrapping" ckoPrivateKey wrapH of
+            Left deny -> Left deny
+            Right (wrapOid, k) -> case (wrapCompRsaOaep params, wrapCompRsaAesBytes params) of
+              (Just (d, _, _), Just aesBytes)
+                | not (wrapCompRsaKekFits k d aesBytes) ->
+                    Left (KeyDeny CKR_DATA_LEN_RANGE
+                      "temp KEK escapes the OAEP input bound")
+                | otherwise -> case wrapCompRsaSplitBlob k blob of
+                    Nothing -> Left (KeyDeny CKR_ARGUMENTS_BAD
+                      "wrapped blob violates composition framing")
+                    Just _ -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
+                      Left deny -> Left deny
+                      Right attrs -> Right
+                        ( PwUnwrapRaw (pendingFromAttrs st attrs)
+                        , FxUnwrap mech (Just wrapOid) params blob
+                        )
+              -- Unreachable post-validation; typed, never a crash.
+              _ -> Left (KeyDeny CKR_ARGUMENTS_BAD
+                "RSA unwrap takes framed OAEP parameters with a served AES strength")
 
 -- | Plan one authenticated wrap: like 'planWrapKey', but the blob
 -- binds associated data under a 32-byte tag, so the answered length

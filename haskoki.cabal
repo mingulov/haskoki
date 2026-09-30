@@ -112,6 +112,7 @@ library haskoki-core
     Haskoki.Recipe.TlsKdf
     Haskoki.Recipe.TlsPrf
     Haskoki.Recipe.WrapComp
+    Haskoki.Recipe.WrapCompRsa
   hs-source-dirs:     core
   build-depends:
     base          >= 4.14 && < 5,
@@ -423,6 +424,7 @@ test-suite haskoki-model-tests
     RecipeTlsPrfSpec
     RecipeX509Spec
     RecipeXcbcMacSpec
+    RecipeWrapCompRsaSpec
     RecipeWrapCompSpec
     RegistrySpec
     RoutingSpec

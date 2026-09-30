@@ -9,7 +9,7 @@
 #ifndef HASKOKI_MECH_CATALOG_INC
 #define HASKOKI_MECH_CATALOG_INC
 
-#define HASKOKI_MECH_COUNT 314
+#define HASKOKI_MECH_COUNT 315
 
 struct haskoki_mech_row {
   unsigned long id;
@@ -247,6 +247,7 @@ static const struct haskoki_mech_row
   { 0x00001050UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_ECDH1_DERIVE */
   { 0x00001051UL, 0UL, 0UL, (unsigned long)(CKF_DERIVE) }, /* CKM_ECDH1_COFACTOR_DERIVE */
   { 0x00001053UL, 192UL, 571UL, (unsigned long)(CKF_UNWRAP | CKF_WRAP) }, /* CKM_ECDH_AES_KEY_WRAP */
+  { 0x00001054UL, 512UL, 4096UL, (unsigned long)(CKF_UNWRAP | CKF_WRAP) }, /* CKM_RSA_AES_KEY_WRAP */
   { 0x00001055UL, 256UL, 456UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_EC_EDWARDS_KEY_PAIR_GEN */
   { 0x00001056UL, 256UL, 448UL, (unsigned long)(CKF_GENERATE_KEY_PAIR) }, /* CKM_EC_MONTGOMERY_KEY_PAIR_GEN */
   { 0x00001057UL, 256UL, 456UL, (unsigned long)(CKF_SIGN | CKF_VERIFY) }, /* CKM_EDDSA */
