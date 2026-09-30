@@ -61,6 +61,7 @@ extern uint64_t haskoki_std_get_slot_list(void *instance, uint8_t token_present,
                                           uint64_t *p_count);
 extern uint64_t haskoki_std_open_session(void *instance, uint64_t slot,
                                          uint64_t read_only,
+                                         uint64_t async,
                                          uint64_t *ph_session);
 extern uint64_t haskoki_std_close_session(void *instance, uint64_t h_session);
 extern uint64_t haskoki_std_close_all_sessions(void *instance, uint64_t slot);
@@ -69,7 +70,8 @@ extern uint64_t haskoki_std_session_cancel(void *instance, uint64_t h_session,
 extern uint64_t haskoki_std_get_session_info(void *instance, uint64_t h_session,
                                              uint64_t *p_slot, uint64_t *p_ro,
                                              uint64_t *p_login,
-                                             uint64_t *p_deverr);
+                                             uint64_t *p_deverr,
+                                             uint64_t *p_async);
 extern uint64_t haskoki_std_token_live(void *instance, uint64_t slot,
                                        uint64_t *p_sess, uint64_t *p_rw,
                                        uint64_t *p_ulock, uint64_t *p_slock,
@@ -704,6 +706,7 @@ CK_RV std_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags,
   rv = (CK_RV)haskoki_std_open_session(
       inst, (uint64_t)slotID,
       (flags & CKF_RW_SESSION) != 0 ? (uint64_t)0 : (uint64_t)1,
+      (uint64_t)((flags & CKF_ASYNC_SESSION) != 0),
       (uint64_t *)phSession);
   (void)haskoki_state_unlock();
   return rv;
@@ -789,7 +792,7 @@ CK_RV std_GetSessionInfo(CK_SESSION_HANDLE hSession,
   }
   CK_RV lr = 0;
   CK_RV rv = 0;
-  uint64_t slot = 0, ro = 0, login = 0, devErr = 0;
+  uint64_t slot = 0, ro = 0, login = 0, devErr = 0, async = 0;
   CK_STATE state = 0;
   if (pInfo == NULL_PTR) {
     return CKR_ARGUMENTS_BAD;
@@ -804,7 +807,7 @@ CK_RV std_GetSessionInfo(CK_SESSION_HANDLE hSession,
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
   rv = (CK_RV)haskoki_std_get_session_info(inst, (uint64_t)hSession, &slot,
-                                           &ro, &login, &devErr);
+                                           &ro, &login, &devErr, &async);
   (void)haskoki_state_unlock();
   if (rv != CKR_OK) {
     return rv;

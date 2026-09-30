@@ -53,6 +53,7 @@ module Haskoki.FFI.Standard
   ( -- * Instance
     StdStore (..)
   , StdInstance (..)
+  , StdAsyncBinding (..)
   , StdStoreError (..)
   , StdAcquisition (..)
   , stdAcquisition
@@ -86,10 +87,12 @@ module Haskoki.FFI.Standard
     -- * slot list, sessions, session info, token liveness
   , haskokiStdGetSlotList
   , haskokiStdOpenSession
+  , haskokiStdOpenSessionWithAsync
   , haskokiStdCloseSession
   , haskokiStdCloseAllSessions
   , haskokiStdSessionCancel
   , haskokiStdGetSessionInfo
+  , haskokiStdGetSessionInfoWithAsync
   , haskokiStdTokenLive
   , haskokiStdTokenLabel
   , haskokiStdSlotPresent
@@ -180,7 +183,10 @@ import Control.Exception
   , Exception (fromException)
   , SomeException
   , catch
+  , evaluate
+  , finally
   , mask
+  , mask_
   , onException
   , throwIO
   , try
@@ -192,10 +198,11 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (ord)
 import qualified Data.ByteString.Unsafe as BSU
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Maybe (fromMaybe, isJust)
+import qualified Data.Set as Set
 import Data.Word (Word64, Word8)
 import Foreign.C.Types (CULong (..))
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
@@ -208,6 +215,7 @@ import Foreign.StablePtr
   , newStablePtr
   )
 import Foreign.Marshal.Array (pokeArray)
+import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Storable (peek, poke)
 
@@ -231,6 +239,12 @@ import Haskoki.Engine.Backend
   )
 import Haskoki.Engine.Driver (KeyResolver, drainReleases, encodeResult, runEffect)
 import Haskoki.Engine.OpenSSL4 (OpenSSL4)
+import Haskoki.FFI.Async
+  ( AsyncCtx (..)
+  , JobHandle
+  , haskokiAsyncCancel
+  , haskokiAsyncStart
+  )
 import Haskoki.FFI.Decode (decodeInputBytes)
 import Haskoki.FFI.Encode
   ( BoundBuffer (..)
@@ -286,6 +300,7 @@ import Haskoki.Operation.Derive
   , planDerive
   )
 import Haskoki.Recipe.Dh (DhRecipe (..), dhRecipeFor)
+import Haskoki.Recipe.Digest (DigestRecipe (drOutLen), digestRecipeFor)
 import Haskoki.Recipe.Ecdh (ecdhRecipeFor)
 import Haskoki.Recipe.EncryptData (EncryptDataRecipe (..), encryptDataRecipeFor)
 import Haskoki.Recipe.Kdf (KdfRecipe (..), kdfRecipeFor)
@@ -326,7 +341,7 @@ import Haskoki.Outcome
   , Rejection (..)
   , StateDelta (..)
   )
-import Haskoki.Output (TypedWrite (..))
+import Haskoki.Output (TypedWrite (..), maxOutputBytes)
 import Haskoki.Registry (MechanismId (..))
 import Haskoki.Request
   ( DecodedRequest (..)
@@ -338,7 +353,14 @@ import Haskoki.Request
   , initOperation
   )
 import Haskoki.Rules (Rules (..))
-import Haskoki.Runtime.Async (JobFunction)
+import Haskoki.Runtime.Async
+  ( AsyncTable
+  , JobFunction (..)
+  , enableAsyncSession
+  , isAsyncSession
+  , newAsyncTable
+  )
+import Haskoki.Runtime.Detached (DetachCtx, detachSlot, openDetached, retireLiveTable)
 import Haskoki.Runtime.Config
   ( Config (..)
   , StorageCfg (..)
@@ -457,6 +479,19 @@ data StdInstance = StdInstance
   , siFind :: !(IORef (Map SessionId [ExternalHandle]))
   , siStore :: !(Maybe StdStore)
   , siCatalog :: !(Map SlotId (String, String, String))
+  , siAsyncTable :: !AsyncTable
+  , siDetach :: !(Maybe DetachCtx)
+  , siAsyncViews :: !(IORef (Map SessionId (StablePtr AsyncCtx)))
+  , siAsyncBindings :: !(IORef (Map (SessionId, JobFunction) StdAsyncBinding))
+  }
+
+-- | One caller-owned output allocation. Input bytes are copied by the worker;
+-- neither its input pointer nor the caller's length-word address is retained.
+data StdAsyncBinding = StdAsyncBinding
+  { sabFunction :: !JobFunction
+  , sabHandle :: !(StablePtr JobHandle)
+  , sabOutput :: !(Ptr Word8)
+  , sabCapacity :: !Word64
   }
 
 foreign export ccall "haskoki_std_open" haskokiStdOpen
@@ -589,18 +624,29 @@ openStdInstanceWith sa cfg = guardedSyncPtr $ mask $ \restore -> do
           case r of
             EngineFail _ -> saCloseStore sa mStore >> pure nullStable
             EngineOk be ->
-              restore (assembleStdInstance env be mStore cfg)
+              assembleStdInstance env be mStore cfg
                 `onException`
                   (saCloseBackend sa be >> saCloseStore sa mStore)
 
--- | Assemble the live instance from fully acquired parts (cannot
--- fail synchronously; async unwind is owned by the caller bracket).
+-- | Assemble under the caller's acquisition mask. The detached context borrows
+-- the already-owned store; a refusal unwinds backend and store in that bracket.
 assembleStdInstance
   :: Env -> BackendEnv OpenSSL4 -> Maybe StdStore -> Config
   -> IO (StablePtr StdInstance)
 assembleStdInstance env be mStore cfg = do
   cursors <- newIORef mempty
-  newStablePtr (StdInstance env be cursors mStore (effectiveCatalog cfg))
+  table <- newAsyncTable 8
+  detach <- case mStore of
+    Nothing -> pure Nothing
+    Just ss -> do
+      opened <- openDetached (stdStore ss) (stdToken ss)
+      case opened of
+        Left deny -> ioError (userError ("standard detached context: " ++ show deny))
+        Right dc -> pure (Just dc)
+  views <- newIORef Map.empty
+  bindings <- newIORef Map.empty
+  newStablePtr (StdInstance env be cursors mStore (effectiveCatalog cfg)
+    table detach views bindings)
 
 -- | Seat every catalog slot in index order. The first refusal
 -- (past the seating bound) fails the whole open loudly — catalogs
@@ -724,11 +770,38 @@ haskokiStdClose :: StablePtr StdInstance -> IO ()
 haskokiStdClose ctx = guardedUnit $
   if castStablePtrToPtr ctx == nullPtr
     then pure ()
-    else do
+    else mask_ $ do
       inst <- deRefStablePtr ctx
-      closeBackend (siBackend inst)
-      closeStdStore (siStore inst)
-      freeStablePtr ctx
+      let closeOwned = closeBackend (siBackend inst)
+            `finally` (closeStdStore (siStore inst) `finally` freeStablePtr ctx)
+      (do
+        views <- readIORef (siAsyncViews inst)
+        (do
+          forM_ (Map.keys views) (cancelStdAsyncJobs inst)
+          forM_ (siDetach inst) $ \dc -> do
+            _ <- retireLiveTable dc
+            pure ()) `finally` forM_ (Map.keys views) (freeStdAsyncView inst))
+        `finally` closeOwned
+
+-- | Borrowed views own only their StablePtr and live job handles. Their backend
+-- and detached context are owned by Standard, so the proof close is never used.
+cancelStdAsyncJobs :: StdInstance -> SessionId -> IO ()
+cancelStdAsyncJobs inst sid = mask_ $ do
+  views <- readIORef (siAsyncViews inst)
+  forM_ (Map.lookup sid views) $ \view -> do
+    c <- deRefStablePtr view
+    handles <- Set.toList <$> readIORef (acLive c)
+    forM_ handles $ \ptr -> do
+      _ <- haskokiAsyncCancel view (castPtrToStablePtr ptr)
+      pure ()
+  atomicModifyIORef' (siAsyncBindings inst) $ \bindings ->
+    (Map.filterWithKey (\(owner, _) _ -> owner /= sid) bindings, ())
+
+freeStdAsyncView :: StdInstance -> SessionId -> IO ()
+freeStdAsyncView inst sid = mask_ $ do
+  view <- atomicModifyIORef' (siAsyncViews inst) $ \views ->
+    (Map.delete sid views, Map.lookup sid views)
+  forM_ view freeStablePtr
 
 -- ---------------------------------------------------------------------------
 -- Template frames (pure)
@@ -1031,17 +1104,18 @@ ckrUserTypeInvalid = CULong 0x103
 
 foreign export ccall "haskoki_std_get_slot_list" haskokiStdGetSlotList
   :: StablePtr StdInstance -> Word8 -> Ptr CULong -> Ptr CULong -> IO CULong
-foreign export ccall "haskoki_std_open_session" haskokiStdOpenSession
-  :: StablePtr StdInstance -> CULong -> CULong -> Ptr CULong -> IO CULong
+foreign export ccall "haskoki_std_open_session" haskokiStdOpenSessionWithAsync
+  :: StablePtr StdInstance -> CULong -> CULong -> CULong -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_close_session" haskokiStdCloseSession
   :: StablePtr StdInstance -> CULong -> IO CULong
 foreign export ccall "haskoki_std_close_all_sessions" haskokiStdCloseAllSessions
   :: StablePtr StdInstance -> CULong -> IO CULong
 foreign export ccall "haskoki_std_session_cancel" haskokiStdSessionCancel
   :: StablePtr StdInstance -> CULong -> CULong -> IO CULong
-foreign export ccall "haskoki_std_get_session_info" haskokiStdGetSessionInfo
+foreign export ccall "haskoki_std_get_session_info" haskokiStdGetSessionInfoWithAsync
   :: StablePtr StdInstance -> CULong
-  -> Ptr CULong -> Ptr CULong -> Ptr CULong -> Ptr CULong -> IO CULong
+  -> Ptr CULong -> Ptr CULong -> Ptr CULong -> Ptr CULong
+  -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_token_live" haskokiStdTokenLive
   :: StablePtr StdInstance -> CULong
   -> Ptr CULong -> Ptr CULong -> Ptr CULong
@@ -1095,7 +1169,15 @@ haskokiStdGetSlotList ctx tokenPresent pSlotList pCount =
 -- handle allocates deterministically from the model counter.
 haskokiStdOpenSession
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr CULong -> IO CULong
-haskokiStdOpenSession ctx (CULong slot) (CULong ro) phSession =
+haskokiStdOpenSession ctx slot ro = haskokiStdOpenSessionWithAsync ctx slot ro 0
+
+-- | The existing native session boundary also carries explicit async intent.
+-- Prepare the borrowed view and registry update before admitting the session;
+-- enable it only after successful model publication. No proof context is opened.
+haskokiStdOpenSessionWithAsync
+  :: StablePtr StdInstance -> CULong -> CULong -> CULong
+  -> Ptr CULong -> IO CULong
+haskokiStdOpenSessionWithAsync ctx (CULong slot) (CULong ro) (CULong async) phSession =
   withStdCtx ctx $ \inst ->
     if phSession == nullPtr
       then pure ckrArgsBad
@@ -1108,15 +1190,40 @@ haskokiStdOpenSession ctx (CULong slot) (CULong ro) phSession =
                 req = Request Pkcs11_3_2 F_OpenSession Nothing Nothing
                   (BC8.pack ("slot=" ++ show slot ++ if ro == 0 then ",rw" else ",ro")) []
             case planCall (envRules (siEnv inst)) m0 req of
-              Immediate pc -> do
-                pr <- publishCommit inst pc
-                case pr of
-                  Left _ -> pure ckrGeneralError
-                  Right ()
-                    | pcCode pc == CKR_OK -> do
-                        poke phSession (CULong (fromIntegral (unSessionId sid)))
-                        pure ckrOk
-                    | otherwise -> pure (stdRvOf (pcCode pc))
+              Immediate pc
+                | pcCode pc == CKR_OK -> mask_ $ do
+                    live <- newIORef Set.empty
+                    let detached = case siDetach inst of
+                          Just dc | detachSlot dc == SlotId (fromIntegral slot) -> Just dc
+                          _ -> Nothing
+                    view <- newStablePtr (AsyncCtx (siEnv inst) (siBackend inst)
+                      sid (siAsyncTable inst) live detached)
+                    (do
+                      views <- readIORef (siAsyncViews inst)
+                      installed <- evaluate (Map.insert sid view views)
+                      pr <- publishCommit inst pc
+                      case pr of
+                        Left _ -> freeStablePtr view >> pure ckrGeneralError
+                        Right () -> do
+                          when (async /= 0) (enableAsyncSession (siAsyncTable inst) sid)
+                          writeIORef (siAsyncViews inst) installed
+                          poke phSession (CULong (fromIntegral (unSessionId sid)))
+                          pure ckrOk) `onException` do
+                            -- Roll back an admitted session if a later allocation
+                            -- fails; before publication this is a harmless no-op.
+                            m <- snapshotModel (siEnv inst)
+                            case lookupSession m sid of
+                              Nothing -> pure ()
+                              Just _ -> case planCall (envRules (siEnv inst)) m
+                                  (Request Pkcs11_3_2 F_CloseSession (Just sid) Nothing BS.empty []) of
+                                Immediate close -> do
+                                  _ <- publishCommit inst close
+                                  pure ()
+                                _ -> pure ()
+                            freeStablePtr view
+                | otherwise -> do
+                    pr <- publishCommit inst pc
+                    pure $ either (const ckrGeneralError) (const (stdRvOf (pcCode pc))) pr
               Reject rej -> do
                 publishRejection inst rej
                 pure (stdRvOf (rejCode rej))
@@ -1132,12 +1239,15 @@ haskokiStdCloseSession ctx (CULong h) =
           Nothing BS.empty []
     case planCall (envRules (siEnv inst)) m0 req of
       Immediate pc -> do
+        when (pcCode pc == CKR_OK) $
+          cancelStdAsyncJobs inst (SessionId (fromIntegral h))
         pr <- publishCommit inst pc
         case pr of
           Left _ -> pure ckrGeneralError
           Right ()
             | pcCode pc == CKR_OK -> do
                 clearCursor inst (SessionId (fromIntegral h))
+                freeStdAsyncView inst (SessionId (fromIntegral h))
                 pure ckrOk
             | otherwise -> pure (stdRvOf (pcCode pc))
       Reject rej -> do
@@ -1161,8 +1271,10 @@ haskokiStdCloseAllSessions ctx (CULong slot) =
           let req = Request Pkcs11_3_2 F_CloseSession (Just sid) Nothing BS.empty []
           case planCall (envRules (siEnv inst)) m req of
             Immediate pc -> do
+              when (pcCode pc == CKR_OK) (cancelStdAsyncJobs inst sid)
               _ <- publishCommit inst pc
               clearCursor inst sid
+              when (pcCode pc == CKR_OK) (freeStdAsyncView inst sid)
             Reject rej -> do
               publishRejection inst rej
               pure ()
@@ -1206,9 +1318,16 @@ haskokiStdSessionCancel ctx (CULong h) (CULong flags) =
 haskokiStdGetSessionInfo
   :: StablePtr StdInstance -> CULong
   -> Ptr CULong -> Ptr CULong -> Ptr CULong -> Ptr CULong -> IO CULong
-haskokiStdGetSessionInfo ctx (CULong h) pSlot pRO pLogin pDevErr =
+haskokiStdGetSessionInfo ctx h pSlot pRO pLogin pDevErr = alloca $ \pAsync ->
+  haskokiStdGetSessionInfoWithAsync ctx h pSlot pRO pLogin pDevErr pAsync
+
+haskokiStdGetSessionInfoWithAsync
+  :: StablePtr StdInstance -> CULong
+  -> Ptr CULong -> Ptr CULong -> Ptr CULong -> Ptr CULong
+  -> Ptr CULong -> IO CULong
+haskokiStdGetSessionInfoWithAsync ctx (CULong h) pSlot pRO pLogin pDevErr pAsync =
   withStdCtx ctx $ \inst ->
-    if pSlot == nullPtr || pRO == nullPtr || pLogin == nullPtr || pDevErr == nullPtr
+    if pSlot == nullPtr || pRO == nullPtr || pLogin == nullPtr || pDevErr == nullPtr || pAsync == nullPtr
       then pure ckrArgsBad
       else do
         m <- snapshotModel (siEnv inst)
@@ -1220,6 +1339,8 @@ haskokiStdGetSessionInfo ctx (CULong h) pSlot pRO pLogin pDevErr =
             poke pRO (CULong ro)
             poke pLogin (CULong login)
             poke pDevErr (CULong devErr)
+            async <- isAsyncSession (siAsyncTable inst) (ssId st)
+            poke pAsync (if async then 1 else 0)
             pure ckrOk
 
 -- | Project a seated slot's token liveness onto the C scalars
@@ -2116,8 +2237,70 @@ haskokiStdDigest ctx h pData (CULong dataLen) pOut pLen =
                 input "digest" pLen
             | otherwise -> do
                 CULong cap <- peek pLen
-                runCryptoBuffered inst sid SlotDigest F_Digest input "digest"
-                  pOut pLen cap
+                runStdDigestBuffered inst sid input pOut pLen cap
+
+-- | Only a fresh fixed-width FxDigest execution with adequate caller storage
+-- can become pending. Planner refusals, staged recalls, and short buffers all
+-- use the existing synchronous publication/encoding dialogue.
+runStdDigestBuffered
+  :: StdInstance -> SessionId -> ByteString -> Ptr Word8 -> Ptr CULong
+  -> Word64 -> IO CULong
+runStdDigestBuffered inst sid input pOut pLen cap = do
+  m <- snapshotModel (siEnv inst)
+  let req = Request Pkcs11_3_2 F_Digest (Just sid) Nothing input
+        [RegionBytes "digest" (IntentBuffer cap)]
+      planned = planCall (envRules (siEnv inst)) m req
+      synchronous = do
+        epc <- runCryptoPlanOn inst m planned
+        case epc of
+          Left rv
+            | rv == ckrBufferTooSmall -> reportShortLength inst sid SlotDigest pLen
+            | otherwise -> pure rv
+          Right pc -> encodeCryptoCommit inst sid SlotDigest pOut pLen cap pc
+  case planned of
+    Execute _ (EffectCrypto (FxDigest mech _))
+      | Just recipe <- digestRecipeFor mech
+      , cap >= fromIntegral (drOutLen recipe) -> do
+          enabled <- isAsyncSession (siAsyncTable inst) sid
+          if not enabled then synchronous else do
+            views <- readIORef (siAsyncViews inst)
+            case Map.lookup sid views of
+              Nothing -> pure ckrGeneralError
+              Just view -> do
+                c <- deRefStablePtr view
+                live <- readIORef (acLive c)
+                if not (Set.null live)
+                  then pure (stdRvOf CKR_OPERATION_ACTIVE)
+                  else startStdDigest inst sid view input pOut (min cap maxOutputBytes)
+    _ -> synchronous
+
+-- | The worker copies the decoded input. Mask the handle-to-binding handoff;
+-- if publication cannot finish, cancel through that same worker before unwind.
+startStdDigest
+  :: StdInstance -> SessionId -> StablePtr AsyncCtx -> ByteString
+  -> Ptr Word8 -> Word64 -> IO CULong
+startStdDigest inst sid view input pOut cap = mask_ $
+  BS.useAsCStringLen input $ \(pInput, inputLen) -> alloca $ \pHandle -> do
+    poke pHandle (castPtrToStablePtr nullPtr)
+    rv <- haskokiAsyncStart view (CULong (fromIntegral (unSessionId sid))) 2
+      (castPtr pInput) (fromIntegral inputLen) (CULong cap) 2 pHandle
+    handle <- peek pHandle
+    c <- deRefStablePtr view
+    live <- readIORef (acLive c)
+    let isLive = Set.member (castStablePtrToPtr handle) live
+        cancel = when isLive $ do
+          _ <- haskokiAsyncCancel view handle
+          pure ()
+    if rv /= stdRvOf CKR_PENDING
+      then cancel >> pure rv
+      else if not isLive
+        then pure ckrGeneralError
+        else (do
+          bindings <- readIORef (siAsyncBindings inst)
+          installed <- evaluate (Map.insert (sid, JobDigest)
+            (StdAsyncBinding JobDigest handle pOut cap) bindings)
+          writeIORef (siAsyncBindings inst) installed
+          pure rv) `onException` cancel
 
 -- | Digest multipart update.
 haskokiStdDigestUpdate
