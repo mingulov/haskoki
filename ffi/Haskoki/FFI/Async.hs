@@ -45,6 +45,7 @@ module Haskoki.FFI.Async
   , asyncCloseCtx
   , jobFunctionCode
   , codeJobFunction
+  , decodeAsyncFunctionName
   , pokeCompletion
   , pokeNeed
   , haskokiAsyncOpen
@@ -241,6 +242,23 @@ codeJobFunction 2 = Just JobDigest
 codeJobFunction 3 = Just JobGenKey
 codeJobFunction 4 = Just JobGenKeyPair
 codeJobFunction _ = Nothing
+
+-- | Decode an exact public byte-job selector, reading at most 32 bytes
+-- and stopping at the first NUL. Structural guards validate the pointer.
+decodeAsyncFunctionName :: Ptr Word8 -> IO (Either ReturnCode JobFunction)
+decodeAsyncFunctionName ptr = go 0 []
+  where
+    go :: Int -> [Word8] -> IO (Either ReturnCode JobFunction)
+    go offset bytes
+      | offset >= 32 = pure (Left CKR_ARGUMENTS_BAD)
+      | otherwise = do
+          byte <- peekByteOff ptr offset
+          if byte == 0
+            then pure $ case BS.pack (reverse bytes) of
+              "C_Sign" -> Right JobSign
+              "C_Digest" -> Right JobDigest
+              _ -> Left CKR_ARGUMENTS_BAD
+            else go (offset + 1) (byte : bytes)
 
 -- | Live native-handle count (test inspection).
 asyncLiveHandles :: AsyncCtx -> IO Int

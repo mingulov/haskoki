@@ -81,6 +81,8 @@ module Haskoki.FFI.Standard
   , tokenScalars
     -- * PIN comparison (pure)
   , pinsMatch
+    -- * Async binding lookup (pure)
+  , lookupStdAsyncBinding
     -- * slot list, sessions, session info, token liveness
   , haskokiStdGetSlotList
   , haskokiStdOpenSession
@@ -336,6 +338,7 @@ import Haskoki.Request
   , initOperation
   )
 import Haskoki.Rules (Rules (..))
+import Haskoki.Runtime.Async (JobFunction)
 import Haskoki.Runtime.Config
   ( Config (..)
   , StorageCfg (..)
@@ -918,6 +921,11 @@ pinsMatch :: ByteString -> ByteString -> Bool
 pinsMatch a b =
   BS.length a == BS.length b
     && foldl' (\acc (x, y) -> acc .|. (x `xor` y)) 0 (BS.zip a b) == 0
+
+-- | Select only the requested session and function, without invoking a worker.
+lookupStdAsyncBinding
+  :: SessionId -> JobFunction -> Map (SessionId, JobFunction) a -> Maybe a
+lookupStdAsyncBinding sid function = Map.lookup (sid, function)
 
 -- ---------------------------------------------------------------------------
 -- Publication

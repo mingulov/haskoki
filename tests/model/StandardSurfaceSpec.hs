@@ -18,6 +18,7 @@ import Control.Exception (bracket)
 import Control.Monad (forM_)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import qualified Data.Map.Strict as Map
 import Data.Word (Word64, Word8)
 import Foreign.C.Types (CULong (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
@@ -29,12 +30,14 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, assertBool, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.FFI.Async (decodeAsyncFunctionName, jobFunctionCode)
 import Haskoki.FFI.Decode (maxInputBytes)
 import Haskoki.FFI.Standard
   ( FrameError (..)
   , ecParamsFromWire
   , ecParamsToWire
   , frameErrorRV
+  , lookupStdAsyncBinding
   , nativeEncodeAttr
   , parseTemplateFrame
   , pinsMatch
@@ -80,6 +83,7 @@ import Haskoki.Model
 import Haskoki.Operation (emptySessionOps, MsgState(..), MsgFamily(..), SlotKind(..), stagedOf)
 import Haskoki.Operation.Message (lookupMessage, messageBuffered)
 import Haskoki.Rules (Rules (..), defaultRules)
+import Haskoki.Runtime.Async (JobFunction (..))
 import Haskoki.Runtime.Config (defaultConfig)
 import Haskoki.Runtime.Lifecycle (snapshotModel)
 import Haskoki.Session (SessionLogin (..))
@@ -104,12 +108,66 @@ spec = testGroup "Standard surface"
   , testCase "session scalars project" caseSessionScalars
   , testCase "token scalars project" caseTokenScalars
   , testCase "PIN comparison is exact" casePins
+  , testCase "caseAsyncFunctionNames" caseAsyncFunctionNames
+  , testCase "caseAsyncBindingLookup" caseAsyncBindingLookup
   , testCase "message exports and session precedence" caseMessageExports
   , testCase "message cipher continuation query preserves snapshot" caseMessageContinuationQuery
   , testCase "message staged query short and exact" caseMessageStagedQuery
   , testCase "message empty staged output" caseMessageEmptyQuery
   , testCase "message verify presence and sign continuation" caseMessageSignals
   ]
+
+caseAsyncFunctionNames :: IO ()
+caseAsyncFunctionNames = do
+  forM_ [("C_Sign", JobSign, 1), ("C_Digest", JobDigest, 2)] $
+    \(name, function, code) -> do
+      result <- decodeBytes (BS.snoc name 0)
+      assertEqual (show name <> " identity") (Right function) result
+      assertEqual (show name <> " code") (Right code) (jobFunctionCode <$> result)
+  forM_
+    [ "", "c_Digest", "C_DIGEST", "C_Digestx", "1", "2"
+    , "sign", "digest", "C_GenerateKey", "C_GenerateKeyPair"
+    ] $ \name -> do
+      result <- decodeBytes (BS.snoc name 0)
+      assertEqual (show name <> " refused") (Left CKR_ARGUMENTS_BAD) result
+  forM_
+    [ ("non-ASCII byte", BS.pack [0x80, 0])
+    , ("32 non-NUL bytes", BS.replicate 32 0x78)
+    , ("NUL at byte 32", BS.snoc (BS.replicate 31 0x78) 0)
+    ] $ \(label, bytes) -> do
+      result <- decodeBytes bytes
+      assertEqual label (Left CKR_ARGUMENTS_BAD) result
+  result <- decodeBytes "C_Digest\0junk"
+  assertEqual "first NUL ends the name" (Right JobDigest) result
+  where
+    -- Allocate exactly the supplied bytes, including only the first NUL
+    -- for the valid names above. Protected-page checks belong to Task 6.
+    decodeBytes :: ByteString -> IO (Either ReturnCode JobFunction)
+    decodeBytes bytes = allocaBytes (BS.length bytes) $ \ptr -> do
+      pokeArray ptr (BS.unpack bytes)
+      decodeAsyncFunctionName ptr
+
+caseAsyncBindingLookup :: IO ()
+caseAsyncBindingLookup = do
+  let bindings = Map.fromList
+        [ ((SessionId 1, JobDigest), "session-1-digest" :: ByteString)
+        , ((SessionId 1, JobSign), "session-1-sign")
+        , ((SessionId 2, JobDigest), "session-2-digest")
+        ]
+  assertEqual "first session digest" (Just "session-1-digest")
+    (lookupStdAsyncBinding (SessionId 1) JobDigest bindings)
+  assertEqual "first session sign" (Just "session-1-sign")
+    (lookupStdAsyncBinding (SessionId 1) JobSign bindings)
+  assertEqual "second session digest" (Just "session-2-digest")
+    (lookupStdAsyncBinding (SessionId 2) JobDigest bindings)
+  assertEqual "no other function fallback" Nothing
+    (lookupStdAsyncBinding (SessionId 2) JobSign bindings)
+  assertEqual "no other session fallback" Nothing
+    (lookupStdAsyncBinding (SessionId 3) JobDigest bindings)
+  assertEqual "no key-generation binding" Nothing
+    (lookupStdAsyncBinding (SessionId 1) JobGenKey bindings)
+  assertEqual "empty bindings" Nothing
+    (lookupStdAsyncBinding (SessionId 1) JobDigest (Map.empty :: Map.Map (SessionId, JobFunction) ByteString))
 
 word :: Word64 -> ByteString
 word w = BS.pack
