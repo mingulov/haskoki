@@ -413,10 +413,12 @@ caseCryptoEnvDishonest envLock = withDishonestEnv envLock "crypto" $ \_ -> do
 
 caseStdEnvDishonest :: MVar () -> IO ()
 caseStdEnvDishonest envLock = withDishonestEnv envLock "std" $ \_ -> do
-  sp <- haskokiStdOpen
-  if isNull sp
-    then pure ()
-    else haskokiStdClose sp >> assertFailure "dishonest std open must be NULL"
+  bracket haskokiInstanceOpen haskokiInstanceClose $ \cell -> do
+    assertBool "authoritative config refuses dishonest cell" (isNull cell)
+    sp <- haskokiStdOpen cell
+    if isNull sp
+      then pure ()
+      else haskokiStdClose sp >> assertFailure "dishonest std open must be NULL"
 
 caseInstanceEnvDishonest :: MVar () -> IO ()
 caseInstanceEnvDishonest envLock = withDishonestEnv envLock "instance" $ \_ -> do

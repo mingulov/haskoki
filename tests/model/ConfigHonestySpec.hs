@@ -40,7 +40,7 @@ import Haskoki.Runtime.Async
   , newAsyncTable
   , startJob
   )
-import Haskoki.Runtime.Control (ControlState, Json (..), dispatchControl, newControlState, renderJson)
+import Haskoki.Runtime.Control (ControlState, Json (..), dispatchControl, newControlState, bindPrivatePresenceOwner, renderJson)
 import Haskoki.Runtime.Events
   ( OverflowPolicy (DropOldest)
   , droppedEvents
@@ -534,7 +534,9 @@ mkCtlState cfg = withTimeout "control state" $ do
   eq <- newEventQueue 64 DropOldest
   at <- newAsyncTable 16
   reg <- newTokenRegistry eq at
-  newControlState cfg reg at False False
+  st <- newControlState cfg reg at False False
+  bindPrivatePresenceOwner st reg
+  pure st
 
 -- | ENFORCED: requests past max_request_bytes refuse with
 -- request_too_large ('dispatchControl'); smaller ones execute.
@@ -662,7 +664,7 @@ caseJobsBound = withTimeout "jobs bound" $ do
     other : _ -> assertFailure ("9th submit must refuse over-capacity, got: " ++ show other)
     [] -> assertFailure "9 submits expected, got none"
 
--- | ENFORCED: limits.events sizes the slot-event queue (9 arrivals
+-- | PRIVATE FIFO evidence only (not serving capacity): limits.events sizes the slot-event queue (9 arrivals
 -- over a bound-8 queue drop exactly 1).
 caseEventsBound :: IO ()
 caseEventsBound = withTimeout "events bound" $ do
@@ -670,7 +672,7 @@ caseEventsBound = withTimeout "events bound" $ do
   inst <- buildInstance cfg
   mapM_ (\i -> insertToken (instRegistry inst) (SlotId i)) [1 .. 9 :: Int]
   drops <- droppedEvents (instEvents inst)
-  assertEqual "9 arrivals over bound 8 drop 1" 1 drops
+  assertEqual "private FIFO: 9 arrivals over bound 8 drop 1" 1 drops
 
 -- | ENFORCED-by-validation: every [limits] value must be >= 1.
 caseLimitsZero :: IO ()

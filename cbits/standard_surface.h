@@ -28,7 +28,7 @@
  * Haskoki.FFI.Standard.maxTemplateAttrs; both sides enforce it). */
 #define HASKOKI_STD_TEMPLATE_MAX_ATTRS 64UL
 
-void *haskoki_std_open_fresh(void);
+void *haskoki_std_open_fresh(void *ops_instance_cell);
 void haskoki_std_install(void *instance);
 void *haskoki_std_get(void);
 void haskoki_std_shutdown(void);

@@ -52,7 +52,7 @@
 #endif
 #ifndef HASKOKI_HAVE_STD_STUB_H
 #include <stdint.h>
-extern void *haskoki_std_open(void);
+extern void *haskoki_std_open(void *ops_instance_cell);
 extern void haskoki_std_close(void *instance);
 extern uint64_t haskoki_std_terminate_slot(void *instance, uint64_t h_session,
                                                uint64_t slot);
@@ -311,7 +311,9 @@ void *haskoki_std_get(void) {
 
 /* Open a fresh owned instance (C_Initialize path). The RTS is up by
  * construction (rts_ensure runs first in on_Initialize). */
-void *haskoki_std_open_fresh(void) { return haskoki_std_open(); }
+void *haskoki_std_open_fresh(void *ops_instance_cell) {
+  return haskoki_std_open(ops_instance_cell);
+}
 
 /* Close the installed handle: shuts the backend and the process
  * store, then uninstalls. Idempotent on NULL. */

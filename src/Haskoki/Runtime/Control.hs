@@ -31,6 +31,9 @@ module Haskoki.Runtime.Control
   , responseBudget
   , ControlState
   , newControlState
+  , PresenceOwner (..)
+  , bindPresenceOwner
+  , bindPrivatePresenceOwner
   , setControlTracer
   , dispatchControl
   , controlGeneration
@@ -66,6 +69,7 @@ import Haskoki.Runtime.Events
   , tokenGeneration
   , tokenPresent
   )
+import Haskoki.Runtime.SlotEvents (SlotSnapshot (..), PresenceError (..), PresenceChange (..))
 import Haskoki.Runtime.Trace (TraceEvent (..), Tracer, emitTrace)
 import Haskoki.Types (ReturnCode (..), SlotId (..))
 
@@ -239,6 +243,7 @@ data ControlState = ControlState
   , csTick :: !(TVar Word64)
   , csScenario :: !(TVar (Maybe Scenario))
   , csTracer :: !(TVar (Maybe Tracer))
+  , csPresenceOwner :: !(TVar (Maybe PresenceOwner))
   }
 
 -- | A fresh control state. The flags are fixed at construction. The
@@ -252,6 +257,37 @@ newControlState cfg reg _asyncTable testEnabled unsafeDebug =
     <*> newTVarIO 0
     <*> newTVarIO Nothing
     <*> newTVarIO Nothing
+    <*> newTVarIO Nothing
+
+-- | The explicit owner of serving presence. Binding and clearing are done
+-- under the C init/state ownership; hooks retain the Haskell value itself.
+data PresenceOwner = PresenceOwner
+  { ownerSnapshot :: IO [SlotSnapshot]
+  , ownerSetPresence :: SlotId -> Bool -> IO (Either PresenceError (PresenceChange, Int))
+  }
+
+bindPresenceOwner :: ControlState -> Maybe PresenceOwner -> IO ()
+bindPresenceOwner st owner = atomically (writeTVar (csPresenceOwner st) owner)
+
+-- | Explicit legacy proof construction only. This preserves the old private
+-- sixteen-slot status window and FIFO/job behavior without a serving fallback.
+bindPrivatePresenceOwner :: ControlState -> TokenRegistry -> IO ()
+bindPrivatePresenceOwner st reg = bindPresenceOwner st (Just (PresenceOwner snapshot change))
+  where
+    snapshot = mapM (\slot -> SlotSnapshot slot True
+      <$> tokenPresent reg slot <*> tokenGeneration reg slot) [SlotId n | n <- [0 .. 15]]
+    change slot True = do
+      out <- insertToken reg slot
+      pure (Right (case out of
+        Inserted epoch -> (PresenceChanged epoch, 0)
+        InsertAlreadyPresent epoch -> (PresenceUnchanged epoch, 0)))
+    change slot False = do
+      out <- removeToken reg slot
+      case out of
+        Removed epoch canceled -> pure (Right (PresenceChanged epoch, canceled))
+        RemoveNotPresent -> do
+          epoch <- tokenGeneration reg slot
+          pure (Right (PresenceUnchanged epoch, 0))
 
 -- | Attach the tracer dispatch events emit to (optional).
 setControlTracer :: ControlState -> Tracer -> IO ()
@@ -263,7 +299,11 @@ controlGeneration st = atomically (readTVar (csGeneration st))
 
 -- | Token presence through the control state (test oracle).
 controlTokenPresent :: ControlState -> SlotId -> IO Bool
-controlTokenPresent st = tokenPresent (csRegistry st)
+controlTokenPresent st slot = do
+  owner <- atomically (readTVar (csPresenceOwner st))
+  case owner of
+    Nothing -> pure False
+    Just bound -> any (\row -> ssSlotId row == slot && ssPresent row) <$> ownerSnapshot bound
 
 -- ---------------------------------------------------------------------------
 -- Dispatch
@@ -385,16 +425,16 @@ execute st CmdTokenInsert args = withTestGate st $ do
           case eGen of
             Just refusal -> pure (OutcomeErr refusal)
             Nothing -> do
-              out <- insertToken (csRegistry st) (SlotId (fromInteger n))
-              g <- bumpGeneration st
-              let inserted = case out of
-                    Inserted _ -> True
-                    InsertAlreadyPresent _ -> False
-              pure (OutcomeOk [ ("command", JStr "token.insert")
-                              , ("slot", JNum n)
-                              , ("inserted", JBool inserted)
-                              , ("generation", JNum (fromIntegral g))
-                              ])
+              out <- setOwnedPresence st (SlotId (fromInteger n)) True
+              case out of
+                Left refusal -> pure (OutcomeErr refusal)
+                Right (change, _) -> do
+                  g <- bumpGeneration st
+                  pure (OutcomeOk [ ("command", JStr "token.insert")
+                                  , ("slot", JNum n)
+                                  , ("inserted", JBool (presenceChanged change))
+                                  , ("generation", JNum (fromIntegral g))
+                                  ])
 execute st CmdTokenRemove args = withTestGate st $ do
   case argInt args "slot" of
     Left err -> pure (OutcomeErr err)
@@ -406,17 +446,17 @@ execute st CmdTokenRemove args = withTestGate st $ do
           case eGen of
             Just refusal -> pure (OutcomeErr refusal)
             Nothing -> do
-              out <- removeToken (csRegistry st) (SlotId (fromInteger n))
-              g <- bumpGeneration st
-              let (removed, canceled) = case out of
-                    Removed _ k -> (True, k)
-                    RemoveNotPresent -> (False, 0)
-              pure (OutcomeOk [ ("command", JStr "token.remove")
-                              , ("slot", JNum n)
-                              , ("removed", JBool removed)
-                              , ("jobs_canceled", JNum (fromIntegral canceled))
-                              , ("generation", JNum (fromIntegral g))
-                              ])
+              out <- setOwnedPresence st (SlotId (fromInteger n)) False
+              case out of
+                Left refusal -> pure (OutcomeErr refusal)
+                Right (change, canceled) -> do
+                  g <- bumpGeneration st
+                  pure (OutcomeOk [ ("command", JStr "token.remove")
+                                  , ("slot", JNum n)
+                                  , ("removed", JBool (presenceChanged change))
+                                  , ("jobs_canceled", JNum (fromIntegral canceled))
+                                  , ("generation", JNum (fromIntegral g))
+                                  ])
 execute st CmdSchedulerAdvance args = withTestGate st $ do
   case argInt args "ticks" of
     Left err -> pure (OutcomeErr err)
@@ -456,6 +496,17 @@ execute st CmdScenarioLoad args = withTestGate st $ do
                         , ("actions", JNum (fromIntegral (length (scSteps sc))))
                         ])
 
+setOwnedPresence :: ControlState -> SlotId -> Bool -> IO (Either String (PresenceChange, Int))
+setOwnedPresence st slot present = do
+  owner <- atomically (readTVar (csPresenceOwner st))
+  case owner of
+    Nothing -> pure (Left "presence_owner_unbound")
+    Just bound -> either (Left . show) Right <$> ownerSetPresence bound slot present
+
+presenceChanged :: PresenceChange -> Bool
+presenceChanged (PresenceChanged _) = True
+presenceChanged (PresenceUnchanged _) = False
+
 -- | Refuse without mutation unless test-enabled.
 withTestGate :: ControlState -> IO Outcome -> IO Outcome
 withTestGate st action
@@ -484,34 +535,34 @@ bumpGeneration st = atomically $ do
 -- and (unsafe-debug only) the fixture PIN marker.
 statusPage :: ControlState -> Int -> Int -> IO Outcome
 statusPage st offset limit = do
-  g <- controlGeneration st
-  tick <- atomically (readTVar (csTick st))
-  mSc <- atomically (readTVar (csScenario st))
-  let maxSlot = 16
-      slots = [0 .. maxSlot - 1]
-  rows <- mapM presenceRow slots
-  let page = take limit (drop offset rows)
-  pure (OutcomeOk
-    [ ("command", JStr "status")
-    , ("generation", JNum (fromIntegral g))
-    , ("tick", JNum (fromIntegral tick))
-    , ("paginated", JBool True)
-    , ("offset", JNum (fromIntegral offset))
-    , ("limit", JNum (fromIntegral limit))
-    , ("presence", JArr page)
-    , ("scenario", maybe JNull (JStr . scName) mSc)
-    , ("test_enabled", JBool (csTestEnabled st))
-    ])
+  owner <- atomically (readTVar (csPresenceOwner st))
+  case owner of
+    Nothing -> pure (OutcomeErr "presence_owner_unbound")
+    Just bound -> do
+      g <- controlGeneration st
+      tick <- atomically (readTVar (csTick st))
+      mSc <- atomically (readTVar (csScenario st))
+      slots <- ownerSnapshot bound
+      let page = map presenceRow (take limit (drop offset slots))
+      pure (OutcomeOk
+        [ ("command", JStr "status")
+        , ("generation", JNum (fromIntegral g))
+        , ("tick", JNum (fromIntegral tick))
+        , ("paginated", JBool True)
+        , ("offset", JNum (fromIntegral offset))
+        , ("limit", JNum (fromIntegral limit))
+        , ("presence", JArr page)
+        , ("scenario", maybe JNull (JStr . scName) mSc)
+        , ("test_enabled", JBool (csTestEnabled st))
+        ])
   where
-    presenceRow n = do
-      let slot = SlotId n
-      p <- tokenPresent (csRegistry st) slot
-      gen <- tokenGeneration (csRegistry st) slot
-      let base = [ ("slot", JNum (fromIntegral n))
-                 , ("present", JBool p)
-                 , ("generation", JNum (fromIntegral gen))
+    presenceRow snapshot =
+      let SlotId n = ssSlotId snapshot
+          base = [ ("slot", JNum (fromIntegral n))
+                 , ("present", JBool (ssPresent snapshot))
+                 , ("generation", JNum (fromIntegral (ssPresenceEpoch snapshot)))
                  ]
-      pure (JObj (base ++ debugExtra))
+      in JObj (base ++ debugExtra)
     debugExtra
       | csUnsafeDebug st =
           [("fixture_pin", JStr "1234"), ("fixture_so_pin", JStr "5678")]

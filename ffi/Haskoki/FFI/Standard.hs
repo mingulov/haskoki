@@ -60,6 +60,7 @@ module Haskoki.FFI.Standard
   , haskokiStdOpen
   , openStdInstance
   , openStdInstanceWith
+  , openStdInstanceWithSlots
   , haskokiStdClose
   , withStdCtx
   , stdRvOf
@@ -265,6 +266,13 @@ import Haskoki.FFI.Encode
   , nativeToWrite
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
+import Haskoki.FFI.Instance (Instance (..), InstanceCell, readLiveInstance)
+import Haskoki.Runtime.Catalog (effectiveCatalog, homeCatalogEntry)
+import Haskoki.Runtime.Control (PresenceOwner (..), bindPresenceOwner)
+import Haskoki.Runtime.SlotEvents
+  ( SlotEvents, SlotDefinition (..), PresenceError (..), newSlotEvents
+  , snapshotSlots, closeSlotEvents
+  )
 import Haskoki.FFI.MessageParams
   ( decodeMessageInitFrame
   , decodeMessageBeginFrame
@@ -376,9 +384,8 @@ import Haskoki.Runtime.Config
   ( Config (..)
   , StorageCfg (..)
   , StorageKind (..)
-  , TokensCfg (..)
-  , newConfigCell
-  , resolveOnce
+  , ControlCfg (..)
+  , Limits (..)
   )
 import Haskoki.Runtime.Lifecycle
   ( Env
@@ -432,32 +439,17 @@ homeTokenId = TokenId 1
 -- metadata lives outside 'TokenAuth'), so the C token-info record
 -- and fresh-store token rows both use exactly this string.
 homeTokenLabel :: String
-homeTokenLabel = "haskoki-demo"
+homeTokenLabel = let (label, _, _) = homeCatalogEntry in label
 
 -- | Provisioned user PIN. Fixed at open; there is no PIN-change
 -- path on the C surface (InitPIN\/SetPIN stay honestly
 -- unsupported), so every process provisioning this token agrees.
 provisionedUserPin :: ByteString
-provisionedUserPin = "1234"
+provisionedUserPin = let (_, _, pin) = homeCatalogEntry in BC8.pack pin
 
 -- | Provisioned security-officer PIN. Same fixity as the user PIN.
 provisionedSoPin :: ByteString
-provisionedSoPin = "5678"
-
--- | The home catalog entry (slot 0 when @[tokens]@ is absent): the
--- demo label with the provisioned PINs. Single source of truth
--- for the absent-section default.
-homeCatalogEntry :: (String, String, String)
-homeCatalogEntry =
-  (homeTokenLabel, BC8.unpack provisionedSoPin, BC8.unpack provisionedUserPin)
-
--- | The effective serving catalog: the declared @[tokens]@ entries
--- (slot = index) or the home singleton when the section is
--- absent. Total over 'Config': every open serves slot 0 at least.
-effectiveCatalog :: Config -> Map SlotId (String, String, String)
-effectiveCatalog cfg = case tcEntries (cfgTokens cfg) of
-  [] -> Map.singleton (SlotId 0) homeCatalogEntry
-  triples -> Map.fromList (zip [SlotId n | n <- [0 ..]] triples)
+provisionedSoPin = let (_, pin, _) = homeCatalogEntry in BC8.pack pin
 
 -- | The stable store identity for a catalog slot: slot @i@ owns
 -- @TokenId (i+1)@, so slot 0 keeps 'homeTokenId' and every slot is
@@ -490,6 +482,9 @@ data StdInstance = StdInstance
   , siFind :: !(IORef (Map SessionId [ExternalHandle]))
   , siStore :: !(Maybe StdStore)
   , siCatalog :: !(Map SlotId (String, String, String))
+  , siSlots :: !SlotEvents
+  , siUnbindPresenceOwner :: !(IO ())
+  , siReleaseResources :: !(IO ())
   , siAsyncTable :: !AsyncTable
   , siDetach :: !(Maybe DetachCtx)
   , siAsyncViews :: !(IORef (Map SessionId (StablePtr AsyncCtx)))
@@ -506,7 +501,7 @@ data StdAsyncBinding = StdAsyncBinding
   }
 
 foreign export ccall "haskoki_std_open" haskokiStdOpen
-  :: IO (StablePtr StdInstance)
+  :: StablePtr InstanceCell -> IO (StablePtr StdInstance)
 foreign export ccall "haskoki_std_close" haskokiStdClose
   :: StablePtr StdInstance -> IO ()
 
@@ -565,15 +560,22 @@ withStdCtx ctx k = guardedRV $ do
     then pure (CULong 5)
     else deRefStablePtr ctx >>= k
 
--- | Open an owned instance from the environment-resolved config
--- (thin wrapper over 'openStdInstance').
-haskokiStdOpen :: IO (StablePtr StdInstance)
-haskokiStdOpen = guardedPtr $ do
-  cell <- newConfigCell
-  eCfg <- resolveOnce cell
-  case eCfg of
-    Left _ -> pure nullStable
-    Right cfg -> openStdInstance cfg
+-- | Production acquisition borrows the already resolved config and hub from
+-- the unpublished cell. The hooks capture the Haskell owner, never a StablePtr.
+haskokiStdOpen :: StablePtr InstanceCell -> IO (StablePtr StdInstance)
+haskokiStdOpen cell = guardedPtr $ do
+  live <- readLiveInstance cell
+  case live of
+    Nothing -> pure nullStable
+    Just ops -> openStdInstanceWithSlots
+      stdAcquisition
+        { saBindPresenceOwner = \inst -> bindPresenceOwner (instControl ops)
+            (Just (PresenceOwner (snapshotSlots (siSlots inst))
+              -- T-N03 supplies Standard's atomic retirement coordinator.
+              (\_ _ -> pure (Left PresenceFixedSlot))))
+        , saUnbindPresenceOwner = bindPresenceOwner (instControl ops) Nothing
+        }
+      (instConfig ops) (instSlots ops)
 
 -- | Injectable acquisition steps for the standard-surface open
 -- The production open threads 'stdAcquisition'; probes
@@ -587,6 +589,9 @@ data StdAcquisition = StdAcquisition
   , saCloseStore :: !(Maybe StdStore -> IO ())
   , saOpenBackend :: !(IO (EngineResult (BackendEnv OpenSSL4)))
   , saCloseBackend :: !(BackendEnv OpenSSL4 -> IO ())
+  , saAssemble :: !(StdInstance -> IO (StablePtr StdInstance))
+  , saBindPresenceOwner :: !(StdInstance -> IO ())
+  , saUnbindPresenceOwner :: !(IO ())
   }
 
 -- | Production acquisition steps.
@@ -597,6 +602,9 @@ stdAcquisition = StdAcquisition
   , saCloseStore = closeStdStore
   , saOpenBackend = openBackend "provider=default"
   , saCloseBackend = closeBackend
+  , saAssemble = newStablePtr
+  , saBindPresenceOwner = const (pure ())
+  , saUnbindPresenceOwner = pure ()
   }
 
 -- | Open an owned instance from a RESOLVED config: fresh 'Env',
@@ -620,31 +628,57 @@ openStdInstance = openStdInstanceWith stdAcquisition
 -- boundary above still maps them to NULL for C).
 openStdInstanceWith
   :: StdAcquisition -> Config -> IO (StablePtr StdInstance)
-openStdInstanceWith sa cfg = guardedSyncPtr $ mask $ \restore -> do
-  env <- newEnv (rulesFromConfig cfg)
-  ini <- restore (saInit sa env)
-  case ini of
-    OutcomeErr _ -> pure nullStable
-    OutcomeOk () -> do
-      eStore <- restore (saOpenStore sa env cfg)
-      case eStore of
-        Left _ -> pure nullStable
-        Right mStore -> do
-          r <- restore (saOpenBackend sa)
-            `onException` saCloseStore sa mStore
-          case r of
-            EngineFail _ -> saCloseStore sa mStore >> pure nullStable
-            EngineOk be ->
-              assembleStdInstance env be mStore cfg
-                `onException`
-                  (saCloseBackend sa be >> saCloseStore sa mStore)
+openStdInstanceWith sa cfg = guardedSyncPtr $ mask_ $ do
+  let catalog = effectiveCatalog cfg
+  when (Map.size catalog > limSlots (cfgLimits cfg)) $
+    ioError (userError "serving catalog exceeds limits.slots")
+  slots <- newSlotEvents (limEvents (cfgLimits cfg))
+    [SlotDefinition slot (ccTestEnabled (cfgControl cfg)) | slot <- Map.keys catalog]
+    >>= either (ioError . userError . show) pure
+  openStdInstanceWithSlots sa cfg slots
 
--- | Assemble under the caller's acquisition mask. The detached context borrows
--- the already-owned store; a refusal unwinds backend and store in that bracket.
+-- | Acquire over an explicit service. Failed acquisition closes that service;
+-- successful ownership carries the matching injected releases through close.
+-- Each acquired resource has exactly one unwind region, including bind failure.
+openStdInstanceWithSlots
+  :: StdAcquisition -> Config -> SlotEvents -> IO (StablePtr StdInstance)
+openStdInstanceWithSlots sa cfg slots = guardedSyncPtr $ mask $ \restore -> do
+  let acquire = do
+        env <- newEnv (rulesFromConfig cfg)
+        ini <- restore (saInit sa env)
+        case ini of
+          OutcomeErr _ -> pure nullStable
+          OutcomeOk () -> do
+            eStore <- restore (saOpenStore sa env cfg)
+            case eStore of
+              Left _ -> pure nullStable
+              Right mStore -> do
+                r <- restore (saOpenBackend sa)
+                  `onException` saCloseStore sa mStore
+                case r of
+                  EngineFail _ -> saCloseStore sa mStore >> pure nullStable
+                  EngineOk be -> do
+                    let release = saCloseBackend sa be `finally` saCloseStore sa mStore
+                    (do
+                      inst <- assembleStdInstance env be mStore cfg slots
+                        (saUnbindPresenceOwner sa) release
+                      ptr <- saAssemble sa inst
+                      if castStablePtrToPtr ptr == nullPtr
+                        then ioError (userError "standard assembly refused")
+                        else do
+                          saBindPresenceOwner sa inst `onException` freeStablePtr ptr
+                          pure ptr)
+                      `onException` (saUnbindPresenceOwner sa `finally` release)
+  ptr <- acquire `onException` closeSlotEvents slots
+  when (castStablePtrToPtr ptr == nullPtr) (closeSlotEvents slots)
+  pure ptr
+
+-- | Assemble under the acquisition mask. The detached context borrows the
+-- existing store; its refusal unwinds in the caller's resource bracket.
 assembleStdInstance
-  :: Env -> BackendEnv OpenSSL4 -> Maybe StdStore -> Config
-  -> IO (StablePtr StdInstance)
-assembleStdInstance env be mStore cfg = do
+  :: Env -> BackendEnv OpenSSL4 -> Maybe StdStore -> Config -> SlotEvents
+  -> IO () -> IO () -> IO StdInstance
+assembleStdInstance env be mStore cfg slots unbind release = do
   cursors <- newIORef mempty
   table <- newAsyncTable 8
   detach <- case mStore of
@@ -656,8 +690,8 @@ assembleStdInstance env be mStore cfg = do
         Right dc -> pure (Just dc)
   views <- newIORef Map.empty
   bindings <- newIORef Map.empty
-  newStablePtr (StdInstance env be cursors mStore (effectiveCatalog cfg)
-    table detach views bindings)
+  pure (StdInstance env be cursors mStore (effectiveCatalog cfg)
+    slots unbind release table detach views bindings)
 
 -- | Seat every catalog slot in index order. The first refusal
 -- (past the seating bound) fails the whole open loudly — catalogs
@@ -783,9 +817,8 @@ haskokiStdClose ctx = guardedUnit $
     then pure ()
     else mask_ $ do
       inst <- deRefStablePtr ctx
-      let closeOwned = closeBackend (siBackend inst)
-            `finally` (closeStdStore (siStore inst) `finally` freeStablePtr ctx)
-      (do
+      let closeOwned = siReleaseResources inst `finally` freeStablePtr ctx
+      (siUnbindPresenceOwner inst `finally` do
         views <- readIORef (siAsyncViews inst)
         (do
           forM_ (Map.keys views) (cancelStdAsyncJobs inst)

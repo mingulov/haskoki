@@ -21,6 +21,8 @@ spawned here.
 
 module Haskoki.FFI.Instance
   ( Instance (..)
+  , InstanceCell
+  , readLiveInstance
   , haskokiInstanceOpen
   , haskokiInstanceClose
   , haskokiWaitForSlotEvent
@@ -28,7 +30,9 @@ module Haskoki.FFI.Instance
   , buildInstance
   ) where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, mask_, onException, try)
+import Control.Monad (when)
+import qualified Data.Map.Strict as Map
 import qualified Data.ByteString as BS
 import Data.Bits ((.&.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
@@ -48,6 +52,8 @@ import System.Posix.Process (getProcessID)
 
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.Runtime.Async (AsyncTable, newAsyncTable)
+import Haskoki.Runtime.Catalog (effectiveCatalog)
+import Haskoki.Runtime.SlotEvents (SlotEvents, SlotDefinition (..), newSlotEvents, closeSlotEvents)
 import Haskoki.Runtime.Config
   ( Config (..)
   , ControlCfg (..)
@@ -59,6 +65,7 @@ import Haskoki.Runtime.Config
 import Haskoki.Runtime.Control
   ( ControlState
   , dispatchControl
+  , bindPresenceOwner
   , newControlState
   , setControlTracer
   )
@@ -87,6 +94,7 @@ import Haskoki.Types (ReturnCode (..), SlotId (..))
 -- presence registry, async table, control state, tracer.
 data Instance = Instance
   { instConfig :: !Config
+  , instSlots :: !SlotEvents
   , instEvents :: !EventQueue
   , instRegistry :: !TokenRegistry
   , instAsync :: !AsyncTable
@@ -116,7 +124,16 @@ guarded body = do
 -- | The per-handle generation: @Just@ the owned instance while the
 -- interval is live, @Nothing@ once closed. Open mints a fresh cell
 -- per handle; close takes it exactly once (atomically).
-type InstanceCell = IORef (Maybe Instance)
+newtype InstanceCell = InstanceCell (IORef (Maybe Instance))
+
+-- | Borrow the live value during unpublished construction under the init lock,
+-- or during a Control call under the state lock. Never reinterpret the cell.
+readLiveInstance :: StablePtr InstanceCell -> IO (Maybe Instance)
+readLiveInstance ptr
+  | castStablePtrToPtr ptr == nullPtr = pure Nothing
+  | otherwise = do
+      InstanceCell live <- deRefStablePtr ptr
+      readIORef live
 
 -- | Handle discipline. The crash this closes is resolve-then-enter
 -- across close (@deRefStablePtr@ racing @freeStablePtr@): C cannot
@@ -168,30 +185,41 @@ haskokiInstanceOpen = do
     Right ptr -> pure ptr
     Left (_ :: SomeException) -> pure nullCell
   where
-    openBody = do
+    openBody = mask_ $ do
       cell <- newConfigCell
       eCfg <- resolveOnce cell
       case eCfg of
         Left _ -> pure nullCell
         Right cfg -> do
           inst <- buildInstance cfg
-          live <- newIORef (Just inst)
-          newStablePtr live
+          (newIORef (Just inst) >>= newStablePtr . InstanceCell)
+            `onException` closeSlotEvents (instSlots inst)
 
 -- | Build an owned instance from an already-resolved config (the
 -- environment-free half of 'haskokiInstanceOpen', extracted so
 -- the config→wiring mapping is directly testable without
 -- process-wide environment mutation).
 buildInstance :: Config -> IO Instance
-buildInstance cfg = do
-  eq <- newEventQueue (max 8 (limEvents (cfgLimits cfg))) DropOldest
-  at <- newAsyncTable (max 8 (limJobs (cfgLimits cfg)))
-  reg <- newTokenRegistry eq at
-  let ctl = cfgControl cfg
-  tr <- newTracer (max 8 (tcQueueLimit (cfgTrace cfg))) (fileSink cfg) False
-  cs <- newControlState cfg reg at (ccTestEnabled ctl) False
-  setControlTracer cs tr
-  pure (Instance cfg eq reg at cs tr)
+buildInstance cfg = mask_ $ do
+  let catalog = effectiveCatalog cfg
+      limits = cfgLimits cfg
+  when (Map.size catalog > limSlots limits) $
+    ioError (userError "serving catalog exceeds limits.slots")
+  slots <- newSlotEvents (limEvents limits)
+    [SlotDefinition slot (ccTestEnabled (cfgControl cfg)) | slot <- Map.keys catalog]
+    >>= either (ioError . userError . show) pure
+  (do
+    -- These remain private scenario/proof services; serving presence never
+    -- falls back to their FIFO or their separately sized async table.
+    eq <- newEventQueue (max 8 (limEvents limits)) DropOldest
+    at <- newAsyncTable (max 8 (limJobs limits))
+    reg <- newTokenRegistry eq at
+    let ctl = cfgControl cfg
+    tr <- newTracer (max 8 (tcQueueLimit (cfgTrace cfg))) (fileSink cfg) False
+    cs <- newControlState cfg reg at (ccTestEnabled ctl) False
+    setControlTracer cs tr
+    pure (Instance cfg slots eq reg at cs tr))
+    `onException` closeSlotEvents slots
 
 -- | Append-only trace sink (best effort; failures are counted by the
 -- tracer, never thrown). @\{pid\}@ in the path expands to the pid.
@@ -229,11 +257,13 @@ haskokiInstanceClose ptr = do
     closeBody
       | castStablePtrToPtr ptr == nullPtr = pure ()
       | otherwise = do
-          live <- deRefStablePtr ptr
+          InstanceCell live <- deRefStablePtr ptr
           mInst <- atomicModifyIORef' live (\m -> (Nothing, m))
           case mInst of
             Nothing -> pure ()
             Just inst -> do
+              bindPresenceOwner (instControl inst) Nothing
+              closeSlotEvents (instSlots inst)
               finalizeEvents (instEvents inst)
               _ <- drainTracer (instTracer inst)
               pure ()
@@ -249,8 +279,7 @@ withInstance ptr k = guarded $ do
   if castStablePtrToPtr ptr == nullPtr
     then pure (CULong 5)
     else do
-      live <- deRefStablePtr ptr
-      mInst <- readIORef live
+      mInst <- readLiveInstance ptr
       case mInst of
         Nothing -> pure (CULong 0x190)
         Just inst -> k inst

@@ -109,6 +109,7 @@ import Haskoki.Request
   , initOperation
   )
 import Haskoki.Rules (Rules (..), defaultRules)
+import Haskoki.Runtime.SlotEvents (SlotDefinition (..), newSlotEvents)
 import Haskoki.Runtime.Async
   ( AsyncWork (..)
   , JobFunction (..)
@@ -1290,7 +1291,10 @@ openManualInstance slots = do
   table <- newAsyncTable 8
   views <- newIORef Map.empty
   bindings <- newIORef Map.empty
-  newStablePtr (StdInstance env be cursors Nothing Map.empty table Nothing views bindings)
+  hub <- newSlotEvents (max 1 (length slots)) [SlotDefinition slot False | slot <- slots]
+    >>= either (fail . show) pure
+  newStablePtr (StdInstance env be cursors Nothing Map.empty
+    hub (pure ()) (closeBackend be) table Nothing views bindings)
   where
     seatOne env slot = do
       eSeat <- seatToken env slot

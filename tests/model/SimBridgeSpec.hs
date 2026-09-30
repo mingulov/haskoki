@@ -57,6 +57,7 @@ import Haskoki.Runtime.Control
   , Scenario (..)
   , dispatchControl
   , newControlState
+  , bindPrivatePresenceOwner
   , renderJson
   , validateScenario
   )
@@ -93,6 +94,7 @@ mkBridge cfg = do
   at <- newAsyncTable 16
   reg <- newTokenRegistry eq at
   st <- newControlState cfg reg at True False
+  bindPrivatePresenceOwner st reg
   env <- newEnv defaultRules
   pure (st, at, env)
 

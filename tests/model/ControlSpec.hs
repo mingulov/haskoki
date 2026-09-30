@@ -35,7 +35,9 @@ mkState testEnabled unsafeDebug = do
   eq <- newEventQueue 64 DropOldest
   at <- newAsyncTable 16
   reg <- newTokenRegistry eq at
-  newControlState defaultConfig reg at testEnabled unsafeDebug
+  st <- newControlState defaultConfig reg at testEnabled unsafeDebug
+  bindPrivatePresenceOwner st reg
+  pure st
 
 statusReq :: BC8.ByteString
 statusReq = BC8.pack "{\"schema_version\":1,\"command\":\"status\",\"arguments\":{}}"

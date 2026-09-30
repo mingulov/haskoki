@@ -9,9 +9,9 @@
  * exports), and close finalizes the event queue first so no waiter
  * is stranded.
  *
- * Discipline: this TU never takes the legacy state lock (the control
- * path and the blocking wait path must not serialize behind table
- * calls); the Haskell side owns all instance synchronization.
+ * Discipline: Control borrows the Standard owner under the C state lock
+ * and revalidates liveness after acquiring it. The blocking wait path
+ * alone remains free of that lock.
  *
  * The handle is an atomic pointer (the standard-surface
  * precedent): install release-stores under the init lock, serving
@@ -111,28 +111,44 @@ uint64_t haskoki_instance_wait_for_slot_event(uint64_t flags, uint64_t *p_slot) 
   return haskoki_wait_for_slot_event(inst, flags, p_slot);
 }
 
+extern int haskoki_live_interval(void);
+extern unsigned long haskoki_state_lock(void);
+extern unsigned long haskoki_state_unlock(void);
+
 /* The extension entry point: a global symbol, in no function table. */
 HASKOKI_RV HASKOKI_Control(const HASKOKI_BYTE *pRequest,
                            HASKOKI_ULONG ulRequestLen,
                            HASKOKI_BYTE *pResponse,
                            HASKOKI_ULONG *pulResponseLen) {
-  void *inst = atomic_load_explicit(&g_haskoki_instance, memory_order_acquire);
-  uint64_t rv;
+  void *inst;
+  unsigned long rv;
+  if (!haskoki_live_interval()) {
+    return (HASKOKI_RV)CKR_CRYPTOKI_NOT_INITIALIZED_INSTANCE;
+  }
+  inst = atomic_load_explicit(&g_haskoki_instance, memory_order_acquire);
   if (inst == 0) {
     return (HASKOKI_RV)CKR_CRYPTOKI_NOT_INITIALIZED_INSTANCE;
   }
-  if (pulResponseLen == 0) {
-    return (HASKOKI_RV)CKR_ARGUMENTS_BAD_INSTANCE;
+  rv = haskoki_state_lock();
+  if (rv != CKR_OK_INSTANCE) {
+    return (HASKOKI_RV)rv;
   }
-  if (pRequest == 0 && ulRequestLen != 0) {
-    return (HASKOKI_RV)CKR_ARGUMENTS_BAD_INSTANCE;
+  /* Authoritative after-lock validation, including budget/status queries.
+   * A caller from an old interval must not borrow a new interval's owner. */
+  if (!haskoki_live_interval() ||
+      inst != atomic_load_explicit(&g_haskoki_instance, memory_order_acquire)) {
+    rv = CKR_CRYPTOKI_NOT_INITIALIZED_INSTANCE;
+  } else if (pulResponseLen == 0) {
+    rv = CKR_ARGUMENTS_BAD_INSTANCE;
+  } else if (pRequest == 0 && ulRequestLen != 0) {
+    rv = CKR_ARGUMENTS_BAD_INSTANCE;
+  } else if (ulRequestLen > 0xFFFFFFFFUL) {
+    rv = CKR_GENERAL_ERROR_INSTANCE;
+  } else {
+    /* The export copies the request bytes and never writes through them. */
+    rv = haskoki_control(inst, (uint8_t *)pRequest, (uint64_t)ulRequestLen,
+                         (uint8_t *)pResponse, (uint64_t *)pulResponseLen);
   }
-  if (ulRequestLen > 0xFFFFFFFFUL) {
-    return (HASKOKI_RV)CKR_GENERAL_ERROR_INSTANCE;
-  }
-  /* const discarded: the export copies the request bytes up front
-   * and never writes through the request pointer. */
-  rv = haskoki_control(inst, (uint8_t *)pRequest, (uint64_t)ulRequestLen,
-                       (uint8_t *)pResponse, (uint64_t *)pulResponseLen);
+  (void)haskoki_state_unlock();
   return (HASKOKI_RV)rv;
 }

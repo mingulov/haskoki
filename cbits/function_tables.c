@@ -80,6 +80,7 @@ extern uint64_t haskoki_get_slot_list(uint8_t token_present,
 #endif
 #ifndef HASKOKI_HAVE_STD_STUB_H
 #include <stdint.h>
+extern void haskoki_std_close(void *instance);
 extern uint64_t haskoki_std_get_slot_list(void *instance,
                                           uint8_t token_present,
                                           uint64_t *p_slot_list,
@@ -90,6 +91,7 @@ extern uint64_t haskoki_std_get_slot_list(void *instance,
  * per init interval, shared by C_WaitForSlotEvent and
  * HASKOKI_Control. */
 extern void *haskoki_instance_open_fresh(void);
+extern void haskoki_instance_close(void *instance);
 extern void haskoki_instance_install(void *instance);
 extern void haskoki_instance_shutdown(void);
 extern uint64_t haskoki_instance_wait_for_slot_event(uint64_t flags,
@@ -561,48 +563,52 @@ static CK_RV on_Initialize(CK_VOID_PTR pInitArgs) {
     pthread_mutex_unlock(&g_init_lock);
     return hv;
   }
-  /* Open the owned ops instance (config resolved + validated
-   * once). A bad config fails init loudly — never a half-built
-   * interval with silent defaults. */
+  /* Build both owners unpublished. Standard borrows this cell's resolved
+   * config/hub and binds its Haskell owner before returning. Only after mutex
+   * adoption can either root be installed. Rollback closes local owners once. */
   {
     void *inst = haskoki_instance_open_fresh();
+    void *std = NULL;
+    CK_RV failure = CKR_GENERAL_ERROR;
     if (inst == NULL) {
-      (void)haskoki_finalize();
-      pthread_mutex_unlock(&g_init_lock);
-      return CKR_GENERAL_ERROR;
+      goto acquisition_failed;
     }
-    haskoki_instance_install(inst);
-  }
-  /* Open the owned standard-surface instance (fresh Env,
-   * provisioned token, live backend, optional store). NULL fails
-   * init loudly with the control/Haskell opens unwound. */
-  {
-    void *std = haskoki_std_open_fresh();
+    std = haskoki_std_open_fresh(inst);
     if (std == NULL) {
-      haskoki_instance_shutdown();
-      (void)haskoki_finalize();
-      pthread_mutex_unlock(&g_init_lock);
-      return CKR_GENERAL_ERROR;
+      goto acquisition_failed;
+    }
+    if (use_callbacks) {
+      CK_VOID_PTR m = NULL;
+      CK_RV created = a->CreateMutex(&m);
+      if (created != CKR_OK || m == NULL) {
+        /* A callback may supply a resource even when it refuses creation. */
+        if (m != NULL) {
+          (void)a->DestroyMutex(m);
+        }
+        failure = CKR_CANT_LOCK;
+        goto acquisition_failed;
+      }
+      g_cb = *a;
+      g_negotiated_mu = m;
+      g_have_negotiated = 1;
     }
     haskoki_std_install(std);
-  }
-  /* Fresh interval: adopt the negotiated locking, with rollback. */
-  if (use_callbacks) {
-    CK_VOID_PTR m = NULL;
-    g_cb = *a;
-    g_negotiated_mu = NULL;
-    g_have_negotiated = 0;
-    if (g_cb.CreateMutex(&m) != CKR_OK || m == NULL) {
-      memset(&g_cb, 0, sizeof(g_cb));
-      haskoki_std_shutdown();
-      haskoki_instance_shutdown();
-      (void)haskoki_finalize();
-      pthread_mutex_unlock(&g_init_lock);
-      return CKR_CANT_LOCK;
+    haskoki_instance_install(inst);
+    goto acquisition_ready;
+
+  acquisition_failed:
+    if (std != NULL) {
+      /* Haskell clears its bound owner before releasing native resources. */
+      haskoki_std_close(std);
     }
-    g_negotiated_mu = m;
-    g_have_negotiated = 1;
+    if (inst != NULL) {
+      haskoki_instance_close(inst);
+    }
+    (void)haskoki_finalize();
+    pthread_mutex_unlock(&g_init_lock);
+    return failure;
   }
+acquisition_ready:
   atomic_store(&g_initialized, 1);
   pthread_mutex_unlock(&g_init_lock);
   return CKR_OK;
