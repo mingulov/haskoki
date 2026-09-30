@@ -76,6 +76,42 @@ KAT lane (same bundle, rc2): 116467 tests — 83426 passed,
 `incomplete: false`). PBE legs identical to fast (28/0/5).
 No new findings.
 
+## 11s-3 fast lane (rc2 oracle, 2026-09-30)
+
+Bundle `dist-release/haskoki-0.3.0.0` at `55d4cc2` (11s-3 RSA wrap
+composition, 315/464), oracle pkcs11-check 0.2.2rc2
+(`/tmp/pkcs11-ws/run-lane-rc2.sh fast`, results
+`/tmp/pkcs11-ws/out-rc2/fast/pkcs11-fast-results.json`,
+backup `/tmp/pkcs11-fast-11s3.json`).
+
+Single run, zero failures: 10173 tests — 5115 passed, 0
+failed, 647 xfailed, 4411 skipped, 0 crashed. Delta
+vs 11s-2: +24 total, +5 passed, +0 xfailed, +19 skipped.
+The oracle exercises the new row end to end: all four
+`TestRSAAESKeyWrap` legs in `test_rsa_extended.py` pass
+with real `CK_RSA_AES_KEY_WRAP_PARAMS` (nested
+OAEP-SHA256) — `test_wrap_unwrap_aes128`,
+`test_wrap_unwrap_aes256`,
+`test_wrapped_data_differs_from_original`,
+`test_tampered_blob_rejected` — after skipping while the
+row was unadvertised. `test_mech_flags.py` adds its two
+matrix legs for the row (+2 passed, +7 skipped);
+`test_mech_negative.py` lists the row in eleven new
+skip legs; `test_mech_wrap.py` adds the documented
+hybrid-params skip (+1). One pass unit of the net delta
+is unattributed across units whose archived stdout is
+empty (prior-round per-test records were not kept);
+every observed movement is pass/skip-side with zero
+failures. No new oracle-side findings: no upstream
+filing from this round.
+
+KAT lane (same bundle, rc2): 116731 tests — 83511
+passed, 0 failed, 0 crashed, 1907 xfailed, 31313
+skipped (`/tmp/pkcs11-ws/out-rc2/kat/pkcs11-kat-results.json`,
+backup `/tmp/pkcs11-kat-11s3.json`;
+`incomplete: false`). Delta shape identical to fast
+(+5p/+0x/+19s). No new findings.
+
 ## 11s-2 fast lane (rc2 oracle, 2026-09-29)
 
 Bundle `dist-release/haskoki-0.3.0.0` at `d2fbd7e` (11s-2
