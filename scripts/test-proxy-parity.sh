@@ -111,7 +111,10 @@ done
 # an entry without a URL, or naming no listed scenario, fails the driver.
 # message_routed: proxy rejects raw IV params, clobbers output state on
 # errors, erases NULL/nonzero shapes, and orders session checks first.
-DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23"
+# async_routed: fixed GetID/Join refusals; Complete source cannot preserve
+# caller output bindings/capacity. Direct success is not transport parity.
+DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23
+async_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/24"
 for entry in $DIRECT_ONLY; do
   dname="${entry%%:*}"; durl="${entry#*:}"
   [ -n "$durl" ] && [ "$durl" != "$entry" ] \

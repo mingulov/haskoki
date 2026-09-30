@@ -2393,3 +2393,54 @@ The source definition counts are pins; runtime dispositions and oracle findings 
   "oracle_cbc_probe": "message:C_MessageEncryptInit/slot-present/3.2 check=ok\nmessage:C_EncryptMessage/slot-present/3.2 check=ok\nmessage:C_EncryptMessageBegin/slot-present/3.2 check=ok\nmessage:C_EncryptMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageEncryptFinal/slot-present/3.2 check=ok\nmessage:C_MessageDecryptInit/slot-present/3.2 check=ok\nmessage:C_DecryptMessage/slot-present/3.2 check=ok\nmessage:C_DecryptMessageBegin/slot-present/3.2 check=ok\nmessage:C_DecryptMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageDecryptFinal/slot-present/3.2 check=ok\nmessage:C_MessageSignInit/slot-present/3.2 check=ok\nmessage:C_SignMessage/slot-present/3.2 check=ok\nmessage:C_SignMessageBegin/slot-present/3.2 check=ok\nmessage:C_SignMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageSignFinal/slot-present/3.2 check=ok\nmessage:C_MessageVerifyInit/slot-present/3.2 check=ok\nmessage:C_VerifyMessage/slot-present/3.2 check=ok\nmessage:C_VerifyMessageBegin/slot-present/3.2 check=ok\nmessage:C_VerifyMessageNext/slot-present/3.2 check=ok\nmessage:C_MessageVerifyFinal/slot-present/3.2 check=ok\nmessage:fixture/open/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nmessage:fixture/create-key/3.2 rv=0x0 expected=0x0\nprobe: CBC init without IV rv=0x7\nmessage:fixture/close/3.2 rv=0x0 expected=0x0\nmessage:C_Finalize/probe-cleanup/3.2 rv=0x0 expected=0x0\n"
 }
 ```
+
+
+## Async routing: proxy transport
+
+Repository: `mingulov/pkcs11-proxy-ng`. Filed and read back on 2026-09-30:
+[Async transport cannot preserve detached jobs and output bindings](https://github.com/mingulov/pkcs11-proxy-ng/issues/24)
+(OPEN). This is the distinct async filing; issue 23 remains the message-routing disposition.
+
+Proxy source pin: `a48b60ba54b0163f4999c1e4fc0514bf7dc01681`.
+The installed pair was verified and mounted read-only; no proxy rebuild was used.
+
+| Artifact | SHA-256 |
+|---|---|
+| `/opt/pkcs11-proxy-ng/pkcs11-proxy-ng` | `260cb245981561291eab4d29a16cb6a4d6f00dca3431f3d583d35364fab0c9e5` |
+| `/opt/pkcs11-proxy-ng/libpkcs11_proxy_ng_shim.so` | `8ea85073ce8436ebdc8ee99bce99e70a6d8c34473c28b5a45567c8a26aba1690` |
+| Pinned `crates/shim/src/dispatch/general/async_ops.rs` | `cf1239e40f482755006bb1d1988b9d083f8f36312ad4d9543160e9c31c40ca72` |
+
+An independent pinned-header probe discovered the shim's 3.2 table, initialized
+it and opened a real async session against an owned SQLite backend with real
+OpenSSL and synthetic fallback disabled. `C_AsyncGetID(session, "C_Digest", &id)`
+returned `CKR_STATE_UNSAVEABLE` (`0x180`);
+`C_AsyncJoin(session, "C_Digest", 18446744073709551615UL, buffer, 32)` returned
+`CKR_SAVED_STATE_INVALID` (`0x160`). Repeating both calls with null names,
+null outputs, both null, and an invalid session produced the same fixed
+refusals: 16 calls, all ID/buffer/adjacent sentinels unchanged. These reproduce
+refusals only; they do not demonstrate successful proxy detach or Join.
+
+At the pinned source, `c_async_get_id` lines 72–78 (return at 77) and
+`c_async_join` lines 84–92 (return at 91) ignore their inputs unconditionally.
+The Complete limitation is a **source observation only**: `c_async_complete`
+lines 34–37 send session/function without caller capacity, while lines 41–61
+copy at most the incoming caller buffer's capacity and return success. This
+uses incoming storage rather than preserving the submission/Join output
+binding. Complete transport behavior was not executed by this probe.
+
+The full Task 7 direct consumer succeeds at attached completion, old-allocation
+revocation/rejoin, and separately executed SQLite restart: 1,281 async
+assertions, zero failures. Its complete transcript is copied to
+`dist-release-evidence/async-routing/proxy/direct-task7.log` (SHA-256
+`825ee5d7458235e6e47a8243f66992277c5c883d53065a7cc987f0fa13805e03`).
+The compared `libhaskoki.so` has SHA-256
+`6a62ee678ed6e5400cb25ad712263bf0a0914492e4a51b05e537ca1811328330`.
+The issue includes the full direct happy-path sequences, module identity,
+complete refusal transcript and reproduction sources; local command receipts,
+pinned source and daemon log are under the same `proxy/` evidence directory.
+
+`async_routed` therefore carries this exact issue URL in `DIRECT_ONLY`:
+the full direct leg must pass, and the driver must print its explicit
+exclusion. Eligible scenarios retain normal parity; no `async:` lines are
+filtered. Exclusion is not async transport equivalence. This records Task 8
+evidence for coordinator review; no acceptance is claimed.
