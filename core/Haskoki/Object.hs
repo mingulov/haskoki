@@ -418,7 +418,7 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
             , pcReasons = ["created object " ++ show oid]
             }
 
-ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkRsa, ckkEc, ckkAes :: Word64
+ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkRsa, ckkEc, ckkAes, ckkDsa, ckkDh, ckkX9_42Dh, ckkEcEdwards, ckkMlDsa, ckkSlhDsa, ckkMlKem :: Word64
 ckoPrivateKey = mustClassId "CKO_PRIVATE_KEY"
 ckoPublicKey = mustClassId "CKO_PUBLIC_KEY"
 ckoSecretKey = mustClassId "CKO_SECRET_KEY"
@@ -763,11 +763,11 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     resolveMlkemSet n = do
       oid <- mlkemOidOfCkp (fromIntegral n)
       (ekW, dkW, ctW) <- mlkemWidthsOfOid oid
-      alg <- case (fromIntegral n :: Int) of
+      alg <- (case (fromIntegral n :: Int) of
         1 -> Just 512
         2 -> Just 768
         3 -> Just 1024
-        _ -> Nothing
+        _ -> Nothing) :: Maybe Int
       pure (oid, ekW, dkW, ctW, alg)
     checkExact w s
       | BS.length s == w = Just s

@@ -321,7 +321,7 @@ sp800HashLen code = do
 -- code.
 sp800LengthFits :: Sp800Mode -> Int -> Int -> Int -> [[(AttributeType, AttributeValue)]] -> Bool
 sp800LengthFits mode lBits rBits hashLen tmpls =
-  let total = sum [fromIntegral n | t <- tmpls, (AttrValueLen, ValULong n) <- t] :: Integer
+  let total = sum [fromIntegral m | t <- tmpls, (AttrValueLen, ValULong m) <- t] :: Integer
       n = (total + toInteger hashLen - 1) `div` toInteger hashLen
   in total * 8 < 2 ^ lBits
     && (mode /= Sp800Counter || n <= 2 ^ rBits - 1)
@@ -689,10 +689,10 @@ planDerive rules model st mech baseH blob
               -- Unreachable post-validation; typed, never a crash.
               Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
                 "byte-op frame rejected after validation")
-              Just (auxN, offN, blob) ->
+              Just (auxN, offN, payBlob) ->
                 case resolveAuxKey byteOpsBaseOkState "byte-op" model st auxN of
                   Left deny -> KeyDenied deny
-                  Right mAux -> byteOpsFinish r mat mAux offN blob
+                  Right mAux -> byteOpsFinish r mat mAux offN payBlob
                     mech ost boBlob tmpls
   | Just r <- sp800RecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
@@ -803,7 +803,7 @@ planDerive rules model st mech baseH blob
     -- ceiling code); an XOR length mismatch refuses
     -- @CKR_DATA_LEN_RANGE@; an EXTRACT overrun refuses
     -- @CKR_ARGUMENTS_BAD@.
-    byteOpsFinish r mat mAux offN blob mech ost boBlob tmpls =
+    byteOpsFinish r mat mAux offN payBlob dMech ost boBlob tmpls =
       case boKind r of
         ConcatBaseAndKey -> case mAux of
           -- Unreachable: validation forces a nonzero aux
@@ -816,10 +816,10 @@ planDerive rules model st mech baseH blob
             Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
               "concat-key aux lost its material")
             Just auxMat -> natural (BS.length mat + BS.length auxMat)
-        ConcatBaseAndData -> natural (BS.length mat + BS.length blob)
-        ConcatDataAndBase -> natural (BS.length blob + BS.length mat)
+        ConcatBaseAndData -> natural (BS.length mat + BS.length payBlob)
+        ConcatDataAndBase -> natural (BS.length payBlob + BS.length mat)
         XorBaseAndData
-          | BS.length mat /= BS.length blob -> KeyDenied (KeyDeny CKR_DATA_LEN_RANGE
+          | BS.length mat /= BS.length payBlob -> KeyDenied (KeyDeny CKR_DATA_LEN_RANGE
               "XOR data length differs from the base length")
           | otherwise -> natural (BS.length mat)
         ExtractKeyFromKey ->
@@ -832,11 +832,11 @@ planDerive rules model st mech baseH blob
               window = max 0 (min (toInteger maxByteOpsOutput) remaining)
           in finish tmpls (fromInteger window)
             "EXTRACT window exceeds the base key"
-            (FxDerive mech (Just (osId ost)) mAux boBlob BS.empty)
+            (FxDerive dMech (Just (osId ost)) mAux boBlob BS.empty)
             Nothing
             CKR_ARGUMENTS_BAD
       where
-        fx = FxDerive mech (Just (osId ost)) mAux boBlob BS.empty
+        fx = FxDerive dMech (Just (osId ost)) mAux boBlob BS.empty
         natural n
           | n < 1 = KeyDenied (KeyDeny CKR_KEY_SIZE_RANGE
               "byte-op natural output is empty")
@@ -857,7 +857,7 @@ planDerive rules model st mech baseH blob
     -- @CKK_GENERIC_SECRET@; cipher keys keep the template type.
     -- KEY_SAFE suppresses IVs (v3.2 §6.40.7: the size is
     -- treated as 0).
-    keyMatFinish r ost tmpls mech kmBlob mac key iv = case tmpls of
+    keyMatFinish r ost tmpls dMech kmBlob mac key iv = case tmpls of
       [tmpl] -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
         Left deny -> KeyDenied deny
         Right attrs
@@ -875,7 +875,7 @@ planDerive rules model st mech baseH blob
               let (pos, lens) = unzip
                     [(pendingFromAttrs st outAttrs, n) | (outAttrs, n) <- outsFor attrs]
               in KeyEffect (PwDeriveIv pos lens (ivEff, ivEff))
-                (FxDerive mech (Just (osId ost)) Nothing kmBlob BS.empty total)
+                (FxDerive dMech (Just (osId ost)) Nothing kmBlob BS.empty total)
       _ -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "key-material derive needs exactly one template")
       where
@@ -909,7 +909,7 @@ planDerive rules model st mech baseH blob
     -- (@CKR_TEMPLATE_INCONSISTENT@ on conflict — the oracle's
     -- template-conflict leg). MAC outputs force
     -- @CKK_GENERIC_SECRET@; cipher keys keep the template type.
-    ssl3KeyMatFinish ost tmpls mech kmBlob mac key iv = case tmpls of
+    ssl3KeyMatFinish ost tmpls dMech kmBlob mac key iv = case tmpls of
       [tmpl] -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
         Left deny -> KeyDenied deny
         Right attrs
@@ -927,7 +927,7 @@ planDerive rules model st mech baseH blob
               let (pos, lens) = unzip
                     [(pendingFromAttrs st outAttrs, n) | (outAttrs, n) <- outsFor attrs]
               in KeyEffect (PwDeriveIv pos lens (iv, iv))
-                (FxDerive mech (Just (osId ost)) Nothing kmBlob BS.empty total)
+                (FxDerive dMech (Just (osId ost)) Nothing kmBlob BS.empty total)
       _ -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "SSL3 key-material derive needs exactly one template")
       where

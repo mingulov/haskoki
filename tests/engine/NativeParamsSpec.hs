@@ -1238,10 +1238,10 @@ spec = testGroup "native mechanism params"
         pokeByteOff out (4 * w) (nullPtr :: Ptr Word8)
         normalizeTls12KeyMatParams p (fromIntegral tls12KeyMatNativeSize)
       assertEqual "null iv refused" Nothing nullIv
-      exp <- build $ \p _ -> do
+      expOut <- build $ \p _ -> do
         pokeByteOff p (3 * w) (1 :: Word8)
         normalizeTls12KeyMatParams p (fromIntegral tls12KeyMatNativeSize)
-      assertEqual "export refused" Nothing exp
+      assertEqual "export refused" Nothing expOut
       ragged <- build $ \p _ -> do
         pokeByteOff p (2 * w) (CULong 127)
         normalizeTls12KeyMatParams p (fromIntegral tls12KeyMatNativeSize)

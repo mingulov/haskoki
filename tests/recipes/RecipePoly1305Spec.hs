@@ -22,6 +22,7 @@ tamper failure plus key independence.
 module RecipePoly1305Spec (spec) where
 
 import qualified Data.ByteString as BS
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
@@ -66,7 +67,7 @@ caseTable = do
 caseResolve :: IO ()
 caseResolve = do
   assertEqual "poly resolves"
-    (Just (head poly1305Recipes)) (poly1305RecipeFor polyMech)
+    (listToMaybe poly1305Recipes) (poly1305RecipeFor polyMech)
   assertEqual "foreign id resolves to Nothing"
     Nothing (poly1305RecipeFor (MechanismId 0xdead))
 

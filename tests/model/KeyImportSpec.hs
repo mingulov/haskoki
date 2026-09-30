@@ -1050,13 +1050,13 @@ caseEcExecutes = withRealEnv $ \env -> do
   privDer <- storedValue privAttrs
   (_, _, pubAttrs) <- doCreate m1 st ecPubTmpl
   pubDer <- storedValue pubAttrs
-  let spec = SigECDSA (EcSpec "P-256" "RAW") (Just D_SHA256)
-  sres <- sign env spec (KeyDer privDer) "import-msg"
+  let ecSpec = SigECDSA (EcSpec "P-256" "RAW") (Just D_SHA256)
+  sres <- sign env ecSpec (KeyDer privDer) "import-msg"
   sig <- case sres of
     EngineOk s -> pure s
     EngineFail err -> assertFailure ("imported EC sign failed: " ++ show err) >> undefined
   assertEqual "raw signature length" 64 (BS.length sig)
-  vres <- verify env spec (KeyDer pubDer) "import-msg" sig
+  vres <- verify env ecSpec (KeyDer pubDer) "import-msg" sig
   case vres of
     EngineOk () -> pure ()
     EngineFail err -> assertFailure ("imported EC verify failed: " ++ show err)
@@ -1069,13 +1069,13 @@ caseDsaExecutes = withRealEnv $ \env -> do
   privDer <- storedValue privAttrs
   (_, _, pubAttrs) <- doCreate m1 st dsaPubTmpl
   pubDer <- storedValue pubAttrs
-  let spec = SigDSA "RAW" (Just D_SHA256)
-  sres <- sign env spec (KeyDer privDer) "import-msg"
+  let dsaSpec = SigDSA "RAW" (Just D_SHA256)
+  sres <- sign env dsaSpec (KeyDer privDer) "import-msg"
   sig <- case sres of
     EngineOk s -> pure s
     EngineFail err -> assertFailure ("imported DSA sign failed: " ++ show err) >> undefined
   assertEqual "raw signature length" 56 (BS.length sig)
-  vres <- verify env spec (KeyDer pubDer) "import-msg" sig
+  vres <- verify env dsaSpec (KeyDer pubDer) "import-msg" sig
   case vres of
     EngineOk () -> pure ()
     EngineFail err -> assertFailure ("imported DSA verify failed: " ++ show err)
@@ -1088,12 +1088,12 @@ caseRsaExecutes = withRealEnv $ \env -> do
   privDer <- storedValue privAttrs
   (_, _, pubAttrs) <- doCreate m1 st rsaPubTmpl
   pubDer <- storedValue pubAttrs
-  let spec = SigRSA_PKCS1v15 D_SHA256
-  sres <- sign env spec (KeyDer privDer) "import-msg"
+  let rsaSpec = SigRSA_PKCS1v15 D_SHA256
+  sres <- sign env rsaSpec (KeyDer privDer) "import-msg"
   sig <- case sres of
     EngineOk s -> pure s
     EngineFail err -> assertFailure ("imported RSA sign failed: " ++ show err) >> undefined
-  vres <- verify env spec (KeyDer pubDer) "import-msg" sig
+  vres <- verify env rsaSpec (KeyDer pubDer) "import-msg" sig
   case vres of
     EngineOk () -> pure ()
     EngineFail err -> assertFailure ("imported RSA verify failed: " ++ show err)
@@ -1413,13 +1413,13 @@ caseMldsaExecutes = withRealEnv $ \env -> do
   privDer <- storedValue privAttrs
   (_, _, pubAttrs) <- doCreate m1 st (mldsaPubTmpl oid raw)
   pubDer <- storedValue pubAttrs
-  let spec = SigMLDSA ML_DSA_44 False "" True
-  sres <- sign env spec (KeyDer privDer) "import-msg"
+  let mSpec = SigMLDSA ML_DSA_44 False "" True
+  sres <- sign env mSpec (KeyDer privDer) "import-msg"
   sig <- case sres of
     EngineOk s -> pure s
     EngineFail err -> assertFailure ("imported ML-DSA sign failed: " ++ show err) >> undefined
   assertEqual "raw signature length" 2420 (BS.length sig)
-  vres <- verify env spec (KeyDer pubDer) "import-msg" sig
+  vres <- verify env mSpec (KeyDer pubDer) "import-msg" sig
   case vres of
     EngineOk () -> pure ()
     EngineFail err -> assertFailure ("imported ML-DSA verify failed: " ++ show err)
@@ -1445,12 +1445,6 @@ mlkemCkp o
   | o == hex "0609608648016503040401" = 1
   | o == hex "0609608648016503040402" = 2
   | otherwise = 3
-
-mlkemAlgNum :: ByteString -> Word64
-mlkemAlgNum o
-  | o == hex "0609608648016503040401" = 512
-  | o == hex "0609608648016503040402" = 768
-  | otherwise = 1024
 
 mlkemPrivTmpl :: ByteString -> ByteString -> [(AttributeType, AttributeValue)]
 mlkemPrivTmpl oid dk =
@@ -1537,6 +1531,7 @@ mlkemFlatPriv oid dk =
       | otherwise = BS.pack [0x82, fromIntegral (n `div` 256), fromIntegral (n `mod` 256)]
     derTlv t body = BS.singleton t <> derLen (BS.length body) <> body
     derSeqLocal parts = derTlv 0x30 (mconcat parts)
+    derIntLocal :: Int -> BS.ByteString
     derIntLocal 0 = BS.pack [0x02, 0x01, 0x00]
     derIntLocal _ = error "mlkemFlatPriv: version only"
     derOctetLocal = derTlv 0x04
@@ -1646,14 +1641,14 @@ caseMlkemExecutes = withRealEnv $ \env -> do
   dkStored <- storedValue privAttrs
   (_, _, pubAttrs) <- doCreate m1 st (mlkemPubTmpl oid ek)
   pubStored <- storedValue pubAttrs
-  let spec = KemSpec ML_KEM_768
-  eres <- kemEncapsulate env spec (KeyBytes pubStored)
+  let kemSpec = KemSpec ML_KEM_768
+  eres <- kemEncapsulate env kemSpec (KeyBytes pubStored)
   (ct, ss1) <- case eres of
     EngineOk pair -> pure pair
     EngineFail err -> assertFailure ("imported ML-KEM encaps failed: " ++ show err) >> undefined
   assertEqual "ciphertext length" 1088 (BS.length ct)
   assertEqual "shared secret length" 32 (BS.length ss1)
-  dres <- kemDecapsulate env spec (KeyBytes dkStored) ct
+  dres <- kemDecapsulate env kemSpec (KeyBytes dkStored) ct
   ss2 <- case dres of
     EngineOk ss -> pure ss
     EngineFail err -> assertFailure ("imported ML-KEM decaps failed: " ++ show err) >> undefined

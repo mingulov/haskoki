@@ -41,7 +41,6 @@ module RecipePbeSpec (spec) where
 
 import qualified Data.ByteString as BS
 import Data.Bits (popCount)
-import Data.Word (Word64)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 

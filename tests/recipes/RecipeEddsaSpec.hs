@@ -27,7 +27,6 @@ module RecipeEddsaSpec (spec) where
 
 import qualified Data.ByteString as BS
 import Data.Char (digitToInt, isHexDigit)
-import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Test.Tasty (TestTree, testGroup)
@@ -146,7 +145,7 @@ recipeOf name =
 
 -- | Big-endian u64 word (canonical codec byte order).
 word64 :: Int -> BS.ByteString
-word64 n = BS.pack [fromIntegral ((n `div` (256 ^ s)) `mod` 256) | s <- [7, 6 .. 0]]
+word64 n = BS.pack [fromIntegral ((n `div` (256 ^ s)) `mod` 256) | s <- ([7, 6 .. 0] :: [Int])]
 
 caseParams :: IO ()
 caseParams = do

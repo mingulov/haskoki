@@ -317,7 +317,7 @@ casePlan = do
   -- Accepted: extended without aux.
   case planDerive defaultRules m testSession extMech baseHandle
       (encodeDeriveParams extFrame [derivedTmpl 48]) of
-    KeyEffect _ (FxDerive mech (Just oid) Nothing _ _ total) -> do
+    KeyEffect _ (FxDerive mech (Just _) Nothing _ _ total) -> do
       assertEqual "mech" extMech mech
       assertEqual "total" 48 total
     other -> assertFailure ("expected effect, got " ++ show other)

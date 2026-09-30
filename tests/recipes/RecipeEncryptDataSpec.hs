@@ -52,7 +52,6 @@ import Haskoki.Operation.KeyManagement
   , KeyPlan (..)
   , ckkAes
   , ckkAria
-  , ckkCamellia
   , ckkDes3
   , ckkGenericSecret
   , ckoSecretKey

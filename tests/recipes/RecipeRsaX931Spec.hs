@@ -20,6 +20,7 @@ oracle sends 20- and 32-byte digests only (TestRSAX931).
 module RecipeRsaX931Spec (spec) where
 
 import qualified Data.ByteString as BS
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
@@ -65,7 +66,7 @@ caseTable = do
 caseResolve :: IO ()
 caseResolve = do
   assertEqual "raw resolves"
-    (Just (head rsaX931Recipes)) (rsaX931RecipeFor x931Mech)
+    (listToMaybe rsaX931Recipes) (rsaX931RecipeFor x931Mech)
   assertEqual "sha1 resolves"
     (Just (rsaX931Recipes !! 1)) (rsaX931RecipeFor sha1Mech)
   assertEqual "foreign id resolves to Nothing"

@@ -2285,8 +2285,8 @@ caseDes3mac = withSynth "11" $ \env -> do
         | oid == k2Oid = Just des3Key16
         | oid == shortOid = Just (KeyBytes "fifteen bytes!!")
         | otherwise = Nothing
-      signAs mech oid params msg =
-        runEffect env res (FxSign mech (Just oid) params msg) >>= expectBytes
+      signAs mech oid params body =
+        runEffect env res (FxSign mech (Just oid) params body) >>= expectBytes
       msg = "twenty bytes of input!!"
   t1 <- signAs macMech kOid BS.empty msg
   assertEqual "plain half width" 4 (BS.length t1)
@@ -2351,8 +2351,8 @@ caseCbcMac = withSynth "11" $ \env -> do
         | oid == k16Oid = Just (KeyBytes "0123456789abcdef")
         | oid == shortOid = Just (KeyBytes "fifteen bytes!!")
         | otherwise = Nothing
-      signAs mech oid params msg =
-        runEffect env res (FxSign mech (Just oid) params msg) >>= expectBytes
+      signAs mech oid params body =
+        runEffect env res (FxSign mech (Just oid) params body) >>= expectBytes
       -- Three blocks: the synthetic XOR-stream keystream cancels at
       -- even block counts (e2 = m1^m2), so separation needs odd.
       msg = "0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -2416,8 +2416,8 @@ caseXcbc = withSynth "11" $ \env -> do
         | oid == badOid = Just (KeyBytes "fedcba9876543210")
         | oid == k32Oid = Just key32
         | otherwise = Nothing
-      signAs mech oid params msg =
-        runEffect env res (FxSign mech (Just oid) params msg) >>= expectBytes
+      signAs mech oid params body =
+        runEffect env res (FxSign mech (Just oid) params body) >>= expectBytes
       msg = "thirty-two bytes of input here!!"
   t1 <- signAs xcbcMech kOid BS.empty msg
   assertEqual "plain width" 16 (BS.length t1)
@@ -2465,8 +2465,8 @@ caseGmac = withSynth "11" $ \env -> do
         | otherwise = Nothing
       nonce = "0123456789ab"
       good = encodeGcmParams nonce BS.empty 16
-      signAs oid params msg =
-        runEffect env res (FxSign gmacMech (Just oid) params msg) >>= expectBytes
+      signAs oid params body =
+        runEffect env res (FxSign gmacMech (Just oid) params body) >>= expectBytes
       msg = "gmac message bytes"
   t1 <- signAs kOid good msg
   assertEqual "tag width" 16 (BS.length t1)
@@ -2576,8 +2576,8 @@ caseTlsPrf = withSynth "11" $ \env -> do
         | oid == secOid = Just (KeyBytes (BS.pack [0 .. 47]))
         | oid == oddOid = Just (KeyBytes (BS.pack [0 .. 46]))
         | otherwise = Nothing
-      deriveAs oid params outLen =
-        runEffect env res (FxDerive tlsPrf (Just oid) Nothing params BS.empty outLen)
+      deriveAs oid frame outLen =
+        runEffect env res (FxDerive tlsPrf (Just oid) Nothing frame BS.empty outLen)
           >>= expectBytes
       params = encodeTlsPrfParams "test label" "0123456789abcdef"
   d1 <- deriveAs secOid params 48

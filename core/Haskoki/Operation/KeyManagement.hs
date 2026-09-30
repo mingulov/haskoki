@@ -269,7 +269,7 @@ import Haskoki.Outcome
   )
 import Haskoki.Recipe.Ecdh (ecdhSecretWidth)
 import Haskoki.Recipe.Kdf (decodePbkd2Params, maxPbkd2Iters)
-import Haskoki.Recipe.Pbe (PbeKind (..), PbeRecipe (pbeKind), decodePbeParams, pbeIvLen, pbeKeyLen, pbeParamsValid, pbeRecipeFor)
+import Haskoki.Recipe.Pbe (PbeKind (..), PbeRecipe (pbeKind), pbeIvLen, pbeKeyLen, pbeParamsValid, pbeRecipeFor)
 import Haskoki.Recipe.Otp (hotpKeygenMaxBytes, hotpKeygenMinBytes)
 import Haskoki.Recipe.RsaOaep
   ( decodeOaepParams
@@ -294,7 +294,6 @@ import Haskoki.Recipe.WrapComp
   , wrapCompDomain
   , wrapCompEcdhKdfServed
   , wrapCompEcdhKeyOk
-  , wrapCompEcdhParamsValid
   , wrapCompEcdhParamsWellFormed
   , wrapCompEcdhRecipeFor
   , wrapCompSplitBlob
@@ -2855,9 +2854,9 @@ planPbkd2Gen st mech params tmpl = case decodePbkd2Params params of
           Left deny -> Left deny
           Right attrs -> case Map.lookup AttrValueLen attrs of
             Just (ValULong n)
-              | lenOk wantKey n -> Right (effect attrs (fromIntegral n))
+              | pbkd2LenOk wantKey n -> Right (effect attrs (fromIntegral n))
               | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
-                  ("PBKD2 length " ++ show n ++ " is outside " ++ lenDesc wantKey))
+                  ("PBKD2 length " ++ show n ++ " is outside " ++ pbkd2LenDesc wantKey))
             Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
               "PBKD2 value length is malformed")
             Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
@@ -2877,12 +2876,12 @@ planPbkd2Gen st mech params tmpl = case decodePbkd2Params params of
         | k == ckkAesXts -> Just ckkAesXts
         | otherwise -> Nothing
       Just _ -> Nothing
-    lenOk wantKey n
+    pbkd2LenOk wantKey n
       | wantKey == ckkAes = n `elem` [16, 24, 32]
       | wantKey == ckkDes3 = n == 24
       | wantKey == ckkAesXts = n `elem` [32, 64]
       | otherwise = n >= 1 && n <= fromIntegral pbkd2KeygenMaxBytes
-    lenDesc wantKey
+    pbkd2LenDesc wantKey
       | wantKey == ckkAes = "the AES 16/24/32 domain"
       | wantKey == ckkDes3 = "the DES3 24-byte domain"
       | wantKey == ckkAesXts = "the XTS 32/64 domain"
@@ -3180,7 +3179,9 @@ fips186ParamSizes label requireSub attrs = case Map.lookup AttrPrimeBits attrs o
   Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
     (label ++ " parameter generation needs CKA_PRIME_BITS"))
   where
+    served :: [(Int, Int)]
     served = [(1024, 160), (2048, 224), (2048, 256), (3072, 256)]
+    dflt :: Int -> Int
     dflt 1024 = 160
     dflt 2048 = 256
     dflt _ = 256

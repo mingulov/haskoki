@@ -1033,8 +1033,8 @@ caseDriverEncryptData = withBackend $ \env -> do
   assertEqual "camellia-cbc full" (hex "94887caa8b90cd132d9aa972db3e52bbd31bfa4ec4d6392631742a8ad4cf91a6") camCbc
   camEcb <- derive kCam camEcbEdMech edData32 32
   assertEqual "camellia-ecb full" (hex "77cf412067af8270613529149919546f460efad46fc3bf49c3b66d8bff668492") camEcb
-  d3cbc <- derive kD3 d3CbcEdMech d3cbc 16
-  assertEqual "des3-cbc full" (hex "a78cd104d767ee1a17dfe53c25fb97d3") d3cbc
+  d3cbcCt <- derive kD3 d3CbcEdMech d3cbc 16
+  assertEqual "des3-cbc full" (hex "a78cd104d767ee1a17dfe53c25fb97d3") d3cbcCt
   d3ecb <- derive kD3 d3EcbEdMech edData16 16
   assertEqual "des3-ecb full" (hex "534c0b5cdcb62ea80cfcfab978042851") d3ecb
   desCbc <- derive kDesCbc desCbcEdMech (drvDesIv <> drvDesPt) 16
@@ -2350,8 +2350,8 @@ caseDriverTlsPrf = withBackend $ \env -> do
         | oid == evenOid = Just (KeyBytes sec48)
         | oid == oddOid = Just (KeyBytes sec47)
         | otherwise = Nothing
-      deriveAs oid params outLen =
-        runEffect env res (FxDerive tlsPrf (Just oid) Nothing params BS.empty outLen)
+      deriveAs oid prfParams outLen =
+        runEffect env res (FxDerive tlsPrf (Just oid) Nothing prfParams BS.empty outLen)
           >>= expectBytes
       params = encodeTlsPrfParams "test label" "0123456789abcdef"
   full48 <- deriveAs evenOid params 48

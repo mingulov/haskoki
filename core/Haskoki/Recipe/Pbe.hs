@@ -181,7 +181,7 @@ decodeU16 bs
       in Just (BS.foldl' (\a b -> a * 256 + fromIntegral b) 0 w, rest)
 
 encodeU64 :: Word64 -> ByteString
-encodeU64 w = BS.pack [fromIntegral ((w `div` (256 ^ i)) `mod` 256) | i <- [7, 6 .. 0]]
+encodeU64 w = BS.pack [fromIntegral ((w `div` (256 ^ i)) `mod` 256) | i <- ([7, 6 .. 0] :: [Int])]
 
 decodeU64 :: ByteString -> Maybe (Word64, ByteString)
 decodeU64 bs

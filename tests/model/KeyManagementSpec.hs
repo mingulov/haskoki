@@ -1558,6 +1558,7 @@ casePbkd2Keygen = withSynth $ \answer -> do
           CKR_MECHANISM_PARAM_INVALID (kdCode deny)
         other -> assertFailure
           ("params " ++ show params ++ " must refuse: " ++ show other)
+    typedTmpl :: Word64 -> Int -> [(AttributeType, AttributeValue)]
     typedTmpl k n =
       [ (AttrClass, ValULong ckoSecretKey)
       , (AttrKeyType, ValULong k)
@@ -1797,13 +1798,13 @@ caseInitKeyTypeMatrix = withSynth $ \answer -> do
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrToken, ValBool False)
         ]
-  (m3, legacyH) <- case publishPending m2 st [pendingFromAttrs st legacyAttrs] of
+  (m4, legacyH) <- case publishPending m2 st [pendingFromAttrs st legacyAttrs] of
     Left deny -> assertFailure ("plant must publish: " ++ show deny) >> undefined
     Right (delta, [h]) -> do
       m' <- expectRight (publishDelta m2 delta)
       pure (m', h)
     Right _ -> assertFailure "plant must mint one handle" >> undefined
-  let env3 = env { oeModel = m3 }
+  let env3 = env { oeModel = m4 }
       (_, signLegacy) = initOperation env3 emptySessionOps st (mkSign legacyH)
   assertEqual "untyped legacy key skips matrix" CKR_OK (ioCode signLegacy)
 
@@ -3457,7 +3458,7 @@ caseUnwrapKeyTypeLength = withSynth $ \answer -> do
   let wrap16Blob = doWrap aesKwMech m3 st answer wrapH targetH 24
   blob16 <- wrap16Blob
   blob32 <- doWrap aesKwMech m3 st answer wrapH target24H 32
-  let des3Tmpl =
+  let des3UnwrapTmpl =
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrKeyType, ValULong (mustKeyTypeId "CKK_DES3"))
         , (AttrToken, ValBool False)
@@ -3470,7 +3471,7 @@ caseUnwrapKeyTypeLength = withSynth $ \answer -> do
         , (AttrExtractable, ValBool True)
         ]
   -- 16 bytes as DES3 refuses at commit (the confusion leg).
-  case planUnwrapKey defaultRules m3 st aesKwMech BS.empty wrapH blob16 des3Tmpl of
+  case planUnwrapKey defaultRules m3 st aesKwMech BS.empty wrapH blob16 des3UnwrapTmpl of
     KeyEffect pw fx -> do
       res <- answer m3 fx
       case finishWork m3 st pw res of
@@ -3480,7 +3481,7 @@ caseUnwrapKeyTypeLength = withSynth $ \answer -> do
         other -> assertFailure ("confused unwrap committed, got: " ++ show other)
     other -> assertFailure ("unwrap plan is not an effect: " ++ show other)
   -- 24 bytes as DES3 commits (the type path itself works).
-  case planUnwrapKey defaultRules m3 st aesKwMech BS.empty wrapH blob32 des3Tmpl of
+  case planUnwrapKey defaultRules m3 st aesKwMech BS.empty wrapH blob32 des3UnwrapTmpl of
     KeyEffect pw fx -> do
       res <- answer m3 fx
       c <- finishCommit m3 st pw res 1
@@ -3626,36 +3627,35 @@ caseRsaWrapMismatch = withSynth $ \answer -> do
   -- the type gate (usage gates first, mirroring the AES resolver).
   let pubT = rsaPubTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
       privT = rsaPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)]
-      oaep = encodeOaepParams "SHA256" "SHA256" BS.empty
   (m1, pubH, privH) <- genRsaPair answer m0 st pubT privT
   (m2, targetH) <- genAesKey answer m1 st (aesTmpl 16)
   (m3, aesWrapH) <- genAesKey answer m2 st wrapKeyTmpl
-  let denyWrap m mech params wrapH targetH cap = case planWrapKey m st mech params wrapH targetH cap of
+  let denyWrap m mech params wrapH tgtH cap = case planWrapKey m st mech params wrapH tgtH cap of
         KeyDenied (KeyDeny code _) -> pure code
         other -> assertFailure ("wrap must deny, got: " ++ show other) >> undefined
-      denyUnwrap m mech params wrapH blob tmpl =
-        case planUnwrapKey defaultRules m st mech params wrapH blob tmpl of
+      denyUnwrap m mech params wrapH blob outTmpl =
+        case planUnwrapKey defaultRules m st mech params wrapH blob outTmpl of
           KeyDenied (KeyDeny code _) -> pure code
           other -> assertFailure ("unwrap must deny, got: " ++ show other) >> undefined
       tmpl = [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong ckkAes)]
   -- Parameter shapes refuse.
-  code <- denyWrap m3 rsaPkcsMech "nonempty" pubH targetH (IntentBuffer 256)
-  assertEqual "v1.5 params code" CKR_ARGUMENTS_BAD code
-  code <- denyWrap m3 rsaOaepMech "garbage" pubH targetH (IntentBuffer 256)
-  assertEqual "oaep params code" CKR_ARGUMENTS_BAD code
+  code1 <- denyWrap m3 rsaPkcsMech "nonempty" pubH targetH (IntentBuffer 256)
+  assertEqual "v1.5 params code" CKR_ARGUMENTS_BAD code1
+  code2 <- denyWrap m3 rsaOaepMech "garbage" pubH targetH (IntentBuffer 256)
+  assertEqual "oaep params code" CKR_ARGUMENTS_BAD code2
   -- Wrong halves and foreign key types refuse.
-  code <- denyWrap m3 rsaPkcsMech BS.empty privH targetH (IntentBuffer 256)
-  assertEqual "private-half wrap code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT code
-  code <- denyWrap m3 rsaPkcsMech BS.empty aesWrapH targetH (IntentBuffer 256)
-  assertEqual "aes-key wrap code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT code
-  code <- denyUnwrap m3 rsaPkcsMech BS.empty pubH (BS.replicate 256 0) tmpl
-  assertEqual "public-half unwrap code" CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT code
+  code3 <- denyWrap m3 rsaPkcsMech BS.empty privH targetH (IntentBuffer 256)
+  assertEqual "private-half wrap code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT code3
+  code4 <- denyWrap m3 rsaPkcsMech BS.empty aesWrapH targetH (IntentBuffer 256)
+  assertEqual "aes-key wrap code" CKR_WRAPPING_KEY_TYPE_INCONSISTENT code4
+  code5 <- denyUnwrap m3 rsaPkcsMech BS.empty pubH (BS.replicate 256 0) tmpl
+  assertEqual "public-half unwrap code" CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT code5
   -- A key marked non-wrapping cannot wrap (absent flags default
   -- true at keygen, so the refusal needs an explicit false).
   (m4, plainPubH, _) <- genRsaPair answer m3 st
     (rsaPubTmpl ++ [(AttrWrap, ValBool False)]) rsaPrivTmpl
-  code <- denyWrap m4 rsaPkcsMech BS.empty plainPubH targetH (IntentBuffer 256)
-  assertEqual "no-wrap-mark code" CKR_KEY_FUNCTION_NOT_PERMITTED code
+  code6 <- denyWrap m4 rsaPkcsMech BS.empty plainPubH targetH (IntentBuffer 256)
+  assertEqual "no-wrap-mark code" CKR_KEY_FUNCTION_NOT_PERMITTED code6
   -- An unextractable target cannot wrap.
   (m5, sealedH) <- genAesKey answer m4 st
     [ (AttrClass, ValULong ckoSecretKey)
@@ -3664,25 +3664,25 @@ caseRsaWrapMismatch = withSynth $ \answer -> do
     , (AttrToken, ValBool False)
     , (AttrExtractable, ValBool False)
     ]
-  code <- denyWrap m5 rsaPkcsMech BS.empty pubH sealedH (IntentBuffer 256)
-  assertEqual "unextractable code" CKR_KEY_UNEXTRACTABLE code
+  code7 <- denyWrap m5 rsaPkcsMech BS.empty pubH sealedH (IntentBuffer 256)
+  assertEqual "unextractable code" CKR_KEY_UNEXTRACTABLE code7
   -- Oversized payloads refuse with the length code (v1.5 bound
   -- k-11 = 245; OAEP-SHA-512 bound k-2*64-2 = 126).
   (m6, bigH) <- genKeyWith answer m5 st genericSecretKeyGenMech
     (genericTmpl 250 ++ [(AttrExtractable, ValBool True)])
-  code <- denyWrap m6 rsaPkcsMech BS.empty pubH bigH (IntentBuffer 256)
-  assertEqual "oversized code" CKR_DATA_LEN_RANGE code
+  code8 <- denyWrap m6 rsaPkcsMech BS.empty pubH bigH (IntentBuffer 256)
+  assertEqual "oversized code" CKR_DATA_LEN_RANGE code8
   let oaep512 = encodeOaepParams "SHA512" "SHA512" BS.empty
   (m7, midH) <- genKeyWith answer m6 st genericSecretKeyGenMech
     (genericTmpl 200 ++ [(AttrExtractable, ValBool True)])
-  code <- denyWrap m7 rsaOaepMech oaep512 pubH midH (IntentBuffer 256)
-  assertEqual "oversized oaep code" CKR_DATA_LEN_RANGE code
+  code9 <- denyWrap m7 rsaOaepMech oaep512 pubH midH (IntentBuffer 256)
+  assertEqual "oversized oaep code" CKR_DATA_LEN_RANGE code9
   -- Off-modulus blobs and key-typeless templates refuse.
-  code <- denyUnwrap m7 rsaPkcsMech BS.empty privH "short" tmpl
-  assertEqual "short blob code" CKR_ARGUMENTS_BAD code
-  code <- denyUnwrap m7 rsaPkcsMech BS.empty privH (BS.replicate 256 0)
+  code10 <- denyUnwrap m7 rsaPkcsMech BS.empty privH "short" tmpl
+  assertEqual "short blob code" CKR_ARGUMENTS_BAD code10
+  code11 <- denyUnwrap m7 rsaPkcsMech BS.empty privH (BS.replicate 256 0)
     [(AttrClass, ValULong ckoSecretKey)]
-  assertEqual "typeless template code" CKR_TEMPLATE_INCOMPLETE code
+  assertEqual "typeless template code" CKR_TEMPLATE_INCOMPLETE code11
   -- Short buffers answer the modulus width.
   case planWrapKey m3 st rsaPkcsMech BS.empty pubH targetH (IntentBuffer 255) of
     KeyImmediate (Reject r) -> do
@@ -3757,27 +3757,27 @@ caseRsaX509Wrap = withSynth $ \answer -> do
         other -> assertFailure ("tail finish must commit, got: " ++ show other)
     other -> assertFailure ("unwrap plan is not a tail effect: " ++ show other)
   -- Refusals: parameters, lengths, blobs, oversized payloads.
-  let denyWrap m mech params wrapH targetH cap =
-        case planWrapKey m st mech params wrapH targetH cap of
+  let denyWrap m mech params wrapH tgtH cap =
+        case planWrapKey m st mech params wrapH tgtH cap of
           KeyDenied (KeyDeny code _) -> pure code
           other -> assertFailure ("wrap must deny, got: " ++ show other) >> undefined
-      denyUnwrap m mech params wrapH blob tmpl =
-        case planUnwrapKey defaultRules m st mech params wrapH blob tmpl of
+      denyUnwrap m mech params wrapH wrapBlob tmpl =
+        case planUnwrapKey defaultRules m st mech params wrapH wrapBlob tmpl of
           KeyDenied (KeyDeny code _) -> pure code
           other -> assertFailure ("unwrap must deny, got: " ++ show other) >> undefined
       notmpl = [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong ckkAes)]
-  code <- denyWrap m2 rsaX509Mech "nonempty" pubH targetH (IntentBuffer 256)
-  assertEqual "params code" CKR_ARGUMENTS_BAD code
-  code <- denyUnwrap m2 rsaX509Mech BS.empty privH (BS.replicate 256 0) notmpl
-  assertEqual "missing length code" CKR_TEMPLATE_INCOMPLETE code
-  code <- denyUnwrap m2 rsaX509Mech BS.empty privH (BS.replicate 256 0)
+  xcode1 <- denyWrap m2 rsaX509Mech "nonempty" pubH targetH (IntentBuffer 256)
+  assertEqual "params code" CKR_ARGUMENTS_BAD xcode1
+  xcode2 <- denyUnwrap m2 rsaX509Mech BS.empty privH (BS.replicate 256 0) notmpl
+  assertEqual "missing length code" CKR_TEMPLATE_INCOMPLETE xcode2
+  xcode3 <- denyUnwrap m2 rsaX509Mech BS.empty privH (BS.replicate 256 0)
     (notmpl ++ [(AttrValueLen, ValULong 300)])
-  assertEqual "over-wide length code" CKR_TEMPLATE_INCONSISTENT code
-  code <- denyUnwrap m2 rsaX509Mech BS.empty privH (BS.replicate 256 0)
+  assertEqual "over-wide length code" CKR_TEMPLATE_INCONSISTENT xcode3
+  xcode4 <- denyUnwrap m2 rsaX509Mech BS.empty privH (BS.replicate 256 0)
     (notmpl ++ [(AttrValueLen, ValBool True)])
-  assertEqual "malformed length code" CKR_TEMPLATE_INCONSISTENT code
-  code <- denyUnwrap m2 rsaX509Mech BS.empty privH "short" tmpl16
-  assertEqual "short blob code" CKR_ARGUMENTS_BAD code
+  assertEqual "malformed length code" CKR_TEMPLATE_INCONSISTENT xcode4
+  xcode5 <- denyUnwrap m2 rsaX509Mech BS.empty privH "short" tmpl16
+  assertEqual "short blob code" CKR_ARGUMENTS_BAD xcode5
   -- Zero overhead: the widest generatable secret (255) fits, while
   -- an extractable RSA private half (DER wider than k) refuses.
   (m3, wideH) <- genKeyWith answer m2 st genericSecretKeyGenMech
@@ -3788,8 +3788,8 @@ caseRsaX509Wrap = withSynth $ \answer -> do
   (m4, _, bigPrivH) <- genRsaPair answer m3 st rsaPubTmpl
     (filter ((/= AttrExtractable) . fst) rsaPrivTmpl
       ++ [(AttrExtractable, ValBool True)])
-  code <- denyWrap m4 rsaX509Mech BS.empty pubH bigPrivH (IntentBuffer 512)
-  assertEqual "oversized code" CKR_DATA_LEN_RANGE code
+  xcode6 <- denyWrap m4 rsaX509Mech BS.empty pubH bigPrivH (IntentBuffer 512)
+  assertEqual "oversized code" CKR_DATA_LEN_RANGE xcode6
 
 caseRecoverAttrs :: IO ()
 caseRecoverAttrs = withSynth $ \answer -> do
@@ -4352,12 +4352,12 @@ casePubPrivRefusals = withSynth $ \_answer -> do
   c7 <- denyCode m5 rsaH (encodeDeriveParams BS.empty [rsaTmpl, rsaTmpl])
   assertEqual "two templates code" CKR_ARGUMENTS_BAD c7
   -- Template class/type must fit the derivation.
-  let secretTmpl =
+  let rsaSecretTmpl =
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrKeyType, ValULong ckkRsa)
         , (AttrToken, ValBool False)
         ]
-  c8 <- denyCode m5 rsaH (encodeDeriveParams BS.empty [secretTmpl])
+  c8 <- denyCode m5 rsaH (encodeDeriveParams BS.empty [rsaSecretTmpl])
   assertEqual "class fit code" CKR_TEMPLATE_INCONSISTENT c8
   let ecTmpl =
         [ (AttrClass, ValULong ckoPublicKey)
@@ -5610,7 +5610,8 @@ caseTlsKdfPlans = do
     , (AttrToken, ValBool False)
     , (AttrDerive, ValBool True)
     ] (BS.pack [0 .. 47])
-  let kid n =
+  let kid :: Int -> [(AttributeType, AttributeValue)]
+      kid n =
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrKeyType, ValULong ckkGenericSecret)
         , (AttrValueLen, ValULong (fromIntegral n))
@@ -5666,7 +5667,8 @@ caseRealTlsKdfVector = withRealEnv $ \env -> do
     , (AttrToken, ValBool False)
     , (AttrDerive, ValBool True)
     ] (BS.pack [0 .. 47])
-  let kid n =
+  let kid :: Int -> [(AttributeType, AttributeValue)]
+      kid n =
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrKeyType, ValULong ckkGenericSecret)
         , (AttrValueLen, ValULong (fromIntegral n))
@@ -5729,6 +5731,7 @@ caseIkePlans = do
     , (AttrDerive, ValBool True)
     ] (BS.pack [32 .. 63])
   let auxN = fromIntegral (unExternalHandle auxH)
+      kid :: Int -> [(AttributeType, AttributeValue)]
       kid n =
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrKeyType, ValULong ckkGenericSecret)
@@ -5795,6 +5798,7 @@ caseRealIkeVector = withRealEnv $ \env -> do
     , (AttrDerive, ValBool True)
     ] (BS.pack [32 .. 63])
   let auxN = fromIntegral (unExternalHandle auxH)
+      kid :: Int -> [(AttributeType, AttributeValue)]
       kid n =
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrKeyType, ValULong ckkGenericSecret)
@@ -5861,6 +5865,7 @@ caseByteOpsPlans = do
     , (AttrDerive, ValBool True)
     ] (BS.pack [32 .. 63])
   let auxN = fromIntegral (unExternalHandle auxH)
+      kid :: Int -> [(AttributeType, AttributeValue)]
       kid n =
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrKeyType, ValULong ckkGenericSecret)
@@ -5951,6 +5956,7 @@ caseRealByteOpsVector = withRealEnv $ \env -> do
     , (AttrDerive, ValBool True)
     ] (BS.pack [32 .. 63])
   let auxN = fromIntegral (unExternalHandle auxH)
+      kid :: Int -> [(AttributeType, AttributeValue)]
       kid n =
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrKeyType, ValULong ckkGenericSecret)
@@ -6128,7 +6134,7 @@ caseRealSsl3Vector = withRealEnv $ \env -> do
     ] (BS.pack [0 .. 31])
   let fm = encodeSsl3MasterParams ssl3Cr ssl3Sr
       deriveOne mech base tmpl = do
-        (m', mat) <- case planDerive defaultRules m2 st mech base
+        (_m', mat) <- case planDerive defaultRules m2 st mech base
             (encodeDeriveParams fm [tmpl]) of
           KeyEffect pw fx -> do
             res <- answer m2 fx
@@ -6484,7 +6490,7 @@ caseKemAesTemplate = withSynth $ \answer -> do
   m0 <- seedModel >>= loginUser
   st <- getSession m0
   (m1, pubH, privH) <- genKemPair answer m0 st
-  let aesTmpl =
+  let aesKemTmpl =
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrKeyType, ValULong ckkAes)
         , (AttrValueLen, ValULong 32)
@@ -6494,7 +6500,7 @@ caseKemAesTemplate = withSynth $ \answer -> do
       ctLen = kemCtLen KemMl768
   -- Encaps against an AES template mints an AES-256 object
   -- carrying the 32-byte secret.
-  (m2, ct) <- case planKemEncaps m1 st mlKemMech pubH KemMl768 aesTmpl
+  (m2, ct) <- case planKemEncaps m1 st mlKemMech pubH KemMl768 aesKemTmpl
       (IntentBuffer (fromIntegral ctLen)) of
     KeyEffect pw fx -> do
       res <- answer m1 fx
@@ -6512,7 +6518,7 @@ caseKemAesTemplate = withSynth $ \answer -> do
         o -> assertFailure ("no ciphertext: " ++ show o) >> undefined
     other -> assertFailure ("must plan, got: " ++ show other) >> undefined
   -- Decaps against an AES template likewise mints AES-256.
-  case planKemDecaps m2 st mlKemMech privH KemMl768 ct aesTmpl of
+  case planKemDecaps m2 st mlKemMech privH KemMl768 ct aesKemTmpl of
     KeyEffect pw fx -> do
       res <- answer m2 fx
       c <- finishCommit m2 st pw res 1
@@ -6524,7 +6530,7 @@ caseKemAesTemplate = withSynth $ \answer -> do
     other -> assertFailure ("must plan, got: " ++ show other)
   -- Any other explicit secret type refuses inconsistent.
   let rsaTmpl = (AttrKeyType, ValULong ckkRsa) :
-        filter ((/= AttrKeyType) . fst) aesTmpl
+        filter ((/= AttrKeyType) . fst) aesKemTmpl
   case planKemEncaps m1 st mlKemMech pubH KemMl768 rsaTmpl
       (IntentBuffer (fromIntegral ctLen)) of
     KeyDenied (KeyDeny code _) ->
@@ -6533,7 +6539,7 @@ caseKemAesTemplate = withSynth $ \answer -> do
   -- Mechanism-contributed attributes refuse inconsistent on
   -- both entries (the finisher would otherwise silently
   -- overwrite caller bytes with the real secret).
-  let injected = (AttrValue, ValBytes "injected") : aesTmpl
+  let injected = (AttrValue, ValBytes "injected") : aesKemTmpl
   case planKemEncaps m1 st mlKemMech pubH KemMl768 injected
       (IntentBuffer (fromIntegral ctLen)) of
     KeyDenied (KeyDeny code _) ->
@@ -6546,7 +6552,7 @@ caseKemAesTemplate = withSynth $ \answer -> do
   -- An AES template without CKA_VALUE_LEN proceeds (the 32 is
   -- mechanism-determined, supplied upfront for the presence
   -- rule rather than refused).
-  let noLen = filter ((/= AttrValueLen) . fst) aesTmpl
+  let noLen = filter ((/= AttrValueLen) . fst) aesKemTmpl
   case planKemEncaps m1 st mlKemMech pubH KemMl768 noLen
       (IntentBuffer (fromIntegral ctLen)) of
     KeyEffect _ _ -> pure ()

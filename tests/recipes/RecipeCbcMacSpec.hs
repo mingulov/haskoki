@@ -297,8 +297,8 @@ caseDriverMap = do
     let mech = MechanismId (mustGeneratedId (mechName suffix))
     mapM_ (\k ->
       case cbcmacSpecFor mech (if isGen then encodeMacGeneral 8 else BS.empty) k of
-        Just (spec, _) -> assertEqual ("ecb " ++ T.unpack suffix ++ "/" ++ show k)
-          (ecbOf suffix k) spec
+        Just (got, _) -> assertEqual ("ecb " ++ T.unpack suffix ++ "/" ++ show k)
+          (ecbOf suffix k) got
         Nothing -> assertFailure ("unmapped " ++ T.unpack suffix ++ "/" ++ show k)
       ) [16, 24, 32]
     ) groupShape

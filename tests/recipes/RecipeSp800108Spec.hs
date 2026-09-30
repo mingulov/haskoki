@@ -248,17 +248,17 @@ caseStruct = do
           (sp800StructToCanonical Sp800Counter prf ps iv' add)
       good = ckm_SHA256_HMAC
   bad "little-endian counter refuses"
-    (Sp800Iter True 32 : tail oracleDataParams) BS.empty 0 good
+    (Sp800Iter True 32 : drop 1 oracleDataParams) BS.empty 0 good
   bad "little-endian dkm refuses"
     (init oracleDataParams ++ [Sp800DkmLen 1 True 32]) BS.empty 0 good
   bad "wide counter refuses"
-    (Sp800Iter False 64 : tail oracleDataParams) BS.empty 0 good
+    (Sp800Iter False 64 : drop 1 oracleDataParams) BS.empty 0 good
   bad "wide dkm refuses"
     (init oracleDataParams ++ [Sp800DkmLen 1 False 64]) BS.empty 0 good
   bad "segments method refuses"
     (init oracleDataParams ++ [Sp800DkmLen 2 False 32]) BS.empty 0 good
   bad "iteration must lead"
-    (tail oracleDataParams ++ [Sp800Iter False 32]) BS.empty 0 good
+    (drop 1 oracleDataParams ++ [Sp800Iter False 32]) BS.empty 0 good
   bad "dkm must trail"
     (oracleDataParams ++ [Sp800Bytes "x"]) BS.empty 0 good
   bad "lone iteration refuses" [Sp800Iter False 32] BS.empty 0 good
@@ -278,7 +278,7 @@ caseStruct = do
   -- have no counter); the frame records width 32, inert
   -- downstream. Counter mode refuses the placeholder (it
   -- needs its width).
-  let noIter = Sp800IterAbsent : tail oracleDataParams
+  let noIter = Sp800IterAbsent : drop 1 oracleDataParams
   assertEqual "feedback absent-iter translates" (Just oracleFrame)
     (sp800StructToCanonical Sp800Feedback ckm_SHA256_HMAC
       noIter BS.empty 0)

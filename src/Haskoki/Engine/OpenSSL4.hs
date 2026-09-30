@@ -413,8 +413,6 @@ instance CryptoBackend OpenSSL4 where
                 | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "sign" "private key DER rejected"))
                 | otherwise -> nativeFail "sign" code
               Right sig -> pure (EngineOk sig)
-        _ -> pure (EngineFail (BackendUnsupported "sign"
-          ("non-RSA/ECDSA/DSA spec: " ++ show spec)))
 
   verify be spec key msg sig = runGuarded be "verify" (sigSupported be spec) $ \env -> do
     mkey <- resolveKeyBytes env key
@@ -492,8 +490,6 @@ instance CryptoBackend OpenSSL4 where
             rc <- withForeignPtr (osslEnv env) $ \_ ->
               Raw.rsaX931Verify (osslCtx env) mdname (osslPropQ env) kb msg sig prehash
             verifyRc "verify" "malformed RSA signature" rc
-        _ -> pure (EngineFail (BackendUnsupported "verify"
-          ("non-RSA/ECDSA/DSA spec: " ++ show spec)))
 
   cipherEncrypt be spec key iv input =
     cipherRun be "cipherEncrypt" True spec key iv input
@@ -703,8 +699,6 @@ instance CryptoBackend OpenSSL4 where
         case r of
           Left code -> nativeFail "generateKey" code
           Right bs -> pure (EngineOk (KeyBytes bs, Nothing))
-  generateKey be spec = runGuarded be "generateKey" (genSupported be spec) $ \_ ->
-    pure (EngineFail (BackendUnsupported "generateKey" ("keygen not in set: " ++ show spec)))
 
   -- Mix the seed via RAND_add (additional input only, never
   -- a DRBG state replacement) with entropy estimate 0.0 (the

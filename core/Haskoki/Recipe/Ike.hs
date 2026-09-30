@@ -136,7 +136,7 @@ decodeIkeParams bs = case BS.uncons bs of
 ikeParamsValid :: IkeRecipe -> ByteString -> Bool
 ikeParamsValid r bs = case decodeIkeParams bs of
   Nothing -> False
-  Just (prf, flags, keynum, aux, b1, b2)
+  Just (prf, flags, keynum, aux, _b1, b2)
     | prf > 13 -> False
     | otherwise -> case ikKind r of
         Ike2PrfPlus -> flags == 0 && keynum == 0 && aux == 0 && BS.null b2

@@ -105,7 +105,7 @@ sp800Widths = [8, 16, 24, 32]
 
 encodeWord64 :: Int -> ByteString
 encodeWord64 n =
-  BS.pack [ fromIntegral ((n `div` 2 ^ (8 * i)) `mod` 256) | i <- [7, 6 .. 0] ]
+  BS.pack [ fromIntegral ((n `div` 2 ^ (8 * i)) `mod` 256) | i <- ([7, 6 .. 0] :: [Int]) ]
 
 decodeWord64 :: ByteString -> Maybe (Int, ByteString)
 decodeWord64 bs

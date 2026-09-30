@@ -227,9 +227,6 @@ concatKeyMech = MechanismId ckm_CONCATENATE_BASE_AND_KEY
 concatDataMech :: MechanismId
 concatDataMech = MechanismId ckm_CONCATENATE_BASE_AND_DATA
 
-dataConcatMech :: MechanismId
-dataConcatMech = MechanismId ckm_CONCATENATE_DATA_AND_BASE
-
 xorMech :: MechanismId
 xorMech = MechanismId ckm_XOR_BASE_AND_DATA
 

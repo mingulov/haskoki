@@ -65,7 +65,6 @@ import Haskoki.Recipe.SlhDsa
   , encodeSlhdsaParams
   , slhdsaCodec
   , slhdsaCodecFor
-  , slhdsaLevelOfDer
   , slhdsaParamsValid
   , slhdsaRecipeFor
   , slhdsaRecipes
@@ -165,7 +164,7 @@ recipeOf name =
 
 -- | Big-endian u64 word (canonical codec byte order).
 word64 :: Int -> BS.ByteString
-word64 n = BS.pack [fromIntegral ((n `div` (256 ^ s)) `mod` 256) | s <- [7, 6 .. 0]]
+word64 n = BS.pack [fromIntegral ((n `div` (256 ^ s)) `mod` 256) | s <- ([7, 6 .. 0] :: [Int])]
 
 caseParams :: IO ()
 caseParams = do

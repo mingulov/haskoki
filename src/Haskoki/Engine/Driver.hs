@@ -474,8 +474,7 @@ import Haskoki.Recipe.Otp
   , hotpTruncate
   )
 import Haskoki.Recipe.XcbcMac
-  ( XcbcRecipe (..)
-  , xcbcOutLen
+  ( xcbcOutLen
   , xcbcRecipeFor
   )
 import Haskoki.Recipe.Sp800108
@@ -3186,10 +3185,10 @@ runEffect env resolve fx = case fx of
     -- key.
     runPbe :: Word64 -> ByteString -> ByteString -> Int -> Bool -> Int -> IO CryptoResult
     runPbe iters pw salt keyLen parity ivLen = do
-      rK <- pbeKdf 1 keyLen
+      rK <- pbeDChain 1 keyLen
       if ivLen > 0
         then do
-          rV <- pbeKdf 2 ivLen
+          rV <- pbeDChain 2 ivLen
           pure $ case (rK, rV) of
             (EngineOk k, EngineOk v) ->
               GotBytes (encodeKeyPair (finish k) (Just v))
@@ -3200,8 +3199,8 @@ runEffect env resolve fx = case fx of
           EngineFail err -> GotCryptoError (toCryptoError err)
       where
         finish = if parity then pbeDesParity else id
-        pbeKdf :: Word8 -> Int -> IO (EngineResult ByteString)
-        pbeKdf ident n = loop n (expand salt <> expand pw) []
+        pbeDChain :: Word8 -> Int -> IO (EngineResult ByteString)
+        pbeDChain ident n = loop n (expand salt <> expand pw) []
           where
             d = BS.replicate 64 ident
             expand s
@@ -3233,7 +3232,7 @@ runEffect env resolve fx = case fx of
               r <- digestOneShot env D_SHA1 msg
               case r of
                 EngineFail err -> pure (EngineFail err)
-                EngineOk d -> hashTimes (k - 1) d
+                EngineOk dig -> hashTimes (k - 1) dig
             beInt :: ByteString -> Integer
             beInt = BS.foldl' (\a w -> a * 256 + fromIntegral w) 0
             beBytes :: Int -> Integer -> ByteString
@@ -3615,7 +3614,7 @@ runEffect env resolve fx = case fx of
         auxOf (Just _) = Left (CryptoBadKey "driver" "IKE aux key is not byte material")
         -- | The truncation rule admits the request: without aux
         -- input the output must fit the base.
-        extTruncOk Nothing extra kbLen outLen = not (BS.null extra) || outLen <= kbLen
+        extTruncOk Nothing extra kbLen wantLen = not (BS.null extra) || wantLen <= kbLen
         extTruncOk (Just _) _ _ _ = True
     -- | Byte-op derives: pure byte manipulation over secret
     -- material (no backend crypto — identical on both

@@ -2409,7 +2409,7 @@ casePoly1305Vector = withBackend $ \env -> do
   tag <- expectOk "poly1305 kat" =<< macSign env MacPoly1305 key polyMsg
   assertEqual "poly1305 tag" polyTag tag
   assertEqual "poly1305 tag length" 16 (BS.length tag)
-  expectOk "poly1305 verify kat" =<< macVerify env MacPoly1305 key polyMsg polyTag
+  _ <- expectOk "poly1305 verify kat" =<< macVerify env MacPoly1305 key polyMsg polyTag
   expectAuthFailed "poly1305 tampered rejected" =<<
     macVerify env MacPoly1305 key polyMsg (BS.init polyTag <> "X")
   expectAuthFailed "poly1305 wrong msg rejected" =<<
@@ -3191,7 +3191,6 @@ mldsaWyCtx = hex "436f6e74657874"
 caseDsa :: IO ()
 caseDsa = withBackend $ \env -> do
   let wyRaw = SigDSA "RAW" (Just D_SHA256)
-      wyDer = SigDSA "DER" (Just D_SHA256)
       cliPub = KeyDer dsaCliPub
       cliPriv = KeyDer dsaCliPriv
       wyPub = KeyDer dsaWyPub
@@ -3254,10 +3253,10 @@ caseDsaKeygen = withBackend $ \env -> do
     other -> assertFailure ("paramgen answer is not DER: " ++ show other)
   (priv, Just pub) <- expectOk "keygen from params" =<<
     generateKey env (GenDSAKeypair paramsDer)
-  let spec = SigDSA "RAW" (Just D_SHA256)
-  sig <- expectOk "genkey sign" =<< sign env spec priv dsaCliMsg
+  let dsaSpec = SigDSA "RAW" (Just D_SHA256)
+  sig <- expectOk "genkey sign" =<< sign env dsaSpec priv dsaCliMsg
   assertEqual "genkey raw width q256" 64 (BS.length sig)
-  expectOk "genkey verify" =<< verify env spec pub dsaCliMsg sig
+  expectOk "genkey verify" =<< verify env dsaSpec pub dsaCliMsg sig
   expectBadKey "garbage params refused" =<<
     generateKey env (GenDSAKeypair "bogus")
 
@@ -3797,7 +3796,7 @@ caseRealMldsaKeygen = withBackend $ \env -> do
   where
     genPair env (alg, width) = do
       let label = show alg
-          spec = SigMLDSA alg False "" True
+          mSpec = SigMLDSA alg False "" True
       (privM, mPubM) <- expectOk ("keygen " ++ label) =<< generateKey env (GenMLDSA alg)
       (privDer, pubDer) <- case (privM, mPubM) of
         (KeyDer priv, Just (KeyDer pub)) -> pure (priv, pub)
@@ -3806,11 +3805,11 @@ caseRealMldsaKeygen = withBackend $ \env -> do
         (Just (pubOid, _), Just (privOid, seed, _))
           | pubOid == privOid -> assertEqual ("seed width " ++ label) 32 (BS.length seed)
         _ -> assertFailure ("keygen halves disagree or do not parse: " ++ label)
-      sig <- expectOk ("genkey sign " ++ label) =<< sign env spec privM mldsaWyMsg
+      sig <- expectOk ("genkey sign " ++ label) =<< sign env mSpec privM mldsaWyMsg
       assertEqual ("genkey width " ++ label) width (BS.length sig)
       case mPubM of
         Just pubM -> expectOk ("genkey verify " ++ label) =<<
-          verify env spec pubM mldsaWyMsg sig
+          verify env mSpec pubM mldsaWyMsg sig
         Nothing -> assertFailure ("keygen missing public half: " ++ label)
 
 -- | SLH-DSA sign/verify: ACVP sigVer KATs (tcId 266 SHA2-128s
@@ -3927,7 +3926,7 @@ caseRealSlhdsaKeygen = withBackend $ \env -> do
   where
     genPair env (alg, secW, width) = do
       let label = show alg
-          spec = SigSLHDSA alg "" True
+          sSpec = SigSLHDSA alg "" True
       (privM, mPubM) <- expectOk ("keygen " ++ label) =<< generateKey env (GenSLHDSA alg)
       (privDer, pubDer) <- case (privM, mPubM) of
         (KeyDer priv, Just (KeyDer pub)) -> pure (priv, pub)
@@ -3936,11 +3935,11 @@ caseRealSlhdsaKeygen = withBackend $ \env -> do
         (Just (pubOid, _), Just (privOid, secret))
           | pubOid == privOid -> assertEqual ("secret width " ++ label) secW (BS.length secret)
         _ -> assertFailure ("keygen halves disagree or do not parse: " ++ label)
-      sig <- expectOk ("genkey sign " ++ label) =<< sign env spec privM slhAcvpMsg266
+      sig <- expectOk ("genkey sign " ++ label) =<< sign env sSpec privM slhAcvpMsg266
       assertEqual ("genkey width " ++ label) width (BS.length sig)
       case mPubM of
         Just pubM -> expectOk ("genkey verify " ++ label) =<<
-          verify env spec pubM slhAcvpMsg266 sig
+          verify env sSpec pubM slhAcvpMsg266 sig
         Nothing -> assertFailure ("keygen missing public half: " ++ label)
 
 -- | ML-KEM fixtures: wycheproof decaps tc1 (valid) per set
@@ -3948,11 +3947,6 @@ caseRealSlhdsaKeygen = withBackend $ \env -> do
 -- derived by seeded keygen against the pinned provider (the
 -- files carry the seed, not the dk; derivation replays byte-
 -- exact under the "seed" keygen param, proven by probe).
-mlkemWySeed512 :: ByteString
-mlkemWySeed512 = hex $ concat
-  ["a3896e30892230a6c1dff667f8caee759ff84a08e3462ae484fcbca9971d7959cdc6c5ec65f10a5a24b5145aac863232ee3b2229ca3a6c4b9c8a2dafc315d9d4"
-  ]
-
 mlkemWyEk512 :: ByteString
 mlkemWyEk512 = hex $ concat
   ["871b108fd980108768612345f2fc7317216f55576f914c3ede67878ea89046d636572ca78fd67a4efc9b68e462853b2ae8dab001b6059c390916fccf45bba50b"
@@ -4019,11 +4013,6 @@ mlkemWyCt512 = hex $ concat
 mlkemWyK512 :: ByteString
 mlkemWyK512 = hex $ concat
   ["cf3bcfeb2679cb43658fcdcd01aa1505bcea1e72a165ccac7bfb66d9dc0c0e90"
-  ]
-
-mlkemWySeed768 :: ByteString
-mlkemWySeed768 = hex $ concat
-  ["cbfc4405d1b2a3a386c94c25e0f2d5f5ee92cb0388ff4d6aa04223086d51c3fd24752da14c9fc3b8ae0d9e4a8b1016b8d8fc69e229c03ea2ef08a4ae0cffc37f"
   ]
 
 mlkemWyEk768 :: ByteString
@@ -4115,11 +4104,6 @@ mlkemWyCt768 = hex $ concat
 mlkemWyK768 :: ByteString
 mlkemWyK768 = hex $ concat
   ["76c10bb1d86d96d7eb18e298363e51f7728e113f455df7d15017940ed3541451"
-  ]
-
-mlkemWySeed1024 :: ByteString
-mlkemWySeed1024 = hex $ concat
-  ["8247c17686a8bc0b3afebe6bed1df1dc3ff7fa07c3670f624930235f20aecb4353ece11faa61f47d946ee501abb9a48029096de63b243a1794c4a760f98cc157"
   ]
 
 mlkemWyEk1024 :: ByteString
@@ -4289,28 +4273,28 @@ caseMlkem = withBackend $ \env -> do
   where
     roundtrip env (alg, ckp, ek, dk, ctW) = do
       let label = show alg
-          spec = mkKem alg
+          kemSpec = mkKem alg
       oid <- case mlkemOidOfCkp ckp of
         Just o -> pure o
         Nothing -> assertFailure ("no OID for CKP: " ++ show ckp)
       let pubDer = KeyDer (mlkemPublicDer oid ek)
           pubRaw = KeyBytes ek
           priv = KeyBytes dk
-      (ct1, ss1) <- expectOk ("encaps SPKI " ++ label) =<< kemEncapsulate env spec pubDer
+      (ct1, ss1) <- expectOk ("encaps SPKI " ++ label) =<< kemEncapsulate env kemSpec pubDer
       assertEqual ("ct width " ++ label) ctW (BS.length ct1)
       assertEqual ("ss width " ++ label) 32 (BS.length ss1)
       assertEqual ("roundtrip SPKI " ++ label) ss1 =<<
-        expectOk ("decaps SPKI " ++ label) =<< kemDecapsulate env spec priv ct1
-      (ct2, ss2) <- expectOk ("encaps raw " ++ label) =<< kemEncapsulate env spec pubRaw
+        expectOk ("decaps SPKI " ++ label) =<< kemDecapsulate env kemSpec priv ct1
+      (ct2, ss2) <- expectOk ("encaps raw " ++ label) =<< kemEncapsulate env kemSpec pubRaw
       assertEqual ("roundtrip raw " ++ label) ss2 =<<
-        expectOk ("decaps raw " ++ label) =<< kemDecapsulate env spec priv ct2
+        expectOk ("decaps raw " ++ label) =<< kemDecapsulate env kemSpec priv ct2
       assertBool ("encaps randomizes " ++ label) (ct1 /= ct2)
       -- A non-canonical raw ek refuses at the backend
       -- (fromdata re-validates the modulus even though import
       -- already refused it).
       let badEk = BS.pack [0xFF, 0xFF, 0xFF] <> BS.drop 3 ek
       expectBadKey ("non-canonical ek refused " ++ label) =<<
-        kemEncapsulate env spec (KeyBytes badEk)
+        kemEncapsulate env kemSpec (KeyBytes badEk)
 
 -- | ML-KEM generation: keygen mints usable pairs on all three
 -- sets (provider PKCS#8 halves with a 64-byte seed, SPKI
@@ -4322,7 +4306,7 @@ caseRealMlkemKeygen = withBackend $ \env -> do
   where
     genPair env (alg, ctW) = do
       let label = show alg
-          spec = mkKem alg
+          kemSpec = mkKem alg
       (privM, mPubM) <- expectOk ("keygen " ++ label) =<< generateKey env (GenMLKEM alg)
       (privDer, pubDer) <- case (privM, mPubM) of
         (KeyDer priv, Just (KeyDer pub)) -> pure (priv, pub)
@@ -4334,10 +4318,10 @@ caseRealMlkemKeygen = withBackend $ \env -> do
       pubM <- case mPubM of
         Just pub -> pure pub
         Nothing -> assertFailure ("keygen missing public half: " ++ label)
-      (ct, ss1) <- expectOk ("genkey encaps " ++ label) =<< kemEncapsulate env spec pubM
+      (ct, ss1) <- expectOk ("genkey encaps " ++ label) =<< kemEncapsulate env kemSpec pubM
       assertEqual ("genkey ct width " ++ label) ctW (BS.length ct)
       assertEqual ("genkey roundtrip " ++ label) ss1 =<<
-        expectOk ("genkey decaps " ++ label) =<< kemDecapsulate env spec privM ct
+        expectOk ("genkey decaps " ++ label) =<< kemDecapsulate env kemSpec privM ct
 
 loadMlkemFixture :: String -> IO ByteString
 loadMlkemFixture name = findFixture
@@ -4622,13 +4606,13 @@ caseRsaCompWrap = withBackend $ \env -> do
 -- Edwards curves); garbage DER refuses as a bad key.
 casePubFromPrivProvider :: IO ()
 casePubFromPrivProvider = withBackend $ \env -> do
-  let mint label spec = do
-        (priv, mpub) <- expectOk label =<< generateKey env spec
+  let mint label keyGen = do
+        (priv, mpub) <- expectOk label =<< generateKey env keyGen
         case (priv, mpub) of
           (KeyDer privB, Just (KeyDer pubB)) -> pure (privB, pubB)
           other -> assertFailure (label ++ ": halves are not DER: " ++ show other) >> undefined
-      check label spec = do
-        (privB, pubB) <- mint ("mint " ++ label) spec
+      check label keyGen = do
+        (privB, pubB) <- mint ("mint " ++ label) keyGen
         spki <- expectOk ("extract " ++ label) =<< pubFromPriv env (KeyDer privB)
         assertEqual ("SPKI equals minted pub: " ++ label) pubB spki
   check "rsa2048" (GenRSA 2048 65537)
@@ -4866,26 +4850,26 @@ caseAeadReal = withBackend $ \env -> do
       nonce = hex "000102030405060708090a0b"
       aad = "aad-data"
       pt = "Hello GCM world!"
-      spec = AeadSpec "AES-128-GCM" 12 16
+      aead = AeadSpec "AES-128-GCM" 12 16
   (ct, tag) <- expectOk "gcm vector" =<<
-    aeadEncrypt env spec key nonce aad pt
+    aeadEncrypt env aead key nonce aad pt
   assertEqual "vector ct" (hex "db09cba2093bb01706f216e544cf1429") ct
   assertEqual "vector tag" (hex "39f0385041afdfd3a2d5a8e8ed69a2e6") tag
   pt' <- expectOk "gcm vector decrypt" =<<
-    aeadDecrypt env spec key nonce aad ct tag
+    aeadDecrypt env aead key nonce aad ct tag
   assertEqual "vector roundtrip" pt pt'
   -- Tampering anywhere fails closed.
   let badTag = BS.pack [BS.head tag `xor` 1] <> BS.tail tag
   expectAuthFailed "tag tamper" =<<
-    aeadDecrypt env spec key nonce aad ct badTag
+    aeadDecrypt env aead key nonce aad ct badTag
   let badCt = BS.pack [BS.head ct `xor` 1] <> BS.tail ct
   expectAuthFailed "ct tamper" =<<
-    aeadDecrypt env spec key nonce aad badCt tag
+    aeadDecrypt env aead key nonce aad badCt tag
   expectAuthFailed "aad tamper" =<<
-    aeadDecrypt env spec key nonce "aad-datX" ct tag
+    aeadDecrypt env aead key nonce "aad-datX" ct tag
   -- Bounds: wrong key/nonce/tag widths refuse as bad params.
   expectBadParam "short key" =<<
-    aeadEncrypt env spec (KeyBytes "short") nonce aad pt
+    aeadEncrypt env aead (KeyBytes "short") nonce aad pt
   expectBadParam "short nonce" =<<
     aeadEncrypt env (AeadSpec "AES-128-GCM" 12 16) key "short" aad pt
   expectBadParam "bad alg" =<<
@@ -4901,20 +4885,20 @@ caseAeadEmptyPlaintext = withBackend $ \env -> do
   -- caseAeadReal): key 00..0f, nonce 00..0b.
   let key = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")
       nonce = hex "000102030405060708090a0b"
-      spec = AeadSpec "AES-128-GCM" 12 16
+      aead = AeadSpec "AES-128-GCM" 12 16
   (ct1, tag1) <- expectOk "empty-pt seal with aad" =<<
-    aeadEncrypt env spec key nonce "aad-data" ""
+    aeadEncrypt env aead key nonce "aad-data" ""
   assertEqual "empty-pt ct with aad" "" ct1
   assertEqual "empty-pt tag with aad" (hex "e01312146176abd643fcee9d4a640184") tag1
   pt1 <- expectOk "empty-pt open with aad" =<<
-    aeadDecrypt env spec key nonce "aad-data" ct1 tag1
+    aeadDecrypt env aead key nonce "aad-data" ct1 tag1
   assertEqual "empty-pt roundtrip with aad" "" pt1
   (ct0, tag0) <- expectOk "empty-pt seal without aad" =<<
-    aeadEncrypt env spec key nonce "" ""
+    aeadEncrypt env aead key nonce "" ""
   assertEqual "empty-pt ct without aad" "" ct0
   assertEqual "empty-pt tag without aad" (hex "435b9ba12d75a4be8a977ea3cd011890") tag0
   pt0 <- expectOk "empty-pt open without aad" =<<
-    aeadDecrypt env spec key nonce "" ct0 tag0
+    aeadDecrypt env aead key nonce "" ct0 tag0
   assertEqual "empty-pt roundtrip without aad" "" pt0
 
 caseAeadCcmReal :: IO ()
@@ -5028,7 +5012,7 @@ caseChachaPolyReal = withBackend $ \env -> do
       nonce = hex "070000004041424344454647"
       aad = hex "50515253c0c1c2c3c4c5c6c7"
       pt = chachaSunscreen
-      spec = AeadSpec "ChaCha20-Poly1305" 12 16
+      aead = AeadSpec "ChaCha20-Poly1305" 12 16
       ct = hex $ concat
         [ "d31a8d34648e60db7b86afbc53ef7ec2"
         , "a4aded51296e08fea9e2b5a736ee62d6"
@@ -5041,21 +5025,21 @@ caseChachaPolyReal = withBackend $ \env -> do
         ]
       tag = hex "1ae10b594f09e26a7e902ecbd0600691"
   (got, gotTag) <- expectOk "rfc 2.8.2 seal" =<<
-    aeadEncrypt env spec key nonce aad pt
+    aeadEncrypt env aead key nonce aad pt
   assertEqual "rfc 2.8.2 ct" ct got
   assertEqual "rfc 2.8.2 tag" tag gotTag
   back <- expectOk "rfc 2.8.2 open" =<<
-    aeadDecrypt env spec key nonce aad got gotTag
+    aeadDecrypt env aead key nonce aad got gotTag
   assertEqual "rfc 2.8.2 roundtrip" pt back
   -- Tampering anywhere fails closed.
   let badTag = BS.pack [BS.head gotTag `xor` 1] <> BS.tail gotTag
   expectAuthFailed "tag tamper" =<<
-    aeadDecrypt env spec key nonce aad got badTag
+    aeadDecrypt env aead key nonce aad got badTag
   expectAuthFailed "aad tamper" =<<
-    aeadDecrypt env spec key nonce "tampered-aad!" got gotTag
+    aeadDecrypt env aead key nonce "tampered-aad!" got gotTag
   -- Bounds: key exactly 32, tag exactly 16.
   expectBadParam "short key" =<<
-    aeadEncrypt env spec (KeyBytes "short") nonce aad pt
+    aeadEncrypt env aead (KeyBytes "short") nonce aad pt
   expectBadParam "short tag" =<<
     aeadEncrypt env (AeadSpec "ChaCha20-Poly1305" 12 8) key nonce aad pt
 
