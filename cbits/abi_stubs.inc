@@ -57,32 +57,6 @@ static CK_DECLARE_FUNCTION(CK_RV, x32_C_GetSessionValidationFlags)
   return x_live_check();
 }
 
-static CK_DECLARE_FUNCTION(CK_RV, x32_C_AsyncComplete)
-(CK_SESSION_HANDLE p0, CK_UTF8CHAR * p1, CK_ASYNC_DATA * p2) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x32_C_AsyncGetID)
-(CK_SESSION_HANDLE p0, CK_UTF8CHAR * p1, CK_ULONG * p2) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  return x_live_check();
-}
-
-static CK_DECLARE_FUNCTION(CK_RV, x32_C_AsyncJoin)
-(CK_SESSION_HANDLE p0, CK_UTF8CHAR * p1, CK_ULONG p2, CK_BYTE * p3, CK_ULONG p4) {
-  (void)p0;
-  (void)p1;
-  (void)p2;
-  (void)p3;
-  (void)p4;
-  return x_live_check();
-}
-
 static CK_DECLARE_FUNCTION(CK_RV, x32_C_WrapKeyAuthenticated)
 (CK_SESSION_HANDLE p0, CK_MECHANISM * p1, CK_OBJECT_HANDLE p2, CK_OBJECT_HANDLE p3, CK_BYTE * p4, CK_ULONG p5, CK_BYTE * p6, CK_ULONG * p7) {
   (void)p0;
@@ -150,9 +124,9 @@ static CK_DECLARE_FUNCTION(CK_RV, x32_C_UnwrapKeyAuthenticated)
     (T)->C_VerifySignatureUpdate = x32_C_VerifySignatureUpdate; \
     (T)->C_VerifySignatureFinal = x32_C_VerifySignatureFinal; \
     (T)->C_GetSessionValidationFlags = x32_C_GetSessionValidationFlags; \
-    (T)->C_AsyncComplete = x32_C_AsyncComplete; \
-    (T)->C_AsyncGetID = x32_C_AsyncGetID; \
-    (T)->C_AsyncJoin = x32_C_AsyncJoin; \
+    (T)->C_AsyncComplete = std_AsyncComplete; \
+    (T)->C_AsyncGetID = std_AsyncGetID; \
+    (T)->C_AsyncJoin = std_AsyncJoin; \
     (T)->C_WrapKeyAuthenticated = x32_C_WrapKeyAuthenticated; \
     (T)->C_UnwrapKeyAuthenticated = x32_C_UnwrapKeyAuthenticated; \
   } while (0)

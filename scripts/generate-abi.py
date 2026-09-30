@@ -458,7 +458,10 @@ def main():
         "C_MessageVerifyFinal": "std_MessageVerifyFinal",
     }
     routed320 = {"C_EncapsulateKey": "std_EncapsulateKey",
-                 "C_DecapsulateKey": "std_DecapsulateKey"}
+                 "C_DecapsulateKey": "std_DecapsulateKey",
+                 "C_AsyncComplete": "std_AsyncComplete",
+                 "C_AsyncGetID": "std_AsyncGetID",
+                 "C_AsyncJoin": "std_AsyncJoin"}
     discrete300, discrete320 = [], []
     for name in n300[68:]:
         if name in ("C_GetInterfaceList", "C_GetInterface"):
