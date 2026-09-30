@@ -113,6 +113,7 @@ spec = testGroup "openssl4 engine"
   , testCase "XDH agreement KATs (CLI + wycheproof tc1)" caseXdhVectors
   , testCase "ECDH wrap compositions roundtrip (provider)" caseEcdhCompWrap
   , testCase "RSA wrap composition roundtrips (provider)" caseRsaCompWrap
+  , testCase "pub-from-priv re-exports SPKI (provider)" casePubFromPrivProvider
   , testCase "Montgomery keygen mints agreeing pairs" caseRealMontgomeryKeygen
   , testCase "DH agreement KAT (CLI vectors)" caseDhAgree
   , testCase "DH keygen mints agreeing pairs" caseDhKeygen
@@ -4615,6 +4616,28 @@ caseRsaCompWrap = withBackend $ \env -> do
       in case BS.uncons rest of
         Just (b, post) -> pre <> BS.singleton (b `xor` 0x01) <> post
         Nothing -> bs
+
+-- Pub-from-priv through the provider: minted pairs re-export
+-- the exact SPKI (RSA-2048, P-256, both Montgomery and both
+-- Edwards curves); garbage DER refuses as a bad key.
+casePubFromPrivProvider :: IO ()
+casePubFromPrivProvider = withBackend $ \env -> do
+  let mint label spec = do
+        (priv, mpub) <- expectOk label =<< generateKey env spec
+        case (priv, mpub) of
+          (KeyDer privB, Just (KeyDer pubB)) -> pure (privB, pubB)
+          other -> assertFailure (label ++ ": halves are not DER: " ++ show other) >> undefined
+      check label spec = do
+        (privB, pubB) <- mint ("mint " ++ label) spec
+        spki <- expectOk ("extract " ++ label) =<< pubFromPriv env (KeyDer privB)
+        assertEqual ("SPKI equals minted pub: " ++ label) pubB spki
+  check "rsa2048" (GenRSA 2048 65537)
+  check "p256" (GenEC (mkEc "P-256" "DER"))
+  check "x25519" (GenXDHKeypair "X25519")
+  check "x448" (GenXDHKeypair "X448")
+  check "ed25519" (GenEdDSAKeypair "Ed25519")
+  check "ed448" (GenEdDSAKeypair "Ed448")
+  expectBadKey "garbage refused" =<< pubFromPriv env (KeyBytes "not-der")
 
 caseDhAgree :: IO ()
 caseDhAgree = withBackend $ \env -> do

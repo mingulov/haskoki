@@ -20,7 +20,7 @@ import Numeric (showHex)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
-import Haskoki.Der (coveredCurveNames)
+import Haskoki.Der (coveredCurveNames, spkiPoint)
 import Haskoki.Engine.Backend
   ( AeadSpec (..)
   , BackendCaps (..)
@@ -128,6 +128,7 @@ spec = testGroup "synthetic engine"
   , testCase "Wrap specs thread the caller IV" caseWrapIv
   , testCase "ECDH wrap compositions roundtrip (opaque)" caseEcdhCompWrap
   , testCase "RSA wrap composition roundtrips (synthetic)" caseRsaCompWrap
+  , testCase "pub-from-priv synthetic double" casePubFromPrivSynth
   , testCase "Legacy-cipher specs roundtrip per width" caseLegacyCipherSpecs
   , testCase "RSA v1.5 specs roundtrip per digest" caseRsaRoundtrip
   , testCase "RSA-PSS specs roundtrip per salt" casePssRoundtrip
@@ -1413,6 +1414,21 @@ caseRsaCompWrap = withSynth "11" $ \env -> do
     expectLabeledBytes label r = case r of
       GotBytes b -> pure b
       other -> assertFailure (label ++ ": expected bytes, got " ++ show other)
+
+-- Pub-from-priv synthetic double: deterministic, labeled
+-- (opaque to the SPKI parsers), stable across calls and key
+-- shapes carrying the same bytes.
+casePubFromPrivSynth :: IO ()
+casePubFromPrivSynth = withSynth "11" $ \env -> do
+  a <- expectOk "first" =<< pubFromPriv env (KeyBytes "base-half")
+  b <- expectOk "second" =<< pubFromPriv env (KeyDer "base-half")
+  c <- expectOk "other" =<< pubFromPriv env (KeyBytes "other-half")
+  assertEqual "deterministic" a b
+  assertEqual "width" 64 (BS.length a)
+  assertBool "distinct bases differ" (a /= c)
+  case spkiPoint a of
+    Nothing -> pure ()
+    Just _ -> assertFailure "double parses as SPKI"
 
 des3Key24 :: KeyMaterial
 des3Key24 = KeyBytes "0123456789abcdef01234567"

@@ -890,6 +890,19 @@ instance CryptoBackend OpenSSL4 where
                     | otherwise -> nativeFail "dhDerive" code
                   Right secret -> pure (EngineOk secret)
 
+  pubFromPriv be priv = runGuarded be "pubFromPriv" Nothing $ \env -> do
+    mpriv <- resolveKeyBytes env priv
+    case mpriv of
+      EngineFail err -> pure (EngineFail err)
+      EngineOk privB -> do
+        r <- withForeignPtr (osslEnv env) $ \_ ->
+          Raw.pubFromPriv (osslCtx env) (osslPropQ env) privB
+        case r of
+          Left code
+            | code == Raw.errBadKey -> pure (EngineFail (BackendBadKey "pubFromPriv" "base half is not served key DER"))
+            | otherwise -> nativeFail "pubFromPriv" code
+          Right spki -> pure (EngineOk spki)
+
   snapshotResource _ _ = pure (Left "unsaveable: OpenSSL4 multipart contexts cannot be serialized")
   restoreResource _ _ = pure (EngineFail (BackendUnsupported "restoreResource" "no saveable resources in engine set"))
   resourceSaveability (OSSL4Backend env) rid = do

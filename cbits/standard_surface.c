@@ -2217,7 +2217,8 @@ static hkdf_class_t hkdf_params_class(const CK_HKDF_PARAMS *hp) {
 
 /* Derive mechanisms served through the opaque Haskell intake
  * (ECDH + DH + SHA-KDF rows + TLS-PRF + SP 800-108 rows + TLS-KDF
- * rows; mirrors the Haskoki.Recipe.Ecdh/Dh/Kdf/TlsPrf/Sp800108/TlsKdf/Ssl3
+ * rows + the pub-from-priv row; mirrors the
+ * Haskoki.Recipe.Ecdh/Dh/Kdf/TlsPrf/Sp800108/TlsKdf/Ssl3/PubPriv
  * tables — Haskell re-checks membership before planning). */
 static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   switch (mech) {
@@ -2278,6 +2279,7 @@ static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   case CKM_SSL3_MASTER_KEY_DERIVE:
   case CKM_SSL3_MASTER_KEY_DERIVE_DH:
   case CKM_SSL3_KEY_AND_MAC_DERIVE:
+  case CKM_PUB_KEY_FROM_PRIV_KEY:
     return 1;
   default:
     return 0;

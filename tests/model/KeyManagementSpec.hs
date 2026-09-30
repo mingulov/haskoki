@@ -19,6 +19,7 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust)
 import Data.Word (Word64, Word8)
 import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Marshal.Array (pokeArray)
@@ -35,7 +36,7 @@ import Haskoki.Attribute
   , getAttributes
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
-import Haskoki.Der (curveTable, dhParamsDer, dhParamsDerQ, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer, mlkemPkcs8Fields, mlkemSpkiFields, montgomeryPrivateDer, montgomeryPublicDer, parseDhParams, parseDsaParams, rsaPrivateDer, rsaPublicDer)
+import Haskoki.Der (curveTable, dhParamsDer, dhParamsDerQ, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer, mlkemPkcs8Fields, mlkemSpkiFields, montgomeryPrivateDer, montgomeryPublicDer, parseDhParams, parseDsaParams, rsaPrivateDer, rsaPublicDer)
 import Haskoki.Engine.Backend
   ( BackendError (..)
   , CryptoBackend (..)
@@ -88,6 +89,7 @@ import Haskoki.Operation.Derive
   , hkdfDeriveMech
   , maxDerivedTotal
   , planDerive
+  , pubPrivMech
   )
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoError (..), CryptoResult (..))
 import Haskoki.Operation.Kem
@@ -384,6 +386,10 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Multi-key derive delivers N handles" caseDeriveMulti
   , testCase "Invalid additional template publishes zero objects" caseDeriveInvalidExtra
   , testCase "Derive codec round-trips and rejects malformed frames" caseDeriveCodec
+  , testCase "pub-from-priv RSA ignores CKA_DERIVE, maps attrs" casePubPrivRsa
+  , testCase "pub-from-priv EC serves embedded, refuses scalar-only" casePubPrivEc
+  , testCase "pub-from-priv EC stamps point and params from SPKI" casePubPrivEcSpkiStamp
+  , testCase "pub-from-priv refusals: scope, class, params, templates" casePubPrivRefusals
   , testCase "HKDF info codec round-trips mode/salt/context" caseHkdfInfoCodec
   , testCase "Decaps recovers the secret as one handle" caseKemDecaps
   , testCase "KEM key/ciphertext mismatches fail closed" caseKemMismatch
@@ -4151,6 +4157,218 @@ caseDeriveCodec = do
         , BS.concat (replicate 17 (BS.pack [0, 0, 0, 0]))
         ]
   assertEqual "fan-out bound" Nothing (decodeDeriveParams over)
+
+-- | Provider P-256 PKCS#8 (pinned openssl CLI output, public
+-- half embedded as SEC1 [1]; same vector as RecipePubPrivSpec).
+pubPrivP256 :: ByteString
+pubPrivP256 = hex
+  "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b0201010420\
+  \ea3851e04e9fa14c421e7669f374493c50ea6f3d5ae5c7d57a31812bd779e8fca144\
+  \034200040146e4dc41f540fedb82ff563b9c49f92fd69f1f7e2bf4c498287c54b8c70\
+  \f2ec528757041bab6c0d808840432f506a84c1d7271fbc068a05fbce16dfdc158d2"
+
+-- | Raw-SEC1 P-256 half in the live keygen shape (121 bytes;
+-- same vector as RecipePubPrivSpec): this is what a generated
+-- key's CKA_VALUE carries.
+pubPrivSec1P256 :: ByteString
+pubPrivSec1P256 =
+  hex "30770201010420" <> BS.replicate 32 0x51
+    <> hex "a00a06082a8648ce3d030107a14403420004" <> BS.replicate 64 0x52
+
+-- | Scalar-only raw SEC1 (no @[1]@): version, scalar, params.
+pubPrivSec1ScalarP256 :: ByteString
+pubPrivSec1ScalarP256 =
+  hex "30310201010420" <> BS.replicate 32 0x51
+    <> hex "a00a06082a8648ce3d030107"
+
+casePubPrivRsa :: IO ()
+casePubPrivRsa = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  -- CKA_DERIVE false on purpose: the row ignores the mark.
+  let privT = rsaPrivTmpl ++ [(AttrDecrypt, ValBool True), (AttrDerive, ValBool False)]
+  (m1, _pubH, privH) <- genRsaPair answer m0 st rsaPubTmpl privT
+  let tmpl =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkRsa)
+        , (AttrToken, ValBool False)
+        , (AttrLabel, ValBytes "custom")
+        ]
+      blob = encodeDeriveParams BS.empty [tmpl]
+  case planDerive defaultRules m1 st pubPrivMech privH blob of
+    KeyEffect pw fx -> do
+      res <- answer m1 fx
+      c <- finishCommit m1 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m2 <- expectRight (publishDelta m1 (pcDelta c))
+      Just ost <- pure (resolveHandle m2 h)
+      assertEqual "class" (Just (ValULong ckoPublicKey))
+        (Map.lookup AttrClass (osAttrs ost))
+      assertEqual "type" (Just (ValULong ckkRsa))
+        (Map.lookup AttrKeyType (osAttrs ost))
+      assertEqual "encrypt reflects decrypt" (Just (ValBool True))
+        (Map.lookup AttrEncrypt (osAttrs ost))
+      assertEqual "token forced" (Just (ValBool False))
+        (Map.lookup AttrToken (osAttrs ost))
+      assertEqual "template wins over map default" (Just (ValBytes "custom"))
+        (Map.lookup AttrLabel (osAttrs ost))
+      assertBool "material stored" (isJust (keyBytesOf ost))
+    other -> assertFailure ("pubpriv plan is not an effect: " ++ show other)
+
+casePubPrivEc :: IO ()
+casePubPrivEc = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let oid = hex "06082a8648ce3d030107"
+      privT =
+        [ (AttrClass, ValULong ckoPrivateKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrEcParams, ValBytes oid)
+        , (AttrToken, ValBool False)
+        , (AttrDerive, ValBool False)
+        ]
+      tmpl =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrToken, ValBool False)
+        ]
+      blob = encodeDeriveParams BS.empty [tmpl]
+  -- The live keygen shape is raw SEC1; PKCS#8 with an embedded
+  -- half plans too. Scalar-only halves in either framing
+  -- refuse: y-recovery is Fp math.
+  (m1, privH) <- plantKey m0 st privT pubPrivSec1P256
+  case planDerive defaultRules m1 st pubPrivMech privH blob of
+    KeyEffect pw fx -> do
+      res <- answer m1 fx
+      c <- finishCommit m1 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m2 <- expectRight (publishDelta m1 (pcDelta c))
+      Just ost <- pure (resolveHandle m2 h)
+      assertEqual "class" (Just (ValULong ckoPublicKey))
+        (Map.lookup AttrClass (osAttrs ost))
+      assertEqual "params copied from base" (Just (ValBytes oid))
+        (Map.lookup AttrEcParams (osAttrs ost))
+      -- Synthetic answers opaque halves: the finisher passes
+      -- them through unstamped (the keygen stamping precedent).
+      assertEqual "point unstamped on synthetic" Nothing
+        (Map.lookup AttrEcPoint (osAttrs ost))
+    other -> assertFailure ("pubpriv plan is not an effect: " ++ show other)
+  (m3, privHP8) <- plantKey m1 st privT pubPrivP256
+  case planDerive defaultRules m3 st pubPrivMech privHP8 blob of
+    KeyEffect {} -> pure ()
+    other -> assertFailure ("pkcs8 embedded refused, got: " ++ show other)
+  (m4, privH2) <- plantKey m3 st privT (ecPrivateDer oid (BS.replicate 32 0x51))
+  case planDerive defaultRules m4 st pubPrivMech privH2 blob of
+    KeyDenied d -> assertEqual "scalar code" CKR_TEMPLATE_INCOMPLETE (kdCode d)
+    other -> assertFailure ("scalar-only accepted, got: " ++ show other)
+  (m5, privH3) <- plantKey m4 st privT pubPrivSec1ScalarP256
+  case planDerive defaultRules m5 st pubPrivMech privH3 blob of
+    KeyDenied d -> assertEqual "sec1 scalar code" CKR_TEMPLATE_INCOMPLETE (kdCode d)
+    other -> assertFailure ("sec1 scalar-only accepted, got: " ++ show other)
+
+casePubPrivEcSpkiStamp :: IO ()
+casePubPrivEcSpkiStamp = do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let oid = hex "06082a8648ce3d030107"
+      point = BS.pack (0x04 : [1 .. 64])
+      spki = ecPublicDer oid point
+      -- Live keygen shape: the private half carries no
+      -- EC_PARAMS (params ride the public template only).
+      privT =
+        [ (AttrClass, ValULong ckoPrivateKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrToken, ValBool False)
+        ]
+      tmpl =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrToken, ValBool False)
+        ]
+      blob = encodeDeriveParams BS.empty [tmpl]
+  (m1, privH) <- plantKey m0 st privT pubPrivSec1P256
+  case planDerive defaultRules m1 st pubPrivMech privH blob of
+    KeyEffect pw _fx -> do
+      c <- finishCommit m1 st pw (GotBytes spki) 1
+      h <- handleOf (pcOutputs c !! 0)
+      m2 <- expectRight (publishDelta m1 (pcDelta c))
+      case resolveHandle m2 h of
+        Nothing -> assertFailure "derived handle unpublished"
+        Just ost -> do
+          assertEqual "point stamped"
+            (Just (ValBytes ("\x04\x41" <> point)))
+            (Map.lookup AttrEcPoint (osAttrs ost))
+          assertEqual "params stamped from SPKI" (Just (ValBytes oid))
+            (Map.lookup AttrEcParams (osAttrs ost))
+    other -> assertFailure ("pubpriv plan is not an effect: " ++ show other)
+
+casePubPrivRefusals :: IO ()
+casePubPrivRefusals = withSynth $ \_answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let rsaBase =
+        [ (AttrClass, ValULong ckoPrivateKey)
+        , (AttrKeyType, ValULong ckkRsa)
+        , (AttrToken, ValBool False)
+        ]
+      rsaTmpl =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkRsa)
+        , (AttrToken, ValBool False)
+        ]
+      denyCode m baseH b = case planDerive defaultRules m st pubPrivMech baseH b of
+        KeyDenied d -> pure (kdCode d)
+        other -> assertFailure ("refusal expected, got: " ++ show other) >> undefined
+  (m1, rsaH) <- plantKey m0 st rsaBase "opaque-rsa-half"
+  let blob0 = encodeDeriveParams BS.empty [rsaTmpl]
+  -- Out-of-scope key types refuse type-inconsistent.
+  (m2, dsaH) <- plantKey m1 st
+    [(AttrClass, ValULong ckoPrivateKey), (AttrKeyType, ValULong ckkDsa), (AttrToken, ValBool False)]
+    "opaque-dsa-half"
+  c1 <- denyCode m2 dsaH blob0
+  assertEqual "dsa code" CKR_KEY_TYPE_INCONSISTENT c1
+  (m3, dhH) <- plantKey m2 st
+    [(AttrClass, ValULong ckoPrivateKey), (AttrKeyType, ValULong ckkDh), (AttrToken, ValBool False)]
+    "opaque-dh-half"
+  c2 <- denyCode m3 dhH blob0
+  assertEqual "dh code" CKR_KEY_TYPE_INCONSISTENT c2
+  (m4, kemH) <- plantKey m3 st
+    [(AttrClass, ValULong ckoPrivateKey), (AttrKeyType, ValULong ckkMlKem), (AttrToken, ValBool False)]
+    "opaque-kem-half"
+  c3 <- denyCode m4 kemH blob0
+  assertEqual "pqc code" CKR_KEY_TYPE_INCONSISTENT c3
+  -- A public base is a class contradiction.
+  (m5, pubH) <- plantKey m4 st
+    [(AttrClass, ValULong ckoPublicKey), (AttrKeyType, ValULong ckkRsa), (AttrToken, ValBool False)]
+    "opaque-rsa-pub"
+  c4 <- denyCode m5 pubH blob0
+  assertEqual "class code" CKR_TEMPLATE_INCONSISTENT c4
+  -- Non-empty params refuse.
+  c5 <- denyCode m5 rsaH (encodeDeriveParams "params" [rsaTmpl])
+  assertEqual "params code" CKR_ARGUMENTS_BAD c5
+  -- Template count is exactly one.
+  c6 <- denyCode m5 rsaH (encodeDeriveParams BS.empty [])
+  assertEqual "zero templates code" CKR_ARGUMENTS_BAD c6
+  c7 <- denyCode m5 rsaH (encodeDeriveParams BS.empty [rsaTmpl, rsaTmpl])
+  assertEqual "two templates code" CKR_ARGUMENTS_BAD c7
+  -- Template class/type must fit the derivation.
+  let secretTmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkRsa)
+        , (AttrToken, ValBool False)
+        ]
+  c8 <- denyCode m5 rsaH (encodeDeriveParams BS.empty [secretTmpl])
+  assertEqual "class fit code" CKR_TEMPLATE_INCONSISTENT c8
+  let ecTmpl =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrToken, ValBool False)
+        ]
+  c9 <- denyCode m5 rsaH (encodeDeriveParams BS.empty [ecTmpl])
+  assertEqual "type fit code" CKR_TEMPLATE_INCONSISTENT c9
+  -- Unknown handles refuse.
+  c10 <- denyCode m5 (ExternalHandle 99999) blob0
+  assertEqual "handle code" CKR_KEY_HANDLE_INVALID c10
 
 caseHkdfInfoCodec :: IO ()
 caseHkdfInfoCodec = do

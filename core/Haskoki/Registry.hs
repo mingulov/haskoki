@@ -112,6 +112,11 @@ import Haskoki.Recipe.Ecdh
   , ecdhCodecFor
   , ecdhRecipes
   )
+import Haskoki.Recipe.PubPriv
+  ( PubPrivRecipe (..)
+  , pubPrivCodecFor
+  , pubPrivRecipes
+  )
 import Haskoki.Recipe.WrapComp
   ( WrapCompEcdhRecipe (..)
   , wrapCompEcdhCodecFor
@@ -1229,6 +1234,16 @@ ecdhDescs =
   | r <- ecdhRecipes
   ]
 
+pubPrivDescs :: [Descriptor]
+pubPrivDescs =
+  [ promotedDesc (pprName r) allBaselines FamilyDerive
+      (pubPrivCodecFor r)
+      [ mechRoute OpDerive (pprName r) ["A20", "A37", "A39"]
+      ]
+      MechanismSpecific 0 0
+  | r <- pubPrivRecipes
+  ]
+
 dhDescs :: [Descriptor]
 dhDescs =
   [ promotedDesc (dhName r) allBaselines FamilyDerive
@@ -1631,7 +1646,7 @@ curatedRegistry =
         , dBLAKE2B_160, dBLAKE2B_256, dBLAKE2B_384
         ] ++ hmacDescs ++ cipherDescs ++ aeadDescs ++ chachaStreamDescs ++ keygenSweepDescs ++ premasterDescs ++ rsaPkcs1Descs
           ++ rsaPssDescs ++ rsaOaepDescs ++ rsaX509Descs ++ ecdsaDescs ++ dsaDescs ++ eddsaDescs ++ mldsaDescs ++ slhdsaDescs ++ ecdhDescs ++ dhDescs ++ wrapCompDescs
-          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ byteOpsDescs ++ tlsKeyMatDescs ++ pbeDescs ++ ssl3Descs ++ otpDescs ++ encryptDataDescs ++ rsaX931Descs ++ poly1305Descs
+          ++ cmacDescs ++ des3macDescs ++ cbcmacDescs ++ xcbcDescs ++ gmacDescs ++ kdfDescs ++ tlsPrfDescs ++ sp800Descs ++ tlsKdfDescs ++ ikeDescs ++ byteOpsDescs ++ tlsKeyMatDescs ++ pbeDescs ++ ssl3Descs ++ otpDescs ++ encryptDataDescs ++ rsaX931Descs ++ poly1305Descs ++ pubPrivDescs
       )
     behaviorIds0 :: [Word64]
     behaviorIds0 = map (unMechanismId . descId) behaviorDescs

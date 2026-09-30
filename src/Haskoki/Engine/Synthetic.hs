@@ -614,6 +614,17 @@ instance CryptoBackend Synthetic where
           B.EngineOk peerB ->
             pure (B.EngineOk (classDh spec (signIdentity privB) peerB))
 
+  -- Deterministic labeled double: 64 pseudorandom bytes over
+  -- the base half, opaque to the SPKI parsers, so the finisher
+  -- passes the derived object through unstamped (the keygen
+  -- opaque-pair precedent). Same base, same double.
+  pubFromPriv be priv = runGuarded be "pubFromPriv" Nothing $ \env -> do
+    mpriv <- resolveKeyBytes env priv
+    case mpriv of
+      B.EngineFail err -> pure (B.EngineFail err)
+      B.EngineOk privB ->
+        pure (B.EngineOk (prfBytes (frame ["haskoki-synth/pub-from-priv/v1", privB]) 64))
+
   generateKey be spec = runGuarded be "generateKey" (genSupported be spec) $ \env -> do
     ctr <- modifyMVar (seGenCtr env) $ \c -> pure (c + 1, c)
     seed <- readMVar (seSeed env)

@@ -30733,16 +30733,32 @@
     {
       "aliases": [],
       "canonical_name": "CKM_PUB_KEY_FROM_PRIV_KEY",
-      "family": "special",
+      "family": "derive",
       "mechanism_info": {
-        "flags": [],
+        "flags": [
+          "CKF_DERIVE"
+        ],
         "key_size_unit": "mechanism-specific",
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: per-algorithm public derivation unmapped in Raw; behavior/synthetic stay planned.",
+      "notes": "Pub-from-priv recipe (core/Haskoki/Recipe/PubPriv.hs): C_DeriveKey with no parameters derives a public key object from a private base, ignoring CKA_DERIVE (the only row allowed to). Base scope: RSA, EC Weierstrass with an embedded public point (scalar-only halves refuse, since y-recovery is Fp math), EC Montgomery, EC Edwards; DSA/DH/PQC refuse. The attribute map reflects usage halves (ENCRYPT from DECRYPT plus the VERIFY/WRAP/ENCAPSULATE pairs), copies DERIVE/ID/SUBJECT/PUBLIC_KEY_INFO/ALLOWED_MECHANISMS, forces TOKEN/PRIVATE false and MODIFIABLE/COPYABLE/DESTROYABLE true with an empty label (caller template wins); curve params copy from the base. Execution answers the DER SPKI (one C entry over the provider; deterministic labeled doubles on synthetic, unstamped); the finisher stamps MODULUS/EXPONENT/EC_POINT per type. Object path pinned by KeyManagementSpec (A20); planner gates pinned by RecipePubPrivSpec (A40); engines pin both backends (SyntheticSpec/OpenSSLSpec A37/A39).",
       "numeric_id": "0x0000403a",
-      "routes": [],
+      "routes": [
+        {
+          "acceptance_cases": [
+            "A20",
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "priv-base-served-type"
+          ],
+          "operation": "derive",
+          "output_rule": "pub-spki/v1",
+          "parameter_codec": "no-params/1"
+        }
+      ],
       "source_refs": [
         {
           "section": "pkcs11.h:CKM_PUB_KEY_FROM_PRIV_KEY",
@@ -30751,12 +30767,48 @@
       ],
       "support": {
         "abi": "planned",
-        "behavior": "planned",
-        "synthetic": "planned",
-        "real": "unsupported-with-reason",
+        "behavior": "tested",
+        "synthetic": "tested",
+        "real": "tested",
         "recovery": "not-applicable"
       },
-      "test_evidence": []
+      "test_evidence": [
+        {
+          "artifact": "haskoki-engine-tests/SyntheticSpec",
+          "build_id": "pubpriv",
+          "case_id": "A37"
+        },
+        {
+          "artifact": "haskoki-engine-tests/OpenSSLSpec",
+          "build_id": "pubpriv",
+          "case_id": "A39"
+        },
+        {
+          "artifact": "haskoki-model-tests/RegistrySpec",
+          "build_id": "pubpriv",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/RecipePubPrivSpec",
+          "build_id": "pubpriv",
+          "case_id": "A40"
+        },
+        {
+          "artifact": "haskoki-model-tests/KeyManagementSpec",
+          "build_id": "key-management",
+          "case_id": "A20"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-model-tests/MechanismExhaustivenessSpec"
+        },
+        {
+          "case_id": "A42",
+          "build_id": "exhaustiveness",
+          "artifact": "haskoki-core-tests/MechanismExhaustivenessSpec"
+        }
+      ]
     },
     {
       "aliases": [],

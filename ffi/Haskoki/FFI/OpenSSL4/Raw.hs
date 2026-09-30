@@ -76,6 +76,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , mlkemGen
   , ecdhDerive
   , xdhDerive
+  , pubFromPriv
   , dhDerive
   , dhGenKeypair
   , rsaSign
@@ -285,6 +286,9 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_ecdh_derive"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_xdh_derive"
   c_xdh_derive :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_pub_from_priv"
+  c_pub_from_priv :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_dh_derive"
   c_dh_derive :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
@@ -922,6 +926,16 @@ xdhDerive ctx propq privDer peerRaw =
     withBytes privDer $ \(ppriv, npriv) ->
       withBytes peerRaw $ \(ppeer, npeer) ->
         withOut (c_xdh_derive ctx cpq ppriv npriv ppeer npeer)
+
+-- | Public key from private (CKM_PUB_KEY_FROM_PRIV_KEY): the
+-- DER SubjectPublicKeyInfo for a PKCS#8 private half of a
+-- served family. Type scope is the planner's; bad DER or an
+-- unserved loaded type answers 'errBadKey'.
+pubFromPriv :: Ptr OsslLibCtx -> String -> ByteString -> IO (Either Int ByteString)
+pubFromPriv ctx propq privDer =
+  withCString propq $ \cpq ->
+    withBytes privDer $ \(ppriv, npriv) ->
+      withOut (c_pub_from_priv ctx cpq ppriv npriv)
 
 -- | Finite-field DH agreement: the raw secret for (PKCS#8 base,
 -- bare peer public value). The shim range-checks the peer

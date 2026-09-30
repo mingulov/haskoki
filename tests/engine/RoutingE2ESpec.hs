@@ -434,6 +434,7 @@ instance CryptoBackend Counting where
   kemDecapsulate (CountingEnv be _) sp key ct = kemDecapsulate be sp key ct
   ecdhDerive (CountingEnv be _) sp priv peer = ecdhDerive be sp priv peer
   dhDerive (CountingEnv be _) sp priv peer = dhDerive be sp priv peer
+  pubFromPriv (CountingEnv be _) priv = pubFromPriv be priv
   snapshotResource (CountingEnv be _) rid = snapshotResource be rid
   restoreResource (CountingEnv be _) bs = restoreResource be bs
   releaseResource (CountingEnv be _) rid = releaseResource be rid

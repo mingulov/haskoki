@@ -3669,6 +3669,152 @@ int main(int argc, char **argv) {
                           rdtmpl, 3, &rUnwrapped);
       CHECKC(rv == CKR_GENERAL_ERROR, "comp RSA cross-strength fails closed");
     }
+    /* Pub-from-priv: C_DeriveKey with no parameters derives a
+     * public key from a private base, ignoring CKA_DERIVE (the
+     * only row allowed to). RSA-2048 and P-256 halves re-export
+     * byte-identical components; usage halves reflect across
+     * the map; params, public bases, and class mismatches
+     * refuse. */
+    {
+      CK_OBJECT_CLASS ppubcls = CKO_PUBLIC_KEY;
+      CK_OBJECT_CLASS pprvcls = CKO_PRIVATE_KEY;
+      CK_KEY_TYPE pkt = CKK_RSA;
+      CK_ULONG pbits = 2048;
+      CK_ATTRIBUTE ppubT[] = {
+        { CKA_CLASS, &ppubcls, sizeof(ppubcls) },
+        { CKA_KEY_TYPE, &pkt, sizeof(pkt) },
+        { CKA_MODULUS_BITS, &pbits, sizeof(pbits) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_ATTRIBUTE pprivT[] = {
+        { CKA_CLASS, &pprvcls, sizeof(pprvcls) },
+        { CKA_KEY_TYPE, &pkt, sizeof(pkt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_DECRYPT, &bTrue, sizeof(bTrue) },
+        { CKA_DERIVE, &bFalse, sizeof(bFalse) }
+      };
+      CK_ATTRIBUTE pdtmpl[] = {
+        { CKA_CLASS, &ppubcls, sizeof(ppubcls) },
+        { CKA_KEY_TYPE, &pkt, sizeof(pkt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_MECHANISM pkgm, pdm;
+      CK_OBJECT_HANDLE pPub = 0, pPriv = 0, pDerived = 0;
+      CK_BYTE pmod0[256], pmod1[256], pexp[8];
+      CK_BBOOL penc = CK_FALSE;
+      CK_ATTRIBUTE pget[1];
+      pkgm.mechanism = CKM_RSA_PKCS_KEY_PAIR_GEN;
+      pkgm.pParameter = NULL_PTR;
+      pkgm.ulParameterLen = 0;
+      rv = f->C_GenerateKeyPair(wsess, &pkgm, ppubT, 4, pprivT, 5,
+                                &pPub, &pPriv);
+      CHECKC(rv == CKR_OK && pPub != 0 && pPriv != 0,
+             "pubpriv RSA pair mints");
+      pdm.mechanism = CKM_PUB_KEY_FROM_PRIV_KEY;
+      pdm.pParameter = NULL_PTR;
+      pdm.ulParameterLen = 0;
+      rv = f->C_DeriveKey(wsess, &pdm, pPriv, pdtmpl, 3, &pDerived);
+      CHECKC(rv == CKR_OK && pDerived != 0 && pDerived != pPub,
+             "pubpriv RSA derive mints a distinct key");
+      pget[0].type = CKA_MODULUS;
+      pget[0].pValue = pmod0;
+      pget[0].ulValueLen = sizeof(pmod0);
+      rv = f->C_GetAttributeValue(wsess, pPub, pget, 1);
+      CHECKC(rv == CKR_OK && pget[0].ulValueLen == 256,
+             "pubpriv RSA original modulus reads");
+      pget[0].pValue = pmod1;
+      pget[0].ulValueLen = sizeof(pmod1);
+      rv = f->C_GetAttributeValue(wsess, pDerived, pget, 1);
+      CHECKC(rv == CKR_OK && pget[0].ulValueLen == 256 &&
+                 memcmp(pmod0, pmod1, 256) == 0,
+             "pubpriv RSA modulus matches");
+      pget[0].type = CKA_PUBLIC_EXPONENT;
+      pget[0].pValue = pexp;
+      pget[0].ulValueLen = sizeof(pexp);
+      rv = f->C_GetAttributeValue(wsess, pDerived, pget, 1);
+      CHECKC(rv == CKR_OK && pget[0].ulValueLen == 3 && pexp[0] == 1 &&
+                 pexp[1] == 0 && pexp[2] == 1,
+             "pubpriv RSA exponent reads 65537");
+      pget[0].type = CKA_ENCRYPT;
+      pget[0].pValue = &penc;
+      pget[0].ulValueLen = sizeof(penc);
+      rv = f->C_GetAttributeValue(wsess, pDerived, pget, 1);
+      CHECKC(rv == CKR_OK && penc == CK_TRUE,
+             "pubpriv RSA encrypt reflects decrypt");
+      pdm.pParameter = pmod0;
+      pdm.ulParameterLen = 1;
+      pDerived = 0;
+      rv = f->C_DeriveKey(wsess, &pdm, pPriv, pdtmpl, 3, &pDerived);
+      CHECKC(rv == CKR_ARGUMENTS_BAD && pDerived == 0,
+             "pubpriv RSA params refused");
+      pdm.pParameter = NULL_PTR;
+      pdm.ulParameterLen = 0;
+      rv = f->C_DeriveKey(wsess, &pdm, pPub, pdtmpl, 3, &pDerived);
+      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT,
+             "pubpriv RSA public base refused");
+    }
+    /* Pub-from-priv over P-256: the derived point equals the
+     * minted half's, and the curve params copy from the base. */
+    {
+      static const CK_BYTE pp256oid[] = {
+        0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07
+      };
+      CK_OBJECT_CLASS qpubcls = CKO_PUBLIC_KEY;
+      CK_OBJECT_CLASS qprvcls = CKO_PRIVATE_KEY;
+      CK_KEY_TYPE qkt = CKK_EC;
+      CK_ATTRIBUTE qpubT[] = {
+        { CKA_CLASS, &qpubcls, sizeof(qpubcls) },
+        { CKA_KEY_TYPE, &qkt, sizeof(qkt) },
+        { CKA_EC_PARAMS, (CK_VOID_PTR) pp256oid, sizeof(pp256oid) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_ATTRIBUTE qprivT[] = {
+        { CKA_CLASS, &qprvcls, sizeof(qprvcls) },
+        { CKA_KEY_TYPE, &qkt, sizeof(qkt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_ATTRIBUTE qdtmpl[] = {
+        { CKA_CLASS, &qpubcls, sizeof(qpubcls) },
+        { CKA_KEY_TYPE, &qkt, sizeof(qkt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_MECHANISM qkgm, qdm;
+      CK_OBJECT_HANDLE qPub = 0, qPriv = 0, qDerived = 0;
+      CK_BYTE qpt0[72], qpt1[72], qpar[12];
+      CK_ATTRIBUTE qget[1];
+      qkgm.mechanism = CKM_EC_KEY_PAIR_GEN;
+      qkgm.pParameter = NULL_PTR;
+      qkgm.ulParameterLen = 0;
+      rv = f->C_GenerateKeyPair(wsess, &qkgm, qpubT, 4, qprivT, 3,
+                                &qPub, &qPriv);
+      CHECKC(rv == CKR_OK && qPub != 0 && qPriv != 0,
+             "pubpriv EC pair mints");
+      qdm.mechanism = CKM_PUB_KEY_FROM_PRIV_KEY;
+      qdm.pParameter = NULL_PTR;
+      qdm.ulParameterLen = 0;
+      rv = f->C_DeriveKey(wsess, &qdm, qPriv, qdtmpl, 3, &qDerived);
+      CHECKC(rv == CKR_OK && qDerived != 0 && qDerived != qPub,
+             "pubpriv EC derive mints a distinct key");
+      qget[0].type = CKA_EC_POINT;
+      qget[0].pValue = qpt0;
+      qget[0].ulValueLen = sizeof(qpt0);
+      rv = f->C_GetAttributeValue(wsess, qPub, qget, 1);
+      CHECKC(rv == CKR_OK && qget[0].ulValueLen == 67,
+             "pubpriv EC original point reads");
+      qget[0].pValue = qpt1;
+      qget[0].ulValueLen = sizeof(qpt1);
+      rv = f->C_GetAttributeValue(wsess, qDerived, qget, 1);
+      CHECKC(rv == CKR_OK && qget[0].ulValueLen == 67 &&
+                 memcmp(qpt0, qpt1, 67) == 0,
+             "pubpriv EC point matches");
+      qget[0].type = CKA_EC_PARAMS;
+      qget[0].pValue = qpar;
+      qget[0].ulValueLen = sizeof(qpar);
+      rv = f->C_GetAttributeValue(wsess, qDerived, qget, 1);
+      CHECKC(rv == CKR_OK && qget[0].ulValueLen == sizeof(pp256oid) &&
+                 memcmp(qpar, pp256oid, sizeof(pp256oid)) == 0,
+             "pubpriv EC params copy from base");
+    }
     /* HKDF derive: the PRF names a SHA-2 hash (SHA-1 through
      * SHA-512/224), expand-only and extract-and-expand served
      * with NULL/DATA salt. Malformed calls refuse ARGUMENTS_BAD;

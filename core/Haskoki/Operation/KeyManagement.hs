@@ -241,7 +241,7 @@ import Haskoki.Attribute.Generated
   , mustClassId
   , mustKeyTypeId
   )
-import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaSpkiFields, edwardsNameOfOid, edwardsTable, mldsaPkcs8Fields, mldsaSpkiFields, mlkemPkcs8Fields, mlkemSpkiFields, montgomeryNameOfOid, montgomeryPkcs8Fields, montgomerySpkiFields, montgomeryTable, parseDsaParams, parseRsaPrivate, parseRsaPublic, slhdsaPkcs8Fields, slhdsaSpkiFields, spkiPoint)
+import Haskoki.Der (RsaCrt (..), curveTable, derOctet, dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, dsaParamsDer, dsaPkcs8Fields, dsaSpkiFields, ecSpkiFields, eddsaPkcs8Fields, eddsaSpkiFields, edwardsNameOfOid, edwardsTable, mldsaPkcs8Fields, mldsaSpkiFields, mlkemPkcs8Fields, mlkemSpkiFields, montgomeryNameOfOid, montgomeryPkcs8Fields, montgomerySpkiFields, montgomeryTable, parseDsaParams, parseRsaPrivate, parseRsaPublic, slhdsaPkcs8Fields, slhdsaSpkiFields, spkiPoint)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState (..))
 import Haskoki.Object
   ( RuleDeny (..)
@@ -1078,6 +1078,10 @@ data PendingWork
       , pwLens :: ![Int]
       , pwIvLens :: !(Int, Int)
       }
+  | PwDerivePub
+      { pwKey :: !PendingObject
+      , pwPubKty :: !Word64
+      }
   deriving (Eq, Show)
 
 -- | Writability over the objects a key plan will create: read-only
@@ -1119,6 +1123,7 @@ pendingObjects pw = case pw of
   PwUnwrapTail k _ _ -> [k]
   PwDerive pos _ -> pos
   PwDeriveIv pos _ _ -> pos
+  PwDerivePub po _ -> [po]
 
 -- | Publish pending objects as one atomic delta: every object
 -- validates before any id or handle is allocated, so a bad entry
@@ -1193,6 +1198,7 @@ keyPairCompatible (PwEncaps _ _ _) (FxKemEncaps _ _ _ _) = True
 keyPairCompatible (PwDecaps _) (FxKemDecaps _ _ _ _) = True
 keyPairCompatible (PwDerive _ _) (FxDerive _ _ _ _ _ _) = True
 keyPairCompatible (PwDeriveIv _ _ _) (FxDerive _ _ _ _ _ _) = True
+keyPairCompatible (PwDerivePub _ _) (FxDerive _ _ _ _ _ _) = True
 keyPairCompatible _ _ = False
 
 -- | Finish planned work against the driver's answer. On bytes the
@@ -1330,6 +1336,14 @@ finishWork model st pw res = case (pw, res) of
       (ivC, ivS) = BS.splitAt ivCLen ivBs
       ivOut _ out | BS.null out = []
       ivOut region out = [NativeOutput (RegionBytes region IntentNull) out]
+  -- Pub-from-priv answers the DER SPKI of the derived public
+  -- key: stamp the type's components (the keygen stamping
+  -- shapes) and publish the single object. Unparseable halves
+  -- (synthetic opaque doubles) pass through unstamped rather
+  -- than rejecting, mirroring the EC/Edwards/Montgomery keygen
+  -- arms — reads serve stored attributes only.
+  (PwDerivePub po kty, GotBytes bs) ->
+    publish1 (storeMaterial bs (stampPub kty po bs)) [] ["derived public key"]
   (_, GotValid _) -> internal "verdict answer to key management"
   (_, GotResource _) -> internal "resource answer to key management"
   -- A feed answer never reaches a key finisher; loud on
@@ -1378,6 +1392,30 @@ finishWork model st pw res = case (pw, res) of
     -- length). A mismatch is key-type confusion (Tookan section
     -- 3.2) and refuses with CKR_TEMPLATE_INCONSISTENT, publishing
     -- nothing.
+    -- Stamp SPKI components onto a derived public object (the
+    -- keygen component shapes, single-sided: the private half
+    -- stays with the caller). Unparseable input passes through
+    -- unstamped (synthetic opaque doubles).
+    stampPub :: Word64 -> PendingObject -> ByteString -> PendingObject
+    stampPub k po bs
+      | k == ckkRsa = case parseRsaPublic bs of
+          Just (n, e) -> po { poAttrs = Map.insert AttrModulus (ValBytes n)
+            (Map.insert AttrPublicExponent (ValBytes e) (poAttrs po)) }
+          Nothing -> po
+      | k == ckkEc = case ecSpkiFields bs of
+          Just (params, pt) | BS.take 1 pt == BS.singleton 0x04 ->
+            po { poAttrs = Map.insert AttrEcPoint (ValBytes (derOctet pt))
+              (Map.insert AttrEcParams (ValBytes params) (poAttrs po)) }
+          _ -> po
+      | k == ckkEcEdwards = case eddsaSpkiFields bs of
+          Just (_, pt) ->
+            po { poAttrs = Map.insert AttrEcPoint (ValBytes pt) (poAttrs po) }
+          Nothing -> po
+      | k == ckkEcMontgomery = case montgomerySpkiFields bs of
+          Just (_, pt) ->
+            po { poAttrs = Map.insert AttrEcPoint (ValBytes pt) (poAttrs po) }
+          Nothing -> po
+      | otherwise = po
     publishUnwrap :: ByteString -> PendingObject -> PlanResult
     publishUnwrap mat po
       | typeLenOk = publish1 (storeMaterial mat po) [] ["unwrapped key"]

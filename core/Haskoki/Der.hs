@@ -105,14 +105,19 @@ module Haskoki.Der
   , parseRsaPrivate
   , parseRsaPublic
   , spkiPoint
+  , ecSpkiFields
+  , ecPkcs8HasPub
+  , ecSec1HasPub
   , derOctet
   ) where
 
+import Control.Monad (guard)
 import Data.Bits (shiftR, (.&.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.List (find)
+import Data.Maybe (isJust)
 import Data.Word (Word8)
 
 -- ---------------------------------------------------------------------------
@@ -946,6 +951,63 @@ spkiPoint der = do
         Just (0, point) -> Just point
         _ -> Nothing
     _ -> Nothing
+
+-- | EC parameters plus the raw point from an SPKI: outer SEQ
+-- of [algId, BIT STRING] where the algorithm is
+-- @id-ecPublicKey@ with parameters (a named-curve OID for
+-- provider halves), and the bit string (past its zero
+-- unused-bits octet) is the X9.62 point. 'Nothing' on any
+-- framing, tag, or OID mismatch.
+ecSpkiFields :: ByteString -> Maybe (ByteString, ByteString)
+ecSpkiFields der = do
+  outer <- whole 0x30 der
+  parts0 <- seqTop outer
+  case parts0 of
+    [algId, bits] -> do
+      algParts <- whole 0x30 algId >>= seqTop
+      case algParts of
+        [oid, params] | oid == oidEcPublicKey -> do
+          content <- whole 0x03 bits
+          case BS.uncons content of
+            Just (0, point) -> pure (params, point)
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+-- | Whether EC PKCS#8 private material embeds its public point:
+-- the SEC1 @ECPrivateKey@ carries @[1] publicKey@ (tag @0xA1@).
+-- Import halves built by 'ecPrivateDer' (scalar-only) do not;
+-- keygen halves ride raw SEC1 ('ecSec1HasPub'), not this
+-- framing. Structural parse only — never curve math. 'False'
+-- on any framing mismatch (garbage, truncation, non-EC
+-- PKCS#8).
+ecPkcs8HasPub :: ByteString -> Bool
+ecPkcs8HasPub der = isJust $ do
+  body <- whole 0x30 der
+  [_ver, _alg, privOct] <- seqTop body
+  sec1 <- whole 0x04 privOct
+  sec1Body <- whole 0x30 sec1
+  parts <- seqTop sec1Body
+  guard (any isA1 parts)
+
+-- | Whether raw-SEC1 EC private material embeds its public
+-- point: @ECPrivateKey@ version 1, an OCTET scalar, and @[1]@
+-- anywhere after. The keygen finisher stores this shape (the
+-- live P-256 @CKA_VALUE@ is 121 bytes of it); scalar-only
+-- SEC1 (version + scalar, no @[1]@) refuses. Structural
+-- parse only — never curve math.
+ecSec1HasPub :: ByteString -> Bool
+ecSec1HasPub der = isJust $ do
+  parts <- whole 0x30 der >>= seqTop
+  (ver : oct : rest) <- pure parts
+  guard (ver == derSmallInt 1)
+  _ <- whole 0x04 oct
+  guard (any isA1 rest)
+
+isA1 :: ByteString -> Bool
+isA1 el = case BS.uncons el of
+  Just (0xA1, _) -> True
+  _ -> False
 
 -- | DSS-Parms from DER: a SEQUENCE of exactly three INTEGERs
 -- (p, q, g), values unsigned-stripped. 'Nothing' on any framing

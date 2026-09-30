@@ -260,6 +260,7 @@ import Haskoki.Recipe.TlsKeyMat (TlsKeyMatKind (..), TlsKeyMatRecipe (tkmKind), 
 import Haskoki.Recipe.Pbe (PbeKind, PbeRecipe (pbeKind), pbeIvLen, pbeRecipeFor)
 import Haskoki.Recipe.Ike (IkeKind (..), IkeRecipe (..), ikeRecipeFor)
 import Haskoki.Recipe.TlsPrf (tlsPrfRecipeFor)
+import Haskoki.Recipe.PubPriv (pubPrivRecipeFor)
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
@@ -3192,11 +3193,13 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
 -- | Mechanisms served by 'haskokiStdDeriveOpaque': the ECDH rows,
 -- the DH rows, the SHA-KDF rows, TLS-PRF, the SP 800-108 rows,
 -- the TLS-KDF rows, the IKE rows, the byte-op rows, the
--- key-material rows, the SSL3 derive rows, and the
--- encrypt-data rows (PBKD2 excluded: no native decoder).
+-- key-material rows, the SSL3 derive rows, the encrypt-data
+-- rows (PBKD2 excluded: no native decoder), and the
+-- pub-from-priv row (no native decoder either: the empty
+-- frame passes through and the planner validates emptiness).
 isOpaqueDeriveMech :: MechanismId -> Bool
 isOpaqueDeriveMech mid =
-  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || isJust (sp800RecipeFor mid) || isJust (tlsKdfRecipeFor mid) || isJust (ikeRecipeFor mid) || isJust (byteOpsRecipeFor mid) || isJust (tlsKeyMatRecipeFor mid) || isJust (encryptDataRecipeFor mid) || isSsl3DeriveMech mid || case kdfRecipeFor mid of
+  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || isJust (sp800RecipeFor mid) || isJust (tlsKdfRecipeFor mid) || isJust (ikeRecipeFor mid) || isJust (byteOpsRecipeFor mid) || isJust (tlsKeyMatRecipeFor mid) || isJust (encryptDataRecipeFor mid) || isJust (pubPrivRecipeFor mid) || isSsl3DeriveMech mid || case kdfRecipeFor mid of
     Just r -> not (rkPbkd2 r)
     Nothing -> False
   where

@@ -214,7 +214,7 @@ import Haskoki.Engine.Backend
   , PssParams (..)
   , SigSpec (..)
   )
-import Haskoki.Operation.Derive (hkdfDataMech, hkdfDeriveMech, maxDerivedTotal, maxXofTotal)
+import Haskoki.Operation.Derive (hkdfDataMech, hkdfDeriveMech, maxDerivedTotal, maxXofTotal, pubPrivMech)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoError (..), CryptoResult (..))
 import Haskoki.Recipe.Cipher
   ( BlockCipherRecipe (..)
@@ -2295,6 +2295,10 @@ runEffect env resolve fx = case fx of
         runDh spec key peer outLen
     | isDhMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: DH mechanism parameters rejected by the recipe"))
+    | mech == pubPrivMech
+    , not (BS.null params) || not (BS.null info) -> pure (GotCryptoError (CryptoFailed
+        "driver: pub-from-priv takes empty params and info"))
+    | mech == pubPrivMech -> withKey mkey runPubFromPriv
     | isKdfShaMech mech
     , not (BS.null params) || not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: SHA key derivation takes empty params and info"))
@@ -3087,6 +3091,15 @@ runEffect env resolve fx = case fx of
           "driver: derive length out of range"))
       _ -> pure (GotCryptoError (CryptoBadKey "driver"
         "key derivation needs raw secret bytes"))
+    -- | Pub-from-priv extraction: the backend answers the DER
+    -- SPKI for the base half (any material shape the backend
+    -- resolves); the finisher parses and stamps per key type.
+    runPubFromPriv :: KeyMaterial -> IO CryptoResult
+    runPubFromPriv key = do
+      r <- pubFromPriv env key
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk spki -> GotBytes spki
     -- | SHAKE XOF key-derivation effects: XOF output at the planned
     -- length (capped by 'maxXofTotal' — the planner caps honestly,
     -- so over-ceiling fires only for hand-built effects).

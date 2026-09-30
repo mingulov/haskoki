@@ -3846,6 +3846,47 @@ end:
     return rc;
 }
 
+/* --- Public key from private (CKM_PUB_KEY_FROM_PRIV_KEY) -------- */
+
+long hsk_ossl4_pub_from_priv(OSSL_LIB_CTX *ctx, const char *propq,
+                             const unsigned char *priv_der, size_t priv_len,
+                             unsigned char **out)
+{
+    ERR_clear_error(); /* fresh queue; failures keep it for last_error */
+    EVP_PKEY *priv = NULL;
+    unsigned char *spki = NULL;
+    int spkilen = 0;
+    long rc = HSK_OSSL4_ERR_NATIVE;
+    int base_id;
+
+    if (ctx == NULL || propq == NULL || out == NULL)
+        return HSK_OSSL4_ERR_BADPARAM;
+
+    priv = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
+    if (priv == NULL)
+        return HSK_OSSL4_ERR_BADKEY;
+    /* Served families only (RSA, EC, Montgomery, Edwards): any
+     * other loaded key is a caller key fault (the Haskell gate
+     * routes by key type instead). */
+    base_id = EVP_PKEY_get_base_id(priv);
+    if (base_id != EVP_PKEY_RSA && base_id != EVP_PKEY_RSA_PSS &&
+        base_id != EVP_PKEY_EC && base_id != EVP_PKEY_X25519 &&
+        base_id != EVP_PKEY_X448 && base_id != EVP_PKEY_ED25519 &&
+        base_id != EVP_PKEY_ED448) {
+        EVP_PKEY_free(priv);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+    spkilen = i2d_PUBKEY(priv, &spki);
+    EVP_PKEY_free(priv);
+    if (spkilen <= 0 || spki == NULL) {
+        OPENSSL_free(spki);
+        return HSK_OSSL4_ERR_NATIVE;
+    }
+    *out = spki;
+    rc = (long)spkilen;
+    return rc;
+}
+
 /* --- Finite-field DH agreement -------------------------------- */
 
 #define HSK_OSSL4_DH_PEER_MAX 4096

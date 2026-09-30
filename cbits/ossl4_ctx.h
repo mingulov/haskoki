@@ -563,6 +563,18 @@ long hsk_ossl4_xdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
                           const unsigned char *peer_raw, size_t peer_len,
                           unsigned char **out);
 
+/* --- Public key from private (CKM_PUB_KEY_FROM_PRIV_KEY) -------- */
+
+/* priv_der: PKCS#8 DER private half of a served family (RSA, EC,
+ * Montgomery, Edwards; anything else -> HSK_OSSL4_ERR_BADKEY).
+ * Exports the DER SubjectPublicKeyInfo with *out set and returns
+ * its length, or a negative HSK_OSSL4_ERR_* code (bad DER ->
+ * HSK_OSSL4_ERR_BADKEY). Type scope and the EC embedded-point
+ * stance are the Haskell planner's; this entry is the mechanism. */
+long hsk_ossl4_pub_from_priv(OSSL_LIB_CTX *ctx, const char *propq,
+                             const unsigned char *priv_der, size_t priv_len,
+                             unsigned char **out);
+
 /* --- Finite-field DH agreement -------------------------------- */
 
 /* priv_der: PKCS#8 DH DER. peer_val: the bare big-endian peer

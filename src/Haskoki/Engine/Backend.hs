@@ -1005,6 +1005,17 @@ class CryptoBackend b where
   dhDerive :: BackendEnv b -> DhSpec -> KeyMaterial -> KeyMaterial -> IO (EngineResult ByteString)
   -- ^ (base private, peer public value) -> full secret.
 
+  -- | Public key from private (CKM_PUB_KEY_FROM_PRIV_KEY):
+  -- the DER SubjectPublicKeyInfo for a PKCS#8 private half of
+  -- a served family (RSA, EC, Montgomery, Edwards). Type scope
+  -- and the EC embedded-point stance are the planner's; the
+  -- backends answer bytes or refuse malformed halves. The real
+  -- backend loads and re-exports via the provider; synthetic
+  -- answers a deterministic labeled double (the finisher
+  -- passes unparseable halves through unstamped).
+  pubFromPriv :: BackendEnv b -> KeyMaterial -> IO (EngineResult ByteString)
+  -- ^ base private half -> DER SPKI.
+
   -- Resource lifecycle for multipart/streaming contexts.
   snapshotResource :: BackendEnv b -> EngineResourceId -> IO (Either String ByteString)
   -- ^ 'Left "unsaveable:..."' where the provider cannot serialize.

@@ -32,6 +32,7 @@ the digest width and the shared ceiling respectively.
 module Haskoki.Operation.Derive
   ( hkdfDeriveMech
   , hkdfDataMech
+  , pubPrivMech
   , maxDerivedTotal
   , maxXofTotal
   , maxDeriveKeys
@@ -62,6 +63,8 @@ import Haskoki.Operation.KeyManagement
   , ckkEcMontgomery
   , ckkGenericSecret
   , ckoData
+  , ckoPrivateKey
+  , ckoPublicKey
   , ckoSecretKey
   , keyBytesOf
   , pendingFromAttrs
@@ -97,6 +100,13 @@ import Haskoki.Recipe.Kdf
   , kdfRecipeFor
   , kdfShaWidth
   , kdfXofStem
+  )
+import Haskoki.Recipe.PubPriv
+  ( pubPrivBaseKeyOk
+  , pubPrivBaseMatOk
+  , pubPrivMapAttrs
+  , pubPrivParamsValid
+  , pubPrivRecipeFor
   )
 import Haskoki.Recipe.Sp800108
   ( Sp800Mode (..)
@@ -154,7 +164,7 @@ import Haskoki.Recipe.TlsPrf
   , tlsPrfRecipeFor
   )
 import Haskoki.Registry (MechanismId (..))
-import Haskoki.Registry.Generated (ckm_HKDF_DATA, ckm_HKDF_DERIVE)
+import Haskoki.Registry.Generated (ckm_HKDF_DATA, ckm_HKDF_DERIVE, ckm_PUB_KEY_FROM_PRIV_KEY)
 import Haskoki.Rules (Rules)
 import Haskoki.Session (admitCode, admitObjects)
 import Haskoki.Types (ExternalHandle (..), ObjectId, ReturnCode (..))
@@ -162,6 +172,12 @@ import Haskoki.Types (ExternalHandle (..), ObjectId, ReturnCode (..))
 -- | @CKM_HKDF_DERIVE@ (generated id, resolved by name).
 hkdfDeriveMech :: MechanismId
 hkdfDeriveMech = MechanismId (ckm_HKDF_DERIVE)
+
+-- | @CKM_PUB_KEY_FROM_PRIV_KEY@ (generated id, resolved by
+-- name): the single derive row that ignores CKA_DERIVE and
+-- yields a public key object.
+pubPrivMech :: MechanismId
+pubPrivMech = MechanismId (ckm_PUB_KEY_FROM_PRIV_KEY)
 
 -- | @CKM_HKDF_DATA@ (generated id, resolved by name): the same KDF
 -- as 'hkdfDeriveMech' with raw-byte output into @CKO_DATA@
@@ -383,6 +399,41 @@ planDerive rules model st mech baseH blob
                   -- be set" (non-mandatory), like the ECDH default.
                   (Just hashLen)
                   CKR_ARGUMENTS_BAD
+  | Just r <- pubPrivRecipeFor mech = case decodeDeriveParams blob of
+      Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+        "malformed derive arguments")
+      -- The base resolves WITHOUT the derive-mark check (the
+      -- only row allowed to ignore it); class, type and
+      -- material contradictions outrank parameter shape (the
+      -- Init-matrix ordering, shared with the ECDH arm).
+      Just (infoSeg, tmpls) -> case resolveBaseAnyMark model st baseH of
+        Left deny -> KeyDenied deny
+        Right (ost, mat)
+          | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong ckoPrivateKey) ->
+              KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                "pub-from-priv base is not a private key")
+          | otherwise -> case Map.lookup AttrKeyType (osAttrs ost) of
+              Just (ValULong kty)
+                | not (pubPrivBaseKeyOk kty) -> KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                    "pub-from-priv base key type is not served")
+                | not (pubPrivBaseMatOk kty mat) -> KeyDenied (KeyDeny CKR_TEMPLATE_INCOMPLETE
+                    "EC base lacks an embedded public point")
+                | not (pubPrivParamsValid r infoSeg) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+                    "pub-from-priv takes empty parameters")
+                | otherwise -> case tmpls of
+                    [tmpl] -> case checkKeyTemplateAny ckoPublicKey kty tmpl of
+                      Left deny -> KeyDenied deny
+                      Right caller -> case Map.lookup AttrKeyType caller of
+                        Just (ValULong k)
+                          | k == kty -> finishPub ost kty caller
+                          | otherwise -> KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                              "derived key type differs from the base key")
+                        _ -> KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                          "derived key type is malformed")
+                    _ -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
+                      "pub-from-priv derives exactly one key")
+              _ -> KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "pub-from-priv base key type is not served")
   | Just r <- ecdhRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -725,6 +776,24 @@ planDerive rules model st mech baseH blob
               let (pos, lens) = unzip
                     [(pendingFromAttrs st attrs, n) | (attrs, n) <- keyed]
               in KeyEffect (PwDerive pos lens) (fx (sum lens))
+    -- | Pub-from-priv admission: the caller template wins over
+    -- the mapped base defaults; curve params copy from the base
+    -- when the caller omits them. The effect carries no
+    -- parameters and a zero length (the SPKI length rides the
+    -- answer, which the finisher parses per key type).
+    finishPub ost kty caller =
+      case admitObjects rules (Map.size (mObjects model)) 1 of
+        Left deny -> KeyDenied (KeyDeny (admitCode deny)
+          ("admission denied: " ++ show deny))
+        Right () ->
+          let merged = Map.union caller (pubPrivMapAttrs (osAttrs ost))
+              withParams = case Map.lookup AttrEcParams (osAttrs ost) of
+                Just p | not (Map.member AttrEcParams merged) ->
+                  Map.insert AttrEcParams p merged
+                _ -> merged
+              po = pendingFromAttrs st withParams
+          in KeyEffect (PwDerivePub po kty)
+            (FxDerive mech (Just (osId ost)) Nothing BS.empty BS.empty 0)
     -- | Byte-op admission after the frame and aux resolve: the
     -- natural output width per kind drives 'finish' (concat
     -- and XOR default a missing template length to the full
@@ -1010,6 +1079,25 @@ resolveBase model st baseH = case resolveHandle model baseH of
     | Map.lookup AttrDerive (osAttrs ost) /= Just (ValBool True) ->
         Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
           "base key does not permit derivation")
+    | otherwise -> case keyBytesOf ost of
+        Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
+          "base key lacks material")
+        Just mat -> Right (ost, mat)
+
+-- | Resolve the base key ignoring CKA_DERIVE: known handle,
+-- session-visible, stored material present. The pub-from-priv
+-- row is the only derive allowed to skip the mark (same
+-- denials otherwise, one implementation shape with
+-- 'resolveBase').
+resolveBaseAnyMark
+  :: Model -> SessionState -> ExternalHandle
+  -> Either KeyDeny (ObjectState, ByteString)
+resolveBaseAnyMark model st baseH = case resolveHandle model baseH of
+  Nothing -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
+    "unknown or destroyed base-key handle")
+  Just ost
+    | not (objectVisible st ost) -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
+        "base key not visible in this session")
     | otherwise -> case keyBytesOf ost of
         Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
           "base key lacks material")

@@ -106,6 +106,7 @@ library haskoki-core
     Haskoki.Recipe.Chacha20
     Haskoki.Recipe.MlDsa
     Haskoki.Recipe.Otp
+    Haskoki.Recipe.PubPriv
     Haskoki.Recipe.SlhDsa
     Haskoki.Recipe.Sp800108
     Haskoki.Recipe.Ssl3
@@ -421,6 +422,7 @@ test-suite haskoki-model-tests
     RecipeSp800108Spec
     RecipeTlsKdfSpec
     RecipeTlsKeyMatSpec
+    RecipePubPrivSpec
     RecipeTlsPrfSpec
     RecipeX509Spec
     RecipeXcbcMacSpec
