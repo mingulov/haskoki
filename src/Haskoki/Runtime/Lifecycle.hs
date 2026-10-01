@@ -39,6 +39,7 @@ module Haskoki.Runtime.Lifecycle
   , finalize
   , seatToken
   , snapshotModel
+  , snapshotPresence
   , restoreStoreState
     -- * Mutation gate and publication
   , Gate
@@ -46,6 +47,7 @@ module Haskoki.Runtime.Lifecycle
   , withGate
   , gateBusy
   , publish
+  , publishPresence
   , invalidateSession
   , checkReservation
   , commitAndDeliver
@@ -97,6 +99,10 @@ import Haskoki.Rules (Rules (..), defaultRules)
 import Haskoki.Runtime.Config
   ( Config (..)
   , Limits (..)
+  )
+import Haskoki.Runtime.SlotEvents
+  ( SlotEvents, SlotSnapshot, PresenceError (..), PresenceChange
+  , snapshotSlotsSTM, publishPresenceSTM
   )
 import Haskoki.Runtime.Storage
   ( ObjectRecord (..)
@@ -299,6 +305,12 @@ seatToken env slot = withGate (envGate env) $
 snapshotModel :: Env -> IO Model
 snapshotModel env = readTVarIO (envModel env)
 
+-- | Read the model and serving presence in the same STM observation. A caller
+-- cannot pair the sessions from before retirement with presence from after it.
+snapshotPresence :: Env -> SlotEvents -> IO (Model, [SlotSnapshot])
+snapshotPresence env slots = atomically $
+  (,) <$> readTVar (envModel env) <*> snapshotSlotsSTM slots
+
 -- | Reload token metadata and token objects from the durable store
 -- into a fresh model (provider-reinit path). Each stored token
 -- seats its slot with its stored auth; each stored object lands
@@ -403,6 +415,24 @@ publish env delta = withGate (envGate env) $
     case publishDelta m delta of
       Left fault -> pure (Left fault)
       Right m' -> writeTVar (envModel env) m' >> pure (Right ())
+
+-- | Publish retirement and serving presence together. Validate the complete
+-- pure delta before asking the leaf to publish; its Left arms write nothing.
+-- Only after both validations succeed may either TVar's new state commit.
+publishPresence :: Env -> SlotEvents -> StateDelta -> SlotId -> Bool
+  -> IO (Either PresenceError PresenceChange)
+publishPresence env slots delta slot present = withGate (envGate env) $
+  atomically $ do
+    model <- readTVar (envModel env)
+    case publishDelta model delta of
+      Left fault -> pure (Left (PresenceModelFault fault))
+      Right unpublished -> do
+        result <- publishPresenceSTM slots slot present
+        case result of
+          Left err -> pure (Left err)
+          Right change -> do
+            writeTVar (envModel env) unpublished
+            pure (Right change)
 
 -- | Explicit reservation invalidation: bump a session's generation
 -- so every dependency pinned to the old generation goes stale. A
@@ -590,4 +620,3 @@ commitAndDeliver env delta releases outs encodeOne releaseOne = do
         withAdapterLock ad m (mapM_ encodeOne outs)
       mapM_ releaseOne releases
       pure (Right ())
-

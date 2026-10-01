@@ -64,6 +64,9 @@ module Haskoki.FFI.Standard
   , haskokiStdClose
   , withStdCtx
   , stdRvOf
+  , prepareStdRemoval
+  , setStdTokenPresence
+  , setStdTokenPresenceWith
     -- * Provisioning constants
   , homeTokenId
   , homeTokenLabel
@@ -196,7 +199,8 @@ import Control.Exception
   , throwIO
   , try
   )
-import Control.Monad (forM_, when, zipWithM_)
+import Control.Concurrent.STM (atomically, catchSTM, throwSTM)
+import Control.Monad (foldM, forM, forM_, when, zipWithM_)
 import Data.Bits (shiftL, shiftR, xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -271,7 +275,8 @@ import Haskoki.Runtime.Catalog (effectiveCatalog, homeCatalogEntry)
 import Haskoki.Runtime.Control (PresenceOwner (..), bindPresenceOwner)
 import Haskoki.Runtime.SlotEvents
   ( SlotEvents, SlotDefinition (..), PresenceError (..), newSlotEvents
-  , snapshotSlots, closeSlotEvents
+  , PresenceChange (..), NotificationPoint (RemovalPrepublication)
+  , snapshotSlots, closeSlotEvents, publishPresenceSTM, observeSlotEvents
   )
 import Haskoki.FFI.MessageParams
   ( decodeMessageInitFrame
@@ -286,6 +291,7 @@ import Haskoki.FFI.MessageParams
 import Haskoki.FFI.NativeParams (DerivedKeySlot (..), KeyMatSlots (..), normalizeByteOpsConcatKeyParams, normalizeByteOpsExtractParams, normalizeByteOpsStringDataParams, normalizeDhPkcsParams, normalizeDhX942Params, normalizeEcdhParams, normalizeEncryptDataCbcParams, normalizeEncryptDataEcbParams, normalizeIke1ExtParams, normalizeIke1PrfParams, normalizeIkePrfParams, normalizeIkePrfPlusParams, normalizeMechParams, normalizePbkd2Params2, normalizeSp800KdfParams, normalizeTlsKdfExtParams, normalizeTlsKdfFreeParams, normalizeTlsKdfMasterParams, normalizeTlsKdfTls12MasterParams, normalizeTlsKeyMatParams, normalizeTls12KeyMatParams, normalizeTls12KeySafeParams, normalizeSsl3MasterParams, normalizeSsl3KeyMatParams, normalizeTlsPrfParams, normalizePbeParamsMaybeIv)
 import Haskoki.Model
   ( Model (..)
+  , HandleBinding (..)
   , ObjectState (..)
   , SessionState (..)
   , lookupSession
@@ -358,6 +364,7 @@ import Haskoki.Outcome
   , PlanResult (..)
   , PreparedCommit (..)
   , Rejection (..)
+  , ResourceRelease
   , StateDelta (..)
   )
 import Haskoki.Output (TypedWrite (..), maxOutputBytes)
@@ -378,6 +385,8 @@ import Haskoki.Runtime.Async
   , enableAsyncSession
   , isAsyncSession
   , newAsyncTable
+  , JobSnapState (..), TerminalState (TermCanceled)
+  , sessionJobs, snapshotJob, jobSnapshotState
   )
 import Haskoki.Runtime.Detached (DetachCtx, detachSlot, openDetached, retireLiveTable)
 import Haskoki.Runtime.Config
@@ -394,6 +403,7 @@ import Haskoki.Runtime.Lifecycle
   , initialize
   , newEnv
   , publish
+  , publishPresence
   , restoreStoreState
   , rulesFromConfig
   , seatToken
@@ -414,7 +424,7 @@ import Haskoki.Session
   , TokenAuth (..)
   , tokenAuthNew
   )
-import Haskoki.Transition (finishEffect, planCall, planDecoded)
+import Haskoki.Transition (finishEffect, planCall, planDecoded, publishDelta)
 import Haskoki.Types
   ( ExternalHandle (..)
   , Generation (..)
@@ -571,8 +581,7 @@ haskokiStdOpen cell = guardedPtr $ do
       stdAcquisition
         { saBindPresenceOwner = \inst -> bindPresenceOwner (instControl ops)
             (Just (PresenceOwner (snapshotSlots (siSlots inst))
-              -- T-N03 supplies Standard's atomic retirement coordinator.
-              (\_ _ -> pure (Left PresenceFixedSlot))))
+              (setStdTokenPresence inst)))
         , saUnbindPresenceOwner = bindPresenceOwner (instControl ops) Nothing
         }
       (instConfig ops) (instSlots ops)
@@ -1185,6 +1194,129 @@ haskokiStdAsyncJoin ctx h name pid output capacity =
 -- ---------------------------------------------------------------------------
 -- Publication
 -- ---------------------------------------------------------------------------
+
+-- | Compose the existing close plans against successively validated models.
+-- Capture bindings from the original model, before session-object destruction
+-- erases their slot identity. Token objects/auth metadata stay parked.
+prepareStdRemoval :: Rules -> Model -> SlotId
+  -> Either ModelFault (StateDelta, [SessionId], [ResourceRelease])
+prepareStdRemoval rules model slot = do
+  case lookupTokenAuth model slot of
+    Nothing -> Left (FaultUnknownSlot slot)
+    Just _ -> Right ()
+  let sessions = map ssId (sessionsOnSlot model slot)
+      handles = [handle | (handle, binding) <- Map.toAscList (mHandles model)
+        , Just object <- [Map.lookup (hbObject binding) (mObjects model)]
+        , osSlot object == slot]
+  (_, operations, releases) <- foldM close (model, [], []) sessions
+  let delta = StateDelta (operations ++ map DeltaUnbindHandle handles)
+  _ <- publishDelta model delta
+  pure (delta, sessions, releases)
+  where
+    close (current, operations, releases) sid =
+      case planCall rules current (Request Pkcs11_3_2 F_CloseSession (Just sid) Nothing BS.empty []) of
+        Immediate pc | pcCode pc == CKR_OK -> do
+          next <- publishDelta current (pcDelta pc)
+          pure (next, operations ++ unStateDelta (pcDelta pc), releases ++ pcReleases pc)
+        _ -> Left (FaultInternal "presence retirement close plan refused")
+
+-- A speculative STM branch always rolls back, including on success. Reuse the
+-- leaf's exact closed/unknown/fixed/epoch precedence without publishing a flag
+-- or adding a second mutable validation API to the leaf.
+newtype PresencePreview = PresencePreview (Either PresenceError PresenceChange)
+  deriving (Show)
+instance Exception PresencePreview
+
+previewPresence :: SlotEvents -> SlotId -> Bool -> IO (Either PresenceError PresenceChange)
+previewPresence slots slot present = atomically $
+  (publishPresenceSTM slots slot present >>= throwSTM . PresencePreview)
+    `catchSTM` (\(PresencePreview result) -> pure result)
+
+-- | Called under the serving C state lock. Cancellation uses Standard's
+-- existing attached/joined workers and their leases outside the model gate.
+setStdTokenPresence :: StdInstance -> SlotId -> Bool
+  -> IO (Either PresenceError (PresenceChange, Int))
+setStdTokenPresence inst = setStdTokenPresenceWith
+  (\release -> drainReleases (siBackend inst) [release]) inst
+
+-- | Internal Haskell release-interpreter seam. Production uses the backend
+-- above; fixtures can fail one release and verify the remaining obligations.
+-- No new C surface or stored state is involved.
+setStdTokenPresenceWith :: (ResourceRelease -> IO ()) -> StdInstance -> SlotId -> Bool
+  -> IO (Either PresenceError (PresenceChange, Int))
+setStdTokenPresenceWith release inst slot present = mask_ $ do
+  preview <- previewPresence (siSlots inst) slot present
+  case preview of
+    Left err -> pure (Left err)
+    Right unchanged@(PresenceUnchanged _) -> pure (Right (unchanged, 0))
+    Right (PresenceChanged _) -> do
+      model <- snapshotModel (siEnv inst)
+      let prepared = if present then Right (StateDelta [], [], [])
+                     else prepareStdRemoval (envRules (siEnv inst)) model slot
+      case prepared of
+        Left fault -> pure (Left (PresenceModelFault fault))
+        Right (delta, sessions, releases) -> do
+          -- Resolve all borrowed views before canceling any job. A corrupted
+          -- ownership graph is a preflight failure, never permission to orphan
+          -- a native binding. The normal C lock keeps these maps stable.
+          views <- readIORef (siAsyncViews inst)
+          bindings <- readIORef (siAsyncBindings inst)
+          let missing = [sid | sid <- sessions, Map.notMember sid views
+                , any ((== sid) . fst) (Map.keys bindings)]
+          if not (null missing)
+            then pure (Left (PresenceModelFault (FaultInternal "presence binding has no borrowed view")))
+            else do
+              committed <- newIORef False
+              let cleanup = do
+                    published <- readIORef committed
+                    when published $ finishAll
+                      (map (clearCursor inst) sessions ++ map (freeStdAsyncView inst) sessions ++ map release releases)
+              (do
+                canceled <- sum <$> mapM (cancelPresenceSession inst) sessions
+                _ <- evaluate canceled
+                when (not present) (observeSlotEvents (siSlots inst) RemovalPrepublication)
+                result <- publishPresence (siEnv inst) (siSlots inst) delta slot present
+                case result of
+                  Left err -> pure (Left err)
+                  Right change -> do
+                    writeIORef committed True
+                    pure (Right (change, canceled))) `finally` cleanup
+
+-- Each action owns its own finally tail: one throwing release cannot strand
+-- another retired view/cursor/native stream. Nothing is drained precommit.
+finishAll :: [IO ()] -> IO ()
+finishAll [] = pure ()
+finishAll (action : rest) = action `finally` finishAll rest
+
+cancelPresenceSession :: StdInstance -> SessionId -> IO Int
+cancelPresenceSession inst sid = do
+  -- Compare live -> canceled states around the actual worker, not all jobs or
+  -- tombstones on a session. A joined attachment is an ordinary live table job;
+  -- an idle detached record has no live native handle here and is untouched.
+  jobs <- sessionJobs (siAsyncTable inst) sid
+  before <- forM jobs $ \jid -> do
+    snapshot <- snapshotJob (siAsyncTable inst) jid
+    pure (jid, case jobSnapshotState <$> snapshot of
+      Just (SnapTerminal _) -> False
+      Nothing -> False
+      _ -> True)
+  views <- readIORef (siAsyncViews inst)
+  forM_ (Map.lookup sid views) $ \view -> do
+    context <- deRefStablePtr view
+    handles <- Set.toList <$> readIORef (acLive context)
+    forM_ handles $ \handle -> do
+      rv <- haskokiAsyncCancel view (castPtrToStablePtr handle)
+      live <- readIORef (acLive context)
+      -- The worker frees terminal handles too (possibly returning the existing
+      -- terminal code). Refusal/exception that retains ownership aborts removal.
+      when (Set.member handle live) $
+        ioError (userError ("presence cancellation retained a handle: " ++ show rv))
+  atomicModifyIORef' (siAsyncBindings inst) $ \bindings ->
+    (Map.filterWithKey (\(owner, _) _ -> owner /= sid) bindings, ())
+  counts <- forM before $ \(jid, wasLive) -> do
+    snapshot <- snapshotJob (siAsyncTable inst) jid
+    pure (if wasLive && fmap jobSnapshotState snapshot == Just (SnapTerminal TermCanceled) then 1 else 0)
+  pure (sum counts)
 
 -- | Publish a delta through the instance environment. A later
 -- extension adds the process-store commit (store-first ordering);

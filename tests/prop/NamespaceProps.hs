@@ -41,12 +41,15 @@ spec count =
     [ testCase "namespaces stay separate" (caseNamespaces count)
     , testCase "namespaces over constant seqs" caseConstNamespaces
     , testCase "full namespace partition" (caseFull count)
+    , testCase "unbind preserves session and token namespaces" caseUnbind
     ]
 
 isSessionOp :: DeltaOp -> Bool
 isSessionOp op = case op of
   DeltaCreateObject _ -> False
   DeltaDestroyObject _ -> False
+  DeltaBindHandle _ _ -> False
+  DeltaUnbindHandle _ -> False
   _ -> True
 
 checkSeparation :: [DeltaOp] -> IO ()
@@ -86,6 +89,7 @@ constOps =
   , DeltaBumpGeneration (SessionId 1) (Generation 2)
   , DeltaCreateObject (ObjectId 1)
   , DeltaDestroyObject (ObjectId 1)
+  , DeltaUnbindHandle (ExternalHandle 9)
   ]
 
 caseConstNamespaces :: IO ()
@@ -112,6 +116,7 @@ opClass op = case op of
   DeltaCreateObjectFull _ _ _ _ -> OCObject
   DeltaBindHandle _ _ -> OCObject
   DeltaBumpHandle _ -> OCObject
+  DeltaUnbindHandle _ -> OCObject
   DeltaSetTokenAuth _ _ -> OCToken
   _ -> OCSession
 
@@ -213,6 +218,7 @@ constOpsFull =
   , DeltaCreateObjectFull (ObjectId 1) Map.empty Nothing (SlotId 0)
   , DeltaBindHandle (ExternalHandle 1) (ObjectId 1)
   , DeltaBumpHandle (ExternalHandle 1)
+  , DeltaUnbindHandle (ExternalHandle 9)
   , DeltaOpenSession (SessionId 1) (SlotId 0) False
   , DeltaSetSessionLogin (SessionId 1) LoginUser
   , DeltaSetTokenAuth (SlotId 0) tokenAuth0
@@ -271,3 +277,22 @@ caseFull count = do
     checkGen (seed, len) = checkPartition (genSeqFull seed len)
     checkConst :: (DeltaOp, Int) -> IO ()
     checkConst (op, len) = checkPartition (replicate len op)
+
+-- Keep the original LCG and all of its seeds/traces intact. These named
+-- success/failure traces add permanent retirement without diluting that corpus.
+caseUnbind :: IO ()
+caseUnbind = mapM_ check
+  [ [DeltaUnbindHandle (ExternalHandle 9)]
+  , [DeltaUnbindHandle (ExternalHandle 9), DeltaUnbindHandle (ExternalHandle 9)]
+  , [DeltaUnbindHandle (ExternalHandle 9), DeltaBindHandle (ExternalHandle 11) (ObjectId 9)]
+  , [DeltaUnbindHandle (ExternalHandle 9), DeltaDestroyObject (ObjectId 404)]
+  ]
+  where
+    check ops = do
+      checkSeparation ops
+      checkPartition ops
+      case publishDelta seedBase (StateDelta ops) of
+        Left _ -> pure ()
+        Right m -> do
+          assertEqual "old binding deleted" Nothing (Map.lookup (ExternalHandle 9) (mHandles m))
+          assertEqual "parked objects retained" (mObjects seedBase) (mObjects m)

@@ -64,6 +64,7 @@ import Haskoki.Session (SessionLogin (..))
 import Haskoki.Transition (finishEffect, packStep, planCall, publishDelta, runFinisher)
 import Haskoki.Types
   ( EngineResourceId (..)
+  , ExternalHandle (..)
   , Generation (..)
   , ObjectId (..)
   , Pkcs11Version (..)
@@ -85,8 +86,27 @@ spec = testGroup "model transitions"
   , testCase "generated: delta split-application equivalence" caseDeltaSplit
   , testCase "generated: session/object namespaces stay separate" caseNamespaces
   , testCase "generated: unknown destroy reports exact fault" caseUnknownDestroy
+  , testCase "unbind retains parked object and allocation counters" caseUnbindHandle
   , testCase "runFinisher finishing-leg set is pinned" caseFinisherCoverage
   ]
+
+caseUnbindHandle :: IO ()
+caseUnbindHandle = do
+  let oid = ObjectId 42
+      handle = ExternalHandle 17
+      seeded = publishDelta emptyModel (StateDelta [DeltaCreateObject oid, DeltaBindHandle handle oid])
+  case seeded of
+    Left fault -> assertBool (show fault) False
+    Right before -> do
+      let removed = publishDelta before (StateDelta [DeltaUnbindHandle handle, DeltaUnbindHandle handle])
+      case removed of
+        Left fault -> assertBool (show fault) False
+        Right after -> do
+          assertEqual "no binding survives" Map.empty (mHandles after)
+          assertEqual "parked record retained" (mObjects before) (mObjects after)
+          assertEqual "counter never recycled" (mNextHandle before) (mNextHandle after)
+      assertEqual "later fault aborts the entire delta" (Left (FaultUnknownSession (SessionId 999)))
+        (publishDelta before (StateDelta [DeltaUnbindHandle handle, DeltaCloseSession (SessionId 999)]))
 
 -- | The exact 'FunctionId's with a finishing leg: in
 -- declaration order, as produced by the coverage sweep. A new

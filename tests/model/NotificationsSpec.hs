@@ -1,6 +1,10 @@
+{-# LANGUAGE OverloadedStrings #-}
 module NotificationsSpec (spec) where
 
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, readMVar)
 import Control.Concurrent.STM (atomically)
+import Control.Exception (SomeException, try)
 import Control.Monad (foldM, forM_, replicateM)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sort, sortOn)
@@ -9,18 +13,39 @@ import qualified Data.Set as Set
 import Data.Word (Word64)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (Assertion, assertEqual, assertFailure, testCase)
+import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase)
 
+import qualified Data.ByteString.Char8 as BS
+import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.FFI.Standard (prepareStdRemoval)
+import Haskoki.Model
+import Haskoki.Object (resolveHandle)
+import Haskoki.Outcome
+import Haskoki.Rules (defaultRules)
+import Haskoki.Runtime.Async (newAsyncTable)
+import Haskoki.Runtime.Config (defaultConfig)
+import Haskoki.Runtime.Control
+import Haskoki.Runtime.Events (OverflowPolicy (DropOldest), newEventQueue, newTokenRegistry)
+import qualified Haskoki.Runtime.Lifecycle as Life
 import Haskoki.Runtime.SlotEvents
-import Haskoki.Types (SlotId (..))
+import Haskoki.Session (ActiveLogin (..), SessionLogin (..), TokenAuth (..), tokenAuthNew)
+import Haskoki.Transition (publishDelta)
+import Haskoki.Types (SlotId (..), SessionId (..), ObjectId (..), ExternalHandle (..), Generation (..))
 
 spec :: TestTree
-spec = testGroup "Notifications/T-N01"
+spec = testGroup "Notifications"
+  [ testGroup "T-N01"
   [ testCase "caseServingInitialCore" caseServingInitialCore
   , testCase "caseServingCoalesces" caseServingCoalesces
   , testCase "caseServingBound" caseServingBound
   , testCase "caseServingClosedFirst" caseServingClosedFirst
   , testCase "caseServingReferenceTraces" caseServingReferenceTraces
+  ]
+  , testGroup "T-N03"
+    [ testCase "casePresencePublication" casePresencePublication
+    , testCase "casePresenceHandleRetirement" casePresenceHandleRetirement
+    , testCase "casePresenceGenerationAtomicity" casePresenceGenerationAtomicity
+    ]
   ]
 
 slotA, slotB :: SlotId
@@ -273,3 +298,218 @@ caseServingReferenceTraces = do
       pure next) referenceInitial (zip [1 :: Int ..] inputs)
     pure ()
   putStrLn "T-N01 reference traces: 2401/2401 (length four, lexical order)"
+
+-- T-N03: a split publication, a write on a Left arm, or a stale binding
+-- revived by a later generation all violate these independently built states.
+rightOrFail :: Show e => Either e a -> IO a
+rightOrFail = either (assertFailure . show) pure
+
+presenceEnv :: IO Life.Env
+presenceEnv = do
+  env <- Life.newEnv defaultRules
+  forM_ [slotA, slotB] $ \slot -> Life.seatToken env slot >>= rightOrFail
+  Life.publish env (StateDelta [DeltaOpenSession (SessionId 1) slotA False,
+    DeltaOpenSession (SessionId 2) slotB False]) >>= rightOrFail
+  pure env
+
+casePresencePublication :: Assertion
+casePresencePublication = do
+  env <- presenceEnv
+  hub <- fresh
+  before <- Life.snapshotPresence env hub
+  let invalid = StateDelta [DeltaCloseSession (SessionId 1), DeltaCloseSession (SessionId 999)]
+      retire = StateDelta [DeltaCloseSession (SessionId 1)]
+  Life.publishPresence env hub invalid slotA False >>= assertEqual "model fault publishes neither half"
+    (Left (PresenceModelFault (FaultUnknownSession (SessionId 999))))
+  Life.snapshotPresence env hub >>= assertEqual "one STM snapshot unchanged" before
+  waitSlot hub DontBlock >>= assertEqual "model failure posts nothing" SlotNoEvent
+  forM_ ["unknown", "fixed", "exhausted", "closed"] $ \kind -> do
+    e <- presenceEnv
+    h <- opened (newSlotEventsWith (const (pure ()))
+      (if kind == "exhausted" then maxBound else 0) 2
+      [SlotDefinition slotA (kind /= "fixed"), SlotDefinition slotB True])
+    if kind == "closed" then closeSlotEvents h else pure ()
+    snap <- Life.snapshotPresence e h
+    let slot = if kind == "unknown" then SlotId 999 else slotA
+        err = case kind of
+          "unknown" -> PresenceUnknownSlot
+          "fixed" -> PresenceFixedSlot
+          "exhausted" -> PresenceEpochExhausted
+          _ -> PresenceClosed
+    Life.publishPresence e h retire slot False >>= assertEqual (kind ++ " refusal") (Left err)
+    Life.snapshotPresence e h >>= assertEqual (kind ++ " preserves both TVars") snap
+    waitSlot h DontBlock >>= assertEqual (kind ++ " has no false indication")
+      (if kind == "closed" then SlotWaitClosed else SlotNoEvent)
+  Life.publishPresence env hub retire slotA False >>= assertEqual "combined retirement"
+    (Right (PresenceChanged 1))
+  (removed, rows) <- Life.snapshotPresence env hub
+  assertEqual "one observation sees closed session" [SessionId 2] (Map.keys (mSessions removed))
+  assertEqual "same observation sees absence" [SlotSnapshot slotA True False 1, SlotSnapshot slotB True True 0] rows
+  waitSlot hub DontBlock >>= assertEqual "one publication event" (SlotReady slotA)
+
+  -- Concurrent readers exercise the joint snapshot while the marker and hub
+  -- alternate. The marker is a session login, avoiding reused session IDs.
+  e <- presenceEnv
+  h <- fresh
+  Life.publish e (StateDelta [DeltaSetSessionLogin (SessionId 1) LoginUser]) >>= rightOrFail
+  start <- newEmptyMVar
+  done <- newEmptyMVar
+  _ <- forkIO $ do
+    r <- try $ do
+      readMVar start
+      forM_ [1 .. 400 :: Int] $ \n -> do
+        let present = even n
+        Life.publishPresence e h (StateDelta [DeltaSetSessionLogin (SessionId 1)
+          (if present then LoginUser else LoginPublic)]) slotA present >>= rightOrFail
+    putMVar done (r :: Either SomeException ())
+  putMVar start ()
+  forM_ [1 .. 800 :: Int] $ \_ -> do
+    (m, slots) <- Life.snapshotPresence e h
+    let login = ssLogin <$> lookupSession m (SessionId 1)
+        present = [ssPresent s | s <- slots, ssSlotId s == slotA]
+    assertBool "never observe half-publication" ((login, present) `elem`
+      [(Just LoginUser, [True]), (Just LoginPublic, [False])])
+  timeout 2000000 (takeMVar done) >>= maybe (assertFailure "publication writer stuck") rightOrFail
+  putStrLn "T-N03 casePresencePublication: half_publications=0 checked_refusals=5"
+
+casePresenceHandleRetirement :: Assertion
+casePresenceHandleRetirement = do
+  let a = SessionId 1; b = SessionId 2; other = SessionId 3
+      tok = ObjectId 1; obj = ObjectId 2; unrelated = ObjectId 3
+      old = ExternalHandle 1; sessionHandle = ExternalHandle 2; otherHandle = ExternalHandle 3
+      auth = tokenAuthNew { taLogin = Just AuthUser, taPrincipal = Just "retained",
+        taUserAttempts = 2, taSoAttempts = 1, taSoLocked = True, taAuthEpoch = 7 }
+  m <- rightOrFail $ publishDelta (addToken (addToken emptyModel slotA) slotB) $ StateDelta
+    [ DeltaOpenSession a slotA False, DeltaOpenSession b slotA False, DeltaOpenSession other slotB False
+    , DeltaSetTokenAuth slotA auth, DeltaSetSessionLogin a LoginUser, DeltaSetSessionLogin b LoginUser
+    , DeltaCreateObjectFull tok (Map.singleton AttrToken (ValBool True)) Nothing slotA
+    , DeltaCreateObjectFull obj Map.empty (Just a) slotA
+    , DeltaCreateObjectFull unrelated Map.empty (Just other) slotB
+    , DeltaBindHandle old tok, DeltaBindHandle sessionHandle obj, DeltaBindHandle otherHandle unrelated
+    ]
+  (delta, sessions, releases) <- rightOrFail (prepareStdRemoval defaultRules m slotA)
+  assertEqual "all target sessions" [a,b] sessions
+  assertEqual "no invented releases" [] releases
+  assertBool "permanent deletion, never bump for removal"
+    (DeltaUnbindHandle old `elem` unStateDelta delta && not (any isBump (unStateDelta delta)))
+  retired <- rightOrFail (publishDelta m delta)
+  assertEqual "only unrelated session remains" [other] (Map.keys (mSessions retired))
+  assertEqual "park token, destroy session object" [tok, unrelated] (Map.keys (mObjects retired))
+  assertEqual "remove all target bindings" [otherHandle] (Map.keys (mHandles retired))
+  assertEqual "token object unchanged" (lookupObject m tok) (lookupObject retired tok)
+  afterAuth <- maybe (assertFailure "token auth was deleted") pure (lookupTokenAuth retired slotA)
+  assertEqual "active login reset" Nothing (taLogin afterAuth)
+  assertEqual "auth metadata retained" (taUserAttempts auth, taSoAttempts auth, taSoLocked auth)
+    (taUserAttempts afterAuth, taSoAttempts afterAuth, taSoLocked afterAuth)
+  assertEqual "monotonic counters unchanged by retirement"
+    (mNextSession m, mNextObject m, mNextHandle m)
+    (mNextSession retired, mNextObject retired, mNextHandle retired)
+  assertEqual "missing unbind is idempotent" (Right retired)
+    (publishDelta retired (StateDelta [DeltaUnbindHandle old, DeltaUnbindHandle old]))
+  -- Reinsertion/rediscovery gets fresh IDs. Force the object generation to the
+  -- old bump value as well: a tombstone-only removal would revive old here.
+  let freshHandle = ExternalHandle (mNextHandle retired)
+      changed = retired { mObjects = Map.adjust (\o -> o { osGeneration = Generation 2 }) tok (mObjects retired) }
+  rediscovered <- rightOrFail $ publishDelta changed $ StateDelta
+    [DeltaOpenSession (SessionId (mNextSession retired)) slotA False,
+     DeltaBindHandle freshHandle tok, DeltaSetAttributes tok (Map.singleton AttrLabel (ValBytes "new"))]
+  assertEqual "old token handle cannot revive" Nothing (resolveHandle rediscovered old)
+  assertEqual "old session object handle stays stale" Nothing (resolveHandle rediscovered sessionHandle)
+  assertBool "new token handle works" (resolveHandle rediscovered freshHandle /= Nothing)
+  assertBool "no handle recycling" (freshHandle > otherHandle)
+  putStrLn "T-N03 casePresenceHandleRetirement: stale_handles=2 recycled_ids=0 parked_tokens=1"
+  where
+    isBump (DeltaBumpHandle _) = True
+    isBump _ = False
+
+controlRequest :: String -> [(String, Json)] -> BS.ByteString
+controlRequest cmd args = renderJson (JObj [("schema_version", JNum 1), ("command", JStr cmd), ("arguments", JObj args)])
+
+newPresenceControl :: Word64 -> IO () -> Bool -> PresenceOwner -> IO ControlState
+newPresenceControl seed allocation enabled owner = do
+  queue <- newEventQueue 8 DropOldest
+  table <- newAsyncTable 8
+  reg <- newTokenRegistry queue table
+  ctl <- newControlStateWith seed allocation defaultConfig reg table enabled False
+  bindPresenceOwner ctl (Just owner)
+  pure ctl
+
+casePresenceGenerationAtomicity :: Assertion
+casePresenceGenerationAtomicity = do
+  hub <- fresh
+  env <- presenceEnv
+  calls <- newIORef (0 :: Int)
+  allocations <- newIORef (0 :: Int)
+  let owner = PresenceOwner (snapshotSlots hub) $ \slot present -> do
+        modifyIORef' calls (+1)
+        fmap (fmap (\change -> (change, 0))) (Life.publishPresence env hub (StateDelta []) slot present)
+      req = controlRequest "token.remove" [("slot", JNum 1), ("expected_generation", JNum 0)]
+      view ctl = (,,) <$> Life.snapshotPresence env hub <*> controlGeneration ctl <*> readIORef calls
+  ctl <- newPresenceControl 0 (modifyIORef' allocations (+1)) True owner
+  dispatchControl ctl (error "query parsed request") Nothing >>= assertEqual "query executes nothing" (0, BS.empty, 65536)
+  dispatchControl ctl (error "short buffer parsed request") (Just 65535) >>= assertEqual "short executes nothing" (0x150, BS.empty, 65536)
+  readIORef calls >>= assertEqual "zero owner calls" 0
+  readIORef allocations >>= assertEqual "no reply allocation on query/short" 0
+  before <- view ctl
+  forM_ ["malformed", controlRequest "unknown" [], controlRequest "token.remove" [("slot", JNum 99)],
+      controlRequest "token.remove" [("slot", JNum 1), ("expected_generation", JNum 1)]] $ \bad -> do
+    -- An unknown slot reaches owner validation but still changes neither half.
+    (rv, bytes, len) <- dispatchControl ctl bad (Just 65536)
+    assertEqual "checked failure RV" 0x07 rv
+    assertBool "bounded error envelope" (len == fromIntegral (BS.length bytes) && len <= 65536)
+    (m, g, _) <- view ctl
+    let (original, originalG, _) = before
+    assertEqual "all model/presence state retained" original m
+    assertEqual "generation retained" originalG g
+    waitSlot hub DontBlock >>= assertEqual "checked control failure emits no event" SlotNoEvent
+  disabled <- newPresenceControl 0 (pure ()) False owner
+  exhausted <- newPresenceControl maxBound (pure ()) True owner
+  forM_ [disabled, exhausted] $ \c -> do
+    beforeCalls <- readIORef calls
+    (rv, _, _) <- dispatchControl c (controlRequest "token.remove" [("slot", JNum 1)]) (Just 65536)
+    assertEqual "disabled/exhausted refuse before owner" 7 rv
+    readIORef calls >>= assertEqual "no cleanup claim" beforeCalls
+  controlGeneration exhausted >>= assertEqual "generation never wraps" maxBound
+  start <- newEmptyMVar
+  answers <- replicateM 2 newEmptyMVar
+  forM_ answers $ \answer -> do
+    _ <- forkIO $ do
+      readMVar start
+      r <- try (dispatchControl ctl req (Just 65536))
+      putMVar answer (r :: Either SomeException (Word64, BS.ByteString, Word64))
+    pure ()
+  putMVar start ()
+  results <- mapM (\answer -> timeout 2000000 (takeMVar answer) >>= maybe (assertFailure "dispatch deadlock") rightOrFail) answers
+  assertEqual "one accepted mutation, one stale generation" [0,7] (sort [rv | (rv,_,_) <- results])
+  controlGeneration ctl >>= assertEqual "one accepted command" 1
+  snapshotSlots hub >>= assertEqual "one changed presence epoch"
+    [SlotSnapshot slotA True False 1, SlotSnapshot slotB True True 0]
+  (rv, _, _) <- dispatchControl ctl (controlRequest "token.remove" [("slot", JNum 1), ("expected_generation", JNum 1)]) (Just 65536)
+  assertEqual "accepted idempotent removal" 0 rv
+  controlGeneration ctl >>= assertEqual "idempotence counts a command" 2
+  snapshotSlots hub >>= assertEqual "idempotence does not count an epoch"
+    [SlotSnapshot slotA True False 1, SlotSnapshot slotB True True 0]
+  waitSlot hub DontBlock >>= assertEqual "one pending flag" (SlotReady slotA)
+  waitSlot hub DontBlock >>= assertEqual "no idempotence flag" SlotNoEvent
+  forM_ [(PresenceClosed, 0x190), (PresenceModelFault (FaultInternal "injected"), 0x06)] $ \(err, want) -> do
+    c <- newPresenceControl 0 (pure ()) True (owner { ownerSetPresence = \_ _ -> pure (Left err) })
+    (code, _, _) <- dispatchControl c req (Just 65536)
+    assertEqual "typed operational failure" want code
+    controlGeneration c >>= assertEqual "operational refusal doesn't bump" 0
+  assertEqual "typed boundary mapping" [7,0x190,6]
+    (map controlFailureRV [ControlInvalid "bad", ControlUnavailable, ControlPublishFault (FaultInternal "bad")])
+  refused <- newPresenceControl 0 (ioError (userError "reply allocation")) True owner
+  beforeClaim <- view refused
+  failed <- try (dispatchControl refused req (Just 65536)) :: IO (Either SomeException (Word64, BS.ByteString, Word64))
+  assertBool "allocation fault observed" (case failed of Left _ -> True; _ -> False)
+  view refused >>= assertEqual "allocation refused before claim" beforeClaim
+  -- A response's echo must be checked before a mutation; an oversized echo
+  -- cannot turn a successful mutation into BUFFER_TOO_SMALL afterward.
+  let huge = renderJson (JObj [("schema_version", JNum 1), ("command", JStr "token.insert"),
+        ("arguments", JObj [("slot", JNum 1)]), ("correlation_id", JStr (replicate 65536 'x'))])
+  snap <- view ctl
+  (largeRV, largeBody, largeLen) <- dispatchControl ctl huge (Just 65536)
+  assertEqual "oversized request refuses" 7 largeRV
+  assertBool "refusal envelope bounded" (BS.length largeBody <= 65536 && largeLen <= 65536)
+  view ctl >>= assertEqual "oversized echo mutates nothing" snap
+  putStrLn "T-N03 casePresenceGenerationAtomicity: accepted=1 stale=1 idempotent_commands=1 allocation_claims=0"

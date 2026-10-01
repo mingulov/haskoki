@@ -40,6 +40,7 @@ import Haskoki.Runtime.Async
   , newAsyncTable
   , startJob
   )
+import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.Runtime.Control (ControlState, Json (..), dispatchControl, newControlState, bindPrivatePresenceOwner, renderJson)
 import Haskoki.Runtime.Events
   ( OverflowPolicy (DropOldest)
@@ -550,10 +551,10 @@ caseMaxRequest = withTimeout "max request" $ do
   let big = BC8.pack ("{\"schema_version\":1,\"command\":\"status\",\"arguments\":{},\"pad\":\"" ++ replicate 200 'x' ++ "\"}")
       small = BC8.pack "{\"schema_version\":1,\"command\":\"status\",\"arguments\":{}}"
   (codeBig, bodyBig, _) <- dispatchControl st big (Just 65536)
-  assertEqual "oversize code" CKR_ARGUMENTS_BAD codeBig
+  assertEqual "oversize code" (fromIntegral (returnCodeToRV CKR_ARGUMENTS_BAD)) codeBig
   assertBool "oversize named" ("request_too_large" `isInfixOf` BC8.unpack bodyBig)
   (codeSmall, _, _) <- dispatchControl st small (Just 65536)
-  assertEqual "small executes" CKR_OK codeSmall
+  assertEqual "small executes" (fromIntegral (returnCodeToRV CKR_OK)) codeSmall
 
 -- | ENFORCED-by-validation: the §5.1 budget is fixed at 65536.
 caseBudgetRefused :: IO ()

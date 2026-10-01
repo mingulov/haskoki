@@ -323,17 +323,17 @@ haskokiControl ptr pReq (CULong reqLen) pResp pLen = withInstance ptr $ \inst ->
           else Just <$> (do CULong cap <- peek pLen; pure cap)
         (code, body, needed) <- dispatchControl (instControl inst) req mCap
         _ <- drainTracer (instTracer inst)
-        let rv = CULong (fromIntegral (returnCodeToRV code))
+        let rv = CULong code
         case mCap of
           Nothing -> do
             poke pLen (CULong (fromIntegral needed))
             pure rv
           Just cap -> case code of
-            CKR_OK -> do
+            _ | code == fromIntegral (returnCodeToRV CKR_OK) -> do
               writeBytes pResp body
               poke pLen (CULong (fromIntegral needed))
               pure rv
-            CKR_BUFFER_TOO_SMALL -> do
+            _ | code == fromIntegral (returnCodeToRV CKR_BUFFER_TOO_SMALL) -> do
               -- The required length is authoritative; the short
               -- diagnostic body is copied only if it fits.
               whenFits pResp cap body

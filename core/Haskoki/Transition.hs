@@ -1218,6 +1218,10 @@ applyOp m op = case op of
           { mHandles = Map.insert h (HandleBinding oid (osGeneration ost)) (mHandles m)
           , mNextHandle = max (mNextHandle m) (unExternalHandle h + 1)
           }
+  -- Presence retirement permanently deletes bindings, while retaining parked
+  -- token records and the monotonic allocation counter. Repeated deletion is
+  -- harmless; a later object generation cannot resurrect a removed handle.
+  DeltaUnbindHandle h -> Right m { mHandles = Map.delete h (mHandles m) }
   DeltaBumpHandle h -> case Map.lookup h (mHandles m) of
     Nothing -> Left (FaultUnknownHandle h)
     Just b ->

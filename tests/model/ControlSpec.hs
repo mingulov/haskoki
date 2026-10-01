@@ -11,6 +11,7 @@ import Data.List (isInfixOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 
+import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.Runtime.Async (newAsyncTable)
 import Haskoki.Runtime.Config (defaultConfig)
 import Haskoki.Runtime.Control
@@ -57,7 +58,7 @@ caseBudgetQuery = do
   before <- genOf st
   (code, body, required) <- dispatchControl st (insertReq 0) Nothing
   after <- genOf st
-  assertEqual "query ok" CKR_OK code
+  assertEqual "query ok" (fromIntegral (returnCodeToRV CKR_OK)) code
   assertEqual "empty body" BC8.empty body
   assertEqual "required is the budget" 65536 required
   assertEqual "executed nothing" before after
@@ -68,7 +69,7 @@ caseTooSmall = do
   before <- genOf st
   (code, body, required) <- dispatchControl st (insertReq 0) (Just 100)
   after <- genOf st
-  assertEqual "too small" CKR_BUFFER_TOO_SMALL code
+  assertEqual "too small" (fromIntegral (returnCodeToRV CKR_BUFFER_TOO_SMALL)) code
   assertEqual "empty body" BC8.empty body
   assertEqual "required is the budget" 65536 required
   assertEqual "executed nothing" before after
@@ -77,14 +78,14 @@ caseExecuteOnce :: IO ()
 caseExecuteOnce = do
   st <- mkState True False
   (code, body, actual) <- dispatchControl st (insertReq 0) (Just 65536)
-  assertEqual "insert ok" CKR_OK code
+  assertEqual "insert ok" (fromIntegral (returnCodeToRV CKR_OK)) code
   assertBool "actual length honest" (fromIntegral (BC8.length body) == actual)
   assertBool "response names the slot" ("\"slot\":0" `isInfixOf` BC8.unpack body)
   present <- controlTokenPresent st (SlotId 0)
   assertBool "token seated" present
   -- A repeat insert is idempotent, not a second mutation row.
   (code2, _, _) <- dispatchControl st (insertReq 0) (Just 65536)
-  assertEqual "re-insert ok" CKR_OK code2
+  assertEqual "re-insert ok" (fromIntegral (returnCodeToRV CKR_OK)) code2
 
 caseUnknown :: IO ()
 caseUnknown = do
@@ -93,7 +94,7 @@ caseUnknown = do
   let bad = BC8.pack "{\"schema_version\":1,\"command\":\"token.selfdestruct\",\"arguments\":{}}"
   (code, body, _) <- dispatchControl st bad (Just 65536)
   after <- genOf st
-  assertEqual "argument error" CKR_ARGUMENTS_BAD code
+  assertEqual "argument error" (fromIntegral (returnCodeToRV CKR_ARGUMENTS_BAD)) code
   assertBool "error tagged" ("\"error\"" `isInfixOf` BC8.unpack body)
   assertEqual "no mutation" before after
 
@@ -103,7 +104,7 @@ caseMalformed = do
   before <- genOf st
   (code, _, _) <- dispatchControl st (BC8.pack "{\"schema_version\":") (Just 65536)
   after <- genOf st
-  assertEqual "argument error" CKR_ARGUMENTS_BAD code
+  assertEqual "argument error" (fromIntegral (returnCodeToRV CKR_ARGUMENTS_BAD)) code
   assertEqual "no mutation" before after
 
 caseGeneration :: IO ()
@@ -114,21 +115,21 @@ caseGeneration = do
   let stale = BC8.pack ("{\"schema_version\":1,\"command\":\"token.remove\","
         ++ "\"arguments\":{\"slot\":0,\"expected_generation\":" ++ show (g + 99) ++ "}}")
   (code, _, _) <- dispatchControl st stale (Just 65536)
-  assertEqual "stale generation refuses" CKR_ARGUMENTS_BAD code
+  assertEqual "stale generation refuses" (fromIntegral (returnCodeToRV CKR_ARGUMENTS_BAD)) code
   present <- controlTokenPresent st (SlotId 0)
   assertBool "token still seated" present
   let fresh = BC8.pack ("{\"schema_version\":1,\"command\":\"token.remove\","
         ++ "\"arguments\":{\"slot\":0,\"expected_generation\":" ++ show g ++ "}}")
   (code2, _, _) <- dispatchControl st fresh (Just 65536)
-  assertEqual "fresh generation proceeds" CKR_OK code2
+  assertEqual "fresh generation proceeds" (fromIntegral (returnCodeToRV CKR_OK)) code2
 
 caseTestGate :: IO ()
 caseTestGate = do
   st <- mkState False False
   (codeS, _, _) <- dispatchControl st statusReq (Just 65536)
-  assertEqual "status needs no test instance" CKR_OK codeS
+  assertEqual "status needs no test instance" (fromIntegral (returnCodeToRV CKR_OK)) codeS
   (codeI, bodyI, _) <- dispatchControl st (insertReq 0) (Just 65536)
-  assertEqual "insert refused" CKR_ARGUMENTS_BAD codeI
+  assertEqual "insert refused" (fromIntegral (returnCodeToRV CKR_ARGUMENTS_BAD)) codeI
   assertBool "refusal names the gate" ("test_instance_required" `isInfixOf` BC8.unpack bodyI)
   present <- controlTokenPresent st (SlotId 0)
   assertBool "nothing seated" (not present)
@@ -139,7 +140,7 @@ casePaginated = do
   let paged = BC8.pack ("{\"schema_version\":1,\"command\":\"status\","
         ++ "\"arguments\":{\"offset\":0,\"limit\":4}}")
   (code, body, actual) <- dispatchControl st paged (Just 65536)
-  assertEqual "paged status ok" CKR_OK code
+  assertEqual "paged status ok" (fromIntegral (returnCodeToRV CKR_OK)) code
   assertBool "fits budget" (actual <= 65536)
   assertBool "page marker" ("\"paginated\":true" `isInfixOf` BC8.unpack body)
 

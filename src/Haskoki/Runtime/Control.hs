@@ -31,6 +31,9 @@ module Haskoki.Runtime.Control
   , responseBudget
   , ControlState
   , newControlState
+  , newControlStateWith
+  , ControlFailure (..)
+  , controlFailureRV
   , PresenceOwner (..)
   , bindPresenceOwner
   , bindPrivatePresenceOwner
@@ -44,6 +47,8 @@ module Haskoki.Runtime.Control
   , maxScenarioActions
   ) where
 
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
+import Control.Exception (evaluate, mask_)
 import Control.Concurrent.STM
   ( TVar
   , atomically
@@ -52,11 +57,19 @@ import Control.Concurrent.STM
   , writeTVar
   )
 import qualified Data.ByteString.Char8 as BC8
+import qualified Data.ByteString.Internal as BSI
 import Data.ByteString (ByteString)
 import Data.Char (isDigit, isSpace)
 import Data.List (intercalate)
 import Data.Word (Word64)
+import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
+import Foreign.Marshal.Utils (copyBytes, fillBytes)
+import Foreign.Ptr (Ptr, castPtr, plusPtr)
+import Foreign.Storable (pokeByteOff)
+import Data.Word (Word8)
 
+import Haskoki.FFI.Exports (returnCodeToRV)
+import Haskoki.Outcome (ModelFault (..))
 import Haskoki.Runtime.Async (AsyncTable, advanceTicks)
 import Haskoki.Runtime.Config (Config (..), ControlCfg (..), SimCfg (..))
 import Haskoki.Runtime.Events
@@ -244,6 +257,8 @@ data ControlState = ControlState
   , csScenario :: !(TVar (Maybe Scenario))
   , csTracer :: !(TVar (Maybe Tracer))
   , csPresenceOwner :: !(TVar (Maybe PresenceOwner))
+  , csDispatch :: !(MVar ())
+  , csPrepareReply :: !(IO ())
   }
 
 -- | A fresh control state. The flags are fixed at construction. The
@@ -251,13 +266,22 @@ data ControlState = ControlState
 -- parameter keeps the owned-instance bundle explicit at call sites.
 newControlState
   :: Config -> TokenRegistry -> AsyncTable -> Bool -> Bool -> IO ControlState
-newControlState cfg reg _asyncTable testEnabled unsafeDebug =
+newControlState = newControlStateWith 0 (pure ())
+
+-- | Internal constructor injection only: production starts generation zero.
+-- The allocation observation runs before allocating a mutation's bounded reply
+-- and before claiming work. No setter can rewind a live command generation.
+newControlStateWith
+  :: Word64 -> IO () -> Config -> TokenRegistry -> AsyncTable -> Bool -> Bool -> IO ControlState
+newControlStateWith generation beforeReply cfg reg _asyncTable testEnabled unsafeDebug =
   ControlState cfg reg testEnabled unsafeDebug
-    <$> newTVarIO 0
+    <$> newTVarIO generation
     <*> newTVarIO 0
     <*> newTVarIO Nothing
     <*> newTVarIO Nothing
     <*> newTVarIO Nothing
+    <*> newMVar ()
+    <*> pure beforeReply
 
 -- | The explicit owner of serving presence. Binding and clearing are done
 -- under the C init/state ownership; hooks retain the Haskell value itself.
@@ -346,52 +370,37 @@ argInt args name = case lookup name args of
   Just (JNum n) -> Right (Just n)
   Just _ -> Left ("argument '" ++ name ++ "' must be an integer")
 
--- | Dispatch one request under the budget rule. The capacity is
--- 'Nothing' for a null response pointer (pure budget query) and
--- 'Just' @cap@ otherwise. Returns @(code, body, required-or-actual)@.
-dispatchControl
-  :: ControlState -> ByteString -> Maybe Word64 -> IO (ReturnCode, ByteString, Word64)
-dispatchControl st req mCap = case mCap of
-  Nothing -> pure (CKR_OK, BC8.empty, responseBudget)
-  Just cap
-    | cap < responseBudget -> pure (CKR_BUFFER_TOO_SMALL, BC8.empty, responseBudget)
-    | otherwise -> run cap
-  where
-    run cap = do
-      let maxReq = ccMaxRequestBytes (cfgControl (csConfig st))
-      if BC8.length req > maxReq
-        then pure (refused "request_too_large")
-        else case parseJson req of
-          Left err -> pure (refused ("malformed_json: " ++ err))
-          Right val -> case parseEnvelope val of
-            Left err -> pure (refused err)
-            Right (cmd, args, corr) -> exec cap cmd args corr
-    refused why =
-      let body = renderJson (JObj [("schema_version", JNum 1), ("error", JStr why)])
-      in (CKR_ARGUMENTS_BAD, body, fromIntegral (BC8.length body))
-    exec cap cmd args corr = do
-      outcome <- execute st cmd args
-      let body = renderJson (envelope corr outcome)
-          actual = fromIntegral (BC8.length body) :: Word64
-      case outcome of
-        OutcomeErr _ -> pure (CKR_ARGUMENTS_BAD, body, actual)
-        OutcomeOk _
-          | actual > cap ->
-              let need = renderJson (JObj [("schema_version", JNum 1)
-                                          , ("error", JStr "response_over_budget")])
-              in pure (CKR_BUFFER_TOO_SMALL, need, actual)
-          | otherwise -> do
-              traceDispatch st cmd CKR_OK
-              pure (CKR_OK, body, actual)
+-- | Extension-only failures: persisted/core return-code constructors and their
+-- encodings stay unchanged. Unexpected exceptions still reach the outer 0x05
+-- FFI fence, including faults after a committed presence transition.
+data ControlFailure
+  = ControlInvalid !String
+  | ControlUnavailable
+  | ControlPublishFault !ModelFault
+  deriving (Eq, Show)
 
--- | Command outcome (internal): either a refusal tag or result fields.
-data Outcome
-  = OutcomeErr !String
-  | OutcomeOk ![(String, Json)]
+controlFailureRV :: ControlFailure -> Word64
+controlFailureRV failure = case failure of
+  ControlInvalid _ -> 0x07
+  ControlUnavailable -> 0x190
+  ControlPublishFault _ -> 0x06
+
+failureText :: ControlFailure -> String
+failureText failure = case failure of
+  ControlInvalid why -> take 1024 why
+  ControlUnavailable -> "presence_closed"
+  ControlPublishFault _ -> "model_publication_fault"
+
+type Reply = (Word64, ByteString, Word64)
+
+data Outcome = OutcomeErr !ControlFailure | OutcomeOk ![(String, Json)]
+
+invalid :: String -> Outcome
+invalid = OutcomeErr . ControlInvalid
 
 envelope :: Maybe String -> Outcome -> Json
 envelope corr (OutcomeErr why) = JObj
-  ([("schema_version", JNum 1), ("error", JStr why)] ++ corrField corr)
+  ([("schema_version", JNum 1), ("error", JStr (failureText why))] ++ corrField corr)
 envelope corr (OutcomeOk fields) = JObj
   ([("schema_version", JNum 1)] ++ fields ++ corrField corr)
 
@@ -399,137 +408,218 @@ corrField :: Maybe String -> [(String, Json)]
 corrField Nothing = []
 corrField (Just c) = [("correlation_id", JStr c)]
 
--- | Execute one validated command. Test-gated commands refuse without
--- mutation when the instance is not test-enabled; generation checks
--- run before any mutation.
-execute :: ControlState -> ControlCommand -> [(String, Json)] -> IO Outcome
-execute st CmdStatus args = do
+outcomeRV :: Outcome -> Word64
+outcomeRV (OutcomeErr failure) = controlFailureRV failure
+outcomeRV (OutcomeOk _) = fromIntegral (returnCodeToRV CKR_OK)
+
+-- Force rendering and enforce the budget BEFORE an action is claimed. Even
+-- parser diagnostics and correlation echoes fit the same bounded envelope.
+encodedReply :: Maybe String -> Outcome -> Either ControlFailure Reply
+encodedReply corr outcome =
+  let bytes = renderJson (envelope corr outcome)
+      size = fromIntegral (BC8.length bytes)
+  in if size > responseBudget then Left (ControlInvalid "response_over_budget")
+     else Right (outcomeRV outcome, bytes, size)
+
+failureReply :: Maybe String -> ControlFailure -> Reply
+failureReply corr failure = case encodedReply corr (OutcomeErr failure) of
+  Right reply -> reply
+  Left _ -> case encodedReply Nothing (invalid "response_over_budget") of
+    Right reply -> reply
+    Left _ -> error "bounded control error envelope exceeds budget"
+
+-- A complete, privately owned response allocation, prepared before cleanup.
+-- Dynamic integer fields occupy twenty bytes of JSON whitespace/digits. Both
+-- presence-change variants are ready before calling the owner; afterwards we
+-- only fill the count in that allocation, with no rendering or resizing.
+data PreparedReply = PreparedReply !Reply !(ForeignPtr Word8) ![(String, Int)]
+
+counterPlaceholder :: Json
+counterPlaceholder = JNum 10000000000000000000
+
+prepareReply :: Reply -> [String] -> IO PreparedReply
+prepareReply (rv, source, size) fields = do
+  let offsets = [(name, BC8.length prefix + BC8.length marker)
+        | name <- fields
+        , let marker = BC8.pack ("\"" ++ name ++ "\":")
+              (prefix, _) = BC8.breakSubstring marker source]
+  -- Force every offset while failure is still harmless.
+  _ <- evaluate (sum (map snd offsets))
+  storage <- mallocForeignPtrBytes (fromIntegral size)
+  withForeignPtr storage $ \dst -> BC8.useAsCStringLen source $ \(src, len) ->
+    copyBytes dst (castPtr src) len
+  body <- evaluate (BSI.fromForeignPtr storage 0 (fromIntegral size))
+  pure (PreparedReply (rv, body, size) storage offsets)
+
+finishReply :: PreparedReply -> [(String, Word64)] -> IO Reply
+finishReply (PreparedReply reply storage fields) values = do
+  withForeignPtr storage $ \ptr -> mapM_ (writeField ptr) values
+  pure reply
+  where
+    writeField ptr (name, value) = case lookup name fields of
+      Nothing -> error "unprepared control response field"
+      Just offset -> do
+        fillBytes (ptr `plusPtr` offset) 32 20
+        writeDecimal ptr (offset + decimalDigits value - 1) value
+    decimalDigits :: Word64 -> Int
+    decimalDigits value
+      | value < 10 = 1
+      | otherwise = 1 + decimalDigits (value `quot` 10)
+    writeDecimal :: Ptr Word8 -> Int -> Word64 -> IO ()
+    writeDecimal ptr offset value = do
+      let (remaining, digit) = value `quotRem` 10
+      pokeByteOff ptr offset (fromIntegral (48 + digit) :: Word8)
+      if remaining == 0 then pure () else writeDecimal ptr (offset - 1) remaining
+
+-- | Query and short capacity return before even examining the request. The
+-- private gate also serializes compare/mutate/increment; serving callers retain
+-- the existing outer C state lock for the captured Standard owner's lifetime.
+dispatchControl
+  :: ControlState -> ByteString -> Maybe Word64 -> IO (Word64, ByteString, Word64)
+dispatchControl st req mCap = case mCap of
+  Nothing -> pure (fromIntegral (returnCodeToRV CKR_OK), BC8.empty, responseBudget)
+  Just cap
+    | cap < responseBudget -> pure (fromIntegral (returnCodeToRV CKR_BUFFER_TOO_SMALL), BC8.empty, responseBudget)
+    | otherwise -> withMVar (csDispatch st) $ \_ -> mask_ $ do
+        let maxReq = ccMaxRequestBytes (cfgControl (csConfig st))
+        if BC8.length req > maxReq
+          then pure (failureReply Nothing (ControlInvalid "request_too_large"))
+          else case either (Left . ("malformed_json: " ++)) parseEnvelope (parseJson req) of
+            Left err -> pure (failureReply Nothing (ControlInvalid err))
+            Right (cmd, args, corr) -> do
+              reply@(rv, _, _) <- dispatchCommand st cmd args corr
+              if rv == fromIntegral (returnCodeToRV CKR_OK) then traceDispatch st cmd rv else pure ()
+              pure reply
+
+-- Every mutation enters here with the private dispatch gate held. Checked
+-- failures consume neither a command generation nor an owner cleanup claim.
+withMutation :: ControlState -> [(String, Json)] -> Maybe String -> (Word64 -> IO Reply) -> IO Reply
+withMutation st args corr action
+  | not (csTestEnabled st) = pure (failureReply corr (ControlInvalid "test_instance_required"))
+  | otherwise = do
+      generation <- controlGeneration st
+      case lookup "expected_generation" args of
+        Just (JNum wanted) | wanted /= fromIntegral generation ->
+          refuse ("generation_mismatch: expected " ++ show wanted ++ ", live " ++ show generation)
+        Just (JNum _) -> checked generation
+        Just _ -> refuse "expected_generation must be an integer"
+        Nothing -> checked generation
+  where
+    refuse = pure . failureReply corr . ControlInvalid
+    checked generation
+      | generation == maxBound = refuse "control_generation_exhausted"
+      | otherwise = action (generation + 1)
+
+commitGeneration :: ControlState -> Word64 -> IO ()
+commitGeneration st generation = atomically (writeTVar (csGeneration st) generation)
+
+dispatchCommand :: ControlState -> ControlCommand -> [(String, Json)] -> Maybe String -> IO Reply
+dispatchCommand st CmdStatus args corr = do
   let mOffset = lookup "offset" args
       mLimit = lookup "limit" args
-  case (mOffset, mLimit) of
-    (Just (JNum o), _) | o < 0 -> pure (OutcomeErr "offset must be >= 0")
-    (_, Just (JNum l)) | l < 0 -> pure (OutcomeErr "limit must be >= 0")
-    (Just (JNum o), Just (JNum l)) -> statusPage st (fromInteger o) (fromInteger l)
-    (Just (JNum o), Nothing) -> statusPage st (fromInteger o) 64
-    (Nothing, Just (JNum l)) -> statusPage st 0 (fromInteger l)
+  outcome <- case (mOffset, mLimit) of
+    (Just (JNum o), _) | o < 0 -> pure (invalid "offset must be >= 0")
+    (_, Just (JNum l)) | l < 0 -> pure (invalid "limit must be >= 0")
+    (Just (JNum o), Just (JNum l)) -> statusPage st (boundedInt o) (boundedInt l)
+    (Just (JNum o), Nothing) -> statusPage st (boundedInt o) 64
+    (Nothing, Just (JNum l)) -> statusPage st 0 (boundedInt l)
     (Nothing, Nothing) -> statusPage st 0 64
-    _ -> pure (OutcomeErr "offset/limit must be integers")
-execute st CmdTokenInsert args = withTestGate st $ do
-  case argInt args "slot" of
-    Left err -> pure (OutcomeErr err)
-    Right Nothing -> pure (OutcomeErr "token.insert needs an integer 'slot'")
-    Right (Just n)
-      | n < 0 || n > 0xFFFFFFFF -> pure (OutcomeErr "slot out of range")
-      | otherwise -> do
-          eGen <- checkGeneration st args
-          case eGen of
-            Just refusal -> pure (OutcomeErr refusal)
-            Nothing -> do
-              out <- setOwnedPresence st (SlotId (fromInteger n)) True
-              case out of
-                Left refusal -> pure (OutcomeErr refusal)
-                Right (change, _) -> do
-                  g <- bumpGeneration st
-                  pure (OutcomeOk [ ("command", JStr "token.insert")
-                                  , ("slot", JNum n)
-                                  , ("inserted", JBool (presenceChanged change))
-                                  , ("generation", JNum (fromIntegral g))
-                                  ])
-execute st CmdTokenRemove args = withTestGate st $ do
-  case argInt args "slot" of
-    Left err -> pure (OutcomeErr err)
-    Right Nothing -> pure (OutcomeErr "token.remove needs an integer 'slot'")
-    Right (Just n)
-      | n < 0 || n > 0xFFFFFFFF -> pure (OutcomeErr "slot out of range")
-      | otherwise -> do
-          eGen <- checkGeneration st args
-          case eGen of
-            Just refusal -> pure (OutcomeErr refusal)
-            Nothing -> do
-              out <- setOwnedPresence st (SlotId (fromInteger n)) False
-              case out of
-                Left refusal -> pure (OutcomeErr refusal)
-                Right (change, canceled) -> do
-                  g <- bumpGeneration st
-                  pure (OutcomeOk [ ("command", JStr "token.remove")
-                                  , ("slot", JNum n)
-                                  , ("removed", JBool (presenceChanged change))
-                                  , ("jobs_canceled", JNum (fromIntegral canceled))
-                                  , ("generation", JNum (fromIntegral g))
-                                  ])
-execute st CmdSchedulerAdvance args = withTestGate st $ do
+    _ -> pure (invalid "offset/limit must be integers")
+  pure (either (failureReply corr) id (encodedReply corr outcome))
+  where boundedInt n = fromInteger (min n (toInteger (maxBound :: Int)))
+dispatchCommand st CmdTokenInsert args corr = dispatchPresence st True args corr
+dispatchCommand st CmdTokenRemove args corr = dispatchPresence st False args corr
+dispatchCommand st CmdSchedulerAdvance args corr = withMutation st [] corr $ \generation ->
   case argInt args "ticks" of
-    Left err -> pure (OutcomeErr err)
-    Right Nothing -> pure (OutcomeErr "scheduler.advance needs integer 'ticks'")
+    Left err -> refuse err
+    Right Nothing -> refuse "scheduler.advance needs integer 'ticks'"
     Right (Just n)
-      | n < 1 || n > 1000000 -> pure (OutcomeErr "ticks must be 1..1000000")
+      | n < 1 || n > 1000000 -> refuse "ticks must be 1..1000000"
       | otherwise -> do
-          tick <- atomically $ do
-            t <- readTVar (csTick st)
-            let t' = t + fromIntegral n
-            writeTVar (csTick st) t'
-            pure t'
-          -- Delay bridge: the advance (plus the configured [sim]
-          -- schedule boost, when sim is enabled) decrements
-          -- pending-job ticks through the async table, saturating at
-          -- 1 so the last tick always drives via the poll path.
-          let sim = cfgSim (csConfig st)
-              sched = if scEnabled sim then scDelaySchedule sim else []
-          (adv, sat) <- advanceTicks (registryAsync (csRegistry st)) (fromInteger n) sched
-          _ <- bumpGeneration st
-          pure (OutcomeOk [ ("command", JStr "scheduler.advance")
-                          , ("advanced", JNum n)
-                          , ("tick", JNum (fromIntegral tick))
-                          , ("jobs_advanced", JNum (fromIntegral adv))
-                          , ("jobs_saturated", JNum (fromIntegral sat))
-                          ])
-execute st CmdScenarioLoad args = withTestGate st $ do
+          tick <- atomically (readTVar (csTick st))
+          let nextTick = tick + fromIntegral n
+              outcome = OutcomeOk [("command", JStr "scheduler.advance"), ("advanced", JNum n)
+                , ("tick", JNum (fromIntegral nextTick)), ("jobs_advanced", counterPlaceholder)
+                , ("jobs_saturated", counterPlaceholder)]
+          case encodedReply corr outcome of
+            Left err -> pure (failureReply corr err)
+            Right encoded -> do
+              csPrepareReply st
+              reply <- prepareReply encoded ["jobs_advanced", "jobs_saturated"]
+              let sim = cfgSim (csConfig st)
+                  schedule = if scEnabled sim then scDelaySchedule sim else []
+              (advanced, saturated) <- advanceTicks (registryAsync (csRegistry st)) (fromInteger n) schedule
+              atomically $ do
+                writeTVar (csTick st) nextTick
+                writeTVar (csGeneration st) generation
+              finishReply reply [("jobs_advanced", fromIntegral advanced), ("jobs_saturated", fromIntegral saturated)]
+  where refuse = pure . failureReply corr . ControlInvalid
+dispatchCommand st CmdScenarioLoad args corr = withMutation st [] corr $ \generation ->
   case lookup "scenario" args of
-    Nothing -> pure (OutcomeErr "scenario.load needs a 'scenario' object")
+    Nothing -> refuse "scenario.load needs a 'scenario' object"
     Just val -> case validateScenario val of
-      Left err -> pure (OutcomeErr ("scenario rejected: " ++ err))
-      Right sc -> do
-        atomically (writeTVar (csScenario st) (Just sc))
-        _ <- bumpGeneration st
-        pure (OutcomeOk [ ("command", JStr "scenario.load")
-                        , ("loaded", JStr (scName sc))
-                        , ("actions", JNum (fromIntegral (length (scSteps sc))))
-                        ])
+      Left err -> refuse ("scenario rejected: " ++ err)
+      Right scenario -> case encodedReply corr (OutcomeOk
+          [("command", JStr "scenario.load"), ("loaded", JStr (scName scenario))
+          , ("actions", JNum (fromIntegral (length (scSteps scenario))))]) of
+        Left err -> pure (failureReply corr err)
+        Right encoded -> do
+          csPrepareReply st
+          reply <- prepareReply encoded []
+          atomically $ do
+            writeTVar (csScenario st) (Just scenario)
+            writeTVar (csGeneration st) generation
+          finishReply reply []
+  where refuse = pure . failureReply corr . ControlInvalid
 
-setOwnedPresence :: ControlState -> SlotId -> Bool -> IO (Either String (PresenceChange, Int))
-setOwnedPresence st slot present = do
-  owner <- atomically (readTVar (csPresenceOwner st))
-  case owner of
-    Nothing -> pure (Left "presence_owner_unbound")
-    Just bound -> either (Left . show) Right <$> ownerSetPresence bound slot present
+dispatchPresence :: ControlState -> Bool -> [(String, Json)] -> Maybe String -> IO Reply
+dispatchPresence st present args corr = withMutation st args corr $ \generation ->
+  case argInt args "slot" of
+    Left err -> refuse err
+    Right Nothing -> refuse ((if present then "token.insert" else "token.remove") ++ " needs an integer 'slot'")
+    Right (Just n)
+      | n < 0 || n > 0xFFFFFFFF -> refuse "slot out of range"
+      | otherwise -> do
+          owner <- atomically (readTVar (csPresenceOwner st))
+          case owner of
+            Nothing -> refuse "presence_owner_unbound"
+            Just bound -> do
+              let success changed = encodedReply corr (OutcomeOk
+                    ([("command", JStr (if present then "token.insert" else "token.remove"))
+                     , ("slot", JNum n), (if present then "inserted" else "removed", JBool changed)]
+                     ++ [("jobs_canceled", counterPlaceholder) | not present]
+                     ++ [("generation", JNum (fromIntegral generation))]))
+              case (success True, success False) of
+                (Left err, _) -> pure (failureReply corr err)
+                (_, Left err) -> pure (failureReply corr err)
+                (Right changed, Right unchanged) -> do
+                  -- Allocate both success variants and every bounded failure
+                  -- before entering Standard's irreversible cancellation work.
+                  csPrepareReply st
+                  yes <- prepareReply changed ["jobs_canceled" | not present]
+                  no <- prepareReply unchanged ["jobs_canceled" | not present]
+                  errors <- mapM (\err -> prepareReply (failureReply corr err) [])
+                    [ControlInvalid "PresenceUnknownSlot", ControlInvalid "PresenceFixedSlot"
+                    , ControlInvalid "PresenceEpochExhausted", ControlUnavailable
+                    , ControlPublishFault (FaultInternal "publication")]
+                  out <- ownerSetPresence bound (SlotId (fromInteger n)) present
+                  case out of
+                    Left err -> finishReply (errors !! failureIndex err) []
+                    Right (change, canceled) -> do
+                      commitGeneration st generation
+                      finishReply (if presenceChanged change then yes else no)
+                        [("jobs_canceled", fromIntegral canceled) | not present]
+  where
+    refuse = pure . failureReply corr . ControlInvalid
+    failureIndex PresenceUnknownSlot = 0
+    failureIndex PresenceFixedSlot = 1
+    failureIndex PresenceEpochExhausted = 2
+    failureIndex PresenceClosed = 3
+    failureIndex (PresenceModelFault _) = 4
 
 presenceChanged :: PresenceChange -> Bool
 presenceChanged (PresenceChanged _) = True
 presenceChanged (PresenceUnchanged _) = False
-
--- | Refuse without mutation unless test-enabled.
-withTestGate :: ControlState -> IO Outcome -> IO Outcome
-withTestGate st action
-  | csTestEnabled st = action
-  | otherwise = pure (OutcomeErr "test_instance_required")
-
--- | Check @expected_generation@ when present ('Nothing' = proceed).
-checkGeneration :: ControlState -> [(String, Json)] -> IO (Maybe String)
-checkGeneration st args = case lookup "expected_generation" args of
-  Nothing -> pure Nothing
-  Just (JNum want) -> do
-    g <- controlGeneration st
-    pure (if fromIntegral g == want then Nothing
-           else Just ("generation_mismatch: expected " ++ show want ++ ", live " ++ show g))
-  Just _ -> pure (Just "expected_generation must be an integer")
-
--- | Bump the control generation (every executed mutation).
-bumpGeneration :: ControlState -> IO Word64
-bumpGeneration st = atomically $ do
-  g <- readTVar (csGeneration st)
-  let g' = g + 1
-  writeTVar (csGeneration st) g'
-  pure g'
 
 -- | Paginated status: presence window plus limits, tick, scenario,
 -- and (unsafe-debug only) the fixture PIN marker.
@@ -537,7 +627,7 @@ statusPage :: ControlState -> Int -> Int -> IO Outcome
 statusPage st offset limit = do
   owner <- atomically (readTVar (csPresenceOwner st))
   case owner of
-    Nothing -> pure (OutcomeErr "presence_owner_unbound")
+    Nothing -> pure (invalid "presence_owner_unbound")
     Just bound -> do
       g <- controlGeneration st
       tick <- atomically (readTVar (csTick st))
@@ -570,7 +660,7 @@ statusPage st offset limit = do
 
 -- | Emit the §7 line for a successful dispatch (best effort; the
 -- code is already decided and never changes here).
-traceDispatch :: ControlState -> ControlCommand -> ReturnCode -> IO ()
+traceDispatch :: ControlState -> ControlCommand -> Word64 -> IO ()
 traceDispatch st cmd code = do
   mTr <- atomically (readTVar (csTracer st))
   case mTr of
@@ -585,18 +675,13 @@ traceDispatch st cmd code = do
         , teJob = Nothing
         , teInputLen = 0
         , teOutputLen = 0
-        , teCkr = codeNum code
+        , teCkr = fromIntegral code
         , teDisposition = "delivered"
         , teReason = "rule:none"
         , teMode = "control"
         , teSecret = Nothing
-        }) (codeNum code)
+        }) (fromIntegral code)
       pure ()
-  where
-    codeNum CKR_OK = 0
-    codeNum CKR_ARGUMENTS_BAD = 7
-    codeNum CKR_BUFFER_TOO_SMALL = 0x150
-    codeNum _ = 5
 
 -- ---------------------------------------------------------------------------
 -- Scenarios (declarative, bounded, no code)

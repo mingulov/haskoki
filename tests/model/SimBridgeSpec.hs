@@ -51,6 +51,7 @@ import Haskoki.Runtime.Config
   , SimCfg (..)
   , defaultConfig
   )
+import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.Runtime.Control
   ( ControlState
   , Json (..)
@@ -136,7 +137,7 @@ caseAdvanceCompletes = do
     Left deny -> assertFailure ("start refused: " ++ show deny)
     Right j -> pure j
   (code, body, _) <- dispatchControl st (advanceReq 5) (Just 65536)
-  assertEqual "advance ok" CKR_OK code
+  assertEqual "advance ok" (fromIntegral (returnCodeToRV CKR_OK)) code
   mAfter <- inspectJob table jid
   assertEqual "advance saturates at 1" (Just (Just 1)) (fmap jvTicksLeft mAfter)
   assertBool "bridge ran" ("\"jobs_advanced\":1" `isInfixOf` BC8.unpack body)
@@ -162,7 +163,7 @@ boostLeft sched enabled mech ticks adv = do
     Left deny -> assertFailure ("start refused: " ++ show deny)
     Right j -> pure j
   (code, _, _) <- dispatchControl st (advanceReq adv) (Just 65536)
-  assertEqual "advance ok" CKR_OK code
+  assertEqual "advance ok" (fromIntegral (returnCodeToRV CKR_OK)) code
   mAfter <- inspectJob table jid
   pure (mAfter >>= jvTicksLeft)
 

@@ -5,14 +5,15 @@ sequences — extending the TransitionSpec corpus precedent.
 module DeltaProps (spec) where
 
 import Data.Word (Word64)
+import qualified Data.Map.Strict as Map
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, testCase)
 
 import Gen (genSeq)
-import Haskoki.Model (Model, emptyModel)
+import Haskoki.Model (Model (..), emptyModel)
 import Haskoki.Outcome (DeltaOp (..), ModelFault (..), StateDelta (..))
 import Haskoki.Transition (publishDelta)
-import Haskoki.Types (Generation (..), ObjectId (..), SessionId (..))
+import Haskoki.Types (Generation (..), ObjectId (..), SessionId (..), ExternalHandle (..))
 
 spec :: Int -> TestTree
 spec count =
@@ -20,6 +21,7 @@ spec count =
     "delta laws"
     [ testCase "split equivalence all splits" (caseSplit count)
     , testCase "split equivalence constant seqs" caseConst
+    , testCase "unbind split and fault traces" caseUnbind
     ]
 
 -- | Publishing a++b at once equals publishing a then b, for EVERY
@@ -55,6 +57,7 @@ constOps =
   , DeltaBumpGeneration (SessionId 1) (Generation 2)
   , DeltaCreateObject (ObjectId 1)
   , DeltaDestroyObject (ObjectId 1)
+  , DeltaUnbindHandle (ExternalHandle 1)
   ]
 
 -- | The split law over constant sequences (incl. empty, single, and
@@ -78,3 +81,24 @@ caseConst = mapM_ check [(op, len) | op <- constOps, len <- [0 .. 12]]
           ++ " k=" ++ show k)
         whole
         split
+
+-- Explicit unbind traces supplement, rather than reseed or change, genSeq.
+-- Include successful deletion, repeated missing deletion, and a later fault.
+caseUnbind :: IO ()
+caseUnbind = mapM_ check
+  [ [DeltaUnbindHandle h]
+  , [DeltaCreateObject oid, DeltaBindHandle h oid, DeltaUnbindHandle h]
+  , [DeltaCreateObject oid, DeltaBindHandle h oid, DeltaUnbindHandle h, DeltaUnbindHandle h]
+  , [DeltaCreateObject oid, DeltaBindHandle h oid, DeltaUnbindHandle h, DeltaDestroyObject (ObjectId 99)]
+  ]
+  where
+    h = ExternalHandle 7
+    oid = ObjectId 9
+    check ops = do
+      let whole = publishDelta emptyModel (StateDelta ops)
+      mapM_ (\k -> let (a,b) = splitAt k ops in
+        assertEqual ("unbind split " ++ show k) whole
+          (publishDelta emptyModel (StateDelta a) >>= \m -> publishDelta m (StateDelta b))) [0 .. length ops]
+      case whole of
+        Left _ -> pure ()
+        Right m -> assertEqual "permanent binding removal" Nothing (Map.lookup h (mHandles m))

@@ -63,8 +63,9 @@ data ObjectState = ObjectState
 
 -- | One external-handle binding: the object it names plus the object
 -- generation observed at bind time. Resolution succeeds only while
--- the generations still match. Bindings are retained stale (never
--- deleted, never reused), so a destroyed handle faults forever.
+-- the generations still match. Destroyed-object bindings are retained stale;
+-- token removal deletes its bindings permanently. Allocation remains monotonic:
+-- neither retirement path recycles an external handle.
 data HandleBinding = HandleBinding
   { hbObject :: !ObjectId
   , hbGeneration :: !Generation
