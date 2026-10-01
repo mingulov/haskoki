@@ -6,6 +6,7 @@ import qualified AdmissionSpec
 import qualified AsyncSpec
 import qualified ByteFormatSpec
 import qualified BytesSpec
+import qualified CertificateSpec
 import qualified ConfigHonestySpec
 import qualified ConfigSpec
 import qualified ControlSpec
@@ -155,6 +156,7 @@ main = defaultMain $ testGroup "haskoki model + lifecycle"
   , AsyncSpec.spec
   , ByteFormatSpec.spec
   , BytesSpec.spec
+  , CertificateSpec.spec
   , DetachedSpec.spec
   , ErrorDetailSpec.spec
   , ErrorInterpSpec.spec

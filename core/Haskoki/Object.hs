@@ -386,37 +386,42 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
     ("wrong shape for attribute: " ++ show t)
   Left TemplateIncomplete -> templateReject CKR_TEMPLATE_INCOMPLETE
     "template is missing the class"
-  Right attrs
-    | Just (ValULong c) <- Map.lookup AttrClass attrs
-    , isNothing (classNameById c) ->
-        templateReject CKR_TEMPLATE_INCONSISTENT
-          ("unknown object class: " ++ show c)
-    | otherwise -> case importMaterial attrs of
-        Left (code, msg) -> templateReject code msg
-        Right stored
-          | Left deny <- admitPrivate (ssLogin st) (mergedIsPrivate stored) ->
-              templateReject (admitCode deny)
-                "public session cannot create private objects"
-          | Left deny <- admitWritable (ssReadOnly st) (mergedIsToken stored) ->
-              templateReject (admitCode deny)
-                "read-only session cannot create token objects"
-          | otherwise ->
-          let oid = ObjectId (mNextObject model)
-              h = ExternalHandle (mNextHandle model)
-              owner
-                | mergedIsToken stored = Nothing
-                | otherwise = Just (ssId st)
-          in Immediate PreparedCommit
-            { pcCode = CKR_OK
-            , pcDelta = StateDelta
-                [ DeltaCreateObjectFull oid stored owner (ssSlot st)
-                , DeltaBindHandle h oid
-                ]
-            , pcPersist = []
-            , pcOutputs = [NativeOutput (RegionHandle "object") (encodeHandle h)]
-            , pcReleases = []
-            , pcReasons = ["created object " ++ show oid]
-            }
+  Right attrs -> case checkCertificateTemplate attrs of
+    Left TemplateIncomplete -> templateReject CKR_TEMPLATE_INCOMPLETE
+      "x509 certificate template requires certificate type, value and subject"
+    Left e -> templateReject CKR_TEMPLATE_INCONSISTENT
+      ("certificate template: " ++ show e)
+    Right ()
+      | Just (ValULong c) <- Map.lookup AttrClass attrs
+      , isNothing (classNameById c) ->
+          templateReject CKR_TEMPLATE_INCONSISTENT
+            ("unknown object class: " ++ show c)
+      | otherwise -> case importMaterial attrs of
+          Left (code, msg) -> templateReject code msg
+          Right stored
+            | Left deny <- admitPrivate (ssLogin st) (mergedIsPrivate stored) ->
+                templateReject (admitCode deny)
+                  "public session cannot create private objects"
+            | Left deny <- admitWritable (ssReadOnly st) (mergedIsToken stored) ->
+                templateReject (admitCode deny)
+                  "read-only session cannot create token objects"
+            | otherwise ->
+            let oid = ObjectId (mNextObject model)
+                h = ExternalHandle (mNextHandle model)
+                owner
+                  | mergedIsToken stored = Nothing
+                  | otherwise = Just (ssId st)
+            in Immediate PreparedCommit
+              { pcCode = CKR_OK
+              , pcDelta = StateDelta
+                  [ DeltaCreateObjectFull oid stored owner (ssSlot st)
+                  , DeltaBindHandle h oid
+                  ]
+              , pcPersist = []
+              , pcOutputs = [NativeOutput (RegionHandle "object") (encodeHandle h)]
+              , pcReleases = []
+              , pcReasons = ["created object " ++ show oid]
+              }
 
 ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkRsa, ckkEc, ckkAes, ckkDsa, ckkDh, ckkX9_42Dh, ckkEcEdwards, ckkMlDsa, ckkSlhDsa, ckkMlKem :: Word64
 ckoPrivateKey = mustClassId "CKO_PRIVATE_KEY"
@@ -434,6 +439,36 @@ ckkMlDsa = mustKeyTypeId "CKK_ML_DSA"
 ckkSlhDsa = mustKeyTypeId "CKK_SLH_DSA"
 ckkMlKem = mustKeyTypeId "CKK_ML_KEM"
 ckkAes = mustKeyTypeId "CKK_AES"
+
+ckoCertificate :: Word64
+ckoCertificate = mustClassId "CKO_CERTIFICATE"
+
+-- | CKC_X_509 per the pinned header (spec/vendor/pkcs11.h:300);
+-- there is no model inventory of certificate types.
+ckcX509 :: Word64
+ckcX509 = 0
+
+-- | X.509 creation requirements over an already shape-validated
+-- template: the type itself must be present; X.509 additionally
+-- requires VALUE and SUBJECT (presence only: empty-DER-Name
+-- SUBJECT is accepted for SAN-only certificates). Non-X.509
+-- subtype values keep the generic CLASS+TYPE-only path. Only
+-- TemplateIncomplete is ever produced here; shapes were pinned
+-- by validateTemplate before this runs.
+checkCertificateTemplate
+  :: Map AttributeType AttributeValue -> Either TemplateError ()
+checkCertificateTemplate attrs = case Map.lookup AttrClass attrs of
+  Just (ValULong c)
+    | c == ckoCertificate -> case Map.lookup AttrCertificateType attrs of
+        Nothing -> Left TemplateIncomplete
+        Just (ValULong t)
+          | t == ckcX509 ->
+              if Map.member AttrValue attrs && Map.member AttrSubject attrs
+                then Right ()
+                else Left TemplateIncomplete
+          | otherwise -> Right ()
+        _ -> Right ()
+  _ -> Right ()
 
 -- | Key-import material: RSA/EC public/private templates carry
 -- components, but the engine consumes PKCS#8/SPKI DER in 'AttrValue'

@@ -368,6 +368,7 @@ test-suite haskoki-model-tests
     AsyncSpec
     ByteFormatSpec
     BytesSpec
+    CertificateSpec
     ConfigHonestySpec
     ConfigSpec
     ControlSpec
