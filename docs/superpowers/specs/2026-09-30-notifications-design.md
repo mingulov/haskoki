@@ -929,7 +929,7 @@ manifest explicitly, following the established message/async arrangement.
 Do not silently omit it because its filename lacks `consumer_`. Preserve
 generator determinism and static ABI/contract checks. Record source revision,
 command/exit status, toolchain, module/bundle hashes, source pins, and result/log
-paths and hashes for later evidence. Old green results do not qualify changed
+paths and hashes for later evidence. Old passing results do not qualify changed
 code. This design supplies no such execution record.
 
 ### 5.5 Proxy parity at the pinned source

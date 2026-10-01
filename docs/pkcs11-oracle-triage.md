@@ -4875,3 +4875,50 @@ Recorder remains `5b141a238f6cabed6ffb5111c016e66a466fc34bc862c011c343e55c73c059
 | [reviewed/oracle-issue.md](../dist-release-evidence/notifications/reviewed/oracle-issue.md) | `6d5b95dd47ee5feeb49db48003a758e09d68cff79a127c024083389b9cf3bb1f` |
 
 Spec trace: §§5.4–5.6; N11, N12; retained G17 scope distinctions. T-N09 is ready for coordinator review. No acceptance claimed. No T-N10 work was started.
+
+
+## Notifications T-N10 documentation checkpoint
+
+This checkpoint updates public/private behavior notes and adds exactly 16
+executed evidence tuples to seven existing contracts. The catalog remains
+104 rows: 70 planned, 32 unsupported, 2 not applicable; earlier references,
+classifications and layouts are retained. Private EventsSpec FIFO/callback
+proofs do not establish public coalescing, removal or native surrender.
+The [N01–N12 and G01–G17 disposition links](../dist-release-evidence/notifications/task-n10/traceability.json)
+identify the owning historical assertions and their limits; they are not
+accepted final-revision records.
+
+The [T-N09 review](../dist-release-evidence/notifications/reviewed/task-n09/review.md)
+records full parity with 10 common scenarios, 3 direct-only scenarios,
+72 rich direct legs and 153 matching eligible polling lines. Direct polling
+covers four tables; proxy polling covers 2.40/3.0/3.2, with the absent 3.1
+table checked separately as OK/NULL. The existing
+[notifications proxy issue 25](https://github.com/mingulov/pkcs11-proxy-ng/issues/25)
+is backed by its [preserved readback](../dist-release-evidence/notifications/proxy/issue.json)
+and bounded direct/proxy reproduction. Its OPEN status is the recorded
+readback, not a new live status query. No issue was filed or re-filed in
+T-N10. Callback transport remains an optional capability limitation;
+no proxied surrender or blocking/finalize parity is promised.
+
+| Reviewed lane | Passed | Failed | Skipped | Xfailed | Required notification nodes |
+|---|---:|---:|---:|---:|---:|
+| [fast inspection](../dist-release-evidence/notifications/reviewed/fast-inspection.json) | 5138 | 4 | 4413 | 635 | 16 passed |
+| [KAT inspection](../dist-release-evidence/notifications/reviewed/kat-inspection.json) | 84455 | 4 | 31315 | 974 | 16 passed |
+
+Both wrappers exited 0 and both oracle test processes exited 1. Fast findings
+review preceded KAT admission. The [disposition ledger](../dist-release-evidence/notifications/reviewed/dispositions.json)
+retains historical failures/xfails and the reviewed RFC6979 diagnostic
+variance; no new unresolved provider finding was identified in those runs.
+The oracle callback matrix performs no Digest and proves no surrender,
+cancellation or reentry. The narrow direct comparison ran 24 cases / 172
+assertions with zero callbacks. The oracle prose/coverage issue remains
+[prepared only](../dist-release-evidence/notifications/reviewed/oracle-issue.md),
+unfiled; no existing message/async/oracle issue is repurposed here.
+
+The [T-N08 review](../dist-release-evidence/notifications/task-n08/review.md)
+explicitly leaves the removed-session `haskokiStdFind` page precedence case
+deferred. Its passing FindObjectsFinal assertion does not resolve that case.
+The documentation-inclusive clean revision, installed checks, 18 static
+gates, all suites, 14 drivers plus build/install, final bundle reproduction
+and fresh fast/KAT reviews remain pending. This is the coordinator's docs
+checkpoint only. No acceptance claimed.

@@ -66,7 +66,10 @@ The `active-catalog` names IN-PROCESS behavior coverage (proven by
 the Haskell suites; see `docs/coverage.md`). The C surface exposes
 the `support.real == "tested"` projection (109 rows, step 3).
 `scenario run` interprets steps against an owned in-memory model; it
-never controls another live process.
+never controls another live process. Its `EventQueue`/`TokenRegistry` FIFO,
+Haskell callbacks and token script are private scenario proofs. The native
+serving path in step 4 uses a separate shared `SlotEvents` service and
+coalesced pending-slot flags.
 
 ## 3. Consumer crypto (real sessions/objects/sign/encrypt)
 
@@ -119,6 +122,26 @@ scripts/test-consumers.sh
   in [reviewed consumer evidence](../dist-release-evidence/async-routing/reviewed/gates/test-consumers.sh.log).
   The parity driver labels this scenario `DIRECT-ONLY` under
   [proxy issue 24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24).
+
+- `notifications_routed`: four actual table layouts, memory/SQLite and
+  fixed/removable configurations; 72 direct legs exercise coalescing,
+  known-empty slot/query agreement, exact wait errors and canaries,
+  removal/guarded async output retirement, stale handles, waiter competition,
+  reopen and native Digest surrender. Callback OK/CANCEL/other returns,
+  original cookie/thread identity, silent non-producers and reentry under
+  both lock modes are separate assertions. Deterministic Haskell seams own
+  event-first/close-first ordering; native pre-call readiness is not STM
+  admission. The [T-N08 record](../dist-release-evidence/notifications/task-n08/review.md)
+  includes the deferred removed-session FindObjects page precedence case.
+- `consumer_notifications_poll`: nonmutating polling and structural/lifecycle
+  checks. Direct execution retains all four tables (37 assertions each).
+  At the pinned proxy, common 2.40/3.0/3.2 polling remains parity-eligible;
+  the missing 3.1 table has a separate exact OK/NULL topology check.
+  Rich notifications remain DIRECT-ONLY under the existing
+  [proxy issue 25](https://github.com/mingulov/pkcs11-proxy-ng/issues/25).
+  No callback transport, control-route or blocking/finalize parity is promised.
+  [T-N09's reviewed evidence](pkcs11-oracle-triage.md#notifications-t-n09-reviewed-evidence-2026-10-01)
+  records those runs; final-revision installation and lanes remain pending.
 
 Random (`C_GenerateRandom` / `C_SeedRandom`, live on 2.40 +
 3.0/3.1/3.2 via one legacy-table entry re-homed by name):
@@ -182,12 +205,31 @@ scripts/test-control-events.sh
 # PASS: test-control-events.sh (native control/slot-event proof)
 ```
 
-A native thread blocks in `C_WaitForSlotEvent`; the same
-instance's `HASKOKI_Control` entry point inserts a token; the waiter
-wakes with the slot event. Then the control budget rule (§5.1):
-pure budget query, too-small executes nothing, unknown command
-without mutation, `DON'T_BLOCK` no-event mode. This is the live
-control/event path behind the owned-instance scenario in step 2.
+The test enables removable software slots in the loaded instance. Tokens
+start present with no pending indication, so it first removes the token
+and consumes that removal flag. A native thread then blocks in
+`C_WaitForSlotEvent`; the **same instance's** `HASKOKI_Control` reinserts
+the provisioned token and the waiter consumes its pending slot. Full/present
+lists and slot/token queries corroborate the current state. A control reply
+budget query and a short buffer execute nothing; an invalid command refuses
+without mutation. An empty `CKF_DONT_BLOCK` poll returns `CKR_NO_EVENT`
+with its slot sentinel untouched.
+
+This serving path is distinct from step 2's private CLI scenario. With test
+controls off, slots stay fixed/present and a blocker can remain asleep until
+Finalize. Public flags coalesce rather than replay every edge; after a wait,
+query current state. SQLite restart restores present tokens with flags clear,
+without a store reset or new durability promise. Presence changes do not
+produce session callbacks. For callback use, only a fresh, sufficiently sized
+synchronous one-shot Digest on an ordinary registered session surrenders;
+query, short, staged, multipart and explicit async paths are silent. The
+callback must return normally and must not join a thread needing this
+provider. See [operations notes](operations-notes.md#session-notification-callbacks-and-reentry)
+for the four discovery/GetInfo exceptions and rejection of other reentry.
+
+[T-N08 control evidence](../dist-release-evidence/notifications/task-n08/control-command.json)
+records execution at its stated source/patch. These instructions add no
+claim of final installed acceptance.
 
 ## 5. Coverage and limits
 
@@ -306,7 +348,7 @@ Keys (`[sim]`, see `tests/ops/fixtures/sim-demo.toml`):
   default 0/0): the seeded fault window over step indices
   `[start, start+ticks)`.
 
-Verbs (test-gated like `scenario.load`; refuse with
+Private scenario verbs (test-gated like `scenario.load`; refuse with
 `test_instance_required` unless the instance is test-enabled):
 
 - `token.insert {"slot": N}`: seat a token (posts the arrival event).
@@ -366,12 +408,15 @@ user_pins = ["1234", "2345", "3456"]
   session is invisible from any other slot (find yields zero;
   get/destroy refuse with `CKR_OBJECT_HANDLE_INVALID`). Sessions
   stay the isolation unit and are slot-aware throughout.
-- Records: `C_GetSlotList` enumerates the seated slots with the
-  usual count-query/short-buffer discipline; `C_GetTokenInfo`
-  reports each slot's catalog label (blank-padded) with a per-slot
-  serial (1-based, so slot 0 keeps `0000000000000001`); unknown
-  slots refuse with `CKR_SLOT_ID_INVALID` on every slot-taking
-  entry, before any NULL check.
+- Records: `C_GetSlotList(CK_FALSE)` enumerates configured slots and
+  `C_GetSlotList(CK_TRUE)` filters current presence, both with the usual
+  count-query/short-buffer discipline. SlotInfo still accepts a known empty
+  slot; TokenInfo and OpenSession refuse it with `CKR_TOKEN_NOT_PRESENT`.
+  For a present token, TokenInfo reports the catalog label (blank-padded)
+  and per-slot serial (1-based, so slot 0 keeps `0000000000000001`).
+  Unknown slots return `CKR_SLOT_ID_INVALID` at these catalog checks;
+  OpenSession's output/serial/flag guards precede them. See the
+  [boundary order](operations-notes.md#removal-wait-outputs-and-finalization).
 - `C_InitToken` stays a stub: provisioning is config-declared, so
   the InitToken state machine is out of scope.
 - Credentials are EXAMPLE-GRADE: catalog PINs are fixture-only

@@ -19,6 +19,9 @@ Deliberate keeps (narrow allowlist below, each with its reason):
                               bytes must not churn
   SyntheticSpec t06-* labels  golden-fixture KDF inputs; changing them
                               would invalidate pinned goldens
+  notifications test comments execution-evidence hash lock; T-N07/T-N08
+                              receipts bind these bytes by SHA-256, so
+                              comment-only churn would void evidence
 
 Acceptance ids (A00-A99) are stable external handles and are NOT
 flagged. Lowercase s/m/f/p/g + digit locals (s1, m2) are ordinary
@@ -72,6 +75,12 @@ ALLOW = [
     ("docs/superpowers/plans/2026-09-26-pqc-slice.md",
      re.compile(r'Slice 9 plan|KATs green|TDD RED first'),
      "frozen 2026-09-26 process record (title + status + test-order note)"),
+    ("tests/c/notifications_routed.c",
+     re.compile(r"semantic-red relabel|never an expected red|cannot hang this intended red"),
+     "execution-evidence hash lock (T-N08 consumers receipt binds source SHA-256)"),
+    ("tests/engine/NotificationsEngineSpec.hs",
+     re.compile(r"red/green probe|pre-implementation behavioral red"),
+     "execution-evidence hash lock (T-N07 retained receipt binds source SHA-256)"),
 ]
 
 EXTS = {".hs", ".c", ".h", ".py", ".sh", ".cabal", ".md", ".toml",

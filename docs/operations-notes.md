@@ -27,32 +27,183 @@ The same "no new dependencies" constraint drives the minimal JSON
 reader in `Haskoki.Runtime.Control` (control envelope + scenario
 runner share it): `aeson` is not in the freeze.
 
-## Overflow policy
+## Public slot indications and retained private proofs
 
-Slot-event queue overflow is `DropOldest` by default (a waitable slot
-event queue must surface the *latest* token state; a consumer that
-fell behind re-syncs via the reentrant snapshot), `DropNewest`
-selectable per queue. Both increment the dropped counter. Named and
-tested in `EventsSpec`.
+The four public tables (2.40/3.0/3.1/3.2) share one interval-local
+`SlotEvents` service with Standard and the serving control owner.
+`C_WaitForSlotEvent` consumes a pending **slot flag**, not an edge log.
+All configured tokens start present at presence epoch zero, with flags clear.
+Repeated remove/insert/remove changes coalesce into one pending slot;
+selection is FIFO by first-pending order. A successful wait clears that
+flag once. Queries do not acknowledge flags: query current slot information
+after a wait, allowing for another change between the two calls. One flag
+has one consumer among competing polls/blockers; there is no broadcast,
+waiter fairness promise, or failure merely because a second waiter exists.
+This stronger competing-waiter policy is Haskoki's contract; the standards
+leave simultaneous application waits undefined (design §2.2).
 
-## Session notification callbacks
+The retained **private** `EventQueue`/`TokenRegistry` utilities still use
+edge FIFO `DropOldest`/`DropNewest` policies and dropped counters.
+`EventsSpec` exercises those private overflow, Haskell callback and
+quiescence proofs. Public waits and serving presence controls do not use
+that registry. Its `reentrantSlotSnapshot` and `ReentryRejected` proof
+API does not make native slot queries callback-safe. The CLI's local
+scenario owner is likewise separate from another process's loaded module.
 
-`C_OpenSession` accepts a non-NULL `Notify` (the v3.2 §5.6.1
-return list carries no callback-refusal code, so refusing
-would invent one). The callback is retained nowhere and
-never invoked: the module generates no notification
-events (no surrender/device callbacks on any path). Pinned
-by the `consumer_errors` per-table Notify leg (open OK +
-usable session + zero invocations; direct-only — a
-function pointer cannot cross the proxy).
+`control.test_enabled=false` gives fixed software slots: always
+`CKF_TOKEN_PRESENT`, no `CKF_REMOVABLE_DEVICE`. With test controls enabled,
+every configured slot remains removable for the whole interval, including
+while absent. `CKF_HW_SLOT` stays clear in both modes. Slot IDs, labels and
+provisioned token identity are fixed within the interval; removal does not
+delete a slot, and reinsertion restores its same token. Only the existing
+in-process `token.insert`/`token.remove` controls produce presence changes.
 
-## The one reentrant query
+`limits.events` must be positive and at least the catalog size at open;
+the public service never clamps the bound or drops an admitted slot flag.
+`limits.slots` still limits catalog admission. Presence epochs count true
+transitions and refuse overflow. The control command generation counts
+accepted mutations, including idempotent commands; stale expected generations
+and overflow refuse before cleanup. Neither counter is the stored token
+generation or a persistent async ID. See [configuration scope](config-honesty.md#serving-presence-and-private-scenario-scope).
 
-`reentrantSlotSnapshot` (token presence per slot) is the single query
-callable from inside a session notification callback without holding
-the model gate. Every other in-callback gated call is rejected with
-`ReentryRejected` (tested; no deadlock by design — in-callback
-gated calls are rejected, so callbacks never block on the gate).
+Memory keeps `siStore = Nothing`; SQLite borrows the existing store.
+Presence is not persisted: SQLite restart loads the provisioned tokens as
+present with flags clear, while memory retains its existing transient
+behavior. There is no extra store, reset, writer, watcher, event thread or
+new ordinary-object durability contract. Store errors, login, objects,
+session open/close and async completion do not create slot indications.
+
+## Removal, wait outputs and finalization
+
+Removal holds the C state lock, prepares retirement, and cancels Standard's
+actual attached and joined jobs before atomically publishing model retirement,
+absence, epoch and pending flag. Sessions, session objects, login state,
+cursors, borrowed views and callback associations retire; token data is
+parked and all old object handles remain stale after reinsertion. Other
+slots and idle detached records retain their existing policy. Published
+removal revokes the retired jobs' output bindings. Validation, query and
+short-buffer refusals mutate nothing. A precommit fault publishes no event
+but does not roll back cancellation already performed; a postcommit release
+fault retains committed absence and runs remaining cleanup. These are the
+distinct fault cases in `NotificationsEngineSpec` and the
+[T-N03 review](../dist-release-evidence/notifications/task-n03/review.md).
+
+For a known empty slot, `C_GetSlotList(CK_FALSE)` retains the slot and
+`C_GetSlotList(CK_TRUE)` omits it; `tokenPresent` is a boolean, not a flags
+mask. `C_GetSlotInfo` succeeds with the constant removable bit and no
+present bit. Token-required queries and `C_OpenSession` return
+`CKR_TOKEN_NOT_PRESENT`; unknown slots return `CKR_SLOT_ID_INVALID`.
+Info refusals leave whole structs untouched; refused opens leave the session
+output untouched and retain no callback. List queries report the count;
+short fetches update the required count and leave the array untouched.
+SlotInfo checks catalog validity before null output, TokenInfo checks
+catalog/presence before null output, and OpenSession keeps its output/serial/
+flag guards before catalog/presence. CloseAll on a known empty slot succeeds.
+
+Removed sessions are not resurrected. Qualification limitation:
+`haskokiStdFind` (the FindObjects page routine) still checks find state
+before session validity; that removed-session precedence case is **deferred**
+in the [T-N08 review](../dist-release-evidence/notifications/task-n08/review.md).
+The repaired FindObjectsFinal case and passing fresh-session find calls do
+not qualify it. No claim that every removed-session entry has been verified
+is made here.
+
+Outside a callback, Wait first checks public liveness, then null `pSlot`,
+non-null `pReserved`, and unknown native-width flag bits beyond
+`CKF_DONT_BLOCK`, then revalidates the captured interval. Sequential
+before-init/after-finalize calls return `CKR_CRYPTOKI_NOT_INITIALIZED`
+even for malformed arguments. Live malformed calls return
+`CKR_ARGUMENTS_BAD` without consuming a flag. A malformed entrant that
+already passed liveness can still return that error during a concurrent
+Finalize. Neither pointer argument is a size-query convention.
+
+Live empty polling returns exactly `CKR_NO_EVENT`; blocking uses STM retry
+without holding the C state lock or model gate and does not return NO_EVENT
+just because it starts empty. Absence is not a wait error. Only `CKR_OK`
+writes one slot ID; **every non-OK result leaves `*pSlot` unchanged**.
+Prohibited callback reentry returns `CKR_FUNCTION_FAILED`. Unexpected Haskell
+exceptions meet the existing `CKR_GENERAL_ERROR` fence; represented explicit
+allocation failure may return `CKR_HOST_MEMORY`, without promising recovery
+from all RTS exhaustion or invalid native pointers. The claim-to-output
+handoff is masked against asynchronous Haskell exceptions; blocking retry
+remains interruptible. Polling is not a hard real-time latency promise.
+
+Finalize closes the service and unbinds the owner after obtaining the state
+lock, before Standard teardown. Close discards pending flags and wakes all
+undecided waiters with NOT_INITIALIZED and unchanged outputs. In the
+**event-first** race, a committed OK decision still owns its output even if
+the thread returns after Finalize. In the **close-first** race there is no
+queued-tail success. A Finalize state-lock failure restores the live interval
+for retry. Reinitialize creates a fresh hub with clear flags; old waiters
+stay on their closed hub/cell and never migrate to it.
+
+The lifetime strategy retains one empty `InstanceCell`/`StablePtr` per
+initialization interval; this small per-interval cost has not been removed.
+An atomic C root alone is not a lifetime lease. Finalize makes blocked waits
+runnable without waiting for application threads to be scheduled and return.
+The [T-N05 evidence](../dist-release-evidence/notifications/task-n05/review.md)
+uses deterministic admission/claim/close seams; native pre-call acknowledgments
+and race stress alone do not establish STM parking or the winning order.
+
+## Session notification callbacks and reentry
+
+A successful `C_OpenSession` retains one typed `CK_NOTIFY`/`pApplication`
+pair on the actual Standard session before publishing its handle. Either
+pointer may independently be null; null Notify means no call. Standard owns
+the association, not the application's allocation or executable code. Close,
+close-all, removal and Finalize retire the association without calling it;
+no callback runs after the relevant retirement returns.
+
+The sole producer is an admitted fresh synchronous one-shot `C_Digest` on
+an ordinary session, with a known fixed-width recipe and adequate capacity.
+It calls once, immediately before the fresh effect, on the caller's bound
+thread with the actual session, `CKN_SURRENDER` and original application
+pointer. Surrender is optional in PKCS#11 and separate from slot changes;
+it is not an insertion/removal callback or an interrupt inside OpenSSL.
+
+| Callback result | Digest behavior |
+|---|---|
+| `CKR_OK` | Execute the admitted effect once and publish its normal output. |
+| `CKR_CANCEL` | Terminate; return `CKR_FUNCTION_CANCELED`; no effect, output bytes or length write. |
+| Any other code / caught Haskell test-adapter exception | Terminate; return `CKR_FUNCTION_FAILED`; same unchanged output and length. |
+
+After cancel/failure, Digest without a new DigestInit returns
+`CKR_OPERATION_NOT_INITIALIZED`. `DigestInit`, `DigestUpdate`, `DigestFinal`,
+length queries, short buffers, staged-output recalls and decode/planner
+refusals are silent. Explicit async-session submission (including fallback),
+Complete/GetID/Join/cancel, non-Digest crypto, RNG, login, objects, lifecycle,
+control and slot calls are also silent. There are no background-thread,
+OTP or vendor notifications. `consumer_errors` retains its zero-callback
+assertion for its open/info/close sequence, which does not execute Digest.
+
+Callbacks retain the C state lock as their lifetime lease and run outside
+STM, the model gate, callback-registry/store locks and async job leases.
+The `safe` foreign invoker establishes/restores a thread-local guard before
+any prohibited entry can inspect buffers, mutate state or acquire a lock.
+Only `C_GetFunctionList`, `C_GetInterfaceList`, `C_GetInterface`, and static
+`C_GetInfo` may reenter with their ordinary validation. All other native
+table calls and `HASKOKI_Control`, including SessionCancel, both wait modes,
+slot queries, nested Digest and Finalize, return `CKR_FUNCTION_FAILED`.
+The [T-N06 guard evidence](../dist-release-evidence/notifications/task-n06/review.md)
+and [T-N07 real callback evidence](../dist-release-evidence/notifications/task-n07/review.md)
+cover rejection under internal and negotiated nonrecursive mutexes.
+
+Callbacks must return normally and must not join a thread whose progress
+needs a serving call into this provider: it is waiting behind the callback's
+state lock. Keep function/application storage valid while registered.
+No recovery from an invalid callback pointer, C++ exception, `longjmp` or
+signal crossing the ABI is promised. Calls on different sessions serialize;
+there is no concurrent or nested callback promise. SERIAL remains required;
+OS-locking permission is not obsolete parallel-session support.
+
+At the pinned proxy, callback registration is discarded and rich notifications
+are DIRECT-ONLY. The blocking/finalize reproduction and existing
+[proxy issue 25](https://github.com/mingulov/pkcs11-proxy-ng/issues/25)
+are distinct from that optional callback capability limitation. Polling parity
+retains the common tables; no proxy callback promise is made. See the
+[reviewed dispositions](pkcs11-oracle-triage.md#notifications-t-n10-documentation-checkpoint).
+The cited executions belong to their recorded revisions. Clean final-revision
+gates, installation and lanes remain pending; no acceptance is claimed.
 
 ## Quarantine protocol (memory + SQLite stores)
 

@@ -8,10 +8,9 @@ present (exact substrings, quoted in the failure detail):
 * Random-context split: the walkthrough random section names the
   default-ctx vs libctx split with no read-observable effect
   asserted.
-* Slot-listing note: haskokiStdGetSlotList carries the
-  vacuous-by-design note (two-phase shape kept for the original
-  slot-listing contract); the filter shape it documents is
-  still there.
+* Slot-listing shape: haskokiStdGetSlotList reads the shared
+  slot snapshot and filters actual presence
+  (tokenPresent == 0 || ssPresent entry).
 * Funnel path: neither the walkthrough nor the CHANGELOG presents
   commitAndDeliver as a live commit-application path; both name
   the three publishCommit funnels plus the Runtime/Async drains.
@@ -156,11 +155,11 @@ def main():
           "reads draw from the private libctx DRBG")
     check("CTX-SPLIT", m1 in walk, "walkthrough names the ctx split")
 
-    # --- vacuous-by-design note + documented shape ---
-    check("SLOTLIST-NOTE", "vacuous by design" in standard,
-          "GetSlotList carries the vacuity note")
-    check("SLOTLIST-SHAPE", "lookupTokenAuth m slot /= Nothing" in standard,
-          "the documented filter shape is still there")
+    # --- shared snapshot + presence filter shape ---
+    check("SLOTLIST-NOTE", "snapshotSlots (siSlots inst)" in standard,
+          "GetSlotList reads the shared slot snapshot")
+    check("SLOTLIST-SHAPE", "tokenPresent == 0 || ssPresent entry" in standard,
+          "the documented presence filter shape is still there")
 
     # --- commitAndDeliver no longer the live path ---
     check("FUNNEL-WALK-STALE", "(`commitAndDeliver` and the" not in walk,

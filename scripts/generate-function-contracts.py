@@ -200,6 +200,8 @@ PLANNED = {
     "C_GetMechanismInfo": ("c-table:on_GetMechanismInfo",
                            [("test-loader.sh", "tests/c/loader.c")]),
     "C_WaitForSlotEvent": ("haskoki-export:haskoki_wait_for_slot_event",
+                           # Retained private FIFO/callback proofs, not public
+                           # coalescing, presence or native CK_NOTIFY evidence.
                            [("haskoki-model-tests", "tests/model/EventsSpec.hs"),
                             ("test-control-events.sh", "tests/c/control_events.c")]),
     # These route through the standard surface with behavior tests
@@ -244,6 +246,38 @@ PLANNED = {
                      ("haskoki-model-tests", "tests/model/StandardSurfaceSpec.hs"),
                      ("haskoki-engine-tests", "tests/engine/AsyncEngineSpec.hs")]),
 }
+
+# Public notifications evidence from the executed serving suites and native
+# consumers. Append without replacing earlier planner/private references or
+# changing classifications, entries, ordinals, layouts or CSV acceptance.
+NOTIFICATIONS_EVIDENCE = {
+    "C_WaitForSlotEvent": [
+        ("test-consumers.sh", "tests/c/notifications_routed.c"),
+        ("test-consumers.sh", "tests/c/consumer_notifications_poll.c"),
+        ("haskoki-model-tests", "tests/model/NotificationsSpec.hs")],
+    "C_GetSlotList": [
+        ("test-consumers.sh", "tests/c/notifications_routed.c"),
+        ("haskoki-model-tests", "tests/model/NotificationsSpec.hs")],
+    "C_GetSlotInfo": [
+        ("test-consumers.sh", "tests/c/notifications_routed.c"),
+        ("haskoki-model-tests", "tests/model/NotificationsSpec.hs")],
+    "C_GetTokenInfo": [
+        ("test-consumers.sh", "tests/c/notifications_routed.c"),
+        ("haskoki-model-tests", "tests/model/NotificationsSpec.hs")],
+    "C_OpenSession": [
+        ("test-consumers.sh", "tests/c/notifications_routed.c"),
+        ("haskoki-engine-tests", "tests/engine/NotificationsEngineSpec.hs")],
+    "C_Digest": [
+        ("test-consumers.sh", "tests/c/notifications_routed.c"),
+        ("haskoki-engine-tests", "tests/engine/NotificationsEngineSpec.hs")],
+    "C_Finalize": [
+        ("test-consumers.sh", "tests/c/notifications_routed.c"),
+        ("haskoki-model-tests", "tests/model/NotificationsSpec.hs"),
+        ("haskoki-engine-tests", "tests/engine/NotificationsEngineSpec.hs")],
+}
+for name, additions in NOTIFICATIONS_EVIDENCE.items():
+    entry, earlier = PLANNED[name]
+    PLANNED[name] = (entry, list(dict.fromkeys(earlier + additions)))
 
 # name -> exact-gap reason (no behavior claim without tests).
 UNWIRed_OP = ("operation-layer behavior tested but no planCall FunctionId "

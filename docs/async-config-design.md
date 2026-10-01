@@ -56,6 +56,26 @@ for `415278fd23053d0150f7b13a18b373139236c891` is linked in the
 This routing slice leaves the scheduler, detached policy, and every
 D1-D12 item below unchanged; final-revision verification remains pending.
 
+### Notifications baseline clarification (2026-10-01)
+
+Serving presence now uses one interval-local coalesced `SlotEvents` service
+shared with Standard; the CLI/private `EventQueue` proofs remain separate.
+Actual Standard attached/joined jobs on a removed slot are canceled before
+absence is published, while idle detached records retain their prior policy.
+The optional native surrender producer is a fresh synchronous one-shot Digest
+on an ordinary session; explicit async sessions remain silent, including
+fallback paths. Presence epochs and control generations are distinct from
+stored token generations and persistent async IDs. Memory still has
+`siStore = Nothing`; SQLite restart starts present with flags clear, with no
+new store/reset/watcher or ordinary-object durability claim.
+
+This is baseline clarification only. Scheduler, capacity eight, cancellation,
+competing Join, recipe identity and detached formats are unchanged. Every
+D1-D12 proposal below remains unchanged. See
+[operations notes](operations-notes.md#public-slot-indications-and-retained-private-proofs)
+and [T-N08's executed evidence and deferred case](../dist-release-evidence/notifications/task-n08/review.md).
+Final documentation-inclusive gates and installed acceptance remain pending.
+
 ### Configuration (43 keys, honesty-dispositioned)
 
 `src/Haskoki/Runtime/Config.hs` plus

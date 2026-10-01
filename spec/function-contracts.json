@@ -60,6 +60,18 @@
         {
           "suite": "test-loader.sh",
           "spec": "tests/c/loader.c"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/notifications_routed.c"
+        },
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/NotificationsSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/NotificationsEngineSpec.hs"
         }
       ]
     },
@@ -134,6 +146,14 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/RoutingSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/notifications_routed.c"
+        },
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/NotificationsSpec.hs"
         }
       ]
     },
@@ -168,6 +188,14 @@
         {
           "suite": "test-consumers.sh",
           "spec": "tests/c/consumer_multitoken.c"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/notifications_routed.c"
+        },
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/NotificationsSpec.hs"
         }
       ]
     },
@@ -202,6 +230,14 @@
         {
           "suite": "test-consumers.sh",
           "spec": "tests/c/consumer_multitoken.c"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/notifications_routed.c"
+        },
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/NotificationsSpec.hs"
         }
       ]
     },
@@ -341,6 +377,14 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/SessionSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/notifications_routed.c"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/NotificationsEngineSpec.hs"
         }
       ]
     },
@@ -1021,6 +1065,14 @@
         {
           "suite": "test-crypto-routed.sh",
           "spec": "tests/c/crypto_routed.c"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/notifications_routed.c"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/NotificationsEngineSpec.hs"
         }
       ]
     },
@@ -1698,6 +1750,18 @@
         {
           "suite": "test-control-events.sh",
           "spec": "tests/c/control_events.c"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/notifications_routed.c"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_notifications_poll.c"
+        },
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/NotificationsSpec.hs"
         }
       ]
     },

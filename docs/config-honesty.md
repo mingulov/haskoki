@@ -45,7 +45,7 @@ Counts: E=27 pure + 1 dual (`storage.path`, E/R) + R=9 pure + D=6.
 | `control.enabled` | R | control plane always on; `false` refused | `ConfigHonestySpec` enabled refusal |
 | `control.max_request_bytes` | E | oversize refuses `request_too_large` | `ConfigHonestySpec` max-request |
 | `control.response_budget_bytes` | E | fixed 65536 by §5.1 | `ConfigHonestySpec` budget refusal |
-| `control.test_enabled` | E | gates scenario/mutation commands | `ControlSpec` test-gate + `SimBridgeSpec` verbs-gated |
+| `control.test_enabled` | E | gates mutations; serving slots fixed when false, permanently removable within the interval when true | `ControlSpec` + `SimBridgeSpec` private gates; `NotificationsEngineSpec` serving configuration |
 | `fixtures.set` | R | reserved placeholder: only `"minimal-demo"` | `ConfigHonestySpec` set refusal |
 | `fixtures.apply` | R | reserved placeholder: only `"new-store-only"` | `ConfigHonestySpec` apply refusal |
 | `limits.slots` | E | `rulesFromConfig` → token admission | `AdmissionSpec` tracking |
@@ -57,10 +57,10 @@ Counts: E=27 pure + 1 dual (`storage.path`, E/R) + R=9 pure + D=6.
 | `limits.attribute_entries` | D | RESERVED: effective bound pinned 64 (see `template-bounds`) | `ConfigSpec` template disclosure |
 | `limits.attribute_depth` | D | reserved: no attribute-depth bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line |
 | `limits.jobs` | E | async-table bound (`max 8`) | `ConfigHonestySpec` jobs bound |
-| `limits.events` | E | event-queue bound (`max 8`) | `ConfigHonestySpec` events bound |
+| `limits.events` | E | public open requires positive bound at least catalog size; private FIFO retains `max 8` | `NotificationsSpec` + `NotificationsEngineSpec` serving limits; `ConfigHonestySpec` private events bound |
 | `sim.enabled` | E | gates schedule/script/fault-window | `SimBridgeSpec` boost gating + fault windows |
 | `sim.delay_schedule` | E | per-job tick boost | `SimBridgeSpec` schedule boost |
-| `sim.token_script` | E | runs at scenario start | `SimBridgeSpec` script-ran |
+| `sim.token_script` | E | runs in the private local scenario owner at scenario start | `SimBridgeSpec` script-ran |
 | `sim.fault_window_start` | E | seeds the fault window | `SimBridgeSpec` fault windows |
 | `sim.fault_window_ticks` | E | fault window length | `SimBridgeSpec` fault windows |
 | `tokens.labels` | E | catalog seating + served labels | `MultiTokenSpec` labels + `ConfigSpec` catalog validation |
@@ -155,6 +155,55 @@ Unknown keys/sections: `CfgUnknownKey` naming the dotted key
   regardless (see the `native-engine` report line).
 - `profile`: validated label; `demo-maximal` is marked a target
   profile in the report (gaps remain, not a completeness claim).
+
+## Serving presence and private scenario scope
+
+Serving initialization resolves one configuration/catalog and shares its
+`SlotEvents` with Instance and Standard. All catalog tokens start present,
+at presence epoch zero, with public pending flags clear. Slots keep the same
+identity and removable capability for the whole interval. With
+`control.test_enabled=false`, software slots are fixed and always present;
+mutations refuse. With it true, existing in-process `token.insert` and
+`token.remove` are the sole presence producers. Unknown slots refuse;
+removal leaves the configured slot and reinsertion restores the same token.
+There is no hardware monitoring, dynamic slot addition or network control.
+
+`limits.events` counts distinct potentially pending configured slots in the
+public service: it must be positive and at least the catalog size, without
+clamping or dropping flags. An invalid bound fails serving open via the
+existing configuration/open-failure route. `limits.slots` still constrains
+catalog admission. Private `EventQueue` proofs retain their separate FIFO
+overflow policy and `max 8` construction; that does not describe public waits.
+
+The control command generation counts accepted mutations, including accepted
+idempotent commands. Its `expected_generation` check and increment serialize
+with mutation; exhaustion refuses before cleanup. Per-slot status generation
+is the presence epoch, incremented only by true changes and checked against
+overflow. These differ from the stored token generation and persistent async
+IDs. Status paginates the actual catalog. Budget queries and short buffers
+execute nothing; presence replies are prepared before mutation where allocation
+can fail. Operational failures before/after publication retain the separate
+cleanup semantics in [operations notes](operations-notes.md#removal-wait-outputs-and-finalization).
+
+Standard memory retains `siStore = Nothing`; SQLite uses its existing store.
+There is no new writer, reset, schema, persisted presence field or watcher.
+SQLite restart loads the provisioned token present with pending flags clear;
+memory restart has only its existing transient behavior. Removal/reinsertion
+does not reset durable token data or increment its stored identity generation.
+Ordinary-object durability and Async/Detached persistence/capacity remain
+unchanged. Store errors, object changes and job completion do not imply removal.
+
+`haskoki-ctl` and `[sim].token_script` retain private local scenario ownership;
+they cannot change another process's loaded provider. Their FIFO, Haskell
+callback and scheduler proofs do not establish public pending-slot delivery or
+native surrender. No callback knob was added. Public slot changes are separate
+from the sole optional synchronous Digest surrender producer described in
+[operations notes](operations-notes.md#session-notification-callbacks-and-reentry).
+The serving configuration, bounds and store ledger executed in
+[T-N02](../dist-release-evidence/notifications/task-n02/review.md),
+[T-N03](../dist-release-evidence/notifications/task-n03/review.md) and
+[T-N08](../dist-release-evidence/notifications/task-n08/review.md); these
+historical records do not qualify a final documentation-inclusive revision.
 
 ## Dogfood matrix
 
