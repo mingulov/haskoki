@@ -94,8 +94,8 @@ extern void *haskoki_instance_open_fresh(void);
 extern void haskoki_instance_close(void *instance);
 extern void haskoki_instance_install(void *instance);
 extern void haskoki_instance_shutdown(void);
-extern uint64_t haskoki_instance_wait_for_slot_event(uint64_t flags,
-                                                uint64_t *p_slot);
+extern unsigned long haskoki_instance_wait_for_slot_event(unsigned long flags,
+                                                        unsigned long *p_slot);
 
 /* ================= local cryptoki subset (BEGIN) =================
  * Provider-local mirror of the PKCS#11 v2.40 legacy interface.
@@ -143,6 +143,7 @@ typedef CK_MECHANISM_TYPE *CK_MECHANISM_TYPE_PTR;
 
 #define CKF_LIBRARY_CANT_CREATE_OS_THREADS 0x00000001UL
 #define CKF_OS_LOCKING_OK 0x00000002UL
+#define CKF_DONT_BLOCK 0x00000001UL
 
 typedef struct CK_VERSION {
   unsigned char major;
@@ -725,8 +726,12 @@ static CK_RV on_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
   if (lr != CKR_OK) {
     return lr;
   }
-  /* Served from the standard-surface instance's live model
-   * (the export validates pointers and presence). */
+  /* Revalidate the interval under the lock before reading its owner. */
+  if (!live_interval()) {
+    (void)state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  /* The export validates pointers and captures serving presence. */
   inst = haskoki_std_get();
   if (inst == NULL) {
     (void)state_unlock();
@@ -946,18 +951,22 @@ static CK_RV stub_CancelFunction(CK_SESSION_HANDLE h) {
 }
 static CK_RV on_WaitForSlotEvent(CK_FLAGS f, CK_SLOT_ID_PTR p,
                                  CK_VOID_PTR r) {
-  (void)r;
   if (!live_interval()) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
   if (p == NULL) {
     return CKR_ARGUMENTS_BAD;
   }
+  if (r != NULL) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if ((f & ~CKF_DONT_BLOCK) != 0) {
+    return CKR_ARGUMENTS_BAD;
+  }
   /* Blocking call: NEVER hold the C state lock across it (the
    * Haskell side owns instance synchronization); a waiter holding
    * the lock would serialize the module behind it. */
-  return (CK_RV)haskoki_instance_wait_for_slot_event((uint64_t)f,
-                                                (uint64_t *)p);
+  return (CK_RV)haskoki_instance_wait_for_slot_event(f, p);
 }
 
 /* ---------- static table + exported discovery ---------- */

@@ -34,9 +34,9 @@ import Control.Exception (SomeException, mask_, onException, try)
 import Control.Monad (when)
 import qualified Data.Map.Strict as Map
 import qualified Data.ByteString as BS
-import Data.Bits ((.&.))
+import Data.Bits ((.&.), complement)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
-import Data.Word (Word8, Word64)
+import Data.Word (Word8)
 import Foreign.C.Types (CULong (..))
 import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
@@ -53,7 +53,10 @@ import System.Posix.Process (getProcessID)
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.Runtime.Async (AsyncTable, newAsyncTable)
 import Haskoki.Runtime.Catalog (effectiveCatalog)
-import Haskoki.Runtime.SlotEvents (SlotEvents, SlotDefinition (..), newSlotEvents, closeSlotEvents)
+import Haskoki.Runtime.SlotEvents
+  ( SlotEvents, SlotDefinition (..), SlotWait (..), WaitMode (..)
+  , newSlotEvents, closeSlotEvents, waitSlot
+  )
 import Haskoki.Runtime.Config
   ( Config (..)
   , ControlCfg (..)
@@ -72,16 +75,10 @@ import Haskoki.Runtime.Control
 import Haskoki.Runtime.Events
   ( EventQueue
   , OverflowPolicy (DropOldest)
-  , SlotEvent (evSlot)
   , TokenRegistry
-  , WaitOutcome (..)
   , finalizeEvents
   , newEventQueue
   , newTokenRegistry
-  , registryEvents
-  , tryWaitSlotEvent
-  , waitCode
-  , waitSlotEvent
   )
 import Haskoki.Runtime.Trace (Tracer, drainTracer, newTracer)
 import Haskoki.Types (ReturnCode (..), SlotId (..))
@@ -105,7 +102,7 @@ data Instance = Instance
 -- | @CKF_DONT_BLOCK@ for @C_WaitForSlotEvent@: 1, pinned by
 -- @spec\/vendor\/pkcs11.h@ (NOT 0x2 — that is
 -- @CKF_OS_LOCKING_OK@; the C proof caught the mixup).
-ckfDontBlock :: Word64
+ckfDontBlock :: CULong
 ckfDontBlock = 0x00000001
 
 -- | Mandatory top-level exception boundary: no Haskell exception may
@@ -284,24 +281,20 @@ withInstance ptr k = guarded $ do
         Nothing -> pure (CULong 0x190)
         Just inst -> k inst
 
--- | Blocking (@flags == 0@) or @DON'T_BLOCK@ slot-event wait over the
--- instance queue. Returns the source-correct @CK_RV@ and, on an
--- event, the slot id through @pSlot@.
+-- | Claim one serving indication from the captured interval. Mask through the
+-- output handoff: atomically/retry remains interruptible while empty, but after
+-- a successful STM claim no asynchronous exception can suppress the slot write.
+-- The native C entry validates reserved/pointer/flags before resolving this cell.
 haskokiWaitForSlotEvent :: StablePtr InstanceCell -> CULong -> Ptr CULong -> IO CULong
-haskokiWaitForSlotEvent ptr (CULong flags) pSlot = withInstance ptr $ \inst -> do
-  if pSlot == nullPtr
+haskokiWaitForSlotEvent ptr flags pSlot = withInstance ptr $ \inst ->
+  if pSlot == nullPtr || flags .&. complement ckfDontBlock /= 0
     then pure (CULong 7)
-    else do
-      let queue = registryEvents (instRegistry inst)
-      w <- if flags .&. ckfDontBlock /= 0
-        then tryWaitSlotEvent queue
-        else waitSlotEvent queue
-      case w of
-        WaitEvent ev -> do
-          let SlotId n = evSlot ev
-          poke pSlot (CULong (fromIntegral n))
-          pure (CULong (fromIntegral (waitCode w)))
-        _ -> pure (CULong (fromIntegral (waitCode w)))
+    else mask_ $ do
+      result <- waitSlot (instSlots inst) (if flags == ckfDontBlock then DontBlock else Block)
+      case result of
+        SlotReady (SlotId slot) -> poke pSlot (fromIntegral slot) >> pure (CULong 0)
+        SlotNoEvent -> pure (CULong 8)
+        SlotWaitClosed -> pure (CULong 0x190)
 
 -- | The @HASKOKI_Control@ body: budget convention first (null
 -- response pointer = pure query; short capacity = required +

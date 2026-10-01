@@ -94,6 +94,7 @@ module Haskoki.FFI.Standard
   , haskokiStdTerminateSlot
     -- * slot list, sessions, session info, token liveness
   , haskokiStdGetSlotList
+  , haskokiStdGetSlotFlags
   , haskokiStdOpenSession
   , haskokiStdOpenSessionWithAsync
   , haskokiStdCloseSession
@@ -274,7 +275,7 @@ import Haskoki.FFI.Instance (Instance (..), InstanceCell, readLiveInstance)
 import Haskoki.Runtime.Catalog (effectiveCatalog, homeCatalogEntry)
 import Haskoki.Runtime.Control (PresenceOwner (..), bindPresenceOwner)
 import Haskoki.Runtime.SlotEvents
-  ( SlotEvents, SlotDefinition (..), PresenceError (..), newSlotEvents
+  ( SlotEvents, SlotDefinition (..), SlotSnapshot (..), PresenceError (..), newSlotEvents
   , PresenceChange (..), NotificationPoint (RemovalPrepublication)
   , snapshotSlots, closeSlotEvents, publishPresenceSTM, observeSlotEvents
   )
@@ -408,6 +409,7 @@ import Haskoki.Runtime.Lifecycle
   , rulesFromConfig
   , seatToken
   , snapshotModel
+  , snapshotPresence
   )
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
@@ -1416,6 +1418,8 @@ ckrUserTypeInvalid = CULong 0x103
 -- slot list, sessions, session info, token liveness
 -- ---------------------------------------------------------------------------
 
+foreign export ccall "haskoki_std_get_slot_flags" haskokiStdGetSlotFlags
+  :: StablePtr StdInstance -> CULong -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_get_slot_list" haskokiStdGetSlotList
   :: StablePtr StdInstance -> Word8 -> Ptr CULong -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_open_session" haskokiStdOpenSessionWithAsync
@@ -1435,47 +1439,66 @@ foreign export ccall "haskoki_std_token_live" haskokiStdTokenLive
   -> Ptr CULong -> Ptr CULong -> Ptr CULong
   -> Ptr CULong -> Ptr CULong -> Ptr CULong -> IO CULong
 
--- | Serve the slot list from live model state: every seated slot
--- in index order, token-present exactly when the slot holds a
--- token (always, in a live interval: every seated slot holds its
--- catalog token). Size-query and short-buffer semantics per the
--- Direct contract. The token-present filter is vacuous by design:
--- it re-checks seated keys for membership, and every seated slot
--- holds a token, so the filtered list always equals the full
--- list (pinned by casePresentFiltering, counts and elements).
--- The two-phase shape is kept for the direct contract.
+-- | Public slot/token calls hold the C state lock from owner resolution through
+-- output publication. Reject closure before inspecting the retained snapshot.
+-- Reuse the existing rollback-only preview; it never publishes or acknowledges,
+-- even when the chosen slot is present, absent, fixed, or missing.
+withLiveStdCtx :: StablePtr StdInstance -> (StdInstance -> IO CULong) -> IO CULong
+withLiveStdCtx ctx k = withStdCtx ctx $ \inst -> do
+  live <- previewPresence (siSlots inst) (SlotId 0) True
+  case live of
+    Left PresenceClosed -> pure (stdRvOf CKR_CRYPTOKI_NOT_INITIALIZED)
+    _ -> k inst
+
+-- Native-width comparison before converting a caller's slot to the core ID.
+-- Existence is independent of presence and parked token auth metadata.
+slotSnapshot :: [SlotSnapshot] -> CULong -> Either CULong SlotSnapshot
+slotSnapshot snapshots native = case
+    [entry | entry <- snapshots, fromIntegral (unSlotId (ssSlotId entry)) == native] of
+  entry : _ -> Right entry
+  [] -> Left ckrSlotIdInvalid
+
+tokenSlot :: [SlotSnapshot] -> CULong -> Either CULong SlotId
+tokenSlot snapshots native = do
+  entry <- slotSnapshot snapshots native
+  if ssPresent entry then Right (ssSlotId entry) else Left (stdRvOf CKR_TOKEN_NOT_PRESENT)
+
+-- | Ascending configured slots, optionally filtered by current serving presence.
+-- Queries and short buffers publish only the count; no query acknowledges flags.
 haskokiStdGetSlotList
   :: StablePtr StdInstance -> Word8 -> Ptr CULong -> Ptr CULong -> IO CULong
 haskokiStdGetSlotList ctx tokenPresent pSlotList pCount =
-  withStdCtx ctx $ \inst ->
+  withLiveStdCtx ctx $ \inst ->
     if pCount == nullPtr
       then pure ckrArgsBad
       else do
-        m <- snapshotModel (siEnv inst)
-        let seated = Map.keys (mTokenAuth m)
-            ids
-              | tokenPresent == 0 = seated
-              | otherwise =
-                  [ slot
-                  | slot <- seated
-                  , lookupTokenAuth m slot /= Nothing
-                  ]
-            want = fromIntegral (length ids) :: Word64
-            outIds = [CULong (fromIntegral n) | SlotId n <- ids]
+        slots <- snapshotSlots (siSlots inst)
+        let outIds = [fromIntegral (unSlotId (ssSlotId entry))
+                     | entry <- slots, tokenPresent == 0 || ssPresent entry]
+            want = fromIntegral (length outIds) :: CULong
         if pSlotList == nullPtr
-          then do
-            poke pCount (CULong want)
-            pure ckrOk
+          then poke pCount want >> pure ckrOk
           else do
-            CULong cap <- peek pCount
+            cap <- peek pCount
             if cap < want
-              then do
-                poke pCount (CULong want)
-                pure ckrBufferTooSmall
+              then poke pCount want >> pure ckrBufferTooSmall
               else do
                 pokeArray pSlotList outIds
-                poke pCount (CULong want)
+                poke pCount want
                 pure ckrOk
+
+-- | A configured empty slot is valid: TOKEN_PRESENT=1, REMOVABLE_DEVICE=2,
+-- HW_SLOT clear. Slot validity precedes null output; refusals write nothing.
+haskokiStdGetSlotFlags :: StablePtr StdInstance -> CULong -> Ptr CULong -> IO CULong
+haskokiStdGetSlotFlags ctx native pFlags = withLiveStdCtx ctx $ \inst -> do
+  slots <- snapshotSlots (siSlots inst)
+  case slotSnapshot slots native of
+    Left rv -> pure rv
+    Right entry
+      | pFlags == nullPtr -> pure ckrArgsBad
+      | otherwise -> do
+          poke pFlags ((if ssPresent entry then 1 else 0) + (if ssRemovable entry then 2 else 0))
+          pure ckrOk
 
 -- | Open a session on a seated slot (unseated slots refuse with
 -- @SLOT_ID_INVALID@), read-only flag from the caller (the C side
@@ -1491,15 +1514,15 @@ haskokiStdOpenSession ctx slot ro = haskokiStdOpenSessionWithAsync ctx slot ro 0
 haskokiStdOpenSessionWithAsync
   :: StablePtr StdInstance -> CULong -> CULong -> CULong
   -> Ptr CULong -> IO CULong
-haskokiStdOpenSessionWithAsync ctx (CULong slot) (CULong ro) (CULong async) phSession =
-  withStdCtx ctx $ \inst ->
+haskokiStdOpenSessionWithAsync ctx slot (CULong ro) (CULong async) phSession =
+  withLiveStdCtx ctx $ \inst ->
     if phSession == nullPtr
       then pure ckrArgsBad
       else do
-        m0 <- snapshotModel (siEnv inst)
-        case lookupTokenAuth m0 (SlotId (fromIntegral slot)) of
-          Nothing -> pure ckrSlotIdInvalid
-          Just _ -> do
+        (m0, slots) <- snapshotPresence (siEnv inst) (siSlots inst)
+        case tokenSlot slots slot of
+          Left rv -> pure rv
+          Right slotId -> do
             let sid = SessionId (mNextSession m0)
                 req = Request Pkcs11_3_2 F_OpenSession Nothing Nothing
                   (BC8.pack ("slot=" ++ show slot ++ if ro == 0 then ",rw" else ",ro")) []
@@ -1508,7 +1531,7 @@ haskokiStdOpenSessionWithAsync ctx (CULong slot) (CULong ro) (CULong async) phSe
                 | pcCode pc == CKR_OK -> mask_ $ do
                     live <- newIORef Set.empty
                     let detached = case siDetach inst of
-                          Just dc | detachSlot dc == SlotId (fromIntegral slot) -> Just dc
+                          Just dc | detachSlot dc == slotId -> Just dc
                           _ -> Nothing
                     view <- newStablePtr (AsyncCtx (siEnv inst) (siBackend inst)
                       sid (siAsyncTable inst) live detached)
@@ -1573,13 +1596,14 @@ haskokiStdCloseSession ctx (CULong h) =
 -- Each close plans against a fresh snapshot so last-close logout
 -- fires exactly once, on the final close.
 haskokiStdCloseAllSessions :: StablePtr StdInstance -> CULong -> IO CULong
-haskokiStdCloseAllSessions ctx (CULong slot) =
-  withStdCtx ctx $ \inst -> do
-    m0 <- snapshotModel (siEnv inst)
-    case lookupTokenAuth m0 slotId of
-      Nothing -> pure ckrSlotIdInvalid
-      Just _ -> do
-        let sids = map ssId (sessionsOnSlot m0 slotId)
+haskokiStdCloseAllSessions ctx slot =
+  withLiveStdCtx ctx $ \inst -> do
+    (m0, slots) <- snapshotPresence (siEnv inst) (siSlots inst)
+    case slotSnapshot slots slot of
+      Left rv -> pure rv
+      Right entry -> do
+        let slotId = ssSlotId entry
+            sids = map ssId (sessionsOnSlot m0 slotId)
         forM_ sids $ \sid -> do
           m <- snapshotModel (siEnv inst)
           let req = Request Pkcs11_3_2 F_CloseSession (Just sid) Nothing BS.empty []
@@ -1594,8 +1618,6 @@ haskokiStdCloseAllSessions ctx (CULong slot) =
               pure ()
             Execute _ _ -> pure ()
         pure ckrOk
-  where
-    slotId = SlotId (fromIntegral slot)
 
 -- | Cancel a session's active operations under its CKF_* selector
 -- mask (unknown handles refuse; the planner clears the selected
@@ -1667,19 +1689,19 @@ haskokiStdTokenLive
   :: StablePtr StdInstance -> CULong
   -> Ptr CULong -> Ptr CULong -> Ptr CULong
   -> Ptr CULong -> Ptr CULong -> Ptr CULong -> IO CULong
-haskokiStdTokenLive ctx (CULong slot)
+haskokiStdTokenLive ctx slot
     pSess pRw pUserLock pSoLock pUserRem pSoRem =
-  withStdCtx ctx $ \inst -> do
-    m <- snapshotModel (siEnv inst)
-    case lookupTokenAuth m (SlotId (fromIntegral slot)) of
-      Nothing -> pure ckrSlotIdInvalid
-      Just _
+  withLiveStdCtx ctx $ \inst -> do
+    (m, slots) <- snapshotPresence (siEnv inst) (siSlots inst)
+    case tokenSlot slots slot of
+      Left rv -> pure rv
+      Right slotId
         | pSess == nullPtr || pRw == nullPtr || pUserLock == nullPtr
           || pSoLock == nullPtr || pUserRem == nullPtr || pSoRem == nullPtr ->
             pure ckrArgsBad
         | otherwise -> do
             let (ns, nrw, ul, sl, ur, sr) =
-                  tokenScalars (envRules (siEnv inst)) m (SlotId (fromIntegral slot))
+                  tokenScalars (envRules (siEnv inst)) m slotId
             poke pSess (CULong ns)
             poke pRw (CULong nrw)
             poke pUserLock (CULong ul)
@@ -1699,19 +1721,17 @@ foreign export ccall "haskoki_std_slot_present" haskokiStdSlotPresent
 -- checked before the buffer (the "bad slots rejected first"
 -- discipline).
 haskokiStdTokenLabel :: StablePtr StdInstance -> CULong -> Ptr Word8 -> IO CULong
-haskokiStdTokenLabel ctx (CULong slot) pOut =
-  withStdCtx ctx $ \inst -> do
-    m <- snapshotModel (siEnv inst)
-    case lookupTokenAuth m sid of
-      Nothing -> pure ckrSlotIdInvalid
-      Just _
+haskokiStdTokenLabel ctx slot pOut =
+  withLiveStdCtx ctx $ \inst -> do
+    slots <- snapshotSlots (siSlots inst)
+    case tokenSlot slots slot of
+      Left rv -> pure rv
+      Right sid
         | pOut == nullPtr -> pure ckrArgsBad
         | otherwise -> do
             let (label, _, _) = catalogLookup inst sid
             pokeArray pOut (padLabel32 label)
             pure ckrOk
-  where
-    sid = SlotId (fromIntegral slot)
 
 -- | Blank-pad a catalog label to exactly 32 bytes (truncate past
 -- 32; validation caps labels at 32 chars, ASCII in practice).
@@ -1719,16 +1739,13 @@ padLabel32 :: String -> [Word8]
 padLabel32 label =
   take 32 (map (fromIntegral . ord) label ++ repeat 0x20)
 
--- | Report whether a slot is seated in this instance (@CKR_OK@) or
--- not (@SLOT_ID_INVALID@). Serves the C slot-info/mechanism
--- bodies, which carry no Haskell state of their own.
+-- | Token-required check for mechanism callers. Empty configured slots refuse
+-- TOKEN_NOT_PRESENT; only the slot-info adapter uses existence alone.
 haskokiStdSlotPresent :: StablePtr StdInstance -> CULong -> IO CULong
-haskokiStdSlotPresent ctx (CULong slot) =
-  withStdCtx ctx $ \inst -> do
-    m <- snapshotModel (siEnv inst)
-    case lookupTokenAuth m (SlotId (fromIntegral slot)) of
-      Nothing -> pure ckrSlotIdInvalid
-      Just _ -> pure ckrOk
+haskokiStdSlotPresent ctx slot =
+  withLiveStdCtx ctx $ \inst -> do
+    slots <- snapshotSlots (siSlots inst)
+    pure (either id (const ckrOk) (tokenSlot slots slot))
 
 -- ---------------------------------------------------------------------------
 -- objects

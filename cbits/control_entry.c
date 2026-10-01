@@ -50,8 +50,8 @@
 #include <stdint.h>
 extern void *haskoki_instance_open(void);
 extern void haskoki_instance_close(void *instance);
-extern uint64_t haskoki_wait_for_slot_event(void *instance, uint64_t flags,
-                                            uint64_t *p_slot);
+extern unsigned long haskoki_wait_for_slot_event(void *instance, unsigned long flags,
+                                                 unsigned long *p_slot);
 extern uint64_t haskoki_control(void *instance, const uint8_t *p_request,
                                 uint64_t request_len, uint8_t *p_response,
                                 uint64_t *p_response_len);
@@ -100,7 +100,7 @@ void haskoki_instance_shutdown(void) {
  * acquire-load snapshot either enters Haskell with a published
  * handle (the Haskell liveness cell re-validates before serving)
  * or fails fast. */
-uint64_t haskoki_instance_wait_for_slot_event(uint64_t flags, uint64_t *p_slot) {
+unsigned long haskoki_instance_wait_for_slot_event(unsigned long flags, unsigned long *p_slot) {
   void *inst = atomic_load_explicit(&g_haskoki_instance, memory_order_acquire);
   if (inst == 0) {
     return (uint64_t)CKR_CRYPTOKI_NOT_INITIALIZED_INSTANCE;

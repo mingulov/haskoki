@@ -4,26 +4,36 @@ module NotificationsSpec (spec) where
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, readMVar)
 import Control.Concurrent.STM (atomically)
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, bracket, try)
 import Control.Monad (foldM, forM_, replicateM)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sort, sortOn)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Word (Word64)
+import Data.Bits (finiteBitSize, shiftL)
+import Foreign.C.Types (CULong)
+import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Marshal.Array (peekArray, pokeArray)
+import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr)
+import Foreign.Storable (peek, poke, sizeOf)
+import System.Directory (createDirectoryIfMissing, removeFile)
+import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Timeout (timeout)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, testGroup, after, DependencyType (AllFinish))
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase)
 
 import qualified Data.ByteString.Char8 as BS
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
-import Haskoki.FFI.Standard (prepareStdRemoval)
+import Haskoki.FFI.Standard
+import Haskoki.FFI.Instance
 import Haskoki.Model
 import Haskoki.Object (resolveHandle)
 import Haskoki.Outcome
 import Haskoki.Rules (defaultRules)
 import Haskoki.Runtime.Async (newAsyncTable)
-import Haskoki.Runtime.Config (defaultConfig)
+import Haskoki.Runtime.Config (Config (..), ControlCfg (..), TokensCfg (..), TraceCfg (..), defaultConfig)
 import Haskoki.Runtime.Control
 import Haskoki.Runtime.Events (OverflowPolicy (DropOldest), newEventQueue, newTokenRegistry)
 import qualified Haskoki.Runtime.Lifecycle as Life
@@ -45,6 +55,15 @@ spec = testGroup "Notifications"
     [ testCase "casePresencePublication" casePresencePublication
     , testCase "casePresenceHandleRetirement" casePresenceHandleRetirement
     , testCase "casePresenceGenerationAtomicity" casePresenceGenerationAtomicity
+    ]
+  , testGroup "T-N04"
+    [ testCase "caseServingSlotBoundary" caseServingSlotBoundary
+    -- ConfigSpec is the only other HASKOKI_CONFIG writer in the model suite.
+    -- Order this real-cell fixture after it; no production constructor seam.
+    , after AllFinish "/no per-call env reads after resolve/" $
+        testCase "caseServingWaitOutput" caseServingWaitOutput
+    , testCase "caseServingFilteredGrowth" caseServingFilteredGrowth
+    , testCase "caseServingTokenRequired" caseServingTokenRequired
     ]
   ]
 
@@ -513,3 +532,178 @@ casePresenceGenerationAtomicity = do
   assertBool "refusal envelope bounded" (BS.length largeBody <= 65536 && largeLen <= 65536)
   view ctl >>= assertEqual "oversized echo mutates nothing" snap
   putStrLn "T-N03 casePresenceGenerationAtomicity: accepted=1 stale=1 idempotent_commands=1 allocation_claims=0"
+
+
+-- T-N04 exercises the actual Haskell adapters. The independent native probes
+-- own C guard/lock ordering; these cases catch wrong serving snapshots, private
+-- FIFO routing, speculative output writes and resurrection of retired handles.
+boundaryConfig :: Bool -> Config
+boundaryConfig removable = defaultConfig
+  { cfgControl = (cfgControl defaultConfig) { ccTestEnabled = removable }
+  , cfgTokens = TokensCfg [("haskoki-demo", "5678", "1234"), ("second", "5678", "1234")]
+  , cfgTrace = (cfgTrace defaultConfig) { tcEnabled = False }
+  }
+
+withBoundary :: Bool -> (StablePtr StdInstance -> StdInstance -> IO a) -> IO a
+withBoundary removable action =
+  bracket (openStdInstance (boundaryConfig removable)) haskokiStdClose $ \ctx -> do
+    assertBool "boundary fixture opens" (castStablePtrToPtr ctx /= nullPtr)
+    deRefStablePtr ctx >>= action ctx
+
+sentinel :: CULong
+sentinel = 0xa5a5a5a5a5a5a5a5
+
+-- Full allocation comparisons include both guards and every unused output word.
+withWords :: Int -> (Ptr CULong -> IO [CULong] -> IO a) -> IO a
+withWords n action = allocaBytes ((n + 2) * sizeOf sentinel) $ \raw -> do
+  let wordsPtr = castPtr raw :: Ptr CULong
+      output = wordsPtr `plusPtr` sizeOf sentinel
+  pokeArray wordsPtr (replicate (n + 2) sentinel)
+  action output (peekArray (n + 2) wordsPtr)
+
+changePresence :: StdInstance -> Int -> Bool -> Assertion
+changePresence inst slot present = do
+  result <- setStdTokenPresence inst (SlotId slot) present
+  case result of
+    Right (PresenceChanged _, 0) -> pure ()
+    _ -> assertFailure ("presence transition: " ++ show result)
+
+caseServingSlotBoundary :: Assertion
+caseServingSlotBoundary = forM_ [False, True] $ \removable ->
+  withBoundary removable $ \ctx inst -> withWords 2 $ \out inspect -> withWords 1 $ \count countBytes -> do
+    haskokiStdGetSlotList ctx 0 out nullPtr >>= assertEqual "null count" 7
+    inspect >>= assertEqual "null count preserves full allocation" (replicate 4 sentinel)
+    haskokiStdGetSlotList ctx 0 nullPtr count >>= assertEqual "count query ignores input" 0
+    countBytes >>= assertEqual "count only" [sentinel, 2, sentinel]
+    forM_ [0, 1] $ \cap -> do
+      poke count cap
+      haskokiStdGetSlotList ctx 0 out count >>= assertEqual "short list" 0x150
+      inspect >>= assertEqual "short array unchanged" (replicate 4 sentinel)
+      countBytes >>= assertEqual "short updates count only" [sentinel, 2, sentinel]
+    haskokiStdGetSlotList ctx 0 out count >>= assertEqual "adequate full list" 0
+    inspect >>= assertEqual "ascending full list and canaries" [sentinel, 0, 1, sentinel]
+    forM_ [1, 2, 255] $ \truth -> do
+      haskokiStdGetSlotList ctx truth nullPtr count >>= assertEqual "nonzero CK_BBOOL" 0
+      peek count >>= assertEqual "both initially present" 2
+    withWords 1 $ \flags flagBytes -> do
+      haskokiStdGetSlotFlags ctx 99 nullPtr >>= assertEqual "unknown before null" 3
+      haskokiStdGetSlotFlags ctx 99 flags >>= assertEqual "unknown slot" 3
+      flagBytes >>= assertEqual "unknown flags untouched" [sentinel, sentinel, sentinel]
+      haskokiStdGetSlotFlags ctx 0 nullPtr >>= assertEqual "known null output" 7
+      haskokiStdGetSlotFlags ctx 0 flags >>= assertEqual "known flags" 0
+      flagBytes >>= assertEqual "present/removable, hardware clear"
+        [sentinel, if removable then 3 else 1, sentinel]
+      if removable then do
+        changePresence inst 0 False
+        haskokiStdGetSlotFlags ctx 0 flags >>= assertEqual "empty slot is valid" 0
+        flagBytes >>= assertEqual "removable only" [sentinel, 2, sentinel]
+        haskokiStdGetSlotFlags ctx 0 nullPtr >>= assertEqual "empty null flags" 7
+        waitSlot (siSlots inst) DontBlock >>= assertEqual "slot reads never acknowledge" (SlotReady (SlotId 0))
+      else pure ()
+      closeSlotEvents (siSlots inst)
+      poke flags sentinel
+      poke count sentinel
+      haskokiStdGetSlotFlags ctx 0 flags >>= assertEqual "closed flags" 0x190
+      haskokiStdGetSlotFlags ctx 99 nullPtr >>= assertEqual "closed before slot/pointer" 0x190
+      haskokiStdGetSlotList ctx 0 out count >>= assertEqual "closed list" 0x190
+      haskokiStdGetSlotList ctx 0 nullPtr nullPtr >>= assertEqual "closed before count" 0x190
+      flagBytes >>= assertEqual "closed flags untouched" [sentinel, sentinel, sentinel]
+      countBytes >>= assertEqual "closed count untouched" [sentinel, sentinel, sentinel]
+
+caseServingWaitOutput :: Assertion
+caseServingWaitOutput = do
+  createDirectoryIfMissing True "/tmp/haskoki-notifications"
+  let path = "/tmp/haskoki-notifications/model-wait-config.toml"
+  bracket (lookupEnv "HASKOKI_CONFIG")
+    (\old -> maybe (unsetEnv "HASKOKI_CONFIG") (setEnv "HASKOKI_CONFIG") old) $ \_ ->
+    bracket (writeFile path (unlines
+      [ "schema_version = 1", "[control]", "test_enabled = true"
+      , "[trace]", "enabled = false"
+      ])) (const (removeFile path)) $ \_ -> do
+      setEnv "HASKOKI_CONFIG" path
+      bracket haskokiInstanceOpen haskokiInstanceClose $ \cell -> do
+        assertBool "real cell opens" (castStablePtrToPtr cell /= nullPtr)
+        Just ops <- readLiveInstance cell
+        bracket (haskokiStdOpen cell) haskokiStdClose $ \ctx -> do
+          assertBool "standard borrows real cell" (castStablePtrToPtr ctx /= nullPtr)
+          inst <- deRefStablePtr ctx
+          withWords 1 $ \out inspect -> do
+            haskokiWaitForSlotEvent cell 1 out >>= assertEqual "empty poll" 8
+            inspect >>= assertEqual "no event preserves all bytes" [sentinel, sentinel, sentinel]
+            changePresence inst 0 False
+            haskokiWaitForSlotEvent cell 1 nullPtr >>= assertEqual "null output no claim" 7
+            forM_ [2, 3, 1 `shiftL` (finiteBitSize sentinel - 1)] $ \flags -> do
+              haskokiWaitForSlotEvent cell flags out >>= assertEqual "native-width unknown flags" 7
+              inspect >>= assertEqual "invalid wait preserves all bytes" [sentinel, sentinel, sentinel]
+            haskokiWaitForSlotEvent cell 1 out >>= assertEqual "pending absent slot poll" 0
+            inspect >>= assertEqual "one output word" [sentinel, 0, sentinel]
+            poke out sentinel
+            haskokiWaitForSlotEvent cell 1 out >>= assertEqual "one consumption" 8
+            inspect >>= assertEqual "empty again unchanged" [sentinel, sentinel, sentinel]
+            closeSlotEvents (instSlots ops)
+            forM_ [0, 1] $ \flags -> do
+              haskokiWaitForSlotEvent cell flags out >>= assertEqual "closed shared service" 0x190
+              inspect >>= assertEqual "closed service unchanged" [sentinel, sentinel, sentinel]
+            haskokiInstanceClose cell
+            haskokiWaitForSlotEvent cell 3 nullPtr >>= assertEqual "closed cell lifecycle first" 0x190
+
+caseServingFilteredGrowth :: Assertion
+caseServingFilteredGrowth = withBoundary True $ \ctx inst ->
+  withWords 2 $ \out inspect -> withWords 1 $ \count countBytes -> do
+    haskokiStdGetSlotList ctx 2 nullPtr count >>= assertEqual "initial query" 0
+    peek count >>= assertEqual "initial count 2" 2
+    changePresence inst 0 False
+    haskokiStdGetSlotList ctx 0 nullPtr count >>= assertEqual "full query while empty" 0
+    peek count >>= assertEqual "full count retains empty slot" 2
+    haskokiStdGetSlotList ctx 2 nullPtr count >>= assertEqual "filtered query" 0
+    peek count >>= assertEqual "filtered count 1" 1
+    haskokiStdGetSlotList ctx 2 out count >>= assertEqual "filtered fetch" 0
+    inspect >>= assertEqual "only present slot" [sentinel, 1, sentinel, sentinel]
+    pokeArray out [sentinel, sentinel]
+    changePresence inst 0 True
+    haskokiStdGetSlotList ctx 2 out count >>= assertEqual "growth needs retry" 0x150
+    inspect >>= assertEqual "short growth preserves entire array" (replicate 4 sentinel)
+    countBytes >>= assertEqual "filtered count grows to 2" [sentinel, 2, sentinel]
+    haskokiStdGetSlotList ctx 2 out count >>= assertEqual "growth retry" 0
+    inspect >>= assertEqual "ascending retry" [sentinel, 0, 1, sentinel]
+    waitSlot (siSlots inst) DontBlock >>= assertEqual "queries/fetches never consume coalesced event" (SlotReady (SlotId 0))
+    waitSlot (siSlots inst) DontBlock >>= assertEqual "exactly one pending slot" SlotNoEvent
+
+caseServingTokenRequired :: Assertion
+caseServingTokenRequired = withBoundary True $ \ctx inst -> withWords 6 $ \out inspect -> do
+  haskokiStdOpenSession ctx 0 0 out >>= assertEqual "open old session" 0
+  old <- peek out
+  changePresence inst 0 False
+  pokeArray out (replicate 6 sentinel)
+  forM_ [(99, 3), (0, 0xe0)] $ \(slot, expected) -> do
+    haskokiStdSlotPresent ctx slot >>= assertEqual "token-required existence/presence" expected
+    forM_ [nullPtr, castPtr out] $ \label ->
+      haskokiStdTokenLabel ctx slot label >>= assertEqual "label before output shape" expected
+    forM_ [nullPtr, out] $ \scalar ->
+      haskokiStdTokenLive ctx slot scalar scalar scalar scalar scalar scalar
+        >>= assertEqual "token scalars before output shape" expected
+    haskokiStdOpenSession ctx slot 0 out >>= assertEqual "open token required" expected
+    inspect >>= assertEqual "every token refusal preserves whole allocation" (replicate 8 sentinel)
+  haskokiStdCloseAllSessions ctx 0 >>= assertEqual "empty close all succeeds" 0
+  haskokiStdCloseAllSessions ctx 99 >>= assertEqual "unknown close all" 3
+  waitSlot (siSlots inst) DontBlock >>= assertEqual "only removal produced" (SlotReady (SlotId 0))
+  waitSlot (siSlots inst) DontBlock >>= assertEqual "close all not a producer" SlotNoEvent
+  changePresence inst 0 True
+  haskokiStdGetSessionInfo ctx old out out out out >>= assertEqual "retired info after reinsertion" 0xb3
+  haskokiStdSessionCancel ctx old 0 >>= assertEqual "retired cancel after reinsertion" 0xb3
+  haskokiStdCloseSession ctx old >>= assertEqual "retired close after reinsertion" 0xb3
+  inspect >>= assertEqual "retired session outputs untouched" (replicate 8 sentinel)
+  haskokiStdOpenSession ctx 0 0 out >>= assertEqual "new session admitted" 0
+  new <- peek out
+  assertBool "session handle never resurrected" (new /= old)
+  haskokiStdCloseAllSessions ctx 0 >>= assertEqual "close new sessions" 0
+  waitSlot (siSlots inst) DontBlock >>= assertEqual "only insertion produced" (SlotReady (SlotId 0))
+  waitSlot (siSlots inst) DontBlock >>= assertEqual "session operations produce nothing" SlotNoEvent
+  closeSlotEvents (siSlots inst)
+  pokeArray out (replicate 6 sentinel)
+  haskokiStdTokenLabel ctx 0 (castPtr out) >>= assertEqual "closed label" 0x190
+  haskokiStdTokenLive ctx 0 out out out out out out >>= assertEqual "closed token scalars" 0x190
+  haskokiStdSlotPresent ctx 0 >>= assertEqual "closed token check" 0x190
+  haskokiStdOpenSession ctx 0 0 out >>= assertEqual "closed admission" 0x190
+  haskokiStdCloseAllSessions ctx 0 >>= assertEqual "closed close all" 0x190
+  inspect >>= assertEqual "closed outputs unchanged" (replicate 8 sentinel)

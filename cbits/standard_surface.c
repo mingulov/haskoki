@@ -86,6 +86,8 @@ extern uint64_t haskoki_std_token_live(void *instance, uint64_t slot,
 extern uint64_t haskoki_std_token_label(void *instance, uint64_t slot,
                                         uint8_t *p_label32);
 extern uint64_t haskoki_std_slot_present(void *instance, uint64_t slot);
+extern unsigned long haskoki_std_get_slot_flags(void *instance, unsigned long slot,
+                                              unsigned long *flags);
 extern uint64_t haskoki_std_create_object(void *instance, uint64_t h_session,
                                           uint8_t *p_frame, uint64_t frame_len,
                                           uint64_t *ph_object);
@@ -452,14 +454,14 @@ CK_RV std_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
   return rv;
 }
 
-/* Provisioned slot record: static strings, token always present in
- * a live interval. Seating is per-slot (one Haskell entry), the
- * record shape is identical on every seated slot. */
+/* Configured slot record: static strings and one captured serving snapshot,
+ * including known-empty slots. Publish the complete record under the lock. */
 CK_RV std_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
   static const char kDesc[] = "haskoki soft slot";
   static const char kManu[] = "haskoki contributors";
   void *inst = 0;
-  CK_SLOT_INFO tmp;
+  CK_SLOT_INFO tmp = {0};
+  unsigned long flags = 0;
   CK_RV lr = 0;
   CK_RV rv = 0;
   if (!haskoki_live_interval()) {
@@ -474,24 +476,26 @@ CK_RV std_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
     (void)haskoki_state_unlock();
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
-  rv = (CK_RV)haskoki_std_slot_present(inst, (uint64_t)slotID);
-  (void)haskoki_state_unlock();
+  rv = (CK_RV)haskoki_std_get_slot_flags(inst, slotID, &flags);
   if (rv != CKR_OK) {
+    (void)haskoki_state_unlock();
     return rv;
   }
   if (pInfo == NULL_PTR) {
+    (void)haskoki_state_unlock();
     return CKR_ARGUMENTS_BAD;
   }
   memset(tmp.slotDescription, ' ', sizeof(tmp.slotDescription));
   memcpy(tmp.slotDescription, kDesc, sizeof(kDesc) - 1);
   memset(tmp.manufacturerID, ' ', sizeof(tmp.manufacturerID));
   memcpy(tmp.manufacturerID, kManu, sizeof(kManu) - 1);
-  tmp.flags = CKF_TOKEN_PRESENT;
+  tmp.flags = flags;
   tmp.hardwareVersion.major = 1;
   tmp.hardwareVersion.minor = 0;
   tmp.firmwareVersion.major = 0;
   tmp.firmwareVersion.minor = 3;
   memcpy(pInfo, &tmp, sizeof(tmp));
+  (void)haskoki_state_unlock();
   return CKR_OK;
 }
 
@@ -511,7 +515,7 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   if (!haskoki_live_interval()) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
-  CK_TOKEN_INFO tmp;
+  CK_TOKEN_INFO tmp = {0};
   CK_RV lr = 0;
   CK_RV rv = 0;
   uint64_t nSess = 0, nRw = 0, uLock = 0, sLock = 0, uRem = 0, sRem = 0;
@@ -534,11 +538,12 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   }
   rv = (CK_RV)haskoki_std_token_live(inst, (uint64_t)slotID, &nSess, &nRw,
                                      &uLock, &sLock, &uRem, &sRem);
-  (void)haskoki_state_unlock();
   if (rv != CKR_OK) {
+    (void)haskoki_state_unlock();
     return rv;
   }
   if (pInfo == NULL_PTR) {
+    (void)haskoki_state_unlock();
     return CKR_ARGUMENTS_BAD;
   }
   memcpy(tmp.label, label32, sizeof(tmp.label));
@@ -583,6 +588,7 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   tmp.firmwareVersion.minor = 3;
   memcpy(tmp.utcTime, kUtc, sizeof(tmp.utcTime));
   memcpy(pInfo, &tmp, sizeof(tmp));
+  (void)haskoki_state_unlock();
   return CKR_OK;
 }
 
