@@ -2733,3 +2733,184 @@ consumer/model/engine evidence is appended. Catalog totals remain
 104/70/32/2. Mechanism count/flags, the runtime pins, and D1-D12 remain
 unchanged. This entry supports the bounded routing review; it makes no
 general asynchronous-operation or PKCS #11 conformance claim.
+
+## Notifications T-N09 reviewed evidence (2026-10-01)
+
+T-N09's remaining required commands passed on HEAD
+`7e8cb2f8800e505364eacbb4a7bb5853c2ed7ca9` with measured input patch
+`5fcc28da79cd67d5d5e811109884fd8e83c03fbca9c1af6dd9d6c97e5e394b81`. This includes the exact
+coordinator-authorized consumer topology correction. The final documentation
+patch is separately saved and hashed in the
+[task-n09 review](../dist-release-evidence/notifications/reviewed/task-n09/review.md).
+All evidence is provisional. No acceptance is claimed; clean final-revision
+gates and installed acceptance remain outside this task.
+
+### Proxy reproduction, filing and resolved consumer boundary
+
+The bounded blocking-wait/finalize defect at proxy commit
+`a48b60ba54b0163f4999c1e4fc0514bf7dc01681` remains filed as
+[pkcs11-proxy-ng #25](https://github.com/mingulov/pkcs11-proxy-ng/issues/25),
+OPEN at the verified readback. Its creation/readback receipts and posted body
+were preserved byte-for-byte; no duplicate issue was created. Both direct
+legs completed (Finalize OK, waiter NOT_INITIALIZED, sentinel unchanged).
+Both proxy legs stayed blocked for the 10-second observation window and
+were contained by their owner (exit -15), below the unchanged 60-second
+transport timeout. Backend-entry acknowledgment proves backend dispatch,
+not Haskell STM parking; unwrapped legs remain separate corroboration.
+Callback transport is an optional capability limitation, not an obligation
+to synthesize insertion callbacks. Rich notifications remain DIRECT-ONLY.
+
+Dispatch 3 stopped because the polling consumer assumed a proxied 3.1 table.
+The pinned shim advertises 2.40/3.0/3.2 and returns OK/NULL for the 3.1 miss.
+The coordinator expanded T-N09's allowlist for the exact
+[boundary patch](../dist-release-evidence/notifications/reviewed/task-n09/boundary.patch)
+(SHA-256 `0934a41673c1c7a0cbc2c668dbcf65fb258a2efa09a9c1b48f55945aafd7ee21`).
+It was applied verbatim and rebuilt in the full parity run. Direct 3.1 still
+executes all 37 assertions as topology inventory; the proxy requires exact
+OK/NULL absence and executes no 3.1 polling case. The existing driver filter
+was unchanged. Every common-version polling line remains eligible; no Wait
+return-code set or assertion was weakened.
+
+Full parity exited 0: 10 common scenarios matched and 3 direct-only scenarios
+passed. Polling completed 148 direct assertions (four tables) and 111 proxy
+polling assertions (three tables), plus two proxy inventory assertions;
+153 eligible lines matched exactly. Rich notifications completed 72 direct
+matrix legs with no child leaks. The proxy checker, release, reviewed pin
+capture, narrow comparison, fast collection/review and KAT collection/review
+all exited 0. Both oracle test processes exited 1, as distinguished below.
+
+The two dispatch-3 required-zero failures are archived in
+`notifications/attempts/proxy/parity/0001` and
+`notifications/attempts/proxy/parity-scoped-retry/0001` before name reuse.
+Dispatch-3 handoff files remain under `reviewed/task-n09/dispatch3-handoff`.
+The old release and both prior oracle output trees were preserved with
+verified hashes and timestamps. Runtime source, module, bundle, header,
+external source, wrapper/config and image identities were checked around the
+applicable runs; the approved consumer input is pinned separately.
+
+### Actual oracle inputs and findings
+
+The independent bundle comparison exited 0: **24 cases, 172 assertions,
+zero callbacks**, across all four discovered tables. It required exactly
+NO_EVENT for a fresh DONT_BLOCK poll with unchanged sentinel, initial
+TOKEN_PRESENT, and successful open/info/close for four callback/application
+shapes. No Digest producer was called.
+
+Both fast and KAT executed and passed all **16 required notification nodes**:
+
+- `test_remaining_gaps.py::TestWaitForSlotEvent::test_wait_for_slot_event_non_blocking`
+- `ckr/test_ckr_slot_token.py::TestWaitForSlotEventErrors::test_non_blocking_no_event`
+- `test_session_edge_cases.py::TestCKNotifyCallback::test_open_session_with_null_callback`
+- `test_session_edge_cases.py::TestCKNotifyCallback::test_open_session_callback_matrix[null-null|null-data|callback-null|callback-data]`
+- `test_token_flags.py::TestSlotInfo::{test_slot_count,test_slots_with_tokens,test_slot_info_readable,test_slot_has_token_present_flag,test_slot_hardware_version_is_valid,test_slot_firmware_version_is_valid}`
+- `test_interface.py::TestLibraryInfo::test_library_has_slots` and
+  `TestSlotEnumeration::{test_get_slots_with_token,test_slot_has_token_info}`
+
+Neither Wait node used a FUNCTION_NOT_SUPPORTED skip. The oracle's broad
+accepted-RV sets do not expand Haskoki's exact expectations. The callback
+matrix performs no Digest, so its input has zero callbacks. The slot-info
+and enumeration cases observe initial presence, not a transition;
+`test_slot_has_token_info` checks a non-null entry, not GetTokenInfo.
+No oracle result here proves blocking, coalescing, removal, cancellation or
+reentry. G17's private/serving/runtime/installed distinctions remain in force.
+
+| Lane | Reported total | Passed | Failed | Skipped | Xfailed | Observed call phases | Required notification nodes |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| fast | 10190 | 5138 | 4 | 4413 | 635 | 10099 | 16 passed |
+| kat | 116748 | 84455 | 4 | 31315 | 974 | 111793 | 16 passed |
+
+Raw results contain no aggregate collected/executed fields. Observed unique
+test nodes are 10,190 / 116,748; setup-skipped nodes are 91 / 4,955, separate
+from the call-phase counts above. No setup errors, crashes, timeouts, xpasses,
+or incomplete runs occurred. `trace.jsonl` is a byte-identical alias of the
+wrapper's actual `report.jsonl` oracle event stream; it is not provider C-call
+tracing. Source definition counts and marker membership are not execution counts.
+
+All 639 fast finding signatures match the prior run exactly. KAT retains
+978 historical findings: 977 signatures match exactly; one RFC6979 xfail
+changes only the source-defined 32-hex-digit `got` signature prefix.
+The exact old/new records, fixed expected prefix, source hash/lines and narrow
+variance review are retained in `reviewed/kat-rfc6979-variance.json`. This
+comparison does not independently validate the new signature. Four historical
+message-crypto failures retain [pkcs11-check #34](https://github.com/mingulov/pkcs11-check/issues/34).
+All historical provider/oracle/capability dispositions and issue evidence remain
+in the ledger. **Zero new findings and zero unresolved new provider findings**
+were identified; the historical findings are not counted as notifications success.
+
+Fast findings were inspected and `fast-review` succeeded before KAT started.
+The exact gate is preserved in `before-kat-fast-inspection.json` and
+`before-kat-dispositions.json`; every fast row remains unchanged in the final
+combined ledger. KAT has its own raw findings review and successful checker.
+
+The oracle source-prose/coverage correction is
+[prepared only](../dist-release-evidence/notifications/reviewed/oracle-issue.md),
+with its exact command saved in `reviewed/oracle-issue-unrun.json`; it was
+**not filed**. It concerns `test_remaining_gaps.py:1114-1117` claiming a
+function-specific FUNCTION_NOT_SUPPORTED return-list entry, and
+`ckr/_ckr_spec_tables.py:5699-5705` claiming a concrete raw-null wait test
+that `test_ckr_raw_args_bad.py:41-82` does not contain. Neither is a reproduced
+provider failure; the general unsupported-function convention is distinct.
+
+### Verified pins and artifact hashes
+
+Header: latchset `c5e61990c5621a9b955fc208644fe8145ac0a75d`, SHA-256 `61e0b3f996fa9f095859d7d3b8e361d0b982de69fc8b6a4bf10291afbe7e24d8`.
+
+| Proxy artifact/source | SHA-256 |
+|---|---|
+| `/opt/pkcs11-proxy-ng/libpkcs11_proxy_ng_shim.so` | `8ea85073ce8436ebdc8ee99bce99e70a6d8c34473c28b5a45567c8a26aba1690` |
+| `/opt/pkcs11-proxy-ng/pkcs11-proxy-ng` | `260cb245981561291eab4d29a16cb6a4d6f00dca3431f3d583d35364fab0c9e5` |
+| `crates/server/src/server/grpc_service/general/lifecycle.rs` at pinned commit | `f8471f29ba797c87dd8bdeb124dec73776b0375e25eb5e69996b455cc48712dc` |
+| `crates/server/src/server/grpc_service/state_ops/slot_event.rs` at pinned commit | `f620f3e2757f203f94cbe217eba5c6d29395d9ad4e65dd00a8a3f81708a1b8a0` |
+| `crates/shim/src/dispatch/general/async_ops.rs` at pinned commit | `cf1239e40f482755006bb1d1988b9d083f8f36312ad4d9543160e9c31c40ca72` |
+| `crates/shim/src/dispatch/general/helpers.rs` at pinned commit | `7ffac3e129781c6f449d4d20de2733e058febb4947655fb1e92b241534988d40` |
+| `crates/shim/src/dispatch/general/session.rs` at pinned commit | `9ced22f764c6cfb31eff25251cd32aafe2f4219b71c9a608262ac6c2fcb166ed` |
+| `crates/shim/src/dispatch/general/state_ops.rs` at pinned commit | `c6907ccb2f8f7138ffdadb25a2174da8e6a9dae67bd9dac8c5747d326113f485` |
+
+Oracle package `0.2.2rc2`, root `/tmp/pkcs11-ws/pkcs11-check-0.2.2rc2`: 519 Python files, digest `b7b5327c4294a892fcf21f351717bb240b2505621ce842c182b33cf6685bad23`. Digest: sorted release-relative UTF-8 path + NUL + raw bytes + NUL. Counts below are AST source definitions, not runtime cases.
+
+| Inherited oracle source | All / Async definitions | SHA-256 |
+|---|---:|---|
+| `_probes/ckr_v32_raw.py` | 0 / 0 | `3167748a0ff6336d457b36f442f3156c8c6cc71892c70e58a16f70b89bb5819e` |
+| `ckr/_ckr_spec.py` | 0 / 0 | `79c590d8f81c0f6bbf0b437e19a234e91411a6dd684dd98741a2210f8ca03136` |
+| `ckr/_ckr_spec_tables.py` | 0 / 0 | `3df59974adfcb4e3112db1851676ce7b11f91c34d3c001458c38a5096d2aaba2` |
+| `ckr/test_ckr_v32_raw.py` | 8 / 1 | `278d32b6509e556746c4fb3ef688315c1f21c701cdc8a2bfddcaa7bda3eafcb1` |
+| `test_remaining_gaps.py` | 29 / 4 | `56ca76211694ac5c8fe8142cc550d8415d91ee39da830240db0cf0a5c9a9a33f` |
+
+| Notifications source | All definitions | SHA-256 |
+|---|---:|---|
+| `ckr/_ckr_spec_tables.py` | 0 | `3df59974adfcb4e3112db1851676ce7b11f91c34d3c001458c38a5096d2aaba2` |
+| `ckr/test_ckr_slot_token.py` | 3 | `9262b2b88f77628eab25f8e0ae0ba13c808f145b7157612e84686e7a377ab603` |
+| `test_interface.py` | 11 | `879de8b7223b2e63bb00c369d1a305bcc372be5accbcc2bdbb12c01834b19d01` |
+| `test_remaining_gaps.py` | 29 | `56ca76211694ac5c8fe8142cc550d8415d91ee39da830240db0cf0a5c9a9a33f` |
+| `test_session_edge_cases.py` | 7 | `167703230e29892e4b0f3db498035f0bf1b9b27d252f1a2f369349b105eb26b8` |
+| `test_token_flags.py` | 18 | `6a93dfac30b6df2a076876186255eddf40be5e703dc8743126f641ff48cdda09` |
+
+Measured toolchain image: `sha256:ba329f78938e1cef9ed163f86c1d7ac01db047259ec556d2e0027077b8ea41be`.
+Module: `057285757333cce05d6ce4ea93a453622597356996e28a30bf6312fba4fafed6`.
+Bundle: `9040e81c2da586026b9f2194259c9ac106beee2aed0f52094def5793dc1390e2` (35 files; bundle-relative path + NUL + bytes + NUL).
+Recorder remains `5b141a238f6cabed6ffb5111c016e66a466fc34bc862c011c343e55c73c059f3`.
+
+| Measured artifact under notifications/ | SHA-256 |
+|---|---|
+| [proxy/pins.json](../dist-release-evidence/notifications/proxy/pins.json) | `3c2ea26c041a44db7c378238e103578a867717a2c3fe7e2e49060e16674aff64` |
+| [proxy/reproduction-command.json](../dist-release-evidence/notifications/proxy/reproduction-command.json) | `8afc21a88c4bd8189d70be7d2b5baf01f16acb0134c3e4117c433b18b659fea6` |
+| [proxy/reproduction-result.json](../dist-release-evidence/notifications/proxy/reproduction-result.json) | `37f3c947e08ed2e89d9b7304aa3da39b257063f83dd3f4be54838cb76a7c2931` |
+| [proxy/reproduction.log](../dist-release-evidence/notifications/proxy/reproduction.log) | `7a5e950f5546e5fc3b66b210efdd9c02fcdb44ca779cbb0916b2b09d38006558` |
+| [proxy/issue-create-command.json](../dist-release-evidence/notifications/proxy/issue-create-command.json) | `2e5e2122ea5d806a9d1889743af3aa9968cb69fa380375a520cbf3343abe87d3` |
+| [proxy/issue-readback-command.json](../dist-release-evidence/notifications/proxy/issue-readback-command.json) | `1a7f5822c05dc1e62cca1edd04a79b82432f698300c5f55a9c50b9cff4003f99` |
+| [proxy/issue.json](../dist-release-evidence/notifications/proxy/issue.json) | `ff331f5f89bac1c5856f68faf8868c9d2dcfe9804efd045240f105c85f0080c2` |
+| [proxy/parity-command.json](../dist-release-evidence/notifications/proxy/parity-command.json) | `4a80690b18310e07a7b05973abd2f595c4cc9762938fa0b13c069866b1eb20b0` |
+| [proxy/parity.log](../dist-release-evidence/notifications/proxy/parity.log) | `93d3f7167d436d95e1126ff4206638ea667436ac9299e2752120701ff65259fe` |
+| [reviewed/pins.json](../dist-release-evidence/notifications/reviewed/pins.json) | `e73a41f32d855ea0469dda2bb2e988b420fd06dcf336482d544be388d1bb49f2` |
+| [reviewed/oracle-comparison.log](../dist-release-evidence/notifications/reviewed/oracle-comparison.log) | `70bca171df4325da1c74271a443efce87a1964135844c45099df88e88a003dd9` |
+| [reviewed/fast/pkcs11-fast-results.json](../dist-release-evidence/notifications/reviewed/fast/pkcs11-fast-results.json) | `047dc07ade753a160e6dd7712984341a518e4bf3ad59e68d14cfe75472855809` |
+| [reviewed/fast/trace.jsonl](../dist-release-evidence/notifications/reviewed/fast/trace.jsonl) | `5fb2db3b81c25b83d0c470e2d385a604bcd231f07609820855602dd09baf62ea` |
+| [reviewed/fast-inspection.json](../dist-release-evidence/notifications/reviewed/fast-inspection.json) | `14f1f5d9f15d1aac1ab889e32fd05e8a70b2fcc32a4399d9b80e211b0d4aa1d0` |
+| [reviewed/kat/pkcs11-kat-results.json](../dist-release-evidence/notifications/reviewed/kat/pkcs11-kat-results.json) | `3f0a464d3cd4ff27ca41da22c3a97c9f9cbb4e8c3f444416fac9cebbcd270dc1` |
+| [reviewed/kat/trace.jsonl](../dist-release-evidence/notifications/reviewed/kat/trace.jsonl) | `d9c94e1364d6328d6d94db39f487b1f35c08bebbce359cd765ef4ac8d50b2583` |
+| [reviewed/kat-inspection.json](../dist-release-evidence/notifications/reviewed/kat-inspection.json) | `72a654b110985f6b01ef6a7d29a7427d587b878385497dfda05808d57c84ce5c` |
+| [reviewed/dispositions.json](../dist-release-evidence/notifications/reviewed/dispositions.json) | `68c9cc40454cbbe13419165e16b352c1b0bf0c658d0f794bf3a6685c908ca781` |
+| [reviewed/kat-rfc6979-variance.json](../dist-release-evidence/notifications/reviewed/kat-rfc6979-variance.json) | `af457426fa6ae0cc21c6910f678cbff80a9167dfdded5cd19addc16acab0807e` |
+| [reviewed/oracle-issue.md](../dist-release-evidence/notifications/reviewed/oracle-issue.md) | `6d5b95dd47ee5feeb49db48003a758e09d68cff79a127c024083389b9cf3bb1f` |
+
+Spec trace: §§5.4–5.6; N11, N12; retained G17 scope distinctions. T-N09 is ready for coordinator review. No acceptance claimed. No T-N10 work was started.

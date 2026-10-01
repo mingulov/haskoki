@@ -1,6 +1,9 @@
 /* Parity-eligible notifications: only valid empty polls, sequential lifecycle,
  * and live structural checks. No control, malformed wait, reentry, or blocker.
- * Four real public layouts; use only the independent vendored PKCS #11 header.
+ * Direct covers four real public layouts. The pinned shim has no 3.1 table;
+ * its exact discovery miss and direct 3.1 checks are topology-only inventory.
+ * Common 2.40/3.0/3.2 polling transcripts remain fully parity-eligible.
+ * Use only the independent vendored PKCS #11 header.
  */
 #define _GNU_SOURCE
 #define CK_PTR *
@@ -24,18 +27,19 @@ static struct { COMMON(FIELD) } a;
 #undef FIELD
 static const char *versions[] = {"2.40", "3.0", "3.1", "3.2"};
 static const char *version;
+static const char *line_prefix;
 static unsigned assertions;
 static int failed;
 static int check(int ok, const char *name) {
   if (failed) return 0;
   ++assertions;
-  printf("notifications-poll:%s/%s check=%s\n", name, version, ok ? "pass" : "FAIL");
+  printf("%snotifications-poll:%s/%s check=%s\n", line_prefix, name, version, ok ? "pass" : "FAIL");
   if (!ok) failed = 1;
   return ok;
 }
 static int expect(CK_RV got, CK_RV want, const char *name) {
   if (failed) return 0;
-  printf("notifications-poll:%s/%s rv=0x%lx expected=0x%lx\n", name, version, got, want);
+  printf("%snotifications-poll:%s/%s rv=0x%lx expected=0x%lx\n", line_prefix, name, version, got, want);
   return check(got == want, name);
 }
 #define CHECK(c, n) do { if (!check((c), (n))) return; } while (0)
@@ -56,7 +60,7 @@ static void assertions_live(void) {
   RV(a.GetSlotList(CK_FALSE, list, &cap), CKR_OK, "live-list");
   CHECK(cap == count, "live-list-count");
   /* Logical name only: the shim is entitled to renumber the slot. */
-  puts("notifications-poll:discovered logical=slot-A");
+  printf("%snotifications-poll:discovered logical=slot-A\n", line_prefix);
   RV(a.GetSlotInfo(list[0], NULL), CKR_ARGUMENTS_BAD, "live-null-slot-info");
   slot = SENTINEL;
   RV(a.WaitForSlotEvent(CKF_DONT_BLOCK, &slot, NULL), CKR_NO_EVENT, "queries-no-event");
@@ -64,6 +68,9 @@ static void assertions_live(void) {
 }
 static int run_table(const char *path, unsigned index) {
   version = versions[index];
+  line_prefix = index == 2 ? "topology: " : "";
+  const char *topology = getenv("HASKOKI_CONSUMER_TOPOLOGY");
+  int is_proxy = topology && !strcmp(topology, "proxy");
   void *module = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!module) { puts("notifications-poll:setup module-load"); return 2; }
   CK_C_GetFunctionList get = (CK_C_GetFunctionList)dlsym(module, "C_GetFunctionList");
@@ -77,8 +84,14 @@ static int run_table(const char *path, unsigned index) {
     COMMON(COPY)
   } else {
     CK_VERSION want = {3, (CK_BYTE)(index - 1)}; CK_INTERFACE *i = NULL;
-    if (!expect(iface(NULL, &want, &i, 0), CKR_OK, "discovery") ||
-        !check(i && i->pFunctionList, "table")) return 1;
+    if (!expect(iface(NULL, &want, &i, 0), CKR_OK, "discovery")) return 1;
+    if (index == 2 && is_proxy) {
+      /* Pinned shim inventory only: no Wait call or polling pass is claimed. */
+      if (!check(i == NULL, "pinned-proxy-3.1-absent")) return 1;
+      puts("topology: notifications-poll/3.1 unavailable in pinned proxy; no polling case executed");
+      return 0;
+    }
+    if (!check(i && i->pFunctionList, "table")) return 1;
     CK_VERSION actual; memcpy(&actual, i->pFunctionList, sizeof(actual));
     if (!check(actual.major == want.major && actual.minor == want.minor, "layout-version")) return 1;
     if (index == 3) { CK_FUNCTION_LIST_3_2 *t = i->pFunctionList; COMMON(COPY) }
@@ -97,7 +110,7 @@ static int run_table(const char *path, unsigned index) {
     expect(a.WaitForSlotEvent(CKF_DONT_BLOCK, &slot, NULL), CKR_CRYPTOKI_NOT_INITIALIZED, "after-finalize");
     check(slot == SENTINEL, "after-canary");
   }
-  printf("notifications-poll:result/%s assertions=%u failures=%d\n", version, assertions, failed);
+  printf("%snotifications-poll:result/%s assertions=%u failures=%d\n", line_prefix, version, assertions, failed);
   return failed ? 1 : 0;
 }
 int main(int argc, char **argv) {

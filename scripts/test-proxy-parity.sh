@@ -119,8 +119,12 @@ done
 # errors, erases NULL/nonzero shapes, and orders session checks first.
 # async_routed: fixed GetID/Join refusals; Complete source cannot preserve
 # caller output bindings/capacity. Direct success is not transport parity.
+# notifications_routed: blocking Wait retains the shim client mutex needed by
+# Finalize; callback association and provider control are not transported.
+# Valid empty polling remains parity-eligible in consumer_notifications_poll.
 DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23
-async_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/24"
+async_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/24
+notifications_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/25"
 for entry in $DIRECT_ONLY; do
   dname="${entry%%:*}"; durl="${entry#*:}"
   [ -n "$durl" ] && [ "$durl" != "$entry" ] \
