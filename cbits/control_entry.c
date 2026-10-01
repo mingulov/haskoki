@@ -33,6 +33,7 @@
 #include <stdint.h>
 
 #include "haskoki_control.h"
+#include "notify_guard.h"
 
 /* Haskell instance exports (ffi/Haskoki/FFI/Instance.hs). Prefer the
  * GHC-generated stub header when available; else the manual
@@ -60,6 +61,7 @@ extern uint64_t haskoki_control(void *instance, const uint8_t *p_request,
 /* Local cryptoki values (pinned v2.40; this TU serves the table body
  * too, so it cannot assume the caller's headers). */
 #define CKR_OK_INSTANCE 0x00000000UL
+#define CKR_FUNCTION_FAILED_INSTANCE 0x00000006UL
 #define CKR_GENERAL_ERROR_INSTANCE 0x00000005UL
 #define CKR_ARGUMENTS_BAD_INSTANCE 0x00000007UL
 #define CKR_CRYPTOKI_NOT_INITIALIZED_INSTANCE 0x00000190UL
@@ -103,6 +105,7 @@ void haskoki_instance_shutdown(void) {
  * handle (the Haskell liveness cell re-validates before serving)
  * or fails fast. Never reload the root after capturing this interval. */
 unsigned long haskoki_instance_wait_for_slot_event(unsigned long flags, unsigned long *p_slot) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED_INSTANCE;
   void *inst = atomic_load_explicit(&g_haskoki_instance, memory_order_acquire);
   if (inst == 0) {
     return (uint64_t)CKR_CRYPTOKI_NOT_INITIALIZED_INSTANCE;
@@ -122,6 +125,7 @@ HASKOKI_RV HASKOKI_Control(const HASKOKI_BYTE *pRequest,
                            HASKOKI_ULONG ulRequestLen,
                            HASKOKI_BYTE *pResponse,
                            HASKOKI_ULONG *pulResponseLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED_INSTANCE;
   void *inst;
   unsigned long rv;
   if (!haskoki_live_interval()) {

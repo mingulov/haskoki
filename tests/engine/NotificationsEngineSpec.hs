@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module NotificationsEngineSpec (spec) where
 
-import Control.Concurrent (ThreadId, forkFinally, killThread, myThreadId, throwTo, yield)
+import Control.Concurrent (ThreadId, isCurrentThreadBound, runInBoundThread, forkFinally, killThread, myThreadId, throwTo, yield)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryReadMVar)
 import Control.Concurrent.STM (atomically, newTQueueIO, readTQueue, writeTQueue)
 import Control.Exception (SomeException, AsyncException (ThreadKilled), MaskingState (..), bracket, evaluate, try, mask, getMaskingState, fromException)
@@ -17,8 +17,8 @@ import Foreign.C.Types (CInt (..), CULong (..))
 import Foreign.C.String (CString, withCString)
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Marshal.Array (peekArray, pokeArray)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
-import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr, plusPtr)
+import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr, newStablePtr, freeStablePtr)
 import Foreign.Storable (peek, poke, sizeOf)
 import GHC.Conc (threadStatus, ThreadStatus (..), BlockReason (..))
 import System.Directory (createDirectoryIfMissing, doesFileExist, getCurrentDirectory, removeFile)
@@ -63,6 +63,11 @@ spec envLock = testGroup "Notifications"
     [ testCase "caseRemovalOwnsActualJobs" (bounded caseRemovalOwnsActualJobs)
     , testCase "casePresenceCleanupFault" (bounded (casePresenceCleanupFault envLock))
     , testCase "casePresenceStoreLedger" (bounded casePresenceStoreLedger)
+    ]
+  , testGroup "T-N06"
+    [ testCase "caseNativeNotifyAssociation" (bounded caseNativeNotifyAssociation)
+    , testCase "caseNativeNotifyRetirement" (bounded caseNativeNotifyRetirement)
+    , testCase "caseNativeNotifyGuard" (bounded caseNativeNotifyGuard)
     ]
   , testGroup "T-N05"
     [ testCase "caseServingFinalizeOrder" (bounded caseServingFinalizeOrder)
@@ -423,6 +428,7 @@ assertRetired f = do
   (m, slots) <- snapshotPresence (siEnv inst) (siSlots inst)
   assertEqual "all target sessions retired" [sidOf other] (Map.keys (mSessions m))
   assertEqual "atomic absence" [SlotSnapshot (SlotId 0) True False 1, SlotSnapshot (SlotId 1) True True 0] slots
+  assertEqual "target notification pairs retired" [sidOf other] . Map.keys =<< readIORef (siNotify inst)
   assertEqual "target views freed" [sidOf other] . Map.keys =<< readIORef (siAsyncViews inst)
   assertEqual "target bindings gone" [(sidOf other,JobDigest)] . Map.keys =<< readIORef (siAsyncBindings inst)
   assertEqual "target cursors gone, other cursor retained" [sidOf other] . Map.keys =<< readIORef (siFind inst)
@@ -524,9 +530,11 @@ casePresenceCleanupFault envLock = do
       hook _ = pure ()
   withRemovalFixture "precommit" hook 0 True $ \f -> do
     let inst = rfStd f
+    pairs <- readIORef (siNotify inst)
     before <- snapshotPresence (siEnv inst) (siSlots inst)
     assertControlFault envLock inst (setStdTokenPresence inst)
     snapshotPresence (siEnv inst) (siSlots inst) >>= assertEqual "precommit keeps model and presence" before
+    readIORef (siNotify inst) >>= assertEqual "precommit retains all associations" pairs
     waitSlot (siSlots inst) DontBlock >>= assertEqual "no false event" SlotNoEvent
     mapM asyncLiveHandles (rfViews f) >>= assertEqual "already canceled jobs stay canceled" [0,0,0,0,0,1]
     writeIORef failBefore False
@@ -882,7 +890,7 @@ runFinalizeProbe = do
       quote s = "'" ++ concatMap (\c -> if c == '\'' then "'\\''" else [c]) s ++ "'"
   child "compile" ["cc", "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror",
     "-ffunction-sections", "-fdata-sections", "-Icbits", "-Ispec/vendor",
-    "/tmp/haskoki-notifications/finalize-probe.c", "cbits/standard_surface.c",
+    "/tmp/haskoki-notifications/finalize-probe.c", "cbits/standard_surface.c", "cbits/notify_guard.c",
     "-Wl,--gc-sections", "-lpthread", "-o", "/tmp/haskoki-notifications/finalize-probe"]
   -- Preserve the actual engine-built executable before Docker removes /tmp.
   cwd <- getCurrentDirectory
@@ -1013,3 +1021,185 @@ finalizeProbeSource = unlines
   , "  return failures ? 1 : 0;"
   , "}"
   ]
+
+
+-- T-N06: these fail if pointers are discarded, installed after handle delivery,
+-- stranded by admission/release failure, invoked on teardown, or lose TLS/thread.
+foreign import ccall unsafe "&notifications_callback"
+  notifyCallback :: FunPtr NativeNotify
+foreign import ccall unsafe "notifications_reset"
+  notifyReset :: CULong -> IO ()
+foreign import ccall unsafe "notifications_read"
+  notifyRead :: CULong -> IO CULong
+foreign import ccall unsafe "notifications_cookie"
+  notifyCookie :: IO (Ptr ())
+foreign import ccall safe "notifications_invoke"
+  notifyInvoke :: FunPtr NativeNotify -> CULong -> CULong -> Ptr () -> IO CULong
+foreign import ccall unsafe "haskoki_in_notify"
+  inNotify :: IO CInt
+
+withNotifyInstance :: NotifyInvoker -> (StablePtr StdInstance -> StdInstance -> IO a) -> IO a
+withNotifyInstance invoker action = do
+  hub <- newSlotEvents 2 [SlotDefinition (SlotId 0) True, SlotDefinition (SlotId 1) True] >>= mustRight
+  bracket (openStdInstanceWithNotify stdAcquisition (cfgTwo True) hub invoker) haskokiStdClose $ \ptr -> do
+    assertBool "notification owner acquired" (not (isNull ptr))
+    deRefStablePtr ptr >>= action ptr
+
+openNotify :: StablePtr StdInstance -> CULong -> Ptr () -> FunPtr NativeNotify -> IO CULong
+openNotify ptr slot cookie callback = alloca $ \out -> do
+  poke out 0xa5a5a5a5a5a5a5a5
+  haskokiStdOpenSessionWithNotify ptr slot 0 0 cookie callback out >>= assertEqual "notify session admitted" 0
+  peek out
+
+assertNotifyEmpty :: StdInstance -> Assertion
+assertNotifyEmpty inst = do
+  readIORef (siNotify inst) >>= assertBool "no leaked pairs" . Map.null
+  readIORef (siAsyncViews inst) >>= assertBool "no leaked views" . Map.null
+  readIORef (siAsyncBindings inst) >>= assertBool "no leaked bindings" . Map.null
+  snapshotModel (siEnv inst) >>= assertBool "no leaked model sessions" . Map.null . mSessions
+
+caseNativeNotifyAssociation :: Assertion
+caseNativeNotifyAssociation = runInBoundThread $ allocaBytes 1 $ \cookie -> do
+  notifyReset 0
+  withNotifyInstance notifyInvoke $ \ptr inst -> do
+    forM_ [(nullFunPtr,nullPtr),(nullFunPtr,cookie),(notifyCallback,nullPtr),(notifyCallback,cookie)] $ \(callback,application) -> do
+      handle <- openNotify ptr 0 application callback
+      pairs <- readIORef (siNotify inst)
+      assertEqual "retains exact independent pointer pair before output" (Just (SessionNotify callback application)) (Map.lookup (sidOf handle) pairs)
+      haskokiStdCloseSession ptr handle >>= assertEqual "shape closes" 0
+      assertNotifyEmpty inst
+    notifyRead 0 >>= assertEqual "open and close emit zero callbacks" 0
+    allocaBytes 1 $ \otherCookie -> do
+      a <- openNotify ptr 0 cookie notifyCallback
+      b <- openNotify ptr 0 otherCookie notifyCallback
+      assertBool "distinct actual handles and cookie addresses" (a /= b && cookie /= otherCookie)
+      forM_ [(a,cookie),(b,otherCookie)] $ \(handle,application) -> do
+        notifyReset 0
+        surrenderDigest inst (sidOf handle) >>= assertEqual "explicit dispatcher continues" NotifyContinue
+        notifyRead 0 >>= assertEqual "one explicit invocation" 1
+        notifyRead 1 >>= assertEqual "actual admitted session" handle
+        notifyRead 2 >>= assertEqual "numeric CKN_SURRENDER" 0
+        notifyCookie >>= assertEqual "exact application address" application
+      haskokiStdCloseAllSessions ptr 0 >>= assertEqual "both close" 0
+      assertNotifyEmpty inst
+    alloca $ \out -> do
+      poke out 0xa5a5a5a5a5a5a5a5
+      haskokiStdOpenSessionWithNotify ptr 99 0 1 cookie notifyCallback out >>= assertEqual "unknown slot refused" 3
+      peek out >>= assertEqual "failed admission preserves sentinel" 0xa5a5a5a5a5a5a5a5
+      assertNotifyEmpty inst
+  forM_ [BeforeModelAdmission,AfterModelAdmission,BeforeNotifyRegistration,AfterNotifyRegistration,BeforeBorrowedViewInstall,AfterBorrowedViewInstall] $ \point ->
+    withNotifyInstance notifyInvoke $ \ptr inst -> alloca $ \out -> do
+      poke out 0xa5a5a5a5a5a5a5a5
+      reached <- newIORef []
+      let observe phase = do
+            modifyIORef' reached (++ [phase])
+            model <- snapshotModel (siEnv inst)
+            let sessions = Map.keys (mSessions model)
+            case phase of
+              BeforeModelAdmission -> assertEqual "not yet admitted" [] sessions
+              _ -> assertEqual "one admitted session" 1 (length sessions)
+            pairs <- Map.size <$> readIORef (siNotify inst)
+            views <- Map.size <$> readIORef (siAsyncViews inst)
+            assertEqual "registry insertion phase" (if phase `elem` [AfterNotifyRegistration,BeforeBorrowedViewInstall,AfterBorrowedViewInstall] then 1 else 0) pairs
+            assertEqual "view installation phase" (if phase == AfterBorrowedViewInstall then 1 else 0) views
+            peek out >>= assertEqual "no early handle publication at any phase" 0xa5a5a5a5a5a5a5a5
+            when (phase == point) (ioError (userError (show point)))
+      haskokiStdOpenSessionWithNotifyWith observe ptr 0 0 1 cookie notifyCallback out >>= assertEqual "injected open fault fenced" 5
+      readIORef reached >>= assertBool "fault point reached" . elem point
+      peek out >>= assertEqual "rollback preserves handle sentinel" 0xa5a5a5a5a5a5a5a5
+      assertNotifyEmpty inst
+      -- The rolled-back session never retains explicit async admission.
+      isAsyncSession (siAsyncTable inst) (SessionId 1) >>= assertEqual "rollback disables async session" False
+      h <- openNotify ptr 0 cookie notifyCallback
+      haskokiStdCloseSession ptr h >>= assertEqual "retry works" 0
+      assertNotifyEmpty inst
+  putStrLn "T-N06 association: shapes=4 distinct_pairs=2 rollback_points=6 leaked_pairs=0 leaked_views=0"
+
+caseNativeNotifyRetirement :: Assertion
+caseNativeNotifyRetirement = runInBoundThread $ allocaBytes 1 $ \cookie -> do
+  notifyReset 0
+  withNotifyInstance notifyInvoke $ \ptr inst -> do
+    a <- openNotify ptr 0 cookie notifyCallback
+    b <- openNotify ptr 0 cookie notifyCallback
+    c <- openNotify ptr 1 cookie notifyCallback
+    haskokiStdCloseSession ptr a >>= assertEqual "close-one" 0
+    readIORef (siNotify inst) >>= assertEqual "one retired" [sidOf b,sidOf c] . Map.keys
+    haskokiStdCloseAllSessions ptr 0 >>= assertEqual "close-all" 0
+    readIORef (siNotify inst) >>= assertEqual "other slot retained" [sidOf c] . Map.keys
+    setStdTokenPresence inst (SlotId 1) False >>= assertEqual "removal" (Right (PresenceChanged 1,0))
+    assertNotifyEmpty inst
+  -- A cursor cleanup failure after a committed close must still retire its
+  -- callback and free its view, and close-all must continue to later sessions.
+  forM_ [False,True] $ \closeAll -> withNotifyInstance notifyInvoke $ \ptr inst -> do
+    a <- openNotify ptr 0 cookie notifyCallback
+    b <- openNotify ptr 0 cookie notifyCallback
+    badCursors <- newIORef (error "injected cursor cleanup failure")
+    bracket (newStablePtr inst { siFind = badCursors }) freeStablePtr $ \faultPtr -> do
+      (if closeAll then haskokiStdCloseAllSessions faultPtr 0 else haskokiStdCloseSession faultPtr a)
+        >>= assertEqual "postcommit cleanup fault fenced" 5
+      pairs <- readIORef (siNotify inst)
+      assertEqual "failed close retires each committed association" (if closeAll then [] else [sidOf b]) (Map.keys pairs)
+      views <- readIORef (siAsyncViews inst)
+      assertEqual "failed close frees each committed borrowed view" (Map.keys pairs) (Map.keys views)
+      when (not closeAll) (haskokiStdCloseSession ptr b >>= assertEqual "other session remains usable" 0)
+      assertNotifyEmpty inst
+  -- A failed owner-unbind must not strand registry/view cleanup at Finalize.
+  forM_ [False,True] $ \failUnbind -> do
+    retained <- newIORef Nothing
+    hub <- newSlotEvents 2 [SlotDefinition (SlotId 0) True, SlotDefinition (SlotId 1) True] >>= mustRight
+    let acquisition = stdAcquisition { saUnbindPresenceOwner = when failUnbind (ioError (userError "unbind fault")) }
+    bracket (openStdInstanceWithNotify acquisition (cfgTwo True) hub notifyInvoke) haskokiStdClose $ \ptr -> do
+      inst <- deRefStablePtr ptr
+      writeIORef retained (Just inst)
+      _ <- openNotify ptr 0 cookie notifyCallback
+      _ <- openNotify ptr 1 cookie notifyCallback
+      pure ()
+    Just inst <- readIORef retained
+    readIORef (siNotify inst) >>= assertBool "finalize (also failed cleanup) retires pairs" . Map.null
+    readIORef (siAsyncViews inst) >>= assertBool "finalize (also failed cleanup) frees views" . Map.null
+    surrenderDigest inst (SessionId 1) >>= assertEqual "retired callback cannot run" NotifyContinue
+  -- Extend the real T-N03 postcommit release failure, using actual native resources.
+  withRemovalFixture "notify-release" (const (pure ())) 0 True $ \f -> do
+    let inst = rfStd f
+    forM_ (rfSessions f) $ \handle -> registerSessionNotify inst (sidOf handle) (SessionNotify notifyCallback cookie)
+    attempted <- newIORef (0 :: Int)
+    outcome <- try (setStdTokenPresenceWith (\release -> do
+      modifyIORef' attempted (+1)
+      drainReleases (siBackend inst) [release]
+      ioError (userError "release fault")) inst (SlotId 0) False)
+      :: IO (Either SomeException (Either PresenceError (PresenceChange,Int)))
+    assertBool "release failure observed" (case outcome of Left _ -> True; _ -> False)
+    readIORef attempted >>= assertEqual "every release drained despite faults" 5
+    assertRetired f
+  notifyRead 0 >>= assertEqual "all retirement paths are silent" 0
+  putStrLn "T-N06 retirement: close_one=pass close_all=pass removal=pass failed_cleanup=pass finalize=pass callbacks=0"
+
+caseNativeNotifyGuard :: Assertion
+caseNativeNotifyGuard = runInBoundThread $ allocaBytes 1 $ \cookie -> do
+  forM_ [(0,NotifyContinue),(1,NotifyCancel),(7,NotifyFailed),(0xdead,NotifyFailed)] $ \(rv,want) -> do
+    notifyReset rv
+    dispatchSessionNotifyWith notifyInvoke (SessionId 71) (SessionNotify notifyCallback cookie) >>= assertEqual "typed callback result" want
+    notifyRead 0 >>= assertEqual "exactly one callback" 1
+    notifyRead 1 >>= assertEqual "session preserved" 71
+    notifyRead 2 >>= assertEqual "event preserved" 0
+    notifyCookie >>= assertEqual "cookie preserved" cookie
+    forM_ [3,4,5] $ \field -> notifyRead field >>= assertEqual "caller thread, active TLS, restored TLS" 1
+    notifyRead 6 >>= assertEqual "normal-return adapter fences its simulated failure" (if rv == 0xdead then 1 else 0)
+    inNotify >>= assertEqual "no TLS leak" 0
+  let throwing _ _ _ _ = ioError (userError "Haskell invoker failed before entering C")
+  notifyReset 0
+  withNotifyInstance throwing $ \ptr inst -> do
+    handle <- openNotify ptr 0 cookie notifyCallback
+    surrenderDigest inst (sidOf handle) >>= assertEqual "injected invoker exception fenced" NotifyFailed
+    inNotify >>= assertEqual "throw before C leaves TLS clear" 0
+    nullHandle <- openNotify ptr 0 cookie nullFunPtr
+    surrenderDigest inst (sidOf nullHandle) >>= assertEqual "null callback bypasses throwing invoker" NotifyContinue
+    notifyRead 0 >>= assertEqual "typed failure crosses no foreign callback wrapper" 0
+  -- An unbound Haskell caller must also be bound for the invoker action.
+  done <- newEmptyMVar
+  _ <- forkFinally (dispatchSessionNotifyWith (\_ _ _ _ -> do
+    bound <- isCurrentThreadBound
+    assertBool "dispatcher binds an unbound caller" bound
+    pure 0) (SessionId 1) (SessionNotify notifyCallback cookie)) (putMVar done)
+  takeMVar done >>= either (assertFailure . show) (assertEqual "bound dispatcher" NotifyContinue)
+  putStrLn "T-N06 dispatcher: decisions=4 typed_exception=pass same_thread=pass tls_restored=pass null_silent=pass"

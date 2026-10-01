@@ -45,6 +45,7 @@
 #include "pkcs11.h"
 #include "abi_generated.h"
 #include "abi_probe.h"
+#include "notify_guard.h"
 #include "async_trampoline.h"
 #include "crypto_trampoline.h"
 
@@ -81,6 +82,7 @@ extern CK_RV std_DecapsulateKey(CK_SESSION_HANDLE hSession,
  * order), arguments are never inspected by stubs. Fork children observe no
  * live interval via haskoki_live_interval(). */
 static CK_RV x_live_check(void) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   if (!haskoki_live_interval()) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }

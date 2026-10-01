@@ -140,6 +140,7 @@ library
     Haskoki.FFI.MessageParams
     Haskoki.FFI.NativeParams
     Haskoki.FFI.Standard
+    Haskoki.FFI.Notify
     Haskoki.FFI.Instance
     Haskoki.Runtime
     Haskoki.Runtime.Async
@@ -163,8 +164,10 @@ library
   -- staged prefix there when building outside the rebuilt image).
   c-sources:
     cbits/ossl4_ctx.c
+    cbits/notify_guard.c
   include-dirs:
     cbits
+    spec/vendor
     /opt/openssl-4.0.2/include
   extra-lib-dirs:
     /opt/openssl-4.0.2/lib
@@ -217,6 +220,7 @@ foreign-library haskoki
     Haskoki.FFI.OpenSSL4.Raw
     Haskoki.FFI.NativeParams
     Haskoki.FFI.Standard
+    Haskoki.FFI.Notify
     Haskoki.FFI.Instance
     Haskoki.FFI.Types
     Haskoki.Runtime.Async
@@ -238,6 +242,7 @@ foreign-library haskoki
     cbits/exports.c
     cbits/abi_probe.c
     cbits/ossl4_ctx.c
+    cbits/notify_guard.c
     cbits/standard_surface.c
   -- Pinned PD 3.2 headers (declare all layouts + CK_C_* typedefs)
   -- for cbits/exports.c and ffi/Haskoki/FFI/Types.hsc. The mirror TU
@@ -464,6 +469,8 @@ test-suite haskoki-engine-tests
   type:             exitcode-stdio-1.0
   main-is:          Main.hs
   hs-source-dirs:   tests/engine
+  c-sources:        tests/engine/notifications_adapter.c
+  include-dirs:     spec/vendor cbits
   other-modules:
     AsyncEngineSpec
     CryptoExportSpec

@@ -47,6 +47,7 @@
  * mirror below. */
 #include "abi_generated.h"
 #include "abi_probe.h"
+#include "notify_guard.h"
 
 /* Standard-surface instance root (stdint-only: no Cryptoki
  * types, so it coexists with the mirror too). */
@@ -128,6 +129,7 @@ typedef CK_MECHANISM_TYPE *CK_MECHANISM_TYPE_PTR;
 #define CKR_OK 0x00000000UL
 #define CKR_SLOT_ID_INVALID 0x00000003UL
 #define CKR_GENERAL_ERROR 0x00000005UL
+#define CKR_FUNCTION_FAILED 0x00000006UL
 #define CKR_ARGUMENTS_BAD 0x00000007UL
 #define CKR_NEED_TO_CREATE_THREADS 0x00000009UL
 #define CKR_CANT_LOCK 0x0000000AUL
@@ -528,6 +530,7 @@ static int live_interval(void) {
 /* ---------- slice implementations ---------- */
 
 static CK_RV on_Initialize(CK_VOID_PTR pInitArgs) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   CK_C_INITIALIZE_ARGS_PTR a = (CK_C_INITIALIZE_ARGS_PTR)pInitArgs;
   CK_RV hv;
   int use_callbacks = 0;
@@ -616,6 +619,7 @@ acquisition_ready:
 }
 
 static CK_RV on_Finalize(CK_VOID_PTR pReserved) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   CK_RV hv;
   CK_RV lr;
   if (pReserved != NULL) {
@@ -722,6 +726,7 @@ CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList);
 
 static CK_RV on_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
                              CK_ULONG_PTR pulCount) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   CK_RV lr, rv;
   void *inst;
   if (!live_interval()) {
@@ -803,6 +808,7 @@ static CK_RV on_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
  * (STUB-UNIFORM-LEGACY). */
 
 static CK_RV stub_probe(void) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   if (!live_interval()) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
@@ -810,6 +816,7 @@ static CK_RV stub_probe(void) {
 }
 
 static CK_RV stub_parallel(void) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   if (!live_interval()) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
@@ -956,6 +963,7 @@ static CK_RV stub_CancelFunction(CK_SESSION_HANDLE h) {
 }
 static CK_RV on_WaitForSlotEvent(CK_FLAGS f, CK_SLOT_ID_PTR p,
                                  CK_VOID_PTR r) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   if (!live_interval()) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }

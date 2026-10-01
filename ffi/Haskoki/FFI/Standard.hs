@@ -61,6 +61,13 @@ module Haskoki.FFI.Standard
   , openStdInstance
   , openStdInstanceWith
   , openStdInstanceWithSlots
+  , openStdInstanceWithNotify
+  , NativeNotify, SessionNotify (..), NotifyDecision (..), NotifyInvoker
+  , invokeNativeNotify, dispatchSessionNotifyWith
+  , registerSessionNotify, retireSessionNotify, surrenderDigest
+  , SessionOpenPoint (..)
+  , haskokiStdOpenSessionWithNotify
+  , haskokiStdOpenSessionWithNotifyWith
   , haskokiStdClose
   , withStdCtx
   , stdRvOf
@@ -191,6 +198,7 @@ import Control.Exception
   ( AsyncException
   , Exception (fromException)
   , SomeException
+  , bracketOnError
   , catch
   , evaluate
   , finally
@@ -208,14 +216,15 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (ord)
 import qualified Data.ByteString.Unsafe as BSU
+import Data.List (find)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import qualified Data.Set as Set
 import Data.Word (Word64, Word8)
 import Foreign.C.Types (CULong (..))
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr)
 import Foreign.StablePtr
   ( StablePtr
   , castPtrToStablePtr
@@ -272,6 +281,7 @@ import Haskoki.FFI.Encode
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.FFI.Instance (Instance (..), InstanceCell, readLiveInstance)
+import Haskoki.FFI.Notify
 import Haskoki.Runtime.Catalog (effectiveCatalog, homeCatalogEntry)
 import Haskoki.Runtime.Control (PresenceOwner (..), bindPresenceOwner)
 import Haskoki.Runtime.SlotEvents
@@ -501,6 +511,8 @@ data StdInstance = StdInstance
   , siDetach :: !(Maybe DetachCtx)
   , siAsyncViews :: !(IORef (Map SessionId (StablePtr AsyncCtx)))
   , siAsyncBindings :: !(IORef (Map (SessionId, JobFunction) StdAsyncBinding))
+  , siNotify :: !(IORef (Map SessionId SessionNotify))
+  , siNotifyInvoker :: !NotifyInvoker
   }
 
 -- | One caller-owned output allocation. Input bytes are copied by the worker;
@@ -653,7 +665,14 @@ openStdInstanceWith sa cfg = guardedSyncPtr $ mask_ $ do
 -- Each acquired resource has exactly one unwind region, including bind failure.
 openStdInstanceWithSlots
   :: StdAcquisition -> Config -> SlotEvents -> IO (StablePtr StdInstance)
-openStdInstanceWithSlots sa cfg slots = guardedSyncPtr $ mask $ \restore -> do
+openStdInstanceWithSlots sa cfg slots =
+  openStdInstanceWithNotify sa cfg slots invokeNativeNotify
+
+-- | The production invoker is explicit ownership, never a global registry or
+-- public fault switch. Typed Haskell fixtures may inject a failing action.
+openStdInstanceWithNotify
+  :: StdAcquisition -> Config -> SlotEvents -> NotifyInvoker -> IO (StablePtr StdInstance)
+openStdInstanceWithNotify sa cfg slots invoker = guardedSyncPtr $ mask $ \restore -> do
   let acquire = do
         env <- newEnv (rulesFromConfig cfg)
         ini <- restore (saInit sa env)
@@ -672,7 +691,7 @@ openStdInstanceWithSlots sa cfg slots = guardedSyncPtr $ mask $ \restore -> do
                     let release = saCloseBackend sa be `finally` saCloseStore sa mStore
                     (do
                       inst <- assembleStdInstance env be mStore cfg slots
-                        (saUnbindPresenceOwner sa) release
+                        (saUnbindPresenceOwner sa) release invoker
                       ptr <- saAssemble sa inst
                       if castStablePtrToPtr ptr == nullPtr
                         then ioError (userError "standard assembly refused")
@@ -688,8 +707,8 @@ openStdInstanceWithSlots sa cfg slots = guardedSyncPtr $ mask $ \restore -> do
 -- existing store; its refusal unwinds in the caller's resource bracket.
 assembleStdInstance
   :: Env -> BackendEnv OpenSSL4 -> Maybe StdStore -> Config -> SlotEvents
-  -> IO () -> IO () -> IO StdInstance
-assembleStdInstance env be mStore cfg slots unbind release = do
+  -> IO () -> IO () -> NotifyInvoker -> IO StdInstance
+assembleStdInstance env be mStore cfg slots unbind release invoker = do
   cursors <- newIORef mempty
   table <- newAsyncTable 8
   detach <- case mStore of
@@ -701,8 +720,9 @@ assembleStdInstance env be mStore cfg slots unbind release = do
         Right dc -> pure (Just dc)
   views <- newIORef Map.empty
   bindings <- newIORef Map.empty
+  notify <- newIORef Map.empty
   pure (StdInstance env be cursors mStore (effectiveCatalog cfg)
-    slots unbind release table detach views bindings)
+    slots unbind release table detach views bindings notify invoker)
 
 -- | Seat every catalog slot in index order. The first refusal
 -- (past the seating bound) fails the whole open loudly — catalogs
@@ -830,9 +850,11 @@ haskokiStdClose ctx = guardedUnit $
       inst <- deRefStablePtr ctx
       let closeOwned = siReleaseResources inst `finally` freeStablePtr ctx
       (siUnbindPresenceOwner inst `finally` do
+        -- Retire associations even if cancellation/native release later fails.
+        writeIORef (siNotify inst) Map.empty
         views <- readIORef (siAsyncViews inst)
         (do
-          forM_ (Map.keys views) (cancelStdAsyncJobs inst)
+          finishAll (map (cancelStdAsyncJobs inst) (Map.keys views))
           forM_ (siDetach inst) $ \dc -> do
             _ <- retireLiveTable dc
             pure ()) `finally` forM_ (Map.keys views) (freeStdAsyncView inst))
@@ -1272,7 +1294,8 @@ setStdTokenPresenceWith release inst slot present = mask_ $ do
               let cleanup = do
                     published <- readIORef committed
                     when published $ finishAll
-                      (map (clearCursor inst) sessions ++ map (freeStdAsyncView inst) sessions ++ map release releases)
+                      (map (retireSessionNotify inst) sessions ++ map (clearCursor inst) sessions
+                        ++ map (freeStdAsyncView inst) sessions ++ map release releases)
               (do
                 canceled <- sum <$> mapM (cancelPresenceSession inst) sessions
                 _ <- evaluate canceled
@@ -1422,8 +1445,9 @@ foreign export ccall "haskoki_std_get_slot_flags" haskokiStdGetSlotFlags
   :: StablePtr StdInstance -> CULong -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_get_slot_list" haskokiStdGetSlotList
   :: StablePtr StdInstance -> Word8 -> Ptr CULong -> Ptr CULong -> IO CULong
-foreign export ccall "haskoki_std_open_session" haskokiStdOpenSessionWithAsync
-  :: StablePtr StdInstance -> CULong -> CULong -> CULong -> Ptr CULong -> IO CULong
+foreign export ccall "haskoki_std_open_session" haskokiStdOpenSessionWithNotify
+  :: StablePtr StdInstance -> CULong -> CULong -> CULong
+  -> Ptr () -> FunPtr NativeNotify -> Ptr CULong -> IO CULong
 foreign export ccall "haskoki_std_close_session" haskokiStdCloseSession
   :: StablePtr StdInstance -> CULong -> IO CULong
 foreign export ccall "haskoki_std_close_all_sessions" haskokiStdCloseAllSessions
@@ -1508,13 +1532,49 @@ haskokiStdOpenSession
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr CULong -> IO CULong
 haskokiStdOpenSession ctx slot ro = haskokiStdOpenSessionWithAsync ctx slot ro 0
 
--- | The existing native session boundary also carries explicit async intent.
--- Prepare the borrowed view and registry update before admitting the session;
--- enable it only after successful model publication. No proof context is opened.
+-- | Existing proof wrapper: no callback, regardless of explicit async intent.
 haskokiStdOpenSessionWithAsync
   :: StablePtr StdInstance -> CULong -> CULong -> CULong
   -> Ptr CULong -> IO CULong
-haskokiStdOpenSessionWithAsync ctx slot (CULong ro) (CULong async) phSession =
+haskokiStdOpenSessionWithAsync ctx slot ro async =
+  haskokiStdOpenSessionWithNotify ctx slot ro async nullPtr nullFunPtr
+
+-- | Each association borrows its pointers for exactly the model session's
+-- lifetime. Serving callers serialize map access with the C state lock.
+registerSessionNotify :: StdInstance -> SessionId -> SessionNotify -> IO ()
+registerSessionNotify inst sid notification = do
+  current <- readIORef (siNotify inst)
+  updated <- evaluate (Map.insert sid notification current)
+  writeIORef (siNotify inst) updated
+
+retireSessionNotify :: StdInstance -> SessionId -> IO ()
+retireSessionNotify inst sid =
+  atomicModifyIORef' (siNotify inst) (\pairs -> (Map.delete sid pairs, ()))
+
+-- | Dispatcher only: T-N06 has no production caller. Reading the IORef takes
+-- no registry lock; no model gate, store lock or async lease is held here.
+surrenderDigest :: StdInstance -> SessionId -> IO NotifyDecision
+surrenderDigest inst sid = do
+  notification <- Map.lookup sid <$> readIORef (siNotify inst)
+  maybe (pure NotifyContinue) (dispatchSessionNotifyWith (siNotifyInvoker inst) sid) notification
+
+-- | Internal, typed failure-observation seam. Production supplies no-op IO;
+-- observers run outside model gates/STM, before output ownership transfers.
+data SessionOpenPoint
+  = BeforeModelAdmission | AfterModelAdmission
+  | BeforeNotifyRegistration | AfterNotifyRegistration
+  | BeforeBorrowedViewInstall | AfterBorrowedViewInstall
+  deriving (Eq, Show)
+
+haskokiStdOpenSessionWithNotify
+  :: StablePtr StdInstance -> CULong -> CULong -> CULong
+  -> Ptr () -> FunPtr NativeNotify -> Ptr CULong -> IO CULong
+haskokiStdOpenSessionWithNotify = haskokiStdOpenSessionWithNotifyWith (const (pure ()))
+
+haskokiStdOpenSessionWithNotifyWith
+  :: (SessionOpenPoint -> IO ()) -> StablePtr StdInstance -> CULong -> CULong -> CULong
+  -> Ptr () -> FunPtr NativeNotify -> Ptr CULong -> IO CULong
+haskokiStdOpenSessionWithNotifyWith observe ctx slot (CULong ro) (CULong async) application callback phSession =
   withLiveStdCtx ctx $ \inst ->
     if phSession == nullPtr
       then pure ckrArgsBad
@@ -1533,31 +1593,43 @@ haskokiStdOpenSessionWithAsync ctx slot (CULong ro) (CULong async) phSession =
                     let detached = case siDetach inst of
                           Just dc | detachSlot dc == slotId -> Just dc
                           _ -> Nothing
-                    view <- newStablePtr (AsyncCtx (siEnv inst) (siBackend inst)
-                      sid (siAsyncTable inst) live detached)
-                    (do
-                      views <- readIORef (siAsyncViews inst)
-                      installed <- evaluate (Map.insert sid view views)
-                      pr <- publishCommit inst pc
-                      case pr of
-                        Left _ -> freeStablePtr view >> pure ckrGeneralError
-                        Right () -> do
-                          when (async /= 0) (enableAsyncSession (siAsyncTable inst) sid)
-                          writeIORef (siAsyncViews inst) installed
-                          poke phSession (CULong (fromIntegral (unSessionId sid)))
-                          pure ckrOk) `onException` do
-                            -- Roll back an admitted session if a later allocation
-                            -- fails; before publication this is a harmless no-op.
-                            m <- snapshotModel (siEnv inst)
-                            case lookupSession m sid of
-                              Nothing -> pure ()
-                              Just _ -> case planCall (envRules (siEnv inst)) m
-                                  (Request Pkcs11_3_2 F_CloseSession (Just sid) Nothing BS.empty []) of
-                                Immediate close -> do
-                                  _ <- publishCommit inst close
-                                  pure ()
-                                _ -> pure ()
-                            freeStablePtr view
+                        rollbackModel = do
+                          m <- snapshotModel (siEnv inst)
+                          case lookupSession m sid of
+                            Nothing -> pure ()
+                            Just _ -> case planCall (envRules (siEnv inst)) m
+                                (Request Pkcs11_3_2 F_CloseSession (Just sid) Nothing BS.empty []) of
+                              Immediate close -> do
+                                pr <- publishCommit inst close
+                                either (ioError . userError . show) pure pr
+                              _ -> ioError (userError "session rollback refused")
+                        rollback = finishAll
+                          [ retireSessionNotify inst sid
+                          , atomicModifyIORef' (siAsyncViews inst) (\views -> (Map.delete sid views, ()))
+                          , rollbackModel
+                          ]
+                    -- The bracket owns the StablePtr until successful output.
+                    -- Rollback only removes its map entry; it never frees twice.
+                    bracketOnError
+                      (newStablePtr (AsyncCtx (siEnv inst) (siBackend inst)
+                        sid (siAsyncTable inst) live detached)) freeStablePtr $ \view ->
+                      (do
+                        views <- readIORef (siAsyncViews inst)
+                        installed <- evaluate (Map.insert sid view views)
+                        observe BeforeModelAdmission
+                        pr <- publishCommit inst pc
+                        either (ioError . userError . show) pure pr
+                        observe AfterModelAdmission
+                        observe BeforeNotifyRegistration
+                        registerSessionNotify inst sid (SessionNotify callback application)
+                        observe AfterNotifyRegistration
+                        observe BeforeBorrowedViewInstall
+                        writeIORef (siAsyncViews inst) installed
+                        observe AfterBorrowedViewInstall
+                        -- No interruptible/test hook remains after async enable.
+                        when (async /= 0) (enableAsyncSession (siAsyncTable inst) sid)
+                        poke phSession (CULong (fromIntegral (unSessionId sid)))
+                        pure ckrOk) `onException` rollback
                 | otherwise -> do
                     pr <- publishCommit inst pc
                     pure $ either (const ckrGeneralError) (const (stdRvOf (pcCode pc))) pr
@@ -1566,11 +1638,19 @@ haskokiStdOpenSessionWithAsync ctx slot (CULong ro) (CULong async) phSession =
                 pure (stdRvOf (rejCode rej))
               Execute _ _ -> pure ckrGeneralError
 
+-- | Release failures after model close cannot retain a callable association or
+-- borrowed view. A failed publication with a still-live session retains both.
+retireClosedSession :: StdInstance -> SessionId -> IO ()
+retireClosedSession inst sid = do
+  model <- snapshotModel (siEnv inst)
+  when (isNothing (lookupSession model sid)) $ finishAll
+    [retireSessionNotify inst sid, clearCursor inst sid, freeStdAsyncView inst sid]
+
 -- | Close one session (unknown handles refuse; the engine also
 -- destroys the session's objects and applies last-close logout).
 haskokiStdCloseSession :: StablePtr StdInstance -> CULong -> IO CULong
 haskokiStdCloseSession ctx (CULong h) =
-  withStdCtx ctx $ \inst -> do
+  withStdCtx ctx $ \inst -> mask_ $ do
     m0 <- snapshotModel (siEnv inst)
     let req = Request Pkcs11_3_2 F_CloseSession (Just (SessionId (fromIntegral h)))
           Nothing BS.empty []
@@ -1578,14 +1658,11 @@ haskokiStdCloseSession ctx (CULong h) =
       Immediate pc -> do
         when (pcCode pc == CKR_OK) $
           cancelStdAsyncJobs inst (SessionId (fromIntegral h))
-        pr <- publishCommit inst pc
+        pr <- publishCommit inst pc `finally` retireClosedSession inst (SessionId (fromIntegral h))
         case pr of
           Left _ -> pure ckrGeneralError
           Right ()
-            | pcCode pc == CKR_OK -> do
-                clearCursor inst (SessionId (fromIntegral h))
-                freeStdAsyncView inst (SessionId (fromIntegral h))
-                pure ckrOk
+            | pcCode pc == CKR_OK -> pure ckrOk
             | otherwise -> pure (stdRvOf (pcCode pc))
       Reject rej -> do
         publishRejection inst rej
@@ -1604,20 +1681,9 @@ haskokiStdCloseAllSessions ctx slot =
       Right entry -> do
         let slotId = ssSlotId entry
             sids = map ssId (sessionsOnSlot m0 slotId)
-        forM_ sids $ \sid -> do
-          m <- snapshotModel (siEnv inst)
-          let req = Request Pkcs11_3_2 F_CloseSession (Just sid) Nothing BS.empty []
-          case planCall (envRules (siEnv inst)) m req of
-            Immediate pc -> do
-              when (pcCode pc == CKR_OK) (cancelStdAsyncJobs inst sid)
-              _ <- publishCommit inst pc
-              clearCursor inst sid
-              when (pcCode pc == CKR_OK) (freeStdAsyncView inst sid)
-            Reject rej -> do
-              publishRejection inst rej
-              pure ()
-            Execute _ _ -> pure ()
-        pure ckrOk
+        results <- forM sids $ \sid ->
+          haskokiStdCloseSession ctx (fromIntegral (unSessionId sid))
+        pure $ fromMaybe ckrOk (find (/= ckrOk) results)
 
 -- | Cancel a session's active operations under its CKF_* selector
 -- mask (unknown handles refuse; the planner clears the selected

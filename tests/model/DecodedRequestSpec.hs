@@ -61,6 +61,7 @@ import Haskoki.Outcome
 import Haskoki.Engine.Backend (BackendEnv, CryptoBackend (..), EngineResult (..))
 import Haskoki.Engine.OpenSSL4 (OpenSSL4)
 import Haskoki.FFI.Exports (returnCodeToRV)
+import Haskoki.FFI.Notify (invokeNativeNotify)
 import Haskoki.FFI.Standard
   ( StdInstance (..)
   , haskokiStdClose
@@ -1291,10 +1292,12 @@ openManualInstance slots = do
   table <- newAsyncTable 8
   views <- newIORef Map.empty
   bindings <- newIORef Map.empty
+  notify <- newIORef Map.empty
   hub <- newSlotEvents (max 1 (length slots)) [SlotDefinition slot False | slot <- slots]
     >>= either (fail . show) pure
   newStablePtr (StdInstance env be cursors Nothing Map.empty
-    hub (pure ()) (closeBackend be) table Nothing views bindings)
+    hub (pure ()) (closeBackend be) table Nothing views bindings
+    notify invokeNativeNotify)
   where
     seatOne env slot = do
       eSeat <- seatToken env slot

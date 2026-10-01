@@ -37,6 +37,7 @@
 #include "abi_probe.h"
 #include "mech_catalog.inc"
 #include "standard_surface.h"
+#include "notify_guard.h"
 
 /* Haskell instance exports (ffi/Haskoki/FFI/Standard.hs). Prefer
  * the GHC-generated stub header when available; else the manual
@@ -59,10 +60,9 @@ extern uint64_t haskoki_std_terminate_slot(void *instance, uint64_t h_session,
 extern uint64_t haskoki_std_get_slot_list(void *instance, uint8_t token_present,
                                           uint64_t *p_slot_list,
                                           uint64_t *p_count);
-extern uint64_t haskoki_std_open_session(void *instance, uint64_t slot,
-                                         uint64_t read_only,
-                                         uint64_t async,
-                                         uint64_t *ph_session);
+extern unsigned long haskoki_std_open_session(void *instance, unsigned long slot,
+    unsigned long read_only, unsigned long async_session,
+    void *application, CK_NOTIFY notify, unsigned long *ph_session);
 extern uint64_t haskoki_std_close_session(void *instance, uint64_t h_session);
 extern uint64_t haskoki_std_close_all_sessions(void *instance, uint64_t slot);
 extern uint64_t haskoki_std_session_cancel(void *instance, uint64_t h_session,
@@ -430,6 +430,7 @@ static CK_RV refuse_null_arg(CK_SESSION_HANDLE hSession, uint64_t slot) {
 
 CK_RV std_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
                       CK_ULONG_PTR pulCount) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -457,6 +458,7 @@ CK_RV std_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
 /* Configured slot record: static strings and one captured serving snapshot,
  * including known-empty slots. Publish the complete record under the lock. */
 CK_RV std_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   static const char kDesc[] = "haskoki soft slot";
   static const char kManu[] = "haskoki contributors";
   void *inst = 0;
@@ -506,6 +508,7 @@ CK_RV std_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
  * StandardSurfaceSpec casePolicyPins). Serials are per-slot
  * (1-based, slot 0 keeps ...0001). */
 CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   static const char kManu[] = "haskoki contributors";
   static const char kModel[] = "soft-token";
   static const char kUtc[] = "0000000000000000";
@@ -595,6 +598,7 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
 CK_RV std_GetMechanismList(CK_SLOT_ID slotID,
                            CK_MECHANISM_TYPE_PTR pMechanismList,
                            CK_ULONG_PTR pulCount) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   CK_RV lr = 0;
   CK_RV rv = CKR_OK;
@@ -638,6 +642,7 @@ CK_RV std_GetMechanismList(CK_SLOT_ID slotID,
 
 CK_RV std_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type,
                            CK_MECHANISM_INFO_PTR pInfo) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   CK_RV lr = 0;
   CK_RV rv = CKR_MECHANISM_INVALID;
@@ -682,6 +687,7 @@ CK_RV std_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type,
 CK_RV std_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags,
                       CK_VOID_PTR pApplication, CK_NOTIFY Notify,
                       CK_SESSION_HANDLE_PTR phSession) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -690,20 +696,12 @@ CK_RV std_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags,
   }
   CK_RV lr = 0;
   CK_RV rv = 0;
-  (void)pApplication;
   if (phSession == NULL_PTR) {
     return CKR_ARGUMENTS_BAD;
   }
-  /* A supplied Notify is accepted, never refused: the
-   * C_OpenSession return list (v3.2 §5.6.1) carries no
-   * callback-refusal code, so refusing would invent one
-   * (rc2's callback matrix pins accept-or-SESSION_COUNT).
-   * The module generates no notification events (no
-   * surrender/device callbacks), so the callback is
-   * retained nowhere and never invoked; see
-   * docs/operations-notes.md ("Session notification
-   * callbacks"). */
-  (void)Notify;
+  /* Both native values may independently be null. Standard retains the pair
+   * before publishing the admitted handle and retires it with that session.
+   * Registration itself never invokes the application callback. */
   if ((flags & CKF_SERIAL_SESSION) == 0) {
     return CKR_SESSION_PARALLEL_NOT_SUPPORTED;
   }
@@ -720,15 +718,21 @@ CK_RV std_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags,
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
   rv = (CK_RV)haskoki_std_open_session(
-      inst, (uint64_t)slotID,
-      (flags & CKF_RW_SESSION) != 0 ? (uint64_t)0 : (uint64_t)1,
-      (uint64_t)((flags & CKF_ASYNC_SESSION) != 0),
-      (uint64_t *)phSession);
+      inst, (unsigned long)slotID,
+      (flags & CKF_RW_SESSION) != 0 ? 0UL : 1UL,
+      (unsigned long)((flags & CKF_ASYNC_SESSION) != 0), pApplication,
+#ifdef HASKOKI_HAVE_STD_STUB_H
+      (HsFunPtr)Notify,
+#else
+      Notify,
+#endif
+      phSession);
   (void)haskoki_state_unlock();
   return rv;
 }
 
 CK_RV std_CloseSession(CK_SESSION_HANDLE hSession) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -752,6 +756,7 @@ CK_RV std_CloseSession(CK_SESSION_HANDLE hSession) {
 }
 
 CK_RV std_CloseAllSessions(CK_SLOT_ID slotID) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -775,6 +780,7 @@ CK_RV std_CloseAllSessions(CK_SLOT_ID slotID) {
 }
 
 CK_RV std_SessionCancel(CK_SESSION_HANDLE hSession, CK_FLAGS flags) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -800,6 +806,7 @@ CK_RV std_SessionCancel(CK_SESSION_HANDLE hSession, CK_FLAGS flags) {
 
 CK_RV std_GetSessionInfo(CK_SESSION_HANDLE hSession,
                          CK_SESSION_INFO_PTR pInfo) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -863,6 +870,7 @@ CK_RV std_GetSessionInfo(CK_SESSION_HANDLE hSession,
 
 CK_RV std_AsyncComplete(CK_SESSION_HANDLE hSession,
     CK_UTF8CHAR *pFunctionName, CK_ASYNC_DATA *pResult) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* The initial peek preserves lifecycle precedence; live_std() under
    * the state lock is authoritative, as for the classic bodies. */
@@ -893,6 +901,7 @@ CK_RV std_AsyncComplete(CK_SESSION_HANDLE hSession,
 
 CK_RV std_AsyncGetID(CK_SESSION_HANDLE hSession,
     CK_UTF8CHAR *pFunctionName, CK_ULONG *pulID) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   if (!haskoki_live_interval()) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -922,6 +931,7 @@ CK_RV std_AsyncGetID(CK_SESSION_HANDLE hSession,
 CK_RV std_AsyncJoin(CK_SESSION_HANDLE hSession,
     CK_UTF8CHAR *pFunctionName, CK_ULONG ulID,
     CK_BYTE *pData, CK_ULONG ulData) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   if (!haskoki_live_interval()) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -954,6 +964,7 @@ CK_RV std_AsyncJoin(CK_SESSION_HANDLE hSession,
 CK_RV std_CreateObject(CK_SESSION_HANDLE hSession,
                        CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                        CK_OBJECT_HANDLE_PTR phObject) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -995,6 +1006,7 @@ CK_RV std_CreateObject(CK_SESSION_HANDLE hSession,
 CK_RV std_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject,
                      CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                      CK_OBJECT_HANDLE_PTR phNewObject) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1037,6 +1049,7 @@ CK_RV std_CopyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject,
 CK_RV std_SetAttributeValue(CK_SESSION_HANDLE hSession,
                            CK_OBJECT_HANDLE hObject,
                            CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1074,6 +1087,7 @@ CK_RV std_SetAttributeValue(CK_SESSION_HANDLE hSession,
 }
 
 CK_RV std_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1100,6 +1114,7 @@ CK_RV std_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject) {
 CK_RV std_GetAttributeValue(CK_SESSION_HANDLE hSession,
                             CK_OBJECT_HANDLE hObject,
                             CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1170,6 +1185,7 @@ CK_RV std_GetAttributeValue(CK_SESSION_HANDLE hSession,
 
 CK_RV std_FindObjectsInit(CK_SESSION_HANDLE hSession,
                           CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1207,6 +1223,7 @@ CK_RV std_FindObjectsInit(CK_SESSION_HANDLE hSession,
 CK_RV std_FindObjects(CK_SESSION_HANDLE hSession,
                       CK_OBJECT_HANDLE_PTR phObject, CK_ULONG ulMaxObjectCount,
                       CK_ULONG_PTR pulObjectCount) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1239,6 +1256,7 @@ CK_RV std_FindObjects(CK_SESSION_HANDLE hSession,
 }
 
 CK_RV std_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1265,6 +1283,7 @@ CK_RV std_FindObjectsFinal(CK_SESSION_HANDLE hSession) {
 
 CK_RV std_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType,
                 CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1292,6 +1311,7 @@ CK_RV std_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType,
 }
 
 CK_RV std_Logout(CK_SESSION_HANDLE hSession) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1317,6 +1337,7 @@ CK_RV std_Logout(CK_SESSION_HANDLE hSession) {
 /* ---------- routed bodies: digest ---------- */
 
 CK_RV std_DigestInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1350,6 +1371,7 @@ CK_RV std_DigestInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism) {
 CK_RV std_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
                  CK_ULONG ulDataLen, CK_BYTE_PTR pDigest,
                  CK_ULONG_PTR pulDigestLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1382,6 +1404,7 @@ CK_RV std_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
 
 CK_RV std_DigestUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
                        CK_ULONG ulPartLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1410,6 +1433,7 @@ CK_RV std_DigestUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
 }
 
 CK_RV std_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1435,6 +1459,7 @@ CK_RV std_DigestKey(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hKey) {
 
 CK_RV std_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest,
                       CK_ULONG_PTR pulDigestLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1465,6 +1490,7 @@ CK_RV std_DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest,
 CK_RV std_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                       CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
                       CK_OBJECT_HANDLE_PTR phKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1513,6 +1539,7 @@ CK_RV std_GenerateKeyPair(CK_SESSION_HANDLE hSession,
                           CK_ULONG ulPrivateKeyAttributeCount,
                           CK_OBJECT_HANDLE_PTR phPublicKey,
                           CK_OBJECT_HANDLE_PTR phPrivateKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1571,6 +1598,7 @@ CK_RV std_GenerateKeyPair(CK_SESSION_HANDLE hSession,
 
 CK_RV std_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                    CK_OBJECT_HANDLE hKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1604,6 +1632,7 @@ CK_RV std_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 
 CK_RV std_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
                CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1636,6 +1665,7 @@ CK_RV std_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen
 
 CK_RV std_SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
                      CK_ULONG ulPartLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1664,6 +1694,7 @@ CK_RV std_SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
 
 CK_RV std_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
                     CK_ULONG_PTR pulSignatureLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1693,6 +1724,7 @@ CK_RV std_SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
 
 CK_RV std_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                      CK_OBJECT_HANDLE hKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1727,6 +1759,7 @@ CK_RV std_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 CK_RV std_Verify(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
                  CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
                  CK_ULONG ulSignatureLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1759,6 +1792,7 @@ CK_RV std_Verify(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
 
 CK_RV std_VerifyUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
                        CK_ULONG ulPartLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1787,6 +1821,7 @@ CK_RV std_VerifyUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
 
 CK_RV std_VerifyFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
                       CK_ULONG ulSignatureLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1816,6 +1851,7 @@ CK_RV std_VerifyFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
 
 CK_RV std_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                       CK_OBJECT_HANDLE hKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1850,6 +1886,7 @@ CK_RV std_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 CK_RV std_Encrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
                   CK_ULONG ulDataLen, CK_BYTE_PTR pEncryptedData,
                   CK_ULONG_PTR pulEncryptedDataLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1883,6 +1920,7 @@ CK_RV std_Encrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
 CK_RV std_EncryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
                         CK_ULONG ulPartLen, CK_BYTE_PTR pEncryptedPart,
                         CK_ULONG_PTR pulEncryptedPartLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1915,6 +1953,7 @@ CK_RV std_EncryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
 
 CK_RV std_EncryptFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pLastEncryptedPart,
                        CK_ULONG_PTR pulLastEncryptedPartLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1944,6 +1983,7 @@ CK_RV std_EncryptFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pLastEncryptedPar
 
 CK_RV std_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                       CK_OBJECT_HANDLE hKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -1978,6 +2018,7 @@ CK_RV std_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 CK_RV std_Decrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedData,
                   CK_ULONG ulEncryptedDataLen, CK_BYTE_PTR pData,
                   CK_ULONG_PTR pulDataLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -2012,6 +2053,7 @@ CK_RV std_Decrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedData,
 CK_RV std_DecryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedPart,
                         CK_ULONG ulEncryptedPartLen, CK_BYTE_PTR pPart,
                         CK_ULONG_PTR pulPartLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -2044,6 +2086,7 @@ CK_RV std_DecryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedPart,
 
 CK_RV std_DecryptFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pLastPart,
                        CK_ULONG_PTR pulLastPartLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -2073,6 +2116,7 @@ CK_RV std_DecryptFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pLastPart,
 
 CK_RV std_GenerateRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pRandomData,
                          CK_ULONG ulRandomLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -2102,6 +2146,7 @@ CK_RV std_GenerateRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pRandomData,
 
 CK_RV std_SeedRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSeed,
                      CK_ULONG ulSeedLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -2132,6 +2177,7 @@ CK_RV std_SeedRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSeed,
 CK_RV std_WrapKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                   CK_OBJECT_HANDLE hWrappingKey, CK_OBJECT_HANDLE hKey,
                   CK_BYTE_PTR pWrappedKey, CK_ULONG_PTR pulWrappedKeyLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -2168,6 +2214,7 @@ CK_RV std_UnwrapKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                     CK_OBJECT_HANDLE hUnwrappingKey, CK_BYTE_PTR pWrappedKey,
                     CK_ULONG ulWrappedKeyLen, CK_ATTRIBUTE_PTR pTemplate,
                     CK_ULONG ulAttributeCount, CK_OBJECT_HANDLE_PTR phKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -2219,6 +2266,7 @@ CK_RV std_EncapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism
                          CK_OBJECT_HANDLE hPublicKey, CK_ATTRIBUTE_PTR pTemplate,
                          CK_ULONG ulAttributeCount, CK_BYTE_PTR pCiphertext,
                          CK_ULONG_PTR pulCiphertextLen, CK_OBJECT_HANDLE_PTR phKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -2270,6 +2318,7 @@ CK_RV std_DecapsulateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism
                          CK_OBJECT_HANDLE hPrivateKey, CK_ATTRIBUTE_PTR pTemplate,
                          CK_ULONG ulAttributeCount, CK_BYTE_PTR pCiphertext,
                          CK_ULONG ulCiphertextLen, CK_OBJECT_HANDLE_PTR phKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -2520,6 +2569,7 @@ static CK_RV std_derive_opaque(CK_SESSION_HANDLE hSession,
 CK_RV std_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                     CK_OBJECT_HANDLE hBaseKey, CK_ATTRIBUTE_PTR pTemplate,
                     CK_ULONG ulAttributeCount, CK_OBJECT_HANDLE_PTR phKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst = 0;
   /* Fast-path precedence peek (the resolve under the state lock
    * below is authoritative; this keeps NOT_INITIALIZED first). */
@@ -2597,6 +2647,7 @@ CK_RV std_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 }
 
 CK_RV std_MessageEncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2615,6 +2666,7 @@ CK_RV std_MessageEncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanis
 }
 
 CK_RV std_EncryptMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen, CK_BYTE *pPlaintext, CK_ULONG ulPlaintextLen, CK_BYTE *pCiphertext, CK_ULONG *pulCiphertextLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2635,6 +2687,7 @@ CK_RV std_EncryptMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG 
 }
 
 CK_RV std_EncryptMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2653,6 +2706,7 @@ CK_RV std_EncryptMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_U
 }
 
 CK_RV std_EncryptMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pPlaintextPart, CK_ULONG ulPlaintextPartLen, CK_BYTE *pCiphertextPart, CK_ULONG *pulCiphertextPartLen, CK_FLAGS flags) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2673,6 +2727,7 @@ CK_RV std_EncryptMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_UL
 }
 
 CK_RV std_MessageEncryptFinal(CK_SESSION_HANDLE hSession) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2689,6 +2744,7 @@ CK_RV std_MessageEncryptFinal(CK_SESSION_HANDLE hSession) {
 }
 
 CK_RV std_MessageDecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2707,6 +2763,7 @@ CK_RV std_MessageDecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanis
 }
 
 CK_RV std_DecryptMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen, CK_BYTE *pCiphertext, CK_ULONG ulCiphertextLen, CK_BYTE *pPlaintext, CK_ULONG *pulPlaintextLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2727,6 +2784,7 @@ CK_RV std_DecryptMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG 
 }
 
 CK_RV std_DecryptMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pAssociatedData, CK_ULONG ulAssociatedDataLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2745,6 +2803,7 @@ CK_RV std_DecryptMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_U
 }
 
 CK_RV std_DecryptMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pCiphertextPart, CK_ULONG ulCiphertextPartLen, CK_BYTE *pPlaintextPart, CK_ULONG *pulPlaintextPartLen, CK_FLAGS flags) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2765,6 +2824,7 @@ CK_RV std_DecryptMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_UL
 }
 
 CK_RV std_MessageDecryptFinal(CK_SESSION_HANDLE hSession) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2781,6 +2841,7 @@ CK_RV std_MessageDecryptFinal(CK_SESSION_HANDLE hSession) {
 }
 
 CK_RV std_MessageSignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2799,6 +2860,7 @@ CK_RV std_MessageSignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanism, 
 }
 
 CK_RV std_SignMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pData, CK_ULONG ulDataLen, CK_BYTE *pSignature, CK_ULONG *pulSignatureLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2818,6 +2880,7 @@ CK_RV std_SignMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulP
 }
 
 CK_RV std_SignMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2835,6 +2898,7 @@ CK_RV std_SignMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULON
 }
 
 CK_RV std_SignMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pDataPart, CK_ULONG ulDataPartLen, CK_BYTE *pSignature, CK_ULONG *pulSignatureLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2853,6 +2917,7 @@ CK_RV std_SignMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG
 }
 
 CK_RV std_MessageSignFinal(CK_SESSION_HANDLE hSession) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2869,6 +2934,7 @@ CK_RV std_MessageSignFinal(CK_SESSION_HANDLE hSession) {
 }
 
 CK_RV std_MessageVerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanism, CK_OBJECT_HANDLE hKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2887,6 +2953,7 @@ CK_RV std_MessageVerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM *pMechanism
 }
 
 CK_RV std_VerifyMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pData, CK_ULONG ulDataLen, CK_BYTE *pSignature, CK_ULONG ulSignatureLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2906,6 +2973,7 @@ CK_RV std_VerifyMessage(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG u
 }
 
 CK_RV std_VerifyMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2923,6 +2991,7 @@ CK_RV std_VerifyMessageBegin(CK_SESSION_HANDLE hSession, void *pParameter, CK_UL
 }
 
 CK_RV std_VerifyMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULONG ulParameterLen, CK_BYTE *pDataPart, CK_ULONG ulDataPartLen, CK_BYTE *pSignature, CK_ULONG ulSignatureLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
@@ -2942,6 +3011,7 @@ CK_RV std_VerifyMessageNext(CK_SESSION_HANDLE hSession, void *pParameter, CK_ULO
 }
 
 CK_RV std_MessageVerifyFinal(CK_SESSION_HANDLE hSession) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   void *inst;
   CK_RV lr, rv;
   if (!haskoki_live_interval()) return CKR_CRYPTOKI_NOT_INITIALIZED;
