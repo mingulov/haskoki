@@ -182,8 +182,8 @@ static void write_config(void) {
     CHECKC(prv == CKR_OK && sess != 0, "%s: session opens", tag);            \
     /* Notify acceptance (direct-only: a function pointer cannot */         \
     /* cross the proxy). A supplied callback opens OK and the */            \
-    /* session is usable; the callback never fires (the module */           \
-    /* generates no notification events). */                                \
+    /* session is usable; this open/info/close sequence emits */           \
+    /* no callback. It does not exercise a Digest producer. */                                \
     if (!isProxy) {                                                        \
       CK_SESSION_HANDLE nsess = 0;                                         \
       CK_SESSION_INFO ninfo;                                               \

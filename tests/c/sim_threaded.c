@@ -33,7 +33,7 @@
  * scripts/test-sim-threaded.sh.
  * Usage: sim_threaded <path-to-libhaskoki.so>
  */
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
 
 #define CK_PTR *
 #define CK_DECLARE_FUNCTION(returnType, name) returnType name
@@ -48,6 +48,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 /* Extension entry: local prototype (must match cbits/haskoki_control.h). */
@@ -65,6 +66,7 @@ static atomic_long g_prints = 0;
 static atomic_long g_calls = 0;
 static atomic_long g_opens = 0;
 static atomic_long g_closes = 0;
+static CK_SLOT_ID worker_slot, churn_slot;
 
 /* Codes a live module legitimately produces for the hammered
  * entries. Notably absent: CKR_GENERAL_ERROR (the guarded-Haskell
@@ -136,7 +138,7 @@ static void *worker_main(void *arg) {
     case 1: {
       if (sess == 0) {
         CK_SESSION_HANDLE h = 0;
-        rv = f->C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION,
+        rv = f->C_OpenSession(worker_slot, CKF_SERIAL_SESSION | CKF_RW_SESSION,
                               NULL_PTR, NULL_PTR, &h);
         note_rv("OpenSession", rv);
         if (rv == CKR_OK) {
@@ -225,14 +227,15 @@ static void *churner_main(void *arg) {
   churner_arg_t *ca = (churner_arg_t *)arg;
   long c;
   for (c = 0; c < ca->cycles; c++) {
-    CK_RV rv = control_call("{\"schema_version\":1,\"command\":\"token.insert\","
-                            "\"arguments\":{\"slot\":1}}");
+    char request[256];
+    snprintf(request, sizeof(request), "{\"schema_version\":1,\"command\":\"token.insert\",\"arguments\":{\"slot\":%lu}}", churn_slot);
+    CK_RV rv = control_call(request);
     atomic_fetch_add(&g_calls, 1);
     if (rv != CKR_OK) {
       note_bad("control token.insert", rv);
     }
-    rv = control_call("{\"schema_version\":1,\"command\":\"token.remove\","
-                      "\"arguments\":{\"slot\":1}}");
+    snprintf(request, sizeof(request), "{\"schema_version\":1,\"command\":\"token.remove\",\"arguments\":{\"slot\":%lu}}", churn_slot);
+    rv = control_call(request);
     atomic_fetch_add(&g_calls, 1);
     if (rv != CKR_OK) {
       note_bad("control token.remove", rv);
@@ -247,6 +250,10 @@ static void write_config(void) {
   /* Test-enabled: the churner issues token.insert/remove mutations. */
   static const char body[] = "schema_version = 1\n"
                              "profile = \"demo-maximal\"\n"
+                             "[tokens]\n"
+                             "labels = [\"haskoki-demo\", \"churn-B\"]\n"
+                             "so_pins = [\"5678\", \"5678\"]\n"
+                             "user_pins = [\"1234\", \"1234\"]\n"
                              "[storage]\n"
                              "kind = \"memory\"\n"
                              "[engine]\n"
@@ -274,6 +281,47 @@ static void write_config(void) {
     perror("setenv");
     exit(2);
   }
+}
+
+/* Separate from independent-slot conservation: removal intentionally retires
+ * the held session. Exact outcomes here do not widen worker legal codes. */
+static void same_slot_removal(void) {
+  CK_SESSION_HANDLE old = 0xa5a5a5a5a5a5a5a5UL, fresh = 0xa5a5a5a5a5a5a5a5UL;
+  CK_SESSION_INFO info, before;
+  CK_MECHANISM mechanism = {CKM_SHA256, NULL_PTR, 0};
+  unsigned assertions = 0;
+#define EXACT(call, want, name) do { \
+    CK_RV code = (call); ++assertions; \
+    printf("sim:same-slot/%s rv=0x%lx expected=0x%lx\n", name, code, (CK_RV)(want)); \
+    if (code != (want)) { note_bad(name, code); return; } \
+  } while (0)
+  EXACT(g_f->C_OpenSession(worker_slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR, NULL_PTR, &old), CKR_OK, "open");
+  EXACT(g_f->C_DigestInit(old, &mechanism), CKR_OK, "digest-init");
+  char request[256];
+  snprintf(request, sizeof(request), "{\"schema_version\":1,\"command\":\"token.remove\",\"arguments\":{\"slot\":%lu}}", worker_slot);
+  EXACT(control_call(request), CKR_OK, "remove");
+  memset(&info, 0xa5, sizeof(info)); before = info;
+  EXACT(g_f->C_GetSessionInfo(old, &info), CKR_SESSION_HANDLE_INVALID, "old-info");
+  if (memcmp(&info, &before, sizeof(info))) { note_bad("same-slot info canary", CKR_GENERAL_ERROR); return; }
+  EXACT(g_f->C_DigestInit(old, &mechanism), CKR_SESSION_HANDLE_INVALID, "old-digest");
+  EXACT(g_f->C_CloseSession(old), CKR_SESSION_HANDLE_INVALID, "old-close");
+  EXACT(g_f->C_OpenSession(worker_slot, CKF_SERIAL_SESSION, NULL_PTR, NULL_PTR, &fresh), CKR_TOKEN_NOT_PRESENT, "absent-open");
+  if (fresh != 0xa5a5a5a5a5a5a5a5UL) { note_bad("same-slot session canary", CKR_GENERAL_ERROR); return; }
+  EXACT(g_f->C_CloseAllSessions(worker_slot), CKR_OK, "absent-close-all");
+  snprintf(request, sizeof(request), "{\"schema_version\":1,\"command\":\"token.insert\",\"arguments\":{\"slot\":%lu}}", worker_slot);
+  EXACT(control_call(request), CKR_OK, "insert");
+  EXACT(g_f->C_GetSessionInfo(old, &info), CKR_SESSION_HANDLE_INVALID, "old-still-invalid");
+  EXACT(g_f->C_OpenSession(worker_slot, CKF_SERIAL_SESSION, NULL_PTR, NULL_PTR, &fresh), CKR_OK, "fresh-open");
+  if (fresh == old) { note_bad("same-slot handle resurrection", CKR_GENERAL_ERROR); return; }
+  EXACT(g_f->C_CloseSession(fresh), CKR_OK, "fresh-close");
+  printf("sim:same-slot/result assertions=%u failures=0 canary=pass\n", assertions);
+#undef EXACT
+}
+static int bounded_join(pthread_t thread) {
+  struct timespec until;
+  if (clock_gettime(CLOCK_REALTIME, &until)) return -1;
+  until.tv_sec += 120;
+  return pthread_timedjoin_np(thread, NULL, &until);
 }
 
 static long env_long(const char *name, long dflt) {
@@ -356,6 +404,12 @@ int main(int argc, char **argv) {
     note_bad("initial-Initialize", rv);
   }
 
+  CK_SLOT_ID discovered[2]; CK_ULONG discovered_count = 2;
+  rv = f->C_GetSlotList(CK_TRUE, discovered, &discovered_count);
+  if (rv != CKR_OK || discovered_count != 2) { note_bad("two configured slots", rv); return 1; }
+  worker_slot = discovered[0]; churn_slot = discovered[1];
+  puts("sim:independent-slot/discovery worker=slot-A churn=slot-B count=2");
+
   workers = (pthread_t *)calloc((size_t)nworkers, sizeof(*workers));
   wargs = (worker_arg_t *)calloc((size_t)nworkers, sizeof(*wargs));
   if (workers == NULL || wargs == NULL) {
@@ -377,18 +431,20 @@ int main(int argc, char **argv) {
     return 2;
   }
   for (i = 0; i < nworkers; i++) {
-    pthread_join(workers[i], NULL);
+    if (bounded_join(workers[i])) return 2;
   }
-  pthread_join(churner, NULL);
+  if (bounded_join(churner)) return 2;
   free(workers);
   free(wargs);
+
+  same_slot_removal();
 
   /* Final quiet-module smoke: slot list + open/info/close. */
   rv = f->C_GetSlotList(CK_FALSE, NULL_PTR, &n);
   if (rv != CKR_OK) {
     note_bad("final-GetSlotList", rv);
   }
-  rv = f->C_OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
+  rv = f->C_OpenSession(worker_slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
                         NULL_PTR, &sess);
   if (rv != CKR_OK || sess == 0) {
     note_bad("final-OpenSession", rv);
@@ -422,6 +478,7 @@ int main(int argc, char **argv) {
     printf("RESULT: FAIL\n");
     return 1;
   }
+  unlink(g_cfg_path);
   printf("RESULT: PASS\n");
   return 0;
 }

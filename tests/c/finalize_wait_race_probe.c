@@ -1,28 +1,19 @@
-/* tests/c/finalize_wait_race_probe.c — finalize/wait race characterization probe (FENCED).
+/* Supplementary finalize/wait stress. The C root is atomic and points to a
+ * retained liveness cell: after shutdown the empty cell remains rooted, and
+ * an old waiter cannot follow a later interval's root. The historical plain
+ * pointer comment described a predecessor before that fix.
  *
- * Exercises the finalize-vs-wait window: cbits/control_entry.c keeps
- * g_haskoki_instance as a plain pointer resolved lock-free by
- * C_WaitForSlotEvent (resolve at wait entry) while C_Finalize closes
- * it (uninstall + Haskell close). One thread loops BLOCKING slot-event
- * waits, a second spins DON'T_BLOCK waits (hammering the resolve
- * path), and a third cycles C_Initialize/C_Finalize CYCLES times.
+ * An empty fixture has no event producer: blocking returns only NOT_INITIALIZED;
+ * polling returns NO_EVENT or NOT_INITIALIZED, always without writing output.
+ * T-N05's internal STM seams prove admission and exact close/claim order. This
+ * stress run does not infer admission from a native thread-start acknowledgement.
  *
- * This probe is characterization, NOT a gate: it is fenced out of
- * scripts/test-sim-threaded.sh and run manually; its tally decides
- * the conditional fix (ANY crash/hang triggers the fix, clean 50/50
- * leaves this window a follow-up with the evidence).
- *
- * Pass criteria per run: CYCLES close/reopen cycles complete, both
- * waiter threads join, and the final quiet-module smoke succeeds.
- * Crash (signal), hang (alarm below, or the driver's timeout(1)),
- * or an illegal code is a DIRTY run. Flakiness cuts against the
- * provider: any dirty run triggers the fix.
- *
- * Compile with -Ispec/vendor.
- * Usage: finalize_wait_race_probe <path-to-libhaskoki.so>
- * Tuning: HASKOKI_FINALIZE_WAIT_CYCLES (default 50).
+ * scripts/test-finalize-race.sh runs finalize_race.c, NOT this probe. T-N08's
+ * native runner separately compiles/runs this file with 100 cycles.
+ * Compile with -Ispec/vendor. Usage: finalize_wait_race_probe MODULE
+ * HASKOKI_FINALIZE_WAIT_CYCLES defaults to 50. Crash/timeout is a setup failure.
  */
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
 
 #define CK_PTR *
 #define CK_DECLARE_FUNCTION(returnType, name) returnType name
@@ -50,15 +41,8 @@ static atomic_long g_cycles = 0;
 /* Codes the wait/close interplay legitimately produces. Notably
  * absent: CKR_GENERAL_ERROR (the guarded-Haskell tell-tale) and
  * anything else — garbage included. */
-static int legal_rv(CK_RV rv) {
-  switch (rv) {
-  case CKR_OK:
-  case CKR_CRYPTOKI_NOT_INITIALIZED:
-  case CKR_NO_EVENT:
-    return 1;
-  default:
-    return 0;
-  }
+static int legal_rv(CK_RV rv, int blocking) {
+  return rv == CKR_CRYPTOKI_NOT_INITIALIZED || (!blocking && rv == CKR_NO_EVENT);
 }
 
 static void note_bad(const char *what, CK_RV rv) {
@@ -86,10 +70,10 @@ static void msleep(long ms) {
 static void *blocker_main(void *arg) {
   (void)arg;
   while (!atomic_load(&g_stop)) {
-    CK_SLOT_ID slot = 0xDEADu;
+    CK_SLOT_ID slot = 0xa5a5a5a5a5a5a5a5UL;
     CK_RV rv = g_f->C_WaitForSlotEvent(0 /* blocking */, &slot, NULL_PTR);
     atomic_fetch_add(&g_waits, 1);
-    if (!legal_rv(rv)) {
+    if (!legal_rv(rv, 1) || slot != 0xa5a5a5a5a5a5a5a5UL) {
       note_bad("blocking-wait", rv);
     }
     if (rv == CKR_CRYPTOKI_NOT_INITIALIZED) {
@@ -104,11 +88,11 @@ static void *blocker_main(void *arg) {
 static void *spinner_main(void *arg) {
   (void)arg;
   while (!atomic_load(&g_stop)) {
-    CK_SLOT_ID slot = 0xDEADu;
+    CK_SLOT_ID slot = 0xa5a5a5a5a5a5a5a5UL;
     CK_RV rv =
         g_f->C_WaitForSlotEvent(CKF_DONT_BLOCK, &slot, NULL_PTR);
     atomic_fetch_add(&g_waits, 1);
-    if (!legal_rv(rv)) {
+    if (!legal_rv(rv, 0) || slot != 0xa5a5a5a5a5a5a5a5UL) {
       note_bad("spinner-wait", rv);
     }
   }
@@ -126,7 +110,7 @@ static void *closer_main(void *arg) {
   long c;
   for (c = 0; c < ca->cycles; c++) {
     CK_RV rv = g_f->C_Finalize(NULL_PTR);
-    if (rv != CKR_OK && rv != CKR_CRYPTOKI_NOT_INITIALIZED) {
+    if (rv != CKR_OK) {
       note_bad("Finalize", rv);
     }
     rv = g_f->C_Initialize(NULL_PTR);
@@ -138,7 +122,7 @@ static void *closer_main(void *arg) {
   return NULL;
 }
 
-static char g_cfg_path[256];
+static char g_cfg_path[4096];
 
 static void write_config(void) {
   static const char body[] = "schema_version = 1\n"
@@ -149,7 +133,10 @@ static void write_config(void) {
                              "kind = \"synthetic\"\n"
                              "[trace]\n"
                              "enabled = false\n";
-  char tmpl[] = "/tmp/haskoki-finalize-race-probe-XXXXXX";
+  char tmpl[4096];
+  const char *scratch = getenv("TMPDIR");
+  if (!scratch) scratch = "/tmp";
+  if (snprintf(tmpl, sizeof(tmpl), "%s/haskoki-finalize-race-probe-XXXXXX", scratch) >= (int)sizeof(tmpl)) exit(2);
   int fd = mkstemp(tmpl);
   size_t want;
   if (fd < 0) {
@@ -167,6 +154,13 @@ static void write_config(void) {
     perror("setenv");
     exit(2);
   }
+}
+
+static int bounded_join(pthread_t thread) {
+  struct timespec until;
+  if (clock_gettime(CLOCK_REALTIME, &until)) return -1;
+  until.tv_sec += 100;
+  return pthread_timedjoin_np(thread, NULL, &until);
 }
 
 static long env_long(const char *name, long dflt) {
@@ -241,16 +235,16 @@ int main(int argc, char **argv) {
     fprintf(stderr, "pthread_create closer failed\n");
     return 2;
   }
-  pthread_join(closer, NULL);
+  if (bounded_join(closer)) return 2;
   /* Stop the waiters: C_Finalize wakes the parked blocker (Haskell
    * queue finalizer); the spinner observes the flag directly. */
   atomic_store(&g_stop, 1);
   rv = f->C_Finalize(NULL_PTR);
-  if (rv != CKR_OK && rv != CKR_CRYPTOKI_NOT_INITIALIZED) {
+  if (rv != CKR_OK) {
     note_bad("stop-Finalize", rv);
   }
-  pthread_join(blocker, NULL);
-  pthread_join(spinner, NULL);
+  if (bounded_join(blocker)) return 2;
+  if (bounded_join(spinner)) return 2;
 
   /* Final quiet-module smoke. */
   rv = f->C_Initialize(NULL_PTR);
@@ -261,6 +255,9 @@ int main(int argc, char **argv) {
   if (rv != CKR_OK) {
     note_bad("final-GetSlotList", rv);
   }
+  CK_SLOT_ID empty = 0xa5a5a5a5a5a5a5a5UL;
+  rv = f->C_WaitForSlotEvent(CKF_DONT_BLOCK, &empty, NULL_PTR);
+  if (rv != CKR_NO_EVENT || empty != 0xa5a5a5a5a5a5a5a5UL) note_bad("final-empty-poll", rv);
   rv = f->C_Finalize(NULL_PTR);
   if (rv != CKR_OK) {
     note_bad("final-Finalize", rv);
@@ -279,6 +276,7 @@ int main(int argc, char **argv) {
     printf("RESULT: FAIL\n");
     return 1;
   }
-  printf("RESULT: PASS\n");
+  unlink(g_cfg_path);
+  printf("RESULT: PASS (unexplained_ok=0 canary=pass)\n");
   return 0;
 }

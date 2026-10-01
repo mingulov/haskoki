@@ -2184,9 +2184,8 @@ haskokiStdFind ctx (CULong h) (CULong maxCount) pHandles pCount =
 
 -- | Close a find cursor (closing a non-open search refuses).
 haskokiStdFindFinal :: StablePtr StdInstance -> CULong -> IO CULong
-haskokiStdFindFinal ctx (CULong h) =
-  withStdCtx ctx $ \inst -> do
-    let sid = SessionId (fromIntegral h)
+haskokiStdFindFinal ctx h =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
     wasOpen <- atomicModifyIORef' (siFind inst) $ \m ->
       case Map.lookup sid m of
         Nothing -> (m, False)

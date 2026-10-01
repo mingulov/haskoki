@@ -16,7 +16,7 @@
  * scripts/test-control-events.sh.
  * Usage: control_events <path-to-libhaskoki.so>
  */
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
 
 #define CK_PTR *
 #define CK_DECLARE_FUNCTION(returnType, name) returnType name
@@ -28,6 +28,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,14 +63,21 @@ typedef struct waiter_arg {
   CK_C_WaitForSlotEvent fn;
   CK_RV rv;
   CK_SLOT_ID slot;
-  int done;
+  atomic_int done;
+  int started;
+  pthread_mutex_t mutex;
+  pthread_cond_t ready;
 } waiter_arg;
 
 static void *waiter_thread(void *arg) {
   waiter_arg *wa = (waiter_arg *)arg;
-  wa->slot = 0xDEADu;
+  pthread_mutex_lock(&wa->mutex);
+  wa->started = 1;
+  pthread_cond_signal(&wa->ready);
+  pthread_mutex_unlock(&wa->mutex);
+  wa->slot = 0xa5a5a5a5a5a5a5a5UL;
   wa->rv = wa->fn(0 /* blocking */, &wa->slot, NULL_PTR);
-  wa->done = 1;
+  atomic_store(&wa->done, 1);
   return 0;
 }
 
@@ -144,35 +152,62 @@ int main(int argc, char **argv) {
   rv = fns->C_Initialize(NULL_PTR);
   CHECK(rv == CKR_OK, "C_Initialize ok (rv=%lu)", rv);
 
-  /* FIRST TEST: block natively, insert via control, observe wakeup. */
+  /* Discovery supplies the comparison identity. Startup is already present;
+   * remove A and consume that indication before testing blocking reinsertion. */
+  CK_SLOT_ID slots[16]; CK_ULONG slot_count = 16;
+  rv = fns->C_GetSlotList(CK_TRUE, slots, &slot_count);
+  CHECK(rv == CKR_OK && slot_count > 0, "discover logical slot-A");
+  if (rv != CKR_OK || !slot_count) { fns->C_Finalize(NULL_PTR); return 1; }
+  CK_SLOT_ID slot_a = slots[0];
+  char mutation[256];
+  snprintf(mutation, sizeof(mutation),
+           "{\"schema_version\":1,\"command\":\"token.remove\",\"arguments\":{\"slot\":%lu}}", slot_a);
+  rv = control_call(pControl, mutation, resp, CONTROL_BUDGET, &out_len);
+  CHECK(rv == CKR_OK, "remove initially present slot-A (rv=%lu)", rv);
+  CK_SLOT_ID indication = 0xa5a5a5a5a5a5a5a5UL;
+  rv = fns->C_WaitForSlotEvent(CKF_DONT_BLOCK, &indication, NULL_PTR);
+  CHECK(rv == CKR_OK && indication == slot_a, "initial removal event is slot-A");
+  CK_SLOT_INFO slot_info;
+  rv = fns->C_GetSlotInfo(slot_a, &slot_info);
+  CHECK(rv == CKR_OK && slot_info.flags == CKF_REMOVABLE_DEVICE,
+        "removal query agrees with event");
+  CK_ULONG present = 0;
+  rv = fns->C_GetSlotList(CK_TRUE, NULL_PTR, &present);
+  CHECK(rv == CKR_OK && present + 1 == slot_count, "removed slot absent from filtered list");
+  if (g_failures) { fns->C_Finalize(NULL_PTR); return 1; }
+
   memset(&wa, 0, sizeof(wa));
+  atomic_init(&wa.done, 0);
+  if (pthread_mutex_init(&wa.mutex, NULL) || pthread_cond_init(&wa.ready, NULL)) return 2;
   wa.fn = fns->C_WaitForSlotEvent;
   CHECK(wa.fn != 0, "table carries C_WaitForSlotEvent");
-  if (pthread_create(&th, 0, waiter_thread, &wa) != 0) {
-    printf("FAIL: pthread_create\n");
-    return 1;
+  if (pthread_create(&th, 0, waiter_thread, &wa) != 0) return 2;
+  struct timespec until;
+  clock_gettime(CLOCK_REALTIME, &until); until.tv_sec += 10;
+  pthread_mutex_lock(&wa.mutex);
+  while (!wa.started) {
+    if (pthread_cond_timedwait(&wa.ready, &wa.mutex, &until)) {
+      pthread_mutex_unlock(&wa.mutex); fns->C_Finalize(NULL_PTR); return 2;
+    }
   }
-  { /* let the waiter block (nanosleep: usleep is obsolescent) */
-    struct timespec ts;
-    ts.tv_sec = 0;
-    ts.tv_nsec = 200000000L;
-    nanosleep(&ts, 0);
-  }
-  CHECK(wa.done == 0, "waiter is blocked before insert");
-
-  rv = control_call(pControl,
-                    "{\"schema_version\":1,\"command\":\"token.insert\","
-                    "\"arguments\":{\"slot\":0}}",
-                    resp, CONTROL_BUDGET, &out_len);
+  pthread_mutex_unlock(&wa.mutex);
+  /* This acknowledges native entry preparation, not Haskell STM admission.
+   * The real transition below remains pending until one waiter consumes it. */
+  snprintf(mutation, sizeof(mutation),
+           "{\"schema_version\":1,\"command\":\"token.insert\",\"arguments\":{\"slot\":%lu}}", slot_a);
+  rv = control_call(pControl, mutation, resp, CONTROL_BUDGET, &out_len);
   CHECK(rv == CKR_OK, "control token.insert ok (rv=%lu)", rv);
-
-  if (pthread_join(th, 0) != 0) {
-    printf("FAIL: pthread_join\n");
-    return 1;
-  }
-  CHECK(wa.done == 1, "waiter returned");
+  clock_gettime(CLOCK_REALTIME, &until); until.tv_sec += 10;
+  if (pthread_timedjoin_np(th, NULL, &until)) { fns->C_Finalize(NULL_PTR); return 2; }
+  CHECK(atomic_load(&wa.done) == 1, "waiter returned");
   CHECK(wa.rv == CKR_OK, "waiter woke with CKR_OK (rv=%lu)", wa.rv);
-  CHECK(wa.slot == 0, "waiter reports slot 0 (slot=%lu)", wa.slot);
+  CHECK(wa.slot == slot_a, "waiter reports discovered slot-A");
+  rv = fns->C_GetSlotInfo(slot_a, &slot_info);
+  CHECK(rv == CKR_OK && slot_info.flags == (CKF_REMOVABLE_DEVICE | CKF_TOKEN_PRESENT),
+        "insertion query agrees with event");
+  rv = fns->C_GetSlotList(CK_TRUE, NULL_PTR, &present);
+  CHECK(rv == CKR_OK && present == slot_count, "inserted slot restored to filtered list");
+  pthread_cond_destroy(&wa.ready); pthread_mutex_destroy(&wa.mutex);
 
   /* DON'T_BLOCK with an empty queue: immediate NO_EVENT. */
   {
