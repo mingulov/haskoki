@@ -96,7 +96,7 @@ def main():
         ("tests/c/consumer_roundtrip.c", re.compile(r".")),
         ("tests/c/consumer_discovery.c", re.compile(r".")),
     ]
-    skip_dirs = {"dist-newstyle", "dist-release", ".git"}
+    skip_dirs = {"dist-newstyle", "dist-release", "dist-release-evidence", ".git"}
     skip_files = {"spec/function-contracts.json",  # owned by ROW-MIRROR/PLANNED-COUNT
                   "scripts/generate-function-contracts.py"}  # planner-scope table
     exts = {".md", ".json", ".py", ".sh", ".c", ".hs", ".cabal", ".h", ".inc"}
@@ -107,7 +107,7 @@ def main():
         parts = path.relative_to(REPO).parts
         rel = path.relative_to(REPO).as_posix()
         if any(part in skip_dirs or part.startswith(".") for part in parts):
-            continue  # build trees, VCS, third-party venvs: not repo prose
+            continue  # build trees, evidence mirrors, VCS, third-party venvs: not repo prose
         if rel in skip_files:
             continue
         for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
