@@ -41,6 +41,7 @@ module Haskoki.Object
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing, listToMaybe)
@@ -89,7 +90,7 @@ import Haskoki.Outcome
   , StateDelta (..)
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
-import Haskoki.Session (SessionLogin (LoginPublic), admitCode, admitPrivate, admitWritable)
+import Haskoki.Session (SessionLogin (LoginPublic, LoginSO), admitCode, admitPrivate, admitWritable)
 import Haskoki.Types
   ( ExternalHandle (..)
   , ObjectId (..)
@@ -123,6 +124,15 @@ checkDuplicates = go Map.empty
       Just v'
         | v' == v -> go acc rest
         | otherwise -> Left t
+
+-- | First wrongly shaped entry in a validated template list, if any.
+-- Shared by the setter and the copy path so wrong shapes refuse
+-- before any seal, immutable, or mutability rule.
+wrongShape :: [(AttributeType, AttributeValue)] -> Maybe AttributeType
+wrongShape [] = Nothing
+wrongShape ((t, v) : rest)
+  | shapeMatches t v = wrongShape rest
+  | otherwise = Just t
 
 -- | Validate a creation template: no contradictions, every value
 -- carrying its type's shape, and the class present (the one
@@ -386,42 +396,49 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
     ("wrong shape for attribute: " ++ show t)
   Left TemplateIncomplete -> templateReject CKR_TEMPLATE_INCOMPLETE
     "template is missing the class"
-  Right attrs -> case checkCertificateTemplate attrs of
-    Left TemplateIncomplete -> templateReject CKR_TEMPLATE_INCOMPLETE
-      "x509 certificate template requires certificate type, value and subject"
+  Right attrs -> case checkCertificateDates attrs of
     Left e -> templateReject CKR_TEMPLATE_INCONSISTENT
-      ("certificate template: " ++ show e)
-    Right ()
-      | Just (ValULong c) <- Map.lookup AttrClass attrs
-      , isNothing (classNameById c) ->
-          templateReject CKR_TEMPLATE_INCONSISTENT
-            ("unknown object class: " ++ show c)
-      | otherwise -> case importMaterial attrs of
-          Left (code, msg) -> templateReject code msg
-          Right stored
-            | Left deny <- admitPrivate (ssLogin st) (mergedIsPrivate stored) ->
-                templateReject (admitCode deny)
-                  "public session cannot create private objects"
-            | Left deny <- admitWritable (ssReadOnly st) (mergedIsToken stored) ->
-                templateReject (admitCode deny)
-                  "read-only session cannot create token objects"
-            | otherwise ->
-            let oid = ObjectId (mNextObject model)
-                h = ExternalHandle (mNextHandle model)
-                owner
-                  | mergedIsToken stored = Nothing
-                  | otherwise = Just (ssId st)
-            in Immediate PreparedCommit
-              { pcCode = CKR_OK
-              , pcDelta = StateDelta
-                  [ DeltaCreateObjectFull oid stored owner (ssSlot st)
-                  , DeltaBindHandle h oid
-                  ]
-              , pcPersist = []
-              , pcOutputs = [NativeOutput (RegionHandle "object") (encodeHandle h)]
-              , pcReleases = []
-              , pcReasons = ["created object " ++ show oid]
-              }
+      ("certificate date: " ++ show e)
+    Right () -> case checkCertificateTemplate attrs of
+      Left TemplateIncomplete -> templateReject CKR_TEMPLATE_INCOMPLETE
+        "x509 certificate template requires certificate type, value and subject"
+      Left e -> templateReject CKR_TEMPLATE_INCONSISTENT
+        ("certificate template: " ++ show e)
+      Right ()
+        | Just (ValULong c) <- Map.lookup AttrClass attrs
+        , isNothing (classNameById c) ->
+            templateReject CKR_TEMPLATE_INCONSISTENT
+              ("unknown object class: " ++ show c)
+        | otherwise -> case importMaterial attrs of
+            Left (code, msg) -> templateReject code msg
+            Right stored
+              | Left deny <- admitPrivate (ssLogin st) (mergedIsPrivate stored) ->
+                  templateReject (admitCode deny)
+                    "public session cannot create private objects"
+              | Left deny <- admitWritable (ssReadOnly st) (mergedIsToken stored) ->
+                  templateReject (admitCode deny)
+                    "read-only session cannot create token objects"
+              | Map.lookup AttrTrusted stored == Just (ValBool True)
+              , ssLogin st /= LoginSO ->
+                  templateReject CKR_ATTRIBUTE_READ_ONLY
+                    "only the security officer may create TRUSTED=true objects"
+              | otherwise ->
+                let oid = ObjectId (mNextObject model)
+                    h = ExternalHandle (mNextHandle model)
+                    owner
+                      | mergedIsToken stored = Nothing
+                      | otherwise = Just (ssId st)
+                in Immediate PreparedCommit
+                  { pcCode = CKR_OK
+                  , pcDelta = StateDelta
+                      [ DeltaCreateObjectFull oid stored owner (ssSlot st)
+                      , DeltaBindHandle h oid
+                      ]
+                  , pcPersist = []
+                  , pcOutputs = [NativeOutput (RegionHandle "object") (encodeHandle h)]
+                  , pcReleases = []
+                  , pcReasons = ["created object " ++ show oid]
+                  }
 
 ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkRsa, ckkEc, ckkAes, ckkDsa, ckkDh, ckkX9_42Dh, ckkEcEdwards, ckkMlDsa, ckkSlhDsa, ckkMlKem :: Word64
 ckoPrivateKey = mustClassId "CKO_PRIVATE_KEY"
@@ -469,6 +486,37 @@ checkCertificateTemplate attrs = case Map.lookup AttrClass attrs of
           | otherwise -> Right ()
         _ -> Right ()
   _ -> Right ()
+
+-- | Certificate date format over an already shape-validated
+-- template: present START_DATE/END_DATE values must be exactly 8
+-- ASCII-digit bytes (the YYYYMMDD layout; month/day semantics are
+-- NOT validated and no validity period is enforced). Violations are
+-- 'TemplateWrongType' (inconsistent); absence is fine. The create
+-- path runs this before 'checkCertificateTemplate' so malformedness
+-- precedes incompleteness.
+checkCertificateDates
+  :: Map AttributeType AttributeValue -> Either TemplateError ()
+checkCertificateDates attrs = do
+  checkOne AttrStartDate
+  checkOne AttrEndDate
+  where
+    checkOne t = case Map.lookup t attrs of
+      Nothing -> Right ()
+      Just (ValBytes bs)
+        | BS.length bs == 8 && BS.all isDigit bs -> Right ()
+        | otherwise -> Left (TemplateWrongType t)
+      Just _ -> Left (TemplateWrongType t)
+    isDigit w = w >= 0x30 && w <= 0x39
+
+-- | Certificate attributes a copy template may never override: the
+-- identity fields plus the trust, category, and date attributes.
+-- The copy guard scopes this set to certificate sources only.
+certImmutable :: [AttributeType]
+certImmutable =
+  [ AttrClass, AttrCertificateType, AttrValue, AttrSubject, AttrIssuer, AttrSerialNumber
+  , AttrPublicKeyInfo, AttrHashOfSubjectPublicKey, AttrHashOfIssuerPublicKey
+  , AttrTrusted, AttrCertificateCategory, AttrStartDate, AttrEndDate
+  ]
 
 -- | Key-import material: RSA/EC public/private templates carry
 -- components, but the engine consumes PKCS#8/SPKI DER in 'AttrValue'
@@ -875,8 +923,11 @@ planDestroyObject model st h = case resolveHandle model h of
 -- untouched. Seal ratchet: overrides that flip sensitive true->false
 -- or extractable false->true are rejected ('CKR_TEMPLATE_INCONSISTENT');
 -- sealed flags otherwise inherit, so a copy of a sealed object is
--- sealed too. An explicit @CKA_COPYABLE=false@ on the source
--- prohibits the copy ('CKR_ACTION_PROHIBITED').
+-- sealed too. Wrongly shaped overrides refuse before any rule;
+-- TRUSTED=true overrides need the SO login; certificate sources
+-- refuse overrides of the certificate-immutable set (all
+-- 'CKR_TEMPLATE_INCONSISTENT'). An explicit @CKA_COPYABLE=false@ on
+-- the source prohibits the copy ('CKR_ACTION_PROHIBITED').
 planCopyObject
   :: Model -> SessionState -> ExternalHandle -> [(AttributeType, AttributeValue)]
   -> PlanResult
@@ -891,47 +942,61 @@ planCopyObject model st h tmpl = case resolveHandle model h of
     | otherwise -> case checkDuplicates tmpl of
         Left t -> templateReject CKR_TEMPLATE_INCONSISTENT
           ("contradictory attribute: " ++ show t)
-        Right over
-          | Map.lookup AttrSensitive (osAttrs src) == Just (ValBool True)
-          , Map.lookup AttrSensitive over == Just (ValBool False) ->
-              templateReject CKR_TEMPLATE_INCONSISTENT
-                "copy cannot clear the sensitive flag"
-          | Map.lookup AttrExtractable (osAttrs src) == Just (ValBool False)
-          , Map.lookup AttrExtractable over == Just (ValBool True) ->
-              templateReject CKR_TEMPLATE_INCONSISTENT
-                "copy cannot set extractable on an unextractable source"
-          | Just msg <- valueLenConflict (Map.union over (osAttrs src)) ->
-              templateReject CKR_TEMPLATE_INCONSISTENT msg
-          | Left deny <- admitPrivate (ssLogin st)
-              (mergedIsPrivate (Map.union over (osAttrs src))) ->
-              templateReject (admitCode deny)
-                "public session cannot copy to private objects"
-          | Left deny <- admitWritable (ssReadOnly st)
-              (mergedIsToken (Map.union over (osAttrs src))) ->
-              templateReject (admitCode deny)
-                "read-only session cannot copy to token objects"
-          | otherwise ->
-              let merged = Map.union over (osAttrs src)
-              in if Map.member AttrClass merged
-            then
-              let oid = ObjectId (mNextObject model)
-                  h2 = ExternalHandle (mNextHandle model)
-                  owner
-                    | mergedIsToken merged = Nothing
-                    | otherwise = Just (ssId st)
-              in Immediate PreparedCommit
-                { pcCode = CKR_OK
-                , pcDelta = StateDelta
-                    [ DeltaCreateObjectFull oid merged owner (ssSlot st)
-                    , DeltaBindHandle h2 oid
-                    ]
-                , pcPersist = []
-                , pcOutputs = [NativeOutput (RegionHandle "object") (encodeHandle h2)]
-                , pcReleases = []
-                , pcReasons = ["copied object " ++ show (osId src) ++ " to " ++ show oid]
-                }
-            else templateReject CKR_TEMPLATE_INCOMPLETE
-              "merged template is missing the class"
+        Right over -> case wrongShape (Map.toList over) of
+          Just t -> templateReject CKR_TEMPLATE_INCONSISTENT
+            ("wrong shape for attribute: " ++ show t)
+          Nothing
+            | Map.lookup AttrSensitive (osAttrs src) == Just (ValBool True)
+            , Map.lookup AttrSensitive over == Just (ValBool False) ->
+                templateReject CKR_TEMPLATE_INCONSISTENT
+                  "copy cannot clear the sensitive flag"
+            | Map.lookup AttrExtractable (osAttrs src) == Just (ValBool False)
+            , Map.lookup AttrExtractable over == Just (ValBool True) ->
+                templateReject CKR_TEMPLATE_INCONSISTENT
+                  "copy cannot set extractable on an unextractable source"
+            | Map.lookup AttrTrusted over == Just (ValBool True)
+            , ssLogin st /= LoginSO ->
+                templateReject CKR_TEMPLATE_INCONSISTENT
+                  "only the security officer may copy to TRUSTED=true"
+            | isCertSource
+            , Just t <- find (`elem` certImmutable) (Map.keys over) ->
+                templateReject CKR_TEMPLATE_INCONSISTENT
+                  ("copy cannot override certificate field: " ++ show t)
+            | Just msg <- valueLenConflict (Map.union over (osAttrs src)) ->
+                templateReject CKR_TEMPLATE_INCONSISTENT msg
+            | Left deny <- admitPrivate (ssLogin st)
+                (mergedIsPrivate (Map.union over (osAttrs src))) ->
+                templateReject (admitCode deny)
+                  "public session cannot copy to private objects"
+            | Left deny <- admitWritable (ssReadOnly st)
+                (mergedIsToken (Map.union over (osAttrs src))) ->
+                templateReject (admitCode deny)
+                  "read-only session cannot copy to token objects"
+            | otherwise ->
+                let merged = Map.union over (osAttrs src)
+                in if Map.member AttrClass merged
+              then
+                let oid = ObjectId (mNextObject model)
+                    h2 = ExternalHandle (mNextHandle model)
+                    owner
+                      | mergedIsToken merged = Nothing
+                      | otherwise = Just (ssId st)
+                in Immediate PreparedCommit
+                  { pcCode = CKR_OK
+                  , pcDelta = StateDelta
+                      [ DeltaCreateObjectFull oid merged owner (ssSlot st)
+                      , DeltaBindHandle h2 oid
+                      ]
+                  , pcPersist = []
+                  , pcOutputs = [NativeOutput (RegionHandle "object") (encodeHandle h2)]
+                  , pcReleases = []
+                  , pcReasons = ["copied object " ++ show (osId src) ++ " to " ++ show oid]
+                  }
+              else templateReject CKR_TEMPLATE_INCOMPLETE
+                "merged template is missing the class"
+            where
+              isCertSource =
+                Map.lookup AttrClass (osAttrs src) == Just (ValULong ckoCertificate)
 
 -- | Plan an attribute change: the handle must resolve and be
 -- visible to the calling session, the template must be
@@ -945,7 +1010,9 @@ planCopyObject model st h tmpl = case resolveHandle model h of
 -- length, mechanism policy, certificate and key-component
 -- attributes) is unmodifiable and refuses
 -- 'CKR_ATTRIBUTE_READ_ONLY'. The change is atomic: one combined
--- delta applies all entries or none.
+-- delta applies all entries or none. TRUSTED=true writes need the
+-- SO login (refused before mutability as 'CKR_ATTRIBUTE_READ_ONLY');
+-- TRUSTED=false writes pass for any session.
 planSetAttributes
   :: Model -> SessionState -> ExternalHandle -> [(AttributeType, AttributeValue)]
   -> PlanResult
@@ -967,22 +1034,23 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
         Right over -> case wrongShape (Map.toList over) of
           Just t -> templateReject CKR_TEMPLATE_INCONSISTENT
             ("wrong shape for attribute: " ++ show t)
-          Nothing -> case firstRefusal (osAttrs ost) (Map.toList over) of
-            Just (code, msg) -> templateReject code msg
-            Nothing -> Immediate PreparedCommit
-              { pcCode = CKR_OK
-              , pcDelta = StateDelta [DeltaSetAttributes (osId ost) over]
-              , pcPersist = []
-              , pcOutputs = []
-              , pcReleases = []
-              , pcReasons = ["set " ++ show (Map.size over)
-                  ++ " attributes on " ++ show (osId ost)]
-              }
+          Nothing
+            | Map.lookup AttrTrusted over == Just (ValBool True)
+            , ssLogin st /= LoginSO ->
+                templateReject CKR_ATTRIBUTE_READ_ONLY
+                  "only the security officer may set TRUSTED=true"
+            | otherwise -> case firstRefusal (osAttrs ost) (Map.toList over) of
+                Just (code, msg) -> templateReject code msg
+                Nothing -> Immediate PreparedCommit
+                  { pcCode = CKR_OK
+                  , pcDelta = StateDelta [DeltaSetAttributes (osId ost) over]
+                  , pcPersist = []
+                  , pcOutputs = []
+                  , pcReleases = []
+                  , pcReasons = ["set " ++ show (Map.size over)
+                      ++ " attributes on " ++ show (osId ost)]
+                  }
   where
-    wrongShape [] = Nothing
-    wrongShape ((t, v) : rest)
-      | shapeMatches t v = wrongShape rest
-      | otherwise = Just t
     firstRefusal _ [] = Nothing
     firstRefusal cur ((t, v) : rest) = case mutableAs cur t v of
       Just refusal -> Just refusal
@@ -1011,6 +1079,7 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
           "CKA_COPYABLE can only change true->false"
       | t == AttrDestroyable = ratchet cur AttrDestroyable False
           "CKA_DESTROYABLE can only change true->false"
+      | t == AttrTrusted = Nothing
       | otherwise = Just (CKR_ATTRIBUTE_READ_ONLY,
           "attribute is not modifiable: " ++ show t)
       where

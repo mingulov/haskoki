@@ -101,6 +101,10 @@ data AttributeType
   | AttrSeed
   | AttrSignRecover
   | AttrVerifyRecover
+  | AttrTrusted
+  | AttrCertificateCategory
+  | AttrStartDate
+  | AttrEndDate
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Owned attribute values. The semantic value stays separate
@@ -233,11 +237,13 @@ shapeOf t = case t of
   AttrDecapsulate -> ShapeBool
   AttrSignRecover -> ShapeBool
   AttrVerifyRecover -> ShapeBool
+  AttrTrusted -> ShapeBool
   AttrClass -> ShapeULong
   AttrKeyType -> ShapeULong
   AttrValueLen -> ShapeULong
   AttrModulusBits -> ShapeULong
   AttrKemAlg -> ShapeULong
+  AttrCertificateCategory -> ShapeULong
   AttrLabel -> ShapeBytes
   AttrApplication -> ShapeBytes
   AttrValue -> ShapeBytes
@@ -270,6 +276,8 @@ shapeOf t = case t of
   AttrParameterSet -> ShapeULong
   AttrSeed -> ShapeBytes
   AttrSubprimeBits -> ShapeULong
+  AttrStartDate -> ShapeBytes
+  AttrEndDate -> ShapeBytes
 
 -- | Whether a value carries its type's shape. The template
 -- wrong-type gate ('Haskoki.Object.validateTemplate' refuses
@@ -397,6 +405,10 @@ attributeTypeByName name = case name of
   "CKA_SUBPRIME_BITS" -> Just AttrSubprimeBits
   "CKA_PARAMETER_SET" -> Just AttrParameterSet
   "CKA_SEED" -> Just AttrSeed
+  "CKA_TRUSTED" -> Just AttrTrusted
+  "CKA_CERTIFICATE_CATEGORY" -> Just AttrCertificateCategory
+  "CKA_START_DATE" -> Just AttrStartDate
+  "CKA_END_DATE" -> Just AttrEndDate
   _ -> Nothing
 
 -- | 8-byte big-endian decoding; total over 8-byte inputs (only

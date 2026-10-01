@@ -995,6 +995,10 @@ attrName t = case t of
   AttrSubprimeBits -> "subprime_bits"
   AttrParameterSet -> "parameter_set"
   AttrSeed -> "seed"
+  AttrTrusted -> "trusted"
+  AttrCertificateCategory -> "certificate_category"
+  AttrStartDate -> "start_date"
+  AttrEndDate -> "end_date"
 
 -- | Name back to type; unknown names fail.
 nameAttr :: String -> Maybe AttributeType
@@ -1052,6 +1056,10 @@ nameAttr s = case s of
   "subprime_bits" -> Just AttrSubprimeBits
   "parameter_set" -> Just AttrParameterSet
   "seed" -> Just AttrSeed
+  "trusted" -> Just AttrTrusted
+  "certificate_category" -> Just AttrCertificateCategory
+  "start_date" -> Just AttrStartDate
+  "end_date" -> Just AttrEndDate
   _ -> Nothing
 
 -- | Encode one attribute value: bools as JSON booleans, unsigned
@@ -1120,6 +1128,10 @@ decodeAttrValue t j = case t of
   AttrSubprimeBits -> ulongOf j
   AttrParameterSet -> ulongOf j
   AttrSeed -> bytesOf j
+  AttrTrusted -> boolOf j
+  AttrCertificateCategory -> ulongOf j
+  AttrStartDate -> bytesOf j
+  AttrEndDate -> bytesOf j
   where
     boolOf (JBool b) = Just (ValBool b)
     boolOf _ = Nothing

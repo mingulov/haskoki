@@ -1,5 +1,8 @@
 {- | Certificate durability engine tests (T-C02).
 
+T-C03 adds the numeric-admission case (numeric CKA 0x86 modeled
+end to end).
+
 Gate-held store-first publication of public (token) objects: token
 X.509 certificates and DATA survive engine restart with exact
 attribute readback, session objects stay volatile, copy/set/destroy
@@ -119,14 +122,19 @@ import Haskoki.Types
   )
 
 spec :: MVar () -> TestTree
-spec envLock = testGroup "Certificates/T-C02"
-  [ testCase "caseCertTokenRestart" (caseCertTokenRestart envLock)
-  , testCase "caseCertSessionVolatile" (caseCertSessionVolatile envLock)
-  , testCase "caseCertDurableMutations" (caseCertDurableMutations envLock)
-  , testCase "caseReadOnlyCycles" (caseReadOnlyCycles envLock)
-  , testCase "caseDurabilityFaults" (caseDurabilityFaults envLock)
-  , testCase "caseDurabilityConflict" (caseDurabilityConflict envLock)
-  , testCase "caseDurabilityInterrupt" (caseDurabilityInterrupt envLock)
+spec envLock = testGroup "Certificates"
+  [ testGroup "T-C02"
+    [ testCase "caseCertTokenRestart" (caseCertTokenRestart envLock)
+    , testCase "caseCertSessionVolatile" (caseCertSessionVolatile envLock)
+    , testCase "caseCertDurableMutations" (caseCertDurableMutations envLock)
+    , testCase "caseReadOnlyCycles" (caseReadOnlyCycles envLock)
+    , testCase "caseDurabilityFaults" (caseDurabilityFaults envLock)
+    , testCase "caseDurabilityConflict" (caseDurabilityConflict envLock)
+    , testCase "caseDurabilityInterrupt" (caseDurabilityInterrupt envLock)
+    ]
+  , testGroup "T-C03"
+    [ testCase "caseTrustedNumericModeled" (caseTrustedNumericModeled envLock)
+    ]
   ]
 
 -- ---------------------------------------------------------------------------
@@ -644,6 +652,35 @@ caseDurabilityInterrupt envLock = do
   noteCommitLog rep probe
 
 -- ---------------------------------------------------------------------------
+-- T-C03 cases
+-- ---------------------------------------------------------------------------
+
+-- | Numeric CKA 0x86 (TRUSTED) is modeled: a raw FFI frame carrying
+-- it as false is admitted on a public session and reads back. Before
+-- the T-C03 inventory the same assertion fails with
+-- CKR_ATTRIBUTE_TYPE_INVALID at frame decode.
+caseTrustedNumericModeled :: MVar () -> IO ()
+caseTrustedNumericModeled envLock = do
+  der <- fixtureDer
+  subj <- derSubject der
+  dbPath <- certDbPath "trusted-numeric"
+  probe <- newCertProbe
+  withCertInstance envLock dbPath probe $ \ctx _inst -> do
+    h <- openRwSession ctx
+    let frame = buildFrame
+          [ (ckaClass, le64 ckoCert)
+          , (ckaCertType, le64 ckcX509)
+          , (ckaToken, uBool False)
+          , (ckaLabel, "tc03-trusted-numeric")
+          , (ckaValue, der)
+          , (ckaSubject, subj)
+          , (ckaTrusted, uBool False)
+          ]
+    obj <- createObject ctx h frame
+    back <- getAttrOk ctx h obj ckaTrusted
+    assertEqual "TRUSTED=false readback" (uBool False) back
+
+-- ---------------------------------------------------------------------------
 -- DURABILITY reporting
 -- ---------------------------------------------------------------------------
 
@@ -907,6 +944,9 @@ ckaLabel = 0x3
 ckaValue = 0x11
 ckaCertType = 0x80
 ckaSubject = 0x101
+
+ckaTrusted :: Word64
+ckaTrusted = 0x86
 
 ckoData, ckoCert, ckcX509 :: Word64
 ckoData = 0x0
