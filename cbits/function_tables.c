@@ -28,10 +28,10 @@
  *    (session scoping arrived later). The direct surface exposes
  *    one slot (id 0) and no token model (token-present queries
  *    report zero slots).
- *  - Finalization is not safe against concurrent in-flight calls
- *    (waits out lock holders, but a fresh entrant racing finalize is
- *    unprotected); async admission leases arrived later. The harness
- *    joins all threads before finalizing.
+ *  - Finalization waits out state-lock holders, then closes/unbinds the
+ *    shared slot service before releasing Standard resources. Lock-free
+ *    waits retain an interval cell/service and arbitrate against close in
+ *    STM; Finalize need not join already-decided application threads.
  */
 
 #include <pthread.h>
@@ -651,15 +651,20 @@ static CK_RV on_Finalize(CK_VOID_PTR pReserved) {
     pthread_mutex_unlock(&g_init_lock);
     return lr;
   }
-  /* Shut the standard-surface instance first (closes the
-   * backend and the process store while everything is live). */
+  /* Commit shared-service close and discard pending flags, then unroot the
+   * serving owner before Standard cancellation/backend/store release. The
+   * Haskell close also clears the owner binding. Old captured cells remain
+   * valid empty cells, and captured hubs remain closed; neither can migrate.
+   * This must be AFTER successful state-lock acquisition: a refused lock
+   * above restores the same live interval without closing its service.
+   * Closing makes undecided waits runnable without joining application
+   * threads that already own a result but have not returned yet. */
+  haskoki_instance_shutdown();
+  /* Standard cleanup may cancel workers and release native resources only
+   * after the shared service is closed and its control owner unbound. */
   haskoki_std_shutdown();
   /* End the Haskell interval (never stops the RTS). */
   hv = (CK_RV)haskoki_finalize();
-  /* Shut the ops instance (finalizes the event queue FIRST, so
-   * every blocked slot-event waiter wakes with the source-correct
-   * code instead of stranding). Fast and nonblocking: safe here. */
-  haskoki_instance_shutdown();
   /* Tear down interval locking while still holding the state lock:
    * no entrant can be inside (they all serialize through it). */
   if (g_have_negotiated) {

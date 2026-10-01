@@ -3,8 +3,9 @@
 
 The C side (@cbits\/control_entry.c@) holds one @StablePtr@ per init
 interval: opened from @C_Initialize@ (config resolved once from
-@HASKOKI_CONFIG@\/@HASKOKI_TRACE@), closed from @C_Finalize@ (which
-finalizes the event queue first, waking ALL waiters). The handle
+@HASKOKI_CONFIG@\/@HASKOKI_TRACE@), closed from @C_Finalize@ before
+Standard teardown. Closing discards pending flags and makes every undecided
+wait runnable; an already committed decision still owns its output. The handle
 points at a single-shot liveness cell, never at the
 instance directly, and is never freed — so every export can
 re-validate it with a plain read, and use-after-close answers
@@ -22,6 +23,7 @@ spawned here.
 module Haskoki.FFI.Instance
   ( Instance (..)
   , InstanceCell
+  , newInstanceCell
   , readLiveInstance
   , haskokiInstanceOpen
   , haskokiInstanceClose
@@ -123,6 +125,14 @@ guarded body = do
 -- per handle; close takes it exactly once (atomically).
 newtype InstanceCell = InstanceCell (IORef (Maybe Instance))
 
+-- | Allocate a fresh interval cell over explicitly constructed services. This
+-- Haskell-only constructor also lets fixtures inject the SlotEvents observers;
+-- it neither publishes a C root nor adds a foreign export. Never free its slot.
+newInstanceCell :: Instance -> IO (StablePtr InstanceCell)
+newInstanceCell inst = mask_ $
+  (newIORef (Just inst) >>= newStablePtr . InstanceCell)
+    `onException` closeSlotEvents (instSlots inst)
+
 -- | Borrow the live value during unpublished construction under the init lock,
 -- or during a Control call under the state lock. Never reinterpret the cell.
 readLiveInstance :: StablePtr InstanceCell -> IO (Maybe Instance)
@@ -150,13 +160,14 @@ readLiveInstance ptr
 --   closer finalizes; entries read the cell and serve the held
 --   value, or answer @CKR_CRYPTOKI_NOT_INITIALIZED@ on @Nothing@.
 --
--- Two deliberate consequences. Retention: one slot plus one
--- (emptied) cell per init interval stays rooted — words, not the
--- instance graph, which close unroots for collection. Benign TOCTOU:
--- an entry that reads @Just@ just before close serves its held
--- (GC-alive) value — memory-safe, linearizing before the close;
--- cross-thread staleness of the plain read can only widen that same
--- benign window, never crash.
+-- Retention grows by one StablePtr slot and one empty cell/IORef per interval;
+-- no fixed RTS byte cost is promised. Close unroots the instance graph from
+-- that cell. A waiter that already read @Just@ keeps its service GC-live, but
+-- must still arbitrate against service close in STM: only a committed claim
+-- owns success. It never reloads the C root or follows a new interval. Control
+-- borrows the Standard owner under the C state lock, including revalidation.
+-- The old plain-C-pointer data race and freed-StablePtr race are historical;
+-- atomic C publication alone would not replace this lifetime discipline.
 nullCell :: StablePtr InstanceCell
 nullCell = castPtrToStablePtr nullPtr
 
@@ -189,8 +200,7 @@ haskokiInstanceOpen = do
         Left _ -> pure nullCell
         Right cfg -> do
           inst <- buildInstance cfg
-          (newIORef (Just inst) >>= newStablePtr . InstanceCell)
-            `onException` closeSlotEvents (instSlots inst)
+          newInstanceCell inst
 
 -- | Build an owned instance from an already-resolved config (the
 -- environment-free half of 'haskokiInstanceOpen', extracted so
@@ -236,9 +246,11 @@ fileSink cfg line
       show (pid :: Int) ++ expandPid rest pid
     expandPid (c : rest) pid = c : expandPid rest pid
 
--- | Close: atomically take the cell (exactly one closer wins),
--- then finalize the event queue FIRST (wakes ALL waiters with the
--- source-correct code) and drain the tracer on the taken value.
+-- | Close: take the cell once, unbind the serving owner, and atomically close
+-- the shared service/discard flags before C releases any Standard resources.
+-- Mask that ownership handoff. Production observers do not block, and close
+-- never joins already-decided application threads. Private queue/tracer cleanup
+-- follows service close; Standard cancellation/native teardown follows return.
 -- Idempotent on NULL AND on already-closed handles (a stale close
 -- takes @Nothing@ and does nothing — never a touch of freed
 -- memory), silent on failure (finalize has no error channel left).
@@ -251,7 +263,8 @@ haskokiInstanceClose ptr = do
     Right () -> pure ()
     Left (_ :: SomeException) -> pure ()
   where
-    closeBody
+    closeBody = mask_ closeMasked
+    closeMasked
       | castStablePtrToPtr ptr == nullPtr = pure ()
       | otherwise = do
           InstanceCell live <- deRefStablePtr ptr

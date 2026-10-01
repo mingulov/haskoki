@@ -1,12 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 module NotificationsSpec (spec) where
 
-import Control.Concurrent (forkIO)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, readMVar)
-import Control.Concurrent.STM (atomically)
+import Control.Concurrent (forkIO, forkFinally, myThreadId, killThread, yield)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, readMVar, tryReadMVar)
+import Control.Concurrent.STM (atomically, newTQueueIO, readTQueue, writeTQueue, newTVarIO, readTVar, modifyTVar', check)
 import Control.Exception (SomeException, bracket, try)
-import Control.Monad (foldM, forM_, replicateM)
-import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
+import Control.Monad (foldM, forM_, replicateM, replicateM_)
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sort, sortOn)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -21,6 +21,7 @@ import Foreign.Storable (peek, poke, sizeOf)
 import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Timeout (timeout)
+import GHC.Conc (threadStatus, ThreadStatus (..), BlockReason (..))
 import Test.Tasty (TestTree, testGroup, after, DependencyType (AllFinish))
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase)
 
@@ -65,6 +66,8 @@ spec = testGroup "Notifications"
     , testCase "caseServingFilteredGrowth" caseServingFilteredGrowth
     , testCase "caseServingTokenRequired" caseServingTokenRequired
     ]
+  , testGroup "T-N05"
+    [ testCase "caseServingWaitCompetition" caseServingWaitCompetition ]
   ]
 
 slotA, slotB :: SlotId
@@ -87,6 +90,80 @@ snapshots :: String -> SlotEvents -> [SlotSnapshot] -> Assertion
 snapshots label hub expected = do
   snapshotSlots hub >>= assertEqual (label ++ ": IO snapshot") expected
   atomically (snapshotSlotsSTM hub) >>= assertEqual (label ++ ": STM snapshot") expected
+
+-- Catches broadcast/duplicate claims, losing a second pending slot, a poll
+-- retrying, and a losing blocker returning early. Observe actual BlockedOnSTM,
+-- not just the pre-retry hook; timeouts contain failures and never publish.
+caseServingWaitCompetition :: Assertion
+caseServingWaitCompetition = forM_ [0, 2] $ \pollers -> forM_ [1, 2] $ \flags -> do
+  roles <- newIORef Map.empty
+  retrySeen <- newTQueueIO
+  pollCaptured <- newTQueueIO
+  releasePolls <- newEmptyMVar
+  decisions <- newTVarIO []
+  let boundedWait label action = timeout 2000000 action >>= maybe (assertFailure label) pure
+      parked tid = boundedWait "loser did not park in STM" $ let
+        loop = threadStatus tid >>= \state -> case state of
+          ThreadBlocked BlockedOnSTM -> pure ()
+          ThreadRunning -> yield >> loop
+          _ -> assertFailure ("unexpected waiter state: " ++ show state)
+        in loop
+      hook point = do
+        tid <- myThreadId
+        role <- Map.lookup tid <$> readIORef roles
+        case point of
+          WaitCaptured | role == Just DontBlock -> do
+            atomically (writeTQueue pollCaptured ())
+            readMVar releasePolls
+          WaitBeforeRetry -> do
+            assertEqual "poll never enters retry" (Just Block) role
+            atomically (writeTQueue retrySeen ())
+          WaitDecisionCommitted result -> atomically (modifyTVar' decisions (++ [(tid, result)]))
+          _ -> pure ()
+  bracket (opened (newSlotEventsWith hook 0 2 catalog)) closeSlotEvents $ \hub -> do
+    let spawn mode = do
+          done <- newEmptyMVar
+          tid <- forkFinally (do
+            self <- myThreadId
+            atomicModifyIORef' roles (\m -> (Map.insert self mode m, ()))
+            waitSlot hub mode) (putMVar done)
+          pure (tid, done)
+        cleanup workers = closeSlotEvents hub >> mapM_ (killThread . fst) workers
+        join (_, done) = do
+          result <- boundedWait "bounded waiter join" (readMVar done)
+          either (assertFailure . show) pure (result :: Either SomeException SlotWait)
+    bracket (replicateM 2 (spawn Block)) cleanup $ \blockers -> do
+      replicateM_ 2 (boundedWait "pre-retry observation" (atomically (readTQueue retrySeen)))
+      mapM_ (parked . fst) blockers
+      bracket (replicateM pollers (spawn DontBlock)) cleanup $ \polls -> do
+        replicateM_ pollers (boundedWait "poll capture" (atomically (readTQueue pollCaptured)))
+        atomically (mapM (\slot -> publishPresenceSTM hub slot False) (take flags [slotA, slotB]))
+          >>= assertEqual "publish exactly the requested flags" (replicate flags (Right (PresenceChanged 1)))
+        putMVar releasePolls ()
+        polled <- mapM join polls
+        winners <- boundedWait "one committed success per flag" $ atomically $ do
+          seen <- readTVar decisions
+          let ready = [(tid, slot) | (tid, SlotReady slot) <- seen]
+          check (length ready >= flags)
+          pure ready
+        assertEqual "exact number of claims" flags (length winners)
+        assertEqual "each distinct flag claimed once" (take flags [slotA, slotB]) (sort (map snd winners))
+        let losers = filter (\(tid, _) -> tid `notElem` map fst winners) blockers
+        forM_ losers $ \worker@(_, done) -> do
+          parked (fst worker)
+          tryReadMVar done >>= assertBool "parked loser remains undecided" . maybe True (const False)
+        closeSlotEvents hub
+        blocked <- mapM join blockers
+        let outcomes = blocked ++ polled
+        assertEqual "no duplicate slot across all callers" (take flags [slotA, slotB])
+          (sort [slot | SlotReady slot <- outcomes])
+        assertEqual "all undecided blockers closed" (length losers) (length (filter (== SlotWaitClosed) blocked))
+        assertEqual "block never returns no-event" 0 (length (filter (== SlotNoEvent) blocked))
+        assertBool "polls decide without retry" (all (/= SlotWaitClosed) polled)
+        waitSlot hub DontBlock >>= assertEqual "no closed tail" SlotWaitClosed
+        putStrLn ("T-N05 competition flags=" ++ show flags ++ " pollers=" ++ show pollers
+          ++ " successes=" ++ show flags ++ " duplicates=0 parked-losers=" ++ show (length losers)
+          ++ " poll-retries=0 bounded-joins=" ++ show (2 + pollers))
 
 -- Catches fabricated initial flags, unsorted catalogs, read acknowledgments,
 -- idempotent increments, fixed-slot mutation, and a lost pre-retry transition.

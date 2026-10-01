@@ -1,26 +1,30 @@
 {-# LANGUAGE OverloadedStrings #-}
 module NotificationsEngineSpec (spec) where
 
-import Control.Concurrent.MVar (MVar)
-import Control.Concurrent.STM (atomically)
-import Control.Exception (SomeException, bracket, evaluate, try)
-import Control.Monad (forM_, replicateM, when)
+import Control.Concurrent (ThreadId, forkFinally, killThread, myThreadId, throwTo, yield)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryReadMVar)
+import Control.Concurrent.STM (atomically, newTQueueIO, readTQueue, writeTQueue)
+import Control.Exception (SomeException, AsyncException (ThreadKilled), MaskingState (..), bracket, evaluate, try, mask, getMaskingState, fromException)
+import Control.Monad (forM_, replicateM, replicateM_, when)
 import qualified Data.ByteString as Bytes
 import qualified Data.ByteString.Char8 as BS
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
 import EnvLock (withEnvLock)
 import Data.Word (Word64, Word8)
-import Foreign.C.Types (CULong (..))
+import Foreign.C.Types (CInt (..), CULong (..))
+import Foreign.C.String (CString, withCString)
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Marshal.Array (peekArray, pokeArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr)
-import Foreign.Storable (peek, poke)
-import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
+import Foreign.Storable (peek, poke, sizeOf)
+import GHC.Conc (threadStatus, ThreadStatus (..), BlockReason (..))
+import System.Directory (createDirectoryIfMissing, doesFileExist, getCurrentDirectory, removeFile)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Mem.StableName (makeStableName)
+import System.IO (hFlush, hClose, openBinaryTempFile, stdout)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase)
@@ -59,6 +63,10 @@ spec envLock = testGroup "Notifications"
     [ testCase "caseRemovalOwnsActualJobs" (bounded caseRemovalOwnsActualJobs)
     , testCase "casePresenceCleanupFault" (bounded (casePresenceCleanupFault envLock))
     , testCase "casePresenceStoreLedger" (bounded casePresenceStoreLedger)
+    ]
+  , testGroup "T-N05"
+    [ testCase "caseServingFinalizeOrder" (bounded caseServingFinalizeOrder)
+    , testCase "caseServingMaskedHandoff" (bounded caseServingMaskedHandoff)
     ]
   ]
 
@@ -624,3 +632,384 @@ casePresenceStoreLedger = do
     _ <- openSession ctx 0 False
     setStdTokenPresence std (SlotId 0) False >>= assertEqual "memory retirement" (Right (PresenceChanged 1,0))
   putStrLn "T-N03 casePresenceStoreLedger: store_resets=0 presence_commits=0 presence_reloads=0 acquisition_commits=1 cancellation_async_commits=1 cancellation_job_loads=1"
+
+-- T-N05 uses constructor-injected T-N01 hooks with a real retained cell and
+-- Standard owner. No global root or process environment is needed by fixtures.
+withWaitInterval
+  :: NotificationHooks
+  -> (StablePtr InstanceCell -> Instance -> IO () -> Assertion)
+  -> Assertion
+withWaitInterval hooks action = do
+  let cfg = (cfgTwo True) { cfgTrace = (cfgTrace defaultConfig) { tcEnabled = False } }
+  original <- buildInstance cfg
+  closeSlotEvents (instSlots original)
+  hub <- newSlotEventsWith hooks 0 2 [SlotDefinition (SlotId 0) True, SlotDefinition (SlotId 1) True]
+    >>= either (assertFailure . show) pure
+  bracket (newInstanceCell (original { instSlots = hub })) haskokiInstanceClose $ \cell -> do
+    Just ops <- readLiveInstance cell
+    std <- haskokiStdOpen cell
+    assertBool "Standard borrows the fixture cell" (not (isNull std))
+    stdLive <- newIORef True
+    let close = do
+          haskokiInstanceClose cell
+          first <- atomicModifyIORef' stdLive (\live -> (False, live))
+          when first (haskokiStdClose std)
+    bracket (pure ()) (const close) $ \_ -> action cell ops close
+
+waitBounded :: String -> IO a -> IO a
+waitBounded label action = timeout 2000000 action >>= maybe (assertFailure label) pure
+
+withWaitThread :: IO a -> ((ThreadId, MVar (Either SomeException a)) -> IO b) -> IO b
+withWaitThread action k = do
+  done <- newEmptyMVar
+  bracket (forkFinally action (putMVar done)) killThread $ \tid -> k (tid, done)
+
+joinWait :: (ThreadId, MVar (Either SomeException a)) -> IO a
+joinWait (_, done) = waitBounded "bounded waiter join" (readMVar done) >>= either (assertFailure . show) pure
+
+waitParked :: ThreadId -> Assertion
+waitParked tid = waitBounded "waiter never entered STM retry" loop
+  where
+    loop = threadStatus tid >>= \state -> case state of
+      ThreadBlocked BlockedOnSTM -> pure ()
+      ThreadRunning -> yield >> loop
+      _ -> assertFailure ("unexpected waiter state: " ++ show state)
+
+waitSentinel :: CULong
+waitSentinel = 0xa5a5a5a5a5a5a5a5
+
+withWaitOutput :: (Ptr CULong -> IO [CULong] -> IO a) -> IO a
+withWaitOutput action = allocaBytes (3 * sizeOf waitSentinel) $ \raw -> do
+  let base = castPtr raw :: Ptr CULong
+  pokeArray base (replicate 3 waitSentinel)
+  action (base `plusPtr` sizeOf waitSentinel) (peekArray 3 base)
+
+ffiWait :: StablePtr InstanceCell -> CULong -> IO (CULong, [CULong])
+ffiWait cell flags = withWaitOutput $ \out inspect -> do
+  rv <- haskokiWaitForSlotEvent cell flags out
+  bytes <- inspect
+  pure (rv, bytes)
+
+closedWait :: (CULong, [CULong])
+closedWait = (0x190, replicate 3 waitSentinel)
+
+publishWaitFlag :: SlotEvents -> SlotId -> Assertion
+publishWaitFlag hub slot = atomically (publishPresenceSTM hub slot False)
+  >>= assertEqual "one real presence transition" (Right (PresenceChanged 1))
+
+assertClosedOwner :: Instance -> Assertion
+assertClosedOwner ops = do
+  (rv, _, _) <- dispatchControl (instControl ops) (request "status" []) (Just responseBudget)
+  assertEqual "closed cell unbinds serving owner" 7 rv
+
+schedule :: Int -> String -> Assertion
+schedule number label = putStrLn ("T-N05 schedule " ++ show number ++ " " ++ label ++ " PASS")
+
+-- Catches queued-tail delivery, revocation of an owned decision, migration to
+-- a reopened interval, and freeing a captured cell. The native subprobe below
+-- also executes the real C Finalize state-lock refusal and teardown ordering.
+caseServingFinalizeOrder :: Assertion
+caseServingFinalizeOrder = do
+  retrySeen <- newTQueueIO
+  emptyClosed <- newEmptyMVar
+  let emptyHook point = case point of
+        WaitBeforeRetry -> atomically (writeTQueue retrySeen ())
+        CloseCommitted -> do
+          previous <- tryReadMVar emptyClosed
+          when (isNothing previous) (putMVar emptyClosed ())
+        _ -> pure ()
+  withWaitInterval emptyHook $ \cell ops close ->
+    withWaitThread (ffiWait cell 0) $ \a -> withWaitThread (ffiWait cell 0) $ \b -> do
+      replicateM_ 2 (waitBounded "empty pre-retry" (atomically (readTQueue retrySeen)))
+      mapM_ (waitParked . fst) [a, b]
+      waitBounded "close must make blockers runnable" close
+      waitBounded "empty close transaction observed" (readMVar emptyClosed)
+      readLiveInstance cell >>= assertBool "empty cell retained, value removed" . isNothing
+      assertClosedOwner ops
+      mapM joinWait [a, b] >>= assertEqual "empty close wakes every blocker" [closedWait, closedWait]
+      schedule 1 "empty-close"
+
+  captured <- newTQueueIO
+  resume <- newEmptyMVar
+  closeSeen <- newEmptyMVar
+  let captureHook point = case point of
+        WaitCaptured -> atomically (writeTQueue captured ()) >> readMVar resume
+        CloseCommitted -> do
+          previous <- tryReadMVar closeSeen
+          when (isNothing previous) (putMVar closeSeen ())
+        _ -> pure ()
+  withWaitInterval captureHook $ \cell ops close -> do
+    mapM_ (publishWaitFlag (instSlots ops)) [SlotId 0, SlotId 1]
+    withWaitThread (ffiWait cell 0) $ \a -> withWaitThread (ffiWait cell 1) $ \b -> do
+      replicateM_ 2 (waitBounded "captured before queued close" (atomically (readTQueue captured)))
+      close
+      waitBounded "close transaction observed" (readMVar closeSeen)
+      putMVar resume ()
+      mapM joinWait [a, b] >>= assertEqual "close-first discards queued flags" [closedWait, closedWait]
+      schedule 2 "queued-close-first"
+
+  decided <- newEmptyMVar
+  outputAllowed <- newEmptyMVar
+  let decisionHook point = case point of
+        WaitDecisionCommitted (SlotReady _) -> putMVar decided () >> readMVar outputAllowed
+        _ -> pure ()
+  withWaitInterval decisionHook $ \cell ops close -> withWaitOutput $ \out inspect -> do
+    publishWaitFlag (instSlots ops) (SlotId 0)
+    -- This barrier models descheduling only; no exception is injected at this
+    -- interruptible test hook. The injection case below uses no blocking hook.
+    withWaitThread (haskokiWaitForSlotEvent cell 0 out) $ \worker@(_, done) -> do
+      waitBounded "event decision committed" (readMVar decided)
+      waitBounded "Finalize cannot join a decided application thread" close
+      tryReadMVar done >>= assertBool "decided thread still delayed" . isNothing
+      inspect >>= assertEqual "output deliberately delayed" (replicate 3 waitSentinel)
+      putMVar outputAllowed ()
+      joinWait worker >>= assertEqual "owned OK survives later Finalize" 0
+      inspect >>= assertEqual "exactly one normal output write" [waitSentinel, 0, waitSentinel]
+      schedule 3 "claim-close-delayed-output"
+
+  withWaitInterval (const (pure ())) $ \oldCell old closeOld -> do
+    -- A C entrant has retained this exact cell but has not entered the FFI.
+    let capturedCell = oldCell
+    closeOld
+    assertClosedOwner old
+    withWaitInterval (const (pure ())) $ \newCell new _ -> do
+      assertBool "fresh interval has a distinct, never reused cell" (castStablePtrToPtr oldCell /= castStablePtrToPtr newCell)
+      ffiWait newCell 1 >>= assertEqual "reopen initially clear" (8, replicate 3 waitSentinel)
+      publishWaitFlag (instSlots new) (SlotId 1)
+      forM_ [0, 1] $ \flags -> ffiWait capturedCell flags >>= assertEqual "old cell cannot migrate" closedWait
+      ffiWait newCell 1 >>= assertEqual "old cell never claimed new flag" (0, [waitSentinel, 1, waitSentinel])
+      schedule 4 "retained-cell-after-reopen"
+
+  hubCaptured <- newEmptyMVar
+  enterDecision <- newEmptyMVar
+  let retainedHook point = case point of
+        WaitCaptured -> putMVar hubCaptured () >> readMVar enterDecision
+        _ -> pure ()
+  withWaitInterval retainedHook $ \oldCell _ closeOld ->
+    withWaitThread (ffiWait oldCell 0) $ \worker -> do
+      waitBounded "old service retained inside wait" (readMVar hubCaptured)
+      closeOld
+      withWaitInterval (const (pure ())) $ \newCell new _ -> do
+        ffiWait newCell 1 >>= assertEqual "new hub initially clear" (8, replicate 3 waitSentinel)
+        publishWaitFlag (instSlots new) (SlotId 0)
+        putMVar enterDecision ()
+        joinWait worker >>= assertEqual "retained old hub stays closed" closedWait
+        ffiWait newCell 1 >>= assertEqual "no waiter migration" (0, [waitSentinel, 0, waitSentinel])
+        schedule 5 "retained-hub-after-reopen"
+  runFinalizeProbe
+  putStrLn "T-N05 lifetime closed-tail-deliveries=0 waiter-migrations=0 freed-cell-dereferences=0 bounded-joins=complete"
+
+-- Catches an uninterruptible empty retry or an unmasked claim/output window.
+-- Native invalid output pointers are outside the handoff guarantee.
+caseServingMaskedHandoff :: Assertion
+caseServingMaskedHandoff = do
+  retrySeen <- newEmptyMVar
+  let emptyHook point = case point of
+        WaitBeforeRetry -> putMVar retrySeen ()
+        _ -> pure ()
+  withWaitInterval emptyHook $ \cell ops _ -> withWaitThread (ffiWait cell 0) $ \worker -> do
+    waitBounded "empty wait observed" (readMVar retrySeen)
+    waitParked (fst worker)
+    waitBounded "empty retry must remain interruptible" (throwTo (fst worker) ThreadKilled)
+    joinWait worker >>= assertEqual "foreign fence preserves sentinel without claim" (5, replicate 3 waitSentinel)
+    publishWaitFlag (instSlots ops) (SlotId 0)
+    ffiWait cell 1 >>= assertEqual "exception leaves interval usable" (0, [waitSentinel, 0, waitSentinel])
+    putStrLn "T-N05 mask empty-retry GENERAL_ERROR sentinel=unchanged interruptible=yes"
+
+  maskSeen <- newIORef Nothing
+  injectorDone <- newEmptyMVar
+  outsideHandoff <- newEmptyMVar
+  let handoffHook point = case point of
+        WaitDecisionCommitted (SlotReady _) -> do
+          state <- getMaskingState
+          writeIORef maskSeen (Just state)
+          assertEqual "claim-to-output is masked" MaskedInterruptible state
+          target <- myThreadId
+          sender <- forkFinally (throwTo target ThreadKilled) (putMVar injectorDone)
+          -- Only scheduler yields and status reads: no interruptible MVar/STM
+          -- wait inside the protected handoff. Bound the observation by work,
+          -- because a timeout exception itself is deferred by the mask.
+          let queued 0 = assertFailure "injector did not queue its exception"
+              queued n = threadStatus sender >>= \status' -> case status' of
+                ThreadBlocked BlockedOnException -> pure ()
+                ThreadRunning -> yield >> queued (n - 1)
+                _ -> assertFailure ("injector escaped protected handoff: " ++ show status')
+          queued (100000 :: Int)
+        _ -> pure ()
+  withWaitInterval handoffHook $ \cell ops _ -> do
+    publishWaitFlag (instSlots ops) (SlotId 1)
+    withWaitThread (withWaitOutput $ \out inspect -> mask $ \restore -> do
+      result <- try (restore (haskokiWaitForSlotEvent cell 0 out))
+      bytes <- inspect
+      -- A blocked throwTo sender need not have dispatched at one immediate
+      -- allowInterrupt. If the call returned OK, wait for delivery OUTSIDE
+      -- the protected handoff, after snapshotting the completed output. The
+      -- bounded worker join contains a missing injection; no timer produces it.
+      delivered <- case result of
+        Right 0 -> try (restore (takeMVar outsideHandoff))
+        _ -> pure (Right ())
+      pure (result :: Either SomeException CULong, bytes, delivered :: Either SomeException ())) $ \worker -> do
+        (result, bytes, delivered) <- joinWait worker
+        readIORef maskSeen >>= assertEqual "observed real FFI mask" (Just MaskedInterruptible)
+        assertEqual "queued exception cannot suppress the normal write" [waitSentinel, 1, waitSentinel] bytes
+        case (result, delivered) of
+          (Right 0, Left ex) -> assertEqual "delivery after normal return" (Just ThreadKilled) (fromException ex)
+          (Right 5, Right ()) -> pure () -- The outer foreign fence caught it.
+          (Left ex, Right ()) -> assertEqual "delivery outside protected handoff" (Just ThreadKilled) (fromException ex)
+          other -> assertFailure ("exception must be delivered exactly once outside handoff: " ++ show other)
+        waitBounded "injector bounded join" (readMVar injectorDone) >>= either (assertFailure . show) pure
+        ffiWait cell 1 >>= assertEqual "committed flag acknowledged exactly once" (8, replicate 3 waitSentinel)
+        putStrLn "T-N05 mask decided-handoff MaskedInterruptible injection=queued output=written delivery=outside"
+
+-- The engine test keeps the native fixture durable in this file. It compiles
+-- the real lifecycle/root translation units with mock Haskell resource edges;
+-- no public module is loaded and no installed behavior is claimed. The same
+-- bytes are used by the separately recorded run-finalize.sh red/green probe.
+foreign import ccall safe "system" nativeSystem :: CString -> IO CInt
+
+runFinalizeProbe :: Assertion
+runFinalizeProbe = do
+  createDirectoryIfMissing True "/tmp/haskoki-notifications"
+  writeFile "/tmp/haskoki-notifications/finalize-probe.c" finalizeProbeSource
+  let child :: String -> [String] -> Assertion
+      child label argv = do
+        putStrLn ("T-N05 child " ++ label ++ " argv=" ++ show argv)
+        hFlush stdout
+        result <- withCString (unwords (map quote argv)) nativeSystem
+        putStrLn ("T-N05 child " ++ label ++ " exit=" ++ show result)
+        assertEqual ("native Finalize " ++ label) 0 result
+      quote :: String -> String
+      quote s = "'" ++ concatMap (\c -> if c == '\'' then "'\\''" else [c]) s ++ "'"
+  child "compile" ["cc", "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror",
+    "-ffunction-sections", "-fdata-sections", "-Icbits", "-Ispec/vendor",
+    "/tmp/haskoki-notifications/finalize-probe.c", "cbits/standard_surface.c",
+    "-Wl,--gc-sections", "-lpthread", "-o", "/tmp/haskoki-notifications/finalize-probe"]
+  -- Preserve the actual engine-built executable before Docker removes /tmp.
+  cwd <- getCurrentDirectory
+  let artifacts = cwd ++ "/dist-release-evidence/notifications/task-n05/native-probes"
+  createDirectoryIfMissing True artifacts
+  (artifact, handle) <- openBinaryTempFile artifacts "finalize-probe"
+  Bytes.readFile "/tmp/haskoki-notifications/finalize-probe" >>= Bytes.hPut handle
+  hClose handle
+  writeFile (artifact ++ ".c") finalizeProbeSource
+  putStrLn ("T-N05 native artifact=" ++ artifact)
+  child "run" ["/tmp/haskoki-notifications/finalize-probe"]
+
+finalizeProbeSource :: String
+finalizeProbeSource = unlines
+  [ "/* T-N05: real production C lifecycle/root paths, mock Haskell resource edges."
+  , " * The durable source is embedded in NotificationsEngineSpec.hs. */"
+  , "#include <stdio.h>"
+  , "#include <stdlib.h>"
+  , "#include \"function_tables.c\""
+  , "#include \"control_entry.c\""
+  , ""
+  , "static int failures, hub_live, owner_live, backend_live, store_live, pending;"
+  , "static int closed, released, refuse_lock, held, destroys;"
+  , "static int cell_cookie, standard_cookie, mutex_cookie;"
+  , "static char ledger[64];"
+  , "static size_t used;"
+  , ""
+  , "static void check(int ok, const char *label) {"
+  , "  if (!ok) { fprintf(stderr, \"FAIL %s\\n\", label); ++failures; }"
+  , "}"
+  , "static void note(char event) {"
+  , "  check(used + 1 < sizeof ledger, \"bounded lifecycle ledger\");"
+  , "  if (used + 1 < sizeof ledger) { ledger[used++] = event; ledger[used] = '\\0'; }"
+  , "}"
+  , "int haskoki_rts_ensure(void) { return 0; }"
+  , "int haskoki_c_entry_ok(void) { return 1; }"
+  , "void *haskoki_instance_open(void) {"
+  , "  hub_live = 1; pending = 0;"
+  , "  return &cell_cookie;"
+  , "}"
+  , "void *haskoki_std_open(void *cell) {"
+  , "  check(cell == &cell_cookie && hub_live, \"Standard borrows live hub\");"
+  , "  owner_live = backend_live = store_live = 1;"
+  , "  return &standard_cookie;"
+  , "}"
+  , "void haskoki_instance_close(void *cell) {"
+  , "  check(cell == &cell_cookie, \"close exact retained cell\");"
+  , "  check(haskoki_instance_get() == NULL, \"unpublish root before cell close\");"
+  , "  check(!g_have_negotiated || held, \"close under state lock\");"
+  , "  hub_live = 0; pending = 0; ++closed; note('C');"
+  , "  owner_live = 0; note('U');"
+  , "  puts(\"T-N05 native close/unbind committed\");"
+  , "}"
+  , "void haskoki_std_close(void *std) {"
+  , "  check(std == &standard_cookie && backend_live && store_live, \"release owned native resources once\");"
+  , "  check(!hub_live && !owner_live && haskoki_instance_get() == NULL,"
+  , "        \"close-before-teardown: Standard released before shared service close/unbind\");"
+  , "  check(!g_have_negotiated || held, \"teardown under state lock\");"
+  , "  backend_live = 0; note('B');"
+  , "  store_live = 0; note('S'); ++released;"
+  , "  puts(\"T-N05 native backend/store released\");"
+  , "}"
+  , "unsigned long haskoki_wait_for_slot_event(void *cell, unsigned long flags, unsigned long *slot) {"
+  , "  (void)flags;"
+  , "  check(cell == &cell_cookie, \"wait uses captured cell\");"
+  , "  if (!hub_live) return CKR_CRYPTOKI_NOT_INITIALIZED;"
+  , "  if (!pending) return 8;"
+  , "  pending = 0; *slot = 0; return CKR_OK;"
+  , "}"
+  , "static CK_RV create_mutex(CK_VOID_PTR *out) { *out = &mutex_cookie; return CKR_OK; }"
+  , "static CK_RV lock_mutex(CK_VOID_PTR mu) {"
+  , "  check(mu == &mutex_cookie && !held, \"nonrecursive state lock\");"
+  , "  if (refuse_lock) return CKR_CANT_LOCK;"
+  , "  held = 1; return CKR_OK;"
+  , "}"
+  , "static CK_RV unlock_mutex(CK_VOID_PTR mu) {"
+  , "  check(mu == &mutex_cookie && held, \"unlock held state lock\");"
+  , "  held = 0; return CKR_OK;"
+  , "}"
+  , "static CK_RV destroy_mutex(CK_VOID_PTR mu) {"
+  , "  check(mu == &mutex_cookie && !held, \"destroy unlocked mutex\");"
+  , "  ++destroys; return CKR_OK;"
+  , "}"
+  , "static CK_C_INITIALIZE_ARGS args = {create_mutex, destroy_mutex, lock_mutex, unlock_mutex, 0, NULL};"
+  , ""
+  , "static void finish_interval(int negotiated) {"
+  , "  int before = closed;"
+  , "  used = 0; ledger[0] = '\\0';"
+  , "  pending = 1;"
+  , "  check(on_Finalize(NULL) == CKR_OK, \"Finalize successful close\");"
+  , "  check(strcmp(ledger, \"CUBS\") == 0, \"close-before-teardown: exact close/unbind/backend/store order\");"
+  , "  check(closed == before + 1 && closed == released, \"one close and release per interval\");"
+  , "  check(!hub_live && !owner_live && !backend_live && !store_live && !pending,"
+  , "        \"closed interval has no live owner or pending flag\");"
+  , "  check(!live_interval() && !haskoki_instance_get() && !haskoki_std_get(), \"both roots unpublished\");"
+  , "  check(!held && !g_have_negotiated, \"locking retired\");"
+  , "  unsigned long slot = 0xa5a5a5a5a5a5a5a5UL;"
+  , "  check(on_WaitForSlotEvent(1, &slot, NULL) == CKR_CRYPTOKI_NOT_INITIALIZED &&"
+  , "        slot == 0xa5a5a5a5a5a5a5a5UL, \"closed wait leaves sentinel unchanged\");"
+  , "  check(on_Finalize(NULL) == CKR_CRYPTOKI_NOT_INITIALIZED && closed == before + 1,"
+  , "        \"repeated Finalize cannot release twice\");"
+  , "  printf(\"T-N05 native order locking=%s ledger=%s\\n\", negotiated ? \"negotiated\" : \"internal\", ledger);"
+  , "}"
+  , "int main(void) {"
+  , "  check(on_Initialize(NULL) == CKR_OK, \"internal initialization\");"
+  , "  finish_interval(0);"
+  , "  check(on_Initialize(&args) == CKR_OK, \"negotiated reopen\");"
+  , "  unsigned long slot = 0xa5a5a5a5a5a5a5a5UL;"
+  , "  check(on_WaitForSlotEvent(1, &slot, NULL) == 8 && slot == 0xa5a5a5a5a5a5a5a5UL,"
+  , "        \"new interval starts clear\");"
+  , "  int before_closed = closed, before_released = released, before_destroys = destroys;"
+  , "  used = 0; ledger[0] = '\\0';"
+  , "  refuse_lock = 1;"
+  , "  check(on_Finalize(NULL) == CKR_CANT_LOCK, \"Finalize first returns CKR_CANT_LOCK\");"
+  , "  check(live_interval() && haskoki_instance_get() == &cell_cookie &&"
+  , "        haskoki_std_get() == &standard_cookie && hub_live && owner_live && backend_live && store_live,"
+  , "        \"lock refusal restores liveness with same usable hub\");"
+  , "  check(closed == before_closed && released == before_released && destroys == before_destroys && used == 0,"
+  , "        \"lock refusal does not close/unbind/release/destroy\");"
+  , "  pending = 1;"
+  , "  check(on_WaitForSlotEvent(1, &slot, NULL) == CKR_OK && slot == 0,"
+  , "        \"usable interval after lock refusal accepts one wait\");"
+  , "  refuse_lock = 0;"
+  , "  finish_interval(1);"
+  , "  check(destroys == before_destroys + 1, \"successful retry retires negotiated mutex once\");"
+  , "  if (!failures) puts(\"T-N05 schedule 6 state-lock-refusal-retry PASS\");"
+  , "  printf(\"T-N05 native assertions: %s (%d failures)\\n\", failures ? \"FAIL\" : \"PASS\", failures);"
+  , "  return failures ? 1 : 0;"
+  , "}"
+  ]

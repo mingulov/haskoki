@@ -6,8 +6,8 @@
  * resolve the SAME handle through haskoki_instance_get(), so a native
  * waiter and a control call in one process always share one
  * instance. Haskell manages the handle lifetime (open/close
- * exports), and close finalizes the event queue first so no waiter
- * is stranded.
+ * exports). Close discards shared pending flags and unbinds the control
+ * owner before Standard teardown, making undecided waiters runnable.
  *
  * Discipline: Control borrows the Standard owner under the C state lock
  * and revalidates liveness after acquiring it. The blocking wait path
@@ -23,7 +23,7 @@
  * the Haskell per-handle liveness cell (Instance.hs) is never freed, so
  * every deRef is memory-safe by construction, and a taken (closed)
  * cell answers CKR_CRYPTOKI_NOT_INITIALIZED. A C-side generation
- * counter would be theater here (C cannot observe Haskell entry
+ * counter cannot provide that lease (C cannot observe Haskell entry
  * completion, so no C-side grace period is sound under
  * preemption).
  */
@@ -82,10 +82,12 @@ void *haskoki_instance_get(void) {
 /* Open a fresh owned instance (C_Initialize path). */
 void *haskoki_instance_open_fresh(void) { return haskoki_instance_open(); }
 
-/* Close the installed handle: unpublish first (later entrants fail
- * fast), then close through Haskell (which finalizes the event
- * queue, waking ALL slot-event waiters, before releasing the
- * handle). Idempotent on NULL. */
+/* Under init + state locks, unpublish first, then close/unbind through Haskell
+ * before Standard teardown. The emptied InstanceCell/StablePtr is retained
+ * forever (one per interval); it is not freed here or by Haskell. A waiter
+ * which captured it before this exchange may enter safely after reopen and
+ * still observes the old closed interval. Idempotent on NULL. The historical
+ * plain-pointer publication race is distinct from that retained-cell lease. */
 void haskoki_instance_shutdown(void) {
   void *inst =
       atomic_exchange_explicit(&g_haskoki_instance, 0, memory_order_acq_rel);
@@ -99,7 +101,7 @@ void haskoki_instance_shutdown(void) {
  * lock: blocking calls must not serialize the module. The single
  * acquire-load snapshot either enters Haskell with a published
  * handle (the Haskell liveness cell re-validates before serving)
- * or fails fast. */
+ * or fails fast. Never reload the root after capturing this interval. */
 unsigned long haskoki_instance_wait_for_slot_event(unsigned long flags, unsigned long *p_slot) {
   void *inst = atomic_load_explicit(&g_haskoki_instance, memory_order_acquire);
   if (inst == 0) {
