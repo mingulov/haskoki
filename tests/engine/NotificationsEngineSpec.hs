@@ -19,7 +19,7 @@ import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Marshal.Array (peekArray, pokeArray)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr, newStablePtr, freeStablePtr)
-import Foreign.Storable (peek, poke, sizeOf)
+import Foreign.Storable (peek, poke, peekByteOff, sizeOf)
 import GHC.Conc (threadStatus, ThreadStatus (..), BlockReason (..))
 import System.Directory (createDirectoryIfMissing, doesFileExist, getCurrentDirectory, removeFile)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
@@ -37,6 +37,7 @@ import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.FFI.Instance
 import Haskoki.FFI.Standard
 import Haskoki.Operation.Effect (CryptoEffect (..))
+import Haskoki.Operation (SlotKind (..), DigestStream (..), commonOf, lookupSingle, streamOf)
 import Haskoki.Model
 import Haskoki.Object (resolveHandle)
 import Haskoki.Outcome (EffectRequest (..), Reservation (..), StateDelta (..), DeltaOp (..), ResourceRelease (..), ModelFault (..))
@@ -46,10 +47,10 @@ import Haskoki.Runtime.Config
 import Haskoki.Runtime.Control
 import Haskoki.Runtime.Events (insertToken, tokenPresent)
 import Haskoki.Runtime.SlotEvents
-import Haskoki.Runtime.Lifecycle (snapshotModel, snapshotPresence, envRules, publish, newEnv)
+import Haskoki.Runtime.Lifecycle (snapshotModel, snapshotPresence, envRules, envGate, gateBusy, publish, newEnv)
 import qualified Haskoki.Runtime.Storage as Store
 import Haskoki.Session (AdmitDeny (..), TokenAuth (..), SessionLogin (..))
-import Haskoki.Types (ReturnCode (..), SessionId (..), SlotId (..), ExternalHandle (..), ObjectId (..), JobId)
+import Haskoki.Types (ReturnCode (..), SessionId (..), SlotId (..), ExternalHandle (..), ObjectId (..), EngineResourceId, JobId)
 
 spec :: MVar () -> TestTree
 spec envLock = testGroup "Notifications"
@@ -68,6 +69,11 @@ spec envLock = testGroup "Notifications"
     [ testCase "caseNativeNotifyAssociation" (bounded caseNativeNotifyAssociation)
     , testCase "caseNativeNotifyRetirement" (bounded caseNativeNotifyRetirement)
     , testCase "caseNativeNotifyGuard" (bounded caseNativeNotifyGuard)
+    ]
+  , testGroup "T-N07"
+    [ testCase "caseDigestSurrender" (bounded caseDigestSurrender)
+    , testCase "caseNotifyNonProducers" (bounded caseNotifyNonProducers)
+    , testCase "caseNotifyDigestIsolation" (bounded caseNotifyDigestIsolation)
     ]
   , testGroup "T-N05"
     [ testCase "caseServingFinalizeOrder" (bounded caseServingFinalizeOrder)
@@ -1203,3 +1209,359 @@ caseNativeNotifyGuard = runInBoundThread $ allocaBytes 1 $ \cookie -> do
     pure 0) (SessionId 1) (SessionNotify notifyCallback cookie)) (putMVar done)
   takeMVar done >>= either (assertFailure . show) (assertEqual "bound dispatcher" NotifyContinue)
   putStrLn "T-N06 dispatcher: decisions=4 typed_exception=pass same_thread=pass tls_restored=pass null_silent=pass"
+
+-- T-N07 catches an omitted/misplaced surrender, arbitrary native RV leakage,
+-- early output/length writes, failure to retire just this Digest, and callbacks
+-- accidentally added to the shared crypto runner or explicit async fallback.
+foreign import ccall safe "haskoki_std_seed_random"
+  haskokiStdSeedRandom :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> IO CULong
+
+sha256Abc :: [Word8]
+sha256Abc = [0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
+             0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad]
+
+withDigestOwner :: Config -> NotifyInvoker -> (StablePtr StdInstance -> StdInstance -> IO a) -> IO a
+withDigestOwner cfg invoker action = do
+  hub <- newSlotEvents 2 [SlotDefinition (SlotId 0) True, SlotDefinition (SlotId 1) True] >>= mustRight
+  bracket (openStdInstanceWithNotify stdAcquisition cfg hub invoker) haskokiStdClose $ \ptr -> do
+    assertBool "real OpenSSL Standard owner acquired" (not (isNull ptr))
+    deRefStablePtr ptr >>= action ptr
+
+notifyConfig :: Config
+notifyConfig = (cfgTwo True)
+  { cfgEngine = EngineCfg EngineOpenSSL False True
+  , cfgTrace = (cfgTrace defaultConfig) { tcEnabled = False }
+  }
+
+initDigest :: StablePtr StdInstance -> CULong -> Assertion
+initDigest ptr h = haskokiStdDigestInit ptr h 0x250 nullPtr 0 >>= assertEqual "SHA-256 init" 0
+
+abcDigest :: StablePtr StdInstance -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
+abcDigest ptr h out len = BS.useAsCStringLen "abc" $ \(input,n) ->
+  haskokiStdDigest ptr h (castPtr input) (fromIntegral n) out len
+
+withDigestCanaries :: (Ptr Word8 -> Ptr CULong -> IO a) -> IO a
+withDigestCanaries action = allocaBytes 96 $ \whole -> alloca $ \len -> do
+  pokeArray whole (replicate 96 (0xa5 :: Word8))
+  poke len 64
+  action (whole `plusPtr` 16) len
+
+assertDigestBytes :: Bool -> Ptr Word8 -> Ptr CULong -> Assertion
+assertDigestBytes success out len = do
+  peek len >>= assertEqual "exact length (refusal preserves incoming 64)" (if success then 32 else 64)
+  peekArray 96 (out `plusPtr` (-16)) >>= assertEqual "whole buffer including prefix/tail"
+    (if success then replicate 16 0xa5 ++ sha256Abc ++ replicate 48 0xa5 else replicate 96 0xa5)
+
+assertNoDigest :: StablePtr StdInstance -> CULong -> Assertion
+assertNoDigest ptr h = withDigestCanaries $ \out len -> do
+  abcDigest ptr h out len >>= assertEqual "repeated Digest is OPERATION_NOT_INITIALIZED" 0x91
+  assertDigestBytes False out len
+
+notifyOutcomes :: [(String, CULong, Bool, CULong)]
+notifyOutcomes = [("ok",0,False,0), ("cancel",1,False,0x50),
+  ("other",0x1234567887654321,False,6), ("exception",0,True,6)]
+
+caseDigestSurrender :: Assertion
+caseDigestSurrender = runInBoundThread $ allocaBytes 1 $ \cookie ->
+  forM_ notifyOutcomes $ \(label,reply,throws,want) -> do
+    invocations <- newIORef (0 :: Int)
+    owner <- newIORef Nothing
+    let invoker fn h event app = do
+          modifyIORef' invocations (+1)
+          Just inst <- readIORef owner
+          gateBusy (envGate (siEnv inst)) >>= assertEqual "model gate free at dispatch" False
+          -- Test adapter exceptions happen in Haskell before C, not through
+          -- an exported callback wrapper. The actual backend is still real.
+          if throws then ioError (userError "T-N07 typed adapter failure")
+            else notifyInvoke fn h event app
+    notifyReset reply
+    withDigestOwner notifyConfig invoker $ \ptr inst -> do
+      writeIORef owner (Just inst)
+      h <- openNotify ptr 0 cookie notifyCallback
+      initDigest ptr h
+      resource <- digestResource inst h
+      withDigestCanaries $ \out len -> do
+        rv <- abcDigest ptr h out len
+        -- This is the intended pre-implementation behavioral red: the actual
+        -- fresh ordinary Digest currently executes without surrendering.
+        readIORef invocations >>= assertEqual "fresh synchronous Digest must notify exactly once" 1
+        assertEqual "actual Standard Digest mapped result" want rv
+        assertDigestBytes (want == 0) out len
+      assertDigestReleased inst resource
+      assertNoDigest ptr h
+      readIORef invocations >>= assertEqual "repeat refusal cannot notify" 1
+      if throws then notifyRead 0 >>= assertEqual "typed exception never crosses C" 0 else do
+        notifyRead 0 >>= assertEqual "one native callback" 1
+        notifyRead 1 >>= assertEqual "actual session" h
+        notifyRead 2 >>= assertEqual "CKN_SURRENDER only" 0
+        notifyCookie >>= assertEqual "original application" cookie
+        forM_ [3,4,5] $ \field -> notifyRead field >>= assertEqual "native thread, TLS guard, TLS restoration" 1
+      inNotify >>= assertEqual "TLS restored after every outcome" 0
+      waitSlot (siSlots inst) DontBlock >>= assertEqual "callback refusal creates no slot event" SlotNoEvent
+      -- Replace only the invoker, retaining the same owner and session, to
+      -- prove recovery from a caught typed failure as well as native refusal.
+      bracket (newStablePtr inst { siNotifyInvoker = notifyInvoke }) freeStablePtr $ \recovered -> do
+        notifyReset 0
+        initDigest recovered h
+        withDigestCanaries $ \out len -> abcDigest recovered h out len >>= assertEqual "fresh init restores usability" 0 >> assertDigestBytes True out len
+        notifyRead 0 >>= assertEqual "recovery surrenders once" 1
+      putStrLn ("T-N07 real/" ++ label ++ " calls=1 rv=" ++ show want ++ " bytes=pass length=pass terminated=pass recovery=pass tls=pass gate_free=pass")
+    -- The instrumented continuation is deliberately separate from the real
+    -- export above. It proves refusal never enters execution/publication.
+    writeIORef invocations 0
+    entries <- newIORef (0 :: Int)
+    writes <- newIORef (0 :: Int)
+    notifyReset reply
+    withDigestOwner notifyConfig invoker $ \ptr inst -> do
+      writeIORef owner (Just inst)
+      h <- openNotify ptr 0 cookie notifyCallback
+      initDigest ptr h
+      resource <- digestResource inst h
+      let continuation = do
+            readIORef invocations >>= assertEqual "dispatch precedes continuation" 1
+            modifyIORef' entries (+1)
+            modifyIORef' writes (+1)
+            pure 0
+      withDigestSurrender inst (sidOf h) continuation >>= assertEqual "boundary result" want
+      a <- readIORef invocations
+      b <- readIORef entries
+      c <- readIORef writes
+      assertEqual "invoker / execution entry / publication writes"
+        (if want == 0 then (1,1,1) else (1,0,0)) (a,b,c)
+      when (want /= 0) $ assertNoDigest ptr h >> assertDigestReleased inst resource
+      inNotify >>= assertEqual "boundary TLS restoration" 0
+      putStrLn ("T-N07 boundary/" ++ label ++ " counts=" ++ show a ++ "/" ++ show b ++ "/" ++ show c)
+
+digestResource :: StdInstance -> CULong -> IO EngineResourceId
+digestResource inst h = do
+  m <- snapshotModel (siEnv inst)
+  case lookupSession m (sidOf h) >>= (\st -> lookupSingle (ssOps st) SlotDigest) >>= streamOf . commonOf of
+    Just ds -> pure (dsResource ds)
+    Nothing -> assertFailure "DigestInit must own a real native stream"
+
+assertDigestReleased :: StdInstance -> EngineResourceId -> Assertion
+assertDigestReleased inst resource = resourceSaveability (siBackend inst) resource
+  >>= assertEqual "surrender termination drains native stream" (ResourceUnsaveable (UnsaveableGone resource))
+
+-- Count every call independently. A callback on an earlier setup step cannot
+-- hide behind a later reset or a shared zero total.
+silent :: String -> IO a -> IO a
+silent label action = do
+  notifyReset 0
+  value <- action
+  notifyRead 0 >>= assertEqual (label ++ " must remain silent") 0
+  putStrLn ("T-N07 silent/" ++ label ++ " calls=0")
+  pure value
+
+caseNotifyNonProducers :: Assertion
+caseNotifyNonProducers = runInBoundThread $ allocaBytes 1 $ \cookie -> allocaBytes 96 $ \whole -> alloca $ \len -> do
+  createDirectoryIfMissing True "/tmp/haskoki-notifications"
+  let db = "/tmp/haskoki-notifications/n07-silent.db"
+      cfg = notifyConfig { cfgStorage = (cfgStorage notifyConfig) { scKind = StorageSQLite, scPath = Just db } }
+      out = whole `plusPtr` 16
+      reset = pokeArray whole (replicate 96 (0xa5 :: Word8)) >> poke len 64
+  bracket (removeDB db) (const (removeDB db)) $ \_ -> do
+    notifyReset 0
+    withDigestOwner cfg notifyInvoke $ \ptr inst -> do
+      h <- silent "open" (openNotify ptr 0 cookie notifyCallback)
+      silent "DigestInit" (initDigest ptr h)
+      silent "DigestUpdate" $ BS.useAsCStringLen "abc" $ \(input,n) ->
+        haskokiStdDigestUpdate ptr h (castPtr input) (fromIntegral n) >>= assertEqual "multipart update" 0
+      reset
+      silent "DigestFinal" (haskokiStdDigestFinal ptr h out len >>= assertEqual "multipart final" 0)
+      assertDigestBytes True out len
+      forM_ [("ordinary",h)] $ \(prefix,session) -> digestFallbacks prefix ptr session out len
+      reset
+      silent "planner-refusal" (abcDigest ptr h out len >>= assertEqual "no active op" 0x91)
+      initDigest ptr h
+      silent "decode-refusal" (haskokiStdDigest ptr h nullPtr 3 out len >>= assertEqual "bad input" 7)
+      assertNoDigest ptr h
+      initDigest ptr h
+      silent "null-length" (abcDigest ptr h out nullPtr >>= assertEqual "bad length" 7)
+      silent "bad-mechanism" (haskokiStdDigestInit ptr h 0xffffffff nullPtr 0 >>= assertEqual "planner init refusal" 0x70)
+      async <- silent "async-open" $ alloca $ \handle -> do
+        haskokiStdOpenSessionWithNotify ptr 0 0 1 cookie notifyCallback handle >>= assertEqual "async open" 0
+        peek handle
+      digestFallbacks "async" ptr async out len
+      silent "async-DigestInit" (initDigest ptr async)
+      silent "async-DigestUpdate" $ BS.useAsCStringLen "abc" $ \(input,n) ->
+        haskokiStdDigestUpdate ptr async (castPtr input) (fromIntegral n) >>= assertEqual "async multipart update" 0
+      reset
+      silent "async-DigestFinal" (haskokiStdDigestFinal ptr async out len >>= assertEqual "async synchronous final" 0)
+      assertDigestBytes True out len
+      reset
+      silent "async-planner-refusal" (abcDigest ptr async out len >>= assertEqual "async no op" 0x91)
+      initDigest ptr async
+      silent "async-decode-refusal" (haskokiStdDigest ptr async nullPtr 3 out len >>= assertEqual "async bad input" 7)
+      initDigest ptr async
+      silent "async-null-length" (abcDigest ptr async out nullPtr >>= assertEqual "async bad length" 7)
+      silent "async-bad-mechanism" (haskokiStdDigestInit ptr async 0xffffffff nullPtr 0 >>= assertEqual "async init refusal" 0x70)
+      initDigest ptr async
+      silent "async-refusal-update" $ haskokiStdDigestUpdate ptr async nullPtr 0 >>= assertEqual "marks stream fed" 0
+      silent "async-multipart-refusal" (abcDigest ptr async out len >>= assertEqual "one shot after update refused" 0x90)
+      -- OPERATION_ACTIVE preserves the fed operation: explicitly retire it.
+      haskokiStdSessionCancel ptr async 0x400 >>= assertEqual "retire fed operation" 0
+      initDigest ptr async
+      reset
+      silent "async-submit" (abcDigest ptr async out len >>= assertEqual "pending" 0x204)
+      tableStats (siAsyncTable inst) >>= assertEqual "one occupied job, fallback allocated none" (1,0,1)
+      silent "async-busy" (abcDigest ptr async out len >>= assertEqual "busy" 0x90)
+      assertDigestBytes False out len
+      withName $ \name -> allocaBytes 40 $ \result -> do
+        pokeArray result (replicate 40 (0xa5 :: Word8))
+        silent "async-poll-one" (haskokiStdAsyncComplete ptr async name (castPtr result) >>= assertEqual "first poll pending" 0x204)
+        assertDigestBytes False out len
+        peekArray 40 result >>= assertEqual "pending preserves whole result" (replicate 40 0xa5)
+        silent "async-Complete" (haskokiStdAsyncComplete ptr async name (castPtr result) >>= assertEqual "second poll executes" 0)
+        peekByteOff result 0 >>= assertEqual "public completion version zero" (0 :: CULong)
+        peekByteOff result 16 >>= assertEqual "public completion length" (32 :: CULong)
+        peekArray 32 out >>= assertEqual "async exact KAT" sha256Abc
+      tableStats (siAsyncTable inst) >>= assertEqual "one delivered job" (0,1,1)
+      initDigest ptr async
+      reset
+      silent "async-submit-detach" (abcDigest ptr async out len >>= assertEqual "pending detach candidate" 0x204)
+      withName $ \name -> alloca $ \job -> do
+        silent "async-GetID" (haskokiStdAsyncGetId ptr async name job >>= assertEqual "detach real job" 0)
+        pid <- peek job
+        silent "async-Join" (haskokiStdAsyncJoin ptr async name pid out 64 >>= assertEqual "public Join remains OK" 0)
+        silent "async-cancel" (haskokiStdSessionCancel ptr async 0x400 >>= assertEqual "cancel Digest" 0)
+      reset
+      assertNoDigest ptr async
+      silent "non-Digest-encrypt" (haskokiStdEncrypt ptr h nullPtr 0 out len >>= assertEqual "encrypt no op" 0x91)
+      silent "non-Digest-decrypt" (haskokiStdDecrypt ptr h nullPtr 0 out len >>= assertEqual "decrypt no op" 0x91)
+      silent "non-Digest-sign" (haskokiStdSign ptr h nullPtr 0 out len >>= assertEqual "sign no op" 0x91)
+      silent "non-Digest-verify" (haskokiStdVerify ptr h nullPtr 0 nullPtr 0 >>= assertEqual "verify no op" 0x91)
+      silentCrypto ptr inst h async out len
+      silent "RNG" (haskokiStdGenerateRandom ptr h out 32 >>= assertEqual "real RNG" 0)
+      silent "seed-RNG" $ BS.useAsCStringLen "seed" $ \(seed,n) ->
+        haskokiStdSeedRandom ptr h (castPtr seed) (fromIntegral n) >>= assertEqual "seed RNG" 0
+      silent "login" $ BS.useAsCStringLen "1234" $ \(pin,n) ->
+        haskokiStdLogin ptr h 1 (castPtr pin) (fromIntegral n) >>= assertEqual "login" 0
+      silent "logout" (haskokiStdLogout ptr h >>= assertEqual "logout" 0)
+      silent "session-info" $ alloca $ \a -> alloca $ \b -> alloca $ \c -> alloca $ \d ->
+        haskokiStdGetSessionInfo ptr h a b c d >>= assertEqual "session info" 0
+      silent "object-find-init" $ Bytes.useAsCStringLen (Bytes.replicate 8 0) $ \(frame,n) ->
+        haskokiStdFindInit ptr h (castPtr frame) (fromIntegral n) >>= assertEqual "find init" 0
+      silent "object-find" $ alloca $ \count -> alloca $ \handle ->
+        haskokiStdFind ptr h 1 handle count >>= assertEqual "find" 0
+      silent "object-find-final" (haskokiStdFindFinal ptr h >>= assertEqual "find final" 0)
+      silent "slot-list" $ alloca $ \count -> haskokiStdGetSlotList ptr 1 nullPtr count >>= assertEqual "slot list" 0
+      silent "slot-flags" $ alloca $ \flags -> haskokiStdGetSlotFlags ptr 0 flags >>= assertEqual "slot flags" 0
+      silent "slot-poll" (waitSlot (siSlots inst) DontBlock >>= assertEqual "empty poll" SlotNoEvent)
+      ctl <- buildInstance notifyConfig
+      bindPresenceOwner (instControl ctl) (Just (PresenceOwner
+        (snapshotSlots (siSlots inst)) (setStdTokenPresence inst)))
+      silent "control-status" (status (instControl ctl) [] >>= assertEqual "actual serving control" [row 0 True 0,row 1 True 0])
+      bindPresenceOwner (instControl ctl) Nothing
+      silent "close" (haskokiStdCloseSession ptr h >>= assertEqual "close" 0)
+      silent "close-all" (haskokiStdCloseAllSessions ptr 0 >>= assertEqual "close all" 0)
+      _ <- silent "removal-open" (openNotify ptr 1 cookie notifyCallback)
+      silent "removal" (setStdTokenPresence inst (SlotId 1) False >>= assertEqual "remove" (Right (PresenceChanged 1,0)))
+      silent "insertion" (setStdTokenPresence inst (SlotId 1) True >>= assertEqual "insert" (Right (PresenceChanged 2,0)))
+      _ <- silent "finalize-open" (openNotify ptr 0 cookie notifyCallback)
+      notifyReset 0
+    notifyRead 0 >>= assertEqual "finalize stays silent" 0
+    putStrLn "T-N07 silent/finalize calls=0"
+
+-- Actual non-Digest effects, in addition to the refusal paths. These catch
+-- surrender accidentally being added to runCryptoPlanOn for every family.
+silentCrypto :: StablePtr StdInstance -> StdInstance -> CULong -> CULong -> Ptr Word8 -> Ptr CULong -> Assertion
+silentCrypto ptr inst h async out len = do
+  let attrs = Map.fromList [(AttrClass,ValULong 4),(AttrKeyType,ValULong 0x1f),
+        (AttrValue,ValBytes (Bytes.replicate 16 0)),(AttrEncrypt,ValBool True),(AttrDecrypt,ValBool True)]
+      macAttrs = Map.fromList [(AttrClass,ValULong 4),(AttrKeyType,ValULong 0x10),
+        (AttrValue,ValBytes "key"),(AttrSign,ValBool True),(AttrVerify,ValBool True)]
+  publish (siEnv inst) (StateDelta
+    [DeltaCreateObjectFull (ObjectId 901) attrs (Just (sidOf h)) (SlotId 0),
+     DeltaBindHandle (ExternalHandle 901) (ObjectId 901),
+     DeltaCreateObjectFull (ObjectId 902) macAttrs (Just (sidOf h)) (SlotId 0),
+     DeltaBindHandle (ExternalHandle 902) (ObjectId 902)]) >>= mustRight
+  silent "encrypt-init" (haskokiStdEncryptInit ptr h 0x1081 nullPtr 0 901 >>= assertEqual "AES ECB init" 0)
+  poke len 64
+  silent "encrypt-effect" $ Bytes.useAsCStringLen (Bytes.replicate 16 0) $ \(input,n) ->
+    haskokiStdEncrypt ptr h (castPtr input) (fromIntegral n) out len >>= assertEqual "real AES encryption" 0
+  cipher <- Bytes.pack <$> peekArray 16 out
+  assertEqual "AES zero block KAT" (Bytes.pack [0x66,0xe9,0x4b,0xd4,0xef,0x8a,0x2c,0x3b,0x88,0x4c,0xfa,0x59,0xca,0x34,0x2b,0x2e]) cipher
+  silent "decrypt-init" (haskokiStdDecryptInit ptr h 0x1081 nullPtr 0 901 >>= assertEqual "AES decrypt init" 0)
+  poke len 64
+  silent "decrypt-effect" $ Bytes.useAsCStringLen cipher $ \(input,n) ->
+    haskokiStdDecrypt ptr h (castPtr input) (fromIntegral n) out len >>= assertEqual "real AES decryption" 0
+  peekArray 16 out >>= assertEqual "decrypted zero block" (replicate 16 0)
+  silent "sign-init" (haskokiStdSignInit ptr h 0x251 nullPtr 0 902 >>= assertEqual "HMAC init" 0)
+  poke len 64
+  silent "sign-effect" $ BS.useAsCStringLen "abc" $ \(input,n) ->
+    haskokiStdSign ptr h (castPtr input) (fromIntegral n) out len >>= assertEqual "real HMAC" 0
+  peek len >>= assertEqual "HMAC width" 32
+  signature <- Bytes.pack <$> peekArray 32 out
+  silent "verify-init" (haskokiStdVerifyInit ptr h 0x251 nullPtr 0 902 >>= assertEqual "verify init" 0)
+  silent "verify-effect" $ BS.useAsCStringLen "abc" $ \(input,n) -> Bytes.useAsCStringLen signature $ \(sig,sn) ->
+    haskokiStdVerify ptr h (castPtr input) (fromIntegral n) (castPtr sig) (fromIntegral sn) >>= assertEqual "real HMAC verify" 0
+  initDigest ptr h
+  silent "DigestKey" (haskokiStdDigestKey ptr h 902 >>= assertEqual "digest secret value" 0)
+  haskokiStdSessionCancel ptr h 0x400 >>= assertEqual "retire key digest" 0
+  initDigest ptr async
+  -- The object belongs to h: the async key visibility refusal also remains
+  -- silent, with no job submission or fallback callback.
+  silent "async-DigestKey-refusal" (haskokiStdDigestKey ptr async 999999 >>= assertEqual "unknown digest key" 0x82)
+  silent "object-destroy-aes" (haskokiStdDestroyObject ptr h 901 >>= assertEqual "destroy AES key" 0)
+  silent "object-destroy-hmac" (haskokiStdDestroyObject ptr h 902 >>= assertEqual "destroy HMAC key" 0)
+
+-- Each query/short path executes synchronously even on an explicit async
+-- session, then recalls staged bytes without a fresh backend execution.
+digestFallbacks :: String -> StablePtr StdInstance -> CULong -> Ptr Word8 -> Ptr CULong -> Assertion
+digestFallbacks prefix ptr h out len =
+  forM_ [("query",Nothing),("capacity-0",Just 0),("capacity-31",Just 31)] $ \(label,capacity) -> do
+    silent (prefix ++ "-" ++ label ++ "-init") (initDigest ptr h)
+    pokeArray (out `plusPtr` (-16)) (replicate 96 (0xa5 :: Word8))
+    poke len (maybe 64 id capacity)
+    silent (prefix ++ "-" ++ label) $ abcDigest ptr h (maybe nullPtr (const out) capacity) len
+      >>= assertEqual "query/short return" (maybe 0 (const 0x150) capacity)
+    peek len >>= assertEqual "query/short length" 32
+    peekArray 96 (out `plusPtr` (-16)) >>= assertEqual "query/short data untouched" (replicate 96 (0xa5 :: Word8))
+    poke len 64
+    silent (prefix ++ "-" ++ label ++ "-recall") (abcDigest ptr h out len >>= assertEqual "staged recall" 0)
+    assertDigestBytes True out len
+
+caseNotifyDigestIsolation :: Assertion
+caseNotifyDigestIsolation = runInBoundThread $ allocaBytes 1 $ \cookie -> allocaBytes 1 $ \otherCookie -> do
+  withDigestOwner notifyConfig notifyInvoke $ \ptr inst -> do
+    a <- openNotify ptr 0 cookie notifyCallback
+    b <- openNotify ptr 1 otherCookie notifyCallback
+    initDigest ptr a
+    initDigest ptr b
+    notifyReset 1
+    withDigestCanaries $ \out len -> abcDigest ptr a out len >>= assertEqual "only A canceled" 0x50 >> assertDigestBytes False out len
+    assertNoDigest ptr a
+    notifyReset 0
+    withDigestCanaries $ \out len -> abcDigest ptr b out len >>= assertEqual "other session still initialized" 0 >> assertDigestBytes True out len
+    notifyRead 1 >>= assertEqual "other session identity" b
+    notifyCookie >>= assertEqual "other cookie identity" otherCookie
+    -- All four independent nullness combinations, through the actual Digest.
+    forM_ [(nullFunPtr,nullPtr),(nullFunPtr,cookie),(notifyCallback,nullPtr),(notifyCallback,cookie)] $ \(callback,app) -> do
+      h <- openNotify ptr 0 app callback
+      initDigest ptr h
+      notifyReset 0
+      withDigestCanaries $ \out len -> abcDigest ptr h out len >>= assertEqual "nullness shape usable" 0 >> assertDigestBytes True out len
+      notifyRead 0 >>= assertEqual "null Notify is silent regardless of cookie" (if callback == nullFunPtr then 0 else 1)
+      when (callback /= nullFunPtr) $ do
+        notifyCookie >>= assertEqual "null cookie preserved" app
+        notifyRead 1 >>= assertEqual "shape session preserved" h
+      inNotify >>= assertEqual "shape TLS restored" 0
+      haskokiStdCloseSession ptr h >>= assertEqual "shape close" 0
+    gateBusy (envGate (siEnv inst)) >>= assertEqual "gate usable after refusal" False
+    -- Exceptions from provider execution retain the unrelated GENERAL_ERROR
+    -- fence, while releasing the admitted Digest resource and model slot.
+    initDigest ptr a
+    resource <- digestResource inst a
+    notifyReset 0
+    withStdCtx ptr (\owner -> withDigestSurrender owner (sidOf a)
+      (ioError (userError "unexpected provider execution failure"))) >>= assertEqual "foreign catch-all remains GENERAL_ERROR" 5
+    assertNoDigest ptr a
+    assertDigestReleased inst resource
+    inNotify >>= assertEqual "provider failure TLS restored" 0
+    initDigest ptr a
+    withDigestCanaries $ \out len -> do
+      poke len 32
+      abcDigest ptr a out len >>= assertEqual "adequate exact capacity 32" 0
+      assertDigestBytes True out len
+  putStrLn "T-N07 isolation: other_session=pass nullness_shapes=4 tls=pass"

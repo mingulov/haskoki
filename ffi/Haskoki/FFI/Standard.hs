@@ -65,6 +65,7 @@ module Haskoki.FFI.Standard
   , NativeNotify, SessionNotify (..), NotifyDecision (..), NotifyInvoker
   , invokeNativeNotify, dispatchSessionNotifyWith
   , registerSessionNotify, retireSessionNotify, surrenderDigest
+  , withDigestSurrender
   , SessionOpenPoint (..)
   , haskokiStdOpenSessionWithNotify
   , haskokiStdOpenSessionWithNotifyWith
@@ -2676,7 +2677,7 @@ runStdDigestBuffered inst sid input pOut pLen cap = do
       | Just recipe <- digestRecipeFor mech
       , cap >= fromIntegral (drOutLen recipe) -> do
           enabled <- isAsyncSession (siAsyncTable inst) sid
-          if not enabled then synchronous else do
+          if not enabled then withDigestSurrender inst sid synchronous else do
             views <- readIORef (siAsyncViews inst)
             case Map.lookup sid views of
               Nothing -> pure ckrGeneralError
@@ -2687,6 +2688,29 @@ runStdDigestBuffered inst sid input pOut pLen cap = do
                   then pure (stdRvOf CKR_OPERATION_ACTIVE)
                   else startStdDigest inst sid view input pOut (min cap maxOutputBytes)
     _ -> synchronous
+
+-- | The caller has admitted a fresh synchronous Digest and retains the C
+-- state lock as its lifetime lease. Planning holds no model gate here. Only
+-- this branch surrenders; the continuation owns execution and publication.
+withDigestSurrender :: StdInstance -> SessionId -> IO CULong -> IO CULong
+withDigestSurrender inst sid synchronous = mask $ \restore -> do
+  -- DigestInit owns a native stream even before its first update. Reuse the
+  -- cancellation plan and Standard publication/drain path, not a bare slot
+  -- deletion, so refusal also releases that stream. CKF_DIGEST selects only
+  -- this session's Digest; it does not retire the notification association.
+  let terminate = do
+        cancelStdAsyncBinding inst sid JobDigest
+        runCryptoSilent inst (Request Pkcs11_3_2 F_SessionCancel (Just sid)
+          Nothing (encodeCancelInput 0x400) [])
+      cleanup = terminate >> pure ()
+      refuse rv = do
+        retired <- terminate
+        pure (if retired == ckrOk then rv else retired)
+  decision <- restore (surrenderDigest inst sid) `onException` cleanup
+  case decision of
+    NotifyContinue -> restore synchronous `onException` cleanup
+    NotifyCancel -> refuse (stdRvOf CKR_FUNCTION_CANCELED)
+    NotifyFailed -> refuse 0x06
 
 -- | The worker copies the decoded input. Mask the handle-to-binding handoff;
 -- if publication cannot finish, cancel through that same worker before unwind.
