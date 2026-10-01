@@ -47,6 +47,7 @@ module Haskoki.Runtime.Lifecycle
   , withGate
   , gateBusy
   , publish
+  , withHeldModel
   , publishPresence
   , invalidateSession
   , checkReservation
@@ -415,6 +416,21 @@ publish env delta = withGate (envGate env) $
     case publishDelta m delta of
       Left fault -> pure (Left fault)
       Right m' -> writeTVar (envModel env) m' >> pure (Right ())
+
+-- | Run a durable-publication action holding the mutation gate.
+-- The action receives the current model; a @Just m'@ result is
+-- written before the gate releases, then the post-write hook runs
+-- (still under the gate) so publication observation follows the
+-- actual write. Runs under the caller's mask.
+withHeldModel :: Env -> (Model -> IO (Either ModelFault (Maybe Model)))
+  -> IO () -> IO (Either ModelFault (Maybe Model))
+withHeldModel env act afterWrite = withGate (envGate env) $ do
+  m <- readTVarIO (envModel env)
+  r <- act m
+  case r of
+    Right (Just m') ->
+      atomically (writeTVar (envModel env) m') >> afterWrite >> pure r
+    _ -> pure r
 
 -- | Publish retirement and serving presence together. Validate the complete
 -- pure delta before asking the leaf to publish; its Left arms write nothing.

@@ -264,6 +264,7 @@ data StoreDelta = StoreDelta
   , sdDropObjects :: ![ObjectId]
   , sdPutJobs :: ![JobRecord]
   , sdDropJobs :: ![Word64]
+  , sdPutMeta :: ![(String, String)]
   } deriving (Eq, Show)
 
 -- | The empty delta: commits nothing.
@@ -275,6 +276,7 @@ emptyDelta = StoreDelta
   , sdDropObjects = []
   , sdPutJobs = []
   , sdDropJobs = []
+  , sdPutMeta = []
   }
 
 -- | Commit outcome classification (design 08, section 5).
@@ -582,6 +584,7 @@ data Store = Store
   , storeQuarantined :: IO [(TokenId, String)]
   , storeReload :: IO (Either StoreError ())
   , storeStats :: IO StoreStats
+  , storeLoadMeta :: IO (Either StoreError [(String, String)])
   }
 
 -- | One raw stored document: the table, the stable key, and the

@@ -1297,7 +1297,7 @@ openManualInstance slots = do
     >>= either (fail . show) pure
   newStablePtr (StdInstance env be cursors Nothing Map.empty
     hub (pure ()) (closeBackend be) table Nothing views bindings
-    notify invokeNativeNotify)
+    notify invokeNativeNotify Nothing)
   where
     seatOne env slot = do
       eSeat <- seatToken env slot

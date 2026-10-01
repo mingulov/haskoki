@@ -368,6 +368,7 @@ mkStore conn = Store
   , storeQuarantined = readMVar (sqQuarantine conn)
   , storeReload = reloadConn conn
   , storeStats = readIORef (sqStats conn)
+  , storeLoadMeta = withConn conn loadMeta
   }
 
 -- | Run one connection use under the guard lock (async-safe
@@ -442,6 +443,7 @@ resetEffectiveDb db tid wantGen replacement = do
                     , sdDropObjects = oids
                     , sdPutJobs = []
                     , sdDropJobs = pids
+                    , sdPutMeta = []
                     })
                   _ -> pure (Left (StoreCorrupt "corrupt reset ownership rows"))
               (Left err, _) -> pure (Left err)
@@ -529,18 +531,23 @@ protocolLocked conn db delta = do
         else do
           eLoaded <- loadTokens db
           eJobs <- loadJobs db
-          case (eLoaded, eJobs) of
-            (Right loaded, Right jobs)
+          eMeta <- loadMeta db
+          case (eLoaded, eJobs, eMeta) of
+            (Right loaded, Right jobs, Right meta)
               | reconcileReload d loaded == ReconciledPresent
-              , reconcileJobsReload d jobs == ReconciledPresent -> do
+              , reconcileJobsReload d jobs == ReconciledPresent
+              , reconcileMetaReload d meta == ReconciledPresent -> do
                   bumpCommits sVar
                   postCommitTail inj qVar sVar affected
-            (Right _, Right _) ->
+            (Right _, Right _, Right _) ->
               pure (NotCommitted (StoreIO "ambiguous commit resolved: delta absent"))
-            (Left err, _) -> do
+            (Left err, _, _) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)
-            (_, Left err) -> do
+            (_, Left err, _) -> do
+              quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
+              pure (CommitUnknown err)
+            (_, _, Left err) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)
     -- After a confirmed commit, a post-commit failure quarantines
@@ -565,7 +572,8 @@ protocolLocked conn db delta = do
       e4 <- runAll (map putTokenStmt (sdPutTokens d))
       e5 <- runAll (map putObjectStmt (sdPutObjects d))
       e6 <- runAll (map putJobStmt (sdPutJobs d))
-      pure (e1 >> e2 >> e3 >> e4 >> e5 >> e6)
+      e7 <- runAll (map putMetaStmt (sdPutMeta d))
+      pure (e1 >> e2 >> e3 >> e4 >> e5 >> e6 >> e7)
       where
         runAll :: [(Text, [S.SQLData])] -> IO (Either StoreError ())
         runAll [] = pure (Right ())
@@ -657,6 +665,15 @@ checkRevisionsDb db delta
       rev <- decodeRevision n
       pure (ObjectId oid, Revision rev)
     parseRev _ = Nothing
+
+-- | Compare a delta's expected meta rows against reloaded meta
+-- with full key/value equality. Every expected row must be
+-- present; extra loaded rows (schema bookkeeping) are fine. A
+-- metadata-only delta reconciles against meta alone.
+reconcileMetaReload :: StoreDelta -> [(String, String)] -> Reconcile
+reconcileMetaReload delta loaded
+  | all (\(k, v) -> lookup k loaded == Just v) (sdPutMeta delta) = ReconciledPresent
+  | otherwise = ReconciledAbsent
 
 -- | The first touched token that is quarantined, if any.
 firstQuarantined :: [(TokenId, String)] -> [TokenId] -> Maybe (TokenId, String)
@@ -781,6 +798,17 @@ decodeJobRow _ = Left (StoreCorrupt "corrupt job row shape")
 noteJob :: String -> Maybe a -> Either StoreError a
 noteJob col = maybe (Left (StoreCorrupt ("corrupt job record: bad " ++ col))) Right
 
+-- | Load every @store_meta@ row as key/value pairs.
+loadMeta :: S.Database -> IO (Either StoreError [(String, String)])
+loadMeta db = do
+  eRows <- queryRows db "SELECT key, value FROM store_meta" []
+  case eRows of
+    Left err -> pure (Left err)
+    Right rows -> pure (mapM decodeMetaRow rows)
+  where
+    decodeMetaRow [S.SQLText k, S.SQLText v] = Right (T.unpack k, T.unpack v)
+    decodeMetaRow _ = Left (StoreCorrupt "corrupt store_meta row shape")
+
 -- | Render every stored record through its canonical bytes (load,
 -- then re-encode, so inspection always shows canonical form).
 inspectConn :: S.Database -> IO [StoredDoc]
@@ -843,6 +871,13 @@ putTokenStmt t =
     , S.SQLBlob (encodeBlob8 (unGeneration (trGeneration t)))
     , S.SQLText (T.pack (encodeTokenRecord t))
     ]
+  )
+
+-- | Upsert one meta row.
+putMetaStmt :: (String, String) -> (Text, [S.SQLData])
+putMetaStmt (k, v) =
+  ( "INSERT OR REPLACE INTO store_meta(key, value) VALUES (?, ?)"
+  , [S.SQLText (T.pack k), S.SQLText (T.pack v)]
   )
 
 -- | Upsert one object row.

@@ -53,6 +53,9 @@ module Haskoki.FFI.Standard
   ( -- * Instance
     StdStore (..)
   , StdInstance (..)
+    -- * Durability ledger (T-C02 observation seam; production stays 'Nothing')
+  , LedgerEvent (..)
+  , renderLedgerEvent
   , StdAsyncBinding (..)
   , StdStoreError (..)
   , StdAcquisition (..)
@@ -218,7 +221,7 @@ import qualified Data.ByteString.Char8 as BC8
 import Data.Char (ord)
 import qualified Data.ByteString.Unsafe as BSU
 import Data.List (find)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Maybe (fromMaybe, isJust, isNothing)
@@ -234,6 +237,7 @@ import Foreign.StablePtr
   , freeStablePtr
   , newStablePtr
   )
+import Text.Read (readMaybe)
 import Foreign.Marshal.Array (pokeArray)
 import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
@@ -421,14 +425,19 @@ import Haskoki.Runtime.Lifecycle
   , seatToken
   , snapshotModel
   , snapshotPresence
+  , withHeldModel
   )
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
+  , ObjectPut (..)
+  , Reconcile (..)
   , Store (..)
   , StoreDelta (..)
-  , StoreError
+  , StoreError (StoreCorrupt)
   , TokenRecord (..)
   , emptyDelta
+  , objectToRecord
+  , reconcileReload
   )
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Session
@@ -444,6 +453,7 @@ import Haskoki.Types
   , Outcome (..)
   , Pkcs11Version (..)
   , ReturnCode (..)
+  , Revision (..)
   , SessionId (..)
   , SlotId (..)
   , TokenId (..)
@@ -514,7 +524,42 @@ data StdInstance = StdInstance
   , siAsyncBindings :: !(IORef (Map (SessionId, JobFunction) StdAsyncBinding))
   , siNotify :: !(IORef (Map SessionId SessionNotify))
   , siNotifyInvoker :: !NotifyInvoker
+  , siLedger :: !(Maybe (IORef [LedgerEvent]))
   }
+
+-- | Gate-held durable-publication observations, in emission order.
+-- Production instances carry 'Nothing' (zero overhead, zero behavior
+-- change); engine fixtures inject @Just ref@ through an 'saAssemble'
+-- probe override via record update and print the event list for the
+-- restart-ledger checker.
+data LedgerEvent
+  = EvProjectOk
+  | EvProjectFault
+  | EvBypass
+  | EvIssued !Int !Int !Int
+  | EvCommitted
+  | EvNotCommitted
+  | EvUnknown
+  | EvReconciled !Bool
+  | EvPublished
+  deriving (Eq, Show)
+
+-- | The checker's event strings: @project-ok | project-fault |
+-- bypass | issued{puts,drops,meta} | committed | not-committed |
+-- commit-unknown | reconciled{landed} | published@.
+renderLedgerEvent :: LedgerEvent -> String
+renderLedgerEvent e = case e of
+  EvProjectOk -> "project-ok"
+  EvProjectFault -> "project-fault"
+  EvBypass -> "bypass"
+  EvIssued puts drops meta ->
+    "issued{" ++ show puts ++ "," ++ show drops ++ "," ++ show meta ++ "}"
+  EvCommitted -> "committed"
+  EvNotCommitted -> "not-committed"
+  EvUnknown -> "commit-unknown"
+  EvReconciled True -> "reconciled{true}"
+  EvReconciled False -> "reconciled{false}"
+  EvPublished -> "published"
 
 -- | One caller-owned output allocation. Input bytes are copied by the worker;
 -- neither its input pointer nor the caller's length-word address is retained.
@@ -723,7 +768,7 @@ assembleStdInstance env be mStore cfg slots unbind release invoker = do
   bindings <- newIORef Map.empty
   notify <- newIORef Map.empty
   pure (StdInstance env be cursors mStore (effectiveCatalog cfg)
-    slots unbind release table detach views bindings notify invoker)
+    slots unbind release table detach views bindings notify invoker Nothing)
 
 -- | Seat every catalog slot in index order. The first refusal
 -- (past the seating bound) fails the whole open loudly — catalogs
@@ -785,61 +830,129 @@ openStdStore env cfg = case scKind (cfgStorage cfg) of
                       storeClose store
                       pure (Left (StdStoreReload deny))
                     Right () -> do
-                      m <- snapshotModel env
-                      -- A shrunk catalog over a
-                      -- reused store must never serve the stale
-                      -- extra slots with home-fallback labels/PINs.
-                      -- REFUSE (not prune: pruning would silently
-                      -- drop operator token data; the loud refusal
-                      -- forces explicit reconciliation), failing the
-                      -- whole open.
-                      let stored = Map.keys (mTokenAuth m)
-                          extra =
-                            [ slot
-                            | slot <- stored
-                            , Map.notMember slot catalog
-                            ]
-                      case extra of
-                        (_ : _) -> do
+                      eReserved <- reserveDurableCounters env store
+                      case eReserved of
+                        Left err -> do
                           storeClose store
-                          pure (Left StdStoreCatalogMismatch)
-                        [] -> do
-                          let missing =
+                          pure (Left (StdStoreSQLite err))
+                        Right () -> do
+                          m <- snapshotModel env
+                          -- A shrunk catalog over a
+                          -- reused store must never serve the stale
+                          -- extra slots with home-fallback labels/PINs.
+                          -- REFUSE (not prune: pruning would silently
+                          -- drop operator token data; the loud refusal
+                          -- forces explicit reconciliation), failing the
+                          -- whole open.
+                          let stored = Map.keys (mTokenAuth m)
+                              extra =
                                 [ slot
-                                | slot <- Map.keys catalog
-                                , Map.notMember slot (mTokenAuth m)
+                                | slot <- stored
+                                , Map.notMember slot catalog
                                 ]
-                          case missing of
-                            [] -> pure (Right (Just (StdStore store homeTokenId)))
-                            _ -> do
-                              eSeat <- seatAll env missing
-                              case eSeat of
-                                Left deny -> do
-                                  storeClose store
-                                  pure (Left (StdStoreSeating deny))
-                                Right () -> do
-                                  res <- storeCommit store emptyDelta
-                                    { sdPutTokens =
-                                        [ TokenRecord (tokenIdForSlot slot) slot
-                                            (Generation 0) label tokenAuthNew
-                                        | slot <- missing
-                                        , let (label, _, _) = catalogEntry slot
-                                        ]
-                                    }
-                                  case res of
-                                    Committed -> pure (Right (Just (StdStore store homeTokenId)))
-                                    _ -> do
+                          case extra of
+                            (_ : _) -> do
+                              storeClose store
+                              pure (Left StdStoreCatalogMismatch)
+                            [] -> do
+                              let missing =
+                                    [ slot
+                                    | slot <- Map.keys catalog
+                                    , Map.notMember slot (mTokenAuth m)
+                                    ]
+                              case missing of
+                                [] -> pure (Right (Just (StdStore store homeTokenId)))
+                                _ -> do
+                                  eSeat <- seatAll env missing
+                                  case eSeat of
+                                    Left deny -> do
                                       storeClose store
-                                      pure (Left StdStoreCommit)
+                                      pure (Left (StdStoreSeating deny))
+                                    Right () -> do
+                                      res <- storeCommit store emptyDelta
+                                        { sdPutTokens =
+                                            [ TokenRecord (tokenIdForSlot slot) slot
+                                                (Generation 0) label tokenAuthNew
+                                            | slot <- missing
+                                            , let (label, _, _) = catalogEntry slot
+                                            ]
+                                        }
+                                      case res of
+                                        Committed -> pure (Right (Just (StdStore store homeTokenId)))
+                                        _ -> do
+                                          storeClose store
+                                          pure (Left StdStoreCommit)
   where
     catalog = effectiveCatalog cfg
     catalogEntry slot = Map.findWithDefault homeCatalogEntry slot catalog
+
+-- | Reserve the durable handle/revision high-waters after a
+-- store reload: @mNextHandle@ advances past the maximum of the
+-- persisted @handle_counter@ and the highest live handle plus one,
+-- and @mNextRevision@ past the maximum of the persisted
+-- @revision_counter@ and the highest restored revision plus one
+-- (all under the gate). Persisted high-waters -- not
+-- restored-rows-only -- because deleting the highest-revision
+-- object would lose the mark while restored ids can be reused:
+-- recreated ids thus mint revisions no pre-restart CAS can
+-- satisfy. ABSENT meta keys (old stores) fall back to
+-- restored-rows-only reservation, never a refusal. A meta LOAD
+-- failure or a PRESENT-but-unparsable/nonpositive counter refuses
+-- the open (@Left@): silently shrinking the high-waters could
+-- reuse an earlier handle or mint a revision a pre-restart CAS
+-- satisfies.
+reserveDurableCounters :: Env -> Store -> IO (Either StoreError ())
+reserveDurableCounters env store = do
+  eMeta <- storeLoadMeta store
+  case eMeta of
+    Left err -> pure (Left err)
+    Right meta ->
+      case (loadCounter "handle_counter" meta, loadCounter "revision_counter" meta) of
+        (Left bad, _) -> pure (Left bad)
+        (_, Left bad) -> pure (Left bad)
+        (Right persistedHandle, Right persistedRev) -> do
+          let reserve m =
+                let liveMaxH = maximum (0 : [unExternalHandle h | h <- Map.keys (mHandles m)])
+                    restMaxR = maximum (0 : [unRevision (osRevision o) | o <- Map.elems (mObjects m)])
+                    nextH = max (mNextHandle m) (max (liveMaxH + 1) (fromMaybe 0 persistedHandle))
+                    nextR = max (mNextRevision m) (max (restMaxR + 1) (fromMaybe 0 persistedRev))
+                in m { mNextHandle = nextH, mNextRevision = nextR }
+          _ <- withHeldModel env (\m -> pure (Right (Just (reserve m)))) (pure ())
+          pure (Right ())
+  where
+    loadCounter :: String -> [(String, String)] -> Either StoreError (Maybe Int)
+    loadCounter key meta = case lookup key meta of
+      Nothing -> Right Nothing
+      Just s -> case readMaybe s of
+        Just n | n >= 1 -> Right (Just n)
+        _ -> Left (StoreCorrupt ("corrupt durable counter: " ++ key))
 
 -- | Close the process store, if any. Always succeeds (the close
 -- path has no error channel).
 closeStdStore :: Maybe StdStore -> IO ()
 closeStdStore Nothing = pure ()
 closeStdStore (Just ss) = storeClose (stdStore ss)
+
+-- | Best-effort close flush: persist the final handle/revision
+-- counters as a meta-only delta so the next open's reservation
+-- observes this generation's high-waters (consecutive read-only
+-- open/find/close cycles thus never alias handles). Memory
+-- instances flush nothing; store failures and exceptions are
+-- swallowed (the close path has no error channel).
+flushDurableCounters :: StdInstance -> IO ()
+flushDurableCounters inst = case siStore inst of
+  Nothing -> pure ()
+  Just (StdStore store _) -> do
+    r <- try $ do
+      m <- snapshotModel (siEnv inst)
+      _ <- storeCommit store (emptyDelta
+        { sdPutMeta = [ ("handle_counter", show (mNextHandle m))
+                      , ("revision_counter", show (mNextRevision m))
+                      ] })
+      pure ()
+    case r of
+      Left (_ :: SomeException) -> pure ()
+      Right () -> pure ()
 
 -- | Close: shut the backend and the process store, then release
 -- the handle. Idempotent on NULL, silent on failure.
@@ -849,6 +962,7 @@ haskokiStdClose ctx = guardedUnit $
     then pure ()
     else mask_ $ do
       inst <- deRefStablePtr ctx
+      flushDurableCounters inst
       let closeOwned = siReleaseResources inst `finally` freeStablePtr ctx
       (siUnbindPresenceOwner inst `finally` do
         -- Retire associations even if cancellation/native release later fails.
@@ -1344,11 +1458,136 @@ cancelPresenceSession inst sid = do
     pure (if wasLive && fmap jobSnapshotState snapshot == Just (SnapTerminal TermCanceled) then 1 else 0)
   pure (sum counts)
 
--- | Publish a delta through the instance environment. A later
--- extension adds the process-store commit (store-first ordering);
--- until then it is the plain gate publication.
+-- | The store half of a gate-held publication: the projected
+-- delta plus its put/drop/meta-row counts (the @issued@ ledger
+-- payload).
+data ObjectProjection = ObjectProjection
+  { projDelta :: !StoreDelta
+  , projPuts :: !Int
+  , projDrops :: !Int
+  , projMeta :: !Int
+  }
+
+-- | Project a published delta onto its durable store half
+-- (@m@ = pre model, @m'@ = projected model):
+--
+-- * @DeltaCreateObjectFull@ with a token owner in @m'@ (session
+--   creates excluded) becomes an unguarded initial put.
+-- * @DeltaSetAttributes@ on a token-owned @m'@ object becomes a
+--   guarded put: the expected revision is the PRE model @m@'s
+--   @osRevision@ (what the store still holds); a session->token
+--   promotion (or a same-delta creation) becomes an unguarded
+--   initial put instead.
+-- * @DeltaDestroyObject@ on a token-owned @m@ object becomes a
+--   drop (the schema carries no drop revisions).
+-- * Session-owned throughout, handle binds, and cursor, session,
+--   and login ops project to nothing.
+--
+-- Every puts/drops-carrying commit also upserts the projected
+-- @mNextHandle@\/@mNextRevision@ as @handle_counter@ and
+-- @revision_counter@ meta rows.
+buildObjectProjection :: Model -> Model -> StateDelta -> ObjectProjection
+buildObjectProjection m m' (StateDelta ops) = ObjectProjection
+  { projDelta = emptyDelta
+      { sdPutObjects = puts, sdDropObjects = drops, sdPutMeta = meta }
+  , projPuts = length puts
+  , projDrops = length drops
+  , projMeta = length meta
+  }
+  where
+    puts = concatMap putOf ops
+    drops = concatMap dropOf ops
+    meta
+      | null puts && null drops = []
+      | otherwise =
+          [ ("handle_counter", show (mNextHandle m'))
+          , ("revision_counter", show (mNextRevision m'))
+          ]
+    putOf (DeltaCreateObjectFull oid _ _ _) =
+      case Map.lookup oid (mObjects m') of
+        Just ost' | osOwner ost' == Nothing ->
+          [ObjectPut Nothing (objectToRecord (tokenIdForSlot (osSlot ost')) ost')]
+        _ -> []
+    putOf (DeltaSetAttributes oid _) =
+      case Map.lookup oid (mObjects m') of
+        Just ost' | osOwner ost' == Nothing ->
+          let rec' = objectToRecord (tokenIdForSlot (osSlot ost')) ost'
+              expected = case Map.lookup oid (mObjects m) of
+                Just ost | osOwner ost == Nothing -> Just (osRevision ost)
+                _ -> Nothing
+          in [ObjectPut expected rec']
+        _ -> []
+    putOf _ = []
+    dropOf (DeltaDestroyObject oid)
+      | destroyedTokenOwned oid = [oid]
+      | otherwise = []
+    dropOf _ = []
+    destroyedTokenOwned oid = case Map.lookup oid (mObjects m) of
+      Just ost -> osOwner ost == Nothing
+      Nothing -> False
+
+-- | A projection with no puts, drops, or meta rows bypasses the
+-- store (session/cursor activity publishes straight through).
+nullProjection :: ObjectProjection -> Bool
+nullProjection p = projPuts p == 0 && projDrops p == 0 && projMeta p == 0
+
+-- | Gate-held caller reconciliation after 'CommitUnknown': re-read
+-- tokens plus meta and compare every projected put/drop/meta row
+-- against the reread state. All match means the commit landed
+-- (publish @m'@); any mismatch means it did not (keep @m@); a
+-- reread failure fails closed (model unchanged, fault returned).
+-- Never calls 'restoreStoreState' (it would deadlock on the
+-- non-reentrant gate) and never reissues the commit.
+reconcileUnderGate :: Store -> StoreDelta -> IO Bool
+reconcileUnderGate store proj = do
+  eToks <- storeLoadTokens store
+  eMeta <- storeLoadMeta store
+  case (eToks, eMeta) of
+    (Right loaded, Right meta) ->
+      pure (reconcileReload proj loaded == ReconciledPresent
+        && metaPresent (sdPutMeta proj) meta)
+    _ -> pure False
+  where
+    metaPresent expected loaded =
+      all (\(k, v) -> lookup k loaded == Just v) expected
+
+-- | Publish a delta through the instance environment. Memory stays
+-- the plain gate publication; a stored instance commits the
+-- projected object half store-FIRST under the gate (masked, so no
+-- async exception can land between durable success and the model
+-- write): only 'Committed' -- or an unknown commit that
+-- reconciles landed -- publishes @m'@; anything else keeps @m@
+-- and reports the store fault.
 publishStd :: StdInstance -> StateDelta -> IO (Either ModelFault ())
-publishStd inst delta = publish (siEnv inst) delta
+publishStd inst delta = case siStore inst of
+  Nothing -> publish (siEnv inst) delta
+  Just (StdStore store _) -> mask_ $ do
+    r <- withHeldModel (siEnv inst)
+      (\m -> case publishDelta m delta of
+        Left fault -> emit EvProjectFault >> pure (Left fault)
+        Right m' -> do
+          emit EvProjectOk
+          let proj = buildObjectProjection m m' delta
+          if nullProjection proj
+            then emit EvBypass >> pure (Right (Just m'))
+            else do
+              emit (EvIssued (projPuts proj) (projDrops proj) (projMeta proj))
+              res <- storeCommit store (projDelta proj)
+              case res of
+                Committed -> emit EvCommitted >> pure (Right (Just m'))
+                NotCommitted _ -> emit EvNotCommitted >> pure (Left (storeFault res))
+                CommitUnknown _ -> do
+                  emit EvUnknown
+                  landed <- reconcileUnderGate store (projDelta proj)
+                  emit (EvReconciled landed)
+                  if landed
+                    then pure (Right (Just m'))
+                    else pure (Left (storeFault res)))
+      (emit EvPublished)
+    pure (fmap (const ()) r)
+  where
+    emit e = forM_ (siLedger inst) (`modifyIORef'` (++ [e]))
+    storeFault res = FaultInternal ("certificate store commit: " ++ show res)
 
 -- | Publish a prepared commit, then drain its releases through the
 -- instance backend (every commit-application site routes

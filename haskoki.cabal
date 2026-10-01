@@ -474,6 +474,7 @@ test-suite haskoki-engine-tests
   include-dirs:     spec/vendor cbits
   other-modules:
     AsyncEngineSpec
+    CertificateEngineSpec
     CryptoExportSpec
     DetachedEngineSpec
     EnvLock

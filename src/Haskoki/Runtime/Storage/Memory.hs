@@ -79,6 +79,7 @@ data WorldState = WorldState
   { wsTokens :: !(Map TokenId TokenRecord)
   , wsObjects :: !(Map ObjectId ObjectRecord)
   , wsJobs :: !(Map Word64 JobRecord)
+  , wsMeta :: !(Map String String)
   }
 
 -- | One memory store identity: the state plus the single-writer
@@ -91,7 +92,7 @@ data MemoryWorld = MemoryWorld
 -- | A fresh empty world with no owner.
 newMemoryWorld :: IO MemoryWorld
 newMemoryWorld = MemoryWorld
-  <$> newMVar (WorldState Map.empty Map.empty Map.empty)
+  <$> newMVar (WorldState Map.empty Map.empty Map.empty Map.empty)
   <*> newMVar False
 
 -- | Open the world with default limits and no fault injection.
@@ -129,6 +130,7 @@ mkStore world limits inj qVar sVar cVar = Store
   , storeQuarantined = readMVar qVar
   , storeReload = reloadWorld world qVar
   , storeStats = readIORef sVar
+  , storeLoadMeta = loadMeta world
   }
 
 -- | Release ownership. Idempotent: a double close leaves the flag
@@ -216,6 +218,7 @@ resetEffective world tid wantGen replacement = withMVar (mwState world) $ \st ->
           , sdDropObjects = [orId o | o <- Map.elems (wsObjects st), orToken o == tid]
           , sdPutJobs = []
           , sdDropJobs = [jrPersistentId j | j <- Map.elems (wsJobs st), jrToken j == tid]
+          , sdPutMeta = []
           })
 
 -- | The commit flow with the commit lock already held.
@@ -277,18 +280,23 @@ protocolLocked world limits inj qVar sVar delta = do
         else do
           eLoaded <- loadTokens world
           eJobs <- loadJobs world
-          case (eLoaded, eJobs) of
-            (Right loaded, Right jobs)
+          eMeta <- loadMeta world
+          case (eLoaded, eJobs, eMeta) of
+            (Right loaded, Right jobs, Right meta)
               | reconcileReload delta loaded == ReconciledPresent
-              , reconcileJobsReload delta jobs == ReconciledPresent -> do
+              , reconcileJobsReload delta jobs == ReconciledPresent
+              , reconcileMetaReload delta meta == ReconciledPresent -> do
                   bumpCommits sVar
                   postCommitTail affected
-            (Right _, Right _) ->
+            (Right _, Right _, Right _) ->
               pure (NotCommitted (StoreIO "ambiguous commit resolved: delta absent"))
-            (Left err, _) -> do
+            (Left err, _, _) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)
-            (_, Left err) -> do
+            (_, Left err, _) -> do
+              quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
+              pure (CommitUnknown err)
+            (_, _, Left err) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)
     -- After a confirmed commit, a post-commit failure quarantines
@@ -378,6 +386,15 @@ reloadWorld world qVar = do
     Left err -> pure (Left err)
     Right _ -> modifyMVar_ qVar (\_ -> pure []) >> pure (Right ())
 
+-- | Compare a delta's expected meta rows against reloaded meta
+-- with full key/value equality. Every expected row must be
+-- present; extra loaded rows are fine. A metadata-only delta
+-- reconciles against meta alone.
+reconcileMetaReload :: StoreDelta -> [(String, String)] -> Reconcile
+reconcileMetaReload delta loaded
+  | all (\(k, v) -> lookup k loaded == Just v) (sdPutMeta delta) = ReconciledPresent
+  | otherwise = ReconciledAbsent
+
 -- | Pure delta application (shared shape with the SQLite backend's
 -- statement plan).
 applyDelta :: WorldState -> StoreDelta -> WorldState
@@ -391,7 +408,13 @@ applyDelta st delta =
         objs1 (sdPutObjects delta)
     , wsJobs = foldr (\j m -> Map.insert (jrPersistentId j) j m)
         jobs1 (sdPutJobs delta)
+    , wsMeta = foldr (\(k, v) m -> Map.insert k v m) (wsMeta st) (sdPutMeta delta)
     }
+
+-- | Load every meta row as key/value pairs.
+loadMeta :: MemoryWorld -> IO (Either StoreError [(String, String)])
+loadMeta world = withMVar (mwState world) $ \st ->
+  pure (Right (Map.toList (wsMeta st)))
 
 -- | Load every detached job, persistent-id ascending. Decodes
 -- round-trip through the canonical bytes.

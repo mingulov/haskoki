@@ -4,6 +4,7 @@ import Control.Concurrent.MVar (newMVar)
 import Test.Tasty (defaultMain, testGroup)
 
 import qualified AsyncEngineSpec
+import qualified CertificateEngineSpec
 import qualified CryptoExportSpec
 import qualified DetachedEngineSpec
 import qualified FfiAcquireSpec
@@ -36,4 +37,5 @@ main = do
     , LeaseWedgeDenseSpec.spec
     , NativeParamsSpec.spec
     , NotificationsEngineSpec.spec envLock
+    , CertificateEngineSpec.spec envLock
     ]
