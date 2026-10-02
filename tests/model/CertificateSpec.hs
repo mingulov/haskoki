@@ -86,6 +86,10 @@ spec = testGroup "Certificates"
     , testCase "caseSetterPrecedence" caseSetterPrecedence
     , testCase "caseNewAttrShapes" caseNewAttrShapes
     ]
+  , testGroup "T-C04"
+    [ testCase "caseSuppliedOpaque" caseSuppliedOpaque
+    , testCase "caseNoCoherenceGate" caseNoCoherenceGate
+    ]
   ]
 
 certClass :: Word64
@@ -765,6 +769,70 @@ caseNewAttrShapes = do
   let huge = (AttrStartDate, ValBytes (BS.replicate (maxAttributeBytes + 1) 0))
   (codeH, _) <- runReject m0 (createReq sid (certAttrs ++ [huge]))
   assertEqual "overlong date" CKR_ARGUMENTS_BAD codeH
+
+-- ---------------------------------------------------------------------------
+-- T-C04 cases
+-- ---------------------------------------------------------------------------
+
+-- | Supplied metadata is opaque: garbage non-DER VALUE plus arbitrary
+-- SUBJECT/ISSUER/SERIAL/SPKI/both-hashes commits; every field reads
+-- back exactly; find by each supplied field matches.
+caseSuppliedOpaque :: IO ()
+caseSuppliedOpaque = do
+  (sid, m0) <- openSession seeded
+  let garbageBytes = BS.pack [0xFF, 0x00, 0xFE, 0x47, 0x41, 0x52, 0x42, 0x41, 0x47, 0x45]
+      valGarbage = (AttrValue, ValBytes garbageBytes)
+      subjSup = (AttrSubject, ValBytes "supplied-subject-opaque")
+      issSup = (AttrIssuer, ValBytes "supplied-issuer-opaque")
+      serSup = (AttrSerialNumber, ValBytes "supplied-serial-opaque")
+      spkiSup = (AttrPublicKeyInfo, ValBytes "supplied-spki-opaque")
+      hSubjSup = (AttrHashOfSubjectPublicKey, ValBytes "supplied-hash-subject")
+      hIssSup = (AttrHashOfIssuerPublicKey, ValBytes "supplied-hash-issuer")
+      tmpl = [clsCert, typX509, valGarbage, subjSup, issSup, serSup, spkiSup, hSubjSup, hIssSup]
+  (pc, m1) <- runCommit m0 (createReq sid tmpl)
+  assertEqual "garbage VALUE commits" CKR_OK (pcCode pc)
+  h <- commitHandle pc
+  case resolveHandle m1 h of
+    Nothing -> assertFailure "opaque handle lost"
+    Just ost -> do
+      assertEqual "VALUE stored verbatim"
+        (Just (ValBytes garbageBytes)) (Map.lookup AttrValue (osAttrs ost))
+      assertEqual "SUBJECT stored verbatim"
+        (Just (ValBytes "supplied-subject-opaque")) (Map.lookup AttrSubject (osAttrs ost))
+      assertEqual "ISSUER stored verbatim"
+        (Just (ValBytes "supplied-issuer-opaque")) (Map.lookup AttrIssuer (osAttrs ost))
+      assertEqual "SERIAL stored verbatim"
+        (Just (ValBytes "supplied-serial-opaque")) (Map.lookup AttrSerialNumber (osAttrs ost))
+      assertEqual "SPKI stored verbatim"
+        (Just (ValBytes "supplied-spki-opaque")) (Map.lookup AttrPublicKeyInfo (osAttrs ost))
+      assertEqual "hash-subject stored verbatim"
+        (Just (ValBytes "supplied-hash-subject")) (Map.lookup AttrHashOfSubjectPublicKey (osAttrs ost))
+      assertEqual "hash-issuer stored verbatim"
+        (Just (ValBytes "supplied-hash-issuer")) (Map.lookup AttrHashOfIssuerPublicKey (osAttrs ost))
+  let checkFind entry = do
+        (pcF, _) <- runCommit m1 (findReq sid [entry])
+        found <- findHandles pcF
+        assertEqual ("find matches: " ++ show (fst entry)) [h] found
+  mapM_ checkFind [valGarbage, subjSup, issSup, serSup, spkiSup, hSubjSup, hIssSup]
+
+-- | No coherence gate: SUBJECT/ISSUER/SERIAL contradicting each other
+-- and VALUE still commits; only missing required fields refuse.
+caseNoCoherenceGate :: IO ()
+caseNoCoherenceGate = do
+  (sid, m0) <- openSession seeded
+  let valC = (AttrValue, ValBytes "value-says-alice")
+      subjC = (AttrSubject, ValBytes "CN=bob-contradicts-value")
+      issC = (AttrIssuer, ValBytes "CN=carol-contradicts-both")
+      serC = (AttrSerialNumber, ValBytes "serial-999-contradicts-all")
+      tmpl = [clsCert, typX509, valC, subjC, issC, serC]
+  (pc, _) <- runCommit m0 (createReq sid tmpl)
+  assertEqual "contradictory metadata commits" CKR_OK (pcCode pc)
+  (codeT, _) <- runReject m0 (createReq sid [clsCert, valC, subjC, issC, serC])
+  assertEqual "missing TYPE" CKR_TEMPLATE_INCOMPLETE codeT
+  (codeV, _) <- runReject m0 (createReq sid [clsCert, typX509, subjC, issC, serC])
+  assertEqual "missing VALUE" CKR_TEMPLATE_INCOMPLETE codeV
+  (codeS, _) <- runReject m0 (createReq sid [clsCert, typX509, valC, issC, serC])
+  assertEqual "missing SUBJECT" CKR_TEMPLATE_INCOMPLETE codeS
 
 -- ---------------------------------------------------------------------------
 -- Fixture block copied verbatim from tests/model/ObjectSpec.hs:218-320
