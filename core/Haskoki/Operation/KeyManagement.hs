@@ -390,7 +390,7 @@ import Haskoki.Registry.Generated
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (Rules)
-import Haskoki.Session (admitCode, admitObjects, admitPrivate, admitWritable)
+import Haskoki.Session (SessionLogin (LoginSO), admitCode, admitObjects, admitPrivate, admitWritable)
 import Haskoki.Types
   ( ExternalHandle (..)
   , ObjectId (..)
@@ -1083,6 +1083,17 @@ data PendingWork
       }
   deriving (Eq, Show)
 
+-- | Whether any pending object requests @CKA_TRUSTED=true@. Shared
+-- by the submit-time gate ('admitPending') and the completion-time
+-- gate ('finishWork'): only the security officer may create or
+-- complete such objects (both refuse non-SO sessions with
+-- 'CKR_ATTRIBUTE_READ_ONLY' and an empty delta).
+pendingWantsTrusted :: PendingWork -> Bool
+pendingWantsTrusted pw = any isTrusted (pendingObjects pw)
+  where
+    isTrusted po =
+      Map.lookup AttrTrusted (poAttrs po) == Just (ValBool True)
+
 -- | Writability over the objects a key plan will create: read-only
 -- sessions admit session objects and deny token objects
 -- (OASIS PKCS#11 Base v3.0 §5.7.1-5.7.3, via 'admitWritable').
@@ -1095,7 +1106,11 @@ admitPending st pw =
     Right () -> case admitWritable (ssReadOnly st) wantsToken of
       Left deny -> Left (KeyDeny (admitCode deny)
         "read-only session cannot create token objects")
-      Right () -> Right ()
+      Right ()
+        | wantsTrusted
+        , ssLogin st /= LoginSO -> Left (KeyDeny CKR_ATTRIBUTE_READ_ONLY
+            "only the security officer may create TRUSTED=true objects")
+        | otherwise -> Right ()
   where
     pos = pendingObjects pw
     wantsToken = any isToken pos
@@ -1105,6 +1120,7 @@ admitPending st pw =
     wantsPrivate = any isPrivate pos
     isPrivate po =
       Map.lookup AttrPrivate (poAttrs po) == Just (ValBool True)
+    wantsTrusted = pendingWantsTrusted pw
 
 -- | Objects a pending work item will create (queries and pure
 -- bytes-out work create none).
@@ -1206,7 +1222,16 @@ keyPairCompatible _ _ = False
 -- answer or a validation failure yields zero objects); on any
 -- driver failure the mapped code rejects with an empty delta.
 finishWork :: Model -> SessionState -> PendingWork -> CryptoResult -> PlanResult
-finishWork model st pw res = case (pw, res) of
+finishWork model st pw res
+  -- Completion-time SO-only TRUSTED gate (T-C03f round 2): the
+  -- submit-time check in 'admitPending' covers sync dispatch, but
+  -- async completions and detached replays publish through this
+  -- finisher — refuse before any shape dispatch, with an empty
+  -- delta (no partial publication).
+  | pendingWantsTrusted pw
+  , ssLogin st /= LoginSO = rejectOf (KeyDeny CKR_ATTRIBUTE_READ_ONLY
+      "only the security officer may complete TRUSTED=true objects")
+  | otherwise = case (pw, res) of
   (PwGeneratePair pub priv, GotBytes bs) -> case decodeKeyPair bs of
     Just (privM, Just pubM) ->
       case stampPairComponents pub priv pubM privM of
