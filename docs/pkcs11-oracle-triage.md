@@ -4922,3 +4922,220 @@ The documentation-inclusive clean revision, installed checks, 18 static
 gates, all suites, 14 drivers plus build/install, final bundle reproduction
 and fresh fast/KAT reviews remain pending. This is the coordinator's docs
 checkpoint only. No acceptance claimed.
+
+## Certificates T-C09 reviewed evidence (2026-10-02)
+
+T-C09 (task-c09 public-surface qualification) passed its required commands on
+HEAD `5bbebcde3674ebe091c9d7e5e716e59f859e48a9` with measured input patch
+`5d3bbdd62a9cf2f67b02e94521629efb43060542c9b45a1f46af9df3a2c7f349` (final
+R12 bytes: consumer C09-01 fix plus driver C09-02/C09-05 fixes over the
+version-qualified parity-driver bytes; the two oracle-doc edits in this
+section extend the patch and are recorded in the task-c09 review). The
+native matrix holds 48/48 leg results (4 versions x 2 stores x 6 legs)
+with exact-byte reads against fixture `tests/fixtures/cert-selfsigned.der`
+(746 bytes, SHA-256
+`9b6838a4400677b3300d359834dcc53036f94cf04637c2d944ae1cfc75be3a23`).
+Consumer `tests/c/consumer_certificates.c` SHA-256
+`be8e4313c95ca0afb38d1975f1b2016a1f66e67b7bb6f3d42bc6f0f623b3adff`.
+All evidence is provisional. No acceptance is claimed; clean
+final-revision gates and installed acceptance remain outside this task.
+
+### Proxy branch (b): three filings with per-leg and per-version dispositions
+
+Branch (b) (owned-probe reproduction plus upstream filing) was decided by
+evidence over coordinator rulings R6–R10. Proxy pair at commit
+`a48b60ba54b0163f4999c1e4fc0514bf7dc01681`: shim
+`libpkcs11_proxy_ng_shim.so` SHA-256
+`8ea85073ce8436ebdc8ee99bce99e70a6d8c34473c28b5a45567c8a26aba1690`
+(11477328 bytes), daemon `pkcs11-proxy-ng` SHA-256
+`260cb245981561291eab4d29a16cb6a4d6f00dca3431f3d583d35364fab0c9e5`
+(13747008 bytes).
+
+- [pkcs11-proxy-ng #26](https://github.com/mingulov/pkcs11-proxy-ng/issues/26),
+  OPEN at the verified readback: proxied `C_GetAttributeValue` on an
+  invalid handle returns the correct RV (`0x82`) and length but zeroes
+  the caller's value buffer (direct preserves the `0xA5` canary).
+  Corrected totals (live): all 127 assertions pass direct; proxied
+  124/125 pass with the sole `read-after-destroy-canary` failure and
+  two assertions past the fail-fast stop unreached. The
+  owned four-leg branch-b reproduction
+  `2.40-memory-lifecycle-read-canary` records `reproduced-candidate`
+  (single `bytes_match` delta on `get-after-destroy`, backend-entry
+  acks 13/13, zero violations). Disposition: whole-leg DIRECT-ONLY
+  `lifecycle` + `visibility` + `atomicity` (same cause, byte-proven
+  per leg with the same URL; retained diag-bytes pins `0e33d51b41e46db48e2b7e587c18e6f4b3d3ea7a9f9d0756c015c24b6c4a50d3`
+  with direct+proxied lifecycle/visibility/atomicity logs in the
+  artifact table below).
+- [pkcs11-proxy-ng #27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27),
+  OPEN at the verified readback: memory token objects survive client
+  Finalize/Initialize through the proxy (direct drops them; 2.40/memory
+  `restart-memory-volatile` 1-vs-0). Corrected totals (live): all 47
+  assertions pass direct; proxied 39/40 pass with the sole
+  `restart-memory-volatile` failure and seven assertions past the
+  fail-fast stop unreached. Disposition: whole-leg DIRECT-ONLY
+  `restart`.
+- [pkcs11-proxy-ng #28](https://github.com/mingulov/pkcs11-proxy-ng/issues/28),
+  OPEN at the verified readback: v3.1 `C_GetInterface` returns `CKR_OK`
+  yet yields no usable function table through the proxy (direct yields
+  the 3.1 table; 2.40/3.0/3.2 pass proxied). Retained diag-bytes
+  nullarm runs reproduce the shape on shim 3.1 (rv `0x0`,
+  NULL-`interface`, no table) with the 3.0 control green in both
+  modes (pins `0e33d51b41e46db48e2b7e587c18e6f4b3d3ea7a9f9d0756c015c24b6c4a50d3`; logs in the artifact table below).
+  Disposition: version-qualified DIRECT-ONLY
+  `create:3.1` + `find:3.1` (the `leg:version:URL` grammar skips only
+  that version's proxied run; whole-leg and whole-basename entries
+  keep working).
+
+Full parity exited 0: 12 parity-holds + 36 DIRECT-ONLY skips = 48
+certificate legs (group R fully green; v3.2 create/find parity-held on
+both modes). Each filing's creation/readback receipts and posted body
+were preserved byte-for-byte; no duplicate issue was created; no
+placeholder URL was ever installed. Issues #26/#27 carry corrected
+assertion totals (127/47) via a byte-verified `proxy/issue-correct`
+record (live readbacks stripped-equal post-edit, zero comments);
+at-filing bodies are preserved as history.
+
+Frontier note, stated honestly: after the R11 PASS, codex review
+returned FINDINGS(5), all accepted under coordinator ruling R12 —
+consumer OOB guard (C09-01), strict disposition validation (C09-02),
+live #26/#27 total corrections (C09-03), retained hash-bound
+diag-bytes (C09-04), fatal artifact export (C09-05) — followed by a
+full re-proof green at final bytes: 48/48 native, both lanes inspect
+green, parity PASS (12 holds + 36 skips), `reproduced-candidate`,
+`proxy/after` PASS, `review task-c09` fully green (exit 0) with
+`invariants` pass. Every gate receipt is green at final bytes.
+
+### Actual oracle inputs and findings
+
+| Lane | Reported total | Passed | Failed | Skipped | Xfailed | Observed call phases | x509 nodes |
+|---|---:|---:|---:|---:|---:|---:|---|
+| fast | 10190 | 5141 | 4 | 4413 | 632 | 10099 | 742 (738 passed) |
+| kat | 116748 | 84458 | 4 | 31315 | 971 | 111793 | 742 (738 passed) |
+
+The 4 failed on each lane are exactly the `TestMessageEncryptDecrypt`
+nodes retaining
+[pkcs11-check #34](https://github.com/mingulov/pkcs11-check/issues/34)
+(`CKR_ARGUMENTS_BAD` vs `CKR_OK` at `rv.py:53`, read fresh from each
+trace), dispositioned oracle/completed with the real URL. Twelve
+setup-phase EdDSA xfail markers (no call records) are dispositioned
+capability/completed with null URL (the framework's own
+expected-failure markers firing at setup).
+`test_user_cannot_set_trusted` PASSED on both lanes with no wasxfail.
+All three resolved storage negatives passed (missing-SUBJECT,
+`TRUSTED=false`, category); START_DATE and policy xfails are present
+with their recorded reasons.
+
+The bounded stress census is collect-only: 1009/1750 stress-marked
+nodes collected (741 non-stress deselected), pinned to corpus SHA-256
+`563805f46937ad25ac9d4e41341c414070aced32a22294821b5c5fe526e2c52d`
+(41230300 bytes); zero stress nodes executed on either lane. Source
+definition counts (26 total / 24 non-stress AST over the 11-file x509
+inventory) are not execution counts. `trace.jsonl` is a byte-identical
+alias of the wrapper's oracle event stream, not provider C-call
+tracing. **Zero new findings and zero unresolved new provider
+findings** were identified.
+
+Fast findings were inspected and `fast-review` succeeded before KAT
+started. The exact gate is preserved in
+`before-kat-fast-inspection.json` and
+`before-kat-fast-dispositions.json`; live fast files remain
+byte-identical post-KAT. Each lane carries its own signed EXPECTED
+inventory, per-lane dispositions, and hash-bound findings review. No
+new P11C filing: the lane findings retain historical #34 (oracle) plus
+framework capability markers — no new oracle defect was observed, and
+unrelated historical findings are preserved elsewhere in this doc.
+
+### Verified pins and artifact hashes
+
+Header: latchset `c5e61990c5621a9b955fc208644fe8145ac0a75d`, SHA-256
+`61e0b3f996fa9f095859d7d3b8e361d0b982de69fc8b6a4bf10291afbe7e24d8`.
+
+| Proxy artifact/source | SHA-256 |
+|---|---|
+| `/opt/pkcs11-proxy-ng/libpkcs11_proxy_ng_shim.so` | `8ea85073ce8436ebdc8ee99bce99e70a6d8c34473c28b5a45567c8a26aba1690` |
+| `/opt/pkcs11-proxy-ng/pkcs11-proxy-ng` | `260cb245981561291eab4d29a16cb6a4d6f00dca3431f3d583d35364fab0c9e5` |
+| `crates/shim/src/dispatch/general/state_ops.rs` at pinned commit | `c6907ccb2f8f7138ffdadb25a2174da8e6a9dae67bd9dac8c5747d326113f485` |
+| `crates/shim/src/dispatch/general/helpers.rs` at pinned commit | `7ffac3e129781c6f449d4d20de2733e058febb4947655fb1e92b241534988d40` |
+| `crates/shim/src/dispatch/general/session.rs` at pinned commit | `9ced22f764c6cfb31eff25251cd32aafe2f4219b71c9a608262ac6c2fcb166ed` |
+| `crates/server/src/server/grpc_service/state_ops/slot_event.rs` at pinned commit | `f620f3e2757f203f94cbe217eba5c6d29395d9ad4e65dd00a8a3f81708a1b8a0` |
+| `crates/server/src/server/grpc_service/general/lifecycle.rs` at pinned commit | `f8471f29ba797c87dd8bdeb124dec73776b0375e25eb5e69996b455cc48712dc` |
+| `crates/shim/src/dispatch/general/async_ops.rs` at pinned commit | `cf1239e40f482755006bb1d1988b9d083f8f36312ad4d9543160e9c31c40ca72` |
+
+Oracle package `0.2.2rc2`, root
+`/tmp/pkcs11-ws/pkcs11-check-0.2.2rc2`: 519 Python files, digest
+`b7b5327c4294a892fcf21f351717bb240b2505621ce842c182b33cf6685bad23`.
+Digest: sorted release-relative UTF-8 path + NUL + raw bytes + NUL.
+Counts below are AST source definitions, not runtime cases.
+
+| x509 oracle source | Definitions | SHA-256 |
+|---|---:|---|
+| `x509/__init__.py` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| `x509/conftest.py` | 0 | `fe23778c32f9b098af08fb44df76b1947e1f66a9440693fb6cc0a89d55facf02` |
+| `x509/test_attribute_parity.py` | 1 | `acd783876e8b3d8006a328a3a5890c6bdb3fd0e82ac126ca488e3ac9bdec6b28` |
+| `x509/test_attributes.py` | 3 | `663f30a9d0712e9458191a416d05b32263a02623f741f50de2eb99d7ac47170c` |
+| `x509/test_cert_storage.py` | 2 | `629a7577e84fd419eb2710da2e902e57f22c4294f42f1eb563d73d503939bf78` |
+| `x509/test_core_ops.py` | 10 | `ced1e4f555d5521aeb6b47bd885b3fca46dbd70aa274da48fedadd2ebd9de47f` |
+| `x509/test_identity.py` | 1 | `c4d48a4ad3ff8d3b872c53426d71ebe93b10e9f85a40273e2af92181afcfe2fb` |
+| `x509/test_lifecycle.py` | 3 | `51a7661f0ec93026664f956e709c54321898fab195a86117ea628623742d662c` |
+| `x509/test_limbo_import.py` | 3 | `cfb62c94023a40e1df361e89a90da683442479ad9fcef746879db1bb5e015dce` |
+| `x509/test_limbo_stress.py` | 2 | `adf4744cea44a712f5d09a7f083712ad81a42354c3a97b982083b4b3928cba05` |
+| `x509/test_search.py` | 1 | `45147ef3b174d6e7d7591ee07d45c9408ffa83bc22aa56b5f8e137ac9165d99a` |
+
+Measured toolchain image:
+`sha256:ba329f78938e1cef9ed163f86c1d7ac01db047259ec556d2e0027077b8ea41be`.
+Module:
+`351f4069eef7704f28aa101d8b7beb31f7d288e2ab88b5a527a9869b6c6daa25`
+(15065480 bytes). Bundle:
+`ab1d5fcefbba97f6fae0e062ddcf1b196327dcf0c96e183bdfbc96429f1e9fdd`
+(35 files; bundle-relative path + NUL + bytes + NUL). Certificates
+recorder:
+`e9f8fc3f32dfa4f74b54b059a1ea9b6b373758d01ee6cdf4844ea1f6059096a9`.
+
+| Measured artifact under certificates/ | SHA-256 |
+|---|---|
+| [task-c09/after.log](../dist-release-evidence/certificates/task-c09/after.log) | `e6f360cbb8ff8fd49104383e039dc2d12744a227405988fb4571572c20570036` |
+| [task-c09/matrix.log](../dist-release-evidence/certificates/task-c09/matrix.log) | `53cf2d8063f2d29638384e6bd9f97c73d1b77a53cf55cd4cdb229f0eafa1fbee` |
+| [task-c09/consumers.log](../dist-release-evidence/certificates/task-c09/consumers.log) | `21571270282f0f37e622a7580ff09fbe54db6bd7869c25bb143e655ea8180ac6` |
+| [proxy/pins.json](../dist-release-evidence/certificates/proxy/pins.json) | `b4d940a1f3d2fea83b3ddea6b9252d37e1e2a65666261bdc93aaa08d595ddc7a` |
+| [proxy/reproduction-command.json](../dist-release-evidence/certificates/proxy/reproduction-command.json) | `11a6cbbbdfa14e03011c2656fd440f09f4006188c8fb7679866a3eec7446a90b` |
+| [proxy/reproduction-result.json](../dist-release-evidence/certificates/proxy/reproduction-result.json) | `96e9f9a9697d3632a133a277eafcc7563e9e88f61f2ca81c20e8c4cbfeb713a6` |
+| [proxy/reproduction.log](../dist-release-evidence/certificates/proxy/reproduction.log) | `8b3091544accc480e9667ac01710cdeefce6febc497273fa5e75c8c1a0630b4d` |
+| [proxy/issue-create-command.json](../dist-release-evidence/certificates/proxy/issue-create-command.json) | `bde81fd7c50317a375b89a622788f40e0d93430d01c7eaa45d85432b8828dca2` |
+| [proxy/issue-readback-command.json](../dist-release-evidence/certificates/proxy/issue-readback-command.json) | `396d3a406e83e10d2f010c7be9763e17cdb4d5fb5988840e3e75be59aa9a940c` |
+| [proxy/issue.json](../dist-release-evidence/certificates/proxy/issue.json) | `b432614909deb0754f1652c6e8e8525c490ffc1247a6ba331baa2fa310d7b96c` |
+| [proxy/parity-command.json](../dist-release-evidence/certificates/proxy/parity-command.json) | `87d8bf9202890bb438f7c4786030d393c3c4e8e3ad62020b950bad4ae9050168` |
+| [proxy/parity.log](../dist-release-evidence/certificates/proxy/parity.log) | `97a8177d572eeb10698d8a42614e3fb93ee0f7cb4f21f89c6dbf617bca21dd8c` |
+| [reviewed/pins.json](../dist-release-evidence/certificates/reviewed/pins.json) | `52e11df11002755ff53d390bba2b1ae42e98701013175a80401e648619f8fd36` |
+| [reviewed/stress-census.log](../dist-release-evidence/certificates/reviewed/stress-census.log) | `ce4d20b4caae1385f5e793f77b0854860d222def5d2a5b5b581e86a919b934fa` |
+| [reviewed/fast/pkcs11-fast-results.json](../dist-release-evidence/certificates/reviewed/fast/pkcs11-fast-results.json) | `4501c9699cae1ae293d107f9b07f580eab1f9a06af57f2bdf200a0017628801a` |
+| [reviewed/fast/trace.jsonl](../dist-release-evidence/certificates/reviewed/fast/trace.jsonl) | `0ae3e0fa1ee0bfb338e53ca94e68ec86270a3c186e0a8d2242379298222155b4` |
+| [reviewed/fast-inspection.json](../dist-release-evidence/certificates/reviewed/fast-inspection.json) | `147b034e5405ad060bb2398f344cc76be83927841f298d427863d9494c2b506a` |
+| [reviewed/fast-dispositions.json](../dist-release-evidence/certificates/reviewed/fast-dispositions.json) | `4f67b5c0a020aacaa53de079a05f21a88d24c32c223730c2154270b1e9ba9657` |
+| [reviewed/fast-expected.json](../dist-release-evidence/certificates/reviewed/fast-expected.json) | `edaee0bcbef4d9dadfd4bbbeb7dfdb2cb744d2eadf8714be0fdde7bd5b5aa1fa` |
+| [reviewed/fast-findings-review.json](../dist-release-evidence/certificates/reviewed/fast-findings-review.json) | `981590147a7d432d6da67f3f312f5089cb06d9867565711a53c74f3b9a811c54` |
+| [reviewed/kat/pkcs11-kat-results.json](../dist-release-evidence/certificates/reviewed/kat/pkcs11-kat-results.json) | `da0df4bc8858208d668bfd41ae6f93d31dd7c9f7ba62bf45994a6aa61a104641` |
+| [reviewed/kat/trace.jsonl](../dist-release-evidence/certificates/reviewed/kat/trace.jsonl) | `ab9b3b0cc6cb45f14e7b98e05d33758fc876fa66ba9172e58a714994e8568d75` |
+| [reviewed/kat-inspection.json](../dist-release-evidence/certificates/reviewed/kat-inspection.json) | `d254d8e4fdb7be3c4bb4f6cd4513a90673a76f34cf4e11892429c7a8a34f0816` |
+| [reviewed/kat-dispositions.json](../dist-release-evidence/certificates/reviewed/kat-dispositions.json) | `e62ab8614be67eed2035aa09136b36f553e9a4e78efe8e66bf2b4ee78edd3ed6` |
+| [reviewed/kat-expected.json](../dist-release-evidence/certificates/reviewed/kat-expected.json) | `e03d14e498332e7c324eab17c96aa87e78a4bf58b24bd2faacd9f942940e8035` |
+| [reviewed/kat-findings-review.json](../dist-release-evidence/certificates/reviewed/kat-findings-review.json) | `c2236ae1a594f23e441ce766c08bf2085c91ae2e9f658f2db0fc212db5a0174e` |
+| [proxy/issue-correct-command.json](../dist-release-evidence/certificates/proxy/issue-correct-command.json) | `dfdca09674fa689b39230dadab17203635e9d9e4941bfd1896de80641458cfa8` |
+| [proxy/issue-correct.log](../dist-release-evidence/certificates/proxy/issue-correct.log) | `531e5d4ab271b5e446b7c77dc4a8097a3bb4b0cdd5bd513e9004f76c5ab66929` |
+| [proxy/diag-bytes/pins.json](../dist-release-evidence/certificates/proxy/diag-bytes/pins.json) | `0e33d51b41e46db48e2b7e587c18e6f4b3d3ea7a9f9d0756c015c24b6c4a50d3` |
+| [proxy/diag-bytes/diag-bytes.c](../dist-release-evidence/certificates/proxy/diag-bytes/diag-bytes.c) | `1976c12997545d0da62b5a173f389254d32c2b89fdc2899b699861234f3bed2e` |
+| [proxy/diag-bytes/run-diag.sh](../dist-release-evidence/certificates/proxy/diag-bytes/run-diag.sh) | `e9ff5c0c20372fb4a904bd80c4b5df030109dedc8ec5650bfb85802d39356640` |
+| [proxy/diag-bytes/commands.txt](../dist-release-evidence/certificates/proxy/diag-bytes/commands.txt) | `5d6317009d1577e77c61076f803af1737e62914b81514c52046d8fb580b8ee40` |
+| [proxy/diag-bytes/direct-lifecycle.log](../dist-release-evidence/certificates/proxy/diag-bytes/direct-lifecycle.log) | `c715060f69d4aa4a31a40edaccc4913de951add91cc09c59f46723c96238a935` |
+| [proxy/diag-bytes/proxied-lifecycle.log](../dist-release-evidence/certificates/proxy/diag-bytes/proxied-lifecycle.log) | `41e80d9bf69d10e604ad7fe401c880edc5268cc782e9bad1da8f8b918667005c` |
+| [proxy/diag-bytes/direct-visibility.log](../dist-release-evidence/certificates/proxy/diag-bytes/direct-visibility.log) | `2e8635773df78efc4b98ca5a9f501804a36db86dfd48229f6f8202c0e67823bb` |
+| [proxy/diag-bytes/proxied-visibility.log](../dist-release-evidence/certificates/proxy/diag-bytes/proxied-visibility.log) | `a5c2ccec0ac31e315278d65660b8fa44c15192777187f0e2d571d2abb8194aa2` |
+| [proxy/diag-bytes/direct-atomicity.log](../dist-release-evidence/certificates/proxy/diag-bytes/direct-atomicity.log) | `773f419ef4f80988e3823f35abf029901705a647b41f462bf1671eb4da08b965` |
+| [proxy/diag-bytes/proxied-atomicity.log](../dist-release-evidence/certificates/proxy/diag-bytes/proxied-atomicity.log) | `d9fb1e35e159967f85c3f78acfec84579ca1d57d01fd0ff59e6281f4bb7ff58e` |
+| [proxy/diag-bytes/direct-nullarm-3.0.log](../dist-release-evidence/certificates/proxy/diag-bytes/direct-nullarm-3.0.log) | `6c256b028058d4b6176ab0b4a96848b44d2ec6b42bb3340b2be6cbb6e54739bb` |
+| [proxy/diag-bytes/proxied-nullarm-3.0.log](../dist-release-evidence/certificates/proxy/diag-bytes/proxied-nullarm-3.0.log) | `a28c70dc5fcd0ad04b50cd6ed4fbdb7d08fbb0b073589c2069f0de50c575f454` |
+| [proxy/diag-bytes/direct-nullarm-3.1.log](../dist-release-evidence/certificates/proxy/diag-bytes/direct-nullarm-3.1.log) | `7b99404b7b65447d8d282906ad058f2bc350b04e87a95078be3d3455d39131bb` |
+| [proxy/diag-bytes/proxied-nullarm-3.1.log](../dist-release-evidence/certificates/proxy/diag-bytes/proxied-nullarm-3.1.log) | `1243791cde4d6ca05f698d7b8031c49f2de3187e8bb2561b1c9f7b42833df38c` |
+
+Spec trace: §3 C09, §6 C/oracle/proxy; G13; S01–S05 linked. T-C09
+evidence is complete at final bytes; the task-c09 review passes fully
+after the R12 codex-findings re-proof. No acceptance claimed.

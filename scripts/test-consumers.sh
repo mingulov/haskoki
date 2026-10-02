@@ -39,9 +39,10 @@ fail() {
 [ -f tests/c/message_routed.c ] || fail "message consumer missing"
 [ -f tests/c/async_routed.c ] || fail "async consumer missing"
 [ -f tests/c/notifications_routed.c ] || fail "notifications consumer missing"
+[ -f tests/c/consumer_certificates.c ] || fail "certificates consumer missing"
 [ -f tests/c/consumer_notifications_poll.c ] || fail "notifications polling consumer missing"
 SCEN_LIST=$(
-  for scen in tests/c/consumer_*.c tests/c/message_routed.c tests/c/async_routed.c tests/c/notifications_routed.c; do
+  for scen in tests/c/consumer_*.c tests/c/message_routed.c tests/c/async_routed.c tests/c/notifications_routed.c tests/c/consumer_certificates.c; do
     [ -f "$scen" ] && printf '%s\n' "$scen"
   done | LC_ALL=C sort -u
 )
@@ -52,6 +53,8 @@ SCEN_LIST=$(
   || fail "async consumer must occur exactly once"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/notifications_routed.c')" -eq 1 ] \
   || fail "notifications consumer must occur exactly once"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_certificates.c')" -eq 1 ] \
+  || fail "certificates consumer must occur exactly once"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_notifications_poll.c')" -eq 1 ] \
   || fail "notifications polling consumer must occur exactly once"
 for scen in $SCEN_LIST; do
@@ -93,7 +96,7 @@ run_scenario() {
     -o "$BIN" "$1" -ldl -lpthread \
     || fail "$base did not compile"
   echo "scenario compiled: $BIN (headers: spec/vendor)"
-  "$BIN" "$SO" || fail "$base reported failures"
+  ec=0; "$BIN" "$SO" || ec=$?; echo "child exit: $base $ec"; [ "$ec" -eq 0 ] || fail "$base reported failures"
 }
 
 if [ -n "${1:-}" ]; then

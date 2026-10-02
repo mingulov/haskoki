@@ -90,9 +90,10 @@ fail() {
 [ -f tests/c/message_routed.c ] || fail "message consumer missing"
 [ -f tests/c/async_routed.c ] || fail "async consumer missing"
 [ -f tests/c/notifications_routed.c ] || fail "notifications consumer missing"
+[ -f tests/c/consumer_certificates.c ] || fail "certificates consumer missing"
 [ -f tests/c/consumer_notifications_poll.c ] || fail "notifications polling consumer missing"
 SCEN_LIST=$(
-  for scen in tests/c/consumer_*.c tests/c/message_routed.c tests/c/async_routed.c tests/c/notifications_routed.c; do
+  for scen in tests/c/consumer_*.c tests/c/message_routed.c tests/c/async_routed.c tests/c/notifications_routed.c tests/c/consumer_certificates.c; do
     [ -f "$scen" ] && printf '%s\n' "$scen"
   done | LC_ALL=C sort -u
 )
@@ -103,6 +104,8 @@ SCEN_LIST=$(
   || fail "async consumer must occur exactly once"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/notifications_routed.c')" -eq 1 ] \
   || fail "notifications consumer must occur exactly once"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_certificates.c')" -eq 1 ] \
+  || fail "certificates consumer must occur exactly once"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_notifications_poll.c')" -eq 1 ] \
   || fail "notifications polling consumer must occur exactly once"
 for scen in $SCEN_LIST; do
@@ -115,6 +118,12 @@ done
 # the direct leg runs and must pass while the proxied leg and transcript
 # diff are skipped with a loud notice. Each entry is base:upstream-issue-URL;
 # an entry without a URL, or naming no listed scenario, fails the driver.
+# Per-leg entries base:leg:upstream-issue-URL skip only that leg's proxied
+# run (whole-basename entries keep working); the leg must be one of the
+# six certificate legs.
+# Per-version entries consumer_certificates:leg:version:upstream-issue-URL
+# skip only that leg+version's proxied run; version is one of
+# 2.40/3.0/3.1/3.2 (whole-leg and whole-basename entries keep working).
 # message_routed: proxy rejects raw IV params, clobbers output state on
 # errors, erases NULL/nonzero shapes, and orders session checks first.
 # async_routed: fixed GetID/Join refusals; Complete source cannot preserve
@@ -122,13 +131,54 @@ done
 # notifications_routed: blocking Wait retains the shim client mutex needed by
 # Finalize; callback association and provider control are not transported.
 # Valid empty polling remains parity-eligible in consumer_notifications_poll.
+# consumer_certificates:lifecycle+visibility+atomicity: proxied
+# C_GetAttributeValue on an invalid handle (destroyed or post-logout
+# stale) zeroes the caller canary buffer (direct preserves it); same
+# cause, one URL; T-C09 R8.
+# consumer_certificates:restart: memory token objects survive client
+# Finalize/Initialize through the proxy (direct drops them);
+# https://github.com/mingulov/pkcs11-proxy-ng/issues/27; T-C09 R9.
+# consumer_certificates:create+find:3.1: v3.1 C_GetInterface returns CKR_OK
+# with no usable function table through the proxy (direct yields the 3.1
+# table); every 3.1 leg trips the same pre-session discovery gate — same
+# cause, one URL;
+# https://github.com/mingulov/pkcs11-proxy-ng/issues/28; T-C09 R10.
 DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23
 async_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/24
-notifications_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/25"
+notifications_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/25
+consumer_certificates:lifecycle:https://github.com/mingulov/pkcs11-proxy-ng/issues/26
+consumer_certificates:visibility:https://github.com/mingulov/pkcs11-proxy-ng/issues/26
+consumer_certificates:atomicity:https://github.com/mingulov/pkcs11-proxy-ng/issues/26
+consumer_certificates:restart:https://github.com/mingulov/pkcs11-proxy-ng/issues/27
+consumer_certificates:create:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28
+consumer_certificates:find:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28"
 for entry in $DIRECT_ONLY; do
   dname="${entry%%:*}"; durl="${entry#*:}"
   [ -n "$durl" ] && [ "$durl" != "$entry" ] \
     || fail "direct-only entry without issue URL: $entry"
+  # Strict disposition grammar (T-C09 R12 C09-02): after the basename
+  # strip, the remainder must be exactly a whole-basename URL, a
+  # whole-leg leg:URL, or a version-qualified leg:version:URL.
+  case "$durl" in
+    https://?*)
+      ;;
+    create:*|find:*|lifecycle:*|visibility:*|atomicity:*|restart:*)
+      durl="${durl#*:}"
+      case "$durl" in
+        https://?*)
+          ;;
+        2.40:*|3.0:*|3.1:*|3.2:*)
+          durl="${durl#*:}"
+          case "$durl" in
+            https://?*) ;;
+            *) fail "malformed direct-only entry" ;;
+          esac
+          ;;
+        *) fail "malformed direct-only entry" ;;
+      esac
+      ;;
+    *) fail "malformed direct-only entry" ;;
+  esac
   [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx "tests/c/$dname.c")" -eq 1 ] \
     || fail "direct-only entry not in scenario list: $dname"
 done
@@ -148,21 +198,31 @@ cabal build all || fail "cabal build all failed"
 
 # Locate exactly one built shared module (absolute path: the daemon
 # config carries it and the daemon dlopens it).
-SO_LIST=$(find "$PWD/dist-newstyle" -name 'libhaskoki*.so' 2>/dev/null | sort)
-SO_COUNT=$(echo "$SO_LIST" | grep -c . || true)
-if [ -z "$SO_LIST" ]; then
-  fail "no loadable module found (run: cabal build all)"
+if [ -n "${HASKOKI_PARITY_MODULE:-}" ]; then
+  SO="$HASKOKI_PARITY_MODULE"
+  [ -f "$SO" ] || fail "HASKOKI_PARITY_MODULE missing: $SO"
+  echo "module under test: $SO (HASKOKI_PARITY_MODULE override)"
+else
+  SO_LIST=$(find "$PWD/dist-newstyle" -name 'libhaskoki*.so' 2>/dev/null | sort)
+  SO_COUNT=$(echo "$SO_LIST" | grep -c . || true)
+  if [ -z "$SO_LIST" ]; then
+    fail "no loadable module found (run: cabal build all)"
+  fi
+  if [ "$SO_COUNT" -ne 1 ]; then
+    echo "found candidates:"
+    echo "$SO_LIST"
+    fail "expected exactly one libhaskoki*.so, found $SO_COUNT"
+  fi
+  SO="$SO_LIST"
+  echo "module under test: $SO"
 fi
-if [ "$SO_COUNT" -ne 1 ]; then
-  echo "found candidates:"
-  echo "$SO_LIST"
-  fail "expected exactly one libhaskoki*.so, found $SO_COUNT"
-fi
-SO="$SO_LIST"
-echo "module under test: $SO"
 
 TMPD="${TMPDIR:-/tmp}/haskoki-parity"
 mkdir -p "$TMPD" || fail "cannot create $TMPD"
+ARTIFACTS="${HASKOKI_PARITY_ARTIFACTS:-$TMPD/parity-logs}"
+mkdir -p "$ARTIFACTS" || fail "cannot create $ARTIFACTS"
+CERT_LEGS="${CERT_LEGS:-create find lifecycle visibility atomicity restart}"
+HASKOKI_PARITY_STORAGE="${HASKOKI_PARITY_STORAGE:-memory sqlite}"
 
 # Backend config for the daemon side (real-crypto engine, trace off).
 cat > "$TMPD/backend.toml" <<'EOF'
@@ -177,6 +237,37 @@ private_library_context = true
 [trace]
 enabled = false
 EOF
+
+# Certificate-group backend: the base shape above plus the two-label
+# token catalog (equal-length PIN arrays) and kind/path for the mode.
+write_cert_backend() {
+  # $1 = storage mode, $2 = output path
+  if [ "$1" = "sqlite" ]; then
+    mkdir -p "$TMPD/cert-$1" || fail "cannot create $TMPD/cert-$1"
+  fi
+  cat > "$2" <<EOF
+schema_version = 1
+profile = "real-crypto"
+[tokens]
+labels = ["haskoki-demo", "certificates-B"]
+so_pins = ["5678", "5678"]
+user_pins = ["1234", "1234"]
+[storage]
+kind = "$1"
+EOF
+  if [ "$1" = "sqlite" ]; then
+    echo "path = \"$TMPD/cert-$1/tokens.db\"" >> "$2" \
+      || fail "cannot write cert backend path"
+  fi
+  cat >> "$2" <<'EOF'
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+[trace]
+enabled = false
+EOF
+}
 
 # Daemon config (loopback dev shape; see proxy examples/).
 cat > "$TMPD/proxy.toml" <<EOF
@@ -273,40 +364,51 @@ for scen in $SCEN_LIST; do
   compile_scenario "$scen"
 done
 
-# Start the daemon (backend = our module under its own config).
-RUST_LOG=info HASKOKI_CONFIG="$TMPD/backend.toml" "$SERVER_BIN" "$TMPD/proxy.toml" \
-  >"$TMPD/server.log" 2>&1 &
-SRV=$!
+# Start one daemon per group/mode (backend = our module under the given
+# config). Each start keeps the 30s readiness gate; cleanup stops the
+# live daemon explicitly (kill + wait, log retained) before the next
+# group/mode starts, and still runs on EXIT.
+SRV=""
 cleanup() {
-  kill $SRV 2>/dev/null || true
+  if [ -n "${SRV:-}" ]; then
+    kill $SRV 2>/dev/null || true
+    wait $SRV 2>/dev/null || true
+    SRV=""
+  fi
 }
 trap cleanup EXIT
-
-# Readiness: TCP accept on the port. The daemon binds only after the
-# backend loads and its slot map populates (main.rs: load_backend ->
-# populate_slots -> serve), so an accepting socket plus a live process
-# means fully ready. (Plain-HTTP probes do not work: the listener is
-# gRPC/h2c-prior-knowledge and never answers HTTP/1.1.)
-command -v bash >/dev/null 2>&1 || fail "bash required for TCP readiness probe"
-READY=0
-i=0
-while [ "$i" -lt 30 ]; do
-  if ! kill -0 $SRV 2>/dev/null; then
-    echo "--- daemon log:"; cat "$TMPD/server.log"
-    fail "proxy daemon died during startup"
+start_daemon() {
+  # $1 = backend.toml, $2 = server log
+  RUST_LOG=info HASKOKI_CONFIG="$1" "$SERVER_BIN" "$TMPD/proxy.toml" \
+    >"$2" 2>&1 &
+  SRV=$!
+  SERVER_LOG="$2"
+  # Readiness: TCP accept on the port. The daemon binds only after the
+  # backend loads and its slot map populates (main.rs: load_backend ->
+  # populate_slots -> serve), so an accepting socket plus a live process
+  # means fully ready. (Plain-HTTP probes do not work: the listener is
+  # gRPC/h2c-prior-knowledge and never answers HTTP/1.1.)
+  command -v bash >/dev/null 2>&1 || fail "bash required for TCP readiness probe"
+  READY=0
+  i=0
+  while [ "$i" -lt 30 ]; do
+    if ! kill -0 $SRV 2>/dev/null; then
+      echo "--- daemon log:"; cat "$SERVER_LOG"
+      fail "proxy daemon died during startup"
+    fi
+    if bash -c "echo > /dev/tcp/127.0.0.1/$PROXY_PORT" 2>/dev/null; then
+      READY=1
+      break
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+  if [ "$READY" -ne 1 ]; then
+    echo "--- daemon log:"; cat "$SERVER_LOG"
+    fail "proxy daemon not listening on $ENDPOINT after 30s"
   fi
-  if bash -c "echo > /dev/tcp/127.0.0.1/$PROXY_PORT" 2>/dev/null; then
-    READY=1
-    break
-  fi
-  i=$((i + 1))
-  sleep 1
-done
-if [ "$READY" -ne 1 ]; then
-  echo "--- daemon log:"; cat "$TMPD/server.log"
-  fail "proxy daemon not listening on $ENDPOINT after 30s"
-fi
-echo "proxy daemon ready: $ENDPOINT (pid $SRV)"
+  echo "proxy daemon ready: $ENDPOINT (pid $SRV)"
+}
 
 normalize() {
   # $1 = raw log, $2 = normalized output: drop topology-specific
@@ -315,29 +417,120 @@ normalize() {
     | sed -e 's|^PASS: \([A-Za-z0-9_]*\) (.*)$|PASS: \1|' > "$2"
 }
 
+archive_logs() {
+  # $@ = required log paths to preserve under $ARTIFACTS (T-C09 R12
+  # C09-05): a missing input or a failed copy fails the driver, so a
+  # reported PASS always exports every transcript it claims.
+  for f in "$@"; do
+    [ -f "$f" ] || fail "archive_logs: required artifact missing: $f"
+    cp "$f" "$ARTIFACTS/" || fail "archive_logs: cannot copy $f to $ARTIFACTS"
+  done
+}
+
+run_parity_cert_leg() {
+  # $1 = version, $2 = leg; $CERT_MODE is the LIVE daemon's storage mode
+  V="$1"; L="$2"; M="$CERT_MODE"
+  D="$TMPD/cert-$M/$V-$L"
+  mkdir -p "$D" || fail "cannot create $D"
+  chmod 0700 "$D" || fail "cannot chmod $D"
+  DLOG="$TMPD/consumer_certificates-$V-$L-$M.direct.log"
+  PLOG="$TMPD/consumer_certificates-$V-$L-$M.proxied.log"
+  DNORM="$TMPD/consumer_certificates-$V-$L-$M.direct.norm"
+  PNORM="$TMPD/consumer_certificates-$V-$L-$M.proxied.norm"
+  echo "--- parity leg: consumer_certificates version=$V storage=$M leg=$L"
+  echo "child argv: env -u HASKOKI_CONSUMER_TOPOLOGY $BIN $SO --version $V --storage $M --leg $L --directory $D"
+  ec=0; env -u HASKOKI_CONSUMER_TOPOLOGY "$BIN" "$SO" --version "$V" --storage "$M" --leg "$L" --directory "$D" >"$DLOG" 2>&1 || ec=$?
+  echo "direct exit: consumer_certificates $ec"
+  if [ "$ec" -ne 0 ]; then echo "--- direct log:"; cat "$DLOG"; fail "consumer_certificates:$L FAILED direct ($V/$M)"; fi
+  for entry in $DIRECT_ONLY; do
+    case "$entry" in
+      "consumer_certificates:$L:$V:"*)
+        echo "DIRECT-ONLY: consumer_certificates:$L:$V (proxied leg skipped, see ${entry#consumer_certificates:$L:$V:})"
+        archive_logs "$DLOG"
+        return 0
+        ;;
+      "consumer_certificates:$L:"*)
+        case "${entry#consumer_certificates:$L:}" in
+          2.40:*|3.0:*|3.1:*|3.2:*)
+            # Version-qualified entry for another version: this run proceeds.
+            ;;
+          https://?*)
+            echo "DIRECT-ONLY: consumer_certificates:$L (proxied leg skipped, see ${entry#consumer_certificates:$L:})"
+            archive_logs "$DLOG"
+            return 0
+            ;;
+          # Defense in depth (T-C09 R12 C09-02): unreachable
+          # post-validation, which rejects malformed entries first.
+          *) fail "malformed direct-only entry" ;;
+        esac
+        ;;
+      "consumer_certificates:http"*)
+        echo "DIRECT-ONLY: consumer_certificates (proxied leg skipped, see ${entry#consumer_certificates:})"
+        archive_logs "$DLOG"
+        return 0
+        ;;
+    esac
+  done
+  echo "child argv: env HASKOKI_CONSUMER_TOPOLOGY=proxy PKCS11_PROXY_ENDPOINT=$ENDPOINT PKCS11_PROXY_MECHANISMS=$TMPD/mechanisms-override.toml $BIN $SHIM_SO --version $V --storage $M --leg $L --directory $D"
+  ec=0; HASKOKI_CONSUMER_TOPOLOGY=proxy PKCS11_PROXY_ENDPOINT="$ENDPOINT" \
+    PKCS11_PROXY_MECHANISMS="$TMPD/mechanisms-override.toml" \
+    "$BIN" "$SHIM_SO" --version "$V" --storage "$M" --leg "$L" --directory "$D" >"$PLOG" 2>&1 || ec=$?
+  echo "proxied exit: consumer_certificates $ec"
+  if [ "$ec" -ne 0 ]; then echo "--- proxied log:"; cat "$PLOG"; fail "consumer_certificates:$L FAILED proxied ($V/$M)"; fi
+  normalize "$DLOG" "$DNORM"
+  normalize "$PLOG" "$PNORM"
+  if [ "${HASKOKI_PARITY_SEED_MISMATCH:-0}" = "1" ]; then
+    echo "ok: SEED-INJECTED-DIVERGENCE (sensitivity proof)" >> "$PNORM"
+    echo "SEEDED: injected one divergent line into proxied transcript"
+  fi
+  if ! diff -u "$DNORM" "$PNORM" > "$TMPD/consumer_certificates-$V-$L-$M.diff"; then
+    echo "PARITY DIVERGENCE in consumer_certificates:$L ($V/$M):"
+    cat "$TMPD/consumer_certificates-$V-$L-$M.diff"
+    echo "--- full direct log:"
+    cat "$DLOG"
+    echo "--- full proxied log:"
+    cat "$PLOG"
+    fail "consumer_certificates:$L: forwarded-call transcripts differ direct-vs-proxied ($V/$M)"
+  fi
+  echo "parity holds: consumer_certificates:$L ($V/$M, $(wc -l < "$DNORM") forwarded lines identical)"
+  archive_logs "$DLOG" "$PLOG" "$DNORM" "$PNORM" "$TMPD/consumer_certificates-$V-$L-$M.diff"
+}
+
 run_parity() {
   # $1 = scenario base name
   base="$1"
   BIN="$TMPD/$base"
+  if [ "$base" = "consumer_certificates" ]; then
+    echo "--- parity: $base (storage mode $CERT_MODE)"
+    for V in 2.40 3.0 3.1 3.2; do
+      for L in $CERT_LEGS; do
+        run_parity_cert_leg "$V" "$L"
+      done
+    done
+    return 0
+  fi
   DLOG="$TMPD/$base.direct.log"
   PLOG="$TMPD/$base.proxied.log"
   DNORM="$TMPD/$base.direct.norm"
   PNORM="$TMPD/$base.proxied.norm"
   echo "--- parity: $base"
-  env -u HASKOKI_CONSUMER_TOPOLOGY "$BIN" "$SO" >"$DLOG" 2>&1 \
-    || { echo "--- direct log:"; cat "$DLOG"; fail "$base FAILED direct"; }
-  echo "direct exit 0"
+  echo "child argv: env -u HASKOKI_CONSUMER_TOPOLOGY $BIN $SO"
+  ec=0; env -u HASKOKI_CONSUMER_TOPOLOGY "$BIN" "$SO" >"$DLOG" 2>&1 || ec=$?
+  echo "direct exit: $base $ec"
+  if [ "$ec" -ne 0 ]; then echo "--- direct log:"; cat "$DLOG"; fail "$base FAILED direct"; fi
   for entry in $DIRECT_ONLY; do
     if [ "${entry%%:*}" = "$base" ]; then
       echo "DIRECT-ONLY: $base (proxied leg skipped, see ${entry#*:})"
+      archive_logs "$DLOG"
       return 0
     fi
   done
-  HASKOKI_CONSUMER_TOPOLOGY=proxy PKCS11_PROXY_ENDPOINT="$ENDPOINT" \
+  echo "child argv: env HASKOKI_CONSUMER_TOPOLOGY=proxy PKCS11_PROXY_ENDPOINT=$ENDPOINT PKCS11_PROXY_MECHANISMS=$TMPD/mechanisms-override.toml $BIN $SHIM_SO"
+  ec=0; HASKOKI_CONSUMER_TOPOLOGY=proxy PKCS11_PROXY_ENDPOINT="$ENDPOINT" \
     PKCS11_PROXY_MECHANISMS="$TMPD/mechanisms-override.toml" \
-    "$BIN" "$SHIM_SO" >"$PLOG" 2>&1 \
-    || { echo "--- proxied log:"; cat "$PLOG"; fail "$base FAILED proxied"; }
-  echo "proxied exit 0"
+    "$BIN" "$SHIM_SO" >"$PLOG" 2>&1 || ec=$?
+  echo "proxied exit: $base $ec"
+  if [ "$ec" -ne 0 ]; then echo "--- proxied log:"; cat "$PLOG"; fail "$base FAILED proxied"; fi
   normalize "$DLOG" "$DNORM"
   normalize "$PLOG" "$PNORM"
   if [ "${HASKOKI_PARITY_SEED_MISMATCH:-0}" = "1" ]; then
@@ -354,14 +547,32 @@ run_parity() {
     fail "$base: forwarded-call transcripts differ direct-vs-proxied"
   fi
   echo "parity holds: $base ($(wc -l < "$DNORM") forwarded lines identical)"
+  archive_logs "$DLOG" "$PLOG" "$DNORM" "$PNORM" "$TMPD/$base.diff"
 }
 
 if [ -n "${1:-}" ]; then
   fail "usage: scripts/test-proxy-parity.sh"
 fi
 
+# Group R: all retained scenarios on the default backend.
+start_daemon "$TMPD/backend.toml" "$TMPD/server.log"
 for scen in $SCEN_LIST; do
-  run_parity "$(basename "$scen" .c)"
+  base="$(basename "$scen" .c)"
+  if [ "$base" = "consumer_certificates" ]; then
+    continue
+  fi
+  run_parity "$base"
+done
+cleanup
+
+# Group C: the certificate scenario only, once per storage mode, each
+# with a fresh daemon on its own catalog backend.
+CERT_MODE=""
+for CERT_MODE in $HASKOKI_PARITY_STORAGE; do
+  write_cert_backend "$CERT_MODE" "$TMPD/backend-cert-$CERT_MODE.toml"
+  start_daemon "$TMPD/backend-cert-$CERT_MODE.toml" "$TMPD/server-cert-$CERT_MODE.log"
+  run_parity consumer_certificates
+  cleanup
 done
 
 echo "PASS: test-proxy-parity.sh (direct/proxy parity)"
