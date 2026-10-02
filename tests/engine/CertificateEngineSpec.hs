@@ -46,7 +46,7 @@ import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Word (Word64, Word8)
 import Foreign.C.Types (CULong (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
-import Foreign.Marshal.Array (allocaArray, peekArray)
+import Foreign.Marshal.Array (allocaArray, peekArray, pokeArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr
   ( StablePtr
@@ -66,7 +66,9 @@ import EnvLock (withEnvLock)
 import Haskoki.Attribute
   ( AttributeType (..)
   , AttributeValue (..)
+  , attributeTypeByName
   )
+import Haskoki.Attribute.Generated (attributeNameById)
 import Haskoki.Engine.Backend
   ( CryptoBackend (..)
   , DigestAlg (..)
@@ -175,6 +177,10 @@ spec envLock = testGroup "Certificates"
   , testGroup "T-C05"
     [ testCase "caseIdLinkage" (caseIdLinkage envLock)
     , testCase "caseRealSignature" (caseRealSignature envLock)
+    ]
+  , testGroup "T-C06"
+    [ testCase "caseTrustNumericPinned" (caseTrustNumericPinned envLock)
+    , testCase "caseValidationNumericPinned" (caseValidationNumericPinned envLock)
     ]
   ]
 
@@ -815,6 +821,114 @@ doFind m st tmpl = case planFindObjects m st tmpl of
     pure (m', hs)
   Reject rej -> assertFailure ("must find, got: " ++ show (rejCode rej)) >> undefined
   Execute _ _ -> assertFailure "find must not execute" >> undefined
+
+-- ---------------------------------------------------------------------------
+-- T-C06 cases
+-- ---------------------------------------------------------------------------
+
+-- | CKO_TRUST / CKO_VALIDATION numeric class ids (pinned header
+-- spec/vendor/pkcs11.h:1034-1035).
+ckoTrust, ckoValidation :: Word64
+ckoTrust = 0xb
+ckoValidation = 0xa
+
+-- | Generic-attribute numeric ids for the trust/validation create
+-- frames (pinned header: CKA_ISSUER 0x81, CKA_SERIAL_NUMBER 0x82).
+ckaIssuer, ckaSerialNumber :: Word64
+ckaIssuer = 0x81
+ckaSerialNumber = 0x82
+
+-- | CKR_ATTRIBUTE_TYPE_INVALID (pinned: ckrAttrTypeInvalid in
+-- Standard.hs is CULong 0x12).
+rvAttrTypeInvalid :: CULong
+rvAttrTypeInvalid = CULong 0x12
+
+-- | Unmodeled trust numerics: CKA_TRUST_* 0x62c-0x632 plus
+-- CKA_HASH_OF_CERTIFICATE 0x635 (pinned header).
+trustNumerics :: [Word64]
+trustNumerics = [0x62c .. 0x632] ++ [0x635]
+
+-- | Unmodeled validation numerics: CKA_OBJECT_VALIDATION_FLAGS
+-- 0x61e plus CKA_VALIDATION_* 0x61f-0x629 (pinned header).
+validationNumerics :: [Word64]
+validationNumerics = [0x61e .. 0x629]
+
+-- | The deferral proof for one unmodeled numeric attribute id:
+-- the generated name exists (attributeNameById returns Just) AND
+-- attributeTypeByName returns Nothing — proving the id takes the
+-- unknown-id path in haskokiStdGetOneAttr (Standard.hs:2299-2302),
+-- not the modeled-but-missing rejection arm (Standard.hs:2332)
+-- which emits the same response triple — plus the deferral triple
+-- read through the scalar FFI getter: RV
+-- CKR_ATTRIBUTE_TYPE_INVALID, pLen CK_UNAVAILABLE_INFORMATION
+-- (maxBound), and the value buffer byte-identical to its pre-call
+-- canary fill. The unknown-id path pokes only pLen and never
+-- touches the value buffer.
+assertNumericPinned :: StablePtr StdInstance -> CULong -> CULong -> Word64 -> IO ()
+assertNumericPinned ctx h obj cka = do
+  case attributeNameById cka of
+    Nothing -> assertFailure ("generated name missing for " ++ show cka)
+    Just name ->
+      assertEqual ("typed mapping " ++ show cka) Nothing (attributeTypeByName name)
+  allocaBytes canaryLen $ \(buf :: Ptr Word8) ->
+    alloca $ \(pLen :: Ptr CULong) -> do
+      pokeArray buf canary
+      poke pLen (CULong (fromIntegral canaryLen))
+      rv <- haskokiStdGetOneAttr ctx h obj (CULong cka) buf pLen
+      assertEqual ("rv " ++ show cka) rvAttrTypeInvalid rv
+      CULong n <- peek pLen
+      assertEqual ("pLen " ++ show cka) maxBound n
+      after <- peekArray canaryLen buf
+      assertEqual ("buffer " ++ show cka) canary after
+  where
+    canaryLen = 64
+    canary = replicate canaryLen 0xA5
+
+-- | CKO_TRUST numeric pins: a trust object created through the
+-- generic FFI path carries generic attributes only (LABEL reads
+-- back); every unmodeled trust numeric id refuses with the
+-- deferral triple. This pins absence; it must NOT be "fixed" into
+-- service.
+caseTrustNumericPinned :: MVar () -> IO ()
+caseTrustNumericPinned envLock = do
+  dbPath <- certDbPath "trust-numeric"
+  probe <- newCertProbe
+  withCertInstance envLock dbPath probe $ \ctx _inst -> do
+    h <- openRwSession ctx
+    let frame = buildFrame
+          [ (ckaClass, le64 ckoTrust)
+          , (ckaToken, uBool False)
+          , (ckaLabel, "tc06-trust-numeric")
+          , (ckaIssuer, "tc06-trust-issuer")
+          , (ckaSerialNumber, "tc06-trust-serial")
+          ]
+    obj <- createObject ctx h frame
+    back <- getAttrOk ctx h obj ckaLabel
+    assertEqual "LABEL readback" "tc06-trust-numeric" back
+    forM_ trustNumerics (assertNumericPinned ctx h obj)
+
+-- | CKO_VALIDATION numeric pins: a validation object created
+-- through the generic FFI path carries generic attributes only
+-- (LABEL reads back); every unmodeled validation numeric id
+-- refuses with the deferral triple. This pins absence; it must NOT
+-- be "fixed" into service.
+caseValidationNumericPinned :: MVar () -> IO ()
+caseValidationNumericPinned envLock = do
+  dbPath <- certDbPath "validation-numeric"
+  probe <- newCertProbe
+  withCertInstance envLock dbPath probe $ \ctx _inst -> do
+    h <- openRwSession ctx
+    let frame = buildFrame
+          [ (ckaClass, le64 ckoValidation)
+          , (ckaToken, uBool False)
+          , (ckaLabel, "tc06-validation-numeric")
+          , (ckaIssuer, "tc06-validation-issuer")
+          , (ckaSerialNumber, "tc06-validation-serial")
+          ]
+    obj <- createObject ctx h frame
+    back <- getAttrOk ctx h obj ckaLabel
+    assertEqual "LABEL readback" "tc06-validation-numeric" back
+    forM_ validationNumerics (assertNumericPinned ctx h obj)
 
 -- ---------------------------------------------------------------------------
 -- T-C05 KeyImportSpec local copies

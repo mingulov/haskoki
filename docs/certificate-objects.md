@@ -79,3 +79,40 @@ assertion). See `dist-release-evidence/certificates/task-c05/after.log`
 the green runs. The recipe remainder (raw-DER-through-`CKA_VALUE`
 import) is dispositioned as oracle-recipe incompatibility, NOT a provider conformance defect.
 Triage is untouched here; T-C09 owns lane-tied triage.
+
+## Trust and validation deferral
+
+Spec trace: §2.1 G08/G09, §3 C06.
+
+`CKO_TRUST` (0x0b) and `CKO_VALIDATION` (0x0a) stay
+registered-but-unserved: both numeric classes remain creatable
+through the generic path with generic attributes only, and no
+`CKA_TRUST_*`, `CKA_HASH_OF_CERTIFICATE`, or `CKA_VALIDATION_*`
+typed support is added. The generic side is pinned by
+`caseTrustGenericPinned` (create `CKO_TRUST` with
+CLASS/LABEL/ISSUER/SERIAL → OK; a typed read over
+`[AttributeType]` returns the generic values — the typed seam
+cannot express raw numeric ids) and
+`caseValidationGenericPinned` (create `CKO_VALIDATION` with
+generic attributes → OK, stored values read back). The absence
+side is pinned at the scalar FFI getter by
+`caseTrustNumericPinned` (each of `0x62c`–`0x632` plus `0x635`)
+and `caseValidationNumericPinned` (each of `0x61e`–`0x629`,
+where `0x61e` is `CKA_OBJECT_VALIDATION_FLAGS` and
+`0x61f`–`0x629` are `CKA_VALIDATION_*`): every id refuses with
+the deferral triple — RV `CKR_ATTRIBUTE_TYPE_INVALID` (0x12),
+`pLen == maxBound` (`CK_UNAVAILABLE_INFORMATION`), and the value
+buffer byte-identical to its pre-call canary fill, plus proof
+the id is genuinely unmodeled: its generated name exists yet
+`attributeTypeByName` returns `Nothing`, so the refusal comes
+from the unknown-id path in `haskokiStdGetOneAttr` (which pokes
+only `pLen` and never touches the buffer), not the
+modeled-but-missing arm that emits the same triple. These pins
+record absence; they must
+NOT be "fixed" into service. Rationale: the oracle qualifies
+only empty enumeration — its trust/validation tests pass on
+empty enumeration and skip dependents — so there is no qualified
+behavior to serve and no fabricated trust semantics are recorded
+here. See `dist-release-evidence/certificates/task-c06/after.log`
+(`task-c06/after`), `task-c06/docs`, and `task-c06/retained` for
+the green runs.

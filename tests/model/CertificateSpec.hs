@@ -24,6 +24,7 @@ import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
 import Haskoki.Attribute
   ( AttributeType (..)
   , AttributeValue (..)
+  , encodeValue
   , maxAttributeBytes
   )
 import Haskoki.Attribute.Generated (mustClassId)
@@ -89,6 +90,10 @@ spec = testGroup "Certificates"
   , testGroup "T-C04"
     [ testCase "caseSuppliedOpaque" caseSuppliedOpaque
     , testCase "caseNoCoherenceGate" caseNoCoherenceGate
+    ]
+  , testGroup "T-C06"
+    [ testCase "caseTrustGenericPinned" caseTrustGenericPinned
+    , testCase "caseValidationGenericPinned" caseValidationGenericPinned
     ]
   ]
 
@@ -833,6 +838,79 @@ caseNoCoherenceGate = do
   assertEqual "missing VALUE" CKR_TEMPLATE_INCOMPLETE codeV
   (codeS, _) <- runReject m0 (createReq sid [clsCert, typX509, valC, issC, serC])
   assertEqual "missing SUBJECT" CKR_TEMPLATE_INCOMPLETE codeS
+
+-- ---------------------------------------------------------------------------
+-- T-C06 cases
+-- ---------------------------------------------------------------------------
+
+trustClass, validationClass :: Word64
+trustClass = mustClassId "CKO_TRUST"
+validationClass = mustClassId "CKO_VALIDATION"
+
+-- | CKO_TRUST creates through the generic path with generic
+-- attributes only: CLASS/LABEL/ISSUER/SERIAL commits, the stored
+-- attributes read back, and a typed F_GetAttributeValue read over
+-- [AttributeType] returns the generic values. There are no
+-- CKA_TRUST_* typed constructors to name, so the read cannot
+-- express raw numeric ids. This pins absence; it must NOT be
+-- "fixed" into service.
+caseTrustGenericPinned :: IO ()
+caseTrustGenericPinned = do
+  (sid, m0) <- openSession seeded
+  let labelT = (AttrLabel, ValBytes "trust-generic")
+      issT = (AttrIssuer, ValBytes "trust-issuer")
+      serT = (AttrSerialNumber, ValBytes "trust-serial")
+      tmpl = [(AttrClass, ValULong trustClass), labelT, issT, serT]
+  (pc, m1) <- runCommit m0 (createReq sid tmpl)
+  assertEqual "trust generic create" CKR_OK (pcCode pc)
+  h <- commitHandle pc
+  case resolveHandle m1 h of
+    Nothing -> assertFailure "trust handle lost"
+    Just ost -> do
+      assertEqual "CLASS stored"
+        (Just (ValULong trustClass)) (Map.lookup AttrClass (osAttrs ost))
+      assertEqual "LABEL stored"
+        (Just (ValBytes "trust-generic")) (Map.lookup AttrLabel (osAttrs ost))
+      assertEqual "ISSUER stored"
+        (Just (ValBytes "trust-issuer")) (Map.lookup AttrIssuer (osAttrs ost))
+      assertEqual "SERIAL stored"
+        (Just (ValBytes "trust-serial")) (Map.lookup AttrSerialNumber (osAttrs ost))
+  (pcG, _) <- runCommit m1 (getReq sid h [AttrLabel, AttrIssuer, AttrSerialNumber])
+  assertEqual "trust generic read" CKR_OK (pcCode pcG)
+  assertEqual "generic values read back"
+    [ encodeValue (ValBytes "trust-generic")
+    , encodeValue (ValBytes "trust-issuer")
+    , encodeValue (ValBytes "trust-serial")
+    ]
+    [outBytes o | o <- pcOutputs pcG]
+
+-- | CKO_VALIDATION creates through the generic path with generic
+-- attributes only: CLASS/LABEL/APPLICATION/ID commits and the
+-- stored attributes read back. There is no CKA_VALIDATION_* typed
+-- support. This pins absence; it must NOT be "fixed" into service.
+caseValidationGenericPinned :: IO ()
+caseValidationGenericPinned = do
+  (sid, m0) <- openSession seeded
+  let tmpl =
+        [ (AttrClass, ValULong validationClass)
+        , (AttrLabel, ValBytes "validation-generic")
+        , (AttrApplication, ValBytes "validation-app")
+        , (AttrId, ValBytes "validation-id")
+        ]
+  (pc, m1) <- runCommit m0 (createReq sid tmpl)
+  assertEqual "validation generic create" CKR_OK (pcCode pc)
+  h <- commitHandle pc
+  case resolveHandle m1 h of
+    Nothing -> assertFailure "validation handle lost"
+    Just ost -> do
+      assertEqual "CLASS stored"
+        (Just (ValULong validationClass)) (Map.lookup AttrClass (osAttrs ost))
+      assertEqual "LABEL stored"
+        (Just (ValBytes "validation-generic")) (Map.lookup AttrLabel (osAttrs ost))
+      assertEqual "APPLICATION stored"
+        (Just (ValBytes "validation-app")) (Map.lookup AttrApplication (osAttrs ost))
+      assertEqual "ID stored"
+        (Just (ValBytes "validation-id")) (Map.lookup AttrId (osAttrs ost))
 
 -- ---------------------------------------------------------------------------
 -- Fixture block copied verbatim from tests/model/ObjectSpec.hs:218-320
