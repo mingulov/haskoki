@@ -155,3 +155,44 @@ SHA-256 at HEAD `fd9ff48838ab48e1cac99c7adc7ceafa3b1c2177`:
 function_tables.c `4687bdb0…`; full SHA-256 digests in the
 record). See `task-c07/docs` and `task-c07/retained` for the
 green runs.
+
+## DATA VALUE policy
+
+Spec trace: §2.1 G15, §3 C11.
+
+DATA `VALUE` immutability is deliberate policy, not an
+implementation gap: `caseSetAttrRatchets`
+(`tests/model/ObjectSpec.hs:940-971`) creates a DATA object and
+pins that CLASS and VALUE are never mutable — the
+"Class and value never mutable" assertions (lines 958-963) refuse
+both with `CKR_ATTRIBUTE_READ_ONLY` — green in
+`dist-release-evidence/certificates/task-c11/retained.log`
+(`task-c11/retained`,
+`set-attributes: ratchets and atomicity: OK`). The oracle
+recognizes this same refusal as policy: its DATA-VALUE node
+`src/pkcs11_check/testcases/test_object_visibility.py::TestCrossSessionModification::test_modify_value_cross_session`
+(oracle source lines 508-582, the `xfail_as` honest-deviation
+policy marker at 547-553) attempts `C_SetAttributeValue` on a
+data object's `CKA_VALUE` and xfails on the provider's
+`CKR_ATTRIBUTE_READ_ONLY`/`CKR_ATTRIBUTE_VALUE_INVALID`
+("Module treats CKA_VALUE as read-only after object creation";
+xfailed in both the fast and kat lane results). This DATA policy
+is separate from the certificate immutable-field requirements:
+copy-override of any `certImmutable` member
+(`core/Haskoki/Object.hs:514-519`, enforced for certificate
+sources by the copy guard at 961-964) refuses with
+`CKR_TEMPLATE_INCONSISTENT` for every login and both TRUSTED
+values — copies inherit the source fields and there is no
+exception, not even SO `TRUSTED=true` — while set refuses with
+`CKR_ATTRIBUTE_READ_ONLY` with exactly two exceptions:
+`TRUSTED=false` writes (all logins) and SO `TRUSTED=true`. The
+matrix is pinned by `caseCertImmutableMatrix`
+(`tests/model/CertificateSpec.hs:535-614`: every member refused
+on copy, SO `TRUSTED=true` copy still refused, both set
+exceptions committed) and `caseTrustedBoundary`
+(`tests/model/CertificateSpec.hs:254-430`: `TRUSTED=false`
+stored and read back for all four login shapes, SO-only
+`TRUSTED=true`), both green in `task-c11/retained`. Citation
+record with live-byte hashes:
+`dist-release-evidence/certificates/task-c11/pin.json`. See
+`task-c11/docs` and `task-c11/retained` for the green runs.
