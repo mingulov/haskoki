@@ -187,14 +187,16 @@ def main():
              f"name field: {line.strip()[:80]}")
     # Planner-scope wording: the behavior label claims
     # planner/in-process reachability, never C-table routing.
-    # 63 -> 66 -> 67 -> 68 -> 70; the session-info rows reclassified
+    # 63 -> 66 -> 67 -> 68 -> 70 -> 78; the session-info rows reclassified
     # first, then C_DigestKey (routed via the digest-update
     # planner), then C_SetAttributeValue (routed via the object
     # planner with executed consumer evidence), then
     # C_WrapKey/C_UnwrapKey (c-table std_WrapKey/std_UnwrapKey
-    # routes with executed consumer evidence).
-    if text.count('"contract": "planned-with-behavior"') != 70:
-        fail("function-contracts.json: planned-with-behavior count != 70")
+    # routes with executed consumer evidence), then the 4 dual
+    # plus 4 recover rows (T-M02/T-M03 flips with executed
+    # consumer evidence).
+    if text.count('"contract": "planned-with-behavior"') != 78:
+        fail("function-contracts.json: planned-with-behavior count != 78")
     # The three reclassified rows stay planned with
     # executed evidence (the stale "no behavior test" reasons stay gone).
     for _name in ("C_GetSessionInfo", "C_GetSlotInfo", "C_GetTokenInfo"):
