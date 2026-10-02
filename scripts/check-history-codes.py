@@ -22,6 +22,8 @@ Deliberate keeps (narrow allowlist below, each with its reason):
   notifications test comments execution-evidence hash lock; T-N07/T-N08
                               receipts bind these bytes by SHA-256, so
                               comment-only churn would void evidence
+consumer test comment   execution-evidence hash lock; T-C09 receipts bind
+                        this source SHA-256, so comment-only churn is barred
 
 Acceptance ids (A00-A99) are stable external handles and are NOT
 flagged. Lowercase s/m/f/p/g + digit locals (s1, m2) are ordinary
@@ -81,6 +83,9 @@ ALLOW = [
     ("tests/engine/NotificationsEngineSpec.hs",
      re.compile(r"red/green probe|pre-implementation behavioral red"),
      "execution-evidence hash lock (T-N07 retained receipt binds source SHA-256)"),
+    ("tests/c/consumer_certificates.c",
+     re.compile(r"semantic-red relabel"),
+     "execution-evidence hash lock (T-C09/CERT_BASE receipts bind source SHA-256)"),
 ]
 
 EXTS = {".hs", ".c", ".h", ".py", ".sh", ".cabal", ".md", ".toml",

@@ -2865,7 +2865,12 @@ Honest skips (no engine support, stay skipped): RC2/RC4,
 Blowfish, CAST, IDEA, SEED, GOST, Salsa20, WTLS/KEA/FORTEZZA,
 CMS/PBA/LYNKS/FASTHASH, HSS/XMSS stateful, SSL3 KDFs,
 message-mode CKF flags (T4 skips clean), x509-limbo
-(certificate objects unserved), v2.40-only legs. Destructive
+(certificate objects served since the certificates slice:
+48/48 T-C09 native legs plus reviewed fast/kat lane
+inspections with zero unresolved provider findings; see the
+certificates T-C09 section below and receipts `task-c09/after`,
+`reviewed/fast-review`, `reviewed/kat-review`), v2.40-only
+legs. Destructive
 tests (13) need the explicit flag. Counts shift after the GCM
 crash fix completes the lane.
 
@@ -4979,7 +4984,7 @@ evidence over coordinator rulings R6–R10. Proxy pair at commit
   yet yields no usable function table through the proxy (direct yields
   the 3.1 table; 2.40/3.0/3.2 pass proxied). Retained diag-bytes
   nullarm runs reproduce the shape on shim 3.1 (rv `0x0`,
-  NULL-`interface`, no table) with the 3.0 control green in both
+  NULL-`interface`, no table) with the 3.0 control passing in both
   modes (pins `0e33d51b41e46db48e2b7e587c18e6f4b3d3ea7a9f9d0756c015c24b6c4a50d3`; logs in the artifact table below).
   Disposition: version-qualified DIRECT-ONLY
   `create:3.1` + `find:3.1` (the `leg:version:URL` grammar skips only
@@ -4987,7 +4992,7 @@ evidence over coordinator rulings R6–R10. Proxy pair at commit
   keep working).
 
 Full parity exited 0: 12 parity-holds + 36 DIRECT-ONLY skips = 48
-certificate legs (group R fully green; v3.2 create/find parity-held on
+certificate legs (group R fully passing; v3.2 create/find parity-held on
 both modes). Each filing's creation/readback receipts and posted body
 were preserved byte-for-byte; no duplicate issue was created; no
 placeholder URL was ever installed. Issues #26/#27 carry corrected
@@ -5000,10 +5005,10 @@ returned FINDINGS(5), all accepted under coordinator ruling R12 —
 consumer OOB guard (C09-01), strict disposition validation (C09-02),
 live #26/#27 total corrections (C09-03), retained hash-bound
 diag-bytes (C09-04), fatal artifact export (C09-05) — followed by a
-full re-proof green at final bytes: 48/48 native, both lanes inspect
-green, parity PASS (12 holds + 36 skips), `reproduced-candidate`,
-`proxy/after` PASS, `review task-c09` fully green (exit 0) with
-`invariants` pass. Every gate receipt is green at final bytes.
+full re-proof passing at final bytes: 48/48 native, both lanes inspect
+passing, parity PASS (12 holds + 36 skips), `reproduced-candidate`,
+`proxy/after` PASS, `review task-c09` fully passing (exit 0) with
+`invariants` pass. Every gate receipt is passing at final bytes.
 
 ### Actual oracle inputs and findings
 

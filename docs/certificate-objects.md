@@ -30,7 +30,7 @@ SUBJECT/ISSUER/SERIAL contradicting each other and VALUE, and shows
 only missing required fields refuse. See
 `dist-release-evidence/certificates/task-c04/after.log`
 (`task-c04/after`), `task-c04/docs`, and `task-c04/retained` for the
-green runs.
+passing runs.
 
 ## Durability convergence note
 
@@ -76,7 +76,7 @@ certificate VALUE bytes with the imported private DER and verifies
 with the public DER to a real `EngineOk ()` (not a non-None
 assertion). See `dist-release-evidence/certificates/task-c05/after.log`
 (`task-c05/after`), `task-c05/docs`, and `task-c05/retained` for
-the green runs. The recipe remainder (raw-DER-through-`CKA_VALUE`
+the passing runs. The recipe remainder (raw-DER-through-`CKA_VALUE`
 import) is dispositioned as oracle-recipe incompatibility, NOT a provider conformance defect.
 Triage is untouched here; T-C09 owns lane-tied triage.
 
@@ -115,7 +115,7 @@ empty enumeration and skip dependents — so there is no qualified
 behavior to serve and no fabricated trust semantics are recorded
 here. See `dist-release-evidence/certificates/task-c06/after.log`
 (`task-c06/after`), `task-c06/docs`, and `task-c06/retained` for
-the green runs.
+the passing runs.
 
 ## Subtype and size disposition
 
@@ -124,7 +124,7 @@ Spec trace: §2.1 G10/G11, §3 C07.
 Non-X.509 subtype values keep the generic CLASS+TYPE-only path:
 `caseCertNonX509Generic` (`tests/model/CertificateSpec.hs:161-173`;
 types 1 and 2 commit with CLASS+TYPE only, VALUE/SUBJECT omitted)
-is green in the T-C01 proof — see
+is passing in the T-C01 proof — see
 `dist-release-evidence/certificates/task-c01/after.log`
 (`task-c01/after`); this task cites that receipt and re-proves
 nothing. The remaining declared fields — `CKA_URL` (0x89),
@@ -154,7 +154,7 @@ SHA-256 at HEAD `fd9ff48838ab48e1cac99c7adc7ceafa3b1c2177`:
 (Attribute.hs `6550421f…`, Storage.hs `ac315382…`,
 function_tables.c `4687bdb0…`; full SHA-256 digests in the
 record). See `task-c07/docs` and `task-c07/retained` for the
-green runs.
+passing runs.
 
 ## DATA VALUE policy
 
@@ -165,7 +165,7 @@ implementation gap: `caseSetAttrRatchets`
 (`tests/model/ObjectSpec.hs:940-971`) creates a DATA object and
 pins that CLASS and VALUE are never mutable — the
 "Class and value never mutable" assertions (lines 958-963) refuse
-both with `CKR_ATTRIBUTE_READ_ONLY` — green in
+both with `CKR_ATTRIBUTE_READ_ONLY` — passing in
 `dist-release-evidence/certificates/task-c11/retained.log`
 (`task-c11/retained`,
 `set-attributes: ratchets and atomicity: OK`). The oracle
@@ -192,7 +192,54 @@ on copy, SO `TRUSTED=true` copy still refused, both set
 exceptions committed) and `caseTrustedBoundary`
 (`tests/model/CertificateSpec.hs:254-430`: `TRUSTED=false`
 stored and read back for all four login shapes, SO-only
-`TRUSTED=true`), both green in `task-c11/retained`. Citation
+`TRUSTED=true`), both passing in `task-c11/retained`. Citation
 record with live-byte hashes:
 `dist-release-evidence/certificates/task-c11/pin.json`. See
-`task-c11/docs` and `task-c11/retained` for the green runs.
+`task-c11/docs` and `task-c11/retained` for the passing runs.
+
+## Contract and evidence alignment
+
+Spec trace: §2.1 G14, §3 C10.
+
+Contract rows: the six object functions `C_CreateObject`,
+`C_CopyObject`, `C_DestroyObject`, `C_GetAttributeValue`,
+`C_SetAttributeValue`, and `C_FindObjects` in
+`spec/function-contracts.json` carry certificate test evidence
+(the T-C09 native consumer plus the model and engine
+certificate specs on Create) and `policy_refs` to the
+[supplied-values metadata
+position](#supplied-values-metadata-position) above.
+`C_FindObjectsInit` and `C_FindObjectsFinal` keep
+`unsupported-with-reason` classification; their reason carries
+the planner-scope suffix (pure-engine one-shot model; the
+public FFI cursor lives above this layer). Classification
+counts stay `104/70/32/2`; the generator diff is
+evidence-only (see `task-c10/generate`).
+
+Public-surface evidence (T-C09, provisional): 48/48 native
+legs in `dist-release-evidence/certificates/task-c09/after.log`
+(`task-c09/after`), reviewed fast/kat lane inspections in
+`reviewed/fast-inspection.json` and
+`reviewed/kat-inspection.json` (`reviewed/fast-review`,
+`reviewed/kat-review`, zero unresolved provider findings),
+and the proxy branch-(b) reproduction with three upstream
+filings ([proxy-ng
+#26](https://github.com/mingulov/pkcs11-proxy-ng/issues/26),
+[#27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27),
+[#28](https://github.com/mingulov/pkcs11-proxy-ng/issues/28));
+detail is in the certificates T-C09 section of
+`docs/pkcs11-oracle-triage.md`.
+
+Deferrals complete: [trust and validation
+deferral](#trust-and-validation-deferral) (no `CKA_TRUST_*` /
+`CKA_VALIDATION_*` typed support), [subtype and size
+disposition](#subtype-and-size-disposition) (non-X.509 generic
+path, unmapped fields, `C_GetObjectSize` stub), and the [DATA
+VALUE policy](#data-value-policy) above; creation and
+durability positions in [supplied-values metadata
+position](#supplied-values-metadata-position) and [durability
+convergence note](#durability-convergence-note); interop in
+[certificate/key identity
+interop](#certificatekey-identity-interop). See
+`task-c10/after`, `task-c10/docs`, `task-c10/denominators`,
+and `task-c10/history` for the alignment checks.

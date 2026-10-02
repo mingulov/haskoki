@@ -279,6 +279,41 @@ for name, additions in NOTIFICATIONS_EVIDENCE.items():
     entry, earlier = PLANNED[name]
     PLANNED[name] = (entry, list(dict.fromkeys(earlier + additions)))
 
+# Public certificate evidence from the executed serving suites and the
+# native consumer. Append without replacing earlier planner references
+# or changing classifications, entries, ordinals, layouts or CSV
+# acceptance. T-C10 owns exactly these tuples.
+CERTIFICATES_EVIDENCE = {
+    "C_CreateObject": [
+        ("test-consumers.sh", "tests/c/consumer_certificates.c"),
+        ("haskoki-model-tests", "tests/model/CertificateSpec.hs"),
+        ("haskoki-engine-tests", "tests/engine/CertificateEngineSpec.hs")],
+    "C_CopyObject": [
+        ("test-consumers.sh", "tests/c/consumer_certificates.c")],
+    "C_DestroyObject": [
+        ("test-consumers.sh", "tests/c/consumer_certificates.c")],
+    "C_GetAttributeValue": [
+        ("test-consumers.sh", "tests/c/consumer_certificates.c")],
+    "C_SetAttributeValue": [
+        ("test-consumers.sh", "tests/c/consumer_certificates.c")],
+    "C_FindObjects": [
+        ("test-consumers.sh", "tests/c/consumer_certificates.c")],
+}
+for name, additions in CERTIFICATES_EVIDENCE.items():
+    entry, earlier = PLANNED[name]
+    PLANNED[name] = (entry, list(dict.fromkeys(earlier + additions)))
+
+# Row-to-policy references: function name -> list of doc anchors.
+# Emitted ONLY on rows present in this map (the six object rows).
+POLICY_REFS = {
+    "C_CreateObject": ["docs/certificate-objects.md#supplied-values-metadata-position"],
+    "C_CopyObject": ["docs/certificate-objects.md#supplied-values-metadata-position"],
+    "C_DestroyObject": ["docs/certificate-objects.md#supplied-values-metadata-position"],
+    "C_GetAttributeValue": ["docs/certificate-objects.md#supplied-values-metadata-position"],
+    "C_SetAttributeValue": ["docs/certificate-objects.md#supplied-values-metadata-position"],
+    "C_FindObjects": ["docs/certificate-objects.md#supplied-values-metadata-position"],
+}
+
 # name -> exact-gap reason (no behavior claim without tests).
 UNWIRed_OP = ("operation-layer behavior tested but no planCall FunctionId "
               "and no C-table route")
@@ -297,8 +332,8 @@ UNSUPPORTED = {
     "C_SetOperationState": ("no C_SetOperationState framing; engine snapshot "
                             "machinery is tested but unwired to this entry"),
     "C_GetObjectSize": "no model planning; ABI layout only",
-    "C_FindObjectsInit": "one-shot find only; no cursor state",
-    "C_FindObjectsFinal": "one-shot find only; no cursor state",
+    "C_FindObjectsInit": "one-shot find only; no cursor state (planner scope: pure-engine one-shot model; the public FFI cursor lives above this layer)",
+    "C_FindObjectsFinal": "one-shot find only; no cursor state (planner scope: pure-engine one-shot model; the public FFI cursor lives above this layer)",
     "C_SignRecoverInit": UNWIRed_OP + " (OperationSpec recover cases)",
     "C_SignRecover": UNWIRed_OP + " (OperationSpec recover cases)",
     "C_VerifyRecoverInit": UNWIRed_OP + " (OperationSpec recover cases)",
@@ -401,6 +436,8 @@ def main():
             base["test_evidence"] = [
                 {"suite": suite, "spec": rel} for suite, rel in ev
             ]
+            if name in POLICY_REFS:
+                base["policy_refs"] = list(POLICY_REFS[name])
         elif name in UNSUPPORTED:
             base["contract"] = "unsupported-with-reason"
             base["entry"] = "none"

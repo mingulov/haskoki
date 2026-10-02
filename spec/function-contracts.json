@@ -573,11 +573,26 @@
       ],
       "name": "C_CreateObject",
       "ordinal_3_2": 21,
+      "policy_refs": [
+        "docs/certificate-objects.md#supplied-values-metadata-position"
+      ],
       "reason": null,
       "test_evidence": [
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/ObjectSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_certificates.c"
+        },
+        {
+          "suite": "haskoki-model-tests",
+          "spec": "tests/model/CertificateSpec.hs"
+        },
+        {
+          "suite": "haskoki-engine-tests",
+          "spec": "tests/engine/CertificateEngineSpec.hs"
         }
       ]
     },
@@ -601,11 +616,18 @@
       ],
       "name": "C_CopyObject",
       "ordinal_3_2": 22,
+      "policy_refs": [
+        "docs/certificate-objects.md#supplied-values-metadata-position"
+      ],
       "reason": null,
       "test_evidence": [
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/ObjectSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_certificates.c"
         }
       ]
     },
@@ -629,11 +651,18 @@
       ],
       "name": "C_DestroyObject",
       "ordinal_3_2": 23,
+      "policy_refs": [
+        "docs/certificate-objects.md#supplied-values-metadata-position"
+      ],
       "reason": null,
       "test_evidence": [
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/ObjectSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_certificates.c"
         }
       ]
     },
@@ -680,11 +709,18 @@
       ],
       "name": "C_GetAttributeValue",
       "ordinal_3_2": 25,
+      "policy_refs": [
+        "docs/certificate-objects.md#supplied-values-metadata-position"
+      ],
       "reason": null,
       "test_evidence": [
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/ObjectSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_certificates.c"
         }
       ]
     },
@@ -708,6 +744,9 @@
       ],
       "name": "C_SetAttributeValue",
       "ordinal_3_2": 26,
+      "policy_refs": [
+        "docs/certificate-objects.md#supplied-values-metadata-position"
+      ],
       "reason": null,
       "test_evidence": [
         {
@@ -717,6 +756,10 @@
         {
           "suite": "test-consumers.sh",
           "spec": "tests/c/consumer_template_attrs.c"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_certificates.c"
         }
       ]
     },
@@ -740,7 +783,7 @@
       ],
       "name": "C_FindObjectsInit",
       "ordinal_3_2": 27,
-      "reason": "one-shot find only; no cursor state",
+      "reason": "one-shot find only; no cursor state (planner scope: pure-engine one-shot model; the public FFI cursor lives above this layer)",
       "test_evidence": []
     },
     {
@@ -763,11 +806,18 @@
       ],
       "name": "C_FindObjects",
       "ordinal_3_2": 28,
+      "policy_refs": [
+        "docs/certificate-objects.md#supplied-values-metadata-position"
+      ],
       "reason": null,
       "test_evidence": [
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/ObjectSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_certificates.c"
         }
       ]
     },
@@ -791,7 +841,7 @@
       ],
       "name": "C_FindObjectsFinal",
       "ordinal_3_2": 29,
-      "reason": "one-shot find only; no cursor state",
+      "reason": "one-shot find only; no cursor state (planner scope: pure-engine one-shot model; the public FFI cursor lives above this layer)",
       "test_evidence": []
     },
     {

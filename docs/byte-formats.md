@@ -93,7 +93,7 @@ Value codec (`encodeValue`/`decodeValue`):
 ```
 bool:  1 byte, 0x00 or 0x01 (anything else rejects)
 ulong: 8-byte big-endian over the whole Word64 domain
-bytes: raw bytes, length <= maxAttributeBytes (65536)
+bytes: raw bytes, length <= maxAttributeBytes (4194304, 4 MiB)
 ```
 
 Decoding validates the owning type's shape strictly
@@ -249,7 +249,7 @@ hand-typed `CKA_*` numerics); unknown ids reject with
 `decodeNativeValue` (`:738-747`): booleans are one byte of
 0x00/0x01, unsigned longs are 8-byte little-endian
 (`decodeULongLE`), byte arrays are raw bytes bounded by
-`maxAttributeBytes` (65536); shape misses reject with
+`maxAttributeBytes` (4194304, 4 MiB); shape misses reject with
 `FrameBadValue`. Faults map to CK_RV codes in `frameErrorRV`
 (`:1230-1234`): truncation and over-count to
 `CKR_ARGUMENTS_BAD` (0x07), unknown types to

@@ -6992,7 +6992,7 @@ caseKeygenTrustedAllowedPaths = do
 -- ---------------------------------------------------------------------------
 
 -- | A class-carrying pending secret object (publishable pre-fix,
--- so the refusal pin is a genuine red without the gate).
+-- so the refusal pin is a genuine failure without the gate).
 trustedSecret :: PendingObject
 trustedSecret = trustedPending
   [ (AttrClass, ValULong ckoSecretKey)
