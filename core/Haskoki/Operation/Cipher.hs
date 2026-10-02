@@ -28,7 +28,7 @@ module Haskoki.Operation.Cipher
 import Control.Monad (guard)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 
 import Haskoki.Model (SessionState)
 import Haskoki.Operation
@@ -37,6 +37,7 @@ import Haskoki.Operation
   , CryptoEffect (..)
   , CryptoResult (..)
   , DataGate (..)
+  , DigestStream (..)
   , SessionOps
   , SlotCommon
   , SlotKind (..)
@@ -64,18 +65,27 @@ import Haskoki.Operation
   , removeSingle
   , setStaged
   , setChainIv
+  , setDualLink
   , stageBytes
   , stagedOf
   , chainIvOf
   , hasStreamed
   , activeCipher
+  , activeDigest
+  , activeVerify
   , bufferedOf
   , commonKey
   , commonMech
   , commonParams
+  , dualLinkOf
   , mkActiveCipher
+  , mkActiveDigest
+  , mkActiveVerify
   , setBuffered
+  , streamOf
   )
+import Haskoki.Operation.Digest (streamRelease)
+import Haskoki.Outcome (ResourceRelease)
 import Haskoki.Output (OutputPlan (..), planOneShot)
 import Haskoki.Registry (MechanismId)
 import Haskoki.Request (OutputIntent (..))
@@ -258,7 +268,10 @@ effectParamsFor sc = fromMaybe (commonParams sc) (chainIvOf sc)
 -- effect, retain the suffix. A short output buffer refuses
 -- 'CKR_BUFFER_TOO_SMALL' with NO state change (no gate spend, no
 -- append): the caller repeats the same part with room. Empty
--- streamable input buffers exactly as before (zero bytes out).
+-- streamable input buffers exactly as before (zero bytes out). A
+-- successful update drops the slot's combined link (a separate
+-- cipher call feeds no peer, so the peer missed these bytes; the
+-- combined path re-establishes its link after success).
 planCipherUpdate
   :: SessionOps -> SessionState -> SlotKind -> ByteString
   -> Maybe OutputIntent
@@ -294,7 +307,7 @@ planCipherUpdate ops st kind part mIntent = case withCipherSlot ops kind of
               | streamable == 0 -> case appendBuffered sc' part of
                   Left d -> (removeSingle kind ops, st', denyOutcome d)
                   Right sc'' ->
-                    ( insertOp (mkActiveCipher dir sc'' spec) ops
+                    ( insertOp (mkActiveCipher dir (setDualLink Nothing sc'') spec) ops
                     , st'
                     , StepOutcome CKR_OK [] Nothing
                         ["buffered " ++ show (BS.length part)
@@ -325,7 +338,7 @@ planCipherUpdate ops st kind part mIntent = case withCipherSlot ops kind of
                         DirEncrypt
                           | isEcbMech -> setChainIv (Just BS.empty) scRetain
                           | otherwise -> scRetain
-                  in ( insertOp (mkActiveCipher dir scAdv spec) ops
+                  in ( insertOp (mkActiveCipher dir (setDualLink Nothing scAdv) spec) ops
                      , st'
                      , StepOutcome CKR_OK
                          [FxCipher dir (commonMech sc) (commonKey sc)
@@ -339,7 +352,8 @@ planCipherUpdate ops st kind part mIntent = case withCipherSlot ops kind of
 -- | Plan a cipher one-shot over the full input. Allowed only before
 -- any update. One-shot denies terminate the slot (spec: every error
 -- other than BUFFER_TOO_SMALL terminates); a re-init, not a final,
--- follows a denied one-shot.
+-- follows a denied one-shot. A planned one-shot drops the slot's
+-- combined link (a one-shot feeds no peer).
 planCipherOneShot
   :: SessionOps -> SessionState -> SlotKind -> String -> ByteString
   -> (SessionOps, SessionState, StepOutcome)
@@ -365,7 +379,7 @@ planCipherOneShot ops st kind _name input = case withCipherSlot ops kind of
       case appendBuffered sc' raw of
         Left deny -> (removeSingle k o, s, denyOutcome deny)
         Right sc'' ->
-          ( insertOp (mkActiveCipher d sc'' spec) o
+          ( insertOp (mkActiveCipher d (setDualLink Nothing sc'') spec) o
           , s
           , StepOutcome CKR_OK
               [FxCipher d (commonMech sc'') (commonKey sc'') (commonParams sc'') effectInput]
@@ -408,10 +422,54 @@ planCipherFinal ops st kind _name = case withCipherSlot ops kind of
                 ++ show (BS.length (bufferedOf sc')) ++ " bytes"] [] Nothing
           )
 
+-- | Feed a decrypt final's recovered tail to the linked combined
+-- peer (digest or verify), then drop the link. Encrypt finals and
+-- unlinked slots pass through untouched; a missing, concluded, or
+-- foreign peer only drops the link. A peer-buffer bound violation
+-- terminates the peer (releasing its stream, if any) while the
+-- cipher bytes still stage: the peer can no longer hold its input,
+-- but the cipher output is exact.
+feedDualTail
+  :: SessionOps -> CipherDir -> SlotCommon -> ByteString
+  -> (SessionOps, SlotCommon, [ResourceRelease])
+feedDualTail ops dir sc tail
+  | dir /= DirDecrypt = (ops, sc, [])
+  | otherwise = case dualLinkOf sc of
+      Nothing -> (ops, sc, [])
+      Just peer ->
+        let (fedOps, fedRel) = feedPeer ops peer tail
+        in (fedOps, setDualLink Nothing sc, fedRel)
+  where
+    feedPeer o peer t = case lookupSingle o peer of
+      Just active -> case peer of
+        SlotDigest -> case activeDigest active of
+          Just psc -> feedDigest o psc t
+          Nothing -> (o, [])
+        SlotVerify -> case activeVerify active of
+          Just psc -> feedVerify o psc t
+          Nothing -> (o, [])
+        _ -> (o, [])
+      Nothing -> (o, [])
+    feedDigest o psc t
+      | isJust (stagedOf psc) = (o, [])
+      | fedStream (streamOf psc) = (o, [])
+      | otherwise = case appendBuffered psc t of
+          Left _ -> (removeSingle SlotDigest o, streamRelease psc)
+          Right psc' -> (insertOp (mkActiveDigest psc') o, [])
+    feedVerify o psc t
+      | isJust (stagedOf psc) = (o, [])
+      | otherwise = case appendBuffered psc t of
+          Left _ -> (removeSingle SlotVerify o, [])
+          Right psc' -> (insertOp (mkActiveVerify psc') o, [])
+    fedStream Nothing = False
+    fedStream (Just ds) = dsFed ds
+
 -- | Finish a planned cipher final or one-shot. Encrypt stages the
 -- driver bytes; decrypt strips padding (padded) or checks alignment
--- (unpadded). Corrupt pads, ragged answers, verdict-shaped results,
--- and crypto failures all terminate the slot.
+-- (unpadded). A linked decrypt final first completes its combined
+-- peer input with the recovered tail ('feedDualTail'). Corrupt
+-- pads, ragged answers, verdict-shaped results, and crypto
+-- failures all terminate the slot.
 finishCipher
   :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
@@ -422,14 +480,15 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
       "cipher output already staged; use retry"))
     Nothing ->
       let stageRaw bytes =
-            let (staged, plan, freed) = stageBytes name bytes intent
+            let (opsFed, scFed, rel) = feedDualTail ops dir sc bytes
+                (staged, plan, freed) = stageBytes name bytes intent
             in if freed
-              then (removeSingle kind ops
-                   , StepOutcome CKR_OK [] (Just plan) ["cipher step complete"] [] Nothing)
+              then (removeSingle kind opsFed
+                   , StepOutcome CKR_OK [] (Just plan) ["cipher step complete"] rel Nothing)
               else ( insertOp
-                       (mkActiveCipher dir (setStaged staged sc) spec) ops
+                       (mkActiveCipher dir (setStaged staged scFed) spec) opsFed
                    , StepOutcome CKR_BUFFER_TOO_SMALL [] (Just plan)
-                       ["cipher output staged; retry with the reported length"] [] Nothing)
+                       ["cipher output staged; retry with the reported length"] rel Nothing)
       in case result of
         GotBytes raw -> case dir of
           DirEncrypt -> stageRaw raw

@@ -17,13 +17,15 @@ module Haskoki.Operation.Digest
   , finishDigestInit
   , finishDigestFeed
   , finishDigest
+  , streamRelease
   ) where
 
 import qualified Data.ByteString as BS
 
 import Haskoki.Model (SessionState)
 import Haskoki.Operation
-  ( CryptoEffect (..)
+  ( CipherDir (..)
+  , CryptoEffect (..)
   , CryptoResult (..)
   , DigestStream (..)
   , SessionOps
@@ -45,12 +47,16 @@ import Haskoki.Operation
   , stageBytes
   , stagedOf
   , streamOf
+  , activeCipher
   , activeDigest
   , bufferedOf
   , commonMech
+  , dualLinkOf
   , mkActiveDigest
+  , multipartActiveOf
   , setBuffered
   , setLive
+  , setMultipartActive
   )
 import Haskoki.Outcome (ResourceRelease (..))
 import Haskoki.Request (OutputIntent)
@@ -68,8 +74,26 @@ streamFed :: Maybe DigestStream -> Bool
 streamFed Nothing = False
 streamFed (Just ds) = dsFed ds
 
--- | Plan one digest update: feed the part to the backend stream.
--- The part is never buffered; the driver runs the feed effect.
+-- | Whether this digest update accumulates into the slot buffer
+-- instead of the backend stream: the decrypt slot links to this
+-- digest slot (a combined flow), or the buffer already holds
+-- combined bytes (the link dropped after a separate cipher call,
+-- and accumulation must stay coherent). Unlinked slots with empty
+-- buffers stream exactly as before.
+dualBufferedMode :: SessionOps -> SlotCommon -> Bool
+dualBufferedMode ops sc =
+  not (BS.null (bufferedOf sc)) || linked
+  where
+    linked = case lookupSingle ops SlotDecrypt of
+      Just active -> case activeCipher active of
+        Just (DirDecrypt, csc, _) -> dualLinkOf csc == Just SlotDigest
+        _ -> False
+      Nothing -> False
+
+-- | Plan one digest update: feed the part to the backend stream
+-- (combined flows buffer it instead; see 'dualBufferedMode'). The
+-- part is never buffered outside combined flows; the driver runs
+-- the feed effect.
 planDigestUpdate
   :: SessionOps -> SessionState -> BS.ByteString
   -> (SessionOps, SessionState, StepOutcome)
@@ -84,23 +108,49 @@ planDigestUpdate ops st part = case lookupSingle ops SlotDigest of
     runUpdate o s sc p = case stagedOf sc of
       Just _ -> (o, s, denyOutcome (mkDeny CKR_OPERATION_NOT_INITIALIZED
         "digest is finalized; retry the staged output instead"))
-      Nothing -> case gateDataCall s sc of
-        GateDeny d term ->
-          (if term then removeSingle SlotDigest o else o, s, denyOutcome d)
-        GateOk s' sc' -> case streamOf sc' of
-          Nothing -> (removeSingle SlotDigest o, s', denyOutcome
-            (mkDeny CKR_GENERAL_ERROR "digest stream is not allocated"))
-          Just ds ->
-            let sc'' = setLive (ds { dsFed = True }) sc'
-            in ( insertOp (mkActiveDigest sc'') o
-               , s'
-               , StepOutcome CKR_OK
-                   [FxDigestFeed (dsResource ds) p]
-                   Nothing
-                   ["fed " ++ show (BS.length p)
-                     ++ " bytes to the digest stream"]
-                   [] Nothing
-               )
+      Nothing
+        | dualBufferedMode o sc -> runBuffered o s sc p
+        | otherwise -> runStreamed o s sc p
+    runStreamed o s sc p = case gateDataCall s sc of
+      GateDeny d term ->
+        (if term then removeSingle SlotDigest o else o, s, denyOutcome d)
+      GateOk s' sc' -> case streamOf sc' of
+        Nothing -> (removeSingle SlotDigest o, s', denyOutcome
+          (mkDeny CKR_GENERAL_ERROR "digest stream is not allocated"))
+        Just ds ->
+          let sc'' = setLive (ds { dsFed = True }) sc'
+          in ( insertOp (mkActiveDigest sc'') o
+             , s'
+             , StepOutcome CKR_OK
+                 [FxDigestFeed (dsResource ds) p]
+                 Nothing
+                 ["fed " ++ show (BS.length p)
+                   ++ " bytes to the digest stream"]
+                 [] Nothing
+             )
+    -- | Buffer one combined-flow digest part. The gate still runs;
+    -- the stream is untouched (the final one-shots over the buffer
+    -- while the finisher releases the stream). A bound violation
+    -- terminates the slot and releases the stream, so no exit leaks
+    -- the allocated context. Activity records even for empty parts,
+    -- so a zero-output dual update closes the one-shot window.
+    runBuffered o s sc p = case gateDataCall s sc of
+      GateDeny d term
+        | term -> ( removeSingle SlotDigest o, s
+                  , denyOutcomeR d (streamRelease sc))
+        | otherwise -> (o, s, denyOutcome d)
+      GateOk s' sc' -> case appendBuffered sc' p of
+        Left d -> ( removeSingle SlotDigest o, s'
+                  , denyOutcomeR d (streamRelease sc'))
+        Right sc'' ->
+          ( insertOp (mkActiveDigest (setMultipartActive sc'')) o
+          , s'
+          , StepOutcome CKR_OK [] Nothing
+              ["buffered " ++ show (BS.length p)
+                ++ " bytes for the combined digest ("
+                ++ show (BS.length (bufferedOf sc''))
+                ++ " total)"] [] Nothing
+          )
 
 -- | Plan a digest one-shot over the full input. Allowed only before
 -- any update; the bound still guards the single input even though
@@ -120,7 +170,7 @@ planDigestOneShot ops st _name input = case lookupSingle ops SlotDigest of
       Just _ -> (o, s, denyOutcome (mkDeny CKR_OPERATION_NOT_INITIALIZED
         "digest is finalized; retry the staged output instead"))
       Nothing
-        | streamFed (streamOf sc) || not (BS.null (bufferedOf sc)) ->
+        | streamFed (streamOf sc) || not (BS.null (bufferedOf sc)) || multipartActiveOf sc ->
             (removeSingle SlotDigest o, s, denyOutcome (mkDeny CKR_OPERATION_ACTIVE
               "multipart input already fed; re-init to continue"))
         | otherwise -> case gateDataCall s sc of
@@ -140,8 +190,10 @@ planDigestOneShot ops st _name input = case lookupSingle ops SlotDigest of
                        [] Nothing
                    )
 
--- | Plan a digest final: consume the backend stream. The finisher
--- stages the digest bytes and releases the context on every exit.
+-- | Plan a digest final: consume the backend stream (combined
+-- flows one-shot over the buffer instead; see
+-- 'dualBufferedMode'). The finisher stages the digest bytes and
+-- releases the context on every exit.
 planDigestFinal
   :: SessionOps -> SessionState -> String
   -> (SessionOps, SessionState, StepOutcome)
@@ -162,15 +214,44 @@ planDigestFinal ops st _name = case lookupSingle ops SlotDigest of
         GateOk s' sc' -> case streamOf sc' of
           Nothing -> (removeSingle SlotDigest o, s', denyOutcome
             (mkDeny CKR_GENERAL_ERROR "digest stream is not allocated"))
-          Just ds ->
-            ( insertOp (mkActiveDigest sc') o
-            , s'
-            , StepOutcome CKR_OK
-                [FxDigestConsume (dsResource ds)]
-                Nothing
-                ["digest final consumes the stream"]
-                [] Nothing
-            )
+          Just ds
+            | dsFed ds && not (BS.null (bufferedOf sc')) ->
+                -- Diverged accumulation (a fed stream plus combined
+                -- buffer): neither side holds the whole input, so
+                -- terminate loudly instead of digesting a prefix.
+                -- Fail-closed defense, kept deliberately: linkage
+                -- checks (kind-matched continuation plus the
+                -- freshness rule) keep combined bytes out of a fed
+                -- stream, but any divergence reaching this arm must
+                -- terminate loudly rather than digest a prefix.
+                ( removeSingle SlotDigest o, s'
+                , denyOutcomeR (mkDeny CKR_GENERAL_ERROR
+                    "digest stream and combined buffer diverged; terminating")
+                    (streamRelease sc'))
+            | not (dsFed ds) && not (BS.null (bufferedOf sc')) ->
+                -- Combined flow: the updates buffered while the
+                -- allocated stream stayed unfed, so one-shot over
+                -- the buffer. The finisher stages the bytes and
+                -- releases the stream on every exit, exactly as for
+                -- consume.
+                ( insertOp (mkActiveDigest sc') o
+                , s'
+                , StepOutcome CKR_OK
+                    [FxDigest (commonMech sc') (bufferedOf sc')]
+                    Nothing
+                    ["digest combined final planned over "
+                      ++ show (BS.length (bufferedOf sc')) ++ " buffered bytes"]
+                    [] Nothing
+                )
+            | otherwise ->
+                ( insertOp (mkActiveDigest sc') o
+                , s'
+                , StepOutcome CKR_OK
+                    [FxDigestConsume (dsResource ds)]
+                    Nothing
+                    ["digest final consumes the stream"]
+                    [] Nothing
+                )
 
 -- | Finish a digest-init allocation: record the stream on success,
 -- terminate the slot on any failure. The allocation answered with

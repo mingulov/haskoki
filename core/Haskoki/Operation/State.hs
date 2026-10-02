@@ -81,6 +81,11 @@ module Haskoki.Operation.State
   , commonParams
   , commonAuth
   , setCommonAuth
+  , dualLinkOf
+  , setDualLink
+  , slotLinkFresh
+  , multipartActiveOf
+  , setMultipartActive
   , bufferedOf
   , setBuffered
   , chainIvOf
@@ -100,7 +105,7 @@ import Data.ByteString (ByteString)
 import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, isNothing)
 import Data.Word (Word32)
 
 import Haskoki.Registry
@@ -246,7 +251,8 @@ data SlotPhase
 
 -- | State shared by every active single operation: mechanism,
 -- operation, bound key object, opaque parameters, auth state,
--- multipart accumulation, and the lifecycle phase.
+-- multipart accumulation, the lifecycle phase, and the decrypt-dual
+-- peer link (unrelated slots leave it empty).
 data SlotCommon = SlotCommon
   { scMech :: !MechanismId
   , scOp :: !Operation
@@ -256,6 +262,22 @@ data SlotCommon = SlotCommon
   , scBuffered :: !ByteString
   , scPhase :: !SlotPhase
   , scChainIv :: !(Maybe ByteString)
+  -- | The decrypt-dual peer link: @Just peer@ on a decrypt slot
+  -- means every byte the peer slot holds came from this slot's
+  -- cipher output through combined updates, so the decrypt final
+  -- completes the peer input with its recovered tail. Set ONLY by
+  -- the combined-update path; cleared on final, completion,
+  -- init-change (fresh slots start unlinked), peer removal
+  -- ('clearLinksTo'), and any separate cipher data call. Never
+  -- serialized: restored slots start unlinked.
+  , scDualLink :: !(Maybe SlotKind)
+  -- | Multipart update activity for combined flows: set by the
+  -- combined digest-update path even when the part carries no
+  -- bytes, so a zero-output dual update closes the one-shot
+  -- window exactly like a streamed empty update. Never
+  -- serialized: restored slots start inactive (the same corner
+  -- as the dual link).
+  , scMultipartActive :: !Bool
   } deriving (Eq, Show)
 
 -- | One active single operation: its kind plus its shared state and,
@@ -384,10 +406,24 @@ bufferedLength ops kind =
 lookupSingle :: SessionOps -> SlotKind -> Maybe ActiveOp
 lookupSingle ops kind = Map.lookup kind (soSingles ops)
 
--- | Free one slot.
+-- | Free one slot. A removed peer ends every combined flow
+-- pointing at it ('clearLinksTo'): conclusion, termination, and
+-- the removal preceding any replacement all pass through here, so
+-- a replacement peer never inherits the old recovered-tail feed.
 removeSingle :: SlotKind -> SessionOps -> SessionOps
 removeSingle kind ops =
-  ops { soSingles = Map.delete kind (soSingles ops) }
+  clearLinksTo kind (ops { soSingles = Map.delete kind (soSingles ops) })
+
+-- | Clear the decrypt-dual peer links that reference a concluded
+-- slot. A no-op when no slot links to it (every single flow).
+clearLinksTo :: SlotKind -> SessionOps -> SessionOps
+clearLinksTo kind ops =
+  ops { soSingles = Map.map clear (soSingles ops) }
+  where
+    clear active
+      | dualLinkOf (commonOf active) == Just kind =
+          setCommon active (setDualLink Nothing (commonOf active))
+      | otherwise = active
 
 -- | The CKF_* selector bits addressing one slot: the pinned-header
 -- mechanism-flag values (spec/vendor/pkcs11.h), reused as the
@@ -427,7 +463,9 @@ cancelOps flags ops =
         Just du
           | SlotDigest `elem` kinds || dirKind (duDir du) `elem` kinds -> Nothing
           | otherwise -> Just du
-  in SessionOps singles' dual'
+  -- A cancelled peer ends the combined flows pointing at it, like
+  -- any other removal ('removeSingle' shares 'clearLinksTo').
+  in foldr clearLinksTo (SessionOps singles' dual') kinds
 
 -- | The slot one active operation truly occupies: the kind side of
 -- the validated insertion pair. Total: every constructor names its
@@ -527,6 +565,8 @@ mkSlotCommon mech op key params auth = SlotCommon
   , scBuffered = BS.empty
   , scPhase = PhaseBuffered
   , scChainIv = Nothing
+  , scDualLink = Nothing
+  , scMultipartActive = False
   }
 
 -- | Build single-shape active operations.
@@ -612,6 +652,38 @@ commonAuth = scAuth
 -- | Replace the auth state of shared slot state.
 setCommonAuth :: OpAuth -> SlotCommon -> SlotCommon
 setCommonAuth auth sc = sc { scAuth = auth }
+
+-- | The decrypt-dual peer link of shared slot state, if linked.
+dualLinkOf :: SlotCommon -> Maybe SlotKind
+dualLinkOf = scDualLink
+
+-- | Replace the decrypt-dual peer link of shared slot state.
+setDualLink :: Maybe SlotKind -> SlotCommon -> SlotCommon
+setDualLink link sc = sc { scDualLink = link }
+
+-- | Whether a slot is byte-fresh: no buffered bytes, no chaining
+-- value, no staged output, and no fed digest stream. The
+-- combined-update path links only fresh pairs, so a broken link
+-- never re-forms over bytes the peer missed.
+slotLinkFresh :: SlotCommon -> Bool
+slotLinkFresh sc =
+  BS.null (scBuffered sc)
+    && isNothing (scChainIv sc)
+    && isNothing (stagedOf sc)
+    && case streamOf sc of
+      Nothing -> True
+      Just ds -> not (dsFed ds)
+
+-- | Whether a combined-flow update reached shared slot state (set
+-- even for parts carrying no bytes).
+multipartActiveOf :: SlotCommon -> Bool
+multipartActiveOf = scMultipartActive
+
+-- | Record combined-flow update activity on shared slot state.
+-- Activity never clears on a live slot; only a fresh slot starts
+-- without it.
+setMultipartActive :: SlotCommon -> SlotCommon
+setMultipartActive sc = sc { scMultipartActive = True }
 
 -- | The buffered multipart bytes of shared slot state.
 bufferedOf :: SlotCommon -> ByteString

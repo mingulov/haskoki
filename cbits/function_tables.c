@@ -793,13 +793,11 @@ static CK_RV on_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
  * yield the stub code (pinned by the STB stub-beats-args checks),
  * so argument bugs in stub CALLERS are invisible here by design;
  * routed entries keep liveness -> args -> behavior. Per-entry
- * setting (14 x stub_probe, 2 x stub_parallel): stub_InitToken,
+ * setting (10 x stub_probe, 2 x stub_parallel): stub_InitToken,
  * stub_InitPIN, stub_SetPIN, stub_GetOperationState,
  * stub_SetOperationState, stub_GetObjectSize,
  * stub_SignRecoverInit,
- * stub_SignRecover, stub_VerifyRecoverInit, stub_VerifyRecover,
- * stub_DigestEncryptUpdate, stub_DecryptDigestUpdate,
- * stub_SignEncryptUpdate, stub_DecryptVerifyUpdate ->
+ * stub_SignRecover, stub_VerifyRecoverInit, stub_VerifyRecover ->
  * stub_probe (NOT_INITIALIZED pre-init, NOT_SUPPORTED live);
  * stub_GetFunctionStatus, stub_CancelFunction -> stub_parallel
  * (legacy parallel pair: NOT_PARALLEL live). Revisit: when an
@@ -913,46 +911,9 @@ static CK_RV stub_VerifyRecover(CK_SESSION_HANDLE h, CK_BYTE_PTR p, CK_ULONG n,
   (void)m;
   return stub_probe();
 }
-static CK_RV stub_DigestEncryptUpdate(CK_SESSION_HANDLE h, CK_BYTE_PTR p,
-                                       CK_ULONG n, CK_BYTE_PTR q,
-                                       CK_ULONG_PTR m) {
-  (void)h;
-  (void)p;
-  (void)n;
-  (void)q;
-  (void)m;
-  return stub_probe();
-}
-static CK_RV stub_DecryptDigestUpdate(CK_SESSION_HANDLE h, CK_BYTE_PTR p,
-                                       CK_ULONG n, CK_BYTE_PTR q,
-                                       CK_ULONG_PTR m) {
-  (void)h;
-  (void)p;
-  (void)n;
-  (void)q;
-  (void)m;
-  return stub_probe();
-}
-static CK_RV stub_SignEncryptUpdate(CK_SESSION_HANDLE h, CK_BYTE_PTR p,
-                                     CK_ULONG n, CK_BYTE_PTR q,
-                                     CK_ULONG_PTR m) {
-  (void)h;
-  (void)p;
-  (void)n;
-  (void)q;
-  (void)m;
-  return stub_probe();
-}
-static CK_RV stub_DecryptVerifyUpdate(CK_SESSION_HANDLE h, CK_BYTE_PTR p,
-                                       CK_ULONG n, CK_BYTE_PTR q,
-                                       CK_ULONG_PTR m) {
-  (void)h;
-  (void)p;
-  (void)n;
-  (void)q;
-  (void)m;
-  return stub_probe();
-}
+/* Dual combined updates routed (std_DigestEncryptUpdate/
+ * std_DecryptDigestUpdate/std_SignEncryptUpdate/
+ * std_DecryptVerifyUpdate). */
 static CK_RV stub_GetFunctionStatus(CK_SESSION_HANDLE h) {
   (void)h;
   return stub_parallel();
@@ -1091,6 +1052,20 @@ extern CK_RV std_DecryptUpdate(CK_SESSION_HANDLE hSession,
                                CK_ULONG_PTR pulPartLen);
 extern CK_RV std_DecryptFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pLastPart,
                               CK_ULONG_PTR pulLastPartLen);
+extern CK_RV std_DigestEncryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
+                                     CK_ULONG ulPartLen, CK_BYTE_PTR pEncryptedPart,
+                                     CK_ULONG_PTR pulEncryptedPartLen);
+extern CK_RV std_DecryptDigestUpdate(CK_SESSION_HANDLE hSession,
+                                     CK_BYTE_PTR pEncryptedPart,
+                                     CK_ULONG ulEncryptedPartLen, CK_BYTE_PTR pPart,
+                                     CK_ULONG_PTR pulPartLen);
+extern CK_RV std_SignEncryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
+                                   CK_ULONG ulPartLen, CK_BYTE_PTR pEncryptedPart,
+                                   CK_ULONG_PTR pulEncryptedPartLen);
+extern CK_RV std_DecryptVerifyUpdate(CK_SESSION_HANDLE hSession,
+                                     CK_BYTE_PTR pEncryptedPart,
+                                     CK_ULONG ulEncryptedPartLen, CK_BYTE_PTR pPart,
+                                     CK_ULONG_PTR pulPartLen);
 extern CK_RV std_GenerateRandom(CK_SESSION_HANDLE hSession,
                                 CK_BYTE_PTR pRandomData, CK_ULONG ulRandomLen);
 extern CK_RV std_SeedRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSeed,
@@ -1165,10 +1140,10 @@ static struct CK_FUNCTION_LIST g_function_list = {
   .C_VerifyFinal = std_VerifyFinal,
   .C_VerifyRecoverInit = stub_VerifyRecoverInit,
   .C_VerifyRecover = stub_VerifyRecover,
-  .C_DigestEncryptUpdate = stub_DigestEncryptUpdate,
-  .C_DecryptDigestUpdate = stub_DecryptDigestUpdate,
-  .C_SignEncryptUpdate = stub_SignEncryptUpdate,
-  .C_DecryptVerifyUpdate = stub_DecryptVerifyUpdate,
+  .C_DigestEncryptUpdate = std_DigestEncryptUpdate,
+  .C_DecryptDigestUpdate = std_DecryptDigestUpdate,
+  .C_SignEncryptUpdate = std_SignEncryptUpdate,
+  .C_DecryptVerifyUpdate = std_DecryptVerifyUpdate,
   .C_GenerateKey = std_GenerateKey,
   .C_GenerateKeyPair = std_GenerateKeyPair,
   .C_WrapKey = std_WrapKey,

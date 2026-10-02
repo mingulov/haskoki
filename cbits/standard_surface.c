@@ -180,6 +180,18 @@ extern uint64_t haskoki_std_decrypt_update(void *instance, uint64_t h_session,
                                            uint8_t *p_out, uint64_t *p_len);
 extern uint64_t haskoki_std_decrypt_final(void *instance, uint64_t h_session,
                                           uint8_t *p_out, uint64_t *p_len);
+extern uint64_t haskoki_std_dual_digest_encrypt(void *instance, uint64_t h_session,
+                                               uint8_t *p_part, uint64_t part_len,
+                                               uint8_t *p_out, uint64_t *p_len);
+extern uint64_t haskoki_std_dual_decrypt_digest(void *instance, uint64_t h_session,
+                                               uint8_t *p_part, uint64_t part_len,
+                                               uint8_t *p_out, uint64_t *p_len);
+extern uint64_t haskoki_std_dual_sign_encrypt(void *instance, uint64_t h_session,
+                                             uint8_t *p_part, uint64_t part_len,
+                                             uint8_t *p_out, uint64_t *p_len);
+extern uint64_t haskoki_std_dual_decrypt_verify(void *instance, uint64_t h_session,
+                                               uint8_t *p_part, uint64_t part_len,
+                                               uint8_t *p_out, uint64_t *p_len);
 extern uint64_t haskoki_std_generate_random(void *instance, uint64_t h_session,
                                             uint8_t *p_out, uint64_t out_len);
 extern uint64_t haskoki_std_seed_random(void *instance, uint64_t h_session,
@@ -2110,6 +2122,154 @@ CK_RV std_DecryptFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pLastPart,
   rv = (CK_RV)haskoki_std_decrypt_final(inst, (uint64_t)hSession,
                                         (uint8_t *)pLastPart,
                                         (uint64_t *)pulLastPartLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+/* Dual combined updates: a malformed pointer terminates both
+ * sides (the joint step ends on both slots). */
+CK_RV std_DigestEncryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
+                              CK_ULONG ulPartLen, CK_BYTE_PTR pEncryptedPart,
+                              CK_ULONG_PTR pulEncryptedPartLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pulEncryptedPartLen == NULL_PTR) {
+    (void)refuse_null_arg(hSession, HSK_SLOT_DIGEST);
+    return refuse_null_arg(hSession, HSK_SLOT_ENCRYPT);
+  }
+  if (ulPartLen > 0 && pPart == NULL_PTR) {
+    (void)refuse_null_arg(hSession, HSK_SLOT_DIGEST);
+    return refuse_null_arg(hSession, HSK_SLOT_ENCRYPT);
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_dual_digest_encrypt(
+      inst, (uint64_t)hSession, (uint8_t *)pPart, (uint64_t)ulPartLen,
+      (uint8_t *)pEncryptedPart, (uint64_t *)pulEncryptedPartLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_DecryptDigestUpdate(CK_SESSION_HANDLE hSession,
+                              CK_BYTE_PTR pEncryptedPart,
+                              CK_ULONG ulEncryptedPartLen, CK_BYTE_PTR pPart,
+                              CK_ULONG_PTR pulPartLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pulPartLen == NULL_PTR) {
+    (void)refuse_null_arg(hSession, HSK_SLOT_DIGEST);
+    return refuse_null_arg(hSession, HSK_SLOT_DECRYPT);
+  }
+  if (ulEncryptedPartLen > 0 && pEncryptedPart == NULL_PTR) {
+    (void)refuse_null_arg(hSession, HSK_SLOT_DIGEST);
+    return refuse_null_arg(hSession, HSK_SLOT_DECRYPT);
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_dual_decrypt_digest(
+      inst, (uint64_t)hSession, (uint8_t *)pEncryptedPart,
+      (uint64_t)ulEncryptedPartLen, (uint8_t *)pPart, (uint64_t *)pulPartLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_SignEncryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
+                            CK_ULONG ulPartLen, CK_BYTE_PTR pEncryptedPart,
+                            CK_ULONG_PTR pulEncryptedPartLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pulEncryptedPartLen == NULL_PTR) {
+    (void)refuse_null_arg(hSession, HSK_SLOT_SIGN);
+    return refuse_null_arg(hSession, HSK_SLOT_ENCRYPT);
+  }
+  if (ulPartLen > 0 && pPart == NULL_PTR) {
+    (void)refuse_null_arg(hSession, HSK_SLOT_SIGN);
+    return refuse_null_arg(hSession, HSK_SLOT_ENCRYPT);
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_dual_sign_encrypt(
+      inst, (uint64_t)hSession, (uint8_t *)pPart, (uint64_t)ulPartLen,
+      (uint8_t *)pEncryptedPart, (uint64_t *)pulEncryptedPartLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_DecryptVerifyUpdate(CK_SESSION_HANDLE hSession,
+                              CK_BYTE_PTR pEncryptedPart,
+                              CK_ULONG ulEncryptedPartLen, CK_BYTE_PTR pPart,
+                              CK_ULONG_PTR pulPartLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pulPartLen == NULL_PTR) {
+    (void)refuse_null_arg(hSession, HSK_SLOT_VERIFY);
+    return refuse_null_arg(hSession, HSK_SLOT_DECRYPT);
+  }
+  if (ulEncryptedPartLen > 0 && pEncryptedPart == NULL_PTR) {
+    (void)refuse_null_arg(hSession, HSK_SLOT_VERIFY);
+    return refuse_null_arg(hSession, HSK_SLOT_DECRYPT);
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_dual_decrypt_verify(
+      inst, (uint64_t)hSession, (uint8_t *)pEncryptedPart,
+      (uint64_t)ulEncryptedPartLen, (uint8_t *)pPart, (uint64_t *)pulPartLen);
   (void)haskoki_state_unlock();
   return rv;
 }

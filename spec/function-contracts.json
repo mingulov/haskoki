@@ -1506,11 +1506,11 @@
       "test_evidence": []
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A17"
       ],
-      "entry": "none",
+      "entry": "haskoki_std_dual_digest_encrypt:F_DigestUpdate+F_EncryptUpdate",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -1520,15 +1520,20 @@
       ],
       "name": "C_DigestEncryptUpdate",
       "ordinal_3_2": 55,
-      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec dual cases)",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "mechanisms/task-m02",
+          "spec": "tests/c/dual_routed.c"
+        }
+      ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A17"
       ],
-      "entry": "none",
+      "entry": "haskoki_std_dual_decrypt_digest:F_DecryptUpdate+F_DigestUpdate",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -1538,15 +1543,20 @@
       ],
       "name": "C_DecryptDigestUpdate",
       "ordinal_3_2": 56,
-      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec dual cases)",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "mechanisms/task-m02",
+          "spec": "tests/c/dual_routed.c"
+        }
+      ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A17"
       ],
-      "entry": "none",
+      "entry": "haskoki_std_dual_sign_encrypt:F_SignUpdate+F_EncryptUpdate",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -1556,15 +1566,20 @@
       ],
       "name": "C_SignEncryptUpdate",
       "ordinal_3_2": 57,
-      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec dual cases)",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "mechanisms/task-m02",
+          "spec": "tests/c/dual_routed.c"
+        }
+      ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A17"
       ],
-      "entry": "none",
+      "entry": "haskoki_std_dual_decrypt_verify:F_DecryptUpdate+F_VerifyUpdate",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -1574,8 +1589,13 @@
       ],
       "name": "C_DecryptVerifyUpdate",
       "ordinal_3_2": 58,
-      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec dual cases)",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "mechanisms/task-m02",
+          "spec": "tests/c/dual_routed.c"
+        }
+      ]
     },
     {
       "contract": "unsupported-with-reason",

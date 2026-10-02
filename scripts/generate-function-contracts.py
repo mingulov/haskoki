@@ -125,6 +125,17 @@ PLANNED = {
                         [("haskoki-model-tests", "tests/model/OperationSpec.hs")]),
     "C_DecryptFinal": ("planCall:F_DecryptFinal",
                        [("haskoki-model-tests", "tests/model/OperationSpec.hs")]),
+    # Dual-function entries: one haskoki_std_dual_* foreign export
+    # framing into both reused planCall FunctionIds (the
+    # C_DigestKey precedent), executed by tests/c/dual_routed.c.
+    "C_DigestEncryptUpdate": ("haskoki_std_dual_digest_encrypt:F_DigestUpdate+F_EncryptUpdate",
+                              [("mechanisms/task-m02", "tests/c/dual_routed.c")]),
+    "C_DecryptDigestUpdate": ("haskoki_std_dual_decrypt_digest:F_DecryptUpdate+F_DigestUpdate",
+                              [("mechanisms/task-m02", "tests/c/dual_routed.c")]),
+    "C_SignEncryptUpdate": ("haskoki_std_dual_sign_encrypt:F_SignUpdate+F_EncryptUpdate",
+                            [("mechanisms/task-m02", "tests/c/dual_routed.c")]),
+    "C_DecryptVerifyUpdate": ("haskoki_std_dual_decrypt_verify:F_DecryptUpdate+F_VerifyUpdate",
+                              [("mechanisms/task-m02", "tests/c/dual_routed.c")]),
     # planCall entries: v3 message families (all 20).
     "C_MessageEncryptInit": ("planCall:F_MessageEncryptInit",
                              [("haskoki-model-tests", "tests/model/MessageSpec.hs"),
@@ -338,10 +349,7 @@ UNSUPPORTED = {
     "C_SignRecover": UNWIRed_OP + " (OperationSpec recover cases)",
     "C_VerifyRecoverInit": UNWIRed_OP + " (OperationSpec recover cases)",
     "C_VerifyRecover": UNWIRed_OP + " (OperationSpec recover cases)",
-    "C_DigestEncryptUpdate": UNWIRed_OP + " (OperationSpec dual cases)",
-    "C_DecryptDigestUpdate": UNWIRed_OP + " (OperationSpec dual cases)",
-    "C_SignEncryptUpdate": UNWIRed_OP + " (OperationSpec dual cases)",
-    "C_DecryptVerifyUpdate": UNWIRed_OP + " (OperationSpec dual cases)",
+    # Dual rows live in PLANNED (wired + executed).
     "C_GenerateKey": UNWIRed_OP + " (KeyManagementSpec keygen cases)",
     "C_GenerateKeyPair": UNWIRed_OP + " (KeyManagementSpec keypair + KEM cases)",
     "C_DeriveKey": UNWIRed_OP + " (KeyManagementSpec derive cases)",

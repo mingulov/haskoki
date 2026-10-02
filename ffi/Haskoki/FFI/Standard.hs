@@ -319,15 +319,21 @@ import Haskoki.Operation
   ( CryptoEffect (..)
   , MsgFamily (..)
   , MsgState (..)
+  , SessionOps
   , SlotKind (..)
   , StagedOutput (..)
   , activeCipher
   , bufferedOf
   , commonMech
   , commonOf
+  , dualLinkOf
+  , insertOp
   , lookupSingle
   , msgFamilyKind
   , removeSingle
+  , setCommon
+  , setDualLink
+  , slotLinkFresh
   , stagedOf
   )
 import Haskoki.Operation.Cipher (cipherUpdateSplit)
@@ -3913,6 +3919,256 @@ haskokiStdDecryptFinal ctx h pOut pLen =
             CULong cap <- peek pLen
             runCryptoBuffered inst sid SlotDecrypt F_DecryptFinal BS.empty
               "decrypt" pOut pLen cap
+
+-- ---------------------------------------------------------------------------
+-- dual updates
+-- ---------------------------------------------------------------------------
+
+foreign export ccall "haskoki_std_dual_digest_encrypt" haskokiStdDualDigestEncrypt
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+foreign export ccall "haskoki_std_dual_decrypt_digest" haskokiStdDualDecryptDigest
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+foreign export ccall "haskoki_std_dual_sign_encrypt" haskokiStdDualSignEncrypt
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+foreign export ccall "haskoki_std_dual_decrypt_verify" haskokiStdDualDecryptVerify
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+
+-- | Refuse a dual data call with ARGS_BAD after terminating both
+-- sides (a malformed dual call ends the joint step on both slots).
+refuseDualArgsTerminate :: StdInstance -> SessionId -> SlotKind -> SlotKind -> IO CULong
+refuseDualArgsTerminate inst sid ka kb =
+  terminateSlot inst sid ka >> terminateSlot inst sid kb >> pure ckrArgsBad
+
+-- | The cipher output bytes of an update commit: exactly the one
+-- byte region updates emit (nothing buffered yields no regions).
+-- Anything else is an internal mismatch the caller reports loudly.
+dualCipherBytes :: [NativeOutput] -> Maybe ByteString
+dualCipherBytes [] = Just BS.empty
+dualCipherBytes [NativeOutput (RegionBytes _ _) bs] = Just bs
+dualCipherBytes _ = Nothing
+
+-- | Run the digest/sign/verify side of a dual update over its input
+-- (the caller's part for encrypt direction, the cipher output for
+-- decrypt direction). Silent dialogue: the side produces no bytes.
+runDualPeer :: StdInstance -> SessionId -> SlotKind -> FunctionId -> ByteString -> IO CULong
+runDualPeer inst sid kind func input = do
+  m <- snapshotModel (siEnv inst)
+  let req = Request Pkcs11_3_2 func (Just sid) Nothing input []
+  epc <- runCryptoPlan inst m req
+  encodeSilent epc
+
+-- | Whether a decrypt-dual update may link its cipher slot to
+-- its peer slot: the link continues (a previous combined update
+-- linked THIS pair — the kind must match, so a decrypt-verify
+-- flow never continues onto a digest peer), or both slots are
+-- byte-fresh (a new combined flow). Checked BEFORE the cipher
+-- plan runs (the plan drops the link); the set lands after cipher
+-- success, before the peer runs. A broken link (separate cipher
+-- activity cleared it while the peer holds combined bytes) never
+-- re-forms, so the final can never feed bytes the peer missed.
+dualLinkAuth :: SessionOps -> SlotKind -> SlotKind -> Bool
+dualLinkAuth ops cKind dKind =
+  case (lookupSingle ops cKind, lookupSingle ops dKind) of
+    (Just cActive, Just dActive) ->
+      dualLinkOf (commonOf cActive) == Just dKind
+        || (slotLinkFresh (commonOf cActive) && slotLinkFresh (commonOf dActive))
+    _ -> False
+
+-- | Establish the decrypt-dual peer link on the cipher slot. Runs
+-- after cipher success and before the peer, so the peer planner
+-- observes the link. A failed publication terminates both sides
+-- and reports failure: running the peer unlinked would silently
+-- drop the final tail.
+establishDualLink :: StdInstance -> SessionId -> SlotKind -> SlotKind -> IO Bool
+establishDualLink inst sid cKind dKind = do
+  m <- snapshotModel (siEnv inst)
+  case lookupSession m sid of
+    Nothing -> pure False
+    Just st -> case lookupSingle (ssOps st) cKind of
+      Nothing -> pure False
+      Just cActive -> do
+        let ops' = insertOp
+              (setCommon cActive (setDualLink (Just dKind) (commonOf cActive)))
+              (ssOps st)
+        pr <- publishStd inst (StateDelta [DeltaSetSessionOps sid ops'])
+        case pr of
+          Left _ -> do
+            terminateSlot inst sid cKind
+            terminateSlot inst sid dKind
+            pure False
+          Right () -> pure True
+
+-- | Run the peer side of a linked decrypt-dual update: establish
+-- the peer link first (the cipher plan dropped it), then run the
+-- peer over its input.
+runLinkedPeer
+  :: StdInstance -> SessionId -> SlotKind -> SlotKind -> FunctionId
+  -> ByteString -> IO CULong
+runLinkedPeer inst sid cKind dKind dFunc bytes = do
+  ok <- establishDualLink inst sid cKind dKind
+  if ok then runDualPeer inst sid dKind dFunc bytes
+        else pure ckrGeneralError
+
+-- | Whether the peer side of a dual update may take input: the
+-- peer slot must be present and unstaged. A concluded (staged)
+-- peer is not update-eligible; refusing here keeps the joint call
+-- atomic -- the cipher side never advances ahead of a peer
+-- refusal. Checked BEFORE either dialogue touches cipher state.
+dualPeerEligible :: SessionOps -> SlotKind -> Bool
+dualPeerEligible ops dKind = case lookupSingle ops dKind of
+  Just dActive -> isNothing (stagedOf (commonOf dActive))
+  Nothing -> False
+
+-- | Dual-update dialogue: both slots must be active or the call
+-- refuses OPERATION_NOT_INITIALIZED with no state change. The
+-- peer must also be unstaged ('dualPeerEligible'): a concluded
+-- peer refuses before the cipher side runs. The cipher side runs
+-- first (its short-buffer refusal changes no state, so the caller
+-- repeats the same part with room); its output encodes to the
+-- caller before the peer runs, so delivered bytes always match a
+-- successful cipher step exactly as the separate cipher update
+-- would deliver them. Each side otherwise behaves exactly as its
+-- separate update (same planner, same codes, same state effects),
+-- in cipher-first order. Decrypt direction additionally links the
+-- cipher slot to the peer slot after cipher success ('dualLinkAuth'
+-- pre-check, 'establishDualLink' set), so the decrypt final can
+-- complete the peer input with its recovered tail; the peer
+-- planner observes the link.
+runDualUpdateBuffered
+  :: StdInstance -> SessionId -> SlotKind -> FunctionId -> String
+  -> SlotKind -> FunctionId -> Bool
+  -> ByteString -> Ptr Word8 -> Ptr CULong -> Word64 -> IO CULong
+runDualUpdateBuffered inst sid cKind cFunc cRegion dKind dFunc isDecrypt input pOut pLen cap = do
+  m <- snapshotModel (siEnv inst)
+  case lookupSession m sid of
+    Nothing -> pure (stdRvOf CKR_SESSION_HANDLE_INVALID)
+    Just st -> case (lookupSingle (ssOps st) cKind, lookupSingle (ssOps st) dKind) of
+      (Just _, Just _) | dualPeerEligible (ssOps st) dKind -> do
+        let link = isDecrypt && dualLinkAuth (ssOps st) cKind dKind
+            runPeer = if link then runLinkedPeer inst sid cKind dKind dFunc
+                              else runDualPeer inst sid dKind dFunc
+            cReq = Request Pkcs11_3_2 cFunc (Just sid) Nothing input
+              [RegionBytes cRegion (IntentBuffer cap)]
+        epcC <- runCryptoPlan inst m cReq
+        case epcC of
+          Left rv
+            | rv == ckrBufferTooSmall -> reportUpdateShortLength inst sid cKind input pLen
+            | otherwise -> pure rv
+          Right pcC
+            | pcCode pcC == CKR_OK && null (pcOutputs pcC) -> do
+                _ <- encodeLength pLen 0
+                runPeer (if isDecrypt then BS.empty else input)
+            | otherwise -> do
+                enc <- encodeCryptoCommit inst sid cKind pOut pLen cap pcC
+                if enc /= ckrOk then pure enc
+                else case dualCipherBytes (pcOutputs pcC) of
+                  Nothing -> pure ckrGeneralError
+                  Just cBytes -> runPeer
+                    (if isDecrypt then cBytes else input)
+      _ -> pure (stdRvOf CKR_OPERATION_NOT_INITIALIZED)
+
+-- | Dual size-query dialogue: the peer must be active and
+-- unstaged ('dualPeerEligible' -- a query for a call that would
+-- refuse is itself a refusal), then the cipher side dry-runs
+-- exactly as the separate update query (no commit, no peer
+-- append, no gate spend).
+runDualUpdateQuery
+  :: StdInstance -> SessionId -> SlotKind -> FunctionId -> String
+  -> SlotKind -> ByteString -> Ptr CULong -> IO CULong
+runDualUpdateQuery inst sid cKind cFunc cRegion dKind input pLen = do
+  m <- snapshotModel (siEnv inst)
+  case lookupSession m sid of
+    Nothing -> pure (stdRvOf CKR_SESSION_HANDLE_INVALID)
+    Just st -> case (lookupSingle (ssOps st) cKind, lookupSingle (ssOps st) dKind) of
+      (Just _, Just _) | dualPeerEligible (ssOps st) dKind ->
+        runCryptoUpdateQuery inst sid cKind cFunc input cRegion pLen
+      _ -> pure (stdRvOf CKR_OPERATION_NOT_INITIALIZED)
+
+-- | Digest+encrypt combined update (digests and encrypts the part).
+haskokiStdDualDigestEncrypt
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+haskokiStdDualDigestEncrypt ctx h pPart (CULong partLen) pOut pLen =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    if pLen == nullPtr
+      then refuseDualArgsTerminate inst sid SlotDigest SlotEncrypt
+      else do
+        eInput <- decodeInputBytes pPart partLen
+        case eInput of
+          Left _ -> refuseDualArgsTerminate inst sid SlotDigest SlotEncrypt
+          Right input
+            | pOut == nullPtr -> runDualUpdateQuery inst sid SlotEncrypt
+                F_EncryptUpdate "encrypt" SlotDigest input pLen
+            | otherwise -> do
+                CULong cap <- peek pLen
+                runDualUpdateBuffered inst sid SlotEncrypt F_EncryptUpdate "encrypt"
+                  SlotDigest F_DigestUpdate False input pOut pLen cap
+
+-- | Decrypt+digest combined update (decrypts the part, digests the
+-- recovered plaintext).
+haskokiStdDualDecryptDigest
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+haskokiStdDualDecryptDigest ctx h pPart (CULong partLen) pOut pLen =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    if pLen == nullPtr
+      then refuseDualArgsTerminate inst sid SlotDigest SlotDecrypt
+      else do
+        eInput <- decodeInputBytes pPart partLen
+        case eInput of
+          Left _ -> refuseDualArgsTerminate inst sid SlotDigest SlotDecrypt
+          Right input
+            | pOut == nullPtr -> runDualUpdateQuery inst sid SlotDecrypt
+                F_DecryptUpdate "decrypt" SlotDigest input pLen
+            | otherwise -> do
+                CULong cap <- peek pLen
+                runDualUpdateBuffered inst sid SlotDecrypt F_DecryptUpdate "decrypt"
+                  SlotDigest F_DigestUpdate True input pOut pLen cap
+
+-- | Sign+encrypt combined update (signs and encrypts the part).
+haskokiStdDualSignEncrypt
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+haskokiStdDualSignEncrypt ctx h pPart (CULong partLen) pOut pLen =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    if pLen == nullPtr
+      then refuseDualArgsTerminate inst sid SlotSign SlotEncrypt
+      else do
+        eInput <- decodeInputBytes pPart partLen
+        case eInput of
+          Left _ -> refuseDualArgsTerminate inst sid SlotSign SlotEncrypt
+          Right input
+            | pOut == nullPtr -> runDualUpdateQuery inst sid SlotEncrypt
+                F_EncryptUpdate "encrypt" SlotSign input pLen
+            | otherwise -> do
+                CULong cap <- peek pLen
+                runDualUpdateBuffered inst sid SlotEncrypt F_EncryptUpdate "encrypt"
+                  SlotSign F_SignUpdate False input pOut pLen cap
+
+-- | Decrypt+verify combined update (decrypts the part, verifies the
+-- recovered plaintext).
+haskokiStdDualDecryptVerify
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+haskokiStdDualDecryptVerify ctx h pPart (CULong partLen) pOut pLen =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    if pLen == nullPtr
+      then refuseDualArgsTerminate inst sid SlotVerify SlotDecrypt
+      else do
+        eInput <- decodeInputBytes pPart partLen
+        case eInput of
+          Left _ -> refuseDualArgsTerminate inst sid SlotVerify SlotDecrypt
+          Right input
+            | pOut == nullPtr -> runDualUpdateQuery inst sid SlotDecrypt
+                F_DecryptUpdate "decrypt" SlotVerify input pLen
+            | otherwise -> do
+                CULong cap <- peek pLen
+                runDualUpdateBuffered inst sid SlotDecrypt F_DecryptUpdate "decrypt"
+                  SlotVerify F_VerifyUpdate True input pOut pLen cap
 
 -- ---------------------------------------------------------------------------
 -- random
