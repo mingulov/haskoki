@@ -26,14 +26,20 @@ import qualified Data.Text as T
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
-import Haskoki.Engine.Backend (DigestAlg (..), SigSpec (..))
-import Haskoki.Engine.Driver (rsaPkcs1SpecFor)
+import Haskoki.Engine.Backend (DigestAlg (..), RsaCipherParams (..), SigSpec (..))
+import Haskoki.Engine.Driver
+  ( recoverType1Pad
+  , recoverType1Strip
+  , rsaPkcs1SpecFor
+  , rsaRecoverCipherFor
+  )
 import Haskoki.Model (SessionState (..), emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
   , KeyPolicy (..)
   , OpEnv (..)
+  , RecoverSpec (..)
   , emptySessionOps
   , initOperation
   )
@@ -78,6 +84,9 @@ spec = testGroup "RSA PKCS#1 v1.5 recipe"
   , testCase "params: empty-only" caseParams
   , testCase "init enforces empty RSA params" caseInitParams
   , testCase "driver maps every recipe to its SigSpec" caseDriverMap
+  , testCase "recover init accepts the raw row, refuses digest rows" caseRecoverInit
+  , testCase "recover driver maps the raw row onto raw RSA" caseRecoverDriver
+  , testCase "recover type-1 framing round-trips" caseRecoverFraming
   ]
 
 -- | (Name suffix, digest stem or Nothing for the raw row, backend alg).
@@ -216,3 +225,91 @@ caseDriverMap =
     assertEqual ("driver rejects params " ++ T.unpack suffix) Nothing
       (rsaPkcs1SpecFor mech "x")
     ) groupShape
+
+-- | The recover shape for a 2048-bit RSA key: capacity and tag
+-- width both fix the modulus width (the driver block stages
+-- directly, never split).
+recSpec :: RecoverSpec
+recSpec = RecoverSpec 256 256
+
+recEnv :: OpEnv
+recEnv = testEnv
+  { oeCaps = mkCapabilities
+      [(rawMech, OpSignRecover), (rawMech, OpVerifyRecover)]
+  }
+
+runRecInit :: InitArgs -> ReturnCode
+runRecInit args =
+  ioCode (snd (initOperation recEnv emptySessionOps testSession args))
+
+caseRecoverInit :: IO ()
+caseRecoverInit = do
+  assertEqual "raw sign-recover non-empty refused" CKR_ARGUMENTS_BAD
+    (runRecInit (InitArgs OpSignRecover rawMech "x"
+      (Just badKey) Nothing (Just recSpec)))
+  assertEqual "raw sign-recover empty passes params"
+    CKR_OBJECT_HANDLE_INVALID
+    (runRecInit (InitArgs OpSignRecover rawMech BS.empty
+      (Just badKey) Nothing (Just recSpec)))
+  assertEqual "raw verify-recover empty passes params"
+    CKR_OBJECT_HANDLE_INVALID
+    (runRecInit (InitArgs OpVerifyRecover rawMech BS.empty
+      (Just badKey) Nothing (Just recSpec)))
+  assertEqual "digest sign-recover route miss" CKR_MECHANISM_INVALID
+    (runRecInit (InitArgs OpSignRecover rsaMech BS.empty
+      (Just badKey) Nothing (Just recSpec)))
+  -- Granted caps do not help: the digest rows carry no recover
+  -- routes, so the refusal is registry-driven.
+  let capped = recEnv
+        { oeCaps = mkCapabilities [(rsaMech, OpSignRecover)] }
+      got = ioCode (snd (initOperation capped emptySessionOps
+        testSession (InitArgs OpSignRecover rsaMech BS.empty
+          (Just badKey) Nothing (Just recSpec))))
+  assertEqual "digest miss stands under caps" CKR_MECHANISM_INVALID got
+
+caseRecoverDriver :: IO ()
+caseRecoverDriver = do
+  let x509 = MechanismId (mustGeneratedId "CKM_RSA_X_509")
+      pss = MechanismId ckm_RSA_PKCS_PSS
+      oaep = MechanismId ckm_RSA_PKCS_OAEP
+  assertEqual "raw maps" (Just RsaX509)
+    (rsaRecoverCipherFor rawMech BS.empty)
+  assertEqual "raw rejects params" Nothing
+    (rsaRecoverCipherFor rawMech "x")
+  assertEqual "digest row unmapped" Nothing
+    (rsaRecoverCipherFor rsaMech BS.empty)
+  assertEqual "x509 pair row maps" (Just RsaX509)
+    (rsaRecoverCipherFor x509 BS.empty)
+  assertEqual "pss unmapped" Nothing
+    (rsaRecoverCipherFor pss BS.empty)
+  assertEqual "oaep unmapped" Nothing
+    (rsaRecoverCipherFor oaep BS.empty)
+
+caseRecoverFraming :: IO ()
+caseRecoverFraming = do
+  assertEqual "pad shape"
+    (Just (BS.pack [0x00, 0x01] <> BS.replicate 250 0xff
+      <> BS.pack [0x00] <> "abc"))
+    (recoverType1Pad 256 "abc")
+  mapM_ (\payload ->
+    assertEqual ("round-trip " ++ show (BS.length payload)) (Just payload)
+      (recoverType1Strip =<< recoverType1Pad 256 payload))
+    [BS.empty, "a", "abc", BS.replicate 245 7]
+  assertEqual "pad refuses the 246th byte" Nothing
+    (recoverType1Pad 256 (BS.replicate 246 7))
+  assertEqual "strip accepts empty data" (Just BS.empty)
+    (recoverType1Strip (BS.pack [0x00, 0x01] <> BS.replicate 8 0xff
+      <> BS.pack [0x00]))
+  mapM_ (\(label, raw) ->
+    assertEqual ("strip refuses " ++ label) Nothing
+      (recoverType1Strip raw))
+    [ ("empty", BS.empty)
+    , ("type-2", BS.pack [0x00, 0x02] <> BS.replicate 8 0xff
+        <> BS.pack [0x00] <> "abc")
+    , ("short filler", BS.pack [0x00, 0x01] <> BS.replicate 7 0xff
+        <> BS.pack [0x00] <> "abc")
+    , ("missing separator", BS.pack [0x00, 0x01] <> BS.replicate 8 0xff
+        <> "abc")
+    , ("missing leading zero", BS.pack [0x01] <> BS.replicate 8 0xff
+        <> BS.pack [0x00] <> "abc")
+    ]

@@ -136,6 +136,17 @@ PLANNED = {
                             [("mechanisms/task-m02", "tests/c/dual_routed.c")]),
     "C_DecryptVerifyUpdate": ("haskoki_std_dual_decrypt_verify:F_DecryptUpdate+F_VerifyUpdate",
                               [("mechanisms/task-m02", "tests/c/dual_routed.c")]),
+    # Recover entries: one haskoki_std_*recover* foreign export
+    # framing into its own planCall FunctionId (native framing),
+    # executed by tests/c/recover_routed.c.
+    "C_SignRecoverInit": ("haskoki_std_sign_recover_init:F_SignRecoverInit",
+                          [("mechanisms/task-m03", "tests/c/recover_routed.c")]),
+    "C_SignRecover": ("haskoki_std_sign_recover:F_SignRecover",
+                      [("mechanisms/task-m03", "tests/c/recover_routed.c")]),
+    "C_VerifyRecoverInit": ("haskoki_std_verify_recover_init:F_VerifyRecoverInit",
+                            [("mechanisms/task-m03", "tests/c/recover_routed.c")]),
+    "C_VerifyRecover": ("haskoki_std_verify_recover:F_VerifyRecover",
+                        [("mechanisms/task-m03", "tests/c/recover_routed.c")]),
     # planCall entries: v3 message families (all 20).
     "C_MessageEncryptInit": ("planCall:F_MessageEncryptInit",
                              [("haskoki-model-tests", "tests/model/MessageSpec.hs"),
@@ -345,10 +356,7 @@ UNSUPPORTED = {
     "C_GetObjectSize": "no model planning; ABI layout only",
     "C_FindObjectsInit": "one-shot find only; no cursor state (planner scope: pure-engine one-shot model; the public FFI cursor lives above this layer)",
     "C_FindObjectsFinal": "one-shot find only; no cursor state (planner scope: pure-engine one-shot model; the public FFI cursor lives above this layer)",
-    "C_SignRecoverInit": UNWIRed_OP + " (OperationSpec recover cases)",
-    "C_SignRecover": UNWIRed_OP + " (OperationSpec recover cases)",
-    "C_VerifyRecoverInit": UNWIRed_OP + " (OperationSpec recover cases)",
-    "C_VerifyRecover": UNWIRed_OP + " (OperationSpec recover cases)",
+    # Recover rows live in PLANNED (wired + executed).
     # Dual rows live in PLANNED (wired + executed).
     "C_GenerateKey": UNWIRed_OP + " (KeyManagementSpec keygen cases)",
     "C_GenerateKeyPair": UNWIRed_OP + " (KeyManagementSpec keypair + KEM cases)",

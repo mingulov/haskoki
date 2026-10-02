@@ -133,12 +133,16 @@ import Haskoki.Operation.Message
   )
 import Haskoki.Operation.Signature
   ( finishSign
+  , finishSignRecover
   , finishVerify
+  , finishVerifyRecover
   , planSignFinal
   , planSignOneShot
+  , planSignRecoverOneShot
   , planSignUpdate
   , planVerifyFinal
   , planVerifyOneShot
+  , planVerifyRecoverOneShot
   , planVerifyUpdate
   )
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), typedWriteBytes)
@@ -204,6 +208,14 @@ planCall rules model req = case reqFunction req of
   F_Sign -> withSession $ planRetryable req SlotSign
     (\ops st -> planSignOneShot ops st "" (reqInput req))
     (retryFor SlotSign)
+  -- Recovery inits arrive decoded only (the caller fixes the
+  -- modulus-width shape 'DRInitRecover' carries): no legacy-bytes
+  -- arm exists, so byte-carrying callers refuse.
+  F_SignRecoverInit -> withSession $ \_st ->
+    badArgs "sign-recover init arrives decoded"
+  F_SignRecover -> withSession $ planRetryable req SlotSign
+    (\ops st -> planSignRecoverOneShot ops st "" (reqInput req))
+    (retryFor SlotSign)
   F_DigestUpdate -> withSession $ planData req SlotDigest $ \ops st ->
     planDigestUpdate ops st (reqInput req)
   F_DigestFinal -> withSession $ planRetryable req SlotDigest
@@ -219,6 +231,13 @@ planCall rules model req = case reqFunction req of
     Nothing -> badArgs "malformed verify input"
     Just (dat, sig) -> planOutput req SlotVerify
       (\ops s -> planVerifyOneShot ops s "" dat sig) st
+  -- Recovery inits arrive decoded only (see
+  -- 'F_SignRecoverInit'): no legacy-bytes arm exists.
+  F_VerifyRecoverInit -> withSession $ \_st ->
+    badArgs "verify-recover init arrives decoded"
+  F_VerifyRecover -> withSession $ planRetryable req SlotVerify
+    (\ops st -> planVerifyRecoverOneShot ops st "" (reqInput req))
+    (retryFor SlotVerify)
   F_VerifyUpdate -> withSession $ planData req SlotVerify $ \ops st ->
     planVerifyUpdate ops st (reqInput req)
   F_VerifyFinal -> withSession $ planOutput req SlotVerify $ \ops st ->
@@ -397,6 +416,53 @@ planDecoded rules model dreq = case dreq of
         Just cshape ->
           let key = fmap (\h -> KeyPolicy h permits auth) mkey
               args = InitArgs op mech params key cshape Nothing
+              env = OpEnv (rulesRegistry rules) (rulesCaps rules) model
+              (ops', outcome) = initOperation env (ssOps st) st args
+          in if ioCode outcome /= CKR_OK
+            then Reject Rejection
+              { rejCode = ioCode outcome
+              , rejOutputs = []
+              , rejDelta = StateDelta []
+              , rejReleases = []
+              , rejReasons = ioReasons outcome
+              }
+            else if op == OpDigest
+              then Execute
+                (Reservation
+                  { resOperation = "digest"
+                  , resDeps = [DepSession (ssId st) (ssRevision st) (ssGeneration st)]
+                  , resResource = Nothing
+                  , resStep = Just (CryptoStep func SlotDigest ""
+                      (IntentBuffer 0) ops' st)
+                  })
+                (EffectCrypto (FxDigestInit mech))
+              else Immediate PreparedCommit
+                { pcCode = CKR_OK
+                , pcDelta = StateDelta [DeltaSetSessionOps (ssId st) ops']
+                , pcPersist = []
+                , pcOutputs = []
+                , pcReleases = []
+                , pcReasons = ioReasons outcome
+                }
+  -- Plan a recovery init from decoded arguments plus the
+  -- caller-fixed recover shape: the 'DRInit' shape with the
+  -- shape threaded into the init arguments (a non-recovery tag
+  -- carrying a shape fails closed in 'checkRecover').
+  DRInitRecover sid ifunc mkey mech permits auth params spec ->
+    withSessionSid model sid $ \st ->
+      let op = Req.initOperation ifunc
+          func = initFunctionId ifunc
+      in case cipherShapeArg op mech of
+        Nothing -> Reject Rejection
+          { rejCode = CKR_MECHANISM_INVALID
+          , rejOutputs = []
+          , rejDelta = StateDelta []
+          , rejReleases = []
+          , rejReasons = ["no cipher shape for mechanism"]
+          }
+        Just cshape ->
+          let key = fmap (\h -> KeyPolicy h permits auth) mkey
+              args = InitArgs op mech params key cshape (Just spec)
               env = OpEnv (rulesRegistry rules) (rulesCaps rules) model
               (ops', outcome) = initOperation env (ssOps st) st args
           in if ioCode outcome /= CKR_OK
@@ -655,8 +721,12 @@ opName fid = case fid of
   F_DigestFinal -> "digest"
   F_Sign -> "sign"
   F_SignFinal -> "sign"
+  F_SignRecoverInit -> "sign"
+  F_SignRecover -> "sign"
   F_Verify -> "verify"
   F_VerifyFinal -> "verify"
+  F_VerifyRecoverInit -> "verify"
+  F_VerifyRecover -> "verify"
   F_Encrypt -> "encrypt"
   F_EncryptFinal -> "encrypt"
   F_Decrypt -> "decrypt"
@@ -1050,8 +1120,10 @@ runFinisher step res = case csFunction step of
   F_DigestFinal -> go finishDigest
   F_Sign -> go finishSign
   F_SignFinal -> go finishSign
+  F_SignRecover -> go finishSignRecover
   F_Verify -> go finishVerify
   F_VerifyFinal -> go finishVerify
+  F_VerifyRecover -> go finishVerifyRecover
   F_Encrypt -> go finishCipher
   F_EncryptFinal -> go finishCipher
   F_Decrypt -> go finishCipher
@@ -1078,6 +1150,7 @@ runFinisher step res = case csFunction step of
   F_Login -> Nothing
   F_Logout -> Nothing
   F_SignInit -> Nothing
+  F_SignRecoverInit -> Nothing
   F_CreateObject -> Nothing
   F_DestroyObject -> Nothing
   F_CopyObject -> Nothing
@@ -1086,6 +1159,7 @@ runFinisher step res = case csFunction step of
   F_SetAttributeValue -> Nothing
   F_SignUpdate -> Nothing
   F_VerifyInit -> Nothing
+  F_VerifyRecoverInit -> Nothing
   F_VerifyUpdate -> Nothing
   F_EncryptInit -> Nothing
   F_EncryptUpdate -> go finishCipherUpdate

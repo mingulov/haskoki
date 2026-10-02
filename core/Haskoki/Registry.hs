@@ -710,7 +710,7 @@ rsaPkcs1Descs =
         , mechRoute OpVerify (rrName r) ["A37", "A39"]
         , mechRoute OpMessageSign (rrName r) ["A37", "A39"]
         , mechRoute OpMessageVerify (rrName r) ["A37", "A39"]
-        ] ++ wrapRoutes (rrName r)
+        ] ++ wrapRoutes (rrName r) ++ recoverRoutes (rrName r)
       )
       KeyBits 512 4096
   | r <- rsaPkcs1Recipes
@@ -720,6 +720,12 @@ rsaPkcs1Descs =
       | name == "CKM_RSA_PKCS" =
           [ mechRoute OpWrap "CKM_RSA_PKCS" ["A20", "A37", "A39"]
           , mechRoute OpUnwrap "CKM_RSA_PKCS" ["A20", "A37", "A39"]
+          ]
+      | otherwise = []
+    recoverRoutes name
+      | name == "CKM_RSA_PKCS" =
+          [ mechRoute OpSignRecover "CKM_RSA_PKCS" ["A37", "A39"]
+          , mechRoute OpVerifyRecover "CKM_RSA_PKCS" ["A37", "A39"]
           ]
       | otherwise = []
 
@@ -784,6 +790,8 @@ rsaX509Descs =
       , mechRoute OpMessageDecrypt (rxName r) ["A16", "A37", "A39"]
       , mechRoute OpWrap (rxName r) ["A20", "A37", "A39"]
       , mechRoute OpUnwrap (rxName r) ["A20", "A37", "A39"]
+      , mechRoute OpSignRecover (rxName r) ["A37", "A39"]
+      , mechRoute OpVerifyRecover (rxName r) ["A37", "A39"]
       ]
       KeyBits 512 4096
   | r <- rsaX509Recipes

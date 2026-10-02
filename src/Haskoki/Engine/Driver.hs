@@ -143,6 +143,9 @@ module Haskoki.Engine.Driver
   , rsaOaepParamsFor
   , rsaX509SigFor
   , rsaX509CipherFor
+  , rsaRecoverCipherFor
+  , recoverType1Pad
+  , recoverType1Strip
   , rsaX931SigFor
   , poly1305MacFor
   , ecdsaSpecFor
@@ -330,6 +333,7 @@ import Haskoki.Recipe.WrapCompRsa
   )
 import Haskoki.Recipe.Poly1305 (poly1305ParamsValid, poly1305RecipeFor)
 import Haskoki.Recipe.RsaX509 (rsaX509ParamsValid, rsaX509RecipeFor)
+import Haskoki.Recipe.RsaX509 (x509PadBlock)
 import Haskoki.Recipe.RsaX931 (rsaX931ParamsValid, rsaX931RecipeFor, rx931Name)
 import Haskoki.Recipe.RsaPkcs1
   ( RsaPkcs1Recipe (..)
@@ -516,6 +520,8 @@ import Haskoki.Registry.Generated
   , ckm_BLAKE2B_512
   , ckm_MD5
   , ckm_RIPEMD160
+  , ckm_RSA_PKCS
+  , ckm_RSA_X_509
   , ckm_SHA224
   , ckm_SHA256
   , ckm_SHA384
@@ -1529,6 +1535,51 @@ rsaX509CipherFor mech params = do
 isRsaX509Mech :: MechanismId -> Bool
 isRsaX509Mech mech = isJust (rsaX509RecipeFor mech)
 
+-- | Recover dispatch: the covered (mechanism, params) pair to its
+-- raw backend params (pinned against the recipe tables by
+-- RecipeX509Spec and RecipeRsaSpec). 'Just RsaX509' covers the
+-- two raw-RSA rows with empty parameters: X.509 runs the raw
+-- op directly, while the raw PKCS row frames block-type-1 in
+-- the driver ('recoverType1Pad'/'recoverType1Strip') around the
+-- same raw op. The eleven PKCS digest rows and every other
+-- mechanism map to 'Nothing' (never 'CryptoUnsupported' here;
+-- the arms' fallthrough owns that refusal).
+rsaRecoverCipherFor :: MechanismId -> ByteString -> Maybe RsaCipherParams
+rsaRecoverCipherFor mech params
+  | isJust (rsaX509CipherFor mech params) = Just RsaX509
+  | mech == MechanismId ckm_RSA_PKCS
+  , Just r <- rsaPkcs1RecipeFor mech
+  , rsaPkcs1ParamsValid r params = Just RsaX509
+  | otherwise = Nothing
+
+-- | PKCS#1 block-type-1 framing for the raw-PKCS recover arm:
+-- pad @0x00 0x01 0xFF.. 0x00 data@ out to the given width
+-- ('Nothing' when the data cannot fit with the mandatory
+-- 8-byte filler).
+recoverType1Pad :: Int -> ByteString -> Maybe ByteString
+recoverType1Pad width input
+  | BS.length input + 11 > width = Nothing
+  | otherwise = Just
+      (BS.pack [0x00, 0x01]
+        <> BS.replicate (width - BS.length input - 3) 0xff
+        <> BS.pack [0x00]
+        <> input)
+
+-- | The inverse framing: validate @0x00 0x01 0xFF.. 0x00 data@
+-- and return the data ('Nothing' on any deviation, which the
+-- arm reports as a mismatch verdict).
+recoverType1Strip :: ByteString -> Maybe ByteString
+recoverType1Strip raw = case BS.uncons raw of
+  Just (0x00, r1) -> case BS.uncons r1 of
+    Just (0x01, r2) ->
+      let (fill, rest) = BS.span (== 0xff) r2
+      in case BS.uncons rest of
+        Just (0x00, dat)
+          | BS.length fill >= 8 -> Just dat
+        _ -> Nothing
+    _ -> Nothing
+  _ -> Nothing
+
 -- | RSA-X9.31 dispatch: the covered (mechanism, params) pair to
 -- its sign/verify backend spec (pinned against
 -- 'Haskoki.Recipe.RsaX931' by RecipeRsaX931Spec). The raw row
@@ -2070,7 +2121,40 @@ runEffect env resolve fx = case fx of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure slhdsaRefusal
     | otherwise -> pure (unsupported fx)
+  -- Sign-recover over the raw private op: the crossed
+  -- 'pkeyDecrypt' entry (raw RSA has no sign/verify backend
+  -- entries; the private-half primitive is the decrypt one).
+  -- X.509 left-pads the input to the tag width (decrypt takes
+  -- full k-blocks on both backends); the raw PKCS row frames
+  -- block-type-1 first (the tag width is the modulus width,
+  -- fixed at init).
+  FxSignRecover mech mkey params input tagLen
+    | Just cparams <- rsaRecoverCipherFor mech params -> withKey mkey $ \key ->
+        if mech == MechanismId ckm_RSA_PKCS
+          then case recoverType1Pad tagLen input of
+            Nothing -> pure (GotCryptoError (CryptoFailed
+              "driver: v1.5 recover data too long for the tag width"))
+            Just padded -> toBytes <$> pkeyDecrypt env cparams key padded
+          else case x509PadBlock tagLen input of
+            Nothing -> pure (GotCryptoError (CryptoFailed
+              "driver: X.509 recover data exceeds the tag width"))
+            Just padded -> toBytes <$> pkeyDecrypt env cparams key padded
   FxSignRecover {} -> pure (unsupported fx)
+  -- Verify-recover over the raw public op (the crossed
+  -- 'pkeyEncrypt' entry). X.509 stages whatever the
+  -- exponentiation yields; the raw PKCS row strips
+  -- block-type-1, reporting a framing deviation as a mismatch
+  -- verdict.
+  FxVerifyRecover mech mkey params block _tagLen
+    | Just cparams <- rsaRecoverCipherFor mech params -> withKey mkey $ \key -> do
+        out <- pkeyEncrypt env cparams key block
+        pure $ case out of
+          EngineOk raw
+            | mech == MechanismId ckm_RSA_PKCS -> case recoverType1Strip raw of
+                Just dat -> GotBytes dat
+                Nothing -> GotValid False
+            | otherwise -> GotBytes raw
+          EngineFail err -> GotCryptoError (toCryptoError err)
   FxVerifyRecover {} -> pure (unsupported fx)
   FxGenerateKey mech params input
     | not (BS.null params)

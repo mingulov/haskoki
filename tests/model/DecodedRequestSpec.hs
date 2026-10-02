@@ -670,12 +670,15 @@ caseInitFunctionMaps = do
         , (InitVerify, F_VerifyInit, OpVerify)
         , (InitEncrypt, F_EncryptInit, OpEncrypt)
         , (InitDecrypt, F_DecryptInit, OpDecrypt)
+        , (InitSignRecover, F_SignRecoverInit, OpSignRecover)
+        , (InitVerifyRecover, F_VerifyRecoverInit, OpVerifyRecover)
         ]
   mapM_ (\(ifunc, fun, op) -> do
     assertEqual ("function id of " ++ show ifunc) fun (initFunctionId ifunc)
     assertEqual ("operation of " ++ show ifunc) op (initOperation ifunc)) rows
   assertEqual "all init functions mapped"
-    [InitDigest, InitSign, InitVerify, InitEncrypt, InitDecrypt]
+    [InitDigest, InitSign, InitVerify, InitEncrypt, InitDecrypt
+    , InitSignRecover, InitVerifyRecover]
     [minBound .. maxBound :: InitFunction]
 
 -- ---------------------------------------------------------------------------

@@ -793,11 +793,9 @@ static CK_RV on_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
  * yield the stub code (pinned by the STB stub-beats-args checks),
  * so argument bugs in stub CALLERS are invisible here by design;
  * routed entries keep liveness -> args -> behavior. Per-entry
- * setting (10 x stub_probe, 2 x stub_parallel): stub_InitToken,
+ * setting (6 x stub_probe, 2 x stub_parallel): stub_InitToken,
  * stub_InitPIN, stub_SetPIN, stub_GetOperationState,
- * stub_SetOperationState, stub_GetObjectSize,
- * stub_SignRecoverInit,
- * stub_SignRecover, stub_VerifyRecoverInit, stub_VerifyRecover ->
+ * stub_SetOperationState, stub_GetObjectSize ->
  * stub_probe (NOT_INITIALIZED pre-init, NOT_SUPPORTED live);
  * stub_GetFunctionStatus, stub_CancelFunction -> stub_parallel
  * (legacy parallel pair: NOT_PARALLEL live). Revisit: when an
@@ -879,38 +877,8 @@ static CK_RV stub_GetObjectSize(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
 }
 /* Digest update/final/key routed (std_DigestUpdate/
  * std_DigestKey/std_DigestFinal). */
-static CK_RV stub_SignRecoverInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
-                                   CK_OBJECT_HANDLE k) {
-  (void)h;
-  (void)m;
-  (void)k;
-  return stub_probe();
-}
-static CK_RV stub_SignRecover(CK_SESSION_HANDLE h, CK_BYTE_PTR p, CK_ULONG n,
-                               CK_BYTE_PTR q, CK_ULONG_PTR m) {
-  (void)h;
-  (void)p;
-  (void)n;
-  (void)q;
-  (void)m;
-  return stub_probe();
-}
-static CK_RV stub_VerifyRecoverInit(CK_SESSION_HANDLE h, CK_MECHANISM_PTR m,
-                                     CK_OBJECT_HANDLE k) {
-  (void)h;
-  (void)m;
-  (void)k;
-  return stub_probe();
-}
-static CK_RV stub_VerifyRecover(CK_SESSION_HANDLE h, CK_BYTE_PTR p, CK_ULONG n,
-                                 CK_BYTE_PTR q, CK_ULONG_PTR m) {
-  (void)h;
-  (void)p;
-  (void)n;
-  (void)q;
-  (void)m;
-  return stub_probe();
-}
+/* Sign/verify recovery routed (std_SignRecoverInit/
+ * std_SignRecover/std_VerifyRecoverInit/std_VerifyRecover). */
 /* Dual combined updates routed (std_DigestEncryptUpdate/
  * std_DecryptDigestUpdate/std_SignEncryptUpdate/
  * std_DecryptVerifyUpdate). */
@@ -1030,6 +998,18 @@ extern CK_RV std_VerifyUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
                               CK_ULONG ulPartLen);
 extern CK_RV std_VerifyFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
                              CK_ULONG ulSignatureLen);
+extern CK_RV std_SignRecoverInit(CK_SESSION_HANDLE hSession,
+                                 CK_MECHANISM_PTR pMechanism,
+                                 CK_OBJECT_HANDLE hKey);
+extern CK_RV std_SignRecover(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
+                             CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
+                             CK_ULONG_PTR pulSignatureLen);
+extern CK_RV std_VerifyRecoverInit(CK_SESSION_HANDLE hSession,
+                                   CK_MECHANISM_PTR pMechanism,
+                                   CK_OBJECT_HANDLE hKey);
+extern CK_RV std_VerifyRecover(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
+                               CK_ULONG ulSignatureLen, CK_BYTE_PTR pData,
+                               CK_ULONG_PTR pulDataLen);
 extern CK_RV std_EncryptInit(CK_SESSION_HANDLE hSession,
                              CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey);
 extern CK_RV std_Encrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
@@ -1132,14 +1112,14 @@ static struct CK_FUNCTION_LIST g_function_list = {
   .C_Sign = std_Sign,
   .C_SignUpdate = std_SignUpdate,
   .C_SignFinal = std_SignFinal,
-  .C_SignRecoverInit = stub_SignRecoverInit,
-  .C_SignRecover = stub_SignRecover,
+  .C_SignRecoverInit = std_SignRecoverInit,
+  .C_SignRecover = std_SignRecover,
   .C_VerifyInit = std_VerifyInit,
   .C_Verify = std_Verify,
   .C_VerifyUpdate = std_VerifyUpdate,
   .C_VerifyFinal = std_VerifyFinal,
-  .C_VerifyRecoverInit = stub_VerifyRecoverInit,
-  .C_VerifyRecover = stub_VerifyRecover,
+  .C_VerifyRecoverInit = std_VerifyRecoverInit,
+  .C_VerifyRecover = std_VerifyRecover,
   .C_DigestEncryptUpdate = std_DigestEncryptUpdate,
   .C_DecryptDigestUpdate = std_DecryptDigestUpdate,
   .C_SignEncryptUpdate = std_SignEncryptUpdate,

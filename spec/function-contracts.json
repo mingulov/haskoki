@@ -1322,13 +1322,13 @@
       ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A16",
         "A21",
         "A24"
       ],
-      "entry": "none",
+      "entry": "haskoki_std_sign_recover_init:F_SignRecoverInit",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -1338,17 +1338,22 @@
       ],
       "name": "C_SignRecoverInit",
       "ordinal_3_2": 47,
-      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec recover cases)",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "mechanisms/task-m03",
+          "spec": "tests/c/recover_routed.c"
+        }
+      ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A16",
         "A21",
         "A24"
       ],
-      "entry": "none",
+      "entry": "haskoki_std_sign_recover:F_SignRecover",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -1358,8 +1363,13 @@
       ],
       "name": "C_SignRecover",
       "ordinal_3_2": 48,
-      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec recover cases)",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "mechanisms/task-m03",
+          "spec": "tests/c/recover_routed.c"
+        }
+      ]
     },
     {
       "contract": "planned-with-behavior",
@@ -1466,13 +1476,13 @@
       ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A16",
         "A21",
         "A24"
       ],
-      "entry": "none",
+      "entry": "haskoki_std_verify_recover_init:F_VerifyRecoverInit",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -1482,17 +1492,22 @@
       ],
       "name": "C_VerifyRecoverInit",
       "ordinal_3_2": 53,
-      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec recover cases)",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "mechanisms/task-m03",
+          "spec": "tests/c/recover_routed.c"
+        }
+      ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A16",
         "A21",
         "A24"
       ],
-      "entry": "none",
+      "entry": "haskoki_std_verify_recover:F_VerifyRecover",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -1502,8 +1517,13 @@
       ],
       "name": "C_VerifyRecover",
       "ordinal_3_2": 54,
-      "reason": "operation-layer behavior tested but no planCall FunctionId and no C-table route (OperationSpec recover cases)",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "mechanisms/task-m03",
+          "spec": "tests/c/recover_routed.c"
+        }
+      ]
     },
     {
       "contract": "planned-with-behavior",

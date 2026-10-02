@@ -156,6 +156,11 @@ module Haskoki.FFI.Standard
   , haskokiStdVerify
   , haskokiStdVerifyUpdate
   , haskokiStdVerifyFinal
+    -- * sign/verify recovery
+  , haskokiStdSignRecoverInit
+  , haskokiStdSignRecover
+  , haskokiStdVerifyRecoverInit
+  , haskokiStdVerifyRecover
     -- * message operations
   , haskokiStdMessageEncryptInit
   , haskokiStdMessageEncrypt
@@ -251,7 +256,14 @@ import Haskoki.Attribute
   , shapeMatches
   )
 import Haskoki.Attribute.Generated (attributeNameById)
-import Haskoki.Der (curveTable, edwardsTable, montgomeryTable)
+import Haskoki.Der
+  ( RsaCrt (..)
+  , curveTable
+  , edwardsTable
+  , montgomeryTable
+  , parseRsaPrivate
+  , parseRsaPublic
+  )
 import Haskoki.Engine.Backend
   ( BackendEnv
   , BackendError (..)
@@ -319,6 +331,7 @@ import Haskoki.Operation
   ( CryptoEffect (..)
   , MsgFamily (..)
   , MsgState (..)
+  , RecoverSpec (..)
   , SessionOps
   , SlotKind (..)
   , StagedOutput (..)
@@ -390,7 +403,14 @@ import Haskoki.Outcome
   , StateDelta (..)
   )
 import Haskoki.Output (TypedWrite (..), maxOutputBytes)
-import Haskoki.Registry (MechanismId (..))
+import Haskoki.Registry
+  ( Descriptor (..)
+  , MechanismId (..)
+  , Operation (..)
+  , Registry
+  , RoutePolicy (..)
+  , lookupBehavior
+  )
 import Haskoki.Request
   ( DecodedRequest (..)
   , FunctionId (..)
@@ -3479,6 +3499,162 @@ haskokiStdVerifyFinal ctx h pSig (CULong sigLen) =
         let req = Request Pkcs11_3_2 F_VerifyFinal (Just sid) Nothing sig
               [RegionBytes "verify" (IntentBuffer 0)]
         runCryptoSilent inst req
+
+-- ---------------------------------------------------------------------------
+-- sign/verify recovery
+-- ---------------------------------------------------------------------------
+
+foreign export ccall "haskoki_std_sign_recover_init" haskokiStdSignRecoverInit
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
+  -> IO CULong
+foreign export ccall "haskoki_std_sign_recover" haskokiStdSignRecover
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+foreign export ccall "haskoki_std_verify_recover_init" haskokiStdVerifyRecoverInit
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
+  -> IO CULong
+foreign export ccall "haskoki_std_verify_recover" haskokiStdVerifyRecover
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+
+-- | The RSA modulus byte width behind a key object, if it carries
+-- RSA material: the DER parses first, the stamped modulus
+-- attribute covers the rest. (The key-management width helper is
+-- not exported; this mirrors its derivation.)
+recoverModulusWidth :: ObjectState -> Maybe Int
+recoverModulusWidth ost = case keyBytesOf ost of
+  Just der -> case parseRsaPublic der of
+    Just (n, _) -> Just (BS.length n)
+    Nothing -> case parseRsaPrivate der of
+      Just crt -> Just (BS.length (crtN crt))
+      Nothing -> fromAttr
+  Nothing -> fromAttr
+  where
+    fromAttr = case Map.lookup AttrModulus (osAttrs ost) of
+      Just (ValBytes n) ->
+        let stripped = BS.dropWhile (== 0) n
+        in if BS.null stripped then Nothing else Just (BS.length stripped)
+      _ -> Nothing
+
+-- | Whether the registry serves a recovery route for the
+-- mechanism. The FFI consults the same registry the planner
+-- validates against, so the two never disagree.
+recoverRouteServed :: Registry -> MechanismId -> Operation -> Bool
+recoverRouteServed reg mid op = case lookupBehavior reg mid of
+  Nothing -> False
+  Just d -> op `elem` map routeOperation (descRoutes d)
+
+-- | Shared recovery init: fix the modulus-width shape off the key
+-- object, then plan decoded. Unknown or invisible handles refuse
+-- exactly as the planner would; a served route over a key
+-- without RSA material is a key-type refusal (the reviewed key
+-- matrix carries no recover rows, so the planner cannot name
+-- it — the FFI names it here instead, reading the same
+-- registry). Anything else plans, and the planner owns every
+-- remaining verdict (mechanism, params, usage, auth).
+runRecoverInit
+  :: StdInstance -> SessionId -> InitFunction -> MechanismId
+  -> ByteString -> Word64 -> IO CULong
+runRecoverInit inst sid ifunc mid params key = do
+  m <- snapshotModel (siEnv inst)
+  let h = ExternalHandle (fromIntegral key)
+      op = initOperation ifunc
+  case resolveHandle m h of
+    Nothing -> pure (stdRvOf CKR_OBJECT_HANDLE_INVALID)
+    Just ost -> case lookupSession m sid of
+      Nothing -> pure (stdRvOf CKR_SESSION_HANDLE_INVALID)
+      Just st
+        | not (objectVisible st ost) ->
+            pure (stdRvOf CKR_OBJECT_HANDLE_INVALID)
+        | otherwise -> case recoverModulusWidth ost of
+            Nothing
+              | recoverRouteServed (rulesRegistry (envRules (siEnv inst))) mid op ->
+                  pure (stdRvOf CKR_KEY_TYPE_INCONSISTENT)
+              | otherwise ->
+                  -- No route and no width: the planner refuses on
+                  -- mechanism grounds before ever reading the
+                  -- placeholder shape.
+                  let dreq = DRInitRecover sid ifunc (Just h) mid [op]
+                        False params (RecoverSpec 1 1)
+                  in runCryptoSilentDecoded inst dreq
+            Just k ->
+              let dreq = DRInitRecover sid ifunc (Just h) mid [op]
+                    False params (RecoverSpec k k)
+              in runCryptoSilentDecoded inst dreq
+
+-- | Shared recovery-init intake: copy the parameter block,
+-- normalize caller-native mechanism structs into the recipe
+-- canonical codecs ('normalizeMechParams'), and plan.
+runRecoverInitParams
+  :: StdInstance -> SessionId -> InitFunction -> CULong
+  -> Ptr Word8 -> CULong -> CULong -> IO CULong
+runRecoverInitParams inst sid ifunc (CULong mech) pParams (CULong paramsLen) (CULong key) = do
+  eParams <- decodeInputBytes pParams paramsLen
+  case eParams of
+    Left _ -> pure ckrArgsBad
+    Right raw -> do
+      let mid = MechanismId (fromIntegral mech)
+      params <- normalizeMechParams mid pParams paramsLen raw
+      runRecoverInit inst sid ifunc mid params key
+
+-- | Initialize a sign-recover operation over one key.
+haskokiStdSignRecoverInit
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
+  -> IO CULong
+haskokiStdSignRecoverInit ctx h mech pParams paramsLen key =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    runRecoverInitParams inst sid InitSignRecover mech pParams paramsLen key
+
+-- | Sign-recover one-shot (size-query and short-buffer recall per
+-- the shared dialogue).
+haskokiStdSignRecover
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+haskokiStdSignRecover ctx h pData (CULong dataLen) pSig pLen =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    if pLen == nullPtr
+      then refuseArgsTerminate inst sid SlotSign
+      else do
+        eInput <- decodeInputBytes pData dataLen
+        case eInput of
+          Left _ -> refuseArgsTerminate inst sid SlotSign
+          Right input
+            | pSig == nullPtr -> runCryptoQuery inst sid SlotSign F_SignRecover
+                input "sign-recover" pLen
+            | otherwise -> do
+                CULong cap <- peek pLen
+                runCryptoBuffered inst sid SlotSign F_SignRecover input "sign-recover"
+                  pSig pLen cap
+
+-- | Initialize a verify-recover operation over one key.
+haskokiStdVerifyRecoverInit
+  :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong -> CULong
+  -> IO CULong
+haskokiStdVerifyRecoverInit ctx h mech pParams paramsLen key =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    runRecoverInitParams inst sid InitVerifyRecover mech pParams paramsLen key
+
+-- | Verify-recover one-shot (size-query and short-buffer recall
+-- per the shared dialogue): the candidate block is the whole
+-- input, the recovered bytes are the output.
+haskokiStdVerifyRecover
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> Ptr CULong -> IO CULong
+haskokiStdVerifyRecover ctx h pBlock (CULong blockLen) pData pLen =
+  withStdCtx ctx $ \inst -> withStdSession inst h $ \sid ->
+    if pLen == nullPtr
+      then refuseArgsTerminate inst sid SlotVerify
+      else do
+        eInput <- decodeInputBytes pBlock blockLen
+        case eInput of
+          Left _ -> refuseArgsTerminate inst sid SlotVerify
+          Right input
+            | pData == nullPtr -> runCryptoQuery inst sid SlotVerify F_VerifyRecover
+                input "verify-recover" pLen
+            | otherwise -> do
+                CULong cap <- peek pLen
+                runCryptoBuffered inst sid SlotVerify F_VerifyRecover input "verify-recover"
+                  pData pLen cap
 
 -- ---------------------------------------------------------------------------
 -- message operations

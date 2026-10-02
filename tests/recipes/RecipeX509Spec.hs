@@ -30,17 +30,28 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (RsaCipherParams (..), SigSpec (..))
-import Haskoki.Engine.Driver (rsaX509CipherFor, rsaX509SigFor)
+import Haskoki.Engine.Driver (rsaRecoverCipherFor, rsaX509CipherFor, rsaX509SigFor)
 import Haskoki.Model (SessionState (..), emptyModel)
 import Haskoki.Operation
   ( CipherSpec (..)
+  , CryptoEffect (..)
   , InitArgs (..)
   , InitOutcome (..)
   , KeyPolicy (..)
+  , OpAuth (..)
   , OpEnv (..)
+  , RecoverRole (..)
+  , RecoverSpec (..)
+  , SlotKind (..)
+  , StepOutcome (..)
+  , activeSlots
   , emptySessionOps
   , initOperation
+  , insertOp
+  , mkActiveRecover
+  , mkSlotCommon
   )
+import Haskoki.Operation.Signature (planSignRecoverOneShot, planVerifyRecoverOneShot)
 import Haskoki.Recipe.RsaX509
   ( RsaX509Recipe (..)
   , rsaX509Codec
@@ -63,6 +74,7 @@ import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
   , Generation (..)
+  , ObjectId (..)
   , ReturnCode (..)
   , Revision (..)
   , SessionId (..)
@@ -78,6 +90,9 @@ spec = testGroup "RSA-X.509 recipe"
   , testCase "block framing pads left, tails right" caseFraming
   , testCase "init enforces X.509 params, refuses padding" caseInitParams
   , testCase "driver maps to raw RSA specs" caseDriverMap
+  , testCase "recover init accepts empty params, refuses otherwise" caseRecoverInit
+  , testCase "recover driver maps the pair onto raw RSA" caseRecoverDriver
+  , testCase "recover planner bounds input by the capacity" caseRecoverPlanner
   ]
 
 x509Name :: Text
@@ -201,3 +216,101 @@ caseDriverMap = do
     (rsaX509SigFor (MechanismId (ckm_RSA_PKCS)) BS.empty)
   assertEqual "non-x509 cipher uncovered" Nothing
     (rsaX509CipherFor (MechanismId (ckm_RSA_PKCS_OAEP)) BS.empty)
+
+-- | The recover shape for a 2048-bit RSA key: capacity and tag
+-- width both fix the modulus width (the driver block stages
+-- directly, never split).
+recSpec :: RecoverSpec
+recSpec = RecoverSpec 256 256
+
+recEnv :: OpEnv
+recEnv = testEnv
+  { oeCaps = mkCapabilities
+      [(x509Mech, OpSignRecover), (x509Mech, OpVerifyRecover)]
+  }
+
+runRecInit :: InitArgs -> ReturnCode
+runRecInit args =
+  ioCode (snd (initOperation recEnv emptySessionOps testSession args))
+
+caseRecoverInit :: IO ()
+caseRecoverInit = do
+  assertEqual "sign-recover non-empty refused" CKR_ARGUMENTS_BAD
+    (runRecInit (InitArgs OpSignRecover x509Mech (BS.pack [0])
+      (Just badKey) Nothing (Just recSpec)))
+  assertEqual "sign-recover empty passes params" CKR_OBJECT_HANDLE_INVALID
+    (runRecInit (InitArgs OpSignRecover x509Mech BS.empty
+      (Just badKey) Nothing (Just recSpec)))
+  assertEqual "verify-recover non-empty refused" CKR_ARGUMENTS_BAD
+    (runRecInit (InitArgs OpVerifyRecover x509Mech (BS.pack [0])
+      (Just badKey) Nothing (Just recSpec)))
+  assertEqual "verify-recover empty passes params" CKR_OBJECT_HANDLE_INVALID
+    (runRecInit (InitArgs OpVerifyRecover x509Mech BS.empty
+      (Just badKey) Nothing (Just recSpec)))
+  assertEqual "sign-recover missing spec refused" CKR_ARGUMENTS_BAD
+    (runRecInit (InitArgs OpSignRecover x509Mech BS.empty
+      (Just badKey) Nothing Nothing))
+
+caseRecoverDriver :: IO ()
+caseRecoverDriver = do
+  let pkcs = MechanismId ckm_RSA_PKCS
+      digested = MechanismId (mustGeneratedId "CKM_SHA256_RSA_PKCS")
+      oaep = MechanismId ckm_RSA_PKCS_OAEP
+  assertEqual "x509 maps" (Just RsaX509)
+    (rsaRecoverCipherFor x509Mech BS.empty)
+  assertEqual "x509 rejects params" Nothing
+    (rsaRecoverCipherFor x509Mech (BS.pack [0]))
+  assertEqual "raw pkcs maps" (Just RsaX509)
+    (rsaRecoverCipherFor pkcs BS.empty)
+  assertEqual "raw pkcs rejects params" Nothing
+    (rsaRecoverCipherFor pkcs (BS.pack [0]))
+  assertEqual "digest row unmapped" Nothing
+    (rsaRecoverCipherFor digested BS.empty)
+  assertEqual "oaep unmapped" Nothing
+    (rsaRecoverCipherFor oaep BS.empty)
+
+-- | Capacity bounds over a live recover slot (direct slot
+-- construction: the fixture model carries no key objects, so init
+-- cannot reach a plannable slot here).
+caseRecoverPlanner :: IO ()
+caseRecoverPlanner = do
+  let scS = mkSlotCommon x509Mech OpSignRecover (Just (ObjectId 7))
+        BS.empty AuthNone
+      opsS = insertOp (mkActiveRecover RoleSignRecover scS recSpec)
+        emptySessionOps
+      scV = mkSlotCommon x509Mech OpVerifyRecover (Just (ObjectId 7))
+        BS.empty AuthNone
+      opsV = insertOp (mkActiveRecover RoleVerifyRecover scV recSpec)
+        emptySessionOps
+  let (opsOk, _, uOk) = planSignRecoverOneShot opsS testSession
+        "rec" (BS.replicate 256 9)
+  assertEqual "sign fits" CKR_OK (soCode uOk)
+  case soEffects uOk of
+    [FxSignRecover mech _ _ input tagLen] -> do
+      assertEqual "sign effect mech" x509Mech mech
+      assertEqual "sign input carried" 256 (BS.length input)
+      assertEqual "sign tag width" 256 tagLen
+      assertEqual "sign keeps the slot" [SlotSign] (activeSlots opsOk)
+    other -> assertFailure ("one sign effect, got " ++ show other)
+  let (opsBig, _, uBig) = planSignRecoverOneShot opsS testSession
+        "rec" (BS.replicate 257 9)
+  assertEqual "sign oversize refused" CKR_DATA_LEN_RANGE (soCode uBig)
+  assertEqual "sign oversize frees" [] (activeSlots opsBig)
+  let (opsShort, _, uShort) = planVerifyRecoverOneShot opsV testSession
+        "rec" (BS.replicate 255 9)
+  assertEqual "short block invalid" CKR_SIGNATURE_INVALID (soCode uShort)
+  assertEqual "short block frees" [] (activeSlots opsShort)
+  let (opsFull, _, uFull) = planVerifyRecoverOneShot opsV testSession
+        "rec" (BS.replicate 256 9)
+  assertEqual "full block plans" CKR_OK (soCode uFull)
+  case soEffects uFull of
+    [FxVerifyRecover mech _ _ block tagLen] -> do
+      assertEqual "verify effect mech" x509Mech mech
+      assertEqual "verify block carried" 256 (BS.length block)
+      assertEqual "verify tag width" 256 tagLen
+      assertEqual "verify keeps the slot" [SlotVerify] (activeSlots opsFull)
+    other -> assertFailure ("one verify effect, got " ++ show other)
+  let (opsLong, _, uLong) = planVerifyRecoverOneShot opsV testSession
+        "rec" (BS.replicate 257 9)
+  assertEqual "verify oversize refused" CKR_DATA_LEN_RANGE (soCode uLong)
+  assertEqual "verify oversize frees" [] (activeSlots opsLong)

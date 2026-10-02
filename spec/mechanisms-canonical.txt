@@ -1,7 +1,7 @@
 schema 1
 mech|0x00000000|CKM_RSA_PKCS_KEY_PAIR_GEN||keypair|no-params/1|bits:0-0|generate-key-pair:A20,A37
-mech|0x00000001|CKM_RSA_PKCS||rsa|no-params/1|bits:512-4096|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;unwrap:A20,A37,A39;verify:A37,A39;wrap:A20,A37,A39
-mech|0x00000003|CKM_RSA_X_509||rsa|no-params/1|bits:512-4096|decrypt:A16,A37,A39;encrypt:A16,A37,A39;message-decrypt:A16,A37,A39;message-encrypt:A16,A37,A39;message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;unwrap:A20,A37,A39;verify:A37,A39;wrap:A20,A37,A39
+mech|0x00000001|CKM_RSA_PKCS||rsa|no-params/1|bits:512-4096|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;sign-recover:A37,A39;unwrap:A20,A37,A39;verify:A37,A39;verify-recover:A37,A39;wrap:A20,A37,A39
+mech|0x00000003|CKM_RSA_X_509||rsa|no-params/1|bits:512-4096|decrypt:A16,A37,A39;encrypt:A16,A37,A39;message-decrypt:A16,A37,A39;message-encrypt:A16,A37,A39;message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;sign-recover:A37,A39;unwrap:A20,A37,A39;verify:A37,A39;verify-recover:A37,A39;wrap:A20,A37,A39
 mech|0x00000005|CKM_MD5_RSA_PKCS||rsa|no-params/1|bits:512-4096|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;verify:A37,A39
 mech|0x00000006|CKM_SHA1_RSA_PKCS||rsa|no-params/1|bits:512-4096|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;verify:A37,A39
 mech|0x00000008|CKM_RIPEMD160_RSA_PKCS||rsa|no-params/1|bits:512-4096|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;verify:A37,A39

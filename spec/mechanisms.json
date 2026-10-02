@@ -81,13 +81,15 @@
           "CKF_UNWRAP",
           "CKF_WRAP",
           "CKF_MESSAGE_SIGN",
-          "CKF_MESSAGE_VERIFY"
+          "CKF_MESSAGE_VERIFY",
+          "CKF_SIGN_RECOVER",
+          "CKF_VERIFY_RECOVER"
         ],
         "key_size_unit": "bits",
         "max_key_size": 4096,
         "min_key_size": 512
       },
-      "notes": "RSA PKCS#1 v1.5 recipe (core/Haskoki/Recipe/RsaPkcs1.hs): raw block-type-1 operation over the input (no hashing), empty mechanism parameters. Real execution pinned (OpenSSLSpec caseRsaKats against the pinned libcrypto: fixed RSA-2048 CLI vector, raw block-type-1 KAT (pkeyutl vector)); synthetic per-digest constructions pinned (SyntheticSpec caseRsaRoundtrip); init enforces empty params (RecipeRsaSpec). Wrap/unwrap (block-type-2 cipher, empty parameters, typed input bound k-11, modulus-wide blobs, padding failures are verdicts): planner pinned (KeyManagementSpec caseRsaWrapRoundtrip/caseRsaWrapMismatch), synthetic envelopes pinned (SyntheticSpec casePkcs1Roundtrip), real execution pinned (OpenSSLSpec caseRsaPkcs1Vectors CLI interop + RoutingE2ESpec caseDriverRsaWrap).",
+      "notes": "RSA PKCS#1 v1.5 recipe (core/Haskoki/Recipe/RsaPkcs1.hs): raw block-type-1 operation over the input (no hashing), empty mechanism parameters. Real execution pinned (OpenSSLSpec caseRsaKats against the pinned libcrypto: fixed RSA-2048 CLI vector, raw block-type-1 KAT (pkeyutl vector)); synthetic per-digest constructions pinned (SyntheticSpec caseRsaRoundtrip); init enforces empty params (RecipeRsaSpec). Wrap/unwrap (block-type-2 cipher, empty parameters, typed input bound k-11, modulus-wide blobs, padding failures are verdicts): planner pinned (KeyManagementSpec caseRsaWrapRoundtrip/caseRsaWrapMismatch), synthetic envelopes pinned (SyntheticSpec casePkcs1Roundtrip), real execution pinned (OpenSSLSpec caseRsaPkcs1Vectors CLI interop + RoutingE2ESpec caseDriverRsaWrap). Sign-recover/verify-recover served over the raw arms with block-type-1 framing (routes plus flags as on the X.509 row; RecipeRsaSpec recover cases, OperationSmokeSpec recover round-trips).",
       "numeric_id": "0x00000001",
       "routes": [
         {
@@ -162,6 +164,30 @@
           ],
           "operation": "unwrap",
           "output_rule": "synthetic-pkcs1/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign-recover",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify-recover",
+          "output_rule": "synthetic-verify/v1",
           "parameter_codec": "no-params/1"
         }
       ],
@@ -259,13 +285,15 @@
           "CKF_MESSAGE_ENCRYPT",
           "CKF_MESSAGE_DECRYPT",
           "CKF_MESSAGE_SIGN",
-          "CKF_MESSAGE_VERIFY"
+          "CKF_MESSAGE_VERIFY",
+          "CKF_SIGN_RECOVER",
+          "CKF_VERIFY_RECOVER"
         ],
         "key_size_unit": "bits",
         "min_key_size": 512,
         "max_key_size": 4096
       },
-      "notes": "RSA-X.509 recipe (core/Haskoki/Recipe/RsaX509.hs): empty no-params/1, raw modular exponentiation over RSA_NO_PADDING; short inputs left-pad to the modulus width and outputs are full k-blocks. Sign/verify (one-shot, no hashing): synthetic construction pinned (SyntheticSpec caseX509Sign), real execution pinned (OpenSSLSpec caseRsaX509Vectors). Encrypt/decrypt (typed input bound k, multipart buffered): planner pinned (OperationSpec A16), synthetic k-block envelopes pinned (SyntheticSpec caseX509Roundtrip), real execution pinned (OpenSSLSpec caseRsaX509Vectors). Wrap/unwrap (zero overhead, modulus-wide blobs, unwrap slices the trailing value_len bytes): planner pinned (KeyManagementSpec caseRsaX509Wrap), synthetic envelopes pinned (SyntheticSpec caseX509Roundtrip), real execution pinned (OpenSSLSpec caseRsaX509Vectors + RoutingE2ESpec caseDriverRsaX509Wrap). Init enforces empty params and refuses PKCS#7 specs (RecipeX509Spec). Sign-recover/verify-recover stay stubbed (named gap; the framework marks the recover flags optional).",
+      "notes": "RSA-X.509 recipe (core/Haskoki/Recipe/RsaX509.hs): empty no-params/1, raw modular exponentiation over RSA_NO_PADDING; short inputs left-pad to the modulus width and outputs are full k-blocks. Sign/verify (one-shot, no hashing): synthetic construction pinned (SyntheticSpec caseX509Sign), real execution pinned (OpenSSLSpec caseRsaX509Vectors). Encrypt/decrypt (typed input bound k, multipart buffered): planner pinned (OperationSpec A16), synthetic k-block envelopes pinned (SyntheticSpec caseX509Roundtrip), real execution pinned (OpenSSLSpec caseRsaX509Vectors). Wrap/unwrap (zero overhead, modulus-wide blobs, unwrap slices the trailing value_len bytes): planner pinned (KeyManagementSpec caseRsaX509Wrap), synthetic envelopes pinned (SyntheticSpec caseX509Roundtrip), real execution pinned (OpenSSLSpec caseRsaX509Vectors + RoutingE2ESpec caseDriverRsaX509Wrap). Init enforces empty params and refuses PKCS#7 specs (RecipeX509Spec). Sign-recover/verify-recover served over the raw arms (sign-recover/verify-recover routes plus CKF_SIGN_RECOVER/CKF_VERIFY_RECOVER flags; RecipeX509Spec recover cases, OperationSmokeSpec recover round-trips).",
       "numeric_id": "0x00000003",
       "routes": [
         {
@@ -392,6 +420,30 @@
           ],
           "operation": "unwrap",
           "output_rule": "synthetic-x509/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "signing-key"
+          ],
+          "operation": "sign-recover",
+          "output_rule": "synthetic-sig64/v1",
+          "parameter_codec": "no-params/1"
+        },
+        {
+          "acceptance_cases": [
+            "A37",
+            "A39"
+          ],
+          "key_constraints": [
+            "verification-key"
+          ],
+          "operation": "verify-recover",
+          "output_rule": "synthetic-verify/v1",
           "parameter_codec": "no-params/1"
         }
       ],

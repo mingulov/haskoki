@@ -706,7 +706,8 @@ caseRsaPromoted = do
     , MechanismId 0x62, MechanismId 0x66
     ]
   checkOne [OpSign, OpVerify, OpMessageSign, OpMessageVerify
-           , OpWrap, OpUnwrap] (MechanismId 0x01)
+           , OpWrap, OpUnwrap
+           , OpSignRecover, OpVerifyRecover] (MechanismId 0x01)
   where
     checkOne ops mid = do
       let reg = curatedRegistry

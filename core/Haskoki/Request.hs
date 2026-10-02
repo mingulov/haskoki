@@ -21,6 +21,7 @@ import qualified Data.ByteString as BS
 import Data.Word (Word64)
 
 import Haskoki.Attribute (AttributeType, AttributeValue)
+import Haskoki.Operation.State (RecoverSpec)
 import Haskoki.Registry (MechanismId, Operation (..))
 import Haskoki.Types (ExternalHandle, Pkcs11Version, SessionId, redactShown)
 
@@ -85,6 +86,10 @@ data FunctionId
   | F_MessageSignFinal
   | F_MessageVerifyFinal
   | F_SessionCancel
+  | F_SignRecoverInit
+  | F_SignRecover
+  | F_VerifyRecoverInit
+  | F_VerifyRecover
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | How the caller provided (or omitted) an output buffer. Null (absent)
@@ -186,6 +191,21 @@ data DecodedRequest
       , drInitAuth :: !Bool
       , drInitParams :: !ByteString
       }
+  | -- | Initialize a recovery operation from decoded init
+      -- arguments plus the caller-fixed recover shape (the
+      -- modulus-width capacity, read off the key by the
+      -- producer — no init frame to re-parse). Positional:
+      -- the fields mirror 'DRInit' with the recover shape
+      -- appended.
+    DRInitRecover
+      !SessionId
+      !InitFunction
+      !(Maybe ExternalHandle)
+      !MechanismId
+      ![Operation]
+      !Bool
+      !ByteString
+      !RecoverSpec
   deriving (Eq)
 
 -- | 'Show' redacts decoded templates (following the 'Request'
@@ -224,11 +244,21 @@ instance Show DecodedRequest where
       ++ ", drInitPermits = " ++ show permits
       ++ ", drInitAuth = " ++ show auth
       ++ ", drInitParams = " ++ show params ++ "}"
+  show (DRInitRecover sid fun key mech permits auth params spec) =
+    "DRInitRecover {drSession = " ++ show sid
+      ++ ", drInitFunction = " ++ show fun
+      ++ ", drInitKey = " ++ show key
+      ++ ", drInitMech = " ++ show mech
+      ++ ", drInitPermits = " ++ show permits
+      ++ ", drInitAuth = " ++ show auth
+      ++ ", drInitParams = " ++ show params
+      ++ ", drInitRecover = " ++ show spec ++ "}"
 
 -- | The classic init shapes: digest plus the four keyed
--- inits. The planner function id and the registry operation both
--- derive from this one tag ('initFunctionId', 'initOperation'), so
--- an init/function mismatch is unrepresentable. Message inits stay
+-- inits plus the two recovery inits. The planner function id
+-- and the registry operation both derive from this one tag
+-- ('initFunctionId', 'initOperation'), so an init/function
+-- mismatch is unrepresentable. Message inits stay
 -- on 'Request' (no FFI producer).
 data InitFunction
   = InitDigest
@@ -236,6 +266,8 @@ data InitFunction
   | InitVerify
   | InitEncrypt
   | InitDecrypt
+  | InitSignRecover
+  | InitVerifyRecover
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | The planner function id behind an init shape.
@@ -246,6 +278,8 @@ initFunctionId f = case f of
   InitVerify -> F_VerifyInit
   InitEncrypt -> F_EncryptInit
   InitDecrypt -> F_DecryptInit
+  InitSignRecover -> F_SignRecoverInit
+  InitVerifyRecover -> F_VerifyRecoverInit
 
 -- | The registry operation behind an init shape.
 initOperation :: InitFunction -> Operation
@@ -255,3 +289,5 @@ initOperation f = case f of
   InitVerify -> OpVerify
   InitEncrypt -> OpEncrypt
   InitDecrypt -> OpDecrypt
+  InitSignRecover -> OpSignRecover
+  InitVerifyRecover -> OpVerifyRecover

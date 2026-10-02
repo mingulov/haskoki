@@ -35,13 +35,15 @@ import Haskoki.Engine.Backend
   , EcSpec (..)
   , EngineResult (..)
   , KeyMaterial (..)
+  , KeyGenSpec (..)
   , MacSpec (..)
   , ResourceSaveability (..)
   , SigSpec (..)
   , UnsaveableReason (..)
   )
-import Haskoki.Engine.Driver (drainReleases)
+import Haskoki.Engine.Driver (KeyResolver, drainReleases, runEffect)
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
+import Haskoki.Engine.Synthetic (Synthetic)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -61,6 +63,7 @@ import Haskoki.Operation
   , KeyPolicy (..)
   , MsgFamily (..)
   , OpEnv (..)
+  , RecoverSpec (..)
   , SessionOps
   , SlotKind (..)
   , StepOutcome (..)
@@ -92,9 +95,13 @@ import Haskoki.Operation.Message
   )
 import Haskoki.Operation.Signature
   ( finishSign
+  , finishSignRecover
   , finishVerify
+  , finishVerifyRecover
   , planSignOneShot
+  , planSignRecoverOneShot
   , planVerifyOneShot
+  , planVerifyRecoverOneShot
   )
 import Haskoki.Outcome (ResourceRelease (..))
 import Haskoki.Recipe.Cipher (decodeCtrParams, encodeCtrParams)
@@ -141,6 +148,12 @@ spec = testGroup "operations over the real backend"
   , testCase "message hmac sign/verify through slots" caseMessageHmac
   , testCase "message gcm+aad KAT through message slots" caseMessageGcmAad
   , testCase "message ecdsa sign/verify through slots" caseMessageEcdsa
+  , testCase "rsa-x509 sign-recover round-trip through slots (openssl)" caseX509RecoverOpenssl
+  , testCase "rsa-x509 sign-recover round-trip through slots (synthetic)" caseX509RecoverSynthetic
+  , testCase "rsa-pkcs sign-recover round-trip through slots (openssl)" casePkcsRecoverOpenssl
+  , testCase "rsa-pkcs sign-recover round-trip through slots (synthetic)" casePkcsRecoverSynthetic
+  , testCase "recover refuses non-pair mechanisms at the driver" caseRecoverRefusesNonPair
+  , testCase "sign-recover empty input pins the pair verdicts" caseRecoverEmptyInput
   ]
 
 -- ---------------------------------------------------------------------------
@@ -195,6 +208,41 @@ ecPubDer = hex "3059301306072a8648ce3d020106082a8648ce3d03010703420004a348bab88d
 
 ecSigRaw :: ByteString
 ecSigRaw = hex "debdbb00072c928d38bf43791d32f0eefe8a562d8444869adabdf77820cbed4963cc0a678a74c3e006c7387907210825f12920ff5f15b96709291e48b84ddc21"
+
+-- | Fixed RSA-2048 recover fixture (committed DER, generated once
+-- with host OpenSSL): raw-RSA round-trips are deterministic, so
+-- one keypair pins every recover vector below.
+rsaPrivDer :: ByteString
+rsaPrivDer = hex (concat
+  [ "308204a30201000282010100c68c1f0205a16273e77a4a6df6ae1870fbf4f58e2465e5d7b6997ab57f5278ab0014c888bd9a9457053d56945639fd25d881afb1"
+  , "f2a2a50b37f2b81323c16d4b62ddb8ba1c8b86fae1c63fa4316a48c433e20e7de9a18dd4b0d7244c35c90f652ab45482a23ad6fe30acf9096f7885b88bac6fa7"
+  , "8fce311e73d17ee600f2b3fe1f2ff69998f6e0f7585fd5dcc7f9b6d275a01e402b1d763105bc47ec0d7fbcf615658f9769cb62eb5f142515c99b42d75b50ec55"
+  , "15f2564487eeb15e061b4f9d2717c4be7778f39b47a4d463f0234e2a41d8f795aa6f0dcdeba112e17fe732f712970cbcda1ca1081279e2cb6da08f61e5efc42b"
+  , "f93ca34563ffacce5a5d7317020301000102820100182d41d806302903ecc0f86fe6cf90f703c7480b74a52fd567a2782317b646d953c6341bbfdd7888c180e9"
+  , "9a6086e92b82ef5a7749bb6d162e4c3bb14b9e51c7bc94912fa080365735c78fed0228c0b99b8915b356baaf16f77db5d4233730cd0f392c3d480745876862a2"
+  , "64a2bd43533de17e807743680f1ee7f8bd85df5d495d38affd70e4e1d3459043a9dcbbc6573b9fb8e79669c7a15938d4635f65c92668e525bdfd316a2150b9a4"
+  , "b72b84bf2c6909eb86f89c9090f4be0ef0901049ecfa1f0e5567e12ccdc8b8f5cbba677a2547cc4f6638c224171a2cd2cdbc9227c6748969e874f8fe3b8e5294"
+  , "737464bbe4454db9528f8cd8d685ae2f61f7b2444902818100e9dea63e1c37ae4d7f2f056fd6ee88eff3454d559d47df6befdce86272dfa8ed4d999d4a54e0f1"
+  , "5d167fb501c2b39a77a4b355df5012d88e054c1e8f847fb43b7ad7c8a44b4d30c294c0b321f7d146f9172b2906a46cc6f89166782593fa461ab58cb4cf190c0d"
+  , "aed5adbd45a240ddfb23ff91779ba3383a9e413385b7d807e302818100d955cf10938075ed8b3095135a9dbc06a70b30a964450d07a1e6d970fee61401b3450b"
+  , "8db0cba076b88c0d14023ed627f416e70baf06bff89d6ba1f04bc08fe900595578463e3cede2d33d63e1b2bfe63341d2b63d7ba585bc22d033c70f45459d67ce"
+  , "97b37b1fd0a37a3eed9057b7b30ba7d9d0caa4c5b4dbfbec94b92ec63d02818100ce4381a99be77c027b9eb413dca38b00de350c2ceb47bd848c0bf0a50b9db9"
+  , "767a0f76cb5d2afb9557479114196da059cf581fef91c6dd59fcd012d00f5336599351877367ba8fbbbdc86af515856d2c39c3e62e268c8dbc233915d446bbe0"
+  , "62a426923d6960d91c8ef6e9cce57a828d8245603df675b11cfa0095796518d27302818018ade7cf88106453cf247b2931770beced7715d5866f58e56efb19e1"
+  , "fcefff8199ebd33e09bf75bf458191d29dd6a8d6ec9ed529bc7c55bc5393ef55ac2477b30bb9193d892c741ac751197d88199634fbc913b66210f260d75654b2"
+  , "2c7e8d6d344c9f6716987aaa6485f33362dab31f7fc955b0a1f248091b99e5e99585bc3902818032f73e09fea6cf6598169aed3afe0b4f53f01411869fea2611"
+  , "49c2c5972df484149f875a9e4b21b95953d0da5f57f5556e9e2a8a84f6269beb4d0c564af69bb85c939cc3696508c2b18c462f4a71f0026a982a0f346e0f403d"
+  , "229527e008932d656de98cd180f90cc03d9ed9ba2ba6f0640e3d5adf956d7c03b6f29ab5b875f7"
+  ])
+
+rsaPubDer :: ByteString
+rsaPubDer = hex (concat
+  [ "30820122300d06092a864886f70d01010105000382010f003082010a0282010100c68c1f0205a16273e77a4a6df6ae1870fbf4f58e2465e5d7b6997ab57f5278"
+  , "ab0014c888bd9a9457053d56945639fd25d881afb1f2a2a50b37f2b81323c16d4b62ddb8ba1c8b86fae1c63fa4316a48c433e20e7de9a18dd4b0d7244c35c90f"
+  , "652ab45482a23ad6fe30acf9096f7885b88bac6fa78fce311e73d17ee600f2b3fe1f2ff69998f6e0f7585fd5dcc7f9b6d275a01e402b1d763105bc47ec0d7fbc"
+  , "f615658f9769cb62eb5f142515c99b42d75b50ec5515f2564487eeb15e061b4f9d2717c4be7778f39b47a4d463f0234e2a41d8f795aa6f0dcdeba112e17fe732"
+  , "f712970cbcda1ca1081279e2cb6da08f61e5efc42bf93ca34563ffacce5a5d73170203010001"
+  ])
 
 -- | AES-GCM message vector (the OpenSSLSpec caseAeadReal root:
 -- Python cryptography AESGCM): key 00..0f, nonce 00..0b, aad
@@ -314,6 +362,42 @@ ecPrivKeyP = KeyPolicy (ExternalHandle 103) [OpSign] False
 ecPubKeyP = KeyPolicy (ExternalHandle 104) [OpVerify] False
 gcmKeyP = KeyPolicy (ExternalHandle 105) [OpEncrypt, OpDecrypt] False
 
+x509Mech, pkcsMech :: MechanismId
+x509Mech = MechanismId 0x03
+pkcsMech = MechanismId 0x01
+
+rsaPrivOid, rsaPubOid :: ObjectId
+rsaPrivOid = ObjectId 16
+rsaPubOid = ObjectId 17
+
+recPrivKeyP, recPubKeyP :: KeyPolicy
+recPrivKeyP = KeyPolicy (ExternalHandle 106) [OpSignRecover] False
+recPubKeyP = KeyPolicy (ExternalHandle 107) [OpVerifyRecover] False
+
+recModel :: Model
+recModel = smokeModel
+  { mObjects = Map.insert rsaPrivOid (mkObject rsaPrivOid)
+      (Map.insert rsaPubOid (mkObject rsaPubOid) (mObjects smokeModel))
+  , mHandles = Map.insert (ExternalHandle 106)
+      (HandleBinding rsaPrivOid (Generation 1))
+      (Map.insert (ExternalHandle 107)
+        (HandleBinding rsaPubOid (Generation 1)) (mHandles smokeModel))
+  }
+
+recEnv :: OpEnv
+recEnv = smokeEnv
+  { oeCaps = mkCapabilities
+      [ (x509Mech, OpSignRecover)
+      , (x509Mech, OpVerifyRecover)
+      , (pkcsMech, OpSignRecover)
+      , (pkcsMech, OpVerifyRecover)
+      ]
+  , oeModel = recModel
+  }
+
+recShape :: RecoverSpec
+recShape = RecoverSpec 256 256
+
 -- ---------------------------------------------------------------------------
 -- The driver: planned effects answered by the real backend
 -- ---------------------------------------------------------------------------
@@ -325,6 +409,8 @@ keyFor oid
   | oid == ecPrivOid = Just (KeyDer ecPrivDer)
   | oid == ecPubOid = Just (KeyDer ecPubDer)
   | oid == gcmOid = Just (KeyBytes gcmKatKey)
+  | oid == rsaPrivOid = Just (KeyDer rsaPrivDer)
+  | oid == rsaPubOid = Just (KeyDer rsaPubDer)
   | otherwise = Nothing
 
 toBytes :: EngineResult ByteString -> CryptoResult
@@ -460,6 +546,13 @@ runRealEffect env fx = case fx of
 withBackend :: (BackendEnv OpenSSL4 -> IO ()) -> IO ()
 withBackend action = do
   r <- openBackend "provider=default" :: IO (EngineResult (BackendEnv OpenSSL4))
+  case r of
+    EngineFail err -> assertFailure ("openBackend failed: " ++ show err)
+    EngineOk env -> action env >> closeBackend env
+
+withSynth :: String -> (BackendEnv Synthetic -> IO ()) -> IO ()
+withSynth seed action = do
+  r <- openBackend seed :: IO (EngineResult (BackendEnv Synthetic))
   case r of
     EngineFail err -> assertFailure ("openBackend failed: " ++ show err)
     EngineOk env -> action env >> closeBackend env
@@ -1185,3 +1278,164 @@ caseMessageEcdsa = withBackend $ \env -> do
       assertEqual "outer final ok" CKR_OK (soCode final')
       assertEqual "slot freed" [] (activeSlots o2')
     other -> assertFailure ("expected one effect, got " ++ show other)
+
+-- ---------------------------------------------------------------------------
+-- Recover round-trips through the production driver
+-- ---------------------------------------------------------------------------
+
+-- | One recover round-trip through slots: sign over the input,
+-- then verify over the staged signature. Runs the planned
+-- effects through the production driver ('runEffect') so the
+-- recover arms execute on the given backend. Returns the staged
+-- signature and the staged recovered bytes.
+roundRecover
+  :: CryptoBackend b
+  => BackendEnv b -> KeyResolver -> MechanismId -> ByteString
+  -> IO (ByteString, ByteString)
+roundRecover env resolve mech input = do
+  let (ops0, i0) = initOperation recEnv emptySessionOps smokeSession
+        (InitArgs OpSignRecover mech BS.empty (Just recPrivKeyP)
+          Nothing (Just recShape))
+  assertEqual "sign-recover init ok" CKR_OK (ioCode i0)
+  let (ops1, _, u1) = planSignRecoverOneShot ops0 smokeSession "rec" input
+  assertEqual "sign-recover plans" CKR_OK (soCode u1)
+  sig <- case soEffects u1 of
+    [fx] -> do
+      res <- runEffect env resolve fx
+      res2 <- runEffect env resolve fx
+      case (res, res2) of
+        (GotBytes b, GotBytes b2) -> do
+          assertEqual "raw RSA deterministic" b b2
+          pure b
+        other -> assertFailure ("sign bytes twice, got " ++ show other)
+    other -> assertFailure ("one sign effect, got " ++ show other)
+  assertEqual "signature width" 256 (BS.length sig)
+  sigStaged <- case soEffects u1 of
+    [_] -> do
+      let (o, fin) = finishSignRecover ops1 SlotSign "rec"
+            (GotBytes sig) (IntentBuffer 512)
+      assertEqual "sign finish ok" CKR_OK (soCode fin)
+      assertEqual "sign finish frees" [] (activeSlots o)
+      case stagedBytes fin of
+        Just s -> pure s
+        Nothing -> assertFailure "expected staged signature"
+    other -> assertFailure ("one sign effect, got " ++ show other)
+  assertEqual "staged signature matches" sig sigStaged
+  let (ops2, i2) = initOperation recEnv emptySessionOps smokeSession
+        (InitArgs OpVerifyRecover mech BS.empty (Just recPubKeyP)
+          Nothing (Just recShape))
+  assertEqual "verify-recover init ok" CKR_OK (ioCode i2)
+  let (ops3, _, u2) = planVerifyRecoverOneShot ops2 smokeSession "rec" sig
+  assertEqual "verify-recover plans" CKR_OK (soCode u2)
+  case soEffects u2 of
+    [fx] -> do
+      res <- runEffect env resolve fx
+      let (o, fin) = finishVerifyRecover ops3 SlotVerify "rec"
+            res (IntentBuffer 512)
+      assertEqual "verify finish ok" CKR_OK (soCode fin)
+      assertEqual "verify finish frees" [] (activeSlots o)
+      case stagedBytes fin of
+        Just rec -> pure (sig, rec)
+        Nothing -> assertFailure "expected staged recovery"
+    other -> assertFailure ("one verify effect, got " ++ show other)
+
+-- | The X.509 recovered shape: the input left-padded to the
+-- modulus width (raw RSA has no framing to strip).
+leftPad256 :: ByteString -> ByteString
+leftPad256 input = BS.replicate (256 - BS.length input) 0 <> input
+
+caseX509RecoverOpenssl :: IO ()
+caseX509RecoverOpenssl = withBackend $ \env -> do
+  (sig, rec) <- roundRecover env keyFor x509Mech "abc"
+  assertEqual "x509 recovers the padded input" (leftPad256 "abc") rec
+  assertBool "signature is no passthrough" (sig /= leftPad256 "abc")
+
+caseX509RecoverSynthetic :: IO ()
+caseX509RecoverSynthetic = withSynth "11" $ \env -> do
+  eKeys <- generateKey env (GenRSA 2048 65537)
+  (priv, mPub) <- case eKeys of
+    EngineOk pair -> pure pair
+    EngineFail err -> assertFailure ("gen rsa failed: " ++ show err)
+  pub <- case mPub of
+    Just p -> pure p
+    Nothing -> assertFailure "rsa gen must return a pair"
+  let resolve oid
+        | oid == rsaPrivOid = Just priv
+        | oid == rsaPubOid = Just pub
+        | otherwise = keyFor oid
+  (_sig, rec) <- roundRecover env resolve x509Mech "abc"
+  assertEqual "x509 recovers the padded input" (leftPad256 "abc") rec
+
+casePkcsRecoverOpenssl :: IO ()
+casePkcsRecoverOpenssl = withBackend $ \env -> do
+  (sig, rec) <- roundRecover env keyFor pkcsMech "abc"
+  assertEqual "pkcs recovers the input" "abc" rec
+  assertEqual "signature width" 256 (BS.length sig)
+
+casePkcsRecoverSynthetic :: IO ()
+casePkcsRecoverSynthetic = withSynth "11" $ \env -> do
+  eKeys <- generateKey env (GenRSA 2048 65537)
+  (priv, mPub) <- case eKeys of
+    EngineOk pair -> pure pair
+    EngineFail err -> assertFailure ("gen rsa failed: " ++ show err)
+  pub <- case mPub of
+    Just p -> pure p
+    Nothing -> assertFailure "rsa gen must return a pair"
+  let resolve oid
+        | oid == rsaPrivOid = Just priv
+        | oid == rsaPubOid = Just pub
+        | otherwise = keyFor oid
+  (_sig, rec) <- roundRecover env resolve pkcsMech "abc"
+  assertEqual "pkcs recovers the input" "abc" rec
+
+caseRecoverRefusesNonPair :: IO ()
+caseRecoverRefusesNonPair = withBackend $ \env -> do
+  let digested = MechanismId 0x40
+  r1 <- runEffect env keyFor
+    (FxSignRecover hmacMech (Just hmacOid) BS.empty "x" 4)
+  case r1 of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
+  r2 <- runEffect env keyFor
+    (FxVerifyRecover hmacMech (Just hmacOid) BS.empty "x" 4)
+  case r2 of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
+  r3 <- runEffect env keyFor
+    (FxSignRecover digested (Just hmacOid) BS.empty "x" 256)
+  case r3 of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
+  r4 <- runEffect env keyFor
+    (FxVerifyRecover digested (Just hmacOid) BS.empty
+      (BS.replicate 256 9) 256)
+  case r4 of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
+
+caseRecoverEmptyInput :: IO ()
+caseRecoverEmptyInput = withBackend $ \env -> do
+  -- X.509: the planner admits the empty input (it fits the
+  -- capacity); the driver refuses it (no empty X.509 block) and
+  -- the finisher surfaces the failure, freeing the slot.
+  let (xops0, xi0) = initOperation recEnv emptySessionOps smokeSession
+        (InitArgs OpSignRecover x509Mech BS.empty (Just recPrivKeyP)
+          Nothing (Just recShape))
+  assertEqual "x509 empty init ok" CKR_OK (ioCode xi0)
+  let (xops1, _, xu1) = planSignRecoverOneShot xops0 smokeSession "rec" BS.empty
+  assertEqual "x509 empty plans" CKR_OK (soCode xu1)
+  case soEffects xu1 of
+    [fx] -> do
+      res <- runEffect env keyFor fx
+      case res of
+        GotCryptoError (CryptoFailed _) -> pure ()
+        other -> assertFailure ("expected driver failure, got: " ++ show other)
+      let (o, fin) = finishSignRecover xops1 SlotSign "rec" res (IntentBuffer 512)
+      assertEqual "x509 empty surfaces" CKR_GENERAL_ERROR (soCode fin)
+      assertEqual "x509 empty frees" [] (activeSlots o)
+    other -> assertFailure ("one sign effect, got " ++ show other)
+  -- PKCS: the empty input pads, signs, and recovers the empty
+  -- payload (type-1 framing admits empty data).
+  (sig, rec) <- roundRecover env keyFor pkcsMech BS.empty
+  assertEqual "pkcs empty signature width" 256 (BS.length sig)
+  assertEqual "pkcs empty recovers empty" BS.empty rec

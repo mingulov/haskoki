@@ -23,6 +23,22 @@ Legs (each a named tasty case):
   route and one flipped flag must fail the rule/flag checks (the
   battery proves per run it is not blind; scratch discarded).
 
+Recover legs (each a named tasty case, appended for task-m03):
+
+* recover route rule: the @sign-recover@/@verify-recover@ routes
+  are present iff the row is one of the DG3 pair
+  (@CKM_RSA_X_509@, @CKM_RSA_PKCS@); missing and unearned routes
+  both fail loudly, and the pair rows must exist;
+* recover route init: every cataloged recover route initializes
+  @CKR_OK@ through the classic funnel under full caps (the leg
+  fails when no recover route is cataloged at all);
+* recover flag correspondence: every @CKF_SIGN_RECOVER@ /
+  @CKF_VERIFY_RECOVER@ flag (parsed from the generated
+  @cbits/mech_catalog.inc@) has its route and vice versa, and
+  the pair rows advertise both flags;
+* recover refusals: every non-pair row refuses recover inits
+  with the exact route-miss refusal.
+
 Rule (b) mirrors the driver arms exactly through the same recipe
 tables the driver's @is*Mech@ predicates wrap ('isJust'
 @XRecipeFor@): message-cipher is GCM/cipher/(chacha-stream)/OAEP/X.509
@@ -71,6 +87,7 @@ import Haskoki.Operation
   , cipherDirOf
   , emptySessionOps
   , initMessageOperation
+  , initOperation
   , msgFamilyOp
   , msgOperation
   , recoverRoleOf
@@ -132,6 +149,10 @@ spec = testGroup "message flag battery (T-M01)"
   , testCase "flag correspondence: CKF_MESSAGE_* has its route and vice versa" caseFlags
   , testCase "no CKF_MULTI_MESSAGE advertised" caseNoMulti
   , testCase "scratch mutation: flipped route/flag fails per run" caseMutation
+  , testCase "recover route rule: recover routes iff DG3 pair holds" caseRecoverRule
+  , testCase "recover route init: every recover route initializes CKR_OK" caseRecoverInit
+  , testCase "recover flag correspondence: CKF_*_RECOVER has its route and vice versa" caseRecoverFlags
+  , testCase "recover refusals: non-pair mechanisms refuse recover" caseRecoverRefusals
   ]
 
 -- ---------------------------------------------------------------------------
@@ -603,3 +624,140 @@ caseMutation = guarded "mutation" $ do
       assertNoMismatches "mutation detection"
         (["route flip undetected: battery is blind" | not (rowHit routeHits)]
          ++ ["flag flip undetected: battery is blind" | not (rowHit flagHits)])
+
+-- ---------------------------------------------------------------------------
+-- Recover legs (task-m03): DG3 pair advertisement
+-- ---------------------------------------------------------------------------
+
+-- | The DG3 pair: the only rows that carry recover routes.
+recoverPair :: [Text]
+recoverPair = ["CKM_RSA_X_509", "CKM_RSA_PKCS"]
+
+recoverOps :: [Operation]
+recoverOps = [OpSignRecover, OpVerifyRecover]
+
+-- | Recover route/flag pairs.
+recoverPairs :: [(Operation, Text)]
+recoverPairs =
+  [(OpSignRecover, "CKF_SIGN_RECOVER"), (OpVerifyRecover, "CKF_VERIFY_RECOVER")]
+
+-- | The recover route rule per row: the recover routes are present
+-- iff the row is one of the DG3 pair.
+checkRecoverRule :: [MechRow] -> [String]
+checkRecoverRule mechs = presence ++ concatMap checkOne mechs
+  where
+    names = map mrName mechs
+    presence =
+      ["DG3 pair row missing from catalog: " ++ T.unpack name
+      | name <- recoverPair, name `notElem` names]
+    checkOne row = concatMap (checkOp row) recoverOps
+    checkOp row op =
+      let tag = T.unpack (mrName row) ++ " " ++ show (MechanismId (mrId row))
+                ++ " " ++ T.unpack (operationName op)
+          want = mrName row `elem` recoverPair
+          present = op `elem` mrOps row
+      in case (want, present) of
+        (True, False) ->
+          ["missing " ++ T.unpack (operationName op)
+           ++ " route at " ++ tag]
+        (False, True) ->
+          ["unearned " ++ T.unpack (operationName op)
+           ++ " route at " ++ tag]
+        _ -> []
+
+caseRecoverRule :: IO ()
+caseRecoverRule = guarded "recover-rule" $ do
+  (parseBad, mechs) <- loadCatalog
+  assertNoMismatches "recover route rule" (parseBad ++ checkRecoverRule mechs)
+
+-- | Every cataloged recover route initializes @CKR_OK@ through the
+-- classic funnel under full caps.
+checkRecoverInit :: [MechRow] -> [String]
+checkRecoverInit mechs = nonempty ++ concatMap checkOne mechs
+  where
+    pairs = [(row, op) | row <- mechs, op <- recoverOps, op `elem` mrOps row]
+    nonempty = ["no recover routes cataloged" | null pairs]
+    checkOne row = concatMap (checkOp row) recoverOps
+    checkOp row op =
+      let mid = MechanismId (mrId row)
+          tag = T.unpack (mrName row) ++ " " ++ show mid
+                ++ " " ++ T.unpack (operationName op)
+      in if op `notElem` mrOps row
+         then []
+         else case paramsFor (mrCodec row) mid of
+           Left err -> ["params: " ++ err ++ " at " ++ tag]
+           Right params ->
+             let (_, out) = initOperation fullEnv emptySessionOps
+                   fixtureSession (argsFor op mid params)
+                 want = (CKR_OK, ["initialized " ++ show op])
+                 got = (ioCode out, ioReasons out)
+             in ["init: want " ++ show want ++ ", got "
+                 ++ show got ++ " at " ++ tag
+                | got /= want]
+
+caseRecoverInit :: IO ()
+caseRecoverInit = guarded "recover-init" $ do
+  (parseBad, mechs) <- loadCatalog
+  assertNoMismatches "recover route init" (parseBad ++ checkRecoverInit mechs)
+
+-- | Recover flag/route correspondence per row: the
+-- @CKF_*_RECOVER@ flag is present iff its recover route is, and
+-- the pair rows advertise both flags.
+checkRecoverFlags :: [MechRow] -> Map Word64 [Text] -> [String]
+checkRecoverFlags mechs flagMap = pairHit ++ concatMap checkOne mechs
+  where
+    pairHit =
+      ["recover flag " ++ T.unpack flag ++ " missing on " ++ T.unpack (mrName row)
+      | row <- mechs
+      , mrName row `elem` recoverPair
+      , (_, flag) <- recoverPairs
+      , flag `notElem` fromMaybe [] (Map.lookup (mrId row) flagMap)]
+    checkOne row = concatMap (checkPair row) recoverPairs
+    checkPair row (op, flag) =
+      let flags = fromMaybe [] (Map.lookup (mrId row) flagMap)
+          tag = T.unpack (mrName row) ++ " " ++ show (MechanismId (mrId row))
+          hasFlag = flag `elem` flags
+          hasRoute = op `elem` mrOps row
+      in case (hasFlag, hasRoute) of
+        (True, False) ->
+          ["flag without route: " ++ T.unpack flag
+           ++ " at " ++ tag]
+        (False, True) ->
+          ["route without flag: " ++ T.unpack (operationName op)
+           ++ " at " ++ tag]
+        _ -> []
+
+caseRecoverFlags :: IO ()
+caseRecoverFlags = guarded "recover-flags" $ do
+  (parseBad, mechs) <- loadCatalog
+  (flagBad, flagMap, _) <- loadFlags
+  assertNoMismatches "recover flag correspondence"
+    (parseBad ++ flagBad ++ checkRecoverFlags mechs flagMap)
+
+-- | Every non-pair row refuses recover inits with the exact
+-- route-miss refusal. Parameters are empty everywhere: the
+-- funnel checks the route before parameters, so the route miss
+-- wins regardless (a params-dependent refusal would fail here
+-- as a funnel-order break).
+checkRecoverRefusals :: [MechRow] -> [String]
+checkRecoverRefusals mechs = nonempty ++ concatMap checkOne others
+  where
+    others = [row | row <- mechs, mrName row `notElem` recoverPair]
+    nonempty = ["no non-pair rows to refuse" | null others]
+    checkOne row = concatMap (checkOp row) recoverOps
+    checkOp row op =
+      let mid = MechanismId (mrId row)
+          tag = T.unpack (mrName row) ++ " " ++ show mid
+                ++ " " ++ T.unpack (operationName op)
+          (_, out) = initOperation fullEnv emptySessionOps
+            fixtureSession (argsFor op mid BS.empty)
+          want = (CKR_MECHANISM_INVALID, ["no source-backed route for this operation"])
+          got = (ioCode out, ioReasons out)
+      in ["refusal: want " ++ show want ++ ", got "
+          ++ show got ++ " at " ++ tag
+         | got /= want]
+
+caseRecoverRefusals :: IO ()
+caseRecoverRefusals = guarded "recover-refusals" $ do
+  (parseBad, mechs) <- loadCatalog
+  assertNoMismatches "recover refusals" (parseBad ++ checkRecoverRefusals mechs)

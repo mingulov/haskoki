@@ -158,6 +158,23 @@ extern uint64_t haskoki_std_verify_update(void *instance, uint64_t h_session,
                                           uint8_t *p_part, uint64_t part_len);
 extern uint64_t haskoki_std_verify_final(void *instance, uint64_t h_session,
                                          uint8_t *p_sig, uint64_t sig_len);
+extern uint64_t haskoki_std_sign_recover_init(void *instance, uint64_t h_session,
+                                              uint64_t mechanism,
+                                              uint8_t *p_params,
+                                              uint64_t params_len,
+                                              uint64_t h_key);
+extern uint64_t haskoki_std_sign_recover(void *instance, uint64_t h_session,
+                                         uint8_t *p_data, uint64_t data_len,
+                                         uint8_t *p_sig, uint64_t *p_len);
+extern uint64_t haskoki_std_verify_recover_init(void *instance,
+                                                uint64_t h_session,
+                                                uint64_t mechanism,
+                                                uint8_t *p_params,
+                                                uint64_t params_len,
+                                                uint64_t h_key);
+extern uint64_t haskoki_std_verify_recover(void *instance, uint64_t h_session,
+                                           uint8_t *p_block, uint64_t block_len,
+                                           uint8_t *p_data, uint64_t *p_len);
 extern uint64_t haskoki_std_encrypt_init(void *instance, uint64_t h_session,
                                          uint64_t mechanism, uint8_t *p_params,
                                          uint64_t params_len, uint64_t h_key);
@@ -1857,6 +1874,146 @@ CK_RV std_VerifyFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
   rv = (CK_RV)haskoki_std_verify_final(inst, (uint64_t)hSession,
                                        (uint8_t *)pSignature,
                                        (uint64_t)ulSignatureLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_SignRecoverInit(CK_SESSION_HANDLE hSession,
+                          CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pMechanism == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (pMechanism->ulParameterLen > 0 && pMechanism->pParameter == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_sign_recover_init(
+      inst, (uint64_t)hSession, (uint64_t)pMechanism->mechanism,
+      (uint8_t *)pMechanism->pParameter, (uint64_t)pMechanism->ulParameterLen,
+      (uint64_t)hKey);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_SignRecover(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
+                      CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
+                      CK_ULONG_PTR pulSignatureLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pulSignatureLen == NULL_PTR) {
+    return refuse_null_arg(hSession, HSK_SLOT_SIGN);
+  }
+  if (ulDataLen > 0 && pData == NULL_PTR) {
+    return refuse_null_arg(hSession, HSK_SLOT_SIGN);
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_sign_recover(inst, (uint64_t)hSession,
+                                       (uint8_t *)pData, (uint64_t)ulDataLen,
+                                       (uint8_t *)pSignature,
+                                       (uint64_t *)pulSignatureLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_VerifyRecoverInit(CK_SESSION_HANDLE hSession,
+                            CK_MECHANISM_PTR pMechanism,
+                            CK_OBJECT_HANDLE hKey) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pMechanism == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  if (pMechanism->ulParameterLen > 0 && pMechanism->pParameter == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_verify_recover_init(
+      inst, (uint64_t)hSession, (uint64_t)pMechanism->mechanism,
+      (uint8_t *)pMechanism->pParameter, (uint64_t)pMechanism->ulParameterLen,
+      (uint64_t)hKey);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_VerifyRecover(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
+                        CK_ULONG ulSignatureLen, CK_BYTE_PTR pData,
+                        CK_ULONG_PTR pulDataLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pulDataLen == NULL_PTR) {
+    return refuse_null_arg(hSession, HSK_SLOT_VERIFY);
+  }
+  if (ulSignatureLen > 0 && pSignature == NULL_PTR) {
+    return refuse_null_arg(hSession, HSK_SLOT_VERIFY);
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_verify_recover(inst, (uint64_t)hSession,
+                                         (uint8_t *)pSignature,
+                                         (uint64_t)ulSignatureLen,
+                                         (uint8_t *)pData,
+                                         (uint64_t *)pulDataLen);
   (void)haskoki_state_unlock();
   return rv;
 }

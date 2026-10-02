@@ -137,6 +137,8 @@ finisherJustSet =
   , F_DecryptMessageNext
   , F_SignMessageNext
   , F_VerifyMessageNext
+  , F_SignRecover
+  , F_VerifyRecover
   ]
 
 -- | A quiescent probe step: finishers answer deny outcomes on the
