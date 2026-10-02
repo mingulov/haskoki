@@ -49,3 +49,33 @@ reservation from the persisted counters and converges to the same
 high-waters.
 
 Later tasks append their headed sections below this line.
+
+## Certificate/key identity interop
+
+Spec trace: §2.1 G07, §3 C05.
+
+The oracle identity recipe (`test_identity.py:71-158` in
+pkcs11-check 0.2.2rc2) imports each private key by stuffing the raw
+PEM-decoded private DER through `CKA_VALUE` with only
+CLASS/KEY_TYPE/ID/LABEL/TOKEN/SIGN/EXTRACTABLE/SENSITIVE alongside
+it (lines 109-125), then asserts only `sig is not None` (line 143).
+That recipe shape is incompatible with component-based private-key
+import: this provider builds private keys from their key-type
+components (for RSA: modulus, exponents, primes), never from a raw
+DER blob in `CKA_VALUE`, so the recipe's private-key import leg
+cannot succeed here — once per Limbo case carrying a peer key (202
+import failures across the pinned corpus). What the recipe means
+to prove — ID linkage between a certificate and its keys, plus a
+working signature from the linked identity — is shown instead by
+this task's cases: `caseIdLinkage` imports the RSA pair through
+the component import, creates an X.509 certificate with VALUE =
+fixture DER, assigns `CKA_ID="link"` on all three objects, and
+shows find-by-ID returning exactly those three handles with
+matching ID readback on each; `caseRealSignature` signs the
+certificate VALUE bytes with the imported private DER and verifies
+with the public DER to a real `EngineOk ()` (not a non-None
+assertion). See `dist-release-evidence/certificates/task-c05/after.log`
+(`task-c05/after`), `task-c05/docs`, and `task-c05/retained` for
+the green runs. The recipe remainder (raw-DER-through-`CKA_VALUE`
+import) is dispositioned as oracle-recipe incompatibility, NOT a provider conformance defect.
+Triage is untouched here; T-C09 owns lane-tied triage.

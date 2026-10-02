@@ -3,6 +3,10 @@
 T-C03 adds the numeric-admission case (numeric CKA 0x86 modeled
 end to end).
 
+T-C05 adds the identity interop cases (CKA_ID linkage across the
+component-imported RSA pair plus an X.509 certificate, and a real
+sign/verify over the certificate VALUE bytes).
+
 Gate-held store-first publication of public (token) objects: token
 X.509 certificates and DATA survive engine restart with exact
 attribute readback, session objects stay volatile, copy/set/destroy
@@ -34,6 +38,7 @@ import Control.Monad (forM_, guard, unless, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
+import Data.Char (digitToInt, isHexDigit)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (nub)
 import qualified Data.Map.Strict as Map
@@ -59,9 +64,17 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import EnvLock (withEnvLock)
 import Haskoki.Attribute
-  ( AttributeType (AttrLabel)
-  , AttributeValue (ValBytes)
+  ( AttributeType (..)
+  , AttributeValue (..)
   )
+import Haskoki.Engine.Backend
+  ( CryptoBackend (..)
+  , DigestAlg (..)
+  , EngineResult (..)
+  , KeyMaterial (..)
+  , SigSpec (..)
+  )
+import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
 import Haskoki.FFI.Standard
   ( LedgerEvent
   , StdAcquisition (..)
@@ -82,8 +95,31 @@ import Haskoki.FFI.Standard
   , stdAcquisition
   , tokenIdForSlot
   )
-import Haskoki.Model (Model (..), ObjectState (..))
-import Haskoki.Outcome (DeltaOp (..), ModelFault (..), StateDelta (..))
+import Haskoki.Model
+  ( Model (..)
+  , ObjectState (..)
+  , SessionState
+  , addToken
+  , emptyModel
+  , lookupSession
+  )
+import Haskoki.Object
+  ( decodeHandle
+  , planCreateObject
+  , planFindObjects
+  , planSetAttributes
+  , resolveHandle
+  )
+import Haskoki.Operation.KeyManagement (ckoPrivateKey, ckoPublicKey, ckkRsa)
+import Haskoki.Outcome
+  ( DeltaOp (..)
+  , ModelFault (..)
+  , NativeOutput (..)
+  , PlanResult (..)
+  , PreparedCommit (..)
+  , Rejection (..)
+  , StateDelta (..)
+  )
 import Haskoki.Runtime.Catalog (effectiveCatalog)
 import Haskoki.Runtime.Config
   ( Config (..)
@@ -115,6 +151,7 @@ import Haskoki.Types
   ( ExternalHandle (..)
   , Generation (..)
   , ObjectId (..)
+  , ReturnCode (..)
   , Revision (..)
   , SessionId (..)
   , SlotId (..)
@@ -134,6 +171,10 @@ spec envLock = testGroup "Certificates"
     ]
   , testGroup "T-C03"
     [ testCase "caseTrustedNumericModeled" (caseTrustedNumericModeled envLock)
+    ]
+  , testGroup "T-C05"
+    [ testCase "caseIdLinkage" (caseIdLinkage envLock)
+    , testCase "caseRealSignature" (caseRealSignature envLock)
     ]
   ]
 
@@ -679,6 +720,279 @@ caseTrustedNumericModeled envLock = do
     obj <- createObject ctx h frame
     back <- getAttrOk ctx h obj ckaTrusted
     assertEqual "TRUSTED=false readback" (uBool False) back
+
+-- ---------------------------------------------------------------------------
+-- T-C05 cases
+-- ---------------------------------------------------------------------------
+
+-- | CKA_ID linkage across the component-imported RSA pair and an
+-- X.509 certificate carrying the fixture DER: all three objects get
+-- CKA_ID "link", find-by-ID returns exactly those three handles,
+-- and the ID reads back on each. A fourth X.509 object carrying
+-- CKA_ID "other" proves the find filters on the ID value (it is
+-- excluded from the "link" find, returned alone by the "other"
+-- find), and a find for an absent ID returns no handles.
+caseIdLinkage :: MVar () -> IO ()
+caseIdLinkage _envLock = do
+  der <- fixtureDer
+  subj <- derSubject der
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, hPriv, _) <- doCreate m0 st rsaPrivTmpl
+  (m2, hPub, _) <- doCreate m1 st rsaPubTmpl
+  (m3, hCert, _) <- doCreate m2 st (linkCertTmpl der subj)
+  (m4, hOther, _) <- doCreate m3 st (linkCertTmpl der subj)
+  let link = [(AttrId, ValBytes "link")]
+      other = [(AttrId, ValBytes "other")]
+      absent = [(AttrId, ValBytes "absent")]
+  m5 <- doSet m4 st hPriv link
+  m6 <- doSet m5 st hPub link
+  m7 <- doSet m6 st hCert link
+  m8 <- doSet m7 st hOther other
+  (m9, found) <- doFind m8 st link
+  assertEqual "find-by-ID returns exactly the three linked handles"
+    [hPriv, hPub, hCert] found
+  (m10, foundOther) <- doFind m9 st other
+  assertEqual "find-by-other-ID returns exactly the distractor handle"
+    [hOther] foundOther
+  (m11, foundAbsent) <- doFind m10 st absent
+  assertEqual "find-by-absent-ID returns no handles"
+    [] foundAbsent
+  forM_ [hPriv, hPub, hCert] $ \h -> case resolveHandle m11 h of
+    Nothing -> assertFailure "linked handle does not resolve"
+    Just ost -> assertEqual "ID readback"
+      (Just (ValBytes "link")) (Map.lookup AttrId (osAttrs ost))
+
+-- | Real sign/verify over the certificate VALUE bytes: the message
+-- is the VALUE read back from a created X.509 certificate object
+-- (the fixture DER), signed with the component-imported private
+-- DER and verified with the public DER to a real EngineOk ().
+caseRealSignature :: MVar () -> IO ()
+caseRealSignature _envLock = withRealEnv $ \env -> do
+  der <- fixtureDer
+  subj <- derSubject der
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, _, privAttrs) <- doCreate m0 st rsaPrivTmpl
+  privDer <- storedValue privAttrs
+  (m2, _, pubAttrs) <- doCreate m1 st rsaPubTmpl
+  pubDer <- storedValue pubAttrs
+  (_, _, certAttrs) <- doCreate m2 st (linkCertTmpl der subj)
+  certValue <- storedValue certAttrs
+  assertEqual "certificate VALUE is the fixture DER" der certValue
+  let rsaSpec = SigRSA_PKCS1v15 D_SHA256
+  sres <- sign env rsaSpec (KeyDer privDer) certValue
+  sig <- case sres of
+    EngineOk s -> pure s
+    EngineFail err -> assertFailure ("identity RSA sign failed: " ++ show err) >> undefined
+  vres <- verify env rsaSpec (KeyDer pubDer) certValue sig
+  case vres of
+    EngineOk () -> pure ()
+    EngineFail err -> assertFailure ("identity RSA verify failed: " ++ show err)
+
+-- | X.509 create template over caller-supplied VALUE/SUBJECT.
+linkCertTmpl :: ByteString -> ByteString -> [(AttributeType, AttributeValue)]
+linkCertTmpl der subj =
+  [ (AttrClass, ValULong ckoCert)
+  , (AttrCertificateType, ValULong ckcX509)
+  , (AttrValue, ValBytes der)
+  , (AttrSubject, ValBytes subj)
+  ]
+
+-- | Set attributes, publish, and return the model (doCreate-shaped).
+doSet :: Model -> SessionState -> ExternalHandle -> [(AttributeType, AttributeValue)] -> IO Model
+doSet m st h tmpl = case planSetAttributes m st h tmpl of
+  Immediate c -> expectRight (publishDelta m (pcDelta c))
+  Reject rej -> assertFailure ("must set, got: " ++ show (rejCode rej)) >> undefined
+  Execute _ _ -> assertFailure "set must not execute" >> undefined
+
+-- | One-shot find returning the bound handles (doCreate-shaped).
+doFind :: Model -> SessionState -> [(AttributeType, AttributeValue)] -> IO (Model, [ExternalHandle])
+doFind m st tmpl = case planFindObjects m st tmpl of
+  Immediate c -> do
+    m' <- expectRight (publishDelta m (pcDelta c))
+    hs <- mapM handleOf (pcOutputs c)
+    pure (m', hs)
+  Reject rej -> assertFailure ("must find, got: " ++ show (rejCode rej)) >> undefined
+  Execute _ _ -> assertFailure "find must not execute" >> undefined
+
+-- ---------------------------------------------------------------------------
+-- T-C05 KeyImportSpec local copies
+-- ---------------------------------------------------------------------------
+
+-- The blocks below are copied from tests/model/KeyImportSpec.hs
+-- (which exports only spec and lives outside the engine source
+-- directory, so the T-C05 cases carry local copies). Each span was
+-- asserted to hold exactly the briefed names before copying.
+
+-- KeyImportSpec.hs:105-131 (slot0, sid1, hex, seedModel,
+-- getSession, expectRight).
+slot0 :: SlotId
+slot0 = SlotId 0
+
+sid1 :: SessionId
+sid1 = SessionId 1
+
+-- | Decode a hex string (whitespace-tolerant).
+hex :: String -> ByteString
+hex s = BS.pack (go (filter isHexDigit s))
+  where
+    go [] = []
+    go (a : b : rest) = fromIntegral (digitToInt a * 16 + digitToInt b) : go rest
+    go [_] = error "hex: odd digit count"
+
+seedModel :: IO Model
+seedModel = do
+  let m0 = addToken emptyModel slot0
+  expectRight (publishDelta m0 (StateDelta [DeltaOpenSession sid1 slot0 False]))
+
+getSession :: Model -> IO SessionState
+getSession m = case lookupSession m sid1 of
+  Nothing -> assertFailure "seed session missing" >> undefined
+  Just st -> pure st
+
+expectRight :: Show e => Either e a -> IO a
+expectRight (Right a) = pure a
+expectRight (Left e) = assertFailure ("expected Right, got: " ++ show e) >> undefined
+
+-- KeyImportSpec.hs:134-168 (withRealEnv, doCreate, handleOf,
+-- expectReject with full body).
+withRealEnv :: (BackendEnv OpenSSL4 -> IO a) -> IO a
+withRealEnv action = do
+  opened <- openBackend "provider=default" :: IO (EngineResult (BackendEnv OpenSSL4))
+  case opened of
+    EngineFail err -> assertFailure ("openssl4 open failed: " ++ show err) >> undefined
+    EngineOk env -> do
+      r <- action env
+      closeBackend env
+      pure r
+
+-- | Create one object, publish it, and return the stored attributes.
+doCreate :: Model -> SessionState -> [(AttributeType, AttributeValue)]
+  -> IO (Model, ExternalHandle, Map.Map AttributeType AttributeValue)
+doCreate m st tmpl = case planCreateObject m st tmpl of
+  Immediate c -> do
+    m' <- expectRight (publishDelta m (pcDelta c))
+    h <- case pcOutputs c of
+      [o] -> handleOf o
+      _ -> assertFailure "create outputs arity" >> undefined
+    case resolveHandle m' h of
+      Nothing -> assertFailure "created object unresolvable" >> undefined
+      Just ost -> pure (m', h, osAttrs ost)
+  Reject rej -> assertFailure ("must create, got: " ++ show (rejCode rej)) >> undefined
+  Execute _ _ -> assertFailure "create must not execute" >> undefined
+
+handleOf :: NativeOutput -> IO ExternalHandle
+handleOf o = case decodeHandle (outBytes o) of
+  Just h -> pure h
+  Nothing -> assertFailure "handle output undecodable" >> undefined
+
+expectReject :: ReturnCode -> PlanResult -> IO ()
+expectReject want res = case res of
+  Reject rej -> assertEqual "reject code" want (rejCode rej)
+  Immediate _ -> assertFailure "must reject, created"
+  Execute _ _ -> assertFailure "must reject, executed"
+
+-- KeyImportSpec.hs:170-192 (rsaPrivTmpl, rsaPubTmpl).
+rsaPrivTmpl :: [(AttributeType, AttributeValue)]
+rsaPrivTmpl =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkRsa)
+  , (AttrToken, ValBool False)
+  , (AttrModulus, ValBytes rsaN)
+  , (AttrPublicExponent, ValBytes rsaE)
+  , (AttrPrivateExponent, ValBytes rsaD)
+  , (AttrPrime1, ValBytes rsaP)
+  , (AttrPrime2, ValBytes rsaQ)
+  , (AttrExponent1, ValBytes rsaDp)
+  , (AttrExponent2, ValBytes rsaDq)
+  , (AttrCoefficient, ValBytes rsaQinv)
+  ]
+
+rsaPubTmpl :: [(AttributeType, AttributeValue)]
+rsaPubTmpl =
+  [ (AttrClass, ValULong ckoPublicKey)
+  , (AttrKeyType, ValULong ckkRsa)
+  , (AttrToken, ValBool False)
+  , (AttrModulus, ValBytes rsaN)
+  , (AttrPublicExponent, ValBytes rsaE)
+  ]
+
+-- KeyImportSpec.hs:489-492 (storedValue).
+storedValue :: Map.Map AttributeType AttributeValue -> IO ByteString
+storedValue attrs = case Map.lookup AttrValue attrs of
+  Just (ValBytes bs) -> pure bs
+  _ -> assertFailure "stored value missing" >> undefined
+
+-- KeyImportSpec.hs:1101-1169 (rsaN/E/D/P/Q/Dp/Dq/Qinv blobs).
+rsaN :: ByteString
+rsaN = hex $ concat
+    [ "bf249542389ea0de381c11c04c7777e6c56106165ec581cc378e6f9022cd2b4f"
+    , "efd66e575e7043004afef1e4916177cea097cef02d4f09de587d869840cd75ec"
+    , "a6adb70c19824f9a8a573c9ac337876cd2c490e6c5d69a686386009d54d13f1b"
+    , "1be0a71055f23717d81bdc060c29d0ec7a6d8280a677ab92d65c9b64981300e4"
+    , "a4eb60e4180189362c964ba3d55ca2db2d2998331ea0e87ab44d577fe8533717"
+    , "9f02cf8d71404b4f8bd99e4e3e636c45ceea91e7660165f35451ee15fd44b42a"
+    , "5eee7552aaccc25737be7f3d43542a43cc46b39fb127608c5a055327d339855e"
+    , "838995295160067a417cc8c3095ee012bf078da33c71becae36b9805c174f357"
+    ]
+
+rsaE :: ByteString
+rsaE = hex $ concat
+    [ "010001"
+    ]
+
+rsaD :: ByteString
+rsaD = hex $ concat
+    [ "02147aaaa8fabcedbe219165e22478ac626079befb92b2fa0f1960886a8088b9"
+    , "f5765966b4fde16a1ae6d1a8b6eb9f1b4e0468e43f31f97daf167fef9f363d29"
+    , "7144e4558adf855092b47bfc83d1a7b51cf40ba449e9d9c34cb5f4181788b162"
+    , "f0f78db4854d934b91f6a25079ddbdf5722847ea70cff8e62a540152e3bec287"
+    , "3598079bf1965083cca686d500ab2867c43db553dd2894a3014fa30814f58966"
+    , "b7f91e71b9c6928f41d22587daa3a939b409b9aeac3765404b0b3a890000c2e3"
+    , "480d90950529f73df1340f69cc8be3c69def997524a3883cc618f51a81130842"
+    , "f094b95699d093acb3e8c59a9a65b968101f6220638265e398f8f65ba6363ca5"
+    ]
+
+rsaP :: ByteString
+rsaP = hex $ concat
+    [ "f38edb79d7c425b930bee769f17aa3cc565f6e0a72b7fd0c734a0257960213f5"
+    , "c5c5d16887e80d0d8c9136daa855e26e38319f7cd5f454b875e9eff1c9a6dc88"
+    , "753a65d825d079d1fd9b8d1843e250793279877e1db7bd932b09473a1973ce71"
+    , "0f5179baf192a17052a66c5247205bdad49fb48938b6590d5f2154820337498b"
+    ]
+
+rsaQ :: ByteString
+rsaQ = hex $ concat
+    [ "c8e8439d64764eaff4f6bf45bc56df3280d3c5aeedae00f0099f3d169db75f3a"
+    , "0105900eef944f120f0d49d63d623e07b6feafa043914bf8e4ae243a9f82b853"
+    , "dc1e347b262a250423d1f53f097cdce6677813a277f8eca15b5a61acb08bbdc2"
+    , "042a0457492f09488ab22936aa8e098798484a230f3c4d27294589d4c8a1bee5"
+    ]
+
+rsaDp :: ByteString
+rsaDp = hex $ concat
+    [ "17e28b9d804e6910a73a21819f3fd2ae684e05819acc76517140f1c7db1b2b0f"
+    , "f02c3d240e27f097c2903f1be4643fc765556079a295ca7528831f97cb99c488"
+    , "d14e3fcc99b0bf319bb85476ebb95700fbb5355765dcae07afb1c23d6d5f9100"
+    , "3f6b530fc53f06fbf7ef0032756d33f4dae32a96466c83812f321a9281743b8f"
+    ]
+
+rsaDq :: ByteString
+rsaDq = hex $ concat
+    [ "80b900096a02bb2bd5e1fa6f2ddae32ab28bfd0eb54e555f766ac673251e062f"
+    , "5dd43896b93de6e3852d586fa1e8be21a747cb32fdd7ac3b8e195d310a5e70c7"
+    , "9a32e8213734ad7ed78c807ba112955e325127136396e3d606780438e6ecc1e9"
+    , "fb4d0876fc76dc95d3f78e9c6dee8f80873b59f4d8a02436c124c2c8c8bb8959"
+    ]
+
+rsaQinv :: ByteString
+rsaQinv = hex $ concat
+    [ "3cefd2574cbb2056d55f71c3fe82090a9797c6c038d1ef045e0373081801f4e4"
+    , "68f7822b9580bcd21aac3c601a330ca745978cd01761cbccf29201086defab1f"
+    , "08ec5024b60b79ed839dbf43c9c35a07da5cf8163fc4c57a1e06b20378077dab"
+    , "fb54e39d56bf2a4d478187829ec00236001f1503a903482246a21aac1c04ae4f"
+    ]
 
 -- ---------------------------------------------------------------------------
 -- DURABILITY reporting
