@@ -116,3 +116,42 @@ behavior to serve and no fabricated trust semantics are recorded
 here. See `dist-release-evidence/certificates/task-c06/after.log`
 (`task-c06/after`), `task-c06/docs`, and `task-c06/retained` for
 the green runs.
+
+## Subtype and size disposition
+
+Spec trace: §2.1 G10/G11, §3 C07.
+
+Non-X.509 subtype values keep the generic CLASS+TYPE-only path:
+`caseCertNonX509Generic` (`tests/model/CertificateSpec.hs:161-173`;
+types 1 and 2 commit with CLASS+TYPE only, VALUE/SUBJECT omitted)
+is green in the T-C01 proof — see
+`dist-release-evidence/certificates/task-c01/after.log`
+(`task-c01/after`); this task cites that receipt and re-proves
+nothing. The remaining declared fields — `CKA_URL` (0x89),
+`CKA_JAVA_MIDP_SECURITY_DOMAIN` (0x88),
+`CKA_NAME_HASH_ALGORITHM` (0x8c), `CKA_CHECK_VALUE` (0x90),
+`CKA_AC_ISSUER` (0x83), `CKA_OWNER` (0x84), `CKA_ATTR_TYPES`
+(0x85), `CKA_UNIQUE_ID` (0x04) — have no model/storage mapping:
+`attributeTypeByName` in `core/Haskoki/Attribute.hs` (lines
+354-412, fallthrough `_ -> Nothing` at line 412) has no arms for
+them, and the `attrName` / `nameAttr` / `decodeAttrValue` maps in
+`src/Haskoki/Runtime/Storage.hs` (lines 943-1001 / 1004-1063 /
+1076-1141) have no rows for them either — both files are
+grep-clean for the `CKA_*` and `Attr*` spellings, and the only
+post-T-C01 additions to those maps are T-C03's four
+trusted/category/date rows. `C_GetObjectSize` remains the
+explicit stub: `stub_GetObjectSize` in
+`cbits/function_tables.c` (actual lines 875-881; the plan-time
+citation 870-880 covered the disposition comment at 870-874 —
+"GetObjectSize stays honestly unsupported (no engine planner)" —
+plus the stub head, re-resolved here by reading), wired at line
+1137, returning `stub_probe()` (lines 810-816:
+`CKR_FUNCTION_NOT_SUPPORTED` live,
+`CKR_CRYPTOKI_NOT_INITIALIZED` pre-init). The stub keeps refusing
+cleanly; no behavior change. Inspection record with per-file
+SHA-256 at HEAD `fd9ff48838ab48e1cac99c7adc7ceafa3b1c2177`:
+`dist-release-evidence/certificates/task-c07/inspection.json`
+(Attribute.hs `6550421f…`, Storage.hs `ac315382…`,
+function_tables.c `4687bdb0…`; full SHA-256 digests in the
+record). See `task-c07/docs` and `task-c07/retained` for the
+green runs.
