@@ -39,6 +39,14 @@ Recover legs (each a named tasty case, appended for task-m03):
 * recover refusals: every non-pair row refuses recover inits
   with the exact route-miss refusal.
 
+CFB64 leg (appended for the CFB64 honest close):
+
+* cfb64 kept: @CKM_AES_CFB64@ (@0x00002105@) stays an @inv|@
+  row (DG5: the provider probe shows no CFB64 mode, and slicing
+  CFB128 output is not CFB64 feedback). Pins the projection row,
+  the registry absence (no behavior routes, no flags), and the
+  exact classic-init refusal under full caps.
+
 Rule (b) mirrors the driver arms exactly through the same recipe
 tables the driver's @is*Mech@ predicates wrap ('isJust'
 @XRecipeFor@): message-cipher is GCM/cipher/(chacha-stream)/OAEP/X.509
@@ -153,6 +161,7 @@ spec = testGroup "message flag battery (T-M01)"
   , testCase "recover route init: every recover route initializes CKR_OK" caseRecoverInit
   , testCase "recover flag correspondence: CKF_*_RECOVER has its route and vice versa" caseRecoverFlags
   , testCase "recover refusals: non-pair mechanisms refuse recover" caseRecoverRefusals
+  , testCase "CFB64 kept refusal: 0x00002105 refuses unknown-mechanism" caseCfb64Kept
   ]
 
 -- ---------------------------------------------------------------------------
@@ -761,3 +770,73 @@ caseRecoverRefusals :: IO ()
 caseRecoverRefusals = guarded "recover-refusals" $ do
   (parseBad, mechs) <- loadCatalog
   assertNoMismatches "recover refusals" (parseBad ++ checkRecoverRefusals mechs)
+
+-- ---------------------------------------------------------------------------
+-- CFB64 kept refusal (DG5 honest close: no provider mode exists)
+-- ---------------------------------------------------------------------------
+
+-- | The kept CFB64 id (@CKM_AES_CFB64@).
+cfb64KeptId :: Word64
+cfb64KeptId = 0x2105
+
+-- | Load the canonical projection's @inv|@ lines. Parse failures
+-- are returned as mismatches (a malformed projection fails
+-- loudly, never silently skips rows).
+loadInvLines :: IO ([String], [Text])
+loadInvLines = do
+  root <- packageRoot
+  content <- TIO.readFile (root </> "spec/mechanisms-canonical.txt")
+  let ls = T.lines (T.strip content)
+      hdrBad = ["bad projection header" | take 1 ls /= ["schema 1"]]
+      invLines = [l | l <- drop 1 ls, "inv|" `T.isPrefixOf` l]
+      lineBad = ["bad inv line: " ++ T.unpack l
+                | l <- invLines
+                , case T.splitOn "|" l of
+                    ["inv", wid, _name, _aliases, st] ->
+                      parseHex wid == Nothing || st /= "catalog-only"
+                    _ -> True]
+  pure (hdrBad ++ lineBad, invLines)
+
+-- | The CFB64 row stays refused: its @inv|@ line is present, no
+-- @mech|@ row advertises the id, the registry carries no behavior
+-- routes and no flags for it, and classic encrypt/decrypt inits
+-- refuse @(CKR_MECHANISM_INVALID, "unknown mechanism")@ under
+-- full caps.
+checkCfb64Kept :: [MechRow] -> [Text] -> Map Word64 [Text] -> [String]
+checkCfb64Kept mechs invLines flagMap =
+  invHit ++ mechMiss ++ routeMiss ++ flagMiss ++ initMiss
+  where
+    mid = MechanismId cfb64KeptId
+    tag = "CKM_AES_CFB64 " ++ show mid
+    wantInv = "inv|0x00002105|CKM_AES_CFB64||catalog-only"
+    invHit =
+      ["CFB64 inv row missing: want " ++ T.unpack wantInv
+      | wantInv `notElem` invLines]
+    mechMiss =
+      ["CFB64 id advertised as mech| at " ++ tag
+      | any ((== cfb64KeptId) . mrId) mechs]
+    routeMiss =
+      ["CFB64 id carries behavior routes at " ++ tag
+      | mid `elem` map fst (behaviorRoutes curatedRegistry)]
+    flagMiss =
+      ["CFB64 id carries flags " ++ show flags ++ " at " ++ tag
+      | flags <- [fromMaybe [] (Map.lookup cfb64KeptId flagMap)]
+      , not (null flags)]
+    initMiss = concatMap checkOp [OpEncrypt, OpDecrypt]
+    checkOp op =
+      let (_, out) = initOperation fullEnv emptySessionOps
+            fixtureSession (argsFor op mid BS.empty)
+          want = (CKR_MECHANISM_INVALID, ["unknown mechanism"])
+          got = (ioCode out, ioReasons out)
+      in ["refusal: want " ++ show want ++ ", got "
+          ++ show got ++ " at " ++ tag
+          ++ " " ++ T.unpack (operationName op)
+         | got /= want]
+
+caseCfb64Kept :: IO ()
+caseCfb64Kept = guarded "cfb64-kept" $ do
+  (parseBad, mechs) <- loadCatalog
+  (invBad, invLines) <- loadInvLines
+  (flagBad, flagMap, _) <- loadFlags
+  assertNoMismatches "cfb64 kept refusal"
+    (parseBad ++ invBad ++ flagBad ++ checkCfb64Kept mechs invLines flagMap)
