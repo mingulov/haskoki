@@ -47,6 +47,17 @@ CFB64 leg (appended for the CFB64 honest close):
   the registry absence (no behavior routes, no flags), and the
   exact classic-init refusal under full caps.
 
+DG6 leg (appended for task-m05):
+
+* closed set: the five DG6 pinned ids (oracle-pinned @0x403B@/@0x403C@,
+  oracle-local @0x418@/@0x419@, oracle vendor @0x80000100@) refuse
+  @(CKR_MECHANISM_INVALID, "unknown mechanism")@ through classic
+  init under full caps. The enumeration is closed (an explicit
+  fixed five-id set, length-pinned); no catalog row, no behavior
+  routes, and no flags exist for any of them. Header-absent names
+  without pinned ids are covered by the register rationale, not by
+  invented rows.
+
 Rule (b) mirrors the driver arms exactly through the same recipe
 tables the driver's @is*Mech@ predicates wrap ('isJust'
 @XRecipeFor@): message-cipher is GCM/cipher/(chacha-stream)/OAEP/X.509
@@ -162,6 +173,7 @@ spec = testGroup "message flag battery (T-M01)"
   , testCase "recover flag correspondence: CKF_*_RECOVER has its route and vice versa" caseRecoverFlags
   , testCase "recover refusals: non-pair mechanisms refuse recover" caseRecoverRefusals
   , testCase "CFB64 kept refusal: 0x00002105 refuses unknown-mechanism" caseCfb64Kept
+  , testCase "DG6 closed set: pinned ids refuse unknown-mechanism" caseDg6ClosedSet
   ]
 
 -- ---------------------------------------------------------------------------
@@ -840,3 +852,65 @@ caseCfb64Kept = guarded "cfb64-kept" $ do
   (flagBad, flagMap, _) <- loadFlags
   assertNoMismatches "cfb64 kept refusal"
     (parseBad ++ invBad ++ flagBad ++ checkCfb64Kept mechs invLines flagMap)
+
+-- ---------------------------------------------------------------------------
+-- DG6 closed set (stance register: header-absent pinned ids refuse)
+-- ---------------------------------------------------------------------------
+
+-- | The DG6 pinned ids: oracle-pinned @0x403B@/@0x403C@
+-- (external-mu), oracle-local @0x418@/@0x419@ (SHAKE XOF), oracle
+-- vendor @0x80000100@ (GCM-SIV). An explicit fixed set: the check
+-- pins its length, so a dropped or added id fails loudly instead of
+-- silently changing coverage.
+dg6PinnedIds :: [(Text, Word64)]
+dg6PinnedIds =
+  [ ("CKM_ML_DSA_EXTERNAL_MU_GEN", 0x403B)
+  , ("CKM_ML_DSA_EXTERNAL_MU", 0x403C)
+  , ("CKM_SHAKE_128", 0x418)
+  , ("CKM_SHAKE_256", 0x419)
+  , ("CKM_AES_GCM_SIV", 0x80000100)
+  ]
+
+-- | Every pinned id refuses: no @mech|@ row advertises it, the
+-- registry carries no behavior routes and no flags for it, and
+-- classic encrypt/decrypt inits refuse @(CKR_MECHANISM_INVALID,
+-- "unknown mechanism")@ under full caps.
+checkDg6ClosedSet :: [MechRow] -> Map Word64 [Text] -> [String]
+checkDg6ClosedSet mechs flagMap =
+  closedHit ++ concatMap checkOne dg6PinnedIds
+  where
+    closedHit =
+      ["DG6 closed set: want 5 pinned ids, got " ++ show (length dg6PinnedIds)
+      | length dg6PinnedIds /= 5]
+    checkOne (name, wid) =
+      mechMiss ++ routeMiss ++ flagMiss ++ initMiss
+      where
+        mid = MechanismId wid
+        tag = T.unpack name ++ " " ++ show mid
+        mechMiss =
+          ["DG6 id advertised as mech| at " ++ tag
+          | any ((== wid) . mrId) mechs]
+        routeMiss =
+          ["DG6 id carries behavior routes at " ++ tag
+          | mid `elem` map fst (behaviorRoutes curatedRegistry)]
+        flagMiss =
+          ["DG6 id carries flags " ++ show flags ++ " at " ++ tag
+          | flags <- [fromMaybe [] (Map.lookup wid flagMap)]
+          , not (null flags)]
+        initMiss = concatMap checkOp [OpEncrypt, OpDecrypt]
+        checkOp op =
+          let (_, out) = initOperation fullEnv emptySessionOps
+                fixtureSession (argsFor op mid BS.empty)
+              want = (CKR_MECHANISM_INVALID, ["unknown mechanism"])
+              got = (ioCode out, ioReasons out)
+          in ["refusal: want " ++ show want ++ ", got "
+              ++ show got ++ " at " ++ tag
+              ++ " " ++ T.unpack (operationName op)
+             | got /= want]
+
+caseDg6ClosedSet :: IO ()
+caseDg6ClosedSet = guarded "dg6-closed-set" $ do
+  (parseBad, mechs) <- loadCatalog
+  (flagBad, flagMap, _) <- loadFlags
+  assertNoMismatches "dg6 closed set"
+    (parseBad ++ flagBad ++ checkDg6ClosedSet mechs flagMap)

@@ -5144,3 +5144,36 @@ recorder:
 Spec trace: §3 C09, §6 C/oracle/proxy; G13; S01–S05 linked. T-C09
 evidence is complete at final bytes; the task-c09 review passes fully
 after the R12 codex-findings re-proof. No acceptance claimed.
+
+## DG6 stance dispositions (mechanisms slice, reviewed; no lane run)
+
+DG6 DISPOSITIONS (task-m05). Reviewed dispositions for the 14
+oracle-new names of the DG6 stance table (mechanisms design
+section 3; register `spec/source-issues.json` `GAP-ORACLE-NEW`).
+No lane ran here: lane receipts belong to the oracle
+qualification task. Each row names the oracle legs and the
+skip/negative mechanism that keeps the REASON stance honest;
+all 14 stances stay REASON with zero numeric rows.
+
+| # | Name | Oracle legs | Disposition |
+|---|---|---|---|
+| 01 | `CKM_AES_GCM_SIV` | ACVP GCM-SIV legs via `testcases/acvp/aes/base_runner_aead.py` (oracle vendor id `0x80000100`) | Skip: the id is unadvertised, so the legs never select this token; no backend arm exists either. Separate slice for the backend survey plus vendor-range policy. |
+| 02 | `CKM_AES_XTS_KEY_GEN_VAL` | None distinct: `testcases/mechanism_helpers.py` treats it as an alias of `CKM_AES_XTS_KEY_GEN` | Negative-only: no separate legs exist; the tested `CKM_AES_XTS_KEY_GEN` row carries the coverage. |
+| 03 | `CKM_BLOWFISH_ECB` | None: `testcases/test_blowfish.py` states ECB is not OASIS and covers CBC/CBC_PAD only | Absent by construction: no ECB legs exist to run; sibling CBC rows stay served. |
+| 04 | `CKM_ECDSA_SHA` | Bare-SHA legs, if any, probe an unnamed digest | Negative-only: bare `SHA` names no served digest row; the digest-named `ECDSA_SHA*` rows carry the coverage. |
+| 05 | `CKM_KMAC_128` | `TestKMAC` (`testcases/test_extended_mechanisms.py`, `testcases/test_remaining_gaps.py`): vendor range, no OASIS point; `--p11-vendor-mechanism` / `require_mechanism_or_skip` gate | Skip: no vendor points are supplied and no backend MAC arm plus keygen rows exist. Deferred to a KMAC slice. |
+| 06 | `CKM_KMAC_256` | Same as row 05 | Same as row 05. |
+| 07 | `CKM_ML_DSA_EXTERNAL_MU` | External-mu legs (`testcases/test_extended_mechanisms.py`; oracle-pinned `0x403C`, absent from the token list) | Skip: the id is unadvertised. Joint slice with the deferred pre-hash PQC rows (external-mu provider API survey plus KATs). |
+| 08 | `CKM_ML_DSA_EXTERNAL_MU_GEN` | Same family as row 07 (oracle-pinned `0x403B`) | Same as row 07. |
+| 09 | `CKM_PKCS12_PBE_EXPORT` | Availability leg (`testcases/test_remaining_gaps.py`, `has_mechanism` gate) | Skip: unadvertised; PBE export framing is unimplemented with no demo path. |
+| 10 | `CKM_PKCS12_PBE_IMPORT` | Availability leg (`testcases/test_remaining_gaps.py`, `has_mechanism` gate) | Skip: unadvertised; PBE import framing is unimplemented with no demo path. |
+| 11 | `CKM_RSA_PKCS_NULL` | Availability leg (`testcases/test_remaining_gaps.py`, `has_mechanism` gate) | Skip: unadvertised and no stable code point exists; raw-RSA semantics are served via `CKM_RSA_X_509`. |
+| 12 | `CKM_SHAKE_128` | XOF legs (`testcases/test_extended_mechanisms.py`, oracle-local `0x418`): require the `C_DigestXof` surface | Skip: the XOF surface is absent and the id is unadvertised; KDF extraction is served via `CKM_SHAKE_128_KEY_DERIVATION`. Fixed-output-only advertisement would be dishonest. |
+| 13 | `CKM_SHAKE_256` | Same family as row 12 (oracle-local `0x419`) | Same as row 12. |
+| 14 | `CKM_TWOFISH_ECB` | None: `testcases/test_twofish.py` states ECB is not OASIS and covers CBC/CBC_PAD only | Absent by construction: no ECB legs exist to run; coherent with the unsupported `TWOFISH_CBC` / `TWOFISH_CBC_PAD` rows. |
+
+Carried to the oracle qualification EXPECTED inventories: rows 01,
+05–08, 12–13 skip on unadvertised ids; rows 09–11 skip via the
+`has_mechanism` availability gate; rows 02–04, 14 are
+negative-only or absent by construction. No lane receipt is
+claimed here.
