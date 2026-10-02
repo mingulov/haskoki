@@ -681,6 +681,8 @@ hmacDescs =
       (hmacCodecFor r)
       [ mechRoute OpSign (hrName r) ["A37", "A39"]
       , mechRoute OpVerify (hrName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (hrName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (hrName r) ["A37", "A39"]
       ]
       MechanismSpecific 0 0
   | r <- hmacRecipes
@@ -706,6 +708,8 @@ rsaPkcs1Descs =
       (rsaPkcs1CodecFor r)
       ( [ mechRoute OpSign (rrName r) ["A37", "A39"]
         , mechRoute OpVerify (rrName r) ["A37", "A39"]
+        , mechRoute OpMessageSign (rrName r) ["A37", "A39"]
+        , mechRoute OpMessageVerify (rrName r) ["A37", "A39"]
         ] ++ wrapRoutes (rrName r)
       )
       KeyBits 512 4096
@@ -730,6 +734,8 @@ rsaPssDescs =
       (rsaPssCodecFor r)
       [ mechRoute OpSign (rpName r) ["A37", "A39"]
       , mechRoute OpVerify (rpName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (rpName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (rpName r) ["A37", "A39"]
       ]
       KeyBits 512 4096
   | r <- rsaPssRecipes
@@ -747,6 +753,8 @@ rsaOaepDescs =
       (rsaOaepCodecFor r)
       [ mechRoute OpEncrypt (roName r) ["A16", "A37", "A39"]
       , mechRoute OpDecrypt (roName r) ["A16", "A37", "A39"]
+      , mechRoute OpMessageEncrypt (roName r) ["A16", "A37", "A39"]
+      , mechRoute OpMessageDecrypt (roName r) ["A16", "A37", "A39"]
       , mechRoute OpWrap (roName r) ["A20", "A37", "A39"]
       , mechRoute OpUnwrap (roName r) ["A20", "A37", "A39"]
       ]
@@ -770,6 +778,10 @@ rsaX509Descs =
       , mechRoute OpVerify (rxName r) ["A37", "A39"]
       , mechRoute OpEncrypt (rxName r) ["A16", "A37", "A39"]
       , mechRoute OpDecrypt (rxName r) ["A16", "A37", "A39"]
+      , mechRoute OpMessageSign (rxName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (rxName r) ["A37", "A39"]
+      , mechRoute OpMessageEncrypt (rxName r) ["A16", "A37", "A39"]
+      , mechRoute OpMessageDecrypt (rxName r) ["A16", "A37", "A39"]
       , mechRoute OpWrap (rxName r) ["A20", "A37", "A39"]
       , mechRoute OpUnwrap (rxName r) ["A20", "A37", "A39"]
       ]
@@ -795,6 +807,8 @@ ecdsaDescs =
       (ecdsaCodecFor r)
       [ mechRoute OpSign (reName r) ["A37", "A39"]
       , mechRoute OpVerify (reName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (reName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (reName r) ["A37", "A39"]
       ]
       KeyBits 256 521
   | r <- ecdsaRecipes
@@ -818,6 +832,8 @@ dsaDescs =
       (dsaCodecFor r)
       [ mechRoute OpSign (rdName r) ["A37", "A39"]
       , mechRoute OpVerify (rdName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (rdName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (rdName r) ["A37", "A39"]
       ]
       KeyBits 1024 3072
   | r <- dsaRecipes
@@ -839,6 +855,8 @@ eddsaDescs =
       (eddsaCodecFor r)
       [ mechRoute OpSign (redName r) ["A37", "A39"]
       , mechRoute OpVerify (redName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (redName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (redName r) ["A37", "A39"]
       ]
       KeyBits 256 456
   | r <- eddsaRecipes
@@ -861,6 +879,8 @@ mldsaDescs =
       (mldsaCodecFor r)
       [ mechRoute OpSign (rmlName r) ["A37", "A39"]
       , mechRoute OpVerify (rmlName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (rmlName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (rmlName r) ["A37", "A39"]
       ]
       KeyBytes 1312 2592
   | r <- mldsaRecipes
@@ -883,6 +903,8 @@ slhdsaDescs =
       (slhdsaCodecFor r)
       [ mechRoute OpSign (rslName r) ["A37", "A39"]
       , mechRoute OpVerify (rslName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (rslName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (rslName r) ["A37", "A39"]
       ]
       KeyBytes 32 64
   | r <- slhdsaRecipes
@@ -898,6 +920,8 @@ cmacDescs =
       (cmacCodecFor r)
       [ mechRoute OpSign (rcName r) ["A37", "A39"]
       , mechRoute OpVerify (rcName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (rcName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (rcName r) ["A37", "A39"]
       ]
       MechanismSpecific 0 0
   | r <- cmacRecipes
@@ -913,6 +937,8 @@ des3macDescs =
       (des3macCodecFor r)
       [ mechRoute OpSign (rdmName r) ["A37", "A39"]
       , mechRoute OpVerify (rdmName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (rdmName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (rdmName r) ["A37", "A39"]
       ]
       MechanismSpecific 0 0
   | r <- des3macRecipes
@@ -928,6 +954,8 @@ cbcmacDescs =
       (cbcmacCodecFor r)
       [ mechRoute OpSign (cbmName r) ["A37", "A39"]
       , mechRoute OpVerify (cbmName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (cbmName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (cbmName r) ["A37", "A39"]
       ]
       MechanismSpecific 0 0
   | r <- cbcmacRecipes
@@ -943,6 +971,8 @@ xcbcDescs =
       (xcbcCodecFor r)
       [ mechRoute OpSign (xcbName r) ["A37", "A39"]
       , mechRoute OpVerify (xcbName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (xcbName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (xcbName r) ["A37", "A39"]
       ]
       MechanismSpecific 0 0
   | r <- xcbcRecipes
@@ -958,6 +988,8 @@ gmacDescs =
       (gmacCodecFor r)
       [ mechRoute OpSign (gmName r) ["A37", "A39"]
       , mechRoute OpVerify (gmName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (gmName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (gmName r) ["A37", "A39"]
       ]
       MechanismSpecific 0 0
   | r <- gmacRecipes
@@ -1164,6 +1196,8 @@ rsaX931Descs =
       (rsaX931CodecFor r)
       [ mechRoute OpSign (rx931Name r) ["A37", "A39"]
       , mechRoute OpVerify (rx931Name r) ["A37", "A39"]
+      , mechRoute OpMessageSign (rx931Name r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (rx931Name r) ["A37", "A39"]
       ]
       KeyBits 512 4096
   | r <- rsaX931Recipes
@@ -1179,6 +1213,8 @@ poly1305Descs =
       (poly1305CodecFor r)
       [ mechRoute OpSign (polyName r) ["A37", "A39"]
       , mechRoute OpVerify (polyName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (polyName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (polyName r) ["A37", "A39"]
       ]
       MechanismSpecific 0 0
   | r <- poly1305Recipes
@@ -1213,6 +1249,8 @@ otpDescs =
       (hotpCodecFor r)
       [ mechRoute OpSign (otpName r) ["A37", "A39"]
       , mechRoute OpVerify (otpName r) ["A37", "A39"]
+      , mechRoute OpMessageSign (otpName r) ["A37", "A39"]
+      , mechRoute OpMessageVerify (otpName r) ["A37", "A39"]
       ]
       MechanismSpecific 0 0
   | r <- hotpRecipes
@@ -1426,6 +1464,8 @@ cipherDescs =
       (cipherCodecFor r)
       ( [ mechRoute OpEncrypt (crName r) ["A16", "A37", "A39"]
         , mechRoute OpDecrypt (crName r) ["A16", "A37", "A39"]
+        , mechRoute OpMessageEncrypt (crName r) ["A16", "A37", "A39"]
+        , mechRoute OpMessageDecrypt (crName r) ["A16", "A37", "A39"]
         ] ++ wrapRoutes (crName r)
       )
       KeyBytes (fromIntegral (minimum (crKeyLens r)))
@@ -1589,6 +1629,8 @@ aeadDescs =
       (gcmCodecFor r)
       [ mechRoute OpEncrypt (gcmName r) ["A16", "A37", "A39"]
       , mechRoute OpDecrypt (gcmName r) ["A16", "A37", "A39"]
+      , mechRoute OpMessageEncrypt (gcmName r) ["A16", "A37", "A39"]
+      , mechRoute OpMessageDecrypt (gcmName r) ["A16", "A37", "A39"]
       ]
       KeyBytes 16 32
   | r <- gcmRecipes
@@ -1619,6 +1661,8 @@ chachaStreamDescs =
       (chachaCodecFor r)
       [ mechRoute OpEncrypt (chachaName r) ["A16", "A37", "A39"]
       , mechRoute OpDecrypt (chachaName r) ["A16", "A37", "A39"]
+      , mechRoute OpMessageEncrypt (chachaName r) ["A16", "A37", "A39"]
+      , mechRoute OpMessageDecrypt (chachaName r) ["A16", "A37", "A39"]
       ]
       KeyBytes 32 32
   | r <- chachaRecipes, chachaName r == "CKM_CHACHA20"

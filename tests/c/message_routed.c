@@ -33,6 +33,9 @@ typedef struct {
   CK_C_OpenSession C_OpenSession;
   CK_C_CloseSession C_CloseSession;
   CK_C_CreateObject C_CreateObject;
+  CK_C_GetMechanismList C_GetMechanismList;
+  CK_C_GetMechanismInfo C_GetMechanismInfo;
+  CK_C_GenerateKeyPair C_GenerateKeyPair;
   CK_C_EncryptInit C_EncryptInit;
   CK_C_Encrypt C_Encrypt;
   CK_C_EncryptUpdate C_EncryptUpdate;
@@ -140,6 +143,9 @@ static MessageApi read_common(CK_FUNCTION_LIST_3_0 *table) {
   a.C_OpenSession=table->C_OpenSession;
   a.C_CloseSession=table->C_CloseSession;
   a.C_CreateObject=table->C_CreateObject;
+  a.C_GetMechanismList=table->C_GetMechanismList;
+  a.C_GetMechanismInfo=table->C_GetMechanismInfo;
+  a.C_GenerateKeyPair=table->C_GenerateKeyPair;
   a.C_EncryptInit=table->C_EncryptInit;
   a.C_Encrypt=table->C_Encrypt;
   a.C_EncryptUpdate=table->C_EncryptUpdate;
@@ -190,6 +196,9 @@ static MessageApi read_common(CK_FUNCTION_LIST_3_0 *table) {
   check("C_VerifyMessageBegin","slot-present",a.C_VerifyMessageBegin != NULL);
   check("C_VerifyMessageNext","slot-present",a.C_VerifyMessageNext != NULL);
   check("C_MessageVerifyFinal","slot-present",a.C_MessageVerifyFinal != NULL);
+  check("C_GetMechanismList","slot-present",a.C_GetMechanismList != NULL);
+  check("C_GetMechanismInfo","slot-present",a.C_GetMechanismInfo != NULL);
+  check("C_GenerateKeyPair","slot-present",a.C_GenerateKeyPair != NULL);
   return a;
 }
 static MessageApi read_newest(CK_FUNCTION_LIST_3_2 *table) {
@@ -200,6 +209,9 @@ static MessageApi read_newest(CK_FUNCTION_LIST_3_2 *table) {
   a.C_OpenSession=table->C_OpenSession;
   a.C_CloseSession=table->C_CloseSession;
   a.C_CreateObject=table->C_CreateObject;
+  a.C_GetMechanismList=table->C_GetMechanismList;
+  a.C_GetMechanismInfo=table->C_GetMechanismInfo;
+  a.C_GenerateKeyPair=table->C_GenerateKeyPair;
   a.C_EncryptInit=table->C_EncryptInit;
   a.C_Encrypt=table->C_Encrypt;
   a.C_EncryptUpdate=table->C_EncryptUpdate;
@@ -250,6 +262,9 @@ static MessageApi read_newest(CK_FUNCTION_LIST_3_2 *table) {
   check("C_VerifyMessageBegin","slot-present",a.C_VerifyMessageBegin != NULL);
   check("C_VerifyMessageNext","slot-present",a.C_VerifyMessageNext != NULL);
   check("C_MessageVerifyFinal","slot-present",a.C_MessageVerifyFinal != NULL);
+  check("C_GetMechanismList","slot-present",a.C_GetMechanismList != NULL);
+  check("C_GetMechanismInfo","slot-present",a.C_GetMechanismInfo != NULL);
+  check("C_GenerateKeyPair","slot-present",a.C_GenerateKeyPair != NULL);
   return a;
 }
 static void boundary_legs(MessageApi *a, int lifecycle, const char *phase);
@@ -259,6 +274,7 @@ static void sign_legs(MessageApi *a);
 static void verify_legs(MessageApi *a);
 static void extra_legs(MessageApi *a);
 static void oversize_legs(MessageApi *a);
+static void sweep_legs(MessageApi *a);
 
 int main(int argc, char **argv) {
   if (argc != 2) return 2;
@@ -302,6 +318,7 @@ int main(int argc, char **argv) {
     sign_legs(&a);
     verify_legs(&a);
     extra_legs(&a);
+    sweep_legs(&a);
     if (!proxy) oversize_legs(&a);
     rv("C_Finalize","end",a.C_Finalize(NULL),CKR_OK);
     boundary_legs(&a,1,"post-finalize");
@@ -1114,4 +1131,267 @@ static void oversize_legs(MessageApi *a) {
   free(large);
   close_fixture(a,f);
   directProbe=0;
+}
+
+/* T-M01 flag-to-init sweep: every CKF_MESSAGE_* flag the token
+ * advertises must round-trip into a successful message init, and
+ * rows the D-G1 rule excludes (CCM, ChaCha20-Poly1305, the SSL3
+ * MACs) must carry no message flag. The list count is pinned to
+ * the HASKOKI_MECH_COUNT value (316), independently enforced by
+ * scripts/check-mechanisms.py and the evidence invariants; the
+ * literal keeps this consumer on the pinned headers only. */
+#define SWEEP_MECH_COUNT 316UL
+#define SWEEP_MSG_MASK (CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT|CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY)
+
+static unsigned sweepSwept, sweepAbsent;
+static CK_BYTE aes256Bytes[32] = {0x60,0x3d,0xeb,0x10,0x15,0xca,0x71,0xbe,0x2b,0x73,0xae,0xf0,0x85,0x7d,0x77,0x81,0x1f,0x35,0x2c,0x07,0x3b,0x61,0x08,0xd7,0x2d,0x98,0x10,0xa3,0x09,0x14,0xdf,0xf4};
+static CK_BYTE des3Bytes[24] = {0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,0x01,0x45,0x67,0x89,0xab,0xcd,0xef,0x01,0x23};
+static CK_BYTE poly32Bytes[32] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f};
+static CK_BYTE gcmKeyBytes[16] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f};
+static CK_BYTE gcmNonce[12] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b};
+static CK_BYTE gcmAad[8] = {'a','a','d','-','d','a','t','a'};
+static CK_BYTE gcmPt[16] = {'H','e','l','l','o',' ','G','C','M',' ','w','o','r','l','d','!'};
+static CK_BYTE gcmSealed[32] = {0xdb,0x09,0xcb,0xa2,0x09,0x3b,0xb0,0x17,0x06,0xf2,0x16,0xe5,0x44,0xcf,0x14,0x29,0x39,0xf0,0x38,0x50,0x41,0xaf,0xdf,0xd3,0xa2,0xd5,0xa8,0xe8,0xed,0x69,0xa2,0xe6};
+
+static void sweep_flags(MessageApi *a, CK_MECHANISM_TYPE mech, const char *label, CK_FLAGS want) {
+  CK_MECHANISM_INFO info;
+  char leg[96];
+  CK_RV result=a->C_GetMechanismInfo(tokenSlot,mech,&info);
+  snprintf(leg,sizeof(leg),"%s-info",label);
+  rv("sweep",leg,result,CKR_OK);
+  if (result != CKR_OK) return;
+  snprintf(leg,sizeof(leg),"%s-flags",label);
+  check("sweep",leg,(info.flags & SWEEP_MSG_MASK) == want);
+  printf("sweep:flag/%s/3.%u flags=0x%lx expect=0x%lx\n",label,minor,(unsigned long)(info.flags & SWEEP_MSG_MASK),(unsigned long)want);
+}
+
+static void sweep_cipher(MessageApi *a, CK_SESSION_HANDLE session, const char *label, CK_MECHANISM *m, CK_OBJECT_HANDLE encKey, CK_OBJECT_HANDLE decKey) {
+  char leg[96];
+  snprintf(leg,sizeof(leg),"%s-encrypt-init",label);
+  rv("sweep",leg,a->C_MessageEncryptInit(session,m,encKey),CKR_OK);
+  snprintf(leg,sizeof(leg),"%s-encrypt-final",label);
+  rv("sweep",leg,a->C_MessageEncryptFinal(session),CKR_OK);
+  snprintf(leg,sizeof(leg),"%s-decrypt-init",label);
+  rv("sweep",leg,a->C_MessageDecryptInit(session,m,decKey),CKR_OK);
+  snprintf(leg,sizeof(leg),"%s-decrypt-final",label);
+  rv("sweep",leg,a->C_MessageDecryptFinal(session),CKR_OK);
+  ++sweepSwept;
+}
+
+static void sweep_sign(MessageApi *a, CK_SESSION_HANDLE session, const char *label, CK_MECHANISM *m, CK_OBJECT_HANDLE signKey, CK_OBJECT_HANDLE verifyKey) {
+  char leg[96];
+  snprintf(leg,sizeof(leg),"%s-sign-init",label);
+  rv("sweep",leg,a->C_MessageSignInit(session,m,signKey),CKR_OK);
+  snprintf(leg,sizeof(leg),"%s-sign-final",label);
+  rv("sweep",leg,a->C_MessageSignFinal(session),CKR_OK);
+  snprintf(leg,sizeof(leg),"%s-verify-init",label);
+  rv("sweep",leg,a->C_MessageVerifyInit(session,m,verifyKey),CKR_OK);
+  snprintf(leg,sizeof(leg),"%s-verify-final",label);
+  rv("sweep",leg,a->C_MessageVerifyFinal(session),CKR_OK);
+  ++sweepSwept;
+}
+
+static void sweep_absent(MessageApi *a, CK_MECHANISM_TYPE mech, const char *label) {
+  sweep_flags(a,mech,label,0);
+  ++sweepAbsent;
+}
+
+static void sweep_keypair(MessageApi *a, CK_SESSION_HANDLE session, const char *leg, CK_MECHANISM_TYPE kgm, CK_ATTRIBUTE *pubT, CK_ULONG pubN, CK_ATTRIBUTE *privT, CK_ULONG privN, CK_OBJECT_HANDLE *pub, CK_OBJECT_HANDLE *priv) {
+  CK_MECHANISM m={kgm,NULL,0};
+  CK_RV result=a->C_GenerateKeyPair(session,&m,pubT,pubN,privT,privN,pub,priv);
+  rv("sweep",leg,result,CKR_OK);
+  if (result != CKR_OK) exit(1);
+}
+
+static void sweep_gcm_kat(MessageApi *a, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key) {
+  /* Per-message GCM parameters ride the gcm-params/1 image
+   * (BE64 tag length, BE64 IV length, IV; the AAD travels in the
+   * associated-data slot, never embedded). */
+  static CK_BYTE gcmMsgParams[28] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x0c,0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b};
+  CK_GCM_PARAMS gp={gcmNonce,12,96,NULL,0,128};
+  CK_MECHANISM m={CKM_AES_GCM,(CK_VOID_PTR)&gp,sizeof(gp)};
+  Output sealed, opened;
+  rv("sweep","gcm-kat-encrypt-init",a->C_MessageEncryptInit(session,&m,key),CKR_OK);
+  reset_output(&sealed,64);
+  rv("sweep","gcm-kat-encrypt",a->C_EncryptMessage(session,gcmMsgParams,sizeof(gcmMsgParams),gcmAad,8,gcmPt,16,sealed.bytes+1,&sealed.length),CKR_OK);
+  output_bytes("sweep","gcm-kat-sealed",&sealed,gcmSealed,32);
+  rv("sweep","gcm-kat-encrypt-final",a->C_MessageEncryptFinal(session),CKR_OK);
+  rv("sweep","gcm-kat-decrypt-init",a->C_MessageDecryptInit(session,&m,key),CKR_OK);
+  reset_output(&opened,64);
+  rv("sweep","gcm-kat-decrypt",a->C_DecryptMessage(session,gcmMsgParams,sizeof(gcmMsgParams),gcmAad,8,sealed.bytes+1,sealed.length,opened.bytes+1,&opened.length),CKR_OK);
+  output_bytes("sweep","gcm-kat-opened",&opened,gcmPt,16);
+  rv("sweep","gcm-kat-decrypt-final",a->C_MessageDecryptFinal(session),CKR_OK);
+}
+
+static void sweep_ecdsa_msg(MessageApi *a, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE priv, CK_OBJECT_HANDLE pub) {
+  static CK_BYTE data[32] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f};
+  static CK_BYTE sig[256];
+  CK_ULONG sigLen=sizeof(sig);
+  CK_MECHANISM m={CKM_ECDSA_SHA256,NULL,0};
+  rv("sweep","ecdsa-msg-sign-init",a->C_MessageSignInit(session,&m,priv),CKR_OK);
+  rv("sweep","ecdsa-msg-sign",a->C_SignMessage(session,NULL,0,data,sizeof(data),sig,&sigLen),CKR_OK);
+  check("sweep","ecdsa-msg-siglen",sigLen > 0 && sigLen <= sizeof(sig));
+  rv("sweep","ecdsa-msg-sign-final",a->C_MessageSignFinal(session),CKR_OK);
+  rv("sweep","ecdsa-msg-verify-init",a->C_MessageVerifyInit(session,&m,pub),CKR_OK);
+  rv("sweep","ecdsa-msg-verify",a->C_VerifyMessage(session,NULL,0,data,sizeof(data),sig,sigLen),CKR_OK);
+  rv("sweep","ecdsa-msg-verify-final",a->C_MessageVerifyFinal(session),CKR_OK);
+}
+
+static void sweep_legs(MessageApi *a) {
+  CK_ULONG count=0;
+  CK_RV result=a->C_GetMechanismList(tokenSlot,NULL,&count);
+  rv("sweep","list-count",result,CKR_OK);
+  printf("sweep:list count=%lu expected=316\n",(unsigned long)count);
+  check("sweep","list-count-316",count == SWEEP_MECH_COUNT);
+  {
+    CK_MECHANISM_TYPE mechs[512];
+    CK_ULONG n=512;
+    result=a->C_GetMechanismList(tokenSlot,mechs,&n);
+    rv("sweep","list-fetch",result,CKR_OK);
+    check("sweep","list-fetch-316",n == SWEEP_MECH_COUNT);
+  }
+  sweepSwept=0;
+  sweepAbsent=0;
+  {
+    CK_SESSION_HANDLE s=0;
+    CK_OBJECT_HANDLE aes, des3, hmac20, poly, gcmk, xts;
+    CK_OBJECT_HANDLE rsaPub, rsaPriv, ecPub, ecPriv, edPub, edPriv, mlPub, mlPriv, slhPub, slhPriv;
+    CK_OBJECT_CLASS pcls=CKO_PUBLIC_KEY, scls=CKO_PRIVATE_KEY;
+    CK_KEY_TYPE rkt=CKK_RSA, ekt=CKK_EC, edkt=CKK_EC_EDWARDS;
+    CK_KEY_TYPE mkt=CKK_ML_DSA, skt=CKK_SLH_DSA;
+    CK_BBOOL bFalse=CK_FALSE, bTrue=CK_TRUE;
+    CK_ULONG bits2048=2048;
+    static const CK_BYTE p256oid[]={0x06,0x08,0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07};
+    static CK_BYTE edParams[]={0x06,0x03,0x2B,0x65,0x70};
+    CK_ULONG mset65=CKP_ML_DSA_65, sset1=CKP_SLH_DSA_SHA2_128S;
+    CK_BYTE iv8[8]={0,1,2,3,4,5,6,7};
+    CK_AES_CTR_PARAMS ctr={128,{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}};
+    CK_GCM_PARAMS gcm={gcmNonce,12,96,NULL,0,128};
+    CK_ULONG genLen=16;
+    CK_RSA_PKCS_PSS_PARAMS pss={CKM_SHA256,CKG_MGF1_SHA256,20};
+    CK_RSA_PKCS_OAEP_PARAMS oaep={CKM_SHA_1,CKG_MGF1_SHA1,CKZ_DATA_SPECIFIED,NULL,0};
+    CK_MECHANISM mAesCbc={CKM_AES_CBC,iv,16}, mAesCbcPad={CKM_AES_CBC_PAD,iv,16};
+    CK_MECHANISM mAesEcb={CKM_AES_ECB,NULL,0}, mAesCtr={CKM_AES_CTR,(CK_VOID_PTR)&ctr,sizeof(ctr)};
+    CK_MECHANISM mAesGcm={CKM_AES_GCM,(CK_VOID_PTR)&gcm,sizeof(gcm)};
+    CK_MECHANISM mAesXts={CKM_AES_XTS,iv,16}, mAesKw={CKM_AES_KEY_WRAP,NULL,0};
+    CK_MECHANISM mDes3Cbc={CKM_DES3_CBC,iv8,8};
+    CK_MECHANISM mHmac={CKM_SHA256_HMAC,NULL,0};
+    CK_MECHANISM mHmacGen={CKM_SHA256_HMAC_GENERAL,(CK_VOID_PTR)&genLen,sizeof(genLen)};
+    CK_MECHANISM mCmac={CKM_AES_CMAC,NULL,0}, mGmac={CKM_AES_GMAC,(CK_VOID_PTR)&gcm,sizeof(gcm)};
+    CK_MECHANISM mXcbc={CKM_AES_XCBC_MAC,NULL,0}, mDes3Mac={CKM_DES3_MAC,NULL,0};
+    CK_MECHANISM mPoly={CKM_POLY1305,NULL,0};
+    CK_MECHANISM mRsaPkcs={CKM_SHA256_RSA_PKCS,NULL,0}, mX509={CKM_RSA_X_509,NULL,0};
+    CK_MECHANISM mX931={CKM_RSA_X9_31,NULL,0};
+    CK_MECHANISM mPss={CKM_SHA256_RSA_PKCS_PSS,(CK_VOID_PTR)&pss,sizeof(pss)};
+    CK_MECHANISM mOaep={CKM_RSA_PKCS_OAEP,(CK_VOID_PTR)&oaep,sizeof(oaep)};
+    CK_MECHANISM mEcdsa={CKM_ECDSA_SHA256,NULL,0}, mEd={CKM_EDDSA,NULL,0};
+    CK_MECHANISM mMl={CKM_ML_DSA,NULL,0}, mSlh={CKM_SLH_DSA,NULL,0};
+    CK_ATTRIBUTE rsaPubT[]={
+      {CKA_CLASS,&pcls,sizeof(pcls)},{CKA_KEY_TYPE,&rkt,sizeof(rkt)},
+      {CKA_MODULUS_BITS,&bits2048,sizeof(bits2048)},{CKA_TOKEN,&bFalse,sizeof(bFalse)},
+      {CKA_ENCRYPT,&bTrue,sizeof(bTrue)},{CKA_VERIFY,&bTrue,sizeof(bTrue)}};
+    CK_ATTRIBUTE rsaPrivT[]={
+      {CKA_CLASS,&scls,sizeof(scls)},{CKA_KEY_TYPE,&rkt,sizeof(rkt)},
+      {CKA_TOKEN,&bFalse,sizeof(bFalse)},
+      {CKA_DECRYPT,&bTrue,sizeof(bTrue)},{CKA_SIGN,&bTrue,sizeof(bTrue)}};
+    CK_ATTRIBUTE ecPubT[]={
+      {CKA_CLASS,&pcls,sizeof(pcls)},{CKA_KEY_TYPE,&ekt,sizeof(ekt)},
+      {CKA_EC_PARAMS,(CK_VOID_PTR)p256oid,sizeof(p256oid)},{CKA_TOKEN,&bFalse,sizeof(bFalse)},
+      {CKA_VERIFY,&bTrue,sizeof(bTrue)}};
+    CK_ATTRIBUTE ecPrivT[]={
+      {CKA_CLASS,&scls,sizeof(scls)},{CKA_KEY_TYPE,&ekt,sizeof(ekt)},
+      {CKA_TOKEN,&bFalse,sizeof(bFalse)},{CKA_SIGN,&bTrue,sizeof(bTrue)}};
+    CK_ATTRIBUTE edPubT[]={
+      {CKA_CLASS,&pcls,sizeof(pcls)},{CKA_KEY_TYPE,&edkt,sizeof(edkt)},
+      {CKA_EC_PARAMS,edParams,sizeof(edParams)},{CKA_TOKEN,&bFalse,sizeof(bFalse)},
+      {CKA_VERIFY,&bTrue,sizeof(bTrue)}};
+    CK_ATTRIBUTE edPrivT[]={
+      {CKA_CLASS,&scls,sizeof(scls)},{CKA_KEY_TYPE,&edkt,sizeof(edkt)},
+      {CKA_TOKEN,&bFalse,sizeof(bFalse)},{CKA_SIGN,&bTrue,sizeof(bTrue)}};
+    CK_ATTRIBUTE mlPubT[]={
+      {CKA_CLASS,&pcls,sizeof(pcls)},{CKA_KEY_TYPE,&mkt,sizeof(mkt)},
+      {CKA_PARAMETER_SET,&mset65,sizeof(mset65)},{CKA_TOKEN,&bFalse,sizeof(bFalse)},
+      {CKA_VERIFY,&bTrue,sizeof(bTrue)}};
+    CK_ATTRIBUTE mlPrivT[]={
+      {CKA_CLASS,&scls,sizeof(scls)},{CKA_KEY_TYPE,&mkt,sizeof(mkt)},
+      {CKA_TOKEN,&bFalse,sizeof(bFalse)},{CKA_SIGN,&bTrue,sizeof(bTrue)}};
+    CK_ATTRIBUTE slhPubT[]={
+      {CKA_CLASS,&pcls,sizeof(pcls)},{CKA_KEY_TYPE,&skt,sizeof(skt)},
+      {CKA_PARAMETER_SET,&sset1,sizeof(sset1)},{CKA_TOKEN,&bFalse,sizeof(bFalse)},
+      {CKA_VERIFY,&bTrue,sizeof(bTrue)}};
+    CK_ATTRIBUTE slhPrivT[]={
+      {CKA_CLASS,&scls,sizeof(scls)},{CKA_KEY_TYPE,&skt,sizeof(skt)},
+      {CKA_TOKEN,&bFalse,sizeof(bFalse)},{CKA_SIGN,&bTrue,sizeof(bTrue)}};
+    result=a->C_OpenSession(tokenSlot,CKF_SERIAL_SESSION|CKF_RW_SESSION,NULL,NULL,&s);
+    rv("sweep","open",result,CKR_OK);
+    if (result != CKR_OK) exit(1);
+    aes=make_key(a,s,CKK_AES,aes256Bytes,32,CK_TRUE,CK_TRUE,CK_TRUE,CK_TRUE);
+    des3=make_key(a,s,CKK_DES3,des3Bytes,24,CK_TRUE,CK_TRUE,CK_TRUE,CK_TRUE);
+    hmac20=make_key(a,s,CKK_GENERIC_SECRET,macBytes,20,CK_FALSE,CK_FALSE,CK_TRUE,CK_TRUE);
+    poly=make_key(a,s,CKK_POLY1305,poly32Bytes,32,CK_FALSE,CK_FALSE,CK_TRUE,CK_TRUE);
+    gcmk=make_key(a,s,CKK_AES,gcmKeyBytes,16,CK_TRUE,CK_TRUE,CK_FALSE,CK_FALSE);
+    xts=make_key(a,s,CKK_AES_XTS,aes256Bytes,32,CK_TRUE,CK_TRUE,CK_FALSE,CK_FALSE);
+    sweep_keypair(a,s,"rsa-pair",CKM_RSA_PKCS_KEY_PAIR_GEN,rsaPubT,6,rsaPrivT,5,&rsaPub,&rsaPriv);
+    sweep_keypair(a,s,"ec-pair",CKM_EC_KEY_PAIR_GEN,ecPubT,5,ecPrivT,4,&ecPub,&ecPriv);
+    sweep_keypair(a,s,"ed-pair",CKM_EC_EDWARDS_KEY_PAIR_GEN,edPubT,5,edPrivT,4,&edPub,&edPriv);
+    sweep_keypair(a,s,"mldsa-pair",CKM_ML_DSA_KEY_PAIR_GEN,mlPubT,5,mlPrivT,4,&mlPub,&mlPriv);
+    sweep_keypair(a,s,"slhdsa-pair",CKM_SLH_DSA_KEY_PAIR_GEN,slhPubT,5,slhPrivT,4,&slhPub,&slhPriv);
+    sweep_flags(a,CKM_AES_CBC,"aes-cbc",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
+    sweep_cipher(a,s,"aes-cbc",&mAesCbc,aes,aes);
+    sweep_flags(a,CKM_AES_CBC_PAD,"aes-cbc-pad",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
+    sweep_cipher(a,s,"aes-cbc-pad",&mAesCbcPad,aes,aes);
+    sweep_flags(a,CKM_AES_ECB,"aes-ecb",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
+    sweep_cipher(a,s,"aes-ecb",&mAesEcb,aes,aes);
+    sweep_flags(a,CKM_AES_CTR,"aes-ctr",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
+    sweep_cipher(a,s,"aes-ctr",&mAesCtr,aes,aes);
+    sweep_flags(a,CKM_AES_GCM,"aes-gcm",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
+    sweep_cipher(a,s,"aes-gcm",&mAesGcm,aes,aes);
+    sweep_flags(a,CKM_AES_XTS,"aes-xts",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
+    sweep_cipher(a,s,"aes-xts",&mAesXts,xts,xts);
+    sweep_flags(a,CKM_AES_KEY_WRAP,"aes-kw",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
+    sweep_cipher(a,s,"aes-kw",&mAesKw,aes,aes);
+    sweep_flags(a,CKM_DES3_CBC,"des3-cbc",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
+    sweep_cipher(a,s,"des3-cbc",&mDes3Cbc,des3,des3);
+    sweep_flags(a,CKM_SHA256_HMAC,"hmac-sha256",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"hmac-sha256",&mHmac,hmac20,hmac20);
+    sweep_flags(a,CKM_SHA256_HMAC_GENERAL,"hmac-sha256-general",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"hmac-sha256-general",&mHmacGen,hmac20,hmac20);
+    sweep_flags(a,CKM_AES_CMAC,"aes-cmac",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"aes-cmac",&mCmac,aes,aes);
+    sweep_flags(a,CKM_AES_GMAC,"aes-gmac",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"aes-gmac",&mGmac,aes,aes);
+    sweep_flags(a,CKM_AES_XCBC_MAC,"aes-xcbc-mac",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"aes-xcbc-mac",&mXcbc,aes,aes);
+    sweep_flags(a,CKM_DES3_MAC,"des3-mac",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"des3-mac",&mDes3Mac,des3,des3);
+    sweep_flags(a,CKM_POLY1305,"poly1305",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"poly1305",&mPoly,poly,poly);
+    sweep_flags(a,CKM_SHA256_RSA_PKCS,"rsa-pkcs",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"rsa-pkcs",&mRsaPkcs,rsaPriv,rsaPub);
+    sweep_flags(a,CKM_RSA_X_509,"rsa-x509",SWEEP_MSG_MASK);
+    sweep_sign(a,s,"rsa-x509",&mX509,rsaPriv,rsaPub);
+    sweep_cipher(a,s,"rsa-x509",&mX509,rsaPub,rsaPriv);
+    sweep_flags(a,CKM_RSA_X9_31,"rsa-x931",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"rsa-x931",&mX931,rsaPriv,rsaPub);
+    sweep_flags(a,CKM_SHA256_RSA_PKCS_PSS,"rsa-pss",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"rsa-pss",&mPss,rsaPriv,rsaPub);
+    sweep_flags(a,CKM_RSA_PKCS_OAEP,"rsa-oaep",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
+    sweep_cipher(a,s,"rsa-oaep",&mOaep,rsaPub,rsaPriv);
+    sweep_flags(a,CKM_ECDSA_SHA256,"ecdsa-sha256",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"ecdsa-sha256",&mEcdsa,ecPriv,ecPub);
+    sweep_flags(a,CKM_EDDSA,"eddsa",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"eddsa",&mEd,edPriv,edPub);
+    sweep_flags(a,CKM_ML_DSA,"ml-dsa",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"ml-dsa",&mMl,mlPriv,mlPub);
+    sweep_flags(a,CKM_SLH_DSA,"slh-dsa",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_sign(a,s,"slh-dsa",&mSlh,slhPriv,slhPub);
+    sweep_absent(a,CKM_AES_CCM,"aes-ccm");
+    sweep_absent(a,CKM_CHACHA20_POLY1305,"chacha20-poly1305");
+    sweep_absent(a,CKM_SSL3_MD5_MAC,"ssl3-md5-mac");
+    sweep_absent(a,CKM_SSL3_SHA1_MAC,"ssl3-sha1-mac");
+    sweep_gcm_kat(a,s,gcmk);
+    sweep_ecdsa_msg(a,s,ecPriv,ecPub);
+    printf("sweep:summary swept=%u absent=%u\n",sweepSwept,sweepAbsent);
+    rv("sweep","close",a->C_CloseSession(s),CKR_OK);
+  }
 }

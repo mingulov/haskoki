@@ -26,7 +26,8 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Engine.Backend
-  ( BackendError (..)
+  ( AeadSpec (..)
+  , BackendError (..)
   , BackendEnv
   , CipherSpec (C_AES256_CBC, C_AES256_CTR, C_AES256_CTS, C_AES256_CFB128, C_AES256_OFB, C_AES256_KW, C_AES256_KWP, C_AES128_XTS)
   , CryptoBackend (..)
@@ -97,6 +98,7 @@ import Haskoki.Operation.Signature
   )
 import Haskoki.Outcome (ResourceRelease (..))
 import Haskoki.Recipe.Cipher (decodeCtrParams, encodeCtrParams)
+import Haskoki.Recipe.Gcm (decodeGcmParams, encodeGcmParams)
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
 import Haskoki.Registry
   ( MechanismId (..)
@@ -137,6 +139,8 @@ spec = testGroup "operations over the real backend"
   , testCase "denied init plans no crypto" caseDeniedPlansNothing
   , testCase "message aes KAT through message slots" caseMessageAesKat
   , testCase "message hmac sign/verify through slots" caseMessageHmac
+  , testCase "message gcm+aad KAT through message slots" caseMessageGcmAad
+  , testCase "message ecdsa sign/verify through slots" caseMessageEcdsa
   ]
 
 -- ---------------------------------------------------------------------------
@@ -192,14 +196,29 @@ ecPubDer = hex "3059301306072a8648ce3d020106082a8648ce3d03010703420004a348bab88d
 ecSigRaw :: ByteString
 ecSigRaw = hex "debdbb00072c928d38bf43791d32f0eefe8a562d8444869adabdf77820cbed4963cc0a678a74c3e006c7387907210825f12920ff5f15b96709291e48b84ddc21"
 
+-- | AES-GCM message vector (the OpenSSLSpec caseAeadReal root:
+-- Python cryptography AESGCM): key 00..0f, nonce 00..0b, aad
+-- "aad-data", pt "Hello GCM world!".
+gcmKatKey, gcmNonce, gcmAad, gcmPt, gcmCt, gcmTag :: ByteString
+gcmKatKey = hex "000102030405060708090a0b0c0d0e0f"
+gcmNonce = hex "000102030405060708090a0b"
+gcmAad = "aad-data"
+gcmPt = "Hello GCM world!"
+gcmCt = hex "db09cba2093bb01706f216e544cf1429"
+gcmTag = hex "39f0385041afdfd3a2d5a8e8ed69a2e6"
+
+gcmAead :: AeadSpec
+gcmAead = AeadSpec "AES-128-GCM" 12 16
+
 -- ---------------------------------------------------------------------------
 -- Fixtures: registry, model, sessions
 -- ---------------------------------------------------------------------------
 
-sha256Mech, hmacMech, aesCbcMech, ecdsaMech, aesCtrMech, aesCtsMech, aesCfb128Mech, aesOfbMech, aesKwMech, aesKwpMech, aesXtsMech :: MechanismId
+sha256Mech, hmacMech, aesCbcMech, ecdsaMech, aesCtrMech, aesCtsMech, aesCfb128Mech, aesOfbMech, aesKwMech, aesKwpMech, aesXtsMech, gcmMech :: MechanismId
 sha256Mech = MechanismId 0x250
 hmacMech = MechanismId 0x251
 aesCbcMech = MechanismId 0x1082
+gcmMech = MechanismId 0x1087
 ecdsaMech = MechanismId 0x1041
 aesCtrMech = MechanismId 0x1086
 aesCtsMech = MechanismId 0x1089
@@ -216,11 +235,12 @@ aesXtsMech = MechanismId 0x1071
 smokeRegistry :: Registry
 smokeRegistry = curatedRegistry
 
-hmacOid, aesOid, ecPrivOid, ecPubOid :: ObjectId
+hmacOid, aesOid, ecPrivOid, ecPubOid, gcmOid :: ObjectId
 hmacOid = ObjectId 11
 aesOid = ObjectId 12
 ecPrivOid = ObjectId 13
 ecPubOid = ObjectId 14
+gcmOid = ObjectId 15
 
 mkObject :: ObjectId -> ObjectState
 mkObject oid = ObjectState
@@ -235,12 +255,13 @@ mkObject oid = ObjectState
 
 smokeModel :: Model
 smokeModel = emptyModel
-  { mObjects = Map.fromList [(oid, mkObject oid) | oid <- [hmacOid, aesOid, ecPrivOid, ecPubOid]]
+  { mObjects = Map.fromList [(oid, mkObject oid) | oid <- [hmacOid, aesOid, ecPrivOid, ecPubOid, gcmOid]]
   , mHandles = Map.fromList
       [ (ExternalHandle 101, HandleBinding hmacOid (Generation 1))
       , (ExternalHandle 102, HandleBinding aesOid (Generation 1))
       , (ExternalHandle 103, HandleBinding ecPrivOid (Generation 1))
       , (ExternalHandle 104, HandleBinding ecPubOid (Generation 1))
+      , (ExternalHandle 105, HandleBinding gcmOid (Generation 1))
       ]
   }
 
@@ -269,6 +290,8 @@ smokeEnv = OpEnv
       , (aesXtsMech, OpDecrypt)
       , (ecdsaMech, OpSign)
       , (ecdsaMech, OpVerify)
+      , (gcmMech, OpEncrypt)
+      , (gcmMech, OpDecrypt)
       ]
   , oeModel = smokeModel
   }
@@ -284,11 +307,12 @@ smokeSession = SessionState
   , ssOps = emptySessionOps
   }
 
-hmacKeyP, aesKeyP, ecPrivKeyP, ecPubKeyP :: KeyPolicy
+hmacKeyP, aesKeyP, ecPrivKeyP, ecPubKeyP, gcmKeyP :: KeyPolicy
 hmacKeyP = KeyPolicy (ExternalHandle 101) [OpSign, OpVerify] False
 aesKeyP = KeyPolicy (ExternalHandle 102) [OpEncrypt, OpDecrypt] False
 ecPrivKeyP = KeyPolicy (ExternalHandle 103) [OpSign] False
 ecPubKeyP = KeyPolicy (ExternalHandle 104) [OpVerify] False
+gcmKeyP = KeyPolicy (ExternalHandle 105) [OpEncrypt, OpDecrypt] False
 
 -- ---------------------------------------------------------------------------
 -- The driver: planned effects answered by the real backend
@@ -300,6 +324,7 @@ keyFor oid
   | oid == aesOid = Just (KeyBytes aes256Key)
   | oid == ecPrivOid = Just (KeyDer ecPrivDer)
   | oid == ecPubOid = Just (KeyDer ecPubDer)
+  | oid == gcmOid = Just (KeyBytes gcmKatKey)
   | otherwise = Nothing
 
 toBytes :: EngineResult ByteString -> CryptoResult
@@ -321,6 +346,16 @@ toVerifyUnit :: EngineResult () -> CryptoResult
 toVerifyUnit (EngineOk ()) = GotValid True
 toVerifyUnit (EngineFail (BackendAuthFailed _)) = GotValid False
 toVerifyUnit (EngineFail err) = GotCryptoError (CryptoFailed (show err))
+
+-- | Sealed answers: ciphertext and tag concatenate (the production
+-- driver's sealed shape); decrypt splits the trailing tag width.
+toSealed :: EngineResult (ByteString, ByteString) -> CryptoResult
+toSealed (EngineOk (ct, tag)) = GotBytes (ct <> tag)
+toSealed (EngineFail (BackendUnsupported o w)) =
+  GotCryptoError (CryptoUnsupported o w)
+toSealed (EngineFail (BackendBadKey o w)) =
+  GotCryptoError (CryptoBadKey o w)
+toSealed (EngineFail err) = GotCryptoError (CryptoFailed (show err))
 
 smokeEncoding :: ByteString -> String
 smokeEncoding params
@@ -384,24 +419,35 @@ runRealEffect env fx = case fx of
   -- arrives per message, not from init). The backend is not
   -- AEAD, so bound AAD is honestly refused, never ignored.
   FxMessageCipher DirEncrypt mech (Just oid) params aad input
+    | mech == gcmMech, Just key <- keyFor oid
+    , Just (nonce, _, _) <- decodeGcmParams params ->
+        toSealed <$> aeadEncrypt env gcmAead key nonce aad input
     | mech == aesCbcMech, Just key <- keyFor oid, BS.null aad ->
         toBytes <$> cipherEncrypt env C_AES256_CBC key params input
     | mech == aesCbcMech, Just _ <- keyFor oid ->
         pure (GotCryptoError (CryptoUnsupported "smoke driver" "non-AEAD backend takes no AAD"))
     | otherwise -> pure (badKey fx)
   FxMessageCipher DirDecrypt mech (Just oid) params aad input
+    | mech == gcmMech, Just key <- keyFor oid
+    , Just (nonce, _, _) <- decodeGcmParams params, BS.length input >= 16 ->
+        let (ct, tag) = BS.splitAt (BS.length input - 16) input
+        in toBytes <$> aeadDecrypt env gcmAead key nonce aad ct tag
     | mech == aesCbcMech, Just key <- keyFor oid, BS.null aad ->
         toBytes <$> cipherDecrypt env C_AES256_CBC key params input
     | mech == aesCbcMech, Just _ <- keyFor oid ->
         pure (GotCryptoError (CryptoUnsupported "smoke driver" "non-AEAD backend takes no AAD"))
     | otherwise -> pure (badKey fx)
-  FxMessageSign mech (Just oid) _params input
+  FxMessageSign mech (Just oid) params input
     | mech == hmacMech, Just key <- keyFor oid ->
         toBytes <$> macSign env (MacHMAC D_SHA256 Nothing) key input
+    | mech == ecdsaMech, Just key <- keyFor oid ->
+        toBytes <$> sign env (SigECDSA (EcSpec "P-256" (smokeEncoding params)) (Just D_SHA256)) key input
     | otherwise -> pure (badKey fx)
-  FxMessageVerify mech (Just oid) _params input sig
+  FxMessageVerify mech (Just oid) params input sig
     | mech == hmacMech, Just key <- keyFor oid ->
         toVerifyBool <$> macVerify env (MacHMAC D_SHA256 Nothing) key input sig
+    | mech == ecdsaMech, Just key <- keyFor oid ->
+        toVerifyUnit <$> verify env (SigECDSA (EcSpec "P-256" (smokeEncoding params)) (Just D_SHA256)) key input sig
     | otherwise -> pure (badKey fx)
   _ -> pure (unsupported fx)
   where
@@ -1041,4 +1087,101 @@ caseMessageHmac = withBackend $ \env -> do
       let (o2, final) = finalizeMessage MsgVerify o
       assertEqual "outer final ok" CKR_OK (soCode final)
       assertEqual "slot freed" [] (activeSlots o2)
+    other -> assertFailure ("expected one effect, got " ++ show other)
+
+caseMessageGcmAad :: IO ()
+caseMessageGcmAad = withBackend $ \env -> do
+  -- Init carries the full recipe params; per-message delivery
+  -- rebinds the nonce while the AAD travels bound alongside.
+  let gcmInit = encodeGcmParams gcmNonce gcmAad 16
+      gcmOne = encodeGcmParams gcmNonce BS.empty 16
+      eArgs = InitArgs OpEncrypt gcmMech gcmInit (Just gcmKeyP)
+        (Just (CipherSpec 1 False)) Nothing
+      (ops0, i0) = initMessageOperation MsgEncrypt smokeEnv emptySessionOps smokeSession eArgs
+  assertEqual "message gcm init ok" CKR_OK (ioCode i0)
+  -- One-shot seal hits the pinned ct||tag vector; the slot survives.
+  let (ops1, _, o1) = planMessageOneShot ops0 smokeSession MsgEncrypt "sealed"
+        (MsgOneShotCipher gcmOne gcmAad gcmPt)
+  ops2 <- case soEffects o1 of
+    [fx@(FxMessageCipher _ _ _ _ _ _)] -> do
+      out <- expectBytes env fx
+      let (o, fin) = finishMessage MsgEncrypt ops1 SlotEncrypt "sealed"
+            (GotBytes out) (IntentBuffer 64)
+      assertEqual "encrypt ok" CKR_OK (soCode fin)
+      assertEqual "KAT sealed" (Just (gcmCt <> gcmTag)) (stagedBytes fin)
+      assertEqual "slot kept" [SlotEncrypt] (activeSlots o)
+      pure o
+    other -> assertFailure ("expected one effect, got " ++ show other)
+  let (ops3, final) = finalizeMessage MsgEncrypt ops2
+  assertEqual "outer final ok" CKR_OK (soCode final)
+  assertEqual "outer final frees" [] (activeSlots ops3)
+  -- Decrypt opens the sealed bytes back to the plaintext.
+  let dArgs = InitArgs OpDecrypt gcmMech gcmInit (Just gcmKeyP)
+        (Just (CipherSpec 1 False)) Nothing
+      (opsD0, _) = initMessageOperation MsgDecrypt smokeEnv emptySessionOps smokeSession dArgs
+      (opsD1, _, oD) = planMessageOneShot opsD0 smokeSession MsgDecrypt "pt"
+        (MsgOneShotCipher gcmOne gcmAad (gcmCt <> gcmTag))
+  opsD2 <- case soEffects oD of
+    [fx] -> do
+      out <- expectBytes env fx
+      let (o, fin) = finishMessage MsgDecrypt opsD1 SlotDecrypt "pt"
+            (GotBytes out) (IntentBuffer 64)
+      assertEqual "decrypt ok" CKR_OK (soCode fin)
+      assertEqual "roundtrip" (Just gcmPt) (stagedBytes fin)
+      pure o
+    other -> assertFailure ("expected one effect, got " ++ show other)
+  -- A tampered tag fails closed (never bytes, never silent).
+  let bad = gcmCt <> BS.pack [BS.head gcmTag `xor` 1] <> BS.tail gcmTag
+      (opsD3, _, oT) = planMessageOneShot opsD2 smokeSession MsgDecrypt "pt"
+        (MsgOneShotCipher gcmOne gcmAad bad)
+  case soEffects oT of
+    [fx] -> do
+      res <- runRealEffect env fx
+      case res of
+        GotBytes _ -> assertFailure "tampered tag sealed bytes"
+        _ -> pure ()
+      let (o, fin) = finishMessage MsgDecrypt opsD3 SlotDecrypt "pt"
+            res (IntentBuffer 64)
+      assertBool "tamper fails closed" (soCode fin /= CKR_OK)
+      assertEqual "context survives" [SlotDecrypt] (activeSlots o)
+    other -> assertFailure ("expected one effect, got " ++ show other)
+
+caseMessageEcdsa :: IO ()
+caseMessageEcdsa = withBackend $ \env -> do
+  -- Fresh DER sign through the message slot (ECDSA signs are
+  -- randomized: the KAT is the verify roundtrip, not fixed bytes).
+  let sArgs = InitArgs OpSign ecdsaMech BS.empty (Just ecPrivKeyP) Nothing Nothing
+      (ops0, i0) = initMessageOperation MsgSign smokeEnv emptySessionOps smokeSession sArgs
+  assertEqual "message ecdsa init ok" CKR_OK (ioCode i0)
+  let (ops1, _, o1) = planMessageOneShot ops0 smokeSession MsgSign "sig"
+        (MsgOneShotSign BS.empty ecMsg)
+  (opsS, sig) <- case soEffects o1 of
+    [fx@(FxMessageSign _ _ _ _)] -> do
+      out <- expectBytes env fx
+      let (o, fin) = finishMessage MsgSign ops1 SlotSign "sig"
+            (GotBytes out) (IntentBuffer 128)
+      assertEqual "sign ok" CKR_OK (soCode fin)
+      assertEqual "slot kept" [SlotSign] (activeSlots o)
+      case stagedBytes fin of
+        Just s -> pure (o, s)
+        Nothing -> assertFailure "expected staged signature"
+    other -> assertFailure ("expected one effect, got " ++ show other)
+  assertBool "nonempty signature" (not (BS.null sig))
+  let (ops2, final) = finalizeMessage MsgSign opsS
+  assertEqual "outer final ok" CKR_OK (soCode final)
+  assertEqual "outer final frees" [] (activeSlots ops2)
+  let vArgs = InitArgs OpVerify ecdsaMech BS.empty (Just ecPubKeyP) Nothing Nothing
+      (ops3, _) = initMessageOperation MsgVerify smokeEnv emptySessionOps smokeSession vArgs
+      (ops4, _, o2) = planMessageOneShot ops3 smokeSession MsgVerify "vrf"
+        (MsgOneShotVerify BS.empty ecMsg sig)
+  case soEffects o2 of
+    [fx] -> do
+      res <- runRealEffect env fx
+      let (o, fin) = finishMessage MsgVerify ops4 SlotVerify "vrf"
+            res (IntentBuffer 0)
+      assertEqual "verify ok" CKR_OK (soCode fin)
+      assertEqual "slot kept" [SlotVerify] (activeSlots o)
+      let (o2', final') = finalizeMessage MsgVerify o
+      assertEqual "outer final ok" CKR_OK (soCode final')
+      assertEqual "slot freed" [] (activeSlots o2')
     other -> assertFailure ("expected one effect, got " ++ show other)

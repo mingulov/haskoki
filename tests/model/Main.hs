@@ -27,6 +27,7 @@ import qualified KeyImportSpec
 import qualified KeyManagementSpec
 import qualified LifecycleSpec
 import qualified MechanismExhaustivenessSpec
+import qualified MessageFlagBatterySpec
 import qualified MessageSpec
 import qualified MultiSessionSpec
 import qualified MultiTokenSpec
@@ -143,6 +144,7 @@ main = defaultMain $ testGroup "haskoki model + lifecycle"
   , RecipeWrapCompSpec.spec
   , RegistrySpec.spec
   , MechanismExhaustivenessSpec.spec
+  , MessageFlagBatterySpec.spec
   , RoutingSpec.spec
   , KeyImportSpec.spec
   , KeyManagementSpec.spec

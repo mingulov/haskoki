@@ -516,11 +516,11 @@ caseJsonProjection = do
   let expectedHead =
         [ "schema 1"
         , "mech|0x00000250|CKM_SHA256||digest|no-params/1|not-applicable:0-0|digest:A16,A37,A39"
-        , "mech|0x00000251|CKM_SHA256_HMAC||mac|no-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39"
+        , "mech|0x00000251|CKM_SHA256_HMAC||mac|no-params/1|mechanism-specific:0-0|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;verify:A37,A39"
         , "mech|0x00001080|CKM_AES_KEY_GEN||keygen|no-params/1|bits:128-256|generate-key:A37"
         , "mech|0x00000350|CKM_GENERIC_SECRET_KEY_GEN||keygen|no-params/1|bits:8-2040|generate-key:A37"
-        , "mech|0x00001082|CKM_AES_CBC||cipher|iv-bytes/1|bytes:16-32|authenticated-unwrap:A23,A37;authenticated-wrap:A23,A37;decrypt:A16,A37,A39;encrypt:A16,A37,A39;unwrap:A20,A37,A39;wrap:A20,A37,A39"
-        , "mech|0x00001087|CKM_AES_GCM||aead|gcm-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39"
+        , "mech|0x00001082|CKM_AES_CBC||cipher|iv-bytes/1|bytes:16-32|authenticated-unwrap:A23,A37;authenticated-wrap:A23,A37;decrypt:A16,A37,A39;encrypt:A16,A37,A39;message-decrypt:A16,A37,A39;message-encrypt:A16,A37,A39;unwrap:A20,A37,A39;wrap:A20,A37,A39"
+        , "mech|0x00001087|CKM_AES_GCM||aead|gcm-params/1|bytes:16-32|decrypt:A16,A37,A39;encrypt:A16,A37,A39;message-decrypt:A16,A37,A39;message-encrypt:A16,A37,A39"
         ]
       dumpLines = T.lines (dumpRegistry curatedRegistry)
   -- Order-free: behavior sorts by id, so new low-id promotions sort
@@ -634,7 +634,8 @@ caseAesCbcWrap = do
   case lookupBehavior reg mid of
     Nothing -> assertFailure "AES-CBC behavior must resolve"
     Just d -> assertEqual "AES-CBC routes"
-      [OpEncrypt, OpDecrypt, OpWrap, OpUnwrap, OpAuthWrap, OpAuthUnwrap]
+      [OpEncrypt, OpDecrypt, OpMessageEncrypt, OpMessageDecrypt
+      , OpWrap, OpUnwrap, OpAuthWrap, OpAuthUnwrap]
       (map routeOperation (descRoutes d))
   let caps = mkCapabilities [(mid, OpWrap), (mid, OpUnwrap)]
   assertBool "wrap executable" (isExecutable reg caps mid OpWrap)
@@ -684,18 +685,19 @@ caseCipherPromoted = do
       assertEqual ("supported " ++ show mid) StatusSupported (describeStatus reg mid)
       case lookupBehavior reg mid of
         Nothing -> assertFailure ("behavior must resolve " ++ show mid)
-        Just d -> assertEqual ("cipher routes " ++ show mid) [OpEncrypt, OpDecrypt]
+        Just d -> assertEqual ("cipher routes " ++ show mid)
+          [OpEncrypt, OpDecrypt, OpMessageEncrypt, OpMessageDecrypt]
           (map routeOperation (descRoutes d))
       mapM_ (\op -> assertBool ("executable " ++ show mid ++ " " ++ show op)
         (isExecutable reg (mkCapabilities [(mid, op)]) mid op))
-        [OpEncrypt, OpDecrypt]
+        [OpEncrypt, OpDecrypt, OpMessageEncrypt, OpMessageDecrypt]
 
 caseRsaPromoted :: IO ()
 caseRsaPromoted = do
   -- The 12 RSA v1.5 behaviors resolve with the sign/verify
   -- routes and execute under caps; the raw row additionally
   -- serves wrap/unwrap (the digest rows are signature-only).
-  mapM_ (checkOne [OpSign, OpVerify])
+  mapM_ (checkOne [OpSign, OpVerify, OpMessageSign, OpMessageVerify])
     [ MechanismId 0x05
     , MechanismId 0x06, MechanismId 0x08
     , MechanismId 0x40, MechanismId 0x41
@@ -703,7 +705,8 @@ caseRsaPromoted = do
     , MechanismId 0x60, MechanismId 0x61
     , MechanismId 0x62, MechanismId 0x66
     ]
-  checkOne [OpSign, OpVerify, OpWrap, OpUnwrap] (MechanismId 0x01)
+  checkOne [OpSign, OpVerify, OpMessageSign, OpMessageVerify
+           , OpWrap, OpUnwrap] (MechanismId 0x01)
   where
     checkOne ops mid = do
       let reg = curatedRegistry
@@ -721,13 +724,14 @@ caseRsaPssOaepPromoted = do
   -- The 10 PSS behaviors resolve with sign/verify routes and
   -- the OAEP behavior with encrypt/decrypt/wrap/unwrap routes;
   -- all execute under caps.
-  mapM_ (checkOne [OpSign, OpVerify])
+  mapM_ (checkOne [OpSign, OpVerify, OpMessageSign, OpMessageVerify])
     [ MechanismId 0x0d, MechanismId 0x0e
     , MechanismId 0x43, MechanismId 0x44, MechanismId 0x45
     , MechanismId 0x47, MechanismId 0x63, MechanismId 0x64
     , MechanismId 0x65, MechanismId 0x67
     ]
-  checkOne [OpEncrypt, OpDecrypt, OpWrap, OpUnwrap] (MechanismId 0x09)
+  checkOne [OpEncrypt, OpDecrypt, OpMessageEncrypt, OpMessageDecrypt
+           , OpWrap, OpUnwrap] (MechanismId 0x09)
   where
     checkOne ops mid = do
       let reg = curatedRegistry
@@ -754,11 +758,12 @@ caseEcdsaPromoted = do
       assertEqual ("supported " ++ show mid) StatusSupported (describeStatus reg mid)
       case lookupBehavior reg mid of
         Nothing -> assertFailure ("behavior must resolve " ++ show mid)
-        Just d -> assertEqual ("ecdsa routes " ++ show mid) [OpSign, OpVerify]
+        Just d -> assertEqual ("ecdsa routes " ++ show mid)
+          [OpSign, OpVerify, OpMessageSign, OpMessageVerify]
           (map routeOperation (descRoutes d))
       mapM_ (\op -> assertBool ("executable " ++ show mid ++ " " ++ show op)
         (isExecutable reg (mkCapabilities [(mid, op)]) mid op))
-        [OpSign, OpVerify]
+        [OpSign, OpVerify, OpMessageSign, OpMessageVerify]
 
 caseEcdhPromoted :: IO ()
 caseEcdhPromoted = do
@@ -790,11 +795,12 @@ caseCmacPromoted = do
       assertEqual ("supported " ++ show mid) StatusSupported (describeStatus reg mid)
       case lookupBehavior reg mid of
         Nothing -> assertFailure ("behavior must resolve " ++ show mid)
-        Just d -> assertEqual ("cmac routes " ++ show mid) [OpSign, OpVerify]
+        Just d -> assertEqual ("cmac routes " ++ show mid)
+          [OpSign, OpVerify, OpMessageSign, OpMessageVerify]
           (map routeOperation (descRoutes d))
       mapM_ (\op -> assertBool ("executable " ++ show mid ++ " " ++ show op)
         (isExecutable reg (mkCapabilities [(mid, op)]) mid op))
-        [OpSign, OpVerify]
+        [OpSign, OpVerify, OpMessageSign, OpMessageVerify]
 
 caseKdfPromoted :: IO ()
 caseKdfPromoted = do
@@ -826,7 +832,7 @@ caseOtpPromoted = do
   -- the KEY_GEN behavior with the generate-key route; both execute
   -- under caps.
   mapM_ checkOne
-    [ (MechanismId 0x291, [OpSign, OpVerify])
+    [ (MechanismId 0x291, [OpSign, OpVerify, OpMessageSign, OpMessageVerify])
     , (MechanismId 0x290, [OpGenerateKey])
     ]
   where
