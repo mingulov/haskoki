@@ -1,6 +1,6 @@
 {- | Message route/flag battery (acceptance case T-M01).
 
-D-G1: a tested row gains a @message-*@ route iff (a) its classic
+DG1: a tested row gains a @message-*@ route iff (a) its classic
 counterpart route is tested, (b) the driver @FxMessage*@ arm serves
 the mechanism (@src/Haskoki/Engine/Driver.hs:1944-2072@, never the
 @unsupported fx@ fallthrough), and (c) 'initMessageOperation'
@@ -11,7 +11,7 @@ unadvertised.
 Legs (each a named tasty case):
 
 * route rule: for every tested row and message family, the
-  @message-*@ route is present iff the D-G1 rule holds (missing and
+  @message-*@ route is present iff the DG1 rule holds (missing and
   unearned routes both fail loudly);
 * route init: every cataloged @message-*@ route initializes @CKR_OK@
   via 'initMessageOperation' under full caps;
@@ -127,7 +127,7 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "message flag battery (T-M01)"
-  [ testCase "route rule: message route iff D-G1 holds" caseRouteRule
+  [ testCase "route rule: message route iff DG1 holds" caseRouteRule
   , testCase "route init: every message route initializes CKR_OK" caseRouteInit
   , testCase "flag correspondence: CKF_MESSAGE_* has its route and vice versa" caseFlags
   , testCase "no CKF_MULTI_MESSAGE advertised" caseNoMulti
@@ -366,7 +366,7 @@ argsFor op mid params = InitArgs
   }
 
 -- ---------------------------------------------------------------------------
--- D-G1 rule (b): the driver FxMessage* arm serves the mechanism
+-- DG1 rule (b): the driver FxMessage* arm serves the mechanism
 -- ---------------------------------------------------------------------------
 
 -- | Message-cipher service: the exact @FxMessageCipher@ mechanism
@@ -453,7 +453,7 @@ guarded label act = do
 -- The battery
 -- ---------------------------------------------------------------------------
 
--- | The D-G1 rule per (row, family): present iff (a) classic tested
+-- | The DG1 rule per (row, family): present iff (a) classic tested
 -- and (b) driver-served and (c) message-init OK.
 checkRouteRule :: [MechRow] -> [String]
 checkRouteRule mechs = concatMap checkOne mechs
@@ -597,7 +597,7 @@ caseMutation = guarded "mutation" $ do
       -- fail the correspondence check.
           mutatedFlags = Map.insert (mrId keygen) ["CKF_MESSAGE_SIGN"] flagMap
           flagHits = checkFlags mechs mutatedFlags
-          -- Detection must name the flipped row: on a red tree the
+          -- Detection must name the flipped row: on a failing tree the
           -- re-check also reports the live catalog's own gaps.
           rowHit hits = any ("CKM_RSA_PKCS_KEY_PAIR_GEN" `isInfixOf`) hits
       assertNoMismatches "mutation detection"

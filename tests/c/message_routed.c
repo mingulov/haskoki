@@ -1135,7 +1135,7 @@ static void oversize_legs(MessageApi *a) {
 
 /* T-M01 flag-to-init sweep: every CKF_MESSAGE_* flag the token
  * advertises must round-trip into a successful message init, and
- * rows the D-G1 rule excludes (CCM, ChaCha20-Poly1305, the SSL3
+ * rows the DG1 rule excludes (CCM, ChaCha20-Poly1305, the SSL3
  * MACs) must carry no message flag. The list count is pinned to
  * the HASKOKI_MECH_COUNT value (316), independently enforced by
  * scripts/check-mechanisms.py and the evidence invariants; the
