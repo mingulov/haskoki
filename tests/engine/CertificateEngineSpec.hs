@@ -170,6 +170,7 @@ spec envLock = testGroup "Certificates"
     , testCase "caseDurabilityFaults" (caseDurabilityFaults envLock)
     , testCase "caseDurabilityConflict" (caseDurabilityConflict envLock)
     , testCase "caseDurabilityInterrupt" (caseDurabilityInterrupt envLock)
+    , testCase "caseKeylessHighWater" (caseKeylessHighWater envLock)
     ]
   , testGroup "T-C03"
     [ testCase "caseTrustedNumericModeled" (caseTrustedNumericModeled envLock)
@@ -412,7 +413,12 @@ caseReadOnlyCycles envLock = do
         let flushTags = [tag | (isF, tag) <- tapeAfter, isF]
         forM_ flushTags $ \tag ->
           say rep ("phase=live kind=flush gen=" ++ show gen ++ " result=" ++ tag)
-        assertEqual ("flush committed gen " ++ show gen) ["committed"] flushTags
+        -- Conditional flush (T-C02f): gen 0's creates are covered by
+        -- live upserts (no close commit); gens 1-3 finds mint fresh
+        -- handles, so the handle high-water flush fires (this is
+        -- what keeps the generations disjoint below).
+        assertEqual ("flush committed gen " ++ show gen)
+          (if gen == 0 then [] else ["committed"]) flushTags
   forM_ [0, 1, 2, 3] runGen
   sets <- readIORef genHandles
   assertDisjoint "readonly cycles" sets
@@ -434,7 +440,7 @@ caseDurabilityFaults envLock = do
       disarm = writeIORef (cpFault probe) (\delta backing -> backing delta)
   preRev <- newIORef (0 :: Int)
   preHandle <- newIORef (0 :: Int)
-  preNextRev <- newIORef (0 :: Int)
+  preObjHW <- newIORef (0 :: Int)
   withCertInstance envLock dbPath probe $ \ctx inst -> do
     noteOpen rep inst 0
     h <- openRwSession ctx
@@ -504,7 +510,7 @@ caseDurabilityFaults envLock = do
     _ <- openRwSession ctx
     mPre <- snapshotModel (siEnv inst)
     writeIORef preHandle (mNextHandle mPre)
-    writeIORef preNextRev (mNextRevision mPre)
+    writeIORef preObjHW (mObjectRevHW mPre)
     say rep ("phase=live kind=preclose next_handle=" ++ show (mNextHandle mPre)
       ++ " next_rev=" ++ show (mNextRevision mPre))
     -- (c) the close flush itself goes ambiguous: best-effort close
@@ -517,13 +523,24 @@ caseDurabilityFaults envLock = do
   tape0 <- readIORef (cpCommits probe)
   let flush0 = [(isF, tag) | (isF, tag) <- tape0, isF]
   forM_ flush0 $ \(_, tag) -> say rep ("phase=live kind=flush gen=0 result=" ++ tag)
-  assertEqual "gen0 flush ambiguous" [(True, "commit-unknown")] flush0
+  assertEqual "gen0 no close-flush commit" [] flush0
+  eStore0 <- openSQLiteStore dbPath
+  store0 <- case eStore0 of
+    Left err -> assertFailure ("gen0 meta setup open: " ++ show err) >> fail "unreachable"
+    Right store -> pure store
+  eMeta0 <- storeLoadMeta store0
+  meta0 <- case eMeta0 of
+    Left err -> assertFailure ("gen0 meta setup meta: " ++ show err) >> fail "unreachable"
+    Right meta -> pure meta
+  storeClose store0
+  assertEqual "gen0 persisted handle counter" (Just "3") (lookup "handle_counter" meta0)
+  assertEqual "gen0 persisted revision counter" (Just "4") (lookup "revision_counter" meta0)
   writeIORef (cpFault probe) (\delta backing -> backing delta)
   withCertInstance envLock dbPath probe $ \ctx inst -> do
     noteOpen rep inst 1
     m1 <- snapshotModel (siEnv inst)
     wantH <- readIORef preHandle
-    wantR <- readIORef preNextRev
+    wantR <- readIORef preObjHW
     say rep ("phase=live kind=meta-landed next_handle=" ++ show (mNextHandle m1)
       ++ " next_rev=" ++ show (mNextRevision m1))
     assertBool "flushed handle high-water restored" (mNextHandle m1 >= wantH)
@@ -584,6 +601,26 @@ caseDurabilityFaults envLock = do
   refused2 <- tryOpenRefused envLock refusalDb
   say rep ("phase=live kind=refusal key=handle_counter poison=nonpositive result=" ++ if refused2 then "refused" else "opened")
   assertBool "nonpositive handle counter refuses open" refused2
+  -- (f) positive backstop: on a fresh keyless DB the close flush
+  -- MUST fire (absent counters count as dirty), and flush
+  -- ambiguity is tolerated (close succeeds, tag recorded).
+  backstopDb <- certDbPath "backstop"
+  probeB <- newCertProbe
+  withCertInstance envLock backstopDb probeB $ \ctxB instB -> do
+    noteOpen rep instB 0
+    hB <- openRwSession ctxB
+    foundB <- findByLabel ctxB hB "tc02-backstop-absent"
+    say rep ("phase=live kind=find label=tc02-backstop-absent hits=" ++ show (length foundB))
+    assertEqual "backstop empty find" 0 (length foundB)
+    writeIORef (cpFault probeB) $ \delta backing ->
+      if isFlushDelta delta
+        then backing delta >> pure (CommitUnknown (StoreIO "t-c02 injected flush ambiguity"))
+        else backing delta
+    pure ()
+  tapeB <- readIORef (cpCommits probeB)
+  let flushB = [(isF, tag) | (isF, tag) <- tapeB, isF]
+  forM_ flushB $ \(_, tag) -> say rep ("phase=live kind=flush gen=backstop result=" ++ tag)
+  assertEqual "backstop flush fires ambiguous" [(True, "commit-unknown")] flushB
   tape1 <- newCommits probe (length tape0)
   forM_ tape1 $ \(isF, tag) ->
     when isF (say rep ("phase=live kind=flush gen=1 result=" ++ tag))
@@ -695,6 +732,131 @@ caseDurabilityInterrupt envLock = do
     assertEqual "victim zero store IO" [] tapeAfter
     backingAfter <- readIORef (cpBacking probe)
     assertEqual "victim zero backing" backingBefore backingAfter
+    pure ()
+  noteCommitLog rep probe
+
+-- | Restored revisions feed the object high-water (C02f-01): on a
+-- populated keyless store the reservation must cover the highest
+-- restored revision, or a handle-dirty close persists a
+-- revision_counter BELOW a live revision and a recreated id
+-- re-mints its pre-restart revision (satisfying a stale CAS).
+-- Gen 0 builds the keyless DB (meta-stripping fault, objects at
+-- rev 2 and 4); gen 1 deletes the rev-4 id and binds the rev-2
+-- id (handle-dirty close); gen 2 recreates and stale-CASes.
+caseKeylessHighWater :: MVar () -> IO ()
+caseKeylessHighWater envLock = do
+  rep <- newReporter "caseKeylessHighWater"
+  der <- fixtureDer
+  subj <- derSubject der
+  dbPath <- certDbPath "keyless-hw"
+  let labelA = "tc02-hw-a"
+      labelB = "tc02-hw-b"
+      labelB2 = "tc02-hw-b-v2"
+      deletedRev = 4
+  doomedOid <- newIORef (ObjectId 0)
+  -- Gen 0: populate WITHOUT meta counters (old keyless store
+  -- shape). Session rev 1, A rev 2, B rev 3, label set rev 4.
+  -- The stripping fault also covers the close flush, so the DB
+  -- keeps objects but no counters.
+  probe0 <- newCertProbe
+  writeIORef (cpFault probe0) (\delta backing -> backing (delta { sdPutMeta = [] }))
+  withCertInstance envLock dbPath probe0 $ \ctx inst -> do
+    noteOpen rep inst 0
+    h <- openRwSession ctx
+    _ <- createObject ctx h (certTemplate True labelA der subj)
+    hB <- createObject ctx h (dataTemplate True labelB "hw-b")
+    setAttrs ctx h hB (buildFrame [(ckaLabel, labelB2)])
+    revA <- revisionOfLabel inst labelA
+    revB <- revisionOfLabel inst labelB2
+    say rep ("phase=live kind=seed rev-a=" ++ show revA ++ " rev-b=" ++ show revB)
+    assertEqual "seeded A revision" 2 revA
+    assertEqual "seeded B revision" 4 revB
+    _ <- drainLedger rep probe0
+    pure ()
+  eStoreK <- openSQLiteStore dbPath
+  storeK <- case eStoreK of
+    Left err -> assertFailure ("keyless setup open: " ++ show err) >> fail "unreachable"
+    Right store -> pure store
+  eMetaK <- storeLoadMeta storeK
+  metaK <- case eMetaK of
+    Left err -> assertFailure ("keyless setup meta: " ++ show err) >> fail "unreachable"
+    Right meta -> pure meta
+  storeClose storeK
+  assertEqual "keyless has no handle counter" Nothing (lookup "handle_counter" metaK)
+  assertEqual "keyless has no revision counter" Nothing (lookup "revision_counter" metaK)
+  -- Gen 1: keyless open (restored-fallback) -> session ->
+  -- find+delete the rev-4 id -> find the previously unbound
+  -- rev-2 id (fresh handle binds make the close handle-dirty).
+  probe <- newCertProbe
+  withCertInstance envLock dbPath probe $ \ctx inst -> do
+    noteOpen rep inst 1
+    preB <- revisionOfLabel inst labelB2
+    assertEqual "doomed pre-restart revision" deletedRev preB
+    ostB <- objectStateOfLabel inst labelB2
+    writeIORef doomedOid (osId ostB)
+    h <- openRwSession ctx
+    foundB <- findByLabel ctx h labelB2
+    say rep ("phase=live kind=find label=" ++ BC8.unpack labelB2 ++ " hits=" ++ show (length foundB))
+    hDel <- only "doomed refind" foundB
+    destroyObject ctx h hDel
+    say rep ("phase=live kind=destroy-highest rev=" ++ show deletedRev
+      ++ " oid=" ++ show (unObjectId (osId ostB)))
+    foundA <- findByLabel ctx h labelA
+    say rep ("phase=live kind=find label=" ++ BC8.unpack labelA ++ " hits=" ++ show (length foundA))
+    assertEqual "survivor refind" 1 (length foundA)
+    _ <- drainLedger rep probe
+    pure ()
+  eStore1 <- openSQLiteStore dbPath
+  store1 <- case eStore1 of
+    Left err -> assertFailure ("gen1 meta setup open: " ++ show err) >> fail "unreachable"
+    Right store -> pure store
+  eMeta1 <- storeLoadMeta store1
+  meta1 <- case eMeta1 of
+    Left err -> assertFailure ("gen1 meta setup meta: " ++ show err) >> fail "unreachable"
+    Right meta -> pure meta
+  storeClose store1
+  let hCtr1 = lookup "handle_counter" meta1
+      rCtr1 = lookup "revision_counter" meta1
+  say rep ("phase=live kind=gen1-meta handle=" ++ show hCtr1 ++ " revision=" ++ show rCtr1)
+  assertBool "handle-dirty close persisted a handle counter" (hCtr1 /= Nothing)
+  assertEqual "close persisted the restored high-water" (Just "5") rCtr1
+  -- Gen 2: the reservation must already exceed the deleted
+  -- revision BEFORE the session burn; the recreated id mints
+  -- fresh (rev 6, not the deleted 4); a stale CAS at rev 4
+  -- refuses.
+  withCertInstance envLock dbPath probe $ \ctx inst -> do
+    noteOpen rep inst 2
+    mRes <- snapshotModel (siEnv inst)
+    let reserved = mNextRevision mRes
+    say rep ("phase=startup kind=reserved-rev rev=" ++ show reserved
+      ++ " obj-hw=" ++ show (mObjectRevHW mRes))
+    assertBool "reserved revision past the deleted revision" (reserved > deletedRev)
+    assertEqual "reserved object high-water" 5 (mObjectRevHW mRes)
+    h <- openRwSession ctx
+    foundA <- findByLabel ctx h labelA
+    say rep ("phase=live kind=find label=" ++ BC8.unpack labelA ++ " hits=" ++ show (length foundA))
+    assertEqual "survivor kept" 1 (length foundA)
+    foundB <- findByLabel ctx h labelB2
+    say rep ("phase=live kind=find label=" ++ BC8.unpack labelB2 ++ " hits=" ++ show (length foundB))
+    assertEqual "destroyed stays destroyed" 0 (length foundB)
+    hB2 <- createObject ctx h (dataTemplate True labelB2 "hw-b")
+    say rep ("phase=live kind=fresh-issue handle=" ++ showH hB2 ++ " label=" ++ BC8.unpack labelB2 ++ " gen=2")
+    ostX <- objectStateOfLabel inst labelB2
+    wantOid <- readIORef doomedOid
+    say rep ("phase=live kind=recreate rev=" ++ show (unRevision (osRevision ostX))
+      ++ " oid=" ++ show (unObjectId (osId ostX)))
+    assertEqual "recreated ID reuses the deleted ID" wantOid (osId ostX)
+    assertEqual "recreated revision is fresh" 6 (unRevision (osRevision ostX))
+    store <- liveStore inst
+    let staleRec = objectToRecord (tokenIdForSlot (SlotId 0)) ostX
+    resCas <- storeCommit store (emptyDelta { sdPutObjects = [ObjectPut (Just (Revision deletedRev)) staleRec] })
+    case resCas of
+      NotCommitted (StoreRevisionConflict _) ->
+        say rep "phase=live kind=stale-cas result=conflict target=recreated"
+      _ -> do
+        say rep "phase=live kind=stale-cas result=other target=recreated"
+        assertFailure "stale pre-restart CAS landed"
+    _ <- drainLedger rep probe
     pure ()
   noteCommitLog rep probe
 

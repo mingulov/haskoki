@@ -891,7 +891,9 @@ openStdStore env cfg = case scKind (cfgStorage cfg) of
 -- persisted @handle_counter@ and the highest live handle plus one,
 -- and @mNextRevision@ past the maximum of the persisted
 -- @revision_counter@ and the highest restored revision plus one
--- (all under the gate). Persisted high-waters -- not
+-- (all under the gate). The object-revision high-water restarts
+-- from the persisted @revision_counter@ (absent keys fall back to
+-- the highest restored revision plus one). Persisted high-waters -- not
 -- restored-rows-only -- because deleting the highest-revision
 -- object would lose the mark while restored ids can be reused:
 -- recreated ids thus mint revisions no pre-restart CAS can
@@ -916,7 +918,8 @@ reserveDurableCounters env store = do
                     restMaxR = maximum (0 : [unRevision (osRevision o) | o <- Map.elems (mObjects m)])
                     nextH = max (mNextHandle m) (max (liveMaxH + 1) (fromMaybe 0 persistedHandle))
                     nextR = max (mNextRevision m) (max (restMaxR + 1) (fromMaybe 0 persistedRev))
-                in m { mNextHandle = nextH, mNextRevision = nextR }
+                    objHW = max (mObjectRevHW m) (max (restMaxR + 1) (fromMaybe 0 persistedRev))
+                in m { mNextHandle = nextH, mNextRevision = nextR, mObjectRevHW = objHW }
           _ <- withHeldModel env (\m -> pure (Right (Just (reserve m)))) (pure ())
           pure (Right ())
   where
@@ -933,26 +936,43 @@ closeStdStore :: Maybe StdStore -> IO ()
 closeStdStore Nothing = pure ()
 closeStdStore (Just ss) = storeClose (stdStore ss)
 
--- | Best-effort close flush: persist the final handle/revision
--- counters as a meta-only delta so the next open's reservation
+-- | Best-effort close flush: persist the final handle/object-revision
+-- high-waters as a meta-only delta so the next open's reservation
 -- observes this generation's high-waters (consecutive read-only
--- open/find/close cycles thus never alias handles). Memory
--- instances flush nothing; store failures and exceptions are
--- swallowed (the close path has no error channel).
+-- open/find/close cycles thus never alias handles). The delta
+-- commits ONLY when an in-memory high-water advanced past the
+-- persisted counter, so session-ephemeral burns and byte-neutral
+-- closes leave the durable image untouched. Memory instances flush
+-- nothing; store failures and exceptions are swallowed (the close
+-- path has no error channel). A meta LOAD failure falls back to
+-- the unconditional write attempt (the close path cannot refuse).
 flushDurableCounters :: StdInstance -> IO ()
 flushDurableCounters inst = case siStore inst of
   Nothing -> pure ()
   Just (StdStore store _) -> do
     r <- try $ do
       m <- snapshotModel (siEnv inst)
-      _ <- storeCommit store (emptyDelta
-        { sdPutMeta = [ ("handle_counter", show (mNextHandle m))
-                      , ("revision_counter", show (mNextRevision m))
-                      ] })
+      eMeta <- storeLoadMeta store
+      let dirty = case eMeta of
+            Left _ -> True
+            Right meta ->
+              exceeds "handle_counter" (mNextHandle m) meta
+                || exceeds "revision_counter" (mObjectRevHW m) meta
+      when dirty $ do
+        _ <- storeCommit store (emptyDelta
+          { sdPutMeta = [ ("handle_counter", show (mNextHandle m))
+                        , ("revision_counter", show (mObjectRevHW m))
+                        ] })
+        pure ()
       pure ()
     case r of
       Left (_ :: SomeException) -> pure ()
       Right () -> pure ()
+  where
+    exceeds :: String -> Int -> [(String, String)] -> Bool
+    exceeds key cur meta = case lookup key meta >>= readMaybe of
+      Just n -> cur > n
+      Nothing -> True
 
 -- | Close: shut the backend and the process store, then release
 -- the handle. Idempotent on NULL, silent on failure.

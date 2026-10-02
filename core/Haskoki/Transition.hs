@@ -1186,7 +1186,7 @@ applyOp m op = case op of
   DeltaCreateObjectFull oid attrs owner slot -> case Map.lookup oid (mObjects m) of
     Just _ -> Left (FaultDuplicateObject oid)
     Nothing ->
-      let (rev, m1) = nextRevision m
+      let (rev@(Revision r), m1) = nextRevision m
           ost = ObjectState
             { osId = oid
             , osRevision = rev
@@ -1198,18 +1198,20 @@ applyOp m op = case op of
       in Right m1
         { mObjects = Map.insert oid ost (mObjects m1)
         , mNextObject = max (mNextObject m1) (unObjectId oid + 1)
+        , mObjectRevHW = max (mObjectRevHW m1) (r + 1)
         }
   DeltaSetAttributes oid over -> case Map.lookup oid (mObjects m) of
     Nothing -> Left (FaultUnknownObject oid)
     Just ost ->
-      let (rev, m1) = nextRevision m
+      let (rev@(Revision r), m1) = nextRevision m
           merged = Map.union over (osAttrs ost)
           ost' = ost { osAttrs = merged, osRevision = rev }
           -- Token promotion moves ownership off the session; the
           -- planner only ever flips token false->true, so the
           -- owner never moves back here.
           owner' = if objectToken ost' then Nothing else osOwner ost
-      in Right m1 { mObjects = Map.insert oid (ost' { osOwner = owner' }) (mObjects m1) }
+      in Right m1 { mObjects = Map.insert oid (ost' { osOwner = owner' }) (mObjects m1)
+                  , mObjectRevHW = max (mObjectRevHW m1) (r + 1) }
   DeltaBindHandle h oid -> case Map.lookup oid (mObjects m) of
     Nothing -> Left (FaultUnknownObject oid)
     Just ost

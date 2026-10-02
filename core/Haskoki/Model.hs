@@ -84,6 +84,7 @@ data Model = Model
   , mNextObject :: !Int
   , mNextHandle :: !Int
   , mNextRevision :: !Int
+  , mObjectRevHW :: !Int
   } deriving (Eq, Show)
 
 -- | The empty model: no sessions, no objects, no handles, no tokens,
@@ -99,6 +100,7 @@ emptyModel = Model
   , mNextObject = 1
   , mNextHandle = 1
   , mNextRevision = 1
+  , mObjectRevHW = 1
   }
 
 -- | Seat a fresh token in a slot. Seating an already-seated slot
