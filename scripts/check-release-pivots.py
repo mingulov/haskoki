@@ -102,8 +102,15 @@ def main() -> int:
           "Uniform stub rule" in gen and "stub-first" in gen,
           "stub generator documents the uniform rule")
     legacy = stub_bodies(tables, "stub_", ("probe", "parallel"))
+    # Floor history: 15 while dual/recover sat in legacy stubs; 8 after
+    # the 4 dual entries registered to std_Dual* bodies (T-M02,
+    # 63e7ce0) and the 4 recover entries to std_*Recover* bodies
+    # (T-M03, 5f1b025). Remaining: PIN/token lifecycle, opstate pair
+    # (deliberate saveability stubs), object size, legacy
+    # status/cancel.
+    # Lower deliberately with the routing commit cited.
     check("STUB-UNIFORM-LEGACY",
-          len(legacy) >= 15 and all(
+          len(legacy) >= 8 and all(
               body_voids_only(b, ("return stub_probe();",
                                    "return stub_parallel();"))
               for _, b in legacy),
