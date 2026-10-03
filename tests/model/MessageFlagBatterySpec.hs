@@ -72,7 +72,7 @@ module MessageFlagBatterySpec (spec) where
 
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.List (isInfixOf, sort)
+import Data.List (isInfixOf, nub, sort)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Maybe (fromMaybe, isJust)
@@ -877,11 +877,14 @@ dg6PinnedIds =
 -- "unknown mechanism")@ under full caps.
 checkDg6ClosedSet :: [MechRow] -> Map Word64 [Text] -> [String]
 checkDg6ClosedSet mechs flagMap =
-  closedHit ++ concatMap checkOne dg6PinnedIds
+  closedHit ++ dupHit ++ concatMap checkOne dg6PinnedIds
   where
     closedHit =
       ["DG6 closed set: want 5 pinned ids, got " ++ show (length dg6PinnedIds)
       | length dg6PinnedIds /= 5]
+    dupHit =
+      ["DG6 closed set: pinned ids are not unique: " ++ show (map snd dg6PinnedIds)
+      | length (nub (map snd dg6PinnedIds)) /= length dg6PinnedIds]
     checkOne (name, wid) =
       mechMiss ++ routeMiss ++ flagMiss ++ initMiss
       where

@@ -77,9 +77,9 @@ streamFed (Just ds) = dsFed ds
 -- | Whether this digest update accumulates into the slot buffer
 -- instead of the backend stream: the decrypt slot links to this
 -- digest slot (a combined flow), or the buffer already holds
--- combined bytes (the link dropped after a separate cipher call,
--- and accumulation must stay coherent). Unlinked slots with empty
--- buffers stream exactly as before.
+-- combined bytes (the link dropped at the decrypt final or after
+-- a separate cipher call, and accumulation must stay coherent).
+-- Unlinked slots with empty buffers stream exactly as before.
 dualBufferedMode :: SessionOps -> SlotCommon -> Bool
 dualBufferedMode ops sc =
   not (BS.null (bufferedOf sc)) || linked

@@ -480,7 +480,7 @@ Release-wide limitations (reviewed, non-generated):
 
 ## Source issues
 
-14 open issues in spec/source-issues.json:
+14 registered issues (5 open) in spec/source-issues.json:
 
 | id | title | status |
 |---|---|---|

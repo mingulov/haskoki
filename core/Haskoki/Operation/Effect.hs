@@ -126,6 +126,7 @@ detailFor code why = case code of
   CKR_SAVED_STATE_INVALID -> DenyOpState why
   CKR_KEY_SIZE_RANGE -> DenyRange why
   CKR_DATA_LEN_RANGE -> DenyRange why
+  CKR_SIGNATURE_LEN_RANGE -> DenyRange why
   CKR_ENCRYPTED_DATA_LEN_RANGE -> DenyRange why
   CKR_BUFFER_TOO_SMALL -> DenyRange why
   _ -> DenyGeneral why

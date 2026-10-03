@@ -28,7 +28,7 @@ module Haskoki.Operation.Cipher
 import Control.Monad (guard)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe)
 
 import Haskoki.Model (SessionState)
 import Haskoki.Operation
@@ -37,7 +37,6 @@ import Haskoki.Operation
   , CryptoEffect (..)
   , CryptoResult (..)
   , DataGate (..)
-  , DigestStream (..)
   , SessionOps
   , SlotCommon
   , SlotKind (..)
@@ -71,20 +70,13 @@ import Haskoki.Operation
   , chainIvOf
   , hasStreamed
   , activeCipher
-  , activeDigest
-  , activeVerify
   , bufferedOf
   , commonKey
   , commonMech
   , commonParams
-  , dualLinkOf
   , mkActiveCipher
-  , mkActiveDigest
-  , mkActiveVerify
   , setBuffered
-  , streamOf
   )
-import Haskoki.Operation.Digest (streamRelease)
 import Haskoki.Outcome (ResourceRelease)
 import Haskoki.Output (OutputPlan (..), planOneShot)
 import Haskoki.Registry (MechanismId)
@@ -422,52 +414,28 @@ planCipherFinal ops st kind _name = case withCipherSlot ops kind of
                 ++ show (BS.length (bufferedOf sc')) ++ " bytes"] [] Nothing
           )
 
--- | Feed a decrypt final's recovered tail to the linked combined
--- peer (digest or verify), then drop the link. Encrypt finals and
--- unlinked slots pass through untouched; a missing, concluded, or
--- foreign peer only drops the link. A peer-buffer bound violation
--- terminates the peer (releasing its stream, if any) while the
--- cipher bytes still stage: the peer can no longer hold its input,
--- but the cipher output is exact.
+-- | Drop a decrypt final's link to its combined peer (digest or
+-- verify) WITHOUT feeding the peer. OASIS PKCS#11 v3.0 §5.17.2
+-- (§5.17.4 for verify) links the operations only through the
+-- combined update call: the decrypt final feeds nothing, and the
+-- caller passes the recovered tail through an explicit peer
+-- update before the peer final. An auto-feed here would feed a
+-- spec-compliant caller's tail twice (wrong digest, CKR_OK).
+-- Encrypt finals and unlinked slots pass through untouched.
+-- Releases nothing: nothing is fed, so no peer bound can be
+-- violated and no peer state changes.
 feedDualTail
   :: SessionOps -> CipherDir -> SlotCommon -> ByteString
   -> (SessionOps, SlotCommon, [ResourceRelease])
-feedDualTail ops dir sc tail
+feedDualTail ops dir sc _tail
   | dir /= DirDecrypt = (ops, sc, [])
-  | otherwise = case dualLinkOf sc of
-      Nothing -> (ops, sc, [])
-      Just peer ->
-        let (fedOps, fedRel) = feedPeer ops peer tail
-        in (fedOps, setDualLink Nothing sc, fedRel)
-  where
-    feedPeer o peer t = case lookupSingle o peer of
-      Just active -> case peer of
-        SlotDigest -> case activeDigest active of
-          Just psc -> feedDigest o psc t
-          Nothing -> (o, [])
-        SlotVerify -> case activeVerify active of
-          Just psc -> feedVerify o psc t
-          Nothing -> (o, [])
-        _ -> (o, [])
-      Nothing -> (o, [])
-    feedDigest o psc t
-      | isJust (stagedOf psc) = (o, [])
-      | fedStream (streamOf psc) = (o, [])
-      | otherwise = case appendBuffered psc t of
-          Left _ -> (removeSingle SlotDigest o, streamRelease psc)
-          Right psc' -> (insertOp (mkActiveDigest psc') o, [])
-    feedVerify o psc t
-      | isJust (stagedOf psc) = (o, [])
-      | otherwise = case appendBuffered psc t of
-          Left _ -> (removeSingle SlotVerify o, [])
-          Right psc' -> (insertOp (mkActiveVerify psc') o, [])
-    fedStream Nothing = False
-    fedStream (Just ds) = dsFed ds
+  | otherwise = (ops, setDualLink Nothing sc, [])
 
 -- | Finish a planned cipher final or one-shot. Encrypt stages the
 -- driver bytes; decrypt strips padding (padded) or checks alignment
--- (unpadded). A linked decrypt final first completes its combined
--- peer input with the recovered tail ('feedDualTail'). Corrupt
+-- (unpadded). A linked decrypt final drops its combined peer link
+-- without feeding the peer ('feedDualTail'): §5.17.2/§5.17.4
+-- leave the recovered tail to an explicit peer update. Corrupt
 -- pads, ragged answers, verdict-shaped results, and crypto
 -- failures all terminate the slot.
 finishCipher

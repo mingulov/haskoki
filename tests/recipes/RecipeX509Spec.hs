@@ -298,7 +298,7 @@ caseRecoverPlanner = do
   assertEqual "sign oversize frees" [] (activeSlots opsBig)
   let (opsShort, _, uShort) = planVerifyRecoverOneShot opsV testSession
         "rec" (BS.replicate 255 9)
-  assertEqual "short block invalid" CKR_SIGNATURE_INVALID (soCode uShort)
+  assertEqual "short block invalid" CKR_SIGNATURE_LEN_RANGE (soCode uShort)
   assertEqual "short block frees" [] (activeSlots opsShort)
   let (opsFull, _, uFull) = planVerifyRecoverOneShot opsV testSession
         "rec" (BS.replicate 256 9)
@@ -312,5 +312,5 @@ caseRecoverPlanner = do
     other -> assertFailure ("one verify effect, got " ++ show other)
   let (opsLong, _, uLong) = planVerifyRecoverOneShot opsV testSession
         "rec" (BS.replicate 257 9)
-  assertEqual "verify oversize refused" CKR_DATA_LEN_RANGE (soCode uLong)
+  assertEqual "verify oversize refused" CKR_SIGNATURE_LEN_RANGE (soCode uLong)
   assertEqual "verify oversize frees" [] (activeSlots opsLong)

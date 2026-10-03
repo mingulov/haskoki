@@ -2132,6 +2132,11 @@ runEffect env resolve fx = case fx of
     | Just cparams <- rsaRecoverCipherFor mech params -> withKey mkey $ \key ->
         if mech == MechanismId ckm_RSA_PKCS
           then case recoverType1Pad tagLen input of
+            -- Defense in depth: the planner gate pre-refuses PKCS
+            -- inputs over k - 11 (see 'signRecoverAllowance',
+            -- pinned by the pkcs-boundary leg), so a
+            -- length-driven 'Nothing' is unreachable via
+            -- planning; the arm stays for unplanned callers.
             Nothing -> pure (GotCryptoError (CryptoFailed
               "driver: v1.5 recover data too long for the tag width"))
             Just padded -> toBytes <$> pkeyDecrypt env cparams key padded

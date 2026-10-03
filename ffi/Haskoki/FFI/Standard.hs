@@ -4145,7 +4145,9 @@ runDualPeer inst sid kind func input = do
 -- plan runs (the plan drops the link); the set lands after cipher
 -- success, before the peer runs. A broken link (separate cipher
 -- activity cleared it while the peer holds combined bytes) never
--- re-forms, so the final can never feed bytes the peer missed.
+-- re-forms, so the peer's stream-vs-buffer accumulation choice
+-- can never flip mid-flow (the decrypt final itself feeds
+-- nothing per §5.17.2/§5.17.4).
 dualLinkAuth :: SessionOps -> SlotKind -> SlotKind -> Bool
 dualLinkAuth ops cKind dKind =
   case (lookupSingle ops cKind, lookupSingle ops dKind) of
@@ -4157,8 +4159,9 @@ dualLinkAuth ops cKind dKind =
 -- | Establish the decrypt-dual peer link on the cipher slot. Runs
 -- after cipher success and before the peer, so the peer planner
 -- observes the link. A failed publication terminates both sides
--- and reports failure: running the peer unlinked would silently
--- drop the final tail.
+-- and reports failure: running the peer unlinked would
+-- desynchronize the pair (the cipher side proceeds as if the
+-- peer buffered this part).
 establishDualLink :: StdInstance -> SessionId -> SlotKind -> SlotKind -> IO Bool
 establishDualLink inst sid cKind dKind = do
   m <- snapshotModel (siEnv inst)

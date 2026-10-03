@@ -263,10 +263,12 @@ data SlotCommon = SlotCommon
   , scPhase :: !SlotPhase
   , scChainIv :: !(Maybe ByteString)
   -- | The decrypt-dual peer link: @Just peer@ on a decrypt slot
-  -- means every byte the peer slot holds came from this slot's
-  -- cipher output through combined updates, so the decrypt final
-  -- completes the peer input with its recovered tail. Set ONLY by
-  -- the combined-update path; cleared on final, completion,
+  -- means the peer slot's buffered bytes came from this slot's
+  -- cipher output through combined updates (so the peer final
+  -- reads its buffer, not a backend stream). The decrypt final
+  -- drops the link WITHOUT feeding the peer: §5.17.2/§5.17.4
+  -- leave the recovered tail to an explicit peer update. Set ONLY
+  -- by the combined-update path; cleared on final, completion,
   -- init-change (fresh slots start unlinked), peer removal
   -- ('clearLinksTo'), and any separate cipher data call. Never
   -- serialized: restored slots start unlinked.
@@ -409,7 +411,7 @@ lookupSingle ops kind = Map.lookup kind (soSingles ops)
 -- | Free one slot. A removed peer ends every combined flow
 -- pointing at it ('clearLinksTo'): conclusion, termination, and
 -- the removal preceding any replacement all pass through here, so
--- a replacement peer never inherits the old recovered-tail feed.
+-- a replacement peer never inherits the old combined-flow link.
 removeSingle :: SlotKind -> SessionOps -> SessionOps
 removeSingle kind ops =
   clearLinksTo kind (ops { soSingles = Map.delete kind (soSingles ops) })

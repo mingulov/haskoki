@@ -189,6 +189,7 @@ spec = testGroup "operation lifecycles"
   , testCase "ML-DSA init admits empty, refuses bad hedge/overlong" caseMldsaParams
   , testCase "recover roundtrip" caseRecoverRoundtrip
   , testCase "recover oversize data fails terminally" caseRecoverOversize
+  , testCase "recover over-capacity block reports len-range" caseRecoverOverCapacity
   , testCase "recover tampered block fails" caseRecoverTampered
   , testCase "recovery slots reject multipart" caseRecoverNoMultipart
   , testCase "dual init conflicts with singles and itself" caseDualConflicts
@@ -1898,6 +1899,19 @@ caseRecoverOversize = do
   assertEqual "oversize code" CKR_DATA_LEN_RANGE (soCode o1)
   assertEqual "oversize plans nothing" [] (soEffects o1)
   assertEqual "oversize frees" [] (activeSlots ops1)
+
+-- | Section 5.15.6: a recovery block invalid purely by length
+-- reports 'CKR_SIGNATURE_LEN_RANGE' on every row (generic
+-- data||tag rows share the over-capacity arm with the RSA pair).
+caseRecoverOverCapacity :: IO ()
+caseRecoverOverCapacity = do
+  -- 65 bytes exceed the 64-byte capacity (non-RSA row).
+  let (ops0, _) = initOperation recEnv emptySessionOps testSession verifyRecoverArgs
+  let (ops1, _, o1) = planVerifyRecoverOneShot ops0 testSession "data"
+        (BS.replicate 65 0x41)
+  assertEqual "over-capacity code" CKR_SIGNATURE_LEN_RANGE (soCode o1)
+  assertEqual "over-capacity plans nothing" [] (soEffects o1)
+  assertEqual "over-capacity frees" [] (activeSlots ops1)
 
 caseRecoverTampered :: IO ()
 caseRecoverTampered = do

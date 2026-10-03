@@ -14,9 +14,14 @@
  * route C -> FFI -> planner -> engine on every versioned table, and
  * each dual run equals its separate-sequences run at the C boundary
  * (same digest bytes, same cipher bytes). Final-coupling legs pin
- * the decrypt tail: non-aligned padded input, fully-buffered AEAD
- * input, and verify over non-aligned input all match their
- * separate sequences, tail included. Lifecycle legs pin the
+ * the decrypt tail per PKCS#11 v3.0 section 5.17: the decrypt
+ * final feeds nothing to the peer, so each leg passes the
+ * recovered tail through an explicit peer update before the peer
+ * final and then matches its separate sequences, tail included
+ * (non-aligned padded input, fully-buffered AEAD input, verify
+ * over non-aligned input). Partial-final legs pin the peer final
+ * WITHOUT that explicit update: it covers only the update-fed
+ * bytes. Lifecycle legs pin the
  * link against peer-slot transitions: a concluded-then-replaced
  * peer takes no tail, a link never crosses to another peer kind,
  * an update that emits nothing still closes the one-shot window,
@@ -80,6 +85,9 @@ static void check(const char *entry, const char *leg, int good) {
 static void rv(const char *entry, const char *leg, CK_RV got, CK_RV want) {
   printf("dual:%s/%s/%s rv=0x%lx expected=0x%lx\n",entry,leg,ver,(unsigned long)got,(unsigned long)want);
   if (got != want) ++failures;
+}
+static void rv_note(const char *entry, const char *leg, CK_RV got) {
+  printf("dual:%s/%s/%s rv=0x%lx noted\n",entry,leg,ver,(unsigned long)got);
 }
 static void reset_output(Output *o, CK_ULONG n) { memset(o->bytes,0xa5,sizeof(o->bytes)); o->length=n; }
 static void hex_of(const char *entry, const char *leg, const char *tag, const CK_BYTE *p, CK_ULONG n) {
@@ -602,11 +610,14 @@ static void equiv_decrypt_verify(DualApi *a) {
 /* Final-coupling legs: decrypt-direction duals must equal their
  * separate sequences even when the decrypt final emits recovered
  * plaintext (non-aligned padded input, fully-buffered AEAD input,
- * verify over non-aligned input). The recovered tail reaches the
- * peer only through the decrypt final; each leg pins its tail
- * width (a leg with an empty tail would prove nothing) and then
- * the byte equality (same digest bytes, same plaintext bytes,
- * same verdicts). */
+ * verify over non-aligned input). Per section 5.17.2/5.17.4 the
+ * decrypt final feeds NOTHING to the peer: the caller passes the
+ * recovered tail through an explicit peer update before the peer
+ * final (section 5.17.2's own example C_DigestUpdates the 2 tail
+ * bytes after C_DecryptFinal). Each leg pins its tail width (a
+ * leg with an empty tail would prove nothing), performs that
+ * explicit tail update, and then pins the byte equality (same
+ * digest bytes, same plaintext bytes, same verdicts). */
 static void equiv_final_nonaligned_digest(DualApi *a) {
   Fixture f=fixture(a);
   CK_MECHANISM sha={CKM_SHA256,NULL,0};
@@ -627,6 +638,9 @@ static void equiv_final_nonaligned_digest(DualApi *a) {
   result=a->C_DecryptDigestUpdate(f.session,ct,32,d1.bytes,&d1.length); good &= result==CKR_OK;
   reset_output(&de,32);
   result=a->C_DecryptFinal(f.session,de.bytes,&de.length); good &= result==CKR_OK;
+  /* Section 5.17.2 shape: the tail reaches the digest ONLY through
+   * this explicit update (the decrypt final feeds nothing). */
+  result=a->C_DigestUpdate(f.session,de.bytes,de.length); good &= result==CKR_OK;
   reset_output(&dd,32);
   result=a->C_DigestFinal(f.session,dd.bytes,&dd.length); good &= result==CKR_OK;
   good &= d1.length==16 && de.length==4 && dd.length==32;
@@ -678,6 +692,9 @@ static void equiv_final_gcm_digest(DualApi *a) {
   result=a->C_DecryptDigestUpdate(f.session,ct,48,d1.bytes,&d1.length); good &= result==CKR_OK;
   reset_output(&de,48);
   result=a->C_DecryptFinal(f.session,de.bytes,&de.length); good &= result==CKR_OK;
+  /* Section 5.17.2 shape: the tail reaches the digest ONLY through
+   * this explicit update (the decrypt final feeds nothing). */
+  result=a->C_DigestUpdate(f.session,de.bytes,de.length); good &= result==CKR_OK;
   reset_output(&dd,32);
   result=a->C_DigestFinal(f.session,dd.bytes,&dd.length); good &= result==CKR_OK;
   good &= d1.length==0 && de.length==32 && dd.length==32;
@@ -733,6 +750,9 @@ static void equiv_final_nonaligned_verify(DualApi *a) {
   reset_output(&de,32);
   result=a->C_DecryptFinal(f.session,de.bytes,&de.length); good &= result==CKR_OK;
   good &= d1.length==16 && de.length==4;
+  /* Section 5.17.4 shape: the tail reaches the verify peer ONLY
+   * through this explicit update (the decrypt final feeds nothing). */
+  result=a->C_VerifyUpdate(f.session,de.bytes,de.length); good &= result==CKR_OK;
   vfDual=a->C_VerifyFinal(f.session,sig,32);
   result=a->C_DecryptInit(f.session,&pad,f.aes); good &= result==CKR_OK;
   reset_output(&r1,32);
@@ -754,6 +774,145 @@ static void equiv_final_nonaligned_verify(DualApi *a) {
   hex_of("C_DecryptVerifyUpdate","equiv-final","ref-plain",ptRef,20);
   printf("dual:C_DecryptVerifyUpdate/equiv-final/%s verify=%s cipher=%s\n",ver,vfOk ? "match" : "MISMATCH",ptOk ? "match" : "MISMATCH");
   check("C_DecryptVerifyUpdate","equiv-final",vfOk && ptOk);
+  close_fixture(a,f);
+}
+/* Partial-final legs: the spec-example partial state. A peer
+ * final WITHOUT the explicit tail update covers ONLY the
+ * update-fed bytes (section 5.17.2: the 2 tail bytes "are not
+ * passed on to be digested" by the decrypt final). Each leg pins
+ * its widths, the equality against the update-fed-only
+ * reference, AND the inequality against the full-message
+ * reference (a leg that cannot tell partial from full proves
+ * nothing). */
+static void partial_final_nonaligned_digest(DualApi *a) {
+  Fixture f=fixture(a);
+  CK_MECHANISM sha={CKM_SHA256,NULL,0};
+  CK_MECHANISM pad={CKM_AES_CBC_PAD,ivBytes,sizeof(ivBytes)};
+  Output ce, d1, de, dd, rp, rf;
+  CK_BYTE ct[32], dgDual[32], dgPart[32], dgFull[32];
+  int good=1, dgOk, ptOk;
+  CK_RV result;
+  result=a->C_EncryptInit(f.session,&pad,f.aes); good &= result==CKR_OK;
+  reset_output(&ce,32);
+  result=a->C_Encrypt(f.session,(CK_BYTE_PTR)ptShort,sizeof(ptShort)-1,ce.bytes,&ce.length); good &= result==CKR_OK;
+  good &= ce.length==32;
+  if (!good) { check("C_DecryptDigestUpdate","partial-final",0); close_fixture(a,f); return; }
+  memcpy(ct,ce.bytes,32);
+  result=a->C_DigestInit(f.session,&sha); good &= result==CKR_OK;
+  result=a->C_DecryptInit(f.session,&pad,f.aes); good &= result==CKR_OK;
+  reset_output(&d1,32);
+  result=a->C_DecryptDigestUpdate(f.session,ct,32,d1.bytes,&d1.length); good &= result==CKR_OK;
+  reset_output(&de,32);
+  result=a->C_DecryptFinal(f.session,de.bytes,&de.length); good &= result==CKR_OK;
+  /* NO explicit tail update: the peer final must cover exactly the
+   * 16 update-fed bytes. */
+  reset_output(&dd,32);
+  result=a->C_DigestFinal(f.session,dd.bytes,&dd.length); good &= result==CKR_OK;
+  good &= d1.length==16 && de.length==4 && dd.length==32;
+  good &= memcmp(d1.bytes,ptShort,16)==0;
+  good &= memcmp(de.bytes,ptShort+16,4)==0;
+  result=a->C_DigestInit(f.session,&sha); good &= result==CKR_OK;
+  result=a->C_DigestUpdate(f.session,(CK_BYTE_PTR)ptShort,16); good &= result==CKR_OK;
+  reset_output(&rp,32);
+  result=a->C_DigestFinal(f.session,rp.bytes,&rp.length); good &= result==CKR_OK;
+  result=a->C_DigestInit(f.session,&sha); good &= result==CKR_OK;
+  result=a->C_DigestUpdate(f.session,(CK_BYTE_PTR)ptShort,20); good &= result==CKR_OK;
+  reset_output(&rf,32);
+  result=a->C_DigestFinal(f.session,rf.bytes,&rf.length); good &= result==CKR_OK;
+  good &= rp.length==32 && rf.length==32;
+  if (!good) { check("C_DecryptDigestUpdate","partial-final",0); close_fixture(a,f); return; }
+  memcpy(dgDual,dd.bytes,32); memcpy(dgPart,rp.bytes,32); memcpy(dgFull,rf.bytes,32);
+  dgOk = memcmp(dgDual,dgPart,32)==0 && memcmp(dgDual,dgFull,32)!=0;
+  ptOk = memcmp(dgPart,dgFull,32)!=0;
+  hex_of("C_DecryptDigestUpdate","partial-final","dual-digest",dgDual,32);
+  hex_of("C_DecryptDigestUpdate","partial-final","part-digest",dgPart,32);
+  hex_of("C_DecryptDigestUpdate","partial-final","full-digest",dgFull,32);
+  printf("dual:C_DecryptDigestUpdate/partial-final/%s digest=%s control=%s\n",ver,dgOk ? "match" : "MISMATCH",ptOk ? "match" : "MISMATCH");
+  check("C_DecryptDigestUpdate","partial-final",dgOk && ptOk);
+  close_fixture(a,f);
+}
+static void partial_final_gcm_digest(DualApi *a) {
+  Fixture f=fixture(a);
+  CK_MECHANISM sha={CKM_SHA256,NULL,0};
+  CK_GCM_PARAMS gp={nonce12,12,96,NULL,0,128};
+  CK_MECHANISM gcm={CKM_AES_GCM,(CK_VOID_PTR)&gp,sizeof(gp)};
+  Output ce, d1, de, dd, rp, rf;
+  CK_BYTE ct[48], dgDual[32], dgPart[32], dgFull[32];
+  int good=1, dgOk, ptOk;
+  CK_RV result;
+  result=a->C_EncryptInit(f.session,&gcm,f.aes); good &= result==CKR_OK;
+  reset_output(&ce,48);
+  result=a->C_Encrypt(f.session,(CK_BYTE_PTR)ptText,32,ce.bytes,&ce.length); good &= result==CKR_OK;
+  good &= ce.length==48;
+  if (!good) { check("C_DecryptDigestUpdate","partial-final",0); close_fixture(a,f); return; }
+  memcpy(ct,ce.bytes,48);
+  result=a->C_DigestInit(f.session,&sha); good &= result==CKR_OK;
+  result=a->C_DecryptInit(f.session,&gcm,f.aes); good &= result==CKR_OK;
+  reset_output(&d1,48);
+  result=a->C_DecryptDigestUpdate(f.session,ct,48,d1.bytes,&d1.length); good &= result==CKR_OK;
+  reset_output(&de,48);
+  result=a->C_DecryptFinal(f.session,de.bytes,&de.length); good &= result==CKR_OK;
+  /* NO explicit tail update: the update fed zero bytes, so the
+   * peer final must cover exactly the empty input. */
+  reset_output(&dd,32);
+  result=a->C_DigestFinal(f.session,dd.bytes,&dd.length); good &= result==CKR_OK;
+  good &= d1.length==0 && de.length==32 && dd.length==32;
+  good &= memcmp(de.bytes,ptText,32)==0;
+  result=a->C_DigestInit(f.session,&sha); good &= result==CKR_OK;
+  reset_output(&rp,32);
+  result=a->C_DigestFinal(f.session,rp.bytes,&rp.length); good &= result==CKR_OK;
+  result=a->C_DigestInit(f.session,&sha); good &= result==CKR_OK;
+  result=a->C_DigestUpdate(f.session,(CK_BYTE_PTR)ptText,32); good &= result==CKR_OK;
+  reset_output(&rf,32);
+  result=a->C_DigestFinal(f.session,rf.bytes,&rf.length); good &= result==CKR_OK;
+  good &= rp.length==32 && rf.length==32;
+  if (!good) { check("C_DecryptDigestUpdate","partial-final",0); close_fixture(a,f); return; }
+  memcpy(dgDual,dd.bytes,32); memcpy(dgPart,rp.bytes,32); memcpy(dgFull,rf.bytes,32);
+  dgOk = memcmp(dgDual,dgPart,32)==0 && memcmp(dgDual,dgFull,32)!=0;
+  ptOk = memcmp(dgPart,dgFull,32)!=0;
+  hex_of("C_DecryptDigestUpdate","partial-final","dual-digest",dgDual,32);
+  hex_of("C_DecryptDigestUpdate","partial-final","empty-digest",dgPart,32);
+  hex_of("C_DecryptDigestUpdate","partial-final","full-digest",dgFull,32);
+  printf("dual:C_DecryptDigestUpdate/partial-final/%s digest=%s control=%s\n",ver,dgOk ? "match" : "MISMATCH",ptOk ? "match" : "MISMATCH");
+  check("C_DecryptDigestUpdate","partial-final",dgOk && ptOk);
+  close_fixture(a,f);
+}
+static void partial_final_nonaligned_verify(DualApi *a) {
+  Fixture f=fixture(a);
+  CK_MECHANISM hmac={CKM_SHA256_HMAC,NULL,0};
+  CK_MECHANISM pad={CKM_AES_CBC_PAD,ivBytes,sizeof(ivBytes)};
+  Output ce, sg, d1, de;
+  CK_BYTE ct[32], sig[32];
+  int good=1;
+  CK_RV result, vfDual, vfFull;
+  result=a->C_EncryptInit(f.session,&pad,f.aes); good &= result==CKR_OK;
+  reset_output(&ce,32);
+  result=a->C_Encrypt(f.session,(CK_BYTE_PTR)ptShort,sizeof(ptShort)-1,ce.bytes,&ce.length); good &= result==CKR_OK;
+  result=a->C_SignInit(f.session,&hmac,f.hmac); good &= result==CKR_OK;
+  result=a->C_SignUpdate(f.session,(CK_BYTE_PTR)ptShort,sizeof(ptShort)-1); good &= result==CKR_OK;
+  reset_output(&sg,32);
+  result=a->C_SignFinal(f.session,sg.bytes,&sg.length); good &= result==CKR_OK;
+  good &= ce.length==32 && sg.length==32;
+  if (!good) { check("C_DecryptVerifyUpdate","partial-final",0); close_fixture(a,f); return; }
+  memcpy(ct,ce.bytes,32);
+  memcpy(sig,sg.bytes,32);
+  result=a->C_DecryptInit(f.session,&pad,f.aes); good &= result==CKR_OK;
+  result=a->C_VerifyInit(f.session,&hmac,f.hmac); good &= result==CKR_OK;
+  reset_output(&d1,32);
+  result=a->C_DecryptVerifyUpdate(f.session,ct,32,d1.bytes,&d1.length); good &= result==CKR_OK;
+  reset_output(&de,32);
+  result=a->C_DecryptFinal(f.session,de.bytes,&de.length); good &= result==CKR_OK;
+  good &= d1.length==16 && de.length==4;
+  /* NO explicit tail update: the peer holds only the 16
+   * update-fed bytes, so the 20-byte tag must NOT verify. */
+  vfDual=a->C_VerifyFinal(f.session,sig,32);
+  rv("C_DecryptVerifyUpdate","partial-final",vfDual,CKR_SIGNATURE_INVALID);
+  good &= vfDual==CKR_SIGNATURE_INVALID;
+  result=a->C_VerifyInit(f.session,&hmac,f.hmac); good &= result==CKR_OK;
+  result=a->C_VerifyUpdate(f.session,(CK_BYTE_PTR)ptShort,20); good &= result==CKR_OK;
+  vfFull=a->C_VerifyFinal(f.session,sig,32);
+  rv("setup","partial-final-control",vfFull,CKR_OK); good &= vfFull==CKR_OK;
+  check("C_DecryptVerifyUpdate","partial-final",good);
   close_fixture(a,f);
 }
 /* Lifecycle legs: the decrypt-final peer link follows the peer
@@ -959,8 +1118,9 @@ static void lifecycle_staged_peer(DualApi *a) {
 }
 /* Refusal legs (3.2 only): a missing peer refuses with no state
  * change (the live side still serves separate calls); malformed
- * pointers refuse and terminate both sides. Follow-up probes run
- * silently and fold into the leg verdict. */
+ * pointers refuse and terminate both sides. Null-len follow-up
+ * probes log their measured return values (issue #30 evidence)
+ * and fold into the leg verdict; other follow-ups run silently. */
 static void neg_digest_encrypt(DualApi *a) {
   Fixture f;
   CK_MECHANISM sha={CKM_SHA256,NULL,0};
@@ -1012,8 +1172,10 @@ static void neg_digest_encrypt(DualApi *a) {
   good = result==CKR_ARGUMENTS_BAD;
   reset_output(&q,64);
   follow=a->C_EncryptUpdate(f.session,(CK_BYTE_PTR)ptText,16,q.bytes,&q.length);
+  rv_note("C_DigestEncryptUpdate","neg-null-len-followup-cipher",follow);
   good &= follow==CKR_OPERATION_NOT_INITIALIZED;
   follow=a->C_DigestUpdate(f.session,(CK_BYTE_PTR)ptText,16);
+  rv_note("C_DigestEncryptUpdate","neg-null-len-followup-peer",follow);
   good &= follow==CKR_OPERATION_NOT_INITIALIZED;
   check("C_DigestEncryptUpdate","neg-null-len",good);
   close_fixture(a,f);
@@ -1083,8 +1245,10 @@ static void neg_decrypt_digest(DualApi *a) {
   good = result==CKR_ARGUMENTS_BAD;
   reset_output(&q,64);
   follow=a->C_DecryptUpdate(f.session,(CK_BYTE_PTR)ptText,16,q.bytes,&q.length);
+  rv_note("C_DecryptDigestUpdate","neg-null-len-followup-cipher",follow);
   good &= follow==CKR_OPERATION_NOT_INITIALIZED;
   follow=a->C_DigestUpdate(f.session,(CK_BYTE_PTR)ptText,16);
+  rv_note("C_DecryptDigestUpdate","neg-null-len-followup-peer",follow);
   good &= follow==CKR_OPERATION_NOT_INITIALIZED;
   check("C_DecryptDigestUpdate","neg-null-len",good);
   close_fixture(a,f);
@@ -1154,8 +1318,10 @@ static void neg_sign_encrypt(DualApi *a) {
   good = result==CKR_ARGUMENTS_BAD;
   reset_output(&q,64);
   follow=a->C_EncryptUpdate(f.session,(CK_BYTE_PTR)ptText,16,q.bytes,&q.length);
+  rv_note("C_SignEncryptUpdate","neg-null-len-followup-cipher",follow);
   good &= follow==CKR_OPERATION_NOT_INITIALIZED;
   follow=a->C_SignUpdate(f.session,(CK_BYTE_PTR)ptText,16);
+  rv_note("C_SignEncryptUpdate","neg-null-len-followup-peer",follow);
   good &= follow==CKR_OPERATION_NOT_INITIALIZED;
   check("C_SignEncryptUpdate","neg-null-len",good);
   close_fixture(a,f);
@@ -1225,8 +1391,10 @@ static void neg_decrypt_verify(DualApi *a) {
   good = result==CKR_ARGUMENTS_BAD;
   reset_output(&q,64);
   follow=a->C_DecryptUpdate(f.session,(CK_BYTE_PTR)ptText,16,q.bytes,&q.length);
+  rv_note("C_DecryptVerifyUpdate","neg-null-len-followup-cipher",follow);
   good &= follow==CKR_OPERATION_NOT_INITIALIZED;
   follow=a->C_VerifyUpdate(f.session,(CK_BYTE_PTR)ptText,16);
+  rv_note("C_DecryptVerifyUpdate","neg-null-len-followup-peer",follow);
   good &= follow==CKR_OPERATION_NOT_INITIALIZED;
   check("C_DecryptVerifyUpdate","neg-null-len",good);
   close_fixture(a,f);
@@ -1267,6 +1435,9 @@ static void run_legs(DualApi *a, const char *which) {
     equiv_final_nonaligned_digest(a);
     equiv_final_gcm_digest(a);
     equiv_final_nonaligned_verify(a);
+    partial_final_nonaligned_digest(a);
+    partial_final_gcm_digest(a);
+    partial_final_nonaligned_verify(a);
     lifecycle_stale_link(a);
     lifecycle_peer_kind(a);
     lifecycle_zero_activity(a);

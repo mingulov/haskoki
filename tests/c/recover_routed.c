@@ -21,7 +21,9 @@
  * CKF_SIGN_RECOVER/CKF_VERIFY_RECOVER advertisement on the pair
  * and its absence elsewhere; refusal legs pin the joint contract
  * (unknown mechanism, digest-row exclusion, oversize input,
- * short/oversize blocks, wrong key type, malformed pointers).
+ * PKCS k-11/k-10 boundary, short/oversize blocks at
+ * CKR_SIGNATURE_LEN_RANGE per section 5.15.6, wrong key type,
+ * malformed pointers).
  *
  * Usage: recover_routed <module> [--version 2.40|3.0|3.1|3.2]
  *                              [--legs route|pkcs|flags|neg|all]
@@ -493,13 +495,108 @@ static void neg_short_block(RecoverApi *a) {
   rv("neg","short-block-init",result,CKR_OK); good &= result==CKR_OK;
   reset_output(&o,256);
   result=a->C_VerifyRecover(f.session,tiny,sizeof(tiny),o.bytes,&o.length);
-  rv("neg","short-block-detail",result,CKR_SIGNATURE_INVALID); good &= result==CKR_SIGNATURE_INVALID;
+  rv("neg","short-block-detail",result,CKR_SIGNATURE_LEN_RANGE); good &= result==CKR_SIGNATURE_LEN_RANGE;
   result=a->C_VerifyRecoverInit(f.session,&m,f.pub);
   rv("neg","short-block-reinit",result,CKR_OK); good &= result==CKR_OK;
   reset_output(&o,512);
   result=a->C_VerifyRecover(f.session,big,sizeof(big),o.bytes,&o.length);
-  rv("neg","short-block-detail",result,CKR_DATA_LEN_RANGE); good &= result==CKR_DATA_LEN_RANGE;
+  rv("neg","short-block-detail",result,CKR_SIGNATURE_LEN_RANGE); good &= result==CKR_SIGNATURE_LEN_RANGE;
   check("neg","short-block",good);
+  close_fixture(a,f);
+}
+/* PKCS input boundary: block-type-1 framing costs 11 bytes
+ * (0x00 0x01 PS 0x00 with an 8-byte minimum filler), so over a
+ * 2048-bit key (k = 256) CKM_RSA_PKCS sign-recover admits exactly
+ * k-11 = 245 input bytes and refuses k-10 = 246 with
+ * CKR_DATA_LEN_RANGE before dispatch. CKM_RSA_X_509 keeps full-k
+ * admission (pinned by the route sign leg's 256-byte input). */
+static void neg_pkcs_boundary(RecoverApi *a) {
+  Fixture f=fixture(a);
+  CK_MECHANISM m={CKM_RSA_PKCS,NULL,0};
+  CK_BYTE admit[245], refuse[246];
+  Output o, v;
+  int good=1, i;
+  CK_RV result;
+  for (i=0;i<245;++i) admit[i]=(CK_BYTE)(i+1);
+  for (i=0;i<246;++i) refuse[i]=(CK_BYTE)(i+1);
+  result=a->C_SignRecoverInit(f.session,&m,f.priv);
+  rv("neg","pkcs-boundary-init",result,CKR_OK); good &= result==CKR_OK;
+  reset_output(&o,256);
+  result=a->C_SignRecover(f.session,admit,sizeof(admit),o.bytes,&o.length);
+  rv("neg","pkcs-boundary-admit",result,CKR_OK); good &= result==CKR_OK;
+  good &= o.length==256;
+  result=a->C_VerifyRecoverInit(f.session,&m,f.pub);
+  rv("neg","pkcs-boundary-vinit",result,CKR_OK); good &= result==CKR_OK;
+  reset_output(&v,256);
+  result=a->C_VerifyRecover(f.session,o.bytes,o.length,v.bytes,&v.length);
+  rv("neg","pkcs-boundary-roundtrip",result,CKR_OK); good &= result==CKR_OK;
+  good &= v.length==sizeof(admit) && memcmp(v.bytes,admit,sizeof(admit))==0;
+  result=a->C_SignRecoverInit(f.session,&m,f.priv);
+  rv("neg","pkcs-boundary-reinit",result,CKR_OK); good &= result==CKR_OK;
+  reset_output(&o,256);
+  result=a->C_SignRecover(f.session,refuse,sizeof(refuse),o.bytes,&o.length);
+  rv("neg","pkcs-boundary-detail",result,CKR_DATA_LEN_RANGE); good &= result==CKR_DATA_LEN_RANGE;
+  check("neg","pkcs-boundary",good);
+  close_fixture(a,f);
+}
+/* Signature-length shapes: section 5.15.6 ("If the signature can
+ * be seen to be invalid purely on the basis of its length, then
+ * CKR_SIGNATURE_LEN_RANGE should be returned") outranks the
+ * output dialogue, so short AND over-capacity blocks report
+ * CKR_SIGNATURE_LEN_RANGE under both the NULL-output query and
+ * the short-buffer shapes. The exact-capacity control pins that
+ * BUFFER_TOO_SMALL still fires when the length is fine. */
+static void neg_siglen_shapes(RecoverApi *a) {
+  Fixture f=fixture(a);
+  CK_MECHANISM m={CKM_RSA_X_509,NULL,0};
+  CK_BYTE tiny[10], big[257], input[256];
+  Output o;
+  int good=1;
+  CK_RV result;
+  memset(tiny,0xa5,sizeof(tiny));
+  memset(big,0xa5,sizeof(big));
+  x509_input(input,msgText);
+  result=a->C_VerifyRecoverInit(f.session,&m,f.pub);
+  rv("neg","siglen-init",result,CKR_OK); good &= result==CKR_OK;
+  reset_output(&o,256);
+  result=a->C_VerifyRecover(f.session,tiny,sizeof(tiny),NULL,&o.length);
+  rv("neg","siglen-short-query",result,CKR_SIGNATURE_LEN_RANGE); good &= result==CKR_SIGNATURE_LEN_RANGE;
+  result=a->C_VerifyRecoverInit(f.session,&m,f.pub);
+  rv("neg","siglen-reinit",result,CKR_OK); good &= result==CKR_OK;
+  reset_output(&o,4);
+  result=a->C_VerifyRecover(f.session,tiny,sizeof(tiny),o.bytes,&o.length);
+  rv("neg","siglen-short-buffer",result,CKR_SIGNATURE_LEN_RANGE); good &= result==CKR_SIGNATURE_LEN_RANGE;
+  result=a->C_VerifyRecoverInit(f.session,&m,f.pub);
+  rv("neg","siglen-reinit",result,CKR_OK); good &= result==CKR_OK;
+  reset_output(&o,512);
+  result=a->C_VerifyRecover(f.session,big,sizeof(big),NULL,&o.length);
+  rv("neg","siglen-over-query",result,CKR_SIGNATURE_LEN_RANGE); good &= result==CKR_SIGNATURE_LEN_RANGE;
+  result=a->C_VerifyRecoverInit(f.session,&m,f.pub);
+  rv("neg","siglen-reinit",result,CKR_OK); good &= result==CKR_OK;
+  reset_output(&o,4);
+  result=a->C_VerifyRecover(f.session,big,sizeof(big),o.bytes,&o.length);
+  rv("neg","siglen-over-buffer",result,CKR_SIGNATURE_LEN_RANGE); good &= result==CKR_SIGNATURE_LEN_RANGE;
+  /* The sign slot is independent: sign first, then init verify fresh. */
+  result=a->C_SignRecoverInit(f.session,&m,f.priv);
+  rv("neg","siglen-sign-init",result,CKR_OK); good &= result==CKR_OK;
+  {
+    Output s;
+    reset_output(&s,256);
+    result=a->C_SignRecover(f.session,input,sizeof(input),s.bytes,&s.length);
+    rv("neg","siglen-sign",result,CKR_OK); good &= result==CKR_OK;
+    good &= s.length==256;
+    result=a->C_VerifyRecoverInit(f.session,&m,f.pub);
+    rv("neg","siglen-reinit",result,CKR_OK); good &= result==CKR_OK;
+    reset_output(&o,4);
+    result=a->C_VerifyRecover(f.session,s.bytes,s.length,o.bytes,&o.length);
+    rv("neg","siglen-exact-short",result,CKR_BUFFER_TOO_SMALL); good &= result==CKR_BUFFER_TOO_SMALL;
+    good &= o.length==256;
+    reset_output(&o,256);
+    result=a->C_VerifyRecover(f.session,s.bytes,s.length,o.bytes,&o.length);
+    rv("neg","siglen-exact-recall",result,CKR_OK); good &= result==CKR_OK;
+    good &= o.length==256 && memcmp(o.bytes,input,256)==0;
+  }
+  check("neg","siglen-shapes",good);
   close_fixture(a,f);
 }
 static void neg_key_type(RecoverApi *a) {
@@ -584,6 +681,8 @@ static void run_legs(RecoverApi *a, const char *which) {
     neg_digest_row(a);
     neg_oversize(a);
     neg_short_block(a);
+    neg_pkcs_boundary(a);
+    neg_siglen_shapes(a);
     neg_key_type(a);
     neg_null(a);
   }

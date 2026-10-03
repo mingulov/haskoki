@@ -105,12 +105,16 @@ isRecoverRsa :: MechanismId -> Bool
 isRecoverRsa m =
   m == MechanismId ckm_RSA_X_509 || m == MechanismId ckm_RSA_PKCS
 
--- | The tag width counted against the capacity for one
--- sign-recover input: pair rows stage the driver block directly,
--- so the input alone must fit; other rows assemble
--- @data \|\| tag@, so the tag width counts too.
+-- | The framing width counted against the capacity for one
+-- sign-recover input: the raw-PKCS row frames block-type-1 in
+-- the driver (@0x00 0x01 PS 0x00@ with an 8-byte minimum filler,
+-- 11 bytes of overhead), so the input must fit @k - 11@; the
+-- X.509 row stages the driver block directly, so the input alone
+-- must fit the full @k@; other rows assemble @data \|\| tag@,
+-- so the tag width counts too.
 signRecoverAllowance :: SlotCommon -> RecoverSpec -> Int
 signRecoverAllowance sc spec
+  | commonMech sc == MechanismId ckm_RSA_PKCS = 11
   | isRecoverRsa (commonMech sc) = 0
   | otherwise = rsTagLen spec
 
@@ -422,9 +426,11 @@ finishVerify ops kind name result _intent
 -- plus the buffered input assembles the @data \|\| tag@ block. The
 -- block must fit the init-fixed capacity; oversize input terminates
 -- the slot without planning an effect. Pair rows ('isRecoverRsa')
--- run the raw-RSA composition instead: the input alone must fit
--- the capacity (the modulus width, fixed at init) and the driver
--- block stages directly (see 'finishSignRecover').
+-- run the raw-RSA composition instead: the X.509 row takes the
+-- input alone against the full capacity (the modulus width, fixed
+-- at init) while the raw-PKCS row reserves the 11-byte type-1
+-- framing ('signRecoverAllowance'), and the driver block stages
+-- directly (see 'finishSignRecover').
 planSignRecoverOneShot
   :: SessionOps -> SessionState -> String -> ByteString
   -> (SessionOps, SessionState, StepOutcome)
@@ -519,13 +525,16 @@ finishSignRecover ops kind name result intent
 -- ---------------------------------------------------------------------------
 
 -- | Plan a verify-recover one-shot over a @data \|\| tag@ block. A
--- block no longer than the tag alone is invalid without an effect;
--- both shape failures terminate the slot. Pair rows
--- ('isRecoverRsa') take the raw-RSA composition instead: the
--- block must cover exactly the capacity (the modulus width,
--- fixed at init) — a short block is not a signature and refuses
--- @CKR_SIGNATURE_INVALID@ — and the driver payload stages
--- directly.
+-- block no longer than the tag alone holds no data and reports
+-- @CKR_SIGNATURE_INVALID@ without an effect (the empty-signature
+-- shape); both shape failures terminate the slot. Length-invalid
+-- blocks refuse @CKR_SIGNATURE_LEN_RANGE@ (§5.15.6): a short
+-- pair-row block and any over-capacity block, on every row. The
+-- length arms fire before any output staging, so they outrank
+-- @CKR_BUFFER_TOO_SMALL@. Pair rows ('isRecoverRsa') take the
+-- raw-RSA composition instead: the block must cover exactly the
+-- capacity (the modulus width, fixed at init), and the driver
+-- payload stages directly.
 planVerifyRecoverOneShot
   :: SessionOps -> SessionState -> String -> ByteString
   -> (SessionOps, SessionState, StepOutcome)
@@ -549,12 +558,12 @@ planVerifyRecoverOneShot ops st _name sig =
             && BS.length sig < rsCapacity spec ->
             ( removeSingle SlotVerify ops
             , st
-            , StepOutcome CKR_SIGNATURE_INVALID [] Nothing
+            , StepOutcome CKR_SIGNATURE_LEN_RANGE [] Nothing
                 ["recovery block is shorter than the modulus width"] [] Nothing)
         | BS.length sig > rsCapacity spec ->
             ( removeSingle SlotVerify ops
             , st
-            , denyOutcome (mkDeny CKR_DATA_LEN_RANGE
+            , denyOutcome (mkDeny CKR_SIGNATURE_LEN_RANGE
                 "recovery block exceeds the signature capacity"))
         | otherwise -> case gateDataCall st sc of
             GateDeny d term ->

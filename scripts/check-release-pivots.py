@@ -115,6 +115,16 @@ def main() -> int:
                                    "return stub_parallel();"))
               for _, b in legacy),
           f"all {len(legacy)} legacy stubs void args (no inspections)")
+    # Exact identities (T-M08 codex #2): the floor above admits
+    # silent substitutions and extra stubs, so the remaining set
+    # is pinned by name. Edit only with the routing commit cited,
+    # same as the floor.
+    check("STUB-IDENTITY-LEGACY",
+          sorted(n for n, _ in legacy) == sorted([
+              "InitToken", "InitPIN", "SetPIN",
+              "GetOperationState", "SetOperationState",
+              "GetObjectSize", "GetFunctionStatus", "CancelFunction"]),
+          f"legacy stub identities exact (got {sorted(n for n, _ in legacy)})")
     check("STUB-UNIFORM-GEN",
           "(void)" in gen and "return x_live_check();" in gen,
           "stub generator template voids args + live-checks")
