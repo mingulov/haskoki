@@ -3178,3 +3178,42 @@ recorder:
 Spec trace: §3 C09, §6 C/oracle/proxy; G13; S01–S05 linked. T-C09
 evidence is complete at final bytes; the task-c09 review passes fully
 after the R12 codex-findings re-proof. No acceptance claimed.
+
+## P11C-012 (candidate): HOTP registry entry pairs `param_required=True` with the default `none` recipe; message-init probes send NULL
+
+T-M06 finding F-HOTP-PARAMS (2 nodes, fast + kat identical).
+`mechanism_registry/_misc.py` registers `CKM_HOTP` with
+`param_required=True` and no recipe override, so
+`TestRegistryMessageInit` sign/verify legs pass NULL params;
+the provider requires its documented 16-byte `hotp-params/1`
+image identically on classic and message paths and refuses
+`CKR_ARGUMENTS_BAD`. Sibling shape of P11C-009 (POLY1305).
+Reproduction: fast/kat lane capture in
+`dist-release-evidence/mechanisms/task-m06/` (signed reviews).
+
+## P11C-013 (candidate): `message_encrypt` recipe resolves omitted params to NULL for CBC; provider requires the init IV as classic does
+
+T-M06 finding F-CBC-IV (4 nodes, fast + kat identical).
+`raw/recipes.py::_resolve_mech` maps `mech_param=None` to
+`mech_simple` (NULL params); the 4 `TestMessageEncryptDecrypt`
+legs therefore init `CKM_AES_CBC` message-encrypt/decrypt
+without an IV and the provider refuses `CKR_ARGUMENTS_BAD`,
+exactly as classic init without an IV does (provider C sweep
+passes the IV and asserts `CKR_OK`; AES_CBC registry
+message-inits with an IV pass). Sibling shape of P11C-008.
+Reproduction: fast/kat lane capture in
+`dist-release-evidence/mechanisms/task-m06/` (signed reviews).
+
+## P11C-014 (candidate): RSA recover recipes expect `CKR_OK` from keys without `CKA_SIGN_RECOVER` / `CKA_VERIFY_RECOVER`
+
+T-M06 finding F-RECOVER-ATTRS (3 nodes, fast + kat identical).
+`raw/recipes.py::rsa_usage_attrs` maps SIGN usage to
+`CKA_SIGN`/`CKA_VERIFY` only, while
+`sign_recover_single`/`verify_recover_single` expect `CKR_OK`
+from `C_SignRecoverInit`/`C_VerifyRecoverInit`; the provider
+gates recover ops on the standard `_RECOVER` attributes and
+returns `CKR_KEY_FUNCTION_NOT_PERMITTED`. Properly attributed
+keys pass 2/2 in `test_mech_sign_recover.py`, as do the
+provider's own recover legs. Reproduction: fast/kat lane
+capture in `dist-release-evidence/mechanisms/task-m06/`
+(signed reviews).

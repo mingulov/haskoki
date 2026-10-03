@@ -5177,3 +5177,30 @@ Carried to the oracle qualification EXPECTED inventories: rows 01,
 `has_mechanism` availability gate; rows 02–04, 14 are
 negative-only or absent by construction. No lane receipt is
 claimed here.
+
+## T-M06 lane dispositions (mechanisms slice, reviewed)
+
+T-M06 DISPOSITIONS (task-m06, coordinator-reviewed). Fast lane
+11710 nodes (5774 passed, 32 failed, 979 xfailed, 4925
+skipped) and kat lane 118268 nodes (85091 passed, 32 failed,
+1318 xfailed, 31827 skipped), 0 crashed/timeout/error/xpassed
+in both; the 32 failed nodes are the identical set in both
+lanes and all 32 are explained below. No lane failure
+indicates a T-M01-T-M05 provider defect. Evidence:
+`dist-release-evidence/mechanisms/task-m06/` with signed
+fast/kat findings reviews (`reviewed:true`,
+`unresolved_new_provider_findings:0`).
+
+| Finding | Nodes | Verdict | Disposition |
+|---|---|---|---|
+| F-GCM-SHAPE (native `CK_GCM_MESSAGE_PARAMS` refused `CKR_ARGUMENTS_BAD`) | 7 | Capability (documented pre-slice provider contract) | Message-init accepts classic-shaped params only (message-routing design section 3.2; T-M01 pins `CK_GCM_PARAMS`). The oracle shape is header-real (`pkcs11.h:1376` + `:1588`; see the signed fast-review correction). Native message-struct support is provider-side future work, not a slice defect. |
+| F-HOTP-PARAMS (NULL params refused) | 2 | Oracle (registry recipe gap) | Oracle gives HOTP `param_required=True` with the default `none` recipe; the provider requires its documented 16-byte image identically on classic and message paths. Upstream candidate (sibling of P11C-009). |
+| F-BLAKE2B-KEYTYPE (wrong-key-type accepted) | 16 | Capability, pre-existing (provider matrix gap) | `KeyMatrix` carries no BLAKE2B rows, so the shared `validateInit` path keeps legacy usage-only behavior identically on classic and message paths. Untouched since pre-slice; matrix-owner follow-up, not this slice. |
+| F-CBC-IV (NULL IV refused) | 4 | Oracle (recipe gap) | The `message_encrypt` recipe resolves omitted params to NULL while the provider requires the CBC IV at message-init exactly as classic does. Upstream candidate (sibling of P11C-008). |
+| F-RECOVER-ATTRS (`CKR_KEY_FUNCTION_NOT_PERMITTED`) | 3 | Oracle (key-template gap) | `rsa_usage_attrs` sets `CKA_SIGN`/`CKA_VERIFY` without the `_RECOVER` attributes the standard gates recover on, while the recipes expect `CKR_OK`. Properly attributed keys pass 2/2 (`test_mech_sign_recover.py`). Upstream candidate. |
+
+Skip/negative suites (`test_operation_state.py`, the ML/SLH-DSA pre-hash suites, the GOST/stateful/X3DH/ratchet/CMS suites) hold their stances with 3 source-verified
+negative passes; mixed files skip with DG6-triage-verbatim
+reasons (28/28 identical across lanes). Token classification
+re-run: 504/504 tokens tested (329) / reasoned (107) /
+deferred (68), 0 blockers — no silent thirds.
