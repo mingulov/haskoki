@@ -478,8 +478,9 @@ int main(int argc, char **argv) {
         "AES_KEY_GEN info: generate-only, 128-256 bits");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_AES_CBC_PAD, &mi);
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 16 && mi.ulMaxKeySize == 32 &&
-            mi.flags == (CKF_ENCRYPT | CKF_DECRYPT),
-        "AES_CBC_PAD info: 16..32, encrypt/decrypt");
+            mi.flags == (CKF_ENCRYPT | CKF_DECRYPT | CKF_MESSAGE_ENCRYPT |
+                         CKF_MESSAGE_DECRYPT),
+        "AES_CBC_PAD info: 16..32, encrypt/decrypt, message encrypt/decrypt");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_RSA_PKCS_KEY_PAIR_GEN, &mi);
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 0 && mi.ulMaxKeySize == 0 &&
             mi.flags == CKF_GENERATE_KEY_PAIR,
@@ -494,16 +495,19 @@ int main(int argc, char **argv) {
         "ML_KEM info: 800..1568, encapsulate/decapsulate");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_AES_GCM, &mi);
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 16 && mi.ulMaxKeySize == 32 &&
-            mi.flags == (CKF_ENCRYPT | CKF_DECRYPT),
-        "AES_GCM info: 16..32, encrypt/decrypt, no wrap flags");
+            mi.flags == (CKF_ENCRYPT | CKF_DECRYPT | CKF_MESSAGE_ENCRYPT |
+                         CKF_MESSAGE_DECRYPT),
+        "AES_GCM info: 16..32, encrypt/decrypt, message encrypt/decrypt, no wrap flags");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_DES_CBC, &mi);
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 8 && mi.ulMaxKeySize == 8 &&
-            mi.flags == (CKF_ENCRYPT | CKF_DECRYPT),
-        "DES_CBC info: 8/8, encrypt/decrypt");
+            mi.flags == (CKF_ENCRYPT | CKF_DECRYPT | CKF_MESSAGE_ENCRYPT |
+                         CKF_MESSAGE_DECRYPT),
+        "DES_CBC info: 8/8, encrypt/decrypt, message encrypt/decrypt");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_RC2_CBC, &mi);
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 1 && mi.ulMaxKeySize == 128 &&
-            mi.flags == (CKF_ENCRYPT | CKF_DECRYPT),
-        "RC2_CBC info: 1..128, encrypt/decrypt");
+            mi.flags == (CKF_ENCRYPT | CKF_DECRYPT | CKF_MESSAGE_ENCRYPT |
+                         CKF_MESSAGE_DECRYPT),
+        "RC2_CBC info: 1..128, encrypt/decrypt, message encrypt/decrypt");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_RSA_X9_31_KEY_PAIR_GEN, &mi);
   CHECK(rv == CKR_MECHANISM_INVALID, "unlisted mechanism info rejected");
   rv = tbl32->C_GetMechanismInfo(999991UL, CKM_SHA256, &mi);

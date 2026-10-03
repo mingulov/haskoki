@@ -91,9 +91,11 @@ fail() {
 [ -f tests/c/async_routed.c ] || fail "async consumer missing"
 [ -f tests/c/notifications_routed.c ] || fail "notifications consumer missing"
 [ -f tests/c/consumer_certificates.c ] || fail "certificates consumer missing"
+[ -f tests/c/dual_routed.c ] || fail "dual consumer missing"
+[ -f tests/c/recover_routed.c ] || fail "recover consumer missing"
 [ -f tests/c/consumer_notifications_poll.c ] || fail "notifications polling consumer missing"
 SCEN_LIST=$(
-  for scen in tests/c/consumer_*.c tests/c/message_routed.c tests/c/async_routed.c tests/c/notifications_routed.c tests/c/consumer_certificates.c; do
+  for scen in tests/c/consumer_*.c tests/c/message_routed.c tests/c/async_routed.c tests/c/notifications_routed.c tests/c/consumer_certificates.c tests/c/dual_routed.c tests/c/recover_routed.c; do
     [ -f "$scen" ] && printf '%s\n' "$scen"
   done | LC_ALL=C sort -u
 )
@@ -106,6 +108,10 @@ SCEN_LIST=$(
   || fail "notifications consumer must occur exactly once"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_certificates.c')" -eq 1 ] \
   || fail "certificates consumer must occur exactly once"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/dual_routed.c')" -eq 1 ] \
+  || fail "dual consumer must occur exactly once"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/recover_routed.c')" -eq 1 ] \
+  || fail "recover consumer must occur exactly once"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_notifications_poll.c')" -eq 1 ] \
   || fail "notifications polling consumer must occur exactly once"
 for scen in $SCEN_LIST; do
@@ -120,8 +126,10 @@ done
 # an entry without a URL, or naming no listed scenario, fails the driver.
 # Per-leg entries base:leg:upstream-issue-URL skip only that leg's proxied
 # run (whole-basename entries keep working); the leg must be one of the
-# six certificate legs.
-# Per-version entries consumer_certificates:leg:version:upstream-issue-URL
+# six certificate legs (create/find/lifecycle/visibility/atomicity/restart),
+# the three dual legs (route/equiv/neg), or the four recover legs
+# (route/pkcs/flags/neg), and must belong to the named consumer.
+# Per-version entries base:leg:version:upstream-issue-URL
 # skip only that leg+version's proxied run; version is one of
 # 2.40/3.0/3.1/3.2 (whole-leg and whole-basename entries keep working).
 # message_routed: proxy rejects raw IV params, clobbers output state on
@@ -131,6 +139,20 @@ done
 # notifications_routed: blocking Wait retains the shim client mutex needed by
 # Finalize; callback association and provider control are not transported.
 # Valid empty polling remains parity-eligible in consumer_notifications_poll.
+# dual_routed/recover_routed: per-(version,leg) runs with transcript diff.
+# dual/recover :3.1 legs: v3.1 C_GetInterface returns CKR_OK with no usable
+# function table through the proxy (direct yields the 3.1 table); every 3.1
+# leg trips the same pre-session discovery gate — same cause, one URL;
+# https://github.com/mingulov/pkcs11-proxy-ng/issues/29; T-M07 R1.
+# dual_routed route+neg × 3.2: NULL out-length error without termination
+# (proxied keeps both sides alive) and NULL part returns CKR_OK (direct
+# CKR_ARGUMENTS_BAD); same cause, one URL;
+# https://github.com/mingulov/pkcs11-proxy-ng/issues/30; T-M07 R2.
+# recover_routed neg × 2.40/3.0/3.2 (whole leg; the :3.1 entry wins on 3.1):
+# NULL out-length error without termination (proxied re-init 0x90) and
+# NULL input returns 0x5 (direct 0x7);
+# https://github.com/mingulov/pkcs11-proxy-ng/issues/31; T-M07 R3.
+# Reproductions + 28-pair transcripts: task-m07/matrix receipt.
 # consumer_certificates:lifecycle+visibility+atomicity: proxied
 # C_GetAttributeValue on an invalid handle (destroyed or post-logout
 # stale) zeroes the caller canary buffer (direct preserves it); same
@@ -151,7 +173,17 @@ consumer_certificates:visibility:https://github.com/mingulov/pkcs11-proxy-ng/iss
 consumer_certificates:atomicity:https://github.com/mingulov/pkcs11-proxy-ng/issues/26
 consumer_certificates:restart:https://github.com/mingulov/pkcs11-proxy-ng/issues/27
 consumer_certificates:create:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28
-consumer_certificates:find:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28"
+consumer_certificates:find:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28
+dual_routed:route:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
+dual_routed:equiv:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
+dual_routed:neg:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
+recover_routed:route:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
+recover_routed:pkcs:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
+recover_routed:flags:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
+recover_routed:neg:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
+dual_routed:route:3.2:https://github.com/mingulov/pkcs11-proxy-ng/issues/30
+dual_routed:neg:3.2:https://github.com/mingulov/pkcs11-proxy-ng/issues/30
+recover_routed:neg:https://github.com/mingulov/pkcs11-proxy-ng/issues/31"
 for entry in $DIRECT_ONLY; do
   dname="${entry%%:*}"; durl="${entry#*:}"
   [ -n "$durl" ] && [ "$durl" != "$entry" ] \
@@ -159,10 +191,15 @@ for entry in $DIRECT_ONLY; do
   # Strict disposition grammar (T-C09 R12 C09-02): after the basename
   # strip, the remainder must be exactly a whole-basename URL, a
   # whole-leg leg:URL, or a version-qualified leg:version:URL.
+  # The first token after the basename is the leg for leg entries
+  # (dual legs route/equiv/neg, recover legs route/pkcs/flags/neg)
+  # or the URL scheme for whole-basename entries; a leg entry on
+  # any other consumer fails below.
+  dleg="${durl%%:*}"
   case "$durl" in
     https://?*)
       ;;
-    create:*|find:*|lifecycle:*|visibility:*|atomicity:*|restart:*)
+    create:*|find:*|lifecycle:*|visibility:*|atomicity:*|restart:*|route:*|equiv:*|neg:*|pkcs:*|flags:*)
       durl="${durl#*:}"
       case "$durl" in
         https://?*)
@@ -177,6 +214,24 @@ for entry in $DIRECT_ONLY; do
         *) fail "malformed direct-only entry" ;;
       esac
       ;;
+    *) fail "malformed direct-only entry" ;;
+  esac
+  case "$dleg" in
+    https)
+      ;;
+    create|find|lifecycle|visibility|atomicity|restart)
+      [ "$dname" = "consumer_certificates" ] \
+        || fail "malformed direct-only entry"
+      ;;
+    route|equiv|neg|pkcs|flags)
+      case "$dname:$dleg" in
+        dual_routed:route|dual_routed:equiv|dual_routed:neg|recover_routed:route|recover_routed:pkcs|recover_routed:flags|recover_routed:neg)
+          ;;
+        *) fail "malformed direct-only entry" ;;
+      esac
+      ;;
+    # Defense in depth (T-C09 R12 C09-02): unreachable
+    # post-validation, which rejects malformed entries first.
     *) fail "malformed direct-only entry" ;;
   esac
   [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx "tests/c/$dname.c")" -eq 1 ] \
@@ -222,6 +277,8 @@ mkdir -p "$TMPD" || fail "cannot create $TMPD"
 ARTIFACTS="${HASKOKI_PARITY_ARTIFACTS:-$TMPD/parity-logs}"
 mkdir -p "$ARTIFACTS" || fail "cannot create $ARTIFACTS"
 CERT_LEGS="${CERT_LEGS:-create find lifecycle visibility atomicity restart}"
+DUAL_LEGS="${DUAL_LEGS:-route equiv neg}"
+RECOVER_LEGS="${RECOVER_LEGS:-route pkcs flags neg}"
 HASKOKI_PARITY_STORAGE="${HASKOKI_PARITY_STORAGE:-memory sqlite}"
 
 # Backend config for the daemon side (real-crypto engine, trace off).
@@ -496,10 +553,90 @@ run_parity_cert_leg() {
   archive_logs "$DLOG" "$PLOG" "$DNORM" "$PNORM" "$TMPD/consumer_certificates-$V-$L-$M.diff"
 }
 
+run_parity_routed_leg() {
+  # $1 = consumer base (dual_routed|recover_routed), $2 = version, $3 = leg
+  B="$1"; V="$2"; L="$3"
+  DLOG="$TMPD/$B-$V-$L.direct.log"
+  PLOG="$TMPD/$B-$V-$L.proxied.log"
+  DNORM="$TMPD/$B-$V-$L.direct.norm"
+  PNORM="$TMPD/$B-$V-$L.proxied.norm"
+  echo "--- parity leg: $B version=$V legs=$L"
+  echo "child argv: env -u HASKOKI_CONSUMER_TOPOLOGY $BIN $SO --version $V --legs $L"
+  ec=0; env -u HASKOKI_CONSUMER_TOPOLOGY "$BIN" "$SO" --version "$V" --legs "$L" >"$DLOG" 2>&1 || ec=$?
+  echo "direct exit: $B:$V-$L $ec"
+  if [ "$ec" -ne 0 ]; then echo "--- direct log:"; cat "$DLOG"; fail "$B:$L FAILED direct ($V)"; fi
+  for entry in $DIRECT_ONLY; do
+    case "$entry" in
+      "$B:$L:$V:"*)
+        echo "DIRECT-ONLY: $B:$L:$V (proxied leg skipped, see ${entry#$B:$L:$V:})"
+        archive_logs "$DLOG"
+        return 0
+        ;;
+      "$B:$L:"*)
+        case "${entry#$B:$L:}" in
+          2.40:*|3.0:*|3.1:*|3.2:*)
+            # Version-qualified entry for another version: this run proceeds.
+            ;;
+          https://?*)
+            echo "DIRECT-ONLY: $B:$L (proxied leg skipped, see ${entry#$B:$L:})"
+            archive_logs "$DLOG"
+            return 0
+            ;;
+          # Defense in depth (T-C09 R12 C09-02): unreachable
+          # post-validation, which rejects malformed entries first.
+          *) fail "malformed direct-only entry" ;;
+        esac
+        ;;
+      "$B:http"*)
+        echo "DIRECT-ONLY: $B (proxied leg skipped, see ${entry#$B:})"
+        archive_logs "$DLOG"
+        return 0
+        ;;
+    esac
+  done
+  echo "child argv: env HASKOKI_CONSUMER_TOPOLOGY=proxy PKCS11_PROXY_ENDPOINT=$ENDPOINT PKCS11_PROXY_MECHANISMS=$TMPD/mechanisms-override.toml $BIN $SHIM_SO --version $V --legs $L"
+  ec=0; HASKOKI_CONSUMER_TOPOLOGY=proxy PKCS11_PROXY_ENDPOINT="$ENDPOINT" \
+    PKCS11_PROXY_MECHANISMS="$TMPD/mechanisms-override.toml" \
+    "$BIN" "$SHIM_SO" --version "$V" --legs "$L" >"$PLOG" 2>&1 || ec=$?
+  echo "proxied exit: $B:$V-$L $ec"
+  if [ "$ec" -ne 0 ]; then echo "--- proxied log:"; cat "$PLOG"; fail "$B:$L FAILED proxied ($V)"; fi
+  normalize "$DLOG" "$DNORM"
+  normalize "$PLOG" "$PNORM"
+  if [ "${HASKOKI_PARITY_SEED_MISMATCH:-0}" = "1" ]; then
+    echo "ok: SEED-INJECTED-DIVERGENCE (sensitivity proof)" >> "$PNORM"
+    echo "SEEDED: injected one divergent line into proxied transcript"
+  fi
+  if ! diff -u "$DNORM" "$PNORM" > "$TMPD/$B-$V-$L.diff"; then
+    echo "PARITY DIVERGENCE in $B:$L ($V):"
+    cat "$TMPD/$B-$V-$L.diff"
+    echo "--- full direct log:"
+    cat "$DLOG"
+    echo "--- full proxied log:"
+    cat "$PLOG"
+    fail "$B:$L: forwarded-call transcripts differ direct-vs-proxied ($V)"
+  fi
+  echo "parity holds: $B:$L ($V, $(wc -l < "$DNORM") forwarded lines identical)"
+  archive_logs "$DLOG" "$PLOG" "$DNORM" "$PNORM" "$TMPD/$B-$V-$L.diff"
+}
+
 run_parity() {
   # $1 = scenario base name
   base="$1"
   BIN="$TMPD/$base"
+  if [ "$base" = "dual_routed" ] || [ "$base" = "recover_routed" ]; then
+    echo "--- parity: $base (per-leg)"
+    if [ "$base" = "dual_routed" ]; then
+      LEGS="$DUAL_LEGS"
+    else
+      LEGS="$RECOVER_LEGS"
+    fi
+    for V in 2.40 3.0 3.1 3.2; do
+      for L in $LEGS; do
+        run_parity_routed_leg "$base" "$V" "$L"
+      done
+    done
+    return 0
+  fi
   if [ "$base" = "consumer_certificates" ]; then
     echo "--- parity: $base (storage mode $CERT_MODE)"
     for V in 2.40 3.0 3.1 3.2; do
