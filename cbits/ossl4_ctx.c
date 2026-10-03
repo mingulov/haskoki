@@ -3713,7 +3713,7 @@ long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     EVP_PKEY *peer = NULL;
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *secret = NULL;
-    size_t secretlen = 0;
+    size_t secretlen = 0, secretalloc = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
     if (ctx == NULL || propq == NULL || out == NULL ||
@@ -3758,8 +3758,11 @@ long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
+    /* The failed derive below may mutate secretlen: cleanse with the
+     * allocation length, never the out-param. */
+    secretalloc = secretlen;
     if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
-        OPENSSL_clear_free(secret, secretlen);
+        OPENSSL_clear_free(secret, secretalloc);
         secret = NULL;
         goto end;
     }
@@ -3786,7 +3789,7 @@ long hsk_ossl4_xdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     EVP_PKEY *peer = NULL;
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *secret = NULL;
-    size_t secretlen = 0;
+    size_t secretlen = 0, secretalloc = 0;
     size_t keylen = 0;
     const char *keytype = NULL;
     int base_id;
@@ -3841,12 +3844,15 @@ long hsk_ossl4_xdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
+    /* The failed derive below may mutate secretlen: cleanse with the
+     * allocation length, never the out-param. */
+    secretalloc = secretlen;
     if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
         /* A low-order peer: the provider refuses zero-output
          * derives. The clamped scalar is always valid, so on
          * width-exact inputs no other failure mode exists —
          * every derive failure attributes the peer. */
-        OPENSSL_clear_free(secret, secretlen);
+        OPENSSL_clear_free(secret, secretalloc);
         secret = NULL;
         rc = HSK_OSSL4_ERR_BADPEER;
         goto end;
