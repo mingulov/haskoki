@@ -1141,8 +1141,8 @@ static void case_stub(CK_FUNCTION_LIST_PTR p11) {
   EXPECT_RV(rv, CKR_FUNCTION_NOT_SUPPORTED, "stub-beats-args init-token");
   rv = p11->C_SetPIN(0xFFFFFFFFu, NULL, 0, NULL, 0);
   EXPECT_RV(rv, CKR_FUNCTION_NOT_SUPPORTED, "stub-beats-args set-pin");
-  rv = p11->C_SignRecoverInit(DUMMY_SESSION, NULL, 0);
-  EXPECT_RV(rv, CKR_FUNCTION_NOT_SUPPORTED, "stub-beats-args sign-recover");
+  rv = p11->C_GetOperationState(DUMMY_SESSION, NULL, NULL);
+  EXPECT_RV(rv, CKR_FUNCTION_NOT_SUPPORTED, "stub-beats-args get-operation-state");
   rv = p11->C_Finalize(NULL);
   EXPECT_RV(rv, CKR_OK, "stub finalize");
   CASE_END("STB");
