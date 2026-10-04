@@ -3,9 +3,10 @@
 
 -- | Raw PKCS#11 client bindings: @dlopen@ a module, fetch its function
 -- list, and call through it. Every offset and constant comes from the
--- single verbatim @spec/vendor/pkcs11.h@ via hsc2hs; nothing is
--- hand-copied. Test-only: this module exists to prove the C ABI is
--- drivable by a genuine foreign client.
+-- single verbatim @vendor/pkcs11.h@ (byte copy of the pinned
+-- @spec/vendor/pkcs11.h@; see @README.md@ provenance note) via
+-- hsc2hs; nothing is hand-copied. Test-only: this module exists to
+-- prove the C ABI is drivable by a genuine foreign client.
 module Haskoki.Client.Raw
   ( -- * Handles and codes
     CK_RV

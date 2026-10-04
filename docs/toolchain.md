@@ -87,6 +87,143 @@ version string (exact values in `toolchain.lock`).
   Hackage pins, OpenSSL build, and loader-proof facts. The release
   builder checksums it into every artifact (`toolchain-record.txt`).
 
+## OpenSSL provenance + maintenance contract
+
+The project links one pinned libcrypto and ships no
+system-libcrypto fallback (option C: keep the static link). Exact
+pin values live in `toolchain.lock` (`[openssl]`); the values below
+are restated from that lock for the release record.
+
+- Source tarball:
+  `https://github.com/openssl/openssl/releases/download/openssl-4.0.2/openssl-4.0.2.tar.gz`
+- Tarball sha256:
+  `736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8`
+  (checked on download by the `openssl-build` Docker stage before
+  unpacking).
+- Configure flags: `--prefix=/opt/openssl-4.0.2
+  --openssldir=/opt/openssl-4.0.2/ssl --libdir=lib no-docs no-tests
+  threads no-shared no-pinshared linux-x86_64` (see `Dockerfile`).
+- Linked bytes: `libcrypto.a` from that build, statically linked
+  into `lib/libhaskoki.so` (`haskoki.cabal` names the exact archive
+  in both link stanzas); the pinned `legacy.so` provider module
+  ships next to it (`lib/ossl-modules/legacy.so`, plus
+  `lib/libcrypto.so.4` only on module-build layouts — see
+  `scripts/make-release.sh`).
+- License text: `licenses/openssl-LICENSE.txt` is byte-identical to
+  the tarball's `LICENSE.txt` (compared at vendoring time; sha256
+  `7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a`);
+  every bundle carries it plus the generated `licenses/NOTICES.md`,
+  the GHC distribution grant (`licenses/GHC-copyright`), and each
+  Hackage-sourced lib's own `licenses/<pkg>-LICENSE`.
+
+Validation scope (what ran and what did not):
+
+- Upstream OpenSSL test suite: NOT run (`no-tests` in the
+  configure flags; `make install_sw` only). No `make test` result
+  is claimed for the pinned build.
+- Tarball integrity: sha256 checked on download (Docker stage).
+- Version identity: the engine refuses any libcrypto whose version
+  string is not the pinned one
+  (`src/Haskoki/Engine/OpenSSL4.hs`); the pinned CLI reports
+  `OpenSSL 4.0.2 25 Aug 2026`.
+- Crypto sanity: the engine proof vector `sha256("abc") =
+  ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`
+  (exact value in the lock) plus the release smoke (real digest +
+  legacy-cipher KAT) on every install test.
+
+Advisory monitoring + rebuild ownership:
+
+- Whoever cuts a release watches the OpenSSL 4.0.x security
+  advisories (openssl-announce) from pin date to release date and
+  records the check in the release evidence. (Owner to confirm the
+  standing owner + cadence; until then the release manager owns it.)
+- Any OpenSSL change — version bump, flag change, or rebuild from
+  a different tarball — re-qualifies ALL binaries (full gates +
+  drivers + install legs) under a NEW release identity (new
+  version). Bytes are never swapped silently under a published
+  version.
+
+Provider-origin rule: shipped provider modules must resolve
+inside the artifact, never host `/opt` (absent on install
+hosts). Enforcement: `scripts/make-release.sh` fails the build
+when `ldd` shows any `/opt` binding on the shipped provider files
+(PROVIDER-ORIGIN check), and `scripts/test-release-install.sh`
+re-checks inside-artifact bindings on a bare image in both legs.
+
+## Pinned source-build recipe
+
+Rebuilds the library, module, operator tool, and full test suite
+from the `haskoki-<ver>.tar.gz` source archive (the verified sdist
+shipped as a release asset). Two paths: the Docker builder (pinned
+compiler + prefix, preferred) and a native host (same compiler +
+a hand-built prefix). `cabal install haskoki` is NOT claimed to
+work without the system prerequisites below.
+
+### Path 1: Docker builder (preferred)
+
+Prereqs: Docker + the builder image (`haskoki-dev:ghc-9.10.3`,
+which carries GHC 9.10.3, cabal-install, the pinned
+`/opt/openssl-4.0.2` prefix, and the frozen-plan inputs).
+
+```sh
+tar xzf haskoki-0.3.0.0.tar.gz
+cd haskoki-0.3.0.0
+printf 'packages: .\nallow-newer: all\n' > cabal.project
+docker run --rm --network host -v "$PWD:/src" -w /src \
+  haskoki-dev:ghc-9.10.3 sh -c 'cabal build all --enable-tests && cabal test all'
+```
+
+The unpacked tree carries `cabal.project.freeze`, which `cabal`
+reads next to the created `cabal.project`; no Hackage re-resolution
+happens (offline-safe once the image's package index is present).
+
+Expected outputs: `cabal build all` exits 0; `cabal test all`
+passes every suite (core 260/260, tests 2/2, storage 58/58,
+engine 368/368, prop 58/58, model 1279/1279 — the locked counts;
+see the verification log for the observed run).
+
+### Path 2: native host (Ubuntu 26.04)
+
+Prereqs: `sudo apt install ghc cabal-install build-essential
+libgmp-dev` (GHC 9.10.3) plus the prefix below.
+
+Prefix setup (how to obtain `/opt/openssl-4.0.2`):
+
+```sh
+curl -fsSLO https://github.com/openssl/openssl/releases/download/openssl-4.0.2/openssl-4.0.2.tar.gz
+echo "736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8  openssl-4.0.2.tar.gz" | sha256sum -c -
+tar xzf openssl-4.0.2.tar.gz
+cd openssl-4.0.2
+perl ./Configure --prefix=/opt/openssl-4.0.2 \
+  --openssldir=/opt/openssl-4.0.2/ssl --libdir=lib \
+  no-docs no-tests threads no-shared no-pinshared linux-x86_64
+make -j"$(nproc)"
+sudo make install_sw
+/opt/openssl-4.0.2/bin/openssl version
+```
+
+The last line must print `OpenSSL 4.0.2 25 Aug 2026`. Then, from
+the unpacked source archive (same `cabal.project` line as path 1):
+
+```sh
+tar xzf haskoki-0.3.0.0.tar.gz
+cd haskoki-0.3.0.0
+printf 'packages: .\nallow-newer: all\n' > cabal.project
+cabal update
+cabal build all --enable-tests
+cabal test all
+```
+
+Expected outputs: same suite counts as path 1.
+
+### Hackage candidate (deferred)
+
+Mechanics prepared, upload NOT performed (owner decision
+pending): `cabal sdist` produces the candidate tarball, and the
+candidate procedure is `cabal upload --candidate
+dist-newstyle/sdist/haskoki-<ver>.tar.gz`. No upload was run for
+this release.
+
 ## Troubleshooting
 
 - `Missing (or bad) C library: crypto` at configure: the OpenSSL

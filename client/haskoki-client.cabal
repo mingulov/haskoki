@@ -8,13 +8,18 @@ description:
   digest, cipher, sign\/verify, keygen, derive, random). The bundled
   @haskoki-client@ CLI exercises the built @libhaskoki.so@ end to end.
   This package is a test jig: it is NOT shipped by @scripts\/make-release.sh@.
-license:            BSD-3-Clause
-license-file:       ../LICENSE
+license:            Apache-2.0
+license-file:       LICENSE
 author:             Haskoki
-maintainer:         Haskoki
+maintainer:         haskoki contributors
 category:           Testing
 build-type:         Simple
 extra-doc-files:   README.md
+-- Self-containment: this package must not escape its own root (no
+-- `../` paths), so `cabal sdist` from this directory is shippable.
+-- The PKCS#11 header is vendored as vendor/pkcs11.h (byte copy of
+-- the pinned spec/vendor/pkcs11.h; see README.md provenance note).
+extra-source-files: vendor/*.h
 
 common warnings
   ghc-options: -Wall
@@ -25,7 +30,7 @@ library
   hs-source-dirs:   src
   -- The single verbatim PKCS#11 header; all offsets and constants
   -- come from it via hsc2hs (nothing hand-copied).
-  include-dirs:     ../spec/vendor
+  include-dirs:     vendor
   exposed-modules:
     Haskoki.Client
     Haskoki.Client.Raw

@@ -13,6 +13,7 @@ description:
   encrypt/decrypt, digest, wrap/unwrap, derive); genuinely
   unsupported calls refuse honestly. Not a conformance claim.
 license:            Apache-2.0
+license-file:       LICENSE
 author:             haskoki contributors
 maintainer:         haskoki contributors
 category:           Security, Cryptography
@@ -23,6 +24,32 @@ tested-with:       GHC == 9.10.3
 extra-doc-files:
   README.md
   CHANGELOG.md
+-- Source-package completeness: c-sources/.hs modules ship
+-- automatically; everything else the build or the test suites read
+-- (headers, generated .inc, spec inputs, fixtures, the catalog doc
+-- one suite reads, the frozen build plan) is listed here so
+-- `cabal sdist` unpacks to a buildable + testable tree. Verified by
+-- unpacking the sdist outside the checkout and running the
+-- docs/toolchain.md source-build recipe.
+extra-source-files:
+  cbits/*.h
+  cbits/*.inc
+  spec/*.json
+  spec/*.txt
+  spec/*.sql
+  spec/vendor/*.h
+  spec/planning/*.md
+  spec/planning/*.csv
+  tests/fixtures/*.der
+  tests/fixtures/*.txt
+  tests/ops/fixtures/*.toml
+  tests/ops/fixtures/*.json
+  tests/ops/fixtures/*.md
+  docs/config-honesty.md
+  cabal.project.freeze
+source-repository head
+  type:     git
+  location: https://github.com/mingulov/haskoki
 
 -- Omission classes are fatal in the pinned validation
 -- configuration. Spellings confirmed by compiling probes on the pinned
@@ -270,7 +297,7 @@ foreign-library haskoki
     stm           >= 2.5  && < 2.6,
     text          >= 1.2  && < 2.2,
     unix          >= 2.7  && < 2.9,
-    haskoki:haskoki-core
+    haskoki:haskoki-core >= 0.3 && < 0.4
   ghc-options:      -Wall -threaded
   cc-options:       -Wall -Wextra -std=c11 -pthread
   -- Relocatable bundle: resolve the bundled libHS* closure from the

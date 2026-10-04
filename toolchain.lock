@@ -1,4 +1,4 @@
-# haskoki toolchain lock (GHC 9.10.3; frozen 2026-09-24).
+# haskoki toolchain lock (GHC 9.10.3; frozen 2026-09-24; image re-pinned 2026-10-04).
 #
 # The environment is the Docker image below. It carries the full
 # toolchain plus prebuilt project deps and baked passing tests, so a fresh
@@ -8,8 +8,9 @@
 
 [image]
 tag = haskoki-dev:ghc-9.10.3
-id = sha256:5383beb2b6b3d8744f4fe49c6025b3aaf61ef0301a05a01a679519498601faa5
-size = 3.8GB
+id = sha256:0ee486d207331df09625f19cceeca3fe63f245477a6374e085e61da04c2bf699
+digest = none (local build; no registry push; no repository digest observed; the daemon RepoDigests entry echoes the image id above, which is a config digest, not a manifest digest)
+size = 3.94GB (3941325983 bytes)
 base = ubuntu:26.04
 
 [compiler]
@@ -41,10 +42,10 @@ tasty-hunit = 0.10.2
 freeze-file = cabal.project.freeze
 
 [verified]
-cabal-test = PASS (core 221/221, tests 2/2, storage 58/58, engine 147/147, prop 54/54, model 784/784; native GHC 9.10.3, 2026-09-24)
-cabal-test-image = PASS (in-image /work during build, 2026-09-24)
+cabal-test = PASS (core 260/260, tests 2/2, storage 58/58, engine 368/368, prop 58/58, model 1279/1279; rebuilt builder bind-mount, 2026-10-04)
+cabal-test-image = PASS (in-image /work during build + re-run, 2026-10-04; same counts)
 warnings = EMPTY (forced native build, 0 warnings)
-make-release = PASS (native; 24 bundled libHS; host deps system-only incl. libffi/libnuma; glibc floor 2.43)
+make-release = PASS (rebuilt builder, 2026-10-04; 24 bundled libHS; host deps system-only incl. libffi/libnuma; glibc floor GLIBC_2.43; static-libcrypto + provider-origin gates passing)
 
 [openssl-freeze]
 # Loader-proof facts for the toolchain (GHC 9.10.3). The

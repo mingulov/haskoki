@@ -7,7 +7,14 @@ the advertised surface is usable outside the C consumers.
 
 Test jig, not a shipped SDK: `scripts/make-release.sh` does not pack
 this package. All struct offsets and constants come from the single
-verbatim `spec/vendor/pkcs11.h` via hsc2hs.
+verbatim `vendor/pkcs11.h` via hsc2hs.
+
+Provenance: `vendor/pkcs11.h` is a byte-identical copy of the pinned
+`spec/vendor/pkcs11.h` at the repository root (public-domain header,
+`/* This file is in the Public Domain */`), vendored so this package
+is self-contained for `cabal sdist` (no paths outside its own root).
+When the pinned header changes, re-copy it and keep the two bytes
+identical (compare with `sha256sum`).
 
 ## Layout
 

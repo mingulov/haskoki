@@ -8,9 +8,16 @@
 #     lib/libHS*.so              bundled GHC/store closure (explicit)
 #     lib/ossl-modules/legacy.so pinned legacy provider module
 #     lib/libcrypto.so.4         pinned libcrypto for it (module builds only)
-#     bin/haskoki-ctl            operator tool (static Haskell)
+#     bin/haskoki-ctl            operator tool (needs only system libs)
 #     smoke/release_smoke.c      install smoke source (self-contained)
 #     smoke/include/pkcs11*.h    pinned 2.40 headers for the smoke
+#     licenses/Haskoki-LICENSE   Haskoki license text
+#     licenses/OpenSSL-LICENSE.txt  pinned OpenSSL license text
+#     licenses/GHC-copyright     GHC distribution license grant
+#     licenses/<pkg>-LICENSE     Hackage-sourced lib licenses, one per
+#                                package, from the package's own
+#                                cabal-store license file
+#     licenses/NOTICES.md        component + attribution notices
 #     closure/ldd-libhaskoki.txt captured ldd (toolchain side)
 #     closure/ldd-haskoki-ctl.txt
 #     closure/review.txt         closure review (see below)
@@ -70,6 +77,7 @@ VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
 OUT="${HASKOKI_RELEASE_DIR:-dist-release}/haskoki-$VER"
 rm -rf "$OUT"
 mkdir -p "$OUT/lib" "$OUT/bin" "$OUT/smoke/include" "$OUT/closure" \
+  "$OUT/licenses" \
   || fail "cannot create $OUT"
 
 cp "$SO" "$OUT/lib/libhaskoki.so" || fail "copy module"
@@ -77,6 +85,16 @@ cp "$CTL" "$OUT/bin/haskoki-ctl" || fail "copy ctl"
 cp tests/c/release_smoke.c "$OUT/smoke/" || fail "copy smoke"
 cp spec/vendor/pkcs11.h "$OUT/smoke/include/" \
   || fail "copy smoke headers"
+
+# License/notice files (required in every bundle): Haskoki's own
+# license, the pinned OpenSSL license text, and the generated
+# component notices below.
+[ -f LICENSE ] || fail "LICENSE missing from checkout"
+[ -f licenses/openssl-LICENSE.txt ] \
+  || fail "licenses/openssl-LICENSE.txt missing from checkout"
+cp LICENSE "$OUT/licenses/Haskoki-LICENSE" || fail "copy Haskoki license"
+cp licenses/openssl-LICENSE.txt "$OUT/licenses/OpenSSL-LICENSE.txt" \
+  || fail "copy OpenSSL license"
 
 # Closure capture + review gates.
 ldd "$SO" > "$OUT/closure/ldd-libhaskoki.txt" 2>&1 \
@@ -167,6 +185,20 @@ fi
 if ldd "$OUT/lib/ossl-modules/legacy.so" | grep "not found"; then
   fail "shipped legacy.so has unresolved libs"
 fi
+# Provider-origin check: shipped provider modules must resolve
+# inside the artifact — never host /opt (absent on install hosts,
+# where the baked default would dangle). Enforced here at build
+# time (ldd bindings) and again by the clean-container install
+# test (inside-artifact bindings on a bare image).
+if ldd "$OUT/lib/ossl-modules/legacy.so" | grep "/opt/"; then
+  fail "shipped legacy.so references host /opt"
+fi
+if [ -n "$EXTRA_CRYPTO_SHA" ]; then
+  if ldd "$OUT/lib/libcrypto.so.4" | grep "/opt/"; then
+    fail "shipped libcrypto.so.4 references host /opt"
+  fi
+fi
+echo "PROVIDER-ORIGIN: shipped provider modules resolve inside the artifact (no /opt)"
 echo "bundled provider: $PROVIDER_FILES ($PROVIDER_KIND; from $MODDIR)"
 
 # Host-side (NOT bundled) dynamic deps of the module: must be exactly
@@ -183,9 +215,14 @@ if grep -v -E "^(libm\.so|libgmp\.so|libffi\.so|libnuma\.so|libc\.so|linux-vdso)
 fi
 echo "STATIC: host deps are system-only"
 
-# glibc floor: max GLIBC_* ref over the module AND every bundled lib
-# (the module alone understates it: OS-built libHS* can exceed it).
-FLOOR=$(for f in "$OUT/lib"/*.so "$OUT/lib/ossl-modules/"*.so "$OUT/bin/haskoki-ctl"; do
+# glibc floor: max GLIBC_* ref over EVERY shipped ELF — the module,
+# every bundled lib including versioned names (*.so.*: the shipped
+# libcrypto.so.4 on module-build layouts), the provider modules, and
+# the operator tool. The module alone understates it: OS-built libHS*
+# can exceed it, and the conditional libcrypto.so.4 must count when
+# shipped. This figure is measured, never adjusted.
+FLOOR=$(for f in "$OUT/lib"/*.so "$OUT/lib"/*.so.* \
+  "$OUT/lib/ossl-modules/"*.so "$OUT/bin/haskoki-ctl"; do
   objdump -T "$f" 2>/dev/null | grep -o "GLIBC_[0-9.]*"
 done | sort -uV | tail -1)
 [ -n "$FLOOR" ] || fail "cannot compute glibc floor"
@@ -218,6 +255,110 @@ echo "glibc floor: $FLOOR"
 } > "$OUT/closure/review.txt"
 cat "$OUT/closure/review.txt"
 
+# GHC + Hackage license texts (every shipped .so needs its grant
+# identifiable here) and the per-library inventory table for the
+# notices below. Origins are observed, not assumed: each bundled
+# lib's source path comes from the captured ldd output above.
+# /usr/lib/ghc/* is the OS GHC distribution (one Debian grant covers
+# it); a cabal store path is a Hackage build (the package's own
+# license file ships alongside); anything else fails loudly so a new
+# origin gets classified explicitly instead of mislabeled.
+[ -f /usr/share/doc/ghc/copyright ] \
+  || fail "GHC distribution license not found (/usr/share/doc/ghc/copyright)"
+cp /usr/share/doc/ghc/copyright "$OUT/licenses/GHC-copyright" \
+  || fail "copy GHC-copyright"
+GHC_DIST_VER=$(ghc --numeric-version 2>/dev/null || echo unknown)
+TABLE=""
+for f in "$OUT"/lib/libHS*.so; do
+  b=$(basename "$f")
+  SRC=$(awk -v b="$b" '$1 == b {print $3}' "$OUT/closure/ldd-libhaskoki.txt")
+  case "$b" in
+    libHShaskoki-*)
+      ORIGIN="this project"
+      LIC="Apache-2.0 (licenses/Haskoki-LICENSE)" ;;
+    *)
+      case "$SRC" in
+        /usr/lib/ghc/*)
+          ORIGIN="GHC distribution"
+          LIC="BSD-3-Clause (licenses/GHC-copyright)" ;;
+        */cabal/store/*)
+          UNITDIR=$(dirname "$(dirname "$SRC")")
+          UNIT=$(basename "$UNITDIR")
+          PKG=$(echo "$UNIT" | sed -e 's/-[0-9a-f]\{32,\}$//' -e 's/-[0-9][^-]*$//')
+          [ -f "$UNITDIR/share/doc/LICENSE" ] \
+            || fail "license file missing for Hackage lib $b (want $UNITDIR/share/doc/LICENSE)"
+          cp "$UNITDIR/share/doc/LICENSE" "$OUT/licenses/$PKG-LICENSE" \
+            || fail "copy $PKG license"
+          ORIGIN="Hackage"
+          LIC="see licenses/$PKG-LICENSE" ;;
+        *)
+          fail "unrecognized origin for bundled lib $b (ldd source: ${SRC:-none})" ;;
+      esac ;;
+  esac
+  TABLE="$TABLE$b
+  origin: $ORIGIN
+  license: $LIC
+"
+done
+[ -n "$TABLE" ] || fail "empty GHC closure inventory table"
+
+# Component + attribution notices (third-party bytes shipped above).
+OSSL_URL=$(grep -m1 '^tarball-url' toolchain.lock | awk '{print $3}')
+OSSL_SHA=$(grep -m1 '^tarball-sha256' toolchain.lock | awk '{print $3}')
+[ -n "$OSSL_URL" ] || fail "cannot parse tarball-url from toolchain.lock"
+[ -n "$OSSL_SHA" ] || fail "cannot parse tarball-sha256 from toolchain.lock"
+{
+  echo "# Third-party notices — haskoki $VER"
+  echo ""
+  echo "Built $(date -u +%Y-%m-%dT%H:%M:%SZ). Full license texts ship"
+  echo "under licenses/ in this bundle."
+  echo ""
+  echo "## Haskoki (this project)"
+  echo ""
+  echo "Apache License 2.0 — full text: licenses/Haskoki-LICENSE."
+  echo ""
+  echo "## OpenSSL 4.0.2 (libcrypto)"
+  echo ""
+  echo "Apache License 2.0 — full text: licenses/OpenSSL-LICENSE.txt."
+  echo "Source: $OSSL_URL"
+  echo "Tarball sha256: $OSSL_SHA (also pinned in toolchain.lock)."
+  echo "Shipped bytes: libcrypto.a statically linked into"
+  echo "lib/libhaskoki.so, plus the pinned provider files"
+  echo "(lib/$PROVIDER_FILES, ldd-verified inside this bundle)."
+  echo ""
+  echo "## GHC runtime closure (lib/libHS*.so, $BUNDLED libs)"
+  echo ""
+  echo "Per-library inventory (every file below ships in lib/):"
+  echo ""
+  printf '%s' "$TABLE"
+  echo "Origins: GHC-distribution libs come from the Ubuntu ghc"
+  echo "package (GHC $GHC_DIST_VER; license grant:"
+  echo "licenses/GHC-copyright, BSD-3-Clause, Files: *); Hackage"
+  echo "libs come from the frozen plan (cabal.project.freeze,"
+  echo "checksummed in toolchain-record.txt) with each package's"
+  echo "own license file shipped under licenses/ (see above);"
+  echo "this-project is haskoki itself (Apache-2.0,"
+  echo "licenses/Haskoki-LICENSE)."
+  echo ""
+  echo "Unresolved for the final artifact pass:"
+  echo "- upstream per-package license texts for the individual"
+  echo "  GHC boot libraries beyond the distribution-level grant"
+  echo "  above;"
+  echo "- statically linked dependencies of bin/haskoki-ctl"
+  echo "  (outside the lib/libHS*.so closure inventoried here)."
+  echo ""
+  echo "## Pinned PKCS#11 header (smoke/include/pkcs11.h)"
+  echo ""
+  echo "Public domain (\"This file is in the Public Domain\" — see the"
+  echo "header itself)."
+  echo ""
+  echo "## Host system libraries (NOT shipped; installed from the OS)"
+  echo ""
+  echo "libc, libm, libgmp.so.10, libffi.so.8, libnuma.so.1 — see the"
+  echo "OS packages' own copyright files (Debian/Ubuntu:"
+  echo "/usr/share/doc/*/copyright)."
+} > "$OUT/licenses/NOTICES.md"
+
 # Toolchain record.
 {
   echo "toolchain record — haskoki $VER"
@@ -231,24 +372,29 @@ cat "$OUT/closure/review.txt"
   echo "cc: $(cc --version 2>/dev/null | head -1)"
   echo "builder glibc: $(ldd --version 2>/dev/null | head -1)"
   echo "freeze: cabal.project.freeze sha256 $(sha256sum cabal.project.freeze 2>/dev/null | awk '{print $1}')"
-  echo "toolchain.lock sha256 $(sha256sum toolchain.lock 2>/dev/null | awk '{print $1}')"
+  echo "toolchain.lock sha256 $(sha256sum toolchain.lock 2>/dev/null | awk '{print $1}') (build-time snapshot; the release manifest carries the packaging-time snapshot)"
   echo "engine builds:"
   echo "  openssl4 prefix: /opt/openssl-4.0.2"
   /opt/openssl-4.0.2/bin/openssl version 2>/dev/null | sed 's/^/  pinned openssl: /' || echo "  pinned openssl: CLI unavailable"
   echo "  linkage: static libcrypto.a into libhaskoki.so (extra-libraries: crypto)"
   echo "artifact sha256:"
-  (cd "$OUT" && find lib bin smoke -type f | sort | xargs sha256sum)
+  (cd "$OUT" && find lib bin smoke licenses -type f | sort | xargs sha256sum)
 } > "$OUT/toolchain-record.txt"
 
 # INSTALL.md.
 {
   echo "# haskoki $VER — install notes"
   echo ""
+  echo "This directory is a relocatable runtime bundle: it runs from"
+  echo "any path (including paths with spaces) with no environment"
+  echo "setup, resolving its bundled closure from its own directory."
+  echo ""
   echo "Contents: \`lib/libhaskoki.so\` (loadable PKCS#11 module),"
   echo "\`lib/libHS*.so\` (bundled GHC runtime closure, $BUNDLED libs),"
   echo "pinned legacy provider (\$ORIGIN-anchored): \`lib/$PROVIDER_FILES\`"
   echo "($PROVIDER_KIND), \`bin/haskoki-ctl\` (operator tool), \`smoke/\`"
-  echo "(install smoke source + pinned headers), \`closure/\` (captured"
+  echo "(install smoke source + pinned headers), \`licenses/\` (license"
+  echo "texts + third-party notices), \`closure/\` (captured"
   echo "dependency closure + review), \`toolchain-record.txt\`."
   echo ""
   echo "## Host requirements"
@@ -267,8 +413,9 @@ cat "$OUT/closure/review.txt"
   echo "No environment setup is needed: the module resolves its"
   echo "bundled closure from its own directory (\$ORIGIN RUNPATH;"
   echo "verified: every libHS* resolves inside lib/ with"
-  echo "LD_LIBRARY_PATH unset), and \`bin/haskoki-ctl\` is fully"
-  echo "static (no bundled libs needed at all)."
+  echo "LD_LIBRARY_PATH unset), and \`bin/haskoki-ctl\` needs no"
+  echo "bundled libraries at all (only the documented system"
+  echo "libraries above)."
   echo "Keep \`lib/\` together: \`libhaskoki.so\` next to the bundled"
   echo "\`libHS*.so\` files plus the provider files (do not separate"
   echo "them)."
