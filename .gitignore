@@ -25,3 +25,4 @@ dist-release-evidence/
 .pkcs11-check-isolation-policy.json
 .pkcs11-check-isolation-*.lock
 core.*
+.superpowers/
