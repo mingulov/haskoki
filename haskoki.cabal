@@ -5,8 +5,9 @@ synopsis:           Haskell PKCS#11 soft token (demonstrator)
 description:
   A Haskell soft token that makes the PKCS#11 surface (APIs 2.40, 3.0, 3.1
   and 3.2) easy to exercise and understand. At 0.3.0.0: a C-loadable
-  shared module with byte-pinned versioned tables, a 104-row mechanism
-  catalog proven in-process through real libcrypto, native consumer
+  shared module with byte-pinned versioned tables, a mechanism catalog
+  with 316 mechanisms tested of 464 catalog mechanisms, proven
+  in-process through real libcrypto, native consumer
   and proxy-parity proofs, and a relocatable release artifact. The C
   tables route real crypto (sessions, objects, sign/verify,
   encrypt/decrypt, digest, wrap/unwrap, derive); genuinely

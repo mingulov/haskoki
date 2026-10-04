@@ -29,8 +29,9 @@ This unpacks the artifact on bare `ubuntu:26.04` (+ documented
 `haskoki-ctl --version`, and compiles+runs the bundled
 `release_smoke`: `SMOKE-OK` over the full served surface
 (dlopen + init + lib metadata + one slot + token presence
-with the pinned `haskoki-demo` label + the EXACT 130-row served
-mechanism catalog with `CKM_SHA256` membership + two REAL session
+with the pinned `haskoki-demo` label + the EXACT 316-row served
+mechanism catalog (316 mechanisms tested of 464 catalog mechanisms)
+with `CKM_SHA256` membership + two REAL session
 lifecycles each yielding REAL FIPS SHA-256 "abc" bytes +
 finalize). The smoke keeps proving REAL libcrypto bytes
 (`real-crypto` profile, OpenSSL engine, no synthetic fallback).
@@ -64,7 +65,8 @@ $CTL scenario run --config tests/ops/fixtures/maximal-demo.toml \
 
 The `active-catalog` names IN-PROCESS behavior coverage (proven by
 the Haskell suites; see `docs/coverage.md`). The C surface exposes
-the `support.real == "tested"` projection (109 rows, step 3).
+the `support.real == "tested"` projection (316 mechanisms tested
+of 464 catalog mechanisms; step 3).
 `scenario run` interprets steps against an owned in-memory model; it
 never controls another live process. Its `EventQueue`/`TokenRegistry` FIFO,
 Haskell callbacks and token script are private scenario proofs. The native
@@ -82,7 +84,8 @@ scripts/test-consumers.sh
 
 - `consumer_discovery`: 3.x interface discovery per version,
   versioned-table isolation, cross-table consistency, mechanism/info
-  queries (130 rows), real slot/token records (provisioned
+  queries (316 mechanisms tested of 464 catalog mechanisms),
+  real slot/token records (provisioned
   `haskoki-demo`), session open/info/close, legacy-vs-3.2
   no-skew checks.
 - `consumer_roundtrip`: REAL round-trips over real sessions —
@@ -235,18 +238,20 @@ claim of final installed acceptance.
 
 ```sh
 python3 scripts/publish-coverage.py --check
-# coverage publication current (464 rows, 11 issues)
+# coverage publication current (464 rows, 14 issues)
 ```
 
-`docs/coverage.md`: 111 behavior-tested / 29 unsupported-with-reason /
-2 not-applicable / 322 planned (464 = mechanism denominator), per-family
+`docs/coverage.md`: 316 behavior-tested / 89 unsupported-with-reason /
+2 not-applicable / 57 planned (464 = mechanism denominator), per-family
 and per-mechanism tables with evidence case ids, generated
-limitations, 12 source issues — plus the release-scope boundary
-(in-process proofs vs the 130-row C surface). Known
-limitations and host support: `SUPPORTED-HOSTS.md`.
+limitations, 14 source issues — plus the release-scope boundary
+(in-process proofs vs the 316-row C surface). The FIPS citations in
+this file name known-answer vectors (SHA-256 `abc`, multipart KATs),
+never a certificate. Known limitations, the capability table, and
+host support: `SUPPORTED-HOSTS.md`.
 
-**2026-09-30 message routing:** The 130-row C-surface boundary note above is
-historical. At the inspected revision, the `support.real == "tested"`
+**2026-09-30 message routing (historical note):** earlier revisions of this
+section cited a 130-row C surface. At the inspected revision, the `support.real == "tested"`
 projection in `spec/mechanisms.json` and `HASKOKI_MECH_COUNT` in
 `cbits/mech_catalog.inc` both contain 316 mechanisms. This change routes
 20 functions through the existing message planner; it changes neither
@@ -491,11 +496,22 @@ non-streamed remainder, and these paths still buffer by design:
   key-context binding design; the verdict-carrying answers stay
   `GotBytes` (tags) and `GotValid` (verify verdicts). Guarded by
   the buffered-shape pins.
-- Cipher encrypt/decrypt (one-shot `cipherEncrypt`/`cipherDecrypt`
-  in the same class), dual operations (which mirror the single-side
-  buffering), message multipart (inner buffering), and one-shot
-  inputs (bound-checked at plan time; the bytes cross in the
-  effect, not the buffer).
+- Cipher one-shots (`cipherEncrypt`/`cipherDecrypt` in the same
+  class) buffer by design (bound-checked at plan time; the bytes
+  cross in the effect, not the buffer); cipher MULTISTAGE updates
+  stream only for framed block modes (CBC/ECB/CFB/CTR and DES
+  equivalents) — each update emits the releasable block prefix
+  through one cipher effect and retains only the suffix
+  (`core/Haskoki/Operation/Cipher.hs`, streamed legs pinned in
+  `tests/c/consumer_roundtrip.c`) — so for those modes multistage
+  cipher input is not capped at 16 MiB cumulative: only retained
+  bytes plus the current update are. Fully buffered instead
+  (`cipherUpdateSplit` returns the whole buffer, so retained input
+  accumulates and the 16 MiB check is effectively cumulative):
+  AEAD (GCM/CCM/ChaCha20-Poly1305), asymmetric (RSA-OAEP/X.509),
+  CTS, OFB, key-wrap (KW/KWP/KW-PKCS7), XTS, and RC4. Dual
+  operations (which mirror the single-side buffering), message
+  multipart (inner buffering), and one-shot inputs stay buffered.
 
 End-to-end proof: `tests/c/consumer_streaming.c` (wired into
 `scripts/test-consumers.sh` and `scripts/test-proxy-parity.sh`)
@@ -503,3 +519,69 @@ streams 1 MiB (plus a one-shot cross-check), 8 MiB, and 20 MiB
 (the last past the bound) over the legacy 2.40 table plus the
 3.x tables, KAT-checked, with a close-mid-stream abort after
 which a fresh digest works.
+
+## 10. In-process shape (no-RPC rationale)
+
+Haskoki is an in-process PKCS#11 demonstrator. It ships as a loadable
+module rather than introducing another daemon and a custom RPC protocol.
+Loading the module also loads its Haskell runtime and crypto implementation
+into the host process. The optional pkcs11-proxy-ng example places the
+provider in a separate process. This changes the process boundary; it does
+not turn Haskoki into a hardened HSM.
+
+Four topics, kept separate:
+
+Runtime loading. `dlopen` on the module (`foreign-library haskoki`,
+`native-shared` in `haskoki.cabal`) maps the C tables, the Haskell
+runtime libraries (resolved from the module's own directory via
+`$ORIGIN` RUNPATH), and the statically linked libcrypto into the
+client's address space. The threaded RTS starts once per process
+image on the first `C_Initialize` needing Haskell entry and records
+its boot PID (`cbits/rts_bootstrap.c`); `C_Finalize` ends the
+provider interval and never stops the runtime (a poison macro turns
+any shutdown call-site into a compile error in the same file), and
+`-z nodelete` keeps `dlclose` from unloading the module.
+
+Key and state placement. Session, object, login, and operation state
+live in `TVar` cells in process memory (`Haskoki.Runtime.Lifecycle`
+environment), with one `InstanceCell` per initialization interval;
+the OpenSSL4 backend keeps digest contexts and key material in
+`MVar`-guarded maps in the same process (`OSSL4Env` in
+`src/Haskoki/Engine/OpenSSL4.hs`). Nothing here implies a second
+storage tier: persistence exists only where SQLite is configured
+(see below), and the proxy example moves this whole image across a
+process boundary without changing what it stores.
+
+Buffering vs streaming. Classic digest multipart streams through
+backend contexts (`digestInit`/`digestUpdate`/`digestFinal` in the
+`CryptoBackend` class; §9), so the 20 MiB leg completes past the
+buffer bound with no cumulative cap; cipher multistage updates
+stream for framed block modes only (CBC/ECB/CFB/CTR and DES
+equivalents), emitting the releasable block prefix per update and
+retaining only the suffix (`core/Haskoki/Operation/Cipher.hs`;
+`tests/c/consumer_roundtrip.c` pins streamed output, queries, and
+short-buffer retries). The 16 MiB `maxBuffered` backstop
+(`core/Haskoki/Operation.hs`) is per-buffer, not cumulative, for
+streaming modes: a cipher update refuses only when retained bytes
+plus the current update exceed it, and a short output buffer
+refuses with `CKR_BUFFER_TOO_SMALL` without consuming input. Fully
+buffered by design: sign, verify, MAC, dual mirrors, message inner
+buffering, one-shot inputs (bound-checked at plan time), and these
+cipher modes — AEAD (GCM/CCM/ChaCha20-Poly1305), asymmetric
+(RSA-OAEP/X.509), CTS, OFB, key-wrap (KW/KWP/KW-PKCS7), XTS, RC4 —
+whose retained input accumulates under the same 16 MiB check
+(`cipherUpdateSplit` buffers them whole, so the bound is
+effectively cumulative). Random seeds and
+reads cap at 1 MiB (`seedRandomMaxBytes`,
+`generateRandomMaxBytes`). Behind the proxy, legs additionally fit
+the proxy's 4 MiB default message cap
+(`tests/c/consumer_streaming.c` sizes its cross-check leg under it).
+
+SQLite storage. `storage.kind = "sqlite"` requires an explicit path
+and refuses pathless opens; the store is single-writer and wraps
+each commit in one `BEGIN IMMEDIATE` transaction
+(`src/Haskoki/Runtime/Storage/SQLite.hs`). Token and object rows
+persist as plain JSON/blobs with no encryption-at-rest; attempt and
+lockout counters ride the token row, while PINs stay fixed at open
+(§6). Restart reloads provisioned tokens as present with flags
+clear; see `docs/operations-notes.md` for the quarantine protocol.

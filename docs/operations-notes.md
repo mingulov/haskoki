@@ -334,3 +334,65 @@ tombstones accumulate until process end — wiring reap to a
 destroy/close path needs an FFI surface decision (follow-up, out
 of scope). Ruling + code:
 `src/Haskoki/Runtime/Async.hs:1112-1158`.
+
+## Release limits for operators
+
+Demo and test purpose only: no certification, FIPS, Common Criteria,
+or production-security claim is made anywhere in this release (see
+`SUPPORTED-HOSTS.md` for the capability table and the full limit
+list). The notes below bind each operational property to its code.
+
+Key storage. Memory mode keeps token and object records in process
+memory only; SQLite mode persists the same records to the configured
+path as plain JSON/blobs — token rows plus object rows with
+`material_blob` key bytes (`src/Haskoki/Runtime/Storage/SQLite.hs`
+schema) — with no encryption-at-rest. Session objects are never
+stored, and external handles are never stored: the live model mints
+handles on reload (`src/Haskoki/Runtime/Storage.hs` record notes).
+The store path is explicit in config and single-writer; a pathless
+SQLite open or a second concurrent open refuses loudly instead of
+sharing state.
+
+PINs and auth state. PINs are fixed at open (home `1234` / `5678`,
+catalog PINs from the TOML file in plaintext) with no PIN-change
+path; comparison is the position-constant xor fold with length
+short-circuit (`pinsMatch` in `ffi/Haskoki/FFI/Standard.hs`),
+accepted per the in-code ruling, not machine constant-time. The
+persisted token row carries the login/attempt/lockout counters
+(`TokenAuth` in `core/Haskoki/Session.hs`); wrong guesses count
+down per-role retries to `CKR_PIN_LOCKED`. Catalog PINs are
+example-grade fixtures.
+
+Trace and store files. The provider writes the trace file (`{pid}`
+expansion, append-only, best-effort;
+`ffi/Haskoki/FFI/Instance.hs`) and, in SQLite mode, the store file
+plus its sidecars: a `<db>.lock` ownership file carrying the owner
+pid (created `O_EXCL` at open, removed on close, taken over after
+a dead owner) and, under the configured rollback-journal mode
+(`PRAGMA journal_mode = DELETE`), a transient `<db>-journal` file
+that SQLite holds for the duration of a write transaction and
+removes on commit
+(`src/Haskoki/Runtime/Storage/SQLite.hs`). Trace events redact
+PINs, key material and message bodies to kind + length
+(`src/Haskoki/Runtime/Trace.hs`). No other temp-file calls ship in
+the provider paths (the `mkstemp`/`tmpfile` family is absent from
+`src/`, `ffi/`, `app/`, `cbits/`, `core/`, `tools/`). Ship
+trace-off configs unless tracing is wanted.
+
+Close and lifecycle. `C_Finalize` requires zero open sessions
+(`validateFinalize` in `src/Haskoki/Runtime/Lifecycle.hs`) and ends
+the provider interval without stopping the RTS
+(`cbits/rts_bootstrap.c`); closing the backend releases digest
+contexts and drops the key maps. Unload is pinned (`-z nodelete`
+in `haskoki.cabal`), and fork children of a booted process fail
+without entering Haskell. Async tombstones stay unbounded until
+reaped (see Async expiry/GC above); no production caller wires
+`reapJob` today.
+
+Memory handling. Tag comparison inside the engines uses the full
+xor-fold shape (`ctEq`); no broader constant-time promise is made
+for Haskell paths. Native code cleanses scoped native buffers,
+including HMAC scratch (sized `OPENSSL_clear_free` on returned
+buffers plus cipher-scratch cleansing in `cbits/ossl4_ctx.c`); no
+general memory-zeroization promise is made, and SQLite blobs
+persist until deleted.

@@ -7,11 +7,22 @@ outside this package (see `CHANGELOG.md`).
 
 > Status: 0.3.0.0 — behavior breadth (in-process) + consumer integration
 > + release packaging. C-loadable `libhaskoki.so` with byte-pinned
-> versioned tables (2.40/3.0/3.1/3.2); a 104-row mechanism catalog
-> proven in-process through real libcrypto, routed on the C tables
+> versioned tables (2.40/3.0/3.1/3.2); a mechanism catalog with
+> 316 mechanisms tested of 464 catalog mechanisms, proven
+> in-process through real libcrypto, routed on the C tables
 > (sessions, objects, sign/verify, encrypt/decrypt, digest,
 > wrap/unwrap, derive); genuinely unsupported calls refuse honestly.
 > Not a conformance claim. See `CHANGELOG.md` for the evidence index.
+
+Release scope is the demonstrator: `SUPPORTED-HOSTS.md` carries the
+[capability table](SUPPORTED-HOSTS.md#release-capability-table)
+(demonstrated vs partial rows, each with its evidence class) and the
+[release limits](SUPPORTED-HOSTS.md#limitations-release-scope--read-before-deploying);
+`docs/demo-walkthrough.md` is the operator path, including the
+[in-process (no-RPC) rationale](docs/demo-walkthrough.md#10-in-process-shape-no-rpc-rationale).
+No certification or production-security claim is made;
+[docs/coverage.md](docs/coverage.md) states the mechanism-catalog
+boundary (316 tested of 464 rows).
 
 ## Layout
 
