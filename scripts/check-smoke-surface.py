@@ -6,7 +6,9 @@ Fails (exit 1) when any rule fails. Presence rules demand the exact
 contract substrings in tests/c/release_smoke.c; absence rules demand
 the early reduced-catalog/session-less defects be gone:
 
-* COUNT: SMOKE_MECH_COUNT is 130 (measured; see the smoke header).
+* COUNT: SMOKE_MECH_COUNT equals HASKOKI_MECH_COUNT from
+  cbits/mech_catalog.inc (derived, never hardcoded; a hardcoded
+  count went stale at 130 while the served surface grew).
 * SIZEQ: a NULL size-query leg pins the count before the full list.
 * MEMBER: CKM_SHA256 membership is asserted over the served list.
 * TOKEN: C_GetTokenInfo pins the single-token default label.
@@ -26,6 +28,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT = REPO / "tests" / "c" / "release_smoke.c"
+INC = REPO / "cbits" / "mech_catalog.inc"
 
 failures = []
 
@@ -36,11 +39,20 @@ def check(rule, cond, detail):
         failures.append(rule)
 
 
+def served_count():
+    for line in INC.read_text().splitlines():
+        if line.startswith("#define HASKOKI_MECH_COUNT"):
+            return int(line.split()[-1])
+    raise AssertionError(
+        "HASKOKI_MECH_COUNT not found in cbits/mech_catalog.inc")
+
+
 def main() -> int:
     src = Path(sys.argv[1]).read_text() if len(sys.argv) > 1 else DEFAULT.read_text()
+    n = served_count()
 
-    check("COUNT", "#define SMOKE_MECH_COUNT 130" in src,
-          "exact served count pinned at 130")
+    check("COUNT", f"#define SMOKE_MECH_COUNT {n}" in src,
+          f"exact served count pinned at the derived {n}")
     check("SIZEQ", "C_GetMechanismList(slots[0], NULL_PTR, &q)" in src,
           "NULL size-query leg pins the count first")
     check("MEMBER", "mechs[i] == CKM_SHA256" in src

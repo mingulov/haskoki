@@ -4,29 +4,34 @@ C surface truthfully, via the publisher.
 
 Fails (exit 1) when any rule fails. The original one-mechanism boundary
 note ("C function tables ... expose exactly one mechanism") went
-stale when the real C surface grew to the 130-row tested
-catalog; the corrected boundary names that surface and records the
-retirement provenance. The fix lives in the PUBLISHER
-(scripts/publish-coverage.py), never as a hand-edit of the
-GENERATED file:
+stale when the real C surface grew past it; the corrected boundary
+names that surface and records the retirement provenance. The fix
+lives in the PUBLISHER (scripts/publish-coverage.py), never as a
+hand-edit of the GENERATED file. The served-row count is DERIVED
+from spec/mechanisms.json (support.real == "tested") here and in
+the publisher — never hardcoded (a hardcoded count went stale
+twice: 104, then 130):
 
 * BLOCK: the doc carries a `>`-quoted boundary block (sanity).
 * NO-ONEMECH: the stale one-mechanism claim is gone from it.
-* SURFACE-130: it names the 130-row tested C surface.
+* SURFACE-COUNT: it names the derived N-row tested C surface.
 * PROVENANCE: it records the note retirement.
-* PUB-EMITS-130: the publisher source emits the 130-row boundary.
+* PUB-EMITS-COUNT: the publisher derives the N-row boundary from
+  the catalog and grounds it in HASKOKI_MECH_COUNT.
 * PUB-DROPS-ONEMECH: the publisher source drops the stale claim.
 
 STDLIB ONLY. Run on HOST python3 from anywhere:
   python3 scripts/check-coverage-boundary.py
 """
 
+import json
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 DOC = REPO / "docs" / "coverage.md"
 PUB = REPO / "scripts" / "publish-coverage.py"
+MECH = REPO / "spec" / "mechanisms.json"
 
 failures = []
 
@@ -47,17 +52,20 @@ def main() -> int:
     doc = DOC.read_text()
     pub = PUB.read_text()
     block = boundary_block(doc)
+    mechs = json.loads(MECH.read_text())["mechanisms"]
+    n = sum(1 for r in mechs if r["support"]["real"] == "tested")
 
     check("BLOCK", bool(block.strip()),
           "a quoted boundary block exists")
     check("NO-ONEMECH", "exactly one mechanism" not in block,
           "stale one-mechanism claim gone from the boundary")
-    check("SURFACE-130", "130-row" in block,
-          "boundary names the 130-row tested C surface")
+    check("SURFACE-COUNT", f"{n}-row" in block,
+          f"boundary names the derived {n}-row tested C surface")
     check("PROVENANCE", "retired" in block,
           "boundary records the note retirement")
-    check("PUB-EMITS-130", "130-row" in pub,
-          "publisher emits the 130-row boundary")
+    check("PUB-EMITS-COUNT", "{n}-row" in pub
+          and "HASKOKI_MECH_COUNT" in pub,
+          "publisher derives the N-row boundary, grounded in the C catalog")
     check("PUB-DROPS-ONEMECH", "exactly one mechanism" not in pub,
           "publisher drops the stale claim")
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Regenerate docs/coverage.md from the spec data.
 
-Reads spec/mechanisms.json + spec/source-issues.json ONLY (no new claims
-beyond evidence), asserts internal consistency, and writes the coverage /
-limitations / source-issues publication. Usage:
+Reads spec/mechanisms.json + spec/source-issues.json + the served-count
+macro HASKOKI_MECH_COUNT in cbits/mech_catalog.inc (consistency only, no
+new claims beyond evidence), asserts internal consistency, and writes the
+coverage / limitations / source-issues publication. Usage:
 
   scripts/publish-coverage.py          # regenerate docs/coverage.md
   scripts/publish-coverage.py --check  # fail if docs/coverage.md is stale
@@ -22,25 +23,30 @@ ROOT = Path(__file__).resolve().parent.parent
 MECH = ROOT / "spec" / "mechanisms.json"
 ISSUES = ROOT / "spec" / "source-issues.json"
 OUT = ROOT / "docs" / "coverage.md"
+INC = ROOT / "cbits" / "mech_catalog.inc"
 
-BOUNDARY = """\
+# Templates, not fixed text: the served-row count is derived from
+# spec/mechanisms.json (support.real == "tested") and proven equal
+# to HASKOKI_MECH_COUNT in cbits/mech_catalog.inc (see
+# check_consistency). Never hardcode the count here.
+BOUNDARY_TEMPLATE = """\
 > Release-scope boundary (the original one-mechanism note is retired):
 > every "tested" row below is proven IN-PROCESS by the
 > Haskell suites (see test_evidence artifacts) against real
 > libcrypto (pinned OpenSSL 4.0.2) and/or the synthetic engine.
 > The C function tables of THIS release route real crypto over
-> the 130-row tested catalog (see docs/demo-walkthrough.md §5 and
+> the {n}-row tested catalog (see docs/demo-walkthrough.md §5 and
 > scripts/test-release-install.sh); genuinely unsupported calls
 > keep their documented refusals. No row below claims more than
 > its evidence. Consumer evidence: scripts/test-consumers.sh,
 > scripts/test-proxy-parity.sh, plus the 2026-09-21 consumer session notes (working notes, outside this package).
 """
 
-LIMITATIONS_FIXED = """\
+LIMITATIONS_TEMPLATE = """\
 - C surface: the default config serves 1 slot with its token (a
   `[tokens]` catalog serves N slots; see SUPPORTED-HOSTS.md and
   `docs/demo-walkthrough.md` §8). Real C-surface crypto routes
-  over the 130-row tested catalog; genuinely unsupported calls
+  over the {n}-row tested catalog; genuinely unsupported calls
   keep their documented refusals.
 - `haskoki-ctl scenario run` simulates against an owned in-memory
   model; it never controls another live process.
@@ -59,9 +65,26 @@ def load():
     return mechs, issues
 
 
+def real_tested_count(mechs):
+    return sum(1 for r in mechs if r["support"]["real"] == "tested")
+
+
+def c_surface_count():
+    for line in INC.read_text().splitlines():
+        if line.startswith("#define HASKOKI_MECH_COUNT"):
+            return int(line.split()[-1])
+    raise AssertionError(
+        "HASKOKI_MECH_COUNT not found in cbits/mech_catalog.inc")
+
+
 def check_consistency(mechs):
     total = len(mechs)
     assert total == 464, f"denominator drift: {total} rows, want the 464 catalog rows"
+    n_real = real_tested_count(mechs)
+    n_c = c_surface_count()
+    assert n_real == n_c, (
+        f"C surface drift: {n_real} real-tested rows vs "
+        f"HASKOKI_MECH_COUNT {n_c} (re-run generate-mechanisms.py)")
     ids = [r["numeric_id"] for r in mechs]
     assert len(set(ids)) == total, "duplicate numeric_id"
     n_alias = sum(len(r["aliases"]) for r in mechs)
@@ -106,7 +129,8 @@ def render(mechs, issues):
     L.append("Denominator: 464 catalog rows "
              f"(+ {n_alias} aliases = 480 header CKM).")
     L.append("")
-    L.append(BOUNDARY)
+    n_real = real_tested_count(mechs)
+    L.append(BOUNDARY_TEMPLATE.format(n=n_real))
     L.append("## Mechanism coverage")
     L.append("")
     L.append(f"- behavior: {fmt_counts(by_beh, total)}")
@@ -175,7 +199,7 @@ def render(mechs, issues):
     L.append("")
     L.append("Release-wide limitations (reviewed, non-generated):")
     L.append("")
-    L.append(LIMITATIONS_FIXED)
+    L.append(LIMITATIONS_TEMPLATE.format(n=real_tested_count(mechs)))
     L.append("## Source issues")
     L.append("")
     n_open = sum(1 for i in issues if str(i.get("status", "?")).strip().lower() == "open")
