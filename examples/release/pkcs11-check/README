@@ -3,7 +3,8 @@
 Files here ship inside the demo image
 (`/opt/haskoki/examples/release/pkcs11-check/`) and are load-bearing:
 the entrypoint sources `profiles.conf` and copies `backend-memory.toml`
-into each run dir. Everything in this directory is PROVISIONAL.
+into each run dir. Profiles are FROZEN (R4); only the compare subset
+stays provisional (R5).
 
 ## Profiles (`profiles.conf`)
 
@@ -11,8 +12,9 @@ into each run dir. Everything in this directory is PROVISIONAL.
   profiles'` (743 tests; zero findings direct and proxied as measured
   for R3).
 - `full`: offline marker over the whole suite, no `-k` selection
-  (11002 tests; 32 findings direct, 44 findings + 1 crash proxied as
-  measured for R3 — exact ids asserted by
+  (11003 tests; 27 findings direct, proxy 40 stable findings
+  (39 failed + 1 crash) + 0–2 timing-flaky failures, as measured
+  for R4 on checker 0.2.3 — asserted by
   `scripts/test-demo-image.sh`).
 - The offline marker is the CI fast-lane marker verbatim: vector-data
   lanes (`wycheproof`/`acvp`/`cctv`) need fetched data that the offline
@@ -41,7 +43,7 @@ as `HASKOKI_CONFIG`, proxy lanes hand it to the daemon. PINs come from
 docker run --rm -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
   check --mode direct --profile smoke   # exit 0
 docker run --rm -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
-  check --mode direct --profile full    # exit 1, 32 findings listed
+  check --mode direct --profile full    # exit 1, 27 findings listed
 ```
 
 Each run keeps `results.json` (checker-native), `report.jsonl`

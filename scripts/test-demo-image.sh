@@ -177,13 +177,16 @@ run_check proxy smoke 0
 grep -q 'findings: none' "$OUT/check-proxy-smoke.log" \
   || fail "smoke/proxy summary marker missing"
 
-# Full lanes exit 1 with exact finding sets (provisional R3 measurement;
-# R4 triages each id). Direct is byte-exact (deterministic across 5 runs).
-# Proxy asserts a stable 45-line core + 2 classified timing-flaky ids
+# Full lanes exit 1 with exact finding sets (R4: 27 direct / 40 proxy-core /
+# 238 diff-core + 12 shared on checker 0.2.3; triaged in task-R4-report.md
+# section 6). Direct is byte-exact (deterministic across runs).
+# Proxy asserts a stable 40-line core + 2 classified timing-flaky ids (0.2.3)
 # (R3d, report section 9.8); any other line fails loudly.
 run_check direct full 1
 RUN_DIR=$(latest_run "check-direct-full")
 cat > "$OUT/exp-full-direct.txt" <<'EOF'
+failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
+failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
 failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_aes_gcm_generated_iv_writeback
 failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_decrypt_aes_gcm
 failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_multipart_aes_gcm
@@ -209,25 +212,20 @@ failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_mess
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_multipart
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_single
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_decrypt_roundtrip
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_single
-failed test_sign_recover.py::TestSignRecoverRecipes::test_sign_recover_single_returns_signature
-failed test_sign_recover.py::TestSignRecoverRecipes::test_verify_recover_invalid_signature
-failed test_sign_recover.py::TestSignRecoverRecipes::test_verify_recover_round_trip
 EOF
-[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 32 ] || fail "driver: want 32 expected direct findings"
+[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 27 ] || fail "driver: want 27 expected direct findings"
 if ! diff -u "$OUT/exp-full-direct.txt" "$RUN_DIR/findings.txt"; then
-  fail "check direct/full findings differ from the exact expected 32"
+  fail "check direct/full findings differ from the exact expected 27"
 fi
-echo "check direct/full: exact 32 findings match"
+echo "check direct/full: exact 27 findings match"
 
 run_check proxy full 1
 RUN_DIR=$(latest_run "check-proxy-full")
 cat > "$OUT/exp-full-proxy.txt" <<'EOF'
 crashed test_authenticated_wrap.py::TestAuthenticatedWrap::test_aes_gcm_authenticated_wrap_generated_iv_and_tag
 failed ckr/test_ckr_object.py::TestCreateObjectErrors::test_allowed_mechanisms_null_pointer_nonzero_length
+failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
+failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
 failed security/test_ffi_length_boundary.py::TestEddsaNullContext::test_eddsa_null_context_data
 failed security/test_ffi_length_boundary.py::TestHkdfNullInfo::test_hkdf_null_info
 failed security/test_ffi_length_boundary.py::TestMechanismNullInnerParams::test_hkdf_null_salt
@@ -243,10 +241,6 @@ failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_mess
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_256_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_multipart
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_single
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_decrypt_roundtrip
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_single
 failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-input]
 failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-length]
 failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-update-input]
@@ -264,15 +258,12 @@ failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_SHA1_RC2_12
 failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_SHA1_RC2_40_CBC]
 failed test_pbe.py::TestPBESHA1DES2::test_generate_key_writes_init_vector
 failed test_pbe.py::TestPBESHA1DES3::test_generate_key_writes_init_vector
-failed test_sign_recover.py::TestSignRecoverRecipes::test_sign_recover_single_returns_signature
-failed test_sign_recover.py::TestSignRecoverRecipes::test_verify_recover_invalid_signature
-failed test_sign_recover.py::TestSignRecoverRecipes::test_verify_recover_round_trip
 failed test_tls12.py::TestTLS10PreMasterKeyGen::test_tls_key_and_mac_derive
 failed test_tls12.py::TestTLS12KeyAndMacDerive::test_key_and_mac_derive
 failed test_tls12.py::TestTLS12KeyAndMacDerive::test_key_safe_derive
 failed test_tls12.py::TestTLS12KeyAndMacDerive::test_key_safe_derive_ignores_iv_size_request
 EOF
-[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 45 ] || fail "driver: want 45 stable-core proxy findings"
+[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 40 ] || fail "driver: want 40 stable-core proxy findings"
 check_stable_core "check proxy/full findings" "$OUT/exp-full-proxy.txt" \
   "$RUN_DIR/findings.txt" \
   "failed test_ro_session.py::TestROSessionOperations::test_verify_in_ro_session" \
@@ -280,7 +271,7 @@ check_stable_core "check proxy/full findings" "$OUT/exp-full-proxy.txt" \
 
 # ---------------------------------------------------------------------------
 # 4. compare: exit 1 with a stable-core diff + exact shared set.
-# The diff asserts a stable 235-line core + 4 classified timing-flaky
+# The diff asserts a stable 238-line core + 4 classified timing-flaky (0.2.3)
 # lines (R3d, report section 9.8); the shared set stays byte-exact.
 # ---------------------------------------------------------------------------
 note "compare (expect exit 1 with exact diff)"
@@ -483,6 +474,9 @@ passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_tampered_data_fail
 passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_tampered_data_fails_verify[BLAKE2B_256_HMAC_GENERAL]
 passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_tampered_data_fails_verify[BLAKE2B_384_HMAC_GENERAL]
 passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_tampered_data_fails_verify[BLAKE2B_512_HMAC_GENERAL]
+passed skipped test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_single
+passed skipped test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_decrypt_roundtrip
+passed skipped test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_single
 passed skipped test_operation_termination.py::test_c_encrypt_terminates_after_multipart[BLOWFISH_CBC]
 passed skipped test_operation_termination.py::test_c_encrypt_terminates_after_multipart[BLOWFISH_CBC_PAD]
 passed skipped test_operation_termination.py::test_c_encrypt_terminates_after_multipart[DES_CFB64]
@@ -529,6 +523,8 @@ passed skipped test_wtls.py::TestWTLSPreMasterKeyGen::test_generate_yields_non_z
 passed skipped test_wtls.py::TestWTLSPreMasterKeyGen::test_two_generated_keys_differ
 EOF
 cat > "$OUT/exp-shared.txt" <<'EOF'
+failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
+failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[HOTP]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[HOTP]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC]
@@ -539,15 +535,8 @@ failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_mess
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_256_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_multipart
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_single
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_decrypt_roundtrip
-failed test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_single
-failed test_sign_recover.py::TestSignRecoverRecipes::test_sign_recover_single_returns_signature
-failed test_sign_recover.py::TestSignRecoverRecipes::test_verify_recover_invalid_signature
-failed test_sign_recover.py::TestSignRecoverRecipes::test_verify_recover_round_trip
 EOF
-[ "$(wc -l < "$OUT/exp-diff.txt")" -eq 235 ] || fail "driver: want 235 stable-core diff lines"
+[ "$(wc -l < "$OUT/exp-diff.txt")" -eq 238 ] || fail "driver: want 238 stable-core diff lines"
 check_stable_core "compare diff" "$OUT/exp-diff.txt" "$RUN_DIR/diff.txt" \
   "passed skipped test_object.py::TestSessionObjects::test_multiple_keys_same_type" \
   "passed failed test_ro_session.py::TestROSessionOperations::test_verify_in_ro_session" \
@@ -570,7 +559,7 @@ for c in demo check compare; do
     || fail "$c --help failed"
 done
 grep -q 'fixed-fixture' "$OUT/help-demo.log" || fail "demo help marker missing"
-grep -q 'PROVISIONAL' "$OUT/help-check.log" || fail "check help marker missing"
+grep -q 'FROZEN (R4' "$OUT/help-check.log" || fail "check help marker missing"
 grep -q 'PROVISIONAL' "$OUT/help-compare.log" || fail "compare help marker missing"
 echo "help texts: 4/4 exit 0"
 
@@ -747,7 +736,7 @@ rust:1.94-bookworm is recipe-pinned, and tags still float). What IS
 pinned and re-verified per build: the bundle recipe gates (static
 libcrypto, provider origin, system-only host deps, GLIBC_2.43 floor),
 the proxy canonical pair for the default ref (byte-identical assertion
-in the proxy stage), pkcs11-check == 0.2.2 (venv + version assertion),
+in the proxy stage), pkcs11-check == 0.2.3 (venv + version assertion),
 and every entrypoint verdict asserted byte-exact on its stable core by
 this driver. Four proxy-lane timing-flaky test ids are classified with
 enumerated variant forms (report section 9.8); any line outside the

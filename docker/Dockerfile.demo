@@ -17,11 +17,11 @@
 # Stages: bundle (existing Dockerfile image, runs scripts/make-release.sh
 # + closure/floor/notices verification); proxy (pinned Rust recipe from
 # scripts/test-proxy-parity.sh, PROXY_REF default a48b60b); checker
-# (pkcs11-check v0.2.2 + pkcs11-tool); runtime (slim: bundle tree +
+# (pkcs11-check v0.2.3 + pkcs11-tool); runtime (slim: bundle tree +
 # proxy binaries + checker + entrypoint ONLY, no toolchains).
 #
-# Checker profiles and the compare subset are PROVISIONAL (R4/R5 freeze
-# them); the entrypoint help text says so.
+# Checker profiles are FROZEN (R4); the compare subset stays PROVISIONAL
+# (R5 freezes it); the entrypoint help text says so.
 #
 # Build-time network is used for fetches (apt, crates.io, PyPI, git);
 # RUNTIME scenarios run --network none.
@@ -136,7 +136,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && echo "proxy static checks: daemon runs, shim exports discovery surface"
 
 # ---------------------------------------------------------------------------
-# Stage: checker. pkcs11-check v0.2.2 (venv) + pkcs11-tool (opensc).
+# Stage: checker. pkcs11-check v0.2.3 (venv) + pkcs11-tool (opensc).
 # ---------------------------------------------------------------------------
 FROM ubuntu:26.04 AS checker
 
@@ -149,10 +149,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-venv python3-pip opensc ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/p11c \
-    && /opt/p11c/bin/pip install --no-input "pkcs11-check==0.2.2" \
-    && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.2' \
+    && /opt/p11c/bin/pip install --no-input "pkcs11-check==0.2.3" \
+    && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.3$' \
     && /opt/p11c/bin/pip freeze > /opt/p11c/freeze.txt \
-    && { echo "pkcs11-check = 0.2.2 (PyPI pin)"; \
+    && { echo "pkcs11-check = 0.2.3 (PyPI pin)"; \
          echo -n "python3 = "; python3 --version; \
          echo -n "opensc = "; dpkg-query -W -f='${Version}' opensc; echo; \
        } > /opt/p11c/versions.txt \
@@ -170,9 +170,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Every package documented: libgmp10 + libffi8 + libnuma1 are the bundle's
 # host runtime libs (R2 native proof); opensc provides pkcs11-tool for the
 # demo and examples; python3 runs the checker venv (/opt/p11c symlinks to
-# /usr/bin/python3, same base image as the checker stage).
+# /usr/bin/python3, same base image as the checker stage);
+# ca-certificates lets fetch-data download vectors over TLS at runtime
+# (R4: without it every fetch fails with CERTIFICATE_VERIFY_FAILED).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libgmp10 libffi8 libnuma1 opensc python3 \
+      libgmp10 libffi8 libnuma1 opensc python3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=bundle /home/ubuntu/r3build/dist-release/ /opt/haskoki/dist-release/
@@ -187,10 +189,11 @@ RUN chmod +x /usr/local/bin/haskoki-demo \
     && test -f "$SO" \
     && ldd "$SO" > /tmp/ldd-so.txt 2>&1 \
     && ! grep -q "not found" /tmp/ldd-so.txt \
-    && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.2' \
+    && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.3$' \
     && command -v pkcs11-tool \
+    && test -f /etc/ssl/certs/ca-certificates.crt \
     && haskoki-demo --help > /dev/null \
-    && echo "runtime self-test: bundle resolves, checker + pkcs11-tool present"
+    && echo "runtime self-test: bundle resolves, checker + pkcs11-tool + CA store present"
 
 ENTRYPOINT ["/usr/local/bin/haskoki-demo"]
 CMD ["demo"]

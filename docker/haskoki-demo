@@ -15,8 +15,8 @@
 # tool-native artifacts). --output json|text selects the stdout rendering
 # (default text); report files are always written.
 #
-# PROVISIONAL (R4/R5 freeze; see examples/release/pkcs11-check/README):
-# smoke profile selection, full profile scope, compare subset (= all).
+# Profiles FROZEN (R4; see examples/release/pkcs11-check/README).
+# Compare subset (= all) still PROVISIONAL (R5 freezes).
 # Demo PINs/seeds/labels are PUBLIC fixtures (values never logged).
 #
 # Arbitrary-UID safe: writes only under the run dir (inside /out);
@@ -50,10 +50,10 @@ Commands:
             encrypt/decrypt (RSA-OAEP SHA256) of fixed PUBLIC fixtures,
             plus a pinned SHA-256 digest anchor. Human summary plus a
             JSON report under /out.
-  check     run pkcs11-check v0.2.2 (doctor gate, then the test lane)
+  check     run pkcs11-check v0.2.3 (doctor gate, then the test lane)
             against the bundle directly or via the loopback proxy shim.
             Exit 0 only on runs with zero findings; any finding lists
-            separately and exits 1. Smoke/full profiles are PROVISIONAL.
+            separately and exits 1. Smoke/full profiles are FROZEN (R4).
   compare   run the full checker profile direct vs proxied (subset = all,
             PROVISIONAL) and diff per-test verdict transcripts. Exit 0
             only on completed runs with zero findings and zero
@@ -114,7 +114,7 @@ then `test` with the profile selection. Findings (failed/error/
 crashed/timeout/xpass verdicts) list separately with stable per-test
 ids; the native checker exit status is preserved in the report.
 
-Profiles are PROVISIONAL (R4 freezes; values live in
+Profiles are FROZEN (R4; values live in
 examples/release/pkcs11-check/profiles.conf):
   smoke   small fast subset: offline marker plus a -k selection over
           interface/slot/digest/profiles categories
@@ -469,8 +469,8 @@ PY
 # check
 # ---------------------------------------------------------------------------
 
-# Profiles (PROVISIONAL): sourced from the shipped examples so the file
-# R4 freezes is the file this command reads.
+# Profiles (FROZEN in R4): sourced from the shipped examples so the file
+# this command reads is the frozen one.
 load_profiles() {
   [ -f "$PROFILES" ] || { echo "haskoki-demo: profiles missing: $PROFILES" >&2; return 1; }
   # shellcheck disable=SC1090
@@ -801,7 +801,7 @@ report = {
     "command": "check",
     "mode": mode,
     "profile": profile,
-    "profile_status": "provisional (R4 freezes)",
+    "profile_status": "frozen (R4)",
     "entrypoint": "haskoki-demo " + version,
     "started_utc": started,
     "finished_utc": finished,
