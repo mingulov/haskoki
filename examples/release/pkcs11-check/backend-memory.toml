@@ -1,0 +1,18 @@
+# Checker backend for the demo image lanes (memory store: the checker
+# manages its own keys per test; nothing must persist across runs).
+# Content matches scripts/ci-backend.toml (real crypto, OpenSSL engine,
+# no synthetic fallback, trace off). Demo token on slot 0 carries the
+# PUBLIC fixture PINs (user 1234, SO 5678) from minimal-demo fixtures.
+schema_version = 1
+profile = "demo-maximal"
+
+[storage]
+kind = "memory"
+
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+
+[trace]
+enabled = false

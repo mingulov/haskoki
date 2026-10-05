@@ -84,6 +84,21 @@ sudo apt install ghc cabal-install build-essential libgmp-dev
 cabal update && cabal test all
 ```
 
+## Demo image
+
+Self-contained image with the bundle, proxy pair, checker, and the
+`haskoki-demo` CLI (`demo` | `check` | `compare`; reports under `/out`):
+
+```sh
+docker build -f docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 .
+docker run --rm -v "$PWD/out:/out" haskoki-demo:0.3.0.0 demo
+```
+
+One-command examples live in [`examples/release/`](examples/release/)
+(URI second opinion, checker smoke, checker profiles). Checker profiles
+and the compare subset are provisional until frozen later in release
+preparation; `haskoki-demo --help` states the exit-code contract.
+
 ## Threading and host limitations
 
 Recorded limits, not supported modes:

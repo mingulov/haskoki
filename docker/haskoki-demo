@@ -1,0 +1,1105 @@
+#!/bin/sh
+# docker/haskoki-demo -- demo image entrypoint (demo | check | compare).
+#
+# Self-contained operator CLI over the in-image bundle + proxy + checker:
+#   demo                  keygen, sign/verify + encrypt/decrypt of fixed
+#                         PUBLIC fixtures (default command)
+#   check --mode M --profile P
+#                         run pkcs11-check (doctor gate + test lane)
+#   compare               run the full profile direct vs proxied and diff
+#                         per-test verdict transcripts
+#
+# Exit-code contract (exact): 0 healthy / 1 findings or unexpected diffs
+# / 2 usage-or-infrastructure failure. Every command writes a unique run
+# directory under /out with machine-readable reports (report.json plus
+# tool-native artifacts). --output json|text selects the stdout rendering
+# (default text); report files are always written.
+#
+# PROVISIONAL (R4/R5 freeze; see examples/release/pkcs11-check/README):
+# smoke profile selection, full profile scope, compare subset (= all).
+# Demo PINs/seeds/labels are PUBLIC fixtures (values never logged).
+#
+# Arbitrary-UID safe: writes only under the run dir (inside /out);
+# no root-only paths, no HOME writes.
+set -u
+
+VERSION="0.3.0.0"
+BUNDLE_ROOT="/opt/haskoki/dist-release"
+PROXY_DIR="/opt/haskoki/proxy"
+CHECKER="/opt/p11c/bin/pkcs11-check"
+EXAMPLES="/opt/haskoki/examples/release"
+PROFILES="$EXAMPLES/pkcs11-check/profiles.conf"
+OUT_DEFAULT="/out"
+
+# ---------------------------------------------------------------------------
+# Help
+# ---------------------------------------------------------------------------
+
+top_help() {
+  cat <<'EOF'
+haskoki-demo — self-contained PKCS#11 demonstrator image CLI
+
+Usage:
+  haskoki-demo [--output json|text] demo
+  haskoki-demo [--output json|text] check --mode direct|proxy --profile smoke|full
+  haskoki-demo [--output json|text] compare
+  haskoki-demo --help | demo --help | check --help | compare --help
+
+Commands:
+  demo      (default) keygen, then sign/verify (ECDSA P-256) and
+            encrypt/decrypt (RSA-OAEP SHA256) of fixed PUBLIC fixtures,
+            plus a pinned SHA-256 digest anchor. Human summary plus a
+            JSON report under /out.
+  check     run pkcs11-check v0.2.2 (doctor gate, then the test lane)
+            against the bundle directly or via the loopback proxy shim.
+            Exit 0 only on runs with zero findings; any finding lists
+            separately and exits 1. Smoke/full profiles are PROVISIONAL.
+  compare   run the full checker profile direct vs proxied (subset = all,
+            PROVISIONAL) and diff per-test verdict transcripts. Exit 0
+            only on completed runs with zero findings and zero
+            unexpected diffs; findings shared by both modes are shown
+            (and exit 1) but are not diffs.
+
+Global:
+  --output json|text   stdout rendering (default text). Report files are
+            always machine-readable under a unique run dir in /out.
+  Exit codes (exact): 0 healthy / 1 findings or unexpected diffs /
+            2 usage-or-infrastructure failure.
+  Demo PINs, seeds and labels are PUBLIC fixtures; values are never
+  logged (command echoes redact --pin arguments).
+EOF
+}
+
+demo_help() {
+  cat <<'EOF'
+haskoki-demo demo — fixed-fixture crypto round-trips (default command)
+
+Usage:
+  haskoki-demo [--output json|text] demo
+
+Runs, against fresh per-run SQLite stores under a unique /out run dir:
+  1. slot listing (token haskoki-demo present)
+  2. EC P-256 keypairgen, ECDSA-SHA256 sign, then verify ("Signature
+     is valid"); raw signature must be exactly 64 bytes
+  3. SHA-256 digest of the fixed 3-byte message, byte-compared to the
+     pinned FIPS constant (deterministic anchor)
+  4. RSA-2048 keypairgen, RSA-OAEP-SHA256 encrypt (256-byte output),
+     then decrypt; plaintext must round-trip byte-identically
+
+Fixtures (all PUBLIC, pinned): messages `abc` and `hello-rsa`, user
+and SO PINs, key labels, OAEP hash/MGF. Determinism: exit codes,
+output shapes, the digest bytes and round-trip equality are fixed;
+fresh key bytes, signatures and ciphertexts vary per run by design
+(new randomness each invocation).
+
+Isolated single-purpose stores per phase: this pkcs11-tool release
+selects the first enumerated key for some operations, so each phase
+gets a store holding only its own keys (documented, deterministic).
+
+Exit: 0 all verifications hold / 1 a verification failed / 2 usage
+or environment failure (module or /out unavailable).
+EOF
+}
+
+check_help() {
+  cat <<'EOF'
+haskoki-demo check — pkcs11-check lane, direct or proxied
+
+Usage:
+  haskoki-demo [--output json|text] check --mode direct|proxy --profile smoke|full
+
+Flow: resolve the module (direct: bundle libhaskoki.so; proxy: start
+the loopback daemon and use its shim), run `doctor` as a hard gate,
+then `test` with the profile selection. Findings (failed/error/
+crashed/timeout/xpass verdicts) list separately with stable per-test
+ids; the native checker exit status is preserved in the report.
+
+Profiles are PROVISIONAL (R4 freezes; values live in
+examples/release/pkcs11-check/profiles.conf):
+  smoke   small fast subset: offline marker plus a -k selection over
+          interface/slot/digest/profiles categories
+  full    everything smoke does plus the rest of the checker surface:
+          the offline marker over the whole suite
+
+Modes: direct runs the checker against the bundle module; proxy runs
+it against the proxy shim with the daemon on 127.0.0.1:17512
+(HASKOKI_DEMO_PROXY_PORT overrides; one run at a time — a busy port
+fails loudly). Proxy mode needs no external network (loopback only).
+
+Exit: 0 zero findings / 1 one or more findings / 2 usage or
+infrastructure failure (bad flags, doctor refusal, daemon or checker
+setup error, incomplete run).
+EOF
+}
+
+compare_help() {
+  cat <<'EOF'
+haskoki-demo compare — direct-vs-proxied verdict diff (plumbing)
+
+Usage:
+  haskoki-demo [--output json|text] compare
+
+Runs the full checker profile twice (direct, then via the loopback
+proxy shim) and diffs per-test verdict transcripts after normalizing
+test ids. Findings shared by both modes are shown but are not diffs;
+every outcome mismatch (including present-in-one-side-only) is an
+unexpected diff. Both sub-run reports are kept under the run dir.
+
+Subset = all (PROVISIONAL, R5 freezes the parity subset definition).
+
+Exit: 0 both runs completed with zero findings and zero unexpected
+diffs / 1 one or more findings (shared or single-sided) or
+unexpected diffs / 2 usage or infrastructure failure.
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Small utilities
+# ---------------------------------------------------------------------------
+
+# Resolve the single bundle tree (fail loudly unless exactly one).
+bundle_dir() {
+  n=$(ls -d "$BUNDLE_ROOT"/haskoki-* 2>/dev/null | wc -l)
+  if [ "$n" -ne 1 ]; then
+    echo "haskoki-demo: want exactly one bundle under $BUNDLE_ROOT, found $n" >&2
+    return 1
+  fi
+  echo "$BUNDLE_ROOT"/haskoki-*
+}
+
+utc_now() {
+  date -u +%Y%m%dT%H%M%SZ
+}
+
+# Make a unique run dir under /out (fail loudly when /out is missing
+# or not writable — exit 2 at the caller).
+make_run_dir() {
+  # $1 = command tag
+  out="${HASKOKI_DEMO_OUT:-$OUT_DEFAULT}"
+  if [ ! -d "$out" ]; then
+    echo "haskoki-demo: output dir missing: $out (bind it with -v OUT:/out)" >&2
+    return 1
+  fi
+  if [ ! -w "$out" ]; then
+    echo "haskoki-demo: output dir not writable: $out" >&2
+    return 1
+  fi
+  # mktemp is atomic (no concurrent-invocation collision) but yields
+  # mode 0700; the host user collects results from the bind mount, so
+  # open the dir (run dirs never carry secrets — PINs are never logged).
+  run=$(mktemp -d "$out/$1-$(utc_now)-$$-XXXXXX") || return 1
+  chmod 755 "$run" || return 1
+  echo "$run"
+}
+
+# Redact --pin/--so-pin values for log echoes (fixtures are public,
+# but values still never hit logs).
+redact() {
+  # stdin -> stdout with pin values replaced
+  sed -e 's/--pin [^ ]*/--pin [withheld]/g' \
+      -e 's/--so-pin [^ ]*/--so-pin [withheld]/g'
+}
+
+tool_versions() {
+  # prints shell assignments: P11TOOL_INFO OPENSC_VER CHECKER_VER PY_VER
+  P11TOOL_INFO="unknown"
+  OPENSC_VER="unknown"
+  CHECKER_VER="unknown"
+  PY_VER="unknown"
+  if command -v pkcs11-tool >/dev/null 2>&1; then
+    P11TOOL_INFO="present"
+  fi
+  if command -v dpkg-query >/dev/null 2>&1; then
+    OPENSC_VER=$(dpkg-query -W -f='${Version}' opensc 2>/dev/null || echo unknown)
+  fi
+  if [ -x "$CHECKER" ]; then
+    CHECKER_VER=$("$CHECKER" version 2>/dev/null | head -1 || echo unknown)
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    PY_VER=$(python3 --version 2>&1 || echo unknown)
+  fi
+}
+
+# Progress chatter: stdout in text mode, stderr in json mode (where
+# stdout carries exactly one JSON document). Errors always use stderr.
+OUTMODE="text"
+say() {
+  if [ "$OUTMODE" = "json" ]; then
+    echo "$*" >&2
+  else
+    echo "$*"
+  fi
+}
+
+# TCP connect probe (python3): exit 0 when something accepts.
+tcp_accepts() {
+  # $1 = port
+  python3 -c "
+import socket, sys
+s = socket.socket()
+s.settimeout(2)
+try:
+    s.connect(('127.0.0.1', $1))
+except OSError:
+    sys.exit(1)
+sys.exit(0)
+"
+}
+
+# ---------------------------------------------------------------------------
+# demo
+# ---------------------------------------------------------------------------
+
+cmd_demo() {
+  # $1 = output mode (text|json)
+  outmode="$1"; OUTMODE="$1"
+  started=$(utc_now)
+  art=$(bundle_dir) || return 2
+  SO="$art/lib/libhaskoki.so"
+  [ -f "$SO" ] || { echo "haskoki-demo: module missing: $SO" >&2; return 2; }
+  command -v pkcs11-tool >/dev/null 2>&1 \
+    || { echo "haskoki-demo: pkcs11-tool missing" >&2; return 2; }
+  run=$(make_run_dir demo) || return 2
+
+  # Fixed PUBLIC fixtures (pinned bytes; determinism documented below).
+  printf 'abc' > "$run/msg-sign.bin"
+  printf 'hello-rsa' > "$run/msg-enc.bin"
+  USER_PIN="1234"
+  SO_PIN="5678"
+  EC_LABEL="demo-ec"
+  RSA_LABEL="demo-rsa"
+  # Pinned FIPS 180-4 SHA-256("abc") constant (deterministic anchor).
+  SHA_ABC="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+  # Isolated single-purpose stores (see demo --help for why).
+  cat > "$run/backend-sign.toml" <<EOF
+schema_version = 1
+profile = "real-crypto"
+[storage]
+kind = "sqlite"
+path = "$run/sign.sqlite"
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+[trace]
+enabled = false
+EOF
+  sed "s#sign.sqlite#enc.sqlite#" "$run/backend-sign.toml" > "$run/backend-enc.toml"
+
+  fails=0
+  step() {
+    # $1 = step tag, rest = description (echoed redacted)
+    tag="$1"; shift
+    say "$(echo "demo [$tag]: $*" | redact)"
+  }
+  note() {
+    # append "rc=<rc> <text>" to the step ledger
+    echo "$1" >> "$run/steps.log"
+  }
+  : > "$run/steps.log"
+
+  # 1. slot listing (token present).
+  step slots "pkcs11-tool --module ... -L"
+  HASKOKI_CONFIG="$run/backend-sign.toml" pkcs11-tool --module "$SO" -L \
+    > "$run/step-slots.out" 2> "$run/step-slots.err"
+  rc=$?
+  if [ $rc -eq 0 ] && grep -q 'token label *: haskoki-demo' "$run/step-slots.out"; then
+    note "rc=0 slots token haskoki-demo present"
+  else
+    note "rc=$rc slots FAILED (see step-slots.out/err)"; fails=$((fails + 1))
+  fi
+
+  # 2. EC keypairgen.
+  step ec-keygen "pkcs11-tool --keypairgen EC:prime256v1 --label $EC_LABEL"
+  HASKOKI_CONFIG="$run/backend-sign.toml" pkcs11-tool --module "$SO" \
+    --keypairgen --key-type EC:prime256v1 --label "$EC_LABEL" --usage-sign \
+    -l --pin "$USER_PIN" > "$run/step-ec-keygen.out" 2> "$run/step-ec-keygen.err"
+  rc=$?
+  if [ $rc -eq 0 ]; then note "rc=0 ec-keygen ok"; else
+    note "rc=$rc ec-keygen FAILED"; fails=$((fails + 1)); fi
+
+  # 3. ECDSA-SHA256 sign (raw R||S must be exactly 64 bytes).
+  step ec-sign "pkcs11-tool -s -m ECDSA-SHA256"
+  HASKOKI_CONFIG="$run/backend-sign.toml" pkcs11-tool --module "$SO" \
+    -s -m ECDSA-SHA256 --label "$EC_LABEL" --type privkey \
+    -l --pin "$USER_PIN" -i "$run/msg-sign.bin" -o "$run/sig.bin" \
+    > "$run/step-ec-sign.out" 2> "$run/step-ec-sign.err"
+  rc=$?
+  sigbytes=0
+  [ -f "$run/sig.bin" ] && sigbytes=$(wc -c < "$run/sig.bin" | tr -d ' ')
+  if [ $rc -eq 0 ] && [ "$sigbytes" -eq 64 ]; then
+    note "rc=0 ec-sign ok sig_bytes=64"
+  else
+    note "rc=$rc ec-sign FAILED sig_bytes=$sigbytes"; fails=$((fails + 1)); fi
+
+  # 4. ECDSA verify ("Signature is valid").
+  step ec-verify "pkcs11-tool --verify -m ECDSA-SHA256"
+  HASKOKI_CONFIG="$run/backend-sign.toml" pkcs11-tool --module "$SO" \
+    --verify -m ECDSA-SHA256 --label "$EC_LABEL" --type pubkey \
+    -l --pin "$USER_PIN" -i "$run/msg-sign.bin" \
+    --signature-file "$run/sig.bin" \
+    > "$run/step-ec-verify.out" 2> "$run/step-ec-verify.err"
+  rc=$?
+  # Verdict stream varies by opensc release: accept stdout or stderr.
+  if [ $rc -eq 0 ] && grep -q 'Signature is valid' \
+      "$run/step-ec-verify.out" "$run/step-ec-verify.err" 2>/dev/null; then
+    note "rc=0 ec-verify ok (Signature is valid)"
+  else
+    note "rc=$rc ec-verify FAILED"; fails=$((fails + 1)); fi
+
+  # 5. SHA-256 digest anchor (module bytes vs pinned constant + sha256sum).
+  step digest "pkcs11-tool -h -m SHA256 (pinned-constant comparison)"
+  HASKOKI_CONFIG="$run/backend-sign.toml" pkcs11-tool --module "$SO" \
+    -h -m SHA256 -i "$run/msg-sign.bin" \
+    > "$run/digest.raw" 2> "$run/step-digest.err"
+  rc=$?
+  gothex=""
+  [ -f "$run/digest.raw" ] && gothex=$(od -A n -t x1 "$run/digest.raw" | tr -d ' \n')
+  wanthex="$SHA_ABC"
+  syshex=$(sha256sum "$run/msg-sign.bin" | awk '{print $1}')
+  if [ $rc -eq 0 ] && [ "$gothex" = "$wanthex" ] && [ "$syshex" = "$wanthex" ]; then
+    note "rc=0 digest ok sha256(abc)=$gothex"
+  else
+    note "rc=$rc digest FAILED module=$gothex pinned=$wanthex sys=$syshex"
+    fails=$((fails + 1)); fi
+
+  # 6. RSA keypairgen.
+  step rsa-keygen "pkcs11-tool --keypairgen RSA:2048 --label $RSA_LABEL"
+  HASKOKI_CONFIG="$run/backend-enc.toml" pkcs11-tool --module "$SO" \
+    --keypairgen --key-type RSA:2048 --label "$RSA_LABEL" --usage-decrypt \
+    -l --pin "$USER_PIN" > "$run/step-rsa-keygen.out" 2> "$run/step-rsa-keygen.err"
+  rc=$?
+  if [ $rc -eq 0 ]; then note "rc=0 rsa-keygen ok"; else
+    note "rc=$rc rsa-keygen FAILED"; fails=$((fails + 1)); fi
+
+  # 7. RSA-OAEP-SHA256 encrypt (2048-bit output = 256 bytes).
+  step rsa-encrypt "pkcs11-tool --encrypt -m RSA-PKCS-OAEP --hash-algorithm SHA256"
+  HASKOKI_CONFIG="$run/backend-enc.toml" pkcs11-tool --module "$SO" \
+    --encrypt -m RSA-PKCS-OAEP --hash-algorithm SHA256 \
+    -l --pin "$USER_PIN" -i "$run/msg-enc.bin" -o "$run/enc.bin" \
+    > "$run/step-rsa-encrypt.out" 2> "$run/step-rsa-encrypt.err"
+  rc=$?
+  encbytes=0
+  [ -f "$run/enc.bin" ] && encbytes=$(wc -c < "$run/enc.bin" | tr -d ' ')
+  if [ $rc -eq 0 ] && [ "$encbytes" -eq 256 ]; then
+    note "rc=0 rsa-encrypt ok ct_bytes=256"
+  else
+    note "rc=$rc rsa-encrypt FAILED ct_bytes=$encbytes"; fails=$((fails + 1)); fi
+
+  # 8. RSA-OAEP-SHA256 decrypt + byte-identical round-trip.
+  step rsa-decrypt "pkcs11-tool --decrypt -m RSA-PKCS-OAEP + cmp round-trip"
+  HASKOKI_CONFIG="$run/backend-enc.toml" pkcs11-tool --module "$SO" \
+    --decrypt -m RSA-PKCS-OAEP --hash-algorithm SHA256 \
+    -l --pin "$USER_PIN" -i "$run/enc.bin" -o "$run/dec.bin" \
+    > "$run/step-rsa-decrypt.out" 2> "$run/step-rsa-decrypt.err"
+  rc=$?
+  if [ $rc -eq 0 ] && cmp -s "$run/msg-enc.bin" "$run/dec.bin"; then
+    note "rc=0 rsa-decrypt ok round-trip identical"
+  else
+    note "rc=$rc rsa-decrypt FAILED"; fails=$((fails + 1)); fi
+
+  finished=$(utc_now)
+  tool_versions
+  modsha=$(sha256sum "$SO" | awk '{print $1}')
+  msgsha=$(sha256sum "$run/msg-sign.bin" | awk '{print $1}')
+  encmsgsha=$(sha256sum "$run/msg-enc.bin" | awk '{print $1}')
+  exitcode=0
+  [ "$fails" -gt 0 ] && exitcode=1
+
+  # JSON report (machine-readable; PIN values never included).
+  # Scalars via argv; steps read from the ledger (no interpolation).
+  python3 - "$run" "$started" "$finished" "$exitcode" "$art" "$modsha" \
+    "$P11TOOL_INFO" "$OPENSC_VER" "$PY_VER" "$msgsha" "$encmsgsha" \
+    "$EC_LABEL" "$RSA_LABEL" "$SHA_ABC" "$VERSION" <<'PY'
+import json, sys
+(run, started, finished, exitcode, art, modsha, p11info, ossl, pyver,
+ msgsha, encmsgsha, eclabel, rsalabel, anchor, version) = sys.argv[1:16]
+steps = []
+for line in open(run + "/steps.log"):
+    line = line.rstrip("\n")
+    if line:
+        rc, _, rest = line.partition(" ")
+        steps.append({"rc": rc, "detail": rest})
+report = {
+    "command": "demo",
+    "entrypoint": "haskoki-demo " + version,
+    "started_utc": started,
+    "finished_utc": finished,
+    "exit_code": int(exitcode),
+    "run_dir": run,
+    "bundle": art,
+    "module_sha256": modsha,
+    "tools": {"pkcs11_tool": p11info, "opensc": ossl, "python3": pyver},
+    "fixtures": {
+        "note": "all PUBLIC pinned fixtures (no real secrets)",
+        "msg_sign": {"file": "msg-sign.bin", "sha256": msgsha},
+        "msg_enc": {"file": "msg-enc.bin", "sha256": encmsgsha},
+        "pins": "PUBLIC-FIXED (values withheld from logs)",
+        "labels": [eclabel, rsalabel],
+        "oaep": "SHA256 + MGF1-SHA256",
+        "digest_anchor": anchor,
+    },
+    "determinism": "exit codes, output shapes, digest bytes and round-trip equality are fixed; fresh key bytes, signatures and ciphertexts vary per run by design",
+    "steps": steps,
+}
+json.dump(report, open(run + "/report.json", "w"), indent=1)
+PY
+  py_rc=$?
+  if [ "$py_rc" -ne 0 ]; then
+    echo "haskoki-demo: cannot write report.json" >&2
+    return 2
+  fi
+
+  if [ "$outmode" = "json" ]; then
+    cat "$run/report.json"
+  else
+    echo "demo summary ($run):"
+    sed 's/^/  /' "$run/steps.log"
+    if [ "$fails" -eq 0 ]; then
+      echo "demo-ok: 8/8 verifications hold; report: $run/report.json"
+    else
+      echo "demo-FINDINGS: $fails verification(s) failed; report: $run/report.json"
+    fi
+  fi
+  return "$exitcode"
+}
+
+# ---------------------------------------------------------------------------
+# check
+# ---------------------------------------------------------------------------
+
+# Profiles (PROVISIONAL): sourced from the shipped examples so the file
+# R4 freezes is the file this command reads.
+load_profiles() {
+  [ -f "$PROFILES" ] || { echo "haskoki-demo: profiles missing: $PROFILES" >&2; return 1; }
+  # shellcheck disable=SC1090
+  . "$PROFILES"
+  [ -n "${SMOKE_MARKER:-}" ] || { echo "haskoki-demo: SMOKE_MARKER empty" >&2; return 1; }
+  [ -n "${SMOKE_MATCH:-}" ] || { echo "haskoki-demo: SMOKE_MATCH empty" >&2; return 1; }
+  [ -n "${FULL_MARKER:-}" ] || { echo "haskoki-demo: FULL_MARKER empty" >&2; return 1; }
+  : "${FULL_MATCH:-}"
+  : "${CHECK_TIMEOUT:=180}"
+  : "${CHECK_SLOT:=0}"
+}
+
+check_backend() {
+  # $1 = run dir; prints backend path (memory store for checker lanes:
+  # the checker manages its own keys per test; nothing must persist).
+  run="$1"
+  src="$EXAMPLES/pkcs11-check/backend-memory.toml"
+  [ -f "$src" ] || { echo "haskoki-demo: backend template missing: $src" >&2; return 1; }
+  cp "$src" "$run/backend.toml" || return 1
+  echo "$run/backend.toml"
+}
+
+DAEMON_PID=""
+
+daemon_stop() {
+  if [ -n "${DAEMON_PID:-}" ]; then
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+    DAEMON_PID=""
+  fi
+}
+
+daemon_start() {
+  # $1 = run dir, $2 = module path; sets DAEMON_PID; proxy.toml + log in run dir.
+  run="$1"; mod="$2"
+  port="${HASKOKI_DEMO_PROXY_PORT:-17512}"
+  bin="$PROXY_DIR/pkcs11-proxy-ng"
+  [ -x "$bin" ] || { echo "haskoki-demo: proxy daemon missing: $bin" >&2; return 1; }
+  if tcp_accepts "$port"; then
+    echo "haskoki-demo: proxy port $port already busy (one run at a time)" >&2
+    return 1
+  fi
+  # Daemon config mirrors scripts/test-proxy-parity.sh (loopback dev
+  # shape): transparent discovery, loopback bind, no auth. HASKOKI_CONFIG
+  # selects the daemon-side backend (memory store, real crypto).
+  cat > "$run/proxy.toml" <<EOF
+[backend]
+module = "$mod"
+
+[proxy]
+mechanism_discovery = "transparent"
+lease_seconds = 600
+request_timeout_secs = 60
+max_concurrent_backend_calls = 200
+max_blocking_threads = 512
+
+[listener.remote]
+bind = "127.0.0.1:$port"
+auth = "none"
+allow_insecure_tcp = true
+EOF
+  HASKOKI_CONFIG="$run/backend.toml" RUST_LOG=info "$bin" "$run/proxy.toml" \
+    >> "$run/daemon.log" 2>&1 &
+  DAEMON_PID=$!
+  # Readiness: TCP accept on the loopback port (the daemon binds only
+  # after the backend loads, so accept means ready). 30s gate.
+  i=0
+  while [ "$i" -lt 30 ]; do
+    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+      echo "haskoki-demo: proxy daemon died during startup (see $run/daemon.log)" >&2
+      DAEMON_PID=""
+      return 1
+    fi
+    if tcp_accepts "$port"; then
+      say "proxy daemon ready: 127.0.0.1:$port (pid $DAEMON_PID)"
+      return 0
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+  echo "haskoki-demo: proxy daemon not listening after 30s (see $run/daemon.log)" >&2
+  daemon_stop
+  return 1
+}
+
+# One checker lane inside an existing run dir. Sets globals:
+# LANE_RC (native checker exit), LANE_FINDINGS (summary count),
+# LANE_LISTED (per-test rows written), LANE_CHILD_UNITS (worker-unit
+# counters), LANE_INCOMPLETE.
+LANE_RC=0
+LANE_FINDINGS=0
+LANE_LISTED=0
+LANE_CHILD_UNITS=0
+LANE_INCOMPLETE=0
+
+run_lane() {
+  # $1 run dir, $2 mode, $3 profile, $4 marker, $5 match (may be empty)
+  # Locals: compare calls this twice and must keep its own $run.
+  local run mode profile marker match art SO backend MOD SHIM port rc bin i
+  run="$1"; mode="$2"; profile="$3"; marker="$4"; match="$5"
+  art=$(bundle_dir) || return 2
+  SO="$art/lib/libhaskoki.so"
+  [ -f "$SO" ] || { echo "haskoki-demo: module missing: $SO" >&2; return 2; }
+  [ -x "$CHECKER" ] || { echo "haskoki-demo: checker missing: $CHECKER" >&2; return 2; }
+  backend=$(check_backend "$run") || return 2
+
+  MOD="$SO"
+  if [ "$mode" = "proxy" ]; then
+    SHIM="$PROXY_DIR/libpkcs11_proxy_ng_shim.so"
+    [ -f "$SHIM" ] || { echo "haskoki-demo: proxy shim missing: $SHIM" >&2; return 2; }
+    daemon_start "$run" "$SO" || return 2
+    port="${HASKOKI_DEMO_PROXY_PORT:-17512}"
+    export PKCS11_PROXY_ENDPOINT="http://127.0.0.1:$port"
+    MOD="$SHIM"
+  fi
+
+  # PINs via env (never on argv, never in logs). PUBLIC fixtures.
+  export P11TEST_PIN="1234"
+  export P11TEST_SO_PIN="5678"
+  # No bytecode writes outside the run dir (arbitrary-UID safe:
+  # site-packages may be read-only for the invoker).
+  export PYTHONDONTWRITEBYTECODE=1
+  export PYTHONPYCACHEPREFIX="$run/pycache"
+
+  say "doctor: $CHECKER doctor --module <...>"
+  if [ "$mode" = "proxy" ]; then
+    "$CHECKER" doctor --module "$MOD" --slot "$CHECK_SLOT" \
+      > "$run/doctor.out" 2> "$run/doctor.err"
+  else
+    HASKOKI_CONFIG="$backend" "$CHECKER" doctor --module "$MOD" --slot "$CHECK_SLOT" \
+      > "$run/doctor.out" 2> "$run/doctor.err"
+  fi
+  rc=$?
+  cat "$run/doctor.out" "$run/doctor.err" > "$run/checker.log"
+  if [ $rc -ne 0 ]; then
+    echo "doctor refused (rc=$rc); see $run/doctor.out/err" >&2
+    [ "$mode" = "proxy" ] && daemon_stop
+    return 2
+  fi
+  say "doctor: healthy"
+
+  say "test [$mode/$profile]: marker + match from $PROFILES"
+  # Optional --match as separate argv (no word-splitting tricks).
+  set -- --module "$MOD" --slot "$CHECK_SLOT" \
+      --isolation auto --timeout "$CHECK_TIMEOUT" \
+      --state-file "$run/state.json" --policy-file "$run/policy.json" \
+      --marker "$marker"
+  if [ -n "$match" ]; then
+    set -- "$@" --match "$match"
+  fi
+  set -- "$@" --output json --output-file "$run/results.json"
+  if [ "$mode" = "proxy" ]; then
+    ( cd "$run" && "$CHECKER" test "$@" >> "$run/checker.log" 2>&1 )
+  else
+    ( cd "$run" && HASKOKI_CONFIG="$backend" "$CHECKER" test "$@" >> "$run/checker.log" 2>&1 )
+  fi
+  LANE_RC=$?
+  say "checker native exit: $LANE_RC (preserved in report)"
+  [ "$mode" = "proxy" ] && daemon_stop
+
+  if [ "$LANE_RC" -ge 2 ]; then
+    echo "checker setup error (rc=$LANE_RC); see $run/checker.log" >&2
+    return 2
+  fi
+  [ -f "$run/results.json" ] || { echo "haskoki-demo: results.json missing" >&2; return 2; }
+  [ -f "$run/report.jsonl" ] || { echo "haskoki-demo: report.jsonl missing" >&2; return 2; }
+
+  # Verdict from the summary + per-test finding ids from report.jsonl
+  # (stable ids: venv path prefix stripped up to testcases/). A parse
+  # failure must never pass as healthy: stale LANE_* would lie.
+  # Verdict mapping (same rules as compare): call outcome wins; a
+  # setup-phase terminal outcome without a call record maps as itself
+  # (failed/error/skipped); setup-passed without a call record means
+  # the worker died (crashed); an explicit failed/error teardown
+  # surfaces unless the call record already carries a finding;
+  # unknown outcomes map to the finding side.
+  lane_eval=""
+  lane_eval=$(python3 - "$run/results.json" "$run/report.jsonl" "$run/findings.txt" <<'PY'
+import json, sys
+results, report, out = sys.argv[1], sys.argv[2], sys.argv[3]
+s = json.load(open(results))["summary"]
+keys = ("failed", "error", "crashed", "timeout", "crash_limited",
+        "xpassed", "child_crash", "child_timeout")
+findings = sum(int(s.get(k, 0)) for k in keys)
+incomplete = bool(s.get("incomplete", False))
+setup, call, teardown = {}, {}, {}
+bad_lines = 0
+for raw in open(report):
+    if not raw.strip():
+        bad_lines += 1
+        continue
+    try:
+        e = json.loads(raw)
+    except ValueError:
+        bad_lines += 1
+        continue
+    if e.get("$report_type") != "TestReport":
+        continue
+    nid = (e.get("nodeid") or "").split("testcases/")[-1]
+    if not nid:
+        bad_lines += 1
+        continue
+    when, outcome = e.get("when"), e.get("outcome") or "?"
+    if when == "setup":
+        setup[nid] = outcome
+    elif when == "call":
+        call[nid] = outcome
+    elif when == "teardown":
+        teardown[nid] = outcome
+if bad_lines:
+    print("haskoki-demo: %d malformed/blank jsonl lines in %s"
+          % (bad_lines, report), file=sys.stderr)
+    sys.exit(2)
+verdicts = dict(call)
+for nid, outcome in setup.items():
+    if nid not in verdicts:
+        if outcome == "passed":
+            verdicts[nid] = "crashed"
+        elif outcome in ("failed", "error", "skipped"):
+            verdicts[nid] = outcome
+        else:
+            verdicts[nid] = "crashed"
+for nid, outcome in teardown.items():
+    # Explicit teardown failures surface unless the call record
+    # already carries an explicit finding (which wins as primary);
+    # in particular they override passed/skipped verdicts, absent
+    # records, unknown outcomes, and setup-inferred crashes.
+    if outcome in ("failed", "error") and call.get(nid) not in (
+            "failed", "error", "crashed", "timeout", "xpassed"):
+        verdicts[nid] = outcome
+rows = []
+for nid in sorted(verdicts):
+    o = verdicts[nid]
+    if o not in ("passed", "skipped"):
+        rows.append(("crashed" if o == "?" else o, nid))
+with open(out, "w") as f:
+    for o, nid in sorted(rows):
+        f.write("%s %s\n" % (o, nid))
+print("LANE_FINDINGS=%d" % findings)
+print("LANE_LISTED=%d" % len(rows))
+print("LANE_CHILD_UNITS=%d" % (int(s.get("child_crash", 0)) +
+                               int(s.get("child_timeout", 0))))
+print("LANE_INCOMPLETE=%d" % (1 if incomplete else 0))
+PY
+)
+  py_rc=$?
+  if [ "$py_rc" -ne 0 ]; then
+    echo "haskoki-demo: verdict parse failed (see above)" >&2
+    return 2
+  fi
+  if [ -z "$lane_eval" ]; then
+    echo "haskoki-demo: verdict parse produced nothing (see $run/checker.log)" >&2
+    return 2
+  fi
+  eval "$lane_eval"
+  # Reconciliation: every summary finding must be listed (child_crash /
+  # child_timeout are worker-unit counters without per-test records and
+  # stay summary-only; anything else unlisted is a mapping gap).
+  listed_want=$((LANE_FINDINGS - LANE_CHILD_UNITS))
+  if [ "$LANE_LISTED" -ne "$listed_want" ]; then
+    echo "haskoki-demo: listed $LANE_LISTED findings but summary has $listed_want (mapping gap)" >&2
+    return 2
+  fi
+  if [ "$LANE_INCOMPLETE" -eq 1 ]; then
+    echo "checker run incomplete; see $run/checker.log" >&2
+    return 2
+  fi
+  # Native-status consistency: rc 0 means zero findings, rc 1 means
+  # some; any other combination is a verdict bug — fail loudly.
+  if [ "$LANE_RC" -eq 0 ] && [ "$LANE_FINDINGS" -ne 0 ]; then
+    echo "haskoki-demo: checker rc=0 but $LANE_FINDINGS findings parsed" >&2
+    return 2
+  fi
+  if [ "$LANE_RC" -eq 1 ] && [ "$LANE_FINDINGS" -eq 0 ]; then
+    echo "haskoki-demo: checker rc=1 but zero findings parsed" >&2
+    return 2
+  fi
+  return 0
+}
+
+cmd_check() {
+  # $1 = output mode, $2 = mode, $3 = profile
+  outmode="$1"; OUTMODE="$1"; mode="$2"; profile="$3"
+  started=$(utc_now)
+  load_profiles || return 2
+  case "$mode/$profile" in
+    direct/smoke|direct/full|proxy/smoke|proxy/full) ;;
+    *) echo "haskoki-demo: check needs --mode direct|proxy --profile smoke|full" >&2; return 2 ;;
+  esac
+  art=$(bundle_dir) || return 2
+  run=$(make_run_dir "check-$mode-$profile") || return 2
+  say "run dir: $run"
+
+  if [ "$profile" = "smoke" ]; then
+    marker="$SMOKE_MARKER"; match="$SMOKE_MATCH"
+  else
+    marker="$FULL_MARKER"; match="$FULL_MATCH"
+  fi
+  trap daemon_stop EXIT
+  trap 'daemon_stop; exit 143' INT TERM
+  run_lane "$run" "$mode" "$profile" "$marker" "$match"
+  rc=$?
+  daemon_stop
+  if [ $rc -eq 2 ]; then
+    return 2
+  fi
+
+  finished=$(utc_now)
+  tool_versions
+  exitcode=0
+  [ "$LANE_FINDINGS" -gt 0 ] && exitcode=1
+  # Report writer takes scalars via argv and reads the artifacts itself:
+  # no JSON is ever interpolated into Python source.
+  python3 - "$run" "$mode" "$profile" "$started" "$finished" "$exitcode" \
+    "$art" "$LANE_RC" "$CHECKER_VER" "$PY_VER" "$marker" "$match" \
+    "$LANE_FINDINGS" "$VERSION" <<'PY'
+import json, sys
+(run, mode, profile, started, finished, exitcode, art, lane_rc,
+ checker_ver, py_ver, marker, match, findings_n, version) = sys.argv[1:15]
+summary = json.load(open(run + "/results.json"))["summary"]
+findings = []
+for line in open(run + "/findings.txt"):
+    line = line.rstrip("\n")
+    if line:
+        o, _, nid = line.partition(" ")
+        findings.append({"outcome": o, "test": nid})
+report = {
+    "command": "check",
+    "mode": mode,
+    "profile": profile,
+    "profile_status": "provisional (R4 freezes)",
+    "entrypoint": "haskoki-demo " + version,
+    "started_utc": started,
+    "finished_utc": finished,
+    "exit_code": int(exitcode),
+    "run_dir": run,
+    "bundle": art,
+    "checker_native_exit": int(lane_rc),
+    "tools": {"checker": checker_ver, "python3": py_ver},
+    "selection": {"marker": marker, "match": match},
+    "summary": summary,
+    "findings_count": int(findings_n),
+    "findings": findings,
+}
+json.dump(report, open(run + "/report.json", "w"), indent=1)
+PY
+  py_rc=$?
+  if [ "$py_rc" -ne 0 ]; then
+    echo "haskoki-demo: cannot write report.json" >&2
+    return 2
+  fi
+
+  if [ "$outmode" = "json" ]; then
+    cat "$run/report.json"
+  else
+    echo "check summary [$mode/$profile] ($run):"
+    echo "  checker native exit: $LANE_RC"
+    if [ "$LANE_FINDINGS" -eq 0 ]; then
+      echo "  findings: none"
+      echo "check-ok: zero findings; report: $run/report.json"
+    else
+      echo "  findings ($LANE_FINDINGS):"
+      sed 's/^/    /' "$run/findings.txt"
+      echo "check-FINDINGS: $LANE_FINDINGS finding(s); report: $run/report.json"
+    fi
+  fi
+  return "$exitcode"
+}
+
+# ---------------------------------------------------------------------------
+# compare
+# ---------------------------------------------------------------------------
+
+cmd_compare() {
+  # $1 = output mode
+  outmode="$1"; OUTMODE="$1"
+  started=$(utc_now)
+  load_profiles || return 2
+  art=$(bundle_dir) || return 2
+  run=$(make_run_dir compare) || return 2
+  say "run dir: $run"
+  mkdir -p "$run/direct" "$run/proxy" || return 2
+
+  trap daemon_stop EXIT
+  trap 'daemon_stop; exit 143' INT TERM
+  say "--- sub-run: direct/full ---"
+  run_lane "$run/direct" direct full "$FULL_MARKER" "$FULL_MATCH"
+  rc1=$?
+  say "--- sub-run: proxy/full ---"
+  run_lane "$run/proxy" proxy full "$FULL_MARKER" "$FULL_MATCH"
+  rc2=$?
+  daemon_stop
+  if [ $rc1 -eq 2 ] || [ $rc2 -eq 2 ]; then
+    echo "haskoki-demo: compare sub-run infrastructure failure" >&2
+    return 2
+  fi
+
+  # Verdict-map diff (stable ids; same mapping rules as check:
+  # call wins, setup-terminal without call maps as itself, setup-passed
+  # without call = crashed, explicit failed/error teardown
+  # surfaces unless the call record already carries a finding,
+  # unknown outcomes map to the finding side).
+  python3 - "$run/direct/report.jsonl" "$run/proxy/report.jsonl" \
+    "$run/diff.txt" "$run/shared-findings.txt" <<'PY'
+import json, sys
+djsonl, pjsonl, diffout, sharedout = sys.argv[1:5]
+
+def verdicts(path):
+    setup, call, teardown = {}, {}, {}
+    bad_lines = 0
+    with open(path) as f:
+        for raw in f:
+            if not raw.strip():
+                bad_lines += 1
+                continue
+            try:
+                e = json.loads(raw)
+            except ValueError:
+                bad_lines += 1
+                continue
+            if e.get("$report_type") != "TestReport":
+                continue
+            nid = (e.get("nodeid") or "").split("testcases/")[-1]
+            if not nid:
+                bad_lines += 1
+                continue
+            when, outcome = e.get("when"), e.get("outcome") or "?"
+            if when == "setup":
+                setup[nid] = outcome
+            elif when == "call":
+                call[nid] = outcome
+            elif when == "teardown":
+                teardown[nid] = outcome
+    if bad_lines:
+        print("haskoki-demo: %d malformed/blank jsonl lines in %s"
+              % (bad_lines, path), file=sys.stderr)
+        sys.exit(2)
+    verdicts = dict(call)
+    for nid, outcome in setup.items():
+        if nid not in verdicts:
+            if outcome == "passed":
+                verdicts[nid] = "crashed"
+            elif outcome in ("failed", "error", "skipped"):
+                verdicts[nid] = outcome
+            else:
+                verdicts[nid] = "crashed"
+    for nid, outcome in teardown.items():
+        # Explicit teardown failures surface unless the call record
+        # already carries an explicit finding (which wins as primary).
+        if outcome in ("failed", "error") and call.get(nid) not in (
+                "failed", "error", "crashed", "timeout", "xpassed"):
+            verdicts[nid] = outcome
+    for nid, outcome in list(verdicts.items()):
+        if outcome == "?":
+            verdicts[nid] = "crashed"
+    return verdicts
+
+d, p = verdicts(djsonl), verdicts(pjsonl)
+bad = {"failed", "error", "crashed", "timeout"}
+diff, shared = [], []
+for nid in sorted(set(d) | set(p)):
+    do, po = d.get(nid, "absent"), p.get(nid, "absent")
+    if do != po:
+        diff.append((do, po, nid))
+    elif do in bad:
+        shared.append((do, nid))
+with open(diffout, "w") as f:
+    for do, po, nid in diff:
+        f.write("%s %s %s\n" % (do, po, nid))
+with open(sharedout, "w") as f:
+    for o, nid in shared:
+        f.write("%s %s\n" % (o, nid))
+print("diffs=%d shared=%d" % (len(diff), len(shared)))
+PY
+  py_rc=$?
+  if [ "$py_rc" -ne 0 ]; then
+    echo "haskoki-demo: verdict-map diff failed (see above)" >&2
+    return 2
+  fi
+  diffs=$(wc -l < "$run/diff.txt")
+  shared=$(wc -l < "$run/shared-findings.txt")
+
+  finished=$(utc_now)
+  tool_versions
+  # Exit 1 on findings OR diffs: shared findings are still findings,
+  # so zero diffs with shared failures is not healthy.
+  exitcode=0
+  [ "$diffs" -gt 0 ] && exitcode=1
+  [ "$shared" -gt 0 ] && exitcode=1
+  # Scalars via argv; diff files read directly (no interpolation).
+  python3 - "$run" "$started" "$finished" "$exitcode" "$art" \
+    "$CHECKER_VER" "$PY_VER" "$diffs" "$shared" "$VERSION" <<'PY'
+import json, sys
+(run, started, finished, exitcode, art, checker_ver, pyver,
+ diffs, shared, version) = sys.argv[1:11]
+diffs_list = []
+for line in open(run + "/diff.txt"):
+    parts = line.rstrip("\n").split(" ", 2)
+    if len(parts) == 3:
+        diffs_list.append({"direct": parts[0], "proxy": parts[1],
+                           "test": parts[2]})
+shared_list = []
+for line in open(run + "/shared-findings.txt"):
+    line = line.rstrip("\n")
+    if line:
+        o, _, nid = line.partition(" ")
+        shared_list.append({"outcome": o, "test": nid})
+report = {
+    "command": "compare",
+    "subset": "all",
+    "subset_status": "provisional (R5 freezes the parity subset)",
+    "entrypoint": "haskoki-demo " + version,
+    "started_utc": started,
+    "finished_utc": finished,
+    "exit_code": int(exitcode),
+    "run_dir": run,
+    "bundle": art,
+    "tools": {"checker": checker_ver, "python3": pyver},
+    "diff_count": int(diffs),
+    "diffs": diffs_list,
+    "shared_findings_count": int(shared),
+    "shared_findings": shared_list,
+}
+json.dump(report, open(run + "/report.json", "w"), indent=1)
+PY
+  py_rc=$?
+  if [ "$py_rc" -ne 0 ]; then
+    echo "haskoki-demo: cannot write report.json" >&2
+    return 2
+  fi
+
+  if [ "$outmode" = "json" ]; then
+    cat "$run/report.json"
+  else
+    echo "compare summary (direct/full vs proxy/full) ($run):"
+    echo "  shared findings (both modes, not diffs): $shared"
+    if [ "$shared" -gt 0 ]; then
+      sed 's/^/    shared: /' "$run/shared-findings.txt"
+    fi
+    if [ "$diffs" -eq 0 ] && [ "$shared" -eq 0 ]; then
+      echo "  unexpected diffs: none"
+      echo "compare-ok: zero findings and zero unexpected diffs; report: $run/report.json"
+    else
+      echo "  unexpected diffs ($diffs) [direct proxy test]:"
+      [ "$diffs" -gt 0 ] && sed 's/^/    /' "$run/diff.txt"
+      echo "compare-FINDINGS: $diffs unexpected diff(s) + $shared shared finding(s); report: $run/report.json"
+    fi
+  fi
+  return "$exitcode"
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+main() {
+  outmode="text"
+  cmd=""
+  mode=""
+  profile=""
+  help=0
+  # Global flags may precede the command; command flags follow it.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --output)
+        [ $# -ge 2 ] || { echo "haskoki-demo: --output needs json|text" >&2; return 2; }
+        outmode="$2"; shift 2
+        case "$outmode" in json|text) ;; *) echo "haskoki-demo: --output needs json|text" >&2; return 2 ;; esac
+        ;;
+      --output=*)
+        outmode="${1#--output=}"; shift
+        case "$outmode" in json|text) ;; *) echo "haskoki-demo: --output needs json|text" >&2; return 2 ;; esac
+        ;;
+      --help|-h) help=1; shift ;;
+      --mode)
+        [ $# -ge 2 ] || { echo "haskoki-demo: --mode needs direct|proxy" >&2; return 2; }
+        mode="$2"; shift 2 ;;
+      --mode=*) mode="${1#--mode=}"; shift ;;
+      --profile)
+        [ $# -ge 2 ] || { echo "haskoki-demo: --profile needs smoke|full" >&2; return 2; }
+        profile="$2"; shift 2 ;;
+      --profile=*) profile="${1#--profile=}"; shift ;;
+      demo|check|compare)
+        [ -z "$cmd" ] || { echo "haskoki-demo: one command at a time" >&2; return 2; }
+        cmd="$1"; shift ;;
+      --) shift; break ;;
+      -*) echo "haskoki-demo: unknown flag: $1" >&2; top_help >&2; return 2 ;;
+      *) echo "haskoki-demo: unknown argument: $1" >&2; top_help >&2; return 2 ;;
+    esac
+  done
+  [ -z "$cmd" ] && cmd="demo"
+  # --mode/--profile are meaningless outside check: refuse loudly.
+  if [ "$cmd" != "check" ]; then
+    if [ -n "$mode" ] || [ -n "$profile" ]; then
+      echo "haskoki-demo: $cmd takes no --mode/--profile" >&2
+      return 2
+    fi
+  fi
+  # `<cmd> --help` shows that command's help (bare `--help` is caught
+  # before dispatch and shows the top help).
+  if [ "$help" -eq 1 ]; then
+    case "$cmd" in
+      demo) demo_help ;;
+      check) check_help ;;
+      compare) compare_help ;;
+    esac
+    return 0
+  fi
+  case "$cmd" in
+    demo) cmd_demo "$outmode" ;;
+    check) cmd_check "$outmode" "$mode" "$profile" ;;
+    compare) cmd_compare "$outmode" ;;
+  esac
+}
+
+# Bare `--help` (no command word) prints the top help; `<cmd> --help`
+# prints that command's help. Detect the bare form before dispatch.
+bare_help=0
+saw_cmd=0
+for a in "$@"; do
+  case "$a" in
+    demo|check|compare) saw_cmd=1 ;;
+    --help|-h) bare_help=1 ;;
+  esac
+done
+if [ "$bare_help" -eq 1 ] && [ "$saw_cmd" -eq 0 ]; then
+  top_help
+  exit 0
+fi
+
+main "$@"
+exit $?

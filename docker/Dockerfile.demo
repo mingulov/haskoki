@@ -1,0 +1,196 @@
+# haskoki demo image: self-contained bundle + proxy + checker + entrypoint.
+#
+# Multi-stage build; the bundle is rebuilt INSIDE the image from source
+# with the R2-verified scripts (never COPY a host dist-release/).
+#
+#   Build (from repo root):
+#     docker build -f docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 .
+#     docker build -f docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 \
+#       --build-arg PROXY_REF=v0.2.0 .
+#
+#   Run (runtime scenarios run --network none; the proxy stays on
+#   loopback, which needs no external network):
+#     docker run --rm -v "$PWD/out:/out" haskoki-demo:0.3.0.0 demo
+#     docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
+#       check --mode direct --profile smoke
+#
+# Stages: bundle (existing Dockerfile image, runs scripts/make-release.sh
+# + closure/floor/notices verification); proxy (pinned Rust recipe from
+# scripts/test-proxy-parity.sh, PROXY_REF default a48b60b); checker
+# (pkcs11-check v0.2.2 + pkcs11-tool); runtime (slim: bundle tree +
+# proxy binaries + checker + entrypoint ONLY, no toolchains).
+#
+# Checker profiles and the compare subset are PROVISIONAL (R4/R5 freeze
+# them); the entrypoint help text says so.
+#
+# Build-time network is used for fetches (apt, crates.io, PyPI, git);
+# RUNTIME scenarios run --network none.
+
+# ---------------------------------------------------------------------------
+# Stage: bundle. Rebuild the R2 bundle recipe from a fresh source copy.
+# Base = the existing Dockerfile image (R2 re-pinned id
+# sha256:0ee486d207331df09625f19cceeca3fe63f245477a6374e085e61da04c2bf699).
+# ---------------------------------------------------------------------------
+FROM haskoki-dev:ghc-9.10.3 AS bundle
+
+ENV HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3
+
+# Fresh source copy under the image user's home (the image runs as the
+# non-root dev user; /work keeps the baked tree untouched). Explicit
+# COPY list extends Dockerfile's with the license inputs make-release.sh
+# requires (LICENSE, licenses/); no .dockerignore is needed.
+WORKDIR /home/ubuntu/r3build
+COPY --chown=1000:1000 haskoki.cabal cabal.project cabal.project.freeze Setup.hs ./
+COPY --chown=1000:1000 toolchain.lock toolchain.lock
+COPY --chown=1000:1000 README.md CHANGELOG.md LICENSE ./
+COPY --chown=1000:1000 licenses/ licenses/
+COPY --chown=1000:1000 src/ src/
+COPY --chown=1000:1000 core/ core/
+COPY --chown=1000:1000 ffi/ ffi/
+COPY --chown=1000:1000 cbits/ cbits/
+COPY --chown=1000:1000 test/ test/
+COPY --chown=1000:1000 tests/ tests/
+COPY --chown=1000:1000 spec/ spec/
+COPY --chown=1000:1000 scripts/ scripts/
+COPY --chown=1000:1000 app/ app/
+COPY --chown=1000:1000 tools/ tools/
+COPY --chown=1000:1000 docs/ docs/
+COPY --chown=1000:1000 client/ client/
+
+# R2-verified recipe + read-only re-verification of its outputs
+# (closure gates, glibc floor, notice files). The script fails loudly
+# itself; the assertions below re-check the landed artifacts without
+# touching the script's logic.
+RUN ./scripts/make-release.sh > /tmp/make-release.log 2>&1; rc=$?; \
+      tail -5 /tmp/make-release.log; test $rc -eq 0 \
+    && grep -q '^PASS: make-release.sh' /tmp/make-release.log \
+    && ART=$(echo dist-release/haskoki-*) && test -d "$ART" \
+    && test -f "$ART/lib/libhaskoki.so" \
+    && test -f "$ART/bin/haskoki-ctl" \
+    && test -f "$ART/lib/ossl-modules/legacy.so" \
+    && test "$(ls "$ART"/lib/libHS*.so | wc -l)" -gt 0 \
+    && grep -q '^STATIC: no dynamic libcrypto/libssl' /tmp/make-release.log \
+    && grep -q '^PROVIDER-ORIGIN: ' /tmp/make-release.log \
+    && grep -q '^STATIC: host deps are system-only' /tmp/make-release.log \
+    && grep -q '^glibc floor: GLIBC_' /tmp/make-release.log \
+    && test -f "$ART/licenses/Haskoki-LICENSE" \
+    && test -f "$ART/licenses/OpenSSL-LICENSE.txt" \
+    && test -f "$ART/licenses/GHC-copyright" \
+    && test -f "$ART/licenses/NOTICES.md" \
+    && test -f "$ART/closure/review.txt" \
+    && test -f "$ART/toolchain-record.txt" \
+    && test -f "$ART/INSTALL.md" \
+    && echo "bundle verified: $ART"
+
+# ---------------------------------------------------------------------------
+# Stage: proxy. Pinned-toolchain build of daemon + shim.
+# Recipe EXACTLY per scripts/test-proxy-parity.sh header (canonical build):
+#   rust:1.94-bookworm + apt-get install protobuf-compiler
+#   + cargo build --release, from a pristine checkout at PROXY_REF.
+# git + ca-certificates are fetch-time only (clone + checkout); the
+# BUILD recipe above is the pinned one verbatim.
+# ---------------------------------------------------------------------------
+FROM rust:1.94-bookworm AS proxy
+
+ARG PROXY_REF=a48b60b
+
+# Canonical artifact hashes for the regression pin, quoted from
+# scripts/test-proxy-parity.sh ("Canonical build (the ONLY authoritative
+# hashes)"). Asserted when the build ref resolves to that commit; any
+# other ref records its hashes without asserting.
+ENV PROXY_CANON_COMMIT=a48b60ba54b0163f4999c1e4fc0514bf7dc01681
+ENV PROXY_CANON_DAEMON=260cb245981561291eab4d29a16cb6a4d6f00dca3431f3d583d35364fab0c9e5
+ENV PROXY_CANON_SHIM=8ea85073ce8436ebdc8ee99bce99e70a6d8c34473c28b5a45567c8a26aba1690
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/* \
+    && git clone https://github.com/mingulov/pkcs11-proxy-ng.git /src \
+    && cd /src \
+    && git checkout "$PROXY_REF" \
+    && cargo build --release \
+    && mkdir -p /out/proxy \
+    && cp target/release/pkcs11-proxy-ng \
+         target/release/libpkcs11_proxy_ng_shim.so /out/proxy/ \
+    && COMMIT=$(git rev-parse HEAD) \
+    && { echo "source = https://github.com/mingulov/pkcs11-proxy-ng"; \
+         echo "ref = $PROXY_REF"; \
+         echo "commit = $COMMIT"; \
+         echo "subject = $(git log -1 --format=%s)"; \
+         echo "recipe = rust:1.94-bookworm + apt-get install protobuf-compiler + cargo build --release (scripts/test-proxy-parity.sh header)"; \
+         echo -n "daemon sha256 = "; sha256sum /out/proxy/pkcs11-proxy-ng | awk '{print $1}'; \
+         echo -n "shim sha256 = "; sha256sum /out/proxy/libpkcs11_proxy_ng_shim.so | awk '{print $1}'; \
+       } > /out/proxy/PROVENANCE \
+    && cat /out/proxy/PROVENANCE \
+    && if [ "$COMMIT" = "$PROXY_CANON_COMMIT" ]; then \
+         (cd /out/proxy && echo "$PROXY_CANON_DAEMON  pkcs11-proxy-ng" | sha256sum -c -) \
+         && (cd /out/proxy && echo "$PROXY_CANON_SHIM  libpkcs11_proxy_ng_shim.so" | sha256sum -c -) \
+         && echo "proxy provenance: canonical pair reproduced"; \
+       else \
+         echo "proxy provenance: non-canonical ref, hashes recorded, not asserted"; \
+       fi \
+    && /out/proxy/pkcs11-proxy-ng --version \
+    && nm -D --defined-only /out/proxy/libpkcs11_proxy_ng_shim.so | grep -q " T C_GetFunctionList$" \
+    && nm -D --defined-only /out/proxy/libpkcs11_proxy_ng_shim.so | grep -q " T C_GetInterface$" \
+    && nm -D --defined-only /out/proxy/libpkcs11_proxy_ng_shim.so | grep -q " T C_GetInterfaceList$" \
+    && echo "proxy static checks: daemon runs, shim exports discovery surface"
+
+# ---------------------------------------------------------------------------
+# Stage: checker. pkcs11-check v0.2.2 (venv) + pkcs11-tool (opensc).
+# ---------------------------------------------------------------------------
+FROM ubuntu:26.04 AS checker
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Every package documented: python3 + python3-venv + python3-pip build
+# the checker venv; opensc provides the pkcs11-tool client;
+# ca-certificates lets pip/apt fetch over TLS at build time.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-venv python3-pip opensc ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/p11c \
+    && /opt/p11c/bin/pip install --no-input "pkcs11-check==0.2.2" \
+    && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.2' \
+    && /opt/p11c/bin/pip freeze > /opt/p11c/freeze.txt \
+    && { echo "pkcs11-check = 0.2.2 (PyPI pin)"; \
+         echo -n "python3 = "; python3 --version; \
+         echo -n "opensc = "; dpkg-query -W -f='${Version}' opensc; echo; \
+       } > /opt/p11c/versions.txt \
+    && cat /opt/p11c/versions.txt \
+    && command -v pkcs11-tool
+
+# ---------------------------------------------------------------------------
+# Stage: runtime. Slim: bundle tree + proxy binaries + checker + entrypoint
+# ONLY. No GHC/Cabal/Rust toolchains.
+# ---------------------------------------------------------------------------
+FROM ubuntu:26.04 AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Every package documented: libgmp10 + libffi8 + libnuma1 are the bundle's
+# host runtime libs (R2 native proof); opensc provides pkcs11-tool for the
+# demo and examples; python3 runs the checker venv (/opt/p11c symlinks to
+# /usr/bin/python3, same base image as the checker stage).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libgmp10 libffi8 libnuma1 opensc python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=bundle /home/ubuntu/r3build/dist-release/ /opt/haskoki/dist-release/
+COPY --from=proxy /out/proxy/ /opt/haskoki/proxy/
+COPY --from=checker /opt/p11c/ /opt/p11c/
+COPY docker/haskoki-demo /usr/local/bin/haskoki-demo
+COPY examples/release/ /opt/haskoki/examples/release/
+
+RUN chmod +x /usr/local/bin/haskoki-demo \
+    && test "$(ls -d /opt/haskoki/dist-release/haskoki-* | wc -l)" -eq 1 \
+    && SO=$(echo /opt/haskoki/dist-release/haskoki-*/lib/libhaskoki.so) \
+    && test -f "$SO" \
+    && ldd "$SO" > /tmp/ldd-so.txt 2>&1 \
+    && ! grep -q "not found" /tmp/ldd-so.txt \
+    && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.2' \
+    && command -v pkcs11-tool \
+    && haskoki-demo --help > /dev/null \
+    && echo "runtime self-test: bundle resolves, checker + pkcs11-tool present"
+
+ENTRYPOINT ["/usr/local/bin/haskoki-demo"]
+CMD ["demo"]

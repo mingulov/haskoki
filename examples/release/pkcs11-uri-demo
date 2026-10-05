@@ -1,0 +1,112 @@
+#!/bin/sh
+# examples/release/pkcs11-uri-demo -- second opinion driven by URIs.
+#
+# Reaches the demo token and a fresh EC key through RFC 7512 URI
+# identification (independent of hardcoded label selection): the slot
+# listing yields the token URI, the object listing yields object URIs,
+# and sign/verify select the key through components parsed FROM those
+# URIs (token label, object label, key type). A matching verdict through
+# this second selection path corroborates the entrypoint demo.
+#
+# Why URI-derived instead of literal `pkcs11-tool --uri`: the installed
+# opensc (0.27.0~rc1) refuses `--module` together with `--uri`
+# (verified: "The --module cannot be specified with --uri option"), so
+# a literal object URI cannot address this module. This example drives
+# selection from the URIs the module itself reports.
+#
+# Run (inside the demo image):
+#   docker run --rm -v "$PWD/out:/out" --entrypoint /bin/sh \
+#     haskoki-demo:0.3.0.0 /opt/haskoki/examples/release/pkcs11-uri-demo
+#
+# Expected output (R3 measurement): exit 0, the token URI line, parsed
+# token/object components, one public + one private object, "Signature
+# is valid" for the URI-derived selection, and "uri-demo-ok" with the
+# run dir. (Exact URIs vary per run: fresh key bytes each invocation.)
+set -u
+
+fail() { echo "pkcs11-uri-demo: FAIL: $1" >&2; exit 1; }
+
+n=$(ls -d /opt/haskoki/dist-release/haskoki-* 2>/dev/null | wc -l)
+[ "$n" -eq 1 ] || fail "want exactly one bundle, found $n"
+SO=$(echo /opt/haskoki/dist-release/haskoki-*/lib/libhaskoki.so)
+[ -f "$SO" ] || fail "module missing: $SO"
+command -v pkcs11-tool >/dev/null 2>&1 || fail "pkcs11-tool missing"
+
+out="${HASKOKI_DEMO_OUT:-/out}"
+[ -d "$out" ] && [ -w "$out" ] || fail "output dir missing/unwritable: $out"
+run=$(mktemp -d "$out/uri-demo-$(date -u +%Y%m%dT%H%M%SZ)-$$-XXXXXX") || fail "cannot create run dir"
+chmod 755 "$run" || fail "cannot chmod run dir"
+
+cat > "$run/backend.toml" <<EOF
+schema_version = 1
+profile = "real-crypto"
+[storage]
+kind = "sqlite"
+path = "$run/uri.sqlite"
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+[trace]
+enabled = false
+EOF
+export HASKOKI_CONFIG="$run/backend.toml"
+printf 'abc' > "$run/msg.bin"
+
+echo "--- slot listing (token URI) ---"
+pkcs11-tool --module "$SO" -L > "$run/slots.out" 2> "$run/slots.err" \
+  || fail "slot listing failed"
+TOKEN_URI=$(grep -m1 'uri *: pkcs11:' "$run/slots.out" | sed 's/^ *uri *: //')
+[ -n "$TOKEN_URI" ] || fail "no token URI in slot listing"
+echo "token URI: $TOKEN_URI"
+# Parse URI components. The full URI legitimately percent-encodes the
+# manufacturer space (%20); the components reused as selectors below
+# must carry no escapes (asserted: usable verbatim as flag values).
+URI_TOKEN=$(echo "$TOKEN_URI" | sed 's/;/\n/g' | grep '^token=' | cut -d= -f2)
+URI_SERIAL=$(echo "$TOKEN_URI" | sed 's/;/\n/g' | grep '^serial=' | cut -d= -f2)
+[ "$URI_TOKEN" = "haskoki-demo" ] || fail "token component: $URI_TOKEN"
+echo "$URI_TOKEN$URI_SERIAL" | grep -q '%' && fail "escaped selector bytes"
+echo "token component: label=$URI_TOKEN serial=$URI_SERIAL"
+
+echo "--- keypairgen (label uri-ec) ---"
+pkcs11-tool --module "$SO" --keypairgen --key-type EC:prime256v1 \
+  --label uri-ec --usage-sign -l --pin 1234 > "$run/keygen.out" 2>&1 \
+  || fail "keypairgen failed"
+
+echo "--- object URIs under the token ---"
+pkcs11-tool --module "$SO" -O --token-label "$URI_TOKEN" -l --pin 1234 \
+  > "$run/objects.out" 2> "$run/objects.err" \
+  || fail "object listing failed"
+grep -c 'label: *uri-ec' "$run/objects.out" | grep -q '^2$' \
+  || fail "want public+private uri-ec objects"
+grep 'uri: *pkcs11:' "$run/objects.out" | sed 's/^ *uri: /object URI: /'
+PRIV_URI=$(grep -A6 'Private Key Object' "$run/objects.out" | grep -m1 'uri: *pkcs11:' | sed 's/^ *uri: *//')
+PUB_URI=$(grep -A6 'Public Key Object' "$run/objects.out" | grep -m1 'uri: *pkcs11:' | sed 's/^ *uri: *//')
+[ -n "$PRIV_URI" ] && [ -n "$PUB_URI" ] || fail "object URIs missing"
+# Selection components come FROM the private object URI (second path:
+# nothing hardcoded below except the fixture message and PIN).
+SEL_LABEL=$(echo "$PRIV_URI" | sed 's/;/\n/g' | grep '^object=' | cut -d= -f2)
+SEL_TYPE=$(echo "$PRIV_URI" | sed 's/;/\n/g' | grep '^type=' | cut -d= -f2)
+[ -n "$SEL_LABEL" ] && [ "$SEL_TYPE" = "private" ] \
+  || fail "cannot parse object URI components"
+echo "$SEL_LABEL$SEL_TYPE" | grep -q '%' && fail "escaped selector bytes"
+echo "URI-derived selection: label=$SEL_LABEL type=$SEL_TYPE"
+
+echo "--- sign via URI-derived selection ---"
+pkcs11-tool --module "$SO" -s -m ECDSA-SHA256 \
+  --token-label "$URI_TOKEN" --label "$SEL_LABEL" --type privkey \
+  -l --pin 1234 -i "$run/msg.bin" -o "$run/sig.bin" \
+  > "$run/sign.out" 2> "$run/sign.err" \
+  || fail "sign failed"
+
+echo "--- verify via URI-derived selection ---"
+pkcs11-tool --module "$SO" --verify -m ECDSA-SHA256 \
+  --token-label "$URI_TOKEN" --label "$SEL_LABEL" --type pubkey \
+  -l --pin 1234 -i "$run/msg.bin" --signature-file "$run/sig.bin" \
+  > "$run/verify.out" 2> "$run/verify.err" \
+  || fail "verify failed"
+# Verdict stream varies by opensc release: accept stdout or stderr.
+grep -q 'Signature is valid' "$run/verify.out" "$run/verify.err" 2>/dev/null \
+  || fail "verify verdict missing"
+
+echo "uri-demo-ok: URI-driven sign/verify corroborates the demo ($run)"

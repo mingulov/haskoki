@@ -1,0 +1,29 @@
+#!/bin/sh
+# examples/release/check-smoke -- one-command checker smoke.
+#
+# Runs the provisional smoke profile directly against the bundle module
+# and prints where the machine-readable report landed.
+#
+# Run (inside the demo image):
+#   docker run --rm -v "$PWD/out:/out" --entrypoint /bin/sh \
+#     haskoki-demo:0.3.0.0 /opt/haskoki/examples/release/check-smoke
+# Any arguments pass through to `haskoki-demo check` (e.g. `--mode proxy`).
+#
+# Expected output (R3 measurement; entrypoint prints the run summary):
+#   exit 0, "findings: none", "check-ok: zero findings; report: ..."
+# plus results.json / report.jsonl / report.json under the run dir.
+set -u
+
+mode="direct"
+rest=""
+for a in "$@"; do
+  case "$a" in
+    --mode) mode="__next__";;
+    --mode=*) mode="${a#--mode=}";;
+    *)
+      if [ "$mode" = "__next__" ]; then mode="$a"; else rest="$rest $a"; fi
+      ;;
+  esac
+done
+# shellcheck disable=SC2086
+exec haskoki-demo check --mode "$mode" --profile smoke $rest

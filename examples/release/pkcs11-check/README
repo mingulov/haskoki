@@ -1,0 +1,49 @@
+# Checker profiles and config used by `haskoki-demo check` / `compare`
+
+Files here ship inside the demo image
+(`/opt/haskoki/examples/release/pkcs11-check/`) and are load-bearing:
+the entrypoint sources `profiles.conf` and copies `backend-memory.toml`
+into each run dir. Everything in this directory is PROVISIONAL.
+
+## Profiles (`profiles.conf`)
+
+- `smoke`: offline marker + `-k 'interface or slot or digest or
+  profiles'` (743 tests; zero findings direct and proxied as measured
+  for R3).
+- `full`: offline marker over the whole suite, no `-k` selection
+  (11002 tests; 32 findings direct, 44 findings + 1 crash proxied as
+  measured for R3 — exact ids asserted by
+  `scripts/test-demo-image.sh`).
+- The offline marker is the CI fast-lane marker verbatim: vector-data
+  lanes (`wycheproof`/`acvp`/`cctv`) need fetched data that the offline
+  demo image does not carry; `stress`/`fuzz`/`slow` stay out of the
+  interactive lanes.
+
+## Backend (`backend-memory.toml`)
+
+Memory store, real-crypto OpenSSL engine, no synthetic fallback, trace
+off. The checker manages its own keys per test; direct lanes export it
+as `HASKOKI_CONFIG`, proxy lanes hand it to the daemon. PINs come from
+`P11TEST_PIN`/`P11TEST_SO_PIN` (PUBLIC fixtures 1234/5678, never logged).
+
+## What R4/R5 freeze (do not treat R3 values as final)
+
+- R4: profile selections (smoke/full scope), the disposition of every
+  R3-measured finding (module gap vs oracle drift vs accepted), the
+  frozen checker reports and release-results docs.
+- R5: the compare parity-subset definition (R3 compares all), proxy
+  version qualification (R3 builds the regression pin by default),
+  honest-comparison docs.
+
+## Reproducing the measurements
+
+```
+docker run --rm -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
+  check --mode direct --profile smoke   # exit 0
+docker run --rm -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
+  check --mode direct --profile full    # exit 1, 32 findings listed
+```
+
+Each run keeps `results.json` (checker-native), `report.jsonl`
+(per-test records), `report.json` (entrypoint verdict) and
+`findings.txt` (stable `outcome test-id` rows) under its run dir.
