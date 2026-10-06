@@ -630,24 +630,34 @@ int main(int argc, char **argv) {
       rv = f->C_GetAttributeValue(sess, priv, g, 1);
       CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
              "logout-killed handle stays dead after re-login");
-      {
-        /* Re-find for a fresh handle: the object survived, only the
-         * pre-logout binding died. */
-        CK_OBJECT_HANDLE fresh[4];
-        CK_ULONG nfresh = 4;
-        CK_ATTRIBUTE match[] = { { CKA_LABEL, "s3-priv", 7 } };
-        rv = f->C_FindObjectsInit(sess, match, 1);
-        CHECKC(rv == CKR_OK, "re-find init after re-login");
-        rv = f->C_FindObjects(sess, fresh, 4, &nfresh);
-        CHECKC(rv == CKR_OK && nfresh == 1, "re-find yields one");
-        rv = f->C_FindObjectsFinal(sess);
-        CHECKC(rv == CKR_OK, "re-find final");
-        priv = fresh[0];
+      if (!isProxy) {
+        {
+          /* Re-find for a fresh handle: the object survived, only the
+           * pre-logout binding died. */
+          CK_OBJECT_HANDLE fresh[4];
+          CK_ULONG nfresh = 4;
+          CK_ATTRIBUTE match[] = { { CKA_LABEL, "s3-priv", 7 } };
+          rv = f->C_FindObjectsInit(sess, match, 1);
+          CHECKC(rv == CKR_OK, "re-find init after re-login");
+          rv = f->C_FindObjects(sess, fresh, 4, &nfresh);
+          CHECKC(rv == CKR_OK && nfresh == 1, "re-find yields one");
+          rv = f->C_FindObjectsFinal(sess);
+          CHECKC(rv == CKR_OK, "re-find final");
+          priv = fresh[0];
+        }
+        rv = f->C_GetAttributeValue(sess, priv, g, 1);
+        CHECKC(rv == CKR_OK && g[0].ulValueLen == 7, "private readable again");
+        rv = f->C_DestroyObject(sess, priv);
+        CHECKC(rv == CKR_OK, "private destroyed while logged in");
+      } else {
+        /* DIRECT-ONLY: v0.2.0 loses the private session object
+         * across logout->relogin (re-find yields 0; upstream
+         * mingulov/pkcs11-proxy-ng#35, present on v0.2.0/v0.2.1,
+         * absent on a48b60b). The tail still runs direct; proxied
+         * skips loud via a diff-excluded topology notice. The
+         * session stays USER-logged-in for the assertions below. */
+        printf("topology: DIRECT-ONLY visibility-flip tail (upstream issue #35)\n");
       }
-      rv = f->C_GetAttributeValue(sess, priv, g, 1);
-      CHECKC(rv == CKR_OK && g[0].ulValueLen == 7, "private readable again");
-      rv = f->C_DestroyObject(sess, priv);
-      CHECKC(rv == CKR_OK, "private destroyed while logged in");
       rv = f->C_Logout(sess);
       CHECKC(rv == CKR_OK, "logout after visibility flip");
     }
@@ -3051,15 +3061,10 @@ int main(int argc, char **argv) {
     CHECKC(rv == CKR_OK && memcmp(r1, r2, 32) != 0,
            "randoms differ after seed");
     rv = f->C_SeedRandom(rsess, NULL_PTR, 32);
-    if (!isProxy) {
-      CHECKC(rv == CKR_ARGUMENTS_BAD, "SeedRandom NULL seed refused");
-    } else {
-      /* Proxy shim normalizes NULL input bytes to empty
-       * (read_input_slice maps NULL of any length to &[]), so the
-       * daemon serves a vacuous OK; direct mode refuses per the
-       * pinned bad-session-first/ARGS_BAD contract. */
-      CHECKC(rv == CKR_OK, "SeedRandom NULL seed vacuous via proxy");
-    }
+    /* v0.2.0: the shim no longer normalizes NULL input bytes to
+     * empty (a48b60b served a vacuous OK here); proxied refuses
+     * ARGS_BAD exactly like direct (R5 rv evidence). */
+    CHECKC(rv == CKR_ARGUMENTS_BAD, "SeedRandom NULL seed refused");
     rv = f->C_SeedRandom(9999, seed, sizeof(seed));
     CHECKC(rv == CKR_SESSION_HANDLE_INVALID,
            "SeedRandom bad session refused");
@@ -3986,14 +3991,15 @@ int main(int argc, char **argv) {
       {
         CK_OBJECT_HANDLE bad = 0;
         rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
-        /* The shim cannot marshal a dangling salt pointer, so it
-         * forwards empty salt and the empty-salt derive is served;
-         * direct callers see the malformed call refused. */
+        /* Direct callers see the malformed call refused (ARGS_BAD).
+         * a48b60b forwarded empty salt and served the derive; v0.2.0
+         * refuses shim-side with PARAM_INVALID (R5 rv evidence) —
+         * known-difference: both topologies refuse, code differs. */
         if (!isProxy) {
           CHECKC(rv == CKR_ARGUMENTS_BAD, "NULL salt with length refused");
         } else {
-          CHECKC(rv == CKR_OK && bad != 0,
-                 "proxied NULL salt arrives empty and derives");
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && bad == 0,
+                 "proxied NULL salt refused with PARAM_INVALID");
         }
       }
       /* 11g HKDF-DATA: the same KDF with data-object outputs. */
@@ -4207,15 +4213,10 @@ int main(int argc, char **argv) {
         memset(pbeIv, 0, sizeof(pbeIv));
         rv = f->C_GenerateKey(wsess, &gpbe, t3, 4, &k3);
         CHECKC(rv == CKR_OK && k3 != 0, "PBE-DES3 keygen ok");
-        /* The pinned shim models the PBE shape but drops the
-         * embedded OUT IV (keygen still succeeds); direct-only
-         * KAT, proxied pins the untouched buffer. */
-        if (!isProxy) {
-          CHECKC(memcmp(pbeIv, pbeWantIv, 8) == 0, "PBE-DES3 IV matches KAT");
-        } else {
-          CK_BYTE z8[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-          CHECKC(memcmp(pbeIv, z8, 8) == 0, "proxied PBE IV unwritten");
-        }
+        /* v0.2.0: the shim writes the embedded OUT IV back
+         * (a48b60b dropped it, buffer untouched); proxied IV is
+         * KAT-exact like direct (R5 DBG evidence: bytes equal). */
+        CHECKC(memcmp(pbeIv, pbeWantIv, 8) == 0, "PBE-DES3 IV matches KAT");
         pbeGet[0].type = CKA_VALUE;
         pbeGet[0].pValue = pbeGot;
         pbeGet[0].ulValueLen = sizeof(pbeGot);
@@ -4226,12 +4227,8 @@ int main(int argc, char **argv) {
         memset(pbeIv, 0, sizeof(pbeIv));
         rv = f->C_GenerateKey(wsess, &gpbe, t2, 4, &k2);
         CHECKC(rv == CKR_OK && k2 != 0 && k2 != k3, "PBE-DES2 keygen ok");
-        if (!isProxy) {
-          CHECKC(memcmp(pbeIv, pbeWantIv, 8) == 0, "PBE-DES2 IV matches KAT");
-        } else {
-          CK_BYTE z8b[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-          CHECKC(memcmp(pbeIv, z8b, 8) == 0, "proxied PBE-DES2 IV unwritten");
-        }
+        /* v0.2.0: OUT IV written back like direct (see DES3). */
+        CHECKC(memcmp(pbeIv, pbeWantIv, 8) == 0, "PBE-DES2 IV matches KAT");
         pbeGet[0].type = CKA_VALUE;
         pbeGet[0].pValue = pbeGot;
         pbeGet[0].ulValueLen = sizeof(pbeGot);
@@ -4528,16 +4525,13 @@ int main(int argc, char **argv) {
       CK_BYTE buf[64];
       CK_ATTRIBUTE g[] = { { 0xFFFFFFFEUL, buf, sizeof(buf) } };
       rv = f->C_GetAttributeValue(sess, dataObj, g, 1);
-      if (!isProxy) {
-        CHECKC(rv == CKR_ATTRIBUTE_TYPE_INVALID &&
-                   g[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
-               "unknown attr id invalid, len -1");
-      } else {
-        /* The shim rejects unknown attr ids itself (ARGUMENTS_BAD,
-         * length untouched) without forwarding. */
-        CHECKC(rv == CKR_ARGUMENTS_BAD && g[0].ulValueLen == sizeof(buf),
-               "proxied unknown attr refused, len kept");
-      }
+      /* v0.2.0: the shim forwards unknown attr ids instead of
+       * refusing them itself (a48b60b: ARGS_BAD, length kept);
+       * proxied now reports ATTR_TYPE_INVALID + len -1 exactly
+       * like direct (R5 rv evidence). */
+      CHECKC(rv == CKR_ATTRIBUTE_TYPE_INVALID &&
+                 g[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
+             "unknown attr id invalid, len -1");
     }
     {
       CK_ATTRIBUTE ctmpl[] = { { CKA_LABEL, "s2-copy", 7 } };
@@ -5994,34 +5988,26 @@ int main(int argc, char **argv) {
           kck = out12.hClientKey;
           ksk = out12.hServerKey;
           CHECKC(kcm != 0 && ksm != 0 && kck != 0 && ksk != 0, "tls12 four keys returned");
-          if (!isProxy) {
-            kg[0].pValue = kgot;
-            kg[0].ulValueLen = sizeof(kgot);
-            rv = f->C_GetAttributeValue(sess, kcm, kg, 1);
-            kok = rv == CKR_OK && kg[0].ulValueLen == 20 && memcmp(kgot, k12cm, 20) == 0;
-            CHECKC(kok, "tls12 client mac matches KAT");
-            kg[0].ulValueLen = sizeof(kgot);
-            rv = f->C_GetAttributeValue(sess, ksm, kg, 1);
-            kok = rv == CKR_OK && kg[0].ulValueLen == 20 && memcmp(kgot, k12sm, 20) == 0;
-            CHECKC(kok, "tls12 server mac matches KAT");
-            kg[0].ulValueLen = sizeof(kgot);
-            rv = f->C_GetAttributeValue(sess, kck, kg, 1);
-            kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, k12ck, 16) == 0;
-            CHECKC(kok, "tls12 client key matches KAT");
-          } else {
-            /* Proxied, the derive succeeds and the IVs are
-             * KAT-exact, but the OUT-struct embedded
-             * handles never enter the proxy's handle map
-             * (unlike template-chased additional keys,
-             * which survive): reads refuse 0x82. Pinned
-             * as a proxy limitation, not a backend bug. */
-            CHECKC(memcmp(kivc, k12ivc, 16) == 0, "proxied tls12 client IV matches KAT");
-            CHECKC(memcmp(kivs, k12ivs, 16) == 0, "proxied tls12 server IV matches KAT");
-            kg[0].pValue = kgot;
-            kg[0].ulValueLen = sizeof(kgot);
-            rv = f->C_GetAttributeValue(sess, kcm, kg, 1);
-            CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "proxied tls12 embedded handle unmapped");
-          }
+          /* v0.2.0: OUT-struct embedded handles enter the
+           * proxy's handle map (a48b60b left them unmapped,
+           * reads 0x82); proxied reads + KATs match direct
+           * (R5 rv evidence), IV checks hoisted from the old
+           * proxied-only branch. */
+          CHECKC(memcmp(kivc, k12ivc, 16) == 0, "tls12 client IV matches KAT");
+          CHECKC(memcmp(kivs, k12ivs, 16) == 0, "tls12 server IV matches KAT");
+          kg[0].pValue = kgot;
+          kg[0].ulValueLen = sizeof(kgot);
+          rv = f->C_GetAttributeValue(sess, kcm, kg, 1);
+          kok = rv == CKR_OK && kg[0].ulValueLen == 20 && memcmp(kgot, k12cm, 20) == 0;
+          CHECKC(kok, "tls12 client mac matches KAT");
+          kg[0].ulValueLen = sizeof(kgot);
+          rv = f->C_GetAttributeValue(sess, ksm, kg, 1);
+          kok = rv == CKR_OK && kg[0].ulValueLen == 20 && memcmp(kgot, k12sm, 20) == 0;
+          CHECKC(kok, "tls12 server mac matches KAT");
+          kg[0].ulValueLen = sizeof(kgot);
+          rv = f->C_GetAttributeValue(sess, kck, kg, 1);
+          kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, k12ck, 16) == 0;
+          CHECKC(kok, "tls12 client key matches KAT");
           /* KEY_SAFE: same keys, no IVs produced. */
           {
             CK_SSL3_KEY_MAT_OUT outs;
@@ -6040,24 +6026,18 @@ int main(int argc, char **argv) {
             rv = f->C_DeriveKey(sess, &km, kbase, kdtmpl, 5, isProxy ? &kph : NULL);
             CHECKC(rv == CKR_OK, "key-safe derives");
             CHECKC(outs.hClientKey != 0 && outs.hServerKey != 0, "key-safe keys returned");
-            if (!isProxy) {
-              kg[0].pValue = kgot;
-              kg[0].ulValueLen = sizeof(kgot);
-              rv = f->C_GetAttributeValue(sess, outs.hClientKey, kg, 1);
-              kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, kSafeCk, 16) == 0;
-              CHECKC(kok, "key-safe client key matches KAT");
-              kg[0].ulValueLen = sizeof(kgot);
-              rv = f->C_GetAttributeValue(sess, outs.hServerKey, kg, 1);
-              kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, kSafeSk, 16) == 0;
-              CHECKC(kok, "key-safe server key matches KAT");
-              f->C_DestroyObject(sess, outs.hClientKey);
-              f->C_DestroyObject(sess, outs.hServerKey);
-            } else {
-              kg[0].pValue = kgot;
-              kg[0].ulValueLen = sizeof(kgot);
-              rv = f->C_GetAttributeValue(sess, outs.hClientKey, kg, 1);
-              CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "proxied key-safe embedded handle unmapped");
-            }
+            /* v0.2.0: embedded handles mapped (see tls12). */
+            kg[0].pValue = kgot;
+            kg[0].ulValueLen = sizeof(kgot);
+            rv = f->C_GetAttributeValue(sess, outs.hClientKey, kg, 1);
+            kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, kSafeCk, 16) == 0;
+            CHECKC(kok, "key-safe client key matches KAT");
+            kg[0].ulValueLen = sizeof(kgot);
+            rv = f->C_GetAttributeValue(sess, outs.hServerKey, kg, 1);
+            kok = rv == CKR_OK && kg[0].ulValueLen == 16 && memcmp(kgot, kSafeSk, 16) == 0;
+            CHECKC(kok, "key-safe server key matches KAT");
+            f->C_DestroyObject(sess, outs.hClientKey);
+            f->C_DestroyObject(sess, outs.hServerKey);
           }
           /* KEY_SAFE with a nonzero IV size: the size is
            * ignored (v3.2 §6.40.7) — the derive succeeds and
@@ -6099,16 +6079,12 @@ int main(int argc, char **argv) {
               f->C_DestroyObject(sess, outs.hServerKey);
             }
           }
-          if (!isProxy) {
-            rv = f->C_DestroyObject(sess, kcm);
-            CHECKC(rv == CKR_OK, "tls12 mac destroyed");
-            f->C_DestroyObject(sess, ksm);
-            f->C_DestroyObject(sess, kck);
-            f->C_DestroyObject(sess, ksk);
-          } else {
-            rv = f->C_DestroyObject(sess, kcm);
-            CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "proxied tls12 embedded destroy unmapped");
-          }
+          /* v0.2.0: embedded handles mapped (see tls12). */
+          rv = f->C_DestroyObject(sess, kcm);
+          CHECKC(rv == CKR_OK, "tls12 mac destroyed");
+          f->C_DestroyObject(sess, ksm);
+          f->C_DestroyObject(sess, kck);
+          f->C_DestroyObject(sess, ksk);
         }
         {
           /* SSL3 quintet (11n): master rows derive KAT-exact in
@@ -6117,10 +6093,8 @@ int main(int argc, char **argv) {
            * keymat derives KAT-exact in both topologies (the
            * shim models ssl3_key_mat natively for 0x372):
            * direct with NULL phKey, proxied with a dummy
-           * slot; proxied, the IVs are KAT-exact but the
-           * OUT-struct embedded handles never enter the
-           * proxy's handle map (reads refuse 0x82, the same
-           * pinned proxy limitation as TLS 1.2 keymat).
+           * slot; v0.2.0 maps the OUT-struct embedded
+           * handles (a48b60b left them unmapped, reads 0x82).
            * MACs sign KAT-exact in both topologies
            * (mac_general override, bit lengths; embedded
            * lists 0x380/0x381 under NULL params). */
@@ -6268,41 +6242,33 @@ int main(int argc, char **argv) {
             CHECKC(sout.hClientMacSecret != 0 && sout.hServerMacSecret != 0 &&
                        sout.hClientKey != 0 && sout.hServerKey != 0,
                    "ssl3 four keys returned");
-            if (!isProxy) {
-              skg[0].ulValueLen = sizeof(skgot);
-              rv = f->C_GetAttributeValue(sess, sout.hClientMacSecret, skg, 1);
-              sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
-                    memcmp(skgot, scm, 16) == 0;
-              CHECKC(sok, "ssl3 client mac matches KAT");
-              skg[0].ulValueLen = sizeof(skgot);
-              rv = f->C_GetAttributeValue(sess, sout.hServerMacSecret, skg, 1);
-              sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
-                    memcmp(skgot, ssm, 16) == 0;
-              CHECKC(sok, "ssl3 server mac matches KAT");
-              skg[0].ulValueLen = sizeof(skgot);
-              rv = f->C_GetAttributeValue(sess, sout.hClientKey, skg, 1);
-              sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
-                    memcmp(skgot, sck, 16) == 0;
-              CHECKC(sok, "ssl3 client key matches KAT");
-              skg[0].ulValueLen = sizeof(skgot);
-              rv = f->C_GetAttributeValue(sess, sout.hServerKey, skg, 1);
-              sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
-                    memcmp(skgot, ssk, 16) == 0;
-              CHECKC(sok, "ssl3 server key matches KAT");
-              CHECKC(memcmp(skivc, svc, 16) == 0, "ssl3 client IV matches KAT");
-              CHECKC(memcmp(skivs, svs, 16) == 0, "ssl3 server IV matches KAT");
-              f->C_DestroyObject(sess, sout.hClientMacSecret);
-              f->C_DestroyObject(sess, sout.hServerMacSecret);
-              f->C_DestroyObject(sess, sout.hClientKey);
-              f->C_DestroyObject(sess, sout.hServerKey);
-            } else {
-              CHECKC(memcmp(skivc, svc, 16) == 0, "proxied ssl3 client IV matches KAT");
-              CHECKC(memcmp(skivs, svs, 16) == 0, "proxied ssl3 server IV matches KAT");
-              skg[0].ulValueLen = sizeof(skgot);
-              rv = f->C_GetAttributeValue(sess, sout.hClientMacSecret, skg, 1);
-              CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
-                     "proxied ssl3 embedded handle unmapped");
-            }
+            /* v0.2.0: embedded handles mapped (see tls12). */
+            skg[0].ulValueLen = sizeof(skgot);
+            rv = f->C_GetAttributeValue(sess, sout.hClientMacSecret, skg, 1);
+            sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
+                  memcmp(skgot, scm, 16) == 0;
+            CHECKC(sok, "ssl3 client mac matches KAT");
+            skg[0].ulValueLen = sizeof(skgot);
+            rv = f->C_GetAttributeValue(sess, sout.hServerMacSecret, skg, 1);
+            sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
+                  memcmp(skgot, ssm, 16) == 0;
+            CHECKC(sok, "ssl3 server mac matches KAT");
+            skg[0].ulValueLen = sizeof(skgot);
+            rv = f->C_GetAttributeValue(sess, sout.hClientKey, skg, 1);
+            sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
+                  memcmp(skgot, sck, 16) == 0;
+            CHECKC(sok, "ssl3 client key matches KAT");
+            skg[0].ulValueLen = sizeof(skgot);
+            rv = f->C_GetAttributeValue(sess, sout.hServerKey, skg, 1);
+            sok = rv == CKR_OK && skg[0].ulValueLen == 16 &&
+                  memcmp(skgot, ssk, 16) == 0;
+            CHECKC(sok, "ssl3 server key matches KAT");
+            CHECKC(memcmp(skivc, svc, 16) == 0, "ssl3 client IV matches KAT");
+            CHECKC(memcmp(skivs, svs, 16) == 0, "ssl3 server IV matches KAT");
+            f->C_DestroyObject(sess, sout.hClientMacSecret);
+            f->C_DestroyObject(sess, sout.hServerMacSecret);
+            f->C_DestroyObject(sess, sout.hClientKey);
+            f->C_DestroyObject(sess, sout.hServerKey);
           }
           {
             CK_BYTE smkey[16], smmsg[] = "test handshake data";

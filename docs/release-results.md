@@ -1,4 +1,4 @@
-# Release results — Haskoki 0.3.0.0 demo image (R4)
+# Release results — Haskoki 0.3.0.0 demo image (R4/R5)
 
 What the external `pkcs11-check` oracle reports against the
 release bundle, measured through the demo image on
@@ -23,10 +23,12 @@ and `crashed` are separate counters — findings = failed + crashed):
 | lane | collected | executed | passed | failed | skipped | xfailed | crashed | timeout | exit |
 |---|---|---|---|---|---|---|---|---|---|
 | smoke direct | 743 | 379 | 373 | 0 | 364 | 6 | 0 | 0 | 0 |
-| smoke proxy | 743 | 379 | 374 | 0 | 364 | 5 | 0 | 0 | 0 |
+| smoke proxy (a48b60b, R4) | 743 | 379 | 374 | 0 | 364 | 5 | 0 | 0 | 0 |
+| smoke proxy (v0.2.0, R5) | 743 | 379 | 375 | 0 | 364 | 4 | 0 | 0 | 0 |
 | full direct | 11003 | 6060 | 5058 | 27 | 4943 | 975 | 0 | 0 | 1 |
-| full proxy (standalone r4b) | 11003 | 6063 | 4838 | 39 | 4940 | 1185 | 1 | 0 | 1 |
-| full proxy (driver4) | 11003 | 6064 | 4837 | 40 | 4939 | 1186 | 1 | 0 | 1 |
+| full proxy (standalone r4b, a48b60b) | 11003 | 6063 | 4838 | 39 | 4940 | 1185 | 1 | 0 | 1 |
+| full proxy (driver4, a48b60b) | 11003 | 6064 | 4837 | 40 | 4939 | 1186 | 1 | 0 | 1 |
+| full proxy (v0.2.0, R5, 2 samples identical) | 11003 | 6060 | 4884 | 25 | 4943 | 1151 | 0 | 0 | 1 |
 | cctv vectors direct | 1365 | 1365 | 1364 | 0 | 0 | 1 | 0 | 0 | 0 |
 | full direct + vectors | 11711 | 6776 | 5772 | 27 | 4935 | 977 | 0 | 0 | 1 |
 
@@ -41,18 +43,23 @@ summary does not report per-test body execution, so true
 executed-test count is `unknown`; phase detail comes from the
 jsonl census (R4 report §2).
 
-Proxy full carries 39 stable failed + 1 stable crash + 2
-timing-flaky session-visibility ids (`test_verify_in_ro_session`,
-`test_open_session_is_public`), each independently passed or
-failed per run: r4b samples show 40 findings (pair passed),
-driver4 shows 41 (`verify_in_ro` failed plus one skip-to-xfail
-shift). The proxy counters above are complete per-sample
-snapshots — passed/skipped/xfailed shift with the flaky ids, so
-no cross-sample "exact" claim is made for them. Compare
-direct-vs-proxy: 238 stable diff lines + 0–4 classified flaky
-(r4b sample 240 with skip pair both; driver4 sample 240 the
-same) + 12 shared findings. (R5 re-qualifies the 5 flaky ids
-against the frozen parity subset.)
+Direct rows are pin-independent: the v0.2.0 image reproduces
+the exact R4 direct summaries and the identical 27-finding set
+(backend unchanged; verified diff-empty).
+
+Proxy full on v0.2.0 carries 25 failed + 0 crashed. The
+2 historical failed-pair ids (`test_verify_in_ro_session`,
+`test_open_session_is_public`) now PASS as R5 §4
+stable-eligible and sit OUTSIDE the 25 findings (both passed
+in both R5 full samples, as in all R4 rc1 samples — which
+does not prove fixed; any re-flip fails the gate).
+The proxy counters above are complete per-sample snapshots.
+Compare direct-vs-proxy on v0.2.0 (parity subset FROZEN in
+R5): 188 exclusion lines in 7 reasoned families, ZERO allowed
+variants (all 5 R4 flaky ids re-qualified stable-eligible in
+R5 §4) + 25 shared findings, zero proxy-only findings.
+(R4 a48b60b numbers retained above for the pin delta: 40/41
+findings, including one crash, 238 diffs, 12 shared.)
 
 Counting model: the checker's `results.json` summary.
 `units[].tests` lists non-passed outcomes only. Unknown outcomes
@@ -72,13 +79,19 @@ attributions from `docs/pkcs11-oracle-triage.md` §T-M06):
 2. Wrong-key-type negatives accepted (`CKR_OK` instead of
    rejection) on BLAKE2B-HMAC message sign/verify — no
    `KeyMatrix` BLAKE2B rows (provider matrix gap,
-   F-BLAKE2B-KEYTYPE); proxied `_GENERAL` variants xfail earlier
-   (lane divergence).
-3. Proxy-only NULL-acceptance: NULL pointer + nonzero length
-   accepted for HKDF salt/info, EDDSA context, CONCATENATE base
-   data, `CKA_ALLOWED_MECHANISMS`; NULL length pointers leave
-   encrypt/decrypt operations active.
-4. Proxy-only PBE: generated IV reads back as 8 zero bytes.
+   F-BLAKE2B-KEYTYPE) — direct + proxy (all 16 shared on
+   v0.2.0; the a48b60b `_GENERAL` lane divergence is gone).
+3. Proxy message-init validation (v0.2.0, subset-excluded):
+   IV-shaped message params refused with `0x71` for 153 tests
+   the backend serves (upstream
+   `mingulov/pkcs11-proxy-ng#39`, repro + 3-lane proof in R5
+   report §2); proxied Blowfish fully inoperative through the
+   same advertised-but-rejected shape (20 tests, embedded
+   catalog lacks `0x1094`, checker lanes run embedded-only).
+4. Proxy derive/template validation deltas (v0.2.0,
+   subset-excluded): TLS key-and-mac derive `0x71` (×2),
+   WTLS premaster `0x71` (×3), two boundary
+   check-order inversions (×2) — reasons in R5 report §1.
 5. `C_AsyncGetID` error tests fail on a CHECKER probe defect,
    not provider behavior: the child probe passes a `c_char`
    buffer where the declared signature requires `POINTER
@@ -86,10 +99,18 @@ attributions from `docs/pkcs11-oracle-triage.md` §T-M06):
    module call (reproduced in-memory; R4 report §6.1 D4) —
    direct + proxy, native `failed` verdicts kept.
 
-Fixed by the rc1 oracle (gone vs 0.2.2): CBC message singles ×4
-(oracle recipe gap F-CBC-IV) and recover ×3 (oracle template gap
-F-RECOVER-ATTRS) — 7 findings removed on both lanes with zero
-retained-id churn.
+Fixed by the v0.2.0 proxy (gone vs a48b60b, 27 findings +
+crash): NULL-acceptance ×5 + NULL op-termination ×8,
+PBE zero-IV ×9, session-visibility stable ×1,
+AES-GCM-wrap crash ×1, TLS/key/mac/safe derive ×4
+(three now pass both lanes, `tls_key_and_mac_derive`
+xfails on `0x71`) — zero proxy-only findings remain (25
+proxy = 25 shared; v0.2.0 newly fails the GCM-message ×5
+and BLAKE2B-`_GENERAL` ×8 that direct fails, all shared).
+Fixed by the rc1 oracle (gone
+vs 0.2.2): CBC message singles ×4 (F-CBC-IV) and recover
+×3 (F-RECOVER-ATTRS) — 7 findings removed on both lanes
+with zero retained-id churn.
 
 ## Profiles (FROZEN in R4)
 
@@ -126,8 +147,9 @@ checker manages its own keys in a per-run memory store).
   `--slot` is a 0-based index into token-present slots —
   `--slot 1` fails with that hint).
 - Checker `pkcs11-check 0.2.3` (PyPI pin), Python 3.14.4,
-  opensc `0.27.0~rc1-1`, proxy `a48b60b` (daemon/shim hashes in
-  `environment.json`).
+  opensc `0.27.0~rc1-1`, proxy `v0.2.0` (tag `v0.2.0` =
+  `1755403a…`; daemon/shim hashes in `environment.json`;
+  R4 rows above retain the superseded `a48b60b` pin).
 - OS/arch: Ubuntu 26.04 container, x86_64.
 
 ## Reproduce
@@ -144,11 +166,11 @@ docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
   check --mode proxy --profile full
 docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 compare
 # Full gate (rebuilds the image; asserts the offline finding sets —
-# smoke zero-findings, direct exact-27, proxy stable-40 core + flaky
-# classification, compare 238 stable + shared-12 — plus exits,
+# smoke zero-findings, direct exact-27, proxy exact-25, compare
+# exact-188 + shared-25 (zero variants anywhere) — plus exits,
 # verdicts, and doctor/help/version gates; vector rows and full
 # native counters are separate probe receipts, not driver asserts):
-HASKOKI_DEMO_TEST_OUT=/tmp/r4-driver sh scripts/test-demo-image.sh
+HASKOKI_DEMO_TEST_OUT=/tmp/r5-driver sh scripts/test-demo-image.sh
 ```
 
 Each run dir keeps the raw reports unedited (`results.json`,
@@ -161,34 +183,41 @@ subset: `results.json`, `report.jsonl`, `test.log`,
 `backend.toml` — no `report.json`/`findings.txt`, which are
 entrypoint products.)
 
-## Finding triage (condensed; full text in the R4 report §6)
+## Finding triage (condensed; R4 full text in its report §6, R5 in §1)
 
-Direct 27 (4 families): GCM-shape ×7; HOTP-params ×2; BLAKE2B
-wrong-key-type ×16; async child-result ×2 (new). Proxy 40 (9
-families): NULL-accepted ×5; session-visibility 1 stable (+2
-flaky ids, passed in rc1 samples); counted AES-GCM-wrap crash ×1;
-HOTP ×2; BLAKE2B non-GENERAL ×8; NULL op-termination ×8; PBE
-zero-IV ×9; TLS/key/mac/safe derive ×4; async ×2. Shared
-direct∩proxy: 12 (2 async + 2 HOTP + 8 BLAKE2B).
+Direct 27 (4 families, identical set R4→R5): GCM-shape ×7;
+HOTP-params ×2; BLAKE2B wrong-key-type ×16; async child-result
+×2. Proxy on v0.2.0: 25, all shared, zero proxy-only (async ×2;
+GCM-message ×5; HOTP ×2; BLAKE2B ×16). Compare exclusions (188,
+frozen subset): message-init `0x71` ×153 (upstream #39);
+Blowfish catalog ×20; TLS-derive ×2; WTLS-premaster ×3;
+boundary check-order ×2; GMAC direct-only ×2; proxy-better
+spec-code inversions ×6 — per-id reasons in R5 report §1.
+(R4 a48b60b for the delta: proxy 40 in 9 families, 238 diffs,
+12 shared.)
 
-Skip/xfail causes, one model (jsonl call-record census, direct:
-4,876 plain in 85 groups + 963 wasxfail; proxy: 4,873 + 1,173;
-setup 67 plain + 12 xfail both lanes): not-advertised 1859;
-registered-elsewhere 939; params-not-required 710; registry
-negatives needing secret-key keygen 283+196; derive negatives
-144; unsupported-by-module 138+111; no-KAT-vectors (persisted
-post-fetch; mechanism-vs-mapping ambiguity) 90; generic-secret
-88; DSA domain params 54; no-objects 23; tail 241 (73 groups).
-Setup: destructive-gated 55, edwards setup-xfail 12, empty-param
-5, limbo-missing 3, DigestXof-absent 4. wasxfail top: `CKA_LOCAL`
-49, unwrap suites, keygen-rejected suites. Proxy-only xfail delta
-(+210): BLAKE2B-HMAC, BLOWFISH, AES-GMAC, DES, AES-GCM-wrap.
+Skip/xfail causes, one model (R5 jsonl census on v0.2.0 lanes;
+direct table byte-identical to R4): direct 4,876 plain in 85
+groups + 963 wasxfail; proxy 4,876 plain (same table) + 1,139
+wasxfail; setup 67 plain + 12 xfail both lanes.
+not-advertised 1859; registered-elsewhere 939;
+params-not-required 710; registry negatives needing secret-key
+keygen 283+196; derive negatives 144; unsupported-by-module
+138+111; no-KAT-vectors (persisted post-fetch;
+mechanism-vs-mapping ambiguity) 90; generic-secret 88; DSA
+domain params 54; no-objects 23; tail 241 (73 groups). Setup:
+destructive-gated 55, edwards setup-xfail 12, empty-param 5,
+limbo-missing 3, DigestXof-absent 4. wasxfail top (identical
+both lanes): `CKA_LOCAL` 49, unwrap suites, keygen-rejected
+suites. Proxy-only xfail delta (+176 over direct): message-init
+`0x71` family, Blowfish, TLS/WTLS/boundary validation.
 
-Core dumps: direct 4, all `ffi_length` hostile-probe
-grandchildren (crashing is the probe's design; each maps to an
-EXTENDED-pass, `crashed=0`); proxy 21 = 19 identical probes + 2
-counted AES-GCM worker crashes (the `crashed=1` verdict's
-counterpart).
+Core dumps: `crashed=0` verdicts both lanes on v0.2.0 (the two
+counted AES-GCM worker crashes are gone). The
+hostile-probe-grandchildren mechanism (R4 §6.5: crashing is the
+probe's design, each maps to EXTENDED-pass) stands by
+reference; no counted-crash counterpart exists to explain on
+this pin, so no recount was run.
 
 ## Vector-data runs (§6)
 
@@ -362,3 +391,9 @@ run two checker lanes concurrently (R3d timing sensitivity).
   pin (fetch/CCTV/nonet-vector/full-with-vectors evidence is
   rc1-measured, transferred by verified checker source
   identity).
+- Update (R5): parity subset frozen (188 exclusions, zero
+  variants, §1 of the R5 report), the 5 R4 flaky ids
+  re-qualified stable-eligible (R5 §4), proxy re-pinned
+  `a48b60b` → `v0.2.0` and qualified (parity 49 holds / 40
+  skips + full checker lanes, R5 §2). Still no engine
+  behavior change of any kind.

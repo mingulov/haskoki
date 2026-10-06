@@ -16,12 +16,14 @@
 #
 # Stages: bundle (existing Dockerfile image, runs scripts/make-release.sh
 # + closure/floor/notices verification); proxy (pinned Rust recipe from
-# scripts/test-proxy-parity.sh, PROXY_REF default a48b60b); checker
+# scripts/test-proxy-parity.sh, PROXY_REF default v0.2.0); checker
 # (pkcs11-check v0.2.3 + pkcs11-tool); runtime (slim: bundle tree +
 # proxy binaries + checker + entrypoint ONLY, no toolchains).
 #
-# Checker profiles are FROZEN (R4); the compare subset stays PROVISIONAL
-# (R5 freezes it); the entrypoint help text says so.
+# Checker profiles are FROZEN (R4); the compare parity subset is FROZEN
+# (R5; classified by the shipped examples/release/compare-classify
+# wrapper, enforced by scripts/test-demo-image.sh); the entrypoint
+# help text says so.
 #
 # Build-time network is used for fetches (apt, crates.io, PyPI, git);
 # RUNTIME scenarios run --network none.
@@ -92,15 +94,21 @@ RUN ./scripts/make-release.sh > /tmp/make-release.log 2>&1; rc=$?; \
 # ---------------------------------------------------------------------------
 FROM rust:1.94-bookworm AS proxy
 
-ARG PROXY_REF=a48b60b
+ARG PROXY_REF=v0.2.0
 
-# Canonical artifact hashes for the regression pin, quoted from
+# Canonical artifact hashes for the release pin, quoted from
 # scripts/test-proxy-parity.sh ("Canonical build (the ONLY authoritative
 # hashes)"). Asserted when the build ref resolves to that commit; any
 # other ref records its hashes without asserting.
-ENV PROXY_CANON_COMMIT=a48b60ba54b0163f4999c1e4fc0514bf7dc01681
-ENV PROXY_CANON_DAEMON=260cb245981561291eab4d29a16cb6a4d6f00dca3431f3d583d35364fab0c9e5
-ENV PROXY_CANON_SHIM=8ea85073ce8436ebdc8ee99bce99e70a6d8c34473c28b5a45567c8a26aba1690
+# R5: pin is pkcs11-proxy-ng v0.2.0 (tag v0.2.0 = commit 1755403a…;
+# parity 49 holds / 40 skips; checker-lane qualification + known
+# deltas recorded in the R5 report before this pin commits).
+# v0.2.1 was attempted and REJECTED (upstream #35 visibility loss,
+# #36 cert-find hole, #37 daemon death on message params — the last
+# blocks all full proxy checker lanes).
+ENV PROXY_CANON_COMMIT=1755403adb6e265f094a888f27db4fe9bda17cb6
+ENV PROXY_CANON_DAEMON=8b7def0f128a3e47543c91b78b7a2c37a9ee1edb37916f8dc4a15147f3a1ae23
+ENV PROXY_CANON_SHIM=cb22c7e525c6b20c47c5e622b343dc2ceb8f39adb5c33180783264f20ca8f820
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git ca-certificates protobuf-compiler \
@@ -112,6 +120,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && mkdir -p /out/proxy \
     && cp target/release/pkcs11-proxy-ng \
          target/release/libpkcs11_proxy_ng_shim.so /out/proxy/ \
+    && cp LICENSE-APACHE LICENSE-MIT /out/proxy/ \
     && COMMIT=$(git rev-parse HEAD) \
     && { echo "source = https://github.com/mingulov/pkcs11-proxy-ng"; \
          echo "ref = $PROXY_REF"; \
@@ -192,8 +201,10 @@ RUN chmod +x /usr/local/bin/haskoki-demo \
     && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.3$' \
     && command -v pkcs11-tool \
     && test -f /etc/ssl/certs/ca-certificates.crt \
+    && test -f /opt/haskoki/proxy/LICENSE-APACHE \
+    && test -f /opt/haskoki/proxy/LICENSE-MIT \
     && haskoki-demo --help > /dev/null \
-    && echo "runtime self-test: bundle resolves, checker + pkcs11-tool + CA store present"
+    && echo "runtime self-test: bundle resolves, checker + pkcs11-tool + CA store + proxy licenses present"
 
 ENTRYPOINT ["/usr/local/bin/haskoki-demo"]
 CMD ["demo"]

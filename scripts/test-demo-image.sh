@@ -4,9 +4,12 @@
 # Builds the self-contained demo image, then proves every entrypoint
 # contract: expected tag/digest shape, demo verifications, check lanes
 # (smoke/full x direct/proxy, all under --network none; direct
-# byte-exact, proxy stable-core + classified flaky), compare diff
-# (under --network none; stable-core + classified flaky), help texts +
-# usage-error matrix + examples + JSON purity, arbitrary-UID rerun,
+# byte-exact, proxy stable-core strict), compare diff
+# (under --network none; frozen R5 parity subset: 188 exclusions,
+# strict — no flaky variance allowance) + the shipped
+# compare-classify wrapper leg (in-image ok + drift controls),
+# help texts + usage-error matrix + examples (incl. proxy-example
+# 5/5) + JSON purity, arbitrary-UID rerun,
 # --network none demo rerun (loopback proxy stays up), glibc floor over
 # bundle + proxy + venv ELF, and records the image digest plus a layer
 # note on reproducibility.
@@ -55,20 +58,22 @@ latest_run() {
   ls -dt "$OUT"/$1-* 2>/dev/null | head -1
 }
 
-# Stable-core + classified-flaky assertion (R3d disposition for the
-# proxy-lane timing flake; evidence in task-R3-report.md section 9.8).
-# $1 = label, $2 = expected stable-core file, $3 = actual file,
-# $4.. = allowed flaky variant lines (exact whole lines).
-# Passes iff actual == stable core + a subset of the allowed variants
-# (each at most once, order of the stable lines preserved), compared
-# BYTE-exact (line terminators included: CRLF or a missing final LF
-# fails); anything else — a missing stable line, an unexpected line,
-# a flaky id in an undemonstrated form — fails loudly with a diff.
+# Strict byte-exact set assertion (R5 section 4: the v0.2.0 freeze
+# classifies every id as stable-eligible, so ZERO flaky variants are
+# allowed — any variance fails loud and re-opens section 4 with
+# current-pin evidence; the R3d allowance it replaces is recorded in
+# task-R3-report.md section 9.8).
+# $1 = label, $2 = expected file, $3 = actual file. No $4.. accepted.
+# Passes iff actual == expected line-for-line, compared BYTE-exact
+# (line terminators included: CRLF or a missing final LF fails);
+# anything else — a missing line, an unexpected line — fails loudly
+# with a diff.
 check_stable_core() {
   label="$1"; exp="$2"; act="$3"; shift 3
-  python3 - "$label" "$exp" "$act" "$@" <<'PY' || fail "$label differs outside the classified flaky set"
+  [ $# -eq 0 ] || fail "$label: check_stable_core takes no variant args (R5 strict)"
+  python3 - "$label" "$exp" "$act" <<'PY' || fail "$label differs from the frozen stable set"
 import difflib, sys
-label, exp, act, allowed = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+label, exp, act = sys.argv[1], sys.argv[2], sys.argv[3]
 raw_exp = open(exp, "rb").read()
 raw_act = open(act, "rb").read()
 try:
@@ -77,16 +82,10 @@ try:
 except UnicodeDecodeError as e:
     print("%s: non-UTF8 bytes: %s" % (label, e))
     sys.exit(1)
-allowed_set = set(allowed)
-flaky = [l for l in got if l in allowed_set]
-stable = [l for l in got if l not in allowed_set]
-if len(set(flaky)) != len(flaky):
-    print("%s: duplicate flaky line" % label)
-    sys.exit(1)
-if stable != want:
-    print("%s: stable core differs:" % label)
-    for l in difflib.unified_diff(want, stable, "expected-stable",
-                                  "actual-minus-flaky", lineterm=""):
+if got != want:
+    print("%s: stable set differs:" % label)
+    for l in difflib.unified_diff(want, got, "expected-stable",
+                                  "actual", lineterm=""):
         print(l)
     sys.exit(1)
 # Byte-exactness: the entrypoint writes LF-terminated lines, so the
@@ -100,9 +99,8 @@ canon_exp = ("\n".join(want) + "\n").encode("utf-8") if want else b""
 if raw_exp != canon_exp:
     print("%s: expected file itself is not LF-canonical" % label)
     sys.exit(1)
-print("%s: stable core holds (%d lines, byte-exact) + %d classified flaky%s" % (
-    label, len(want), len(flaky),
-    (": " + ", ".join(sorted(set(flaky)))) if flaky else " (none this run)"))
+print("%s: stable set holds (%d lines, byte-exact, zero variants allowed)" % (
+    label, len(want)))
 PY
 }
 
@@ -177,11 +175,13 @@ run_check proxy smoke 0
 grep -q 'findings: none' "$OUT/check-proxy-smoke.log" \
   || fail "smoke/proxy summary marker missing"
 
-# Full lanes exit 1 with exact finding sets (R4: 27 direct / 40 proxy-core /
-# 238 diff-core + 12 shared on checker 0.2.3; triaged in task-R4-report.md
-# section 6). Direct is byte-exact (deterministic across runs).
-# Proxy asserts a stable 40-line core + 2 classified timing-flaky ids (0.2.3)
-# (R3d, report section 9.8); any other line fails loudly.
+# Full lanes exit 1 with exact finding sets (R5 on proxy v0.2.0: 27
+# direct / 25 proxy-core / 188 diff-core + 25 shared on checker 0.2.3;
+# triaged in task-R5-report.md sections 1/4/6). Direct is byte-exact
+# (deterministic across runs; identical set to R4 — backend unchanged).
+# Proxy asserts a stable 25-line core exactly (strict, codex I4 —
+# the failed pair's historical {pass, fail} bound is NOT suppressed);
+# any other line fails loudly.
 run_check direct full 1
 RUN_DIR=$(latest_run "check-direct-full")
 cat > "$OUT/exp-full-direct.txt" <<'EOF'
@@ -222,57 +222,52 @@ echo "check direct/full: exact 27 findings match"
 run_check proxy full 1
 RUN_DIR=$(latest_run "check-proxy-full")
 cat > "$OUT/exp-full-proxy.txt" <<'EOF'
-crashed test_authenticated_wrap.py::TestAuthenticatedWrap::test_aes_gcm_authenticated_wrap_generated_iv_and_tag
-failed ckr/test_ckr_object.py::TestCreateObjectErrors::test_allowed_mechanisms_null_pointer_nonzero_length
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
-failed security/test_ffi_length_boundary.py::TestEddsaNullContext::test_eddsa_null_context_data
-failed security/test_ffi_length_boundary.py::TestHkdfNullInfo::test_hkdf_null_info
-failed security/test_ffi_length_boundary.py::TestMechanismNullInnerParams::test_hkdf_null_salt
-failed security/test_ffi_length_boundary.py::TestSimpleKdfNullData::test_concat_base_data_null
-failed test_access.py::TestLoginStates::test_public_session_no_private_keys
+failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_aes_gcm_generated_iv_writeback
+failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_decrypt_aes_gcm
+failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_multipart_aes_gcm
+failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[AES_GCM]
+failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[AES_GCM]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[HOTP]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[HOTP]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC]
+failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_256_HMAC]
+failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_256_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_384_HMAC]
+failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_512_HMAC]
+failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_160_HMAC]
+failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_256_HMAC]
+failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_256_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC]
+failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
-failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-input]
-failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-length]
-failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-update-input]
-failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-update-length]
-failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[encrypt-input]
-failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[encrypt-length]
-failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[encrypt-update-input]
-failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[encrypt-update-length]
-failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_MD5_CAST128_CBC]
-failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_MD5_CAST3_CBC]
-failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_MD5_CAST_CBC]
-failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_MD5_DES_CBC]
-failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_SHA1_CAST128_CBC]
-failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_SHA1_RC2_128_CBC]
-failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_SHA1_RC2_40_CBC]
-failed test_pbe.py::TestPBESHA1DES2::test_generate_key_writes_init_vector
-failed test_pbe.py::TestPBESHA1DES3::test_generate_key_writes_init_vector
-failed test_tls12.py::TestTLS10PreMasterKeyGen::test_tls_key_and_mac_derive
-failed test_tls12.py::TestTLS12KeyAndMacDerive::test_key_and_mac_derive
-failed test_tls12.py::TestTLS12KeyAndMacDerive::test_key_safe_derive
-failed test_tls12.py::TestTLS12KeyAndMacDerive::test_key_safe_derive_ignores_iv_size_request
+failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
 EOF
-[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 40 ] || fail "driver: want 40 stable-core proxy findings"
+[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 25 ] || fail "driver: want 25 stable-core proxy findings"
+# R5 strict (codex I4): the failed pair's {pass, fail} bound is
+# historical (older pin) — v0.2.0 never demonstrated the flip, so
+# no failure form is suppressed here; any variance fails loud and
+# re-opens §4 with current-pin evidence.
 check_stable_core "check proxy/full findings" "$OUT/exp-full-proxy.txt" \
-  "$RUN_DIR/findings.txt" \
-  "failed test_ro_session.py::TestROSessionOperations::test_verify_in_ro_session" \
-  "failed test_session_state_machine.py::TestLoginStateTransitions::test_open_session_is_public"
+  "$RUN_DIR/findings.txt"
 
 # ---------------------------------------------------------------------------
 # 4. compare: exit 1 with a stable-core diff + exact shared set.
-# The diff asserts a stable 238-line core + 4 classified timing-flaky (0.2.3)
-# lines (R3d, report section 9.8); the shared set stays byte-exact.
+# R5 parity-subset freeze (proxy v0.2.0): the diff asserts the
+# 188-line exclusion core exactly (7 families: message-init 0x71
+# x153, blowfish catalog x20, tls12-derive x2, wtls-premaster x3,
+# boundary-order x2, GMAC direct-only x2, proxy-better inversions
+# x6 — reasons in task-R5-report.md section 1); the 25-line shared
+# set stays byte-exact. Parity-eligible = every other collected id
+# (default-eligible; the freeze is this exclusion list, not an 11k
+# allowlist). Flaky ids assert their measured v0.2.0 verdicts with
+# NO variance allowance (strict, codex I4 — historical bounds in
+# R5 §4 would mask a pin regression if suppressed).
 # ---------------------------------------------------------------------------
 note "compare (expect exit 1 with exact diff)"
 timeout -s KILL "$STEP_TIMEOUT" docker run --rm --network none -v "$OUT:/out" "$TAG" \
@@ -282,270 +277,82 @@ rc=$?
 RUN_DIR=$(latest_run compare)
 [ -n "$RUN_DIR" ] && [ -f "$RUN_DIR/report.json" ] \
   || fail "compare report.json missing"
-cat > "$OUT/exp-diff.txt" <<'EOF'
-skipped passed ckr/test_ckr_digest.py::TestDigestInitErrors::test_mechanism_param_invalid
-passed failed ckr/test_ckr_object.py::TestCreateObjectErrors::test_allowed_mechanisms_null_pointer_nonzero_length
-skipped passed ckr/test_ckr_sign.py::TestSignInitErrors::test_mechanism_param_invalid
-passed skipped security/test_arithmetic_overflow.py::TestGcmDecryptUpdateAccumulation::test_gcm_decrypt_update_accumulation_does_not_crash
-passed failed security/test_ffi_length_boundary.py::TestEddsaNullContext::test_eddsa_null_context_data
-passed failed security/test_ffi_length_boundary.py::TestHkdfNullInfo::test_hkdf_null_info
-passed failed security/test_ffi_length_boundary.py::TestMechanismNullInnerParams::test_hkdf_null_salt
-passed skipped security/test_ffi_length_boundary.py::TestMessageApiLengthBoundary::test_sign_message_isize_input_len[isize_max]
-passed skipped security/test_ffi_length_boundary.py::TestMessageApiLengthBoundary::test_sign_message_isize_input_len[isize_max_plus_1]
-passed skipped security/test_ffi_length_boundary.py::TestMessageApiLengthBoundary::test_verify_message_isize_input_len[data_len-isize_max]
-passed skipped security/test_ffi_length_boundary.py::TestMessageApiLengthBoundary::test_verify_message_isize_input_len[data_len-isize_max_plus_1]
-passed skipped security/test_ffi_length_boundary.py::TestMessageApiLengthBoundary::test_verify_message_isize_input_len[signature_len-isize_max]
-passed skipped security/test_ffi_length_boundary.py::TestMessageApiLengthBoundary::test_verify_message_isize_input_len[signature_len-isize_max_plus_1]
-passed failed security/test_ffi_length_boundary.py::TestSimpleKdfNullData::test_concat_base_data_null
-passed skipped security/test_field_size_boundary.py::TestGenerateKeyValueLenTruncation::test_aes_keygen_value_len_truncation
-passed skipped security/test_field_size_boundary.py::TestRsaModulusBitsOversizedValue::test_rsa_modulus_bits_oversized_value
-passed skipped security/test_scalar_attr_length_extended.py::TestRsaPrivatePartOversize::test_rsa_private_part_wild_oversized_in_create[exponent-1]
-passed skipped security/test_scalar_attr_length_extended.py::TestRsaPrivatePartOversize::test_rsa_private_part_wild_oversized_in_create[prime-1]
-passed skipped security/test_scalar_attr_length_extended.py::TestRsaPrivatePartOversize::test_rsa_private_part_wild_oversized_in_create[prime-2]
-passed skipped security/test_scalar_attr_length_extended.py::TestRsaPublicKeyAttrOverlong::test_rsa_pub_attr_wild_oversized_in_create[modulus]
-passed skipped security/test_scalar_attr_length_extended.py::TestRsaPublicKeyAttrOverlong::test_rsa_pub_attr_wild_oversized_in_create[public-exponent]
-passed skipped security/test_scalar_attr_length_extended.py::TestWildOversizedAttrInCreate::test_wild_oversized_bool_attr
-passed skipped security/test_scalar_attr_length_extended.py::TestWildOversizedAttrInCreate::test_wild_oversized_ulong_attr
-passed failed test_access.py::TestLoginStates::test_public_session_no_private_keys
-skipped crashed test_authenticated_wrap.py::TestAuthenticatedWrap::test_aes_gcm_authenticated_wrap_generated_iv_and_tag
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_boundary_lengths[maximum-BLAKE2B-160]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_boundary_lengths[maximum-BLAKE2B-256]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_boundary_lengths[maximum-BLAKE2B-384]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_boundary_lengths[maximum-BLAKE2B-512]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_boundary_lengths[minimum-BLAKE2B-160]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_boundary_lengths[minimum-BLAKE2B-256]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_boundary_lengths[minimum-BLAKE2B-384]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_boundary_lengths[minimum-BLAKE2B-512]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_rejects_tampered_mac[BLAKE2B-160]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_rejects_tampered_mac[BLAKE2B-256]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_rejects_tampered_mac[BLAKE2B-384]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_rejects_tampered_mac[BLAKE2B-512]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_rejects_wrong_length_mac[BLAKE2B-160]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_rejects_wrong_length_mac[BLAKE2B-256]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_rejects_wrong_length_mac[BLAKE2B-384]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_rejects_wrong_length_mac[BLAKE2B-512]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_truncates[BLAKE2B-160]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_truncates[BLAKE2B-256]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_truncates[BLAKE2B-384]
-passed skipped test_blake2.py::TestBlake2bKeyed::test_blake2b_hmac_general_truncates[BLAKE2B-512]
-passed skipped test_blowfish.py::TestBlowfishEncryption::test_blowfish_cbc_different_ivs
-passed skipped test_blowfish.py::TestBlowfishEncryption::test_blowfish_cbc_pad_different_keys
-passed skipped test_blowfish.py::TestBlowfishEncryption::test_blowfish_cbc_pad_roundtrip
-passed skipped test_blowfish.py::TestBlowfishEncryption::test_blowfish_cbc_roundtrip
-passed skipped test_des.py::TestDESEncryption::test_des_cfb64_roundtrip
-passed skipped test_des.py::TestDESEncryption::test_des_cfb8_roundtrip
-passed skipped test_des.py::TestDESEncryption::test_des_ofb64_roundtrip
-passed skipped test_ike.py::TestIKE1ExtendedDerive::test_derive_aes128
-passed skipped test_ike.py::TestIKE1ExtendedDerive::test_derive_deterministic
-passed skipped test_ike.py::TestIKE1ExtendedDerive::test_derive_skeyid_d
-passed skipped test_ike.py::TestIKE1ExtendedDerive::test_different_spis_produce_different_keys
-passed skipped test_ike.py::TestIKE1ExtendedDerive::test_extended_hmac_sha256_exact_vector
-passed skipped test_ike.py::TestIKE1ExtendedDerive::test_extended_hmac_sha256_multiblock_exact_vector
-passed skipped test_ike.py::TestIKE1PRFDerive::test_derive_aes128
-passed skipped test_ike.py::TestIKE1PRFDerive::test_derive_deterministic
-passed skipped test_ike.py::TestIKE1PRFDerive::test_derive_skeyid
-passed skipped test_ike.py::TestIKE1PRFDerive::test_different_nonces_produce_different_keys
-passed skipped test_ike.py::TestIKE1PRFDerive::test_prf_hmac_sha256_exact_vector
-passed skipped test_mech_derive.py::TestMechDerive::test_derive_produces_key[ARIA_ECB_ENCRYPT_DATA]
-passed skipped test_mech_derive.py::TestMechDerive::test_derive_produces_key[CAMELLIA_ECB_ENCRYPT_DATA]
-passed skipped test_mech_encrypt.py::TestMechEncryptKAT::test_kat_vector[BLOWFISH_CBC]
-passed skipped test_mech_encrypt.py::TestMechEncryptKAT::test_kat_vector[BLOWFISH_CBC_PAD]
-passed skipped test_mech_encrypt.py::TestMechEncryptKAT::test_kat_vector[RC2_ECB]
-passed skipped test_mech_encrypt.py::TestMechEncryptRoundtrip::test_roundtrip[BLOWFISH_CBC]
-passed skipped test_mech_encrypt.py::TestMechEncryptRoundtrip::test_roundtrip[BLOWFISH_CBC_PAD]
-passed skipped test_mech_encrypt.py::TestMechEncryptRoundtrip::test_roundtrip[DES_CFB64]
-passed skipped test_mech_encrypt.py::TestMechEncryptRoundtrip::test_roundtrip[DES_CFB8]
-passed skipped test_mech_encrypt.py::TestMechEncryptRoundtrip::test_roundtrip[DES_OFB64]
-passed skipped test_mech_encrypt.py::TestMechEncryptRoundtrip::test_roundtrip[RC2_ECB]
-failed skipped test_mech_message.py::TestMessageEncrypt::test_message_encrypt_aes_gcm_generated_iv_writeback
-failed skipped test_mech_message.py::TestMessageEncrypt::test_message_encrypt_decrypt_aes_gcm
-failed skipped test_mech_message.py::TestMessageEncrypt::test_message_encrypt_multipart_aes_gcm
-passed skipped test_mech_message.py::TestMessageEncrypt::test_message_sign_aes_gmac
-failed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[AES_GCM]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[BLOWFISH_CBC]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[BLOWFISH_CBC_PAD]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[DES_CFB64]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[DES_CFB8]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[DES_OFB64]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[RC2_ECB]
-failed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[AES_GCM]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[BLOWFISH_CBC]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[BLOWFISH_CBC_PAD]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[DES_CFB64]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[DES_CFB8]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[DES_OFB64]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[RC2_ECB]
-failed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[AES_GMAC]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[BLAKE2B_160_HMAC_GENERAL]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[BLAKE2B_256_HMAC_GENERAL]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[BLAKE2B_384_HMAC_GENERAL]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[BLAKE2B_512_HMAC_GENERAL]
-failed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[AES_GMAC]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[BLAKE2B_160_HMAC_GENERAL]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[BLAKE2B_256_HMAC_GENERAL]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[BLAKE2B_384_HMAC_GENERAL]
-passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[BLAKE2B_512_HMAC_GENERAL]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_decrypt_wrong_key_type[BLOWFISH_CBC]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_decrypt_wrong_key_type[BLOWFISH_CBC_PAD]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_decrypt_wrong_key_type[DES_CFB64]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_decrypt_wrong_key_type[DES_CFB8]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_decrypt_wrong_key_type[DES_OFB64]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_decrypt_wrong_key_type[RC2_ECB]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_encrypt_wrong_key_type[BLOWFISH_CBC]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_encrypt_wrong_key_type[BLOWFISH_CBC_PAD]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_encrypt_wrong_key_type[DES_CFB64]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_encrypt_wrong_key_type[DES_CFB8]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_encrypt_wrong_key_type[DES_OFB64]
-passed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_encrypt_wrong_key_type[RC2_ECB]
-failed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
-failed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_256_HMAC_GENERAL]
-failed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
-failed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
-failed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
-failed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_256_HMAC_GENERAL]
-failed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
-failed skipped test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
-passed skipped test_mech_multipart.py::TestMultipartEncrypt::test_streaming_equals_single[BLOWFISH_CBC]
-passed skipped test_mech_multipart.py::TestMultipartEncrypt::test_streaming_equals_single[BLOWFISH_CBC_PAD]
-passed skipped test_mech_multipart.py::TestMultipartEncrypt::test_streaming_equals_single[DES_CFB64]
-passed skipped test_mech_multipart.py::TestMultipartEncrypt::test_streaming_equals_single[DES_CFB8]
-passed skipped test_mech_multipart.py::TestMultipartEncrypt::test_streaming_equals_single[DES_OFB64]
-passed skipped test_mech_multipart.py::TestMultipartSign::test_multipart_sign_verify[AES_GMAC]
-passed skipped test_mech_multipart.py::TestMultipartSign::test_multipart_sign_verify[BLAKE2B_160_HMAC_GENERAL]
-passed skipped test_mech_multipart.py::TestMultipartSign::test_multipart_sign_verify[BLAKE2B_256_HMAC_GENERAL]
-passed skipped test_mech_multipart.py::TestMultipartSign::test_multipart_sign_verify[BLAKE2B_384_HMAC_GENERAL]
-passed skipped test_mech_multipart.py::TestMultipartSign::test_multipart_sign_verify[BLAKE2B_512_HMAC_GENERAL]
-passed skipped test_mech_multipart.py::TestMultipartSign::test_streaming_equals_single[AES_GMAC]
-passed skipped test_mech_multipart.py::TestMultipartSign::test_streaming_equals_single[BLAKE2B_160_HMAC_GENERAL]
-passed skipped test_mech_multipart.py::TestMultipartSign::test_streaming_equals_single[BLAKE2B_256_HMAC_GENERAL]
-passed skipped test_mech_multipart.py::TestMultipartSign::test_streaming_equals_single[BLAKE2B_384_HMAC_GENERAL]
-passed skipped test_mech_multipart.py::TestMultipartSign::test_streaming_equals_single[BLAKE2B_512_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_decrypt_without_flag[BLOWFISH_CBC]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_decrypt_without_flag[BLOWFISH_CBC_PAD]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_decrypt_without_flag[DES_CFB64]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_decrypt_without_flag[DES_CFB8]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_decrypt_without_flag[DES_OFB64]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_decrypt_without_flag[RC2_ECB]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_encrypt_without_flag[BLOWFISH_CBC]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_encrypt_without_flag[BLOWFISH_CBC_PAD]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_encrypt_without_flag[DES_CFB64]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_encrypt_without_flag[DES_CFB8]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_encrypt_without_flag[DES_OFB64]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_encrypt_without_flag[RC2_ECB]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_sign_without_flag[AES_GMAC]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_sign_without_flag[BLAKE2B_160_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_sign_without_flag[BLAKE2B_256_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_sign_without_flag[BLAKE2B_384_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_sign_without_flag[BLAKE2B_512_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_verify_without_flag[AES_GMAC]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_verify_without_flag[BLAKE2B_160_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_verify_without_flag[BLAKE2B_256_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_verify_without_flag[BLAKE2B_384_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestMissingPermission::test_registry_verify_without_flag[BLAKE2B_512_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_decrypt_wrong_key_type[BLOWFISH_CBC]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_decrypt_wrong_key_type[BLOWFISH_CBC_PAD]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_decrypt_wrong_key_type[DES_CFB64]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_decrypt_wrong_key_type[DES_CFB8]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_decrypt_wrong_key_type[DES_OFB64]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_decrypt_wrong_key_type[RC2_ECB]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_encrypt_wrong_key_type[BLOWFISH_CBC]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_encrypt_wrong_key_type[BLOWFISH_CBC_PAD]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_encrypt_wrong_key_type[DES_CFB64]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_encrypt_wrong_key_type[DES_CFB8]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_encrypt_wrong_key_type[DES_OFB64]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_encrypt_wrong_key_type[RC2_ECB]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_sign_wrong_key_type[AES_GMAC]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_sign_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_sign_wrong_key_type[BLAKE2B_256_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_sign_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_sign_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_verify_wrong_key_type[AES_GMAC]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_verify_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_verify_wrong_key_type[BLAKE2B_256_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_verify_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
-passed skipped test_mech_negative.py::TestWrongKeyType::test_registry_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
-passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_roundtrip[AES_GMAC]
-passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_roundtrip[BLAKE2B_160_HMAC_GENERAL]
-passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_roundtrip[BLAKE2B_256_HMAC_GENERAL]
-passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_roundtrip[BLAKE2B_384_HMAC_GENERAL]
-passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_roundtrip[BLAKE2B_512_HMAC_GENERAL]
-passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_tampered_data_fails_verify[AES_GMAC]
-passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_tampered_data_fails_verify[BLAKE2B_160_HMAC_GENERAL]
-passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_tampered_data_fails_verify[BLAKE2B_256_HMAC_GENERAL]
-passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_tampered_data_fails_verify[BLAKE2B_384_HMAC_GENERAL]
-passed skipped test_mech_sign.py::TestMechSignRoundtrip::test_tampered_data_fails_verify[BLAKE2B_512_HMAC_GENERAL]
-passed skipped test_message_crypto.py::TestMessageEncryptDecrypt::test_message_decrypt_single
-passed skipped test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_decrypt_roundtrip
-passed skipped test_message_crypto.py::TestMessageEncryptDecrypt::test_message_encrypt_single
-passed skipped test_operation_termination.py::test_c_encrypt_terminates_after_multipart[BLOWFISH_CBC]
-passed skipped test_operation_termination.py::test_c_encrypt_terminates_after_multipart[BLOWFISH_CBC_PAD]
-passed skipped test_operation_termination.py::test_c_encrypt_terminates_after_multipart[DES_CFB64]
-passed skipped test_operation_termination.py::test_c_encrypt_terminates_after_multipart[DES_CFB8]
-passed skipped test_operation_termination.py::test_c_encrypt_terminates_after_multipart[DES_OFB64]
-passed failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-input]
-passed failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-length]
-passed failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-update-input]
-passed failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-update-length]
-passed failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[encrypt-input]
-passed failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[encrypt-length]
-passed failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[encrypt-update-input]
-passed failed test_operation_termination.py::test_null_argument_rejection_terminates_encrypt_decrypt_operation[encrypt-update-length]
-passed failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_MD5_CAST128_CBC]
-passed failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_MD5_CAST3_CBC]
-passed failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_MD5_CAST_CBC]
-passed failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_MD5_DES_CBC]
-passed failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_SHA1_CAST128_CBC]
-passed failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_SHA1_RC2_128_CBC]
-passed failed test_pbe.py::TestLegacyPBEVariants::test_generate_key[CKM_PBE_SHA1_RC2_40_CBC]
-passed failed test_pbe.py::TestPBESHA1DES2::test_generate_key_writes_init_vector
-passed failed test_pbe.py::TestPBESHA1DES3::test_generate_key_writes_init_vector
-passed skipped test_ssl3.py::TestSSL3KeyAndMacDerive::test_derive_key_material
-passed skipped test_ssl3.py::TestSSL3KeyAndMacDerive::test_derive_key_material_exact_vector
-passed skipped test_ssl3.py::TestSSL3KeyAndMacDerive::test_rejects_template_protection_conflict
-passed skipped test_ssl3.py::TestSSL3Mac::test_md5_mac_deterministic
-passed skipped test_ssl3.py::TestSSL3Mac::test_md5_mac_different_data
-passed skipped test_ssl3.py::TestSSL3Mac::test_md5_mac_key_affects_output
-passed skipped test_ssl3.py::TestSSL3Mac::test_md5_mac_sign
-passed skipped test_ssl3.py::TestSSL3Mac::test_sha1_mac_deterministic
-passed skipped test_ssl3.py::TestSSL3Mac::test_sha1_mac_different_data
-passed skipped test_ssl3.py::TestSSL3Mac::test_sha1_mac_key_affects_output
-passed skipped test_ssl3.py::TestSSL3Mac::test_sha1_mac_sign
-passed failed test_tls12.py::TestTLS10PreMasterKeyGen::test_tls_key_and_mac_derive
-passed skipped test_tls12.py::TestTLS10PreMasterKeyGen::test_tls_key_and_mac_rejects_template_protection_conflict
-passed skipped test_tls12.py::TestTLS10PreMasterKeyGen::test_tls_master_key_derive
-passed failed test_tls12.py::TestTLS12KeyAndMacDerive::test_key_and_mac_derive
-passed skipped test_tls12.py::TestTLS12KeyAndMacDerive::test_key_and_mac_rejects_template_protection_conflict
-passed failed test_tls12.py::TestTLS12KeyAndMacDerive::test_key_safe_derive
-passed failed test_tls12.py::TestTLS12KeyAndMacDerive::test_key_safe_derive_ignores_iv_size_request
-passed skipped test_tls12.py::TestTLS12KeyAndMacDerive::test_key_safe_rejects_template_protection_conflict
-passed skipped test_wtls.py::TestWTLSPreMasterKeyGen::test_generate_pre_master_key
-passed skipped test_wtls.py::TestWTLSPreMasterKeyGen::test_generate_yields_non_zero_material
-passed skipped test_wtls.py::TestWTLSPreMasterKeyGen::test_two_generated_keys_differ
-EOF
-cat > "$OUT/exp-shared.txt" <<'EOF'
-failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
-failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[HOTP]
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[HOTP]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_256_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_384_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_512_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_160_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_256_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
-EOF
-[ "$(wc -l < "$OUT/exp-diff.txt")" -eq 238 ] || fail "driver: want 238 stable-core diff lines"
-check_stable_core "compare diff" "$OUT/exp-diff.txt" "$RUN_DIR/diff.txt" \
-  "passed skipped test_object.py::TestSessionObjects::test_multiple_keys_same_type" \
-  "passed failed test_ro_session.py::TestROSessionOperations::test_verify_in_ro_session" \
-  "passed skipped test_search.py::TestObjectSearch::test_find_many_objects" \
-  "passed failed test_session_state_machine.py::TestLoginStateTransitions::test_open_session_is_public"
+# Single-source freeze data (codex I3): the shipped in-image wrapper
+# `examples/release/compare-classify` reads these same files, so the
+# driver and the classifier cannot drift apart.
+CC_DATA="examples/release/compare-classify"
+[ -f "$CC_DATA/frozen-subset.tsv" ] || fail "missing $CC_DATA/frozen-subset.tsv"
+[ -f "$CC_DATA/frozen-shared.txt" ] || fail "missing $CC_DATA/frozen-shared.txt"
+python3 - "$CC_DATA/frozen-subset.tsv" <<'PY' || fail "frozen-subset.tsv tallies drifted"
+import sys
+from collections import Counter
+rows = [l for l in open(sys.argv[1]).read().splitlines()
+        if l and not l.startswith("#")]
+c = Counter(l.split("\t", 1)[0] for l in rows)
+want = {"A-msg-init-0x71": 153, "B-blowfish": 20, "C-tls12": 2,
+        "D-wtls": 3, "E-boundary": 2, "F-gmac": 2, "G-inversion": 6}
+assert len(rows) == 188 and dict(c) == want, (len(rows), dict(c))
+PY
+grep -v '^#' "$CC_DATA/frozen-subset.tsv" | cut -f2- > "$OUT/exp-diff.txt"
+grep -v '^#' "$CC_DATA/frozen-shared.txt" > "$OUT/exp-shared.txt"
+[ "$(wc -l < "$OUT/exp-diff.txt")" -eq 188 ] || fail "driver: want 188 stable-core diff lines"
+# R5 strict (codex I4): flaky bounds are historical (older pin) —
+# v0.2.0 measured no flips, so the freeze asserts the measured
+# verdicts exactly; any variance fails loud and re-opens §4.
+check_stable_core "compare diff" "$OUT/exp-diff.txt" "$RUN_DIR/diff.txt"
 if ! diff -u "$OUT/exp-shared.txt" "$RUN_DIR/shared-findings.txt"; then
   fail "compare shared set differs from the exact expected set"
 fi
 echo "compare: stable-core diff + exact shared set match"
+
+# Subset-aware wrapper (codex I3): exercise the SHIPPED in-image
+# classifier on this compare run dir (raw plumbing stays untouched),
+# then prove its drift sensitivity in both directions on copies.
+note "compare-classify wrapper (expect exit 0 + drift controls exit 1)"
+CC_RUN=$(basename "$RUN_DIR")
+timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
+  --entrypoint /bin/sh "$TAG" \
+  /opt/haskoki/examples/release/compare-classify/compare-classify \
+  "/out/$CC_RUN" > "$OUT/classify.log" 2>&1
+rc=$?
+[ "$rc" -eq 0 ] || fail "in-image compare-classify exited $rc, want 0"
+grep -q 'compare-classify-ok: 188 known-difference + shared 25/25 exact' \
+  "$OUT/classify.log" || fail "compare-classify ok marker missing"
+[ -f "$RUN_DIR/classification.json" ] || fail "classification.json missing"
+python3 - "$RUN_DIR/classification.json" <<'PY' || fail "classification.json counts drifted"
+import json, sys
+c = json.load(open(sys.argv[1]))["counts"]
+assert c == {"known_difference": 188, "direct_only": 0, "flaky": 0,
+             "unexpected_difference": 0, "missing_known": 0,
+             "duplicate_diff_lines": 0, "shared_expected": 25,
+             "shared_actual": 25, "shared_exact": True}, c
+PY
+# Drift controls on run-dir copies (the raw run dir is untouched):
+# an injected line must surface as unexpected=1, a removed frozen
+# line as missing-known=1 — each exiting 1.
+rm -rf "$OUT/cc-inject" "$OUT/cc-remove"
+mkdir -p "$OUT/cc-inject" "$OUT/cc-remove"
+cp "$RUN_DIR/diff.txt" "$RUN_DIR/shared-findings.txt" "$OUT/cc-inject/"
+cp "$RUN_DIR/diff.txt" "$RUN_DIR/shared-findings.txt" "$OUT/cc-remove/"
+echo 'passed failed INJECTED::drift-control' >> "$OUT/cc-inject/diff.txt"
+head -n -1 "$RUN_DIR/diff.txt" > "$OUT/cc-remove/diff.txt"
+timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
+  --entrypoint /bin/sh "$TAG" \
+  /opt/haskoki/examples/release/compare-classify/compare-classify \
+  /out/cc-inject > "$OUT/classify-inject.log" 2>&1
+rc=$?
+[ "$rc" -eq 1 ] || fail "classify injection control exited $rc, want 1"
+grep -q 'unexpected 1' "$OUT/classify-inject.log" \
+  || fail "injection control marker missing"
+timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
+  --entrypoint /bin/sh "$TAG" \
+  /opt/haskoki/examples/release/compare-classify/compare-classify \
+  /out/cc-remove > "$OUT/classify-remove.log" 2>&1
+rc=$?
+[ "$rc" -eq 1 ] || fail "classify removal control exited $rc, want 1"
+grep -q 'missing-known 1' "$OUT/classify-remove.log" \
+  || fail "removal control marker missing"
+echo "compare-classify: in-image ok + injection/removal controls hold"
 
 # ---------------------------------------------------------------------------
 # 5. Help/exit matrix, examples, JSON purity (fast legs).
@@ -560,7 +367,7 @@ for c in demo check compare; do
 done
 grep -q 'fixed-fixture' "$OUT/help-demo.log" || fail "demo help marker missing"
 grep -q 'FROZEN (R4' "$OUT/help-check.log" || fail "check help marker missing"
-grep -q 'PROVISIONAL' "$OUT/help-compare.log" || fail "compare help marker missing"
+grep -q 'frozen parity subset (R5' "$OUT/help-compare.log" || fail "compare help marker missing"
 echo "help texts: 4/4 exit 0"
 
 note "usage-error matrix (expect exit 2 x8)"
@@ -587,6 +394,7 @@ echo "usage errors: 8/8 exit 2"
 note "examples (executable + runnable in-image)"
 [ -x examples/release/check-smoke ] || fail "check-smoke not executable"
 [ -x examples/release/pkcs11-uri-demo ] || fail "pkcs11-uri-demo not executable"
+[ -x examples/release/proxy-example ] || fail "proxy-example not executable"
 timeout -s KILL "$STEP_TIMEOUT" docker run --rm -v "$OUT:/out" \
   --entrypoint /bin/sh "$TAG" /opt/haskoki/examples/release/check-smoke \
   > "$OUT/ex-smoke-direct.log" 2>&1
@@ -604,7 +412,13 @@ timeout -s KILL "$STEP_TIMEOUT" docker run --rm -v "$OUT:/out" \
   > "$OUT/ex-uri.log" 2>&1
 [ $? -eq 0 ] || fail "pkcs11-uri-demo failed"
 grep -q 'uri-demo-ok' "$OUT/ex-uri.log" || fail "uri-demo marker missing"
-echo "examples: check-smoke x2 + uri-demo hold"
+timeout -s KILL "$STEP_TIMEOUT" docker run --rm -v "$OUT:/out" \
+  --entrypoint /bin/sh "$TAG" /opt/haskoki/examples/release/proxy-example \
+  > "$OUT/ex-proxy.log" 2>&1
+[ $? -eq 0 ] || fail "proxy-example failed"
+grep -q 'proxy-example-ok: 5/5 steps hold' "$OUT/ex-proxy.log" \
+  || fail "proxy-example marker missing"
+echo "examples: check-smoke x2 + uri-demo + proxy-example hold"
 
 note "JSON purity (--output json demo)"
 timeout -s KILL "$STEP_TIMEOUT" docker run --rm -v "$OUT:/out" "$TAG" \
@@ -738,9 +552,11 @@ libcrypto, provider origin, system-only host deps, GLIBC_2.43 floor),
 the proxy canonical pair for the default ref (byte-identical assertion
 in the proxy stage), pkcs11-check == 0.2.3 (venv + version assertion),
 and every entrypoint verdict asserted byte-exact on its stable core by
-this driver. Four proxy-lane timing-flaky test ids are classified with
-enumerated variant forms (report section 9.8); any line outside the
-stable core + classified variants fails the driver loudly.
+this driver. Four proxy-lane timing-flaky test ids carry historical
+bounds (R5 report section 4; a fifth id is transcript-stable) but
+no variance allowance on this pin — any line outside the stable
+core fails the driver loudly. The parity subset is frozen (R5):
+188 compare exclusions in 7 reasoned families, strict.
 Functional reproducibility = same versions + same outcomes above.
 EOF
 cat "$OUT/reproducibility-note.txt"

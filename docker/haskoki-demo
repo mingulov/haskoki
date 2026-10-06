@@ -16,7 +16,10 @@
 # (default text); report files are always written.
 #
 # Profiles FROZEN (R4; see examples/release/pkcs11-check/README).
-# Compare subset (= all) still PROVISIONAL (R5 freezes).
+# Compare parity subset FROZEN (R5): this command diffs ALL collected
+# ids (raw plumbing); the shipped examples/release/compare-classify
+# wrapper classifies the 188 frozen exclusions with per-id reasons
+# (driver: scripts/test-demo-image.sh).
 # Demo PINs/seeds/labels are PUBLIC fixtures (values never logged).
 #
 # Arbitrary-UID safe: writes only under the run dir (inside /out);
@@ -54,8 +57,8 @@ Commands:
             against the bundle directly or via the loopback proxy shim.
             Exit 0 only on runs with zero findings; any finding lists
             separately and exits 1. Smoke/full profiles are FROZEN (R4).
-  compare   run the full checker profile direct vs proxied (subset = all,
-            PROVISIONAL) and diff per-test verdict transcripts. Exit 0
+  compare   run the full checker profile direct vs proxied (parity
+            subset FROZEN, R5) and diff per-test verdict transcripts. Exit 0
             only on completed runs with zero findings and zero
             unexpected diffs; findings shared by both modes are shown
             (and exit 1) but are not diffs.
@@ -141,11 +144,18 @@ Usage:
 
 Runs the full checker profile twice (direct, then via the loopback
 proxy shim) and diffs per-test verdict transcripts after normalizing
-test ids. Findings shared by both modes are shown but are not diffs;
-every outcome mismatch (including present-in-one-side-only) is an
-unexpected diff. Both sub-run reports are kept under the run dir.
+test ids. This command is RAW plumbing: it diffs every collected id
+and labels every outcome mismatch (including present-in-one-side-only)
+an unexpected diff, even frozen ones. Findings shared by both modes
+are shown but are not diffs. Both sub-run reports are kept under the
+run dir.
 
-Subset = all (PROVISIONAL, R5 freezes the parity subset definition).
+Subset = frozen parity subset (R5). For the subset-aware view, run
+the shipped classifier over the run dir — it splits the raw diff
+into known-difference (188 frozen exclusions with per-id reasons),
+direct-only, flaky, and unexpected-difference buckets and leaves
+diff.txt / shared-findings.txt untouched:
+  /opt/haskoki/examples/release/compare-classify/compare-classify <run-dir>
 
 Exit: 0 both runs completed with zero findings and zero unexpected
 diffs / 1 one or more findings (shared or single-sided) or
@@ -980,8 +990,8 @@ for line in open(run + "/shared-findings.txt"):
         shared_list.append({"outcome": o, "test": nid})
 report = {
     "command": "compare",
-    "subset": "all",
-    "subset_status": "provisional (R5 freezes the parity subset)",
+    "subset": "frozen parity subset (R5)",
+    "subset_status": "frozen (R5; raw diff of all collected ids; classify with examples/release/compare-classify)",
     "entrypoint": "haskoki-demo " + version,
     "started_utc": started,
     "finished_utc": finished,

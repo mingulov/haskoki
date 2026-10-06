@@ -1,0 +1,289 @@
+#!/bin/sh
+# examples/release/proxy-example -- same small crypto scenario direct vs proxied.
+#
+# Topology (two processes, ONE container — a process boundary, not a
+# deployment demo; no Compose, no host port, no Windows client):
+#
+#   DIRECT    client [pkcs11-tool -> libhaskoki.so + GHC RTS + crypto]
+#   PROXIED   client [pkcs11-tool -> proxy shim] -> loopback ->
+#             provider [proxy daemon -> libhaskoki.so + GHC RTS + crypto]
+#
+# What this ADDS over `demo`: the application never loads the Haskoki
+# runtime directly — the backend sits behind a process boundary and is
+# reached through the pkcs11-proxy-ng shim/daemon pair. The scenario
+# itself is deliberately the small deterministic core of `demo` (slot
+# listing, EC keygen, ECDSA sign/verify, pinned SHA-256 anchor) so the
+# comparison is apples-to-apples.
+#
+# Run (inside the demo image):
+#   docker run --rm -v "$PWD/out:/out" --entrypoint /bin/sh \
+#     haskoki-demo:0.3.0.0 /opt/haskoki/examples/release/proxy-example
+# Port override: HASKOKI_DEMO_PROXY_PORT (default 17512, loopback only).
+#
+# Expected output (R5 measurement): exit 0, five HOLD lines plus
+# "proxy-example-ok: 5/5 steps hold direct-vs-proxied; report: ...",
+# with daemon.log / report.json / per-side step logs under the run dir.
+# Exit 1 = an unexpected direct-vs-proxied difference; exit 2 = usage
+# or infrastructure failure (bad env, daemon startup, busy port).
+#
+# TEST-ONLY TRANSPORT (signed): the daemon listens on 127.0.0.1 with
+# auth = "none" and plaintext (allow_insecure_tcp). This is a local
+# functional example only — never expose this shape to a network.
+# Single trusted logical client (this script, sequential phases); no
+# multi-tenant independence is claimed or configured.
+#
+# Comparison contract (stated rules, cf. the parity harness):
+# - compared: exit codes, ECDSA signature LENGTH (64), the verify
+#   verdict ("Signature is valid"), and digest BYTES (pinned constant).
+# - randomized outputs (fresh key bytes, signature bytes) are compared
+#   by shape/semantics only, never byte-for-byte across sides.
+# - known-difference rules: NONE (empty list — every step is expected
+#   to hold; any mismatch is unexpected-difference and fails).
+# - HOLD requires match AND success: each step pins its success shape
+#   (slots rc=0 token present, keygen rc=0, sign rc=0 64 bytes,
+#   verify rc=0 valid, digest rc=0 anchor bytes). An equal failure on
+#   both sides, or a missing record, is UNEXPECTED-DIFFERENCE.
+# - no auto-retry: every pkcs11-tool call runs exactly once per side;
+#   a failure is recorded, the side completes, and the step mismatches.
+# - reset between runs: each side gets a FRESH sqlite store (direct:
+#   own file; proxied: the daemon backend file), so neither side sees
+#   the other's keys.
+set -u
+
+PROXY_DIR="/opt/haskoki/proxy"
+PORT="${HASKOKI_DEMO_PROXY_PORT:-17512}"
+SHA_ABC="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+fail() { echo "proxy-example: FAIL: $1" >&2; exit 2; }
+note() { echo "proxy-example: $1"; }
+
+n=$(ls -d /opt/haskoki/dist-release/haskoki-* 2>/dev/null | wc -l)
+[ "$n" -eq 1 ] || fail "want exactly one bundle, found $n"
+SO=$(echo /opt/haskoki/dist-release/haskoki-*/lib/libhaskoki.so)
+[ -f "$SO" ] || fail "module missing: $SO"
+BIN="$PROXY_DIR/pkcs11-proxy-ng"
+SHIM="$PROXY_DIR/libpkcs11_proxy_ng_shim.so"
+[ -x "$BIN" ] || fail "proxy daemon missing: $BIN"
+[ -f "$SHIM" ] || fail "proxy shim missing: $SHIM"
+[ -f "$PROXY_DIR/PROVENANCE" ] || fail "proxy PROVENANCE missing"
+command -v pkcs11-tool >/dev/null 2>&1 || fail "pkcs11-tool missing"
+command -v python3 >/dev/null 2>&1 || fail "python3 missing (TCP probe)"
+
+out="${HASKOKI_DEMO_OUT:-/out}"
+[ -d "$out" ] && [ -w "$out" ] || fail "output dir missing/unwritable: $out"
+run=$(mktemp -d "$out/proxy-example-$(date -u +%Y%m%dT%H%M%SZ)-$$-XXXXXX") \
+  || fail "cannot create run dir"
+chmod 755 "$run" || fail "cannot chmod run dir"
+
+note "run dir: $run"
+note "proxy: $("$BIN" --version 2>/dev/null || echo unknown) ($PROXY_DIR)"
+grep -h 'sha256' "$PROXY_DIR/PROVENANCE" | sed 's/^/proxy-example: provenance: /'
+note "TEST-ONLY transport: loopback 127.0.0.1:$PORT, auth none, plaintext (local example only)"
+
+tcp_accepts() {
+  python3 -c "
+import socket, sys
+s = socket.socket()
+s.settimeout(2)
+try:
+    s.connect(('127.0.0.1', $1))
+except OSError:
+    sys.exit(1)
+sys.exit(0)
+"
+}
+
+DAEMON_PID=""
+daemon_stop() {
+  if [ -n "${DAEMON_PID:-}" ]; then
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+    DAEMON_PID=""
+  fi
+}
+trap daemon_stop EXIT
+trap 'daemon_stop; exit 143' INT TERM
+
+tcp_accepts "$PORT" && fail "proxy port $PORT already busy (one run at a time)"
+
+# Fresh stores per side (reset between runs).
+cat > "$run/backend-direct.toml" <<EOF
+schema_version = 1
+profile = "real-crypto"
+[storage]
+kind = "sqlite"
+path = "$run/direct.sqlite"
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+[trace]
+enabled = false
+EOF
+sed "s#direct.sqlite#daemon.sqlite#" "$run/backend-direct.toml" > "$run/backend-daemon.toml"
+
+cat > "$run/proxy.toml" <<EOF
+[backend]
+module = "$SO"
+
+[proxy]
+mechanism_discovery = "transparent"
+lease_seconds = 600
+request_timeout_secs = 60
+max_concurrent_backend_calls = 200
+max_blocking_threads = 512
+
+[listener.remote]
+bind = "127.0.0.1:$PORT"
+auth = "none"
+allow_insecure_tcp = true
+EOF
+
+# One scenario side. $1 = tag (direct|proxied), $2 = module path.
+# Writes $run/$tag.steps (fact lines) + per-step tool logs.
+run_side() {
+  tag="$1"; mod="$2"
+  : > "$run/$tag.steps"
+  if [ "$tag" = "direct" ]; then
+    export HASKOKI_CONFIG="$run/backend-direct.toml"
+    unset PKCS11_PROXY_ENDPOINT
+  else
+    unset HASKOKI_CONFIG
+    export PKCS11_PROXY_ENDPOINT="http://127.0.0.1:$PORT"
+  fi
+  printf 'abc' > "$run/$tag-msg.bin"
+
+  # 1. slots (token present).
+  pkcs11-tool --module "$mod" -L \
+    > "$run/$tag-slots.out" 2> "$run/$tag-slots.err"
+  rc=$?
+  if [ $rc -eq 0 ] && grep -q 'token label *: haskoki-demo' "$run/$tag-slots.out"; then
+    echo "slots rc=0 token=present" >> "$run/$tag.steps"
+  else
+    echo "slots rc=$rc token=MISSING" >> "$run/$tag.steps"
+  fi
+
+  # 2. EC keygen.
+  pkcs11-tool --module "$mod" --keypairgen --key-type EC:prime256v1 \
+    --label "px-ec-$tag" --usage-sign -l --pin 1234 \
+    > "$run/$tag-ec-keygen.out" 2> "$run/$tag-ec-keygen.err"
+  echo "ec-keygen rc=$?" >> "$run/$tag.steps"
+
+  # 3. ECDSA sign (raw R||S length only — bytes vary by design).
+  pkcs11-tool --module "$mod" -s -m ECDSA-SHA256 --label "px-ec-$tag" \
+    --type privkey -l --pin 1234 -i "$run/$tag-msg.bin" -o "$run/$tag-sig.bin" \
+    > "$run/$tag-ec-sign.out" 2> "$run/$tag-ec-sign.err"
+  rc=$?; sigbytes=0
+  [ -f "$run/$tag-sig.bin" ] && sigbytes=$(wc -c < "$run/$tag-sig.bin" | tr -d ' ')
+  echo "ec-sign rc=$rc sig_bytes=$sigbytes" >> "$run/$tag.steps"
+
+  # 4. ECDSA verify.
+  pkcs11-tool --module "$mod" --verify -m ECDSA-SHA256 --label "px-ec-$tag" \
+    --type pubkey -l --pin 1234 -i "$run/$tag-msg.bin" \
+    --signature-file "$run/$tag-sig.bin" \
+    > "$run/$tag-ec-verify.out" 2> "$run/$tag-ec-verify.err"
+  rc=$?
+  if [ $rc -eq 0 ] && grep -q 'Signature is valid' \
+      "$run/$tag-ec-verify.out" "$run/$tag-ec-verify.err" 2>/dev/null; then
+    echo "ec-verify rc=0 verdict=valid" >> "$run/$tag.steps"
+  else
+    echo "ec-verify rc=$rc verdict=INVALID" >> "$run/$tag.steps"
+  fi
+
+  # 5. SHA-256 digest anchor (bytes vs pinned constant).
+  pkcs11-tool --module "$mod" -h -m SHA256 -i "$run/$tag-msg.bin" \
+    > "$run/$tag-digest.raw" 2> "$run/$tag-digest.err"
+  rc=$?; gothex=""
+  [ -f "$run/$tag-digest.raw" ] && gothex=$(od -A n -t x1 "$run/$tag-digest.raw" | tr -d ' \n')
+  echo "digest rc=$rc sha256=$gothex" >> "$run/$tag.steps"
+}
+
+note "--- side: direct (libhaskoki.so) ---"
+run_side direct "$SO"
+
+note "--- starting proxy daemon (loopback, test-only, bounded 30s readiness) ---"
+HASKOKI_CONFIG="$run/backend-daemon.toml" RUST_LOG=info "$BIN" "$run/proxy.toml" \
+  >> "$run/daemon.log" 2>&1 &
+DAEMON_PID=$!
+i=0; ready=0
+while [ "$i" -lt 30 ]; do
+  if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+    DAEMON_PID=""
+    fail "proxy daemon died during startup (see daemon.log)"
+  fi
+  if tcp_accepts "$PORT"; then ready=1; break; fi
+  i=$((i + 1)); sleep 1
+done
+[ "$ready" -eq 1 ] || { daemon_stop; fail "daemon not listening after 30s (see daemon.log)"; }
+note "proxy daemon ready: 127.0.0.1:$PORT"
+
+note "--- side: proxied (shim -> loopback -> daemon -> libhaskoki.so) ---"
+run_side proxied "$SHIM"
+daemon_stop
+
+# Compare: every step must match AND succeed (empty known-difference
+# list). Equality alone is not enough — an equal failure on both sides
+# (or a missing record) must not HOLD — so each step pins its success
+# shape; digest additionally pins the FIPS anchor bytes.
+step_ok() { # $1 = step, $2 = record; true iff the success shape
+  case "$1:$2" in
+    "slots:slots rc=0 token=present") return 0 ;;
+    "ec-keygen:ec-keygen rc=0") return 0 ;;
+    "ec-sign:ec-sign rc=0 sig_bytes=64") return 0 ;;
+    "ec-verify:ec-verify rc=0 verdict=valid") return 0 ;;
+    "digest:digest rc=0 sha256=$SHA_ABC") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+holds=0; total=0; bad=0
+: > "$run/verdicts.txt"
+for step in slots ec-keygen ec-sign ec-verify digest; do
+  total=$((total + 1))
+  d=$(grep "^$step " "$run/direct.steps" || echo "MISSING")
+  p=$(grep "^$step " "$run/proxied.steps" || echo "MISSING")
+  if [ "$d" = "$p" ] && step_ok "$step" "$d"; then
+    v="HOLD"
+  else
+    v="UNEXPECTED-DIFFERENCE"
+  fi
+  if [ "$v" = "HOLD" ]; then holds=$((holds + 1)); else bad=$((bad + 1)); fi
+  echo "$step direct=[$d] proxied=[$p] $v" >> "$run/verdicts.txt"
+done
+
+modsha=$(sha256sum "$SO" | awk '{print $1}')
+daemonsha=$(sha256sum "$BIN" | awk '{print $1}')
+shimsha=$(sha256sum "$SHIM" | awk '{print $1}')
+daemonver=$("$BIN" --version 2>/dev/null || echo unknown)
+python3 - "$run" "$holds" "$total" "$modsha" "$daemonsha" "$shimsha" \
+  "$daemonver" "$SHA_ABC" <<'PY'
+import json, sys
+run, holds, total, modsha, daemonsha, shimsha, daemonver, anchor = sys.argv[1:9]
+verdicts = []
+for line in open(run + "/verdicts.txt"):
+    line = line.rstrip("\n")
+    if line:
+        verdicts.append(line)
+report = {
+    "command": "proxy-example",
+    "run_dir": run,
+    "holds": int(holds),
+    "total": int(total),
+    "module_sha256": modsha,
+    "proxy": {"daemon_version": daemonver, "daemon_sha256": daemonsha,
+              "shim_sha256": shimsha},
+    "digest_anchor": anchor,
+    "known_differences": [],
+    "verdicts": verdicts,
+}
+json.dump(report, open(run + "/report.json", "w"), indent=1)
+PY
+[ $? -ne 0 ] && fail "cannot write report.json"
+
+sed 's/^/  /' "$run/verdicts.txt"
+if [ "$bad" -eq 0 ]; then
+  echo "proxy-example-ok: $holds/$total steps hold direct-vs-proxied; report: $run/report.json"
+  exit 0
+else
+  echo "proxy-example-FINDINGS: $bad unexpected difference(s); report: $run/report.json" >&2
+  exit 1
+fi

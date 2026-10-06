@@ -14,9 +14,18 @@
 #
 # Proxy provenance (external binaries, never built into the repo):
 #   source: https://github.com/mingulov/pkcs11-proxy-ng
-#   commit: a48b60ba54b0163f4999c1e4fc0514bf7dc01681
+#   commit: 1755403adb6e265f094a888f27db4fe9bda17cb6 (tag v0.2.0,
+#             "Record v0.2.0 quality receipt"; annotated-tag object
+#             b298b0c; R5 re-pin — a48b60b superseded: v0.2.0 fixes
+#             PBE OUT-IV writeback, embedded-handle mapping,
+#             unknown-attr forwarding, NULL-input normalization,
+#             and absorbs most of the override below into embedded;
+#             v0.2.1 was attempted and REJECTED, upstream #35/#36/#37)
 #   built:  throwaway rust:1.94-bookworm container,
 #             apt-get install protobuf-compiler && cargo build --release
+#           (effective toolchain 1.98.1 via the repo's
+#           rust-toolchain.toml in both the canonical build and the
+#           demo image proxy stage)
 #           artifacts: pkcs11-proxy-ng (daemon) +
 #             libpkcs11_proxy_ng_shim.so (loadable shim)
 #   env:    HASKOKI_PROXY_DIR (default /opt/pkcs11-proxy-ng) must hold
@@ -25,9 +34,9 @@
 #
 # Canonical build (the ONLY authoritative hashes):
 #   daemon sha256:
-#     260cb245981561291eab4d29a16cb6a4d6f00dca3431f3d583d35364fab0c9e5  pkcs11-proxy-ng
+#     8b7def0f128a3e47543c91b78b7a2c37a9ee1edb37916f8dc4a15147f3a1ae23  pkcs11-proxy-ng
 #   shim sha256:
-#     8ea85073ce8436ebdc8ee99bce99e70a6d8c34473c28b5a45567c8a26aba1690  libpkcs11_proxy_ng_shim.so
+#     cb22c7e525c6b20c47c5e622b343dc2ceb8f39adb5c33180783264f20ca8f820  libpkcs11_proxy_ng_shim.so
 #   repro: from a pristine checkout of the source above at the commit
 #   above (no target/ dir), run the pinned-toolchain recipe:
 #     timeout -s KILL 2400 docker run --rm --network host \
@@ -36,9 +45,10 @@
 #         protobuf-compiler && cargo build --release'
 #     sha256sum target/release/pkcs11-proxy-ng \
 #       target/release/libpkcs11_proxy_ng_shim.so
-#   The two hashes MUST match the pair above (verified 2026-09-23:
-#   a fresh build from pristine source reproduced them
-#   byte-identically; build log kept by the reviewer).
+#   The two hashes MUST match the pair above (recorded 2026-10-05
+#   from a pristine v0.2.0 build; byte-identity is re-verified by
+#   the demo image proxy stage, which rebuilds from the same
+#   ref+recipe and asserts this pair via PROXY_CANON_*).
 #
 # Historical /tmp builds (a past review concern): EIGHT
 # divergent pairs were found under /tmp (five hash-distinct).
@@ -47,15 +57,18 @@
 # MUST be rebuilt from the pinned commit + recipe and re-pinned
 # here before use; unrecorded binaries are never authoritative.
 #
-# Residual tree (recorded during review): /tmp/pkcs11-proxy-ng/target/release/
-# holds a build at the pinned a48b60b commit (clean checkout) whose
-# artifacts are byte-identical to the canonical pair above (verified
-# by the reviewer with their own sha256; re-verified separately).
+# Residual tree (recorded during an a48b60b-era review, SUPERSEDED
+# by the v0.2.0 re-pin above): /tmp/pkcs11-proxy-ng/target/release/
+# held a build at a48b60b (clean checkout) whose artifacts were
+# byte-identical to the THEN-canonical a48b60b pair (daemon
+# 260cb245…, shim 8ea85073… — NOT the v0.2.0 pair above).
 #
 # Sensitivity proof (a parity script that cannot fail is theater):
-#   HASKOKI_PARITY_SEED_MISMATCH=1 corrupts one side's transcript
-#   before the diff; the script MUST fail and report the divergent
-#   call plus both outputs.
+#   HASKOKI_PARITY_SEED_MISMATCH=1 mutates one compared
+#   deterministic result on the proxied side BEFORE normalization
+#   (seed_mutate marks the first retained non-PASS line, which then
+#   flows through the real normalize+diff path); the script MUST
+#   fail and report the divergent call plus both outputs.
 #
 # Usage:
 #   scripts/test-proxy-parity.sh             # full parity (must PASS)
@@ -75,7 +88,7 @@ HERE=$(dirname "$0")
 PKG="$HERE/.."
 cd "$PKG" || exit 1
 
-PROXY_COMMIT="a48b60ba54b0163f4999c1e4fc0514bf7dc01681"
+PROXY_COMMIT="1755403adb6e265f094a888f27db4fe9bda17cb6"
 PROXY_DIR="${HASKOKI_PROXY_DIR:-/opt/pkcs11-proxy-ng}"
 PROXY_PORT="${HASKOKI_PROXY_PORT:-17512}"
 ENDPOINT="http://127.0.0.1:$PROXY_PORT"
@@ -144,46 +157,56 @@ done
 # function table through the proxy (direct yields the 3.1 table); every 3.1
 # leg trips the same pre-session discovery gate — same cause, one URL;
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/29; T-M07 R1.
-# dual_routed route+neg × 3.2: NULL out-length error without termination
-# (proxied keeps both sides alive) and NULL part returns CKR_OK (direct
-# CKR_ARGUMENTS_BAD); same cause, one URL;
+# dual_routed route+neg × 3.2 (R5: REMOVED on v0.2.0 — both hold,
+# 191/140 forwarded lines identical; the a48b60b NULL out-length /
+# NULL-part causes are fixed by the v0.2.0 NULL-handling rework):
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/30; T-M07 R2.
-# recover_routed neg × 2.40/3.0/3.2 (whole leg; the :3.1 entry wins on 3.1):
-# NULL out-length error without termination (proxied re-init 0x90) and
-# NULL input returns 0x5 (direct 0x7);
+# recover_routed neg × 2.40/3.0/3.2 (R5: REMOVED on v0.2.0 — holds,
+# 83 forwarded lines identical per version; the :3.1 entry below now
+# does real work instead of duplicating this one):
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/31; T-M07 R3.
 # Reproductions + 28-pair transcripts: task-m07/matrix receipt.
-# consumer_certificates:lifecycle+visibility+atomicity: proxied
-# C_GetAttributeValue on an invalid handle (destroyed or post-logout
-# stale) zeroes the caller canary buffer (direct preserves it); same
-# cause, one URL; T-C09 R8.
+# consumer_certificates:lifecycle+atomicity (R5: SHRUNK on v0.2.0 to
+# the :3.1 legs under issue 28 — 2.40/3.0/3.2 hold since v0.2.0
+# forwards GAV instead of zeroing the caller canary buffer):
+# https://github.com/mingulov/pkcs11-proxy-ng/issues/26; T-C09 R8.
+# consumer_certificates:visibility (R5: MOVED 26→27 — the canary
+# holds; the leg fails on cross-version census matches=2: fixed
+# "vis-private" TOKEN label + one shared memory-backend daemon for
+# the whole version matrix, while direct gets a fresh store per
+# leg; 2.40 passes only because it runs first, so per-version
+# eligibility would enshrine run-order dependence — whole leg).
 # consumer_certificates:restart: memory token objects survive client
 # Finalize/Initialize through the proxy (direct drops them);
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/27; T-C09 R9.
-# consumer_certificates:create+find:3.1: v3.1 C_GetInterface returns CKR_OK
-# with no usable function table through the proxy (direct yields the 3.1
-# table); every 3.1 leg trips the same pre-session discovery gate — same
-# cause, one URL;
+# consumer_certificates:create+find+lifecycle+atomicity:3.1: v3.1
+# C_GetInterface returns CKR_OK with no usable function table
+# through the proxy (direct yields the 3.1 table); every 3.1 leg
+# trips the same pre-session discovery gate — same cause, one URL;
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/28; T-C09 R10.
+# consumer_certificates:find (R5: NEW whole-leg on v0.2.0 — find
+# never returns CKO_CERTIFICATE: data-by-label 1, cert-by-label 0,
+# cert-by-class 0 on 2.40/3.0/3.2; regression window a48b60b..v0.2.0,
+# also present on v0.2.1; the :3.1 entry above stays — 3.1 is gated
+# at discovery before any find runs):
+# https://github.com/mingulov/pkcs11-proxy-ng/issues/36.
 DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23
 async_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/24
 notifications_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/25
-consumer_certificates:lifecycle:https://github.com/mingulov/pkcs11-proxy-ng/issues/26
-consumer_certificates:visibility:https://github.com/mingulov/pkcs11-proxy-ng/issues/26
-consumer_certificates:atomicity:https://github.com/mingulov/pkcs11-proxy-ng/issues/26
+consumer_certificates:lifecycle:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28
+consumer_certificates:visibility:https://github.com/mingulov/pkcs11-proxy-ng/issues/27
+consumer_certificates:atomicity:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28
 consumer_certificates:restart:https://github.com/mingulov/pkcs11-proxy-ng/issues/27
 consumer_certificates:create:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28
 consumer_certificates:find:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28
+consumer_certificates:find:https://github.com/mingulov/pkcs11-proxy-ng/issues/36
 dual_routed:route:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
 dual_routed:equiv:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
 dual_routed:neg:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
 recover_routed:route:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
 recover_routed:pkcs:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
 recover_routed:flags:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
-recover_routed:neg:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
-dual_routed:route:3.2:https://github.com/mingulov/pkcs11-proxy-ng/issues/30
-dual_routed:neg:3.2:https://github.com/mingulov/pkcs11-proxy-ng/issues/30
-recover_routed:neg:https://github.com/mingulov/pkcs11-proxy-ng/issues/31"
+recover_routed:neg:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29"
 for entry in $DIRECT_ONLY; do
   dname="${entry%%:*}"; durl="${entry#*:}"
   [ -n "$durl" ] && [ "$durl" != "$entry" ] \
@@ -327,6 +350,15 @@ EOF
 }
 
 # Daemon config (loopback dev shape; see proxy examples/).
+# [mechanisms] config_path (v0.2.0+): the daemon publishes its
+# mechanism registry to the shim at connect (upstream 6cff550) and
+# the shim installs the published registry OVER its seeded
+# embedded+PKCS11_PROXY_MECHANISMS registry. A shim-side-only
+# override is therefore silently dropped on v0.2.0: the same file
+# must be served daemon-side or the non-embedded entries
+# (0x1094/0x210C/0x403A) fall back to parameterless and IV/param
+# calls fail PARAM_INVALID (R5: 19-fail baseline, 7 lines). The
+# file itself is written below; the daemon reads it at startup.
 cat > "$TMPD/proxy.toml" <<EOF
 [backend]
 module = "$SO"
@@ -337,6 +369,9 @@ lease_seconds = 600
 request_timeout_secs = 60
 max_concurrent_backend_calls = 200
 max_blocking_threads = 512
+
+[mechanisms]
+config_path = "$TMPD/mechanisms-override.toml"
 
 [listener.remote]
 bind = "127.0.0.1:$PROXY_PORT"
@@ -357,6 +392,15 @@ EOF
 # to the other *_HMAC_GENERAL rows; until then this file is the
 # recorded extension point (extend here, never fork
 # the pinned binaries).
+# v0.2.0 notes (R5): embedded absorbed all of the above plus the
+# RC2/DES-CFB8/SSL3-MAC/AES-GMAC/MAC_GENERAL/ECDH-wrap rows —
+# only 0x1094/0x210C/0x403A still need this file. The absorbed
+# rows stay (harmless duplication, keeps one file for both
+# sides). v0.2.0 REQUIRES the two-sided wiring: the daemon
+# publishes its registry and the shim installs it over the
+# seeded one, so the SAME file is served daemon-side via the
+# [mechanisms] config_path above; shim-side-only is silently
+# dropped (upstream 6cff550).
 cat > "$TMPD/mechanisms-override.toml" <<'EOF'
 [[params]]
 shape = "sign_additional_context"
@@ -474,6 +518,26 @@ normalize() {
     | sed -e 's|^PASS: \([A-Za-z0-9_]*\) (.*)$|PASS: \1|' > "$2"
 }
 
+seed_mutate() {
+  # $1 = raw proxied log: flip one compared deterministic result
+  # BEFORE normalization (negative control). Marks the first
+  # retained non-PASS line (retained = survives normalize's drop
+  # rules, so the mutation flows through the real processing
+  # path). PASS trailers are excluded (normalize reduces them,
+  # which would erase the marker). Fails loud when no retained
+  # line exists — a scenario with nothing compared is vacuous.
+  [ "${HASKOKI_PARITY_SEED_MISMATCH:-0}" = "1" ] || return 0
+  if awk '!done && !/^(topology:|invent:|crypto:|routed:|PASS:)/ \
+      { $0 = $0 " [SEED-MUTATED]"; done = 1 } { print }' \
+      "$1" > "$1.seeded" && grep -q 'SEED-MUTATED' "$1.seeded"; then
+    mv "$1.seeded" "$1"
+    echo "SEEDED: mutated one retained result line pre-normalize"
+  else
+    rm -f "$1.seeded"
+    fail "seeded control found no retained line to mutate in $1"
+  fi
+}
+
 archive_logs() {
   # $@ = required log paths to preserve under $ARTIFACTS (T-C09 R12
   # C09-05): a missing input or a failed copy fails the driver, so a
@@ -534,12 +598,9 @@ run_parity_cert_leg() {
     "$BIN" "$SHIM_SO" --version "$V" --storage "$M" --leg "$L" --directory "$D" >"$PLOG" 2>&1 || ec=$?
   echo "proxied exit: consumer_certificates $ec"
   if [ "$ec" -ne 0 ]; then echo "--- proxied log:"; cat "$PLOG"; fail "consumer_certificates:$L FAILED proxied ($V/$M)"; fi
+  seed_mutate "$PLOG"
   normalize "$DLOG" "$DNORM"
   normalize "$PLOG" "$PNORM"
-  if [ "${HASKOKI_PARITY_SEED_MISMATCH:-0}" = "1" ]; then
-    echo "ok: SEED-INJECTED-DIVERGENCE (sensitivity proof)" >> "$PNORM"
-    echo "SEEDED: injected one divergent line into proxied transcript"
-  fi
   if ! diff -u "$DNORM" "$PNORM" > "$TMPD/consumer_certificates-$V-$L-$M.diff"; then
     echo "PARITY DIVERGENCE in consumer_certificates:$L ($V/$M):"
     cat "$TMPD/consumer_certificates-$V-$L-$M.diff"
@@ -600,12 +661,9 @@ run_parity_routed_leg() {
     "$BIN" "$SHIM_SO" --version "$V" --legs "$L" >"$PLOG" 2>&1 || ec=$?
   echo "proxied exit: $B:$V-$L $ec"
   if [ "$ec" -ne 0 ]; then echo "--- proxied log:"; cat "$PLOG"; fail "$B:$L FAILED proxied ($V)"; fi
+  seed_mutate "$PLOG"
   normalize "$DLOG" "$DNORM"
   normalize "$PLOG" "$PNORM"
-  if [ "${HASKOKI_PARITY_SEED_MISMATCH:-0}" = "1" ]; then
-    echo "ok: SEED-INJECTED-DIVERGENCE (sensitivity proof)" >> "$PNORM"
-    echo "SEEDED: injected one divergent line into proxied transcript"
-  fi
   if ! diff -u "$DNORM" "$PNORM" > "$TMPD/$B-$V-$L.diff"; then
     echo "PARITY DIVERGENCE in $B:$L ($V):"
     cat "$TMPD/$B-$V-$L.diff"
@@ -668,12 +726,9 @@ run_parity() {
     "$BIN" "$SHIM_SO" >"$PLOG" 2>&1 || ec=$?
   echo "proxied exit: $base $ec"
   if [ "$ec" -ne 0 ]; then echo "--- proxied log:"; cat "$PLOG"; fail "$base FAILED proxied"; fi
+  seed_mutate "$PLOG"
   normalize "$DLOG" "$DNORM"
   normalize "$PLOG" "$PNORM"
-  if [ "${HASKOKI_PARITY_SEED_MISMATCH:-0}" = "1" ]; then
-    echo "ok: SEED-INJECTED-DIVERGENCE (sensitivity proof)" >> "$PNORM"
-    echo "SEEDED: injected one divergent line into proxied transcript"
-  fi
   if ! diff -u "$DNORM" "$PNORM" > "$TMPD/$base.diff"; then
     echo "PARITY DIVERGENCE in $base (first divergent call + outputs):"
     cat "$TMPD/$base.diff"

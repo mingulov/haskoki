@@ -1,0 +1,235 @@
+#!/bin/sh
+# examples/release/compare-classify -- subset-aware classifier over a
+# `haskoki-demo compare` run dir (codex I3: the entrypoint comparator is
+# raw plumbing — it diffs ALL collected ids and labels every mismatch
+# "unexpected". This wrapper is the frozen-subset porcelain).
+#
+# Reads <run-dir>/diff.txt + <run-dir>/shared-findings.txt (never modified;
+# raw outputs are preserved) and classifies every diff line into exactly
+# one bucket:
+#   KNOWN-DIFFERENCE      exact frozen line, with family + per-id reason
+#                         (frozen-subset.tsv, 188 lines in 7 families)
+#   DIRECT-ONLY           one-sided collection (`absent` on either side);
+#                         zero on the frozen pin
+#   FLAKY                 an R5 section-4 stable-eligible id appearing as
+#                         a diff at all — ZERO allowed on v0.2.0, so any
+#                         hit fails and re-opens section 4
+#   UNEXPECTED-DIFFERENCE anything else — fails
+# The shared set must equal frozen-shared.txt (25) exactly; missing
+# frozen lines (a diff silently fixed) fail as drift too.
+#
+# Writes <run-dir>/classification.txt + <run-dir>/classification.json.
+#
+# Run (inside the demo image; run dirs live under the /out mount):
+#   docker run --rm --network none -v "$PWD/out:/out" --entrypoint /bin/sh \
+#     haskoki-demo:0.3.0.0 /opt/haskoki/examples/release/compare-classify/compare-classify /out/<compare-run-dir>
+# Data override (tests only): HASKOKI_COMPARE_CLASSIFY_DATA=<dir>.
+#
+# Exit: 0 every diff line known + shared exact + zero other buckets /
+# 1 classification drift (unexpected, direct-only, flaky, missing-known,
+# or shared mismatch) / 2 usage or infrastructure failure.
+set -u
+
+SELF=$(dirname "$0")
+DATA=${HASKOKI_COMPARE_CLASSIFY_DATA:-$SELF}
+SUBSET="$DATA/frozen-subset.tsv"
+SHARED="$DATA/frozen-shared.txt"
+
+usage() {
+  cat <<'EOF'
+compare-classify — frozen-subset classifier over a compare run dir
+
+Usage:
+  compare-classify <run-dir>
+
+<run-dir> holds diff.txt + shared-findings.txt from `haskoki-demo
+compare`. Raw files are never modified; classification.txt and
+classification.json are written beside them.
+
+Exit: 0 frozen set reproduced exactly (188 known + shared 25/25,
+zero unexpected/direct-only/flaky/missing) / 1 drift / 2 usage
+or infrastructure failure.
+EOF
+}
+
+fail() { echo "compare-classify: $1" >&2; exit 2; }
+
+case "${1:-}" in
+  --help|-h) usage; exit 0 ;;
+  ""|--*) fail "want exactly one argument: <run-dir>" ;;
+esac
+[ $# -eq 1 ] || fail "want exactly one argument: <run-dir>"
+RUN=$1
+[ -f "$RUN/diff.txt" ] || fail "no diff.txt file in $RUN"
+[ -f "$RUN/shared-findings.txt" ] || fail "no shared-findings.txt file in $RUN"
+[ -f "$SUBSET" ] || fail "missing frozen data: $SUBSET"
+[ -f "$SHARED" ] || fail "missing frozen data: $SHARED"
+command -v python3 >/dev/null 2>&1 || fail "python3 missing"
+
+python3 - "$RUN" "$SUBSET" "$SHARED" <<'PY'
+import json, sys
+from collections import Counter
+
+run, subset_path, shared_path = sys.argv[1:4]
+
+REASONS = {
+    "A-msg-init-0x71": "v0.2.0 shim refuses IV-shaped message params "
+        "with CKR_MECHANISM_PARAM_INVALID (0x71); backend serves them "
+        "(upstream #39)",
+    "B-blowfish": "v0.2.0 embedded catalog lacks Blowfish 0x1094; "
+        "advertised but not operational (0x71)",
+    "C-tls12": "CKM_TLS_KEY_AND_MAC_DERIVE refused 0x71 (not operational)",
+    "D-wtls": "CKM_WTLS_PRE_MASTER_KEY_GEN refused "
+        "CKR_MECHANISM_PARAM_INVALID (not operational)",
+    "E-boundary": "validation check-order differs between lanes "
+        "(not refusal-vs-accept)",
+    "F-gmac": "AES_GMAC message-init: direct fails native (provider "
+        "capability contract), proxy xfails 0x71",
+    "G-inversion": "proxy returns spec-preferred codes the backend does "
+        "not (proxy-better direction, not normalized away)",
+}
+
+# R5 section 4 stable-eligible ids: any appearance in diff.txt is a
+# variance event (zero allowed on v0.2.0).
+STABLE5 = {
+    "test_object.py::TestSessionObjects::test_multiple_keys_same_type",
+    "test_search.py::TestObjectSearch::test_find_many_objects",
+    "test_ro_session.py::TestROSessionOperations::test_verify_in_ro_session",
+    "test_session_state_machine.py::TestLoginStateTransitions::test_open_session_is_public",
+    "test_provisioned_sign_coherence.py::test_provisioned_signing_keys_are_coherent",
+}
+
+
+def read_lines(path):
+    try:
+        raw = open(path, "rb").read()
+    except OSError as e:
+        print("compare-classify: cannot read %s: %s" % (path, e))
+        sys.exit(2)
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as e:
+        print("compare-classify: non-UTF8 bytes in %s: %s" % (path, e))
+        sys.exit(2)
+    canon = ("\n".join(lines) + "\n").encode("utf-8") if lines else b""
+    if raw != canon:
+        print("compare-classify: %s is not LF-canonical" % path)
+        sys.exit(2)
+    return lines
+
+
+frozen = {}
+for line in read_lines(subset_path):
+    if line.startswith("#") or not line:
+        continue
+    fam, _, frozen_line = line.partition("\t")
+    if not fam or not frozen_line or fam not in REASONS:
+        print("compare-classify: malformed frozen row: %r" % line)
+        sys.exit(2)
+    if frozen_line in frozen:
+        print("compare-classify: duplicate frozen line: %r" % frozen_line)
+        sys.exit(2)
+    frozen[frozen_line] = fam
+if len(frozen) != 188:
+    print("compare-classify: want 188 frozen lines, have %d" % len(frozen))
+    sys.exit(2)
+
+want_shared = [l for l in read_lines(shared_path)
+               if l and not l.startswith("#")]
+if len(want_shared) != 25:
+    print("compare-classify: want 25 frozen shared lines, have %d"
+          % len(want_shared))
+    sys.exit(2)
+
+got_diff = read_lines(run + "/diff.txt")
+got_shared = read_lines(run + "/shared-findings.txt")
+
+known, direct_only, flaky, unexpected = [], [], [], []
+for line in got_diff:
+    if line in frozen:
+        fam = frozen[line]
+        known.append({"family": fam, "reason": REASONS[fam], "line": line})
+        continue
+    parts = line.split(" ", 2)
+    if len(parts) == 3 and "absent" in parts[:2]:
+        direct_only.append(line)
+        continue
+    nid = parts[2] if len(parts) == 3 else ""
+    if nid in STABLE5:
+        flaky.append(line)
+        continue
+    unexpected.append(line)
+
+missing = [l for l in frozen if l not in set(got_diff)]
+dupes = [l for l, n in Counter(got_diff).items() if n > 1]
+shared_missing = list((Counter(want_shared) - Counter(got_shared)).elements())
+shared_extra = list((Counter(got_shared) - Counter(want_shared)).elements())
+shared_exact = got_shared == want_shared
+
+# Report I/O failures are infrastructure (exit 2), never drift: an
+# unwritable run dir must not masquerade as exit 1. The guard covers
+# open AND the full write/flush/close sequence — a failure after a
+# successful open (disk full, size limit) is still exit 2.
+try:
+    with open(run + "/classification.txt", "w") as f:
+        f.write("compare-classify %s\n" % run)
+        f.write("known-difference: %d (raw diff lines preserved in diff.txt)\n"
+                % len(known))
+        for fam in sorted(REASONS):
+            n = sum(1 for k in known if k["family"] == fam)
+            f.write("  %s: %d\n" % (fam, n))
+        for label, bucket in (("direct-only", direct_only), ("flaky", flaky),
+                              ("unexpected-difference", unexpected),
+                              ("missing-known", missing),
+                              ("shared-missing", shared_missing),
+                              ("shared-extra", shared_extra),
+                              ("duplicate-diff-lines", dupes)):
+            f.write("%s: %d\n" % (label, len(bucket)))
+            for line in bucket:
+                f.write("  %s\n" % line)
+        f.write("shared: %d/%d exact=%s\n"
+                % (len(got_shared), len(want_shared), shared_exact))
+
+    with open(run + "/classification.json", "w") as f:
+        json.dump({
+            "command": "compare-classify",
+            "subset": "frozen parity subset (R5)",
+            "run_dir": run,
+            "counts": {
+                "known_difference": len(known),
+                "direct_only": len(direct_only),
+                "flaky": len(flaky),
+                "unexpected_difference": len(unexpected),
+                "missing_known": len(missing),
+                "duplicate_diff_lines": len(dupes),
+                "shared_expected": len(want_shared),
+                "shared_actual": len(got_shared),
+                "shared_exact": shared_exact,
+            },
+            "known": known,
+            "direct_only": direct_only,
+            "flaky": flaky,
+            "unexpected_difference": unexpected,
+            "missing_known": missing,
+            "shared_missing": shared_missing,
+            "shared_extra": shared_extra,
+        }, f, indent=1)
+        f.write("\n")
+except OSError as e:
+    print("compare-classify: cannot write reports in %s: %s" % (run, e))
+    sys.exit(2)
+
+drift = (unexpected or direct_only or flaky or missing or dupes
+         or not shared_exact)
+if drift:
+    print("compare-classify-DRIFT: known %d + direct-only %d + flaky %d + "
+          "unexpected %d + missing-known %d (+%d dupes) + shared %d/%d "
+          "exact=%s; see %s/classification.txt"
+          % (len(known), len(direct_only), len(flaky), len(unexpected),
+             len(missing), len(dupes), len(got_shared), len(want_shared),
+             shared_exact, run))
+    sys.exit(1)
+print("compare-classify-ok: 188 known-difference + shared 25/25 exact; "
+      "zero unexpected/direct-only/flaky/missing; report: "
+      "%s/classification.json" % run)
+PY
