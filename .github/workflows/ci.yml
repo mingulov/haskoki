@@ -11,10 +11,20 @@ name: CI
 #
 # CD: publishing happens ONLY in the `publish` job, which runs only
 # for v* tags (push a tag and the release goes out with it). It needs
-# passing build+tests+bundle+fast-lane, then pushes the toolchain image
-# to GHCR and attaches the release bundle to the GitHub release.
+# passing build+tests+bundle+fast-lane+demo-image, verifies the tag
+# matches the Cabal version, then pushes the DEMO image to GHCR and
+# attaches the release bundle to a NEW GitHub release (never
+# replacement assets: no --clobber anywhere).
 # The KAT lane stays informational (too slow to gate a release).
 # To cut a release: git tag vX.Y.Z && git push origin vX.Y.Z.
+#
+# Pin policy (R8 audit): external actions are major-pinned
+# (checkout v6, cache v5, buildx v3, build-push v6, login v3,
+# upload/download-artifact v7, setup-uv v8.1.0). Floating inputs,
+# visible here with reasons: `ubuntu-latest` runners
+# (GitHub-managed, unpinnable by design); `ubuntu:26.04` and
+# `rust:1.94-bookworm` image tags (floating tags; the effective
+# digests are recorded per build in the job output/evidence).
 
 on:
   push:
@@ -129,7 +139,7 @@ jobs:
   # ------------------------------------------------------------------
   bundle:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     permissions:
       contents: read
     steps:
@@ -154,65 +164,374 @@ jobs:
         run: |
           docker run --rm --network host -v "$PWD:/work" -w /work \
             haskoki-dev:ghc-9.10.3 scripts/make-release.sh
+      - name: Capture producer provenance
+        run: |
+          set -euo pipefail
+          IMAGE_ID=$(docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3) \
+            || { echo "cannot inspect builder image"; exit 2; }
+          GHC_V=$(docker run --rm haskoki-dev:ghc-9.10.3 ghc --numeric-version) \
+            || { echo "cannot read GHC version"; exit 2; }
+          CABAL_V=$(docker run --rm haskoki-dev:ghc-9.10.3 cabal --numeric-version) \
+            || { echo "cannot read cabal version"; exit 2; }
+          GCC_V=$(docker run --rm haskoki-dev:ghc-9.10.3 sh -c 'gcc -dumpversion') \
+            || { echo "cannot read gcc version"; exit 2; }
+          GLIBC_V=$(docker run --rm haskoki-dev:ghc-9.10.3 sh -c 'ldd --version | head -1') \
+            || { echo "cannot read glibc version"; exit 2; }
+          python3 - "$IMAGE_ID" "$GHC_V" "$CABAL_V" "$GCC_V" "$GLIBC_V" \
+            > producer-provenance.json <<'PY' || { echo "provenance write failed"; exit 2; }
+          import json, sys
+          print(json.dumps({
+            "builder_image": "haskoki-dev:ghc-9.10.3",
+            "builder_image_id": sys.argv[1],
+            "ghc": sys.argv[2],
+            "cabal_install": sys.argv[3],
+            "gcc": sys.argv[4],
+            "builder_glibc": sys.argv[5],
+          }, indent=2))
+          PY
+          python3 -m json.tool producer-provenance.json > /dev/null \
+            || { echo "provenance is not valid JSON"; exit 2; }
+          cat producer-provenance.json
       - name: Install test on bare image
         run: bash scripts/test-release-install.sh
+      - name: Build sdist and verify outside the checkout
+        run: |
+          set -euo pipefail
+          docker run --rm --network host -v "$PWD:/work" -w /work \
+            haskoki-dev:ghc-9.10.3 sh -c 'cabal sdist'
+          VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
+          rm -rf /tmp/sdist-verify && mkdir -p /tmp/sdist-verify
+          tar xzf "dist-newstyle/sdist/haskoki-$VER.tar.gz" -C /tmp/sdist-verify
+          printf 'packages: .\nallow-newer: all\n' \
+            > "/tmp/sdist-verify/haskoki-$VER/cabal.project"
+          sudo chown -R 1000:1000 /tmp/sdist-verify
+          docker run --rm --network host -v "/tmp/sdist-verify/haskoki-$VER:/src" \
+            -w /src haskoki-dev:ghc-9.10.3 \
+            sh -c 'cabal build all --enable-tests && cabal test all'
+      - name: Archive bundle tree (mode-preserving transport)
+        run: |
+          set -euo pipefail
+          # Artifact upload/download normalizes modes to 0644, which
+          # would strip +x from bin/haskoki-ctl and fail packaging
+          # downstream: ship a tarball (modes live in tar headers).
+          rm -f release-bundle.tar.gz
+          tar -czf release-bundle.tar.gz dist-release
+          tar tzf release-bundle.tar.gz > /dev/null \
+            || { echo "bundle archive validation failed"; exit 2; }
+          ls -la release-bundle.tar.gz
       - name: Upload bundle
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: release-bundle
-          path: dist-release
+          path: release-bundle.tar.gz
+          if-no-files-found: error
+      - name: Upload producer provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: producer-provenance
+          path: producer-provenance.json
+          if-no-files-found: error
+      - name: Upload verified sdist
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-sdist
+          path: dist-newstyle/sdist/haskoki-*.tar.gz
           if-no-files-found: error
 
   # ------------------------------------------------------------------
+  # Demo image (release candidate): consumes the STAGED bundle
+  # (release-bundle artifact from the bundle job — brief D1, no
+  # second bundle build anywhere) and runs
+  # scripts/test-demo-image.sh, the host-driver that asserts
+  # every final-artifact lane (demo, smoke x2, full x2 with
+  # exact finding sets, compare with the frozen subset,
+  # wrapper drift, help/matrix, examples, JSON, UID, nonet,
+  # floor). Old build-tree runs never substitute for these
+  # lanes. Plain `docker` commands only: the Buildx container
+  # driver cannot see host-loaded base images, so no buildx
+  # action is used here. The TESTED image is saved to a tarball
+  # and uploaded: publish loads these exact bytes (staged-only
+  # identity, no rebuild). Floating FROM tags are resolved at
+  # build time; their effective digests leave via job outputs.
+  # ------------------------------------------------------------------
+  demo-image:
+    needs: bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    outputs:
+      imageid: ${{ steps.record.outputs.imageid }}
+      base_digest: ${{ steps.record.outputs.base_digest }}
+      rust_digest: ${{ steps.record.outputs.rust_digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Preflight (docker access, demo Dockerfile)
+        run: |
+          set -euo pipefail
+          docker info >/dev/null || { echo "docker unavailable"; exit 2; }
+          test -f docker/Dockerfile.demo || { echo "Dockerfile.demo missing"; exit 2; }
+          echo "preflight ok"
+      - name: Download staged bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: release-bundle
+          path: .
+      - name: Extract staged bundle
+        run: |
+          set -euo pipefail
+          test -f release-bundle.tar.gz || { echo "staged bundle missing"; exit 2; }
+          tar xzf release-bundle.tar.gz
+          VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
+          test -x "dist-release/haskoki-$VER/bin/haskoki-ctl" \
+            || { echo "staged bundle lost the executable bit in transport"; exit 2; }
+          echo "staged bundle extracted: dist-release/haskoki-$VER"
+      - name: Establish base images (explicit pull)
+        run: |
+          set -euo pipefail
+          # BuildKit resolves FROM sources into its cache without
+          # guaranteeing image-store tags; pull explicitly so both
+          # the driver build and the digest recording below see
+          # named tags on a fresh runner.
+          docker pull ubuntu:26.04
+          docker pull rust:1.94-bookworm
+          docker inspect --format '{{index .RepoDigests 0}}' ubuntu:26.04
+          docker inspect --format '{{index .RepoDigests 0}}' rust:1.94-bookworm
+      - name: Run the demo-image driver (exact lane assertions)
+        env:
+          HASKOKI_DEMO_TEST_OUT: ${{ github.workspace }}/driver-out
+          HASKOKI_DEMO_REVISION: ${{ github.sha }}
+          HASKOKI_DEMO_USE_STAGED: "1"
+        run: |
+          set -euo pipefail
+          time sh scripts/test-demo-image.sh
+      - name: Record image identity
+        id: record
+        run: |
+          set -euo pipefail
+          docker inspect --format 'id={{.Id}} size={{.Size}}' haskoki-demo:0.3.0.0
+          docker inspect --format '{{json .Config.Labels}}' haskoki-demo:0.3.0.0
+          echo "imageid=$(docker inspect --format '{{.Id}}' haskoki-demo:0.3.0.0)" \
+            >> "$GITHUB_OUTPUT"
+          BASE_DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' ubuntu:26.04)
+          case "$BASE_DIGEST" in
+            ""|"<no value>") echo "base digest unreadable"; exit 2 ;;
+          esac
+          echo "base_digest=$BASE_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "base: $BASE_DIGEST"
+          RUST_DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' rust:1.94-bookworm)
+          case "$RUST_DIGEST" in
+            ""|"<no value>") echo "rust digest unreadable"; exit 2 ;;
+          esac
+          echo "rust_digest=$RUST_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "rust: $RUST_DIGEST"
+      - name: Save tested image
+        run: |
+          set -euo pipefail
+          docker save haskoki-demo:0.3.0.0 | gzip > demo-image.tar.gz
+          ls -la demo-image.tar.gz
+      - name: Upload tested image
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo-image-tested
+          path: demo-image.tar.gz
+          if-no-files-found: error
+      - name: Upload run dirs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo-image-runs
+          path: driver-out
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------------
   # Publish (CD): the ONLY job that publishes. Runs only for v* tags,
-  # after passing build+tests+bundle+fast-lane: pushes the toolchain
-  # image to GHCR and attaches the release bundle to the GitHub
-  # release (creating it when missing).
+  # after passing build+tests+bundle+fast-lane+demo-image. Publishes
+  # a staged candidate only: the tag must agree with the Cabal
+  # version, the release must not already exist (checked BEFORE any
+  # registry write, fail-closed on anything but confirmed
+  # absence), and assets are never replaced (no --clobber: an
+  # existing asset fails loudly). Order is strict: every download
+  # and the full packaging validation run BEFORE the first
+  # registry write, so a broken candidate fails with nothing
+  # pushed. The pushed image is the TESTED bytes transferred from
+  # the demo-image job (docker save/load + id check, no rebuild),
+  # and its digest is bound into the manifest before release
+  # creation. The manifest's build environment comes from the
+  # bundle producer (provenance artifact), never from a fresh
+  # local inspection. Plain `docker` commands only (same
+  # Buildx-driver reason as the demo-image job).
   # ------------------------------------------------------------------
   publish:
-    needs: [haskell, bundle, pkcs11-fast]
+    needs: [haskell, bundle, pkcs11-fast, demo-image]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: write
       packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v3
+      - name: Verify tag matches Cabal version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          CABAL_VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
+          TAG_VER=${TAG#v}
+          [ -n "$CABAL_VER" ] || { echo "cannot read Cabal version"; exit 2; }
+          [ "$TAG_VER" = "$CABAL_VER" ] \
+            || { echo "tag $TAG disagrees with Cabal version $CABAL_VER"; exit 2; }
+          echo "tag/version agreement ok: $TAG == Cabal $CABAL_VER"
+      - name: Refuse to replace an existing release (fail-closed)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          set +e
+          LOOKUP=$(gh release view "$TAG" 2>&1)
+          RC=$?
+          set -e
+          if [ "$RC" -eq 0 ]; then
+            echo "release $TAG already exists: refusing to replace assets"
+            exit 2
+          fi
+          # Only the observed genuine-absence shape proceeds
+          # (exit 1 + "release not found", gh 2.101.0): a missing
+          # binary (127), a repo-level 404, an auth error, or any
+          # reworded message fails closed.
+          [ "$RC" -eq 1 ] || { echo "release lookup failed (rc=$RC): $LOOKUP"; exit 2; }
+          case "$LOOKUP" in
+            *release\ not\ found*)
+              echo "no existing release $TAG: proceeding" ;;
+            *)
+              echo "release lookup failed ambiguously: $LOOKUP"
+              exit 2 ;;
+          esac
+      - name: Download tested image
+        uses: actions/download-artifact@v7
+        with:
+          name: demo-image-tested
+          path: image-in
+      - name: Load and verify staged bytes (no push yet)
+        env:
+          TESTED_ID: ${{ needs.demo-image.outputs.imageid }}
+        run: |
+          set -euo pipefail
+          test -f image-in/demo-image.tar.gz || { echo "tested image missing"; exit 2; }
+          gunzip -c image-in/demo-image.tar.gz | docker load
+          LOADED_ID=$(docker inspect --format '{{.Id}}' haskoki-demo:0.3.0.0)
+          [ -n "$TESTED_ID" ] || { echo "tested id output missing"; exit 2; }
+          [ "$LOADED_ID" = "$TESTED_ID" ] \
+            || { echo "loaded $LOADED_ID != tested $TESTED_ID"; exit 2; }
+          echo "staged bytes verified: $LOADED_ID"
+      - name: Download bundle tree
+        uses: actions/download-artifact@v7
+        with:
+          name: release-bundle
+          path: .
+      - name: Download verified sdist
+        uses: actions/download-artifact@v7
+        with:
+          name: release-sdist
+          path: dist-newstyle/sdist
+      - name: Download gate evidence for the results archive
+        uses: actions/download-artifact@v7
+        with:
+          name: haskell-test-log
+          path: evidence-in/haskell
+      - name: Download fast-lane report
+        uses: actions/download-artifact@v7
+        with:
+          name: pkcs11-fast-report
+          path: evidence-in/fast
+      - name: Download demo-image run dirs
+        uses: actions/download-artifact@v7
+        with:
+          name: demo-image-runs
+          path: evidence-in/demo
+      - name: Download producer provenance
+        uses: actions/download-artifact@v7
+        with:
+          name: producer-provenance
+          path: provenance-in
+      - name: Extract bundle and validate staged assets (pre-push)
+        env:
+          HASKOKI_PROVENANCE_FILE: provenance-in/producer-provenance.json
+          HASKOKI_BASE_DIGEST: ${{ needs.demo-image.outputs.base_digest }}
+          HASKOKI_RUST_DIGEST: ${{ needs.demo-image.outputs.rust_digest }}
+        run: |
+          set -euo pipefail
+          test -f release-bundle.tar.gz || { echo "staged bundle missing"; exit 2; }
+          tar xzf release-bundle.tar.gz
+          VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
+          test -x "dist-release/haskoki-$VER/bin/haskoki-ctl" \
+            || { echo "staged bundle lost the executable bit in transport"; exit 2; }
+          mkdir -p "dist-release/test-results-$VER"
+          cp -r evidence-in/haskell evidence-in/fast evidence-in/demo \
+            "dist-release/test-results-$VER"/
+          sh scripts/package-release.sh dist-release
+          (cd dist-release && sha256sum -c SHA256SUMS)
+          echo "pre-push asset validation ok"
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ghcr.io/${{ github.repository }}:ghc-9.10.3
-          cache-from: type=gha
-      - name: Download bundle
-        uses: actions/download-artifact@v7
-        with:
-          name: release-bundle
-          path: dist-release
-      - name: Attach bundle to release
+      - name: Push tested image and record digest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          docker tag haskoki-demo:0.3.0.0 "ghcr.io/mingulov/haskoki-demo:$TAG"
+          docker tag haskoki-demo:0.3.0.0 ghcr.io/mingulov/haskoki-demo:latest
+          docker push "ghcr.io/mingulov/haskoki-demo:$TAG"
+          docker push ghcr.io/mingulov/haskoki-demo:latest
+          docker pull "ghcr.io/mingulov/haskoki-demo:$TAG" >/dev/null
+          # Select the pushed repository's own digest entry: the
+          # daemon may also echo the local id (unpushed form), and
+          # under the containerd store a genuine registry digest
+          # can equal the image id — so select by repo name,
+          # never by comparing against .Id.
+          PUSHED_DIGEST=$(docker inspect \
+            --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+            "ghcr.io/mingulov/haskoki-demo:$TAG" 2>/dev/null \
+            | grep -m1 "^ghcr.io/mingulov/haskoki-demo@sha256:" || true)
+          [ -n "$PUSHED_DIGEST" ] \
+            || { echo "pushed digest missing for ghcr.io/mingulov/haskoki-demo:$TAG"; exit 2; }
+          echo "pushed: $PUSHED_DIGEST"
+          echo "PUSHED_DIGEST=$PUSHED_DIGEST" >> "$GITHUB_ENV"
+      - name: Finalize manifest with pushed digest
+        env:
+          HASKOKI_OCI_DIGEST: ${{ env.PUSHED_DIGEST }}
+          HASKOKI_PROVENANCE_FILE: provenance-in/producer-provenance.json
+          HASKOKI_BASE_DIGEST: ${{ needs.demo-image.outputs.base_digest }}
+          HASKOKI_RUST_DIGEST: ${{ needs.demo-image.outputs.rust_digest }}
+        run: |
+          set -euo pipefail
+          [ -n "${HASKOKI_OCI_DIGEST:-}" ] || { echo "pushed digest missing"; exit 2; }
+          sh scripts/package-release.sh dist-release
+          (cd dist-release && sha256sum -c SHA256SUMS)
+          echo "finalized manifest ok"
+      - name: Create release and attach archives (no clobber)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          ART=$(echo dist-release/haskoki-*)
-          VER=$(basename "$ART" | sed 's/^haskoki-//')
-          tar czf "haskoki-$VER.tar.gz" -C dist-release "$(basename "$ART")"
-          gh release view "$TAG" >/dev/null 2>&1 \
-            || gh release create "$TAG" --title "haskoki $TAG" \
-              --notes "Automated release bundle."
-          gh release upload "$TAG" "haskoki-$VER.tar.gz" --clobber
+          ls dist-release/*.tar.gz dist-release/SHA256SUMS \
+            dist-release/release-manifest.json
+          gh release create "$TAG" --title "haskoki $TAG" \
+            --notes-file docs/release-notes-0.3.0.0.md
+          gh release upload "$TAG" dist-release/*.tar.gz \
+            dist-release/SHA256SUMS dist-release/release-manifest.json
 
   # ------------------------------------------------------------------
   # Fetch the Wycheproof/ACVP/CCTV/x509-limbo vectors ONCE (shared via
@@ -268,7 +587,14 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: release-bundle
-          path: dist-release
+          path: .
+      - name: Extract staged bundle
+        run: |
+          set -euo pipefail
+          test -f release-bundle.tar.gz || { echo "staged bundle missing"; exit 2; }
+          tar xzf release-bundle.tar.gz
+          ART=$(echo dist-release/haskoki-*)
+          test -f "$ART/lib/libhaskoki.so" || { echo "staged bundle broken: $ART"; exit 2; }
       - name: Run fast lane
         run: |
           ART=$(echo dist-release/haskoki-*)
@@ -327,7 +653,14 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: release-bundle
-          path: dist-release
+          path: .
+      - name: Extract staged bundle
+        run: |
+          set -euo pipefail
+          test -f release-bundle.tar.gz || { echo "staged bundle missing"; exit 2; }
+          tar xzf release-bundle.tar.gz
+          ART=$(echo dist-release/haskoki-*)
+          test -f "$ART/lib/libhaskoki.so" || { echo "staged bundle broken: $ART"; exit 2; }
       - name: Run KAT lane
         run: |
           ART=$(echo dist-release/haskoki-*)

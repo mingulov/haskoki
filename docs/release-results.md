@@ -475,3 +475,101 @@ defaults are N=4/M=50/iters=20000
 each (`seedRandomMaxBytes`, `generateRandomMaxBytes`);
 p11scope `doctor` exits 0 with zero FAILs privileged, exit 1
 with 3 FAILs unprivileged.
+
+## Staging appendix (R8 release candidate)
+
+Built from worktree at `a2fe4f9` plus the R8 changes (OCI
+labels + staged-bundle consumption: the Dockerfile COPYs the
+tree the driver stages instead of rebuilding it). Measurement
+lanes re-run in full on the staged image:
+
+- Driver `HASKOKI_DEMO_TEST_OUT=/tmp/r8-driver2 sh
+  scripts/test-demo-image.sh`: exit 0,
+  `PASS: test-demo-image.sh (demo + check x4 + compare +
+  help/matrix/examples/json + UID + nonet + floor)`. Wall
+  ~85 min (staging + cached build, then lanes 07:48Z→09:10Z,
+  console close 09:13Z, 5100 s total): staging (3 s, warm
+  incremental) + cached build ≈ 23 s to the first lane,
+  demo seconds + smokes 129 s / 134 s, full direct 841 s
+  (exact 27), full proxy 1159 s (25 stable, byte-exact),
+  compare 2105 s (188+25 exact), tail legs ≈ 12 min
+  (report mtimes: demo 07:48:46Z, smokes 07:50:56Z /
+  07:53:11Z, fulls 08:07:13Z / 08:26:38Z, compare
+  09:01:44Z).
+- Driver image id
+  `sha256:0780f24f86ddad546f876f204717960794da0edf0b01a592710458635181ff1b`
+  (revision label `unknown`, honest local default);
+  506300511 B.
+- Candidate `haskoki-demo:r8-candidate` (the CI form:
+  staged tree + `--build-arg
+  REVISION=a2fe4f93f242c28185daacf46da9865a49f01e08`):
+  id `sha256:1561da951cf365e1bf4cf7472681ef0531c44702f5d4399402df5713724ca1fa`,
+  506300885 B, demo 8/8 + smoke zero-findings re-proven on
+  it (direct 09:14Z, proxy 09:20Z).
+- Full-filesystem comparison (driver image vs candidate:
+  both `docker save` outputs unpacked layer by layer,
+  every regular file hashed — method in
+  `ws/r8-evidence/tree-diff/round2/fsdiff.sh`): 12,339
+  files per image, identical file sets, 12,333
+  byte-identical; the 6 that differ are build-mechanical
+  only — `/tmp/ldd-so.txt` (ASLR addresses, zero
+  non-address lines after normalization),
+  `/var/cache/ldconfig/aux-cache` (regenerated binary
+  cache, same 5458 B), and four apt/dpkg logs
+  (timestamps / APT-ID numbers only: history, term, and
+  dpkg are strip-identical, eipp differs in 12 APT-ID
+  lines). The five bundle record files are identical
+  across images (single staged tree). Spot shas on the
+  candidate: libhaskoki `ef13f1a0…` (the staged tree,
+  same in both images), entrypoint `1afe3bdf…`, proxy
+  `8b7def0f…`; same deb versions. Layer-history commands
+  differ in 4 line-pairs, all carrying only the REVISION
+  value (unknown vs tag SHA) — that arg cache-busts the
+  apt layer, which explains the log/cache diffs above.
+  Whole-image byte identity is NOT claimed.
+- Base `ubuntu:26.04`
+  `sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d`;
+  proxy toolchain `rust:1.94-bookworm`
+  `sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55`;
+  builder `haskoki-dev:ghc-9.10.3`
+  `sha256:0ee486d207331df09625f19cceeca3fe63f245477a6374e085e61da04c2bf699`.
+- Group maxima (re-measured on the candidate): bundle
+  GLIBC_2.43 (27 ELFs), proxy GLIBC_2.34 (2 ELFs), venv
+  GLIBC_2.34 (10 ELFs); floor GLIBC_2.43 holds (system
+  python3.14 at 2.38).
+- Negatives (candidate image; full commands + exits in
+  `ws/r8-evidence/negatives/`): readonly `/out` →
+  `haskoki-demo: output dir not writable: /out`, exit 2;
+  busy proxy port (port occupied in-container, proven by a
+  bind probe) → `haskoki-demo: proxy port 17512 already
+  busy (one run at a time)`, exit 2; kat missing-data
+  guard → exit 1 with the exact script message; post-run:
+  no stray containers, port free, run dirs intact.
+- Content audit (commands + exits preserved): no
+  credentials, key material, journals, or stray workspace
+  files in image or archives. Name hits are checker/venv
+  code only (`_secrets.py` redaction policy,
+  `test_*secret*`/`test_private_key*` modules,
+  `asn1crypto/pem.py`, CA bundle); `BEGIN … PRIVATE KEY`
+  hits are `cryptography` format-string constants
+  (`_SK_START`). Demo PINs are public fixtures by design.
+  Archive top dirs match the documented tree.
+- Tag-build delta (observed vs future): the comparison
+  above measures one cached rebuild pair (same tree,
+  different REVISION) — 6 build-mechanical diffs. A future
+  tag build additionally re-resolves floating inputs
+  (apt/PyPI/crates registries, base/toolchain tags), so
+  its delta is NOT limited to those 6; the CI `demo-image`
+  job re-runs all entrypoint lanes on the tag tree, and
+  `publish` records the pushed digest. No equivalence
+  with any earlier build is claimed.
+- Single-bundle provenance (staged-only): the bundle is
+  built ONCE — by the CI `bundle` job (`/work`) or the
+  local driver staging step — and consumed unchanged by
+  the demo image (`COPY staged-bundle/`), the lanes, and
+  the archives. `libhaskoki.so` RUNPATH anchors at
+  `/work/dist-newstyle/…` in all of them. The staged
+  module hash `ef13f1a0…` reproduces exactly across the
+  R1, driver, and candidate builds (core sources
+  unchanged); the earlier cross-image pair is closed by
+  construction — there is no second bundle build.

@@ -37,6 +37,20 @@
 #   TEST_RESULTS_DIR     staged results dir (default $OUT/test-results-<ver>)
 #   HASKOKI_IMAGE        builder image for the env record
 #                        (default haskoki-dev:ghc-9.10.3)
+#   HASKOKI_OCI_DIGEST   pushed demo image digest for the manifest
+#                        (default null; the publish path passes the
+#                        digest it just pushed)
+#   HASKOKI_PROVENANCE_FILE
+#                        bundle-producer provenance JSON (written by
+#                        the CI bundle job; when set, build_env comes
+#                        from the producer instead of a local docker
+#                        inspection, and docker is not required)
+#   HASKOKI_BASE_DIGEST  demo-build ubuntu:26.04 digest (CI
+#                        demo-image job output; default: resolve
+#                        locally and mark packaging-time)
+#   HASKOKI_RUST_DIGEST  demo-build rust:1.94-bookworm digest (CI
+#                        demo-image job output; default: resolve
+#                        locally and mark packaging-time)
 #
 # Exit status: 0 iff every asset is written and SHA256SUMS verifies.
 set -u
@@ -75,7 +89,9 @@ TREE="$OUT/haskoki-$VER"
 SDIST="dist-newstyle/sdist/haskoki-$VER.tar.gz"
 RESULTS="${TEST_RESULTS_DIR:-$OUT/test-results-$VER}"
 IMAGE="${HASKOKI_IMAGE:-haskoki-dev:ghc-9.10.3}"
-command -v docker >/dev/null 2>&1 || fail "docker required (builder image identity)"
+if [ -z "${HASKOKI_PROVENANCE_FILE:-}" ]; then
+  command -v docker >/dev/null 2>&1 || fail "docker required (builder image identity)"
+fi
 command -v python3 >/dev/null 2>&1 || fail "python3 required (manifest validation)"
 
 # Required inputs (verified elsewhere; never built here).
@@ -112,31 +128,80 @@ else
 fi
 CLIENT_VER=$(grep -m1 '^version:' client/haskoki-client.cabal | awk '{print $2}')
 [ -n "$CLIENT_VER" ] || fail "cannot parse version from client/haskoki-client.cabal"
-IMAGE_ID=$(docker inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null) \
-  || fail "cannot inspect builder image: $IMAGE"
-IMAGE_DIGEST=$(docker inspect "$IMAGE" --format '{{index .RepoDigests 0}}' 2>/dev/null)
-case "$IMAGE_DIGEST" in
-  ""|"<no value>") IMAGE_DIGEST_JSON=null ;;
-  *)
-    # A RepoDigest whose digest part equals the local image (config)
-    # ID is the daemon echoing the ID for an unpushed image, not a
-    # repository (manifest) digest; record null and keep the ID
-    # separate rather than mislabeling it.
-    if [ "${IMAGE_DIGEST##*@}" = "$IMAGE_ID" ]; then
-      IMAGE_DIGEST_JSON=null
-    else
-      IMAGE_DIGEST_JSON="\"$IMAGE_DIGEST\""
-    fi ;;
-esac
+if [ -n "${HASKOKI_PROVENANCE_FILE:-}" ]; then
+  # Producer path (CI publish): build_env describes the bundle
+  # job's build environment, not this packaging host.
+  [ -f "$HASKOKI_PROVENANCE_FILE" ] \
+    || fail "provenance file missing: $HASKOKI_PROVENANCE_FILE"
+  IMAGE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["builder_image"])' \
+    "$HASKOKI_PROVENANCE_FILE") || fail "cannot read builder_image from $HASKOKI_PROVENANCE_FILE"
+  IMAGE_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["builder_image_id"])' \
+    "$HASKOKI_PROVENANCE_FILE") || fail "cannot read builder_image_id from $HASKOKI_PROVENANCE_FILE"
+  GHC_V=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ghc"])' \
+    "$HASKOKI_PROVENANCE_FILE") || fail "cannot read ghc from $HASKOKI_PROVENANCE_FILE"
+  CABAL_V=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cabal_install"])' \
+    "$HASKOKI_PROVENANCE_FILE") || fail "cannot read cabal_install from $HASKOKI_PROVENANCE_FILE"
+  GCC_V=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["gcc"])' \
+    "$HASKOKI_PROVENANCE_FILE") || fail "cannot read gcc from $HASKOKI_PROVENANCE_FILE"
+  GLIBC_V=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["builder_glibc"])' \
+    "$HASKOKI_PROVENANCE_FILE") || fail "cannot read builder_glibc from $HASKOKI_PROVENANCE_FILE"
+  [ -n "$IMAGE_ID" ] && [ -n "$GHC_V" ] \
+    || fail "provenance file has empty fields: $HASKOKI_PROVENANCE_FILE"
+  IMAGE_DIGEST_JSON=null
+  ENV_PROVENANCE="bundle-producer ($HASKOKI_PROVENANCE_FILE)"
+else
+  IMAGE_ID=$(docker inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null) \
+    || fail "cannot inspect builder image: $IMAGE"
+  IMAGE_DIGEST=$(docker inspect "$IMAGE" --format '{{index .RepoDigests 0}}' 2>/dev/null)
+  case "$IMAGE_DIGEST" in
+    ""|"<no value>") IMAGE_DIGEST_JSON=null ;;
+    *)
+      # A RepoDigest whose digest part equals the local image
+      # ID is the daemon echoing the ID for an unpushed image,
+      # not a repository (manifest) digest; record null and keep
+      # the ID separate rather than mislabeling it. (The local
+      # builder tag is never pushed, so null is always correct
+      # here; the publish path selects pushed digests by repo
+      # name instead — see the workflow's push step.)
+      if [ "${IMAGE_DIGEST##*@}" = "$IMAGE_ID" ]; then
+        IMAGE_DIGEST_JSON=null
+      else
+        IMAGE_DIGEST_JSON="\"$IMAGE_DIGEST\""
+      fi ;;
+  esac
+  GHC_V=$(docker run --rm "$IMAGE" ghc --numeric-version 2>/dev/null) \
+    || fail "cannot read GHC version from $IMAGE"
+  CABAL_V=$(docker run --rm "$IMAGE" cabal --numeric-version 2>/dev/null) \
+    || fail "cannot read cabal version from $IMAGE"
+  GCC_V=$(docker run --rm "$IMAGE" sh -c 'gcc -dumpversion' 2>/dev/null) \
+    || fail "cannot read gcc version from $IMAGE"
+  GLIBC_V=$(docker run --rm "$IMAGE" sh -c 'ldd --version | head -1' 2>/dev/null) \
+    || fail "cannot read glibc version from $IMAGE"
+  ENV_PROVENANCE="packaging-time (local run; the publish path passes the bundle producer instead)"
+fi
+if [ -n "${HASKOKI_BASE_DIGEST:-}" ]; then
+  BASE_DIGEST_JSON="\"$HASKOKI_BASE_DIGEST\""
+  BASE_NOTE="demo runtime FROM; digest resolved at demo-image build time (job output)"
+else
+  BASE_DIGEST=$(docker inspect ubuntu:26.04 --format '{{index .RepoDigests 0}}' 2>/dev/null)
+  case "$BASE_DIGEST" in
+    ""|"<no value>") BASE_DIGEST_JSON=null ;;
+    *) BASE_DIGEST_JSON="\"$BASE_DIGEST\"" ;;
+  esac
+  BASE_NOTE="demo runtime FROM; digest resolved at packaging time (local run)"
+fi
+if [ -n "${HASKOKI_RUST_DIGEST:-}" ]; then
+  RUST_DIGEST_JSON="\"$HASKOKI_RUST_DIGEST\""
+  RUST_NOTE="proxy toolchain FROM; digest resolved at demo-image build time (job output)"
+else
+  RUST_DIGEST=$(docker inspect rust:1.94-bookworm --format '{{index .RepoDigests 0}}' 2>/dev/null)
+  case "$RUST_DIGEST" in
+    ""|"<no value>") RUST_DIGEST_JSON=null ;;
+    *) RUST_DIGEST_JSON="\"$RUST_DIGEST\"" ;;
+  esac
+  RUST_NOTE="proxy toolchain FROM; digest resolved at packaging time (local run)"
+fi
 HOST_ABI=$(uname -srm)
-GHC_V=$(docker run --rm "$IMAGE" ghc --numeric-version 2>/dev/null) \
-  || fail "cannot read GHC version from $IMAGE"
-CABAL_V=$(docker run --rm "$IMAGE" cabal --numeric-version 2>/dev/null) \
-  || fail "cannot read cabal version from $IMAGE"
-GCC_V=$(docker run --rm "$IMAGE" sh -c 'gcc -dumpversion' 2>/dev/null) \
-  || fail "cannot read gcc version from $IMAGE"
-GLIBC_V=$(docker run --rm "$IMAGE" sh -c 'ldd --version | head -1' 2>/dev/null) \
-  || fail "cannot read glibc version from $IMAGE"
 FREEZE_SHA=$(sha256sum cabal.project.freeze | awk '{print $1}')
 LOCK_SHA=$(sha256sum toolchain.lock | awk '{print $1}')
 OSSL_VER=$(grep -m1 '^version' toolchain.lock | awk '{print $3}')
@@ -177,6 +242,7 @@ RESULTS_JSON=$(printf '%s\n' "$RESULTS_LIST" | python3 -c 'import sys,json; prin
   echo "    \"builder_image\": \"$IMAGE\","
   echo "    \"builder_image_id\": \"$IMAGE_ID\","
   echo "    \"builder_image_digest\": $IMAGE_DIGEST_JSON,"
+  echo "    \"provenance\": \"$ENV_PROVENANCE\","
   echo "    \"host_abi\": \"$HOST_ABI\","
   echo "    \"ghc\": \"$GHC_V\","
   echo "    \"cabal_install\": \"$CABAL_V\","
@@ -210,16 +276,42 @@ RESULTS_JSON=$(printf '%s\n' "$RESULTS_LIST" | python3 -c 'import sys,json; prin
   echo "    \"sha256sums\": {\"file\": \"$(basename "$SUMS")\", \"note\": \"written after finalization, excluding itself\"}"
   echo "  },"
   echo "  \"tool_pins\": {"
-  echo "    \"checker\": {\"repo\": \"mingulov/pkcs11-check\", \"release\": \"v0.2.2\", \"tag_sha\": \"23813a5bc84f5763d4ec20b06f99429339f296be\", \"qualified\": false, \"note\": \"declared; re-verify in the checker task\"},"
-  echo "    \"proxy_regression\": {\"repo\": \"mingulov/pkcs11-proxy-ng\", \"commit\": \"a48b60ba54b0163f4999c1e4fc0514bf7dc01681\", \"qualified\": false, \"note\": \"declared; re-qualify in the proxy task\"},"
-  echo "    \"proxy_demo\": {\"repo\": \"mingulov/pkcs11-proxy-ng\", \"release\": \"v0.2.0\", \"tag_sha\": \"b298b0cd0f59d3e6b42518fc7a4aa5be51761c9d\", \"qualified\": false, \"note\": \"declared; qualify in the proxy task\"}"
+  echo "    \"checker\": {\"repo\": \"mingulov/pkcs11-check\", \"release\": \"v0.2.3\", \"tag_sha\": \"70f9796d62ca97043c77d27adfc82f5e50bc5d26\", \"pypi\": \"pkcs11-check==0.2.3\", \"qualified\": true, \"note\": \"R4 entrypoint pin (PyPI final; r4b rc1 proven code-identical, final re-proven by the driver)\"},"
+  echo "    \"proxy_regression\": {\"repo\": \"mingulov/pkcs11-proxy-ng\", \"commit\": \"a48b60ba54b0163f4999c1e4fc0514bf7dc01681\", \"qualified\": false, \"note\": \"superseded by v0.2.0 in R5; kept as the R4 historical record\"},"
+  echo "    \"proxy_demo\": {\"repo\": \"mingulov/pkcs11-proxy-ng\", \"release\": \"v0.2.0\", \"tag_sha\": \"b298b0cd0f59d3e6b42518fc7a4aa5be51761c9d\", \"qualified\": true, \"note\": \"R5 qualified (parity 49 holds / 40 skips + full checker lanes)\"}"
   echo "  },"
   echo "  \"gate_evidence\": {"
   echo "    \"bundle\": [\"haskoki-$VER/closure/review.txt\", \"haskoki-$VER/toolchain-record.txt\"],"
   echo "    \"test_results\": $RESULTS_JSON"
   echo "  },"
-  echo "  \"oci_digest\": null,"
-  echo "  \"oci_note\": \"added later without a rebuild\""
+  if [ -n "${HASKOKI_OCI_DIGEST:-}" ]; then
+    echo "  \"oci_digest\": \"$HASKOKI_OCI_DIGEST\","
+    echo "  \"oci_note\": \"pushed demo image digest, passed in by the publish path\","
+  else
+    echo "  \"oci_digest\": null,"
+    echo "  \"oci_note\": \"no HASKOKI_OCI_DIGEST supplied (local/staging package run)\","
+  fi
+  echo "  \"base_image\": {"
+  echo "    \"ref\": \"ubuntu:26.04\","
+  echo "    \"digest\": $BASE_DIGEST_JSON,"
+  echo "    \"note\": \"$BASE_NOTE\""
+  echo "  },"
+  echo "  \"proxy_toolchain\": {"
+  echo "    \"ref\": \"rust:1.94-bookworm\","
+  echo "    \"digest\": $RUST_DIGEST_JSON,"
+  echo "    \"note\": \"$RUST_NOTE\""
+  echo "  },"
+  echo "  \"ci_pin_policy\": \"external actions major-pinned; ubuntu-latest runners and image tags float (see .github/workflows/ci.yml header)\","
+  echo "  \"floating_inputs\": ["
+  echo "    {\"input\": \"ubuntu-latest runners\", \"reason\": \"GitHub-managed, unpinnable by design\", \"effective\": \"not captured; lanes run containerized (pinned toolchain image) or assert exact outputs\"},"
+  echo "    {\"input\": \"ubuntu:26.04 image tag\", \"reason\": \"base tag floats by policy; the effective digest is recorded per build\", \"effective\": \"base_image.digest\"},"
+  echo "    {\"input\": \"rust:1.94-bookworm image tag\", \"reason\": \"proxy toolchain tag floats by policy; the effective digest is recorded per build\", \"effective\": \"proxy_toolchain.digest\"},"
+  echo "    {\"input\": \"haskoki-dev:ghc-9.10.3 local tag\", \"reason\": \"rebuilt per CI run from the pinned Dockerfile, never pushed\", \"effective\": \"build_env.builder_image_id\"},"
+  echo "    {\"input\": \"PyPI (checker venv)\", \"reason\": \"no hash lock; version pin only\", \"effective\": \"pkcs11-check==0.2.3 plus /opt/p11c/freeze.txt baked into the image\"},"
+  echo "    {\"input\": \"crates.io (proxy build)\", \"reason\": \"upstream Cargo.lock floats with PROXY_REF\", \"effective\": \"PROXY_REF v0.2.0 plus asserted daemon/shim hashes (Dockerfile)\"},"
+  echo "    {\"input\": \"github.com git (proxy clone)\", \"reason\": \"source fetch at image build time\", \"effective\": \"PROXY_REF tag plus tag_sha in tool_pins.proxy_demo\"},"
+  echo "    {\"input\": \"APT repository/package resolution\", \"reason\": \"checker and runtime stages apt-install unversioned package names; the base digest does not identify them\", \"effective\": \"installed dpkg versions baked into the image, enumerated in docs/dependency-inventory.md\"}"
+  echo "  ]"
   echo "}"
 } > "$MANIFEST" || fail "manifest write failed"
 python3 -m json.tool "$MANIFEST" > /dev/null || fail "manifest is not valid JSON"

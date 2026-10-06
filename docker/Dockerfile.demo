@@ -1,9 +1,12 @@
 # haskoki demo image: self-contained bundle + proxy + checker + entrypoint.
 #
-# Multi-stage build; the bundle is rebuilt INSIDE the image from source
-# with the R2-verified scripts (never COPY a host dist-release/).
+# Multi-stage build; the bundle is STAGED before the build (R8/D1):
+# scripts/test-demo-image.sh builds scripts/make-release.sh once
+# (or consumes the CI release-bundle artifact), and the runtime
+# stage COPYs that staged tree (staged-bundle/) — the image never
+# builds a second bundle from source.
 #
-#   Build (from repo root):
+#   Build (from repo root; the driver stages first — see above):
 #     docker build -f docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 .
 #     docker build -f docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 \
 #       --build-arg PROXY_REF=v0.2.0 .
@@ -14,11 +17,10 @@
 #     docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
 #       check --mode direct --profile smoke
 #
-# Stages: bundle (existing Dockerfile image, runs scripts/make-release.sh
-# + closure/floor/notices verification); proxy (pinned Rust recipe from
+# Stages: proxy (pinned Rust recipe from
 # scripts/test-proxy-parity.sh, PROXY_REF default v0.2.0); checker
-# (pkcs11-check v0.2.3 + pkcs11-tool); runtime (slim: bundle tree +
-# proxy binaries + checker + entrypoint ONLY, no toolchains).
+# (pkcs11-check v0.2.3 + pkcs11-tool); runtime (slim: staged bundle
+# tree + proxy binaries + checker + entrypoint ONLY, no toolchains).
 #
 # Checker profiles are FROZEN (R4); the compare parity subset is FROZEN
 # (R5; classified by the shipped examples/release/compare-classify
@@ -27,62 +29,24 @@
 #
 # Build-time network is used for fetches (apt, crates.io, PyPI, git);
 # RUNTIME scenarios run --network none.
+#
+# Identity labels (R8): the runtime stage carries OCI
+# source/version/revision/licenses labels. Plain local builds
+# leave REVISION=unknown (honest: .git is dockerignored, so the
+# build cannot see the SHA); release-candidate builds pass
+# --build-arg REVISION=<source SHA> (CI publish path does).
+# The image never contains its own final digest.
+ARG VERSION=0.3.0.0
+ARG REVISION=unknown
+ARG SOURCE=https://github.com/mingulov/haskoki
 
 # ---------------------------------------------------------------------------
-# Stage: bundle. Rebuild the R2 bundle recipe from a fresh source copy.
-# Base = the existing Dockerfile image (R2 re-pinned id
-# sha256:0ee486d207331df09625f19cceeca3fe63f245477a6374e085e61da04c2bf699).
+# No bundle stage: the bundle is staged BEFORE the build (R8/D1) and
+# consumed via COPY in the runtime stage below. Staging is owned by
+# scripts/test-demo-image.sh (local: runs make-release.sh in the
+# toolchain container; CI: consumes the release-bundle artifact).
+# The runtime self-test asserts the staged tree's shape.
 # ---------------------------------------------------------------------------
-FROM haskoki-dev:ghc-9.10.3 AS bundle
-
-ENV HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3
-
-# Fresh source copy under the image user's home (the image runs as the
-# non-root dev user; /work keeps the baked tree untouched). Explicit
-# COPY list extends Dockerfile's with the license inputs make-release.sh
-# requires (LICENSE, licenses/); no .dockerignore is needed.
-WORKDIR /home/ubuntu/r3build
-COPY --chown=1000:1000 haskoki.cabal cabal.project cabal.project.freeze Setup.hs ./
-COPY --chown=1000:1000 toolchain.lock toolchain.lock
-COPY --chown=1000:1000 README.md CHANGELOG.md LICENSE ./
-COPY --chown=1000:1000 licenses/ licenses/
-COPY --chown=1000:1000 src/ src/
-COPY --chown=1000:1000 core/ core/
-COPY --chown=1000:1000 ffi/ ffi/
-COPY --chown=1000:1000 cbits/ cbits/
-COPY --chown=1000:1000 test/ test/
-COPY --chown=1000:1000 tests/ tests/
-COPY --chown=1000:1000 spec/ spec/
-COPY --chown=1000:1000 scripts/ scripts/
-COPY --chown=1000:1000 app/ app/
-COPY --chown=1000:1000 tools/ tools/
-COPY --chown=1000:1000 docs/ docs/
-COPY --chown=1000:1000 client/ client/
-
-# R2-verified recipe + read-only re-verification of its outputs
-# (closure gates, glibc floor, notice files). The script fails loudly
-# itself; the assertions below re-check the landed artifacts without
-# touching the script's logic.
-RUN ./scripts/make-release.sh > /tmp/make-release.log 2>&1; rc=$?; \
-      tail -5 /tmp/make-release.log; test $rc -eq 0 \
-    && grep -q '^PASS: make-release.sh' /tmp/make-release.log \
-    && ART=$(echo dist-release/haskoki-*) && test -d "$ART" \
-    && test -f "$ART/lib/libhaskoki.so" \
-    && test -f "$ART/bin/haskoki-ctl" \
-    && test -f "$ART/lib/ossl-modules/legacy.so" \
-    && test "$(ls "$ART"/lib/libHS*.so | wc -l)" -gt 0 \
-    && grep -q '^STATIC: no dynamic libcrypto/libssl' /tmp/make-release.log \
-    && grep -q '^PROVIDER-ORIGIN: ' /tmp/make-release.log \
-    && grep -q '^STATIC: host deps are system-only' /tmp/make-release.log \
-    && grep -q '^glibc floor: GLIBC_' /tmp/make-release.log \
-    && test -f "$ART/licenses/Haskoki-LICENSE" \
-    && test -f "$ART/licenses/OpenSSL-LICENSE.txt" \
-    && test -f "$ART/licenses/GHC-copyright" \
-    && test -f "$ART/licenses/NOTICES.md" \
-    && test -f "$ART/closure/review.txt" \
-    && test -f "$ART/toolchain-record.txt" \
-    && test -f "$ART/INSTALL.md" \
-    && echo "bundle verified: $ART"
 
 # ---------------------------------------------------------------------------
 # Stage: proxy. Pinned-toolchain build of daemon + shim.
@@ -174,6 +138,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ---------------------------------------------------------------------------
 FROM ubuntu:26.04 AS runtime
 
+# Re-declare the global identity args so this stage can use them.
+ARG VERSION
+ARG REVISION
+ARG SOURCE
+LABEL org.opencontainers.image.title="haskoki-demo" \
+      org.opencontainers.image.description="Haskoki PKCS#11 soft-token demo: bundle + pinned proxy + external checker" \
+      org.opencontainers.image.source="${SOURCE}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Every package documented: libgmp10 + libffi8 + libnuma1 are the bundle's
@@ -186,7 +161,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgmp10 libffi8 libnuma1 opensc python3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=bundle /home/ubuntu/r3build/dist-release/ /opt/haskoki/dist-release/
+# Staged bundle tree (built once before this build; see the header).
+# The self-test below asserts its shape — a missing or partial
+# staged-bundle/ fails here, never silently.
+COPY staged-bundle/ /opt/haskoki/dist-release/
 COPY --from=proxy /out/proxy/ /opt/haskoki/proxy/
 COPY --from=checker /opt/p11c/ /opt/p11c/
 COPY docker/haskoki-demo /usr/local/bin/haskoki-demo
@@ -194,8 +172,22 @@ COPY examples/release/ /opt/haskoki/examples/release/
 
 RUN chmod +x /usr/local/bin/haskoki-demo \
     && test "$(ls -d /opt/haskoki/dist-release/haskoki-* | wc -l)" -eq 1 \
-    && SO=$(echo /opt/haskoki/dist-release/haskoki-*/lib/libhaskoki.so) \
-    && test -f "$SO" \
+    && ART=$(echo /opt/haskoki/dist-release/haskoki-*) && test -d "$ART" \
+    && test -f "$ART/lib/libhaskoki.so" \
+    && test -x "$ART/bin/haskoki-ctl" \
+    && test -f "$ART/lib/ossl-modules/legacy.so" \
+    && test "$(ls "$ART"/lib/libHS*.so | wc -l)" -gt 0 \
+    && test -f "$ART/licenses/Haskoki-LICENSE" \
+    && test -f "$ART/licenses/OpenSSL-LICENSE.txt" \
+    && test -f "$ART/licenses/GHC-copyright" \
+    && test -f "$ART/licenses/NOTICES.md" \
+    && test -f "$ART/closure/review.txt" \
+    && grep -q 'libcrypto: STATIC' "$ART/closure/review.txt" \
+    && grep -q 'provider (shipped, $ORIGIN-anchored)' "$ART/closure/review.txt" \
+    && grep -q 'bundled GHC/store libs' "$ART/closure/review.txt" \
+    && test -f "$ART/toolchain-record.txt" \
+    && test -f "$ART/INSTALL.md" \
+    && SO="$ART/lib/libhaskoki.so" \
     && ldd "$SO" > /tmp/ldd-so.txt 2>&1 \
     && ! grep -q "not found" /tmp/ldd-so.txt \
     && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.3$' \
@@ -204,7 +196,7 @@ RUN chmod +x /usr/local/bin/haskoki-demo \
     && test -f /opt/haskoki/proxy/LICENSE-APACHE \
     && test -f /opt/haskoki/proxy/LICENSE-MIT \
     && haskoki-demo --help > /dev/null \
-    && echo "runtime self-test: bundle resolves, checker + pkcs11-tool + CA store + proxy licenses present"
+    && echo "runtime self-test: staged bundle verified, checker + pkcs11-tool + CA store + proxy licenses present"
 
 ENTRYPOINT ["/usr/local/bin/haskoki-demo"]
 CMD ["demo"]

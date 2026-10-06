@@ -23,6 +23,14 @@
 #                           per-step timeout seconds (default 7200; each
 #                           full lane takes tens of minutes and compare
 #                           runs two of them back to back)
+#   HASKOKI_DEMO_REVISION   source SHA baked into the revision label
+#                           (default unset: revision=unknown; lane
+#                           behavior identical either way)
+#   HASKOKI_DEMO_USE_STAGED consume ./dist-release/haskoki-<ver> as the
+#                           staged bundle WITHOUT rebuilding (CI: the
+#                           release-bundle artifact lands there; default
+#                           unset: the driver builds it fresh via
+#                           make-release.sh in the toolchain container)
 #
 # Exit status: 0 iff every leg holds; any deviation fails loudly.
 # Never pushes or tags anything beyond the local test tag.
@@ -105,13 +113,60 @@ PY
 }
 
 # ---------------------------------------------------------------------------
+# 0. Stage the bundle (R8/D1: the image is built FROM this tree).
+# ---------------------------------------------------------------------------
+STAGED_SRC="dist-release/haskoki-$VER"
+if [ -n "${HASKOKI_DEMO_USE_STAGED:-}" ]; then
+  note "using staged bundle $STAGED_SRC (CI artifact, not rebuilt)"
+  [ -f "$STAGED_SRC/lib/libhaskoki.so" ] \
+    || fail "staged bundle missing lib: $STAGED_SRC (release-bundle artifact not extracted?)"
+  [ -x "$STAGED_SRC/bin/haskoki-ctl" ] \
+    || fail "staged bundle missing executable ctl: $STAGED_SRC"
+  [ -f "$STAGED_SRC/toolchain-record.txt" ] \
+    || fail "staged bundle missing toolchain record: $STAGED_SRC"
+else
+  note "staging bundle via make-release.sh"
+  docker inspect haskoki-dev:ghc-9.10.3 >/dev/null 2>&1 \
+    || fail "builder image missing (run: docker build -t haskoki-dev:ghc-9.10.3 .)"
+  docker run --rm --network host -v "$PWD:/work" -w /work \
+    haskoki-dev:ghc-9.10.3 scripts/make-release.sh > "$OUT/stage-bundle.log" 2>&1 \
+    || fail "bundle staging failed (see $OUT/stage-bundle.log)"
+  tail -2 "$OUT/stage-bundle.log"
+  [ -f "$STAGED_SRC/lib/libhaskoki.so" ] \
+    || fail "staged bundle missing lib after build: $STAGED_SRC"
+fi
+STAGED_SHA=$(sha256sum "$STAGED_SRC/lib/libhaskoki.so" | awk '{print $1}')
+echo "staged bundle: $STAGED_SRC (libhaskoki sha256 $STAGED_SHA)"
+# Exact tree the Dockerfile COPYs (nothing else from dist-release/
+# may leak into the image: no archives, no manifest, no results).
+rm -rf staged-bundle
+mkdir -p staged-bundle || fail "cannot create staged-bundle/"
+cp -a "$STAGED_SRC" staged-bundle/ || fail "cannot copy staged bundle"
+test -x "staged-bundle/haskoki-$VER/bin/haskoki-ctl" \
+  || fail "staged copy lost the executable bit"
+
+# ---------------------------------------------------------------------------
 # 1. Build image, assert tag/digest shape.
 # ---------------------------------------------------------------------------
 note "build image $TAG"
-BUILD_CMD="docker build -f docker/Dockerfile.demo -t $TAG ."
+# Optional label input (R8 staged-only identity): when set, the
+# source SHA is baked into the revision label; unset builds
+# exactly as before (revision=unknown). No lane behavior changes.
+if [ -n "${HASKOKI_DEMO_REVISION:-}" ]; then
+  BUILD_CMD="docker build -f docker/Dockerfile.demo --build-arg REVISION=$HASKOKI_DEMO_REVISION -t $TAG ."
+else
+  BUILD_CMD="docker build -f docker/Dockerfile.demo -t $TAG ."
+fi
 echo "build command: $BUILD_CMD"
-docker build -f docker/Dockerfile.demo -t "$TAG" . > "$OUT/build.log" 2>&1 \
-  || fail "image build failed (see $OUT/build.log)"
+if [ -n "${HASKOKI_DEMO_REVISION:-}" ]; then
+  docker build -f docker/Dockerfile.demo \
+    --build-arg "REVISION=$HASKOKI_DEMO_REVISION" -t "$TAG" . \
+    > "$OUT/build.log" 2>&1 \
+    || fail "image build failed (see $OUT/build.log)"
+else
+  docker build -f docker/Dockerfile.demo -t "$TAG" . > "$OUT/build.log" 2>&1 \
+    || fail "image build failed (see $OUT/build.log)"
+fi
 tail -3 "$OUT/build.log"
 
 IMGID=$(docker inspect --format '{{.Id}}' "$TAG" 2>/dev/null) \
@@ -121,6 +176,11 @@ echo "$IMGID" | grep -qE '^sha256:[0-9a-f]{64}$' \
 IMGSIZE=$(docker inspect --format '{{.Size}}' "$TAG")
 echo "image id: $IMGID"
 echo "image size: $IMGSIZE bytes"
+# The image holds the staged bytes now; remove the context copy so a
+# stale tree can never leak into a later build (the source tree stays
+# in dist-release/ for inspection).
+rm -rf staged-bundle
+echo "staged-bundle/ context copy removed"
 REPO_DIGESTS=$(docker inspect --format '{{.RepoDigests}}' "$TAG")
 echo "repo digests: $REPO_DIGESTS (local build; nothing pushed)"
 BUILDER_ID=$(docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3 2>/dev/null || echo unknown)
