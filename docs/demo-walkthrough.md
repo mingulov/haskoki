@@ -184,8 +184,9 @@ scripts/test-proxy-parity.sh
 ```
 
 Same CKR + same outputs on every forwarded call (current record:
-49 consumer legs hold on the pinned v0.2.0 proxy, 40 quarantined
-skips — see the Update (R5) bullet in `docs/release-results.md`);
+70 consumer legs hold on the pinned v0.2.2 proxy, 19 quarantined
+legs in 5 quarantine entries — see the Update (R9) bullet in
+`docs/release-results.md`);
 handle-carrying calls now forward and succeed behind the proxy on
 opened sessions. Seeded-mismatch
 (`HASKOKI_PARITY_SEED_MISMATCH=1`, see the script header) still
@@ -617,7 +618,7 @@ clear; see `docs/operations-notes.md` for the quarantine protocol.
 Prerequisites: the demo image built (`docker build -f
 docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 .`, repo root) and an
 output dir (`mkdir -p out`). The proxy example diffs 5 steps
-direct-vs-proxied over the pinned `pkcs11-proxy-ng` v0.2.0 pair on
+direct-vs-proxied over the pinned `pkcs11-proxy-ng` v0.2.2 pair on
 loopback (TEST-ONLY transport):
 
 ```sh
@@ -629,7 +630,7 @@ docker run --rm --network none -v "$PWD/out:/out" --entrypoint /bin/sh \
 `compare` runs the full checker profile in both modes and diffs
 verdict transcripts; it is raw plumbing (every mismatch is an
 "unexpected diff", even frozen ones). The shipped classifier splits
-the raw diff into known-difference (188 frozen exclusions with
+the raw diff into known-difference (83 frozen exclusions with
 per-id reasons), direct-only, flaky, and unexpected-difference
 buckets without touching the raw files:
 
@@ -641,7 +642,7 @@ docker run --rm --network none -v "$PWD/out:/out" --entrypoint /bin/sh \
   haskoki-demo:0.3.0.0 \
   /opt/haskoki/examples/release/compare-classify/compare-classify \
   "/out/$(basename "$RD")"
-# compare-classify-ok: 188 known-difference + shared 25/25 exact
+# compare-classify-ok: 83 known-difference + shared 27/27 exact
 ```
 
 Frozen sets, family reasons, and the zero-variance rule live in

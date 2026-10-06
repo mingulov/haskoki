@@ -5,7 +5,7 @@
 # contract: expected tag/digest shape, demo verifications, check lanes
 # (smoke/full x direct/proxy, all under --network none; direct
 # byte-exact, proxy stable-core strict), compare diff
-# (under --network none; frozen R5 parity subset: 188 exclusions,
+# (under --network none; frozen R9 parity subset: 83 exclusions,
 # strict — no flaky variance allowance) + the shipped
 # compare-classify wrapper leg (in-image ok + drift controls),
 # help texts + usage-error matrix + examples (incl. proxy-example
@@ -66,7 +66,7 @@ latest_run() {
   ls -dt "$OUT"/$1-* 2>/dev/null | head -1
 }
 
-# Strict byte-exact set assertion (R5 section 4: the v0.2.0 freeze
+# Strict byte-exact set assertion (R5 section 4: the v0.2.2 freeze
 # classifies every id as stable-eligible, so ZERO flaky variants are
 # allowed — any variance fails loud and re-opens section 4 with
 # current-pin evidence; the R3d allowance it replaces is recorded in
@@ -235,13 +235,15 @@ run_check proxy smoke 0
 grep -q 'findings: none' "$OUT/check-proxy-smoke.log" \
   || fail "smoke/proxy summary marker missing"
 
-# Full lanes exit 1 with exact finding sets (R5 on proxy v0.2.0: 27
-# direct / 25 proxy-core / 188 diff-core + 25 shared on checker 0.2.3;
-# triaged in task-R5-report.md sections 1/4/6). Direct is byte-exact
+# Full lanes exit 1 with exact finding sets (R9 on proxy v0.2.2: 27
+# direct / 27 proxy-core / diff-core + shared re-frozen below on
+# checker 0.2.3; triaged in task-R9-report.md). Direct is byte-exact
 # (deterministic across runs; identical set to R4 — backend unchanged).
-# Proxy asserts a stable 25-line core exactly (strict, codex I4 —
+# Proxy asserts a stable 27-line core exactly (strict, codex I4 —
 # the failed pair's historical {pass, fail} bound is NOT suppressed);
-# any other line fails loudly.
+# any other line fails loudly. R9 delta vs R5: +2 GMAC message-init
+# lines (init params now forward; the backend's native 0x7 refusal
+# surfaces byte-identical in both lanes, verified in the run dirs).
 run_check direct full 1
 RUN_DIR=$(latest_run "check-direct-full")
 cat > "$OUT/exp-full-direct.txt" <<'EOF'
@@ -289,7 +291,9 @@ failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_decrypt_ae
 failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_multipart_aes_gcm
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[AES_GCM]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[AES_GCM]
+failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[AES_GMAC]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[HOTP]
+failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[AES_GMAC]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[HOTP]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
@@ -308,7 +312,7 @@ failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_mess
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
 EOF
-[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 25 ] || fail "driver: want 25 stable-core proxy findings"
+[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 27 ] || fail "driver: want 27 stable-core proxy findings"
 # R5 strict (codex I4): the failed pair's {pass, fail} bound is
 # historical (older pin) — v0.2.0 never demonstrated the flip, so
 # no failure form is suppressed here; any variance fails loud and
@@ -318,16 +322,17 @@ check_stable_core "check proxy/full findings" "$OUT/exp-full-proxy.txt" \
 
 # ---------------------------------------------------------------------------
 # 4. compare: exit 1 with a stable-core diff + exact shared set.
-# R5 parity-subset freeze (proxy v0.2.0): the diff asserts the
-# 188-line exclusion core exactly (7 families: message-init 0x71
-# x153, blowfish catalog x20, tls12-derive x2, wtls-premaster x3,
-# boundary-order x2, GMAC direct-only x2, proxy-better inversions
-# x6 — reasons in task-R5-report.md section 1); the 25-line shared
-# set stays byte-exact. Parity-eligible = every other collected id
-# (default-eligible; the freeze is this exclusion list, not an 11k
-# allowlist). Flaky ids assert their measured v0.2.0 verdicts with
-# NO variance allowance (strict, codex I4 — historical bounds in
-# R5 §4 would mask a pin regression if suppressed).
+# R9 parity-subset re-freeze (proxy v0.2.2): the diff asserts the
+# 83-line exclusion core exactly (6 families: message-init 0x71
+# x34, blowfish catalog x20, tls12-derive x2, wtls-premaster x3,
+# boundary-order x2, proxy-better inversions x22 — every delta
+# vs R5 caused in task-R9-report.md section 4; GMAC moved to
+# shared); the 27-line shared set stays byte-exact.
+# Parity-eligible = every other collected id (default-eligible;
+# the freeze is this exclusion list, not an 11k allowlist). Flaky
+# ids assert their measured v0.2.2 verdicts with NO variance
+# allowance (strict, codex I4 — historical bounds in R5 §4 would
+# mask a pin regression if suppressed).
 # ---------------------------------------------------------------------------
 note "compare (expect exit 1 with exact diff)"
 timeout -s KILL "$STEP_TIMEOUT" docker run --rm --network none -v "$OUT:/out" "$TAG" \
@@ -349,15 +354,15 @@ from collections import Counter
 rows = [l for l in open(sys.argv[1]).read().splitlines()
         if l and not l.startswith("#")]
 c = Counter(l.split("\t", 1)[0] for l in rows)
-want = {"A-msg-init-0x71": 153, "B-blowfish": 20, "C-tls12": 2,
-        "D-wtls": 3, "E-boundary": 2, "F-gmac": 2, "G-inversion": 6}
-assert len(rows) == 188 and dict(c) == want, (len(rows), dict(c))
+want = {"A-msg-init-0x71": 34, "B-blowfish": 20, "C-tls12": 2,
+        "D-wtls": 3, "E-boundary": 2, "G-inversion": 22}
+assert len(rows) == 83 and dict(c) == want, (len(rows), dict(c))
 PY
 grep -v '^#' "$CC_DATA/frozen-subset.tsv" | cut -f2- > "$OUT/exp-diff.txt"
 grep -v '^#' "$CC_DATA/frozen-shared.txt" > "$OUT/exp-shared.txt"
-[ "$(wc -l < "$OUT/exp-diff.txt")" -eq 188 ] || fail "driver: want 188 stable-core diff lines"
-# R5 strict (codex I4): flaky bounds are historical (older pin) —
-# v0.2.0 measured no flips, so the freeze asserts the measured
+[ "$(wc -l < "$OUT/exp-diff.txt")" -eq 83 ] || fail "driver: want 83 stable-core diff lines"
+# R9 strict (codex I4): flaky bounds are historical (older pin) —
+# v0.2.2 measured no flips, so the freeze asserts the measured
 # verdicts exactly; any variance fails loud and re-opens §4.
 check_stable_core "compare diff" "$OUT/exp-diff.txt" "$RUN_DIR/diff.txt"
 if ! diff -u "$OUT/exp-shared.txt" "$RUN_DIR/shared-findings.txt"; then
@@ -376,16 +381,16 @@ timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
   "/out/$CC_RUN" > "$OUT/classify.log" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] || fail "in-image compare-classify exited $rc, want 0"
-grep -q 'compare-classify-ok: 188 known-difference + shared 25/25 exact' \
+grep -q 'compare-classify-ok: 83 known-difference + shared 27/27 exact' \
   "$OUT/classify.log" || fail "compare-classify ok marker missing"
 [ -f "$RUN_DIR/classification.json" ] || fail "classification.json missing"
 python3 - "$RUN_DIR/classification.json" <<'PY' || fail "classification.json counts drifted"
 import json, sys
 c = json.load(open(sys.argv[1]))["counts"]
-assert c == {"known_difference": 188, "direct_only": 0, "flaky": 0,
+assert c == {"known_difference": 83, "direct_only": 0, "flaky": 0,
              "unexpected_difference": 0, "missing_known": 0,
-             "duplicate_diff_lines": 0, "shared_expected": 25,
-             "shared_actual": 25, "shared_exact": True}, c
+             "duplicate_diff_lines": 0, "shared_expected": 27,
+             "shared_actual": 27, "shared_exact": True}, c
 PY
 # Drift controls on run-dir copies (the raw run dir is untouched):
 # an injected line must surface as unexpected=1, a removed frozen
@@ -615,8 +620,8 @@ and every entrypoint verdict asserted byte-exact on its stable core by
 this driver. Four proxy-lane timing-flaky test ids carry historical
 bounds (R5 report section 4; a fifth id is transcript-stable) but
 no variance allowance on this pin — any line outside the stable
-core fails the driver loudly. The parity subset is frozen (R5):
-188 compare exclusions in 7 reasoned families, strict.
+core fails the driver loudly. The parity subset is frozen (R9):
+83 compare exclusions in 6 reasoned families, strict.
 Functional reproducibility = same versions + same outcomes above.
 EOF
 cat "$OUT/reproducibility-note.txt"

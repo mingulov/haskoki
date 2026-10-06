@@ -94,9 +94,9 @@ Verified capabilities (short list; evidence classes per row in
   key derive — over real sessions, byte cross-checked.
 - Async 3.2 (`CKR_PENDING` + completion), message-family calls,
   multi-token serving, SQLite restart with flags clear.
-- Direct/proxy parity on the pinned proxy (`pkcs11-proxy-ng` v0.2.0):
-  49 consumer legs hold; the 40 skips are quarantined per-test with
-  upstream causes.
+- Direct/proxy parity on the pinned proxy (`pkcs11-proxy-ng` v0.2.2):
+  70 consumer legs hold; the 19 skipped legs are quarantined per-test
+  with upstream causes (5 quarantine entries).
 
 ## Results and limitations (measured on this release)
 
@@ -105,19 +105,19 @@ Compact headline numbers (full tables:
 
 - Checker smoke (743 tests): zero findings, direct and proxied.
 - Checker full (11003 tests): direct 27 triaged findings (4 families);
-  proxied 25 findings, all shared with direct, zero proxy-only.
-- Compare direct-vs-proxy: 188 frozen exclusions in 7 reasoned families
-  + 25 shared findings; the shipped `compare-classify` wrapper prints
+  proxied 27 findings, all shared with direct, zero proxy-only.
+- Compare direct-vs-proxy: 83 frozen exclusions in 6 reasoned families
+  + 27 shared findings; the shipped `compare-classify` wrapper prints
   the per-id reasons (`/opt/haskoki/examples/release/compare-classify/compare-classify
   <run-dir>` over any `compare` run dir).
 
 Cause summary (full triage: the Finding triage section of
 `docs/release-results.md`). Direct 27 = GCM message-init shape
 ×7, HOTP params ×2, BLAKE2B wrong-key-type ×16, checker
-child-probe defect ×2. Compare 188 = proxy message-init `0x71`
-×153 (upstream #39), Blowfish catalog ×20, TLS-derive ×2,
-WTLS-premaster ×3, boundary check-order ×2, GMAC direct-only
-×2, proxy-better spec-code inversions ×6. Scope is the FROZEN
+child-probe defect ×2. Compare 83 = proxy message-init `0x71`
+×34, Blowfish catalog ×20, TLS-derive ×2, WTLS-premaster ×3,
+boundary check-order ×2, proxy-better spec-code inversions
+×22. Scope is the FROZEN
 offline profiles only (`not (wycheproof or acvp or cctv or
 stress or fuzz or slow)`); vector-corpus runs are a separate
 guarded path (the Vector-data runs §6 there) — fetching data
@@ -126,13 +126,19 @@ never extends the shipped profiles.
 Known limitations (see also the [release
 limits](SUPPORTED-HOSTS.md#limitations-release-scope--read-before-deploying)):
 
-- Upstream proxy defects (same proxy, pinned v0.2.0): private objects
-  lost across logout→relogin
+- Upstream proxy defects fixed by the v0.2.2 re-pin (all four
+  closed with verification probes): private objects lost across
+  logout→relogin
   ([pkcs11-proxy-ng#35](https://github.com/mingulov/pkcs11-proxy-ng/issues/35)),
   `find` never returns certificates
   ([#36](https://github.com/mingulov/pkcs11-proxy-ng/issues/36)),
+  daemon death on message params
+  ([#37](https://github.com/mingulov/pkcs11-proxy-ng/issues/37)),
   message-init with IV-shaped params refused `0x71`
   ([#39](https://github.com/mingulov/pkcs11-proxy-ng/issues/39)).
+  Remaining proxy divergences are the 83 frozen compare
+  exclusions above (fail-closed shape gates, catalog gaps)
+  plus 19 quarantined parity legs (5 quarantine entries).
   Proxy v0.2.1 stays rejected (daemon death on message-init,
   [#37](https://github.com/mingulov/pkcs11-proxy-ng/issues/37)).
 - The proxy example is TEST-ONLY transport (loopback TCP, no auth/TLS);

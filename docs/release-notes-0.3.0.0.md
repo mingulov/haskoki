@@ -57,7 +57,7 @@ until the release is cut.)
   `libgmp10`/`libffi8`/`libnuma1` verified; the image carries
   its own userland).
 - Checker `pkcs11-check` 0.2.3 (PyPI pin), offline
-  smoke/full profiles; proxy `pkcs11-proxy-ng` v0.2.0
+  smoke/full profiles; proxy `pkcs11-proxy-ng` v0.2.2
   (TEST-ONLY loopback transport).
 - CI gates: static gates + `cabal test all` + bundle build +
   bare-install test + sdist out-of-checkout verify + fast
@@ -68,12 +68,13 @@ until the release is cut.)
 
 - Checker smoke (743 tests): zero findings, direct and proxied.
 - Checker full (11003 tests): direct 27 triaged findings
-  (4 families); proxied 25 findings, all shared with direct,
+  (4 families); proxied 27 findings, all shared with direct,
   zero proxy-only.
-- Compare direct-vs-proxy: 188 frozen exclusions in 7 reasoned
-  families + 25 shared findings (zero allowed variance).
-- Direct/proxy parity on the pinned proxy: 49 consumer legs
-  hold; 40 quarantined skips with upstream causes.
+- Compare direct-vs-proxy: 83 frozen exclusions in 6 reasoned
+  families + 27 shared findings (zero allowed variance).
+- Direct/proxy parity on the pinned proxy: 70 consumer legs
+  hold; 19 quarantined legs in 5 quarantine entries with upstream
+  causes.
 - Demo: 8/8 verifications hold. Proxy example: 5/5 steps hold.
 - Full tables and triage: [release-results](release-results.md).
 

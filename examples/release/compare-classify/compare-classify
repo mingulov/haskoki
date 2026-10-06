@@ -8,14 +8,14 @@
 # raw outputs are preserved) and classifies every diff line into exactly
 # one bucket:
 #   KNOWN-DIFFERENCE      exact frozen line, with family + per-id reason
-#                         (frozen-subset.tsv, 188 lines in 7 families)
+#                         (frozen-subset.tsv, 83 lines in 6 families)
 #   DIRECT-ONLY           one-sided collection (`absent` on either side);
 #                         zero on the frozen pin
 #   FLAKY                 an R5 section-4 stable-eligible id appearing as
-#                         a diff at all — ZERO allowed on v0.2.0, so any
+#                         a diff at all — ZERO allowed on v0.2.2, so any
 #                         hit fails and re-opens section 4
 #   UNEXPECTED-DIFFERENCE anything else — fails
-# The shared set must equal frozen-shared.txt (25) exactly; missing
+# The shared set must equal frozen-shared.txt (27) exactly; missing
 # frozen lines (a diff silently fixed) fail as drift too.
 #
 # Writes <run-dir>/classification.txt + <run-dir>/classification.json.
@@ -46,7 +46,7 @@ Usage:
 compare`. Raw files are never modified; classification.txt and
 classification.json are written beside them.
 
-Exit: 0 frozen set reproduced exactly (188 known + shared 25/25,
+Exit: 0 frozen set reproduced exactly (83 known + shared 27/27,
 zero unexpected/direct-only/flaky/missing) / 1 drift / 2 usage
 or infrastructure failure.
 EOF
@@ -72,25 +72,28 @@ from collections import Counter
 
 run, subset_path, shared_path = sys.argv[1:4]
 
+# R9: family F-gmac retired — AES_GMAC message-init now fails
+# native-identical in both lanes (init transparency) and moved to
+# the shared set. A shrank 153 -> 34 (flat-byte opaque forwarding);
+# G grew 6 -> 22 (message shape-gate 0x71 where the backend
+# answers 0x7); E holds at 2 (RSA-oversized converged out,
+# derive key-type params-first in).
 REASONS = {
-    "A-msg-init-0x71": "v0.2.0 shim refuses IV-shaped message params "
-        "with CKR_MECHANISM_PARAM_INVALID (0x71); backend serves them "
-        "(upstream #39)",
-    "B-blowfish": "v0.2.0 embedded catalog lacks Blowfish 0x1094; "
-        "advertised but not operational (0x71)",
+    "A-msg-init-0x71": "shape gate still refuses unmodeled IV-shaped "
+        "message params with CKR_MECHANISM_PARAM_INVALID (0x71); "
+        "backend serves them",
+    "B-blowfish": "Blowfish 0x1094 advertised but not operational (0x71)",
     "C-tls12": "CKM_TLS_KEY_AND_MAC_DERIVE refused 0x71 (not operational)",
     "D-wtls": "CKM_WTLS_PRE_MASTER_KEY_GEN refused "
         "CKR_MECHANISM_PARAM_INVALID (not operational)",
     "E-boundary": "validation check-order differs between lanes "
         "(not refusal-vs-accept)",
-    "F-gmac": "AES_GMAC message-init: direct fails native (provider "
-        "capability contract), proxy xfails 0x71",
     "G-inversion": "proxy returns spec-preferred codes the backend does "
         "not (proxy-better direction, not normalized away)",
 }
 
 # R5 section 4 stable-eligible ids: any appearance in diff.txt is a
-# variance event (zero allowed on v0.2.0).
+# variance event (zero allowed on v0.2.2; none in the R9 re-freeze).
 STABLE5 = {
     "test_object.py::TestSessionObjects::test_multiple_keys_same_type",
     "test_search.py::TestObjectSearch::test_find_many_objects",
@@ -130,14 +133,14 @@ for line in read_lines(subset_path):
         print("compare-classify: duplicate frozen line: %r" % frozen_line)
         sys.exit(2)
     frozen[frozen_line] = fam
-if len(frozen) != 188:
-    print("compare-classify: want 188 frozen lines, have %d" % len(frozen))
+if len(frozen) != 83:
+    print("compare-classify: want 83 frozen lines, have %d" % len(frozen))
     sys.exit(2)
 
 want_shared = [l for l in read_lines(shared_path)
                if l and not l.startswith("#")]
-if len(want_shared) != 25:
-    print("compare-classify: want 25 frozen shared lines, have %d"
+if len(want_shared) != 27:
+    print("compare-classify: want 27 frozen shared lines, have %d"
           % len(want_shared))
     sys.exit(2)
 
@@ -193,7 +196,7 @@ try:
     with open(run + "/classification.json", "w") as f:
         json.dump({
             "command": "compare-classify",
-            "subset": "frozen parity subset (R5)",
+            "subset": "frozen parity subset (R9)",
             "run_dir": run,
             "counts": {
                 "known_difference": len(known),
@@ -229,7 +232,8 @@ if drift:
              len(missing), len(dupes), len(got_shared), len(want_shared),
              shared_exact, run))
     sys.exit(1)
-print("compare-classify-ok: 188 known-difference + shared 25/25 exact; "
+print("compare-classify-ok: %d known-difference + shared %d/%d exact; "
       "zero unexpected/direct-only/flaky/missing; report: "
-      "%s/classification.json" % run)
+      "%s/classification.json" % (len(known), len(got_shared),
+                                  len(want_shared), run))
 PY

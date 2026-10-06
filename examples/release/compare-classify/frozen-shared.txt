@@ -1,4 +1,4 @@
-# frozen shared findings (R5): exact shared-findings.txt — 25 lines
+# frozen shared findings (R9): exact shared-findings.txt — 27 lines
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
 failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_aes_gcm_generated_iv_writeback
@@ -6,7 +6,9 @@ failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_decrypt_ae
 failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_multipart_aes_gcm
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[AES_GCM]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[AES_GCM]
+failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[AES_GMAC]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[HOTP]
+failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[AES_GMAC]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[HOTP]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]

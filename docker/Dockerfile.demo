@@ -9,7 +9,7 @@
 #   Build (from repo root; the driver stages first — see above):
 #     docker build -f docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 .
 #     docker build -f docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 \
-#       --build-arg PROXY_REF=v0.2.0 .
+#       --build-arg PROXY_REF=v0.2.2 .
 #
 #   Run (runtime scenarios run --network none; the proxy stays on
 #   loopback, which needs no external network):
@@ -18,7 +18,7 @@
 #       check --mode direct --profile smoke
 #
 # Stages: proxy (pinned Rust recipe from
-# scripts/test-proxy-parity.sh, PROXY_REF default v0.2.0); checker
+# scripts/test-proxy-parity.sh, PROXY_REF default v0.2.2); checker
 # (pkcs11-check v0.2.3 + pkcs11-tool); runtime (slim: staged bundle
 # tree + proxy binaries + checker + entrypoint ONLY, no toolchains).
 #
@@ -58,21 +58,21 @@ ARG SOURCE=https://github.com/mingulov/haskoki
 # ---------------------------------------------------------------------------
 FROM rust:1.94-bookworm AS proxy
 
-ARG PROXY_REF=v0.2.0
+ARG PROXY_REF=v0.2.2
 
 # Canonical artifact hashes for the release pin, quoted from
 # scripts/test-proxy-parity.sh ("Canonical build (the ONLY authoritative
 # hashes)"). Asserted when the build ref resolves to that commit; any
 # other ref records its hashes without asserting.
-# R5: pin is pkcs11-proxy-ng v0.2.0 (tag v0.2.0 = commit 1755403a…;
-# parity 49 holds / 40 skips; checker-lane qualification + known
-# deltas recorded in the R5 report before this pin commits).
+# R9: pin is pkcs11-proxy-ng v0.2.2 (tag v0.2.2 = commit 1ed7cc15…;
+# parity 70 holds; checker-lane re-qualification + known deltas
+# recorded in the R9 report before this pin commits).
 # v0.2.1 was attempted and REJECTED (upstream #35 visibility loss,
 # #36 cert-find hole, #37 daemon death on message params — the last
-# blocks all full proxy checker lanes).
-ENV PROXY_CANON_COMMIT=1755403adb6e265f094a888f27db4fe9bda17cb6
-ENV PROXY_CANON_DAEMON=8b7def0f128a3e47543c91b78b7a2c37a9ee1edb37916f8dc4a15147f3a1ae23
-ENV PROXY_CANON_SHIM=cb22c7e525c6b20c47c5e622b343dc2ceb8f39adb5c33180783264f20ca8f820
+# blocks all full proxy checker lanes); v0.2.0 was the R5 pin.
+ENV PROXY_CANON_COMMIT=1ed7cc15c838de2e56ba03ac34f426847ffce049
+ENV PROXY_CANON_DAEMON=91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b
+ENV PROXY_CANON_SHIM=87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git ca-certificates protobuf-compiler \

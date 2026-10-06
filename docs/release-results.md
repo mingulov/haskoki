@@ -25,10 +25,12 @@ and `crashed` are separate counters — findings = failed + crashed):
 | smoke direct | 743 | 379 | 373 | 0 | 364 | 6 | 0 | 0 | 0 |
 | smoke proxy (a48b60b, R4) | 743 | 379 | 374 | 0 | 364 | 5 | 0 | 0 | 0 |
 | smoke proxy (v0.2.0, R5) | 743 | 379 | 375 | 0 | 364 | 4 | 0 | 0 | 0 |
+| smoke proxy (v0.2.2, R9, 3 samples identical) | 743 | 379 | 374 | 0 | 364 | 5 | 0 | 0 | 0 |
 | full direct | 11003 | 6060 | 5058 | 27 | 4943 | 975 | 0 | 0 | 1 |
 | full proxy (standalone r4b, a48b60b) | 11003 | 6063 | 4838 | 39 | 4940 | 1185 | 1 | 0 | 1 |
 | full proxy (driver4, a48b60b) | 11003 | 6064 | 4837 | 40 | 4939 | 1186 | 1 | 0 | 1 |
 | full proxy (v0.2.0, R5, 2 samples identical) | 11003 | 6060 | 4884 | 25 | 4943 | 1151 | 0 | 0 | 1 |
+| full proxy (v0.2.2, R9) | 11003 | 6060 | 5019 | 27 | 4943 | 1014 | 0 | 0 | 1 |
 | cctv vectors direct | 1365 | 1365 | 1364 | 0 | 0 | 1 | 0 | 0 | 0 |
 | full direct + vectors | 11711 | 6776 | 5772 | 27 | 4935 | 977 | 0 | 0 | 1 |
 
@@ -45,7 +47,8 @@ jsonl census (R4 report §2).
 
 Direct rows are pin-independent: the v0.2.0 image reproduces
 the exact R4 direct summaries and the identical 27-finding set
-(backend unchanged; verified diff-empty).
+(backend unchanged; verified diff-empty), and the v0.2.2 image
+reproduces them again (R9 driver: same counters, exact-27 match).
 
 Proxy full on v0.2.0 carries 25 failed + 0 crashed. The
 2 historical failed-pair ids (`test_verify_in_ro_session`,
@@ -147,9 +150,9 @@ checker manages its own keys in a per-run memory store).
   `--slot` is a 0-based index into token-present slots —
   `--slot 1` fails with that hint).
 - Checker `pkcs11-check 0.2.3` (PyPI pin), Python 3.14.4,
-  opensc `0.27.0~rc1-1`, proxy `v0.2.0` (tag `v0.2.0` =
-  `1755403a…`; daemon/shim hashes in `environment.json`;
-  R4 rows above retain the superseded `a48b60b` pin).
+  opensc `0.27.0~rc1-1`, proxy `v0.2.2` (tag `v0.2.2` =
+  `1ed7cc15…`; daemon/shim hashes in `environment.json`;
+  R4/R5 rows above retain the superseded pins).
 - OS/arch: Ubuntu 26.04 container, x86_64.
 
 ## Reproduce
@@ -166,11 +169,11 @@ docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
   check --mode proxy --profile full
 docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 compare
 # Full gate (rebuilds the image; asserts the offline finding sets —
-# smoke zero-findings, direct exact-27, proxy exact-25, compare
-# exact-188 + shared-25 (zero variants anywhere) — plus exits,
+# smoke zero-findings, direct exact-27, proxy exact-27, compare
+# exact-83 + shared-27 (zero variants anywhere) — plus exits,
 # verdicts, and doctor/help/version gates; vector rows and full
 # native counters are separate probe receipts, not driver asserts):
-HASKOKI_DEMO_TEST_OUT=/tmp/r5-driver sh scripts/test-demo-image.sh
+HASKOKI_DEMO_TEST_OUT=/tmp/r9-driver2 sh scripts/test-demo-image.sh
 ```
 
 Each run dir keeps the raw reports unedited (`results.json`,
@@ -397,6 +400,15 @@ run two checker lanes concurrently (R3d timing sensitivity).
   `a48b60b` → `v0.2.0` and qualified (parity 49 holds / 40
   skips + full checker lanes, R5 §2). Still no engine
   behavior change of any kind.
+- Update (R9): proxy re-pinned `v0.2.0` → `v0.2.2`
+  (`1ed7cc15…`; upstream #35/#36/#37/#39 closed with
+  verification probes) and re-qualified: parity 70 holds /
+  19 skipped legs in 5 quarantine entries, proxy/full stable
+  set 27 (all shared, +2 GMAC),
+  subset re-frozen to 83 exclusions in 6 families + 27
+  shared (every delta caused in §4 of the R9 report; the
+  R5 figures above stay as the v0.2.0 historical record).
+  Still no engine behavior change of any kind.
 
 ## Figure sourcing record (R6 completeness correction)
 
@@ -410,14 +422,17 @@ cite this document, never a log.
 Headline lanes (measured through the demo image; rows in One
 screen above): smoke 743 collected, zero findings direct and
 proxied; full 11003 collected, direct 27 findings, proxy
-(v0.2.0) 25 findings all shared, zero proxy-only. Compare: 188
-frozen exclusions in 7 families + 25 shared findings (Finding
-triage above; per-id reasons in the frozen sets).
+(v0.2.0, R5) 25 findings all shared, zero proxy-only; proxy
+(v0.2.2, R9) 27 findings all shared, zero proxy-only. Compare:
+R5 188 frozen exclusions in 7 families + 25 shared findings;
+R9 83 in 6 families + 27 shared (Finding triage above; per-id
+reasons in the frozen sets).
 
 Driver-lane figures (passing R5 driver record,
 `HASKOKI_DEMO_TEST_OUT=… sh scripts/test-demo-image.sh`, exit
-0): demo 8/8 verifications hold (`demo-ok` marker, asserted by
-the driver); proxy-example 5/5 steps hold
+0; R9 driver re-verified identical figures on the v0.2.2
+image): demo 8/8 verifications hold (`demo-ok` marker,
+asserted by the driver); proxy-example 5/5 steps hold
 (`proxy-example-ok`, `known_differences: []`); usage-error
 matrix 8/8 exit 2; glibc floor GLIBC_2.43 overall (driver
 assert over bundle + proxy + venv ELFs), proxy ELFs group

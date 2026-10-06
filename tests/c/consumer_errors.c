@@ -454,8 +454,9 @@ int main(int argc, char **argv) {
   if (!isProxy) {
     CHECKM(rv == CKR_OK && p31 != NULL_PTR, "GetInterface selects 3.1");
   } else {
-    CHECKM(rv == CKR_OK && p31 == NULL_PTR,
-           "GetInterface 3.1 misses NULL (no shim 3.1)");
+    /* Backend-published 3.1 is merged into the live catalog. */
+    CHECKM(rv == CKR_OK && p31 != NULL_PTR,
+           "GetInterface selects proxied 3.1");
   }
   v.minor = 0;
   rv = pGetInterface((CK_UTF8CHAR_PTR) "PKCS 11", &v, &p30, 0);

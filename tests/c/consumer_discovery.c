@@ -162,16 +162,22 @@ int main(int argc, char **argv) {
         "discovery symbols resolve");
 
   /* ---- discovery before Initialize (no Haskell entry needed) ---- */
+  /* Direct catalog is the backend's own 3 (3.2/3.1/3.0). Proxied,
+   * pkcs11-proxy-ng >= 0.2.1 merges the backend-published
+   * interfaces into the seeded shim list, so the live catalog is
+   * 4 (2.40/3.0/3.1/3.2) with a functional 3.1. */
   count = 0;
   rv = pGetInterfaceList(NULL_PTR, &count);
-  CHECK(rv == CKR_OK && count == 3, "interface count query is 3");
+  CHECK(rv == CKR_OK && count == (isProxy ? 4 : 3),
+        "interface count query matches catalog (3 direct / 4 proxy)");
   count = 2;
   rv = pGetInterfaceList(ifaces, &count);
-  CHECK(rv == CKR_BUFFER_TOO_SMALL && count == 3,
-        "short interface buffer reports 3");
+  CHECK(rv == CKR_BUFFER_TOO_SMALL && count == (isProxy ? 4 : 3),
+        "short interface buffer reports catalog size");
   count = 8;
   rv = pGetInterfaceList(ifaces, &count);
-  CHECK(rv == CKR_OK && count == 3, "interface list fetches 3");
+  CHECK(rv == CKR_OK && count == (isProxy ? 4 : 3),
+        "interface list fetches catalog");
   CHECK(strcmp((const char *)ifaces[0].pInterfaceName, "PKCS 11") == 0 &&
             strcmp((const char *)ifaces[1].pInterfaceName, "PKCS 11") == 0 &&
             strcmp((const char *)ifaces[2].pInterfaceName, "PKCS 11") == 0,
@@ -185,14 +191,22 @@ int main(int argc, char **argv) {
       CHECKX(v1->major == 3 && v1->minor == 1, "iface[1] is 3.1");
       CHECKX(v2->major == 3 && v2->minor == 0, "iface[2] is 3.0");
     } else {
-      /* Shim fixed catalog (interface_probe.rs): 2.40/3.0/3.2. */
+      /* Merged catalog: seeded 2.40/3.0/3.2 plus the backend's
+       * published 3.1, sorted into place. */
+      CK_VERSION *v3 = (CK_VERSION *)ifaces[3].pFunctionList;
       CHECKX(v0->major == 2 && v0->minor == 40, "iface[0] is 2.40");
       CHECKX(v1->major == 3 && v1->minor == 0, "iface[1] is 3.0");
-      CHECKX(v2->major == 3 && v2->minor == 2, "iface[2] is 3.2");
+      CHECKX(v2->major == 3 && v2->minor == 1, "iface[2] is 3.1");
+      CHECKX(v3->major == 3 && v3->minor == 2, "iface[3] is 3.2");
+      CHECKX(strcmp((const char *)ifaces[3].pInterfaceName, "PKCS 11") == 0,
+             "iface[3] named 'PKCS 11'");
     }
   }
   CHECK(ifaces[0].flags == 0 && ifaces[1].flags == 0 && ifaces[2].flags == 0,
         "no interface claims fork-safe");
+  if (isProxy) {
+    CHECKX(ifaces[3].flags == 0, "iface[3] claims no fork-safe");
+  }
 
   v.major = 3;
   v.minor = 2;
@@ -204,10 +218,10 @@ int main(int argc, char **argv) {
   if (!isProxy) {
     CHECKX(rv == CKR_OK && p31 != NULL_PTR, "GetInterface selects 3.1");
   } else {
-    /* No 3.1 in the shim catalog: OK + NULL (shim lib.rs miss
-     * contract, claimed per PKCS#11 3.0 section 5.4). */
-    CHECKX(rv == CKR_OK && p31 == NULL_PTR,
-           "GetInterface 3.1 misses NULL (no shim 3.1)");
+    /* Backend-published 3.1 is merged into the live catalog and
+     * functional (Initialize/slot-list/finalize verified). */
+    CHECKX(rv == CKR_OK && p31 != NULL_PTR,
+           "GetInterface selects proxied 3.1");
   }
   v.minor = 0;
   rv = pGetInterface((CK_UTF8CHAR_PTR) "PKCS 11", &v, &p30, 0);
@@ -273,13 +287,18 @@ int main(int argc, char **argv) {
                tbl30->version.major == 3 && tbl30->version.minor == 0,
            "3.x table versions exact");
   } else {
-    CHECKX((void *)tbl32 != (void *)tbl30 &&
+    CHECKX(tbl31 != NULL_PTR, "shim 3.1 table selected");
+    CHECKX((void *)tbl32 != (void *)tbl31 &&
+               (void *)tbl32 != (void *)tbl30 &&
+               (void *)tbl31 != (void *)tbl30 &&
                (void *)legacy != (void *)tbl32 &&
+               (void *)legacy != (void *)tbl31 &&
                (void *)legacy != (void *)tbl30,
-           "legacy + shim 3.2/3.0 instances distinct");
+           "legacy + shim 3.2/3.1/3.0 instances distinct");
     CHECKX(tbl32->version.major == 3 && tbl32->version.minor == 2 &&
+               tbl31->version.major == 3 && tbl31->version.minor == 1 &&
                tbl30->version.major == 3 && tbl30->version.minor == 0,
-           "shim 3.2/3.0 table versions exact");
+           "shim 3.2/3.1/3.0 table versions exact");
   }
   if (!tbl32 || !tbl30) {
     printf("FAIL: required tables missing; aborting forwarded section\n");

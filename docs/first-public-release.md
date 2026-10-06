@@ -88,6 +88,10 @@ Nothing here worked first try. Three examples with receipts:
   ([#35](https://github.com/mingulov/pkcs11-proxy-ng/issues/35),
   [#36](https://github.com/mingulov/pkcs11-proxy-ng/issues/36),
   [#39](https://github.com/mingulov/pkcs11-proxy-ng/issues/39)).
+  The v0.2.2 re-pin closed all four upstream (#35/#36/#37/#39)
+  with verification probes and lifted parity to 70 holds / 19
+  skipped legs (5 quarantine entries)
+  (see the Update (R9) bullet in [release-results](release-results.md)).
 - Public docs went through four review rounds: stale outputs,
   unsourced figures, and a sticky-lockout misstatement were all
   caught by the reviewer and fixed with executed proofs

@@ -54,11 +54,12 @@ texts beside it. Contents:
 
 ## Proxy (`/opt/haskoki/proxy/`)
 
-`pkcs11-proxy-ng` v0.2.0 (tag `v0.2.0`), built from source in
-the image. Dual MIT/Apache-2.0; full texts ship as
-`LICENSE-MIT` + `LICENSE-APACHE` beside the binaries (asserted
-present by the Dockerfile runtime self-test). Source:
-`https://github.com/mingulov/pkcs11-proxy-ng` at tag `v0.2.0`;
+`pkcs11-proxy-ng` v0.2.2 (tag `v0.2.2` = commit `1ed7cc15…`),
+built from source in the image (R9 re-pin; R5 used v0.2.0).
+Dual MIT/Apache-2.0; full texts ship as `LICENSE-MIT` +
+`LICENSE-APACHE` beside the binaries (asserted present by the
+Dockerfile runtime self-test). Source:
+`https://github.com/mingulov/pkcs11-proxy-ng` at tag `v0.2.2`;
 daemon/shim hashes in `docs/release-results/environment.json`.
 
 ## Checker venv (`/opt/p11c/`, Python 3.14.4)

@@ -9,18 +9,27 @@
 # "routed:" prefixes) are asserted strictly per mode by the scenarios
 # themselves but excluded from the diff — see
 # the 2026-09-21 proxy-parity session notes for each exclusion's cited
-# mechanism (shim fixed catalog, NULL-on-miss contract, shim-side
+# mechanism (merged shim catalog, derive shape gate, shim-side
 # session validation, absent vendor trampolines).
 #
 # Proxy provenance (external binaries, never built into the repo):
 #   source: https://github.com/mingulov/pkcs11-proxy-ng
-#   commit: 1755403adb6e265f094a888f27db4fe9bda17cb6 (tag v0.2.0,
-#             "Record v0.2.0 quality receipt"; annotated-tag object
-#             b298b0c; R5 re-pin — a48b60b superseded: v0.2.0 fixes
-#             PBE OUT-IV writeback, embedded-handle mapping,
-#             unknown-attr forwarding, NULL-input normalization,
-#             and absorbs most of the override below into embedded;
-#             v0.2.1 was attempted and REJECTED, upstream #35/#36/#37)
+#   commit: 1ed7cc15c838de2e56ba03ac34f426847ffce049 (tag v0.2.2,
+#             "Record v0.2.2 quality receipt"; annotated-tag object
+#             e500cec9; R9 re-pin — v0.2.0 superseded: v0.2.2 fixes
+#             upstream #35 (logout DATA loss), #36 (cert-find hole),
+#             #37 (daemon death on message params), and #39
+#             (IV-shaped message-init 0x71, unclaimed upstream).
+#             Behavior notes (v0.2.1-origin, kept in v0.2.2): the
+#             live shim catalog merges the backend-published 3.1
+#             (4 entries, functional); init params forward to the
+#             backend (backend codes surface); derive garbage fails
+#             closed 0x71 before key-type/args checks (3 known
+#             divergences, branched in consumer_roundtrip).
+#             v0.2.1 was attempted and REJECTED (upstream #35/#36/#37;
+#             v0.2.0 history: fixed PBE OUT-IV writeback,
+#             embedded-handle mapping, unknown-attr forwarding, and
+#             NULL-input normalization over a48b60b).
 #   built:  throwaway rust:1.94-bookworm container,
 #             apt-get install protobuf-compiler && cargo build --release
 #           (effective toolchain 1.98.1 via the repo's
@@ -34,9 +43,9 @@
 #
 # Canonical build (the ONLY authoritative hashes):
 #   daemon sha256:
-#     8b7def0f128a3e47543c91b78b7a2c37a9ee1edb37916f8dc4a15147f3a1ae23  pkcs11-proxy-ng
+#     91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b  pkcs11-proxy-ng
 #   shim sha256:
-#     cb22c7e525c6b20c47c5e622b343dc2ceb8f39adb5c33180783264f20ca8f820  libpkcs11_proxy_ng_shim.so
+#     87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75  libpkcs11_proxy_ng_shim.so
 #   repro: from a pristine checkout of the source above at the commit
 #   above (no target/ dir), run the pinned-toolchain recipe:
 #     timeout -s KILL 2400 docker run --rm --network host \
@@ -45,8 +54,8 @@
 #         protobuf-compiler && cargo build --release'
 #     sha256sum target/release/pkcs11-proxy-ng \
 #       target/release/libpkcs11_proxy_ng_shim.so
-#   The two hashes MUST match the pair above (recorded 2026-10-05
-#   from a pristine v0.2.0 build; byte-identity is re-verified by
+#   The two hashes MUST match the pair above (recorded 2026-10-06
+#   from a pristine v0.2.2 build; byte-identity is re-verified by
 #   the demo image proxy stage, which rebuilds from the same
 #   ref+recipe and asserts this pair via PROXY_CANON_*).
 #
@@ -88,7 +97,7 @@ HERE=$(dirname "$0")
 PKG="$HERE/.."
 cd "$PKG" || exit 1
 
-PROXY_COMMIT="1755403adb6e265f094a888f27db4fe9bda17cb6"
+PROXY_COMMIT="1ed7cc15c838de2e56ba03ac34f426847ffce049"
 PROXY_DIR="${HASKOKI_PROXY_DIR:-/opt/pkcs11-proxy-ng}"
 PROXY_PORT="${HASKOKI_PROXY_PORT:-17512}"
 ENDPOINT="http://127.0.0.1:$PROXY_PORT"
@@ -145,17 +154,23 @@ done
 # Per-version entries base:leg:version:upstream-issue-URL
 # skip only that leg+version's proxied run; version is one of
 # 2.40/3.0/3.1/3.2 (whole-leg and whole-basename entries keep working).
-# message_routed: proxy rejects raw IV params, clobbers output state on
-# errors, erases NULL/nonzero shapes, and orders session checks first.
+# message_routed (R9: raw-IV init now forwards, #39 fixed — leg stays
+# for the remaining #23 defects: EncryptMessageNext IV repair /
+# supply-at-end / replace-at-end plus the GCM KAT sweep, 5 fails).
 # async_routed: fixed GetID/Join refusals; Complete source cannot preserve
 # caller output bindings/capacity. Direct success is not transport parity.
-# notifications_routed: blocking Wait retains the shim client mutex needed by
-# Finalize; callback association and provider control are not transported.
+# notifications_routed (R9: a48b60b deadlocked Finalize behind a
+# parked native wait; v0.2.2 refuses blocking waits at daemon
+# admission instead — fail-fast FUNCTION_NOT_SUPPORTED, zero native
+# attempts, mutex dropped before the RPC — but a refusal is not
+# transport: callback association and provider control are still
+# not transported, so the quarantine stays).
 # Valid empty polling remains parity-eligible in consumer_notifications_poll.
 # dual_routed/recover_routed: per-(version,leg) runs with transcript diff.
-# dual/recover :3.1 legs: v3.1 C_GetInterface returns CKR_OK with no usable
-# function table through the proxy (direct yields the 3.1 table); every 3.1
-# leg trips the same pre-session discovery gate — same cause, one URL;
+# dual/recover :3.1 legs (R9: REMOVED on v0.2.2 — all hold: dual
+# route/equiv/neg 64/148/13, recover route/pkcs/flags/neg
+# 48/40/21/83 forwarded lines identical; backend-published 3.1 is
+# functional, upstream #29 closed):
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/29; T-M07 R1.
 # dual_routed route+neg × 3.2 (R5: REMOVED on v0.2.0 — both hold,
 # 191/140 forwarded lines identical; the a48b60b NULL out-length /
@@ -179,34 +194,19 @@ done
 # consumer_certificates:restart: memory token objects survive client
 # Finalize/Initialize through the proxy (direct drops them);
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/27; T-C09 R9.
-# consumer_certificates:create+find+lifecycle+atomicity:3.1: v3.1
-# C_GetInterface returns CKR_OK with no usable function table
-# through the proxy (direct yields the 3.1 table); every 3.1 leg
-# trips the same pre-session discovery gate — same cause, one URL;
+# consumer_certificates:create+find+lifecycle+atomicity:3.1 (R9:
+# REMOVED on v0.2.2 — all hold, 112/174/215/87 forwarded lines
+# identical per version x storage; upstream #28 closed):
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/28; T-C09 R10.
 # consumer_certificates:find (R5: NEW whole-leg on v0.2.0 — find
-# never returns CKO_CERTIFICATE: data-by-label 1, cert-by-label 0,
-# cert-by-class 0 on 2.40/3.0/3.2; regression window a48b60b..v0.2.0,
-# also present on v0.2.1; the :3.1 entry above stays — 3.1 is gated
-# at discovery before any find runs):
+# never returned CKO_CERTIFICATE; R9: REMOVED on v0.2.2 — upstream
+# #36 fixed and closed, leg holds all versions x storages):
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/36.
 DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23
 async_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/24
 notifications_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/25
-consumer_certificates:lifecycle:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28
 consumer_certificates:visibility:https://github.com/mingulov/pkcs11-proxy-ng/issues/27
-consumer_certificates:atomicity:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28
-consumer_certificates:restart:https://github.com/mingulov/pkcs11-proxy-ng/issues/27
-consumer_certificates:create:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28
-consumer_certificates:find:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/28
-consumer_certificates:find:https://github.com/mingulov/pkcs11-proxy-ng/issues/36
-dual_routed:route:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
-dual_routed:equiv:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
-dual_routed:neg:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
-recover_routed:route:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
-recover_routed:pkcs:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
-recover_routed:flags:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29
-recover_routed:neg:3.1:https://github.com/mingulov/pkcs11-proxy-ng/issues/29"
+consumer_certificates:restart:https://github.com/mingulov/pkcs11-proxy-ng/issues/27"
 for entry in $DIRECT_ONLY; do
   dname="${entry%%:*}"; durl="${entry#*:}"
   [ -n "$durl" ] && [ "$durl" != "$entry" ] \

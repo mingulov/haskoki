@@ -483,9 +483,10 @@ int main(int argc, char **argv) {
         CHECKC(rv == CKR_ARGUMENTS_BAD,
                "SHA-256 with stray param is ARGUMENTS_BAD");
       } else {
-        /* The shim translates init param errors to PARAM_INVALID. */
-        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
-               "proxied stray param is PARAM_INVALID");
+        /* Init params are forwarded to the backend, whose
+         * ARGUMENTS_BAD surfaces unchanged. */
+        CHECKC(rv == CKR_ARGUMENTS_BAD,
+               "proxied stray param surfaces backend ARGS_BAD");
       }
     }
     rv = f->C_CloseSession(dsess);
@@ -1040,11 +1041,10 @@ int main(int argc, char **argv) {
     sig[((size_t) sigLen) - 1] ^= 0xFF;
     rv = f->C_Verify(ssess, (CK_BYTE_PTR) "abc", 3, sig, sigLen);
     CHECKC(rv == CKR_SIGNATURE_INVALID, "tampered ECDSA refused");
-    /* Explicit DER encoding stays available on request (direct:
-     * our vendor params convention). Proxied, the shim refuses
-     * params on parameterless CKM_ECDSA_SHA256 before forwarding
-     * (validate_mechanism/check_operation), so the init surfaces
-     * PARAM_INVALID and no op starts. */
+    /* Explicit DER encoding stays available on request (our
+     * vendor params convention), direct and proxied alike: init
+     * params are forwarded to the backend, so the one-shot Sign
+     * below terminates the op in both topologies. */
     {
       CK_MECHANISM dsm;
       CK_BYTE derp[] = { 'D', 'E', 'R' };
@@ -1059,8 +1059,14 @@ int main(int argc, char **argv) {
         CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72 && sig[0] == 0x30,
                "explicit DER yields DER bytes");
       } else {
-        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
-               "proxied DER params are PARAM_INVALID");
+        /* Init params are forwarded to the backend, so the vendor
+         * DER convention works through the proxy exactly as direct
+         * (v0.2.0 refused shim-side with PARAM_INVALID). */
+        CHECKC(rv == CKR_OK, "proxied DER SignInit ok");
+        sigLen = sizeof(sig);
+        rv = f->C_Sign(ssess, (CK_BYTE_PTR) "abc", 3, sig, &sigLen);
+        CHECKC(rv == CKR_OK && sigLen > 64 && sigLen <= 72 && sig[0] == 0x30,
+               "proxied explicit DER yields DER bytes");
       }
     }
     /* ECDSA multipart. */
@@ -2193,9 +2199,10 @@ int main(int argc, char **argv) {
       if (!isProxy) {
         CHECKC(rv == CKR_ARGUMENTS_BAD, "DES3-MAC nonempty params refused");
       } else {
-        /* The shim translates init param errors to PARAM_INVALID. */
-        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
-               "proxied DES3-MAC nonempty params is PARAM_INVALID");
+        /* Init params are forwarded to the backend, whose
+         * ARGUMENTS_BAD surfaces unchanged. */
+        CHECKC(rv == CKR_ARGUMENTS_BAD,
+               "proxied DES3-MAC nonempty params surfaces backend ARGS_BAD");
       }
       rv = f->C_VerifyInit(ssess, &dnm, dkey);
       CHECKC(rv == CKR_OK, "DES3-MAC re-init for tamper");
@@ -3991,15 +3998,14 @@ int main(int argc, char **argv) {
       {
         CK_OBJECT_HANDLE bad = 0;
         rv = f->C_DeriveKey(wsess, &dhkdf, sealedKey, ktmpl, 5, &bad);
-        /* Direct callers see the malformed call refused (ARGS_BAD).
-         * a48b60b forwarded empty salt and served the derive; v0.2.0
-         * refuses shim-side with PARAM_INVALID (R5 rv evidence) —
-         * known-difference: both topologies refuse, code differs. */
+        /* The malformed call is refused in both topologies; the
+         * backend's ARGUMENTS_BAD now surfaces unchanged through
+         * the proxy (v0.2.0 refused shim-side with PARAM_INVALID). */
         if (!isProxy) {
           CHECKC(rv == CKR_ARGUMENTS_BAD, "NULL salt with length refused");
         } else {
-          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && bad == 0,
-                 "proxied NULL salt refused with PARAM_INVALID");
+          CHECKC(rv == CKR_ARGUMENTS_BAD && bad == 0,
+                 "proxied NULL salt refused with backend ARGS_BAD");
         }
       }
       /* 11g HKDF-DATA: the same KDF with data-object outputs. */
@@ -4973,8 +4979,16 @@ int main(int argc, char **argv) {
           badm.pParameter = garbage;
           badm.ulParameterLen = sizeof(garbage);
           rv = f->C_DeriveKey(sess, &badm, pssPriv, dtmpl, 6, &d3);
-          CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT && d3 == 0,
-                 "ECDH with RSA base and garbage params refused typed");
+          if (!isProxy) {
+            CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT && d3 == 0,
+                   "ECDH with RSA base and garbage params refused typed");
+          } else {
+            /* Derive-path shape gate refuses the garbage params
+             * before the key-type check runs: known divergence
+             * (direct reports KEY_TYPE_INCONSISTENT). */
+            CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && d3 == 0,
+                   "proxied ECDH-RSA-garbage refused params-first");
+          }
           rv = f->C_DeriveKey(sess, &dm, pssPriv, dtmpl, 6, &d3);
           CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT && d3 == 0,
                  "ECDH with RSA base and valid params refused typed");
@@ -5164,16 +5178,12 @@ int main(int argc, char **argv) {
               CHECKC(rv == CKR_ARGUMENTS_BAD && pd3 == 0,
                      "TLS-PRF with garbage params refused typed");
             } else {
-              /* The shim chases the all-zero image to empty
-               * label+seed (NULL-on-miss contract); empty params
-               * are legal TLS-PRF inputs, so the backend serves. */
-              CHECKC(rv == CKR_OK && pd3 != 0,
-                     "proxied zero-image params derive with empty label+seed");
-              if (rv == CKR_OK && pd3 != 0) {
-                rv = f->C_DestroyObject(sess, pd3);
-                CHECKC(rv == CKR_OK, "proxied empty-params secret destroyed");
-                pd3 = 0;
-              }
+              /* Derive-path shape gate fails closed on the zero
+               * image: known divergence (direct reports
+               * ARGUMENTS_BAD; v0.2.0 served an empty-params
+               * derive via the NULL-on-miss contract). */
+              CHECKC(rv == CKR_MECHANISM_PARAM_INVALID && pd3 == 0,
+                     "proxied zero-image params refused closed");
             }
             rv = f->C_DestroyObject(sess, pd2);
             CHECKC(rv == CKR_OK, "second TLS-PRF secret destroyed");
@@ -5302,8 +5312,15 @@ int main(int argc, char **argv) {
             badkm.pParameter = garbage;
             badkm.ulParameterLen = sizeof(garbage);
             rv = f->C_DeriveKey(sess, &badkm, kbase, ktmpl, 6, &kd3);
-            CHECKC(rv == CKR_ARGUMENTS_BAD,
-                   "SP800 with garbage params refused typed");
+            if (!isProxy) {
+              CHECKC(rv == CKR_ARGUMENTS_BAD,
+                     "SP800 with garbage params refused typed");
+            } else {
+              /* Derive-path shape gate fails closed on garbage:
+               * known divergence (direct reports ARGUMENTS_BAD). */
+              CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                     "proxied SP800-garbage refused closed");
+            }
             rv = f->C_DestroyObject(sess, kd2);
             CHECKC(rv == CKR_OK, "second SP800 secret destroyed");
           }
@@ -6767,9 +6784,10 @@ int main(int argc, char **argv) {
           if (!isProxy) {
             CHECKC(rv == CKR_ARGUMENTS_BAD, "rc2-cbc word-only image refused");
           } else {
-            /* The shim translates init param errors to PARAM_INVALID. */
-            CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
-                   "proxied rc2-cbc word-only image is PARAM_INVALID");
+            /* Init params are forwarded to the backend, whose
+             * ARGUMENTS_BAD surfaces unchanged. */
+            CHECKC(rv == CKR_ARGUMENTS_BAD,
+                   "proxied rc2-cbc word-only image surfaces backend ARGS_BAD");
           }
           qm.mechanism = CKM_RC4;
           qm.pParameter = NULL_PTR;

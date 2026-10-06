@@ -86,10 +86,9 @@ static int run_table(const char *path, unsigned index) {
     CK_VERSION want = {3, (CK_BYTE)(index - 1)}; CK_INTERFACE *i = NULL;
     if (!expect(iface(NULL, &want, &i, 0), CKR_OK, "discovery")) return 1;
     if (index == 2 && is_proxy) {
-      /* Pinned shim inventory only: no Wait call or polling pass is claimed. */
-      if (!check(i == NULL, "pinned-proxy-3.1-absent")) return 1;
-      puts("topology: notifications-poll/3.1 unavailable in pinned proxy; no polling case executed");
-      return 0;
+      /* Merged catalog: the backend-published 3.1 is present and
+       * takes the same polling pass as 3.0 (same table layout). */
+      if (!check(i != NULL, "proxied-3.1-present")) return 1;
     }
     if (!check(i && i->pFunctionList, "table")) return 1;
     CK_VERSION actual; memcpy(&actual, i->pFunctionList, sizeof(actual));
