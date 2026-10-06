@@ -21,7 +21,7 @@ below runs in a clean shell.
 
 ```sh
 scripts/test-release-install.sh
-# PASS: test-release-install.sh (clean-container install passing)
+# PASS: test-release-install.sh (legs A+B passing on the bare image)
 ```
 
 This unpacks the artifact on bare `ubuntu:26.04` (+ documented
@@ -41,7 +41,7 @@ glibc >= 2.43).
 ## 2. `haskoki-ctl` (offline / owned-instance operator tool)
 
 ```sh
-CTL=dist-newstyle/.../haskoki-ctl   # or dist-release/.../bin/haskoki-ctl
+CTL=dist-release/haskoki-0.3.0.0/bin/haskoki-ctl   # installed artifact (§1)
 $CTL --version                      # haskoki-ctl 0.3.0.0
 $CTL config check --config tests/ops/fixtures/maximal-demo.toml
 # config-ok: profile=ProfileDemoMaximal interfaces=["2.40","3.0","3.1","3.2"]
@@ -49,9 +49,9 @@ $CTL capabilities --config tests/ops/fixtures/maximal-demo.toml
 # profile: demo-maximal [target-profile: gaps remain, ...]
 # engine: EngineSynthetic
 # native-engine: EngineOpenSSL (native paths always run OpenSSL4; ...)
-# template-bounds: entries=64 bytes=65536 (pinned; ...)
-# active-catalog: CKM_AES_CBC CKM_AES_CBC_PAD ... (in-process catalog)
-# gap-set: CKM_ACTI CKM_AES_CCM ... (not behavior-covered)
+# template-bounds: entries=64 bytes=4194304 (pinned; ...)
+# active-catalog: CKM_AES_CBC CKM_AES_CBC_ENCRYPT_DATA CKM_AES_CBC_PAD CKM_AES_CCM ... (in-process catalog)
+# gap-set: CKM_ACTI CKM_ACTI_KEY_GEN CKM_AES_CFB64 ... (not behavior-covered)
 $CTL scenario run --config tests/ops/fixtures/maximal-demo.toml \
     --scenario tests/ops/fixtures/scenario.json
 # scenario: pending-sign-and-token-removal
@@ -183,29 +183,30 @@ scripts/test-proxy-parity.sh
 # PASS: test-proxy-parity.sh (direct/proxy parity)
 ```
 
-Same CKR + same outputs on every forwarded call (71 + 9 transcript
-lines identical); handle-carrying calls now forward and succeed
-behind the proxy on opened sessions. Seeded-mismatch
+Same CKR + same outputs on every forwarded call (current record:
+49 consumer legs hold on the pinned v0.2.0 proxy, 40 quarantined
+skips — see the Update (R5) bullet in `docs/release-results.md`);
+handle-carrying calls now forward and succeed behind the proxy on
+opened sessions. Seeded-mismatch
 (`HASKOKI_PARITY_SEED_MISMATCH=1`, see the script header) still
 proves the script can fail.
 
-External consumers (throwaway containers; verbatim evidence in
-the 2026-09-22 oracle session notes, kept outside this
-package): `pkcs11-check==0.2.0`
-doctor passing (interface v3.2, 1 token-present slot, 104
-mechanisms) with 51/51 digest files; `pkcs11-tool` REAL
-ECDSA-SHA256 sign (70-byte DER) + verify and REAL AES-ECB
+External consumers, HISTORICAL 2026-09-22 note (throwaway
+containers; the dated oracle session notes holding the counts
+are kept outside this package, so no figures are quoted here):
+`pkcs11-check==0.2.0` doctor passing plus digest files;
+`pkcs11-tool` REAL ECDSA-SHA256 sign + verify and REAL AES-ECB
 encrypt/decrypt round-trips (via the pkcs11-proxy-ng daemon shim,
 which shares session space; all crypto is this module's engine);
-`p11-kit list-modules` lists module + token; NSS attaches (0
-certs). SunPKCS11 and the OpenSSL provider were NOT attempted (no
+`p11-kit list-modules` lists module + token; NSS attaches.
+SunPKCS11 and the OpenSSL provider were NOT attempted (no
 JVM/provider in the toolchain image).
 
 ## 4. Control scenario (live token events, in-process)
 
 ```sh
 scripts/test-control-events.sh
-# PASS: test-control-events.sh (native control/slot-event proof)
+# PASS: test-control-events.sh
 ```
 
 The test enables removable software slots in the loaded instance. Tokens
@@ -269,8 +270,11 @@ session. Recognizing the `C_Sign` selector preserves identity checks;
 it does not admit async Sign, message, multipart, or key-generation work.
 The 316 mechanisms and their flags are unchanged; async session/token
 capability bits do not add mechanisms. The three contracts remain
-`planned-with-behavior`, within the unchanged 104 functions / 70 planned /
-32 unsupported / 2 not-applicable catalog. This is function-level byte-job
+`planned-with-behavior`, within the 104-function catalog (78
+planned-with-behavior / 24 unsupported-with-reason / 2
+not-applicable per `spec/function-contracts.json`; the
+2026-09-30 70/32 split predates the T-M02/T-M03 route flips).
+This is function-level byte-job
 evidence, with no broader async or PKCS #11 conformance claim. The
 [oracle qualification record](pkcs11-oracle-triage.md#async-routing-verification-2026-09-30)
 cites measured reviewed artifacts; verification of the final revision
@@ -293,7 +297,11 @@ the home token).
   `CKR_FUNCTION_NOT_SUPPORTED`), so every process provisioning
   this token agrees. Wrong PINs count down per-role retries
   (`CKF_USER_PIN_COUNT_LOW`, then `CKR_PIN_LOCKED`); a correct
-  login clears the counter.
+  login resets the counter only BEFORE lockout — once locked, the
+  role stays locked even for the right PIN (sticky, per-role;
+  the other role is unaffected). This section is the single
+  canonical PIN/state explanation; README links here and the
+  issue template cites this section instead of repeating values.
 - No-InitToken path: `C_InitToken` stays honestly
   `CKR_FUNCTION_NOT_SUPPORTED`. Provisioning happens at open, not
   through the token-init entry.
@@ -315,11 +323,28 @@ the home token).
   Both records are pinned in `consumer_discovery`. On a catalog
   open each slot reports its own label and serial (same flags
   and strings otherwise); see §8.
+- Inter-run state and safe removal (single canonical statement):
+  with `memory` storage each process opens a FRESH store —
+  nothing survives the process, and concurrent opens are
+  isolated by construction (no shared run-store). With `sqlite`,
+  the store file IS the state: restart reloads provisioned
+  tokens as present with flags clear, while attempt/lockout
+  counters persist on the token row. Reset = fresh store: for
+  memory, a new process; for SQLite, after the process exits,
+  remove the store file (or point the config at a fresh path) —
+  removal of an inactive store is always safe (no background
+  writer exists; the single-writer rule fails a second concurrent
+  open loudly, so a successful open proves sole ownership).
+  Container runs (`demo`/`check`/`compare`) keep run state in a
+  per-run dir under the mounted `/out`; `--rm` drops everything
+  else with the container. Reset = delete the run dir (or the
+  whole `out/`) — nothing outside the mount is touched.
 
 ## 7. HSM simulation
 
 ```sh
-haskoki-ctl scenario run --config tests/ops/fixtures/sim-demo.toml \
+CTL=dist-release/haskoki-0.3.0.0/bin/haskoki-ctl   # installed artifact (§1)
+$CTL scenario run --config tests/ops/fixtures/sim-demo.toml \
   --scenario tests/ops/fixtures/sim-scenario.json
 # scenario: sim-delay-token-fault
 # steps-executed: 22
@@ -430,9 +455,10 @@ user_pins = ["1234", "2345", "3456"]
   changes.
 
 ```sh
-haskoki-ctl config check --config tests/ops/fixtures/multi-token.toml
+CTL=dist-release/haskoki-0.3.0.0/bin/haskoki-ctl   # installed artifact (§1)
+$CTL config check --config tests/ops/fixtures/multi-token.toml
 # config-ok: profile=ProfileDemoMaximal interfaces=["2.40","3.0","3.1","3.2"]
-haskoki-ctl capabilities --config tests/ops/fixtures/multi-token.toml | grep tokens
+$CTL capabilities --config tests/ops/fixtures/multi-token.toml | grep tokens
 # tokens.count: 3
 # tokens.labels: haskoki-demo,haskoki-ops,haskoki-audit
 ```
@@ -585,3 +611,38 @@ persist as plain JSON/blobs with no encryption-at-rest; attempt and
 lockout counters ride the token row, while PINs stay fixed at open
 (§6). Restart reloads provisioned tokens as present with flags
 clear; see `docs/operations-notes.md` for the quarantine protocol.
+
+## 11. Container image: proxy example + compare classifier
+
+Prerequisites: the demo image built (`docker build -f
+docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 .`, repo root) and an
+output dir (`mkdir -p out`). The proxy example diffs 5 steps
+direct-vs-proxied over the pinned `pkcs11-proxy-ng` v0.2.0 pair on
+loopback (TEST-ONLY transport):
+
+```sh
+docker run --rm --network none -v "$PWD/out:/out" --entrypoint /bin/sh \
+  haskoki-demo:0.3.0.0 /opt/haskoki/examples/release/proxy-example
+# proxy-example-ok: 5/5 steps hold direct-vs-proxied
+```
+
+`compare` runs the full checker profile in both modes and diffs
+verdict transcripts; it is raw plumbing (every mismatch is an
+"unexpected diff", even frozen ones). The shipped classifier splits
+the raw diff into known-difference (188 frozen exclusions with
+per-id reasons), direct-only, flaky, and unexpected-difference
+buckets without touching the raw files:
+
+```sh
+docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 compare
+# ... then classify that run dir (newest out/compare-*):
+RD=$(ls -dt out/compare-* | head -1)
+docker run --rm --network none -v "$PWD/out:/out" --entrypoint /bin/sh \
+  haskoki-demo:0.3.0.0 \
+  /opt/haskoki/examples/release/compare-classify/compare-classify \
+  "/out/$(basename "$RD")"
+# compare-classify-ok: 188 known-difference + shared 25/25 exact
+```
+
+Frozen sets, family reasons, and the zero-variance rule live in
+`docs/release-results.md` (+ `docs/release-results/` companions).

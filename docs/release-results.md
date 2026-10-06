@@ -397,3 +397,81 @@ run two checker lanes concurrently (R3d timing sensitivity).
   `a48b60b` → `v0.2.0` and qualified (parity 49 holds / 40
   skips + full checker lanes, R5 §2). Still no engine
   behavior change of any kind.
+
+## Figure sourcing record (R6 completeness correction)
+
+Every user-facing figure traces to exactly one record in this
+document; nothing here is re-measured (all values were measured
+in R3/R5/R6 or by the cited publication/spec checks — the R6
+rows are the installed-`ctl` outputs, the `doctor` outcomes,
+and the p11scope capture below). README and the walkthrough
+cite this document, never a log.
+
+Headline lanes (measured through the demo image; rows in One
+screen above): smoke 743 collected, zero findings direct and
+proxied; full 11003 collected, direct 27 findings, proxy
+(v0.2.0) 25 findings all shared, zero proxy-only. Compare: 188
+frozen exclusions in 7 families + 25 shared findings (Finding
+triage above; per-id reasons in the frozen sets).
+
+Driver-lane figures (passing R5 driver record,
+`HASKOKI_DEMO_TEST_OUT=… sh scripts/test-demo-image.sh`, exit
+0): demo 8/8 verifications hold (`demo-ok` marker, asserted by
+the driver); proxy-example 5/5 steps hold
+(`proxy-example-ok`, `known_differences: []`); usage-error
+matrix 8/8 exit 2; glibc floor GLIBC_2.43 overall (driver
+assert over bundle + proxy + venv ELFs), proxy ELFs group
+maximum 2.34 (driver floor-leg record).
+
+Catalog figures (`python3 scripts/publish-coverage.py --check`,
+464 rows, 14 issues): 464 catalog mechanisms = 316
+behavior-tested + 89 unsupported-with-reason + 2 not-applicable
++ 57 planned (behavior column; the 316 tested rows are the
+C-surface served catalog; `docs/coverage.md`).
+
+p11scope capture (primary record `docs/p11scope-trace.md`;
+artifact `cap.json`, 315966 bytes, schema
+`p11scope/observed-profile/v3`, NOT shipped — re-run the recipe
+there): 60 s of `check --mode direct --profile full` (start
+2026-10-06T03:12:28Z), 36 attributed calls across 9 named
+functions, `evidence.completeness = PARTIAL`, 496 slots
+count-only, mechanisms table EMPTY (`[]`), attach refusal
+"module needs 104 more of the 512 attach slots; 496 are in
+use", provider `libhaskoki.so` hash-pinned `sha256
+5bad965f…`, 40 pid/descendant gaps, 20 `discovery unavailable`
++ 1 unwalked function-table-layout subjects. Per-function
+attribution (the full 36 calls; replicated from the primary
+record so this document stays the sole number source):
+
+| Function | Calls | Errors | Return codes |
+|---|---|---|---|
+| C_GetSlotList | 8 | 0 | 8 × `0x0` |
+| C_CloseSession | 5 | 0 | 5 × `0x0` |
+| C_Finalize | 4 | 0 | 4 × `0x0` |
+| C_OpenSession | 4 | 0 | 4 × `0x0` |
+| C_Login | 4 | 0 | 4 × `0x0` |
+| C_Initialize | 3 | 0 | 3 × `0x0` |
+| C_CreateObject | 3 | 3 | 3 × `0xd0` |
+| C_GetInterface | 3 | 0 | 3 × `0x0` |
+| C_Logout | 2 | 0 | 2 × `0x0` |
+
+Native test extents and observed operator outputs (R6):
+installed `haskoki-ctl` 0.3.0.0 prints `template-bounds:
+entries=64 bytes=4194304`; scenario
+`pending-sign-and-token-removal` runs 12 steps and
+`sim-delay-token-fault` 22 steps (byte-identical across 3 runs
+per `SimBridgeSpec.caseSimScenario`); streaming legs are 1/8/20
+MiB in 64 KiB parts (`tests/c/consumer_streaming.c`) against
+the 16 MiB `maxBuffered` backstop
+(`core/Haskoki/Operation.hs`) and under the proxy's 4 MiB
+default message cap; notifications parity (T-N09 reviewed
+evidence) is 72 rich direct legs with 153 matching eligible
+polling lines, direct 3.1 executing all 37 assertions as
+topology inventory; the function catalog is 104 rows = 78
+planned-with-behavior + 24 unsupported-with-reason + 2
+not-applicable (`spec/function-contracts.json`); sim stress
+defaults are N=4/M=50/iters=20000
+(`tests/c/sim_threaded.c`); seed and generate caps are 1 MiB
+each (`seedRandomMaxBytes`, `generateRandomMaxBytes`);
+p11scope `doctor` exits 0 with zero FAILs privileged, exit 1
+with 3 FAILs unprivileged.
