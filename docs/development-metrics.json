@@ -1,0 +1,137 @@
+{
+  "schema": "haskoki/development-metrics/v1",
+  "status": "awaiting owner data",
+  "cutoff": {
+    "iso_utc": "2026-10-06T04:18:48Z",
+    "source_sha": "d34f31a (release/first-public, R6 commit; moves at R8)",
+    "scope": "Haskoki workspace sessions only (first commit 2026-09-24 through cutoff)"
+  },
+  "sessions_definition": "A root session is one session_id (codex) or one session directory (muse). Resumed/continued codex sessions may span several rollout files (84 files for 82 bound roots at census time; one root spans 3 files); usage is deduplicated globally so continuations never double-count. Of 82 bound codex roots, 1 is the excluded ops session and 1 post-cutoff review session contributes nothing: 80 codex + 25 muse = 105 counted sessions, of which 10 muse sessions hold zero usage records (counted in inventory, contributing nothing). Later post-cutoff sessions grow the bound inventory without changing the aggregates.",
+  "binding_rule": "A session counts iff its recorded working directory is the Haskoki workspace root (identifier HASKOKI_WORKSPACE) or a descendant path: codex session_meta cwd equals the root or starts with root + '/', same rule for runtime_workspace_roots; muse workspace_root markers likewise. Mention-grep rejected (nearly every in-scope file mentions haskoki, e.g. 350/352 at first scan); workspace binding admits 82, of which 80 contribute pre-cutoff usage. One bound session (ops disk-space check, no Haskoki work product) is EXCLUDED from all aggregates below.",
+  "field_definitions": {
+    "input_tokens": "Total input per call (INCLUDES cached tokens; never add cached on top).",
+    "cached_tokens": "Subset of input served from cache (re-read context, not written code). codex: cached_input_tokens; muse: cached_tokens == cache_read_tokens (one quantity, counted once).",
+    "cache_write_tokens": "Cache-creation tokens. Observed 0 on both harnesses.",
+    "output_tokens": "Total output per call (INCLUDES reasoning tokens; never add reasoning on top).",
+    "reasoning_tokens": "Subset of output spent on reasoning. codex: reasoning_output_tokens.",
+    "calls": "Individual recorded model calls ONLY (codex: unique response_id; muse: unique model_completed record id). Workflow-child usage summaries are separate aggregate events, never calls.",
+    "summary_events": "muse workflow_child_lifecycle usage summaries for child sessions outside the bound set. Token totals real; per-summary call counts unavailable; model not recorded in the summaries."
+  },
+  "dedup": "codex: global response_id dedup over all bound files (0 duplicates over 3298 records); per-record timestamp cutoff (18 post-cutoff records excluded). muse: record-id dedup (0 duplicates); 1 workflow-child summary excluded as dup of a bound child session; post-cutoff records excluded by recorded_at. Nesting cached<=input and reasoning<=output verified on every record (0 violations); codex total==input+output verified on every record.",
+  "inclusions": "All recorded pre-cutoff calls regardless of outcome: failed requests, retries, reviews, release packaging. Parallel sessions are never summed as calendar hours.",
+  "by_model": [
+    {
+      "model": "muse-spark-1.3-contributor",
+      "harness": "muse",
+      "role": "implementation driver (mixed implementation/research/verification within sessions)",
+      "provenance": "session.jsonl model_completed events, 25 bound sessions",
+      "sessions": 25,
+      "calls": 31803,
+      "input_tokens": 7413592270,
+      "cached_tokens": 7291825933,
+      "cache_write_tokens": 0,
+      "output_tokens": 13794082,
+      "reasoning_tokens": 5580092
+    },
+    {
+      "model": "gpt-6-astra",
+      "mode": "max",
+      "harness": "codex",
+      "provenance": "rollout token_usage_record joined to turn_context model",
+      "input_tokens": 157558510,
+      "cached_tokens": 151208192,
+      "cache_write_tokens": 0,
+      "output_tokens": 1392735,
+      "reasoning_tokens": 479264
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "mode": "max",
+      "harness": "codex",
+      "provenance": "rollout token_usage_record joined to turn_context model",
+      "input_tokens": 156611774,
+      "cached_tokens": 142648960,
+      "cache_write_tokens": 0,
+      "output_tokens": 1823435,
+      "reasoning_tokens": 976491
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "mode": "xhigh",
+      "harness": "codex",
+      "provenance": "rollout token_usage_record joined to turn_context model",
+      "input_tokens": 42506434,
+      "cached_tokens": 40568960,
+      "cache_write_tokens": 0,
+      "output_tokens": 361610,
+      "reasoning_tokens": 98054
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "mode": "high",
+      "harness": "codex",
+      "provenance": "rollout token_usage_record joined to turn_context model",
+      "input_tokens": 2628082,
+      "cached_tokens": 2411648,
+      "cache_write_tokens": 0,
+      "output_tokens": 19770,
+      "reasoning_tokens": 1769
+    }
+  ],
+  "child_summaries": {
+    "model": "not recorded",
+    "provenance": "muse workflow_child_lifecycle usage summaries for child sessions outside the bound set (58 events)",
+    "summary_events": 58,
+    "calls": "unavailable (summaries carry no per-request counts)",
+    "input_tokens": 53614192,
+    "cached_tokens": 49577927,
+    "cache_write_tokens": 0,
+    "output_tokens": 571034,
+    "reasoning_tokens": 261494
+  },
+  "by_role_codex": [
+    {
+      "role": "implementation",
+      "provenance": "prompt keyword rule (implement-only/implementer/worker/final-collection), 50 root sessions",
+      "sessions": 50,
+      "calls": 1740,
+      "input_tokens": 189814918,
+      "output_tokens": 1559401,
+      "total_tokens": 191374319
+    },
+    {
+      "role": "review",
+      "provenance": "prompt keyword rule (reviewer/re-review/verdict), 20 root sessions",
+      "sessions": 20,
+      "calls": 1133,
+      "input_tokens": 132046708,
+      "output_tokens": 1605436,
+      "total_tokens": 133652144
+    },
+    {
+      "role": "planning",
+      "provenance": "prompt keyword rule (brainstorm/spec/plan/consultation/recon), 10 root sessions",
+      "sessions": 10,
+      "calls": 315,
+      "input_tokens": 37443174,
+      "output_tokens": 432713,
+      "total_tokens": 37875887
+    }
+  ],
+  "totals": {
+    "sessions": 105,
+    "calls": 34991,
+    "summary_events": 58,
+    "input_tokens": 7826511262,
+    "cached_tokens": 7678241620,
+    "output_tokens": 17962666,
+    "reasoning_tokens": 7397164,
+    "note": "Totals are input/output only (calls + summary events combined). Cached and reasoning are subsets (see definitions) and are never added again."
+  },
+  "not_measured": {
+    "author_personal_time": "OWNER: author's own estimate only, labeled as estimate.",
+    "money_spent": "OWNER: actual spend and/or subscription. No API-equivalent estimate: no verified tariff for these model IDs/modes.",
+    "agent_wall_hours": "Not reported: parallel sessions cannot be summed as hours.",
+    "child_summary_call_counts": "Not recorded in workflow_child_lifecycle summaries."
+  }
+}
