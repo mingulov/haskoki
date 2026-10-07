@@ -25,9 +25,12 @@ planning funnel — to its cataloged disposition:
 
 Catalog coupling is structural: the battery parses the generated
 projection at test time, so any catalog/code drift (a status flip,
-a route change, an id rename) fails loudly here. A scratch
-catalog mutation that flips one row's status must fail this
-battery (proven per run, scratch discarded, log kept).
+a route change, an id rename) fails loudly here. Sensitivity to
+status flips is proven per run by the status-mutation control
+('caseStatusFlips'): one allowed row reinterpreted as refused and
+one refused row reinterpreted as allowed, each in memory (the
+catalog file is never touched); each flip must be detected AND
+identify its row, or the control itself fails.
 
 Shared with @haskoki-core-tests@ (pure-core imports only): the
 core suite is in this battery's reporting closure.
@@ -35,9 +38,12 @@ core suite is in this battery's reporting closure.
 {-# LANGUAGE OverloadedStrings #-}
 module MechanismExhaustivenessSpec (spec) where
 
+-- Machine-readable acceptance token for the test-evidence gate.
+-- ACCEPTS: A42
+
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.List (sort)
+import Data.List (isInfixOf, sort, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Maybe (fromMaybe, isJust, isNothing)
@@ -125,6 +131,7 @@ spec = testGroup "mechanism exhaustiveness (A42)"
   , testCase "allowed routes: classic init OK, non-classic exact refusal" caseInitRouting
   , testCase "allowed classic routes: caps miss refuses exactly" caseCapsStage
   , testCase "refused ids: exact code + reason under granted caps" caseRefusals
+  , testCase "status-mutation control: flips detected and rows identified" caseStatusFlips
   ]
 
 -- ---------------------------------------------------------------------------
@@ -421,29 +428,35 @@ caseCoverage = guarded "coverage" $ do
            | allIds /= sort catIds]
   assertNoMismatches "coverage" mm
 
+-- | Descriptor verdicts for one allowed row, pure in the row.
+-- Shared by 'caseDescriptors' and the status-flip control
+-- ('caseStatusFlips'), which re-runs these exact checks against
+-- an in-memory flipped row.
+checkDescriptorRow :: MechRow -> [String]
+checkDescriptorRow row =
+  let reg = curatedRegistry
+      mid = MechanismId (mrId row)
+      tag = T.unpack (mrName row) ++ " " ++ show mid
+  in case lookupBehavior reg mid of
+    Nothing ->
+      ["allowed row without behavior: " ++ tag]
+    Just d ->
+      ["status: want StatusSupported, got "
+       ++ show (describeStatus reg mid) ++ " at " ++ tag
+      | describeStatus reg mid /= StatusSupported]
+      ++ ["name: want " ++ T.unpack (mrName row) ++ ", got "
+          ++ show (descCanonical d) ++ " at " ++ tag
+         | descCanonical d /= mrName row]
+      ++ ["routes: want " ++ show (sort (mrOps row)) ++ ", got "
+          ++ show (sort (map routeOperation (descRoutes d)))
+          ++ " at " ++ tag
+         | sort (map routeOperation (descRoutes d))
+           /= sort (mrOps row)]
+
 caseDescriptors :: IO ()
 caseDescriptors = guarded "descriptors" $ do
   (parseBad, mechs, _invs, _cat) <- loadCatalog
-  let reg = curatedRegistry
-      mm = parseBad ++ concatMap checkOne mechs
-      checkOne row =
-        let mid = MechanismId (mrId row)
-            tag = T.unpack (mrName row) ++ " " ++ show mid
-        in case lookupBehavior reg mid of
-          Nothing ->
-            ["allowed row without behavior: " ++ tag]
-          Just d ->
-            ["status: want StatusSupported, got "
-             ++ show (describeStatus reg mid) ++ " at " ++ tag
-            | describeStatus reg mid /= StatusSupported]
-            ++ ["name: want " ++ T.unpack (mrName row) ++ ", got "
-                ++ show (descCanonical d) ++ " at " ++ tag
-               | descCanonical d /= mrName row]
-            ++ ["routes: want " ++ show (sort (mrOps row)) ++ ", got "
-                ++ show (sort (map routeOperation (descRoutes d)))
-                ++ " at " ++ tag
-               | sort (map routeOperation (descRoutes d))
-                 /= sort (mrOps row)]
+  let mm = parseBad ++ concatMap checkDescriptorRow mechs
   assertNoMismatches "descriptors" mm
 
 caseInitRouting :: IO ()
@@ -505,42 +518,96 @@ caseCapsStage = guarded "caps-stage" $ do
                | got /= want]
   assertNoMismatches "caps-stage" mm
 
+-- | Refusal verdicts for one refused row, pure in the row.
+-- Shared by 'caseRefusals' and the status-flip control
+-- ('caseStatusFlips'), which re-runs these exact checks against
+-- an in-memory flipped row.
+checkRefusedRow :: InvRow -> [String]
+checkRefusedRow row =
+  let reg = curatedRegistry
+      want = (CKR_MECHANISM_INVALID, ["unknown mechanism"])
+      mid = MechanismId (irId row)
+      tag = T.unpack (irName row) ++ " " ++ show mid
+      statusBad =
+        ["status: want StatusCatalogOnly, got "
+         ++ show (describeStatus reg mid) ++ " at " ++ tag
+        | describeStatus reg mid /= StatusCatalogOnly]
+      behavBad =
+        ["refused row carries behavior at " ++ tag
+        | isJust (lookupBehavior reg mid)]
+      -- Fully granted caps: the refusal must be
+      -- registry-driven, never a caps artifact.
+      caps = mkCapabilities [(mid, op) | op <- classicOps]
+      env = fullEnv { oeCaps = caps }
+      args = InitArgs
+        { iaOp = OpDigest
+        , iaMech = mid
+        , iaParams = BS.empty
+        , iaKey = Nothing
+        , iaCipher = Nothing
+        , iaRecover = Nothing
+        }
+      (_, out) = initOperation env emptySessionOps
+        fixtureSession args
+      got = (ioCode out, ioReasons out)
+      routeBad =
+        ["refusal: want " ++ show want ++ ", got "
+         ++ show got ++ " at " ++ tag
+        | got /= want]
+        ++ ["refusal: untyped denial at " ++ tag
+           | isNothing (ioDeny out)]
+  in statusBad ++ behavBad ++ routeBad
+
 caseRefusals :: IO ()
 caseRefusals = guarded "refusals" $ do
   (parseBad, _mechs, invs, _cat) <- loadCatalog
-  let reg = curatedRegistry
-      want = (CKR_MECHANISM_INVALID, ["unknown mechanism"])
-      mm = parseBad ++ concatMap checkOne invs
-      checkOne row =
-        let mid = MechanismId (irId row)
-            tag = T.unpack (irName row) ++ " " ++ show mid
-            statusBad =
-              ["status: want StatusCatalogOnly, got "
-               ++ show (describeStatus reg mid) ++ " at " ++ tag
-              | describeStatus reg mid /= StatusCatalogOnly]
-            behavBad =
-              ["refused row carries behavior at " ++ tag
-              | isJust (lookupBehavior reg mid)]
-            -- Fully granted caps: the refusal must be
-            -- registry-driven, never a caps artifact.
-            caps = mkCapabilities [(mid, op) | op <- classicOps]
-            env = fullEnv { oeCaps = caps }
-            args = InitArgs
-              { iaOp = OpDigest
-              , iaMech = mid
-              , iaParams = BS.empty
-              , iaKey = Nothing
-              , iaCipher = Nothing
-              , iaRecover = Nothing
-              }
-            (_, out) = initOperation env emptySessionOps
-              fixtureSession args
-            got = (ioCode out, ioReasons out)
-            routeBad =
-              ["refusal: want " ++ show want ++ ", got "
-               ++ show got ++ " at " ++ tag
-              | got /= want]
-              ++ ["refusal: untyped denial at " ++ tag
-                 | isNothing (ioDeny out)]
-        in statusBad ++ behavBad ++ routeBad
+  let mm = parseBad ++ concatMap checkRefusedRow invs
   assertNoMismatches "refusals" mm
+
+-- | Assert a flipped row is both detected (non-empty mismatch
+-- verdicts) and identified (the row tag appears in the verdicts).
+assertDetected :: String -> String -> [String] -> IO ()
+assertDetected label tag mm
+  | null mm = assertFailure
+      (label ++ ": flip NOT detected (no mismatches)")
+  | not (any (tag `isInfixOf`) mm) = assertFailure
+      (label ++ ": flip detected but row not identified; want tag "
+       ++ show tag ++ " in:\n" ++ unlines mm)
+  | otherwise = pure ()
+
+-- | Per-run status-mutation control: the lowest-id allowed row is
+-- reinterpreted as refused and the lowest-id refused row as
+-- allowed, each purely in memory. Both flips must be detected by
+-- the exact battery verdicts above AND identify their row.
+caseStatusFlips :: IO ()
+caseStatusFlips = guarded "status-flips" $ do
+  (parseBad, mechs, invs, _cat) <- loadCatalog
+  assertNoMismatches "status-flips catalog parse" parseBad
+  case (sortOn mrId mechs, sortOn irId invs) of
+    ([], _) -> assertFailure "status-flips: no allowed rows to flip"
+    (_, []) -> assertFailure "status-flips: no refused rows to flip"
+    (m : _, i : _) -> do
+      -- Unflipped sanity: the control rows pass their own checks,
+      -- so the flip verdicts below are meaningful.
+      assertNoMismatches "status-flips unflipped mech control row"
+        (checkDescriptorRow m)
+      assertNoMismatches "status-flips unflipped inv control row"
+        (checkRefusedRow i)
+      -- Flip 1: allowed row reinterpreted as refused. The
+      -- registry still carries behavior for this id, so the
+      -- refused-row verdicts must fire, naming the row.
+      let flippedInv = InvRow (mrId m) (mrName m)
+          tagM = T.unpack (mrName m)
+            ++ " " ++ show (MechanismId (mrId m))
+      assertDetected "status-flips mech->inv" tagM
+        (checkRefusedRow flippedInv)
+      -- Flip 2: refused row reinterpreted as allowed. The
+      -- flipped row borrows the control row's codec/routes shape
+      -- (a refused row carries none); the registry has no
+      -- behavior for this id, so the descriptor verdict must
+      -- fire, naming the row.
+      let flippedMech = MechRow (irId i) (irName i) (mrCodec m) (mrOps m)
+          tagI = T.unpack (irName i)
+            ++ " " ++ show (MechanismId (irId i))
+      assertDetected "status-flips inv->mech" tagI
+        (checkDescriptorRow flippedMech)

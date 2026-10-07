@@ -54,20 +54,27 @@ import Haskoki.Object
   , parseTemplate
   , resolveHandle
   )
+import Haskoki.Operation (CryptoEffect (..), SlotKind (..), activeSlots)
+import Haskoki.Operation.Codec (encodeInitInput, encodeVerifyInput)
 import Haskoki.Outcome
   ( DeltaOp (..)
+  , EffectRequest (..)
+  , EngineResult (..)
   , NativeOutput (..)
   , PlanResult (..)
   , PreparedCommit (..)
   , Rejection (..)
+  , Reservation (..)
   , StateDelta (..)
   )
-import Haskoki.Request (FunctionId (..), Request (..))
+import Haskoki.Registry (MechanismId (..), Operation (..))
+import Haskoki.Request (FunctionId (..), OutputIntent (..), OutputRegion (..), Request (..))
 import Haskoki.Rules (defaultRules)
 import Haskoki.Session (SessionLogin (..))
-import Haskoki.Transition (planCall, publishDelta)
+import Haskoki.Transition (finishEffect, planCall, publishDelta)
 import Haskoki.Types
-  ( ExternalHandle (..)
+  ( EngineResourceId (..)
+  , ExternalHandle (..)
   , Generation (..)
   , Pkcs11Version (..)
   , ReturnCode (..)
@@ -105,6 +112,9 @@ spec = testGroup "objects and attributes"
   , testCase "create: secret VALUE/VALUE_LEN coherence" caseSecretImportCoherence
   , testCase "create: certificate stores verbatim" caseCertCreate
   , testCase "visibility: private objects follow login state" caseVisibilityLogin
+  , testCase "visibility: SO sessions cannot see user private objects" caseVisibilitySOIsolation
+  , testCase "logout: private-key operations retire across login transitions" caseLogoutRetiresPrivateOps
+  , testCase "logout: destroyed-key staged output retires across logout" caseLogoutRetiresDestroyedKeyStagedOps
   , testCase "isolation: sessions only touch their own slot objects" caseSlotIsolation
   , testCase "logout: private handles die without resurrection" caseLogoutNoResurrection
   , testCase "close: creator-close destroys session objects" caseCreatorClose
@@ -310,6 +320,23 @@ runRejectFull model req =
       Right m' -> pure (rej, m')
     Immediate pc -> assertFailure ("expected reject, committed: " ++ show (pcCode pc))
     Execute _ _ -> assertFailure "expected reject, got Execute"
+
+-- | Plan an Execute step; fail otherwise. Returns the reservation and
+-- effect for 'finishEffect'.
+runExecute :: Model -> Request -> IO (Reservation, EffectRequest)
+runExecute model req =
+  case planCall defaultRules model req of
+    Execute res eff -> pure (res, eff)
+    Reject rej -> assertFailure ("expected execute, rejected: " ++ show (rejCode rej))
+    Immediate pc -> assertFailure ("expected execute, committed: " ++ show (pcCode pc))
+
+-- | One crypto data call with a single byte output region.
+dataReq :: FunctionId -> SessionId -> String -> ByteString -> Int -> Request
+dataReq fid sid name blob cap =
+  (mkRequest fid (Just sid))
+    { reqInput = blob
+    , reqRegions = [RegionBytes name (IntentBuffer (fromIntegral cap))]
+    }
 
 -- | The single handle carried by a create/copy commit's outputs.
 commitHandle :: PreparedCommit -> IO ExternalHandle
@@ -756,7 +783,7 @@ tokenFlagTmpl = (AttrToken, ValBool True)
 caseVisibilityLogin :: IO ()
 caseVisibilityLogin = do
   -- The pure rule first: public is always visible, private needs a
-  -- non-public login.
+  -- user login (plain or context grant; SO does not qualify).
   (a0, m0) <- openSession seeded
   -- Public sessions cannot mint private objects in the first place.
   (codeP, _) <- runReject m0 (createReq a0 [classData, label "priv", privateFlag])
@@ -791,6 +818,323 @@ caseVisibilityLogin = do
   assertBool "find keeps public while public" (hu `elem` foundPublic)
   (pcG2, _) <- runCommit m5 (getReq a0 hu [AttrLabel])
   assertEqual "public reads public" CKR_OK (pcCode pcG2)
+
+-- | SO/user private-object isolation (F-1): an SO session must not
+-- see or use user @CKA_PRIVATE=true@ objects, while user, context,
+-- and public visibility keep their established shapes. The planner
+-- legs flip the session login to SO in-model with the binding live:
+-- a real logout would kill the binding, which would fault for the
+-- wrong reason. The final legs run the real login transitions
+-- end to end (logout -> SO -> logout -> user).
+caseVisibilitySOIsolation :: IO ()
+caseVisibilitySOIsolation = do
+  (a0, m0) <- openSession seeded
+  m0login <- loginAs m0 a0
+  let secretClass = ValULong (mustClassId "CKO_SECRET_KEY")
+      genericSecret = ValULong (mustKeyTypeId "CKK_GENERIC_SECRET")
+  (pcK, m1) <- runCommit m0login (createReq a0
+    [ (AttrClass, secretClass)
+    , (AttrKeyType, genericSecret)
+    , (AttrValue, ValBytes "0123456789abcdef0123456789abcdef")
+    , (AttrToken, ValBool True)
+    , (AttrPrivate, ValBool True)
+    , (AttrSign, ValBool True)
+    , label "so-key"
+    ])
+  hk <- commitHandle pcK
+  (pcU, m2) <- runCommit m1 (createReq a0 [classData, label "pub"])
+  hu <- commitHandle pcU
+  st0 <- case lookupSession m2 a0 of
+    Nothing -> assertFailure "setup session lost"
+    Just st -> pure st
+  ostK <- case resolveHandle m2 hk of
+    Nothing -> assertFailure "setup key lost"
+    Just ost -> pure ost
+  ostU <- case resolveHandle m2 hu of
+    Nothing -> assertFailure "setup public object lost"
+    Just ost -> pure ost
+  -- The pure rule: SO joins public in hiding private objects; user,
+  -- context, and SO-over-public keep their established shapes.
+  assertBool "private hidden from SO" $
+    not (objectVisible (st0 { ssLogin = LoginSO }) ostK)
+  assertBool "private visible to user" $
+    objectVisible (st0 { ssLogin = LoginUser }) ostK
+  assertBool "private visible to context grant" $
+    objectVisible (st0 { ssLogin = LoginContextUser }) ostK
+  assertBool "private hidden from public" $
+    not (objectVisible (st0 { ssLogin = LoginPublic }) ostK)
+  assertBool "public visible to SO" $
+    objectVisible (st0 { ssLogin = LoginSO }) ostU
+  -- Find/read/use refuse with the binding live under an SO login.
+  let mSO = m2
+        { mSessions = Map.adjust (\st -> st { ssLogin = LoginSO }) a0 (mSessions m2) }
+      sReq sid h = (mkRequest F_SignInit (Just sid))
+        { reqHandle = Just h
+        , reqInput = encodeInitInput (MechanismId 0x251) [OpSign] False BS.empty
+        }
+  (pcF, _) <- runCommit mSO (findReq a0 [])
+  foundSO <- findHandles pcF
+  assertBool "SO find excludes private key" (hk `notElem` foundSO)
+  assertBool "SO find keeps public object" (hu `elem` foundSO)
+  (codeG, _) <- runReject mSO (getReq a0 hk [AttrLabel])
+  assertEqual "SO read faults" CKR_OBJECT_HANDLE_INVALID codeG
+  (codeD, _) <- runReject mSO (destroyReq a0 hk)
+  assertEqual "SO destroy faults" CKR_OBJECT_HANDLE_INVALID codeD
+  (codeC, _) <- runReject mSO (copyReq a0 hk [label "smuggled"])
+  assertEqual "SO copy faults" CKR_OBJECT_HANDLE_INVALID codeC
+  (codeS, _) <- runReject mSO (setReq a0 hk [label "relabeled"])
+  assertEqual "SO set-attributes faults" CKR_OBJECT_HANDLE_INVALID codeS
+  (codeI, _) <- runReject mSO (sReq a0 hk)
+  assertEqual "SO sign-init refused" CKR_OBJECT_HANDLE_INVALID codeI
+  -- The user still uses the key at the same seam.
+  (pcUI, _) <- runCommit m2 (sReq a0 hk)
+  assertEqual "user sign-init commits" CKR_OK (pcCode pcUI)
+  -- Login transitions end to end: logout -> SO hides the token key
+  -- (public object stays), logout -> user reveals it under a fresh
+  -- handle (logout killed the old binding, not the object).
+  m4 <- snd <$> runCommit m2 (logoutReq a0)
+  mSO2 <- snd <$> runCommit m4 (soLoginReq a0)
+  (pcF2, _) <- runCommit mSO2 (findReq a0 [])
+  foundSO2 <- findHandles pcF2
+  assertEqual "SO find after transition sees public only" [hu] foundSO2
+  m5 <- snd <$> runCommit mSO2 (logoutReq a0)
+  m6 <- loginAs m5 a0
+  (pcF3, m7) <- runCommit m6 (findReq a0 [])
+  foundU2 <- findHandles pcF3
+  assertEqual "user re-find reveals both objects" 2 (length foundU2)
+  -- Final-triage F-1(b): length-only is blind to wrong-member sets.
+  -- The key's old binding died at logout (fresh handle by design —
+  -- asserting hk membership here is wrong); pin the documented shape:
+  -- public handle stable, exactly one fresh non-hk handle, and the
+  -- fresh handle resolves to a live object (not a phantom). The
+  -- resolution runs against the POST-find state: find commits the
+  -- fresh binding via DeltaBindHandle, so pre-find m6 cannot see it.
+  assertBool "user re-find keeps public object" (hu `elem` foundU2)
+  assertBool "key rebinding is fresh (old binding died)" (hk `notElem` foundU2)
+  case filter (/= hu) foundU2 of
+    [freshH] -> case resolveHandle m7 freshH of
+      Nothing -> assertFailure "re-found key handle is dangling"
+      -- Codex-final minor: identity, not just liveness — a fresh
+      -- alias to the public object must not pass this pin.
+      Just ost -> assertEqual "re-found handle resolves to the key object"
+        (osId ostK) (osId ost)
+    _ -> assertFailure "user re-find must add exactly one fresh handle"
+
+soLoginReq :: SessionId -> Request
+soLoginReq sid = (mkRequest F_Login (Just sid)) { reqInput = "so:ok" }
+
+-- | F-1 follow-up (cached-operation bypass): logout retires every
+-- cached operation bound to a private key — on every same-slot
+-- session, staged outputs included — so neither a public session
+-- nor a later SO login can drive init-before-logout key use. The
+-- unkeyed digest survives both transitions: retirement is
+-- selective, not a session wipe.
+caseLogoutRetiresPrivateOps :: IO ()
+caseLogoutRetiresPrivateOps = do
+  (a0, m0) <- openSession seeded
+  m0login <- loginAs m0 a0
+  let secretClass = ValULong (mustClassId "CKO_SECRET_KEY")
+      genericSecret = ValULong (mustKeyTypeId "CKK_GENERIC_SECRET")
+      aesType = ValULong (mustKeyTypeId "CKK_AES")
+      hmacMech = MechanismId 0x251
+      sha256Mech = MechanismId 0x250
+      aesCbcMech = MechanismId 0x1082
+      iv = BS.replicate 16 0
+      initReq fid h blob = (mkRequest fid (Just a0))
+        { reqHandle = Just h, reqInput = blob }
+  (pcK, m1) <- runCommit m0login (createReq a0
+    [ (AttrClass, secretClass)
+    , (AttrKeyType, genericSecret)
+    , (AttrValue, ValBytes "0123456789abcdef0123456789abcdef")
+    , (AttrToken, ValBool True)
+    , (AttrPrivate, ValBool True)
+    , (AttrSign, ValBool True)
+    , (AttrVerify, ValBool True)
+    , label "f1-op-hmac"
+    ])
+  hk <- commitHandle pcK
+  (pcE, m2) <- runCommit m1 (createReq a0
+    [ (AttrClass, secretClass)
+    , (AttrKeyType, aesType)
+    , (AttrValue, ValBytes "0123456789abcdef")
+    , (AttrToken, ValBool True)
+    , (AttrPrivate, ValBool True)
+    , (AttrEncrypt, ValBool True)
+    , (AttrDecrypt, ValBool True)
+    , label "f1-op-aes"
+    ])
+  he <- commitHandle pcE
+  -- All four keyed classic slots go active under the user login.
+  (_, mS) <- runCommit m2 (initReq F_SignInit hk
+    (encodeInitInput hmacMech [OpSign] False BS.empty))
+  (_, mV) <- runCommit mS (initReq F_VerifyInit hk
+    (encodeInitInput hmacMech [OpVerify] False BS.empty))
+  (_, mE) <- runCommit mV (initReq F_EncryptInit he
+    (encodeInitInput aesCbcMech [OpEncrypt] False iv))
+  (_, mD) <- runCommit mE (initReq F_DecryptInit he
+    (encodeInitInput aesCbcMech [OpDecrypt] False iv))
+  -- Plus an unkeyed digest (stream alloc finished with a fake id).
+  (resDI, effDI) <- runExecute mD ((mkRequest F_DigestInit (Just a0))
+    { reqInput = encodeInitInput sha256Mech [OpDigest] False BS.empty })
+  m3 <- case effDI of
+    EffectCrypto (FxDigestInit _) ->
+      case finishEffect defaultRules mD resDI
+             (EngineOkResource (EngineResourceId 11)) of
+        Left rej ->
+          assertFailure ("digest init finish rejected: " ++ show (rejCode rej))
+        Right pc -> case publishDelta mD (pcDelta pc) of
+          Left fault -> assertFailure ("digest init fault: " ++ show fault)
+          Right m' -> pure m'
+    _ -> assertFailure ("expected FxDigestInit, got: " ++ show effDI)
+  -- A second same-slot session stages a signature under the user login.
+  (b0, mB0) <- openSession m3
+  stb <- case lookupSession mB0 b0 of
+    Nothing -> assertFailure "second session lost"
+    Just st -> pure st
+  assertEqual "second session observes the user login" LoginUser (ssLogin stb)
+  (_, mB1) <- runCommit mB0 ((mkRequest F_SignInit (Just b0))
+    { reqHandle = Just hk
+    , reqInput = encodeInitInput hmacMech [OpSign] False BS.empty
+    })
+  (resShort, _) <- runExecute mB1 (dataReq F_Sign b0 "signature" "f1-bytes" 8)
+  mB2 <- case finishEffect defaultRules mB1 resShort
+               (EngineOkBytes (BS.replicate 32 0xEE)) of
+    Left rej ->
+      assertFailure ("short sign finish rejected: " ++ show (rejCode rej))
+    Right pc -> do
+      assertEqual "short buffer stages" CKR_BUFFER_TOO_SMALL (pcCode pc)
+      case publishDelta mB1 (pcDelta pc) of
+        Left fault -> assertFailure ("short sign fault: " ++ show fault)
+        Right m' -> pure m'
+  -- Logout retires the private-key slots on both sessions; the
+  -- unkeyed digest stays (so no stream is released).
+  (pcL, m4) <- runCommit mB2 (logoutReq a0)
+  assertEqual "logout releases nothing" [] (pcReleases pcL)
+  sta <- case lookupSession m4 a0 of
+    Nothing -> assertFailure "session lost across logout"
+    Just st -> pure st
+  assertEqual "only the digest survives on A" [SlotDigest] (activeSlots (ssOps sta))
+  stb2 <- case lookupSession m4 b0 of
+    Nothing -> assertFailure "second session lost across logout"
+    Just st -> pure st
+  assertEqual "staged sign retires on B" [] (activeSlots (ssOps stb2))
+  -- Public use after logout: every keyed slot refuses.
+  let signReq sid = dataReq F_Sign sid "signature" "f1-bytes" 64
+      verifyReq sid = dataReq F_Verify sid "verify"
+        (encodeVerifyInput "f1-bytes" (BS.replicate 32 0)) 64
+      encReq sid = dataReq F_Encrypt sid "ciphertext" (BS.replicate 16 1) 64
+      decReq sid = dataReq F_Decrypt sid "plaintext" (BS.replicate 16 2) 64
+  (codePS, m5) <- runReject m4 (signReq a0)
+  assertEqual "public sign after logout refuses"
+    CKR_OPERATION_NOT_INITIALIZED codePS
+  (codePV, m6) <- runReject m5 (verifyReq a0)
+  assertEqual "public verify after logout refuses"
+    CKR_OPERATION_NOT_INITIALIZED codePV
+  (codePE, m7) <- runReject m6 (encReq a0)
+  assertEqual "public encrypt after logout refuses"
+    CKR_OPERATION_NOT_INITIALIZED codePE
+  (codePD, m8) <- runReject m7 (decReq a0)
+  assertEqual "public decrypt after logout refuses"
+    CKR_OPERATION_NOT_INITIALIZED codePD
+  -- The finding's exact path: SO login, then the cached sign refuses.
+  mSO <- snd <$> runCommit m8 (soLoginReq a0)
+  (codeSO, m9) <- runReject mSO (signReq a0)
+  assertEqual "SO sign after logout refuses"
+    CKR_OPERATION_NOT_INITIALIZED codeSO
+  -- The staged signature retired with its slot: the retry refuses
+  -- instead of delivering user-login bytes to the SO session.
+  (codeR, m10) <- runReject m9 (dataReq F_Sign b0 "signature" BS.empty 64)
+  assertEqual "SO staged-sign retry refuses"
+    CKR_OPERATION_NOT_INITIALIZED codeR
+  -- The unkeyed digest sailed through logout and the SO login: it
+  -- still feeds, and still feeds after a user re-login.
+  (_, effU1) <- runExecute m10
+    ((mkRequest F_DigestUpdate (Just a0)) { reqInput = "hello" })
+  case effU1 of
+    EffectCrypto (FxDigestFeed _ fed) ->
+      assertEqual "first feed intact" "hello" fed
+    _ -> assertFailure ("expected FxDigestFeed, got: " ++ show effU1)
+  m11 <- snd <$> runCommit m10 (logoutReq a0)
+  m12 <- loginAs m11 a0
+  (_, effU2) <- runExecute m12
+    ((mkRequest F_DigestUpdate (Just a0)) { reqInput = "world" })
+  case effU2 of
+    EffectCrypto (FxDigestFeed _ fed) ->
+      assertEqual "second feed intact" "world" fed
+    _ -> assertFailure ("expected FxDigestFeed, got: " ++ show effU2)
+
+-- | F-1 round 2 (staged-recall residual): a private-key decrypt
+-- staged through a length query keeps its bytes in the slot when the
+-- key is destroyed ('DeltaDestroyObject' leaves 'ssOps' intact), so
+-- a logout retirement that skips keys which no longer resolve
+-- strands the staged plaintext for a later SO login to recall
+-- ('retryStaged' delivers staged bytes without key resolution).
+-- Logout must retire keyed operations whose key no longer resolves.
+caseLogoutRetiresDestroyedKeyStagedOps :: IO ()
+caseLogoutRetiresDestroyedKeyStagedOps = do
+  (a0, m0) <- openSession seeded
+  m0login <- loginAs m0 a0
+  let secretClass = ValULong (mustClassId "CKO_SECRET_KEY")
+      aesType = ValULong (mustKeyTypeId "CKK_AES")
+      aesCbcMech = MechanismId 0x1082
+      iv = BS.replicate 16 0
+      plain = "user-plaintext!!"
+  assertEqual "fixture is one CBC block" 16 (BS.length plain)
+  (pcK, m1) <- runCommit m0login (createReq a0
+    [ (AttrClass, secretClass)
+    , (AttrKeyType, aesType)
+    , (AttrValue, ValBytes "0123456789abcdef")
+    , (AttrToken, ValBool True)
+    , (AttrPrivate, ValBool True)
+    , (AttrDecrypt, ValBool True)
+    , label "f1-op-aes-destroy"
+    ])
+  hk <- commitHandle pcK
+  (_, m2) <- runCommit m1 ((mkRequest F_DecryptInit (Just a0))
+    { reqHandle = Just hk
+    , reqInput = encodeInitInput aesCbcMech [OpDecrypt] False iv
+    })
+  -- A length query stages the decrypted block without delivering it.
+  let query = (mkRequest F_Decrypt (Just a0))
+        { reqInput = BS.replicate 16 0x2A
+        , reqRegions = [RegionBytes "plaintext" IntentNull]
+        }
+  (resQ, _) <- runExecute m2 query
+  m3 <- case finishEffect defaultRules m2 resQ (EngineOkBytes plain) of
+    Left rej ->
+      assertFailure ("query finish rejected: " ++ show (rejCode rej))
+    Right pc -> do
+      assertEqual "query stages" CKR_BUFFER_TOO_SMALL (pcCode pc)
+      case publishDelta m2 (pcDelta pc) of
+        Left fault -> assertFailure ("query fault: " ++ show fault)
+        Right m' -> pure m'
+  -- Destroying the key leaves the staged slot intact (pre-existing
+  -- shape: destroy touches objects/handles, not 'ssOps').
+  (_, m4) <- runCommit m3 (destroyReq a0 hk)
+  case resolveHandle m4 hk of
+    Nothing -> pure ()
+    Just _ -> assertFailure "destroyed key still resolves"
+  -- Logout must retire the stranded staged slot even though its key
+  -- no longer resolves; the SO login then recalls nothing.
+  m5 <- snd <$> runCommit m4 (logoutReq a0)
+  mSO <- snd <$> runCommit m5 (soLoginReq a0)
+  case planCall defaultRules mSO (dataReq F_Decrypt a0 "plaintext" BS.empty 64) of
+    Immediate pc
+      | pcCode pc == CKR_OK ->
+          assertFailure ("SO recalls destroyed-key staged plaintext: "
+            ++ show [outBytes o | o <- pcOutputs pc])
+      | otherwise ->
+          assertFailure ("SO recall committed with: " ++ show (pcCode pc))
+    Reject rej ->
+      assertEqual "SO staged recall after destroy+logout refuses"
+        CKR_OPERATION_NOT_INITIALIZED (rejCode rej)
+    Execute _ _ ->
+      assertFailure "SO recall executed instead of refusing"
+  sta <- case lookupSession m5 a0 of
+    Nothing -> assertFailure "session lost across logout"
+    Just st -> pure st
+  assertEqual "destroyed-key staged op retires at logout"
+    [] (activeSlots (ssOps sta))
 
 -- | Slot isolation: a session only sees objects on its own slot, on
 -- every object gate (get, find, destroy, copy). Same-slot access

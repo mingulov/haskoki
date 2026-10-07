@@ -26,3 +26,7 @@ dist-release-evidence/
 .pkcs11-check-isolation-*.lock
 core.*
 .superpowers/
+# Test-run trace droppings (haskoki-<suite>-*.jsonl); never committed.
+haskoki-*.jsonl
+# HPC coverage ticks from local --enable-coverage runs; never committed.
+*.tix

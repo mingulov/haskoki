@@ -2,7 +2,8 @@
 # scripts/release-evidence.sh -- release-evidence manifest.
 #
 # ONE entry point for the C consumer/parity/release story: runs every
-# driver plus the release build + clean-container install, and records
+# driver plus the ABI sensitivity leg (`test-c-abi.sh --negative`,
+# T-1) plus the release build + clean-container install, and records
 # per-driver logs plus a MANIFEST.txt. Passing here (invoked as the
 # final step of scripts/run-gates.sh) means a passing release story.
 #
@@ -12,6 +13,9 @@
 #     standing hard rules (timeout -s KILL + --network host);
 #     test-proxy-parity.sh additionally bind-mounts $HASKOKI_PROXY_DIR
 #     at /opt/pkcs11-proxy-ng:ro (its default; see its header);
+#   * the ABI sensitivity leg (`test-c-abi.sh --negative`) runs
+#     INSIDE the container right after the driver loop and is
+#     recorded as its own manifest line (a leg, not a 16th driver);
 #   * scripts/make-release.sh rebuilds the artifact in-container;
 #   * scripts/test-release-install.sh runs ON THE HOST (it drives
 #     docker itself against a bare image);
@@ -99,6 +103,16 @@ for d in $CONTAINER_DRIVERS; do
   fi
   record "$d" "$RC" "$LOG"
 done
+
+# ABI sensitivity control (T-1): the layout probes' headline property
+# (hardcoded independent expectations) is proven, not just asserted.
+# A leg of test-c-abi.sh, not a 16th driver: the drift check above is
+# unaffected (no new test-*.sh).
+echo "--- sensitivity leg: test-c-abi.sh --negative"
+timeout -s KILL $DRIVER_TIMEOUT docker run --rm --network host \
+  -v "$PWD:/work" -w /work \
+  "$IMAGE" scripts/test-c-abi.sh --negative >"$EVIDENCE_DIR/test-c-abi-negative.log" 2>&1
+record "test-c-abi.sh --negative" "$?" "$EVIDENCE_DIR/test-c-abi-negative.log"
 
 echo "--- release build: make-release.sh"
 timeout -s KILL $DRIVER_TIMEOUT docker run --rm --network host \

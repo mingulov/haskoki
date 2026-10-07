@@ -80,6 +80,8 @@ import Haskoki.Operation
   )
 import Haskoki.Operation.Cipher (pkcs7Pad, pkcs7Unpad)
 import Haskoki.Output (OpDisposition (..), OutputPlan (..), ResultDisposition (..), planOneShot)
+import Haskoki.Recipe.Gcm (gcmParamsValid, gcmRecipeFor)
+import Haskoki.Registry.Types (MechanismId)
 import Haskoki.Request (OutputIntent)
 import Haskoki.Types (ReturnCode (..))
 
@@ -213,6 +215,22 @@ checkAad fam aad
       _ -> Left (mkDeny CKR_ARGUMENTS_BAD
         "verify messages carry no associated data")
 
+-- | Per-message GCM parameter check (F-9\/FINAL-101): the AEAD
+-- per-message image must be canonical @gcm-params\/1@ (tag length,
+-- IV length, IV; the AAD travels on the effect, never embedded).
+-- Native @CK_GCM_MESSAGE_PARAMS@ images and truncated shapes fail
+-- this check and refuse 'CKR_ARGUMENTS_BAD' — the documented
+-- F-GCM-SHAPE refusal — instead of leaking through to a
+-- 'CKR_GENERAL_ERROR' effect failure. Non-GCM mechanisms pass
+-- untouched (their rows keep today's behavior and codes).
+checkMsgCipherParams :: MechanismId -> ByteString -> Either StepDeny ()
+checkMsgCipherParams mech params
+  | Just r <- gcmRecipeFor mech
+  , not (gcmParamsValid r params) =
+      Left (mkDeny CKR_ARGUMENTS_BAD
+        "GCM per-message parameters rejected by the recipe")
+  | otherwise = Right ()
+
 -- | Per-call parameters override when present: a nonempty 'MsgNext'
 -- parameter block replaces the stored one, an empty block keeps it.
 nextParams :: ByteString -> ByteString -> ByteString
@@ -259,6 +277,13 @@ planMessageBegin ops st fam begin = case withMessageSlot ops fam of
               || BS.length (mbAad begin) > maxBuffered ->
               (ops, st, denyOutcome (mkDeny CKR_ARGUMENTS_BAD
                 "message parameters exceed the buffer bound"))
+          -- Present-but-invalid GCM parameters refuse here; an
+          -- empty block stays open so a later part can supply
+          -- them (the 'nextParams' override rule).
+          | not (BS.null (mbParams begin))
+          , Left d <- checkMsgCipherParams
+              (commonMech (msCommon ms)) (mbParams begin) ->
+              (ops, st, denyOutcome d)
           | otherwise -> case gateMessage ops st ms of
               Left denied -> denied
               Right (o, s, ms') ->
@@ -329,6 +354,15 @@ runCipherNext ops st fam dir params part end = case withMessageSlot ops fam of
           , StepOutcome CKR_OK [] Nothing
               ["buffered " ++ show (BS.length part)
                 ++ " bytes (" ++ show (BS.length buf') ++ " total)"] [] Nothing
+          )
+      -- An ending part with invalid merged GCM parameters
+      -- terminates the message (a shape error is not repairable
+      -- alignment): the outer context survives for the next
+      -- message.
+      | Left d <- checkMsgCipherParams (commonMech (msCommon ms')) pa =
+          ( storeMessage o (abortMessage ms')
+          , s
+          , denyOutcome d
           )
       | otherwise = case (dir, msCipher ms') of
           (DirEncrypt, Just spec)
@@ -542,6 +576,9 @@ runCipherOneShot ops st fam dir params aad input = case withMessageSlot ops fam 
               || BS.length input > maxBuffered ->
               (ops, st, denyOutcome (mkDeny CKR_ARGUMENTS_BAD
                 "one-shot message exceeds the buffer bound"))
+          | Left d <- checkMsgCipherParams
+              (commonMech (msCommon ms)) params ->
+              (ops, st, denyOutcome d)
           | otherwise -> case gateMessage ops st ms of
               Left denied -> denied
               Right (o, s, ms') -> case (dir, msCipher ms') of

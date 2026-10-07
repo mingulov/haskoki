@@ -609,9 +609,11 @@ cat > "$OUT/reproducibility-note.txt" <<'EOF'
 Reproducibility note (demo image): rebuilds from the same inputs are
 NOT bit-reproducible, so a rebuilt image id is expected to differ.
 Concrete nondeterminism sources: file mtimes across stages, Python
-bytecode caches in the checker venv, floating apt/PyPI/crates snapshots
-behind the pinned names, and registry tag drift on ubuntu:26.04 (only
-rust:1.94-bookworm is recipe-pinned, and tags still float). What IS
+bytecode caches in the checker venv, floating apt snapshots behind
+the pinned names, and registry tag drift on ubuntu:26.04 (only
+rust:1.94-bookworm is recipe-pinned, and tags still float). PyPI and
+crates no longer float here: the checker venv installs
+--require-hashes (F-6) and the proxy builds cargo --locked (F-5). What IS
 pinned and re-verified per build: the bundle recipe gates (static
 libcrypto, provider origin, system-only host deps, GLIBC_2.43 floor),
 the proxy canonical pair for the default ref (byte-identical assertion

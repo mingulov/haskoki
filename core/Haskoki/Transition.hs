@@ -30,6 +30,7 @@ module Haskoki.Transition
 
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust, isNothing)
 
 import Haskoki.Model
   ( HandleBinding (..)
@@ -76,6 +77,7 @@ import Haskoki.Operation
   , CryptoError (..)
   , CryptoResult (..)
   , DigestStream (..)
+  , DualState (..)
   , InitArgs (..)
   , InitOutcome (..)
   , KeyPolicy (..)
@@ -86,7 +88,9 @@ import Haskoki.Operation
   , StepOutcome (..)
   , activeDigest
   , cancelOps
+  , commonKey
   , commonOf
+  , dualOf
   , emptySessionOps
   , initMessageOperation
   , initOperation
@@ -95,7 +99,9 @@ import Haskoki.Operation
   , msgFamilyKind
   , msgFamilyOp
   , opsActive
+  , removeSingle
   , retryStaged
+  , setDual
   , stagedOf
   , streamOf
   )
@@ -650,11 +656,12 @@ planLogin rules model req st =
       | otherwise = []
 
 -- | Plan Logout: clear the token login, return every session on
--- the slot to public, and stale-mark every handle bound to a live
--- private object on the slot. Invalidated handles never resurrect:
--- a later login mints fresh bindings through discovery. Logging
--- out a public token rejects with 'CKR_USER_NOT_LOGGED_IN' and no
--- mutation.
+-- the slot to public, stale-mark every handle bound to a live
+-- private object on the slot, and retire every cached operation
+-- bound to a private key on the slot ('retirePrivateKeyOps').
+-- Invalidated handles never resurrect: a later login mints fresh
+-- bindings through discovery. Logging out a public token rejects
+-- with 'CKR_USER_NOT_LOGGED_IN' and no mutation.
 planLogout :: Model -> SessionState -> PlanResult
 planLogout model st =
   let slot = ssSlot st
@@ -675,16 +682,25 @@ planLogout model st =
         , rejReasons = ["token not logged in"]
         }
       (auth', True) ->
-        let ops = DeltaSetTokenAuth slot auth'
-              : map ((`DeltaSetSessionLogin` LoginPublic) . ssId)
-                    (sessionsOnSlot model slot)
+        let sessions = sessionsOnSlot model slot
+            retired s = retirePrivateKeyOps model (ssOps s)
+            ops = DeltaSetTokenAuth slot auth'
+              : map ((`DeltaSetSessionLogin` LoginPublic) . ssId) sessions
               ++ map DeltaBumpHandle (privateHandlesOnSlot model slot)
+              ++ [ DeltaSetSessionOps (ssId s) (retired s)
+                 | s <- sessions, retired s /= ssOps s
+                 ]
         in Immediate PreparedCommit
           { pcCode = CKR_OK
           , pcDelta = StateDelta ops
           , pcPersist = []
           , pcOutputs = []
-          , pcReleases = []
+          , pcReleases =
+              [ r
+              | s <- sessions
+              , digestRetired (ssOps s) (retired s)
+              , r <- streamReleases (ssOps s)
+              ]
           , pcReasons = ["logout"]
           }
 
@@ -697,6 +713,44 @@ privateHandlesOnSlot model slot =
   , osSlot ost == slot
   , objectPrivate ost
   ]
+
+-- | Retire the cached operations a logout strands: every slot bound
+-- to a private key object drops (its staged output retires with it
+-- — staged bytes live in the same slot), as does every slot whose
+-- key no longer resolves to a live object (destroy leaves 'ssOps'
+-- intact, and staged recalls deliver without key resolution, so an
+-- unresolvable key fails closed — its original classification is
+-- unknowable and its staged bytes may be sensitive). Unkeyed
+-- operations (digest) and live public-key operations survive: logout
+-- ends private-key use, nothing else. The dual drops when either
+-- side is private-keyed or unresolvable (a dual is one operation:
+-- half-retiring it is unrepresentable, as in 'cancelOps').
+retirePrivateKeyOps :: Model -> SessionOps -> SessionOps
+retirePrivateKeyOps model ops =
+  let singles' = foldr removeSingle ops
+        [ kind | kind <- [minBound .. maxBound], killSingle kind ]
+  in case dualOf singles' of
+    Just du
+      | killKey (duDigest du) || killKey (duCipher du) ->
+          setDual Nothing singles'
+    _ -> singles'
+  where
+    killSingle kind = case lookupSingle ops kind of
+      Just active -> killKey (commonOf active)
+      Nothing -> False
+    killKey sc = case commonKey sc of
+      Just oid -> case Map.lookup oid (mObjects model) of
+        Just ost -> objectPrivate ost
+        Nothing -> True
+      Nothing -> False
+
+-- | Whether retirement dropped the classic digest single (a retired
+-- live backend stream must drain with the commit, as in
+-- 'planSessionCancel').
+digestRetired :: SessionOps -> SessionOps -> Bool
+digestRetired before after =
+  isJust (lookupSingle before SlotDigest)
+    && isNothing (lookupSingle after SlotDigest)
 
 -- ---------------------------------------------------------------------------
 -- Operation routing

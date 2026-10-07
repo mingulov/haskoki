@@ -29,6 +29,11 @@
 #   SHA256SUMS                          checksums of the four files above
 #                                       (written after finalization,
 #                                       excluding itself)
+#   SHA256SUMS.asc                      detached armored OpenPGP signature
+#                                       over SHA256SUMS (FINAL-4; written
+#                                       AFTER the checksums finalize and
+#                                       self-verify, then verified
+#                                       in-script before success)
 #
 # Usage (from haskoki/, on the HOST):
 #   scripts/package-release.sh [out-dir]
@@ -51,8 +56,22 @@
 #   HASKOKI_RUST_DIGEST  demo-build rust:1.94-bookworm digest (CI
 #                        demo-image job output; default: resolve
 #                        locally and mark packaging-time)
+#   HASKOKI_SIGNING_KEY  key id or fingerprint of the release signing
+#                        key (REQUIRED, FINAL-4). Absent or empty FAILS
+#                        CLOSED (non-zero; nothing ships unsigned).
+#                        Key provenance: the real release key is
+#                        owner-controlled and provisioned out of band;
+#                        at publish time the CI publish job imports it
+#                        from the HASKOKI_RELEASE_SIGNING_KEY secret
+#                        into an ephemeral GPG home (see the publish
+#                        job), and the public verification key is
+#                        published out-of-band (project site / release
+#                        notes). Never commit key material. The key
+#                        must be usable non-interactively (no
+#                        passphrase prompt; loopback pinentry).
 #
-# Exit status: 0 iff every asset is written and SHA256SUMS verifies.
+# Exit status: 0 iff every asset is written, SHA256SUMS verifies, and
+# SHA256SUMS.asc is written and verifies (Good signature).
 set -u
 
 HERE=$(dirname "$0")
@@ -278,7 +297,7 @@ RESULTS_JSON=$(printf '%s\n' "$RESULTS_LIST" | python3 -c 'import sys,json; prin
   echo "  \"tool_pins\": {"
   echo "    \"checker\": {\"repo\": \"mingulov/pkcs11-check\", \"release\": \"v0.2.3\", \"tag_sha\": \"70f9796d62ca97043c77d27adfc82f5e50bc5d26\", \"pypi\": \"pkcs11-check==0.2.3\", \"qualified\": true, \"note\": \"R4 entrypoint pin (PyPI final; r4b rc1 proven code-identical, final re-proven by the driver)\"},"
   echo "    \"proxy_regression\": {\"repo\": \"mingulov/pkcs11-proxy-ng\", \"commit\": \"a48b60ba54b0163f4999c1e4fc0514bf7dc01681\", \"qualified\": false, \"note\": \"superseded by v0.2.0 in R5; kept as the R4 historical record\"},"
-  echo "    \"proxy_demo\": {\"repo\": \"mingulov/pkcs11-proxy-ng\", \"release\": \"v0.2.2\", \"tag_sha\": \"e500cec9f4a8ef26decd854deae262b57477445d\", \"qualified\": true, \"note\": \"R9 qualified (parity 70 holds + full checker lanes); supersedes R5 v0.2.0 pin\"}"
+  echo "    \"proxy_demo\": {\"repo\": \"mingulov/pkcs11-proxy-ng\", \"release\": \"v0.2.2\", \"tag_sha\": \"e500cec9f4a8ef26decd854deae262b57477445d\", \"commit\": \"1ed7cc15c838de2e56ba03ac34f426847ffce049\", \"lock_sha256\": \"5452b6bd6ab47d72e8172a04a8f8a72460dabc17f66ced110b930f6d5d75b7d3\", \"qualified\": true, \"note\": \"R9 qualified (parity 70 holds + full checker lanes); supersedes R5 v0.2.0 pin; checked out by full commit SHA with fail-closed commit+lock+pair asserts (Dockerfile)\"}"
   echo "  },"
   echo "  \"gate_evidence\": {"
   echo "    \"bundle\": [\"haskoki-$VER/closure/review.txt\", \"haskoki-$VER/toolchain-record.txt\"],"
@@ -301,15 +320,15 @@ RESULTS_JSON=$(printf '%s\n' "$RESULTS_LIST" | python3 -c 'import sys,json; prin
   echo "    \"digest\": $RUST_DIGEST_JSON,"
   echo "    \"note\": \"$RUST_NOTE\""
   echo "  },"
-  echo "  \"ci_pin_policy\": \"external actions major-pinned; ubuntu-latest runners and image tags float (see .github/workflows/ci.yml header)\","
+  echo "  \"ci_pin_policy\": \"external actions SHA-pinned with Dependabot bumps; ubuntu-latest runners and image tags float (see .github/workflows/ci.yml header)\","
   echo "  \"floating_inputs\": ["
   echo "    {\"input\": \"ubuntu-latest runners\", \"reason\": \"GitHub-managed, unpinnable by design\", \"effective\": \"not captured; lanes run containerized (pinned toolchain image) or assert exact outputs\"},"
   echo "    {\"input\": \"ubuntu:26.04 image tag\", \"reason\": \"base tag floats by policy; the effective digest is recorded per build\", \"effective\": \"base_image.digest\"},"
   echo "    {\"input\": \"rust:1.94-bookworm image tag\", \"reason\": \"proxy toolchain tag floats by policy; the effective digest is recorded per build\", \"effective\": \"proxy_toolchain.digest\"},"
   echo "    {\"input\": \"haskoki-dev:ghc-9.10.3 local tag\", \"reason\": \"rebuilt per CI run from the pinned Dockerfile, never pushed\", \"effective\": \"build_env.builder_image_id\"},"
-  echo "    {\"input\": \"PyPI (checker venv)\", \"reason\": \"no hash lock; version pin only\", \"effective\": \"pkcs11-check==0.2.3 plus /opt/p11c/freeze.txt baked into the image\"},"
-  echo "    {\"input\": \"crates.io (proxy build)\", \"reason\": \"upstream Cargo.lock floats with PROXY_REF\", \"effective\": \"PROXY_REF v0.2.2 plus asserted daemon/shim hashes (Dockerfile)\"},"
-  echo "    {\"input\": \"github.com git (proxy clone)\", \"reason\": \"source fetch at image build time\", \"effective\": \"PROXY_REF tag plus tag_sha in tool_pins.proxy_demo\"},"
+  echo "    {\"input\": \"PyPI (checker venv)\", \"reason\": \"registry resolution at build time\", \"effective\": \"docker/checker-requirements.txt hash lock (all 33 distributions pinned with artifact hashes) installed with pip --require-hashes; the lock plus /opt/p11c/freeze.txt are baked into the image (FINAL-34)\"},"
+  echo "    {\"input\": \"crates.io (proxy build)\", \"reason\": \"registry resolution at build time\", \"effective\": \"PROXY_COMMIT 1ed7cc15 plus Cargo.lock sha256 pin plus --locked build plus asserted daemon/shim hashes (Dockerfile)\"},"
+  echo "    {\"input\": \"github.com git (proxy clone)\", \"reason\": \"source fetch at image build time\", \"effective\": \"PROXY_COMMIT full-SHA checkout with fail-closed commit check; tag_sha in tool_pins.proxy_demo is a label only\"},"
   echo "    {\"input\": \"APT repository/package resolution\", \"reason\": \"checker and runtime stages apt-install unversioned package names; the base digest does not identify them\", \"effective\": \"installed dpkg versions baked into the image, enumerated in docs/dependency-inventory.md\"}"
   echo "  ]"
   echo "}"
@@ -321,7 +340,27 @@ python3 -m json.tool "$MANIFEST" > /dev/null || fail "manifest is not valid JSON
   || fail "SHA256SUMS write failed"
 (cd "$OUT" && sha256sum -c "$(basename "$SUMS")") || fail "SHA256SUMS self-verify failed"
 
+# Release authentication (FINAL-4): the checksums above are FINALIZED
+# before this point — nothing below mutates the four checksummed
+# files — and the detached signature is written only now, then
+# verified in-script before success is reported. A missing key, a
+# missing gpg, a signing failure, or a verify failure all FAIL
+# CLOSED (any stale/partial .asc is removed, never shipped).
+ASC="$OUT/SHA256SUMS.asc"
+# A stale signature from an earlier run must never survive a
+# failed run: remove it before any fail-closed check below.
+rm -f "$ASC"
+[ -n "${HASKOKI_SIGNING_KEY:-}" ] \
+  || fail "HASKOKI_SIGNING_KEY is not set (release signing key id; refusing to ship unsigned)"
+command -v gpg >/dev/null 2>&1 || fail "gpg required (SHA256SUMS signing)"
+gpg --batch --no-tty --pinentry-mode loopback --yes \
+  --detach-sign --armor --local-user "$HASKOKI_SIGNING_KEY" \
+  --output "$ASC" "$SUMS" \
+  || { rm -f "$ASC"; fail "SHA256SUMS signing failed"; }
+gpg --batch --no-tty --verify "$ASC" "$SUMS" \
+  || { rm -f "$ASC"; fail "SHA256SUMS.asc self-verify failed"; }
+
 echo "assets:"
-ls -la "$BUNDLE_ARC" "$SDIST_ARC" "$RESULTS_ARC" "$MANIFEST" "$SUMS"
+ls -la "$BUNDLE_ARC" "$SDIST_ARC" "$RESULTS_ARC" "$MANIFEST" "$SUMS" "$ASC"
 cat "$SUMS"
-echo "PASS: package-release.sh (5 assets + verified checksums)"
+echo "PASS: package-release.sh (6 assets + verified checksums + verified signature)"

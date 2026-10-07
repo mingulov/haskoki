@@ -54,10 +54,10 @@ import Haskoki.Types
   , SlotId (..)
   )
 
-spec :: Int -> TestTree
-spec count = testGroup "wrap key-type gate laws"
-  [ propWith "wrap admits exactly AES" 701 count pWrapGate
-  , propWith "unwrap admits exactly AES" 702 count pUnwrapGate
+spec :: Maybe Int -> Int -> TestTree
+spec seedOv count = testGroup "wrap key-type gate laws"
+  [ propWith seedOv "wrap admits exactly AES" 701 count pWrapGate
+  , propWith seedOv "unwrap admits exactly AES" 702 count pUnwrapGate
   ]
 
 slot0 :: SlotId

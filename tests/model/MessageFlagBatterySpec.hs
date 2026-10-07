@@ -6,7 +6,13 @@ the mechanism (@src/Haskoki/Engine/Driver.hs:1944-2072@, never the
 @unsupported fx@ fallthrough), and (c) 'initMessageOperation'
 returns @CKR_OK@ under full caps with valid parameters. The
 @CKF_MESSAGE_*@ flags match the routes; @CKF_MULTI_MESSAGE@ stays
-unadvertised.
+unadvertised. F-9 (FINAL-101) withdrawal: @CKM_AES_GCM@ keeps its
+cipher @message-*@ routes (classic-shaped @CK_GCM_PARAMS@ init
+plus the @gcm-params\/1@ per-message image stays served) but
+advertises neither cipher message flag (native
+@CK_GCM_MESSAGE_PARAMS@ refuses @CKR_ARGUMENTS_BAD@ per
+F-GCM-SHAPE). The flag leg pins that exact withdrawn state for
+the GCM row instead of the iff.
 
 Legs (each a named tasty case):
 
@@ -17,11 +23,14 @@ Legs (each a named tasty case):
   via 'initMessageOperation' under full caps;
 * flag correspondence: every @CKF_MESSAGE_*@ flag (parsed from the
   generated @cbits/mech_catalog.inc@, the exact
-  @C_GetMechanismInfo@ source) has its route and vice versa;
+  @C_GetMechanismInfo@ source) has its route and vice versa,
+  except the withdrawn GCM row (flags absent, routes present,
+  pinned exactly);
 * no multi: @CKF_MULTI_MESSAGE@ is advertised nowhere;
 * scratch mutation: an in-memory catalog copy with one flipped
-  route and one flipped flag must fail the rule/flag checks (the
-  battery proves per run it is not blind; scratch discarded).
+  route, one flipped flag, and one re-advertised withdrawn flag
+  must fail the rule/flag checks (the battery proves per run it
+  is not blind; scratch discarded).
 
 Recover legs (each a named tasty case, appended for task-m03):
 
@@ -569,6 +578,14 @@ flagFor MsgDecrypt = "CKF_MESSAGE_DECRYPT"
 flagFor MsgSign = "CKF_MESSAGE_SIGN"
 flagFor MsgVerify = "CKF_MESSAGE_VERIFY"
 
+-- | F-9 (FINAL-101) withdrawn row: @CKM_AES_GCM@ (@0x1087@) keeps
+-- its cipher @message-*@ routes but advertises neither cipher
+-- message flag. The correspondence leg pins that exact state —
+-- flags absent AND routes present — so drift in either direction
+-- (flags re-advertised, routes dropped) fails loudly.
+withdrawnRow :: Word64
+withdrawnRow = 0x1087
+
 checkFlags :: [MechRow] -> Map Word64 [Text] -> [String]
 checkFlags mechs flagMap =
   coverage ++ concatMap checkOne mechs
@@ -587,11 +604,17 @@ checkFlags mechs flagMap =
           tag = T.unpack (mrName row) ++ " " ++ show (MechanismId (mrId row))
           hasFlag = flagFor fam `elem` flags
           hasRoute = msgOp `elem` mrOps row
-      in case (hasFlag, hasRoute) of
-        (True, False) ->
+          withdrawn = mrId row == withdrawnRow
+            && fam `elem` [MsgEncrypt, MsgDecrypt]
+      in case (withdrawn, hasFlag, hasRoute) of
+        (True, False, True) -> []
+        (True, _, _) ->
+          ["withdrawn GCM row must keep its route without its flag: got flag="
+           ++ show hasFlag ++ " route=" ++ show hasRoute ++ " at " ++ tag]
+        (False, True, False) ->
           ["flag without route: " ++ T.unpack (flagFor fam)
            ++ " at " ++ tag]
-        (False, True) ->
+        (False, False, True) ->
           ["route without flag: " ++ T.unpack (operationName msgOp)
            ++ " at " ++ tag]
         _ -> []
@@ -639,12 +662,19 @@ caseMutation = guarded "mutation" $ do
       -- fail the correspondence check.
           mutatedFlags = Map.insert (mrId keygen) ["CKF_MESSAGE_SIGN"] flagMap
           flagHits = checkFlags mechs mutatedFlags
+          -- Flip the withdrawn GCM flag back on: re-advertising
+          -- @CKF_MESSAGE_ENCRYPT@ on the withdrawn row must fail
+          -- the pinned withdrawn-state check.
+          gcmFlags = Map.adjust ("CKF_MESSAGE_ENCRYPT" :) withdrawnRow flagMap
+          gcmHits = checkFlags mechs gcmFlags
           -- Detection must name the flipped row: on a failing tree the
           -- re-check also reports the live catalog's own gaps.
           rowHit hits = any ("CKM_RSA_PKCS_KEY_PAIR_GEN" `isInfixOf`) hits
+          gcmHit = any ("CKM_AES_GCM" `isInfixOf`) gcmHits
       assertNoMismatches "mutation detection"
         (["route flip undetected: battery is blind" | not (rowHit routeHits)]
-         ++ ["flag flip undetected: battery is blind" | not (rowHit flagHits)])
+         ++ ["flag flip undetected: battery is blind" | not (rowHit flagHits)]
+         ++ ["withdrawn-flag flip undetected: battery is blind" | not gcmHit])
 
 -- ---------------------------------------------------------------------------
 -- Recover legs (task-m03): DG3 pair advertisement

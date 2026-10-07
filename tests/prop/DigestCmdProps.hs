@@ -64,13 +64,13 @@ import Haskoki.Types
   , SlotId (..)
   )
 
-spec :: Int -> TestTree
-spec count =
+spec :: Maybe Int -> Int -> TestTree
+spec seedOv count =
   testGroup
     "digest command laws"
-    [ propWith "reference model agreement" 301 count pCommands
-    , propWith "staged transitions reject" 302 count pStagedRejects
-    , propWith "freed transitions reject" 303 count pFreedRejects
+    [ propWith seedOv "reference model agreement" 301 count pCommands
+    , propWith seedOv "staged transitions reject" 302 count pStagedRejects
+    , propWith seedOv "freed transitions reject" 303 count pFreedRejects
     , testCase "illegal orders reject" caseIllegal
     , testCase "valid scripts succeed" (caseValid count)
     ]

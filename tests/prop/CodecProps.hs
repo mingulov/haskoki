@@ -40,19 +40,19 @@ import Haskoki.Operation.Message (MsgBegin (..), MsgNext (..), MsgOneShot (..))
 import Haskoki.Operation.State (MsgFamily (..))
 import Haskoki.Registry (MechanismId (..), Operation (..))
 
-spec :: Int -> TestTree
-spec count =
+spec :: Maybe Int -> Int -> TestTree
+spec seedOv count =
   testGroup
     "codec laws"
-    [ propWith "init roundtrip" 101 count pInitRoundtrip
-    , propWith "verify roundtrip" 102 count pVerifyRoundtrip
-    , propWith "begin roundtrip" 103 count pBeginRoundtrip
-    , propWith "next roundtrip cipher" 104 count pNextCipher
-    , propWith "next roundtrip sign" 105 count pNextSign
-    , propWith "next roundtrip verify" 106 count pNextVerify
-    , propWith "oneshot roundtrip cipher" 107 count pOneCipher
-    , propWith "oneshot roundtrip sign" 108 count pOneSign
-    , propWith "oneshot roundtrip verify" 109 count pOneVerify
+    [ propWith seedOv "init roundtrip" 101 count pInitRoundtrip
+    , propWith seedOv "verify roundtrip" 102 count pVerifyRoundtrip
+    , propWith seedOv "begin roundtrip" 103 count pBeginRoundtrip
+    , propWith seedOv "next roundtrip cipher" 104 count pNextCipher
+    , propWith seedOv "next roundtrip sign" 105 count pNextSign
+    , propWith seedOv "next roundtrip verify" 106 count pNextVerify
+    , propWith seedOv "oneshot roundtrip cipher" 107 count pOneCipher
+    , propWith seedOv "oneshot roundtrip sign" 108 count pOneSign
+    , propWith seedOv "oneshot roundtrip verify" 109 count pOneVerify
     , testCase "init reserved bits reject" (caseInitReserved count)
     , testCase "verify truncation law" (caseVerifyTrunc count)
     , testCase "next family gate table" caseNextGate

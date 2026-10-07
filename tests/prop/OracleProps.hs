@@ -8,22 +8,36 @@ Byte-equality between synthetic and OpenSSL4 is NOT asserted: the
 synthetic backend is a labeled test construction
 ('haskoki-synth\/class-digest\/v1' PRF stem), deliberately not real
 crypto.
+
+Hermeticity (T-19): the external CLI is resolved explicitly by
+'resolveOracleCli' (@OPENSSL4_BIN@ with pinned default) and
+version-checked; each CLI-agreement run writes its corpus to a
+fresh per-run temporary directory ('withOracleWorkDir') instead of
+a fixed shared path, so overlapping runs share no state.
+Fail-closed: a missing binary or version drift fails the suite
+loudly (the identity case is kept); oracle drift never skips
+silently.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module OracleProps (spec) where
 
 import qualified Data.ByteString as BS
+import Control.Exception (bracket, try)
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
 import Data.List (isPrefixOf)
 import Data.Word (Word64)
 import System.Directory
   ( createDirectory
-  , doesDirectoryExist
   , doesFileExist
+  , getTemporaryDirectory
   , removeDirectoryRecursive
+  , removeFile
   )
+import System.Environment (lookupEnv)
 import System.FilePath ((</>))
+import System.IO (hClose, openTempFile)
+import System.IO.Error (isAlreadyExistsError)
 import System.Process (readProcess)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -53,12 +67,69 @@ import Haskoki.Types (ObjectId (..))
 -- ---------------------------------------------------------------------------
 
 -- | The pinned external oracle (brief anchor: OpenSSL 4.x at
--- /opt/openssl-4.0.2).
-cliPath :: FilePath
-cliPath = "/opt/openssl-4.0.2/bin/openssl"
+-- /opt/openssl-4.0.2); used when @OPENSSL4_BIN@ is unset.
+defaultCliPath :: FilePath
+defaultCliPath = "/opt/openssl-4.0.2/bin/openssl"
 
-cliWorkDir :: FilePath
-cliWorkDir = "/tmp/oracle-corpus"
+-- | Environment override for the oracle CLI path.
+oracleBinEnv :: String
+oracleBinEnv = "OPENSSL4_BIN"
+
+-- | Expected @openssl version@ prefix of the pinned oracle.
+expectedOracleVersion :: String
+expectedOracleVersion = "OpenSSL 4.0.2"
+
+-- | Resolve the oracle CLI explicitly and check it loudly:
+-- @OPENSSL4_BIN@ with pinned default (empty counts as unset), then
+-- existence plus version. Fail-closed: a missing binary or version
+-- drift fails the suite; oracle drift never skips silently.
+resolveOracleCli :: IO FilePath
+resolveOracleCli = do
+  menv <- lookupEnv oracleBinEnv
+  let cli = case menv of
+        Just path | not (null path) -> path
+        _ -> defaultCliPath
+  exists <- doesFileExist cli
+  assertBool ("oracle binary present: " ++ cli
+              ++ " (set " ++ oracleBinEnv ++ " to override)") exists
+  out <- readProcess cli ["version"] ""
+  assertBool ("oracle version " ++ expectedOracleVersion
+              ++ ", got: " ++ out ++ " (binary: " ++ cli ++ ")")
+    (expectedOracleVersion `isPrefixOf` out)
+  pure cli
+
+-- | Run an action with a fresh per-run oracle corpus directory under
+-- the system temp dir; the directory is removed afterwards.
+-- Overlapping runs never share state.
+--
+-- Uniqueness is OS-backed: 'openTempFile' atomically reserves a
+-- unique name, which is then swapped for a directory of the same
+-- name (retrying on the vanishingly rare lost race). Uses only
+-- @base@/@directory@ so no new dependency is needed.
+withOracleWorkDir :: (FilePath -> IO a) -> IO a
+withOracleWorkDir = bracket acquire removeDirectoryRecursive
+  where
+    acquire :: IO FilePath
+    acquire = do
+      tmp <- getTemporaryDirectory
+      let maxAttempts :: Int
+          maxAttempts = 100
+          loop :: Int -> IO FilePath
+          loop attemptsLeft = do
+            (fp, h) <- openTempFile tmp "oracle-corpus"
+            hClose h
+            removeFile fp
+            claimed <- try (createDirectory fp)
+            case claimed of
+              Right () -> pure fp
+              -- Only a lost claim race is retried, and only up to
+              -- 'maxAttempts' times; any other failure (permissions,
+              -- space, read-only tmp) fails loudly instead of hanging.
+              Left e
+                | isAlreadyExistsError e && attemptsLeft > 1 ->
+                    loop (attemptsLeft - 1)
+                | otherwise -> ioError e
+      loop maxAttempts
 
 sha256Mech :: MechanismId
 sha256Mech = MechanismId 0x250
@@ -148,14 +219,10 @@ expectBytes label res = case res of
 -- Oracle identity
 -- ---------------------------------------------------------------------------
 
--- | The external oracle is the pinned OpenSSL 4.0.2 binary.
+-- | The external oracle is the pinned OpenSSL 4.0.2 binary (or the
+-- @OPENSSL4_BIN@ override); drift fails loudly, never skips.
 caseIdentity :: IO ()
-caseIdentity = do
-  exists <- doesFileExist cliPath
-  assertBool ("oracle binary present: " ++ cliPath) exists
-  out <- readProcess cliPath ["version"] ""
-  assertBool ("oracle version 4.0.2, got: " ++ out)
-    ("OpenSSL 4.0.2" `isPrefixOf` out)
+caseIdentity = resolveOracleCli >> pure ()
 
 -- ---------------------------------------------------------------------------
 -- Backend <-> CLI digest agreement
@@ -202,9 +269,9 @@ corpusInputs count =
 
 -- | Run the CLI once over files, returning parsed (file, digest)
 -- pairs in output order.
-runCliDgst :: String -> [FilePath] -> IO [(FilePath, ByteString)]
-runCliDgst alg files = do
-  out <- readProcess cliPath (["dgst", "-" ++ alg] ++ files) ""
+runCliDgst :: FilePath -> String -> [FilePath] -> IO [(FilePath, ByteString)]
+runCliDgst cli alg files = do
+  out <- readProcess cli (["dgst", "-" ++ alg] ++ files) ""
   case mapM parseDgst (lines out) of
     Nothing -> assertFailure ("CLI parse failed: " ++ out) >> undefined
     Just pairs -> pure pairs
@@ -213,29 +280,28 @@ runCliDgst alg files = do
 -- over the whole generated corpus, at two widths.
 caseCliDigest :: Int -> IO ()
 caseCliDigest count = do
-  exists <- doesFileExist cliPath
-  assertBool ("oracle binary present: " ++ cliPath) exists
+  cli <- resolveOracleCli
   ossl <- openOssl
   let inputs = corpusInputs count
-  haveDir <- doesDirectoryExist cliWorkDir
-  if haveDir then removeDirectoryRecursive cliWorkDir else pure ()
-  createDirectory cliWorkDir
-  let files = [cliWorkDir </> name | (name, _) <- inputs]
-  mapM_ (\(name, bs) -> BS.writeFile (cliWorkDir </> name) bs) inputs
-  checkAlg ossl inputs files sha256Mech "sha256" 32
-  checkAlg ossl inputs files sha512Mech "sha512" 64
+  withOracleWorkDir $ \workDir -> do
+    let files = [workDir </> name | (name, _) <- inputs]
+    mapM_ (\(name, bs) -> BS.writeFile (workDir </> name) bs) inputs
+    checkAlg cli workDir ossl inputs files sha256Mech "sha256" 32
+    checkAlg cli workDir ossl inputs files sha512Mech "sha512" 64
   closeBackend ossl
   where
     checkAlg
-      :: BackendEnv OpenSSL4
+      :: FilePath
+      -> FilePath
+      -> BackendEnv OpenSSL4
       -> [(FilePath, ByteString)]
       -> [FilePath]
       -> MechanismId
       -> String
       -> Int
       -> IO ()
-    checkAlg be inputs files mech alg width = do
-      pairs <- runCliDgst alg files
+    checkAlg cli workDir be inputs files mech alg width = do
+      pairs <- runCliDgst cli alg files
       assertEqual "CLI answers every file" (length files) (length pairs)
       mapM_ checkPair (zip inputs pairs)
       where
@@ -243,7 +309,7 @@ caseCliDigest count = do
           :: ((FilePath, ByteString), (FilePath, ByteString))
           -> IO ()
         checkPair ((name, input), (gotFile, cliBytes)) = do
-          assertEqual "CLI echoes the file" (cliWorkDir </> name) gotFile
+          assertEqual "CLI echoes the file" (workDir </> name) gotFile
           assertEqual ("CLI width " ++ alg) width (BS.length cliBytes)
           beBytes <-
             runEffect be (keyResolver BS.empty)

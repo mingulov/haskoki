@@ -321,19 +321,37 @@ for measured source and artifact pins; final-revision verification is pending.
 
 ## Async expiry/GC
 
-Job tombstones are UNBOUNDED until reaped: no count/age cap, the
-live cap counts live jobs only (tombstones never block submits),
-and delivered tombstones retain their completion payload until
-reaped. Reaping is owner-only via the manual terminal-only
-`reapJob` (synchronous, under the job lease; `reapEligibility`
-drops terminal tombstones and leaves live states with `ReapLive`,
+Job tombstones are retained under a DUAL bound per table: at
+most `maxRetainedTombstones` (4096) tombstones AND at most
+`maxRetainedBytes` (64 MiB) of retained bytes. Every commit past
+either bound evicts the oldest (lowest-id) terminal tombstones
+first — the minimal oldest-first prefix restoring both bounds —
+so repeated jobs cannot grow provider memory by count or by
+bytes. The byte budget prices every retained payload byte
+exactly (effect inputs/parameters/AAD/signatures, key-template
+bytes, pinned session-snapshot bytes, completion payloads) plus
+a fixed per-tombstone structural allowance; live jobs are
+excluded (transient and live-capped). The 64 MiB value is
+measured: a count-full table of small suite-shaped tombstones
+retains 12.0 MB, the max-volume sim shape retains 8.5 MB, so 64
+MiB (the smallest power-of-two multiple of the 16 MiB output
+bound) clears the suite worst case with 5.6x headroom while
+shrinking the pre-fix ceiling (~64 GiB: 4096 tombstones times
+attacker-sized inputs plus up-to-16 MiB outputs) by three orders
+of magnitude. A single over-budget job is always retained on its
+own commit (its delivery stays observable) and evicted as an
+elder by the next terminal commit. The live cap counts live jobs
+only (tombstones never block submits), and delivered tombstones
+retain their completion payload until evicted or reaped. Eager
+release stays owner-only via the manual terminal-only `reapJob`
+(synchronous, under the job lease; `reapEligibility` drops
+terminal tombstones and leaves live states with `ReapLive`,
 unknown ids report `ReapUnknown`); there is no background reaper
-(discipline: no background threads). The honest wiring gap: no
-production caller wires `reapJob` today, so production
-tombstones accumulate until process end — wiring reap to a
-destroy/close path needs an FFI surface decision (follow-up, out
-of scope). Ruling + code:
-`src/Haskoki/Runtime/Async.hs:1112-1158`.
+(discipline: no background threads). An evicted job observes
+unknown, exactly as if the owner had reaped it. Ruling + code:
+`src/Haskoki/Runtime/Async.hs:1124-1185` (ruling, reaping rule)
+and `:1462-1497` (dual-bound eviction + commit wiring); budget
+derivation on `maxRetainedBytes`.
 
 ## Release limits for operators
 

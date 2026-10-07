@@ -12,11 +12,13 @@ SQLite satisfy the SAME contract ('contractSpec'). Backend-specific
 fixtures (a 'MemoryWorld' vs a SQLite file path) supply the shared
 store identity across the close/reopen boundary.
 -}
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
 module StoreSpec
   ( spec
   , contractSpec
   , Opener (..)
+  , holderMain
   , makeTempDir
   , expectRight
   , expectJust
@@ -26,23 +28,34 @@ module StoreSpec
   , demoJobResult
   ) where
 
-import Control.Exception (bracket)
+import Control.Concurrent (forkIO, killThread, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, takeMVar, tryPutMVar)
+import Control.Exception (bracket, bracket_, onException)
+import Control.Monad (when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (isSpace)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf, isPrefixOf, sort)
 import Data.Maybe (mapMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
 import Data.Word (Word64)
-import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive)
-import System.Environment (getExecutablePath)
+import Foreign.C.Types (CInt (..))
+import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
+import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
+import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Error (catchIOError)
-import System.Posix.Process (getProcessID)
+import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, setFileMode)
+import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
+import System.Posix.Process (exitImmediately, forkProcess, getParentProcessID, getProcessID, getProcessStatus)
+import System.Posix.Signals (sigKILL, signalProcess)
+import System.Posix.Types (Fd, FileMode, ProcessID)
+import System.Process (CreateProcess (..), ProcessHandle, createProcess, getPid, getProcessExitCode, proc)
 import System.Timeout (timeout)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
@@ -82,7 +95,7 @@ import Haskoki.Runtime.Storage
   , reserveRestoredIds
   )
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
-import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
+import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), livenessFromProbes, openSQLiteStore)
 import Haskoki.Session (tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
@@ -150,6 +163,33 @@ spec = testGroup "store contract"
       , testCase "corrupt records diagnosed" testCorruptDiagnosed
       , testCase "raw columns contain no pointers or handles" testRawColumnsClean
       , testCase "live schema matches spec/storage-schema.sql" testSchemaShape
+      , testCase "stale lock takeable; masked proc and held flock refuse" testOwnershipGuards
+      , testCase "ppid-0 liveness mapping" testLivenessMapping
+      , testCase "lock deletion cannot fork a live owner" testUnlinkRefuses
+      , testCase "owner close keeps a replacement lock" testCloseKeepsReplacement
+      -- The proc-root tests mutate HASKOKI_PROC_ROOT process-wide,
+      -- the pause tests mutate HASKOKI_OPEN_PAUSE process-wide, and
+      -- the ownership-guards / kill-retry tests consult the real
+      -- /proc (their stale-takeover phases); chain them so they
+      -- never run concurrently with each other. (The
+      -- unlink/replacement tests neither mutate the env nor consult
+      -- liveness, so they stay parallel.)
+      , after AllFinish "/stale lock takeable; masked proc and held flock refuse/" $
+          testCase "unreadable proc root refuses cleanly" testProcUnreadableRefuses
+      , after AllFinish "/unreadable proc root refuses cleanly/" $
+          testCase "partially masked proc refuses as unknowable" testProcPartialMaskRefuses
+      , after AllFinish "/partially masked proc refuses as unknowable/" $
+          testCase "fresh open guards the database before init" testFreshGuardBeforeInit
+      , after AllFinish "/fresh open guards the database before init/" $
+          testCase "database swapped during open aborts" testSwappedDbAborts
+      , after AllFinish "/database swapped during open aborts/" $
+          testCase "cancellation during db-guard retry releases the sidecar" testKillDuringDbRetry
+      , after AllFinish "/cancellation during db-guard retry releases the sidecar/" $
+          testCase "selective owner hiding refuses safely" testSelectiveHideRefuses
+      , after AllFinish "/selective owner hiding refuses safely/" $
+          testCase "pause binds to the intended opener" testPauseBindsToIntendedOpener
+      , after AllFinish "/pause binds to the intended opener/" $
+          testCase "lock naming pid 0 is takeable without probing" testPidZeroTakeable
       ]
   ]
 
@@ -414,8 +454,8 @@ testGarbageRejected = do
         storeClose s
         assertFailure "garbage file opened as a store"
       Left _ -> pure ()
-    after <- BS.readFile path
-    assertEqual "garbage bytes untouched" before after
+    bytesAfter <- BS.readFile path
+    assertEqual "garbage bytes untouched" before bytesAfter
 
 -- | Acceptance 4 (wrong schema): a future schema version is
 -- rejected with its versions diagnosed, the bytes untouched, and
@@ -439,8 +479,8 @@ testFutureVersionRejected =
         assertEqual "expected version" 1 expected
         assertEqual "found version" "999" found
       Left other -> assertFailure ("wrong error: " ++ show other)
-    after <- BS.readFile path
-    assertEqual "bytes untouched" before after
+    bytesAfter <- BS.readFile path
+    assertEqual "bytes untouched" before bytesAfter
     lockLeft <- doesFileExist (path ++ ".lock")
     assertBool "no stranded lock" (not lockLeft)
 
@@ -771,6 +811,713 @@ testSchemaShape = do
   case mOut of
     Just () -> pure ()
     Nothing -> assertFailure "schema-shape wedged (120s timeout)"
+
+-- | Ownership guards (one case, sequential phases — the masked-proc
+-- phase mutates @HASKOKI_PROC_ROOT@ process-wide, so the phases must
+-- not run concurrently with each other): a stale-pid lock with no
+-- holder is still takeable and the taken-over store keeps its data
+-- (no fail-closed overreach); a second open with owner liveness
+-- unknowable is refused; and a stale-pid lock whose kernel lock is
+-- held is refused until the holder goes away.
+testOwnershipGuards :: IO ()
+testOwnershipGuards = do
+  staleTakeable
+  heldFlockRefuses
+  maskedProcRefuses
+
+-- | Variant guard: a lock naming a provably-dead pid, with no
+-- kernel-lock holder, is taken over; the lock is re-owned and the
+-- seeded data survives the takeover.
+staleTakeable :: IO ()
+staleTakeable =
+  bracket (makeTempDir "haskoki-storage-stale") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+    e0 <- openSQLiteStore path
+    s0 <- either (\e -> assertFailure ("stale seed open: " ++ show e)) pure e0
+    _ <- seedStore s0
+    storeClose s0
+    deadPid <- reapedPid
+    writeFile (path ++ ".lock") (show deadPid ++ "\n")
+    e1 <- openSQLiteStore path
+    s1 <- either (\e -> assertFailure ("stale takeover failed: " ++ show e)) pure e1
+    me <- getProcessID
+    content <- readFile (path ++ ".lock")
+    assertEqual "stale: lock re-owned by taker" (show me ++ "\n") content
+    eLoaded <- storeLoadTokens s1
+    loaded <- either (\e -> assertFailure ("stale load after takeover: " ++ show e)) pure eLoaded
+    assertEqual "stale: seeded token survives takeover" 1 (length loaded)
+    storeClose s1
+
+-- | Kernel guard: a stale-pid lock whose file is @flock@-held (a
+-- live-but-hidden owner from the store's point of view) refuses the
+-- takeover with 'StoreSecondWriter'; once the holder goes away the
+-- same lock is takeable.
+heldFlockRefuses :: IO ()
+heldFlockRefuses =
+  bracket (makeTempDir "haskoki-storage-held") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+    e0 <- openSQLiteStore path
+    s0 <- either (\e -> assertFailure ("held seed open: " ++ show e)) pure e0
+    storeClose s0
+    deadPid <- reapedPid
+    writeFile (path ++ ".lock") (show deadPid ++ "\n")
+    bracket (openFd (path ++ ".lock") ReadOnly defaultFileFlags) closeFd $ \holderFd -> do
+      held <- testTryFlock holderFd
+      assertBool "held: test holder took the kernel lock" held
+      e1 <- openSQLiteStore path
+      case e1 of
+        Right s1 -> do
+          storeClose s1
+          assertFailure "held: takeover succeeded despite held kernel lock (state fork)"
+        Left (StoreSecondWriter _) -> pure ()
+        Left other -> assertFailure ("held: wrong error for held lock: " ++ show other)
+    e2 <- openSQLiteStore path
+    s2 <- either (\e -> assertFailure ("held: takeover after release failed: " ++ show e)) pure e2
+    storeClose s2
+
+-- | Fail-closed guard: with @\/proc@ masked (via @HASKOKI_PROC_ROOT@,
+-- deterministically empty), a second open against a live owner in
+-- ANOTHER process is refused with the unknowable-liveness
+-- 'StoreSecondWriter' instead of forking. The owner must be a
+-- separate process: a same-process second open is refused by the
+-- same-process guard before liveness is ever consulted, so it can
+-- never pin the fail-closed path (and its message carries no
+-- "unknowable" on either base or patch).
+maskedProcRefuses :: IO ()
+maskedProcRefuses =
+  bracket (makeTempDir "haskoki-storage-masked") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-emptyproc") removeDirectoryRecursive $ \emptyProc -> do
+      reaped <- newIORef False
+      let path = dir </> "store.db"
+          doneFile = dir </> "holder.done"
+          readyFile = dir </> "holder.ready"
+      bracket (spawnHolder path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+        holderPid <- spawnedPid ph "masked"
+        awaitLockOwner path holderPid
+        awaitDone readyFile (6000 :: Int)
+        withProcRoot emptyProc $ do
+          e2 <- openSQLiteStore path
+          case e2 of
+            Right s2 -> do
+              storeClose s2
+              assertFailure "masked: second open succeeded with liveness unknowable (state fork)"
+            Left (StoreSecondWriter msg) ->
+              assertBool ("masked: expected unknowable-liveness refusal, got: " ++ msg)
+                ("unknowable" `isInfixOf` msg)
+            Left other ->
+              assertFailure ("masked: wrong error for unknowable liveness: " ++ show other)
+        writeFile doneFile "done\n"
+        awaitHolderExit reaped ph "masked"
+        e3 <- openSQLiteStore path
+        s3 <- either (\e -> assertFailure ("masked reopen after close: " ++ show e)) pure e3
+        storeClose s3
+
+-- | The lock holder: runs in a spawned child process (see
+-- 'spawnHolder'), opens the store (becoming its live owner),
+-- signals readiness only once the open has fully completed (the
+-- pid names the lock before schema init finishes, so the lock
+-- alone cannot gate a racing second open), waits for the parent's
+-- done file, then closes and exits. Never returns to test code;
+-- uses 'exitImmediately' to avoid flushing the parent's stdio
+-- buffers.
+holderMain :: FilePath -> FilePath -> FilePath -> IO ()
+holderMain path doneFile readyFile = do
+  e <- openSQLiteStore path
+  case e of
+    Left _ -> exitImmediately (ExitFailure 1)
+    Right s -> do
+      writeFile readyFile "ready\n"
+      awaitDone doneFile (6000 :: Int)
+      storeClose s
+      exitImmediately ExitSuccess
+
+-- | Poll for the done file (10ms steps, bounded so a stuck parent
+-- cannot wedge the suite past the tasty timeout).
+awaitDone :: FilePath -> Int -> IO ()
+awaitDone _ 0 = pure ()
+awaitDone doneFile n = do
+  done <- fileExist doneFile
+  if done then pure () else threadDelay 10000 >> awaitDone doneFile (n - 1)
+
+-- | Poll until the lock names the holder child (10s cap); the
+-- holder is live from then on.
+awaitLockOwner :: FilePath -> ProcessID -> IO ()
+awaitLockOwner path holderPid = do
+  let want = BC8.pack (show holderPid ++ "\n")
+      go = do
+        content <- catchIOError (BS.readFile (path ++ ".lock")) (\_ -> pure BS.empty)
+        if content == want then pure () else threadDelay 10000 >> go
+  mOk <- timeout 10000000 go
+  case mOk of
+    Just () -> pure ()
+    Nothing -> assertFailure "masked: holder child did not take the lock"
+
+-- | Spawn a holder child as a FRESH OS process (the test binary
+-- re-invoked with @--holder@), never 'forkProcess': a forked child
+-- would inherit the parent's open guard fds (the same open file
+-- description — the parent's close then cannot release the kernel
+-- locks while the child lives, poisoning concurrent tests with
+-- spurious refusals) and forking a multithreaded RTS while another
+-- thread is inside SQLite can wedge the child forever. The spawned
+-- child starts with only stdio fds (@close_fds@) and a clean
+-- address space.
+spawnHolder :: FilePath -> FilePath -> FilePath -> IO ProcessHandle
+spawnHolder path doneFile readyFile = do
+  exe <- getExecutablePath
+  (_, _, _, ph) <- createProcess ((proc exe ["--holder", path, doneFile, readyFile]) { close_fds = True })
+  pure ph
+
+-- | The spawned child's pid for the lock-ownership handshake;
+-- fails fast when the child already exited before handshaking.
+spawnedPid :: ProcessHandle -> String -> IO ProcessID
+spawnedPid ph tag = do
+  mPid <- getPid ph
+  case mPid of
+    Just pid -> pure pid
+    Nothing -> assertFailure (tag ++ ": holder child exited before handshake")
+
+-- | Claim the exactly-once right to reap a holder child: True
+-- for the first claimer (it owns signal+reap), False once the
+-- child has been reaped. A reaped numeric pid may be recycled by
+-- an unrelated process, so it must never be signaled again.
+claimReap :: IORef Bool -> IO Bool
+claimReap ref = atomicModifyIORef' ref (\done -> (True, not done))
+
+-- | Bounded wait on a holder child (10ms non-blocking polls), so
+-- a wedged child cannot hang the suite. Nothing on timeout; every
+-- error is swallowed on the release path.
+waitBounded :: ProcessHandle -> Int -> IO (Maybe ExitCode)
+waitBounded _ 0 = pure Nothing
+waitBounded ph n = do
+  mSt <- catchIOError (getProcessExitCode ph) (\_ -> pure Nothing)
+  case mSt of
+    Just st -> pure (Just st)
+    Nothing -> threadDelay 10000 >> waitBounded ph (n - 1)
+
+-- | Bracket release for a holder child: exactly-once SIGKILL plus
+-- a bounded wait. A no-op when the body already reaped the child.
+-- The kill targets only our own unreaped child (its pid cannot be
+-- recycled before we reap it), never a recycled numeric pid.
+-- Every failure is swallowed: the release must not mask the test
+-- verdict.
+releaseHolder :: IORef Bool -> ProcessHandle -> IO ()
+releaseHolder reaped ph = do
+  ours <- claimReap reaped
+  when ours $ do
+    catchIOError (getPid ph >>= maybe (pure ()) (signalProcess sigKILL)) (\_ -> pure ())
+    _ <- waitBounded ph 500
+    pure ()
+
+-- | Bounded join on a holder child (10s cap) with checked exit
+-- status; marks the child reaped so the bracket release skips it.
+awaitHolderExit :: IORef Bool -> ProcessHandle -> String -> IO ()
+awaitHolderExit reaped ph tag = do
+  mSt <- waitBounded ph 1000
+  case mSt of
+    Nothing -> assertFailure (tag ++ ": holder child did not exit within 10s")
+    Just st -> do
+      _ <- claimReap reaped
+      case st of
+        ExitSuccess -> pure ()
+        other -> assertFailure (tag ++ ": holder child failed: " ++ show other)
+
+-- | Run with a path's mode overridden, restoring it afterwards
+-- (a denied mode must never strand an undeletable fixture, even
+-- when the action throws).
+withFileMode :: FilePath -> FileMode -> IO a -> IO a
+withFileMode p mode action = do
+  st <- getFileStatus p
+  bracket_ (setFileMode p mode) (setFileMode p (fileMode st)) action
+
+-- | Run with @HASKOKI_PROC_ROOT@ overridden, restoring it afterwards.
+withProcRoot :: FilePath -> IO a -> IO a
+withProcRoot root action =
+  bracket (lookupEnv "HASKOKI_PROC_ROOT")
+          (\prev -> maybe (unsetEnv "HASKOKI_PROC_ROOT") (setEnv "HASKOKI_PROC_ROOT") prev)
+          (\_ -> setEnv "HASKOKI_PROC_ROOT" root >> action)
+
+-- | Run with @HASKOKI_OPEN_PAUSE@ (pause directory) and
+-- @HASKOKI_OPEN_PAUSE_PATH@ (intended opener's database path)
+-- overridden, restoring both afterwards. The path binding keeps
+-- unrelated parallel SQLite creators from pausing on our handshake.
+withOpenPause :: FilePath -> FilePath -> IO a -> IO a
+withOpenPause dir want action =
+  bracket (lookupEnv "HASKOKI_OPEN_PAUSE")
+          (\prev -> maybe (unsetEnv "HASKOKI_OPEN_PAUSE") (setEnv "HASKOKI_OPEN_PAUSE") prev)
+          (\_ -> setEnv "HASKOKI_OPEN_PAUSE" dir >> inner)
+  where
+    inner =
+      bracket (lookupEnv "HASKOKI_OPEN_PAUSE_PATH")
+              (\prev -> maybe (unsetEnv "HASKOKI_OPEN_PAUSE_PATH") (setEnv "HASKOKI_OPEN_PAUSE_PATH") prev)
+              (\_ -> setEnv "HASKOKI_OPEN_PAUSE_PATH" want >> action)
+
+-- | Unlink guard: deleting a live owner's lock path must not let
+-- a second opener take over by creating and flocking a different
+-- inode — exclusion is anchored to the database identity as well
+-- as the sidecar, so the replacement lock's sidecar flock
+-- succeeding still refuses at the database guard.
+testUnlinkRefuses :: IO ()
+testUnlinkRefuses =
+  bracket (makeTempDir "haskoki-storage-unlink") removeDirectoryRecursive $ \dir -> do
+    reaped <- newIORef False
+    let path = dir </> "store.db"
+        lockPath = path ++ ".lock"
+        doneFile = dir </> "holder.done"
+        readyFile = dir </> "holder.ready"
+    bracket (spawnHolder path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+      holderPid <- spawnedPid ph "unlink"
+      awaitLockOwner path holderPid
+      awaitDone readyFile (6000 :: Int)
+      removeFile lockPath
+      e2 <- openSQLiteStore path
+      case e2 of
+        Right s2 -> do
+          storeClose s2
+          assertFailure "unlink: second open took over after lock deletion (state fork)"
+        Left (StoreSecondWriter msg) ->
+          assertBool ("unlink: expected database-anchored refusal, got: " ++ msg)
+            ("database" `isInfixOf` msg)
+        Left other ->
+          assertFailure ("unlink: wrong error after lock deletion: " ++ show other)
+      writeFile doneFile "done\n"
+      awaitHolderExit reaped ph "unlink"
+
+-- | Owned-inode release: a replacement lock planted at the path
+-- after a live owner's lock was deleted is NOT the owner's, so
+-- the owner's close must leave it byte-identical (unlink only the
+-- owned inode).
+testCloseKeepsReplacement :: IO ()
+testCloseKeepsReplacement =
+  bracket (makeTempDir "haskoki-storage-replace") removeDirectoryRecursive $ \dir -> do
+    reaped <- newIORef False
+    let path = dir </> "store.db"
+        lockPath = path ++ ".lock"
+        doneFile = dir </> "holder.done"
+        readyFile = dir </> "holder.ready"
+    bracket (spawnHolder path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+      holderPid <- spawnedPid ph "replace"
+      awaitLockOwner path holderPid
+      awaitDone readyFile (6000 :: Int)
+      removeFile lockPath
+      writeFile lockPath "replacement-marker\n"
+      writeFile doneFile "done\n"
+      awaitHolderExit reaped ph "replace"
+      content <- readFile lockPath
+      assertEqual "replace: owner close deleted a replacement lock"
+        "replacement-marker\n" content
+
+-- | Probe-error guard: a @\/proc@ root the opener cannot read
+-- (@EACCES@) fails closed with a clean 'StoreSecondWriter', never
+-- an uncaught 'IOException' — even when the named owner is dead
+-- (death cannot be proven, so no takeover).
+testProcUnreadableRefuses :: IO ()
+testProcUnreadableRefuses =
+  bracket (makeTempDir "haskoki-storage-noproc") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-denied") removeDirectoryRecursive $ \denied -> do
+      let path = dir </> "store.db"
+      e0 <- openSQLiteStore path
+      s0 <- either (\e -> assertFailure ("noproc seed open: " ++ show e)) pure e0
+      storeClose s0
+      deadPid <- reapedPid
+      writeFile (path ++ ".lock") (show deadPid ++ "\n")
+      withFileMode denied 0o000 $
+        withProcRoot denied $ do
+          e1 <- openSQLiteStore path
+          case e1 of
+            Right s1 -> do
+              storeClose s1
+              assertFailure "noproc: takeover succeeded with liveness unknowable (state fork)"
+            Left (StoreSecondWriter msg) ->
+              assertBool ("noproc: expected unknowable-liveness refusal, got: " ++ msg)
+                ("unknowable" `isInfixOf` msg)
+            Left other ->
+              assertFailure ("noproc: wrong error for unreadable proc: " ++ show other)
+
+-- | Partial-mask guard: a @\/proc@ view that shows @self@ but
+-- hides our own pid, or whose owner entry ERRORS on stat (a
+-- self-loop symlink: ELOOP for every runner, root included),
+-- cannot prove death — so a second open against a live owner is
+-- refused as unknowable, never misread as dead.
+testProcPartialMaskRefuses :: IO ()
+testProcPartialMaskRefuses =
+  bracket (makeTempDir "haskoki-storage-pmask") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-fakeproc") removeDirectoryRecursive $ \fakeProc -> do
+      reaped <- newIORef False
+      me <- getProcessID
+      ppid <- getParentProcessID
+      let path = dir </> "store.db"
+          doneFile = dir </> "holder.done"
+          readyFile = dir </> "holder.ready"
+      bracket (spawnHolder path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+        holderPid <- spawnedPid ph "pmask"
+        awaitLockOwner path holderPid
+        awaitDone readyFile (6000 :: Int)
+        writeFile (fakeProc </> "self") ""
+        withProcRoot fakeProc $ do
+          e1 <- openSQLiteStore path
+          case e1 of
+            Right s1 -> do
+              storeClose s1
+              assertFailure "pmask: second open succeeded with a partial proc view (state fork)"
+            Left (StoreSecondWriter msg) ->
+              assertBool ("pmask: expected unknowable-liveness refusal, got: " ++ msg)
+                ("unknowable" `isInfixOf` msg)
+            Left other ->
+              assertFailure ("pmask: wrong error for partial proc view: " ++ show other)
+        writeFile (fakeProc </> show me) ""
+        -- The parent witness must be present so phase 2 still pins
+        -- the owner-entry error (not the parent's absence).
+        writeFile (fakeProc </> show ppid) ""
+        -- The owner entry must ERROR on stat (not merely be absent)
+        -- while self+own-pid stay visible. A self-loop symlink stats
+        -- as ELOOP for every runner; a chmod-000 construction would
+        -- be bypassed as root (CI runs as root), misreading the live
+        -- owner as dead.
+        createSymbolicLink (show holderPid) (fakeProc </> show holderPid)
+        withProcRoot fakeProc $ do
+          e2 <- openSQLiteStore path
+          case e2 of
+            Right s2 -> do
+              storeClose s2
+              assertFailure "pmask: second open succeeded with owner entry denied (state fork)"
+            Left (StoreSecondWriter msg) ->
+              assertBool ("pmask: expected unknowable-liveness refusal, got: " ++ msg)
+                ("unknowable" `isInfixOf` msg)
+            Left other ->
+              assertFailure ("pmask: wrong error for denied owner entry: " ++ show other)
+        writeFile doneFile "done\n"
+        awaitHolderExit reaped ph "pmask"
+        e3 <- openSQLiteStore path
+        s3 <- either (\e -> assertFailure ("pmask reopen after close: " ++ show e)) pure e3
+        storeClose s3
+
+-- | Fresh-guard test (finding 1): the database guard is held before
+-- any SQLite work on the fresh-create path. A is forked and pauses
+-- after creating+guarding the database (via @HASKOKI_OPEN_PAUSE@);
+-- its sidecar is deleted (the finding's interleaving); B's open
+-- must refuse at the database guard — never take over — and A's
+-- resume must complete harmlessly. Then A owns alone and the store
+-- reopens cleanly. In-process threads contend on @flock@ exactly
+-- like processes (separate opens), so no spawn is needed.
+testFreshGuardBeforeInit :: IO ()
+testFreshGuardBeforeInit =
+  bracket (makeTempDir "haskoki-storage-freshg") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-pause") removeDirectoryRecursive $ \pauseDir -> do
+      let path = dir </> "store.db"
+          lockPath = path ++ ".lock"
+          pausedFile = pauseDir </> "paused"
+          goFile = pauseDir </> "go"
+      withOpenPause pauseDir path $ do
+        resVar <- newEmptyMVar
+        _ <- forkIO $ do
+          e <- openSQLiteStore path
+          _ <- tryPutMVar resVar e
+          pure ()
+        awaitDone pausedFile (300 :: Int)
+        paused <- doesFileExist pausedFile
+        assertBool "freshg: opener did not pause (seam not honored?)" paused
+        -- The interleaving: A loses its sidecar while paused.
+        removeFile lockPath
+        e2 <- openSQLiteStore path
+        case e2 of
+          Right s2 -> do
+            storeClose s2
+            assertFailure "freshg: second open took over a paused fresh init (state fork)"
+          Left (StoreSecondWriter msg) ->
+            assertBool ("freshg: expected database-anchored refusal, got: " ++ msg)
+              ("database" `isInfixOf` msg)
+          Left other ->
+            assertFailure ("freshg: wrong error during paused fresh init: " ++ show other)
+        writeFile goFile "go\n"
+        mA <- timeout (30 * 1000000) (takeMVar resVar)
+        eA <- case mA of
+          Nothing -> assertFailure "freshg: paused opener wedged after release"
+          Just e -> pure e
+        sA <- either (\e -> assertFailure ("freshg: paused opener failed: " ++ show e)) pure eA
+        storeClose sA
+        e3 <- openSQLiteStore path
+        s3 <- either (\e -> assertFailure ("freshg reopen after close: " ++ show e)) pure e3
+        eLoaded <- storeLoadTokens s3
+        _ <- either (\e -> assertFailure ("freshg load after close: " ++ show e)) pure eLoaded
+        storeClose s3
+
+-- | Swap-abort test (finding 1): if the database path no longer
+-- names the guarded inode when SQLite opens it, the open aborts
+-- with "replaced" instead of initializing another file — and the
+-- planted file is left byte-identical. (The planted store is
+-- created outside the pause env: it must not pause itself.)
+testSwappedDbAborts :: IO ()
+testSwappedDbAborts =
+  bracket (makeTempDir "haskoki-storage-swap") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-pause") removeDirectoryRecursive $ \pauseDir -> do
+      let path = dir </> "store.db"
+          plantSrc = dir </> "plant.db"
+          movedAside = dir </> "moved-aside.db"
+          pausedFile = pauseDir </> "paused"
+          goFile = pauseDir </> "go"
+      ePlant <- openSQLiteStore plantSrc
+      plant <- either (\e -> assertFailure ("swap plant open: " ++ show e)) pure ePlant
+      _ <- seedStore plant
+      storeClose plant
+      plantBytes <- BS.readFile plantSrc
+      withOpenPause pauseDir path $ do
+        resVar <- newEmptyMVar
+        _ <- forkIO $ do
+          e <- openSQLiteStore path
+          _ <- tryPutMVar resVar e
+          pure ()
+        awaitDone pausedFile (300 :: Int)
+        paused <- doesFileExist pausedFile
+        assertBool "swap: opener did not pause (seam not honored?)" paused
+        renameFile path movedAside
+        renameFile plantSrc path
+        writeFile goFile "go\n"
+        mA <- timeout (30 * 1000000) (takeMVar resVar)
+        eA <- case mA of
+          Nothing -> assertFailure "swap: paused opener wedged after release"
+          Just e -> pure e
+        case eA of
+          Right sA -> do
+            storeClose sA
+            assertFailure "swap: opener initialized a swapped-in database"
+          Left (StoreIO msg) ->
+            assertBool ("swap: expected replaced-database refusal, got: " ++ msg)
+              ("replaced" `isInfixOf` msg)
+          Left other ->
+            assertFailure ("swap: wrong error for swapped database: " ++ show other)
+        afterBytes <- BS.readFile path
+        assertEqual "swap: planted database modified" plantBytes afterBytes
+        aside <- doesFileExist movedAside
+        assertBool "swap: paused opener's file went missing" aside
+        e3 <- openSQLiteStore path
+        s3 <- either (\e -> assertFailure ("swap reopen planted: " ++ show e)) pure e3
+        eLoaded <- storeLoadTokens s3
+        loaded <- either (\e -> assertFailure ("swap load planted: " ++ show e)) pure eLoaded
+        assertEqual "swap: planted token survives" 1 (length loaded)
+        storeClose s3
+
+-- | Async-cleanup test (finding 2): killing a thread blocked in the
+-- database-guard retry (flock-retry delays are interruptible even
+-- under mask) must release the already-owned sidecar — never
+-- strand a live-pid lock that wedges later opens. Each iteration
+-- deterministically enters the retry window (the parent holds the
+-- database flock, so every try fails over ~45ms); the kill lands
+-- ~10ms in. A missed kill (the opener refused first) still
+-- asserts the clean end-state; the hit counter proves the window
+-- was entered at least once.
+testKillDuringDbRetry :: IO ()
+testKillDuringDbRetry =
+  bracket (makeTempDir "haskoki-storage-killr") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+        lockPath = path ++ ".lock"
+    e0 <- openSQLiteStore path
+    s0 <- either (\e -> assertFailure ("killr seed open: " ++ show e)) pure e0
+    storeClose s0
+    me <- getProcessID
+    hits <- newIORef (0 :: Int)
+    let awaitOwnPid = do
+          let want = BC8.pack (show me ++ "\n")
+              go = do
+                content <- catchIOError (BS.readFile lockPath) (\_ -> pure BS.empty)
+                if content == want then pure () else threadDelay 1000 >> go
+          mOk <- timeout 10000000 go
+          case mOk of
+            Just () -> pure ()
+            Nothing -> assertFailure "killr: opener did not reach the db-guard retry"
+        loop 0 = pure ()
+        loop n = do
+          deadPid <- reapedPid
+          writeFile lockPath (show deadPid ++ "\n")
+          bracket (openFd path ReadOnly defaultFileFlags) closeFd $ \holdFd -> do
+            held <- testTryFlock holdFd
+            assertBool "killr: parent could not hold the database flock" held
+            resVar <- newEmptyMVar
+            tid <- forkIO $ do
+              e <- (openSQLiteStore path) `onException`
+                (tryPutMVar resVar False >> pure ())
+              case e of
+                Right s -> storeClose s
+                Left _ -> pure ()
+              _ <- tryPutMVar resVar True
+              pure ()
+            awaitOwnPid
+            threadDelay 10000
+            killThread tid
+            mOut <- timeout (5 * 1000000) (takeMVar resVar)
+            case mOut of
+              Nothing -> assertFailure "killr: opener wedged after kill"
+              Just False -> atomicModifyIORef' hits (\h -> (h + 1, ()))
+              Just True -> pure ()
+          absent <- not <$> doesFileExist lockPath
+          assertBool "killr: kill stranded the sidecar lock" absent
+          eRe <- openSQLiteStore path
+          sRe <- either (\e -> assertFailure ("killr: reopen wedged after kill: " ++ show e)) pure eRe
+          storeClose sRe
+          loop (n - 1)
+    loop (20 :: Int)
+    nHits <- readIORef hits
+    assertBool "killr: no mid-window kill observed (vacuous?)" (nHits >= 1)
+
+-- | Selective-hiding test (finding 3): a @\/proc@ view showing
+-- @self@ and our own pid but hiding the live owner's entry with
+-- @ENOENT@ cannot prove death — the parent witness (always a live
+-- process) is absent, so the open refuses as unknowable. A
+-- surgical filter hiding ONLY the owner is
+-- @\/proc@-indistinguishable from a dead owner and falls through
+-- to the kernel-lock backstop, which still refuses.
+testSelectiveHideRefuses :: IO ()
+testSelectiveHideRefuses =
+  bracket (makeTempDir "haskoki-storage-selhide") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-fakeproc") removeDirectoryRecursive $ \fakeProc -> do
+      reaped <- newIORef False
+      me <- getProcessID
+      ppid <- getParentProcessID
+      let path = dir </> "store.db"
+          doneFile = dir </> "holder.done"
+          readyFile = dir </> "holder.ready"
+      bracket (spawnHolder path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+        holderPid <- spawnedPid ph "selhide"
+        awaitLockOwner path holderPid
+        awaitDone readyFile (6000 :: Int)
+        -- Phase A: self + own pid visible, live owner hidden
+        -- (ENOENT), parent witness absent -> unknowable.
+        writeFile (fakeProc </> "self") ""
+        writeFile (fakeProc </> show me) ""
+        withProcRoot fakeProc $ do
+          e1 <- openSQLiteStore path
+          case e1 of
+            Right s1 -> do
+              storeClose s1
+              assertFailure "selhide: second open succeeded with owner hidden (state fork)"
+            Left (StoreSecondWriter msg) ->
+              assertBool ("selhide: expected unknowable-liveness refusal, got: " ++ msg)
+                ("unknowable" `isInfixOf` msg)
+            Left other ->
+              assertFailure ("selhide: wrong error for hidden owner: " ++ show other)
+        -- Phase B: the surgical residual — parent witness present,
+        -- only the live owner hidden -> takeover attempted, kernel
+        -- lock backstop refuses.
+        writeFile (fakeProc </> show ppid) ""
+        withProcRoot fakeProc $ do
+          e2 <- openSQLiteStore path
+          case e2 of
+            Right s2 -> do
+              storeClose s2
+              assertFailure "selhide: second open took over a live owner (state fork)"
+            Left (StoreSecondWriter msg) ->
+              assertBool ("selhide: expected kernel-lock refusal, got: " ++ msg)
+                ("kernel lock held" `isInfixOf` msg)
+            Left other ->
+              assertFailure ("selhide: wrong error for surgical hiding: " ++ show other)
+        writeFile doneFile "done\n"
+        awaitHolderExit reaped ph "selhide"
+        e3 <- openSQLiteStore path
+        s3 <- either (\e -> assertFailure ("selhide reopen after close: " ++ show e)) pure e3
+        storeClose s3
+
+-- | Pause-isolation test (finding 3): with the pause seam armed
+-- for one intended database path, a fresh-create open of a
+-- DIFFERENT path must not pause. (Before path binding, any parallel
+-- SQLite creator — contract/commit tests, inherited-env holders —
+-- paused on the same handshake file and could satisfy the
+-- controller's handshake before the intended opener paused.)
+testPauseBindsToIntendedOpener :: IO ()
+testPauseBindsToIntendedOpener =
+  bracket (makeTempDir "haskoki-storage-pausebind") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-pause") removeDirectoryRecursive $ \pauseDir -> do
+      let intended = dir </> "intended.db"
+          other = dir </> "other.db"
+      withOpenPause pauseDir intended $ do
+        resVar <- newEmptyMVar
+        _ <- forkIO $ do
+          e <- openSQLiteStore other
+          _ <- tryPutMVar resVar e
+          pure ()
+        mDone <- timeout (5 * 1000000) (takeMVar resVar)
+        eOther <- case mDone of
+          Nothing -> assertFailure "pausebind: unrelated fresh open paused (seam leaked across openers)"
+          Just e -> pure e
+        sOther <- either (\e -> assertFailure ("pausebind: unrelated open failed: " ++ show e)) pure eOther
+        storeClose sOther
+        pausedExists <- doesFileExist (pauseDir </> "paused")
+        assertBool "pausebind: pause seam fired for an unintended opener" (not pausedExists)
+
+-- | Pid-0 test (finding 2): a lock naming pid 0 is takeable WITHOUT
+-- probing @\/proc\/0@ — pid 0 is never a userspace owner (owners
+-- write @getProcessID@), so the entry is dead by rule while the
+-- kernel backstop still confirms. The fake proc root even contains
+-- a @0@ entry: any probe would read Present (alive) and refuse, so
+-- success proves no probe happened.
+testPidZeroTakeable :: IO ()
+testPidZeroTakeable =
+  bracket (makeTempDir "haskoki-storage-pidzero") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-fakeproc") removeDirectoryRecursive $ \fakeProc -> do
+      me <- getProcessID
+      ppid <- getParentProcessID
+      let path = dir </> "store.db"
+      e0 <- openSQLiteStore path
+      s0 <- either (\e -> assertFailure ("pidzero seed open: " ++ show e)) pure e0
+      _ <- seedStore s0
+      storeClose s0
+      writeFile (path ++ ".lock") "0\n"
+      writeFile (fakeProc </> "self") ""
+      writeFile (fakeProc </> show me) ""
+      writeFile (fakeProc </> show ppid) ""
+      writeFile (fakeProc </> "0") ""
+      withProcRoot fakeProc $ do
+        e1 <- openSQLiteStore path
+        s1 <- either (\e -> assertFailure ("pidzero takeover failed: " ++ show e)) pure e1
+        content <- readFile (path ++ ".lock")
+        assertEqual "pidzero: lock re-owned by taker" (show me ++ "\n") content
+        eLoaded <- storeLoadTokens s1
+        loaded <- either (\e -> assertFailure ("pidzero load after takeover: " ++ show e)) pure eLoaded
+        assertEqual "pidzero: seeded token survives takeover" 1 (length loaded)
+        storeClose s1
+
+-- | Liveness-mapping unit test (finding 2): the pure verdict
+-- table over synthetic probe results, pinning the namespace-local
+-- ppid-0 rule (parent witness inapplicable, stale recovery works)
+-- without forking into a PID namespace — plus the fail-closed rows
+-- the @\/proc@-fixture tests rely on.
+testLivenessMapping :: IO ()
+testLivenessMapping = do
+  let t = assertEqual "liveness mapping"
+  -- The ppid-0 rule (parent probe Nothing: no /proc/0 probe taken).
+  t PidDead $ livenessFromProbes ProbePresent ProbePresent Nothing ProbeAbsent
+  t PidAlive $ livenessFromProbes ProbePresent ProbePresent Nothing ProbePresent
+  t PidUnknown $ livenessFromProbes ProbePresent ProbePresent Nothing ProbeUnknown
+  -- The parent witness still gates when the ppid is namespace-local.
+  t PidDead $ livenessFromProbes ProbePresent ProbePresent (Just ProbePresent) ProbeAbsent
+  t PidAlive $ livenessFromProbes ProbePresent ProbePresent (Just ProbePresent) ProbePresent
+  t PidUnknown $ livenessFromProbes ProbePresent ProbePresent (Just ProbePresent) ProbeUnknown
+  t PidUnknown $ livenessFromProbes ProbePresent ProbePresent (Just ProbeAbsent) ProbeAbsent
+  t PidUnknown $ livenessFromProbes ProbePresent ProbePresent (Just ProbeUnknown) ProbeAbsent
+  -- Self/own gating fails closed regardless of the parent row.
+  t PidUnknown $ livenessFromProbes ProbeAbsent ProbePresent Nothing ProbeAbsent
+  t PidUnknown $ livenessFromProbes ProbeUnknown ProbePresent (Just ProbePresent) ProbeAbsent
+  t PidUnknown $ livenessFromProbes ProbePresent ProbeAbsent Nothing ProbeAbsent
+  t PidUnknown $ livenessFromProbes ProbePresent ProbeUnknown (Just ProbePresent) ProbeAbsent
+
+-- | A provably-dead pid: fork a child that exits immediately, reap
+-- it, and confirm @\/proc@ has no entry (a reused pid is retried).
+reapedPid :: IO Int
+reapedPid = go (0 :: Int)
+  where
+    go n
+      | n > 50 = assertFailure "could not reap a dead pid"
+      | otherwise = do
+          pid <- forkProcess (exitImmediately ExitSuccess)
+          _ <- getProcessStatus True False pid
+          alive <- fileExist ("/proc/" ++ show (fromIntegral pid :: Int))
+          if alive then go (n + 1) else pure (fromIntegral pid)
+
+foreign import ccall unsafe "sys/file.h flock" test_c_flock :: CInt -> CInt -> IO CInt
+
+-- | The test's own kernel-lock hold: an independent @flock@ import
+-- (not the library's), so the held-lock phase proves the guard
+-- interacts at the kernel level. @6 = LOCK_EX|LOCK_NB@ (Linux ABI).
+testTryFlock :: Fd -> IO Bool
+testTryFlock fd = (== 0) <$> test_c_flock (fromIntegral fd) 6
 
 -- | Reject any bytes mentioning pointers, handles, callbacks, or
 -- native crypto contexts.

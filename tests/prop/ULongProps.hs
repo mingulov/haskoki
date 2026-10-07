@@ -17,9 +17,9 @@ import Haskoki.Attribute
   , encodeValue
   )
 
-spec :: Int -> TestTree
-spec count = testGroup "unsigned attribute laws"
-  [ propWith "ulong totality" 305 count pUlongTotal
+spec :: Maybe Int -> Int -> TestTree
+spec seedOv count = testGroup "unsigned attribute laws"
+  [ propWith seedOv "ulong totality" 305 count pUlongTotal
   ]
 
 pUlongTotal :: Property

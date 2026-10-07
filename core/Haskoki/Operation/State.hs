@@ -44,6 +44,7 @@ module Haskoki.Operation.State
   , kindOccupied
   , slotAuth
   , bufferedLength
+  , sessionOpsBytes
     -- * Slot accessors for the per-kind lifecycles
   , lookupSingle
   , removeSingle
@@ -116,6 +117,7 @@ import Haskoki.Types
   ( EngineResourceId
   , ObjectId
   , OpState
+  , retainedStringBytes
   )
 
 -- | Per-session operation slots. Sign and sign-recover share
@@ -403,6 +405,54 @@ slotAuth ops kind = scAuth . commonOf <$> lookupSingle ops kind
 bufferedLength :: SessionOps -> SlotKind -> Maybe Int
 bufferedLength ops kind =
   BS.length . scBuffered . commonOf <$> lookupSingle ops kind
+
+-- | Retained-byte size of a session-ops snapshot, for retention
+-- accounting (see 'Haskoki.Runtime.Async.retainedBytes' for the
+-- contract): the exact length of every pinned 'ByteString' (slot
+-- parameters, multipart buffers, chain IVs, open-message
+-- parameters\/AAD\/buffers, staged outputs) plus a 256-byte
+-- structural allowance per active slot side covering its fixed
+-- scalar words (the slot record, its operation wrapper, and its
+-- map node — roughly 160 bytes worst case, with margin). Scalar
+-- fields (mechanism, key, auth, phases, specs, counters) carry no
+-- bytes and are covered by the allowance. Exhaustive over the
+-- operation shapes (no wildcard): a new shape fails the build via
+-- @-Werror=incomplete-patterns@ instead of silently undercounting.
+sessionOpsBytes :: SessionOps -> Int
+sessionOpsBytes ops =
+  sum [slotStructural + activeOpBytes op | op <- Map.elems (soSingles ops)]
+  + case soDual ops of
+    Nothing -> 0
+    Just du -> slotStructural + dualStateBytes du
+  where
+    slotStructural = 256
+    activeOpBytes :: ActiveOp -> Int
+    activeOpBytes (ActiveDigest sc) = slotBytes sc
+    activeOpBytes (ActiveSign sc) = slotBytes sc
+    activeOpBytes (ActiveVerify sc) = slotBytes sc
+    activeOpBytes (ActiveRecover _ sc _) = slotBytes sc
+    activeOpBytes (ActiveCipher _ sc _) = slotBytes sc
+    activeOpBytes (ActiveMessage ms) =
+      slotBytes (msCommon ms) + msgInnerBytes (msInner ms)
+    slotBytes :: SlotCommon -> Int
+    slotBytes sc = BS.length (scParams sc)
+      + BS.length (scBuffered sc)
+      + maybe 0 BS.length (scChainIv sc)
+      + phaseBytes (scPhase sc)
+    phaseBytes :: SlotPhase -> Int
+    phaseBytes PhaseBuffered = 0
+    phaseBytes (PhaseLive _) = 0
+    phaseBytes (PhaseStaged so) = stagedBytes so
+    stagedBytes :: StagedOutput -> Int
+    stagedBytes so = retainedStringBytes (stName so) + BS.length (stBytes so)
+    msgInnerBytes :: MsgInner -> Int
+    msgInnerBytes MsgIdle = 0
+    msgInnerBytes (MsgOpen p a b) = BS.length p + BS.length a + BS.length b
+    dualStateBytes :: DualState -> Int
+    dualStateBytes du = slotBytes (duDigest du) + slotBytes (duCipher du)
+      + case duStaged du of
+        Nothing -> 0
+        Just ds -> stagedBytes (dsDigest ds) + stagedBytes (dsCipher ds)
 
 -- | Look up the active operation in one slot.
 lookupSingle :: SessionOps -> SlotKind -> Maybe ActiveOp

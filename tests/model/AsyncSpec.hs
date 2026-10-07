@@ -11,20 +11,27 @@ module AsyncSpec (spec) where
 
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, tryTakeMVar)
-import Data.IORef (IORef, newIORef, readIORef, modifyIORef')
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay, tryTakeMVar)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, modifyIORef', writeIORef)
 import qualified Data.Map.Strict as Map
-import Data.Word (Word64)
+import Data.Word (Word64, Word8)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
+import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
+import Foreign.Ptr (plusPtr)
+import System.Mem (performGC)
+import System.Mem.Weak (Weak, deRefWeak, mkWeak)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model (Model (..), SessionState (..), lookupSession)
 import Haskoki.Object (encodeHandle)
-import Haskoki.Operation (CryptoEffect (..), CryptoError (..), CryptoResult (..))
+import Haskoki.Operation (CryptoEffect (..), CryptoError (..), CryptoResult (..), StepOutcome (..))
+import Haskoki.Operation.Cipher (finishCipherUpdate, planCipherUpdate)
 import Haskoki.Operation.Codec (encodeInitInput)
 import Haskoki.Operation.KeyManagement
   ( KeyPlan (..)
+  , PendingObject (..)
+  , PendingWork (..)
   , aesKeyGenMech
   , ckkAes
   , ckkMlKem
@@ -37,8 +44,26 @@ import Haskoki.Operation.KeyManagement
   , planGenerateKeyPair
   )
 import Haskoki.Operation.Kem (mlKemKeyPairGenMech)
+import Haskoki.Operation.State
+  ( CipherDir (..)
+  , CipherSpec (..)
+  , OpAuth (..)
+  , SessionOps
+  , SlotKind (..)
+  , bufferedOf
+  , chainIvOf
+  , commonOf
+  , emptySessionOps
+  , insertOp
+  , lookupSingle
+  , mkActiveCipher
+  , mkActiveSign
+  , mkSlotCommon
+  , setBuffered
+  )
 import Haskoki.Outcome
-  ( EffectRequest (..)
+  ( CryptoStep (..)
+  , EffectRequest (..)
   , EngineResult (..)
   , PlanResult (..)
   , PreparedCommit (..)
@@ -47,9 +72,10 @@ import Haskoki.Outcome
   , RevisionDep (..)
   )
 import Haskoki.Output (maxOutputBytes)
-import Haskoki.Registry (MechanismId (..))
+import Haskoki.Registry (MechanismId (..), Operation (..))
 import Haskoki.Request (FunctionId (..), OutputIntent (..), OutputRegion (..), Request (..))
 import Haskoki.Rules (defaultRules)
+import Haskoki.Session (SessionLogin (..))
 import Haskoki.Runtime.Async
   ( CompleteOutcome (..)
   , Completion (..)
@@ -70,9 +96,12 @@ import Haskoki.Runtime.Async
   , enableAsyncSession
   , encodeCompletion
   , inspectJob
+  , maxRetainedBytes
+  , maxRetainedTombstones
   , newAsyncTable
   , pollJob
   , reapJob
+  , retainedBytes
   , sessionJobs
   , startJob
   , tableStats
@@ -91,10 +120,12 @@ import Haskoki.Transition (finishEffect, planCall)
 import Haskoki.Types
   ( EngineResourceId (..)
   , ExternalHandle (..)
+  , Generation (..)
   , JobId (..)
   , Outcome (..)
   , Pkcs11Version (..)
   , ReturnCode (..)
+  , Revision (..)
   , SessionId (..)
   , SlotId (..)
   )
@@ -123,6 +154,16 @@ spec = testGroup "Attached async"
   , testCase "cancel during drive waits, then wins" caseCancelDuringDrive
   , testCase "concurrent complete vs cancel: exactly one winner" caseConcurrentWinner
   , testCase "drain after publish: short drains nothing, deliver drains once" caseDrainAfterPublish
+  , testCase "retention bound: N delivered digests keep at most cap tombstones" caseRetentionBound
+  , testCase "capped store: delivery + retry + cancel semantics unchanged" caseCappedSemantics
+  , testCase "byte retention bound: N max-size digests keep bytes within budget" caseByteRetentionBound
+  , testCase "byte budget clears suite-shaped fills with headroom" caseByteBudgetHeadroom
+  , testCase "byte accounting prices every retained field" caseByteAccountingFields
+  , testCase "byte-evicted store: delivery + retry + cancel semantics unchanged" caseByteEvictionSemantics
+  , testCase "retained cipher slices are independent copies" caseCipherSlicesIndependent
+  , testCase "committed eviction reclaims without a later table read" caseCommitReclaimsWithoutRead
+  , testCase "eviction race under count trigger observes winner-or-unknown" caseEvictionRaceCount
+  , testCase "eviction race under byte trigger observes winner-or-unknown" caseEvictionRaceBytes
   ]
 
 sid1 :: SessionId
@@ -1062,3 +1103,788 @@ caseConcurrentWinner = do
   assertEqual "effect ran once" 1 nRuns
   stFinal <- inspectJob table j0
   assertEqual "epoch: drive + terminal" (Just 2) (fmap jvEpoch stFinal)
+
+-- ---------------------------------------------------------------------------
+-- Terminal-record retention bound (FINAL-19)
+-- ---------------------------------------------------------------------------
+
+-- | Expected retention ceiling under test.
+retentionCap :: Int
+retentionCap = maxRetainedTombstones
+
+-- | Start, drive, and deliver one digest; every delivery carries the
+-- canned bytes exactly once.
+deliverOneDigest
+  :: AsyncTable -> Env -> (CryptoEffect -> IO CryptoResult) -> Delivery -> Int -> IO ()
+deliverOneDigest table env run del _ = do
+  eJid <- startJob table (digestRequest sid1 1)
+  jid <- case eJid of
+    Right j -> pure j
+    Left deny -> assertFailure ("digest start denied: " ++ show deny)
+  p <- pollJob run env table JobDigest jid
+  case p of
+    PollReady -> pure ()
+    other -> assertFailure ("expected ready, got " ++ show other)
+  c <- completeJob env table JobDigest jid del (\_ -> pure ())
+  case c of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "digest delivery bytes" cannedSig bs
+    other -> assertFailure ("expected delivery, got " ++ show other)
+
+caseRetentionBound :: IO ()
+caseRetentionBound = do
+  (table, env) <- mkTable
+  cap <- newCapture
+  let del = captureDelivery 64 cap
+      n = retentionCap + 64
+  runs <- newIORef 0
+  let run = countingRunner runs
+  mapM_ (deliverOneDigest table env run del) [1 .. n]
+  nRuns <- readIORef runs
+  assertEqual "every digest drove its effect once" n nRuns
+  writes <- writesOf cap
+  assertEqual "every digest delivered exactly once" n (length writes)
+  (live, term, nextId) <- tableStats table
+  assertEqual "no live jobs left" 0 live
+  assertEqual "tombstones bounded by the retention cap" retentionCap term
+  assertEqual "job ids contiguous" n nextId
+  -- Oldest-first eviction: the first jobs observe unknown, like
+  -- reaped ones, while the newest delivery still observes its winner.
+  pOld <- pollJob run env table JobDigest (JobId 0)
+  assertEqual "evicted job polls unknown" PollUnknown pOld
+  cOld <- completeJob env table JobDigest (JobId 0) del (\_ -> pure ())
+  assertEqual "evicted job completes unknown" CompleteUnknown cOld
+  cNew <- completeJob env table JobDigest (JobId (n - 1)) del (\_ -> pure ())
+  case cNew of
+    CompleteAlready (TermDelivered (CompBytes bs)) ->
+      assertEqual "newest winner bytes" cannedSig bs
+    other -> assertFailure ("expected newest already-delivered, got " ++ show other)
+
+-- | Start and immediately cancel one job (a cheap terminal record).
+cancelOneJob :: AsyncTable -> Int -> IO ()
+cancelOneJob table _ = do
+  eJid <- startJob table (signRequest sid1 5)
+  jid <- case eJid of
+    Right j -> pure j
+    Left deny -> assertFailure ("fill start denied: " ++ show deny)
+  k <- cancelJob table jid
+  case k of
+    CancelOk -> pure ()
+    other -> assertFailure ("expected cancel win, got " ++ show other)
+
+caseCappedSemantics :: IO ()
+caseCappedSemantics = do
+  (table, env) <- mkTable
+  cap <- newCapture
+  let del = captureDelivery 64 cap
+      tiny = captureDelivery 8 cap
+  runs <- newIORef 0
+  let run = countingRunner runs
+  -- Fill past the cap so eviction is active for everything below.
+  mapM_ (cancelOneJob table) [1 .. retentionCap + 16]
+  (live0, term0, _) <- tableStats table
+  assertEqual "fill leaves no live jobs" 0 live0
+  assertEqual "store is at the retention cap" retentionCap term0
+  -- Delivery: exact bytes, exactly once, winner observable.
+  Right jd <- startJob table (digestRequest sid1 1)
+  pD <- pollJob run env table JobDigest jd
+  assertEqual "capped poll ready" PollReady pD
+  cD <- completeJob env table JobDigest jd del (\_ -> pure ())
+  case cD of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "capped delivery bytes" cannedSig bs
+    other -> assertFailure ("expected capped delivery, got " ++ show other)
+  assertWrites "capped delivery writes once" cap [goldenBytes]
+  cD2 <- completeJob env table JobDigest jd del (\_ -> pure ())
+  case cD2 of
+    CompleteAlready (TermDelivered (CompBytes bs)) ->
+      assertEqual "capped loser observes winner" cannedSig bs
+    other -> assertFailure ("expected capped already-delivered, got " ++ show other)
+  assertWrites "capped loser writes nothing" cap [goldenBytes]
+  -- Retry: short sizes without delivering, roomy retry delivers once
+  -- without re-running the effect.
+  runsBefore <- readIORef runs
+  Right jr <- startJob table (digestRequest sid1 1)
+  pR <- pollJob run env table JobDigest jr
+  assertEqual "retry poll ready" PollReady pR
+  cShort <- completeJob env table JobDigest jr tiny (\_ -> pure ())
+  assertEqual "capped short sizes" (CompleteShort 64) cShort
+  assertWrites "capped short writes nothing" cap [goldenBytes]
+  cRetry <- completeJob env table JobDigest jr del (\_ -> pure ())
+  case cRetry of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "capped retry bytes" cannedSig bs
+    other -> assertFailure ("expected capped retry delivery, got " ++ show other)
+  runsAfter <- readIORef runs
+  assertEqual "capped retry runs the effect once" (runsBefore + 1) runsAfter
+  -- Cancel: wins on live, terminal observes, re-cancel observes.
+  Right jc <- startJob table (signRequest sid1 5)
+  k <- cancelJob table jc
+  assertEqual "capped cancel wins" CancelOk k
+  pC <- pollJob run env table JobSign jc
+  assertEqual "capped poll sees cancel" (PollTerminal TermCanceled) pC
+  cC <- completeJob env table JobSign jc del (\_ -> pure ())
+  assertEqual "capped complete-after-cancel rejected"
+    (CompleteAlready TermCanceled) cC
+  k2 <- cancelJob table jc
+  assertEqual "capped re-cancel observes" (CancelAlready TermCanceled) k2
+  assertWrites "capped cancel writes no payload" cap [goldenBytes, goldenBytes]
+  -- The bound holds throughout: evicted elders are unknown, the
+  -- store never exceeds the cap.
+  pOld <- pollJob run env table JobSign (JobId 0)
+  assertEqual "evicted fill job polls unknown" PollUnknown pOld
+  kOld <- cancelJob table (JobId 0)
+  assertEqual "evicted fill job cancels unknown" CancelUnknown kOld
+  rOld <- reapJob table (JobId 0)
+  assertEqual "evicted fill job reaps unknown" ReapUnknown rOld
+  (liveF, termF, _) <- tableStats table
+  assertEqual "no live jobs left" 0 liveF
+  assertEqual "store still at the retention cap" retentionCap termF
+
+-- ---------------------------------------------------------------------------
+-- Byte-budget retention bound (FINAL-19 fix round 1: dual bound)
+-- ---------------------------------------------------------------------------
+
+-- | A planned async digest with a caller-sized input: the input is
+-- attacker-sized (no submit-time input cap), so each tombstone
+-- retains its full input until evicted or reaped.
+bigDigestRequest :: SessionId -> Int -> ByteString -> JobRequest
+bigDigestRequest sid ticks input = JobRequest
+  { jrSession = sid
+  , jrFunction = JobDigest
+  , jrWork = WorkCall
+      (Reservation "async-digest-test" [] Nothing Nothing)
+      (EffectCrypto (FxDigest (MechanismId 0x250) input))
+  , jrTicks = ticks
+  , jrCapacity = 64
+  }
+
+-- | Start, drive, and deliver one caller-sized digest; every
+-- delivery carries the canned bytes exactly once. Each job gets a
+-- DISTINCT input allocation (no sharing between tombstones).
+deliverOneBigDigest
+  :: AsyncTable -> Env -> (CryptoEffect -> IO CryptoResult) -> Delivery -> Int -> Int -> IO ()
+deliverOneBigDigest table env run del size i = do
+  let input = BS.replicate size (fromIntegral i)
+  eJid <- startJob table (bigDigestRequest sid1 1 input)
+  jid <- case eJid of
+    Right j -> pure j
+    Left deny -> assertFailure ("big digest start denied: " ++ show deny)
+  p <- pollJob run env table JobDigest jid
+  case p of
+    PollReady -> pure ()
+    other -> assertFailure ("expected ready, got " ++ show other)
+  c <- completeJob env table JobDigest jid del (\_ -> pure ())
+  case c of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "big digest delivery bytes" cannedSig bs
+    other -> assertFailure ("expected delivery, got " ++ show other)
+
+caseByteRetentionBound :: IO ()
+caseByteRetentionBound = do
+  (table, env) <- mkTable
+  cap <- newCapture
+  let del = captureDelivery 64 cap
+      -- 16 x 8 MiB = 128 MiB of retained inputs on an unbounded
+      -- tree: past any meaningful byte budget while far below the
+      -- 4096 count cap, so only byte eviction can explain shrinkage.
+      size = 8 * 1024 * 1024
+      n = 16
+  runs <- newIORef 0
+  let run = countingRunner runs
+  mapM_ (deliverOneBigDigest table env run del size) [1 .. n]
+  nRuns <- readIORef runs
+  assertEqual "every big digest drove its effect once" n nRuns
+  writes <- writesOf cap
+  assertEqual "every big digest delivered exactly once" n (length writes)
+  (live, term, _) <- tableStats table
+  assertEqual "no live jobs left" 0 live
+  bytes <- retainedBytes table
+  if bytes <= maxRetainedBytes
+    then pure ()
+    else assertFailure
+      ("retained bytes exceed budget: " ++ show bytes
+        ++ " > " ++ show (maxRetainedBytes :: Int))
+  -- Exact eviction shape: each tombstone prices at 2048 + 17*48 +
+  -- 8 MiB + 64 = 8391536 bytes; 7 fit in 64 MiB (58740752) but 8
+  -- do not (67132288), so minimal-prefix oldest-first eviction
+  -- keeps exactly the newest 7 (ids 9..15).
+  assertEqual "byte eviction keeps the newest 7 of 16" 7 term
+  -- Oldest-first eviction: the first job observes unknown while the
+  -- newest delivery still observes its winner.
+  pOld <- pollJob run env table JobDigest (JobId 0)
+  assertEqual "evicted big job polls unknown" PollUnknown pOld
+  pEdge <- pollJob run env table JobDigest (JobId 8)
+  assertEqual "prefix-minimal edge evicted" PollUnknown pEdge
+  cEdge <- completeJob env table JobDigest (JobId 9) del (\_ -> pure ())
+  case cEdge of
+    CompleteAlready (TermDelivered (CompBytes bs)) ->
+      assertEqual "oldest retained winner bytes" cannedSig bs
+    other -> assertFailure
+      ("expected oldest-retained already-delivered, got " ++ show other)
+  cNew <- completeJob env table JobDigest (JobId (n - 1)) del (\_ -> pure ())
+  case cNew of
+    CompleteAlready (TermDelivered (CompBytes bs)) ->
+      assertEqual "newest big winner bytes" cannedSig bs
+    other -> assertFailure ("expected newest already-delivered, got " ++ show other)
+
+-- | The byte budget clears suite-shaped fills: the small-digest
+-- fill is the heaviest suite shape (it prices above sim signs
+-- and canceled signs), so pinning it bounds them all. The count
+-- cap — never the byte budget — must bound small fills, and the
+-- budget must stay within 8x of the suite worst case (a
+-- meaningful bound, not a decoration).
+caseByteBudgetHeadroom :: IO ()
+caseByteBudgetHeadroom = do
+  (table, env) <- mkTable
+  cap <- newCapture
+  let del = captureDelivery 64 cap
+      n = retentionCap + 64
+  runs <- newIORef 0
+  let run = countingRunner runs
+  mapM_ (deliverOneDigest table env run del) [1 .. n]
+  (live, term, _) <- tableStats table
+  assertEqual "no live jobs left" 0 live
+  assertEqual "count cap (not the byte budget) bounds small fills"
+    retentionCap term
+  bytes <- retainedBytes table
+  if bytes <= maxRetainedBytes
+    then pure ()
+    else assertFailure
+      ("suite-shaped fill exceeds byte budget: " ++ show bytes)
+  if bytes > maxRetainedBytes `div` 8
+    then pure ()
+    else assertFailure
+      ("byte budget exceeds 8x the suite-shaped worst case: " ++ show bytes)
+
+-- | Start and immediately cancel one job built from the given
+-- request: a cheap terminal record that retains its full work.
+cancelOneRequest :: AsyncTable -> JobRequest -> IO ()
+cancelOneRequest table req = do
+  eJid <- startJob table req
+  jid <- case eJid of
+    Right j -> pure j
+    Left deny -> assertFailure ("field probe start denied: " ++ show deny)
+  k <- cancelJob table jid
+  case k of
+    CancelOk -> pure ()
+    other -> assertFailure ("expected cancel win, got " ++ show other)
+
+-- | Retained bytes of a fresh table holding 4 canceled jobs built
+-- from the given request. Cancellation retains the full work
+-- with no delivery, so field-coverage deltas need no model
+-- state and no finisher.
+canceledBytes :: JobRequest -> IO Int
+canceledBytes req = do
+  (table, _) <- mkTable
+  mapM_ (\_ -> cancelOneRequest table req) [1 .. 4 :: Int]
+  retainedBytes table
+
+-- | The byte ruler prices every retained field: exact deltas
+-- when exactly one field varies (shape fixed, so allowances and
+-- overhead cancel). One case per ByteString-bearing effect
+-- field (input, params, AAD, signature — including the
+-- input-less 'FxVerifyRecover' arm), plus template bytes,
+-- completion payloads, and pinned snapshot bytes.
+caseByteAccountingFields :: IO ()
+caseByteAccountingFields = do
+  let mechS = MechanismId 0x251
+      fxReq fx = JobRequest
+        { jrSession = sid1
+        , jrFunction = JobSign
+        , jrWork = WorkCall
+            (Reservation "field-probe" [] Nothing Nothing)
+            (EffectCrypto fx)
+        , jrTicks = 1
+        , jrCapacity = 64
+        }
+      base = FxSign mechS Nothing BS.empty "hello"
+  bInBase <- canceledBytes (fxReq base)
+  bInBig <- canceledBytes
+    (fxReq (FxSign mechS Nothing BS.empty (BS.replicate 1024 0x41)))
+  assertEqual "input bytes priced" (4 * 1019) (bInBig - bInBase)
+  bParams <- canceledBytes
+    (fxReq (FxSign mechS Nothing (BS.replicate 1024 0x41) "hello"))
+  assertEqual "params bytes priced" (4 * 1024) (bParams - bInBase)
+  bAadBase <- canceledBytes
+    (fxReq (FxMessageCipher DirEncrypt mechS Nothing BS.empty BS.empty "hi"))
+  bAad <- canceledBytes (fxReq
+    (FxMessageCipher DirEncrypt mechS Nothing BS.empty (BS.replicate 1024 0x41) "hi"))
+  assertEqual "AAD bytes priced" (4 * 1024) (bAad - bAadBase)
+  bSigBase <- canceledBytes
+    (fxReq (FxVerifyRecover mechS Nothing BS.empty BS.empty 0))
+  bSig <- canceledBytes (fxReq
+    (FxVerifyRecover mechS Nothing BS.empty (BS.replicate 1024 0x41) 0))
+  assertEqual "signature bytes priced" (4 * 1024) (bSig - bSigBase)
+  -- Resourceless shapes price their (absent) payloads at zero.
+  bConsume <- canceledBytes (fxReq (FxDigestConsume (EngineResourceId 7)))
+  bEmptyDigest <- canceledBytes
+    (fxReq (FxDigest (MechanismId 0x250) BS.empty))
+  assertEqual "empty payloads price identically" bEmptyDigest bConsume
+  -- Template bytes: one entry each, so the per-entry allowance
+  -- cancels and the delta is pure payload.
+  let keyReq tmpl = JobRequest
+        { jrSession = sid1
+        , jrFunction = JobGenKey
+        , jrWork = WorkKey
+            (Reservation "field-probe" [] Nothing Nothing)
+            (PwGenerateKey (PendingObject tmpl Nothing (SlotId 0)))
+            (FxGenerateKey (MechanismId 0x108) BS.empty BS.empty)
+        , jrTicks = 1
+        , jrCapacity = 64
+        }
+      tmpl1 = Map.singleton AttrLabel (ValBytes (BS.replicate 1024 0x41))
+      tmpl2 = Map.singleton AttrLabel (ValBytes (BS.replicate 2048 0x41))
+  bTmpl1 <- canceledBytes (keyReq tmpl1)
+  bTmpl2 <- canceledBytes (keyReq tmpl2)
+  assertEqual "template bytes priced" (4 * 1024) (bTmpl2 - bTmpl1)
+  -- Completion payloads: 64-byte vs 128-byte stub answers.
+  -- Both sides share one roomy request shape (attached capacity
+  -- 256 covers the 128-byte delivery), so only the payload varies.
+  let roomySign = (signRequest sid1 1) { jrCapacity = 256 }
+      deliverSign t e run d want = do
+        ej <- startJob t roomySign
+        jid <- case ej of
+          Left deny -> assertFailure ("completion probe denied: " ++ show deny)
+          Right j -> pure j
+        p <- pollJob run e t JobSign jid
+        case p of
+          PollReady -> pure ()
+          other -> assertFailure ("completion probe not ready: " ++ show other)
+        co <- completeJob e t JobSign jid d (\_ -> pure ())
+        case co of
+          CompleteDelivered (CompBytes bs) ->
+            assertEqual "completion probe bytes" want bs
+          other -> assertFailure ("completion probe no delivery: " ++ show other)
+      deliveredBytes answer = do
+        (t, e) <- mkTable
+        c <- newCapture
+        let d = captureDelivery 256 c
+        mapM_ (\_ -> deliverSign t e
+          (\_ -> pure (GotBytes answer)) d answer) [1 .. 4 :: Int]
+        retainedBytes t
+  bComp64 <- deliveredBytes cannedSig
+  bComp128 <- deliveredBytes (BS.replicate 128 0x42)
+  assertEqual "completion bytes priced" (4 * 64) (bComp128 - bComp64)
+  -- Pinned snapshots: one sign slot with empty params, so each
+  -- snapshot prices at 256 (structural) + buffered; both the
+  -- post-plan ops and the session state pin it (x2).
+  let snapOps bufLen = insertOp
+        (mkActiveSign (setBuffered (BS.replicate bufLen 0x43)
+          (mkSlotCommon (MechanismId 0x251) OpSign Nothing BS.empty AuthNone)))
+        emptySessionOps
+      snapSession ops = SessionState
+        { ssId = sid1
+        , ssSlot = SlotId 0
+        , ssRevision = Revision 0
+        , ssGeneration = Generation 0
+        , ssReadOnly = False
+        , ssLogin = LoginPublic
+        , ssOps = ops
+        }
+      snapReq ops = JobRequest
+        { jrSession = sid1
+        , jrFunction = JobSign
+        , jrWork = WorkCall
+            (Reservation "field-probe" [] Nothing (Just (CryptoStep
+              F_Sign SlotSign "" (IntentBuffer 0) ops (snapSession ops))))
+            (EffectCrypto base)
+        , jrTicks = 1
+        , jrCapacity = 64
+        }
+  bSnap100 <- canceledBytes (snapReq (snapOps 100))
+  assertEqual "snapshot bytes priced" (4 * 2 * (256 + 100)) (bSnap100 - bInBase)
+  bSnap200 <- canceledBytes (snapReq (snapOps 200))
+  assertEqual "snapshot payload delta priced"
+    (4 * 2 * 100) (bSnap200 - bSnap100)
+
+-- | Delivery + retry + cancel semantics under BYTE eviction (the
+-- F-3 variant re-verified with the byte bound as the active
+-- evictor): fill past the byte budget with max-size jobs, then
+-- exercise all three against the byte-capped store.
+caseByteEvictionSemantics :: IO ()
+caseByteEvictionSemantics = do
+  (table, env) <- mkTable
+  capFill <- newCapture
+  let delFill = captureDelivery 64 capFill
+      size = 8 * 1024 * 1024
+  runs <- newIORef 0
+  let run = countingRunner runs
+  -- Fill past the BYTE budget (16 x 8 MiB); the count cap (4096)
+  -- cannot explain any shrinkage here.
+  mapM_ (deliverOneBigDigest table env run delFill size) [1 .. 16]
+  (live0, term0, _) <- tableStats table
+  bytes0 <- retainedBytes table
+  assertEqual "fill leaves no live jobs" 0 live0
+  if bytes0 <= maxRetainedBytes
+    then pure ()
+    else assertFailure
+      ("byte fill exceeds budget: " ++ show bytes0)
+  assertEqual "byte fill keeps 7" 7 term0
+  -- Fresh capture for the semantics phases below.
+  cap <- newCapture
+  let del = captureDelivery 64 cap
+      tiny = captureDelivery 8 cap
+  -- Delivery: exact bytes, exactly once, winner observable.
+  Right jd <- startJob table (digestRequest sid1 1)
+  pD <- pollJob run env table JobDigest jd
+  assertEqual "byte-capped poll ready" PollReady pD
+  cD <- completeJob env table JobDigest jd del (\_ -> pure ())
+  case cD of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "byte-capped delivery bytes" cannedSig bs
+    other -> assertFailure ("expected byte-capped delivery, got " ++ show other)
+  assertWrites "byte-capped delivery writes once" cap [goldenBytes]
+  cD2 <- completeJob env table JobDigest jd del (\_ -> pure ())
+  case cD2 of
+    CompleteAlready (TermDelivered (CompBytes bs)) ->
+      assertEqual "byte-capped loser observes winner" cannedSig bs
+    other -> assertFailure
+      ("expected byte-capped already-delivered, got " ++ show other)
+  assertWrites "byte-capped loser writes nothing" cap [goldenBytes]
+  -- Retry: short sizes without delivering, roomy retry delivers once
+  -- without re-running the effect.
+  runsBefore <- readIORef runs
+  Right jr <- startJob table (digestRequest sid1 1)
+  pR <- pollJob run env table JobDigest jr
+  assertEqual "retry poll ready" PollReady pR
+  cShort <- completeJob env table JobDigest jr tiny (\_ -> pure ())
+  assertEqual "byte-capped short sizes" (CompleteShort 64) cShort
+  assertWrites "byte-capped short writes nothing" cap [goldenBytes]
+  cRetry <- completeJob env table JobDigest jr del (\_ -> pure ())
+  case cRetry of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "byte-capped retry bytes" cannedSig bs
+    other -> assertFailure
+      ("expected byte-capped retry delivery, got " ++ show other)
+  runsAfter <- readIORef runs
+  assertEqual "byte-capped retry runs the effect once"
+    (runsBefore + 1) runsAfter
+  -- Cancel: wins on live, terminal observes, re-cancel observes.
+  Right jc <- startJob table (signRequest sid1 5)
+  k <- cancelJob table jc
+  assertEqual "byte-capped cancel wins" CancelOk k
+  pC <- pollJob run env table JobSign jc
+  assertEqual "byte-capped poll sees cancel" (PollTerminal TermCanceled) pC
+  cC <- completeJob env table JobSign jc del (\_ -> pure ())
+  assertEqual "byte-capped complete-after-cancel rejected"
+    (CompleteAlready TermCanceled) cC
+  k2 <- cancelJob table jc
+  assertEqual "byte-capped re-cancel observes" (CancelAlready TermCanceled) k2
+  assertWrites "byte-capped cancel writes no payload"
+    cap [goldenBytes, goldenBytes]
+  -- The byte bound holds throughout: evicted elders are unknown,
+  -- the small jobs fit beside the 7 big ones without further
+  -- eviction (58.7 MiB + ~9 KiB stays within budget).
+  pOld <- pollJob run env table JobDigest (JobId 0)
+  assertEqual "evicted big job polls unknown" PollUnknown pOld
+  kOld <- cancelJob table (JobId 0)
+  assertEqual "evicted big job cancels unknown" CancelUnknown kOld
+  rOld <- reapJob table (JobId 0)
+  assertEqual "evicted big job reaps unknown" ReapUnknown rOld
+  (liveF, termF, _) <- tableStats table
+  bytesF <- retainedBytes table
+  assertEqual "no live jobs left" 0 liveF
+  assertEqual "store holds 7 big + 3 small" 10 termF
+  if bytesF <= maxRetainedBytes
+    then pure ()
+    else assertFailure
+      ("byte-capped store exceeds budget: " ++ show bytesF)
+
+-- ---------------------------------------------------------------------------
+-- Fix round 2 / finding 1: retained slices keep their backing alive
+-- ---------------------------------------------------------------------------
+
+-- | Backing-store aliasing oracle, INDEPENDENT of 'retainedBytes':
+-- 'True' iff 'small' starts 'offset' bytes into 'big''s live
+-- storage (read-only pointer comparison; both inputs stay alive
+-- for the comparison). A retained slice aliasing a large backing
+-- allocation keeps the whole allocation alive while the ruler
+-- prices only the slice length, so aliasing here is the retention
+-- violation itself — observed at the heap layout, not via the
+-- ruler asserting about itself.
+aliasingAt :: ByteString -> ByteString -> Int -> IO Bool
+aliasingAt big small offset =
+  unsafeUseAsCStringLen big $ \(bigPtr, _) ->
+    unsafeUseAsCStringLen small $ \(smallPtr, _) ->
+      pure (smallPtr == bigPtr `plusPtr` offset)
+
+cbcMech :: MechanismId
+cbcMech = MechanismId 0x1082
+
+-- | A padded-CBC slot with an empty buffer (hand-built: with
+-- 'AuthNone' and a public session the data gate passes, so no
+-- init flow is needed).
+cbcSlotOps :: CipherDir -> Operation -> SessionOps
+cbcSlotOps dir op = insertOp
+  (mkActiveCipher dir
+    (mkSlotCommon cbcMech op Nothing (BS.replicate 16 0) AuthNone)
+    (CipherSpec 16 True))
+  emptySessionOps
+
+-- | Every small cipher bytestring a slot retains (CBC tails,
+-- decrypt chains, retained update suffixes) must be an
+-- independent copy: async snapshots pin slot state, so a slice
+-- would keep a whole multi-MiB backing allocation alive behind a
+-- 16-byte ruler price. The oracle is backing-store aliasing (see
+-- 'aliasingAt'), never the ruler.
+caseCipherSlicesIndependent :: IO ()
+caseCipherSlicesIndependent = do
+  let mib = 1024 * 1024
+      st = SessionState
+        { ssId = sid1
+        , ssSlot = SlotId 0
+        , ssRevision = Revision 0
+        , ssGeneration = Generation 0
+        , ssReadOnly = False
+        , ssLogin = LoginPublic
+        , ssOps = emptySessionOps
+        }
+  -- (1) Encrypt-update finish: the CBC tail of a 1 MiB driver
+  -- answer must be an independent copy.
+  let raw = BS.replicate mib 0xAB
+      (opsE, finE) = finishCipherUpdate
+        (cbcSlotOps DirEncrypt OpEncrypt) SlotEncrypt "cbc-tail"
+        (GotBytes raw) (IntentBuffer (4 * fromIntegral mib))
+  assertEqual "encrypt finish ok" CKR_OK (soCode finE)
+  scE <- case lookupSingle opsE SlotEncrypt of
+    Just active -> pure (commonOf active)
+    Nothing -> assertFailure "encrypt slot gone after finish"
+  tailE <- case chainIvOf scE of
+    Just t | BS.length t == 16 -> pure t
+    other -> assertFailure
+      ("expected 16-byte chain tail, got " ++ show (fmap BS.length other))
+  assertEqual "tail bytes are the answer tail"
+    (BS.drop (mib - 16) raw) tailE
+  aliasedE <- aliasingAt raw tailE (mib - 16)
+  assertBool "CBC finish tail must not alias the driver answer"
+    (not aliasedE)
+  -- (2) Decrypt-update plan over 1 MiB: the plan-time chain and
+  -- the retained suffix must not alias the planned input's
+  -- storage. Both slice the fresh full buffer, so the oracle
+  -- compares against the co-sliced stream bytes (same backing):
+  -- adjacency proves sharing, separation proves independence.
+  let big = BS.replicate mib 0xCD
+      (opsP, _, updP) = planCipherUpdate
+        (cbcSlotOps DirDecrypt OpDecrypt) st SlotDecrypt big Nothing
+  assertEqual "decrypt plan ok" CKR_OK (soCode updP)
+  stream <- case soEffects updP of
+    [FxCipher DirDecrypt _ _ _ input] -> pure input
+    other -> assertFailure
+      ("expected one decrypt effect, got " ++ show (length other))
+  scP <- case lookupSingle opsP SlotDecrypt of
+    Just active -> pure (commonOf active)
+    Nothing -> assertFailure "decrypt slot gone after plan"
+  let retained = bufferedOf scP
+  assertBool "retained suffix nonempty" (not (BS.null retained))
+  assertEqual "retained bytes are the input tail"
+    (BS.drop (mib - BS.length retained) big) retained
+  adjRet <- aliasingAt stream retained (BS.length stream)
+  assertBool "retained suffix must not alias the planned input"
+    (not adjRet)
+  chainP <- case chainIvOf scP of
+    Just c | not (BS.null c) -> pure c
+    _ -> assertFailure "expected decrypt chain block"
+  assertEqual "chain bytes are the stream tail"
+    (BS.drop (BS.length stream - BS.length chainP) stream) chainP
+  adjChain <- aliasingAt stream chainP
+    (BS.length stream - BS.length chainP)
+  assertBool "decrypt chain must not alias the planned input"
+    (not adjChain)
+  -- (3) Snapshot pinning: the finished ops embed in a real
+  -- submitted job's reservation snapshot (both the post-plan ops
+  -- and the session state pin them), and the pinned tail is that
+  -- same independent copy.
+  let snapReq = JobRequest
+        { jrSession = sid1
+        , jrFunction = JobDigest
+        , jrWork = WorkCall
+            (Reservation "tail-snap" [] Nothing (Just (CryptoStep
+              F_Digest SlotEncrypt "" (IntentBuffer 0) opsE
+              (st { ssOps = opsE }))))
+            (EffectCrypto (FxDigest (MechanismId 0x250) "abc"))
+        , jrTicks = 1
+        , jrCapacity = 64
+        }
+  (tableSnap, _) <- mkTable
+  cancelOneRequest tableSnap snapReq
+  pinTail <- case lookupSingle opsE SlotEncrypt of
+    Just active -> case chainIvOf (commonOf active) of
+      Just t -> pure t
+      Nothing -> assertFailure "pinned tail lost its chain"
+    Nothing -> assertFailure "pinned tail lost its slot"
+  aliasedPin <- aliasingAt raw pinTail (mib - 16)
+  assertBool "snapshot-pinned tail must not alias the driver answer"
+    (not aliasedPin)
+
+-- ---------------------------------------------------------------------------
+-- Fix round 2 / finding 2: commits must not retain the pre-eviction map
+-- ---------------------------------------------------------------------------
+
+-- | Submit and immediately cancel one independently-oversized
+-- digest, answering a weak pointer to its input payload. The
+-- payload's only strong reference after this returns is the
+-- table's tombstone (canceled jobs retain their full work), so
+-- the weak pointer observes exactly what the table retains.
+submitCanceledBig :: AsyncTable -> Int -> Word8 -> IO (Weak ())
+submitCanceledBig table size fill = do
+  let input = BS.replicate size fill
+  w <- mkWeak input () Nothing
+  eJid <- startJob table (bigDigestRequest sid1 5 input)
+  jid <- case eJid of
+    Right j -> pure j
+    Left deny -> assertFailure ("oversized start denied: " ++ show deny)
+  k <- cancelJob table jid
+  case k of
+    CancelOk -> pure ()
+    other -> assertFailure ("expected cancel win, got " ++ show other)
+  pure w
+
+-- | Committed eviction reclaims without a later table read:
+-- cancel two independently-oversized jobs, then idle — no poll,
+-- complete, stats, or byte census, since any table read would
+-- force a lazy prune and conceal the violation — collect, and
+-- prove the evicted elder's payload is gone while the single
+-- oversized-job exception keeps the newest. The oracle is object
+-- reachability ('Weak' + 'performGC'), never a table read.
+caseCommitReclaimsWithoutRead :: IO ()
+caseCommitReclaimsWithoutRead = do
+  (table, _) <- mkTable
+  let size = 65 * 1024 * 1024
+  wOld <- submitCanceledBig table size 0x41
+  _ <- submitCanceledBig table size 0x42
+  -- Oracle first: NO atJobs read may precede it — any read
+  -- would force a lazy prune and conceal the violation. Collect
+  -- twice with allocation churn between: the churn recycles
+  -- dead frames from the submit phase that might otherwise hold
+  -- a transient GC root to the evicted payload, so the oracle
+  -- observes only table reachability.
+  performGC
+  churnDeadRoots
+  performGC
+  mOld <- deRefWeak wOld
+  -- Liveness pin (post-observation): the jobs map must be used
+  -- after the GC, else the whole table is dead at 'performGC'
+  -- and both payloads collect vacuously. IO ordering guarantees
+  -- this read — and any forcing it performs — happens strictly
+  -- after the oracle above, so it cannot conceal anything.
+  (live, term, _) <- tableStats table
+  assertEqual "eviction left exactly the newest tombstone" (0, 1) (live, term)
+  assertEqual "evicted oversized payload reclaimed without a table read"
+    Nothing mOld
+  -- Newest-retention oracle (post-observation table read): the newest
+  -- payload is proven retained by MEASURED BYTES, never by heap-object
+  -- identity — a 'Weak' observation of the newest input is
+  -- instrumentation-fragile (transient-root survival differs under
+  -- -fhpc: the identity assert failed 3/3 instrumented runs while
+  -- (live, term) == (0, 1) and the elder oracle held), while the exact
+  -- byte ruler is layout-independent. The 65 MiB payload alone exceeds
+  -- the 64 MiB budget; with exactly one tombstone left and the elder
+  -- proven reclaimed above, bytes over budget ⟹ the single
+  -- oversized-job exception retains the newest.
+  bytes <- retainedBytes table
+  assertBool ("single oversized-job exception retains the newest: "
+    ++ show bytes ++ " bytes") (bytes > maxRetainedBytes)
+
+-- | Allocate garbage through fresh deep call depth, recycling
+-- dead stack slots left by the submit phase (see
+-- 'caseCommitReclaimsWithoutRead').
+churnDeadRoots :: IO ()
+churnDeadRoots = deep (0 :: Int) >> pure ()
+  where
+    deep :: Int -> IO Int
+    deep n
+      | n >= 5000 = pure n
+      | otherwise = do
+          m <- deep (n + 1)
+          let bs = BS.replicate 64 (fromIntegral (m + n))
+          pure (m + BS.length bs)
+
+-- ---------------------------------------------------------------------------
+-- Fix round 2 / finding 3: eviction must not fabricate observations
+-- ---------------------------------------------------------------------------
+
+numRaceSpinners :: Int
+numRaceSpinners = 16
+
+isWinnerOrUnknownPoll :: PollOutcome -> Bool
+isWinnerOrUnknownPoll (PollTerminal (TermDelivered (CompBytes bs))) = bs == cannedSig
+isWinnerOrUnknownPoll PollUnknown = True
+isWinnerOrUnknownPoll _ = False
+
+isWinnerOrUnknownComplete :: CompleteOutcome -> Bool
+isWinnerOrUnknownComplete (CompleteAlready (TermDelivered (CompBytes bs))) =
+  bs == cannedSig
+isWinnerOrUnknownComplete CompleteUnknown = True
+isWinnerOrUnknownComplete _ = False
+
+-- | Race harness: 'fill' leaves the victim (JobId 0, delivered)
+-- as the oldest terminal at the trigger edge; 'evict' performs
+-- one terminal commit that evicts it. Spinner observers hammer
+-- the victim across the eviction (their lease queue stretches
+-- every admission-to-reread window, so eviction lands mid-window
+-- with near certainty); every observation must be the winner or
+-- unknown — never a fabricated terminal. Spinner threads never
+-- assert: they record outcomes for the main thread to classify.
+raceEvictionObservation :: AsyncTable -> Env -> Delivery -> IO () -> IO () -> IO ()
+raceEvictionObservation table env del fill evict = do
+  let run = const (pure (GotBytes cannedSig))
+  fill
+  stopRef <- newIORef False
+  outcomeRef <- newIORef []
+  dones <- mapM (\_ -> newEmptyMVar) [1 .. numRaceSpinners]
+  let spin done = do
+        let loop = do
+              p <- pollJob run env table JobDigest (JobId 0)
+              c <- completeJob env table JobDigest (JobId 0) del (\_ -> pure ())
+              atomicModifyIORef' outcomeRef (\xs -> ((p, c) : xs, ()))
+              stop <- readIORef stopRef
+              if stop then pure () else loop
+        loop
+        putMVar done ()
+  mapM_ (forkIO . spin) dones
+  threadDelay 100000
+  evict
+  writeIORef stopRef True
+  mapM_ takeMVar dones
+  outcomes <- readIORef outcomeRef
+  assertBool "spinners observed the race" (not (null outcomes))
+  let bad = [(p, c) | (p, c) <- outcomes
+                    , not (isWinnerOrUnknownPoll p)
+                      || not (isWinnerOrUnknownComplete c)]
+  assertEqual "every raced observation is winner-or-unknown" [] bad
+  -- Deterministic post-race: the victim is long evicted.
+  pFinal <- pollJob run env table JobDigest (JobId 0)
+  assertEqual "evicted victim polls unknown" PollUnknown pFinal
+  cFinal <- completeJob env table JobDigest (JobId 0) del (\_ -> pure ())
+  assertEqual "evicted victim completes unknown" CompleteUnknown cFinal
+
+-- | Observation race under the COUNT trigger: the victim plus
+-- 4095 canceled jobs pin the table at the cap; one more
+-- delivered digest evicts the victim mid-observation.
+caseEvictionRaceCount :: IO ()
+caseEvictionRaceCount = do
+  (table, env) <- mkTable
+  cap <- newCapture
+  let del = captureDelivery 64 cap
+      run0 = const (pure (GotBytes cannedSig))
+  raceEvictionObservation table env del
+    (do deliverOneDigest table env run0 del 0
+        mapM_ (cancelOneJob table) [1 .. retentionCap - 1])
+    (deliverOneDigest table env run0 del 999999)
+
+-- | Observation race under the BYTE trigger: the victim plus 7
+-- max-size digests sit just under budget; one more max-size
+-- digest evicts the victim mid-observation.
+caseEvictionRaceBytes :: IO ()
+caseEvictionRaceBytes = do
+  (table, env) <- mkTable
+  cap <- newCapture
+  let del = captureDelivery 64 cap
+      run0 = const (pure (GotBytes cannedSig))
+      size = 8 * 1024 * 1024
+  raceEvictionObservation table env del
+    (do deliverOneDigest table env run0 del 0
+        mapM_ (deliverOneBigDigest table env run0 del size) [1 .. 7])
+    (deliverOneBigDigest table env run0 del size 8)
+

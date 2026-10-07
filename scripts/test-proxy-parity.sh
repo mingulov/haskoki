@@ -31,7 +31,7 @@
 #             embedded-handle mapping, unknown-attr forwarding, and
 #             NULL-input normalization over a48b60b).
 #   built:  throwaway rust:1.94-bookworm container,
-#             apt-get install protobuf-compiler && cargo build --release
+#             apt-get install protobuf-compiler && cargo build --release --locked
 #           (effective toolchain 1.98.1 via the repo's
 #           rust-toolchain.toml in both the canonical build and the
 #           demo image proxy stage)
@@ -46,18 +46,21 @@
 #     91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b  pkcs11-proxy-ng
 #   shim sha256:
 #     87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75  libpkcs11_proxy_ng_shim.so
+#   Cargo.lock sha256 (of the source tree at the commit above):
+#     5452b6bd6ab47d72e8172a04a8f8a72460dabc17f66ced110b930f6d5d75b7d3  Cargo.lock
 #   repro: from a pristine checkout of the source above at the commit
 #   above (no target/ dir), run the pinned-toolchain recipe:
 #     timeout -s KILL 2400 docker run --rm --network host \
 #       -v <src>:/src -w /src rust:1.94-bookworm \
 #       bash -c 'apt-get update -qq && apt-get install -y -qq \
-#         protobuf-compiler && cargo build --release'
+#         protobuf-compiler && cargo build --release --locked'
 #     sha256sum target/release/pkcs11-proxy-ng \
 #       target/release/libpkcs11_proxy_ng_shim.so
 #   The two hashes MUST match the pair above (recorded 2026-10-06
 #   from a pristine v0.2.2 build; byte-identity is re-verified by
-#   the demo image proxy stage, which rebuilds from the same
-#   ref+recipe and asserts this pair via PROXY_CANON_*).
+#   the demo image proxy stage, which rebuilds from the same commit
+#   SHA + locked recipe and asserts commit, Cargo.lock, and this
+#   pair via PROXY_CANON_* — fail closed on ANY mismatch, FINAL-35).
 #
 # Historical /tmp builds (a past review concern): EIGHT
 # divergent pairs were found under /tmp (five hash-distinct).

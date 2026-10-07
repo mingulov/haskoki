@@ -4701,9 +4701,11 @@ haskokiStdUnwrapKey ctx h (CULong mech) pIv (CULong ivLen) (CULong wrapH)
 -- before parameter shape is examined. SHA rows take the image as
 -- the info segment (emptiness enforced by 'planDerive').
 -- Unmappable struct images pass through raw so the recipe refusal
--- (and its @CKR@) is unchanged. PBKD2 is not served here (its
--- native struct has no decoder yet) and refuses
--- @CKR_MECHANISM_INVALID@. Multi-output rows (SP 800-108 with
+-- (and its @CKR@) is unchanged. PBKD2 normalizes through
+-- 'normalizePbkd2Params2' with the password segment pinned empty
+-- (the password rides the base key on the derive route; a
+-- non-empty struct password fails 'kdfParamsValid' and refuses
+-- typed). Multi-output rows (SP 800-108 with
 -- additional keys, the key-material trio) pack
 -- params-embedded templates and write handles (plus IVs) back
 -- into caller memory on success only; the trio accepts a NULL
@@ -4833,20 +4835,22 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
       | Just r <- encryptDataRecipeFor mid
       , erIvBytes r == 0 =
           fromMaybe BS.empty <$> normalizeEncryptDataEcbParams pParams paramsLen
+      | Just r <- kdfRecipeFor mid
+      , rkPbkd2 r =
+          fromMaybe raw <$> normalizePbkd2Params2 pParams paramsLen
       | otherwise = pure raw
 
 -- | Mechanisms served by 'haskokiStdDeriveOpaque': the ECDH rows,
--- the DH rows, the SHA-KDF rows, TLS-PRF, the SP 800-108 rows,
--- the TLS-KDF rows, the IKE rows, the byte-op rows, the
--- key-material rows, the SSL3 derive rows, the encrypt-data
--- rows (PBKD2 excluded: no native decoder), and the
--- pub-from-priv row (no native decoder either: the empty
--- frame passes through and the planner validates emptiness).
+-- the DH rows, the SHA-KDF rows (PBKD2 included: the native
+-- struct normalizes through 'normalizePbkd2Params2'), TLS-PRF,
+-- the SP 800-108 rows, the TLS-KDF rows, the IKE rows, the
+-- byte-op rows, the key-material rows, the SSL3 derive rows,
+-- the encrypt-data rows, and the pub-from-priv row (no native
+-- decoder: the empty frame passes through and the planner
+-- validates emptiness).
 isOpaqueDeriveMech :: MechanismId -> Bool
 isOpaqueDeriveMech mid =
-  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || isJust (sp800RecipeFor mid) || isJust (tlsKdfRecipeFor mid) || isJust (ikeRecipeFor mid) || isJust (byteOpsRecipeFor mid) || isJust (tlsKeyMatRecipeFor mid) || isJust (encryptDataRecipeFor mid) || isJust (pubPrivRecipeFor mid) || isSsl3DeriveMech mid || case kdfRecipeFor mid of
-    Just r -> not (rkPbkd2 r)
-    Nothing -> False
+  isJust (ecdhRecipeFor mid) || isJust (dhRecipeFor mid) || isJust (tlsPrfRecipeFor mid) || isJust (sp800RecipeFor mid) || isJust (tlsKdfRecipeFor mid) || isJust (ikeRecipeFor mid) || isJust (byteOpsRecipeFor mid) || isJust (tlsKeyMatRecipeFor mid) || isJust (encryptDataRecipeFor mid) || isJust (pubPrivRecipeFor mid) || isSsl3DeriveMech mid || isJust (kdfRecipeFor mid)
   where
     isSsl3DeriveMech m = case ssl3RecipeFor m of
       Just r -> case ssl3Kind r of

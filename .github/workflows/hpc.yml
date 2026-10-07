@@ -1,0 +1,192 @@
+name: hpc
+
+# Informational HPC lane (F-15 / T-5 phase 1 + T-23 triage): measures
+# expression/branch coverage of the two libraries; it gates NOTHING.
+# Separate workflow (prop-nightly.yml precedent): its own push/PR +
+# nightly triggers, so no other job's cost or verdict changes, and
+# the publish job's `needs:` (ci.yml) never names it. NO ratchet, NO
+# floors, NO coverage gate anywhere in this lane (deferred per the
+# F-15 brief: ratchets/floors need phase-1 numbers first, and this
+# lane produces them).
+#
+# What it runs: `cabal test --enable-coverage all`, then one combined
+# .tix (`hpc sum --union`), one text report PER LIBRARY
+# (`hpc report --include=<unitid>:`) plus per-library HTML
+# (`hpc markup`). Artifacts (hpc-coverage + hpc-test-log) stay
+# browseable from the run even when a suite fails (`if: always()` on
+# the report/upload steps): coverage from a near-green run is still
+# the deliverable. The test step itself keeps its honest exit code —
+# no `|| true` anywhere.
+#
+# Documented excludes (T-5): `Haskoki.PKCS11` (untested stub) and the
+# cabal autogen module `Paths_haskoki`. Suite runners (`Main`) and
+# spec/helpers never enter the reports: only the two LIBRARY mix dirs
+# are passed as --hpcdir, so harness modules cannot inflate a number.
+#
+# Hardened case, not a lane defect (see docs/hpc-triage.md §5): the
+# worktree-new `AsyncSpec` case "committed eviction reclaims without
+# a later table read" (F-3 area) once failed under -fhpc only — a
+# `Weak`-identity oracle for the newest payload (transient-root
+# survival differs under instrumentation) while the product behavior
+# held. Final triage replaced that sub-assert with a measured-byte
+# oracle (`retainedBytes` over budget); the no-table-read property
+# itself is untouched. Suite verdicts in every OTHER lane are
+# unchanged: nothing outside this file reads --enable-coverage.
+#
+# Pin policy (F-4): same as ci.yml — every third-party action is
+# pinned to a full commit SHA with the human-readable tag as a
+# trailing comment on the same line.
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hpc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: ubuntu:26.04
+    env:
+      # Keep the cabal store on the mounted workspace so the cache
+      # action (host-side) can persist it across runs.
+      CABAL_DIR: ${{ github.workspace }}/.cabal
+    steps:
+      - name: Base packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential ghc cabal-install libgmp-dev git perl curl \
+            ca-certificates python3
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Restore OpenSSL prefix cache
+        id: ossl-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ossl-cache/openssl-4.0.2.tar.gz
+          key: openssl-4.0.2-static-v1
+      - name: Build OpenSSL prefix (cache miss only)
+        if: steps.ossl-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ossl-build ossl-cache
+          cd /tmp/ossl-build
+          OSSL_URL=https://github.com/openssl/openssl/releases/download
+          curl -fsSLO "$OSSL_URL/openssl-4.0.2/openssl-4.0.2.tar.gz"
+          OSSL_SHA=736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8
+          echo "$OSSL_SHA  openssl-4.0.2.tar.gz" | sha256sum -c -
+          tar xzf openssl-4.0.2.tar.gz
+          cd openssl-4.0.2
+          perl ./Configure --prefix=/opt/openssl-4.0.2 --openssldir=/opt/openssl-4.0.2/ssl \
+            --libdir=lib no-docs no-tests threads no-shared no-pinshared linux-x86_64
+          make -j"$(nproc)"
+          make install_sw
+          /opt/openssl-4.0.2/bin/openssl version
+          tar czf "$GITHUB_WORKSPACE/ossl-cache/openssl-4.0.2.tar.gz" -C / opt/openssl-4.0.2
+      - name: Install cached OpenSSL prefix
+        if: steps.ossl-cache.outputs.cache-hit == 'true'
+        run: tar xzf ossl-cache/openssl-4.0.2.tar.gz -C /
+      - name: Restore cabal store cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .cabal
+          key: cabal-store-9.10.3-${{ hashFiles('cabal.project.freeze') }}
+          restore-keys: |
+            cabal-store-9.10.3-
+      - name: Test with coverage (honest exit code)
+        # Container steps default to sh/dash, where pipefail does not
+        # exist and `cabal ... | tee` would mask a suite failure behind
+        # tee's exit 0: select bash (ci.yml precedent).
+        shell: bash
+        run: |
+          set -euo pipefail
+          cabal update
+          cabal test --enable-coverage all 2>&1 | tee hpc-test.log
+      - name: Per-library reports + HTML
+        # Runs even when a suite fails: the combined .tix and the
+        # reports are the lane's deliverable, not the suite verdict.
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p hpc
+          # --union is load-bearing: the default intersection keeps
+          # only modules covered by EVERY suite, which collapses to
+          # the one module the scaffold suite touches.
+          mapfile -t TIXES < <(find dist-newstyle -path '*hpc/vanilla/tix/*.tix' | sort)
+          [ "${#TIXES[@]}" -gt 0 ] || { echo 'no .tix files under dist-newstyle'; exit 2; }
+          hpc sum --union "${TIXES[@]}" --output=hpc/combined.tix
+          # Scope discovery to the mix/ parents: per-suite html/ dirs
+          # reuse the same unit-id names and must not match. hpc
+          # appends <unitid>/<Module>.mix to each --hpcdir, so the
+          # flag takes the mix/ parent, never the unit-id dir itself.
+          CORE_MIX=$(find dist-newstyle -type d \
+            -path '*l/haskoki-core/build/*/extra-compilation-artifacts/hpc/vanilla/mix')
+          MAIN_MIX=$(find dist-newstyle -type d \
+            -path '*extra-compilation-artifacts/hpc/vanilla/mix' \
+            | grep -v '/l/\|/t/' | sort | head -n 1)
+          [ -n "$CORE_MIX" ] || { echo 'core mix dir not found'; exit 2; }
+          [ -n "$MAIN_MIX" ] || { echo 'main mix dir not found'; exit 2; }
+          [ "$(printf '%s\n' "$CORE_MIX" | wc -l)" -eq 1 ] || { echo 'core mix dir ambiguous'; exit 2; }
+          # Unit ids are derived, never hardcoded: a version bump
+          # renames them (haskoki-<ver>-inplace[-<lib>]).
+          CORE_UNIT=$(ls "$CORE_MIX")
+          MAIN_UNIT=$(ls "$MAIN_MIX")
+          [ -n "$CORE_UNIT" ] || { echo 'core unit id missing'; exit 2; }
+          [ -n "$MAIN_UNIT" ] || { echo 'main unit id missing'; exit 2; }
+          # The trailing colon scopes --include to the whole package;
+          # one --include/positional module otherwise selects a single
+          # module. Excludes: the PKCS11 stub + cabal autogen (T-5).
+          hpc report hpc/combined.tix \
+            --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
+            --include="$CORE_UNIT:" \
+            --exclude=Haskoki.PKCS11 --exclude=Paths_haskoki \
+            --per-module > hpc/report-haskoki-core.txt
+          hpc report hpc/combined.tix \
+            --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
+            --include="$MAIN_UNIT:" \
+            --exclude=Haskoki.PKCS11 --exclude=Paths_haskoki \
+            --per-module > hpc/report-haskoki.txt
+          hpc markup hpc/combined.tix \
+            --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
+            --include="$CORE_UNIT:" \
+            --exclude=Haskoki.PKCS11 --exclude=Paths_haskoki \
+            --destdir=hpc/html-core
+          hpc markup hpc/combined.tix \
+            --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
+            --include="$MAIN_UNIT:" \
+            --exclude=Haskoki.PKCS11 --exclude=Paths_haskoki \
+            --destdir=hpc/html-main
+          test -f hpc/html-core/hpc_index.html || { echo 'core html missing'; exit 2; }
+          test -f hpc/html-main/hpc_index.html || { echo 'main html missing'; exit 2; }
+          echo '--- haskoki-core total ---'
+          hpc report hpc/combined.tix \
+            --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
+            --include="$CORE_UNIT:" > hpc/total-haskoki-core.txt
+          head -n 2 hpc/total-haskoki-core.txt
+          echo '--- haskoki total ---'
+          hpc report hpc/combined.tix \
+            --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
+            --include="$MAIN_UNIT:" > hpc/total-haskoki.txt
+          head -n 2 hpc/total-haskoki.txt
+      - name: Upload coverage bundle
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hpc-coverage
+          path: hpc/
+          if-no-files-found: error
+      - name: Upload coverage test log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hpc-test-log
+          path: hpc-test.log
+          if-no-files-found: warn

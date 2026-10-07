@@ -2765,7 +2765,8 @@ static hkdf_class_t hkdf_params_class(const CK_HKDF_PARAMS *hp) {
 }
 
 /* Derive mechanisms served through the opaque Haskell intake
- * (ECDH + DH + SHA-KDF rows + TLS-PRF + SP 800-108 rows + TLS-KDF
+ * (ECDH + DH + SHA-KDF rows + PBKD2 + the DES/SEED encrypt-data
+ * rows + TLS-PRF + SP 800-108 rows + TLS-KDF
  * rows + the pub-from-priv row; mirrors the
  * Haskoki.Recipe.Ecdh/Dh/Kdf/TlsPrf/Sp800108/TlsKdf/Ssl3/PubPriv
  * tables — Haskell re-checks membership before planning). */
@@ -2795,10 +2796,15 @@ static int derive_opaque_ok(CK_MECHANISM_TYPE mech) {
   case CKM_CAMELLIA_ECB_ENCRYPT_DATA:
   case CKM_DES3_CBC_ENCRYPT_DATA:
   case CKM_DES3_ECB_ENCRYPT_DATA:
+  case CKM_DES_CBC_ENCRYPT_DATA:
+  case CKM_DES_ECB_ENCRYPT_DATA:
+  case CKM_SEED_CBC_ENCRYPT_DATA:
+  case CKM_SEED_ECB_ENCRYPT_DATA:
   case CKM_ECDH1_DERIVE:
   case CKM_ECDH1_COFACTOR_DERIVE:
   case CKM_DH_PKCS_DERIVE:
   case CKM_X9_42_DH_DERIVE:
+  case CKM_PKCS5_PBKD2:
   case CKM_MD5_KEY_DERIVATION:
   case CKM_SHAKE_128_KEY_DERIVATION:
   case CKM_SHAKE_256_KEY_DERIVATION:

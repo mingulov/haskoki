@@ -69,6 +69,21 @@ def real_tested_count(mechs):
     return sum(1 for r in mechs if r["support"]["real"] == "tested")
 
 
+# Catalog sweep batteries: shared catalog-level evidence (F-11). A
+# tested row is `sweep-only` when every test_evidence entry cites one
+# of these; otherwise it carries behavior-exercising evidence
+# (engine/key-management/operation suites or a per-mechanism recipe)
+# and renders `dedicated`. Computed per row from the spec module
+# (artifact basename), never from the case_id: Recipe* specs share
+# case A40 with RegistrySpec but are dedicated per-mechanism cases.
+SWEEP_SPECS = frozenset({"MechanismExhaustivenessSpec", "RegistrySpec"})
+
+
+def evidence_kind(row):
+    arts = {e["artifact"].split("/")[-1] for e in row["test_evidence"]}
+    return "sweep-only" if arts <= SWEEP_SPECS else "dedicated"
+
+
 def c_surface_count():
     for line in INC.read_text().splitlines():
         if line.startswith("#define HASKOKI_MECH_COUNT"):
@@ -167,10 +182,13 @@ def render(mechs, issues):
     L.append("### Behavior-tested mechanisms (executable recipes, in-process)")
     L.append("")
     L.append("Each row names its evidence artifacts (suite/case). No row "
-             "implies C-surface availability (see boundary above).")
+             "implies C-surface availability (see boundary above). The kind "
+             "column marks rows carried only by the catalog sweep batteries "
+             "(`sweep-only`) versus rows with behavior-exercising evidence "
+             "(`dedicated`).")
     L.append("")
-    L.append("| mechanism | id | evidence cases |")
-    L.append("|---|---|---|")
+    L.append("| mechanism | id | evidence cases | kind |")
+    L.append("|---|---|---|---|")
     tested = sorted((r for r in mechs if r["support"]["behavior"] == "tested"),
                     key=lambda r: int(r["numeric_id"], 16))
     for r in tested:
@@ -178,7 +196,8 @@ def render(mechs, issues):
                        for e in r["test_evidence"][:4])
         if len(r["test_evidence"]) > 4:
             ev += f" (+{len(r['test_evidence']) - 4})"
-        L.append(f"| {r['canonical_name']} | {r['numeric_id']} | {ev} |")
+        L.append(f"| {r['canonical_name']} | {r['numeric_id']} | {ev} | "
+                 f"{evidence_kind(r)} |")
     L.append("")
     L.append("## Known limitations (from unsupported-with-reason rows)")
     L.append("")

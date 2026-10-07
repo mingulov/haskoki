@@ -87,16 +87,29 @@ echo "$SCEN_LIST"
 TMPD="${TMPDIR:-/tmp}/haskoki-consumers"
 mkdir -p "$TMPD" || fail "cannot create $TMPD"
 
+FAILURES=""
+
 run_scenario() {
-  # $1 = source path
+  # $1 = source path. Collect-all: a failing scenario is recorded
+  # and the rest still run (final-triage F-7: the old fail-fast
+  # loop hid later-driver signal behind the first failure).
+  # Fail-closed is preserved: any recorded failure exits 1 below.
   base=$(basename "$1" .c)
   BIN="$TMPD/$base"
-  cc -std=c11 -O2 -g -Wall -Wextra -Werror \
+  if ! cc -std=c11 -O2 -g -Wall -Wextra -Werror \
     -Ispec/vendor \
-    -o "$BIN" "$1" -ldl -lpthread \
-    || fail "$base did not compile"
+    -o "$BIN" "$1" -ldl -lpthread; then
+    echo "FAIL: $base did not compile"
+    FAILURES="$FAILURES $base(compile)"
+    return 0
+  fi
   echo "scenario compiled: $BIN (headers: spec/vendor)"
-  ec=0; "$BIN" "$SO" || ec=$?; echo "child exit: $base $ec"; [ "$ec" -eq 0 ] || fail "$base reported failures"
+  ec=0; "$BIN" "$SO" || ec=$?
+  echo "child exit: $base $ec"
+  if [ "$ec" -ne 0 ]; then
+    echo "FAIL: $base reported failures"
+    FAILURES="$FAILURES $base(exit $ec)"
+  fi
 }
 
 if [ -n "${1:-}" ]; then
@@ -106,5 +119,7 @@ fi
 for scen in $SCEN_LIST; do
   run_scenario "$scen"
 done
+
+[ -z "$FAILURES" ] || fail "consumer failures:$FAILURES"
 
 echo "PASS: test-consumers.sh (direct-load consumer scenarios)"

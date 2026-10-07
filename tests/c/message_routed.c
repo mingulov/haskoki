@@ -275,6 +275,7 @@ static void verify_legs(MessageApi *a);
 static void extra_legs(MessageApi *a);
 static void oversize_legs(MessageApi *a);
 static void sweep_legs(MessageApi *a);
+static void gcm_shape_legs(MessageApi *a);
 
 int main(int argc, char **argv) {
   if (argc != 2) return 2;
@@ -319,6 +320,7 @@ int main(int argc, char **argv) {
     verify_legs(&a);
     extra_legs(&a);
     sweep_legs(&a);
+    gcm_shape_legs(&a);
     if (!proxy) oversize_legs(&a);
     rv("C_Finalize","end",a.C_Finalize(NULL),CKR_OK);
     boundary_legs(&a,1,"post-finalize");
@@ -1223,6 +1225,99 @@ static void sweep_gcm_kat(MessageApi *a, CK_SESSION_HANDLE session, CK_OBJECT_HA
   rv("sweep","gcm-kat-decrypt-final",a->C_MessageDecryptFinal(session),CKR_OK);
 }
 
+/* F-9 (FINAL-101, T-9 narrowed): header-native CK_GCM_MESSAGE_PARAMS
+ * shapes refuse pinned CKR_ARGUMENTS_BAD at every GCM message entry
+ * point (init, one-shot, begin, multipart end), for encrypt and
+ * decrypt alike; truncated images refuse the same code at the same
+ * points. The classic-shaped path (CK_GCM_PARAMS init plus the
+ * gcm-params/1 per-message image) stays served, including the
+ * begin-empty/supply-at-end pattern and recovery after each refusal. */
+static void gcm_shape_legs(MessageApi *a) {
+  static CK_BYTE gcmMsgParams[28] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x0c,0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b};
+  CK_SESSION_HANDLE s=0;
+  CK_OBJECT_HANDLE key=0;
+  CK_BYTE tag[16];
+  Output out;
+  CK_GCM_MESSAGE_PARAMS native0={gcmNonce,12,0,CKG_NO_GENERATE,NULL,128};
+  CK_GCM_MESSAGE_PARAMS nativeTag={gcmNonce,12,96,CKG_NO_GENERATE,tag,128};
+  CK_GCM_PARAMS gp={gcmNonce,12,96,NULL,0,128};
+  CK_MECHANISM mNative0={CKM_AES_GCM,(CK_VOID_PTR)&native0,sizeof(native0)};
+  CK_MECHANISM mNativeTag={CKM_AES_GCM,(CK_VOID_PTR)&nativeTag,sizeof(nativeTag)};
+  CK_MECHANISM mTrunc={CKM_AES_GCM,(CK_VOID_PTR)&nativeTag,sizeof(nativeTag)-16};
+  CK_MECHANISM mClassic={CKM_AES_GCM,(CK_VOID_PTR)&gp,sizeof(gp)};
+  CK_RV result=a->C_OpenSession(tokenSlot,CKF_SERIAL_SESSION|CKF_RW_SESSION,NULL,NULL,&s);
+  rv("gcm-shape","open",result,CKR_OK);
+  if (result != CKR_OK) exit(1);
+  memset(tag,0,sizeof(tag));
+  key=make_key(a,s,CKK_AES,gcmKeyBytes,16,CK_TRUE,CK_TRUE,CK_FALSE,CK_FALSE);
+  rv("gcm-shape","native-init",a->C_MessageEncryptInit(s,&mNative0,key),CKR_ARGUMENTS_BAD);
+  rv("gcm-shape","native-decrypt-init",a->C_MessageDecryptInit(s,&mNativeTag,key),CKR_ARGUMENTS_BAD);
+  rv("gcm-shape","trunc-init",a->C_MessageEncryptInit(s,&mTrunc,key),CKR_ARGUMENTS_BAD);
+  rv("gcm-shape","pm-init",a->C_MessageEncryptInit(s,&mClassic,key),CKR_OK);
+  reset_output(&out,64);
+  rv("gcm-shape","native-per-message",a->C_EncryptMessage(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag),gcmAad,8,gcmPt,16,out.bytes+1,&out.length),CKR_ARGUMENTS_BAD);
+  untouched("gcm-shape","native-per-message-clean",&out,64);
+  rv("gcm-shape","trunc-per-message",a->C_EncryptMessage(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag)-16,gcmAad,8,gcmPt,16,out.bytes+1,&out.length),CKR_ARGUMENTS_BAD);
+  untouched("gcm-shape","trunc-per-message-clean",&out,64);
+  rv("gcm-shape","pm-final",a->C_MessageEncryptFinal(s),CKR_OK);
+  rv("gcm-shape","decrypt-init",a->C_MessageDecryptInit(s,&mClassic,key),CKR_OK);
+  reset_output(&out,64);
+  rv("gcm-shape","decrypt-native-per-message",a->C_DecryptMessage(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag),gcmAad,8,gcmSealed,32,out.bytes+1,&out.length),CKR_ARGUMENTS_BAD);
+  untouched("gcm-shape","decrypt-native-clean",&out,64);
+  reset_output(&out,64);
+  rv("gcm-shape","decrypt-trunc-per-message",a->C_DecryptMessage(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag)-16,gcmAad,8,gcmSealed,32,out.bytes+1,&out.length),CKR_ARGUMENTS_BAD);
+  untouched("gcm-shape","decrypt-trunc-clean",&out,64);
+  reset_output(&out,64);
+  rv("gcm-shape","decrypt-recover",a->C_DecryptMessage(s,gcmMsgParams,sizeof(gcmMsgParams),gcmAad,8,gcmSealed,32,out.bytes+1,&out.length),CKR_OK);
+  output_bytes("gcm-shape","decrypt-recover-opened",&out,gcmPt,16);
+  rv("gcm-shape","decrypt-final",a->C_MessageDecryptFinal(s),CKR_OK);
+  rv("gcm-shape","decrypt-mp-init",a->C_MessageDecryptInit(s,&mClassic,key),CKR_OK);
+  rv("gcm-shape","decrypt-native-begin",a->C_DecryptMessageBegin(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag),gcmAad,8),CKR_ARGUMENTS_BAD);
+  rv("gcm-shape","decrypt-trunc-begin",a->C_DecryptMessageBegin(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag)-16,gcmAad,8),CKR_ARGUMENTS_BAD);
+  rv("gcm-shape","decrypt-empty-begin",a->C_DecryptMessageBegin(s,NULL,0,gcmAad,8),CKR_OK);
+  reset_output(&out,64);
+  rv("gcm-shape","decrypt-supply-at-end",a->C_DecryptMessageNext(s,gcmMsgParams,sizeof(gcmMsgParams),gcmSealed,32,out.bytes+1,&out.length,CKF_END_OF_MESSAGE),CKR_OK);
+  output_bytes("gcm-shape","decrypt-supply-at-end-opened",&out,gcmPt,16);
+  rv("gcm-shape","decrypt-mp-final",a->C_MessageDecryptFinal(s),CKR_OK);
+  rv("gcm-shape","decrypt-badend-init",a->C_MessageDecryptInit(s,&mClassic,key),CKR_OK);
+  rv("gcm-shape","decrypt-badend-begin",a->C_DecryptMessageBegin(s,NULL,0,gcmAad,8),CKR_OK);
+  reset_output(&out,64);
+  rv("gcm-shape","decrypt-badend-native-end",a->C_DecryptMessageNext(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag),gcmSealed,32,out.bytes+1,&out.length,CKF_END_OF_MESSAGE),CKR_ARGUMENTS_BAD);
+  untouched("gcm-shape","decrypt-badend-native-clean",&out,64);
+  rv("gcm-shape","decrypt-badend-reopen",a->C_DecryptMessageBegin(s,NULL,0,gcmAad,8),CKR_OK);
+  reset_output(&out,64);
+  rv("gcm-shape","decrypt-badend-trunc-end",a->C_DecryptMessageNext(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag)-16,gcmSealed,32,out.bytes+1,&out.length,CKF_END_OF_MESSAGE),CKR_ARGUMENTS_BAD);
+  untouched("gcm-shape","decrypt-badend-trunc-clean",&out,64);
+  rv("gcm-shape","decrypt-badend-rebegin",a->C_DecryptMessageBegin(s,NULL,0,gcmAad,8),CKR_OK);
+  reset_output(&out,64);
+  rv("gcm-shape","decrypt-badend-recover",a->C_DecryptMessageNext(s,gcmMsgParams,sizeof(gcmMsgParams),gcmSealed,32,out.bytes+1,&out.length,CKF_END_OF_MESSAGE),CKR_OK);
+  output_bytes("gcm-shape","decrypt-badend-recover-opened",&out,gcmPt,16);
+  rv("gcm-shape","decrypt-badend-final",a->C_MessageDecryptFinal(s),CKR_OK);
+  rv("gcm-shape","mp-init",a->C_MessageEncryptInit(s,&mClassic,key),CKR_OK);
+  rv("gcm-shape","native-begin",a->C_EncryptMessageBegin(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag),gcmAad,8),CKR_ARGUMENTS_BAD);
+  rv("gcm-shape","trunc-begin",a->C_EncryptMessageBegin(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag)-16,gcmAad,8),CKR_ARGUMENTS_BAD);
+  rv("gcm-shape","empty-begin",a->C_EncryptMessageBegin(s,NULL,0,gcmAad,8),CKR_OK);
+  reset_output(&out,64);
+  rv("gcm-shape","supply-at-end",a->C_EncryptMessageNext(s,gcmMsgParams,sizeof(gcmMsgParams),gcmPt,16,out.bytes+1,&out.length,CKF_END_OF_MESSAGE),CKR_OK);
+  output_bytes("gcm-shape","supply-at-end-sealed",&out,gcmSealed,32);
+  rv("gcm-shape","mp-final",a->C_MessageEncryptFinal(s),CKR_OK);
+  rv("gcm-shape","badend-init",a->C_MessageEncryptInit(s,&mClassic,key),CKR_OK);
+  rv("gcm-shape","badend-begin",a->C_EncryptMessageBegin(s,NULL,0,gcmAad,8),CKR_OK);
+  reset_output(&out,64);
+  rv("gcm-shape","badend-native-end",a->C_EncryptMessageNext(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag),gcmPt,16,out.bytes+1,&out.length,CKF_END_OF_MESSAGE),CKR_ARGUMENTS_BAD);
+  untouched("gcm-shape","badend-native-clean",&out,64);
+  rv("gcm-shape","badend-reopen",a->C_EncryptMessageBegin(s,NULL,0,gcmAad,8),CKR_OK);
+  reset_output(&out,64);
+  rv("gcm-shape","badend-end",a->C_EncryptMessageNext(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag)-16,gcmPt,16,out.bytes+1,&out.length,CKF_END_OF_MESSAGE),CKR_ARGUMENTS_BAD);
+  untouched("gcm-shape","badend-clean",&out,64);
+  rv("gcm-shape","badend-rebegin",a->C_EncryptMessageBegin(s,NULL,0,gcmAad,8),CKR_OK);
+  reset_output(&out,64);
+  rv("gcm-shape","badend-recover",a->C_EncryptMessageNext(s,gcmMsgParams,sizeof(gcmMsgParams),gcmPt,16,out.bytes+1,&out.length,CKF_END_OF_MESSAGE),CKR_OK);
+  output_bytes("gcm-shape","badend-recover-sealed",&out,gcmSealed,32);
+  rv("gcm-shape","badend-final",a->C_MessageEncryptFinal(s),CKR_OK);
+  rv("gcm-shape","close",a->C_CloseSession(s),CKR_OK);
+}
+
 static void sweep_ecdsa_msg(MessageApi *a, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE priv, CK_OBJECT_HANDLE pub) {
   static CK_BYTE data[32] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f};
   static CK_BYTE sig[256];
@@ -1344,7 +1439,7 @@ static void sweep_legs(MessageApi *a) {
     sweep_cipher(a,s,"aes-ecb",&mAesEcb,aes,aes);
     sweep_flags(a,CKM_AES_CTR,"aes-ctr",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
     sweep_cipher(a,s,"aes-ctr",&mAesCtr,aes,aes);
-    sweep_flags(a,CKM_AES_GCM,"aes-gcm",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
+    sweep_flags(a,CKM_AES_GCM,"aes-gcm",0); /* F-9: message flags withdrawn (FINAL-101) */
     sweep_cipher(a,s,"aes-gcm",&mAesGcm,aes,aes);
     sweep_flags(a,CKM_AES_XTS,"aes-xts",CKF_MESSAGE_ENCRYPT|CKF_MESSAGE_DECRYPT);
     sweep_cipher(a,s,"aes-xts",&mAesXts,xts,xts);

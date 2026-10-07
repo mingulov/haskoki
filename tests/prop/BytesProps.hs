@@ -18,9 +18,9 @@ import Haskoki.Attribute
   , maxAttributeBytes
   )
 
-spec :: Int -> TestTree
-spec count = testGroup "byte representation laws"
-  [ propWith "bytes round-trip" 304 count pBytesRoundTrip
+spec :: Maybe Int -> Int -> TestTree
+spec seedOv count = testGroup "byte representation laws"
+  [ propWith seedOv "bytes round-trip" 304 count pBytesRoundTrip
   ]
 
 pBytesRoundTrip :: Property

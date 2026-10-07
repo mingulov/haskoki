@@ -11,20 +11,26 @@ name: CI
 #
 # CD: publishing happens ONLY in the `publish` job, which runs only
 # for v* tags (push a tag and the release goes out with it). It needs
-# passing build+tests+bundle+fast-lane+demo-image, verifies the tag
-# matches the Cabal version, then pushes the DEMO image to GHCR and
+# passing build+tests+c-drivers+bundle+fast-lane+demo-image, verifies
+# the tag matches the Cabal version, then pushes the DEMO image to GHCR and
 # attaches the release bundle to a NEW GitHub release (never
 # replacement assets: no --clobber anywhere).
 # The KAT lane stays informational (too slow to gate a release).
 # To cut a release: git tag vX.Y.Z && git push origin vX.Y.Z.
 #
-# Pin policy (R8 audit): external actions are major-pinned
-# (checkout v6, cache v5, buildx v3, build-push v6, login v3,
-# upload/download-artifact v7, setup-uv v8.1.0). Floating inputs,
-# visible here with reasons: `ubuntu-latest` runners
-# (GitHub-managed, unpinnable by design); `ubuntu:26.04` and
-# `rust:1.94-bookworm` image tags (floating tags; the effective
-# digests are recorded per build in the job output/evidence).
+# Pin policy (F-4): every third-party action is pinned to a full
+# commit SHA, the human-readable tag kept as a trailing `# vX`
+# comment on the same line (checkout v6, cache v5, buildx v3,
+# build-push v6, login v3, upload/download-artifact v7, setup-uv
+# v8.1.0, attest-build-provenance v2); Dependabot
+# (`.github/dependabot.yml`) proposes SHA bumps,
+# and `scripts/check-actions-pinned.py` fails any `uses:` that
+# drifts back to a mutable tag. Floating inputs, visible here with
+# reasons: `ubuntu-latest` runners (GitHub-managed, unpinnable by
+# design); `ubuntu:26.04` and `rust:1.94-bookworm` image tags
+# (floating tags; the effective digests are recorded per build in
+# the job output/evidence) — base-image/APT/cache pinning deferred
+# (F-4 defers P-15).
 
 on:
   push:
@@ -71,10 +77,10 @@ jobs:
             build-essential ghc cabal-install libgmp-dev git perl curl \
             ca-certificates python3
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Restore OpenSSL prefix cache
         id: ossl-cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ossl-cache/openssl-4.0.2.tar.gz
           key: openssl-4.0.2-static-v1
@@ -100,7 +106,7 @@ jobs:
         if: steps.ossl-cache.outputs.cache-hit == 'true'
         run: tar xzf ossl-cache/openssl-4.0.2.tar.gz -C /
       - name: Restore cabal store cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .cabal
           key: cabal-store-9.10.3-${{ hashFiles('cabal.project.freeze') }}
@@ -112,11 +118,19 @@ jobs:
           for g in check-core-boundary check-mechanisms check-denominators \
               check-attributes check-ossl4-surface check-version check-ckr \
               check-seed-honesty check-warnings-zero check-docs \
-              check-fork-stance check-test-wiring check-coverage-boundary \
+              check-fork-stance check-test-wiring check-test-evidence check-coverage-boundary \
               check-release-pivots check-loader-norm check-release-install-flags \
-              check-smoke-surface check-history-codes; do
+              check-smoke-surface check-history-codes check-actions-pinned; do
             python3 scripts/$g.py
           done
+          # Final-review M-1: the pin gate defaults to ci.yml — cover
+          # every workflow so later lanes cannot drift to a mutable tag.
+          python3 scripts/check-actions-pinned.py .github/workflows/hpc.yml
+          python3 scripts/check-actions-pinned.py .github/workflows/prop-nightly.yml
+          # F-4..F-8 fix-round regression: evasive-form negative
+          # controls + F-6/F-7 structural asserts (durable, stdlib-only).
+          python3 scripts/check-actions-pinned.py --self-test
+          python3 scripts/check-test-evidence.py --self-test
           python3 scripts/publish-coverage.py --check
       - name: Build and test
         run: |
@@ -126,10 +140,109 @@ jobs:
           cabal test all 2>&1 | tee haskell-test.log
       - name: Upload test log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: haskell-test-log
           path: haskell-test.log
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------------
+  # Per-PR C-driver gate (F-7 / TEST1): the timed deterministic subset
+  # of the 15 container drivers, on every push/PR, in an Ubuntu 26.04
+  # container (same base + OpenSSL prefix + cabal cache shape as the
+  # `haskell` job). Subset in run order:
+  #   test-loader.sh, test-c-abi.sh (+ --negative, T-1),
+  #   test-c-output.sh, test-c-mutexes.sh, test-consumers.sh,
+  #   test-client.sh, test-ossl4-bounds.sh
+  # (test-consumers.sh picks up every tests/c/consumer_*.c via its
+  # glob, including consumer_so_isolation.c.) Race/threaded drivers
+  # (test-finalize-race.sh, test-sim-threaded.sh,
+  # test-async-attached.sh, test-async-detached.sh,
+  # test-control-events.sh, test-lifecycle.sh, test-crypto-routed.sh,
+  # test-proxy-parity.sh) stay on the release/nightly path only (the
+  # release-evidence manifest via run-gates.sh); the split is also
+  # recorded in the run-gates.sh header. Each driver step is timed and
+  # tee'd to a per-driver log, uploaded as an artifact.
+  # ------------------------------------------------------------------
+  c-drivers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: ubuntu:26.04
+    env:
+      # Same mounted-store shape as `haskell` so the host-side cache
+      # action can persist the cabal store across runs.
+      CABAL_DIR: ${{ github.workspace }}/.cabal
+    steps:
+      - name: Base packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential ghc cabal-install libgmp-dev git perl curl \
+            ca-certificates python3
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Restore OpenSSL prefix cache
+        id: ossl-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ossl-cache/openssl-4.0.2.tar.gz
+          key: openssl-4.0.2-static-v1
+      - name: Build OpenSSL prefix (cache miss only)
+        if: steps.ossl-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ossl-build ossl-cache
+          cd /tmp/ossl-build
+          OSSL_URL=https://github.com/openssl/openssl/releases/download
+          curl -fsSLO "$OSSL_URL/openssl-4.0.2/openssl-4.0.2.tar.gz"
+          OSSL_SHA=736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8
+          echo "$OSSL_SHA  openssl-4.0.2.tar.gz" | sha256sum -c -
+          tar xzf openssl-4.0.2.tar.gz
+          cd openssl-4.0.2
+          perl ./Configure --prefix=/opt/openssl-4.0.2 --openssldir=/opt/openssl-4.0.2/ssl \
+            --libdir=lib no-docs no-tests threads no-shared no-pinshared linux-x86_64
+          make -j"$(nproc)"
+          make install_sw
+          /opt/openssl-4.0.2/bin/openssl version
+          tar czf "$GITHUB_WORKSPACE/ossl-cache/openssl-4.0.2.tar.gz" -C / opt/openssl-4.0.2
+      - name: Install cached OpenSSL prefix
+        if: steps.ossl-cache.outputs.cache-hit == 'true'
+        run: tar xzf ossl-cache/openssl-4.0.2.tar.gz -C /
+      - name: Restore cabal store cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .cabal
+          key: cabal-store-9.10.3-${{ hashFiles('cabal.project.freeze') }}
+          restore-keys: |
+            cabal-store-9.10.3-
+      - name: Build all
+        run: |
+          set -euo pipefail
+          cabal update
+          cabal build all --enable-tests
+      - name: PR driver subset (timed, deterministic)
+        # Container steps default to sh/dash, where `time` is not a
+        # keyword and GNU time is not installed (exit 127 before any
+        # driver runs): select bash, like the file's other timed step
+        # (demo-image, runner bash).
+        shell: bash
+        run: |
+          set -euo pipefail
+          for d in test-loader.sh test-c-abi.sh test-c-output.sh \
+              test-c-mutexes.sh test-consumers.sh test-client.sh \
+              test-ossl4-bounds.sh; do
+            echo "=== driver: $d ==="
+            time sh "scripts/$d" 2>&1 | tee "c-drivers-$d.log"
+          done
+          echo "=== sensitivity control: test-c-abi.sh --negative ==="
+          time sh scripts/test-c-abi.sh --negative 2>&1 | tee c-drivers-test-c-abi-negative.log
+      - name: Upload driver logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: c-drivers-logs
+          path: c-drivers-*.log
           if-no-files-found: warn
 
   # ------------------------------------------------------------------
@@ -144,10 +257,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v3
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build image (load for local use)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           tags: haskoki-dev:ghc-9.10.3
@@ -221,21 +334,21 @@ jobs:
           ls -la release-bundle.tar.gz
       - name: Upload bundle
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-bundle
           path: release-bundle.tar.gz
           if-no-files-found: error
       - name: Upload producer provenance
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: producer-provenance
           path: producer-provenance.json
           if-no-files-found: error
       - name: Upload verified sdist
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-sdist
           path: dist-newstyle/sdist/haskoki-*.tar.gz
@@ -269,7 +382,7 @@ jobs:
       rust_digest: ${{ steps.record.outputs.rust_digest }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Preflight (docker access, demo Dockerfile)
         run: |
           set -euo pipefail
@@ -277,7 +390,7 @@ jobs:
           test -f docker/Dockerfile.demo || { echo "Dockerfile.demo missing"; exit 2; }
           echo "preflight ok"
       - name: Download staged bundle
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: release-bundle
           path: .
@@ -335,14 +448,14 @@ jobs:
           docker save haskoki-demo:0.3.0.0 | gzip > demo-image.tar.gz
           ls -la demo-image.tar.gz
       - name: Upload tested image
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: demo-image-tested
           path: demo-image.tar.gz
           if-no-files-found: error
       - name: Upload run dirs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: demo-image-runs
           path: driver-out
@@ -365,18 +478,32 @@ jobs:
   # bundle producer (provenance artifact), never from a fresh
   # local inspection. Plain `docker` commands only (same
   # Buildx-driver reason as the demo-image job).
+  # Release authentication (F-8 / FINAL-4): the packager signs
+  # SHA256SUMS with the owner-controlled release key (imported
+  # below from the HASKOKI_RELEASE_SIGNING_KEY secret into an
+  # ephemeral GPG home; the public verification key is published
+  # out-of-band), the signature is re-verified in this job, and
+  # SLSA build-provenance attestations are attached for the
+  # bundle, the sdist, and the pushed image digest — all BEFORE
+  # `gh release create`. Order enforcement: the `needs:` below
+  # runs publish only after haskell (all static gates) + bundle
+  # + c-drivers (timed subset + --negative control) + pkcs11-fast
+  # + demo-image succeed, so every gating check precedes the
+  # first registry/release write.
   # ------------------------------------------------------------------
   publish:
-    needs: [haskell, bundle, pkcs11-fast, demo-image]
+    needs: [haskell, bundle, c-drivers, pkcs11-fast, demo-image]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: write
       packages: write
+      attestations: write
+      id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Verify tag matches Cabal version
         env:
           TAG: ${{ github.ref_name }}
@@ -415,7 +542,7 @@ jobs:
               exit 2 ;;
           esac
       - name: Download tested image
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: demo-image-tested
           path: image-in
@@ -432,40 +559,57 @@ jobs:
             || { echo "loaded $LOADED_ID != tested $TESTED_ID"; exit 2; }
           echo "staged bytes verified: $LOADED_ID"
       - name: Download bundle tree
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: release-bundle
           path: .
       - name: Download verified sdist
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: release-sdist
           path: dist-newstyle/sdist
       - name: Download gate evidence for the results archive
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: haskell-test-log
           path: evidence-in/haskell
       - name: Download fast-lane report
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: pkcs11-fast-report
           path: evidence-in/fast
       - name: Download demo-image run dirs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: demo-image-runs
           path: evidence-in/demo
       - name: Download producer provenance
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: producer-provenance
           path: provenance-in
+      - name: Import release signing key (fail-closed)
+        env:
+          HASKOKI_RELEASE_SIGNING_KEY: ${{ secrets.HASKOKI_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "${HASKOKI_RELEASE_SIGNING_KEY:-}" ] \
+            || { echo "HASKOKI_RELEASE_SIGNING_KEY secret is not set: refusing to ship unsigned"; exit 2; }
+          export GNUPGHOME="$RUNNER_TEMP/gnupg-f8"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          printf '%s' "$HASKOKI_RELEASE_SIGNING_KEY" | gpg --batch --no-tty --import
+          FPR=$(gpg --batch --no-tty --list-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
+          [ -n "$FPR" ] || { echo "imported key has no fingerprint"; exit 2; }
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          echo "HASKOKI_SIGNING_KEY=$FPR" >> "$GITHUB_ENV"
+          echo "release signing key imported ok"
       - name: Extract bundle and validate staged assets (pre-push)
         env:
           HASKOKI_PROVENANCE_FILE: provenance-in/producer-provenance.json
           HASKOKI_BASE_DIGEST: ${{ needs.demo-image.outputs.base_digest }}
           HASKOKI_RUST_DIGEST: ${{ needs.demo-image.outputs.rust_digest }}
+          HASKOKI_SIGNING_KEY: ${{ env.HASKOKI_SIGNING_KEY }}
         run: |
           set -euo pipefail
           test -f release-bundle.tar.gz || { echo "staged bundle missing"; exit 2; }
@@ -480,7 +624,7 @@ jobs:
           (cd dist-release && sha256sum -c SHA256SUMS)
           echo "pre-push asset validation ok"
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -508,18 +652,40 @@ jobs:
             || { echo "pushed digest missing for ghcr.io/mingulov/haskoki-demo:$TAG"; exit 2; }
           echo "pushed: $PUSHED_DIGEST"
           echo "PUSHED_DIGEST=$PUSHED_DIGEST" >> "$GITHUB_ENV"
+          echo "PUSHED_DIGEST_ONLY=${PUSHED_DIGEST##*@}" >> "$GITHUB_ENV"
       - name: Finalize manifest with pushed digest
         env:
           HASKOKI_OCI_DIGEST: ${{ env.PUSHED_DIGEST }}
           HASKOKI_PROVENANCE_FILE: provenance-in/producer-provenance.json
           HASKOKI_BASE_DIGEST: ${{ needs.demo-image.outputs.base_digest }}
           HASKOKI_RUST_DIGEST: ${{ needs.demo-image.outputs.rust_digest }}
+          HASKOKI_SIGNING_KEY: ${{ env.HASKOKI_SIGNING_KEY }}
         run: |
           set -euo pipefail
           [ -n "${HASKOKI_OCI_DIGEST:-}" ] || { echo "pushed digest missing"; exit 2; }
           sh scripts/package-release.sh dist-release
           (cd dist-release && sha256sum -c SHA256SUMS)
           echo "finalized manifest ok"
+      - name: Verify release signature (fail-closed)
+        run: |
+          set -euo pipefail
+          OUT=$(gpg --batch --no-tty --verify \
+            dist-release/SHA256SUMS.asc dist-release/SHA256SUMS 2>&1)
+          echo "$OUT"
+          case "$OUT" in
+            *'Good signature'*) echo "signature verifies: Good signature" ;;
+            *) echo "SHA256SUMS.asc does not verify"; exit 2 ;;
+          esac
+      - name: Attest release files (bundle + sdist provenance)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist-release/haskoki-*.tar.gz
+      - name: Attest pushed image digest (provenance)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ghcr.io/mingulov/haskoki-demo
+          subject-digest: ${{ env.PUSHED_DIGEST_ONLY }}
+          push-to-registry: true
       - name: Create release and attach archives (no clobber)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -527,11 +693,12 @@ jobs:
         run: |
           set -euo pipefail
           ls dist-release/*.tar.gz dist-release/SHA256SUMS \
-            dist-release/release-manifest.json
+            dist-release/SHA256SUMS.asc dist-release/release-manifest.json
           gh release create "$TAG" --title "haskoki $TAG" \
             --notes-file docs/release-notes-0.3.0.0.md
           gh release upload "$TAG" dist-release/*.tar.gz \
-            dist-release/SHA256SUMS dist-release/release-manifest.json
+            dist-release/SHA256SUMS dist-release/SHA256SUMS.asc \
+            dist-release/release-manifest.json
 
   # ------------------------------------------------------------------
   # Fetch the Wycheproof/ACVP/CCTV/x509-limbo vectors ONCE (shared via
@@ -542,15 +709,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout framework
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: mingulov/pkcs11-check
           ref: ${{ env.FRAMEWORK_REF }}
           path: pkcs11-check
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - name: Restore / populate vector-data cache
         id: data-cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: data
           key: pkcs11-data-${{ hashFiles('pkcs11-check/src/pkcs11_check/testcases/data/sources.toml') }}
@@ -572,19 +739,19 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Checkout framework
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: mingulov/pkcs11-check
           ref: ${{ env.FRAMEWORK_REF }}
           path: pkcs11-check
       - name: System libs
         run: sudo apt-get update && sudo apt-get install -y libgmp10 libffi8 libnuma1
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - run: uv sync --project pkcs11-check --frozen --extra dev
       - name: Download bundle
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: release-bundle
           path: .
@@ -618,7 +785,7 @@ jobs:
           PY
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: pkcs11-fast-report
           path: pkcs11-fast-results.json
@@ -633,24 +800,24 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Checkout framework
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: mingulov/pkcs11-check
           ref: ${{ env.FRAMEWORK_REF }}
           path: pkcs11-check
       - name: System libs
         run: sudo apt-get update && sudo apt-get install -y libgmp10 libffi8 libnuma1
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - run: uv sync --project pkcs11-check --frozen --extra dev
       - name: Restore vector-data cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: data
           key: pkcs11-data-${{ hashFiles('pkcs11-check/src/pkcs11_check/testcases/data/sources.toml') }}
       - name: Download bundle
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: release-bundle
           path: .
@@ -684,7 +851,7 @@ jobs:
           PY
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: pkcs11-kat-report
           path: pkcs11-kat-results.json

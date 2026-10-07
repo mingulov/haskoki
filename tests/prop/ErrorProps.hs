@@ -19,11 +19,11 @@ import Haskoki.Operation.Effect
   )
 import Haskoki.Types (EngineResourceId (..), ReturnCode (..))
 
-spec :: Int -> TestTree
-spec count =
+spec :: Maybe Int -> Int -> TestTree
+spec seedOv count =
   testGroup
     "error laws"
-    [ propWith "deny passthrough" 201 count pDenyPassthrough
+    [ propWith seedOv "deny passthrough" 201 count pDenyPassthrough
     , testCase "deny passthrough exhaustive" caseDenyExhaustive
     , testCase "crypto exhaustiveness" caseCrypto
     , testCase "mkDeny preserves code" caseMkDeny

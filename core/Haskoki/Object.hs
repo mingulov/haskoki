@@ -90,7 +90,7 @@ import Haskoki.Outcome
   , StateDelta (..)
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
-import Haskoki.Session (SessionLogin (LoginPublic, LoginSO), admitCode, admitPrivate, admitWritable)
+import Haskoki.Session (SessionLogin (LoginContextUser, LoginSO, LoginUser), admitCode, admitPrivate, admitWritable)
 import Haskoki.Types
   ( ExternalHandle (..)
   , ObjectId (..)
@@ -370,14 +370,14 @@ objectDestroyable :: ObjectState -> Bool
 objectDestroyable ost = Map.lookup AttrDestroyable (osAttrs ost) /= Just (ValBool False)
 
 -- | Visibility per calling session: the object must live on the
--- session's slot, and private objects additionally need a
--- non-public login. Any authenticated login (user, SO,
--- context grant) sees same-slot private objects; finer roles arrive
--- with the operation tasks.
+-- session's slot, and private objects are additionally visible
+-- only under a user login (plain or context grant). The SO sees
+-- same-slot public objects only: SO sessions must neither see nor
+-- use user @CKA_PRIVATE=true@ objects (PKCS#11 role separation).
 objectVisible :: SessionState -> ObjectState -> Bool
 objectVisible st ost =
   ssSlot st == osSlot ost
-    && (not (objectPrivate ost) || ssLogin st /= LoginPublic)
+    && (not (objectPrivate ost) || ssLogin st `elem` [LoginUser, LoginContextUser])
 
 -- ---------------------------------------------------------------------------
 -- Planning

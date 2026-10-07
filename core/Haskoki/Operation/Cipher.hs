@@ -285,7 +285,13 @@ planCipherUpdate ops st kind part mIntent = case withCipherSlot ops kind of
           block = csBlock spec
           isEcbMech =
             maybe False ((== 0) . crIvBytes) (cipherRecipeFor (commonMech sc))
-          lastBlock bs = BS.drop (max 0 (BS.length bs - block)) bs
+          -- Retention rule: every small slice this module stores
+          -- in a slot is an independent copy ('BS.copy'), never a
+          -- view sharing its backing allocation. Async snapshots
+          -- pin slot state, so a 16-byte slice of a 16 MiB buffer
+          -- would keep the whole allocation alive behind a
+          -- 16-byte retention price.
+          lastBlock bs = BS.copy (BS.drop (max 0 (BS.length bs - block)) bs)
       in if BS.length full > maxBuffered
         then (removeSingle kind ops, st, denyOutcome (mkDeny CKR_ARGUMENTS_BAD
           "multipart input exceeds the buffer bound"))
@@ -308,7 +314,9 @@ planCipherUpdate ops st kind part mIntent = case withCipherSlot ops kind of
                     )
               | otherwise ->
                   let (streamBytes, retainBytes) = BS.splitAt streamable full
-                      scRetain = setBuffered retainBytes sc'
+                      -- Independent copy per the retention rule
+                      -- above (the suffix is tiny, 'full' is not).
+                      scRetain = setBuffered (BS.copy retainBytes) sc'
                       -- CTR chains the counter forward by whole
                       -- blocks consumed (never the ciphertext tail:
                       -- the chain stays a parameter image). A
@@ -554,8 +562,14 @@ finishCipherUpdate ops kind name result intent = case withCipherSlot ops kind of
                 Left "cipher update answer is not a whole CTR block run"
             | BS.length raw < block || block <= 0 =
                 Left "cipher update answer shorter than one block"
+            -- The CBC tail is 16 bytes of a potentially 16 MiB
+            -- answer and is retained in the slot, so it must be
+            -- an independent copy: a slice would keep the whole
+            -- answer alive behind a 16-byte retention price (async
+            -- snapshots pin slot state). Same retention rule as
+            -- the plan-time 'lastBlock' copy above.
             | otherwise = Right (setChainIv
-                (Just (BS.drop (BS.length raw - block) raw)) sc)
+                (Just (BS.copy (BS.drop (BS.length raw - block) raw))) sc)
       in case result of
         GotBytes raw -> case advance raw of
           Left why ->

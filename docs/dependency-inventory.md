@@ -54,13 +54,16 @@ texts beside it. Contents:
 
 ## Proxy (`/opt/haskoki/proxy/`)
 
-`pkcs11-proxy-ng` v0.2.2 (tag `v0.2.2` = commit `1ed7cc15…`),
+`pkcs11-proxy-ng` v0.2.2 (commit `1ed7cc15…`; the `v0.2.2` tag is a
+human label only, never the checkout ref),
 built from source in the image (R9 re-pin; R5 used v0.2.0).
 Dual MIT/Apache-2.0; full texts ship as `LICENSE-MIT` +
 `LICENSE-APACHE` beside the binaries (asserted present by the
 Dockerfile runtime self-test). Source:
-`https://github.com/mingulov/pkcs11-proxy-ng` at tag `v0.2.2`;
-daemon/shim hashes in `docs/release-results/environment.json`.
+`https://github.com/mingulov/pkcs11-proxy-ng` at commit `1ed7cc15…`
+(full-SHA checkout, fail closed on mismatch; Cargo.lock pinned by
+sha256, built `--locked`); daemon/shim hashes in
+`docs/release-results/environment.json`.
 
 ## Checker venv (`/opt/p11c/`, Python 3.14.4)
 
@@ -113,8 +116,15 @@ Upstream for each distribution:
 `https://pypi.org/project/<dist>/<version>/` (exact
 project-page URL pattern; verified 2026-10-06:
 `cryptography/50.0.2` and `pytest/9.1.1` both → 200).
-Reproduce the set with `pip download` against
-`/opt/p11c/freeze.txt`, written at image build time.
+The set is hash-locked by
+`docker/checker-requirements.txt` (all 33 distributions; the
+Dockerfile checker stage installs with `pip install
+--require-hashes --only-binary=:all:`, FINAL-34 — binaries
+only, so sdist-only resolution fails closed instead of
+fetching unhashed isolated-build deps). Reproduce it with `pip download`
+against that lock (a copy ships at
+`/opt/p11c/requirements.txt` beside `/opt/p11c/freeze.txt`,
+both written at image build time).
 
 ## OS packages and base image
 

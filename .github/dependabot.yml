@@ -1,0 +1,10 @@
+# F-4: automated SHA bumps for the SHA-pinned third-party actions in
+# .github/workflows/ci.yml (pins rot without a bumper).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"

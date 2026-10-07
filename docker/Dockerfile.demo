@@ -8,8 +8,10 @@
 #
 #   Build (from repo root; the driver stages first — see above):
 #     docker build -f docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 .
-#     docker build -f docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 \
-#       --build-arg PROXY_REF=v0.2.2 .
+#   The proxy pin accepts ONLY the qualified commit SHA: any other
+#   --build-arg PROXY_COMMIT fails the proxy stage (fail closed,
+#   FINAL-35). Re-pins go through the reviewed requalification gate
+#   named in the proxy-stage comment — never a silent edit.
 #
 #   Run (runtime scenarios run --network none; the proxy stays on
 #   loopback, which needs no external network):
@@ -18,7 +20,8 @@
 #       check --mode direct --profile smoke
 #
 # Stages: proxy (pinned Rust recipe from
-# scripts/test-proxy-parity.sh, PROXY_REF default v0.2.2); checker
+# scripts/test-proxy-parity.sh, PROXY_COMMIT default = the qualified
+# v0.2.2 commit SHA); checker
 # (pkcs11-check v0.2.3 + pkcs11-tool); runtime (slim: staged bundle
 # tree + proxy binaries + checker + entrypoint ONLY, no toolchains).
 #
@@ -52,25 +55,35 @@ ARG SOURCE=https://github.com/mingulov/haskoki
 # Stage: proxy. Pinned-toolchain build of daemon + shim.
 # Recipe EXACTLY per scripts/test-proxy-parity.sh header (canonical build):
 #   rust:1.94-bookworm + apt-get install protobuf-compiler
-#   + cargo build --release, from a pristine checkout at PROXY_REF.
+#   + cargo build --release --locked, from a pristine checkout at PROXY_COMMIT.
 # git + ca-certificates are fetch-time only (clone + checkout); the
 # BUILD recipe above is the pinned one verbatim.
 # ---------------------------------------------------------------------------
 FROM rust:1.94-bookworm AS proxy
 
-ARG PROXY_REF=v0.2.2
+ARG PROXY_COMMIT=1ed7cc15c838de2e56ba03ac34f426847ffce049
 
-# Canonical artifact hashes for the release pin, quoted from
-# scripts/test-proxy-parity.sh ("Canonical build (the ONLY authoritative
-# hashes)"). Asserted when the build ref resolves to that commit; any
-# other ref records its hashes without asserting.
-# R9: pin is pkcs11-proxy-ng v0.2.2 (tag v0.2.2 = commit 1ed7cc15…;
-# parity 70 holds; checker-lane re-qualification + known deltas
-# recorded in the R9 report before this pin commits).
+# Canonical source + artifact hashes for the release pin, quoted from
+# scripts/test-proxy-parity.sh ("Proxy provenance" + "Canonical build",
+# the ONLY authoritative hashes). The stage checks out by full commit
+# SHA and FAILS CLOSED on ANY mismatch (FINAL-35): a moved tag, a
+# --build-arg override to another commit, or a drifted Cargo.lock all
+# fail the build — hashes are never "recorded, not asserted".
+# R9: pin is pkcs11-proxy-ng v0.2.2 (commit 1ed7cc15…; the v0.2.2 tag
+# is a human label only, never the checkout ref; parity 70 holds;
+# checker-lane re-qualification + known deltas recorded in the R9
+# report before this pin commits).
 # v0.2.1 was attempted and REJECTED (upstream #35 visibility loss,
 # #36 cert-find hole, #37 daemon death on message params — the last
 # blocks all full proxy checker lanes); v0.2.0 was the R5 pin.
+# Re-pins REQUIRE reviewed requalification, never silent acceptance:
+# rebuild the canonical pair per the parity-script recipe, re-run the
+# parity driver (scripts/test-proxy-parity.sh, all topologies) and the
+# full demo-image lanes (scripts/test-demo-image.sh), record the report
+# (ws/r*-evidence style), THEN update PROXY_COMMIT / PROXY_CANON_*
+# in this stage together.
 ENV PROXY_CANON_COMMIT=1ed7cc15c838de2e56ba03ac34f426847ffce049
+ENV PROXY_CANON_LOCK=5452b6bd6ab47d72e8172a04a8f8a72460dabc17f66ced110b930f6d5d75b7d3
 ENV PROXY_CANON_DAEMON=91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b
 ENV PROXY_CANON_SHIM=87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75
 
@@ -79,29 +92,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && git clone https://github.com/mingulov/pkcs11-proxy-ng.git /src \
     && cd /src \
-    && git checkout "$PROXY_REF" \
-    && cargo build --release \
+    && git checkout "$PROXY_COMMIT" \
+    && COMMIT=$(git rev-parse HEAD) \
+    && if [ "$COMMIT" != "$PROXY_CANON_COMMIT" ]; then echo "proxy provenance: FAIL — checkout $COMMIT != qualified $PROXY_CANON_COMMIT"; exit 1; fi \
+    && echo "$PROXY_CANON_LOCK  Cargo.lock" | sha256sum -c - \
+    && cargo build --release --locked \
     && mkdir -p /out/proxy \
     && cp target/release/pkcs11-proxy-ng \
          target/release/libpkcs11_proxy_ng_shim.so /out/proxy/ \
     && cp LICENSE-APACHE LICENSE-MIT /out/proxy/ \
-    && COMMIT=$(git rev-parse HEAD) \
     && { echo "source = https://github.com/mingulov/pkcs11-proxy-ng"; \
-         echo "ref = $PROXY_REF"; \
+         echo "ref = $PROXY_COMMIT"; \
          echo "commit = $COMMIT"; \
          echo "subject = $(git log -1 --format=%s)"; \
-         echo "recipe = rust:1.94-bookworm + apt-get install protobuf-compiler + cargo build --release (scripts/test-proxy-parity.sh header)"; \
+         echo "recipe = rust:1.94-bookworm + apt-get install protobuf-compiler + cargo build --release --locked (scripts/test-proxy-parity.sh header)"; \
          echo -n "daemon sha256 = "; sha256sum /out/proxy/pkcs11-proxy-ng | awk '{print $1}'; \
          echo -n "shim sha256 = "; sha256sum /out/proxy/libpkcs11_proxy_ng_shim.so | awk '{print $1}'; \
        } > /out/proxy/PROVENANCE \
     && cat /out/proxy/PROVENANCE \
-    && if [ "$COMMIT" = "$PROXY_CANON_COMMIT" ]; then \
-         (cd /out/proxy && echo "$PROXY_CANON_DAEMON  pkcs11-proxy-ng" | sha256sum -c -) \
-         && (cd /out/proxy && echo "$PROXY_CANON_SHIM  libpkcs11_proxy_ng_shim.so" | sha256sum -c -) \
-         && echo "proxy provenance: canonical pair reproduced"; \
-       else \
-         echo "proxy provenance: non-canonical ref, hashes recorded, not asserted"; \
-       fi \
+    && (cd /out/proxy && echo "$PROXY_CANON_DAEMON  pkcs11-proxy-ng" | sha256sum -c -) \
+    && (cd /out/proxy && echo "$PROXY_CANON_SHIM  libpkcs11_proxy_ng_shim.so" | sha256sum -c -) \
+    && echo "proxy provenance: qualified commit + lockfile + pair reproduced" \
     && /out/proxy/pkcs11-proxy-ng --version \
     && nm -D --defined-only /out/proxy/libpkcs11_proxy_ng_shim.so | grep -q " T C_GetFunctionList$" \
     && nm -D --defined-only /out/proxy/libpkcs11_proxy_ng_shim.so | grep -q " T C_GetInterface$" \
@@ -110,10 +121,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ---------------------------------------------------------------------------
 # Stage: checker. pkcs11-check v0.2.3 (venv) + pkcs11-tool (opensc).
+# The venv installs from the committed hash lock
+# (docker/checker-requirements.txt, compiled from
+# docker/checker-requirements.in) with `pip install
+# --require-hashes --only-binary=:all:`: any float or hash
+# mismatch fails the build (FINAL-34), and --only-binary closes
+# the sdist hole — --require-hashes alone does NOT cover
+# isolated-build deps (CFFI's sdist would pull floating
+# setuptools>=77.0.3 unhashed), so an index withholding wheels
+# must fail closed here instead of executing unbound code.
+# Re-locks REQUIRE reviewed requalification of the checker pin,
+# never a silent edit — same rule as the proxy pin.
 # ---------------------------------------------------------------------------
 FROM ubuntu:26.04 AS checker
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# The hash lock enters the build context from the repo root (the
+# driver builds with `-f docker/Dockerfile.demo` from the root).
+COPY docker/checker-requirements.txt /tmp/checker-requirements.txt
 
 # Every package documented: python3 + python3-venv + python3-pip build
 # the checker venv; opensc provides the pkcs11-tool client;
@@ -122,7 +148,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-venv python3-pip opensc ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/p11c \
-    && /opt/p11c/bin/pip install --no-input "pkcs11-check==0.2.3" \
+    && /opt/p11c/bin/pip install --no-input --require-hashes \
+         --only-binary=:all: \
+         -r /tmp/checker-requirements.txt \
+    && cp /tmp/checker-requirements.txt /opt/p11c/requirements.txt \
     && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.3$' \
     && /opt/p11c/bin/pip freeze > /opt/p11c/freeze.txt \
     && { echo "pkcs11-check = 0.2.3 (PyPI pin)"; \

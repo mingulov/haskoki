@@ -1,3 +1,4 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {- | SQLite store backend: one local file, single writer.
@@ -10,6 +11,17 @@ previous run; detected via @\/proc@) is taken over without touching
 any data. SQLite-level locking alone would not keep two provider
 caches coherent, so the file lock — not the database — is the
 ownership arbiter.
+
+Ownership is fail-closed and kernel-backed: when owner liveness is
+unknowable (@\/proc@ unreadable, masked, or partially hidden) the
+second opener is refused with 'StoreSecondWriter' rather than risk
+a state fork, and every owner holds an exclusive non-blocking
+@flock(2)@ on a held-open lock fd for the lock's lifetime, so a
+live-but-hidden owner still refuses takeovers. Exclusion is
+anchored to the database identity as well as the sidecar (a second
+held-open @flock(2)@, on the database file itself), so deleting
+the lock path cannot fork a live owner via a replacement lock;
+release unlinks only the owned lock inode.
 
 An empty database initializes transactionally from the schema in
 @spec\/storage-schema.sql@ (four tables, indexes, meta rows); an
@@ -32,11 +44,16 @@ module Haskoki.Runtime.Storage.SQLite
   ( openSQLiteStore
   , openSQLiteStoreWith
   , sqliteSchemaVersion
+  , livenessFromProbes
+  , PidLiveness (..)
+  , ProcProbe (..)
   ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, putMVar, readMVar, takeMVar)
-import Control.Exception (SomeException, bracket, bracket_, mask, mask_, throwIO, try)
-import Data.Bits (shiftR, (.&.))
+import Control.Exception (SomeException, bracket, bracket_, mask, mask_, onException, throwIO, try)
+import Control.Monad (when)
+import Data.Bits (shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
@@ -48,11 +65,13 @@ import qualified Data.Text as T
 import Data.Text (Text)
 import Data.Word (Word64)
 import qualified Database.SQLite3 as S
-import System.IO.Error (tryIOError)
-import System.Posix.Files (fileExist, fileSize, getFileStatus, removeLink, setFileMode)
-import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdWrite, openFd)
-import System.Posix.Process (getProcessID)
-import System.Posix.Types (ProcessID)
+import Foreign.C.Types (CInt (..))
+import System.Environment (lookupEnv)
+import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
+import System.Posix.Files (deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, removeLink, setFdSize, setFileMode)
+import System.Posix.IO (FdOption (..), OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdWrite, openFd, setFdOption)
+import System.Posix.Process (getParentProcessID, getProcessID)
+import System.Posix.Types (Fd, ProcessID)
 
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
@@ -99,14 +118,19 @@ sqliteSchemaVersion :: Int
 sqliteSchemaVersion = 1
 
 -- | One open SQLite store: the connection, its guard lock, the
--- idempotent-close flag, the owned paths, and the live-handle
--- protocol state (injector, quarantine, stats).
+-- idempotent-close flag, the owned paths, the held-open flocked
+-- lock fd (the kernel ownership guard), the held-open flocked
+-- database fd (the stable-identity guard: deleting the lock path
+-- cannot fork a live owner), and the live-handle protocol state
+-- (injector, quarantine, stats).
 data SQLiteConn = SQLiteConn
   { sqDb :: !S.Database
   , sqLock :: !(MVar ())
   , sqClosed :: !(MVar Bool)
   , sqPath :: !FilePath
   , sqLockPath :: !FilePath
+  , sqLockFd :: !Fd
+  , sqDbFd :: !Fd
   , sqInjector :: !FaultInjector
   , sqQuarantine :: !(MVar [(TokenId, String)])
   , sqStats :: !(IORef StoreStats)
@@ -126,35 +150,83 @@ openSQLiteStore :: FilePath -> IO (Either StoreError Store)
 openSQLiteStore path = openSQLiteStoreWith path defaultLimits noFaults
 
 -- | Open with explicit limits (always enforced) and an
--- explicit fault injector.
+-- explicit fault injector. The whole acquisition runs masked;
+-- the only interruptible points are the flock-retry delays
+-- (inside 'ensureDbGuard'/'takeOwnership', each with its fd
+-- cleanup scoped), the fresh-create pause (no handle exists
+-- yet), and the restored 'openInner' section inside
+-- 'openAndInit' (protected by handle cleanup). Every acquired
+-- resource has cleanup registered across the entire remaining
+-- acquisition (nested 'onException'), so a cancellation releases
+-- the sidecar, the database guard, and the SQLite handle exactly
+-- once each — normal 'Left' paths release explicitly instead, so
+-- no handler ever double-closes. The database guard is always
+-- held before any SQLite work (fresh files are created and
+-- guarded first), so a lost sidecar can never fork init. The
+-- initialized handle travels from 'openAndInit' to 'SQLiteConn'
+-- construction masked, with no restored section and no
+-- interruptible operation on the path, and handle cleanup is
+-- retained across the construction itself — so the handoff has
+-- no async-delivery window at all.
 openSQLiteStoreWith :: FilePath -> StoreLimits -> FaultInjector -> IO (Either StoreError Store)
-openSQLiteStoreWith path limits inj = do
+openSQLiteStoreWith path limits inj = mask $ \restore -> do
+  procRoot <- procRootFromEnv
   let lockPath = path ++ ".lock"
-  eOwn <- takeOwnership path lockPath 3
+  eOwn <- takeOwnership path lockPath procRoot 3
   case eOwn of
     Left err -> pure (Left err)
-    Right () -> mask $ \restore -> do
-      eDb <- try (restore (openAndInit path))
+    Right lockFd ->
+      acquireRest restore lockPath lockFd `onException` releaseQuiet lockFd lockPath
+  where
+    acquireRest restore lockPath lockFd = do
+      eGuard <- ensureDbGuard path
+      case eGuard of
+        Left err -> releaseQuiet lockFd lockPath >> pure (Left err)
+        Right (dbFd, created) ->
+          dbPart restore lockPath lockFd dbFd created `onException` closeQuietFd dbFd
+    -- 'openAndInit' runs under this mask (its only restored
+    -- section is handle-cleanup-protected) and returns the handle
+    -- masked: no 'restore' wraps the handoff, so a cancellation
+    -- cannot land between init success and our receipt. Handle
+    -- cleanup is still retained across the construction below, so
+    -- every acquisition prefix owns cleanup for every resource.
+    dbPart restore lockPath lockFd dbFd created = do
+      eDb <- openAndInit restore dbFd path created
       case eDb of
-        Left (e :: SomeException) -> releaseQuiet lockPath >> throwIO e
-        Right (Left err) -> releaseQuiet lockPath >> pure (Left err)
-        Right (Right db) -> do
-          lock <- newMVar ()
-          closed <- newMVar False
-          qVar <- newMVar []
-          sVar <- newIORef zeroStats
-          let conn = SQLiteConn
-                { sqDb = db
-                , sqLock = lock
-                , sqClosed = closed
-                , sqPath = path
-                , sqLockPath = lockPath
-                , sqInjector = inj
-                , sqQuarantine = qVar
-                , sqStats = sVar
-                , sqLimits = limits
-                }
-          pure (Right (mkStore conn))
+        Left err -> do
+          closeQuietFd dbFd
+          releaseQuiet lockFd lockPath
+          pure (Left err)
+        Right db ->
+          (do lock <- newMVar ()
+              closed <- newMVar False
+              qVar <- newMVar []
+              sVar <- newIORef zeroStats
+              let conn = SQLiteConn
+                    { sqDb = db
+                    , sqLock = lock
+                    , sqClosed = closed
+                    , sqPath = path
+                    , sqLockPath = lockPath
+                    , sqLockFd = lockFd
+                    , sqDbFd = dbFd
+                    , sqInjector = inj
+                    , sqQuarantine = qVar
+                    , sqStats = sVar
+                    , sqLimits = limits
+                    }
+              pure (Right (mkStore conn)))
+            `onException` closeQuiet db
+
+-- | The @\/proc@ root for owner-liveness checks: @HASKOKI_PROC_ROOT@
+-- overrides (tests mask liveness deterministically); empty or unset
+-- means @\/proc@. Any override that hides a live owner fails closed
+-- (the opener is refused), never open — and the kernel lock below
+-- backstops every @\/proc@ verdict.
+procRootFromEnv :: IO FilePath
+procRootFromEnv = do
+  mRoot <- lookupEnv "HASKOKI_PROC_ROOT"
+  pure (case mRoot of Just r | not (null r) -> r; _ -> "/proc")
 
 -- ---------------------------------------------------------------------------
 -- Ownership
@@ -162,28 +234,54 @@ openSQLiteStoreWith path limits inj = do
 
 -- | Take single-writer ownership via an O_EXCL sidecar lock carrying
 -- our pid. An existing lock owned by a live pid fails explicitly;
--- a lock owned by a dead pid (a crashed run) is taken over after a
--- bounded number of retries. Taking over never touches the
--- database bytes.
-takeOwnership :: FilePath -> FilePath -> Int -> IO (Either StoreError ())
-takeOwnership dbPath lockPath attempts
+-- a lock whose owner liveness is unknowable fails closed; a lock
+-- owned by a dead pid (a crashed run) is taken over after the
+-- kernel lock confirms no live holder, within a bounded number of
+-- retries. Taking over never touches the database bytes. Success
+-- returns the held-open flocked lock fd, which the caller keeps for
+-- the lock's lifetime.
+--
+-- Acquisition runs fully masked: it performs only fast,
+-- non-blocking syscalls, so deferring async exceptions cannot wedge
+-- the caller — and no cancellation can strand an unreachable fd
+-- holding the kernel lock (@tryIOError@ alone would not catch an
+-- async exception delivered between 'openFd' and the fd handoff).
+takeOwnership :: FilePath -> FilePath -> FilePath -> Int -> IO (Either StoreError Fd)
+takeOwnership dbPath lockPath procRoot attempts
   | attempts <= 0 = pure (Left (StoreSecondWriter ("cannot take ownership of " ++ dbPath ++ ": lock contention")))
-  | otherwise = do
+  | otherwise = mask_ $ do
       pid <- getProcessID
       eFd <- tryIOError (openFd lockPath WriteOnly
         defaultFileFlags { creat = Just 0o600, exclusive = True })
       case eFd of
-        Right fd -> do
-          _ <- tryIOError (fdWrite fd (show pid ++ "\n"))
-          _ <- tryIOError (closeFd fd)
-          pure (Right ())
-        Left _ -> inspectLock dbPath lockPath pid attempts
+        Right fd -> claimFresh dbPath lockPath procRoot attempts fd pid
+        Left _ -> inspectLock dbPath lockPath procRoot pid attempts
 
--- | Diagnose an existing lock: same-process, live peer (both fail),
--- dead owner (take over), or unreadable (fail safe). Owner pids
+-- | Claim a freshly created lock file: take the kernel lock before
+-- writing our pid, and keep the fd open. A lost race retries
+-- (bounded); the retry then sees the winner's live pid and refuses.
+-- Runs under the caller's mask. Each fd cleanup scope ends before
+-- its explicit close: the retry below runs outside every scope
+-- covering this fd, so a cancellation during the retry can never
+-- double-close it (possibly after the number is recycled).
+claimFresh :: FilePath -> FilePath -> FilePath -> Int -> Fd -> ProcessID -> IO (Either StoreError Fd)
+claimFresh dbPath lockPath procRoot attempts fd pid = do
+  _ <- tryIOError (setFdOption fd CloseOnExec True)
+  locked <- tryFlock fd `onException` closeQuietFd fd
+  if not locked
+    then do
+      closeQuietFd fd
+      takeOwnership dbPath lockPath procRoot (attempts - 1)
+    else do
+      _ <- tryIOError (fdWrite fd (show pid ++ "\n")) `onException` closeQuietFd fd
+      pure (Right fd)
+
+-- | Diagnose an existing lock: same-process, live peer, and
+-- unknowable-liveness owner (all fail), dead owner (take over after
+-- the kernel lock confirms), or unreadable (fail safe). Owner pids
 -- compare as text, avoiding any orphan 'Read' instances.
-inspectLock :: FilePath -> FilePath -> ProcessID -> Int -> IO (Either StoreError ())
-inspectLock dbPath lockPath pid attempts = do
+inspectLock :: FilePath -> FilePath -> FilePath -> ProcessID -> Int -> IO (Either StoreError Fd)
+inspectLock dbPath lockPath procRoot pid attempts = do
   eContent <- tryIOError (readFile lockPath)
   case eContent of
     Left _ -> pure (Left (StoreSecondWriter ("store is locked and the owner is unreadable: " ++ lockPath)))
@@ -191,23 +289,244 @@ inspectLock dbPath lockPath pid attempts = do
       [(ownerN, _) :: (Int, String)] | show ownerN == show pid ->
         pure (Left (StoreSecondWriter ("store is already open in this process: " ++ dbPath)))
       [(ownerN, _) :: (Int, String)] -> do
-        alive <- isPidAlive ownerN
-        if alive
-          then pure (Left (StoreSecondWriter ("store is already open by pid " ++ show ownerN ++ ": " ++ dbPath)))
-          else do
-            _ <- tryIOError (removeLink lockPath)
-            takeOwnership dbPath lockPath (attempts - 1)
+        live <- pidLiveness procRoot ownerN
+        case live of
+          PidAlive -> pure (Left (StoreSecondWriter ("store is already open by pid " ++ show ownerN ++ ": " ++ dbPath)))
+          PidUnknown -> pure (Left (StoreSecondWriter ("store is locked by pid " ++ show ownerN
+            ++ " but owner liveness is unknowable (/proc unreadable); refusing second writer: " ++ dbPath)))
+          PidDead -> confirmTakeover dbPath lockPath procRoot pid attempts
       _ -> pure (Left (StoreSecondWriter ("store is locked by an unknown owner: " ++ lockPath)))
 
--- | Pid liveness via @/proc@ (Linux-only, matching the supported
--- loader policy): no signal is ever sent.
-isPidAlive :: Int -> IO Bool
-isPidAlive pid = fileExist ("/proc/" ++ show pid)
+-- | Owner-liveness verdict: alive, provably dead (sufficient
+-- death evidence), or unknowable (anything else: masked,
+-- unreadable, or partially hidden proc). Unknowable fails closed.
+data PidLiveness = PidAlive | PidDead | PidUnknown deriving (Eq, Show)
+
+-- | One @\/proc@ entry probe: present, cleanly absent (@ENOENT@),
+-- or unknowable (any other error: permission denied, I\/O error,
+-- not a directory, ...). Unlike 'fileExist', no probe error ever
+-- escapes to the caller.
+data ProcProbe = ProbePresent | ProbeAbsent | ProbeUnknown deriving (Eq, Show)
+
+probeProc :: FilePath -> IO ProcProbe
+probeProc entry = do
+  eSt <- tryIOError (getFileStatus entry)
+  case eSt of
+    Right _ -> pure ProbePresent
+    Left err
+      | isDoesNotExistError err -> pure ProbeAbsent
+      | otherwise -> pure ProbeUnknown
+
+-- | Pure liveness verdict from probe results (exported so the
+-- table is deterministically unit-testable; 'pidLiveness' is its
+-- only production caller). Death needs sufficient evidence:
+-- @\/proc\/self@ present (a healthy view), our own pid visible,
+-- the parent witness satisfied, and the owner cleanly absent. The
+-- parent probe is 'Nothing' exactly when our parent pid is 0 —
+-- the kernel reports 0 when the parent lives outside our PID
+-- namespace (e.g. container-init processes), so the parent
+-- provably exists but can never have an entry under our @\/proc@:
+-- the witness is inapplicable, not failed, and stale recovery
+-- still works. (Probing @\/proc\/0@ instead would read Absent on
+-- a healthy @\/proc@ and permanently fail closed, so no probe is
+-- taken.) Any other gap fails closed. Residual: a filter hiding
+-- ONLY the owner is @\/proc@-indistinguishable from a dead
+-- owner, so it still reaches 'confirmTakeover' — where the kernel
+-- lock backstop refuses the live owner.
+livenessFromProbes :: ProcProbe -> ProcProbe -> Maybe ProcProbe -> ProcProbe -> PidLiveness
+livenessFromProbes selfProbe meProbe mParentProbe ownerProbe
+  | selfProbe /= ProbePresent = PidUnknown
+  | meProbe /= ProbePresent = PidUnknown
+  | otherwise = case mParentProbe of
+      Just ProbePresent -> ownerVerdict
+      Nothing -> ownerVerdict
+      _ -> PidUnknown
+  where
+    ownerVerdict = case ownerProbe of
+      ProbePresent -> PidAlive
+      ProbeAbsent -> PidDead
+      ProbeUnknown -> PidUnknown
+
+-- | Pid liveness via @\/proc@ (Linux-only, matching the supported
+-- loader policy): no signal is ever sent. Takeover needs
+-- sufficient death evidence (see 'livenessFromProbes'):
+-- @\/proc\/self@ present, our own pid visible, our PARENT pid
+-- visible, and the owner cleanly absent. The parent is always a
+-- live process (the kernel re-parents orphans to init\/a
+-- subreaper), so a view hiding it is demonstrably filtered and
+-- cannot prove death — except a namespace-local parent pid of 0,
+-- which skips the witness (no @\/proc\/0@ probe is ever taken).
+-- An owner pid of 0 likewise takes no probe: pid 0 is never a
+-- userspace owner, so it is dead by rule while the kernel
+-- backstop still confirms. Any probe error maps to 'PidUnknown'
+-- (fail closed).
+pidLiveness :: FilePath -> Int -> IO PidLiveness
+pidLiveness procRoot ownerPid = do
+  selfProbe <- probeProc (procRoot ++ "/self")
+  case selfProbe of
+    ProbePresent -> do
+      me <- getProcessID
+      meProbe <- probeProc (procRoot ++ "/" ++ show me)
+      case meProbe of
+        ProbePresent -> do
+          ppid <- getParentProcessID
+          mParentProbe <- if ppid == 0
+            then pure Nothing
+            else Just <$> probeProc (procRoot ++ "/" ++ show ppid)
+          ownerProbe <- if ownerPid == 0
+            then pure ProbeAbsent
+            else probeProc (procRoot ++ "/" ++ show ownerPid)
+          pure (livenessFromProbes selfProbe meProbe mParentProbe ownerProbe)
+        _ -> pure PidUnknown
+    _ -> pure PidUnknown
+
+-- | Take over an apparently-stale lock: the kernel lock confirms
+-- staleness (a live-but-hidden owner still holds it, and we refuse),
+-- and an fstat-vs-path revalidation closes the unlink race (a lock
+-- unlinked by a concurrently-closing owner is retried, never adopted
+-- orphaned). The winner's pid is written in place and the held-open
+-- flocked fd returned, so deleting the path cannot grant a second
+-- writer while the new owner lives.
+confirmTakeover :: FilePath -> FilePath -> FilePath -> ProcessID -> Int -> IO (Either StoreError Fd)
+confirmTakeover dbPath lockPath procRoot pid attempts = do
+  eFd <- tryIOError (openFd lockPath ReadWrite defaultFileFlags)
+  case eFd of
+    Left e
+      | isDoesNotExistError e -> takeOwnership dbPath lockPath procRoot (attempts - 1)
+      | otherwise -> pure (Left (StoreSecondWriter ("store lock cannot be taken over: " ++ lockPath)))
+    -- Each fd cleanup scope ends before its explicit close (see
+    -- 'claimFresh'): the retry runs outside every scope covering
+    -- this fd, so a cancellation during the retry cannot
+    -- double-close it after the number is recycled.
+    Right fd -> do
+      _ <- tryIOError (setFdOption fd CloseOnExec True)
+      locked <- tryFlock fd `onException` closeQuietFd fd
+      if not locked
+        then do
+          closeQuietFd fd
+          pure (Left (StoreSecondWriter ("store lock is held by a live owner (kernel lock held on "
+            ++ lockPath ++ "); refusing second writer: " ++ dbPath)))
+        else do
+          same <- sameFile fd lockPath `onException` closeQuietFd fd
+          if not same
+            then do
+              closeQuietFd fd
+              takeOwnership dbPath lockPath procRoot (attempts - 1)
+            else do
+              _ <- (do
+                _ <- tryIOError (setFdSize fd 0)
+                tryIOError (fdWrite fd (show pid ++ "\n"))) `onException` closeQuietFd fd
+              pure (Right fd)
+
+-- | True when the open fd and the path name the same file (the
+-- unlink race: a closer may have removed the path after we opened
+-- it, in which case the fd names an orphan, not the lock).
+sameFile :: Fd -> FilePath -> IO Bool
+sameFile fd path = do
+  eSt <- tryIOError (getFdStatus fd)
+  ePath <- tryIOError (getFileStatus path)
+  pure (case (eSt, ePath) of
+    (Right a, Right b) -> deviceID a == deviceID b && fileID a == fileID b
+    _ -> False)
+
+-- | Close an fd best-effort (failure-path cleanup; errors
+-- ignored).
+closeQuietFd :: Fd -> IO ()
+closeQuietFd fd = do
+  _ <- tryIOError (closeFd fd)
+  pure ()
+
+-- | Take the database-anchored kernel guard on an open database
+-- fd: an exclusive non-blocking @flock(2)@ held for the store's
+-- lifetime. A replacement sidecar lock is a different inode whose
+-- own flock succeeds, so without this guard deleting the lock path
+-- would fork a live owner; the database inode is the stable
+-- identity both openers contend on. Runs under the caller's mask;
+-- the cleanup scope ends before the explicit close (see
+-- 'claimFresh').
+takeDbGuard :: FilePath -> Fd -> IO (Either StoreError Fd)
+takeDbGuard dbPath fd = do
+  _ <- tryIOError (setFdOption fd CloseOnExec True)
+  locked <- tryFlock fd `onException` closeQuietFd fd
+  if locked
+    then pure (Right fd)
+    else do
+      closeQuietFd fd
+      pure (Left (StoreSecondWriter ("store database is locked by a live owner (kernel lock held on "
+        ++ dbPath ++ "); refusing second writer: " ++ dbPath)))
+
+-- | Ensure the database file exists and take the database-anchored
+-- kernel guard BEFORE any SQLite work, on both creation paths: a
+-- missing file is created (@O_CREAT|O_EXCL@) and guarded here, so
+-- fresh init is never unguarded — otherwise an opener that loses
+-- its sidecar mid-init would run schema creation against a live
+-- owner's database and even unlink it on failure. Returns the held
+-- guard fd and whether this open created the file (a lost
+-- create-race retries on the winner's file, bounded).
+ensureDbGuard :: FilePath -> IO (Either StoreError (Fd, Bool))
+ensureDbGuard dbPath = mask_ (go (3 :: Int))
+  where
+    go n
+      | n <= 0 = pure (Left (StoreIO ("store database cannot be guarded: " ++ dbPath)))
+      | otherwise = do
+          eFd <- tryIOError (openFd dbPath ReadOnly defaultFileFlags)
+          case eFd of
+            Right fd -> do
+              eGuard <- takeDbGuard dbPath fd
+              pure (fmap (, False) eGuard)
+            Left e
+              | isDoesNotExistError e -> do
+                  eCr <- tryIOError (openFd dbPath WriteOnly
+                    defaultFileFlags { creat = Just 0o600, exclusive = True })
+                  case eCr of
+                    Right fd -> do
+                      eGuard <- takeDbGuard dbPath fd
+                      pure (fmap (, True) eGuard)
+                    Left e2
+                      | isAlreadyExistsError e2 -> go (n - 1)
+                      | otherwise -> pure (Left (StoreIO ("store database cannot be created: " ++ dbPath)))
+              | otherwise -> pure (Left (StoreIO ("store database cannot be guarded: " ++ dbPath)))
+
+-- | @flock(2)@ constants (Linux ABI; this backend is Linux-only, as
+-- is the @\/proc@ liveness check above).
+lockEx, lockNb :: CInt
+lockEx = 2 -- LOCK_EX: exclusive
+lockNb = 4 -- LOCK_NB: non-blocking
+
+foreign import ccall unsafe "sys/file.h flock" c_flock :: CInt -> CInt -> IO CInt
+
+-- | Try an exclusive non-blocking kernel lock on a guard fd,
+-- retrying briefly: a conflicting lock may be a
+-- microsecond-transient inheritance (a forked child between fork
+-- and exec\/exit holds copies of our guard fds, so our close
+-- cannot release the kernel lock until the child closes them)
+-- rather than a live owner. A live owner holds indefinitely, so a
+-- bounded retry (10 tries over ~45ms, far longer than any
+-- fork-to-exec gap) distinguishes the two. Any persistent failure
+-- (held, unavailable) means "not ours": the caller fails closed.
+tryFlock :: Fd -> IO Bool
+tryFlock fd = go (0 :: Int)
+  where
+    go n = do
+      ok <- (== 0) <$> c_flock (fromIntegral fd) (lockEx .|. lockNb)
+      if ok || n >= 9
+        then pure ok
+        else threadDelay 5000 >> go (n + 1)
 
 -- | Release ownership best-effort (close path; errors ignored).
-releaseQuiet :: FilePath -> IO ()
-releaseQuiet lockPath = do
-  _ <- tryIOError (removeLink lockPath)
+-- The path is unlinked only while it still names OUR lock inode —
+-- a live owner's close must never delete a replacement lock
+-- planted after the path was deleted. The unlink happens while the
+-- kernel lock is still held, so no takeover can confirm on the
+-- stale inode mid-release; the fd close then drops the kernel
+-- lock.
+releaseQuiet :: Fd -> FilePath -> IO ()
+releaseQuiet fd lockPath = do
+  owned <- sameFile fd lockPath
+  when owned $ do
+    _ <- tryIOError (removeLink lockPath)
+    pure ()
+  _ <- tryIOError (closeFd fd)
   pure ()
 
 -- ---------------------------------------------------------------------------
@@ -215,37 +534,84 @@ releaseQuiet lockPath = do
 -- ---------------------------------------------------------------------------
 
 -- | Open the database file, configure it, and initialize or verify
--- the schema. Every sync failure is reported as 'Left'; the caller
--- releases ownership on 'Left'.
-openAndInit :: FilePath -> IO (Either StoreError S.Database)
-openAndInit path = do
-  eFresh <- isFreshFile path
-  case eFresh of
+-- the schema. Runs under the caller's mask (see
+-- 'openSQLiteStoreWith'), whose @restore@ this takes: the only
+-- restored section is 'openInner' work, which the exception path
+-- below protects with handle cleanup (rollback, then close).
+-- Every sync failure is reported as 'Left' with the handle
+-- already closed; success returns the handle masked, so it
+-- transfers to 'SQLiteConn' construction with no async-delivery
+-- window. The caller always holds the database guard
+-- ('ensureDbGuard') before this runs, and freshness is read from
+-- the guarded fd (never the path: no TOCTOU between the check and
+-- SQLite's open). After opening, the path must still name the
+-- guarded inode — otherwise the bytes SQLite would touch are not
+-- the guarded ones and the open aborts. The handle has exactly
+-- one owner: the inner helpers never close it, so no interleaving
+-- can double-close the raw pointer; this function's case analysis
+-- closes once on each failure path and hands the handle off
+-- untouched on success.
+openAndInit
+  :: (IO (Either StoreError S.Database) -> IO (Either StoreError S.Database))
+  -> Fd -> FilePath -> Bool -> IO (Either StoreError S.Database)
+openAndInit restore guardFd path created = do
+  eSt <- tryStoreIO (getFdStatus guardFd)
+  case eSt of
     Left err -> pure (Left err)
-    Right fresh -> do
+    Right st -> do
+      let fresh = fileSize st == 0
+      when created (pauseForFreshCreate path)
       eDb <- trySQLite (S.open (T.pack path))
       case eDb of
         Left err -> pure (Left err)
         Right db -> do
-          eCfg <- configure db
-          case eCfg of
-            Left err -> closeQuiet db >> pure (Left err)
-            Right ()
-              | fresh -> initSchema db path
-              | otherwise -> verifyExisting db path
+          same <- sameFile guardFd path
+          if not same
+            then closeQuiet db >> pure (Left (StoreIO ("store database replaced during open: " ++ path)))
+            else do
+              eRes <- try (restore (openInner db path fresh))
+              case eRes of
+                Left (e :: SomeException) -> rollbackQuiet db >> closeQuiet db >> throwIO e
+                Right (Left err) -> closeQuiet db >> pure (Left err)
+                Right (Right ok) -> pure (Right ok)
+  where
+    openInner db dbPath fresh = do
+      eCfg <- configure db
+      case eCfg of
+        Left err -> pure (Left err)
+        Right ()
+          | fresh -> initSchema db guardFd dbPath
+          | otherwise -> verifyExisting db dbPath
 
--- | A path is fresh when it is missing or a zero-byte file.
-isFreshFile :: FilePath -> IO (Either StoreError Bool)
-isFreshFile path = do
-  eExists <- tryStoreIO (fileExist path)
-  case eExists of
-    Left e -> pure (Left e)
-    Right False -> pure (Right True)
-    Right True -> do
-      eSt <- tryStoreIO (getFileStatus path)
-      case eSt of
-        Left e -> pure (Left e)
-        Right st -> pure (Right (fileSize st == 0))
+-- | Test seam: when @HASKOKI_OPEN_PAUSE@ names a directory AND
+-- @HASKOKI_OPEN_PAUSE_PATH@ names THIS open's database path
+-- (exact string match) AND this open created the file, write a
+-- @paused@ file and wait for a @go@ file (10ms poll, 30s cap,
+-- then proceed). Inert unless both variables are set (one env
+-- lookup each) and on every open that did not create the file.
+-- The path binding keeps unrelated parallel SQLite creators
+-- (contract\/commit tests, inherited-env holder children) from
+-- pausing on another test's handshake — only the intended opener
+-- can write its controller's @paused@ file. Justification: the
+-- fresh-init interleaving (sidecar lost between guard acquisition
+-- and SQLite's open) is otherwise timing-only; this pauses
+-- exactly that window so the interleaving and the path-swap abort
+-- are deterministically testable. One pauser per directory;
+-- production never sets it.
+pauseForFreshCreate :: FilePath -> IO ()
+pauseForFreshCreate dbPath = do
+  mDir <- lookupEnv "HASKOKI_OPEN_PAUSE"
+  mWant <- lookupEnv "HASKOKI_OPEN_PAUSE_PATH"
+  case (mDir, mWant) of
+    (Just dir, Just want) | not (null dir), want == dbPath -> do
+      _ <- tryIOError (writeFile (dir ++ "/paused") "paused\n")
+      go (dir ++ "/go") (3000 :: Int)
+    _ -> pure ()
+  where
+    go _ 0 = pure ()
+    go goFile n = do
+      done <- fileExist goFile
+      if done then pure () else threadDelay 10000 >> go goFile (n - 1)
 
 -- | Configure one connection: foreign keys, bounded busy timeout,
 -- rollback journal, durable sync — then verify the durable modes
@@ -283,60 +649,74 @@ verifyPragmas db = do
 
 -- | Transactionally initialize a fresh database from the schema.
 -- On failure the partial file is removed (best effort) so a retry
--- sees a fresh path, never a half-schema.
-initSchema :: S.Database -> FilePath -> IO (Either StoreError S.Database)
-initSchema db path = do
+-- sees a fresh path, never a half-schema — but ONLY while the path
+-- still names our guarded inode, so a failed CREATE can never
+-- unlink another owner's database. Never closes the handle (owned
+-- by 'openAndInit').
+initSchema :: S.Database -> Fd -> FilePath -> IO (Either StoreError S.Database)
+initSchema db guardFd path = do
   eBegin <- trySQLite (S.exec db "BEGIN IMMEDIATE")
   case eBegin of
-    Left err -> closeQuiet db >> pure (Left err)
+    Left err -> pure (Left err)
     Right () -> do
       eBody <- trySQLite (mapM_ (S.exec db) schemaStatements)
       case eBody of
         Left err -> do
           _ <- trySQLite (S.exec db "ROLLBACK")
-          closeQuiet db
-          _ <- tryIOError (removeLink path)
+          removeIfOurs guardFd path
           pure (Left (StoreIO ("schema init failed: " ++ show err)))
         Right () -> do
           eCommit <- trySQLite (S.exec db "COMMIT")
           case eCommit of
             Left err -> do
               _ <- trySQLite (S.exec db "ROLLBACK")
-              closeQuiet db
-              _ <- tryIOError (removeLink path)
+              removeIfOurs guardFd path
               pure (Left (StoreIO ("schema init commit failed: " ++ show err)))
             Right () -> do
               _ <- tryIOError (setFileMode path 0o600)
               pure (Right db)
 
+-- | Best-effort removal of a failed-init database, only while the
+-- path still names our guarded inode. Sound: we hold the exclusive
+-- guard on that inode, and any live owner holds a guard on the
+-- live inode — so if the path names ours, no other live owner
+-- uses it. A swapped path is left alone.
+removeIfOurs :: Fd -> FilePath -> IO ()
+removeIfOurs guardFd path = do
+  ours <- sameFile guardFd path
+  when ours $ do
+    _ <- tryIOError (removeLink path)
+    pure ()
+
 -- | Verify an existing database: all four tables present and the
--- schema version exactly ours. Anything else closes the handle and
--- fails WITHOUT writing a single byte.
+-- schema version exactly ours. Anything else fails WITHOUT writing
+-- a single byte. Never closes the handle (owned by 'openAndInit').
 verifyExisting :: S.Database -> FilePath -> IO (Either StoreError S.Database)
 verifyExisting db path = do
   eTables <- queryRows db "SELECT name FROM sqlite_master WHERE type = 'table'" []
   case eTables of
-    Left err -> closeQuiet db >> pure (Left err)
+    Left err -> pure (Left err)
     Right rows -> do
       let names = [t | [S.SQLText t] <- rows]
           want = ["store_meta", "tokens", "objects", "detached_jobs"]
       if all (`elem` names) want
         then checkVersion db path
-        else closeQuiet db >> pure (Left (StoreIO (path ++ ": not a haskoki store (missing tables)")))
+        else pure (Left (StoreIO (path ++ ": not a haskoki store (missing tables)")))
 
 -- | Check the integer schema version (exactly ours; wrong\/future
 -- versions are rejected, never migrated silently — explicit
--- migrations arrive with a future format bump).
+-- migrations arrive with a future format bump). Never closes the
+-- handle (owned by 'openAndInit').
 checkVersion :: S.Database -> FilePath -> IO (Either StoreError S.Database)
 checkVersion db path = do
   eVer <- queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
   case eVer of
-    Left err -> closeQuiet db >> pure (Left err)
+    Left err -> pure (Left err)
     Right [[S.SQLText v]]
       | v == T.pack (show sqliteSchemaVersion) -> pure (Right db)
-      | otherwise -> closeQuiet db >> pure
+      | otherwise -> pure
           (Left (StoreSchemaVersion sqliteSchemaVersion (T.unpack v)))
-    Right _ -> closeQuiet db >> pure (Left (StoreCorrupt (path ++ ": corrupt store metadata")))
+    Right _ -> pure (Left (StoreCorrupt (path ++ ": corrupt store metadata")))
 
 -- | The schema (mirrors @spec\/storage-schema.sql@).
 schemaStatements :: [Text]
@@ -377,8 +757,9 @@ withConn :: SQLiteConn -> (S.Database -> IO a) -> IO a
 withConn conn f =
   bracket_ (takeMVar (sqLock conn)) (putMVar (sqLock conn) ()) (f (sqDb conn))
 
--- | Idempotent close: the database handle closes and the lock file
--- is removed exactly once; later closes are silent no-ops.
+-- | Idempotent close: the database handle closes and the lock
+-- (path plus both held kernel guards) is released exactly once;
+-- later closes are silent no-ops.
 closeConn :: SQLiteConn -> IO ()
 closeConn conn = mask_ $ do
   already <- takeMVar (sqClosed conn)
@@ -386,7 +767,8 @@ closeConn conn = mask_ $ do
     then putMVar (sqClosed conn) True
     else do
       _ <- trySQLite (S.close (sqDb conn))
-      releaseQuiet (sqLockPath conn)
+      releaseQuiet (sqLockFd conn) (sqLockPath conn)
+      _ <- tryIOError (closeFd (sqDbFd conn))
       putMVar (sqClosed conn) True
 
 -- | The commit protocol: quarantine refusal, pre-commit
@@ -946,6 +1328,13 @@ tryStoreIO act = do
 closeQuiet :: S.Database -> IO ()
 closeQuiet db = do
   _ <- trySQLite (S.close db)
+  pure ()
+
+-- | Roll back best-effort (exception-path cleanup before the
+-- handle close; errors ignored).
+rollbackQuiet :: S.Database -> IO ()
+rollbackQuiet db = do
+  _ <- trySQLite (S.exec db "ROLLBACK")
   pure ()
 
 -- ---------------------------------------------------------------------------

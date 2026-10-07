@@ -1,0 +1,91 @@
+name: prop-nightly
+
+# Fresh-seed exploration lane (F-14 / narrowed T-3): the prop suite
+# stays replay-fixed on PRs; this lane runs it nightly with a random
+# PROP_SEED at 1000 cases. The suite prints its effective seed/count
+# once per start, so any failure reruns bit-identically via
+# PROP_SEED=<logged> PROP_CASES=<logged>.
+#
+# Pin policy (F-4): same as ci.yml — every third-party action is
+# pinned to a full commit SHA with the human-readable tag as a
+# trailing comment on the same line.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  haskell-prop-nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: ubuntu:26.04
+    env:
+      # Keep the cabal store on the mounted workspace so the cache
+      # action (host-side) can persist it across runs.
+      CABAL_DIR: ${{ github.workspace }}/.cabal
+    steps:
+      - name: Base packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential ghc cabal-install libgmp-dev git perl curl \
+            ca-certificates python3
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Restore OpenSSL prefix cache
+        id: ossl-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ossl-cache/openssl-4.0.2.tar.gz
+          key: openssl-4.0.2-static-v1
+      - name: Build OpenSSL prefix (cache miss only)
+        if: steps.ossl-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ossl-build ossl-cache
+          cd /tmp/ossl-build
+          OSSL_URL=https://github.com/openssl/openssl/releases/download
+          curl -fsSLO "$OSSL_URL/openssl-4.0.2/openssl-4.0.2.tar.gz"
+          OSSL_SHA=736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8
+          echo "$OSSL_SHA  openssl-4.0.2.tar.gz" | sha256sum -c -
+          tar xzf openssl-4.0.2.tar.gz
+          cd openssl-4.0.2
+          perl ./Configure --prefix=/opt/openssl-4.0.2 --openssldir=/opt/openssl-4.0.2/ssl \
+            --libdir=lib no-docs no-tests threads no-shared no-pinshared linux-x86_64
+          make -j"$(nproc)"
+          make install_sw
+          /opt/openssl-4.0.2/bin/openssl version
+          tar czf "$GITHUB_WORKSPACE/ossl-cache/openssl-4.0.2.tar.gz" -C / opt/openssl-4.0.2
+      - name: Install cached OpenSSL prefix
+        if: steps.ossl-cache.outputs.cache-hit == 'true'
+        run: tar xzf ossl-cache/openssl-4.0.2.tar.gz -C /
+      - name: Restore cabal store cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .cabal
+          key: cabal-store-9.10.3-${{ hashFiles('cabal.project.freeze') }}
+          restore-keys: |
+            cabal-store-9.10.3-
+      - name: Fresh-seed prop run (1000 cases)
+        # Container steps default to sh/dash, where $RANDOM and
+        # pipefail do not exist: select bash (ci.yml precedent).
+        shell: bash
+        run: |
+          set -euo pipefail
+          cabal update
+          cabal build all --enable-tests
+          SEED=$RANDOM
+          echo "fresh-seed nightly: PROP_SEED=$SEED PROP_CASES=1000"
+          PROP_SEED=$SEED PROP_CASES=1000 cabal test haskoki-prop-tests 2>&1 | tee prop-nightly.log
+      - name: Upload nightly log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: prop-nightly-log
+          path: prop-nightly.log
+          if-no-files-found: warn

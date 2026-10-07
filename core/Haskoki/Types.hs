@@ -27,6 +27,8 @@ module Haskoki.Types
   , Outcome (..)
     -- * Redacted rendering
   , redactShown
+    -- * Retained-size accounting
+  , retainedStringBytes
   ) where
 
 import Data.Word (Word32)
@@ -177,3 +179,15 @@ redactShown :: String -> Int -> String
 redactShown kind len =
   "{\"redacted\":true,\"kind\":\"" ++ kind ++ "\",\"length\":"
     ++ show len ++ "}"
+
+-- | Heap upper bound for a retained 'String' (a @[Char]@ list):
+-- 48 bytes per character. A cons cell is 3 words and a boxed
+-- 'Char' is 2 words, so 40 bytes per character on 64-bit
+-- architectures (+8 margin); 32-bit heaps are smaller, so the
+-- bound holds there too. Used by retention accounting (the
+-- 'Haskoki.Runtime.Async.retainedBytes' contract), where short
+-- trust-boundary texts (operation names,
+-- region names, failure renders) are the only 'String's pinned
+-- per record.
+retainedStringBytes :: String -> Int
+retainedStringBytes = (48 *) . length

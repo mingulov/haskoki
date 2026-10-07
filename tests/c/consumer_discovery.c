@@ -513,10 +513,10 @@ int main(int argc, char **argv) {
             mi.flags == (CKF_ENCAPSULATE | CKF_DECAPSULATE),
         "ML_KEM info: 800..1568, encapsulate/decapsulate");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_AES_GCM, &mi);
+  /* F-9: GCM message flags withdrawn (FINAL-101); classic encrypt/decrypt stay. */
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 16 && mi.ulMaxKeySize == 32 &&
-            mi.flags == (CKF_ENCRYPT | CKF_DECRYPT | CKF_MESSAGE_ENCRYPT |
-                         CKF_MESSAGE_DECRYPT),
-        "AES_GCM info: 16..32, encrypt/decrypt, message encrypt/decrypt, no wrap flags");
+            mi.flags == (CKF_ENCRYPT | CKF_DECRYPT),
+        "AES_GCM info: 16..32, encrypt/decrypt, no message flags, no wrap flags");
   rv = tbl32->C_GetMechanismInfo(slotsL[0], CKM_DES_CBC, &mi);
   CHECK(rv == CKR_OK && mi.ulMinKeySize == 8 && mi.ulMaxKeySize == 8 &&
             mi.flags == (CKF_ENCRYPT | CKF_DECRYPT | CKF_MESSAGE_ENCRYPT |

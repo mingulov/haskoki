@@ -3,13 +3,16 @@
 The LCG and delta-sequence corpus extend the hand-rolled 'genSeq'
 precedent (tests/model/TransitionSpec.hs:194-219). QuickCheck
 properties run with fixed replay seeds ('propWith') and 'PROP_CASES'
-counts, so every run is deterministic.
+counts, so every default run is deterministic; 'PROP_SEED' overrides
+every replay seed for fresh-seed exploration (a seeded rerun with the
+logged seed replays bit-identically).
 -}
 module Gen
   ( lcgNext
   , lcgBytes
   , genSeq
   , propCases
+  , propSeedOverride
   , propWith
   , permitOps
   , qcBytes
@@ -21,6 +24,7 @@ import Data.Bits (shiftR)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.List (sort)
+import Data.Maybe (fromMaybe)
 import Data.Word (Word64, Word8)
 import System.Environment (lookupEnv)
 import Text.Read (readMaybe)
@@ -86,11 +90,20 @@ propCases = do
       Just k | k > 0 -> k
       _ -> 100
 
--- | A QuickCheck property with a fixed replay seed and case count.
-propWith :: TestName -> Int -> Int -> Property -> TestTree
-propWith name seed count prop =
+-- | Seed knob: PROP_SEED override for every QuickCheck replay seed.
+-- Nothing (unset or unparseable) keeps each property's fixed seed.
+propSeedOverride :: IO (Maybe Int)
+propSeedOverride = parseSeed <$> lookupEnv "PROP_SEED"
+  where
+    parseSeed :: Maybe String -> Maybe Int
+    parseSeed mtxt = mtxt >>= readMaybe
+
+-- | A QuickCheck property with a fixed replay seed and case count,
+-- or the PROP_SEED override when set (see propSeedOverride).
+propWith :: Maybe Int -> TestName -> Int -> Int -> Property -> TestTree
+propWith seedOv name seed count prop =
   localOption (QuickCheckTests count) $
-    localOption (QuickCheckReplayLegacy seed) $
+    localOption (QuickCheckReplayLegacy (fromMaybe seed seedOv)) $
       testProperty name prop
 
 -- | The six permit-bit operations (Codec.hs permitBits assignment).
