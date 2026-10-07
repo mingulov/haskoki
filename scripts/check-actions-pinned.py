@@ -2104,7 +2104,7 @@ def _docker_physical_refused(docker: str):
     comment to the builder, P22 — the gate refuses it anyway).
     Multiple leading BOMs: v0.33.0 strips exactly one and then
     fails dispatch on the survivor (`unknown instruction`, probe
-    probe 2) — the gate refuses fail-closed, which agrees with that
+    2) — the gate refuses fail-closed, which agrees with that
     outcome on the cited version AND stays safe if a future
     builder strips more (the union rule is load-bearing: CI pins
     no buildkit version). `# check=` / `// check=` need no
@@ -5704,7 +5704,7 @@ def self_test_fix15() -> int:
     instructions/parse.go L161-168), the `check` consumer
     (convert.go L197 → lint config only, linter.go
     `ParseLintOptions`: skip/experimental/error — warnings-only,
-    never execution), and REAL `docker build` probes 0–14+5b
+    never execution), and REAL `docker build` probes 0–14+P5b
     (BuildKit v0.33.0 via default docker-driver, client Docker
     29.8.1, base alpine:3.22, contested ref
     127.0.0.1:1/f15-nonexistent:latest — forward proves

@@ -31,6 +31,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 CONTRACTS = REPO / "spec/function-contracts.json"
 
+# One shared unsupported-shape list for HOSTS-DROP and NO-STALE so
+# the two rules cannot drift: a SeedRandom line fails when it
+# carries any of these shapes (case-insensitive).
+HOLDOUT_SHAPES = (r"unsupport|refus|not supported|honestly NA"
+                  r"|NOT_SUPPORTED|not yet|not implement|holdout|N/A")
+
 failures = []
 
 
@@ -71,9 +77,7 @@ def main():
     # which is the documented intent ("no longer listed as
     # unsupported").
     hosts = (REPO / "SUPPORTED-HOSTS.md").read_text()
-    holdout = re.compile(r"unsupport|refus|not supported|honestly NA"
-                         r"|NOT_SUPPORTED|not yet|not implement|holdout|N/A",
-                         re.IGNORECASE)
+    holdout = re.compile(HOLDOUT_SHAPES, re.IGNORECASE)
     bad = [line.strip()[:100] for line in hosts.splitlines()
            if "SeedRandom" in line and holdout.search(line)]
     check("HOSTS-DROP", not bad,
@@ -98,11 +102,11 @@ def main():
     check("CHANGELOG-ENTRY", "C_SeedRandom" in changelog,
           "CHANGELOG carries a C_SeedRandom entry")
 
-    # --- NO-STALE: stale-claim scan ---
-    neg = re.compile(r"SeedRandom.*(unsupport|refus|not supported|honestly NA"
-                     r"|NOT_SUPPORTED|not yet|not implement)|"
-                     r"(unsupport|refus|not supported|honestly NA)"
-                     r".*SeedRandom",
+    # --- NO-STALE: stale-claim scan (shared HOLDOUT_SHAPES, both
+    # directions: the reversed branch previously omitted
+    # NOT_SUPPORTED|not yet|not implement and the newer holdout|N/A) ---
+    neg = re.compile(r"SeedRandom.*(" + HOLDOUT_SHAPES + r")|"
+                     r"(" + HOLDOUT_SHAPES + r").*SeedRandom",
                      re.IGNORECASE)
     # (path suffix, line regex): dated history or executed pins, not prose claims.
     allow = [
