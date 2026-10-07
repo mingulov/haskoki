@@ -282,6 +282,43 @@ jobs:
         run: |
           docker run --rm --network host -v "$PWD:/work" -w /work \
             haskoki-dev:ghc-9.10.3 scripts/make-release.sh
+      - name: Install test on bare image
+        run: |
+          set -euo pipefail
+          # Leg B needs the packaged-asset tarball layout, which only
+          # exists after publish-time packaging: stage an unsigned
+          # layout-identical tarball in /tmp (packager precedent:
+          # top-level member haskoki-$VER) and pass it explicitly, so
+          # the staged dist-release/ tree stays clean.
+          VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
+          [ -n "$VER" ] || { echo "cannot parse version"; exit 2; }
+          rm -rf /tmp/legb-stage && mkdir -p /tmp/legb-stage
+          (cd dist-release && tar -czf "/tmp/legb-stage/haskoki-$VER-linux-x86_64.tar.gz" "haskoki-$VER") \
+            || { echo "leg-B tarball staging failed"; exit 2; }
+          bash scripts/test-release-install.sh \
+            "dist-release/haskoki-$VER" ubuntu:26.04 \
+            "/tmp/legb-stage/haskoki-$VER-linux-x86_64.tar.gz"
+      - name: Build sdist and verify outside the checkout
+        run: |
+          set -euo pipefail
+          docker run --rm --network host -v "$PWD:/work" -w /work \
+            haskoki-dev:ghc-9.10.3 sh -c 'cabal sdist'
+          VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
+          rm -rf /tmp/sdist-verify && mkdir -p /tmp/sdist-verify
+          tar xzf "dist-newstyle/sdist/haskoki-$VER.tar.gz" -C /tmp/sdist-verify
+          printf 'packages: .\nallow-newer: all\n' \
+            > "/tmp/sdist-verify/haskoki-$VER/cabal.project"
+          sudo chown -R 1000:1000 /tmp/sdist-verify
+          docker run --rm --network host -v "/tmp/sdist-verify/haskoki-$VER:/src" \
+            -w /src haskoki-dev:ghc-9.10.3 \
+            sh -c 'cabal build all --enable-tests && cabal test all'
+      - name: Restore checkout ownership to runner
+        run: |
+          # The align step handed the checkout to the image user
+          # (1000:1000) for the bind-mounted docker steps; hand it
+          # back so host-side writes (provenance, tarball) and the
+          # artifact upload work again.
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - name: Capture producer provenance
         run: |
           set -euo pipefail
@@ -310,22 +347,6 @@ jobs:
           python3 -m json.tool producer-provenance.json > /dev/null \
             || { echo "provenance is not valid JSON"; exit 2; }
           cat producer-provenance.json
-      - name: Install test on bare image
-        run: bash scripts/test-release-install.sh
-      - name: Build sdist and verify outside the checkout
-        run: |
-          set -euo pipefail
-          docker run --rm --network host -v "$PWD:/work" -w /work \
-            haskoki-dev:ghc-9.10.3 sh -c 'cabal sdist'
-          VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
-          rm -rf /tmp/sdist-verify && mkdir -p /tmp/sdist-verify
-          tar xzf "dist-newstyle/sdist/haskoki-$VER.tar.gz" -C /tmp/sdist-verify
-          printf 'packages: .\nallow-newer: all\n' \
-            > "/tmp/sdist-verify/haskoki-$VER/cabal.project"
-          sudo chown -R 1000:1000 /tmp/sdist-verify
-          docker run --rm --network host -v "/tmp/sdist-verify/haskoki-$VER:/src" \
-            -w /src haskoki-dev:ghc-9.10.3 \
-            sh -c 'cabal build all --enable-tests && cabal test all'
       - name: Archive bundle tree (mode-preserving transport)
         run: |
           set -euo pipefail
