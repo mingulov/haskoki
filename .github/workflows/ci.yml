@@ -448,6 +448,13 @@ jobs:
         run: |
           set -euo pipefail
           time sh scripts/test-demo-image.sh
+      - name: Normalize driver-out ownership
+        run: |
+          # The driver runs entrypoints in containers: run files land
+          # root-owned, some mode-locked (dec.bin), and the artifact
+          # upload runs as the runner — hand the tree back first.
+          sudo chown -R "$(id -u):$(id -g)" driver-out
+          chmod -R u+rwX driver-out
       - name: Record image identity
         id: record
         run: |
