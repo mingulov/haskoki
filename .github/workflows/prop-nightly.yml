@@ -18,6 +18,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # Structural tests read UTF-8 sources with locale-dependent
+  # decoders (Dockerfile precedent: the builder image sets the same
+  # pair); the bare ubuntu:26.04 container defaults to C.
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+
 jobs:
   haskell-prop-nightly:
     runs-on: ubuntu-latest
