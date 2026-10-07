@@ -5104,7 +5104,13 @@ caseRealDhKeygen = withRealEnv $ \env -> do
         EngineOk s -> pure s
         EngineFail err -> assertFailure ("real derive B->A failed: " ++ show err) >> undefined
       assertEqual "agreement commutes" sAB sBA
-      assertEqual "prime width" 256 (BS.length sAB)
+      -- The provider derive returns the minimal big-endian
+      -- encoding (leading zeros stripped, no left pad): the
+      -- secret is uniform in [1, p-1], so its width is
+      -- 1..prime-width — a 255-byte draw lands with
+      -- probability ~1/256, and an exact-256 assertion flakes.
+      assertBool "secret nonempty" (not (BS.null sAB))
+      assertBool "secret within prime width" (BS.length sAB <= 256)
     _ -> assertFailure "real DH halves lack material"
 
 caseRealEcKeygen384 :: IO ()

@@ -3200,7 +3200,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "DH recipe (core/Haskoki/Recipe/Dh.hs): PKCS#3 agreement on CKK_DH bases. Null-KDF (raw secret at the prime width) only; every other KDF selector is a typed refusal (deferred dimension). The peer rides as bare big-endian bytes (the PKCS#11 parameter form); the shim range-checks 1 < y < p - 1 natively and rebuilds the peer on the base's domain (named-group bases need named-group peers, explicit p/g/q otherwise; OSSL_PARAM BN import reads native-endian). Real KAT pinned (OpenSSLSpec caseDhAgree: ffdhe2048 CLI vectors both directions + range refusals); synthetic 512-byte max-width constructions pinned (SyntheticSpec caseDh); planner width ceiling + driver truncation pinned (RecipeDhSpec, RoutingE2ESpec caseDriverDh).",
+      "notes": "DH recipe (core/Haskoki/Recipe/Dh.hs): PKCS#3 agreement on CKK_DH bases. Null-KDF (raw secret, minimal big-endian, 1..prime width) only; every other KDF selector is a typed refusal (deferred dimension). The peer rides as bare big-endian bytes (the PKCS#11 parameter form); the shim range-checks 1 < y < p - 1 natively and rebuilds the peer on the base's domain (named-group bases need named-group peers, explicit p/g/q otherwise; OSSL_PARAM BN import reads native-endian). Real KAT pinned (OpenSSLSpec caseDhAgree: ffdhe2048 CLI vectors both directions + range refusals); synthetic 512-byte max-width constructions pinned (SyntheticSpec caseDh); planner width ceiling + driver truncation pinned (RecipeDhSpec, RoutingE2ESpec caseDriverDh).",
       "numeric_id": "0x00000021",
       "routes": [
         {

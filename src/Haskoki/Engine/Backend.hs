@@ -995,8 +995,10 @@ class CryptoBackend b where
   ecdhDerive :: BackendEnv b -> EcdhSpec -> KeyMaterial -> KeyMaterial -> IO (EngineResult ByteString)
   -- ^ (base private, peer public) -> full secret.
 
-  -- DH agreement: the raw shared secret at the prime's byte width
-  -- (@CKD_NULL@ only — the recipe refuses every KDF selector). The
+  -- DH agreement: the raw shared secret in minimal big-endian
+  -- (the provider's derive strips leading zeros — no left pad —
+  -- so the width is 1..prime-width, not exactly the prime width;
+  -- @CKD_NULL@ only — the recipe refuses every KDF selector). The
   -- peer rides as bare big-endian bytes ('KeyDer'); the real
   -- backend range-checks @1 < y < p - 1@ natively and refuses
   -- out-of-range peers as parameter faults. Synthetic answers the
