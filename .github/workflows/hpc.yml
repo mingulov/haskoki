@@ -9,8 +9,11 @@ name: hpc
 # F-15 brief: ratchets/floors need phase-1 numbers first, and this
 # lane produces them).
 #
-# What it runs: `cabal test --enable-coverage all`, then one combined
-# .tix (`hpc sum --union`), one text report PER LIBRARY
+# What it runs: forced `cabal build` first (Cabal-9341: a fresh
+# `cabal test` can probe haskoki-core-tests before the sibling main
+# library unit registers — run-gates.sh / ci.yml / prop-nightly
+# precedent), then `cabal test --enable-coverage all`, then one
+# combined .tix (`hpc sum --union`), one text report PER LIBRARY
 # (`hpc report --include=<unitid>:`) plus per-library HTML
 # (`hpc markup`). Artifacts (hpc-coverage + hpc-test-log) stay
 # browseable from the run even when a suite fails (`if: always()` on
@@ -108,6 +111,9 @@ jobs:
         run: |
           set -euo pipefail
           cabal update
+          # Forced build first (Cabal-9341, run-gates.sh precedent);
+          # coverage flags match the test run so artifacts are reused.
+          cabal build all --enable-tests --enable-coverage
           cabal test --enable-coverage all 2>&1 | tee hpc-test.log
       - name: Per-library reports + HTML
         # Runs even when a suite fails: the combined .tix and the
