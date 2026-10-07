@@ -95,8 +95,18 @@ ALSO = {"Dockerfile", "CHANGELOG.md", "README.md", "SUPPORTED-HOSTS.md",
 
 
 def tracked():
-    out = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True,
-                         text=True, check=True).stdout
+    # Container-proof: checkouts mounted from the CI host are owned
+    # by another uid, which git refuses (dubious ownership, exit
+    # 128) unless declared safe — scope the declaration to this one
+    # read-only invocation so the gate runs from anywhere.
+    try:
+        out = subprocess.run(
+            ["git", "-c", f"safe.directory={REPO}", "ls-files"],
+            cwd=REPO, capture_output=True, text=True, check=True).stdout
+    except subprocess.CalledProcessError as e:
+        print("history-codes: cannot list tracked files: "
+              f"{(e.stderr or '').strip()[:300]}")
+        sys.exit(2)
     for rel in out.splitlines():
         rel = rel.strip()
         if not rel or rel == SELF:
