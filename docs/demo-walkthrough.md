@@ -642,7 +642,7 @@ docker run --rm --network none -v "$PWD/out:/out" --entrypoint /bin/sh \
   haskoki-demo:0.3.0.0 \
   /opt/haskoki/examples/release/compare-classify/compare-classify \
   "/out/$(basename "$RD")"
-# compare-classify-ok: 83 known-difference + shared 27/27 exact
+# compare-classify-ok: 83 known-difference + shared 22/22 exact
 ```
 
 Frozen sets, family reasons, and the zero-variance rule live in

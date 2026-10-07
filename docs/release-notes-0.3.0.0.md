@@ -67,11 +67,11 @@ until the release is cut.)
 ## Results (measured on this release)
 
 - Checker smoke (743 tests): zero findings, direct and proxied.
-- Checker full (11003 tests): direct 27 triaged findings
-  (4 families); proxied 27 findings, all shared with direct,
+- Checker full (11003 tests): direct 22 triaged findings
+  (4 families); proxied 22 findings, all shared with direct,
   zero proxy-only.
 - Compare direct-vs-proxy: 83 frozen exclusions in 6 reasoned
-  families + 27 shared findings (zero allowed variance).
+  families + 22 shared findings (zero allowed variance).
 - Direct/proxy parity on the pinned proxy: 70 consumer legs
   hold; 19 quarantined legs in 5 quarantine entries with upstream
   causes.

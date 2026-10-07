@@ -197,7 +197,9 @@ Blowfish catalog ×20; TLS-derive ×2; WTLS-premaster ×3;
 boundary check-order ×2; GMAC direct-only ×2; proxy-better
 spec-code inversions ×6 — per-id reasons in R5 report §1.
 (R4 a48b60b for the delta: proxy 40 in 9 families, 238 diffs,
-12 shared.)
+12 shared.) Post-R9 (F-9): direct/proxy 22 in the same 4
+families — GCM-shape shrinks 7 to 2 (the 5 AES_GCM message
+lines leave with the withdrawn flags; GMAC pair stays).
 
 Skip/xfail causes, one model (R5 jsonl census on v0.2.0 lanes;
 direct table byte-identical to R4): direct 4,876 plain in 85
@@ -426,7 +428,11 @@ proxied; full 11003 collected, direct 27 findings, proxy
 (v0.2.2, R9) 27 findings all shared, zero proxy-only. Compare:
 R5 188 frozen exclusions in 7 families + 25 shared findings;
 R9 83 in 6 families + 27 shared (Finding triage above; per-id
-reasons in the frozen sets).
+reasons in the frozen sets). Post-R9 (F-9 re-freeze): direct
+and proxy 22 findings, all shared, zero proxy-only; compare
+83 exclusions + 22 shared — the 5 AES_GCM message lines left
+when F-9 withdrew CKF_MESSAGE_* from the GCM row (the
+framework skips message ops whose flags are not advertised).
 
 Driver-lane figures (passing R5 driver record,
 `HASKOKI_DEMO_TEST_OUT=… sh scripts/test-demo-image.sh`, exit

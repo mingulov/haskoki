@@ -1,11 +1,7 @@
-# frozen shared findings (R9): exact shared-findings.txt — 27 lines
+# frozen shared findings (R9, F-9 re-freeze): exact shared-findings.txt — 22 lines
+# (the 5 AES_GCM message lines left when F-9 withdrew CKF_MESSAGE_* from GCM)
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
-failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_aes_gcm_generated_iv_writeback
-failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_decrypt_aes_gcm
-failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_multipart_aes_gcm
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[AES_GCM]
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[AES_GCM]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[AES_GMAC]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[HOTP]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[AES_GMAC]

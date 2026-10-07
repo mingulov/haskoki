@@ -237,23 +237,22 @@ grep -q 'findings: none' "$OUT/check-proxy-smoke.log" \
 
 # Full lanes exit 1 with exact finding sets (R9 on proxy v0.2.2: 27
 # direct / 27 proxy-core / diff-core + shared re-frozen below on
-# checker 0.2.3; triaged in task-R9-report.md). Direct is byte-exact
-# (deterministic across runs; identical set to R4 — backend unchanged).
-# Proxy asserts a stable 27-line core exactly (strict, codex I4 —
+# checker 0.2.3; triaged in task-R9-report.md; F-9 re-freeze: 22/22,
+# see below). Direct is byte-exact (deterministic across runs).
+# Proxy asserts a stable 22-line core exactly (strict, codex I4 —
 # the failed pair's historical {pass, fail} bound is NOT suppressed);
 # any other line fails loudly. R9 delta vs R5: +2 GMAC message-init
 # lines (init params now forward; the backend's native 0x7 refusal
 # surfaces byte-identical in both lanes, verified in the run dirs).
+# F-9 delta vs R9: -5 AES_GCM message lines (F-9 withdrew
+# CKF_MESSAGE_* from the GCM row; the framework skips message ops
+# whose flags are not advertised — verified in framework source
+# test_mech_message.py — so the oracle no longer reports them).
 run_check direct full 1
 RUN_DIR=$(latest_run "check-direct-full")
 cat > "$OUT/exp-full-direct.txt" <<'EOF'
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
-failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_aes_gcm_generated_iv_writeback
-failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_decrypt_aes_gcm
-failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_multipart_aes_gcm
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[AES_GCM]
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[AES_GCM]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[AES_GMAC]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[HOTP]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[AES_GMAC]
@@ -275,22 +274,17 @@ failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_mess
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
 EOF
-[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 27 ] || fail "driver: want 27 expected direct findings"
+[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 22 ] || fail "driver: want 22 expected direct findings"
 if ! diff -u "$OUT/exp-full-direct.txt" "$RUN_DIR/findings.txt"; then
-  fail "check direct/full findings differ from the exact expected 27"
+  fail "check direct/full findings differ from the exact expected 22"
 fi
-echo "check direct/full: exact 27 findings match"
+echo "check direct/full: exact 22 findings match"
 
 run_check proxy full 1
 RUN_DIR=$(latest_run "check-proxy-full")
 cat > "$OUT/exp-full-proxy.txt" <<'EOF'
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
-failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_aes_gcm_generated_iv_writeback
-failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_decrypt_aes_gcm
-failed test_mech_message.py::TestMessageEncrypt::test_message_encrypt_multipart_aes_gcm
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[AES_GCM]
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_encrypt_init[AES_GCM]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[AES_GMAC]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[HOTP]
 failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[AES_GMAC]
@@ -312,7 +306,7 @@ failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_mess
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
 EOF
-[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 27 ] || fail "driver: want 27 stable-core proxy findings"
+[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 22 ] || fail "driver: want 22 stable-core proxy findings"
 # R5 strict (codex I4): the failed pair's {pass, fail} bound is
 # historical (older pin) — v0.2.0 never demonstrated the flip, so
 # no failure form is suppressed here; any variance fails loud and
@@ -327,7 +321,8 @@ check_stable_core "check proxy/full findings" "$OUT/exp-full-proxy.txt" \
 # x34, blowfish catalog x20, tls12-derive x2, wtls-premaster x3,
 # boundary-order x2, proxy-better inversions x22 — every delta
 # vs R5 caused in task-R9-report.md section 4; GMAC moved to
-# shared); the 27-line shared set stays byte-exact.
+# shared); the 22-line shared set stays byte-exact (F-9 re-freeze:
+# the 5 AES_GCM message lines left with the withdrawn flags).
 # Parity-eligible = every other collected id (default-eligible;
 # the freeze is this exclusion list, not an 11k allowlist). Flaky
 # ids assert their measured v0.2.2 verdicts with NO variance
@@ -381,7 +376,7 @@ timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
   "/out/$CC_RUN" > "$OUT/classify.log" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] || fail "in-image compare-classify exited $rc, want 0"
-grep -q 'compare-classify-ok: 83 known-difference + shared 27/27 exact' \
+grep -q 'compare-classify-ok: 83 known-difference + shared 22/22 exact' \
   "$OUT/classify.log" || fail "compare-classify ok marker missing"
 [ -f "$RUN_DIR/classification.json" ] || fail "classification.json missing"
 python3 - "$RUN_DIR/classification.json" <<'PY' || fail "classification.json counts drifted"
@@ -389,8 +384,8 @@ import json, sys
 c = json.load(open(sys.argv[1]))["counts"]
 assert c == {"known_difference": 83, "direct_only": 0, "flaky": 0,
              "unexpected_difference": 0, "missing_known": 0,
-             "duplicate_diff_lines": 0, "shared_expected": 27,
-             "shared_actual": 27, "shared_exact": True}, c
+             "duplicate_diff_lines": 0, "shared_expected": 22,
+             "shared_actual": 22, "shared_exact": True}, c
 PY
 # Drift controls on run-dir copies (the raw run dir is untouched):
 # an injected line must surface as unexpected=1, a removed frozen
