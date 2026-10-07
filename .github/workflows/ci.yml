@@ -885,10 +885,19 @@ jobs:
           uv --version
       - run: uv sync --project pkcs11-check --frozen --extra dev
       - name: Restore vector-data cache
+        id: data-cache
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: data
           key: pkcs11-data-${{ hashFiles('pkcs11-check/src/pkcs11_check/testcases/data/sources.toml') }}
+      - name: Fetch vectors (cache miss only)
+        if: steps.data-cache.outputs.cache-hit != 'true'
+        run: |
+          # Self-healing: the fetch-data job normally warms this
+          # cache, but a restore miss must not fail a 180-minute
+          # lane — fetch inline (same commands as fetch-data).
+          uv run --project pkcs11-check pkcs11-check fetch-data all --data-dir data
+          uv run --project pkcs11-check pkcs11-check fetch-disabled --data-dir data
       - name: Download bundle
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
