@@ -1306,16 +1306,20 @@ caseDriverDh = withBackend $ \env -> do
   direct <- case directR of
     EngineOk s -> pure s
     other -> assertFailure ("direct derive failed: " ++ show other)
-  full <- runEffect env res (FxDerive dhMech (Just aOid) Nothing (blob peerB) BS.empty 256)
+  -- Minimal big-endian (no left pad): full-width requests use
+  -- the drawn length, never a literal 256 (a short draw would
+  -- fail the request for length, not for the tested reason).
+  let w = BS.length direct
+  full <- runEffect env res (FxDerive dhMech (Just aOid) Nothing (blob peerB) BS.empty w)
     >>= expectBytes
   assertEqual "driver == direct" direct full
   short <- runEffect env res (FxDerive dhMech (Just aOid) Nothing (blob peerB) BS.empty 128)
     >>= expectBytes
-  assertEqual "truncation drops leading bytes" (BS.drop 128 direct) short
-  rev <- runEffect env res (FxDerive dhMech (Just bOid) Nothing (blob peerA) BS.empty 256)
+  assertEqual "truncation drops leading bytes" (BS.drop (w - 128) direct) short
+  rev <- runEffect env res (FxDerive dhMech (Just bOid) Nothing (blob peerA) BS.empty w)
     >>= expectBytes
   assertEqual "commutes" direct rev
-  x9 <- runEffect env res (FxDerive dhX942Mech (Just aOid) Nothing (blob peerB) BS.empty 256)
+  x9 <- runEffect env res (FxDerive dhX942Mech (Just aOid) Nothing (blob peerB) BS.empty w)
     >>= expectBytes
   assertEqual "x9.42 row agrees identically" direct x9
   over <- runEffect env res (FxDerive dhMech (Just aOid) Nothing (blob peerB) BS.empty 257)
@@ -1323,11 +1327,11 @@ caseDriverDh = withBackend $ \env -> do
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   kdf <- runEffect env res
-    (FxDerive dhMech (Just aOid) Nothing (encodeDhParams 1 peerB) BS.empty 256)
+    (FxDerive dhMech (Just aOid) Nothing (encodeDhParams 1 peerB) BS.empty w)
   case kdf of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
-  inf <- runEffect env res (FxDerive dhMech (Just aOid) Nothing (blob peerB) "info" 256)
+  inf <- runEffect env res (FxDerive dhMech (Just aOid) Nothing (blob peerB) "info" w)
   case inf of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
