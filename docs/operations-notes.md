@@ -375,7 +375,7 @@ PINs and auth state. PINs are fixed at open (home `1234` / `5678`,
 catalog PINs from the TOML file in plaintext) with no PIN-change
 path; comparison is the position-constant xor fold with length
 short-circuit (`pinsMatch` in `ffi/Haskoki/FFI/Standard.hs`),
-accepted per the in-code ruling, not machine constant-time. The
+accepted per the in-code PIN-compare ruling, not machine constant-time. The
 persisted token row carries the login/attempt/lockout counters
 (`TokenAuth` in `core/Haskoki/Session.hs`); wrong guesses count
 down per-role retries to `CKR_PIN_LOCKED`. Catalog PINs are
@@ -409,7 +409,8 @@ reaped (see Async expiry/GC above); no production caller wires
 
 Memory handling. Tag comparison inside the engines uses the full
 xor-fold shape (`ctEq`); no broader constant-time promise is made
-for Haskell paths. Native code cleanses scoped native buffers,
+for Haskell paths (the PIN-compare ruling covers the PIN compare only).
+Native code cleanses scoped native buffers,
 including HMAC scratch (sized `OPENSSL_clear_free` on returned
 buffers plus cipher-scratch cleansing in `cbits/ossl4_ctx.c`); no
 general memory-zeroization promise is made, and SQLite blobs

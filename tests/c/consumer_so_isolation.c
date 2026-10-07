@@ -158,7 +158,7 @@ int main(int argc, char **argv) {
     CHECK(rv == CKR_OK, "user logout ok");
   }
 
-  /* ---- SO leg: the isolation assertions (F-1 RED on base) ---- */
+  /* ---- SO leg: the isolation assertions (F-1 fails on base) ---- */
   {
     CK_ATTRIBUTE match[] = { { CKA_LABEL, "f1-so-key", 9 } };
     CK_OBJECT_HANDLE found[4] = { 0, 0, 0, 0 };

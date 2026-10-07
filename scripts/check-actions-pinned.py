@@ -2076,7 +2076,7 @@ def _docker_strip_bom(docker: str) -> str:
     most one occurrence: file-leading BOM #2+ stays and kills the
     directive (the line no longer starts with `#`/`//`), and the
     surviving BOM later fails dispatch (`unknown instruction`,
-    probe P2). Mid-file BOMs are never stripped (data, probe P10).
+    probe 2). Mid-file BOMs are never stripped (data, probe P10).
     Callers strip their own local copy exactly once; the multi-BOM
     refusal in `_docker_physical_refused` sees the survivor."""
     if docker.startswith("\ufeff"):
@@ -2095,16 +2095,16 @@ def _docker_physical_refused(docker: str):
     BuildKit-recognized alternate `// escape=` / `// syntax=`
     forms, any spacing or case, anywhere in the file): BuildKit
     honors the escape switch before the first instruction
-    (P10a/P21/P23/P24, BOM-prefixed too — probe P7) and it
+    (P10a/P21/P23/P24, BOM-prefixed too — probe 7) and it
     redefines the continuation character outright (P10b) — a
     `syntax` switch replaces the whole frontend (BOM-prefixed,
     `//`, shebang-skipped, and whole-file-JSON forms all forward,
-    probes P1/P3/P4/P9/P14); refused everywhere, a deliberate
+    probes 1/3/4/9 and P14); refused everywhere, a deliberate
     superset of the honored positions (a late directive is a plain
     comment to the builder, P22 — the gate refuses it anyway).
     Multiple leading BOMs: v0.33.0 strips exactly one and then
     fails dispatch on the survivor (`unknown instruction`, probe
-    P2) — the gate refuses fail-closed, which agrees with that
+    probe 2) — the gate refuses fail-closed, which agrees with that
     outcome on the cited version AND stays safe if a future
     builder strips more (the union rule is load-bearing: CI pins
     no buildkit version). `# check=` / `// check=` need no
@@ -2797,7 +2797,7 @@ def _with_env_decoy(ci: str) -> str:
 def probe_mutations(ci: str, docker: str):
     """Non-executable substitutes: (name, ci text, docker text, victim
     assert). Each must trip exactly its own assert while the others
-    stay green — proving the asserts match executable content."""
+    stay passing — proving the asserts match executable content."""
     shell_sub = ci.replace("        shell: bash\n",
                            "        # shell: bash\n", 1)
     without_shell = ci.replace("        shell: bash\n", "", 1)
@@ -3929,7 +3929,7 @@ def self_test_fix10() -> int:
     `--` end-of-options, abbreviation refusals, `-h`/`--help`
     skips vs `-V`/`--version` evaluation, the hash-flag exclusion,
     dash-leading binary-control values refused, and the real
-    install argv green. Synthetic checker stages (anchor-free);
+    install argv passing. Synthetic checker stages (anchor-free);
     every case carries its probe needle (applied-guard)."""
     bad = 0
 
@@ -4354,7 +4354,7 @@ def self_test_fix10() -> int:
         ("fix10-dashval-no",
          run2(GOOD, "pip install --require-hashes --only-binary=:all:"
               " --no-binary -x pkg"), False, "--no-binary -x"),
-        # The real install argv stays green (exact stage line).
+        # The real install argv stays passing (exact stage line).
         ("fix10-real-install-argv",
          run("/opt/p11c/bin/pip install --no-input --require-hashes "
              "--only-binary=:all: -r /tmp/checker-requirements.txt"),
@@ -4391,7 +4391,7 @@ def self_test_fix10() -> int:
     # Real-stage enumeration: the checker stage's python-bearing
     # payloads are exactly the known two lines (venv build +
     # `--version` stamp), so the new refusals cannot bite them —
-    # and the stage itself stays green.
+    # and the stage itself stays passing.
     docker = (REPO / "docker" / "Dockerfile.demo").read_text()
     stage, phys = None, []
     logicals = []
@@ -4422,9 +4422,9 @@ def self_test_fix10() -> int:
                  and len(shell_payloads) > 0,
                  f"checker stage: {len(shell_payloads)} shell payloads, "
                  "exactly the venv + --version python lines")
-    check_fix10("fix10-real-stage-green",
+    check_fix10("fix10-real-stage-passing",
                  f6_only_binary_ok(docker),
-                 "checker stage still evaluates wheel-only green")
+                 "checker stage still evaluates wheel-only passing")
 
     return bad
 
@@ -4632,7 +4632,7 @@ def self_test_fix11() -> int:
     # post-shlex token of every checker-stage shell payload, no
     # function definitions, no traps — so outright refusal and
     # trip-on-definition cannot bite the real stage — and the
-    # stage itself stays green.
+    # stage itself stays passing.
     docker = (REPO / "docker" / "Dockerfile.demo").read_text()
     stage, phys = None, []
     logicals = []
@@ -4676,9 +4676,9 @@ def self_test_fix11() -> int:
                  f"checker stage: {npayloads} shell payloads, "
                  f"{cluster_hits} cluster hits, {funcdefs} funcdefs, "
                  f"{traps} traps")
-    check_fix11("fix11-real-stage-green",
+    check_fix11("fix11-real-stage-passing",
                  f6_only_binary_ok(docker),
-                 "checker stage still evaluates wheel-only green")
+                 "checker stage still evaluates wheel-only passing")
 
     return bad
 
@@ -4706,7 +4706,7 @@ def self_test_fix12() -> int:
     (bare/indented) and blank splits; directive/lone-CR/exotic-ws
     refusals (+ narrowness guards); CRLF evaluation; the exact-join
     sweep (27 probe oracles, string equality, zero dangerous
-    direction); and the real-stage proof (green, refusal-free,
+    direction); and the real-stage proof (passing, refusal-free,
     15/15 token-boundary continuations enumerated, old-vs-new
     token identity). Synthetic checker stages (anchor-free); every
     f6 case carries its probe needle (applied-guard)."""
@@ -5083,14 +5083,14 @@ def self_test_fix12() -> int:
                  == ([("base", "RUN echo a FROM x AS checker"),
                       ("base", "RUN echo hi")], None),
                  "consumed FROM does not switch stage")
-    # Real-stage proof: green, refusal-free, physical/logical FROM
+    # Real-stage proof: passing, refusal-free, physical/logical FROM
     # agreement, every continuation enumerated at a token boundary
     # (a mid-word junction fails LOUDLY), and old-vs-new token
     # identity per checker logical.
     docker = (REPO / "docker" / "Dockerfile.demo").read_text()
-    check_fix12("fix12-real-stage-green",
+    check_fix12("fix12-real-stage-passing",
                  f6_only_binary_ok(docker),
-                 "checker stage still evaluates wheel-only green")
+                 "checker stage still evaluates wheel-only passing")
     struct, why = _docker_stage_logicals(docker)
     nodirect = not any(_DOCKER_DIRECTIVE_RE.match(l)
                        for l in docker.split("\n"))
@@ -5210,7 +5210,7 @@ def self_test_fix13() -> int:
     both polarities per probe shape (unsafe-behind trips,
     flagged-alone passes proving evaluation); round-12 full-line
     shapes preserved; stage-attribution units; real-stage immunity
-    (green + per-line old-vs-new mapping identity + checker `#`
+    (passing + per-line old-vs-new mapping identity + checker `#`
     enumeration). Synthetic checker stages (anchor-free); every f6
     case carries its probe needle (applied-guard)."""
     bad = 0
@@ -5381,15 +5381,15 @@ def self_test_fix13() -> int:
                       ("checker", "RUN echo hi")], None),
                  "trailing-comment FROM stays in its stage (Q10)")
 
-    # Real-stage immunity: green, per-line old-vs-new mapping
+    # Real-stage immunity: passing, per-line old-vs-new mapping
     # identity (identical join inputs => identical pipeline => zero
     # behavior change), and the checker-span `#` enumeration (every
     # `#` full-line; no trailing backslash after an inline
     # comment — the real file has no inline comments at all).
     docker = (REPO / "docker" / "Dockerfile.demo").read_text()
-    check_fix13("fix13-real-stage-green",
+    check_fix13("fix13-real-stage-passing",
                  f6_only_binary_ok(docker),
-                 "checker stage still evaluates wheel-only green")
+                 "checker stage still evaluates wheel-only passing")
     raw_lines = docker.split("\n")
     differing = [i + 1 for i, l in enumerate(raw_lines)
                  if _docker_pre_join_line(l) != strip_comment(l)]
@@ -5447,7 +5447,7 @@ def self_test_fix14() -> int:
     skips or bounds — conservative-fail-closed, never the reverse);
     U+001C polarity both directions; NUL passthrough lock; lone-CR
     prefix refusal (P31 kept); per-member set units; exact-logical
-    stage units; real-file immunity (ASCII proof + green +
+    stage units; real-file immunity (ASCII proof + passing +
     old-vs-new agreement on all physical lines). Synthetic checker
     stages (anchor-free); every f6 case carries its probe needle
     (applied-guard)."""
@@ -5653,7 +5653,7 @@ def self_test_fix14() -> int:
     # handles the file); every exotic char (non-ASCII or C0
     # control outside tab/LF/CR) is inventoried and none is
     # whitespace-class under EITHER the old or the new test (so no
-    # VT/FF/NEL/NBSP/U+2000-class char is present); stage green;
+    # VT/FF/NEL/NBSP/U+2000-class char is present); stage passing;
     # and old-vs-new agreement on ALL physical lines for BOTH the
     # pre-join mapping and the blank test (identical join inputs
     # => zero behavior change).
@@ -5668,9 +5668,9 @@ def self_test_fix14() -> int:
     check_fix14("fix14-real-no-gows-chars", not ws_bad,
                  f"{len(raw_bytes)}B UTF-8; exotic inventory={inv}, "
                  f"ws-class={ws_bad}")
-    check_fix14("fix14-real-stage-green",
+    check_fix14("fix14-real-stage-passing",
                  f6_only_binary_ok(docker),
-                 "checker stage still evaluates wheel-only green")
+                 "checker stage still evaluates wheel-only passing")
 
     def _old_pre_join(line):
         return "" if line.lstrip(" \t").startswith("#") else line
@@ -5704,7 +5704,7 @@ def self_test_fix15() -> int:
     instructions/parse.go L161-168), the `check` consumer
     (convert.go L197 → lint config only, linter.go
     `ParseLintOptions`: skip/experimental/error — warnings-only,
-    never execution), and REAL `docker build` probes P0–P14+P5b
+    never execution), and REAL `docker build` probes 0–14+5b
     (BuildKit v0.33.0 via default docker-driver, client Docker
     29.8.1, base alpine:3.22, contested ref
     127.0.0.1:1/f15-nonexistent:latest — forward proves
@@ -5735,14 +5735,14 @@ def self_test_fix15() -> int:
     BADRUN = "RUN " + BAD + "\n"
 
     cases = [
-        # The codex bypass forms: single BOM + `#` directive (P1/P7:
+        # The codex bypass forms: single BOM + `#` directive (probes 1/7:
         # detector/main-parser strip the BOM, then honor it).
         ("fix15-bom-syntax",
          BOM + "# syntax=docker/dockerfile:1\n" + syn + GOODRUN,
          False, BOM + "# syntax="),
         ("fix15-bom-escape",
          BOM + "# escape=`\n" + syn + GOODRUN, False, BOM + "# escape="),
-        # Multi-BOM refuses fail-closed (P2: v0.33.0 strips one,
+        # Multi-BOM refuses fail-closed (probe 2: v0.33.0 strips one,
         # the directive dies AND dispatch fails on the survivor —
         # refusal agrees with that outcome and stays safe if a
         # future builder strips more).
@@ -5759,13 +5759,13 @@ def self_test_fix15() -> int:
         # Mid-file BOM is data, never a comment/directive (P10):
         # the BOM blocks the `#` match, the line rides through as
         # a skipped non-RUN logical. The builder fails such a file
-        # later at dispatch (unknown instruction, P2-analog) — so
+        # later at dispatch (unknown instruction, probe-2 analog) — so
         # the gate passing is the safe direction, locked here.
         ("fix15-midfile-bom-standalone",
          syn + GOODRUN + BOM + "# sneaky\n", True, BOM + "# sneaky"),
         ("fix15-midfile-bom-nodirective",
          syn + GOODRUN + BOM + "# syntax=x\n", True, BOM + "# syntax="),
-        # The `//` directive refusals (P3: `// syntax=` forwards).
+        # The `//` directive refusals (probe 3: `// syntax=` forwards).
         ("fix15-slash-syntax",
          "// syntax=docker/dockerfile:1\n" + syn + GOODRUN,
          False, "// syntax="),
@@ -5812,7 +5812,7 @@ def self_test_fix15() -> int:
          BOM + "# check=skip=all\n" + syn + GOODRUN,
          True, BOM + "# check="),
         # Shebang agreement: `#!` is a plain comment to the main
-        # parser and skipped by the detector (P8: builds fine).
+        # parser and skipped by the detector (probe 8: builds fine).
         ("fix15-shebang-first",
          "#!/bin/sh\n" + syn + GOODRUN, True, "#!/bin/sh"),
         ("fix15-shebang-mid",
@@ -5826,7 +5826,7 @@ def self_test_fix15() -> int:
         ("fix15-shebang-escape-looking",
          "#! escape=`\n" + syn + GOODRUN, True, "#! escape="),
         # Shebang + a REAL directive on the next line still
-        # forwards (P9/P14) — the anywhere-superset covers it.
+        # forwards (probe 9/P14) — the anywhere-superset covers it.
         ("fix15-shebang-then-syntax",
          "#!/bin/sh\n# syntax=x\n" + syn + GOODRUN,
          False, "#!/bin/sh"),
@@ -5846,11 +5846,11 @@ def self_test_fix15() -> int:
         # BOM-prefixed FROM does not attribute, so the unflagged
         # install below it is gate-invisible while a LATER clean
         # checker stage still yields found=True — the old behavior
-        # returns True (miss) where the builder (which strips, P7)
+        # returns True (miss) where the builder (which strips, probe 7)
         # executes the unflagged install. The strip catches it.
         ("fix15-bom-run-evaluated",
          BOM + syn + BADRUN + syn + GOODRUN, False, BOM + "FROM"),
-        # Whole-file JSON `{"syntax": ...}` forwards (P4) but can
+        # Whole-file JSON `{"syntax": ...}` forwards (probe 4) but can
         # never smuggle a checker install past the gate: JSON
         # strings cannot span lines, so no FROM/RUN line-start can
         # appear in detector-recognized input → found=False.
@@ -5866,7 +5866,7 @@ def self_test_fix15() -> int:
                     f"BOM/directive union -> {got} (want {expect})")
 
     # Exact-logical agreement units: `//` and BOM-prefixed `#`
-    # lines mid-continuation splice as CONTENT (P5/P10), ending the
+    # lines mid-continuation splice as CONTENT (probe 5/P10), ending the
     # splice exactly like the builder's (contrast: a plain `#`
     # comment is skipped and the FROM is consumed — fix13/14).
     OTHER = "FROM ubuntu:26.04 AS other\n"
@@ -5876,7 +5876,7 @@ def self_test_fix15() -> int:
                      + OTHER + "RUN echo three\n")
                  == ([("checker", "RUN echo one // two"),
                       ("other", "RUN echo three")], None),
-                 "P5: `// two` spliced as content, FROM is boundary")
+                 "probe 5: `// two` spliced as content, FROM is boundary")
     check_fix15("fix15-unit-midbom-content",
                  _docker_stage_logicals(
                      syn + "RUN echo ok # \\\n" + BOM + "# sneaky\n"
@@ -5930,7 +5930,7 @@ def self_test_fix15() -> int:
     # Real-file immunity: strict UTF-8 decode (the BOM would decode
     # cleanly to U+FEFF — normalization is post-decode), zero BOM /
     # line-start-`//` / directive forms in BOTH Dockerfiles, the
-    # strip is identity, refusal-free, stage green — and the join
+    # strip is identity, refusal-free, stage passing — and the join
     # inputs are provably identical to the pre-fix path (same
     # refusal outcome + identity strip ⟹ identical downstream).
     for fname in ("docker/Dockerfile.demo", "Dockerfile"):
@@ -5951,9 +5951,9 @@ def self_test_fix15() -> int:
                      _docker_strip_bom(docker) == docker,
                      "strip is identity on BOM-free text")
     demo = (REPO / "docker" / "Dockerfile.demo").read_text()
-    check_fix15("fix15-real-stage-green",
+    check_fix15("fix15-real-stage-passing",
                  f6_only_binary_ok(demo),
-                 "checker stage still evaluates wheel-only green")
+                 "checker stage still evaluates wheel-only passing")
     check_fix15("fix15-real-no-refusal",
                  _docker_physical_refused(demo) is None,
                  "refusal-free (same outcome as pre-fix path)")

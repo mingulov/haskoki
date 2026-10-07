@@ -216,7 +216,7 @@ TRANSITIONAL_KNOWN_PAIRS = frozenset({
 # PINNED approved legacy membership (Low 3): the self-test fails if
 # TRANSITIONAL_KNOWN_PAIRS is not a subset of this set, so any
 # registry addition trips CI. Shrink-only migration (deleting entries
-# as tokens land) stays green. Touching this constant to admit a new
+# as tokens land) stays passing. Touching this constant to admit a new
 # exemption is a shrink-only violation: review-visible by design.
 PINNED_APPROVED_REGISTRY = frozenset({
     ("haskoki-engine-tests/OpenSSLSpec", "A37"),
@@ -973,7 +973,7 @@ def _selftest_root(tmp, mech_entries, modules, suites, extra_modules=None):
 # consume these same literals, so the GHC-validated bytes and the
 # asserted bytes cannot drift.
 FIX2_CORPUS = {
-    # Path 1: string gaps (RED: gap-close `\"` eaten as an escape,
+    # Path 1: string gaps (failing: gap-close `\"` eaten as an escape,
     # so the real close was consumed and later string data scanned).
     "p1-gap-decoy": ("module FooSpec where\n"
                      "a = \"gap-then-close\\\n  \\\"\n"
@@ -987,7 +987,7 @@ FIX2_CORPUS = {
     "p1-caret-char": ("module FooSpec where\n"
                       "q = '\\^A'\n"
                       "-- ACCEPTS: A52\n", "A52", True),
-    # Path 2: `--` inside operator lexemes (RED: `+--`, `→--` mint).
+    # Path 2: `--` inside operator lexemes (failing: `+--`, `→--` mint).
     "p2-op-ascii": ("module FooSpec where\n"
                     "v = let (+--) a b = b in (1 :: Int) +-- \"ACCEPTS: A99\"\n",
                     "A99", False),
@@ -1032,7 +1032,7 @@ FIX2_CORPUS = {
     "p2-underscore": ("module FooSpec where\n"
                       "a_ = 1\n"
                       "v = a_-- ACCEPTS: A59\n", "A59", True),
-    # Path 3: qualified quasiquotes (RED: `[Q.qq|...|]` mints).
+    # Path 3: qualified quasiquotes (failing: `[Q.qq|...|]` mints).
     "p3-qq-qual": ("{-# LANGUAGE QuasiQuotes #-}\n"
                    "module FooSpec where\n"
                    "import qualified QqDef as Q\n"
@@ -1065,7 +1065,7 @@ FIX2_CORPUS = {
 # QqUni/M/QqM.Sub sweep supports. resolves?=False entries must mint
 # nothing (dangling); resolves?=True entries must token-resolve.
 FIX3_CORPUS = {
-    # TH brackets with string-embedded |] (RED: first-|] search ended
+    # TH brackets with string-embedded |] (failing: first-|] search ended
     # the span inside the string and minted the string data as a
     # comment). All four tags plus typed [|| ||] and old [||].
     "f3t-e": ("{-# LANGUAGE TemplateHaskell #-}\n"
@@ -1153,7 +1153,7 @@ FIX3_CORPUS = {
                        "v :: Q Exp\n"
                        "v = [e| \"x\" |]\n"
                        "-- ACCEPTS: A68\n", "A68", True),
-    # Path 2: punctuation operators (RED: Po/Pd/Pc runs misread as
+    # Path 2: punctuation operators (failing: Po/Pd/Pc runs misread as
     # comments, minting following string data). Prefix per added class
     # (+ round-4 blockers ¿ and ＿) and suffix (--X) per added class.
     "f3s-po-inv": ("module FooSpec where\n"
@@ -1200,7 +1200,7 @@ FIX3_CORPUS = {
     "f3s-pf": ("module FooSpec where\n"
                "w = 1 --» ACCEPTS: A66\n"
                "v = 1\n", "A66", True),
-    # Path 3: Unicode quoters (RED: ASCII-only opener matcher scanned
+    # Path 3: Unicode quoters (failing: ASCII-only opener matcher scanned
     # quasiquote bodies as code). Single Ll/Lo, qualified, multi-part
     # qualified, and Nd/Pc/prime/Mn/Lm/Nl/No continue classes.
     "f3q-alpha": ("{-# LANGUAGE QuasiQuotes #-}\n"
@@ -1254,7 +1254,7 @@ FIX3_CORPUS = {
 # Control 13 asserts the trip (a "refused to scan" failure, never a
 # token resolution and never a silent dangle).
 FIX3_CORPUS_REFUSED = {
-    # Comprehension followed by "|]" string data (RED-b): skipping to
+    # Comprehension followed by "|]" string data (failing-b): skipping to
     # the buried |] desynchronizes into the string; scanning mints.
     "f3r-compr": ("module FooSpec where\n"
                   "v = [x|x <- [1::Int]]\n"
@@ -1297,7 +1297,7 @@ FIX3_CORPUS_REFUSED = {
 # entries must token-resolve.
 FIX4_CORPUS = {
     # Nested raw quasiquote with a quote in its body, followed by a
-    # gapped string (codex-exact RED (a)): the outer TH scan must end
+    # gapped string (codex-exact failing case (a)): the outer TH scan must end
     # the inner raw span at ITS raw-first |] (the quote is data) and
     # skip the whole outer span, so the string data mints nothing.
     "f4a-nested-raw-quote": ("{-# LANGUAGE QuasiQuotes, TemplateHaskell #-}\n"
@@ -1374,7 +1374,7 @@ FIX4_CORPUS = {
 # failure, never a token resolution and never a silent dangle).
 FIX4_CORPUS_REFUSED = {
     # Raw [e| span with a quote in its body, followed by a gapped
-    # string (codex-exact RED (b)): the code-level end falls inside
+    # string (codex-exact failing case (b)): the code-level end falls inside
     # the resumed (gap-continued) string. Refuse.
     "f4r-raw-e-gap": ("{-# LANGUAGE QuasiQuotes #-}\n"
                       "module FooSpec where\n"
@@ -1449,7 +1449,7 @@ FIX5_CORPUS = {
 # "refused to scan" failure, never a token resolution and never a
 # silent dangle).
 FIX5_CORPUS_REFUSED = {
-    # Codex-exact RED (#4): QuasiQuotes-only e quoter; the selected
+    # Codex-exact failing case (#4): QuasiQuotes-only e quoter; the selected
     # end is line-buried with a quote past it; GHC reads the whole as
     # raw/string data while the pre-fix gate minted A99 (exit 0).
     # Byte-identity with task-912r4-codex.jsonl item_10 checked.
@@ -1940,7 +1940,7 @@ def self_test():
         # Control 17 (Low 4 fix4): the GHC-validated corpus — nested
         # raw spans with quote/comment bodies and gapped following
         # strings under TH and QuasiQuotes-only outers (both codex
-        # RED variants), a valid 3-level spliced TH nest, and the
+        # failing variants), a valid 3-level spliced TH nest, and the
         # resume-lock positives (a real comment after the span still
         # resolves). Negatives mint nothing; positives resolve.
         for key in sorted(FIX4_CORPUS):

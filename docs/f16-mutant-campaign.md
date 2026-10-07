@@ -24,9 +24,9 @@ Method (all mutants in ONE isolated scratch tree, never the live checkout):
 - Sequential mutants with backup/restore: each mutant applied to the scratch
   file only, killer run, file restored from backup, `git diff` sha re-verified
   equal to the pre-campaign value after every revert.
-- Every killer below was run green on the unmutated scratch first (baseline),
-  then red on the mutant, then green again after restore (except the two
-  instant python gates, re-run green after restore where noted).
+- Every killer below was run passing on the unmutated scratch first (baseline),
+  then failing on the mutant, then passing again after restore (except the two
+  instant python gates, re-run passing after restore where noted).
 - Shell is dash; each run captured as `cmd > file 2>&1; echo "EXIT: $?"`.
 - Raw logs (baseline/kill/restore per mutant) were session artifacts under
   `/tmp/f16-evidence/`; this file is the durable record.
@@ -37,21 +37,21 @@ Result: 8 mutants, 8 killed, 0 survivors. No gate or test was weakened.
 
 | ID | Area (F-item) | Mutant file | Killer | Verdict |
 |----|---------------|-------------|--------|---------|
-| M1 | authorization (F-1) | `core/Haskoki/Object.hs` | model test `visibility: SO sessions cannot see user private objects` | KILLED |
-| M2 | locking (F-2) | `src/Haskoki/Runtime/Storage/SQLite.hs` | storage tests `stale lock takeable; masked proc and held flock refuse`, `unreadable proc root refuses cleanly`, `partially masked proc refuses as unknowable` | KILLED (3/3) |
-| M3 | retention (F-3) | `src/Haskoki/Runtime/Async.hs` | model tests `retention bound: N delivered digests keep at most cap tombstones`, `byte retention bound: N max-size digests keep bytes within budget` | KILLED (2/2) |
-| M4 | capability (F-9) | `cbits/mech_catalog.inc` | model test `flag correspondence: CKF_MESSAGE_* has its route and vice versa` | KILLED |
-| M4b | capability (F-10) | `cbits/standard_surface.c` | C consumer `consumer_derive_f10` (test-consumers.sh recipe) | KILLED |
-| M5a | evidence (F-11) | `spec/mechanisms.json` | gate `scripts/check-test-evidence.py` | KILLED |
-| M5b | evidence (F-12) | `tests/model/MechanismExhaustivenessSpec.hs` | model test `status-mutation control: flips detected and rows identified` | KILLED |
-| M6 | release-input (F-4) | `.github/workflows/ci.yml` | gate `scripts/check-actions-pinned.py` | KILLED |
+| mutant 1 | authorization (F-1) | `core/Haskoki/Object.hs` | model test `visibility: SO sessions cannot see user private objects` | KILLED |
+| mutant 2 | locking (F-2) | `src/Haskoki/Runtime/Storage/SQLite.hs` | storage tests `stale lock takeable; masked proc and held flock refuse`, `unreadable proc root refuses cleanly`, `partially masked proc refuses as unknowable` | KILLED (3/3) |
+| mutant 3 | retention (F-3) | `src/Haskoki/Runtime/Async.hs` | model tests `retention bound: N delivered digests keep at most cap tombstones`, `byte retention bound: N max-size digests keep bytes within budget` | KILLED (2/2) |
+| mutant 4 | capability (F-9) | `cbits/mech_catalog.inc` | model test `flag correspondence: CKF_MESSAGE_* has its route and vice versa` | KILLED |
+| mutant 4b | capability (F-10) | `cbits/standard_surface.c` | C consumer `consumer_derive_f10` (test-consumers.sh recipe) | KILLED |
+| mutant 5a | evidence (F-11) | `spec/mechanisms.json` | gate `scripts/check-test-evidence.py` | KILLED |
+| mutant 5b | evidence (F-12) | `tests/model/MechanismExhaustivenessSpec.hs` | model test `status-mutation control: flips detected and rows identified` | KILLED |
+| mutant 6 | release-input (F-4) | `.github/workflows/ci.yml` | gate `scripts/check-actions-pinned.py` | KILLED |
 
 Gates/suites that participated as killers: `haskoki-model-tests`,
 `haskoki-storage-tests`, `scripts/test-consumers.sh` (single-scenario recipe:
 `cc … tests/c/consumer_derive_f10.c` + run against the rebuilt `libhaskoki.so`),
 `scripts/check-test-evidence.py`, `scripts/check-actions-pinned.py`.
 
-## M1 — authorization (F-1): SO sees private objects again
+## Mutant 1 — authorization (F-1): SO sees private objects again
 
 Mutant (`core/Haskoki/Object.hs:380`, one line): re-admit `LoginSO` to the
 same-slot private-visibility set (compiling equivalent of the pre-F-1 rule;
@@ -81,7 +81,7 @@ visibility: SO sessions cannot see user private objects: FAIL (0.07s)
 
 Baseline before: `EXIT: 0`, same case `OK (0.07s)`. After restore: `EXIT: 0`.
 
-## M2 — locking (F-2): unknowable liveness proceeds to takeover
+## Mutant 2 — locking (F-2): unknowable liveness proceeds to takeover
 
 Mutant (`src/Haskoki/Runtime/Storage/SQLite.hs`, `inspectLock`): route the
 `PidUnknown` arm to `confirmTakeover` instead of failing closed:
@@ -117,7 +117,7 @@ Note the `noproc` leg: without a live holder the mutant takes over outright
 carries that case. Baseline before: `EXIT: 0`, all 3 `OK`. After restore:
 `EXIT: 0`, 3 `OK`.
 
-## M3 — retention (F-3): eviction never triggers
+## Mutant 3 — retention (F-3): eviction never triggers
 
 Mutant (`src/Haskoki/Runtime/Async.hs:1496`, one guard): the retention walk
 always stops, so no victim is ever evicted (a head-level `enforceRetention _
@@ -148,7 +148,7 @@ byte retention bound: N max-size digests keep bytes within budget: FAIL
 
 Baseline before: `EXIT: 0`, both `OK`. After restore: `EXIT: 0`, 2 `OK`.
 
-## M4 — capability (F-9): GCM message flags re-advertised
+## Mutant 4 — capability (F-9): GCM message flags re-advertised
 
 Mutant (`cbits/mech_catalog.inc:264`, one row): restore the withdrawn
 `CKF_MESSAGE_*` flags on `CKM_AES_GCM` (F-9 revert). The battery parses this
@@ -178,7 +178,7 @@ recover flag correspondence: …: OK
 
 Baseline before: `EXIT: 0`, both `OK`. After restore: `EXIT: 0`.
 
-## M4b — capability (F-10): PBKD2 derive row unwired
+## Mutant 4b — capability (F-10): PBKD2 derive row unwired
 
 Mutant (`cbits/standard_surface.c:2807`, one case): drop `CKM_PKCS5_PBKD2`
 from `derive_opaque_ok` (F-10 revert); foreign lib rebuilt in scratch via
@@ -217,7 +217,7 @@ consumer was written to close. Baseline before (same binary, baseline `.so`):
 After restore + rebuild: `RESTORED-RUN EXIT: 0`, same `PASS` line, identical
 derive vectors (`pbkd2=0c60c80f961f0e71f3a9b524af6012062fe037a6`).
 
-## M5a — evidence (F-11): typoed case_id
+## Mutant 5a — evidence (F-11): typoed case_id
 
 Mutant (`spec/mechanisms.json:62`, one value): `A42` → `A42X` on the
 `haskoki-model-tests/MechanismExhaustivenessSpec` exhaustiveness entry:
@@ -241,7 +241,7 @@ Baseline before: `EXIT: 0`,
 `test-evidence: OK (2040 entries, 49 pairs: 2 token-resolved, 47
 registry-resolved (token pending))`. After restore: `EXIT: 0`, same OK line.
 
-## M5b — evidence (F-12): flip logic neutered
+## Mutant 5b — evidence (F-12): flip logic neutered
 
 Mutant (`tests/model/MechanismExhaustivenessSpec.hs:599`, one line): flip 1
 checks the genuinely-refused row instead of the flipped one, so no mismatch
@@ -269,7 +269,7 @@ status-mutation control: flips detected and rows identified: FAIL (0.09s)
 The control catches its own neutering. Baseline before: `EXIT: 0`, `OK
 (0.08s)`. After restore: `EXIT: 0`.
 
-## M6 — release-input (F-4): mutable action tag
+## Mutant 6 — release-input (F-4): mutable action tag
 
 Mutant (`.github/workflows/ci.yml:80`, one line): replace the SHA pin with a
 mutable tag:
@@ -294,7 +294,7 @@ actions-pinned: FAIL (NOPIN-FLOAT, NOPIN-GREP, TAGCOMMENT)
 ```
 
 Baseline before: `EXIT: 0`, `actions-pinned: OK (third-party uses: SHA-pinned
-+ Dependabot wired)`. Scratch file restored; gate re-verified green on the
++ Dependabot wired)`. Scratch file restored; gate re-verified passing on the
 live tree at handoff (see below).
 
 ## Survivors
@@ -309,7 +309,7 @@ under `/tmp`, each restored with the pre-campaign `git diff` sha re-verified.
 After the campaign, the live tree holds only this record file plus the SDD
 report as additions; the tracked diff is byte-identical to the pre-campaign
 state (`git diff | sha256sum` unchanged). Both python killer gates re-run
-green on the live tree:
+passing on the live tree:
 
 - `python3 scripts/check-test-evidence.py` → `EXIT: 0`, `test-evidence: OK …`
 - `python3 scripts/check-actions-pinned.py` → `EXIT: 0`, `actions-pinned: OK …`

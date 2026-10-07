@@ -65,9 +65,21 @@ def main():
     check("PLANNED-COUNT", planned == 78, f"planned-with-behavior count == 78 (saw {planned})")
 
     # --- HOSTS-DROP: supported-hosts drops the seed holdout ---
+    # The doc now lists C_SeedRandom as SUPPORTED (Random row), so a
+    # bare "SeedRandom not in hosts" check false-positives on the
+    # support claim. Fail only on unsupported-shaped SeedRandom lines,
+    # which is the documented intent ("no longer listed as
+    # unsupported").
     hosts = (REPO / "SUPPORTED-HOSTS.md").read_text()
-    check("HOSTS-DROP", "SeedRandom" not in hosts,
-          "SUPPORTED-HOSTS.md carries no SeedRandom holdout")
+    holdout = re.compile(r"unsupport|refus|not supported|honestly NA"
+                         r"|NOT_SUPPORTED|not yet|not implement|holdout|N/A",
+                         re.IGNORECASE)
+    bad = [line.strip()[:100] for line in hosts.splitlines()
+           if "SeedRandom" in line and holdout.search(line)]
+    check("HOSTS-DROP", not bad,
+          "SUPPORTED-HOSTS.md carries no SeedRandom holdout"
+          + ("" if not bad else f" ({len(bad)} holdout lines: "
+             + "; ".join(bad) + ")"))
 
     # --- WALK-RANDOM: walkthrough random section ---
     walk = (REPO / "docs/demo-walkthrough.md").read_text()
@@ -97,6 +109,9 @@ def main():
         ("scripts/check-seed-honesty.py", re.compile(r".")),
         ("tests/c/consumer_roundtrip.c", re.compile(r".")),
         ("tests/c/consumer_discovery.c", re.compile(r".")),
+        # Dated R5 evidence mirror of the executed seed-contract
+        # negatives (absent from CI checkouts; local worktree only).
+        ("ws/r5-evidence/probe-src/consumer_roundtrip.c", re.compile(r".")),
     ]
     skip_dirs = {"dist-newstyle", "dist-release", "dist-release-evidence", ".git"}
     skip_files = {"spec/function-contracts.json",  # owned by ROW-MIRROR/PLANNED-COUNT

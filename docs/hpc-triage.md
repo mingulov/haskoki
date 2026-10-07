@@ -371,10 +371,10 @@ coverage flags. Root cause (proven, not timing): the newest-payload
 sub-assert observed heap-object identity via `Weak` + `performGC`,
 whose transient-root survival differs under instrumentation —
 while the product behavior held in every run (`(live, term) ==
-(0, 1)`, elder oracle green). The fix keeps the no-table-read
+(0, 1)`, elder oracle passing). The fix keeps the no-table-read
 property byte-for-byte and proves newest-retention by measured
-bytes (`retainedBytes` over the 64 MiB budget; RED-checked at
-68,160,304 bytes). The `hpc` job is green; it gates nothing, and
+bytes (`retainedBytes` over the 64 MiB budget; verified failing at
+68,160,304 bytes). The `hpc` job is passing; it gates nothing, and
 every other lane's verdicts are unchanged.
 
 ## 6. Reproduce

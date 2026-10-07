@@ -14,7 +14,7 @@ name: hpc
 # (`hpc report --include=<unitid>:`) plus per-library HTML
 # (`hpc markup`). Artifacts (hpc-coverage + hpc-test-log) stay
 # browseable from the run even when a suite fails (`if: always()` on
-# the report/upload steps): coverage from a near-green run is still
+# the report/upload steps): coverage from a near-passing run is still
 # the deliverable. The test step itself keeps its honest exit code —
 # no `|| true` anywhere.
 #
