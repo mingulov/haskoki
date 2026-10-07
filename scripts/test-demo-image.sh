@@ -221,7 +221,19 @@ run_check() {
     docker run --rm --network none -v "$OUT:/out" "$TAG" \
       check --mode "$1" --profile "$2" > "$OUT/check-$1-$2.log" 2>&1
   rc=$?
-  [ "$rc" -eq "$3" ] || fail "check $1/$2 exited $rc, want $3"
+  if [ "$rc" -ne "$3" ]; then
+    # A wrong lane exit is opaque without the lane output: dump
+    # bounded tails into the job log (the full run dirs upload as
+    # an artifact) before failing.
+    echo "--- tail of check-$1-$2.log (exit $rc, want $3) ---"
+    tail -n 50 "$OUT/check-$1-$2.log" 2>/dev/null || true
+    _rd=$(latest_run "check-$1-$2")
+    if [ -n "$_rd" ] && [ -f "$_rd/checker.log" ]; then
+      echo "--- tail of $_rd/checker.log ---"
+      tail -n 50 "$_rd/checker.log" 2>/dev/null || true
+    fi
+    fail "check $1/$2 exited $rc, want $3"
+  fi
   RUN_DIR=$(latest_run "check-$1-$2")
   [ -n "$RUN_DIR" ] && [ -f "$RUN_DIR/report.json" ] \
     || fail "check $1/$2 report.json missing"
