@@ -416,7 +416,7 @@ jobs:
           test -f docker/Dockerfile.demo || { echo "Dockerfile.demo missing"; exit 2; }
           echo "preflight ok"
       - name: Download staged bundle
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-bundle
           path: .
@@ -580,7 +580,7 @@ jobs:
               exit 2 ;;
           esac
       - name: Download tested image
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: demo-image-tested
           path: image-in
@@ -597,32 +597,32 @@ jobs:
             || { echo "loaded $LOADED_ID != tested $TESTED_ID"; exit 2; }
           echo "staged bytes verified: $LOADED_ID"
       - name: Download bundle tree
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-bundle
           path: .
       - name: Download verified sdist
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-sdist
           path: dist-newstyle/sdist
       - name: Download gate evidence for the results archive
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: haskell-test-log
           path: evidence-in/haskell
       - name: Download fast-lane report
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pkcs11-fast-report
           path: evidence-in/fast
       - name: Download demo-image run dirs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: demo-image-runs
           path: evidence-in/demo
       - name: Download producer provenance
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: producer-provenance
           path: provenance-in
@@ -809,7 +809,7 @@ jobs:
           uv --version
       - run: uv sync --project pkcs11-check --frozen --extra dev
       - name: Download bundle
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-bundle
           path: .
@@ -904,7 +904,7 @@ jobs:
           uv run --project pkcs11-check pkcs11-check fetch-data all --data-dir data
           uv run --project pkcs11-check pkcs11-check fetch-disabled --data-dir data
       - name: Download bundle
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-bundle
           path: .
