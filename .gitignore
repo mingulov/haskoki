@@ -30,3 +30,10 @@ core.*
 haskoki-*.jsonl
 # HPC coverage ticks from local --enable-coverage runs; never committed.
 *.tix
+# Local session scratch (workspace-private); never committed.
+HANDOFF.md
+ws/
+docs/superpowers/plans/2026-10-01-certificates.md
+docs/superpowers/plans/2026-10-02-mechanisms.md
+docs/superpowers/specs/2026-10-01-certificates-design.md
+docs/superpowers/specs/2026-10-02-mechanisms-design.md

@@ -14,7 +14,7 @@
 
 - Implementation starts from inspected `main` at `170c679c268dcfbd254202953b3508d146fad6b1` (`170c679`). The spec's earlier source-inspection revision is historical context; the complete committed spec is the requirements source for this plan.
 - Drafting boundary: only `docs/superpowers/plans/2026-09-30-async-routing.md` is written now. Every edit, test, command, evidence artifact, and filing below describes subsequent implementation work. This plan claims no observed test failure, gate result, lane result, consumer result, or upstream filing.
-- Preserve the pre-existing untracked `ws/` and `HANDOFF.md`. All commands below start at `/home/user/src/m/haskoki-ws/haskoki`. Scratch validation tools live under `/tmp/haskoki-async-routing`; implementation evidence lives under `dist-release-evidence/async-routing`. Neither is created while drafting.
+- Preserve the pre-existing untracked `ws/` and `HANDOFF.md`. All commands below start at `<haskoki-checkout>`. Scratch validation tools live under `/tmp/haskoki-async-routing`; implementation evidence lives under `dist-release-evidence/async-routing`. Neither is created while drafting.
 - D1-D12 remain outside scope. Keep `src/Haskoki/Runtime/Async.hs` and `src/Haskoki/Runtime/Detached.hs` byte-identical to the starting revision. Keep scheduler transitions, epochs, cancellation policy, detached formats, retention, first-attachment policy, authentication, recipes, and mechanisms unchanged. Recovery operations, dual operations, authenticated wrapping, key-template submission, async Sign/message/multipart producers, threads, timers, and new configuration semantics are outside this slice.
 - The public producer is a fresh full-buffer one-shot `C_Digest` on an explicit `CKF_ASYNC_SESSION`. Recognizing `C_Sign` is selector validation and identity preservation; it grants no new submission capability. Ordinary sessions and staged recalls remain synchronous.
 - One `AsyncTable` of capacity `8` belongs to each `StdInstance`. Views share the exact `siEnv`, `siBackend`, and table, use actual `SessionId` values, and own separate live-handle sets. SQLite uses one `openDetached` on the existing `StdStore` and home token; only home-slot views receive that detached context. Standard memory mode retains `siStore = Nothing` and its no-store errors.
@@ -470,7 +470,7 @@ python3 /tmp/haskoki-async-routing/record.py task-7/check zero python3 /tmp/hask
 
 ```sh
 sha256sum /opt/pkcs11-proxy-ng/pkcs11-proxy-ng /opt/pkcs11-proxy-ng/libpkcs11_proxy_ng_shim.so
-git -C /home/user/src/m/pkcs11-proxy-ng-ws/pkcs11-proxy-ng show a48b60ba54b0163f4999c1e4fc0514bf7dc01681:crates/shim/src/dispatch/general/async_ops.rs
+git -C <proxy-checkout> show a48b60ba54b0163f4999c1e4fc0514bf7dc01681:crates/shim/src/dispatch/general/async_ops.rs
 ```
 
 Expected: the exact pair hashes above; pinned source hash above; GetID and Join unconditional refusals at the `c_async_get_id` and `c_async_join` bodies. `c_async_complete` sends function/session without caller capacity, then copies `min(response length, caller capacity)` while returning success and using incoming caller storage. Record source lines with the source blob; do not describe this source observation as a tested Complete transport behavior.
@@ -538,7 +538,7 @@ Expected: both exit `0`, preserving private result version `1`, private Join `CK
 - [ ] Run the host gate entry point with an explicit evidence directory.
 
 ```sh
-python3 /tmp/haskoki-async-routing/record.py reviewed/gates zero env HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng HASKOKI_EVIDENCE_DIR=/home/user/src/m/haskoki-ws/haskoki/dist-release-evidence/async-routing/reviewed/gates bash scripts/run-gates.sh
+python3 /tmp/haskoki-async-routing/record.py reviewed/gates zero env HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng HASKOKI_EVIDENCE_DIR=<haskoki-checkout>/dist-release-evidence/async-routing/reviewed/gates bash scripts/run-gates.sh
 python3 /tmp/haskoki-async-routing/check-gates.py reviewed
 ```
 
@@ -677,7 +677,7 @@ git diff --check
 - [ ] Run gates again at this final revision and verify the manifest revision and all steps.
 
 ```sh
-python3 /tmp/haskoki-async-routing/record.py final/gates zero env HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng HASKOKI_EVIDENCE_DIR=/home/user/src/m/haskoki-ws/haskoki/dist-release-evidence/async-routing/final/gates bash scripts/run-gates.sh
+python3 /tmp/haskoki-async-routing/record.py final/gates zero env HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng HASKOKI_EVIDENCE_DIR=<haskoki-checkout>/dist-release-evidence/async-routing/final/gates bash scripts/run-gates.sh
 python3 /tmp/haskoki-async-routing/check-gates.py final
 python3 /tmp/haskoki-async-routing/pins.py final
 ```

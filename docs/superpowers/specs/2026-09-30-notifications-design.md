@@ -935,7 +935,7 @@ code. This design supplies no such execution record.
 ### 5.5 Proxy parity at the pinned source
 
 Read using `git show a48b60ba54b0163f4999c1e4fc0514bf7dc01681:<path>` in
-`/home/user/src/m/pkcs11-proxy-ng-ws/pkcs11-proxy-ng`. This is the pin recorded
+`<proxy-checkout>`. This is the pin recorded
 in `scripts/test-proxy-parity.sh:15-30,78`, not the proxy checkout's current HEAD.
 The script's canonical daemon/shim hashes are respectively
 `260cb245981561291eab4d29a16cb6a4d6f00dca3431f3d583d35364fab0c9e5` and

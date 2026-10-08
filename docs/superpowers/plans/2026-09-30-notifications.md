@@ -57,7 +57,7 @@ Read-only invariants additionally include `src/Haskoki/Runtime/Storage.hs`, `src
 
 ## Evidence and command contract
 
-All commands start at `/home/user/src/m/haskoki-ws/haskoki`. Use the slice recorder `/tmp/haskoki-notifications/record.py` (SHA-256 `5b141a238f6cabed6ffb5111c016e66a466fc34bc862c011c343e55c73c059f3`) with interface `record.py NAME zero|nonzero COMMAND ARG...`. It is byte-identical to the Async recorder except its evidence root `dist-release-evidence/notifications`; names below are plain relative labels like `task-n01/before` (no `..` escapes). For example, `task-n01/before` writes `dist-release-evidence/notifications/task-n01/before.log` and `before-command.json`. Do not change the recorder, and do not overwrite Async evidence. If that prerequisite script is missing, stop for the coordinator to restore it; do not create scratch outside this slice's directory. Known toolchain fact: the `haskoki-dev:ghc-9.10.3` image has no `python3`; container steps needing Python must use the pre-existing scratch runtime (Async Tasks 8/10 precedent), never `cabal clean` or image changes.
+All commands start at `<haskoki-checkout>`. Use the slice recorder `/tmp/haskoki-notifications/record.py` (SHA-256 `5b141a238f6cabed6ffb5111c016e66a466fc34bc862c011c343e55c73c059f3`) with interface `record.py NAME zero|nonzero COMMAND ARG...`. It is byte-identical to the Async recorder except its evidence root `dist-release-evidence/notifications`; names below are plain relative labels like `task-n01/before` (no `..` escapes). For example, `task-n01/before` writes `dist-release-evidence/notifications/task-n01/before.log` and `before-command.json`. Do not change the recorder, and do not overwrite Async evidence. If that prerequisite script is missing, stop for the coordinator to restore it; do not create scratch outside this slice's directory. Known toolchain fact: the `haskoki-dev:ghc-9.10.3` image has no `python3`; container steps needing Python must use the pre-existing scratch runtime (Async Tasks 8/10 precedent), never `cabal clean` or image changes.
 
 T-N01 creates `/tmp/haskoki-notifications/evidence.py` with these exact commands:
 
@@ -474,7 +474,7 @@ Reuse Async Task 8's verified pins **exactly**:
 
 | Pin | Exact value |
 |---|---|
-| Proxy repository/source commit | `/home/user/src/m/pkcs11-proxy-ng-ws/pkcs11-proxy-ng`, `a48b60ba54b0163f4999c1e4fc0514bf7dc01681` |
+| Proxy repository/source commit | `<proxy-checkout>`, `a48b60ba54b0163f4999c1e4fc0514bf7dc01681` |
 | `/opt/pkcs11-proxy-ng/pkcs11-proxy-ng` SHA-256 | `260cb245981561291eab4d29a16cb6a4d6f00dca3431f3d583d35364fab0c9e5` |
 | `/opt/pkcs11-proxy-ng/libpkcs11_proxy_ng_shim.so` SHA-256 | `8ea85073ce8436ebdc8ee99bce99e70a6d8c34473c28b5a45567c8a26aba1690` |
 | Pinned `crates/shim/src/dispatch/general/async_ops.rs` SHA-256 | `cf1239e40f482755006bb1d1988b9d083f8f36312ad4d9543160e9c31c40ca72` |
@@ -621,7 +621,7 @@ git diff --check
 ```sh
 python3 /tmp/haskoki-notifications/record.py final/attached zero timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work haskoki-dev:ghc-9.10.3 scripts/test-async-attached.sh
 python3 /tmp/haskoki-notifications/record.py final/detached zero timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work haskoki-dev:ghc-9.10.3 scripts/test-async-detached.sh
-python3 /tmp/haskoki-notifications/record.py final/gates zero env HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng HASKOKI_EVIDENCE_DIR=/home/user/src/m/haskoki-ws/haskoki/dist-release-evidence/notifications/final/gates bash scripts/run-gates.sh
+python3 /tmp/haskoki-notifications/record.py final/gates zero env HASKOKI_PROXY_DIR=/opt/pkcs11-proxy-ng HASKOKI_EVIDENCE_DIR=<haskoki-checkout>/dist-release-evidence/notifications/final/gates bash scripts/run-gates.sh
 python3 /tmp/haskoki-notifications/record.py final/gate-check zero python3 /tmp/haskoki-notifications/check-gates.py final
 python3 /tmp/haskoki-notifications/record.py final/pins zero python3 /tmp/haskoki-notifications/pins.py final
 python3 /tmp/haskoki-notifications/record.py final/installed-native zero timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -v /tmp/haskoki-notifications:/tmp/haskoki-notifications -w /work haskoki-dev:ghc-9.10.3 python3 /tmp/haskoki-notifications/run-native.py final

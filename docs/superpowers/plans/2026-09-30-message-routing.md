@@ -46,7 +46,7 @@
 
 Coverage map: sections 1 and 2 → Tasks 1–7; section 3 → Tasks 1–6; section 3.1 → Tasks 2–3; section 3.2 → Tasks 1–2; section 3.3 → Tasks 3 and 5; section 3.4 → Tasks 2 and 5; section 3.5 → Task 4; section 3.6 → Tasks 5–7; section 4 → Tasks 1–3 and 5; section 5 → Tasks 1–7; section 5.1 → Tasks 1–2; sections 5.2 and 5.3 → Task 5; section 5.4 → Task 7; section 6 → Tasks 4–7.
 
-Every test cycle below requires the executor to observe and retain the stated failure before adding its implementation. An unexpected failure is investigated before proceeding. Commands are rooted at `/home/user/src/m/haskoki-ws/haskoki`; scoped Cabal commands run in the pinned environment. Preserve the pre-existing untracked `ws/` directory. The executor commits each task with the listed exact path set; the plan author does not commit.
+Every test cycle below requires the executor to observe and retain the stated failure before adding its implementation. An unexpected failure is investigated before proceeding. Commands are rooted at `<haskoki-checkout>`; scoped Cabal commands run in the pinned environment. Preserve the pre-existing untracked `ws/` directory. The executor commits each task with the listed exact path set; the plan author does not commit.
 
 ### Task 1: Owned message frames and decoder cases
 
