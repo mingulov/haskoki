@@ -752,7 +752,7 @@ jobs:
           repository: mingulov/pkcs11-check
           ref: ${{ env.FRAMEWORK_REF }}
           path: pkcs11-check
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Restore / populate vector-data cache
         id: data-cache
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
