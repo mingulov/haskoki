@@ -490,6 +490,7 @@ load_profiles() {
   [ -n "${FULL_MARKER:-}" ] || { echo "haskoki-demo: FULL_MARKER empty" >&2; return 1; }
   : "${FULL_MATCH:-}"
   : "${CHECK_TIMEOUT:=180}"
+  : "${CHECK_TIMEOUT_PROXY:=360}"
   : "${CHECK_SLOT:=0}"
 }
 
@@ -579,7 +580,7 @@ LANE_INCOMPLETE=0
 run_lane() {
   # $1 run dir, $2 mode, $3 profile, $4 marker, $5 match (may be empty)
   # Locals: compare calls this twice and must keep its own $run.
-  local run mode profile marker match art SO backend MOD SHIM port rc bin i
+  local run mode profile marker match art SO backend MOD SHIM port rc bin i ctimeout
   run="$1"; mode="$2"; profile="$3"; marker="$4"; match="$5"
   art=$(bundle_dir) || return 2
   SO="$art/lib/libhaskoki.so"
@@ -623,9 +624,14 @@ run_lane() {
   say "doctor: healthy"
 
   say "test [$mode/$profile]: marker + match from $PROFILES"
+  # Per-test timeout is per mode (profiles.conf carries both
+  # budgets with the measurement); one budget cannot fit a
+  # 21x proxy/direct spread.
+  ctimeout="$CHECK_TIMEOUT"
+  [ "$mode" = "proxy" ] && ctimeout="$CHECK_TIMEOUT_PROXY"
   # Optional --match as separate argv (no word-splitting tricks).
   set -- --module "$MOD" --slot "$CHECK_SLOT" \
-      --isolation auto --timeout "$CHECK_TIMEOUT" \
+      --isolation auto --timeout "$ctimeout" \
       --state-file "$run/state.json" --policy-file "$run/policy.json" \
       --marker "$marker"
   if [ -n "$match" ]; then
