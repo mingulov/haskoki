@@ -44,6 +44,16 @@ the publisher checks all release pages and exact tag/run/SHA ownership
 before any remote writes. The workflow runs the required Haskell, C-driver,
 bundle, source-package, fast-checker and demo-image jobs. It then loads the exact
 tested demo image and uses the already verified bundle and source archive.
+The demo image is built once in `demo-image-build`. Three
+`demo-image-shards` jobs load the saved candidate and run contracts, full
+checks, and the real compare command in parallel. The required `demo-image`
+gate rejects failed, cancelled, skipped or missing shards and verifies all
+three tested the same source and image before promoting the saved bytes.
+Reports keep separate `contracts/`, `full/` and `compare/` directories in
+`demo-image-runs`; the publisher still consumes `demo-image-tested`.
+For complete local verification, run `sh scripts/test-demo-image.sh` from
+the repository root; it builds and runs all three groups in sequence.
+
 There is no second build or dispatch after creating the source tag.
 A tag pushed with `GITHUB_TOKEN` need not trigger another workflow.
 

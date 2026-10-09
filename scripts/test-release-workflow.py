@@ -70,6 +70,36 @@ class WorkflowTests(unittest.TestCase):
         for job in ["haskell", "c-drivers", "bundle", "fetch-data"]:
             self.assertEqual(field(section(self.jobs, job, 2), "needs", 4), "release-request")
 
+    def test_demo_gate_always_runs_and_requires_build_and_all_shards(self):
+        build = section(self.jobs, "demo-image-build", 2)
+        shards = section(self.jobs, "demo-image-shards", 2)
+        gate = section(self.jobs, "demo-image", 2)
+        self.assertEqual(field(build, "needs", 4), "bundle")
+        self.assertEqual(field(shards, "needs", 4), "demo-image-build")
+        self.assertEqual(field(gate, "needs", 4), "[demo-image-build, demo-image-shards]")
+        self.assertEqual(field(gate, "if", 4), "${{ always() }}")
+        strategy = section(shards, "strategy", 4)
+        self.assertEqual(field(strategy, "fail-fast", 6), "false")
+        self.assertEqual(field(strategy, "max-parallel", 6), "3")
+        self.assertEqual(field(section(strategy, "matrix", 6), "phase", 8),
+                         "[contracts, full, compare]")
+        self.assertIn("needs.demo-image-build.result", gate)
+        self.assertIn("needs.demo-image-shards.result", gate)
+        self.assertIn("demo-image-shards.py check-results", gate)
+        self.assertIn("demo-image-shards.py gate", gate)
+        self.assertLess(gate.index("check-results"), gate.index("actions/download-artifact"))
+        self.assertLess(gate.index("demo-image-shards.py gate"), gate.index("cp candidate/demo-image.tar.gz"))
+        self.assertNotIn("docker build", shards + gate)
+        self.assertNotIn("docker save", shards + gate)
+        self.assertIn("sh scripts/test-demo-image.sh build", build)
+        self.assertIn('sh scripts/test-demo-image.sh "${{ matrix.phase }}"', shards)
+        self.assertIn("demo-image-shards.py verify-archive", shards)
+        self.assertLess(shards.index("verify-archive"), shards.index("docker load"))
+        for artifact in ["demo-image-tested", "demo-image-runs"]:
+            self.assertIn("name: " + artifact, gate)
+        for output in ["imageid", "configid", "base_digest", "rust_digest"]:
+            self.assertIn(output + ": ${{ steps.gate.outputs." + output + " }}", gate)
+
     def test_only_publication_job_has_write_permissions(self):
         self.assertEqual(field(section(self.text, "permissions", 0), "contents", 2), "read")
         for job in re.findall(r"(?m)^  ([a-z][a-z0-9-]*):", self.jobs):

@@ -197,6 +197,7 @@ jobs:
           python3 scripts/check-test-evidence.py --self-test
           python3 scripts/test-release-request.py
           python3 scripts/test-release-workflow.py
+          python3 scripts/test-demo-shards.py
           python3 scripts/publish-coverage.py --check
       - name: Build and test
         run: |
@@ -448,32 +449,18 @@ jobs:
           if-no-files-found: error
 
   # ------------------------------------------------------------------
-  # Demo image (release candidate): consumes the STAGED bundle
-  # (release-bundle artifact from the bundle job — brief D1, no
-  # second bundle build anywhere) and runs
-  # scripts/test-demo-image.sh, the host-driver that asserts
-  # every final-artifact lane (demo, smoke x2, full x2 with
-  # exact finding sets, compare with the frozen subset,
-  # wrapper drift, help/matrix, examples, JSON, UID, nonet,
-  # floor). Old build-tree runs never substitute for these
-  # lanes. Plain `docker` commands only: the Buildx container
-  # driver cannot see host-loaded base images, so no buildx
-  # action is used here. The TESTED image is saved to a tarball
-  # and uploaded: publish loads these exact bytes (staged-only
-  # identity, no rebuild). Floating FROM tags are resolved at
-  # build time; their effective digests leave via job outputs.
+  # Build once from the staged release bundle, save candidate bytes/identity,
+  # then test contracts, full and real compare in three parallel jobs. Every
+  # prior assertion remains in the phase driver. Plain Docker sees the pulled
+  # base tags; their effective digests remain recorded. The final demo-image
+  # gate verifies all receipts before promoting the same saved bytes for publish.
   # ------------------------------------------------------------------
-  demo-image:
+  demo-image-build:
     needs: bundle
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 90
     permissions:
       contents: read
-    outputs:
-      imageid: ${{ steps.record.outputs.imageid }}
-      configid: ${{ steps.save.outputs.configid }}
-      base_digest: ${{ steps.record.outputs.base_digest }}
-      rust_digest: ${{ steps.record.outputs.rust_digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -510,26 +497,14 @@ jobs:
           docker pull rust:1.94-bookworm
           docker inspect --format '{{index .RepoDigests 0}}' ubuntu:26.04
           docker inspect --format '{{index .RepoDigests 0}}' rust:1.94-bookworm
-      - name: Run the demo-image driver (exact lane assertions)
+      - name: Build the demo candidate once (staged bundle)
         env:
-          HASKOKI_DEMO_TEST_OUT: ${{ github.workspace }}/driver-out
+          HASKOKI_DEMO_TEST_OUT: ${{ github.workspace }}/driver-out/build
           HASKOKI_DEMO_REVISION: ${{ github.sha }}
           HASKOKI_DEMO_USE_STAGED: "1"
         run: |
           set -euo pipefail
-          time sh scripts/test-demo-image.sh
-      - name: Normalize driver-out ownership
-        if: always()
-        run: |
-          # The driver runs entrypoints in containers: run files land
-          # root-owned, some mode-locked (dec.bin), and the artifact
-          # upload runs as the runner — hand the tree back first.
-          # Always-run: the run-dirs upload below is always() too, and
-          # a failed driver is exactly when its logs are needed.
-          if [ -d driver-out ]; then
-            sudo chown -R "$(id -u):$(id -g)" driver-out
-            chmod -R u+rwX driver-out
-          fi
+          time sh scripts/test-demo-image.sh build
       - name: Record image identity
         id: record
         run: |
@@ -551,27 +526,153 @@ jobs:
           esac
           echo "rust_digest=$RUST_DIGEST" >> "$GITHUB_OUTPUT"
           echo "rust: $RUST_DIGEST"
-      - name: Save tested image
-        id: save
+      - name: Save candidate bytes and identity
+        env:
+          BASE_DIGEST: ${{ steps.record.outputs.base_digest }}
+          RUST_DIGEST: ${{ steps.record.outputs.rust_digest }}
         run: |
           set -euo pipefail
           VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
-          docker save "haskoki-demo:$VER" | gzip > demo-image.tar.gz
-          python3 scripts/release-request.py archive-config
-          ls -la demo-image.tar.gz
+          mkdir -p candidate
+          docker save "haskoki-demo:$VER" | gzip > candidate/demo-image.tar.gz
+          python3 scripts/demo-image-shards.py capture \
+            --archive candidate/demo-image.tar.gz --identity candidate/identity.json \
+            --image "haskoki-demo:$VER" --source "$GITHUB_SHA" --version "$VER" \
+            --base-digest "$BASE_DIGEST" --rust-digest "$RUST_DIGEST"
+      - name: Upload candidate (not yet qualified)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: demo-image-candidate
+          path: candidate/
+          if-no-files-found: error
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: demo-image-build-runs
+          path: driver-out/
+          if-no-files-found: warn
+
+  demo-image-shards:
+    needs: demo-image-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        phase: [contracts, full, compare]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Download candidate bytes
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: demo-image-candidate
+          path: candidate/
+      - name: Verify archive identity before loading
+        run: |
+          set -euo pipefail
+          VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
+          python3 scripts/demo-image-shards.py verify-archive \
+            --archive candidate/demo-image.tar.gz --identity candidate/identity.json \
+            --source "$GITHUB_SHA" --version "$VER"
+          docker load -i candidate/demo-image.tar.gz
+      - name: Run assigned phase on the exact candidate
+        env:
+          HASKOKI_DEMO_TEST_OUT: ${{ github.workspace }}/driver-out/${{ matrix.phase }}
+          HASKOKI_DEMO_REVISION: ${{ github.sha }}
+          HASKOKI_DEMO_IDENTITY: ${{ github.workspace }}/candidate/identity.json
+          HASKOKI_DEMO_ARCHIVE: ${{ github.workspace }}/candidate/demo-image.tar.gz
+        run: |
+          set -euo pipefail
+          HASKOKI_DEMO_IMAGE=$(python3 -c 'import json; print(json.load(open("candidate/identity.json"))["imageid"])')
+          export HASKOKI_DEMO_IMAGE
+          time sh scripts/test-demo-image.sh "${{ matrix.phase }}"
+      - name: Normalize shard output ownership
+        if: always()
+        run: |
+          if [ -d driver-out ]; then
+            sudo chown -R "$(id -u):$(id -g)" driver-out
+            chmod -R u+rwX driver-out
+          fi
+      - name: Upload distinct shard reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: demo-image-shard-${{ matrix.phase }}
+          path: driver-out/
+          if-no-files-found: error
+
+  # Keep this check name and publish-facing outputs. always() makes a failed,
+  # cancelled or skipped prerequisite a failed gate rather than a skipped check.
+  # Receipts additionally reject missing shards or different source/image bytes.
+  demo-image:
+    needs: [demo-image-build, demo-image-shards]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      imageid: ${{ steps.gate.outputs.imageid }}
+      configid: ${{ steps.gate.outputs.configid }}
+      base_digest: ${{ steps.gate.outputs.base_digest }}
+      rust_digest: ${{ steps.gate.outputs.rust_digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Fail closed on required job results
+        env:
+          BUILD_RESULT: ${{ needs.demo-image-build.result }}
+          SHARDS_RESULT: ${{ needs.demo-image-shards.result }}
+        run: |
+          python3 scripts/demo-image-shards.py check-results \
+            --build-result "$BUILD_RESULT" --shards-result "$SHARDS_RESULT"
+      - name: Download candidate bytes
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: demo-image-candidate
+          path: candidate/
+      - name: Download all three shard reports (distinct subdirectories)
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: demo-image-shard-*
+          path: driver-out/
+          merge-multiple: true
+      - name: Verify complete same-source same-image qualification
+        id: gate
+        env:
+          BUILD_RESULT: ${{ needs.demo-image-build.result }}
+          SHARDS_RESULT: ${{ needs.demo-image-shards.result }}
+        run: |
+          set -euo pipefail
+          VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
+          python3 scripts/demo-image-shards.py gate \
+            --archive candidate/demo-image.tar.gz --identity candidate/identity.json \
+            --source "$GITHUB_SHA" --version "$VER" --runs driver-out \
+            --build-result "$BUILD_RESULT" --shards-result "$SHARDS_RESULT"
+          # Promote saved bytes only after all receipts pass. Never rebuild/save.
+          cp candidate/demo-image.tar.gz demo-image.tar.gz
+      - name: Download build logs
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: demo-image-build-runs
+          path: driver-out/
       - name: Upload tested image
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: demo-image-tested
           path: demo-image.tar.gz
           if-no-files-found: error
-      - name: Upload run dirs
-        if: always()
+      - name: Upload complete run evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: demo-image-runs
-          path: driver-out
-          if-no-files-found: warn
+          path: driver-out/
+          if-no-files-found: error
 
   # ------------------------------------------------------------------
   # Publish (CD): the only job with publication permissions. Main release

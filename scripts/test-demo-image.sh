@@ -15,7 +15,11 @@
 # note on reproducibility.
 #
 # Usage (from repo root):
-#   scripts/test-demo-image.sh
+#   scripts/test-demo-image.sh [all|build|contracts|full|compare]
+# Default all builds and runs every assertion. Test-only phases require
+# HASKOKI_DEMO_IMAGE (an existing image; always run by inspected immutable ID).
+# CI also sets HASKOKI_DEMO_IDENTITY and HASKOKI_DEMO_ARCHIVE to bind a
+# success receipt to the exact saved candidate bytes and selected revision.
 # Env:
 #   HASKOKI_DEMO_TEST_OUT   host out dir (default mktemp; bind-mounted
 #                           to /out; made world-writable for the UID leg)
@@ -43,12 +47,23 @@ cd "$PKG" || exit 1
 fail() { echo "FAIL: $1"; exit 1; }
 note() { echo "--- $1"; }
 
+PHASE="${1:-all}"
+[ "$#" -le 1 ] || fail "usage: $0 [all|build|contracts|full|compare]"
+case "$PHASE" in
+  all|build|contracts|full|compare) ;;
+  *) fail "invalid phase: $PHASE" ;;
+esac
+case "$PHASE" in
+  contracts|full|compare)
+    [ -n "${HASKOKI_DEMO_IMAGE:-}" ] || fail "test phase requires HASKOKI_DEMO_IMAGE" ;;
+esac
+
 command -v docker >/dev/null 2>&1 || fail "docker missing"
 command -v timeout >/dev/null 2>&1 || fail "timeout missing"
 
 VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
 [ -n "$VER" ] || fail "cannot parse version from haskoki.cabal"
-TAG="haskoki-demo:$VER"
+TAG="${HASKOKI_DEMO_IMAGE:-haskoki-demo:$VER}"
 STEP_TIMEOUT="${HASKOKI_DEMO_STEP_TIMEOUT:-7200}"
 
 if [ -n "${HASKOKI_DEMO_TEST_OUT:-}" ]; then
@@ -58,7 +73,9 @@ else
   OUT=$(mktemp -d /tmp/haskoki-demo-test.XXXXXX) || fail "mktemp failed"
 fi
 chmod 777 "$OUT" || fail "cannot chmod $OUT"
-echo "host out dir: $OUT"
+echo "host out dir: $OUT (phase $PHASE)"
+# A failed retry cannot leave a previous success receipt behind.
+rm -f "$OUT/phase-receipt.json" || fail "cannot remove stale phase receipt"
 
 # Latest run dir for a command tag (unique per invocation by design).
 latest_run() {
@@ -115,6 +132,7 @@ PY
 # ---------------------------------------------------------------------------
 # 0. Stage the bundle (R8/D1: the image is built FROM this tree).
 # ---------------------------------------------------------------------------
+if [ "$PHASE" = all ] || [ "$PHASE" = build ]; then
 STAGED_SRC="dist-release/haskoki-$VER"
 if [ -n "${HASKOKI_DEMO_USE_STAGED:-}" ]; then
   note "using staged bundle $STAGED_SRC (CI artifact, not rebuilt)"
@@ -169,6 +187,8 @@ else
 fi
 tail -3 "$OUT/build.log"
 
+fi
+
 IMGID=$(docker inspect --format '{{.Id}}' "$TAG" 2>/dev/null) \
   || fail "cannot inspect $TAG"
 echo "$IMGID" | grep -qE '^sha256:[0-9a-f]{64}$' \
@@ -179,16 +199,43 @@ echo "image size: $IMGSIZE bytes"
 # The image holds the staged bytes now; remove the context copy so a
 # stale tree can never leak into a later build (the source tree stays
 # in dist-release/ for inspection).
-rm -rf staged-bundle
-echo "staged-bundle/ context copy removed"
+if [ "$PHASE" = all ] || [ "$PHASE" = build ]; then
+  rm -rf staged-bundle
+  echo "staged-bundle/ context copy removed"
+fi
 REPO_DIGESTS=$(docker inspect --format '{{.RepoDigests}}' "$TAG")
 echo "repo digests: $REPO_DIGESTS (local build; nothing pushed)"
+# Freeze the reference before any tests; a mutable local tag cannot redirect
+# later legs to different bytes. Test-only phases never stage or build.
+TAG="$IMGID"
+if [ -n "${HASKOKI_DEMO_REVISION:-}" ]; then
+  LABELS=$(docker inspect --format '{{json .Config.Labels}}' "$TAG") \
+    || fail "cannot read image labels"
+  python3 - "$LABELS" "$HASKOKI_DEMO_REVISION" "$VER" <<'PYLABEL' || fail "image labels differ"
+import json, sys
+labels = json.loads(sys.argv[1])
+assert labels["org.opencontainers.image.revision"] == sys.argv[2]
+assert labels["org.opencontainers.image.version"] == sys.argv[3]
+assert labels["org.opencontainers.image.source"] == "https://github.com/mingulov/haskoki"
+PYLABEL
+fi
+if [ -n "${HASKOKI_DEMO_IDENTITY:-}" ]; then
+  python3 scripts/demo-image-shards.py verify-image \
+    --identity "$HASKOKI_DEMO_IDENTITY" --archive "${HASKOKI_DEMO_ARCHIVE:-}" \
+    --source "${HASKOKI_DEMO_REVISION:-}" --version "$VER" --image "$TAG" \
+    || fail "candidate identity verification failed"
+fi
+if [ "$PHASE" = build ]; then
+  echo "PASS: test-demo-image.sh (build)"
+  exit 0
+fi
 BUILDER_ID=$(docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3 2>/dev/null || echo unknown)
 echo "builder image id: $BUILDER_ID"
 
 # ---------------------------------------------------------------------------
 # 2. demo: exit 0 + report markers.
 # ---------------------------------------------------------------------------
+if [ "$PHASE" = all ] || [ "$PHASE" = contracts ]; then
 note "demo (expect exit 0)"
 timeout -s KILL "$STEP_TIMEOUT" docker run --rm -v "$OUT:/out" "$TAG" demo \
   > "$OUT/demo.log" 2>&1
@@ -211,6 +258,8 @@ echo "demo: 8/8 verifications, report at $DEMO_RUN/report.json"
 # ---------------------------------------------------------------------------
 # 3. check lanes: exact outcomes per mode/profile.
 # ---------------------------------------------------------------------------
+fi
+
 run_check() {
   # $1 = mode, $2 = profile, $3 = want exit
   # All lanes run with --network none (plan section 7.1: runtime
@@ -240,6 +289,7 @@ run_check() {
   echo "check $1/$2: exit $rc, run at $RUN_DIR"
 }
 
+if [ "$PHASE" = all ] || [ "$PHASE" = contracts ]; then
 run_check direct smoke 0
 grep -q 'findings: none' "$OUT/check-direct-smoke.log" \
   || fail "smoke/direct summary marker missing"
@@ -247,6 +297,9 @@ run_check proxy smoke 0
 grep -q 'findings: none' "$OUT/check-proxy-smoke.log" \
   || fail "smoke/proxy summary marker missing"
 
+fi
+
+if [ "$PHASE" = all ] || [ "$PHASE" = full ]; then
 # Full lanes exit 1 with exact finding sets (R9 on proxy v0.2.2: 27
 # direct / 27 proxy-core / diff-core + shared re-frozen below on
 # checker 0.2.3; triaged in task-R9-report.md; F-9 re-freeze: 22/22,
@@ -326,6 +379,9 @@ EOF
 check_stable_core "check proxy/full findings" "$OUT/exp-full-proxy.txt" \
   "$RUN_DIR/findings.txt"
 
+fi
+
+if [ "$PHASE" = all ] || [ "$PHASE" = compare ]; then
 # ---------------------------------------------------------------------------
 # 4. compare: exit 1 with a stable-core diff + exact shared set.
 # R9 parity-subset re-freeze (proxy v0.2.2): the diff asserts the
@@ -426,6 +482,9 @@ grep -q 'missing-known 1' "$OUT/classify-remove.log" \
   || fail "removal control marker missing"
 echo "compare-classify: in-image ok + injection/removal controls hold"
 
+fi
+
+if [ "$PHASE" = all ] || [ "$PHASE" = contracts ]; then
 # ---------------------------------------------------------------------------
 # 5. Help/exit matrix, examples, JSON purity (fast legs).
 # ---------------------------------------------------------------------------
@@ -597,6 +656,8 @@ echo "measured floor: $FLOOR (want GLIBC_2.43)"
 [ "$FLOOR" = "GLIBC_2.43" ] || fail "glibc floor moved: $FLOOR"
 echo "floor holds: $FLOOR over bundle + proxy + venv native extensions"
 
+fi
+
 # ---------------------------------------------------------------------------
 # 9. Record digest + layer note.
 # ---------------------------------------------------------------------------
@@ -606,8 +667,8 @@ note "record"
   echo "id: $IMGID"
   echo "size: $IMGSIZE bytes"
   echo "builder: $BUILDER_ID"
-  echo "build: $BUILD_CMD (from repo root)"
-  echo "glibc floor: $FLOOR"
+  echo "build: ${BUILD_CMD:-existing candidate (not rebuilt)} (from repo root)"
+  echo "glibc floor: ${FLOOR:-checked by contracts phase}"
   echo "layers:"
   docker history --no-trunc --format '{{.Size}} {{.CreatedBy}}' "$TAG" \
     | head -40 | sed 's/^/  /'
@@ -635,4 +696,15 @@ Functional reproducibility = same versions + same outcomes above.
 EOF
 cat "$OUT/reproducibility-note.txt"
 
+if [ -n "${HASKOKI_DEMO_IDENTITY:-}" ]; then
+  python3 scripts/demo-image-shards.py receipt \
+    --identity "$HASKOKI_DEMO_IDENTITY" --archive "$HASKOKI_DEMO_ARCHIVE" \
+    --source "$HASKOKI_DEMO_REVISION" --version "$VER" --image "$TAG" \
+    --phase "$PHASE" --runs "$OUT" || fail "cannot write phase receipt"
+fi
+
+if [ "$PHASE" != all ]; then
+  echo "PASS: test-demo-image.sh ($PHASE)"
+  exit 0
+fi
 echo "PASS: test-demo-image.sh (demo + check x4 + compare + help/matrix/examples/json + UID + nonet + floor)"
