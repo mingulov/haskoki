@@ -16,7 +16,7 @@ DRIVER = ROOT / 'scripts/test-demo-image.sh'
 HELPER = ROOT / 'scripts/demo-image-shards.py'
 SOURCE = 'a' * 40
 IMAGE = 'sha256:' + 'b' * 64
-BASE = 'ubuntu@sha256:' + 'c' * 64
+BASE_DIGEST = 'ubuntu@sha256:' + 'c' * 64
 RUST = 'rust@sha256:' + 'd' * 64
 
 
@@ -66,7 +66,7 @@ exit 47
         self.expected = {'schema': 1, 'source': SOURCE, 'version': '0.3.0.0',
                          'imageid': IMAGE, 'configid': self.configid,
                          'archive_sha256': hashlib.sha256(self.archive.read_bytes()).hexdigest(),
-                         'base_digest': BASE, 'rust_digest': RUST}
+                         'base_digest': BASE_DIGEST, 'rust_digest': RUST}
         self.identity.write_text(json.dumps(self.expected))
         self.runs = self.work / 'runs'
         for phase in ('contracts', 'full', 'compare'):
@@ -189,7 +189,7 @@ exit 47
     def test_capture_and_receipt_keep_docker_id_distinct_from_configuration_digest(self):
         self.identity.unlink()
         result = self.helper('capture', '--image', 'fixture:owned',
-                             '--base-digest', BASE, '--rust-digest', RUST)
+                             '--base-digest', BASE_DIGEST, '--rust-digest', RUST)
         self.assertEqual(result.returncode, 0, result.stdout)
         identity = json.loads(self.identity.read_text())
         self.assertEqual(identity, self.expected)
