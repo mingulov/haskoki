@@ -714,7 +714,7 @@ def e2e_colon_text(extra: str) -> str:
     (codex's exact insertion point): YAML resolves 44 actions; the
     gate must FAIL, not report 43 pinned."""
     t = DEFAULT.read_text()
-    anchor = "      - name: Stage draft release and verify all six uploaded files\n"
+    anchor = "      - name: Stage draft release and verify all uploaded files\n"
     i = t.index(anchor)
     return t[:i] + extra + t[i:]
 

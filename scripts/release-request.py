@@ -156,8 +156,9 @@ def preflight(root, env, include_drafts=False):
     request = request_context(root, env)
     if request is None:
         return None
-    if not env.get("HASKOKI_RELEASE_SIGNING_KEY"):
-        raise Refusal("HASKOKI_RELEASE_SIGNING_KEY secret is required before releasing")
+    # Signing is OPTIONAL: an absent HASKOKI_RELEASE_SIGNING_KEY secret
+    # releases unsigned (five assets, no SHA256SUMS.asc) instead of
+    # refusing. A present signature is always verified (validate_assets).
     check_tag(root, request["tag"], request["sha"])
     if include_drafts:
         lookup_release(request)
@@ -282,23 +283,41 @@ def registry_identity(request, env):
     return {"id": image_id, "digest": digest, "labels": config.get("config", {}).get("Labels") or {}}
 
 
-def asset_names(request):
+def required_assets(request):
+    """The five assets every release carries, signed or not."""
     version = request["version"]
     return [f"haskoki-{version}-linux-x86_64.tar.gz", f"haskoki-{version}.tar.gz",
-            f"test-results-{version}.tar.gz", "release-manifest.json", "SHA256SUMS", "SHA256SUMS.asc"]
+            f"test-results-{version}.tar.gz", "release-manifest.json", "SHA256SUMS"]
+
+
+SIGNATURE = "SHA256SUMS.asc"
+
+
+def asset_names(request):
+    """Canonical six-asset (signed) shape: fixture builders and asset-id mapping."""
+    return required_assets(request) + [SIGNATURE]
+
+
+def present_assets(request, directory):
+    """Required five plus the signature exactly when its file is present."""
+    names = required_assets(request)
+    if (directory / SIGNATURE).is_file():
+        names = names + [SIGNATURE]
+    return names
 
 
 def validate_assets(directory, request, digest):
-    names = asset_names(request)
-    if any(not (directory / n).is_file() for n in names):
-        raise Refusal("release is missing one of its six assets")
+    names = present_assets(request, directory)
+    required = required_assets(request)
+    if any(not (directory / n).is_file() for n in required):
+        raise Refusal("release is missing one of its five required assets")
     checks = {}
     for line in (directory / "SHA256SUMS").read_text().splitlines():
         match = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9_.-]+)", line)
         if not match or match[2] in checks:
             raise Refusal("release checksum file is malformed")
         checks[match[2]] = match[1]
-    if set(checks) != set(names[:4]):
+    if set(checks) != set(required[:4]):
         raise Refusal("release checksum set must contain exactly the three archives and manifest")
     for name, expected in checks.items():
         if hashlib.sha256((directory / name).read_bytes()).hexdigest() != expected:
@@ -306,9 +325,10 @@ def validate_assets(directory, request, digest):
     manifest = json.loads((directory / "release-manifest.json").read_text())
     if (manifest.get("version") != request["version"] or manifest.get("source", {}).get("sha") != request["sha"]
             or manifest.get("oci_digest") != digest):
-        raise Refusal("signed manifest differs from the selected source, version or image digest")
-    command("gpg", "--batch", "--no-tty", "--verify", str(directory / "SHA256SUMS.asc"),
-            str(directory / "SHA256SUMS"))
+        raise Refusal("manifest differs from the selected source, version or image digest")
+    if SIGNATURE in names:
+        command("gpg", "--batch", "--no-tty", "--verify", str(directory / SIGNATURE),
+                str(directory / "SHA256SUMS"))
 
 
 def checkpoint_name(request):
@@ -345,23 +365,24 @@ def checkpoint_metadata(request, digest, config_id, directory):
     return {"schema": 1, "run_id": request["run_id"], "sha": request["sha"],
             "tag": request["tag"], "oci_digest": digest, "config_id": config_id,
             "files": {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
-                      for name in asset_names(request)}}
+                      for name in present_assets(request, directory)}}
 
 
 def prepare_checkpoint(directory, checkpoint, request, digest, config_id):
-    """Stage exactly six signed files plus checkpoint metadata for upload-artifact."""
+    """Stage the required files (plus the signature when present) and metadata for upload-artifact."""
+    names = present_assets(request, directory)
     validate_assets(directory, request, digest)
     if find_checkpoint(request) is not None:
         raise Refusal("checkpoint already exists; restore it instead of replacing its files")
     checkpoint.mkdir()
-    for name in asset_names(request):
+    for name in names:
         (checkpoint / name).write_bytes((directory / name).read_bytes())
     (checkpoint / "release-checkpoint.json").write_text(json.dumps(
         checkpoint_metadata(request, digest, config_id, checkpoint), indent=2) + "\n")
 
 
 def restore_checkpoint(directory, request, digest, config_id):
-    """Restore original signed bytes before any draft create/upload, including partial retries."""
+    """Restore original bytes before any draft create/upload, including partial retries."""
     existing = lookup_release(request)
     artifact = find_checkpoint(request)
     if artifact is None:
@@ -369,31 +390,39 @@ def restore_checkpoint(directory, request, digest, config_id):
             raise Refusal("release checkpoint is missing for the existing draft; refusing an unsafe retry")
         return False
     raw = command("gh", "api", f"repos/{request['repository']}/actions/artifacts/{artifact['id']}/zip")
-    names = asset_names(request)
-    expected = set(names) | {"release-checkpoint.json"}
+    required = required_assets(request)
+    allowed = [set(required) | {"release-checkpoint.json"},
+               set(required) | {SIGNATURE, "release-checkpoint.json"}]
     with tempfile.TemporaryDirectory() as temp:
         stage = Path(temp)
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             members = archive.namelist()
-            if len(members) != len(expected) or set(members) != expected:
-                raise Refusal("checkpoint archive must contain exactly six assets and its metadata")
+            if len(members) != len(set(members)) or set(members) not in allowed:
+                raise Refusal("checkpoint archive must contain exactly five assets (unsigned) or six (signed), plus its metadata")
             for name in members:
                 (stage / name).write_bytes(archive.read(name))
+        names = present_assets(request, stage)
         metadata = json.loads((stage / "release-checkpoint.json").read_text())
         if metadata != checkpoint_metadata(request, digest, config_id, stage):
-            raise Refusal("checkpoint metadata or signed file identity does not match")
+            raise Refusal("checkpoint metadata or file identity does not match")
         validate_assets(stage, request, digest)
         # Check against the independently staged bundle/source inputs of this run.
-        for name in names[:2]:
+        for name in required[:2]:
             if hashlib.sha256((stage / name).read_bytes()).digest() != hashlib.sha256((directory / name).read_bytes()).digest():
                 raise Refusal("checkpoint bundle/source differs from this run's checked artifacts")
         # Apply only after the complete archive, metadata and signature verify.
         for name in names:
             (directory / name).write_bytes((stage / name).read_bytes())
+        # The restored set is the run's immutable record: a signature left
+        # over from an unsigned checkpoint's signed retry must not linger.
+        stale = directory / SIGNATURE
+        if SIGNATURE not in names and (stale.is_file() or stale.is_symlink()):
+            stale.unlink()
     return True
 
 
 def stage_draft(root, directory, request, digest):
+    names = present_assets(request, directory)
     validate_assets(directory, request, digest)
     existing = lookup_release(request)
     if existing is None:
@@ -406,7 +435,6 @@ def stage_draft(root, directory, request, digest):
         if existing is None:
             raise Refusal("new draft release could not be verified")
     assets = existing.get("assets", [])
-    names = asset_names(request)
     if len({a["name"] for a in assets}) != len(assets) or any(a["name"] not in names for a in assets):
         raise Refusal("draft contains unexpected or duplicate assets")
     for asset in assets:
@@ -421,7 +449,7 @@ def stage_draft(root, directory, request, digest):
     final = lookup_release(request)
     assets = final.get("assets", []) if final else []
     if len(assets) != len(names) or {a["name"] for a in assets} != set(names):
-        raise Refusal("draft did not receive all six assets")
+        raise Refusal(f"draft did not receive all {len(names)} assets")
     for asset in assets:
         remote = command("gh", "api", f"repos/{request['repository']}/releases/assets/{asset['id']}",
                          "-H", "Accept: application/octet-stream")
@@ -479,12 +507,12 @@ def main():
             if restore_checkpoint(args.assets, request, env["PUSHED_DIGEST"], env["TESTED_CONFIG_ID"]):
                 with open(env["GITHUB_ENV"], "a") as out:
                     out.write("RESTORED_CHECKPOINT=1\n")
-                print(f"restored immutable signed checkpoint: {checkpoint_name(request)}")
+                print(f"restored immutable checkpoint: {checkpoint_name(request)}")
             elif env.get("REQUIRE_CHECKPOINT") == "1":
                 raise Refusal("release checkpoint is missing after upload; refusing any draft writes")
         elif args.operation == "prepare-checkpoint":
             prepare_checkpoint(args.assets, args.checkpoint, request, env["PUSHED_DIGEST"], env["TESTED_CONFIG_ID"])
-            print(f"signed checkpoint ready for upload: {checkpoint_name(request)}")
+            print(f"checkpoint ready for upload: {checkpoint_name(request)}")
         elif args.operation == "stage-draft":
             stage_draft(root, args.assets, request, env["PUSHED_DIGEST"])
         elif args.operation == "publish-draft":

@@ -90,9 +90,9 @@ class RequestTests(unittest.TestCase):
             with self.subTest(version=version), self.assertRaises(release.Refusal):
                 self.request(RELEASE_VERSION=version)
 
-    def test_missing_signing_input_is_rejected(self):
-        with self.assertRaisesRegex(release.Refusal, "SIGNING_KEY"):
-            self.request(HASKOKI_RELEASE_SIGNING_KEY="")
+    def test_missing_signing_input_releases_unsigned(self):
+        self.assertEqual(self.request(HASKOKI_RELEASE_SIGNING_KEY="")["tag"], "v0.3.0.0")
+        self.assertEqual(self.request()["tag"], "v0.3.0.0")
 
     def test_checkout_must_equal_selected_sha(self):
         with self.assertRaisesRegex(release.Refusal, "checkout"):
@@ -270,6 +270,29 @@ class BoundaryTests(unittest.TestCase):
                 release.validate_assets(root, req, digest)
                 (root / names[0]).write_bytes(b"tampered")
                 with self.assertRaisesRegex(release.Refusal, "checksum"):
+                    release.validate_assets(root, req, digest)
+
+    def test_unsigned_assets_validate_without_signature_or_gpg(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            req = {"version": "0.3.0.0", "sha": "a" * 40}
+            digest = "ghcr.io/mingulov/haskoki-demo@sha256:" + "b" * 64
+            required = release.required_assets(req)
+            for name in required:
+                (root / name).write_bytes(b"fixture")
+            (root / "release-manifest.json").write_text(json.dumps({
+                "version": "0.3.0.0", "source": {"sha": "a" * 40}, "oci_digest": digest}))
+            (root / "SHA256SUMS").write_text("".join(
+                f"{hashlib.sha256((root / n).read_bytes()).hexdigest()}  {n}\n" for n in required[:4]))
+            with patch.object(release, "command") as run:
+                release.validate_assets(root, req, digest)
+                run.assert_not_called()
+                (root / required[0]).write_bytes(b"tampered")
+                with self.assertRaisesRegex(release.Refusal, "checksum"):
+                    release.validate_assets(root, req, digest)
+                (root / required[0]).write_bytes(b"fixture")
+                (root / "SHA256SUMS").unlink()
+                with self.assertRaisesRegex(release.Refusal, "five required assets"):
                     release.validate_assets(root, req, digest)
 
 
@@ -495,6 +518,24 @@ class ApiLifecycleTests(unittest.TestCase):
         self.assertEqual(self.remote["SHA256SUMS.asc"], b"fixture")
         self.assertEqual(self.remote["release-manifest.json"], (self.root / "release-manifest.json").read_bytes())
         self.assertTrue(all(self.remote[name] == value for name, value in original_remote.items()))
+
+    def test_unsigned_checkpoint_round_trip_has_no_signature(self):
+        (self.root / "SHA256SUMS.asc").unlink()
+        checkpoint = self.root / "checkpoint"
+        with patch.object(release.subprocess, "run", self.transport):
+            release.prepare_checkpoint(self.root, checkpoint, self.req, self.digest, self.config_id)
+            self.save_checkpoint_boundary(checkpoint)
+            self.assertFalse(any(call[0] == "gpg" for call in self.calls))
+            release.stage_draft(self.root, self.root, self.req, self.digest)
+            self.assertFalse(any(call[0] == "gpg" for call in self.calls))
+            retry = self.root / "retry"
+            retry.mkdir()
+            for name in release.required_assets(self.req):
+                (retry / name).write_bytes((self.root / name).read_bytes())
+            (retry / "SHA256SUMS.asc").write_bytes(b"stale signature from a signed attempt")
+            self.assertTrue(release.restore_checkpoint(retry, self.req, self.digest, self.config_id))
+            self.assertFalse((retry / "SHA256SUMS.asc").exists())
+        self.assertEqual(set(self.remote), set(release.required_assets(self.req)))
 
     def test_owned_draft_requires_unexpired_same_run_checkpoint(self):
         self.current = {"id": 10, "tag_name": self.req["tag"], "draft": True,

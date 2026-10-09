@@ -22,9 +22,10 @@ name: CI and Release
 #
 # Pin policy (F-4): every third-party action is pinned to a full
 # commit SHA, the human-readable tag kept as a trailing `# vX`
-# comment on the same line (checkout v6, cache v5, buildx v3,
-# build-push v6, login v3, upload/download-artifact v7, setup-uv
-# v8.1.0, attest-build-provenance v2); Dependabot
+# comment on the same line (checkout v7.0.1, cache v6.1.0,
+# buildx v4.4.1, build-push v7.4.0, login v4.6.0,
+# upload-artifact v7.0.2, download-artifact v8.0.2, setup-uv
+# v10.2.0, attest-build-provenance v4.2.2); Dependabot
 # (`.github/dependabot.yml`) proposes SHA bumps,
 # and `scripts/check-actions-pinned.py` fails any `uses:` that
 # drifts back to a mutable tag. Floating inputs, visible here with
@@ -100,12 +101,16 @@ jobs:
       - name: Build mode requires no release credentials
         if: "!(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.mode == 'release')"
         run: python3 scripts/release-request.py preflight
-      - name: Prove unattended signing before starting release builds
+      - name: Prove unattended signing when a key is provisioned
         if: steps.request.outputs.tag != ''
         env:
           HASKOKI_RELEASE_SIGNING_KEY: ${{ secrets.HASKOKI_RELEASE_SIGNING_KEY }}
         run: |
           set -euo pipefail
+          if [ -z "${HASKOKI_RELEASE_SIGNING_KEY:-}" ]; then
+            echo "no HASKOKI_RELEASE_SIGNING_KEY secret: release will ship unsigned"
+            exit 0
+          fi
           export GNUPGHOME="$RUNNER_TEMP/release-preflight-gpg"
           mkdir -m 700 "$GNUPGHOME"
           trap 'rm -rf "$GNUPGHOME"' EXIT
@@ -144,7 +149,7 @@ jobs:
           ref: ${{ github.sha }}
       - name: Restore OpenSSL prefix cache
         id: ossl-cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ossl-cache/openssl-4.0.2.tar.gz
           key: openssl-4.0.2-static-v1
@@ -170,7 +175,7 @@ jobs:
         if: steps.ossl-cache.outputs.cache-hit == 'true'
         run: tar xzf ossl-cache/openssl-4.0.2.tar.gz -C /
       - name: Restore cabal store cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cabal
           key: cabal-store-9.10.3-${{ hashFiles('cabal.project.freeze') }}
@@ -207,7 +212,7 @@ jobs:
           cabal test all 2>&1 | tee haskell-test.log
       - name: Upload test log
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: haskell-test-log
           path: haskell-test.log
@@ -254,7 +259,7 @@ jobs:
           ref: ${{ github.sha }}
       - name: Restore OpenSSL prefix cache
         id: ossl-cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ossl-cache/openssl-4.0.2.tar.gz
           key: openssl-4.0.2-static-v1
@@ -280,7 +285,7 @@ jobs:
         if: steps.ossl-cache.outputs.cache-hit == 'true'
         run: tar xzf ossl-cache/openssl-4.0.2.tar.gz -C /
       - name: Restore cabal store cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cabal
           key: cabal-store-9.10.3-${{ hashFiles('cabal.project.freeze') }}
@@ -309,7 +314,7 @@ jobs:
           time sh scripts/test-c-abi.sh --negative 2>&1 | tee c-drivers-test-c-abi-negative.log
       - name: Upload driver logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: c-drivers-logs
           path: c-drivers-*.log
@@ -428,21 +433,21 @@ jobs:
           ls -la release-bundle.tar.gz
       - name: Upload bundle
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-bundle
           path: release-bundle.tar.gz
           if-no-files-found: error
       - name: Upload producer provenance
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: producer-provenance
           path: producer-provenance.json
           if-no-files-found: error
       - name: Upload verified sdist
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-sdist
           path: dist-newstyle/sdist/haskoki-*.tar.gz
@@ -473,7 +478,7 @@ jobs:
           test -f docker/Dockerfile.demo || { echo "Dockerfile.demo missing"; exit 2; }
           echo "preflight ok"
       - name: Download staged bundle
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-bundle
           path: .
@@ -540,14 +545,14 @@ jobs:
             --image "haskoki-demo:$VER" --source "$GITHUB_SHA" --version "$VER" \
             --base-digest "$BASE_DIGEST" --rust-digest "$RUST_DIGEST"
       - name: Upload candidate (not yet qualified)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: demo-image-candidate
           path: candidate/
           if-no-files-found: error
       - name: Upload build logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: demo-image-build-runs
           path: driver-out/
@@ -568,7 +573,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
       - name: Download candidate bytes
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: demo-image-candidate
           path: candidate/
@@ -600,7 +605,7 @@ jobs:
           fi
       - name: Upload distinct shard reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: demo-image-shard-${{ matrix.phase }}
           path: driver-out/
@@ -632,12 +637,12 @@ jobs:
           python3 scripts/demo-image-shards.py check-results \
             --build-result "$BUILD_RESULT" --shards-result "$SHARDS_RESULT"
       - name: Download candidate bytes
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: demo-image-candidate
           path: candidate/
       - name: Download all three shard reports (distinct subdirectories)
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: demo-image-shard-*
           path: driver-out/
@@ -657,18 +662,18 @@ jobs:
           # Promote saved bytes only after all receipts pass. Never rebuild/save.
           cp candidate/demo-image.tar.gz demo-image.tar.gz
       - name: Download build logs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: demo-image-build-runs
           path: driver-out/
       - name: Upload tested image
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: demo-image-tested
           path: demo-image.tar.gz
           if-no-files-found: error
       - name: Upload complete run evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: demo-image-runs
           path: driver-out/
@@ -677,21 +682,28 @@ jobs:
   # ------------------------------------------------------------------
   # Publish (CD): the only job with publication permissions. Main release
   # dispatches and owner-pushed tags use the same run's verified artifacts.
-  # Local packaging and signing precede tag/registry writes. Tag/source,
-  # image configuration (including labels and DiffIDs), and draft/run
-  # identities must agree; conflicting identities and public releases fail.
+  # Local packaging (and signing, when a key is provisioned) precede
+  # tag/registry writes. Tag/source, image configuration (including
+  # labels and DiffIDs), and draft/run identities must agree;
+  # conflicting identities and public releases fail.
   # Existing versioned images and draft assets are never overwritten.
-  # An immutable same-run Actions checkpoint preserves signed original files
+  # An immutable same-run Actions checkpoint preserves the original files
   # before draft writes; retry verifies archive/metadata/signature and inputs.
   # The image is transferred by docker save/load, with the existing same-
   # runner .Id guard plus an independent saved-configuration digest for
   # registry comparison (Docker .Id varies across storage backends).
   # Bundle build environment comes from producer provenance, not this host.
   # Anonymous digest pull + demo/direct smoke precede draft creation.
-  # Uploaded files and signatures verify before provenance attestations,
-  # latest update, and public release. The KAT lane remains informational.
-  # F-8 / FINAL-4: signing uses the owner-provisioned secret and an ephemeral
-  # keyring. Publish neither creates keys nor permits unsigned assets.
+  # Uploaded files (and the signature, when present) verify before
+  # provenance attestations, latest update, and public release. The KAT
+  # lane remains informational.
+  # F-8 / FINAL-4: signing is OPTIONAL. When the owner provisions
+  # HASKOKI_RELEASE_SIGNING_KEY, the secret is imported into an
+  # ephemeral keyring, SHA256SUMS is signed, and the signature is
+  # verified before anything ships. When the secret is absent the
+  # release ships UNSIGNED (five assets, no SHA256SUMS.asc) with
+  # checksums + SLSA attestations still applied. Publish never
+  # creates keys.
   # ------------------------------------------------------------------
   publish:
     needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]
@@ -720,7 +732,7 @@ jobs:
           HASKOKI_RELEASE_SIGNING_KEY: ${{ secrets.HASKOKI_RELEASE_SIGNING_KEY }}
         run: python3 scripts/release-request.py publisher-preflight
       - name: Download tested image
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: demo-image-tested
           path: image-in
@@ -735,42 +747,45 @@ jobs:
             || { echo "loaded $LOADED_ID != tested $TESTED_ID"; exit 2; }
           echo "staged bytes verified: $LOADED_ID"
       - name: Download bundle tree
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-bundle
           path: .
       - name: Download verified sdist
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-sdist
           path: dist-newstyle/sdist
       - name: Download gate evidence for the results archive
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: haskell-test-log
           path: evidence-in/haskell
       - name: Download fast-lane report
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: pkcs11-fast-report
           path: evidence-in/fast
       - name: Download demo-image run dirs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: demo-image-runs
           path: evidence-in/demo
       - name: Download producer provenance
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: producer-provenance
           path: provenance-in
-      - name: Import release signing key (fail-closed)
+      - name: Import release signing key (optional)
         env:
           HASKOKI_RELEASE_SIGNING_KEY: ${{ secrets.HASKOKI_RELEASE_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          [ -n "${HASKOKI_RELEASE_SIGNING_KEY:-}" ] \
-            || { echo "HASKOKI_RELEASE_SIGNING_KEY secret is not set: refusing to ship unsigned"; exit 2; }
+          if [ -z "${HASKOKI_RELEASE_SIGNING_KEY:-}" ]; then
+            echo "no HASKOKI_RELEASE_SIGNING_KEY secret: release will ship unsigned"
+            echo "HASKOKI_SIGNING_KEY=" >> "$GITHUB_ENV"
+            exit 0
+          fi
           export GNUPGHOME="$RUNNER_TEMP/gnupg-f8"
           mkdir -p "$GNUPGHOME"
           chmod 700 "$GNUPGHOME"
@@ -800,7 +815,7 @@ jobs:
           (cd dist-release && sha256sum -c SHA256SUMS)
           echo "pre-push asset validation ok"
       - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -837,7 +852,7 @@ jobs:
           docker run --rm --network none --user "$(id -u):$(id -g)" \
             -v "$RUNNER_TEMP/pulled-demo:/out" "$PUSHED_DIGEST" \
             check --mode direct --profile smoke
-      - name: Restore immutable same-run signed checkpoint when present
+      - name: Restore immutable same-run checkpoint when present
         run: python3 scripts/release-request.py restore-checkpoint
       - name: Finalize manifest with pushed digest
         if: env.RESTORED_CHECKPOINT != '1'
@@ -853,9 +868,13 @@ jobs:
           sh scripts/package-release.sh dist-release
           (cd dist-release && sha256sum -c SHA256SUMS)
           echo "finalized manifest ok"
-      - name: Verify release signature (fail-closed)
+      - name: Verify release signature (when signed)
         run: |
           set -euo pipefail
+          if [ ! -f dist-release/SHA256SUMS.asc ]; then
+            echo "no SHA256SUMS.asc: unsigned release, nothing to verify"
+            exit 0
+          fi
           OUT=$(gpg --batch --no-tty --verify \
             dist-release/SHA256SUMS.asc dist-release/SHA256SUMS 2>&1)
           echo "$OUT"
@@ -863,12 +882,12 @@ jobs:
             *'Good signature'*) echo "signature verifies: Good signature" ;;
             *) echo "SHA256SUMS.asc does not verify"; exit 2 ;;
           esac
-      - name: Prepare original signed assets for immutable checkpoint
+      - name: Prepare original assets for immutable checkpoint
         if: env.RESTORED_CHECKPOINT != '1'
         run: python3 scripts/release-request.py prepare-checkpoint
-      - name: Save original signed assets once (same run and source)
+      - name: Save original assets once (same run and source)
         if: env.RESTORED_CHECKPOINT != '1'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets-${{ github.run_id }}-${{ github.sha }}
           path: release-checkpoint/
@@ -880,14 +899,14 @@ jobs:
         env:
           REQUIRE_CHECKPOINT: "1"
         run: python3 scripts/release-request.py restore-checkpoint
-      - name: Stage draft release and verify all six uploaded files
+      - name: Stage draft release and verify all uploaded files
         run: python3 scripts/release-request.py stage-draft
       - name: Attest release files (bundle + sdist provenance)
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist-release/haskoki-*.tar.gz
       - name: Attest pushed image digest (provenance)
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/mingulov/haskoki-demo
           subject-digest: ${{ env.PUSHED_DIGEST_ONLY }}
@@ -906,7 +925,11 @@ jobs:
             echo "Source: $GITHUB_SHA"
             echo "Image: $PUSHED_DIGEST"
             echo "Anonymous digest pull, demo and direct smoke verified."
-            echo "Six signed release assets uploaded and verified."
+            if [ -f dist-release/SHA256SUMS.asc ]; then
+              echo "Six signed release assets uploaded and verified."
+            else
+              echo "Five unsigned release assets uploaded and verified (no signing key)."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------------
@@ -927,7 +950,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Restore / populate vector-data cache
         id: data-cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: data
           key: pkcs11-data-${{ hashFiles('pkcs11-check/src/pkcs11_check/testcases/data/sources.toml') }}
@@ -983,7 +1006,7 @@ jobs:
           uv --version
       - run: uv sync --project pkcs11-check --frozen --extra dev
       - name: Download bundle
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-bundle
           path: .
@@ -1017,7 +1040,7 @@ jobs:
           PY
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pkcs11-fast-report
           path: pkcs11-fast-results.json
@@ -1067,7 +1090,7 @@ jobs:
       - run: uv sync --project pkcs11-check --frozen --extra dev
       - name: Restore vector-data cache
         id: data-cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: data
           key: pkcs11-data-${{ hashFiles('pkcs11-check/src/pkcs11_check/testcases/data/sources.toml') }}
@@ -1080,7 +1103,7 @@ jobs:
           uv run --project pkcs11-check pkcs11-check fetch-data all --data-dir data
           uv run --project pkcs11-check pkcs11-check fetch-disabled --data-dir data
       - name: Download bundle
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-bundle
           path: .
@@ -1114,7 +1137,7 @@ jobs:
           PY
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pkcs11-kat-report
           path: pkcs11-kat-results.json
