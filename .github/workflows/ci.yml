@@ -580,8 +580,8 @@ jobs:
   # image configuration (including labels and DiffIDs), and draft/run
   # identities must agree; conflicting identities and public releases fail.
   # Existing versioned images and draft assets are never overwritten.
-  # Same-run complete drafts restore their signed original files after
-  # signature, source/digest and bundle/source archive checks.
+  # An immutable same-run Actions checkpoint preserves signed original files
+  # before draft writes; retry verifies archive/metadata/signature and inputs.
   # The image is transferred by docker save/load, with the existing same-
   # runner .Id guard plus an independent saved-configuration digest for
   # registry comparison (Docker .Id varies across storage backends).
@@ -598,6 +598,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
+      actions: read
       contents: write
       packages: write
       attestations: write
@@ -616,7 +617,7 @@ jobs:
       - name: Recheck source, tag and draft ownership before publication
         env:
           HASKOKI_RELEASE_SIGNING_KEY: ${{ secrets.HASKOKI_RELEASE_SIGNING_KEY }}
-        run: python3 scripts/release-request.py preflight
+        run: python3 scripts/release-request.py publisher-preflight
       - name: Download tested image
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
@@ -735,10 +736,10 @@ jobs:
           docker run --rm --network none --user "$(id -u):$(id -g)" \
             -v "$RUNNER_TEMP/pulled-demo:/out" "$PUSHED_DIGEST" \
             check --mode direct --profile smoke
-      - name: Restore complete owned draft assets on an exact-identity retry
-        run: python3 scripts/release-request.py restore-draft
+      - name: Restore immutable same-run signed checkpoint when present
+        run: python3 scripts/release-request.py restore-checkpoint
       - name: Finalize manifest with pushed digest
-        if: env.RESTORED_DRAFT != '1'
+        if: env.RESTORED_CHECKPOINT != '1'
         env:
           HASKOKI_OCI_DIGEST: ${{ env.PUSHED_DIGEST }}
           HASKOKI_PROVENANCE_FILE: provenance-in/producer-provenance.json
@@ -761,6 +762,23 @@ jobs:
             *'Good signature'*) echo "signature verifies: Good signature" ;;
             *) echo "SHA256SUMS.asc does not verify"; exit 2 ;;
           esac
+      - name: Prepare original signed assets for immutable checkpoint
+        if: env.RESTORED_CHECKPOINT != '1'
+        run: python3 scripts/release-request.py prepare-checkpoint
+      - name: Save original signed assets once (same run and source)
+        if: env.RESTORED_CHECKPOINT != '1'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-assets-${{ github.run_id }}-${{ github.sha }}
+          path: release-checkpoint/
+          retention-days: 90
+          overwrite: false
+          if-no-files-found: error
+      - name: Verify saved checkpoint before any draft writes
+        if: env.RESTORED_CHECKPOINT != '1'
+        env:
+          REQUIRE_CHECKPOINT: "1"
+        run: python3 scripts/release-request.py restore-checkpoint
       - name: Stage draft release and verify all six uploaded files
         run: python3 scripts/release-request.py stage-draft
       - name: Attest release files (bundle + sdist provenance)

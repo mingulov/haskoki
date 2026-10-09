@@ -1115,12 +1115,12 @@ def self_test() -> int:
         # container, where setup-uv (a host-side node action) cannot
         # provision; both lanes install pinned uv 0.12.23 by
         # URL + SHA256 instead.
-        # 41 -> 42: the release-request preflight checks out the selected SHA.
-        count_ok = ("all 42 third-party" in out) if name == "real-ci-yml" else True
+        # 41 -> 43: preflight checkout and immutable signed-assets checkpoint.
+        count_ok = ("all 43 third-party" in out) if name == "real-ci-yml" else True
         ok = (rc == expect) and count_ok
         print(f"{'ok' if ok else 'FAIL'}: selftest-{name}: "
               f"rc={rc} (want {expect})"
-              + ("" if name != "real-ci-yml" else " + 42/42 count"))
+              + ("" if name != "real-ci-yml" else " + 43/43 count"))
         if not ok:
             bad += 1
             print(out)

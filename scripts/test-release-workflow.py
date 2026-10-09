@@ -76,8 +76,42 @@ class WorkflowTests(unittest.TestCase):
             if job != "publish":
                 self.assertNotRegex(section(self.jobs, job, 2), r"(?m)^\s+[a-z-]+: write$", "write outside publication")
         permissions = section(self.publish, "permissions", 4)
+        self.assertEqual(field(permissions, "actions", 6), "read")
         for name in ["contents", "packages", "attestations", "id-token"]:
             self.assertEqual(field(permissions, name, 6), "write")
+
+    def test_publisher_checks_draft_visibility_before_remote_writes(self):
+        preflight = section(self.jobs, "release-request", 2)
+        self.assertNotIn("publisher-preflight", preflight)
+        steps = re.findall(r"(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name:|\Z)", self.publish)
+        self.assertIn("publisher-preflight", steps[1][1])
+        self.assertNotIn("publisher-preflight", self.publish[:self.publish.index(steps[1][0])])
+        for name in ["Create version tag on the checked source (never force)",
+                     "Push exact tested version image when absent", "Stage draft release and verify all six uploaded files"]:
+            self.assertGreater([step[0] for step in steps].index(name), 1)
+
+    def test_immutable_checkpoint_is_saved_and_verified_before_draft_writes(self):
+        steps = dict(re.findall(r"(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name:|\Z)", self.publish))
+        names = list(steps)
+        ordered = ["Require an anonymous digest pull and usable demo",
+                   "Restore immutable same-run signed checkpoint when present",
+                   "Finalize manifest with pushed digest", "Verify release signature (fail-closed)",
+                   "Prepare original signed assets for immutable checkpoint",
+                   "Save original signed assets once (same run and source)",
+                   "Verify saved checkpoint before any draft writes",
+                   "Stage draft release and verify all six uploaded files",
+                   "Publish latest only after versioned image and draft validation", "Publish verified draft"]
+        self.assertEqual([names.index(name) for name in ordered], sorted(names.index(name) for name in ordered))
+        saved = steps[ordered[5]]
+        self.assertRegex(saved, r"uses: actions/upload-artifact@[0-9a-f]{40}")
+        self.assertIn("name: release-assets-${{ github.run_id }}-${{ github.sha }}", saved)
+        for setting in ["path: release-checkpoint/", "retention-days: 90", "overwrite: false", "if-no-files-found: error"]:
+            self.assertIn(setting, saved)
+        self.assertIn('REQUIRE_CHECKPOINT: "1"', steps[ordered[6]])
+        self.assertIn("restore-checkpoint", steps[ordered[1]])
+        self.assertNotIn("if:", steps[ordered[1]])
+        for name in [ordered[2], *ordered[4:7]]:
+            self.assertIn("if: env.RESTORED_CHECKPOINT != '1'", steps[name])
 
     def test_release_uses_qualified_checker_while_builds_can_override_it(self):
         expression = field(section(self.text, "env", 0), "FRAMEWORK_REF", 2)
