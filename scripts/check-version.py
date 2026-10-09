@@ -62,7 +62,17 @@ def main():
         if not pm or (int(pm.group(1)), int(pm.group(2))) != (x, y):
             return fail(f"{rel} lib pin != {x}.{y}")
 
-    print(f"version: OK ({full}; cabal + changelog + C lib + ctl + 3 C pins agree)")
+    for rel, pat in {
+        "docker/haskoki-demo": r'^VERSION="([^"\n]+)"$',
+        "docker/Dockerfile.demo": r"^ARG VERSION=(\S+)$",
+    }.items():
+        pin = re.search(pat, (ROOT / rel).read_text(), re.M)
+        if not pin or pin[1] != full:
+            return fail(f"{rel} release identity != {full}")
+    if not (ROOT / f"docs/release-notes-{full}.md").is_file():
+        return fail(f"release notes missing for {full}")
+
+    print(f"version: OK ({full}; Cabal, changelog, C, ctl, demo and notes agree)")
     return 0
 
 

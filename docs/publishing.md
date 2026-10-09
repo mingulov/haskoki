@@ -1,127 +1,125 @@
-# Publishing the first demo
+# Publishing the demo
 
-The project can be tried from source now. A Docker-only, pull-and-run
-announcement needs the publication steps below. This checklist describes
-the existing [CI workflow](../.github/workflows/ci.yml); it does not mean
-a release has already been published.
+Use **Actions -> CI and Release -> Run workflow** to publish the demo.
+Select **main**, set **mode** to **release**, and enter the exact Cabal
+**version** without `v` (currently `0.3.0.0`). The default **build** mode
+only builds and tests artifacts. A release always uses the selected
+commit recorded by GitHub, even if main changes while the jobs run.
 
-## Current position
+This is a publication recipe. As of 2026-10-09, a GitHub Release and
+anonymous access to the GHCR image have not been verified. The successful
+[October 8 CI run](https://github.com/mingulov/haskoki/actions/runs/37774745195)
+validated the previous source, not this workflow or a public release.
 
-Checked on 2026-10-09 at `0603322e33b0595a29c89622f49fcb5a5def1a07`:
+## One-time owner setup
 
-- [CI](https://github.com/mingulov/haskoki/actions/runs/37774745195)
-  completed, including bundle, source-package, and demo-image jobs.
-  The publish job was skipped, as expected for a main-branch push.
-- [HPC](https://github.com/mingulov/haskoki/actions/runs/37774745165)
-  and [nightly properties](https://github.com/mingulov/haskoki/actions/runs/37913805765)
-  completed. These do not validate publication.
-- GitHub listed no release tags or releases. An anonymous GHCR manifest
-  request for `ghcr.io/mingulov/haskoki-demo:v0.3.0.0` was denied.
-- The repository listed no Actions secrets. The required release signing
-  key is an outstanding owner setup step.
+1. Integrate the reviewed workflow and release notes into main. Keep
+   `haskoki.cabal`, demo entrypoint, Dockerfile version and release-note
+   filename consistent. The release input must match those identities.
+2. Add the repository Actions secret `HASKOKI_RELEASE_SIGNING_KEY`, containing
+   the exported GPG private signing key. It must sign unattended with no
+   passphrase prompt. Preflight imports it into a temporary keyring and
+   proves signing works before starting the release builds. Never commit it.
+3. Publish the corresponding public key and full fingerprint at an
+   owner-controlled location, and link that location in the release notes.
+   Checksums alone do not authenticate downloads.
+4. Allow the workflow's requested release, package and attestation writes.
+   It uses `GITHUB_TOKEN`; no extra PAT is required by this workflow.
+5. After the first image push, check the
+   [GHCR package settings](https://github.com/users/mingulov/packages/container/haskoki-demo/settings)
+   and set visibility to **Public**. New packages normally start private;
+   a public Git repository does not make its container public automatically.
+   If the anonymous pull step stops the first run, change visibility and
+   choose **Re-run failed jobs** in that same run.
 
-New edits need their own CI run before tagging. An older successful run
-does not validate a later revision.
+Release mode retains the qualified fast-checker ref `v0.2.1`.
+`framework_ref` overrides apply to build mode only. The image includes its
+separately pinned checker `0.2.3` and proxy `v0.2.2`.
 
-## Before creating the tag
+## What the release does
 
-1. Review and integrate the public documentation changes. Select the exact
-   release commit and require CI on it, including the demo-image job.
-2. Configure the repository secret `HASKOKI_RELEASE_SIGNING_KEY`. The
-   workflow imports this exported GPG private key into a temporary keyring;
-   the current signing path must work unattended. Keep the private key out
-   of the repository and logs.
-3. Publish the corresponding public verification key and full fingerprint
-   at an owner-controlled location. Add that location to the release notes
-   before publishing; a checksum alone does not authenticate a download.
-4. Confirm Actions can write repository releases, GHCR packages, and
-   attestations. The workflow requests these permissions explicitly.
-   Confirm the resulting GHCR package is public.
+The workflow validates main, version, source SHA, signing and existing
+release identities. It runs the required Haskell, C-driver, bundle,
+source-package, fast-checker and demo-image jobs. It then loads the exact
+tested demo image and uses the already verified bundle and source archive.
+There is no second build or dispatch after creating the source tag.
+A tag pushed with `GITHUB_TOKEN` need not trigger another workflow.
 
-For a local repeat of all demo-image checks, first build the toolchain
-image with the UID/GID arguments in the [README](../README.md). Then use
-a disposable evidence directory and an absolute path (the driver also
-tests arbitrary UIDs):
+After local asset/signature checks, it creates `v0.3.0.0` on the checked
+SHA, pushes the versioned image when absent, and verifies its configuration,
+version/revision labels and registry digest. It requires an anonymous
+pull by digest using a fresh Docker configuration, then runs the pulled
+demo and direct smoke profile without external network access.
 
-```sh
-HASKOKI_DEMO_TEST_OUT="$PWD/out/qualification" \
-  HASKOKI_DEMO_REVISION="$(git rev-parse HEAD)" \
-  sh scripts/test-demo-image.sh
-```
-
-This stages the bundle and runs demo, smoke/full checks in both modes,
-comparison, examples, and error cases. Allow roughly an hour or more.
-The fast and vector CI checker lanes allow reported findings; a passing
-job is not a claim of zero findings. The vector lane does not gate publish.
-The complete native C driver manifest is a separate `scripts/run-gates.sh`
-route with the toolchain and qualified proxy prerequisites; the CI C job
-runs a smaller deterministic subset.
-
-## Publish the selected commit
-
-Creating and pushing the tag is the release owner's publication action.
-On the approved clean checkout, the commands are:
-
-```sh
-git status --short
-git rev-parse HEAD
-git tag -a v0.3.0.0 -m 'Haskoki 0.3.0.0 demonstrator'
-git push origin refs/tags/v0.3.0.0
-```
-
-The tag must match the Cabal version exactly: `v0.3.0.0`, not `v0.3.0`.
-The tag workflow runs its required jobs, loads the tested image bytes,
-pushes the versioned image and `latest`, records the registry digest,
-signs checksums, creates attestations, and creates the GitHub release.
-
-Expect these six assets:
+A draft GitHub Release receives these six files. The workflow downloads
+and checks the uploaded bytes before creating provenance attestations,
+updating `latest`, and publishing the draft:
 
 | Asset | Purpose |
 | --- | --- |
 | `haskoki-0.3.0.0-linux-x86_64.tar.gz` | Native module, control tool, runtime libraries, licenses, smoke consumer |
-| `haskoki-0.3.0.0.tar.gz` | Source distribution |
+| `haskoki-0.3.0.0.tar.gz` | Verified source distribution |
 | `test-results-0.3.0.0.tar.gz` | Staged test evidence |
-| `release-manifest.json` | Source revision, artifact hashes, build information, image digest |
+| `release-manifest.json` | Source SHA, hashes, build information, image digest |
 | `SHA256SUMS` | Checksums of the three archives and manifest |
-| `SHA256SUMS.asc` | Detached signature of the checksum file |
+| `SHA256SUMS.asc` | Detached OpenPGP signature of the checksums |
 
-Publication is not atomic: the workflow pushes image tags before creating
-the release, and creates the release before uploading its assets. If it
-fails partway, inspect the registry, release assets, and run logs first.
-The job refuses to replace an existing release. Do not announce, force-move
-the source tag, or blindly rerun an incomplete publication; the owner must
-decide how to finish or withdraw it.
+The Actions summary records the release URL, source SHA and image digest.
+The KAT/vector lane remains informational; a passing checker job can still
+report findings. The C job is the existing deterministic subset. The full
+native driver manifest has its separate `scripts/run-gates.sh` route.
 
-The manifest's `source.dirty` includes untracked packaging files. In the
-current workflow it may be true even for an unchanged tagged source;
-inspect the recorded SHA and CI checkout before interpreting that field.
+The owner-pushed tag route also remains available: push an annotated
+`v<VERSION>` tag matching Cabal to run the same publication job. Manual
+release mode is the simplest UI route. Publication runs serialize with
+one another, and ordinary CI pushes cannot cancel an active release.
 
-## Check the experience before announcing
+## Failed runs and retries
 
-Download all six assets into a fresh directory. After importing the public
-key from the documented trusted location and checking its fingerprint:
+Publication is not atomic. A failure may leave a source tag, versioned
+image or draft. Inspect the failed step and remote state before retrying:
+
+- For first-time private GHCR access, set the package to Public, then
+  **Re-run failed jobs** in the original run. The existing tag must still
+  resolve to the selected SHA, and the existing image must match that
+  run's tested image ID and source labels. Neither is overwritten.
+- A complete draft owned by the same run and SHA can be resumed. Its
+  downloaded checksums, signature, source/image identity, bundle and source
+  archive must verify before its original files are reused.
+- An incomplete owned draft accepts only missing files; every existing
+  file must equal the staged file byte for byte. If packaging timestamps
+  make a file differ, recover the original run's exact files and finish
+  under owner control. Do not delete or replace files merely to pass CI.
+- A public release, foreign draft, changed tag or different image is
+  refused. **Re-run all jobs** may rebuild different bytes because base
+  images and package repositories float; it is not an identity-safe retry.
+  A new workflow run cannot take over another run's draft.
+
+Never force-move a version tag or blindly start another release. Existing
+published versions are preserved. The manifest's `source.dirty` includes
+untracked packaging inputs and can be true despite an unchanged checkout;
+use its source SHA and the run's checked commit for identity.
+
+## Verify the public experience
+
+Download all six files into a new directory. Import the public key from
+the trusted location in the notes and check its full fingerprint, then:
 
 ```sh
 gpg --verify SHA256SUMS.asc SHA256SUMS
 sha256sum -c SHA256SUMS
-```
-
-Expect a valid signature from that key and four `OK` checksums. Then use
-a fresh Docker client configuration to test anonymous access:
-
-```sh
 HASKOKI_DOCKER_CONFIG=$(mktemp -d)
 docker --config "$HASKOKI_DOCKER_CONFIG" pull ghcr.io/mingulov/haskoki-demo:v0.3.0.0
 docker image inspect ghcr.io/mingulov/haskoki-demo:v0.3.0.0 \
   --format '{{json .RepoDigests}}'
+rm -r "$HASKOKI_DOCKER_CONFIG"
 ```
 
-Compare the repository digest with `release-manifest.json`. Run the
-[demo, direct smoke, and proxy example](try-it.md) using this pulled image
-name. Check the reports and verify archive installation against the
-[host requirements](../SUPPORTED-HOSTS.md). Record the release URL, tag
-SHA, image digest, and observed results.
+Expect a signature from the documented key and four `OK` checksums. The
+repository digest must match `release-manifest.json`. Run the
+[demo, direct/proxy checks and exploration recipes](try-it.md#after-the-first-successful-release)
+with that image. Verify the native archive against the
+[host requirements](../SUPPORTED-HOSTS.md), and record the release URL,
+tag SHA, digest and observed results before announcing it.
 
-Only then switch the README to the pull-and-run command and announce it.
-Keep the source-build route available. Hackage and Docker Hub publication
-are optional later work; neither is needed for this demo.
+Hackage and Docker Hub publication are separate optional work.

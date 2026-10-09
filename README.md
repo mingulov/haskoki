@@ -12,8 +12,12 @@ Use disposable keys: this is a demonstrator, not a production HSM.
 
 **Release status:** version 0.3.0.0 is prepared in source. As of
 2026-10-09, no GitHub release or anonymously pullable demo image has
-been verified. The [release checklist](docs/publishing.md) covers the
-remaining publication steps. The local demo below is available now.
+been verified. Owners can publish through **Actions -> CI and Release ->
+Run workflow**, selecting **main**, **release**, and the exact Cabal version.
+The [publishing guide](docs/publishing.md) covers signing setup and GHCR
+visibility. The local demo below is available now; after publication,
+the [pull-and-run recipes](docs/try-it.md#after-the-first-successful-release)
+also provide checker, proxy and shell exploration using the same image.
 
 ## Quick Start (container, no Haskell build)
 

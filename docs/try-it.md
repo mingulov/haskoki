@@ -109,3 +109,93 @@ the output directories also contain disposable demo stores.
 
 For optional host-side observation, see the small
 [p11scope note](p11scope-trace.md). It is not a demo dependency.
+
+## After the first successful release
+
+These GHCR commands become available after the owner publishes and verifies
+anonymous pulls. The image targets **Linux amd64**. Docker supplies the
+runtime userland; native archive users still need the
+[supported host ABI](../SUPPORTED-HOSTS.md). The compiler/builder image is
+not part of this public runtime package.
+
+```sh
+docker pull ghcr.io/mingulov/haskoki-demo:v0.3.0.0
+HASKOKI_IMAGE=ghcr.io/mingulov/haskoki-demo:v0.3.0.0
+docker image inspect "$HASKOKI_IMAGE" \
+  --format '{{json .Config.Labels}} {{json .RepoDigests}}'
+mkdir -p out
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" "$HASKOKI_IMAGE" demo
+```
+
+Expect the same `demo-ok: 8/8 verifications hold` and persistent reports
+shown above. Use a non-root Linux shell and a directory your UID can write.
+Mounting `/out` keeps reports and disposable stores after the container exits.
+To retain a precise image, compare the repository digest with the signed
+release manifest, then pin it:
+
+```sh
+HASKOKI_IMAGE=$(docker image inspect ghcr.io/mingulov/haskoki-demo:v0.3.0.0 \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+  | sed -n '/^ghcr.io\/mingulov\/haskoki-demo@sha256:/p' | head -n 1)
+test -n "$HASKOKI_IMAGE"
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" "$HASKOKI_IMAGE" --output json demo
+```
+
+Use this variable in the following commands. Direct and proxy smoke both
+expect exit 0 with zero findings:
+
+```sh
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" "$HASKOKI_IMAGE" check --mode direct --profile smoke
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" "$HASKOKI_IMAGE" check --mode proxy --profile smoke
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" --entrypoint /bin/sh "$HASKOKI_IMAGE" \
+  /opt/haskoki/examples/release/proxy-example
+```
+
+The proxy example expects `proxy-example-ok: 5/5 steps hold direct-vs-proxied`.
+For the longer investigation, these commands intentionally report findings
+and can exit 1; keep their JSON reports and logs:
+
+```sh
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" "$HASKOKI_IMAGE" check --mode direct --profile full
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" "$HASKOKI_IMAGE" check --mode proxy --profile full
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" "$HASKOKI_IMAGE" compare
+```
+
+## Explore the included tools
+
+The same image includes OpenSC `pkcs11-tool`, `pkcs11-check`, the control
+tool, the native module, proxy daemon/shim, and release examples. Override
+the entrypoint to run tools or open a shell; no compiler or Haskell setup
+is needed. The following also works with the local image built above
+(`HASKOKI_IMAGE=haskoki-demo:0.3.0.0`):
+
+```sh
+docker run --rm --network none \
+  --entrypoint /bin/sh "$HASKOKI_IMAGE" -ec \
+  '/opt/haskoki/dist-release/haskoki-0.3.0.0/bin/haskoki-ctl --help; /opt/p11c/bin/pkcs11-check --help'
+docker run --rm --network none \
+  --entrypoint /bin/sh "$HASKOKI_IMAGE" -ec \
+  '/opt/haskoki/dist-release/haskoki-0.3.0.0/bin/haskoki-ctl capabilities --config /opt/haskoki/examples/release/pkcs11-check/backend-memory.toml'
+docker run --rm --network none \
+  -e HASKOKI_CONFIG=/opt/haskoki/examples/release/pkcs11-check/backend-memory.toml \
+  --entrypoint /opt/p11c/bin/pkcs11-check "$HASKOKI_IMAGE" info \
+  --module /opt/haskoki/dist-release/haskoki-0.3.0.0/lib/libhaskoki.so
+docker run --rm -it --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" --entrypoint /bin/sh "$HASKOKI_IMAGE"
+```
+
+The control tool's `capabilities` command describes configured mechanisms and honest refusals;
+the checker `info` command queries the loaded module. Inside the shell,
+inspect `/opt/haskoki/examples/release` and
+`/opt/haskoki/dist-release/haskoki-0.3.0.0/lib/libhaskoki.so`.
+Use `/out` for writable files. The [native walkthrough](demo-walkthrough.md)
+explains control configuration and module loading; use public disposable
+fixtures when experimenting.
