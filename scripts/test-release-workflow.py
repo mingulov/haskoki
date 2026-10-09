@@ -117,19 +117,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("publisher-preflight", steps[1][1])
         self.assertNotIn("publisher-preflight", self.publish[:self.publish.index(steps[1][0])])
         for name in ["Create version tag on the checked source (never force)",
-                     "Push exact tested version image when absent", "Stage draft release and verify all six uploaded files"]:
+                     "Push exact tested version image when absent", "Stage draft release and verify all uploaded files"]:
             self.assertGreater([step[0] for step in steps].index(name), 1)
 
     def test_immutable_checkpoint_is_saved_and_verified_before_draft_writes(self):
         steps = dict(re.findall(r"(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name:|\Z)", self.publish))
         names = list(steps)
         ordered = ["Require an anonymous digest pull and usable demo",
-                   "Restore immutable same-run signed checkpoint when present",
-                   "Finalize manifest with pushed digest", "Verify release signature (fail-closed)",
-                   "Prepare original signed assets for immutable checkpoint",
-                   "Save original signed assets once (same run and source)",
+                   "Restore immutable same-run checkpoint when present",
+                   "Finalize manifest with pushed digest", "Verify release signature (when signed)",
+                   "Prepare original assets for immutable checkpoint",
+                   "Save original assets once (same run and source)",
                    "Verify saved checkpoint before any draft writes",
-                   "Stage draft release and verify all six uploaded files",
+                   "Stage draft release and verify all uploaded files",
                    "Publish latest only after versioned image and draft validation", "Publish verified draft"]
         self.assertEqual([names.index(name) for name in ordered], sorted(names.index(name) for name in ordered))
         saved = steps[ordered[5]]

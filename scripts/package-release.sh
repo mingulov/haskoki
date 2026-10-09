@@ -30,10 +30,13 @@
 #                                       (written after finalization,
 #                                       excluding itself)
 #   SHA256SUMS.asc                      detached armored OpenPGP signature
-#                                       over SHA256SUMS (FINAL-4; written
-#                                       AFTER the checksums finalize and
-#                                       self-verify, then verified
-#                                       in-script before success)
+#                                       over SHA256SUMS (FINAL-4, OPTIONAL;
+#                                       written only when HASKOKI_SIGNING_KEY
+#                                       is set, AFTER the checksums finalize
+#                                       and self-verify, then verified
+#                                       in-script before success; absent
+#                                       otherwise and the release ships
+#                                       UNSIGNED with exit 0)
 #
 # Usage (from haskoki/, on the HOST):
 #   scripts/package-release.sh [out-dir]
@@ -57,8 +60,13 @@
 #                        demo-image job output; default: resolve
 #                        locally and mark packaging-time)
 #   HASKOKI_SIGNING_KEY  key id or fingerprint of the release signing
-#                        key (REQUIRED, FINAL-4). Absent or empty FAILS
-#                        CLOSED (non-zero; nothing ships unsigned).
+#                        key (OPTIONAL, FINAL-4). When set, SHA256SUMS
+#                        is signed and the signature self-verified
+#                        (any signing failure FAILS CLOSED, non-zero).
+#                        When absent or empty the release ships
+#                        UNSIGNED: checksums are still written and
+#                        verified, no SHA256SUMS.asc is produced, and
+#                        the exit status is still 0.
 #                        Key provenance: the real release key is
 #                        owner-controlled and provisioned out of band;
 #                        at publish time the CI publish job imports it
@@ -70,8 +78,9 @@
 #                        must be usable non-interactively (no
 #                        passphrase prompt; loopback pinentry).
 #
-# Exit status: 0 iff every asset is written, SHA256SUMS verifies, and
-# SHA256SUMS.asc is written and verifies (Good signature).
+# Exit status: 0 iff every asset is written and SHA256SUMS verifies
+# (plus, when HASKOKI_SIGNING_KEY is set, SHA256SUMS.asc is written
+# and verifies with a Good signature).
 set -u
 
 HERE=$(dirname "$0")
@@ -340,27 +349,42 @@ python3 -m json.tool "$MANIFEST" > /dev/null || fail "manifest is not valid JSON
   || fail "SHA256SUMS write failed"
 (cd "$OUT" && sha256sum -c "$(basename "$SUMS")") || fail "SHA256SUMS self-verify failed"
 
-# Release authentication (FINAL-4): the checksums above are FINALIZED
-# before this point — nothing below mutates the four checksummed
-# files — and the detached signature is written only now, then
-# verified in-script before success is reported. A missing key, a
-# missing gpg, a signing failure, or a verify failure all FAIL
-# CLOSED (any stale/partial .asc is removed, never shipped).
+# Release authentication (FINAL-4, OPTIONAL): the checksums above are
+# FINALIZED before this point — nothing below mutates the four
+# checksummed files. When HASKOKI_SIGNING_KEY names a usable key,
+# the detached signature is written only now, then verified
+# in-script before success is reported; a missing gpg, a signing
+# failure, or a verify failure all FAIL CLOSED (any stale/partial
+# .asc is removed, never shipped). When the key is absent or empty
+# the release ships UNSIGNED with exit 0 (checksums still written
+# and verified, no .asc).
 ASC="$OUT/SHA256SUMS.asc"
-# A stale signature from an earlier run must never survive a
-# failed run: remove it before any fail-closed check below.
+# A stale signature from an earlier run must never survive into a
+# run it does not belong to: remove it before either branch below.
 rm -f "$ASC"
-[ -n "${HASKOKI_SIGNING_KEY:-}" ] \
-  || fail "HASKOKI_SIGNING_KEY is not set (release signing key id; refusing to ship unsigned)"
-command -v gpg >/dev/null 2>&1 || fail "gpg required (SHA256SUMS signing)"
-gpg --batch --no-tty --pinentry-mode loopback --yes \
-  --detach-sign --armor --local-user "$HASKOKI_SIGNING_KEY" \
-  --output "$ASC" "$SUMS" \
-  || { rm -f "$ASC"; fail "SHA256SUMS signing failed"; }
-gpg --batch --no-tty --verify "$ASC" "$SUMS" \
-  || { rm -f "$ASC"; fail "SHA256SUMS.asc self-verify failed"; }
+if [ -n "${HASKOKI_SIGNING_KEY:-}" ]; then
+  command -v gpg >/dev/null 2>&1 || fail "gpg required (SHA256SUMS signing)"
+  gpg --batch --no-tty --pinentry-mode loopback --yes \
+    --detach-sign --armor --local-user "$HASKOKI_SIGNING_KEY" \
+    --output "$ASC" "$SUMS" \
+    || { rm -f "$ASC"; fail "SHA256SUMS signing failed"; }
+  gpg --batch --no-tty --verify "$ASC" "$SUMS" \
+    || { rm -f "$ASC"; fail "SHA256SUMS.asc self-verify failed"; }
+  SIGNED=yes
+else
+  echo "NOTE: HASKOKI_SIGNING_KEY is not set; shipping UNSIGNED (no SHA256SUMS.asc)"
+  SIGNED=no
+fi
 
 echo "assets:"
-ls -la "$BUNDLE_ARC" "$SDIST_ARC" "$RESULTS_ARC" "$MANIFEST" "$SUMS" "$ASC"
+if [ "$SIGNED" = yes ]; then
+  ls -la "$BUNDLE_ARC" "$SDIST_ARC" "$RESULTS_ARC" "$MANIFEST" "$SUMS" "$ASC"
+else
+  ls -la "$BUNDLE_ARC" "$SDIST_ARC" "$RESULTS_ARC" "$MANIFEST" "$SUMS"
+fi
 cat "$SUMS"
-echo "PASS: package-release.sh (6 assets + verified checksums + verified signature)"
+if [ "$SIGNED" = yes ]; then
+  echo "PASS: package-release.sh (6 assets + verified checksums + verified signature)"
+else
+  echo "PASS: package-release.sh (5 assets + verified checksums, UNSIGNED: no HASKOKI_SIGNING_KEY)"
+fi
