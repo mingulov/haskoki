@@ -714,7 +714,7 @@ def e2e_colon_text(extra: str) -> str:
     (codex's exact insertion point): YAML resolves 44 actions; the
     gate must FAIL, not report 43 pinned."""
     t = DEFAULT.read_text()
-    anchor = "      - name: Create release and attach archives (no clobber)\n"
+    anchor = "      - name: Stage draft release and verify all six uploaded files\n"
     i = t.index(anchor)
     return t[:i] + extra + t[i:]
 
@@ -760,12 +760,12 @@ def e2e_quoted_needs_text() -> str:
     quoted forms and attributed the successor's list to publish."""
     t = DEFAULT.read_text()
     mangled = t.replace(
-        "    needs: [haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n",
+        "    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n",
         '    "needs": [haskell, bundle, pkcs11-fast, demo-image]\n', 1)
     pub_at = mangled.index("  publish:\n")
     nxt = re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$", mangled[pub_at + 10:])
     succ = ('  "zzz":\n'
-            '    needs: [haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n')
+            '    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n')
     at = pub_at + 10 + nxt.start()
     return mangled[:at] + succ + mangled[at:]
 SELF_CASES = [
@@ -1115,11 +1115,12 @@ def self_test() -> int:
         # container, where setup-uv (a host-side node action) cannot
         # provision; both lanes install pinned uv 0.12.23 by
         # URL + SHA256 instead.
-        count_ok = ("all 41 third-party" in out) if name == "real-ci-yml" else True
+        # 41 -> 42: the release-request preflight checks out the selected SHA.
+        count_ok = ("all 42 third-party" in out) if name == "real-ci-yml" else True
         ok = (rc == expect) and count_ok
         print(f"{'ok' if ok else 'FAIL'}: selftest-{name}: "
               f"rc={rc} (want {expect})"
-              + ("" if name != "real-ci-yml" else " + 41/41 count"))
+              + ("" if name != "real-ci-yml" else " + 42/42 count"))
         if not ok:
             bad += 1
             print(out)
@@ -2806,7 +2807,7 @@ def probe_mutations(ci: str, docker: str):
                            "        # shell: bash\n", 1)
     without_shell = ci.replace("        shell: bash\n", "", 1)
     needs_sub = ci.replace(
-        "    needs: [haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n",
+        "    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n",
         "    needs: [haskell, bundle, pkcs11-fast, demo-image] # c-drivers\n",
         1)
     echo_sub = docker.replace(
@@ -2823,9 +2824,9 @@ def probe_mutations(ci: str, docker: str):
         "        for reference\"\n",
         1)
     needs_str = ci.replace(
-        "    needs: [haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n",
+        "    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n",
         "    name: \"staged release\n"
-        "    needs: [haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n"
+        "    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n"
         "    trailer\"\n",
         1)
     midline_echo = docker.replace(
@@ -2985,16 +2986,20 @@ def self_test_structural() -> int:
                  f"publish needs {sorted(needs)} covers required "
                  f"{sorted(REQUIRED_PUBLISH_NEEDS)}")
     # ... and c-drivers itself must run wherever publish runs: no
-    # job-level `if:` and no `needs:` of its own (else adding it to
-    # publish.needs could stall publication).
+    # job-level `if:`; its only permitted dependency is the unconditional
+    # request preflight (else adding it to publish.needs could stall).
     cdrv = re.search(r"(?ms)^  c-drivers:\n(.*?)(?=^  [a-z0-9-]+:|\Z)",
                      code_text(ci))
     cdrv_body = cdrv.group(1) if cdrv else ""
     # Job-level keys sit at exactly 4 spaces; step-level `if:` (8
     # spaces) must not trip this — anchor at line start.
     check_struct("f7-c-drivers-unconditional",
-                 bool(cdrv) and not re.search(r"(?m)^    (if|needs):", cdrv_body),
-                 "c-drivers has no job-level if:/needs: (runs on v-tags)")
+                 bool(cdrv) and not re.search(r"(?m)^    if:", cdrv_body)
+                 and not re.search(r"(?m)^    needs:(?! release-request$)", cdrv_body)
+                 and ("    needs: release-request" not in cdrv_body
+                      or bool(re.search(r"(?ms)^  release-request:\n(?:(?!^  [a-z0-9-]+:).)*?(?=^  [a-z0-9-]+:|\Z)", code_text(ci)))
+                      and not re.search(r"(?ms)^  release-request:\n(?:(?!^  [a-z0-9-]+:).)*?^    (if|needs):", code_text(ci))),
+                 "c-drivers runs on v-tags; only unconditional release-request dependency allowed")
 
     # F-7: the timed driver step selects bash (container default is
     # sh/dash, where `time` is exit 127).

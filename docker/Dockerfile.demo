@@ -190,6 +190,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgmp10 libffi8 libnuma1 opensc python3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# The control tool's help uses UTF-8. Keep it usable through a shell or
+# direct entrypoint override on this otherwise minimal runtime image.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
 # Staged bundle tree (built once before this build; see the header).
 # The self-test below asserts its shape — a missing or partial
 # staged-bundle/ fails here, never silently.

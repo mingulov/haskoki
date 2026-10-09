@@ -153,18 +153,18 @@ note "build image $TAG"
 # source SHA is baked into the revision label; unset builds
 # exactly as before (revision=unknown). No lane behavior changes.
 if [ -n "${HASKOKI_DEMO_REVISION:-}" ]; then
-  BUILD_CMD="docker build -f docker/Dockerfile.demo --build-arg REVISION=$HASKOKI_DEMO_REVISION -t $TAG ."
+  BUILD_CMD="docker build -f docker/Dockerfile.demo --build-arg VERSION=$VER --build-arg REVISION=$HASKOKI_DEMO_REVISION -t $TAG ."
 else
-  BUILD_CMD="docker build -f docker/Dockerfile.demo -t $TAG ."
+  BUILD_CMD="docker build -f docker/Dockerfile.demo --build-arg VERSION=$VER -t $TAG ."
 fi
 echo "build command: $BUILD_CMD"
 if [ -n "${HASKOKI_DEMO_REVISION:-}" ]; then
   docker build -f docker/Dockerfile.demo \
-    --build-arg "REVISION=$HASKOKI_DEMO_REVISION" -t "$TAG" . \
+    --build-arg "VERSION=$VER" --build-arg "REVISION=$HASKOKI_DEMO_REVISION" -t "$TAG" . \
     > "$OUT/build.log" 2>&1 \
     || fail "image build failed (see $OUT/build.log)"
 else
-  docker build -f docker/Dockerfile.demo -t "$TAG" . > "$OUT/build.log" 2>&1 \
+  docker build -f docker/Dockerfile.demo --build-arg "VERSION=$VER" -t "$TAG" . > "$OUT/build.log" 2>&1 \
     || fail "image build failed (see $OUT/build.log)"
 fi
 tail -3 "$OUT/build.log"

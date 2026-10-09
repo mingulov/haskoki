@@ -1,4 +1,4 @@
-name: CI
+name: CI and Release
 
 # Default toolchain (GHC 9.10.3) + bundle build + external
 # pkcs11-check conformance, both lanes on every push/PR:
@@ -7,16 +7,18 @@ name: CI
 # pkcs11-check findings are REPORTED, not gating (exit 1 passes the
 # lane): the module is a demonstrator whose honest refusals the
 # oracle records as findings. Exit >= 2 (setup error) fails loudly.
-# The framework pins to v0.2.1; workflow_dispatch can override it.
+# The framework pins to v0.2.1; build-mode dispatch can override it.
 #
-# CD: publishing happens ONLY in the `publish` job, which runs only
-# for v* tags (push a tag and the release goes out with it). It needs
+# CD: Actions -> Run workflow -> main, mode=release, version=X.Y.Z.W.
+# Publishing also accepts owner-pushed v* tags. Both routes use the
+# SAME run's tested artifacts; a GITHUB_TOKEN tag push need not trigger CI.
+# Publishing happens ONLY in `publish`. It needs
 # passing build+tests+c-drivers+bundle+fast-lane+demo-image, verifies
 # the tag matches the Cabal version, then pushes the DEMO image to GHCR and
 # attaches the release bundle to a NEW GitHub release (never
 # replacement assets: no --clobber anywhere).
 # The KAT lane stays informational (too slow to gate a release).
-# To cut a release: git tag vX.Y.Z && git push origin vX.Y.Z.
+# Setup and recovery: docs/publishing.md.
 #
 # Pin policy (F-4): every third-party action is pinned to a full
 # commit SHA, the human-readable tag kept as a trailing `# vX`
@@ -37,6 +39,18 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Build artifacts only, or publish a release from main"
+        default: build
+        required: true
+        type: choice
+        options:
+          - build
+          - release
+      version:
+        description: "Release only: exact Cabal version, e.g. 0.3.0.0 (no v)"
+        default: ""
+        type: string
       framework_ref:
         description: "mingulov/pkcs11-check ref (tag/branch/sha)"
         default: "v0.2.1"
@@ -46,14 +60,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # All publications share a group; ordinary main CI has a different group.
+  group: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.mode == 'release') && 'haskoki-publication' || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.mode == 'release') }}
 
 env:
   # One canonical data location shared by the fetch job (cache save)
   # and the kat lane (cache restore).
   PKCS11_CHECK_DATA_DIR: ${{ github.workspace }}/data
-  FRAMEWORK_REF: ${{ github.event.inputs.framework_ref || 'v0.2.1' }}
+  # Releases retain the qualified fast-lane pin; overrides are build-only.
+  FRAMEWORK_REF: ${{ inputs.mode == 'release' && 'v0.2.1' || github.event.inputs.framework_ref || 'v0.2.1' }}
+  RELEASE_MODE: ${{ inputs.mode || 'build' }}
+  RELEASE_VERSION: ${{ inputs.version || '' }}
   # Structural tests read UTF-8 sources with locale-dependent
   # decoders (Dockerfile precedent: the builder image sets the same
   # pair); the bare ubuntu:26.04 container defaults to C.
@@ -61,11 +79,50 @@ env:
   LC_ALL: C.UTF-8
 
 jobs:
+  release-request:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.request.outputs.tag }}
+      version: ${{ steps.request.outputs.version }}
+    steps:
+      - name: Checkout selected commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Validate release request (build mode has no release calls)
+        id: request
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.mode == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HASKOKI_RELEASE_SIGNING_KEY: ${{ secrets.HASKOKI_RELEASE_SIGNING_KEY }}
+        run: python3 scripts/release-request.py preflight
+      - name: Build mode requires no release credentials
+        if: "!(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.mode == 'release')"
+        run: python3 scripts/release-request.py preflight
+      - name: Prove unattended signing before starting release builds
+        if: steps.request.outputs.tag != ''
+        env:
+          HASKOKI_RELEASE_SIGNING_KEY: ${{ secrets.HASKOKI_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/release-preflight-gpg"
+          mkdir -m 700 "$GNUPGHOME"
+          trap 'rm -rf "$GNUPGHOME"' EXIT
+          printf '%s' "$HASKOKI_RELEASE_SIGNING_KEY" | gpg --batch --no-tty --import
+          FPR=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
+          [ -n "$FPR" ] || { echo "release signing secret contains no private key"; exit 2; }
+          printf 'Haskoki signing preflight\n' > "$RUNNER_TEMP/signing-check"
+          gpg --batch --no-tty --pinentry-mode loopback --passphrase '' \
+            --local-user "$FPR" --detach-sign --output "$RUNNER_TEMP/signing-check.sig" \
+            "$RUNNER_TEMP/signing-check"
+          gpg --batch --verify "$RUNNER_TEMP/signing-check.sig" "$RUNNER_TEMP/signing-check"
   # ------------------------------------------------------------------
   # Native build + full test suite + static gates in an Ubuntu 26.04
   # container (OS GHC 9.10.3, same base as the Dockerfile).
   # ------------------------------------------------------------------
   haskell:
+    needs: release-request
     runs-on: ubuntu-latest
     timeout-minutes: 60
     container:
@@ -83,6 +140,8 @@ jobs:
             ca-certificates python3
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
       - name: Restore OpenSSL prefix cache
         id: ossl-cache
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
@@ -136,6 +195,8 @@ jobs:
           # controls + F-6/F-7 structural asserts (durable, stdlib-only).
           python3 scripts/check-actions-pinned.py --self-test
           python3 scripts/check-test-evidence.py --self-test
+          python3 scripts/test-release-request.py
+          python3 scripts/test-release-workflow.py
           python3 scripts/publish-coverage.py --check
       - name: Build and test
         run: |
@@ -170,6 +231,7 @@ jobs:
   # tee'd to a per-driver log, uploaded as an artifact.
   # ------------------------------------------------------------------
   c-drivers:
+    needs: release-request
     runs-on: ubuntu-latest
     timeout-minutes: 60
     container:
@@ -187,6 +249,8 @@ jobs:
             ca-certificates python3
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
       - name: Restore OpenSSL prefix cache
         id: ossl-cache
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
@@ -256,6 +320,7 @@ jobs:
   # Nothing here publishes; see `publish`.
   # ------------------------------------------------------------------
   bundle:
+    needs: release-request
     runs-on: ubuntu-latest
     timeout-minutes: 150
     permissions:
@@ -263,6 +328,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build image (load for local use)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -404,11 +471,14 @@ jobs:
       contents: read
     outputs:
       imageid: ${{ steps.record.outputs.imageid }}
+      configid: ${{ steps.save.outputs.configid }}
       base_digest: ${{ steps.record.outputs.base_digest }}
       rust_digest: ${{ steps.record.outputs.rust_digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
       - name: Preflight (docker access, demo Dockerfile)
         run: |
           set -euo pipefail
@@ -464,9 +534,10 @@ jobs:
         id: record
         run: |
           set -euo pipefail
-          docker inspect --format 'id={{.Id}} size={{.Size}}' haskoki-demo:0.3.0.0
-          docker inspect --format '{{json .Config.Labels}}' haskoki-demo:0.3.0.0
-          echo "imageid=$(docker inspect --format '{{.Id}}' haskoki-demo:0.3.0.0)" \
+          VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
+          docker inspect --format 'id={{.Id}} size={{.Size}}' "haskoki-demo:$VER"
+          docker inspect --format '{{json .Config.Labels}}' "haskoki-demo:$VER"
+          echo "imageid=$(docker inspect --format '{{.Id}}' "haskoki-demo:$VER")" \
             >> "$GITHUB_OUTPUT"
           BASE_DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' ubuntu:26.04)
           case "$BASE_DIGEST" in
@@ -481,9 +552,12 @@ jobs:
           echo "rust_digest=$RUST_DIGEST" >> "$GITHUB_OUTPUT"
           echo "rust: $RUST_DIGEST"
       - name: Save tested image
+        id: save
         run: |
           set -euo pipefail
-          docker save haskoki-demo:0.3.0.0 | gzip > demo-image.tar.gz
+          VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
+          docker save "haskoki-demo:$VER" | gzip > demo-image.tar.gz
+          python3 scripts/release-request.py archive-config
           ls -la demo-image.tar.gz
       - name: Upload tested image
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -500,38 +574,27 @@ jobs:
           if-no-files-found: warn
 
   # ------------------------------------------------------------------
-  # Publish (CD): the ONLY job that publishes. Runs only for v* tags,
-  # after passing build+tests+bundle+fast-lane+demo-image. Publishes
-  # a staged candidate only: the tag must agree with the Cabal
-  # version, the release must not already exist (checked BEFORE any
-  # registry write, fail-closed on anything but confirmed
-  # absence), and assets are never replaced (no --clobber: an
-  # existing asset fails loudly). Order is strict: every download
-  # and the full packaging validation run BEFORE the first
-  # registry write, so a broken candidate fails with nothing
-  # pushed. The pushed image is the TESTED bytes transferred from
-  # the demo-image job (docker save/load + id check, no rebuild),
-  # and its digest is bound into the manifest before release
-  # creation. The manifest's build environment comes from the
-  # bundle producer (provenance artifact), never from a fresh
-  # local inspection. Plain `docker` commands only (same
-  # Buildx-driver reason as the demo-image job).
-  # Release authentication (F-8 / FINAL-4): the packager signs
-  # SHA256SUMS with the owner-controlled release key (imported
-  # below from the HASKOKI_RELEASE_SIGNING_KEY secret into an
-  # ephemeral GPG home; the public verification key is published
-  # out-of-band), the signature is re-verified in this job, and
-  # SLSA build-provenance attestations are attached for the
-  # bundle, the sdist, and the pushed image digest — all BEFORE
-  # `gh release create`. Order enforcement: the `needs:` below
-  # runs publish only after haskell (all static gates) + bundle
-  # + c-drivers (timed subset + --negative control) + pkcs11-fast
-  # + demo-image succeed, so every gating check precedes the
-  # first registry/release write.
+  # Publish (CD): the only job with publication permissions. Main release
+  # dispatches and owner-pushed tags use the same run's verified artifacts.
+  # Local packaging and signing precede tag/registry writes. Tag/source,
+  # image configuration (including labels and DiffIDs), and draft/run
+  # identities must agree; conflicting identities and public releases fail.
+  # Existing versioned images and draft assets are never overwritten.
+  # Same-run complete drafts restore their signed original files after
+  # signature, source/digest and bundle/source archive checks.
+  # The image is transferred by docker save/load, with the existing same-
+  # runner .Id guard plus an independent saved-configuration digest for
+  # registry comparison (Docker .Id varies across storage backends).
+  # Bundle build environment comes from producer provenance, not this host.
+  # Anonymous digest pull + demo/direct smoke precede draft creation.
+  # Uploaded files and signatures verify before provenance attestations,
+  # latest update, and public release. The KAT lane remains informational.
+  # F-8 / FINAL-4: signing uses the owner-provisioned secret and an ephemeral
+  # keyring. Publish neither creates keys nor permits unsigned assets.
   # ------------------------------------------------------------------
   publish:
-    needs: [haskell, bundle, c-drivers, pkcs11-fast, demo-image]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.mode == 'release'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -539,59 +602,32 @@ jobs:
       packages: write
       attestations: write
       id-token: write
+    env:
+      TAG: ${{ needs.release-request.outputs.tag }}
+      VER: ${{ needs.release-request.outputs.version }}
+      TESTED_ID: ${{ needs.demo-image.outputs.imageid }}
+      TESTED_CONFIG_ID: ${{ needs.demo-image.outputs.configid }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Verify tag matches Cabal version
+        with:
+          ref: ${{ github.sha }}
+      - name: Recheck source, tag and draft ownership before publication
         env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          CABAL_VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
-          TAG_VER=${TAG#v}
-          [ -n "$CABAL_VER" ] || { echo "cannot read Cabal version"; exit 2; }
-          [ "$TAG_VER" = "$CABAL_VER" ] \
-            || { echo "tag $TAG disagrees with Cabal version $CABAL_VER"; exit 2; }
-          echo "tag/version agreement ok: $TAG == Cabal $CABAL_VER"
-      - name: Refuse to replace an existing release (fail-closed)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          set +e
-          LOOKUP=$(gh release view "$TAG" 2>&1)
-          RC=$?
-          set -e
-          if [ "$RC" -eq 0 ]; then
-            echo "release $TAG already exists: refusing to replace assets"
-            exit 2
-          fi
-          # Only the observed genuine-absence shape proceeds
-          # (exit 1 + "release not found", gh 2.101.0): a missing
-          # binary (127), a repo-level 404, an auth error, or any
-          # reworded message fails closed.
-          [ "$RC" -eq 1 ] || { echo "release lookup failed (rc=$RC): $LOOKUP"; exit 2; }
-          case "$LOOKUP" in
-            *release\ not\ found*)
-              echo "no existing release $TAG: proceeding" ;;
-            *)
-              echo "release lookup failed ambiguously: $LOOKUP"
-              exit 2 ;;
-          esac
+          HASKOKI_RELEASE_SIGNING_KEY: ${{ secrets.HASKOKI_RELEASE_SIGNING_KEY }}
+        run: python3 scripts/release-request.py preflight
       - name: Download tested image
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: demo-image-tested
           path: image-in
       - name: Load and verify staged bytes (no push yet)
-        env:
-          TESTED_ID: ${{ needs.demo-image.outputs.imageid }}
         run: |
           set -euo pipefail
           test -f image-in/demo-image.tar.gz || { echo "tested image missing"; exit 2; }
           gunzip -c image-in/demo-image.tar.gz | docker load
-          LOADED_ID=$(docker inspect --format '{{.Id}}' haskoki-demo:0.3.0.0)
+          LOADED_ID=$(docker inspect --format '{{.Id}}' "haskoki-demo:$VER")
           [ -n "$TESTED_ID" ] || { echo "tested id output missing"; exit 2; }
           [ "$LOADED_ID" = "$TESTED_ID" ] \
             || { echo "loaded $LOADED_ID != tested $TESTED_ID"; exit 2; }
@@ -637,7 +673,7 @@ jobs:
           mkdir -p "$GNUPGHOME"
           chmod 700 "$GNUPGHOME"
           printf '%s' "$HASKOKI_RELEASE_SIGNING_KEY" | gpg --batch --no-tty --import
-          FPR=$(gpg --batch --no-tty --list-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
+          FPR=$(gpg --batch --no-tty --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
           [ -n "$FPR" ] || { echo "imported key has no fingerprint"; exit 2; }
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
           echo "HASKOKI_SIGNING_KEY=$FPR" >> "$GITHUB_ENV"
@@ -667,31 +703,42 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Push tested image and record digest
-        env:
-          TAG: ${{ github.ref_name }}
+      - name: Refuse to overwrite different versioned image bytes
+        run: python3 scripts/release-request.py registry
+      - name: Create version tag on the checked source (never force)
+        run: python3 scripts/release-request.py tag
+      - name: Push exact tested version image when absent
+        if: env.VERSION_IMAGE_EXISTS != '1'
         run: |
           set -euo pipefail
-          docker tag haskoki-demo:0.3.0.0 "ghcr.io/mingulov/haskoki-demo:$TAG"
-          docker tag haskoki-demo:0.3.0.0 ghcr.io/mingulov/haskoki-demo:latest
+          docker tag "haskoki-demo:$VER" "ghcr.io/mingulov/haskoki-demo:$TAG"
           docker push "ghcr.io/mingulov/haskoki-demo:$TAG"
-          docker push ghcr.io/mingulov/haskoki-demo:latest
-          docker pull "ghcr.io/mingulov/haskoki-demo:$TAG" >/dev/null
-          # Select the pushed repository's own digest entry: the
-          # daemon may also echo the local id (unpushed form), and
-          # under the containerd store a genuine registry digest
-          # can equal the image id — so select by repo name,
-          # never by comparing against .Id.
-          PUSHED_DIGEST=$(docker inspect \
-            --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-            "ghcr.io/mingulov/haskoki-demo:$TAG" 2>/dev/null \
-            | grep -m1 "^ghcr.io/mingulov/haskoki-demo@sha256:" || true)
-          [ -n "$PUSHED_DIGEST" ] \
-            || { echo "pushed digest missing for ghcr.io/mingulov/haskoki-demo:$TAG"; exit 2; }
-          echo "pushed: $PUSHED_DIGEST"
-          echo "PUSHED_DIGEST=$PUSHED_DIGEST" >> "$GITHUB_ENV"
-          echo "PUSHED_DIGEST_ONLY=${PUSHED_DIGEST##*@}" >> "$GITHUB_ENV"
+      - name: Verify registry bytes and record version digest
+        env:
+          REQUIRE_IMAGE: "1"
+        run: python3 scripts/release-request.py registry
+      - name: Require an anonymous digest pull and usable demo
+        run: |
+          set -euo pipefail
+          ANON_CONFIG=$(mktemp -d "$RUNNER_TEMP/anonymous-docker.XXXXXX")
+          trap 'rm -rf "$ANON_CONFIG"' EXIT
+          if ! docker --config "$ANON_CONFIG" pull "$PUSHED_DIGEST"; then
+            echo "GHCR package must be public before this release can finish."
+            echo "Owner: https://github.com/users/mingulov/packages/container/haskoki-demo/settings"
+            echo "Set visibility to Public, then Re-run failed jobs in this same run."
+            echo "Do not start a new release or move the version tag."
+            exit 2
+          fi
+          mkdir -p "$RUNNER_TEMP/pulled-demo"
+          docker run --rm --network none --user "$(id -u):$(id -g)" \
+            -v "$RUNNER_TEMP/pulled-demo:/out" "$PUSHED_DIGEST" demo
+          docker run --rm --network none --user "$(id -u):$(id -g)" \
+            -v "$RUNNER_TEMP/pulled-demo:/out" "$PUSHED_DIGEST" \
+            check --mode direct --profile smoke
+      - name: Restore complete owned draft assets on an exact-identity retry
+        run: python3 scripts/release-request.py restore-draft
       - name: Finalize manifest with pushed digest
+        if: env.RESTORED_DRAFT != '1'
         env:
           HASKOKI_OCI_DIGEST: ${{ env.PUSHED_DIGEST }}
           HASKOKI_PROVENANCE_FILE: provenance-in/producer-provenance.json
@@ -714,6 +761,8 @@ jobs:
             *'Good signature'*) echo "signature verifies: Good signature" ;;
             *) echo "SHA256SUMS.asc does not verify"; exit 2 ;;
           esac
+      - name: Stage draft release and verify all six uploaded files
+        run: python3 scripts/release-request.py stage-draft
       - name: Attest release files (bundle + sdist provenance)
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
@@ -724,25 +773,29 @@ jobs:
           subject-name: ghcr.io/mingulov/haskoki-demo
           subject-digest: ${{ env.PUSHED_DIGEST_ONLY }}
           push-to-registry: true
-      - name: Create release and attach archives (no clobber)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
+      - name: Publish latest only after versioned image and draft validation
         run: |
           set -euo pipefail
-          ls dist-release/*.tar.gz dist-release/SHA256SUMS \
-            dist-release/SHA256SUMS.asc dist-release/release-manifest.json
-          gh release create "$TAG" --title "haskoki $TAG" \
-            --notes-file docs/release-notes-0.3.0.0.md
-          gh release upload "$TAG" dist-release/*.tar.gz \
-            dist-release/SHA256SUMS dist-release/SHA256SUMS.asc \
-            dist-release/release-manifest.json
+          docker tag "$PUSHED_DIGEST" ghcr.io/mingulov/haskoki-demo:latest
+          docker push ghcr.io/mingulov/haskoki-demo:latest
+      - name: Publish verified draft
+        run: python3 scripts/release-request.py publish-draft
+      - name: Release summary
+        run: |
+          {
+            echo "Release: https://github.com/mingulov/haskoki/releases/tag/$TAG"
+            echo "Source: $GITHUB_SHA"
+            echo "Image: $PUSHED_DIGEST"
+            echo "Anonymous digest pull, demo and direct smoke verified."
+            echo "Six signed release assets uploaded and verified."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------------
   # Fetch the Wycheproof/ACVP/CCTV/x509-limbo vectors ONCE (shared via
   # cache); the kat lane restores this cache instead of re-downloading.
   # ------------------------------------------------------------------
   fetch-data:
+    needs: release-request
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -783,6 +836,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
       - name: Checkout framework
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -864,6 +919,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
       - name: Checkout framework
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
