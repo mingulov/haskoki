@@ -1,10 +1,10 @@
 {
   "schema": "haskoki/development-metrics/v1",
-  "status": "awaiting owner data",
+  "status": "historical snapshot; cutoff-limited, not a final project cost",
   "cutoff": {
     "iso_utc": "2026-10-06T04:18:48Z",
-    "source_sha": "d34f31a (release/first-public, R6 commit; moves at R8)",
-    "scope": "Haskoki workspace sessions only (first commit 2026-09-24 through cutoff)"
+    "source_sha": "d34f31a (historical local checkpoint recorded by the original census)",
+    "scope": "Haskoki workspace sessions through the stated cutoff; not all later release work"
   },
   "sessions_definition": "A root session is one session_id (codex) or one session directory (muse). Resumed/continued codex sessions may span several rollout files (84 files for 82 bound roots at census time; one root spans 3 files); usage is deduplicated globally so continuations never double-count. Of 82 bound codex roots, 1 is the excluded ops session and 1 post-cutoff review session contributes nothing: 80 codex + 25 muse = 105 counted sessions, of which 10 muse sessions hold zero usage records (counted in inventory, contributing nothing). Later post-cutoff sessions grow the bound inventory without changing the aggregates.",
   "binding_rule": "A session counts iff its recorded working directory is the Haskoki workspace root (identifier HASKOKI_WORKSPACE) or a descendant path: codex session_meta cwd equals the root or starts with root + '/', same rule for runtime_workspace_roots; muse workspace_root markers likewise. Mention-grep rejected (nearly every in-scope file mentions haskoki, e.g. 350/352 at first scan); workspace binding admits 82, of which 80 contribute pre-cutoff usage. One bound session (ops disk-space check, no Haskoki work product) is EXCLUDED from all aggregates below.",
@@ -129,8 +129,8 @@
     "note": "Totals are input/output only (calls + summary events combined). Cached and reasoning are subsets (see definitions) and are never added again."
   },
   "not_measured": {
-    "author_personal_time": "OWNER: author's own estimate only, labeled as estimate.",
-    "money_spent": "OWNER: actual spend and/or subscription. No API-equivalent estimate: no verified tariff for these model IDs/modes.",
+    "author_personal_time": "Not measured; repository timestamps do not establish personal working hours.",
+    "money_spent": "Not established. No API-equivalent estimate: no verified tariff for these model IDs/modes.",
     "agent_wall_hours": "Not reported: parallel sessions cannot be summed as hours.",
     "child_summary_call_counts": "Not recorded in workflow_child_lifecycle summaries."
   }

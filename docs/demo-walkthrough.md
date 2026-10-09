@@ -1,5 +1,8 @@
 # Demo walkthrough
 
+For a short first run, use [Try Haskoki](try-it.md). This page is the
+longer native-consumer and operator reference.
+
 End-to-end operator path: install → `haskoki-ctl` → consumer crypto →
 control scenario → provisioning record. Steps 2–6 were executed
 against the release tree in the toolchain container
@@ -121,8 +124,9 @@ scripts/test-consumers.sh
   remain synchronous. The SQLite home-token legs detach, revoke the old
   allocation with `PROT_NONE`, join into new storage, and separately
   execute restart children using only the persistent id. The direct
-  proof is recorded for source `415278fd23053d0150f7b13a18b373139236c891`
-  in [reviewed consumer evidence](../dist-release-evidence/async-routing/reviewed/gates/test-consumers.sh.log).
+  proof was recorded for source `415278fd23053d0150f7b13a18b373139236c891`.
+  Historical review logs are not packaged; the reproducible consumer is
+  [async_routed.c](../tests/c/async_routed.c).
   The parity driver labels this scenario `DIRECT-ONLY` under
   [proxy issue 24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24).
 
@@ -134,8 +138,9 @@ scripts/test-consumers.sh
   original cookie/thread identity, silent non-producers and reentry under
   both lock modes are separate assertions. Deterministic Haskell seams own
   event-first/close-first ordering; native pre-call readiness is not STM
-  admission. The [T-N08 record](../dist-release-evidence/notifications/task-n08/review.md)
-  includes the deferred removed-session FindObjects page precedence case.
+  admission. The [operations notes](operations-notes.md#removal-wait-outputs-and-finalization)
+  retain the deferred removed-session FindObjects page precedence case;
+  [notifications_routed.c](../tests/c/notifications_routed.c) contains the consumer.
 - `consumer_notifications_poll`: nonmutating polling and structural/lifecycle
   checks. Direct execution retains all four tables (37 assertions each).
   At the pinned proxy, common 2.40/3.0/3.2 polling remains parity-eligible;
@@ -232,9 +237,9 @@ callback must return normally and must not join a thread needing this
 provider. See [operations notes](operations-notes.md#session-notification-callbacks-and-reentry)
 for the four discovery/GetInfo exceptions and rejection of other reentry.
 
-[T-N08 control evidence](../dist-release-evidence/notifications/task-n08/control-command.json)
-records execution at its stated source/patch. These instructions add no
-claim of final installed acceptance.
+The [native notification consumer](../tests/c/notifications_routed.c)
+exercises the control path. Historical control-run logs are not packaged;
+these instructions add no claim of final installed acceptance.
 
 ## 5. Coverage and limits
 
@@ -615,9 +620,10 @@ clear; see `docs/operations-notes.md` for the quarantine protocol.
 
 ## 11. Container image: proxy example + compare classifier
 
-Prerequisites: the demo image built (`docker build -f
-docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 .`, repo root) and an
-output dir (`mkdir -p out`). The proxy example diffs 5 steps
+Prerequisites: the demo image built using the complete
+[README sequence](../README.md#quick-start-container-no-haskell-build),
+including bundle staging, and an output dir (`mkdir -p out`).
+The proxy example diffs 5 steps
 direct-vs-proxied over the pinned `pkcs11-proxy-ng` v0.2.2 pair on
 loopback (TEST-ONLY transport):
 

@@ -1,4 +1,41 @@
-# Release results — Haskoki 0.3.0.0 demo image (R4/R5)
+# Release results - Haskoki 0.3.0.0 candidate
+
+## Current CI snapshot (2026-10-08)
+
+The [CI run for 0603322](https://github.com/mingulov/haskoki/actions/runs/37774745195)
+passed the demo-image driver. The following counters were read from its
+`demo-image-runs` artifact, not inferred from the job status. The
+[JSON summary](release-results/summary.json) records the source revision,
+image ID, original report hashes, and full counters. Earlier measurements
+are retained below and inside its `historical_snapshot` field.
+
+| Profile | Mode | Collected | Passed | Failed | Skipped | Expected failures | Exit |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Smoke | Direct | 743 | 373 | 0 | 364 | 6 | 0 |
+| Smoke | Proxy | 743 | 374 | 0 | 364 | 5 | 0 |
+| Full | Direct | 10993 | 5060 | 22 | 4963 | 948 | 1 |
+| Full | Proxy | 10993 | 5021 | 22 | 4963 | 987 | 1 |
+
+These four reports record zero runner errors, crashes, and timeouts.
+Collected counts include skipped and expected-failure outcomes; they are
+not counts of passing or fully executed test bodies. The full selection's
+22 findings are shared across modes: two GMAC message-shape cases, two
+HOTP parameter cases, sixteen BLAKE2B key-type cases, and two async checker
+child-result cases. The compare driver accepts only its frozen 83
+exclusions and 22 shared findings. Demo and proxy-example checks also
+passed, at 8/8 and 5/5 respectively.
+
+The demo pins checker 0.2.3 and proxy v0.2.2. Per-test timeouts are 180
+seconds direct and 360 seconds proxied. These offline selections exclude
+vector corpora, stress, fuzz, and slow tests. The separate CI fast/vector
+lanes use their own framework pin; do not combine their counters with this
+table. A successful main-branch run did not publish a release or image.
+
+## Historical measurements
+
+The remainder records earlier release-preparation runs. Its 27-finding
+and 11003-collected snapshots are historical, not the current headline.
+The `environment.json` companion also belongs to those earlier runs.
 
 What the external `pkcs11-check` oracle reports against the
 release bundle, measured through the demo image on

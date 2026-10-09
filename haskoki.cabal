@@ -24,6 +24,10 @@ tested-with:       GHC == 9.10.3
 extra-doc-files:
   README.md
   CHANGELOG.md
+  SUPPORTED-HOSTS.md
+  docs/*.md
+  docs/*.json
+  docs/release-results/*.json
 -- Source-package completeness: c-sources/.hs modules ship
 -- automatically; everything else the build or the test suites read
 -- (headers, generated .inc, spec inputs, fixtures, the catalog doc

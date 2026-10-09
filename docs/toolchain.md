@@ -21,7 +21,11 @@ reject `haskoki.cabal`.
 
 ```sh
 cd haskoki
-docker build -t haskoki-dev:ghc-9.10.3 .
+HASKOKI_BUILD_USER=ubuntu
+if [ "$(id -u)" != 1000 ]; then HASKOKI_BUILD_USER=haskoki-builder; fi
+docker build --build-arg USERNAME="$HASKOKI_BUILD_USER" \
+  --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" \
+  -t haskoki-dev:ghc-9.10.3 .
 docker run --rm -v "$PWD:/work" -w /work haskoki-dev:ghc-9.10.3 cabal test all
 ```
 
@@ -31,6 +35,11 @@ with the test suite baked passing, so a fresh machine needs only
 Docker. Transfer it with `docker save` / `docker load` (see the
 `Dockerfile` header). Scripts that drive the image honor
 `HASKOKI_IMAGE` (default `haskoki-dev:ghc-9.10.3`).
+
+Run these commands as a non-root host user. Matching the builder UID/GID
+lets it write the bind-mounted checkout. On a non-1000 UID, the different
+username is required too: the base image already has an `ubuntu` user,
+and changing only the numeric build arguments does not change that user.
 
 ## Native setup (Ubuntu 26.04)
 

@@ -83,7 +83,7 @@ ENV OPENSSL4_PREFIX=/opt/openssl-4.0.2
 WORKDIR /work
 COPY --chown=$UID:$GID haskoki.cabal cabal.project cabal.project.freeze Setup.hs ./
 COPY --chown=$UID:$GID toolchain.lock toolchain.lock
-COPY --chown=$UID:$GID README.md CHANGELOG.md LICENSE ./
+COPY --chown=$UID:$GID README.md CHANGELOG.md SUPPORTED-HOSTS.md LICENSE ./
 COPY --chown=$UID:$GID licenses/ licenses/
 COPY --chown=$UID:$GID src/ src/
 COPY --chown=$UID:$GID core/ core/
