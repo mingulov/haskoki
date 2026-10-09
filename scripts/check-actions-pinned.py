@@ -1116,7 +1116,7 @@ def self_test() -> int:
         # provision; both lanes install pinned uv 0.12.23 by
         # URL + SHA256 instead.
         # 41 -> 43: preflight checkout and immutable signed-assets checkpoint.
-        count_ok = ("all 43 third-party" in out) if name == "real-ci-yml" else True
+        count_ok = ("all 52 third-party" in out) if name == "real-ci-yml" else True
         ok = (rc == expect) and count_ok
         print(f"{'ok' if ok else 'FAIL'}: selftest-{name}: "
               f"rc={rc} (want {expect})"
