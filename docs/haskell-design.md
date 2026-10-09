@@ -53,6 +53,6 @@ serialized into an operation snapshot. The
 guard, not a proof of purity or totality.
 
 Haskell helps explain and maintain protocol behavior. It does not prove
-PKCS#11 conformance, constant-time execution, or memory safety across C
-and OpenSSL. That boundary still needs native tests and careful ownership.
+PKCS#11 conformance, eliminate timing leaks, or make C and OpenSSL memory-safe.
+That boundary still needs native tests and careful ownership.
 See the [evidence levels](trust-ladder.md) and [current results](release-results.md).
