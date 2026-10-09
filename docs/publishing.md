@@ -38,9 +38,11 @@ separately pinned checker `0.2.3` and proxy `v0.2.2`.
 
 ## What the release does
 
-The workflow validates main, version, source SHA, signing and existing
-release identities. It runs the required Haskell, C-driver, bundle,
-source-package, fast-checker and demo-image jobs. It then loads the exact
+The read-only preflight validates main, version, source SHA, signing and
+published releases. Draft discovery needs authenticated write visibility;
+the publisher checks all release pages and exact tag/run/SHA ownership
+before any remote writes. The workflow runs the required Haskell, C-driver,
+bundle, source-package, fast-checker and demo-image jobs. It then loads the exact
 tested demo image and uses the already verified bundle and source archive.
 There is no second build or dispatch after creating the source tag.
 A tag pushed with `GITHUB_TOKEN` need not trigger another workflow.
@@ -51,9 +53,11 @@ version/revision labels and registry digest. It requires an anonymous
 pull by digest using a fresh Docker configuration, then runs the pulled
 demo and direct smoke profile without external network access.
 
-A draft GitHub Release receives these six files. The workflow downloads
-and checks the uploaded bytes before creating provenance attestations,
-updating `latest`, and publishing the draft:
+Before creating or uploading a draft, the workflow saves and verifies the
+original signed files in an immutable same-run Actions checkpoint. A draft
+GitHub Release receives these six files. The workflow downloads and checks
+the uploaded bytes before creating provenance attestations, updating
+`latest`, and publishing the draft:
 
 | Asset | Purpose |
 | --- | --- |
@@ -83,13 +87,19 @@ image or draft. Inspect the failed step and remote state before retrying:
   **Re-run failed jobs** in the original run. The existing tag must still
   resolve to the selected SHA, and the existing image must match that
   run's tested image ID and source labels. Neither is overwritten.
-- A complete draft owned by the same run and SHA can be resumed. Its
-  downloaded checksums, signature, source/image identity, bundle and source
-  archive must verify before its original files are reused.
-- An incomplete owned draft accepts only missing files; every existing
-  file must equal the staged file byte for byte. If packaging timestamps
-  make a file differ, recover the original run's exact files and finish
-  under owner control. Do not delete or replace files merely to pass CI.
+- For an owned draft, choose **Re-run failed jobs** in the original run.
+  The publisher restores the original signed files from the Actions artifact
+  `release-assets-<run_id>-<source_sha>`, retained for 90 days subject to
+  repository retention policy. The checkpoint contains the six files and
+  `release-checkpoint.json`; that metadata is not a GitHub Release asset.
+  The downloaded member set, run/SHA/version/image identity, file hashes,
+  signature and checked bundle/source archives must all match before use.
+  An incomplete draft receives only missing files; existing bytes must match.
+- The checkpoint is never overwritten on retry. Keep it until publication
+  succeeds. A missing, expired, ambiguous or mismatched checkpoint for an
+  existing draft stops the retry. Inspect the state and decide on withdrawal
+  or a new version under owner control; the workflow cannot reconstruct lost
+  signed files or take over a different run. Do not replace draft assets.
 - A public release, foreign draft, changed tag or different image is
   refused. **Re-run all jobs** may rebuild different bytes because base
   images and package repositories float; it is not an identity-safe retry.

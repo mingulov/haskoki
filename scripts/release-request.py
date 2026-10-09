@@ -8,6 +8,7 @@ are never printed. The workflow supplies the selected commit, not a moving ref.
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 
 IMAGE = "ghcr.io/mingulov/haskoki-demo"
 VERSION = r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){3}"
@@ -35,7 +37,7 @@ def command(*args, cwd=None):
     return result.stdout
 
 
-def api(endpoint, allow_absent=False):
+def api(endpoint, allow_absent=False, expected=dict):
     result = subprocess.run(["gh", "api", "--include", endpoint],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     raw = result.stdout.decode("utf-8").replace("\r\n", "\n")
@@ -47,7 +49,7 @@ def api(endpoint, allow_absent=False):
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
         raise Refusal("GitHub API lookup returned invalid JSON") from exc
-    if not isinstance(payload, dict):
+    if not isinstance(payload, expected):
         raise Refusal("GitHub API lookup returned an unexpected response shape")
     code = int(status[1])
     if allow_absent and code == 404 and result.returncode == 1 and payload.get("message") == "Not Found":
@@ -61,15 +63,40 @@ def marker(request):
     return f"<!-- haskoki-release run={request['run_id']} sha={request['sha']} -->"
 
 
-def lookup_release(request):
-    # Prove authenticated repository access before treating a release 404 as absence.
+def lookup_published_release(request):
+    """Read-only preflight can reject published releases, not establish draft absence."""
     api(f"repos/{request['repository']}")
     existing = api(f"repos/{request['repository']}/releases/tags/{request['tag']}", allow_absent=True)
     if existing is not None:
-        if not existing.get("draft"):
-            raise Refusal("a public release already exists; it will not be replaced")
-        if marker(request) not in (existing.get("body") or ""):
-            raise Refusal("existing draft belongs to another run or source; inspect it before recovery")
+        raise Refusal("a public release already exists; it will not be replaced")
+
+
+def lookup_release(request):
+    """Publisher-only discovery; the workflow grants this job contents:write."""
+    # Repository permissions bits are not a visibility oracle for installation
+    # tokens. Draft visibility follows the publisher's write-scoped contract.
+    api(f"repos/{request['repository']}")
+    matches = []
+    page = 1
+    while True:
+        entries = api(f"repos/{request['repository']}/releases?per_page=100&page={page}", expected=list)
+        if any(not isinstance(entry, dict) for entry in entries):
+            raise Refusal("release list returned an unexpected response shape")
+        matches.extend(entry for entry in entries if entry.get("tag_name") == request["tag"])
+        if len(entries) < 100:
+            break
+        page += 1
+    if len(matches) > 1:
+        raise Refusal("multiple releases reference this version tag; refusing ambiguous ownership")
+    if not matches:
+        return None
+    existing = matches[0]
+    if existing.get("draft") is not True:
+        raise Refusal("a public release already exists; it will not be replaced")
+    if not isinstance(existing.get("id"), int) or existing["id"] <= 0:
+        raise Refusal("draft release identity is malformed")
+    if marker(request) not in (existing.get("body") or ""):
+        raise Refusal("existing draft belongs to another run or source; inspect it before recovery")
     return existing
 
 
@@ -125,14 +152,17 @@ def request_context(root, env):
             "repository": repository, "run_id": run_id, "manual": manual, "notes": notes}
 
 
-def preflight(root, env):
+def preflight(root, env, include_drafts=False):
     request = request_context(root, env)
     if request is None:
         return None
     if not env.get("HASKOKI_RELEASE_SIGNING_KEY"):
         raise Refusal("HASKOKI_RELEASE_SIGNING_KEY secret is required before releasing")
     check_tag(root, request["tag"], request["sha"])
-    lookup_release(request)
+    if include_drafts:
+        lookup_release(request)
+    else:
+        lookup_published_release(request)
     return request
 
 
@@ -281,28 +311,83 @@ def validate_assets(directory, request, digest):
             str(directory / "SHA256SUMS"))
 
 
-def restore_draft(directory, request, digest):
-    """A complete owned draft is the immutable checkpoint for its original assets."""
+def checkpoint_name(request):
+    return f"release-assets-{request['run_id']}-{request['sha']}"
+
+
+def find_checkpoint(request):
+    matches = []
+    page = 1
+    while True:
+        payload = api(f"repos/{request['repository']}/actions/runs/{request['run_id']}/artifacts?per_page=100&page={page}")
+        entries = payload.get("artifacts")
+        if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+            raise Refusal("checkpoint artifact list returned an unexpected response shape")
+        matches.extend(entry for entry in entries if entry.get("name") == checkpoint_name(request))
+        if len(entries) < 100:
+            break
+        page += 1
+    if len(matches) > 1:
+        raise Refusal("multiple checkpoint artifacts match; refusing ambiguous identity")
+    if not matches:
+        return None
+    artifact = matches[0]
+    if artifact.get("expired") is not False:
+        raise Refusal("release checkpoint expired or unavailable; do not replace the draft or artifact")
+    run = artifact.get("workflow_run") or {}
+    if (str(run.get("id")) != request["run_id"] or run.get("head_sha") != request["sha"]
+            or not isinstance(artifact.get("id"), int) or artifact["id"] <= 0):
+        raise Refusal("checkpoint artifact run/source identity does not match")
+    return artifact
+
+
+def checkpoint_metadata(request, digest, config_id, directory):
+    return {"schema": 1, "run_id": request["run_id"], "sha": request["sha"],
+            "tag": request["tag"], "oci_digest": digest, "config_id": config_id,
+            "files": {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+                      for name in asset_names(request)}}
+
+
+def prepare_checkpoint(directory, checkpoint, request, digest, config_id):
+    """Stage exactly six signed files plus checkpoint metadata for upload-artifact."""
+    validate_assets(directory, request, digest)
+    if find_checkpoint(request) is not None:
+        raise Refusal("checkpoint already exists; restore it instead of replacing its files")
+    checkpoint.mkdir()
+    for name in asset_names(request):
+        (checkpoint / name).write_bytes((directory / name).read_bytes())
+    (checkpoint / "release-checkpoint.json").write_text(json.dumps(
+        checkpoint_metadata(request, digest, config_id, checkpoint), indent=2) + "\n")
+
+
+def restore_checkpoint(directory, request, digest, config_id):
+    """Restore original signed bytes before any draft create/upload, including partial retries."""
     existing = lookup_release(request)
-    if existing is None:
+    artifact = find_checkpoint(request)
+    if artifact is None:
+        if existing is not None:
+            raise Refusal("release checkpoint is missing for the existing draft; refusing an unsafe retry")
         return False
-    assets = existing.get("assets", [])
+    raw = command("gh", "api", f"repos/{request['repository']}/actions/artifacts/{artifact['id']}/zip")
     names = asset_names(request)
-    if len(assets) != len(names) or {a["name"] for a in assets} != set(names):
-        # Incomplete drafts may be completed later only if every existing file
-        # equals the newly staged file. No draft asset is overwritten.
-        return False
+    expected = set(names) | {"release-checkpoint.json"}
     with tempfile.TemporaryDirectory() as temp:
         stage = Path(temp)
-        for asset in assets:
-            (stage / asset["name"]).write_bytes(command("gh", "api",
-                f"repos/{request['repository']}/releases/assets/{asset['id']}",
-                "-H", "Accept: application/octet-stream"))
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            members = archive.namelist()
+            if len(members) != len(expected) or set(members) != expected:
+                raise Refusal("checkpoint archive must contain exactly six assets and its metadata")
+            for name in members:
+                (stage / name).write_bytes(archive.read(name))
+        metadata = json.loads((stage / "release-checkpoint.json").read_text())
+        if metadata != checkpoint_metadata(request, digest, config_id, stage):
+            raise Refusal("checkpoint metadata or signed file identity does not match")
         validate_assets(stage, request, digest)
-        # Bundle and source bytes must match this run's checked inputs as well.
+        # Check against the independently staged bundle/source inputs of this run.
         for name in names[:2]:
             if hashlib.sha256((stage / name).read_bytes()).digest() != hashlib.sha256((directory / name).read_bytes()).digest():
-                raise Refusal("owned draft bundle/source differs from this run's checked artifacts")
+                raise Refusal("checkpoint bundle/source differs from this run's checked artifacts")
+        # Apply only after the complete archive, metadata and signature verify.
         for name in names:
             (directory / name).write_bytes((stage / name).read_bytes())
     return True
@@ -328,7 +413,7 @@ def stage_draft(root, directory, request, digest):
         remote = command("gh", "api", f"repos/{request['repository']}/releases/assets/{asset['id']}",
                          "-H", "Accept: application/octet-stream")
         if hashlib.sha256(remote).digest() != hashlib.sha256((directory / asset["name"]).read_bytes()).digest():
-            raise Refusal(f"draft asset differs: {asset['name']}; recover the original run's files before retrying")
+            raise Refusal(f"draft asset differs from the checkpoint: {asset['name']}; refusing replacement")
     missing = [str(directory / n) for n in names if n not in {a["name"] for a in assets}]
     if missing:
         command("gh", "release", "upload", request["tag"], *missing, "--repo", request["repository"])
@@ -346,8 +431,10 @@ def stage_draft(root, directory, request, digest):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["archive-config", "preflight", "tag", "registry", "restore-draft", "stage-draft", "publish-draft"])
+    parser.add_argument("operation", choices=["archive-config", "preflight", "publisher-preflight", "tag", "registry",
+                                              "restore-checkpoint", "prepare-checkpoint", "stage-draft", "publish-draft"])
     parser.add_argument("--assets", type=Path, default=Path("dist-release"))
+    parser.add_argument("--checkpoint", type=Path, default=Path("release-checkpoint"))
     parser.add_argument("--image-archive", type=Path, default=Path("demo-image.tar.gz"))
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
@@ -361,15 +448,18 @@ def main():
                 out.write(f"configid={config_id}\n")
             print(f"tested archive configuration digest: {config_id}")
             return
-        request = preflight(root, env) if args.operation == "preflight" else request_context(root, env)
+        request = (preflight(root, env, include_drafts=args.operation == "publisher-preflight")
+                   if args.operation in ("preflight", "publisher-preflight") else request_context(root, env))
         if request is None:
             print("build mode: no release actions")
             return
-        if args.operation == "preflight":
+        if args.operation in ("preflight", "publisher-preflight"):
             if env.get("GITHUB_OUTPUT"):
                 with open(env["GITHUB_OUTPUT"], "a") as out:
                     out.write(f"tag={request['tag']}\nversion={request['version']}\n")
             print(f"release request validated: {request['tag']} at {request['sha']}")
+            if args.operation == "preflight":
+                print("published-release preflight only; draft discovery runs in the write-scoped publisher")
         elif args.operation == "tag":
             lookup_release(request)
             ensure_tag(root, request)
@@ -385,18 +475,23 @@ def main():
                     with open(env["GITHUB_ENV"], "a") as out:
                         out.write(f"PUSHED_DIGEST={IMAGE}@{identity['digest']}\nPUSHED_DIGEST_ONLY={identity['digest']}\nVERSION_IMAGE_EXISTS=1\n")
                 print(f"verified versioned image: {IMAGE}@{identity['digest']}")
-        elif args.operation == "restore-draft":
-            if restore_draft(args.assets, request, env["PUSHED_DIGEST"]):
+        elif args.operation == "restore-checkpoint":
+            if restore_checkpoint(args.assets, request, env["PUSHED_DIGEST"], env["TESTED_CONFIG_ID"]):
                 with open(env["GITHUB_ENV"], "a") as out:
-                    out.write("RESTORED_DRAFT=1\n")
-                print("restored the owned draft's verified signed assets")
+                    out.write("RESTORED_CHECKPOINT=1\n")
+                print(f"restored immutable signed checkpoint: {checkpoint_name(request)}")
+            elif env.get("REQUIRE_CHECKPOINT") == "1":
+                raise Refusal("release checkpoint is missing after upload; refusing any draft writes")
+        elif args.operation == "prepare-checkpoint":
+            prepare_checkpoint(args.assets, args.checkpoint, request, env["PUSHED_DIGEST"], env["TESTED_CONFIG_ID"])
+            print(f"signed checkpoint ready for upload: {checkpoint_name(request)}")
         elif args.operation == "stage-draft":
             stage_draft(root, args.assets, request, env["PUSHED_DIGEST"])
         elif args.operation == "publish-draft":
             # Recheck owned draft files immediately before making it public.
             stage_draft(root, args.assets, request, env["PUSHED_DIGEST"])
             command("gh", "release", "edit", request["tag"], "--repo", request["repository"], "--draft=false")
-    except (Refusal, OSError, ValueError, KeyError) as exc:
+    except (Refusal, OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
         print(f"release refused: {exc}")
         raise SystemExit(2) from exc
 
