@@ -85,8 +85,8 @@ removal revokes the retired jobs' output bindings. Validation, query and
 short-buffer refusals mutate nothing. A precommit fault publishes no event
 but does not roll back cancellation already performed; a postcommit release
 fault retains committed absence and runs remaining cleanup. These are the
-distinct fault cases in `NotificationsEngineSpec` and the
-[T-N03 review](../dist-release-evidence/notifications/task-n03/review.md).
+distinct fault cases in
+[NotificationsEngineSpec](../tests/engine/NotificationsEngineSpec.hs).
 
 For a known empty slot, `C_GetSlotList(CK_FALSE)` retains the slot and
 `C_GetSlotList(CK_TRUE)` omits it; `tokenPresent` is a boolean, not a flags
@@ -103,7 +103,7 @@ flag guards before catalog/presence. CloseAll on a known empty slot succeeds.
 Removed sessions are not resurrected. Qualification limitation:
 `haskokiStdFind` (the FindObjects page routine) still checks find state
 before session validity; that removed-session precedence case is **deferred**
-in the [T-N08 review](../dist-release-evidence/notifications/task-n08/review.md).
+in the historical notification review (not packaged).
 The repaired FindObjectsFinal case and passing fresh-session find calls do
 not qualify it. No claim that every removed-session entry has been verified
 is made here.
@@ -141,8 +141,8 @@ The lifetime strategy retains one empty `InstanceCell`/`StablePtr` per
 initialization interval; this small per-interval cost has not been removed.
 An atomic C root alone is not a lifetime lease. Finalize makes blocked waits
 runnable without waiting for application threads to be scheduled and return.
-The [T-N05 evidence](../dist-release-evidence/notifications/task-n05/review.md)
-uses deterministic admission/claim/close seams; native pre-call acknowledgments
+The [notification tests](../tests/model/NotificationsSpec.hs)
+use deterministic admission/claim/close seams; native pre-call acknowledgments
 and race stress alone do not establish STM parking or the winning order.
 
 ## Session notification callbacks and reentry
@@ -184,9 +184,9 @@ Only `C_GetFunctionList`, `C_GetInterfaceList`, `C_GetInterface`, and static
 `C_GetInfo` may reenter with their ordinary validation. All other native
 table calls and `HASKOKI_Control`, including SessionCancel, both wait modes,
 slot queries, nested Digest and Finalize, return `CKR_FUNCTION_FAILED`.
-The [T-N06 guard evidence](../dist-release-evidence/notifications/task-n06/review.md)
-and [T-N07 real callback evidence](../dist-release-evidence/notifications/task-n07/review.md)
-cover rejection under internal and negotiated nonrecursive mutexes.
+The [engine notification tests](../tests/engine/NotificationsEngineSpec.hs)
+and [native callback consumer](../tests/c/notifications_routed.c)
+exercise rejection under internal and negotiated nonrecursive mutexes.
 
 Callbacks must return normally and must not join a thread whose progress
 needs a serving call into this provider: it is waiting behind the callback's

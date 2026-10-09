@@ -10,7 +10,7 @@ Method (all mutants in ONE isolated scratch tree, never the live checkout):
 
 - Scratch: `/tmp/f16base`, rsync of the live tree excluding build/evidence
   dirs (`dist-release-evidence/`, `dist-release/`, `dist-newstyle/`, `ws/`,
-  `.superpowers/`, `haskoki-*.jsonl`). Tracked diff identical to live:
+  local agent scratch, `haskoki-*.jsonl`). Tracked diff identical to live:
   `git diff | sha256sum` = `16e1a566…be4b4f0` in both trees before the campaign.
 - Untracked-input manifest (the tracked-diff hash cannot see these): the
   snapshot carries all F-1..F-14 untracked inputs (verified: F-13's

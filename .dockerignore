@@ -2,3 +2,10 @@ dist/
 dist-newstyle/
 .stack-work/
 .git/
+.git
+.superpowers/
+docs/superpowers/
+ws/
+out/
+dist-release/
+dist-release-evidence/

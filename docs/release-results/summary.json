@@ -1,1 +1,333 @@
-{"body_execution":"unknown (the native summary does not report per-test body execution; call-phase skips executed setup before skipping while setup-phase xfails never reached the test body \u2014 see jsonl census, R4 report section 2)","counting_model":"pkcs11-check results.json summary (one entry per collected test; failed and crashed are separate counters, findings = failed + crashed; units[].tests lists non-passed outcomes only; unknown outcomes never reported as 0). collected = summary.total. executed = NON-SKIPPED verdicts = passed+failed+error+xfailed+xpassed+crashed+timeout. This is outcome arithmetic, NOT test-body execution (see body_execution). Identity verified on every lane.","document":"docs/release-results.md","lanes":[{"counters":{"crashed":0,"error":0,"failed":0,"passed":373,"skipped":364,"timeout":0,"total":743,"xfailed":6,"xpassed":0,"collected":743,"executed":379},"exit":0,"mode":"direct","profile":"smoke"},{"counters":{"crashed":0,"error":0,"failed":0,"passed":374,"skipped":364,"timeout":0,"total":743,"xfailed":5,"xpassed":0,"collected":743,"executed":379},"exit":0,"mode":"proxy","profile":"smoke","sample":"r4-a48b60b"},{"counters":{"crashed":0,"error":0,"failed":0,"passed":375,"skipped":364,"timeout":0,"total":743,"xfailed":4,"xpassed":0,"collected":743,"executed":379},"exit":0,"mode":"proxy","profile":"smoke","sample":"r5-v020-driver","note":"v0.2.0: one xfail fixed vs R4 (UAF digest-key-after-destroy now passes)"},{"counters":{"crashed":0,"error":0,"failed":27,"passed":5058,"skipped":4943,"timeout":0,"total":11003,"xfailed":975,"xpassed":0,"collected":11003,"executed":6060},"exit":1,"mode":"direct","note":"27 findings triaged in R4 report section 6.1 (4 families, T-M06-partitioned)","profile":"full"},{"counters":{"crashed":1,"error":0,"failed":39,"passed":4838,"skipped":4940,"timeout":0,"total":11003,"xfailed":1185,"xpassed":0,"collected":11003,"executed":6063},"exit":1,"mode":"proxy","note":"40 findings (39 failed + 1 crash); failed pair passed in this sample","profile":"full","sample":"standalone"},{"counters":{"crashed":1,"error":0,"failed":40,"passed":4837,"skipped":4939,"timeout":0,"total":11003,"xfailed":1186,"xpassed":0,"collected":11003,"executed":6064},"exit":1,"mode":"proxy","note":"driver4 run on the final image (6881206a): verify_in_ro flaky-failed + one skip-to-xfail shift","profile":"full","sample":"driver4-final-image"},{"counters":{"crashed":0,"error":0,"failed":25,"passed":4884,"skipped":4943,"timeout":0,"total":11003,"xfailed":1151,"xpassed":0,"collected":11003,"executed":6060},"exit":1,"mode":"proxy","profile":"full","sample":"r5-v020-2-samples-identical","note":"v0.2.0: 25 findings, all shared, zero proxy-only; failed pair passed in both samples"},{"counters":{"crashed":0,"error":0,"failed":0,"passed":1364,"skipped":0,"timeout":0,"total":1365,"xfailed":1,"xpassed":0,"collected":1365,"executed":1365},"exit":0,"marker":"cctv","mode":"direct","note":"1 xfailed = RFC 6979 deterministic-k (module uses random-k ECDSA); byte-identical under --network none","profile":"vectors-cctv"},{"counters":{"crashed":0,"error":0,"failed":27,"passed":5772,"skipped":4935,"timeout":0,"total":11711,"xfailed":977,"xpassed":0,"collected":11711,"executed":6776},"exit":1,"mode":"direct","note":"full offline selection with fetched vectors: +708 collected, same exact 27 finding ids","profile":"full-with-vectors"},{"counters":{"crashed":0,"error":0,"failed":0,"passed":374,"skipped":364,"timeout":0,"total":743,"xfailed":5,"xpassed":0,"collected":743,"executed":379},"exit":0,"mode":"proxy","profile":"smoke","sample":"r9-v022-driver","note":"v0.2.2: +1 xfail vs R5 (digest mechanism_param_invalid surfaces backend 0x7)"},{"counters":{"crashed":0,"error":0,"failed":27,"passed":5019,"skipped":4943,"timeout":0,"total":11003,"xfailed":1014,"xpassed":0,"collected":11003,"executed":6060},"exit":1,"mode":"proxy","profile":"full","sample":"r9-v022-driver","note":"v0.2.2: 27 findings, all shared, zero proxy-only; +2 GMAC vs R5; executed 6060 conserved"}],"profiles_frozen":"R4","r4_note":"proxy passed/skipped/xfailed shift with the timing-flaky ids; only complete per-sample snapshots are recorded, never mixed-sample rows","release":"0.3.0.0","parity_subset_frozen":"R9 (83 exclusions, zero variants, proxy v0.2.2)","r5_note":"proxy v0.2.0 re-pin: 25 findings (all shared), 188 diffs, 25 shared; samples byte-identical; see R5 report sections 1/4","r9_note":"proxy v0.2.2 re-pin: 27 findings (all shared), 83 diffs, 27 shared; upstream #35/#36/#37/#39 closed with probes; see R9 report"}
+{
+  "schema": "haskoki/demo-results/v2",
+  "release": "0.3.0.0 candidate",
+  "source_sha": "0603322e33b0595a29c89622f49fcb5a5def1a07",
+  "observed_utc": "2026-10-08",
+  "ci_run": "https://github.com/mingulov/haskoki/actions/runs/37774745195",
+  "artifact": "demo-image-runs",
+  "artifact_id": 11552557963,
+  "image_id": "sha256:65069af378414d93e506d615afa4f120f8e6958730ba3cbc2d88fd487e85f362",
+  "counting_model": "Native runner outcomes; total means collected, including skipped and xfailed; test-body execution is unknown.",
+  "lanes": [
+    {
+      "mode": "direct",
+      "profile": "smoke",
+      "sample": "check-direct-smoke-20261008T122053Z-1-C7adjS",
+      "report_sha256": "de293697eee183d156dab3f0417c54432bb46b654b32aafa91ed7129817ef246",
+      "counters": {
+        "passed": 373,
+        "failed": 0,
+        "skipped": 364,
+        "xfailed": 6,
+        "xpassed": 0,
+        "error": 0,
+        "crashed": 0,
+        "timeout": 0,
+        "crash_limited": 0,
+        "total": 743,
+        "child_crash": 0,
+        "child_timeout": 0,
+        "incomplete": false
+      },
+      "exit": 0,
+      "findings": 0
+    },
+    {
+      "mode": "proxy",
+      "profile": "smoke",
+      "sample": "check-proxy-smoke-20261008T122220Z-1-5E7Zw3",
+      "report_sha256": "d78b9dd41a5e0164797392edd8ba74e8e946e4407dbdf46a6c742b13ba43095b",
+      "counters": {
+        "passed": 374,
+        "failed": 0,
+        "skipped": 364,
+        "xfailed": 5,
+        "xpassed": 0,
+        "error": 0,
+        "crashed": 0,
+        "timeout": 0,
+        "crash_limited": 0,
+        "total": 743,
+        "child_crash": 0,
+        "child_timeout": 0,
+        "incomplete": false
+      },
+      "exit": 0,
+      "findings": 0
+    },
+    {
+      "mode": "direct",
+      "profile": "full",
+      "sample": "check-direct-full-20261008T122357Z-1-trcwnx",
+      "report_sha256": "3ff2d9da729ff5e60683db305062388754be43fca0a15c3f3693c02450997d2c",
+      "counters": {
+        "passed": 5060,
+        "failed": 22,
+        "skipped": 4963,
+        "xfailed": 948,
+        "xpassed": 0,
+        "error": 0,
+        "crashed": 0,
+        "timeout": 0,
+        "crash_limited": 0,
+        "total": 10993,
+        "child_crash": 0,
+        "child_timeout": 0,
+        "incomplete": false
+      },
+      "exit": 1,
+      "findings": 22
+    },
+    {
+      "mode": "proxy",
+      "profile": "full",
+      "sample": "check-proxy-full-20261008T123327Z-1-RR3982",
+      "report_sha256": "3213f72142399cde867627f159f0f11b2ed5a902026bd3454fc7f6afaa885a65",
+      "counters": {
+        "passed": 5021,
+        "failed": 22,
+        "skipped": 4963,
+        "xfailed": 987,
+        "xpassed": 0,
+        "error": 0,
+        "crashed": 0,
+        "timeout": 0,
+        "crash_limited": 0,
+        "total": 10993,
+        "child_crash": 0,
+        "child_timeout": 0,
+        "incomplete": false
+      },
+      "exit": 1,
+      "findings": 22
+    }
+  ],
+  "historical_snapshot": {
+    "body_execution": "unknown (the native summary does not report per-test body execution; call-phase skips executed setup before skipping while setup-phase xfails never reached the test body \u2014 see jsonl census, R4 report section 2)",
+    "counting_model": "pkcs11-check results.json summary (one entry per collected test; failed and crashed are separate counters, findings = failed + crashed; units[].tests lists non-passed outcomes only; unknown outcomes never reported as 0). collected = summary.total. executed = NON-SKIPPED verdicts = passed+failed+error+xfailed+xpassed+crashed+timeout. This is outcome arithmetic, NOT test-body execution (see body_execution). Identity verified on every lane.",
+    "document": "docs/release-results.md",
+    "lanes": [
+      {
+        "counters": {
+          "crashed": 0,
+          "error": 0,
+          "failed": 0,
+          "passed": 373,
+          "skipped": 364,
+          "timeout": 0,
+          "total": 743,
+          "xfailed": 6,
+          "xpassed": 0,
+          "collected": 743,
+          "executed": 379
+        },
+        "exit": 0,
+        "mode": "direct",
+        "profile": "smoke"
+      },
+      {
+        "counters": {
+          "crashed": 0,
+          "error": 0,
+          "failed": 0,
+          "passed": 374,
+          "skipped": 364,
+          "timeout": 0,
+          "total": 743,
+          "xfailed": 5,
+          "xpassed": 0,
+          "collected": 743,
+          "executed": 379
+        },
+        "exit": 0,
+        "mode": "proxy",
+        "profile": "smoke",
+        "sample": "r4-a48b60b"
+      },
+      {
+        "counters": {
+          "crashed": 0,
+          "error": 0,
+          "failed": 0,
+          "passed": 375,
+          "skipped": 364,
+          "timeout": 0,
+          "total": 743,
+          "xfailed": 4,
+          "xpassed": 0,
+          "collected": 743,
+          "executed": 379
+        },
+        "exit": 0,
+        "mode": "proxy",
+        "profile": "smoke",
+        "sample": "r5-v020-driver",
+        "note": "v0.2.0: one xfail fixed vs R4 (UAF digest-key-after-destroy now passes)"
+      },
+      {
+        "counters": {
+          "crashed": 0,
+          "error": 0,
+          "failed": 27,
+          "passed": 5058,
+          "skipped": 4943,
+          "timeout": 0,
+          "total": 11003,
+          "xfailed": 975,
+          "xpassed": 0,
+          "collected": 11003,
+          "executed": 6060
+        },
+        "exit": 1,
+        "mode": "direct",
+        "note": "27 findings triaged in R4 report section 6.1 (4 families, T-M06-partitioned)",
+        "profile": "full"
+      },
+      {
+        "counters": {
+          "crashed": 1,
+          "error": 0,
+          "failed": 39,
+          "passed": 4838,
+          "skipped": 4940,
+          "timeout": 0,
+          "total": 11003,
+          "xfailed": 1185,
+          "xpassed": 0,
+          "collected": 11003,
+          "executed": 6063
+        },
+        "exit": 1,
+        "mode": "proxy",
+        "note": "40 findings (39 failed + 1 crash); failed pair passed in this sample",
+        "profile": "full",
+        "sample": "standalone"
+      },
+      {
+        "counters": {
+          "crashed": 1,
+          "error": 0,
+          "failed": 40,
+          "passed": 4837,
+          "skipped": 4939,
+          "timeout": 0,
+          "total": 11003,
+          "xfailed": 1186,
+          "xpassed": 0,
+          "collected": 11003,
+          "executed": 6064
+        },
+        "exit": 1,
+        "mode": "proxy",
+        "note": "driver4 run on the final image (6881206a): verify_in_ro flaky-failed + one skip-to-xfail shift",
+        "profile": "full",
+        "sample": "driver4-final-image"
+      },
+      {
+        "counters": {
+          "crashed": 0,
+          "error": 0,
+          "failed": 25,
+          "passed": 4884,
+          "skipped": 4943,
+          "timeout": 0,
+          "total": 11003,
+          "xfailed": 1151,
+          "xpassed": 0,
+          "collected": 11003,
+          "executed": 6060
+        },
+        "exit": 1,
+        "mode": "proxy",
+        "profile": "full",
+        "sample": "r5-v020-2-samples-identical",
+        "note": "v0.2.0: 25 findings, all shared, zero proxy-only; failed pair passed in both samples"
+      },
+      {
+        "counters": {
+          "crashed": 0,
+          "error": 0,
+          "failed": 0,
+          "passed": 1364,
+          "skipped": 0,
+          "timeout": 0,
+          "total": 1365,
+          "xfailed": 1,
+          "xpassed": 0,
+          "collected": 1365,
+          "executed": 1365
+        },
+        "exit": 0,
+        "marker": "cctv",
+        "mode": "direct",
+        "note": "1 xfailed = RFC 6979 deterministic-k (module uses random-k ECDSA); byte-identical under --network none",
+        "profile": "vectors-cctv"
+      },
+      {
+        "counters": {
+          "crashed": 0,
+          "error": 0,
+          "failed": 27,
+          "passed": 5772,
+          "skipped": 4935,
+          "timeout": 0,
+          "total": 11711,
+          "xfailed": 977,
+          "xpassed": 0,
+          "collected": 11711,
+          "executed": 6776
+        },
+        "exit": 1,
+        "mode": "direct",
+        "note": "full offline selection with fetched vectors: +708 collected, same exact 27 finding ids",
+        "profile": "full-with-vectors"
+      },
+      {
+        "counters": {
+          "crashed": 0,
+          "error": 0,
+          "failed": 0,
+          "passed": 374,
+          "skipped": 364,
+          "timeout": 0,
+          "total": 743,
+          "xfailed": 5,
+          "xpassed": 0,
+          "collected": 743,
+          "executed": 379
+        },
+        "exit": 0,
+        "mode": "proxy",
+        "profile": "smoke",
+        "sample": "r9-v022-driver",
+        "note": "v0.2.2: +1 xfail vs R5 (digest mechanism_param_invalid surfaces backend 0x7)"
+      },
+      {
+        "counters": {
+          "crashed": 0,
+          "error": 0,
+          "failed": 27,
+          "passed": 5019,
+          "skipped": 4943,
+          "timeout": 0,
+          "total": 11003,
+          "xfailed": 1014,
+          "xpassed": 0,
+          "collected": 11003,
+          "executed": 6060
+        },
+        "exit": 1,
+        "mode": "proxy",
+        "profile": "full",
+        "sample": "r9-v022-driver",
+        "note": "v0.2.2: 27 findings, all shared, zero proxy-only; +2 GMAC vs R5; executed 6060 conserved"
+      }
+    ],
+    "profiles_frozen": "R4",
+    "r4_note": "proxy passed/skipped/xfailed shift with the timing-flaky ids; only complete per-sample snapshots are recorded, never mixed-sample rows",
+    "release": "0.3.0.0",
+    "parity_subset_frozen": "R9 (83 exclusions, zero variants, proxy v0.2.2)",
+    "r5_note": "proxy v0.2.0 re-pin: 25 findings (all shared), 188 diffs, 25 shared; samples byte-identical; see R5 report sections 1/4",
+    "r9_note": "proxy v0.2.2 re-pin: 27 findings (all shared), 83 diffs, 27 shared; upstream #35/#36/#37/#39 closed with probes; see R9 report"
+  }
+}

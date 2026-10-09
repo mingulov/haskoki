@@ -204,7 +204,7 @@
       "title": "Oracle-new names: 14 REASON stances, zero numeric rows (DG6 stance register)",
       "status": "resolved",
       "sources": [
-        "DG6 stance table (docs/superpowers/specs/2026-10-02-mechanisms-design.md section 3, rows 01-14)",
+        "Per-name rationale in this GAP-ORACLE-NEW record and tests/model/MessageFlagBatterySpec.hs",
         "Pinned oracle pkcs11-check 0.2.2rc2 (src/pkcs11_check/testcases plus raw/types_std.py): id evidence per row",
         "Pinned header spec/vendor/pkcs11.h: none of the 14 names carries a stable OASIS code point present in it"
       ],

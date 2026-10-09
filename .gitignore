@@ -33,7 +33,6 @@ haskoki-*.jsonl
 # Local session scratch (workspace-private); never committed.
 HANDOFF.md
 ws/
-docs/superpowers/plans/2026-10-01-certificates.md
-docs/superpowers/plans/2026-10-02-mechanisms.md
-docs/superpowers/specs/2026-10-01-certificates-design.md
-docs/superpowers/specs/2026-10-02-mechanisms-design.md
+docs/superpowers/
+staged-bundle/
+out/
