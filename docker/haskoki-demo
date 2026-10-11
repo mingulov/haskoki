@@ -18,7 +18,7 @@
 # Profiles FROZEN (R4; see examples/release/pkcs11-check/README).
 # Compare parity subset FROZEN (R5): this command diffs ALL collected
 # ids (raw plumbing); the shipped examples/release/compare-classify
-# wrapper classifies the 188 frozen exclusions with per-id reasons
+# wrapper classifies the 83 frozen exclusions with per-id reasons
 # (driver: scripts/test-demo-image.sh).
 # Demo PINs/seeds/labels are PUBLIC fixtures (values never logged).
 #
@@ -26,7 +26,7 @@
 # no root-only paths, no HOME writes.
 set -u
 
-VERSION="0.3.0.0"
+VERSION="0.3.1.0"
 BUNDLE_ROOT="/opt/haskoki/dist-release"
 PROXY_DIR="/opt/haskoki/proxy"
 CHECKER="/opt/p11c/bin/pkcs11-check"
@@ -46,9 +46,16 @@ Usage:
   haskoki-demo [--output json|text] demo
   haskoki-demo [--output json|text] check --mode direct|proxy --profile smoke|full
   haskoki-demo [--output json|text] compare
+  haskoki-demo shell [COMMAND [ARG...]]
+  haskoki-demo proxy-demo | p11-kit-demo
   haskoki-demo --help | demo --help | check --help | compare --help
 
 Commands:
+  shell     open a shell with a fresh token, HASKOKI_MODULE and
+            HASKOKI_CONFIG set, and tools on PATH. An optional COMMAND
+            runs in that same environment. Demo user PIN: 1234.
+  proxy-demo    small sign/verify comparison through pkcs11-proxy-ng.
+  p11-kit-demo  sign/verify through p11-kit over a local Unix socket.
   demo      (default) keygen, then sign/verify (ECDSA P-256) and
             encrypt/decrypt (RSA-OAEP SHA256) of fixed PUBLIC fixtures,
             plus a pinned SHA-256 digest anchor. Human summary plus a
@@ -64,8 +71,10 @@ Commands:
             (and exit 1) but are not diffs.
 
 Global:
-  --output json|text   stdout rendering (default text). Report files are
-            always machine-readable under a unique run dir in /out.
+  --output json|text   rendering for demo/check/compare (default text).
+            Reports and disposable stores are written under /out.
+            Mount /out to keep them after docker run --rm exits.
+            shell returns the chosen command's exit code.
   Exit codes (exact): 0 healthy / 1 findings or unexpected diffs /
             2 usage-or-infrastructure failure.
   Demo PINs, seeds and labels are PUBLIC fixtures; values are never
@@ -152,7 +161,7 @@ run dir.
 
 Subset = frozen parity subset (R5). For the subset-aware view, run
 the shipped classifier over the run dir — it splits the raw diff
-into known-difference (188 frozen exclusions with per-id reasons),
+into known-difference (83 frozen exclusions with per-id reasons),
 direct-only, flaky, and unexpected-difference buckets and leaves
 diff.txt / shared-findings.txt untouched:
   /opt/haskoki/examples/release/compare-classify/compare-classify <run-dir>
@@ -1069,7 +1078,12 @@ main() {
         [ $# -ge 2 ] || { echo "haskoki-demo: --profile needs smoke|full" >&2; return 2; }
         profile="$2"; shift 2 ;;
       --profile=*) profile="${1#--profile=}"; shift ;;
-      demo|check|compare)
+      shell)
+        [ -z "$cmd" ] || { echo "haskoki-demo: one command at a time" >&2; return 2; }
+        cmd="$1"; shift
+        if [ "${1:-}" = --help ]; then help=1; shift; fi
+        break ;;
+      demo|check|compare|proxy-demo|p11-kit-demo)
         [ -z "$cmd" ] || { echo "haskoki-demo: one command at a time" >&2; return 2; }
         cmd="$1"; shift ;;
       --) shift; break ;;
@@ -1092,13 +1106,21 @@ main() {
       demo) demo_help ;;
       check) check_help ;;
       compare) compare_help ;;
+      shell|proxy-demo|p11-kit-demo) top_help ;;
     esac
     return 0
   fi
   case "$cmd" in
+    shell|proxy-demo|p11-kit-demo)
+      [ "$outmode" = text ] || { echo "haskoki-demo: $cmd does not support --output json" >&2; return 2; } ;;
+  esac
+  case "$cmd" in
     demo) cmd_demo "$outmode" ;;
     check) cmd_check "$outmode" "$mode" "$profile" ;;
     compare) cmd_compare "$outmode" ;;
+    shell) exec /usr/local/bin/haskoki-shell "$@" ;;
+    proxy-demo) exec /bin/sh "$EXAMPLES/proxy-example" ;;
+    p11-kit-demo) exec /usr/local/bin/haskoki-shell /bin/sh "$EXAMPLES/p11-kit-example" ;;
   esac
 }
 
@@ -1108,7 +1130,8 @@ bare_help=0
 saw_cmd=0
 for a in "$@"; do
   case "$a" in
-    demo|check|compare) saw_cmd=1 ;;
+    shell) saw_cmd=1; break ;;
+    demo|check|compare|proxy-demo|p11-kit-demo) saw_cmd=1 ;;
     --help|-h) bare_help=1 ;;
   esac
 done

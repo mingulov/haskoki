@@ -3,49 +3,37 @@
 For a short first run, use [Try Haskoki](try-it.md). This page is the
 longer native-consumer and operator reference.
 
-End-to-end operator path: install → `haskoki-ctl` → consumer crypto →
-control scenario → provisioning record. Steps 2–6 were executed
-against the release tree in the toolchain container
-(`haskoki-dev:ghc-9.10.3`); expected outputs are quoted
-from passing runs. Step 1 (artifact install) is unchanged —
-rebuild the artifact with `scripts/make-release.sh` to ship.
-(Choice of location recorded:
-`docs/demo-walkthrough.md` in the repo, so the handoff ships with
-the tree. Evidence levels for every claim below:
-`docs/trust-ladder.md`.)
-
-Prerequisites: the release artifact (`scripts/make-release.sh`) and
-docker. No environment setup is needed: the artifact is
-self-resolving (the module finds its bundled closure via `$ORIGIN`
-RUNPATH; `haskoki-ctl` is fully static), so every consumer step
-below runs in a clean shell.
+The path is install → `haskoki-ctl` → consumer crypto → control scenario.
+Later examples and quoted outputs are historical contributor checks;
+they use the source checkout and its toolchain container. Evidence levels
+are explained in [docs/trust-ladder.md](trust-ladder.md).
 
 ## 1. Install (bare host)
 
+Download the native bundle for the desired version from
+[GitHub Releases](https://github.com/mingulov/haskoki/releases), together with
+its manifest and checksums. The host must meet [SUPPORTED-HOSTS](../SUPPORTED-HOSTS.md):
+Linux x86-64, glibc >= 2.43, and `libgmp10`, `libffi8`, `libnuma1`.
+The container in the [README](../README.md#try-it-with-docker) supplies these
+libraries if your host does not. Do not copy just the `.so`: extract the
+whole bundle so it can locate its bundled runtime libraries.
+
 ```sh
-scripts/test-release-install.sh
-# PASS: test-release-install.sh (legs A+B passing on the bare image)
+tar -xzf haskoki-0.3.1.0-linux-x86_64.tar.gz
+haskoki-0.3.1.0/bin/haskoki-ctl --version
+# haskoki-ctl 0.3.1.0
 ```
 
-This unpacks the artifact on bare `ubuntu:26.04` (+ documented
-`libgmp10`/`libffi8`/`libnuma1`), resolves the full `ldd` closure, runs
-`haskoki-ctl --version`, and compiles+runs the bundled
-`release_smoke`: `SMOKE-OK` over the full served surface
-(dlopen + init + lib metadata + one slot + token presence
-with the pinned `haskoki-demo` label + the EXACT 316-row served
-mechanism catalog (316 mechanisms tested of 464 catalog mechanisms)
-with `CKM_SHA256` membership + two REAL session
-lifecycles each yielding REAL FIPS SHA-256 "abc" bytes +
-finalize). The smoke keeps proving REAL libcrypto bytes
-(`real-crypto` profile, OpenSSL engine, no synthetic fallback).
-Host contract: see `SUPPORTED-HOSTS.md` (Linux x86-64,
-glibc >= 2.43).
+The later sections are contributor/operator references and use fixtures
+from a source checkout with the bundle staged under `dist-release/`.
+`scripts/test-release-install.sh` is the maintainer's installation test;
+it is not required to install or use a downloaded bundle.
 
 ## 2. `haskoki-ctl` (offline / owned-instance operator tool)
 
 ```sh
-CTL=dist-release/haskoki-0.3.0.0/bin/haskoki-ctl   # installed artifact (§1)
-$CTL --version                      # haskoki-ctl 0.3.0.0
+CTL=dist-release/haskoki-0.3.1.0/bin/haskoki-ctl   # installed artifact (§1)
+$CTL --version                      # haskoki-ctl 0.3.1.0
 $CTL config check --config tests/ops/fixtures/maximal-demo.toml
 # config-ok: profile=ProfileDemoMaximal interfaces=["2.40","3.0","3.1","3.2"]
 $CTL capabilities --config tests/ops/fixtures/maximal-demo.toml
@@ -349,7 +337,7 @@ the home token).
 ## 7. HSM simulation
 
 ```sh
-CTL=dist-release/haskoki-0.3.0.0/bin/haskoki-ctl   # installed artifact (§1)
+CTL=dist-release/haskoki-0.3.1.0/bin/haskoki-ctl   # installed artifact (§1)
 $CTL scenario run --config tests/ops/fixtures/sim-demo.toml \
   --scenario tests/ops/fixtures/sim-scenario.json
 # scenario: sim-delay-token-fault
@@ -461,7 +449,7 @@ user_pins = ["1234", "2345", "3456"]
   changes.
 
 ```sh
-CTL=dist-release/haskoki-0.3.0.0/bin/haskoki-ctl   # installed artifact (§1)
+CTL=dist-release/haskoki-0.3.1.0/bin/haskoki-ctl   # installed artifact (§1)
 $CTL config check --config tests/ops/fixtures/multi-token.toml
 # config-ok: profile=ProfileDemoMaximal interfaces=["2.40","3.0","3.1","3.2"]
 $CTL capabilities --config tests/ops/fixtures/multi-token.toml | grep tokens
@@ -629,7 +617,7 @@ loopback (TEST-ONLY transport):
 
 ```sh
 docker run --rm --network none -v "$PWD/out:/out" --entrypoint /bin/sh \
-  haskoki-demo:0.3.0.0 /opt/haskoki/examples/release/proxy-example
+  haskoki-demo:0.3.1.0 /opt/haskoki/examples/release/proxy-example
 # proxy-example-ok: 5/5 steps hold direct-vs-proxied
 ```
 
@@ -641,11 +629,11 @@ per-id reasons), direct-only, flaky, and unexpected-difference
 buckets without touching the raw files:
 
 ```sh
-docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 compare
+docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.1.0 compare
 # ... then classify that run dir (newest out/compare-*):
 RD=$(ls -dt out/compare-* | head -1)
 docker run --rm --network none -v "$PWD/out:/out" --entrypoint /bin/sh \
-  haskoki-demo:0.3.0.0 \
+  haskoki-demo:0.3.1.0 \
   /opt/haskoki/examples/release/compare-classify/compare-classify \
   "/out/$(basename "$RD")"
 # compare-classify-ok: 83 known-difference + shared 22/22 exact

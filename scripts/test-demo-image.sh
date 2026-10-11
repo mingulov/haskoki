@@ -570,6 +570,8 @@ echo "JSON purity: stdout is exactly the report document"
 # 6. Arbitrary-UID rerun (no passwd entry, no HOME).
 # ---------------------------------------------------------------------------
 note "arbitrary UID rerun (19876:19876)"
+sh scripts/test-demo-onboarding.sh "$TAG" "$OUT/onboarding" \
+  || fail "beginner paths failed (see $OUT/onboarding)"
 timeout -s KILL "$STEP_TIMEOUT" docker run --rm --user 19876:19876 \
   -v "$OUT:/out" "$TAG" demo > "$OUT/uid-demo.log" 2>&1
 rc=$?
