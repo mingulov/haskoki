@@ -28,9 +28,9 @@ module StoreSpec
   , demoJobResult
   ) where
 
-import Control.Concurrent (forkIO, killThread, threadDelay)
-import Control.Concurrent.MVar (newEmptyMVar, takeMVar, tryPutMVar)
-import Control.Exception (bracket, bracket_, onException)
+import Control.Concurrent (forkFinally, forkIO, killThread, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar, tryReadMVar)
+import Control.Exception (AsyncException (ThreadKilled), bracket, bracket_, fromException, onException)
 import Control.Monad (when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
@@ -1299,12 +1299,12 @@ testSwappedDbAborts =
 -- | Async-cleanup test (finding 2): killing a thread blocked in the
 -- database-guard retry (flock-retry delays are interruptible even
 -- under mask) must release the already-owned sidecar — never
--- strand a live-pid lock that wedges later opens. Each iteration
--- deterministically enters the retry window (the parent holds the
--- database flock, so every try fails over ~45ms); the kill lands
--- ~10ms in. A missed kill (the opener refused first) still
--- asserts the clean end-state; the hit counter proves the window
--- was entered at least once.
+-- strand a live-pid lock that wedges later opens. The parent holds
+-- the database flock, so the opener retries over ~45ms; a kill is
+-- attempted ~10ms after observing ownership. The observer also
+-- checks completion, since scheduling can hide the short-lived
+-- sidecar. A missed kill still asserts the clean end-state; the
+-- hit counter requires at least one actual ThreadKilled outcome.
 testKillDuringDbRetry :: IO ()
 testKillDuringDbRetry =
   bracket (makeTempDir "haskoki-storage-killr") removeDirectoryRecursive $ \dir -> do
@@ -1315,15 +1315,19 @@ testKillDuringDbRetry =
     storeClose s0
     me <- getProcessID
     hits <- newIORef (0 :: Int)
-    let awaitOwnPid = do
+    let awaitOwnPid resVar = do
           let want = BC8.pack (show me ++ "\n")
               go = do
-                content <- catchIOError (BS.readFile lockPath) (\_ -> pure BS.empty)
-                if content == want then pure () else threadDelay 1000 >> go
+                completed <- tryReadMVar resVar
+                case completed of
+                  Just _ -> pure False
+                  Nothing -> do
+                    content <- catchIOError (BS.readFile lockPath) (\_ -> pure BS.empty)
+                    if content == want then pure True else threadDelay 1000 >> go
           mOk <- timeout 10000000 go
           case mOk of
-            Just () -> pure ()
-            Nothing -> assertFailure "killr: opener did not reach the db-guard retry"
+            Just observed -> pure observed
+            Nothing -> assertFailure "killr: opener neither published ownership nor completed"
         loop 0 = pure ()
         loop n = do
           deadPid <- reapedPid
@@ -1332,22 +1336,31 @@ testKillDuringDbRetry =
             held <- testTryFlock holdFd
             assertBool "killr: parent could not hold the database flock" held
             resVar <- newEmptyMVar
-            tid <- forkIO $ do
-              e <- (openSQLiteStore path) `onException`
-                (tryPutMVar resVar False >> pure ())
-              case e of
-                Right s -> storeClose s
-                Left _ -> pure ()
-              _ <- tryPutMVar resVar True
-              pure ()
-            awaitOwnPid
-            threadDelay 10000
-            killThread tid
-            mOut <- timeout (5 * 1000000) (takeMVar resVar)
-            case mOut of
-              Nothing -> assertFailure "killr: opener wedged after kill"
-              Just False -> atomicModifyIORef' hits (\h -> (h + 1, ()))
-              Just True -> pure ()
+            bracket
+              (forkFinally
+                (do e <- openSQLiteStore path
+                    case e of
+                      Right s -> storeClose s
+                      Left _ -> pure ())
+                (putMVar resVar))
+              (\tid -> do
+                  stopped <- timeout (5 * 1000000) (killThread tid >> readMVar resVar)
+                  case stopped of
+                    Just _ -> pure ()
+                    Nothing -> assertFailure "killr: retry worker did not finish during cleanup")
+              $ \tid -> do
+                observed <- awaitOwnPid resVar
+                when observed $ do
+                  threadDelay 10000
+                  killThread tid
+                mOut <- timeout (5 * 1000000) (readMVar resVar)
+                case mOut of
+                  Nothing -> assertFailure "killr: opener wedged after kill"
+                  Just (Left err)
+                    | observed && fromException err == Just ThreadKilled ->
+                        atomicModifyIORef' hits (\h -> (h + 1, ()))
+                    | otherwise -> assertFailure ("killr: unexpected opener exception: " ++ show err)
+                  Just (Right ()) -> pure ()
           absent <- not <$> doesFileExist lockPath
           assertBool "killr: kill stranded the sidecar lock" absent
           eRe <- openSQLiteStore path
