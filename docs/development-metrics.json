@@ -289,15 +289,9 @@
     "later_work": "Publication and v0.3.1.0 work are outside this fixed window.",
     "summary_only_usage": "Workflow-child lifecycle summaries are outside these individual-call aggregates."
   },
-  "supersedes": {
-    "old_total_tokens": 7844473928,
-    "old_cutoff_utc": "2026-10-06T04:18:48Z",
-    "reason": "Recounted the available root and child model-call records with a later fixed cutoff. The earlier partial census is not the complete development history."
-  },
   "latest_codex_snapshot": {
     "collected_at_utc": "2026-10-11T13:04:15Z",
-    "collector": "agent-stats.py --workspace HASKOKI_WORKSPACE --json (the available implementation; agent-stats.sh was absent)",
-    "scope": "All available workspace-bound Codex per-response records at collection time, including work after October 8. This snapshot is separate from the fixed historical totals above.",
+    "scope": "Cumulative project Codex usage through collection time, including the historical Codex subtotal. Later usage is the difference; the two cumulative totals must not be added.",
     "by_model": [
       {
         "model": "gpt-6-astra",

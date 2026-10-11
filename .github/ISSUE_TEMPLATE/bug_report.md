@@ -1,41 +1,38 @@
 ---
 name: Bug report
-about: Report a Haskoki defect with a reproducible record
+about: Report a Haskoki defect with a reproducible example
 labels: bug
 ---
 
-> Do NOT paste PINs, private keys, real token databases, or any secrets.
-> Scrub `report.json`/logs before attaching: keep versions, the command,
-> exit code, and the failing step; drop key material and PINs.
+Do not include PINs, private keys, token databases, or other secrets.
+Clean reports and logs before attaching them.
 
-## Version / digest
+## Version and environment
 
 - Haskoki version (`haskoki-ctl --version`, or image tag):
-- Image digest if containerized (`docker inspect --format '{{.Id}} {{.RepoDigests}}' <image:tag>`, e.g. `… haskoki-demo:0.3.0.0`):
-- Proxy pair if proxied (`pkcs11-proxy-ng --version` + shim/daemon hashes):
+- Image tag and digest, if using Docker (`docker image inspect <image> --format '{{.Id}} {{json .RepoDigests}}'`):
+- Proxy or p11-kit version, if using remoting:
+- Host OS, kernel, and architecture (`uname -a`):
+- Docker or native; glibc version for a native bundle (`ldd --version`):
+- Storage (`memory` or `sqlite`) and whether it is a fresh store:
 
-## Command
+## Reproduction
 
-Exact command line(s), run from which directory, and the config/module
-path used (e.g. `HASKOKI_CONFIG=…`, `--module …`).
+Exact commands, starting directory, and module/configuration paths:
 
 ```sh
-# paste here
+# Paste here.
 ```
 
-## Environment
+Steps to reproduce with disposable keys and a fresh state directory:
 
-- Host OS + kernel (`uname -a`), glibc (`ldd --version`):
-- Docker or native; container tag or toolchain image:
-- Storage: `memory` (default, transient) or `sqlite` (path?) — state/reset rules: `docs/demo-walkthrough.md` §6:
+## Expected and actual result
 
-## Observed vs expected
+What you expected:
 
-What happened (exit code + failing step/output):
+What happened, including the exit code and failing output:
 
-What you expected instead:
+## Reports
 
-## Cleaned report
-
-Attach the scrubbed `report.json` / run-dir excerpt (see the warning
-above). Steps to reproduce from a fresh state directory help most.
+If available, attach cleaned `report.json` and relevant logs. Keep versions,
+commands, exit codes, and failing steps; remove credentials and key material.

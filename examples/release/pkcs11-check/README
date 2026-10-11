@@ -1,6 +1,6 @@
 # Checker profiles used by the demo image
 
-Start with `docs/try-it.md` in the repository for runnable Docker commands.
+Start with [Try Haskoki](../../../docs/try-it.md) for runnable Docker commands.
 These files configure `haskoki-demo check` and `compare`; the entrypoint
 sources `profiles.conf` and copies `backend-memory.toml` into each run.
 
@@ -14,7 +14,7 @@ sources `profiles.conf` and copies `backend-memory.toml` into each run.
 Collected cases include skips and expected failures. They are not counts
 of passing tests. The checker is pinned to 0.2.3 and the proxy to v0.2.2.
 `scripts/test-demo-image.sh` checks the exact finding sets; current counters
-and earlier measurements are in `docs/release-results.md`.
+and measured counters are in [demo results](../../../docs/release-results.md).
 
 The selections exclude vector corpora, stress, fuzz, and slow cases.
 Large vector collections are optional downloads, as described in that

@@ -1,17 +1,13 @@
-# Byte formats
+# Internal byte formats
 
-Every byte format a consumer or peer crosses: layouts, encodings,
-endianness, the decoder that parses it, pointer resolution, and the
-trust story. Each format is pinned by at least one test proving the
-definition below matches the code (goldens or round-trip plus
-layout assertions); the pin column names it.
+These are Haskoki's request, snapshot, storage, and template encodings.
+Ordinary PKCS#11 clients use the C ABI; they do not construct these frames.
+The source definitions and tests below cover layouts, validation, and bounds.
 
-Conventions: `u8`/`u16`/`u32`/`u64` are unsigned big-endian
-integers of that width unless noted; `len32` is a `u32` length plus
-that many bytes. No format below carries pointers, offsets into
-caller memory, or handles: lengths are validated before any split,
-and every decoder is total (`Maybe`/`Either`), never partial (malformed input rejects,
-never reads out of bounds).
+Unless noted, `u8`/`u16`/`u32`/`u64` are unsigned big-endian integers of
+that width; `len32` is a `u32` length followed by those bytes. Frames carry
+owned values rather than caller pointers. Some encode numeric handles or
+identities; each decoder checks its own lengths, tags, and ranges.
 
 ## Inventory
 
@@ -79,14 +75,10 @@ Template entry (order and duplicates preserved):
 entry: tag:u8 vlen:u32 value:vlen
 ```
 
-`tag` is the `AttributeType` enumerant (`attrTag = fromEnum`:
-0 class, 1 token, 2 private, 3 label, 4 application, 5 value, 6
-sensitive, 7 extractable, 8 key type, 9 value length, 10–16 usage
-flags encrypt/decrypt/sign/verify/wrap/unwrap/derive, 17
-always-authenticate, 18 EC params, 19 modulus bits, 20 KEM alg, 21
-encapsulate, 22 decapsulate, 23 id, 24 public exponent); unknown
-tags reject. `value` is the canonical value encoding below; at
-most `maxTemplateEntries` (64) entries decode.
+`tag` comes from the `AttributeType` enumerant (`attrTag = fromEnum`)
+in [Attribute.hs](../core/Haskoki/Attribute.hs). Unknown tags reject;
+at most `maxTemplateEntries` (64) entries decode. Use that enum and
+`shapeOf` as the complete inventory instead of a separately maintained list.
 
 Value codec (`encodeValue`/`decodeValue`):
 
@@ -97,10 +89,7 @@ bytes: raw bytes, length <= maxAttributeBytes (4194304, 4 MiB)
 ```
 
 Decoding validates the owning type's shape strictly
-(`shapeOf`): flags are bool, class/key-type/value-len/
-modulus-bits/KEM-alg are ulong, label/application/value/EC-params/
-id/public-exponent are bytes — a template cannot smuggle a bool
-where a ULong belongs. Only label/application carry a text
+(`shapeOf`); a value with the wrong shape rejects before planning. Only label/application carry a text
 contract (strict UTF-8 via `decodeTextAttribute`); every other
 bytes-typed attribute is opaque binary.
 
@@ -195,94 +184,56 @@ nullable hex `key_type`, the attrs object, `material_encoding`
 wrong/future `schema_version` is rejected without rewriting the
 database.
 
-## 6. Proxy wire framing: no in-repo format (ruled)
+## 6. Proxy transport
 
-The proxy pair (`pkcs11-proxy-ng` daemon + shim) is an EXTERNAL
-binary (see `scripts/test-proxy-parity.sh` provenance header);
+The proxy pair (`pkcs11-proxy-ng` daemon + shim) is maintained
+externally (see [the parity driver](../scripts/test-proxy-parity.sh));
 its wire framing (protobuf RPC) is owned by that project, and no
 haskoki code parses or emits it. What crosses between our module
 and the proxy is the C PKCS#11 ABI surface (function tables,
 structs, scalar encodings), which is pinned by the `layout_*`
 byte locks (`tests/c/layout_240.c` etc., run by
 `scripts/test-c-abi.sh`) and the direct-vs-proxied parity
-transcripts. There is deliberately no proxy-framing codec to pin
-here; adding one would pin a foreign project's bytes.
-
+transcripts.
 ## 7. FFI template frame (C→Haskell)
 
 The one frame every template-taking C entry speaks. The C side
 flattens the caller's `CK_ATTRIBUTE` array into a malloc'd byte
 frame; the Haskell side parses that frame back into typed
 entries before any planner acts. Layout (`u64le` is a
-little-endian 8-byte word — the only little-endian integer in
-this inventory; contrast the big-endian F4 entries of §2):
+little-endian 8-byte word; count, type, length, and native ulong
+values use this order on the tested Linux amd64 ABI, unlike F4):
 
 ```
 frame:  count:u64le record:count
 record: type:u64le len:u64le value:len
 ```
 
-Packer: `haskoki_std_pack_template`
-(`cbits/standard_surface.c:1963-2014`, declared in
-`cbits/standard_surface.h:44-45`), called by `std_CreateObject`
-(`standard_surface.c:710`), `std_CopyObject` (`:751`),
-`std_FindObjectsInit` (`:877`), `std_GenerateKey` (`:1151`),
-`std_GenerateKeyPair` (`:1204`, `:1209` — one frame per
-template), `std_UnwrapKey` (`:1859`), and `std_DeriveKey`
-(`:1938`). The packer fails its call (which returns
-`CKR_ARGUMENTS_BAD`) on: a NULL array with nonzero count, a
-NULL value with nonzero length, more than
-`HASKOKI_STD_TEMPLATE_MAX_ATTRS` (64) attributes, any value
-past 16 MiB (`STD_VALUE_MAX`), or a frame past the 16 MiB input
-bound plus record headers (`STD_FRAME_MAX`).
+The C packer `haskoki_std_pack_template` in
+[standard_surface.c](../cbits/standard_surface.c) copies attribute values
+into a flat allocation. It rejects a NULL array/value with nonzero count/
+length, more than 64 attributes, values past 16 MiB, and oversized frames.
 
-Decoder: `parseTemplateFrame`
-(`ffi/Haskoki/FFI/Standard.hs:691-719`, entry point `readFrame`
-at `:1250-1256`). A `count` past `maxTemplateAttrs` (`:668-669`,
-64 — both sides enforce the same bound) rejects with
-`FrameTooManyAttrs`; short headers, short records, value
-overruns, and trailing bytes (consumption must be exact) reject
-with `FrameTruncated`. Type ids resolve through the generated
-inventory (`attributeNameById` then `attributeTypeByName` — no
-hand-typed `CKA_*` numerics); unknown ids reject with
-`FrameUnknownType`. Values decode in caller-native order via
-`decodeNativeValue` (`:738-747`): booleans are one byte of
-0x00/0x01, unsigned longs are 8-byte little-endian
-(`decodeULongLE`), byte arrays are raw bytes bounded by
-`maxAttributeBytes` (4194304, 4 MiB); shape misses reject with
-`FrameBadValue`. Faults map to CK_RV codes in `frameErrorRV`
-(`:1230-1234`): truncation and over-count to
-`CKR_ARGUMENTS_BAD` (0x07), unknown types to
-`CKR_ATTRIBUTE_TYPE_INVALID` (0x12), bad values to
-`CKR_TEMPLATE_INCONSISTENT` (0xD1).
+`parseTemplateFrame` and `readFrame` in
+[Standard.hs](../ffi/Haskoki/FFI/Standard.hs) recheck the frame. They require
+complete headers/records, exact consumption, at most 64 entries, known
+attribute IDs, and valid typed values. Booleans use one byte (0 or 1);
+native unsigned longs use eight little-endian bytes on this ABI; raw byte
+values are bounded at 4 MiB. The generated attribute inventory maps IDs;
+`decodeNativeValue` maps their values into the core representation.
 
-Pointer resolution: no pointer crosses into Haskell — the
-packer copies caller `pValue` bytes into the flat frame, and
-`readFrame` re-bounds the frame (`maxFrameBytes`, `:1246-1247`)
-before reading a single byte; lengths are validated before
-every split. Trust story: caller memory is touched only by the
-packer under the checks above, and every parser bound
-re-checks the frame independently, so a corrupt or hostile
-frame fails closed into a typed `FrameError`, never into an
-out-of-bounds read or a mis-shaped entry.
-
-Pins (`tests/model/StandardSurfaceSpec.hs`, group
-`Standard surface`): `frame errors map to CK_RV` (`caseFrameRV`:
-fault→RV codes), `empty frame decodes`
-(`caseEmptyFrame`: count-0 and empty-input edges),
-`ulong/bool/bytes values decode` (`caseValues`: one record per
-shape), `truncation and bounds fail` (`caseMalformed`: short
-header/record, value overrun, count 65),
-`unknown type and bad value fail typed` (`caseTypedFaults`:
-unknown id, bool len 2, ulong len 4), and
-`native attr encoding` (`caseNativeEncode`: the inverse
-encoder, incl. EC-params round-trip through wire bytes).
+`frameErrorRV` maps truncation/over-count to `CKR_ARGUMENTS_BAD`, unknown
+types to `CKR_ATTRIBUTE_TYPE_INVALID`, and invalid values to
+`CKR_TEMPLATE_INCONSISTENT`.
+[StandardSurfaceSpec](../tests/model/StandardSurfaceSpec.hs) covers empty,
+malformed, bounded, typed, and native-encoding cases. No caller pointer is
+embedded in the copied frame.
 
 ### EC `CKA_EC_PARAMS` wire mapping (F9 sub-format)
 
 `AttrEcParams` values translate between DER curve OIDs on the
 wire and engine curve names inside, in both directions
-(`ecParamsFromWire`, `:766-771`; `ecParamsToWire`, `:776-781`):
+(`ecParamsFromWire`; `ecParamsToWire`):
 
 | Wire bytes (DER OID) | Engine name |
 |---|---|
@@ -296,8 +247,7 @@ The table shows the prime/Montgomery subset; the full mapping
 is the core `curveTable` plus `edwardsTable` plus
 `montgomeryTable` (`Haskoki.Der`). The OID bytes are an
 external standard (SEC2 prime curves in RFC 5480 §2.1.1 DER
-encoding, Montgomery curves in RFC 8410), ruled the F8 way:
-haskoki pins only its own translation table, not the standard.
+encoding, Montgomery curves in RFC 8410), Haskoki tests its own translation table against those encodings.
 Unknown inputs pass through both functions unchanged for the
 engine to refuse (served curves execute; anything else the
 engine refuses). Pin: `EC params map both ways`

@@ -1,37 +1,25 @@
-# Config honesty catalog
+# Configuration reference
 
-Historical receipt paths under `dist-release-evidence/` refer to private
-working notes that are not shipped in this repository. They are shown as
-archive identifiers, not download links. For current demo results and
-commands, use [release results](release-results.md) and [Try Haskoki](try-it.md).
+Set `HASKOKI_CONFIG` to the TOML file used by the process loading Haskoki.
+Check a file with `haskoki-ctl config check --config PATH`; use
+`capabilities --config PATH` to inspect the reported settings and limits.
 
-Every knob the provider parses is exactly one of:
+Each accepted setting is enforced, refused for unsupported values, or
+reserved. Reserved values parse and appear in reports but do not change the
+behavior described below. Unknown keys and sections return `CfgUnknownKey`.
+Invalid values return `CfgInvalid`; configuration errors stop the open.
 
-- **ENFORCED** — a wrong value errors, or a right value observably
-  selects behavior. Each has a maintained behavior contract test.
-- **REFUSED** — values that promise behavior the code does not
-  implement fail at parse with an exact `CfgInvalid` error (hence
-  fail startup: every native open maps resolve failure to NULL).
-  Each refusal is pinned by a test.
-- **CONFIG-NOT-POLICY** (reserved) — parses, validates, reports,
-  but drives no enforcement; disclosed loudly in the capabilities
-  report and here. Each has a doc-claim test proving the doc.
-
-Unknown keys and sections are rejected (`CfgUnknownKey` naming the
-dotted key or section); there is no silent ignore anywhere.
-
-## Disposition table (43 keys, zero gaps)
+## Accepted settings (43 keys)
 
 `E` = ENFORCED, `R` = REFUSED (non-default/misleading values),
 `D` = CONFIG-NOT-POLICY (reserved, disclosed).
-Counts: E=27 pure + 1 dual (`storage.path`, E/R) + R=9 pure + D=6.
 
-| Key | Disp | Site / rule | Contract test |
+| Setting | Behavior | Rule | Test |
 |---|---|---|---|
 | `schema_version` | E | must be 1 (`Config.hs` build) | `ConfigHonestySpec` schema refusal |
 | `profile` | E | 3 names validated + reported | `ConfigHonestySpec` + `CtlSpec` capabilities |
 | `interfaces` | E | subset validated + reported (declarative; no native path gates on it — scope note below) | `ConfigHonestySpec` bad/empty/reported |
-| `seed` | R | reserved placeholder: only 1234 (nothing reads it) | `ConfigHonestySpec` seed refusal |
+| `seed` | R | reserved placeholder: only 1234; does not seed native crypto | `ConfigHonestySpec` seed refusal |
 | `storage.kind` | E | routes the store (`openStdStore`) | `FfiAsyncSpec` success/bad-sqlite |
 | `storage.path` | E/R | sqlite opens it; memory+path refused (ignored otherwise) | `FfiAsyncSpec` + `ConfigHonestySpec` memory-path refusal |
 | `storage.busy_timeout_ms` | R | pinned 5000 at open; only 5000 accepted | `ConfigHonestySpec` busy refusal |
@@ -49,7 +37,7 @@ Counts: E=27 pure + 1 dual (`storage.path`, E/R) + R=9 pure + D=6.
 | `trace.queue_limit` | E | tracer queue bound (`max 8`) | `ConfigHonestySpec` queue bound |
 | `control.enabled` | R | control plane always on; `false` refused | `ConfigHonestySpec` enabled refusal |
 | `control.max_request_bytes` | E | oversize refuses `request_too_large` | `ConfigHonestySpec` max-request |
-| `control.response_budget_bytes` | E | fixed 65536 by §5.1 | `ConfigHonestySpec` budget refusal |
+| `control.response_budget_bytes` | E | fixed 65536-byte response budget | `ConfigHonestySpec` budget refusal |
 | `control.test_enabled` | E | gates mutations; serving slots fixed when false, permanently removable within the interval when true | `ControlSpec` + `SimBridgeSpec` private gates; `NotificationsEngineSpec` serving configuration |
 | `fixtures.set` | R | reserved placeholder: only `"minimal-demo"` | `ConfigHonestySpec` set refusal |
 | `fixtures.apply` | R | reserved placeholder: only `"new-store-only"` | `ConfigHonestySpec` apply refusal |
@@ -76,7 +64,7 @@ Sections (9): `storage`, `engine`, `async`, `trace`, `control`,
 `fixtures`, `limits`, `sim`, `tokens`. Any other section name is
 rejected as unknown.
 
-## Reserved knobs (CONFIG-NOT-POLICY)
+## Reserved settings (CONFIG-NOT-POLICY)
 
 - `limits.buffer_bytes`, `limits.attribute_entries`: parse,
   validate (`>= 1`), and report through the
@@ -84,7 +72,7 @@ rejected as unknown.
   constants (64 entries, 4194304 bytes per attribute value) in the
   template decoder (`maxAttributeBytes` in `core/Haskoki/Attribute.hs`).
   The `small-limits.toml` fixture (8/1024 configured, 64/4194304
-  still enforced) pins the ignored-ness as documented behavior.
+  still enforced) tests this reserved behavior.
 - `limits.transcript_bytes`, `limits.aggregate_payload_bytes`,
   `limits.attribute_depth`: same shape — parse,
   validate, report; no bound implemented anywhere. Disclosed by
@@ -94,7 +82,7 @@ rejected as unknown.
   the configured store at detach (unconditional `storeCommit`;
   two-process SQLite recovery is driver-pinned), so durability
   follows `storage.kind` (memory: process lifetime; sqlite: file
-  lifetime) with no knob effect. Both values parse (fixtures use
+  lifetime) with no setting effect. Both values parse (fixtures use
   both); the `reserved-async` capabilities line (below) discloses
   the reservation.
 
@@ -110,9 +98,9 @@ Capabilities disclosure lines (pinned verbatim by tests):
   attribute_depth reserved (parse+report, no enforcement effect;
   buffer_bytes/attribute_entries: see template-bounds)`
 
-## Refusal pins (exact errors)
+## Unsupported values
 
-| Knob | Refused value | Exact `CfgInvalid` message |
+| Setting | Refused value | `CfgInvalid` message |
 |---|---|---|
 | `seed` | anything but 1234 | `seed is reserved (no determinism seeding reads it yet): the only accepted value is 1234` |
 | `storage.path` | set with `kind=memory` | `storage.path is only meaningful with storage.kind=sqlite (memory ignores it; refusing rather than silently ignoring)` |
@@ -128,7 +116,7 @@ Capabilities disclosure lines (pinned verbatim by tests):
 Each refusal fails `parseConfig`/`loadConfigFile`, hence
 `resolveFrom`/`resolveOnce`, hence every native open (crypto,
 std, instance answer NULL — pinned by `FfiAcquireSpec`), and
-`haskoki-ctl config check` exits non-zero naming the knob.
+`haskoki-ctl config check` exits non-zero naming the setting.
 
 Pre-existing validation refusals (unchanged, contract-pinned):
 bad `schema_version`/`profile`/`interfaces`/`storage.kind`/
@@ -139,16 +127,16 @@ Unknown keys/sections: `CfgUnknownKey` naming the dotted key
 (e.g. `seclevel`, `async.max-queue`) or the section (e.g.
 `admission`); `config check` exits non-zero.
 
-## Review-proposed never-knobs (explicitly non-config)
+## Unsupported settings
 
 | Name | Rationale |
 |---|---|
 | `seclevel` | No config surface; OpenSSL security level is not operator-tuned through this provider. Rejected as unknown. |
 | `max-tls` | No config surface; no TLS stack reads provider config. Rejected as unknown. |
-| `native-engine` (as knob) | A capabilities REPORT line (`Ctl.hs`), not a knob: native paths always run OpenSSL4. Writing it as config is rejected as unknown. |
-| `admission` / `max-queue` / `waiters` | No thread-pool admission knobs exist (`Events.hs` waiters are runtime, not config). Rejected as unknown. |
+| `native-engine` (as setting) | A capabilities REPORT line (`Ctl.hs`), not a setting: native paths always run OpenSSL4. Writing it as config is rejected as unknown. |
+| `admission` / `max-queue` / `waiters` | No thread-pool admission settings exist (`Events.hs` waiters are runtime, not config). Rejected as unknown. |
 
-## Scope notes (validated-but-narrow knobs)
+## Scope of reported settings
 
 - `interfaces`: the declared interface set is validated (non-empty
   subset of 2.40/3.0/3.1/3.2) and reported, but no native path
@@ -164,64 +152,29 @@ Unknown keys/sections: `CfgUnknownKey` naming the dotted key
 
 ## Serving presence and private scenario scope
 
-Serving initialization resolves one configuration/catalog and shares its
-`SlotEvents` with Instance and Standard. All catalog tokens start present,
-at presence epoch zero, with public pending flags clear. Slots keep the same
-identity and removable capability for the whole interval. With
-`control.test_enabled=false`, software slots are fixed and always present;
-mutations refuse. With it true, existing in-process `token.insert` and
-`token.remove` are the sole presence producers. Unknown slots refuse;
-removal leaves the configured slot and reinsertion restores the same token.
-There is no hardware monitoring, dynamic slot addition or network control.
+All configured tokens start present, with clear pending slot flags. With
+`control.test_enabled=false`, slots are fixed and presence mutations refuse.
+When enabled, the loaded instance's `token.insert` and `token.remove`
+controls change presence; they do not add slots or monitor hardware.
+`limits.events` must be positive and fit the catalog. SQLite restart seats
+tokens as present again without resetting their durable objects or lockout
+counters.
 
-`limits.events` counts distinct potentially pending configured slots in the
-public service: it must be positive and at least the catalog size, without
-clamping or dropping flags. An invalid bound fails serving open via the
-existing configuration/open-failure route. `limits.slots` still constrains
-catalog admission. Private `EventQueue` proofs retain their separate FIFO
-overflow policy and `max 8` construction; that does not describe public waits.
+The CLI scenario runner and `[sim].token_script` operate on an owned local
+model, separately from native serving. Native slot changes and Digest
+callbacks follow the [runtime contract](operations-notes.md).
 
-The control command generation counts accepted mutations, including accepted
-idempotent commands. Its `expected_generation` check and increment serialize
-with mutation; exhaustion refuses before cleanup. Per-slot status generation
-is the presence epoch, incremented only by true changes and checked against
-overflow. These differ from the stored token generation and persistent async
-IDs. Status paginates the actual catalog. Budget queries and short buffers
-execute nothing; presence replies are prepared before mutation where allocation
-can fail. Operational failures before/after publication retain the separate
-cleanup semantics in [operations notes](operations-notes.md#removal-wait-outputs-and-finalization).
+## Example configurations
 
-Standard memory retains `siStore = Nothing`; SQLite uses its existing store.
-There is no new writer, reset, schema, persisted presence field or watcher.
-SQLite restart loads the provisioned token present with pending flags clear;
-memory restart has only its existing transient behavior. Removal/reinsertion
-does not reset durable token data or increment its stored identity generation.
-Ordinary-object durability and Async/Detached persistence/capacity remain
-unchanged. Store errors, object changes and job completion do not imply removal.
+`defaultConfig` and the shipped examples are checked by
+[ConfigHonestySpec](../tests/model/ConfigHonestySpec.hs):
 
-`haskoki-ctl` and `[sim].token_script` retain private local scenario ownership;
-they cannot change another process's loaded provider. Their FIFO, Haskell
-callback and scheduler proofs do not establish public pending-slot delivery or
-native surrender. No callback knob was added. Public slot changes are separate
-from the sole optional synchronous Digest surrender producer described in
-[operations notes](operations-notes.md#session-notification-callbacks-and-reentry).
-The serving configuration, bounds and store ledger executed in
-T-N02 (`../dist-release-evidence/notifications/task-n02/review.md`),
-T-N03 (`../dist-release-evidence/notifications/task-n03/review.md`) and
-T-N08 (`../dist-release-evidence/notifications/task-n08/review.md`); these
-historical records do not qualify a final documentation-inclusive revision.
-
-## Dogfood matrix
-
-`defaultConfig` plus every shipped fixture satisfies the honesty
-rules (zero exemptions):
-
-| Config | Honest | Note |
+| Configuration | Checked | Note |
 |---|---|---|
-| `defaultConfig` | yes | every refusal-prone knob on its honest value (pinned) |
+| `defaultConfig` | yes | every refusal-prone setting on its honest value (pinned) |
 | `maximal-demo.toml` | yes | `persist_detached=true` (reserved, disclosed) |
 | `persistent-demo.toml` | yes | sqlite + explicit path, busy 5000, exclusive |
 | `real-crypto.toml` | yes | `private_library_context=true`, `persist_detached=false` (reserved, disclosed) |
-| `small-limits.toml` | yes | 8/1024 template keys (disclosed-ignored) |
+| `small-limits.toml` | yes | 8/1024 template keys (reserved; effective bounds unchanged) |
 | `sim-demo.toml` | yes | full `[sim]` surface |
 | `multi-token.toml` | yes | 3-token catalog |

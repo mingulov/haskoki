@@ -1,21 +1,15 @@
-# SUPPORTED-HOSTS.md — haskoki release host support
+# Native host requirements and limits
 
-This file describes the hosts the release artifact
-(`scripts/make-release.sh` output) is verified on, and the
-limitations that apply everywhere. No certification or
-production-security claim is made for any host below: this is a
-demonstration-scope release (see "Limitations"). Host install
-verification below was re-exercised on the 0.3.0.0 GHC 9.10.3
-artifact. Re-run `scripts/make-release.sh` +
-`scripts/test-release-install.sh` to ship and re-verify the
-C-surface scope below.
+The demo image supplies its Linux userland. These requirements apply when
+loading a downloaded native bundle on your own host. For a first run, use
+[Docker](README.md#try-it-with-docker).
 
 ## Verified hosts
 
 | Host | Evidence |
 |---|---|
 | `ubuntu:26.04` (glibc 2.43, x86-64) + `libgmp10` + `libffi8` + `libnuma1`, clean env (no `LD_LIBRARY_PATH`) | `scripts/test-release-install.sh` passing: ldd closure resolves via `$ORIGIN`, `haskoki-ctl --version` runs, `release_smoke` reports SMOKE-OK (dlopen + init + metadata + FIPS SHA-256 + finalize) |
-| `haskoki-dev:ghc-9.10.3` (Ubuntu 26.04, glibc 2.43, x86-64), post-`cabal build` | baked `cabal test all` passing (221/2/58/147/54/784); `pkcs11-check` doctor + fast lane re-run against the 9.10.3 artifact; proxy/p11-kit/NSS runs carried from the 0.3.0.0 evidence |
+| Developer image, GHC 9.10.3 on Ubuntu 26.04 x86-64 | Checkout suites and native consumers; see the [GitHub checks](docs/publishing.md) for the selected revision |
 
 ## Host requirements (all hosts)
 
@@ -74,7 +68,7 @@ unverified — a missing C pin alone never makes a row model-only.
 | Async (3.2) | `C_AsyncComplete`, `C_AsyncGetID`, `C_AsyncJoin` on 3.2 only | OpenSSL4 (digest jobs) | `tests/c/async_routed.c` (pending + complete bytes) | partial: digest-only, explicit async session; direct-only at proxy (issue 24) |
 | Notifications, callbacks | `C_WaitForSlotEvent` on all tables; surrender callback on one-shot digest | in-process slot service | `notifications_routed` (72 direct legs), `consumer_notifications_poll`, `control_events` | partial: rich legs direct-only at proxy (issue 25); callbacks dropped at proxy; no broadcast promise |
 | Stubs (refused by design) | `C_InitToken`, `C_InitPIN`, `C_SetPIN`, `C_GetOperationState`, `C_SetOperationState`, `C_GetObjectSize`, parallel pair | n/a | `consumer_roundtrip` stub pins; `cbits/function_tables.c` | unsupported: `CKR_FUNCTION_NOT_SUPPORTED` (`CKR_FUNCTION_NOT_PARALLEL` for the pair) |
-| Proxy example | loopback gRPC/h2c (`auth = "none"`), daemon + shim from pin `a48b60b` | same module, other process | `scripts/test-proxy-parity.sh` (same CKR + outputs; seeded-mismatch control) | moves the process boundary only: no isolation, no transport security, no certificate |
+| Proxy example | loopback gRPC/h2c (`auth = "none"`), daemon + shim v0.2.2 (`1ed7cc15`) | same module, other process | `scripts/test-proxy-parity.sh` (same CKR + outputs; seeded-mismatch control) | moves the process boundary only: loopback plaintext with no authentication in this example |
 
 ## Not supported
 
@@ -112,25 +106,20 @@ exits via `_exit`, parent unaffected) runs in every
 `scripts/test-loader.sh` invocation, which the release-evidence
 manifest runs; `scripts/check-fork-stance.py` (gate 12 in
 `scripts/run-gates.sh`) pins this stance text plus the probe's
-presence. Removing the probe or weakening this section fails
-gates loudly.
-
+presence.
 ## Limitations (release scope — read before deploying)
 
 - Demo and test purpose only. No certification, FIPS, Common
   Criteria, or production-security claim is made anywhere in this
   release (`docs/coverage.md` limitations). Known-answer vectors
-  check output bytes; they are not a validation program. A FIPS
-  sidecar exists only as PROPOSED research in
-  `docs/fips-compatibility.md`.
+  check output bytes; they are not a validation program. See [FIPS status](docs/fips-compatibility.md).
 - Token serving: the default config seats exactly one token —
   slot 0, `haskoki-demo` at `C_Initialize` (user PIN `1234`, SO
   PIN `5678`); a `[tokens]` catalog serves N tokens on N slots
   (slot = index, slot 0 stays `haskoki-demo`). There is no
   `C_InitToken` path — that entry, like `C_InitPIN`/`C_SetPIN`,
   stays `CKR_FUNCTION_NOT_SUPPORTED`.
-  Full provisioning record (`memory` vs `sqlite`, PIN/lockout
-  rules, catalog): `docs/demo-walkthrough.md` §6/§8.
+  See [token provisioning and state](docs/demo-walkthrough.md#token-provisioning-and-state).
 - Real C-surface crypto: sessions, objects/find, keygen/keypair,
   sign/verify (incl. multistage, dual, recover), encrypt/decrypt
   (incl. multistage, dual), digest (one-shot + streamed
@@ -142,16 +131,6 @@ gates loudly.
   table above names the demonstrated subset per row; genuinely
   unrouted calls keep their documented refusals (stubs in
   `cbits/function_tables.c`); see `docs/coverage.md`.
-- Third-party consumers (dated 2026-09-22 evidence,
-  `pkcs11-check` 0.2.0 era: interface v3.2, 1 token-present slot,
-  104 mechanisms then, 51/51 digest files; `pkcs11-tool`
-  ECDSA-SHA256 sign+verify and AES-ECB round-trips; `p11-kit`
-  lists module + token; NSS attaches with 0 certs): kept as a
-  historical record — `docs/demo-walkthrough.md` step 3.
-  Re-qualification on current pins is pending; the 104 figure is
-  superseded by the 316-row served catalog above. SunPKCS11 and
-  the OpenSSL provider were NOT attempted (no JVM/provider in the
-  toolchain image).
 - `haskoki-ctl scenario run` interprets scenarios against an owned
   in-memory model; it never controls another live process.
 - Trace files: a config with `[trace] enabled = true` writes
@@ -172,8 +151,8 @@ gates loudly.
   catalog PINs come from the TOML file in plaintext) with no
   PIN-change path on the C surface. Comparison is a
   position-constant xor fold with length short-circuit
-  (`pinsMatch` in `ffi/Haskoki/FFI/Standard.hs`) — accepted per
-  the in-code PIN-compare ruling, not machine constant-time —
+  (`pinsMatch` in `ffi/Haskoki/FFI/Standard.hs`); no machine
+  constant-time claim is made,
   and wrong guesses count down per-role retries to
   `CKR_PIN_LOCKED`. Catalog PINs are example-grade fixtures,
   never production secrets. Tag comparison inside the engines
@@ -206,9 +185,10 @@ gates loudly.
   (`scripts/test-proxy-parity.sh` daemon config), so no
   transport-security claim applies. It does not fix Haskoki
   defects, grant multi-tenant isolation, or certify anything;
-  the shim presents its own fixed catalog without a 3.1 table,
-  and message/async/rich-notification legs stay direct-only with
-  per-issue records in the driver. No claims are made about daemon
+  the pinned proxy supports the backend-published 3.1 table.
+  Message/async/rich-notification and certificate visibility/restart
+  exclusions are listed in [the parity driver](scripts/test-proxy-parity.sh).
+  Blocking waits fail fast with `CKR_FUNCTION_NOT_SUPPORTED` at this pin. No claims are made about daemon
   sandboxing, worker isolation, or mTLS: the example config carries
   only concurrency bounds on a loopback plaintext listener with
   `auth = "none"`.

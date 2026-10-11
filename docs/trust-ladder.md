@@ -1,102 +1,31 @@
-# Trust ladder
+# Evidence levels
 
-What each evidence level proves — and what it explicitly does
-not. Every behavioral claim in `docs/demo-walkthrough.md` and
-`docs/coverage.md` sits on one of these rungs; a claim that
-outgrows its rung is inaccurate until fixed or scoped (this
-ladder is pinned by `scripts/check-docs.py`).
+Different checks answer different questions. A property test does not
+exercise the C ABI; a successful driver does not cover every parameter or
+mechanism. Read each result with its source revision and tested scope.
 
-Higher rungs subsume broader execution reality, never the rung
-below: a driver PASS does not re-prove unit refusal pins, and a
-unit battery does not prove C-ABI behavior.
+| Level | Check | What it shows |
+| --- | --- | --- |
+| rung 0 | Static gates, `scripts/check-*.py` | Catalog, generated-file, source-boundary, and documentation consistency; no runtime behavior |
+| rung 1 | Deterministic unit suites | The specified core, model, engine, storage, and operator cases pass in-process |
+| rung 2 | Generated prop suites, [tests/prop](../tests/prop) | Agreement across the inputs and command sequences produced by the generators |
+| rung 3 | Native C driver tests | Actual loading, calls, bytes, errors, and ownership for each driver's scope |
+| rung 4 | Direct/proxy parity | Matching transcripts for the forwarded subset; excluded calls remain separate |
+| rung 5 | External oracle and consumer checks | Agreement with known-answer vectors or another implementation for the exercised cases |
+| rung 6 | Human audit | A source-backed review judgment; it is not an execution result |
 
-## The rungs
+The [consumer driver](../scripts/test-consumers.sh),
+[parity driver](../scripts/test-proxy-parity.sh), and
+[external-checker wrapper](../scripts/ci-pkcs11-lane.sh) make the execution
+boundaries explicit. Native tests include canaries, fault injection, aborted
+operations, and mismatch controls where those failure paths matter.
 
-rung 0 — static gates (`scripts/check-*.py`, `run-gates.sh`).
-Proves file-shape and cross-artifact consistency: catalogs parse,
-projections match byte-for-byte, forbidden strings are absent,
-required wordings present. Proves NO runtime behavior; a passing
-static gate means "the paperwork agrees".
+[Mechanism coverage](coverage.md) records in-process evidence per catalog
+row. [Release results](release-results.md) records measured consumer outcomes.
+A non-null function pointer or listed mechanism alone does not establish
+conformance, parameter coverage, or successful cryptographic work.
 
-rung 1 — unit suites (model/core/storage/ops/engine Haskell
-tests, deterministic). Proves specified cases pass in-process,
-including the refusal taxonomy: exact codes plus explanatory
-reasons for refused mechanisms (the exhaustiveness battery,
-`tests/model/MechanismExhaustivenessSpec.hs`),
-malformed-input rejection, quota boundaries, and byte-format
-goldens. Does not prove C-ABI behavior, cross-process reality,
-or anything outside the enumerated cases.
-
-rung 2 — prop suites (`tests/prop`, QuickCheck under fixed
-replay seeds and `PROP_CASES` counts). Proves generated
-behavioral agreement on the covered space: chunk-partition
-invariants, command-sequence model agreement, the full
-37×7 denial grid (`ErrorProps`), refusal-taxonomy agreement
-(`OracleProps`). Replayable (seed + count), still in-process,
-still bounded by what the generators construct: props cover
-supported mechanisms and their failure legs, NOT refused-mechanism
-routing (that is rung 1's battery) and NOT the C surface.
-
-rung 3 — C drivers (`scripts/test-*.sh` over the built `.so`).
-Proves the real C ABI behaves: loader/A01–A06, consumers,
-mutexes, output contracts, crypto routing, async, control
-events, lifecycle — including can-fail evidence (seeded
-transcript mismatches, injected faults, mid-stream aborts).
-Single topology (direct load); each driver re-verifies only its
-own slice per run.
-
-rung 4 — parity (`scripts/test-proxy-parity.sh`). Proves
-topology independence for forwarded calls: byte-identical
-forwarded-call transcripts direct vs behind `pkcs11-proxy-ng`
-(the external pair, canonically hashed in the script header).
-Topology-specific lines are asserted per mode, excluded from the
-diff by cited mechanism — parity proves the forwarded subset,
-not the excluded lines.
-
-rung 5 — oracles (independent implementations). Proves our bytes
-agree with the outside world: FIPS KATs via the pinned OpenSSL
-4.0.2 CLI, `pkcs11-check`/`pkcs11-tool`/`p11-kit`/NSS against the
-served surface. Dated verbatim evidence lives in working notes outside this package; each
-oracle run proves its own date and scope only. Non-attempts are
-disclosed, not implied (JVM consumers, the OpenSSL provider).
-
-rung 6 — audit (human review). Proves judgment was applied: the
-FP design review
-(2026-09-22, in working notes outside this package), the impl
-review, per-task audits. An audit finding is a scoped opinion
-with cited evidence, not an execution result; dispositions live
-in task reports and in this ladder's §Review-name dispositions
-below.
-
-## Claim map (where the walkthrough's claims sit)
-
-- Quoted command outputs (§1–§4, §7–§9): rung 3/4 transcripts at
-  the stated revisions (header: the release tree for steps 2–6;
-  later sections name their own revisions). Re-run the named script
-  for current bytes.
-- Refusal claims ("stays honestly X", "refuses loudly"): rung 1
-  pins plus rung 3 consumer pins; the exact code+reason pairs are
-  the rung-1 batteries' assertions.
-- Coverage counts (§5): generated from `spec/mechanisms.json` by
-  `scripts/publish-coverage.py` (rung 0 consistency + rung 1/2
-  evidence artifacts named per row). Counts are true at the
-  quoted publication hash only.
-- External-consumer claims (§3 oracles): rung 5 at the cited
-  evidence date; the "NOT attempted" list bounds them.
-- Negative universals ("never", "no X"): each names its rung —
-  e.g. sim interleavings are never asserted (rung 3 stress pins
-  conservation only), C-table determinism is not asserted (rung 2
-  replay pins stay on the synthetic engine by design).
-
-## Historical review-name dispositions
-
-Earlier review discussions used the names `GuardJumpForUnreachable`,
-`ValidSuffixes`, and `MeaningfulPrefix`. No implementation or test in
-this repository uses those names; this note and the documentation checker
-retain the disposition. They are not missing product features.
-
-A requested "property matrix" was mapped to the existing
-`tests/prop/ErrorProps.hs` denial grid and `OracleProps` refusal checks.
-These are rung-2 properties; refused-mechanism routing still needs the
-rung-1 exhaustiveness tests. Unattempted JVM and OpenSSL-provider clients
-remain disclosed in the walkthrough rather than represented as evidence.
+Known-answer tests check bytes; they are not FIPS validation. A successful
+checker wrapper can still report findings, because its exit policy accepts
+completed runs with documented failures. Inspect the counters and findings,
+not just the job badge.

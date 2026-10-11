@@ -226,11 +226,6 @@ def main():
           all(r in ladder for r in
               ("unit", "prop", "driver", "parity", "oracle", "audit")),
           "ladder names every evidence level")
-    check("LADDER-STREAMLINE",
-          "GuardJumpForUnreachable" in ladder
-          and "ValidSuffixes" in ladder
-          and "MeaningfulPrefix" in ladder,
-          "ladder records the streamline-name disposition")
     check("LADDER-LINK",
           "docs/trust-ladder.md" in walk,
           "walkthrough links the trust ladder")

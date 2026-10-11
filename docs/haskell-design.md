@@ -43,7 +43,8 @@ their lifetime is a runtime responsibility, not a consequence of purity.
 Loading the module also loads the GHC runtime. The release bundles its
 runtime dependencies and keeps the runtime alive for the process lifetime.
 The [host contract](../SUPPORTED-HOSTS.md) covers threading, loading, and
-finalization. Async coordination uses STM and IO, and the FFI contains
+finalization. Async coordination uses software transactional memory (STM)
+and IO. The foreign-function interface (FFI) contains
 substantial validation, admission, persistence, and delivery logic.
 
 Some requests still carry generic byte payloads, and effect/result

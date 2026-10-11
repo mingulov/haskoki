@@ -16,14 +16,12 @@ not a production HSM; its stored keys are not encrypted at rest.
 
 ## Try it with Docker
 
-This branch prepares **v0.3.1.0**. Its image tag becomes available on
-publication; the [published v0.3.0.0 demo](https://github.com/mingulov/haskoki/releases/tag/v0.3.0.0)
-can be tried now using the command on that release page.
-
 With Docker running, paste this into a terminal:
 
 ```sh
-docker run --rm --network none ghcr.io/mingulov/haskoki-demo:v0.3.1.0
+mkdir -p out
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" ghcr.io/mingulov/haskoki-demo:v0.3.0.0 demo
 ```
 
 Docker downloads the image on the first run. The demo itself works offline:
@@ -35,12 +33,16 @@ demo-ok: 8/8 verifications hold
 ```
 
 That's the complete first run. No clone, compiler, account, PIN setup, or
-physical token is needed. The keys and reports disappear when this container
-exits. [Try it yourself](docs/try-it.md) shows how to keep reports and type
-the individual `pkcs11-tool` commands.
+physical token is needed. Reports and disposable keys remain in `out/demo-*/`.
 
-The image includes Haskoki, its runtime and crypto libraries, OpenSC
-`pkcs11-tool`, `pkcs11-check`, `pkcs11-proxy-ng`, and p11-kit remoting. Extra
+This checkout prepares **v0.3.1.0**, adding a prepared shell and p11-kit
+remoting. Its registry tag is available only after publication. The
+[hands-on guide](docs/try-it.md) shows how to load a tested candidate,
+generate a key with `pkcs11-tool`, and sign your own message.
+
+The demo image includes Haskoki, its runtime and crypto libraries, OpenSC
+`pkcs11-tool`, `pkcs11-check`, and `pkcs11-proxy-ng`; the candidate adds
+p11-kit server/client examples. Extra
 test-vector collections are an optional download. The tested platform is
 **Linux x86-64 (amd64)**; Docker supplies the Linux libraries. Other platforms
 and ARM emulation have not been qualified. Image measurements and contents
@@ -65,7 +67,7 @@ explains the design, its milestones, and the recorded AI-token usage.
 
 A side note: [p11scope](https://github.com/mingulov/p11scope) can observe
 PKCS#11 calls on Linux. It is optional and runs separately; a
-[sample trace](docs/p11scope-trace.md) shows what was captured.
+[observer note](docs/p11scope-trace.md) explains that route.
 
 ## Choose your next step
 

@@ -1,44 +1,36 @@
-# haskoki-client (test-only)
+# Haskell test client
 
-In-repo Haskell PKCS#11 client driver for the Haskoki token. It
-`dlopen`s a module, resolves `C_GetFunctionList`, and drives the C ABI
-through the resolved function list — a genuine foreign client proving
-the advertised surface is usable outside the C consumers.
+This package loads a PKCS#11 module with `dlopen`, resolves its function
+list, and exercises the C ABI from Haskell. It is a test client, excluded
+from the release bundles.
 
-Test jig, not a shipped SDK: `scripts/make-release.sh` does not pack
-this package. All struct offsets and constants come from the single
-verbatim `vendor/pkcs11.h` via hsc2hs.
+From the repository root, `scripts/test-client.sh` builds and exercises the
+client against Haskoki in the [developer environment](../docs/toolchain.md).
+The script also runs as part of the full native gate driver.
 
-Provenance: `vendor/pkcs11.h` is a byte-identical copy of the pinned
-`spec/vendor/pkcs11.h` at the repository root (public-domain header,
-`/* This file is in the Public Domain */`), vendored so this package
-is self-contained for `cabal sdist` (no paths outside its own root).
-When the pinned header changes, re-copy it and keep the two bytes
-identical (compare with `sha256sum`).
+## Commands
 
-## Layout
-
-- `src/Haskoki/Client/Raw.hsc` — raw bindings: `dlopen`, function-list
-  resolution, `foreign import ccall "dynamic"` wrappers, info-struct
-  readers.
-- `src/Haskoki/Client.hs` — small bracketed layer: sessions, login,
-  templates, single-moves crypto, random.
-- `app/Main.hs` — `haskoki-client` CLI.
-
-## CLI
-
-```
+```text
 haskoki-client <module.so> slots
 haskoki-client <module.so> mechs [slot]
 haskoki-client <module.so> digest <file>
 haskoki-client <module.so> rand [n]
 haskoki-client <module.so> hmac        # RFC 4231 test case 1
-haskoki-client <module.so> aes         # AES-CBC-PAD roundtrip
+haskoki-client <module.so> aes         # AES-CBC-PAD round trip
 haskoki-client <module.so> ec          # ECDSA P-256 sign/verify
 haskoki-client <module.so> kdf         # SHA256-KDF derive
 haskoki-client <module.so> roundtrip   # aes + hmac + ec + kdf
 ```
 
-Exit nonzero with the `CK_RV` name on stderr on any token refusal.
-`scripts/test-client.sh` runs the CLI against the freshly built
-`libhaskoki.so` and is part of `scripts/run-gates.sh`.
+Token refusals produce a nonzero exit and a `CK_RV` name on stderr.
+
+## Source and header
+
+[Raw.hsc](src/Haskoki/Client/Raw.hsc) derives constants and struct layouts
+with hsc2hs. [Client.hs](src/Haskoki/Client.hs) manages sessions, login,
+templates, and crypto calls; [Main.hs](app/Main.hs) implements the CLI.
+
+The public-domain [vendored header](vendor/pkcs11.h) is a byte-identical copy
+of the root [PKCS#11 header](../spec/vendor/pkcs11.h), included so this
+package's source archive is self-contained. Keep both copies synchronized
+when the pinned header changes.
