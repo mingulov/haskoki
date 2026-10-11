@@ -109,7 +109,8 @@ docker run --rm --network none "$HASKOKI_IMAGE" p11-kit-demo
 
 The p11-kit example performs key generation, signing, verification, and a
 known digest check. It also rejects a changed message and checks that the
-client fails after the server stops. It needs no pkcs11-proxy-ng service.
+token disappears and digesting fails after the server stops. It needs no
+pkcs11-proxy-ng service.
 The [small script](../examples/release/p11-kit-example) shows the server and
 client commands; [upstream remoting documentation](https://p11-glue.github.io/p11-glue/p11-kit/manual/remoting.html)
 explains forwarding. This demo checks those basic operations only, not the
