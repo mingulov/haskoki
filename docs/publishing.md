@@ -11,8 +11,11 @@ was published on October 9, 2026. Its [release workflow](https://github.com/ming
 checked anonymous access. Each new release must repeat those checks on its
 own source and artifacts.
 
-For **GitHub-only validation without publication**, push a working branch:
-CI builds the native bundle and demo image and runs their checks. Download
+For **GitHub-only validation without publication**, open or update a pull
+request. Each update runs CI and coverage once; automatic push builds cover
+main and tags. To validate a branch before opening a PR, run **CI and Release**
+with **mode=build** on that branch. CI builds the native bundle and demo image
+and runs their checks. Download
 `demo-image-tested` from a successful run if you want the candidate image
 before publication; extract the artifact ZIP, then use `docker load -i
 demo-image.tar.gz` and `docker run --rm --network none haskoki-demo:0.3.1.0`.

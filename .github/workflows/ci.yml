@@ -1,7 +1,7 @@
 name: CI and Release
 
 # Default toolchain (GHC 9.10.3) + bundle build + external
-# pkcs11-check conformance, both lanes on every push/PR:
+# pkcs11-check conformance, both lanes on main/tag pushes and PR updates:
 #   fast  offline markers, no vector data (quick conformance signal)
 #   kat   full markers over fetched vector data (fetch-data, cached)
 # pkcs11-check findings are REPORTED, not gating (exit 1 passes the
@@ -37,6 +37,9 @@ name: CI and Release
 
 on:
   push:
+    # PR branches are covered by pull_request; running both duplicates checks.
+    branches: ["main"]
+    tags: ["**"]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -220,7 +223,7 @@ jobs:
 
   # ------------------------------------------------------------------
   # Per-PR C-driver gate (F-7 / TEST1): the timed deterministic subset
-  # of the 15 container drivers, on every push/PR, in an Ubuntu 26.04
+  # of the 15 container drivers, on every CI run, in an Ubuntu 26.04
   # container (same base + OpenSSL prefix + cabal cache shape as the
   # `haskell` job). Subset in run order:
   #   test-loader.sh, test-c-abi.sh (+ --negative, T-1),

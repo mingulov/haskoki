@@ -2,7 +2,7 @@ name: hpc
 
 # Informational HPC lane (F-15 / T-5 phase 1 + T-23 triage): measures
 # expression/branch coverage of the two libraries; it gates NOTHING.
-# Separate workflow (prop-nightly.yml precedent): its own push/PR +
+# Separate workflow (prop-nightly.yml precedent): its own main/tag push + PR +
 # nightly triggers, so no other job's cost or verdict changes, and
 # the publish job's `needs:` (ci.yml) never names it. NO ratchet, NO
 # floors, NO coverage gate anywhere in this lane (deferred per the
@@ -42,6 +42,9 @@ name: hpc
 
 on:
   push:
+    # Match CI routing so one PR update produces one coverage run.
+    branches: ["main"]
+    tags: ["**"]
   pull_request:
   schedule:
     - cron: "0 4 * * *"
