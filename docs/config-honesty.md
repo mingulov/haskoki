@@ -1,5 +1,10 @@
 # Config honesty catalog
 
+Historical receipt paths under `dist-release-evidence/` refer to private
+working notes that are not shipped in this repository. They are shown as
+archive identifiers, not download links. For current demo results and
+commands, use [release results](release-results.md) and [Try Haskoki](try-it.md).
+
 Every knob the provider parses is exactly one of:
 
 - **ENFORCED** — a wrong value errors, or a right value observably
@@ -31,7 +36,7 @@ Counts: E=27 pure + 1 dual (`storage.path`, E/R) + R=9 pure + D=6.
 | `storage.path` | E/R | sqlite opens it; memory+path refused (ignored otherwise) | `FfiAsyncSpec` + `ConfigHonestySpec` memory-path refusal |
 | `storage.busy_timeout_ms` | R | pinned 5000 at open; only 5000 accepted | `ConfigHonestySpec` busy refusal |
 | `storage.exclusive_provider_ownership` | R | always single-writer O_EXCL; `false` refused | `ConfigHonestySpec` exclusive refusal |
-| `engine.kind` | E | validated + selects the reported active catalog (116 vs 114 rows); native paths always bind OpenSSL4 (disclosed by the `native-engine` line) | `CtlSpec` capabilities + native-scope |
+| `engine.kind` | E | validated + selects the reported active catalog; native paths always bind OpenSSL4 (disclosed by the `native-engine` line) | `CtlSpec` capabilities + native-scope |
 | `engine.allow_synthetic_fallback` | R | no fallback exists; `true` refused | `ConfigHonestySpec` fallback refusal |
 | `engine.private_library_context` | R | native OpenSSL4 always opens a private libctx; `false` refused, default `true` | `ConfigHonestySpec` privctx refusal + default |
 | `async.executor` | E | must be `"logical"` | `ConfigHonestySpec` executor refusal |
@@ -51,7 +56,7 @@ Counts: E=27 pure + 1 dual (`storage.path`, E/R) + R=9 pure + D=6.
 | `limits.slots` | E | `rulesFromConfig` → token admission | `AdmissionSpec` tracking |
 | `limits.sessions` | E | `rulesFromConfig` → session admission | `ConfigHonestySpec` sessions tracking |
 | `limits.objects` | E | `rulesFromConfig` → object admission | `AdmissionSpec` tracking |
-| `limits.buffer_bytes` | D | RESERVED: effective bound pinned 65536 (see `template-bounds`) | `ConfigSpec` template disclosure |
+| `limits.buffer_bytes` | D | RESERVED: effective attribute-value bound pinned 4194304 (4 MiB; see `template-bounds`) | `ConfigSpec` template disclosure |
 | `limits.transcript_bytes` | D | reserved: no transcript bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line |
 | `limits.aggregate_payload_bytes` | D | reserved: no aggregate bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line |
 | `limits.attribute_entries` | D | RESERVED: effective bound pinned 64 (see `template-bounds`) | `ConfigSpec` template disclosure |
@@ -76,8 +81,9 @@ rejected as unknown.
 - `limits.buffer_bytes`, `limits.attribute_entries`: parse,
   validate (`>= 1`), and report through the
   `limit.*` lines, but template enforcement uses the pinned
-  constants (64 entries, 65536 bytes) on both sides of the FFI.
-  The `small-limits.toml` fixture (8/1024 configured, 64/65536
+  constants (64 entries, 4194304 bytes per attribute value) in the
+  template decoder (`maxAttributeBytes` in `core/Haskoki/Attribute.hs`).
+  The `small-limits.toml` fixture (8/1024 configured, 64/4194304
   still enforced) pins the ignored-ness as documented behavior.
 - `limits.transcript_bytes`, `limits.aggregate_payload_bytes`,
   `limits.attribute_depth`: same shape — parse,
@@ -94,9 +100,9 @@ rejected as unknown.
 
 Capabilities disclosure lines (pinned verbatim by tests):
 
-- `template-bounds: entries=64 bytes=65536 (pinned;
+- `template-bounds: entries=64 bytes=4194304 (pinned;
   limits.attribute_entries/buffer_bytes reserved, no enforcement
-  effect)` (unchanged line)
+  effect)` (`templateBoundsLine` in `src/Haskoki/Ctl.hs`)
 - `reserved-async: persist_detached reserved (detached records
   always commit to the store; durability follows storage.kind, no
   knob effect)`
@@ -200,9 +206,9 @@ native surrender. No callback knob was added. Public slot changes are separate
 from the sole optional synchronous Digest surrender producer described in
 [operations notes](operations-notes.md#session-notification-callbacks-and-reentry).
 The serving configuration, bounds and store ledger executed in
-[T-N02](../dist-release-evidence/notifications/task-n02/review.md),
-[T-N03](../dist-release-evidence/notifications/task-n03/review.md) and
-[T-N08](../dist-release-evidence/notifications/task-n08/review.md); these
+T-N02 (`../dist-release-evidence/notifications/task-n02/review.md`),
+T-N03 (`../dist-release-evidence/notifications/task-n03/review.md`) and
+T-N08 (`../dist-release-evidence/notifications/task-n08/review.md`); these
 historical records do not qualify a final documentation-inclusive revision.
 
 ## Dogfood matrix

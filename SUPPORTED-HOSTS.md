@@ -29,7 +29,9 @@ C-surface scope below.
   the module resolves the bundled `libHS*` GHC runtime libs from
   its own directory (`$ORIGIN` RUNPATH; the module's NEEDED set
   covers the whole flat closure, so no transitive lookup escapes
-  the bundle), and `bin/haskoki-ctl` is fully static. Keep
+  the bundle). `bin/haskoki-ctl` statically links its Haskell libraries
+  but still needs the system libraries listed above (see the
+  [dependency inventory](docs/dependency-inventory.md)). Keep
   `lib/libhaskoki.so` next to the bundled `libHS*.so` files.
   There is no `ldconfig` or setuid component.
 - libcrypto is STATICALLY linked from the pinned OpenSSL 4.0.2

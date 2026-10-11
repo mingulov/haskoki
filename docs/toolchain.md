@@ -20,8 +20,9 @@ reject `haskoki.cabal`.
 ## Build on GitHub without using local disk
 
 For a ready-made demo, start with the [README](../README.md#try-it-with-docker).
-For development, push your branch to GitHub: CI builds and tests the bundle,
-source distribution, and demo image. The [publishing guide](publishing.md)
+For development, open a pull request for your branch: CI builds and tests
+the bundle, source distribution, and demo image. Before opening a PR, you
+can dispatch the workflow manually in build mode. The [publishing guide](publishing.md)
 explains the tested-image artifact and the separate release action.
 
 The commands below are for contributors who choose to build locally. The
@@ -54,13 +55,12 @@ and changing only the numeric build arguments does not change that user.
 
 ## Native setup (Ubuntu 26.04)
 
-```sh
-sudo apt install ghc cabal-install build-essential libgmp-dev
-cabal update
-cabal test all
-```
+Follow the [complete native source-build recipe](#path-2-native-host-ubuntu-2604)
+below: install GHC 9.10.3 and build the pinned OpenSSL prefix before
+running Cabal. For a repository checkout, run Cabal from the repository
+root after that setup.
 
-This needs the OpenSSL prefix below. When the prefix uses the
+When an existing prefix uses the
 `lib64` + shared-object layout instead of the expected `lib/`
 static-only layout (see below), point the build at a staged prefix:
 
@@ -176,7 +176,9 @@ Rebuilds the library, module, operator tool, and full test suite
 from the `haskoki-<ver>.tar.gz` source archive (the verified sdist
 shipped as a release asset). Two paths: the Docker builder (pinned
 compiler + prefix, preferred) and a native host (same compiler +
-a hand-built prefix). `cabal install haskoki` is NOT claimed to
+a hand-built prefix). This archive contains the main package and its six
+test suites; the separate test-only `haskoki-client` package belongs to
+the repository checkout. `cabal install haskoki` is NOT claimed to
 work without the system prerequisites below.
 
 ### Path 1: Docker builder (preferred)
@@ -186,8 +188,9 @@ which carries GHC 9.10.3, cabal-install, the pinned
 `/opt/openssl-4.0.2` prefix, and the frozen-plan inputs).
 
 ```sh
-tar xzf haskoki-0.3.0.0.tar.gz
-cd haskoki-0.3.0.0
+HASKOKI_VERSION=0.3.1.0  # select a published version and download its source archive
+tar xzf "haskoki-$HASKOKI_VERSION.tar.gz"
+cd "haskoki-$HASKOKI_VERSION"
 printf 'packages: .\nallow-newer: all\n' > cabal.project
 docker run --rm --network host -v "$PWD:/src" -w /src \
   haskoki-dev:ghc-9.10.3 sh -c 'cabal build all --enable-tests && cabal test all'
@@ -197,10 +200,9 @@ The unpacked tree carries `cabal.project.freeze`, which `cabal`
 reads next to the created `cabal.project`; no Hackage re-resolution
 happens (offline-safe once the image's package index is present).
 
-Expected outputs: `cabal build all` exits 0; `cabal test all`
-passes every suite (core 260/260, tests 2/2, storage 58/58,
-engine 368/368, prop 58/58, model 1279/1279 — the locked counts;
-see the verification log for the observed run).
+Expected outputs: `cabal build all` and all six `cabal test all` suites
+exit 0. Counts depend on the selected revision; GitHub's bundle job
+records the source-archive verification separately from checkout tests.
 
 ### Path 2: native host (Ubuntu 26.04)
 
@@ -213,6 +215,7 @@ Prefix setup (how to obtain `/opt/openssl-4.0.2`):
 curl -fsSLO https://github.com/openssl/openssl/releases/download/openssl-4.0.2/openssl-4.0.2.tar.gz
 echo "736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8  openssl-4.0.2.tar.gz" | sha256sum -c -
 tar xzf openssl-4.0.2.tar.gz
+(
 cd openssl-4.0.2
 perl ./Configure --prefix=/opt/openssl-4.0.2 \
   --openssldir=/opt/openssl-4.0.2/ssl --libdir=lib \
@@ -220,21 +223,23 @@ perl ./Configure --prefix=/opt/openssl-4.0.2 \
 make -j"$(nproc)"
 sudo make install_sw
 /opt/openssl-4.0.2/bin/openssl version
+)
 ```
 
 The last line must print `OpenSSL 4.0.2 25 Aug 2026`. Then, from
 the unpacked source archive (same `cabal.project` line as path 1):
 
 ```sh
-tar xzf haskoki-0.3.0.0.tar.gz
-cd haskoki-0.3.0.0
+HASKOKI_VERSION=0.3.1.0  # select a published version and download its source archive
+tar xzf "haskoki-$HASKOKI_VERSION.tar.gz"
+cd "haskoki-$HASKOKI_VERSION"
 printf 'packages: .\nallow-newer: all\n' > cabal.project
 cabal update
 cabal build all --enable-tests
 cabal test all
 ```
 
-Expected outputs: same suite counts as path 1.
+Expected outputs: successful build and the same six suites as path 1.
 
 ### Hackage candidate (deferred)
 

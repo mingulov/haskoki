@@ -83,7 +83,7 @@ docker run --rm --network none --user "$(id -u):$(id -g)" -v "$PWD/out:/out" \
 ## Related tools
 
 [`pkcs11-check`](https://github.com/mingulov/pkcs11-check)
-(external checker, same author),
+(external checker),
 [`pkcs11-proxy-ng`](https://github.com/mingulov/pkcs11-proxy-ng)
 (proxy),
 [`p11scope`](https://github.com/mingulov/p11scope) (call
@@ -92,6 +92,6 @@ observer; [sample capture](https://github.com/mingulov/haskoki/blob/v0.3.0.0/doc
 
 ## Development story
 
-Read the [development history](https://github.com/mingulov/haskoki/blob/v0.3.0.0/docs/first-public-release.md) and
+Read the [development history](haskoki-creation-story.md) and
 [Haskell design](https://github.com/mingulov/haskoki/blob/v0.3.0.0/docs/haskell-design.md). The usage snapshot linked from
-the history is cutoff-limited, not a final cost or personal-time claim.
+the history is dated, not a final cost or personal-time claim.

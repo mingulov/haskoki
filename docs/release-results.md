@@ -1,6 +1,6 @@
-# Release results - Haskoki 0.3.0.0 candidate
+# Release results and historical evidence
 
-## Current CI snapshot (2026-10-08)
+## v0.3.0.0 baseline (2026-10-08)
 
 The [CI run for 0603322](https://github.com/mingulov/haskoki/actions/runs/37774745195)
 passed the demo-image driver. The following counters were read from its
@@ -29,7 +29,10 @@ The demo pins checker 0.2.3 and proxy v0.2.2. Per-test timeouts are 180
 seconds direct and 360 seconds proxied. These offline selections exclude
 vector corpora, stress, fuzz, and slow tests. The separate CI fast/vector
 lanes use their own framework pin; do not combine their counters with this
-table. A successful main-branch run did not publish a release or image.
+table. A successful main-branch run did not publish a release or image. The
+subsequent [October 9 release](release-notes-0.3.0.0.md) records publication.
+For runnable commands on the next version, use [Try Haskoki](try-it.md);
+the tables here retain their measured revisions.
 
 ## Historical measurements
 
@@ -192,11 +195,16 @@ checker manages its own keys in a per-run memory store).
   R4/R5 rows above retain the superseded pins).
 - OS/arch: Ubuntu 26.04 container, x86_64.
 
-## Reproduce
+## Historical run commands
+
+The following records the older R9 run, with its exact-27 expectation.
+It is an archive receipt, not the current setup recipe. Current demo
+commands are in [Try Haskoki](try-it.md); maintainers use the
+[GitHub build workflow](publishing.md), which stages the bundle before
+building the image.
 
 ```sh
-# Build (from the `haskoki/` repo root — the git root of this commit):
-docker build -f docker/Dockerfile.demo -t haskoki-demo:0.3.0.0 .
+# Assumes the historical image had already been built and tagged locally.
 # Lanes (each writes a run dir under ./out):
 docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
   check --mode direct --profile smoke
@@ -205,7 +213,7 @@ docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
 docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
   check --mode proxy --profile full
 docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.0.0 compare
-# Full gate (rebuilds the image; asserts the offline finding sets —
+# Historical full gate (bundle/image staging already prepared; asserted —
 # smoke zero-findings, direct exact-27, proxy exact-27, compare
 # exact-83 + shared-27 (zero variants anywhere) — plus exits,
 # verdicts, and doctor/help/version gates; vector rows and full

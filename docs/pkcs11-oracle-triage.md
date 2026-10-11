@@ -1,5 +1,10 @@
 # pkcs11-check oracle triage (local docker lanes)
 
+Historical receipt paths under `dist-release-evidence/` refer to private
+working notes that are not shipped in this repository. They are shown as
+archive identifiers, not download links. For current demo results and
+commands, use [release results](release-results.md) and [Try Haskoki](try-it.md).
+
 External-oracle findings against the release bundle, from local docker runs
 of `pkcs11-check` with fetched vectors (`bash /tmp/pkcs11-ws/run-lane.sh
 fast|kat`; lane wrapper `scripts/ci-pkcs11-lane.sh`). Bundle:
@@ -4656,42 +4661,42 @@ result, trace-origin, source applicability, and disposition records):
 
 | Artifact | SHA-256 |
 |---|---|
-| [reviewed/pins.json](../dist-release-evidence/async-routing/reviewed/pins.json) | `156480e7d12cf1609c43637705fd524a44d3bef076741704c0e5e8eeef00c500` |
-| [reviewed/gates/MANIFEST.txt](../dist-release-evidence/async-routing/reviewed/gates/MANIFEST.txt) | `bfd83d566de8676523dbe9f18b0bca3cbc0b328b3477159b2ec8498f6ff7791c` |
-| [reviewed/gates-command.json](../dist-release-evidence/async-routing/reviewed/gates-command.json) | `b4135c3145f9064483bfdb14d9035dcf037fba37b8c64dcf7b07c095fbba5052` |
-| [reviewed/gates.log](../dist-release-evidence/async-routing/reviewed/gates.log) | `19d9a3ccb6e57049ab503c270ef7921b06bd34196f6f96be67ea1ae3ee6e3ced` |
-| [reviewed/gates/test-consumers.sh.log](../dist-release-evidence/async-routing/reviewed/gates/test-consumers.sh.log) | `825ee5d7458235e6e47a8243f66992277c5c883d53065a7cc987f0fa13805e03` |
-| [reviewed/gates/test-proxy-parity.sh.log](../dist-release-evidence/async-routing/reviewed/gates/test-proxy-parity.sh.log) | `29a300a5e9be895f1f5354997c9347b744bec90cde3b056b2e5efefe13baaac7` |
-| [reviewed/dispositions.json](../dist-release-evidence/async-routing/reviewed/dispositions.json) | `9af733a909b84e862451ec0deaae00d95d8ec4b7a9de9837383e142798219c86` |
-| [reviewed/oracle-getid-runtime-command.json](../dist-release-evidence/async-routing/reviewed/oracle-getid-runtime-command.json) | `d1fff05cc613f9268a71c10a0c49e6d2a2960059b5bec55df6be388aaca00d88` |
-| [reviewed/oracle-getid-runtime.log](../dist-release-evidence/async-routing/reviewed/oracle-getid-runtime.log) | `d00855bd3f7f2f5233b0b9e052d890cba097e606f415b21eddd8aab8faba6add` |
-| [reviewed/oracle-version-source.log](../dist-release-evidence/async-routing/reviewed/oracle-version-source.log) | `b078e31967a013b777f62bf8801054d9e062b68d2e00253a17259d4db4fffa57` |
-| [reviewed/oracle-selector-issue.json](../dist-release-evidence/async-routing/reviewed/oracle-selector-issue.json) | `a92d5b28a89e84d1caa12ac60d577957afc6c9e3ab5a2eb398d25d492cbb8c9a` |
-| [reviewed/oracle-version-issue.json](../dist-release-evidence/async-routing/reviewed/oracle-version-issue.json) | `4bf86d6b17ac65b055446dd45c1a8644416d75ff588a0d8b4cafee483410a4ad` |
-| [reviewed/kat-rfc6979-variance.json](../dist-release-evidence/async-routing/reviewed/kat-rfc6979-variance.json) | `059009ff0d5112f52afbd8fc3eba808123c19f63192987e95ce2f574f3f8cbdf` |
-| [reviewed/fast-command.json](../dist-release-evidence/async-routing/reviewed/fast-command.json) | `041ce1765f5b950580847a1ee94f2c75ff5e9439a5158d936ce0f3149944ea8c` |
-| [reviewed/fast-run.json](../dist-release-evidence/async-routing/reviewed/fast-run.json) | `52b4f5a1d0d5061cb86fb7771457f65ef03ed2c0e0ae55308faff27bbebc91aa` |
-| [reviewed/fast-inspection.json](../dist-release-evidence/async-routing/reviewed/fast-inspection.json) | `3a5470ecc3b3823d0864fe1b8929fd35f71dc047fb509bbd8c60c4e86108b283` |
-| [reviewed/fast.log](../dist-release-evidence/async-routing/reviewed/fast.log) | `336eb78dc1553adb87d53f7686dae538aaef9adafae38467c9a43fea94f5a719` |
-| [reviewed/fast/pkcs11-fast-results.json](../dist-release-evidence/async-routing/reviewed/fast/pkcs11-fast-results.json) | `eaa4a48291de19f047b65996154ce5a371ae62c69d47891f70911982d62e4e50` |
-| [reviewed/fast/trace.jsonl](../dist-release-evidence/async-routing/reviewed/fast/trace.jsonl) | `889c5b074326443af69ba9d57bb67eaa0d8fedc08eb2c5f9ebeaaeba34eb05de` |
-| [reviewed/fast/trace-origin.json](../dist-release-evidence/async-routing/reviewed/fast/trace-origin.json) | `7358c2d6261ef4c9d01f5e3536ada981c3027209015567d4464b8830e01bddcd` |
-| [reviewed/kat-command.json](../dist-release-evidence/async-routing/reviewed/kat-command.json) | `6b2c28e20d5ee491807ef63e0286a342900cf7df135529dfed5717ff1e5da938` |
-| [reviewed/kat-run.json](../dist-release-evidence/async-routing/reviewed/kat-run.json) | `753c637b2110360121e88de184979915fa6d51ae1ec3454c3efa444829299472` |
-| [reviewed/kat-inspection.json](../dist-release-evidence/async-routing/reviewed/kat-inspection.json) | `af359143eed606826add05c90fade3063800a766b31340d31dba7aab62768219` |
-| [reviewed/kat.log](../dist-release-evidence/async-routing/reviewed/kat.log) | `e69170c74e9f9e8d5e6a7b8a87a63e9147fa77eb55523bd76af525cdc5381748` |
-| [reviewed/kat/pkcs11-kat-results.json](../dist-release-evidence/async-routing/reviewed/kat/pkcs11-kat-results.json) | `d0dc330c055428415381742cda7048f64341cb9a7ce08db5bee15ce7219e59d7` |
-| [reviewed/kat/trace.jsonl](../dist-release-evidence/async-routing/reviewed/kat/trace.jsonl) | `e934fd8e29feeccfe0560c9e0670834310bd97f4fd6d67e0afbac8e2bcd34af5` |
-| [reviewed/kat/trace-origin.json](../dist-release-evidence/async-routing/reviewed/kat/trace-origin.json) | `52d2344f3f6774ad8fe31ea7a1c4ac34f508052f68b50c2a72e5a04a676b8181` |
-| [proxy/issue.json](../dist-release-evidence/async-routing/proxy/issue.json) | `a0e03753f7c68ad5f8f5daf439328668e9335ab6e1523c3a7ab84d033bb6f7ec` |
-| [proxy/reproduction-result.json](../dist-release-evidence/async-routing/proxy/reproduction-result.json) | `355f6e7ef0472f018de528370b336d99c65795a51419aaffb81417f95ae60ade` |
-| [proxy/probe.log](../dist-release-evidence/async-routing/proxy/probe.log) | `8fe7eb3d9b180a699680b7f277a4c0e457af3829f551e556c4c8106ce312a0e3` |
-| [proxy/source-lines.txt](../dist-release-evidence/async-routing/proxy/source-lines.txt) | `10f386f206b4095a5f6fbf26529fbc80b32acb97c2b5b465103e682c0cf3f6cb` |
-| [proxy/direct-happy-path.log](../dist-release-evidence/async-routing/proxy/direct-happy-path.log) | `a9fea64f810273ee1d443ebdf66762f6a527567a30c2a5351920baa592d0da02` |
-| [proxy/parity-command.json](../dist-release-evidence/async-routing/proxy/parity-command.json) | `e01fbe9e89847afe5549545c3a9f8eb43f006c73762fbcbb59ebb22c21160896` |
-| [proxy/reproduction-command.json](../dist-release-evidence/async-routing/proxy/reproduction-command.json) | `84faeeb933dcaeb3674ae0e9159fe6ce0d7355ce73c1fd73e2bed815ab40c610` |
-| [proxy/readback-command.json](../dist-release-evidence/async-routing/proxy/readback-command.json) | `969fc71eedee428f834596bb99eb7dba8100d423ed0724e0853bd3cdbdd8974b` |
-| [proxy/direct-task7-command.json](../dist-release-evidence/async-routing/proxy/direct-task7-command.json) | `ee580956944e059e11c985e987809bea95e7970159d1863963a00c5973f3f985` |
+| reviewed/pins.json (`../dist-release-evidence/async-routing/reviewed/pins.json`) | `156480e7d12cf1609c43637705fd524a44d3bef076741704c0e5e8eeef00c500` |
+| reviewed/gates/MANIFEST.txt (`../dist-release-evidence/async-routing/reviewed/gates/MANIFEST.txt`) | `bfd83d566de8676523dbe9f18b0bca3cbc0b328b3477159b2ec8498f6ff7791c` |
+| reviewed/gates-command.json (`../dist-release-evidence/async-routing/reviewed/gates-command.json`) | `b4135c3145f9064483bfdb14d9035dcf037fba37b8c64dcf7b07c095fbba5052` |
+| reviewed/gates.log (`../dist-release-evidence/async-routing/reviewed/gates.log`) | `19d9a3ccb6e57049ab503c270ef7921b06bd34196f6f96be67ea1ae3ee6e3ced` |
+| reviewed/gates/test-consumers.sh.log (`../dist-release-evidence/async-routing/reviewed/gates/test-consumers.sh.log`) | `825ee5d7458235e6e47a8243f66992277c5c883d53065a7cc987f0fa13805e03` |
+| reviewed/gates/test-proxy-parity.sh.log (`../dist-release-evidence/async-routing/reviewed/gates/test-proxy-parity.sh.log`) | `29a300a5e9be895f1f5354997c9347b744bec90cde3b056b2e5efefe13baaac7` |
+| reviewed/dispositions.json (`../dist-release-evidence/async-routing/reviewed/dispositions.json`) | `9af733a909b84e862451ec0deaae00d95d8ec4b7a9de9837383e142798219c86` |
+| reviewed/oracle-getid-runtime-command.json (`../dist-release-evidence/async-routing/reviewed/oracle-getid-runtime-command.json`) | `d1fff05cc613f9268a71c10a0c49e6d2a2960059b5bec55df6be388aaca00d88` |
+| reviewed/oracle-getid-runtime.log (`../dist-release-evidence/async-routing/reviewed/oracle-getid-runtime.log`) | `d00855bd3f7f2f5233b0b9e052d890cba097e606f415b21eddd8aab8faba6add` |
+| reviewed/oracle-version-source.log (`../dist-release-evidence/async-routing/reviewed/oracle-version-source.log`) | `b078e31967a013b777f62bf8801054d9e062b68d2e00253a17259d4db4fffa57` |
+| reviewed/oracle-selector-issue.json (`../dist-release-evidence/async-routing/reviewed/oracle-selector-issue.json`) | `a92d5b28a89e84d1caa12ac60d577957afc6c9e3ab5a2eb398d25d492cbb8c9a` |
+| reviewed/oracle-version-issue.json (`../dist-release-evidence/async-routing/reviewed/oracle-version-issue.json`) | `4bf86d6b17ac65b055446dd45c1a8644416d75ff588a0d8b4cafee483410a4ad` |
+| reviewed/kat-rfc6979-variance.json (`../dist-release-evidence/async-routing/reviewed/kat-rfc6979-variance.json`) | `059009ff0d5112f52afbd8fc3eba808123c19f63192987e95ce2f574f3f8cbdf` |
+| reviewed/fast-command.json (`../dist-release-evidence/async-routing/reviewed/fast-command.json`) | `041ce1765f5b950580847a1ee94f2c75ff5e9439a5158d936ce0f3149944ea8c` |
+| reviewed/fast-run.json (`../dist-release-evidence/async-routing/reviewed/fast-run.json`) | `52b4f5a1d0d5061cb86fb7771457f65ef03ed2c0e0ae55308faff27bbebc91aa` |
+| reviewed/fast-inspection.json (`../dist-release-evidence/async-routing/reviewed/fast-inspection.json`) | `3a5470ecc3b3823d0864fe1b8929fd35f71dc047fb509bbd8c60c4e86108b283` |
+| reviewed/fast.log (`../dist-release-evidence/async-routing/reviewed/fast.log`) | `336eb78dc1553adb87d53f7686dae538aaef9adafae38467c9a43fea94f5a719` |
+| reviewed/fast/pkcs11-fast-results.json (`../dist-release-evidence/async-routing/reviewed/fast/pkcs11-fast-results.json`) | `eaa4a48291de19f047b65996154ce5a371ae62c69d47891f70911982d62e4e50` |
+| reviewed/fast/trace.jsonl (`../dist-release-evidence/async-routing/reviewed/fast/trace.jsonl`) | `889c5b074326443af69ba9d57bb67eaa0d8fedc08eb2c5f9ebeaaeba34eb05de` |
+| reviewed/fast/trace-origin.json (`../dist-release-evidence/async-routing/reviewed/fast/trace-origin.json`) | `7358c2d6261ef4c9d01f5e3536ada981c3027209015567d4464b8830e01bddcd` |
+| reviewed/kat-command.json (`../dist-release-evidence/async-routing/reviewed/kat-command.json`) | `6b2c28e20d5ee491807ef63e0286a342900cf7df135529dfed5717ff1e5da938` |
+| reviewed/kat-run.json (`../dist-release-evidence/async-routing/reviewed/kat-run.json`) | `753c637b2110360121e88de184979915fa6d51ae1ec3454c3efa444829299472` |
+| reviewed/kat-inspection.json (`../dist-release-evidence/async-routing/reviewed/kat-inspection.json`) | `af359143eed606826add05c90fade3063800a766b31340d31dba7aab62768219` |
+| reviewed/kat.log (`../dist-release-evidence/async-routing/reviewed/kat.log`) | `e69170c74e9f9e8d5e6a7b8a87a63e9147fa77eb55523bd76af525cdc5381748` |
+| reviewed/kat/pkcs11-kat-results.json (`../dist-release-evidence/async-routing/reviewed/kat/pkcs11-kat-results.json`) | `d0dc330c055428415381742cda7048f64341cb9a7ce08db5bee15ce7219e59d7` |
+| reviewed/kat/trace.jsonl (`../dist-release-evidence/async-routing/reviewed/kat/trace.jsonl`) | `e934fd8e29feeccfe0560c9e0670834310bd97f4fd6d67e0afbac8e2bcd34af5` |
+| reviewed/kat/trace-origin.json (`../dist-release-evidence/async-routing/reviewed/kat/trace-origin.json`) | `52d2344f3f6774ad8fe31ea7a1c4ac34f508052f68b50c2a72e5a04a676b8181` |
+| proxy/issue.json (`../dist-release-evidence/async-routing/proxy/issue.json`) | `a0e03753f7c68ad5f8f5daf439328668e9335ab6e1523c3a7ab84d033bb6f7ec` |
+| proxy/reproduction-result.json (`../dist-release-evidence/async-routing/proxy/reproduction-result.json`) | `355f6e7ef0472f018de528370b336d99c65795a51419aaffb81417f95ae60ade` |
+| proxy/probe.log (`../dist-release-evidence/async-routing/proxy/probe.log`) | `8fe7eb3d9b180a699680b7f277a4c0e457af3829f551e556c4c8106ce312a0e3` |
+| proxy/source-lines.txt (`../dist-release-evidence/async-routing/proxy/source-lines.txt`) | `10f386f206b4095a5f6fbf26529fbc80b32acb97c2b5b465103e682c0cf3f6cb` |
+| proxy/direct-happy-path.log (`../dist-release-evidence/async-routing/proxy/direct-happy-path.log`) | `a9fea64f810273ee1d443ebdf66762f6a527567a30c2a5351920baa592d0da02` |
+| proxy/parity-command.json (`../dist-release-evidence/async-routing/proxy/parity-command.json`) | `e01fbe9e89847afe5549545c3a9f8eb43f006c73762fbcbb59ebb22c21160896` |
+| proxy/reproduction-command.json (`../dist-release-evidence/async-routing/proxy/reproduction-command.json`) | `84faeeb933dcaeb3674ae0e9159fe6ce0d7355ce73c1fd73e2bed815ab40c610` |
+| proxy/readback-command.json (`../dist-release-evidence/async-routing/proxy/readback-command.json`) | `969fc71eedee428f834596bb99eb7dba8100d423ed0724e0853bd3cdbdd8974b` |
+| proxy/direct-task7-command.json (`../dist-release-evidence/async-routing/proxy/direct-task7-command.json`) | `ee580956944e059e11c985e987809bea95e7970159d1863963a00c5973f3f985` |
 
 The three async contracts retain their original entries, ordinals, layouts,
 acceptance ids, and `planned-with-behavior` classification; only executed
@@ -4707,7 +4712,7 @@ T-N09's remaining required commands passed on HEAD
 `5fcc28da79cd67d5d5e811109884fd8e83c03fbca9c1af6dd9d6c97e5e394b81`. This includes the exact
 coordinator-authorized consumer topology correction. The final documentation
 patch is separately saved and hashed in the
-[task-n09 review](../dist-release-evidence/notifications/reviewed/task-n09/review.md).
+task-n09 review (`../dist-release-evidence/notifications/reviewed/task-n09/review.md`).
 All evidence is provisional. No acceptance is claimed; clean final-revision
 gates and installed acceptance remain outside this task.
 
@@ -4729,7 +4734,7 @@ to synthesize insertion callbacks. Rich notifications remain DIRECT-ONLY.
 Dispatch 3 stopped because the polling consumer assumed a proxied 3.1 table.
 The pinned shim advertises 2.40/3.0/3.2 and returns OK/NULL for the 3.1 miss.
 The coordinator expanded T-N09's allowlist for the exact
-[boundary patch](../dist-release-evidence/notifications/reviewed/task-n09/boundary.patch)
+boundary patch (`../dist-release-evidence/notifications/reviewed/task-n09/boundary.patch`)
 (SHA-256 `0934a41673c1c7a0cbc2c668dbcf65fb258a2efa09a9c1b48f55945aafd7ee21`).
 It was applied verbatim and rebuilt in the full parity run. Direct 3.1 still
 executes all 37 assertions as topology inventory; the proxy requires exact
@@ -4809,7 +4814,7 @@ The exact gate is preserved in `before-kat-fast-inspection.json` and
 combined ledger. KAT has its own raw findings review and successful checker.
 
 The oracle source-prose/coverage correction is
-[prepared only](../dist-release-evidence/notifications/reviewed/oracle-issue.md),
+prepared only (`../dist-release-evidence/notifications/reviewed/oracle-issue.md`),
 with its exact command saved in `reviewed/oracle-issue-unrun.json`; it was
 **not filed**. It concerns `test_remaining_gaps.py:1114-1117` claiming a
 function-specific FUNCTION_NOT_SUPPORTED return-list entry, and
@@ -4858,26 +4863,26 @@ Recorder remains `5b141a238f6cabed6ffb5111c016e66a466fc34bc862c011c343e55c73c059
 
 | Measured artifact under notifications/ | SHA-256 |
 |---|---|
-| [proxy/pins.json](../dist-release-evidence/notifications/proxy/pins.json) | `3c2ea26c041a44db7c378238e103578a867717a2c3fe7e2e49060e16674aff64` |
-| [proxy/reproduction-command.json](../dist-release-evidence/notifications/proxy/reproduction-command.json) | `8afc21a88c4bd8189d70be7d2b5baf01f16acb0134c3e4117c433b18b659fea6` |
-| [proxy/reproduction-result.json](../dist-release-evidence/notifications/proxy/reproduction-result.json) | `37f3c947e08ed2e89d9b7304aa3da39b257063f83dd3f4be54838cb76a7c2931` |
-| [proxy/reproduction.log](../dist-release-evidence/notifications/proxy/reproduction.log) | `7a5e950f5546e5fc3b66b210efdd9c02fcdb44ca779cbb0916b2b09d38006558` |
-| [proxy/issue-create-command.json](../dist-release-evidence/notifications/proxy/issue-create-command.json) | `2e5e2122ea5d806a9d1889743af3aa9968cb69fa380375a520cbf3343abe87d3` |
-| [proxy/issue-readback-command.json](../dist-release-evidence/notifications/proxy/issue-readback-command.json) | `1a7f5822c05dc1e62cca1edd04a79b82432f698300c5f55a9c50b9cff4003f99` |
-| [proxy/issue.json](../dist-release-evidence/notifications/proxy/issue.json) | `ff331f5f89bac1c5856f68faf8868c9d2dcfe9804efd045240f105c85f0080c2` |
-| [proxy/parity-command.json](../dist-release-evidence/notifications/proxy/parity-command.json) | `4a80690b18310e07a7b05973abd2f595c4cc9762938fa0b13c069866b1eb20b0` |
-| [proxy/parity.log](../dist-release-evidence/notifications/proxy/parity.log) | `93d3f7167d436d95e1126ff4206638ea667436ac9299e2752120701ff65259fe` |
-| [reviewed/pins.json](../dist-release-evidence/notifications/reviewed/pins.json) | `e73a41f32d855ea0469dda2bb2e988b420fd06dcf336482d544be388d1bb49f2` |
-| [reviewed/oracle-comparison.log](../dist-release-evidence/notifications/reviewed/oracle-comparison.log) | `70bca171df4325da1c74271a443efce87a1964135844c45099df88e88a003dd9` |
-| [reviewed/fast/pkcs11-fast-results.json](../dist-release-evidence/notifications/reviewed/fast/pkcs11-fast-results.json) | `047dc07ade753a160e6dd7712984341a518e4bf3ad59e68d14cfe75472855809` |
-| [reviewed/fast/trace.jsonl](../dist-release-evidence/notifications/reviewed/fast/trace.jsonl) | `5fb2db3b81c25b83d0c470e2d385a604bcd231f07609820855602dd09baf62ea` |
-| [reviewed/fast-inspection.json](../dist-release-evidence/notifications/reviewed/fast-inspection.json) | `14f1f5d9f15d1aac1ab889e32fd05e8a70b2fcc32a4399d9b80e211b0d4aa1d0` |
-| [reviewed/kat/pkcs11-kat-results.json](../dist-release-evidence/notifications/reviewed/kat/pkcs11-kat-results.json) | `3f0a464d3cd4ff27ca41da22c3a97c9f9cbb4e8c3f444416fac9cebbcd270dc1` |
-| [reviewed/kat/trace.jsonl](../dist-release-evidence/notifications/reviewed/kat/trace.jsonl) | `d9c94e1364d6328d6d94db39f487b1f35c08bebbce359cd765ef4ac8d50b2583` |
-| [reviewed/kat-inspection.json](../dist-release-evidence/notifications/reviewed/kat-inspection.json) | `72a654b110985f6b01ef6a7d29a7427d587b878385497dfda05808d57c84ce5c` |
-| [reviewed/dispositions.json](../dist-release-evidence/notifications/reviewed/dispositions.json) | `68c9cc40454cbbe13419165e16b352c1b0bf0c658d0f794bf3a6685c908ca781` |
-| [reviewed/kat-rfc6979-variance.json](../dist-release-evidence/notifications/reviewed/kat-rfc6979-variance.json) | `af457426fa6ae0cc21c6910f678cbff80a9167dfdded5cd19addc16acab0807e` |
-| [reviewed/oracle-issue.md](../dist-release-evidence/notifications/reviewed/oracle-issue.md) | `6d5b95dd47ee5feeb49db48003a758e09d68cff79a127c024083389b9cf3bb1f` |
+| proxy/pins.json (`../dist-release-evidence/notifications/proxy/pins.json`) | `3c2ea26c041a44db7c378238e103578a867717a2c3fe7e2e49060e16674aff64` |
+| proxy/reproduction-command.json (`../dist-release-evidence/notifications/proxy/reproduction-command.json`) | `8afc21a88c4bd8189d70be7d2b5baf01f16acb0134c3e4117c433b18b659fea6` |
+| proxy/reproduction-result.json (`../dist-release-evidence/notifications/proxy/reproduction-result.json`) | `37f3c947e08ed2e89d9b7304aa3da39b257063f83dd3f4be54838cb76a7c2931` |
+| proxy/reproduction.log (`../dist-release-evidence/notifications/proxy/reproduction.log`) | `7a5e950f5546e5fc3b66b210efdd9c02fcdb44ca779cbb0916b2b09d38006558` |
+| proxy/issue-create-command.json (`../dist-release-evidence/notifications/proxy/issue-create-command.json`) | `2e5e2122ea5d806a9d1889743af3aa9968cb69fa380375a520cbf3343abe87d3` |
+| proxy/issue-readback-command.json (`../dist-release-evidence/notifications/proxy/issue-readback-command.json`) | `1a7f5822c05dc1e62cca1edd04a79b82432f698300c5f55a9c50b9cff4003f99` |
+| proxy/issue.json (`../dist-release-evidence/notifications/proxy/issue.json`) | `ff331f5f89bac1c5856f68faf8868c9d2dcfe9804efd045240f105c85f0080c2` |
+| proxy/parity-command.json (`../dist-release-evidence/notifications/proxy/parity-command.json`) | `4a80690b18310e07a7b05973abd2f595c4cc9762938fa0b13c069866b1eb20b0` |
+| proxy/parity.log (`../dist-release-evidence/notifications/proxy/parity.log`) | `93d3f7167d436d95e1126ff4206638ea667436ac9299e2752120701ff65259fe` |
+| reviewed/pins.json (`../dist-release-evidence/notifications/reviewed/pins.json`) | `e73a41f32d855ea0469dda2bb2e988b420fd06dcf336482d544be388d1bb49f2` |
+| reviewed/oracle-comparison.log (`../dist-release-evidence/notifications/reviewed/oracle-comparison.log`) | `70bca171df4325da1c74271a443efce87a1964135844c45099df88e88a003dd9` |
+| reviewed/fast/pkcs11-fast-results.json (`../dist-release-evidence/notifications/reviewed/fast/pkcs11-fast-results.json`) | `047dc07ade753a160e6dd7712984341a518e4bf3ad59e68d14cfe75472855809` |
+| reviewed/fast/trace.jsonl (`../dist-release-evidence/notifications/reviewed/fast/trace.jsonl`) | `5fb2db3b81c25b83d0c470e2d385a604bcd231f07609820855602dd09baf62ea` |
+| reviewed/fast-inspection.json (`../dist-release-evidence/notifications/reviewed/fast-inspection.json`) | `14f1f5d9f15d1aac1ab889e32fd05e8a70b2fcc32a4399d9b80e211b0d4aa1d0` |
+| reviewed/kat/pkcs11-kat-results.json (`../dist-release-evidence/notifications/reviewed/kat/pkcs11-kat-results.json`) | `3f0a464d3cd4ff27ca41da22c3a97c9f9cbb4e8c3f444416fac9cebbcd270dc1` |
+| reviewed/kat/trace.jsonl (`../dist-release-evidence/notifications/reviewed/kat/trace.jsonl`) | `d9c94e1364d6328d6d94db39f487b1f35c08bebbce359cd765ef4ac8d50b2583` |
+| reviewed/kat-inspection.json (`../dist-release-evidence/notifications/reviewed/kat-inspection.json`) | `72a654b110985f6b01ef6a7d29a7427d587b878385497dfda05808d57c84ce5c` |
+| reviewed/dispositions.json (`../dist-release-evidence/notifications/reviewed/dispositions.json`) | `68c9cc40454cbbe13419165e16b352c1b0bf0c658d0f794bf3a6685c908ca781` |
+| reviewed/kat-rfc6979-variance.json (`../dist-release-evidence/notifications/reviewed/kat-rfc6979-variance.json`) | `af457426fa6ae0cc21c6910f678cbff80a9167dfdded5cd19addc16acab0807e` |
+| reviewed/oracle-issue.md (`../dist-release-evidence/notifications/reviewed/oracle-issue.md`) | `6d5b95dd47ee5feeb49db48003a758e09d68cff79a127c024083389b9cf3bb1f` |
 
 Spec trace: §§5.4–5.6; N11, N12; retained G17 scope distinctions. T-N09 is ready for coordinator review. No acceptance claimed. No T-N10 work was started.
 
@@ -4889,17 +4894,17 @@ executed evidence tuples to seven existing contracts. The catalog remains
 104 rows: 70 planned, 32 unsupported, 2 not applicable; earlier references,
 classifications and layouts are retained. Private EventsSpec FIFO/callback
 proofs do not establish public coalescing, removal or native surrender.
-The [N01–N12 and G01–G17 disposition links](../dist-release-evidence/notifications/task-n10/traceability.json)
+The N01–N12 and G01–G17 disposition links (`../dist-release-evidence/notifications/task-n10/traceability.json`)
 identify the owning historical assertions and their limits; they are not
 accepted final-revision records.
 
-The [T-N09 review](../dist-release-evidence/notifications/reviewed/task-n09/review.md)
+The T-N09 review (`../dist-release-evidence/notifications/reviewed/task-n09/review.md`)
 records full parity with 10 common scenarios, 3 direct-only scenarios,
 72 rich direct legs and 153 matching eligible polling lines. Direct polling
 covers four tables; proxy polling covers 2.40/3.0/3.2, with the absent 3.1
 table checked separately as OK/NULL. The existing
 [notifications proxy issue 25](https://github.com/mingulov/pkcs11-proxy-ng/issues/25)
-is backed by its [preserved readback](../dist-release-evidence/notifications/proxy/issue.json)
+is backed by its preserved readback (`../dist-release-evidence/notifications/proxy/issue.json`)
 and bounded direct/proxy reproduction. Its OPEN status is the recorded
 readback, not a new live status query. No issue was filed or re-filed in
 T-N10. Callback transport remains an optional capability limitation;
@@ -4907,20 +4912,20 @@ no proxied surrender or blocking/finalize parity is promised.
 
 | Reviewed lane | Passed | Failed | Skipped | Xfailed | Required notification nodes |
 |---|---:|---:|---:|---:|---:|
-| [fast inspection](../dist-release-evidence/notifications/reviewed/fast-inspection.json) | 5138 | 4 | 4413 | 635 | 16 passed |
-| [KAT inspection](../dist-release-evidence/notifications/reviewed/kat-inspection.json) | 84455 | 4 | 31315 | 974 | 16 passed |
+| fast inspection (`../dist-release-evidence/notifications/reviewed/fast-inspection.json`) | 5138 | 4 | 4413 | 635 | 16 passed |
+| KAT inspection (`../dist-release-evidence/notifications/reviewed/kat-inspection.json`) | 84455 | 4 | 31315 | 974 | 16 passed |
 
 Both wrappers exited 0 and both oracle test processes exited 1. Fast findings
-review preceded KAT admission. The [disposition ledger](../dist-release-evidence/notifications/reviewed/dispositions.json)
+review preceded KAT admission. The disposition ledger (`../dist-release-evidence/notifications/reviewed/dispositions.json`)
 retains historical failures/xfails and the reviewed RFC6979 diagnostic
 variance; no new unresolved provider finding was identified in those runs.
 The oracle callback matrix performs no Digest and proves no surrender,
 cancellation or reentry. The narrow direct comparison ran 24 cases / 172
 assertions with zero callbacks. The oracle prose/coverage issue remains
-[prepared only](../dist-release-evidence/notifications/reviewed/oracle-issue.md),
+prepared only (`../dist-release-evidence/notifications/reviewed/oracle-issue.md`),
 unfiled; no existing message/async/oracle issue is repurposed here.
 
-The [T-N08 review](../dist-release-evidence/notifications/task-n08/review.md)
+The T-N08 review (`../dist-release-evidence/notifications/task-n08/review.md`)
 explicitly leaves the removed-session `haskokiStdFind` page precedence case
 deferred. Its passing FindObjectsFinal assertion does not resolve that case.
 The documentation-inclusive clean revision, installed checks, 18 static
@@ -5098,48 +5103,48 @@ recorder:
 
 | Measured artifact under certificates/ | SHA-256 |
 |---|---|
-| [task-c09/after.log](../dist-release-evidence/certificates/task-c09/after.log) | `e6f360cbb8ff8fd49104383e039dc2d12744a227405988fb4571572c20570036` |
-| [task-c09/matrix.log](../dist-release-evidence/certificates/task-c09/matrix.log) | `53cf2d8063f2d29638384e6bd9f97c73d1b77a53cf55cd4cdb229f0eafa1fbee` |
-| [task-c09/consumers.log](../dist-release-evidence/certificates/task-c09/consumers.log) | `21571270282f0f37e622a7580ff09fbe54db6bd7869c25bb143e655ea8180ac6` |
-| [proxy/pins.json](../dist-release-evidence/certificates/proxy/pins.json) | `b4d940a1f3d2fea83b3ddea6b9252d37e1e2a65666261bdc93aaa08d595ddc7a` |
-| [proxy/reproduction-command.json](../dist-release-evidence/certificates/proxy/reproduction-command.json) | `11a6cbbbdfa14e03011c2656fd440f09f4006188c8fb7679866a3eec7446a90b` |
-| [proxy/reproduction-result.json](../dist-release-evidence/certificates/proxy/reproduction-result.json) | `96e9f9a9697d3632a133a277eafcc7563e9e88f61f2ca81c20e8c4cbfeb713a6` |
-| [proxy/reproduction.log](../dist-release-evidence/certificates/proxy/reproduction.log) | `8b3091544accc480e9667ac01710cdeefce6febc497273fa5e75c8c1a0630b4d` |
-| [proxy/issue-create-command.json](../dist-release-evidence/certificates/proxy/issue-create-command.json) | `bde81fd7c50317a375b89a622788f40e0d93430d01c7eaa45d85432b8828dca2` |
-| [proxy/issue-readback-command.json](../dist-release-evidence/certificates/proxy/issue-readback-command.json) | `396d3a406e83e10d2f010c7be9763e17cdb4d5fb5988840e3e75be59aa9a940c` |
-| [proxy/issue.json](../dist-release-evidence/certificates/proxy/issue.json) | `b432614909deb0754f1652c6e8e8525c490ffc1247a6ba331baa2fa310d7b96c` |
-| [proxy/parity-command.json](../dist-release-evidence/certificates/proxy/parity-command.json) | `87d8bf9202890bb438f7c4786030d393c3c4e8e3ad62020b950bad4ae9050168` |
-| [proxy/parity.log](../dist-release-evidence/certificates/proxy/parity.log) | `97a8177d572eeb10698d8a42614e3fb93ee0f7cb4f21f89c6dbf617bca21dd8c` |
-| [reviewed/pins.json](../dist-release-evidence/certificates/reviewed/pins.json) | `52e11df11002755ff53d390bba2b1ae42e98701013175a80401e648619f8fd36` |
-| [reviewed/stress-census.log](../dist-release-evidence/certificates/reviewed/stress-census.log) | `ce4d20b4caae1385f5e793f77b0854860d222def5d2a5b5b581e86a919b934fa` |
-| [reviewed/fast/pkcs11-fast-results.json](../dist-release-evidence/certificates/reviewed/fast/pkcs11-fast-results.json) | `4501c9699cae1ae293d107f9b07f580eab1f9a06af57f2bdf200a0017628801a` |
-| [reviewed/fast/trace.jsonl](../dist-release-evidence/certificates/reviewed/fast/trace.jsonl) | `0ae3e0fa1ee0bfb338e53ca94e68ec86270a3c186e0a8d2242379298222155b4` |
-| [reviewed/fast-inspection.json](../dist-release-evidence/certificates/reviewed/fast-inspection.json) | `147b034e5405ad060bb2398f344cc76be83927841f298d427863d9494c2b506a` |
-| [reviewed/fast-dispositions.json](../dist-release-evidence/certificates/reviewed/fast-dispositions.json) | `4f67b5c0a020aacaa53de079a05f21a88d24c32c223730c2154270b1e9ba9657` |
-| [reviewed/fast-expected.json](../dist-release-evidence/certificates/reviewed/fast-expected.json) | `edaee0bcbef4d9dadfd4bbbeb7dfdb2cb744d2eadf8714be0fdde7bd5b5aa1fa` |
-| [reviewed/fast-findings-review.json](../dist-release-evidence/certificates/reviewed/fast-findings-review.json) | `981590147a7d432d6da67f3f312f5089cb06d9867565711a53c74f3b9a811c54` |
-| [reviewed/kat/pkcs11-kat-results.json](../dist-release-evidence/certificates/reviewed/kat/pkcs11-kat-results.json) | `da0df4bc8858208d668bfd41ae6f93d31dd7c9f7ba62bf45994a6aa61a104641` |
-| [reviewed/kat/trace.jsonl](../dist-release-evidence/certificates/reviewed/kat/trace.jsonl) | `ab9b3b0cc6cb45f14e7b98e05d33758fc876fa66ba9172e58a714994e8568d75` |
-| [reviewed/kat-inspection.json](../dist-release-evidence/certificates/reviewed/kat-inspection.json) | `d254d8e4fdb7be3c4bb4f6cd4513a90673a76f34cf4e11892429c7a8a34f0816` |
-| [reviewed/kat-dispositions.json](../dist-release-evidence/certificates/reviewed/kat-dispositions.json) | `e62ab8614be67eed2035aa09136b36f553e9a4e78efe8e66bf2b4ee78edd3ed6` |
-| [reviewed/kat-expected.json](../dist-release-evidence/certificates/reviewed/kat-expected.json) | `e03d14e498332e7c324eab17c96aa87e78a4bf58b24bd2faacd9f942940e8035` |
-| [reviewed/kat-findings-review.json](../dist-release-evidence/certificates/reviewed/kat-findings-review.json) | `c2236ae1a594f23e441ce766c08bf2085c91ae2e9f658f2db0fc212db5a0174e` |
-| [proxy/issue-correct-command.json](../dist-release-evidence/certificates/proxy/issue-correct-command.json) | `dfdca09674fa689b39230dadab17203635e9d9e4941bfd1896de80641458cfa8` |
-| [proxy/issue-correct.log](../dist-release-evidence/certificates/proxy/issue-correct.log) | `531e5d4ab271b5e446b7c77dc4a8097a3bb4b0cdd5bd513e9004f76c5ab66929` |
-| [proxy/diag-bytes/pins.json](../dist-release-evidence/certificates/proxy/diag-bytes/pins.json) | `0e33d51b41e46db48e2b7e587c18e6f4b3d3ea7a9f9d0756c015c24b6c4a50d3` |
-| [proxy/diag-bytes/diag-bytes.c](../dist-release-evidence/certificates/proxy/diag-bytes/diag-bytes.c) | `1976c12997545d0da62b5a173f389254d32c2b89fdc2899b699861234f3bed2e` |
-| [proxy/diag-bytes/run-diag.sh](../dist-release-evidence/certificates/proxy/diag-bytes/run-diag.sh) | `e9ff5c0c20372fb4a904bd80c4b5df030109dedc8ec5650bfb85802d39356640` |
-| [proxy/diag-bytes/commands.txt](../dist-release-evidence/certificates/proxy/diag-bytes/commands.txt) | `5d6317009d1577e77c61076f803af1737e62914b81514c52046d8fb580b8ee40` |
-| [proxy/diag-bytes/direct-lifecycle.log](../dist-release-evidence/certificates/proxy/diag-bytes/direct-lifecycle.log) | `c715060f69d4aa4a31a40edaccc4913de951add91cc09c59f46723c96238a935` |
-| [proxy/diag-bytes/proxied-lifecycle.log](../dist-release-evidence/certificates/proxy/diag-bytes/proxied-lifecycle.log) | `41e80d9bf69d10e604ad7fe401c880edc5268cc782e9bad1da8f8b918667005c` |
-| [proxy/diag-bytes/direct-visibility.log](../dist-release-evidence/certificates/proxy/diag-bytes/direct-visibility.log) | `2e8635773df78efc4b98ca5a9f501804a36db86dfd48229f6f8202c0e67823bb` |
-| [proxy/diag-bytes/proxied-visibility.log](../dist-release-evidence/certificates/proxy/diag-bytes/proxied-visibility.log) | `a5c2ccec0ac31e315278d65660b8fa44c15192777187f0e2d571d2abb8194aa2` |
-| [proxy/diag-bytes/direct-atomicity.log](../dist-release-evidence/certificates/proxy/diag-bytes/direct-atomicity.log) | `773f419ef4f80988e3823f35abf029901705a647b41f462bf1671eb4da08b965` |
-| [proxy/diag-bytes/proxied-atomicity.log](../dist-release-evidence/certificates/proxy/diag-bytes/proxied-atomicity.log) | `d9fb1e35e159967f85c3f78acfec84579ca1d57d01fd0ff59e6281f4bb7ff58e` |
-| [proxy/diag-bytes/direct-nullarm-3.0.log](../dist-release-evidence/certificates/proxy/diag-bytes/direct-nullarm-3.0.log) | `6c256b028058d4b6176ab0b4a96848b44d2ec6b42bb3340b2be6cbb6e54739bb` |
-| [proxy/diag-bytes/proxied-nullarm-3.0.log](../dist-release-evidence/certificates/proxy/diag-bytes/proxied-nullarm-3.0.log) | `a28c70dc5fcd0ad04b50cd6ed4fbdb7d08fbb0b073589c2069f0de50c575f454` |
-| [proxy/diag-bytes/direct-nullarm-3.1.log](../dist-release-evidence/certificates/proxy/diag-bytes/direct-nullarm-3.1.log) | `7b99404b7b65447d8d282906ad058f2bc350b04e87a95078be3d3455d39131bb` |
-| [proxy/diag-bytes/proxied-nullarm-3.1.log](../dist-release-evidence/certificates/proxy/diag-bytes/proxied-nullarm-3.1.log) | `1243791cde4d6ca05f698d7b8031c49f2de3187e8bb2561b1c9f7b42833df38c` |
+| task-c09/after.log (`../dist-release-evidence/certificates/task-c09/after.log`) | `e6f360cbb8ff8fd49104383e039dc2d12744a227405988fb4571572c20570036` |
+| task-c09/matrix.log (`../dist-release-evidence/certificates/task-c09/matrix.log`) | `53cf2d8063f2d29638384e6bd9f97c73d1b77a53cf55cd4cdb229f0eafa1fbee` |
+| task-c09/consumers.log (`../dist-release-evidence/certificates/task-c09/consumers.log`) | `21571270282f0f37e622a7580ff09fbe54db6bd7869c25bb143e655ea8180ac6` |
+| proxy/pins.json (`../dist-release-evidence/certificates/proxy/pins.json`) | `b4d940a1f3d2fea83b3ddea6b9252d37e1e2a65666261bdc93aaa08d595ddc7a` |
+| proxy/reproduction-command.json (`../dist-release-evidence/certificates/proxy/reproduction-command.json`) | `11a6cbbbdfa14e03011c2656fd440f09f4006188c8fb7679866a3eec7446a90b` |
+| proxy/reproduction-result.json (`../dist-release-evidence/certificates/proxy/reproduction-result.json`) | `96e9f9a9697d3632a133a277eafcc7563e9e88f61f2ca81c20e8c4cbfeb713a6` |
+| proxy/reproduction.log (`../dist-release-evidence/certificates/proxy/reproduction.log`) | `8b3091544accc480e9667ac01710cdeefce6febc497273fa5e75c8c1a0630b4d` |
+| proxy/issue-create-command.json (`../dist-release-evidence/certificates/proxy/issue-create-command.json`) | `bde81fd7c50317a375b89a622788f40e0d93430d01c7eaa45d85432b8828dca2` |
+| proxy/issue-readback-command.json (`../dist-release-evidence/certificates/proxy/issue-readback-command.json`) | `396d3a406e83e10d2f010c7be9763e17cdb4d5fb5988840e3e75be59aa9a940c` |
+| proxy/issue.json (`../dist-release-evidence/certificates/proxy/issue.json`) | `b432614909deb0754f1652c6e8e8525c490ffc1247a6ba331baa2fa310d7b96c` |
+| proxy/parity-command.json (`../dist-release-evidence/certificates/proxy/parity-command.json`) | `87d8bf9202890bb438f7c4786030d393c3c4e8e3ad62020b950bad4ae9050168` |
+| proxy/parity.log (`../dist-release-evidence/certificates/proxy/parity.log`) | `97a8177d572eeb10698d8a42614e3fb93ee0f7cb4f21f89c6dbf617bca21dd8c` |
+| reviewed/pins.json (`../dist-release-evidence/certificates/reviewed/pins.json`) | `52e11df11002755ff53d390bba2b1ae42e98701013175a80401e648619f8fd36` |
+| reviewed/stress-census.log (`../dist-release-evidence/certificates/reviewed/stress-census.log`) | `ce4d20b4caae1385f5e793f77b0854860d222def5d2a5b5b581e86a919b934fa` |
+| reviewed/fast/pkcs11-fast-results.json (`../dist-release-evidence/certificates/reviewed/fast/pkcs11-fast-results.json`) | `4501c9699cae1ae293d107f9b07f580eab1f9a06af57f2bdf200a0017628801a` |
+| reviewed/fast/trace.jsonl (`../dist-release-evidence/certificates/reviewed/fast/trace.jsonl`) | `0ae3e0fa1ee0bfb338e53ca94e68ec86270a3c186e0a8d2242379298222155b4` |
+| reviewed/fast-inspection.json (`../dist-release-evidence/certificates/reviewed/fast-inspection.json`) | `147b034e5405ad060bb2398f344cc76be83927841f298d427863d9494c2b506a` |
+| reviewed/fast-dispositions.json (`../dist-release-evidence/certificates/reviewed/fast-dispositions.json`) | `4f67b5c0a020aacaa53de079a05f21a88d24c32c223730c2154270b1e9ba9657` |
+| reviewed/fast-expected.json (`../dist-release-evidence/certificates/reviewed/fast-expected.json`) | `edaee0bcbef4d9dadfd4bbbeb7dfdb2cb744d2eadf8714be0fdde7bd5b5aa1fa` |
+| reviewed/fast-findings-review.json (`../dist-release-evidence/certificates/reviewed/fast-findings-review.json`) | `981590147a7d432d6da67f3f312f5089cb06d9867565711a53c74f3b9a811c54` |
+| reviewed/kat/pkcs11-kat-results.json (`../dist-release-evidence/certificates/reviewed/kat/pkcs11-kat-results.json`) | `da0df4bc8858208d668bfd41ae6f93d31dd7c9f7ba62bf45994a6aa61a104641` |
+| reviewed/kat/trace.jsonl (`../dist-release-evidence/certificates/reviewed/kat/trace.jsonl`) | `ab9b3b0cc6cb45f14e7b98e05d33758fc876fa66ba9172e58a714994e8568d75` |
+| reviewed/kat-inspection.json (`../dist-release-evidence/certificates/reviewed/kat-inspection.json`) | `d254d8e4fdb7be3c4bb4f6cd4513a90673a76f34cf4e11892429c7a8a34f0816` |
+| reviewed/kat-dispositions.json (`../dist-release-evidence/certificates/reviewed/kat-dispositions.json`) | `e62ab8614be67eed2035aa09136b36f553e9a4e78efe8e66bf2b4ee78edd3ed6` |
+| reviewed/kat-expected.json (`../dist-release-evidence/certificates/reviewed/kat-expected.json`) | `e03d14e498332e7c324eab17c96aa87e78a4bf58b24bd2faacd9f942940e8035` |
+| reviewed/kat-findings-review.json (`../dist-release-evidence/certificates/reviewed/kat-findings-review.json`) | `c2236ae1a594f23e441ce766c08bf2085c91ae2e9f658f2db0fc212db5a0174e` |
+| proxy/issue-correct-command.json (`../dist-release-evidence/certificates/proxy/issue-correct-command.json`) | `dfdca09674fa689b39230dadab17203635e9d9e4941bfd1896de80641458cfa8` |
+| proxy/issue-correct.log (`../dist-release-evidence/certificates/proxy/issue-correct.log`) | `531e5d4ab271b5e446b7c77dc4a8097a3bb4b0cdd5bd513e9004f76c5ab66929` |
+| proxy/diag-bytes/pins.json (`../dist-release-evidence/certificates/proxy/diag-bytes/pins.json`) | `0e33d51b41e46db48e2b7e587c18e6f4b3d3ea7a9f9d0756c015c24b6c4a50d3` |
+| proxy/diag-bytes/diag-bytes.c (`../dist-release-evidence/certificates/proxy/diag-bytes/diag-bytes.c`) | `1976c12997545d0da62b5a173f389254d32c2b89fdc2899b699861234f3bed2e` |
+| proxy/diag-bytes/run-diag.sh (`../dist-release-evidence/certificates/proxy/diag-bytes/run-diag.sh`) | `e9ff5c0c20372fb4a904bd80c4b5df030109dedc8ec5650bfb85802d39356640` |
+| proxy/diag-bytes/commands.txt (`../dist-release-evidence/certificates/proxy/diag-bytes/commands.txt`) | `5d6317009d1577e77c61076f803af1737e62914b81514c52046d8fb580b8ee40` |
+| proxy/diag-bytes/direct-lifecycle.log (`../dist-release-evidence/certificates/proxy/diag-bytes/direct-lifecycle.log`) | `c715060f69d4aa4a31a40edaccc4913de951add91cc09c59f46723c96238a935` |
+| proxy/diag-bytes/proxied-lifecycle.log (`../dist-release-evidence/certificates/proxy/diag-bytes/proxied-lifecycle.log`) | `41e80d9bf69d10e604ad7fe401c880edc5268cc782e9bad1da8f8b918667005c` |
+| proxy/diag-bytes/direct-visibility.log (`../dist-release-evidence/certificates/proxy/diag-bytes/direct-visibility.log`) | `2e8635773df78efc4b98ca5a9f501804a36db86dfd48229f6f8202c0e67823bb` |
+| proxy/diag-bytes/proxied-visibility.log (`../dist-release-evidence/certificates/proxy/diag-bytes/proxied-visibility.log`) | `a5c2ccec0ac31e315278d65660b8fa44c15192777187f0e2d571d2abb8194aa2` |
+| proxy/diag-bytes/direct-atomicity.log (`../dist-release-evidence/certificates/proxy/diag-bytes/direct-atomicity.log`) | `773f419ef4f80988e3823f35abf029901705a647b41f462bf1671eb4da08b965` |
+| proxy/diag-bytes/proxied-atomicity.log (`../dist-release-evidence/certificates/proxy/diag-bytes/proxied-atomicity.log`) | `d9fb1e35e159967f85c3f78acfec84579ca1d57d01fd0ff59e6281f4bb7ff58e` |
+| proxy/diag-bytes/direct-nullarm-3.0.log (`../dist-release-evidence/certificates/proxy/diag-bytes/direct-nullarm-3.0.log`) | `6c256b028058d4b6176ab0b4a96848b44d2ec6b42bb3340b2be6cbb6e54739bb` |
+| proxy/diag-bytes/proxied-nullarm-3.0.log (`../dist-release-evidence/certificates/proxy/diag-bytes/proxied-nullarm-3.0.log`) | `a28c70dc5fcd0ad04b50cd6ed4fbdb7d08fbb0b073589c2069f0de50c575f454` |
+| proxy/diag-bytes/direct-nullarm-3.1.log (`../dist-release-evidence/certificates/proxy/diag-bytes/direct-nullarm-3.1.log`) | `7b99404b7b65447d8d282906ad058f2bc350b04e87a95078be3d3455d39131bb` |
+| proxy/diag-bytes/proxied-nullarm-3.1.log (`../dist-release-evidence/certificates/proxy/diag-bytes/proxied-nullarm-3.1.log`) | `1243791cde4d6ca05f698d7b8031c49f2de3187e8bb2561b1c9f7b42833df38c` |
 
 Spec trace: §3 C09, §6 C/oracle/proxy; G13; S01–S05 linked. T-C09
 evidence is complete at final bytes; the task-c09 review passes fully

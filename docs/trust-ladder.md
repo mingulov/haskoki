@@ -88,26 +88,15 @@ below.
   conservation only), C-table determinism is not asserted (rung 2
   replay pins stay on the synthetic engine by design).
 
-## Review-name dispositions (no silent drops)
+## Historical review-name dispositions
 
-The streamline cases (`GuardJumpForUnreachable`, `ValidSuffixes`,
-`MeaningfulPrefix`-free) match NOTHING in the current tree
-(repo-wide grep: zero hits for all three names and for
-"streamline" itself). There is no in-tree equivalent to locate: no
-test, gate, or doc ever carried these names in this lineage, so
-there is no removal to record and no structural-invariant claim
-depending on them. If a future task introduces streamline cases,
-they enter at rung 1 with this ladder updated.
+Earlier review discussions used the names `GuardJumpForUnreachable`,
+`ValidSuffixes`, and `MeaningfulPrefix`. No implementation or test in
+this repository uses those names; this note and the documentation checker
+retain the disposition. They are not missing product features.
 
-"Property matrix" likewise has no in-tree form (zero hits). Its
-closest living equivalent is the rung-2 prop suite set, which —
-contrary to the "only present/supported cases" characterization —
-enumerates failure space too (`ErrorProps`: the full denial grid;
-`OracleProps`: refusal taxonomy; `DigestCmdProps`: staged/error
-traces). Refused-mechanism routing is rung 1 (the battery), as the
-ladder states above.
-
-"Disabled-build" claims: none found in the walkthrough or
-coverage docs. The one non-execution boundary (JVM consumers /
-OpenSSL provider not attempted) is explicitly disclosed in §3,
-not presented as passing behavior.
+A requested "property matrix" was mapped to the existing
+`tests/prop/ErrorProps.hs` denial grid and `OracleProps` refusal checks.
+These are rung-2 properties; refused-mechanism routing still needs the
+rung-1 exhaustiveness tests. Unattempted JVM and OpenSSL-provider clients
+remain disclosed in the walkthrough rather than represented as evidence.
