@@ -31,7 +31,24 @@ part of the Haskoki image and NOT a release dependency.
   (`sha256 5bad965f…` for the observed `libhaskoki.so`) with
   in-place-change detection (`evidence.provider_changed`).
 
-## How to reproduce
+## Capture prerequisites and historical commands
+
+This is the October 6 capture recipe, using locally prepared image tags.
+Prepare the observer using the [p11scope setup instructions](https://github.com/mingulov/p11scope)
+and check its installed `profile --help`: these flags belong to that
+capture's version. The commands below require a Linux host with eBPF,
+cgroup v2, Docker's systemd cgroup driver, and observer privileges.
+Other cgroup drivers use different paths; inspect the workload's actual
+cgroup instead of assuming `system.slice/docker-*.scope` exists.
+
+The observer is tagged `p11scope-observer:preview` locally. For the workload,
+pull the published image and assign the local tag used by this old recipe:
+
+```sh
+docker pull ghcr.io/mingulov/haskoki-demo:v0.3.0.0
+docker tag ghcr.io/mingulov/haskoki-demo:v0.3.0.0 haskoki-demo:0.3.0.0
+mkdir -p out
+```
 
 Observer: `p11scope-observer:preview` (`p11scope profile --help` is the
 pinned flag doc). Step 0 is `doctor` (privileged observer: exit 0,

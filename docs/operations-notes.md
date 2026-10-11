@@ -403,9 +403,12 @@ the provider interval without stopping the RTS
 (`cbits/rts_bootstrap.c`); closing the backend releases digest
 contexts and drops the key maps. Unload is pinned (`-z nodelete`
 in `haskoki.cabal`), and fork children of a booted process fail
-without entering Haskell. Async tombstones stay unbounded until
-reaped (see Async expiry/GC above); no production caller wires
-`reapJob` today.
+without entering Haskell. Async terminal tombstones have per-table
+retention limits of 4096 records and 64 MiB; commits evict the oldest
+terminal records when either limit is exceeded. Owners may also use
+`reapJob` for eager removal (see Async expiry/GC above and
+`maxRetainedTombstones` / `maxRetainedBytes` in
+`src/Haskoki/Runtime/Async.hs`).
 
 Memory handling. Tag comparison inside the engines uses the full
 xor-fold shape (`ctEq`); no broader constant-time promise is made

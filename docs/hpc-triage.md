@@ -382,7 +382,8 @@ every other lane's verdicts are unchanged.
 From `haskoki/` (dash-safe; host needs the lib64 OpenSSL layout
 via the git-ignored `cabal.project.local`, as in CI):
 
-    cabal test --enable-coverage all > hpc-test.log 2>&1; echo "EXIT: $?"
+    mkdir -p hpc
+    cabal test --enable-coverage all > hpc-test.log 2>&1
     hpc sum --union $(find dist-newstyle -name '*.tix') --output=hpc/combined.tix
     CORE_MIX=$(find dist-newstyle -type d -path '*l/haskoki-core/build/*/extra-compilation-artifacts/hpc/vanilla/mix')
     MAIN_MIX=$(find dist-newstyle -type d -path '*extra-compilation-artifacts/hpc/vanilla/mix' | grep -v '/l/\|/t/' | sort | head -n 1)
@@ -393,6 +394,12 @@ via the git-ignored `cabal.project.local`, as in CI):
     hpc report hpc/combined.tix --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
       --include="$MAIN_UNIT:" --exclude=Haskoki.PKCS11 --exclude=Paths_haskoki \
       --per-module > hpc/report-haskoki.txt
+    hpc markup hpc/combined.tix --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
+      --include="$CORE_UNIT:" --exclude=Haskoki.PKCS11 --exclude=Paths_haskoki \
+      --destdir=hpc/html-core
+    hpc markup hpc/combined.tix --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
+      --include="$MAIN_UNIT:" --exclude=Haskoki.PKCS11 --exclude=Paths_haskoki \
+      --destdir=hpc/html-main
 
 Open `hpc/html-core/hpc_index.html` / `hpc/html-main/hpc_index.html`
 (from `hpc markup` with the same flags) for the annotated sources.

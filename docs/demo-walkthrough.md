@@ -542,12 +542,15 @@ which a fresh digest works.
 
 ## 10. In-process shape (no-RPC rationale)
 
-Haskoki is an in-process PKCS#11 demonstrator. It ships as a loadable
-module rather than introducing another daemon and a custom RPC protocol.
-Loading the module also loads its Haskell runtime and crypto implementation
-into the host process. The optional pkcs11-proxy-ng example places the
-provider in a separate process. This changes the process boundary; it does
-not turn Haskoki into a hardened HSM.
+Haskoki ships a loadable PKCS#11 module. Direct loading also brings the GHC
+runtime, its shared libraries, and the crypto implementation into the
+client's address space, where their footprint and runtime behavior can
+affect the client. The pkcs11-proxy-ng example loads that stack in its
+daemon; the application loads a PKCS#11 shim. Reusing its transport avoided
+building a separate Haskoki client/daemon gRPC system unrelated to the
+token's original goals. The p11-kit example offers another process route.
+See [Try Haskoki](try-it.md#try-another-process) for both. This process
+separation does not establish an HSM security boundary.
 
 Four topics, kept separate:
 
@@ -608,16 +611,18 @@ clear; see `docs/operations-notes.md` for the quarantine protocol.
 
 ## 11. Container image: proxy example + compare classifier
 
-Prerequisites: the demo image built using the complete
-[README sequence](../README.md#quick-start-container-no-haskell-build),
-including bundle staging, and an output dir (`mkdir -p out`).
+Use the published demo image and a writable output directory. The
+[hands-on guide](try-it.md) gives the version availability and platform
+requirements. These commands run in your host terminal:
 The proxy example diffs 5 steps
 direct-vs-proxied over the pinned `pkcs11-proxy-ng` v0.2.2 pair on
 loopback (TEST-ONLY transport):
 
 ```sh
-docker run --rm --network none -v "$PWD/out:/out" --entrypoint /bin/sh \
-  haskoki-demo:0.3.1.0 /opt/haskoki/examples/release/proxy-example
+HASKOKI_IMAGE=ghcr.io/mingulov/haskoki-demo:v0.3.1.0
+mkdir -p out
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" "$HASKOKI_IMAGE" proxy-demo
 # proxy-example-ok: 5/5 steps hold direct-vs-proxied
 ```
 
@@ -629,15 +634,19 @@ per-id reasons), direct-only, flaky, and unexpected-difference
 buckets without touching the raw files:
 
 ```sh
-docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.3.1.0 compare
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" "$HASKOKI_IMAGE" compare
 # ... then classify that run dir (newest out/compare-*):
 RD=$(ls -dt out/compare-* | head -1)
-docker run --rm --network none -v "$PWD/out:/out" --entrypoint /bin/sh \
-  haskoki-demo:0.3.1.0 \
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/out" --entrypoint /bin/sh "$HASKOKI_IMAGE" \
   /opt/haskoki/examples/release/compare-classify/compare-classify \
   "/out/$(basename "$RD")"
 # compare-classify-ok: 83 known-difference + shared 22/22 exact
 ```
+
+The `compare` command intentionally exits 1 for the documented findings;
+the classifier must then exit 0 when the frozen sets match.
 
 Frozen sets, family reasons, and the zero-variance rule live in
 `docs/release-results.md` (+ `docs/release-results/` companions).

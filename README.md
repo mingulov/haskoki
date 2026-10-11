@@ -2,7 +2,7 @@
 
 Try the interface used by smart cards and hardware security modules, using
 software on your computer. Haskoki lets you create a disposable key, sign a
-message, check its signature, and experiment with encryption—no hardware
+message, check its signature, and experiment with encryption. No hardware
 or Haskell knowledge required.
 
 **PKCS#11** is the common interface that applications use to ask a *token*
@@ -48,18 +48,20 @@ are in [Try it](docs/try-it.md#image-contents-and-size).
 
 ## Where it came from
 
-Haskoki grew from a small experiment: describe a token's rules in Haskell,
-then let real applications challenge those rules. The first step was a
-loadable module; the harder work followed when clients exercised keys,
-sessions, errors, and process boundaries.
+Haskoki explores a development idea: describe a token's rules in Haskell,
+test that model separately, then let real applications challenge the
+compiled module. The aim was easier development with broad, explicit
+coverage of PKCS#11 behavior: keys, sessions, errors, and interrupted work.
 
 [pkcs11-check](https://github.com/mingulov/pkcs11-check) supplies the external
-checks, and [pkcs11-proxy-ng](https://github.com/mingulov/pkcs11-proxy-ng)
-lets the same token run in a separate process. Both share an author with
-Haskoki. Coding agents helped implement and review the project; tests and
-consumer runs supply the behavioral evidence. The [short development
-story](docs/first-public-release.md) explains the Haskell choice and the
-recorded token usage, including why cached input dominates those figures.
+checks. [pkcs11-proxy-ng](https://github.com/mingulov/pkcs11-proxy-ng) keeps
+Haskell's runtime and shared libraries in a separate process, so a client
+can use Haskoki through a PKCS#11 shim. Reusing that transport avoided
+building a custom client/daemon protocol alongside the token.
+
+Coding agents helped implement and review the project; tests and consumer
+runs supply the behavioral evidence. The [development story](docs/haskoki-creation-story.md)
+explains the design, its milestones, and the recorded AI-token usage.
 
 A side note: [p11scope](https://github.com/mingulov/p11scope) can observe
 PKCS#11 calls on Linux. It is optional and runs separately; a
@@ -67,18 +69,18 @@ PKCS#11 calls on Linux. It is optional and runs separately; a
 
 ## Choose your next step
 
-| I want to… | Start here |
+| I want to... | Start here |
 | --- | --- |
 | Generate a key and sign something myself | [Hands-on guide](docs/try-it.md#try-pkcs11-tool-yourself) |
 | Try the checker or another process | [Checker and remoting](docs/try-it.md) |
-| Understand the project and its creation | [Development story](docs/first-public-release.md) |
+| Understand the project and its creation | [Development story](docs/haskoki-creation-story.md) |
 | Load it in my own application | [Native reference](docs/demo-walkthrough.md) and [host requirements](SUPPORTED-HOSTS.md) |
 | Investigate support or build the project | [Coverage](docs/coverage.md), [results](docs/release-results.md), [developer toolchain](docs/toolchain.md) |
 
-Haskoki exposes PKCS#11 2.40–3.2 interfaces, with 316 behavior-tested
+Haskoki exposes PKCS#11 2.40-3.2 interfaces, with 316 behavior-tested
 mechanisms out of 464 catalog entries. The full checker profile retains
 22 documented findings; the short smoke profile expects zero. Neither
 number establishes conformance or certification. See the [results and
 limits](docs/release-results.md) before choosing it for an integration.
 
-[Apache-2.0](LICENSE) · [Report a problem](https://github.com/mingulov/haskoki/issues/new?template=bug_report.md)
+[Apache-2.0](LICENSE) | [Report a problem](https://github.com/mingulov/haskoki/issues/new?template=bug_report.md)

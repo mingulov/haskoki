@@ -157,7 +157,7 @@ rm -r "$HASKOKI_DOCKER_CONFIG"
 Expect four `OK` checksums (plus a signature from the documented key
 on signed releases). The repository digest must match
 `release-manifest.json`. Run the
-[demo, direct/proxy checks and exploration recipes](try-it.md#after-the-first-successful-release)
+[demo, direct/proxy checks and exploration recipes](try-it.md)
 with that image. Verify the native archive against the
 [host requirements](../SUPPORTED-HOSTS.md), and record the release URL,
 tag SHA, digest and observed results before announcing it.

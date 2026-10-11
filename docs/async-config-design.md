@@ -1,5 +1,10 @@
 # Async/config design: baseline plus delta
 
+Historical receipt paths under `dist-release-evidence/` refer to private
+working notes that are not shipped in this repository. They are shown as
+archive identifiers, not download links. For current demo results and
+commands, use [release results](release-results.md) and [Try Haskoki](try-it.md).
+
 Design brief for the async-execution and configuration surface,
 grounded in the implemented baseline (this repo) plus the external
 research report (`/tmp/haskoki-config/REPORT.md`, ecosystem
@@ -73,7 +78,7 @@ This is baseline clarification only. Scheduler, capacity eight, cancellation,
 competing Join, recipe identity and detached formats are unchanged. Every
 D1-D12 proposal below remains unchanged. See
 [operations notes](operations-notes.md#public-slot-indications-and-retained-private-proofs)
-and [T-N08's executed evidence and deferred case](../dist-release-evidence/notifications/task-n08/review.md).
+and T-N08's executed evidence and deferred case (`../dist-release-evidence/notifications/task-n08/review.md`).
 Final documentation-inclusive gates and installed acceptance remain pending.
 
 ### Configuration (43 keys, honesty-dispositioned)

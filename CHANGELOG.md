@@ -22,12 +22,26 @@ written-at-the-time pointers.
 - Include p11-kit server/client and a local Unix-socket example with signature,
   digest, changed-message, and disconnected-server checks. The scope is the
   example's basic operations, not a full remoting compatibility matrix.
-- Explain the dated development-usage snapshot in `docs/first-public-release.md`
-  and correct stale publication,
+- Publish the creation story, timeline, and dated model-usage account in
+  `docs/haskoki-creation-story*.md`, with root and child calls counted and
+  model totals shown separately. Correct stale publication,
   signature, and comparison-help claims. Preserve the documented full-checker
   findings and transport limits.
 - GitHub's demo contracts run `scripts/test-demo-onboarding.sh` on the exact
   candidate image, including an arbitrary UID and no external network.
+- Validate feature PRs once on `pull_request`; keep push validation for
+  main and tags, plus manual builds. This removes duplicate check runs
+  without changing the release gates.
+
+## [0.3.0.0] - 2026-10-09
+
+First public release from `c49aa45f543522746380eda2a08d9f71b839b4ea`:
+native bundle, verified source archive, test evidence, checksums, and demo
+image. The C surface serves 316 behavior-tested mechanisms from the
+464-row catalog. Demo and smoke checks pass; the full demo-checker profiles
+retain 22 documented findings in each mode. See
+[release notes](docs/release-notes-0.3.0.0.md) and
+[results](docs/release-results.md) for the measured scope.
 
 ## [Unreleased historical changes before 0.3.0.0]
 
@@ -352,7 +366,7 @@ written-at-the-time pointers.
   the Init key-type matrix gap; KAT blocked on key-material
   attribute coverage).
 
-## [0.3.0.0] - 2026-09-21
+## Development baseline labeled 0.3.0.0 - 2026-09-21 (not a public release)
 
 Behavior breadth (proven in-process) + consumer integration + release
 packaging. Release-scope boundary: the 106 behavior-tested mechanisms
