@@ -66,7 +66,7 @@ runs supply the behavioral evidence. The [development story](docs/haskoki-creati
 explains the design, its milestones, and the recorded AI-token usage.
 
 A side note: [p11scope](https://github.com/mingulov/p11scope) can observe
-PKCS#11 calls on Linux. It is optional and runs separately; a
+PKCS#11 calls on Linux. It is optional and runs separately; an
 [observer note](docs/p11scope-trace.md) explains that route.
 
 ## Choose your next step
