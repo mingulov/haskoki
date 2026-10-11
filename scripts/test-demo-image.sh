@@ -254,6 +254,9 @@ assert r["exit_code"] == 0, r
 assert len(r["steps"]) == 8, r
 PY
 echo "demo: 8/8 verifications, report at $DEMO_RUN/report.json"
+note "beginner paths (first run, tools, persistence, remoting)"
+sh scripts/test-demo-onboarding.sh "$TAG" "$OUT/onboarding" \
+  || fail "beginner paths failed (see $OUT/onboarding)"
 
 # ---------------------------------------------------------------------------
 # 3. check lanes: exact outcomes per mode/profile.
@@ -570,8 +573,6 @@ echo "JSON purity: stdout is exactly the report document"
 # 6. Arbitrary-UID rerun (no passwd entry, no HOME).
 # ---------------------------------------------------------------------------
 note "arbitrary UID rerun (19876:19876)"
-sh scripts/test-demo-onboarding.sh "$TAG" "$OUT/onboarding" \
-  || fail "beginner paths failed (see $OUT/onboarding)"
 timeout -s KILL "$STEP_TIMEOUT" docker run --rm --user 19876:19876 \
   -v "$OUT:/out" "$TAG" demo > "$OUT/uid-demo.log" 2>&1
 rc=$?

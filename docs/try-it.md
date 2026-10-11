@@ -130,9 +130,11 @@ p11scope is an optional host-side observer, not an image dependency.
 For scale, the published **v0.3.0.0** image is **112.45 MiB compressed**
 (sum of registry layers) and **341.97 MiB unpacked** (`docker inspect .Size`
 in its [GitHub build](https://github.com/mingulov/haskoki/actions/runs/37961585654/job/113928599520)).
-Those are different measurements, not extra amounts to add together. The
-v0.3.1.0 build records its own size in the GitHub `demo-image-build` job;
-actual disk use also depends on shared Docker layers and retained reports.
+Those are different measurements, not extra amounts to add together. An
+[October 11 v0.3.1.0 candidate build](https://github.com/mingulov/haskoki/actions/runs/38125091547/job/114430294809)
+measured **346.66 MiB unpacked**, about 4.68 MiB (1.4%) more with this patch.
+Each build records its size in the GitHub `demo-image-build` job. Actual disk
+use also depends on shared Docker layers and retained reports.
 
 Everything needed above is included. Larger vector-test collections are
 optional downloads; see [results](release-results.md#vector-data-runs-6).
@@ -153,6 +155,10 @@ docker image inspect "$HASKOKI_IMAGE" --format '{{.Size}} bytes; {{json .RepoDig
   emulation may provide that environment, but those paths are unqualified.
 - **Output permission denied:** create `out` yourself and use the UID/GID
   arguments shown above. A read-only mount cannot hold reports.
+- **Attribute warnings:** OpenSC may report `CKR_ATTRIBUTE_TYPE_INVALID`
+  while inspecting `LOCAL`, `DERIVE`, `VERIFY_RECOVER`, or
+  `ALWAYS_AUTHENTICATE`. These are current attribute-reporting limitations;
+  key generation and signature verification must still succeed.
 - **A command reports findings:** exit 1 means a check failed; exit 2 means
   invalid arguments or setup trouble. Keep the report and logs. A shell
   command returns that tool's own exit code.

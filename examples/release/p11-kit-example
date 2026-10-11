@@ -80,7 +80,8 @@ if tool --login --pin 1234 --verify --mechanism ECDSA-SHA256 \
   echo 'p11-kit-demo: a changed message incorrectly verified' >&2
   exit 1
 fi
-grep -q 'CKR_SIGNATURE_INVALID' changed.log
+# OpenSC renders CKR_SIGNATURE_INVALID as this human-readable error.
+grep -q '^error: Invalid signature$' changed.log
 echo '6. Rejected a changed message.'
 stop_server
 if tool --list-slots > disconnected.log 2>&1; then
