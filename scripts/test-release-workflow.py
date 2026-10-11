@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Focused release workflow contract, without a YAML package dependency."""
 import ast
+from fnmatch import fnmatchcase
 from pathlib import Path
 import re
 import unittest
@@ -22,6 +23,22 @@ def field(text, name, indent):
     if not match:
         raise AssertionError(f"missing field: {name}")
     return match[1]
+
+
+def triggered(text, event, ref=""):
+    """Evaluate the event presence and simple push filters used here."""
+    events = section(text, "on", 0)
+    if not re.search(rf"^  {re.escape(event)}:", events, re.M):
+        return False
+    if event != "push":
+        return True
+    push = section(events, "push", 2)
+    filters = dict(re.findall(r"^    (branches|tags): (.+)$", push, re.M))
+    if not filters:
+        return True
+    kind, name = ref.removeprefix("refs/").split("/", 1)
+    patterns = ast.literal_eval(filters.get({"heads": "branches", "tags": "tags"}[kind], "[]"))
+    return any(fnmatchcase(name, pattern) for pattern in patterns)
 
 
 def evaluate(expression, event, ref, mode, framework=""):
@@ -46,6 +63,25 @@ class WorkflowTests(unittest.TestCase):
         self.text = WORKFLOW.read_text()
         self.jobs = section(self.text, "jobs", 0)
         self.publish = section(self.jobs, "publish", 2)
+
+    def test_feature_branch_updates_start_one_run_per_workflow(self):
+        for workflow in [WORKFLOW, WORKFLOW.with_name("hpc.yml")]:
+            text = workflow.read_text()
+            with self.subTest(workflow=workflow.name):
+                self.assertTrue(triggered(text, "pull_request", "refs/pull/13/merge"))
+                self.assertFalse(triggered(text, "push", "refs/heads/demo/v0.3.1.0"),
+                                 "a PR update must not also start a branch-push run")
+
+    def test_main_tags_and_manual_validation_remain_available(self):
+        for workflow in [WORKFLOW, WORKFLOW.with_name("hpc.yml")]:
+            text = workflow.read_text()
+            for event, ref in [("push", "refs/heads/main"),
+                               ("push", "refs/tags/v0.3.1.0"),
+                               ("push", "refs/tags/checkpoint"),
+                               ("workflow_dispatch", "refs/heads/demo/v0.3.1.0")]:
+                with self.subTest(workflow=workflow.name, event=event, ref=ref):
+                    self.assertTrue(triggered(text, event, ref))
+        self.assertTrue(triggered(WORKFLOW.with_name("hpc.yml").read_text(), "schedule"))
 
     def test_build_dispatch_and_normal_ci_cannot_publish_or_cancel_releases(self):
         concurrency = section(self.text, "concurrency", 0)
