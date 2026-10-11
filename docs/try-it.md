@@ -32,6 +32,8 @@ Open a prepared shell. It creates a fresh token store, sets the module and
 configuration paths, and puts the included tools on `PATH`:
 
 ```sh
+HASKOKI_IMAGE=ghcr.io/mingulov/haskoki-demo:v0.3.1.0
+mkdir -p out
 docker run --rm -it --network none --user "$(id -u):$(id -g)" \
   -v "$PWD/out:/out" "$HASKOKI_IMAGE" shell
 ```

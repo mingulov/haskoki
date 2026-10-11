@@ -86,7 +86,7 @@ provenance attestations, updating `latest`, and publishing the draft:
 | --- | --- |
 | `haskoki-0.3.1.0-linux-x86_64.tar.gz` | Native module, control tool, runtime libraries, licenses, smoke consumer |
 | `haskoki-0.3.1.0.tar.gz` | Verified source distribution |
-| `test-results-0.3.0.0.tar.gz` | Staged test evidence |
+| `test-results-0.3.1.0.tar.gz` | Staged test evidence |
 | `release-manifest.json` | Source SHA, hashes, build information, image digest |
 | `SHA256SUMS` | Checksums of the three archives and manifest |
 | `SHA256SUMS.asc` | Detached OpenPGP signature of the checksums (only when a signing key is provisioned) |

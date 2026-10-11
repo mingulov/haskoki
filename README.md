@@ -70,7 +70,7 @@ PKCS#11 calls on Linux. It is optional and runs separately; a
 | I want to… | Start here |
 | --- | --- |
 | Generate a key and sign something myself | [Hands-on guide](docs/try-it.md#try-pkcs11-tool-yourself) |
-| Try the checker or another process | [Checker and remoting](docs/try-it.md#check-the-token) |
+| Try the checker or another process | [Checker and remoting](docs/try-it.md) |
 | Understand the project and its creation | [Development story](docs/first-public-release.md) |
 | Load it in my own application | [Native reference](docs/demo-walkthrough.md) and [host requirements](SUPPORTED-HOSTS.md) |
 | Investigate support or build the project | [Coverage](docs/coverage.md), [results](docs/release-results.md), [developer toolchain](docs/toolchain.md) |
