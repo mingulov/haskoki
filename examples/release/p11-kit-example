@@ -84,18 +84,14 @@ fi
 grep -q '^error: Invalid signature$' changed.log
 echo '6. Rejected a changed message.'
 stop_server
-# p11-kit intentionally initializes with zero slots when the server is absent.
-# Listing can succeed; a real token operation must no longer be possible.
-tool --list-slots > disconnected.log 2>&1
-if grep -q 'token label *: haskoki-demo' disconnected.log; then
-  echo 'p11-kit-demo: token remained visible with the server stopped' >&2
-  exit 1
-fi
+# p11-kit exposes zero slots without a server. OpenSC reports that as
+# "No slots."; require this specific failure of a real token operation.
 if tool --hash --mechanism SHA256 --input-file abc.txt \
-    --output-file disconnected.bin > disconnected-hash.log 2>&1; then
+    --output-file disconnected.bin > disconnected.log 2>&1; then
   echo 'p11-kit-demo: digest unexpectedly worked with the server stopped' >&2
   exit 1
 fi
+grep -q '^No slots\.$' disconnected.log
 echo '7. Confirmed the client needs the remote server.'
 python3 - "$client" <<'PY'
 import json, os, pathlib, sys
