@@ -50,7 +50,7 @@ import System.FilePath (takeDirectory, (</>))
 import System.IO.Error (catchIOError)
 import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, setFileMode)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
-import System.Posix.Process (exitImmediately, forkProcess, getParentProcessID, getProcessID, getProcessStatus)
+import System.Posix.Process (exitImmediately, getParentProcessID, getProcessID)
 import System.Posix.Signals (sigKILL, signalProcess)
 import System.Posix.Types (Fd, FileMode, ProcessID)
 import System.Process (CreateProcess (..), ProcessHandle, createProcess, getPid, getProcessExitCode, proc)
@@ -1498,18 +1498,26 @@ testLivenessMapping = do
   t PidUnknown $ livenessFromProbes ProbePresent ProbeAbsent Nothing ProbeAbsent
   t PidUnknown $ livenessFromProbes ProbePresent ProbeUnknown (Just ProbePresent) ProbeAbsent
 
--- | A provably-dead pid: fork a child that exits immediately, reap
--- it, and confirm @\/proc@ has no entry (a reused pid is retried).
+-- | A provably-dead pid: spawn a fresh process with no inherited
+-- store descriptors, reap it, and confirm @\/proc@ has no entry
+-- (a reused pid is retried). A raw fork can keep another parallel
+-- test's database guard locked after that test closes its store.
 reapedPid :: IO Int
 reapedPid = go (0 :: Int)
   where
     go n
       | n > 50 = assertFailure "could not reap a dead pid"
       | otherwise = do
-          pid <- forkProcess (exitImmediately ExitSuccess)
-          _ <- getProcessStatus True False pid
-          alive <- fileExist ("/proc/" ++ show (fromIntegral pid :: Int))
-          if alive then go (n + 1) else pure (fromIntegral pid)
+          reaped <- newIORef False
+          bracket spawnReaper (releaseHolder reaped) $ \ph -> do
+            pid <- spawnedPid ph "dead-pid"
+            awaitHolderExit reaped ph "dead-pid"
+            alive <- fileExist ("/proc/" ++ show (fromIntegral pid :: Int))
+            if alive then go (n + 1) else pure (fromIntegral pid)
+    spawnReaper :: IO ProcessHandle
+    spawnReaper = do
+      (_, _, _, ph) <- createProcess ((proc "/bin/true" []) { close_fds = True })
+      pure ph
 
 foreign import ccall unsafe "sys/file.h flock" test_c_flock :: CInt -> CInt -> IO CInt
 
