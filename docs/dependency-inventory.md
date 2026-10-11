@@ -1,4 +1,4 @@
-# Dependency/license inventory — demo image `haskoki-demo:0.3.0.0`
+# Dependency and license inventory
 
 For v0.3.1.0, the runtime also installs the distribution's `p11-kit` and
 `p11-kit-modules` packages for server/client remoting. Their license texts
@@ -7,11 +7,9 @@ are recorded in `/opt/haskoki/image-tools.txt`. The detailed tables below
 are the historical 0.3.0.0 inventory, not a freshly measured package list
 for later images.
 
-What the release image actually contains, per layer, with the
-notice location for each component. Measured on the R8
-candidate build unless noted. This document states facts and
-points at texts; it makes no claim of legal compatibility
-between any two licenses.
+The tables describe the 0.3.0.0 preparation snapshot, with notice locations
+for its components. Use the selected image's `/opt/haskoki/image-tools.txt`,
+`/opt/p11c/freeze.txt`, and package metadata for its exact installed versions.
 
 Haskoki itself: Apache-2.0 (`LICENSE`, `haskoki.cabal`
 `license: Apache-2.0`, image label
@@ -63,14 +61,14 @@ texts beside it. Contents:
 
 `pkcs11-proxy-ng` v0.2.2 (commit `1ed7cc15…`; the `v0.2.2` tag is a
 human label only, never the checkout ref),
-built from source in the image (R9 re-pin; R5 used v0.2.0).
+built from the pinned source in the image.
 Dual MIT/Apache-2.0; full texts ship as `LICENSE-MIT` +
 `LICENSE-APACHE` beside the binaries (asserted present by the
 Dockerfile runtime self-test). Source:
-`https://github.com/mingulov/pkcs11-proxy-ng` at commit `1ed7cc15…`
+[pkcs11-proxy-ng](https://github.com/mingulov/pkcs11-proxy-ng/tree/1ed7cc15c838de2e56ba03ac34f426847ffce049)
 (full-SHA checkout, fail closed on mismatch; Cargo.lock pinned by
 sha256, built `--locked`); daemon/shim hashes in
-`docs/release-results/environment.json`.
+the selected image's `/opt/haskoki/proxy/PROVENANCE`.
 
 ## Checker venv (`/opt/p11c/`, Python 3.14.4)
 
@@ -121,8 +119,7 @@ metadata (verified: `pkcs11-check` carries `licenses/`).
 
 Upstream for each distribution:
 `https://pypi.org/project/<dist>/<version>/` (exact
-project-page URL pattern; verified 2026-10-06:
-`cryptography/50.0.2` and `pytest/9.1.1` both → 200).
+project-page URL pattern).
 The set is hash-locked by
 `docker/checker-requirements.txt` (all 33 distributions; the
 Dockerfile checker stage installs with `pip install
@@ -150,8 +147,7 @@ The License column quotes the file's first `Files` stanza
 (`Files: *` unless noted); `(prose)` = old-format file read
 by hand. Upstream per package: the `Source` column names the
 source package; `https://packages.ubuntu.com/search?keywords=<src>`
-resolves each one (pattern verified 2026-10-06,
-`keywords=libgmp10` → 200; suite `resolute`).
+locates the source package in Ubuntu's package index.
 
 `libgmp10`'s in-image grant is `GPL-2+ or LGPL-3+`
 (`Files: *`): it is consumed only as a dynamic OS package —
@@ -283,8 +279,7 @@ a scanner list:
   272 `sqlite3_*` dynamic symbols and version string
   `3.45.0` (measured `nm -D` + `strings`). SQLite's own
   dedication is public domain
-  (`https://www.sqlite.org/copyright.html`, verified 200
-  2026-10-06); the Haskell bindings around it are covered by
+  ([SQLite copyright](https://www.sqlite.org/copyright.html)); the Haskell bindings around it are covered by
   `licenses/direct-sqlite-LICENSE` (shipped; upstream
   `direct-sqlite-2.3.29`, Hackage `license: BSD3`).
 - `cryptography 50.0.2` (`_rust.abi3.so`) embeds OpenSSL
@@ -303,10 +298,3 @@ a scanner list:
 sets): project files, Apache-2.0. No third-party dataset is
 embedded: vector corpora ship unfetched and download at user
 request only (`fetch-data`).
-
-## Blockers
-
-None found: every shipped component above carries its notice
-in-image or a pointer to its exact source. The two historical
-NOTICES.md open items are resolved in the Bundle section
-(GHC grant scope stated; `haskoki-ctl` linkage measured).

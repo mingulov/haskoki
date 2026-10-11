@@ -1,31 +1,24 @@
-# Provenance — operations fixtures
+# Operator example fixtures
 
-Copied verbatim (read-only source) from the design bundle:
+The first four examples originated in the project's initial design; the
+remaining examples were added alongside their tests. They are maintained
+in this repository.
 
-- `ws/docs/incoming/haskell-pkcs11-design/examples/maximal-demo.toml`
-- `ws/docs/incoming/haskell-pkcs11-design/examples/persistent-demo.toml`
-- `ws/docs/incoming/haskell-pkcs11-design/examples/real-crypto.toml`
-- `ws/docs/incoming/haskell-pkcs11-design/examples/scenario.json`
+| File | Purpose |
+| --- | --- |
+| `maximal-demo.toml` | Target-profile capabilities and local scenario checks |
+| `persistent-demo.toml` | SQLite storage with an explicit path |
+| `real-crypto.toml` | OpenSSL configuration |
+| `scenario.json` | Pending signing and token-removal scenario |
+| `sim-demo.toml` and `sim-scenario.json` | Logical delays, token actions, and fault windows |
+| `multi-token.toml` | Three-token catalog and per-token authentication/isolation |
+| `small-limits.toml` | Disclosure of reserved settings and effective template bounds |
 
-Copied so config/CLI tests run hermetically from
-the repo tree. The design bundle remains the source of truth; any drift
-must be reconciled by re-copying, never by editing both sides.
-`scenario.json` keeps its `status: design-example-not-executed` marker:
-the owned-instance runner interprets an adapted copy of these steps
-(see `Haskoki.Ctl`), it never controls another live process.
+`scenario.json` retains its `design-example-not-executed` origin marker.
+The CLI reads this file and runs an owned local scenario; it never
+controls another process's loaded provider. [CtlSpec](../../model/CtlSpec.hs)
+and [SimBridgeSpec](../../model/SimBridgeSpec.hs) exercise these examples.
 
-Repo-authored (NOT from the design bundle):
-
-- `sim-demo.toml`: the `[sim]` surface demo (delay schedules, token
-  script, fault window) for the ConfigSpec/CtlSpec pins and the
-  sim-scenario runs. Owned by the repo tree; edit in place.
-- `sim-scenario.json`: the sim verb demo (`token.insert`,
-  `async.delay`, `fault.window` over an async sign flow). Run with
-  `sim-demo.toml` (test-enabled); edit in place.
-- `multi-token.toml`: the `[tokens]` catalog demo (3 tokens:
-  `haskoki-demo`/`haskoki-ops`/`haskoki-audit`, slot = catalog
-  index) for the ConfigSpec pins, the MultiTokenSpec seating/
-  auth/isolation suites, and the C consumer proof. Catalog PINs
-  are EXAMPLE-GRADE fixture material ("Do not use production
-  secrets", same discipline as the design fixtures). Owned by the
-  repo tree; edit in place.
+PINs are public test fixtures. Use disposable keys and paths. Configuration
+behavior, including reserved settings, is described in the
+[configuration reference](../../../docs/config-honesty.md).

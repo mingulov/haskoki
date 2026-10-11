@@ -103,7 +103,7 @@
     }
   ],
   "historical_snapshot": {
-    "body_execution": "unknown (the native summary does not report per-test body execution; call-phase skips executed setup before skipping while setup-phase xfails never reached the test body \u2014 see jsonl census, R4 report section 2)",
+    "body_execution": "Unknown: summaries count outcomes rather than complete test bodies. Setup can run before a skip; an expected failure can occur before the body.",
     "counting_model": "pkcs11-check results.json summary (one entry per collected test; failed and crashed are separate counters, findings = failed + crashed; units[].tests lists non-passed outcomes only; unknown outcomes never reported as 0). collected = summary.total. executed = NON-SKIPPED verdicts = passed+failed+error+xfailed+xpassed+crashed+timeout. This is outcome arithmetic, NOT test-body execution (see body_execution). Identity verified on every lane.",
     "document": "docs/release-results.md",
     "lanes": [
@@ -180,7 +180,7 @@
         },
         "exit": 1,
         "mode": "direct",
-        "note": "27 findings triaged in R4 report section 6.1 (4 families, T-M06-partitioned)",
+        "note": "27 historical findings in four families, before the later 22-finding baseline.",
         "profile": "full"
       },
       {
@@ -323,11 +323,7 @@
         "note": "v0.2.2: 27 findings, all shared, zero proxy-only; +2 GMAC vs R5; executed 6060 conserved"
       }
     ],
-    "profiles_frozen": "R4",
-    "r4_note": "proxy passed/skipped/xfailed shift with the timing-flaky ids; only complete per-sample snapshots are recorded, never mixed-sample rows",
     "release": "0.3.0.0",
-    "parity_subset_frozen": "R9 (83 exclusions, zero variants, proxy v0.2.2)",
-    "r5_note": "proxy v0.2.0 re-pin: 25 findings (all shared), 188 diffs, 25 shared; samples byte-identical; see R5 report sections 1/4",
-    "r9_note": "proxy v0.2.2 re-pin: 27 findings (all shared), 83 diffs, 27 shared; upstream #35/#36/#37/#39 closed with probes; see R9 report"
+    "parity_subset_frozen": "Proxy v0.2.2: 83 exclusions with zero allowed variants."
   }
 }

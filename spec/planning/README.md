@@ -1,13 +1,11 @@
-# Planning seed (vendored)
+# Function inventory
 
-`functions.csv` is the 104-row function planning seed, copied verbatim
-from the design bundle (`ws/docs/incoming/haskell-pkcs11-design/spec/
-inventory/functions.csv`, outside this package) so generation and
-validation stay hermetic: three scripts read it
-(`generate-abi.py`, `generate-function-contracts.py`,
-`validate-spec.py`), and CI checks out this repo alone.
+[functions.csv](functions.csv) is the checked-in 104-row input for ABI and
+function-contract generation. It originated in the project's initial design
+and is maintained here.
 
-Bytes are pinned: `spec/abi-reconciliation.json`
-`planning_seed_sha256` must match this file (`validate-spec.py`
-rule A41 fails otherwise). Do not edit in place; re-copy from the
-bundle and re-run `generate-abi.py`.
+Its checksum is recorded as `planning_seed_sha256` in
+[abi-reconciliation.json](../abi-reconciliation.json). When the inventory
+changes, update the generated ABI/contracts and reconciliation together;
+[validate-spec.py](../../scripts/validate-spec.py) checks the checksum and
+row count. Generation uses only files in this repository.

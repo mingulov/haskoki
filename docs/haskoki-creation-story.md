@@ -57,7 +57,7 @@ for calls it cannot forward. v0.3.1.0 also offers a basic p11-kit route
 over a local socket; [Try Haskoki](try-it.md#try-another-process) explains both.
 
 A side note: [p11scope](https://github.com/mingulov/p11scope) can observe
-PKCS#11 calls on Linux. The [sample trace](p11scope-trace.md) illustrates
+PKCS#11 calls on Linux. The [observer note](p11scope-trace.md) explains
 that view. It is optional and runs separately from the demo image.
 
 ## Making it useful to someone else
@@ -74,7 +74,7 @@ Recorded development calls through October 8 account for about **13.24
 billion input-plus-output tokens**; **97.9% of input was cached**, mostly
 repeated context reads. That is model usage, not generated-code volume,
 a bill, or personal working hours. The [usage account](haskoki-creation-story-costing.md)
-gives the model breakdown, counting method, and a later Codex snapshot.
+gives the model breakdown and later Codex usage.
 
 To see the result, [try the Docker demo](../README.md#try-it-with-docker)
 with disposable keys. Haskoki remains a demonstrator with unencrypted

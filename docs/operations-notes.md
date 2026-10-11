@@ -1,31 +1,17 @@
-# Decision note — operations surface
+# Runtime behavior and limits
 
-`hsp11` strings in design-bundle-derived files (e.g. trace paths
-in `tests/ops/fixtures/*.toml`) are inherited verbatim from the
-design bundle (see `tests/ops/fixtures/PROVENANCE.md`) and were
-never the product name; the package ships as `haskoki`.
+For setup and ordinary client commands, use [Try Haskoki](try-it.md) or the
+[native reference](demo-walkthrough.md). This page explains notification,
+async, storage, and lifetime behavior needed by client authors.
 
-## TOML route: minimal hand parser (no new dependency)
+## Configuration syntax
 
-The design examples use a small TOML subset (top-level scalars,
-`[sections]`, strings, integers, booleans, string arrays, `#`
-comments). Options considered:
-
-1. Hackage `tomland` pinned in the freeze — full TOML, but a new
-   dependency subtree against the pinned toolchain + index-state;
-   resolution risk inside the container with no network fallback.
-2. Minimal hand parser covering exactly the subset the example files
-   use, with unknown-key rejection over an explicit known-key table.
-
-Decision: (2). Rationale: the subset is fixed by the three example
-fixtures (all parsed in tests), unknown-key rejection is a one-table
-check either way, and zero new dependencies keeps the verified closure
-unchanged (§8 packaging). If the config surface outgrows the subset,
-revisit `tomland` with the example files as the conformance corpus.
-
-The same "no new dependencies" constraint drives the minimal JSON
-reader in `Haskoki.Runtime.Control` (control envelope + scenario
-runner share it): `aeson` is not in the freeze.
+The configuration parser supports top-level scalars, sections, strings,
+integers, booleans, string arrays, and comments. It implements the subset
+used by the [example configurations](../tests/ops/fixtures), rather than a
+full TOML implementation. Unknown keys/sections reject. The control and
+scenario interfaces likewise use a small JSON reader. Accepted settings
+are listed in the [configuration reference](config-honesty.md).
 
 ## Public slot indications and retained private proofs
 
@@ -39,8 +25,8 @@ flag once. Queries do not acknowledge flags: query current slot information
 after a wait, allowing for another change between the two calls. One flag
 has one consumer among competing polls/blockers; there is no broadcast,
 waiter fairness promise, or failure merely because a second waiter exists.
-This stronger competing-waiter policy is Haskoki's contract; the standards
-leave simultaneous application waits undefined (design §2.2).
+The pending-slot policy is exercised by
+[NotificationsSpec](../tests/model/NotificationsSpec.hs).
 
 The retained **private** `EventQueue`/`TokenRegistry` utilities still use
 edge FIFO `DropOldest`/`DropNewest` policies and dropped counters.
@@ -66,11 +52,10 @@ accepted mutations, including idempotent commands; stale expected generations
 and overflow refuse before cleanup. Neither counter is the stored token
 generation or a persistent async ID. See [configuration scope](config-honesty.md#serving-presence-and-private-scenario-scope).
 
-Memory keeps `siStore = Nothing`; SQLite borrows the existing store.
+Memory mode has no persistent store; SQLite uses its configured store.
 Presence is not persisted: SQLite restart loads the provisioned tokens as
 present with flags clear, while memory retains its existing transient
-behavior. There is no extra store, reset, writer, watcher, event thread or
-new ordinary-object durability contract. Store errors, login, objects,
+behavior. There is no hardware watcher or event thread. Store errors, login, objects,
 session open/close and async completion do not create slot indications.
 
 ## Removal, wait outputs and finalization
@@ -100,13 +85,12 @@ SlotInfo checks catalog validity before null output, TokenInfo checks
 catalog/presence before null output, and OpenSession keeps its output/serial/
 flag guards before catalog/presence. CloseAll on a known empty slot succeeds.
 
-Removed sessions are not resurrected. Qualification limitation:
-`haskokiStdFind` (the FindObjects page routine) still checks find state
-before session validity; that removed-session precedence case is **deferred**
-in the historical notification review (not packaged).
-The repaired FindObjectsFinal case and passing fresh-session find calls do
-not qualify it. No claim that every removed-session entry has been verified
-is made here.
+Removed sessions are not resurrected. One error-order limitation remains:
+`haskokiStdFind` checks find state before session validity, so a FindObjects
+page on a removed session can report a find-state error first. A repaired
+FindObjectsFinal case does not cover that page call. See
+[Standard.hs](../ffi/Haskoki/FFI/Standard.hs) and the
+[notification consumer](../tests/c/notifications_routed.c).
 
 Outside a callback, Wait first checks public liveness, then null `pSlot`,
 non-null `pReserved`, and unknown native-width flag bits beyond
@@ -196,56 +180,29 @@ signal crossing the ABI is promised. Calls on different sessions serialize;
 there is no concurrent or nested callback promise. SERIAL remains required;
 OS-locking permission is not obsolete parallel-session support.
 
-At the pinned proxy, callback registration is discarded and rich notifications
-are DIRECT-ONLY. The blocking/finalize reproduction and existing
-[proxy issue 25](https://github.com/mingulov/pkcs11-proxy-ng/issues/25)
-are distinct from that optional callback capability limitation. Polling parity
-retains the common tables; no proxy callback promise is made. See the
-[reviewed dispositions](pkcs11-oracle-triage.md#notifications-t-n10-documentation-checkpoint).
-The cited executions belong to their recorded revisions. Clean final-revision
-gates, installation and lanes remain pending; no acceptance is claimed.
+Rich notification transport remains excluded on the pinned v0.2.2 proxy;
+blocking waits return `CKR_FUNCTION_NOT_SUPPORTED`. Ordinary forwarded
+polling and direct rich-notification tests have separate scopes in the
+[parity driver](../scripts/test-proxy-parity.sh).
 
 ## Quarantine protocol (memory + SQLite stores)
 
-Both durable stores run the same commit protocol
-(`src/Haskoki/Runtime/Storage/Memory.hs:160-301`,
-`src/Haskoki/Runtime/Storage/SQLite.hs:391-555`; SQLite wraps the
-durable section in one `BEGIN IMMEDIATE` transaction, memory swaps
-under `mask_`): quarantine refusal, pre-commit validation (limits,
-expected revisions), pre-commit fault rollback, then the masked
-durable section with ambiguous-commit verification and post-commit
-quarantine. One commit runs at a time per handle (memory: commit
-`MVar`; SQLite: connection guard).
+Memory and SQLite stores serialize commits, validate limits and expected
+revisions, then perform the masked durable section. SQLite uses one
+`BEGIN IMMEDIATE` transaction. The implementations are in
+[Memory.hs](../src/Haskoki/Runtime/Storage/Memory.hs) and
+[SQLite.hs](../src/Haskoki/Runtime/Storage/SQLite.hs).
 
-Quarantine has three entry points, all per-token with a reason
-string:
+A token in quarantine refuses another commit with `StoreQuarantined`.
+After an ambiguous write, a reload determines whether the projected delta
+landed; the operation is not reissued. A failed reload quarantines the
+affected tokens and reports `CommitUnknown`. A failure after a confirmed
+commit can also quarantine the token while retaining the committed result.
 
-1. Refusal at the gate — a commit touching a quarantined token is
-   refused before validation with `NotCommitted (StoreQuarantined
-   tid why)` (`firstQuarantined`; Memory `:231-234`, SQLite
-   `:466-468`).
-2. Ambiguous-commit verification — after the durable write the
-   observed outcome is discarded and a reload decides: delta
-   present verifies committed (every table, incl. jobs), delta
-   absent verifies rolled back, and a failed reload quarantines
-   the affected tokens and reports `CommitUnknown` (nothing
-   reissues; Memory `:269-293`, SQLite `:519-545`).
-3. Post-commit tail — a failure after a confirmed commit
-   quarantines the affected tokens while durable truth stays
-   `Committed` (Memory `:296-303`, SQLite `:546-557`).
-
-Recovery is authoritative reload (`storeReload`): a clean load
-clears the quarantine list, a failed load keeps it and reports
-the error, and reloads never consult the fault script (Memory
-`:371-379`, SQLite `:674-682`).
-
-Operators observe quarantine per token: `storeQuarantined`
-returns the live `[(TokenId, reason)]` list (`Storage.hs:583`;
-Memory `:129`, SQLite `:368`), and every quarantine entry counts
-one event per token into the `ssQuarantines` stat
-(`quarantineTokens`; `Storage.hs:373-378`, Memory `:363-367`,
-SQLite `:666-670`). Quarantine and stats are live-handle
-properties — fresh handles start clean (Memory header `:14-15`).
+An authoritative `storeReload` clears quarantine only after a clean load.
+Quarantine reasons and statistics belong to the live store handle; fresh
+handles start clean. [CommitSpec](../tests/storage/CommitSpec.hs) exercises
+publication and fault handling.
 
 ## Public 3.2 async routing
 
@@ -290,7 +247,7 @@ poll per valid Complete and completion when ready. Scenario-runner
 `async.enabled` and `async.pending_polls` do not configure this native
 policy. There are no new threads, timers, or configuration semantics.
 
-Standard memory mode keeps `siStore = Nothing`: attached execution
+Standard memory mode has no detached store: attached execution
 works, but GetID for a resolved live job and Join on a view without a
 store retain `CKR_GENERAL_ERROR`. SQLite uses the existing store and
 one detached context for the home token. Non-home sessions have no
@@ -301,7 +258,7 @@ memory sessions. Private exports continue to own their context/job
 tokens, publish version `1`, return `CKR_PENDING` on successful Join,
 and support their existing query/short-buffer and optional-need dialogue.
 
-At proxy pin `a48b60ba54b0163f4999c1e4fc0514bf7dc01681`,
+At the pinned proxy v0.2.2 (`1ed7cc15`),
 `async_routed` is explicitly `DIRECT-ONLY` in the parity driver under
 [proxy issue 24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24).
 The pinned transport returns fixed GetID/Join refusals and cannot
@@ -315,43 +272,22 @@ bytes; the completion verdict and terminal in-memory attachment remain.
 There is no crash-safe exactly-once guarantee across a failed durable
 mark. Fault-injection coverage in `tests/engine/DetachedEngineSpec.hs`
 is separate from the successful-store SQLite restart proof in
-`tests/c/async_routed.c`. Runtime policy and D1-D12 are unchanged.
-See the [reviewed async qualification](pkcs11-oracle-triage.md#async-routing-verification-2026-09-30)
-for measured source and artifact pins; final-revision verification is pending.
+`tests/c/async_routed.c`. See the [qualification reference](pkcs11-oracle-triage.md#public-async-operations)
+for the native and external-checker scopes.
 
 ## Async expiry/GC
 
-Job tombstones are retained under a DUAL bound per table: at
-most `maxRetainedTombstones` (4096) tombstones AND at most
-`maxRetainedBytes` (64 MiB) of retained bytes. Every commit past
-either bound evicts the oldest (lowest-id) terminal tombstones
-first — the minimal oldest-first prefix restoring both bounds —
-so repeated jobs cannot grow provider memory by count or by
-bytes. The byte budget prices every retained payload byte
-exactly (effect inputs/parameters/AAD/signatures, key-template
-bytes, pinned session-snapshot bytes, completion payloads) plus
-a fixed per-tombstone structural allowance; live jobs are
-excluded (transient and live-capped). The 64 MiB value is
-measured: a count-full table of small suite-shaped tombstones
-retains 12.0 MB, the max-volume sim shape retains 8.5 MB, so 64
-MiB (the smallest power-of-two multiple of the 16 MiB output
-bound) clears the suite worst case with 5.6x headroom while
-shrinking the pre-fix ceiling (~64 GiB: 4096 tombstones times
-attacker-sized inputs plus up-to-16 MiB outputs) by three orders
-of magnitude. A single over-budget job is always retained on its
-own commit (its delivery stays observable) and evicted as an
-elder by the next terminal commit. The live cap counts live jobs
-only (tombstones never block submits), and delivered tombstones
-retain their completion payload until evicted or reaped. Eager
-release stays owner-only via the manual terminal-only `reapJob`
-(synchronous, under the job lease; `reapEligibility` drops
-terminal tombstones and leaves live states with `ReapLive`,
-unknown ids report `ReapUnknown`); there is no background reaper
-(discipline: no background threads). An evicted job observes
-unknown, exactly as if the owner had reaped it. Ruling + code:
-`src/Haskoki/Runtime/Async.hs:1124-1185` (ruling, reaping rule)
-and `:1462-1497` (dual-bound eviction + commit wiring); budget
-derivation on `maxRetainedBytes`.
+Terminal job records are retained under two per-table limits: 4096 records
+and 64 MiB of retained bytes. Commits evict the oldest terminal records when
+either bound is exceeded; live jobs have their separate capacity limit.
+A newly completed job larger than the byte budget is retained for that
+commit and can be evicted by the next terminal commit. Delivered payloads
+remain until eviction or explicit terminal-only `reapJob`.
+
+There is no background reaper. An evicted or reaped id becomes unknown.
+See `maxRetainedTombstones`, `maxRetainedBytes`, and `reapEligibility` in
+[Async.hs](../src/Haskoki/Runtime/Async.hs), with count/byte bounds in
+[AsyncSpec](../tests/model/AsyncSpec.hs).
 
 ## Release limits for operators
 
@@ -375,7 +311,7 @@ PINs and auth state. PINs are fixed at open (home `1234` / `5678`,
 catalog PINs from the TOML file in plaintext) with no PIN-change
 path; comparison is the position-constant xor fold with length
 short-circuit (`pinsMatch` in `ffi/Haskoki/FFI/Standard.hs`),
-accepted per the in-code PIN-compare ruling, not machine constant-time. The
+with no uniform running-time guarantee. The
 persisted token row carries the login/attempt/lockout counters
 (`TokenAuth` in `core/Haskoki/Session.hs`); wrong guesses count
 down per-role retries to `CKR_PIN_LOCKED`. Catalog PINs are
@@ -411,8 +347,8 @@ terminal records when either limit is exceeded. Owners may also use
 `src/Haskoki/Runtime/Async.hs`).
 
 Memory handling. Tag comparison inside the engines uses the full
-xor-fold shape (`ctEq`); no broader constant-time promise is made
-for Haskell paths (the PIN-compare ruling covers the PIN compare only).
+xor-fold shape (`ctEq`); no uniform running-time guarantee is made
+for Haskell paths.
 Native code cleanses scoped native buffers,
 including HMAC scratch (sized `OPENSSL_clear_free` on returned
 buffers plus cipher-scratch cleansing in `cbits/ossl4_ctx.c`); no

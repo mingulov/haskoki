@@ -2,8 +2,8 @@
 
 The project grew from a loadable module into a token people could try.
 This table follows the development work; it is not a list of separately
-published releases. September 20 comes from the [changelog](../CHANGELOG.md)
-and the original workspace history. The public repository begins with
+published releases. The [changelog](../CHANGELOG.md) starts on September 20.
+The public repository begins with
 [the September 24 import](https://github.com/mingulov/haskoki/commit/2cd3f37).
 
 | When, in 2026 | What changed | Why it mattered |
@@ -24,10 +24,8 @@ and the original workspace history. The public repository begins with
 | v0.3.1.0 preparation | Shorter onboarding, a prepared shell, pkcs11-tool examples, and p11-kit remoting | Makes a first demo easier to run and understand; publication is a separate step. |
 
 The [coverage](coverage.md) and [results](release-results.md) pages give
-current counts and limitations. Earlier measurements in those records
-belong to their stated revisions. Calendar dates do not measure personal
-working hours, and the [AI-usage account](haskoki-creation-story-costing.md)
-uses model-call timestamps rather than commit dates.
+current counts and limitations. The
+[AI-usage account](haskoki-creation-story-costing.md) follows the same stages.
 
 Read the [creation story](haskoki-creation-story.md) for the reasoning
 behind these stages, or [try the demo](../README.md#try-it-with-docker).

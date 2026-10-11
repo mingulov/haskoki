@@ -30,22 +30,19 @@ INC = ROOT / "cbits" / "mech_catalog.inc"
 # to HASKOKI_MECH_COUNT in cbits/mech_catalog.inc (see
 # check_consistency). Never hardcode the count here.
 BOUNDARY_TEMPLATE = """\
-> Release-scope boundary (the original one-mechanism note is retired):
-> every "tested" row below is proven IN-PROCESS by the
-> Haskell suites (see test_evidence artifacts) against real
-> libcrypto (pinned OpenSSL 4.0.2) and/or the synthetic engine.
-> The C function tables of THIS release route real crypto over
-> the {n}-row tested catalog (see docs/demo-walkthrough.md §5 and
-> scripts/test-release-install.sh); genuinely unsupported calls
-> keep their documented refusals. No row below claims more than
-> its evidence. Consumer evidence: scripts/test-consumers.sh,
-> scripts/test-proxy-parity.sh, plus the 2026-09-21 consumer session notes (working notes, outside this package).
+> Scope: the row evidence names in-process Haskell tests using
+> pinned OpenSSL 4.0.2 and/or the synthetic engine. The C surface
+> serves the {n}-row real-tested catalog; listing a mechanism does
+> not establish coverage of every parameter or operation through C.
+> Native checks: [consumer tests](../scripts/test-consumers.sh),
+> [proxy parity](../scripts/test-proxy-parity.sh), and
+> [bundle installation](../scripts/test-release-install.sh).
 """
 
 LIMITATIONS_TEMPLATE = """\
 - C surface: the default config serves 1 slot with its token (a
-  `[tokens]` catalog serves N slots; see SUPPORTED-HOSTS.md and
-  `docs/demo-walkthrough.md` §8). Real C-surface crypto routes
+  `[tokens]` catalog serves N slots; see [host requirements](../SUPPORTED-HOSTS.md)
+  and [token provisioning](demo-walkthrough.md#token-provisioning-and-state)). Real C-surface crypto routes
   over the {n}-row tested catalog; genuinely unsupported calls
   keep their documented refusals.
 - `haskoki-ctl scenario run` simulates against an owned in-memory
@@ -181,8 +178,8 @@ def render(mechs, issues):
     L.append("")
     L.append("### Behavior-tested mechanisms (executable recipes, in-process)")
     L.append("")
-    L.append("Each row names its evidence artifacts (suite/case). No row "
-             "implies C-surface availability (see boundary above). The kind "
+    L.append("Each row names its in-process evidence (suite/case). See the "
+             "scope above for the C surface. The kind "
              "column marks rows carried only by the catalog sweep batteries "
              "(`sweep-only`) versus rows with behavior-exercising evidence "
              "(`dedicated`).")

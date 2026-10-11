@@ -5,7 +5,7 @@ C surface truthfully, via the publisher.
 Fails (exit 1) when any rule fails. The original one-mechanism boundary
 note ("C function tables ... expose exactly one mechanism") went
 stale when the real C surface grew past it; the corrected boundary
-names that surface and records the retirement provenance. The fix
+names that surface. The fix
 lives in the PUBLISHER (scripts/publish-coverage.py), never as a
 hand-edit of the GENERATED file. The served-row count is DERIVED
 from spec/mechanisms.json (support.real == "tested") here and in
@@ -15,7 +15,6 @@ twice: 104, then 130):
 * BLOCK: the doc carries a `>`-quoted boundary block (sanity).
 * NO-ONEMECH: the stale one-mechanism claim is gone from it.
 * SURFACE-COUNT: it names the derived N-row tested C surface.
-* PROVENANCE: it records the note retirement.
 * PUB-EMITS-COUNT: the publisher derives the N-row boundary from
   the catalog and grounds it in HASKOKI_MECH_COUNT.
 * PUB-DROPS-ONEMECH: the publisher source drops the stale claim.
@@ -61,8 +60,6 @@ def main() -> int:
           "stale one-mechanism claim gone from the boundary")
     check("SURFACE-COUNT", f"{n}-row" in block,
           f"boundary names the derived {n}-row tested C surface")
-    check("PROVENANCE", "retired" in block,
-          "boundary records the note retirement")
     check("PUB-EMITS-COUNT", "{n}-row" in pub
           and "HASKOKI_MECH_COUNT" in pub,
           "publisher derives the N-row boundary, grounded in the C catalog")
