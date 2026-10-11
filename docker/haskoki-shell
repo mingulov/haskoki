@@ -8,8 +8,10 @@ if [ ! -d "$out" ] || [ ! -w "$out" ]; then
   echo "haskoki-shell: output directory is missing or unwritable: $out" >&2
   exit 2
 fi
+out=$(cd "$out" && pwd -P)
 run=$(mktemp -d "$out/session-XXXXXXXX") || exit 2
 export HASKOKI_MODULE=${HASKOKI_MODULE:-/opt/haskoki/current/lib/libhaskoki.so}
+case "$HASKOKI_MODULE" in /*) ;; *) HASKOKI_MODULE="$PWD/$HASKOKI_MODULE" ;; esac
 if [ -z "${HASKOKI_CONFIG:-}" ]; then
   HASKOKI_CONFIG="$run/backend.toml"
   export HASKOKI_CONFIG
@@ -32,6 +34,7 @@ elif [ ! -r "$HASKOKI_CONFIG" ]; then
   echo "haskoki-shell: cannot read HASKOKI_CONFIG: $HASKOKI_CONFIG" >&2
   exit 2
 fi
+case "$HASKOKI_CONFIG" in /*) ;; *) HASKOKI_CONFIG="$PWD/$HASKOKI_CONFIG" ;; esac
 cd "$run"
 printf 'Haskoki session: %s\nModule: %s\nConfig: %s\n' \
   "$run" "$HASKOKI_MODULE" "$HASKOKI_CONFIG" >&2

@@ -2,7 +2,8 @@
 # Run the beginner paths against an existing image. No builds, host toolchain,
 # network access in the containers, host credentials, or real keys required.
 # The first run catches missing /out; hands-on catches missing tools/config and
-# lost keys between clients; remoting catches a client that never reaches Haskoki.
+# lost keys between clients/containers; remoting catches a client that never
+# reaches Haskoki.
 set -u
 image=${1:?usage: test-demo-onboarding.sh IMAGE [OUTPUT-DIR]}
 out=${2:-$(mktemp -d)}
@@ -55,6 +56,35 @@ hands_on() {
   '
 }
 
+persistence() {
+  saved="$out/persistence"
+  mkdir -p "$saved" || return 1
+  saved=$(cd "$saved" && pwd -P) || return 1
+  # Relative overrides must keep working after the helper changes directory.
+  timeout -s KILL 180 docker run --rm --network none --user "$(id -u):$(id -g)" \
+    -v "$saved:/out" -w / -e HASKOKI_DEMO_OUT=out \
+    -e HASKOKI_MODULE=opt/haskoki/current/lib/libhaskoki.so "$image" shell sh -ec '
+      pkcs11-tool --module "$HASKOKI_MODULE" --login --pin 1234 \
+        --keypairgen --key-type EC:prime256v1 --label saved-key --usage-sign
+      printf "keep this token" > /out/message.txt
+      pkcs11-tool --module "$HASKOKI_MODULE" --login --pin 1234 \
+        --sign --mechanism ECDSA-SHA256 --label saved-key --type privkey \
+        --input-file /out/message.txt --output-file /out/signature.bin
+      printf "%s\n" "${HASKOKI_CONFIG#/}" > /out/reuse-config
+    ' || return 1
+  config=$(cat "$saved/reuse-config") || return 1
+  # A fresh container must find the original public key in the mounted store.
+  timeout -s KILL 180 docker run --rm --network none --user "$(id -u):$(id -g)" \
+    -v "$saved:/out" -w / -e HASKOKI_CONFIG="$config" "$image" shell sh -ec '
+      pkcs11-tool --module "$HASKOKI_MODULE" --login --pin 1234 \
+        --verify --mechanism ECDSA-SHA256 --label saved-key --type pubkey \
+        --input-file /out/message.txt --signature-file /out/signature.bin \
+        > /out/reuse-verify.log 2>&1
+      cat /out/reuse-verify.log
+      grep -q "Signature is valid" /out/reuse-verify.log
+    '
+}
+
 p11_kit() {
   timeout -s KILL 180 docker run --rm --network none --user 19876:19876 "$image" p11-kit-demo \
     > "$out/p11-kit.txt" 2>&1 &&
@@ -73,6 +103,7 @@ proxy() {
 
 check first-run first_run
 check hands-on hands_on
+check persistence persistence
 check p11-kit p11_kit
 check proxy proxy
 test "$failures" -eq 0
