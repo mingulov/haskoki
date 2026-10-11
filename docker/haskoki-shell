@@ -1,0 +1,43 @@
+#!/bin/sh
+# Prepare one disposable, persistent-within-this-session token for ordinary
+# PKCS#11 clients. Keep generated files under /out so a bind mount retains them.
+set -eu
+umask 077
+out=${HASKOKI_DEMO_OUT:-/out}
+if [ ! -d "$out" ] || [ ! -w "$out" ]; then
+  echo "haskoki-shell: output directory is missing or unwritable: $out" >&2
+  exit 2
+fi
+run=$(mktemp -d "$out/session-XXXXXXXX") || exit 2
+export HASKOKI_MODULE=${HASKOKI_MODULE:-/opt/haskoki/current/lib/libhaskoki.so}
+if [ -z "${HASKOKI_CONFIG:-}" ]; then
+  HASKOKI_CONFIG="$run/backend.toml"
+  export HASKOKI_CONFIG
+  python3 - "$HASKOKI_CONFIG" "$run/token.sqlite" <<'PY'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text('''schema_version = 1
+profile = "real-crypto"
+[storage]
+kind = "sqlite"
+path = ''' + json.dumps(sys.argv[2]) + '''
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+[trace]
+enabled = false
+''')
+PY
+elif [ ! -r "$HASKOKI_CONFIG" ]; then
+  echo "haskoki-shell: cannot read HASKOKI_CONFIG: $HASKOKI_CONFIG" >&2
+  exit 2
+fi
+cd "$run"
+printf 'Haskoki session: %s\nModule: %s\nConfig: %s\n' \
+  "$run" "$HASKOKI_MODULE" "$HASKOKI_CONFIG" >&2
+if [ "$#" -eq 0 ]; then
+  echo 'Try: pkcs11-tool --module "$HASKOKI_MODULE" --list-slots' >&2
+  echo 'The demo user PIN is 1234. Type exit to leave.' >&2
+  exec /bin/sh
+fi
+exec "$@"

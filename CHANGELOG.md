@@ -10,7 +10,26 @@ under `../ws/docs/...`: those working notes live outside this package
 and are not shipped here; the paths stay verbatim as
 written-at-the-time pointers.
 
-## [Unreleased]
+## [0.3.1.0] - Unreleased
+
+### Demo and documentation
+
+- Docker-first introduction and one hands-on guide: explain PKCS#11, signing,
+  encryption, token persistence, and how to try the included client tools.
+- Create writable `/out` in the demo image so the default command works
+  without a bind mount. Add `shell` with a fresh SQLite token and stable
+  tool/module paths, plus `proxy-demo` and `p11-kit-demo` shortcuts.
+- Include p11-kit server/client and a local Unix-socket example with signature,
+  digest, changed-message, and disconnected-server checks. The scope is the
+  example's basic operations, not a full remoting compatibility matrix.
+- Explain the dated development-usage snapshot in `docs/first-public-release.md`
+  and correct stale publication,
+  signature, and comparison-help claims. Preserve the documented full-checker
+  findings and transport limits.
+- GitHub's demo contracts run `scripts/test-demo-onboarding.sh` on the exact
+  candidate image, including an arbitrary UID and no external network.
+
+## [Unreleased historical changes before 0.3.0.0]
 
 ### Added
 

@@ -1,71 +1,85 @@
 # How Haskoki developed
 
-Haskoki explores whether a Haskell model can make PKCS#11 behavior easier
-to inspect, test, and exercise through ordinary C clients. OpenSSL supplies
-the cryptographic operations. Haskell describes protocol state, decisions,
-and the work needed to carry them out.
+Haskoki began with a small question: could a token's rules be described in
+Haskell and exercised by the same C applications that use a smart card or
+hardware security module? The first useful result was a shared library that
+a client could load. Adding cryptographic algorithms was only part of the
+work; clients also needed predictable sessions, key visibility, errors,
+and behavior when operations stop halfway through.
 
-The public Git history starts with an import on 2026-09-24, already
-containing a working model and shared-library skeleton. The changelog
-also records earlier scaffold work. Those dates describe repository
-activity, not the author's working hours or the start of the idea.
+The [changelog](../CHANGELOG.md) records the scaffold on September 20, 2026.
+The [public repository](https://github.com/mingulov/haskoki/commit/2cd3f37)
+starts with an import on September 24. The first public release,
+[v0.3.0.0](https://github.com/mingulov/haskoki/releases/tag/v0.3.0.0),
+was published on October 9. That is a calendar timeline, not a measurement
+of anyone's working hours.
 
-## From a loadable module to a usable demo
+## Why Haskell?
 
-| Period | What changed | Public record |
-| --- | --- | --- |
-| September 24-25 | The imported token met external consumers. Work addressed key import, error codes, templates, and session behavior. | [Initial import](https://github.com/mingulov/haskoki/commit/2cd3f37) and [oracle triage](pkcs11-oracle-triage.md) |
-| September 25-30 | Cipher modes, curves, post-quantum operations, MACs, and derivation expanded the mechanism catalog. Coverage reached 316 behavior-tested rows out of 464. | [Coverage inventory](coverage.md) and [changelog](../CHANGELOG.md) |
-| September 30-October 3 | Message calls, async completion, slot notifications, and certificate objects gained native routing and lifecycle tests. | [Operation contracts](operations-notes.md) and [byte formats](byte-formats.md) |
-| October 4-6 | A relocatable bundle, source package, demo container, checker profiles, and proxy comparison made the project easier to try. | [Packaging work](https://github.com/mingulov/haskoki/commit/a338ace) and [demo image](https://github.com/mingulov/haskoki/commit/5592088) |
-| October 7-8 | Review fixes tightened native boundaries and packaging checks; CI build, ownership, and timeout problems were corrected. | [Hardening changes](https://github.com/mingulov/haskoki/commit/29dab82) and [passing CI at 0603322](https://github.com/mingulov/haskoki/actions/runs/37774745195) |
+Haskell is a functional programming language. Here its useful idea is to
+separate a decision from the work needed to carry it out. For example, the
+model can decide whether a session may sign and which state should follow;
+the runtime then asks OpenSSL to perform the signature.
 
-This produced a release candidate. As of 2026-10-09, the repository has
-no published release tag or downloadable GitHub release, and anonymous
-access to the proposed GHCR image is denied. Building and testing release
-artifacts is separate from publishing them.
+This makes many protocol rules testable using ordinary values, without
+loading a native client. Different types help keep session handles, object
+handles, and requests distinct. The compiler can catch some mismatches,
+but native resource lifetimes, concurrency, and cryptographic behavior
+still need tests. The [design note](haskell-design.md) gives a short
+code-oriented explanation. Users of the demo need not read Haskell.
 
-## What the tests taught us
+## What made it better
 
-Tests changed the implementation and its claims. Incorrectly advertised
-AES-GCM message capabilities were withdrawn, and the frozen full-checker
-finding set fell from 27 to 22. The remaining findings are still disclosed;
-a smaller number is not proof of complete support. See the
-[capability change](https://github.com/mingulov/haskoki/commit/29dab82)
-and [updated checker expectations](https://github.com/mingulov/haskoki/commit/f707095).
+[pkcs11-check](https://github.com/mingulov/pkcs11-check) loads the compiled
+module as an external client. Its findings drove work on templates, errors,
+and capability claims. For example, review withdrew an incorrectly
+advertised AES-GCM message capability. The full demo-checker finding set
+fell from 27 to 22; the remaining findings are still [documented](release-results.md).
 
-Proxy testing exposed problems that direct calls did not. An earlier proxy
-version was rejected after daemon failures. The qualified v0.2.2 pin improved
-the compared subset, while known differences and skipped cases remained
-explicit. The [results record](release-results.md) keeps the earlier
-measurements alongside current CI results.
+[pkcs11-proxy-ng](https://github.com/mingulov/pkcs11-proxy-ng) added another
+question: would the same application behave the same way with Haskoki in a
+separate process? Earlier proxy tests exposed failures missed by direct
+loading. The demo pins the qualified v0.2.2 version and records differences
+explicitly. Both projects share an author with Haskoki, so this is useful
+consumer evidence rather than an independent audit.
 
-Some failures came from the test setup itself: container ownership,
-missing vector caches, assumptions about DH output width, and a proxy test
-timeout. Those fixes matter to reproducibility, but they do not add token
-features. The [October 8 history](https://github.com/mingulov/haskoki/commits/0603322)
-shows that distinction.
+[p11scope](https://github.com/mingulov/p11scope) adds optional observation
+of calls on Linux. The [recorded trace](p11scope-trace.md) is a small example,
+not a requirement for trying the token.
 
-## Haskell and the development process
+Coding agents helped write and review the implementation. Haskell tests,
+real C clients, external checks, and review passes caught different classes
+of mistake. Packaging then became part of the work: a demonstrator is only
+useful to someone else if they can run it and understand the result.
 
-The useful Haskell idea is the separation of protocol rules from effects.
-The pure model can be tested with ordinary values; the runtime still has
-to manage native resources, concurrency, storage, and the C ABI. The
-[Haskell design note](haskell-design.md) explains what this buys and where
-the boundary ends.
+## How many AI tokens?
 
-Development used coding agents, review passes, native consumers, and
-external checkers. These are complementary sources of evidence. Agent
-review is not an independent security audit, and Haskoki and pkcs11-check
-share an author. The [trust ladder](trust-ladder.md) separates model tests,
-native execution, comparisons, and review judgments.
+The committed [usage snapshot](development-metrics.json) covers recorded
+Haskoki workspace sessions **through October 6, 2026 at 04:18 UTC**:
 
-A [historical usage snapshot](development-metrics.json) covers workspace
-sessions only through October 6. It is not a final project cost: cached
-context dominates its input counts, parallel sessions cannot be added
-into elapsed working hours, and no actual spending or personal-time
-figure is established. Those figures are omitted rather than guessed.
+| Measurement | Recorded amount |
+| --- | ---: |
+| Input tokens, including cached input | 7,826,511,262 |
+| Of that input, reread from cache | 7,678,241,620 (98.1%) |
+| Input not served from cache | 148,269,642 |
+| Output tokens, including reasoning | 17,962,666 |
+| Input plus output | 7,844,473,928 (about 7.84 billion) |
 
-To try the result, start with the [small demo](try-it.md). Feedback about
-loading the module in another consumer, reproducing a report, or a needed
-PKCS#11 behavior is more useful than a general pass/fail label.
+A token is a small chunk of text processed by a model. These large input
+numbers mostly reflect repeated reading of context during long sessions;
+they are not billions of tokens of source code. Cached input is already
+inside the input figure, and reasoning is already inside output: adding
+either again would double-count it. The snapshot covers implementation,
+reviews, retries, and packaging, using its recorded workspace attribution
+and deduplication rules.
+
+This is a dated checkpoint, **not the complete cost of the released
+project**: it excludes later release work and this patch. No personal-hour
+or actual-spending figure is established. Session durations overlap when
+agents run concurrently, and token counts alone do not establish a bill.
+The JSON retains the model breakdown and counting method for readers who
+want to inspect them.
+
+Start with the [demo](../README.md#try-it-with-docker). Feedback such as
+“this command failed” or “I could not tell where my key went” directly
+helps improve the next version.

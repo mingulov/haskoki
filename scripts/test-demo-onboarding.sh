@@ -20,14 +20,14 @@ check() {
 }
 
 first_run() {
-  docker run --rm --network none --user 19876:19876 "$image" > "$out/first-run.txt" 2>&1 &&
+  timeout -s KILL 180 docker run --rm --network none --user 19876:19876 "$image" > "$out/first-run.txt" 2>&1 &&
     grep -q 'demo-ok: 8/8 verifications hold' "$out/first-run.txt" || {
       cat "$out/first-run.txt"; return 1;
     }
 }
 
 hands_on() {
-  docker run --rm --network none --user 19876:19876 "$image" shell sh -ec '
+  timeout -s KILL 180 docker run --rm --network none --user 19876:19876 "$image" shell sh -ec '
     haskoki-ctl --version
     pkcs11-check version
     pkcs11-tool --module "$HASKOKI_MODULE" --list-slots
@@ -56,7 +56,7 @@ hands_on() {
 }
 
 p11_kit() {
-  docker run --rm --network none --user 19876:19876 "$image" p11-kit-demo \
+  timeout -s KILL 180 docker run --rm --network none --user 19876:19876 "$image" p11-kit-demo \
     > "$out/p11-kit.txt" 2>&1 &&
     grep -q 'p11-kit-demo-ok:' "$out/p11-kit.txt" || {
       cat "$out/p11-kit.txt"; return 1;
@@ -64,7 +64,7 @@ p11_kit() {
 }
 
 proxy() {
-  docker run --rm --network none --user 19876:19876 "$image" proxy-demo \
+  timeout -s KILL 180 docker run --rm --network none --user 19876:19876 "$image" proxy-demo \
     > "$out/proxy.txt" 2>&1 &&
     grep -q 'proxy-example-ok: 5/5 steps hold' "$out/proxy.txt" || {
       cat "$out/proxy.txt"; return 1;

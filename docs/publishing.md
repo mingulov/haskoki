@@ -2,14 +2,22 @@
 
 Use **Actions -> CI and Release -> Run workflow** to publish the demo.
 Select **main**, set **mode** to **release**, and enter the exact Cabal
-**version** without `v` (currently `0.3.0.0`). The default **build** mode
+**version** without `v` (`0.3.1.0` for this candidate). The default **build** mode
 only builds and tests artifacts. A release always uses the selected
 commit recorded by GitHub, even if main changes while the jobs run.
 
-This is a publication recipe. As of 2026-10-09, a GitHub Release and
-anonymous access to the GHCR image have not been verified. The successful
-[October 8 CI run](https://github.com/mingulov/haskoki/actions/runs/37774745195)
-validated the previous source, not this workflow or a public release.
+The first release, [v0.3.0.0](https://github.com/mingulov/haskoki/releases/tag/v0.3.0.0),
+was published on October 9, 2026. Its [release workflow](https://github.com/mingulov/haskoki/actions/runs/37961585654)
+checked anonymous access. Each new release must repeat those checks on its
+own source and artifacts.
+
+For **GitHub-only validation without publication**, push a working branch:
+CI builds the native bundle and demo image and runs their checks. Download
+`demo-image-tested` from a successful run if you want the candidate image
+before publication; extract the artifact ZIP, then use `docker load -i
+demo-image.tar.gz` and `docker run --rm --network none haskoki-demo:0.3.1.0`.
+The `demo-image-candidate` artifact is produced before all tests finish;
+use the tested artifact for a demo. No local compiler build is needed.
 
 ## One-time owner setup
 
@@ -62,7 +70,7 @@ There is no second build or dispatch after creating the source tag.
 A tag pushed with `GITHUB_TOKEN` need not trigger another workflow.
 
 After local asset checks (plus signature checks when signed), it
-creates `v0.3.0.0` on the checked SHA, pushes the versioned image when
+creates the requested version tag on the checked SHA, pushes the versioned image when
 absent, and verifies its configuration, version/revision labels and
 registry digest. It requires an anonymous pull by digest using a fresh
 Docker configuration, then runs the pulled demo and direct smoke
@@ -76,8 +84,8 @@ provenance attestations, updating `latest`, and publishing the draft:
 
 | Asset | Purpose |
 | --- | --- |
-| `haskoki-0.3.0.0-linux-x86_64.tar.gz` | Native module, control tool, runtime libraries, licenses, smoke consumer |
-| `haskoki-0.3.0.0.tar.gz` | Verified source distribution |
+| `haskoki-0.3.1.0-linux-x86_64.tar.gz` | Native module, control tool, runtime libraries, licenses, smoke consumer |
+| `haskoki-0.3.1.0.tar.gz` | Verified source distribution |
 | `test-results-0.3.0.0.tar.gz` | Staged test evidence |
 | `release-manifest.json` | Source SHA, hashes, build information, image digest |
 | `SHA256SUMS` | Checksums of the three archives and manifest |
@@ -137,8 +145,8 @@ fingerprint, and verify the signature first:
 gpg --verify SHA256SUMS.asc SHA256SUMS  # signed releases only
 sha256sum -c SHA256SUMS
 HASKOKI_DOCKER_CONFIG=$(mktemp -d)
-docker --config "$HASKOKI_DOCKER_CONFIG" pull ghcr.io/mingulov/haskoki-demo:v0.3.0.0
-docker image inspect ghcr.io/mingulov/haskoki-demo:v0.3.0.0 \
+docker --config "$HASKOKI_DOCKER_CONFIG" pull ghcr.io/mingulov/haskoki-demo:v0.3.1.0
+docker image inspect ghcr.io/mingulov/haskoki-demo:v0.3.1.0 \
   --format '{{json .RepoDigests}}'
 rm -r "$HASKOKI_DOCKER_CONFIG"
 ```

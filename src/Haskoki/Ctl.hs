@@ -108,7 +108,7 @@ ctlHelp = unlines
 runCtl :: [String] -> IO CtlExit
 runCtl ["--help"] = pure (CtlExit 0 ctlHelp "")
 runCtl ["-h"] = pure (CtlExit 0 ctlHelp "")
-runCtl ["--version"] = pure (CtlExit 0 "haskoki-ctl 0.3.0.0\n" "")
+runCtl ["--version"] = pure (CtlExit 0 "haskoki-ctl 0.3.1.0\n" "")
 runCtl ("config" : "check" : rest) = do
   case flag "--config" rest of
     Nothing -> pure (CtlExit 2 "" "config check needs --config FILE\n")

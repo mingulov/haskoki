@@ -76,7 +76,16 @@ exit 47
                 dict(self.expected, phase=phase, result='success')))
 
     def driver(self, *args, **env):
-        return subprocess.run(['sh', str(DRIVER), *args], env=dict(self.env, **env),
+        # Run the real driver in a minimal package fixture whose version agrees
+        # with the fake image. A release bump must not make phase-selection tests
+        # stop at label validation before reaching the Docker boundary.
+        package = self.work / 'package'
+        scripts = package / 'scripts'
+        scripts.mkdir(parents=True, exist_ok=True)
+        (package / 'haskoki.cabal').write_text('version: 0.3.0.0\n')
+        driver = scripts / DRIVER.name
+        driver.write_text(DRIVER.read_text())
+        return subprocess.run(['sh', str(driver), *args], env=dict(self.env, **env),
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
     def helper(self, operation, *extra):

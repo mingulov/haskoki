@@ -17,7 +17,18 @@ Minimum is GHC 9.10: the build treats `-Wincomplete-record-selectors`
 (introduced in 9.10) as a fatal omission class, so older compilers
 reject `haskoki.cabal`.
 
-## Docker (default environment)
+## Build on GitHub without using local disk
+
+For a ready-made demo, start with the [README](../README.md#try-it-with-docker).
+For development, push your branch to GitHub: CI builds and tests the bundle,
+source distribution, and demo image. The [publishing guide](publishing.md)
+explains the tested-image artifact and the separate release action.
+
+The commands below are for contributors who choose to build locally. The
+builder needs several GB of disk space; it is separate from the smaller
+runtime demo image.
+
+## Docker (developer environment)
 
 ```sh
 cd haskoki

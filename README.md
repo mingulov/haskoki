@@ -1,122 +1,84 @@
 # Haskoki
 
-Haskoki is a Haskell PKCS#11 software token for experiments, integration
-tests, and learning how the interface behaves. Applications load
-`libhaskoki.so` through the usual C interface; OpenSSL performs the real
-cryptographic operations.
+Try the interface used by smart cards and hardware security modules, using
+software on your computer. Haskoki lets you create a disposable key, sign a
+message, check its signature, and experiment with encryption—no hardware
+or Haskell knowledge required.
 
-It exposes versioned tables for PKCS#11 2.40, 3.0, 3.1, and 3.2. The
-catalog records 316 behavior-tested mechanisms out of 464 entries.
-That is a coverage inventory, not a conformance or certification claim.
-Use disposable keys: this is a demonstrator, not a production HSM.
+**PKCS#11** is the common interface that applications use to ask a *token*
+to hold keys and perform cryptographic operations. Haskoki is a software
+token written in **Haskell**, a functional programming language. OpenSSL
+performs the cryptography; ordinary tools talk to Haskoki through
+`libhaskoki.so`, just as they would load another PKCS#11 module.
 
-**Release status:** version 0.3.0.0 is prepared in source. As of
-2026-10-09, no GitHub release or anonymously pullable demo image has
-been verified. Owners can publish through **Actions -> CI and Release ->
-Run workflow**, selecting **main**, **release**, and the exact Cabal version.
-The [publishing guide](docs/publishing.md) covers signing setup and GHCR
-visibility. The local demo below is available now; after publication,
-the [pull-and-run recipes](docs/try-it.md#after-the-first-successful-release)
-also provide checker, proxy and shell exploration using the same image.
+Use disposable keys. This is a demonstrator for learning and client testing,
+not a production HSM; its stored keys are not encrypted at rest.
 
-## Quick Start (container, no Haskell build)
+## Try it with Docker
 
-Use Docker from a non-root shell on Linux x86-64, with network access
-during the build. The builder user is matched to your UID/GID below. The
-first build downloads the compiler, crypto library, checker, and proxy;
-allow several minutes and several GB of disk space.
+This branch prepares **v0.3.1.0**. Its image tag becomes available on
+publication; the [published v0.3.0.0 demo](https://github.com/mingulov/haskoki/releases/tag/v0.3.0.0)
+can be tried now using the command on that release page.
+
+With Docker running, paste this into a terminal:
 
 ```sh
-git clone https://github.com/mingulov/haskoki.git
-cd haskoki
-HASKOKI_BUILD_USER=ubuntu
-if [ "$(id -u)" != 1000 ]; then HASKOKI_BUILD_USER=haskoki-builder; fi
-docker build --build-arg USERNAME="$HASKOKI_BUILD_USER" \
-  --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" \
-  -t haskoki-dev:ghc-9.10.3 .
-docker run --rm -v "$PWD:/work" -w /work \
-  haskoki-dev:ghc-9.10.3 scripts/make-release.sh
-mkdir -p staged-bundle
-cp -a dist-release/haskoki-0.3.0.0 staged-bundle/
-docker build -f docker/Dockerfile.demo \
-  --build-arg REVISION="$(git rev-parse HEAD)" \
-  -t haskoki-demo:0.3.0.0 .
-rm -r staged-bundle
-
-mkdir -p out
-docker run --rm --network none --user "$(id -u):$(id -g)" \
-  -v "$PWD/out:/out" haskoki-demo:0.3.0.0 demo
+docker run --rm --network none ghcr.io/mingulov/haskoki-demo:v0.3.1.0
 ```
 
-Expect `demo-ok: 8/8 verifications hold`. The demo creates an EC key
-pair, signs and verifies a message, checks the SHA-256 digest of `abc`,
-and performs an RSA-OAEP encrypt/decrypt round trip. Reports and step
-logs appear under `out/demo-*/`. The runs use public demo fixtures and
-fresh stores; they need no external network or real token.
+Docker downloads the image on the first run. The demo itself works offline:
+it generates keys, signs and verifies a message, checks a SHA-256 fingerprint,
+and encrypts then decrypts another message. Look for:
 
-Next, run the external checker:
-
-```sh
-docker run --rm --network none --user "$(id -u):$(id -g)" \
-  -v "$PWD/out:/out" haskoki-demo:0.3.0.0 \
-  check --mode direct --profile smoke
+```text
+demo-ok: 8/8 verifications hold
 ```
 
-Expect `check-ok: zero findings`. This profile collects 743 tests;
-some are skipped or expected failures. It does not mean 743 passing
-tests or complete PKCS#11 coverage. See [Try it](docs/try-it.md) for
-the small proxy demo, report locations, and the longer checks.
+That's the complete first run. No clone, compiler, account, PIN setup, or
+physical token is needed. The keys and reports disappear when this container
+exits. [Try it yourself](docs/try-it.md) shows how to keep reports and type
+the individual `pkcs11-tool` commands.
 
-## What to explore
+The image includes Haskoki, its runtime and crypto libraries, OpenSC
+`pkcs11-tool`, `pkcs11-check`, `pkcs11-proxy-ng`, and p11-kit remoting. Extra
+test-vector collections are an optional download. The tested platform is
+**Linux x86-64 (amd64)**; Docker supplies the Linux libraries. Other platforms
+and ARM emulation have not been qualified. Image measurements and contents
+are in [Try it](docs/try-it.md#image-contents-and-size).
 
-| Interest | Start here |
+## Where it came from
+
+Haskoki grew from a small experiment: describe a token's rules in Haskell,
+then let real applications challenge those rules. The first step was a
+loadable module; the harder work followed when clients exercised keys,
+sessions, errors, and process boundaries.
+
+[pkcs11-check](https://github.com/mingulov/pkcs11-check) supplies the external
+checks, and [pkcs11-proxy-ng](https://github.com/mingulov/pkcs11-proxy-ng)
+lets the same token run in a separate process. Both share an author with
+Haskoki. Coding agents helped implement and review the project; tests and
+consumer runs supply the behavioral evidence. The [short development
+story](docs/first-public-release.md) explains the Haskell choice and the
+recorded token usage, including why cached input dominates those figures.
+
+A side note: [p11scope](https://github.com/mingulov/p11scope) can observe
+PKCS#11 calls on Linux. It is optional and runs separately; a
+[sample trace](docs/p11scope-trace.md) shows what was captured.
+
+## Choose your next step
+
+| I want to… | Start here |
 | --- | --- |
-| Run a small demo and understand its output | [Try it](docs/try-it.md) |
-| Load the module in your own application | [Native walkthrough](docs/demo-walkthrough.md) and [host requirements](SUPPORTED-HOSTS.md) |
-| See what is implemented and what remains | [Coverage](docs/coverage.md) and [test results](docs/release-results.md) |
-| Understand why this is written in Haskell | [Haskell design](docs/haskell-design.md) |
-| Read how the project developed | [Development history](docs/first-public-release.md) |
-| Build, test, or publish a release | [Toolchain](docs/toolchain.md) and [publishing](docs/publishing.md) |
+| Generate a key and sign something myself | [Hands-on guide](docs/try-it.md#try-pkcs11-tool-yourself) |
+| Try the checker or another process | [Checker and remoting](docs/try-it.md#check-the-token) |
+| Understand the project and its creation | [Development story](docs/first-public-release.md) |
+| Load it in my own application | [Native reference](docs/demo-walkthrough.md) and [host requirements](SUPPORTED-HOSTS.md) |
+| Investigate support or build the project | [Coverage](docs/coverage.md), [results](docs/release-results.md), [developer toolchain](docs/toolchain.md) |
 
-The current demo checker's full profile records 22 findings shared
-between direct and proxied runs. The comparison also has 83 documented
-exclusions. These are known limits, not a clean full-suite result; the
-[results page](docs/release-results.md) separates current CI evidence
-from earlier measurements.
+Haskoki exposes PKCS#11 2.40–3.2 interfaces, with 316 behavior-tested
+mechanisms out of 464 catalog entries. The full checker profile retains
+22 documented findings; the short smoke profile expects zero. Neither
+number establishes conformance or certification. See the [results and
+limits](docs/release-results.md) before choosing it for an integration.
 
-## Why Haskell
-
-The protocol model separates planning a call, running a crypto effect,
-finishing the result, and publishing the state change. Distinct types
-describe handles, output requests, and failures. A separate pure-core
-component lets model and property tests exercise rules without loading
-a C consumer. The [design note](docs/haskell-design.md) explains the
-benefits and the runtime and FFI work that types do not remove.
-
-## Related tools
-
-- [pkcs11-check](https://github.com/mingulov/pkcs11-check) exercises a
-  compiled PKCS#11 module and reports its behavior. The demo pins
-  version 0.2.3. It shares an author with Haskoki, so this is external
-  consumer evidence, not an independent audit.
-- [pkcs11-proxy-ng](https://github.com/mingulov/pkcs11-proxy-ng) places
-  the module in a separate process behind a PKCS#11 shim. The demo pins
-  v0.2.2 and uses plaintext loopback transport inside one container.
-- [p11scope](https://github.com/mingulov/p11scope) can optionally help
-  inspect PKCS#11 calls on Linux. It is not needed for the demo; the
-  [recorded capture](docs/p11scope-trace.md) has stated coverage limits.
-
-## Practical limits
-
-The native bundle targets Linux x86-64 with glibc 2.43 or newer; the
-container supplies its own userland. SQLite token storage is not
-encrypted at rest. The GHC runtime stays loaded for the process lifetime,
-and sessions must be closed before finalization. The proxy example adds
-a process boundary, not a hardened HSM or authenticated network service.
-See [operations notes](docs/operations-notes.md) for PIN lockout, storage,
-and lifecycle details.
-
-If a command fails, keep its `report.json` and logs, check the image
-revision, and use the [bug template](.github/ISSUE_TEMPLATE/bug_report.md).
-Do not attach keys, PINs, or token databases. Haskoki is licensed under
-[Apache-2.0](LICENSE).
+[Apache-2.0](LICENSE) · [Report a problem](https://github.com/mingulov/haskoki/issues/new?template=bug_report.md)

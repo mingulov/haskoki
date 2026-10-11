@@ -1,0 +1,99 @@
+#!/bin/sh
+# Run inside `haskoki-demo shell`: the token/config and working directory are
+# prepared there. A foreground p11-kit server owns the Unix socket; each client
+# loads p11-kit-client.so. No TCP listener or host configuration is involved.
+set -eu
+client=${HASKOKI_P11_KIT_MODULE:-/usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-client.so}
+: "${HASKOKI_MODULE:?run with haskoki-demo p11-kit-demo}"
+: "${HASKOKI_CONFIG:?run with haskoki-demo p11-kit-demo}"
+run=$PWD
+runtime=$(mktemp -d /tmp/haskoki-p11.XXXXXXXX)
+server_pid=
+stop_server() {
+  if [ -n "$server_pid" ]; then
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+    server_pid=
+  fi
+}
+cleanup() {
+  status=$?
+  stop_server
+  if [ "$status" -ne 0 ]; then
+    echo "p11-kit-demo: failed (exit $status); step logs follow" >&2
+    for log in ./*.log; do
+      [ -f "$log" ] || continue
+      tail -n 20 "$log" >&2
+    done
+  fi
+  rm -rf "$runtime"
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
+echo 'pkcs11-tool -> p11-kit client -> Unix socket -> p11-kit remote -> Haskoki'
+p11-kit server --foreground --provider "$HASKOKI_MODULE" \
+  --name "$runtime/token.sock" 'pkcs11:token=haskoki-demo' \
+  > server.log 2>&1 &
+server_pid=$!
+attempt=0
+while [ ! -S "$runtime/token.sock" ]; do
+  if ! kill -0 "$server_pid" 2>/dev/null || [ "$attempt" -ge 50 ]; then
+    cat server.log >&2
+    echo 'p11-kit-demo: server did not create its socket' >&2
+    exit 2
+  fi
+  attempt=$((attempt + 1))
+  sleep 0.1
+done
+export P11_KIT_SERVER_ADDRESS="unix:path=$runtime/token.sock"
+tool() { pkcs11-tool --module "$client" "$@"; }
+
+tool --list-slots > slots.log 2>&1
+grep -q 'token label *: haskoki-demo' slots.log
+echo '1. Found Haskoki through the p11-kit client.'
+tool --login --pin 1234 --keypairgen --key-type EC:prime256v1 \
+  --label p11-kit-key --usage-sign > keygen.log 2>&1
+echo '2. Generated an EC signing key through p11-kit.'
+printf 'hello from p11-kit' > message.txt
+tool --login --pin 1234 --sign --mechanism ECDSA-SHA256 \
+  --label p11-kit-key --type privkey --input-file message.txt \
+  --output-file signature.bin > sign.log 2>&1
+test "$(wc -c < signature.bin)" -eq 64
+echo '3. Signed the message (64-byte signature).'
+tool --login --pin 1234 --verify --mechanism ECDSA-SHA256 \
+  --label p11-kit-key --type pubkey --input-file message.txt \
+  --signature-file signature.bin > verify.log 2>&1
+grep -q 'Signature is valid' verify.log
+echo '4. Verified the signature.'
+printf abc > abc.txt
+tool --hash --mechanism SHA256 --input-file abc.txt \
+  --output-file digest.bin > digest.log 2>&1
+test "$(od -An -tx1 digest.bin | tr -d ' \n')" = \
+  ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+echo '5. Checked the SHA-256 digest against a known value.'
+printf 'a different message' > changed.txt
+if tool --login --pin 1234 --verify --mechanism ECDSA-SHA256 \
+    --label p11-kit-key --type pubkey --input-file changed.txt \
+    --signature-file signature.bin > changed.log 2>&1; then
+  echo 'p11-kit-demo: a changed message incorrectly verified' >&2
+  exit 1
+fi
+grep -q 'CKR_SIGNATURE_INVALID' changed.log
+echo '6. Rejected a changed message.'
+stop_server
+if tool --list-slots > disconnected.log 2>&1; then
+  echo 'p11-kit-demo: client unexpectedly worked with the server stopped' >&2
+  exit 1
+fi
+echo '7. Confirmed the client needs the remote server.'
+python3 - "$client" <<'PY'
+import json, os, pathlib, sys
+pathlib.Path('report.json').write_text(json.dumps({
+    'command': 'p11-kit-demo', 'exit_code': 0, 'checks_passed': 7,
+    'client_module': sys.argv[1], 'backend_module': os.environ['HASKOKI_MODULE'],
+    'transport': 'local Unix socket', 'token': 'haskoki-demo',
+}, indent=2) + '\n')
+PY
+echo "p11-kit-demo-ok: 7/7 checks hold; report: $run/report.json"

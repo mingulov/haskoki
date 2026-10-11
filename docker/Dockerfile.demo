@@ -39,7 +39,7 @@
 # build cannot see the SHA); release-candidate builds pass
 # --build-arg REVISION=<source SHA> (CI publish path does).
 # The image never contains its own final digest.
-ARG VERSION=0.3.0.0
+ARG VERSION=0.3.1.0
 ARG REVISION=unknown
 ARG SOURCE=https://github.com/mingulov/haskoki
 
@@ -184,10 +184,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # host runtime libs (R2 native proof); opensc provides pkcs11-tool for the
 # demo and examples; python3 runs the checker venv (/opt/p11c symlinks to
 # /usr/bin/python3, same base image as the checker stage);
+# p11-kit + p11-kit-modules provide the server and PKCS#11 client module;
 # ca-certificates lets fetch-data download vectors over TLS at runtime
 # (R4: without it every fetch fails with CERTIFICATE_VERIFY_FAILED).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libgmp10 libffi8 libnuma1 opensc python3 ca-certificates \
+      libgmp10 libffi8 libnuma1 opensc python3 ca-certificates p11-kit p11-kit-modules \
     && rm -rf /var/lib/apt/lists/*
 
 # The control tool's help uses UTF-8. Keep it usable through a shell or
@@ -201,11 +202,14 @@ COPY staged-bundle/ /opt/haskoki/dist-release/
 COPY --from=proxy /out/proxy/ /opt/haskoki/proxy/
 COPY --from=checker /opt/p11c/ /opt/p11c/
 COPY docker/haskoki-demo /usr/local/bin/haskoki-demo
+COPY docker/haskoki-shell /usr/local/bin/haskoki-shell
 COPY examples/release/ /opt/haskoki/examples/release/
 
-RUN chmod +x /usr/local/bin/haskoki-demo \
+RUN chmod +x /usr/local/bin/haskoki-demo /usr/local/bin/haskoki-shell \
     && test "$(ls -d /opt/haskoki/dist-release/haskoki-* | wc -l)" -eq 1 \
     && ART=$(echo /opt/haskoki/dist-release/haskoki-*) && test -d "$ART" \
+    && ln -s "$ART" /opt/haskoki/current \
+    && mkdir -p /out && chmod 1777 /out \
     && test -f "$ART/lib/libhaskoki.so" \
     && test -x "$ART/bin/haskoki-ctl" \
     && test -f "$ART/lib/ossl-modules/legacy.so" \
@@ -225,11 +229,18 @@ RUN chmod +x /usr/local/bin/haskoki-demo \
     && ! grep -q "not found" /tmp/ldd-so.txt \
     && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.3$' \
     && command -v pkcs11-tool \
+    && command -v p11-kit \
+    && dpkg-query -W opensc p11-kit p11-kit-modules python3 > /opt/haskoki/image-tools.txt \
+    && test -f /usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-client.so \
     && test -f /etc/ssl/certs/ca-certificates.crt \
     && test -f /opt/haskoki/proxy/LICENSE-APACHE \
     && test -f /opt/haskoki/proxy/LICENSE-MIT \
     && haskoki-demo --help > /dev/null \
-    && echo "runtime self-test: staged bundle verified, checker + pkcs11-tool + CA store + proxy licenses present"
+    && echo "runtime self-test: staged bundle verified, checker + pkcs11-tool + p11-kit + CA store + proxy licenses present"
+
+ENV PATH="/opt/haskoki/current/bin:/opt/p11c/bin:/opt/haskoki/proxy:${PATH}" \
+    HASKOKI_MODULE=/opt/haskoki/current/lib/libhaskoki.so \
+    HASKOKI_P11_KIT_MODULE=/usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-client.so
 
 ENTRYPOINT ["/usr/local/bin/haskoki-demo"]
 CMD ["demo"]

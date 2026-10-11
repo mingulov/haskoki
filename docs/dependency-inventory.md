@@ -1,5 +1,12 @@
 # Dependency/license inventory — demo image `haskoki-demo:0.3.0.0`
 
+For v0.3.1.0, the runtime also installs the distribution's `p11-kit` and
+`p11-kit-modules` packages for server/client remoting. Their license texts
+are included under `/usr/share/doc/p11-kit*/copyright`; installed versions
+are recorded in `/opt/haskoki/image-tools.txt`. The detailed tables below
+are the historical 0.3.0.0 inventory, not a freshly measured package list
+for later images.
+
 What the release image actually contains, per layer, with the
 notice location for each component. Measured on the R8
 candidate build unless noted. This document states facts and
