@@ -4907,6 +4907,32 @@ caseRealRsaKeygen = withRealEnv $ \env -> do
         EngineFail err -> assertFailure ("real verify failed: " ++ show err)
     _ -> assertFailure "real RSA halves lack material"
 
+-- A generated base is an unsigned integer, not a prime-width field:
+-- DER strips leading zero octets, so valid g can be shorter than p.
+-- All three parameter-generation mechanisms use DSA P/Q/G generation.
+assertDomainGenerator :: ByteString -> ByteString -> ByteString -> IO ()
+assertDomainGenerator p q g = do
+  assertBool "base has a nonempty minimal unsigned encoding"
+    (not (BS.null g) && BS.head g /= 0)
+  let pInt = unsigned p
+      qInt = unsigned q
+      gInt = unsigned g
+  assertBool "subprime is between one and prime" (1 < qInt && qInt < pInt)
+  assertBool "base is between one and prime minus one" (1 < gInt && gInt < pInt - 1)
+  assertEqual "subprime divides prime minus one" 0 ((pInt - 1) `mod` qInt)
+  assertEqual "base is in the subprime-order subgroup" 1 (powerMod gInt qInt pInt)
+  where
+    unsigned :: ByteString -> Integer
+    unsigned = BS.foldl' (\acc octet -> acc * 256 + fromIntegral octet) 0
+
+    powerMod :: Integer -> Integer -> Integer -> Integer
+    powerMod base power modulus = go 1 (base `mod` modulus) power
+      where
+        go acc _ 0 = acc
+        go acc factor n =
+          go (if odd n then (acc * factor) `mod` modulus else acc)
+            ((factor * factor) `mod` modulus) (n `div` 2)
+
 caseRealX942Paramgen :: IO ()
 caseRealX942Paramgen = withRealEnv $ \env -> do
   m0 <- seedModel
@@ -4930,7 +4956,7 @@ caseRealX942Paramgen = withRealEnv $ \env -> do
     (Just (ValBytes p), Just (ValBytes q), Just (ValBytes g)) -> do
       assertEqual "prime width" 128 (BS.length p)
       assertEqual "subprime width" 20 (BS.length q)
-      assertEqual "base width" 128 (BS.length g)
+      assertDomainGenerator p q g
       assertEqual "prime bits" (Just (ValULong 1024))
         (Map.lookup AttrPrimeBits (osAttrs ost))
       assertEqual "subprime bits" (Just (ValULong 160))
@@ -4960,7 +4986,7 @@ caseRealDhPkcsParamgen = withRealEnv $ \env -> do
     (Just (ValBytes p), Just (ValBytes q), Just (ValBytes g)) -> do
       assertEqual "prime width" 128 (BS.length p)
       assertEqual "subprime width" 20 (BS.length q)
-      assertEqual "base width" 128 (BS.length g)
+      assertDomainGenerator p q g
       assertEqual "prime bits" (Just (ValULong 1024))
         (Map.lookup AttrPrimeBits (osAttrs ost))
       assertEqual "subprime bits" (Just (ValULong 160))
@@ -4990,7 +5016,7 @@ caseRealDsaParamgen = withRealEnv $ \env -> do
     (Just (ValBytes p), Just (ValBytes q), Just (ValBytes g)) -> do
       assertEqual "prime width" 128 (BS.length p)
       assertEqual "subprime width" 20 (BS.length q)
-      assertEqual "base width" 128 (BS.length g)
+      assertDomainGenerator p q g
       assertEqual "prime bits" (Just (ValULong 1024))
         (Map.lookup AttrPrimeBits (osAttrs ost))
       assertEqual "subprime bits" (Just (ValULong 160))
