@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import warnings
 import zipfile
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 SCRIPT = Path(__file__).with_name("release-request.py")
 spec = importlib.util.spec_from_file_location("release_request", SCRIPT)
@@ -376,6 +376,10 @@ class ApiLifecycleTests(unittest.TestCase):
         self.artifacts = []
         self.checkpoint_zip = b""
         self.config_id = "sha256:" + "d" * 64
+        self.lag_after_create = 0
+        self.lag_after_upload = 0
+        self.lag_lists = 0
+        self.lag_assets = 0
 
     def tearDown(self):
         DraftTests.tearDown(self)
@@ -404,6 +408,13 @@ class ApiLifecycleTests(unittest.TestCase):
             if path.endswith("/releases"):
                 page = int(urllib.parse.parse_qs(query)["page"][0])
                 entries = self.release_pages.get(page, []) if hasattr(self, "release_pages") else ([self.current] if self.current else [])
+                if self.lag_lists > 0:
+                    self.lag_lists -= 1
+                    entries = []
+                elif self.lag_assets > 0:
+                    self.lag_assets -= 1
+                    entries = [{**entry, "assets": []} if isinstance(entry, dict) else entry
+                               for entry in entries]
                 return self.response(args, 200, entries)
             if "/releases/assets/" in path:
                 asset_id = int(path.rsplit("/", 1)[1])
@@ -421,6 +432,7 @@ class ApiLifecycleTests(unittest.TestCase):
             notes = Path(args[args.index("--notes-file") + 1]).read_text()
             self.current = {"id": 10, "tag_name": self.req["tag"], "draft": True,
                             "body": notes, "assets": []}
+            self.lag_lists = self.lag_after_create
             return subprocess.CompletedProcess(args, 0, b"", b"")
         if args[:3] == ["gh", "release", "upload"]:
             for number, path in enumerate(args[4:args.index("--repo")]):
@@ -432,6 +444,7 @@ class ApiLifecycleTests(unittest.TestCase):
                 self.remote[asset.name] = asset.read_bytes()
                 self.current["assets"].append({"id": release.asset_names(self.req).index(asset.name) + 1,
                                                "name": asset.name})
+            self.lag_assets = self.lag_after_upload
             return subprocess.CompletedProcess(args, 0, b"", b"")
         raise AssertionError(f"unexpected command: {args[:3]}")
 
@@ -452,6 +465,37 @@ class ApiLifecycleTests(unittest.TestCase):
         self.assertEqual(result["id"], 10)
         self.assertEqual(set(self.remote), set(release.asset_names(self.req)))
         self.assertEqual(len([call for call in self.calls if call[:3] == ["gh", "release", "create"]]), 1)
+
+    def test_created_draft_settles_after_list_lag(self):
+        self.lag_after_create = 2
+        with patch.object(release.subprocess, "run", self.transport), patch("time.sleep") as snooze:
+            release.stage_draft(self.root, self.root, self.req, self.digest)
+        self.assertEqual(set(self.remote), set(release.asset_names(self.req)))
+        creates = [cmd for cmd in self.calls if cmd[:3] == ["gh", "release", "create"]]
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(snooze.call_args_list, [call(5)] * 2)
+
+    def test_uploaded_assets_settle_after_list_lag(self):
+        self.lag_after_upload = 2
+        with patch.object(release.subprocess, "run", self.transport), patch("time.sleep") as snooze:
+            release.stage_draft(self.root, self.root, self.req, self.digest)
+        self.assertEqual(set(self.remote), set(release.asset_names(self.req)))
+        self.assertEqual(snooze.call_args_list, [call(5)] * 2)
+
+    def test_persistent_list_lag_still_refuses_without_uploads(self):
+        self.lag_after_create = 100
+        with patch.object(release.subprocess, "run", self.transport), patch("time.sleep") as snooze:
+            with self.assertRaisesRegex(release.Refusal, "could not be verified"):
+                release.stage_draft(self.root, self.root, self.req, self.digest)
+        creates = [cmd for cmd in self.calls if cmd[:3] == ["gh", "release", "create"]]
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(self.remote, {})
+        self.assertEqual(snooze.call_args_list, [call(5)] * 5)
+
+    def test_settled_stage_draft_does_not_wait(self):
+        with patch.object(release.subprocess, "run", self.transport), patch("time.sleep") as snooze:
+            release.stage_draft(self.root, self.root, self.req, self.digest)
+        snooze.assert_not_called()
 
     def test_owned_and_foreign_drafts_found_when_published_tag_is_absent(self):
         self.current = {"id": 10, "tag_name": self.req["tag"], "draft": True,

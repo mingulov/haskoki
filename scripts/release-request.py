@@ -16,6 +16,7 @@ import re
 import subprocess
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -98,6 +99,27 @@ def lookup_release(request):
     if marker(request) not in (existing.get("body") or ""):
         raise Refusal("existing draft belongs to another run or source; inspect it before recovery")
     return existing
+
+
+LOOKUP_ATTEMPTS = 6
+LOOKUP_DELAY = 5
+
+
+def patient_lookup(request, names=None):
+    """Poll the release list after a write; it may lag the create or upload."""
+    existing = None
+    for attempt in range(LOOKUP_ATTEMPTS):
+        existing = lookup_release(request)
+        assets = existing.get("assets", []) if existing else []
+        if names is None:
+            complete = existing is not None
+        else:
+            complete = len(assets) == len(names) and {a["name"] for a in assets} == set(names)
+        if complete or attempt + 1 == LOOKUP_ATTEMPTS:
+            return existing
+        if attempt == 0:
+            print("release list lags the write; waiting for it to settle")
+        time.sleep(LOOKUP_DELAY)
 
 
 def check_tag(root, tag, sha):
@@ -431,7 +453,7 @@ def stage_draft(root, directory, request, digest):
             notes.flush()
             command("gh", "release", "create", request["tag"], "--repo", request["repository"],
                     "--draft", "--verify-tag", "--title", f"haskoki {request['tag']}", "--notes-file", notes.name)
-        existing = lookup_release(request)
+        existing = patient_lookup(request)
         if existing is None:
             raise Refusal("new draft release could not be verified")
     assets = existing.get("assets", [])
@@ -446,7 +468,7 @@ def stage_draft(root, directory, request, digest):
     if missing:
         command("gh", "release", "upload", request["tag"], *missing, "--repo", request["repository"])
     # Verify all downloaded bytes, not merely the successful upload exit code.
-    final = lookup_release(request)
+    final = patient_lookup(request, names)
     assets = final.get("assets", []) if final else []
     if len(assets) != len(names) or {a["name"] for a in assets} != set(names):
         raise Refusal(f"draft did not receive all {len(names)} assets")
