@@ -30,9 +30,9 @@ module StoreSpec
   ) where
 
 import Control.Concurrent (forkFinally, forkIO, killThread, threadDelay)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar, tryReadMVar)
-import Control.Exception (AsyncException (ThreadKilled), bracket, bracket_, fromException, onException)
-import Control.Monad (when)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar, tryReadMVar)
+import Control.Exception (AsyncException (ThreadKilled), bracket, bracket_, fromException, mask, onException)
+import Control.Monad (replicateM_, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (isSpace)
@@ -124,7 +124,7 @@ withOpener :: IO Opener -> (Opener -> IO ()) -> IO ()
 withOpener mkOpener = bracket mkOpener openerClose
 
 -- | Open the current identity, closing the handle when the body
--- exits on any path (M4 hygiene: a failing assertion mid-case
+-- exits on any path (handle hygiene: a failing assertion mid-case
 -- must not leak a live handle into fixture cleanup). Explicit
 -- closes inside the body stay — they are the behavior under
 -- test — and the bracket close is an idempotent no-op after
@@ -236,6 +236,10 @@ contractSpec label mkOpener = testGroup label
       withOpener mkOpener mixedTokenAndObjectPutPreservesOtherChildren
   , testCase "dropped token cannot resurrect children on recreate" $
       withOpener mkOpener dropRecreateCannotResurrectChildren
+  , testCase "killed competing openers never strand the identity" $
+      withOpener mkOpener testKilledOpener
+  , testCase "token slot moves commit identically in either put order" $
+      withOpener mkOpener tokenSlotMovesAreOrderIndependent
   ]
 
 -- | Acceptance 1: the same logical token objects across a
@@ -348,8 +352,8 @@ expectRight ctx = either (\e -> assertFailure (ctx ++ ": " ++ show e)) pure
 expectJust :: String -> Maybe a -> IO a
 expectJust ctx = maybe (assertFailure ("missing: " ++ ctx)) pure
 
--- | Inspect a store, failing the case on an inspection error (M4:
--- inspection is fallible, so every happy-path use unwraps here).
+-- | Inspect a store, failing the case on an inspection error:
+-- inspection is fallible, so every happy-path use unwraps here.
 expectInspect :: Store -> IO [StoredDoc]
 expectInspect s = storeInspect s >>= expectRight "inspect"
 
@@ -375,7 +379,7 @@ testSecondWriter o = do
   s3 <- either (\e -> assertFailure ("reopen after close: " ++ show e)) pure e3
   storeClose s3
 
--- | M4: a stale close never releases the new owner. Open A, close
+-- | A stale close never releases the new owner. Open A, close
 -- A, open B, then close A again: B must still own the identity
 -- (a third open is refused and B stays usable), and only B's own
 -- close releases it.
@@ -407,6 +411,141 @@ staleCloseDoesNotReleaseNewOwner o =
         meta2 <- either (assertFailure . show) pure eMeta2
         assertEqual "probe survives owner close" (Just "1") (lookup "m4-stale-probe" meta2)
         storeClose sD
+
+-- | A kill racing a competing open never strands the identity. Each
+-- round kills one opener twice — once on the refusal path while an
+-- owner holds the identity, once on the claim path with the identity
+-- unowned — then the owner still closes under a bounded wait and the
+-- identity reopens and closes cleanly. A stranded owner cell would
+-- refuse the reopen (or hang the close past the guard) instead.
+testKilledOpener :: Opener -> IO ()
+testKilledOpener o = replicateM_ openerKillRounds $ do
+  eOwner <- openCurrent o
+  owner <- expectRight "open owner" eOwner
+  raceRefusal o
+  closeObserved owner "owner close completes after killed competing open"
+  raceClaim o
+  eFinal <- openCurrent o
+  final <- expectRight "reopen after killed claim" eFinal
+  closeObserved final "reopened close completes after killed racing claim"
+
+-- | Opener-kill race rounds per case: repeated kills, so a
+-- regression stranding the owner cell is near-certain to refuse
+-- (or hang past the guard) at least once.
+openerKillRounds :: Int
+openerKillRounds = 50
+
+-- | Refusal-race opens the spinner provably runs before the kill
+-- lands (the handshake proves each round raced live opens).
+refusalSpinIters :: Int
+refusalSpinIters = 20
+
+-- | Bounded waits in the opener-kill races (5 seconds, matching
+-- the multi-session suite's guards).
+killGuard :: Int
+killGuard = 5000000
+
+-- | Race a kill against opens on the refusal path: the owner holds
+-- the identity throughout, so no open can claim (nothing can leak)
+-- while the kill may land inside any of them. The spinner signals
+-- once it has run 'refusalSpinIters' opens, proving the round raced
+-- live opens; the kill then races the opens past the handshake.
+raceRefusal :: Opener -> IO ()
+raceRefusal o = do
+  spunVar <- newEmptyMVar
+  outcomeVar <- newEmptyMVar
+  tid <- forkFinally (refusalSpin o spunVar) (putMVar outcomeVar)
+  mSpun <- timeout killGuard (takeMVar spunVar)
+  case mSpun of
+    Nothing -> assertFailure "refusal spinner never ran its opens (5s guard)"
+    Just () -> pure ()
+  killThread tid
+  mOut <- timeout killGuard (takeMVar outcomeVar)
+  case mOut of
+    Nothing -> assertFailure "killed refusal spinner join timed out (5s guard)"
+    Just (Left e) -> case fromException e of
+      Just ThreadKilled -> pure ()
+      _ -> assertFailure ("refusal spinner died: " ++ show e)
+    Just (Right ()) -> pure ()
+
+-- | Spin opens that cannot claim (the caller holds the identity),
+-- signaling after 'refusalSpinIters' of them. Each open runs
+-- restored (killable no matter the ambient mask); the loop holds
+-- no claim across iterations, so a kill can neither leak a handle
+-- nor strand the worker past the join.
+refusalSpin :: Opener -> MVar () -> IO ()
+refusalSpin o spunVar = go (0 :: Int)
+  where
+    go n = do
+      e <- mask (\restore -> restore (openCurrent o))
+      case e of
+        -- Impossible while the owner holds; closed for totality
+        -- (a foreign token releases nothing).
+        Right stray -> storeClose stray >> go (n + 1)
+        Left _ -> do
+          when (n + 1 == refusalSpinIters) $ do
+            _ <- tryPutMVar spunVar ()
+            pure ()
+          go (n + 1)
+
+-- | Race a kill against one opening claim with the identity unowned.
+-- The opener signals entry before opening, so the kill provably races
+-- a started open; the opener self-reports its attempt (see
+-- 'claimOnce'), so a claim that completed before the kill is drained
+-- (never leaked) and the identity is unowned on return.
+raceClaim :: Opener -> IO ()
+raceClaim o = do
+  enteredVar <- newEmptyMVar
+  reportVar <- newEmptyMVar
+  outcomeVar <- newEmptyMVar
+  tid <- forkFinally (claimOnce o enteredVar reportVar) (putMVar outcomeVar)
+  mEntered <- timeout killGuard (takeMVar enteredVar)
+  case mEntered of
+    Nothing -> assertFailure "racing opener never started (5s guard)"
+    Just () -> pure ()
+  killThread tid
+  mOut <- timeout killGuard (takeMVar outcomeVar)
+  case mOut of
+    Nothing -> assertFailure "killed opener join timed out (5s guard)"
+    Just (Left e) -> case fromException e of
+      Just ThreadKilled -> pure ()
+      _ -> assertFailure ("opener worker died: " ++ show e)
+    Just (Right ()) -> pure ()
+  -- The worker is dead, so its self-report (if any) is final: drain
+  -- a completed claim, and fail on a completed refusal (impossible
+  -- on the unowned identity) or a missing report (the kill aborted
+  -- the open — the schedule this regression guards).
+  mRep <- tryTakeMVar reportVar
+  case mRep of
+    Nothing -> assertFailure "racing opener died without reporting its open"
+    Just (Left err) ->
+      assertFailure ("racing opener refused on unowned identity: " ++ show err)
+    Just (Right stray) -> storeClose stray
+
+-- | Signal entry, then run one open, restored (killable no matter
+-- the ambient mask), and self-report the attempt under the same
+-- mask — acquisition through registration is atomic w.r.t. async
+-- exceptions, so a completed claim always reaches the drain. The
+-- caller drains the report after joining the worker.
+claimOnce :: Opener -> MVar () -> MVar (Either StoreError Store) -> IO ()
+claimOnce o enteredVar reportVar = mask $ \restore -> do
+  putMVar enteredVar ()
+  e <- restore (openCurrent o)
+  putMVar reportVar e
+
+-- | Close a handle in a worker, observing the outcome under a
+-- bounded wait. A close hung past the guard fails the case instead
+-- of hanging the suite; the stuck worker (if any) is contained —
+-- every case runs on a fresh identity.
+closeObserved :: Store -> String -> IO ()
+closeObserved s ctx = do
+  outcomeVar <- newEmptyMVar
+  _ <- forkFinally (storeClose s) (putMVar outcomeVar)
+  mOut <- timeout killGuard (takeMVar outcomeVar)
+  case mOut of
+    Just (Right ()) -> pure ()
+    Just (Left e) -> assertFailure (ctx ++ ": close threw: " ++ show e)
+    Nothing -> assertFailure (ctx ++ " (5s guard)")
 
 -- | Acceptance 2 (no silent refixture): the stored bytes before and
 -- after a close/reopen boundary are identical.
@@ -1661,6 +1800,65 @@ testSlotUnique o = do
   ok <- storeCommit s emptyDelta { sdPutTokens = [twin { trSlot = SlotId 1 }] }
   assertEqual "free slot commits" Committed ok
   storeClose s
+
+-- | Token slot moves apply order-independently: shifting two tokens
+-- up one slot commits identically whether the leader or the trailer
+-- comes first (no transient slot refusal), a direct slot swap
+-- commits, children ride along untouched, and the moved layout
+-- survives close/reopen. The final projected uniqueness check still
+-- refuses genuine conflicts (see 'testSlotUnique').
+tokenSlotMovesAreOrderIndependent :: Opener -> IO ()
+tokenSlotMovesAreOrderIndependent o = do
+  eStore <- openCurrent o
+  s <- either (assertFailure . show) pure eStore
+  (seedA, seedB) <- seedTwoTokens s
+  let tokA = tsToken seedA
+      tokB = tsToken seedB
+      fwdA = tokA { trSlot = SlotId 1 }
+      fwdB = tokB { trSlot = SlotId 2 }
+  rFwd <- storeCommit s emptyDelta { sdPutTokens = [fwdA, fwdB] }
+  assertEqual "leader-first shift commits" Committed rFwd
+  assertSlotProjection s [(trId tokA, SlotId 1), (trId tokB, SlotId 2)]
+  assertSeedRecords s (seedA { tsToken = fwdA }) (seedB { tsToken = fwdB })
+  let backA = tokA { trSlot = SlotId 0 }
+      backB = tokB { trSlot = SlotId 1 }
+  rBack <- storeCommit s emptyDelta { sdPutTokens = [backB, backA] }
+  assertEqual "trailer-first shift commits" Committed rBack
+  assertSlotProjection s [(trId tokA, SlotId 0), (trId tokB, SlotId 1)]
+  assertSeedRecords s (seedA { tsToken = backA }) (seedB { tsToken = backB })
+  let swapA = tokA { trSlot = SlotId 1 }
+      swapB = tokB { trSlot = SlotId 0 }
+  rSwap <- storeCommit s emptyDelta { sdPutTokens = [swapA, swapB] }
+  assertEqual "slot swap commits" Committed rSwap
+  assertSlotProjection s [(trId tokA, SlotId 1), (trId tokB, SlotId 0)]
+  assertSeedRecords s (seedA { tsToken = swapA }) (seedB { tsToken = swapB })
+  -- Boundary: a target slot near the top of the range commits in
+  -- either put order as well (staging must not rely on space
+  -- above the maximum).
+  let homeA = tokA { trSlot = SlotId 0 }
+      topB = tokB { trSlot = SlotId (maxBound - 1) }
+  rTop <- storeCommit s emptyDelta { sdPutTokens = [homeA, topB] }
+  assertEqual "near-limit shift commits" Committed rTop
+  assertSlotProjection s [(trId tokA, SlotId 0), (trId tokB, SlotId (maxBound - 1))]
+  assertSeedRecords s (seedA { tsToken = homeA }) (seedB { tsToken = topB })
+  rTopBack <- storeCommit s emptyDelta { sdPutTokens = [swapB, swapA] }
+  assertEqual "near-limit shift returns in reversed order" Committed rTopBack
+  assertSlotProjection s [(trId tokA, SlotId 1), (trId tokB, SlotId 0)]
+  assertSeedRecords s (seedA { tsToken = swapA }) (seedB { tsToken = swapB })
+  storeClose s
+  eStore2 <- openCurrent o
+  s2 <- either (assertFailure . show) pure eStore2
+  assertSlotProjection s2 [(trId tokA, SlotId 1), (trId tokB, SlotId 0)]
+  assertSeedRecords s2 (seedA { tsToken = swapA }) (seedB { tsToken = swapB })
+  storeClose s2
+
+-- | Assert the store holds exactly the given token/slot pairs.
+assertSlotProjection :: Store -> [(TokenId, SlotId)] -> IO ()
+assertSlotProjection s want = do
+  eLoaded <- storeLoadTokens s
+  loaded <- either (assertFailure . show) pure eLoaded
+  assertEqual "slot projection"
+    (sort want) (sort [(trId t, trSlot t) | (t, _) <- loaded])
 
 -- | One seeded token subtree: the token with its objects and jobs.
 data TokenSeed = TokenSeed

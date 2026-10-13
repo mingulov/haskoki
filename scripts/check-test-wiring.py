@@ -2,7 +2,8 @@
 """Test-wiring gate: no suite silently drops a spec module.
 
 Fails (exit 1) when any rule fails. For every `test-suite` stanza
-in haskoki.cabal, every `other-modules` spec module (`*Spec`,
+in haskoki.cabal and client/haskoki-client.cabal, every
+`other-modules` spec module (`*Spec`,
 `*Props`) must be BOTH imported AND run as a tree entry by that
 suite's Main: a spec removed from Main but left in `other-modules`
 compiles while its tests silently stop running, and this gate is
@@ -26,10 +27,11 @@ indented merges into the preceding span by design. Positions are
 reported by line.
 
 Suite membership is pinned in tests/suite-inventory.json, the
-reviewed executable-suite manifest: the cabal suite set must equal
-the inventoried set, and each suite's cabal module set must equal
-its pinned set, so a module removed from BOTH the runner and Cabal
-fails here (removal is reviewed in the manifest, never silent).
+reviewed executable-suite manifest: the cabal suite set (both
+build files unioned) must equal the inventoried set, and each
+suite's cabal module set must equal its pinned set, so a module
+removed from BOTH the runner and Cabal fails here (removal is
+reviewed in the manifest, never silent).
 Each runner carries one `-- REGISTRATION: <suite>` marker naming
 its owning suite; each suite's required tasty groups must appear
 as string literals in its Main; each `executed_by` lane must name
@@ -158,6 +160,34 @@ def parse_suites(text):
         m = re.match(r"\s+(\S+)\s*$", line)
         if m and field == "other-modules":
             suites[cur]["modules"].append(m.group(1))
+    return suites
+
+
+def parse_all_suites(root):
+    """name -> {dirs, modules, main, base} from both build files.
+
+    Suites union the root `haskoki.cabal` and
+    `client/haskoki-client.cabal`; `base` is the package subdir
+    (""/"client") the suite's dirs hang under. A missing client
+    file contributes no suites (single-package fixtures); a
+    missing root file or a suite named in both files raises,
+    failing the gate closed instead of shadowing one side.
+    """
+    root = Path(root)
+    suites = {}
+    for rel, base in (("haskoki.cabal", ""),
+                      ("client/haskoki-client.cabal", "client")):
+        path = root / rel
+        if not path.is_file():
+            if base == "":
+                raise FileNotFoundError(f"missing {rel}")
+            continue
+        for name, spec in parse_suites(path.read_text()).items():
+            if name in suites:
+                raise ValueError(f"duplicate suite {name} in {rel}")
+            spec = dict(spec)
+            spec["base"] = base
+            suites[name] = spec
     return suites
 
 
@@ -1938,16 +1968,18 @@ def load_inventory(path):
     return by_name, None
 
 
-def module_source(root, dirs, mod):
+def module_source(root, dirs, mod, base=""):
     """First suite dir holding the module's source, else None.
 
-    Shared with generate-function-contracts.py, which pins
-    each evidence citation to the file its suite actually
-    compiles (same stem, right directory).
+    `base` is the package subdir (""/"client") the dirs hang
+    under; the default keeps the root-package callers (and
+    generate-function-contracts.py, which pins each evidence
+    citation to the file its suite actually compiles: same
+    stem, right directory) working unchanged.
     """
     rel = mod.replace(".", "/") + ".hs"
     for d in dirs:
-        cand = Path(root) / d / rel
+        cand = Path(root) / base / d / rel
         if cand.is_file():
             return cand
     return None
@@ -1965,9 +1997,9 @@ def check_tree(root, inventory_path):
             fails.append(name)
 
     try:
-        suites = parse_suites((root / "haskoki.cabal").read_text())
+        suites = parse_all_suites(root)
     except Exception as e:  # noqa: BLE001
-        rule("CABAL-PARSE", False, f"cannot parse haskoki.cabal: {e}")
+        rule("CABAL-PARSE", False, f"cannot parse cabal suites: {e}")
         return fails, stats
     inv, err = load_inventory(inventory_path)
     if err is not None:
@@ -2001,7 +2033,7 @@ def check_tree(root, inventory_path):
         if not s["dirs"] or not s["main"]:
             rule(f"WIRING-{name}", False, "dirs/main-is unparsed")
             continue
-        main_path = root / s["dirs"][0] / s["main"]
+        main_path = root / s["base"] / s["dirs"][0] / s["main"]
         if not main_path.exists():
             rule(f"WIRING-{name}", False, f"missing {main_path}")
             continue
@@ -2010,7 +2042,7 @@ def check_tree(root, inventory_path):
         regions = executed_regions(code)
         files = []
         for d in s["dirs"]:
-            files.extend((root / d).glob("*.hs"))
+            files.extend((root / s["base"] / d).glob("*.hs"))
         have = {f.stem for f in files}
         pinned = inv.get(name, {}).get("modules")
         if pinned is None:
@@ -2068,7 +2100,7 @@ def check_tree(root, inventory_path):
                                   f"{sorted(s['modules'])}")
             found = {}
             for mod in s["modules"]:
-                src = module_source(root, s["dirs"], mod)
+                src = module_source(root, s["dirs"], mod, s["base"])
                 if src is None:
                     continue  # missing file: the WIRING leg fails
                 names, err = spec_top_names(src.read_text())
@@ -2110,7 +2142,7 @@ def check_tree(root, inventory_path):
                                 f"{m2}::{t2}")
                 whole = {}
                 for mod in s["modules"]:
-                    src = module_source(root, s["dirs"], mod)
+                    src = module_source(root, s["dirs"], mod, s["base"])
                     if src is not None:
                         whole[mod] = spec_all_names(src.read_text())
                 for mod in s["modules"]:
@@ -2162,7 +2194,8 @@ def check_tree(root, inventory_path):
     return fails, stats
 
 
-def _selftest_root(tmp, mains, cabal_suites, inventory, workflows):
+def _selftest_root(tmp, mains, cabal_suites, inventory, workflows,
+                   client_cabal_suites=None):
     root = Path(tmp)
     root.mkdir(parents=True, exist_ok=True)
     cabal = []
@@ -2173,6 +2206,18 @@ def _selftest_root(tmp, mains, cabal_suites, inventory, workflows):
                      f"  other-modules:\n"
                      + "".join(f"    {m}\n" for m in spec["modules"]))
     (root / "haskoki.cabal").write_text("".join(cabal))
+    if client_cabal_suites:
+        client = []
+        for suite, spec in client_cabal_suites.items():
+            client.append(f"test-suite {suite}\n"
+                          f"  main-is: {spec['main']}\n"
+                          f"  hs-source-dirs: {' '.join(spec['dirs'])}\n"
+                          f"  other-modules:\n"
+                          + "".join(f"    {m}\n"
+                                    for m in spec["modules"]))
+        client_path = root / "client" / "haskoki-client.cabal"
+        client_path.parent.mkdir(parents=True, exist_ok=True)
+        client_path.write_text("".join(client))
     for rel, text in mains.items():
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -2182,6 +2227,14 @@ def _selftest_root(tmp, mains, cabal_suites, inventory, workflows):
         for spec in cabal_suites.values():
             for d in spec["dirs"]:
                 p = root / d / f"{rel}.hs"
+                if not p.exists() and rel in spec["modules"]:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_text(f"module {rel} where\n")
+    for rel in {m for spec in (client_cabal_suites or {}).values()
+                for d in spec["dirs"] for m in spec["modules"]}:
+        for spec in (client_cabal_suites or {}).values():
+            for d in spec["dirs"]:
+                p = root / "client" / d / f"{rel}.hs"
                 if not p.exists() and rel in spec["modules"]:
                     p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_text(f"module {rel} where\n")
@@ -2322,9 +2375,9 @@ def self_test():
             fails.append(name)
 
     def run_fixture(tmp, mains, cabal_suites, inventory, workflows,
-                    mutate=None):
+                    mutate=None, client_cabal_suites=None):
         root = _selftest_root(tmp, mains, cabal_suites, inventory,
-                              workflows)
+                              workflows, client_cabal_suites)
         if mutate is not None:
             mutate(root)
         buf = io.StringIO()
@@ -3085,6 +3138,60 @@ def self_test():
             beta_cabal, beta_inv, workflows)
         expect("main-inline-exempts-empty-suite",
                fails_out == ["SPECS-COUNT"], repr(fails_out))
+
+        client_main = ("-- REGISTRATION: suite-b\n"
+                       "module Main (main) where\n"
+                       "import Test.Tasty (defaultMain, testGroup)\n"
+                       "import qualified BetaSpec\n"
+                       "main :: IO ()\n"
+                       "main = defaultMain $ testGroup \"beta group\" "
+                       "[BetaSpec.spec]\n")
+        client_cabal = {"suite-b": {"dirs": ["test"],
+                                   "modules": ["BetaSpec"],
+                                   "main": "Main.hs"}}
+        both_mains = dict(mains)
+        both_mains["client/test/Main.hs"] = client_main
+        both_inv = _good_inventory()
+        both_inv["suites"].append(
+            {"name": "suite-b", "main": "client/test/Main.hs",
+             "modules": ["BetaSpec"], "required_groups": ["beta group"],
+             "module_groups": {"BetaSpec": []},
+             "allowed_imports": {
+                 "Test.Tasty": ["defaultMain", "testGroup"]},
+             "executed_by": [{"workflow": ".github/workflows/ci.yml",
+                              "job": "haskell"}]})
+        fails_out, _ = run_fixture(
+            tmp + "/clientboth", both_mains, GOOD_CABAL, both_inv,
+            workflows, client_cabal_suites=client_cabal)
+        expect("client-suite-registered-passes", not fails_out,
+               repr(fails_out))
+
+        fails_out, _ = run_fixture(
+            tmp + "/clientunreg", both_mains, GOOD_CABAL,
+            _good_inventory(), workflows,
+            client_cabal_suites=client_cabal)
+        expect("client-suite-unregistered-fails",
+               "SUITES-SYNC" in fails_out, repr(fails_out))
+
+        emptied = dict(both_mains)
+        emptied["client/test/Main.hs"] = ("module Main (main) where\n"
+                                          "main :: IO ()\n"
+                                          "main = return ()\n")
+        fails_out, _ = run_fixture(
+            tmp + "/clientempty", emptied, GOOD_CABAL, both_inv,
+            workflows, client_cabal_suites=client_cabal)
+        expect("client-main-emptied-fails",
+               "REGISTRATION-suite-b" in fails_out
+               and "WIRING-suite-b-BetaSpec" in fails_out
+               and "SUITES-SYNC" not in fails_out, repr(fails_out))
+
+        dup_cabal = {"suite-a": {"dirs": ["test"],
+                                "modules": [], "main": "Main.hs"}}
+        fails_out, _ = run_fixture(
+            tmp + "/clientdup", both_mains, GOOD_CABAL, both_inv,
+            workflows, client_cabal_suites=dup_cabal)
+        expect("client-duplicate-suite-fails",
+               fails_out == ["CABAL-PARSE"], repr(fails_out))
 
     if fails:
         print(f"test-wiring self-test: FAIL ({', '.join(fails)})")

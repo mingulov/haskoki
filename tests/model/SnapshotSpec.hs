@@ -42,7 +42,9 @@ import Haskoki.Operation
   , SlotKind (..)
   , StepOutcome (..)
   , activeDigest
+  , activeSlots
   , bufferedOf
+  , commonAuth
   , dualOf
   , emptySessionOps
   , initDualOperation
@@ -61,6 +63,7 @@ import Haskoki.Operation
   , setBuffered
   , setDual
   , setLive
+  , slotAuth
   )
 import Haskoki.Operation.Cipher (finishCipherUpdate, planCipherFinal, planCipherUpdate)
 import Haskoki.Operation.Dual (planDualFinal, planDualUpdate)
@@ -123,6 +126,8 @@ spec = testGroup "operation snapshots"
   , testCase "defaults admit buffer-bound states" caseBufferBound
   , testCase "fixtures carry no pointer or handle encodings" caseNoPointers
   , testCase "dual save/restore roundtrip preserves both sides" caseDualRoundtrip
+  , testCase "restore into grant-bound target refuses; grant survives" caseRestoreGrantBound
+  , testCase "pending dual restore respects grant binding" caseRestoreGrantBoundDual
   , testCase "cipher geometry mutations reject, target untouched" caseCipherGeometry
   , testCase "cipher bound probes restore and plan" caseCipherBounds
   , testCase "recovery lengths reject, target untouched" caseRecoverGeometry
@@ -802,6 +807,187 @@ caseDualRoundtrip = do
     Left err -> assertEqual "dual busy error"
       (RestoreSlotBusy SlotEncrypt) err
     Right _ -> assertFailure "dual restore into busy slot succeeded"
+
+-- ---------------------------------------------------------------------------
+-- Grant binding: restored work joins the same guard as init
+-- ---------------------------------------------------------------------------
+
+-- | Model holding two always-authenticate AES keys (handles 3 and 4).
+-- Usage and the always-authenticate mark come from the key objects,
+-- so inits under a user login mark their slots auth-pending.
+modelWithAuthKeys :: Model
+modelWithAuthKeys =
+  let mkKey oid mat = ObjectState
+        { osId = oid
+        , osRevision = Revision 1
+        , osGeneration = Generation 1
+        , osAttrs = Map.fromList
+            [ (AttrClass, ValULong 4)
+            , (AttrKeyType, ValULong 0x1F)
+            , (AttrPrivate, ValBool False)
+            , (AttrEncrypt, ValBool True)
+            , (AttrDecrypt, ValBool True)
+            , (AttrAlwaysAuthenticate, ValBool True)
+            , (AttrValue, ValBytes mat)
+            ]
+        , osOwner = Nothing
+        , osSlot = testSlot
+        }
+      ost1 = mkKey (ObjectId 9) "0123456789abcdef0123456789abcdef"
+      ost2 = mkKey (ObjectId 10) "fedcba9876543210fedcba9876543210"
+  in emptyModel
+    { mObjects = Map.fromList [(ObjectId 9, ost1), (ObjectId 10, ost2)]
+    , mHandles = Map.fromList
+        [ (keyHandle, HandleBinding (ObjectId 9) (Generation 1))
+        , (otherHandle, HandleBinding (ObjectId 10) (Generation 1))
+        ]
+    }
+
+authEnv :: OpEnv
+authEnv = OpEnv
+  { oeRegistry = curatedRegistry
+  , oeCaps = mkCapabilities [(aesCbcMech, OpEncrypt), (aesCbcMech, OpDecrypt)]
+  , oeModel = modelWithAuthKeys
+  }
+
+authDualEnv :: OpEnv
+authDualEnv = OpEnv
+  { oeRegistry = curatedRegistry
+  , oeCaps = mkCapabilities [(sha256Mech, OpDigest), (aesCbcMech, OpEncrypt)]
+  , oeModel = modelWithAuthKeys
+  }
+
+decryptArgsFor :: ExternalHandle -> InitArgs
+decryptArgsFor h = InitArgs
+  { iaOp = OpDecrypt
+  , iaMech = aesCbcMech
+  , iaParams = BS.replicate 16 0
+  , iaKey = Just (KeyPolicy h [OpDecrypt] False)
+  , iaCipher = Just (CipherSpec 16 True)
+  , iaRecover = Nothing
+  }
+
+-- | Restoring auth-pending work into a grant-bound target refuses with
+-- the same code as a second pending init: the restored operation must
+-- not steal the grant held for the resident one. The refusal leaves
+-- the target untouched — the resident operation still spends its own
+-- grant — while the same bytes restore fine into unbound targets.
+caseRestoreGrantBound :: IO ()
+caseRestoreGrantBound = do
+  -- Source: pending encrypt/key-A under a user login (saved pre-use,
+  -- so the bytes carry AUTH=pending).
+  let src0 = (mkSession (SessionId 1)) { ssLogin = LoginUser }
+      (opsA, outA) = initOperation authEnv (ssOps src0) src0 encryptArgs
+  assertEqual "source init code" CKR_OK (ioCode outA)
+  assertEqual "source slot pending" (Just AuthPending) (slotAuth opsA SlotEncrypt)
+  let stA = src0 { ssOps = opsA }
+  bytes <- expectSaved modelWithAuthKeys stA Pkcs11_3_2 (SaveSlot SlotEncrypt)
+  -- Target: pending decrypt/key-B holding a context grant.
+  let tgt0 = (mkSession (SessionId 2)) { ssLogin = LoginUser }
+      (opsB, outB) = initOperation authEnv (ssOps tgt0) tgt0
+        (decryptArgsFor otherHandle)
+  assertEqual "target init code" CKR_OK (ioCode outB)
+  assertEqual "target slot pending" (Just AuthPending) (slotAuth opsB SlotDecrypt)
+  let granted = (tgt0 { ssOps = opsB }) { ssLogin = LoginContextUser }
+  -- The restore refuses: the grant already binds to the decrypt.
+  assertRejectedUntouched
+    (restoreOperation defaultQuotas modelWithAuthKeys granted Pkcs11_3_2
+      (RestoreSingle (Just keyHandle)) bytes)
+    (RestoreSlotBusy SlotEncrypt) CKR_OPERATION_ACTIVE
+  -- Non-consumption proof: the resident decrypt still spends its own
+  -- grant on its first data call.
+  let (opsB', stB', stepB) =
+        planCipherUpdate (ssOps granted) granted SlotDecrypt "part-1" Nothing
+  assertEqual "owner consumes its grant" CKR_OK (soCode stepB)
+  assertEqual "grant spent" LoginUser (ssLogin stB')
+  assertEqual "owner satisfied" (Just AuthSatisfied) (slotAuth opsB' SlotDecrypt)
+  -- Valid-restore control: the same bytes land in a fresh session.
+  stC <- case restoreOperation defaultQuotas modelWithAuthKeys
+      (mkSession (SessionId 3)) Pkcs11_3_2 (RestoreSingle (Just keyHandle)) bytes of
+    Left err -> assertFailure ("valid restore failed: " ++ show err) >> undefined
+    Right s -> pure s
+  assertEqual "restored slot equals saved slot"
+    (lookupSingle (ssOps stA) SlotEncrypt)
+    (lookupSingle (ssOps stC) SlotEncrypt)
+  -- Ungranted pair admits (init parity): B pending without a grant is
+  -- no barrier to the pending restore.
+  let ungranted = tgt0 { ssOps = opsB }
+  case restoreOperation defaultQuotas modelWithAuthKeys ungranted Pkcs11_3_2
+      (RestoreSingle (Just keyHandle)) bytes of
+    Left err -> assertFailure ("ungranted pair restore failed: " ++ show err)
+    Right stD -> assertEqual "pair slots" [SlotEncrypt, SlotDecrypt]
+      (activeSlots (ssOps stD))
+  -- Plain work still admits under a held grant (init parity): an
+  -- AuthNone digest lands without disturbing the bound grant.
+  stP <- legacyBuffered (mkSession (SessionId 4)) "hello "
+  plain <- expectSaved emptyModel stP Pkcs11_3_2 (SaveSlot SlotDigest)
+  case restoreOperation defaultQuotas modelWithAuthKeys granted Pkcs11_3_2
+      (RestoreSingle Nothing) plain of
+    Left err -> assertFailure ("plain restore under grant failed: " ++ show err)
+    Right stE -> do
+      assertEqual "grant survives plain arrival" LoginContextUser (ssLogin stE)
+      assertEqual "digest joins the bound slot" [SlotDigest, SlotDecrypt]
+        (activeSlots (ssOps stE))
+
+-- | The grant guard covers dual restores in both directions: a pending
+-- dual refuses into a bound single target, and a pending single
+-- refuses into a bound dual target. Valid dual bytes still restore.
+caseRestoreGrantBoundDual :: IO ()
+caseRestoreGrantBoundDual = do
+  -- Source: pending dual (digest + encrypt/key-A) under a user login.
+  let src0 = (mkSession (SessionId 1)) { ssLogin = LoginUser }
+      (opsD, outD) = initDualOperation authDualEnv (ssOps src0) src0
+        digestArgs encryptArgs
+  assertEqual "dual init code" CKR_OK (ioCode outD)
+  case dualOf opsD of
+    Just du -> assertEqual "dual cipher pending" AuthPending
+      (commonAuth (duCipher du))
+    Nothing -> assertFailure "dual missing after init"
+  let stD = src0 { ssOps = opsD }
+  dualBytes <- expectSaved modelWithAuthKeys stD Pkcs11_3_2 SaveDual
+  -- Bound single target refuses the pending dual.
+  let tgt0 = (mkSession (SessionId 2)) { ssLogin = LoginUser }
+      (opsB, outB) = initOperation authEnv (ssOps tgt0) tgt0
+        (decryptArgsFor otherHandle)
+  assertEqual "target init code" CKR_OK (ioCode outB)
+  let granted = (tgt0 { ssOps = opsB }) { ssLogin = LoginContextUser }
+  assertRejectedUntouched
+    (restoreOperation defaultQuotas modelWithAuthKeys granted Pkcs11_3_2
+      (RestoreDual Nothing (Just keyHandle)) dualBytes)
+    RestoreDualBusy CKR_OPERATION_ACTIVE
+  -- Bound dual target refuses a pending single on a free slot.
+  let dualTgt0 = (mkSession (SessionId 3)) { ssLogin = LoginUser }
+      (opsDT, outDT) = initDualOperation authDualEnv (ssOps dualTgt0) dualTgt0
+        digestArgs encryptArgs
+  assertEqual "dual target init code" CKR_OK (ioCode outDT)
+  let grantedDual = (dualTgt0 { ssOps = opsDT }) { ssLogin = LoginContextUser }
+      srcS0 = (mkSession (SessionId 4)) { ssLogin = LoginUser }
+      (opsS, outS) = initOperation authEnv (ssOps srcS0) srcS0
+        (decryptArgsFor otherHandle)
+  assertEqual "single init code" CKR_OK (ioCode outS)
+  assertEqual "single slot pending" (Just AuthPending) (slotAuth opsS SlotDecrypt)
+  singleBytes <- expectSaved modelWithAuthKeys (srcS0 { ssOps = opsS })
+    Pkcs11_3_2 (SaveSlot SlotDecrypt)
+  assertRejectedUntouched
+    (restoreOperation defaultQuotas modelWithAuthKeys grantedDual Pkcs11_3_2
+      (RestoreSingle (Just otherHandle)) singleBytes)
+    (RestoreSlotBusy SlotDecrypt) CKR_OPERATION_ACTIVE
+  -- Non-consumption proof: the resident dual still spends its own
+  -- grant on its first update.
+  let (opsDU', stDU', stepDU) = planDualUpdate opsDT grantedDual "dual-part"
+  assertEqual "dual consumes its grant" CKR_OK (soCode stepDU)
+  assertEqual "dual grant spent" LoginUser (ssLogin stDU')
+  case dualOf opsDU' of
+    Just du -> assertEqual "dual cipher satisfied" AuthSatisfied
+      (commonAuth (duCipher du))
+    Nothing -> assertFailure "dual missing after update"
+  -- Valid-restore control: the same dual bytes land in a fresh session.
+  case restoreOperation defaultQuotas modelWithAuthKeys
+      (mkSession (SessionId 5)) Pkcs11_3_2
+      (RestoreDual Nothing (Just keyHandle)) dualBytes of
+    Left err -> assertFailure ("valid dual restore failed: " ++ show err)
+    Right stR -> assertEqual "restored dual equals saved dual"
+      (dualOf (ssOps stD)) (dualOf (ssOps stR))
 
 -- ---------------------------------------------------------------------------
 -- Geometry revalidation: decode admits exactly what init admits

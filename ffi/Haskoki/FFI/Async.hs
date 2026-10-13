@@ -37,7 +37,7 @@ is nowhere durable to put the record — and report typed failures.
 
 Concurrency (handle resolution under concurrent retirement).
 Job handles are pure key tokens, not heap references: each handle
-packs a per-context salt (high 32 bits, nonzero) with its job id
+packs its table's exact salt (high 32 bits, nonzero) with its job id
 (low 32 bits), and the per-context live set is the
 admission\/retirement registry — admission inserts the key,
 retirement deletes it, and resolution decodes the key and checks
@@ -108,7 +108,6 @@ import Foreign.StablePtr
   , newStablePtr
   )
 import Foreign.Storable (peek, poke, peekByteOff)
-import System.Mem.StableName (hashStableName, makeStableName)
 
 import Haskoki.Engine.Backend (BackendEnv, CryptoBackend (..), EngineResult (..))
 import Haskoki.Engine.Driver (drainReleases, encodeResult, runEffect)
@@ -146,6 +145,7 @@ import Haskoki.Runtime.Async
   , PollOutcome (..)
   , StartDeny (..)
   , asyncTableId
+  , asyncTableSalt
   , jobFunctionOf
   , TerminalState (..)
   , cancelJob
@@ -153,9 +153,9 @@ import Haskoki.Runtime.Async
   , decodeCompletion
   , enableAsyncSession
   , jobReadyNeed
-  , newAsyncTable
   , pollJob
   , startJob
+  , tryNewAsyncTable
   )
 import Haskoki.Runtime.Detached
   ( DetachCtx
@@ -336,8 +336,8 @@ withCtx ctx k = guarded $
     then pure (toRV 0x05)
     else deRefStablePtr ctx >>= k
 
--- | Encode a job id as its opaque handle token under the given
--- context salt: the high 32 bits carry the salt, the low 32 the
+-- | Encode a job id as its opaque handle token under the table's
+-- exact salt: the high 32 bits carry the salt, the low 32 the
 -- job id. The salt is always nonzero, so an admitted key is never
 -- NULL. Job ids are table counters starting at 0 and never reused
 -- within a table; the salt distinguishes live handles across
@@ -399,18 +399,18 @@ freeJobHandle ctx h = mask_ $
     (Set.delete (castStablePtrToPtr h) live, ())
 
 -- | Admit a job's native handle (submission success path only).
--- The salt derives from the context's own live set identity with
--- zero remapped to one (never zero); key derivation is
--- infallible, so allocation cannot leak, and the masked section
--- holds no interruptible operation. Job ids are never reused
--- within a table, so an admitted key is unique among the
--- context's live handles; distinct contexts admit distinct keys
--- unless their 32-bit salts collide. Callers refuse job ids past
--- the 32-bit codec before admitting (see 'jobIdExhausted').
+-- The salt is the table's exact minted salt (nonzero, distinct
+-- per table, stable for the table's life — see 'asyncTableSalt');
+-- key derivation is pure and infallible, so allocation cannot
+-- leak, and the masked section holds no interruptible operation.
+-- Job ids are never reused within a table, so an admitted key is
+-- unique among the context's live handles, and distinct tables
+-- admit distinct keys for equal numeric job ids. Callers refuse
+-- job ids past the 32-bit codec before admitting (see
+-- 'jobIdExhausted').
 allocJobHandle :: AsyncCtx -> JobId -> IO (StablePtr JobHandle)
 allocJobHandle ctx jid = mask_ $ do
-  sn <- makeStableName (acLive ctx)
-  let salt = max 1 (fromIntegral (hashStableName sn) :: Word32)
+  let salt = asyncTableSalt (acTable ctx)
       h = encodeJobHandle salt jid
   atomicModifyIORef' (acLive ctx) $ \live ->
     (Set.insert (castStablePtrToPtr h) live, ())
@@ -546,10 +546,17 @@ haskokiAsyncOpen = guardedPtr $ do
                     case pr of
                       Left _ -> closeBackend be >> pure (castPtrToStablePtr nullPtr)
                       Right () -> do
-                        table <- newAsyncTable ctxCapacity
-                        enableAsyncSession table sid
-                        live <- newIORef Set.empty
-                        newStablePtr (AsyncCtx env be sid table live Nothing)
+                        mTable <- tryNewAsyncTable ctxCapacity
+                        case mTable of
+                          Nothing ->
+                            -- Table-allocator refusal (past 2^32-1
+                            -- tables): NULL like every other open
+                            -- failure, with the backend shut.
+                            closeBackend be >> pure (castPtrToStablePtr nullPtr)
+                          Just table -> do
+                            enableAsyncSession table sid
+                            live <- newIORef Set.empty
+                            newStablePtr (AsyncCtx env be sid table live Nothing)
                   _ -> closeBackend be >> pure (castPtrToStablePtr nullPtr)
   where
     openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
@@ -1015,10 +1022,17 @@ haskokiAsyncOpenOn box = guardedPtr $
                             case pr of
                               Left _ -> closeBackend be >> pure (castPtrToStablePtr nullPtr)
                               Right () -> do
-                                table <- newAsyncTable ctxCapacity
-                                enableAsyncSession table sid
-                                live <- newIORef Set.empty
-                                newStablePtr (AsyncCtx env be sid table live (Just (sbDetach b)))
+                                mTable <- tryNewAsyncTable ctxCapacity
+                                case mTable of
+                                  Nothing ->
+                                    -- Table-allocator refusal (past 2^32-1
+                                    -- tables): NULL like every other open
+                                    -- failure, with the backend shut.
+                                    closeBackend be >> pure (castPtrToStablePtr nullPtr)
+                                  Just table -> do
+                                    enableAsyncSession table sid
+                                    live <- newIORef Set.empty
+                                    newStablePtr (AsyncCtx env be sid table live (Just (sbDetach b)))
                           _ -> closeBackend be >> pure (castPtrToStablePtr nullPtr)
   where
     openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []

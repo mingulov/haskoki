@@ -20,7 +20,7 @@ name: Qualification (build-only)
 # a hard failure, not a skipped leg. External versions and hashes land
 # in the per-job provenance artifacts; every job sets a timeout and
 # uploads its evidence through an always-run step so partial failure
-# artifacts survive a red run.
+# artifacts survive a failing run.
 #
 # Pin policy (F-4): same as the CI workflow — every third-party action
 # is pinned to a full commit SHA with the human-readable tag kept as a
@@ -349,21 +349,29 @@ jobs:
           # checkout as 1001, so the bind-mounted /work would be
           # read-only and cabal could not create dist-newstyle (CI
           # bundle-job precedent; the manifest itself never chowns).
+          # The host demo leg also writes into the checkout
+          # (staged-bundle beside the evidence redirect), and the host
+          # runner is a different UID than the image user, so the
+          # checkout stays world-writable: the image user keeps
+          # ownership for the bind-mounted container legs while the
+          # host keeps write access for the demo leg.
           sudo chown -R 1000:1000 "$GITHUB_WORKSPACE"
+          sudo chmod -R a+rwX "$GITHUB_WORKSPACE"
       - name: Run the repaired V1 manifest
         run: |
           set -euo pipefail
           export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3
           export HASKOKI_PROXY_DIR="$GITHUB_WORKSPACE/proxy-in/proxy-pair"
           # Host-side manifest outputs live outside the checkout: the
-          # align step above hands the checkout to the image user for
-          # the bind-mounted container legs, while the host runner (a
-          # different UID) must keep write access to the evidence dir
-          # and the run log. The manifest funnels every host write
-          # through HASKOKI_EVIDENCE_DIR (per-driver logs, staged
-          # tarball, MANIFEST.txt) and runs the demo leg under it, so
-          # one redirect covers all host outputs; container legs keep
-          # writing dist-newstyle/dist-release into the checkout.
+          # manifest funnels its own host writes through
+          # HASKOKI_EVIDENCE_DIR (per-driver logs, staged tarball,
+          # MANIFEST.txt) and runs the demo leg under it. Beside that
+          # redirect, the host demo leg still creates staged-bundle
+          # inside the checkout, so the align step above hands the
+          # checkout to the image user for the bind-mounted container
+          # legs while keeping it writable for the host runner (a
+          # different UID). Container legs keep writing
+          # dist-newstyle/dist-release into the checkout.
           export HASKOKI_EVIDENCE_DIR="$RUNNER_TEMP/qualify-evidence"
           bash scripts/release-evidence.sh 2>&1 | tee "$RUNNER_TEMP/qualify-evidence-run.log"
           test -f "$HASKOKI_EVIDENCE_DIR/MANIFEST.txt" \

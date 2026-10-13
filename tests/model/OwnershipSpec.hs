@@ -168,6 +168,7 @@ import Haskoki.Runtime.Async
   , StartDeny (..)
   , TerminalState (..)
   , asyncTableId
+  , asyncTableSalt
   , beginDetach
   , callCompletion
   , cancelJob
@@ -180,7 +181,9 @@ import Haskoki.Runtime.Async
   , reapEligibility
   , reapJob
   , startJob
+  , tableSaltFor
   , tableStats
+  , tryNewAsyncTable
   )
 import Haskoki.Runtime.Detached
   ( AttachmentView (..)
@@ -356,6 +359,12 @@ spec = testGroup "Ownership"
         (guarded "handle-close-race" caseHandleCloseRace)
     , testCase "foreign and bogus handles stay stale"
         (guarded "handle-foreign-stale" caseHandleForeignStale)
+    , testCase "table salts are stable and distinguish contexts"
+        (guarded "handle-salt-stable" caseHandleSaltStable)
+    , testCase "table salts are exact, nonzero, and stable"
+        (guarded "table-salt-exact" caseTableSaltExact)
+    , testCase "table salt mint refuses past the 32-bit bound"
+        (guarded "table-salt-bound" caseTableSaltBound)
     ]
   , testGroup "attachment claims"
     [ testCase "table identities are unique and stable"
@@ -1831,7 +1840,10 @@ caseGateCancelWhileClosing = withGate $ \g -> withRealBackend $ \env -> do
 -- race-free under the suite's parallel runner.
 mkM3Ctx :: IO AsyncCtx
 mkM3Ctx = do
-  table <- newAsyncTable 8
+  mTable <- tryNewAsyncTable 8
+  table <- case mTable of
+    Just t -> pure t
+    Nothing -> assertFailure "table allocator refused"
   env <- newEnv defaultRules
   enableAsyncSession table sid1
   eBe <- B.openBackend "provider=default"
@@ -2088,17 +2100,23 @@ caseHandleCloseRace = do
 -- stale on another, while staying live on its own; bogus and null
 -- tokens stay stale everywhere without touching anything. Both
 -- contexts admit their own first job, so both tables hold the same
--- numeric job id — the discriminating case for cross-context
--- aliasing: each handle must resolve only on its own context.
+-- numeric job id under distinct exact salts: each handle must
+-- resolve only on its own context, and the two admitted tokens
+-- must differ despite the equal job ids (equal tokens here would
+-- alias one context's job onto the other).
 caseHandleForeignStale :: IO ()
 caseHandleForeignStale = do
   ctxA <- mkM3Ctx
   ctxB <- mkM3Ctx
+  assertBool "table identities distinct"
+    (asyncTableId (acTable ctxA) /= asyncTableId (acTable ctxB))
   Right jA <- startJob (acTable ctxA) (signRequest sid1 1000000)
   Right jB <- startJob (acTable ctxB) (signRequest sid1 1000000)
   assertEqual "same numeric job id" jA jB
   hA <- allocJobHandle ctxA jA
   hB <- allocJobHandle ctxB jB
+  assertBool "equal job ids admit distinct tokens"
+    (castStablePtrToPtr hA /= castStablePtrToPtr hB)
   mAB <- resolveJobHandle ctxB hA
   assertEqual "A-handle stale on B" Nothing mAB
   mBA <- resolveJobHandle ctxA hB
@@ -2118,6 +2136,64 @@ caseHandleForeignStale = do
   assertEqual "B owns one handle" 1 nB
   asyncCloseCtx ctxA
   asyncCloseCtx ctxB
+
+-- | Salt stability pin: re-admitting one job on one table yields
+-- the identical token (the salt is stable per table), while a
+-- second table admitting the same numeric job id yields a distinct
+-- token by its distinct exact salt. Same-context resolution stays
+-- live after re-admission.
+caseHandleSaltStable :: IO ()
+caseHandleSaltStable = do
+  ctxA <- mkM3Ctx
+  ctxB <- mkM3Ctx
+  Right jA <- startJob (acTable ctxA) (signRequest sid1 1000000)
+  Right jB <- startJob (acTable ctxB) (signRequest sid1 1000000)
+  assertEqual "same numeric job id" jA jB
+  hA1 <- allocJobHandle ctxA jA
+  freeJobHandle ctxA hA1
+  hA2 <- allocJobHandle ctxA jA
+  assertEqual "re-admission is token-identical"
+    (castStablePtrToPtr hA1) (castStablePtrToPtr hA2)
+  hB <- allocJobHandle ctxB jB
+  assertBool "second context admits a distinct token"
+    (castStablePtrToPtr hB /= castStablePtrToPtr hA2)
+  mA <- resolveJobHandle ctxA hA2
+  assertEqual "own handle live on A" (Just jA) mA
+  mB <- resolveJobHandle ctxB hB
+  assertEqual "own handle live on B" (Just jB) mB
+  mAB <- resolveJobHandle ctxB hA2
+  assertEqual "A-handle stale on B" Nothing mAB
+  asyncCloseCtx ctxA
+  asyncCloseCtx ctxB
+
+-- | Exact per-table salts: distinct tables carry distinct nonzero
+-- salts, each stable for its table's life.
+caseTableSaltExact :: IO ()
+caseTableSaltExact = do
+  t1 <- newAsyncTable 8
+  t2 <- newAsyncTable 8
+  let s1 = asyncTableSalt t1
+      s2 = asyncTableSalt t2
+  assertBool "salts nonzero" (s1 /= 0 && s2 /= 0)
+  assertBool "distinct tables, distinct salts" (s1 /= s2)
+  assertEqual "salt stable" s1 (asyncTableSalt t1)
+  many <- mapM (const (newAsyncTable 8)) [1 .. 128 :: Int]
+  let salts = map asyncTableSalt many
+  assertBool "128 fresh tables, all salts nonzero" (all (/= 0) salts)
+  assertEqual "128 fresh tables, 128 salts" 128 (Set.size (Set.fromList salts))
+
+-- | Salt-mint boundary: the n-th table (0-based) salts n+1, so the
+-- first table salts 1 (never zero) and the last admissible index
+-- salts the 32-bit maximum; past 2^32-1 tables the mint refuses
+-- ('Nothing') instead of wrapping or reusing a salt.
+caseTableSaltBound :: IO ()
+caseTableSaltBound = do
+  assertEqual "first table salts 1" (Just 1) (tableSaltFor 0)
+  assertEqual "second table salts 2" (Just 2) (tableSaltFor 1)
+  assertEqual "last index salts maxBound" (Just maxBound) (tableSaltFor 0xFFFFFFFE)
+  assertEqual "past 2^32-1 tables refuses" Nothing (tableSaltFor 0xFFFFFFFF)
+  assertEqual "far past refuses" Nothing (tableSaltFor 0x100000000)
+  assertEqual "negative refuses" Nothing (tableSaltFor (-1))
 
 -- ---------------------------------------------------------------------------
 -- Attachment-claim ownership

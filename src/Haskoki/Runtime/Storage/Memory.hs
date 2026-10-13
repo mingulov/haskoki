@@ -3,13 +3,13 @@
 A 'MemoryWorld' is the shared store identity (the analogue of one
 SQLite file): exactly one open 'Store' owns it at a time, and
 closing releases ownership so a later generation can reopen the
-same durable state. Ownership is handle-scoped (M4): every open
+same durable state. Ownership is handle-scoped: every open
 mints a fresh owner token and a close releases only while its own
 token is still current, so a stale close can never release a new
 owner. State lives in an 'MVar'-guarded map pair; every
 'storeCommit' applies its 'StoreDelta' atomically under the one
 lock, so multi-object transactions are all-or-nothing by
-construction. Close serializes with use (M4): it waits for the
+construction. Close serializes with use: it waits for the
 handle's commit lock, marks the handle closed, and only then
 releases the token; later uses of the closed handle fail closed.
 
@@ -33,10 +33,11 @@ import Control.Concurrent.MVar
   , putMVar
   , readMVar
   , takeMVar
+  , tryPutMVar
   , tryTakeMVar
   , withMVar
   )
-import Control.Exception (bracket_, mask_, throwIO, uninterruptibleMask_)
+import Control.Exception (bracket_, mask_, onException, throwIO, uninterruptibleMask_)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (nub, sortOn)
 import Data.Unique (Unique, newUnique)
@@ -112,24 +113,40 @@ openMemoryStore world = openMemoryStoreWith world defaultLimits noFaults
 -- and an explicit fault injector. The open mints a fresh owner
 -- token plus a per-handle lifecycle state; the close releases
 -- the token only while it is still current.
+--
+-- The owner-cell update runs masked with rollback. The claim
+-- holds the cell empty across several allocations, and a kill
+-- landing there would strand it empty: every later open would
+-- refuse and the owner's close would wait on it permanently
+-- under 'uninterruptibleMask_'. Masking defers the kill past
+-- the span, and the rollback restores the unowned mark if the
+-- span ever aborts, so the cell is never observably empty
+-- outside this critical section.
 openMemoryStoreWith :: MemoryWorld -> StoreLimits -> FaultInjector -> IO (Either StoreError Store)
-openMemoryStoreWith world limits inj = do
+openMemoryStoreWith world limits inj = mask_ $ do
   mPrev <- tryTakeMVar (mwOwner world)
   case mPrev of
     Nothing -> pure (Left alreadyOpen)
     Just prev@(Just _) -> do
       putMVar (mwOwner world) prev
       pure (Left alreadyOpen)
-    Just Nothing -> do
-      tok <- newUnique
-      putMVar (mwOwner world) (Just tok)
-      qVar <- newMVar []
-      sVar <- newIORef zeroStats
-      cVar <- newMVar ()
-      closedVar <- newMVar HandleOpen
-      pure (Right (mkStore world limits inj qVar sVar cVar tok closedVar))
+    Just Nothing ->
+      (do tok <- newUnique
+          putMVar (mwOwner world) (Just tok)
+          qVar <- newMVar []
+          sVar <- newIORef zeroStats
+          cVar <- newMVar ()
+          closedVar <- newMVar HandleOpen
+          pure (Right (mkStore world limits inj qVar sVar cVar tok closedVar)))
+        `onException` restoreUnowned
   where
     alreadyOpen = StoreSecondWriter "memory store is already open (single writer)"
+    -- Best-effort rollback: refill the cell only while it is
+    -- still empty (a late abort after the claim refilled it
+    -- keeps the minted owner rather than forking ownership).
+    restoreUnowned = do
+      _ <- tryPutMVar (mwOwner world) Nothing
+      pure ()
 
 -- | Build the 'Store' record over an owned world: the owner token
 -- plus the per-handle lifecycle state scope every operation and
@@ -180,8 +197,10 @@ withUse cVar closedVar act =
 -- transiently empty the owner cell, and a kill landing while the
 -- release waits on it would otherwise orphan ownership behind a
 -- handle already marked closed (whose retries would no-op). The
--- uninterruptible wait is bounded by the racing thread's own
--- non-blocking owner update.
+-- uninterruptible wait is bounded: every racing owner update
+-- runs masked across non-blocking steps only (see
+-- 'openMemoryStoreWith'), so the cell is never stranded empty
+-- and the release wait always terminates.
 closeMemory :: MemoryWorld -> Unique -> FaultInjector -> MVar () -> MVar HandleState -> IO ()
 closeMemory world tok inj cVar closedVar = mask_ $
   bracket_ (takeMVar cVar) (putMVar cVar ()) $ do

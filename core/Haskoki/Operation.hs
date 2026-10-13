@@ -26,8 +26,9 @@ Context-specific authentication (the login machine) binds each
 grant by uniqueness to the single eligible active marked
 key/operation: admission requires exactly one
 always-authenticate slot still awaiting its first data call
-('hasSingleAuthPendingOp'), a second marked init while a grant is
-outstanding refuses, and the grant is consumed only at its
+('hasSingleAuthPendingOp'), a second marked arrival — by init or by
+snapshot restore — refuses while a grant is outstanding, and the
+grant is consumed only at its
 defined point — the first data call of the bound slot
 ('gateDataCall'). A grant presented to a non-pending slot fails
 without being consumed (premature); a pending slot whose first
@@ -50,6 +51,7 @@ module Haskoki.Operation
   , initOperation
   , initDualOperation
   , initMessageOperation
+  , grantAdmitsPending
     -- * Data-call planning shared machinery
     -- ('StepDeny', 'DenyDetail', 'TypedError' and the interpreter
     -- live in Haskoki.Operation.Effect and are re-exported above)
@@ -506,14 +508,24 @@ checkRecover args incoming = case (recoverRoleOf (iaOp args), iaRecover args) of
     Left (mkDeny CKR_ARGUMENTS_BAD "non-recovery operation takes no recover spec")
   (Nothing, Nothing) -> Right incoming
 
+-- | Whether a fresh always-authenticate operation may join the session:
+-- a held context grant already binds by uniqueness to the pending
+-- operation, so a second pending arrival refuses — whether it arrives
+-- by init ('checkKeyBinding') or by snapshot restore, which routes
+-- through this same guard.
+grantAdmitsPending :: SessionState -> Bool
+grantAdmitsPending st =
+  not (ssLogin st == LoginContextUser && hasAuthPendingOp (ssOps st))
+
 -- | Key-shape and key-binding checks: keyed ops need a key, unkeyed
 -- ops take none, and a bound key must resolve, be visible, carry a
 -- compatible key type, permit the operation, and (for
 -- always-authenticate keys) sit under a user login. Success carries
 -- the resolved object id and the auth marking. A second
--- always-authenticate init while a context grant is outstanding
--- refuses: the grant binds by uniqueness to the already-pending
--- operation, so no later operation can steal it. Usage permission
+-- always-authenticate arrival while a context grant is outstanding
+-- refuses ('grantAdmitsPending', shared with snapshot restore): the
+-- grant binds by uniqueness to the already-pending operation, so no
+-- later operation can steal it. Usage permission
 -- and the always-authenticate mark come from the key OBJECT
 -- ('policyFromObject') wherever key attributes exist; legacy
 -- objects without them still honor the caller-derived 'KeyPolicy'
@@ -552,8 +564,7 @@ checkKeyBinding env st args = case (opKeyed (iaOp args), iaKey args) of
             else if alwaysAuth && ssLogin st `notElem` [LoginUser, LoginContextUser]
               then Left (mkDeny CKR_USER_NOT_LOGGED_IN
                 "always-authenticate key needs a user login")
-              else if alwaysAuth && ssLogin st == LoginContextUser
-                      && hasAuthPendingOp (ssOps st)
+              else if alwaysAuth && not (grantAdmitsPending st)
               then Left (mkDeny CKR_OPERATION_ACTIVE
                 "a context grant is already bound to another operation")
               else Right (Just (osId ost),

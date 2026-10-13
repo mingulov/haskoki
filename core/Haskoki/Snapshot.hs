@@ -57,8 +57,9 @@ out-of-range values, incoherent kind\/operation pairs, ill-formed
 cipher\/recovery geometries (revalidated against the shared init
 bounds, with message cipher-spec presence matching the family),
 and quota violations all reject. Restore checks run in documented
-order: decode, quotas, profile, token, slot occupancy, then key
-binding — and any failure returns the target session untouched.
+order: decode, quotas, profile, token, slot occupancy, key binding,
+then grant binding — and any failure returns the target session
+untouched.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Snapshot
@@ -95,7 +96,7 @@ import Data.Word (Word8, Word64)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model (Model (..), ObjectState (..), SessionState (..))
 import Haskoki.Object (objectVisible, resolveHandle)
-import Haskoki.Operation (maxBuffered)
+import Haskoki.Operation (grantAdmitsPending, maxBuffered)
 import Haskoki.Operation.State
   ( ActiveOp
   , CipherDir (..)
@@ -373,8 +374,8 @@ restoreCode e = case e of
   RestoreStagedOverQuota _ _ -> CKR_SAVED_STATE_INVALID
 
 -- | Restore snapshot bytes into the target session. Check order: decode,
--- quotas, profile, token, slot occupancy, then key binding. Any failure
--- returns 'Left' and the session is untouched.
+-- quotas, profile, token, slot occupancy, key binding, then grant
+-- binding. Any failure returns 'Left' and the session is untouched.
 restoreOperation
   :: SnapshotQuotas -> Model -> SessionState -> Pkcs11Version -> RestoreKeys
   -> ByteString -> Either RestoreError SessionState
@@ -392,6 +393,8 @@ restoreOperation quotas model st profile keys bytes = do
     (Left ds, RestoreSingle mh) -> do
       checkSingleFree (ssOps st) (dsKind ds)
       active <- buildSingle model st mh ds
+      checkGrantFree st (commonAuth (commonOf active))
+        (RestoreSlotBusy (dsKind ds))
       case insertChecked (dsKind ds) active (ssOps st) of
         Left mm -> Left (RestoreMalformed
           ("slot tag mismatches the restored operation: " ++ show mm))
@@ -399,6 +402,7 @@ restoreOperation quotas model st profile keys bytes = do
     (Right dd, RestoreDual mhd mhc) -> do
       checkDualFree (ssOps st) (ddDir dd)
       du <- buildDual model st mhd mhc dd
+      checkGrantFree st (commonAuth (duCipher du)) RestoreDualBusy
       pure st { ssOps = setDual (Just du) (ssOps st) }
     (Left _, RestoreDual _ _) ->
       Left (RestoreMalformed "dual key arguments for a single snapshot")
@@ -445,6 +449,19 @@ checkDualFree ops dir
   | otherwise = Right ()
   where
     ck = dirKind dir
+
+-- | Refuse restored auth-pending work when the target's context grant
+-- already binds to another operation: the same guard ordinary init
+-- applies ('grantAdmitsPending'). The grant's owner keeps it, and —
+-- like every restore failure — the target is untouched. Only the
+-- dual's cipher side counts: the digest side is unkeyed and never
+-- gated, matching the live pending-operation count. The refusal
+-- reuses the operation-active typed errors, the same code init
+-- reports.
+checkGrantFree :: SessionState -> OpAuth -> RestoreError -> Either RestoreError ()
+checkGrantFree st auth busy
+  | auth == AuthPending && not (grantAdmitsPending st) = Left busy
+  | otherwise = Right ()
 
 -- | Bind one decoded key section against its handle argument: the handle
 -- must resolve to a visible object whose canonical identity equals the

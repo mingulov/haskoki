@@ -91,10 +91,11 @@ import Haskoki.Runtime.Async
   , JobRequest (..)
   , PollOutcome (..)
   , asyncTableId
+  , asyncTableSalt
   , enableAsyncSession
-  , newAsyncTable
   , pollJob
   , startJob
+  , tryNewAsyncTable
   )
 import Haskoki.Runtime.Config
   ( Config (..)
@@ -345,7 +346,10 @@ mkFfiGen dc = do
             Right () -> pure ()
             Left f -> assertFailure ("digest-init publish failed: " ++ show f)
     other -> assertFailure ("digest-init did not plan execute: " ++ show other)
-  table <- newAsyncTable 8
+  mTable <- tryNewAsyncTable 8
+  table <- case mTable of
+    Just t -> pure t
+    Nothing -> assertFailure "table allocator refused"
   enableAsyncSession table sid
   eBe <- B.openBackend "provider=default"
     :: IO (B.EngineResult (B.BackendEnv OpenSSL4))
@@ -397,6 +401,10 @@ caseCloseOneKeepsOther = do
   let tidA = asyncTableId (acTable ctxA)
       tidB = asyncTableId (acTable ctxB)
   assertBool "table identities distinct" (tidA /= tidB)
+  let saltA = asyncTableSalt (acTable ctxA)
+      saltB = asyncTableSalt (acTable ctxB)
+  assertBool "salts nonzero" (saltA /= 0 && saltB /= 0)
+  assertBool "table salts distinct" (saltA /= saltB)
   -- A starts and detaches; both contexts allocate from job zero.
   jA0 <- startFfiDigest ctxA "abc" 32 1
   assertEqual "A starts at zero" (JobId 0) jA0
@@ -418,6 +426,19 @@ caseCloseOneKeepsOther = do
   hB <- allocJobHandle ctxB jB
   mB0 <- resolveJobHandle ctxB hB
   assertEqual "B handle resolves" (Just jB) mB0
+  -- Exactness pin at the store-bound level: both contexts hold
+  -- numeric job zero under distinct exact salts, so B's handle
+  -- must stay stale on A while live on B. The companion admission
+  -- on A is registry only (the live set never consults table
+  -- liveness), admitted solely to pin token distinctness across
+  -- the equal job ids.
+  mCross <- resolveJobHandle ctxA hB
+  assertEqual "B handle stale on A" Nothing mCross
+  hA <- allocJobHandle ctxA jA0
+  assertBool "equal job ids admit distinct tokens"
+    (castStablePtrToPtr hA /= castStablePtrToPtr hB)
+  mA0 <- resolveJobHandle ctxA hA
+  assertEqual "A handle resolves" (Just jA0) mA0
   nLiveB0 <- asyncLiveHandles ctxB
   assertEqual "B one live handle" 1 nLiveB0
   revB <- inspectReverse dc tidB jB

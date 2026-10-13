@@ -364,10 +364,10 @@ the stale planner-catalog rows found at `f4a967a`, for H3/V5 owners:
 |---|---|---:|
 | Genuine C-table stubs (`CKR_FUNCTION_NOT_SUPPORTED` live) | 14 | 6 legacy `stub_probe` + 8 post-2.40 `x_live_check` |
 | Legacy parallel pair (`CKR_FUNCTION_NOT_PARALLEL` live) | 2 | `C_GetFunctionStatus`, `C_CancelFunction` |
-| Catalog rows needing routing-context rewording | 10 | S1-S10 (7 stale denials + 3 planner-scope); S11 parallel-pair wording |
+| Catalog rows needing routing-context rewording | 10 | R1-R10 (7 stale denials + 3 planner-scope); R11 parallel-pair wording |
 
-The 14 genuine stubs keep accurate catalog reasons. S4-S10 deny C-table
-routes that exist as `std_` bodies in `cbits/standard_surface.c`, S1-S3
-state planner limits that read as serving denials, and S11 records the
-parallel-pair reason/code wording gap. See gaps G2 and G3 in the inventory
+The 14 genuine stubs keep accurate catalog reasons. R4-R10 deny C-table
+routes that exist as `std_` bodies in `cbits/standard_surface.c`, R1-R3
+state planner limits that read as serving denials, and R11 records the
+parallel-pair reason/code wording gap. See gaps D2 and D3 in the inventory
 for the V5 follow-ups.

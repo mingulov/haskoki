@@ -53,7 +53,7 @@ Each body returns `OutcomeErr CKR_GENERAL_ERROR` unconditionally:
 Re-exported through `src/Haskoki.hs:12-20`. The serving path does not use
 them: real callers go through the versioned C tables (`cbits/` + `ffi/`)
 and the `planCall` / `finishEffect` / `publishDelta` contracts. A Haskell
-newcomer importing `Haskoki` meets these 4 failures first; see gap G1.
+newcomer importing `Haskoki` meets these 4 failures first; see gap D1.
 
 ## 3. C-table stub inventory (14 + 2)
 
@@ -94,9 +94,9 @@ Outside the 14 (named so the count reconciles): the legacy parallel pair
 `CKR_FUNCTION_NOT_PARALLEL`, `cbits/function_tables.c:820-826`,
 bodies `:891-898`) and are classified `not-applicable` in the contracts;
 their reason wording names a different return code than the stub returns
-(see S11 in section 4).
+(see R11 in section 4).
 Reconciliation: 14 genuine stubs + 2 parallel + 10 reword-needed rows
-(section 4: 7 stale denials S4-S10 + 3 planner-scope S1-S3) + 78 planned
+(section 4: 7 stale denials R4-R10 + 3 planner-scope R1-R3) + 78 planned
 = 104 functions in `spec/function-contracts.json`
 (`scope` + counts read from the file; 24 `unsupported-with-reason` =
 14 genuine + 7 stale + 3 planner-scope).
@@ -105,10 +105,10 @@ Reconciliation: 14 genuine stubs + 2 parallel + 10 reword-needed rows
 
 `spec/function-contracts.json` declares
 `"scope": "planner/in-process reachability, NOT C-table routing"`.
-Seven rows (S4-S10) literally deny C-table routes that exist as `std_`
+Seven rows (R4-R10) literally deny C-table routes that exist as `std_`
 bodies wired into the versioned tables; those denials are stale. Three
-rows (S1-S3) state planner-scope limits that read as serving denials but
-do not literally deny a route (S2/S3 already name the public FFI cursor);
+rows (R1-R3) state planner-scope limits that read as serving denials but
+do not literally deny a route (R2/R3 already name the public FFI cursor);
 those need serving-context rewording, not a routing correction. The
 planner-scope half of all 10 still holds (search over
 `core/Haskoki/Request.hs` and `core/Haskoki/Transition.hs` finds no `F_`
@@ -118,24 +118,24 @@ prefixes).
 
 | # | Kind | Function | Reason text | Routed evidence |
 |---|---|---|---|---|
-| S1 | planner-scope | `C_CloseAllSessions` | `no close-all planning (single-session close only)` | `std_CloseAllSessions`, `cbits/standard_surface.c:794`, table `cbits/function_tables.c:1089` |
-| S2 | planner-scope | `C_FindObjectsInit` | `one-shot find only; no cursor state (planner scope: ... the public FFI cursor lives above this layer)` | `std_FindObjectsInit`, `standard_surface.c:1222`, table `:1101` |
-| S3 | planner-scope | `C_FindObjectsFinal` | `one-shot find only; no cursor state (planner scope: ... the public FFI cursor lives above this layer)` | `std_FindObjectsFinal`, `standard_surface.c:1294`, table `:1103` |
-| S4 | stale denial | `C_GenerateKey` | `operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec keygen cases)` | `std_GenerateKey`, `standard_surface.c:1526`, table `:1133` |
-| S5 | stale denial | `C_GenerateKeyPair` | `... no C-table route (KeyManagementSpec keypair + KEM cases)` | `std_GenerateKeyPair`, `standard_surface.c:1570`, table `:1134` |
-| S6 | stale denial | `C_DeriveKey` | `... no C-table route (KeyManagementSpec derive cases)` | `std_DeriveKey`, `standard_surface.c:2899`, table `:1137` |
-| S7 | stale denial | `C_SeedRandom` | `no model planning; ABI layout only` | `std_SeedRandom`, `standard_surface.c:2471`, table `:1138` |
-| S8 | stale denial | `C_GenerateRandom` | `no model planning; ABI layout only` | `std_GenerateRandom`, `standard_surface.c:2441`, table `:1139` |
-| S9 | stale denial | `C_EncapsulateKey` | `... no C-table route (KeyManagementSpec KEM encaps cases, SyntheticSpec KEM)` | `std_EncapsulateKey`, `standard_surface.c:2589`, fill `cbits/abi_stubs.inc:120` |
-| S10 | stale denial | `C_DecapsulateKey` | `... no C-table route (KeyManagementSpec KEM cases, SyntheticSpec KEM)` | `std_DecapsulateKey`, `standard_surface.c:2641`, fill `abi_stubs.inc:121` |
-| S0 | (meta) `scope` vs reason wording | — | The `scope` field disclaims C-table routing while S4-S10 reasons assert `no C-table route` / `ABI layout only` about it | `spec/function-contracts.json` `scope`; generator `UNSUPPORTED` table |
-| S11 | (wording) parallel-pair code name | `C_GetFunctionStatus`, `C_CancelFunction` | `not-applicable` reason names `CKR_FUNCTION_NOT_SUPPORTED`, but `stub_parallel` returns `CKR_FUNCTION_NOT_PARALLEL` (`cbits/function_tables.c:825`), pinned by `tests/c/loader.c:1134-1137` | reason text in `spec/function-contracts.json`; V5 decides which side to change |
+| R1 | planner-scope | `C_CloseAllSessions` | `no close-all planning (single-session close only)` | `std_CloseAllSessions`, `cbits/standard_surface.c:794`, table `cbits/function_tables.c:1089` |
+| R2 | planner-scope | `C_FindObjectsInit` | `one-shot find only; no cursor state (planner scope: ... the public FFI cursor lives above this layer)` | `std_FindObjectsInit`, `standard_surface.c:1222`, table `:1101` |
+| R3 | planner-scope | `C_FindObjectsFinal` | `one-shot find only; no cursor state (planner scope: ... the public FFI cursor lives above this layer)` | `std_FindObjectsFinal`, `standard_surface.c:1294`, table `:1103` |
+| R4 | stale denial | `C_GenerateKey` | `operation-layer behavior tested but no planCall FunctionId and no C-table route (KeyManagementSpec keygen cases)` | `std_GenerateKey`, `standard_surface.c:1526`, table `:1133` |
+| R5 | stale denial | `C_GenerateKeyPair` | `... no C-table route (KeyManagementSpec keypair + KEM cases)` | `std_GenerateKeyPair`, `standard_surface.c:1570`, table `:1134` |
+| R6 | stale denial | `C_DeriveKey` | `... no C-table route (KeyManagementSpec derive cases)` | `std_DeriveKey`, `standard_surface.c:2899`, table `:1137` |
+| R7 | stale denial | `C_SeedRandom` | `no model planning; ABI layout only` | `std_SeedRandom`, `standard_surface.c:2471`, table `:1138` |
+| R8 | stale denial | `C_GenerateRandom` | `no model planning; ABI layout only` | `std_GenerateRandom`, `standard_surface.c:2441`, table `:1139` |
+| R9 | stale denial | `C_EncapsulateKey` | `... no C-table route (KeyManagementSpec KEM encaps cases, SyntheticSpec KEM)` | `std_EncapsulateKey`, `standard_surface.c:2589`, fill `cbits/abi_stubs.inc:120` |
+| R10 | stale denial | `C_DecapsulateKey` | `... no C-table route (KeyManagementSpec KEM cases, SyntheticSpec KEM)` | `std_DecapsulateKey`, `standard_surface.c:2641`, fill `abi_stubs.inc:121` |
+| R0 | (meta) `scope` vs reason wording | — | The `scope` field disclaims C-table routing while R4-R10 reasons assert `no C-table route` / `ABI layout only` about it | `spec/function-contracts.json` `scope`; generator `UNSUPPORTED` table |
+| R11 | (wording) parallel-pair code name | `C_GetFunctionStatus`, `C_CancelFunction` | `not-applicable` reason names `CKR_FUNCTION_NOT_SUPPORTED`, but `stub_parallel` returns `CKR_FUNCTION_NOT_PARALLEL` (`cbits/function_tables.c:825`), pinned by `tests/c/loader.c:1134-1137` | reason text in `spec/function-contracts.json`; V5 decides which side to change |
 
 Routing comments in `cbits/function_tables.c:770-788` confirm the same
 10 as routed (sessions, find, keygen, random/seed, encaps note in
 `cbits/exports.c:19-20`). The 14 section-3 stubs keep accurate reasons
-(their entries really are stubs); S4-S10 are the only literal stale
-denials, S1-S3 need serving-context rewording, and S11 records the
+(their entries really are stubs); R4-R10 are the only literal stale
+denials, R1-R3 need serving-context rewording, and R11 records the
 parallel-pair wording gap.
 
 ## 5. Onboarding accuracy vs artifacts
@@ -161,9 +161,9 @@ parallel-pair wording gap.
 
 | # | Gap | Owner direction |
 |---|---|---|
-| G1 | The facade explanation lives only in-source: `src/Haskoki/PKCS11.hs:3-9` plus per-function `Stub` notes already name the C serving path and unconditional failure, but nothing at the `Haskoki` re-export site points there | H3: one pointer sentence in the `src/Haskoki.hs` header or a deprecation marker; do not duplicate the existing header text |
-| G2 | Stale denials S4-S10 and planner-scope S1-S3 read as serving truth to anyone who opens `spec/function-contracts.json` without the planner-scope context | V5: reword the 7 stale denials to name the existing `std_` route, add serving context to the 3 planner-scope rows, and resolve the S11 code-name wording |
-| G3 | Meta item S0: `scope` disclaims C-table routing while reasons assert routing facts | V5: pick one level per field and pin it in the generator docstring |
-| G4 | 7 library-exposed modules missing from the flib, and flib-only `Haskoki.FFI.Types` with zero in-tree importers, are unexplained | H3: document which Haskell API (if any) external consumers should use |
-| G5 | Image-size figures in `try-it.md` cite CI runs that cannot be re-measured from the tree | V5: keep the run links adjacent to the figures (already the case); re-measure on publication |
-| G6 | `v0.3.1.0` tag/publication wording across README, `try-it.md`, and the 0.3.1.0 notes is time-sensitive | V5: refresh once after publication instead of patching per-branch |
+| D1 | The facade explanation lives only in-source: `src/Haskoki/PKCS11.hs:3-9` plus per-function `Stub` notes already name the C serving path and unconditional failure, but nothing at the `Haskoki` re-export site points there | H3: one pointer sentence in the `src/Haskoki.hs` header or a deprecation marker; do not duplicate the existing header text |
+| D2 | Stale denials R4-R10 and planner-scope R1-R3 read as serving truth to anyone who opens `spec/function-contracts.json` without the planner-scope context | V5: reword the 7 stale denials to name the existing `std_` route, add serving context to the 3 planner-scope rows, and resolve the R11 code-name wording |
+| D3 | Meta item R0: `scope` disclaims C-table routing while reasons assert routing facts | V5: pick one level per field and pin it in the generator docstring |
+| D4 | 7 library-exposed modules missing from the flib, and flib-only `Haskoki.FFI.Types` with zero in-tree importers, are unexplained | H3: document which Haskell API (if any) external consumers should use |
+| D5 | Image-size figures in `try-it.md` cite CI runs that cannot be re-measured from the tree | V5: keep the run links adjacent to the figures (already the case); re-measure on publication |
+| D6 | `v0.3.1.0` tag/publication wording across README, `try-it.md`, and the 0.3.1.0 notes is time-sensitive | V5: refresh once after publication instead of patching per-branch |

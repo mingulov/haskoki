@@ -691,6 +691,34 @@
         }
       ],
       "module_groups": {}
+    },
+    {
+      "name": "haskoki-client-tests",
+      "main": "client/test/Main.hs",
+      "modules": [
+        "ClientLifecycleSpec"
+      ],
+      "required_groups": [
+        "haskoki-client-tests"
+      ],
+      "allowed_imports": {
+        "Test.Tasty": ["TestTree", "defaultMain", "testGroup"]
+      },
+      "executed_by": [
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/hpc.yml",
+          "job": "hpc"
+        }
+      ],
+      "module_groups": {
+        "ClientLifecycleSpec": [
+          "client lifecycle"
+        ]
+      }
     }
   ]
 }
