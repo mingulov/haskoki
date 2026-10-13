@@ -1221,7 +1221,7 @@ dropObjectStmt :: ObjectId -> (Text, [S.SQLData])
 dropObjectStmt (ObjectId n) =
   ("DELETE FROM objects WHERE object_id = ?", [S.SQLText (T.pack (encodeHex16 n))])
 
--- | DELETE one token by id (objects cascade).
+-- | DELETE one token by id (owned objects and jobs cascade).
 dropTokenStmt :: TokenId -> (Text, [S.SQLData])
 dropTokenStmt (TokenId n) =
   ("DELETE FROM tokens WHERE token_id = ?", [S.SQLText (T.pack (encodeHex16 n))])
@@ -1244,10 +1244,14 @@ putJobStmt j =
     ]
   )
 
--- | Upsert one token row.
+-- | Upsert one token row. An ordinary same-id update preserves the
+-- parent row — and therefore every owned object and job — while a
+-- conflicting slot still refuses (never silently replacing another
+-- token's row). Only an explicit token drop or reset removes
+-- children; foreign keys stay on.
 putTokenStmt :: TokenRecord -> (Text, [S.SQLData])
 putTokenStmt t =
-  ( "INSERT OR REPLACE INTO tokens (token_id, slot_key, generation_key, record_json, format_version) VALUES (?, ?, ?, ?, 1)"
+  ( "INSERT INTO tokens (token_id, slot_key, generation_key, record_json, format_version) VALUES (?, ?, ?, ?, 1) ON CONFLICT(token_id) DO UPDATE SET slot_key = excluded.slot_key, generation_key = excluded.generation_key, record_json = excluded.record_json, format_version = excluded.format_version"
   , [ S.SQLText (T.pack (encodeHex16 (unTokenId (trId t))))
     , S.SQLBlob (encodeBlob8 (unSlotId (trSlot t)))
     , S.SQLBlob (encodeBlob8 (unGeneration (trGeneration t)))

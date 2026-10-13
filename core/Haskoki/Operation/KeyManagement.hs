@@ -198,6 +198,9 @@ module Haskoki.Operation.KeyManagement
   , checkKeyTemplateAny
   , checkDataTemplate
   , pendingFromAttrs
+  , ByteOpsProtection (..)
+  , byteOpsProtectionOf
+  , resolveByteOpsProtection
     -- * Generation frames (planner \<-\> driver contract)
   , GenArgs (..)
   , encodeGenArgs
@@ -1914,6 +1917,67 @@ pendingFromAttrs st attrs = PendingObject
         else Just (ssId st)
   , poSlot = ssSlot st
   }
+
+-- | Required byte-operation child protection (OASIS PKCS#11 3.2
+-- §6.43.3–§6.43.7): sensitivity is required when any input key is
+-- sensitive; nonextractability is required when any input key is
+-- unextractable. Explicit source values decide (absent flags are
+-- unprotected, matching the readback seal and the copy guard).
+data ByteOpsProtection = ByteOpsProtection
+  { bopSensitive :: !Bool
+  , bopUnextractable :: !Bool
+  } deriving (Eq, Show)
+
+-- | Combine validated byte-operation source protection: the base
+-- key plus the auxiliary key where the mechanism takes one
+-- (@CKM_CONCATENATE_BASE_AND_KEY@ only; the data/offset rows pass
+-- 'Nothing'). Either input can require protection; neither input
+-- can waive the other's.
+byteOpsProtectionOf
+  :: Map AttributeType AttributeValue
+  -> Maybe (Map AttributeType AttributeValue)
+  -> ByteOpsProtection
+byteOpsProtectionOf base mAux = ByteOpsProtection
+  { bopSensitive = isTrue AttrSensitive base || maybe False (isTrue AttrSensitive) mAux
+  , bopUnextractable = isFalse AttrExtractable base
+      || maybe False (isFalse AttrExtractable) mAux
+  }
+  where
+    isTrue t attrs = Map.lookup t attrs == Just (ValBool True)
+    isFalse t attrs = Map.lookup t attrs == Just (ValBool False)
+
+-- | Resolve one validated byte-operation caller template against
+-- the required source protection: a template that explicitly
+-- downgrades (sensitive true->false or extractable false->true)
+-- refuses 'CKR_TEMPLATE_INCONSISTENT' (the copy-guard precedent);
+-- otherwise the required flags stamp onto the template (omitted
+-- attributes inherit, matching values pass through) and the merged
+-- map carries into the pending object. When nothing is required
+-- the template stands unchanged (template or default wins, per
+-- §6.43). Scoped to the five byte-operation mechanisms only: no
+-- other derivation family consults this helper.
+--
+-- History attributes (@CKA_ALWAYS_SENSITIVE@/@CKA_NEVER_EXTRACTABLE@)
+-- are not in the attribute inventory, so they cannot stamp here:
+-- native templates carrying them refuse at the FFI chase and reads
+-- report @CKR_ATTRIBUTE_TYPE_INVALID@ (existing boundary behavior).
+resolveByteOpsProtection
+  :: ByteOpsProtection -> Map AttributeType AttributeValue
+  -> Either KeyDeny (Map AttributeType AttributeValue)
+resolveByteOpsProtection req attrs
+  | bopSensitive req
+  , Map.lookup AttrSensitive attrs == Just (ValBool False) =
+      Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        "byte-op derive cannot clear the inherited sensitive flag")
+  | bopUnextractable req
+  , Map.lookup AttrExtractable attrs == Just (ValBool True) =
+      Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        "byte-op derive cannot set extractable on an inherited unextractable key")
+  | otherwise = Right (stamp AttrExtractable (ValBool False) (bopUnextractable req)
+      (stamp AttrSensitive (ValBool True) (bopSensitive req) attrs))
+  where
+    stamp t v True m = Map.insert t v m
+    stamp _ _ False m = m
 
 -- ---------------------------------------------------------------------------
 -- Generation frames (planner <-> driver contract)

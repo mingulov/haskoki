@@ -57,6 +57,7 @@ import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
   , PendingWork (..)
+  , byteOpsProtectionOf
   , checkDataTemplate
   , checkKeyTemplateAny
   , ckkEc
@@ -68,6 +69,7 @@ import Haskoki.Operation.KeyManagement
   , ckoSecretKey
   , keyBytesOf
   , pendingFromAttrs
+  , resolveByteOpsProtection
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
 import Haskoki.Recipe.Dh
@@ -761,7 +763,14 @@ planDerive rules model st mech baseH blob
         ("not a derive mechanism: " ++ show mech))
   where
     finish tmpls ceilingN ceilingMsg fx defLen ceilingCode =
-      case checkAll defLen tmpls of
+      finishMerged Right tmpls ceilingN ceilingMsg fx defLen ceilingCode
+    -- | 'finish' with a per-template merge over the validated
+    -- attributes: identity for every family except the byte
+    -- operations, which resolve §6.43 source inheritance here
+    -- (before ceiling, admission and effect construction), so the
+    -- merged flags retain through finish/publication.
+    finishMerged merge tmpls ceilingN ceilingMsg fx defLen ceilingCode =
+      case checkAllMerged defLen merge tmpls of
         Left deny -> KeyDenied deny
         Right keyed
           | null keyed -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
@@ -810,18 +819,24 @@ planDerive rules model st mech baseH blob
           -- handle, which resolves or denies above.
           Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
             "concat-key aux vanished after resolution")
-          Just auxOid -> case Map.lookup auxOid (mObjects model) >>= keyBytesOf of
-            -- Unreachable: the aux carried material at
-            -- resolution.
+          Just auxOid -> case Map.lookup auxOid (mObjects model) of
+            -- Unreachable: the aux resolved with material
+            -- above.
             Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
               "concat-key aux lost its material")
-            Just auxMat -> natural (BS.length mat + BS.length auxMat)
-        ConcatBaseAndData -> natural (BS.length mat + BS.length payBlob)
-        ConcatDataAndBase -> natural (BS.length payBlob + BS.length mat)
+            Just auxOst -> case keyBytesOf auxOst of
+              -- Unreachable: the aux carried material at
+              -- resolution.
+              Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                "concat-key aux lost its material")
+              Just auxMat -> natural (Just (osAttrs auxOst))
+                (BS.length mat + BS.length auxMat)
+        ConcatBaseAndData -> natural Nothing (BS.length mat + BS.length payBlob)
+        ConcatDataAndBase -> natural Nothing (BS.length payBlob + BS.length mat)
         XorBaseAndData
           | BS.length mat /= BS.length payBlob -> KeyDenied (KeyDeny CKR_DATA_LEN_RANGE
               "XOR data length differs from the base length")
-          | otherwise -> natural (BS.length mat)
+          | otherwise -> natural Nothing (BS.length mat)
         ExtractKeyFromKey ->
           let baseBits = toInteger (BS.length mat) * 8
               remaining = (baseBits - toInteger offN) `div` 8
@@ -830,19 +845,25 @@ planDerive rules model st mech baseH blob
               -- leaves no window, so every positive request
               -- overruns.
               window = max 0 (min (toInteger maxByteOpsOutput) remaining)
-          in finish tmpls (fromInteger window)
+          in finishMerged (byteOpsMerge Nothing) tmpls (fromInteger window)
             "EXTRACT window exceeds the base key"
             (FxDerive dMech (Just (osId ost)) mAux boBlob BS.empty)
             Nothing
             CKR_ARGUMENTS_BAD
       where
         fx = FxDerive dMech (Just (osId ost)) mAux boBlob BS.empty
-        natural n
+        -- | The §6.43 merge for one validated caller template:
+        -- base protection plus the aux key's where the row takes
+        -- one (concat-key only; the data/offset rows pass
+        -- 'Nothing').
+        byteOpsMerge mAuxAttrs =
+          resolveByteOpsProtection (byteOpsProtectionOf (osAttrs ost) mAuxAttrs)
+        natural mAuxAttrs n
           | n < 1 = KeyDenied (KeyDeny CKR_KEY_SIZE_RANGE
               "byte-op natural output is empty")
           | n > maxByteOpsOutput = KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
               "byte-op natural output exceeds the ceiling")
-          | otherwise = finish tmpls n
+          | otherwise = finishMerged (byteOpsMerge mAuxAttrs) tmpls n
               "derived total exceeds the byte-op natural width"
               fx (Just n)
               CKR_KEY_SIZE_RANGE
@@ -965,10 +986,15 @@ planDerive rules model st mech baseH blob
         baseBool at b = case Map.lookup at b of
           Just (ValBool x) -> x
           _ -> False
-    checkAll
-      :: Maybe Int -> [[(AttributeType, AttributeValue)]]
+    checkAllMerged
+      :: Maybe Int
+      -> (Map.Map AttributeType AttributeValue
+          -> Either KeyDeny (Map.Map AttributeType AttributeValue))
+      -> [[(AttributeType, AttributeValue)]]
       -> Either KeyDeny [(Map.Map AttributeType AttributeValue, Int)]
-    checkAll defLen = mapM (checkOne defLen)
+    checkAllMerged defLen merge = mapM $ \tmpl -> do
+      (attrs, n) <- checkOne defLen tmpl
+      (, n) <$> merge attrs
     -- | BLAKE2B-KDF rows default a missing length to the digest
     -- width (the lane's default-template legs derive full-width
     -- generic secrets); SHA rows keep INCOMPLETE (v3.2 SHA-KDF:

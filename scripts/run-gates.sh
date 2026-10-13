@@ -2,16 +2,16 @@
 # Gate runner: static gates + full cabal test + release evidence,
 # the ONE entry point whose pass means a passing release story.
 #
-# Gate count: 20 static gates —
+# Gate count: 21 static gates —
 # core-boundary, mechanisms, denominators, attributes, ossl4-surface,
 # version, ckr, seed-honesty, plus warnings-zero, docs,
 # fork-stance, test-wiring, test-evidence, coverage-boundary,
 # coverage-fresh, release-pivots, loader-norm,
-# history-codes, actions-pinned
+# history-codes, actions-pinned, release-evidence-fixtures
 # and funnel-cwd (wired here) — then a forced `cabal build all`
 # plus `cabal test all` in the pinned toolchain container, then the
-# release-evidence manifest (15 drivers + release build +
-# clean-container install).
+# release-evidence manifest (15 container + 2 host drivers + release
+# build + clean-container install; nested children run in-parent).
 #
 # Order matters twice: the forced build runs BEFORE the tests (a fresh
 # `cabal test all` can run haskoki-core-tests before the sibling main
@@ -41,7 +41,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 IMAGE="${HASKOKI_IMAGE:-haskoki-dev:ghc-9.10.3}"
 export HASKOKI_IMAGE="$IMAGE"
-echo "=== static gates (1-19, build-free) ==="
+echo "=== static gates (1-20, build-free) ==="
 python3 scripts/check-core-boundary.py
 python3 scripts/check-mechanisms.py
 python3 scripts/check-denominators.py
@@ -70,11 +70,13 @@ python3 scripts/check-actions-pinned.py .github/workflows/prop-nightly.yml
 # negative controls + F-6/F-7 structural asserts. Same --self-test
 # the CI static-gates step runs.
 python3 scripts/check-actions-pinned.py --self-test
+# V1: release-evidence runner fixtures (fake docker/timeout/build only).
+python3 scripts/test-release-evidence.py
 echo "=== forced build + cabal test all (pinned container) ==="
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal build all --enable-tests
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal test all
-echo "=== static gate 20 (needs the built tests) ==="
+echo "=== static gate 21 (needs the built tests) ==="
 bash scripts/check-funnel-cwd.sh
 echo "=== release evidence (drivers + install) ==="
 bash scripts/release-evidence.sh
-echo "GATES: all passing (20 gates + cabal test + release evidence)"
+echo "GATES: all passing (21 gates + cabal test + release evidence)"

@@ -32,6 +32,7 @@ import Haskoki.Attribute
   , AttributeType (..)
   , AttributeValue (..)
   , PartialReads (..)
+  , attributeTypeByName
   , encodeValue
   , getAttributes
   )
@@ -445,6 +446,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real IKE derives match the KATs" caseRealIkeVector
   , testCase "Byte-op plans rows, refuses bad shapes" caseByteOpsPlans
   , testCase "Real byte-op derives match the KATs" caseRealByteOpsVector
+  , testCase "Byte-op derives preserve source protection" caseByteOpsProtection
   , testCase "Key-material plans rows, refuses bad shapes" caseKeyMatPlans
   , testCase "Real key-material derives match the KATs" caseRealKeyMatVector
   , testCase "SSL3 plans rows, refuses bad shapes" caseSsl3DerivePlans
@@ -6040,6 +6042,262 @@ caseRealByteOpsVector = withRealEnv $ \env -> do
     (Just (hex "000102030405060708090a0b0c0d0e0f")) gotExt
   gotExt4 <- derive extractMech fExt4 2
   assertEqual "extract sub-byte KAT" (Just (hex "0010")) gotExt4
+
+-- | Byte-operation protection inheritance (OASIS 3.2 §6.43.3–§6.43.7,
+-- finding TS4): a template that explicitly downgrades inherited
+-- protection refuses 'CKR_TEMPLATE_INCONSISTENT'; matching and
+-- omitted attributes resolve to the sealed flags and retain through
+-- finish/publication, with exact output bytes, readback refusal and
+-- wrap refusal. Split-flag sources prove the two rules are
+-- independent on every row, aux-only and mixed concat-key inputs
+-- combine, length boundaries, the history-attribute audit and two
+-- unaffected-rule controls (unprotected byte-op inputs, HKDF over a
+-- protected base) pin the scope: the byte-operation rules apply to
+-- the named mechanisms only. Byte ops need no backend crypto, so
+-- the synthetic driver serves the retained chain.
+caseByteOpsProtection :: IO ()
+caseByteOpsProtection = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let secretAttrs prot =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        , (AttrDerive, ValBool True)
+        ] ++ prot
+      protFlags = [(AttrSensitive, ValBool True), (AttrExtractable, ValBool False)]
+      plainFlags = [(AttrSensitive, ValBool False), (AttrExtractable, ValBool True)]
+      sensOnlyFlags = [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)]
+      unextrOnlyFlags = [(AttrSensitive, ValBool False), (AttrExtractable, ValBool False)]
+      baseMat = BS.pack [0 .. 31]
+      auxMat = BS.pack [32 .. 63]
+  (m1, protBaseH) <- plantKey m0 st (secretAttrs protFlags) baseMat
+  (m2, plainBaseH) <- plantKey m1 st (secretAttrs plainFlags) baseMat
+  (m3, protAuxH) <- plantKey m2 st (secretAttrs protFlags) auxMat
+  (m4, plainAuxH) <- plantKey m3 st (secretAttrs plainFlags) auxMat
+  (m4s, sensOnlyH) <- plantKey m4 st (secretAttrs sensOnlyFlags) baseMat
+  (m4u, unextrOnlyH) <- plantKey m4s st (secretAttrs unextrOnlyFlags) baseMat
+  (m5, wrapH) <- plantKey m4u st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkAes)
+    , (AttrToken, ValBool False)
+    , (AttrWrap, ValBool True)
+    ] (BS.pack [64 .. 95])
+  let protAuxN = fromIntegral (unExternalHandle protAuxH)
+      plainAuxN = fromIntegral (unExternalHandle plainAuxH)
+      sensAuxN = fromIntegral (unExternalHandle sensOnlyH)
+      unextrAuxN = fromIntegral (unExternalHandle unextrOnlyH)
+      kid :: Int -> [(AttributeType, AttributeValue)] -> [(AttributeType, AttributeValue)]
+      kid n prot =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ] ++ prot
+      kidDown n = kid n plainFlags
+      kidMatch n = kid n protFlags
+      kidOmit n = kid n []
+      kidOmitNoLen =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        ]
+      fKeyProtAux = encodeByteOpsParams protAuxN 0 BS.empty
+      fKeyPlainAux = encodeByteOpsParams plainAuxN 0 BS.empty
+      fKeySensAux = encodeByteOpsParams sensAuxN 0 BS.empty
+      fKeyUnextrAux = encodeByteOpsParams unextrAuxN 0 BS.empty
+      fBD = encodeByteOpsParams 0 0 byteOpsD16
+      fXor = encodeByteOpsParams 0 0 (BS.pack [0 .. 31])
+      fExt = encodeByteOpsParams 0 0 BS.empty
+      assertSealed tag attrs = do
+        assertEqual (tag ++ " sensitive")
+          (Just (ValBool True)) (Map.lookup AttrSensitive attrs)
+        assertEqual (tag ++ " extractable")
+          (Just (ValBool False)) (Map.lookup AttrExtractable attrs)
+      pendingSealed tag plan = case plan of
+        KeyEffect (PwDerive (po : _) _) _ -> assertSealed tag (poAttrs po)
+        other -> assertFailure (tag ++ " must plan sealed, got: " ++ show other)
+  -- Every row refuses an explicit downgrade of a protected base.
+  mapM_ (\(mech, frame, n) ->
+    case planDerive defaultRules m5 st mech protBaseH
+        (encodeDeriveParams frame [kidDown n]) of
+      KeyDenied (KeyDeny code _) ->
+        assertEqual ("downgrade code " ++ show mech) CKR_TEMPLATE_INCONSISTENT code
+      other -> assertFailure ("downgrade must deny, got: " ++ show other))
+    [ (concatKeyMech, fKeyPlainAux, 64)
+    , (concatDataMech, fBD, 16)
+    , (dataConcatMech, fBD, 16)
+    , (xorMech, fXor, 16)
+    , (extractMech, fExt, 16)
+    ]
+  -- Aux-only concat-key protection: the protected second input
+  -- alone refuses a downgrade and seals an omitted template.
+  case planDerive defaultRules m5 st concatKeyMech plainBaseH
+      (encodeDeriveParams fKeyProtAux [kidDown 64]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "aux-only downgrade code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("aux-only downgrade must deny, got: " ++ show other)
+  pendingSealed "aux-only omitted" (planDerive defaultRules m5 st concatKeyMech plainBaseH
+    (encodeDeriveParams fKeyProtAux [kidOmit 64]))
+  -- Split-flag sources prove the two rules are independent on every
+  -- row: each flag alone refuses its own downgrade, stamps only
+  -- itself when omitted (the unrequired flag stays omitted), and
+  -- passes its own matching template through.
+  mapM_ (\(mech, frame, n) -> do
+    case planDerive defaultRules m5 st mech sensOnlyH
+        (encodeDeriveParams frame [kidDown n]) of
+      KeyDenied (KeyDeny code _) ->
+        assertEqual ("sens-only downgrade " ++ show mech) CKR_TEMPLATE_INCONSISTENT code
+      other -> assertFailure ("sens-only downgrade must deny, got: " ++ show other)
+    case planDerive defaultRules m5 st mech sensOnlyH
+        (encodeDeriveParams frame [kid n sensOnlyFlags]) of
+      KeyEffect (PwDerive (po : _) _) _ -> do
+        assertEqual ("sens-only match sensitive " ++ show mech)
+          (Just (ValBool True)) (Map.lookup AttrSensitive (poAttrs po))
+        assertEqual ("sens-only match extractable " ++ show mech)
+          (Just (ValBool True)) (Map.lookup AttrExtractable (poAttrs po))
+      other -> assertFailure ("sens-only match must plan, got: " ++ show other)
+    case planDerive defaultRules m5 st mech sensOnlyH
+        (encodeDeriveParams frame [kidOmit n]) of
+      KeyEffect (PwDerive (po : _) _) _ -> do
+        assertEqual ("sens-only omitted sensitive " ++ show mech)
+          (Just (ValBool True)) (Map.lookup AttrSensitive (poAttrs po))
+        assertEqual ("sens-only omitted extractable " ++ show mech)
+          Nothing (Map.lookup AttrExtractable (poAttrs po))
+      other -> assertFailure ("sens-only omitted must plan, got: " ++ show other)
+    case planDerive defaultRules m5 st mech unextrOnlyH
+        (encodeDeriveParams frame [kidDown n]) of
+      KeyDenied (KeyDeny code _) ->
+        assertEqual ("unextr-only downgrade " ++ show mech) CKR_TEMPLATE_INCONSISTENT code
+      other -> assertFailure ("unextr-only downgrade must deny, got: " ++ show other)
+    case planDerive defaultRules m5 st mech unextrOnlyH
+        (encodeDeriveParams frame [kid n unextrOnlyFlags]) of
+      KeyEffect (PwDerive (po : _) _) _ -> do
+        assertEqual ("unextr-only match sensitive " ++ show mech)
+          (Just (ValBool False)) (Map.lookup AttrSensitive (poAttrs po))
+        assertEqual ("unextr-only match extractable " ++ show mech)
+          (Just (ValBool False)) (Map.lookup AttrExtractable (poAttrs po))
+      other -> assertFailure ("unextr-only match must plan, got: " ++ show other)
+    case planDerive defaultRules m5 st mech unextrOnlyH
+        (encodeDeriveParams frame [kidOmit n]) of
+      KeyEffect (PwDerive (po : _) _) _ -> do
+        assertEqual ("unextr-only omitted sensitive " ++ show mech)
+          Nothing (Map.lookup AttrSensitive (poAttrs po))
+        assertEqual ("unextr-only omitted extractable " ++ show mech)
+          (Just (ValBool False)) (Map.lookup AttrExtractable (poAttrs po))
+      other -> assertFailure ("unextr-only omitted must plan, got: " ++ show other))
+    [ (concatKeyMech, fKeyPlainAux, 64)
+    , (concatDataMech, fBD, 16)
+    , (dataConcatMech, fBD, 16)
+    , (xorMech, fXor, 16)
+    , (extractMech, fExt, 16)
+    ]
+  -- Mixed inputs combine: a sensitivity-only base plus a
+  -- nonextractable-only aux requires both flags, in either
+  -- direction.
+  case planDerive defaultRules m5 st concatKeyMech sensOnlyH
+      (encodeDeriveParams fKeyUnextrAux [kidDown 64]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "mixed downgrade code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("mixed downgrade must deny, got: " ++ show other)
+  pendingSealed "mixed omitted" (planDerive defaultRules m5 st concatKeyMech sensOnlyH
+    (encodeDeriveParams fKeyUnextrAux [kidOmit 64]))
+  pendingSealed "mixed reversed omitted" (planDerive defaultRules m5 st concatKeyMech unextrOnlyH
+    (encodeDeriveParams fKeySensAux [kidOmit 64]))
+  -- Matching passes through and omitted stamps (extract plus one
+  -- concat row); an omitted length still defaults to the natural
+  -- width with the sealed flags.
+  pendingSealed "match" (planDerive defaultRules m5 st extractMech protBaseH
+    (encodeDeriveParams fExt [kidMatch 16]))
+  pendingSealed "omitted" (planDerive defaultRules m5 st concatDataMech protBaseH
+    (encodeDeriveParams fBD [kidOmit 16]))
+  case planDerive defaultRules m5 st concatDataMech protBaseH
+      (encodeDeriveParams fBD [kidOmitNoLen]) of
+    KeyEffect (PwDerive (po : _) _) (FxDerive _ _ _ _ _ total) -> do
+      assertEqual "natural total" 48 total
+      assertSealed "natural omitted" (poAttrs po)
+    other -> assertFailure ("natural default must plan, got: " ++ show other)
+  -- Boundaries with protection: full-length extract plans sealed,
+  -- past-the-end still refuses typed.
+  pendingSealed "full-length" (planDerive defaultRules m5 st extractMech protBaseH
+    (encodeDeriveParams fExt [kidMatch 32]))
+  case planDerive defaultRules m5 st extractMech protBaseH
+      (encodeDeriveParams fExt [kidMatch 33]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "overrun code" CKR_ARGUMENTS_BAD code
+    other -> assertFailure ("overrun must deny, got: " ++ show other)
+  -- A refused derivation allocates nothing.
+  let before = Map.size (mObjects m5)
+  case planDerive defaultRules m5 st extractMech protBaseH
+      (encodeDeriveParams fExt [kidDown 16]) of
+    KeyDenied _ -> pure ()
+    other -> assertFailure ("downgrade must deny, got: " ++ show other)
+  assertEqual "denied derive allocates nothing" before (Map.size (mObjects m5))
+  -- The sealed flags retain through finish/publication with exact
+  -- output bytes; readback and wrap then refuse typed.
+  (m6, childH) <- case planDerive defaultRules m5 st extractMech protBaseH
+      (encodeDeriveParams fExt [kidMatch 32]) of
+    KeyEffect pw fx -> do
+      res <- answer m5 fx
+      c <- finishCommit m5 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m5 (pcDelta c))
+      pure (m', h)
+    other -> assertFailure ("sealed derive must plan: " ++ show other) >> undefined
+  Just child <- pure (resolveHandle m6 childH)
+  assertSealed "child" (osAttrs child)
+  assertEqual "child bytes" (Just baseMat) (keyBytesOf child)
+  case getAttributes (osAttrs child) [AttrValue] of
+    PartialReads code results -> do
+      assertEqual "readback code" CKR_ATTRIBUTE_SENSITIVE code
+      assertEqual "readback result" [(AttrValue, ResSensitive)] results
+  Just baseOst <- pure (resolveHandle m6 protBaseH)
+  case getAttributes (osAttrs baseOst) [AttrValue] of
+    PartialReads bcode _ ->
+      assertEqual "base stays sealed" CKR_ATTRIBUTE_SENSITIVE bcode
+  case planWrapKey m6 st aesCbcMech iv16 wrapH childH IntentNull of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "wrap code" CKR_KEY_UNEXTRACTABLE code
+    other -> assertFailure ("sealed child wrap must deny, got: " ++ show other)
+  -- History attributes stay unmapped: native templates carrying
+  -- them refuse at the FFI chase and reads report
+  -- 'CKR_ATTRIBUTE_TYPE_INVALID' (existing boundary behavior, no
+  -- silent weakening through an unstamped flag).
+  assertEqual "ALWAYS_SENSITIVE unmapped"
+    Nothing (attributeTypeByName "CKA_ALWAYS_SENSITIVE")
+  assertEqual "NEVER_EXTRACTABLE unmapped"
+    Nothing (attributeTypeByName "CKA_NEVER_EXTRACTABLE")
+  -- Unaffected inputs: unprotected byte-op derivations keep the
+  -- caller's readable template, and omitted attributes stay
+  -- omitted (template or default wins when nothing is required).
+  case planDerive defaultRules m5 st extractMech plainBaseH
+      (encodeDeriveParams fExt [kidDown 16]) of
+    KeyEffect (PwDerive (po : _) _) _ -> do
+      assertEqual "plain template sensitive"
+        (Just (ValBool False)) (Map.lookup AttrSensitive (poAttrs po))
+      assertEqual "plain template extractable"
+        (Just (ValBool True)) (Map.lookup AttrExtractable (poAttrs po))
+    other -> assertFailure ("plain derive must plan, got: " ++ show other)
+  case planDerive defaultRules m5 st concatKeyMech plainBaseH
+      (encodeDeriveParams fKeyPlainAux [kidOmit 64]) of
+    KeyEffect (PwDerive (po : _) _) _ -> do
+      assertEqual "plain omitted sensitive"
+        Nothing (Map.lookup AttrSensitive (poAttrs po))
+      assertEqual "plain omitted extractable"
+        Nothing (Map.lookup AttrExtractable (poAttrs po))
+    other -> assertFailure ("plain concat-key must plan, got: " ++ show other)
+  -- Unaffected family: HKDF carries no §6.43 inheritance rule, so
+  -- a readable template over a protected base still plans with the
+  -- caller's flags (scoping control against a global rule).
+  let hkdfKid = kidDown 32
+  case planDerive defaultRules m5 st hkdfDeriveMech protBaseH
+      (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "p1-control") [hkdfKid]) of
+    KeyEffect (PwDerive (po : _) _) _ -> do
+      assertEqual "hkdf template sensitive"
+        (Just (ValBool False)) (Map.lookup AttrSensitive (poAttrs po))
+      assertEqual "hkdf template extractable"
+        (Just (ValBool True)) (Map.lookup AttrExtractable (poAttrs po))
+    other -> assertFailure ("HKDF control must plan, got: " ++ show other)
 
 keyMat10Mech, keyMat12Mech, keyMatSafeMech :: MechanismId
 keyMat10Mech = MechanismId ckm_TLS_KEY_AND_MAC_DERIVE

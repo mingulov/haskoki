@@ -257,6 +257,12 @@ data JobRecord = JobRecord
 -- | Bounded inserts, updates, and deletes applied as one atomic
 -- transaction. A combined key-pair or multi-key derivation is a
 -- single 'StoreDelta'; partial application is a backend bug.
+--
+-- Ownership rule, enforced identically by both backends: an
+-- ordinary same-id token put updates the token row and preserves
+-- every owned object and job; dropping a token removes its owned
+-- objects and jobs; 'storeResetToken' is the generation-guarded
+-- replacement-plus-removal path.
 data StoreDelta = StoreDelta
   { sdPutTokens :: ![TokenRecord]
   , sdDropTokens :: ![TokenId]
@@ -463,7 +469,10 @@ data LoadedState = LoadedState
 -- pre-commit bounds: per-record bytes on every put, then the
 -- projected object and job counts, then the projected total
 -- stored bytes (exact UTF-8 sizes of the canonical documents).
--- The first hit wins; 'Nothing' commits clean.
+-- The projection drops explicitly removed records and cascades
+-- token drops onto the owned objects and jobs, matching what
+-- both backends commit. The first hit wins; 'Nothing' commits
+-- clean.
 checkLimits :: StoreLimits -> StoreDelta -> LoadedState -> Maybe StoreError
 checkLimits lim delta current
   | Just over <- firstOverRecord =
@@ -489,10 +498,12 @@ checkLimits lim delta current
     tokMap' = foldr (\t m -> Map.insert (trId t) t m) tokMap putToks
     objMap = foldr Map.delete
       (Map.fromList [(orId o, o) | (_, os) <- lsTokens current, o <- os]) (sdDropObjects delta)
-    objMap' = foldr (\o m -> Map.insert (orId o) o m) objMap putObjs
+    objKept = Map.filter (\o -> orToken o `notElem` sdDropTokens delta) objMap
+    objMap' = foldr (\o m -> Map.insert (orId o) o m) objKept putObjs
     jobMap = foldr Map.delete
       (Map.fromList [(jrPersistentId j, j) | j <- lsJobs current]) (sdDropJobs delta)
-    jobMap' = foldr (\j m -> Map.insert (jrPersistentId j) j m) jobMap putJobs
+    jobKept = Map.filter (\j -> jrToken j `notElem` sdDropTokens delta) jobMap
+    jobMap' = foldr (\j m -> Map.insert (jrPersistentId j) j m) jobKept putJobs
     totalBytes =
       sum [utf8Bytes (encodeTokenRecord t) | t <- Map.elems tokMap']
         + sum [utf8Bytes (encodeObjectRecord o) | o <- Map.elems objMap']

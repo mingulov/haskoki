@@ -123,6 +123,8 @@ protocolCases withIdentity =
       withIdentity testFullDisk
   , testCase "reset respects quarantine" $
       withIdentity testResetQuarantine
+  , testCase "ambiguous token refresh preserves children" $
+      withIdentity testAmbiguousTokenRefresh
   ]
 
 -- | The pre-commit limit cases every backend runs.
@@ -512,6 +514,43 @@ testResetQuarantine openWith = do
   _ <- either (assertFailure . show) pure eReload
   ok <- storeResetToken sFaulty (trId tok) (trGeneration tok) replacement
   assertEqual "reset works after reload" Committed ok
+  storeClose sFaulty
+
+-- | C2: a token refresh that commits ambiguously still verifies
+-- via reload (exactly one durable commit, exactly one
+-- verification reload) and preserves every owned object and job
+-- byte-exact.
+testAmbiguousTokenRefresh :: OpenWith -> IO ()
+testAmbiguousTokenRefresh openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, recs) <- seedStore sClean
+  let jobs =
+        [ demoJobPending 60 (trId tok) (trGeneration tok)
+        , demoJobResult 61 (trId tok) (trGeneration tok)
+        ]
+  rJobs <- storeCommit sClean emptyDelta { sdPutJobs = jobs }
+  assertEqual "jobs seed" Committed rJobs
+  storeClose sClean
+  inj <- scriptedFaults [FaultAmbiguousCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  let tok' = tok { trLabel = "seed-token-relabeled" }
+  result <- storeCommit sFaulty emptyDelta { sdPutTokens = [tok'] }
+  assertEqual "ambiguous refresh resolves committed" Committed result
+  stats <- storeStats sFaulty
+  assertEqual "exactly one durable commit" 1 (ssCommits stats)
+  assertEqual "exactly one verification reload" 1 (ssVerifyReloads stats)
+  eLoaded <- storeLoadTokens sFaulty
+  loaded <- either (assertFailure . show) pure eLoaded
+  case loaded of
+    [(t2, objs2)] -> do
+      assertEqual "token refreshed" tok' t2
+      assertEqual "objects preserved" recs objs2
+    _ -> assertFailure ("expected one token, got: " ++ show (length loaded))
+  eJobs <- storeLoadJobs sFaulty
+  jobsAfter <- either (assertFailure . show) pure eJobs
+  assertEqual "jobs preserved" jobs jobsAfter
   storeClose sFaulty
 
 -- | Job cap: the third job refuses at a cap of two and commits

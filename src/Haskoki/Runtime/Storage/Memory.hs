@@ -396,12 +396,17 @@ reconcileMetaReload delta loaded
   | otherwise = ReconciledAbsent
 
 -- | Pure delta application (shared shape with the SQLite backend's
--- statement plan).
+-- statement plan). Dropping a token removes its owned objects and
+-- jobs, matching the SQLite @ON DELETE CASCADE@; an ordinary
+-- same-id token put preserves them. Drops (with cascade) apply
+-- before puts, so a drop/recreate pair cannot resurrect children.
 applyDelta :: WorldState -> StoreDelta -> WorldState
 applyDelta st delta =
   let toks1 = foldr Map.delete (wsTokens st) (sdDropTokens delta)
-      objs1 = foldr Map.delete (wsObjects st) (sdDropObjects delta)
-      jobs1 = foldr Map.delete (wsJobs st) (sdDropJobs delta)
+      objs1 = Map.filter (\o -> orToken o `notElem` sdDropTokens delta)
+        (foldr Map.delete (wsObjects st) (sdDropObjects delta))
+      jobs1 = Map.filter (\j -> jrToken j `notElem` sdDropTokens delta)
+        (foldr Map.delete (wsJobs st) (sdDropJobs delta))
   in WorldState
     { wsTokens = foldr (\t m -> Map.insert (trId t) t m) toks1 (sdPutTokens delta)
     , wsObjects = foldr (\p m -> Map.insert (orId (opRecord p)) (opRecord p) m)
