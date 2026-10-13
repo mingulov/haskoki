@@ -20,6 +20,7 @@
 
 #include <dlfcn.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -59,6 +60,93 @@ struct hsk_ossl4_env {
     OSSL_PROVIDER *provs[HSK_OSSL4_MAX_PROV];
     size_t nprov;
 };
+
+/* --- TEST-ONLY live-sets (actual-destroy attribution + hardening) --------- */
+/*
+ * Every digest handle and env rides its process-wide set:
+ * creation inserts (object, gate-or-NULL), destruction claims.
+ * The claim hands the creating gate back so the destroy path
+ * itself can note the ACTUAL native destruction (ungated: none).
+ * A claim of an unknown handle with no pending overflow credit
+ * records a double-free attempt and skips destruction (safe
+ * no-op); an unknown handle WITH a pending credit (an overflowed
+ * entry the set could not store) is destroyed normally,
+ * preserving production behavior exactly — overflow can never
+ * leak. Comparison is by pointer value only (never
+ * dereferenced). Caveat: an address reused by a LATER object
+ * between a destroy and a stale repeat could misattribute; the
+ * transfer proof (the attempt counter stays zero) is what rules
+ * out repeats, not this set alone.
+ */
+#define HSK_TEST_LIVE_CAP 256
+typedef struct hsk_test_live {
+    pthread_mutex_t mu;
+    const void *ptrs[HSK_TEST_LIVE_CAP];
+    hsk_ossl4_test_gate_t *gates[HSK_TEST_LIVE_CAP];
+    size_t n;
+    long doublefree; /* unknown destroys with no pending credit */
+    long noverflow; /* overflow inserts, monotonic */
+    long npending; /* overflowed-but-undestroyed credits */
+} hsk_test_live_t;
+
+static hsk_test_live_t hsk_test_digests = {
+    PTHREAD_MUTEX_INITIALIZER, { 0 }, { 0 }, 0, 0, 0, 0
+};
+static hsk_test_live_t hsk_test_envs = {
+    PTHREAD_MUTEX_INITIALIZER, { 0 }, { 0 }, 0, 0, 0, 0
+};
+
+static void hsk_test_live_insert(hsk_test_live_t *s, const void *h,
+                                 hsk_ossl4_test_gate_t *g)
+{
+    pthread_mutex_lock(&s->mu);
+    if (s->n < HSK_TEST_LIVE_CAP) {
+        s->ptrs[s->n] = h;
+        s->gates[s->n] = g;
+        s->n++;
+    } else {
+        s->noverflow++;
+        s->npending++;
+    }
+    pthread_mutex_unlock(&s->mu);
+}
+
+/* Claims h for destruction, returning its gate (NULL when ungated
+ * or overflow-credited). Returns nonzero when the caller must
+ * destroy; a repeat claim records a double-free attempt and
+ * returns zero (safe no-op). */
+static int hsk_test_live_claim(hsk_test_live_t *s, const void *h,
+                               hsk_ossl4_test_gate_t **gate)
+{
+    size_t i;
+    int destroy = 0;
+    *gate = NULL;
+    pthread_mutex_lock(&s->mu);
+    for (i = 0; i < s->n; i++) {
+        if (s->ptrs[i] == h) {
+            *gate = s->gates[i];
+            s->n--;
+            s->ptrs[i] = s->ptrs[s->n];
+            s->gates[i] = s->gates[s->n];
+            destroy = 1;
+            break;
+        }
+    }
+    if (!destroy) {
+        if (s->npending > 0) {
+            /* An overflowed entry: destroy normally (production
+             * behavior preserved); its gate is unknown, so no
+             * per-gate note fires (the monotonic overflow count
+             * records the tracking gap instead). */
+            s->npending--;
+            destroy = 1;
+        } else {
+            s->doublefree++;
+        }
+    }
+    pthread_mutex_unlock(&s->mu);
+    return destroy;
+}
 
 /* --- private context lifecycle -------------------------------------- */
 
@@ -150,7 +238,7 @@ void hsk_ossl4_free_ctx(OSSL_LIB_CTX *ctx)
 
 /* --- env wrapper ----------------------------------------------------- */
 
-hsk_ossl4_env_t *hsk_ossl4_env_new(void)
+static hsk_ossl4_env_t *hsk_ossl4_env_new_core(hsk_ossl4_test_gate_t *g)
 {
     hsk_ossl4_env_t *env = OPENSSL_malloc(sizeof(*env));
     if (env == NULL)
@@ -161,7 +249,13 @@ hsk_ossl4_env_t *hsk_ossl4_env_new(void)
         OPENSSL_free(env);
         return NULL;
     }
+    hsk_test_live_insert(&hsk_test_envs, env, g);
     return env;
+}
+
+hsk_ossl4_env_t *hsk_ossl4_env_new(void)
+{
+    return hsk_ossl4_env_new_core(NULL);
 }
 
 int hsk_ossl4_env_load(hsk_ossl4_env_t *env, const char *name)
@@ -185,9 +279,15 @@ OSSL_LIB_CTX *hsk_ossl4_env_ctx(const hsk_ossl4_env_t *env)
 
 void hsk_ossl4_env_free(hsk_ossl4_env_t *env)
 {
+    hsk_ossl4_test_gate_t *g = NULL;
     size_t i;
     if (env == NULL)
         return;
+    /* Single-free: destroy exactly when claimed; the -1 notes the
+     * ACTUAL native destruction to the creating gate (NULL: none). */
+    if (!hsk_test_live_claim(&hsk_test_envs, env, &g))
+        return;
+    hsk_ossl4_test_gate_note_env(g, -1);
     for (i = 0; i < env->nprov; i++)
         hsk_ossl4_unload_provider(env->provs[i]);
     hsk_ossl4_free_ctx(env->ctx);
@@ -401,8 +501,10 @@ end:
 
 /* --- multipart digest ------------------------------------------------ */
 
-hsk_ossl4_md_t *hsk_ossl4_digest_init(OSSL_LIB_CTX *ctx, const char *mdname,
-                                     const char *propq)
+static hsk_ossl4_md_t *hsk_ossl4_digest_init_core(hsk_ossl4_test_gate_t *g,
+                                                       OSSL_LIB_CTX *ctx,
+                                                       const char *mdname,
+                                                       const char *propq)
 {
     ERR_clear_error(); /* fresh queue; failures keep it for last_error */
     hsk_ossl4_md_t *h = NULL;
@@ -420,6 +522,7 @@ hsk_ossl4_md_t *hsk_ossl4_digest_init(OSSL_LIB_CTX *ctx, const char *mdname,
         goto fail;
     if (!EVP_DigestInit_ex2(h->mctx, h->md, NULL))
         goto fail;
+    hsk_test_live_insert(&hsk_test_digests, h, g);
     return h;
 fail:
     EVP_MD_CTX_free(h->mctx);
@@ -428,9 +531,15 @@ fail:
     return NULL;
 }
 
-hsk_ossl4_md_t *hsk_ossl4_digest_init_sized(OSSL_LIB_CTX *ctx,
-                                           const char *mdname,
-                                           const char *propq, int outsize)
+hsk_ossl4_md_t *hsk_ossl4_digest_init(OSSL_LIB_CTX *ctx, const char *mdname,
+                                     const char *propq)
+{
+    return hsk_ossl4_digest_init_core(NULL, ctx, mdname, propq);
+}
+
+static hsk_ossl4_md_t *hsk_ossl4_digest_init_sized_core(
+    hsk_ossl4_test_gate_t *g, OSSL_LIB_CTX *ctx, const char *mdname,
+    const char *propq, int outsize)
 {
     ERR_clear_error(); /* fresh queue; failures keep it for last_error */
     hsk_ossl4_md_t *h = NULL;
@@ -452,12 +561,21 @@ hsk_ossl4_md_t *hsk_ossl4_digest_init_sized(OSSL_LIB_CTX *ctx,
     params[1] = OSSL_PARAM_construct_end();
     if (!EVP_DigestInit_ex2(h->mctx, h->md, params))
         goto fail;
+    hsk_test_live_insert(&hsk_test_digests, h, g);
     return h;
 fail:
     EVP_MD_CTX_free(h->mctx);
     EVP_MD_free(h->md);
     OPENSSL_free(h);
     return NULL;
+}
+
+hsk_ossl4_md_t *hsk_ossl4_digest_init_sized(OSSL_LIB_CTX *ctx,
+                                           const char *mdname,
+                                           const char *propq, int outsize)
+{
+    return hsk_ossl4_digest_init_sized_core(NULL, ctx, mdname, propq,
+                                            outsize);
 }
 
 int hsk_ossl4_digest_update(hsk_ossl4_md_t *h, const unsigned char *msg,
@@ -496,8 +614,14 @@ end:
 
 void hsk_ossl4_digest_free(hsk_ossl4_md_t *h)
 {
+    hsk_ossl4_test_gate_t *g = NULL;
     if (h == NULL)
         return;
+    /* Single-free: destroy exactly when claimed; the -1 notes the
+     * ACTUAL native destruction to the creating gate (NULL: none). */
+    if (!hsk_test_live_claim(&hsk_test_digests, h, &g))
+        return;
+    hsk_ossl4_test_gate_note_digest(g, -1);
     EVP_MD_CTX_free(h->mctx);
     EVP_MD_free(h->md);
     OPENSSL_clear_free(h, sizeof(*h));
@@ -5235,4 +5359,389 @@ end:
     EVP_MD_free(md);
     EVP_PKEY_free(pkey);
     return rc;
+}
+
+/* --- TEST-ONLY ownership hooks ------------------------------------------- */
+
+struct hsk_ossl4_test_gate {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    int copy_mode; /* 0 off, 1 fail-next, 2 park-next, 3 fail-2nd */
+    int copy_queries; /* gated-copy polls since the arm (mode 3) */
+    int parked; /* a gated copy is parked */
+    int released; /* a release was posted */
+    int verdict; /* the posted release verdict */
+    int alloc_fail; /* a gated allocation fails next (one-shot) */
+    long buf_outstanding;
+    long digest_outstanding;
+    long env_outstanding;
+};
+
+hsk_ossl4_test_gate_t *hsk_ossl4_test_gate_new(void)
+{
+    hsk_ossl4_test_gate_t *g = OPENSSL_malloc(sizeof(*g));
+    if (g == NULL)
+        return NULL;
+    if (pthread_mutex_init(&g->mu, NULL) != 0) {
+        OPENSSL_free(g);
+        return NULL;
+    }
+    if (pthread_cond_init(&g->cv, NULL) != 0) {
+        pthread_mutex_destroy(&g->mu);
+        OPENSSL_free(g);
+        return NULL;
+    }
+    g->copy_mode = 0;
+    g->copy_queries = 0;
+    g->parked = 0;
+    g->released = 0;
+    g->verdict = 0;
+    g->alloc_fail = 0;
+    g->buf_outstanding = 0;
+    g->digest_outstanding = 0;
+    g->env_outstanding = 0;
+    return g;
+}
+
+void hsk_ossl4_test_gate_free(hsk_ossl4_test_gate_t *g)
+{
+    if (g == NULL)
+        return;
+    /* Callers release before freeing (destroying a condition with
+     * waiters is undefined); the test bracket always releases. */
+    pthread_cond_destroy(&g->cv);
+    pthread_mutex_destroy(&g->mu);
+    OPENSSL_free(g);
+}
+
+void hsk_ossl4_test_gate_arm_checkpoint(hsk_ossl4_test_gate_t *g, int mode)
+{
+    if (g == NULL)
+        return;
+    pthread_mutex_lock(&g->mu);
+    g->copy_mode = (mode >= 1 && mode <= 3) ? mode : 0;
+    g->copy_queries = 0;
+    pthread_mutex_unlock(&g->mu);
+}
+
+void hsk_ossl4_test_gate_arm_alloc_fail(hsk_ossl4_test_gate_t *g)
+{
+    if (g == NULL)
+        return;
+    pthread_mutex_lock(&g->mu);
+    g->alloc_fail = 1;
+    pthread_mutex_unlock(&g->mu);
+}
+
+int hsk_ossl4_test_gate_poll(hsk_ossl4_test_gate_t *g)
+{
+    int r = 0;
+    if (g == NULL)
+        return 0;
+    pthread_mutex_lock(&g->mu);
+    switch (g->copy_mode) {
+    case 1:
+        g->copy_mode = 0;
+        r = 1;
+        break;
+    case 2:
+        g->copy_mode = 0;
+        /* Latch: a release posted before checkpoint entry must
+         * survive the poll — the next park consumes it (returning
+         * its verdict immediately) instead of waiting. Resetting
+         * 'released' here would lose an early cleanup release and
+         * strand the worker in a park nobody will release. */
+        g->parked = 1;
+        r = 2;
+        break;
+    case 3:
+        g->copy_queries++;
+        if (g->copy_queries >= 2) {
+            g->copy_mode = 0;
+            g->copy_queries = 0;
+            r = 1;
+        }
+        break;
+    default:
+        break;
+    }
+    pthread_mutex_unlock(&g->mu);
+    return r;
+}
+
+int hsk_ossl4_test_gate_park(hsk_ossl4_test_gate_t *g)
+{
+    int v = 0;
+    if (g == NULL)
+        return 0;
+    /* A parked call is a plain safe foreign call: the waiter
+     * CANNOT be killed out from under the mutex — a kill queued
+     * while parked lands at the Haskell level only after the
+     * release lets this return. */
+    pthread_mutex_lock(&g->mu);
+    while (!g->released)
+        pthread_cond_wait(&g->cv, &g->mu);
+    v = g->verdict;
+    g->parked = 0;
+    g->released = 0;
+    pthread_mutex_unlock(&g->mu);
+    return v;
+}
+
+int hsk_ossl4_test_gate_parked(hsk_ossl4_test_gate_t *g)
+{
+    int r = 0;
+    if (g == NULL)
+        return 0;
+    pthread_mutex_lock(&g->mu);
+    r = g->parked;
+    pthread_mutex_unlock(&g->mu);
+    return r;
+}
+
+void hsk_ossl4_test_gate_release(hsk_ossl4_test_gate_t *g, int verdict)
+{
+    if (g == NULL)
+        return;
+    pthread_mutex_lock(&g->mu);
+    g->verdict = verdict;
+    g->released = 1;
+    /* The release latches: a waiter wakes now, and a worker that
+     * polls after this consumes the verdict in its park instead
+     * of waiting (no waiter then; the broadcast is harmless). */
+    g->parked = 0;
+    pthread_cond_broadcast(&g->cv);
+    pthread_mutex_unlock(&g->mu);
+}
+
+void hsk_ossl4_test_gate_note_buf(hsk_ossl4_test_gate_t *g, long delta)
+{
+    if (g == NULL)
+        return;
+    pthread_mutex_lock(&g->mu);
+    g->buf_outstanding += delta;
+    pthread_mutex_unlock(&g->mu);
+}
+
+long hsk_ossl4_test_gate_buf_outstanding(hsk_ossl4_test_gate_t *g)
+{
+    long r = 0;
+    if (g == NULL)
+        return 0;
+    pthread_mutex_lock(&g->mu);
+    r = g->buf_outstanding;
+    pthread_mutex_unlock(&g->mu);
+    return r;
+}
+
+void hsk_ossl4_test_gate_note_digest(hsk_ossl4_test_gate_t *g, long delta)
+{
+    if (g == NULL)
+        return;
+    pthread_mutex_lock(&g->mu);
+    g->digest_outstanding += delta;
+    pthread_mutex_unlock(&g->mu);
+}
+
+long hsk_ossl4_test_gate_digest_outstanding(hsk_ossl4_test_gate_t *g)
+{
+    long r = 0;
+    if (g == NULL)
+        return 0;
+    pthread_mutex_lock(&g->mu);
+    r = g->digest_outstanding;
+    pthread_mutex_unlock(&g->mu);
+    return r;
+}
+
+void hsk_ossl4_test_gate_note_env(hsk_ossl4_test_gate_t *g, long delta)
+{
+    if (g == NULL)
+        return;
+    pthread_mutex_lock(&g->mu);
+    g->env_outstanding += delta;
+    pthread_mutex_unlock(&g->mu);
+}
+
+long hsk_ossl4_test_gate_env_outstanding(hsk_ossl4_test_gate_t *g)
+{
+    long r = 0;
+    if (g == NULL)
+        return 0;
+    pthread_mutex_lock(&g->mu);
+    r = g->env_outstanding;
+    pthread_mutex_unlock(&g->mu);
+    return r;
+}
+
+/* Consumes a pending alloc-fail arm (the gated entries fail
+ * without allocating when this returns nonzero). */
+static int hsk_test_gate_consume_alloc_fail(hsk_ossl4_test_gate_t *g)
+{
+    int r = 0;
+    if (g == NULL)
+        return 0;
+    pthread_mutex_lock(&g->mu);
+    r = g->alloc_fail;
+    g->alloc_fail = 0;
+    pthread_mutex_unlock(&g->mu);
+    return r;
+}
+
+hsk_ossl4_env_t *hsk_ossl4_env_new_gated(hsk_ossl4_test_gate_t *g)
+{
+    hsk_ossl4_env_t *env;
+    if (hsk_test_gate_consume_alloc_fail(g))
+        return NULL;
+    env = hsk_ossl4_env_new_core(g);
+    /* The +1 notes the creation; the matching -1 fires on the
+     * ACTUAL native destroy (env_free claims the live-set entry). */
+    if (env != NULL)
+        hsk_ossl4_test_gate_note_env(g, 1);
+    return env;
+}
+
+int hsk_ossl4_env_load_gated(hsk_ossl4_test_gate_t *g, hsk_ossl4_env_t *env,
+                             const char *name)
+{
+    if (g != NULL) {
+        /* A checkpoint arm parks/fails the load: the open
+         * bracketing owns the live env on every exit. */
+        int v = hsk_ossl4_test_gate_poll(g);
+        if (v == 1)
+            return -1;
+        if (v == 2) {
+            int w = hsk_ossl4_test_gate_park(g);
+            if (w != 0)
+                return -1;
+        }
+    }
+    return hsk_ossl4_env_load(env, name);
+}
+
+hsk_ossl4_md_t *hsk_ossl4_digest_init_gated(hsk_ossl4_test_gate_t *g,
+                                           OSSL_LIB_CTX *ctx,
+                                           const char *mdname,
+                                           const char *propq)
+{
+    hsk_ossl4_md_t *h;
+    if (hsk_test_gate_consume_alloc_fail(g))
+        return NULL;
+    h = hsk_ossl4_digest_init_core(g, ctx, mdname, propq);
+    if (h != NULL)
+        hsk_ossl4_test_gate_note_digest(g, 1);
+    return h;
+}
+
+hsk_ossl4_md_t *hsk_ossl4_digest_init_sized_gated(hsk_ossl4_test_gate_t *g,
+                                                 OSSL_LIB_CTX *ctx,
+                                                 const char *mdname,
+                                                 const char *propq,
+                                                 int outsize)
+{
+    hsk_ossl4_md_t *h;
+    if (hsk_test_gate_consume_alloc_fail(g))
+        return NULL;
+    h = hsk_ossl4_digest_init_sized_core(g, ctx, mdname, propq, outsize);
+    if (h != NULL)
+        hsk_ossl4_test_gate_note_digest(g, 1);
+    return h;
+}
+
+long hsk_ossl4_digest_gated(hsk_ossl4_test_gate_t *g, OSSL_LIB_CTX *ctx,
+                           const char *mdname, const char *propq,
+                           const unsigned char *msg, size_t msglen,
+                           unsigned char **out)
+{
+    if (hsk_test_gate_consume_alloc_fail(g))
+        return HSK_OSSL4_ERR_NOMEM;
+    return hsk_ossl4_digest(ctx, mdname, propq, msg, msglen, out);
+}
+
+long hsk_ossl4_digest_sized_gated(hsk_ossl4_test_gate_t *g, OSSL_LIB_CTX *ctx,
+                                 const char *mdname, const char *propq,
+                                 const unsigned char *msg, size_t msglen,
+                                 int outsize, unsigned char **out)
+{
+    if (hsk_test_gate_consume_alloc_fail(g))
+        return HSK_OSSL4_ERR_NOMEM;
+    return hsk_ossl4_digest_sized(ctx, mdname, propq, msg, msglen, outsize,
+                                 out);
+}
+
+long hsk_ossl4_digest_xof_gated(hsk_ossl4_test_gate_t *g, OSSL_LIB_CTX *ctx,
+                               const char *mdname, const char *propq,
+                               const unsigned char *msg, size_t msglen,
+                               int outsize, unsigned char **out)
+{
+    if (hsk_test_gate_consume_alloc_fail(g))
+        return HSK_OSSL4_ERR_NOMEM;
+    return hsk_ossl4_digest_xof(ctx, mdname, propq, msg, msglen, outsize,
+                               out);
+}
+
+long hsk_ossl4_digest_final_gated(hsk_ossl4_test_gate_t *g, hsk_ossl4_md_t *h,
+                                 unsigned char **out)
+{
+    int fault = hsk_test_gate_consume_alloc_fail(g);
+    if (h == NULL) {
+        /* Nothing to consume; a consumed arm still faults without
+         * touching accounting (no handle existed). */
+        if (fault)
+            return HSK_OSSL4_ERR_NOMEM;
+        return hsk_ossl4_digest_final(h, out);
+    }
+    if (fault) {
+        /* The real final consumes its handle even on NOMEM; the
+         * gated fault preserves that (consume, then NOMEM). The
+         * -1 fires on the destroy path inside digest_free (the
+         * digest live-set hands the creating gate back). */
+        hsk_ossl4_digest_free(h);
+        return HSK_OSSL4_ERR_NOMEM;
+    }
+    return hsk_ossl4_digest_final(h, out);
+}
+
+void hsk_ossl4_free_gated(hsk_ossl4_test_gate_t *g, void *ptr, size_t len)
+{
+    hsk_ossl4_free(ptr, len);
+    /* The -1 notes the ACTUAL native free (this call), not the
+     * Haskell cleanup claim. */
+    hsk_ossl4_test_gate_note_buf(g, -1);
+}
+
+long hsk_ossl4_test_digest_doublefree(void)
+{
+    long r;
+    pthread_mutex_lock(&hsk_test_digests.mu);
+    r = hsk_test_digests.doublefree;
+    pthread_mutex_unlock(&hsk_test_digests.mu);
+    return r;
+}
+
+long hsk_ossl4_test_digest_untracked(void)
+{
+    long r;
+    pthread_mutex_lock(&hsk_test_digests.mu);
+    r = hsk_test_digests.noverflow;
+    pthread_mutex_unlock(&hsk_test_digests.mu);
+    return r;
+}
+
+long hsk_ossl4_test_env_doublefree(void)
+{
+    long r;
+    pthread_mutex_lock(&hsk_test_envs.mu);
+    r = hsk_test_envs.doublefree;
+    pthread_mutex_unlock(&hsk_test_envs.mu);
+    return r;
+}
+
+long hsk_ossl4_test_env_untracked(void)
+{
+    long r;
+    pthread_mutex_lock(&hsk_test_envs.mu);
+    r = hsk_test_envs.noverflow;
+    pthread_mutex_unlock(&hsk_test_envs.mu);
+    return r;
 }

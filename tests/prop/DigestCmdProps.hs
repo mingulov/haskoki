@@ -9,7 +9,7 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Maybe (isJust)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 import Test.Tasty.QuickCheck
   ( Gen
   , Property
@@ -17,13 +17,14 @@ import Test.Tasty.QuickCheck
   , choose
   , conjoin
   , counterexample
-  , forAll
+  , forAllShrink
   , oneof
   , property
+  , shrinkList
   , vectorOf
   )
 
-import Gen (propWith, qcBytes)
+import Gen (freshIndices, propSeedOverride, propWith, qcBytes)
 import Haskoki.Model (SessionState (..), emptyModel)
 import Haskoki.Operation
   ( CryptoError (..)
@@ -73,7 +74,39 @@ spec seedOv count =
     , propWith seedOv "freed transitions reject" 303 count pFreedRejects
     , testCase "illegal orders reject" caseIllegal
     , testCase "valid scripts succeed" (caseValid count)
+    , testCase "command and state hits" caseCommandHits
     ]
+
+-- | Every digest command by short name. Deliberately exhaustive
+-- with no catch-all: a new command fails compilation here
+-- (fatal-omissions) instead of slipping past the hit obligations.
+cmdName :: DigestCmd -> String
+cmdName cmd = case cmd of
+  DCInit -> "Init"
+  DCUpdate _ -> "Update"
+  DCOneShot _ -> "OneShot"
+  DCFinal -> "Final"
+  DCFinishInit _ -> "FinishInit"
+  DCFinishFeed _ -> "FinishFeed"
+  DCFinish _ _ -> "Finish"
+  DCRetry _ -> "Retry"
+
+-- | Model-phase shape tag (field values excluded).
+phaseTag :: Phase -> String
+phaseTag phase = case phase of
+  PhAbsent -> "Absent"
+  PhActive _ _ -> "Active"
+  PhStaged _ -> "Staged"
+
+-- | Model phases after each step of a script.
+phaseTrace :: [DigestCmd] -> [Phase]
+phaseTrace cmds = go PhAbsent cmds
+  where
+    go :: Phase -> [DigestCmd] -> [Phase]
+    go _ [] = []
+    go phase (c : rest) =
+      let (_, phase') = modelStep phase c
+      in phase' : go phase' rest
 
 -- ---------------------------------------------------------------------------
 -- Fixtures
@@ -146,9 +179,12 @@ fitsLen intent len = case intent of
 fits :: OutputIntent -> ByteString -> Bool
 fits intent bs = fitsLen intent (BS.length bs)
 
+-- | Deliberately exhaustive with no catch-all: a new intent
+-- fails compilation here (fatal-omissions) instead of inheriting
+-- an answer silently.
 isQuery :: OutputIntent -> Bool
 isQuery IntentNull = True
-isQuery _ = False
+isQuery (IntentBuffer _) = False
 
 type StepRes = (ReturnCode, Bool)
 
@@ -158,7 +194,8 @@ modelStep :: Phase -> DigestCmd -> (StepRes, Phase)
 modelStep phase cmd = case cmd of
   DCInit -> case phase of
     PhAbsent -> ((CKR_OK, True), PhActive False False)
-    _ -> ((CKR_OPERATION_ACTIVE, True), phase)
+    PhActive _ _ -> ((CKR_OPERATION_ACTIVE, True), phase)
+    PhStaged _ -> ((CKR_OPERATION_ACTIVE, True), phase)
   DCUpdate _ -> case phase of
     PhAbsent -> ((CKR_OPERATION_NOT_INITIALIZED, False), PhAbsent)
     PhStaged _ -> ((CKR_OPERATION_NOT_INITIALIZED, True), phase)
@@ -187,7 +224,11 @@ modelStep phase cmd = case cmd of
     PhStaged _ -> ((CKR_OK, True), phase)
   DCFinishFeed ok -> case phase of
     PhAbsent -> ((CKR_OPERATION_NOT_INITIALIZED, False), PhAbsent)
-    _ | ok -> ((CKR_OK, True), phase)
+    PhActive _ _
+      | ok -> ((CKR_OK, True), phase)
+      | otherwise -> ((CKR_GENERAL_ERROR, False), PhAbsent)
+    PhStaged _
+      | ok -> ((CKR_OK, True), phase)
       | otherwise -> ((CKR_GENERAL_ERROR, False), PhAbsent)
   DCFinish bs intent -> case phase of
     PhAbsent -> ((CKR_OPERATION_NOT_INITIALIZED, False), PhAbsent)
@@ -287,6 +328,48 @@ genScript = do
   k <- choose (1, 12)
   vectorOf k genCmd
 
+-- | Dependency-preserving shrinker for command scripts:
+-- order-preserving removals only (no element rewrites), so every
+-- shrink replays the surviving commands in their original relative
+-- order against the reference model from the initial phase. Sound
+-- for prefix-free scripts only; the staged/freed properties below
+-- need their setup preserved (see shrinkSetupScript).
+shrinkScript :: [DigestCmd] -> [[DigestCmd]]
+shrinkScript = shrinkList (const [])
+
+-- | Setup-preserving shrinker for the staged/freed transition
+-- scripts: generated scripts are a variable-length setup (init,
+-- 0-2 update pairs, final, delivering finish) plus exactly one
+-- suffix command, and the bare setup fails "suffix pinned" on
+-- its own last command — so dropping the suffix (or the whole
+-- script, as the generic list shrinker would) reports a
+-- degenerate input instead of the original defect. This shrinker
+-- drops update pairs only, keeping the setup shape and the
+-- suffix intact, so every shrink stays inside the generator's
+-- range; any script outside the generated shape does not shrink
+-- at all.
+shrinkSetupScript :: [DigestCmd] -> [[DigestCmd]]
+shrinkSetupScript (DCInit : DCFinishInit rid : rest) =
+  case matchSetupTail rest of
+    Just (ups, fin) ->
+      [ [DCInit, DCFinishInit rid]
+          ++ concat (take i ups ++ drop (i + 1) ups)
+          ++ fin
+      | i <- [0 .. length ups - 1]
+      ]
+    Nothing -> []
+shrinkSetupScript _ = []
+
+-- | Split a setup tail into its update pairs and the final three
+-- commands ([DCFinal, DCFinish, suffix]); Nothing outside that
+-- shape.
+matchSetupTail :: [DigestCmd] -> Maybe ([[DigestCmd]], [DigestCmd])
+matchSetupTail (DCUpdate p : DCFinishFeed True : cs) = do
+  (ups, fin) <- matchSetupTail cs
+  pure ([DCUpdate p, DCFinishFeed True] : ups, fin)
+matchSetupTail fin@[DCFinal, DCFinish _ _, _] = Just ([], fin)
+matchSetupTail _ = Nothing
+
 showStep :: Int -> (DigestCmd, (StepRes, StepRes)) -> String
 showStep i (cmd, (predRes, actRes)) =
   "  " ++ show i ++ " " ++ show cmd
@@ -294,7 +377,7 @@ showStep i (cmd, (predRes, actRes)) =
     ++ " actual=" ++ show actRes
 
 pCommands :: Property
-pCommands = forAll genScript $ \cmds ->
+pCommands = forAllShrink genScript shrinkScript $ \cmds ->
   let steps = runBoth cmds
       bad =
         [ i
@@ -381,16 +464,22 @@ modelAgrees :: [DigestCmd] -> Bool
 modelAgrees script =
   all (\(predRes, actRes) -> predRes == actRes) (runBoth script)
 
+-- | Deliberately exhaustive with no catch-all: a new command
+-- fails compilation here (fatal-omissions) instead of inheriting
+-- a suffix verdict silently.
 stagedSuffixCode :: DigestCmd -> Maybe ReturnCode
 stagedSuffixCode suffix = case suffix of
+  DCInit -> Nothing
   DCUpdate _ -> Just CKR_OPERATION_NOT_INITIALIZED
-  DCFinal -> Just CKR_OPERATION_NOT_INITIALIZED
   DCOneShot _ -> Just CKR_OPERATION_NOT_INITIALIZED
+  DCFinal -> Just CKR_OPERATION_NOT_INITIALIZED
+  DCFinishInit _ -> Nothing
+  DCFinishFeed _ -> Nothing
   DCFinish _ _ -> Just CKR_GENERAL_ERROR
-  _ -> Nothing
+  DCRetry _ -> Nothing
 
 pStagedRejects :: Property
-pStagedRejects = forAll genStagedScript $ \script ->
+pStagedRejects = forAllShrink genStagedScript shrinkSetupScript $ \script ->
   counterexample ("staged script:\n" ++ traceStr script) $
     conjoin
       [ counterexample "prefix stages" (property (prefixStaged script))
@@ -410,7 +499,7 @@ pStagedRejects = forAll genStagedScript $ \script ->
       _ -> False
 
 pFreedRejects :: Property
-pFreedRejects = forAll genFreedScript $ \script ->
+pFreedRejects = forAllShrink genFreedScript shrinkSetupScript $ \script ->
   counterexample ("freed script:\n" ++ traceStr script) $
     conjoin
       [ counterexample "prefix frees" (property (prefixFreed script))
@@ -518,17 +607,29 @@ caseIllegal = mapM_ check illegalScripts
     check (label, cmds, want) =
       assertEqual label want (map fst (actualTrace cmds))
 
+-- | One full valid script over index-driven parts.
+validScript :: Int -> [DigestCmd]
+validScript i =
+  let parts = [BS.replicate ((i * 7) `mod` 33) (fromIntegral i), "mid", BS.empty]
+  in [DCInit, DCFinishInit rid7]
+    ++ concatMap (\p -> [DCUpdate p, DCFinishFeed True]) parts
+    ++ [DCFinal, DCFinish canned32 bigIntent]
+
+-- | Staged then retried: the retry delivers and frees.
+retryHappyScript :: [DigestCmd]
+retryHappyScript =
+  [DCInit, DCFinishInit rid7, DCFinal, DCFinish canned32 shortIntent]
+    ++ [DCRetry bigIntent]
+
 -- | Full valid scripts over generated parts succeed and free the slot.
 caseValid :: Int -> IO ()
-caseValid count = mapM_ check [1 .. count]
+caseValid count = do
+  seedOv <- propSeedOverride
+  mapM_ check (freshIndices seedOv count)
   where
     check :: Int -> IO ()
     check i = do
-      let parts = [BS.replicate ((i * 7) `mod` 33) (fromIntegral i), "mid", BS.empty]
-          script =
-            [DCInit, DCFinishInit rid7]
-              ++ concatMap (\p -> [DCUpdate p, DCFinishFeed True]) parts
-              ++ [DCFinal, DCFinish canned32 bigIntent]
+      let script = validScript i
           steps = runBoth script
       assertEqual ("valid codes " ++ show i)
         (replicate (length script) CKR_OK)
@@ -536,11 +637,46 @@ caseValid count = mapM_ check [1 .. count]
       occ <- finalOccupied ("valid freed " ++ show i) steps
       assertEqual ("valid freed " ++ show i) False occ
       -- Staged then retried: the retry delivers and frees.
-      let stagedScript = [DCInit, DCFinishInit rid7, DCFinal, DCFinish canned32 shortIntent]
-          retryScript = stagedScript ++ [DCRetry bigIntent]
-          retrySteps = runBoth retryScript
+      let retrySteps = runBoth retryHappyScript
       assertEqual ("retry codes " ++ show i)
         [CKR_OK, CKR_OK, CKR_OK, CKR_BUFFER_TOO_SMALL, CKR_OK]
-        (map fst (actualTrace retryScript))
+        (map fst (actualTrace retryHappyScript))
       retryOcc <- finalOccupied ("retry freed " ++ show i) retrySteps
       assertEqual ("retry freed " ++ show i) False retryOcc
+
+-- | Command/state hit obligations over the deterministic script
+-- corpus: every command constructor executes and every model
+-- phase is reached, so the pinned scripts exercise the whole
+-- command vocabulary, not just the codes they assert.
+caseCommandHits :: IO ()
+caseCommandHits = do
+  let scripts =
+        [c | (_, c, _) <- illegalScripts]
+          ++ [validScript i | i <- [1 .. 12]]
+          ++ [retryHappyScript]
+      cmds = concat scripts
+      hits name = length (filter ((== name) . cmdName) cmds)
+      tags = [phaseTag phase | script <- scripts, phase <- phaseTrace script]
+  putStrLn
+    ("digest hits: "
+      ++ unwords
+        [ name ++ "=" ++ show (hits name)
+        | name <-
+            [ "Init"
+            , "Update"
+            , "OneShot"
+            , "Final"
+            , "FinishInit"
+            , "FinishFeed"
+            , "Finish"
+            , "Retry"
+            ]
+        ])
+  mapM_ (checkCmd hits) ["Init", "Update", "OneShot", "Final",
+                         "FinishInit", "FinishFeed", "Finish", "Retry"]
+  mapM_ (checkTag tags) ["Absent", "Active", "Staged"]
+  where
+    checkCmd hits name =
+      assertBool ("corpus runs " ++ name) (hits name >= 1)
+    checkTag tags tag =
+      assertBool ("corpus reaches " ++ tag) (tag `elem` tags)

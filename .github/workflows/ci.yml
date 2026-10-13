@@ -190,7 +190,8 @@ jobs:
           for g in check-core-boundary check-mechanisms check-denominators \
               check-attributes check-ossl4-surface check-version check-ckr \
               check-seed-honesty check-warnings-zero check-docs \
-              check-fork-stance check-test-wiring check-test-evidence check-coverage-boundary \
+              check-fork-stance check-test-wiring check-test-evidence check-test-execution \
+              check-coverage-boundary \
               check-release-pivots check-loader-norm check-release-install-flags \
               check-smoke-surface check-history-codes check-actions-pinned; do
             python3 scripts/$g.py
@@ -203,6 +204,8 @@ jobs:
           # controls + F-6/F-7 structural asserts (durable, stdlib-only).
           python3 scripts/check-actions-pinned.py --self-test
           python3 scripts/check-test-evidence.py --self-test
+          python3 scripts/check-test-wiring.py --self-test
+          python3 scripts/check-test-execution.py --self-test
           python3 scripts/test-release-request.py
           python3 scripts/test-release-workflow.py
           python3 scripts/test-demo-shards.py
@@ -213,12 +216,24 @@ jobs:
           cabal update
           cabal build all --enable-tests
           cabal test all 2>&1 | tee haskell-test.log
+      - name: Collect executed test trees
+        run: |
+          set -euo pipefail
+          # Reached only when `cabal test all` exited 0, so every
+          # suite passed; the join binds that success to the reviewed
+          # intended groups and fails on empty trees. Suite binaries
+          # come from the exact build above (dist-newstyle persists
+          # in the mounted workspace).
+          python3 scripts/check-test-execution.py --collect \
+            --build-root dist-newstyle --dir test-trees --result pass
       - name: Upload test log
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: haskell-test-log
-          path: haskell-test.log
+          path: |
+            haskell-test.log
+            test-trees/
           if-no-files-found: warn
 
   # ------------------------------------------------------------------

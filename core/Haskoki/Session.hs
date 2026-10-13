@@ -8,7 +8,7 @@ optional named-user principal.
 
 Check order inside 'loginAttempt' (documented, tested): state
 conflicts (already/another logged in, SO/RO exclusion,
-context-requires-user-login, context-needs-active-op) are decided
+context-requires-user-login, context-needs-single-pending-op) are decided
 BEFORE PIN evaluation, so a call that cannot succeed never consumes
 an attempt. A locked role denies everything for that role,
 including conflict-shaped calls.
@@ -143,12 +143,12 @@ loginAttempt
   :: Rules
   -> TokenAuth
   -> Bool -- ^ a read-only session is open on this slot
-  -> Bool -- ^ the session has an active operation
+  -> Bool -- ^ the session holds exactly one eligible pending-auth operation
   -> LoginKind
   -> Maybe String -- ^ named-user principal ('Nothing' = default)
   -> PinCheck
   -> LoginOutcome
-loginAttempt rules auth roExists hasOp kind mName pin =
+loginAttempt rules auth roExists hasEligible kind mName pin =
   let limit = max 1 (rulesMaxPinAttempts rules)
       locked = case kind of
         LoginAsUser -> taUserLocked auth
@@ -156,15 +156,19 @@ loginAttempt rules auth roExists hasOp kind mName pin =
         LoginAsSO -> taSoLocked auth
   in if locked
     then LoginDenied DenyPinLocked auth
-    else case checkConflict auth roExists hasOp kind of
+    else case checkConflict auth roExists hasEligible kind of
       Just deny -> LoginDenied deny auth
       Nothing -> case pin of
         PinIncorrect -> LoginDenied (bump limit) (bumpAuth limit)
         PinCorrect -> LoginGranted (grantAuth kind mName) (grantLogin kind)
   where
     -- State conflicts first: a doomed call consumes no attempts.
+    -- A context grant needs exactly one always-authenticate
+    -- operation still awaiting its first data call (binding by
+    -- uniqueness) — zero, a merely active plain operation, or two
+    -- pending operations refuse before PIN evaluation.
     checkConflict :: TokenAuth -> Bool -> Bool -> LoginKind -> Maybe LoginDeny
-    checkConflict a ro hasActive k = case k of
+    checkConflict a ro hasPending k = case k of
       LoginAsUser -> case taLogin a of
         Just AuthSO -> Just DenyAnotherLoggedIn
         Just AuthUser -> Just DenyAlreadyLoggedIn
@@ -177,7 +181,7 @@ loginAttempt rules auth roExists hasOp kind mName pin =
           | otherwise -> Nothing
       LoginAsContext -> case taLogin a of
         Just AuthUser
-          | hasActive -> Nothing
+          | hasPending -> Nothing
           | otherwise -> Just DenyNoActiveOp
         Just AuthSO -> Just DenyAnotherLoggedIn
         Nothing -> Just DenyUserNotLoggedIn
@@ -315,15 +319,18 @@ admitWritable readOnly isToken
   | readOnly && isToken = Left AdmitReadOnly
   | otherwise = Right ()
 
--- | Admit private-object creation against the session login: any
--- authenticated login (user, SO, context grant) admits; a public
--- session creating a private object denies with
--- 'AdmitLoginRequired' (PKCS#11: public sessions see and create
--- public objects only). Checked before 'admitWritable':
--- authentication outranks the session mode.
+-- | Admit private-object creation against the session login: only
+-- the normal user (plain or holding a context grant) admits; public
+-- and SO sessions creating a private object deny with
+-- 'AdmitLoginRequired' (OASIS PKCS#11 3.2 §5.7.1-5.7.2: private
+-- objects are created under a user login — SO authentication is a
+-- distinct role that administers public objects only). Checked
+-- before 'admitWritable': authentication outranks the session mode.
 admitPrivate :: SessionLogin -> Bool -> Either AdmitDeny ()
-admitPrivate LoginPublic True = Left AdmitLoginRequired
-admitPrivate _ _ = Right ()
+admitPrivate login wantsPrivate
+  | not wantsPrivate = Right ()
+  | login == LoginUser || login == LoginContextUser = Right ()
+  | otherwise = Left AdmitLoginRequired
 
 -- | Decode OpenSession arguments: @slot=\<nat\>,rw@ or @slot=\<nat\>,ro@.
 parseOpenArgs :: ByteString -> Maybe (SlotId, Bool)

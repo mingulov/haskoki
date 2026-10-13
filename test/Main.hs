@@ -1,3 +1,4 @@
+-- REGISTRATION: haskoki-tests
 {- | Scaffold smoke suite (kept): two cases pinning the version
 enumeration and the stub outcome type.
 

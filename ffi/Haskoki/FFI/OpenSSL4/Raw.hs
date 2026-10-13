@@ -93,22 +93,38 @@ module Haskoki.FFI.OpenSSL4.Raw
   , rsaX509Decrypt
   , rsaX509Sign
   , rsaX509Verify
+    -- * TEST-ONLY ownership gates
+  , TestGate
+  , envNewGated
+  , envLoadGated
+  , digestGated
+  , digestSizedGated
+  , digestXofGated
+  , digestInitGated
+  , digestInitSizedGated
+  , digestFinalGated
+  , ecGenGated
   ) where
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Unsafe as BSU
+import Control.Exception (finally, mask, mask_, onException, throwIO)
+import Control.Monad (when)
 import Data.ByteString (ByteString)
 import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.C.Types (CChar (..), CInt (..), CLong (..), CSize (..), CUChar (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
-import Foreign.Storable (peek)
+import Foreign.Storable (peek, poke)
 
 -- Opaque native types (never constructed in Haskell).
 
 data OsslEnv
 data OsslLibCtx
 data DigestHandle
+-- | TEST-ONLY ownership gate (per-test fault/accounting object, owned
+-- by the test; production paths pass 'nullPtr' and never consult it).
+data TestGate
 
 -- Shim error codes (mirror cbits/ossl4_ctx.h).
 
@@ -337,6 +353,49 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_x509_sign"
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_x509_verify"
   c_rsa_x509_verify :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> IO CInt
 
+-- TEST-ONLY gate consultation (the ownership helpers call these only
+-- for a non-NULL gate; production pays no hook call at all).
+foreign import ccall unsafe "ossl4_ctx.h hsk_ossl4_test_gate_poll"
+  c_gate_poll :: Ptr TestGate -> IO CInt
+
+-- A plain safe call (NOT interruptible): a parked waiter cannot be
+-- killed out from under the gate mutex, so a kill queued while
+-- parked is delivered at the Haskell level only after the release
+-- lets the call return — cleanup runs before delivery.
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_test_gate_park"
+  c_gate_park :: Ptr TestGate -> IO CInt
+
+foreign import ccall unsafe "ossl4_ctx.h hsk_ossl4_test_gate_note_buf"
+  c_gate_note_buf :: Ptr TestGate -> CLong -> IO ()
+
+-- TEST-ONLY gated allocation entries (fault-or-delegate wrappers).
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_env_new_gated"
+  c_env_new_gated :: Ptr TestGate -> IO (Ptr OsslEnv)
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_env_load_gated"
+  c_env_load_gated :: Ptr TestGate -> Ptr OsslEnv -> CString -> IO CInt
+
+foreign import ccall unsafe "ossl4_ctx.h hsk_ossl4_free_gated"
+  c_free_gated :: Ptr TestGate -> Ptr () -> CSize -> IO ()
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_gated"
+  c_digest_gated :: Ptr TestGate -> Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_sized_gated"
+  c_digest_sized_gated :: Ptr TestGate -> Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_xof_gated"
+  c_digest_xof_gated :: Ptr TestGate -> Ptr OsslLibCtx -> CString -> CString -> Ptr CUChar -> CSize -> CInt -> Ptr (Ptr CUChar) -> IO CLong
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_init_gated"
+  c_digest_init_gated :: Ptr TestGate -> Ptr OsslLibCtx -> CString -> CString -> IO (Ptr DigestHandle)
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_init_sized_gated"
+  c_digest_init_sized_gated :: Ptr TestGate -> Ptr OsslLibCtx -> CString -> CString -> CInt -> IO (Ptr DigestHandle)
+
+foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_final_gated"
+  c_digest_final_gated :: Ptr TestGate -> Ptr DigestHandle -> Ptr (Ptr CUChar) -> IO CLong
+
 -- Managed wrappers.
 
 -- | Use a 'ByteString' as @(ptr, len)@. The empty string uses a
@@ -356,18 +415,91 @@ withOptBytes :: Maybe ByteString -> ((Ptr CUChar, CSize) -> IO a) -> IO a
 withOptBytes Nothing action = action (nullPtr, 0)
 withOptBytes (Just bs) action = withBytes bs action
 
+-- | Ownership transfer: every helper below masks the
+-- acquire-to-registration step, registers cleanup for EVERY output
+-- before copying any, then restores the permitted copy work with
+-- 'finally' cleanup. A NULL gate is production (no hook call);
+-- tests pass a live gate whose faults strike at the copy boundary.
+throwCopyFault :: IO a
+throwCopyFault = throwIO (userError "hsk_ossl4_test_copy_fault")
+
+-- | Consult the copy gate before a copy (NULL gate: proceed).
+-- Poll 1 faults synchronously; poll 2 parks for the release
+-- verdict (a safe call: a kill queued while parked lands only
+-- after the release lets it return).
+copyGate :: Ptr TestGate -> IO ()
+copyGate gate
+  | gate == nullPtr = pure ()
+  | otherwise = do
+      v <- c_gate_poll gate
+      case v of
+        1 -> throwCopyFault
+        2 -> do
+          w <- c_gate_park gate
+          when (w /= 0) throwCopyFault
+        _ -> pure ()
+
+-- | Take ownership of a shim output buffer: register (+1) under
+-- mask, copy with 'finally' cleanup, then clear+free exactly once
+-- on every exit (success, sync fault, or async kill). The matching
+-- -1 fires on the ACTUAL native free inside the gated destroy, so
+-- the counter proves native destruction. Shape note: like base
+-- 'bracket', the restored copy runs with async delivery permitted
+-- while 'finally' runs its cleanup masked.
+takeOwnedGated :: Ptr TestGate -> Ptr CUChar -> Int -> IO ByteString
+takeOwnedGated gate p n = mask $ \restore -> do
+  when (gate /= nullPtr) (c_gate_note_buf gate 1)
+  restore (copyGate gate >> BS.packCStringLen (castPtr p, n))
+    `finally` c_free_gated gate (castPtr p) (fromIntegral n)
+
 -- | Take ownership of a shim output buffer: copy @len@ bytes into an
 -- owned 'ByteString', then clear+free the native buffer.
 takeOwned :: Ptr CUChar -> Int -> IO ByteString
-takeOwned p n = do
-  bs <- BS.packCStringLen (castPtr p, n)
-  c_free (castPtr p) (fromIntegral n)
-  pure bs
+takeOwned = takeOwnedGated nullPtr
+
+-- | Take ownership of a keypair: cleanup for BOTH halves is
+-- registered before either copy, so a fault between the copies
+-- still frees both exactly once.
+takeOwnedPairGated :: Ptr TestGate -> (Ptr CUChar, Int) -> (Ptr CUChar, Int)
+  -> IO (ByteString, ByteString)
+takeOwnedPairGated gate (p1, n1) (p2, n2) = mask $ \restore -> do
+  when (gate /= nullPtr) (c_gate_note_buf gate 2)
+  restore (do
+    copyGate gate
+    b1 <- BS.packCStringLen (castPtr p1, n1)
+    copyGate gate
+    b2 <- BS.packCStringLen (castPtr p2, n2)
+    pure (b1, b2))
+    `finally` do
+      c_free_gated gate (castPtr p1) (fromIntegral n1)
+      c_free_gated gate (castPtr p2) (fromIntegral n2)
+
+takeOwnedPair :: (Ptr CUChar, Int) -> (Ptr CUChar, Int)
+  -> IO (ByteString, ByteString)
+takeOwnedPair = takeOwnedPairGated nullPtr
+
+-- | Take for a gate: production (NULL) flows through the
+-- spec-named 'takeOwned', tests through 'takeOwnedGated'.
+takeOwnedFor :: Ptr TestGate -> Ptr CUChar -> Int -> IO ByteString
+takeOwnedFor gate
+  | gate == nullPtr = takeOwned
+  | otherwise = takeOwnedGated gate
+
+-- | Pair take for a gate ('takeOwnedPair' in production).
+takeOwnedPairFor :: Ptr TestGate -> (Ptr CUChar, Int) -> (Ptr CUChar, Int)
+  -> IO (ByteString, ByteString)
+takeOwnedPairFor gate
+  | gate == nullPtr = takeOwnedPair
+  | otherwise = takeOwnedPairGated gate
 
 -- | Run a shim call that reports a @long@ length-or-negative-code and
--- an out-pointer; copy the output on success.
-withOut :: (Ptr (Ptr CUChar) -> IO CLong) -> IO (Either Int ByteString)
-withOut call = alloca $ \outp -> do
+-- an out-pointer; copy the output on success. The out-pointer is
+-- initialized defensively, and ownership is established under mask
+-- before the copy work is restored inside the take step.
+withOutGated :: Ptr TestGate -> (Ptr (Ptr CUChar) -> IO CLong)
+  -> IO (Either Int ByteString)
+withOutGated gate call = mask_ $ alloca $ \outp -> do
+  poke outp nullPtr
   rc <- call outp
   if rc < 0
     then pure (Left (fromIntegral rc))
@@ -375,7 +507,67 @@ withOut call = alloca $ \outp -> do
       p <- peek outp
       if p == nullPtr
         then pure (Left errNative)
-        else Right <$> takeOwned p (fromIntegral rc)
+        else Right <$> takeOwnedFor gate p (fromIntegral rc)
+
+-- | Run a shim call that reports a @long@ length-or-negative-code and
+-- an out-pointer; copy the output on success.
+withOut :: (Ptr (Ptr CUChar) -> IO CLong) -> IO (Either Int ByteString)
+withOut = withOutGated nullPtr
+
+-- | Run a handle-consuming call (digest final): destruction
+-- transfers to C exactly at call entry (masked, and the safe call
+-- defers async delivery past entry, so the 'onException' below
+-- covers pre-entry failure only and frees then). After entry the
+-- handle is C's; post-call cleanup owns ONLY the output buffer —
+-- the handle is never freed again.
+withConsumingOutGated :: Ptr TestGate -> Ptr DigestHandle
+  -> (Ptr (Ptr CUChar) -> IO CLong) -> IO (Either Int ByteString)
+withConsumingOutGated gate h call = mask_ $ alloca $ \outp -> do
+  poke outp nullPtr
+  rc <- call outp `onException` c_digest_free h
+  if rc < 0
+    then pure (Left (fromIntegral rc))
+    else do
+      p <- peek outp
+      if p == nullPtr
+        then pure (Left errNative)
+        else Right <$> takeOwnedFor gate p (fromIntegral rc)
+
+-- | Allocate + defensively initialize a keypair out-block.
+allocaPairOut :: (Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO a) -> IO a
+allocaPairOut k =
+  alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+    poke ppriv nullPtr
+    poke npriv 0
+    poke ppub nullPtr
+    poke npub 0
+    k ppriv npriv ppub npub
+
+-- | Collect a keypair result: both live halves transfer via the
+-- pair take; a split NULL (the shim never splits — defensive)
+-- frees its live peer directly instead of stranding it.
+collectPairGated :: Ptr TestGate -> Ptr (Ptr CUChar) -> Ptr CSize
+  -> Ptr (Ptr CUChar) -> Ptr CSize -> IO (Either Int (ByteString, ByteString))
+collectPairGated gate ppriv npriv ppub npub = mask_ $ do
+  privp <- peek ppriv
+  privn <- peek npriv
+  pubp <- peek ppub
+  pubn <- peek npub
+  case (privp == nullPtr, pubp == nullPtr) of
+    (False, False) ->
+      Right <$> takeOwnedPairFor gate
+        (privp, fromIntegral privn) (pubp, fromIntegral pubn)
+    (True, True) -> pure (Left errNative)
+    (False, True) -> do
+      c_free (castPtr privp) (fromIntegral privn)
+      pure (Left errNative)
+    (True, False) -> do
+      c_free (castPtr pubp) (fromIntegral pubn)
+      pure (Left errNative)
+
+collectPair :: Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize
+  -> IO (Either Int (ByteString, ByteString))
+collectPair = collectPairGated nullPtr
 
 -- | Current oldest queued native error string (clears the queue).
 lastError :: IO String
@@ -389,6 +581,15 @@ libVersion = c_version >>= peekCString
 
 envNew :: IO (Ptr OsslEnv)
 envNew = c_env_new
+
+-- | TEST-ONLY gated env construction (fault-or-delegate).
+envNewGated :: Ptr TestGate -> IO (Ptr OsslEnv)
+envNewGated = c_env_new_gated
+
+-- | TEST-ONLY gated provider load (checkpoint-or-delegate).
+envLoadGated :: Ptr TestGate -> Ptr OsslEnv -> String -> IO Int
+envLoadGated gate env name = withCString name $ \cname ->
+  fromIntegral <$> c_env_load_gated gate env cname
 
 envLoad :: Ptr OsslEnv -> String -> IO Int
 envLoad env name = withCString name $ \cname ->
@@ -420,12 +621,28 @@ digest ctx mdname propq msg =
       withBytes msg $ \(pmsg, nmsg) ->
         withOut (c_digest ctx cmd cpq pmsg nmsg)
 
+-- | TEST-ONLY gated one-shot digest (same transfer, gate-observed).
+digestGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> ByteString -> IO (Either Int ByteString)
+digestGated gate ctx mdname propq msg =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      withBytes msg $ \(pmsg, nmsg) ->
+        withOutGated gate (c_digest_gated gate ctx cmd cpq pmsg nmsg)
+
 digestSized :: Ptr OsslLibCtx -> String -> String -> ByteString -> Int -> IO (Either Int ByteString)
 digestSized ctx mdname propq msg outsize =
   withCString mdname $ \cmd ->
     withCString propq $ \cpq ->
       withBytes msg $ \(pmsg, nmsg) ->
         withOut (c_digest_sized ctx cmd cpq pmsg nmsg (fromIntegral outsize))
+
+-- | TEST-ONLY gated sized one-shot digest.
+digestSizedGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> ByteString -> Int -> IO (Either Int ByteString)
+digestSizedGated gate ctx mdname propq msg outsize =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      withBytes msg $ \(pmsg, nmsg) ->
+        withOutGated gate (c_digest_sized_gated gate ctx cmd cpq pmsg nmsg (fromIntegral outsize))
 
 digestXof :: Ptr OsslLibCtx -> String -> String -> ByteString -> Int -> IO (Either Int ByteString)
 digestXof ctx mdname propq msg outsize =
@@ -434,11 +651,26 @@ digestXof ctx mdname propq msg outsize =
       withBytes msg $ \(pmsg, nmsg) ->
         withOut (c_digest_xof ctx cmd cpq pmsg nmsg (fromIntegral outsize))
 
+-- | TEST-ONLY gated XOF one-shot digest.
+digestXofGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> ByteString -> Int -> IO (Either Int ByteString)
+digestXofGated gate ctx mdname propq msg outsize =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      withBytes msg $ \(pmsg, nmsg) ->
+        withOutGated gate (c_digest_xof_gated gate ctx cmd cpq pmsg nmsg (fromIntegral outsize))
+
 digestInit :: Ptr OsslLibCtx -> String -> String -> IO (Ptr DigestHandle)
 digestInit ctx mdname propq =
   withCString mdname $ \cmd ->
     withCString propq $ \cpq ->
       c_digest_init ctx cmd cpq
+
+-- | TEST-ONLY gated digest init (fault-or-delegate, +1 noted).
+digestInitGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> IO (Ptr DigestHandle)
+digestInitGated gate ctx mdname propq =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      c_digest_init_gated gate ctx cmd cpq
 
 digestInitSized :: Ptr OsslLibCtx -> String -> String -> Int -> IO (Ptr DigestHandle)
 digestInitSized ctx mdname propq outsize =
@@ -446,13 +678,24 @@ digestInitSized ctx mdname propq outsize =
     withCString propq $ \cpq ->
       c_digest_init_sized ctx cmd cpq (fromIntegral outsize)
 
+-- | TEST-ONLY gated sized digest init.
+digestInitSizedGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> Int -> IO (Ptr DigestHandle)
+digestInitSizedGated gate ctx mdname propq outsize =
+  withCString mdname $ \cmd ->
+    withCString propq $ \cpq ->
+      c_digest_init_sized_gated gate ctx cmd cpq (fromIntegral outsize)
+
 digestUpdate :: Ptr DigestHandle -> ByteString -> IO Int
 digestUpdate h msg =
   withBytes msg $ \(pmsg, nmsg) ->
     fromIntegral <$> c_digest_update h pmsg nmsg
 
 digestFinal :: Ptr DigestHandle -> IO (Either Int ByteString)
-digestFinal h = withOut (c_digest_final h)
+digestFinal h = withConsumingOutGated nullPtr h (c_digest_final h)
+
+-- | TEST-ONLY gated digest final (same consuming transfer, observed).
+digestFinalGated :: Ptr TestGate -> Ptr DigestHandle -> IO (Either Int ByteString)
+digestFinalGated gate h = withConsumingOutGated gate h (c_digest_final_gated gate h)
 
 digestFree :: Ptr DigestHandle -> IO ()
 digestFree = c_digest_free
@@ -597,21 +840,22 @@ ecGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, ByteS
 ecGen ctx group propq =
   withCString group $ \cg ->
     withCString propq $ \cpq ->
-      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+      allocaPairOut $ \ppriv npriv ppub npub -> mask_ $ do
         rc <- c_ec_gen ctx cg cpq ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
-          else do
-            privp <- peek ppriv
-            privn <- peek npriv
-            pubp <- peek ppub
-            pubn <- peek npub
-            if privp == nullPtr || pubp == nullPtr
-              then pure (Left errNative)
-              else do
-                priv <- takeOwned privp (fromIntegral privn)
-                pub <- takeOwned pubp (fromIntegral pubn)
-                pure (Right (priv, pub))
+          else collectPair ppriv npriv ppub npub
+
+-- | TEST-ONLY gated EC keygen (same pair transfer, gate-observed).
+ecGenGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, ByteString))
+ecGenGated gate ctx group propq =
+  withCString group $ \cg ->
+    withCString propq $ \cpq ->
+      allocaPairOut $ \ppriv npriv ppub npub -> mask_ $ do
+        rc <- c_ec_gen ctx cg cpq ppriv npriv ppub npub
+        if rc /= 0
+          then pure (Left (fromIntegral rc))
+          else collectPairGated gate ppriv npriv ppub npub
 
 randBytes :: Ptr OsslLibCtx -> Int -> IO (Either Int ByteString)
 randBytes ctx n =
@@ -621,21 +865,11 @@ rsaGen :: Ptr OsslLibCtx -> Int -> ByteString -> String -> IO (Either Int (ByteS
 rsaGen ctx bits eBe propq =
   withBytes eBe $ \(pe, ne) ->
     withCString propq $ \cpq ->
-      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+      allocaPairOut $ \ppriv npriv ppub npub -> mask_ $ do
         rc <- c_rsa_gen ctx (fromIntegral bits) pe ne cpq ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
-          else do
-            privp <- peek ppriv
-            privn <- peek npriv
-            pubp <- peek ppub
-            pubn <- peek npub
-            if privp == nullPtr || pubp == nullPtr
-              then pure (Left errNative)
-              else do
-                priv <- takeOwned privp (fromIntegral privn)
-                pub <- takeOwned pubp (fromIntegral pubn)
-                pure (Right (priv, pub))
+          else collectPair ppriv npriv ppub npub
 
 -- | Mix seed bytes via the shim's @RAND_add@ entry: 0 is
 -- success, a negative shim code is the @Left@ (mirrors 'withOut').
@@ -692,21 +926,11 @@ dsaGenKeypair :: Ptr OsslLibCtx -> String -> ByteString -> IO (Either Int (ByteS
 dsaGenKeypair ctx propq paramsDer =
   withCString propq $ \cpq ->
     withBytes paramsDer $ \(pparams, nparams) ->
-      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+      allocaPairOut $ \ppriv npriv ppub npub -> mask_ $ do
         rc <- c_dsa_gen_keypair ctx cpq pparams nparams ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
-          else do
-            privp <- peek ppriv
-            privn <- peek npriv
-            pubp <- peek ppub
-            pubn <- peek npub
-            if privp == nullPtr || pubp == nullPtr
-              then pure (Left errNative)
-              else do
-                priv <- takeOwned privp (fromIntegral privn)
-                pub <- takeOwned pubp (fromIntegral pubn)
-                pure (Right (priv, pub))
+          else collectPair ppriv npriv ppub npub
 
 -- | Pure EdDSA sign: the raw signature for (curve name, PKCS#8,
 -- message); empty messages serve.
@@ -733,42 +957,22 @@ edwardsGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, 
 edwardsGen ctx propq curvename =
   withCString propq $ \cpq ->
     withCString curvename $ \ccurve ->
-      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+      allocaPairOut $ \ppriv npriv ppub npub -> mask_ $ do
         rc <- c_edwards_gen ctx cpq ccurve ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
-          else do
-            privp <- peek ppriv
-            privn <- peek npriv
-            pubp <- peek ppub
-            pubn <- peek npub
-            if privp == nullPtr || pubp == nullPtr
-              then pure (Left errNative)
-              else do
-                priv <- takeOwned privp (fromIntegral privn)
-                pub <- takeOwned pubp (fromIntegral pubn)
-                pure (Right (priv, pub))
+          else collectPair ppriv npriv ppub npub
 
 -- | Montgomery keypair for a curve name: PKCS#8 + SPKI halves.
 montgomeryGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, ByteString))
 montgomeryGen ctx propq curvename =
   withCString propq $ \cpq ->
     withCString curvename $ \ccurve ->
-      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+      allocaPairOut $ \ppriv npriv ppub npub -> mask_ $ do
         rc <- c_montgomery_gen ctx cpq ccurve ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
-          else do
-            privp <- peek ppriv
-            privn <- peek npriv
-            pubp <- peek ppub
-            pubn <- peek npub
-            if privp == nullPtr || pubp == nullPtr
-              then pure (Left errNative)
-              else do
-                priv <- takeOwned privp (fromIntegral privn)
-                pub <- takeOwned pubp (fromIntegral pubn)
-                pure (Right (priv, pub))
+          else collectPair ppriv npriv ppub npub
 
 -- | ML-DSA sign: the raw signature for (level name, PKCS#8,
 -- message, optional context, deterministic flag); @Nothing@
@@ -801,21 +1005,11 @@ mldsaGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, By
 mldsaGen ctx propq algname =
   withCString propq $ \cpq ->
     withCString algname $ \calg ->
-      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+      allocaPairOut $ \ppriv npriv ppub npub -> mask_ $ do
         rc <- c_mldsa_gen ctx cpq calg ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
-          else do
-            privp <- peek ppriv
-            privn <- peek npriv
-            pubp <- peek ppub
-            pubn <- peek npub
-            if privp == nullPtr || pubp == nullPtr
-              then pure (Left errNative)
-              else do
-                priv <- takeOwned privp (fromIntegral privn)
-                pub <- takeOwned pubp (fromIntegral pubn)
-                pure (Right (priv, pub))
+          else collectPair ppriv npriv ppub npub
 
 -- | SLH-DSA sign: the raw signature for (set name, PKCS#8,
 -- message, optional context, deterministic flag); @Nothing@
@@ -848,21 +1042,11 @@ slhdsaGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, B
 slhdsaGen ctx propq algname =
   withCString propq $ \cpq ->
     withCString algname $ \calg ->
-      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+      allocaPairOut $ \ppriv npriv ppub npub -> mask_ $ do
         rc <- c_slhdsa_gen ctx cpq calg ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
-          else do
-            privp <- peek ppriv
-            privn <- peek npriv
-            pubp <- peek ppub
-            pubn <- peek npub
-            if privp == nullPtr || pubp == nullPtr
-              then pure (Left errNative)
-              else do
-                priv <- takeOwned privp (fromIntegral privn)
-                pub <- takeOwned pubp (fromIntegral pubn)
-                pure (Right (priv, pub))
+          else collectPair ppriv npriv ppub npub
 
 -- | ML-KEM encapsulate: ct||ss for (set name, SPKI DER or raw
 -- ek); the shim splits nothing — the caller frames by the
@@ -891,21 +1075,11 @@ mlkemGen :: Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, By
 mlkemGen ctx propq algname =
   withCString propq $ \cpq ->
     withCString algname $ \calg ->
-      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+      allocaPairOut $ \ppriv npriv ppub npub -> mask_ $ do
         rc <- c_mlkem_gen ctx cpq calg ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
-          else do
-            privp <- peek ppriv
-            privn <- peek npriv
-            pubp <- peek ppub
-            pubn <- peek npub
-            if privp == nullPtr || pubp == nullPtr
-              then pure (Left errNative)
-              else do
-                priv <- takeOwned privp (fromIntegral privn)
-                pub <- takeOwned pubp (fromIntegral pubn)
-                pure (Right (priv, pub))
+          else collectPair ppriv npriv ppub npub
 
 -- | ECDH agreement: the raw secret for (PKCS#8 base, SPKI peer);
 -- @cofactor@ selects cofactor multiplication.
@@ -953,21 +1127,11 @@ dhGenKeypair :: Ptr OsslLibCtx -> String -> ByteString -> IO (Either Int (ByteSt
 dhGenKeypair ctx propq paramsDer =
   withCString propq $ \cpq ->
     withBytes paramsDer $ \(pparams, nparams) ->
-      alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+      allocaPairOut $ \ppriv npriv ppub npub -> mask_ $ do
         rc <- c_dh_gen_keypair ctx cpq pparams nparams ppriv npriv ppub npub
         if rc /= 0
           then pure (Left (fromIntegral rc))
-          else do
-            privp <- peek ppriv
-            privn <- peek npriv
-            pubp <- peek ppub
-            pubn <- peek npub
-            if privp == nullPtr || pubp == nullPtr
-              then pure (Left errNative)
-              else do
-                priv <- takeOwned privp (fromIntegral privn)
-                pub <- takeOwned pubp (fromIntegral pubn)
-                pure (Right (priv, pub))
+          else collectPair ppriv npriv ppub npub
 
 -- | RSA PKCS#1 v1.5 sign: digested hash-and-sign under @mdname@, or
 -- the raw block-type-1 operation when @isRaw@ (mdname ignored).

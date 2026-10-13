@@ -1,0 +1,696 @@
+{
+  "schema": "haskoki-suite-inventory/1",
+  "note": "Reviewed executable-suite manifest: every cabal test-suite registers here exactly once with its runner Main, its pinned module set, the top-level tasty groups its executed tree must emit, its pinned Main imports (allowed_imports, with (..) types in allowed_dotdot), and the lanes that execute it. The wiring gate fails on any drift between this manifest, the cabal stanzas, and the runner sources, so suite or module removal is reviewed here instead of narrowing coverage silently. A new suite registers with its required groups and lanes before its tests count as executed evidence.",
+  "suites": [
+    {
+      "name": "haskoki-core-tests",
+      "main": "tests/coretests/Main.hs",
+      "modules": [
+        "ByteFormatSpec",
+        "DenominatorSpec",
+        "ErrorDetailSpec",
+        "ErrorInterpSpec",
+        "FfiHygieneSpec",
+        "MechanismExhaustivenessSpec",
+        "ObjectSpec",
+        "OperationSpec",
+        "RegistrySpec",
+        "SessionSpec",
+        "SlotInsertSpec",
+        "SlotPhaseSpec",
+        "SnapshotSpec",
+        "TemplateRulesSpec",
+        "TransitionSpec",
+        "ULongSpec"
+      ],
+      "required_groups": [
+        "core subset (no runtime/FFI)"
+      ],
+      "allowed_imports": {
+        "Test.Tasty": ["TestTree", "defaultMain", "testGroup"]
+      },
+      "executed_by": [
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/hpc.yml",
+          "job": "hpc"
+        }
+      ],
+      "module_groups": {
+        "ByteFormatSpec": [
+          "byte-format goldens"
+        ],
+        "DenominatorSpec": [
+          "Denominators"
+        ],
+        "ErrorDetailSpec": [
+          "Typed denials"
+        ],
+        "ErrorInterpSpec": [
+          "Single interpreter"
+        ],
+        "FfiHygieneSpec": [
+          "FFI hygiene"
+        ],
+        "MechanismExhaustivenessSpec": [
+          "mechanism exhaustiveness (A42)"
+        ],
+        "ObjectSpec": [
+          "objects and attributes"
+        ],
+        "OperationSpec": [
+          "operation lifecycles"
+        ],
+        "RegistrySpec": [
+          "descriptor registry"
+        ],
+        "SessionSpec": [
+          "session lifecycle"
+        ],
+        "SlotInsertSpec": [
+          "Validated slot insertion"
+        ],
+        "SlotPhaseSpec": [
+          "Slot phases"
+        ],
+        "SnapshotSpec": [
+          "operation snapshots"
+        ],
+        "TemplateRulesSpec": [
+          "Template rules"
+        ],
+        "TransitionSpec": [
+          "model transitions"
+        ],
+        "ULongSpec": [
+          "Unsigned attributes"
+        ]
+      }
+    },
+    {
+      "name": "haskoki-engine-tests",
+      "main": "tests/engine/Main.hs",
+      "modules": [
+        "AsyncEngineSpec",
+        "CertificateEngineSpec",
+        "CryptoExportSpec",
+        "DetachedEngineSpec",
+        "EnvLock",
+        "FfiAcquireSpec",
+        "LeaseWedgeDenseSpec",
+        "LeaseWedgeSpec",
+        "NativeParamsSpec",
+        "NotificationsEngineSpec",
+        "OpenSSLSpec",
+        "OperationSmokeSpec",
+        "RoutingE2ESpec",
+        "SnapshotEngineSpec",
+        "SyntheticSpec"
+      ],
+      "required_groups": [
+        "haskoki engine"
+      ],
+      "allowed_imports": {
+        "Control.Concurrent.MVar": ["newMVar"],
+        "Test.Tasty": ["defaultMain", "testGroup"]
+      },
+      "executed_by": [
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/hpc.yml",
+          "job": "hpc"
+        }
+      ],
+      "module_groups": {
+        "AsyncEngineSpec": [
+          "Async engine"
+        ],
+        "CertificateEngineSpec": [
+          "Certificates"
+        ],
+        "CryptoExportSpec": [
+          "Crypto exports"
+        ],
+        "DetachedEngineSpec": [
+          "Detached engine"
+        ],
+        "EnvLock": [],
+        "FfiAcquireSpec": [
+          "Acquisition hooks"
+        ],
+        "LeaseWedgeDenseSpec": [
+          "Dense-rain detach wedge"
+        ],
+        "LeaseWedgeSpec": [
+          "Detach-lease wedge windows"
+        ],
+        "NativeParamsSpec": [
+          "native mechanism params"
+        ],
+        "NotificationsEngineSpec": [
+          "Notifications"
+        ],
+        "OpenSSLSpec": [
+          "openssl4 engine"
+        ],
+        "OperationSmokeSpec": [
+          "operations over the real backend"
+        ],
+        "RoutingE2ESpec": [
+          "Routed end-to-end"
+        ],
+        "SnapshotEngineSpec": [
+          "snapshot engine saveability"
+        ],
+        "SyntheticSpec": [
+          "synthetic engine"
+        ]
+      }
+    },
+    {
+      "name": "haskoki-model-tests",
+      "main": "tests/model/Main.hs",
+      "modules": [
+        "AdmissionSpec",
+        "AsyncSpec",
+        "ByteFormatSpec",
+        "BytesSpec",
+        "CertificateSpec",
+        "ConfigHonestySpec",
+        "ConfigSpec",
+        "ControlSpec",
+        "CtlSpec",
+        "DecodedRequestSpec",
+        "DenominatorSpec",
+        "DetachedSpec",
+        "ErrorDetailSpec",
+        "ErrorInterpSpec",
+        "ErrorPinSpec",
+        "ErrorUnifySpec",
+        "EventsSpec",
+        "FfiAsyncSpec",
+        "FfiHygieneSpec",
+        "JobStepSpec",
+        "LeaseScopeSpec",
+        "TransitionSpec",
+        "SecretsSpec",
+        "SessionCancelSpec",
+        "SessionSpec",
+        "LifecycleSpec",
+        "KeyImportSpec",
+        "KeyManagementSpec",
+        "MechanismExhaustivenessSpec",
+        "MessageFlagBatterySpec",
+        "MessageSpec",
+        "MultiSessionSpec",
+        "MultiTokenSpec",
+        "NotificationsSpec",
+        "ObjectSpec",
+        "OperationSpec",
+        "OwnershipSpec",
+        "OutputSpec",
+        "RecipeByteOpsSpec",
+        "RecipeCbcMacSpec",
+        "RecipeCcmSpec",
+        "RecipeChacha20Spec",
+        "RecipeCipherSpec",
+        "RecipeCmacSpec",
+        "RecipeDes3MacSpec",
+        "RecipeDhSpec",
+        "RecipeDigestSpec",
+        "RecipeDsaSpec",
+        "RecipeEcdsaSpec",
+        "RecipeEcdhSpec",
+        "RecipeEddsaSpec",
+        "RecipeEncryptDataSpec",
+        "RecipeGcmSpec",
+        "RecipeGmacSpec",
+        "RecipeHmacSpec",
+        "RecipeIkeSpec",
+        "RecipeKdfSpec",
+        "RecipeMlDsaSpec",
+        "RecipeOaepSpec",
+        "RecipeOtpSpec",
+        "RecipePbeSpec",
+        "RecipePoly1305Spec",
+        "RecipePssSpec",
+        "RecipeRsaSpec",
+        "RecipeRsaX931Spec",
+        "RecipeSlhDsaSpec",
+        "RecipeSsl3Spec",
+        "RecipeSp800108Spec",
+        "RecipeTlsKdfSpec",
+        "RecipeTlsKeyMatSpec",
+        "RecipePubPrivSpec",
+        "RecipeTlsPrfSpec",
+        "RecipeX509Spec",
+        "RecipeXcbcMacSpec",
+        "RecipeWrapCompRsaSpec",
+        "RecipeWrapCompSpec",
+        "RegistrySpec",
+        "RoutingSpec",
+        "SimBridgeSpec",
+        "SimStressSpec",
+        "SlotInsertSpec",
+        "SlotPhaseSpec",
+        "SnapshotSpec",
+        "StandardSurfaceSpec",
+        "TemplateRulesSpec",
+        "TraceSpec",
+        "ULongSpec"
+      ],
+      "required_groups": [
+        "haskoki model + lifecycle"
+      ],
+      "allowed_imports": {
+        "Test.Tasty": ["defaultMain", "testGroup"]
+      },
+      "executed_by": [
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/hpc.yml",
+          "job": "hpc"
+        }
+      ],
+      "module_groups": {
+        "AdmissionSpec": [
+          "admission bounds"
+        ],
+        "AsyncSpec": [
+          "Attached async"
+        ],
+        "ByteFormatSpec": [
+          "byte-format goldens"
+        ],
+        "BytesSpec": [
+          "Byte representation"
+        ],
+        "CertificateSpec": [
+          "Certificates"
+        ],
+        "ConfigHonestySpec": [
+          "Config honesty"
+        ],
+        "ConfigSpec": [
+          "Config"
+        ],
+        "ControlSpec": [
+          "Control"
+        ],
+        "CtlSpec": [
+          "Haskoki-ctl"
+        ],
+        "DecodedRequestSpec": [
+          "Decoded requests"
+        ],
+        "DenominatorSpec": [
+          "Denominators"
+        ],
+        "DetachedSpec": [
+          "Detached jobs"
+        ],
+        "ErrorDetailSpec": [
+          "Typed denials"
+        ],
+        "ErrorInterpSpec": [
+          "Single interpreter"
+        ],
+        "ErrorPinSpec": [
+          "Code snapshot pins"
+        ],
+        "ErrorUnifySpec": [
+          "Failure unification"
+        ],
+        "EventsSpec": [
+          "Events"
+        ],
+        "FfiAsyncSpec": [
+          "FFI acquisition"
+        ],
+        "FfiHygieneSpec": [
+          "FFI hygiene"
+        ],
+        "JobStepSpec": [
+          "Closed job transition"
+        ],
+        "LeaseScopeSpec": [
+          "Scoped detach leases"
+        ],
+        "TransitionSpec": [
+          "model transitions"
+        ],
+        "SecretsSpec": [
+          "Secrets discipline"
+        ],
+        "SessionCancelSpec": [
+          "session cancel"
+        ],
+        "SessionSpec": [
+          "session lifecycle"
+        ],
+        "LifecycleSpec": [
+          "runtime lifecycle"
+        ],
+        "KeyImportSpec": [
+          "key import"
+        ],
+        "KeyManagementSpec": [
+          "Key management, KEM and wrapping"
+        ],
+        "MechanismExhaustivenessSpec": [
+          "mechanism exhaustiveness (A42)"
+        ],
+        "MessageFlagBatterySpec": [
+          "message flag battery (T-M01)"
+        ],
+        "MessageSpec": [
+          "message operations"
+        ],
+        "MultiSessionSpec": [
+          "Multi-session reservations"
+        ],
+        "MultiTokenSpec": [
+          "Multi-token"
+        ],
+        "NotificationsSpec": [
+          "Notifications"
+        ],
+        "ObjectSpec": [
+          "objects and attributes"
+        ],
+        "OperationSpec": [
+          "operation lifecycles"
+        ],
+        "OwnershipSpec": [
+          "Ownership"
+        ],
+        "OutputSpec": [
+          "exact output planning"
+        ],
+        "RecipeByteOpsSpec": [
+          "ByteOps recipe"
+        ],
+        "RecipeCbcMacSpec": [
+          "CBC-MAC recipe"
+        ],
+        "RecipeCcmSpec": [
+          "AES-CCM recipe"
+        ],
+        "RecipeChacha20Spec": [
+          "ChaCha20 recipe"
+        ],
+        "RecipeCipherSpec": [
+          "Block-cipher recipe"
+        ],
+        "RecipeCmacSpec": [
+          "CMAC recipe"
+        ],
+        "RecipeDes3MacSpec": [
+          "3DES-MAC recipe"
+        ],
+        "RecipeDhSpec": [
+          "DH recipe"
+        ],
+        "RecipeDigestSpec": [
+          "Digest recipe"
+        ],
+        "RecipeDsaSpec": [
+          "DSA recipe"
+        ],
+        "RecipeEcdsaSpec": [
+          "ECDSA recipe"
+        ],
+        "RecipeEcdhSpec": [
+          "ECDH recipe"
+        ],
+        "RecipeEddsaSpec": [
+          "EdDSA recipe"
+        ],
+        "RecipeEncryptDataSpec": [
+          "Encrypt-data recipe"
+        ],
+        "RecipeGcmSpec": [
+          "AES-GCM recipe"
+        ],
+        "RecipeGmacSpec": [
+          "GMAC recipe"
+        ],
+        "RecipeHmacSpec": [
+          "HMAC recipe"
+        ],
+        "RecipeIkeSpec": [
+          "IKE recipe"
+        ],
+        "RecipeKdfSpec": [
+          "KDF recipe"
+        ],
+        "RecipeMlDsaSpec": [
+          "ML-DSA recipe"
+        ],
+        "RecipeOaepSpec": [
+          "RSA-OAEP recipe"
+        ],
+        "RecipeOtpSpec": [
+          "OTP recipe"
+        ],
+        "RecipePbeSpec": [
+          "RecipePbeSpec"
+        ],
+        "RecipePoly1305Spec": [
+          "Poly1305 recipe"
+        ],
+        "RecipePssSpec": [
+          "RSA-PSS recipe"
+        ],
+        "RecipeRsaSpec": [
+          "RSA PKCS#1 v1.5 recipe"
+        ],
+        "RecipeRsaX931Spec": [
+          "RSA-X9.31 recipe"
+        ],
+        "RecipeSlhDsaSpec": [
+          "SLH-DSA recipe"
+        ],
+        "RecipeSsl3Spec": [
+          "SSL3 recipes"
+        ],
+        "RecipeSp800108Spec": [
+          "SP800-108 recipe"
+        ],
+        "RecipeTlsKdfSpec": [
+          "TLS-KDF recipe"
+        ],
+        "RecipeTlsKeyMatSpec": [
+          "TlsKeyMat recipe"
+        ],
+        "RecipePubPrivSpec": [
+          "pub-from-priv recipe"
+        ],
+        "RecipeTlsPrfSpec": [
+          "TLS-PRF recipe"
+        ],
+        "RecipeX509Spec": [
+          "RSA-X.509 recipe"
+        ],
+        "RecipeXcbcMacSpec": [
+          "XCBC-MAC recipe"
+        ],
+        "RecipeWrapCompRsaSpec": [
+          "wrap-composition RSA recipe"
+        ],
+        "RecipeWrapCompSpec": [
+          "wrap-composition ECDH recipe"
+        ],
+        "RegistrySpec": [
+          "descriptor registry"
+        ],
+        "RoutingSpec": [
+          "Operation routing"
+        ],
+        "SimBridgeSpec": [
+          "Sim bridge"
+        ],
+        "SimStressSpec": [
+          "Sim stress"
+        ],
+        "SlotInsertSpec": [
+          "Validated slot insertion"
+        ],
+        "SlotPhaseSpec": [
+          "Slot phases"
+        ],
+        "SnapshotSpec": [
+          "operation snapshots"
+        ],
+        "StandardSurfaceSpec": [
+          "Standard surface"
+        ],
+        "TemplateRulesSpec": [
+          "Template rules"
+        ],
+        "TraceSpec": [
+          "Trace"
+        ],
+        "ULongSpec": [
+          "Unsigned attributes"
+        ]
+      }
+    },
+    {
+      "name": "haskoki-prop-tests",
+      "main": "tests/prop/Main.hs",
+      "modules": [
+        "Gen",
+        "BytesProps",
+        "CodecProps",
+        "ErrorProps",
+        "DeltaProps",
+        "SnapshotProps",
+        "StreamProps",
+        "DigestCmdProps",
+        "CipherProps",
+        "NamespaceProps",
+        "OracleProps",
+        "ULongProps",
+        "WrapProps"
+      ],
+      "required_groups": [
+        "haskoki properties"
+      ],
+      "allowed_imports": {
+        "Gen": ["propCases", "propSeedOverride"],
+        "Test.Tasty": ["defaultMain", "testGroup"]
+      },
+      "executed_by": [
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/prop-nightly.yml",
+          "job": "haskell-prop-nightly"
+        },
+        {
+          "workflow": ".github/workflows/hpc.yml",
+          "job": "hpc"
+        }
+      ],
+      "module_groups": {
+        "Gen": [],
+        "BytesProps": [
+          "byte representation laws"
+        ],
+        "CodecProps": [
+          "codec laws"
+        ],
+        "ErrorProps": [
+          "error laws"
+        ],
+        "DeltaProps": [
+          "delta laws"
+        ],
+        "SnapshotProps": [
+          "snapshot laws"
+        ],
+        "StreamProps": [
+          "streaming laws"
+        ],
+        "DigestCmdProps": [
+          "digest command laws"
+        ],
+        "CipherProps": [
+          "cipher laws"
+        ],
+        "NamespaceProps": [
+          "namespace laws"
+        ],
+        "OracleProps": [
+          "oracle laws"
+        ],
+        "ULongProps": [
+          "unsigned attribute laws"
+        ],
+        "WrapProps": [
+          "wrap key-type gate laws"
+        ]
+      }
+    },
+    {
+      "name": "haskoki-storage-tests",
+      "main": "tests/storage/Main.hs",
+      "modules": [
+        "CommitSpec",
+        "MultiSessionSpec",
+        "StoreCtlSpec",
+        "StoreSpec"
+      ],
+      "required_groups": [
+        "haskoki storage"
+      ],
+      "allowed_imports": {
+        "System.Environment": ["getArgs"],
+        "Test.Tasty": ["defaultMain", "testGroup"]
+      },
+      "executed_by": [
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/hpc.yml",
+          "job": "hpc"
+        }
+      ],
+      "module_groups": {
+        "CommitSpec": [
+          "commit protocol"
+        ],
+        "MultiSessionSpec": [
+          "Multi-session store"
+        ],
+        "StoreCtlSpec": [
+          "Store commands"
+        ],
+        "StoreSpec": [
+          "store contract"
+        ]
+      }
+    },
+    {
+      "name": "haskoki-tests",
+      "main": "test/Main.hs",
+      "modules": [],
+      "required_groups": [
+        "haskoki scaffold"
+      ],
+      "allowed_imports": {
+        "Haskoki": ["Outcome", "Pkcs11Version", "ReturnCode"],
+        "Test.Tasty": ["TestTree", "defaultMain", "testGroup"],
+        "Test.Tasty.HUnit": ["assertBool", "testCase"]
+      },
+      "allowed_dotdot": {
+        "Haskoki": ["Outcome", "Pkcs11Version", "ReturnCode"]
+      },
+      "executed_by": [
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/hpc.yml",
+          "job": "hpc"
+        }
+      ],
+      "module_groups": {}
+    }
+  ]
+}

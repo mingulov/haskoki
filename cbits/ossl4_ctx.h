@@ -745,6 +745,153 @@ int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
                               const unsigned char *msg, size_t msglen,
                               const unsigned char *sig, size_t siglen);
 
+/* --- TEST-ONLY ownership hooks (inert unless used) ----------------------- */
+/*
+ * Fault injection + ownership accounting for the native transfer
+ * tests. Production paths pass no gate (NULL) and never consult
+ * hook state, so a normal configuration behaves exactly as
+ * before: the hooks are inert unless a test explicitly creates a
+ * gate and routes gated operations through it. Gates are
+ * per-test objects; parallel suites cannot cross-trigger.
+ *
+ * Per-gate accounting notes +1 at creation and -1 on the ACTUAL
+ * native destroy (the destroy path itself notes, never the
+ * Haskell cleanup claim): the counters prove native destruction
+ * rather than echoing Haskell-side bookkeeping. A leaked object
+ * strands a +1 exactly where the leak occurred.
+ *
+ * Digest handles and envs additionally ride process-wide
+ * live-sets: creation inserts (object, gate-or-NULL), and only
+ * the matching destroy claims it (returning the creating gate
+ * for the -1). A claim of an unknown handle with no pending
+ * overflow credit records a double-free attempt and skips
+ * destruction (safe no-op). An unknown handle WITH a pending
+ * credit (an overflowed entry the set could not store) is
+ * destroyed normally, preserving production behavior exactly:
+ * overflow can never leak, and only per-gate attribution of
+ * those entries is lost (counted separately; tests assert zero).
+ * The attempt counters are identically zero under the fixed
+ * ownership transfer, so tests assert them without needing
+ * cross-test quiescence.
+ *
+ * CHECKPOINT protocol (async-kill tests): a parked call is a
+ * plain safe foreign call, so a parked waiter CANNOT be killed
+ * out from under the gate mutex — a kill queued while parked is
+ * delivered at the Haskell level only after the release lets the
+ * call return, which is exactly the cleanup-before-delivery
+ * ordering the transfer guarantees. Gates are freed only after
+ * every waiter has returned (destroying a condition with waiters
+ * is undefined); the test bracket releases before freeing.
+ */
+typedef struct hsk_ossl4_test_gate hsk_ossl4_test_gate_t;
+
+hsk_ossl4_test_gate_t *hsk_ossl4_test_gate_new(void);
+void hsk_ossl4_test_gate_free(hsk_ossl4_test_gate_t *g);
+
+/* Checkpoint arming (one-shot): mode 1 fails the next gated
+ * checkpoint, mode 2 parks the next gated checkpoint until
+ * released, mode 3 fails the second gated checkpoint after this
+ * arm (the between-pair-copies window). Checkpoints are the
+ * gated copy sites and the gated provider loads. Any other mode
+ * disarms. */
+void hsk_ossl4_test_gate_arm_checkpoint(hsk_ossl4_test_gate_t *g, int mode);
+
+/* Alloc-fault arming (one-shot): the next gated allocation entry
+ * fails without allocating, consuming the arm. */
+void hsk_ossl4_test_gate_arm_alloc_fail(hsk_ossl4_test_gate_t *g);
+
+/* Gate poll (never blocks): 0 proceed, 1 synchronous fault,
+ * 2 park (the caller must then call gate_park). Consumes
+ * one-shot arms. NULL gate: 0. */
+int hsk_ossl4_test_gate_poll(hsk_ossl4_test_gate_t *g);
+
+/* Park until gate_release (a plain safe foreign call on the
+ * Haskell side, so it returns before any async exception can
+ * land). Returns the release verdict (0 proceed, nonzero
+ * fault). */
+int hsk_ossl4_test_gate_park(hsk_ossl4_test_gate_t *g);
+
+/* Nonzero while a checkpoint is parked in the gate (the test's
+ * rendezvous: observe 1, then release — kill-mode tests queue
+ * the kill while parked and release after). */
+int hsk_ossl4_test_gate_parked(hsk_ossl4_test_gate_t *g);
+
+/* Release a parked checkpoint: verdict 0 proceeds, nonzero
+ * faults. The release latches — a worker that polls after it
+ * consumes the verdict in its park instead of waiting — so an
+ * early cleanup release is never lost. Broadcasts; harmless with
+ * nobody parked. */
+void hsk_ossl4_test_gate_release(hsk_ossl4_test_gate_t *g, int verdict);
+
+/* Per-gate accounting: +1 at creation, -1 on the actual native
+ * destroy (NULL-tolerant; NULL notes nothing). */
+void hsk_ossl4_test_gate_note_buf(hsk_ossl4_test_gate_t *g, long delta);
+long hsk_ossl4_test_gate_buf_outstanding(hsk_ossl4_test_gate_t *g);
+void hsk_ossl4_test_gate_note_digest(hsk_ossl4_test_gate_t *g, long delta);
+long hsk_ossl4_test_gate_digest_outstanding(hsk_ossl4_test_gate_t *g);
+void hsk_ossl4_test_gate_note_env(hsk_ossl4_test_gate_t *g, long delta);
+long hsk_ossl4_test_gate_env_outstanding(hsk_ossl4_test_gate_t *g);
+
+/* Gated provider load: polls the checkpoint first (fault or park
+ * per the arm), then loads like its ungated twin. Nonzero
+ * verdicts and poll faults answer -1. */
+int hsk_ossl4_env_load_gated(hsk_ossl4_test_gate_t *g, hsk_ossl4_env_t *env,
+                             const char *name);
+
+/* Gated allocation entries: like their ungated twins, except a
+ * consumed alloc-fail arm fails first (env/init return NULL, the
+ * one-shot digests answer NOMEM, final consumes its handle and
+ * answers NOMEM). Successful gated env/handle creations note +1
+ * env/digest; the matching -1 fires on the actual destroy
+ * (env_free/digest_free claim the live-set entry). NULL gate:
+ * identical to ungated. */
+hsk_ossl4_env_t *hsk_ossl4_env_new_gated(hsk_ossl4_test_gate_t *g);
+hsk_ossl4_md_t *hsk_ossl4_digest_init_gated(hsk_ossl4_test_gate_t *g,
+                                           OSSL_LIB_CTX *ctx,
+                                           const char *mdname,
+                                           const char *propq);
+hsk_ossl4_md_t *hsk_ossl4_digest_init_sized_gated(hsk_ossl4_test_gate_t *g,
+                                                 OSSL_LIB_CTX *ctx,
+                                                 const char *mdname,
+                                                 const char *propq,
+                                                 int outsize);
+long hsk_ossl4_digest_gated(hsk_ossl4_test_gate_t *g, OSSL_LIB_CTX *ctx,
+                           const char *mdname, const char *propq,
+                           const unsigned char *msg, size_t msglen,
+                           unsigned char **out);
+long hsk_ossl4_digest_sized_gated(hsk_ossl4_test_gate_t *g, OSSL_LIB_CTX *ctx,
+                                 const char *mdname, const char *propq,
+                                 const unsigned char *msg, size_t msglen,
+                                 int outsize, unsigned char **out);
+long hsk_ossl4_digest_xof_gated(hsk_ossl4_test_gate_t *g, OSSL_LIB_CTX *ctx,
+                               const char *mdname, const char *propq,
+                               const unsigned char *msg, size_t msglen,
+                               int outsize, unsigned char **out);
+long hsk_ossl4_digest_final_gated(hsk_ossl4_test_gate_t *g, hsk_ossl4_md_t *h,
+                                 unsigned char **out);
+
+/* Gated buffer free: like hsk_ossl4_free, then notes the ACTUAL
+ * native -1 buffer to the gate (the destroy path notes, never
+ * the Haskell cleanup claim). */
+void hsk_ossl4_free_gated(hsk_ossl4_test_gate_t *g, void *ptr, size_t len);
+
+/* Digest double-free attempts since process start (a live-set
+ * destroy of an unknown handle with no pending credit).
+ * Identically zero under the fixed transfer; tests assert it. */
+long hsk_ossl4_test_digest_doublefree(void);
+
+/* Digest live-set overflows since process start (entries created
+ * past capacity). Tests assert zero (complete tracking). */
+long hsk_ossl4_test_digest_untracked(void);
+
+/* Env double-free attempts since process start (same convention
+ * as the digest twin). Tests assert zero. */
+long hsk_ossl4_test_env_doublefree(void);
+
+/* Env live-set overflows since process start. Tests assert
+ * zero (complete tracking). */
+long hsk_ossl4_test_env_untracked(void);
+
 #ifdef __cplusplus
 }
 #endif

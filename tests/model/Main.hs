@@ -1,3 +1,4 @@
+-- REGISTRATION: haskoki-model-tests
 module Main (main) where
 
 import Test.Tasty (defaultMain, testGroup)

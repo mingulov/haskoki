@@ -27,6 +27,7 @@ Probes:
   Delivered committed first, so the retry observed a phantom
   delivery.
 -}
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
 module OwnershipSpec (spec) where
 
@@ -34,26 +35,38 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Control.Concurrent
   ( MVar
+  , ThreadId
   , forkIO
+  , forkIOWithUnmask
   , killThread
   , newEmptyMVar
   , newMVar
   , putMVar
+  , readMVar
   , takeMVar
+  , threadDelay
   , tryTakeMVar
   )
+import GHC.Conc (ThreadStatus (..), threadStatus)
 import Control.Exception
   ( AsyncException (..)
+  , IOException
   , SomeException
+  , allowInterrupt
+  , bracket
+  , finally
   , fromException
   , mask_
   , throwIO
   , try
+  , uninterruptibleMask_
   )
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word32, Word64)
-import Foreign.Ptr (nullPtr)
+import Foreign.C.Types (CInt (..), CLong (..))
+import Foreign.Ptr (Ptr, nullPtr)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -62,7 +75,15 @@ import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import qualified Haskoki.Engine.Backend as B
 import Haskoki.Engine.Driver (encodeResult, runEffect, toCryptoError)
 import Haskoki.Engine.OpenSSL4
-  ( lookupRegistry
+  ( OpenSSL4 (..)
+  , TestGate
+  , digestFinalGated
+  , digestInitGated
+  , digestOneShotGated
+  , digestXofGated
+  , generateKeyECGated
+  , lookupRegistry
+  , openBackendGated
   , takeRegistry
   , withBorrowedRegistry
   )
@@ -176,6 +197,30 @@ spec = testGroup "Ownership"
         (guarded "snapshot-lookup" caseSnapshotLookup)
     , testCase "kill during blocked sink stays recoverable"
         (guarded "kill-blocked-sink" caseKillDuringBlockedSink)
+    ]
+  , testGroup "native ownership transfers"
+    [ testCase "gated copy fault frees the output (sync)"
+        (guarded "gated-copy-fault" caseGatedCopyFaultSync)
+    , testCase "parked copy dies ThreadKilled with zero outstanding"
+        (guarded "gated-copy-park" caseGatedCopyParkKill)
+    , testCase "pair fault between copies frees both"
+        (guarded "gated-pair-between" caseGatedPairBetweenFault)
+    , testCase "consuming final plus copy fault frees once (sync)"
+        (guarded "gated-final-fault" caseGatedFinalFaultSync)
+    , testCase "consuming final plus kill at copy frees once"
+        (guarded "gated-final-park" caseGatedFinalParkKill)
+    , testCase "alloc fault before adoption fails clean"
+        (guarded "gated-adoption-alloc" caseGatedAdoptionAllocFail)
+    , testCase "load fault before adoption frees the live env"
+        (guarded "gated-adoption-load" caseGatedAdoptionLoadFault)
+    , testCase "parked pre-adoption load dies ThreadKilled, env freed"
+        (guarded "gated-adoption-park" caseGatedAdoptionParkKill)
+    , testCase "alloc fault in digest init fails typed"
+        (guarded "gated-init-alloc" caseGatedInitAllocFail)
+    , testCase "alloc fault in one-shot digest answers NOMEM"
+        (guarded "gated-digest-alloc" caseGatedDigestAllocFail)
+    , testCase "gated normal paths match production, zero outstanding"
+        (guarded "gated-normal-zero" caseGatedNormalZero)
     ]
   , testGroup "publication contract"
     [ testCase "faulted publish drains releases, fails terminal, sink untouched"
@@ -938,3 +983,410 @@ openEnvSession = do
   case lookupSession m1 sid of
     Just st -> pure (env, m1, st)
     Nothing -> assertFailure "seed session missing"
+
+-- ---------------------------------------------------------------------------
+-- Native ownership transfers
+-- ---------------------------------------------------------------------------
+-- The decisive fault battery for the native transfer gaps: each case
+-- routes one operation through a per-test C gate object (created here
+-- via test-local FFI; production paths pass NULL and never consult
+-- hook state) and asserts native destruction counts (the destroy
+-- paths note the -1 themselves, so the counters prove the native
+-- free ran), the primary exception, and exactly-once consumption.
+-- Fault arms are per-test, so parallel suites cannot cross-trigger;
+-- the only shared state is the digest/env live-sets, whose counters
+-- are identically zero under the fixed transfer. The sync-fault
+-- marker ("hsk_ossl4_test_copy_fault") distinguishes the conditional
+-- synchronous checkpoint failure from an ordinary 'ThreadKilled'.
+-- Kill-mode protocol: a parked checkpoint is a plain safe foreign
+-- call, so it cannot be killed out from under the gate mutex.
+-- 'killThread' blocks until delivery, so the kill is issued from a
+-- forked killer (proven entered via a status barrier — see
+-- 'withKillWorker') while the victim is parked and delivered at
+-- the Haskell level after the release, which is exactly the
+-- cleanup ordering the transfer guarantees.
+
+foreign import ccall unsafe "hsk_ossl4_test_gate_new" c_gateNew
+  :: IO (Ptr TestGate)
+foreign import ccall unsafe "hsk_ossl4_test_gate_free" c_gateFree
+  :: Ptr TestGate -> IO ()
+foreign import ccall unsafe "hsk_ossl4_test_gate_arm_checkpoint" c_gateArmCheckpoint
+  :: Ptr TestGate -> CInt -> IO ()
+foreign import ccall unsafe "hsk_ossl4_test_gate_arm_alloc_fail" c_gateArmAllocFail
+  :: Ptr TestGate -> IO ()
+foreign import ccall unsafe "hsk_ossl4_test_gate_parked" c_gateParked
+  :: Ptr TestGate -> IO CInt
+foreign import ccall unsafe "hsk_ossl4_test_gate_release" c_gateRelease
+  :: Ptr TestGate -> CInt -> IO ()
+foreign import ccall unsafe "hsk_ossl4_test_gate_buf_outstanding" c_gateBufOutstanding
+  :: Ptr TestGate -> IO CLong
+foreign import ccall unsafe "hsk_ossl4_test_gate_digest_outstanding" c_gateDigestOutstanding
+  :: Ptr TestGate -> IO CLong
+foreign import ccall unsafe "hsk_ossl4_test_gate_env_outstanding" c_gateEnvOutstanding
+  :: Ptr TestGate -> IO CLong
+foreign import ccall unsafe "hsk_ossl4_test_digest_doublefree" c_digestDoublefree
+  :: IO CLong
+foreign import ccall unsafe "hsk_ossl4_test_digest_untracked" c_digestUntracked
+  :: IO CLong
+foreign import ccall unsafe "hsk_ossl4_test_env_doublefree" c_envDoublefree
+  :: IO CLong
+foreign import ccall unsafe "hsk_ossl4_test_env_untracked" c_envUntracked
+  :: IO CLong
+
+withGate :: (Ptr TestGate -> IO a) -> IO a
+withGate = bracket acquire release
+  where
+    acquire = do
+      g <- c_gateNew
+      if g == nullPtr
+        then assertFailure "test gate allocation failed"
+        else pure g
+    -- Release-then-free on every exit (harmless with nobody
+    -- parked). Kill-mode cases run their worker inside
+    -- 'withKillWorker', whose cleanup joins the worker first, so
+    -- every gate user has returned before the free on every exit
+    -- — including a timeout or a failed assertion mid-test.
+    release g = c_gateRelease g 0 >> c_gateFree g
+
+-- | Run a gate-using op in a worker that is released, killed, and
+-- joined on EVERY exit. The body receives the done-'MVar' and the
+-- killer-firing action, and reads the result with 'readMVar'
+-- (non-consuming — the cleanup owns the consuming take, so the
+-- join happens exactly once).
+--
+-- Why a forked killer plus a barrier: 'killThread' blocks until
+-- the exception is delivered, and a worker parked in a safe
+-- foreign call cannot receive until the release lets the call
+-- return — so the releasing thread must not issue the kill
+-- itself (that deadlocks). The killer is therefore a separate
+-- thread; firing forks it and then waits until its status is
+-- 'ThreadBlocked' — against a parked worker 'killThread' cannot
+-- return, so blocked proves entry, and entry-before-release is
+-- then a fact rather than a scheduling hope (a ready-'MVar'
+-- alone cannot order this on multiple capabilities). The kill is
+-- delivered at the Haskell level after the release, which is
+-- exactly the cleanup-before-delivery ordering the transfer
+-- guarantees.
+--
+-- Masking: the worker is forked with 'forkIOWithUnmask' (a plain
+-- 'forkIO' inside 'bracket' would inherit the masked state and
+-- the kill would pend forever): 'try' installs its handler while
+-- still masked and only the op runs unmasked, while the result
+-- publication stays masked — so the done-'MVar' is filled on
+-- every path and the join below always returns. (The mirrored
+-- 'unmask (try op)' would deliver a queued kill after unmasking
+-- but before the handler installs, skipping the publication and
+-- hanging the join.) The trailing 'allowInterrupt' is the
+-- guaranteed delivery point for a kill still pending when a
+-- fully-masked op (like the consuming final) returns: without it
+-- the worker could publish 'Right' into the masked tail with
+-- 'ThreadKilled' still pending, misclassifying cancellation as
+-- success.
+withKillWorker :: Ptr TestGate -> IO a
+  -> (MVar (Either SomeException a) -> IO () -> IO b) -> IO b
+withKillWorker g op body = do
+  done <- newEmptyMVar
+  killerDone <- newEmptyMVar
+  let fire tid = do
+        ktid <- forkIO (killThread tid >> putMVar killerDone ())
+        awaitBlocked ktid
+      -- Release (wakes any parked waiter, and latches for a
+      -- worker that polls after it, so no release is ever lost),
+      -- kill (vacuous once done), join (the worker puts on every
+      -- path, so this always returns). Uninterruptible: 'killThread'
+      -- stays interruptible even under 'bracket's mask, so a plain
+      -- masked cleanup could be aborted by a timeout before the
+      -- join — every operation here is bounded, so deferring the
+      -- timeout past the join is safe. The killer needs no join
+      -- for gate safety (it never touches the gate) and exits on
+      -- its own once its 'killThread' resolves; the best-effort
+      -- drain is hygiene only (the killer may never have fired).
+      cleanup tid = uninterruptibleMask_ $ do
+        c_gateRelease g 1
+        killThread tid
+        _ <- takeMVar done
+        _ <- tryTakeMVar killerDone
+        pure ()
+  bracket
+    (forkIOWithUnmask $ \unmask -> do
+      r <- try (unmask op <* allowInterrupt)
+      putMVar done r)
+    cleanup
+    (\tid -> body done (fire tid))
+
+-- | Barrier for the forked killer: against a parked worker its
+-- 'killThread' must block, so 'ThreadBlocked' proves entry —
+-- after this returns, the kill is strictly pending and the
+-- release cannot slip through first. Bounded like 'awaitParked'.
+awaitBlocked :: ThreadId -> IO ()
+awaitBlocked ktid = go (200 :: Int)
+  where
+    go n
+      | n <= 0 = assertFailure "killer never blocked in killThread"
+      | otherwise = do
+          st <- threadStatus ktid
+          case st of
+            ThreadBlocked _ -> pure ()
+            _ -> threadDelay 1000 >> go (n - 1)
+
+withRealBackend :: (B.BackendEnv OpenSSL4 -> IO a) -> IO a
+withRealBackend action = do
+  r <- B.openBackend "provider=default"
+    :: IO (B.EngineResult (B.BackendEnv OpenSSL4))
+  case r of
+    B.EngineFail err -> assertFailure ("openBackend failed: " ++ show err)
+    B.EngineOk env -> action env `finally` B.closeBackend env
+
+isCopyFault :: SomeException -> Bool
+isCopyFault e = case fromException e :: Maybe IOException of
+  Just ioe -> "hsk_ossl4_test_copy_fault" `isInfixOf` show ioe
+  Nothing -> False
+
+assertCopyFault :: Either SomeException a -> IO ()
+assertCopyFault (Right _) =
+  assertFailure "expected the injected copy fault, the op succeeded"
+assertCopyFault (Left e) = case fromException e :: Maybe AsyncException of
+  Just ThreadKilled ->
+    assertFailure ("expected the sync copy fault, got ThreadKilled: " ++ show e)
+  _ -> assertBool ("expected the copy-fault marker, got: " ++ show e)
+    (isCopyFault e)
+
+assertThreadKilled :: Either SomeException a -> IO ()
+assertThreadKilled (Right _) =
+  assertFailure "expected ThreadKilled, the op returned"
+assertThreadKilled (Left e) = case fromException e :: Maybe AsyncException of
+  Just ThreadKilled -> pure ()
+  _ -> assertFailure ("expected ThreadKilled, got: " ++ show e)
+
+-- | Rendezvous for the park scenarios: the victim parks in the
+-- checkpoint deterministically (straight-line code past the arm),
+-- so this either observes the park or fails bounded (never
+-- timing-hope, and the outer 'guarded' backstops the whole case).
+awaitParked :: Ptr TestGate -> IO ()
+awaitParked g = go (200 :: Int)
+  where
+    go n
+      | n <= 0 = assertFailure "victim never parked in the checkpoint"
+      | otherwise = do
+          p <- c_gateParked g
+          if p /= 0 then pure () else threadDelay 5000 >> go (n - 1)
+
+assertOutstandingZero :: Ptr TestGate -> IO ()
+assertOutstandingZero g = do
+  b <- c_gateBufOutstanding g
+  d <- c_gateDigestOutstanding g
+  e <- c_gateEnvOutstanding g
+  assertEqual "no stranded buffers" 0 b
+  assertEqual "no stranded digests" 0 d
+  assertEqual "no stranded envs" 0 e
+
+-- | The digest live-set counters are identically zero under the
+-- fixed transfer, so these assert without cross-test quiescence.
+assertDigestCountersClean :: IO ()
+assertDigestCountersClean = do
+  df <- c_digestDoublefree
+  du <- c_digestUntracked
+  assertEqual "no digest double-free" 0 df
+  assertEqual "complete digest tracking" 0 du
+
+-- | The env live-set twin: identically zero under the fixed
+-- transfer (no double-free, complete tracking).
+assertEnvCountersClean :: IO ()
+assertEnvCountersClean = do
+  ef <- c_envDoublefree
+  eu <- c_envUntracked
+  assertEqual "no env double-free" 0 ef
+  assertEqual "complete env tracking" 0 eu
+
+expectGatedOk :: Show a => String -> B.EngineResult a -> IO a
+expectGatedOk label r = case r of
+  B.EngineOk a -> pure a
+  B.EngineFail err ->
+    assertFailure (label ++ ": expected EngineOk, got " ++ show err)
+
+-- | Sync fault before the output copy: the primary exception is the
+-- injected fault (not cancellation) and the native buffer is freed.
+caseGatedCopyFaultSync :: IO ()
+caseGatedCopyFaultSync = withGate $ \g -> withRealBackend $ \env -> do
+  c_gateArmCheckpoint g 1
+  r <- try (digestOneShotGated g env B.D_SHA256 "hello")
+    :: IO (Either SomeException (B.EngineResult ByteString))
+  assertCopyFault r
+  assertOutstandingZero g
+
+-- | Async kill issued at the copy checkpoint: the parked safe call
+-- cannot be killed out from under the gate mutex, so the forked
+-- killer's 'killThread' blocks until the release lets the call
+-- return — cancellation is preserved and the registered buffer is
+-- freed exactly once, before delivery.
+caseGatedCopyParkKill :: IO ()
+caseGatedCopyParkKill = withGate $ \g -> withRealBackend $ \env -> do
+  c_gateArmCheckpoint g 2
+  withKillWorker g (digestOneShotGated g env B.D_SHA256 "hello") $ \done fire -> do
+    awaitParked g
+    fire
+    c_gateRelease g 0
+    r <- readMVar done
+      :: IO (Either SomeException (B.EngineResult ByteString))
+    assertThreadKilled r
+    assertOutstandingZero g
+
+-- | Sync fault between the pair copies: cleanup for BOTH halves was
+-- registered before either copy, so both are freed.
+caseGatedPairBetweenFault :: IO ()
+caseGatedPairBetweenFault = withGate $ \g -> withRealBackend $ \env -> do
+  c_gateArmCheckpoint g 3
+  r <- try (generateKeyECGated g env
+      (B.EcSpec { B.ecCurve = "P-256", B.ecEncoding = "DER" }))
+    :: IO (Either SomeException
+        (B.EngineResult (B.KeyMaterial, Maybe B.KeyMaterial)))
+  assertCopyFault r
+  assertOutstandingZero g
+
+-- | Sync fault after the final's C consumption: post-call cleanup
+-- owns only the output buffer (no second handle free), and the
+-- primary exception is the injected fault.
+caseGatedFinalFaultSync :: IO ()
+caseGatedFinalFaultSync = withGate $ \g -> withRealBackend $ \env -> do
+  rid <- expectGatedOk "gated init" =<< digestInitGated g env B.D_SHA256
+  expectGatedOk "update" =<< B.digestUpdate env rid "hello"
+  c_gateArmCheckpoint g 1
+  r <- try (digestFinalGated g env rid)
+    :: IO (Either SomeException (B.EngineResult ByteString))
+  assertCopyFault r
+  assertOutstandingZero g
+  assertDigestCountersClean
+
+-- | Async kill issued at the final's copy checkpoint: cancellation
+-- preserved, output freed, handle consumed exactly once.
+caseGatedFinalParkKill :: IO ()
+caseGatedFinalParkKill = withGate $ \g -> withRealBackend $ \env -> do
+  rid <- expectGatedOk "gated init" =<< digestInitGated g env B.D_SHA256
+  expectGatedOk "update" =<< B.digestUpdate env rid "hello"
+  c_gateArmCheckpoint g 2
+  withKillWorker g (digestFinalGated g env rid) $ \done fire -> do
+    awaitParked g
+    fire
+    c_gateRelease g 0
+    r <- readMVar done
+      :: IO (Either SomeException (B.EngineResult ByteString))
+    assertThreadKilled r
+    assertOutstandingZero g
+    assertDigestCountersClean
+
+-- | Alloc fault at env construction: the open fails typed (nothing
+-- adopted, nothing to free) and the one-shot arm is spent, so a
+-- second open succeeds on the healthy backend.
+caseGatedAdoptionAllocFail :: IO ()
+caseGatedAdoptionAllocFail = withGate $ \g -> do
+  c_gateArmAllocFail g
+  r <- openBackendGated g "provider=default"
+    :: IO (B.EngineResult (B.BackendEnv OpenSSL4))
+  case r of
+    B.EngineFail _ -> pure ()
+    B.EngineOk env ->
+      B.closeBackend env >> assertFailure "adoption alloc-fail still opened"
+  assertOutstandingZero g
+  assertEnvCountersClean
+  r2 <- openBackendGated g "provider=default"
+    :: IO (B.EngineResult (B.BackendEnv OpenSSL4))
+  case r2 of
+    B.EngineOk env2 -> B.closeBackend env2
+    B.EngineFail err ->
+      assertFailure ("second open must succeed: " ++ show err)
+
+-- | Sync checkpoint fault at the pre-adoption provider load: the
+-- live env is freed on the failure path (never adopted), the open
+-- fails typed, and no env strands.
+caseGatedAdoptionLoadFault :: IO ()
+caseGatedAdoptionLoadFault = withGate $ \g -> do
+  c_gateArmCheckpoint g 1
+  r <- openBackendGated g "provider=default"
+    :: IO (B.EngineResult (B.BackendEnv OpenSSL4))
+  case r of
+    B.EngineFail _ -> pure ()
+    B.EngineOk env ->
+      B.closeBackend env >> assertFailure "load-faulted open still opened"
+  assertOutstandingZero g
+  assertEnvCountersClean
+
+-- | Async kill issued at the pre-adoption load checkpoint: the
+-- forked killer's 'killThread' blocks until the fault-verdict
+-- release lets the load return — deterministically 'ThreadKilled'
+-- (early delivery unwinds via the pre-adoption 'onException',
+-- late delivery lands after the masked failure cleanup) with the
+-- live env freed exactly once either way.
+caseGatedAdoptionParkKill :: IO ()
+caseGatedAdoptionParkKill = withGate $ \g -> do
+  c_gateArmCheckpoint g 2
+  withKillWorker g (openBackendGated g "provider=default") $ \done fire -> do
+    awaitParked g
+    fire
+    c_gateRelease g 1
+    r <- readMVar done
+      :: IO (Either SomeException (B.EngineResult (B.BackendEnv OpenSSL4)))
+    assertThreadKilled r
+    assertOutstandingZero g
+    assertEnvCountersClean
+
+-- | Alloc fault at digest init: typed failure, nothing registered.
+caseGatedInitAllocFail :: IO ()
+caseGatedInitAllocFail = withGate $ \g -> withRealBackend $ \env -> do
+  c_gateArmAllocFail g
+  r <- digestInitGated g env B.D_SHA256
+  case r of
+    B.EngineFail _ -> pure ()
+    B.EngineOk rid -> B.releaseResource env rid
+      >> assertFailure "init alloc-fail still allocated"
+  assertOutstandingZero g
+
+-- | Alloc fault at the one-shot output: the shim answers NOMEM and
+-- the backend reports it typed.
+caseGatedDigestAllocFail :: IO ()
+caseGatedDigestAllocFail = withGate $ \g -> withRealBackend $ \env -> do
+  c_gateArmAllocFail g
+  r <- digestOneShotGated g env B.D_SHA256 "hello"
+  case r of
+    B.EngineFail (B.BackendNative _ code _) ->
+      assertEqual "NOMEM code" (-4) code
+    _ -> assertFailure ("expected a NOMEM native failure, got " ++ show r)
+  assertOutstandingZero g
+
+-- | Characterization: unarmed gated paths match production bytes
+-- (plain, sized, XOF, multipart, pair) and leave zero outstanding.
+-- The gate observes without perturbing; the sized/XOF legs compare
+-- against production either way (served or refused alike).
+caseGatedNormalZero :: IO ()
+caseGatedNormalZero = withGate $ \g -> withRealBackend $ \env -> do
+  prod <- expectGatedOk "prod digest" =<< B.digestOneShot env B.D_SHA256 "abc"
+  gated <- expectGatedOk "gated digest"
+    =<< digestOneShotGated g env B.D_SHA256 "abc"
+  assertEqual "gated matches production" prod gated
+  assertEqual "sha256 abc (FIPS 180-4)" sha256abc gated
+  prodSized <- B.digestOneShot env B.D_BLAKE2B256 "abc"
+  gatedSized <- digestOneShotGated g env B.D_BLAKE2B256 "abc"
+  assertEqual "gated sized matches production" prodSized gatedSized
+  prodXof <- B.digestXof env B.D_SHAKE128 "abc" 32
+  gatedXof <- digestXofGated g env B.D_SHAKE128 "abc" 32
+  assertEqual "gated xof matches production" prodXof gatedXof
+  rid <- expectGatedOk "gated init" =<< digestInitGated g env B.D_SHA256
+  expectGatedOk "update" =<< B.digestUpdate env rid "abc"
+  fin <- expectGatedOk "gated final" =<< digestFinalGated g env rid
+  assertEqual "multipart equals one-shot" gated fin
+  kg <- generateKeyECGated g env
+    (B.EcSpec { B.ecCurve = "P-256", B.ecEncoding = "DER" })
+  case kg of
+    B.EngineOk (B.KeyDer priv, Just (B.KeyDer pub)) -> do
+      assertBool "priv half non-empty" (not (BS.null priv))
+      assertBool "pub half non-empty" (not (BS.null pub))
+    _ -> assertFailure ("EC keygen shape: " ++ show kg)
+  assertOutstandingZero g
+  assertDigestCountersClean
+
+sha256abc :: ByteString
+sha256abc = BS.pack
+  [ 0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea
+  , 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23
+  , 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c
+  , 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
+  ]

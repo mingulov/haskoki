@@ -11,6 +11,15 @@ module Gen
   ( lcgNext
   , lcgBytes
   , genSeq
+  , genOpFull14
+  , genSeqFull14
+  , genDeltaSeq
+  , shrinkDeltaSeq
+  , ctorName
+  , constructorHits
+  , hitSummary
+  , freshSeeds
+  , freshIndices
   , propCases
   , propSeedOverride
   , propWith
@@ -24,6 +33,8 @@ import Data.Bits (shiftR)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.List (sort)
+import qualified Data.Map.Strict as Map
+import Data.Map.Strict (Map)
 import Data.Maybe (fromMaybe)
 import Data.Word (Word64, Word8)
 import System.Environment (lookupEnv)
@@ -40,9 +51,22 @@ import Test.Tasty.QuickCheck
   , vectorOf
   )
 
+import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.Operation (emptySessionOps)
 import Haskoki.Outcome (DeltaOp (..))
 import Haskoki.Registry (Operation (..))
-import Haskoki.Types (Generation (..), ObjectId (..), SessionId (..))
+import Haskoki.Session
+  ( ActiveLogin (..)
+  , SessionLogin (..)
+  , TokenAuth (..)
+  )
+import Haskoki.Types
+  ( ExternalHandle (..)
+  , Generation (..)
+  , ObjectId (..)
+  , SessionId (..)
+  , SlotId (..)
+  )
 
 -- | Next LCG value (Numerical Recipes constants, as in the precedent).
 lcgNext :: Word64 -> Word64
@@ -134,3 +158,135 @@ chunking seed j bs =
     cutAt s = fromIntegral (s `mod` fromIntegral (BS.length bs + 1))
     takeDrop :: Int -> Int -> ByteString
     takeDrop a b = BS.take (b - a) (BS.drop a bs)
+
+-- ---------------------------------------------------------------------------
+-- Full 14-constructor delta corpus + seed discipline
+-- ---------------------------------------------------------------------------
+
+-- | Every DeltaOp constructor by short name. Deliberately
+-- exhaustive with no catch-all: adding a constructor fails
+-- compilation here (fatal-omissions) instead of slipping past the
+-- hit obligations keyed on these names.
+ctorName :: DeltaOp -> String
+ctorName op = case op of
+  DeltaTouchSession _ -> "TouchSession"
+  DeltaCloseSession _ -> "CloseSession"
+  DeltaBumpGeneration _ _ -> "BumpGeneration"
+  DeltaCreateObject _ -> "CreateObject"
+  DeltaDestroyObject _ -> "DestroyObject"
+  DeltaCreateObjectFull _ _ _ _ -> "CreateObjectFull"
+  DeltaSetAttributes _ _ -> "SetAttributes"
+  DeltaBindHandle _ _ -> "BindHandle"
+  DeltaUnbindHandle _ -> "UnbindHandle"
+  DeltaBumpHandle _ -> "BumpHandle"
+  DeltaOpenSession _ _ _ -> "OpenSession"
+  DeltaSetSessionLogin _ _ -> "SetSessionLogin"
+  DeltaSetTokenAuth _ _ -> "SetTokenAuth"
+  DeltaSetSessionOps _ _ -> "SetSessionOps"
+
+-- | Per-constructor occurrence counts over op sequences.
+constructorHits :: [DeltaOp] -> Map String Int
+constructorHits ops =
+  Map.fromListWith (+) [(ctorName op, 1) | op <- ops]
+
+-- | One-line corpus summary for suite logs (coverage is asserted
+-- by hit obligations, never by reading this line).
+hitSummary :: Map String Int -> String
+hitSummary hits =
+  show (Map.size hits) ++ "/14 constructors, "
+    ++ show (sum (Map.elems hits)) ++ " ops"
+
+-- | One full delta op drawn from the generator state over small id
+-- spaces (covers all 14 constructors). Id ranges match the frozen
+-- 12-constructor corpus (sessions 1..3, objects/handles 1..5,
+-- slots 0..1), so the seeded bases park outside them unchanged;
+-- the attribute arm always carries a nonempty overlay.
+genOpFull14 :: Word64 -> (DeltaOp, Word64)
+genOpFull14 s0 =
+  let s1 = lcgNext s0
+      s2 = lcgNext s1
+      s3 = lcgNext s2
+      pick = fromIntegral (s1 `mod` 14) :: Int
+      sid = SessionId (1 + fromIntegral (s2 `mod` 3))
+      sid2 = SessionId (1 + fromIntegral ((s2 `div` 3) `mod` 3))
+      oid = ObjectId (1 + fromIntegral ((s2 `div` 9) `mod` 5))
+      hdl = ExternalHandle (1 + fromIntegral ((s2 `div` 45) `mod` 5))
+      slotV = SlotId (fromIntegral ((s2 `div` 225) `mod` 2))
+      genV = Generation (1 + fromIntegral ((s2 `div` 450) `mod` 4))
+      readOnly = s3 `mod` 2 == 1
+      attrs =
+        if s3 `div` 2 `mod` 2 == 0
+          then Map.empty
+          else Map.singleton AttrClass (ValULong (fromIntegral (s3 `mod` 7)))
+      over13 = Map.singleton AttrClass (ValULong (fromIntegral (s3 `mod` 7)))
+      owner =
+        if s3 `div` 4 `mod` 2 == 0
+          then Nothing
+          else Just sid2
+      loginV = case s3 `div` 8 `mod` 3 of
+        0 -> LoginPublic
+        1 -> LoginUser
+        _ -> LoginSO
+      authV =
+        TokenAuth
+          (if s3 `div` 24 `mod` 2 == 0 then Nothing else Just AuthUser)
+          (if s3 `div` 48 `mod` 2 == 0 then Nothing else Just "test-user")
+          (fromIntegral (s3 `div` 96 `mod` 5))
+          (fromIntegral (s3 `div` 480 `mod` 4))
+          (fromIntegral (s3 `div` 1920 `mod` 4))
+          (s3 `div` 7680 `mod` 2 == 1)
+          (s3 `div` 15360 `mod` 2 == 1)
+  in case pick of
+    0 -> (DeltaTouchSession sid, s3)
+    1 -> (DeltaCloseSession sid, s3)
+    2 -> (DeltaBumpGeneration sid genV, s3)
+    3 -> (DeltaCreateObject oid, s3)
+    4 -> (DeltaDestroyObject oid, s3)
+    5 -> (DeltaCreateObjectFull oid attrs owner slotV, s3)
+    6 -> (DeltaBindHandle hdl oid, s3)
+    7 -> (DeltaBumpHandle hdl, s3)
+    8 -> (DeltaOpenSession sid slotV readOnly, s3)
+    9 -> (DeltaSetSessionLogin sid loginV, s3)
+    10 -> (DeltaSetTokenAuth slotV authV, s3)
+    11 -> (DeltaSetSessionOps sid emptySessionOps, s3)
+    12 -> (DeltaUnbindHandle hdl, s3)
+    _ -> (DeltaSetAttributes oid over13, s3)
+
+-- | A deterministic full op sequence of the requested length.
+genSeqFull14 :: Word64 -> Int -> [DeltaOp]
+genSeqFull14 seed n = go seed n []
+  where
+    go :: Word64 -> Int -> [DeltaOp] -> [DeltaOp]
+    go _ 0 acc = reverse acc
+    go s k acc = let (op, s') = genOpFull14 s in go s' (k - 1) (op : acc)
+
+-- | QuickCheck sequences over the full corpus (seed + length drawn,
+-- ops deterministic given them).
+genDeltaSeq :: Gen [DeltaOp]
+genDeltaSeq = genSeqFull14 <$> choose (0, 999999) <*> choose (0, 12)
+
+-- | Dependency-preserving shrinker for delta sequences:
+-- order-preserving single removals only, so every shrink replays
+-- the surviving ops in their original relative order.
+shrinkDeltaSeq :: [DeltaOp] -> [[DeltaOp]]
+shrinkDeltaSeq xs =
+  [take i xs ++ drop (i + 1) xs | i <- [0 .. length xs - 1]]
+
+-- | Seed lists for the deterministic generated loops. Unset
+-- PROP_SEED reproduces the historical corpus bit-identically
+-- ([1..count]); a logged PROP_SEED shifts the whole corpus, so a
+-- fresh-seed nightly explores disjoint sequences and reruns
+-- bit-identically from the logged seed.
+freshSeeds :: Maybe Int -> Int -> [Word64]
+freshSeeds seedOv count = case seedOv of
+  Nothing -> [1 .. fromIntegral count]
+  Just s ->
+    let off = fromIntegral (abs s) :: Word64
+    in [off + i | i <- [1 .. fromIntegral count]]
+
+-- | Index lists for deterministic index-driven loops (same
+-- discipline as 'freshSeeds').
+freshIndices :: Maybe Int -> Int -> [Int]
+freshIndices seedOv count = case seedOv of
+  Nothing -> [1 .. count]
+  Just s -> [abs s + i | i <- [1 .. count]]

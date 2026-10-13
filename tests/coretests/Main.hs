@@ -1,3 +1,4 @@
+-- REGISTRATION: haskoki-core-tests
 {- | Core-subset runner: the model specs that import pure-core
 modules only, compiled against @haskoki-core@ WITHOUT the runtime/FFI
 libraries. This suite's @build-depends@ names @haskoki:haskoki-core@

@@ -22,12 +22,20 @@ are staged through the output planner ('planOneShot'): a short
 buffer keeps the slot for 'retryStaged', any crypto failure or
 verdict mismatch terminates it.
 
-Context-specific authentication (the login machine) is consumed
-only at its defined point: the first data call of an
-always-authenticate slot ('gateDataCall'). A grant presented to a
-non-pending slot fails without being consumed (premature); a pending
-slot whose first data call arrives grantless terminates, so a later
-grant finds nothing to spend on (late).
+Context-specific authentication (the login machine) binds each
+grant by uniqueness to the single eligible active marked
+key/operation: admission requires exactly one
+always-authenticate slot still awaiting its first data call
+('hasSingleAuthPendingOp'), a second marked init while a grant is
+outstanding refuses, and the grant is consumed only at its
+defined point — the first data call of the bound slot
+('gateDataCall'). A grant presented to a non-pending slot fails
+without being consumed (premature); a pending slot whose first
+data call arrives grantless terminates, so a later grant finds
+nothing to spend on (late). Cancelling the granted operation, or
+terminating it before first use, invalidates the grant
+('cancelDropsPendingAuth'), so a grant for one operation never
+authorizes the next or another session.
 -}
 module Haskoki.Operation
   ( -- * Slots and states (see Haskoki.Operation.State)
@@ -499,8 +507,11 @@ checkRecover args incoming = case (recoverRoleOf (iaOp args), iaRecover args) of
 -- ops take none, and a bound key must resolve, be visible, carry a
 -- compatible key type, permit the operation, and (for
 -- always-authenticate keys) sit under a user login. Success carries
--- the resolved object id and the auth marking. Usage permission and
--- the always-authenticate mark come from the key OBJECT
+-- the resolved object id and the auth marking. A second
+-- always-authenticate init while a context grant is outstanding
+-- refuses: the grant binds by uniqueness to the already-pending
+-- operation, so no later operation can steal it. Usage permission
+-- and the always-authenticate mark come from the key OBJECT
 -- ('policyFromObject') wherever key attributes exist; legacy
 -- objects without them still honor the caller-derived 'KeyPolicy'
 -- (the remaining seam). The key-type check ('keyTypeCompatible')
@@ -538,6 +549,10 @@ checkKeyBinding env st args = case (opKeyed (iaOp args), iaKey args) of
             else if alwaysAuth && ssLogin st `notElem` [LoginUser, LoginContextUser]
               then Left (mkDeny CKR_USER_NOT_LOGGED_IN
                 "always-authenticate key needs a user login")
+              else if alwaysAuth && ssLogin st == LoginContextUser
+                      && hasAuthPendingOp (ssOps st)
+              then Left (mkDeny CKR_OPERATION_ACTIVE
+                "a context grant is already bound to another operation")
               else Right (Just (osId ost),
                 if alwaysAuth then AuthPending else AuthNone)
 

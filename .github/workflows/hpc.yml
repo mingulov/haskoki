@@ -39,6 +39,13 @@ name: hpc
 # Pin policy (F-4): same as ci.yml — every third-party action is
 # pinned to a full commit SHA with the human-readable tag as a
 # trailing comment on the same line.
+#
+# Module reconciliation: after the reports land, the compiled
+# library modules (.mix basenames) are reconciled against the
+# reported modules and every inventoried suite must own a .tix;
+# the result lands in the bundle as hpc/module-reconciliation.json.
+# Gaps are explicit there and in the step log — never a silent
+# pass, and (this lane gates nothing) never a lane failure.
 
 on:
   push:
@@ -192,6 +199,30 @@ jobs:
             --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
             --include="$MAIN_UNIT:" > hpc/total-haskoki.txt
           head -n 2 hpc/total-haskoki.txt
+      - name: Reconcile compiled vs reported modules
+        # Informational like the rest of this lane: gaps print loudly
+        # and land in the uploaded bundle as explicit gaps, never as
+        # a silent pass — and never as a lane failure.
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Mix-dir rediscovery (same shape as the reports step: steps
+          # share no shell variables). Discovery never fails the
+          # step: a missing build root or filtered-out mix dir
+          # yields an empty variable, which reconciliation records
+          # as an explicit gap in the artifact below.
+          CORE_MIX=$(find dist-newstyle -type d \
+            -path '*l/haskoki-core/build/*/extra-compilation-artifacts/hpc/vanilla/mix' 2>/dev/null || true)
+          MAIN_MIX=$(find dist-newstyle -type d \
+            -path '*extra-compilation-artifacts/hpc/vanilla/mix' 2>/dev/null \
+            | grep -v '/l/\|/t/' | sort | head -n 1 || true)
+          python3 scripts/check-test-execution.py --check-hpc \
+            --tix-root dist-newstyle \
+            --mix-dirs "$CORE_MIX,$MAIN_MIX" \
+            --reports hpc/report-haskoki-core.txt,hpc/report-haskoki.txt \
+            --out hpc/module-reconciliation.json \
+            || echo 'RECONCILIATION-GAPS: see hpc/module-reconciliation.json'
       - name: Upload coverage bundle
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

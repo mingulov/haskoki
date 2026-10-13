@@ -15,7 +15,7 @@ module ObjectSpec (spec) where
 
 import qualified Data.Map.Strict as Map
 import Data.List (isInfixOf)
-import Data.Word (Word64)
+import Data.Word (Word32, Word64)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
 
@@ -55,9 +55,10 @@ import Haskoki.Object
   , resolveHandle
   )
 import Haskoki.Operation (CryptoEffect (..), SlotKind (..), activeSlots)
-import Haskoki.Operation.Codec (encodeInitInput, encodeVerifyInput)
+import Haskoki.Operation.Codec (encodeCancelInput, encodeInitInput, encodeVerifyInput)
 import Haskoki.Outcome
-  ( DeltaOp (..)
+  ( BackendFailure (..)
+  , DeltaOp (..)
   , EffectRequest (..)
   , EngineResult (..)
   , NativeOutput (..)
@@ -117,6 +118,12 @@ spec = testGroup "objects and attributes"
   , testCase "logout: destroyed-key staged output retires across logout" caseLogoutRetiresDestroyedKeyStagedOps
   , testCase "isolation: sessions only touch their own slot objects" caseSlotIsolation
   , testCase "logout: private handles die without resurrection" caseLogoutNoResurrection
+  , testCase "logout: destruction is scoped to the token" caseLogoutDestructionMatrix
+  , testCase "create/copy: SO cannot mint private objects" caseSOCreationAdmission
+  , testCase "context grant binds to one key and session" caseContextGrantBinding
+  , testCase "context grant survives short buffers and size queries" caseContextGrantSurvivesShortBuffer
+  , testCase "cancel of unrelated selection keeps the grant" caseContextCancelKeepsUnrelatedGrant
+  , testCase "context lockout performs logout" caseContextLockoutLogsOut
   , testCase "close: creator-close destroys session objects" caseCreatorClose
   , testCase "codec: 65-entry template refused" caseTemplateEntryBound
   , testCase "create: 65-entry template refused loudly" caseCreateEntryBound
@@ -245,9 +252,12 @@ openSession :: Model -> IO (SessionId, Model)
 openSession = openSessionOn slot0
 
 openSessionOn :: SlotId -> Model -> IO (SessionId, Model)
-openSessionOn (SlotId n) model = do
+openSessionOn slot model = openSessionMode slot False model
+
+openSessionMode :: SlotId -> Bool -> Model -> IO (SessionId, Model)
+openSessionMode (SlotId n) readOnly model = do
   let req = (mkRequest F_OpenSession Nothing)
-        { reqInput = BC8.pack ("slot=" ++ show n ++ ",rw") }
+        { reqInput = BC8.pack ("slot=" ++ show n ++ (if readOnly then ",ro" else ",rw")) }
   case planCall defaultRules model req of
     Immediate pc -> case publishDelta model (pcDelta pc) of
       Left fault -> assertFailure ("open delta fault: " ++ show fault)
@@ -923,6 +933,72 @@ caseVisibilitySOIsolation = do
 soLoginReq :: SessionId -> Request
 soLoginReq sid = (mkRequest F_Login (Just sid)) { reqInput = "so:ok" }
 
+ctxLoginReq :: SessionId -> Request
+ctxLoginReq sid = (mkRequest F_Login (Just sid)) { reqInput = "context:ok" }
+
+ctxLoginBadReq :: SessionId -> Request
+ctxLoginBadReq sid = (mkRequest F_Login (Just sid)) { reqInput = "context:bad" }
+
+cancelReq :: SessionId -> Word32 -> Request
+cancelReq sid flags =
+  (mkRequest F_SessionCancel (Just sid)) { reqInput = encodeCancelInput flags }
+
+-- | The observed login of a live session.
+loginOf :: Model -> SessionId -> IO SessionLogin
+loginOf m sid = case lookupSession m sid of
+  Nothing -> assertFailure "session lost"
+  Just st -> pure (ssLogin st)
+
+-- | Resolve a setup handle or fail the case.
+mustResolve :: Model -> ExternalHandle -> IO ObjectState
+mustResolve m h = case resolveHandle m h of
+  Nothing -> assertFailure "setup handle lost"
+  Just ost -> pure ost
+
+-- | Object/handle allocation counters: a refused creation must move none.
+countersOf :: Model -> (Int, Int, Int, Int)
+countersOf m =
+  (Map.size (mObjects m), Map.size (mHandles m), mNextObject m, mNextHandle m)
+
+-- | A private token HMAC key with the always-authenticate mark: the
+-- eligible shape for context grants.
+authKeyTmpl :: ByteString -> [(AttributeType, AttributeValue)]
+authKeyTmpl lbl =
+  [ (AttrClass, ValULong (mustClassId "CKO_SECRET_KEY"))
+  , (AttrKeyType, ValULong (mustKeyTypeId "CKK_GENERIC_SECRET"))
+  , (AttrValue, ValBytes "0123456789abcdef0123456789abcdef")
+  , (AttrToken, ValBool True)
+  , (AttrPrivate, ValBool True)
+  , (AttrSign, ValBool True)
+  , (AttrVerify, ValBool True)
+  , (AttrAlwaysAuthenticate, ValBool True)
+  , label lbl
+  ]
+
+signInitReq :: SessionId -> ExternalHandle -> Request
+signInitReq sid h = (mkRequest F_SignInit (Just sid))
+  { reqHandle = Just h
+  , reqInput = encodeInitInput (MechanismId 0x251) [OpSign] False BS.empty
+  }
+
+verifyInitReq :: SessionId -> ExternalHandle -> Request
+verifyInitReq sid h = (mkRequest F_VerifyInit (Just sid))
+  { reqHandle = Just h
+  , reqInput = encodeInitInput (MechanismId 0x251) [OpVerify] False BS.empty
+  }
+
+-- | Finish a sign one-shot with a 32-byte stub signature, publishing
+-- the resulting commit. Short caps stage (BUFFER_TOO_SMALL);
+-- fitting caps complete (OK).
+runSignFinish :: Model -> SessionId -> String -> ByteString -> Int -> IO (PreparedCommit, Model)
+runSignFinish m sid name input cap = do
+  (res, _) <- runExecute m (dataReq F_Sign sid name input cap)
+  case finishEffect defaultRules m res (EngineOkBytes (BS.replicate 32 0xEE)) of
+    Left rej -> assertFailure ("sign finish rejected: " ++ show (rejCode rej))
+    Right pc -> case publishDelta m (pcDelta pc) of
+      Left fault -> assertFailure ("sign finish fault: " ++ show fault)
+      Right m' -> pure (pc, m')
+
 -- | F-1 follow-up (cached-operation bypass): logout retires every
 -- cached operation bound to a private key — on every same-slot
 -- session, staged outputs included — so neither a public session
@@ -1164,6 +1240,10 @@ caseSlotIsolation = do
   (codeC, _) <- runReject m7 (copyReq b ha [label "smuggled"])
   assertEqual "cross-slot copy faults" CKR_OBJECT_HANDLE_INVALID codeC
 
+-- | Logout destroys private session objects (OASIS PKCS#11 3.2
+-- §5.6.10): the delta carries the destruction, the old handle dies,
+-- and re-login finds nothing — the object is gone, not hidden. The
+-- public session object is untouched throughout.
 caseLogoutNoResurrection :: IO ()
 caseLogoutNoResurrection = do
   (a, m0) <- openSession seeded
@@ -1172,7 +1252,11 @@ caseLogoutNoResurrection = do
   hp <- commitHandle pcP
   (pcU, m3) <- runCommit m2 (createReq a [classData, label "pub"])
   hu <- commitHandle pcU
-  m4 <- snd <$> runCommit m3 (logoutReq a)
+  ostP <- mustResolve m3 hp
+  (pcL, m4) <- runCommit m3 (logoutReq a)
+  let StateDelta lops = pcDelta pcL
+  assertEqual "logout destroys the private session object"
+    [osId ostP] [oid | DeltaDestroyObject oid <- lops]
   (code, m5) <- runReject m4 (getReq a hp [AttrLabel])
   assertEqual "logout kills the private handle" CKR_OBJECT_HANDLE_INVALID code
   (pcG, _) <- runCommit m5 (getReq a hu [AttrLabel])
@@ -1182,19 +1266,16 @@ caseLogoutNoResurrection = do
   assertEqual "no resurrection after re-login" CKR_OBJECT_HANDLE_INVALID code2
   (pcF, mF) <- runCommit m7 (findReq a [label "priv"])
   found <- findHandles pcF
-  case found of
-    [hp2] -> do
-      assertBool "discovery mints a fresh handle" (hp2 /= hp)
-      (pcG2, _) <- runCommit mF (getReq a hp2 [AttrLabel])
-      assertEqual "fresh handle reads" CKR_OK (pcCode pcG2)
-    _ -> assertFailure ("expected exactly the re-discovered handle, got: " ++ show found)
+  assertEqual "destroyed object is not rediscovered" [] found
+  assertEqual "only the public object remains" 1 (Map.size (mObjects mF))
   (pcG3, _) <- runCommit mF (getReq a hu [AttrLabel])
   assertEqual "public handle still the same one" CKR_OK (pcCode pcG3)
 
--- | Token-owned private objects take the same logout path as
+-- | Token-owned private objects take the opposite logout path from
 -- session-owned ones: the handle dies at logout, stays dead across
 -- re-login, and only a fresh discovery handle reads again. The
--- token object itself survives (logout kills handles, not objects).
+-- token object itself survives (logout destroys private session
+-- objects only — the control for the destruction above).
 caseLogoutTokenPrivate :: IO ()
 caseLogoutTokenPrivate = do
   (a, m0) <- openSession seeded
@@ -1216,6 +1297,335 @@ caseLogoutTokenPrivate = do
       (pcG2, _) <- runCommit mF (getReq a hp2 [AttrLabel])
       assertEqual "fresh handle reads" CKR_OK (pcCode pcG2)
     _ -> assertFailure ("expected exactly the re-discovered handle, got: " ++ show found)
+
+-- | Logout destruction is scoped: every private session object on
+-- the token dies — including ones created by a second same-slot
+-- session — while public session objects, every token object, and
+-- every other token survive untouched.
+caseLogoutDestructionMatrix :: IO ()
+caseLogoutDestructionMatrix = do
+  let slot1 = SlotId 1
+      twoSlot = addToken seeded slot1
+  (a, m1) <- openSessionOn slot0 twoSlot
+  (b, m2) <- openSessionOn slot0 m1
+  (c, m3) <- openSessionOn slot1 m2
+  m4 <- loginAs m3 a
+  m5 <- loginAs m4 c
+  (pcPS, m6) <- runCommit m5 (createReq a [classData, label "priv-sess-a", privateFlag])
+  hPS <- commitHandle pcPS
+  (pcUS, m7) <- runCommit m6 (createReq a [classData, label "pub-sess-a"])
+  hUS <- commitHandle pcUS
+  (pcPT, m8) <- runCommit m7
+    (createReq a [classData, label "priv-tok", tokenFlagTmpl, privateFlag])
+  hPT <- commitHandle pcPT
+  (pcUT, m9) <- runCommit m8 (createReq a [classData, label "pub-tok", tokenFlagTmpl])
+  hUT <- commitHandle pcUT
+  (pcPSB, m10) <- runCommit m9 (createReq b [classData, label "priv-sess-b", privateFlag])
+  hPSB <- commitHandle pcPSB
+  (pcPSC, m11) <- runCommit m10 (createReq c [classData, label "priv-sess-c", privateFlag])
+  hPSC <- commitHandle pcPSC
+  ostPT <- mustResolve m11 hPT
+  -- Logout through B still clears the whole of slot 0.
+  m12 <- snd <$> runCommit m11 (logoutReq b)
+  assertEqual "A public" LoginPublic =<< loginOf m12 a
+  assertEqual "B public" LoginPublic =<< loginOf m12 b
+  assertEqual "other token stays logged in" LoginUser =<< loginOf m12 c
+  assertEqual "slot-0 private session object destroyed" Nothing (resolveHandle m12 hPS)
+  assertEqual "second-session private object destroyed" Nothing (resolveHandle m12 hPSB)
+  assertBool "public session object survives" (hUS `resolvesIn` m12)
+  assertBool "public token object survives" (hUT `resolvesIn` m12)
+  assertEqual "private token handle dead" Nothing (resolveHandle m12 hPT)
+  assertBool "private token object survives" (lookupObject m12 (osId ostPT) /= Nothing)
+  assertBool "other-token private object survives" (hPSC `resolvesIn` m12)
+  -- After re-login the destroyed objects stay gone while the token
+  -- object re-discovers under a fresh handle.
+  m13 <- loginAs m12 a
+  (pcFA, m14) <- runCommit m13 (findReq a [label "priv-sess-a"])
+  assertEqual "no rediscovery on A" [] =<< findHandles pcFA
+  (pcFB, _) <- runCommit m14 (findReq b [label "priv-sess-b"])
+  assertEqual "no rediscovery on B" [] =<< findHandles pcFB
+  (pcFT, m15) <- runCommit m14 (findReq a [label "priv-tok"])
+  foundT <- findHandles pcFT
+  case foundT of
+    [fresh] -> do
+      assertBool "token rediscovery mints fresh" (fresh /= hPT)
+      ostFresh <- mustResolve m15 fresh
+      assertEqual "rediscovery names the token object" (osId ostPT) (osId ostFresh)
+    _ -> assertFailure ("expected the token rediscovery, got: " ++ show foundT)
+  (pcFU, _) <- runCommit m15 (findReq a [label "pub-sess-a"])
+  assertEqual "public handle stable" [hUS] =<< findHandles pcFU
+  (pcFC, _) <- runCommit m15 (findReq c [label "priv-sess-c"])
+  assertEqual "other-token handle stable" [hPSC] =<< findHandles pcFC
+  where
+    resolvesIn h m = resolveHandle m h /= Nothing
+
+-- | SO creation admission (OASIS PKCS#11 3.2 §5.7.1-5.7.2): the SO
+-- administers public objects (TRUSTED=true included) but cannot
+-- mint private ones — create and copy both refuse with
+-- CKR_USER_NOT_LOGGED_IN and allocate nothing. Template errors
+-- still precede admission, and admission still precedes the
+-- session mode.
+caseSOCreationAdmission :: IO ()
+caseSOCreationAdmission = do
+  (a, m0) <- openSession seeded
+  mSO <- snd <$> runCommit m0 (soLoginReq a)
+  let before = countersOf mSO
+  -- Private create refuses under SO, session and token alike.
+  (codePS, m1) <- runReject mSO (createReq a [classData, label "so-priv", privateFlag])
+  assertEqual "SO private session refused" CKR_USER_NOT_LOGGED_IN codePS
+  (codePT, m2) <- runReject m1
+    (createReq a [classData, label "so-priv-tok", tokenFlagTmpl, privateFlag])
+  assertEqual "SO private token refused" CKR_USER_NOT_LOGGED_IN codePT
+  assertEqual "refusals allocate nothing" before (countersOf m2)
+  -- Public administration still admits, TRUSTED=true included.
+  (pcU, m3) <- runCommit m2 (createReq a [classData, label "so-pub"])
+  hU <- commitHandle pcU
+  (pcT, m4) <- runCommit m3
+    (createReq a [classData, label "so-trusted", (AttrTrusted, ValBool True)])
+  hT <- commitHandle pcT
+  ostT <- mustResolve m4 hT
+  assertEqual "SO trusted stored"
+    (Just (ValBool True)) (Map.lookup AttrTrusted (osAttrs ostT))
+  -- Copy to private refuses; copy to public admits.
+  (codeC, m5) <- runReject m4 (copyReq a hU [label "so-copy", privateFlag])
+  assertEqual "SO copy to private refused" CKR_USER_NOT_LOGGED_IN codeC
+  assertEqual "copy refusal allocates nothing" (countersOf m4) (countersOf m5)
+  (_, m6) <- runCommit m5 (copyReq a hU [label "so-copy-pub"])
+  -- Template errors precede admission even for SO private shapes.
+  (codeTI, m7) <- runReject m6 (createReq a [classData, label "x", label "y", privateFlag])
+  assertEqual "contradiction precedes admission" CKR_TEMPLATE_INCONSISTENT codeTI
+  (codeTC, _) <- runReject m7 (createReq a [label "noclass", privateFlag])
+  assertEqual "incompleteness precedes admission" CKR_TEMPLATE_INCOMPLETE codeTC
+  -- Admission precedes the session mode: an SO login on a
+  -- read-only session (unreachable live — the SO/RO exclusion
+  -- forbids it — so flipped in-model purely to pin the planner
+  -- order) still reports the role, not the mode.
+  let mRO = m7
+        { mSessions = Map.adjust (\st -> st { ssReadOnly = True }) a (mSessions m7) }
+  (codeRM, _) <- runReject mRO
+    (createReq a [classData, label "so-ro", tokenFlagTmpl, privateFlag])
+  assertEqual "role precedes mode" CKR_USER_NOT_LOGGED_IN codeRM
+  -- And the mode check is still live for the user on a read-only
+  -- session asking for a private token object.
+  mP <- snd <$> runCommit m7 (logoutReq a)
+  mU0 <- loginAs mP a
+  (roU, mU1) <- openSessionMode slot0 True mU0
+  (codeRU, _) <- runReject mU1
+    (createReq roU [classData, label "u-ro", tokenFlagTmpl, privateFlag])
+  assertEqual "user RO token refused by mode" CKR_SESSION_READ_ONLY codeRU
+
+-- | Context-grant binding (G27): a grant issues only for the single
+-- eligible active marked operation (binding by uniqueness), spends
+-- on the first data use, and never authorizes a later operation or
+-- another session. Two keys and two sessions across success,
+-- failure, and cancellation, plus the simultaneous-pending pair.
+caseContextGrantBinding :: IO ()
+caseContextGrantBinding = do
+  (a, m0) <- openSession seeded
+  (b, m1) <- openSession m0
+  m2 <- loginAs m1 a
+  (pcA, m3) <- runCommit m2 (createReq a (authKeyTmpl "key-a"))
+  hA <- commitHandle pcA
+  (pcB, m4) <- runCommit m3 (createReq a (authKeyTmpl "key-b"))
+  hB <- commitHandle pcB
+  -- An idle session takes no grant even with a sibling pending, and
+  -- a plain active operation does not qualify either.
+  (_, m5) <- runCommit m4 (signInitReq a hA)
+  (codeIdle, m6) <- runReject m5 (ctxLoginReq b)
+  assertEqual "idle session takes no grant" CKR_OPERATION_NOT_INITIALIZED codeIdle
+  (resDI, effDI) <- runExecute m6 ((mkRequest F_DigestInit (Just b))
+    { reqInput = encodeInitInput (MechanismId 0x250) [OpDigest] False BS.empty })
+  m7 <- case effDI of
+    EffectCrypto (FxDigestInit _) ->
+      case finishEffect defaultRules m6 resDI (EngineOkResource (EngineResourceId 11)) of
+        Left rej -> assertFailure ("digest init finish rejected: " ++ show (rejCode rej))
+        Right pc -> case publishDelta m6 (pcDelta pc) of
+          Left fault -> assertFailure ("digest init fault: " ++ show fault)
+          Right m' -> pure m'
+    _ -> assertFailure ("expected FxDigestInit, got: " ++ show effDI)
+  (codeDigest, m8) <- runReject m7 (ctxLoginReq b)
+  assertEqual "plain digest takes no grant" CKR_OPERATION_NOT_INITIALIZED codeDigest
+  -- The pending marked key grants — on its session only.
+  m9 <- snd <$> runCommit m8 (ctxLoginReq a)
+  assertEqual "grant lands on A" LoginContextUser =<< loginOf m9 a
+  assertEqual "B stays plain user" LoginUser =<< loginOf m9 b
+  -- First data use spends the grant and succeeds.
+  (pcS1, m10) <- runSignFinish m9 a "signature" "g27-bytes" 64
+  assertEqual "granted sign ok" CKR_OK (pcCode pcS1)
+  assertEqual "grant consumed" LoginUser =<< loginOf m10 a
+  -- The next operation needs a fresh grant: grantless use denies and
+  -- terminates, so a late grant finds nothing.
+  (_, m11) <- runCommit m10 (signInitReq a hB)
+  (codeNext, m12) <- runReject m11 (dataReq F_Sign a "signature" "g27-bytes" 64)
+  assertEqual "next key without fresh grant" CKR_USER_NOT_LOGGED_IN codeNext
+  stA12 <- case lookupSession m12 a of
+    Nothing -> assertFailure "session lost"
+    Just st -> pure st
+  assertEqual "grantless slot terminated" [] (activeSlots (ssOps stA12))
+  -- A fresh grant for the next key succeeds.
+  (_, m13) <- runCommit m12 (signInitReq a hB)
+  m14 <- snd <$> runCommit m13 (ctxLoginReq a)
+  (pcS2, m15) <- runSignFinish m14 a "signature" "g27-bytes" 64
+  assertEqual "fresh-grant sign ok" CKR_OK (pcCode pcS2)
+  -- Cancellation before first use kills the grant: the replacement
+  -- operation cannot spend it.
+  (_, m16) <- runCommit m15 (signInitReq a hA)
+  m17 <- snd <$> runCommit m16 (ctxLoginReq a)
+  assertEqual "grant lands again" LoginContextUser =<< loginOf m17 a
+  m18 <- snd <$> runCommit m17 (cancelReq a 0)
+  assertEqual "cancel kills the grant" LoginUser =<< loginOf m18 a
+  (_, m19) <- runCommit m18 (signInitReq a hB)
+  (codeCancel, m20) <- runReject m19 (dataReq F_Sign a "signature" "g27-bytes" 64)
+  assertEqual "replacement needs a fresh grant" CKR_USER_NOT_LOGGED_IN codeCancel
+  -- A terminating crypto failure ends the spent operation; the next
+  -- one still needs its own grant.
+  (_, m21) <- runCommit m20 (signInitReq a hA)
+  m22 <- snd <$> runCommit m21 (ctxLoginReq a)
+  (resF, _) <- runExecute m22 (dataReq F_Sign a "signature" "g27-bytes" 64)
+  m23 <- case finishEffect defaultRules m22 resF
+      (EngineFail (BackendBadParam "sign" "boom")) of
+    Left rej -> do
+      assertEqual "crypto failure code" CKR_GENERAL_ERROR (rejCode rej)
+      case publishDelta m22 (rejDelta rej) of
+        Left fault -> assertFailure ("failure fault: " ++ show fault)
+        Right m' -> pure m'
+    Right pc -> assertFailure ("failure committed: " ++ show (pcCode pc))
+  (_, m24) <- runCommit m23 (signInitReq a hB)
+  (codeFail, m25) <- runReject m24 (dataReq F_Sign a "signature" "g27-bytes" 64)
+  assertEqual "post-failure needs a fresh grant" CKR_USER_NOT_LOGGED_IN codeFail
+  -- A grant never crosses sessions: B's pending key cannot spend A's.
+  (_, m26) <- runCommit m25 (signInitReq a hA)
+  m27 <- snd <$> runCommit m26 (ctxLoginReq a)
+  m28 <- snd <$> runCommit m27 (cancelReq b 0)
+  (_, m29) <- runCommit m28 (signInitReq b hB)
+  (codeX, m30) <- runReject m29 (dataReq F_Sign b "signature" "g27-bytes" 64)
+  assertEqual "sibling grant does not cross" CKR_USER_NOT_LOGGED_IN codeX
+  assertEqual "A still holds its grant" LoginContextUser =<< loginOf m30 a
+  -- B's own grant spends on B while A keeps its own.
+  (_, m31) <- runCommit m30 (signInitReq b hB)
+  m32 <- snd <$> runCommit m31 (ctxLoginReq b)
+  (pcS3, m33) <- runSignFinish m32 b "signature" "g27-bytes" 64
+  assertEqual "sibling fresh-grant sign ok" CKR_OK (pcCode pcS3)
+  assertEqual "A grant untouched" LoginContextUser =<< loginOf m33 a
+  (pcS4, m34) <- runSignFinish m33 a "signature" "g27-bytes" 64
+  assertEqual "original grant still spends" CKR_OK (pcCode pcS4)
+  -- Two simultaneously pending operations take no grant: the grant
+  -- binds by uniqueness. Reducing to one grants again.
+  (_, m35) <- runCommit m34 (signInitReq a hA)
+  (_, m36) <- runCommit m35 (verifyInitReq a hB)
+  (codePair, m37) <- runReject m36 (ctxLoginReq a)
+  assertEqual "simultaneous pending takes no grant" CKR_OPERATION_NOT_INITIALIZED codePair
+  m38 <- snd <$> runCommit m37 (cancelReq a 0x6000)
+  m39 <- snd <$> runCommit m38 (ctxLoginReq a)
+  (pcS5, m40) <- runSignFinish m39 a "signature" "g27-pair" 64
+  assertEqual "reduced grant spends" CKR_OK (pcCode pcS5)
+  -- A second pending init while a grant is outstanding refuses, so
+  -- no later operation can steal the bound grant; a plain init
+  -- still admits and the bound grant still spends.
+  (_, m41) <- runCommit m40 (signInitReq a hA)
+  m42 <- snd <$> runCommit m41 (ctxLoginReq a)
+  (codeSteal, m43) <- runReject m42 (verifyInitReq a hB)
+  assertEqual "second pending init refused" CKR_OPERATION_ACTIVE codeSteal
+  _ <- runExecute m43 ((mkRequest F_DigestInit (Just a))
+    { reqInput = encodeInitInput (MechanismId 0x250) [OpDigest] False BS.empty })
+  (pcS6, _) <- runSignFinish m43 a "signature" "g27-steal" 64
+  assertEqual "bound grant still spends" CKR_OK (pcCode pcS6)
+
+-- | A spent grant stays spent across nonterminal outputs: short
+-- buffers and size queries stage and retry without re-login.
+caseContextGrantSurvivesShortBuffer :: IO ()
+caseContextGrantSurvivesShortBuffer = do
+  (a, m0) <- openSession seeded
+  m1 <- loginAs m0 a
+  (pcK, m2) <- runCommit m1 (createReq a (authKeyTmpl "key-s"))
+  hK <- commitHandle pcK
+  (_, m3) <- runCommit m2 (signInitReq a hK)
+  m4 <- snd <$> runCommit m3 (ctxLoginReq a)
+  -- A short buffer stages; the retry delivers with no fresh grant.
+  (pcShort, m5) <- runSignFinish m4 a "signature" "g27-short" 8
+  assertEqual "short buffer stages" CKR_BUFFER_TOO_SMALL (pcCode pcShort)
+  assertEqual "still plain user" LoginUser =<< loginOf m5 a
+  (pcRetry, m6) <- runCommit m5 (dataReq F_Sign a "signature" BS.empty 64)
+  assertEqual "retry delivers" CKR_OK (pcCode pcRetry)
+  -- A size query stages; the recall delivers with no fresh grant.
+  (_, m7) <- runCommit m6 (signInitReq a hK)
+  m8 <- snd <$> runCommit m7 (ctxLoginReq a)
+  (resQ, _) <- runExecute m8 ((mkRequest F_Sign (Just a))
+    { reqInput = "g27-query"
+    , reqRegions = [RegionBytes "signature" IntentNull]
+    })
+  m9 <- case finishEffect defaultRules m8 resQ (EngineOkBytes (BS.replicate 32 0xEE)) of
+    Left rej -> assertFailure ("query finish rejected: " ++ show (rejCode rej))
+    Right pc -> do
+      assertEqual "query stages" CKR_BUFFER_TOO_SMALL (pcCode pc)
+      case publishDelta m8 (pcDelta pc) of
+        Left fault -> assertFailure ("query fault: " ++ show fault)
+        Right m' -> pure m'
+  (pcRecall, _) <- runCommit m9 (dataReq F_Sign a "signature" BS.empty 64)
+  assertEqual "recall delivers" CKR_OK (pcCode pcRecall)
+
+-- | Cancelling an unrelated selection leaves the grant alone: only
+-- the granted operation's own end invalidates it.
+caseContextCancelKeepsUnrelatedGrant :: IO ()
+caseContextCancelKeepsUnrelatedGrant = do
+  (a, m0) <- openSession seeded
+  m1 <- loginAs m0 a
+  (pcK, m2) <- runCommit m1 (createReq a (authKeyTmpl "key-c"))
+  hK <- commitHandle pcK
+  (_, m3) <- runCommit m2 (signInitReq a hK)
+  m4 <- snd <$> runCommit m3 (ctxLoginReq a)
+  -- Cancelling an idle selection is a no-op: the grant survives and
+  -- still spends.
+  m5 <- snd <$> runCommit m4 (cancelReq a 0x400)
+  assertEqual "idle cancel keeps the grant" LoginContextUser =<< loginOf m5 a
+  (pcS, _) <- runSignFinish m5 a "signature" "g27-sel" 64
+  assertEqual "grant still spends" CKR_OK (pcCode pcS)
+
+-- | Context-PIN lockout performs the full logout transition: the
+-- token goes public on every session, private session objects die,
+-- private handles stale, and private-key operations retire — while
+-- the user role stays locked and the SO role stays independent.
+caseContextLockoutLogsOut :: IO ()
+caseContextLockoutLogsOut = do
+  (a, m0) <- openSession seeded
+  (b, m1) <- openSession m0
+  m2 <- loginAs m1 a
+  (pcK, m3) <- runCommit m2 (createReq a (authKeyTmpl "key-l"))
+  hK <- commitHandle pcK
+  (pcS, m4) <- runCommit m3 (createReq a [classData, label "lock-priv", privateFlag])
+  hS <- commitHandle pcS
+  (_, m5) <- runCommit m4 (signInitReq a hK)
+  (_, m6) <- runCommit m5 (signInitReq b hK)
+  ostK <- mustResolve m6 hK
+  -- The first misses refuse without logging out.
+  (code1, m7) <- runReject m6 (ctxLoginBadReq a)
+  assertEqual "first context miss" CKR_PIN_INCORRECT code1
+  assertEqual "still user on A" LoginUser =<< loginOf m7 a
+  assertEqual "still user on B" LoginUser =<< loginOf m7 b
+  (code2, m8) <- runReject m7 (ctxLoginBadReq a)
+  assertEqual "second context miss" CKR_PIN_INCORRECT code2
+  -- The locking miss logs the token out.
+  (code3, m9) <- runReject m8 (ctxLoginBadReq a)
+  assertEqual "third context miss locks" CKR_PIN_LOCKED code3
+  assertEqual "A public" LoginPublic =<< loginOf m9 a
+  assertEqual "B public" LoginPublic =<< loginOf m9 b
+  assertEqual "private session object destroyed" Nothing (resolveHandle m9 hS)
+  assertEqual "private key handle dead" Nothing (resolveHandle m9 hK)
+  assertBool "private token key survives" (lookupObject m9 (osId ostK) /= Nothing)
+  stA9 <- case lookupSession m9 a of
+    Nothing -> assertFailure "session lost"
+    Just st -> pure st
+  assertEqual "A ops retired" [] (activeSlots (ssOps stA9))
+  stB9 <- case lookupSession m9 b of
+    Nothing -> assertFailure "session lost"
+    Just st -> pure st
+  assertEqual "B ops retired" [] (activeSlots (ssOps stB9))
+  -- The user role is locked (PIN_LOCKED, not ALREADY_LOGGED_IN —
+  -- the token is public), while SO login still works.
+  (codeU, m10) <- runReject m9 (loginReq a)
+  assertEqual "locked user stays locked" CKR_PIN_LOCKED codeU
+  mSO <- snd <$> runCommit m10 (soLoginReq a)
+  assertEqual "SO independent" LoginSO =<< loginOf mSO a
 
 caseCreatorClose :: IO ()
 caseCreatorClose = do

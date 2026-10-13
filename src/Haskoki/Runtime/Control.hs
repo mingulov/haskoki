@@ -687,7 +687,7 @@ traceDispatch st cmd code = do
 -- Scenarios (declarative, bounded, no code)
 -- ---------------------------------------------------------------------------
 
--- | Maximum scenario actions (steps + rules).
+-- | Maximum scenario steps (rules are always empty).
 maxScenarioActions :: Int
 maxScenarioActions = 1024
 
@@ -698,8 +698,10 @@ data ScenarioStep = ScenarioStep
   , stArgs :: ![(String, Json)]
   } deriving (Eq, Show)
 
--- | A validated scenario: name, rules (kept verbatim, applied in
--- file order), steps (file order = execution order).
+-- | A validated scenario: name, always-empty rules, steps (file
+-- order = execution order). 'scRules' stays a reserved field:
+-- validation rejects any carried rule because the runner executes
+-- steps only, never rules.
 data Scenario = Scenario
   { scName :: !String
   , scRules :: ![Json]
@@ -716,27 +718,41 @@ knownVerbs =
   , "token.insert", "async.delay", "fault.window"
   ]
 
--- | Validate a scenario object: bounded size, known verbs, object
--- arguments. Rules stay opaque JSON (the runner matches them in
--- deterministic file order).
+-- | Validate a scenario object: bounded step count, known verbs,
+-- per-action arguments, well-formed extras. Rules must be absent or
+-- empty: the runner never executes them, so carrying any would
+-- silently mislead. Arguments validate per action (known keys,
+-- value shapes, and required keys). Step extras validate per
+-- action: 'save_as' only on 'session.open' (a non-empty string),
+-- 'expect' carrying the clause its action produces ('return'
+-- everywhere except slot-event.wait, 'event' only there).
+-- Effective session names are unique (positional slots count too,
+-- and the live @"s1"@ alias occupies its name). Duplicate keys
+-- reject at every level: lookup takes the first, so a second entry
+-- would silently vanish.
 validateScenario :: Json -> Either String Scenario
 validateScenario (JObj kvs) = do
+  checkDup "scenario field" kvs
   name <- case lookup "name" kvs of
     Just (JStr n) | not (null n) -> Right n
     _ -> Left "scenario needs a non-empty string 'name'"
-  rules <- case lookup "rules" kvs of
-    Nothing -> Right []
-    Just (JArr rs) -> Right rs
+  case lookup "rules" kvs of
+    Nothing -> pure ()
+    Just (JArr []) -> pure ()
+    Just (JArr _) ->
+      Left "scenario 'rules' must be empty (rules are not executed)"
     Just _ -> Left "scenario 'rules' must be an array"
   stepsVal <- case lookup "steps" kvs of
     Just (JArr ss) -> Right ss
     _ -> Left "scenario needs a 'steps' array"
   steps <- mapM parseStep stepsVal
-  if length steps + length rules > maxScenarioActions
+  checkOpenNames stepsVal
+  if length steps > maxScenarioActions
     then Left "scenario exceeds the bounded action count"
-    else Right (Scenario name rules steps)
+    else Right (Scenario name [] steps)
   where
     parseStep (JObj skvs) = do
+      checkDup "scenario step field" skvs
       act <- case lookup "action" skvs of
         Just (JStr a) -> Right a
         _ -> Left "scenario step needs a string 'action'"
@@ -747,6 +763,144 @@ validateScenario (JObj kvs) = do
         Nothing -> Right []
         Just (JObj pairs) -> Right pairs
         Just _ -> Left "scenario step 'arguments' must be an object"
+      mapM_ checkField skvs
+      checkArgs act args
+      checkSaveAs act skvs
+      checkExpect act skvs
       pure (ScenarioStep act args)
     parseStep _ = Left "scenario steps must be objects"
+    checkDup what pairs = case dupField pairs of
+      Nothing -> Right ()
+      Just k -> Left ("duplicate " ++ what ++ ": " ++ k)
+    dupField = go []
+      where
+        go _ [] = Nothing
+        go seen ((k, _) : rest)
+          | k `elem` seen = Just k
+          | otherwise = go (k : seen) rest
+    checkField (k, _)
+      | k `elem` ["action", "arguments", "save_as", "expect"] = Right ()
+      | otherwise = Left ("unknown scenario step field: " ++ k)
+    checkArgs act pairs = do
+      checkDup "scenario argument" pairs
+      mapM_ (checkArg act) pairs
+      mapM_ (checkRequired act pairs) (requiredArgs act)
+    checkRequired act pairs k = case lookup k pairs of
+      Just _ -> Right ()
+      Nothing -> Left ("scenario action '" ++ act ++ "' needs argument '" ++ k ++ "'")
+    checkArg act (k, v) = case lookup k (argSpec act) of
+      Nothing -> Left ("unknown argument '" ++ k ++ "' for action '" ++ act ++ "'")
+      Just ArgString -> case v of
+        JStr _ -> Right ()
+        _ -> typeErr "a string"
+      Just ArgNonEmptyString -> case v of
+        JStr s | not (null s) -> Right ()
+        _ -> typeErr "a non-empty string"
+      Just ArgBool -> case v of
+        JBool _ -> Right ()
+        _ -> typeErr "a boolean"
+      Just ArgInt -> case v of
+        JNum _ -> Right ()
+        _ -> typeErr "an integer"
+      Just (ArgIntRange lo hi) -> case v of
+        JNum n | n >= lo && n <= hi -> Right ()
+        _ -> Left ("scenario argument '" ++ k ++ "' for action '" ++ act
+          ++ "' must be an integer in " ++ show lo ++ ".." ++ show hi)
+      where
+        typeErr want = Left ("scenario argument '" ++ k ++ "' for action '"
+          ++ act ++ "' must be " ++ want)
+    checkSaveAs act skvs = case lookup "save_as" skvs of
+      Nothing -> Right ()
+      Just val
+        | act /= "session.open" ->
+            Left "scenario step 'save_as' is only supported on 'session.open'"
+        | otherwise -> case val of
+            JStr n | not (null n) -> Right ()
+            _ -> Left "scenario step 'save_as' must be a non-empty string"
+    checkExpect act skvs = case lookup "expect" skvs of
+      Nothing -> Right ()
+      Just (JObj ekvs) -> do
+        checkDup "scenario expect field" ekvs
+        case act of
+          "slot-event.wait" -> checkClause "event" ekvs
+          _ -> checkClause "return" ekvs
+      Just _ -> Left "scenario step 'expect' must be an object"
+    checkClause want ekvs = do
+      mapM_ (checkExpectField want) ekvs
+      case lookup want ekvs of
+        Just (JStr _) -> Right ()
+        _ -> Left ("scenario step 'expect' needs a string '" ++ want ++ "'")
+    checkExpectField want (k, _)
+      | k == want = Right ()
+      | otherwise = Left ("scenario step 'expect' field '" ++ k
+          ++ "' is not supported here")
+    -- Effective session names are unique before execution: each
+    -- open takes its 'save_as' or the positional sN slot (N counts
+    -- opens from 1, exactly as the runner numbers them). A name
+    -- colliding with an earlier open refuses, as does a literal
+    -- "s1" while the implicit alias is live (a named session
+    -- exists but no literal s1): the alias already means the
+    -- first-opened session. Runs after 'parseStep', so 'save_as'
+    -- here is well-formed.
+    checkOpenNames raw = go (1 :: Int) [] raw
+      where
+        go _ _ [] = Right ()
+        go n occupied (JObj skvs : rest) = case lookup "action" skvs of
+          Just (JStr "session.open") -> do
+            let name = case lookup "save_as" skvs of
+                  Just (JStr s) -> s
+                  _ -> "s" ++ show n
+            if name `elem` occupied
+              then Left ("duplicate session name: " ++ name)
+              else if name == "s1" && not (null occupied)
+                then Left "duplicate session name: s1"
+                else go (n + 1) (occupied ++ [name]) rest
+          _ -> go n occupied rest
+        go n occupied (_ : rest) = go n occupied rest
 validateScenario _ = Left "scenario must be a JSON object"
+
+-- | Expected argument value shapes.
+data ArgType
+  = ArgString
+  | ArgNonEmptyString
+  | ArgBool
+  | ArgInt
+  | ArgIntRange !Integer !Integer
+  deriving (Eq, Show)
+
+-- | Per-action argument surface: the keys the runner reads plus the
+-- documentary keys the shipped fixtures carry (token names, fixture
+-- labels, capacities). Anything else is a typo the runner would
+-- silently ignore, so it rejects. An empty session reference can
+-- never resolve ('save_as' is never empty), so it rejects too.
+argSpec :: String -> [(String, ArgType)]
+argSpec "fixture.load" =
+  [("fixture", ArgString), ("only_if_new_store", ArgBool)]
+argSpec "session.open" =
+  [("token", ArgString), ("read_write", ArgBool), ("asynchronous", ArgBool)]
+argSpec "session.login" =
+  [("session", ArgNonEmptyString), ("role", ArgString), ("pin", ArgString)]
+argSpec "sign.init" =
+  [("session", ArgNonEmptyString), ("fixture_key", ArgString), ("mechanism", ArgString)]
+argSpec "sign" =
+  [("session", ArgNonEmptyString), ("data_base64", ArgString), ("output_capacity", ArgInt)]
+argSpec "async.complete" =
+  [("session", ArgNonEmptyString), ("function", ArgString)]
+argSpec "token.remove" = [("token", ArgString)]
+argSpec "slot-event.wait" = [("nonblocking", ArgBool)]
+argSpec "token.insert" = [("slot", ArgIntRange 0 0xFFFFFFFF)]
+argSpec "async.delay" =
+  [("session", ArgNonEmptyString), ("polls", ArgIntRange 0 1000000)]
+argSpec "fault.window" =
+  [("start", ArgIntRange 0 1000000), ("ticks", ArgIntRange 0 1000000)]
+argSpec _ = []
+
+-- | Arguments without a runner default: absence would fail during
+-- execution, so validation requires them beforehand. Every other
+-- key is optional ('session' defaults to the @"s1"@ slot,
+-- 'asynchronous'\/'nonblocking' to runner defaults).
+requiredArgs :: String -> [String]
+requiredArgs "token.insert" = ["slot"]
+requiredArgs "async.delay" = ["polls"]
+requiredArgs "fault.window" = ["start", "ticks"]
+requiredArgs _ = []

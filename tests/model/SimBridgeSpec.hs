@@ -79,6 +79,18 @@ spec = testGroup "Sim bridge"
   , testCase "sim verbs need a test-enabled instance" caseVerbsGated
   , testCase "fault windows: config seed applies, later verb replaces" caseFaultWindows
   , testCase "sync sessions never pend (guard)" caseSyncNeverPends
+  , testCase "rules: nonempty rejects, empty validates" caseRulesRejected
+  , testCase "save_as validates (string, session.open only)" caseSaveAsValidated
+  , testCase "expect validates (object, supported clause only)" caseExpectValidated
+  , testCase "unknown step fields reject" caseStepFieldsRejected
+  , testCase "duplicate fields reject" caseDuplicateFieldsRejected
+  , testCase "per-action arguments validate" caseArgumentsValidated
+  , testCase "save_as names the opened session" caseSaveAsHonored
+  , testCase "duplicate session names refuse" caseSaveAsDuplicate
+  , testCase "s1 aliases the first-opened session" caseFirstOpenedAlias
+  , testCase "expect mismatch fails the run" caseExpectEnforced
+  , testCase "wrong initialize expectation fails" caseInitializeWrongExpectationFails
+  , testCase "every verb's expectation enforces" caseEveryVerbExpectation
   ]
 
 fixture :: FilePath -> FilePath
@@ -235,13 +247,34 @@ step action args mExpect = JObj $
   [("action", JStr action), ("arguments", JObj args)] ++
   maybe [] (\w -> [("expect", JObj [("return", JStr w)])]) mExpect
 
+-- | A scenario object with a name, optional rules, and built steps.
+scenarioWith :: String -> Maybe [Json] -> [Json] -> Json
+scenarioWith name mRules steps = JObj $
+  [("name", JStr name)]
+  ++ maybe [] (\rs -> [("rules", JArr rs)]) mRules
+  ++ [("steps", JArr steps)]
+
+-- | Reject unless validation fails.
+assertRejected :: String -> Json -> IO ()
+assertRejected tag val = case validateScenario val of
+  Left _ -> pure ()
+  Right _ -> assertFailure ("must reject: " ++ tag)
+
 -- | Run a temp scenario (built steps) under sim-demo.toml.
 runTempScenario :: String -> [Json] -> IO CtlExit
 runTempScenario tag steps =
+  runTempScenarioFull (fixture "sim-demo.toml") tag Nothing steps
+
+-- | Run a temp scenario (built steps, optional rules) under any
+-- fixture config.
+runTempScenarioFull
+  :: FilePath -> String -> Maybe [Json] -> [Json] -> IO CtlExit
+runTempScenarioFull cfg tag mRules steps =
   bracket (writeTemp tag body) removeFile $ \path ->
-    runCtl ["scenario", "run", "--config", fixture "sim-demo.toml", "--scenario", path]
+    runCtl ["scenario", "run", "--config", cfg, "--scenario", path]
   where
-    body = BC8.unpack (renderJson (JObj [("name", JStr ("scenario-" ++ tag)), ("steps", JArr steps)]))
+    body = BC8.unpack
+      (renderJson (scenarioWith ("scenario-" ++ tag) mRules steps))
     writeTemp t content = do
       base <- getTemporaryDirectory
       let path = base </> ("haskoki-sim-" ++ t ++ ".json")
@@ -328,3 +361,330 @@ caseSyncNeverPends = do
     ]
   assertEqual ("sync run exit 0: " ++ ceErr r) 0 (ceCode r)
   assertBool "sync sign immediate" ("step[6] sign -> CKR_OK" `isInfixOf` ceOut r)
+
+-- ---------------------------------------------------------------------------
+-- Strict scenario inputs (C4)
+-- ---------------------------------------------------------------------------
+
+-- | The runner never executes rules, so a nonempty list rejects at
+-- load (unit + end-to-end); absent and empty rules validate.
+caseRulesRejected :: IO ()
+caseRulesRejected = do
+  let bad = scenarioWith "c4-rules" (Just [JObj [("match", JNull)]])
+        [JObj [("action", JStr "initialize")]]
+  case validateScenario bad of
+    Left err -> assertBool "names rules" ("rules" `isInfixOf` err)
+    Right _ -> assertFailure "nonempty rules must reject"
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "rulesrun"
+    (Just [JObj [("match", JNull), ("effect", JNull)]])
+    [step "initialize" [] Nothing, step "finalize" [] Nothing]
+  assertEqual "rules refuse at load" 1 (ceCode r)
+  assertBool "rejection named" ("scenario-rejected" `isInfixOf` ceErr r)
+  let goodAbsent = scenarioWith "c4-rules" Nothing
+        [JObj [("action", JStr "initialize")]]
+  case validateScenario goodAbsent of
+    Left err -> assertFailure ("absent rules must validate: " ++ err)
+    Right sc -> assertEqual "no rules kept" [] (scRules sc)
+  let goodEmpty = scenarioWith "c4-rules" (Just [])
+        [JObj [("action", JStr "initialize")]]
+  case validateScenario goodEmpty of
+    Left err -> assertFailure ("empty rules must validate: " ++ err)
+    Right sc -> assertEqual "no rules kept" [] (scRules sc)
+
+-- | 'save_as' must be a non-empty string, and only 'session.open'
+-- carries one (anywhere else it would be silently ignored).
+caseSaveAsValidated :: IO ()
+caseSaveAsValidated = do
+  assertRejected "numeric save_as" (openWith [("save_as", JNum 1)])
+  assertRejected "empty save_as" (openWith [("save_as", JStr "")])
+  assertRejected "save_as on sign" (scenarioWith "c4-saveas" Nothing
+    [JObj [("action", JStr "sign"), ("save_as", JStr "s9")]])
+  case validateScenario (openWith [("save_as", JStr "alice")]) of
+    Left err -> assertFailure ("session.open save_as must validate: " ++ err)
+    Right sc -> assertEqual "one step" 1 (length (scSteps sc))
+  where
+    openWith extras = scenarioWith "c4-saveas" Nothing
+      [JObj ([("action", JStr "session.open")] ++ extras)]
+
+-- | 'expect' must be an object carrying the clause its action
+-- produces ('return' everywhere except slot-event.wait, 'event'
+-- only there); malformed and wrong-clause expects reject instead
+-- of passing silently.
+caseExpectValidated :: IO ()
+caseExpectValidated = do
+  assertRejected "non-object expect" (scenarioWith "c4-expect" Nothing
+    [JObj [("action", JStr "sign"), ("expect", JStr "CKR_OK")]])
+  assertRejected "non-string return" (scenarioWith "c4-expect" Nothing
+    [JObj [("action", JStr "sign")
+      , ("expect", JObj [("return", JNum 1)])]])
+  assertRejected "event on initialize" (scenarioWith "c4-expect" Nothing
+    [JObj [("action", JStr "initialize")
+      , ("expect", JObj [("event", JStr "token-state-change")])]])
+  assertRejected "return on slot-event.wait" (scenarioWith "c4-expect" Nothing
+    [JObj [("action", JStr "slot-event.wait")
+      , ("expect", JObj [("return", JStr "CKR_OK")])]])
+  assertRejected "event on sign" (scenarioWith "c4-expect" Nothing
+    [JObj [("action", JStr "sign")
+      , ("expect", JObj [("event", JStr "token-state-change")])]])
+  assertRejected "unknown expect key" (scenarioWith "c4-expect" Nothing
+    [JObj [("action", JStr "sign")
+      , ("expect", JObj [("return", JStr "CKR_OK"), ("trace", JBool True)])]])
+  case validateScenario (scenarioWith "c4-expect" Nothing
+    [ JObj [("action", JStr "initialize")
+      , ("expect", JObj [("return", JStr "CKR_OK")])]
+    , JObj [("action", JStr "sign")
+      , ("expect", JObj [("return", JStr "CKR_OK")])]
+    , JObj [("action", JStr "slot-event.wait")
+      , ("expect", JObj [("event", JStr "token-state-change")])]
+    ]) of
+    Left err -> assertFailure ("well-formed expects must validate: " ++ err)
+    Right sc -> assertEqual "three steps" 3 (length (scSteps sc))
+
+-- | Unknown step-level fields reject (the runner would ignore them).
+caseStepFieldsRejected :: IO ()
+caseStepFieldsRejected =
+  assertRejected "unknown step field" (scenarioWith "c4-fields" Nothing
+    [JObj [("action", JStr "initialize"), ("when", JStr "now")]])
+
+-- | Duplicate keys reject: lookup takes the first, so a second
+-- entry would silently vanish (notably an empty 'rules' hiding a
+-- nonempty one).
+caseDuplicateFieldsRejected :: IO ()
+caseDuplicateFieldsRejected = do
+  assertRejected "duplicate rules" (JObj
+    [ ("name", JStr "c4-dup")
+    , ("rules", JArr [])
+    , ("rules", JArr [JObj []])
+    , ("steps", JArr [JObj [("action", JStr "initialize")]])
+    ])
+  assertRejected "duplicate step field" (scenarioWith "c4-dup" Nothing
+    [JObj [("action", JStr "initialize"), ("action", JStr "finalize")]])
+  assertRejected "duplicate argument" (scenarioWith "c4-dup" Nothing
+    [JObj [("action", JStr "session.login")
+      , ("arguments", JObj [("session", JStr "s1"), ("session", JStr "s2")])]])
+  assertRejected "duplicate expect key" (scenarioWith "c4-dup" Nothing
+    [JObj [("action", JStr "sign")
+      , ("expect", JObj [("return", JStr "CKR_OK"), ("return", JStr "CKR_OK")])]])
+
+-- | Per-action arguments validate before execution: unknown keys,
+-- mistyped values, out-of-range integers, and empty session
+-- references reject; the documented per-action shapes validate.
+caseArgumentsValidated :: IO ()
+caseArgumentsValidated = do
+  assertRejected "unknown argument" (withArgs "sign" [("seesion", JStr "s1")])
+  assertRejected "argument on bare verb"
+    (withArgs "initialize" [("token", JStr "demo-token")])
+  assertRejected "mistyped asynchronous"
+    (withArgs "session.open" [("asynchronous", JStr "yes")])
+  assertRejected "mistyped session"
+    (withArgs "session.login" [("session", JNum 42)])
+  assertRejected "mistyped nonblocking"
+    (withArgs "slot-event.wait" [("nonblocking", JNum 1)])
+  assertRejected "mistyped slot"
+    (withArgs "token.insert" [("slot", JStr "5")])
+  assertRejected "negative slot"
+    (withArgs "token.insert" [("slot", JNum (-1))])
+  assertRejected "oversized polls"
+    (withArgs "async.delay" [("session", JStr "s1"), ("polls", JNum 1000001)])
+  assertRejected "negative fault start"
+    (withArgs "fault.window" [("start", JNum (-1)), ("ticks", JNum 1)])
+  assertRejected "empty session"
+    (withArgs "sign" [("session", JStr "")])
+  assertRejected "insert without slot" (withArgs "token.insert" [])
+  assertRejected "delay without polls"
+    (withArgs "async.delay" [("session", JStr "s1")])
+  assertRejected "window without ticks"
+    (withArgs "fault.window" [("start", JNum 9)])
+  assertRejected "window without start"
+    (withArgs "fault.window" [("ticks", JNum 1)])
+  case validateScenario (scenarioWith "c4-args" Nothing
+    [withArgsStep "async.delay" [("polls", JNum 1)]]) of
+    Left err -> assertFailure ("session defaults to s1: " ++ err)
+    Right _ -> pure ()
+  case validateScenario (scenarioWith "c4-args" Nothing
+    [ withArgsStep "fixture.load"
+        [("fixture", JStr "minimal-demo"), ("only_if_new_store", JBool True)]
+    , withArgsStep "session.open"
+        [("token", JStr "demo-token"), ("read_write", JBool True)
+        , ("asynchronous", JBool True)]
+    , withArgsStep "session.login"
+        [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")]
+    , withArgsStep "sign.init"
+        [("session", JStr "s1"), ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")]
+    , withArgsStep "sign"
+        [("session", JStr "s1"), ("data_base64", JStr "eA")
+        , ("output_capacity", JNum 256)]
+    , withArgsStep "async.complete"
+        [("session", JStr "s1"), ("function", JStr "C_Sign")]
+    , withArgsStep "token.remove" [("token", JStr "demo-token")]
+    , withArgsStep "slot-event.wait" [("nonblocking", JBool True)]
+    , withArgsStep "token.insert" [("slot", JNum 5)]
+    , withArgsStep "async.delay" [("session", JStr "s1"), ("polls", JNum 1)]
+    , withArgsStep "fault.window" [("start", JNum 9), ("ticks", JNum 1)]
+    ]) of
+    Left err -> assertFailure ("documented shapes must validate: " ++ err)
+    Right sc -> assertEqual "eleven steps" 11 (length (scSteps sc))
+  where
+    withArgsStep action args =
+      JObj [("action", JStr action), ("arguments", JObj args)]
+    withArgs action args = scenarioWith "c4-args" Nothing [withArgsStep action args]
+
+-- | 'session.open' honors 'save_as': later steps address the saved
+-- name (sync session under maximal-demo signs immediately).
+caseSaveAsHonored :: IO ()
+caseSaveAsHonored = do
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "saveas" Nothing
+    [ step "initialize" [] Nothing
+    , step "fixture.load" [] Nothing
+    , stepSaveAs "session.open"
+        [("token", JStr "demo-token"), ("read_write", JBool True)] "alice"
+    , step "session.login"
+        [("session", JStr "alice"), ("role", JStr "USER"), ("pin", JStr "1234")]
+        Nothing
+    , step "sign.init" [("session", JStr "alice")] Nothing
+    , step "sign" [("session", JStr "alice")] (Just "CKR_OK")
+    , step "finalize" [] Nothing
+    ]
+  assertEqual ("save_as run exit 0: " ++ ceErr r) 0 (ceCode r)
+  assertBool "saved session signs"
+    ("step[5] sign -> CKR_OK" `isInfixOf` ceOut r)
+
+-- | Session names are unique before execution: a 'save_as'
+-- colliding with an earlier positional name, with an earlier
+-- 'save_as', or with the live "s1" alias rejects at load.
+caseSaveAsDuplicate :: IO ()
+caseSaveAsDuplicate = do
+  assertRejected "positional then save_as s1" (scenarioWith "c4-dupname" Nothing
+    [ JObj [("action", JStr "session.open")]
+    , JObj [("action", JStr "session.open"), ("save_as", JStr "s1")]
+    ])
+  assertRejected "repeated save_as" (scenarioWith "c4-dupname" Nothing
+    [ JObj [("action", JStr "session.open"), ("save_as", JStr "zeta")]
+    , JObj [("action", JStr "session.open"), ("save_as", JStr "zeta")]
+    ])
+  assertRejected "save_as s1 steals the alias" (scenarioWith "c4-dupname" Nothing
+    [ JObj [("action", JStr "session.open"), ("save_as", JStr "zeta")]
+    , JObj [("action", JStr "session.open"), ("save_as", JStr "s1")]
+    ])
+  case validateScenario (scenarioWith "c4-dupname" Nothing
+    [ JObj [("action", JStr "session.open"), ("save_as", JStr "zeta")]
+    , JObj [("action", JStr "session.open"), ("save_as", JStr "alpha")]
+    ]) of
+    Left err -> assertFailure ("distinct names must validate: " ++ err)
+    Right _ -> pure ()
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "savedup" Nothing
+    [ step "initialize" [] Nothing
+    , step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , stepSaveAs "session.open" [] "s1"
+    ]
+  assertEqual "duplicate refuses" 1 (ceCode r)
+  assertBool "refused at load" ("scenario-rejected" `isInfixOf` ceErr r)
+  assertBool "duplicate named" ("duplicate session name" `isInfixOf` ceErr r)
+  r2 <- runTempScenarioFull (fixture "maximal-demo.toml") "savedupalias" Nothing
+    [ step "initialize" [] Nothing
+    , step "fixture.load" [] Nothing
+    , stepSaveAs "session.open" [] "zeta"
+    , stepSaveAs "session.open" [] "s1"
+    ]
+  assertEqual "alias steal refuses" 1 (ceCode r2)
+  assertBool "refused at load" ("scenario-rejected" `isInfixOf` ceErr r2)
+  assertBool "duplicate named" ("duplicate session name" `isInfixOf` ceErr r2)
+
+-- | A declared expectation that disagrees with the outcome fails the
+-- run (async sign pends, so expecting CKR_OK must fail).
+caseExpectEnforced :: IO ()
+caseExpectEnforced = do
+  r <- runTempScenario "wrongexpect"
+    [ step "initialize" [] Nothing
+    , step "fixture.load" [] Nothing
+    , step "session.open" (openArgs True) Nothing
+    , step "session.login" loginArgs Nothing
+    , step "sign.init" [("session", JStr "s1")] Nothing
+    , step "fault.window" [("start", JNum 100), ("ticks", JNum 0)] Nothing
+    , step "sign" signArgs (Just "CKR_OK")
+    ]
+  assertEqual "mismatch fails" 1 (ceCode r)
+  assertBool "mismatch named" ("expect.return mismatch" `isInfixOf` ceErr r)
+  where
+    openArgs async =
+      [ ("token", JStr "demo-token"), ("read_write", JBool True)
+      , ("asynchronous", JBool async)
+      ]
+    loginArgs = [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")]
+    signArgs = [("session", JStr "s1"), ("data_base64", JStr "eA"), ("output_capacity", JNum 256)]
+
+-- | The "s1" alias resolves to the first-OPENED session, not the
+-- first by name: zeta (async) opens before alpha (sync), so a sign
+-- through s1 pends.
+caseFirstOpenedAlias :: IO ()
+caseFirstOpenedAlias = do
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "alias" Nothing
+    [ step "initialize" [] Nothing
+    , step "fixture.load" [] Nothing
+    , stepSaveAs "session.open" [("asynchronous", JBool True)] "zeta"
+    , stepSaveAs "session.open" [("asynchronous", JBool False)] "alpha"
+    , step "sign.init" [("session", JStr "s1")] Nothing
+    , step "sign" [("session", JStr "s1")] (Just "CKR_PENDING")
+    , step "finalize" [] Nothing
+    ]
+  assertEqual ("alias run exit 0: " ++ ceErr r) 0 (ceCode r)
+  assertBool "first-opened session signs"
+    ("step[5] sign -> CKR_PENDING" `isInfixOf` ceOut r)
+
+-- | A wrong expectation on 'initialize' fails the run, naming the
+-- step, the action, and the expected vs actual results.
+caseInitializeWrongExpectationFails :: IO ()
+caseInitializeWrongExpectationFails = do
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "wronginit" Nothing
+    [ JObj [("action", JStr "initialize")
+      , ("expect", JObj [("return", JStr "CKR_GENERAL_ERROR")])]
+    ]
+  assertEqual "mismatch fails" 1 (ceCode r)
+  assertBool "step named" ("step[0]" `isInfixOf` ceErr r)
+  assertBool "action named" ("initialize" `isInfixOf` ceErr r)
+  assertBool "expected named" ("CKR_GENERAL_ERROR" `isInfixOf` ceErr r)
+  assertBool "actual named" ("CKR_OK" `isInfixOf` ceErr r)
+
+-- | Every verb's supported expectation enforces in one run: return
+-- clauses on each CKR-reporting action, the event clause on the
+-- slot wait (async sign pends, delay extends the poll count).
+caseEveryVerbExpectation :: IO ()
+caseEveryVerbExpectation = do
+  r <- runTempScenario "everyverb"
+    [ step "initialize" [] (Just "CKR_OK")
+    , step "fixture.load" [] (Just "CKR_OK")
+    , step "token.insert" [("slot", JNum 5)] (Just "CKR_OK")
+    , step "session.open" (openArgs True) (Just "CKR_OK")
+    , step "session.login" loginArgs (Just "CKR_OK")
+    , step "sign.init" [("session", JStr "s1")] (Just "CKR_OK")
+    , step "fault.window" [("start", JNum 100), ("ticks", JNum 0)] (Just "CKR_OK")
+    , step "sign" signArgs (Just "CKR_PENDING")
+    , step "async.delay" [("session", JStr "s1"), ("polls", JNum 1)] (Just "CKR_OK")
+    , step "async.complete" compArgs (Just "CKR_PENDING")
+    , step "async.complete" compArgs (Just "CKR_PENDING")
+    , step "async.complete" compArgs (Just "CKR_PENDING")
+    , step "async.complete" compArgs (Just "CKR_OK")
+    , step "token.remove" [("token", JStr "demo-token")] (Just "CKR_OK")
+    , JObj [("action", JStr "slot-event.wait")
+      , ("arguments", JObj [("nonblocking", JBool True)])
+      , ("expect", JObj [("event", JStr "token-state-change")])]
+    , step "finalize" [] (Just "CKR_OK")
+    ]
+  assertEqual ("every-verb run exit 0: " ++ ceErr r) 0 (ceCode r)
+  assertBool "wait reports the event"
+    ("step[14] slot-event.wait -> event:token-state-change" `isInfixOf` ceOut r)
+  where
+    openArgs async =
+      [ ("token", JStr "demo-token"), ("read_write", JBool True)
+      , ("asynchronous", JBool async)
+      ]
+    loginArgs = [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")]
+    signArgs = [("session", JStr "s1"), ("data_base64", JStr "eA"), ("output_capacity", JNum 256)]
+    compArgs = [("session", JStr "s1"), ("function", JStr "C_Sign")]
+
+-- | One scenario step builder with a 'save_as' name.
+stepSaveAs :: String -> [(String, Json)] -> String -> Json
+stepSaveAs action args name = JObj
+  [("action", JStr action), ("arguments", JObj args), ("save_as", JStr name)]

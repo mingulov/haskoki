@@ -51,12 +51,15 @@ import Control.Concurrent
   )
 import Control.Concurrent.MVar (MVar)
 import Control.Exception
-  ( IOException
+  ( AsyncException (ThreadKilled)
+  , IOException
   , SomeException
   , bracket
   , catch
+  , fromException
   , try
   )
+import Control.Monad (replicateM_)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import EnvLock (withEnvLock)
 import Foreign.Ptr (nullPtr)
@@ -67,7 +70,13 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
-import Haskoki.Engine.Backend (BackendError (..), EngineResult (..))
+import Haskoki.Engine.Backend
+  ( BackendEnv
+  , BackendError (..)
+  , CryptoBackend (..)
+  , EngineResult (..)
+  )
+import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
 import Haskoki.FFI.Exports
   ( CryptoAcquisition (..)
   , cryptoAcquisition
@@ -111,6 +120,7 @@ spec envLock = testGroup "Acquisition hooks"
   , testCase "crypto open dishonest config is NULL" (caseCryptoEnvDishonest envLock)
   , testCase "std open dishonest config is NULL" (caseStdEnvDishonest envLock)
   , testCase "Instance open dishonest config is NULL" (caseInstanceEnvDishonest envLock)
+  , testCase "real openBackend kill-loop unwinds without wedge" caseRealOpenKillLoop
   ]
 
 isNull :: StablePtr a -> Bool
@@ -448,3 +458,40 @@ caseEnvRaceRegression envLock = do
       withConfigEnv envLock (Just "/nonexistent-garbage.toml") $ do
         putMVar entered ()
         threadDelay 1000000
+
+-- | Adoption pin (no hooks): a victim looping the REAL
+-- 'openBackend' dies 'ThreadKilled' when killed — the masked
+-- adoption bracketing unwinds the raw env instead of wedging —
+-- and a fresh open/close works after. The rendezvous sits inside
+-- the tried region, so the kill always lands in 'try' (no silent
+-- death, no wedge). Successful opens in the loop are deliberately
+-- not closed (GC owns them; closing in the loop would race
+-- close-gating work instead of pinning adoption). Leak-freedom under
+-- faults is proven with per-test gates in OwnershipSpec: this
+-- suite's KAT traffic shares the process, so no hook state is
+-- armed here.
+caseRealOpenKillLoop :: IO ()
+caseRealOpenKillLoop = withTimeout "real-open-kill" $ do
+  replicateM_ 3 trial
+  r <- openBackend "provider=default"
+    :: IO (EngineResult (BackendEnv OpenSSL4))
+  case r of
+    EngineFail err -> assertFailure ("post-test open failed: " ++ show err)
+    EngineOk env -> closeBackend env
+  where
+    trial = do
+      entered <- newEmptyMVar
+      done <- newEmptyMVar
+      tid <- forkIO (try (putMVar entered () >> loop) >>= putMVar done)
+      takeMVar entered
+      killThread tid
+      r <- takeMVar done :: IO (Either SomeException ())
+      case r of
+        Left e -> case fromException e of
+          Just ThreadKilled -> pure ()
+          _ -> assertFailure ("expected ThreadKilled, got " ++ show e)
+        Right () -> assertFailure "kill-loop victim must die, loop returned"
+    loop = do
+      _ <- openBackend "provider=default"
+        :: IO (EngineResult (BackendEnv OpenSSL4))
+      loop
