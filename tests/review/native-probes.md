@@ -34,6 +34,8 @@ is used. Run with the ordinary OpenSSL-backed fresh demonstrator configuration.
 | --- | --- |
 | `dh-collision` | Imports ffdhe2048 private exponent 12345, validates a peer-2 derivation against independent modular power, then derives from the full native collision peer and checks all 256 bytes. Refused setup or mismatched peer-2 control is explicitly inconclusive. |
 | `derive-protection` | Imports the obvious generic-secret fixture `00 01 ... 1f` with sensitivity true, extractability false, derivation permitted. First proves direct value unreadability, then requests offset-zero, full-length `CKM_EXTRACT_KEY_FROM_KEY` with an explicit protection downgrade. Records allowed template/policy refusal, inherited protection, weakened attributes, or full fixture recovery. No real material is used. |
+| `context-binding` | Requests the public version-3.0 interface through `C_GetInterface`, then uses that table's `C_SessionCancel`. Generates two disposable P-256 key pairs with explicit, read-back `CKA_ALWAYS_AUTHENTICATE=true`. Requires missing-grant denial and a valid correctly authenticated B signature as controls. Authenticates marked operation A, cancels before first data use, then signs with key B without a new context grant. A valid B signature is the precise stale-grant candidate. |
+| `session-limit` | Requires runner configuration with exactly two allowed sessions. Prints advertised token metadata, opens two RW sessions, requires the third open to return `CKR_SESSION_COUNT`, then closes all sessions. Metadata is an observation for separate comparison against the effective configuration. |
 | `private-logout` | Logged-in user creates private session and token CKO_DATA objects. Exact-label searches check both controls, invisibility after logout, then session-object destruction versus token-object persistence after login. Reappearing session object is a contract candidate. |
 | `private-so` | Public creation without login and private creation as user are positive controls. Private creation without login and as SO must return `CKR_USER_NOT_LOGGED_IN`. Successful SO creation is a candidate even if its new handle is invisible to SO. |
 | `digest-os` | `CKF_OS_LOCKING_OK`, no application callbacks. 1/2/4/8 separate RW sessions; each worker performs 64 operations, alternating one-shot and two-update multipart SHA-256. A start gate releases workers only after all are ready. Every byte and both 16-byte output canaries are checked. |
@@ -54,6 +56,15 @@ at this baseline, so lifecycle records their results without reclassifying that
 known limitation as a surprise defect. Token flag observations alone do not prove
 the implementation enforces each advertised policy. The bounded digest exercise
 checks ordinary supported usage, not absence of all concurrency/lifetime defects.
+
+`context-binding` uses raw `CKM_ECDSA` over a fixed public SHA-256 fixture digest,
+checks the 64-byte P-256 signature and output canaries, and verifies signatures
+through the matching generated public key. This is a public call-sequence control,
+not an independent cryptographic oracle. The v3 table is obtained for an explicit
+requested version; no legacy function table is reinterpreted as a larger table.
+An unsupported generation/interface/context-login setup is inconclusive. A denial
+after cancellation must be `CKR_USER_NOT_LOGGED_IN`; unrelated failures do not
+prove operation-bound authentication. All four fixture key objects are cleaned up.
 
 ## Independent expected values
 

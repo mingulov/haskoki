@@ -17,6 +17,9 @@ RESULTS = []
 PROBE_ENV = os.environ.copy()
 PROBE_ENV.pop("HASKOKI_CONFIG", None)
 PROBE_ENV.pop("HASKOKI_TRACE", None)
+FOLLOWUP = sys.argv[1:] == ["--followup"]
+if sys.argv[1:] not in ([], ["--followup"]):
+    raise SystemExit("usage: run-source-checks.py [--followup]")
 
 
 def record(name, command, *, timeout=240, env=None, classification="regression"):
@@ -71,21 +74,36 @@ def configuration(name, *, sqlite=False, extra=""):
     return {"HASKOKI_CONFIG": str(location)}
 
 
-record("versions", ["bash", "-c", "git rev-parse HEAD; ghc --version; cabal --version; cc --version; /opt/openssl-4.0.2/bin/openssl version; p11tool --version; java -version; dpkg-query -W opensc gnutls-bin p11-kit default-jdk-headless"], timeout=30, classification="provenance")
+record("versions", ["bash", "-c", "set -euo pipefail\nprintf 'GITHUB_SHA=%s\\n' \"$GITHUB_SHA\"\nghc --version\ncabal --version\ncc --version\n/opt/openssl-4.0.2/bin/openssl version"], timeout=30, classification="provenance")
 modules = sorted((ROOT / "dist-newstyle").rglob("libhaskoki*.so"))
 if len(modules) != 1:
     record("module-discovery", ["python3", "-c", "raise SystemExit('SETUP_ERROR expected exactly one shared module')"], classification="setup")
+    if FOLLOWUP:
+        failures = [r["name"] for r in RESULTS if r["status"] != "pass"]
+        print("SUMMARY " + json.dumps({"cases": len(RESULTS), "failures": failures}), flush=True)
+        sys.exit(1)
 else:
     module = str(modules[0])
     (OUT / "module.json").write_text(json.dumps({"path": module, "sha256": hashlib.sha256(modules[0].read_bytes()).hexdigest()}, indent=2) + "\n")
     native = str(OUT / "native_product_probe")
     if record("compile-native", ["cc", "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-Ispec/vendor", "tests/review/native_product_probe.c", "-o", native, "-ldl", "-lpthread"], classification="setup"):
-        for mode in ["dh-collision", "derive-protection", "private-logout", "private-so", "digest-os", "digest-app", "lifecycle", "token-info", "pin-lockout-reopen"]:
-            record("native-" + mode, [native, module, mode], env=configuration("native-" + mode, sqlite=mode == "pin-lockout-reopen"), classification="diagnostic")
-        limits = configuration("limits-two-pin-one", extra='\n[limits]\nsessions = 2\n\n[tokens]\nlabels = ["haskoki-demo"]\nso_pins = ["s"]\nuser_pins = ["u"]\n')
-        limits.update(HSK_REVIEW_USER_PIN="u", HSK_REVIEW_SO_PIN="s")
-        record("native-configured-limits", [native, module, "token-info"], env=limits, classification="diagnostic-observation")
-        record("opensc-configured-pin-one", ["pkcs11-tool", "--module", module, "--login", "--pin", "u", "--list-objects"], env=limits, classification="diagnostic-observation")
+        if FOLLOWUP:
+            record("native-context-binding", [native, module, "context-binding"],
+                   env=configuration("native-context-binding"), classification="diagnostic")
+            limits = configuration("limits-two", extra='\n[limits]\nsessions = 2\n')
+            record("native-session-limit", [native, module, "session-limit"],
+                   env=limits, classification="diagnostic")
+        else:
+            for mode in ["dh-collision", "derive-protection", "private-logout", "private-so", "digest-os", "digest-app", "lifecycle", "token-info", "pin-lockout-reopen"]:
+                record("native-" + mode, [native, module, mode], env=configuration("native-" + mode, sqlite=mode == "pin-lockout-reopen"), classification="diagnostic")
+            limits = configuration("limits-two-pin-one", extra='\n[limits]\nsessions = 2\n\n[tokens]\nlabels = ["haskoki-demo"]\nso_pins = ["s"]\nuser_pins = ["u"]\n')
+            limits.update(HSK_REVIEW_USER_PIN="u", HSK_REVIEW_SO_PIN="s")
+            record("native-configured-limits", [native, module, "token-info"], env=limits, classification="diagnostic-observation")
+            record("opensc-configured-pin-one", ["pkcs11-tool", "--module", module, "--login", "--pin", "u", "--list-objects"], env=limits, classification="diagnostic-observation")
+    if FOLLOWUP:
+        failures = [r["name"] for r in RESULTS if r["status"] != "pass"]
+        print("SUMMARY " + json.dumps({"cases": len(RESULTS), "failures": failures}), flush=True)
+        sys.exit(1 if failures else 0)
     waiter = str(OUT / "finalize_wait_race_probe")
     if record("compile-finalize-wait", ["cc", "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-Ispec/vendor", "tests/c/finalize_wait_race_probe.c", "-o", waiter, "-ldl", "-lpthread"], classification="setup"):
         record("finalize-wait-100", [waiter, module], env={"HASKOKI_FINALIZE_WAIT_CYCLES": "100"}, classification="supplementary-stress")

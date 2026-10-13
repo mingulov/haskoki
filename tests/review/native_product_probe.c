@@ -237,6 +237,117 @@ cleanup:
     return rc;
 }
 
+static int generate_marked_ec(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE *pub, CK_OBJECT_HANDLE *priv) {
+    unsigned char oid[] = {0x06,0x08,0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07};
+    CK_OBJECT_CLASS public_cls = CKO_PUBLIC_KEY, private_cls = CKO_PRIVATE_KEY;
+    CK_KEY_TYPE kt = CKK_EC;
+    CK_ATTRIBUTE public_attrs[] = {
+        {CKA_CLASS, &public_cls, sizeof(public_cls)}, {CKA_KEY_TYPE, &kt, sizeof(kt)},
+        {CKA_TOKEN, &no, sizeof(no)}, {CKA_PRIVATE, &no, sizeof(no)},
+        {CKA_EC_PARAMS, oid, sizeof(oid)}, {CKA_VERIFY, &yes, sizeof(yes)}
+    };
+    CK_ATTRIBUTE private_attrs[] = {
+        {CKA_CLASS, &private_cls, sizeof(private_cls)}, {CKA_KEY_TYPE, &kt, sizeof(kt)},
+        {CKA_TOKEN, &no, sizeof(no)}, {CKA_PRIVATE, &yes, sizeof(yes)},
+        {CKA_SIGN, &yes, sizeof(yes)}, {CKA_SENSITIVE, &yes, sizeof(yes)},
+        {CKA_EXTRACTABLE, &no, sizeof(no)}, {CKA_ALWAYS_AUTHENTICATE, &yes, sizeof(yes)}
+    };
+    CK_MECHANISM gen = {CKM_EC_KEY_PAIR_GEN, NULL, 0};
+    if (setup("generate-explicitly-always-authenticate-P256",
+              f->C_GenerateKeyPair(h, &gen, public_attrs, NATTR(public_attrs),
+                                  private_attrs, NATTR(private_attrs), pub, priv))) return 2;
+    CK_BBOOL marked = 0;
+    CK_ATTRIBUTE attr = {CKA_ALWAYS_AUTHENTICATE, &marked, sizeof(marked)};
+    if (setup("read-explicit-always-authenticate", f->C_GetAttributeValue(h, *priv, &attr, 1))) return 2;
+    if (attr.ulValueLen != sizeof(marked) || marked != CK_TRUE) {
+        puts("SETUP-FAIL generated key did not preserve explicit always-authenticate mark");
+        return 2;
+    }
+    return 0;
+}
+static int context_login(CK_SESSION_HANDLE h) {
+    const char *pin = getenv("HSK_REVIEW_USER_PIN");
+    if (pin == NULL) pin = "1234";
+    return setup("C_Login(context-specific)", f->C_Login(h, CKU_CONTEXT_SPECIFIC,
+                 (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin)));
+}
+static CK_RV fixture_sign(CK_SESSION_HANDLE h, unsigned char signature[64], int *canary_ok) {
+    unsigned char guarded[96];
+    memset(guarded, 0xa5, sizeof(guarded));
+    CK_ULONG len = 64;
+    CK_RV rv = f->C_Sign(h, (CK_BYTE_PTR)digest_expected[0], 32, guarded + 16, &len);
+    *canary_ok = 1;
+    for (size_t i = 0; i < 16; i++) {
+        if (guarded[i] != 0xa5 || guarded[80 + i] != 0xa5) *canary_ok = 0;
+    }
+    if (rv == CKR_OK && len != 64) *canary_ok = 0;
+    if (rv == CKR_OK) memcpy(signature, guarded + 16, 64);
+    return rv;
+}
+static int verify_fixture_signature(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE pub, unsigned char signature[64]) {
+    CK_MECHANISM mech = {CKM_ECDSA, NULL, 0};
+    if (setup("C_VerifyInit(fixture)", f->C_VerifyInit(h, &mech, pub))) return 2;
+    return setup("C_Verify(fixture-signature)", f->C_Verify(h, (CK_BYTE_PTR)digest_expected[0], 32, signature, 64));
+}
+static int context_binding(void *module) {
+    CK_C_GetInterface get_interface = NULL;
+    void *symbol = dlsym(module, "C_GetInterface");
+    _Static_assert(sizeof(symbol) == sizeof(get_interface), "POSIX function pointer size");
+    memcpy(&get_interface, &symbol, sizeof(symbol));
+    if (get_interface == NULL) { puts("SETUP-FAIL public C_GetInterface unavailable"); return 2; }
+    CK_VERSION requested = {3, 0};
+    CK_INTERFACE_PTR iface = NULL;
+    if (setup("C_GetInterface(version-3.0)", get_interface(NULL, &requested, &iface, 0))) return 2;
+    if (iface == NULL || iface->pFunctionList == NULL) { puts("SETUP-FAIL null v3 interface"); return 2; }
+    CK_FUNCTION_LIST_3_0_PTR v3 = iface->pFunctionList;
+    if (v3->version.major != 3 || v3->version.minor != 0 || v3->C_SessionCancel == NULL) {
+        puts("SETUP-FAIL requested v3.0 interface/cancel not returned"); return 2;
+    }
+    CK_SESSION_HANDLE h;
+    if (open_session(&h) || login(h, CKU_USER)) return 2;
+    CK_OBJECT_HANDLE keys[4] = {CK_INVALID_HANDLE, CK_INVALID_HANDLE, CK_INVALID_HANDLE, CK_INVALID_HANDLE};
+    int rc = generate_marked_ec(h, &keys[0], &keys[1]);
+    if (rc == 0) rc = generate_marked_ec(h, &keys[2], &keys[3]);
+    if (rc != 0) goto cleanup;
+    CK_MECHANISM mech = {CKM_ECDSA, NULL, 0};
+    unsigned char signature[64];
+    int canary_ok;
+    if (setup("C_SignInit(B-missing-grant-control)", f->C_SignInit(h, &mech, keys[3]))) { rc = 2; goto cleanup; }
+    CK_RV rv = fixture_sign(h, signature, &canary_ok);
+    rvlog("C_Sign(B-missing-grant-control)", rv);
+    if (!canary_ok) { rc = violation("context-sign-output-canary-or-width"); goto cleanup; }
+    if (rv != CKR_USER_NOT_LOGGED_IN) {
+        if (rv == CKR_OK) rc = violation("marked-key-sign-without-any-context-grant");
+        else rc = setup("missing-grant-control-unexpected-result", rv);
+        goto cleanup;
+    }
+    if (setup("C_SessionCancel(control-reset)", v3->C_SessionCancel(h, CKF_SIGN))) { rc = 2; goto cleanup; }
+    if (setup("C_SignInit(B-correct-auth-control)", f->C_SignInit(h, &mech, keys[3])) || context_login(h)) { rc = 2; goto cleanup; }
+    rv = fixture_sign(h, signature, &canary_ok);
+    if (setup("C_Sign(B-correct-auth-control)", rv)) { rc = 2; goto cleanup; }
+    if (!canary_ok) { rc = violation("context-sign-output-canary-or-width"); goto cleanup; }
+    if (verify_fixture_signature(h, keys[2], signature)) { rc = 2; goto cleanup; }
+    if (setup("C_SignInit(A-before-cancel)", f->C_SignInit(h, &mech, keys[1])) || context_login(h)) { rc = 2; goto cleanup; }
+    if (setup("C_SessionCancel(A-authenticated-before-data)", v3->C_SessionCancel(h, CKF_SIGN))) { rc = 2; goto cleanup; }
+    if (setup("C_SignInit(B-after-A-cancel)", f->C_SignInit(h, &mech, keys[3]))) { rc = 2; goto cleanup; }
+    rv = fixture_sign(h, signature, &canary_ok);
+    rvlog("C_Sign(B-without-new-context-grant)", rv);
+    if (!canary_ok) { rc = violation("context-sign-output-canary-or-width"); goto cleanup; }
+    if (rv == CKR_OK) {
+        if (verify_fixture_signature(h, keys[2], signature)) { rc = 2; goto cleanup; }
+        rc = violation("canceled-key-A-context-grant-authorized-valid-key-B-signature");
+    } else if (rv == CKR_USER_NOT_LOGGED_IN) {
+        puts("PASS canceled operation A grant did not authorize marked key B; fresh authentication required");
+    } else rc = setup("post-cancel-sign-unexpected-refusal", rv);
+cleanup:
+    /* Cancel any residual sign state before deleting disposable session keys. */
+    if (setup("C_SessionCancel(cleanup)", v3->C_SessionCancel(h, CKF_SIGN)) && rc == 0) rc = 2;
+    for (size_t i = 0; i < NATTR(keys); i++) {
+        if (keys[i] != CK_INVALID_HANDLE && destroy(h, keys[i]) != 0 && rc == 0) rc = 1;
+    }
+    return rc;
+}
+
 static CK_RV create_data(CK_SESSION_HANDLE h, CK_BBOOL token, CK_BBOOL priv,
                          const char *label, CK_OBJECT_HANDLE *obj) {
     CK_OBJECT_CLASS cls = CKO_DATA;
@@ -462,6 +573,20 @@ static int token_info(void) {
            info.ulRwSessionCount, info.ulMinPinLen, info.ulMaxPinLen);
     return 0;
 }
+static int session_limit(void) {
+    if (token_info()) return 2;
+    puts("OBSERVATION session-limit probe precondition: runner configures exactly two sessions");
+    CK_SESSION_HANDLE handles[3];
+    if (open_session(&handles[0]) || open_session(&handles[1])) return 2;
+    CK_RV rv = f->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL, NULL, &handles[2]);
+    rvlog("C_OpenSession(third-under-configured-limit-two)", rv);
+    int rc = 0;
+    if (rv == CKR_OK) rc = violation("third-session-accepted-under-configured-limit-two");
+    else if (rv != CKR_SESSION_COUNT) rc = setup("session-limit-unexpected-refusal", rv);
+    if (setup("C_CloseAllSessions(limit-cleanup)", f->C_CloseAllSessions(slot)) && rc == 0) rc = 2;
+    if (rc == 0) puts("PASS configured-two-session-limit enforced; compare advertised metadata separately");
+    return rc;
+}
 static int lifecycle(void) {
     for (unsigned i = 0; i < 4; i++) {
         if (token_info()) return 2;
@@ -520,13 +645,14 @@ static int pin_reopen(void) {
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     if (argc != 3) {
-        fprintf(stderr, "usage: %s MODULE {dh-collision|derive-protection|private-logout|private-so|digest-os|digest-app|lifecycle|token-info|pin-lockout-reopen}\n", argv[0]);
+        fprintf(stderr, "usage: %s MODULE {dh-collision|derive-protection|context-binding|session-limit|private-logout|private-so|digest-os|digest-app|lifecycle|token-info|pin-lockout-reopen}\n", argv[0]);
         return 2;
     }
     mode = argv[2];
     if (strcmp(mode, "dh-collision") && strcmp(mode, "private-logout") && strcmp(mode, "private-so") &&
         strcmp(mode, "digest-os") && strcmp(mode, "digest-app") && strcmp(mode, "lifecycle") &&
-        strcmp(mode, "token-info") && strcmp(mode, "pin-lockout-reopen") && strcmp(mode, "derive-protection")) {
+        strcmp(mode, "token-info") && strcmp(mode, "pin-lockout-reopen") && strcmp(mode, "derive-protection") &&
+        strcmp(mode, "context-binding") && strcmp(mode, "session-limit")) {
         fprintf(stderr, "SETUP-FAIL unknown mode %s\n", mode); return 2;
     }
     void *module = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -553,6 +679,8 @@ int main(int argc, char **argv) {
         printf("OBSERVATION mode=%s slot=%lu module-version=%u.%u\n", mode, slot, f->version.major, f->version.minor);
         if (strcmp(mode, "dh-collision") == 0) rc = dh_collision();
         else if (strcmp(mode, "derive-protection") == 0) rc = derive_protection();
+        else if (strcmp(mode, "context-binding") == 0) rc = context_binding(module);
+        else if (strcmp(mode, "session-limit") == 0) rc = session_limit();
         else if (strcmp(mode, "private-logout") == 0) rc = private_logout();
         else if (strcmp(mode, "private-so") == 0) rc = private_so();
         else if (strcmp(mode, "lifecycle") == 0) rc = lifecycle();
