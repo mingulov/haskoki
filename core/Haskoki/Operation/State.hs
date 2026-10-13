@@ -20,6 +20,8 @@ module Haskoki.Operation.State
   , msgOperation
   , CipherSpec (..)
   , RecoverSpec (..)
+  , validCipherSpec
+  , validRecoverSpec
   , OpAuth (..)
   , DigestStream (..)
   -- The three state representations are abstract outside
@@ -222,6 +224,23 @@ data RecoverSpec = RecoverSpec
   { rsCapacity :: !Int
   , rsTagLen :: !Int
   } deriving (Eq, Show)
+
+-- | Whether a cipher shape is well-formed: block width in @1..1024@,
+-- padded widths within the PKCS#7 byte range (@1..255@). Shared by
+-- normal init and snapshot decode, so both admit exactly the same
+-- geometries.
+validCipherSpec :: CipherSpec -> Bool
+validCipherSpec spec =
+  csBlock spec >= 1 && csBlock spec <= 1024
+    && (not (csPad spec) || csBlock spec <= 255)
+
+-- | Whether a recovery shape is well-formed: capacity and tag width
+-- at least 1 byte, the tag no wider than the capacity. Shared by
+-- normal init and snapshot decode.
+validRecoverSpec :: RecoverSpec -> Bool
+validRecoverSpec spec =
+  rsCapacity spec >= 1 && rsTagLen spec >= 1
+    && rsTagLen spec <= rsCapacity spec
 
 -- | Context-auth state of one slot: no requirement, an
 -- always-authenticate requirement awaiting its first data call, or a

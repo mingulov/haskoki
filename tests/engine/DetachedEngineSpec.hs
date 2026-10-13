@@ -657,7 +657,8 @@ caseNativeUnsaveable = withNative $ \be -> do
   assertEqual "permitted code" CKR_STATE_UNSAVEABLE (detachCode out)
   jobs <- loadJobs store
   assertEqual "nothing serialized" 0 (length jobs)
-  docs <- storeInspect store
+  eDocs <- storeInspect store
+  docs <- either (assertFailure . show) pure eDocs
   let jobDocs = [d | d <- docs, docTable d == "detached_jobs"]
   assertEqual "no job documents" 0 (length jobDocs)
   -- The preserved job drives natively and delivers KAT bytes.
@@ -780,7 +781,8 @@ caseNoAddresses = withSynth $ \be -> do
   jReady <- startPlannedCall gen JobDigest F_Digest "ready" 32 1
   driveReady run gen JobDigest jReady
   _ <- detachOk dc gen jReady JobDigest
-  docs <- storeInspect store
+  eDocs <- storeInspect store
+  docs <- either (assertFailure . show) pure eDocs
   let jobDocs = [d | d <- docs, docTable d == "detached_jobs"]
   assertEqual "five job documents" 5 (length jobDocs)
   let wantKeys =

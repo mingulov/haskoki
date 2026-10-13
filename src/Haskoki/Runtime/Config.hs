@@ -48,6 +48,14 @@ import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import System.Environment (lookupEnv)
 
+import Haskoki.Rules (defaultRules)
+import Haskoki.Session
+  ( PinLengthDeny (..)
+  , checkPinLength
+  , effectivePolicy
+  , policyPinMaxLen
+  , policyPinMinLen
+  )
 import Haskoki.Types (redactShown)
 
 -- ---------------------------------------------------------------------------
@@ -163,7 +171,11 @@ data SimCfg = SimCfg
 -- @haskoki-demo@ (the stability anchor for every existing
 -- single-slot pin). Catalog PINs are EXAMPLE-GRADE fixture
 -- material ("Do not use production secrets", the same discipline
--- as the existing fixtures): no PIN policy or lockout changes.
+-- as the existing fixtures), and every configured PIN MUST
+-- satisfy the effective PIN length policy (currently 4..32
+-- bytes, the same bounds native metadata reports): out-of-range
+-- bytes refuse the whole config at load, never truncate or pad
+-- silently (see 'parseTokenCatalog' for the versioned decision).
 data TokensCfg = TokensCfg
   { tcEntries :: ![(String, String, String)]
     -- ^ @(label, soPin, userPin)@ triples, slot = index. Empty
@@ -639,7 +651,22 @@ parseScriptEntry entry = case words entry of
 -- 'Haskoki.Rules.rulesMaxTokens' via 'Haskoki.Session.admitToken'
 -- — exceeding it refuses the open loudly, never truncates
 -- silently), headed by @haskoki-demo@, with labels fitting the
--- 32-byte @CK_TOKEN_INFO@ label field.
+-- 32-byte @CK_TOKEN_INFO@ label field, and with EVERY configured
+-- PIN satisfying the effective PIN length policy
+-- ('Haskoki.Session.checkPinLength').
+--
+-- Versioned compatibility decision (policy v1, @schema_version =
+-- 1@): configured PIN bytes outside the supported range refuse
+-- the whole config at load with an actionable message naming
+-- the token, the role, the observed length, and the supported
+-- range. There is deliberately NO legacy carve-out, silent
+-- truncation, padding, or migration of old short/long fixture
+-- PINs: every in-repo fixture already satisfies 4..32, so a
+-- refusal always names a real provisioning error and the
+-- operator re-provisions (P6 owns user-facing provisioning and
+-- any future migration). The home token's built-in PINs
+-- (4 bytes) satisfy the policy, so an absent section is
+-- unaffected.
 parseTokenCatalog
   :: Map TomlKey TomlVal -> [String] -> [String] -> [String]
   -> Either ConfigError [(String, String, String)]
@@ -658,7 +685,9 @@ parseTokenCatalog kvs labels soPins userPins
       "tokens.labels[0] must be haskoki-demo (slot 0 stability anchor)")
   | any (\l -> length l > 32) labels = Left (CfgInvalid
       "tokens.labels must fit the 32-byte CK_TOKEN_INFO label field")
-  | otherwise = pure (zip3 labels soPins userPins)
+  | otherwise = do
+      mapM_ checkEntry (zip3 labels soPins userPins)
+      pure (zip3 labels soPins userPins)
   where
     tokensPresent = any (`Map.member` kvs)
       [("tokens", "labels"), ("tokens", "so_pins"), ("tokens", "user_pins")]
@@ -670,6 +699,31 @@ parseTokenCatalog kvs labels soPins userPins
     slot0 = case labels of
       (x : _) -> x
       [] -> ""
+    -- PIN bounds are rules-independent constants, so the default
+    -- rules project the same policy any instance would report.
+    policy = effectivePolicy defaultRules
+    checkEntry :: (String, String, String) -> Either ConfigError ()
+    checkEntry (label, so, user) = do
+      checkRole label "so_pin" so
+      checkRole label "user_pin" user
+    checkRole :: String -> String -> String -> Either ConfigError ()
+    checkRole label role pin =
+      -- Catalog PINs are ASCII fixture material (Char8-packed at
+      -- login), so character count is the byte length.
+      case checkPinLength policy (length pin) of
+        Nothing -> pure ()
+        Just (PinTooShort got bound) -> Left (CfgInvalid
+          ("tokens catalog PIN for \"" ++ label ++ "\" (" ++ role
+            ++ ") is " ++ show got ++ " bytes, below the supported minimum "
+            ++ show bound ++ " (policy v1: re-provision with a "
+            ++ show policyPinMinLen ++ ".." ++ show policyPinMaxLen
+            ++ " byte PIN)"))
+        Just (PinTooLong got bound) -> Left (CfgInvalid
+          ("tokens catalog PIN for \"" ++ label ++ "\" (" ++ role
+            ++ ") is " ++ show got ++ " bytes, above the supported maximum "
+            ++ show bound ++ " (policy v1: re-provision with a "
+            ++ show policyPinMinLen ++ ".." ++ show policyPinMaxLen
+            ++ " byte PIN)"))
 
 -- ---------------------------------------------------------------------------
 -- Reporting

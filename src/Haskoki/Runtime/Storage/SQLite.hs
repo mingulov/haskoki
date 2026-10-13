@@ -39,6 +39,15 @@ Full-width unsigned quantities travel as 8-byte big-endian blobs
 or fixed hex text; only the bounded @revision@ counter uses an
 INTEGER column (guarded by @CHECK (revision > 0)@), and every
 read-back range-checks before narrowing to 'Int'.
+
+Close serializes with use (M4): the close runs under the same
+connection guard as every operation, so it waits for in-flight
+uses instead of closing the handle beneath them; later uses of
+the closed handle fail closed. A close that cannot complete (an
+injected close fault, or a SQLite close error) retains the
+handle, the lock, and both kernel guards, refuses new
+operations, reports the failure by throwing, and a later close
+retries for real.
 -}
 module Haskoki.Runtime.Storage.SQLite
   ( openSQLiteStore
@@ -51,7 +60,7 @@ module Haskoki.Runtime.Storage.SQLite
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, putMVar, readMVar, takeMVar)
-import Control.Exception (SomeException, bracket, bracket_, mask, mask_, onException, throwIO, try)
+import Control.Exception (SomeException, bracket, bracket_, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (when)
 import Data.Bits (shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
@@ -77,6 +86,7 @@ import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , FaultInjector (..)
   , FaultPoint (..)
+  , HandleState (..)
   , JobRecord (..)
   , LoadedState (..)
   , ObjectPut (..)
@@ -109,6 +119,7 @@ import Haskoki.Runtime.Storage
   , noFaults
   , reconcileJobsReload
   , reconcileReload
+  , storeClosed
   , zeroStats
   )
 import Haskoki.Types (Generation (..), ObjectId (..), Revision (..), SlotId (..), TokenId (..))
@@ -118,15 +129,15 @@ sqliteSchemaVersion :: Int
 sqliteSchemaVersion = 1
 
 -- | One open SQLite store: the connection, its guard lock, the
--- idempotent-close flag, the owned paths, the held-open flocked
--- lock fd (the kernel ownership guard), the held-open flocked
--- database fd (the stable-identity guard: deleting the lock path
--- cannot fork a live owner), and the live-handle protocol state
--- (injector, quarantine, stats).
+-- per-handle lifecycle state, the owned paths, the held-open
+-- flocked lock fd (the kernel ownership guard), the held-open
+-- flocked database fd (the stable-identity guard: deleting the
+-- lock path cannot fork a live owner), and the live-handle
+-- protocol state (injector, quarantine, stats).
 data SQLiteConn = SQLiteConn
   { sqDb :: !S.Database
   , sqLock :: !(MVar ())
-  , sqClosed :: !(MVar Bool)
+  , sqClosed :: !(MVar HandleState)
   , sqPath :: !FilePath
   , sqLockPath :: !FilePath
   , sqLockFd :: !Fd
@@ -199,7 +210,7 @@ openSQLiteStoreWith path limits inj = mask $ \restore -> do
           pure (Left err)
         Right db ->
           (do lock <- newMVar ()
-              closed <- newMVar False
+              closed <- newMVar HandleOpen
               qVar <- newMVar []
               sVar <- newIORef zeroStats
               let conn = SQLiteConn
@@ -736,60 +747,108 @@ schemaStatements =
 -- Store operations
 -- ---------------------------------------------------------------------------
 
--- | Build the 'Store' record over an open connection.
+-- | Build the 'Store' record over an open connection. Every
+-- world-touching operation runs under the connection guard and
+-- reports the closed handle unless open; quarantine and stats
+-- stay readable (live-handle properties that never touch the
+-- database).
 mkStore :: SQLiteConn -> Store
 mkStore conn = Store
-  { storeLoadTokens = withConn conn loadTokens
-  , storeLoadJobs = withConn conn loadJobs
+  { storeLoadTokens = withConn conn (pure (Left storeClosed)) loadTokens
+  , storeLoadJobs = withConn conn (pure (Left storeClosed)) loadJobs
   , storeCommit = protocolDelta conn
   , storeResetToken = resetTokenConn conn
   , storeClose = closeConn conn
-  , storeInspect = withConn conn inspectConn
+  , storeInspect = withConn conn (pure (Left storeClosed)) inspectConn
   , storeQuarantined = readMVar (sqQuarantine conn)
   , storeReload = reloadConn conn
   , storeStats = readIORef (sqStats conn)
-  , storeLoadMeta = withConn conn loadMeta
+  , storeLoadMeta = withConn conn (pure (Left storeClosed)) loadMeta
   }
 
 -- | Run one connection use under the guard lock (async-safe
--- take\/release pairing).
-withConn :: SQLiteConn -> (S.Database -> IO a) -> IO a
-withConn conn f =
-  bracket_ (takeMVar (sqLock conn)) (putMVar (sqLock conn) ()) (f (sqDb conn))
+-- take\/release pairing), reporting the non-open handle via the
+-- default (a close-failed handle refuses exactly like a closed
+-- one). The state check runs under the guard, and the close
+-- takes the same guard before marking the state, so a use either
+-- runs fully before the close or reports closed — the close can
+-- never shut the handle beneath an in-flight use.
+withConn :: SQLiteConn -> IO a -> (S.Database -> IO a) -> IO a
+withConn conn onClosed f =
+  bracket_ (takeMVar (sqLock conn)) (putMVar (sqLock conn) ()) $ do
+    st <- readMVar (sqClosed conn)
+    if st == HandleOpen then f (sqDb conn) else onClosed
 
--- | Idempotent close: the database handle closes and the lock
--- (path plus both held kernel guards) is released exactly once;
--- later closes are silent no-ops.
+-- | Idempotent close under the connection guard: the close waits
+-- for any in-flight use, then either retires (the database
+-- handle closes and the lock — path plus both held kernel
+-- guards — is released exactly once) or, when the close cannot
+-- complete, poisons the handle. A close that cannot complete —
+-- an injected 'FaultClose' (which skips the real close
+-- entirely) or a SQLite close error (which leaves the
+-- connection open per @sqlite3_close@) — retains the handle,
+-- the lock path, and both kernel guards, refuses new operations
+-- exactly like a closed handle, reports the failure by throwing
+-- it, and a later close retries for real. A failed close never
+-- half-releases, and the next owner can never enter around the
+-- surviving connection. The state cell is only ever emptied
+-- across non-blocking updates: the state read, the fault probe,
+-- and the real close all precede the take, so an exception or a
+-- kill during the arbitrary 'fiFire' IO cannot strand the cell
+-- empty (this close holds the connection guard throughout, so no
+-- other writer can interleave). The retire tail itself runs
+-- uninterruptibly, so a kill cannot strand a half-released
+-- guard set behind a handle already marked closed (whose
+-- retries would no-op); the tail performs only fast local
+-- releases, never blocking operations.
 closeConn :: SQLiteConn -> IO ()
-closeConn conn = mask_ $ do
-  already <- takeMVar (sqClosed conn)
-  if already
-    then putMVar (sqClosed conn) True
-    else do
-      _ <- trySQLite (S.close (sqDb conn))
-      releaseQuiet (sqLockFd conn) (sqLockPath conn)
-      _ <- tryIOError (closeFd (sqDbFd conn))
-      putMVar (sqClosed conn) True
+closeConn conn = mask_ $
+  bracket_ (takeMVar (sqLock conn)) (putMVar (sqLock conn) ()) $ do
+    st <- readMVar (sqClosed conn)
+    case st of
+      HandleClosed -> pure ()
+      _ -> do
+        injected <- fiFire (sqInjector conn) FaultClose
+        eClosed <-
+          if injected
+            then pure (Left (StoreIO "sqlite store close failed (injected FaultClose)"))
+            else trySQLite (S.close (sqDb conn))
+        case eClosed of
+          Left err -> do
+            _ <- takeMVar (sqClosed conn)
+            putMVar (sqClosed conn) HandleCloseFailed
+            throwIO err
+          Right () -> uninterruptibleMask_ $ do
+            _ <- takeMVar (sqClosed conn)
+            putMVar (sqClosed conn) HandleClosed
+            releaseQuiet (sqLockFd conn) (sqLockPath conn)
+            _ <- tryIOError (closeFd (sqDbFd conn))
+            pure ()
 
--- | The commit protocol: quarantine refusal, pre-commit
--- validation (limits, expected revisions), pre-commit fault
--- rollback, then the masked durable section (one @BEGIN IMMEDIATE@
--- transaction, ambiguous verification, post-commit quarantine).
--- The whole flow holds the connection guard, so one commit runs
--- at a time per handle.
+-- | The commit protocol: closed-handle refusal, quarantine
+-- refusal, pre-commit validation (limits, expected revisions),
+-- pre-commit fault rollback, then the masked durable section (one
+-- @BEGIN IMMEDIATE@ transaction, ambiguous verification,
+-- post-commit quarantine). The whole flow holds the connection
+-- guard, so one commit runs at a time per handle and the close
+-- (which takes the same guard first) can never strand it
+-- mid-flight.
 protocolDelta :: SQLiteConn -> StoreDelta -> IO CommitResult
-protocolDelta conn delta = withConn conn (\db -> protocolLocked conn db delta)
+protocolDelta conn delta =
+  withConn conn (pure (NotCommitted storeClosed)) (\db -> protocolLocked conn db delta)
 
 -- | Token reset: the expected generation must match the current
 -- one, then the replacement plus the removal of every owned
--- object and job run as one ordinary protocol flow (quarantine,
--- validation, faults, masking all apply).
+-- object and job run as one ordinary protocol flow
+-- (closed-handle refusal, quarantine, validation, faults, masking
+-- all apply).
 resetTokenConn :: SQLiteConn -> TokenId -> Generation -> TokenRecord -> IO CommitResult
-resetTokenConn conn tid wantGen replacement = withConn conn $ \db -> do
-  eEff <- resetEffectiveDb db tid wantGen replacement
-  case eEff of
-    Left err -> pure (NotCommitted err)
-    Right eff -> protocolLocked conn db eff
+resetTokenConn conn tid wantGen replacement =
+  withConn conn (pure (NotCommitted storeClosed)) $ \db -> do
+    eEff <- resetEffectiveDb db tid wantGen replacement
+    case eEff of
+      Left err -> pure (NotCommitted err)
+      Right eff -> protocolLocked conn db eff
 
 -- | Build the reset's effective delta from one consistent read
 -- (runs under the connection guard, so the generation check is
@@ -1072,9 +1131,10 @@ quarantineTokens qVar sVar tids why = do
 
 -- | Authoritative reload: a clean load clears the quarantine; a
 -- failed load keeps it and reports the error. Reloads never
--- consult the fault script.
+-- consult the fault script. A closed handle reports closed
+-- without touching the quarantine.
 reloadConn :: SQLiteConn -> IO (Either StoreError ())
-reloadConn conn = withConn conn $ \db -> do
+reloadConn conn = withConn conn (pure (Left storeClosed)) $ \db -> do
   eLoaded <- loadTokens db
   case eLoaded of
     Left err -> pure (Left err)
@@ -1192,13 +1252,15 @@ loadMeta db = do
     decodeMetaRow _ = Left (StoreCorrupt "corrupt store_meta row shape")
 
 -- | Render every stored record through its canonical bytes (load,
--- then re-encode, so inspection always shows canonical form).
-inspectConn :: S.Database -> IO [StoredDoc]
+-- then re-encode, so inspection always shows canonical form). A
+-- failed load reports the error (M4) instead of a silent empty
+-- list, so corruption stays diagnosed.
+inspectConn :: S.Database -> IO (Either StoreError [StoredDoc])
 inspectConn db = do
   eLoaded <- loadTokens db
   eJobs <- loadJobs db
   case (eLoaded, eJobs) of
-    (Right toks, Right jobs) -> pure $
+    (Right toks, Right jobs) -> pure $ Right $
       [ StoredDoc "tokens" (show (unTokenId (trId t))) (encodeTokenRecord t)
       | (t, _) <- toks
       ]
@@ -1210,7 +1272,8 @@ inspectConn db = do
       [ StoredDoc "detached_jobs" (encodeHexWord64 (jrPersistentId j)) (encodeJobRecord j)
       | j <- jobs
       ]
-    _ -> pure []
+    (Left err, _) -> pure (Left err)
+    (_, Left err) -> pure (Left err)
 
 -- ---------------------------------------------------------------------------
 -- Statements

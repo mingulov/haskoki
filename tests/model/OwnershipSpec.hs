@@ -35,6 +35,14 @@ Probes:
   an inversion would wedge under the timeout guard), and
   foreign\/bogus handles (per-context authority: never admitted
   here, never resolved here).
+* lifetime gate: every OpenSSL execute path races its close
+  (one-shot\/init\/update\/final\/release\/import\/export) with
+  typed outcomes only; simultaneous closes stay total;
+  deterministic parked-checkpoint proofs show close waiting for an
+  admitted borrower and for the take-to-consume window, and
+  interruption cleanup releasing the gate for a blocked closer; a
+  kill while blocked in close preserves the gate (ThreadKilled,
+  gate intact, close still functions).
 -}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -57,7 +65,7 @@ import Control.Concurrent
   , threadDelay
   , tryTakeMVar
   )
-import GHC.Conc (ThreadStatus (..), threadStatus)
+import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import Control.Exception
   ( AsyncException (..)
   , IOException
@@ -159,6 +167,7 @@ import Haskoki.Runtime.Async
   , ReapOutcome (..)
   , StartDeny (..)
   , TerminalState (..)
+  , asyncTableId
   , beginDetach
   , callCompletion
   , cancelJob
@@ -173,6 +182,22 @@ import Haskoki.Runtime.Async
   , startJob
   , tableStats
   )
+import Haskoki.Runtime.Detached
+  ( AttachmentView (..)
+  , DetachCtx
+  , DetachOutcome (..)
+  , JoinOutcome (..)
+  , JoinRequest (..)
+  , cancelJoined
+  , detachJob
+  , inspectAttachment
+  , inspectReverse
+  , joinJob
+  , joinPolicyName
+  , openDetached
+  , retireLiveTable
+  , retireLiveTableFor
+  )
 import Haskoki.Runtime.Lifecycle
   ( Env
   , defaultInitArgs
@@ -182,10 +207,22 @@ import Haskoki.Runtime.Lifecycle
   , seatToken
   , snapshotModel
   )
+import Haskoki.Runtime.Storage
+  ( CommitResult (..)
+  , JobExecState (..)
+  , JobRecord (..)
+  , Store (..)
+  , StoreDelta (..)
+  , TokenRecord (..)
+  , emptyDelta
+  )
+import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
+import Haskoki.Session (tokenAuthNew)
 import Haskoki.Transition (finishEffect, planCall)
 import Haskoki.Types
   ( EngineResourceId (..)
   , ExternalHandle (..)
+  , Generation (..)
   , JobId (..)
   , ObjectId (..)
   , Outcome (..)
@@ -193,6 +230,7 @@ import Haskoki.Types
   , ReturnCode (..)
   , SessionId (..)
   , SlotId (..)
+  , TokenId (..)
   )
 
 spec :: TestTree
@@ -222,6 +260,32 @@ spec = testGroup "Ownership"
         (guarded "snapshot-lookup" caseSnapshotLookup)
     , testCase "kill during blocked sink stays recoverable"
         (guarded "kill-blocked-sink" caseKillDuringBlockedSink)
+    ]
+  , testGroup "lifetime gate"
+    [ testCase "one-shot vs close stays typed"
+        (guarded "gate-race-oneshot" caseGateRaceOneShot)
+    , testCase "init vs close stays typed"
+        (guarded "gate-race-init" caseGateRaceInit)
+    , testCase "update vs close stays typed"
+        (guarded "gate-race-update" caseGateRaceUpdate)
+    , testCase "final vs close stays typed"
+        (guarded "gate-race-final" caseGateRaceFinal)
+    , testCase "release vs close frees once"
+        (guarded "gate-race-release" caseGateRaceRelease)
+    , testCase "import vs close stays typed"
+        (guarded "gate-race-import" caseGateRaceImportClose)
+    , testCase "export vs close stays typed"
+        (guarded "gate-race-export" caseGateRaceExportClose)
+    , testCase "simultaneous close stays total"
+        (guarded "gate-simultaneous-close" caseGateSimultaneousClose)
+    , testCase "close waits for an admitted borrower"
+        (guarded "gate-close-waits-borrow" caseGateCloseWaitsForBorrow)
+    , testCase "close waits through the take-to-consume window"
+        (guarded "gate-close-waits-final" caseGateCloseWaitsForFinal)
+    , testCase "interruption cleanup releases the gate for close"
+        (guarded "gate-close-after-interrupt" caseGateCloseAfterInterrupt)
+    , testCase "cancel while closing preserves the gate"
+        (guarded "gate-cancel-closing" caseGateCancelWhileClosing)
     ]
   , testGroup "native ownership transfers"
     [ testCase "gated copy fault frees the output (sync)"
@@ -292,6 +356,14 @@ spec = testGroup "Ownership"
         (guarded "handle-close-race" caseHandleCloseRace)
     , testCase "foreign and bogus handles stay stale"
         (guarded "handle-foreign-stale" caseHandleForeignStale)
+    ]
+  , testGroup "attachment claims"
+    [ testCase "table identities are unique and stable"
+        (guarded "claim-table-id-unique" caseTableIdUnique)
+    , testCase "scoped retire is exact and idempotent"
+        (guarded "claim-scoped-retire" caseScopedRetireExactlyOnce)
+    , testCase "rival refusal preserves the owner's cancel"
+        (guarded "claim-rival-refusal" caseRivalRefusalPreservesOwner)
     ]
   ]
 
@@ -1172,6 +1244,20 @@ awaitBlocked ktid = go (200 :: Int)
             ThreadBlocked _ -> pure ()
             _ -> threadDelay 1000 >> go (n - 1)
 
+-- | Barrier for a closer blocked on the lifetime gate: accepts ONLY
+-- 'BlockedOnMVar' — a foreign-call or exception block must never
+-- satisfy a gate-wait proof. Bounded like 'awaitBlocked'.
+awaitMVarBlocked :: ThreadId -> IO ()
+awaitMVarBlocked ctid = go (200 :: Int)
+  where
+    go n
+      | n <= 0 = assertFailure "closer never blocked on the gate MVar"
+      | otherwise = do
+          st <- threadStatus ctid
+          case st of
+            ThreadBlocked BlockedOnMVar -> pure ()
+            _ -> threadDelay 1000 >> go (n - 1)
+
 withRealBackend :: (B.BackendEnv OpenSSL4 -> IO a) -> IO a
 withRealBackend action = do
   r <- B.openBackend "provider=default"
@@ -1433,6 +1519,307 @@ sha256abc = BS.pack
   , 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c
   , 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
   ]
+
+-- ---------------------------------------------------------------------------
+-- Lifetime gate
+-- ---------------------------------------------------------------------------
+
+-- | Race one op against close on an open backend: the op runs under
+-- the exclusive lifetime gate, so its outcome is either the
+-- pre-close answer or 'B.BackendInvalidState' — never a crash,
+-- never a wedge. The start rendezvous sharpens the race; every
+-- assertion accepts both orders (never timing-hope).
+raceWithCloseOn :: B.BackendEnv OpenSSL4 -> IO () -> IO ()
+raceWithCloseOn env op = do
+  start <- newEmptyMVar
+  opDone <- newEmptyMVar
+  closeDone <- newEmptyMVar
+  _ <- forkIO (takeMVar start >> try op >>= putMVar opDone)
+  _ <- forkIO (takeMVar start >> try (B.closeBackend env) >>= putMVar closeDone)
+  putMVar start ()
+  putMVar start ()
+  r1 <- takeMVar opDone :: IO (Either SomeException ())
+  r2 <- takeMVar closeDone :: IO (Either SomeException ())
+  assertWorkerOk r1
+  assertWorkerOk r2
+
+-- | One-shot vs close: bytes or InvalidState, typed either way.
+caseGateRaceOneShot :: IO ()
+caseGateRaceOneShot = replicateM_ 15 $ withRealBackend $ \env ->
+  raceWithCloseOn env $ do
+    r <- B.digestOneShot env B.D_SHA256 "hello"
+    case r of
+      B.EngineOk _ -> pure ()
+      B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+      other -> assertFailure ("one-shot vs close must stay typed, got " ++ show other)
+
+-- | Init vs close: a fresh id (released after the win — release is
+-- total even when close drained first) or InvalidState.
+caseGateRaceInit :: IO ()
+caseGateRaceInit = replicateM_ 15 $ withRealBackend $ \env ->
+  raceWithCloseOn env $ do
+    r <- B.digestInit env B.D_SHA256
+    case r of
+      B.EngineOk rid -> B.releaseResource env rid
+      B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+      other -> assertFailure ("init vs close must stay typed, got " ++ show other)
+
+-- | Update vs close on a live id: unit or InvalidState. Pre-gate
+-- this borrowed a handle close could free mid-call; the gate
+-- serializes the two, and the counters pin no double-free.
+caseGateRaceUpdate :: IO ()
+caseGateRaceUpdate = replicateM_ 15 $ withRealBackend $ \env -> do
+  rid <- expectGatedOk "init" =<< B.digestInit env B.D_SHA256
+  raceWithCloseOn env $ do
+    r <- B.digestUpdate env rid "hello"
+    case r of
+      B.EngineOk () -> pure ()
+      B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+      other -> assertFailure ("update vs close must stay typed, got " ++ show other)
+  assertDigestCountersClean
+
+-- | Final vs close on a fed id: bytes or InvalidState, the handle
+-- consumed exactly once either way.
+caseGateRaceFinal :: IO ()
+caseGateRaceFinal = replicateM_ 15 $ withRealBackend $ \env -> do
+  rid <- expectGatedOk "init" =<< B.digestInit env B.D_SHA256
+  expectGatedOk "update" =<< B.digestUpdate env rid "hello"
+  raceWithCloseOn env $ do
+    r <- B.digestFinal env rid
+    case r of
+      B.EngineOk _ -> pure ()
+      B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+      other -> assertFailure ("final vs close must stay typed, got " ++ show other)
+  assertDigestCountersClean
+
+-- | Release vs close: both take the gate, so the take-to-free and
+-- the close drain cannot overlap — exactly one frees the handle.
+caseGateRaceRelease :: IO ()
+caseGateRaceRelease = replicateM_ 15 $ withRealBackend $ \env -> do
+  rid <- expectGatedOk "init" =<< B.digestInit env B.D_SHA256
+  raceWithCloseOn env (B.releaseResource env rid)
+  assertDigestCountersClean
+
+-- | Simultaneous closes serialize into one drain: every closer
+-- returns, the backend reads closed after, native sets stay clean.
+caseGateSimultaneousClose :: IO ()
+caseGateSimultaneousClose = withRealBackend $ \env -> do
+  done <- newEmptyMVar
+  let closer = B.closeBackend env >> putMVar done ()
+  replicateM_ 16 (forkIO closer)
+  replicateM_ 16 (takeMVar done)
+  r <- B.digestOneShot env B.D_SHA256 "hello"
+  case r of
+    B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+    other -> assertFailure ("post-close one-shot must be InvalidState, got " ++ show other)
+  assertEnvCountersClean
+  assertDigestCountersClean
+
+-- | Fork a backend closer joined on EVERY exit (the inner-bracket
+-- twin of 'withKillWorker'): the body observes the result with
+-- 'readMVar' (non-consuming); the cleanup owns the consuming take,
+-- so the join happens exactly once even when the body dies early.
+-- The cleanup is uninterruptible (a timeout mid-teardown must not
+-- strand the join — every operation here is bounded): the kill
+-- lands in the gate wait (prompt 'ThreadKilled', gate untouched)
+-- or defers past the bounded uninterruptible drain, and the
+-- publication is guaranteed (the handler installs masked, exactly
+-- like 'withKillWorker').
+withJoinedCloser :: B.BackendEnv OpenSSL4
+  -> (MVar (Either SomeException ()) -> ThreadId -> IO b) -> IO b
+withJoinedCloser env body = do
+  closerDone <- newEmptyMVar
+  let spawn = forkIOWithUnmask $ \unmask -> do
+        r <- try (unmask (B.closeBackend env))
+        putMVar closerDone r
+      cleanup tid = uninterruptibleMask_ $ do
+        killThread tid
+        _ <- takeMVar closerDone
+        pure ()
+  bracket spawn cleanup (\tid -> body closerDone tid)
+
+-- | Import vs close: a fresh reference or InvalidState. Registry
+-- insertion takes the gate, so the outcome is typed either way;
+-- wins are kept and must read drained after the race close (a
+-- post-drain insertion would strand a live entry — the sequential
+-- post-close refusal is pinned in OpenSSLSpec).
+caseGateRaceImportClose :: IO ()
+caseGateRaceImportClose = replicateM_ 15 $ withRealBackend $ \env -> do
+  resVar <- newEmptyMVar
+  raceWithCloseOn env $ do
+    r <- B.importKey env (B.KeyBytes "import-race-key-material")
+    putMVar resVar r
+    case r of
+      B.EngineOk _ -> pure ()
+      B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+      other -> assertFailure ("import vs close must stay typed, got " ++ show other)
+  rr <- takeMVar resVar
+  case rr of
+    B.EngineOk ref -> do
+      s <- B.resourceSaveability env (B.keyRefId ref)
+      case s of
+        B.ResourceUnsaveable (B.UnsaveableGone _) -> pure ()
+        other -> assertFailure ("won import must drain at close, got " ++ show other)
+    B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+    other -> assertFailure ("import vs close must stay typed, got " ++ show other)
+
+-- | Export vs close on a live reference: bytes or InvalidState.
+caseGateRaceExportClose :: IO ()
+caseGateRaceExportClose = replicateM_ 15 $ withRealBackend $ \env -> do
+  ref <- expectGatedOk "import" =<< B.importKey env (B.KeyBytes "export-race-key-material")
+  raceWithCloseOn env $ do
+    r <- B.exportKey env ref
+    case r of
+      B.EngineOk _ -> pure ()
+      B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+      other -> assertFailure ("export vs close must stay typed, got " ++ show other)
+
+-- | Close waits for an admitted borrower: the parked one-shot holds
+-- the gate (the park is inside the gated FFI call, so past
+-- admission by construction), the closer provably blocks
+-- ('awaitBlocked'), the release lets the op finish first with
+-- correct bytes, and only then does the closer drain. The blocked
+-- proof plus undisturbed bytes is the deterministic
+-- close-waits-for-use ordering (no timing-hope).
+caseGateCloseWaitsForBorrow :: IO ()
+caseGateCloseWaitsForBorrow = withGate $ \g -> withRealBackend $ \env -> do
+  c_gateArmCheckpoint g 2
+  withKillWorker g (digestOneShotGated g env B.D_SHA256 "abc") $ \opDone _fire -> do
+    awaitParked g
+    withJoinedCloser env $ \closerDone closerTid -> do
+      awaitMVarBlocked closerTid
+      -- The gate is still held (no release yet), so the closer is
+      -- still waiting: a finished close here would prove the drain
+      -- ran without the gate.
+      preRel <- tryTakeMVar closerDone
+      case preRel of
+        Nothing -> pure ()
+        Just _ -> assertFailure "close finished before release (drain ran without the gate)"
+      c_gateRelease g 0
+      ro <- readMVar opDone :: IO (Either SomeException (B.EngineResult ByteString))
+      case ro of
+        Right (B.EngineOk bs) -> assertEqual "parked op bytes" sha256abc bs
+        other -> assertFailure ("parked op must complete, got " ++ show other)
+      rc <- readMVar closerDone :: IO (Either SomeException ())
+      assertWorkerOk rc
+      r <- B.digestOneShot env B.D_SHA256 "hello"
+      case r of
+        B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+        other -> assertFailure ("post-close one-shot must be InvalidState, got " ++ show other)
+    assertOutstandingZero g
+    assertEnvCountersClean
+    assertDigestCountersClean
+
+-- | Close waits through the take-to-consume window: the final takes
+-- the handle, then parks at its copy checkpoint holding the gate,
+-- and the closer provably blocks; the release lets the final
+-- deliver first (matching the pre-captured production digest),
+-- then the closer drains. The consumed id reads InvalidState
+-- after (the closed check precedes the registry lookup).
+caseGateCloseWaitsForFinal :: IO ()
+caseGateCloseWaitsForFinal = withGate $ \g -> withRealBackend $ \env -> do
+  prod <- expectGatedOk "prod digest" =<< B.digestOneShot env B.D_SHA256 "hello"
+  rid <- expectGatedOk "gated init" =<< digestInitGated g env B.D_SHA256
+  expectGatedOk "update" =<< B.digestUpdate env rid "hello"
+  c_gateArmCheckpoint g 2
+  withKillWorker g (digestFinalGated g env rid) $ \opDone _fire -> do
+    awaitParked g
+    withJoinedCloser env $ \closerDone closerTid -> do
+      awaitMVarBlocked closerTid
+      -- The gate is still held (no release yet), so the closer is
+      -- still waiting: a finished close here would prove the drain
+      -- ran without the gate.
+      preRel <- tryTakeMVar closerDone
+      case preRel of
+        Nothing -> pure ()
+        Just _ -> assertFailure "close finished before release (drain ran without the gate)"
+      c_gateRelease g 0
+      ro <- readMVar opDone :: IO (Either SomeException (B.EngineResult ByteString))
+      case ro of
+        Right (B.EngineOk bs) -> assertEqual "final equals one-shot" prod bs
+        other -> assertFailure ("parked final must complete, got " ++ show other)
+      rc <- readMVar closerDone :: IO (Either SomeException ())
+      assertWorkerOk rc
+      r <- B.digestFinal env rid
+      case r of
+        B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+        other -> assertFailure ("post-close final must be InvalidState, got " ++ show other)
+    assertOutstandingZero g
+    assertEnvCountersClean
+    assertDigestCountersClean
+
+-- | Interruption cleanup releases the gate: the parked one-shot is
+-- killed (forked killer plus release, the 'withKillWorker'
+-- protocol), the worker dies 'ThreadKilled', and the closer —
+-- provably blocked — proceeds through the freed gate and drains.
+caseGateCloseAfterInterrupt :: IO ()
+caseGateCloseAfterInterrupt = withGate $ \g -> withRealBackend $ \env -> do
+  c_gateArmCheckpoint g 2
+  withKillWorker g (digestOneShotGated g env B.D_SHA256 "abc") $ \opDone fire -> do
+    awaitParked g
+    withJoinedCloser env $ \closerDone closerTid -> do
+      awaitMVarBlocked closerTid
+      -- The gate is still held (no release yet), so the closer is
+      -- still waiting: a finished close here would prove the drain
+      -- ran without the gate.
+      preRel <- tryTakeMVar closerDone
+      case preRel of
+        Nothing -> pure ()
+        Just _ -> assertFailure "close finished before release (drain ran without the gate)"
+      fire
+      c_gateRelease g 0
+      ro <- readMVar opDone :: IO (Either SomeException (B.EngineResult ByteString))
+      assertThreadKilled ro
+      rc <- readMVar closerDone :: IO (Either SomeException ())
+      assertWorkerOk rc
+      r <- B.digestOneShot env B.D_SHA256 "hello"
+      case r of
+        B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+        other -> assertFailure ("post-close one-shot must be InvalidState, got " ++ show other)
+    assertOutstandingZero g
+    assertEnvCountersClean
+    assertDigestCountersClean
+
+-- | Cancel while closing: a gated op parked in its checkpoint holds
+-- the env gate, so the closer provably blocks on the gate (status
+-- barrier via 'awaitBlocked', never timing-hope). Killing the
+-- closer aborts the wait with the gate untouched — the victim dies
+-- 'ThreadKilled', the parked op still completes after the release,
+-- and close still functions (a lost gate would wedge here under
+-- the outer 'guarded' timeout). Both workers bracket their
+-- teardown ('withKillWorker' outside, 'withJoinedCloser' inside),
+-- so every exit releases and joins both before the backend close
+-- and the C gate free.
+caseGateCancelWhileClosing :: IO ()
+caseGateCancelWhileClosing = withGate $ \g -> withRealBackend $ \env -> do
+  c_gateArmCheckpoint g 2
+  withKillWorker g (digestOneShotGated g env B.D_SHA256 "abc") $ \opDone _fire -> do
+    awaitParked g
+    withJoinedCloser env $ \closerDone closerTid -> do
+      awaitMVarBlocked closerTid
+      -- The gate is still held (no release yet), so the closer is
+      -- still waiting: a finished close here would prove the drain
+      -- ran without the gate.
+      preRel <- tryTakeMVar closerDone
+      case preRel of
+        Nothing -> pure ()
+        Just _ -> assertFailure "close finished before release (drain ran without the gate)"
+      killThread closerTid
+      rc <- readMVar closerDone :: IO (Either SomeException ())
+      assertThreadKilled rc
+      c_gateRelease g 0
+      ro <- readMVar opDone :: IO (Either SomeException (B.EngineResult ByteString))
+      case ro of
+        Right (B.EngineOk bs) -> assertEqual "parked op bytes" sha256abc bs
+        other -> assertFailure ("parked op must complete, got " ++ show other)
+      B.closeBackend env
+      r <- B.digestOneShot env B.D_SHA256 "hello"
+      case r of
+        B.EngineFail (B.BackendInvalidState _ _) -> pure ()
+        other -> assertFailure ("post-close one-shot must be InvalidState, got " ++ show other)
+    assertOutstandingZero g
+    assertEnvCountersClean
+    assertDigestCountersClean
 
 -- ---------------------------------------------------------------------------
 -- Handle registry
@@ -1731,3 +2118,186 @@ caseHandleForeignStale = do
   assertEqual "B owns one handle" 1 nB
   asyncCloseCtx ctxA
   asyncCloseCtx ctxB
+
+-- ---------------------------------------------------------------------------
+-- Attachment-claim ownership
+-- ---------------------------------------------------------------------------
+
+-- | A hand-planned digest submit (no model planning): the detach
+-- source. Rejoin replays the recipe against the real model, so
+-- the world below still carries a digest-initialized session.
+digestHandRequest :: SessionId -> Int -> JobRequest
+digestHandRequest sid ticks = JobRequest
+  { jrSession = sid
+  , jrFunction = JobDigest
+  , jrWork = WorkCall
+      (Reservation "m5-claim-test" [] Nothing Nothing)
+      (EffectCrypto (FxDigest (MechanismId 0x250) "abc"))
+  , jrTicks = ticks
+  , jrCapacity = 64
+  }
+
+-- | One model world for claim-ownership probes: a memory store
+-- with the home token, one detach context, one initialized env
+-- with a seated token and one digest-initialized session. Tables
+-- stay with the caller — several tables share this world.
+mkM5World :: IO (Store, DetachCtx, Env, SessionId)
+mkM5World = do
+  world <- newMemoryWorld
+  eStore <- openMemoryStore world
+  store <- case eStore of
+    Right s -> pure s
+    Left err -> assertFailure ("world open failed: " ++ show err)
+  let tok = TokenRecord
+        { trId = TokenId 1
+        , trSlot = SlotId 0
+        , trGeneration = Generation 0
+        , trLabel = "m5-test"
+        , trAuth = tokenAuthNew
+        }
+  res <- storeCommit store emptyDelta { sdPutTokens = [tok] }
+  case res of
+    Committed -> pure ()
+    other -> assertFailure ("token seat failed: " ++ show other)
+  eDc <- openDetached store (TokenId 1)
+  dc <- case eDc of
+    Right c -> pure c
+    Left err -> assertFailure ("openDetached failed: " ++ show err)
+  env <- newEnv defaultRules
+  ini <- initialize env defaultInitArgs
+  case ini of
+    OutcomeOk () -> pure ()
+    OutcomeErr c -> assertFailure ("init failed: " ++ show c)
+  seatToken env (SlotId 0) >>= assertEqual "seat ok" (Right ())
+  m0 <- snapshotModel env
+  let sid = SessionId (mNextSession m0)
+      openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
+  case planCall defaultRules m0 openReq of
+    Immediate pc -> do
+      pr <- publish env (pcDelta pc)
+      case pr of
+        Right () -> pure ()
+        Left f -> assertFailure ("open publish failed: " ++ show f)
+    other -> assertFailure ("open did not plan immediate: " ++ show other)
+  m2 <- snapshotModel env
+  let initReq = Request Pkcs11_3_2 F_DigestInit (Just sid) Nothing
+        (encodeInitInput (MechanismId 0x250) [] False "") []
+  case planCall defaultRules m2 initReq of
+    Execute res (EffectCrypto _) -> do
+      m3 <- snapshotModel env
+      case finishEffect defaultRules m3 res
+          (EngineOkResource (EngineResourceId 51)) of
+        Left rej -> assertFailure ("digest-init finish rejected: " ++ show rej)
+        Right pc -> do
+          pr <- publish env (pcDelta pc)
+          case pr of
+            Right () -> pure ()
+            Left f -> assertFailure ("digest-init publish failed: " ++ show f)
+    other -> assertFailure ("digest-init did not plan execute: " ++ show other)
+  pure (store, dc, env, sid)
+
+loadJobsM5 :: Store -> IO [JobRecord]
+loadJobsM5 store = do
+  eJobs <- storeLoadJobs store
+  case eJobs of
+    Right jobs -> pure jobs
+    Left err -> assertFailure ("loadJobs failed: " ++ show err)
+
+-- | Table identities are minted uniquely per table and stable
+-- for the table's life.
+caseTableIdUnique :: IO ()
+caseTableIdUnique = do
+  t1 <- newAsyncTable 8
+  t2 <- newAsyncTable 8
+  assertBool "distinct tables, distinct ids"
+    (asyncTableId t1 /= asyncTableId t2)
+  assertEqual "identity stable" (asyncTableId t1) (asyncTableId t1)
+  many <- mapM (const (newAsyncTable 8)) [1 .. 128 :: Int]
+  let ids = map asyncTableId many
+  assertEqual "128 fresh tables, 128 identities" 128 (Set.size (Set.fromList ids))
+
+-- | Scoped retirement is exact and idempotent: retiring A twice
+-- reports A's attachment once and nothing the second time; the
+-- durable records carry exactly one cancel each; B retires
+-- separately with its own single entry.
+caseScopedRetireExactlyOnce :: IO ()
+caseScopedRetireExactlyOnce = do
+  (store, dc, env, sid) <- mkM5World
+  tableA <- newAsyncTable 8
+  tableB <- newAsyncTable 8
+  tableS <- newAsyncTable 8
+  enableAsyncSession tableA sid
+  enableAsyncSession tableB sid
+  enableAsyncSession tableS sid
+  let tidA = asyncTableId tableA
+      tidB = asyncTableId tableB
+  assertBool "table identities distinct" (tidA /= tidB)
+  Right s0 <- startJob tableS (digestHandRequest sid 1)
+  DetachOk pid1 <- detachJob dc tableS s0 JobDigest
+  Right s1 <- startJob tableS (digestHandRequest sid 1)
+  DetachOk pid2 <- detachJob dc tableS s1 JobDigest
+  let joinOn table pid = joinJob dc env table JoinRequest
+        { jqPid = pid
+        , jqFunction = JobDigest
+        , jqSession = sid
+        , jqCapacity = 64
+        }
+  JoinOk jA <- joinOn tableA pid1
+  JoinOk jB <- joinOn tableB pid2
+  revA <- inspectReverse dc tidA jA
+  assertEqual "A reverse resolves" (Just pid1) revA
+  revB <- inspectReverse dc tidB jB
+  assertEqual "B reverse resolves" (Just pid2) revB
+  rA1 <- retireLiveTableFor dc tidA
+  assertEqual "A retires once" [(pid1, Nothing)] rA1
+  rA2 <- retireLiveTableFor dc tidA
+  assertEqual "A retire idempotent" [] rA2
+  rB1 <- retireLiveTableFor dc tidB
+  assertEqual "B retires separately" [(pid2, Nothing)] rB1
+  jobs <- loadJobsM5 store
+  let stateOf p = [jrState r | r <- jobs, jrPersistentId r == p]
+  assertEqual "pid1 canceled" [JobCanceled] (stateOf pid1)
+  assertEqual "pid2 canceled" [JobCanceled] (stateOf pid2)
+  av1 <- inspectAttachment dc pid1
+  assertEqual "pid1 terminal" (Just (AvTerminal JobCanceled)) av1
+  av2 <- inspectAttachment dc pid2
+  assertEqual "pid2 terminal" (Just (AvTerminal JobCanceled)) av2
+  rNone <- retireLiveTable dc
+  assertEqual "whole-context retire finds nothing left" [] rNone
+  storeClose store
+
+-- | A rival-table refusal disturbs nothing: the owner's cancel
+-- still wins and resolves the durable record; the rival's table
+-- holds no trace of the contested id.
+caseRivalRefusalPreservesOwner :: IO ()
+caseRivalRefusalPreservesOwner = do
+  (store, dc, env, sid) <- mkM5World
+  tableA <- newAsyncTable 8
+  tableB <- newAsyncTable 8
+  tableS <- newAsyncTable 8
+  enableAsyncSession tableA sid
+  enableAsyncSession tableB sid
+  enableAsyncSession tableS sid
+  Right s0 <- startJob tableS (digestHandRequest sid 1)
+  DetachOk pid <- detachJob dc tableS s0 JobDigest
+  let joinOn table = joinJob dc env table JoinRequest
+        { jqPid = pid
+        , jqFunction = JobDigest
+        , jqSession = sid
+        , jqCapacity = 64
+        }
+  JoinOk jA <- joinOn tableA
+  rival <- joinOn tableB
+  assertEqual "rival refused" (JoinAlreadyAttached joinPolicyName) rival
+  censusB <- tableStats tableB
+  assertEqual "rival table untouched" (0, 0, 0) censusB
+  (cout, cerr) <- cancelJoined dc tableA jA
+  assertEqual "owner cancel wins" CancelOk cout
+  assertEqual "owner mark clean" Nothing cerr
+  again <- joinOn tableA
+  assertEqual "canceled never rejoins" (JoinTerminal JobCanceled) again
+  jobs <- loadJobsM5 store
+  case [r | r <- jobs, jrPersistentId r == pid] of
+    [rec] -> assertEqual "record canceled" JobCanceled (jrState rec)
+    other -> assertFailure ("expected one record, got " ++ show other)
+  storeClose store

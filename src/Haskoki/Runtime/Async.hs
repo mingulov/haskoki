@@ -146,6 +146,8 @@ module Haskoki.Runtime.Async
   , EffectRunner
     -- * Table
   , AsyncTable
+  , AsyncTableId
+  , asyncTableId
   , newAsyncTable
   , maxRetainedTombstones
   , maxRetainedBytes
@@ -216,7 +218,7 @@ import Control.Exception
   , uninterruptibleMask_
   )
 import Control.Monad (unless)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -227,6 +229,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Word (Word32, Word64)
+import System.IO.Unsafe (unsafePerformIO)
 
 import Haskoki.Attribute (AttributeValue (..))
 import Haskoki.Engine.Driver (encodeResult)
@@ -574,22 +577,57 @@ stepJob ev st e = case ev of
     JobTerminal _ -> Left (JobReject ev st)
     _ -> Right (JobStep (JobTerminal TermCanceled, e + 1))
 
+-- | Opaque process-local identity of one async job table,
+-- minted uniquely per table. Job ids are table-local counters
+-- (every fresh table starts at 0), so detached attachments key
+-- their live bindings by @('AsyncTableId', 'JobId')@ instead of
+-- the bare job id: two tables sharing a detach context never
+-- confuse each other's job zero. The constructor is private —
+-- identities come only from 'asyncTableId' — and values are
+-- meaningless across processes (never persisted, never on the
+-- wire; persistent job ids are unchanged).
+newtype AsyncTableId = AsyncTableId Int
+  deriving (Eq, Ord, Show)
+
+-- | Process-wide table-identity counter: the sole mint, so every
+-- table in the process carries a distinct identity. (The same
+-- shape @base@ uses for 'Data.Unique': one 'NOINLINE' cell, one
+-- atomic step per mint.)
+tableIdCounter :: IORef Int
+tableIdCounter = unsafePerformIO (newIORef 0)
+{-# NOINLINE tableIdCounter #-}
+
+-- | Mint the next table identity (single atomic step).
+mintTableId :: IO AsyncTableId
+mintTableId =
+  AsyncTableId <$> atomicModifyIORef' tableIdCounter (\n -> (n + 1, n))
+
 -- | The attached-job table: live jobs plus tombstones, the next
--- job id, the live-job capacity, and the async-enabled sessions.
+-- job id, the live-job capacity, the async-enabled sessions, and
+-- the table's process-local identity.
 data AsyncTable = AsyncTable
   { atJobs :: !(TVar (Map JobId Job))
   , atNext :: !(TVar Int)
   , atMax :: !Int
   , atAsync :: !(TVar (Set SessionId))
+  , atId :: !AsyncTableId
   }
 
--- | A fresh table with the given live-job capacity.
+-- | A fresh table with the given live-job capacity and a fresh
+-- process-local identity.
 newAsyncTable :: Int -> IO AsyncTable
-newAsyncTable cap = AsyncTable
-  <$> newTVarIO Map.empty
-  <*> newTVarIO 0
-  <*> pure cap
-  <*> newTVarIO Set.empty
+newAsyncTable cap = do
+  tid <- mintTableId
+  AsyncTable
+    <$> newTVarIO Map.empty
+    <*> newTVarIO 0
+    <*> pure cap
+    <*> newTVarIO Set.empty
+    <*> pure tid
+
+-- | A table's process-local identity (stable for the table's life).
+asyncTableId :: AsyncTable -> AsyncTableId
+asyncTableId = atId
 
 -- | Request asynchronous service for a session. Idempotent;
 -- sessions never enabled stay synchronous no matter the async

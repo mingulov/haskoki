@@ -29,7 +29,9 @@ state, OUTSIDE any provider generation's lifetime; contexts open on
 it with 'haskokiAsyncOpenOn' (which reloads token metadata\/objects
 into the fresh model). 'haskokiAsyncGetId' detaches a live job into
 a persistent id (revoking the old handle); 'haskokiAsyncJoin'
-reattaches a persistent id as a fresh live job. Contexts opened
+reattaches a persistent id as a fresh live job. Closing a context
+retires only its own table's attachments — sibling contexts on
+the same store keep theirs. Contexts opened
 without a store ('haskokiAsyncOpen') cannot detach or join — there
 is nowhere durable to put the record — and report typed failures.
 
@@ -143,6 +145,7 @@ import Haskoki.Runtime.Async
   , JobRequest (..)
   , PollOutcome (..)
   , StartDeny (..)
+  , asyncTableId
   , jobFunctionOf
   , TerminalState (..)
   , cancelJob
@@ -167,7 +170,7 @@ import Haskoki.Runtime.Detached
   , joinCode
   , joinJob
   , openDetached
-  , retireLiveTable
+  , retireLiveTableFor
   )
 import Haskoki.Runtime.Config (newConfigCell, resolveOnce)
 import Haskoki.Runtime.Lifecycle
@@ -572,16 +575,17 @@ haskokiAsyncClose pSlot = guardedUnit $
           freeStablePtr ctx
           poke pSlot (castPtrToStablePtr nullPtr)
 
--- | The close worker: retire the detach attachments (active joins
--- resolve canceled, durably), drain jobs and handles, shut the
--- backend. Exported so tests assert drain state through the same
--- function the export calls.
+-- | The close worker: retire this table's detach attachments
+-- (its active joins resolve canceled, durably; sibling contexts
+-- on the same store keep theirs), drain jobs and handles, shut
+-- the backend. Exported so tests assert drain state through the
+-- same function the export calls.
 asyncCloseCtx :: AsyncCtx -> IO ()
 asyncCloseCtx ctx = do
   case acDetach ctx of
     Nothing -> pure ()
     Just dc -> do
-      _ <- retireLiveTable dc
+      _ <- retireLiveTableFor dc (asyncTableId (acTable ctx))
       pure ()
   live <- readIORef (acLive ctx)
   mapM_ drainOne (Set.toList live)

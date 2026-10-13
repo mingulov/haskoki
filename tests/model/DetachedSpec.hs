@@ -8,10 +8,21 @@ revocation-before-success, and failure-preserves-attachment.
 {-# LANGUAGE OverloadedStrings #-}
 module DetachedSpec (spec) where
 
+import Control.Concurrent
+  ( MVar
+  , forkIO
+  , killThread
+  , newEmptyMVar
+  , putMVar
+  , takeMVar
+  )
+import Control.Exception (AsyncException (..), SomeException, fromException, try)
+import Control.Monad (forM_)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.IORef (IORef, newIORef, modifyIORef', readIORef)
 import Data.Word (Word64)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
 
@@ -41,6 +52,7 @@ import Haskoki.Runtime.Async
   , StartDeny (..)
   , TerminalState (..)
   , abortDetach
+  , asyncTableId
   , beginDetach
   , cancelJob
   , commitDetachRevoke
@@ -53,6 +65,7 @@ import Haskoki.Runtime.Async
   , pollJob
   , startJob
   , startSeededJob
+  , tableStats
   )
 import Haskoki.Runtime.Detached
   ( AttachmentView (..)
@@ -65,12 +78,16 @@ import Haskoki.Runtime.Detached
   , completeJoined
   , detachCode
   , detachJob
+  , detachStats
   , inspectAttachment
+  , inspectReverse
   , joinJob
   , joinPolicyName
   , markJobOpaque
   , openDetached
   , retireLiveTable
+  , retireLiveTableFor
+  , setJoinTestHook
   )
 import Haskoki.Runtime.Lifecycle
   ( Env
@@ -144,6 +161,11 @@ spec = testGroup "Detached jobs"
   , testCase "retireLiveTable cancels active attachments" caseRetireCancels
   , testCase "ambiguous commit reconciles present: durable wins" caseAmbiguousPresent
   , testCase "ambiguous commit reconciles absent: kept live" caseAmbiguousAbsent
+  , testCase "simultaneous two-session joins admit exactly one" caseJoinRaceTwoSessions
+  , testCase "colliding job zero resolves per table" caseJoinRaceTwoTables
+  , testCase "scoped retire closes one table, keeps the other" caseRetireScopedKeepsOther
+  , testCase "start refusal rolls the claim back" caseJoinStartRefusalRollsBack
+  , testCase "interruption after start retires the fresh job" caseJoinInterruptionRollsBack
   ]
 
 tokHome :: TokenId
@@ -172,7 +194,10 @@ data LiveGen = LiveGen
   }
 
 openLiveGen :: IO LiveGen
-openLiveGen = do
+openLiveGen = openLiveGenCap 8
+
+openLiveGenCap :: Int -> IO LiveGen
+openLiveGenCap cap = do
   env <- newEnv defaultRules
   ini <- initialize env defaultInitArgs
   case ini of
@@ -208,7 +233,7 @@ openLiveGen = do
             Right () -> pure ()
             Left f -> assertFailure ("digest-init publish failed: " ++ show f)
     other -> assertFailure ("digest-init did not plan execute: " ++ show other)
-  table <- newAsyncTable 8
+  table <- newAsyncTable cap
   enableAsyncSession table sid
   isAsync <- isAsyncSession table sid
   assertEqual "session async-enabled" True isAsync
@@ -269,6 +294,59 @@ loadJobs store = do
   case eJobs of
     Right jobs -> pure jobs
     Left err -> assertFailure ("loadJobs failed: " ++ show err)
+
+-- | Open a second session on a live generation's env, digest-
+-- initialized (so it can replay digest recipes) and async-enabled
+-- on the generation's table. Returns the fresh session state.
+openSecondSession :: LiveGen -> IO SessionState
+openSecondSession gen = do
+  m <- snapshotModel (lgEnv gen)
+  let sid = SessionId (mNextSession m)
+      openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
+  case planCall defaultRules m openReq of
+    Immediate pc -> do
+      pr <- publish (lgEnv gen) (pcDelta pc)
+      case pr of
+        Right () -> pure ()
+        Left f -> assertFailure ("second open publish failed: " ++ show f)
+    other -> assertFailure ("second open did not plan immediate: " ++ show other)
+  m2 <- snapshotModel (lgEnv gen)
+  st <- case lookupSession m2 sid of
+    Just s -> pure s
+    Nothing -> assertFailure "second session missing"
+  let initReq = Request Pkcs11_3_2 F_DigestInit (Just sid) Nothing
+        (encodeInitInput sha256Mech [] False BS.empty) []
+  m3 <- snapshotModel (lgEnv gen)
+  case planCall defaultRules m3 initReq of
+    Execute res (EffectCrypto _) -> do
+      m4 <- snapshotModel (lgEnv gen)
+      case finishEffect defaultRules m4 res
+          (EngineOkResource (EngineResourceId 22)) of
+        Left rej -> assertFailure ("second digest-init finish rejected: " ++ show rej)
+        Right pc -> do
+          pr <- publish (lgEnv gen) (pcDelta pc)
+          case pr of
+            Right () -> pure ()
+            Left f -> assertFailure ("second digest-init publish failed: " ++ show f)
+    other -> assertFailure ("second digest-init did not plan execute: " ++ show other)
+  enableAsyncSession (lgTable gen) sid
+  pure st
+
+-- | No-wedge join for race workers: a lock inversion would hang the
+-- take, so the 10s backstop fails loudly instead of wedging the suite.
+joinBounded :: String -> MVar a -> IO a
+joinBounded name mv = do
+  r <- timeout 10000000 (takeMVar mv)
+  case r of
+    Nothing -> assertFailure ("wedged (>10s): " ++ name)
+    Just v -> pure v
+
+-- | Simultaneous-join rounds: the exactly-one-winner property
+-- holds on every round under every interleaving (the atomic
+-- claim decides), so the loop exercises overlap rather than
+-- betting on it.
+nJoinRaceRounds :: Int
+nJoinRaceRounds = 50
 
 -- FIRST TEST: GetID on a pending job. The persistent id is returned
 -- only after the record is durable AND the old native binding is
@@ -910,6 +988,19 @@ caseJoinIncompatible = do
     other -> assertFailure ("expected JoinIncompatible, got " ++ show other)
   av <- inspectAttachment dc pid
   assertEqual "still idle" (Just AvIdle) av
+  -- The refused replan rolled its claim back: no reverse entry,
+  -- and the good session joins cleanly afterwards.
+  rev <- inspectReverse dc (asyncTableId (lgTable gen)) (JobId 1)
+  assertEqual "no reverse entry after refused replan" Nothing rev
+  retry <- joinJob dc (lgEnv gen) (lgTable gen) JoinRequest
+    { jqPid = pid
+    , jqFunction = JobDigest
+    , jqSession = ssId (lgSession gen)
+    , jqCapacity = 32
+    }
+  case retry of
+    JoinOk _ -> pure ()
+    other -> assertFailure ("retry after incompatible failed: " ++ show other)
   storeClose store
 
 -- A token with an active login admits only authenticated joins: the
@@ -1111,3 +1202,375 @@ caseSeededValidates = do
   assertEqual "seeded job ready" PollReady p
   nRuns <- readIORef runs
   assertEqual "seed runs no engine work" 0 nRuns
+
+-- Simultaneous joins from two sessions (one table, one
+-- context): a barrier releases both joiners at once; exactly one
+-- creates the live attachment and the loser takes the existing
+-- already-attached refusal — on every round, under every
+-- interleaving. Runner and output counts prove no duplicated
+-- engine work.
+caseJoinRaceTwoSessions :: IO ()
+caseJoinRaceTwoSessions = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  dc <- mkDetached store
+  let tid = asyncTableId (lgTable gen)
+  runs <- newIORef 0
+  forM_ [1 .. nJoinRaceRounds :: Int] $ \_ -> do
+    -- Fresh join sessions per round: each round's winning
+    -- complete consumes its session's digest operation, while
+    -- the source session only ever plans and detaches (never
+    -- publishes) and stays replayable across rounds.
+    stA <- openSecondSession gen
+    stB <- openSecondSession gen
+    let sidA = ssId stA
+        sidB = ssId stB
+    j0 <- startDigestJob gen "abc" 32 1
+    DetachOk pid <- detachJob dc (lgTable gen) j0 JobDigest
+    go <- newEmptyMVar
+    out1 <- newEmptyMVar
+    out2 <- newEmptyMVar
+    let racer sid out = forkIO $ do
+          takeMVar go
+          r <- joinJob dc (lgEnv gen) (lgTable gen) JoinRequest
+            { jqPid = pid
+            , jqFunction = JobDigest
+            , jqSession = sid
+            , jqCapacity = 32
+            }
+          putMVar out r
+    _ <- racer sidA out1
+    _ <- racer sidB out2
+    putMVar go ()
+    putMVar go ()
+    r1 <- joinBounded "join racer 1" out1
+    r2 <- joinBounded "join racer 2" out2
+    jWin <- case (r1, r2) of
+      (JoinOk j, JoinAlreadyAttached p) -> do
+        assertEqual "named policy" joinPolicyName p
+        pure j
+      (JoinAlreadyAttached p, JoinOk j) -> do
+        assertEqual "named policy" joinPolicyName p
+        pure j
+      _ -> assertFailure ("race must split winner/loser, got " ++ show (r1, r2))
+    -- Exactly one live attachment, reverse-resolving to this pid.
+    av <- inspectAttachment dc pid
+    assertEqual "one live attachment" (Just (AvActive jWin)) av
+    rev <- inspectReverse dc tid jWin
+    assertEqual "reverse resolves the winner" (Just pid) rev
+    -- The winner drives and delivers exactly once.
+    p <- pollJob (countingRunner runs) (lgEnv gen) (lgTable gen) JobDigest jWin
+    assertEqual "winner ready" PollReady p
+    (del, writes) <- newCapture
+    jc <- completeJoined dc (lgEnv gen) (lgTable gen) JobDigest jWin del (\_ -> pure ())
+    case jcOutcome jc of
+      CompleteDelivered (CompBytes bs) ->
+        assertEqual "winner bytes" cannedDigest bs
+      other -> assertFailure ("expected delivery, got " ++ show other)
+    got <- readIORef writes
+    assertEqual "exactly one write" 1 (length got)
+  nRuns <- readIORef runs
+  assertEqual "one engine run per round" nJoinRaceRounds nRuns
+  census <- tableStats (lgTable gen)
+  assertEqual "round census" (0, nJoinRaceRounds, 2 * nJoinRaceRounds) census
+  storeClose store
+
+-- Two tables (two provider generations, one shared store and
+-- detach context) race one persistent id; the loser then joins a
+-- second id on its own table. Both tables' first live jobs are
+-- job zero — the reverse map and the completion marks resolve
+-- each table's zero to its own persistent id.
+caseJoinRaceTwoTables :: IO ()
+caseJoinRaceTwoTables = do
+  (_world, store) <- mkWorld
+  genS <- openLiveGen
+  genA <- openLiveGen
+  genB <- openLiveGen
+  dc <- mkDetached store
+  let tidA = asyncTableId (lgTable genA)
+      tidB = asyncTableId (lgTable genB)
+  assertBool "table identities distinct" (tidA /= tidB)
+  -- The source detaches twice; the join targets stay fresh so
+  -- both allocate their first live job as job zero.
+  s0 <- startDigestJob genS "abc" 32 1
+  DetachOk pid1 <- detachJob dc (lgTable genS) s0 JobDigest
+  s1 <- startDigestJob genS "abc" 32 1
+  DetachOk pid2 <- detachJob dc (lgTable genS) s1 JobDigest
+  assertBool "persistent ids distinct" (pid1 /= pid2)
+  -- Race pid1 across the two tables.
+  go <- newEmptyMVar
+  outA <- newEmptyMVar
+  outB <- newEmptyMVar
+  let racer gen out = forkIO $ do
+        takeMVar go
+        r <- joinJob dc (lgEnv gen) (lgTable gen) JoinRequest
+          { jqPid = pid1
+          , jqFunction = JobDigest
+          , jqSession = ssId (lgSession gen)
+          , jqCapacity = 32
+          }
+        putMVar out r
+  _ <- racer genA outA
+  _ <- racer genB outB
+  putMVar go ()
+  putMVar go ()
+  rA <- joinBounded "table-A joiner" outA
+  rB <- joinBounded "table-B joiner" outB
+  (genW, genL, jW) <- case (rA, rB) of
+    (JoinOk j, JoinAlreadyAttached _) -> pure (genA, genB, j)
+    (JoinAlreadyAttached _, JoinOk j) -> pure (genB, genA, j)
+    _ -> assertFailure ("cross-table race must split, got " ++ show (rA, rB))
+  assertEqual "winner takes job zero" (JobId 0) jW
+  -- The loser joins the second id on its own table: job zero
+  -- collides numerically and must still resolve per table.
+  outL <- joinJob dc (lgEnv genL) (lgTable genL) JoinRequest
+    { jqPid = pid2
+    , jqFunction = JobDigest
+    , jqSession = ssId (lgSession genL)
+    , jqCapacity = 32
+    }
+  jL <- case outL of
+    JoinOk j -> pure j
+    other -> assertFailure ("loser-table join failed: " ++ show other)
+  assertEqual "loser takes job zero too" (JobId 0) jL
+  revW <- inspectReverse dc (asyncTableId (lgTable genW)) jW
+  assertEqual "winner reverse" (Just pid1) revW
+  revL <- inspectReverse dc (asyncTableId (lgTable genL)) jL
+  assertEqual "loser reverse" (Just pid2) revL
+  census <- detachStats dc
+  assertEqual "two live attachments" (2, 0, 0) census
+  -- Each table completes through its own binding: two engine
+  -- runs, two single deliveries, marks on the right records.
+  runs <- newIORef 0
+  let drive gen j = do
+        p <- pollJob (countingRunner runs) (lgEnv gen) (lgTable gen) JobDigest j
+        assertEqual "joined ready" PollReady p
+        (del, writes) <- newCapture
+        jc <- completeJoined dc (lgEnv gen) (lgTable gen) JobDigest j del (\_ -> pure ())
+        assertEqual "mark clean" Nothing (jcMarkError jc)
+        case jcOutcome jc of
+          CompleteDelivered (CompBytes bs) ->
+            assertEqual "replay bytes" cannedDigest bs
+          other -> assertFailure ("expected delivery, got " ++ show other)
+        got <- readIORef writes
+        assertEqual "one write each" 1 (length got)
+  drive genW jW
+  drive genL jL
+  nRuns <- readIORef runs
+  assertEqual "two engine runs total" 2 nRuns
+  jobs <- loadJobs store
+  let stateOf p = [jrState r | r <- jobs, jrPersistentId r == p]
+  assertEqual "pid1 delivered" [JobDelivered] (stateOf pid1)
+  assertEqual "pid2 delivered" [JobDelivered] (stateOf pid2)
+  storeClose store
+
+-- Scoped retirement: retiring table A cancels only A's
+-- attachments; table B's active join keeps working and delivers.
+caseRetireScopedKeepsOther :: IO ()
+caseRetireScopedKeepsOther = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  let sid = ssId (lgSession gen)
+  tableA <- newAsyncTable 8
+  tableB <- newAsyncTable 8
+  enableAsyncSession tableA sid
+  enableAsyncSession tableB sid
+  let tidA = asyncTableId tableA
+      tidB = asyncTableId tableB
+  assertBool "table identities distinct" (tidA /= tidB)
+  dc <- mkDetached store
+  -- Source jobs live on the generation's own table.
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid1 <- detachJob dc (lgTable gen) j0 JobDigest
+  j1 <- startDigestJob gen "abc" 32 1
+  DetachOk pid2 <- detachJob dc (lgTable gen) j1 JobDigest
+  let joinOn table pid = joinJob dc (lgEnv gen) table JoinRequest
+        { jqPid = pid
+        , jqFunction = JobDigest
+        , jqSession = sid
+        , jqCapacity = 32
+        }
+  JoinOk jA <- joinOn tableA pid1
+  JoinOk jB <- joinOn tableB pid2
+  assertEqual "A takes job zero" (JobId 0) jA
+  assertEqual "B takes job zero" (JobId 0) jB
+  av1 <- inspectAttachment dc pid1
+  assertEqual "pid1 active" (Just (AvActive jA)) av1
+  av2 <- inspectAttachment dc pid2
+  assertEqual "pid2 active" (Just (AvActive jB)) av2
+  -- Retire A: only pid1 resolves canceled.
+  retiredA <- retireLiveTableFor dc tidA
+  assertEqual "only A retired" [(pid1, Nothing)] retiredA
+  av1r <- inspectAttachment dc pid1
+  assertEqual "pid1 terminal" (Just (AvTerminal JobCanceled)) av1r
+  av2r <- inspectAttachment dc pid2
+  assertEqual "pid2 still active" (Just (AvActive jB)) av2r
+  againA <- joinOn tableA pid1
+  assertEqual "retired never rejoins" (JoinTerminal JobCanceled) againA
+  -- B is unaffected: it drives and delivers exactly once.
+  runs <- newIORef 0
+  p <- pollJob (countingRunner runs) (lgEnv gen) tableB JobDigest jB
+  assertEqual "B ready" PollReady p
+  (del, writes) <- newCapture
+  jc <- completeJoined dc (lgEnv gen) tableB JobDigest jB del (\_ -> pure ())
+  assertEqual "B mark clean" Nothing (jcMarkError jc)
+  case jcOutcome jc of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "B bytes" cannedDigest bs
+    other -> assertFailure ("expected B delivery, got " ++ show other)
+  got <- readIORef writes
+  assertEqual "B one write" 1 (length got)
+  nRuns <- readIORef runs
+  assertEqual "B one engine run" 1 nRuns
+  -- The durable records agree: pid1 canceled, pid2 delivered.
+  jobs <- loadJobs store
+  let stateOf p = [jrState r | r <- jobs, jrPersistentId r == p]
+  assertEqual "pid1 canceled" [JobCanceled] (stateOf pid1)
+  assertEqual "pid2 delivered" [JobDelivered] (stateOf pid2)
+  -- Whole-context retirement now finds nothing left to retire.
+  retiredNone <- retireLiveTable dc
+  assertEqual "nothing left" [] retiredNone
+  storeClose store
+
+-- A start refusal under a held claim (the table filled after
+-- validation) rolls back only the claim: the attachment is idle
+-- again, no reverse entry exists, no job id was consumed, and a
+-- retry after freeing the slot joins cleanly.
+caseJoinStartRefusalRollsBack :: IO ()
+caseJoinStartRefusalRollsBack = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGenCap 1
+  dc <- mkDetached store
+  let sid = ssId (lgSession gen)
+      table = lgTable gen
+      tid = asyncTableId table
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid <- detachJob dc table j0 JobDigest
+  -- Fill the single live slot after the detach freed it.
+  jFill <- startDigestJob gen "abc" 32 1
+  (live0, _term0, next0) <- tableStats table
+  assertEqual "table full" 1 live0
+  out <- joinJob dc (lgEnv gen) table JoinRequest
+    { jqPid = pid
+    , jqFunction = JobDigest
+    , jqSession = sid
+    , jqCapacity = 32
+    }
+  assertEqual "start refused over capacity"
+    (JoinDenied StartOverCapacity) out
+  av <- inspectAttachment dc pid
+  assertEqual "claim rolled back to idle" (Just AvIdle) av
+  rev <- inspectReverse dc tid (JobId next0)
+  assertEqual "no reverse entry" Nothing rev
+  (live1, _term1, next1) <- tableStats table
+  assertEqual "refusal consumed no id" next0 next1
+  assertEqual "still exactly the filler live" 1 live1
+  -- Free the slot; the retry joins and delivers.
+  cout <- cancelJob table jFill
+  assertEqual "filler canceled" CancelOk cout
+  JoinOk j1 <- joinJob dc (lgEnv gen) table JoinRequest
+    { jqPid = pid
+    , jqFunction = JobDigest
+    , jqSession = sid
+    , jqCapacity = 32
+    }
+  runs <- newIORef 0
+  p <- pollJob (countingRunner runs) (lgEnv gen) table JobDigest j1
+  assertEqual "retry ready" PollReady p
+  (del, writes) <- newCapture
+  jc <- completeJoined dc (lgEnv gen) table JobDigest j1 del (\_ -> pure ())
+  case jcOutcome jc of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "retry bytes" cannedDigest bs
+    other -> assertFailure ("expected delivery, got " ++ show other)
+  got <- readIORef writes
+  assertEqual "one write" 1 (length got)
+  nRuns <- readIORef runs
+  assertEqual "one engine run" 1 nRuns
+  storeClose store
+
+-- Interruption after the live start but before the attachment
+-- commit: the TEST-ONLY hook parks the joiner inside the
+-- transfer window, a kill lands there deterministically, and the
+-- transfer retires the fresh unregistered job plus rolls the
+-- claim back — no live orphan, no stuck claim, durable job
+-- intact, rejoin clean.
+caseJoinInterruptionRollsBack :: IO ()
+caseJoinInterruptionRollsBack = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  dc <- mkDetached store
+  let sid = ssId (lgSession gen)
+      table = lgTable gen
+      tid = asyncTableId table
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid <- detachJob dc table j0 JobDigest
+  entered <- newEmptyMVar
+  proceed <- newEmptyMVar
+  done <- newEmptyMVar
+  setJoinTestHook dc (putMVar entered () >> takeMVar proceed)
+  joinerTid <- forkIO $ do
+    r <- try (joinJob dc (lgEnv gen) table JoinRequest
+      { jqPid = pid
+      , jqFunction = JobDigest
+      , jqSession = sid
+      , jqCapacity = 32
+      })
+    putMVar done (r :: Either SomeException JoinOutcome)
+  -- The joiner is parked inside the transfer window: its live
+  -- job started, its commit not yet run.
+  mEntered <- timeout 10000000 (takeMVar entered)
+  case mEntered of
+    Nothing -> assertFailure "joiner never entered the transfer window"
+    Just () -> pure ()
+  (liveMid, _termMid, nextMid) <- tableStats table
+  assertEqual "fresh job started" 1 liveMid
+  let freshJid = JobId (nextMid - 1)
+  killThread joinerTid
+  mDone <- timeout 10000000 (takeMVar done)
+  r <- case mDone of
+    Nothing -> assertFailure "joiner never reported after kill"
+    Just x -> pure x
+  case r of
+    Left e -> case fromException e of
+      Just ThreadKilled -> pure ()
+      Nothing -> assertFailure ("expected ThreadKilled, got " ++ show e)
+    Right out -> assertFailure ("kill swallowed, join returned " ++ show out)
+  -- Claim rolled back; fresh job retired; nothing registered.
+  av <- inspectAttachment dc pid
+  assertEqual "claim rolled back" (Just AvIdle) av
+  rev <- inspectReverse dc tid freshJid
+  assertEqual "fresh job unregistered" Nothing rev
+  (liveAfter, termAfter, _nextAfter) <- tableStats table
+  assertEqual "no live orphan" 0 liveAfter
+  assertEqual "one retired tombstone" 1 termAfter
+  cout <- cancelJob table freshJid
+  case cout of
+    CancelAlready TermCanceled -> pure ()
+    other -> assertFailure ("fresh job not canceled, got " ++ show other)
+  jobs <- loadJobs store
+  case [rec | rec <- jobs, jrPersistentId rec == pid] of
+    [rec] -> assertEqual "durable job intact" JobQueued (jrState rec)
+    other -> assertFailure ("expected one record, got " ++ show other)
+  -- The rejoin succeeds and delivers exactly once.
+  setJoinTestHook dc (pure ())
+  JoinOk j1 <- joinJob dc (lgEnv gen) table JoinRequest
+    { jqPid = pid
+    , jqFunction = JobDigest
+    , jqSession = sid
+    , jqCapacity = 32
+    }
+  runs <- newIORef 0
+  p <- pollJob (countingRunner runs) (lgEnv gen) table JobDigest j1
+  assertEqual "rejoin ready" PollReady p
+  (del, writes) <- newCapture
+  jc <- completeJoined dc (lgEnv gen) table JobDigest j1 del (\_ -> pure ())
+  case jcOutcome jc of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "rejoin bytes" cannedDigest bs
+    other -> assertFailure ("expected delivery, got " ++ show other)
+  got <- readIORef writes
+  assertEqual "one write" 1 (length got)
+  nRuns <- readIORef runs
+  assertEqual "one engine run" 1 nRuns
+  storeClose store

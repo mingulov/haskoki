@@ -66,21 +66,35 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Maybe (isJust)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
+import Haskoki.Model (Model (..))
 import Haskoki.Operation (CryptoEffect (..))
-import Haskoki.Outcome (EffectRequest (..), Reservation (..))
+import Haskoki.Operation.Codec (encodeInitInput)
+import Haskoki.Outcome
+  ( EffectRequest (..)
+  , EngineResult (..)
+  , PlanResult (..)
+  , PreparedCommit (..)
+  , Reservation (..)
+  )
 import Haskoki.Registry (MechanismId (..))
+import Haskoki.Request (FunctionId (..), Request (..))
+import Haskoki.Rules (defaultRules)
 import Haskoki.Runtime.Async
   ( AsyncTable
   , AsyncWork (..)
+  , CancelOutcome (..)
   , JobFunction (..)
   , JobRequest (..)
   , LeaseView (..)
   , abortDetach
+  , asyncTableId
   , beginDetach
+  , cancelJob
   , commitDetachRevoke
   , enableAsyncSession
+  , jobSnapshotTicks
   , leaseLockHeld
   , leaseSnapshot
   , newAsyncTable
@@ -88,7 +102,49 @@ import Haskoki.Runtime.Async
   , startJob
   , withDetachLease
   )
-import Haskoki.Types (JobId (..), SessionId (..))
+import Haskoki.Runtime.Detached
+  ( AttachmentView (..)
+  , DetachCtx
+  , DetachOutcome (..)
+  , JoinOutcome (..)
+  , JoinRequest (..)
+  , detachJob
+  , inspectAttachment
+  , joinJob
+  , joinPolicyName
+  , openDetached
+  )
+import Haskoki.Runtime.Lifecycle
+  ( Env
+  , defaultInitArgs
+  , initialize
+  , newEnv
+  , publish
+  , seatToken
+  , snapshotModel
+  )
+import Haskoki.Runtime.Storage
+  ( CommitResult (..)
+  , JobExecState (..)
+  , JobRecord (..)
+  , Store (..)
+  , StoreDelta (..)
+  , TokenRecord (..)
+  , emptyDelta
+  )
+import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
+import Haskoki.Session (tokenAuthNew)
+import Haskoki.Transition (finishEffect, planCall)
+import Haskoki.Types
+  ( EngineResourceId (..)
+  , Generation (..)
+  , JobId (..)
+  , Outcome (..)
+  , Pkcs11Version (..)
+  , SessionId (..)
+  , SlotId (..)
+  , TokenId (..)
+  )
 
 spec :: TestTree
 spec = testGroup "Scoped detach leases"
@@ -101,6 +157,8 @@ spec = testGroup "Scoped detach leases"
   , testCase "raw commit releases the lock" caseRawCommitReleases
   , testCase "kill during commit never wedges"
       caseKillDuringCommitNeverWedges
+  , testCase "rival-table join refuses; leased job undisturbed"
+      caseRivalTableJoinRefuses
   ]
 
 sid1 :: SessionId
@@ -283,3 +341,155 @@ caseKillDuringCommitNeverWedges = do
           Just _ -> abortDetach l
   nW <- readIORef wedged
   assertEqual "no kill-during-commit wedged" 0 nW
+
+-- ---------------------------------------------------------------------------
+-- Join claims against held detach leases
+-- ---------------------------------------------------------------------------
+
+-- | One model world for lease/detach interplay: a memory store
+-- with the home token, one detach context, one initialized env
+-- with a seated token and one digest-initialized session. Tables
+-- stay with the caller — several tables share this world.
+mkLeaseWorld :: IO (Store, DetachCtx, Env, SessionId)
+mkLeaseWorld = do
+  world <- newMemoryWorld
+  eStore <- openMemoryStore world
+  store <- case eStore of
+    Right s -> pure s
+    Left err -> assertFailure ("world open failed: " ++ show err)
+  let tok = TokenRecord
+        { trId = TokenId 1
+        , trSlot = SlotId 0
+        , trGeneration = Generation 0
+        , trLabel = "lease-test"
+        , trAuth = tokenAuthNew
+        }
+  res <- storeCommit store emptyDelta { sdPutTokens = [tok] }
+  case res of
+    Committed -> pure ()
+    other -> assertFailure ("token seat failed: " ++ show other)
+  eDc <- openDetached store (TokenId 1)
+  dc <- case eDc of
+    Right c -> pure c
+    Left err -> assertFailure ("openDetached failed: " ++ show err)
+  env <- newEnv defaultRules
+  ini <- initialize env defaultInitArgs
+  case ini of
+    OutcomeOk () -> pure ()
+    OutcomeErr c -> assertFailure ("init failed: " ++ show c)
+  seatToken env (SlotId 0) >>= assertEqual "seat ok" (Right ())
+  m0 <- snapshotModel env
+  let sid = SessionId (mNextSession m0)
+      openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
+  case planCall defaultRules m0 openReq of
+    Immediate pc -> do
+      pr <- publish env (pcDelta pc)
+      case pr of
+        Right () -> pure ()
+        Left f -> assertFailure ("open publish failed: " ++ show f)
+    other -> assertFailure ("open did not plan immediate: " ++ show other)
+  m2 <- snapshotModel env
+  let initReq = Request Pkcs11_3_2 F_DigestInit (Just sid) Nothing
+        (encodeInitInput (MechanismId 0x250) [] False "") []
+  case planCall defaultRules m2 initReq of
+    Execute res (EffectCrypto _) -> do
+      m3 <- snapshotModel env
+      case finishEffect defaultRules m3 res
+          (EngineOkResource (EngineResourceId 31)) of
+        Left rej -> assertFailure ("digest-init finish rejected: " ++ show rej)
+        Right pc -> do
+          pr <- publish env (pcDelta pc)
+          case pr of
+            Right () -> pure ()
+            Left f -> assertFailure ("digest-init publish failed: " ++ show f)
+    other -> assertFailure ("digest-init did not plan execute: " ++ show other)
+  pure (store, dc, env, sid)
+
+-- | Rival-table join refusal: table A holds the live
+-- attachment under a held detach lease while table B holds a
+-- terminal job at the SAME numeric id. The join of the pid on B
+-- refuses already-attached WITHOUT resolving A's job id in B's
+-- table (no wrong-table lookup, no lease contact, no durable
+-- write); the lease aborts cleanly and A's job is intact.
+caseRivalTableJoinRefuses :: IO ()
+caseRivalTableJoinRefuses = do
+  (store, dc, env, sid) <- mkLeaseWorld
+  tableA <- newAsyncTable 8
+  tableB <- newAsyncTable 8
+  enableAsyncSession tableA sid
+  enableAsyncSession tableB sid
+  let tidA = asyncTableId tableA
+      tidB = asyncTableId tableB
+  assertBool "table identities distinct" (tidA /= tidB)
+  -- A: start, detach, join back (active JobId 1).
+  eA0 <- startJob tableA (digestRequest sid 1)
+  jA0 <- case eA0 of
+    Right j -> pure j
+    Left deny -> assertFailure ("A start denied: " ++ show deny)
+  eDet <- detachJob dc tableA jA0 JobDigest
+  pid <- case eDet of
+    DetachOk p -> pure p
+    other -> assertFailure ("A detach failed: " ++ show other)
+  eJoinA <- joinJob dc env tableA JoinRequest
+    { jqPid = pid
+    , jqFunction = JobDigest
+    , jqSession = sid
+    , jqCapacity = 64
+    }
+  jA <- case eJoinA of
+    JoinOk j -> pure j
+    other -> assertFailure ("A join failed: " ++ show other)
+  -- B: two jobs, second canceled — a terminal job at the same
+  -- numeric id as A's live attachment.
+  eB0 <- startJob tableB (digestRequest sid 1)
+  case eB0 of
+    Right _ -> pure ()
+    Left deny -> assertFailure ("B start denied: " ++ show deny)
+  eB1 <- startJob tableB (digestRequest sid 1)
+  jB1 <- case eB1 of
+    Right j -> pure j
+    Left deny -> assertFailure ("B start denied: " ++ show deny)
+  assertEqual "numeric collision" jA jB1
+  eCancel <- cancelJob tableB jB1
+  case eCancel of
+    CancelOk -> pure ()
+    other -> assertFailure ("B cancel failed: " ++ show other)
+  -- Hold A's detach lease across the rival join.
+  mLease <- beginDetach tableA jA
+  lease <- case mLease of
+    Just l -> pure l
+    Nothing -> assertFailure "begin missed A's live job"
+  mRival <- timeout 10000000
+    (joinJob dc env tableB JoinRequest
+      { jqPid = pid
+      , jqFunction = JobDigest
+      , jqSession = sid
+      , jqCapacity = 64
+      })
+  rival <- case mRival of
+    Nothing -> assertFailure "rival join wedged on the lease"
+    Just r -> pure r
+  assertEqual "rival refused first-wins"
+    (JoinAlreadyAttached joinPolicyName) rival
+  -- The lease never saw contact: abort is clean, job intact.
+  abortDetach lease
+  mSnap <- snapshotJob tableA jA
+  case mSnap of
+    Nothing -> assertFailure "A's job vanished"
+    Just snap -> assertEqual "A's ticks intact" (Just 1) (jobSnapshotTicks snap)
+  mLease2 <- beginDetach tableA jA
+  case mLease2 of
+    Nothing -> assertFailure "A's job unleasable after abort"
+    Just l2 -> abortDetach l2
+  -- No wrong-table self-heal: durable record still queued,
+  -- attachment still A's active.
+  av <- inspectAttachment dc pid
+  assertEqual "A still active" (Just (AvActive jA)) av
+  eJobs <- storeLoadJobs store
+  jobs <- case eJobs of
+    Right js -> pure js
+    Left err -> assertFailure ("loadJobs failed: " ++ show err)
+  case [r | r <- jobs, jrPersistentId r == pid] of
+    [rec] -> assertEqual "record still queued" JobQueued (jrState rec)
+    other -> assertFailure ("expected one record, got " ++ show (length other))
+  storeClose store

@@ -36,6 +36,16 @@ implemented here):
   in-flight use; raw pointers never escape the lock. Snapshot
   lookup ('lookupRegistry') is restricted to immutable values (key
   material), which cannot dangle.
+* Environment lifetime gate: every supported method holds the
+  exclusive @osslGate@ across its work, and 'closeBackend' takes the
+  same gate — so close waits for in-flight native borrowers and
+  post-close stateful work answers 'BackendInvalidState' instead of
+  touching freed state. Lock order is environment-then-registry;
+  composite entries split into unleased private workers (one lease
+  per call, never nested); no caller-supplied callback runs under
+  the gate. Pure\/total operations (key-reference passthrough,
+  cached capability reads) hold the gate but stay total, even
+  post-close.
 * Reachability is lifetime, never coordination: 'ForeignPtr's keep
   the native env alive across each use ('withForeignPtr'); every
   ownership transfer is an explicit masked step, never GC timing.
@@ -56,8 +66,8 @@ module Haskoki.Engine.OpenSSL4
   , generateKeyECGated
   ) where
 
-import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar, withMVar)
-import Control.Exception (mask, mask_, onException)
+import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, putMVar, readMVar, takeMVar, withMVar)
+import Control.Exception (bracket_, mask, mask_, onException, uninterruptibleMask_)
 import Control.Monad (filterM)
 import Data.Bits (xor, (.|.))
 import qualified Data.ByteString as BS
@@ -100,6 +110,11 @@ data OSSL4Env = OSSL4Env
   , osslKeys :: !(MVar (Map Word32 KeyMaterial))
   , osslNextId :: !(MVar Word32)
   , osslClosed :: !(MVar Bool)
+  -- | Exclusive lifetime gate (full = acquirable): every supported
+  -- method holds it across its native\/registry work; 'closeBackend'
+  -- takes it for the drain. Always acquired before any registry
+  -- 'MVar' (environment-then-registry lock order).
+  , osslGate :: !(MVar ())
   }
 
 -- | TEST-ONLY gated open (fault-or-delegate env construction,
@@ -134,7 +149,8 @@ openBackendWith newEnv loadProv propq = mask $ \restore -> do
           keys <- newMVar Map.empty
           nextId <- newMVar 1
           closed <- newMVar False
-          let env = OSSL4Env fenv ctx propq (ossl4Caps version propq) digests keys nextId closed
+          gate <- newMVar ()
+          let env = OSSL4Env fenv ctx propq (ossl4Caps version propq) digests keys nextId closed gate
           caps <- restore (probeCaps env) `onException` finalizeForeignPtr fenv
           pure (EngineOk (OSSL4Backend env { osslCaps = caps }))
   where
@@ -171,17 +187,26 @@ instance CryptoBackend OpenSSL4 where
 
   openBackend propq = openBackendWith Raw.envNew Raw.envLoad propq
 
-  closeBackend (OSSL4Backend env) = modifyMVar (osslClosed env) $ \wasClosed ->
-    if wasClosed
-      then pure (True, ())
-      else do
-        hs <- modifyMVar (osslDigests env) $ \m -> pure (Map.empty, Map.elems m)
-        mapM_ Raw.digestFree hs
-        modifyMVar (osslKeys env) $ \_ -> pure (Map.empty, ())
-        finalizeForeignPtr (osslEnv env)
-        pure (True, ())
+  -- Lifetime gate, closer half: the exclusive take waits out
+  -- in-flight borrowers; the drain then runs uninterruptibly (the
+  -- frees are safe foreign calls, still killable under a plain
+  -- mask) so a kill can only land in the gate wait — where it
+  -- aborts the wait with the gate untouched — never mid-drain.
+  -- Concurrent and repeat closes serialize into the single drain.
+  closeBackend (OSSL4Backend env) = withEnvGate env $ uninterruptibleMask_ $
+    modifyMVar (osslClosed env) $ \wasClosed ->
+      if wasClosed
+        then pure (True, ())
+        else do
+          hs <- modifyMVar (osslDigests env) $ \m -> pure (Map.empty, Map.elems m)
+          mapM_ Raw.digestFree hs
+          modifyMVar (osslKeys env) $ \_ -> pure (Map.empty, ())
+          finalizeForeignPtr (osslEnv env)
+          pure (True, ())
 
-  queryCapabilities (OSSL4Backend env) = pure (osslCaps env)
+  -- Gated (serialized against the close drain) but total: the
+  -- cached caps answer even post-close.
+  queryCapabilities (OSSL4Backend env) = withEnvGate env $ pure (osslCaps env)
 
   digestOneShot be alg msg = runGuarded be "digest" (digestSupported be alg) $ \env ->
     case digestFetchName alg of
@@ -214,21 +239,25 @@ instance CryptoBackend OpenSSL4 where
             (withForeignPtr (osslEnv env) $ \_ -> Raw.digestFree h))
 
   digestUpdate (OSSL4Backend env) rid msg =
-    -- Ownership rule R4: the handle is borrowed UNDER the registry lock — a
-    -- concurrent take (final\/release\/close) waits for this use,
-    -- and the raw pointer never escapes unguarded.
-    withBorrowedRegistry (osslDigests env) (unEngineResourceId rid) $ \mh ->
-      case mh of
-        Nothing -> pure (EngineFail (BackendResourceGone "digestUpdate" rid))
-        Just h -> do
-          rc <- withForeignPtr (osslEnv env) $ \_ -> Raw.digestUpdate h msg
-          if rc == 0
-            then pure (EngineOk ())
-            else do
-              detail <- Raw.lastError
-              pure (EngineFail (BackendNative "digestUpdate" rc detail))
+    -- Lifetime gate first (environment-then-registry lock order),
+    -- then ownership rule R4: the handle is borrowed UNDER the
+    -- registry lock — a concurrent take (final\/release\/close)
+    -- waits for this use, and the raw pointer never escapes
+    -- unguarded. The borrow continuation is backend-internal (the
+    -- FFI use itself), never a caller-supplied callback.
+    withOpenBackend env "digestUpdate" $
+      withBorrowedRegistry (osslDigests env) (unEngineResourceId rid) $ \mh ->
+        case mh of
+          Nothing -> pure (EngineFail (BackendResourceGone "digestUpdate" rid))
+          Just h -> do
+            rc <- withForeignPtr (osslEnv env) $ \_ -> Raw.digestUpdate h msg
+            if rc == 0
+              then pure (EngineOk ())
+              else do
+                detail <- Raw.lastError
+                pure (EngineFail (BackendNative "digestUpdate" rc detail))
 
-  digestFinal (OSSL4Backend env) rid = mask_ $ do
+  digestFinal (OSSL4Backend env) rid = withOpenBackend env "digestFinal" $ mask_ $ do
     mh <- takeRegistry (osslDigests env) rid
     case mh of
       Nothing -> pure (EngineFail (BackendResourceGone "digestFinal" rid))
@@ -772,20 +801,24 @@ instance CryptoBackend OpenSSL4 where
           Right bs -> go ctx (remaining - BS.length bs) (bs : acc)
 
   importKey (OSSL4Backend env) mat = case mat of
+    -- Pure passthrough (no state, no lease): a reference is already
+    -- imported, even post-close.
     KeyRefMaterial r -> pure (EngineOk r)
-    _ -> do
+    _ -> withOpenBackend env "importKey" $ do
       rid <- allocId env
       modifyMVar (osslKeys env) $ \m -> pure (Map.insert rid mat m, ())
       pure (EngineOk (KeyRef (EngineResourceId rid) (keyFamily mat)))
 
-  exportKey (OSSL4Backend env) (KeyRef rid _) = do
-    mmat <- lookupRegistry (osslKeys env) (unEngineResourceId rid)
-    case mmat of
-      Nothing -> pure (EngineFail (BackendResourceGone "exportKey" rid))
-      Just mat -> pure (EngineOk mat)
+  exportKey (OSSL4Backend env) (KeyRef rid _) =
+    withOpenBackend env "exportKey" $ do
+      mmat <- lookupRegistry (osslKeys env) (unEngineResourceId rid)
+      case mmat of
+        Nothing -> pure (EngineFail (BackendResourceGone "exportKey" rid))
+        Just mat -> pure (EngineOk mat)
 
   destroyKey (OSSL4Backend env) (KeyRef rid _) =
-    modifyMVar (osslKeys env) $ \m -> pure (Map.delete (unEngineResourceId rid) m, ())
+    withClosedOk env $
+      modifyMVar (osslKeys env) $ \m -> pure (Map.delete (unEngineResourceId rid) m, ())
 
   -- No key allowlist (the DSA precedent): the shim checks the
   -- key's actual keymgmt type name against the set and refuses
@@ -936,9 +969,13 @@ instance CryptoBackend OpenSSL4 where
             | otherwise -> nativeFail "pubFromPriv" code
           Right spki -> pure (EngineOk spki)
 
-  snapshotResource _ _ = pure (Left "unsaveable: OpenSSL4 multipart contexts cannot be serialized")
-  restoreResource _ _ = pure (EngineFail (BackendUnsupported "restoreResource" "no saveable resources in engine set"))
-  resourceSaveability (OSSL4Backend env) rid = do
+  snapshotResource (OSSL4Backend env) _ =
+    withEnvGate env $ pure (Left "unsaveable: OpenSSL4 multipart contexts cannot be serialized")
+  restoreResource (OSSL4Backend env) _ =
+    withEnvGate env $ pure (EngineFail (BackendUnsupported "restoreResource" "no saveable resources in engine set"))
+  -- Gated (serialized against the close drain) but answering from
+  -- the registries either way: post-close every id reports gone.
+  resourceSaveability (OSSL4Backend env) rid = withEnvGate env $ do
     digests <- readMVar (osslDigests env)
     keys <- readMVar (osslKeys env)
     let n = unEngineResourceId rid
@@ -948,7 +985,7 @@ instance CryptoBackend OpenSSL4 where
       (_, Just _) -> ResourceUnsaveable (UnsaveableNative
         "OpenSSL4 key resources have no restore path in the engine set")
       (Nothing, Nothing) -> ResourceUnsaveable (UnsaveableGone rid)
-  releaseResource (OSSL4Backend env) rid = mask_ $ do
+  releaseResource (OSSL4Backend env) rid = withClosedOk env $ mask_ $ do
     -- Ownership rule R3: take-to-free is one masked transfer — no kill can
     -- strand a taken-but-unfreed handle.
     mh <- takeRegistry (osslDigests env) rid
@@ -957,10 +994,10 @@ instance CryptoBackend OpenSSL4 where
 -- ---------------------------------------------------------------------------
 -- TEST-ONLY gated operations
 -- ---------------------------------------------------------------------------
--- Each mirrors its production twin (same guard ordering, same
--- transfer shape) with a test gate threaded through. Tests create
--- one gate per case via their own FFI; production callers never
--- use these.
+-- Each mirrors its production twin (same guard ordering, same gate,
+-- same transfer shape) with a test gate threaded through. Tests
+-- create one gate per case via their own FFI; production callers
+-- never use these.
 
 -- | TEST-ONLY gated one-shot digest.
 digestOneShotGated :: Ptr TestGate -> BackendEnv OpenSSL4 -> DigestAlg -> ByteString -> IO (EngineResult ByteString)
@@ -1008,7 +1045,7 @@ digestInitGated gate be alg = runGuarded be "digestInit" (digestSupported be alg
 -- | TEST-ONLY gated digest final (same consuming transfer: no
 -- post-entry free, exactly like 'digestFinal').
 digestFinalGated :: Ptr TestGate -> BackendEnv OpenSSL4 -> EngineResourceId -> IO (EngineResult ByteString)
-digestFinalGated gate (OSSL4Backend env) rid = mask_ $ do
+digestFinalGated gate (OSSL4Backend env) rid = withOpenBackend env "digestFinal" $ mask_ $ do
   mh <- takeRegistry (osslDigests env) rid
   case mh of
     Nothing -> pure (EngineFail (BackendResourceGone "digestFinal" rid))
@@ -1822,19 +1859,46 @@ symLenOk alg n
 -- Execution helpers
 -- ---------------------------------------------------------------------------
 
--- | Guard-then-run: the capability check answers FIRST (even on a
--- closed backend, so the guard-before-native law is observable), then
+-- | The exclusive environment lifetime gate, raw half: runs the
+-- action holding @osslGate@, released on every exit (a kill while
+-- blocked in the take aborts the wait with the gate untouched —
+-- 'takeMVar' stays interruptible under 'bracket_'s mask). Callers
+-- must never nest takes (composites split into unleased workers
+-- below) and must acquire the gate before any registry 'MVar'
+-- (environment-then-registry lock order). No caller-supplied
+-- callback ever runs under the gate — only backend-internal
+-- native calls and registry transfers.
+withEnvGate :: OSSL4Env -> IO a -> IO a
+withEnvGate env = bracket_ (takeMVar (osslGate env)) (putMVar (osslGate env) ())
+
+-- | Gate-then-run for execute paths: holds the lifetime gate,
+-- answers 'BackendInvalidState' on a closed backend, and keeps the
+-- env 'ForeignPtr' alive across the action. The gate makes the
+-- closed check and the action atomic with respect to
+-- 'closeBackend'.
+withOpenBackend :: OSSL4Env -> String -> IO (EngineResult a) -> IO (EngineResult a)
+withOpenBackend env op action = withEnvGate env $ do
+  closed <- readMVar (osslClosed env)
+  if closed
+    then pure (EngineFail (BackendInvalidState op "backend is closed"))
+    else withForeignPtr (osslEnv env) $ \_ -> action
+
+-- | Gate-then-run for total lifecycle methods ('releaseResource',
+-- 'destroyKey'): the gate serializes against 'closeBackend'; on a
+-- closed backend the work is a no-op.
+withClosedOk :: OSSL4Env -> IO () -> IO ()
+withClosedOk env action = withEnvGate env $ do
+  closed <- readMVar (osslClosed env)
+  if closed then pure () else action
+
+-- | Guard-then-gate: the capability check answers FIRST (even on a
+-- closed backend, so the guard-before-native law is observable),
+-- then the lifetime gate serializes against 'closeBackend', then
 -- the closed check, then the native call.
 runGuarded :: BackendEnv OpenSSL4 -> String -> Maybe String -> (OSSL4Env -> IO (EngineResult a)) -> IO (EngineResult a)
 runGuarded (OSSL4Backend env) op miss action = case miss of
   Just why -> pure (EngineFail (BackendUnsupported op why))
-  Nothing -> do
-    closed <- readMVar (osslClosed env)
-    if closed
-      then pure (EngineFail (BackendInvalidState op "backend is closed"))
-      -- Keep the env ForeignPtr alive across the action without
-      -- reordering the guards above.
-      else withForeignPtr (osslEnv env) $ \_ -> action env
+  Nothing -> withOpenBackend env op (action env)
 
 -- | Provider fetch names per cipher spec, verified by
 -- executing the OpenSSLSpec KATs against the pinned libcrypto.
@@ -2084,7 +2148,14 @@ cipherKeyBits _ = 0
 
 cipherRun :: BackendEnv OpenSSL4 -> String -> Bool -> CipherSpec -> KeyMaterial -> ByteString -> ByteString -> IO (EngineResult ByteString)
 cipherRun be op enc spec key iv input =
-  runGuarded be op (cipherSupported be spec) $ \env -> do
+  runGuarded be op (cipherSupported be spec) $ \env ->
+    cipherRunWorker env op enc spec key iv input
+
+-- | Unleased cipher worker: runs under the caller's single gate
+-- lease (never takes the gate itself), so the composite entries
+-- ('cipherEncrypt', 'cipherDecrypt') lease exactly once.
+cipherRunWorker :: OSSL4Env -> String -> Bool -> CipherSpec -> KeyMaterial -> ByteString -> ByteString -> IO (EngineResult ByteString)
+cipherRunWorker env op enc spec key iv input = do
     mkey <- resolveKeyBytes env key
     case mkey of
       EngineFail err -> pure (EngineFail err)
@@ -2131,7 +2202,14 @@ cipherRun be op enc spec key iv input =
 -- looked up, missing ones answer ResourceGone.
 aeadRun :: BackendEnv OpenSSL4 -> String -> Bool -> AeadSpec -> KeyMaterial -> ByteString -> ByteString -> ByteString -> ByteString -> IO (EngineResult ByteString)
 aeadRun be op enc spec key iv aad input tag =
-  runGuarded be op Nothing $ \env -> do
+  runGuarded be op Nothing $ \env ->
+    aeadRunWorker env op enc spec key iv aad input tag
+
+-- | Unleased AEAD worker: runs under the caller's single gate lease
+-- (never takes the gate itself), so the composite entries
+-- ('aeadEncrypt', 'aeadDecrypt') lease exactly once.
+aeadRunWorker :: OSSL4Env -> String -> Bool -> AeadSpec -> KeyMaterial -> ByteString -> ByteString -> ByteString -> ByteString -> IO (EngineResult ByteString)
+aeadRunWorker env op enc spec key iv aad input tag = do
     mkey <- resolveKeyBytes env key
     case mkey of
       EngineFail err -> pure (EngineFail err)

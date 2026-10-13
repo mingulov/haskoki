@@ -64,6 +64,7 @@ import Haskoki.Operation
   , initOperation
   , insertOp
   , lookupSingle
+  , mkActiveCipher
   , mkActiveDigest
   , mkSlotCommon
   , retryStaged
@@ -71,6 +72,8 @@ import Haskoki.Operation
   , setLive
   , streamOf
   , slotAuth
+  , validCipherSpec
+  , validRecoverSpec
   )
 import Haskoki.Operation.Cipher
   ( cipherUpdateSplit
@@ -181,6 +184,9 @@ spec = testGroup "operation lifecycles"
   , testCase "always-auth encrypt consumes at first update" caseAuthConsumeUpdate
   , testCase "grantless first update terminates the slot" caseAuthLateFails
   , testCase "oversized padded block rejected at init" caseCipherBlockRange
+  , testCase "cipher spec bounds admit and refuse at init" caseCipherSpecBounds
+  , testCase "recover spec bounds admit and refuse at init" caseRecoverSpecBounds
+  , testCase "corrupt cipher shape refuses without crashing" caseCipherCorruptShape
   , testCase "sign multipart and verify roundtrip" caseSignRoundtrip
   , testCase "Guard: sign updates stay buffered" caseSignStaysBuffered
   , testCase "Guard: verify updates stay buffered" caseVerifyStaysBuffered
@@ -1580,6 +1586,89 @@ caseCipherBlockRange = do
   let narrow = encryptArgs { iaCipher = Just (CipherSpec 0 True) }
       (_, o2) = initOperation testEnv emptySessionOps testSession narrow
   assertEqual "zero block rejected" CKR_ARGUMENTS_BAD (ioCode o2)
+
+-- | Init and the shared cipher predicate agree on the geometry
+-- bounds: 1\/16\/255\/1024 admit unpadded, 1\/16\/255 admit padded,
+-- and 0\/1025\/padded-256\/padded-1024 refuse with
+-- 'CKR_ARGUMENTS_BAD'.
+caseCipherSpecBounds :: IO ()
+caseCipherSpecBounds = mapM_ check table
+  where
+    table =
+      [ (CipherSpec 1 False, True)
+      , (CipherSpec 16 False, True)
+      , (CipherSpec 255 False, True)
+      , (CipherSpec 1024 False, True)
+      , (CipherSpec 1 True, True)
+      , (CipherSpec 16 True, True)
+      , (CipherSpec 255 True, True)
+      , (CipherSpec 0 False, False)
+      , (CipherSpec 1025 False, False)
+      , (CipherSpec 256 True, False)
+      , (CipherSpec 1024 True, False)
+      ]
+    check (cspec, valid) = do
+      assertEqual ("predicate " ++ show cspec) valid (validCipherSpec cspec)
+      let (_, out) = initOperation testEnv emptySessionOps testSession
+            (encryptArgs { iaCipher = Just cspec })
+          want = if valid then CKR_OK else CKR_ARGUMENTS_BAD
+      assertEqual ("init " ++ show cspec) want (ioCode out)
+
+-- | Init and the shared recovery predicate agree on the length
+-- bounds: capacity and tag width at least 1 byte, the tag no wider
+-- than the capacity.
+caseRecoverSpecBounds :: IO ()
+caseRecoverSpecBounds = mapM_ check table
+  where
+    table =
+      [ (RecoverSpec 64 32, True)
+      , (RecoverSpec 1 1, True)
+      , (RecoverSpec 128 16, True)
+      , (RecoverSpec 0 16, False)
+      , (RecoverSpec 64 0, False)
+      , (RecoverSpec 16 32, False)
+      , (RecoverSpec 0 0, False)
+      ]
+    check (rspec, valid) = do
+      assertEqual ("predicate " ++ show rspec) valid (validRecoverSpec rspec)
+      let args = InitArgs OpSignRecover recMech BS.empty
+            (Just aesKey { kpPermits = [OpSignRecover] }) Nothing (Just rspec)
+          (_, out) = initOperation recEnv emptySessionOps testSession args
+          want = if valid then CKR_OK else CKR_ARGUMENTS_BAD
+      assertEqual ("init " ++ show rspec) want (ioCode out)
+
+-- | A corrupt cipher width that somehow reaches a live slot (init
+-- and restore both refuse it) still refuses terminally instead of
+-- crashing the unpadded planner: one-shot, final, and the decrypt
+-- finisher all deny with 'CKR_GENERAL_ERROR' and free the slot,
+-- while an update buffers without streaming.
+caseCipherCorruptShape :: IO ()
+caseCipherCorruptShape = do
+  let bad = CipherSpec 0 False
+      mkBad op dir = insertOp
+        (mkActiveCipher dir
+          (mkSlotCommon aesCbcMech op (Just (ObjectId 9))
+            (BS.replicate 16 0) AuthNone)
+          bad)
+        emptySessionOps
+      encOps = mkBad OpEncrypt DirEncrypt
+      decOps = mkBad OpDecrypt DirDecrypt
+  let (ops1, _, oneOut) =
+        planCipherOneShot encOps testSession SlotEncrypt "cipher" "input-bytes"
+  assertEqual "one-shot code" CKR_GENERAL_ERROR (soCode oneOut)
+  assertEqual "one-shot frees the slot" [] (activeSlots ops1)
+  let (ops2, _, finOut) = planCipherFinal encOps testSession SlotEncrypt "cipher"
+  assertEqual "final code" CKR_GENERAL_ERROR (soCode finOut)
+  assertEqual "final frees the slot" [] (activeSlots ops2)
+  let (ops3, decOut) = finishCipher decOps SlotDecrypt "cipher"
+        (GotBytes (BS.replicate 16 0x44)) (IntentBuffer 64)
+  assertEqual "decrypt finish code" CKR_GENERAL_ERROR (soCode decOut)
+  assertEqual "decrypt finish frees the slot" [] (activeSlots ops3)
+  let (ops4, _, updOut) =
+        planCipherUpdate encOps testSession SlotEncrypt "part-bytes" Nothing
+  assertEqual "update code" CKR_OK (soCode updOut)
+  assertEqual "update keeps the slot" [SlotEncrypt] (activeSlots ops4)
+  assertEqual "update buffers" (Just 10) (bufferedLength ops4 SlotEncrypt)
 
 -- ---------------------------------------------------------------------------
 -- Part C: signature and recovery lifecycles

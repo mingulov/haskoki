@@ -17,6 +17,17 @@ Laws (see Backend-design.md §4):
 * Multipart state lives behind 'EngineResourceId'; 'snapshotResource'
   reports @Left "unsaveable..."@ honestly where the provider cannot
   serialize.
+* Lifetime gate (backends with native state, implemented by
+  OpenSSL4): every stateful\/native method runs under the backend's
+  exclusive environment lifetime gate, and 'closeBackend' takes the
+  same gate — close waits for in-flight native borrowers, and every
+  post-close stateful execute path answers 'BackendInvalidState'
+  without touching native state. Guards still answer first (even
+  when closed); lock order is environment-then-registry; composite
+  entries split into unleased private workers (one lease per call,
+  never nested); no caller-supplied callback runs under the gate.
+  Pure\/total operations (key-reference passthrough, cached
+  capability reads) stay total, even post-close.
 -}
 {-# LANGUAGE TypeFamilies #-}
 module Haskoki.Engine.Backend
@@ -918,6 +929,13 @@ generateRandomMaxBytes = 1048576
 -- * Multipart state lives behind 'EngineResourceId' in the backend
 --   registry; 'snapshotResource' reports @Left "unsaveable..."@ honestly
 --   where the provider cannot serialize.
+-- * Lifetime gate (backends with native state, implemented by
+--   OpenSSL4): every stateful\/native method runs under the
+--   backend's exclusive environment gate and 'closeBackend' takes
+--   the same gate, so close waits for in-flight borrowers and
+--   post-close stateful execute paths answer 'BackendInvalidState'.
+--   Lock order is environment-then-registry; no caller callback
+--   runs under the gate. Pure\/total operations stay total.
 class CryptoBackend b where
   -- | Opaque backend handle (owns libctx/registry refs internally).
   data BackendEnv b
@@ -927,6 +945,13 @@ class CryptoBackend b where
   -- | Open with a PRIVATE OSSL_LIB_CTX + explicit provider/property query.
   -- OpenSSL4: loads e.g. "default", never auto-loads a PKCS#11 provider.
   openBackend :: String -> IO (EngineResult (BackendEnv b))
+  -- | Close drains registries and releases backend state exactly
+  -- once. Backends with native state (OpenSSL4) take their
+  -- exclusive lifetime gate first, waiting out in-flight native
+  -- borrowers; concurrent and repeat closes serialize into the
+  -- single drain. Every later stateful execute path answers
+  -- 'BackendInvalidState' (capability guards still answer first;
+  -- pure\/total operations stay total).
   closeBackend :: BackendEnv b -> IO ()
 
   -- | Full capability report.
