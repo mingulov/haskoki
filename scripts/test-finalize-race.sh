@@ -1,17 +1,21 @@
 #!/bin/sh
 # scripts/test-finalize-race.sh -- finalize-vs-entrant race driver.
 #
-# Compiles tests/c/finalize_race.c against the pinned 3.2 header family
-# (3.2 header; newer-API surface, never provider-generated types) and runs
-# it against the built shared module: N worker threads hammer cheap
-# routed entries while one finalizer thread cycles C_Initialize/
-# C_Finalize. Any crash, hang, or illegal return code is a FAIL.
+# Compiles tests/c/finalize_race.c and tests/c/finalize_wait_race_probe.c
+# against the pinned 3.2 header family (3.2 header; newer-API surface,
+# never provider-generated types) and runs them against the built shared
+# module: N worker threads hammer cheap routed entries while one
+# finalizer thread cycles C_Initialize/C_Finalize, then the wait probe
+# parks a blocking waiter across M finalize cycles while a resolver
+# spinner and a closer churn the wait/close interplay. Any crash, hang,
+# or illegal return code is a FAIL.
 #
 # Usage:
-#   scripts/test-finalize-race.sh             # build scenario, run (must PASS)
+#   scripts/test-finalize-race.sh             # build scenarios, run (must PASS)
 #
 # Tuning (window sizing only; defaults are the pinned N=4, M=50):
 #   HASKOKI_RACE_N / HASKOKI_RACE_M / HASKOKI_RACE_ITERS
+#   HASKOKI_FINALIZE_WAIT_CYCLES (wait-probe cycles, default 50)
 #
 # Run (from haskoki/), inside the Docker toolchain image via bind mount:
 #   docker run --rm -v "$PWD:/work" -w /work \
@@ -31,12 +35,12 @@ fail() {
 
 cabal build all || fail "cabal build all failed"
 
-# 0. Independence guard: the probe must never consume
-#    provider-generated orderings; it uses pinned vendor headers only.
-if grep -rn "abi_generated\|abi_stubs\|abi-inventory" tests/c/finalize_race.c 2>/dev/null; then
+# 0. Independence guard: the probes must never consume
+#    provider-generated orderings; they use pinned vendor headers only.
+if grep -rn "abi_generated\|abi_stubs\|abi-inventory" tests/c/finalize_race.c tests/c/finalize_wait_race_probe.c 2>/dev/null; then
   fail "probe independence violated (see grep hits above)"
 fi
-echo "STATIC: race probe does not include provider-generated artifacts"
+echo "STATIC: race probes do not include provider-generated artifacts"
 
 # 1. Locate exactly one built shared module.
 SO_LIST=$(find dist-newstyle -name 'libhaskoki*.so' 2>/dev/null | sort)
@@ -64,4 +68,13 @@ echo "probe compiled: $BIN (headers: spec/vendor)"
 
 "$BIN" "$SO" || fail "finalize_race reported failures"
 
-echo "PASS: test-finalize-race.sh (finalize-vs-entrant race probe)"
+BIN_WAIT="$TMPD/finalize_wait_race_probe"
+cc -std=c11 -O2 -g -Wall -Wextra -Werror \
+  -Ispec/vendor \
+  -o "$BIN_WAIT" tests/c/finalize_wait_race_probe.c -ldl -lpthread \
+  || fail "finalize_wait_race_probe did not compile"
+echo "probe compiled: $BIN_WAIT (headers: spec/vendor)"
+
+"$BIN_WAIT" "$SO" || fail "finalize_wait_race_probe reported failures"
+
+echo "PASS: test-finalize-race.sh (finalize-vs-entrant race probes)"

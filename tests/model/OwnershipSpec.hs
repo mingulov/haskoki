@@ -26,6 +26,15 @@ Probes:
   recoverable (Ready) with the exception propagated — previously
   Delivered committed first, so the retry observed a phantom
   delivery.
+* handle registry: job handles are pure key tokens over the
+  per-context live set — resolution decodes the key and checks
+  membership without dereferencing, so retirement racing
+  resolution refuses stale instead of dangling. Probes hammer
+  resolve-vs-retire, admission storms, kill storms over admission,
+  close-drain vs in-flight cancel/resolve (the no-inversion pin:
+  an inversion would wedge under the timeout guard), and
+  foreign\/bogus handles (per-context authority: never admitted
+  here, never resolved here).
 -}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -36,6 +45,7 @@ import Data.ByteString (ByteString)
 import Control.Concurrent
   ( MVar
   , ThreadId
+  , forkFinally
   , forkIO
   , forkIOWithUnmask
   , killThread
@@ -61,12 +71,15 @@ import Control.Exception
   , try
   , uninterruptibleMask_
   )
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Control.Monad (replicateM, replicateM_)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Word (Word32, Word64)
 import Foreign.C.Types (CInt (..), CLong (..))
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (Ptr, nullPtr, wordPtrToPtr)
+import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -88,6 +101,17 @@ import Haskoki.Engine.OpenSSL4
   , withBorrowedRegistry
   )
 import Haskoki.Engine.Synthetic (Synthetic (..))
+import Haskoki.FFI.Async
+  ( AsyncCtx (..)
+  , JobHandle
+  , allocJobHandle
+  , asyncCloseCtx
+  , asyncLiveHandles
+  , decodeJobHandle
+  , encodeJobHandle
+  , freeJobHandle
+  , resolveJobHandle
+  )
 import Haskoki.Model (Model (..), SessionState (..), lookupSession)
 import Haskoki.Operation.KeyManagement
   ( KeyPlan (..)
@@ -162,6 +186,7 @@ import Haskoki.Transition (finishEffect, planCall)
 import Haskoki.Types
   ( EngineResourceId (..)
   , ExternalHandle (..)
+  , JobId (..)
   , ObjectId (..)
   , Outcome (..)
   , Pkcs11Version (..)
@@ -249,6 +274,24 @@ spec = testGroup "Ownership"
         (guarded "tombstone-census" caseTombstoneCensus)
     , testCase "cancel after detach is unknown"
         (guarded "cancel-after-detach" caseCancelAfterDetach)
+    ]
+  , testGroup "handle registry"
+    [ testCase "key codec roundtrips; salts distinguish"
+        (guarded "handle-key-codec" caseHandleKeyCodec)
+    , testCase "deterministic retire-then-use stays typed"
+        (guarded "handle-retire-then-use" caseHandleRetireThenUse)
+    , testCase "deterministic resolve-then-close stays typed"
+        (guarded "handle-resolve-then-close" caseHandleResolveThenClose)
+    , testCase "resolve-vs-retire race stays typed"
+        (guarded "handle-resolve-retire" caseHandleResolveRetire)
+    , testCase "admission storm stays consistent"
+        (guarded "handle-admission-storm" caseHandleAdmissionStorm)
+    , testCase "kill storm over admission retires clean"
+        (guarded "handle-kill-storm" caseHandleKillStorm)
+    , testCase "close-drain vs in-flight stays typed"
+        (guarded "handle-close-race" caseHandleCloseRace)
+    , testCase "foreign and bogus handles stay stale"
+        (guarded "handle-foreign-stale" caseHandleForeignStale)
     ]
   ]
 
@@ -1390,3 +1433,301 @@ sha256abc = BS.pack
   , 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c
   , 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
   ]
+
+-- ---------------------------------------------------------------------------
+-- Handle registry
+-- ---------------------------------------------------------------------------
+
+-- | A worker-level async context: private job table, default rules,
+-- production OpenSSL backend, empty live set, no detach state. Reads
+-- no environment (unlike `haskokiAsyncOpen`), so these probes stay
+-- race-free under the suite's parallel runner.
+mkM3Ctx :: IO AsyncCtx
+mkM3Ctx = do
+  table <- newAsyncTable 8
+  env <- newEnv defaultRules
+  enableAsyncSession table sid1
+  eBe <- B.openBackend "provider=default"
+    :: IO (B.EngineResult (B.BackendEnv OpenSSL4))
+  be <- case eBe of
+    B.EngineOk b -> pure b
+    B.EngineFail err -> assertFailure ("openssl open failed: " ++ show err)
+  live <- newIORef Set.empty
+  pure (AsyncCtx env be sid1 table live Nothing)
+
+-- | The worker half of a cancel entry: resolve, then cancel and
+-- retire. Mirrors `haskokiAsyncCancel` without the export boundary.
+cancelMimic :: AsyncCtx -> StablePtr JobHandle -> IO ()
+cancelMimic ctx h = do
+  m <- resolveJobHandle ctx h
+  case m of
+    Nothing -> pure ()
+    Just j -> do
+      _ <- cancelJob (acTable ctx) j
+      freeJobHandle ctx h
+
+assertWorkerOk :: Either SomeException () -> IO ()
+assertWorkerOk (Right ()) = pure ()
+assertWorkerOk (Left e) = assertFailure ("worker failed: " ++ show e)
+
+-- | Key codec contract: NULL decodes to nothing; small ids
+-- roundtrip (including 0 and the 32-bit maximum); distinct salts
+-- distinguish identical job ids; ids past the 32-bit codec expose
+-- only their low 32 bits (the submission entries refuse those ids
+-- before admission — see 'jobIdExhausted' — so truncation is
+-- unreachable for admitted handles).
+caseHandleKeyCodec :: IO ()
+caseHandleKeyCodec = do
+  let nullHandle = castPtrToStablePtr nullPtr :: StablePtr JobHandle
+  assertEqual "null decodes nothing" Nothing (decodeJobHandle nullHandle)
+  assertEqual "roundtrip zero"
+    (Just (JobId 0)) (decodeJobHandle (encodeJobHandle 1 (JobId 0)))
+  assertEqual "roundtrip max32"
+    (Just (JobId 0xFFFFFFFF))
+    (decodeJobHandle (encodeJobHandle 1 (JobId 0xFFFFFFFF)))
+  assertBool "salts distinguish"
+    (castStablePtrToPtr (encodeJobHandle 1 (JobId 0))
+      /= castStablePtrToPtr (encodeJobHandle 3 (JobId 0)))
+  assertEqual "high bits truncated"
+    (Just (JobId 0))
+    (decodeJobHandle (encodeJobHandle 1 (JobId 0x100000000)))
+
+-- | Deterministic lookup-window reproduction (no threads): resolve
+-- a live handle, retire it (the racing terminal path), then act on
+-- the owned id exactly as an entry would after its own
+-- resolution. Every post-retirement step is typed — the id is a
+-- pure value, not a loan, so there is no freed-pointer access.
+caseHandleRetireThenUse :: IO ()
+caseHandleRetireThenUse = do
+  ctx <- mkM3Ctx
+  Right j0 <- startJob (acTable ctx) (signRequest sid1 1000000)
+  h <- allocJobHandle ctx j0
+  m <- resolveJobHandle ctx h
+  assertEqual "live resolves" (Just j0) m
+  freeJobHandle ctx h
+  mStale <- resolveJobHandle ctx h
+  assertEqual "retired resolves stale" Nothing mStale
+  out <- cancelJob (acTable ctx) j0
+  assertEqual "owned id still cancels" CancelOk out
+  nLive <- asyncLiveHandles ctx
+  assertEqual "no live handles" 0 nLive
+  asyncCloseCtx ctx
+
+-- | Deterministic close-window reproduction (no threads): resolve
+-- a live handle, close the context around it, then resolve again
+-- and act on the previously owned id. The drain retires and
+-- cancels; the owned id reports its terminal state typed.
+caseHandleResolveThenClose :: IO ()
+caseHandleResolveThenClose = do
+  ctx <- mkM3Ctx
+  Right j0 <- startJob (acTable ctx) (signRequest sid1 1000000)
+  h <- allocJobHandle ctx j0
+  m <- resolveJobHandle ctx h
+  assertEqual "live resolves" (Just j0) m
+  asyncCloseCtx ctx
+  mStale <- resolveJobHandle ctx h
+  assertEqual "closed resolves stale" Nothing mStale
+  out <- cancelJob (acTable ctx) j0
+  case out of
+    CancelAlready _ -> pure ()
+    other -> assertFailure ("expected CancelAlready, got " ++ show other)
+  nLive <- asyncLiveHandles ctx
+  assertEqual "no live handles" 0 nLive
+
+-- | Resolution racing retirement: four workers resolve one handle
+-- while the owner cycles retirement and re-admission around them
+-- (entered rendezvous first, then no further gates, so the
+-- owner's registry operations genuinely overlap in-flight
+-- resolutions under any fair schedule). Every outcome is typed —
+-- the job id or stale — however the operations interleave. A
+-- dereference-based resolver fails here (check-then-deref vs
+-- freeing retire); the key lookup cannot dangle by construction.
+caseHandleResolveRetire :: IO ()
+caseHandleResolveRetire = do
+  ctx <- mkM3Ctx
+  Right j0 <- startJob (acTable ctx) (signRequest sid1 1000000)
+  h <- allocJobHandle ctx j0
+  entered <- replicateM 4 newEmptyMVar
+  dones <- replicateM 4 newEmptyMVar
+  let checkResolve = do
+        m <- resolveJobHandle ctx h
+        assertBool "resolve typed" (m == Just j0 || m == Nothing)
+      worker enter done = forkIO $ do
+        r <- try $ do
+          putMVar enter ()
+          replicateM_ 500 checkResolve
+        putMVar done (r :: Either SomeException ())
+  mapM_ (uncurry worker) (zip entered dones)
+  mapM_ takeMVar entered
+  replicateM_ 50 (freeJobHandle ctx h >> allocJobHandle ctx j0)
+  freeJobHandle ctx h
+  donesOut <- mapM takeMVar dones
+  mapM_ assertWorkerOk donesOut
+  mFinal <- resolveJobHandle ctx h
+  assertEqual "retired handle stale" Nothing mFinal
+  nLive <- asyncLiveHandles ctx
+  assertEqual "no live handles" 0 nLive
+  asyncCloseCtx ctx
+
+-- | Admission storm: four workers admit\/resolve\/retire their own
+-- jobs 200 times each over the shared live set. Every admitted
+-- handle resolves immediately; the set drains to zero.
+caseHandleAdmissionStorm :: IO ()
+caseHandleAdmissionStorm = do
+  ctx <- mkM3Ctx
+  Right ja <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right jb <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right jc <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right jd <- startJob (acTable ctx) (signRequest sid1 1000000)
+  dones <- replicateM 4 newEmptyMVar
+  let worker jid done = forkIO $ do
+        r <- try $ replicateM_ 200 $ do
+          h <- allocJobHandle ctx jid
+          m <- resolveJobHandle ctx h
+          assertEqual "admitted handle resolves" (Just jid) m
+          freeJobHandle ctx h
+        putMVar done (r :: Either SomeException ())
+  mapM_ (uncurry worker) (zip [ja, jb, jc, jd] dones)
+  donesOut <- mapM takeMVar dones
+  mapM_ assertWorkerOk donesOut
+  nLive <- asyncLiveHandles ctx
+  assertEqual "storm drains to zero" 0 nLive
+  asyncCloseCtx ctx
+
+-- | Kill storm over admission: two workers admit\/resolve\/retire in
+-- a loop while the owner fires 64 kills at them (entered
+-- rendezvous first, so the victims are provably inside the loop
+-- when the storm starts). Per-iteration 'try' catches mid-iteration
+-- kills and continues, rethrowing anything else so assertion
+-- failures stay loud; a kill between iterations aborts that worker
+-- early (tolerated 'ThreadKilled'). Every recorded handle either
+-- retired or still resolves to its own job — never to a wrong
+-- job — and close drains everything to zero, including handles
+-- orphaned between admission and recording (an expected kill
+-- outcome, not corruption). Scheduling may strand kills after a
+-- fast worker finishes, so assertions are prefix-tolerant; the
+-- mask placement itself is review-verified.
+caseHandleKillStorm :: IO ()
+caseHandleKillStorm = do
+  ctx <- mkM3Ctx
+  Right ja <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right jb <- startJob (acTable ctx) (signRequest sid1 1000000)
+  recorded <- newIORef ([] :: [StablePtr JobHandle])
+  entered <- replicateM 2 newEmptyMVar
+  dones <- replicateM 2 newEmptyMVar
+  let iter jid = do
+        h <- allocJobHandle ctx jid
+        atomicModifyIORef' recorded (\hs -> (h : hs, ()))
+        m <- resolveJobHandle ctx h
+        assertEqual "admitted handle resolves" (Just jid) m
+        freeJobHandle ctx h
+      -- forkFinally reports under its own mask, so no kill can
+      -- land between the work finishing and the report: 'done' is
+      -- always filled exactly once.
+      spawn jid enter done = forkFinally
+        (putMVar enter () >> replicateM_ 100 (catchIter (iter jid)))
+        (putMVar done)
+      catchIter body = do
+        r <- try body :: IO (Either SomeException ())
+        case r of
+          Right () -> pure ()
+          Left e -> case fromException e of
+            Just ThreadKilled -> pure ()
+            _ -> throwIO e
+  tids <- mapM (\(jid, enter, done) -> spawn jid enter done)
+    (zip3 [ja, jb] entered dones)
+  mapM_ takeMVar entered
+  mapM_ killThread (concat (replicate 32 tids))
+  results <- mapM takeMVar dones
+  mapM_ checkWorker results
+  hs <- readIORef recorded
+  mapM_ (checkRecorded ctx ja jb) hs
+  asyncCloseCtx ctx
+  nLive <- asyncLiveHandles ctx
+  assertEqual "close drains storm" 0 nLive
+  -- The storm never cancels jobs (handles only), so retired jobs
+  -- may still be pending: cancel them explicitly before the census.
+  _ <- cancelJob (acTable ctx) ja
+  _ <- cancelJob (acTable ctx) jb
+  (liveJobs, _, _) <- tableStats (acTable ctx)
+  assertEqual "storm jobs cancel clean" 0 liveJobs
+  where
+    checkWorker (Right ()) = pure ()
+    checkWorker (Left e) = case fromException e of
+      Just ThreadKilled -> pure ()
+      _ -> assertFailure ("worker failed: " ++ show e)
+    checkRecorded c first second h = do
+      m <- resolveJobHandle c h
+      assertBool "recorded handle resolves to its own job or stale"
+        (m == Just first || m == Just second || m == Nothing)
+
+-- | Close-drain racing in-flight cancel\/resolve: four workers mimic
+-- the cancel entry over four admitted handles while the owner
+-- closes around them (entered rendezvous first, then no further
+-- gates, so the drain genuinely overlaps in-flight worker
+-- operations under any fair schedule). The no-inversion pin: the
+-- registry path takes no locks and every job operation runs after
+-- its resolution, so nothing here can wedge — termination under
+-- the timeout guard IS the assertion, plus a zero census (no live
+-- handles, no live jobs) afterwards. Workers never touch the
+-- backend, so closing it mid-storm is safe for them.
+caseHandleCloseRace :: IO ()
+caseHandleCloseRace = do
+  ctx <- mkM3Ctx
+  Right j0 <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right j1 <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right j2 <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right j3 <- startJob (acTable ctx) (signRequest sid1 1000000)
+  handles <- mapM (allocJobHandle ctx) [j0, j1, j2, j3]
+  entered <- replicateM 4 newEmptyMVar
+  dones <- replicateM 4 newEmptyMVar
+  let worker h enter done = forkIO $ do
+        r <- try $ do
+          putMVar enter ()
+          replicateM_ 200 (cancelMimic ctx h)
+        putMVar done (r :: Either SomeException ())
+  mapM_ (\(h, enter, done) -> worker h enter done)
+    (zip3 handles entered dones)
+  mapM_ takeMVar entered
+  asyncCloseCtx ctx
+  donesOut <- mapM takeMVar dones
+  mapM_ assertWorkerOk donesOut
+  nLive <- asyncLiveHandles ctx
+  assertEqual "no live handles" 0 nLive
+  (liveJobs, _, _) <- tableStats (acTable ctx)
+  assertEqual "no live jobs" 0 liveJobs
+
+-- | Per-context authority: a handle admitted on one context stays
+-- stale on another, while staying live on its own; bogus and null
+-- tokens stay stale everywhere without touching anything. Both
+-- contexts admit their own first job, so both tables hold the same
+-- numeric job id — the discriminating case for cross-context
+-- aliasing: each handle must resolve only on its own context.
+caseHandleForeignStale :: IO ()
+caseHandleForeignStale = do
+  ctxA <- mkM3Ctx
+  ctxB <- mkM3Ctx
+  Right jA <- startJob (acTable ctxA) (signRequest sid1 1000000)
+  Right jB <- startJob (acTable ctxB) (signRequest sid1 1000000)
+  assertEqual "same numeric job id" jA jB
+  hA <- allocJobHandle ctxA jA
+  hB <- allocJobHandle ctxB jB
+  mAB <- resolveJobHandle ctxB hA
+  assertEqual "A-handle stale on B" Nothing mAB
+  mBA <- resolveJobHandle ctxA hB
+  assertEqual "B-handle stale on A" Nothing mBA
+  mA <- resolveJobHandle ctxA hA
+  assertEqual "own handle live on A" (Just jA) mA
+  mB <- resolveJobHandle ctxB hB
+  assertEqual "own handle live on B" (Just jB) mB
+  let bogus = castPtrToStablePtr (wordPtrToPtr 0xDEAD) :: StablePtr JobHandle
+  mBogus <- resolveJobHandle ctxA bogus
+  assertEqual "bogus handle stale" Nothing mBogus
+  mNull <- resolveJobHandle ctxA (castPtrToStablePtr nullPtr)
+  assertEqual "null handle stale" Nothing mNull
+  nA <- asyncLiveHandles ctxA
+  nB <- asyncLiveHandles ctxB
+  assertEqual "A owns one handle" 1 nA
+  assertEqual "B owns one handle" 1 nB
+  asyncCloseCtx ctxA
+  asyncCloseCtx ctxB

@@ -7,7 +7,10 @@
  * result storage untouched, completion delivers FIPS 180-4
  * SHA-256("abc") exactly once, wrong-function/cancel/refusal paths
  * follow the typed contract, and close drains through the handle
- * slot (idempotent, nulled).
+ * slot (idempotent, nulled). Stale-domain pins: a second
+ * cancel stays stale, bogus and null handles are refused on every
+ * entry with nothing touched, and a handle admitted on one context
+ * is stale on another while its job stays intact on the owner.
  *
  * Usage: async_attached <path-to-libhaskoki.so>
  * Exit status: 0 iff every check passes.
@@ -245,6 +248,8 @@ int main(int argc, char **argv) {
   CHECK(rv == CKR_ARGUMENTS_BAD, "complete-after-cancel stale");
   CHECK(struct_canary_intact(&res), "cancelled struct intact");
   CHECK(is_canary(buf, sizeof(buf)), "cancelled buffer intact");
+  rv = pCancel(ctx, job);
+  CHECK(rv == CKR_ARGUMENTS_BAD, "second cancel stale");
 
   /* Short complete sizes with the job held; retry delivers. The
    * canceled third job never consumed its init, so none is needed. */
@@ -264,6 +269,86 @@ int main(int argc, char **argv) {
   res.ulValue = 32;
   rv = pComplete(ctx, job, FN_DIGEST, &res);
   CHECK(rv == CKR_OK && memcmp(buf, kWant, 32) == 0, "retry delivers");
+
+  /* Bogus handles: refused on every entry, nothing touched. */
+  {
+    haskoki_async_job_t bogus = (haskoki_async_job_t)(uintptr_t)0x12345;
+    rv = pPoll(ctx, bogus, FN_DIGEST);
+    CHECK(rv == CKR_ARGUMENTS_BAD, "bogus poll stale");
+    fill_canary(&res, sizeof(res));
+    fill_canary(buf, sizeof(buf));
+    res.pValue = buf;
+    res.ulValue = 32;
+    rv = pComplete(ctx, bogus, FN_DIGEST, &res);
+    CHECK(rv == CKR_ARGUMENTS_BAD, "bogus complete stale");
+    CHECK(struct_canary_intact(&res), "bogus struct intact");
+    CHECK(is_canary(buf, sizeof(buf)), "bogus buffer intact");
+    rv = pCancel(ctx, bogus);
+    CHECK(rv == CKR_ARGUMENTS_BAD, "bogus cancel stale");
+    rv = pPoll(ctx, NULL, FN_DIGEST);
+    CHECK(rv == CKR_ARGUMENTS_BAD, "null poll stale");
+  }
+
+  /* Cross-context handles: a job admitted on one context is stale
+   * on another, on every entry, and the job itself is intact. Both
+   * contexts admit their own job first (both tables start at job
+   * id 0), so each handle must resolve only on its own context. */
+  {
+    haskoki_async_ctx_t ctx2;
+    haskoki_async_job_t xjob, xjob2;
+    ctx2 = pOpen();
+    CHECK(ctx2 != NULL, "second ctx opens");
+    rv = pInit(ctx, 1, CKM_SHA256, NULL, 0);
+    CHECK(rv == CKR_OK, "re-init for cross-context job");
+    rv = pInit(ctx2, 1, CKM_SHA256, NULL, 0);
+    CHECK(rv == CKR_OK, "second ctx inits");
+    xjob = NULL;
+    rv = pStart(ctx, 1, FN_DIGEST, (CK_BYTE_PTR)"abc", 3, 32, 2, &xjob);
+    CHECK(rv == CKR_PENDING && xjob != NULL, "cross-context job starts");
+    /* Align the second table's job ids: four terminal jobs precede
+     * xjob above, so cancel four dummies here and xjob2 shares
+     * xjob's numeric id — the discriminating case for aliasing. */
+    {
+      int i;
+      haskoki_async_job_t dummy;
+      for (i = 0; i < 4; i++) {
+        dummy = NULL;
+        rv = pStart(ctx2, 1, FN_DIGEST, (CK_BYTE_PTR)"abc", 3, 32, 5, &dummy);
+        CHECK(rv == CKR_PENDING && dummy != NULL, "aligning dummy starts");
+        rv = pCancel(ctx2, dummy);
+        CHECK(rv == CKR_OK, "aligning dummy cancels");
+      }
+    }
+    xjob2 = NULL;
+    rv = pStart(ctx2, 1, FN_DIGEST, (CK_BYTE_PTR)"abc", 3, 32, 5, &xjob2);
+    CHECK(rv == CKR_PENDING && xjob2 != NULL, "second ctx job starts");
+    rv = pPoll(ctx2, xjob, FN_DIGEST);
+    CHECK(rv == CKR_ARGUMENTS_BAD, "cross-context poll stale");
+    rv = pPoll(ctx, xjob2, FN_DIGEST);
+    CHECK(rv == CKR_ARGUMENTS_BAD, "reverse cross-context poll stale");
+    fill_canary(&res, sizeof(res));
+    fill_canary(buf, sizeof(buf));
+    res.pValue = buf;
+    res.ulValue = 32;
+    rv = pComplete(ctx2, xjob, FN_DIGEST, &res);
+    CHECK(rv == CKR_ARGUMENTS_BAD, "cross-context complete stale");
+    CHECK(struct_canary_intact(&res), "cross-context struct intact");
+    CHECK(is_canary(buf, sizeof(buf)), "cross-context buffer intact");
+    rv = pCancel(ctx2, xjob);
+    CHECK(rv == CKR_ARGUMENTS_BAD, "cross-context cancel stale");
+    /* Stale paths tick nothing: the owning context still drives it. */
+    rv = pPoll(ctx, xjob, FN_DIGEST);
+    CHECK(rv == CKR_PENDING, "owner poll still pending");
+    rv = pPoll(ctx, xjob, FN_DIGEST);
+    CHECK(rv == CKR_OK, "owner poll ready");
+    rv = pComplete(ctx, xjob, FN_DIGEST, &res);
+    CHECK(rv == CKR_OK && memcmp(buf, kWant, 32) == 0,
+          "owner delivers after cross-context refusals");
+    rv = pPoll(ctx2, xjob2, FN_DIGEST);
+    CHECK(rv == CKR_PENDING, "second ctx job intact");
+    pClose(&ctx2);
+    CHECK(ctx2 == NULL, "second ctx closes");
+  }
 
   /* Fill the table: 8 live; the 9th refuses host-memory. */
   rv = pInit(ctx, 1, CKM_SHA256, NULL, 0);

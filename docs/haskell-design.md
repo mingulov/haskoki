@@ -57,3 +57,22 @@ Haskell helps explain and maintain protocol behavior. It does not prove
 PKCS#11 conformance, eliminate timing leaks, or make C and OpenSSL memory-safe.
 That boundary still needs native tests and careful ownership.
 See the [evidence levels](trust-ladder.md) and [current results](release-results.md).
+
+## Module surface inventory (B3)
+
+The [B3 inventory](b3-docs-inventory.md) lists the module sets read from
+`haskoki.cabal` at `f4a967a`, for H3/V5 owners:
+
+| Set | Count | Source |
+|---|---|---:|
+| Main library `exposed-modules` | 30 | `haskoki.cabal:160-190` |
+| Main library `other-modules` | 1 | `Haskoki.FFI.OpenSSL4.Raw` |
+| `haskoki-core` (`private` component) | 67 | `haskoki.cabal:81-148` |
+| Foreign library `other-modules` | 25 | `haskoki.cabal:244-269` |
+
+Two facts from that survey matter here: the `Haskoki.PKCS11` facade
+(`initialize`, `finalize`, `getInfo`, `getSlotList`) always answers
+`CKR_GENERAL_ERROR` and is not the serving path, and 7 library-exposed
+modules are absent from the foreign library while flib-only
+`Haskoki.FFI.Types` has zero in-tree importers. See gaps G1 and G4 in the
+inventory for the H3 follow-ups.

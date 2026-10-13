@@ -169,6 +169,7 @@ spec = testGroup "Decoded requests"
   , testCase "Read-only sessions read and compute" caseRoAllowed
   , testCase "Public sessions refuse private creation" casePublicPrivateRefusals
   , testCase "Context login needs an active operation" caseContextLoginOpGate
+  , testCase "Context lockout retires slot find cursors" caseLockoutRetiresSlotCursors
   , testCase "Copy VALUE_LEN mismatch refuses" caseCopyValueLenMismatch
   , testCase "Modifiable data object flow" caseModifiableDataFlow
   , testCase "DecodedRequest Show redacts templates" caseShowRedacts
@@ -578,6 +579,19 @@ signKeyTmpl =
   , (AttrValue, ValBytes (BS.replicate 32 0x6B))
   ]
 
+-- | One always-authenticate HMAC key template: the eligible
+-- shape for context grants (a private token key with the mark).
+authKeyTmpl :: [(AttributeType, AttributeValue)]
+authKeyTmpl =
+  [ (AttrClass, ValULong 4)
+  , (AttrKeyType, ValULong 0x10)
+  , (AttrToken, ValBool True)
+  , (AttrPrivate, ValBool True)
+  , (AttrSign, ValBool True)
+  , (AttrAlwaysAuthenticate, ValBool True)
+  , (AttrValue, ValBytes (BS.replicate 32 0x6B))
+  ]
+
 -- | The same digest init decides identically on all three paths:
 -- the C adapter drives it to OK, and the Haskell API and the sim
 -- bytes path plan the identical effect.
@@ -865,9 +879,12 @@ casePublicPrivateRefusals = do
     Nothing -> assertFailure "public/private refusals wedged (30s timeout)"
     Just () -> pure ()
 
--- | Context login through the C adapter needs an active operation
--- to re-authenticate: user login on A, then context login on B
--- refuses while B is idle and grants once B holds a digest.
+-- | Context login through the C adapter needs exactly one
+-- pending always-authenticate operation to re-authenticate
+-- (binding by uniqueness): user login on A, then context login
+-- on B refuses while B is idle, refuses again under a merely
+-- active plain digest, and grants once B holds a marked sign
+-- operation beside it.
 caseContextLoginOpGate :: IO ()
 caseContextLoginOpGate = do
   mTimed <- timeout 30000000 $ withManualInstance [slot0] $ \inst -> do
@@ -879,10 +896,58 @@ caseContextLoginOpGate = do
     assertEqual "context without op" (CULong 0x91) rvBare
     rvInit <- digestInitViaC inst hB sha256Mech BS.empty
     assertEqual "digest init" (CULong 0) rvInit
+    rvPlain <- loginViaC inst hB 2 "1234"
+    assertEqual "context with plain op refuses" (CULong 0x91) rvPlain
+    (rvK, hK) <- createViaC inst hB (frameOf authKeyTmpl)
+    assertEqual "marked key create" (CULong 0) rvK
+    rvSign <- signInitViaC inst hB hmacMech BS.empty hK
+    assertEqual "marked sign init" (CULong 0) rvSign
     rvCtx <- loginViaC inst hB 2 "1234"
-    assertEqual "context with op grants" (CULong 0) rvCtx
+    assertEqual "context with marked op grants" (CULong 0) rvCtx
   case mTimed of
     Nothing -> assertFailure "context op gate wedged (30s timeout)"
+    Just () -> pure ()
+
+-- | A context-PIN lockout retires every find cursor on the slot
+-- even when no private session object existed to destroy
+-- (token-only): user login on A, one private token object, live
+-- find cursors on A and B, a pending marked sign operation on A
+-- (context PINs evaluate only past the op gate), then three bad
+-- context PINs lock the role and log the slot out — both
+-- cursors retire, so both sessions re-init cleanly instead of
+-- refusing OPERATION_ACTIVE.
+caseLockoutRetiresSlotCursors :: IO ()
+caseLockoutRetiresSlotCursors = do
+  mTimed <- timeout 30000000 $ withManualInstance [slot0] $ \inst -> do
+    hA <- openRwSession inst 0
+    hB <- openRwSession inst 0
+    rvLogin <- loginViaC inst hA 1 "1234"
+    assertEqual "user login" (CULong 0) rvLogin
+    let tokTmpl = tmpl ++ [(AttrToken, ValBool True), (AttrPrivate, ValBool True)]
+    (rvT, _) <- createViaC inst hA (frameOf tokTmpl)
+    assertEqual "private token create" (CULong 0) rvT
+    rvFA <- findInitViaC inst hA (frameOf [])
+    assertEqual "find init A" (CULong 0) rvFA
+    rvFB <- findInitViaC inst hB (frameOf [])
+    assertEqual "find init B" (CULong 0) rvFB
+    rvLive <- findInitViaC inst hA (frameOf [])
+    assertEqual "live cursor refuses re-init" (CULong 0x90) rvLive
+    (rvK, hK) <- createViaC inst hA (frameOf authKeyTmpl)
+    assertEqual "marked key create" (CULong 0) rvK
+    rvSign <- signInitViaC inst hA hmacMech BS.empty hK
+    assertEqual "marked sign init" (CULong 0) rvSign
+    rvM1 <- loginViaC inst hA 2 "bad!"
+    assertEqual "first context miss" (CULong 0xA0) rvM1
+    rvM2 <- loginViaC inst hA 2 "bad!"
+    assertEqual "second context miss" (CULong 0xA0) rvM2
+    rvM3 <- loginViaC inst hA 2 "bad!"
+    assertEqual "third context miss locks" (CULong 0xA4) rvM3
+    rvRA <- findInitViaC inst hA (frameOf [])
+    assertEqual "caller cursor retired on lockout" (CULong 0) rvRA
+    rvRB <- findInitViaC inst hB (frameOf [])
+    assertEqual "sibling cursor retired on lockout" (CULong 0) rvRB
+  case mTimed of
+    Nothing -> assertFailure "lockout cursor retirement wedged (30s timeout)"
     Just () -> pure ()
 
 -- | Copying a secret key with a CKA_VALUE_LEN that does not match
@@ -1468,6 +1533,7 @@ signInitViaC inst hSession (MechanismId mech) params (ExternalHandle key) =
 -- @spec/vendor/pkcs11.h@: CKA_CLASS 0x00, CKA_TOKEN
 -- 0x01, CKA_PRIVATE 0x02, CKA_LABEL 0x03, CKA_VALUE 0x11,
 -- CKA_KEY_TYPE 0x100, CKA_WRAP 0x106, CKA_SIGN 0x108,
+-- CKA_ALWAYS_AUTHENTICATE 0x202,
 -- CKA_VALUE_LEN 0x161, CKA_EXTRACTABLE 0x162,
 -- CKA_MODIFIABLE 0x170).
 attrId :: AttributeType -> Word64
@@ -1480,6 +1546,7 @@ attrId AttrValue = 0x11
 attrId AttrKeyType = 0x100
 attrId AttrWrap = 0x106
 attrId AttrSign = 0x108
+attrId AttrAlwaysAuthenticate = 0x202
 attrId AttrValueLen = 0x161
 attrId AttrExtractable = 0x162
 attrId t = error ("frameOf: no id pinned for " ++ show t)

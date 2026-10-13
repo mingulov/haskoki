@@ -8,6 +8,7 @@ import Control.Exception (catch)
 import Data.Bits (xor)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Word (Word64, Word8)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
@@ -24,6 +25,10 @@ main = do
     exitFailure
 
 run :: [String] -> IO String
+-- Lifecycle-retry manages its own intervals (one per attempt), so it
+-- runs outside the shared 'withToken' wrapper used by the other
+-- commands.
+run (modPath : "lifecycle-retry" : rest) = cmdLifecycleRetry modPath rest
 run (modPath : cmd : rest) = withToken modPath $ \funs -> case cmd of
   "slots" -> cmdSlots funs
   "mechs" -> cmdMechs funs rest
@@ -35,7 +40,7 @@ run (modPath : cmd : rest) = withToken modPath $ \funs -> case cmd of
   "kdf" -> cmdKdf funs
   "roundtrip" -> cmdRoundtrip funs
   _ -> fail ("unknown command: " ++ cmd)
-run _ = fail "usage: haskoki-client <module.so> <slots|mechs|digest|rand|hmac|aes|ec|kdf|roundtrip> [args...]"
+run _ = fail "usage: haskoki-client <module.so> <slots|mechs|digest|rand|hmac|aes|ec|kdf|roundtrip|lifecycle-retry> [args...]"
 
 firstSlot :: Functions -> IO Word64
 firstSlot funs = do
@@ -223,3 +228,24 @@ cmdRoundtrip funs = do
   e <- cmdEc funs
   k <- cmdKdf funs
   pure (a ++ h ++ e ++ k)
+
+-- | Prove exception-finalize plus retry through the real module. The
+-- first attempt refuses mid-interval (a bogus slot can never serve);
+-- the interval bracket must still finalize, so the retry
+-- re-initializes cleanly in a fresh interval and serves. Without the
+-- bracket the leaked interval makes the retry's @C_Initialize@ refuse
+-- and this command fails.
+cmdLifecycleRetry :: FilePath -> [String] -> IO String
+cmdLifecycleRetry modPath _rest = do
+  attempts <- newIORef (0 :: Int)
+  lib <- withLifecycleRetry defaultRetryPolicy $ withToken modPath $ \funs -> do
+    n <- atomicModifyIORef' attempts (\c -> (c + 1, c))
+    if n == 0
+      then do
+        _ti <- getTokenInfo funs 999999
+        fail "bogus slot unexpectedly served"
+      else do
+        info <- getInfo funs
+        pure (ciLibrary info)
+  n <- readIORef attempts
+  pure ("lifecycle-retry OK attempts=" ++ show n ++ " library=" ++ lib ++ "\n")

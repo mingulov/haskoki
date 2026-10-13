@@ -613,11 +613,23 @@ int main(int argc, char **argv) {
         { CKA_PRIVATE, &yes, sizeof(yes) },
         { CKA_LABEL, "s3-priv", 7 },
       };
+      CK_ATTRIBUTE ttmpl[] = {
+        { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &yes, sizeof(yes) },
+        { CKA_PRIVATE, &yes, sizeof(yes) },
+        { CKA_LABEL, "s3-priv-tok", 11 },
+      };
+      CK_OBJECT_HANDLE tpriv = 0;
       CK_ATTRIBUTE g[] = { { CKA_LABEL, buf, sizeof(buf) } };
       rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
       CHECKC(rv == CKR_OK, "login for visibility flip");
       rv = f->C_CreateObject(sess, ptmpl, 4, &priv);
       CHECKC(rv == CKR_OK && priv != 0, "private created while logged in");
+      if (!isProxy) {
+        rv = f->C_CreateObject(sess, ttmpl, 4, &tpriv);
+        CHECKC(rv == CKR_OK && tpriv != 0,
+               "private token created while logged in");
+      }
       rv = f->C_GetAttributeValue(sess, priv, g, 1);
       CHECKC(rv == CKR_OK && g[0].ulValueLen == 7 &&
                  memcmp(buf, "s3-priv", 7) == 0,
@@ -627,40 +639,106 @@ int main(int argc, char **argv) {
       rv = f->C_GetAttributeValue(sess, priv, g, 1);
       CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "private hidden on logout");
       rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
-      CHECKC(rv == CKR_OK, "re-login reveals private");
+      CHECKC(rv == CKR_OK, "re-login after visibility flip");
       rv = f->C_GetAttributeValue(sess, priv, g, 1);
       CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
              "logout-killed handle stays dead after re-login");
       if (!isProxy) {
         {
-          /* Re-find for a fresh handle: the object survived, only the
-           * pre-logout binding died. */
+          /* Session-destruction leg: logout destroys private
+           * SESSION objects slot-wide, so the session label
+           * re-finds nothing. */
           CK_OBJECT_HANDLE fresh[4];
           CK_ULONG nfresh = 4;
           CK_ATTRIBUTE match[] = { { CKA_LABEL, "s3-priv", 7 } };
           rv = f->C_FindObjectsInit(sess, match, 1);
           CHECKC(rv == CKR_OK, "re-find init after re-login");
           rv = f->C_FindObjects(sess, fresh, 4, &nfresh);
-          CHECKC(rv == CKR_OK && nfresh == 1, "re-find yields one");
+          CHECKC(rv == CKR_OK && nfresh == 0,
+                 "session object destroyed on logout");
           rv = f->C_FindObjectsFinal(sess);
           CHECKC(rv == CKR_OK, "re-find final");
-          priv = fresh[0];
         }
-        rv = f->C_GetAttributeValue(sess, priv, g, 1);
-        CHECKC(rv == CKR_OK && g[0].ulValueLen == 7, "private readable again");
-        rv = f->C_DestroyObject(sess, priv);
-        CHECKC(rv == CKR_OK, "private destroyed while logged in");
+        g[0].ulValueLen = sizeof(buf);
+        rv = f->C_GetAttributeValue(sess, tpriv, g, 1);
+        CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
+               "token pre-logout binding died");
+        {
+          /* Token-lifetime leg: the private TOKEN object
+           * survives logout; only its pre-logout binding died,
+           * so it re-finds for a fresh handle. */
+          CK_OBJECT_HANDLE tfresh[4];
+          CK_ULONG ntfresh = 4;
+          CK_ATTRIBUTE tmatch[] = { { CKA_LABEL, "s3-priv-tok", 11 } };
+          rv = f->C_FindObjectsInit(sess, tmatch, 1);
+          CHECKC(rv == CKR_OK, "token re-find init after re-login");
+          rv = f->C_FindObjects(sess, tfresh, 4, &ntfresh);
+          CHECKC(rv == CKR_OK && ntfresh == 1, "token re-find yields one");
+          rv = f->C_FindObjectsFinal(sess);
+          CHECKC(rv == CKR_OK, "token re-find final");
+          tpriv = tfresh[0];
+        }
+        g[0].ulValueLen = sizeof(buf);
+        rv = f->C_GetAttributeValue(sess, tpriv, g, 1);
+        CHECKC(rv == CKR_OK && g[0].ulValueLen == 11 &&
+                   memcmp(buf, "s3-priv-tok", 11) == 0,
+               "token private readable again");
+        rv = f->C_DestroyObject(sess, tpriv);
+        CHECKC(rv == CKR_OK, "token private destroyed while logged in");
       } else {
-        /* DIRECT-ONLY: v0.2.0 loses the private session object
-         * across logout->relogin (re-find yields 0; upstream
-         * mingulov/pkcs11-proxy-ng#35, present on v0.2.0/v0.2.1,
-         * absent on a48b60b). The tail still runs direct; proxied
-         * skips loud via a diff-excluded topology notice. The
-         * session stays USER-logged-in for the assertions below. */
-        printf("topology: DIRECT-ONLY visibility-flip tail (upstream issue #35)\n");
+        /* DIRECT-ONLY: the re-find tail pins haskoki logout
+         * semantics (private session objects are destroyed
+         * while token objects survive); proxied skips loud via
+         * a diff-excluded topology notice (upstream
+         * mingulov/pkcs11-proxy-ng#35 keeps proxied re-find
+         * behavior version-dependent). The session stays
+         * USER-logged-in for the assertions below. */
+        printf("topology: DIRECT-ONLY visibility-flip tail (logout destruction semantics)\n");
       }
       rv = f->C_Logout(sess);
       CHECKC(rv == CKR_OK, "logout after visibility flip");
+    }
+    if (!isProxy) {
+      /* Find-result retirement: a logout retires every find
+       * cursor on the slot, so a sibling session's cached
+       * handles never serve past the transition. */
+      CK_SESSION_HANDLE vsess = 0;
+      CK_OBJECT_CLASS ccls = CKO_DATA;
+      CK_BBOOL cyes = CK_TRUE, cno = CK_FALSE;
+      CK_OBJECT_HANDLE cobj = 0, got[4];
+      CK_ULONG ngot = 4;
+      CK_ATTRIBUTE ctmpl[] = {
+        { CKA_CLASS, &ccls, sizeof(ccls) },
+        { CKA_TOKEN, &cno, sizeof(cno) },
+        { CKA_PRIVATE, &cyes, sizeof(cyes) },
+        { CKA_LABEL, "cursor-pin", 10 },
+      };
+      CK_ATTRIBUTE cmatch[] = { { CKA_LABEL, "cursor-pin", 10 } };
+      rv = f->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+      CHECKC(rv == CKR_OK, "login for cursor retirement");
+      rv = f->C_CreateObject(sess, ctmpl, 4, &cobj);
+      CHECKC(rv == CKR_OK && cobj != 0, "cursor pin object created");
+      rv = f->C_OpenSession(here, CKF_RW_SESSION | CKF_SERIAL_SESSION,
+                            NULL_PTR, NULL_PTR, &vsess);
+      CHECKC(rv == CKR_OK && vsess != 0, "sibling session for cursor check");
+      rv = f->C_FindObjectsInit(sess, cmatch, 1);
+      CHECKC(rv == CKR_OK, "caller find init before logout");
+      rv = f->C_FindObjectsInit(vsess, cmatch, 1);
+      CHECKC(rv == CKR_OK, "sibling find init before logout");
+      rv = f->C_Logout(sess);
+      CHECKC(rv == CKR_OK, "logout retires slot cursors");
+      ngot = 4;
+      rv = f->C_FindObjects(sess, got, 4, &ngot);
+      CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+             "caller cursor retired on logout");
+      ngot = 4;
+      rv = f->C_FindObjects(vsess, got, 4, &ngot);
+      CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+             "sibling cursor retired on logout");
+      rv = f->C_CloseSession(vsess);
+      CHECKC(rv == CKR_OK, "sibling session closed");
+    } else {
+      printf("topology: DIRECT-ONLY cursor-retirement leg (sibling find cursors)\n");
     }
     rv = f->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
     CHECKC(rv == CKR_OK, "SO login ok");
@@ -689,17 +767,42 @@ int main(int argc, char **argv) {
     CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
            "context re-auth needs an active op");
     {
-      /* The op and the re-auth live on a scratch session: an
-       * unspent context grant is spendable only on pending
-       * always-authenticate slots, so finalizing the plain digest
-       * here would refuse; closing the scratch session drops it. */
+      /* Context grants bind by uniqueness: a merely active plain
+       * digest no longer qualifies — the scratch session must
+       * hold exactly one pending always-authenticate operation.
+       * The op and the re-auth live on the scratch session so
+       * the main session stays clean; closing the scratch
+       * session drops them. */
       CK_SESSION_HANDLE csess = 0;
       CK_MECHANISM dmech = { CKM_SHA256, NULL_PTR, 0 };
+      CK_MECHANISM hmech = { CKM_SHA256_HMAC, NULL_PTR, 0 };
+      CK_OBJECT_CLASS scls = CKO_SECRET_KEY;
+      CK_KEY_TYPE gkt = CKK_GENERIC_SECRET;
+      CK_BBOOL bTrue = CK_TRUE, bFalse = CK_FALSE;
+      CK_BYTE kval[32];
+      CK_OBJECT_HANDLE akey = 0;
+      CK_ATTRIBUTE atmpl[] = {
+        { CKA_CLASS, &scls, sizeof(scls) },
+        { CKA_KEY_TYPE, &gkt, sizeof(gkt) },
+        { CKA_VALUE, kval, sizeof(kval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_PRIVATE, &bTrue, sizeof(bTrue) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_ALWAYS_AUTHENTICATE, &bTrue, sizeof(bTrue) },
+      };
+      memset(kval, 0x6B, sizeof(kval));
       rv = f->C_OpenSession(here, CKF_RW_SESSION | CKF_SERIAL_SESSION,
                             NULL_PTR, NULL_PTR, &csess);
       CHECKC(rv == CKR_OK && csess != 0, "scratch session for re-auth");
       rv = f->C_DigestInit(csess, &dmech);
       CHECKC(rv == CKR_OK, "digest init for context re-auth");
+      rv = f->C_Login(csess, CKU_CONTEXT_SPECIFIC, (CK_UTF8CHAR_PTR) "1234", 4);
+      CHECKC(rv == CKR_OPERATION_NOT_INITIALIZED,
+             "plain digest does not grant context");
+      rv = f->C_CreateObject(csess, atmpl, 7, &akey);
+      CHECKC(rv == CKR_OK && akey != 0, "always-auth key mints");
+      rv = f->C_SignInit(csess, &hmech, akey);
+      CHECKC(rv == CKR_OK, "marked sign init for context re-auth");
       rv = f->C_Login(csess, CKU_CONTEXT_SPECIFIC, (CK_UTF8CHAR_PTR) "1234", 4);
       CHECKC(rv == CKR_OK, "context re-auth ok");
       rv = f->C_GetSessionInfo(csess, &sinfo);

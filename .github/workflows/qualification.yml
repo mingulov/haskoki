@@ -1,0 +1,386 @@
+name: Qualification (build-only)
+
+# Qualification lane (V4a early bootstrap): build-only remote execution
+# of a checked-out SHA. Manual dispatch (Actions -> Run workflow, with
+# an optional exact revision) plus one bounded weekly schedule. The lane
+# never runs on branch or tag activity, and PR scope stays explicit in
+# the CI workflow: this file adds no push, pull_request, or tag trigger.
+#
+# Permissions are read-only at the top level and no job widens them.
+# Nothing here creates tags, drafts, attestations, or registry entries:
+# the toolchain image is built with load-only semantics for same-run
+# use, and the proxy pair is rebuilt from the pinned source at the
+# locked recipe with the canonical hashes asserted before use.
+#
+# Jobs: static-gates (build-free wiring gates) runs first and gates the
+# toolchain and proxy-pair setup jobs; qualify needs all three setups
+# and runs the repaired V1 manifest (scripts/release-evidence.sh) with
+# the built image and the verified proxy pair. Parity is never silently
+# omitted: the pair is re-verified at load time and a missing pair is
+# a hard failure, not a skipped leg. External versions and hashes land
+# in the per-job provenance artifacts; every job sets a timeout and
+# uploads its evidence through an always-run step so partial failure
+# artifacts survive a red run.
+#
+# Pin policy (F-4): same as the CI workflow — every third-party action
+# is pinned to a full commit SHA with the human-readable tag kept as a
+# trailing comment on the same line; the pin gate covers this file from
+# the CI static step, and check-qualification-wiring.py owns the lane
+# contract (triggers, read-only posture, pinning, setup gating,
+# timeouts, artifacts) with durable negative controls.
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Exact commit SHA to qualify (default: the selected ref)"
+        default: ""
+        type: string
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+
+jobs:
+  static-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout selected commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+      - name: Build-free qualification wiring gates
+        run: |
+          set -euo pipefail
+          {
+            python3 scripts/check-qualification-wiring.py
+            python3 scripts/check-qualification-wiring.py --self-test
+            python3 scripts/check-actions-pinned.py .github/workflows/ci.yml
+            python3 scripts/check-actions-pinned.py .github/workflows/hpc.yml
+            python3 scripts/check-actions-pinned.py .github/workflows/prop-nightly.yml
+            python3 scripts/check-actions-pinned.py .github/workflows/qualification.yml
+            python3 scripts/test-release-workflow.py
+            for d in scripts/test-sim-threaded.sh scripts/test-finalize-race.sh \
+                scripts/test-c-mutexes.sh scripts/test-consumers.sh \
+                scripts/test-async-attached.sh scripts/test-async-detached.sh \
+                scripts/test-ossl4-bounds.sh; do
+              sh -n "$d"
+            done
+            for p in tests/c/sim_threaded.c tests/c/finalize_race.c \
+                tests/c/finalize_wait_race_probe.c tests/c/async_routed.c \
+                tests/c/notifications_routed.c tests/c/mutexes.c \
+                tests/c/consumer_multithread.c; do
+              cc -std=c11 -fsyntax-only -Ispec/vendor "$p"
+            done
+          } 2>&1 | tee static-gates.log
+          test -s static-gates.log || { echo "static gate log missing"; exit 2; }
+      - name: Upload static gate log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: static-gates-log
+          path: static-gates.log
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # Toolchain image, built remotely from the checked-out SHA (the same
+  # Dockerfile as CI bundle). Load-only: the image is saved to an
+  # artifact for the qualify job, never published anywhere.
+  # ------------------------------------------------------------------
+  toolchain:
+    needs: static-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build image (load for local use)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          tags: haskoki-dev:ghc-9.10.3
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Record toolchain provenance
+        run: |
+          set -euo pipefail
+          {
+          IMAGE_ID=$(docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3) \
+            || { echo "cannot inspect builder image"; exit 2; }
+          GHC_V=$(docker run --rm haskoki-dev:ghc-9.10.3 ghc --numeric-version) \
+            || { echo "cannot read GHC version"; exit 2; }
+          CABAL_V=$(docker run --rm haskoki-dev:ghc-9.10.3 cabal --numeric-version) \
+            || { echo "cannot read cabal version"; exit 2; }
+          GCC_V=$(docker run --rm haskoki-dev:ghc-9.10.3 sh -c 'gcc -dumpversion') \
+            || { echo "cannot read gcc version"; exit 2; }
+          GLIBC_V=$(docker run --rm haskoki-dev:ghc-9.10.3 sh -c 'ldd --version | head -1') \
+            || { echo "cannot read glibc version"; exit 2; }
+          OSSL_V=$(docker run --rm haskoki-dev:ghc-9.10.3 /opt/openssl-4.0.2/bin/openssl version) \
+            || { echo "cannot read OpenSSL version"; exit 2; }
+          # BuildKit resolves FROM sources into its cache without
+          # guaranteeing image-store tags; pull explicitly so the
+          # digest recording below sees a named tag on a fresh
+          # runner (CI demo-image-build precedent).
+          docker pull ubuntu:26.04
+          BASE_DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' ubuntu:26.04)
+          case "$BASE_DIGEST" in
+            ""|"<no value>") echo "base digest unreadable"; exit 2 ;;
+          esac
+          echo "base: $BASE_DIGEST"
+          python3 - "$IMAGE_ID" "$GHC_V" "$CABAL_V" "$GCC_V" "$GLIBC_V" "$OSSL_V" "$BASE_DIGEST" \
+            > toolchain-provenance.json <<'PY' || { echo "provenance record failed"; exit 2; }
+          import json, sys
+          print(json.dumps({
+            "builder_image": "haskoki-dev:ghc-9.10.3",
+            "builder_image_id": sys.argv[1],
+            "ghc": sys.argv[2],
+            "cabal_install": sys.argv[3],
+            "gcc": sys.argv[4],
+            "builder_glibc": sys.argv[5],
+            "openssl": sys.argv[6],
+            "base_digest": sys.argv[7],
+            "source": "qualification lane toolchain job",
+          }, indent=2))
+          PY
+          python3 -m json.tool toolchain-provenance.json > /dev/null \
+            || { echo "provenance is not valid JSON"; exit 2; }
+          cat toolchain-provenance.json
+          } 2>&1 | tee toolchain-setup.log
+      - name: Save image for the qualify job
+        run: |
+          set -euo pipefail
+          {
+          docker save haskoki-dev:ghc-9.10.3 | gzip > toolchain-image.tar.gz
+          test -s toolchain-image.tar.gz || { echo "image archive empty"; exit 2; }
+          ls -la toolchain-image.tar.gz
+          } 2>&1 | tee -a toolchain-setup.log
+      - name: Record toolchain setup status
+        if: always()
+        run: |
+          set -uo pipefail
+          IMAGE_ID=missing
+          IMAGE_ID=$(docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3 2>/dev/null) || IMAGE_ID=missing
+          ARCHIVE_PRESENT=no
+          [ -s toolchain-image.tar.gz ] && ARCHIVE_PRESENT=yes
+          python3 - "$IMAGE_ID" "$ARCHIVE_PRESENT" > toolchain-status.json <<'PY' || true
+          import json, sys
+          print(json.dumps({
+            "builder_image_id": sys.argv[1],
+            "archive_present": sys.argv[2],
+          }, indent=2))
+          PY
+          cat toolchain-status.json 2>/dev/null || echo "toolchain setup produced no status"
+          exit 0
+      - name: Upload toolchain bundle
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qualification-toolchain
+          path: |
+            toolchain-image.tar.gz
+            toolchain-provenance.json
+            toolchain-status.json
+            toolchain-setup.log
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # Proxy pair, rebuilt from the pinned source at the locked recipe
+  # (test-proxy-parity.sh header + Dockerfile.demo proxy stage are the
+  # canonical hash authority). Any hash mismatch fails the lane here,
+  # before the qualify job can run parity against a wrong pair.
+  # ------------------------------------------------------------------
+  proxy-pair:
+    needs: static-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+      - name: Rebuild the proxy pair from the pinned source and locked recipe
+        run: |
+          set -euo pipefail
+          {
+          PROXY_COMMIT=1ed7cc15c838de2e56ba03ac34f426847ffce049
+          PROXY_LOCK=5452b6bd6ab47d72e8172a04a8f8a72460dabc17f66ced110b930f6d5d75b7d3
+          PROXY_DAEMON=91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b
+          PROXY_SHIM=87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75
+          rm -rf proxy-src proxy-pair
+          git clone --no-checkout https://github.com/mingulov/pkcs11-proxy-ng proxy-src
+          (cd proxy-src && git checkout --quiet "$PROXY_COMMIT")
+          HEAD=$(cd proxy-src && git rev-parse HEAD)
+          [ "$HEAD" = "$PROXY_COMMIT" ] || { echo "proxy checkout mismatch: $HEAD"; exit 2; }
+          (cd proxy-src && echo "$PROXY_LOCK  Cargo.lock" | sha256sum -c -)
+          docker pull rust:1.94-bookworm
+          RUST_DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' rust:1.94-bookworm)
+          case "$RUST_DIGEST" in
+            ""|"<no value>") echo "rust digest unreadable"; exit 2 ;;
+          esac
+          echo "rust base: $RUST_DIGEST"
+          timeout -s KILL 2400 docker run --rm --network host \
+            -v "$PWD/proxy-src:/src" -w /src rust:1.94-bookworm \
+            bash -c 'apt-get update -qq && apt-get install -y -qq protobuf-compiler && cargo build --release --locked && rustc --version > /src/rustc-version.txt'
+          RUSTC_V=$(cat proxy-src/rustc-version.txt)
+          echo "effective rustc: $RUSTC_V"
+          mkdir -p proxy-pair
+          cp proxy-src/target/release/pkcs11-proxy-ng proxy-pair/
+          cp proxy-src/target/release/libpkcs11_proxy_ng_shim.so proxy-pair/
+          (cd proxy-pair && echo "$PROXY_DAEMON  pkcs11-proxy-ng" | sha256sum -c -)
+          (cd proxy-pair && echo "$PROXY_SHIM  libpkcs11_proxy_ng_shim.so" | sha256sum -c -)
+          # Artifact upload/download normalizes modes to 0644, which
+          # would strip +x from the daemon and fail the qualify-time
+          # executable check: ship a tarball (modes live in tar
+          # headers; CI bundle-job precedent).
+          rm -f proxy-pair.tar.gz
+          tar -czf proxy-pair.tar.gz proxy-pair/
+          tar tzf proxy-pair.tar.gz > /dev/null \
+            || { echo "proxy archive validation failed"; exit 2; }
+          ls -la proxy-pair.tar.gz
+          python3 - "$PROXY_COMMIT" "$PROXY_LOCK" "$PROXY_DAEMON" "$PROXY_SHIM" "$RUSTC_V" "$RUST_DIGEST" \
+            > proxy-provenance.json <<'PY' || { echo "provenance record failed"; exit 2; }
+          import json, sys
+          print(json.dumps({
+            "proxy_source": "https://github.com/mingulov/pkcs11-proxy-ng",
+            "proxy_commit": sys.argv[1],
+            "cargo_lock_sha256": sys.argv[2],
+            "daemon_sha256": sys.argv[3],
+            "shim_sha256": sys.argv[4],
+            "rustc": sys.argv[5],
+            "rust_base_digest": sys.argv[6],
+          }, indent=2))
+          PY
+          python3 -m json.tool proxy-provenance.json > /dev/null \
+            || { echo "provenance is not valid JSON"; exit 2; }
+          cat proxy-provenance.json
+          } 2>&1 | tee proxy-setup.log
+      - name: Record proxy setup status
+        if: always()
+        run: |
+          set -uo pipefail
+          DAEMON_PRESENT=no
+          SHIM_PRESENT=no
+          [ -x proxy-pair/pkcs11-proxy-ng ] && DAEMON_PRESENT=yes
+          [ -f proxy-pair/libpkcs11_proxy_ng_shim.so ] && SHIM_PRESENT=yes
+          python3 - "$DAEMON_PRESENT" "$SHIM_PRESENT" > proxy-status.json <<'PY' || true
+          import json, sys
+          print(json.dumps({
+            "daemon_present": sys.argv[1],
+            "shim_present": sys.argv[2],
+          }, indent=2))
+          PY
+          cat proxy-status.json 2>/dev/null || echo "proxy setup produced no status"
+          exit 0
+      - name: Upload proxy pair
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qualification-proxy
+          path: |
+            proxy-pair.tar.gz
+            proxy-provenance.json
+            proxy-status.json
+            proxy-setup.log
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # Qualify: load the built image, re-verify the proxy pair, and run
+  # the repaired V1 manifest (release-evidence.sh) to a same-run
+  # evidence directory. Measured wall is dominated by the manifest
+  # itself (the demo lane alone runs ~85 min); one 6-hour runner is
+  # the bound, and the always-run upload below preserves partial
+  # failure artifacts. A prepared failure here classifies against the
+  # manifest receipts; result allowances are never broadened to pass.
+  # ------------------------------------------------------------------
+  qualify:
+    needs: [static-gates, toolchain, proxy-pair]
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+      - name: Download toolchain bundle
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: qualification-toolchain
+          path: toolchain-in/
+      - name: Download proxy pair
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: qualification-proxy
+          path: proxy-in/
+      - name: Load image and re-verify the proxy pair
+        run: |
+          set -euo pipefail
+          test -f toolchain-in/toolchain-image.tar.gz || { echo "toolchain image missing"; exit 2; }
+          test -f toolchain-in/toolchain-provenance.json || { echo "toolchain provenance missing"; exit 2; }
+          gunzip -c toolchain-in/toolchain-image.tar.gz | docker load
+          docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3 > /dev/null \
+            || { echo "loaded image missing"; exit 2; }
+          test -f proxy-in/proxy-pair.tar.gz || { echo "proxy pair archive missing"; exit 2; }
+          tar xzf proxy-in/proxy-pair.tar.gz -C proxy-in
+          test -f proxy-in/proxy-provenance.json || { echo "proxy provenance missing"; exit 2; }
+          test -x proxy-in/proxy-pair/pkcs11-proxy-ng || { echo "proxy daemon missing"; exit 2; }
+          test -f proxy-in/proxy-pair/libpkcs11_proxy_ng_shim.so || { echo "proxy shim missing"; exit 2; }
+          (cd proxy-in/proxy-pair \
+            && echo "91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b  pkcs11-proxy-ng" | sha256sum -c -)
+          (cd proxy-in/proxy-pair \
+            && echo "87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75  libpkcs11_proxy_ng_shim.so" | sha256sum -c -)
+          echo "image loaded and proxy pair re-verified"
+      - name: Align checkout ownership with image user
+        run: |
+          # The image runs as uid:gid 1000:1000 but the runner owns the
+          # checkout as 1001, so the bind-mounted /work would be
+          # read-only and cabal could not create dist-newstyle (CI
+          # bundle-job precedent; the manifest itself never chowns).
+          sudo chown -R 1000:1000 "$GITHUB_WORKSPACE"
+      - name: Run the repaired V1 manifest
+        run: |
+          set -euo pipefail
+          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3
+          export HASKOKI_PROXY_DIR="$GITHUB_WORKSPACE/proxy-in/proxy-pair"
+          # Host-side manifest outputs live outside the checkout: the
+          # align step above hands the checkout to the image user for
+          # the bind-mounted container legs, while the host runner (a
+          # different UID) must keep write access to the evidence dir
+          # and the run log. The manifest funnels every host write
+          # through HASKOKI_EVIDENCE_DIR (per-driver logs, staged
+          # tarball, MANIFEST.txt) and runs the demo leg under it, so
+          # one redirect covers all host outputs; container legs keep
+          # writing dist-newstyle/dist-release into the checkout.
+          export HASKOKI_EVIDENCE_DIR="$RUNNER_TEMP/qualify-evidence"
+          bash scripts/release-evidence.sh 2>&1 | tee "$RUNNER_TEMP/qualify-evidence-run.log"
+          test -f "$HASKOKI_EVIDENCE_DIR/MANIFEST.txt" \
+            || { echo "manifest receipt missing"; exit 2; }
+      - name: Restore checkout ownership to runner
+        if: always()
+        run: |
+          # The align step handed the checkout to the image user
+          # (1000:1000) for the bind-mounted manifest; hand it back so
+          # the host-side evidence upload below sees readable files.
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qualification-evidence
+          path: |
+            ${{ runner.temp }}/qualify-evidence/
+            ${{ runner.temp }}/qualify-evidence-run.log
+          if-no-files-found: error

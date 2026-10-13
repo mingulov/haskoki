@@ -45,6 +45,7 @@ typedef struct async_data {
 } async_data_t;
 
 #define CKR_OK 0x00000000UL
+#define CKR_ARGUMENTS_BAD 0x00000007UL
 #define CKR_PENDING 0x00000204UL
 #define CKR_SAVED_STATE_INVALID 0x00000160UL
 
@@ -154,6 +155,11 @@ static int runA(const char *dbpath) {
   CHECK(rv == CKR_PENDING && job != NULL, "A: start reports pending");
   rv = pGetId(ctx, job, FN_DIGEST, &pid);
   CHECK(rv == CKR_OK && pid == 1, "A: get_id returns persistent id 1");
+  {
+    CK_ULONG staleOut = 0xA5A5A5A5UL;
+    rv = pGetId(ctx, job, FN_DIGEST, &staleOut);
+    CHECK(rv == CKR_ARGUMENTS_BAD, "A: repeat get_id stale");
+  }
   /* A second, attached-only job: close must quiesce it WITHOUT a
    * durable record, so process B can prove it was not resurrected. */
   attached = NULL;
@@ -192,6 +198,10 @@ static int runA(const char *dbpath) {
  *   not compared.
  * - Non-detached jobs are not resurrected: A's attached-only job got
  *   no persistent id, and joining the next id here is invalid.
+ *
+ * Stale-domain pins: A's detached handle stays stale on
+ * repeat GetID; B's delivered handle stays stale on repeat
+ * complete, writing nothing.
  */
 static int runB(const char *dbpath, unsigned long pid, void *oldHandle) {
   haskoki_async_store_t store;
@@ -230,6 +240,10 @@ static int runB(const char *dbpath, unsigned long pid, void *oldHandle) {
   CHECK(rv == CKR_OK && res.ulValue == 32 && memcmp(buf, kWant, 32) == 0,
         "B: complete delivers KAT bytes exactly once");
   CHECK(buf[32] == 0xA5, "B: buffer tail canary intact");
+  rv = pComplete(ctx, job2, FN_DIGEST, &res);
+  CHECK(rv == CKR_ARGUMENTS_BAD, "B: double complete stale");
+  CHECK(buf[32] == 0xA5 && res.ulValue == 32,
+        "B: double complete writes nothing");
   pClose(&ctx);
   CHECK(ctx == NULL, "B: ctx closed");
   pStoreClose(&store);

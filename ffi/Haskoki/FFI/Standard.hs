@@ -1668,6 +1668,29 @@ clearCursor :: StdInstance -> SessionId -> IO ()
 clearCursor inst sid =
   atomicModifyIORef' (siFind inst) (\m -> (Map.delete sid m, ()))
 
+-- | Drop every find cursor on a slot (logout paths): the
+-- engine's logout transition destroys private session objects
+-- slot-wide and stale-marks private handles slot-wide, so every
+-- cached cursor on the slot would serve dead handles. The
+-- session set comes from a pre-commit snapshot (login/logout
+-- never add or drop sessions).
+clearSlotCursors :: StdInstance -> Model -> SlotId -> IO ()
+clearSlotCursors inst m slot =
+  let sids = map ssId (sessionsOnSlot m slot)
+  in atomicModifyIORef' (siFind inst) (\c -> (foldr Map.delete c sids, ()))
+
+-- | A login rejection carrying the full logout transition: a
+-- context-PIN lockout while the user is logged in returns every
+-- session on the slot to public (the only login denial that
+-- relabels sessions — ordinary denials only move counters), so
+-- its cursors retire like a logout even when no private session
+-- object existed to destroy.
+rejectionLoggedOut :: Rejection -> Bool
+rejectionLoggedOut rej = any isPublic (unStateDelta (rejDelta rej))
+  where
+    isPublic (DeltaSetSessionLogin _ LoginPublic) = True
+    isPublic _ = False
+
 -- | Resolve a session for the object paths (create, copy, destroy,
 -- set-attributes): unknown sessions report @SESSION_HANDLE_INVALID@
 -- (exactly what planning would say). Read/write enforcement is
@@ -2501,7 +2524,9 @@ maxPinBytes = 65536
 -- the session slot's catalog PIN (the provisioned PIN on slot 0;
 -- accepted per the PIN-compare ruling, not machine constant-time), and the
 -- verdict feeds the engine's attempt counting, lockout, and
--- session relabeling. Denials publish their counter moves.
+-- session relabeling. Denials publish their counter moves; a
+-- context-PIN lockout denial carries the full logout transition
+-- and retires every find cursor on the slot like a logout.
 haskokiStdLogin
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> IO CULong
@@ -2543,6 +2568,9 @@ haskokiStdLogin ctx (CULong h) (CULong userType) pPin (CULong pinLen) =
                   | otherwise -> pure (stdRvOf (pcCode pc))
             Reject rej -> do
               publishRejection inst rej
+              when (rejectionLoggedOut rej) $
+                forM_ (lookupSession m0 (SessionId (fromIntegral h))) $ \st ->
+                  clearSlotCursors inst m0 (ssSlot st)
               pure (stdRvOf (rejCode rej))
             Execute _ _ -> pure ckrGeneralError
     soPinOf (_, so, _) = BC8.pack so
@@ -2550,8 +2578,9 @@ haskokiStdLogin ctx (CULong h) (CULong userType) pPin (CULong pinLen) =
 
 -- | Log out (refused without a login): publishes the engine's
 -- logout delta (session relabeling, private-handle
--- stale-marking) and drops the session's find cursor, whose
--- handles the logout may have killed.
+-- stale-marking, private session-object destruction) and drops
+-- every find cursor on the slot, whose cached handles the
+-- logout may have killed.
 haskokiStdLogout :: StablePtr StdInstance -> CULong -> IO CULong
 haskokiStdLogout ctx (CULong h) =
   withStdCtx ctx $ \inst -> do
@@ -2565,7 +2594,9 @@ haskokiStdLogout ctx (CULong h) =
           Left _ -> pure ckrGeneralError
           Right ()
             | pcCode pc == CKR_OK -> do
-                clearCursor inst sid
+                case lookupSession m0 sid of
+                  Nothing -> clearCursor inst sid
+                  Just st -> clearSlotCursors inst m0 (ssSlot st)
                 pure ckrOk
             | otherwise -> pure (stdRvOf (pcCode pc))
       Reject rej -> do
