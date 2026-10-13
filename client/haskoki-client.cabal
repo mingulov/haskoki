@@ -34,6 +34,11 @@ library
   exposed-modules:
     Haskoki.Client
     Haskoki.Client.Raw
+  -- Lifecycle stays private (other-modules): this package forbids
+  -- `../` paths, so the test suite cannot compile src directly and
+  -- reaches lifecycle behavior through Haskoki.Client re-exports.
+  other-modules:
+    Haskoki.Client.Lifecycle
   build-depends:
     base        >= 4.14 && < 5,
     bytestring  >= 0.10  && < 0.13,
@@ -49,4 +54,18 @@ executable haskoki-client
     base           >= 4.14 && < 5,
     bytestring     >= 0.10  && < 0.13,
     haskoki-client
+  ghc-options:      -threaded
+
+test-suite haskoki-client-tests
+  import:           warnings
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   test
+  other-modules:
+    ClientLifecycleSpec
+  build-depends:
+    base           >= 4.14 && < 5,
+    haskoki-client,
+    tasty          >= 1.4  && < 1.6,
+    tasty-hunit    >= 0.10 && < 0.11
   ghc-options:      -threaded

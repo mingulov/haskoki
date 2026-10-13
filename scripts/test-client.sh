@@ -10,6 +10,8 @@
 #             single-part agrees with multipart (checked in-CLI)
 #   rand      16 bytes out for 16 bytes asked
 #   roundtrip AES-CBC-PAD + RFC 4231 HMAC + ECDSA P-256 + SHA256-KDF
+#   lifecycle-retry a mid-interval refusal finalizes, and the retry
+#             re-initializes cleanly in a fresh interval (2 attempts)
 #
 # Usage:
 #   scripts/test-client.sh
@@ -72,6 +74,12 @@ echo "$ROUND_OUT" | grep -q "HMAC-SHA256(RFC4231#1) = b0344c61d8db38535ca8afceaf
   || fail "HMAC RFC 4231 vector mismatch"
 echo "$ROUND_OUT" | grep -q "ECDSA P-256 sign/verify OK" || fail "EC roundtrip line missing"
 echo "$ROUND_OUT" | grep -q "SHA256-KDF derive OK (16 bytes)" || fail "KDF line missing"
+
+# 6b. Lifecycle retry: a mid-interval refusal finalizes, and the retry
+# re-initializes cleanly (regression pin for exception-finalize).
+RETRY_OUT=$("$CLI" "$SO" lifecycle-retry) || fail "lifecycle-retry refused"
+echo "$RETRY_OUT"
+echo "$RETRY_OUT" | grep -q "lifecycle-retry OK attempts=2" || fail "lifecycle-retry marker missing"
 
 # 7. Negative legs are asserted inside the CLI (verify-after-destroy
 # refuses, corrupt ECDSA signature refuses); reaching this line means

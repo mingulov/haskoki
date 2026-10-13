@@ -4,6 +4,11 @@
 -- name. Test-only.
 module Haskoki.Client
   ( P11Error (..)
+  , withInitialized
+  , RetryPolicy (..)
+  , defaultRetryPolicy
+  , shouldRetry
+  , withLifecycleRetry
   , Session (..)
   , withToken
   , openSession
@@ -36,7 +41,7 @@ module Haskoki.Client
   , unhex
   ) where
 
-import Control.Exception (Exception, bracket, throwIO)
+import Control.Exception (bracket)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Unsafe as BSU
 import Data.Word (Word8, Word64)
@@ -45,23 +50,16 @@ import Foreign.Marshal.Array (allocaArray, peekArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, poke, sizeOf)
 
+import Haskoki.Client.Lifecycle
+  ( P11Error (..)
+  , RetryPolicy (..)
+  , check
+  , defaultRetryPolicy
+  , shouldRetry
+  , withInitialized
+  , withLifecycleRetry
+  )
 import Haskoki.Client.Raw
-
--- ---------------------------------------------------------------------------
--- Errors
--- ---------------------------------------------------------------------------
-
-data P11Error = P11Error
-  { p11Call :: !String
-  , p11Rv :: !CK_RV
-  } deriving (Show)
-
-instance Exception P11Error
-
-check :: Functions -> String -> IO CK_RV -> IO ()
-check _fun call act = do
-  rv <- act
-  if rv == ckrOk then pure () else throwIO (P11Error call rv)
 
 -- ---------------------------------------------------------------------------
 -- Sessions
@@ -75,12 +73,12 @@ data Session = Session
 
 -- | Load the module, initialize, run, finalize. @C_Initialize@ with NULL
 -- args (no custom mutexes, no @CKF_OS_LOCKING_OK@ claim needed here).
+-- The init interval is bracketed ('withInitialized'): @C_Finalize@ runs
+-- even when the body throws, so an exception never leaks an open
+-- interval into the next attempt.
 withToken :: FilePath -> (Functions -> IO a) -> IO a
-withToken path body = withModule path $ \funs -> do
-  check funs "C_Initialize" (fInitialize funs nullPtr)
-  out <- body funs
-  check funs "C_Finalize" (fFinalize funs nullPtr)
-  pure out
+withToken path body =
+  withModule path $ \funs -> withInitialized funs (body funs)
 
 openSession :: Functions -> Word64 -> Bool -> IO Session
 openSession funs slot rw = alloca $ \ph -> do

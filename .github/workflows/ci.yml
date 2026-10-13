@@ -193,19 +193,22 @@ jobs:
               check-fork-stance check-test-wiring check-test-evidence check-test-execution \
               check-coverage-boundary \
               check-release-pivots check-loader-norm check-release-install-flags \
-              check-smoke-surface check-history-codes check-actions-pinned; do
+              check-smoke-surface check-history-codes check-actions-pinned \
+              check-qualification-wiring; do
             python3 scripts/$g.py
           done
           # Final-review M-1: the pin gate defaults to ci.yml — cover
           # every workflow so later lanes cannot drift to a mutable tag.
           python3 scripts/check-actions-pinned.py .github/workflows/hpc.yml
           python3 scripts/check-actions-pinned.py .github/workflows/prop-nightly.yml
+          python3 scripts/check-actions-pinned.py .github/workflows/qualification.yml
           # F-4..F-8 fix-round regression: evasive-form negative
           # controls + F-6/F-7 structural asserts (durable, stdlib-only).
           python3 scripts/check-actions-pinned.py --self-test
           python3 scripts/check-test-evidence.py --self-test
           python3 scripts/check-test-wiring.py --self-test
           python3 scripts/check-test-execution.py --self-test
+          python3 scripts/check-qualification-wiring.py --self-test
           python3 scripts/test-release-request.py
           python3 scripts/test-release-workflow.py
           python3 scripts/test-demo-shards.py

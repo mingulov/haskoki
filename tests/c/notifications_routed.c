@@ -4,6 +4,7 @@
  * No implementation headers, private entry points, or manufactured slot IDs.
  * T-N01..T-N07 own behavior; this T-N08 consumer independently consolidates it.
  * First-failure children are isolated; their parent still runs every matrix cell.
+ * Part of scripts/test-consumers.sh (named explicitly in its scenario list).
  */
 #define _GNU_SOURCE
 #define CK_PTR *

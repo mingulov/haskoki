@@ -8,8 +8,9 @@
  * T-N05's internal STM seams prove admission and exact close/claim order. This
  * stress run does not infer admission from a native thread-start acknowledgement.
  *
- * scripts/test-finalize-race.sh runs finalize_race.c, NOT this probe. T-N08's
- * native runner separately compiles/runs this file with 100 cycles.
+ * Part of scripts/test-finalize-race.sh, which compiles and runs this
+ * probe after finalize_race.c (V4a registers this previously unowned
+ * probe with the finalize-race driver).
  * Compile with -Ispec/vendor. Usage: finalize_wait_race_probe MODULE
  * HASKOKI_FINALIZE_WAIT_CYCLES defaults to 50. Crash/timeout is a setup failure.
  */

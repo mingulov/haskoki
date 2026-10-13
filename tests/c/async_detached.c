@@ -19,6 +19,9 @@
  *   8. Re-arm the old page read-only and verify its canary is intact:
  *      nothing ever wrote through the revoked binding.
  *
+ * Stale-domain pins: the detached handle stays stale on
+ * repeat GetID and on complete, writing nothing.
+ *
  * Usage: async_detached <path-to-libhaskoki.so>
  * Exit status: 0 iff every check passes.
  */
@@ -178,6 +181,15 @@ int main(int argc, char **argv) {
   CHECK(rv == CKR_OK && pid == 1, "get_id returns persistent id 1");
   rv = pPoll(ctx, job, FN_DIGEST);
   CHECK(rv == CKR_ARGUMENTS_BAD, "old handle stale after detach");
+  {
+    CK_ULONG staleOut = 0xA5A5A5A5UL;
+    rv = pGetId(ctx, job, FN_DIGEST, &staleOut);
+    CHECK(rv == CKR_ARGUMENTS_BAD, "repeat get_id stale");
+  }
+  rv = pComplete(ctx, job, FN_DIGEST, &res);
+  CHECK(rv == CKR_ARGUMENTS_BAD, "complete via detached handle stale");
+  CHECK(guard[0] == 0xA5 && guard[31] == 0xA5, "detached complete writes nothing");
+  CHECK(res.ulValue == 32, "detached struct length intact");
 
   /* Revoke the old allocation. From here, any touch is a fatal crash. */
   if (mprotect(guard, kPage, PROT_NONE) != 0) {

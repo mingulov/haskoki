@@ -16,6 +16,12 @@
 #                       encrypt/decrypt (AES-CBC-PAD/CBC/ECB, ARIA-CBC,
 #                       one-shot/multipart), wrap/unwrap, HKDF derive,
 #                       GenerateRandom + SeedRandom (seed mixes)
+#   consumer_multithread
+#                       barrier-start distinct-session SHA-256 load:
+#                       per-worker unique inputs, one-shot vs multipart
+#                       full-byte agreement, size-query liveness, an
+#                       independent sha256("abc") oracle, cross-worker
+#                       distinctness, and session conservation
 #
 # Usage:
 #   scripts/test-consumers.sh             # build scenarios, run all (must PASS)
@@ -41,6 +47,7 @@ fail() {
 [ -f tests/c/notifications_routed.c ] || fail "notifications consumer missing"
 [ -f tests/c/consumer_certificates.c ] || fail "certificates consumer missing"
 [ -f tests/c/consumer_notifications_poll.c ] || fail "notifications polling consumer missing"
+[ -f tests/c/consumer_multithread.c ] || fail "multithread consumer missing"
 SCEN_LIST=$(
   for scen in tests/c/consumer_*.c tests/c/message_routed.c tests/c/async_routed.c tests/c/notifications_routed.c tests/c/consumer_certificates.c; do
     [ -f "$scen" ] && printf '%s\n' "$scen"
@@ -57,6 +64,8 @@ SCEN_LIST=$(
   || fail "certificates consumer must occur exactly once"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_notifications_poll.c')" -eq 1 ] \
   || fail "notifications polling consumer must occur exactly once"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_multithread.c')" -eq 1 ] \
+  || fail "multithread consumer must occur exactly once"
 for scen in $SCEN_LIST; do
   if grep -nE 'abi_generated|abi_stubs|abi-inventory' "$scen"; then
     fail "consumer independence violated: $scen"

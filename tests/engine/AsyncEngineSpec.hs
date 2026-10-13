@@ -2,12 +2,15 @@
 through the production driver: a planned digest completes
 through shaped finisher outputs (exact KAT bytes, slot
 terminated); an HMAC sign completes through the legacy path
-with RFC 4231 bytes.
+with RFC 4231 bytes. The retirement pins exercise the same
+surface concurrently: racing cancels admit exactly one winner,
+racing completes deliver exactly once, and cross-context or
+bogus handles stay stale with the job intact.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module AsyncEngineSpec (spec) where
 
-import Control.Concurrent.MVar (MVar)
+import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (bracket, evaluate, finally)
 import Control.Monad (forM, forM_, replicateM, when)
 import qualified Data.ByteString as BS
@@ -21,7 +24,7 @@ import EnvLock (withEnvLock)
 import Foreign.C.Types (CULong (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Marshal.Array (peekArray, pokeArray)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr, wordPtrToPtr)
 import Foreign.StablePtr
   ( StablePtr
   , castPtrToStablePtr
@@ -32,6 +35,7 @@ import Foreign.StablePtr
 import Foreign.Storable (peek, poke, peekByteOff, pokeByteOff)
 import System.Directory (createDirectoryIfMissing)
 import System.Mem.StableName (makeStableName)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
@@ -183,6 +187,10 @@ spec envLock = testGroup "Async engine"
   , testCase "FFI drive error frees the handle exactly once" (caseFfiDriveError envLock)
   , testCase "FFI close drains pending jobs exactly once" (caseFfiDrain envLock)
   , testCase "FFI double close is silent" (caseFfiDoubleClose envLock)
+  , testCase "FFI concurrent cancel: exactly one wins" (caseFfiCancelRace envLock)
+  , testCase "FFI concurrent complete: single delivery" (caseFfiCompleteRace envLock)
+  , testCase "FFI cross-context handle use is stale" (caseFfiCrossContext envLock)
+  , testCase "FFI bogus handle refused, nothing touched" (caseFfiBogusHandle envLock)
   , testCase "struct sink writes all three shapes exactly" caseSinkShapes
   , testCase "caseAsyncBorrowedOwnership" (caseAsyncBorrowedOwnership envLock)
   , testCase "caseAsyncAdmissionWidths" (caseAsyncAdmissionWidths envLock)
@@ -417,6 +425,36 @@ withACtx envLock action =
     assertBool "slot nulled on close" (castStablePtrToPtr nulled == nullPtr)
     pure out
 
+-- | Two live contexts at once. Both opens share ONE env-lock hold:
+-- the lock is not reentrant, so nested 'withACtx' would wedge.
+withACtx2 :: MVar () -> (StablePtr AsyncCtx -> StablePtr AsyncCtx -> IO a) -> IO a
+withACtx2 envLock action =
+  alloca $ \(pA :: Ptr (StablePtr AsyncCtx)) ->
+    alloca $ \(pB :: Ptr (StablePtr AsyncCtx)) -> do
+      (ctxA, ctxB) <- withEnvLock envLock
+        ((,) <$> haskokiAsyncOpen <*> haskokiAsyncOpen)
+      assertBool "ctxA opened" (castStablePtrToPtr ctxA /= nullPtr)
+      assertBool "ctxB opened" (castStablePtrToPtr ctxB /= nullPtr)
+      poke pA ctxA
+      poke pB ctxB
+      out <- action ctxA ctxB
+      haskokiAsyncClose pA
+      haskokiAsyncClose pB
+      nulledA <- peek pA
+      nulledB <- peek pB
+      assertBool "slot A nulled on close" (castStablePtrToPtr nulledA == nullPtr)
+      assertBool "slot B nulled on close" (castStablePtrToPtr nulledB == nullPtr)
+      pure out
+
+-- | No-wedge join for race workers: a lock inversion would hang the
+-- take, so the 10s backstop fails loudly instead of wedging the suite.
+joinBounded :: String -> MVar a -> IO a
+joinBounded name mv = do
+  r <- timeout 10000000 (takeMVar mv)
+  case r of
+    Nothing -> assertFailure ("wedged (>10s): " ++ name)
+    Just v -> pure v
+
 hSessionOf :: StablePtr AsyncCtx -> IO CULong
 hSessionOf ctx = do
   c <- deRefStablePtr ctx
@@ -558,6 +596,164 @@ caseFfiCancel envLock = withACtx envLock $ \ctx -> do
   assertEqual "poll-after-cancel stale" rvBad rvPoll
   rvCancel2 <- haskokiAsyncCancel ctx hJob
   assertEqual "double cancel stale" rvBad rvCancel2
+
+-- | Two threads cancel the same pending job through the export
+-- boundary. Exactly one wins with OK; the loser is typed — stale
+-- when it resolves after retirement, the terminal cancel code when
+-- it resolves first and meets the already-canceled job. The
+-- handle retires once however the race interleaves, and nothing
+-- crashes. (The 0x50 arm is reachable only through this race:
+-- sequential paths retire before any second cancel can resolve.)
+caseFfiCancelRace :: MVar () -> IO ()
+caseFfiCancelRace envLock = withACtx envLock $ \ctx -> do
+  let rvCancel = CULong 0x50
+  h <- hSessionOf ctx
+  rvInit <- initDigestFfi ctx h
+  assertEqual "init ok" rvOK rvInit
+  (rvStart, hJob) <- startFfi ctx h fnDigest "abc" 32 5
+  assertEqual "start pending" rvPending rvStart
+  go <- newEmptyMVar
+  out1 <- newEmptyMVar
+  out2 <- newEmptyMVar
+  let racer out = forkIO $ do
+        takeMVar go
+        rv <- haskokiAsyncCancel ctx hJob
+        putMVar out rv
+  _ <- racer out1
+  _ <- racer out2
+  putMVar go ()
+  putMVar go ()
+  rv1 <- joinBounded "cancel racer 1" out1
+  rv2 <- joinBounded "cancel racer 2" out2
+  assertBool "exactly one winner" ((rv1 == rvOK) /= (rv2 == rvOK))
+  let loser = if rv1 == rvOK then rv2 else rv1
+  assertBool "loser typed" (loser == rvBad || loser == rvCancel)
+  nLive <- deRefStablePtr ctx >>= asyncLiveHandles
+  assertEqual "handle retired once" 0 nLive
+
+-- | Two threads complete the same ready job into disjoint canary
+-- structs. Delivery happens exactly once — one struct lands KAT
+-- bytes, the other is untouched — and both return codes are typed
+-- (a second OK reports an already-delivered job and writes
+-- nothing). The handle retires once.
+caseFfiCompleteRace :: MVar () -> IO ()
+caseFfiCompleteRace envLock = withACtx envLock $ \ctx -> do
+  h <- hSessionOf ctx
+  rvInit <- initDigestFfi ctx h
+  assertEqual "init ok" rvOK rvInit
+  (rvStart, hJob) <- startFfi ctx h fnDigest "abc" 32 1
+  assertEqual "start pending" rvPending rvStart
+  rvPoll <- haskokiAsyncPoll ctx hJob fnDigest
+  assertEqual "ready" rvOK rvPoll
+  withStruct 32 $ \(pS1, pV1) -> withStruct 32 $ \(pS2, pV2) -> do
+    go <- newEmptyMVar
+    out1 <- newEmptyMVar
+    out2 <- newEmptyMVar
+    let completer pS out = forkIO $ do
+          takeMVar go
+          rv <- haskokiAsyncComplete ctx hJob fnDigest pS
+          putMVar out rv
+    _ <- completer pS1 out1
+    _ <- completer pS2 out2
+    putMVar go ()
+    putMVar go ()
+    rv1 <- joinBounded "complete racer 1" out1
+    rv2 <- joinBounded "complete racer 2" out2
+    assertBool "codes typed" (all (`elem` [rvOK, rvBad]) [rv1, rv2])
+    assertBool "a winner" (rv1 == rvOK || rv2 == rvOK)
+    d1 <- delivered pS1 pV1
+    d2 <- delivered pS2 pV2
+    assertBool "delivery exactly once" (d1 /= d2)
+    when (rv1 == rvBad) (intact pS1 pV1)
+    when (rv2 == rvBad) (intact pS2 pV2)
+  nLive <- deRefStablePtr ctx >>= asyncLiveHandles
+  assertEqual "handle retired once" 0 nLive
+  where
+    delivered pS pV = do
+      ver <- readField pS offVersion
+      len <- readField pS offValueLen
+      bytes <- readBytes pV 32
+      pure (ver == CULong 1 && len == CULong 32 && bytes == sha256Abc)
+    intact pS pV = do
+      assertCanaryStruct "stale loser struct intact" pS
+      assertCanaryBuf "stale loser buffer intact" pV 32
+
+-- | A job's handle used against a second live context is stale on
+-- every entry, and the job itself is intact: stale paths tick
+-- nothing, so the owning context still drives and delivers it.
+-- Both contexts admit their own job first (both tables start at
+-- job id 0), so each handle must resolve only on its own context
+-- despite the shared numeric job id.
+caseFfiCrossContext :: MVar () -> IO ()
+caseFfiCrossContext envLock = withACtx2 envLock $ \ctxA ctxB -> do
+  hA <- hSessionOf ctxA
+  hB <- hSessionOf ctxB
+  rvInitA <- initDigestFfi ctxA hA
+  assertEqual "init A ok" rvOK rvInitA
+  rvInitB <- initDigestFfi ctxB hB
+  assertEqual "init B ok" rvOK rvInitB
+  (rvStartA, hJobA) <- startFfi ctxA hA fnDigest "abc" 32 2
+  assertEqual "start A pending" rvPending rvStartA
+  (rvStartB, hJobB) <- startFfi ctxB hB fnDigest "abc" 32 5
+  assertEqual "start B pending" rvPending rvStartB
+  rvPollAB <- haskokiAsyncPoll ctxB hJobA fnDigest
+  assertEqual "A-handle poll stale on B" rvBad rvPollAB
+  rvPollBA <- haskokiAsyncPoll ctxA hJobB fnDigest
+  assertEqual "B-handle poll stale on A" rvBad rvPollBA
+  withStruct 32 $ \(pS, pV) -> do
+    rvCompB <- haskokiAsyncComplete ctxB hJobA fnDigest pS
+    assertEqual "cross-context complete stale" rvBad rvCompB
+    assertCanaryStruct "cross-context struct intact" pS
+    assertCanaryBuf "cross-context buffer intact" pV 32
+  rvCancelB <- haskokiAsyncCancel ctxB hJobA
+  assertEqual "cross-context cancel stale" rvBad rvCancelB
+  rvPoll1 <- haskokiAsyncPoll ctxA hJobA fnDigest
+  assertEqual "poll 1 pending" rvPending rvPoll1
+  rvPoll2 <- haskokiAsyncPoll ctxA hJobA fnDigest
+  assertEqual "poll 2 ready" rvOK rvPoll2
+  withStruct 32 $ \(pS, pV) -> do
+    rvComp <- haskokiAsyncComplete ctxA hJobA fnDigest pS
+    assertEqual "complete ok" rvOK rvComp
+    out <- readBytes pV 32
+    assertEqual "KAT bytes" sha256Abc out
+  rvPollB <- haskokiAsyncPoll ctxB hJobB fnDigest
+  assertEqual "B job intact" rvPending rvPollB
+  nA <- deRefStablePtr ctxA >>= asyncLiveHandles
+  nB <- deRefStablePtr ctxB >>= asyncLiveHandles
+  assertEqual "A drained" 0 nA
+  assertEqual "B keeps one handle" 1 nB
+
+-- | Bogus and null handles are refused on every entry with nothing
+-- touched, and the context stays healthy: a real job still starts,
+-- drives, and delivers afterwards.
+caseFfiBogusHandle :: MVar () -> IO ()
+caseFfiBogusHandle envLock = withACtx envLock $ \ctx -> do
+  let bogus = castPtrToStablePtr (wordPtrToPtr 0xDEAD) :: StablePtr JobHandle
+  rvPoll <- haskokiAsyncPoll ctx bogus fnDigest
+  assertEqual "bogus poll stale" rvBad rvPoll
+  withStruct 32 $ \(pS, pV) -> do
+    rvComp <- haskokiAsyncComplete ctx bogus fnDigest pS
+    assertEqual "bogus complete stale" rvBad rvComp
+    assertCanaryStruct "bogus struct intact" pS
+    assertCanaryBuf "bogus buffer intact" pV 32
+  rvCancel <- haskokiAsyncCancel ctx bogus
+  assertEqual "bogus cancel stale" rvBad rvCancel
+  rvNull <- haskokiAsyncPoll ctx nullJob fnDigest
+  assertEqual "null poll stale" rvBad rvNull
+  nLive <- deRefStablePtr ctx >>= asyncLiveHandles
+  assertEqual "nothing admitted" 0 nLive
+  h <- hSessionOf ctx
+  rvInit <- initDigestFfi ctx h
+  assertEqual "init ok" rvOK rvInit
+  (rvStart, hJob) <- startFfi ctx h fnDigest "abc" 32 1
+  assertEqual "start pending" rvPending rvStart
+  rvReady <- haskokiAsyncPoll ctx hJob fnDigest
+  assertEqual "ready" rvOK rvReady
+  withStruct 32 $ \(pS, pV) -> do
+    rvComp <- haskokiAsyncComplete ctx hJob fnDigest pS
+    assertEqual "complete ok" rvOK rvComp
+    out <- readBytes pV 32
+    assertEqual "KAT bytes" sha256Abc out
 
 caseFfiRefusals :: MVar () -> IO ()
 caseFfiRefusals envLock = withACtx envLock $ \ctx -> do

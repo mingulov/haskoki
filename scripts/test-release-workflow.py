@@ -7,6 +7,7 @@ import re
 import unittest
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml"
+QUALIFICATION = WORKFLOW.with_name("qualification.yml")
 
 
 def section(text, name, indent):
@@ -178,6 +179,39 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("if:", steps[ordered[1]])
         for name in [ordered[2], *ordered[4:7]]:
             self.assertIn("if: env.RESTORED_CHECKPOINT != '1'", steps[name])
+
+    def test_static_gates_wire_qualification_checks(self):
+        haskell = section(self.jobs, "haskell", 2)
+        match = re.search(r"(?ms)^      - name: Static gates \(build-free\)\n(.*?)(?=^      - name:|\Z)",
+                          haskell)
+        self.assertIsNotNone(match, "static gates step missing")
+        static = match.group(1)
+        self.assertIn("check-qualification-wiring", static)
+        self.assertIn("python3 scripts/check-qualification-wiring.py --self-test", static)
+        self.assertIn("python3 scripts/check-actions-pinned.py .github/workflows/qualification.yml", static)
+
+    def test_qualification_lane_is_build_only_dispatch_or_schedule(self):
+        text = QUALIFICATION.read_text()
+        names = set(re.findall(r"(?m)^  ([a-z_]+):", section(text, "on", 0)))
+        self.assertEqual(names, {"workflow_dispatch", "schedule"})
+        schedule = section(section(text, "on", 0), "schedule", 2)
+        self.assertTrue(1 <= len(re.findall(r"(?m)^\s*-\s*cron:", schedule)) <= 2)
+        self.assertEqual(field(section(text, "permissions", 0), "contents", 2), "read")
+        self.assertNotRegex(text, r"(?m):\s*write\b", "write permission in a build-only lane")
+        for token in ["docker push", "gh release", "release-request.py", "publisher-preflight",
+                      "attest-build-provenance", "packages:", "id-token:", "secrets."]:
+            self.assertNotIn(token, text)
+        jobs = section(text, "jobs", 0)
+        job_names = re.findall(r"(?m)^  ([a-z][a-z0-9-]+):", jobs)
+        self.assertTrue({"static-gates", "toolchain", "proxy-pair", "qualify"} <= set(job_names))
+        for name in job_names:
+            with self.subTest(job=name):
+                self.assertNotIn("publish", name)
+                self.assertNotIn("release", name)
+                block = section(jobs, name, 2)
+                self.assertIn("timeout-minutes:", block)
+                self.assertIn("actions/upload-artifact@", block)
+                self.assertIn("if: always()", block)
 
     def test_release_uses_qualified_checker_while_builds_can_override_it(self):
         expression = field(section(self.text, "env", 0), "FRAMEWORK_REF", 2)

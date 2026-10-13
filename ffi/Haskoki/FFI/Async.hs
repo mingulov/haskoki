@@ -4,11 +4,11 @@ semantics over the 'Haskoki.Runtime.Async' table.
 An 'AsyncCtx' is a caller-owned context (model environment, live
 OpenSSL4 backend, one proof session, one job table, one live-handle
 set), opened and closed like the crypto context. Jobs are opaque
-'JobHandle' tokens: submission allocates exactly one native handle,
+'JobHandle' tokens: submission admits exactly one native handle,
 and every terminal path (complete, cancel, drive-error, close-drain)
-frees it exactly once. Late use of a freed handle is a typed stale
-refusal, never a use-after-free (liveness is checked against the
-handle set before any dereference).
+retires it. Late use of a retired handle is a typed stale
+refusal, never a use-after-free (handles resolve through the
+private key lookup; no handle is ever dereferenced).
 
 Result delivery targets the pinned @CK_ASYNC_DATA@ layout (offsets
 in @tests\/c\/layout_320.c@): byte completions land in the caller's
@@ -32,6 +32,23 @@ a persistent id (revoking the old handle); 'haskokiAsyncJoin'
 reattaches a persistent id as a fresh live job. Contexts opened
 without a store ('haskokiAsyncOpen') cannot detach or join — there
 is nowhere durable to put the record — and report typed failures.
+
+Concurrency (handle resolution under concurrent retirement).
+Job handles are pure key tokens, not heap references: each handle
+packs a per-context salt (high 32 bits, nonzero) with its job id
+(low 32 bits), and the per-context live set is the
+admission\/retirement registry — admission inserts the key,
+retirement deletes it, and resolution decodes the key and checks
+membership, all without dereferencing any caller-supplied
+pointer. A handle retired by a concurrent terminal path therefore
+resolves stale (typed refusal), never dangling: there is no
+check-then-deref window, no per-job 'StablePtr' allocation to
+leak, and nothing to free. The salt keeps live handles distinct
+across contexts sharing numeric job ids (fresh tables all start
+at 0). Admission and retirement run masked single atomic steps;
+resolution is a pure read. The registry path takes no locks, so
+it cannot invert with the per-job delivery leases — every job
+operation runs strictly after its resolution returns.
 -}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -43,6 +60,11 @@ module Haskoki.FFI.Async
   , StoreBox (..)
   , asyncLiveHandles
   , asyncCloseCtx
+  , allocJobHandle
+  , freeJobHandle
+  , resolveJobHandle
+  , encodeJobHandle
+  , decodeJobHandle
   , jobFunctionCode
   , codeJobFunction
   , decodeAsyncFunctionName
@@ -62,18 +84,19 @@ module Haskoki.FFI.Async
   , haskokiAsyncJoin
   ) where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, mask_, try)
+import Data.Bits ((.&.), (.|.), shiftL)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.ByteString.Unsafe (unsafeUseAsCString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Word (Word8, Word64)
+import Data.Word (Word32, Word8, Word64)
 import Foreign.C.String (CString, peekCString)
 import Foreign.C.Types (CULong (..))
 import Foreign.Marshal.Utils (copyBytes)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr, ptrToWordPtr, wordPtrToPtr)
 import Foreign.StablePtr
   ( StablePtr
   , castPtrToStablePtr
@@ -83,6 +106,7 @@ import Foreign.StablePtr
   , newStablePtr
   )
 import Foreign.Storable (peek, poke, peekByteOff)
+import System.Mem.StableName (hashStableName, makeStableName)
 
 import Haskoki.Engine.Backend (BackendEnv, CryptoBackend (..), EngineResult (..))
 import Haskoki.Engine.Driver (drainReleases, encodeResult, runEffect)
@@ -215,9 +239,14 @@ storeHomeToken = TokenId 1
 -- | The @CK_ASYNC_DATA@ shape, manipulated by pinned offsets.
 data AsyncData
 
--- | One opaque native job token. Never dereferenced after its
--- terminal path frees it: every entry checks the live set first.
-data JobHandle = JobHandle !JobId
+-- | One opaque native job token. The 'StablePtr' value is a pure
+-- key token (context salt plus job id, never NULL for an admitted
+-- handle), not a heap reference: nothing ever dereferences or
+-- frees a job handle, so concurrent retirement cannot dangle a
+-- resolution. The type is an empty phantom tag — handles are
+-- admitted and resolved through the key codec below, never
+-- through heap values.
+data JobHandle
 
 -- | Live-job table capacity per context.
 ctxCapacity :: Int
@@ -304,39 +333,93 @@ withCtx ctx k = guarded $
     then pure (toRV 0x05)
     else deRefStablePtr ctx >>= k
 
--- | Resolve a live job handle to its job id. Stale (freed or
--- foreign) tokens refuse without dereferencing.
+-- | Encode a job id as its opaque handle token under the given
+-- context salt: the high 32 bits carry the salt, the low 32 the
+-- job id. The salt is always nonzero, so an admitted key is never
+-- NULL. Job ids are table counters starting at 0 and never reused
+-- within a table; the salt distinguishes live handles across
+-- contexts sharing numeric job ids.
+encodeJobHandle :: Word32 -> JobId -> StablePtr JobHandle
+encodeJobHandle salt (JobId n) =
+  castPtrToStablePtr (wordPtrToPtr key)
+  where
+    key = fromIntegral salt `shiftL` 32 .|. fromIntegral n
+
+-- | Decode an opaque handle token. NULL decodes to 'Nothing';
+-- every other value decodes totally — membership in the caller's
+-- live set, checked by 'resolveJobHandle', is what admits or
+-- refuses it. Decoding a foreign value (another context's live
+-- key, a bogus integer) is pure and safe; it simply fails the
+-- membership check of any context that did not admit it.
+decodeJobHandle :: StablePtr JobHandle -> Maybe JobId
+decodeJobHandle h
+  | isNullStable h = Nothing
+  | otherwise = Just (JobId (fromIntegral (key .&. 0xFFFFFFFF)))
+  where
+    key = ptrToWordPtr (castStablePtrToPtr h)
+
+-- | Resolve a live job handle to its job id through the private
+-- key lookup: decode plus a membership check against the caller's
+-- own live set. No caller-supplied pointer is ever dereferenced,
+-- so a handle retired concurrently resolves stale instead of
+-- dangling. A pure read — there is no state to corrupt, hence no
+-- masking.
+resolveJobHandle :: AsyncCtx -> StablePtr JobHandle -> IO (Maybe JobId)
+resolveJobHandle ctx h = case decodeJobHandle h of
+  Nothing -> pure Nothing
+  Just jid -> do
+    live <- readIORef (acLive ctx)
+    pure (if castStablePtrToPtr h `Set.member` live then Just jid else Nothing)
+
+-- | Resolve a live job handle to its job id. Stale (retired or
+-- foreign) tokens refuse without dereferencing. The continuation —
+-- and with it the job-lease acquisition — runs strictly after
+-- resolution returns, so the lock-free registry path never nests a
+-- job operation.
 withLiveJob
   :: AsyncCtx -> StablePtr JobHandle -> (JobId -> IO CULong) -> IO CULong
 withLiveJob ctx h k
   | isNullStable h = pure (rvOf CKR_ARGUMENTS_BAD)
   | otherwise = do
-      live <- readIORef (acLive ctx)
-      if castStablePtrToPtr h `Set.notMember` live
-        then pure (rvOf CKR_ARGUMENTS_BAD)
-        else do
-          JobHandle jid <- deRefStablePtr h
-          k jid
+      mJid <- resolveJobHandle ctx h
+      case mJid of
+        Nothing -> pure (rvOf CKR_ARGUMENTS_BAD)
+        Just jid -> k jid
 
--- | Free a job's native handle exactly once. The live-set delete
--- runs first so a racing second terminal path finds nothing to
--- free; only the set member dereferences and frees.
+-- | Retire a job's native handle. Deletion is idempotent, so a
+-- racing second terminal path simply deletes nothing; there is no
+-- heap allocation behind a handle and nothing to free. Runs masked
+-- as a single atomic step.
 freeJobHandle :: AsyncCtx -> StablePtr JobHandle -> IO ()
-freeJobHandle ctx h = do
-  wasLive <- atomicModifyIORef' (acLive ctx) $ \live ->
-    let key = castStablePtrToPtr h
-    in if key `Set.member` live
-      then (Set.delete key live, True)
-      else (live, False)
-  if wasLive then freeStablePtr h else pure ()
+freeJobHandle ctx h = mask_ $
+  atomicModifyIORef' (acLive ctx) $ \live ->
+    (Set.delete (castStablePtrToPtr h) live, ())
 
--- | Allocate a job's native handle (submission success path only).
+-- | Admit a job's native handle (submission success path only).
+-- The salt derives from the context's own live set identity with
+-- zero remapped to one (never zero); key derivation is
+-- infallible, so allocation cannot leak, and the masked section
+-- holds no interruptible operation. Job ids are never reused
+-- within a table, so an admitted key is unique among the
+-- context's live handles; distinct contexts admit distinct keys
+-- unless their 32-bit salts collide. Callers refuse job ids past
+-- the 32-bit codec before admitting (see 'jobIdExhausted').
 allocJobHandle :: AsyncCtx -> JobId -> IO (StablePtr JobHandle)
-allocJobHandle ctx jid = do
-  h <- newStablePtr (JobHandle jid)
+allocJobHandle ctx jid = mask_ $ do
+  sn <- makeStableName (acLive ctx)
+  let salt = max 1 (fromIntegral (hashStableName sn) :: Word32)
+      h = encodeJobHandle salt jid
   atomicModifyIORef' (acLive ctx) $ \live ->
     (Set.insert (castStablePtrToPtr h) live, ())
   pure h
+
+-- | Whether a job id lies past the 32-bit handle codec and must be
+-- refused before admission (the codec truncates high bits, so two
+-- live jobs 2^32 apart would share a key). Table counters start at
+-- 0 and grow by one per job; reaching the bound takes 2^32
+-- submissions on one table.
+jobIdExhausted :: JobId -> Bool
+jobIdExhausted (JobId n) = toInteger n >= 0x100000000 || toInteger n < 0
 
 termCode :: TerminalState -> ReturnCode
 termCode (TermDelivered _) = CKR_OK
@@ -469,7 +552,7 @@ haskokiAsyncOpen = guardedPtr $ do
     openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
 
 -- | Close a context through its handle slot: cancel every live
--- job exactly once, free every live handle exactly once, shut the
+-- job exactly once, retire every live handle, shut the
 -- backend, free the pointer, and null the slot. Closing a null
 -- slot is a silent no-op, so close-through-the-slot is idempotent
 -- by construction (no use-after-free on any conforming path).
@@ -506,17 +589,17 @@ asyncCloseCtx ctx = do
   where
     drainOne :: Ptr () -> IO ()
     drainOne key = do
-      let h = castPtrToStablePtr (castPtr key) :: StablePtr JobHandle
-      wasLive <- atomicModifyIORef' (acLive ctx) $ \s ->
-        if key `Set.member` s
-          then (Set.delete key s, True)
-          else (s, False)
-      if not wasLive
-        then pure ()
-        else do
-          JobHandle jid <- deRefStablePtr h
+      let h = castPtrToStablePtr key :: StablePtr JobHandle
+      -- Retire-then-cancel per key, as before: retirement is
+      -- idempotent, so a racing terminal path simply wins or loses
+      -- the delete, and the job id comes from the pure key decode —
+      -- nothing is dereferenced or freed.
+      freeJobHandle ctx h
+      case decodeJobHandle h of
+        Nothing -> pure ()
+        Just jid -> do
           _ <- cancelJob (acTable ctx) jid
-          freeStablePtr h
+          pure ()
 
 -- | Publish a prepared commit, then drain its releases through the
 -- backend (every commit-application site routes here, so
@@ -655,10 +738,16 @@ submitJob c sid jfunc input cap ticks pHandleOut = do
       started <- startJob (acTable c) jobReq
       case started of
         Left deny -> refuse pHandleOut (rvOf (denyCode deny))
-        Right jid -> do
-          h <- allocJobHandle c jid
-          poke pHandleOut h
-          pure (rvOf CKR_PENDING)
+        Right jid
+          | jobIdExhausted jid -> do
+              -- The fresh job never had a handle: cancel it before
+              -- refusing so the table holds no ghost.
+              _ <- cancelJob (acTable c) jid
+              refuse pHandleOut (rvOf CKR_HOST_MEMORY)
+          | otherwise -> do
+              h <- allocJobHandle c jid
+              poke pHandleOut h
+              pure (rvOf CKR_PENDING)
 
 -- | Map a submit refusal to its source-backed code.
 denyCode :: StartDeny -> ReturnCode
@@ -688,7 +777,7 @@ haskokiAsyncPoll ctx h (CULong func) = withCtx ctx $ \c ->
 
 -- | Complete a job into the caller's struct. Pending jobs report
 -- pending with the struct untouched; ready jobs deliver exactly
--- once and free the handle; short buffers size with the job held.
+-- once and retire the handle; short buffers size with the job held.
 -- A null value pointer with a ready bytes job is a sizing probe.
 -- Joined jobs complete through the detach wrapper so delivery marks
 -- the durable record delivered.
@@ -751,7 +840,7 @@ writeFrame pResult frame = case decodeCompletion frame of
   Nothing -> ioError (userError "async: undecodable completion frame")
   Just completion -> pokeCompletion pResult completion
 
--- | Cancel a job: live jobs terminate and free the handle; stale
+-- | Cancel a job: live jobs terminate and retire the handle; stale
 -- handles refuse typed. Joined jobs cancel through the detach
 -- wrapper so the durable record resolves canceled.
 haskokiAsyncCancel :: StablePtr AsyncCtx -> StablePtr JobHandle -> IO CULong
@@ -931,7 +1020,7 @@ haskokiAsyncOpenOn box = guardedPtr $
     openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
 
 -- | Detach a live job (GetID): on success the persistent id lands in
--- the out-pointer and the old native handle is freed (late use is
+-- the out-pointer and the old native handle is retired (late use is
 -- stale); on failure the id out-pointer is zeroed and the live job
 -- is preserved. A null id out-pointer refuses without detaching, as
 -- does a context with no bound store.
@@ -987,10 +1076,16 @@ haskokiAsyncJoin ctx (CULong pid) (CULong func) hSession (CULong cap)
                 , jqCapacity = cap
                 }
               case out of
-                JoinOk jid -> do
-                  h <- allocJobHandle c jid
-                  poke pHandleOut h
-                  pure (rvOf CKR_PENDING)
+                JoinOk jid
+                  | jobIdExhausted jid -> do
+                      -- Cancel through the detach wrapper so the
+                      -- durable attachment resolves canceled too.
+                      _ <- cancelThrough c jid
+                      refuse pHandleOut (rvOf CKR_HOST_MEMORY)
+                  | otherwise -> do
+                      h <- allocJobHandle c jid
+                      poke pHandleOut h
+                      pure (rvOf CKR_PENDING)
                 JoinShort need -> do
                   if pNeedOut /= nullPtr then poke pNeedOut need else pure ()
                   refuse pHandleOut (rvOf CKR_BUFFER_TOO_SMALL)

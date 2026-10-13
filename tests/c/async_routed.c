@@ -2,6 +2,7 @@
  * per-entry behavior, allocation revocation, and executed SQLite recovery.
  * Only discovery is resolved by symbol name. No provider header, generated
  * layout, private trampoline, or numeric handle serves as an oracle.
+ * Part of scripts/test-consumers.sh (named explicitly in its scenario list).
  */
 #define _GNU_SOURCE
 #define CK_PTR *
