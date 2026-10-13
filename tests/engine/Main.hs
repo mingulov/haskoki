@@ -1,3 +1,4 @@
+-- REGISTRATION: haskoki-engine-tests
 module Main (main) where
 
 import Control.Concurrent.MVar (newMVar)

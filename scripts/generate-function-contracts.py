@@ -19,8 +19,13 @@ Contract criterion:
   * planned-with-behavior: a caller-visible entry exists (a planCall
     FunctionId, a real C-table handler, or a haskoki_* foreign export
     exercised by tests) AND behavior tests execute it. Evidence names
-    the executed suites; the generator verifies every cited spec file
-    exists (the semantic link is curated and reviewable in PLANNED).
+    the executing suites as LINKAGE: the generator verifies every
+    citation resolves to a real executable owner (an inventoried
+    suite with the spec wired into its Main, an inventoried script
+    driver, or a reviewed task-label alias). Linkage is not executed
+    evidence: whether the suite ran and passed joins separately via
+    scripts/check-test-execution.py receipts. The semantic link is
+    curated and reviewable in PLANNED.
   * unsupported-with-reason: the reason names the EXACT gap, including
     "behavior tested at the operation layer but unwired" (citing the
     tested behavior without claiming entry reachability).
@@ -30,6 +35,7 @@ Never a behavior claim without tests: no "planned" row without evidence.
 """
 
 import csv
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -383,10 +389,30 @@ NOT_APPLICABLE = {
                          "which haskoki never enters"),
 }
 
+# Reviewed task-label aliases: the dual/recover rows cite the
+# mechanism-task labels they were curated under. Both consumers
+# execute under scripts/test-proxy-parity.sh (its scenario list
+# names tests/c/dual_routed.c and tests/c/recover_routed.c), which
+# is the executable owner the gates resolve.
+TASK_LABEL_OWNERS = {
+    "mechanisms/task-m02": "test-proxy-parity.sh",
+    "mechanisms/task-m03": "test-proxy-parity.sh",
+}
+
 
 def fail(msg):
     print(f"generate-function-contracts: FAIL: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def _load_wiring():
+    path = Path(__file__).with_name("check-test-wiring.py")
+    spec = importlib.util.spec_from_file_location(
+        "check_test_wiring", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["check_test_wiring"] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def main():
@@ -424,14 +450,63 @@ def main():
     if set(PLANNED) & set(UNSUPPORTED) or set(PLANNED) & set(NOT_APPLICABLE) \
             or set(UNSUPPORTED) & set(NOT_APPLICABLE):
         fail("function classified twice")
-    # Every evidence citation must name a real file (the semantic link
-    # is curated; existence is machine-checked).
+    # Every evidence citation must name a real file AND a real
+    # executable owner (the semantic link is curated; ownership and
+    # runner linkage are machine-checked): a cabal suite registered
+    # in tests/suite-inventory.json with the cited module wired into
+    # its Main, an inventoried script driver, or a reviewed
+    # task-label alias onto an inventoried driver that names the
+    # cited consumer.
+    wiring = _load_wiring()
+    inv, err = wiring.load_inventory(REPO / "tests" / "suite-inventory.json")
+    if err is not None:
+        fail(err)
+    try:
+        drivers = {d["name"] for d in json.loads(
+            (REPO / "scripts" / "driver-inventory.json").read_text())
+            ["drivers"]}
+    except Exception as e:  # noqa: BLE001 - reported, not hidden
+        fail(f"cannot parse scripts/driver-inventory.json: {e}")
+    cabal_suites = wiring.parse_suites((REPO / "haskoki.cabal").read_text())
     for name, (_entry, ev) in PLANNED.items():
         if not ev:
             fail(f"{name}: planned without evidence")
         for suite, rel in ev:
             if not (REPO / rel).exists():
                 fail(f"{name}: evidence file missing: {rel} (suite {suite})")
+            if suite in TASK_LABEL_OWNERS:
+                owner = TASK_LABEL_OWNERS[suite]
+                if owner not in drivers:
+                    fail(f"{name}: task alias {suite} owner {owner} "
+                         f"is not an inventoried driver")
+                driver_text = (REPO / "scripts" / owner).read_text()
+                if Path(rel).name not in driver_text:
+                    fail(f"{name}: {rel} not named by its owning "
+                         f"driver scripts/{owner}")
+                continue
+            if suite in drivers:
+                if not (REPO / "scripts" / suite).is_file():
+                    fail(f"{name}: evidence driver missing: "
+                         f"scripts/{suite}")
+                continue
+            if suite in inv:
+                stem = Path(rel).stem
+                cab = cabal_suites.get(suite)
+                if cab is None or stem not in cab["modules"]:
+                    fail(f"{name}: {rel} not compiled into suite {suite}")
+                src = wiring.module_source(REPO, cab["dirs"], stem)
+                if src is None or src.resolve() != (REPO / rel).resolve():
+                    fail(f"{name}: {rel} is not the {stem} file "
+                         f"that suite {suite} compiles")
+                main_text = (REPO / inv[suite]["main"]).read_text()
+                wired = wiring.wiring_of(stem, main_text)
+                if not (wired["imported"] and wired["run"]):
+                    fail(f"{name}: {stem} cited for {suite} but not "
+                         f"wired into its Main (imported="
+                         f"{wired['imported']} run={wired['run']})")
+                continue
+            fail(f"{name}: evidence suite {suite!r} resolves to no "
+                 f"inventoried suite, driver, or task alias")
     functions = []
     for f in f32:
         name = f["name"]

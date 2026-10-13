@@ -10,7 +10,9 @@ Every command owns its instance or works offline:
   (@demo-maximal@ is labeled a target profile, never complete);
 * @scenario run@ executes a declarative scenario against an OWNED
   in-memory instance, deterministically (no code execution; a sync
-  session never pends);
+  session never pends; strict load: nonempty rules, unknown step
+  fields, mistyped arguments, and misplaced save_as\/expect reject;
+  each step's result is checked centrally against its expectation);
 * @store inspect@ reads a SQLite store offline (SELECT-only under
   @query_only@; never takes the ownership lock);
 * @store reset@ REFUSES a live (lock-held) store and resets an
@@ -246,12 +248,31 @@ reservedLimitsLine = "reserved-limits: transcript_bytes/aggregate_payload_bytes/
 -- Scenario runner (owned instance, declarative, deterministic)
 -- ---------------------------------------------------------------------------
 
--- | A runnable step: validated verb + raw extras (save_as, expect).
+-- | A validated expectation: the clause the action's result must
+-- satisfy.
+data StepExpect
+  = ExpectReturn !String
+  | ExpectEvent !String
+  deriving (Eq, Show)
+
+-- | An explicit step result for centralized expectation checking.
+data StepResult
+  = StepReturn !String
+  | StepEvent !String
+  deriving (Eq, Show)
+
+-- | Render a result the way the run log prints it.
+resultNote :: StepResult -> String
+resultNote (StepReturn code) = code
+resultNote (StepEvent name) = "event:" ++ name
+
+-- | A runnable step: validated verb, arguments, and extras (save_as,
+-- expect). Built only by 'runSteps', which refuses malformed input.
 data RunStep = RunStep
   { rsAction :: !String
   , rsArgs :: ![(String, Json)]
   , rsSaveAs :: !(Maybe String)
-  , rsExpect :: !(Maybe Json)
+  , rsExpect :: !(Maybe StepExpect)
   } deriving (Eq, Show)
 
 -- | Logical session in the owned instance.
@@ -268,13 +289,17 @@ data LogicalSession = LogicalSession
 -- 'rnFault' is the live fault window @(start-tick, length)@ over
 -- step indices: sign\/async.complete steps inside it report
 -- @CKR_DEVICE_ERROR@ instead of running (seeded from @[sim]@ when
--- sim is enabled; the @fault.window@ verb replaces it).
+-- sim is enabled; the @fault.window@ verb replaces it). 'rnOrder'
+-- records session names in opening order, so the @"s1"@ alias
+-- resolves to the first-opened session rather than the first by
+-- name.
 data Runner = Runner
   { rnTracer :: !Tracer
   , rnSessions :: !(Map String LogicalSession)
   , rnNextSession :: !Int
   , rnFinalized :: !Bool
   , rnFault :: !(Maybe (Int, Int))
+  , rnOrder :: ![String]
   }
 
 -- | Run a scenario file against an owned instance.
@@ -291,28 +316,49 @@ runScenario cfgPath scPath = do
           Left err -> pure (CtlExit 1 "" ("scenario-malformed: " ++ err ++ "\n"))
           Right val -> case validateScenario val of
             Left err -> pure (CtlExit 1 "" ("scenario-rejected: " ++ show err ++ "\n"))
-            Right sc -> do
-              steps <- pure (runSteps val)
-              execScenario cfg sc steps
+            Right sc -> case runSteps val of
+              Nothing -> pure (CtlExit 1 "" "scenario-rejected: malformed steps\n")
+              Just steps -> execScenario cfg sc steps
 
--- | Re-walk the raw steps for runner extras (verbs already validated).
-runSteps :: Json -> [RunStep]
+-- | Parse the raw steps into validated runner values (actions,
+-- arguments, and per-action extras). Total: malformed input refuses
+-- instead of degrading to defaults (unreachable after
+-- 'validateScenario', which rejects first with detail).
+runSteps :: Json -> Maybe [RunStep]
 runSteps (JObj kvs) = case lookup "steps" kvs of
-  Just (JArr ss) -> [ toStep s | s@(JObj _) <- ss ]
-  _ -> []
+  Just (JArr ss) -> mapM toStep ss
+  _ -> Nothing
   where
-    toStep (JObj skvs) = RunStep
-      { rsAction = case lookup "action" skvs of Just (JStr a) -> a; _ -> ""
-      , rsArgs = case lookup "arguments" skvs of Just (JObj ps) -> ps; _ -> []
-      , rsSaveAs = case lookup "save_as" skvs of Just (JStr n) -> Just n; _ -> Nothing
-      , rsExpect = lookup "expect" skvs
-      }
-    toStep _ = RunStep "" [] Nothing Nothing
-runSteps _ = []
+    toStep (JObj skvs) = do
+      act <- case lookup "action" skvs of Just (JStr a) -> Just a; _ -> Nothing
+      args <- case lookup "arguments" skvs of
+        Nothing -> Just []
+        Just (JObj ps) -> Just ps
+        _ -> Nothing
+      save <- case lookup "save_as" skvs of
+        Nothing -> Just Nothing
+        Just (JStr n) | not (null n) && act == "session.open" -> Just (Just n)
+        _ -> Nothing
+      expect <- case lookup "expect" skvs of
+        Nothing -> Just Nothing
+        Just (JObj ekvs) -> case act of
+          "slot-event.wait" -> expectClause "event" ekvs
+          _ -> expectClause "return" ekvs
+        _ -> Nothing
+      if all (\(k, _) -> k `elem` ["action", "arguments", "save_as", "expect"]) skvs
+        then Just (RunStep act args save expect)
+        else Nothing
+    toStep _ = Nothing
+    expectClause "event" [("event", JStr w)] = Just (Just (ExpectEvent w))
+    expectClause "return" [("return", JStr w)] = Just (Just (ExpectReturn w))
+    expectClause _ _ = Nothing
+runSteps _ = Nothing
 
--- | Execute validated steps in file order (deterministic rule order).
--- When sim is enabled, the @[sim]@ token script runs first (in file
--- order) and the configured fault window seeds the runner.
+-- | Execute validated steps in file order (deterministic). Each
+-- step produces an explicit result, checked centrally against its
+-- declared expectation before the run continues. When sim is
+-- enabled, the @[sim]@ token script runs first (in file order) and
+-- the configured fault window seeds the runner.
 execScenario :: Config -> Scenario -> [RunStep] -> IO CtlExit
 execScenario cfg sc steps = do
   eq <- newEventQueue (max 8 (limEvents (cfgLimits cfg))) DropOldest
@@ -320,7 +366,7 @@ execScenario cfg sc steps = do
   reg <- newTokenRegistry eq at
   tr <- newTracer (max 8 (tcQueueLimit (cfgTrace cfg))) (\_ -> pure (Right ())) False
   applyTokenScript reg (simScript cfg)
-  let rn0 = Runner tr Map.empty 1 False (seedFault cfg)
+  let rn0 = Runner tr Map.empty 1 False (seedFault cfg) []
   eOut <- go rn0 reg tr (zip [0 :: Int ..] steps) []
   case eOut of
     Left err -> pure (CtlExit 1 "" ("scenario-failed: " ++ err ++ "\n"))
@@ -343,7 +389,10 @@ execScenario cfg sc steps = do
       eLine <- execStep cfg reg tr rn i st
       case eLine of
         Left err -> pure (Left ("step[" ++ show i ++ "] " ++ rsAction st ++ ": " ++ err))
-        Right (rn', note) -> go rn' reg tr rest (("step[" ++ show i ++ "] " ++ rsAction st ++ " -> " ++ note) : acc)
+        Right (rn', res) -> case checkStepExpect st res of
+          Left err -> pure (Left ("step[" ++ show i ++ "] " ++ rsAction st ++ ": " ++ err))
+          Right () -> go rn' reg tr rest
+            (("step[" ++ show i ++ "] " ++ rsAction st ++ " -> " ++ resultNote res) : acc)
 
 -- | The effective token script (empty unless sim is enabled).
 simScript :: Config -> [(String, Int)]
@@ -379,33 +428,45 @@ fixtureUserPin = "1234"
 fixtureSoPin = "5678"
 
 -- | Execute one step (@i@ is the step index for fault-window
--- checks). Unknown verbs cannot arrive (validated), so the fallback
--- is an internal error, never code execution. @expect@ clauses are
--- enforced: a mismatch fails the run. Program errors (unknown
--- session, unarmed sign) precede device faults: an in-window step
--- reports @CKR_DEVICE_ERROR@ instead of running, without consuming
--- any pending poll.
-execStep :: Config -> TokenRegistry -> Tracer -> Runner -> Int -> RunStep -> IO (Either String (Runner, String))
+-- checks), producing an explicit result for centralized
+-- expectation checking. Unknown verbs cannot arrive (validated),
+-- so the fallback is an internal error, never code execution.
+-- @session.open@ honors @save_as@ (a duplicate name refuses
+-- without mutation). Program errors (unknown session, unarmed
+-- sign) precede device faults: an in-window step reports
+-- @CKR_DEVICE_ERROR@ instead of running, without consuming any
+-- pending poll.
+execStep :: Config -> TokenRegistry -> Tracer -> Runner -> Int -> RunStep -> IO (Either String (Runner, StepResult))
 execStep cfg reg tr rn i st = case rsAction st of
   "initialize" -> do
     emit tr "C_Initialize" 0 "initialized"
-    pure (Right (rn, "CKR_OK"))
+    pure (Right (rn, StepReturn "CKR_OK"))
   "fixture.load" -> do
     _ <- insertToken reg (SlotId 0)
     emit tr "C_InitToken" 0 "fixture-loaded"
-    pure (Right (rn, "CKR_OK"))
+    pure (Right (rn, StepReturn "CKR_OK"))
   "session.open" -> do
-    let name = saveName (rnNextSession rn)
+    let name = case rsSaveAs st of
+          Just saved -> saved
+          Nothing -> saveName (rnNextSession rn)
         isAsync = case lookup "asynchronous" (rsArgs st) of
           Just (JBool b) -> b
           _ -> False
         sid = SessionId (rnNextSession rn)
-    registerSessionSlot reg sid (SlotId 0)
-    emit tr "C_OpenSession" 0 ("session=" ++ name)
-    let ls = LogicalSession sid isAsync False False 0 0
-        rn' = rn { rnSessions = Map.insert name ls (rnSessions rn)
-                 , rnNextSession = rnNextSession rn + 1 }
-    pure (Right (rn', "CKR_OK"))
+    -- The effective namespace covers literal names plus the live
+    -- "s1" alias (named sessions exist, no literal s1): binding
+    -- that alias refuses, as validation already enforced.
+    let aliasLive = not (Map.null (rnSessions rn)) && Map.notMember "s1" (rnSessions rn)
+    if Map.member name (rnSessions rn) || (name == "s1" && aliasLive)
+      then pure (Left ("duplicate session name: " ++ name))
+      else do
+        registerSessionSlot reg sid (SlotId 0)
+        emit tr "C_OpenSession" 0 ("session=" ++ name)
+        let ls = LogicalSession sid isAsync False False 0 0
+            rn' = rn { rnSessions = Map.insert name ls (rnSessions rn)
+                     , rnNextSession = rnNextSession rn + 1
+                     , rnOrder = rnOrder rn ++ [name] }
+        pure (Right (rn', StepReturn "CKR_OK"))
   "session.login" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
@@ -416,14 +477,14 @@ execStep cfg reg tr rn i st = case rsAction st of
                  || (role == "SO" && pin == fixtureSoPin)
         emit tr "C_Login" (if okPin then 0 else 0xA0) ("session=" ++ name)
         if okPin
-          then pure (Right (rn { rnSessions = Map.insert name (ls { lsLoggedIn = True }) (rnSessions rn) }, "CKR_OK"))
+          then pure (Right (rn { rnSessions = Map.insert name (ls { lsLoggedIn = True }) (rnSessions rn) }, StepReturn "CKR_OK"))
           else pure (Left "login pin incorrect")
   "sign.init" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
       Right (name, ls) -> do
         emit tr "C_SignInit" 0 ("session=" ++ name)
-        pure (Right (rn { rnSessions = Map.insert name (ls { lsSignArmed = True }) (rnSessions rn) }, "CKR_OK"))
+        pure (Right (rn { rnSessions = Map.insert name (ls { lsSignArmed = True }) (rnSessions rn) }, StepReturn "CKR_OK"))
   "sign" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
@@ -433,13 +494,11 @@ execStep cfg reg tr rn i st = case rsAction st of
           else if inFault rn i
             then do
               emit tr "C_Sign" 0x30 ("session=" ++ name)
-              case checkExpect st "CKR_DEVICE_ERROR" of
-                Left err -> pure (Left err)
-                Right () -> pure (Right (rn, "CKR_DEVICE_ERROR"))
+              pure (Right (rn, StepReturn "CKR_DEVICE_ERROR"))
             else do
               -- pending_polls applies ONLY to async-eligible ops in
               -- async sessions: a sync session never pends, no matter
-              -- what the scenario rules say.
+              -- what the scenario file carries.
               let polls = acPendingPolls (cfgAsync cfg)
                   wantPending = lsAsync ls && acEnabled (cfgAsync cfg) && polls > 0
                   calls' = lsSignCalls ls + 1
@@ -447,12 +506,8 @@ execStep cfg reg tr rn i st = case rsAction st of
               if wantPending
                 then do
                   let ls' = ls { lsSignCalls = calls', lsPendingLeft = polls }
-                  case checkExpect st "CKR_PENDING" of
-                    Left err -> pure (Left err)
-                    Right () -> pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, "CKR_PENDING"))
-                else case checkExpect st "CKR_OK" of
-                  Left err -> pure (Left err)
-                  Right () -> pure (Right (rn { rnSessions = Map.insert name (ls { lsSignCalls = calls' }) (rnSessions rn) }, "CKR_OK"))
+                  pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_PENDING"))
+                else pure (Right (rn { rnSessions = Map.insert name (ls { lsSignCalls = calls' }) (rnSessions rn) }, StepReturn "CKR_OK"))
   "async.complete" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
@@ -460,27 +515,21 @@ execStep cfg reg tr rn i st = case rsAction st of
         if inFault rn i
           then do
             emit tr "C_Sign" 0x30 ("session=" ++ name)
-            case checkExpect st "CKR_DEVICE_ERROR" of
-              Left err -> pure (Left err)
-              Right () -> pure (Right (rn, "CKR_DEVICE_ERROR"))
+            pure (Right (rn, StepReturn "CKR_DEVICE_ERROR"))
           else do
             let left_ = lsPendingLeft ls
             -- polls = pending completes before the final OK.
             if left_ > 0
               then do
                 emit tr "C_Sign" 0x204 ("session=" ++ name)
-                case checkExpect st "CKR_PENDING" of
-                  Left err -> pure (Left err)
-                  Right () -> pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = left_ - 1 }) (rnSessions rn) }, "CKR_PENDING"))
+                pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = left_ - 1 }) (rnSessions rn) }, StepReturn "CKR_PENDING"))
               else do
                 emit tr "C_Sign" 0 ("session=" ++ name)
-                case checkExpect st "CKR_OK" of
-                  Left err -> pure (Left err)
-                  Right () -> pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = 0 }) (rnSessions rn) }, "CKR_OK"))
+                pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = 0 }) (rnSessions rn) }, StepReturn "CKR_OK"))
   "token.remove" -> do
     _ <- removeToken reg (SlotId 0)
     emit tr "C_WaitForSlotEvent" 0 "token-removed"
-    pure (Right (rn, "CKR_OK"))
+    pure (Right (rn, StepReturn "CKR_OK"))
   "slot-event.wait" -> do
     let nonblocking = case lookup "nonblocking" (rsArgs st) of
           Just (JBool b) -> b
@@ -489,14 +538,12 @@ execStep cfg reg tr rn i st = case rsAction st of
     case w of
       WaitEvent _ -> do
         emit tr "C_WaitForSlotEvent" 0 "event"
-        case checkExpectEvent st "token-state-change" of
-          Left err -> pure (Left err)
-          Right () -> pure (Right (rn, "event:token-state-change"))
+        pure (Right (rn, StepEvent "token-state-change"))
       WaitNoEvent -> pure (Left "expected a slot event, queue empty")
       WaitFinalized -> pure (Left "instance finalized while waiting")
   "finalize" -> do
     emit tr "C_Finalize" 0 "finalized"
-    pure (Right (rn { rnFinalized = True }, "CKR_OK"))
+    pure (Right (rn { rnFinalized = True }, StepReturn "CKR_OK"))
   -- Sim verbs: test-gated like scenario.load (the gate refuses
   -- without mutation when the instance is not test-enabled).
   "token.insert" -> withSimGate $ do
@@ -505,7 +552,7 @@ execStep cfg reg tr rn i st = case rsAction st of
         | n >= 0 && n <= 0xFFFFFFFF -> do
             _ <- insertToken reg (SlotId (fromInteger n))
             emit tr "C_WaitForSlotEvent" 0 "token-inserted"
-            pure (Right (rn, "CKR_OK"))
+            pure (Right (rn, StepReturn "CKR_OK"))
       _ -> pure (Left "token.insert needs an integer 'slot' in 0..2^32-1")
   "async.delay" -> withSimGate $ do
     case sessionOf rn st of
@@ -515,14 +562,14 @@ execStep cfg reg tr rn i st = case rsAction st of
           | p >= 0 && p <= 1000000 -> do
               emit tr "C_Sign" 0x204 ("session=" ++ name)
               let ls' = ls { lsPendingLeft = lsPendingLeft ls + fromInteger p }
-              pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, "CKR_OK"))
+              pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_OK"))
         _ -> pure (Left "async.delay needs integer 'polls' in 0..1000000")
   "fault.window" -> withSimGate $ do
     case (lookup "start" (rsArgs st), lookup "ticks" (rsArgs st)) of
       (Just (JNum s), Just (JNum t))
         | s >= 0 && t >= 0 && s <= 1000000 && t <= 1000000 -> do
             emit tr "C_Sign" 0 "fault-window"
-            pure (Right (rn { rnFault = Just (fromInteger s, fromInteger t) }, "CKR_OK"))
+            pure (Right (rn { rnFault = Just (fromInteger s, fromInteger t) }, StepReturn "CKR_OK"))
       _ -> pure (Left "fault.window needs integer 'start'/'ticks' in 0..1000000")
   other -> pure (Left ("unknown action (rejected, never executed): " ++ other))
   where
@@ -537,13 +584,12 @@ sessionOf :: Runner -> RunStep -> Either String (String, LogicalSession)
 sessionOf rn st =
   let want = case lookup "session" (rsArgs st) of
         Just (JStr n) -> n
-        _ -> case rsSaveAs st of
-          Just n -> n
-          Nothing -> "s1"
-      -- save_as on session.open names the slot; later steps address
-      -- "s1" positionally (first opened session).
+        _ -> "s1"
+      -- save_as on session.open names the slot (positional s1/s2/...
+      -- without it); an explicit "s1" still aliases the
+      -- first-opened session when no literal s1 exists.
       name = if want == "s1" && Map.notMember want (rnSessions rn)
-        then case Map.keys (rnSessions rn) of
+        then case rnOrder rn of
           (k : _) -> k
           [] -> want
         else want
@@ -555,28 +601,23 @@ sessionOf rn st =
 saveName :: Int -> String
 saveName n = "s" ++ show n
 
--- | Enforce @expect.return@ when the step declares one.
-checkExpect :: RunStep -> String -> Either String ()
-checkExpect st got = case rsExpect st of
-  Just (JObj kvs) -> case lookup "return" kvs of
-    Just (JStr want)
-      | want == got -> Right ()
-      | otherwise -> Left ("expect.return mismatch: want " ++ want ++ ", got " ++ got)
-    Just _ -> Left "expect.return must be a string"
-    Nothing -> Right ()
-  Just _ -> Left "expect must be an object"
+-- | The one total expectation check, applied after every step's
+-- explicit result. A mismatch fails the run (the caller prefixes
+-- the step index and action). Cross-clause arms are unreachable
+-- after validated parsing, which admits only the clause the action
+-- produces.
+checkStepExpect :: RunStep -> StepResult -> Either String ()
+checkStepExpect st (StepReturn got) = case rsExpect st of
+  Just (ExpectReturn want)
+    | want == got -> Right ()
+    | otherwise -> Left ("expect.return mismatch: want " ++ want ++ ", got " ++ got)
+  Just (ExpectEvent _) -> Left "expect.event does not apply to this action"
   Nothing -> Right ()
-
--- | Enforce @expect.event@ when the step declares one.
-checkExpectEvent :: RunStep -> String -> Either String ()
-checkExpectEvent st got = case rsExpect st of
-  Just (JObj kvs) -> case lookup "event" kvs of
-    Just (JStr want)
-      | want == got -> Right ()
-      | otherwise -> Left ("expect.event mismatch: want " ++ want ++ ", got " ++ got)
-    Just _ -> Left "expect.event must be a string"
-    Nothing -> Right ()
-  Just _ -> Left "expect must be an object"
+checkStepExpect st (StepEvent got) = case rsExpect st of
+  Just (ExpectEvent want)
+    | want == got -> Right ()
+    | otherwise -> Left ("expect.event mismatch: want " ++ want ++ ", got " ++ got)
+  Just (ExpectReturn _) -> Left "expect.return does not apply to this action"
   Nothing -> Right ()
 
 -- | Emit one §7 line for the step (memory sink; counted, not printed).

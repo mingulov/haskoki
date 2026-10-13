@@ -135,6 +135,7 @@ spec = testGroup "openssl4 engine"
   , testCase "private contexts are isolated" caseIsolation
   , testCase "shim has no pkcs11 provider or global cleanup" caseShimHygiene
   , testCase "invalid inputs fail typed, never crash" caseInvalidInputs
+  , testCase "digest final consumes exactly once (behavioral)" caseFinalConsumesOnce
   ]
 
 -- ---------------------------------------------------------------------------
@@ -5350,6 +5351,32 @@ caseInvalidInputs = withBackend $ \env -> do
   case r3 of
     EngineFail (BackendResourceGone _ _) -> pure ()
     other -> assertFailure ("second final must be ResourceGone, got " ++ show other)
+
+-- | Behavioral pin: the final consumes the multipart handle, so
+-- every later use of the id answers ResourceGone, and a release of
+-- the consumed id is a no-op that must not throw or free again. The
+-- exception-window proof (a fault at the copy boundary after C
+-- consumes the handle) lives in OwnershipSpec's gated battery, which
+-- is the suite that can observe native ownership counts.
+caseFinalConsumesOnce :: IO ()
+caseFinalConsumesOnce = withBackend $ \env -> do
+  rid <- expectOk "init" =<< digestInit env D_SHA256
+  expectOk "update" =<< digestUpdate env rid "hello"
+  d1 <- expectOk "final" =<< digestFinal env rid
+  assertEqual "sha256 hello" (hex "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824") d1
+  r2 <- digestFinal env rid
+  case r2 of
+    EngineFail (BackendResourceGone _ _) -> pure ()
+    other -> assertFailure ("second final must be Gone, got " ++ show other)
+  u2 <- digestUpdate env rid "hello"
+  case u2 of
+    EngineFail (BackendResourceGone _ _) -> pure ()
+    other -> assertFailure ("update-after-final must be Gone, got " ++ show other)
+  releaseResource env rid
+  r3 <- digestFinal env rid
+  case r3 of
+    EngineFail (BackendResourceGone _ _) -> pure ()
+    other -> assertFailure ("final after release must be Gone, got " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- Small constructors used above

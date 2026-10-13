@@ -25,15 +25,30 @@ For each distinct pair `suite/Module` + `case_id`:
    ambiguous bracket-bar spans (fail-closed: the author rewrites).
    Failures name the dangling id and exit nonzero.
 
+Linkage vs executed evidence. This gate proves LINKAGE: each cited
+module resolves inside the cited suite and carries the ACCEPTS
+token (or a legacy-linkage registry row). It does not prove the
+suite ran, the named case executed, or anything passed — an empty
+test group with a valid token passes here by design. EXECUTED
+evidence is joined separately by scripts/check-test-execution.py,
+which binds Tasty --list-tests captures and suite verdicts from
+the exact build under test to the reviewed intended groups in
+tests/suite-inventory.json, and fails empty batteries (no-test)
+there. Read this gate's verdict as "linkage holds"; read a
+behavior claim only off an execution receipt. A pair cited by N
+entries is ONE linkage record, never N independent behaviors:
+entry counts measure catalog fan-in, not executed checks.
+
 Transitional registry: the pairs cited before tokens existed are
 listed in TRANSITIONAL_KNOWN_PAIRS with module resolution still fully
 enforced. A pair outside BOTH the tokens and the registry fails. Never
 extend the registry: add the `-- ACCEPTS:` token to the spec file and
-delete the entry here (the OK line counts token- vs registry-resolved
-pairs so the migration is trackable). Retirement is self-enforcing: a
-pair present in BOTH tokens and registry FAILS the live gate
-("exemption not retired"), and the self-test pins the approved legacy
-membership and fails if the live registry is not a subset of it.
+delete the entry here (the verdict line counts token- vs
+legacy-linkage pairs so the migration is trackable). Retirement is
+self-enforcing: a pair present in BOTH tokens and registry FAILS the
+live gate ("exemption not retired"), and the self-test pins the
+approved legacy membership and fails if the live registry is not a
+subset of it.
 
 STDLIB ONLY. Run on HOST python3 from anywhere:
   python3 scripts/check-test-evidence.py [--root DIR]
@@ -156,13 +171,16 @@ def _match_qq_open(text, i):
         return None
     return (j + 1, segments == 1 and first in ("e", "d", "t", "p"))
 
-# TRANSITIONAL (F-11): pairs cited in spec/mechanisms.json before
-# `-- ACCEPTS:` tokens existed in the spec files. Module resolution
-# is fully enforced for these; only the token leg is deferred, one
-# entry per pair, deleted as tokens land. DO NOT EXTEND: a new pair
-# must ship its token in the spec file instead. Token-bearing pairs
-# MUST retire their entries (live gate fails "exemption not retired"
-# if a pair sits in both tokens and registry).
+# TRANSITIONAL (F-11): legacy-linkage rows for pairs cited in
+# spec/mechanisms.json before `-- ACCEPTS:` tokens existed in the
+# spec files. Module resolution is fully enforced for these; only
+# the token leg is deferred, one entry per pair, deleted as tokens
+# land. DO NOT EXTEND: a new pair must ship its token in the spec
+# file instead. Token-bearing pairs MUST retire their entries
+# (live gate fails "exemption not retired" if a pair sits in both
+# tokens and registry). Rows here are linkage records, not executed
+# evidence; executed behavior joins separately (see the module
+# docstring: linkage vs executed evidence).
 TRANSITIONAL_KNOWN_PAIRS = frozenset({
     ("haskoki-engine-tests/OpenSSLSpec", "A37"),
     ("haskoki-engine-tests/OpenSSLSpec", "A39"),
@@ -2148,13 +2166,14 @@ def main(argv=None):
     mech = Path(args.mechanisms) if args.mechanisms else root / "spec" / "mechanisms.json"
     failures, stats = check_tree(root, mech)
     if failures:
-        print("test-evidence: INVALID", file=sys.stderr)
+        print("test-evidence linkage: INVALID", file=sys.stderr)
         for f in failures:
             print(f"  {f}", file=sys.stderr)
         return 1
-    print(f"test-evidence: OK ({stats['entries']} entries, "
-          f"{stats['pairs']} pairs: {stats['token']} token-resolved, "
-          f"{stats['registry']} registry-resolved (token pending))")
+    print(f"test-evidence linkage: LINKAGE-OK ({stats['entries']} entries "
+          f"over {stats['pairs']} pairs: {stats['token']} token-resolved, "
+          f"{stats['registry']} legacy-linkage (token pending); executed "
+          f"behavior joins separately via check-test-execution.py)")
     return 0
 
 

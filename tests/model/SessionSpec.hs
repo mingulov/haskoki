@@ -28,8 +28,18 @@ import Haskoki.Request (FunctionId (..), Request (..))
 import Haskoki.Rules (Rules (..), defaultRules)
 import Haskoki.Session
   ( ActiveLogin (..)
+  , AdmitDeny (..)
+  , LoginDeny (..)
+  , LoginKind (..)
+  , LoginOutcome (..)
+  , PinCheck (..)
   , SessionLogin (..)
   , TokenAuth (..)
+  , admitCode
+  , admitPrivate
+  , denyCode
+  , loginAttempt
+  , tokenAuthNew
   )
 import Haskoki.Transition (planCall, publishDelta)
 import Haskoki.Types
@@ -45,6 +55,8 @@ spec = testGroup "session lifecycle"
   , testCase "last session close logs out" caseLastCloseLogout
   , testCase "SO and read-only sessions exclude each other" caseSoRoConflict
   , testCase "context login needs user login and active op" caseContextGrant
+  , testCase "context login needs an eligible pending operation" caseContextEligible
+  , testCase "admission: only the user creates private objects" caseAdmitPrivateRoles
   , testCase "named-user login records the principal" caseNamedUser
   , testCase "PIN lockout is deterministic (default 3)" casePinLockout
   , testCase "PIN threshold comes from rules" casePinThreshold
@@ -207,16 +219,66 @@ caseContextGrant = do
   (code, _) <- runReject defaultRules m2 (loginReq b "ctx-ok")
   assertEqual "context needs user login" CKR_USER_NOT_LOGGED_IN code
   m3 <- loginAs defaultRules m2 a "user-ok"
-  -- Without an active operation there is nothing to re-authenticate:
-  -- state conflicts decide before PIN evaluation, so even the right
-  -- PIN refuses with OPERATION_NOT_INITIALIZED (the grant shape with
-  -- an active op is pinned at the C adapter instead).
+  -- Without an eligible operation there is nothing to
+  -- re-authenticate: state conflicts decide before PIN evaluation,
+  -- so even the right PIN refuses with OPERATION_NOT_INITIALIZED.
+  -- The eligible shape (an always-authenticate operation awaiting
+  -- its first data call) is pinned at the unit level below and end
+  -- to end through the object seams; a merely active plain
+  -- operation such as a digest no longer qualifies.
   (codeOp, m4) <- runReject defaultRules m3 (loginReq b "ctx-ok")
   assertEqual "context needs active op" CKR_OPERATION_NOT_INITIALIZED codeOp
   (codeBad, m5) <- runReject defaultRules m4 (loginReq b "ctx-bad")
   assertEqual "no-op refuses before PIN check" CKR_OPERATION_NOT_INITIALIZED codeBad
   assertEqual "no attempt consumed" 0 (taUserAttempts (authOf m5 slot0))
   assertEqual "B observes user login without grant" LoginUser (loginOf m5 b)
+
+-- | Context-grant eligibility at the login-attempt level: exactly
+-- one always-authenticate operation awaiting its first data call
+-- grants (the token login stays a user login); anything else —
+-- idle, plain, or ambiguously paired — refuses with
+-- OPERATION_NOT_INITIALIZED before PIN evaluation, consuming no
+-- attempt. The planner feeds this flag from the session's pending
+-- slots, so a plain digest or an idle session never qualifies.
+caseContextEligible :: IO ()
+caseContextEligible = do
+  let userAuth = tokenAuthNew { taLogin = Just AuthUser }
+  case loginAttempt defaultRules userAuth False True LoginAsContext Nothing PinCorrect of
+    LoginGranted auth' granted -> do
+      assertEqual "grant login" LoginContextUser granted
+      assertEqual "token login untouched" (Just AuthUser) (taLogin auth')
+      assertEqual "no attempt consumed" 0 (taUserAttempts auth')
+    LoginDenied deny _ ->
+      assertFailure ("eligible context grant denied: " ++ show deny)
+  case loginAttempt defaultRules userAuth False False LoginAsContext Nothing PinCorrect of
+    LoginDenied deny auth' -> do
+      assertEqual "ineligible shape" DenyNoActiveOp deny
+      assertEqual "ineligible code" CKR_OPERATION_NOT_INITIALIZED (denyCode deny)
+      assertEqual "no attempt consumed" 0 (taUserAttempts auth')
+    LoginGranted _ _ ->
+      assertFailure "ineligible context login granted"
+  case loginAttempt defaultRules userAuth False False LoginAsContext Nothing PinIncorrect of
+    LoginDenied DenyNoActiveOp _ -> pure ()
+    other -> assertFailure ("refuses before PIN check, got: " ++ show other)
+
+-- | Private-object creation admission per login: public objects
+-- admit everywhere, while private objects admit only under the
+-- normal user (plain or holding a context grant). The SO joins
+-- public in denial (OASIS PKCS#11 3.2 §5.7.1-5.7.2); the denial is
+-- CKR_USER_NOT_LOGGED_IN.
+caseAdmitPrivateRoles :: IO ()
+caseAdmitPrivateRoles = do
+  mapM_ checkPublic [LoginPublic, LoginUser, LoginSO, LoginContextUser]
+  assertEqual "user creates private"
+    (Right () :: Either AdmitDeny ()) (admitPrivate LoginUser True)
+  assertEqual "context grant creates private"
+    (Right () :: Either AdmitDeny ()) (admitPrivate LoginContextUser True)
+  assertEqual "public denied" (Left AdmitLoginRequired) (admitPrivate LoginPublic True)
+  assertEqual "SO denied" (Left AdmitLoginRequired) (admitPrivate LoginSO True)
+  assertEqual "denial code" CKR_USER_NOT_LOGGED_IN (admitCode AdmitLoginRequired)
+  where
+    checkPublic login = assertEqual ("public under " ++ show login)
+      (Right () :: Either AdmitDeny ()) (admitPrivate login False)
 
 caseNamedUser :: IO ()
 caseNamedUser = do

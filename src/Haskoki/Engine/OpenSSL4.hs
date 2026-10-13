@@ -26,10 +26,11 @@ implemented here):
 * R2 alloc\/register: the native handle is allocator-owned until
   registered. Alloc-to-register runs masked; an interruption after
   alloc frees the handle — never registered-or-leaked.
-* R3 take\/consume: the masked take transfers ownership
-  registry-to-consumer; consumer failure frees, successful consume
-  frees exactly once (the shim final owns the handle past the
-  take). No leak, no double free on any path.
+* R3 take\/consume: the masked take hands the handle to the
+  consuming helper, which transfers destruction to C exactly at
+  call entry; pre-entry failure frees, post-entry cleanup owns
+  only the output buffer (never the handle again). No leak, no
+  double free on any path.
 * R4 borrow: native-handle use borrows UNDER the registry lock
   ('withBorrowedRegistry'), so close\/release waits for permitted
   in-flight use; raw pointers never escape the lock. Snapshot
@@ -45,10 +46,18 @@ module Haskoki.Engine.OpenSSL4
   , withBorrowedRegistry
   , lookupRegistry
   , takeRegistry
+    -- * TEST-ONLY ownership gates
+  , TestGate
+  , openBackendGated
+  , digestOneShotGated
+  , digestXofGated
+  , digestInitGated
+  , digestFinalGated
+  , generateKeyECGated
   ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar, withMVar)
-import Control.Exception (mask_, onException)
+import Control.Exception (mask, mask_, onException)
 import Control.Monad (filterM)
 import Data.Bits (xor, (.|.))
 import qualified Data.ByteString as BS
@@ -74,6 +83,11 @@ import Haskoki.Types (EngineResourceId (..))
 -- | Backend tag for the OpenSSL 4 engine.
 data OpenSSL4 = OpenSSL4 deriving (Eq, Show)
 
+-- | TEST-ONLY ownership gate: a per-test C object routing
+-- fault injection + accounting through the gated operations below.
+-- Production operations pass no gate and never consult hook state.
+type TestGate = Raw.TestGate
+
 -- | Backend handle: private native env + registries. The cached
 -- 'osslCtx' pointer is valid only while 'osslEnv' is alive; every use
 -- runs inside 'withForeignPtr'.
@@ -88,50 +102,74 @@ data OSSL4Env = OSSL4Env
   , osslClosed :: !(MVar Bool)
   }
 
+-- | TEST-ONLY gated open (fault-or-delegate env construction,
+-- checkpoint-or-delegate provider loads).
+openBackendGated :: Ptr TestGate -> String -> IO (EngineResult (BackendEnv OpenSSL4))
+openBackendGated gate propq =
+  openBackendWith (Raw.envNewGated gate) (Raw.envLoadGated gate) propq
+
+-- | Open with a pluggable env allocator + provider loader.
+-- Ownership: the raw env is bracketed until adoption — provider
+-- loads + version run interruptibly (slow work stays killable)
+-- with any throw freeing the unadopted env; the ForeignPtr
+-- adoption itself is atomic under mask; post-adoption
+-- construction failure (a throw from the capability probes)
+-- finalizes the adopted env promptly instead of relying on GC.
+-- Shape note (both 'onException's): like base 'bracket', the
+-- handler is installed outside 'restore', so the restored work
+-- runs interruptibly while the cleanup runs masked.
+openBackendWith :: IO (Ptr Raw.OsslEnv) -> (Ptr Raw.OsslEnv -> String -> IO Int)
+  -> String -> IO (EngineResult (BackendEnv OpenSSL4))
+openBackendWith newEnv loadProv propq = mask $ \restore -> do
+  envp <- newEnv
+  if envp == nullPtr
+    then pure (EngineFail (BackendNative "open" (-1) "OSSL_LIB_CTX_new failed"))
+    else do
+      ePre <- restore (loadAndCheck envp) `onException` Raw.envFree envp
+      case ePre of
+        Left err -> Raw.envFree envp >> pure (EngineFail err)
+        Right (ctx, version) -> do
+          fenv <- newForeignPtr Raw.envFreeFinalizer envp
+          digests <- newMVar Map.empty
+          keys <- newMVar Map.empty
+          nextId <- newMVar 1
+          closed <- newMVar False
+          let env = OSSL4Env fenv ctx propq (ossl4Caps version propq) digests keys nextId closed
+          caps <- restore (probeCaps env) `onException` finalizeForeignPtr fenv
+          pure (EngineOk (OSSL4Backend env { osslCaps = caps }))
+  where
+    loadAndCheck :: Ptr Raw.OsslEnv -> IO (Either BackendError (Ptr Raw.OsslLibCtx, String))
+    loadAndCheck envp = do
+      loadRc <- loadProv envp "default"
+      if loadRc /= 0
+        then do
+          detail <- Raw.lastError
+          pure (Left (BackendNative "open" loadRc ("load default provider: " ++ detail)))
+        else do
+          -- The legacy provider carries single DES, RC2/RC4,
+          -- CAST-128, IDEA, SEED and Blowfish (fetch probes prove
+          -- them legacy-only in the pinned build). Missing legacy
+          -- fails the open: silently serving 25 fewer rows would
+          -- be worse than refusing to start.
+          legacyRc <- loadProv envp "legacy"
+          if legacyRc /= 0
+            then do
+              detail <- Raw.lastError
+              pure (Left (BackendNative "open" legacyRc ("load legacy provider: " ++ detail)))
+            else do
+              version <- Raw.libVersion
+              if not ("4.0.2" `isInfixOf` version)
+                then pure (Left (BackendNative "open" (-1) ("libcrypto pin mismatch, want 4.0.2, got " ++ version)))
+                else do
+                  ctx <- Raw.envCtx envp
+                  pure (Right (ctx, version))
+
 instance CryptoBackend OpenSSL4 where
   data BackendEnv OpenSSL4 = OSSL4Backend !OSSL4Env
 
   backendName _ = "openssl4"
 
-  openBackend propq = do
-    envp <- Raw.envNew
-    if envp == nullPtr
-      then pure (EngineFail (BackendNative "open" (-1) "OSSL_LIB_CTX_new failed"))
-      else do
-        loadRc <- Raw.envLoad envp "default"
-        if loadRc /= 0
-          then do
-            Raw.envFree envp
-            detail <- Raw.lastError
-            pure (EngineFail (BackendNative "open" loadRc ("load default provider: " ++ detail)))
-          else do
-            -- The legacy provider carries single DES, RC2/RC4,
-            -- CAST-128, IDEA, SEED and Blowfish (fetch probes prove
-            -- them legacy-only in the pinned build). Missing legacy
-            -- fails the open: silently serving 25 fewer rows would
-            -- be worse than refusing to start.
-            legacyRc <- Raw.envLoad envp "legacy"
-            if legacyRc /= 0
-              then do
-                Raw.envFree envp
-                detail <- Raw.lastError
-                pure (EngineFail (BackendNative "open" legacyRc ("load legacy provider: " ++ detail)))
-                  else do
-                version <- Raw.libVersion
-                if not ("4.0.2" `isInfixOf` version)
-                  then do
-                    Raw.envFree envp
-                    pure (EngineFail (BackendNative "open" (-1) ("libcrypto pin mismatch, want 4.0.2, got " ++ version)))
-                  else do
-                    ctx <- Raw.envCtx envp
-                    fenv <- newForeignPtr Raw.envFreeFinalizer envp
-                    digests <- newMVar Map.empty
-                    keys <- newMVar Map.empty
-                    nextId <- newMVar 1
-                    closed <- newMVar False
-                    let env = OSSL4Env fenv ctx propq (ossl4Caps version propq) digests keys nextId closed
-                    caps <- probeCaps env
-                    pure (EngineOk (OSSL4Backend env { osslCaps = caps }))
+  openBackend propq = openBackendWith Raw.envNew Raw.envLoad propq
 
   closeBackend (OSSL4Backend env) = modifyMVar (osslClosed env) $ \wasClosed ->
     if wasClosed
@@ -195,12 +233,13 @@ instance CryptoBackend OpenSSL4 where
     case mh of
       Nothing -> pure (EngineFail (BackendResourceGone "digestFinal" rid))
       Just h -> do
-        -- The shim final consumes the handle; it left the registry above,
-        -- so exactly one free happens on every path. Ownership rule R3: the
-        -- take-to-consume transfer is masked, and a throw during
-        -- consume frees the taken handle instead of leaking it.
-        r <- (withForeignPtr (osslEnv env) $ \_ -> Raw.digestFinal h)
-          `onException` (withForeignPtr (osslEnv env) $ \_ -> Raw.digestFree h)
+        -- Ownership rule R3: the masked take hands the handle
+        -- to the consuming helper, which transfers destruction to C
+        -- exactly at call entry; post-entry cleanup owns only the
+        -- output buffer. There is deliberately no 'onException'
+        -- free here: after C consumes the handle any Haskell free
+        -- would double-free.
+        r <- withForeignPtr (osslEnv env) $ \_ -> Raw.digestFinal h
         nativeOut "digestFinal" r
 
   digestXof be alg msg outLen = runGuarded be "digestXof" (xofSupported be alg) $ \env ->
@@ -914,6 +953,81 @@ instance CryptoBackend OpenSSL4 where
     -- strand a taken-but-unfreed handle.
     mh <- takeRegistry (osslDigests env) rid
     mapM_ (\h -> withForeignPtr (osslEnv env) $ \_ -> Raw.digestFree h) mh
+
+-- ---------------------------------------------------------------------------
+-- TEST-ONLY gated operations
+-- ---------------------------------------------------------------------------
+-- Each mirrors its production twin (same guard ordering, same
+-- transfer shape) with a test gate threaded through. Tests create
+-- one gate per case via their own FFI; production callers never
+-- use these.
+
+-- | TEST-ONLY gated one-shot digest.
+digestOneShotGated :: Ptr TestGate -> BackendEnv OpenSSL4 -> DigestAlg -> ByteString -> IO (EngineResult ByteString)
+digestOneShotGated gate be alg msg = runGuarded be "digest" (digestSupported be alg) $ \env ->
+  case digestFetchName alg of
+    Nothing -> pure (EngineFail (BackendUnsupported "digest"
+      ("XOF needs an explicit output length: " ++ show alg)))
+    Just mdname -> do
+      r <- withForeignPtr (osslEnv env) $ \_ ->
+        case digestSizedOut alg of
+          Just nn -> Raw.digestSizedGated gate (osslCtx env) mdname (osslPropQ env) msg nn
+          Nothing -> Raw.digestGated gate (osslCtx env) mdname (osslPropQ env) msg
+      nativeOut "digest" r
+
+-- | TEST-ONLY gated XOF digest.
+digestXofGated :: Ptr TestGate -> BackendEnv OpenSSL4 -> DigestAlg -> ByteString -> Int -> IO (EngineResult ByteString)
+digestXofGated gate be alg msg outLen = runGuarded be "digestXof" (xofSupported be alg) $ \env ->
+  case xofFetchName alg of
+    -- Unreachable post-guard (mirrors 'digestXof').
+    Nothing -> pure (EngineFail (BackendUnsupported "digestXof"
+      ("no fetch name: " ++ show alg)))
+    Just mdname -> do
+      r <- withForeignPtr (osslEnv env) $ \_ ->
+        Raw.digestXofGated gate (osslCtx env) mdname (osslPropQ env) msg outLen
+      nativeOut "digestXof" r
+
+-- | TEST-ONLY gated digest init (same masked alloc-to-register).
+digestInitGated :: Ptr TestGate -> BackendEnv OpenSSL4 -> DigestAlg -> IO (EngineResult EngineResourceId)
+digestInitGated gate be alg = runGuarded be "digestInit" (digestSupported be alg) $ \env ->
+  case digestFetchName alg of
+    Nothing -> pure (EngineFail (BackendUnsupported "digestInit"
+      ("XOF needs an explicit output length: " ++ show alg)))
+    Just mdname -> mask_ $ do
+      h <- withForeignPtr (osslEnv env) $ \_ ->
+        case digestSizedOut alg of
+          Just nn -> Raw.digestInitSizedGated gate (osslCtx env) mdname (osslPropQ env) nn
+          Nothing -> Raw.digestInitGated gate (osslCtx env) mdname (osslPropQ env)
+      if h == nullPtr
+        then do
+          detail <- Raw.lastError
+          pure (EngineFail (BackendNative "digestInit" (-1) detail))
+        else EngineOk <$> (allocResource env h `onException`
+          (withForeignPtr (osslEnv env) $ \_ -> Raw.digestFree h))
+
+-- | TEST-ONLY gated digest final (same consuming transfer: no
+-- post-entry free, exactly like 'digestFinal').
+digestFinalGated :: Ptr TestGate -> BackendEnv OpenSSL4 -> EngineResourceId -> IO (EngineResult ByteString)
+digestFinalGated gate (OSSL4Backend env) rid = mask_ $ do
+  mh <- takeRegistry (osslDigests env) rid
+  case mh of
+    Nothing -> pure (EngineFail (BackendResourceGone "digestFinal" rid))
+    Just h -> do
+      r <- withForeignPtr (osslEnv env) $ \_ -> Raw.digestFinalGated gate h
+      nativeOut "digestFinal" r
+
+-- | TEST-ONLY gated EC keygen: mirrors the 'GenEC' 'generateKey'
+-- branch (same guard) through the gated pair transfer.
+generateKeyECGated :: Ptr TestGate -> BackendEnv OpenSSL4 -> EcSpec -> IO (EngineResult (KeyMaterial, Maybe KeyMaterial))
+generateKeyECGated gate be ec =
+  runGuarded be "generateKey" (genSupported be spec) $ \env -> do
+    r <- withForeignPtr (osslEnv env) $ \_ ->
+      Raw.ecGenGated gate (osslCtx env) (ecGroupName (ecCurve ec)) (osslPropQ env)
+    case r of
+      Left code -> nativeFail "generateKey" code
+      Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
+  where
+    spec = GenEC ec
 
 -- ---------------------------------------------------------------------------
 -- Capabilities

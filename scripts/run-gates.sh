@@ -2,10 +2,11 @@
 # Gate runner: static gates + full cabal test + release evidence,
 # the ONE entry point whose pass means a passing release story.
 #
-# Gate count: 21 static gates —
+# Gate count: 22 static gates —
 # core-boundary, mechanisms, denominators, attributes, ossl4-surface,
 # version, ckr, seed-honesty, plus warnings-zero, docs,
-# fork-stance, test-wiring, test-evidence, coverage-boundary,
+# fork-stance, test-wiring, test-evidence, test-execution,
+# coverage-boundary,
 # coverage-fresh, release-pivots, loader-norm,
 # history-codes, actions-pinned, release-evidence-fixtures
 # and funnel-cwd (wired here) — then a forced `cabal build all`
@@ -41,7 +42,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 IMAGE="${HASKOKI_IMAGE:-haskoki-dev:ghc-9.10.3}"
 export HASKOKI_IMAGE="$IMAGE"
-echo "=== static gates (1-20, build-free) ==="
+echo "=== static gates (1-21, build-free) ==="
 python3 scripts/check-core-boundary.py
 python3 scripts/check-mechanisms.py
 python3 scripts/check-denominators.py
@@ -56,6 +57,9 @@ python3 scripts/check-fork-stance.py
 python3 scripts/check-test-wiring.py
 python3 scripts/check-test-evidence.py
 python3 scripts/check-test-evidence.py --self-test
+python3 scripts/check-test-wiring.py --self-test
+python3 scripts/check-test-execution.py
+python3 scripts/check-test-execution.py --self-test
 python3 scripts/check-coverage-boundary.py
 python3 scripts/publish-coverage.py --check
 python3 scripts/check-release-pivots.py
@@ -75,8 +79,14 @@ python3 scripts/test-release-evidence.py
 echo "=== forced build + cabal test all (pinned container) ==="
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal build all --enable-tests
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal test all
-echo "=== static gate 21 (needs the built tests) ==="
+echo "=== executed test-tree join (host, needs the built suites) ==="
+# The container run above exited 0, so every suite passed; the join
+# binds that success to the reviewed intended groups (suite binaries
+# come from the exact build above: dist-newstyle persists in the
+# mounted workspace).
+python3 scripts/check-test-execution.py --collect --build-root dist-newstyle --dir test-trees --result pass
+echo "=== static gate 22 (needs the built tests) ==="
 bash scripts/check-funnel-cwd.sh
 echo "=== release evidence (drivers + install) ==="
 bash scripts/release-evidence.sh
-echo "GATES: all passing (21 gates + cabal test + release evidence)"
+echo "GATES: all passing (22 gates + cabal test + executed join + release evidence)"

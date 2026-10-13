@@ -26,11 +26,16 @@ import Haskoki.Operation
   ( CryptoEffect (..)
   , CryptoResult (..)
   , InitArgs (..)
+  , OpAuth (..)
   , OpEnv (..)
+  , SessionOps
   , SlotKind (..)
   , StepOutcome (..)
   , emptySessionOps
   , initOperation
+  , insertOp
+  , mkActiveSign
+  , mkSlotCommon
   )
 import Haskoki.Outcome
   ( CryptoStep (..)
@@ -83,6 +88,8 @@ spec = testGroup "model transitions"
   , testCase "legacy resource finish carries its release" caseLegacyResourceRelease
   , testCase "silent step scoped to digest streaming" caseSilentStepScope
   , testCase "regionless foreign effect refuses" caseSilentStepRefuses
+  , testCase "stale context grant dies with its operation" caseStaleGrantInvalidated
+  , testCase "live pending operation keeps its grant" caseGrantPreserved
   , testCase "generated: delta split-application equivalence" caseDeltaSplit
   , testCase "generated: session/object namespaces stay separate" caseNamespaces
   , testCase "generated: unknown destroy reports exact fault" caseUnknownDestroy
@@ -322,6 +329,57 @@ silentReq fun = Request Pkcs11_3_2 fun (Just (SessionId 1)) Nothing
 silentOutcome :: StepOutcome
 silentOutcome = StepOutcome CKR_OK
   [FxDigestFeed (EngineResourceId 3) "part"] Nothing [] [] Nothing
+
+-- | A sign slot awaiting its context-specific authentication: the
+-- eligible shape a grant binds to.
+pendingSignOps :: SessionOps
+pendingSignOps = insertOp
+  (mkActiveSign
+    (mkSlotCommon (MechanismId 0x251) OpSign (Just (ObjectId 9)) mempty AuthPending))
+  emptySessionOps
+
+-- | The one-session model holding a context grant for the pending
+-- sign slot above.
+grantedSession :: SessionState
+grantedSession = case lookupSession oneSessionModel (SessionId 1) of
+  Just st -> st { ssLogin = LoginContextUser, ssOps = pendingSignOps }
+  Nothing -> error "grantedSession: session 1 missing"
+
+-- | A data call that terminates the granted operation without
+-- spending the grant (a pre-gate refusal) must not strand a
+-- spendable grant: packing drops the session back to a plain user
+-- login on both the rejection and the commit path.
+caseStaleGrantInvalidated :: IO ()
+caseStaleGrantInvalidated = do
+  let st = grantedSession
+      stStale = st { ssOps = emptySessionOps }
+      req = digestRequest (Just (SessionId 1))
+      want = StateDelta
+        [ DeltaSetSessionOps (SessionId 1) emptySessionOps
+        , DeltaSetSessionLogin (SessionId 1) LoginUser
+        ]
+      denied = StepOutcome CKR_OPERATION_NOT_INITIALIZED [] Nothing ["terminated"] [] Nothing
+  case packStep req st SlotSign emptySessionOps stStale denied of
+    Reject rej -> assertEqual "stale grant dies with its slot" want (rejDelta rej)
+    other -> fail ("expected Reject, got: " ++ show other)
+  -- The committed twin (a slot freed with CKR_OK, as a finalizer
+  -- does): the same login delta rides along.
+  let freed = StepOutcome CKR_OK [] Nothing ["freed"] [] Nothing
+  case packStep req st SlotSign emptySessionOps stStale freed of
+    Immediate pc -> assertEqual "stale grant dies on commit too" want (pcDelta pc)
+    other -> fail ("expected Immediate, got: " ++ show other)
+
+-- | A grant whose pending operation survives the step is untouched:
+-- a premature denial on another slot carries an empty delta.
+caseGrantPreserved :: IO ()
+caseGrantPreserved = do
+  let st = grantedSession
+      req = digestRequest (Just (SessionId 1))
+      denied = StepOutcome CKR_USER_NOT_LOGGED_IN [] Nothing ["premature"] [] Nothing
+  case packStep req st SlotDigest (ssOps st) st denied of
+    Reject rej -> assertEqual "live grant survives premature use"
+      (StateDelta []) (rejDelta rej)
+    other -> fail ("expected Reject, got: " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- Deterministic sequence generator (inline LCG; fixed seeds)

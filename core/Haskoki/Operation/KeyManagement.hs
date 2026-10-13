@@ -1105,7 +1105,7 @@ admitPending :: SessionState -> PendingWork -> Either KeyDeny ()
 admitPending st pw =
   case admitPrivate (ssLogin st) wantsPrivate of
     Left deny -> Left (KeyDeny (admitCode deny)
-      "public session cannot create private objects")
+      "only the normal user may create private objects")
     Right () -> case admitWritable (ssReadOnly st) wantsToken of
       Left deny -> Left (KeyDeny (admitCode deny)
         "read-only session cannot create token objects")

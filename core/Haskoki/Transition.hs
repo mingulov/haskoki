@@ -87,18 +87,20 @@ import Haskoki.Operation
   , SlotKind (..)
   , StepOutcome (..)
   , activeDigest
+  , cancelDropsPendingAuth
   , cancelOps
   , commonKey
   , commonOf
   , dualOf
   , emptySessionOps
+  , hasAuthPendingOp
+  , hasSingleAuthPendingOp
   , initMessageOperation
   , initOperation
   , kindOccupied
   , lookupSingle
   , msgFamilyKind
   , msgFamilyOp
-  , opsActive
   , removeSingle
   , retryStaged
   , setDual
@@ -170,7 +172,7 @@ import Haskoki.Session
   , LoginKind (..)
   , LoginOutcome (..)
   , SessionLogin (..)
-  , TokenAuth (taLogin)
+  , TokenAuth (taLogin, taUserLocked)
   , admitCode
   , admitObjects
   , admitSession
@@ -586,7 +588,10 @@ planCloseSession model st =
 -- effect — the MCT recovery path depends on cancel clearing
 -- CKR_OPERATION_ACTIVE). A cancelled live digest stream drains its
 -- backend context, exactly as session close drains it; cancelling
--- an idle selection commits an empty delta. Unknown sessions
+-- an idle selection commits an empty delta. Cancelling the granted
+-- operation invalidates the session's context grant (a grant for
+-- one operation never authorizes the next); cancelling anything
+-- else leaves it alone. Unknown sessions
 -- reject (via 'withSession'); malformed flags refuse.
 planSessionCancel :: Request -> SessionState -> PlanResult
 planSessionCancel req st = case decodeCancelInput (reqInput req) of
@@ -597,9 +602,13 @@ planSessionCancel req st = case decodeCancelInput (reqInput req) of
         digestCancelled = kindOccupied before SlotDigest
           && not (kindOccupied after SlotDigest)
         delta = [DeltaSetSessionOps (ssId st) after | after /= before]
+        loginDelta = [DeltaSetSessionLogin (ssId st) LoginUser
+          | ssLogin st == LoginContextUser
+          , cancelDropsPendingAuth flags before
+          ]
     in Immediate PreparedCommit
       { pcCode = CKR_OK
-      , pcDelta = StateDelta delta
+      , pcDelta = StateDelta (delta ++ loginDelta)
       , pcPersist = []
       , pcOutputs = []
       , pcReleases =
@@ -612,6 +621,10 @@ planSessionCancel req st = case decodeCancelInput (reqInput req) of
 -- movement (a rejection carrying a state delta); a token-wide grant
 -- updates every session on the slot so a login through A is visible
 -- through B, while a context grant touches only the calling session.
+-- A context grant needs exactly one eligible active marked
+-- operation on the calling session (binding by uniqueness), and a
+-- context-PIN lockout while the user is logged in performs the full
+-- logout transition rather than leaving ordinary login in place.
 planLogin :: Rules -> Model -> Request -> SessionState -> PlanResult
 planLogin rules model req st =
   case parseLoginArgs (reqInput req) of
@@ -628,8 +641,20 @@ planLogin rules model req st =
           }
         Just auth ->
           let roExists = any ssReadOnly (sessionsOnSlot model slot)
-          in case loginAttempt rules auth roExists (opsActive (ssOps st)) kind mName pin of
-            LoginDenied deny auth' -> Reject Rejection
+          in case loginAttempt rules auth roExists
+              (hasSingleAuthPendingOp (ssOps st)) kind mName pin of
+            LoginDenied deny auth'
+              | contextLockout kind auth' ->
+                  let (authOut, _) = logoutToken auth'
+                      (lops, lrels) = logoutTransition model slot authOut
+                  in Reject Rejection
+                    { rejCode = denyCode deny
+                    , rejOutputs = []
+                    , rejDelta = StateDelta lops
+                    , rejReleases = lrels
+                    , rejReasons = ["login denied: " ++ show deny]
+                    }
+              | otherwise -> Reject Rejection
               { rejCode = denyCode deny
               , rejOutputs = []
               , rejDelta = StateDelta (counterOps slot auth auth')
@@ -654,14 +679,25 @@ planLogin rules model req st =
     counterOps slot before after
       | before /= after = [DeltaSetTokenAuth slot after]
       | otherwise = []
+    -- A context-PIN lockout while the user is logged in performs
+    -- the full logout transition (OASIS PKCS#11 3.2 §4.10): the
+    -- locked role must not leave ordinary login in place.
+    contextLockout :: LoginKind -> TokenAuth -> Bool
+    contextLockout kind auth' =
+      kind == LoginAsContext
+        && taLogin auth' == Just AuthUser
+        && taUserLocked auth'
 
 -- | Plan Logout: clear the token login, return every session on
 -- the slot to public, stale-mark every handle bound to a live
--- private object on the slot, and retire every cached operation
--- bound to a private key on the slot ('retirePrivateKeyOps').
--- Invalidated handles never resurrect: a later login mints fresh
--- bindings through discovery. Logging out a public token rejects
--- with 'CKR_USER_NOT_LOGGED_IN' and no mutation.
+-- private object on the slot, destroy every private session object
+-- on the slot (OASIS PKCS#11 3.2 §5.6.10 — token objects and
+-- public session objects survive), and retire every cached
+-- operation bound to a private key on the slot
+-- ('retirePrivateKeyOps'). Invalidated handles never resurrect: a
+-- later login mints fresh bindings through discovery, and only for
+-- objects that survived. Logging out a public token rejects with
+-- 'CKR_USER_NOT_LOGGED_IN' and no mutation.
 planLogout :: Model -> SessionState -> PlanResult
 planLogout model st =
   let slot = ssSlot st
@@ -682,27 +718,44 @@ planLogout model st =
         , rejReasons = ["token not logged in"]
         }
       (auth', True) ->
-        let sessions = sessionsOnSlot model slot
-            retired s = retirePrivateKeyOps model (ssOps s)
-            ops = DeltaSetTokenAuth slot auth'
-              : map ((`DeltaSetSessionLogin` LoginPublic) . ssId) sessions
-              ++ map DeltaBumpHandle (privateHandlesOnSlot model slot)
-              ++ [ DeltaSetSessionOps (ssId s) (retired s)
-                 | s <- sessions, retired s /= ssOps s
-                 ]
+        let (ops, releases) = logoutTransition model slot auth'
         in Immediate PreparedCommit
           { pcCode = CKR_OK
           , pcDelta = StateDelta ops
           , pcPersist = []
           , pcOutputs = []
-          , pcReleases =
-              [ r
-              | s <- sessions
-              , digestRetired (ssOps s) (retired s)
-              , r <- streamReleases (ssOps s)
-              ]
+          , pcReleases = releases
           , pcReasons = ["logout"]
           }
+
+-- | The full logout transition for a slot from an already-cleared
+-- token auth: public sessions, staled private handles, destroyed
+-- private session objects, and retired private-key operations
+-- (plus the digest-stream releases retirement strands). Shared by
+-- 'planLogout' and context-PIN lockout ('planLogin').
+logoutTransition :: Model -> SlotId -> TokenAuth -> ([DeltaOp], [ResourceRelease])
+logoutTransition model slot auth' =
+  let sessions = sessionsOnSlot model slot
+      retired s = retirePrivateKeyOps model (ssOps s)
+      ops = DeltaSetTokenAuth slot auth'
+        : map ((`DeltaSetSessionLogin` LoginPublic) . ssId) sessions
+        ++ map DeltaBumpHandle (privateHandlesOnSlot model slot)
+        ++ [ DeltaSetSessionOps (ssId s) (retired s)
+           | s <- sessions, retired s /= ssOps s
+           ]
+        ++ [ DeltaDestroyObject oid
+           | (oid, ost) <- Map.toAscList (mObjects model)
+           , osSlot ost == slot
+           , objectPrivate ost
+           , isJust (osOwner ost)
+           ]
+      releases =
+        [ r
+        | s <- sessions
+        , digestRetired (ssOps s) (retired s)
+        , r <- streamReleases (ssOps s)
+        ]
+  in (ops, releases)
 
 -- | Handles bound to live private objects on a slot, ascending.
 privateHandlesOnSlot :: Model -> SlotId -> [ExternalHandle]
@@ -922,7 +975,7 @@ packStep req st kind ops' st' outcome
                 , resDeps = [DepSession (ssId st) (ssRevision st) (ssGeneration st)]
                 , resResource = Nothing
                 , resStep = Just (CryptoStep (reqFunction req) kind ""
-                    (IntentBuffer 0) ops' st')
+                    (IntentBuffer 0) ops' st'')
                 })
               (EffectCrypto fx)
           | otherwise -> Reject Rejection
@@ -937,7 +990,7 @@ packStep req st kind ops' st' outcome
             { resOperation = opName (reqFunction req)
             , resDeps = [DepSession (ssId st) (ssRevision st) (ssGeneration st)]
             , resResource = Nothing
-            , resStep = Just (CryptoStep (reqFunction req) kind name intent ops' st')
+            , resStep = Just (CryptoStep (reqFunction req) kind name intent ops' st'')
             })
           (EffectCrypto fx)
       _ -> Reject Rejection
@@ -950,7 +1003,26 @@ packStep req st kind ops' st' outcome
   where
     opsDelta = [DeltaSetSessionOps (ssId st) ops' | ops' /= ssOps st]
     loginDelta =
-      [DeltaSetSessionLogin (ssId st) (ssLogin st') | ssLogin st' /= ssLogin st]
+      [DeltaSetSessionLogin (ssId st) (ssLogin st'') | ssLogin st'' /= ssLogin st]
+    -- A context grant whose operation is gone: the step terminated
+    -- (or freed) the granted slot without spending the grant, so the
+    -- session drops back to a plain user login instead of stranding
+    -- a spendable grant. Steps that keep a pending slot — including
+    -- premature denials — leave the grant alone.
+    st'' = invalidateStaleGrant ops' st'
+
+-- | Drop a context grant with no pending operation left to spend it
+-- on: 'LoginContextUser' requires an always-authenticate slot still
+-- awaiting its first data call ('hasAuthPendingOp'). The gate spends
+-- grants at first data use; this covers the complementary end — an
+-- operation that terminates, is cancelled elsewhere, or is
+-- otherwise freed before its first use — so a grant for one
+-- operation never authorizes the next.
+invalidateStaleGrant :: SessionOps -> SessionState -> SessionState
+invalidateStaleGrant ops st
+  | ssLogin st == LoginContextUser
+  , not (hasAuthPendingOp ops) = st { ssLogin = LoginUser }
+  | otherwise = st
 
 -- | The init cipher shape for an operation: cipher ops resolve their
 -- mechanism shape, anything else takes none.

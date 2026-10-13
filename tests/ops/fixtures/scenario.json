@@ -3,19 +3,7 @@
   "status": "design-example-not-executed",
   "name": "pending-sign-and-token-removal",
   "notice": "The owned-instance runner interprets these actions; a separate CLI does not control another loaded process.",
-  "rules": [
-    {
-      "match": {
-        "function": "C_Sign",
-        "async_session": true,
-        "call_index": 1
-      },
-      "effect": {
-        "kind": "pending",
-        "completion_polls": 2
-      }
-    }
-  ],
+  "rules": [],
   "steps": [
     {
       "action": "initialize"

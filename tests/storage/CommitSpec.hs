@@ -17,19 +17,43 @@ an authoritative reload resolves it.
   reload clears the quarantine and reconciles publication.
 * Post-commit failure: durable truth is 'Committed' but the token
   quarantines until reload resolves it.
-* The commit-to-publication path is masked against ordinary async
-  exceptions: a kill delivered mid-commit neither interrupts the
-  durable commit nor strands the store unusable; it lands after.
+* The commit region runs masked: both commit probes observe
+  'MaskedInterruptible'.
+* Interruption is honestly scoped: a kill delivered after the
+  commit result is determined is observed as 'ThreadKilled' via
+  outcome capture while the captured 'Committed' result stays
+  durable whole, and ordinary completion fails the cancellation
+  assertion. Forcing an exception pending inside every native SQL
+  window is explicitly out of scope.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module CommitSpec (spec) where
 
-import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, throwTo)
-import Control.Exception (AsyncException (..))
-import Control.Exception (bracket, finally)
+import Control.Concurrent
+  ( MVar
+  , ThreadId
+  , forkFinally
+  , killThread
+  , newEmptyMVar
+  , putMVar
+  , readMVar
+  , takeMVar
+  , throwTo
+  )
+import Control.Exception
+  ( AsyncException (..)
+  , MaskingState (..)
+  , SomeException
+  , bracket
+  , finally
+  , fromException
+  , getMaskingState
+  )
+import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import System.Directory (removeDirectoryRecursive)
 import System.FilePath ((</>))
+import System.IO (hPutStrLn, stderr)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -117,8 +141,12 @@ protocolCases withIdentity =
       withIdentity testAmbiguousUnknown
   , testCase "post-commit failure quarantines a committed token" $
       withIdentity testPostCommitQuarantine
-  , testCase "commit is masked against async kill" $
-      withIdentity testAsyncMasked
+  , testCase "commit regions run masked" $
+      withIdentity testCommitMasking
+  , testCase "kill after commit result is observed, commit survives" $
+      withIdentity testCommitInterruption
+  , testCase "ordinary completion fails the cancellation assertion" $
+      withIdentity testCompletionControl
   , testCase "injected full disk is a clean error" $
       withIdentity testFullDisk
   , testCase "reset respects quarantine" $
@@ -308,61 +336,264 @@ testPostCommitQuarantine openWith = do
   assertEqual "commit works after reload" Committed again
   storeClose sFaulty
 
--- | A kill delivered inside the masked commit region neither
--- interrupts the durable commit nor strands the store: the commit
--- completes, the kill lands after, and the store stays usable.
---
--- Death is observed through a deterministic 'finally'
--- death-signal, never the old 'waitDeath' busy-spin (whose
--- microsecond-timeout of a pure action waited nothing). Every
--- assertion keeps its original intent.
-testAsyncMasked :: OpenWith -> IO ()
-testAsyncMasked openWith = do
-  eClean <- openWith defaultLimits noFaults
-  sClean <- either (assertFailure . show) pure eClean
-  (tok, _) <- seedStore sClean
-  storeClose sClean
-  entered <- newEmptyMVar
-  resultVar <- newEmptyMVar
-  died <- newEmptyMVar
-  inj0 <- scriptedFaults []
-  let inj = withResultHook (putMVar resultVar) (withMaskHook (putMVar entered ()) inj0)
-  eVictim <- openWith defaultLimits inj
-  victim <- either (assertFailure . show) pure eVictim
-  (mBefore, sdelta, _, oid) <- planObject victim (trId tok)
-  _ <- pure mBefore
-  tid <- forkIO (((storeCommit victim sdelta >> pure ()) `finally` putMVar died ()))
-  mEntered <- timeout 5000000 (takeMVar entered)
-  case mEntered of
-    Nothing -> assertFailure "committer never entered the masked region"
-    Just () -> pure ()
-  throwTo tid ThreadKilled
-  mResult <- timeout 5000000 (takeMVar resultVar)
-  result <- maybe (assertFailure "kill interrupted the commit") pure mResult
-  assertEqual "commit survived the kill" Committed result
-  mDied <- timeout 5000000 (takeMVar died)
-  case mDied of
-    Nothing -> assertFailure "kill never landed after the commit (5s guard)"
-    Just () -> pure ()
-  -- The durable delta is whole and the store stays usable.
-  eLoaded <- storeLoadTokens victim
-  loaded <- either (assertFailure . show) pure eLoaded
-  assertBool "committed object durable" (objectPresent oid loaded)
-  stats <- storeStats victim
-  assertEqual "one commit counted" 1 (ssCommits stats)
+-- | Bounded rendezvous for every cross-thread wait in the
+-- interruption cases: 5 seconds, matching the pre-split guards.
+rendezvousTimeout :: Int
+rendezvousTimeout = 5000000
+
+-- | Whether a worker outcome is an observed async kill -- and not
+-- ordinary completion or some other death.
+isObservedKill :: Either SomeException () -> Bool
+isObservedKill (Left e) = case fromException e of
+  Just ThreadKilled -> True
+  _ -> False
+isObservedKill (Right ()) = False
+
+-- | Run a worker with 'forkFinally' outcome capture. The fork happens
+-- BEFORE any masking: forking inside 'bracket' acquisition would run
+-- the worker masked (acquisition is masked and 'forkFinally' restores
+-- that masked state into the worker), but the post-commit rendezvous
+-- must run unmasked, in the caller's state. Every exit path -- pass
+-- or failure -- cancels a still-live worker and joins the outcome
+-- with bounded waits, so a stuck worker cannot leak past the case.
+-- The body observes the outcome with 'readMVar' (leaving it for the
+-- bounded join to drain instantly); the join only blocks when the
+-- worker never reported. Release is best-effort hygiene with a
+-- last-resort stderr breadcrumb: every body wait already fails with
+-- its own diagnostic before release can time out, so release never
+-- raises (it must not mask the body's report). Join failure is
+-- defense-in-depth only: the worker path holds no uninterruptible
+-- operations ('mask_'-only commit regions plus interruptible waits;
+-- the backend's single 'unsafe' FFI call is a non-blocking open-path
+-- flock), so cancellation is always deliverable and the join always
+-- succeeds; blocking teardown on confirmed completion instead would
+-- turn a bounded failure into a potential suite hang.
+withWorker
+  :: IO ()
+  -> ((ThreadId, MVar (Either SomeException ())) -> IO a)
+  -> IO a
+withWorker action use = do
+  outcomeVar <- newEmptyMVar
+  tid <- forkFinally action (putMVar outcomeVar)
+  use (tid, outcomeVar) `finally` release tid outcomeVar
+  where
+    release tid outcomeVar = do
+      _ <- timeout rendezvousTimeout (killThread tid)
+      mJoined <- timeout rendezvousTimeout (takeMVar outcomeVar)
+      case mJoined of
+        Just _ -> pure ()
+        Nothing -> hPutStrLn stderr
+          "withWorker: worker join timed out after kill (5s guard)"
+
+-- | The store still serves after the interruption: either a fresh
+-- same-identity handle opens cleanly, or the victim itself commits
+-- again (its one-shot hooks were drained and only refill inert
+-- cells). Leaves closing to the caller.
+assertStoreUsable :: OpenWith -> Store -> TokenRecord -> Model -> IO ()
+assertStoreUsable openWith victim tok mBefore = do
   eClean2 <- openWith defaultLimits noFaults
   case eClean2 of
-    Right s2 -> storeClose s2 >> storeClose victim
+    Right s2 -> storeClose s2
     Left _ -> do
       -- Same-identity open still owned by victim: use victim.
       (mBefore2, sdelta2, _, _) <- planObjectOn (trId tok) mBefore
       _ <- pure mBefore2
-      -- Victim's injector hooks are spent one-shot signals; a plain
-      -- commit through it must still work (hooks are inert now).
-      r2 <- timeout 5000000 (storeCommit victim sdelta2)
+      r2 <- timeout rendezvousTimeout (storeCommit victim sdelta2)
       case r2 of
-        Just Committed -> storeClose victim
+        Just Committed -> pure ()
         other -> assertFailure ("store unusable after kill: " ++ show other)
+
+-- | The expected durable record for a planned creation: re-derive
+-- the scratch-model object state from the plan outputs and encode it
+-- exactly as the commit under test does.
+expectedRecord :: TokenId -> Model -> StateDelta -> ObjectId -> IO ObjectRecord
+expectedRecord tok mBefore mdelta oid = do
+  mScratch <- expectRight "scratch publish" (publishDelta mBefore mdelta)
+  ost <- expectJust "fresh object" (lookupObject mScratch oid)
+  pure (objectToRecord tok ost)
+
+-- | The durable delta is whole: the seed token is byte-exact, every
+-- seed child is preserved byte-exact, and the committed object lands
+-- as the complete expected record. Children compare ordered by id so
+-- backend row order cannot matter.
+assertWholeDurable
+  :: TokenRecord -> [ObjectRecord] -> ObjectRecord
+  -> [(TokenRecord, [ObjectRecord])] -> IO ()
+assertWholeDurable tok seedRecs expectedRec loaded = case loaded of
+  [(tokAfter, objsAfter)] -> do
+    assertEqual "seed token whole" tok tokAfter
+    assertEqual "children whole"
+      (sortOn orId (seedRecs ++ [expectedRec]))
+      (sortOn orId objsAfter)
+  _ -> assertFailure ("expected one token, got: " ++ show (length loaded))
+
+-- | Both commit probes run inside the masked region: 'fiOnMasked'
+-- fires on entry and 'fiOnResult' fires with the determined result
+-- while still masked. Each hook records 'getMaskingState' without
+-- blocking (a bare state read plus a 'putMVar' into a fresh empty
+-- cell); the case then requires the intended 'MaskedInterruptible'
+-- state at both probes, the 'Committed' result, and durable whole
+-- state. A scratch revision with the production mask removed must
+-- fail this case (remote mutant control, never merged).
+testCommitMasking :: OpenWith -> IO ()
+testCommitMasking openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, seedRecs) <- seedStore sClean
+  storeClose sClean
+  maskedVar <- newEmptyMVar
+  resultVar <- newEmptyMVar
+  inj0 <- scriptedFaults []
+  let inj = withResultHook recordResult (withMaskHook recordMasked inj0)
+      recordMasked = getMaskingState >>= putMVar maskedVar
+      recordResult r = do
+        st <- getMaskingState
+        putMVar resultVar (r, st)
+  eStore <- openWith defaultLimits inj
+  store <- either (assertFailure . show) pure eStore
+  let runCase = do
+        (mBefore, sdelta, mdelta, oid) <- planObject store (trId tok)
+        expectedRec <- expectedRecord (trId tok) mBefore mdelta oid
+        result <- storeCommit store sdelta
+        assertEqual "commit result" Committed result
+        mMasked <- timeout rendezvousTimeout (takeMVar maskedVar)
+        maskedState <- maybe
+          (assertFailure "masked-entry hook never fired (5s guard)") pure mMasked
+        assertEqual "masked-entry state" MaskedInterruptible maskedState
+        mHooked <- timeout rendezvousTimeout (takeMVar resultVar)
+        (hookedResult, resultState) <- maybe
+          (assertFailure "result hook never fired (5s guard)") pure mHooked
+        assertEqual "hooked result agrees" Committed hookedResult
+        assertEqual "result-hook state" MaskedInterruptible resultState
+        eLoaded <- storeLoadTokens store
+        loaded <- either (assertFailure . show) pure eLoaded
+        assertWholeDurable tok seedRecs expectedRec loaded
+        stats <- storeStats store
+        assertEqual "one commit counted" 1 (ssCommits stats)
+  runCase `finally` storeClose store
+
+-- | A kill delivered after the commit result is determined is
+-- observed as 'ThreadKilled' while the captured 'Committed' result
+-- stays durable whole.
+--
+-- Schedule: the worker commits, then reports its masking state and
+-- waits at a post-commit rendezvous OUTSIDE the masked region (a
+-- 'takeMVar' inside 'mask_' is still interruptible and would change
+-- what is being tested). The controller waits for the result hook --
+-- which fires while still masked, so the result is determined before
+-- injection -- then takes the worker's rendezvous report, requiring
+-- 'Unmasked'. That handshake proves the worker is alive and blocked
+-- at the rendezvous when the kill lands; the controller then requires
+-- the actual 'forkFinally' outcome to be 'ThreadKilled'. The kill is
+-- honestly described as injection after the result: this case does
+-- not claim to have forced an exception pending inside every native
+-- SQL window.
+testCommitInterruption :: OpenWith -> IO ()
+testCommitInterruption openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, seedRecs) <- seedStore sClean
+  storeClose sClean
+  resultVar <- newEmptyMVar
+  releaseVar <- newEmptyMVar
+  workerMaskVar <- newEmptyMVar
+  inj0 <- scriptedFaults []
+  let inj = withResultHook (putMVar resultVar) inj0
+  eVictim <- openWith defaultLimits inj
+  victim <- either (assertFailure . show) pure eVictim
+  let runCase = do
+        (mBefore, sdelta, mdelta, oid) <- planObject victim (trId tok)
+        expectedRec <- expectedRecord (trId tok) mBefore mdelta oid
+        let workerBody = do
+              _ <- storeCommit victim sdelta
+              st <- getMaskingState
+              putMVar workerMaskVar st
+              takeMVar releaseVar
+            runWorker tid outcomeVar = do
+              mResult <- timeout rendezvousTimeout (takeMVar resultVar)
+              result <- maybe (assertFailure "commit result never reported (5s guard)") pure mResult
+              assertEqual "commit survived to its result" Committed result
+              mWorkerMask <- timeout rendezvousTimeout (takeMVar workerMaskVar)
+              workerMask <- maybe
+                (assertFailure "worker never reached the rendezvous (5s guard)") pure mWorkerMask
+              assertEqual "rendezvous runs unmasked" Unmasked workerMask
+              mThrown <- timeout rendezvousTimeout (throwTo tid ThreadKilled)
+              case mThrown of
+                Nothing -> assertFailure "kill delivery stuck (5s guard)"
+                Just () -> pure ()
+              mOutcome <- timeout rendezvousTimeout (readMVar outcomeVar)
+              outcome <- maybe (assertFailure "worker outcome never reported (5s guard)") pure mOutcome
+              assertBool ("expected observed ThreadKilled, got: " ++ show outcome)
+                (isObservedKill outcome)
+              eLoaded <- storeLoadTokens victim
+              loaded <- either (assertFailure . show) pure eLoaded
+              assertWholeDurable tok seedRecs expectedRec loaded
+              stats <- storeStats victim
+              assertEqual "one commit counted" 1 (ssCommits stats)
+              assertStoreUsable openWith victim tok mBefore
+        withWorker workerBody $ \(tid, outcomeVar) -> runWorker tid outcomeVar
+  runCase `finally` storeClose victim
+
+-- | Worker-completed-before-injection control: the same schedule as
+-- 'testCommitInterruption', except the controller releases the
+-- worker instead of killing it. Ordinary completion MUST fail the
+-- cancellation assertion, and a late kill to the already completed
+-- worker changes nothing -- the controller cannot throw to an
+-- already dead worker and still pass.
+testCompletionControl :: OpenWith -> IO ()
+testCompletionControl openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, seedRecs) <- seedStore sClean
+  storeClose sClean
+  resultVar <- newEmptyMVar
+  releaseVar <- newEmptyMVar
+  workerMaskVar <- newEmptyMVar
+  inj0 <- scriptedFaults []
+  let inj = withResultHook (putMVar resultVar) inj0
+  eVictim <- openWith defaultLimits inj
+  victim <- either (assertFailure . show) pure eVictim
+  let runCase = do
+        (mBefore, sdelta, mdelta, oid) <- planObject victim (trId tok)
+        expectedRec <- expectedRecord (trId tok) mBefore mdelta oid
+        let workerBody = do
+              _ <- storeCommit victim sdelta
+              st <- getMaskingState
+              putMVar workerMaskVar st
+              takeMVar releaseVar
+            runWorker tid outcomeVar = do
+              mResult <- timeout rendezvousTimeout (takeMVar resultVar)
+              result <- maybe (assertFailure "commit result never reported (5s guard)") pure mResult
+              assertEqual "commit result captured" Committed result
+              mWorkerMask <- timeout rendezvousTimeout (takeMVar workerMaskVar)
+              workerMask <- maybe
+                (assertFailure "worker never reached the rendezvous (5s guard)") pure mWorkerMask
+              assertEqual "rendezvous runs unmasked" Unmasked workerMask
+              -- Ordinary completion: release the worker, do not kill it.
+              putMVar releaseVar ()
+              mOutcome <- timeout rendezvousTimeout (readMVar outcomeVar)
+              outcome <- maybe (assertFailure "worker outcome never reported (5s guard)") pure mOutcome
+              case outcome of
+                Right () -> pure ()
+                Left e -> assertFailure ("control worker unexpectedly died: " ++ show e)
+              assertBool "ordinary completion must fail the cancellation assertion"
+                (not (isObservedKill outcome))
+              -- Late injection after completion changes nothing.
+              mThrown <- timeout rendezvousTimeout (throwTo tid ThreadKilled)
+              case mThrown of
+                Nothing -> assertFailure "late kill delivery stuck (5s guard)"
+                Just () -> pure ()
+              mOutcome2 <- timeout rendezvousTimeout (readMVar outcomeVar)
+              outcome2 <- maybe (assertFailure "worker outcome lost (5s guard)") pure mOutcome2
+              assertBool "late kill must not fabricate cancellation"
+                (not (isObservedKill outcome2))
+              eLoaded <- storeLoadTokens victim
+              loaded <- either (assertFailure . show) pure eLoaded
+              assertWholeDurable tok seedRecs expectedRec loaded
+              stats <- storeStats victim
+              assertEqual "one commit counted" 1 (ssCommits stats)
+        withWorker workerBody $ \(tid, outcomeVar) -> runWorker tid outcomeVar
+  runCase `finally` storeClose victim
 
 -- | Injected full disk: a clean 'NotCommitted' with no durable
 -- or model effect, and the store stays healthy afterwards. (A

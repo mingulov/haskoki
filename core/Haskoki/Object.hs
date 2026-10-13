@@ -414,7 +414,7 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
             Right stored
               | Left deny <- admitPrivate (ssLogin st) (mergedIsPrivate stored) ->
                   templateReject (admitCode deny)
-                    "public session cannot create private objects"
+                    "only the normal user may create private objects"
               | Left deny <- admitWritable (ssReadOnly st) (mergedIsToken stored) ->
                   templateReject (admitCode deny)
                     "read-only session cannot create token objects"
@@ -967,7 +967,7 @@ planCopyObject model st h tmpl = case resolveHandle model h of
             | Left deny <- admitPrivate (ssLogin st)
                 (mergedIsPrivate (Map.union over (osAttrs src))) ->
                 templateReject (admitCode deny)
-                  "public session cannot copy to private objects"
+                  "only the normal user may copy to private objects"
             | Left deny <- admitWritable (ssReadOnly st)
                 (mergedIsToken (Map.union over (osAttrs src))) ->
                 templateReject (admitCode deny)
@@ -1023,7 +1023,7 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
         invalidHandle "object not visible to session"
     | Left deny <- admitPrivate (ssLogin st) (tmplWantsPrivate tmpl) ->
         templateReject (admitCode deny)
-          "public session cannot mark objects private"
+          "only the normal user may mark objects private"
     | Left deny <- admitWritable (ssReadOnly st)
         (objectToken ost || tmplWantsToken tmpl) ->
         templateReject (admitCode deny)

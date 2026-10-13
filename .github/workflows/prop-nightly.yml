@@ -89,10 +89,25 @@ jobs:
           SEED=$RANDOM
           echo "fresh-seed nightly: PROP_SEED=$SEED PROP_CASES=1000"
           PROP_SEED=$SEED PROP_CASES=1000 cabal test haskoki-prop-tests 2>&1 | tee prop-nightly.log
+      - name: Join executed prop tree
+        # Container steps default to sh/dash, where pipefail does not
+        # exist: select bash (ci.yml precedent).
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Reached only when the fresh-seed run exited 0: the join
+          # binds that success to the reviewed prop groups. Only the
+          # prop suite ran here, so only it joins (its binary comes
+          # from the exact build above).
+          python3 scripts/check-test-execution.py --collect \
+            --build-root dist-newstyle --dir test-trees --result pass \
+            --suite haskoki-prop-tests
       - name: Upload nightly log
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: prop-nightly-log
-          path: prop-nightly.log
+          path: |
+            prop-nightly.log
+            test-trees/
           if-no-files-found: warn

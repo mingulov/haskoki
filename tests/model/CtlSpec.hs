@@ -6,11 +6,17 @@ subcommands live in the storage suite (needs file/SQLite deps).
 -}
 module CtlSpec (spec) where
 
+import qualified Data.ByteString.Char8 as BC8
 import Data.List (isInfixOf)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Ctl (CtlExit (..), ctlHelp, runCtl)
+import Haskoki.Runtime.Control
+  ( Scenario (..)
+  , parseJson
+  , validateScenario
+  )
 
 spec :: TestTree
 spec = testGroup "Haskoki-ctl"
@@ -19,6 +25,7 @@ spec = testGroup "Haskoki-ctl"
   , testCase "capabilities reports catalog + gaps" caseCapabilities
   , testCase "capabilities scopes the native engine binding" caseNativeScope
   , testCase "scenario run executes deterministically" caseScenario
+  , testCase "scenario fixture carries no ignored rules" caseScenarioRulesEmpty
   , testCase "help never claims live control" caseHelpHonest
   , testCase "openssl catalog serves CKM_SHA256" caseSha256Served
   ]
@@ -117,6 +124,18 @@ caseScenario = do
   assertEqual "deterministic rerun" (ceOut r1) (ceOut r2)
   assertBool "steps executed" ("steps-executed" `isInfixOf` ceOut r1)
   assertBool "pending honored for async" ("CKR_PENDING" `isInfixOf` ceOut r1)
+
+-- | The shared scenario fixture satisfies the strict loader: it
+-- validates, and it carries no rules (nonempty rules reject at load
+-- because the runner never executes them).
+caseScenarioRulesEmpty :: IO ()
+caseScenarioRulesEmpty = do
+  body <- BC8.readFile (fixture "scenario.json")
+  case parseJson body >>= validateScenario of
+    Left err -> assertFailure ("scenario.json must validate: " ++ err)
+    Right sc -> do
+      assertEqual "no rules carried" [] (scRules sc)
+      assertBool "steps present" (not (null (scSteps sc)))
 
 -- | Mirrors the install smoke's membership leg in-process.
 -- The smoke asserts CKM_SHA256 over the C-served catalog; this case

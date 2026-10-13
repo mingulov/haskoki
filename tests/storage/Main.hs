@@ -1,3 +1,4 @@
+-- REGISTRATION: haskoki-storage-tests
 module Main (main) where
 
 import System.Environment (getArgs)

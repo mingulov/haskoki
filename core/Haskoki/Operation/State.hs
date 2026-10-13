@@ -40,6 +40,9 @@ module Haskoki.Operation.State
   , activeSlots
   , hasDual
   , opsActive
+  , hasAuthPendingOp
+  , hasSingleAuthPendingOp
+  , cancelDropsPendingAuth
   , dirKind
   , kindOccupied
   , slotAuth
@@ -388,6 +391,35 @@ hasDual = isJust . soDual
 opsActive :: SessionOps -> Bool
 opsActive = not . null . activeSlots
 
+-- | The number of slots still awaiting their context-specific
+-- authentication: pending singles plus the dual's cipher side when
+-- pending (the digest side is unkeyed and never gated).
+authPendingCount :: SessionOps -> Int
+authPendingCount ops = singleCount + dualCount
+  where
+    singleCount = length
+      [ () | active <- Map.elems (soSingles ops)
+           , scAuth (commonOf active) == AuthPending
+      ]
+    dualCount = case soDual ops of
+      Just du | scAuth (duCipher du) == AuthPending -> 1
+      _ -> 0
+
+-- | Whether any active operation still awaits its context-specific
+-- authentication. A held grant requires one: with none left the
+-- grant is stale and drops.
+hasAuthPendingOp :: SessionOps -> Bool
+hasAuthPendingOp = (> 0) . authPendingCount
+
+-- | Whether exactly one active operation still awaits its
+-- context-specific authentication. Context login requires one:
+-- the grant binds by uniqueness to the single eligible active
+-- marked key/operation, and the first data use spends it. Two
+-- simultaneously pending operations take no grant — binding would
+-- be ambiguous — until all but one end.
+hasSingleAuthPendingOp :: SessionOps -> Bool
+hasSingleAuthPendingOp = (== 1) . authPendingCount
+
 -- | Whether a slot is occupied by a single or by the dual.
 kindOccupied :: SessionOps -> SlotKind -> Bool
 kindOccupied ops kind =
@@ -518,6 +550,26 @@ cancelOps flags ops =
   -- A cancelled peer ends the combined flows pointing at it, like
   -- any other removal ('removeSingle' shares 'clearLinksTo').
   in foldr clearLinksTo (SessionOps singles' dual') kinds
+
+-- | Whether cancelling a mask drops an always-authenticate slot
+-- that still awaited its first data call. Selected pending
+-- singles count, as does a pending dual cipher side when the mask
+-- covers either dual side (a dual is one operation:
+-- half-cancelling it is unrepresentable, as in 'cancelOps').
+-- Cancelling any such slot invalidates the session's context
+-- grant, so a grant for one operation never authorizes the next.
+cancelDropsPendingAuth :: Word32 -> SessionOps -> Bool
+cancelDropsPendingAuth flags ops =
+  any singleLost (Map.toList (soSingles ops)) || dualLost
+  where
+    kinds = cancelSlots flags
+    singleLost (kind, active) =
+      kind `elem` kinds && scAuth (commonOf active) == AuthPending
+    dualLost = case soDual ops of
+      Just du
+        | scAuth (duCipher du) == AuthPending ->
+            SlotDigest `elem` kinds || dirKind (duDir du) `elem` kinds
+      _ -> False
 
 -- | The slot one active operation truly occupies: the kind side of
 -- the validated insertion pair. Total: every constructor names its

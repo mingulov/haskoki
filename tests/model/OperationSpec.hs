@@ -49,12 +49,16 @@ import Haskoki.Operation
   , activeSlots
   , bufferedLength
   , bufferedOf
+  , cancelDropsPendingAuth
+  , cancelOps
   , chainIvOf
   , commonAuth
   , commonOf
   , emptySessionOps
   , gateDataCall
+  , hasAuthPendingOp
   , hasDual
+  , hasSingleAuthPendingOp
   , hasStreamed
   , initDualOperation
   , initOperation
@@ -155,6 +159,10 @@ spec = testGroup "operation lifecycles"
   , testCase "digest final short buffer keeps the slot" caseDigestShortRetry
   , testCase "digest failure terminates the slot" caseDigestFailureTerminates
   , testCase "premature grant use fails and consumes nothing" casePremature
+  , testCase "pending-auth presence gates context admission" caseHasAuthPendingOp
+  , testCase "cancel dropping a pending op kills the grant" caseCancelDropsPendingAuth
+  , testCase "grant for one key never authorizes the next" caseGrantTwoKey
+  , testCase "second pending init refused under grant" caseSecondPendingInitRefused
   , testCase "pkcs7 pad and unpad vectors" casePkcs7
   , testCase "encrypt multipart equals one-shot" caseCipherMultipart
   , testCase "update split table" caseUpdateSplitTable
@@ -590,6 +598,143 @@ caseGate = do
   case gateDataCall logged satisfied of
     GateOk _ sc' -> assertEqual "stays satisfied" AuthSatisfied (commonAuth sc')
     GateDeny d _ -> assertFailure ("expected proceed, got " ++ show d)
+
+-- | Context-grant eligibility over live slots: only an
+-- always-authenticate slot still awaiting its first data call
+-- qualifies — idle sessions, plain digests, satisfied slots, and
+-- unrelated active slots do not. Dual cipher sides count (the
+-- digest side is unkeyed and never gated). Admission needs exactly
+-- one: the grant binds by uniqueness, so two simultaneously
+-- pending slots take no grant until all but one end.
+caseHasAuthPendingOp :: IO ()
+caseHasAuthPendingOp = do
+  let logged = testSession { ssLogin = LoginUser }
+      granted = testSession { ssLogin = LoginContextUser }
+      authArgs = encryptArgs { iaKey = Just aesKey { kpAlwaysAuth = True } }
+      authDecArgs = decryptArgs { iaKey = Just aesKey { kpAlwaysAuth = True } }
+  assertBool "idle has nothing pending" (not (hasAuthPendingOp emptySessionOps))
+  assertBool "idle has no single pending" (not (hasSingleAuthPendingOp emptySessionOps))
+  let (opsDigest, _) = initOperation testEnv emptySessionOps testSession digestArgs
+  assertBool "plain digest is not eligible" (not (hasAuthPendingOp opsDigest))
+  let (ops0, i0) = initOperation testEnv emptySessionOps logged authArgs
+  assertEqual "pending init ok" CKR_OK (ioCode i0)
+  assertBool "pending slot is eligible" (hasAuthPendingOp ops0)
+  assertBool "one pending slot binds" (hasSingleAuthPendingOp ops0)
+  -- A second pending slot breaks uniqueness: something is pending,
+  -- but no single operation binds.
+  let (opsPair, iP) = initOperation testEnv ops0 logged authDecArgs
+  assertEqual "pair init ok" CKR_OK (ioCode iP)
+  assertBool "pair has pending work" (hasAuthPendingOp opsPair)
+  assertBool "pair binds nothing" (not (hasSingleAuthPendingOp opsPair))
+  -- A consumed grant leaves a satisfied slot: no longer eligible.
+  let (ops1, _, u1) = planCipherUpdate ops0 granted SlotEncrypt "part-1" Nothing
+  assertEqual "first update ok" CKR_OK (soCode u1)
+  assertEqual "slot satisfied" (Just AuthSatisfied) (slotAuth ops1 SlotEncrypt)
+  assertBool "consumed slot is not eligible" (not (hasAuthPendingOp ops1))
+  -- The dual's pending cipher side qualifies; a plain dual does not.
+  let (opsDual, iD) = initDualOperation testEnv emptySessionOps logged
+        digestArgs authArgs
+  assertEqual "dual init ok" CKR_OK (ioCode iD)
+  assertBool "pending dual cipher side is eligible" (hasAuthPendingOp opsDual)
+  assertBool "dual binds singly" (hasSingleAuthPendingOp opsDual)
+  let (opsPlain, _) = initDualOperation testEnv emptySessionOps testSession
+        digestArgs encryptArgs
+  assertBool "plain dual is not eligible" (not (hasAuthPendingOp opsPlain))
+
+-- | A second always-authenticate init while a context grant is
+-- outstanding refuses: the grant binds by uniqueness to the
+-- already-pending operation, so no later operation can steal it. A
+-- plain init still admits, and pairing two pending operations
+-- without a grant still admits (admission, not init, refuses the
+-- ambiguous pair).
+caseSecondPendingInitRefused :: IO ()
+caseSecondPendingInitRefused = do
+  let logged = testSession { ssLogin = LoginUser }
+      authArgs = encryptArgs { iaKey = Just aesKey { kpAlwaysAuth = True } }
+      authDecArgs = decryptArgs { iaKey = Just aesKey { kpAlwaysAuth = True } }
+      (ops0, i0) = initOperation testEnv emptySessionOps logged authArgs
+  assertEqual "first pending init ok" CKR_OK (ioCode i0)
+  let granted = testSession { ssLogin = LoginContextUser, ssOps = ops0 }
+      (opsR, oRefused) = initOperation testEnv ops0 granted authDecArgs
+  assertEqual "second pending init refused" CKR_OPERATION_ACTIVE (ioCode oRefused)
+  assertEqual "refused init changes nothing" ops0 opsR
+  let (opsP, oPlain) = initOperation testEnv ops0 granted digestArgs
+  assertEqual "plain init admits under grant" CKR_OK (ioCode oPlain)
+  assertEqual "digest joins the pending slot" [SlotDigest, SlotEncrypt] (activeSlots opsP)
+  let (_, oPair) = initOperation testEnv ops0 logged authDecArgs
+  assertEqual "ungranted pair admits" CKR_OK (ioCode oPair)
+
+-- | Cancel drops the grant exactly when it drops a pending
+-- always-authenticate slot: cancelling everything, or the pending
+-- slot's class, kills the grant; cancelling an idle selection, an
+-- unrelated live slot, or either side of a pending dual (one
+-- operation) behaves accordingly.
+caseCancelDropsPendingAuth :: IO ()
+caseCancelDropsPendingAuth = do
+  let logged = testSession { ssLogin = LoginUser }
+      authArgs = encryptArgs { iaKey = Just aesKey { kpAlwaysAuth = True } }
+      (ops0, _) = initOperation testEnv emptySessionOps logged authArgs
+      (opsBoth, _) = initOperation testEnv ops0 testSession digestArgs
+  assertBool "cancel-all drops the pending grant"
+    (cancelDropsPendingAuth 0 ops0)
+  assertBool "cancel-encrypt drops the pending grant"
+    (cancelDropsPendingAuth 0x100 ops0)
+  assertBool "cancel-digest keeps the pending grant"
+    (not (cancelDropsPendingAuth 0x400 opsBoth))
+  assertBool "cancel-idle keeps the pending grant"
+    (not (cancelDropsPendingAuth 0x800 ops0))
+  assertBool "idle cancel drops nothing"
+    (not (cancelDropsPendingAuth 0 emptySessionOps))
+  let (opsDigest, _) = initOperation testEnv emptySessionOps testSession digestArgs
+  assertBool "plain cancel drops nothing"
+    (not (cancelDropsPendingAuth 0 opsDigest))
+  -- Either cancelled dual side ends the one dual operation.
+  let (opsDual, _) = initDualOperation testEnv emptySessionOps logged
+        digestArgs authArgs
+  assertBool "dual digest-side cancel drops the pending grant"
+    (cancelDropsPendingAuth 0x400 opsDual)
+  assertBool "dual cipher-side cancel drops the pending grant"
+    (cancelDropsPendingAuth 0x100 opsDual)
+  assertBool "dual unrelated cancel keeps the pending grant"
+    (not (cancelDropsPendingAuth 0x800 opsDual))
+  -- The verdict agrees with the resulting slots.
+  assertBool "verdict matches surviving pending slot"
+    (hasAuthPendingOp (cancelOps 0x400 opsBoth))
+  assertBool "verdict matches dropped pending slot"
+    (not (hasAuthPendingOp (cancelOps 0x100 opsBoth)))
+
+-- | A grant spent on one key/operation never authorizes the next:
+-- the first data call consumes it, and the following pending slot
+-- — a second key, or another session — denies grantless and
+-- terminates. Simultaneously pending slots take no grant at all
+-- (binding by uniqueness, pinned at admission level); sequential
+-- reuse is the defect this gate shape closes.
+caseGrantTwoKey :: IO ()
+caseGrantTwoKey = do
+  let granted = testSession { ssLogin = LoginContextUser }
+      otherSession = testSession { ssId = SessionId 2, ssLogin = LoginUser }
+      pendingFor oid = mkSlotCommon hmacMech OpSign (Just oid) mempty AuthPending
+  -- The grant spends on the first pending slot's first data call.
+  (st1, sc1) <- case gateDataCall granted (pendingFor (ObjectId 9)) of
+    GateOk st' sc' -> do
+      assertEqual "grant consumed" LoginUser (ssLogin st')
+      assertEqual "slot satisfied" AuthSatisfied (commonAuth sc')
+      pure (st', sc')
+    GateDeny d _ -> assertFailure ("expected consume, got " ++ show d)
+  assertEqual "consumed common stays satisfied" AuthSatisfied (commonAuth sc1)
+  -- The next pending key on the same session denies grantless and
+  -- must terminate, so no later grant can revive it.
+  case gateDataCall st1 (pendingFor (ObjectId 10)) of
+    GateDeny d term -> do
+      assertEqual "next key code" CKR_USER_NOT_LOGGED_IN (sdCode d)
+      assertBool "next slot terminates" term
+    GateOk _ _ -> assertFailure "spent grant authorized the next key"
+  -- Another session never observes this session's grant.
+  case gateDataCall otherSession (pendingFor (ObjectId 9)) of
+    GateDeny d term -> do
+      assertEqual "other session code" CKR_USER_NOT_LOGGED_IN (sdCode d)
+      assertBool "other slot terminates" term
+    GateOk _ _ -> assertFailure "grant crossed sessions"
 
 -- ---------------------------------------------------------------------------
 -- Digest sequencing and dispositions
