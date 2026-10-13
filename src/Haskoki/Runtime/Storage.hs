@@ -317,7 +317,7 @@ data StoreError
   deriving (Eq, Show)
 
 -- | Store failures throw as exceptions on the paths with no
--- 'Either' channel (M4: a failed 'storeClose' reports by
+-- 'Either' channel (a failed 'storeClose' reports by
 -- throwing the failure instead of returning silently).
 instance Exception StoreError
 
@@ -600,14 +600,14 @@ checkSlotUnique currentToks delta =
 -- view may have diverged from durable truth. A fresh handle loads
 -- the authoritative bytes and starts clean.
 --
--- Ownership is handle-scoped (M4): every open mints a fresh owner
+-- Ownership is handle-scoped: every open mints a fresh owner
 -- token and a handle is closed exactly as its own owner. A close
 -- releases ownership only while its handle is still the current
 -- owner; a stale close (a second close after the identity
 -- reopened under a new handle) is a silent no-op that never
 -- releases the new owner.
 --
--- Close serializes with use (M4): 'storeClose' waits for any
+-- Close serializes with use: 'storeClose' waits for any
 -- in-flight operation on its handle (commit, reset, load,
 -- inspect, reload), then marks the handle closed. After a close
 -- returns, every world-touching operation on that handle fails
@@ -620,8 +620,8 @@ checkSlotUnique currentToks delta =
 -- closed handle or an unloadable world reports 'Left', never a
 -- silent empty list.
 --
--- A failed close retains everything and refuses onward use
--- (M4): when the close itself cannot complete (an injected
+-- A failed close retains everything and refuses onward use:
+-- when the close itself cannot complete (an injected
 -- 'FaultClose', or a SQLite close error), ownership and kernel
 -- guards stay held, the handle stops serving new operations
 -- (every world-touching operation reports 'storeClosed', exactly
@@ -661,7 +661,7 @@ instance Show StoredDoc where
     ++ ", docKey = " ++ show (docKey d)
     ++ ", docJson = " ++ redactShown "doc" (length (docJson d)) ++ "}"
 
--- | Per-handle lifecycle state (M4), owned by the backend's
+-- | Per-handle lifecycle state, owned by the backend's
 -- close gate. 'HandleOpen' serves; 'HandleClosed' (a clean close)
 -- refuses new operations and ignores further closes;
 -- 'HandleCloseFailed' (a close that could not complete) refuses

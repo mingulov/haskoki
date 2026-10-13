@@ -50,6 +50,17 @@ catalog rows citing the suite beside it: rows fan into names, so
 a name shared by many rows is one executed record, never one
 independent behavior per row.
 
+Collection (`--collect`): run every targeted suite binary's
+`--list-tests` capture and join each one. Binaries built inside
+the toolchain image are listed in that same builder context
+(`--docker-image`, which the gate runner passes since it builds
+inside the image; lanes that build natively collect directly):
+each capture runs via `timeout -s KILL 300 docker run --rm
+--network host` with the workspace bind-mounted at /work, so
+the host never launches container-built binaries and no host
+runtime/library compatibility is assumed. The join itself stays
+host-side (pure text over the captures).
+
 HPC reconciliation (`--check-hpc`): bind coverage artifacts to
 the same inventory before the lane publishes its denominator.
 Every inventoried suite must own at least one `.tix` under the
@@ -67,6 +78,7 @@ STDLIB ONLY. Run on HOST python3 from anywhere:
         [--inventory PATH]
   python3 scripts/check-test-execution.py --collect
         --build-root DIR --dir DIR --result pass [--suite NAME]
+        [--docker-image IMAGE]
   python3 scripts/check-test-execution.py --join --suite NAME
         --list-tests FILE --result pass --out RECEIPT [--root DIR]
   python3 scripts/check-test-execution.py --check-hpc
@@ -437,14 +449,18 @@ def check_hpc(root, inventory_path, tix_root, mix_dirs, reports, out_path):
 
 
 def collect_and_join(root, inventory_path, build_root, out_dir, result,
-                     only_suite=None):
+                     only_suite=None, docker_image=None):
     """Collect `--list-tests` from built binaries and join each suite.
 
     Exactly one executable must match `t/<suite>/build/<suite>/<suite>`
     under the build root; zero or several fail loudly (a missing
-    binary is never an empty tree). Each capture is joined by
-    join_suite; the first failure stops the run. Returns 0 when every
-    targeted suite joined, else 1.
+    binary is never an empty tree). With `docker_image` set, each
+    capture runs inside that builder image (the workspace
+    bind-mounted at /work), so container-built binaries are never
+    launched on the host; otherwise the binary is launched
+    directly. Each capture is joined by join_suite; the first
+    failure stops the run. Returns 0 when every targeted suite
+    joined, else 1.
     """
     wiring = _load_sibling("check-test-wiring")
     root = Path(root)
@@ -468,9 +484,24 @@ def collect_and_join(root, inventory_path, build_root, out_dir, result,
                   f"want exactly one binary for {suite}, "
                   f"saw {len(cands)})")
             return 1
+        if docker_image is None:
+            cmd = [str(cands[0]), "--list-tests"]
+        else:
+            try:
+                rel = cands[0].resolve().relative_to(root.resolve())
+            except ValueError:
+                print(f"test-execution collect: FAIL (no-test-scope: "
+                      f"{suite} binary is outside the mounted "
+                      f"workspace: {cands[0]})")
+                return 1
+            cmd = ["timeout", "-s", "KILL", "300", "docker", "run",
+                   "--rm", "--network", "host",
+                   "-v", f"{root.resolve()}:/work",
+                   "-w", "/work", docker_image, f"/work/{rel}",
+                   "--list-tests"]
         try:
             proc = subprocess.run(
-                [str(cands[0]), "--list-tests"], capture_output=True,
+                cmd, capture_output=True,
                 text=True, timeout=300, check=False)
         except Exception as e:  # noqa: BLE001
             print(f"test-execution collect: FAIL (no-test: {suite} "
@@ -938,6 +969,82 @@ def self_test():
                                   only_suite="suite-a")
         expect("collect-single-suite-passes", rc == 0, buf.getvalue())
 
+        # Builder-context collection: a binary needing builder-only
+        # runtime fails when launched on the host directly, and
+        # joins when captured through the builder image.
+        marker_path = (root / "marker-build" / "x" / "t" / "suite-a"
+                       / "build" / "suite-a" / "suite-a")
+        _write(marker_path,
+               "#!/bin/sh\n"
+               "if [ \"$1\" = \"--list-tests\" ]; then\n"
+               "  if [ \"${BUILDER_LIBS:-}\" = \"present\" ]; then\n"
+               "    printf 'alpha group/first\\nalpha group/second\\n'\n"
+               "  else\n"
+               "    echo \"missing builder runtime\" >&2\nexit 3\n"
+               "  fi\n"
+               "else\n"
+               "  echo \"unexpected args\" >&2\nexit 2\n"
+               "fi\n")
+        os.chmod(marker_path, 0o755)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = collect_and_join(root, inv_path, root / "marker-build",
+                                  root / "test-trees", "pass")
+        expect("collect-builder-only-binary-fails-on-host",
+               rc == 1 and "exited 3" in buf.getvalue(),
+               buf.getvalue())
+
+        fake_bin = root / "fakebin"
+        fake_bin.mkdir(parents=True, exist_ok=True)
+        _write(fake_bin / "timeout",
+               "#!/bin/sh\n"
+               "echo \"TIMEOUT $@\" >> \"$FAKE_DOCKER_LOG\"\n"
+               "if [ \"$1\" = \"-s\" ] && [ \"$2\" = \"KILL\" ]; then\n"
+               "  shift 3\n"
+               "else\n"
+               "  echo \"timeout shape\" >&2\nexit 2\n"
+               "fi\n"
+               "exec \"$@\"\n")
+        _write(fake_bin / "docker",
+               "#!/bin/sh\n"
+               "echo \"DOCKER $@\" >> \"$FAKE_DOCKER_LOG\"\n"
+               "for a in \"$@\"; do\n"
+               "  case \"$a\" in\n"
+               "    /work/*)\n"
+               "      rel=${a#/work/}\n"
+               "      BUILDER_LIBS=present exec \"$FAKE_DOCKER_ROOT/$rel\""
+               " --list-tests\n"
+               "      ;;\n"
+               "  esac\n"
+               "done\n"
+               "echo \"no /work binary arg\" >&2\nexit 2\n")
+        os.chmod(fake_bin / "timeout", 0o755)
+        os.chmod(fake_bin / "docker", 0o755)
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = f"{fake_bin}{os.pathsep}{old_path}"
+        os.environ["FAKE_DOCKER_LOG"] = str(root / "docker-args.log")
+        os.environ["FAKE_DOCKER_ROOT"] = str(root)
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = collect_and_join(root, inv_path,
+                                      root / "marker-build",
+                                      root / "test-trees", "pass",
+                                      docker_image="builder:test")
+        finally:
+            os.environ["PATH"] = old_path
+            os.environ.pop("FAKE_DOCKER_LOG", None)
+            os.environ.pop("FAKE_DOCKER_ROOT", None)
+        logged = (root / "docker-args.log").read_text() \
+            if (root / "docker-args.log").is_file() else ""
+        expect("collect-docker-image-runs-in-builder",
+               rc == 0 and "builder:test" in logged
+               and "TIMEOUT -s KILL 300" in logged
+               and "--network host" in logged
+               and "/work/marker-build/x/t/suite-a/build/suite-a/"
+               "suite-a" in logged,
+               buf.getvalue() + logged)
+
     if fails:
         print(f"test-execution self-test: FAIL ({', '.join(fails)})")
         return 1
@@ -958,6 +1065,7 @@ def main(argv=None):
     ap.add_argument("--collect", action="store_true")
     ap.add_argument("--build-root", default=None)
     ap.add_argument("--dir", default=None)
+    ap.add_argument("--docker-image", default=None)
     ap.add_argument("--check-hpc", action="store_true")
     ap.add_argument("--tix-root", default=None)
     ap.add_argument("--mix-dirs", default=None)
@@ -985,7 +1093,8 @@ def main(argv=None):
             return 1
         return collect_and_join(root, inv, Path(args.build_root),
                                 Path(args.dir), args.result,
-                                only_suite=args.suite)
+                                only_suite=args.suite,
+                                docker_image=args.docker_image)
     if args.check_hpc:
         if not args.tix_root or not args.mix_dirs or not args.reports \
                 or not args.out:

@@ -74,5 +74,5 @@ Two facts from that survey matter here: the `Haskoki.PKCS11` facade
 (`initialize`, `finalize`, `getInfo`, `getSlotList`) always answers
 `CKR_GENERAL_ERROR` and is not the serving path, and 7 library-exposed
 modules are absent from the foreign library while flib-only
-`Haskoki.FFI.Types` has zero in-tree importers. See gaps G1 and G4 in the
+`Haskoki.FFI.Types` has zero in-tree importers. See gaps D1 and D4 in the
 inventory for the H3 follow-ups.

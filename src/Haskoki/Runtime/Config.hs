@@ -663,10 +663,10 @@ parseScriptEntry entry = case words entry of
 -- truncation, padding, or migration of old short/long fixture
 -- PINs: every in-repo fixture already satisfies 4..32, so a
 -- refusal always names a real provisioning error and the
--- operator re-provisions (P6 owns user-facing provisioning and
--- any future migration). The home token's built-in PINs
--- (4 bytes) satisfy the policy, so an absent section is
--- unaffected.
+-- operator re-provisions (user-facing provisioning and any
+-- future migration stay outside this policy check). The home
+-- token's built-in PINs (4 bytes) satisfy the policy, so an
+-- absent section is unaffected.
 parseTokenCatalog
   :: Map TomlKey TomlVal -> [String] -> [String] -> [String]
   -> Either ConfigError [(String, String, String)]

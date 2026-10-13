@@ -1,4 +1,4 @@
-/* tests/c/consumer_derive_protection.c — P1 (TS4): byte-derivation
+/* tests/c/consumer_derive_protection.c — byte-derivation
  * preserves source protection (OASIS PKCS#11 3.2 §6.43.3–§6.43.7).
  *
  * A protected derivable generic-secret fixture (sensitive, unextractable,

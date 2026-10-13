@@ -147,8 +147,12 @@ module Haskoki.Runtime.Async
     -- * Table
   , AsyncTable
   , AsyncTableId
+  , TableIdExhausted
   , asyncTableId
+  , asyncTableSalt
   , newAsyncTable
+  , tryNewAsyncTable
+  , tableSaltFor
   , maxRetainedTombstones
   , maxRetainedBytes
   , retainedBytes
@@ -208,6 +212,7 @@ import Control.Concurrent.STM
   )
 import Control.Exception
   ( AsyncException (..)
+  , Exception
   , SomeException
   , fromException
   , mask
@@ -589,45 +594,97 @@ stepJob ev st e = case ev of
 newtype AsyncTableId = AsyncTableId Int
   deriving (Eq, Ord, Show)
 
+-- | The table allocator refused: the process already holds 2^32-1
+-- tables, so no distinct nonzero 32-bit salt remains for another
+-- one ('tryNewAsyncTable' reports this as 'Nothing';
+-- 'newAsyncTable' throws it). Reaching the bound takes 2^32-1
+-- table creations in one process; the counter saturates rather
+-- than wrapping or reusing an identity.
+data TableIdExhausted = TableIdExhausted
+  deriving (Show)
+
+instance Exception TableIdExhausted
+
 -- | Process-wide table-identity counter: the sole mint, so every
 -- table in the process carries a distinct identity. (The same
 -- shape @base@ uses for 'Data.Unique': one 'NOINLINE' cell, one
--- atomic step per mint.)
+-- atomic step per mint.) The mint refuses past 2^32-1 tables
+-- (see 'tableSaltFor'), leaving the counter untouched, so
+-- identities never wrap and salts never repeat.
 tableIdCounter :: IORef Int
 tableIdCounter = unsafePerformIO (newIORef 0)
 {-# NOINLINE tableIdCounter #-}
 
--- | Mint the next table identity (single atomic step).
-mintTableId :: IO AsyncTableId
+-- | The exact handle salt for the n-th table (0-based): n+1, so the
+-- first table salts 1 (never zero) and every salt is nonzero and
+-- distinct while it fits 32 bits. 'Nothing' past 2^32-1 tables
+-- (index 2^32-1 and beyond, or negative): no distinct nonzero
+-- salt remains, so the allocator must refuse. Pure, so the
+-- boundary pins directly without minting tables.
+tableSaltFor :: Int -> Maybe Word32
+tableSaltFor n
+  | toInteger n >= 0 && toInteger n < 0xFFFFFFFF = Just (fromIntegral n + 1)
+  | otherwise = Nothing
+
+-- | Mint the next table identity with its exact salt (single
+-- atomic step). 'Nothing' past 2^32-1 tables: the counter is left
+-- untouched, so a refused mint allocates nothing and consumes no
+-- identity a later mint could observe.
+mintTableId :: IO (Maybe (AsyncTableId, Word32))
 mintTableId =
-  AsyncTableId <$> atomicModifyIORef' tableIdCounter (\n -> (n + 1, n))
+  atomicModifyIORef' tableIdCounter $ \n ->
+    case tableSaltFor n of
+      Nothing -> (n, Nothing)
+      Just salt -> (n + 1, Just (AsyncTableId n, salt))
 
 -- | The attached-job table: live jobs plus tombstones, the next
--- job id, the live-job capacity, the async-enabled sessions, and
--- the table's process-local identity.
+-- job id, the live-job capacity, the async-enabled sessions, the
+-- table's process-local identity, and its exact handle salt.
 data AsyncTable = AsyncTable
   { atJobs :: !(TVar (Map JobId Job))
   , atNext :: !(TVar Int)
   , atMax :: !Int
   , atAsync :: !(TVar (Set SessionId))
   , atId :: !AsyncTableId
+  , atSalt :: !Word32
   }
 
--- | A fresh table with the given live-job capacity and a fresh
--- process-local identity.
+-- | A fresh table with the given live-job capacity, a fresh
+-- process-local identity, and its exact handle salt. Throws
+-- 'TableIdExhausted' past 2^32-1 tables (see 'tryNewAsyncTable'
+-- for the explicit refusal); a refusal allocates nothing.
 newAsyncTable :: Int -> IO AsyncTable
-newAsyncTable cap = do
-  tid <- mintTableId
-  AsyncTable
-    <$> newTVarIO Map.empty
-    <*> newTVarIO 0
-    <*> pure cap
-    <*> newTVarIO Set.empty
-    <*> pure tid
+newAsyncTable cap =
+  tryNewAsyncTable cap >>= maybe (throwIO TableIdExhausted) pure
+
+-- | A fresh table like 'newAsyncTable', with allocator refusal as
+-- 'Nothing' past 2^32-1 tables instead of an exception. The FFI
+-- open entries report refusal as NULL, like every other open
+-- failure.
+tryNewAsyncTable :: Int -> IO (Maybe AsyncTable)
+tryNewAsyncTable cap = do
+  mTid <- mintTableId
+  case mTid of
+    Nothing -> pure Nothing
+    Just (tid, salt) ->
+      Just <$> (AsyncTable
+        <$> newTVarIO Map.empty
+        <*> newTVarIO 0
+        <*> pure cap
+        <*> newTVarIO Set.empty
+        <*> pure tid
+        <*> pure salt)
 
 -- | A table's process-local identity (stable for the table's life).
 asyncTableId :: AsyncTable -> AsyncTableId
 asyncTableId = atId
+
+-- | A table's exact handle salt (nonzero, distinct per table,
+-- stable for the table's life). The FFI handle codec packs this
+-- salt with the job id, so equal numeric job ids on distinct
+-- tables always admit distinct tokens.
+asyncTableSalt :: AsyncTable -> Word32
+asyncTableSalt = atSalt
 
 -- | Request asynchronous service for a session. Idempotent;
 -- sessions never enabled stay synchronous no matter the async

@@ -79,12 +79,16 @@ python3 scripts/test-release-evidence.py
 echo "=== forced build + cabal test all (pinned container) ==="
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal build all --enable-tests
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal test all
-echo "=== executed test-tree join (host, needs the built suites) ==="
+echo "=== executed test-tree join (builder context, needs the built suites) ==="
 # The container run above exited 0, so every suite passed; the join
-# binds that success to the reviewed intended groups (suite binaries
-# come from the exact build above: dist-newstyle persists in the
-# mounted workspace).
-python3 scripts/check-test-execution.py --collect --build-root dist-newstyle --dir test-trees --result pass
+# binds that success to the reviewed intended groups. Suite binaries
+# come from the exact build above (dist-newstyle persists in the
+# mounted workspace) and were built inside HASKOKI_IMAGE, so each
+# --list-tests capture runs in that same builder context
+# (--docker-image): the host never launches container-built binaries
+# directly, and no host runtime/library compatibility is assumed.
+# The join itself stays host-side (pure text over the captures).
+timeout -s KILL 2400 python3 scripts/check-test-execution.py --collect --build-root dist-newstyle --dir test-trees --result pass --docker-image "$IMAGE"
 echo "=== static gate 22 (needs the built tests) ==="
 bash scripts/check-funnel-cwd.sh
 echo "=== release evidence (drivers + install) ==="

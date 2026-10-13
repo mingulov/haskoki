@@ -3,7 +3,7 @@
 Two sessions share one store handle with interleaved commits (no lost
 updates); revision conflicts surface as the typed
 'StoreRevisionConflict' error, never silent overwrites. Close
-serializes with use (M4): a close issued against an in-flight
+serializes with use: a close issued against an in-flight
 commit or a queued load waits instead of tearing the handle, and
 a failed close retains ownership, refuses new operations, and
 reports, until a retry closes for real. Both backends run the
@@ -146,7 +146,7 @@ withWorkers actions use = go actions []
       withWorker act $ \(_, outcome) -> go rest (outcome : outcomes)
 
 -- | Open a store on the case identity, closing the handle when the
--- body exits on any path (M4 hygiene: a failing assertion
+-- body exits on any path (handle hygiene: a failing assertion
 -- mid-case must not leak a live handle into fixture cleanup).
 -- Sits outside the worker scopes, so workers are joined before
 -- the store and directory cleanup runs. Explicit closes inside
@@ -273,7 +273,7 @@ countObjects = sum . map (length . snd)
 objectPresent :: ObjectId -> [(TokenRecord, [ObjectRecord])] -> Bool
 objectPresent oid = any (any ((== oid) . orId) . snd)
 
--- | M4: a close issued while a commit sits inside the masked
+-- | A close issued while a commit sits inside the masked
 -- region waits for the commit — it never slips past and shuts
 -- the handle beneath it. The barrier commit lands whole, later
 -- uses fail closed, and the identity reopens with the commit
@@ -332,7 +332,7 @@ testCommitCloseBarrier openWith =
       assertEqual "barrier commit durable" (Just "1") (lookup "m4-commit-barrier" meta)
       storeClose re
 
--- | M4: a load issued while a commit sits inside the masked
+-- | A load issued while a commit sits inside the masked
 -- region queues behind it, and a close issued in between queues
 -- too — every outcome is well-defined. The load either serves
 -- the whole seed or reports the closed handle (never torn data,
@@ -422,7 +422,7 @@ testLoadCloseBarrier openWith =
       assertWholeSeed tok seedRecs loaded2
       storeClose re2
 
--- | M4: a failed close (an injected 'FaultClose') reports by
+-- | A failed close (an injected 'FaultClose') reports by
 -- throwing the typed failure, retains ownership and guards,
 -- refuses new operations exactly like a closed handle — and a
 -- later close retries for real. The next owner can never enter
@@ -459,7 +459,7 @@ testFailedCloseRetains openWith = do
     assertWholeSeed tok seedRecs loaded
     storeClose re
 
--- | M4: an exception thrown from the close fault probe never
+-- | An exception thrown from the close fault probe never
 -- strands the handle: the first close propagates the probe
 -- error, the handle stays usable and still owns the identity,
 -- and the retry closes for real.
@@ -507,7 +507,7 @@ testCloseProbeThrows openWith = do
     assertEqual "probe durable across throw retry" (Just "1") (lookup "m4-throw-retry" meta)
     storeClose re
 
--- | M4: killing a close blocked in its fault probe never strands
+-- | Killing a close blocked in its fault probe never strands
 -- the handle: the victim dies observed, the handle stays usable
 -- and still owns the identity, and the retry (after releasing
 -- the probe) closes for real.

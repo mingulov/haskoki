@@ -153,6 +153,7 @@ import Haskoki.Runtime.Async
   , startJob
   , tableStats
   , asyncTableId
+  , asyncTableSalt
   )
 import Haskoki.Runtime.Config (Config, resolveFrom)
 import Haskoki.Runtime.Detached
@@ -698,8 +699,10 @@ caseFfiCompleteRace envLock = withACtx envLock $ \ctx -> do
 -- every entry, and the job itself is intact: stale paths tick
 -- nothing, so the owning context still drives and delivers it.
 -- Both contexts admit their own job first (both tables start at
--- job id 0), so each handle must resolve only on its own context
--- despite the shared numeric job id.
+-- job id 0) under distinct exact salts: each handle must resolve
+-- only on its own context despite the shared numeric job id, and
+-- the two admitted tokens must differ (equal tokens here would
+-- alias one context's job onto the other).
 caseFfiCrossContext :: MVar () -> IO ()
 caseFfiCrossContext envLock = withACtx2 envLock $ \ctxA ctxB -> do
   hA <- hSessionOf ctxA
@@ -712,6 +715,16 @@ caseFfiCrossContext envLock = withACtx2 envLock $ \ctxA ctxB -> do
   assertEqual "start A pending" rvPending rvStartA
   (rvStartB, hJobB) <- startFfi ctxB hB fnDigest "abc" 32 5
   assertEqual "start B pending" rvPending rvStartB
+  cA <- deRefStablePtr ctxA
+  cB <- deRefStablePtr ctxB
+  assertBool "table identities distinct"
+    (asyncTableId (acTable cA) /= asyncTableId (acTable cB))
+  assertBool "table salts distinct"
+    (asyncTableSalt (acTable cA) /= asyncTableSalt (acTable cB))
+  assertBool "table salts nonzero"
+    (asyncTableSalt (acTable cA) /= 0 && asyncTableSalt (acTable cB) /= 0)
+  assertBool "equal job ids admit distinct tokens"
+    (castStablePtrToPtr hJobA /= castStablePtrToPtr hJobB)
   rvPollAB <- haskokiAsyncPoll ctxB hJobA fnDigest
   assertEqual "A-handle poll stale on B" rvBad rvPollAB
   rvPollBA <- haskokiAsyncPoll ctxA hJobB fnDigest

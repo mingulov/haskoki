@@ -40,7 +40,7 @@ or fixed hex text; only the bounded @revision@ counter uses an
 INTEGER column (guarded by @CHECK (revision > 0)@), and every
 read-back range-checks before narrowing to 'Int'.
 
-Close serializes with use (M4): the close runs under the same
+Close serializes with use: the close runs under the same
 connection guard as every operation, so it waits for in-flight
 uses instead of closing the handle beneath them; later uses of
 the closed handle fail closed. A close that cannot complete (an
@@ -1005,12 +1005,13 @@ protocolLocked conn db delta = do
         else pure Committed
     -- Drops before puts; tokens before the objects and jobs that
     -- reference them (foreign keys stay satisfied throughout).
+    -- Token puts run staged (two phases within this transaction).
     runBody :: StoreDelta -> IO (Either StoreError ())
     runBody d = do
       e1 <- runAll (map dropObjectStmt (sdDropObjects d))
       e2 <- runAll (map dropJobStmt (sdDropJobs d))
       e3 <- runAll (map dropTokenStmt (sdDropTokens d))
-      e4 <- runAll (map putTokenStmt (sdPutTokens d))
+      e4 <- runTokenPuts (sdPutTokens d)
       e5 <- runAll (map putObjectStmt (sdPutObjects d))
       e6 <- runAll (map putJobStmt (sdPutJobs d))
       e7 <- runAll (map putMetaStmt (sdPutMeta d))
@@ -1023,6 +1024,34 @@ protocolLocked conn db delta = do
           case e of
             Left err -> pure (Left err)
             Right () -> runAll rest
+        -- Token puts apply in two phases. Sequential upserts would
+        -- observe transient @UNIQUE(slot_key)@ conflicts whenever
+        -- one put's target slot is still held by a token a later
+        -- put moves (list order would decide the outcome, and a
+        -- slot swap could never land) — while the validated final
+        -- projection is unique and the memory backend applies it
+        -- atomically. Staging first parks every put token on a
+        -- temporary slot that collides with neither a current nor
+        -- a final slot, so the subsequent upserts land in any
+        -- order with the same result. Staging touches only
+        -- @slot_key@: the @token_id@ row — and therefore every
+        -- owned object and job — is preserved throughout.
+        runTokenPuts :: [TokenRecord] -> IO (Either StoreError ())
+        runTokenPuts [] = pure (Right ())
+        runTokenPuts puts = do
+          eRows <- queryRows db "SELECT slot_key FROM tokens" []
+          case eRows of
+            Left err -> pure (Left err)
+            Right rows -> case mapM parseSlotKey rows of
+              Nothing -> pure (Left (StoreCorrupt "corrupt slot_key row"))
+              Just current -> do
+                let uniq = firstByToken puts
+                    temps = pickTempSlots
+                      (current ++ map (unSlotId . trSlot) uniq) (length uniq)
+                eStage <- runAll (zipWith stageTokenStmt temps uniq)
+                case eStage of
+                  Left err -> pure (Left err)
+                  Right () -> runAll (map putTokenStmt uniq)
 
 -- | Tokens a delta touches: named tokens plus the home tokens of
 -- named objects and jobs (drop owners resolved from current
@@ -1253,7 +1282,7 @@ loadMeta db = do
 
 -- | Render every stored record through its canonical bytes (load,
 -- then re-encode, so inspection always shows canonical form). A
--- failed load reports the error (M4) instead of a silent empty
+-- failed load reports the error instead of a silent empty
 -- list, so corruption stays diagnosed.
 inspectConn :: S.Database -> IO (Either StoreError [StoredDoc])
 inspectConn db = do
@@ -1321,6 +1350,47 @@ putTokenStmt t =
     , S.SQLText (T.pack (encodeTokenRecord t))
     ]
   )
+
+-- | Park one token on a staging slot. The row keeps its
+-- 'token_id' (a put for a not-yet-existing token matches nothing
+-- and changes nothing); owned objects and jobs keep referencing
+-- the same parent throughout.
+stageTokenStmt :: Int -> TokenRecord -> (Text, [S.SQLData])
+stageTokenStmt tmp t =
+  ( "UPDATE tokens SET slot_key = ? WHERE token_id = ?"
+  , [ S.SQLBlob (encodeBlob8 tmp)
+    , S.SQLText (T.pack (encodeHex16 (unTokenId (trId t))))
+    ]
+  )
+
+-- | Keep the first put per token id. The validated projection
+-- ('checkSlotUnique') and the memory backend both resolve
+-- duplicate puts first-wins, so staging and upserting only the
+-- first occurrence commits exactly what validation approved.
+firstByToken :: [TokenRecord] -> [TokenRecord]
+firstByToken = go []
+  where
+    go :: [TokenId] -> [TokenRecord] -> [TokenRecord]
+    go _ [] = []
+    go seen (t : rest)
+      | trId t `elem` seen = go seen rest
+      | otherwise = t : go (trId t : seen) rest
+
+-- | Pick @n@ staging slots disjoint from every occupied slot
+-- (current plus final). Candidates cover the whole 'Int' range
+-- from zero upward (reaching the negatives only past
+-- 'maxBound'), skipping anything occupied, so the result never
+-- collides with a live slot however slots are valued — including
+-- at the range boundaries, where ascending past the maximum
+-- alone would run dry.
+pickTempSlots :: [Int] -> Int -> [Int]
+pickTempSlots occupied n =
+  take n [c | c <- [0 .. maxBound] ++ [minBound .. -1], c `notElem` occupied]
+
+-- | Decode one @slot_key@ cell.
+parseSlotKey :: [S.SQLData] -> Maybe Int
+parseSlotKey [S.SQLBlob b] = decodeBlob8 b
+parseSlotKey _ = Nothing
 
 -- | Upsert one meta row.
 putMetaStmt :: (String, String) -> (Text, [S.SQLData])

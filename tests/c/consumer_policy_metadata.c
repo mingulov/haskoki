@@ -1,5 +1,5 @@
 /* tests/c/consumer_policy_metadata.c — direct-load consumer: effective
- * session/PIN policy metadata (P5).
+ * session/PIN policy metadata.
  *
  * Standalone C consumer (non-Haskell executable): drives the native
  * metadata surface (C_GetTokenInfo) and session admission
@@ -17,8 +17,8 @@
  *     (config invalid), a normal 4-byte PIN serves with the reported
  *     bounds, initialization flags, and retry/lock flag progression
  *   - OS-locking, application-mutex, and NULL init-arg modes agree
- *   - C_InitPIN/C_SetPIN stay FUNCTION_NOT_SUPPORTED until P6
- *     provisioning (pinned pre-P6 behavior, not new API)
+ *   - C_InitPIN/C_SetPIN stay FUNCTION_NOT_SUPPORTED until user
+ *     provisioning lands (pinned pre-provisioning behavior, not new API)
  *
  * Supervisor shape (mirrors async_routed.c): with no scenario argv
  * the supervisor never loads the module and re-execs one child per
@@ -413,7 +413,7 @@ static int child_multitoken(const char *sop) {
 }
 
 /* ------------------------------------------------------------------ */
-/* PIN legs: bounds, flags, retry/lock progression, P6 stubs           */
+/* PIN legs: bounds, flags, retry/lock progression, setup stubs       */
 /* ------------------------------------------------------------------ */
 
 static const char kPinConfig[] =
@@ -489,12 +489,12 @@ static int child_pin(const char *sop) {
   rv = fl->C_Login(s, CKU_USER, (CK_UTF8CHAR_PTR)"1234", 4);
   CHECK(rv == CKR_PIN_LOCKED, "pin locked denies correct pin (0x%lx)",
         (unsigned long)rv);
-  /* Pre-P6: provisioning stays an explicit stub refusal. */
+  /* Pre-provisioning: PIN setup stays an explicit stub refusal. */
   rv = fl->C_InitPIN(s, (CK_UTF8CHAR_PTR)"9999", 4);
-  CHECK(rv == CKR_FUNCTION_NOT_SUPPORTED, "pin InitPIN pre-P6 stub (0x%lx)",
+  CHECK(rv == CKR_FUNCTION_NOT_SUPPORTED, "pin InitPIN pre-provisioning stub (0x%lx)",
         (unsigned long)rv);
   rv = fl->C_SetPIN(s, (CK_UTF8CHAR_PTR)"1234", 4, (CK_UTF8CHAR_PTR)"9999", 4);
-  CHECK(rv == CKR_FUNCTION_NOT_SUPPORTED, "pin SetPIN pre-P6 stub (0x%lx)",
+  CHECK(rv == CKR_FUNCTION_NOT_SUPPORTED, "pin SetPIN pre-provisioning stub (0x%lx)",
         (unsigned long)rv);
   rv = fl->C_CloseSession(s);
   CHECK(rv == CKR_OK, "pin close ok");

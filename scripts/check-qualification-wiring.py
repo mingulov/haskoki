@@ -44,7 +44,7 @@ Fails (exit 1) when any rule fails:
   toolchain/proxy-pair jobs need the static-gates job.
 * QW-LANE-TIMEOUT: every job sets `timeout-minutes`.
 * QW-LANE-ARTIFACT: every job uploads an artifact and carries an
-  `if: always()` step so partial failure evidence survives a red run.
+  `if: always()` step so partial failure evidence survives a failing run.
 
 Run on HOST python3 from anywhere:
   python3 scripts/check-qualification-wiring.py
