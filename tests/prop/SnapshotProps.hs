@@ -59,9 +59,10 @@ import Haskoki.Operation
   , setBuffered
   , setLive
   )
-import Haskoki.Operation.Cipher (planCipherUpdate)
+import Haskoki.Operation.Cipher (planCipherFinal, planCipherUpdate)
 import Haskoki.Operation.Digest (finishDigest, planDigestOneShot)
 import Haskoki.Operation.Dual (planDualUpdate)
+import Haskoki.Operation.Signature (planSignRecoverOneShot)
 import Haskoki.Registry
   ( MechanismId (..)
   , Operation (..)
@@ -71,10 +72,12 @@ import Haskoki.Registry
 import Haskoki.Request (OutputIntent (..))
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Snapshot
-  ( RestoreKeys (..)
+  ( RestoreError (..)
+  , RestoreKeys (..)
   , SaveError (SaveEmpty, SaveStreamLive)
   , SaveTarget (..)
   , defaultQuotas
+  , restoreCode
   , restoreOperation
   , saveOperation
   )
@@ -107,6 +110,8 @@ spec count =
     , testCase "padded decrypt slots roundtrip" (caseDecryptPadded count)
     , testCase "recover slots roundtrip" (caseRecover count)
     , testCase "message slots roundtrip" (caseMessage count)
+    , testCase "cipher geometry mutations reject" (caseCipherGeometryRejects count)
+    , testCase "recover geometry mutations reject" (caseRecoverGeometryRejects count)
     , testCase "live stream refuses save" caseStreamLive
     ]
 
@@ -648,6 +653,120 @@ caseMessage count =
             (mkKeyedCommon mech (msgOperation fam) part)
             inner mspec (fromIntegral (seed `mod` 5))
       roundtripKeyed (msgFamilyKind fam) (mkActiveMessage ms)
+
+-- ---------------------------------------------------------------------------
+-- Geometry revalidation laws
+-- ---------------------------------------------------------------------------
+
+-- | Big-endian u32, mirroring the snapshot codec.
+u32be :: Int -> ByteString
+u32be n = BS.pack
+  [ fromIntegral (n `div` 0x1000000)
+  , fromIntegral (n `div` 0x10000)
+  , fromIntegral (n `div` 0x100)
+  , fromIntegral n
+  ]
+
+-- | Replace the 4 bytes ending @back@ bytes from the end (a trailing
+-- u32 field) with the big-endian encoding of @n@.
+pokeU32 :: ByteString -> Int -> Int -> ByteString
+pokeU32 bs back n =
+  let len = BS.length bs
+      (h, t) = BS.splitAt (len - back) bs
+  in h <> u32be n <> BS.drop 4 t
+
+-- | Save one keyed cipher slot buffering the given part.
+saveCipherPart :: ByteString -> IO ByteString
+saveCipherPart part = do
+  let stA0 = mkSession (SessionId 1)
+      (ops1, out1) = initOperation cipherEnv (ssOps stA0) stA0 encryptArgs
+  assertEqual "init code" CKR_OK (ioCode out1)
+  let stA1 = stA0 { ssOps = ops1 }
+      (ops2, stA2, stepU) = planCipherUpdate ops1 stA1 SlotEncrypt part Nothing
+  assertEqual "update code" CKR_OK (soCode stepU)
+  case saveOperation defaultQuotas modelWithAesKey (stA2 { ssOps = ops2 })
+      Pkcs11_3_2 (SaveSlot SlotEncrypt) of
+    Left err -> assertFailure ("save failed: " ++ show err) >> undefined
+    Right b -> pure b
+
+-- | Every generated cipher save with a corrupted block field rejects
+-- as malformed: decode revalidates the shared init bounds instead
+-- of installing hostile geometry. The target still restores a
+-- valid save afterwards, and the restored slot plans a final.
+caseCipherGeometryRejects :: Int -> IO ()
+caseCipherGeometryRejects count = do
+  mapM_ check [1 .. fromIntegral count]
+  good <- saveCipherPart (lcgBytes 999 16)
+  let target = mkSession (SessionId 2)
+  stR <- case restoreOperation defaultQuotas modelWithAesKey target
+      Pkcs11_3_2 (RestoreSingle (Just keyHandle)) good of
+    Left err -> assertFailure ("follow-up restore failed: " ++ show err)
+      >> undefined
+    Right s -> pure s
+  let (_, _, fin) = planCipherFinal (ssOps stR) stR SlotEncrypt "cipher"
+  assertEqual "follow-up final code" CKR_OK (soCode fin)
+  where
+    badBlocks = [0, 1025, 65536, 0x7FFFFFFF, 0xFFFFFFFF]
+    check :: Word64 -> IO ()
+    check seed = do
+      let size = fromIntegral (seed `mod` 65)
+          part = lcgBytes seed size
+      good <- saveCipherPart part
+      let bad = badBlocks !! fromIntegral (seed `mod` fromIntegral (length badBlocks))
+          mutated = pokeU32 good 5 bad
+      case restoreOperation defaultQuotas modelWithAesKey (mkSession (SessionId 2))
+          Pkcs11_3_2 (RestoreSingle (Just keyHandle)) mutated of
+        Left err@(RestoreMalformed _) ->
+          assertEqual "restore code" CKR_SAVED_STATE_INVALID (restoreCode err)
+        other -> assertFailure
+          ("corrupt block " ++ show bad ++ " accepted: " ++ show other)
+
+-- | Save one keyed sign-recover slot buffering the given part.
+saveRecoverPart :: ByteString -> RecoverSpec -> IO ByteString
+saveRecoverPart part rspec = do
+  let stA = (mkSession (SessionId 1))
+        { ssOps = insertOp
+            (mkActiveRecover RoleSignRecover
+              (mkKeyedCommon rsaX509Mech OpSignRecover part) rspec)
+            emptySessionOps
+        }
+  case saveOperation defaultQuotas modelWithAesKey stA
+      Pkcs11_3_2 (SaveSlot SlotSign) of
+    Left err -> assertFailure ("save failed: " ++ show err) >> undefined
+    Right b -> pure b
+
+-- | Every generated recovery save with corrupted length fields
+-- rejects as malformed. The target still restores a valid save
+-- afterwards, and the restored slot plans a one-shot.
+caseRecoverGeometryRejects :: Int -> IO ()
+caseRecoverGeometryRejects count = do
+  mapM_ check [1 .. fromIntegral count]
+  good <- saveRecoverPart BS.empty (RecoverSpec 128 16)
+  stR <- case restoreOperation defaultQuotas modelWithAesKey (mkSession (SessionId 2))
+      Pkcs11_3_2 (RestoreSingle (Just keyHandle)) good of
+    Left err -> assertFailure ("follow-up restore failed: " ++ show err)
+      >> undefined
+    Right s -> pure s
+  let (_, _, o1) = planSignRecoverOneShot (ssOps stR) stR "block" "recover-me"
+  assertEqual "follow-up one-shot code" CKR_OK (soCode o1)
+  assertEqual "follow-up one-shot plans" 1 (length (soEffects o1))
+  where
+    badShapes = [(0, 16), (128, 0), (16, 32), (0, 0), (1, 2)]
+    check :: Word64 -> IO ()
+    check seed = do
+      let size = fromIntegral (seed `mod` 65)
+          part = lcgBytes seed size
+      good <- saveRecoverPart part (RecoverSpec 128 16)
+      let (cap, tagLen) =
+            badShapes !! fromIntegral (seed `mod` fromIntegral (length badShapes))
+          mutated = pokeU32 (pokeU32 good 8 cap) 4 tagLen
+      case restoreOperation defaultQuotas modelWithAesKey (mkSession (SessionId 2))
+          Pkcs11_3_2 (RestoreSingle (Just keyHandle)) mutated of
+        Left err@(RestoreMalformed _) ->
+          assertEqual "restore code" CKR_SAVED_STATE_INVALID (restoreCode err)
+        other -> assertFailure
+          ("corrupt lengths " ++ show (cap, tagLen)
+            ++ " accepted: " ++ show other)
 
 -- | A digest slot with a live backend stream refuses to save
 -- (Snapshot.hs `SaveStreamLive`): the portable bytes cannot

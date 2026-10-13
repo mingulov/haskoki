@@ -3,10 +3,15 @@
 A 'MemoryWorld' is the shared store identity (the analogue of one
 SQLite file): exactly one open 'Store' owns it at a time, and
 closing releases ownership so a later generation can reopen the
-same durable state. State lives in an 'MVar'-guarded map pair;
-every 'storeCommit' applies its 'StoreDelta' atomically under the
-one lock, so multi-object transactions are all-or-nothing by
-construction.
+same durable state. Ownership is handle-scoped (M4): every open
+mints a fresh owner token and a close releases only while its own
+token is still current, so a stale close can never release a new
+owner. State lives in an 'MVar'-guarded map pair; every
+'storeCommit' applies its 'StoreDelta' atomically under the one
+lock, so multi-object transactions are all-or-nothing by
+construction. Close serializes with use (M4): it waits for the
+handle's commit lock, marks the handle closed, and only then
+releases the token; later uses of the closed handle fail closed.
 
 This backend runs the shared commit protocol: quarantine refusal,
 pre-commit fault rollback, a masked durable section with
@@ -31,9 +36,10 @@ import Control.Concurrent.MVar
   , tryTakeMVar
   , withMVar
   )
-import Control.Exception (bracket_, mask_)
+import Control.Exception (bracket_, mask_, throwIO, uninterruptibleMask_)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (nub, sortOn)
+import Data.Unique (Unique, newUnique)
 import Data.Word (Word64)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -43,6 +49,7 @@ import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , FaultInjector (..)
   , FaultPoint (..)
+  , HandleState (..)
   , JobRecord (..)
   , LoadedState (..)
   , ObjectPut (..)
@@ -70,6 +77,7 @@ import Haskoki.Runtime.Storage
   , noFaults
   , reconcileJobsReload
   , reconcileReload
+  , storeClosed
   , zeroStats
   )
 import Haskoki.Types (Generation (..), ObjectId (..), Revision, TokenId (..))
@@ -83,62 +91,123 @@ data WorldState = WorldState
   }
 
 -- | One memory store identity: the state plus the single-writer
--- ownership flag ('True' = currently owned).
+-- owner token ('Nothing' = currently unowned; 'Just' the token
+-- minted by the owning open).
 data MemoryWorld = MemoryWorld
   { mwState :: !(MVar WorldState)
-  , mwOwner :: !(MVar Bool)
+  , mwOwner :: !(MVar (Maybe Unique))
   }
 
 -- | A fresh empty world with no owner.
 newMemoryWorld :: IO MemoryWorld
 newMemoryWorld = MemoryWorld
   <$> newMVar (WorldState Map.empty Map.empty Map.empty Map.empty)
-  <*> newMVar False
+  <*> newMVar Nothing
 
 -- | Open the world with default limits and no fault injection.
 openMemoryStore :: MemoryWorld -> IO (Either StoreError Store)
 openMemoryStore world = openMemoryStoreWith world defaultLimits noFaults
 
 -- | Open the world with explicit limits (always enforced)
--- and an explicit fault injector.
+-- and an explicit fault injector. The open mints a fresh owner
+-- token plus a per-handle lifecycle state; the close releases
+-- the token only while it is still current.
 openMemoryStoreWith :: MemoryWorld -> StoreLimits -> FaultInjector -> IO (Either StoreError Store)
 openMemoryStoreWith world limits inj = do
   mPrev <- tryTakeMVar (mwOwner world)
   case mPrev of
     Nothing -> pure (Left alreadyOpen)
-    Just True -> do
-      putMVar (mwOwner world) True
+    Just prev@(Just _) -> do
+      putMVar (mwOwner world) prev
       pure (Left alreadyOpen)
-    Just False -> do
-      putMVar (mwOwner world) True
+    Just Nothing -> do
+      tok <- newUnique
+      putMVar (mwOwner world) (Just tok)
       qVar <- newMVar []
       sVar <- newIORef zeroStats
       cVar <- newMVar ()
-      pure (Right (mkStore world limits inj qVar sVar cVar))
+      closedVar <- newMVar HandleOpen
+      pure (Right (mkStore world limits inj qVar sVar cVar tok closedVar))
   where
     alreadyOpen = StoreSecondWriter "memory store is already open (single writer)"
 
--- | Build the 'Store' record over an owned world.
-mkStore :: MemoryWorld -> StoreLimits -> FaultInjector -> MVar [(TokenId, String)] -> IORef StoreStats -> MVar () -> Store
-mkStore world limits inj qVar sVar cVar = Store
-  { storeLoadTokens = loadTokens world
-  , storeLoadJobs = loadJobs world
-  , storeCommit = protocolDelta world limits inj qVar sVar cVar
-  , storeResetToken = resetTokenWorld world limits inj qVar sVar cVar
-  , storeClose = releaseOwner (mwOwner world)
-  , storeInspect = inspectWorld world
+-- | Build the 'Store' record over an owned world: the owner token
+-- plus the per-handle lifecycle state scope every operation and
+-- the close to this handle.
+mkStore :: MemoryWorld -> StoreLimits -> FaultInjector -> MVar [(TokenId, String)] -> IORef StoreStats -> MVar () -> Unique -> MVar HandleState -> Store
+mkStore world limits inj qVar sVar cVar tok closedVar = Store
+  { storeLoadTokens = withUse cVar closedVar (loadTokens world)
+  , storeLoadJobs = withUse cVar closedVar (loadJobs world)
+  , storeCommit = protocolDelta world limits inj qVar sVar cVar closedVar
+  , storeResetToken = resetTokenWorld world limits inj qVar sVar cVar closedVar
+  , storeClose = closeMemory world tok inj cVar closedVar
+  , storeInspect = withUse cVar closedVar (fmap Right (inspectWorld world))
   , storeQuarantined = readMVar qVar
-  , storeReload = reloadWorld world qVar
+  , storeReload = withUse cVar closedVar (reloadWorld world qVar)
   , storeStats = readIORef sVar
-  , storeLoadMeta = loadMeta world
+  , storeLoadMeta = withUse cVar closedVar (loadMeta world)
   }
 
--- | Release ownership. Idempotent: a double close leaves the flag
--- released and never reports an error.
-releaseOwner :: MVar Bool -> IO ()
-releaseOwner v = mask_ $ do
-  _ <- takeMVar v
-  putMVar v False
+-- | Run one world read under the handle's commit lock, failing
+-- closed unless the handle is open (a close-failed handle
+-- refuses exactly like a closed one). Holding the lock across
+-- the check and the read serializes the read with the close
+-- (which takes the same lock before marking the state), so a
+-- read either serves fully before the close or reports closed —
+-- never a torn view. Internal commit-path loads bypass this
+-- (they already hold the lock); only the exported 'Store' fields
+-- use it.
+withUse :: MVar () -> MVar HandleState -> IO (Either StoreError a) -> IO (Either StoreError a)
+withUse cVar closedVar act =
+  bracket_ (takeMVar cVar) (putMVar cVar ()) $ do
+    st <- readMVar closedVar
+    if st == HandleOpen then act else pure (Left storeClosed)
+
+-- | Close as this handle's own owner: wait for the commit lock,
+-- then either retire (a clean close marks closed and releases
+-- the owner token, but only while the token is still ours) or,
+-- on an injected 'FaultClose', poison the handle (it keeps the
+-- token, refuses new operations, and the close throws to report
+-- the failure) so a later close retries for real. Idempotent on
+-- a cleanly closed handle, and stale-safe (a close after a
+-- reopen finds a foreign token and releases nothing). The state
+-- cell is only ever emptied across non-blocking updates: the
+-- state read and the fault probe both precede the take, so an
+-- exception or a kill during the arbitrary 'fiFire' IO cannot
+-- strand the cell empty (this close holds the commit lock
+-- throughout, so no other writer can interleave). The retire
+-- tail itself runs uninterruptibly: a competing open can
+-- transiently empty the owner cell, and a kill landing while the
+-- release waits on it would otherwise orphan ownership behind a
+-- handle already marked closed (whose retries would no-op). The
+-- uninterruptible wait is bounded by the racing thread's own
+-- non-blocking owner update.
+closeMemory :: MemoryWorld -> Unique -> FaultInjector -> MVar () -> MVar HandleState -> IO ()
+closeMemory world tok inj cVar closedVar = mask_ $
+  bracket_ (takeMVar cVar) (putMVar cVar ()) $ do
+    st <- readMVar closedVar
+    case st of
+      HandleClosed -> pure ()
+      _ -> do
+        failed <- fiFire inj FaultClose
+        if failed
+          then do
+            _ <- takeMVar closedVar
+            putMVar closedVar HandleCloseFailed
+            throwIO (StoreIO "memory store close failed (injected FaultClose)")
+          else uninterruptibleMask_ $ do
+            _ <- takeMVar closedVar
+            putMVar closedVar HandleClosed
+            releaseOwnerToken (mwOwner world) tok
+
+-- | Release ownership only while the given token is still
+-- current; a stale token restores the cell untouched.
+releaseOwnerToken :: MVar (Maybe Unique) -> Unique -> IO ()
+releaseOwnerToken v tok = mask_ $ do
+  cur <- takeMVar v
+  case cur of
+    Just t | t == tok -> putMVar v Nothing
+    _ -> putMVar v cur
 
 -- | Load every token with its home objects, token-id ascending,
 -- object-id ascending within each token. Decode round-trips every
@@ -159,11 +228,14 @@ loadTokens world = withMVar (mwState world) $ \st ->
           Nothing -> Left (StoreCorrupt ("corrupt object record on token " ++ show (trId tok)))
           Just objs -> Right (tok', objs)
 
--- | The commit protocol: quarantine refusal, pre-commit
--- validation (limits, expected revisions), pre-commit fault
--- rollback, then the masked durable section (swap, ambiguous
--- verification, post-commit quarantine). One commit runs at a
--- time per handle.
+-- | The commit protocol: closed-handle refusal, quarantine
+-- refusal, pre-commit validation (limits, expected revisions),
+-- pre-commit fault rollback, then the masked durable section
+-- (swap, ambiguous verification, post-commit quarantine). One
+-- commit runs at a time per handle; the state check runs under
+-- the commit lock, so a commit either enters fully before the
+-- close or reports the non-open handle — the close (which takes
+-- the same lock first) can never strand it mid-flight.
 protocolDelta
   :: MemoryWorld
   -> StoreLimits
@@ -171,16 +243,20 @@ protocolDelta
   -> MVar [(TokenId, String)]
   -> IORef StoreStats
   -> MVar ()
+  -> MVar HandleState
   -> StoreDelta
   -> IO CommitResult
-protocolDelta world limits inj qVar sVar cVar delta =
-  bracket_ (takeMVar cVar) (putMVar cVar ())
-    (protocolLocked world limits inj qVar sVar delta)
+protocolDelta world limits inj qVar sVar cVar closedVar delta =
+  bracket_ (takeMVar cVar) (putMVar cVar ()) $ do
+    st <- readMVar closedVar
+    if st == HandleOpen
+      then protocolLocked world limits inj qVar sVar delta
+      else pure (NotCommitted storeClosed)
 
 -- | Token reset: the expected generation must match the current
 -- one, then the replacement plus the removal of every owned
--- object and job run as one ordinary protocol flow (quarantine,
--- validation, faults, masking all apply).
+-- object and job run as one ordinary protocol flow (closed-handle
+-- refusal, quarantine, validation, faults, masking all apply).
 resetTokenWorld
   :: MemoryWorld
   -> StoreLimits
@@ -188,16 +264,21 @@ resetTokenWorld
   -> MVar [(TokenId, String)]
   -> IORef StoreStats
   -> MVar ()
+  -> MVar HandleState
   -> TokenId
   -> Generation
   -> TokenRecord
   -> IO CommitResult
-resetTokenWorld world limits inj qVar sVar cVar tid wantGen replacement =
+resetTokenWorld world limits inj qVar sVar cVar closedVar tid wantGen replacement =
   bracket_ (takeMVar cVar) (putMVar cVar ()) $ do
-    eEff <- resetEffective world tid wantGen replacement
-    case eEff of
-      Left err -> pure (NotCommitted err)
-      Right eff -> protocolLocked world limits inj qVar sVar eff
+    st <- readMVar closedVar
+    if st == HandleOpen
+      then do
+        eEff <- resetEffective world tid wantGen replacement
+        case eEff of
+          Left err -> pure (NotCommitted err)
+          Right eff -> protocolLocked world limits inj qVar sVar eff
+      else pure (NotCommitted storeClosed)
 
 -- | Build the reset's effective delta under one state read (runs
 -- under the commit lock, so the generation check is exact).

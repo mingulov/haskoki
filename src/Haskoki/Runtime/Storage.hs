@@ -65,6 +65,8 @@ module Haskoki.Runtime.Storage
     -- * Store contract
   , Store (..)
   , StoredDoc (..)
+  , HandleState (..)
+  , storeClosed
     -- * Model projection
   , objectToRecord
   , reserveRestoredIds
@@ -100,6 +102,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word8, Word64)
 
+import Control.Exception (Exception)
 import Control.Monad (guard)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Maybe (listToMaybe)
@@ -313,17 +316,28 @@ data StoreError
   | StoreRevisionConflict !String
   deriving (Eq, Show)
 
+-- | Store failures throw as exceptions on the paths with no
+-- 'Either' channel (M4: a failed 'storeClose' reports by
+-- throwing the failure instead of returning silently).
+instance Exception StoreError
+
 -- ---------------------------------------------------------------------------
 -- Commit protocol
 -- ---------------------------------------------------------------------------
 
--- | Fault-injection points in the commit path.
+-- | Fault-injection points in the commit path, plus the close
+-- path ('FaultClose'). A fired 'FaultClose' simulates a failed
+-- close: ownership and guards are retained, the handle stops
+-- serving new operations, the close reports the failure by
+-- throwing, and a later close retries for real. Both backends
+-- honor it identically (one shot, like every other point).
 data FaultPoint
   = FaultBeforeCommit
   | FaultAmbiguousCommit
   | FaultVerifyReload
   | FaultAfterCommit
   | FaultFullDisk
+  | FaultClose
   deriving (Eq, Show)
 
 -- | One-shot fault injector plus masked-region observation hooks.
@@ -585,13 +599,43 @@ checkSlotUnique currentToks delta =
 -- Quarantine is a live-handle property: it guards a handle whose
 -- view may have diverged from durable truth. A fresh handle loads
 -- the authoritative bytes and starts clean.
+--
+-- Ownership is handle-scoped (M4): every open mints a fresh owner
+-- token and a handle is closed exactly as its own owner. A close
+-- releases ownership only while its handle is still the current
+-- owner; a stale close (a second close after the identity
+-- reopened under a new handle) is a silent no-op that never
+-- releases the new owner.
+--
+-- Close serializes with use (M4): 'storeClose' waits for any
+-- in-flight operation on its handle (commit, reset, load,
+-- inspect, reload), then marks the handle closed. After a close
+-- returns, every world-touching operation on that handle fails
+-- closed instead of touching released state — loads, inspect,
+-- reload, and meta loads report 'Left' 'storeClosed', commits
+-- and resets report 'NotCommitted' 'storeClosed' — while
+-- 'storeQuarantined' and 'storeStats'
+-- stay readable (live-handle properties that never touch the
+-- world). 'storeInspect' is fallible for the same reason: a
+-- closed handle or an unloadable world reports 'Left', never a
+-- silent empty list.
+--
+-- A failed close retains everything and refuses onward use
+-- (M4): when the close itself cannot complete (an injected
+-- 'FaultClose', or a SQLite close error), ownership and kernel
+-- guards stay held, the handle stops serving new operations
+-- (every world-touching operation reports 'storeClosed', exactly
+-- as after a clean close), the close reports the failure by
+-- throwing it, and a later close retries for real. A failed close
+-- never half-releases, and the next owner can never enter around
+-- the surviving connection.
 data Store = Store
   { storeLoadTokens :: IO (Either StoreError [(TokenRecord, [ObjectRecord])])
   , storeLoadJobs :: IO (Either StoreError [JobRecord])
   , storeCommit :: StoreDelta -> IO CommitResult
   , storeResetToken :: TokenId -> Generation -> TokenRecord -> IO CommitResult
   , storeClose :: IO ()
-  , storeInspect :: IO [StoredDoc]
+  , storeInspect :: IO (Either StoreError [StoredDoc])
   , storeQuarantined :: IO [(TokenId, String)]
   , storeReload :: IO (Either StoreError ())
   , storeStats :: IO StoreStats
@@ -616,6 +660,25 @@ instance Show StoredDoc where
   show d = "StoredDoc {docTable = " ++ show (docTable d)
     ++ ", docKey = " ++ show (docKey d)
     ++ ", docJson = " ++ redactShown "doc" (length (docJson d)) ++ "}"
+
+-- | Per-handle lifecycle state (M4), owned by the backend's
+-- close gate. 'HandleOpen' serves; 'HandleClosed' (a clean close)
+-- refuses new operations and ignores further closes;
+-- 'HandleCloseFailed' (a close that could not complete) refuses
+-- new operations like a closed handle but still owns the
+-- identity, and the next close retries for real.
+data HandleState
+  = HandleOpen
+  | HandleCloseFailed
+  | HandleClosed
+  deriving (Eq, Show)
+
+-- | The use-after-close diagnosis, shared by both backends and by
+-- both refusing states: every error-returning operation reports
+-- exactly this on a closed or close-failed handle (commits wrap
+-- it in 'NotCommitted').
+storeClosed :: StoreError
+storeClosed = StoreIO "store is closed"
 
 -- ---------------------------------------------------------------------------
 -- Model projection

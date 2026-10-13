@@ -53,6 +53,7 @@ import Haskoki.FFI.Async
   ( AsyncCtx (..)
   , AsyncData
   , JobHandle
+  , StoreBox
   , asyncCloseCtx
   , asyncLiveHandles
   , haskokiAsyncCancel
@@ -61,11 +62,16 @@ import Haskoki.FFI.Async
   , haskokiAsyncDigestInit
   , haskokiAsyncGetId
   , jobFunctionCode
+  , haskokiAsyncJoin
   , haskokiAsyncOpen
+  , haskokiAsyncOpenOn
   , haskokiAsyncPoll
   , haskokiAsyncStart
+  , haskokiAsyncStoreClose
+  , haskokiAsyncStoreOpen
   , pokeCompletion
   , pokeNeed
+  , resolveJobHandle
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.FFI.Standard
@@ -146,9 +152,16 @@ import Haskoki.Runtime.Async
   , pollJob
   , startJob
   , tableStats
+  , asyncTableId
   )
 import Haskoki.Runtime.Config (Config, resolveFrom)
-import Haskoki.Runtime.Detached (detachSlot, detachToken)
+import Haskoki.Runtime.Detached
+  ( AttachmentView (..)
+  , detachSlot
+  , detachToken
+  , inspectAttachment
+  , inspectReverse
+  )
 import Haskoki.Runtime.Storage (Store (..), StoreError (..))
 import Haskoki.Runtime.Lifecycle
   ( Env
@@ -197,6 +210,8 @@ spec envLock = testGroup "Async engine"
   , testCase "caseAsyncPublicCompletion" (caseAsyncPublicCompletion envLock)
   , testCase "caseAsyncEpochSurface" (caseAsyncEpochSurface envLock)
   , testCase "caseAsyncCleanupSurface" (caseAsyncCleanupSurface envLock)
+  , testCase "FFI close-one keeps other context live" (caseFfiCloseOneKeepsOther envLock)
+  , testCase "FFI simultaneous join: exactly one wins" (caseFfiJoinRace envLock)
   ]
 
 hex :: String -> ByteString
@@ -378,7 +393,7 @@ caseHmacSign = withBackend $ \be -> do
 -- Pinned CK_RV values (0x50/0x205 pinned directly in caseRvPins;
 -- no attached-async FFI path emits them: cancel frees the handle, and the ctx
 -- session is async by construction).
-rvOK, rvBad, rvShort, rvSession, rvNotInit, rvPending, rvHostMem, rvGeneral :: CULong
+rvOK, rvBad, rvShort, rvSession, rvNotInit, rvPending, rvHostMem, rvGeneral, rvActive :: CULong
 rvOK = CULong 0x0
 rvGeneral = CULong 0x05
 rvBad = CULong 0x07
@@ -387,6 +402,7 @@ rvNotInit = CULong 0x91
 rvShort = CULong 0x150
 rvPending = CULong 0x204
 rvSession = CULong 0xB3
+rvActive = CULong 0x90
 
 -- Function codes (the FFI's explicit poller identity).
 fnSign, fnDigest :: CULong
@@ -1620,3 +1636,170 @@ caseAsyncCleanupSurface envLock = do
     assertStdEmpty inst
     tableStats (siAsyncTable inst) >>= assertEqual "three canceled tombstones" (0,3,3)
     assertCanaryBuf "close/finalize writes nothing" bound 32
+
+-- ---------------------------------------------------------------------------
+-- Table-scoped joins and close over a shared store (exports)
+-- ---------------------------------------------------------------------------
+
+-- | Two contexts on one store through the exports: A starts and
+-- detaches, B joins, A closes mid-test — and B's attachment,
+-- live handle, reverse entry, and KAT delivery all survive. The
+-- closing table retires only its own attachments.
+caseFfiCloseOneKeepsOther :: MVar () -> IO ()
+caseFfiCloseOneKeepsOther envLock =
+  alloca $ \(pBox :: Ptr (StablePtr StoreBox)) ->
+  alloca $ \(pA :: Ptr (StablePtr AsyncCtx)) ->
+  alloca $ \(pB :: Ptr (StablePtr AsyncCtx)) -> do
+    box <- haskokiAsyncStoreOpen nullPtr
+    assertBool "store opens" (castStablePtrToPtr box /= nullPtr)
+    poke pBox box
+    (ctxA, ctxB) <- withEnvLock envLock
+      ((,) <$> haskokiAsyncOpenOn box <*> haskokiAsyncOpenOn box)
+    assertBool "ctxA opens" (castStablePtrToPtr ctxA /= nullPtr)
+    assertBool "ctxB opens" (castStablePtrToPtr ctxB /= nullPtr)
+    poke pA ctxA
+    poke pB ctxB
+    hA <- hSessionOf ctxA
+    hB <- hSessionOf ctxB
+    rvInitA <- initDigestFfi ctxA hA
+    assertEqual "init A ok" rvOK rvInitA
+    rvInitB <- initDigestFfi ctxB hB
+    assertEqual "init B ok" rvOK rvInitB
+    (rvStart, hJobA) <- startFfi ctxA hA fnDigest "abc" 32 1
+    assertEqual "start pending" rvPending rvStart
+    pid <- alloca $ \(pidOut :: Ptr Word64) -> do
+      rv <- haskokiAsyncGetId ctxA hJobA fnDigest pidOut
+      assertEqual "get_id ok" rvOK rv
+      peek pidOut
+    assertEqual "persistent id" 1 pid
+    hJobB <- alloca $ \(hSlot :: Ptr (StablePtr JobHandle)) ->
+      alloca $ \(needOut :: Ptr Word64) -> do
+        poke hSlot nullJob
+        poke needOut 0
+        rv <- haskokiAsyncJoin ctxB (CULong pid) fnDigest hB 32 hSlot needOut
+        assertEqual "join pending" rvPending rv
+        peek hSlot
+    assertBool "B handle live" (not (isNullJob hJobB))
+    -- Resolve B's job id for the attachment assertions.
+    cB <- deRefStablePtr ctxB
+    mJidB <- resolveJobHandle cB hJobB
+    jidB <- case mJidB of
+      Just j -> pure j
+      Nothing -> assertFailure "B handle unresolvable"
+    dcB <- case acDetach cB of
+      Just dc -> pure dc
+      Nothing -> assertFailure "B has no detach state"
+    let tidB = asyncTableId (acTable cB)
+    av0 <- inspectAttachment dcB pid
+    assertEqual "B active" (Just (AvActive jidB)) av0
+    rev0 <- inspectReverse dcB tidB jidB
+    assertEqual "B reverse resolves" (Just pid) rev0
+    -- Close A mid-test: B keeps its attachment, handle, and job.
+    haskokiAsyncClose pA
+    nulledA <- peek pA
+    assertBool "slot A nulled" (castStablePtrToPtr nulledA == nullPtr)
+    av1 <- inspectAttachment dcB pid
+    assertEqual "B still active" (Just (AvActive jidB)) av1
+    nLiveB <- asyncLiveHandles cB
+    assertEqual "B handle survives" 1 nLiveB
+    -- B polls ready and completes KAT bytes exactly once.
+    rvPoll <- haskokiAsyncPoll ctxB hJobB fnDigest
+    assertEqual "B ready" rvOK rvPoll
+    withStruct 32 $ \(pS, pV) -> do
+      rv <- haskokiAsyncComplete ctxB hJobB fnDigest pS
+      assertEqual "B complete ok" rvOK rv
+      ver <- readField pS offVersion
+      len <- readField pS offValueLen
+      bytes <- readBytes pV 32
+      assertEqual "version" (CULong 1) ver
+      assertEqual "length" (CULong 32) len
+      assertEqual "KAT bytes" sha256Abc bytes
+    nLiveB2 <- asyncLiveHandles cB
+    assertEqual "B handle retired" 0 nLiveB2
+    haskokiAsyncClose pB
+    nulledB <- peek pB
+    assertBool "slot B nulled" (castStablePtrToPtr nulledB == nullPtr)
+    haskokiAsyncStoreClose pBox
+    nulledBox <- peek pBox
+    assertBool "box nulled" (castStablePtrToPtr nulledBox == nullPtr)
+
+-- | Two contexts on one store race the same persistent id
+-- through the exports behind a barrier: exactly one join
+-- reports PENDING with a live handle; the loser reports
+-- OPERATION_ACTIVE (@0x90@) with a null handle. The winner
+-- delivers KAT bytes; the public path preserves its return
+-- codes on both sides.
+caseFfiJoinRace :: MVar () -> IO ()
+caseFfiJoinRace envLock =
+  alloca $ \(pBox :: Ptr (StablePtr StoreBox)) ->
+  alloca $ \(pA :: Ptr (StablePtr AsyncCtx)) ->
+  alloca $ \(pB :: Ptr (StablePtr AsyncCtx)) -> do
+    box <- haskokiAsyncStoreOpen nullPtr
+    assertBool "store opens" (castStablePtrToPtr box /= nullPtr)
+    poke pBox box
+    (ctxA, ctxB) <- withEnvLock envLock
+      ((,) <$> haskokiAsyncOpenOn box <*> haskokiAsyncOpenOn box)
+    assertBool "ctxA opens" (castStablePtrToPtr ctxA /= nullPtr)
+    assertBool "ctxB opens" (castStablePtrToPtr ctxB /= nullPtr)
+    poke pA ctxA
+    poke pB ctxB
+    hA <- hSessionOf ctxA
+    hB <- hSessionOf ctxB
+    rvInitA <- initDigestFfi ctxA hA
+    assertEqual "init A ok" rvOK rvInitA
+    rvInitB <- initDigestFfi ctxB hB
+    assertEqual "init B ok" rvOK rvInitB
+    (rvStart, hJobA) <- startFfi ctxA hA fnDigest "abc" 32 1
+    assertEqual "start pending" rvPending rvStart
+    pid <- alloca $ \(pidOut :: Ptr Word64) -> do
+      rv <- haskokiAsyncGetId ctxA hJobA fnDigest pidOut
+      assertEqual "get_id ok" rvOK rv
+      peek pidOut
+    go <- newEmptyMVar
+    outA <- newEmptyMVar
+    outB <- newEmptyMVar
+    let joiner ctx h out = forkIO $ do
+          takeMVar go
+          r <- alloca $ \(hSlot :: Ptr (StablePtr JobHandle)) ->
+            alloca $ \(needOut :: Ptr Word64) -> do
+              poke hSlot nullJob
+              poke needOut 0
+              rv <- haskokiAsyncJoin ctx (CULong pid) fnDigest h 32 hSlot needOut
+              hj <- peek hSlot
+              pure (rv, hj)
+          putMVar out r
+    _ <- joiner ctxA hA outA
+    _ <- joiner ctxB hB outB
+    putMVar go ()
+    putMVar go ()
+    (rvA, hA') <- joinBounded "join racer A" outA
+    (rvB, hB') <- joinBounded "join racer B" outB
+    (ctxW, hW) <- case (rvA, rvB) of
+      (rv1, rv2)
+        | rv1 == rvPending && rv2 == rvActive -> do
+            assertBool "loser handle null" (isNullJob hB')
+            assertBool "winner handle live" (not (isNullJob hA'))
+            pure (ctxA, hA')
+        | rv1 == rvActive && rv2 == rvPending -> do
+            assertBool "loser handle null" (isNullJob hA')
+            assertBool "winner handle live" (not (isNullJob hB'))
+            pure (ctxB, hB')
+        | otherwise -> assertFailure
+            ("race must split pending/active, got " ++ show (rvA, rvB))
+    -- Exactly one live handle across both contexts; the winner
+    -- delivers KAT bytes exactly once.
+    cA <- deRefStablePtr ctxA
+    cB <- deRefStablePtr ctxB
+    nA <- asyncLiveHandles cA
+    nB <- asyncLiveHandles cB
+    assertEqual "one live handle total" 1 (nA + nB)
+    rvPoll <- haskokiAsyncPoll ctxW hW fnDigest
+    assertEqual "winner ready" rvOK rvPoll
+    withStruct 32 $ \(pS, pV) -> do
+      rv <- haskokiAsyncComplete ctxW hW fnDigest pS
+      assertEqual "winner complete ok" rvOK rv
+      bytes <- readBytes pV 32
+      assertEqual "KAT bytes" sha256Abc bytes
+    haskokiAsyncClose pA
+    haskokiAsyncClose pB
+    haskokiAsyncStoreClose pBox

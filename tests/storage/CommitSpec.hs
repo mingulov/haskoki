@@ -101,7 +101,7 @@ import Haskoki.Types
   , SlotId (..)
   , TokenId (..)
   )
-import StoreSpec (demoJobPending, demoJobResult, expectJust, expectRight, makeTempDir, seedStore)
+import StoreSpec (demoJobPending, demoJobResult, expectInspect, expectJust, expectRight, makeTempDir, seedStore)
 
 -- | Open a store on the case identity with the given limits and faults.
 type OpenWith = StoreLimits -> FaultInjector -> IO (Either StoreError Store)
@@ -693,7 +693,7 @@ testLimitTotal openWith = do
   eClean <- openWith defaultLimits noFaults
   sClean <- either (assertFailure . show) pure eClean
   (tok, _) <- seedStore sClean
-  before <- storeInspect sClean
+  before <- expectInspect sClean
   storeClose sClean
   let currentBytes = sum (map (length . docJson) before)
   eProbe <- openWith defaultLimits noFaults

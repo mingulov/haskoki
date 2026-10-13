@@ -83,6 +83,13 @@ extern uint64_t haskoki_std_token_live(void *instance, uint64_t slot,
                                        uint64_t *p_sess, uint64_t *p_rw,
                                        uint64_t *p_ulock, uint64_t *p_slock,
                                        uint64_t *p_urem, uint64_t *p_srem);
+extern uint64_t haskoki_std_token_policy(void *instance, uint64_t slot,
+                                         uint64_t *p_prov_max,
+                                         uint64_t *p_tok_max,
+                                         uint64_t *p_rw_max,
+                                         uint64_t *p_pin_min,
+                                         uint64_t *p_pin_max,
+                                         uint64_t *p_attempts);
 extern uint64_t haskoki_std_token_label(void *instance, uint64_t slot,
                                         uint8_t *p_label32);
 extern uint64_t haskoki_std_slot_present(void *instance, uint64_t slot);
@@ -538,11 +545,12 @@ CK_RV std_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
 }
 
 /* Provisioned token record: per-slot label plus live session
- * counts and PIN-state flags from the model. Session bound 1024
- * and PIN lengths 4..32 are the provisioned policy (the 1024
- * duplicates Rules.defaultRules.rulesMaxSessions, pinned by
- * StandardSurfaceSpec casePolicyPins). Serials are per-slot
- * (1-based, slot 0 keeps ...0001). */
+ * counts and PIN-state flags from the model. Session maxima and
+ * PIN bounds come from the ONE effective policy
+ * (Haskoki.Session.effectivePolicy via haskoki_std_token_policy),
+ * the same policy session admission reads — never a second
+ * hand-maintained table here. Serials are per-slot (1-based,
+ * slot 0 keeps ...0001). */
 CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   static const char kManu[] = "haskoki contributors";
@@ -558,6 +566,8 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   CK_RV lr = 0;
   CK_RV rv = 0;
   uint64_t nSess = 0, nRw = 0, uLock = 0, sLock = 0, uRem = 0, sRem = 0;
+  uint64_t provMax = 0, tokMax = 0, rwMax = 0, pinMin = 0, pinMax = 0,
+           attempts = 0;
   uint8_t label32[32];
   char serial16[17];
   lr = haskoki_state_lock();
@@ -577,6 +587,13 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   }
   rv = (CK_RV)haskoki_std_token_live(inst, (uint64_t)slotID, &nSess, &nRw,
                                      &uLock, &sLock, &uRem, &sRem);
+  if (rv != CKR_OK) {
+    (void)haskoki_state_unlock();
+    return rv;
+  }
+  rv = (CK_RV)haskoki_std_token_policy(inst, (uint64_t)slotID, &provMax,
+                                       &tokMax, &rwMax, &pinMin, &pinMax,
+                                       &attempts);
   if (rv != CKR_OK) {
     (void)haskoki_state_unlock();
     return rv;
@@ -611,12 +628,20 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   } else if (sRem == 2) {
     tmp.flags |= CKF_SO_PIN_COUNT_LOW;
   }
-  tmp.ulMaxSessionCount = 1024;
+  /* Effective policy: per-token maxima and PIN bounds from the
+   * Haskell side (the same policy admission enforces). provMax is
+   * the provider-wide admission capacity the gate counts against
+   * (CK_TOKEN_INFO has no provider field, so it is documented,
+   * not reported); attempts drives the COUNT_LOW/FINAL_TRY/LOCKED
+   * flags above through the remaining-attempt scalars. */
+  (void)provMax;
+  (void)attempts;
+  tmp.ulMaxSessionCount = (CK_ULONG)tokMax;
   tmp.ulSessionCount = (CK_ULONG)nSess;
-  tmp.ulMaxRwSessionCount = 1024;
+  tmp.ulMaxRwSessionCount = (CK_ULONG)rwMax;
   tmp.ulRwSessionCount = (CK_ULONG)nRw;
-  tmp.ulMaxPinLen = 32;
-  tmp.ulMinPinLen = 4;
+  tmp.ulMaxPinLen = (CK_ULONG)pinMax;
+  tmp.ulMinPinLen = (CK_ULONG)pinMin;
   tmp.ulTotalPublicMemory = CK_UNAVAILABLE_INFORMATION;
   tmp.ulFreePublicMemory = CK_UNAVAILABLE_INFORMATION;
   tmp.ulTotalPrivateMemory = CK_UNAVAILABLE_INFORMATION;

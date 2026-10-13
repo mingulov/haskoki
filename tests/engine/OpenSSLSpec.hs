@@ -9,11 +9,14 @@ independent of synthetic-engine outputs.
 Also: capability-miss rejection without silent fallback (including a
 guard-before-native probe on a closed backend), explicit RAW-vs-DER
 signature encodings with no silent conversion, private-context
-isolation, and shim-hygiene assertions.
+isolation, lifetime-gate post-close pins plus simultaneous-close
+totality, and shim-hygiene assertions.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module OpenSSLSpec (spec) where
 
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Monad (replicateM_)
 import Data.Bits ((.&.), shiftL, xor)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -51,7 +54,9 @@ import Haskoki.Engine.Backend
   , PqcSigAlg (..)
   , RsaCipherParams (..)
   , PssParams (..)
+  , ResourceSaveability (..)
   , SigCaps (..)
+  , UnsaveableReason (..)
   , SigSpec (..)
   , generateRandomMaxBytes
   , seedRandomMaxBytes
@@ -136,6 +141,8 @@ spec = testGroup "openssl4 engine"
   , testCase "shim has no pkcs11 provider or global cleanup" caseShimHygiene
   , testCase "invalid inputs fail typed, never crash" caseInvalidInputs
   , testCase "digest final consumes exactly once (behavioral)" caseFinalConsumesOnce
+  , testCase "lifetime gate: sequential post-close stays typed" caseLifetimeGateSequential
+  , testCase "lifetime gate: simultaneous close stays total" caseLifetimeGateSimultaneous
   ]
 
 -- ---------------------------------------------------------------------------
@@ -194,6 +201,11 @@ expectNative :: Show a => String -> EngineResult a -> IO ()
 expectNative label r = case r of
   EngineFail (BackendNative _ _ _) -> pure ()
   other -> assertFailure (label ++ ": expected BackendNative, got " ++ show other)
+
+expectInvalidState :: Show a => String -> EngineResult a -> IO ()
+expectInvalidState label r = case r of
+  EngineFail (BackendInvalidState _ _) -> pure ()
+  other -> assertFailure (label ++ ": expected BackendInvalidState, got " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- Known-answer fixtures (independent oracles, see module header)
@@ -5377,6 +5389,59 @@ caseFinalConsumesOnce = withBackend $ \env -> do
   case r3 of
     EngineFail (BackendResourceGone _ _) -> pure ()
     other -> assertFailure ("final after release must be Gone, got " ++ show other)
+
+-- | Lifetime gate, sequential half: after close every supported
+-- execute path answers InvalidState (never touches freed native
+-- state), while capability guards still answer first (the
+-- guard-before-gate law) and lifecycle releases stay total
+-- no-ops. Cached reads keep their characterization: caps still
+-- answer, drained resources report gone.
+caseLifetimeGateSequential :: IO ()
+caseLifetimeGateSequential = do
+  r <- openBackend "provider=default" :: IO (EngineResult (BackendEnv OpenSSL4))
+  env <- case r of
+    EngineFail err -> assertFailure ("openBackend failed: " ++ show err)
+    EngineOk e -> pure e
+  rid <- expectOk "init" =<< digestInit env D_SHA256
+  ref <- expectOk "import" =<< importKey env (KeyBytes (BS.replicate 32 0x17))
+  closeBackend env
+  expectUnsupported "guard before gate" =<< digestOneShot env D_SHAKE128 "abc"
+  expectInvalidState "one-shot post-close" =<< digestOneShot env D_SHA256 "abc"
+  expectInvalidState "init post-close" =<< digestInit env D_SHA256
+  expectInvalidState "update post-close" =<< digestUpdate env rid "hello"
+  expectInvalidState "final post-close" =<< digestFinal env rid
+  expectInvalidState "import post-close" =<< importKey env (KeyBytes "x")
+  expectInvalidState "export post-close" =<< exportKey env ref
+  -- A reference is already imported: the pure passthrough stays
+  -- total (no state, no lease) even post-close.
+  same <- expectOk "ref passthrough post-close" =<< importKey env (KeyRefMaterial ref)
+  assertEqual "passthrough identity" ref same
+  releaseResource env rid
+  destroyKey env ref
+  closeBackend env
+  caps <- queryCapabilities env
+  assertEqual "backend name post-close" "openssl4" (bcName caps)
+  save <- resourceSaveability env rid
+  case save of
+    ResourceUnsaveable (UnsaveableGone _) -> pure ()
+    other -> assertFailure ("expected Gone post-close, got " ++ show other)
+
+-- | Lifetime gate, simultaneous close: concurrent closes serialize
+-- into one drain — every closer returns and the backend reads
+-- closed after. (The race battery — each execute path vs close,
+-- plus cancel-while-closing — lives in OwnershipSpec's lifetime
+-- gate group, the suite with the MVar rendezvous helpers.)
+caseLifetimeGateSimultaneous :: IO ()
+caseLifetimeGateSimultaneous = do
+  r <- openBackend "provider=default" :: IO (EngineResult (BackendEnv OpenSSL4))
+  env <- case r of
+    EngineFail err -> assertFailure ("openBackend failed: " ++ show err)
+    EngineOk e -> pure e
+  done <- newEmptyMVar
+  let closer = closeBackend env >> putMVar done ()
+  replicateM_ 8 (forkIO closer)
+  replicateM_ 8 (takeMVar done)
+  expectInvalidState "post-close one-shot" =<< digestOneShot env D_SHA256 "abc"
 
 -- ---------------------------------------------------------------------------
 -- Small constructors used above

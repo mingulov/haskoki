@@ -22,14 +22,22 @@ import Haskoki.Model
   , emptyModel
   )
 import Haskoki.Operation
-  ( CipherSpec (..)
+  ( CipherDir (..)
+  , CipherSpec (..)
   , CryptoEffect (..)
   , CryptoResult (..)
   , DigestStream (..)
+  , DualState (..)
   , InitArgs (..)
   , InitOutcome (..)
   , KeyPolicy (..)
+  , MsgFamily (..)
+  , MsgInner (..)
+  , MsgState (..)
+  , OpAuth (..)
   , OpEnv (..)
+  , RecoverRole (..)
+  , RecoverSpec (..)
   , SessionOps
   , SlotKind (..)
   , StepOutcome (..)
@@ -42,19 +50,27 @@ import Haskoki.Operation
   , insertOp
   , lookupSingle
   , maxBuffered
+  , mkActiveCipher
   , mkActiveDigest
+  , mkActiveMessage
+  , mkActiveRecover
+  , mkSlotCommon
+  , msgFamilyKind
+  , msgOperation
   , retryStaged
   , setBuffered
+  , setDual
   , setLive
   )
 import Haskoki.Operation.Cipher (finishCipherUpdate, planCipherFinal, planCipherUpdate)
-import Haskoki.Operation.Dual (planDualUpdate)
+import Haskoki.Operation.Dual (planDualFinal, planDualUpdate)
 import Haskoki.Operation.Digest
   ( finishDigest
   , planDigestFinal
   , planDigestOneShot
   , planDigestUpdate
   )
+import Haskoki.Operation.Message (MsgOneShot (..), planMessageOneShot)
 import Haskoki.Registry
   ( MechanismId (..)
   , Operation (..)
@@ -107,6 +123,11 @@ spec = testGroup "operation snapshots"
   , testCase "defaults admit buffer-bound states" caseBufferBound
   , testCase "fixtures carry no pointer or handle encodings" caseNoPointers
   , testCase "dual save/restore roundtrip preserves both sides" caseDualRoundtrip
+  , testCase "cipher geometry mutations reject, target untouched" caseCipherGeometry
+  , testCase "cipher bound probes restore and plan" caseCipherBounds
+  , testCase "recovery lengths reject, target untouched" caseRecoverGeometry
+  , testCase "message spec presence rejects, target untouched" caseMessagePresence
+  , testCase "dual spec mutations reject, target untouched" caseDualGeometry
   ]
 
 sha256Mech :: MechanismId
@@ -781,3 +802,275 @@ caseDualRoundtrip = do
     Left err -> assertEqual "dual busy error"
       (RestoreSlotBusy SlotEncrypt) err
     Right _ -> assertFailure "dual restore into busy slot succeeded"
+
+-- ---------------------------------------------------------------------------
+-- Geometry revalidation: decode admits exactly what init admits
+-- ---------------------------------------------------------------------------
+
+-- | Big-endian u32, mirroring the snapshot codec.
+u32be :: Int -> BS.ByteString
+u32be n = BS.pack
+  [ fromIntegral (n `div` 0x1000000)
+  , fromIntegral (n `div` 0x10000)
+  , fromIntegral (n `div` 0x100)
+  , fromIntegral n
+  ]
+
+-- | Replace the 4 bytes ending @back@ bytes from the end (a trailing
+-- u32 field) with the big-endian encoding of @n@.
+pokeU32 :: BS.ByteString -> Int -> Int -> BS.ByteString
+pokeU32 bs back n =
+  let len = BS.length bs
+      (h, t) = BS.splitAt (len - back) bs
+  in h <> u32be n <> BS.drop 4 t
+
+-- | Save one keyed cipher slot directly (the encoder is total, so
+-- even geometries init would refuse encode): the baseline whose
+-- trailing block field the geometry tests mutate.
+saveCipherSlot :: CipherSpec -> IO BS.ByteString
+saveCipherSlot cspec = do
+  let sc = setBuffered "block#1-block#2-"
+        (mkSlotCommon aesCbcMech OpEncrypt (Just (ObjectId 9))
+          "0123456789abcdef" AuthNone)
+      stA = (mkSession (SessionId 1))
+        { ssOps = insertOp (mkActiveCipher DirEncrypt sc cspec) emptySessionOps }
+  expectSaved modelWithTwoKeys stA Pkcs11_3_2 (SaveSlot SlotEncrypt)
+
+-- | Restore cipher bytes into the target and plan a final over the
+-- restored slot: the follow-up proving a rejected restore left the
+-- target untouched.
+expectRestorePlan :: BS.ByteString -> SessionState -> IO ()
+expectRestorePlan bytes target = do
+  stR <- case restoreOperation defaultQuotas modelWithTwoKeys target
+      Pkcs11_3_2 (RestoreSingle (Just keyHandle)) bytes of
+    Left err -> assertFailure ("follow-up restore failed: " ++ show err) >> undefined
+    Right s -> pure s
+  let (_, _, fin) = planCipherFinal (ssOps stR) stR SlotEncrypt "cipher"
+  assertEqual "follow-up final code" CKR_OK (soCode fin)
+  case soEffects fin of
+    [_] -> pure ()
+    other -> assertFailure ("expected one final effect, got " ++ show other)
+
+caseCipherGeometry :: IO ()
+caseCipherGeometry = do
+  good <- saveCipherSlot (CipherSpec 16 False)
+  -- Golden frame: tag-4 suffix (dirB, block u32, padB).
+  assertEqual "cipher wire suffix"
+    (BS.pack [0x00, 0x00, 0x00, 0x00, 0x10, 0x00])
+    (BS.takeEnd 6 good)
+  padded <- saveCipherSlot (CipherSpec 16 True)
+  let target = mkSession (SessionId 2)
+      rejects label bytes =
+        case restoreOperation defaultQuotas modelWithTwoKeys target
+            Pkcs11_3_2 (RestoreSingle (Just keyHandle)) bytes of
+          Left err@(RestoreMalformed _) -> do
+            assertEqual (label ++ " code")
+              CKR_SAVED_STATE_INVALID (restoreCode err)
+            expectRestorePlan good target
+          other -> assertFailure (label ++ " accepted: " ++ show other)
+  rejects "block 0" (pokeU32 good 5 0)
+  rejects "block 1025" (pokeU32 good 5 1025)
+  rejects "block u32max" (pokeU32 good 5 0xFFFFFFFF)
+  rejects "padded block 256" (pokeU32 padded 5 256)
+  -- Negative control: 256 unpadded is in range, restores, and plans
+  -- (the 16 buffered bytes are ragged for a 256 final, so an update
+  -- proves the slot is live instead).
+  stN <- case restoreOperation defaultQuotas modelWithTwoKeys target
+      Pkcs11_3_2 (RestoreSingle (Just keyHandle)) (pokeU32 good 5 256) of
+    Left err -> assertFailure ("block 256 rejected: " ++ show err) >> undefined
+    Right s -> pure s
+  let (_, _, updN) = planCipherUpdate (ssOps stN) stN SlotEncrypt
+        "more-bytes" Nothing
+  assertEqual "block-256 update code" CKR_OK (soCode updN)
+  -- Aligned control: block 8 divides the 16 buffered bytes, so the
+  -- restored slot plans a final.
+  stA <- case restoreOperation defaultQuotas modelWithTwoKeys target
+      Pkcs11_3_2 (RestoreSingle (Just keyHandle)) (pokeU32 good 5 8) of
+    Left err -> assertFailure ("block 8 rejected: " ++ show err) >> undefined
+    Right s -> pure s
+  let (_, _, finA) = planCipherFinal (ssOps stA) stA SlotEncrypt "cipher"
+  assertEqual "block-8 final code" CKR_OK (soCode finA)
+
+-- | Valid geometry bounds roundtrip through init, save, and
+-- restore, and every restored slot plans a final: the shared
+-- predicate admits 1\/16\/255\/1024 unpadded and 1\/16\/255 padded.
+caseCipherBounds :: IO ()
+caseCipherBounds = mapM_ check
+  [ CipherSpec 1 False
+  , CipherSpec 16 False
+  , CipherSpec 255 False
+  , CipherSpec 1024 False
+  , CipherSpec 1 True
+  , CipherSpec 16 True
+  , CipherSpec 255 True
+  ]
+  where
+    check cspec = do
+      let args = encryptArgs { iaCipher = Just cspec }
+          stA0 = mkSession (SessionId 1)
+          (ops1, out1) = initOperation twoKeyEnv (ssOps stA0) stA0 args
+      assertEqual ("init " ++ show cspec) CKR_OK (ioCode out1)
+      let stA = stA0 { ssOps = ops1 }
+      bytes <- expectSaved modelWithTwoKeys stA Pkcs11_3_2 (SaveSlot SlotEncrypt)
+      -- Golden frame: tag-4 suffix pins the wire geometry.
+      assertEqual ("wire suffix " ++ show cspec)
+        (BS.pack [0x00] <> u32be (csBlock cspec)
+          <> BS.singleton (if csPad cspec then 0x01 else 0x00))
+        (BS.takeEnd 6 bytes)
+      stR <- case restoreOperation defaultQuotas modelWithTwoKeys
+          (mkSession (SessionId 2)) Pkcs11_3_2
+          (RestoreSingle (Just keyHandle)) bytes of
+        Left err ->
+          assertFailure ("restore " ++ show cspec ++ " failed: " ++ show err)
+            >> undefined
+        Right s -> pure s
+      assertEqual ("roundtrip " ++ show cspec)
+        (lookupSingle (ssOps stA) SlotEncrypt)
+        (lookupSingle (ssOps stR) SlotEncrypt)
+      let (_, _, fin) = planCipherFinal (ssOps stR) stR SlotEncrypt "cipher"
+      assertEqual ("final " ++ show cspec) CKR_OK (soCode fin)
+      case soEffects fin of
+        [FxCipher _ _ _ _ input] ->
+          assertEqual ("effect input " ++ show cspec)
+            (if csPad cspec then csBlock cspec else 0) (BS.length input)
+        other -> assertFailure ("expected one final effect, got " ++ show other)
+
+-- | Save one keyed sign-recovery slot directly: the baseline whose
+-- trailing capacity\/tag fields the length tests mutate.
+saveRecoverSlot :: RecoverSpec -> IO BS.ByteString
+saveRecoverSlot rspec = do
+  let sc = setBuffered "recover-me"
+        (mkSlotCommon aesCbcMech OpSignRecover (Just (ObjectId 9))
+          BS.empty AuthNone)
+      stA = (mkSession (SessionId 1))
+        { ssOps = insertOp
+            (mkActiveRecover RoleSignRecover sc rspec) emptySessionOps }
+  expectSaved modelWithTwoKeys stA Pkcs11_3_2 (SaveSlot SlotSign)
+
+caseRecoverGeometry :: IO ()
+caseRecoverGeometry = do
+  good <- saveRecoverSlot (RecoverSpec 128 16)
+  -- Golden frame: tag-3 suffix (roleB, capacity u32, tagLen u32).
+  assertEqual "recover wire suffix"
+    (BS.pack [0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x10])
+    (BS.takeEnd 9 good)
+  cipher <- saveCipherSlot (CipherSpec 16 False)
+  let target = mkSession (SessionId 2)
+      rejects label bytes =
+        case restoreOperation defaultQuotas modelWithTwoKeys target
+            Pkcs11_3_2 (RestoreSingle (Just keyHandle)) bytes of
+          Left err@(RestoreMalformed _) -> do
+            assertEqual (label ++ " code")
+              CKR_SAVED_STATE_INVALID (restoreCode err)
+            expectRestorePlan cipher target
+          other -> assertFailure (label ++ " accepted: " ++ show other)
+  rejects "capacity 0" (pokeU32 good 8 0)
+  rejects "tag 0" (pokeU32 good 4 0)
+  rejects "tag wider than capacity" (pokeU32 (pokeU32 good 8 16) 4 32)
+  rejects "capacity 0 tag 0" (pokeU32 (pokeU32 good 8 0) 4 0)
+
+-- | Save one keyed message slot directly with the given family and
+-- cipher-spec presence.
+saveMessageSlot :: MsgFamily -> Maybe CipherSpec -> IO BS.ByteString
+saveMessageSlot fam mspec = do
+  let sc = mkSlotCommon aesCbcMech (msgOperation fam) (Just (ObjectId 9))
+        "0123456789abcdef" AuthNone
+      ms = MsgState fam sc MsgIdle mspec 0
+      stA = (mkSession (SessionId 1))
+        { ssOps = insertOp (mkActiveMessage ms) emptySessionOps }
+  expectSaved modelWithTwoKeys stA Pkcs11_3_2 (SaveSlot (msgFamilyKind fam))
+
+caseMessagePresence :: IO ()
+caseMessagePresence = do
+  cipher <- saveCipherSlot (CipherSpec 16 False)
+  let target = mkSession (SessionId 2)
+      rejects label fam mspec = do
+        bytes <- saveMessageSlot fam mspec
+        case restoreOperation defaultQuotas modelWithTwoKeys target
+            Pkcs11_3_2 (RestoreSingle (Just keyHandle)) bytes of
+          Left err@(RestoreMalformed _) -> do
+            assertEqual (label ++ " code")
+              CKR_SAVED_STATE_INVALID (restoreCode err)
+            expectRestorePlan cipher target
+          other -> assertFailure (label ++ " accepted: " ++ show other)
+  rejects "encrypt without spec" MsgEncrypt Nothing
+  rejects "decrypt without spec" MsgDecrypt Nothing
+  rejects "sign with spec" MsgSign (Just (CipherSpec 16 False))
+  rejects "verify with spec" MsgVerify (Just (CipherSpec 16 False))
+  rejects "encrypt with corrupt spec" MsgEncrypt (Just (CipherSpec 0 False))
+  rejects "encrypt with wide spec" MsgEncrypt (Just (CipherSpec 1025 False))
+  rejects "encrypt with padded 256" MsgEncrypt (Just (CipherSpec 256 True))
+  -- Accepted control: a cipher family WITH a well-formed spec
+  -- restores and plans a one-shot over the restored geometry.
+  valid <- saveMessageSlot MsgEncrypt (Just (CipherSpec 16 False))
+  -- Golden frame: message suffix (mspec-present flag, block u32,
+  -- padB, delivered-count u32).
+  assertEqual "message wire suffix"
+    (BS.pack [0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00])
+    (BS.takeEnd 10 valid)
+  stV <- case restoreOperation defaultQuotas modelWithTwoKeys target
+      Pkcs11_3_2 (RestoreSingle (Just keyHandle)) valid of
+    Left err -> assertFailure ("valid message rejected: " ++ show err) >> undefined
+    Right s -> pure s
+  let scV = mkSlotCommon aesCbcMech (msgOperation MsgEncrypt)
+        (Just (ObjectId 9)) "0123456789abcdef" AuthNone
+  assertEqual "message roundtrip"
+    (Just (mkActiveMessage
+      (MsgState MsgEncrypt scV MsgIdle (Just (CipherSpec 16 False)) 0)))
+    (lookupSingle (ssOps stV) SlotEncrypt)
+  let (_, _, mo) = planMessageOneShot (ssOps stV) stV MsgEncrypt "message"
+        (MsgOneShotCipher BS.empty BS.empty "block#1-block#2-")
+  assertEqual "message one-shot code" CKR_OK (soCode mo)
+  assertEqual "message one-shot plans" 1 (length (soEffects mo))
+
+-- | Save one dual operation directly with the given cipher shape.
+saveDualSlot :: CipherSpec -> IO BS.ByteString
+saveDualSlot cspec = do
+  let dCommon = mkSlotCommon sha256Mech OpDigest Nothing BS.empty AuthNone
+      cCommon = mkSlotCommon aesCbcMech OpEncrypt (Just (ObjectId 9))
+        "0123456789abcdef" AuthNone
+      stA = (mkSession (SessionId 1))
+        { ssOps = setDual
+            (Just (DualState dCommon cCommon DirEncrypt cspec Nothing))
+            emptySessionOps }
+  expectSaved modelWithTwoKeys stA Pkcs11_3_2 SaveDual
+
+caseDualGeometry :: IO ()
+caseDualGeometry = do
+  -- Golden frame: a valid dual save ends with SPEC (block u32, padB)
+  -- plus the empty dual-staged flag.
+  let stA0 = mkSession (SessionId 1)
+      (ops1, out1) = initDualOperation dualEnv (ssOps stA0) stA0
+        digestArgs encryptArgs
+  assertEqual "dual init code" CKR_OK (ioCode out1)
+  valid <- expectSaved modelWithTwoKeys (stA0 { ssOps = ops1 })
+    Pkcs11_3_2 SaveDual
+  assertEqual "dual wire suffix"
+    (BS.pack [0x00, 0x00, 0x00, 0x10, 0x00, 0x00])
+    (BS.takeEnd 6 valid)
+  -- Accepted control: the valid dual restores and plans a final
+  -- over the restored geometry (one digest plus one cipher effect).
+  stV <- case restoreOperation defaultQuotas modelWithTwoKeys
+      (mkSession (SessionId 4)) Pkcs11_3_2
+      (RestoreDual Nothing (Just keyHandle)) valid of
+    Left err -> assertFailure ("valid dual rejected: " ++ show err) >> undefined
+    Right s -> pure s
+  assertEqual "dual roundtrip"
+    (dualOf (ssOps (stA0 { ssOps = ops1 }))) (dualOf (ssOps stV))
+  let (_, _, dfin) = planDualFinal (ssOps stV) stV
+  assertEqual "dual final code" CKR_OK (soCode dfin)
+  assertEqual "dual final plans" 2 (length (soEffects dfin))
+  cipher <- saveCipherSlot (CipherSpec 16 False)
+  let target = mkSession (SessionId 2)
+      rejects label cspec = do
+        bytes <- saveDualSlot cspec
+        case restoreOperation defaultQuotas modelWithTwoKeys target
+            Pkcs11_3_2 (RestoreDual Nothing (Just keyHandle)) bytes of
+          Left err@(RestoreMalformed _) -> do
+            assertEqual (label ++ " code")
+              CKR_SAVED_STATE_INVALID (restoreCode err)
+            expectRestorePlan cipher target
+          other -> assertFailure (label ++ " accepted: " ++ show other)
+  rejects "dual block 0" (CipherSpec 0 False)
+  rejects "dual block 1025" (CipherSpec 1025 False)
+  rejects "dual padded 256" (CipherSpec 256 True)

@@ -22,6 +22,7 @@ module StoreSpec
   , makeTempDir
   , expectRight
   , expectJust
+  , expectInspect
   , expectCreated
   , seedStore
   , demoJobPending
@@ -122,6 +123,15 @@ data Opener = Opener
 withOpener :: IO Opener -> (Opener -> IO ()) -> IO ()
 withOpener mkOpener = bracket mkOpener openerClose
 
+-- | Open the current identity, closing the handle when the body
+-- exits on any path (M4 hygiene: a failing assertion mid-case
+-- must not leak a live handle into fixture cleanup). Explicit
+-- closes inside the body stay — they are the behavior under
+-- test — and the bracket close is an idempotent no-op after
+-- them.
+withStore :: Opener -> (Store -> IO a) -> IO a
+withStore o = bracket (openCurrent o >>= either (assertFailure . show) pure) storeClose
+
 -- | Fresh memory identity per case.
 memoryOpener :: IO Opener
 memoryOpener = do
@@ -200,6 +210,8 @@ contractSpec label mkOpener = testGroup label
       withOpener mkOpener (testPersistReloadFresh . openCurrent)
   , testCase "second writer fails explicitly" $
       withOpener mkOpener testSecondWriter
+  , testCase "stale close does not release the new owner" $
+      withOpener mkOpener staleCloseDoesNotReleaseNewOwner
   , testCase "close/reopen preserves stored bytes exactly" $
       withOpener mkOpener testBytePreservation
   , testCase "empty store loads empty" $
@@ -277,7 +289,7 @@ testPersistReloadFresh openCurrent = do
   result1 <- storeCommit store1 delta
   assertEqual "initial commit" Committed result1
   -- The stored encoding carries no handle: pin the exact key set.
-  docs <- storeInspect store1
+  docs <- expectInspect store1
   let objDocs = [d | d <- docs, docTable d == "objects"]
   assertEqual "two object docs" 2 (length objDocs)
   mapM_ assertObjectDocKeys objDocs
@@ -336,6 +348,11 @@ expectRight ctx = either (\e -> assertFailure (ctx ++ ": " ++ show e)) pure
 expectJust :: String -> Maybe a -> IO a
 expectJust ctx = maybe (assertFailure ("missing: " ++ ctx)) pure
 
+-- | Inspect a store, failing the case on an inspection error (M4:
+-- inspection is fallible, so every happy-path use unwraps here).
+expectInspect :: Store -> IO [StoredDoc]
+expectInspect s = storeInspect s >>= expectRight "inspect"
+
 -- | Acceptance 2 (ownership): a second concurrent open of the same
 -- identity fails with an explicit second-writer diagnosis — never
 -- a stale-cache shadow. Closing releases ownership.
@@ -358,6 +375,39 @@ testSecondWriter o = do
   s3 <- either (\e -> assertFailure ("reopen after close: " ++ show e)) pure e3
   storeClose s3
 
+-- | M4: a stale close never releases the new owner. Open A, close
+-- A, open B, then close A again: B must still own the identity
+-- (a third open is refused and B stays usable), and only B's own
+-- close releases it.
+staleCloseDoesNotReleaseNewOwner :: Opener -> IO ()
+staleCloseDoesNotReleaseNewOwner o =
+  withStore o $ \sA -> do
+    _ <- seedStore sA
+    storeClose sA
+    withStore o $ \sB -> do
+      storeClose sA
+      eC <- openCurrent o
+      case eC of
+        Right sC -> do
+          storeClose sC
+          assertFailure "stale close released the new owner"
+        Left (StoreSecondWriter _) -> pure ()
+        Left other ->
+          assertFailure ("wrong error while new owner holds: " ++ show other)
+      docs <- expectInspect sB
+      assertBool "new owner still inspects seeded docs" (not (null docs))
+      r <- storeCommit sB emptyDelta { sdPutMeta = [("m4-stale-probe", "1")] }
+      assertEqual "new owner usable after stale close" Committed r
+      eMeta <- storeLoadMeta sB
+      meta <- either (assertFailure . show) pure eMeta
+      assertEqual "probe durable" (Just "1") (lookup "m4-stale-probe" meta)
+      storeClose sB
+      withStore o $ \sD -> do
+        eMeta2 <- storeLoadMeta sD
+        meta2 <- either (assertFailure . show) pure eMeta2
+        assertEqual "probe survives owner close" (Just "1") (lookup "m4-stale-probe" meta2)
+        storeClose sD
+
 -- | Acceptance 2 (no silent refixture): the stored bytes before and
 -- after a close/reopen boundary are identical.
 testBytePreservation :: Opener -> IO ()
@@ -365,12 +415,12 @@ testBytePreservation o = do
   e1 <- openCurrent o
   s1 <- either (\e -> assertFailure ("open: " ++ show e)) pure e1
   _ <- seedStore s1
-  docsBefore <- storeInspect s1
+  docsBefore <- expectInspect s1
   assertBool "seeded docs are non-empty" (not (null docsBefore))
   storeClose s1
   e2 <- openCurrent o
   s2 <- either (\e -> assertFailure ("reopen: " ++ show e)) pure e2
-  docsAfter <- storeInspect s2
+  docsAfter <- expectInspect s2
   storeClose s2
   assertEqual "stored bytes survive close/reopen"
     (map show docsBefore) (map show docsAfter)
@@ -540,7 +590,7 @@ testJobsRoundTrip o = do
       j2 = demoJobResult 2 (trId tok) (trGeneration tok)
   r <- storeCommit s emptyDelta { sdPutJobs = [j1, j2] }
   assertEqual "jobs commit" Committed r
-  docs <- storeInspect s
+  docs <- expectInspect s
   let jobDocs = [d | d <- docs, docTable d == "detached_jobs"]
   assertEqual "two job docs" 2 (length jobDocs)
   mapM_ assertJobDocKeys jobDocs
@@ -667,7 +717,7 @@ testNoPointerBytes o = do
         ]
     }
   assertEqual "jobs commit" Committed r
-  docs <- storeInspect s
+  docs <- expectInspect s
   assertBool "docs non-empty" (not (null docs))
   mapM_ checkDoc docs
   storeClose s
@@ -1742,7 +1792,7 @@ tokenRefreshPreservesChildren o = do
   eStore <- openCurrent o
   s <- either (assertFailure . show) pure eStore
   (seedA, seedB) <- seedTwoTokens s
-  docsBefore <- storeInspect s
+  docsBefore <- expectInspect s
   let tokA = tsToken seedA
       tokA' = tokA { trLabel = "seed2-token-a-relabeled"
                    , trAuth = (trAuth tokA) { taUserAttempts = 1 }
@@ -1751,7 +1801,7 @@ tokenRefreshPreservesChildren o = do
   r <- storeCommit s emptyDelta { sdPutTokens = [tokA'] }
   assertEqual "refresh commits" Committed r
   assertSeedRecords s seedA' seedB
-  docsAfter <- storeInspect s
+  docsAfter <- expectInspect s
   assertEqual "child bytes exact" (childJson docsBefore) (childJson docsAfter)
   storeClose s
   eStore2 <- openCurrent o
@@ -1766,11 +1816,11 @@ unchangedTokenPutPreservesChildren o = do
   eStore <- openCurrent o
   s <- either (assertFailure . show) pure eStore
   (seedA, seedB) <- seedTwoTokens s
-  docsBefore <- storeInspect s
+  docsBefore <- expectInspect s
   r <- storeCommit s emptyDelta { sdPutTokens = [tsToken seedA] }
   assertEqual "identical put commits" Committed r
   assertSeedRecords s seedA seedB
-  docsAfter <- storeInspect s
+  docsAfter <- expectInspect s
   assertEqual "stored bytes unchanged" (map docJson docsBefore) (map docJson docsAfter)
   storeClose s
   eStore2 <- openCurrent o
@@ -1785,7 +1835,7 @@ mixedTokenAndObjectPutPreservesOtherChildren o = do
   eStore <- openCurrent o
   s <- either (assertFailure . show) pure eStore
   (seedA, seedB) <- seedTwoTokens s
-  docsBefore <- storeInspect s
+  docsBefore <- expectInspect s
   (firstA, restA) <- case tsObjects seedA of
     (x : xs) -> pure (x, xs)
     [] -> assertFailure "seed A has no objects"
@@ -1803,7 +1853,7 @@ mixedTokenAndObjectPutPreservesOtherChildren o = do
     }
   assertEqual "mixed put commits" Committed r
   assertSeedRecords s seedA' seedB
-  docsAfter <- storeInspect s
+  docsAfter <- expectInspect s
   assertEqual "other child bytes exact" (otherJson docsBefore) (otherJson docsAfter)
   storeClose s
   eStore2 <- openCurrent o

@@ -234,11 +234,8 @@ checkShape args = case (cipherDirOf (iaOp args), iaCipher args) of
   (Just _, Nothing) ->
     Left (mkDeny CKR_ARGUMENTS_BAD "cipher operation requires a cipher spec")
   (Just _, Just spec)
-    | csBlock spec < 1 || csBlock spec > 1024 ->
-        Left (mkDeny CKR_ARGUMENTS_BAD "cipher block width out of range")
-    | csPad spec && csBlock spec > 255 ->
-        Left (mkDeny CKR_ARGUMENTS_BAD
-          "padded cipher block escapes the PKCS#7 byte range")
+    | not (validCipherSpec spec) ->
+        Left (mkDeny CKR_ARGUMENTS_BAD (cipherSpecWhy spec))
     -- The planner's PKCS#7 framing must never cover an
     -- asymmetric operation (the block width is vestigial for RSA
     -- rows; the length bound lives in the backend).
@@ -261,6 +258,13 @@ checkShape args = case (cipherDirOf (iaOp args), iaCipher args) of
   (Nothing, Just _) ->
     Left (mkDeny CKR_ARGUMENTS_BAD "non-cipher operation takes no cipher spec")
   (Nothing, Nothing) -> checkRecover args ShapePlain
+
+-- | The init complaint for an ill-formed cipher shape: the block
+-- range first, then the PKCS#7 byte range for padded shapes.
+cipherSpecWhy :: CipherSpec -> String
+cipherSpecWhy spec
+  | csBlock spec < 1 || csBlock spec > 1024 = "cipher block width out of range"
+  | otherwise = "padded cipher block escapes the PKCS#7 byte range"
 
 -- | Asymmetric cipher rows skip block framing: an OAEP input is
 -- length-bounded by the backend (@k-2*hLen-2@), an X.509 input by
@@ -495,8 +499,7 @@ checkRecover args incoming = case (recoverRoleOf (iaOp args), iaRecover args) of
   (Just _, Nothing) ->
     Left (mkDeny CKR_ARGUMENTS_BAD "recovery operation requires a recover spec")
   (Just _, Just spec)
-    | rsCapacity spec < 1 || rsTagLen spec < 1
-        || rsTagLen spec > rsCapacity spec ->
+    | not (validRecoverSpec spec) ->
         Left (mkDeny CKR_ARGUMENTS_BAD "recover spec out of range")
     | otherwise -> Right (ShapeRecover spec)
   (Nothing, Just _) ->

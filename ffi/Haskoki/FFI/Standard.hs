@@ -33,9 +33,11 @@ Engine policy (documented, no silent substitution):
   integers are native-order u64. Attribute-type ids resolve
   through the generated inventory ('Haskoki.Attribute.Generated')
   by numeric id -- no hand-typed @CKA_*@ numerics anywhere.
-* Scalar projections ('sessionScalars', 'tokenScalars') return
-  plain words; every @CK_STATE@\/@CKF_*@ spelling lives in C,
-  resolved from the pinned headers.
+* Scalar projections ('sessionScalars', 'tokenScalars',
+  'policyScalars') return plain words; every @CK_STATE@\/@CKF_*@
+  spelling lives in C, resolved from the pinned headers. The
+  policy projection is the same effective policy admission
+  enforces, so metadata and the gate cannot drift.
 * Persistence: @storage.kind=sqlite@ (with its required explicit
   path) opens the process store at open, reloads token state, and
   commits token-affecting publishes; @memory@ stays transient.
@@ -95,6 +97,7 @@ module Haskoki.FFI.Standard
     -- * Scalar projections (pure)
   , sessionScalars
   , tokenScalars
+  , policyScalars
     -- * PIN comparison (pure)
   , pinsMatch
     -- * Async binding lookup (pure)
@@ -114,6 +117,7 @@ module Haskoki.FFI.Standard
   , haskokiStdGetSessionInfo
   , haskokiStdGetSessionInfoWithAsync
   , haskokiStdTokenLive
+  , haskokiStdTokenPolicy
   , haskokiStdTokenLabel
   , haskokiStdSlotPresent
     -- * objects (pure helpers + exports)
@@ -468,8 +472,10 @@ import Haskoki.Runtime.Storage
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Session
   ( AdmitDeny
+  , EffectivePolicy (..)
   , SessionLogin (..)
   , TokenAuth (..)
+  , effectivePolicy
   , tokenAuthNew
   )
 import Haskoki.Transition (finishEffect, planCall, planDecoded, publishDelta)
@@ -1205,13 +1211,31 @@ tokenScalars rules m slot = case lookupTokenAuth m slot of
   Nothing -> (0, 0, 0, 0, 0, 0)
   Just auth ->
     let ss = sessionsOnSlot m slot
-        limit = max 1 (rulesMaxPinAttempts rules)
+        limit = epMaxPinAttempts (effectivePolicy rules)
     in ( fromIntegral (length ss)
        , fromIntegral (length (filter (not . ssReadOnly) ss))
        , if taUserLocked auth then 1 else 0
        , if taSoLocked auth then 1 else 0
        , fromIntegral (max 0 (limit - taUserAttempts auth))
        , fromIntegral (max 0 (limit - taSoAttempts auth)))
+
+-- | Project the ONE effective session/PIN policy onto C scalars:
+-- @(providerMaxSessions, tokenMaxSessions, tokenMaxRwSessions,
+-- pinMinLen, pinMaxLen, maxPinAttempts)@. This is the same
+-- 'effectivePolicy' admission reads, so native metadata and the
+-- session gate cannot drift apart. Provider capacity and the
+-- per-token maxima are separate scalars even though they are
+-- equal while the gate is global; live counts ride 'tokenScalars'.
+policyScalars :: Rules -> (Word64, Word64, Word64, Word64, Word64, Word64)
+policyScalars rules =
+  let p = effectivePolicy rules
+  in ( fromIntegral (epProviderMaxSessions p)
+     , fromIntegral (epTokenMaxSessions p)
+     , fromIntegral (epTokenMaxRwSessions p)
+     , fromIntegral (epPinMinLen p)
+     , fromIntegral (epPinMaxLen p)
+     , fromIntegral (epMaxPinAttempts p)
+     )
 
 -- ---------------------------------------------------------------------------
 -- PIN comparison (pure)
@@ -1771,6 +1795,10 @@ foreign export ccall "haskoki_std_token_live" haskokiStdTokenLive
   :: StablePtr StdInstance -> CULong
   -> Ptr CULong -> Ptr CULong -> Ptr CULong
   -> Ptr CULong -> Ptr CULong -> Ptr CULong -> IO CULong
+foreign export ccall "haskoki_std_token_policy" haskokiStdTokenPolicy
+  :: StablePtr StdInstance -> CULong
+  -> Ptr CULong -> Ptr CULong -> Ptr CULong
+  -> Ptr CULong -> Ptr CULong -> Ptr CULong -> IO CULong
 
 -- | Public slot/token calls hold the C state lock from owner resolution through
 -- output publication. Reject closure before inspecting the retained snapshot.
@@ -2083,6 +2111,38 @@ haskokiStdTokenLive ctx slot
             poke pSoLock (CULong sl)
             poke pUserRem (CULong ur)
             poke pSoRem (CULong sr)
+            pure ckrOk
+
+-- | Project the effective session/PIN policy for a seated slot
+-- onto the C scalars (see 'policyScalars'). The policy is
+-- instance-wide, but the slot rides along for call-shape
+-- symmetry with 'haskokiStdTokenLive', and unseated slots refuse
+-- before the buffers under the same "bad slots rejected first"
+-- discipline. Any null out-pointer refuses with
+-- @ARGUMENTS_BAD@ and writes nothing.
+haskokiStdTokenPolicy
+  :: StablePtr StdInstance -> CULong
+  -> Ptr CULong -> Ptr CULong -> Ptr CULong
+  -> Ptr CULong -> Ptr CULong -> Ptr CULong -> IO CULong
+haskokiStdTokenPolicy ctx slot
+    pProvMax pTokMax pRwMax pPinMin pPinMax pAttempts =
+  withLiveStdCtx ctx $ \inst -> do
+    (_m, slots) <- snapshotPresence (siEnv inst) (siSlots inst)
+    case tokenSlot slots slot of
+      Left rv -> pure rv
+      Right _slotId
+        | pProvMax == nullPtr || pTokMax == nullPtr || pRwMax == nullPtr
+          || pPinMin == nullPtr || pPinMax == nullPtr || pAttempts == nullPtr ->
+            pure ckrArgsBad
+        | otherwise -> do
+            let (prov, tok, rw, pmin, pmax, att) =
+                  policyScalars (envRules (siEnv inst))
+            poke pProvMax (CULong prov)
+            poke pTokMax (CULong tok)
+            poke pRwMax (CULong rw)
+            poke pPinMin (CULong pmin)
+            poke pPinMax (CULong pmax)
+            poke pAttempts (CULong att)
             pure ckrOk
 
 foreign export ccall "haskoki_std_token_label" haskokiStdTokenLabel

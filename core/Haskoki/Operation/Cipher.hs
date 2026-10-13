@@ -183,6 +183,11 @@ encryptInput mech spec buf
       Just padded -> Right padded
       Nothing -> Left (mkDeny CKR_GENERAL_ERROR
         "cipher shape escapes the PKCS#7 range")
+  -- Totality guard: init and snapshot restore both validate the
+  -- shape, but the planner refuses a corrupt width anyway instead
+  -- of dividing by zero below.
+  | csBlock spec <= 0 = Left (mkDeny CKR_GENERAL_ERROR
+      "cipher block width out of range")
   | BS.length buf `mod` csBlock spec == 0 = Right buf
   | otherwise = Left (mkDeny CKR_DATA_LEN_RANGE
       "unpadded encrypt needs block-aligned input")
@@ -494,6 +499,13 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
                   , denyOutcome (mkDeny CKR_ENCRYPTED_DATA_INVALID
                       "decrypt padding check failed")
                   )
+            -- Totality guard, as in 'encryptInput': refuse a corrupt
+            -- width instead of dividing by zero.
+            | csBlock spec <= 0 ->
+                ( removeSingle kind ops
+                , denyOutcome (mkDeny CKR_GENERAL_ERROR
+                    "cipher block width out of range")
+                )
             | BS.length raw `mod` csBlock spec == 0 -> stageRaw raw
             | otherwise ->
                 ( removeSingle kind ops

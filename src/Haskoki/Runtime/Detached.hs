@@ -37,6 +37,17 @@ attachment per persistent job ('joinPolicyName'); delivery-vs-cancel
 arbitration is the job lease, reused, not reimplemented: joined
 jobs complete through 'completeJob' via 'completeJoined', which
 additionally marks the durable record delivered.
+
+Join claims (concurrency): after validation, a join takes an
+in-progress claim on the persistent id in one STM step — carrying
+the claiming table and session identity — before the effectful
+replan\/start, then commits only that claim to the live
+attachment (or rolls only it back on refusal or interruption).
+Live bindings key by @('AsyncTableId', 'JobId')@, so two tables
+sharing this context never confuse each other's local job ids,
+and a retiring table retires only its own attachments. Claim
+transactions touch attachment @TVar@s only: no Store IO runs in
+STM on any path.
 -}
 module Haskoki.Runtime.Detached
   ( -- * Context
@@ -73,10 +84,14 @@ module Haskoki.Runtime.Detached
   , completeJoined
   , cancelJoined
   , retireLiveTable
+  , retireLiveTableFor
     -- * Attachments
   , AttachmentView (..)
   , inspectAttachment
+  , inspectReverse
   , detachStats
+    -- * Join-claim test seam
+  , setJoinTestHook
   ) where
 
 import Control.Concurrent.STM
@@ -87,12 +102,14 @@ import Control.Concurrent.STM
   , readTVarIO
   , writeTVar
   )
+import Control.Exception (mask, mask_, onException)
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Unique (Unique, newUnique)
 import Data.Word (Word64, Word8)
 
 import Haskoki.Attribute (AttributeType, AttributeValue)
@@ -124,6 +141,7 @@ import Haskoki.Request
   )
 import Haskoki.Runtime.Async
   ( AsyncTable
+  , AsyncTableId
   , AsyncWork (..)
   , CancelOutcome (..)
   , CompleteOutcome (..)
@@ -135,6 +153,7 @@ import Haskoki.Runtime.Async
   , LeaseView (..)
   , StartDeny (..)
   , TerminalState (..)
+  , asyncTableId
   , cancelJob
   , completeJob
   , isAsyncSession
@@ -184,17 +203,22 @@ import Haskoki.Types
 
 -- | Detach state bound to one durable store (NOT to one provider
 -- generation): the next persistent id, the attachment registry, the
--- live-job reverse map, and the adapter's opaque marks. A restart
--- reopens the store and calls 'openDetached' again; durable records
--- survive, live attachments do not (close drains them first).
+-- live-job reverse map keyed by table and job identity, the
+-- adapter's opaque marks, and the TEST-ONLY join-transfer hook
+-- (a no-op unless a test sets it). One context may serve several
+-- live tables at once (two FFI contexts on one store box); a
+-- restart reopens the store and calls 'openDetached' again;
+-- durable records survive, live attachments do not (close drains
+-- them first).
 data DetachCtx = DetachCtx
   { dcStore :: !Store
   , dcToken :: !TokenId
   , dcSlot :: !SlotId
   , dcNextPid :: !(TVar Word64)
-  , dcAttach :: !(TVar (Map Word64 AttachmentView))
-  , dcReverse :: !(TVar (Map JobId Word64))
+  , dcAttach :: !(TVar (Map Word64 Attachment))
+  , dcReverse :: !(TVar (Map (AsyncTableId, JobId) Word64))
   , dcOpaque :: !(TVar (Map JobId String))
+  , dcJoinHook :: !(TVar (IO ()))
   }
 
 -- | Why a detach context failed to open.
@@ -225,6 +249,7 @@ openDetached store tok = do
             attachVar <- newTVarIO Map.empty
             revVar <- newTVarIO Map.empty
             opaqueVar <- newTVarIO Map.empty
+            hookVar <- newTVarIO (pure ())
             pure (Right DetachCtx
               { dcStore = store
               , dcToken = tok
@@ -233,6 +258,7 @@ openDetached store tok = do
               , dcAttach = attachVar
               , dcReverse = revVar
               , dcOpaque = opaqueVar
+              , dcJoinHook = hookVar
               })
   where
     storedMax :: [JobRecord] -> Word64
@@ -763,24 +789,60 @@ reconcileDetach dc view pid delta err = do
 -- | One persistent job's attachment: actively bound to a live job,
 -- detached-awaiting-join, or terminally resolved (delivered,
 -- canceled, or failed — never rejoinable, never recompleted).
+-- The public inspection vocabulary is stable: an in-progress join
+-- claim projects to 'AvIdle' (no live binding exists yet — the
+-- job is still detached-awaiting-join).
 data AttachmentView
   = AvActive !JobId
   | AvIdle
   | AvTerminal !JobExecState
   deriving (Eq, Show)
 
+-- | Internal attachment state: the public view plus the owning
+-- table for actives and the in-progress join claim carrying the
+-- claiming table and session identity plus a fresh per-attempt
+-- token. Actives and claims name their table so two tables
+-- sharing this context never resolve each other's local job
+-- ids; the attempt token makes commit and rollback exact — a
+-- retry's later claim is never mistaken for the older one it
+-- follows. (No 'Show': 'Unique' has none, and this state is
+-- never rendered.)
+data Attachment
+  = AttActive !AsyncTableId !JobId
+  | AttIdle
+  | AttTerminal !JobExecState
+  | AttClaim !AsyncTableId !SessionId !Unique
+  deriving (Eq)
+
+-- | Project internal attachment state onto the public view.
+attView :: Attachment -> AttachmentView
+attView (AttActive _ jid) = AvActive jid
+attView AttIdle = AvIdle
+attView (AttTerminal st) = AvTerminal st
+attView (AttClaim _ _ _) = AvIdle
+
 -- | Inspect a persistent job's attachment ('Nothing' = never
 -- detached in this context generation — rejoin resolves those
 -- against the durable record instead).
 inspectAttachment :: DetachCtx -> Word64 -> IO (Maybe AttachmentView)
 inspectAttachment dc pid =
-  Map.lookup pid <$> readTVarIO (dcAttach dc)
+  (fmap attView . Map.lookup pid) <$> readTVarIO (dcAttach dc)
 
--- | Registry census: @(active, idle, terminal)@.
+-- | Resolve a live job to its persistent id through the reverse
+-- map, keyed by the job's own table and job identity. Colliding
+-- local job ids on sibling tables resolve independently.
+-- Focused test\/diagnostic helper (the map itself stays private).
+inspectReverse :: DetachCtx -> AsyncTableId -> JobId -> IO (Maybe Word64)
+inspectReverse dc tid jid =
+  Map.lookup (tid, jid) <$> readTVarIO (dcReverse dc)
+
+-- | Registry census: @(active, idle, terminal)@ over the public
+-- projection (in-progress claims count as idle: still awaiting a
+-- live binding).
 detachStats :: DetachCtx -> IO (Int, Int, Int)
 detachStats dc = do
   attach <- readTVarIO (dcAttach dc)
-  let views = Map.elems attach
+  let views = map attView (Map.elems attach)
       active = length [() | AvActive _ <- views]
       idle = length [() | AvIdle <- views]
   pure (active, idle, length views - active - idle)
@@ -789,7 +851,74 @@ detachStats dc = do
 setIdle :: DetachCtx -> Word64 -> IO ()
 setIdle dc pid = atomically $ do
   attach <- readTVar (dcAttach dc)
-  writeTVar (dcAttach dc) (Map.insert pid AvIdle attach)
+  writeTVar (dcAttach dc) (Map.insert pid AttIdle attach)
+
+-- | What a join claim replaced: the rollback target. Claims only
+-- ever replace an idle entry or an absent one.
+data ClaimPrior
+  = ClaimHadIdle
+  | ClaimHadNone
+  deriving (Eq, Show)
+
+-- | Take the in-progress join claim for a persistent id in one
+-- STM step, stamping it with the attempt token the caller
+-- minted. Succeeds only from idle or absent; anything else
+-- (another claim, an active, a terminal) refuses with 'Nothing'
+-- and the map untouched. STM touches the attachment map only —
+-- never Store IO.
+tryClaim
+  :: DetachCtx -> Word64 -> AsyncTableId -> SessionId -> Unique
+  -> IO (Maybe ClaimPrior)
+tryClaim dc pid tid sid uniq = atomically $ do
+  attach <- readTVar (dcAttach dc)
+  case Map.lookup pid attach of
+    Just AttIdle -> do
+      writeTVar (dcAttach dc) (Map.insert pid (AttClaim tid sid uniq) attach)
+      pure (Just ClaimHadIdle)
+    Nothing -> do
+      writeTVar (dcAttach dc) (Map.insert pid (AttClaim tid sid uniq) attach)
+      pure (Just ClaimHadNone)
+    _ -> pure Nothing
+
+-- | Roll back only our own claim attempt, restoring exactly
+-- what it replaced (idle or absent). Anything else in the slot —
+-- committed, rolled back already, or a retry's later claim — is
+-- left untouched, so rollback is safe on every exit path
+-- including nested cleanup.
+rollbackClaim
+  :: DetachCtx -> Word64 -> AsyncTableId -> SessionId -> Unique
+  -> ClaimPrior -> IO ()
+rollbackClaim dc pid tid sid uniq prior = atomically $ do
+  attach <- readTVar (dcAttach dc)
+  case Map.lookup pid attach of
+    Just (AttClaim tid' sid' uniq')
+      | tid' == tid && sid' == sid && uniq' == uniq ->
+          let attach' = case prior of
+                ClaimHadIdle -> Map.insert pid AttIdle attach
+                ClaimHadNone -> Map.delete pid attach
+          in writeTVar (dcAttach dc) attach'
+    _ -> pure ()
+
+-- | Commit only our own claim attempt to the live attachment,
+-- recording the forward entry (owned by our table) and the
+-- reverse entry keyed by our table and job identity, in one STM
+-- step. Reports 'False' — committing nothing — when the claim
+-- is no longer ours (unreachable: claims transition only via
+-- their claimant, but the transfer handles it by retiring the
+-- fresh job rather than stranding it).
+commitClaim
+  :: DetachCtx -> Word64 -> AsyncTableId -> SessionId -> Unique
+  -> JobId -> IO Bool
+commitClaim dc pid tid sid uniq jid = atomically $ do
+  attach <- readTVar (dcAttach dc)
+  case Map.lookup pid attach of
+    Just (AttClaim tid' sid' uniq')
+      | tid' == tid && sid' == sid && uniq' == uniq -> do
+          writeTVar (dcAttach dc) (Map.insert pid (AttActive tid jid) attach)
+          rev <- readTVar (dcReverse dc)
+          writeTVar (dcReverse dc) (Map.insert (tid, jid) pid rev)
+          pure True
+    _ -> pure False
 
 -- ---------------------------------------------------------------------------
 -- Join (rejoin)
@@ -901,30 +1030,39 @@ joinRecord dc env table req rec = do
             Right trec -> joinValidated dc env table req rec recFunc trec
 
 -- | The one-active-attachment gate: terminal stays terminal, live
--- actives refuse competitors under the named policy, and actives
--- whose live job already died without the wrappers self-heal to the
--- terminal state the table decided. 'Nothing' means the id is free
--- to attach.
+-- actives and in-progress claims refuse competitors under the
+-- named policy, and actives whose live job already died without
+-- the wrappers self-heal to the terminal state the table decided.
+-- An active owned by another table refuses WITHOUT resolving its
+-- local job id in this (wrong) table. 'Nothing' means the id is
+-- free to attach. This gate is advisory — the atomic claim in
+-- 'joinRecipe' is the arbiter that decides genuinely simultaneous
+-- joins.
 attachmentGate
   :: DetachCtx -> AsyncTable -> Word64 -> JobRecord -> IO (Maybe JoinOutcome)
 attachmentGate dc table pid rec = do
-  mAv <- inspectAttachment dc pid
-  case mAv of
-    Just (AvTerminal s) -> pure (Just (JoinTerminal s))
-    Just (AvActive jid) -> do
-      mSnap <- snapshotJob table jid
-      case mSnap of
-        Just snap | snapLive (jobSnapshotState snap) ->
+  mAtt <- Map.lookup pid <$> readTVarIO (dcAttach dc)
+  case mAtt of
+    Just (AttTerminal s) -> pure (Just (JoinTerminal s))
+    Just (AttClaim _ _ _) ->
+      pure (Just (JoinAlreadyAttached joinPolicyName))
+    Just (AttActive owner jid)
+      | owner /= asyncTableId table ->
           pure (Just (JoinAlreadyAttached joinPolicyName))
-        other -> do
-          let st = case other of
-                Just snap -> case jobSnapshotState snap of
-                  SnapTerminal t -> execStateOf t
-                  _ -> JobCanceled
-                Nothing -> JobCanceled
-          _ <- markState dc pid rec st
-          pure (Just (JoinTerminal st))
-    Just AvIdle -> pure Nothing
+      | otherwise -> do
+          mSnap <- snapshotJob table jid
+          case mSnap of
+            Just snap | snapLive (jobSnapshotState snap) ->
+              pure (Just (JoinAlreadyAttached joinPolicyName))
+            other -> do
+              let st = case other of
+                    Just snap -> case jobSnapshotState snap of
+                      SnapTerminal t -> execStateOf t
+                      _ -> JobCanceled
+                    Nothing -> JobCanceled
+              _ <- markState dc pid rec st
+              pure (Just (JoinTerminal st))
+    Just AttIdle -> pure Nothing
     Nothing -> case jrState rec of
       JobDelivered -> healTerminal JobDelivered
       JobCanceled -> healTerminal JobCanceled
@@ -1033,8 +1171,9 @@ recipeFunction (RecipeCall f _ _ _) = f
 recipeFunction RecipeGenKey {} = JobGenKey
 recipeFunction RecipeGenKeyPair {} = JobGenKeyPair
 
--- | Capacity check (BEFORE attaching anything), recipe replay
--- against the current model, live start, and attach recording.
+-- | Capacity check (BEFORE attaching anything), atomic claim,
+-- recipe replay against the current model, live start, and claim
+-- commit. Only the claim decides between simultaneous joins.
 joinRecipe
   :: DetachCtx -> Env -> AsyncTable -> JoinRequest -> SessionState
   -> JobFunction -> Recipe -> Maybe ByteString -> IO JoinOutcome
@@ -1047,26 +1186,90 @@ joinRecipe dc env table req st recFunc recipe mSeed = do
     then pure (JoinDenied StartBadCapacity)
     else if cap < need
       then pure (JoinShort need)
-      else do
-        m <- snapshotModel env
-        case replanRecipe (envRules env) m st recFunc recipe of
-          Left reason -> pure (JoinIncompatible reason)
-          Right work -> do
-            let jr = JobRequest
-                  { jrSession = jqSession req
-                  , jrFunction = recFunc
-                  , jrWork = work
-                  , jrTicks = recipeTicks recipe
-                  , jrCapacity = cap
-                  }
-            started <- case mSeed of
-              Nothing -> startJob table jr
-              Just result -> startSeededJob table jr result
-            case started of
-              Left deny -> pure (JoinDenied deny)
-              Right jid -> do
-                setActive dc (jqPid req) jid
-                pure (JoinOk jid)
+      else joinClaimed dc env table req st recFunc recipe mSeed
+
+-- | The lost-claim outcome: re-read the winner's state so a
+-- concurrently terminalized id reports its terminal fate;
+-- anything still live (active or a rival claim, including a
+-- claim that rolled back between our attempt and this re-read)
+-- reports the existing already-attached refusal.
+claimLost :: DetachCtx -> Word64 -> IO JoinOutcome
+claimLost dc pid = do
+  mAtt <- Map.lookup pid <$> readTVarIO (dcAttach dc)
+  case mAtt of
+    Just (AttTerminal s) -> pure (JoinTerminal s)
+    _ -> pure (JoinAlreadyAttached joinPolicyName)
+
+-- | Claim, replan, start, and attach as one protected
+-- transfer. The claim is acquired masked and the rollback
+-- handler is installed before anything interruptible runs, so
+-- no kill can strand a claim between acquisition and
+-- protection. A replan or start refusal rolls back ONLY our
+-- claim attempt (the durable job is untouched and a retry may
+-- claim again). The start runs masked inside a second mask —
+-- its acquisition is one retry-free STM step plus a fresh
+-- lock, so it never blocks — and cleanup owns the fresh id
+-- before anything runs restored again: from the STM commit
+-- through the attachment commit the transfer is either masked
+-- or covered by cleanup, so an interruption after the live
+-- start but before the commit retires the newly created
+-- unregistered job and rolls the claim back — no live job
+-- ever strands without an attachment decision and no claim
+-- ever sticks. The TEST-ONLY hook runs restored inside that
+-- transfer window (a no-op unless a test sets it); the commit
+-- itself and the outcome return run masked, so a kill can
+-- neither split the commit nor strand cleanup.
+joinClaimed
+  :: DetachCtx -> Env -> AsyncTable -> JoinRequest -> SessionState
+  -> JobFunction -> Recipe -> Maybe ByteString -> IO JoinOutcome
+joinClaimed dc env table req st recFunc recipe mSeed =
+  let tid = asyncTableId table
+      sid = jqSession req
+      pid = jqPid req
+  in mask $ \restore -> do
+    uniq <- newUnique
+    mPrior <- tryClaim dc pid tid sid uniq
+    case mPrior of
+      Nothing -> claimLost dc pid
+      Just prior ->
+        let rollback = rollbackClaim dc pid tid sid uniq prior
+        in flip onException rollback $ restore $ do
+          m <- snapshotModel env
+          case replanRecipe (envRules env) m st recFunc recipe of
+            Left reason -> rollback >> pure (JoinIncompatible reason)
+            Right work -> mask $ \restoreStart -> do
+              let jr = JobRequest
+                    { jrSession = jqSession req
+                    , jrFunction = recFunc
+                    , jrWork = work
+                    , jrTicks = recipeTicks recipe
+                    , jrCapacity = jqCapacity req
+                    }
+              -- Masked: a kill must not land between the STM
+              -- insert and cleanup ownership of the fresh id.
+              started <- case mSeed of
+                Nothing -> startJob table jr
+                Just result -> startSeededJob table jr result
+              case started of
+                Left deny -> rollback >> pure (JoinDenied deny)
+                Right jid -> do
+                  hook <- readTVarIO (dcJoinHook dc)
+                  committed <- (restoreStart hook >> commitClaim dc pid tid sid uniq jid)
+                    `onException` mask_ (retireFresh table jid >> rollback)
+                  if committed
+                    then pure (JoinOk jid)
+                    else do
+                      mask_ (retireFresh table jid >> rollback)
+                      pure (JoinAlreadyAttached joinPolicyName)
+  where
+    -- | Retire a freshly started but unregistered job: it has no
+    -- attachment and no owner yet, so cancel it outright. Fresh
+    -- and table-local: no other thread can hold its lease, so the
+    -- masked cancel cannot block.
+    retireFresh :: AsyncTable -> JobId -> IO ()
+    retireFresh tbl jid = do
+      _ <- cancelJob tbl jid
+      pure ()
 
 -- | A recipe's original attached capacity (the conservative pending
 -- need: the replayed result may run up to its first bound).
@@ -1174,10 +1377,10 @@ completeJoined dc env table func jid del release = do
   out <- completeJob env table func jid del release
   case out of
     CompleteDelivered _ -> do
-      merr <- markResolved dc jid JobDelivered
+      merr <- markResolved dc table jid JobDelivered
       pure (JoinedComplete out merr)
     CompleteAlready (TermDelivered _) -> do
-      merr <- markResolved dc jid JobDelivered
+      merr <- markResolved dc table jid JobDelivered
       pure (JoinedComplete out merr)
     _ -> pure (JoinedComplete out Nothing)
 
@@ -1188,19 +1391,22 @@ cancelJoined dc table jid = do
   out <- cancelJob table jid
   case out of
     CancelOk -> do
-      merr <- markResolved dc jid JobCanceled
+      merr <- markResolved dc table jid JobCanceled
       pure (out, merr)
     CancelAlready t -> do
-      merr <- markResolved dc jid (execStateOf t)
+      merr <- markResolved dc table jid (execStateOf t)
       pure (out, merr)
     CancelUnknown -> pure (out, Nothing)
 
--- | Mark a joined live job's durable record resolved. Unknown (never
--- joined) jobs report clean with no write.
-markResolved :: DetachCtx -> JobId -> JobExecState -> IO (Maybe StoreError)
-markResolved dc jid st = do
+-- | Mark a joined live job's durable record resolved, resolving
+-- through the reverse map by the job's own table and job
+-- identity. Unknown (never joined) jobs report clean with no
+-- write; a colliding local job id on a sibling table resolves to
+-- that table's own record, never this one.
+markResolved :: DetachCtx -> AsyncTable -> JobId -> JobExecState -> IO (Maybe StoreError)
+markResolved dc table jid st = do
   rev <- readTVarIO (dcReverse dc)
-  case Map.lookup jid rev of
+  case Map.lookup (asyncTableId table, jid) rev of
     Nothing -> pure Nothing
     Just pid -> do
       eJobs <- storeLoadJobs (dcStore dc)
@@ -1217,12 +1423,48 @@ markResolved dc jid st = do
 -- | Retire the live table (provider close): every active attachment
 -- resolves canceled, durably and in memory, and the adapter's opaque
 -- marks clear (a new table generation starts unflagged). Returns one
--- entry per retired attachment with its mark error, if any.
+-- entry per retired attachment with its mark error, if any. This is
+-- whole-context retirement for single-table owners (the Standard
+-- adapter, whose instance owns exactly one table and one detach
+-- context); callers sharing one context across tables retire with
+-- 'retireLiveTableFor' so a closing table never cancels a sibling's
+-- attachments.
 retireLiveTable :: DetachCtx -> IO [(Word64, Maybe StoreError)]
 retireLiveTable dc = do
   atomically (writeTVar (dcOpaque dc) Map.empty)
+  retireMatching dc Nothing
+
+-- | Retire one live table's attachments (context close on a shared
+-- store): only actives owned by the retiring table identity
+-- resolve canceled, durably and in memory; sibling tables'
+-- attachments — active, idle, terminal, or mid-claim — are
+-- untouched. Returns one entry per retired attachment with its
+-- mark error, if any. Opaque marks are NOT cleared here: they are
+-- keyed by bare job id (table-blind), so a scoped retire cannot
+-- attribute them — clearing would drop a sibling table's live
+-- marks. A join racing close may still commit after retirement
+-- (close does not coordinate with in-flight claims); full
+-- close\/join admission coordination is follow-up work under
+-- async retirement accounting, which can refuse the commit
+-- through the existing 'False' arm.
+retireLiveTableFor
+  :: DetachCtx -> AsyncTableId -> IO [(Word64, Maybe StoreError)]
+retireLiveTableFor dc tid = retireMatching dc (Just tid)
+
+-- | Shared retire worker: 'Nothing' retires every active (whole
+-- context), @'Just' tid@ retires only that table's actives. Claims
+-- are never retired (their claimant still owns the transfer).
+retireMatching
+  :: DetachCtx -> Maybe AsyncTableId -> IO [(Word64, Maybe StoreError)]
+retireMatching dc mTid = do
   attach <- readTVarIO (dcAttach dc)
-  let actives = [pid | (pid, AvActive _) <- Map.toList attach]
+  let actives =
+        [ pid
+        | (pid, AttActive owner _) <- Map.toList attach
+        , case mTid of
+            Nothing -> True
+            Just tid -> owner == tid
+        ]
   eJobs <- storeLoadJobs (dcStore dc)
   case eJobs of
     Left err -> do
@@ -1261,17 +1503,22 @@ markState dc pid rec st = do
           pure Nothing
         _ -> pure (Just err)
 
--- | Record an active attachment (before any completion can use it)
--- plus its reverse lookup.
-setActive :: DetachCtx -> Word64 -> JobId -> IO ()
-setActive dc pid jid = atomically $ do
-  attach <- readTVar (dcAttach dc)
-  writeTVar (dcAttach dc) (Map.insert pid (AvActive jid) attach)
-  rev <- readTVar (dcReverse dc)
-  writeTVar (dcReverse dc) (Map.insert jid pid rev)
-
 -- | Record a terminal attachment.
 setTerminal :: DetachCtx -> Word64 -> JobExecState -> IO ()
 setTerminal dc pid st = atomically $ do
   attach <- readTVar (dcAttach dc)
-  writeTVar (dcAttach dc) (Map.insert pid (AvTerminal st) attach)
+  writeTVar (dcAttach dc) (Map.insert pid (AttTerminal st) attach)
+
+-- ---------------------------------------------------------------------------
+-- Join-claim test seam
+-- ---------------------------------------------------------------------------
+
+-- | TEST-ONLY: set the action a claimed join runs between its live
+-- start and its attachment commit — the interruption window the
+-- transfer must survive. Production leaves the default no-op, so
+-- normal joins pay one @TVar@ read and no hook call. Tests set a
+-- rendezvous here to land a kill deterministically inside the
+-- window, then assert the claim rolled back and the fresh
+-- unregistered job retired.
+setJoinTestHook :: DetachCtx -> IO () -> IO ()
+setJoinTestHook dc hook = atomically (writeTVar (dcJoinHook dc) hook)

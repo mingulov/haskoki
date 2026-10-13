@@ -37,6 +37,13 @@ module Haskoki.Session
   , admitToken
   , admitWritable
   , admitPrivate
+    -- * Effective session/PIN policy
+  , EffectivePolicy (..)
+  , effectivePolicy
+  , policyPinMinLen
+  , policyPinMaxLen
+  , PinLengthDeny (..)
+  , checkPinLength
     -- * Request-argument codecs
   , parseOpenArgs
   , parseLoginArgs
@@ -149,7 +156,7 @@ loginAttempt
   -> PinCheck
   -> LoginOutcome
 loginAttempt rules auth roExists hasEligible kind mName pin =
-  let limit = max 1 (rulesMaxPinAttempts rules)
+  let limit = epMaxPinAttempts (effectivePolicy rules)
       locked = case kind of
         LoginAsUser -> taUserLocked auth
         LoginAsContext -> taUserLocked auth
@@ -274,12 +281,16 @@ admitCode d = case d of
 -- | Admit a session open: the slot must hold a token, the session
 -- bound must not be exhausted, and a read-only session must not open
 -- while the SO is logged in (SO/RO exclusion, both directions).
+-- The bound is the effective provider capacity ('epProviderMaxSessions'):
+-- callers pass the PROVIDER-wide open count, so one token's opens
+-- consume capacity shared with every other token.
 admitSession :: Rules -> Maybe TokenAuth -> Int -> Bool -> Either AdmitDeny ()
 admitSession rules mAuth openCount readOnly =
   case mAuth of
     Nothing -> Left AdmitTokenAbsent
     Just auth
-      | openCount >= rulesMaxSessions rules -> Left AdmitSessionsFull
+      | openCount >= epProviderMaxSessions (effectivePolicy rules) ->
+          Left AdmitSessionsFull
       | readOnly && taLogin auth == Just AuthSO -> Left AdmitReadOnlyWhileSO
       | otherwise -> Right ()
 
@@ -331,6 +342,98 @@ admitPrivate login wantsPrivate
   | not wantsPrivate = Right ()
   | login == LoginUser || login == LoginContextUser = Right ()
   | otherwise = Left AdmitLoginRequired
+
+-- | The ONE effective session/PIN policy: the single source native
+-- metadata ('CK_TOKEN_INFO' maxima and PIN bounds) and session
+-- admission ('admitSession') both read, so reported limits and
+-- enforced limits cannot drift apart.
+--
+-- Three session quantities stay distinct:
+--
+-- * provider-wide capacity ('epProviderMaxSessions'): the admission
+--   gate. Callers count EVERY open session on the provider, so one
+--   token's opens consume capacity shared with all tokens.
+-- * per-token maxima ('epTokenMaxSessions', 'epTokenMaxRwSessions'):
+--   what one token reports. The gate is global, so any single token
+--   may use the full provider capacity: the per-token maxima equal
+--   the provider cap. They are separate fields (not one reused
+--   number) so metadata keeps the concepts distinct if the gate
+--   ever splits per token.
+-- * live counts: current open sessions, projected separately per
+--   slot ('tokenScalars' in the FFI layer), never stored here.
+--
+-- PIN bounds ('epPinMinLen'\/'epPinMaxLen') are policy constants:
+-- configured catalog bytes MUST satisfy them at load
+-- ('Haskoki.Runtime.Config' refuses out-of-range PINs with an
+-- actionable message), login compares entered bytes exactly
+-- against the seated catalog PIN, and metadata reports this same
+-- range. No second hand-maintained table: the C surface fetches
+-- these numbers through the @haskoki_std_token_policy@ export.
+data EffectivePolicy = EffectivePolicy
+  { epProviderMaxSessions :: !Int
+    -- ^ Provider-wide admission capacity (@>= 1@).
+  , epTokenMaxSessions :: !Int
+    -- ^ Per-token @ulMaxSessionCount@ (@>= 1@; equals the
+    -- provider cap while the gate is global).
+  , epTokenMaxRwSessions :: !Int
+    -- ^ Per-token @ulMaxRwSessionCount@ (@>= 1@; equals the
+    -- provider cap while the gate is global).
+  , epPinMinLen :: !Int
+    -- ^ Minimum configured PIN length in bytes ('policyPinMinLen').
+  , epPinMaxLen :: !Int
+    -- ^ Maximum configured PIN length in bytes ('policyPinMaxLen').
+  , epMaxPinAttempts :: !Int
+    -- ^ Consecutive failures before a role locks (@>= 1@).
+  } deriving (Eq, Show)
+
+-- | Minimum configured PIN length in bytes. Shorter catalog PINs
+-- (including empty) are refused at config load, never silently
+-- accepted: a one-byte fixture PIN is a provisioning error, and
+-- the refusal names the token, the role, and the supported range.
+policyPinMinLen :: Int
+policyPinMinLen = 4
+
+-- | Maximum configured PIN length in bytes. Longer catalog PINs are
+-- refused at config load with the same actionable refusal; the
+-- login path keeps its wider defensive read bound and exact-match
+-- comparison, so an over-long ENTERED PIN simply never matches.
+policyPinMaxLen :: Int
+policyPinMaxLen = 32
+
+-- | Derive the effective policy from planning rules. Session
+-- capacity comes from the rules bound (native instances take it
+-- from @limits.sessions@ via @rulesFromConfig@); PIN bounds are
+-- the policy constants; the lockout threshold is the rules
+-- threshold. Every bound is clamped to @>= 1@ so a degenerate
+-- rules value degrades to a one-slot gate, never an open or
+-- negative one.
+effectivePolicy :: Rules -> EffectivePolicy
+effectivePolicy rules = EffectivePolicy
+  { epProviderMaxSessions = max 1 (rulesMaxSessions rules)
+  , epTokenMaxSessions = max 1 (rulesMaxSessions rules)
+  , epTokenMaxRwSessions = max 1 (rulesMaxSessions rules)
+  , epPinMinLen = policyPinMinLen
+  , epPinMaxLen = policyPinMaxLen
+  , epMaxPinAttempts = max 1 (rulesMaxPinAttempts rules)
+  }
+
+-- | Why a configured PIN length was denied: too short or too long.
+-- Carries the observed byte length and the violated bound so the
+-- config refusal can name both.
+data PinLengthDeny
+  = PinTooShort !Int !Int
+  | PinTooLong !Int !Int
+  deriving (Eq, Show)
+
+-- | Check a configured PIN byte length against the effective
+-- policy: 'Nothing' admits, 'Just' denies with the violated
+-- bound. Pure and total; the config loader maps denials to
+-- actionable @CfgInvalid@ refusals.
+checkPinLength :: EffectivePolicy -> Int -> Maybe PinLengthDeny
+checkPinLength policy nBytes
+  | nBytes < epPinMinLen policy = Just (PinTooShort nBytes (epPinMinLen policy))
+  | nBytes > epPinMaxLen policy = Just (PinTooLong nBytes (epPinMaxLen policy))
+  | otherwise = Nothing
 
 -- | Decode OpenSession arguments: @slot=\<nat\>,rw@ or @slot=\<nat\>,ro@.
 parseOpenArgs :: ByteString -> Maybe (SlotId, Bool)

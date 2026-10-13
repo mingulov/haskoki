@@ -2,21 +2,31 @@
 
 Two sessions share one store handle with interleaved commits (no lost
 updates); revision conflicts surface as the typed
-'StoreRevisionConflict' error, never silent overwrites. Both backends
-run the same cases.
+'StoreRevisionConflict' error, never silent overwrites. Close
+serializes with use (M4): a close issued against an in-flight
+commit or a queued load waits instead of tearing the handle, and
+a failed close retains ownership, refuses new operations, and
+reports, until a retry closes for real. Both backends run the
+same cases.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module MultiSessionSpec (spec) where
 
 import qualified Data.Map.Strict as Map
 import Data.ByteString (ByteString)
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, sortOn)
 import System.Directory (removeDirectoryRecursive)
 import System.FilePath ((</>))
+import System.IO (hPutStrLn, stderr)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
-import Control.Exception (bracket)
+import Control.Concurrent (ThreadId, forkFinally, killThread, threadDelay)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar)
+import Control.Exception (AsyncException (..), SomeException, bracket, finally, fromException, throwIO, try)
+import Control.Monad (replicateM, when)
+import Data.IORef (atomicModifyIORef', newIORef)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model
@@ -28,7 +38,8 @@ import Haskoki.Model
 import Haskoki.Outcome (DeltaOp (..), StateDelta (..))
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
-  , FaultInjector
+  , FaultInjector (..)
+  , FaultPoint (..)
   , ObjectPut (..)
   , ObjectRecord (..)
   , Store (..)
@@ -41,6 +52,9 @@ import Haskoki.Runtime.Storage
   , noFaults
   , objectToRecord
   , reserveRestoredIds
+  , scriptedFaults
+  , withMaskHook
+  , withResultHook
   )
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStoreWith)
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStoreWith)
@@ -51,7 +65,7 @@ import Haskoki.Types
   , SessionId (..)
   , SlotId (..)
   )
-import StoreSpec (expectCreated, expectJust, expectRight, makeTempDir, seedStore)
+import StoreSpec (expectCreated, expectInspect, expectJust, expectRight, makeTempDir, seedStore)
 
 -- | Open a store on the case identity with the given limits and faults.
 type OpenWith = StoreLimits -> FaultInjector -> IO (Either StoreError Store)
@@ -63,15 +77,84 @@ spec = testGroup "Multi-session store"
           withMemoryIdentity testInterleaved
       , testCase "revision conflict is typed, never a silent overwrite" $
           withMemoryIdentity testConflict
+      , testCase "commit in flight serializes with close" $
+          withMemoryIdentity testCommitCloseBarrier
+      , testCase "queued load serializes with close" $
+          withMemoryIdentity testLoadCloseBarrier
+      , testCase "failed close retains ownership and retry succeeds" $
+          withMemoryIdentity testFailedCloseRetains
+      , testCase "throwing close probe never strands the handle" $
+          withMemoryIdentity testCloseProbeThrows
+      , testCase "killed close never strands the handle" $
+          withMemoryIdentity testCloseKillDuringProbe
       ]
   , testGroup "sqlite"
       [ testCase "interleaved commits lose no updates" $
           withSQLiteIdentity testInterleaved
       , testCase "revision conflict is typed, never a silent overwrite" $
           withSQLiteIdentity testConflict
+      , testCase "commit in flight serializes with close" $
+          withSQLiteIdentity testCommitCloseBarrier
+      , testCase "queued load serializes with close" $
+          withSQLiteIdentity testLoadCloseBarrier
+      , testCase "failed close retains ownership and retry succeeds" $
+          withSQLiteIdentity testFailedCloseRetains
+      , testCase "throwing close probe never strands the handle" $
+          withSQLiteIdentity testCloseProbeThrows
+      , testCase "killed close never strands the handle" $
+          withSQLiteIdentity testCloseKillDuringProbe
       ]
   , testCase "commit tests observe death deterministically (no busy-spin)" caseNoBusySpin
   ]
+
+-- | Barrier rendezvous bound: 5 seconds, matching the commit
+-- suite's guards.
+rendezvousTimeout :: Int
+rendezvousTimeout = 5000000
+
+-- | Run a worker with 'forkFinally' outcome capture (the commit
+-- suite's 'withWorker' idiom, repeated because that helper is
+-- private to its module). Every exit path cancels a still-live
+-- worker and joins the outcome with bounded waits, so a stuck
+-- worker cannot leak past the case. The body observes the outcome
+-- with 'readMVar' (leaving it for the bounded join); the join
+-- only blocks when the worker never reported.
+withWorker
+  :: IO ()
+  -> ((ThreadId, MVar (Either SomeException ())) -> IO a)
+  -> IO a
+withWorker action use = do
+  outcomeVar <- newEmptyMVar
+  tid <- forkFinally action (putMVar outcomeVar)
+  use (tid, outcomeVar) `finally` release tid outcomeVar
+  where
+    release tid outcomeVar = do
+      _ <- timeout rendezvousTimeout (killThread tid)
+      mJoined <- timeout rendezvousTimeout (takeMVar outcomeVar)
+      case mJoined of
+        Just _ -> pure ()
+        Nothing -> hPutStrLn stderr
+          "withWorker: worker join timed out after kill (5s guard)"
+
+-- | Run several workers with 'withWorker' nesting, collecting
+-- their outcome cells for the body.
+withWorkers :: [IO ()] -> ([MVar (Either SomeException ())] -> IO a) -> IO a
+withWorkers actions use = go actions []
+  where
+    go [] outcomes = use (reverse outcomes)
+    go (act : rest) outcomes =
+      withWorker act $ \(_, outcome) -> go rest (outcome : outcomes)
+
+-- | Open a store on the case identity, closing the handle when the
+-- body exits on any path (M4 hygiene: a failing assertion
+-- mid-case must not leak a live handle into fixture cleanup).
+-- Sits outside the worker scopes, so workers are joined before
+-- the store and directory cleanup runs. Explicit closes inside
+-- the body stay — they are the behavior under test — and the
+-- bracket close is an idempotent no-op after them.
+withOpenStore :: OpenWith -> StoreLimits -> FaultInjector -> (Store -> IO a) -> IO a
+withOpenStore openWith lim inj =
+  bracket (openWith lim inj >>= either (assertFailure . show) pure) storeClose
 
 -- | Fresh memory identity per case.
 withMemoryIdentity :: (OpenWith -> IO ()) -> IO ()
@@ -189,3 +272,381 @@ countObjects = sum . map (length . snd)
 -- | Whether an object id is present in loaded state.
 objectPresent :: ObjectId -> [(TokenRecord, [ObjectRecord])] -> Bool
 objectPresent oid = any (any ((== oid) . orId) . snd)
+
+-- | M4: a close issued while a commit sits inside the masked
+-- region waits for the commit — it never slips past and shuts
+-- the handle beneath it. The barrier commit lands whole, later
+-- uses fail closed, and the identity reopens with the commit
+-- durable.
+testCommitCloseBarrier :: OpenWith -> IO ()
+testCommitCloseBarrier openWith =
+  withOpenStore openWith defaultLimits noFaults $ \sClean -> do
+    (tok, _) <- seedStore sClean
+    storeClose sClean
+    enteredVar <- newEmptyMVar
+    releaseVar <- newEmptyMVar
+    resultVar <- newEmptyMVar
+    inj0 <- scriptedFaults []
+    let inj = withResultHook (putMVar resultVar) (withMaskHook hook inj0)
+        hook = putMVar enteredVar () >> takeMVar releaseVar
+    withOpenStore openWith defaultLimits inj $ \store -> do
+      docs <- expectInspect store
+      assertBool "seeded docs inspect before close" (not (null docs))
+      let delta = emptyDelta { sdPutMeta = [("m4-commit-barrier", "1")] }
+      commitVar <- newEmptyMVar
+      withWorker (storeCommit store delta >>= putMVar commitVar) $ \(_, _) -> do
+        mEntered <- timeout rendezvousTimeout (takeMVar enteredVar)
+        case mEntered of
+          Nothing -> assertFailure "commit never entered the masked region (5s guard)"
+          Just () -> pure ()
+        assertStillOwned openWith
+        closeStarted <- newEmptyMVar
+        withWorker (putMVar closeStarted () >> storeClose store) $ \(_, closeOutcome) -> do
+          mStarted <- timeout rendezvousTimeout (takeMVar closeStarted)
+          case mStarted of
+            Nothing -> assertFailure "close worker never started (5s guard)"
+            Just () -> pure ()
+          -- The close provably entered 'storeClose' while the commit
+          -- holds the handle lock: it must still be blocked.
+          mEarly <- timeout 100000 (readMVar closeOutcome)
+          case mEarly of
+            Just _ -> assertFailure "close slipped past an in-flight commit"
+            Nothing -> pure ()
+          putMVar releaseVar ()
+          mRes <- timeout rendezvousTimeout (takeMVar resultVar)
+          res <- maybe (assertFailure "commit result hook never fired (5s guard)") pure mRes
+          assertEqual "barrier commit result" Committed res
+          mCommit <- timeout rendezvousTimeout (takeMVar commitVar)
+          case mCommit of
+            Just Committed -> pure ()
+            other -> assertFailure ("barrier commit lost: " ++ show other)
+          mClosed <- timeout rendezvousTimeout (readMVar closeOutcome)
+          case mClosed of
+            Just (Right ()) -> pure ()
+            Just (Left e) -> assertFailure ("close worker died: " ++ show e)
+            Nothing -> assertFailure "close never completed after release (5s guard)"
+          assertClosed store tok
+    withOpenStore openWith defaultLimits noFaults $ \re -> do
+      eMeta <- storeLoadMeta re
+      meta <- either (assertFailure . show) pure eMeta
+      assertEqual "barrier commit durable" (Just "1") (lookup "m4-commit-barrier" meta)
+      storeClose re
+
+-- | M4: a load issued while a commit sits inside the masked
+-- region queues behind it, and a close issued in between queues
+-- too — every outcome is well-defined. The load either serves
+-- the whole seed or reports the closed handle (never torn data,
+-- never an exception), the commit lands, the close completes,
+-- and later loads fail closed.
+testLoadCloseBarrier :: OpenWith -> IO ()
+testLoadCloseBarrier openWith =
+  withOpenStore openWith defaultLimits noFaults $ \sClean -> do
+    (tok, seedRecs) <- seedStore sClean
+    storeClose sClean
+    enteredVar <- newEmptyMVar
+    releaseVar <- newEmptyMVar
+    inj0 <- scriptedFaults []
+    let inj = withMaskHook hook inj0
+        hook = putMVar enteredVar () >> takeMVar releaseVar
+    withOpenStore openWith defaultLimits inj $ \store -> do
+      let delta = emptyDelta { sdPutMeta = [("m4-load-barrier", "1")] }
+      commitVar <- newEmptyMVar
+      withWorker (storeCommit store delta >>= putMVar commitVar) $ \(_, _) -> do
+        mEntered <- timeout rendezvousTimeout (takeMVar enteredVar)
+        case mEntered of
+          Nothing -> assertFailure "commit never entered the masked region (5s guard)"
+          Just () -> pure ()
+        assertStillOwned openWith
+        loadVar <- newEmptyMVar
+        loadStarted <- newEmptyMVar
+        withWorker (putMVar loadStarted () >> (storeLoadTokens store >>= putMVar loadVar)) $ \(_, _) -> do
+          mLStarted <- timeout rendezvousTimeout (takeMVar loadStarted)
+          case mLStarted of
+            Nothing -> assertFailure "loader never started (5s guard)"
+            Just () -> pure ()
+          -- Positioning pause (not an assertion): let the loader reach
+          -- the handle lock ahead of the close. If it loses the race
+          -- the classified outcome below still holds.
+          threadDelay 50000
+          closeStarted <- newEmptyMVar
+          withWorker (putMVar closeStarted () >> storeClose store) $ \(_, closeOutcome) -> do
+            mStarted <- timeout rendezvousTimeout (takeMVar closeStarted)
+            case mStarted of
+              Nothing -> assertFailure "close worker never started (5s guard)"
+              Just () -> pure ()
+            mEarly <- timeout 100000 (readMVar closeOutcome)
+            case mEarly of
+              Just _ -> assertFailure "close slipped past an in-flight commit"
+              Nothing -> pure ()
+            putMVar releaseVar ()
+            mCommit <- timeout rendezvousTimeout (takeMVar commitVar)
+            case mCommit of
+              Just Committed -> pure ()
+              other -> assertFailure ("barrier commit lost: " ++ show other)
+            mLoad <- timeout rendezvousTimeout (takeMVar loadVar)
+            case mLoad of
+              Just (Right loaded) -> assertWholeSeed tok seedRecs loaded
+              Just (Left (StoreIO _)) -> pure ()
+              Just (Left err) -> assertFailure ("queued load misdiagnosed: " ++ show err)
+              Nothing -> assertFailure "queued load never answered (5s guard)"
+            mClosed <- timeout rendezvousTimeout (readMVar closeOutcome)
+            case mClosed of
+              Just (Right ()) -> pure ()
+              Just (Left e) -> assertFailure ("close worker died: " ++ show e)
+              Nothing -> assertFailure "close never completed after release (5s guard)"
+            assertClosed store tok
+    -- Hammer phase: a hundred racing loads against a racing close
+    -- classify cleanly (whole seed or closed diagnosis), never
+    -- tear and never escape as an exception.
+    withOpenStore openWith defaultLimits noFaults $ \re -> do
+      eLoaded <- storeLoadTokens re
+      loaded <- either (assertFailure . show) pure eLoaded
+      assertWholeSeed tok seedRecs loaded
+      loadVars <- replicateM 4 newEmptyMVar
+      let loader var = replicateM 25 (storeLoadTokens re) >>= putMVar var
+      -- No head start: the close races the spinning loaders
+      -- immediately, maximizing the overlap window (the suite
+      -- runs threaded, so the loaders truly run in parallel).
+      -- Mixed batches are the common observation; the assertion
+      -- stays distribution-neutral, classifying every
+      -- outcome.
+      withWorkers (map loader loadVars) $ \_ -> do
+        storeClose re
+        outcomes <- mapM (timeout rendezvousTimeout . takeMVar) loadVars
+        case sequence outcomes of
+          Nothing -> assertFailure "hammer loader join timed out (5s guard)"
+          Just batches -> mapM_ (mapM_ (classifyHammer tok seedRecs)) batches
+    withOpenStore openWith defaultLimits noFaults $ \re2 -> do
+      eLoaded2 <- storeLoadTokens re2
+      loaded2 <- either (assertFailure . show) pure eLoaded2
+      assertWholeSeed tok seedRecs loaded2
+      storeClose re2
+
+-- | M4: a failed close (an injected 'FaultClose') reports by
+-- throwing the typed failure, retains ownership and guards,
+-- refuses new operations exactly like a closed handle — and a
+-- later close retries for real. The next owner can never enter
+-- around the surviving handle.
+testFailedCloseRetains :: OpenWith -> IO ()
+testFailedCloseRetains openWith = do
+  inj <- scriptedFaults [FaultClose]
+  withOpenStore openWith defaultLimits inj $ \store -> do
+    (tok, seedRecs) <- seedStore store
+    eFirst <- try (storeClose store)
+    case eFirst of
+      Left e -> case fromException e of
+        Just (StoreIO msg)
+          | "close failed" `isInfixOf` msg -> pure ()
+        _ -> assertFailure ("close misreported failure: " ++ show (e :: SomeException))
+      Right () -> assertFailure "failed close did not report"
+    -- Poisoned, not usable: new operations refuse ...
+    assertClosed store tok
+    -- ... while the handle still owns the identity.
+    eSecond <- openWith defaultLimits noFaults
+    case eSecond of
+      Right s2 -> do
+        storeClose s2
+        assertFailure "failed close released ownership"
+      Left (StoreSecondWriter _) -> pure ()
+      Left other -> assertFailure
+        ("wrong error while failed-close handle holds: " ++ show other)
+    -- The retry closes for real.
+    storeClose store
+    assertClosed store tok
+  withOpenStore openWith defaultLimits noFaults $ \re -> do
+    eLoaded <- storeLoadTokens re
+    loaded <- either (assertFailure . show) pure eLoaded
+    assertWholeSeed tok seedRecs loaded
+    storeClose re
+
+-- | M4: an exception thrown from the close fault probe never
+-- strands the handle: the first close propagates the probe
+-- error, the handle stays usable and still owns the identity,
+-- and the retry closes for real.
+testCloseProbeThrows :: OpenWith -> IO ()
+testCloseProbeThrows openWith = do
+  armedVar <- newIORef True
+  let inj = noFaults { fiFire = fire }
+      fire FaultClose = do
+        armed <- atomicModifyIORef' armedVar (\armed -> (False, armed))
+        if armed then throwIO (userError "m4-boom") else pure False
+      fire _ = pure False
+  withOpenStore openWith defaultLimits inj $ \store -> do
+    (tok, _) <- seedStore store
+    eClose <- try (storeClose store)
+    case eClose of
+      Left e
+        | "m4-boom" `isInfixOf` show (e :: SomeException) -> pure ()
+      Left e -> assertFailure ("close threw foreign error: " ++ show (e :: SomeException))
+      Right () -> assertFailure "throwing close probe did not propagate"
+    -- The handle is unstranded: the first probe runs bounded (a
+    -- stranded flag would hang here past the guard), then the
+    -- handle serves and still owns the identity.
+    mLoaded <- timeout rendezvousTimeout (storeLoadTokens store)
+    loaded <- case mLoaded of
+      Nothing -> assertFailure "handle stranded by throwing close probe (5s guard)"
+      Just eLoaded -> either (assertFailure . show) pure eLoaded
+    assertBool "seed token served after throwing close"
+      (any ((== trId tok) . trId . fst) loaded)
+    r <- storeCommit store emptyDelta { sdPutMeta = [("m4-throw-retry", "1")] }
+    assertEqual "commit served after throwing close" Committed r
+    eSecond <- openWith defaultLimits noFaults
+    case eSecond of
+      Right s2 -> do
+        storeClose s2
+        assertFailure "throwing close released ownership"
+      Left (StoreSecondWriter _) -> pure ()
+      Left other -> assertFailure
+        ("wrong error while throwing-close handle holds: " ++ show other)
+    -- The probe is spent: the retry closes for real.
+    storeClose store
+    assertClosed store tok
+  withOpenStore openWith defaultLimits noFaults $ \re -> do
+    eMeta <- storeLoadMeta re
+    meta <- either (assertFailure . show) pure eMeta
+    assertEqual "probe durable across throw retry" (Just "1") (lookup "m4-throw-retry" meta)
+    storeClose re
+
+-- | M4: killing a close blocked in its fault probe never strands
+-- the handle: the victim dies observed, the handle stays usable
+-- and still owns the identity, and the retry (after releasing
+-- the probe) closes for real.
+testCloseKillDuringProbe :: OpenWith -> IO ()
+testCloseKillDuringProbe openWith = do
+  enteredVar <- newEmptyMVar
+  releaseVar <- newEmptyMVar
+  armedVar <- newIORef True
+  -- Only the first close probe blocks (that is the victim's
+  -- window); every later probe — the in-body retry and any
+  -- failure-path bracket cleanup — answers immediately, so no
+  -- exit path can hang in the probe.
+  let inj = noFaults { fiFire = fire }
+      fire FaultClose = do
+        first <- atomicModifyIORef' armedVar (\armed -> (False, armed))
+        when first $ do
+          putMVar enteredVar ()
+          takeMVar releaseVar
+        pure False
+      fire _ = pure False
+  withOpenStore openWith defaultLimits inj $ \store -> do
+    (tok, _) <- seedStore store
+    withWorker (storeClose store) $ \(tid, outcome) -> do
+      mEntered <- timeout rendezvousTimeout (takeMVar enteredVar)
+      case mEntered of
+        Nothing -> assertFailure "close never reached its probe (5s guard)"
+        Just () -> pure ()
+      killThread tid
+      mOutcome <- timeout rendezvousTimeout (readMVar outcome)
+      case mOutcome of
+        Just (Left e)
+          | isKill e -> pure ()
+        other -> assertFailure ("close victim not observed killed: " ++ show other)
+      -- The victim died inside the probe: the first probe runs
+      -- bounded (a stranded flag would hang here past the guard),
+      -- then the handle serves and still owns the identity.
+      mLoaded <- timeout rendezvousTimeout (storeLoadTokens store)
+      loaded <- case mLoaded of
+        Nothing -> assertFailure "handle stranded by killed close (5s guard)"
+        Just eLoaded -> either (assertFailure . show) pure eLoaded
+      assertBool "seed token served after killed close"
+        (any ((== trId tok) . trId . fst) loaded)
+      r <- storeCommit store emptyDelta { sdPutMeta = [("m4-kill-retry", "1")] }
+      assertEqual "commit served after killed close" Committed r
+      eSecond <- openWith defaultLimits noFaults
+      case eSecond of
+        Right s2 -> do
+          storeClose s2
+          assertFailure "killed close released ownership"
+        Left (StoreSecondWriter _) -> pure ()
+        Left other -> assertFailure
+          ("wrong error while killed-close handle holds: " ++ show other)
+      -- The probe is spent after its first blocking round: the
+      -- retry closes for real.
+      storeClose store
+      assertClosed store tok
+  withOpenStore openWith defaultLimits noFaults $ \re -> do
+    eMeta <- storeLoadMeta re
+    meta <- either (assertFailure . show) pure eMeta
+    assertEqual "probe durable across kill retry" (Just "1") (lookup "m4-kill-retry" meta)
+    storeClose re
+
+-- | Whether an outcome is an observed async kill.
+isKill :: SomeException -> Bool
+isKill e = case fromException e of
+  Just ThreadKilled -> True
+  _ -> False
+
+-- | A non-open handle fails closed on every world-touching
+-- operation with exactly 'StoreIO "store is closed"' (commits
+-- and resets wrap it in 'NotCommitted'), while the live-handle
+-- diagnostics stay readable. Applies identically to cleanly
+-- closed and close-failed handles. The reset arguments are
+-- never consulted (refusal precedes the generation check), so
+-- the seed token doubles as the replacement.
+assertClosed :: Store -> TokenRecord -> IO ()
+assertClosed store tok = do
+  eToks <- storeLoadTokens store
+  case eToks of
+    Left (StoreIO msg) | msg == "store is closed" -> pure ()
+    other -> assertFailure ("expected closed load refusal, got: " ++ show other)
+  eJobs <- storeLoadJobs store
+  case eJobs of
+    Left (StoreIO msg) | msg == "store is closed" -> pure ()
+    other -> assertFailure ("expected closed jobs refusal, got: " ++ show other)
+  eMeta <- storeLoadMeta store
+  case eMeta of
+    Left (StoreIO msg) | msg == "store is closed" -> pure ()
+    other -> assertFailure ("expected closed meta refusal, got: " ++ show other)
+  eDocs <- storeInspect store
+  case eDocs of
+    Left (StoreIO msg) | msg == "store is closed" -> pure ()
+    other -> assertFailure ("expected closed inspect refusal, got: " ++ show other)
+  eReload <- storeReload store
+  case eReload of
+    Left (StoreIO msg) | msg == "store is closed" -> pure ()
+    other -> assertFailure ("expected closed reload refusal, got: " ++ show other)
+  rCommit <- storeCommit store emptyDelta
+  case rCommit of
+    NotCommitted (StoreIO msg) | msg == "store is closed" -> pure ()
+    other -> assertFailure ("expected closed commit refusal, got: " ++ show other)
+  rReset <- storeResetToken store (trId tok) (trGeneration tok) tok
+  case rReset of
+    NotCommitted (StoreIO msg) | msg == "store is closed" -> pure ()
+    other -> assertFailure ("expected closed reset refusal, got: " ++ show other)
+  _ <- storeStats store
+  _ <- storeQuarantined store
+  pure ()
+
+-- | While an admitted commit is pending, no new handle can
+-- become active on the identity: the owner still holds it.
+assertStillOwned :: OpenWith -> IO ()
+assertStillOwned openWith = do
+  eRival <- openWith defaultLimits noFaults
+  case eRival of
+    Right sRival -> do
+      storeClose sRival
+      assertFailure "new handle entered around a pending commit"
+    Left (StoreSecondWriter _) -> pure ()
+    Left other -> assertFailure ("wrong error around pending commit: " ++ show other)
+
+-- | The loaded state is exactly the seed: one token with its two
+-- children, id-ordered comparison so backend row order cannot
+-- matter.
+assertWholeSeed :: TokenRecord -> [ObjectRecord] -> [(TokenRecord, [ObjectRecord])] -> IO ()
+assertWholeSeed tok seedRecs loaded = case loaded of
+  [(t, os)]
+    | t == tok && sortOn orId os == sortOn orId seedRecs -> pure ()
+    | otherwise -> assertFailure "queued load served torn seed data"
+  _ -> assertFailure ("expected one seed token, got: " ++ show (length loaded))
+
+-- | One hammered load classifies cleanly: the whole seed or the
+-- closed diagnosis — never torn data, never another error.
+classifyHammer
+  :: TokenRecord
+  -> [ObjectRecord]
+  -> Either StoreError [(TokenRecord, [ObjectRecord])]
+  -> IO ()
+classifyHammer tok seedRecs eLoaded = case eLoaded of
+  Right loaded -> assertWholeSeed tok seedRecs loaded
+  Left (StoreIO _) -> pure ()
+  Left err -> assertFailure ("hammer load misdiagnosed: " ++ show err)

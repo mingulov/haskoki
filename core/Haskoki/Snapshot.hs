@@ -53,10 +53,12 @@ that many bytes; @u8@ tags reject any other value):
 >     DDONE, CDONE: u8 0\/1
 
 Decoding is strict: truncated input, trailing bytes, unknown tags,
-out-of-range values, incoherent kind\/operation pairs, and quota
-violations all reject. Restore checks run in documented order:
-decode, quotas, profile, token, slot occupancy, then key binding —
-and any failure returns the target session untouched.
+out-of-range values, incoherent kind\/operation pairs, ill-formed
+cipher\/recovery geometries (revalidated against the shared init
+bounds, with message cipher-spec presence matching the family),
+and quota violations all reject. Restore checks run in documented
+order: decode, quotas, profile, token, slot occupancy, then key
+binding — and any failure returns the target session untouched.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Snapshot
@@ -147,6 +149,8 @@ import Haskoki.Operation.State
   , slotOfActive
   , stagedOf
   , chainIvOf
+  , validCipherSpec
+  , validRecoverSpec
   )
 import Haskoki.Registry (MechanismId (..), Operation (..))
 import Haskoki.Types
@@ -874,6 +878,7 @@ getSingle = do
       cap <- getU32
       tagLen <- getU32
       checkOp common (recoverOp role)
+      checkRecoverSpec (RecoverSpec cap tagLen)
       pure ((bare kind tag common)
         { dsRecoverShape = Just (role, RecoverSpec cap tagLen) })
     4 -> do
@@ -881,6 +886,7 @@ getSingle = do
       block <- getU32
       pad <- getFlag "pad"
       checkOp common (cipherOp dir)
+      checkCipherSpec (CipherSpec block (pad == 1))
       pure ((bare kind tag common)
         { dsCipherShape = Just (dir, CipherSpec block (pad == 1)) })
     5 -> do
@@ -889,6 +895,7 @@ getSingle = do
       mspec <- getMaybeCipherSpec
       count <- getU32
       checkOp common (msgOperation fam)
+      checkMsgSpec fam mspec
       pure ((bare kind tag common)
         { dsMessageShape = Just (fam, inner, mspec, count) })
     t -> getFail ("operation tag out of range: " ++ show t)
@@ -982,6 +989,34 @@ getMaybeCipherSpec = do
       pure (Just (CipherSpec block (pad == 1)))
     _ -> getFail ("cipher-spec tag out of range: " ++ show t)
 
+-- | Revalidate one decoded cipher shape against the shared init
+-- bounds: hostile bytes must not install a geometry normal init
+-- would refuse. Decode runs before any slot is touched, so a
+-- rejection leaves the target unchanged.
+checkCipherSpec :: CipherSpec -> Get ()
+checkCipherSpec spec
+  | validCipherSpec spec = pure ()
+  | otherwise = getFail ("cipher spec out of range: " ++ show spec)
+
+-- | Revalidate one decoded recovery shape against the shared init
+-- bounds.
+checkRecoverSpec :: RecoverSpec -> Get ()
+checkRecoverSpec spec
+  | validRecoverSpec spec = pure ()
+  | otherwise = getFail ("recover spec out of range: " ++ show spec)
+
+-- | Revalidate one decoded message cipher shape: cipher families
+-- carry a well-formed spec, sign\/verify families carry none —
+-- exactly what message init installs.
+checkMsgSpec :: MsgFamily -> Maybe CipherSpec -> Get ()
+checkMsgSpec fam mspec = case (fam, mspec) of
+  (MsgEncrypt, Just spec) -> checkCipherSpec spec
+  (MsgDecrypt, Just spec) -> checkCipherSpec spec
+  (MsgSign, Nothing) -> pure ()
+  (MsgVerify, Nothing) -> pure ()
+  _ -> getFail
+    ("message cipher-spec presence mismatches the family: " ++ show fam)
+
 -- | Dual-operation body.
 getDual :: Get DecodedDual
 getDual = do
@@ -990,6 +1025,7 @@ getDual = do
   dir <- getCipherDir
   block <- getU32
   pad <- getFlag "pad"
+  checkCipherSpec (CipherSpec block (pad == 1))
   staged <- getDualStaged
   pure (DecodedDual d c dir (CipherSpec block (pad == 1)) staged)
 
