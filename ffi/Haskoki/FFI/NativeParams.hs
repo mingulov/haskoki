@@ -33,11 +33,17 @@ Covered structs (caller-native layout, offsets derived from
   with the same null conventions, and the triple re-encodes with
   'encodeEcdhParams' (canonical null-KDF code 0).
 * DH PKCS#3: the parameter image is the bare big-endian peer value
-  (the PKCS#11 parameter form — no struct); 1..4096 bytes wrap with
-  'encodeDhParams' (canonical null-KDF code 0), while an image that
-  already parses as canonical passes through untouched (idempotent:
-  a bare peer that happens to parse as @(0, peer)@ carries the same
-  integer either way, since the parse only strips leading zeros).
+  (the PKCS#11 parameter form — no struct); 1..4096 bytes always wrap
+  whole with 'encodeDhParams' (canonical null-KDF code 0). No content
+  sniffing: a bare peer that happens to parse as the canonical
+  @(kdf, len, peer)@ frame keeps every byte — the old pass-through
+  mistook such a peer for an internal frame and silently dropped its
+  leading bytes (G01). Already-canonical internal images never cross
+  this boundary (the only caller is the native derive intake); the
+  internal codec round-trips on its own ('encodeDhParams' /
+  'decodeDhParams'). Overlong images map to the recipe-refused
+  empty image — never a raw passthrough, which a frame-shaped
+  overlong image would escape through as a short peer.
 * DH X9.42 (@CK_X9_42_DH1_DERIVE_PARAMS@, the ECDH struct layout):
   @kdf@ must be @CKD_NULL@ and the shared data must be empty (the
   recipe has no shared slot — non-empty shared refuses rather than
@@ -239,7 +245,7 @@ import Foreign.Storable (alignment, peekByteOff, sizeOf)
 import Haskoki.FFI.Decode (maxInputBytes)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
 import Haskoki.Recipe.Ccm (ccmRecipeFor, encodeCcmParams)
-import Haskoki.Recipe.Dh (decodeDhParams, encodeDhParams)
+import Haskoki.Recipe.Dh (encodeDhParams)
 import Haskoki.Recipe.Chacha20
   ( chachaName
   , chachaPolyTagLen
@@ -638,16 +644,24 @@ wrapCompEcdhStructToCanonical kdf shared aesBits
   | otherwise = Just (encodeWrapCompEcdhParams (fromIntegral kdf) shared (fromIntegral aesBits))
 
 -- | Pure PKCS#3 DH translation: the bare peer image onto the
--- canonical @dh-params/1@ image. An image that already parses as
--- canonical passes through untouched (idempotent); any other
--- 1..4096-byte image wraps as the null-KDF peer (the native
--- @HSK_OSSL4_DH_PEER_MAX@ bound — longer images refuse
--- downstream either way). Empty images refuse ('Nothing').
+-- canonical @dh-params/1@ image. Every admitted 1..4096-byte image
+-- wraps whole as the null-KDF peer (the native
+-- @HSK_OSSL4_DH_PEER_MAX@ bound); for every admitted @p@,
+-- @dhPkcsStructToCanonical p >>= decodeDhParams@ is @Just (0, p)@
+-- exactly. No canonical pass-through: the input means native peer
+-- bytes only, never an internal frame (a frame-shaped peer keeps
+-- all its bytes). Overlong images map to the empty image —
+-- refused downstream by the recipe — rather than 'Nothing': a
+-- 'Nothing' passes the bytes through raw at the caller, and a
+-- frame-shaped overlong image would then decode as a short peer
+-- and derive (the same G01 escape past the bound). Empty images
+-- refuse ('Nothing' — the empty passthrough cannot parse, so
+-- the recipe refusal is exactly today's).
 dhPkcsStructToCanonical :: ByteString -> Maybe ByteString
-dhPkcsStructToCanonical raw = case decodeDhParams raw of
-  Just (0, _) -> Just raw
-  _ | BS.length raw >= 1 && BS.length raw <= 4096 -> Just (encodeDhParams 0 raw)
-    | otherwise -> Nothing
+dhPkcsStructToCanonical raw
+  | BS.null raw = Nothing
+  | BS.length raw <= 4096 = Just (encodeDhParams 0 raw)
+  | otherwise = Just BS.empty
 
 -- | Pure X9.42 DH translation: the chased shared/peer pair onto
 -- the canonical @dh-params/1@ image. Non-null KDF selectors and

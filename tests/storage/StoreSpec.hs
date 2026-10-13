@@ -96,7 +96,7 @@ import Haskoki.Runtime.Storage
   )
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
 import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), livenessFromProbes, openSQLiteStore)
-import Haskoki.Session (tokenAuthNew)
+import Haskoki.Session (TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
   ( ExternalHandle (..)
@@ -216,6 +216,14 @@ contractSpec label mkOpener = testGroup label
       withOpener mkOpener testNoPointerBytes
   , testCase "second token on one slot refuses" $
       withOpener mkOpener testSlotUnique
+  , testCase "ordinary token refresh preserves owned children" $
+      withOpener mkOpener tokenRefreshPreservesChildren
+  , testCase "byte-identical token put preserves owned children" $
+      withOpener mkOpener unchangedTokenPutPreservesChildren
+  , testCase "mixed token and object puts preserve other children" $
+      withOpener mkOpener mixedTokenAndObjectPutPreservesOtherChildren
+  , testCase "dropped token cannot resurrect children on recreate" $
+      withOpener mkOpener dropRecreateCannotResurrectChildren
   ]
 
 -- | Acceptance 1: the same logical token objects across a
@@ -1603,6 +1611,243 @@ testSlotUnique o = do
   ok <- storeCommit s emptyDelta { sdPutTokens = [twin { trSlot = SlotId 1 }] }
   assertEqual "free slot commits" Committed ok
   storeClose s
+
+-- | One seeded token subtree: the token with its objects and jobs.
+data TokenSeed = TokenSeed
+  { tsToken :: !TokenRecord
+  , tsObjects :: ![ObjectRecord]
+  , tsJobs :: ![JobRecord]
+  }
+
+-- | Seed two tokens (slots 0 and 1), each with two objects and a
+-- queued plus a ready job; return the exact seeded subtrees.
+seedTwoTokens :: Store -> IO (TokenSeed, TokenSeed)
+seedTwoTokens store = do
+  let slotA = SlotId 0
+      slotB = SlotId 1
+      tmplA1 =
+        [ (AttrClass, ValULong 3)
+        , (AttrToken, ValBool True)
+        , (AttrLabel, ValBytes "seed2-a1")
+        , (AttrValue, ValBytes "seed2-bytes-a1")
+        ]
+      tmplA2 =
+        [ (AttrClass, ValULong 4)
+        , (AttrToken, ValBool True)
+        , (AttrLabel, ValBytes "seed2-a2")
+        ]
+      tmplB1 =
+        [ (AttrClass, ValULong 3)
+        , (AttrToken, ValBool True)
+        , (AttrLabel, ValBytes "seed2-b1")
+        , (AttrValue, ValBytes "seed2-bytes-b1")
+        ]
+      tmplB2 =
+        [ (AttrClass, ValULong 4)
+        , (AttrToken, ValBool True)
+        , (AttrLabel, ValBytes "seed2-b2")
+        ]
+  mSeated <- expectRight "seed2 seat+open" (publishDelta (addToken emptyModel slotA)
+    (StateDelta [DeltaOpenSession (SessionId 1) slotA False]))
+  st <- expectJust "seed2 session" (lookupSession mSeated (SessionId 1))
+  (m1, _, oid1) <- expectCreated mSeated st tmplA1
+  (m2, _, oid2) <- expectCreated m1 st tmplA2
+  (m3, _, oid3) <- expectCreated m2 st tmplB1
+  (m4, _, oid4) <- expectCreated m3 st tmplB2
+  assertEqual "seed2 ids" [ObjectId 1, ObjectId 2, ObjectId 3, ObjectId 4] [oid1, oid2, oid3, oid4]
+  ost1 <- expectJust "seed2 object 1" (lookupObject m4 oid1)
+  ost2 <- expectJust "seed2 object 2" (lookupObject m4 oid2)
+  ost3 <- expectJust "seed2 object 3" (lookupObject m4 oid3)
+  ost4 <- expectJust "seed2 object 4" (lookupObject m4 oid4)
+  let tokA = TokenRecord
+        { trId = TokenId 7
+        , trSlot = slotA
+        , trGeneration = Generation 1
+        , trLabel = "seed2-token-a"
+        , trAuth = tokenAuthNew
+        }
+      tokB = TokenRecord
+        { trId = TokenId 8
+        , trSlot = slotB
+        , trGeneration = Generation 1
+        , trLabel = "seed2-token-b"
+        , trAuth = tokenAuthNew
+        }
+      recA1 = objectToRecord (TokenId 7) ost1
+      recA2 = objectToRecord (TokenId 7) ost2
+      recB1 = objectToRecord (TokenId 8) ost3
+      recB2 = objectToRecord (TokenId 8) ost4
+      jobsA =
+        [ demoJobPending 70 (TokenId 7) (Generation 1)
+        , demoJobResult 71 (TokenId 7) (Generation 1)
+        ]
+      jobsB =
+        [ demoJobPending 80 (TokenId 8) (Generation 1)
+        , demoJobResult 81 (TokenId 8) (Generation 1)
+        ]
+  result <- storeCommit store emptyDelta
+    { sdPutTokens = [tokA, tokB]
+    , sdPutObjects =
+        [ ObjectPut Nothing recA1
+        , ObjectPut Nothing recA2
+        , ObjectPut Nothing recB1
+        , ObjectPut Nothing recB2
+        ]
+    , sdPutJobs = jobsA ++ jobsB
+    }
+  assertEqual "seed2 commit" Committed result
+  pure (TokenSeed tokA [recA1, recA2] jobsA, TokenSeed tokB [recB1, recB2] jobsB)
+
+-- | Assert both seeded subtrees load exactly: full token, object
+-- and job records, nothing more and nothing less.
+assertSeedRecords :: Store -> TokenSeed -> TokenSeed -> IO ()
+assertSeedRecords s seedA seedB = do
+  eLoaded <- storeLoadTokens s
+  loaded <- either (assertFailure . show) pure eLoaded
+  assertEqual "two tokens" 2 (length loaded)
+  assertLoadedSeed loaded seedA
+  assertLoadedSeed loaded seedB
+  eJobs <- storeLoadJobs s
+  jobs <- either (assertFailure . show) pure eJobs
+  assertEqual "jobs exact" (tsJobs seedA ++ tsJobs seedB) jobs
+
+-- | Assert one seeded subtree loads with its exact token and objects.
+assertLoadedSeed :: [(TokenRecord, [ObjectRecord])] -> TokenSeed -> IO ()
+assertLoadedSeed loaded seed =
+  case lookup (trId (tsToken seed)) [(trId t, (t, os)) | (t, os) <- loaded] of
+    Nothing -> assertFailure ("token missing: " ++ show (trId (tsToken seed)))
+    Just (t, os) -> do
+      assertEqual ("token exact: " ++ show (trId t)) (tsToken seed) t
+      assertEqual ("objects exact: " ++ show (trId t)) (tsObjects seed) os
+
+-- | Assert a token loads with its exact row and no objects.
+assertChildless :: [(TokenRecord, [ObjectRecord])] -> TokenRecord -> IO ()
+assertChildless loaded tok =
+  case lookup (trId tok) [(trId t, (t, os)) | (t, os) <- loaded] of
+    Nothing -> assertFailure ("token missing: " ++ show (trId tok))
+    Just (t, os) -> do
+      assertEqual "token exact" tok t
+      assertEqual "token childless" [] os
+
+-- | Child (non-token) stored bytes, in inspection order.
+childJson :: [StoredDoc] -> [String]
+childJson = map docJson . filter ((/= "tokens") . docTable)
+
+-- | C2: an ordinary same-id token update (label plus auth metadata,
+-- same slot and generation) preserves every owned object and job
+-- byte-exact, leaves the unrelated token untouched, and survives
+-- close/reopen.
+tokenRefreshPreservesChildren :: Opener -> IO ()
+tokenRefreshPreservesChildren o = do
+  eStore <- openCurrent o
+  s <- either (assertFailure . show) pure eStore
+  (seedA, seedB) <- seedTwoTokens s
+  docsBefore <- storeInspect s
+  let tokA = tsToken seedA
+      tokA' = tokA { trLabel = "seed2-token-a-relabeled"
+                   , trAuth = (trAuth tokA) { taUserAttempts = 1 }
+                   }
+      seedA' = seedA { tsToken = tokA' }
+  r <- storeCommit s emptyDelta { sdPutTokens = [tokA'] }
+  assertEqual "refresh commits" Committed r
+  assertSeedRecords s seedA' seedB
+  docsAfter <- storeInspect s
+  assertEqual "child bytes exact" (childJson docsBefore) (childJson docsAfter)
+  storeClose s
+  eStore2 <- openCurrent o
+  s2 <- either (assertFailure . show) pure eStore2
+  assertSeedRecords s2 seedA' seedB
+  storeClose s2
+
+-- | C2: a byte-identical token put preserves every child and every
+-- stored byte, across close/reopen.
+unchangedTokenPutPreservesChildren :: Opener -> IO ()
+unchangedTokenPutPreservesChildren o = do
+  eStore <- openCurrent o
+  s <- either (assertFailure . show) pure eStore
+  (seedA, seedB) <- seedTwoTokens s
+  docsBefore <- storeInspect s
+  r <- storeCommit s emptyDelta { sdPutTokens = [tsToken seedA] }
+  assertEqual "identical put commits" Committed r
+  assertSeedRecords s seedA seedB
+  docsAfter <- storeInspect s
+  assertEqual "stored bytes unchanged" (map docJson docsBefore) (map docJson docsAfter)
+  storeClose s
+  eStore2 <- openCurrent o
+  s2 <- either (assertFailure . show) pure eStore2
+  assertSeedRecords s2 seedA seedB
+  storeClose s2
+
+-- | C2: a token refresh commuting with one object update lands both
+-- and preserves every other child byte-exact, across close/reopen.
+mixedTokenAndObjectPutPreservesOtherChildren :: Opener -> IO ()
+mixedTokenAndObjectPutPreservesOtherChildren o = do
+  eStore <- openCurrent o
+  s <- either (assertFailure . show) pure eStore
+  (seedA, seedB) <- seedTwoTokens s
+  docsBefore <- storeInspect s
+  (firstA, restA) <- case tsObjects seedA of
+    (x : xs) -> pure (x, xs)
+    [] -> assertFailure "seed A has no objects"
+  let tokA' = (tsToken seedA) { trLabel = "seed2-token-a-mixed" }
+      updA = firstA { orAttrs = Map.insert AttrLabel (ValBytes "relabeled-a1") (orAttrs firstA) }
+      seedA' = seedA { tsToken = tokA', tsObjects = updA : restA }
+      keyA = show (unObjectId (orId updA))
+      keyTokA = show (unTokenId (trId tokA'))
+      otherJson = map docJson . filter (\d ->
+        not (docTable d == "objects" && docKey d == keyA)
+          && not (docTable d == "tokens" && docKey d == keyTokA))
+  r <- storeCommit s emptyDelta
+    { sdPutTokens = [tokA']
+    , sdPutObjects = [ObjectPut Nothing updA]
+    }
+  assertEqual "mixed put commits" Committed r
+  assertSeedRecords s seedA' seedB
+  docsAfter <- storeInspect s
+  assertEqual "other child bytes exact" (otherJson docsBefore) (otherJson docsAfter)
+  storeClose s
+  eStore2 <- openCurrent o
+  s2 <- either (assertFailure . show) pure eStore2
+  assertSeedRecords s2 seedA' seedB
+  storeClose s2
+
+-- | C2: dropping a token removes its owned children on both
+-- backends, and recreating the token cannot resurrect them —
+-- across close/reopen.
+dropRecreateCannotResurrectChildren :: Opener -> IO ()
+dropRecreateCannotResurrectChildren o = do
+  eStore <- openCurrent o
+  s <- either (assertFailure . show) pure eStore
+  (seedA, seedB) <- seedTwoTokens s
+  rDrop <- storeCommit s emptyDelta { sdDropTokens = [trId (tsToken seedA)] }
+  assertEqual "drop commits" Committed rDrop
+  eLoaded <- storeLoadTokens s
+  loaded <- either (assertFailure . show) pure eLoaded
+  assertEqual "only token B remains" [tsToken seedB] (map fst loaded)
+  assertEqual "only B objects remain" (tsObjects seedB) (concatMap snd loaded)
+  eJobs <- storeLoadJobs s
+  jobs <- either (assertFailure . show) pure eJobs
+  assertEqual "only B jobs remain" (tsJobs seedB) jobs
+  rPut <- storeCommit s emptyDelta { sdPutTokens = [tsToken seedA] }
+  assertEqual "recreate commits" Committed rPut
+  eLoaded2 <- storeLoadTokens s
+  loaded2 <- either (assertFailure . show) pure eLoaded2
+  assertChildless loaded2 (tsToken seedA)
+  assertLoadedSeed loaded2 seedB
+  eJobs2 <- storeLoadJobs s
+  jobs2 <- either (assertFailure . show) pure eJobs2
+  assertEqual "no resurrected jobs" (tsJobs seedB) jobs2
+  storeClose s
+  eStore2 <- openCurrent o
+  s2 <- either (assertFailure . show) pure eStore2
+  eLoaded3 <- storeLoadTokens s2
+  loaded3 <- either (assertFailure . show) pure eLoaded3
+  assertChildless loaded3 (tsToken seedA)
+  assertLoadedSeed loaded3 seedB
+  eJobs3 <- storeLoadJobs s2
+  jobs3 <- either (assertFailure . show) pure eJobs3
+  assertEqual "no resurrected jobs after reopen" (tsJobs seedB) jobs3
+  storeClose s2
 
 -- | A pending-recipe job fixture: deterministic recipe plus owned
 -- parameter bytes (replayable after restart, no live context).

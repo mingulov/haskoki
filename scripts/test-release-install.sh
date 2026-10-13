@@ -34,6 +34,13 @@
 #   defaults: dist-release/haskoki-<ver from cabal>  ubuntu:26.04
 #             dist-release/haskoki-<ver>-linux-x86_64.tar.gz
 #
+# Release-evidence contract: scripts/release-evidence.sh always passes
+# all three arguments explicitly (absolute paths to the just-built
+# bundle tree and the fresh staged tarball) with
+# HASKOKI_REQUIRE_EXPLICIT_ARGS=1, under which missing arguments fail
+# instead of defaulting. The defaults above are for direct developer
+# invocation only and never satisfy the release-evidence prerequisite.
+#
 # All artifact paths are normalized to absolute paths before any
 # docker mount. The missing-tarball case fails loudly (leg B needs
 # the packaged archive; run scripts/package-release.sh first).
@@ -55,6 +62,10 @@ fail() {
   echo "FAIL: $1"
   exit 1
 }
+
+if [ "${HASKOKI_REQUIRE_EXPLICIT_ARGS:-0}" = "1" ] && [ "$#" -lt 3 ]; then
+  fail "explicit artifact args required (release-evidence contract): $0 <artifact-dir> <image> <bundle-tarball>"
+fi
 
 VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
 [ -n "$VER" ] || fail "cannot parse version from haskoki.cabal"

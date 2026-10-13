@@ -1,0 +1,24 @@
+{
+  "schema": "haskoki-driver-inventory/1",
+  "note": "Single source of truth for scripts/release-evidence.sh: every scripts/test-*.sh appears exactly once. Role container/host runs directly from the runner; role nested runs only inside its parent (never standalone, so the runner must not execute the parent pipeline twice). Order is runner execution order within each role.",
+  "drivers": [
+    {"name": "test-loader.sh", "role": "container", "parent": null},
+    {"name": "test-c-abi.sh", "role": "container", "parent": null},
+    {"name": "test-c-output.sh", "role": "container", "parent": null},
+    {"name": "test-c-mutexes.sh", "role": "container", "parent": null},
+    {"name": "test-consumers.sh", "role": "container", "parent": null},
+    {"name": "test-client.sh", "role": "container", "parent": null},
+    {"name": "test-crypto-routed.sh", "role": "container", "parent": null},
+    {"name": "test-ossl4-bounds.sh", "role": "container", "parent": null},
+    {"name": "test-sim-threaded.sh", "role": "container", "parent": null},
+    {"name": "test-finalize-race.sh", "role": "container", "parent": null},
+    {"name": "test-async-attached.sh", "role": "container", "parent": null},
+    {"name": "test-async-detached.sh", "role": "container", "parent": null},
+    {"name": "test-control-events.sh", "role": "container", "parent": null},
+    {"name": "test-lifecycle.sh", "role": "container", "parent": null},
+    {"name": "test-proxy-parity.sh", "role": "container", "parent": null},
+    {"name": "test-release-install.sh", "role": "host", "parent": null},
+    {"name": "test-demo-image.sh", "role": "host", "parent": null},
+    {"name": "test-demo-onboarding.sh", "role": "nested", "parent": "test-demo-image.sh"}
+  ]
+}

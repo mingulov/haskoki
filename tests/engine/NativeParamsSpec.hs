@@ -85,7 +85,7 @@ import Haskoki.Recipe.Chacha20
   , encodeChachaStreamParams
   )
 import Haskoki.Recipe.Cipher (cipherParamsValid, cipherRecipeFor, encodeRc2CbcParams)
-import Haskoki.Recipe.Dh (dhParamsValid, dhRecipeFor, encodeDhParams)
+import Haskoki.Recipe.Dh (decodeDhParams, dhParamsValid, dhRecipeFor, encodeDhParams)
 import Haskoki.Recipe.Ecdh (ecdhParamsValid, ecdhRecipeFor, encodeEcdhParams)
 import Haskoki.Recipe.WrapComp
   ( encodeWrapCompEcdhParams
@@ -618,13 +618,46 @@ spec = testGroup "native mechanism params"
         (Just canon, Just r) ->
           assertEqual "recipe accepts" True (dhParamsValid r canon)
         _ -> fail "dh recipe or image missing"
-  , testCase "dh pkcs canonical image is idempotent" $ do
-      let canon = encodeDhParams 0 (BS.replicate 32 0x07)
-      assertEqual "idempotent" (Just canon) (normalizeDhPkcsParams canon)
-  , testCase "dh pkcs empty and overlong refuse" $ do
+  , testCase "dh pkcs frame-shaped peer preserves all bytes" $ do
+      -- G01: 17 native bytes that parse as the @(0, len=1, peer)@
+      -- frame must normalize to all 17 bytes, never `03`.
+      let peer = BS.pack [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0x03]
+      assertEqual "fixture width" 17 (BS.length peer)
+      case normalizeDhPkcsParams peer of
+        Nothing -> fail "frame-shaped peer refused"
+        Just canon ->
+          assertEqual "whole peer preserved" (Just (0, peer)) (decodeDhParams canon)
+  , testCase "dh pkcs internal codec is idempotent" $ do
+      let peer = BS.replicate 32 0x07
+      assertEqual "codec round-trip" (Just (0, peer))
+        (decodeDhParams (encodeDhParams 0 peer))
+  , testCase "dh pkcs empty refuses, overlong maps recipe-refused" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_DH_PKCS_DERIVE")
       assertEqual "empty refused" Nothing (normalizeDhPkcsParams BS.empty)
-      assertEqual "overlong refused" Nothing
-        (normalizeDhPkcsParams (BS.replicate 4097 0x01))
+      case (normalizeDhPkcsParams (BS.replicate 4097 0x01), dhRecipeFor mid) of
+        (Just img, Just r) ->
+          assertEqual "overlong refused by recipe" False (dhParamsValid r img)
+        _ -> fail "overlong image or dh recipe missing"
+  , testCase "dh pkcs frame-shaped overlong cannot escape as peer 2" $ do
+      let mid = MechanismId (mustGeneratedId "CKM_DH_PKCS_DERIVE")
+          -- BE64(0), BE64(4081), 4080 zeros, 02: parses as (0, peer≈2).
+          esc = BS.pack ([0,0,0,0,0,0,0,0,0,0,0,0,0,0,15,241] ++ replicate 4080 0 ++ [2])
+      assertEqual "escape width" 4097 (BS.length esc)
+      case decodeDhParams esc of
+        Just (0, peer) ->
+          assertBool "escape parses as peer 2"
+            (BS.length peer == 4081 && BS.last peer == 2)
+        _ -> fail "escape fixture does not parse canonically"
+      case (normalizeDhPkcsParams esc, dhRecipeFor mid) of
+        (Just img, Just r) ->
+          assertEqual "escape refused by recipe" False (dhParamsValid r img)
+        _ -> fail "escape image or dh recipe missing"
+  , testCase "dh pkcs 4096-byte leading-zero peer admitted whole" $ do
+      let peer = BS.replicate 4096 0x00
+      case normalizeDhPkcsParams peer of
+        Nothing -> fail "4096-byte peer refused"
+        Just canon ->
+          assertEqual "whole peer preserved" (Just (0, peer)) (decodeDhParams canon)
   , testCase "dh x942 native struct chases empty shared and peer" $ do
       let mid = MechanismId (mustGeneratedId "CKM_X9_42_DH_DERIVE")
           peer = BS.replicate 128 0x04
