@@ -601,3 +601,21 @@ test-suite haskoki-core-tests
     text            >= 1.2  && < 2.2
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
   default-language: GHC2024
+
+-- Bounded review diagnostics; intentionally separate from the normal suites.
+test-suite haskoki-review-probes
+  import:           fatal-omissions
+  type:             exitcode-stdio-1.0
+  main-is:          RuntimeProbe.hs
+  hs-source-dirs:   tests/review
+  build-depends:
+    base            >= 4.14 && < 5,
+    bytestring      >= 0.10 && < 0.13,
+    containers      >= 0.6  && < 0.9,
+    directory       >= 1.3  && < 1.4,
+    filepath        >= 1.4  && < 1.6,
+    haskoki,
+    haskoki:haskoki-core,
+    unix            >= 2.7  && < 2.9
+  ghc-options:      -Wall -threaded -rtsopts
+  default-language: GHC2024

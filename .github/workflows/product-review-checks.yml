@@ -1,0 +1,108 @@
+name: Product review checks
+
+# Test-only branch: no publication, main mutation, or release credentials.
+on:
+  push:
+    branches: [review/product-checks-20261013]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  source-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    container:
+      image: ubuntu:26.04
+    env:
+      CABAL_DIR: ${{ github.workspace }}/.cabal
+    steps:
+      - name: Base packages and independent clients
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential ghc cabal-install libgmp-dev git perl curl \
+            ca-certificates python3 opensc gnutls-bin p11-kit openssl default-jdk-headless
+      - name: Checkout reviewed test branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Restore OpenSSL prefix cache
+        id: ossl-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ossl-cache/openssl-4.0.2.tar.gz
+          key: openssl-4.0.2-static-v1
+      - name: Build OpenSSL prefix on cache miss
+        if: steps.ossl-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ossl-build ossl-cache
+          cd /tmp/ossl-build
+          curl -fsSLO https://github.com/openssl/openssl/releases/download/openssl-4.0.2/openssl-4.0.2.tar.gz
+          echo '736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8  openssl-4.0.2.tar.gz' | sha256sum -c -
+          tar xzf openssl-4.0.2.tar.gz
+          cd openssl-4.0.2
+          perl ./Configure --prefix=/opt/openssl-4.0.2 --openssldir=/opt/openssl-4.0.2/ssl \
+            --libdir=lib no-docs no-tests threads no-shared no-pinshared linux-x86_64
+          make -j"$(nproc)"
+          make install_sw
+          tar czf "$GITHUB_WORKSPACE/ossl-cache/openssl-4.0.2.tar.gz" -C / opt/openssl-4.0.2
+      - name: Install cached OpenSSL prefix
+        if: steps.ossl-cache.outputs.cache-hit == 'true'
+        run: tar xzf ossl-cache/openssl-4.0.2.tar.gz -C /
+      - name: Restore cabal store cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cabal
+          key: cabal-store-9.10.3-${{ hashFiles('cabal.project.freeze') }}
+          restore-keys: |
+            cabal-store-9.10.3-
+      - name: Build unchanged product prerequisites
+        run: |
+          set -euo pipefail
+          cabal update
+          cabal build all
+      - name: Collect bounded source checks
+        run: python3 scripts/review/run-source-checks.py
+      - name: Preserve all source evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: product-review-source
+          path: product-review-results
+          if-no-files-found: warn
+
+  published-onboarding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      REVIEW_IMAGE: ghcr.io/mingulov/haskoki-demo@sha256:4f8f152fd283aa9aec864eab18cb3eb2cb7ca7b1bae10875080721bb9c0587fe
+    steps:
+      - name: Checkout onboarding driver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Anonymous pull of published digest
+        run: |
+          set -euo pipefail
+          mkdir -p product-review-published "$RUNNER_TEMP/anonymous-docker"
+          printf '%s\n' '{"auths":{}}' > "$RUNNER_TEMP/anonymous-docker/config.json"
+          DOCKER_CONFIG="$RUNNER_TEMP/anonymous-docker" docker pull "$REVIEW_IMAGE" \
+            2>&1 | tee product-review-published/pull.log
+          docker image inspect "$REVIEW_IMAGE" > product-review-published/image-inspect.json
+          git rev-parse HEAD > product-review-published/driver-sha.txt
+      - name: Five published-image user journeys
+        run: bash scripts/test-demo-onboarding.sh "$REVIEW_IMAGE" "$PWD/product-review-published"
+      - name: Preserve published-artifact evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: product-review-published
+          path: product-review-published
+          if-no-files-found: warn
