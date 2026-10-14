@@ -719,6 +719,165 @@
           "client lifecycle"
         ]
       }
+    },
+    {
+      "name": "haskoki-logout-oracle-tests",
+      "main": "tests/model/LogoutOracleMain.hs",
+      "modules": [],
+      "required_groups": [
+        "logout oracle and variant KAT",
+        "logout policy oracle",
+        "mechanism variant KAT"
+      ],
+      "allowed_imports": {
+        "Data.ByteString": [
+          "ByteString"
+        ],
+        "Data.List": [
+          "sort",
+          "sortOn"
+        ],
+        "Data.Map.Strict": [],
+        "Data.Maybe": [
+          "isJust"
+        ],
+        "Haskoki.Attribute": [
+          "AttributeType",
+          "AttributeValue"
+        ],
+        "Haskoki.Attribute.Generated": [
+          "mustClassId",
+          "mustKeyTypeId"
+        ],
+        "Haskoki.Model": [
+          "HandleBinding",
+          "Model",
+          "ObjectState",
+          "SessionState",
+          "addToken",
+          "emptyModel"
+        ],
+        "Haskoki.Object": [
+          "encodeTemplate"
+        ],
+        "Haskoki.Operation": [
+          "SlotKind",
+          "activeSlots",
+          "commonKey",
+          "commonOf",
+          "lookupSingle"
+        ],
+        "Haskoki.Operation.Codec": [
+          "cipherShapeFor",
+          "decodeInitInput",
+          "encodeInitInput"
+        ],
+        "Haskoki.Operation.State": [
+          "CipherSpec",
+          "SessionOps"
+        ],
+        "Haskoki.Outcome": [
+          "EffectRequest",
+          "EngineResult",
+          "PlanResult",
+          "PreparedCommit",
+          "Rejection",
+          "Reservation"
+        ],
+        "Haskoki.Registry": [
+          "MechanismId",
+          "Operation"
+        ],
+        "Haskoki.Request": [
+          "FunctionId",
+          "Request"
+        ],
+        "Haskoki.Rules": [
+          "defaultRules"
+        ],
+        "Haskoki.Session": [
+          "SessionLogin",
+          "TokenAuth"
+        ],
+        "Haskoki.Transition": [
+          "finishEffect",
+          "planCall",
+          "publishDelta"
+        ],
+        "Haskoki.Types": [
+          "EngineResourceId",
+          "ExternalHandle",
+          "ObjectId",
+          "Pkcs11Version",
+          "ReturnCode",
+          "SessionId",
+          "SlotId"
+        ],
+        "Test.Tasty": [
+          "defaultMain",
+          "testGroup"
+        ],
+        "Test.Tasty.HUnit": [
+          "assertBool",
+          "assertEqual",
+          "assertFailure",
+          "testCase"
+        ]
+      },
+      "allowed_dotdot": {
+        "Haskoki.Attribute": [
+          "AttributeType",
+          "AttributeValue"
+        ],
+        "Haskoki.Model": [
+          "HandleBinding",
+          "Model",
+          "ObjectState",
+          "SessionState"
+        ],
+        "Haskoki.Operation": [
+          "SlotKind"
+        ],
+        "Haskoki.Operation.State": [
+          "CipherSpec"
+        ],
+        "Haskoki.Outcome": [
+          "EngineResult",
+          "PlanResult",
+          "PreparedCommit",
+          "Rejection"
+        ],
+        "Haskoki.Registry": [
+          "MechanismId",
+          "Operation"
+        ],
+        "Haskoki.Request": [
+          "FunctionId",
+          "Request"
+        ],
+        "Haskoki.Session": [
+          "SessionLogin",
+          "TokenAuth"
+        ],
+        "Haskoki.Types": [
+          "EngineResourceId",
+          "Pkcs11Version",
+          "ReturnCode",
+          "SessionId",
+          "SlotId"
+        ]
+      },
+      "executed_by": [
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/hpc.yml",
+          "job": "hpc"
+        }
+      ],
+      "module_groups": {}
     }
   ]
 }

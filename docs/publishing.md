@@ -2,13 +2,18 @@
 
 Use **Actions -> CI and Release -> Run workflow** to publish the demo.
 Select **main**, set **mode** to **release**, and enter the exact Cabal
-**version** without `v` (`0.3.1.0` for this candidate). The default **build** mode
+**version** without `v` (matching `haskoki.cabal`, currently `0.3.1.0`).
+The default **build** mode
 only builds and tests artifacts. A release always uses the selected
 commit recorded by GitHub, even if main changes while the jobs run.
 
 The first release, [v0.3.0.0](https://github.com/mingulov/haskoki/releases/tag/v0.3.0.0),
 was published on October 9, 2026. Its [release workflow](https://github.com/mingulov/haskoki/actions/runs/37961585654)
-checked anonymous access. Each new release must repeat those checks on its
+checked anonymous access. The second release,
+[v0.3.1.0](https://github.com/mingulov/haskoki/releases/tag/v0.3.1.0),
+was published on October 12, 2026 from source `a89fb09` (image digest
+`sha256:4f8f152fd283aa9aec864eab18cb3eb2cb7ca7b1bae10875080721bb9c0587fe`,
+five unsigned assets). Each new release must repeat those checks on its
 own source and artifacts.
 
 For **GitHub-only validation without publication**, open or update a pull

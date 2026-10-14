@@ -2,29 +2,24 @@
 
 You need Docker running on Linux amd64. No Haskell setup or hardware
 token is needed. The [README](../README.md#try-it-with-docker) runs the
-published v0.3.0.0 demo; this guide uses the new v0.3.1.0 commands.
+published v0.3.0.0 demo; this guide uses the v0.3.1.0 commands.
 
 ## Choose the image
 
-Until v0.3.1.0 is published, get the **demo-image-tested** artifact from a
-successful [CI and Release run](https://github.com/mingulov/haskoki/actions/workflows/ci.yml)
-on this version. Download and extract the ZIP, then run in that directory:
-
-```sh
-docker load -i demo-image.tar.gz
-HASKOKI_IMAGE=haskoki-demo:0.3.1.0
-```
-
-Use the tested artifact, which is available after the demo checks finish.
-Downloading Actions artifacts requires a GitHub login. After the version
-appears on [GitHub Releases](https://github.com/mingulov/haskoki/releases),
-use its public image instead:
+Use the published image:
 
 ```sh
 HASKOKI_IMAGE=ghcr.io/mingulov/haskoki-demo:v0.3.1.0
 ```
 
-Keep that variable in your host terminal for the commands below.
+Keep that variable in your host terminal for the commands below. The
+release was published on October 12, 2026 from source `a89fb09`
+([release page](https://github.com/mingulov/haskoki/releases/tag/v0.3.1.0),
+image digest
+`sha256:4f8f152fd283aa9aec864eab18cb3eb2cb7ca7b1bae10875080721bb9c0587fe`);
+the [release manifest](https://github.com/mingulov/haskoki/releases/download/v0.3.1.0/release-manifest.json)
+records the exact source and digest. Trying an unpublished branch
+instead? See [Contributor builds](#contributor-builds).
 
 ## Run the demo and keep its output
 
@@ -151,11 +146,14 @@ p11scope is an optional host-side observer, not an image dependency.
 For scale, the published **v0.3.0.0** image is **112.45 MiB compressed**
 (sum of registry layers) and **341.97 MiB unpacked** (`docker inspect .Size`
 in its [GitHub build](https://github.com/mingulov/haskoki/actions/runs/37961585654/job/113928599520)).
-Those are different measurements, not extra amounts to add together. An
-[October 11 v0.3.1.0 candidate build](https://github.com/mingulov/haskoki/actions/runs/38142615036/job/114482202457)
-measured **346.66 MiB unpacked**, about 4.68 MiB (1.4%) more with this patch.
-Each build records its size in the GitHub `demo-image-build` job. Actual disk
-use also depends on shared Docker layers and retained reports.
+The published **v0.3.1.0** image (October 12, 2026, source `a89fb09`)
+is **113.64 MiB compressed** (sum of registry layer sizes from an
+anonymous `docker manifest inspect`) and **346.66 MiB unpacked**
+(363,496,136 bytes in the release `image-record.txt`, the same bytes
+as the pre-publication candidate). Those are different measurements,
+not extra amounts to add together. Each build records its size in the
+GitHub `demo-image-build` job. Actual disk use also depends on shared
+Docker layers and retained reports.
 
 Everything needed above is included. Larger vector-test collections are
 optional downloads; see [results](release-results.md#vector-data-runs).
@@ -165,6 +163,21 @@ selected image locally (a loaded candidate has no registry digest):
 ```sh
 docker image inspect "$HASKOKI_IMAGE" --format '{{.Size}} bytes; {{json .RepoDigests}}'
 ```
+
+## Contributor builds
+
+A source branch preparing a release does not create its GHCR tag. To
+try an unpublished candidate, get the **demo-image-tested** artifact
+from a successful [CI and Release run](https://github.com/mingulov/haskoki/actions/workflows/ci.yml)
+on that branch. Download and extract the ZIP, then run in that directory:
+
+```sh
+docker load -i demo-image.tar.gz
+HASKOKI_IMAGE=haskoki-demo:0.3.1.0
+```
+
+Use the tested artifact, which is available after the demo checks finish.
+Downloading Actions artifacts requires a GitHub login.
 
 ## When something fails
 

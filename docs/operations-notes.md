@@ -452,6 +452,25 @@ buffers plus cipher-scratch cleansing in `cbits/ossl4_ctx.c`); no
 general memory-zeroization promise is made, and SQLite blobs
 persist until deleted.
 
+## Haskell runtime ownership contracts
+
+Each runtime below names its owner, its close obligation, and the
+lock or coordinator that serializes it. The C state lock is the
+outer lease for serving entries; STM coordinates async parking
+without holding that lock; the store serializes commits on its own
+handle.
+
+| Runtime | Owner | Close obligation | Serialization |
+|---|---|---|---|
+| Lifecycle interval (`Haskoki.Runtime.Lifecycle`) | The instance owns the interval | Finalize ends the interval only; it needs zero open sessions and never stops the RTS | State lock; the module stays pinned (`-z nodelete`) |
+| Storage handle (`Haskoki.Runtime.Storage` + backends) | The open handle owns token/object rows; SQLite adds a lock file, memory an in-memory ownership token | Close releases the SQLite lock file or the memory ownership token and drops the handle; SQLite sidecars follow the write transaction | Single-writer; commits serialize; quarantine refuses until an authoritative reload clears it |
+| Attached async tables (`Haskoki.Runtime.Async`) | The instance owns tables and retained bytes | Attached terminal tombstones are bounded (4096 records, 64 MiB); the just-committed job is always retained and may transiently exceed the byte bound; owners may reap attached tombstones eagerly with `reapJob`; detached terminal records (`Haskoki.Runtime.Detached`) stay stored | STM; no background reaper |
+| Slot service (`Haskoki.Runtime.SlotEvents`) | The interval owns flags and the hub | Close discards pending flags and wakes undecided waiters with `CKR_CRYPTOKI_NOT_INITIALIZED` | One flag has one consumer; no broadcast |
+| Serving backend (`Haskoki.Engine.OpenSSL4`) | The instance binds one backend for serving | Close releases digest contexts and drops the key maps | Backend operations hold the exclusive environment gate (environment-then-registry order), atomic with close; digest contexts are borrowed under the registry lock while used |
+| Trace queue (`Haskoki.Runtime.Trace`) | The `Tracer` owns a bounded STM queue with drop/failure counters; the sink is caller-supplied | Drains write queued lines through the sink; failures counted, never thrown; the serving sink appends per line | Queue operations are STM; concurrent drains share the sink with no ordering across drains |
+| FFI entries (`Haskoki.FFI.Standard`) | Entries borrow the instance; callers own native buffers per the entry contract | Session close, close-all, removal, and finalize retire associations without callbacks | State lock, except blocking waits which park in STM without it; callbacks hold the lock as their lease |
+| Standalone proof APIs (`Haskoki.FFI.Async`, `Haskoki.FFI.Exports`) | The caller owns each standalone context and its store box (serving instead borrows `AsyncCtx` views sharing its backend/table, with no teardown authority) | Explicit close per context (`haskoki_hs_async_close`, `haskoki_hs_async_store_close`, `haskoki_hs_crypto_close`); the store box outlives contexts opened on it | Direct Haskell calls take no C state lock; `AsyncCtx` carries its table and leases; `CryptoCtx` has no retirement lease, so callers must not use it after close |
+
 ## Stub and contract inventory (B3)
 
 The [B3 inventory](b3-docs-inventory.md) records the C-table stub set and
@@ -467,4 +486,8 @@ The 14 genuine stubs keep accurate catalog reasons. R4-R10 deny C-table
 routes that exist as `std_` bodies in `cbits/standard_surface.c`, R1-R3
 state planner limits that read as serving denials, and R11 records the
 parallel-pair reason/code wording gap. See gaps D2 and D3 in the inventory
-for the V5 follow-ups.
+for the V5 follow-ups. Freshness: since that survey the three
+provisioning entries left the stub table for routed bodies
+(`std_InitToken`, `std_InitPIN`, `std_SetPIN` in
+`cbits/standard_surface.c`), leaving 3 legacy `stub_probe` stubs plus
+the 8 post-2.40 ones and the unchanged parallel pair.

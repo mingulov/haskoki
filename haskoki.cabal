@@ -606,3 +606,40 @@ test-suite haskoki-core-tests
     text            >= 1.2  && < 2.2
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
   default-language: GHC2024
+
+-- Buildable source-tree example: one checked rule (logout/object
+-- lifetime) from user call to publication. Core-only, like the
+-- core subset suite above: no runtime/FFI dependency. An
+-- `executable` stanza (not `example`): the pinned cabal-install
+-- 3.18 plans no `example` component (no such target type, absent
+-- from `cabal build all`), so only an executable is buildable here.
+executable logout-journey
+  import:           fatal-omissions
+  main-is:          LogoutJourney.hs
+  hs-source-dirs:   examples/haskell-reference
+  build-depends:
+    base       >= 4.14 && < 5,
+    bytestring >= 0.10 && < 0.13,
+    containers >= 0.6  && < 0.9,
+    haskoki:haskoki-core
+  ghc-options:      -Wall -threaded
+  default-language: GHC2024
+
+-- Independent logout policy oracle plus one mechanism-variant KAT.
+-- Own suite (own Main) so the oracle runs without touching the
+-- shared model runner. Core-only: no `haskoki` in build-depends.
+-- Suite-inventory registration follows at integration time.
+test-suite haskoki-logout-oracle-tests
+  import:           fatal-omissions
+  type:             exitcode-stdio-1.0
+  main-is:          LogoutOracleMain.hs
+  hs-source-dirs:   tests/model
+  build-depends:
+    base        >= 4.14 && < 5,
+    bytestring  >= 0.10 && < 0.13,
+    containers  >= 0.6  && < 0.9,
+    haskoki:haskoki-core,
+    tasty       >= 1.4  && < 1.6,
+    tasty-hunit >= 0.10 && < 0.11
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+  default-language: GHC2024

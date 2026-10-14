@@ -6,7 +6,11 @@ The [October 8 CI run](https://github.com/mingulov/haskoki/actions/runs/37774745
 for source `0603322` passed the demo-image driver. These counters come from
 its reports, recorded in the [JSON summary](release-results/summary.json).
 The subsequent [v0.3.0.0 release](release-notes-0.3.0.0.md) was published on
-October 9. The v0.3.1.0 candidate keeps the same frozen full-finding set.
+October 9. The published v0.3.1.0 evidence keeps the same frozen
+full-finding set: its release compare record reports shared 22/22
+exact with zero unexpected differences
+(`test-results-0.3.1.0.tar.gz` member
+`test-results-0.3.1.0/demo/compare/compare-*/classification.txt`).
 
 | Profile | Mode | Collected | Passed | Findings | Skipped | Expected failures | Exit |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |

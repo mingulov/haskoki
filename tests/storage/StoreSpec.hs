@@ -355,6 +355,8 @@ contractSpec label mkOpener = testGroup label
       withOpener mkOpener testCredentialMissingToken
   , testCase "token drop cascades the credential" $
       withOpener mkOpener testCredentialCascade
+  , testCase "token refresh preserves the credential" $
+      withOpener mkOpener testTokenRefreshPreservesCredential
   , testCase "reset drops the credential" $
       withOpener mkOpener testResetDropsCredential
   , testCase "refused commits preserve stored bytes" $
@@ -3378,6 +3380,31 @@ testResetDropsCredential o = withStore o $ \s -> do
   eLoaded <- storeLoadTokens s
   loaded <- either (\e -> assertFailure ("load tokens: " ++ show e)) pure eLoaded
   assertEqual "replacement token present" [replacement] (map fst loaded)
+
+-- | C2x: an ordinary same-id token refresh preserves the stored
+-- credential, across close/reopen. The ownership rule covers
+-- objects, jobs, AND credentials; the C2 cases pin objects and
+-- jobs, the cascade case pins the drop half — this pins the
+-- refresh half.
+testTokenRefreshPreservesCredential :: Opener -> IO ()
+testTokenRefreshPreservesCredential o =
+  withStore o $ \s -> do
+    (tok, _) <- seedStore s
+    let tid = trId tok
+        cred = CredentialRecord tid "so-pin-1" (Just "user-pin-1")
+        tok' = tok { trLabel = "seed-token-relabeled" }
+    r <- storeCommit s emptyDelta { sdPutCredentials = [cred] }
+    assertEqual "credential put commits" Committed r
+    r2 <- storeCommit s emptyDelta { sdPutTokens = [tok'] }
+    assertEqual "refresh commits" Committed r2
+    eCreds <- storeLoadCredentials s
+    creds <- either (assertFailure . show) pure eCreds
+    assertEqual "refresh preserves the credential" [cred] creds
+    storeClose s
+    withStore o $ \s2 -> do
+      eCreds2 <- storeLoadCredentials s2
+      creds2 <- either (assertFailure . show) pure eCreds2
+      assertEqual "credential survives reopen after refresh" [cred] creds2
 
 -- | A refused commit changes nothing: the inspected bytes and
 -- the loaded records are identical before and after (the
