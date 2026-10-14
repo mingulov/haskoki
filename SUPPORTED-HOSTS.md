@@ -56,7 +56,7 @@ unverified — a missing C pin alone never makes a row model-only.
 | Capability | Interfaces / mechanisms | Backend | Demonstrated by | Limitation |
 |---|---|---|---|---|
 | Discovery (2.40 + 3.x) | 2.40 table + `C_GetInterfaceList` / `C_GetInterface` serving 3.2, 3.1, 3.0; all `CK_INTERFACE.flags` 0 | in-process | `tests/c/consumer_discovery.c` (`scripts/test-consumers.sh`); `tests/c/layout_*.c` | no fork-safe flag; `-I` shows 2.40 only |
-| Session, login, object lifecycle | all four tables; slot 0 `haskoki-demo` default, N slots via `[tokens]` catalog (max 16) | OpenSSL4 native | `consumer_roundtrip` (sessions, objects, login/logout + lockout), `consumer_multitoken`, `consumer_certificates` (X.509 legs), `control_events` | `C_InitToken`, `C_InitPIN`, `C_SetPIN` refused; finalize needs zero open sessions |
+| Session, login, object lifecycle, provisioning | all four tables; slot 0 `haskoki-demo` default, N slots via `[tokens]` catalog (max 16); `C_InitToken`/`C_InitPIN`/`C_SetPIN` routed | OpenSSL4 native | `consumer_roundtrip` (sessions, objects, login/logout + lockout), `consumer_provisioning` (init/change/lockout/recovery/persistence legs), `consumer_multitoken`, `consumer_certificates` (X.509 legs), `control_events` | in-band provisioning persists per-token credentials on SQLite stores ([Token identity contract](docs/operations-notes.md#token-identity-contract)); in memory mode the change holds for the interval only; finalize needs zero open sessions |
 | Digest | SHA-1/256/512 one-shot + multipart; further digest rows per catalog | OpenSSL4 (+ synthetic in suites) | `consumer_roundtrip` (FIPS `abc` bytes), `consumer_streaming` (8/20 MiB multipart KATs), `release_smoke` | multipart streams; further rows real engine-tested in-process (OpenSSL KATs incl. SHA-224/384); C-consumer coverage unverified |
 | Sign, verify | ECDSA, HMAC, ML-DSA, SLH-DSA; sign-recover (raw RSA); dual ops | OpenSSL4 | `consumer_roundtrip` (incl. 2420-byte ML-DSA, 7856-byte SLH-DSA), `dual_routed`, `recover_routed`, `message_routed` (HMAC bytes) | partial: fully buffered under the 16 MiB per-input bound; RSA-1024 refused; further rows real engine-tested in-process; C-consumer coverage unverified |
 | Encrypt, decrypt | AES-CBC/CBC-PAD/ECB, ARIA-CBC; dual ops | OpenSSL4 | `consumer_roundtrip`, `dual_routed`, `message_routed` (AES-CBC bytes) | partial: framed block modes stream multistage updates (16 MiB per-buffer bound on retained + current update); AEAD/asymmetric/CTS/OFB/key-wrap/XTS/RC4 buffer whole (bound effectively cumulative); one-shots buffer; further rows real engine-tested in-process; C-consumer coverage unverified |
@@ -67,7 +67,7 @@ unverified — a missing C pin alone never makes a row model-only.
 | Message-family (v3 ops) | 20 message entries on 3.0, 3.1, 3.2 | OpenSSL4 via message planner | `tests/c/message_routed.c` (AES-CBC + HMAC-SHA256 bytes) | partial: fixed-mechanism reachability; direct-only at proxy (issue 23); no v3.0 conformance claim |
 | Async (3.2) | `C_AsyncComplete`, `C_AsyncGetID`, `C_AsyncJoin` on 3.2 only | OpenSSL4 (digest jobs) | `tests/c/async_routed.c` (pending + complete bytes) | partial: digest-only, explicit async session; direct-only at proxy (issue 24) |
 | Notifications, callbacks | `C_WaitForSlotEvent` on all tables; surrender callback on one-shot digest | in-process slot service | `notifications_routed` (72 direct legs), `consumer_notifications_poll`, `control_events` | partial: rich legs direct-only at proxy (issue 25); callbacks dropped at proxy; no broadcast promise |
-| Stubs (refused by design) | `C_InitToken`, `C_InitPIN`, `C_SetPIN`, `C_GetOperationState`, `C_SetOperationState`, `C_GetObjectSize`, parallel pair | n/a | `consumer_roundtrip` stub pins; `cbits/function_tables.c` | unsupported: `CKR_FUNCTION_NOT_SUPPORTED` (`CKR_FUNCTION_NOT_PARALLEL` for the pair) |
+| Stubs (refused by design) | `C_GetOperationState`, `C_SetOperationState`, `C_GetObjectSize`, parallel pair, plus 8 post-2.40 entries (`C_LoginUser`, the four `C_VerifySignature` entries, `C_GetSessionValidationFlags`, `C_WrapKeyAuthenticated`, `C_UnwrapKeyAuthenticated`) | n/a | `consumer_roundtrip` stub pins (legacy); `cbits/function_tables.c` + `cbits/abi_stubs.inc` | unsupported: `CKR_FUNCTION_NOT_SUPPORTED` (`CKR_FUNCTION_NOT_PARALLEL` for the pair) |
 | Proxy example | loopback gRPC/h2c (`auth = "none"`), daemon + shim v0.2.2 (`1ed7cc15`) | same module, other process | `scripts/test-proxy-parity.sh` (same CKR + outputs; seeded-mismatch control) | moves the process boundary only: loopback plaintext with no authentication in this example |
 
 ## Not supported
@@ -116,9 +116,11 @@ presence.
 - Token serving: the default config seats exactly one token —
   slot 0, `haskoki-demo` at `C_Initialize` (user PIN `1234`, SO
   PIN `5678`); a `[tokens]` catalog serves N tokens on N slots
-  (slot = index, slot 0 stays `haskoki-demo`). There is no
-  `C_InitToken` path — that entry, like `C_InitPIN`/`C_SetPIN`,
-  stays `CKR_FUNCTION_NOT_SUPPORTED`.
+  (slot = index, slot 0 stays `haskoki-demo`). In-band provisioning
+  (`C_InitToken`/`C_InitPIN`/`C_SetPIN`) persists per-token
+  credentials on SQLite stores, as described in the
+  [Token identity contract](docs/operations-notes.md#token-identity-contract);
+  in memory mode the change holds for the interval only.
   See [token provisioning and state](docs/demo-walkthrough.md#token-provisioning-and-state).
 - Real C-surface crypto: sessions, objects/find, keygen/keypair,
   sign/verify (incl. multistage, dual, recover), encrypt/decrypt
@@ -147,9 +149,11 @@ presence.
   The store path is explicit in config (SQLite without a path
   refuses the open) and single-writer (a second concurrent open
   refuses `C_Initialize`).
-- PINs are fixed at open (`haskoki-demo` user `1234`, SO `5678`;
-  catalog PINs come from the TOML file in plaintext) with no
-  PIN-change path on the C surface. Comparison is a
+- PINs start at their configured values (`haskoki-demo` user `1234`,
+  SO `5678`; catalog PINs come from the TOML file in plaintext) and
+  move in-band after that (`C_InitToken` / `C_InitPIN` / `C_SetPIN`,
+  persisted per token on SQLite stores; in memory mode the change
+  holds for the interval only). Comparison is a
   position-constant xor fold with length short-circuit
   (`pinsMatch` in `ffi/Haskoki/FFI/Standard.hs`); no machine
   constant-time claim is made,

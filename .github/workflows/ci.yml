@@ -202,6 +202,7 @@ jobs:
           python3 scripts/check-actions-pinned.py .github/workflows/hpc.yml
           python3 scripts/check-actions-pinned.py .github/workflows/prop-nightly.yml
           python3 scripts/check-actions-pinned.py .github/workflows/qualification.yml
+          python3 scripts/check-actions-pinned.py .github/workflows/haskell-reference.yml
           # F-4..F-8 fix-round regression: evasive-form negative
           # controls + F-6/F-7 structural asserts (durable, stdlib-only).
           python3 scripts/check-actions-pinned.py --self-test

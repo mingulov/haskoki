@@ -17,6 +17,9 @@ module Haskoki.PKCS11
 
 import Haskoki.Types (Outcome (..), ReturnCode (..), SlotId)
 
+{-# DEPRECATED initialize, finalize, getInfo, getSlotList
+  "Compatibility scaffold only: each answers CKR_GENERAL_ERROR. Haskell callers use the request/outcome contracts (planCall, finishEffect, publishDelta); native callers use the versioned C tables (cbits/ + ffi/)." #-}
+
 -- | Initialize the provider. Stub: always 'CKR_GENERAL_ERROR'.
 initialize :: IO (Outcome ())
 initialize = pure (OutcomeErr CKR_GENERAL_ERROR)
