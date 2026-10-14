@@ -62,14 +62,19 @@ import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model (Model (..), SessionState, addToken, emptyModel, lookupObject)
 import Haskoki.Object (planCreateObject)
 import Haskoki.Outcome (DeltaOp (..), PlanResult (..), PreparedCommit (..), StateDelta (..))
+import Data.Word (Word64)
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
+  , DesiredToken (..)
   , FaultInjector
   , FaultPoint (..)
+  , IdentityRefusal (..)
+  , JobRecord (..)
   , ObjectPut (..)
   , ObjectRecord (..)
   , PublicationAdvice (..)
   , Reconcile (..)
+  , ReconcilePlan (..)
   , Store (..)
   , StoreDelta (..)
   , StoreError (..)
@@ -77,18 +82,27 @@ import Haskoki.Runtime.Storage
   , StoreStats (..)
   , StoredDoc (..)
   , TokenRecord (..)
+  , coverDeletedJobIds
   , decidePublication
   , defaultLimits
   , emptyDelta
+  , encodeHexWord64
   , encodeObjectRecord
+  , jobIdCounterKey
+  , nextJobReservation
   , noFaults
   , objectToRecord
+  , planSlotMoves
+  , reconcileIdentities
   , reconcileReload
+  , renderIdentityRefusal
   , reserveRestoredIds
   , scriptedFaults
   , withMaskHook
   , withResultHook
   )
+import Haskoki.Runtime.Catalog (identityCatalog)
+import Haskoki.Runtime.Config (Config (..), parseConfig)
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStoreWith)
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStoreWith)
 import Haskoki.Session (tokenAuthNew)
@@ -111,11 +125,14 @@ spec = testGroup "commit protocol"
   [ testGroup "decisions"
       [ testCase "publication advice follows classification" testAdvice
       , testCase "reload reconciliation compares full records" testReconcile
+      , testCase "reservation step reconciles without lowering" testNextJobReservation
       ]
   , testGroup "memory" (protocolCases withMemoryIdentity)
   , testGroup "sqlite" (protocolCases withSQLiteIdentity)
   , testGroup "limits-memory" (limitCases withMemoryIdentity)
   , testGroup "limits-sqlite" (limitCases withSQLiteIdentity)
+  , testGroup "identity-memory" (identityCases withMemoryIdentity)
+  , testGroup "identity-sqlite" (identityCases withSQLiteIdentity)
   ]
 
 -- | Fresh memory identity per case.
@@ -153,6 +170,20 @@ protocolCases withIdentity =
       withIdentity testResetQuarantine
   , testCase "ambiguous token refresh preserves children" $
       withIdentity testAmbiguousTokenRefresh
+  , testCase "ambiguous reservation reconciles present" $
+      withIdentity testReserveAmbiguousPresent
+  , testCase "ambiguous reservation with failed verification quarantines and fails" $
+      withIdentity testReserveAmbiguousUnknown
+  , testCase "reservation honors pre-commit and capacity faults" $
+      withIdentity testReserveFaults
+  , testCase "failed job insert leaves a gap, never a reuse" $
+      withIdentity testReserveInsertGap
+  , testCase "ambiguous delete with stale counter reconciles committed" $
+      withIdentity testAmbiguousDeleteStaleCounter
+  , testCase "unapplied delete with stale counter stays not committed" $
+      withIdentity testUnappliedDeleteStaleCounter
+  , testCase "ambiguous duplicate meta reconciles committed" $
+      withIdentity testAmbiguousDuplicateMeta
   ]
 
 -- | The pre-commit limit cases every backend runs.
@@ -201,6 +232,51 @@ testReconcile = do
     (reconcileReload delta [(tok, [rec, demoObject (TokenId 1) (ObjectId 9)])])
   assertEqual "altered content reconciles absent" ReconciledAbsent
     (reconcileReload delta [(tok { trLabel = "changed" }, [rec])])
+
+-- | The shared reservation step: absent marks start at 1,
+-- stored jobs reconcile the mark upward without lowering,
+-- corrupt marks fail closed, and exhaustion refuses before wrap.
+testNextJobReservation :: IO ()
+testNextJobReservation = do
+  assertEqual "absent mark starts at 1"
+    (Right (1, encodeHexWord64 2)) (nextJobReservation Nothing [])
+  assertEqual "stored mark serves"
+    (Right (7, encodeHexWord64 8))
+    (nextJobReservation (Just (encodeHexWord64 7)) [3])
+  assertEqual "jobs reconcile upward"
+    (Right (42, encodeHexWord64 43))
+    (nextJobReservation (Just (encodeHexWord64 2)) [41])
+  assertEqual "mark never lowers"
+    (Right (100, encodeHexWord64 101))
+    (nextJobReservation (Just (encodeHexWord64 100)) [41])
+  case nextJobReservation (Just "bogus") [] of
+    Left (StoreCorrupt _) -> pure ()
+    other -> assertFailure ("expected StoreCorrupt, got: " ++ show other)
+  let nearMax = maxBound - 1 :: Word64
+  assertEqual "next-to-last hands out"
+    (Right (nearMax, encodeHexWord64 maxBound))
+    (nextJobReservation (Just (encodeHexWord64 nearMax)) [])
+  case nextJobReservation (Just (encodeHexWord64 maxBound)) [] of
+    Left (StoreFull _) -> pure ()
+    other -> assertFailure ("expected StoreFull, got: " ++ show other)
+  case nextJobReservation Nothing [maxBound] of
+    Left (StoreFull _) -> pure ()
+    other -> assertFailure ("expected StoreFull, got: " ++ show other)
+  assertEqual "deleted pids fold into the mark"
+    (Just (encodeHexWord64 42))
+    (coverDeletedJobIds (Just (encodeHexWord64 1)) [41])
+  assertEqual "empty doomed set leaves the mark alone"
+    (Just (encodeHexWord64 7))
+    (coverDeletedJobIds (Just (encodeHexWord64 7)) [])
+  assertEqual "empty doomed set keeps the key absent"
+    Nothing
+    (coverDeletedJobIds Nothing [])
+  assertEqual "cover saturates instead of wrapping"
+    (Just (encodeHexWord64 maxBound))
+    (coverDeletedJobIds (Just (encodeHexWord64 5)) [maxBound])
+  assertEqual "corrupt mark stays corrupt under deletion"
+    (Just "bogus")
+    (coverDeletedJobIds (Just "bogus") [41])
 
 -- ---------------------------------------------------------------------------
 -- Protocol cases
@@ -784,6 +860,235 @@ testAmbiguousTokenRefresh openWith = do
   assertEqual "jobs preserved" jobs jobsAfter
   storeClose sFaulty
 
+-- | Ambiguous delete-plus-stale-counter: dropping legacy job 41
+-- while repeating counter 1 durably deletes the job and advances
+-- the mark to 42 (deletion coverage), so reconciliation reports
+-- 'Committed' — the verdict agrees with the durable effect,
+-- never the raw request. The deleted id is never re-minted.
+testAmbiguousDeleteStaleCounter :: OpenWith -> IO ()
+testAmbiguousDeleteStaleCounter openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, _) <- seedStore sClean
+  let gen = trGeneration tok
+  seeded <- storeCommit sClean emptyDelta
+    { sdPutJobs = [demoJobPending 41 (trId tok) gen] }
+  assertEqual "legacy job seed" Committed seeded
+  marked <- storeCommit sClean emptyDelta
+    { sdPutMeta = [(jobIdCounterKey, encodeHexWord64 1)] }
+  assertEqual "legacy mark seed" Committed marked
+  storeClose sClean
+  inj <- scriptedFaults [FaultAmbiguousCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  result <- storeCommit sFaulty emptyDelta
+    { sdDropJobs = [41]
+    , sdPutMeta = [(jobIdCounterKey, encodeHexWord64 1)]
+    }
+  assertEqual "ambiguous delete-plus-counter resolves committed" Committed result
+  stats <- storeStats sFaulty
+  assertEqual "exactly one durable commit" 1 (ssCommits stats)
+  assertEqual "exactly one verification reload" 1 (ssVerifyReloads stats)
+  eJobs <- storeLoadJobs sFaulty
+  jobs <- either (assertFailure . show) pure eJobs
+  assertEqual "job durably deleted" [] jobs
+  mark <- loadCounter sFaulty
+  assertEqual "coverage advanced the mark" (Just (encodeHexWord64 42)) mark
+  eNext <- storeReserveJobId sFaulty
+  next <- either (assertFailure . show) pure eNext
+  assertEqual "deleted id never re-minted" 42 next
+  storeClose sFaulty
+
+-- | Control: the same delete-plus-stale-counter shape that
+-- genuinely does not apply (pre-commit fault) still reports
+-- 'NotCommitted', with the job row and the mark untouched.
+testUnappliedDeleteStaleCounter :: OpenWith -> IO ()
+testUnappliedDeleteStaleCounter openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, _) <- seedStore sClean
+  let gen = trGeneration tok
+  seeded <- storeCommit sClean emptyDelta
+    { sdPutJobs = [demoJobPending 41 (trId tok) gen] }
+  assertEqual "legacy job seed" Committed seeded
+  marked <- storeCommit sClean emptyDelta
+    { sdPutMeta = [(jobIdCounterKey, encodeHexWord64 1)] }
+  assertEqual "legacy mark seed" Committed marked
+  storeClose sClean
+  inj <- scriptedFaults [FaultBeforeCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  result <- storeCommit sFaulty emptyDelta
+    { sdDropJobs = [41]
+    , sdPutMeta = [(jobIdCounterKey, encodeHexWord64 1)]
+    }
+  case result of
+    NotCommitted _ -> pure ()
+    other -> assertFailure ("expected NotCommitted, got: " ++ show other)
+  stats <- storeStats sFaulty
+  assertEqual "no commit counted" 0 (ssCommits stats)
+  eJobs <- storeLoadJobs sFaulty
+  jobs <- either (assertFailure . show) pure eJobs
+  assertEqual "job row untouched" [41] (map jrPersistentId jobs)
+  mark <- loadCounter sFaulty
+  assertEqual "mark untouched" (Just (encodeHexWord64 1)) mark
+  storeClose sFaulty
+
+-- | Ambiguous conflicting duplicate meta puts reconcile
+-- committed against the stored effect: exactly one of the two
+-- values lands (backend put order decides), the commit is never
+-- reissued, and the verdict agrees that it applied.
+testAmbiguousDuplicateMeta :: OpenWith -> IO ()
+testAmbiguousDuplicateMeta openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  _ <- seedStore sClean
+  storeClose sClean
+  inj <- scriptedFaults [FaultAmbiguousCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  result <- storeCommit sFaulty emptyDelta
+    { sdPutMeta = [("probe", "a"), ("probe", "b")] }
+  assertEqual "ambiguous duplicate meta resolves committed" Committed result
+  stats <- storeStats sFaulty
+  assertEqual "exactly one durable commit" 1 (ssCommits stats)
+  assertEqual "exactly one verification reload" 1 (ssVerifyReloads stats)
+  eMeta <- storeLoadMeta sFaulty
+  meta <- either (assertFailure . show) pure eMeta
+  assertBool "one duplicate value stored"
+    (lookup "probe" meta `elem` [Just "a", Just "b"])
+  storeClose sFaulty
+
+-- | Read the durable job-id mark ('Nothing' = the key is absent).
+loadCounter :: Store -> IO (Maybe String)
+loadCounter s = do
+  eMeta <- storeLoadMeta s
+  meta <- either (assertFailure . show) pure eMeta
+  pure (lookup jobIdCounterKey meta)
+
+-- | An ambiguous reservation reconciles present: the id is
+-- durable, exactly one commit and one verification reload are
+-- counted, and the next reservation advances (never a reuse).
+testReserveAmbiguousPresent :: OpenWith -> IO ()
+testReserveAmbiguousPresent openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  _ <- seedStore sClean
+  storeClose sClean
+  inj <- scriptedFaults [FaultAmbiguousCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  ePid <- storeReserveJobId sFaulty
+  pid <- either (assertFailure . show) pure ePid
+  assertEqual "ambiguous reservation reconciles present" 1 pid
+  stats <- storeStats sFaulty
+  assertEqual "exactly one durable commit" 1 (ssCommits stats)
+  assertEqual "exactly one verification reload" 1 (ssVerifyReloads stats)
+  mark <- loadCounter sFaulty
+  assertEqual "mark advanced" (Just (encodeHexWord64 2)) mark
+  eNext <- storeReserveJobId sFaulty
+  next <- either (assertFailure . show) pure eNext
+  assertEqual "never a reuse" 2 next
+  storeClose sFaulty
+
+-- | An ambiguous reservation with failed verification fails
+-- closed: no id is returned, the handle quarantines until an
+-- authoritative reload, and later reservations mint fresh ids
+-- with no phantom records.
+testReserveAmbiguousUnknown :: OpenWith -> IO ()
+testReserveAmbiguousUnknown openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, _) <- seedStore sClean
+  storeClose sClean
+  inj <- scriptedFaults [FaultAmbiguousCommit, FaultVerifyReload]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  ePid <- storeReserveJobId sFaulty
+  case ePid of
+    Left _ -> pure ()
+    Right pid -> assertFailure ("unresolved reservation must fail, got: " ++ show pid)
+  q <- storeQuarantined sFaulty
+  assertBool "handle quarantined" (not (null q))
+  assertBool "seed token quarantined" (trId tok `elem` map fst q)
+  stats <- storeStats sFaulty
+  assertBool "quarantine counted" (ssQuarantines stats >= 1)
+  assertEqual "no commit counted" 0 (ssCommits stats)
+  eReload <- storeReload sFaulty
+  either (assertFailure . show) pure eReload
+  q2 <- storeQuarantined sFaulty
+  assertEqual "reload clears" [] q2
+  eNext <- storeReserveJobId sFaulty
+  next <- either (assertFailure . show) pure eNext
+  eAfter <- storeReserveJobId sFaulty
+  after <- either (assertFailure . show) pure eAfter
+  assertBool "fresh ids distinct" (next /= after)
+  eJobs <- storeLoadJobs sFaulty
+  jobs <- either (assertFailure . show) pure eJobs
+  assertEqual "no phantom records" [] jobs
+  storeClose sFaulty
+
+-- | Reservation honors the pre-commit and capacity faults: each
+-- fails clean with the mark untouched, and the next call serves.
+testReserveFaults :: OpenWith -> IO ()
+testReserveFaults openWith = do
+  eStore <- openWith defaultLimits noFaults
+  store <- either (assertFailure . show) pure eStore
+  _ <- seedStore store
+  storeClose store
+  injPre <- scriptedFaults [FaultBeforeCommit]
+  ePre <- openWith defaultLimits injPre
+  sPre <- either (assertFailure . show) pure ePre
+  eRefused <- storeReserveJobId sPre
+  case eRefused of
+    Left (StoreIO _) -> pure ()
+    other -> assertFailure ("expected StoreIO, got: " ++ show other)
+  first <- storeReserveJobId sPre >>= expectRight "reserve after pre-commit fault"
+  assertEqual "nothing burned" 1 first
+  storeClose sPre
+  injFull <- scriptedFaults [FaultFullDisk]
+  eFull <- openWith defaultLimits injFull
+  sFull <- either (assertFailure . show) pure eFull
+  eDisk <- storeReserveJobId sFull
+  case eDisk of
+    Left (StoreFull _) -> pure ()
+    other -> assertFailure ("expected StoreFull, got: " ++ show other)
+  second <- storeReserveJobId sFull >>= expectRight "reserve after full-disk fault"
+  assertEqual "nothing burned" 2 second
+  mark <- loadCounter sFull
+  assertEqual "mark advanced once per success" (Just (encodeHexWord64 3)) mark
+  storeClose sFull
+
+-- | A failed job insert leaves a gap: the burned reservation is
+-- never re-minted, and the burned id names no record.
+testReserveInsertGap :: OpenWith -> IO ()
+testReserveInsertGap openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, _) <- seedStore sClean
+  burned <- storeReserveJobId sClean >>= expectRight "reserve"
+  storeClose sClean
+  inj <- scriptedFaults [FaultBeforeCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  failed <- storeCommit sFaulty emptyDelta
+    { sdPutJobs = [demoJobPending burned (trId tok) (trGeneration tok)] }
+  case failed of
+    NotCommitted _ -> pure ()
+    other -> assertFailure ("expected NotCommitted, got: " ++ show other)
+  storeClose sFaulty
+  eFinal <- openWith defaultLimits noFaults
+  sFinal <- either (assertFailure . show) pure eFinal
+  next <- storeReserveJobId sFinal >>= expectRight "reserve after gap"
+  assertEqual "gap, never a reuse" (burned + 1) next
+  landed <- storeCommit sFinal emptyDelta
+    { sdPutJobs = [demoJobPending next (trId tok) (trGeneration tok)] }
+  assertEqual "insert lands" Committed landed
+  eJobs <- storeLoadJobs sFinal
+  jobs <- either (assertFailure . show) pure eJobs
+  assertEqual "burned id names no record" [next] (map jrPersistentId jobs)
+  storeClose sFinal
+
 -- | Job cap: the third job refuses at a cap of two and commits
 -- at a cap of three.
 testLimitJobs :: OpenWith -> IO ()
@@ -903,3 +1208,214 @@ demoObject tok oid = ObjectRecord
   , orMaterial = Nothing
   , orRevision = Revision 1
   }
+
+-- ---------------------------------------------------------------------------
+-- Identity upgrade fixtures
+-- ---------------------------------------------------------------------------
+
+-- | The identity-upgrade cases every backend runs: legacy
+-- stores reopen byte-identical under matching catalogs,
+-- interrupted move sequences refuse until completed, and
+-- positional downgrades over moved stores refuse. These
+-- fixtures pin the no-mutation-of-old-stores behavior the
+-- explicit move operation builds on; the same scenarios
+-- through the production open live in StoreSpec's
+-- standard-open group.
+identityCases :: ((OpenWith -> IO ()) -> IO ()) -> [TestTree]
+identityCases withIdentity =
+  [ testCase "legacy store reopens byte-identical under matching config" $
+      withIdentity testLegacyReopenStable
+  , testCase "interrupted move sequence refuses until completed" $
+      withIdentity testInterruptedMoveRefuses
+  , testCase "positional downgrade over a moved store refuses" $
+      withIdentity testDowngradeRefuses
+  ]
+
+-- | A @[tokens]@ document with the given parallel arrays (an
+-- empty id list omits the @token_ids@ key).
+tokensDoc :: [String] -> [String] -> [String] -> [String] -> String
+tokensDoc labels soPins userPins ids = unlines $
+  [ "schema_version = 1"
+  , "[tokens]"
+  , "labels = " ++ show labels
+  , "so_pins = " ++ show soPins
+  , "user_pins = " ++ show userPins
+  ] ++ ["token_ids = " ++ show ids | not (null ids)]
+
+-- | The legacy positional three-token document.
+legacyThreeDoc :: String
+legacyThreeDoc = tokensDoc
+  ["haskoki-demo", "haskoki-ops", "haskoki-audit"]
+  ["5678", "6789", "7890"]
+  ["1234", "2345", "3456"]
+  []
+
+-- | The same catalog with pinned positional ids.
+pinnedThreeDoc :: String
+pinnedThreeDoc = tokensDoc
+  ["haskoki-demo", "haskoki-ops", "haskoki-audit"]
+  ["5678", "6789", "7890"]
+  ["1234", "2345", "3456"]
+  ["1", "2", "3"]
+
+-- | The swapped pinned document: audit at slot 1, ops at
+-- slot 2, each with its own PINs.
+swapThreeDoc :: String
+swapThreeDoc = tokensDoc
+  ["haskoki-demo", "haskoki-audit", "haskoki-ops"]
+  ["5678", "7890", "6789"]
+  ["1234", "3456", "2345"]
+  ["1", "3", "2"]
+
+-- | Parse a catalog document or fail the case.
+parseUpgrade :: String -> IO Config
+parseUpgrade body = case parseConfig body of
+  Left err -> assertFailure ("catalog must parse: " ++ show err)
+  Right cfg -> pure cfg
+
+-- | Desired tokens from a config, in slot order.
+desiredUpgrade :: Config -> [DesiredToken]
+desiredUpgrade cfg =
+  [ DesiredToken slot tid label
+  | (slot, (tid, label)) <- Map.toAscList (identityCatalog cfg)
+  ]
+
+-- | Open the case identity with default limits and no faults.
+openClean :: OpenWith -> IO Store
+openClean open = open defaultLimits noFaults >>= expectRight "open"
+
+-- | Load every token with its objects or fail the case.
+loadedOf :: Store -> IO [(TokenRecord, [ObjectRecord])]
+loadedOf s = storeLoadTokens s >>= expectRight "load tokens"
+
+-- | Exact stored bytes: table, key, and full document per row.
+bytesOf :: Store -> IO [(String, String, String)]
+bytesOf s = do
+  docs <- expectInspect s
+  pure [(docTable d, docKey d, docJson d) | d <- docs]
+
+-- | Seed a legacy positional store: identities positional,
+-- generation one, each token owning one object.
+seedIdentityThree :: Store -> IO [TokenRecord]
+seedIdentityThree store = do
+  let toks =
+        [ (demoToken (TokenId 1)) { trSlot = SlotId 0, trLabel = "haskoki-demo" }
+        , (demoToken (TokenId 2)) { trSlot = SlotId 1, trLabel = "haskoki-ops" }
+        , (demoToken (TokenId 3)) { trSlot = SlotId 2, trLabel = "haskoki-audit" }
+        ]
+      objs =
+        [ demoObject (TokenId 1) (ObjectId 1)
+        , demoObject (TokenId 2) (ObjectId 2)
+        , demoObject (TokenId 3) (ObjectId 3)
+        ]
+  result <- storeCommit store emptyDelta
+    { sdPutTokens = toks
+    , sdPutObjects = [ObjectPut Nothing o | o <- objs]
+    }
+  assertEqual "upg seed commit" Committed result
+  pure toks
+
+-- | A legacy positional store (seeded the way older releases
+-- wrote: positional identities, no pinned catalog) closes and
+-- reopens byte-identical under both the matching legacy
+-- catalog and the matching pinned catalog. The steady
+-- reconcile plans nothing: reopening never mutates an old
+-- store.
+testLegacyReopenStable :: OpenWith -> IO ()
+testLegacyReopenStable open = do
+  s1 <- openClean open
+  _ <- seedIdentityThree s1
+  bytesSeeded <- bytesOf s1
+  storeClose s1
+  s2 <- openClean open
+  bytesReopened <- bytesOf s2
+  assertEqual "close/reopen preserves legacy bytes exactly" bytesSeeded bytesReopened
+  loaded <- loadedOf s2
+  cfgLegacy <- parseUpgrade legacyThreeDoc
+  case reconcileIdentities (desiredUpgrade cfgLegacy) [t | (t, _) <- loaded] of
+    Left refusal ->
+      assertFailure ("legacy steady state refused: " ++ renderIdentityRefusal refusal)
+    Right plan -> assertEqual "legacy steady state plans nothing" [] (planSeeds plan)
+  cfgPinned <- parseUpgrade pinnedThreeDoc
+  case reconcileIdentities (desiredUpgrade cfgPinned) [t | (t, _) <- loaded] of
+    Left refusal ->
+      assertFailure ("pinned steady state refused: " ++ renderIdentityRefusal refusal)
+    Right plan -> assertEqual "pinned steady state plans nothing" [] (planSeeds plan)
+  bytesFinal <- bytesOf s2
+  assertEqual "steady reconciles write nothing" bytesSeeded bytesFinal
+  storeClose s2
+
+-- | An interrupted move sequence (one leg committed, the rest
+-- never issued) reopens refused under BOTH the old and the
+-- target catalog: the mid-state matches neither endpoint, so
+-- the operator completes the remaining legs explicitly and
+-- only then reconciles clean.
+testInterruptedMoveRefuses :: OpenWith -> IO ()
+testInterruptedMoveRefuses open = do
+  s1 <- openClean open
+  _ <- seedIdentityThree s1
+  loaded <- loadedOf s1
+  move <- case planSlotMoves [(TokenId 2, SlotId 7)] [t | (t, _) <- loaded] of
+    Left refusal -> assertFailure ("first leg must plan: " ++ show refusal)
+    Right delta -> pure delta
+  rMove <- storeCommit s1 move
+  assertEqual "first leg commits" Committed rMove
+  storeClose s1
+  -- The crash window: reopen with only the first leg durable.
+  s2 <- openClean open
+  bytesMid <- bytesOf s2
+  loadedMid <- loadedOf s2
+  let storedMid = [t | (t, _) <- loadedMid]
+  cfgOld <- parseUpgrade legacyThreeDoc
+  case reconcileIdentities (desiredUpgrade cfgOld) storedMid of
+    Left (RefuseSlotChanged tid _ _ _) ->
+      assertEqual "old catalog sees drifted id 2" (TokenId 2) tid
+    other -> assertFailure
+      ("interrupted state must refuse the old catalog: " ++ show other)
+  cfgTarget <- parseUpgrade swapThreeDoc
+  case reconcileIdentities (desiredUpgrade cfgTarget) storedMid of
+    Left (RefuseSlotChanged _ _ _ _) -> pure ()
+    other -> assertFailure
+      ("interrupted state must refuse the target catalog: " ++ show other)
+  bytesRefused <- bytesOf s2
+  assertEqual "refused reopens preserve the mid-state exactly" bytesMid bytesRefused
+  -- Complete the reroute explicitly: audit to slot 1, ops home
+  -- to slot 2.
+  rest <- case planSlotMoves [(TokenId 3, SlotId 1), (TokenId 2, SlotId 2)] storedMid of
+    Left refusal -> assertFailure ("remaining legs must plan: " ++ show refusal)
+    Right delta -> pure delta
+  rRest <- storeCommit s2 rest
+  assertEqual "remaining legs commit" Committed rRest
+  loadedDone <- loadedOf s2
+  case reconcileIdentities (desiredUpgrade cfgTarget) [t | (t, _) <- loadedDone] of
+    Left refusal ->
+      assertFailure ("completed layout refused: " ++ renderIdentityRefusal refusal)
+    Right plan -> assertEqual "completed layout is steady" [] (planSeeds plan)
+  storeClose s2
+
+-- | A positional downgrade (dropping @token_ids@) over a moved
+-- store refuses: the legacy reading would seat the wrong
+-- credential over moved objects, so the reconciler refuses
+-- and the bytes survive exactly.
+testDowngradeRefuses :: OpenWith -> IO ()
+testDowngradeRefuses open = do
+  s <- openClean open
+  _ <- seedIdentityThree s
+  loaded <- loadedOf s
+  swap <- case planSlotMoves [(TokenId 2, SlotId 2), (TokenId 3, SlotId 1)] [t | (t, _) <- loaded] of
+    Left refusal -> assertFailure ("swap must plan: " ++ show refusal)
+    Right delta -> pure delta
+  rSwap <- storeCommit s swap
+  assertEqual "swap commits" Committed rSwap
+  storeClose s
+  s2 <- openClean open
+  loadedMoved <- loadedOf s2
+  bytesBefore <- bytesOf s2
+  cfgLegacy <- parseUpgrade legacyThreeDoc
+  case reconcileIdentities (desiredUpgrade cfgLegacy) [t | (t, _) <- loadedMoved] of
+    Left (RefuseSlotChanged tid _ _ _) ->
+      assertEqual "downgrade hits id 2" (TokenId 2) tid
+    other -> assertFailure ("positional downgrade must refuse: " ++ show other)
+  bytesAfter <- bytesOf s2
+  assertEqual "refused downgrade preserves bytes exactly" bytesBefore bytesAfter
+  storeClose s2

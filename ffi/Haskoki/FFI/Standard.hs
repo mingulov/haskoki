@@ -22,9 +22,14 @@ Engine policy (documented, no silent substitution):
   the 'homeTokenLabel' token (an absent section serves exactly
   it, with the 'provisionedUserPin'\/'provisionedSoPin' PINs),
   and each catalog entry carries its own label plus user\/SO
-  PINs (example-grade fixture material). There is no InitToken
+  PINs (example-grade fixture material). Stable identities come
+  from the optional @token_ids@ key ('identityCatalog') or the
+  legacy positional reading; a SQLite open reconciles the
+  catalog against the durable identities and refuses drift
+  loudly instead of migrating silently. There is no InitToken
   path (that entry stays honestly @NOT_SUPPORTED@);
-  provisioning is documented in @docs\/demo-walkthrough.md@.
+  provisioning is documented in @docs\/demo-walkthrough.md@ and
+  the identity rules in @docs\/operations-notes.md@.
 * Template arguments cross as template frames (see
   'parseTemplateFrame'): @count:u64le@ then @count@ records of
   @type:u64le, len:u64le, value:len bytes@. The C side packs them
@@ -67,6 +72,7 @@ module Haskoki.FFI.Standard
   , openStdInstanceWith
   , openStdInstanceWithSlots
   , openStdInstanceWithNotify
+  , openStdStore
   , NativeNotify, SessionNotify (..), NotifyDecision (..), NotifyInvoker
   , invokeNativeNotify, dispatchSessionNotifyWith
   , registerSessionNotify, retireSessionNotify, surrenderDigest
@@ -106,6 +112,7 @@ module Haskoki.FFI.Standard
   , haskokiStdAsyncGetId
   , haskokiStdAsyncJoin
   , haskokiStdTerminateSlot
+  , terminateSlotDelta
     -- * slot list, sessions, session info, token liveness
   , haskokiStdGetSlotList
   , haskokiStdGetSlotFlags
@@ -125,6 +132,8 @@ module Haskoki.FFI.Standard
   , nativeFromCanonical
   , frameErrorRV
   , beWord64
+  , ObjectProjection (..)
+  , buildObjectProjection
   , haskokiStdCreateObject
   , haskokiStdCopyObject
   , haskokiStdSetAttributeValue
@@ -303,7 +312,7 @@ import Haskoki.FFI.Encode
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.FFI.Instance (Instance (..), InstanceCell, readLiveInstance)
 import Haskoki.FFI.Notify
-import Haskoki.Runtime.Catalog (effectiveCatalog, homeCatalogEntry)
+import Haskoki.Runtime.Catalog (effectiveCatalog, homeCatalogEntry, identityCatalog)
 import Haskoki.Runtime.Control (PresenceOwner (..), bindPresenceOwner)
 import Haskoki.Runtime.SlotEvents
   ( SlotEvents, SlotDefinition (..), SlotSnapshot (..), PresenceError (..), newSlotEvents
@@ -344,6 +353,7 @@ import Haskoki.Operation
   , commonMech
   , commonOf
   , dualLinkOf
+  , hasAuthPendingOp
   , insertOp
   , lookupSingle
   , msgFamilyKind
@@ -459,15 +469,19 @@ import Haskoki.Runtime.Lifecycle
   )
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
+  , DesiredToken (..)
   , ObjectPut (..)
   , Reconcile (..)
+  , ReconcilePlan (..)
   , Store (..)
   , StoreDelta (..)
   , StoreError (StoreCorrupt)
   , TokenRecord (..)
   , emptyDelta
   , objectToRecord
+  , reconcileIdentities
   , reconcileReload
+  , renderIdentityRefusal
   )
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Session
@@ -476,12 +490,10 @@ import Haskoki.Session
   , SessionLogin (..)
   , TokenAuth (..)
   , effectivePolicy
-  , tokenAuthNew
   )
 import Haskoki.Transition (finishEffect, planCall, planDecoded, publishDelta)
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , Outcome (..)
   , Pkcs11Version (..)
   , ReturnCode (..)
@@ -516,9 +528,13 @@ provisionedUserPin = let (_, _, pin) = homeCatalogEntry in BC8.pack pin
 provisionedSoPin :: ByteString
 provisionedSoPin = let (_, pin, _) = homeCatalogEntry in BC8.pack pin
 
--- | The stable store identity for a catalog slot: slot @i@ owns
--- @TokenId (i+1)@, so slot 0 keeps 'homeTokenId' and every slot is
--- unique by construction.
+-- | The legacy positional store identity for a catalog slot:
+-- slot @i@ owns @TokenId (i+1)@, so slot 0 keeps 'homeTokenId'
+-- and every slot is unique by construction. Configs without
+-- pinned @token_ids@ read through this mapping
+-- ('Haskoki.Runtime.Catalog.identityCatalog'); pinned configs
+-- override it per entry, and the reconciled instance layout
+-- ('stdTokenIds') is what the publish path resolves.
 tokenIdForSlot :: SlotId -> TokenId
 tokenIdForSlot (SlotId n) = TokenId (n + 1)
 
@@ -532,10 +548,18 @@ catalogLookup inst slot = Map.findWithDefault homeCatalogEntry slot (siCatalog i
 -- Instance
 -- ---------------------------------------------------------------------------
 
--- | The open process store behind a SQLite-backed instance.
+-- | The open process store behind a SQLite-backed instance:
+-- the store, the home token the detached context borrows, and
+-- the reconciled slot-to-identity layout (durable slots for
+-- restored tokens plus seed slots for new ones). The object
+-- projection resolves serving slots through this map, so a
+-- token moved by the explicit slot-move operation keeps its
+-- objects under its durable identity instead of the slot's
+-- legacy positional id.
 data StdStore = StdStore
   { stdStore :: !Store
   , stdToken :: !TokenId
+  , stdTokenIds :: !(Map SlotId TokenId)
   }
 
 -- | The owned standard-surface instance: model environment, live
@@ -815,25 +839,32 @@ seatAll env (slot : rest) = do
 
 -- | Resolve the process store from the configuration: memory stays
 -- transient (seat every catalog slot); SQLite opens the store
--- file, reloads token state, refuses a catalog/store reload
--- mismatch (stored slots beyond the live catalog — see
--- 'StdStoreCatalogMismatch'), and seats plus commits each catalog
--- slot the store does not know yet (per-slot labels and stable
--- per-slot token ids). The config arrives resolved (the open
--- resolves once, up front); an unopenable store or a refused
--- seating fails the whole open loudly.
+-- file, reloads token state, reconciles the configured catalog
+-- against the durable token identities
+-- ('Haskoki.Runtime.Storage.reconcileIdentities'), and seats
+-- plus commits each seed the reconciler accepts. The config
+-- arrives resolved (the open resolves once, up front); an
+-- unopenable store, a refused seating, or a refused
+-- reconciliation fails the whole open loudly, without writing.
 --
 -- The store-open failure is TYPED (settling the untyped edge):
 -- every consumer maps failures to NULL uniformly, and the
 -- typed cases keep any future dispatch honest instead of matching
--- on message strings.
+-- on message strings. The C initialization path reports every
+-- store-open failure generically (no diagnostic sink there, as
+-- with every other store-open failure); Haskell callers
+-- receive the typed refusal with its actionable message
+-- through 'openStdStore'.
 data StdStoreError
   = StdStoreSeating !AdmitDeny
   | StdStoreNoPath
   | StdStoreSQLite !StoreError
   | StdStoreReload !AdmitDeny
   | StdStoreCommit
+  -- | Retained for stability; catalog/store drift now reports as
+  -- 'StdStoreIdentityRefusal' with the reconciler's message.
   | StdStoreCatalogMismatch
+  | StdStoreIdentityRefusal !String
   deriving (Eq, Show)
 
 openStdStore :: Env -> Config -> IO (Either StdStoreError (Maybe StdStore))
@@ -867,56 +898,48 @@ openStdStore env cfg = case scKind (cfgStorage cfg) of
                         Left err -> do
                           storeClose store
                           pure (Left (StdStoreSQLite err))
-                        Right () -> do
-                          m <- snapshotModel env
-                          -- A shrunk catalog over a
-                          -- reused store must never serve the stale
-                          -- extra slots with home-fallback labels/PINs.
-                          -- REFUSE (not prune: pruning would silently
-                          -- drop operator token data; the loud refusal
-                          -- forces explicit reconciliation), failing the
-                          -- whole open.
-                          let stored = Map.keys (mTokenAuth m)
-                              extra =
-                                [ slot
-                                | slot <- stored
-                                , Map.notMember slot catalog
-                                ]
-                          case extra of
-                            (_ : _) -> do
+                        Right () ->
+                          -- Durable identity reconciliation: the
+                          -- configured catalog must name every
+                          -- stored token under its durable label
+                          -- at its durable slot. A shrunk
+                          -- catalog, a reorder, an insertion
+                          -- that shifts slots, or a label change
+                          -- REFUSES here (never prunes, moves,
+                          -- or renames silently), failing the
+                          -- whole open with the reconciler's
+                          -- actionable message; accepted seeds
+                          -- seat and commit below.
+                          case reconcileIdentities desired [t | (t, _) <- loaded] of
+                            Left refusal -> do
                               storeClose store
-                              pure (Left StdStoreCatalogMismatch)
-                            [] -> do
-                              let missing =
-                                    [ slot
-                                    | slot <- Map.keys catalog
-                                    , Map.notMember slot (mTokenAuth m)
-                                    ]
-                              case missing of
-                                [] -> pure (Right (Just (StdStore store homeTokenId)))
-                                _ -> do
-                                  eSeat <- seatAll env missing
-                                  case eSeat of
-                                    Left deny -> do
+                              pure (Left (StdStoreIdentityRefusal (renderIdentityRefusal refusal)))
+                            Right plan -> do
+                              let seeds = planSeeds plan
+                              eSeat <- seatAll env [trSlot t | t <- seeds]
+                              case eSeat of
+                                Left deny -> do
+                                  storeClose store
+                                  pure (Left (StdStoreSeating deny))
+                                Right () -> do
+                                  res <- if null seeds
+                                    then pure Committed
+                                    else storeCommit store emptyDelta { sdPutTokens = seeds }
+                                  case res of
+                                    Committed ->
+                                      let slotIds = Map.fromList
+                                            ([(trSlot t, trId t) | (t, _) <- loaded]
+                                              ++ [(trSlot t, trId t) | t <- seeds])
+                                      in pure (Right (Just (StdStore store homeTokenId slotIds)))
+                                    _ -> do
                                       storeClose store
-                                      pure (Left (StdStoreSeating deny))
-                                    Right () -> do
-                                      res <- storeCommit store emptyDelta
-                                        { sdPutTokens =
-                                            [ TokenRecord (tokenIdForSlot slot) slot
-                                                (Generation 0) label tokenAuthNew
-                                            | slot <- missing
-                                            , let (label, _, _) = catalogEntry slot
-                                            ]
-                                        }
-                                      case res of
-                                        Committed -> pure (Right (Just (StdStore store homeTokenId)))
-                                        _ -> do
-                                          storeClose store
-                                          pure (Left StdStoreCommit)
+                                      pure (Left StdStoreCommit)
   where
     catalog = effectiveCatalog cfg
-    catalogEntry slot = Map.findWithDefault homeCatalogEntry slot catalog
+    desired =
+      [ DesiredToken slot tid label
+      | (slot, (tid, label)) <- Map.toAscList (identityCatalog cfg)
+      ]
 
 -- | Reserve the durable handle/revision high-waters after a
 -- store reload: @mNextHandle@ advances past the maximum of the
@@ -981,7 +1004,7 @@ closeStdStore (Just ss) = storeClose (stdStore ss)
 flushDurableCounters :: StdInstance -> IO ()
 flushDurableCounters inst = case siStore inst of
   Nothing -> pure ()
-  Just (StdStore store _) -> do
+  Just (StdStore store _ _) -> do
     r <- try $ do
       m <- snapshotModel (siEnv inst)
       eMeta <- storeLoadMeta store
@@ -1556,8 +1579,17 @@ data ObjectProjection = ObjectProjection
 -- Every puts/drops-carrying commit also upserts the projected
 -- @mNextHandle@\/@mNextRevision@ as @handle_counter@ and
 -- @revision_counter@ meta rows.
-buildObjectProjection :: Model -> Model -> StateDelta -> ObjectProjection
-buildObjectProjection m m' (StateDelta ops) = ObjectProjection
+--
+-- Serving slots resolve to token identities through the
+-- instance's reconciled layout (see 'StdStore'): a token that
+-- reached its slot through the explicit slot-move operation
+-- keeps its objects under its durable identity. Every seated
+-- slot is covered (the open reconciles the catalog against the
+-- durable layout before anything publishes, and seating is
+-- fixed within the interval); an uncovered slot falls back to
+-- the legacy positional id.
+buildObjectProjection :: Map SlotId TokenId -> Model -> Model -> StateDelta -> ObjectProjection
+buildObjectProjection ids m m' (StateDelta ops) = ObjectProjection
   { projDelta = emptyDelta
       { sdPutObjects = puts, sdDropObjects = drops, sdPutMeta = meta }
   , projPuts = length puts
@@ -1573,15 +1605,16 @@ buildObjectProjection m m' (StateDelta ops) = ObjectProjection
           [ ("handle_counter", show (mNextHandle m'))
           , ("revision_counter", show (mNextRevision m'))
           ]
+    tokenOf slot = Map.findWithDefault (tokenIdForSlot slot) slot ids
     putOf (DeltaCreateObjectFull oid _ _ _) =
       case Map.lookup oid (mObjects m') of
         Just ost' | osOwner ost' == Nothing ->
-          [ObjectPut Nothing (objectToRecord (tokenIdForSlot (osSlot ost')) ost')]
+          [ObjectPut Nothing (objectToRecord (tokenOf (osSlot ost')) ost')]
         _ -> []
     putOf (DeltaSetAttributes oid _) =
       case Map.lookup oid (mObjects m') of
         Just ost' | osOwner ost' == Nothing ->
-          let rec' = objectToRecord (tokenIdForSlot (osSlot ost')) ost'
+          let rec' = objectToRecord (tokenOf (osSlot ost')) ost'
               expected = case Map.lookup oid (mObjects m) of
                 Just ost | osOwner ost == Nothing -> Just (osRevision ost)
                 _ -> Nothing
@@ -1631,13 +1664,13 @@ reconcileUnderGate store proj = do
 publishStd :: StdInstance -> StateDelta -> IO (Either ModelFault ())
 publishStd inst delta = case siStore inst of
   Nothing -> publish (siEnv inst) delta
-  Just (StdStore store _) -> mask_ $ do
+  Just (StdStore store _ ids) -> mask_ $ do
     r <- withHeldModel (siEnv inst)
       (\m -> case publishDelta m delta of
         Left fault -> emit EvProjectFault >> pure (Left fault)
         Right m' -> do
           emit EvProjectOk
-          let proj = buildObjectProjection m m' delta
+          let proj = buildObjectProjection ids m m' delta
           if nullProjection proj
             then emit EvBypass >> pure (Right (Just m'))
             else do
@@ -2914,6 +2947,24 @@ withStdSession inst (CULong h) k = do
     Nothing -> pure (stdRvOf CKR_SESSION_HANDLE_INVALID)
     Just st -> k (ssId st)
 
+-- | The delta that terminates one session op slot: the slot leaves
+-- the session ops, and a context grant left with no pending
+-- operation to spend on drops back to a plain user login — the same
+-- invalidation the step path applies ('invalidateStaleGrant'), so a
+-- grant for one operation never authorizes the next. Early FFI
+-- refusals publish this without reaching the planner, which is why
+-- the grant check lives here rather than only on the step path.
+terminateSlotDelta :: SessionState -> SlotKind -> StateDelta
+terminateSlotDelta st kind = StateDelta (opsDelta ++ loginDelta)
+  where
+    ops' = removeSingle kind (ssOps st)
+    opsDelta = [DeltaSetSessionOps (ssId st) ops']
+    loginDelta =
+      [ DeltaSetSessionLogin (ssId st) LoginUser
+      | ssLogin st == LoginContextUser
+      , not (hasAuthPendingOp ops')
+      ]
+
 -- | Terminate one session op slot, if active. Shared by the
 -- Haskell-side early refusals and the C NULL-argument guards (via
 -- 'haskokiStdTerminateSlot'): input-decode failures never reach the
@@ -2929,8 +2980,7 @@ terminateSlot inst sid kind = do
     Just st -> case lookupSingle (ssOps st) kind of
       Nothing -> pure ()
       Just _ -> do
-        _ <- publishStd inst
-          (StateDelta [DeltaSetSessionOps sid (removeSingle kind (ssOps st))])
+        _ <- publishStd inst (terminateSlotDelta st kind)
         pure ()
 
 -- | Refuse a crypto data call with ARGS_BAD after terminating the

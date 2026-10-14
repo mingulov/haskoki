@@ -22,8 +22,10 @@ Detach protocol (design 07, section 6), in order:
    path that holds a live native context) takes the permitted
    typed unsaveable outcome instead — never a crash, never a
    serialized address.
-3. Make the record durable ('storeCommit'). The persistent id is
-   returned ONLY after this and revocation both succeed.
+3. Reserve the persistent id from the store
+   ('storeReserveJobId': the store-wide mark advances durably
+   first) and make the record durable ('storeCommit'). The id is
+   returned ONLY after the insert and revocation both succeed.
 4. Revoke the old binding ('commitDetachRevoke'): the live table
    forgets the job, so no admitted completion can still write
    through the old attachment.
@@ -202,19 +204,20 @@ import Haskoki.Types
 -- ---------------------------------------------------------------------------
 
 -- | Detach state bound to one durable store (NOT to one provider
--- generation): the next persistent id, the attachment registry, the
--- live-job reverse map keyed by table and job identity, the
--- adapter's opaque marks, and the TEST-ONLY join-transfer hook
--- (a no-op unless a test sets it). One context may serve several
--- live tables at once (two FFI contexts on one store box); a
--- restart reopens the store and calls 'openDetached' again;
--- durable records survive, live attachments do not (close drains
--- them first).
+-- generation): the attachment registry, the live-job reverse
+-- map keyed by table and job identity, the adapter's opaque
+-- marks, and the TEST-ONLY join-transfer hook (a no-op unless
+-- a test sets it). Persistent ids are NOT minted here: every
+-- detach reserves its id from the store ('storeReserveJobId'),
+-- so two contexts on one store never share an id. One context
+-- may serve several live tables at once (two FFI contexts on
+-- one store box); a restart reopens the store and calls
+-- 'openDetached' again; durable records survive, live
+-- attachments do not (close drains them first).
 data DetachCtx = DetachCtx
   { dcStore :: !Store
   , dcToken :: !TokenId
   , dcSlot :: !SlotId
-  , dcNextPid :: !(TVar Word64)
   , dcAttach :: !(TVar (Map Word64 Attachment))
   , dcReverse :: !(TVar (Map (AsyncTableId, JobId) Word64))
   , dcOpaque :: !(TVar (Map JobId String))
@@ -230,9 +233,12 @@ data OpenDeny
 
 -- | Open detach state over a store homed to one token. The token
 -- record must exist (it carries the slot and the generation jobs
--- are stamped with). The next persistent id continues past the
--- stored maximum, so ids are never recycled — not across restarts,
--- not across detach failures (allocation gaps are fine).
+-- are stamped with); the stored jobs must load (a corrupt job
+-- table refuses the context rather than serving half a view).
+-- The store owns id allocation ('storeReserveJobId'), so ids
+-- are never recycled — not across restarts, not across detach
+-- failures, not across sibling contexts (allocation gaps are
+-- fine).
 openDetached :: Store -> TokenId -> IO (Either OpenDeny DetachCtx)
 openDetached store tok = do
   eToks <- storeLoadTokens store
@@ -244,8 +250,7 @@ openDetached store tok = do
         eJobs <- storeLoadJobs store
         case eJobs of
           Left err -> pure (Left (OpenJobs err))
-          Right jobs -> do
-            nextVar <- newTVarIO (storedMax jobs + 1)
+          Right _ -> do
             attachVar <- newTVarIO Map.empty
             revVar <- newTVarIO Map.empty
             opaqueVar <- newTVarIO Map.empty
@@ -254,15 +259,11 @@ openDetached store tok = do
               { dcStore = store
               , dcToken = tok
               , dcSlot = trSlot trec
-              , dcNextPid = nextVar
               , dcAttach = attachVar
               , dcReverse = revVar
               , dcOpaque = opaqueVar
               , dcJoinHook = hookVar
               })
-  where
-    storedMax :: [JobRecord] -> Word64
-    storedMax jobs = maximum (0 : map jrPersistentId jobs)
 
 -- | The home token jobs are stamped with.
 detachToken :: DetachCtx -> TokenId
@@ -725,11 +726,15 @@ decodeResultBody body = do
   recipe <- decodeRecipe (BC8.unpack nameBs) params
   pure (recipe, result)
 
--- | Allocate the persistent id, commit the record durably, and on
--- success revoke the old binding and report the id. An ambiguous
--- commit reloads and reconciles: present means the record IS durable
--- (revoke and succeed — the caller asked for durability, which held),
--- absent means nothing was written (abort and report).
+-- | Reserve the persistent id from the store, commit the record
+-- durably, and on success revoke the old binding and report the
+-- id. Reservation and insertion are two durable commits: a
+-- reservation failure reports before anything is written, and a
+-- failed insertion leaves a gap in the id sequence (the burned
+-- id is never reused, never re-minted). An ambiguous insert
+-- reloads and reconciles: present means the record IS durable
+-- (revoke and succeed — the caller asked for durability, which
+-- held), absent means nothing was written (abort and report).
 commitDetach
   :: DetachCtx -> LeaseView -> JobExecState -> JobBody -> IO DetachOutcome
 commitDetach dc view execState body = do
@@ -741,28 +746,29 @@ commitDetach dc view execState body = do
       [] ->
         pure DetachNoToken
       (trec : _) -> do
-        pid <- atomically $ do
-          n <- readTVar (dcNextPid dc)
-          writeTVar (dcNextPid dc) (n + 1)
-          pure n
-        let rec = JobRecord
-              { jrPersistentId = pid
-              , jrToken = dcToken dc
-              , jrTokenGeneration = trGeneration trec
-              , jrFunction = jobFunctionName (jobSnapshotFunction (lvSnapshot view))
-              , jrState = execState
-              , jrBody = body
-              }
-            delta = emptyDelta { sdPutJobs = [rec] }
-        res <- storeCommit (dcStore dc) delta
-        case res of
-          Committed -> do
-            lvCommit view
-            setIdle dc pid
-            pure (DetachOk pid)
-          NotCommitted err ->
+        ePid <- storeReserveJobId (dcStore dc)
+        case ePid of
+          Left err ->
             pure (DetachStore err)
-          CommitUnknown err -> reconcileDetach dc view pid delta err
+          Right pid -> do
+            let rec = JobRecord
+                  { jrPersistentId = pid
+                  , jrToken = dcToken dc
+                  , jrTokenGeneration = trGeneration trec
+                  , jrFunction = jobFunctionName (jobSnapshotFunction (lvSnapshot view))
+                  , jrState = execState
+                  , jrBody = body
+                  }
+                delta = emptyDelta { sdPutJobs = [rec] }
+            res <- storeCommit (dcStore dc) delta
+            case res of
+              Committed -> do
+                lvCommit view
+                setIdle dc pid
+                pure (DetachOk pid)
+              NotCommitted err ->
+                pure (DetachStore err)
+              CommitUnknown err -> reconcileDetach dc view pid delta err
 
 -- | Reconcile an ambiguous detach commit against a fresh reload.
 reconcileDetach
@@ -1101,7 +1107,11 @@ mustFunction rec = case nameJobFunction (S.jrFunction rec) of
   Just f -> f
   Nothing -> JobDigest
 
--- | Check token identity\/generation against the live token record.
+-- | Check token identity/generation against the live token
+-- record: the record must name this context's home token (an
+-- id homed elsewhere is unknown to this join, even at an equal
+-- generation) at the current generation. Runs before session,
+-- body, capacity, claim, replan, and start.
 checkToken :: DetachCtx -> JobRecord -> IO (Either JoinOutcome TokenRecord)
 checkToken dc rec = do
   eToks <- storeLoadTokens (dcStore dc)
@@ -1111,6 +1121,8 @@ checkToken dc rec = do
       [] -> pure (Left (JoinStore
         (StoreRevisionConflict "home token is gone")))
       (trec : _)
+        | jrToken rec /= dcToken dc ->
+            pure (Left JoinUnknown)
         | trGeneration trec /= jrTokenGeneration rec ->
             pure (Left (JoinStaleGeneration
               (jrTokenGeneration rec) (trGeneration trec)))

@@ -197,6 +197,7 @@ library
   c-sources:
     cbits/ossl4_ctx.c
     cbits/notify_guard.c
+    cbits/table_mint.c
   include-dirs:
     cbits
     spec/vendor
@@ -276,6 +277,7 @@ foreign-library haskoki
     cbits/ossl4_ctx.c
     cbits/notify_guard.c
     cbits/standard_surface.c
+    cbits/table_mint.c
   -- Pinned PD 3.2 headers (declare all layouts + CK_C_* typedefs)
   -- for cbits/exports.c and ffi/Haskoki/FFI/Types.hsc. The mirror TU
   -- (function_tables.c) does not include them.

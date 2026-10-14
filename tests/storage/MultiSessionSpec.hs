@@ -14,7 +14,7 @@ module MultiSessionSpec (spec) where
 
 import qualified Data.Map.Strict as Map
 import Data.ByteString (ByteString)
-import Data.List (isInfixOf, sortOn)
+import Data.List (isInfixOf, sort, sortOn)
 import System.Directory (removeDirectoryRecursive)
 import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
@@ -51,6 +51,7 @@ import Haskoki.Runtime.Storage
   , emptyDelta
   , noFaults
   , objectToRecord
+  , planSlotMoves
   , reserveRestoredIds
   , scriptedFaults
   , withMaskHook
@@ -58,12 +59,15 @@ import Haskoki.Runtime.Storage
   )
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStoreWith)
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStoreWith)
+import Haskoki.Session (tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
-  ( ObjectId (..)
+  ( Generation (..)
+  , ObjectId (..)
   , Revision (..)
   , SessionId (..)
   , SlotId (..)
+  , TokenId (..)
   )
 import StoreSpec (expectCreated, expectInspect, expectJust, expectRight, makeTempDir, seedStore)
 
@@ -87,6 +91,10 @@ spec = testGroup "Multi-session store"
           withMemoryIdentity testCloseProbeThrows
       , testCase "killed close never strands the handle" $
           withMemoryIdentity testCloseKillDuringProbe
+      , testCase "concurrent reservations never share an id" $
+          withMemoryIdentity testConcurrentReserve
+      , testCase "concurrent moves to one slot serialize" $
+          withMemoryIdentity testConcurrentMove
       ]
   , testGroup "sqlite"
       [ testCase "interleaved commits lose no updates" $
@@ -103,6 +111,10 @@ spec = testGroup "Multi-session store"
           withSQLiteIdentity testCloseProbeThrows
       , testCase "killed close never strands the handle" $
           withSQLiteIdentity testCloseKillDuringProbe
+      , testCase "concurrent reservations never share an id" $
+          withSQLiteIdentity testConcurrentReserve
+      , testCase "concurrent moves to one slot serialize" $
+          withSQLiteIdentity testConcurrentMove
       ]
   , testCase "commit tests observe death deterministically (no busy-spin)" caseNoBusySpin
   ]
@@ -272,6 +284,26 @@ countObjects = sum . map (length . snd)
 -- | Whether an object id is present in loaded state.
 objectPresent :: ObjectId -> [(TokenRecord, [ObjectRecord])] -> Bool
 objectPresent oid = any (any ((== oid) . orId) . snd)
+
+-- | Reservations from racing threads serialize store-wide:
+-- every id hands out exactly once, with no gaps and no shares.
+testConcurrentReserve :: OpenWith -> IO ()
+testConcurrentReserve openWith =
+  withOpenStore openWith defaultLimits noFaults $ \store -> do
+    resultVars <- replicateM nWorkers newEmptyMVar
+    let worker var =
+          replicateM perWorker (storeReserveJobId store) >>= putMVar var
+    withWorkers (map worker resultVars) $ \_outcomes -> do
+      mBatches <- mapM (timeout rendezvousTimeout . takeMVar) resultVars
+      batches <- case sequence mBatches of
+        Nothing -> assertFailure "reserve worker timed out"
+        Just bs -> pure bs
+      pids <- mapM (expectRight "reserve") (concat batches)
+      assertEqual "every id exactly once" [1 .. fromIntegral total] (sort pids)
+  where
+    nWorkers = 8
+    perWorker = 5
+    total = nWorkers * perWorker
 
 -- | A close issued while a commit sits inside the masked
 -- region waits for the commit — it never slips past and shuts
@@ -650,3 +682,81 @@ classifyHammer tok seedRecs eLoaded = case eLoaded of
   Right loaded -> assertWholeSeed tok seedRecs loaded
   Left (StoreIO _) -> pure ()
   Left err -> assertFailure ("hammer load misdiagnosed: " ++ show err)
+
+-- | Seed three positional tokens (demo/ops/audit at slots
+-- 0/1/2 with ids 1/2/3), each owning one labeled object.
+seedMoveThree :: Store -> IO [TokenRecord]
+seedMoveThree store = do
+  let s0 = SlotId 0
+      s1 = SlotId 1
+      s2 = SlotId 2
+  mSeated <- expectRight "mv seat+open" (publishDelta
+    (addToken (addToken (addToken emptyModel s0) s1) s2)
+    (StateDelta [ DeltaOpenSession (SessionId 1) s0 False
+                , DeltaOpenSession (SessionId 2) s1 False
+                , DeltaOpenSession (SessionId 3) s2 False
+                ]))
+  st0 <- expectJust "mv session 0" (lookupSession mSeated (SessionId 1))
+  st1 <- expectJust "mv session 1" (lookupSession mSeated (SessionId 2))
+  st2 <- expectJust "mv session 2" (lookupSession mSeated (SessionId 3))
+  (m1, _, oid1) <- expectCreated mSeated st0 (tmplFor "mv-demo")
+  (m2, _, oid2) <- expectCreated m1 st1 (tmplFor "mv-ops")
+  (m3, _, oid3) <- expectCreated m2 st2 (tmplFor "mv-audit")
+  ost1 <- expectJust "mv object 1" (lookupObject m3 oid1)
+  ost2 <- expectJust "mv object 2" (lookupObject m3 oid2)
+  ost3 <- expectJust "mv object 3" (lookupObject m3 oid3)
+  let toks =
+        [ TokenRecord (TokenId 1) s0 (Generation 1) "haskoki-demo" tokenAuthNew
+        , TokenRecord (TokenId 2) s1 (Generation 1) "haskoki-ops" tokenAuthNew
+        , TokenRecord (TokenId 3) s2 (Generation 1) "haskoki-audit" tokenAuthNew
+        ]
+  result <- storeCommit store emptyDelta
+    { sdPutTokens = toks
+    , sdPutObjects =
+        [ ObjectPut Nothing (objectToRecord (TokenId 1) ost1)
+        , ObjectPut Nothing (objectToRecord (TokenId 2) ost2)
+        , ObjectPut Nothing (objectToRecord (TokenId 3) ost3)
+        ]
+    }
+  assertEqual "mv seed commit" Committed result
+  pure toks
+
+-- | Two sessions racing the same free slot serialize at the
+-- commit: both move plans validate against the pre-move
+-- layout, exactly one commit lands, and the loser refuses
+-- with the typed slot conflict instead of displacing the
+-- winner. Objects stay under their owners throughout.
+testConcurrentMove :: OpenWith -> IO ()
+testConcurrentMove openWith =
+  withOpenStore openWith defaultLimits noFaults $ \store -> do
+    _ <- seedMoveThree store
+    loaded <- storeLoadTokens store >>= expectRight "load tokens"
+    let stored = [t | (t, _) <- loaded]
+    planA <- case planSlotMoves [(TokenId 2, SlotId 7)] stored of
+      Left refusal -> assertFailure ("plan A must validate: " ++ show refusal)
+      Right delta -> pure delta
+    planB <- case planSlotMoves [(TokenId 3, SlotId 7)] stored of
+      Left refusal -> assertFailure ("plan B must validate: " ++ show refusal)
+      Right delta -> pure delta
+    varA <- newEmptyMVar
+    varB <- newEmptyMVar
+    withWorkers
+      [ storeCommit store planA >>= putMVar varA
+      , storeCommit store planB >>= putMVar varB
+      ] $ \_ -> do
+        mA <- timeout rendezvousTimeout (takeMVar varA)
+        mB <- timeout rendezvousTimeout (takeMVar varB)
+        (rA, rB) <- case (mA, mB) of
+          (Just a, Just b) -> pure (a, b)
+          _ -> assertFailure "move worker timed out"
+        assertBool "exactly one move lands" ((rA == Committed) /= (rB == Committed))
+        case (rA, rB) of
+          (Committed, NotCommitted (StoreRevisionConflict _)) -> pure ()
+          (NotCommitted (StoreRevisionConflict _), Committed) -> pure ()
+          _ -> assertFailure
+            ("loser must refuse with the typed slot conflict: " ++ show (rA, rB))
+        reloaded <- storeLoadTokens store >>= expectRight "reload tokens"
+        let at7 = [trId t | (t, _) <- reloaded, trSlot t == SlotId 7]
+            owned m = sort [(orToken oo, orId oo) | (_, os) <- m, oo <- os]
+        assertEqual "one winner at slot 7" 1 (length at7)
+        assertEqual "objects keep their owners" (owned loaded) (owned reloaded)

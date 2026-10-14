@@ -204,6 +204,88 @@ Quarantine reasons and statistics belong to the live store handle; fresh
 handles start clean. [CommitSpec](../tests/storage/CommitSpec.hs) exercises
 publication and fault handling.
 
+## Token identity contract
+
+A token's durable identity is its `TokenId`; the serving slot is a
+separate assignment. Configuration seeds a new token; an existing
+durable token is authoritative over its identity, label, slot,
+objects, jobs, and auth counters. Labels alone never identify a
+token: a catalog entry that reuses a label under a different
+identity (or the reverse) reopens refused, never silently
+reassigned (see `reconcileIdentities` in
+`src/Haskoki/Runtime/Storage.hs` and the refusal cases in
+`tests/storage/StoreSpec.hs`).
+
+Slot 0 is the home token `TokenId 1`, unconditionally: the
+configuration parser, the reconciler, and the move planner each
+refuse anything else there (see `parseTokenIds`,
+`RefuseHomeAnchor`, and `MoveHomeAnchored`).
+
+Stable identities come from the optional `[tokens] token_ids`
+parallel array (decimal ids in strings, positional with
+`labels`): pinned, unique, and home-anchored, or the whole
+config refuses at load. Without the key, the catalog reads
+positionally (slot `n` owns `TokenId (n+1)`), which is how every
+older file keeps parsing. Dropping `token_ids` is a downgrade
+to that positional reading: it reopens only while the
+positional layout still matches the durable one.
+
+A SQLite open reconciles the catalog against the durable
+identities before anything publishes. Matches proceed; unknown
+identities seed with generation zero and fresh auth; every
+drift refuses the whole open without writing a byte:
+
+| Drift | Refusal | Operator action |
+|---|---|---|
+| stored token missing from the catalog | `RefuseStoredUnconfigured` | restore the entry with its pinned id; removal-by-config is not supported |
+| durable label differs | `RefuseLabelChanged` | restore the durable label; relabeling is not supported |
+| durable slot differs (reorder, shifting insert) | `RefuseSlotChanged` | restore the slot, or move explicitly first |
+| duplicate desired identity | `RefuseDuplicateDesired` | give each entry its own id |
+
+Additional slots move only through the explicit `planSlotMoves`
+operation: one atomic delta, validated against the projected
+layout (unknown tokens, occupied targets, clashing targets,
+duplicated movers, negative slots, and home-anchor violations
+refuse; see `renderSlotMoveRefusal`). Swaps and rotation chains
+commit
+atomically in one plan; a lone move onto an occupied slot
+reroutes through a free slot first. Objects, jobs, labels,
+generations, and auth counters ride along untouched. An
+interrupted sequence reopens refused under both the old and the
+target catalog until the remaining legs commit (see the
+interrupted fixture in `tests/storage/CommitSpec.hs`).
+
+Versions stay put: configuration keeps `schema_version = 1`
+(`token_ids` is optional and additive), durable documents keep
+`format_version = 1` with no new fields (the token document
+already separates `token_id` from `slot`), and the SQLite
+schema keeps `schema_version = 1` with no migration. A wrong
+schema version refuses at open without writing (see
+`verifyExisting` in `src/Haskoki/Runtime/Storage/SQLite.hs` and
+the future-version case in `tests/storage/StoreSpec.hs`);
+unknown document versions refuse on decode, as before.
+
+PIN values stay configuration-owned: the store carries no PIN
+and no PIN check, so a PIN edit changes the credential that
+reaches the same durable identity. There is no token-editor
+surface here: credential lifecycle changes wait for their own
+contract review, and no path reassigns one token's objects to
+another token's credential silently (every reassignment-shaped
+change above refuses loudly instead).
+
+Two boundaries stay outside this contract. Binary rollback is
+excluded: a moved store keeps versions every predecessor
+accepts, but predecessors predate reconciliation and would
+serve the moved layout positionally, so operators upgrade
+every serving binary before moving tokens and never roll one
+back across a move (a future format bump is the mechanism
+that would make such rollback refuse loudly). And the C
+initialization path reports store-open failures generically,
+with no diagnostic sink there, as with every other
+store-open failure; Haskell callers receive the typed
+refusal above through `openStdStore` (see the
+standard-open cases in `tests/storage/StoreSpec.hs`).
+
 ## Public 3.2 async routing
 
 The standard table exposes `C_AsyncComplete`, `C_AsyncGetID`, and
