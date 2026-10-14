@@ -208,6 +208,7 @@ done
 DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23
 async_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/24
 notifications_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/25
+consumer_policy_metadata:https://github.com/mingulov/haskoki/issues/17
 consumer_certificates:visibility:https://github.com/mingulov/pkcs11-proxy-ng/issues/27
 consumer_certificates:restart:https://github.com/mingulov/pkcs11-proxy-ng/issues/27"
 for entry in $DIRECT_ONLY; do
@@ -483,6 +484,12 @@ cleanup() {
 trap cleanup EXIT
 start_daemon() {
   # $1 = backend.toml, $2 = server log
+  # Squatter guard: a stale manual daemon on our port would answer the
+  # readiness probe below and silently hijack the run (observed: a whole
+  # parity run executed against a polluted hand-started daemon).
+  if bash -c "echo > /dev/tcp/127.0.0.1/$PROXY_PORT" 2>/dev/null; then
+    fail "port $PROXY_PORT already bound (stale daemon squatting?)"
+  fi
   RUST_LOG=info HASKOKI_CONFIG="$1" "$SERVER_BIN" "$TMPD/proxy.toml" \
     >"$2" 2>&1 &
   SRV=$!
@@ -555,6 +562,10 @@ run_parity_cert_leg() {
   # $1 = version, $2 = leg; $CERT_MODE is the LIVE daemon's storage mode
   V="$1"; L="$2"; M="$CERT_MODE"
   D="$TMPD/cert-$M/$V-$L"
+  # Fresh dir per leg per run: legs leave created objects behind and
+  # TMPD persists across driver runs, so a reused dir double-counts
+  # shelf state (observed: visibility finds 2 on rerun, expects 1).
+  rm -rf "$D" || fail "cannot clear $D"
   mkdir -p "$D" || fail "cannot create $D"
   chmod 0700 "$D" || fail "cannot chmod $D"
   DLOG="$TMPD/consumer_certificates-$V-$L-$M.direct.log"
@@ -749,16 +760,19 @@ if [ -n "${1:-}" ]; then
   fail "usage: scripts/test-proxy-parity.sh"
 fi
 
-# Group R: all retained scenarios on the default backend.
-start_daemon "$TMPD/backend.toml" "$TMPD/server.log"
+# Group R: all retained scenarios on the default backend, each with a
+# FRESH daemon: token-auth/object state (e.g. roundtrip's deliberate
+# SO lockout) must not leak across scenarios. Direct legs each get a
+# fresh in-process backend, so proxied legs get a fresh daemon each.
 for scen in $SCEN_LIST; do
   base="$(basename "$scen" .c)"
   if [ "$base" = "consumer_certificates" ]; then
     continue
   fi
+  start_daemon "$TMPD/backend.toml" "$TMPD/server-$base.log"
   run_parity "$base"
+  cleanup
 done
-cleanup
 
 # Group C: the certificate scenario only, once per storage mode, each
 # with a fresh daemon on its own catalog backend.

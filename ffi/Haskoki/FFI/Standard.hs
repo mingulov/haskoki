@@ -3270,24 +3270,39 @@ setPinRole m sid = do
 -- object and detached job on the token is destroyed, the
 -- generation bumps (stale job references refuse), the auth
 -- state goes fresh, and the user PIN becomes uninitialized
--- (the SO sets it with 'C_InitPIN'). The label pointer must
--- offer 32 readable bytes (NULL refuses); the PIN pointer
--- must be non-null and offer the passed length. Check order:
--- bad slot first (the universal discipline), then the SO-PIN
--- length (@CKR_PIN_LEN_RANGE@ outside the effective policy),
--- then the label shape, cross-token uniqueness, and the
--- slot-0 stability anchor (a duplicate label would strand
--- the next open: the catalog cannot express two tokens under
--- one label; slot 0 keeps 'homeTokenLabel' because the
--- catalog cannot express any other slot-0 label — both
--- relabels refuse instead), then the sessions-empty
--- precondition (@CKR_SESSION_EXISTS@, re-checked under the
--- gate). Only this token's rows commit; a refused call
--- persists nothing, and a durable write that does not land
--- fails with @CKR_GENERAL_ERROR@. The next open reconciles
--- the catalog against the new durable label: the operator
--- updates the catalog entry to match (the refusal names it),
--- exactly as for any other catalog drift.
+-- (the SO sets it with 'C_InitPIN'). Every seated token
+-- carries an SO PIN (catalog-seeded until its first
+-- provisioning commit, durable after), so this call always
+-- takes the reinitialization path: the caller PIN is checked
+-- against the token's existing SO PIN with the
+-- position-constant 'pinsMatch' fold, and a mismatch refuses
+-- with @CKR_PIN_INCORRECT@ before anything is planned or
+-- published (objects, jobs, credentials, counters, and locks
+-- stay as they were; the SO PIN becomes the caller bytes,
+-- which equal the existing SO PIN on this path — rotate the
+-- SO PIN itself with 'C_SetPIN' from a read/write SO
+-- session). The label pointer must offer 32 readable bytes
+-- (NULL refuses); the PIN pointer must be non-null and offer
+-- the passed length. Check order: bad slot first (the
+-- universal discipline), then the SO-PIN length
+-- (@CKR_PIN_LEN_RANGE@ outside the effective policy), then
+-- the label shape, cross-token uniqueness, and the slot-0
+-- stability anchor (a duplicate label would strand the next
+-- open: the catalog cannot express two tokens under one
+-- label; slot 0 keeps 'homeTokenLabel' because the catalog
+-- cannot express any other slot-0 label — both relabels
+-- refuse instead), then the sessions-empty precondition
+-- (@CKR_SESSION_EXISTS@, re-checked under the gate), and
+-- last the existing-PIN check (a state conflict refuses
+-- before PIN evaluation, the login check-order precedent).
+-- Only this token's rows commit; a refused call persists
+-- nothing, and a durable write that does not land fails with
+-- @CKR_GENERAL_ERROR@. @CKF_TOKEN_INITIALIZED@ stays set on
+-- every token, matching the always-reinit behavior above.
+-- The next open reconciles the catalog against the new
+-- durable label: the operator updates the catalog entry to
+-- match (the refusal names it), exactly as for any other
+-- catalog drift.
 haskokiStdInitToken
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
   -> IO CULong
@@ -3329,8 +3344,23 @@ haskokiStdInitToken ctx slot pPin (CULong pinLen) pLabel =
                             else if (not . null) (sessionsOnSlot m0 slotId)
                               then pure ckrSessionExists
                               else do
+                                -- The reinit authorization: the
+                                -- caller PIN must match the
+                                -- token's existing SO PIN (the
+                                -- post-refresh serving view, so
+                                -- a dirty entry never
+                                -- authorizes). The verdict rides
+                                -- the request (the SetPIN
+                                -- precedent); a bad verdict
+                                -- refuses with
+                                -- @CKR_PIN_INCORRECT@ and an
+                                -- empty delta, publishing
+                                -- nothing.
+                                let verdict
+                                      | pinsMatch soPin (scSoPin (servingFor serving slotId)) = "ok"
+                                      | otherwise = "bad"
                                 let req = Request Pkcs11_3_2 F_InitToken Nothing Nothing
-                                      (BC8.pack ("slot=" ++ show (unSlotId slotId))) []
+                                      (BC8.pack ("slot=" ++ show (unSlotId slotId) ++ ",so:" ++ verdict)) []
                                 case planCall (envRules (siEnv inst)) m0 req of
                                   Immediate pc
                                     | pcCode pc == CKR_OK -> do

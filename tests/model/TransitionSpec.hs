@@ -33,7 +33,9 @@ import Haskoki.Model
   , SessionState (..)
   , addToken
   , emptyModel
+  , lookupObject
   , lookupSession
+  , lookupTokenAuth
   )
 import Haskoki.Operation
   ( CipherDir (..)
@@ -111,7 +113,7 @@ import Haskoki.Registry
   , mkCapabilities
   )
 import Haskoki.Rules (defaultRules)
-import Haskoki.Session (SessionLogin (..))
+import Haskoki.Session (SessionLogin (..), TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition
   ( finishEffect
   , packStep
@@ -155,6 +157,11 @@ spec = testGroup "model transitions"
   , testCase "planned sign dialogue checks coherently" caseCoherentSign
   , testCase "seeded planner emissions check coherently" caseCoherentEmissions
   , testCase "seeded message emissions check coherently" caseCoherentMessage
+  , testCase "reinit refused on a bad SO verdict preserves everything" caseInitTokenDeniedPreserves
+  , testCase "reinit granted on a good SO verdict resets its own token" caseInitTokenAuthorizedResets
+  , testCase "first init without a verdict grants" caseInitTokenFirstInitGrants
+  , testCase "init-token argument shape refuses junk" caseInitTokenArgsShape
+  , testCase "locked SO: refusal preserves the lock, grant clears it" caseInitTokenLockedSo
   ]
 
 caseUnbindHandle :: IO ()
@@ -1139,3 +1146,140 @@ caseCoherentMessage = do
         (isRight (checkedCallWork h1Sid res (EffectCrypto fx)))
       assertEqual ("compatible " ++ show fid)
         True (callPairCompatible h1Sid res (EffectCrypto fx))
+
+-- | Two seated tokens, one token object each, and a worn
+-- slot-0 auth (one SO strike short of nothing: attempts and
+-- locks are what a refused reinit must leave untouched).
+seedInitTokenModel :: IO Model
+seedInitTokenModel = do
+  let seated = addToken (addToken emptyModel (SlotId 0)) (SlotId 1)
+      tokenAttrs = Map.singleton AttrToken (ValBool True)
+      worn = tokenAuthNew { taSoAttempts = 1, taUserAttempts = 2 }
+      seed = StateDelta
+        [ DeltaCreateObjectFull (ObjectId 1) tokenAttrs Nothing (SlotId 0)
+        , DeltaCreateObjectFull (ObjectId 2) tokenAttrs Nothing (SlotId 1)
+        , DeltaSetTokenAuth (SlotId 0) worn
+        ]
+  either (fail . show) pure (publishDelta seated seed)
+
+-- | An InitToken request with the given raw argument bytes.
+initTokenReq :: BS.ByteString -> Request
+initTokenReq args = Request Pkcs11_3_2 F_InitToken Nothing Nothing args []
+
+-- | A denied reinit answers @CKR_PIN_INCORRECT@ with an empty
+-- delta, no outputs, and no releases: objects, auth halves,
+-- and counters survive byte-identical (the published model
+-- equals the pre-call model).
+caseInitTokenDeniedPreserves :: IO ()
+caseInitTokenDeniedPreserves = do
+  m0 <- seedInitTokenModel
+  case planCall defaultRules m0 (initTokenReq "slot=0,so:bad") of
+    Reject rej -> do
+      assertEqual "denied code" CKR_PIN_INCORRECT (rejCode rej)
+      assertEqual "no delta" (StateDelta []) (rejDelta rej)
+      assertEqual "no outputs" [] (rejOutputs rej)
+      assertEqual "no releases" [] (rejReleases rej)
+      case publishDelta m0 (rejDelta rej) of
+        Left fault -> assertBool (show fault) False
+        Right m1 -> assertEqual "model unchanged" m0 m1
+    other -> fail ("expected Reject, got: " ++ show other)
+
+-- | An authorized reinit plans the wipe: fresh auth plus the
+-- destruction of exactly its own slot's objects. Publishing
+-- drops the slot-0 object, keeps the sibling, and resets the
+-- worn auth half.
+caseInitTokenAuthorizedResets :: IO ()
+caseInitTokenAuthorizedResets = do
+  m0 <- seedInitTokenModel
+  case planCall defaultRules m0 (initTokenReq "slot=0,so:ok") of
+    Immediate pc -> do
+      assertEqual "grant code" CKR_OK (pcCode pc)
+      assertEqual "wipe shape"
+        [ DeltaSetTokenAuth (SlotId 0) tokenAuthNew
+        , DeltaDestroyObject (ObjectId 1)
+        ]
+        (unStateDelta (pcDelta pc))
+      case publishDelta m0 (pcDelta pc) of
+        Left fault -> assertBool (show fault) False
+        Right m1 -> do
+          assertEqual "own object destroyed"
+            Nothing (lookupObject m1 (ObjectId 1))
+          assertEqual "sibling object survives"
+            (lookupObject m0 (ObjectId 2)) (lookupObject m1 (ObjectId 2))
+          assertEqual "auth fresh"
+            (Just tokenAuthNew) (lookupTokenAuth m1 (SlotId 0))
+    other -> fail ("expected Immediate, got: " ++ show other)
+
+-- | A bare slot argument (no verdict: the token carries no SO
+-- PIN yet, so there is nothing to check against) plans the
+-- same own-token wipe as an authorized reinit.
+caseInitTokenFirstInitGrants :: IO ()
+caseInitTokenFirstInitGrants = do
+  m0 <- seedInitTokenModel
+  case planCall defaultRules m0 (initTokenReq "slot=0") of
+    Immediate pc -> do
+      assertEqual "grant code" CKR_OK (pcCode pc)
+      assertEqual "wipe shape"
+        [ DeltaSetTokenAuth (SlotId 0) tokenAuthNew
+        , DeltaDestroyObject (ObjectId 1)
+        ]
+        (unStateDelta (pcDelta pc))
+    other -> fail ("expected Immediate, got: " ++ show other)
+
+-- | The init-token codec accepts exactly @slot=\<nat\>@ with an
+-- optional @,so:ok|bad@ verdict: junk refuses with
+-- @CKR_ARGUMENTS_BAD@, and a missing token reports
+-- @CKR_TOKEN_NOT_PRESENT@ ahead of the verdict either way.
+caseInitTokenArgsShape :: IO ()
+caseInitTokenArgsShape = do
+  m0 <- seedInitTokenModel
+  let badArgs =
+        [ BS.empty
+        , "slot="
+        , "slot=0,"
+        , "slot=0,so:"
+        , "slot=0,so:might"
+        , "slot=0,so:ok,extra"
+        , "slot=0,user:ok"
+        , "Slot=0"
+        , "slot=-1"
+        ]
+  mapM_ (assertArgsBad m0) badArgs
+  mapM_ (assertNoToken m0) ["slot=9", "slot=9,so:ok", "slot=9,so:bad"]
+  where
+    assertArgsBad m0 args = case planCall defaultRules m0 (initTokenReq args) of
+      Reject rej -> assertEqual ("args bad: " ++ show args)
+        CKR_ARGUMENTS_BAD (rejCode rej)
+      other -> fail ("expected ARGUMENTS_BAD for " ++ show args ++ ", got: " ++ show other)
+    assertNoToken m0 args = case planCall defaultRules m0 (initTokenReq args) of
+      Reject rej -> assertEqual ("no token: " ++ show args)
+        CKR_TOKEN_NOT_PRESENT (rejCode rej)
+      other -> fail ("expected TOKEN_NOT_PRESENT for " ++ show args ++ ", got: " ++ show other)
+
+-- | A locked SO role ignores the lock on the reinit path: a
+-- bad verdict still refuses with @CKR_PIN_INCORRECT@ and an
+-- empty delta (the lock and counters survive), while a good
+-- verdict grants and the fresh auth clears the lock (the
+-- locked-SO recovery path).
+caseInitTokenLockedSo :: IO ()
+caseInitTokenLockedSo = do
+  m0 <- seedInitTokenModel
+  let locked = tokenAuthNew { taSoAttempts = 3, taSoLocked = True, taUserAttempts = 2 }
+  mLocked <- either (fail . show) pure
+    (publishDelta m0 (StateDelta [DeltaSetTokenAuth (SlotId 0) locked]))
+  case planCall defaultRules mLocked (initTokenReq "slot=0,so:bad") of
+    Reject rej -> do
+      assertEqual "denied code" CKR_PIN_INCORRECT (rejCode rej)
+      assertEqual "no delta" (StateDelta []) (rejDelta rej)
+      case publishDelta mLocked (rejDelta rej) of
+        Left fault -> assertBool (show fault) False
+        Right m1 -> assertEqual "lock preserved" mLocked m1
+    other -> fail ("expected Reject, got: " ++ show other)
+  case planCall defaultRules mLocked (initTokenReq "slot=0,so:ok") of
+    Immediate pc -> do
+      assertEqual "grant code" CKR_OK (pcCode pc)
+      case publishDelta mLocked (pcDelta pc) of
+        Left fault -> assertBool (show fault) False
+        Right m1 -> assertEqual "lock cleared"
+          (Just tokenAuthNew) (lookupTokenAuth m1 (SlotId 0))
+    other -> fail ("expected Immediate, got: " ++ show other)

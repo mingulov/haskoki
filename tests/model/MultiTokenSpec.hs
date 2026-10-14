@@ -51,6 +51,7 @@ import Haskoki.FFI.Standard
   , haskokiStdGetOneAttr
   , haskokiStdGetSessionInfo
   , haskokiStdGetSlotList
+  , haskokiStdInitToken
   , haskokiStdLogin
   , haskokiStdLogout
   , haskokiStdOpenSession
@@ -109,6 +110,10 @@ spec = testGroup "Multi-token"
   , testCase "user PINs route per slot" casePerSlotPins
   , testCase "SO PINs route per slot" caseSoPerSlot
   , testCase "shrunk catalog over a reused store is refused" caseCatalogShrinkRefused
+  , testCase "reinit with a wrong SO PIN refuses and preserves" caseReinitWrongPinRefused
+  , testCase "reinit with the SO PIN resets its own token" caseReinitCorrectPinResets
+  , testCase "reinit with sessions open refuses" caseReinitSessionsRefuse
+  , testCase "locked SO recovers through authorized reinit" caseReinitLockedSoRecovery
   ]
 
 fixturePath :: FilePath
@@ -677,3 +682,168 @@ caseSoPerSlot =
     assertEqual "slot-1 logout ok" (CULong 0) rvLogout
     rvWrongSo <- loginAs inst s1 0 "5678"
     assertEqual "slot-0 SO PIN refused on slot 1" (CULong 0xA0) rvWrongSo
+
+-- | Call InitToken on a slot with a Haskell-string SO PIN and
+-- label (the label pads to the fixed 32 C bytes here, as the
+-- C caller would).
+callInitToken :: StablePtr StdInstance -> CULong -> String -> String -> IO CULong
+callInitToken inst slot pinStr labelStr =
+  BS.useAsCStringLen (BC8.pack pinStr) $ \(cPin, lenPin) ->
+    BS.useAsCStringLen (BC8.pack (take 32 (labelStr ++ repeat ' '))) $ \(cLabel, _) ->
+      haskokiStdInitToken inst slot (castPtr cPin) (fromIntegral lenPin) (castPtr cLabel)
+
+-- | A persistent public data object frame (survives session
+-- close, so a reinit either destroys it or it stays).
+persistentFrame :: String -> BS.ByteString
+persistentFrame label = buildFrame
+  [ (0x00, le64 0) -- CKA_CLASS = CKO_DATA
+  , (0x01, BS.singleton 1) -- CKA_TOKEN = true
+  , (0x02, BS.singleton 0) -- CKA_PRIVATE = false
+  , (0x03, BC8.pack label) -- CKA_LABEL
+  ]
+
+-- | A reinit carrying a wrong SO PIN refuses with
+-- PIN_INCORRECT (0xA0) and preserves everything: the token
+-- object survives, both PINs still serve, and the refusal
+-- consumes no SO attempt (two wrong SO logins afterwards
+-- still answer PIN_INCORRECT rather than locking on the
+-- second, and the catalog SO PIN then serves).
+caseReinitWrongPinRefused :: IO ()
+caseReinitWrongPinRefused =
+  withCatalogInstance $ \inst -> do
+    s0 <- openSession inst (CULong 0)
+    rvLogin <- loginAs inst s0 1 "1234"
+    assertEqual "user login" (CULong 0) rvLogin
+    _victim <- createObject inst s0 (persistentFrame "slot0-kept")
+    rvLogout <- haskokiStdLogout inst s0
+    assertEqual "logout" (CULong 0) rvLogout
+    rvClose <- haskokiStdCloseSession inst s0
+    assertEqual "session closes" (CULong 0) rvClose
+    rvBad <- callInitToken inst (CULong 0) "wrong-pin" "haskoki-demo"
+    assertEqual "wrong SO PIN refused" (CULong 0xA0) rvBad
+    r0 <- openSession inst (CULong 0)
+    hits <- findAll inst r0
+    assertEqual "token object survives" 1 (length hits)
+    rvStrike1 <- loginAs inst r0 0 "bad-so-0001"
+    assertEqual "first wrong SO login" (CULong 0xA0) rvStrike1
+    rvStrike2 <- loginAs inst r0 0 "bad-so-0002"
+    assertEqual "second wrong SO login" (CULong 0xA0) rvStrike2
+    rvSo <- loginAs inst r0 0 "5678"
+    assertEqual "SO PIN serves" (CULong 0) rvSo
+    rvLogout2 <- haskokiStdLogout inst r0
+    assertEqual "SO logout" (CULong 0) rvLogout2
+    rvUser <- loginAs inst r0 1 "1234"
+    assertEqual "user PIN serves" (CULong 0) rvUser
+    rvLogout3 <- haskokiStdLogout inst r0
+    assertEqual "user logout" (CULong 0) rvLogout3
+    rvClose2 <- haskokiStdCloseSession inst r0
+    assertEqual "session closes" (CULong 0) rvClose2
+
+-- | A reinit carrying the token's SO PIN succeeds: its own
+-- token object is destroyed, the sibling token object
+-- survives, the user PIN becomes uninitialized (user login
+-- answers USER_PIN_NOT_INITIALIZED, 0x102), and the SO PIN
+-- serves on.
+caseReinitCorrectPinResets :: IO ()
+caseReinitCorrectPinResets =
+  withCatalogInstance $ \inst -> do
+    s0 <- openSession inst (CULong 0)
+    rvLogin0 <- loginAs inst s0 1 "1234"
+    assertEqual "slot-0 login" (CULong 0) rvLogin0
+    _victim <- createObject inst s0 (persistentFrame "slot0-victim")
+    rvLogout0 <- haskokiStdLogout inst s0
+    assertEqual "slot-0 logout" (CULong 0) rvLogout0
+    rvClose0 <- haskokiStdCloseSession inst s0
+    assertEqual "slot-0 closes" (CULong 0) rvClose0
+    s1 <- openSession inst (CULong 1)
+    rvLogin1 <- loginAs inst s1 1 "2345"
+    assertEqual "slot-1 login" (CULong 0) rvLogin1
+    _kept <- createObject inst s1 (persistentFrame "slot1-kept")
+    rvLogout1 <- haskokiStdLogout inst s1
+    assertEqual "slot-1 logout" (CULong 0) rvLogout1
+    rvClose1 <- haskokiStdCloseSession inst s1
+    assertEqual "slot-1 closes" (CULong 0) rvClose1
+    rvOk <- callInitToken inst (CULong 0) "5678" "haskoki-demo"
+    assertEqual "authorized reinit succeeds" (CULong 0) rvOk
+    r0 <- openSession inst (CULong 0)
+    hits0 <- findAll inst r0
+    assertEqual "own object destroyed" [] hits0
+    rvUser <- loginAs inst r0 1 "1234"
+    assertEqual "user PIN uninitialized" (CULong 0x102) rvUser
+    rvSo <- loginAs inst r0 0 "5678"
+    assertEqual "SO PIN serves" (CULong 0) rvSo
+    rvLogout <- haskokiStdLogout inst r0
+    assertEqual "SO logout" (CULong 0) rvLogout
+    rvClose <- haskokiStdCloseSession inst r0
+    assertEqual "slot-0 closes" (CULong 0) rvClose
+    r1 <- openSession inst (CULong 1)
+    hits1 <- findAll inst r1
+    assertEqual "sibling object survives" 1 (length hits1)
+    rvCloseSib <- haskokiStdCloseSession inst r1
+    assertEqual "slot-1 closes" (CULong 0) rvCloseSib
+
+-- | A reinit with sessions open refuses with SESSION_EXISTS
+-- (0xB6) either way: the sessions-empty precondition holds
+-- ahead of the SO-PIN check, so an open session refuses with
+-- the token's PIN as well as with a wrong one.
+caseReinitSessionsRefuse :: IO ()
+caseReinitSessionsRefuse =
+  withCatalogInstance $ \inst -> do
+    s0 <- openSession inst (CULong 0)
+    rvRight <- callInitToken inst (CULong 0) "5678" "haskoki-demo"
+    assertEqual "open session refuses, token PIN" (CULong 0xB6) rvRight
+    rvWrong <- callInitToken inst (CULong 0) "wrong-pin" "haskoki-demo"
+    assertEqual "open session refuses, wrong PIN" (CULong 0xB6) rvWrong
+    rvClose <- haskokiStdCloseSession inst s0
+    assertEqual "session closes" (CULong 0) rvClose
+
+-- | A locked SO recovers through an authorized reinit, on a
+-- SQLite store with a reopen between the reset and the
+-- proof: three wrong SO logins lock the role (0xA4), a
+-- wrong-PIN reinit refuses with PIN_INCORRECT (0xA0) and the
+-- lock stays (even the token SO PIN answers locked), then
+-- the authorized reinit succeeds, and after the reopen the
+-- SO PIN serves while the user PIN reports uninitialized
+-- (0x102). Dedicated temp store path, never the default
+-- store.
+caseReinitLockedSoRecovery :: IO ()
+caseReinitLockedSoRecovery = do
+  base <- getTemporaryDirectory
+  let dbPath = base </> "haskoki-reinit-locked.sqlite"
+  _ <- tryIOError (removeFile dbPath)
+  _ <- tryIOError (removeFile (dbPath ++ ".lock"))
+  cfg <- loadFixtureConfig
+  let sqliteCfg = cfg
+        { cfgStorage = StorageCfg StorageSQLite (Just dbPath) 5000 True }
+  withConfigInstance sqliteCfg $ \inst -> do
+    s0 <- openSession inst (CULong 0)
+    rvStrike1 <- loginAs inst s0 0 "bad-so-0001"
+    assertEqual "SO strike one" (CULong 0xA0) rvStrike1
+    rvStrike2 <- loginAs inst s0 0 "bad-so-0002"
+    assertEqual "SO strike two" (CULong 0xA0) rvStrike2
+    rvStrike3 <- loginAs inst s0 0 "bad-so-0003"
+    assertEqual "SO strike three locks" (CULong 0xA4) rvStrike3
+    rvClose <- haskokiStdCloseSession inst s0
+    assertEqual "session closes" (CULong 0) rvClose
+    rvBad <- callInitToken inst (CULong 0) "wrong-pin" "haskoki-demo"
+    assertEqual "wrong SO PIN refused" (CULong 0xA0) rvBad
+    r0 <- openSession inst (CULong 0)
+    rvLocked <- loginAs inst r0 0 "5678"
+    assertEqual "SO stays locked" (CULong 0xA4) rvLocked
+    rvClose2 <- haskokiStdCloseSession inst r0
+    assertEqual "session closes" (CULong 0) rvClose2
+    rvOk <- callInitToken inst (CULong 0) "5678" "haskoki-demo"
+    assertEqual "authorized reinit succeeds" (CULong 0) rvOk
+  withConfigInstance sqliteCfg $ \inst -> do
+    r0 <- openSession inst (CULong 0)
+    rvSo <- loginAs inst r0 0 "5678"
+    assertEqual "SO serves after reopen" (CULong 0) rvSo
+    rvLogout <- haskokiStdLogout inst r0
+    assertEqual "SO logout" (CULong 0) rvLogout
+    rvUser <- loginAs inst r0 1 "1234"
+    assertEqual "user PIN uninitialized" (CULong 0x102) rvUser
+    rvClose <- haskokiStdCloseSession inst r0
+    assertEqual "session closes" (CULong 0) rvClose
+  _ <- tryIOError (removeFile dbPath)
+  _ <- tryIOError (removeFile (dbPath ++ ".lock"))
+  pure ()
