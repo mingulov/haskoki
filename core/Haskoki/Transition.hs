@@ -781,6 +781,22 @@ logoutTransition model slot auth' =
 -- delta on the FFI's gate-held path; the new PIN bytes never
 -- ride the request.
 --
+-- Authorization rides the request as the FFI's old-PIN verdict
+-- (the SetPIN precedent: @so:ok|bad@, never the PIN bytes).
+-- A bare slot argument is a first initialization — the token
+-- carries no SO PIN yet, so there is nothing to check against
+-- — and plans the wipe. A good verdict plans the wipe; a bad
+-- verdict refuses with @CKR_PIN_INCORRECT@ and an empty delta,
+-- so objects, auth halves, and counters survive untouched (a
+-- refused reinit consumes no SO attempt: it is a sessionless
+-- authorization check, not a login). The token check precedes
+-- the verdict either way: a missing token reports
+-- @CKR_TOKEN_NOT_PRESENT@, since there is no existing PIN to
+-- check against. A granted reinit clears locks as part of the
+-- fresh-auth reset — presenting the SO PIN authorizes the
+-- reset, which is the locked-SO recovery path (no other call
+-- clears an SO lock).
+--
 -- Precondition: zero sessions on the slot. The FFI enforces it
 -- (a snapshot pre-check plus a gate-held re-check, both
 -- answering the FFI-owned @CKR_SESSION_EXISTS@): the core has
@@ -793,7 +809,7 @@ planInitToken :: Model -> Request -> PlanResult
 planInitToken model req =
   case parseInitTokenArgs (reqInput req) of
     Nothing -> badArgs "malformed init-token arguments"
-    Just slot -> case lookupTokenAuth model slot of
+    Just (slot, verdict) -> case lookupTokenAuth model slot of
       Nothing -> Reject Rejection
         { rejCode = CKR_TOKEN_NOT_PRESENT
         , rejOutputs = []
@@ -801,27 +817,46 @@ planInitToken model req =
         , rejReleases = []
         , rejReasons = ["no token in slot"]
         }
-      Just _ ->
-        let destroys =
-              [ DeltaDestroyObject oid
-              | (oid, ost) <- Map.toAscList (mObjects model)
-              , osSlot ost == slot
-              ]
-        in Immediate PreparedCommit
-          { pcCode = CKR_OK
-          , pcDelta = StateDelta (DeltaSetTokenAuth slot tokenAuthNew : destroys)
-          , pcPersist = []
-          , pcOutputs = []
-          , pcReleases = []
-          , pcReasons = ["token reinitialized"]
+      Just _ -> case verdict of
+        Just PinIncorrect -> Reject Rejection
+          { rejCode = CKR_PIN_INCORRECT
+          , rejOutputs = []
+          , rejDelta = StateDelta []
+          , rejReleases = []
+          , rejReasons = ["SO PIN mismatch: reinit refused"]
           }
+        _ ->
+          let destroys =
+                [ DeltaDestroyObject oid
+                | (oid, ost) <- Map.toAscList (mObjects model)
+                , osSlot ost == slot
+                ]
+          in Immediate PreparedCommit
+            { pcCode = CKR_OK
+            , pcDelta = StateDelta (DeltaSetTokenAuth slot tokenAuthNew : destroys)
+            , pcPersist = []
+            , pcOutputs = []
+            , pcReleases = []
+            , pcReasons = ["token reinitialized"]
+            }
 
--- | Decode InitToken arguments: @slot=\<nat\>@.
-parseInitTokenArgs :: BS.ByteString -> Maybe SlotId
-parseInitTokenArgs bs = do
-  rest <- BS.stripPrefix (BC8.pack "slot=") bs
-  n <- parseNat rest
-  pure (SlotId n)
+-- | Decode InitToken arguments: @slot=\<nat\>@ with an
+-- optional @,so:ok|bad@ reinit verdict (the FFI's old-PIN
+-- check outcome; absent on a first initialization).
+parseInitTokenArgs :: BS.ByteString -> Maybe (SlotId, Maybe PinCheck)
+parseInitTokenArgs bs = case BC8.split ',' bs of
+  [slotPart] -> (, Nothing) <$> parseSlotPart slotPart
+  [slotPart, verdictPart] ->
+    (,) <$> parseSlotPart slotPart <*> (Just <$> parseVerdict verdictPart)
+  _ -> Nothing
+  where
+    parseSlotPart part = do
+      rest <- BS.stripPrefix (BC8.pack "slot=") part
+      SlotId <$> parseNat rest
+    parseVerdict part
+      | part == BC8.pack "so:ok" = Just PinCorrect
+      | part == BC8.pack "so:bad" = Just PinIncorrect
+      | otherwise = Nothing
 
 -- | Parse a non-negative decimal integer; rejects empty and
 -- non-digit input (the 'Haskoki.Session' reader precedent,

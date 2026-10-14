@@ -1199,10 +1199,14 @@ caseInitTokenResets =
       loginAs ctx h 1 "0000" >>= assertEqual "strike 2" (stdRvOf CKR_PIN_INCORRECT)
       loginAs ctx h 1 "0000" >>= assertEqual "strike 3 locks" (stdRvOf CKR_PIN_LOCKED)
       haskokiStdCloseSession ctx h >>= assertEqual "close session" (CULong 0)
-      callInitToken ctx 0 "7777" "haskoki-demo" >>= assertEqual "init-token" (CULong 0)
+      callInitToken ctx 0 "5678" "haskoki-demo" >>= assertEqual "init-token" (CULong 0)
       h2 <- openAuthSession ctx
       loginAs ctx h2 1 "1234" >>= assertEqual "user PIN uninitialized" (CULong 0x102)
-      loginAs ctx h2 0 "7777" >>= assertEqual "new SO PIN serves" (CULong 0)
+      loginAs ctx h2 0 "5678" >>= assertEqual "SO PIN serves" (CULong 0)
+      -- rotation is via SO SetPIN: re-init authorizes, never rotates
+      callSetPin ctx h2 "5678" "7777" >>= assertEqual "SO PIN rotates" (CULong 0)
+      haskokiStdLogout ctx h2 >>= assertEqual "SO logout" (CULong 0)
+      loginAs ctx h2 0 "7777" >>= assertEqual "rotated SO PIN serves" (CULong 0)
       callInitPin ctx h2 "8888" >>= assertEqual "init-pin" (CULong 0)
       haskokiStdLogout ctx h2 >>= assertEqual "SO logout" (CULong 0)
       loginAs ctx h2 1 "8888" >>= assertEqual "user serves on new PIN" (CULong 0)

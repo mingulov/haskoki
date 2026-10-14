@@ -287,6 +287,33 @@ silently (every reassignment-shaped change above refuses
 loudly instead; `C_InitToken` destroys only its own token's
 objects, jobs, and credential).
 
+Reinitializing a token is an authorized operation: every seated
+token carries an SO PIN (catalog-seeded until its first
+provisioning commit, durable after), so `C_InitToken` always
+takes the reinitialization path and checks the caller PIN
+against the token's existing SO PIN with the position-constant
+`pinsMatch` fold before planning anything. A mismatch answers
+`CKR_PIN_INCORRECT` and persists nothing — objects, jobs,
+credentials, attempt counters, and locks stay as they were
+(`caseReinitWrongPinRefused` in `tests/model/MultiTokenSpec.hs`
+pins the preserved serving state, and
+`caseInitTokenDeniedPreserves` in
+`tests/model/TransitionSpec.hs` pins the empty plan behind
+it). A match resets the token exactly as before: the SO PIN
+becomes the caller bytes (which equal the existing SO PIN on
+this path), the label becomes the caller label, every object
+and pending detached job on the token is destroyed, the
+generation bumps, the auth half goes fresh including cleared
+locks (presenting the SO PIN authorizes the reset, which is
+the locked-SO recovery path: no other call clears an SO
+lock), and the user PIN becomes uninitialized. A refused
+reinit consumes no SO attempt — it is a sessionless
+authorization check, not a login — so a wrong PIN neither
+locks the SO role nor disturbs the counter the next `C_Login`
+observes. `CKF_TOKEN_INITIALIZED` stays set on every token,
+matching the always-reinit behavior. To rotate the SO PIN
+itself, log in as SO and use `C_SetPIN`.
+
 Two boundaries stay outside this contract. Binary rollback is
 excluded: a moved store keeps versions every predecessor
 accepts, but predecessors predate reconciliation and would

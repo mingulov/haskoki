@@ -1,6 +1,9 @@
 /* tests/c/consumer_provisioning.c — token-provisioning lifecycle
  * proof through the legacy C table (C_InitToken / C_InitPIN /
  * C_SetPIN), on a two-token SQLite store:
+ *   - reinit authorization: InitToken with a wrong SO PIN
+ *     refuses CKR_PIN_INCORRECT and preserves objects, PINs,
+ *     flags, and SO attempts; the token stays initialized
  *   - ordinary-tool init: InitToken with sessions open refuses
  *     CKR_SESSION_EXISTS; with sessions closed it sets the SO PIN
  *     and label, clears CKF_USER_PIN_INITIALIZED, and resets auth
@@ -198,6 +201,91 @@ static CK_RV create_data(CK_SESSION_HANDLE sess, const char *label,
   return g_api->C_CreateObject(sess, tmpl, 4, ph);
 }
 
+/* ---------- phase: reinit authorization ---------- */
+
+static void phase_reinit_guard(void) {
+  CK_RV rv;
+  CK_SESSION_HANDLE sess = 0;
+  CK_OBJECT_HANDLE obj = 0;
+  CK_ULONG n = 0;
+  CK_TOKEN_INFO info;
+  CK_UTF8CHAR label[32];
+
+  /* Stage one persistent object on the catalog PINs. */
+  rv = open_rw(0, &sess);
+  CHECKC(rv == CKR_OK && sess != 0, "guard: session opens");
+  if (rv != CKR_OK) return;
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+  CHECKC(rv == CKR_OK, "guard: user login on catalog PIN");
+  rv = create_data(sess, "guard-victim", &obj);
+  CHECKC(rv == CKR_OK && obj != 0, "guard: object created");
+  (void)obj;
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "guard: logout");
+  rv = g_api->C_CloseSession(sess);
+  CHECKC(rv == CKR_OK, "guard: session closes");
+
+  /* A wrong SO PIN refuses without mutating. */
+  make_label32("haskoki-demo", label);
+  rv = g_api->C_InitToken(0, (CK_UTF8CHAR_PTR) "wrong-pin", 9, label);
+  CHECKC(rv == CKR_PIN_INCORRECT, "guard: wrong SO PIN refuses");
+
+  /* Token identity and flags untouched. */
+  rv = token_info(0, &info);
+  CHECKC(rv == CKR_OK && label_is(&info, "haskoki-demo"), "guard: label kept");
+  CHECKC((info.flags & CKF_TOKEN_INITIALIZED) != 0, "guard: token stays initialized");
+  CHECKC((info.flags & CKF_USER_PIN_INITIALIZED) != 0,
+         "guard: user PIN stays initialized");
+
+  /* Object, PINs, and counters preserved. The wrong-SO-login
+   * strikes come before any successful SO login (which would
+   * reset the counter and mask a consumed attempt): two
+   * strikes still answer PIN_INCORRECT, so the refusal
+   * consumed nothing — a consumed attempt would lock on the
+   * second strike. */
+  rv = open_rw(0, &sess);
+  CHECKC(rv == CKR_OK && sess != 0, "guard: session reopens");
+  if (rv != CKR_OK) return;
+  rv = find_count(sess, &n);
+  CHECKC(rv == CKR_OK && n == 1, "guard: object survives");
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "bad-so-0001", 10);
+  CHECKC(rv == CKR_PIN_INCORRECT, "guard: first wrong SO login");
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "bad-so-0002", 10);
+  CHECKC(rv == CKR_PIN_INCORRECT, "guard: second wrong SO login");
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
+  CHECKC(rv == CKR_OK, "guard: SO PIN serves after strikes");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "guard: SO logout");
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+  CHECKC(rv == CKR_OK, "guard: user PIN serves");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "guard: user logout");
+
+  /* Clean up: later phases assume a fresh object set. */
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+  CHECKC(rv == CKR_OK, "guard: user login for cleanup");
+  {
+    CK_OBJECT_HANDLE hs[4];
+    CK_ULONG got = 0;
+    rv = g_api->C_FindObjectsInit(sess, NULL_PTR, 0);
+    CHECKC(rv == CKR_OK, "guard: find init for cleanup");
+    rv = g_api->C_FindObjects(sess, hs, 4, &got);
+    CHECKC(rv == CKR_OK && got == 1, "guard: one object found");
+    rv = g_api->C_FindObjectsFinal(sess);
+    CHECKC(rv == CKR_OK, "guard: find final");
+    if (got == 1) {
+      rv = g_api->C_DestroyObject(sess, hs[0]);
+      CHECKC(rv == CKR_OK, "guard: object destroyed");
+    }
+  }
+  rv = find_count(sess, &n);
+  CHECKC(rv == CKR_OK && n == 0, "guard: token holds no objects");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "guard: logout");
+  rv = g_api->C_CloseSession(sess);
+  CHECKC(rv == CKR_OK, "guard: session closes");
+}
+
 /* ---------- phase: ordinary-tool init + precedence ---------- */
 
 static void phase_init_token(void) {
@@ -238,8 +326,9 @@ static void phase_init_token(void) {
   CHECKC(rv == CKR_ARGUMENTS_BAD, "init: duplicate label refuses");
   make_label32("haskoki-demo", label);
 
-  /* The valid init: SO PIN set, label kept, user PIN unset. */
-  rv = g_api->C_InitToken(0, (CK_UTF8CHAR_PTR) "so-fresh", 8, label);
+  /* The valid re-init authorizes with the existing SO PIN: label
+   * kept, user PIN unset, SO PIN unchanged (rotation is SetPIN). */
+  rv = g_api->C_InitToken(0, (CK_UTF8CHAR_PTR) "5678", 4, label);
   CHECKC(rv == CKR_OK, "init: valid call succeeds");
 
   rv = token_info(0, &info);
@@ -253,8 +342,8 @@ static void phase_init_token(void) {
   if (rv != CKR_OK) return;
   rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
   CHECKC(rv == CKR_USER_PIN_NOT_INITIALIZED, "init: unset user PIN refuses login");
-  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "so-fresh", 8);
-  CHECKC(rv == CKR_OK, "init: new SO PIN serves");
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
+  CHECKC(rv == CKR_OK, "init: SO PIN serves");
   rv = g_api->C_Logout(sess);
   CHECKC(rv == CKR_OK, "init: SO logout");
   rv = g_api->C_CloseSession(sess);
@@ -276,7 +365,7 @@ static void phase_pin_lifecycle(void) {
   rv = g_api->C_InitPIN(sess, (CK_UTF8CHAR_PTR) "user-one", 8);
   CHECKC(rv == CKR_USER_NOT_LOGGED_IN, "pin: InitPIN without SO login refuses");
 
-  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "so-fresh", 8);
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
   CHECKC(rv == CKR_OK, "pin: SO login");
 
   /* Bad new-PIN length refuses before anything commits. */
@@ -405,7 +494,7 @@ static void phase_lockout_recovery(void) {
          "lockout: locked flag shows");
 
   /* SO recovery: the SO sets a fresh user PIN, unlocking. */
-  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "so-fresh", 8);
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
   CHECKC(rv == CKR_OK, "lockout: SO login during user lockout");
   rv = g_api->C_InitPIN(sess, (CK_UTF8CHAR_PTR) "recovered", 9);
   CHECKC(rv == CKR_OK, "lockout: SO InitPIN recovers");
@@ -468,7 +557,7 @@ static void phase_reset_scoping(void) {
 
   /* Reset slot 0 only. */
   make_label32("haskoki-demo", label);
-  rv = g_api->C_InitToken(0, (CK_UTF8CHAR_PTR) "so-reset1", 9, label);
+  rv = g_api->C_InitToken(0, (CK_UTF8CHAR_PTR) "5678", 4, label);
   CHECKC(rv == CKR_OK, "scope: slot-0 re-initialized");
 
   rv = open_rw(0, &s0);
@@ -494,7 +583,7 @@ static void phase_reset_scoping(void) {
          "scope: reset token user PIN unset");
 
   /* Re-provision slot 0 so later phases start clean. */
-  rv = g_api->C_Login(s0, CKU_SO, (CK_UTF8CHAR_PTR) "so-reset1", 9);
+  rv = g_api->C_Login(s0, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
   CHECKC(rv == CKR_OK, "scope: reset SO PIN serves");
   rv = g_api->C_InitPIN(s0, (CK_UTF8CHAR_PTR) "scoped-pin", 10);
   CHECKC(rv == CKR_OK, "scope: reset user PIN set");
@@ -525,7 +614,7 @@ static void phase_restart(void) {
   CHECKC(rv == CKR_OK, "restart: provisioned user PIN survives");
   rv = g_api->C_Logout(sess);
   CHECKC(rv == CKR_OK, "restart: logout");
-  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "so-reset1", 9);
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
   CHECKC(rv == CKR_OK, "restart: provisioned SO PIN survives");
   rv = g_api->C_Logout(sess);
   CHECKC(rv == CKR_OK, "restart: SO logout");
@@ -678,7 +767,7 @@ static void phase_race(void) {
   rv = open_rw(0, &sess);
   CHECKC(rv == CKR_OK && sess != 0, "race: recovery session opens");
   if (rv != CKR_OK) return;
-  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "so-reset1", 9);
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
   CHECKC(rv == CKR_OK, "race: SO login after stale lockout");
   rv = g_api->C_InitPIN(sess, (CK_UTF8CHAR_PTR) "race-done!", 10);
   CHECKC(rv == CKR_OK, "race: SO recovery resets the PIN");
@@ -747,7 +836,7 @@ static void phase_relabel(void) {
 
   /* Relabel slot 1 through InitToken (sessions closed). */
   make_label32("renamed-ops", label);
-  rv = g_api->C_InitToken(1, (CK_UTF8CHAR_PTR) "so-renamed", 10, label);
+  rv = g_api->C_InitToken(1, (CK_UTF8CHAR_PTR) "6789", 4, label);
   CHECKC(rv == CKR_OK, "relabel: InitToken with new label");
   rv = token_info(1, &info);
   CHECKC(rv == CKR_OK && label_is(&info, "renamed-ops"), "relabel: new label reports");
@@ -757,8 +846,8 @@ static void phase_relabel(void) {
     rv = open_rw(1, &sess);
     CHECKC(rv == CKR_OK && sess != 0, "relabel: session opens");
     if (rv != CKR_OK) return;
-    rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "so-renamed", 10);
-    CHECKC(rv == CKR_OK, "relabel: renamed SO PIN serves");
+    rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "6789", 4);
+    CHECKC(rv == CKR_OK, "relabel: SO PIN serves");
     rv = g_api->C_InitPIN(sess, (CK_UTF8CHAR_PTR) "renamed-u!", 10);
     CHECKC(rv == CKR_OK, "relabel: user PIN set");
     rv = g_api->C_Logout(sess);
@@ -793,6 +882,7 @@ static void phase_relabel(void) {
 }
 
 static void run_scenario(void) {
+  phase_reinit_guard();
   phase_init_token();
   phase_pin_lifecycle();
   phase_ro_guards();

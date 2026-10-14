@@ -123,9 +123,12 @@ static CK_RV derive_one(CK_SESSION_HANDLE s, CK_MECHANISM *m,
   return CKR_OK;
 }
 
-static void check_advertised(CK_MECHANISM_TYPE mech, const char *name) {
+static void check_advertised(CK_SLOT_ID slot, CK_MECHANISM_TYPE mech,
+                             const char *name) {
   CK_MECHANISM_INFO mi;
-  CK_RV rv = f->C_GetMechanismInfo(0, mech, &mi);
+  /* Slots are enumerated: the proxy maps backend slots to virtual
+   * IDs starting at 1, so a literal 0 is unmapped there. */
+  CK_RV rv = f->C_GetMechanismInfo(slot, mech, &mi);
   CHECK(rv == CKR_OK, "%s mechanism info ok", name);
   CHECK(rv == CKR_OK && (mi.flags & CKF_DERIVE) != 0,
         "%s advertises CKF_DERIVE (flags=0x%lx)", name,
@@ -210,7 +213,7 @@ int main(int argc, char **argv) {
     CK_BYTE got[8], ct[16];
     CK_ULONG gotLen = 0, ctLen = sizeof(ct);
     char hx[17];
-    check_advertised(CKM_DES_CBC_ENCRYPT_DATA, "CKM_DES_CBC_ENCRYPT_DATA");
+    check_advertised(slots[0], CKM_DES_CBC_ENCRYPT_DATA, "CKM_DES_CBC_ENCRYPT_DATA");
     memcpy(p.iv, iv, sizeof(iv));
     p.pData = data;
     p.length = sizeof(data);
@@ -255,7 +258,7 @@ int main(int argc, char **argv) {
     CK_BYTE got[8], ct[16];
     CK_ULONG gotLen = 0, ctLen = sizeof(ct);
     char hx[17];
-    check_advertised(CKM_DES_ECB_ENCRYPT_DATA, "CKM_DES_ECB_ENCRYPT_DATA");
+    check_advertised(slots[0], CKM_DES_ECB_ENCRYPT_DATA, "CKM_DES_ECB_ENCRYPT_DATA");
     p.pData = data;
     p.ulLen = sizeof(data);
     m.mechanism = CKM_DES_ECB_ENCRYPT_DATA;
@@ -288,7 +291,7 @@ int main(int argc, char **argv) {
     CK_BYTE got[16], ct[32];
     CK_ULONG gotLen = 0, ctLen = sizeof(ct);
     char hx[33];
-    check_advertised(CKM_SEED_CBC_ENCRYPT_DATA, "CKM_SEED_CBC_ENCRYPT_DATA");
+    check_advertised(slots[0], CKM_SEED_CBC_ENCRYPT_DATA, "CKM_SEED_CBC_ENCRYPT_DATA");
     memcpy(p.iv, iv, sizeof(iv));
     p.pData = data;
     p.length = sizeof(data);
@@ -318,7 +321,7 @@ int main(int argc, char **argv) {
     CK_BYTE got[16], ct[32];
     CK_ULONG gotLen = 0, ctLen = sizeof(ct);
     char hx[33];
-    check_advertised(CKM_SEED_ECB_ENCRYPT_DATA, "CKM_SEED_ECB_ENCRYPT_DATA");
+    check_advertised(slots[0], CKM_SEED_ECB_ENCRYPT_DATA, "CKM_SEED_ECB_ENCRYPT_DATA");
     p.pData = data;
     p.ulLen = sizeof(data);
     m.mechanism = CKM_SEED_ECB_ENCRYPT_DATA;
@@ -349,7 +352,7 @@ int main(int argc, char **argv) {
     CK_BYTE got[20], got2[20];
     CK_ULONG gotLen = 0, got2Len = 0;
     char hx[41];
-    check_advertised(CKM_PKCS5_PBKD2, "CKM_PKCS5_PBKD2");
+    check_advertised(slots[0], CKM_PKCS5_PBKD2, "CKM_PKCS5_PBKD2");
     p.saltSource = CKZ_SALT_SPECIFIED;
     p.pSaltSourceData = salt;
     p.ulSaltSourceDataLen = sizeof(salt);
