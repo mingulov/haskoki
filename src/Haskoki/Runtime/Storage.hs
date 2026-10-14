@@ -39,6 +39,10 @@ module Haskoki.Runtime.Storage
     -- * Deltas and results
   , StoreDelta (..)
   , emptyDelta
+  , StoreDeltaClass (..)
+  , deltaClasses
+  , scrubTokenAuth
+  , scrubDeltaAuth
   , CommitResult (..)
   , StoreError (..)
     -- * Commit protocol
@@ -124,8 +128,8 @@ import qualified Data.Text.Encoding as TE
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model (Model (..), ObjectState (..))
 import Haskoki.Session
-  ( ActiveLogin (..)
-  , TokenAuth (..)
+  ( TokenAuth (..)
+  , clearTransientAuth
   , tokenAuthNew
   )
 import Haskoki.Types
@@ -166,7 +170,10 @@ defaultLimits = StoreLimits
 -- ---------------------------------------------------------------------------
 
 -- | One persisted token: stable identity, slot assignment,
--- generation, label, and credential/auth state.
+-- generation, label, and the DURABLE authentication half (retry
+-- counters and lock flags). The transient half (active login,
+-- principal, epoch) is scrubbed at the commit boundary and never
+-- encoded, so reopening never restores an authenticated session.
 data TokenRecord = TokenRecord
   { trId :: !TokenId
   , trSlot :: !SlotId
@@ -300,6 +307,54 @@ emptyDelta = StoreDelta
   , sdDropJobs = []
   , sdPutMeta = []
   }
+
+-- | The durable write classes of a delta: one per delta list.
+-- An auth-only change (a token put carrying moved retry/lock
+-- state) is 'DeltaTokensPut': a real write, never a bypass.
+data StoreDeltaClass
+  = DeltaTokensPut
+  | DeltaTokensDrop
+  | DeltaObjectsPut
+  | DeltaObjectsDrop
+  | DeltaJobsPut
+  | DeltaJobsDrop
+  | DeltaMetaPut
+  deriving (Eq, Show, Enum, Bounded)
+
+-- | Classify a delta by its nonempty lists, in field order. The
+-- empty delta classifies to @[]@. The match is on the record
+-- constructor itself (not field selectors), so a new delta list
+-- is a compile error here until it gets its own explicit arm;
+-- and the classification test pins the full delta against
+-- @[minBound .. maxBound]@, so a new class without an arm fails
+-- loudly. No catch-all stands between a new durable write and
+-- its classification.
+deltaClasses :: StoreDelta -> [StoreDeltaClass]
+deltaClasses (StoreDelta putToks dropToks putObjs dropObjs putJobs dropJobs putMeta) = concat
+  [ [DeltaTokensPut | not (null putToks)]
+  , [DeltaTokensDrop | not (null dropToks)]
+  , [DeltaObjectsPut | not (null putObjs)]
+  , [DeltaObjectsDrop | not (null dropObjs)]
+  , [DeltaJobsPut | not (null putJobs)]
+  , [DeltaJobsDrop | not (null dropJobs)]
+  , [DeltaMetaPut | not (null putMeta)]
+  ]
+
+-- | Clear the transient authentication half of a token record
+-- ('clearTransientAuth'): the active application login, the
+-- named-user principal, and the session epoch never reach the
+-- store. Retry counters and lock flags pass through: they are
+-- the durable authentication state.
+scrubTokenAuth :: TokenRecord -> TokenRecord
+scrubTokenAuth t = t { trAuth = clearTransientAuth (trAuth t) }
+
+-- | Scrub every token put of a delta. Backends apply this at the
+-- commit boundary (commits and resets alike), so whatever auth a
+-- caller hands over, loads and ambiguous-commit reconciliation
+-- observe the durable half only, and reopening never restores an
+-- authenticated application session.
+scrubDeltaAuth :: StoreDelta -> StoreDelta
+scrubDeltaAuth d = d { sdPutTokens = map scrubTokenAuth (sdPutTokens d) }
 
 -- | Commit outcome classification (design 08, section 5).
 --
@@ -449,6 +504,9 @@ data Reconcile
 -- | Compare a delta against reloaded state with full-record
 -- equality (pure; shared by the backends' ambiguous-commit
 -- verification and the caller's post-'CommitUnknown' decision).
+-- Token puts compare scrubbed ('scrubDeltaAuth' at the commit
+-- boundary, and the projection scrubs before issuing), so an
+-- auth-only write reconciles present exactly when it landed.
 reconcileReload :: StoreDelta -> [(TokenRecord, [ObjectRecord])] -> Reconcile
 reconcileReload delta loaded
   | all tokenPutPresent (sdPutTokens delta)
@@ -1608,22 +1666,19 @@ encodeTokenRecord t = renderJson $ JObject
   , ("auth", encodeAuth (trAuth t))
   ]
 
--- | Canonical auth-state sub-document.
+-- | Canonical auth-state sub-document: the DURABLE half only
+-- (retry counters and lock flags). The transient half (active
+-- login, principal, epoch) is never encoded — even a caller that
+-- hands over a logged-in 'TokenAuth' persists counters alone
+-- (and the commit boundary scrubs first, so the bytes cannot
+-- carry a session either way).
 encodeAuth :: TokenAuth -> Json
 encodeAuth a = JObject
-  [ ("login", JString (loginName (taLogin a)))
-  , ("principal", maybe JNull JString (taPrincipal a))
-  , ("auth_epoch", JString (encodeHex16 (taAuthEpoch a)))
-  , ("user_attempts", JString (encodeHex16 (taUserAttempts a)))
+  [ ("user_attempts", JString (encodeHex16 (taUserAttempts a)))
   , ("so_attempts", JString (encodeHex16 (taSoAttempts a)))
   , ("user_locked", JBool (taUserLocked a))
   , ("so_locked", JBool (taSoLocked a))
   ]
-  where
-    loginName :: Maybe ActiveLogin -> String
-    loginName Nothing = "none"
-    loginName (Just AuthUser) = "user"
-    loginName (Just AuthSO) = "so"
 
 -- | Decode a token document; unknown format versions, unknown
 -- fields shapes, and out-of-range quantities all fail.
@@ -1646,28 +1701,24 @@ decodeTokenRecord s = do
       , trAuth = auth
       }
 
--- | Decode an auth-state sub-document.
+-- | Decode an auth-state sub-document. Only the durable keys
+-- are read; the transient half always decodes cleared (public,
+-- no principal, epoch zero), so no stored bytes can restore an
+-- authenticated application session. Legacy @login@\/@principal@\/
+-- @auth_epoch@ keys, when present from an older writer, are
+-- ignored rather than refused: they were never load-bearing for
+-- retry enforcement, and refusing them would strand older files
+-- instead of seating them public with their counters intact.
 decodeAuth :: [(String, Json)] -> Maybe TokenAuth
 decodeAuth kvs = do
-  loginName <- lookupField "login" kvs >>= asString
-  login <- case loginName of
-    "none" -> Just Nothing
-    "user" -> Just (Just AuthUser)
-    "so" -> Just (Just AuthSO)
-    _ -> Nothing
-  principal <- case lookupField "principal" kvs of
-    Just JNull -> Just Nothing
-    Just (JString p) -> Just (Just p)
-    _ -> Nothing
-  epoch <- lookupField "auth_epoch" kvs >>= asString >>= decodeHex16
   uatt <- lookupField "user_attempts" kvs >>= asString >>= decodeHex16
   satt <- lookupField "so_attempts" kvs >>= asString >>= decodeHex16
   ulock <- lookupField "user_locked" kvs >>= asBool
   slock <- lookupField "so_locked" kvs >>= asBool
   pure TokenAuth
-    { taLogin = login
-    , taPrincipal = principal
-    , taAuthEpoch = epoch
+    { taLogin = Nothing
+    , taPrincipal = Nothing
+    , taAuthEpoch = 0
     , taUserAttempts = uatt
     , taSoAttempts = satt
     , taUserLocked = ulock

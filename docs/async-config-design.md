@@ -36,6 +36,42 @@ are rejected. `haskoki-ctl` provides `config check`, `capabilities`,
 `scenario run`, `store inspect`, and `store reset`. Native async does not
 consult the scenario runner's `async.enabled` or `async.pending_polls`.
 
+## Construction and linearization
+
+Held call work is admitted in one order, and every refusal precedes
+every mutation. Async submit validates holdability first (bytes-like
+holdings only), then call-work coherence — the submitting session,
+the pinned step's session, function, and slot, and the planned effect
+must agree as one checked triple (see
+[`CallWork`](../core/Haskoki/CallWork.hs)) — then session enablement,
+attached-capacity bounds, and live capacity, all in one transaction
+with the id allocation. Any refusal consumes no id and leaves the
+table unchanged; the [submit tests](../tests/model/AsyncSpec.hs) pin
+the verdicts and the untouched table. The FFI submit leg and the
+detach rejoin replay apply the same triple check to their re-planned
+pairs. Key work is admitted unconditionally at submit and refused at
+the drive instead, before the runner fires.
+
+Linearization, per job: submit allocates the id; the last poll claims
+the job and runs the effect outside STM, holding the owned answer;
+completion re-validates the reservation against a fresh snapshot,
+publishes the commit, drains releases, and delivers the completion
+record exactly once. Stale reservations fail the drive before any
+effect runs, and fail the completion without publishing.
+
+Key-mutation contract: an effect runner observes key material as of
+effect start — the snapshot its resolver closes over, or the owned
+bytes the job already holds — so a key destroyed or revoked mid-flight
+does not fail the in-flight effect. Later calls observe the mutation:
+fresh plans resolve handles and usage flags against the current model
+and refuse typed. The
+[two-session blocked-runner cases](../tests/model/MultiSessionSpec.hs)
+prove both halves across destruction, permitted-use change, unrelated
+label change, and different-key change. Narrow reservations are what
+make the in-flight half hold: plans record only the session revision
+they depend on, so an object mutation never stales a session
+reservation.
+
 ## Possible extensions
 
 The settings and commands below are proposals, not accepted configuration

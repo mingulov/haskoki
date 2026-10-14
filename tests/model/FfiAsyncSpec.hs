@@ -36,20 +36,33 @@ crypto probes are race-free.
 module FfiAsyncSpec (spec) where
 
 import Control.Concurrent
-  ( forkIO
+  ( ThreadId
+  , forkIO
   , killThread
   , newEmptyMVar
   , putMVar
   , takeMVar
+  , threadDelay
+  , tryTakeMVar
   )
-import Control.Exception (SomeException, try)
+import Control.Exception (AsyncException (..), SomeException, fromException, try)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.Set as Set
 import Data.Word (Word64)
-import Foreign.Ptr (nullPtr)
-import Foreign.StablePtr (StablePtr, castStablePtrToPtr)
+import Foreign.C.Types (CULong (..))
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Ptr (castPtr, nullPtr)
+import Foreign.StablePtr
+  ( StablePtr
+  , castPtrToStablePtr
+  , castStablePtrToPtr
+  , freeStablePtr
+  , newStablePtr
+  )
+import Foreign.Storable (peek, poke)
+import GHC.Conc (ThreadStatus (..), threadStatus)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -58,10 +71,17 @@ import qualified Haskoki.Engine.Backend as B
 import Haskoki.Engine.OpenSSL4 (OpenSSL4)
 import Haskoki.FFI.Async
   ( AsyncCtx (..)
+  , JobHandle
   , allocJobHandle
   , asyncCloseCtx
   , asyncLiveHandles
+  , haskokiAsyncCancel
+  , haskokiAsyncClose
+  , haskokiAsyncJoin
+  , haskokiAsyncStart
+  , joinTransfer
   , resolveJobHandle
+  , submitTransfer
   )
 import Haskoki.FFI.Standard (StdInstance, haskokiStdClose, openStdInstance)
 import Haskoki.Model (Model (..))
@@ -84,17 +104,22 @@ import Haskoki.Request
 import Haskoki.Rules (defaultRules)
 import Haskoki.Runtime.Async
   ( AsyncWork (..)
+  , CancelOutcome (..)
   , CompleteOutcome (..)
   , Completion (..)
   , Delivery (..)
   , JobFunction (..)
   , JobRequest (..)
   , PollOutcome (..)
+  , TerminalState (..)
   , asyncTableId
   , asyncTableSalt
+  , cancelJob
   , enableAsyncSession
+  , inspectTableGate
   , pollJob
   , startJob
+  , tableStats
   , tryNewAsyncTable
   )
 import Haskoki.Runtime.Config
@@ -118,6 +143,7 @@ import Haskoki.Runtime.Detached
   , inspectReverse
   , joinJob
   , openDetached
+  , setJoinTestHook
   )
 import Haskoki.Runtime.Lifecycle
   ( defaultInitArgs
@@ -159,6 +185,11 @@ spec = testGroup "FFI acquisition"
   , testCase "std failed open does not poison the next" caseStdNonPoison
   , testCase "std async kill aborts the open (none swallowed)" caseStdAsyncSlow
   , testCase "close-one keeps the other context live" caseCloseOneKeepsOther
+  , testCase "close waits for an entered caller" caseCloseWaitsForEntered
+  , testCase "admitted calls run; close retires the gate" caseAdmittedCallsRun
+  , testCase "kill in the submit transfer cancels the fresh job" caseSubmitKillCancelsFresh
+  , testCase "kill in the join handoff cancels the fresh join" caseHandoffKillCancelsJoin
+  , testCase "join handoff publishes a live handle" caseHandoffPublishes
   ]
 
 isNull :: StablePtr a -> Bool
@@ -488,4 +519,339 @@ caseCloseOneKeepsOther = do
   assertEqual "B drained" 0 nLiveB2
   av2 <- inspectAttachment dc pid
   assertEqual "B delivered terminal" (Just (AvTerminal JobDelivered)) av2
+
+-- ---------------------------------------------------------------------------
+-- Close admission (borrowers drain before teardown)
+-- ---------------------------------------------------------------------------
+
+rvOK, rvPending, rvGeneral :: CULong
+rvOK = CULong 0x0
+rvPending = CULong 0x204
+rvGeneral = CULong 0x05
+
+-- | The null job token: every out-pointer starts here, and every
+-- refusal leaves it here.
+nullJob :: StablePtr JobHandle
+nullJob = castPtrToStablePtr nullPtr
+
+-- | Wait until a thread parks (a status barrier, never timing):
+-- the closer provably blocks in its gate wait before the release.
+awaitBlocked :: ThreadId -> IO ()
+awaitBlocked tid = go (200 :: Int)
+  where
+    go n
+      | n <= 0 = assertFailure "closer never blocked in its gate wait"
+      | otherwise = do
+          st <- threadStatus tid
+          case st of
+            ThreadBlocked _ -> pure ()
+            _ -> threadDelay 1000 >> go (n - 1)
+
+-- | Close waits for an entered caller: a join admitted through
+-- the export parks in the join-transfer window with its borrower
+-- held, a racing close provably blocks on the gate, and only
+-- after the release does the join complete and the close drain
+-- its just-published handle. Afterwards the gate stands retired
+-- with no borrowers, the committed join retired canceled, and
+-- the slot stays nulled across a second close. Pre-fix the
+-- closer never waited: it tore the context down while the
+-- joiner was still inside.
+caseCloseWaitsForEntered :: IO ()
+caseCloseWaitsForEntered = do
+  store <- mkFfiStore
+  dc <- mkFfiDetached store
+  ctx <- mkFfiGen dc
+  j0 <- startFfiDigest ctx "abc" 32 1
+  eDet <- detachJob dc (acTable ctx) j0 JobDigest
+  pid <- case eDet of
+    DetachOk p -> pure p
+    other -> assertFailure ("detach failed: " ++ show other)
+  entered <- newEmptyMVar
+  proceed <- newEmptyMVar
+  done <- newEmptyMVar
+  setJoinTestHook dc (putMVar entered () >> takeMVar proceed)
+  sp <- newStablePtr ctx
+  let sess = CULong (fromIntegral (unSessionId (acSession ctx)))
+  _ <- forkIO $ do
+    r <- try $ alloca $ \pHandleOut -> alloca $ \pNeedOut -> do
+      poke pHandleOut nullJob
+      haskokiAsyncJoin sp (CULong pid) 2 sess 32 pHandleOut pNeedOut
+    putMVar done (r :: Either SomeException CULong)
+  mEntered <- timeout 10000000 (takeMVar entered)
+  case mEntered of
+    Nothing -> assertFailure "joiner never entered the transfer window"
+    Just () -> pure ()
+  gateMid <- inspectTableGate (acTable ctx)
+  assertEqual "one borrower, not retired" (1, False) gateMid
+  alloca $ \pSlot -> do
+    poke pSlot sp
+    closedDone <- newEmptyMVar
+    closerTid <- forkIO $ do
+      r <- try (haskokiAsyncClose pSlot)
+      putMVar closedDone (r :: Either SomeException ())
+    awaitBlocked closerTid
+    preRel <- tryTakeMVar closedDone
+    case preRel of
+      Nothing -> pure ()
+      Just _ -> assertFailure "close finished before release (drain ran without the gate)"
+    putMVar proceed ()
+    mDone <- timeout 10000000 (takeMVar done)
+    jr <- case mDone of
+      Nothing -> assertFailure "joiner never reported after release"
+      Just x -> pure x
+    case jr of
+      Right rv -> assertEqual "join completed through the wait" rvPending rv
+      Left e -> assertFailure ("joiner failed: " ++ show e)
+    mClosed <- timeout 10000000 (takeMVar closedDone)
+    case mClosed of
+      Nothing -> assertFailure "closer never reported after release"
+      Just (Right ()) -> pure ()
+      Just (Left e) -> assertFailure ("closer failed: " ++ show e)
+    gateAfter <- inspectTableGate (acTable ctx)
+    assertEqual "retired, no borrowers" (0, True) gateAfter
+    nLive <- asyncLiveHandles ctx
+    assertEqual "close drained the published handle" 0 nLive
+    av <- inspectAttachment dc pid
+    assertEqual "committed join retired canceled" (Just (AvTerminal JobCanceled)) av
+    jobs <- loadFfiJobs store
+    case [r | r <- jobs, jrPersistentId r == pid] of
+      [rec] -> assertEqual "record canceled" JobCanceled (jrState rec)
+      other -> assertFailure ("expected one record, got " ++ show other)
+    after <- peek pSlot
+    assertBool "slot nulled" (castStablePtrToPtr after == nullPtr)
+    haskokiAsyncClose pSlot
+    after2 <- peek pSlot
+    assertBool "slot stays nulled" (castStablePtrToPtr after2 == nullPtr)
+
+-- | Admitted calls run normally through the gate, and close
+-- retires it: start admits and publishes, cancel retires, the
+-- value-level close claims and drains, and a later entry through
+-- the still-valid pointer is refused without allocating
+-- anything. The refused start proves the gate (not the slot
+-- nulling) refuses it: the pointer was never freed.
+caseAdmittedCallsRun :: IO ()
+caseAdmittedCallsRun = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  sp <- newStablePtr ctx
+  let sess = CULong (fromIntegral (unSessionId (acSession ctx)))
+      startOn pHandleOut = BS.useAsCString "abc" $ \p ->
+        haskokiAsyncStart sp sess 2 (castPtr p) 3 32 1 pHandleOut
+  gate0 <- inspectTableGate (acTable ctx)
+  assertEqual "gate fresh" (0, False) gate0
+  h <- alloca $ \pHandleOut -> do
+    poke pHandleOut nullJob
+    rv <- startOn pHandleOut
+    assertEqual "start pending" rvPending rv
+    hOut <- peek pHandleOut
+    assertBool "handle live" (castStablePtrToPtr hOut /= nullPtr)
+    pure hOut
+  m0 <- resolveJobHandle ctx h
+  assertEqual "handle resolves" (Just (JobId 0)) m0
+  gate1 <- inspectTableGate (acTable ctx)
+  assertEqual "borrower released" (0, False) gate1
+  rvCancel <- haskokiAsyncCancel sp h
+  assertEqual "cancel ok" rvOK rvCancel
+  m1 <- resolveJobHandle ctx h
+  assertEqual "handle retired" Nothing m1
+  (live1, term1, next1) <- tableStats (acTable ctx)
+  assertEqual "job canceled" (0, 1, 1) (live1, term1, next1)
+  asyncCloseCtx ctx
+  gate2 <- inspectTableGate (acTable ctx)
+  assertEqual "close claimed" (0, True) gate2
+  nLive <- asyncLiveHandles ctx
+  assertEqual "drained" 0 nLive
+  hAfter <- alloca $ \pHandleOut -> do
+    poke pHandleOut nullJob
+    rv <- startOn pHandleOut
+    assertEqual "post-close start refused" rvGeneral rv
+    peek pHandleOut
+  assertBool "no handle on refusal" (castStablePtrToPtr hAfter == nullPtr)
+  (live2, term2, next2) <- tableStats (acTable ctx)
+  assertEqual "refusal allocated nothing" (0, 1, 1) (live2, term2, next2)
+  freeStablePtr sp
+
+-- ---------------------------------------------------------------------------
+-- Protected transfers (no stranded handoff)
+-- ---------------------------------------------------------------------------
+
+-- | Plan a digest job on a hand-built context without starting
+-- it, for driving the submit transfer directly.
+planFfiDigest :: AsyncCtx -> ByteString -> Word64 -> Int -> IO JobRequest
+planFfiDigest ctx input cap ticks = do
+  m <- snapshotModel (acEnv ctx)
+  let req = Request Pkcs11_3_2 F_Digest (Just (acSession ctx)) Nothing input
+        [RegionBytes "async" (IntentBuffer maxOutputBytes)]
+  case planCall defaultRules m req of
+    Execute res eff -> pure JobRequest
+      { jrSession = acSession ctx
+      , jrFunction = JobDigest
+      , jrWork = WorkCall res eff
+      , jrTicks = ticks
+      , jrCapacity = cap
+      }
+    other -> assertFailure ("digest did not plan execute: " ++ show other)
+
+-- | A kill landing in the submit transfer window cancels the
+-- fresh unregistered job and nulls the out-pointer: the parked
+-- submitter dies 'ThreadKilled', no live orphan strands, and
+-- close drains clean. Pre-fix the fresh job stayed live with no
+-- handle, and the handle-only drain missed it.
+caseSubmitKillCancelsFresh :: IO ()
+caseSubmitKillCancelsFresh = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  jobReq <- planFfiDigest ctx "abc" 32 1
+  entered <- newEmptyMVar
+  proceed <- newEmptyMVar
+  done <- newEmptyMVar
+  alloca $ \pHandleOut -> do
+    poke pHandleOut nullJob
+    submitterTid <- forkIO $ do
+      r <- try (submitTransfer
+        (putMVar entered () >> takeMVar proceed) ctx jobReq pHandleOut)
+      putMVar done (r :: Either SomeException CULong)
+    mEntered <- timeout 10000000 (takeMVar entered)
+    case mEntered of
+      Nothing -> assertFailure "submitter never entered the transfer window"
+      Just () -> pure ()
+    (liveMid, _termMid, nextMid) <- tableStats (acTable ctx)
+    assertEqual "fresh job started" 1 liveMid
+    let freshJid = JobId (nextMid - 1)
+    killThread submitterTid
+    mDone <- timeout 10000000 (takeMVar done)
+    r <- case mDone of
+      Nothing -> assertFailure "submitter never reported after kill"
+      Just x -> pure x
+    case r of
+      Left e -> case fromException e of
+        Just ThreadKilled -> pure ()
+        Nothing -> assertFailure ("expected ThreadKilled, got " ++ show e)
+      Right rv -> assertFailure ("kill swallowed, transfer returned " ++ show rv)
+    hAfter <- peek pHandleOut
+    assertBool "out-pointer nulled" (castStablePtrToPtr hAfter == nullPtr)
+    nLive <- asyncLiveHandles ctx
+    assertEqual "no handle admitted" 0 nLive
+    (liveAfter, termAfter, _nextAfter) <- tableStats (acTable ctx)
+    assertEqual "no live orphan" 0 liveAfter
+    assertEqual "one canceled tombstone" 1 termAfter
+    cout <- cancelJob (acTable ctx) freshJid
+    case cout of
+      CancelAlready TermCanceled -> pure ()
+      other -> assertFailure ("fresh job not canceled, got " ++ show other)
+  asyncCloseCtx ctx
+  nLive2 <- asyncLiveHandles ctx
+  assertEqual "close drains clean" 0 nLive2
+
+-- | A kill landing in the join handoff window cancels the fresh
+-- join through the detach wrapper: the committed attachment
+-- resolves canceled (durably), the out-pointer nulls, and no
+-- live orphan strands. The persistent id is consumed by the
+-- cancel — the commit is the point of no return; a kill before
+-- it rolls the claim back instead.
+caseHandoffKillCancelsJoin :: IO ()
+caseHandoffKillCancelsJoin = do
+  store <- mkFfiStore
+  dc <- mkFfiDetached store
+  ctx <- mkFfiGen dc
+  j0 <- startFfiDigest ctx "abc" 32 1
+  eDet <- detachJob dc (acTable ctx) j0 JobDigest
+  pid <- case eDet of
+    DetachOk p -> pure p
+    other -> assertFailure ("detach failed: " ++ show other)
+  eJoin <- joinJob dc (acEnv ctx) (acTable ctx) JoinRequest
+    { jqPid = pid
+    , jqFunction = JobDigest
+    , jqSession = acSession ctx
+    , jqCapacity = 32
+    }
+  jid <- case eJoin of
+    JoinOk j -> pure j
+    other -> assertFailure ("join failed: " ++ show other)
+  entered <- newEmptyMVar
+  proceed <- newEmptyMVar
+  done <- newEmptyMVar
+  alloca $ \pHandleOut -> do
+    poke pHandleOut nullJob
+    publisherTid <- forkIO $ do
+      r <- try (joinTransfer
+        (putMVar entered () >> takeMVar proceed) ctx jid pHandleOut)
+      putMVar done (r :: Either SomeException CULong)
+    mEntered <- timeout 10000000 (takeMVar entered)
+    case mEntered of
+      Nothing -> assertFailure "publisher never entered the handoff window"
+      Just () -> pure ()
+    avMid <- inspectAttachment dc pid
+    assertEqual "join committed, unregistered" (Just (AvActive jid)) avMid
+    nLiveMid <- asyncLiveHandles ctx
+    assertEqual "no handle yet" 0 nLiveMid
+    killThread publisherTid
+    mDone <- timeout 10000000 (takeMVar done)
+    r <- case mDone of
+      Nothing -> assertFailure "publisher never reported after kill"
+      Just x -> pure x
+    case r of
+      Left e -> case fromException e of
+        Just ThreadKilled -> pure ()
+        Nothing -> assertFailure ("expected ThreadKilled, got " ++ show e)
+      Right rv -> assertFailure ("kill swallowed, handoff returned " ++ show rv)
+    hAfter <- peek pHandleOut
+    assertBool "out-pointer nulled" (castStablePtrToPtr hAfter == nullPtr)
+    cout <- cancelJob (acTable ctx) jid
+    case cout of
+      CancelAlready TermCanceled -> pure ()
+      other -> assertFailure ("fresh join not canceled, got " ++ show other)
+    avAfter <- inspectAttachment dc pid
+    assertEqual "attachment canceled" (Just (AvTerminal JobCanceled)) avAfter
+    jobs <- loadFfiJobs store
+    case [rec | rec <- jobs, jrPersistentId rec == pid] of
+      [rec] -> assertEqual "record canceled" JobCanceled (jrState rec)
+      other -> assertFailure ("expected one record, got " ++ show other)
+  (liveAfter, _termAfter, _nextAfter) <- tableStats (acTable ctx)
+  assertEqual "no live orphan" 0 liveAfter
+  asyncCloseCtx ctx
+  nLive2 <- asyncLiveHandles ctx
+  assertEqual "close drains clean" 0 nLive2
+
+-- | The join handoff without interruption publishes a live
+-- handle: pending with the out-pointer set, resolving to the
+-- fresh join, and the attachment stays active until close
+-- drains it.
+caseHandoffPublishes :: IO ()
+caseHandoffPublishes = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  j0 <- startFfiDigest ctx "abc" 32 1
+  eDet <- detachJob dc (acTable ctx) j0 JobDigest
+  pid <- case eDet of
+    DetachOk p -> pure p
+    other -> assertFailure ("detach failed: " ++ show other)
+  eJoin <- joinJob dc (acEnv ctx) (acTable ctx) JoinRequest
+    { jqPid = pid
+    , jqFunction = JobDigest
+    , jqSession = acSession ctx
+    , jqCapacity = 32
+    }
+  jid <- case eJoin of
+    JoinOk j -> pure j
+    other -> assertFailure ("join failed: " ++ show other)
+  h <- alloca $ \pHandleOut -> do
+    poke pHandleOut nullJob
+    rv <- joinTransfer (pure ()) ctx jid pHandleOut
+    assertEqual "handoff pending" rvPending rv
+    hOut <- peek pHandleOut
+    assertBool "handle live" (castStablePtrToPtr hOut /= nullPtr)
+    pure hOut
+  m0 <- resolveJobHandle ctx h
+  assertEqual "handle resolves" (Just jid) m0
+  av <- inspectAttachment dc pid
+  assertEqual "attachment active" (Just (AvActive jid)) av
+  nLive <- asyncLiveHandles ctx
+  assertEqual "one live handle" 1 nLive
+  asyncCloseCtx ctx
+  nLive2 <- asyncLiveHandles ctx
+  assertEqual "close drains the handle" 0 nLive2
   storeClose store

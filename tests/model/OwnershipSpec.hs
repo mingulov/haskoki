@@ -80,14 +80,16 @@ import Control.Exception
   , uninterruptibleMask_
   )
 import Control.Monad (replicateM, replicateM_)
-import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Word (Word32, Word64)
-import Foreign.C.Types (CInt (..), CLong (..))
+import Foreign.C.Types (CInt (..), CLong (..), CULong (..))
+import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr, wordPtrToPtr)
-import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr)
+import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr)
+import Foreign.Storable (peek)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -119,6 +121,17 @@ import Haskoki.FFI.Async
   , encodeJobHandle
   , freeJobHandle
   , resolveJobHandle
+  )
+import Haskoki.FFI.Standard
+  ( StdInstance (..)
+  , haskokiStdClose
+  , haskokiStdCloseSession
+  , haskokiStdOpenSessionWithAsync
+  , openStdInstance
+  , openStdInstanceWithSlots
+  , setStdTokenPresence
+  , stdAcquisition
+  , stdRvOf
   )
 import Haskoki.Model (Model (..), SessionState (..), lookupSession)
 import Haskoki.Operation.KeyManagement
@@ -175,7 +188,9 @@ import Haskoki.Runtime.Async
   , commitDetachRevoke
   , completeJob
   , enableAsyncSession
+  , enabledSessionCount
   , inspectJob
+  , isAsyncSession
   , newAsyncTable
   , pollJob
   , reapEligibility
@@ -201,6 +216,7 @@ import Haskoki.Runtime.Detached
   , retireLiveTable
   , retireLiveTableFor
   )
+import Haskoki.Runtime.Config (Config (..), ControlCfg (..), defaultConfig)
 import Haskoki.Runtime.Lifecycle
   ( Env
   , defaultInitArgs
@@ -209,6 +225,13 @@ import Haskoki.Runtime.Lifecycle
   , publish
   , seatToken
   , snapshotModel
+  )
+import Haskoki.Runtime.SlotEvents
+  ( NotificationPoint (..)
+  , PresenceChange (..)
+  , PresenceError (..)
+  , SlotDefinition (..)
+  , newSlotEventsWith
   )
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
@@ -263,6 +286,8 @@ spec = testGroup "Ownership"
         (guarded "snapshot-lookup" caseSnapshotLookup)
     , testCase "kill during blocked sink stays recoverable"
         (guarded "kill-blocked-sink" caseKillDuringBlockedSink)
+    , testCase "cancel while waiting for the lease dies killed; lease intact"
+        (guarded "cancel-waiting-lease" caseCancelWhileWaitingForLease)
     ]
   , testGroup "lifetime gate"
     [ testCase "one-shot vs close stays typed"
@@ -373,6 +398,10 @@ spec = testGroup "Ownership"
         (guarded "claim-scoped-retire" caseScopedRetireExactlyOnce)
     , testCase "rival refusal preserves the owner's cancel"
         (guarded "claim-rival-refusal" caseRivalRefusalPreservesOwner)
+    , testCase "session churn and removal retire async enablement"
+        (guarded "retire-churn-removal" caseSessionRetirementAccounting)
+    , testCase "failed close and removal leave enablement intact"
+        (guarded "retire-rollback" caseRetirementRollback)
     ]
   ]
 
@@ -2377,3 +2406,200 @@ caseRivalRefusalPreservesOwner = do
     [rec] -> assertEqual "record canceled" JobCanceled (jrState rec)
     other -> assertFailure ("expected one record, got " ++ show other)
   storeClose store
+
+-- ---------------------------------------------------------------------------
+-- Session retirement accounting (enablement follows the model)
+-- ---------------------------------------------------------------------------
+
+-- | Open one Standard session on slot 0, returning its handle.
+openStdSession :: StablePtr StdInstance -> Bool -> IO CULong
+openStdSession ctx async = alloca $ \out -> do
+  haskokiStdOpenSessionWithAsync ctx 0 0 (if async then 1 else 0) out
+    >>= assertEqual "open session" (stdRvOf CKR_OK)
+  peek out
+
+-- | A C session handle as a model session id.
+sidOf :: CULong -> SessionId
+sidOf (CULong h) = SessionId (fromIntegral h)
+
+-- | Live model sessions, in id order.
+liveSessions :: StdInstance -> IO [SessionId]
+liveSessions inst = Map.keys . mSessions <$> snapshotModel (siEnv inst)
+
+-- | 'defaultConfig' with removable slots: presence tests need
+-- control test commands enabled (the default seats fixed slots,
+-- whose removal refuses 'PresenceFixedSlot').
+removableConfig :: Config
+removableConfig = defaultConfig
+  { cfgControl = (cfgControl defaultConfig) { ccTestEnabled = True } }
+
+-- | Open\/close churn plus token removal keep the enabled set equal
+-- to the live async sessions: each close disables exactly the
+-- retired session, and removal disables every session on the slot.
+caseSessionRetirementAccounting :: IO ()
+caseSessionRetirementAccounting =
+  bracket (openStdInstance removableConfig) haskokiStdClose $ \ctx -> do
+    assertBool "instance opened" (castStablePtrToPtr ctx /= nullPtr)
+    inst <- deRefStablePtr ctx
+    let table = siAsyncTable inst
+    h1 <- openStdSession ctx True
+    h2 <- openStdSession ctx False
+    h3 <- openStdSession ctx True
+    let s1 = sidOf h1
+        s2 = sidOf h2
+        s3 = sidOf h3
+    liveSessions inst >>= assertEqual "three live sessions" [s1, s2, s3]
+    enabledSessionCount table >>= assertEqual "two enabled" 2
+    isAsyncSession table s1 >>= assertEqual "first async" True
+    isAsyncSession table s2 >>= assertEqual "second sync" False
+    isAsyncSession table s3 >>= assertEqual "third async" True
+    -- Churn: closing the first async session disables exactly it.
+    haskokiStdCloseSession ctx h1 >>= assertEqual "close ok" (stdRvOf CKR_OK)
+    liveSessions inst >>= assertEqual "close retires one" [s2, s3]
+    enabledSessionCount table >>= assertEqual "close disables one" 1
+    isAsyncSession table s1 >>= assertEqual "retired reads sync" False
+    isAsyncSession table s3 >>= assertEqual "survivor stays async" True
+    -- Churn more: open and close another async session.
+    h4 <- openStdSession ctx True
+    enabledSessionCount table >>= assertEqual "reopen counts" 2
+    haskokiStdCloseSession ctx h4 >>= assertEqual "close ok" (stdRvOf CKR_OK)
+    enabledSessionCount table >>= assertEqual "second close disables" 1
+    -- Token removal retires every remaining session and disables all.
+    setStdTokenPresence inst (SlotId 0) False >>= assertEqual "removal retires"
+      (Right (PresenceChanged 1, 0))
+    liveSessions inst >>= assertEqual "no live sessions" []
+    enabledSessionCount table >>= assertEqual "removal disables all" 0
+    isAsyncSession table s3 >>= assertEqual "removed reads sync" False
+
+-- | Failed closes and failed removals retire nothing: unknown
+-- handles refuse, unknown slots refuse, a repeated removal is a
+-- no-op, and a removal whose publish faults rolls back — the live
+-- sessions and the enabled set are unchanged on every path. The
+-- late fault is forced deterministically: a presence hook closes
+-- one session at the model level between removal preparation and
+-- publication, so the prepared delta no longer applies.
+caseRetirementRollback :: IO ()
+caseRetirementRollback = do
+  bracket (openStdInstance removableConfig) haskokiStdClose $ \ctx -> do
+    assertBool "instance opened" (castStablePtrToPtr ctx /= nullPtr)
+    inst <- deRefStablePtr ctx
+    let table = siAsyncTable inst
+    h1 <- openStdSession ctx True
+    h2 <- openStdSession ctx False
+    let s1 = sidOf h1
+        s2 = sidOf h2
+    -- Failed close: an unknown handle refuses with nothing retired.
+    haskokiStdCloseSession ctx 999999 >>= assertEqual "unknown close refuses"
+      (stdRvOf CKR_SESSION_HANDLE_INVALID)
+    liveSessions inst >>= assertEqual "failed close retires nothing" [s1, s2]
+    enabledSessionCount table >>= assertEqual "failed close disables nothing" 1
+    isAsyncSession table s1 >>= assertEqual "live session stays async" True
+    -- Failed removal: an unknown slot refuses before any publish.
+    setStdTokenPresence inst (SlotId 99) False >>= assertEqual "unknown slot refuses"
+      (Left PresenceUnknownSlot)
+    liveSessions inst >>= assertEqual "failed removal retires nothing" [s1, s2]
+    enabledSessionCount table >>= assertEqual "failed removal disables nothing" 1
+    -- Real removal retires everything; repeating it publishes
+    -- nothing and disables nothing further.
+    setStdTokenPresence inst (SlotId 0) False >>= assertEqual "removal retires"
+      (Right (PresenceChanged 1, 0))
+    liveSessions inst >>= assertEqual "removal retires all" []
+    enabledSessionCount table >>= assertEqual "removal disables all" 0
+    setStdTokenPresence inst (SlotId 0) False >>= assertEqual "repeat removal no-ops"
+      (Right (PresenceUnchanged 1, 0))
+    liveSessions inst >>= assertEqual "repeat retires nothing" []
+    enabledSessionCount table >>= assertEqual "repeat disables nothing" 0
+  -- Forced late fault: the hook retires one session behind the
+  -- removal's back after preparation, so publication faults and
+  -- the whole removal rolls back with enablement intact.
+  envRef <- newIORef Nothing
+  let hook RemovalPrepublication = do
+        mEnv <- readIORef envRef
+        case mEnv of
+          Nothing -> pure ()
+          Just env -> do
+            m <- snapshotModel env
+            case Map.keys (mSessions m) of
+              sid : _ -> do
+                r <- publish env (StateDelta [DeltaCloseSession sid])
+                case r of
+                  Right () -> pure ()
+                  Left f -> assertFailure ("hook close faulted: " ++ show f)
+              [] -> pure ()
+      hook _ = pure ()
+  eSlots <- newSlotEventsWith hook 0 2 [SlotDefinition (SlotId 0) True]
+  slots <- case eSlots of
+    Right s -> pure s
+    Left err -> assertFailure ("slot events refused: " ++ show err)
+  bracket (openStdInstanceWithSlots stdAcquisition removableConfig slots)
+      haskokiStdClose $ \ctx -> do
+    assertBool "instance opened" (castStablePtrToPtr ctx /= nullPtr)
+    inst <- deRefStablePtr ctx
+    writeIORef envRef (Just (siEnv inst))
+    let table = siAsyncTable inst
+    h1 <- openStdSession ctx True
+    h2 <- openStdSession ctx True
+    let s1 = sidOf h1
+        s2 = sidOf h2
+    enabledSessionCount table >>= assertEqual "two enabled" 2
+    r <- setStdTokenPresence inst (SlotId 0) False
+    case r of
+      Left (PresenceModelFault _) -> pure ()
+      other -> assertFailure ("expected publish rollback, got " ++ show other)
+    liveSessions inst >>= assertEqual "rollback keeps the survivor" [s2]
+    enabledSessionCount table >>= assertEqual "rollback disables nothing" 2
+    isAsyncSession table s1 >>= assertEqual "hook-closed stays enabled" True
+    isAsyncSession table s2 >>= assertEqual "survivor stays enabled" True
+    -- The slot is still present: new sessions still open.
+    h3 <- openStdSession ctx False
+    liveSessions inst >>= assertEqual "slot still serves" [s2, sidOf h3]
+
+-- ---------------------------------------------------------------------------
+-- Lease waits (cancellation at the delivery lease)
+-- ---------------------------------------------------------------------------
+
+-- | A cancel issued while the drive holds the lease waits on it:
+-- killing the waiter aborts the wait with 'ThreadKilled' and the
+-- lease intact — the drive still publishes Ready and the job
+-- still completes exactly once.
+caseCancelWhileWaitingForLease :: IO ()
+caseCancelWhileWaitingForLease = do
+  (table, env) <- mkTable
+  (writes, needed) <- newCapture
+  let del = captureDelivery 64 writes needed
+      golden = BS.pack [0x01, 0x00, 0x00, 0x00, 0x40] <> cannedSig
+  entered <- newEmptyMVar
+  release <- newEmptyMVar
+  let gated _ = do
+        putMVar entered ()
+        takeMVar release
+        pure (GotBytes cannedSig)
+  Right j0 <- startJob table (signRequest sid1 1)
+  polled <- newEmptyMVar
+  _ <- forkIO (pollJob gated env table JobSign j0 >>= putMVar polled)
+  takeMVar entered
+  outcome <- newEmptyMVar
+  waiter <- forkIO (try (cancelJob table j0) >>= putMVar outcome)
+  -- Prove the waiter reached the lease before killing it: it is
+  -- blocked on the delivery MVar (past 'try', inside the wait),
+  -- so the kill deterministically aborts the wait.
+  awaitMVarBlocked waiter
+  killThread waiter
+  r <- takeMVar outcome
+  case r of
+    Left e -> case fromException e of
+      Just ThreadKilled -> pure ()
+      _ -> assertFailure ("waiter must die ThreadKilled, got " ++ show e)
+    Right _ -> assertFailure "killed waiter must not report an outcome"
+  -- The lease survived: the drive publishes and the job delivers.
+  putMVar release ()
+  takeMVar polled >>= assertEqual "drive publishes ready" PollReady
+  c <- completeJob env table JobSign j0 del (\_ -> pure ())
+  case c of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "delivered bytes" cannedSig bs
+    other -> assertFailure ("expected delivery, got " ++ show other)
+  readIORef writes >>= assertEqual "exactly one write" [golden]
+  readIORef needed >>= assertEqual "no sizing reports" []
+  stFinal <- inspectJob table j0
+  assertEqual "epoch: hold + deliver" (Just 2) (fmap jvEpoch stFinal)

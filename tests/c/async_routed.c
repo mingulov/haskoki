@@ -674,6 +674,60 @@ static void *completer_thread(void *argument) {
   return NULL;
 }
 
+static void session_churn(void) {
+  /* Retirement accounting: repeated async open/submit/close churn must keep
+   * serving new sessions (close retires the live job and the session), and
+   * a sync session stays sync throughout. */
+  for (unsigned round = 0; round < 25; ++round) {
+    char leg[64];
+    snprintf(leg, sizeof(leg), "churn-deliver-%u", round);
+    CK_SESSION_HANDLE session = fixture_session(1);
+    Output output;
+    Result result;
+    if (submit(session, &output, 32, leg)) {
+      reset_result(&result, NULL);
+      complete_pair(session, &output, &result, leg);
+    }
+    fixture_close(session);
+  }
+  /* Abandoned jobs cancel at close: later sessions are unaffected. */
+  for (unsigned round = 0; round < 10; ++round) {
+    char leg[64];
+    snprintf(leg, sizeof(leg), "churn-abandon-%u", round);
+    CK_SESSION_HANDLE session = fixture_session(1);
+    Output output;
+    submit(session, &output, 32, leg);
+    fixture_close(session);
+  }
+  /* A double close refuses; the facility keeps serving new sessions. */
+  CK_SESSION_HANDLE retired = fixture_session(1);
+  fixture_close(retired);
+  expect_rv("C_CloseSession", "churn-double-close",
+            api->C_CloseSession(retired), CKR_SESSION_HANDLE_INVALID);
+  CK_SESSION_HANDLE fresh = fixture_session(1);
+  CK_SESSION_HANDLE sync = fixture_session(0);
+  Output output;
+  Result result;
+  CK_BYTE input[] = {'a', 'b', 'c'};
+  if (submit(fresh, &output, 32, "churn-fresh-async")) {
+    reset_result(&result, NULL);
+    complete_pair(fresh, &output, &result, "churn-fresh-async");
+  }
+  reset_output(&output, 32);
+  if (digest_init(sync, "churn-sync")) {
+    expect_rv("C_Digest", "churn-sync",
+              api->C_Digest(sync, input, sizeof(input), output.bytes,
+                            &output.length),
+              CKR_OK);
+    check("C_Digest", "churn-sync-length", output.length == 32);
+    digest_bytes("C_Digest", "churn-sync", &output);
+    refuse_complete(sync, digest_name, CKR_OPERATION_NOT_INITIALIZED,
+                    &output, "churn-sync-no-job");
+  }
+  fixture_close(sync);
+  fixture_close(fresh);
+}
+
 static void concurrent_completers(void) {
   CK_SESSION_HANDLE session = fixture_session(1);
   Output output;
@@ -1038,6 +1092,7 @@ static int table_proofs(const char *path) {
   occupied_and_classic_refusals();
   memory_no_store();
   cancellations();
+  session_churn();
   concurrent_completers();
   selector_pages();
   fixture_finalize("memory");

@@ -142,6 +142,7 @@ import Haskoki.Runtime.Async
   , JobView (..)
   , AsyncWork (..)
   , PollOutcome (..)
+  , StartDeny (..)
   , completeJob
   , deliveredCount
   , inspectJob
@@ -191,6 +192,7 @@ spec :: MVar () -> TestTree
 spec envLock = testGroup "Async engine"
   [ testCase "planned digest completes shaped with KAT bytes" caseDigestShaped
   , testCase "hmac sign completes with RFC 4231 bytes" caseHmacSign
+  , testCase "call mismatch refused before the engine runner" caseCallMismatchEngine
   , testCase "new return codes pin to header values" caseRvPins
   , testCase "FFI digest: pending canaries, exact delivery" (caseFfiDigestFlow envLock)
   , testCase "FFI wrong function refused; job intact" (caseFfiWrongFunction envLock)
@@ -386,6 +388,62 @@ caseHmacSign = withBackend $ \be -> do
   assertEqual "effect ran once" 1 nRuns
   _ <- pure (j0, table)
   pure ()
+
+-- | A real digest reservation re-paired with a foreign effect refuses
+-- at submit — before the engine runner could fire. The coherent
+-- control drives exactly once first (the counter works), the
+-- refusals add no runs and consume no ids, and a second coherent
+-- submit lands on the next id.
+caseCallMismatchEngine :: IO ()
+caseCallMismatchEngine = withBackend $ \be -> do
+  (env, st) <- openSessionEnv
+  table <- newAsyncTable 4
+  enableAsyncSession table (ssId st)
+  (res, eff) <- planDigestJob env st
+  let submit work = startJob table JobRequest
+        { jrSession = ssId st
+        , jrFunction = JobDigest
+        , jrWork = work
+        , jrTicks = 1
+        , jrCapacity = 32
+        }
+  runs <- newIORef (0 :: Int)
+  let run fx = do
+        modifyIORef' runs (+ 1)
+        runEffect be (const Nothing) fx
+  control <- submit (WorkCall res eff)
+  j0 <- case control of
+    Right j -> pure j
+    Left deny -> assertFailure ("coherent submit refused: " ++ show deny)
+  p <- pollJob run env table JobDigest j0
+  assertEqual "control ready" PollReady p
+  nRuns <- readIORef runs
+  assertEqual "control ran once" 1 nRuns
+  before <- tableStats table
+  let bad fx = do
+        r <- submit (WorkCall res (EffectCrypto fx))
+        assertEqual ("refused: " ++ show fx) (Left StartIncompatibleWork) r
+  -- Sign, verdict, message, feed, and allocation shapes against a
+  -- digest reservation (the verdict and allocation shapes trip the
+  -- holdability gate first, with the identical verdict).
+  mapM_ bad
+    [ FxSign (MechanismId 0x251) Nothing BS.empty "hello"
+    , FxVerify (MechanismId 0x251) Nothing BS.empty "hello" "sig"
+    , FxMessageSign (MechanismId 0x251) Nothing BS.empty "hello"
+    , FxDigestFeed (EngineResourceId 3) "part"
+    , FxDigestInit (MechanismId 0x250)
+    ]
+  after <- tableStats table
+  assertEqual "refusals consume nothing" before after
+  nRuns2 <- readIORef runs
+  assertEqual "refusals ran nothing" 1 nRuns2
+  control2 <- submit (WorkCall res eff)
+  case control2 of
+    Right _ -> pure ()
+    Left deny -> assertFailure ("second coherent submit refused: " ++ show deny)
+  (_, _, nextAfter) <- tableStats table
+  let (_, _, nextBefore) = before
+  assertEqual "second submit takes the next id" (nextBefore + 1) nextAfter
 
 -- ---------------------------------------------------------------------------
 -- S5b: async FFI surface

@@ -81,6 +81,7 @@ import Haskoki.Runtime.Storage
   , noFaults
   , reconcileJobsReload
   , reconcileReload
+  , scrubDeltaAuth
   , storeClosed
   , zeroStats
   )
@@ -443,7 +444,11 @@ quarantineAllTokens world qVar sVar why =
   withMVar (mwState world) $ \wst ->
     quarantineTokens qVar sVar (Map.keys (wsTokens wst)) why
 
--- | The commit flow with the commit lock already held.
+-- | The commit flow with the commit lock already held. The delta
+-- is scrubbed first ('scrubDeltaAuth'): token puts persist the
+-- durable authentication half only, so validation, application,
+-- and ambiguous-commit verification all observe scrubbed bytes
+-- and agree with every later load.
 protocolLocked
   :: MemoryWorld
   -> StoreLimits
@@ -452,7 +457,8 @@ protocolLocked
   -> IORef StoreStats
   -> StoreDelta
   -> IO CommitResult
-protocolLocked world limits inj qVar sVar delta = do
+protocolLocked world limits inj qVar sVar delta0 = do
+  let delta = scrubDeltaAuth delta0
   affected <- affectedTokens world delta
   q <- readMVar qVar
   case firstQuarantined q affected of

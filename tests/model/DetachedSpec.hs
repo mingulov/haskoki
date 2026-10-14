@@ -175,6 +175,8 @@ spec = testGroup "Detached jobs"
   , testCase "stale pre-reset id never names new work" caseStaleIdNeverReused
   , testCase "failed insertion burns its id, never reuses it" caseFailedInsertBurnsId
   , testCase "token mismatch refuses before replan" caseTokenMismatchBeforeReplan
+  , testCase "retire rolls a racing claim back; the join cannot commit" caseRetireRollsBackClaim
+  , testCase "retired table refuses a late claim; siblings keep joining" caseRetiredTableRefusesLateClaim
   ]
 
 tokHome :: TokenId
@@ -1825,4 +1827,144 @@ caseTokenMismatchBeforeReplan = do
   assertEqual "nothing claimed" Nothing av
   jobs <- loadJobs store
   assertEqual "record intact" 1 (length jobs)
+  storeClose store
+
+-- Retirement racing a claimed join rolls the claim back: the
+-- joiner parks in the transfer window (claimed and started,
+-- pre-commit), the table retires, and the late commit is
+-- refused — the fresh job retires, the durable job stands
+-- untouched, the retired table cannot claim again, and a
+-- sibling table still joins and delivers exactly once. Pre-fix
+-- the commit succeeded after retirement and published a live
+-- binding the drain had already missed.
+caseRetireRollsBackClaim :: IO ()
+caseRetireRollsBackClaim = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  dc <- mkDetached store
+  let sid = ssId (lgSession gen)
+      table = lgTable gen
+      tid = asyncTableId table
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid <- detachJob dc table j0 JobDigest
+  entered <- newEmptyMVar
+  proceed <- newEmptyMVar
+  done <- newEmptyMVar
+  setJoinTestHook dc (putMVar entered () >> takeMVar proceed)
+  _ <- forkIO $ do
+    r <- try (joinJob dc (lgEnv gen) table JoinRequest
+      { jqPid = pid
+      , jqFunction = JobDigest
+      , jqSession = sid
+      , jqCapacity = 32
+      })
+    putMVar done (r :: Either SomeException JoinOutcome)
+  mEntered <- timeout 10000000 (takeMVar entered)
+  case mEntered of
+    Nothing -> assertFailure "joiner never entered the transfer window"
+    Just () -> pure ()
+  (liveMid, _termMid, nextMid) <- tableStats table
+  assertEqual "fresh job started" 1 liveMid
+  let freshJid = JobId (nextMid - 1)
+  -- Retire while the joiner parks: no actives, one claim rolled
+  -- back, and the table records its retirement.
+  retired <- retireLiveTableFor dc tid
+  assertEqual "no actives to retire" [] retired
+  avMid <- inspectAttachment dc pid
+  assertEqual "claim rolled back to idle" (Just AvIdle) avMid
+  putMVar proceed ()
+  mDone <- timeout 10000000 (takeMVar done)
+  r <- case mDone of
+    Nothing -> assertFailure "joiner never reported after retire"
+    Just x -> pure x
+  case r of
+    Right out -> assertEqual "late commit refused"
+      (JoinAlreadyAttached joinPolicyName) out
+    Left e -> assertFailure ("joiner failed: " ++ show e)
+  rev <- inspectReverse dc tid freshJid
+  assertEqual "fresh job unregistered" Nothing rev
+  (liveAfter, termAfter, _nextAfter) <- tableStats table
+  assertEqual "no live orphan" 0 liveAfter
+  assertEqual "one retired tombstone" 1 termAfter
+  cout <- cancelJob table freshJid
+  case cout of
+    CancelAlready TermCanceled -> pure ()
+    other -> assertFailure ("fresh job not canceled, got " ++ show other)
+  jobs <- loadJobs store
+  case [rec | rec <- jobs, jrPersistentId rec == pid] of
+    [rec] -> assertEqual "durable job intact" JobQueued (jrState rec)
+    other -> assertFailure ("expected one record, got " ++ show other)
+  -- The retired table cannot claim again; a sibling generation
+  -- still joins the untouched record and delivers exactly once.
+  again <- joinJob dc (lgEnv gen) table JoinRequest
+    { jqPid = pid
+    , jqFunction = JobDigest
+    , jqSession = sid
+    , jqCapacity = 32
+    }
+  assertEqual "retired table cannot reclaim"
+    (JoinAlreadyAttached joinPolicyName) again
+  setJoinTestHook dc (pure ())
+  tableB <- newAsyncTable 8
+  enableAsyncSession tableB sid
+  JoinOk j1 <- joinJob dc (lgEnv gen) tableB JoinRequest
+    { jqPid = pid
+    , jqFunction = JobDigest
+    , jqSession = sid
+    , jqCapacity = 32
+    }
+  runs <- newIORef 0
+  p <- pollJob (countingRunner runs) (lgEnv gen) tableB JobDigest j1
+  assertEqual "sibling ready" PollReady p
+  (del, writes) <- newCapture
+  jc <- completeJoined dc (lgEnv gen) tableB JobDigest j1 del (\_ -> pure ())
+  case jcOutcome jc of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "sibling bytes" cannedDigest bs
+    other -> assertFailure ("expected delivery, got " ++ show other)
+  got <- readIORef writes
+  assertEqual "one write" 1 (length got)
+  nRuns <- readIORef runs
+  assertEqual "one engine run" 1 nRuns
+  storeClose store
+
+-- A retired table refuses a late claim on an untouched record,
+-- while a sibling table joins it normally: retirement pins the
+-- table, not the record. Fully sequential — no rendezvous.
+caseRetiredTableRefusesLateClaim :: IO ()
+caseRetiredTableRefusesLateClaim = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  let sid = ssId (lgSession gen)
+  tableA <- newAsyncTable 8
+  tableB <- newAsyncTable 8
+  enableAsyncSession tableA sid
+  enableAsyncSession tableB sid
+  let tidA = asyncTableId tableA
+      tidB = asyncTableId tableB
+  assertBool "table identities distinct" (tidA /= tidB)
+  dc <- mkDetached store
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid1 <- detachJob dc (lgTable gen) j0 JobDigest
+  j1 <- startDigestJob gen "abc" 32 1
+  DetachOk pid2 <- detachJob dc (lgTable gen) j1 JobDigest
+  let joinOn table pid = joinJob dc (lgEnv gen) table JoinRequest
+        { jqPid = pid
+        , jqFunction = JobDigest
+        , jqSession = sid
+        , jqCapacity = 32
+        }
+  JoinOk _ <- joinOn tableA pid1
+  retiredA <- retireLiveTableFor dc tidA
+  assertEqual "A retires its active" [(pid1, Nothing)] retiredA
+  lateA <- joinOn tableA pid2
+  assertEqual "retired table cannot claim"
+    (JoinAlreadyAttached joinPolicyName) lateA
+  av2 <- inspectAttachment dc pid2
+  assertEqual "untouched record still idle" (Just AvIdle) av2
+  JoinOk jB <- joinOn tableB pid2
+  avB <- inspectAttachment dc pid2
+  assertEqual "sibling active" (Just (AvActive jB)) avB
+  revB <- inspectReverse dc tidB jB
+  assertEqual "sibling reverse resolves" (Just pid2) revB
   storeClose store

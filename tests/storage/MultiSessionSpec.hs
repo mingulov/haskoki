@@ -13,8 +13,15 @@ same cases.
 module MultiSessionSpec (spec) where
 
 import qualified Data.Map.Strict as Map
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
 import Data.List (isInfixOf, sort, sortOn)
+import Foreign.C.Types (CULong (..))
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr)
+import Foreign.Storable (peek, poke)
 import System.Directory (removeDirectoryRecursive)
 import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
@@ -26,9 +33,23 @@ import Control.Concurrent (ThreadId, forkFinally, killThread, threadDelay)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar)
 import Control.Exception (AsyncException (..), SomeException, bracket, finally, fromException, throwIO, try)
 import Control.Monad (replicateM, when)
-import Data.IORef (atomicModifyIORef', newIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.FFI.Standard
+  ( StdAcquisition (..)
+  , StdInstance (..)
+  , StdStore (..)
+  , haskokiStdClose
+  , haskokiStdGetSessionInfo
+  , haskokiStdLogin
+  , haskokiStdLogout
+  , haskokiStdOpenSession
+  , openStdInstanceWith
+  , openStdStoreWith
+  , stdAcquisition
+  , stdRvOf
+  )
 import Haskoki.Model
   ( addToken
   , emptyModel
@@ -57,19 +78,37 @@ import Haskoki.Runtime.Storage
   , withMaskHook
   , withResultHook
   )
+import Haskoki.Runtime.Config
+  ( Config (..)
+  , StorageCfg (..)
+  , StorageKind (..)
+  , defaultConfig
+  , parseConfig
+  )
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStoreWith)
-import Haskoki.Runtime.Storage.SQLite (openSQLiteStoreWith)
-import Haskoki.Session (tokenAuthNew)
+import Haskoki.Runtime.Storage.SQLite (openSQLiteStore, openSQLiteStoreWith)
+import Haskoki.Session (TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
   ( Generation (..)
   , ObjectId (..)
+  , ReturnCode (..)
   , Revision (..)
   , SessionId (..)
   , SlotId (..)
   , TokenId (..)
   )
-import StoreSpec (expectCreated, expectInspect, expectJust, expectRight, makeTempDir, seedStore)
+import StoreSpec
+  ( awaitHolderExit
+  , expectCreated
+  , expectInspect
+  , expectJust
+  , expectRight
+  , makeTempDir
+  , releaseHolder
+  , seedStore
+  , spawnHolderEnv
+  )
 
 -- | Open a store on the case identity with the given limits and faults.
 type OpenWith = StoreLimits -> FaultInjector -> IO (Either StoreError Store)
@@ -117,6 +156,11 @@ spec = testGroup "Multi-session store"
           withSQLiteIdentity testConcurrentMove
       ]
   , testCase "commit tests observe death deterministically (no busy-spin)" caseNoBusySpin
+  , testCase "login lockout persists across close, reopen, and a second process" caseLoginLockoutDurable
+  , testCase "failed durable auth write fails the login closed" caseLoginFailClosed
+  , testCase "unknown-but-landed login reconciles and serves on" caseLoginUnknownLanded
+  , testCase "landed login publishes despite reload failure" caseLoginReloadFailsLanded
+  , testCase "per-token lockout is independent and durable" caseLoginTokenIndependent
   ]
 
 -- | Barrier rendezvous bound: 5 seconds, matching the commit
@@ -760,3 +804,312 @@ testConcurrentMove openWith =
             owned m = sort [(orToken oo, orId oo) | (_, os) <- m, oo <- os]
         assertEqual "one winner at slot 7" 1 (length at7)
         assertEqual "objects keep their owners" (owned loaded) (owned reloaded)
+
+-- ---------------------------------------------------------------------------
+-- Durable login across processes
+-- ---------------------------------------------------------------------------
+
+-- | End-to-end durable authentication over one SQLite file. Wrong
+-- user PINs consume retries that survive finalize/reinitialize
+-- ('haskokiStdClose' plus 'openStdInstance'); a correct login
+-- resets them; the third strike locks the role; a reopened
+-- session is never restored authenticated; and a second OS
+-- process observes the same counters and lockout while the SO
+-- role stays independent. A raw store read after each restart
+-- pins the durable counters behind the observed return codes.
+caseLoginLockoutDurable :: IO ()
+caseLoginLockoutDurable =
+  bracket (makeTempDir "haskoki-auth-test") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+        doneFile = dir </> "done"
+        readyFile = dir </> "ready"
+        resultFile = dir </> "probe.out"
+    -- Phase A: strike, reset, log out, strike again, then an
+    -- SO login left standing across the close. The logout keeps
+    -- the reset counters (logout is transient-only) while
+    -- freeing the token for the next attempt.
+    withAuthInstance path $ \ctx -> do
+      h <- openAuthSession ctx
+      loginAs ctx h 1 "0000" >>= assertEqual "strike 1" (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx h 1 "1234" >>= assertEqual "reset login" (CULong 0)
+      haskokiStdLogout ctx h >>= assertEqual "reset logout" (CULong 0)
+      loginAs ctx h 1 "0000" >>= assertEqual "strike 1 again" (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx h 0 "5678" >>= assertEqual "SO login" (CULong 0)
+    -- Phase B: reinitialize. The session opens public (the SO
+    -- login was never restored); two more user strikes lock the
+    -- role, proving the pre-lockout count survived the restart.
+    withAuthInstance path $ \ctx -> do
+      h <- openAuthSession ctx
+      sessionLoginOf ctx h >>= assertEqual "reopened session public" (CULong 0)
+      loginAs ctx h 1 "0000" >>= assertEqual "strike 2" (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx h 1 "0000" >>= assertEqual "strike 3 locks" (stdRvOf CKR_PIN_LOCKED)
+    authAfterB <- readTokenAuth path
+    assertEqual "user strikes" 3 (taUserAttempts authAfterB)
+    assertEqual "user locked" True (taUserLocked authAfterB)
+    assertEqual "SO settled" 0 (taSoAttempts authAfterB)
+    -- Phase C: a second OS process observes the lockout, then
+    -- exercises the independent SO role.
+    reaped <- newIORef False
+    bracket
+      (spawnHolderEnv
+        [ ("HASKOKI_HOLDER_MODE", "auth-probe")
+        , ("HASKOKI_AUTH_SCRIPT", "info,u-good,s-bad,s-good,logout")
+        , ("HASKOKI_AUTH_RESULT", resultFile)
+        ]
+        path doneFile readyFile)
+      (releaseHolder reaped)
+      $ \ph -> do
+        awaitHolderExit reaped ph "auth probe"
+        out <- readFile resultFile
+        let CULong incorrect = stdRvOf CKR_PIN_INCORRECT
+            CULong locked = stdRvOf CKR_PIN_LOCKED
+        assertEqual "probe lines"
+          [ "info=0"
+          , "u-good=" ++ show locked
+          , "s-bad=" ++ show incorrect
+          , "s-good=0"
+          , "logout=0"
+          ]
+          (lines out)
+    -- Phase D: reinitialize again. The user lockout held; the SO
+    -- role serves and logs out normally.
+    withAuthInstance path $ \ctx -> do
+      h <- openAuthSession ctx
+      loginAs ctx h 1 "1234" >>= assertEqual "user still locked" (stdRvOf CKR_PIN_LOCKED)
+      loginAs ctx h 0 "5678" >>= assertEqual "SO login" (CULong 0)
+      sessionLoginOf ctx h >>= assertEqual "session SO" (CULong 2)
+      haskokiStdLogout ctx h >>= assertEqual "SO logout" (CULong 0)
+      sessionLoginOf ctx h >>= assertEqual "session public" (CULong 0)
+    authAfterD <- readTokenAuth path
+    assertEqual "SO settled after good login" 0 (taSoAttempts authAfterD)
+    assertEqual "user lock held" True (taUserLocked authAfterD)
+
+-- | Open a serving instance over the database path (home
+-- catalog, SQLite store), closing it on exit.
+withAuthInstance :: FilePath -> (StablePtr StdInstance -> IO a) -> IO a
+withAuthInstance = withAuthInstanceOn stdAcquisition
+
+-- | 'withAuthInstance' over injected acquisition steps (fault
+-- wrappers observe or rewrite the opened store's commits).
+withAuthInstanceOn
+  :: StdAcquisition -> FilePath -> (StablePtr StdInstance -> IO a) -> IO a
+withAuthInstanceOn sa path = withAuthInstanceOnCfg sa sqliteCfg
+  where
+    sqliteCfg = defaultConfig
+      { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+
+-- | 'withAuthInstanceOn' over an explicit config (multi-token
+-- catalogs).
+withAuthInstanceOnCfg
+  :: StdAcquisition -> Config -> (StablePtr StdInstance -> IO a) -> IO a
+withAuthInstanceOnCfg sa cfg = bracket openIt haskokiStdClose
+  where
+    openIt = do
+      ctx <- openStdInstanceWith sa cfg
+      assertBool "instance opens" (castStablePtrToPtr ctx /= nullPtr)
+      pure ctx
+
+-- | Open one read/write session on slot 0 (fails unless OK).
+openAuthSession :: StablePtr StdInstance -> IO CULong
+openAuthSession ctx = openAuthSessionOn ctx 0
+
+-- | Open one read/write session on the given slot (fails unless OK).
+openAuthSessionOn :: StablePtr StdInstance -> CULong -> IO CULong
+openAuthSessionOn ctx slot =
+  alloca $ \(phSession :: Ptr CULong) -> do
+    poke phSession (CULong 0)
+    rv <- haskokiStdOpenSession ctx slot (CULong 0) phSession
+    assertEqual "open rv" (CULong 0) rv
+    peek phSession
+
+-- | Log in with the given role word (0 SO, 1 user) and PIN bytes.
+loginAs :: StablePtr StdInstance -> CULong -> CULong -> String -> IO CULong
+loginAs ctx h userType pinStr =
+  BS.useAsCStringLen (BC8.pack pinStr) $ \(cstr, len) ->
+    haskokiStdLogin ctx h userType (castPtr cstr) (fromIntegral len)
+
+-- | Read one session's provider-local login code (0 public, 1
+-- user, 2 SO, 3 context grant; fails unless the info call is OK).
+sessionLoginOf :: StablePtr StdInstance -> CULong -> IO CULong
+sessionLoginOf ctx h =
+  alloca $ \(pSlot :: Ptr CULong) ->
+  alloca $ \(pRO :: Ptr CULong) ->
+  alloca $ \(pLogin :: Ptr CULong) ->
+  alloca $ \(pDevErr :: Ptr CULong) -> do
+    rv <- haskokiStdGetSessionInfo ctx h pSlot pRO pLogin pDevErr
+    assertEqual "session-info rv" (CULong 0) rv
+    peek pLogin
+
+-- | Read the home token's durable auth straight from the file
+-- (fails unless exactly one token row is stored).
+readTokenAuth :: FilePath -> IO TokenAuth
+readTokenAuth path = do
+  eSt <- openSQLiteStore path
+  st <- either (assertFailure . show) pure eSt
+  eLoaded <- storeLoadTokens st
+  loaded <- either (assertFailure . show) pure eLoaded
+  storeClose st
+  case loaded of
+    [(tok, _)] -> pure (trAuth tok)
+    _ -> assertFailure "expected exactly one token row"
+
+-- | A durable auth write that does not land fails the login
+-- with @CKR_GENERAL_ERROR@ (@0x05@) instead of the denial code:
+-- the counters never moved, so answering @CKR_PIN_INCORRECT@
+-- would spend an attempt the store never recorded. A grant on
+-- settled counters still succeeds (transient-only, bypassing
+-- the broken store), and the raw counters stay settled.
+caseLoginFailClosed :: IO ()
+caseLoginFailClosed =
+  bracket (makeTempDir "haskoki-auth-failclosed") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    -- Seed the file with a clean open first: the failing
+    -- acquisition must not break the seed commit itself.
+    withAuthInstance path $ \_ -> pure ()
+    withAuthInstanceOn failingAcquisition path $ \ctx -> do
+      h <- openAuthSession ctx
+      loginAs ctx h 1 "0000" >>= assertEqual "failed write fails closed" (CULong 0x05)
+      loginAs ctx h 1 "1234" >>= assertEqual "settled grant bypasses" (CULong 0)
+      sessionLoginOf ctx h >>= assertEqual "session user" (CULong 1)
+      haskokiStdLogout ctx h >>= assertEqual "logout" (CULong 0)
+    auth <- readTokenAuth path
+    assertEqual "counters never moved" 0 (taUserAttempts auth)
+    assertEqual "unlocked" False (taUserLocked auth)
+
+-- | Acquisition whose store refuses every commit without
+-- effect: the login path's fail-closed leg.
+failingAcquisition :: StdAcquisition
+failingAcquisition = stdAcquisition
+  { saOpenStore = \env cfg -> do
+      eStore <- saOpenStore stdAcquisition env cfg
+      case eStore of
+        Left err -> pure (Left err)
+        Right mStore -> pure (Right (fmap wrapStd mStore))
+  }
+  where
+    wrapStd ss = ss { stdStore = (stdStore ss)
+      { storeCommit = \_ -> pure (NotCommitted (StoreIO "injected auth failure")) } }
+
+-- | An auth write that lands but reports unknown reconciles
+-- through the serving instance, against REAL backend faults
+-- (ambiguous commit plus verification failure, so the backend
+-- quarantines for real): the denial code still answers, the
+-- inline reload clears the quarantine (pinned live: removing
+-- the recovery reload wedges the next write instead), the next
+-- attempt serves normally, and the raw counters show both
+-- strikes — the attempt counted exactly once, never replayed.
+caseLoginUnknownLanded :: IO ()
+caseLoginUnknownLanded =
+  bracket (makeTempDir "haskoki-auth-unknown") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    withAuthInstance path $ \_ -> pure ()
+    inj <- scriptedFaults [FaultAmbiguousCommit, FaultVerifyReload]
+    withAuthInstanceOn (realUnknownAcquisition inj) path $ \ctx -> do
+      h <- openAuthSession ctx
+      loginAs ctx h 1 "0000" >>= assertEqual "unknown still incorrect" (stdRvOf CKR_PIN_INCORRECT)
+      liveQuarantine ctx >>= assertEqual "reload cleared quarantine" []
+      loginAs ctx h 1 "0000" >>= assertEqual "second strike" (stdRvOf CKR_PIN_INCORRECT)
+    auth <- readTokenAuth path
+    assertEqual "both strikes durable, never replayed" 2 (taUserAttempts auth)
+
+-- | Acquisition whose store opens with a scripted fault
+-- injector through the production open path
+-- ('openStdStoreWith'): injected faults exercise the real
+-- backend commit protocol under the serving instance.
+realUnknownAcquisition :: FaultInjector -> StdAcquisition
+realUnknownAcquisition inj = stdAcquisition
+  { saOpenStore = \env cfg ->
+      openStdStoreWith (\p -> openSQLiteStoreWith p defaultLimits inj) env cfg
+  }
+
+-- | Read the serving instance's live quarantine list (fails
+-- unless the instance holds a store).
+liveQuarantine :: StablePtr StdInstance -> IO [TokenId]
+liveQuarantine ctx = do
+  inst <- deRefStablePtr ctx
+  case siStore inst of
+    Nothing -> assertFailure "expected a stored instance"
+    Just ss -> map fst <$> storeQuarantined (stdStore ss)
+
+-- | A landed write still publishes when its recovery reload
+-- fails: the reload already proved durable holds the delta, so
+-- the reconciled model is the authority-matching state. The
+-- first commit lands-for-real but reports unknown while the
+-- first reload fails outright; both logins still answer their
+-- denial codes and both strikes land exactly once.
+caseLoginReloadFailsLanded :: IO ()
+caseLoginReloadFailsLanded =
+  bracket (makeTempDir "haskoki-auth-reloadfail") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    withAuthInstance path $ \_ -> pure ()
+    once <- newIORef True
+    reloadOnce <- newIORef True
+    withAuthInstanceOn (lyingAcquisition once reloadOnce) path $ \ctx -> do
+      h <- openAuthSession ctx
+      loginAs ctx h 1 "0000" >>= assertEqual "landed answers" (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx h 1 "0000" >>= assertEqual "second strike" (stdRvOf CKR_PIN_INCORRECT)
+    auth <- readTokenAuth path
+    assertEqual "both strikes durable" 2 (taUserAttempts auth)
+
+-- | Acquisition whose store commits the first delta for real
+-- but reports it unknown, and whose first reload fails
+-- outright; everything after reports honestly.
+lyingAcquisition :: IORef Bool -> IORef Bool -> StdAcquisition
+lyingAcquisition once reloadOnce = stdAcquisition
+  { saOpenStore = \env cfg -> do
+      eStore <- saOpenStore stdAcquisition env cfg
+      case eStore of
+        Left err -> pure (Left err)
+        Right mStore -> pure (Right (fmap wrapStd mStore))
+  }
+  where
+    wrapStd ss = ss { stdStore = (stdStore ss)
+      { storeCommit = lyingCommit (storeCommit (stdStore ss))
+      , storeReload = lyingReload (storeReload (stdStore ss)) } }
+    lyingCommit backing delta = do
+      fire <- atomicModifyIORef' once (\b -> (False, b))
+      res <- backing delta
+      if fire
+        then pure (CommitUnknown (StoreIO "injected ambiguity"))
+        else pure res
+    lyingReload backing = do
+      fire <- atomicModifyIORef' reloadOnce (\b -> (False, b))
+      if fire
+        then pure (Left (StoreIO "injected reload failure"))
+        else backing
+
+-- | Retry state is per token: strikes and lockout on slot 0
+-- never disturb slot 1, and the slot-0 lockout survives a
+-- close/reopen boundary while slot 1 keeps serving.
+caseLoginTokenIndependent :: IO ()
+caseLoginTokenIndependent =
+  bracket (makeTempDir "haskoki-auth-tokens") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    cfg <- twoTokenConfig path
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+      s0 <- openAuthSessionOn ctx 0
+      s1 <- openAuthSessionOn ctx 1
+      loginAs ctx s0 1 "0000" >>= assertEqual "slot-0 strike 1" (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx s0 1 "0000" >>= assertEqual "slot-0 strike 2" (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx s1 1 "2345" >>= assertEqual "slot-1 unaffected" (CULong 0)
+      haskokiStdLogout ctx s1 >>= assertEqual "slot-1 logout" (CULong 0)
+      loginAs ctx s0 1 "0000" >>= assertEqual "slot-0 strike 3 locks" (stdRvOf CKR_PIN_LOCKED)
+      loginAs ctx s1 1 "2345" >>= assertEqual "slot-1 still fine" (CULong 0)
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+      s0 <- openAuthSessionOn ctx 0
+      s1 <- openAuthSessionOn ctx 1
+      loginAs ctx s0 1 "1234" >>= assertEqual "slot-0 lockout durable" (stdRvOf CKR_PIN_LOCKED)
+      loginAs ctx s1 1 "2345" >>= assertEqual "slot-1 serves" (CULong 0)
+
+-- | A two-token SQLite config over the path (positional
+-- identities: slot 0 demo, slot 1 ops, with distinct PINs).
+twoTokenConfig :: FilePath -> IO Config
+twoTokenConfig path = case parseConfig (unlines
+  [ "schema_version = 1"
+  , "[tokens]"
+  , "labels = [\"haskoki-demo\", \"haskoki-ops\"]"
+  , "so_pins = [\"5678\", \"6789\"]"
+  , "user_pins = [\"1234\", \"2345\"]"
+  ]) of
+    Left err -> assertFailure ("two-token config must parse: " ++ show err)
+    Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True })

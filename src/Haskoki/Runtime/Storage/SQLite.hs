@@ -122,6 +122,7 @@ import Haskoki.Runtime.Storage
   , noFaults
   , reconcileJobsReload
   , reconcileReload
+  , scrubDeltaAuth
   , storeClosed
   , zeroStats
   )
@@ -1102,10 +1103,15 @@ quarantineAllTokensConn conn db why = do
     parseTid [S.SQLText tidT] = TokenId <$> decodeHex16 (T.unpack tidT)
     parseTid _ = Nothing
 
--- | The commit flow with the connection guard already held.
+-- | The commit flow with the connection guard already held. The
+-- delta is scrubbed first ('scrubDeltaAuth'): token puts persist
+-- the durable authentication half only, so validation, the
+-- staged upserts, and ambiguous-commit verification all observe
+-- scrubbed rows and agree with every later load.
 protocolLocked :: SQLiteConn -> S.Database -> StoreDelta -> IO CommitResult
-protocolLocked conn db delta = do
-  let inj = sqInjector conn
+protocolLocked conn db delta0 = do
+  let delta = scrubDeltaAuth delta0
+      inj = sqInjector conn
       qVar = sqQuarantine conn
       sVar = sqStats conn
   eAffected <- tokensForDelta db delta
