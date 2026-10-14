@@ -67,6 +67,7 @@ import Haskoki.Runtime.Storage
   , checkLimits
   , checkSlotUnique
   , checkTokenRefs
+  , coverDeletedJobIds
   , decodeJobRecord
   , decodeObjectRecord
   , decodeTokenRecord
@@ -75,6 +76,8 @@ import Haskoki.Runtime.Storage
   , encodeJobRecord
   , encodeObjectRecord
   , encodeTokenRecord
+  , jobIdCounterKey
+  , nextJobReservation
   , noFaults
   , reconcileJobsReload
   , reconcileReload
@@ -157,6 +160,7 @@ mkStore world limits inj qVar sVar cVar tok closedVar = Store
   , storeLoadJobs = withUse cVar closedVar (loadJobs world)
   , storeCommit = protocolDelta world limits inj qVar sVar cVar closedVar
   , storeResetToken = resetTokenWorld world limits inj qVar sVar cVar closedVar
+  , storeReserveJobId = reserveJobIdWorld world inj qVar sVar cVar closedVar
   , storeClose = closeMemory world tok inj cVar closedVar
   , storeInspect = withUse cVar closedVar (fmap Right (inspectWorld world))
   , storeQuarantined = readMVar qVar
@@ -321,6 +325,124 @@ resetEffective world tid wantGen replacement = withMVar (mwState world) $ \st ->
           , sdPutMeta = []
           })
 
+-- | Reserve one store-wide persistent job id: closed-handle
+-- refusal, then the commit-protocol shape (a pre-commit fault,
+-- a masked durable mark-advance, ambiguous verification)
+-- under the handle's commit lock. The lock plus single-writer
+-- ownership serializes every reservation store-wide, so two
+-- contexts on one handle never share an id. Reservation never
+-- consults quarantine: every call re-reads the durable mark
+-- under the lock, so a quarantined handle still cannot mint a
+-- duplicate. A successful reservation counts as a durable
+-- commit; the observation hooks fire with the commit analogue
+-- of the outcome.
+reserveJobIdWorld
+  :: MemoryWorld
+  -> FaultInjector
+  -> MVar [(TokenId, String)]
+  -> IORef StoreStats
+  -> MVar ()
+  -> MVar HandleState
+  -> IO (Either StoreError Word64)
+reserveJobIdWorld world inj qVar sVar cVar closedVar =
+  bracket_ (takeMVar cVar) (putMVar cVar ()) $ do
+    st <- readMVar closedVar
+    if st == HandleOpen
+      then reserveLocked world inj qVar sVar
+      else pure (Left storeClosed)
+
+-- | The reservation flow with the commit lock already held.
+reserveLocked
+  :: MemoryWorld
+  -> FaultInjector
+  -> MVar [(TokenId, String)]
+  -> IORef StoreStats
+  -> IO (Either StoreError Word64)
+reserveLocked world inj qVar sVar = do
+  preFailed <- fiFire inj FaultBeforeCommit
+  if preFailed
+    then pure (Left (StoreIO "injected pre-commit failure"))
+    else mask_ $ do
+      fiOnMasked inj
+      wst <- takeMVar (mwState world)
+      fullDisk <- fiFire inj FaultFullDisk
+      if fullDisk
+        then do
+          putMVar (mwState world) wst
+          let err = StoreFull "disk full (injected)"
+          fiOnResult inj (NotCommitted err)
+          pure (Left err)
+        else case nextJobReservation
+            (Map.lookup jobIdCounterKey (wsMeta wst))
+            (map jrPersistentId (Map.elems (wsJobs wst))) of
+          Left err -> do
+            putMVar (mwState world) wst
+            fiOnResult inj (NotCommitted err)
+            pure (Left err)
+          Right (pid, advanced) -> do
+            let old = Map.lookup jobIdCounterKey (wsMeta wst)
+            putMVar (mwState world)
+              (wst { wsMeta = Map.insert jobIdCounterKey advanced (wsMeta wst) })
+            ambiguous <- fiFire inj FaultAmbiguousCommit
+            (classification, ePid) <-
+              if ambiguous
+                then resolveAmbiguousReserve world inj qVar sVar pid advanced old
+                else do
+                  bumpCommits sVar
+                  pure (Committed, Right pid)
+            fiOnResult inj classification
+            pure ePid
+
+-- | Reconcile an ambiguous mark-advance against a fresh
+-- reload: the reloaded mark is either the advanced value
+-- (durable: return the id) or the pre-call value (nothing
+-- written: fail clean). A failed reload — or any third
+-- value, unreachable under the single-writer guard —
+-- quarantines every token and fails: never a shared id.
+resolveAmbiguousReserve
+  :: MemoryWorld
+  -> FaultInjector
+  -> MVar [(TokenId, String)]
+  -> IORef StoreStats
+  -> Word64
+  -> String
+  -> Maybe String
+  -> IO (CommitResult, Either StoreError Word64)
+resolveAmbiguousReserve world inj qVar sVar pid advanced old = do
+  bumpVerifyReloads sVar
+  verifyFailed <- fiFire inj FaultVerifyReload
+  if verifyFailed
+    then do
+      quarantineAllTokens world qVar sVar "job-id reservation verification failed"
+      let err = StoreIO "injected verification failure"
+      pure (CommitUnknown err, Left err)
+    else do
+      eMeta <- loadMeta world
+      case eMeta of
+        Left err -> do
+          quarantineAllTokens world qVar sVar ("reload failed: " ++ show err)
+          pure (CommitUnknown err, Left err)
+        Right meta
+          | lookup jobIdCounterKey meta == Just advanced -> do
+              bumpCommits sVar
+              pure (Committed, Right pid)
+          | lookup jobIdCounterKey meta == old ->
+              let err = StoreIO "ambiguous reservation resolved: advance absent"
+              in pure (NotCommitted err, Left err)
+          | otherwise -> do
+              quarantineAllTokens world qVar sVar "job-id counter diverged during reservation"
+              let err = StoreCorrupt "job-id counter diverged during reservation"
+              pure (CommitUnknown err, Left err)
+
+-- | Quarantine every token in the world: an unresolved
+-- store-wide reservation names no affected token, so the
+-- whole handle view is suspect until an authoritative reload.
+quarantineAllTokens
+  :: MemoryWorld -> MVar [(TokenId, String)] -> IORef StoreStats -> String -> IO ()
+quarantineAllTokens world qVar sVar why =
+  withMVar (mwState world) $ \wst ->
+    quarantineTokens qVar sVar (Map.keys (wsTokens wst)) why
+
 -- | The commit flow with the commit lock already held.
 protocolLocked
   :: MemoryWorld
@@ -354,11 +476,12 @@ protocolLocked world limits inj qVar sVar delta = do
                   fiOnResult inj result
                   pure result
                 else do
-                  putMVar (mwState world) (applyDelta st delta)
+                  let applied = applyDelta st delta
+                  putMVar (mwState world) applied
                   ambiguous <- fiFire inj FaultAmbiguousCommit
                   result <-
                     if ambiguous
-                      then resolveAmbiguous affected
+                      then resolveAmbiguous affected (effectiveDelta applied delta)
                       else do
                         bumpCommits sVar
                         postCommitTail affected
@@ -368,9 +491,10 @@ protocolLocked world limits inj qVar sVar delta = do
     -- The observed outcome is discarded; a reload decides. Present
     -- verifies committed (every table), absent verifies rolled
     -- back, and a failed reload quarantines with 'CommitUnknown'.
-    -- Nothing reissues.
-    resolveAmbiguous :: [TokenId] -> IO CommitResult
-    resolveAmbiguous affected = do
+    -- Nothing reissues. The expectation is the effective delta:
+    -- the stored effect, not the raw request.
+    resolveAmbiguous :: [TokenId] -> StoreDelta -> IO CommitResult
+    resolveAmbiguous affected eff = do
       bumpVerifyReloads sVar
       verifyFailed <- fiFire inj FaultVerifyReload
       if verifyFailed
@@ -383,9 +507,9 @@ protocolLocked world limits inj qVar sVar delta = do
           eMeta <- loadMeta world
           case (eLoaded, eJobs, eMeta) of
             (Right loaded, Right jobs, Right meta)
-              | reconcileReload delta loaded == ReconciledPresent
-              , reconcileJobsReload delta jobs == ReconciledPresent
-              , reconcileMetaReload delta meta == ReconciledPresent -> do
+              | reconcileReload eff loaded == ReconciledPresent
+              , reconcileJobsReload eff jobs == ReconciledPresent
+              , reconcileMetaReload eff meta == ReconciledPresent -> do
                   bumpCommits sVar
                   postCommitTail affected
             (Right _, Right _, Right _) ->
@@ -495,11 +619,29 @@ reconcileMetaReload delta loaded
   | all (\(k, v) -> lookup k loaded == Just v) (sdPutMeta delta) = ReconciledPresent
   | otherwise = ReconciledAbsent
 
+-- | The delta as durably applied: requested meta rows re-read
+-- from the committed state, so the generated deletion coverage
+-- of the job-id mark joins the reconciliation expectation. Keys
+-- the delta does not name stay outside it, as before.
+effectiveDelta :: WorldState -> StoreDelta -> StoreDelta
+effectiveDelta applied delta =
+  delta { sdPutMeta = expected }
+  where
+    expected =
+      [ (k, v)
+      | (k, _) <- sdPutMeta delta
+      , Just v <- [Map.lookup k (wsMeta applied)]
+      ]
+
 -- | Pure delta application (shared shape with the SQLite backend's
 -- statement plan). Dropping a token removes its owned objects and
 -- jobs, matching the SQLite @ON DELETE CASCADE@; an ordinary
 -- same-id token put preserves them. Drops (with cascade) apply
 -- before puts, so a drop/recreate pair cannot resurrect children.
+-- Pids present before the commit but absent after it (deleted,
+-- not replaced) fold into the job-id mark, so a legacy store
+-- whose mark never advanced still cannot re-mint them once the
+-- records are gone.
 applyDelta :: WorldState -> StoreDelta -> WorldState
 applyDelta st delta =
   let toks1 = foldr Map.delete (wsTokens st) (sdDropTokens delta)
@@ -507,13 +649,19 @@ applyDelta st delta =
         (foldr Map.delete (wsObjects st) (sdDropObjects delta))
       jobs1 = Map.filter (\j -> jrToken j `notElem` sdDropTokens delta)
         (foldr Map.delete (wsJobs st) (sdDropJobs delta))
+      jobs2 = foldr (\j m -> Map.insert (jrPersistentId j) j m)
+        jobs1 (sdPutJobs delta)
+      doomed = [pid | pid <- Map.keys (wsJobs st), Map.notMember pid jobs2]
+      meta1 = foldr (\(k, v) m -> Map.insert k v m) (wsMeta st) (sdPutMeta delta)
+      meta2 = case coverDeletedJobIds (Map.lookup jobIdCounterKey meta1) doomed of
+        Nothing -> meta1
+        Just v -> Map.insert jobIdCounterKey v meta1
   in WorldState
     { wsTokens = foldr (\t m -> Map.insert (trId t) t m) toks1 (sdPutTokens delta)
     , wsObjects = foldr (\p m -> Map.insert (orId (opRecord p)) (opRecord p) m)
         objs1 (sdPutObjects delta)
-    , wsJobs = foldr (\j m -> Map.insert (jrPersistentId j) j m)
-        jobs1 (sdPutJobs delta)
-    , wsMeta = foldr (\(k, v) m -> Map.insert k v m) (wsMeta st) (sdPutMeta delta)
+    , wsJobs = jobs2
+    , wsMeta = meta2
     }
 
 -- | Load every meta row as key/value pairs.

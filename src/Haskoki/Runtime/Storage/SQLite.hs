@@ -103,6 +103,7 @@ import Haskoki.Runtime.Storage
   , checkLimits
   , checkSlotUnique
   , checkTokenRefs
+  , coverDeletedJobIds
   , decodeAttrsDoc
   , decodeHex16
   , decodeJobRecord
@@ -115,7 +116,9 @@ import Haskoki.Runtime.Storage
   , encodeObjectRecord
   , encodeTokenRecord
   , execStateName
+  , jobIdCounterKey
   , knownMaterialEncodings
+  , nextJobReservation
   , noFaults
   , reconcileJobsReload
   , reconcileReload
@@ -758,6 +761,7 @@ mkStore conn = Store
   , storeLoadJobs = withConn conn (pure (Left storeClosed)) loadJobs
   , storeCommit = protocolDelta conn
   , storeResetToken = resetTokenConn conn
+  , storeReserveJobId = reserveJobIdConn conn
   , storeClose = closeConn conn
   , storeInspect = withConn conn (pure (Left storeClosed)) inspectConn
   , storeQuarantined = readMVar (sqQuarantine conn)
@@ -896,6 +900,208 @@ resetEffectiveDb db tid wantGen replacement = do
     parsePid [S.SQLBlob b] = decodeBlobW64 b
     parsePid _ = Nothing
 
+-- | Read the job-id counter row ('Nothing' = the key is
+-- absent, as in a hand-built database: reservation treats it
+-- as 1 and reconciles with the stored maximum).
+readCounterDb :: S.Database -> IO (Either StoreError (Maybe String))
+readCounterDb db = do
+  eRows <- queryRows db "SELECT value FROM store_meta WHERE key = ?"
+    [S.SQLText (T.pack jobIdCounterKey)]
+  case eRows of
+    Left err -> pure (Left err)
+    Right [] -> pure (Right Nothing)
+    Right [[S.SQLText v]] -> pure (Right (Just (T.unpack v)))
+    Right _ -> pure (Left (StoreCorrupt "corrupt store_meta counter row shape"))
+
+-- | Read the maximum stored persistent job id, if any. The
+-- fixed-width big-endian blob keys order numerically, so one
+-- descending row suffices.
+readMaxJobDb :: S.Database -> IO (Either StoreError (Maybe Word64))
+readMaxJobDb db = do
+  eRows <- queryRows db
+    "SELECT persistent_id_key FROM detached_jobs ORDER BY persistent_id_key DESC LIMIT 1" []
+  case eRows of
+    Left err -> pure (Left err)
+    Right [] -> pure (Right Nothing)
+    Right [[S.SQLBlob b]] -> case decodeBlobW64 b of
+      Just w -> pure (Right (Just w))
+      Nothing -> pure (Left (StoreCorrupt "corrupt persistent_id_key on max job"))
+    Right _ -> pure (Left (StoreCorrupt "corrupt max-job row shape"))
+
+-- | Pids whose records a delta deletes, read inside the
+-- deleting transaction before the drops run: stored jobs
+-- named by an explicit drop or owned by a dropped token,
+-- minus same-delta job puts (a drop\/put pair replaces, so
+-- the id survives). Drops naming unknown pids cover nothing,
+-- matching the memory backend exactly.
+readDoomedPids :: S.Database -> StoreDelta -> IO (Either StoreError [Word64])
+readDoomedPids db d
+  | null (sdDropJobs d) && null (sdDropTokens d) = pure (Right [])
+  | otherwise = do
+      eJobs <- loadJobs db
+      pure (fmap doomedOf eJobs)
+  where
+    doomedOf jobs =
+      [ jrPersistentId j
+      | j <- jobs
+      , jrToken j `elem` sdDropTokens d || jrPersistentId j `elem` sdDropJobs d
+      , jrPersistentId j `notElem` map jrPersistentId (sdPutJobs d)
+      ]
+
+-- | Fold deleted pids into the job-id mark (same transaction,
+-- after the caller's own meta puts): reset/drop keeps
+-- coverage of legacy ids even when the mark never advanced
+-- before. An empty doomed set writes nothing.
+coverDeletedMeta :: S.Database -> [Word64] -> IO (Either StoreError ())
+coverDeletedMeta _ [] = pure (Right ())
+coverDeletedMeta db doomed = do
+  eMark <- readCounterDb db
+  case eMark of
+    Left err -> pure (Left err)
+    Right old -> case coverDeletedJobIds old doomed of
+      Nothing -> pure (Right ())
+      Just v -> let (sql, params) = putMetaStmt (jobIdCounterKey, v)
+                in execParams db sql params
+
+-- | Reserve one store-wide persistent job id: closed-handle
+-- refusal, then the commit-protocol shape (a pre-commit fault,
+-- one masked @BEGIN IMMEDIATE@ mark-advance transaction,
+-- ambiguous verification) under the connection guard. The
+-- guard plus single-writer ownership serializes every
+-- reservation store-wide, so two contexts on one handle never
+-- share an id. Reservation never consults quarantine: every
+-- call re-reads the durable mark under the guard, so a
+-- quarantined handle still cannot mint a duplicate. A
+-- successful reservation counts as a durable commit; the
+-- observation hooks fire with the commit analogue of the
+-- outcome.
+reserveJobIdConn :: SQLiteConn -> IO (Either StoreError Word64)
+reserveJobIdConn conn =
+  withConn conn (pure (Left storeClosed)) (reserveLocked conn)
+
+-- | The reservation flow with the connection guard already held.
+reserveLocked :: SQLiteConn -> S.Database -> IO (Either StoreError Word64)
+reserveLocked conn db = do
+  let inj = sqInjector conn
+      sVar = sqStats conn
+  preFailed <- fiFire inj FaultBeforeCommit
+  if preFailed
+    then pure (Left (StoreIO "injected pre-commit failure"))
+    else mask_ $ do
+      fiOnMasked inj
+      fullDisk <- fiFire inj FaultFullDisk
+      eTxn <-
+        if fullDisk
+          then pure (Left (StoreFull "disk full (injected)"))
+          else runReserveTxn db
+      (classification, ePid) <- case eTxn of
+        Left err -> pure (NotCommitted err, Left err)
+        Right (pid, advanced, old) -> do
+          ambiguous <- fiFire inj FaultAmbiguousCommit
+          if ambiguous
+            then resolveAmbiguousReserve conn db pid advanced old
+            else do
+              bumpCommits sVar
+              pure (Committed, Right pid)
+      fiOnResult inj classification
+      pure ePid
+  where
+    -- One transaction; any failure rolls back and reports.
+    runReserveTxn :: S.Database -> IO (Either StoreError (Word64, String, Maybe String))
+    runReserveTxn d = do
+      eBegin <- trySQLite (S.exec d "BEGIN IMMEDIATE")
+      case eBegin of
+        Left err -> pure (Left err)
+        Right () -> do
+          eBody <- runReserveBody d
+          case eBody of
+            Left err -> do
+              _ <- trySQLite (S.exec d "ROLLBACK")
+              pure (Left err)
+            Right triple@(_, advanced, _) -> do
+              let (sql, params) = putMetaStmt (jobIdCounterKey, advanced)
+              ePut <- execParams d sql params
+              case ePut of
+                Left err -> do
+                  _ <- trySQLite (S.exec d "ROLLBACK")
+                  pure (Left err)
+                Right () -> do
+                  eCommit <- trySQLite (S.exec d "COMMIT")
+                  case eCommit of
+                    Left err -> do
+                      _ <- trySQLite (S.exec d "ROLLBACK")
+                      pure (Left err)
+                    Right () -> pure (Right triple)
+    -- Read the mark and the stored maximum inside the
+    -- transaction and compute the pure reservation step.
+    runReserveBody :: S.Database -> IO (Either StoreError (Word64, String, Maybe String))
+    runReserveBody d = do
+      eCounter <- readCounterDb d
+      case eCounter of
+        Left err -> pure (Left err)
+        Right old -> do
+          eMax <- readMaxJobDb d
+          case eMax of
+            Left err -> pure (Left err)
+            Right mMax ->
+              let pids = maybe [] (: []) mMax
+              in pure (fmap (\(pid, advanced) -> (pid, advanced, old))
+                (nextJobReservation old pids))
+
+-- | Reconcile an ambiguous mark-advance against a fresh
+-- reload: the reloaded mark is either the advanced value
+-- (durable: return the id) or the pre-call value (nothing
+-- written: fail clean). A failed reload — or any third
+-- value, unreachable under the single-writer guard —
+-- quarantines every token and fails: never a shared id.
+resolveAmbiguousReserve
+  :: SQLiteConn -> S.Database -> Word64 -> String -> Maybe String
+  -> IO (CommitResult, Either StoreError Word64)
+resolveAmbiguousReserve conn db pid advanced old = do
+  let inj = sqInjector conn
+      sVar = sqStats conn
+  bumpVerifyReloads sVar
+  verifyFailed <- fiFire inj FaultVerifyReload
+  if verifyFailed
+    then do
+      quarantineAllTokensConn conn db "job-id reservation verification failed"
+      let err = StoreIO "injected verification failure"
+      pure (CommitUnknown err, Left err)
+    else do
+      eCounter <- readCounterDb db
+      case eCounter of
+        Left err -> do
+          quarantineAllTokensConn conn db ("reload failed: " ++ show err)
+          pure (CommitUnknown err, Left err)
+        Right now
+          | now == Just advanced -> do
+              bumpCommits sVar
+              pure (Committed, Right pid)
+          | now == old ->
+              let err = StoreIO "ambiguous reservation resolved: advance absent"
+              in pure (NotCommitted err, Left err)
+          | otherwise -> do
+              quarantineAllTokensConn conn db "job-id counter diverged during reservation"
+              let err = StoreCorrupt "job-id counter diverged during reservation"
+              pure (CommitUnknown err, Left err)
+
+-- | Quarantine every token in the database: an unresolved
+-- store-wide reservation names no affected token, so the
+-- whole handle view is suspect until an authoritative reload.
+-- Best-effort: when the token list itself is unreadable the
+-- caller still fails closed.
+quarantineAllTokensConn :: SQLiteConn -> S.Database -> String -> IO ()
+quarantineAllTokensConn conn db why = do
+  eRows <- queryRows db "SELECT token_id FROM tokens" []
+  case eRows of
+    Left _ -> pure ()
+    Right rows -> case mapM parseTid rows of
+      Nothing -> pure ()
+      Just tids -> quarantineTokens (sqQuarantine conn) (sqStats conn) tids why
+  where
+    parseTid [S.SQLText tidT] = TokenId <$> decodeHex16 (T.unpack tidT)
+    parseTid _ = Nothing
+
 -- | The commit flow with the connection guard already held.
 protocolLocked :: SQLiteConn -> S.Database -> StoreDelta -> IO CommitResult
 protocolLocked conn db delta = do
@@ -926,10 +1132,10 @@ protocolLocked conn db delta = do
                       else runTxn delta
                   result <- case eTxn of
                     Left err -> pure (NotCommitted err)
-                    Right () -> do
+                    Right doomed -> do
                       ambiguous <- fiFire inj FaultAmbiguousCommit
                       if ambiguous
-                        then resolveAmbiguous inj qVar sVar delta affected
+                        then resolveAmbiguous inj qVar sVar (effectiveDelta doomed delta) affected
                         else do
                           bumpCommits sVar
                           postCommitTail inj qVar sVar affected
@@ -937,7 +1143,7 @@ protocolLocked conn db delta = do
                   pure result
   where
     -- One transaction; any failure rolls back and reports.
-    runTxn :: StoreDelta -> IO (Either StoreError ())
+    runTxn :: StoreDelta -> IO (Either StoreError [Word64])
     runTxn d = do
       eBegin <- trySQLite (S.exec db "BEGIN IMMEDIATE")
       case eBegin of
@@ -948,17 +1154,18 @@ protocolLocked conn db delta = do
             Left err -> do
               _ <- trySQLite (S.exec db "ROLLBACK")
               pure (Left err)
-            Right () -> do
+            Right doomed -> do
               eCommit <- trySQLite (S.exec db "COMMIT")
               case eCommit of
                 Left err -> do
                   _ <- trySQLite (S.exec db "ROLLBACK")
                   pure (Left err)
-                Right () -> pure (Right ())
+                Right () -> pure (Right doomed)
     -- The observed outcome is discarded; a reload decides. Present
     -- verifies committed (every table), absent verifies rolled
     -- back, and a failed reload quarantines with 'CommitUnknown'.
-    -- Nothing reissues.
+    -- Nothing reissues. The expectation is the effective delta:
+    -- the stored effect, not the raw request.
     resolveAmbiguous
       :: FaultInjector -> MVar [(TokenId, String)] -> IORef StoreStats
       -> StoreDelta -> [TokenId] -> IO CommitResult
@@ -1006,16 +1213,25 @@ protocolLocked conn db delta = do
     -- Drops before puts; tokens before the objects and jobs that
     -- reference them (foreign keys stay satisfied throughout).
     -- Token puts run staged (two phases within this transaction).
-    runBody :: StoreDelta -> IO (Either StoreError ())
+    -- The doomed pids are read before the drops, then folded
+    -- into the job-id mark after the caller's meta puts, so a
+    -- legacy store whose mark never advanced still cannot
+    -- re-mint deleted ids once the records are gone.
+    runBody :: StoreDelta -> IO (Either StoreError [Word64])
     runBody d = do
-      e1 <- runAll (map dropObjectStmt (sdDropObjects d))
-      e2 <- runAll (map dropJobStmt (sdDropJobs d))
-      e3 <- runAll (map dropTokenStmt (sdDropTokens d))
-      e4 <- runTokenPuts (sdPutTokens d)
-      e5 <- runAll (map putObjectStmt (sdPutObjects d))
-      e6 <- runAll (map putJobStmt (sdPutJobs d))
-      e7 <- runAll (map putMetaStmt (sdPutMeta d))
-      pure (e1 >> e2 >> e3 >> e4 >> e5 >> e6 >> e7)
+      eDoomed <- readDoomedPids db d
+      case eDoomed of
+        Left err -> pure (Left err)
+        Right doomed -> do
+          e1 <- runAll (map dropObjectStmt (sdDropObjects d))
+          e2 <- runAll (map dropJobStmt (sdDropJobs d))
+          e3 <- runAll (map dropTokenStmt (sdDropTokens d))
+          e4 <- runTokenPuts (sdPutTokens d)
+          e5 <- runAll (map putObjectStmt (sdPutObjects d))
+          e6 <- runAll (map putJobStmt (sdPutJobs d))
+          e7 <- runAll (map putMetaStmt (sdPutMeta d))
+          e8 <- coverDeletedMeta db doomed
+          pure ((e1 >> e2 >> e3 >> e4 >> e5 >> e6 >> e7 >> e8) >> Right doomed)
       where
         runAll :: [(Text, [S.SQLData])] -> IO (Either StoreError ())
         runAll [] = pure (Right ())
@@ -1144,6 +1360,28 @@ reconcileMetaReload :: StoreDelta -> [(String, String)] -> Reconcile
 reconcileMetaReload delta loaded
   | all (\(k, v) -> lookup k loaded == Just v) (sdPutMeta delta) = ReconciledPresent
   | otherwise = ReconciledAbsent
+
+-- | The delta as durably applied: requested meta rows replayed
+-- through the backend's own put order (sequential upserts, so
+-- the last put wins, matching 'runBody'), with the requested
+-- job-id counter row advanced by the generated deletion
+-- coverage — so the stored effect, not the raw request, joins
+-- the reconciliation expectation.
+effectiveDelta :: [Word64] -> StoreDelta -> StoreDelta
+effectiveDelta doomed delta =
+  delta { sdPutMeta = expected }
+  where
+    stored = foldl (\m (k, v) -> Map.insert k v m) Map.empty (sdPutMeta delta)
+    covered = case Map.lookup jobIdCounterKey stored of
+      Nothing -> stored
+      Just v -> case coverDeletedJobIds (Just v) doomed of
+        Just c -> Map.insert jobIdCounterKey c stored
+        Nothing -> stored
+    expected =
+      [ (k, v)
+      | (k, _) <- sdPutMeta delta
+      , Just v <- [Map.lookup k covered]
+      ]
 
 -- | The first touched token that is quarantined, if any.
 firstQuarantined :: [(TokenId, String)] -> [TokenId] -> Maybe (TokenId, String)

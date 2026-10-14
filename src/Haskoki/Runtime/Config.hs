@@ -56,7 +56,7 @@ import Haskoki.Session
   , policyPinMaxLen
   , policyPinMinLen
   )
-import Haskoki.Types (redactShown)
+import Haskoki.Types (TokenId (..), redactShown)
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -166,10 +166,11 @@ data SimCfg = SimCfg
 
 -- | @[tokens]@ section: the declarative multi-token
 -- catalog. Parallel string arrays (@labels@, @so_pins@,
--- @user_pins@ — the parser supports flat sections + string arrays
--- only, no @[[tables]]@); slot = catalog index, slot 0 MUST be
--- @haskoki-demo@ (the stability anchor for every existing
--- single-slot pin). Catalog PINs are EXAMPLE-GRADE fixture
+-- @user_pins@, plus the optional @token_ids@ stable identities
+-- held on 'cfgTokenIds' — the parser supports flat sections +
+-- string arrays only, no @[[tables]]@); slot = catalog index,
+-- slot 0 MUST be @haskoki-demo@ (the stability anchor for every
+-- existing single-slot pin). Catalog PINs are EXAMPLE-GRADE fixture
 -- material ("Do not use production secrets", the same discipline
 -- as the existing fixtures), and every configured PIN MUST
 -- satisfy the effective PIN length policy (currently 4..32
@@ -207,10 +208,19 @@ data Config = Config
   , cfgLimits :: !Limits
   , cfgSim :: !SimCfg
   , cfgTokens :: !TokensCfg
+  , cfgTokenIds :: !(Maybe [TokenId])
+    -- ^ Pinned stable identities for the @[tokens]@ catalog,
+    -- positional with 'tcEntries'. 'Nothing' = the @token_ids@
+    -- key is absent (legacy positional reading: slot @n@ owns
+    -- @TokenId (n+1)@). 'Just' = the pinned ids, validated
+    -- rectangular with the entries, unique, and home-anchored
+    -- (slot 0 carries @TokenId 1@); see 'parseTokenIds'.
   } deriving (Eq)
 
 -- | 'Show' renders every section; the token catalog renders
 -- through its redacted instance above (labels shown, PINs never).
+-- Pinned identities render plainly (they are slot routing, not
+-- secrets).
 instance Show Config where
   show c = "Config {cfgSchemaVersion = " ++ show (cfgSchemaVersion c)
     ++ ", cfgProfile = " ++ show (cfgProfile c)
@@ -224,7 +234,8 @@ instance Show Config where
     ++ ", cfgFixtures = " ++ show (cfgFixtures c)
     ++ ", cfgLimits = " ++ show (cfgLimits c)
     ++ ", cfgSim = " ++ show (cfgSim c)
-    ++ ", cfgTokens = " ++ show (cfgTokens c) ++ "}"
+    ++ ", cfgTokens = " ++ show (cfgTokens c)
+    ++ ", cfgTokenIds = " ++ show (cfgTokenIds c) ++ "}"
 
 -- | Why configuration failed.
 data ConfigError
@@ -257,6 +268,7 @@ defaultConfig = Config
   , cfgLimits = Limits 16 1024 100000 67108864 67108864 268435456 4096 8 1024 1024
   , cfgSim = SimCfg False [] [] 0 0
   , cfgTokens = TokensCfg []
+  , cfgTokenIds = Nothing
   }
 
 -- ---------------------------------------------------------------------------
@@ -296,6 +308,7 @@ knownKeys =
   , ("sim", "enabled"), ("sim", "delay_schedule"), ("sim", "token_script")
   , ("sim", "fault_window_start"), ("sim", "fault_window_ticks")
   , ("tokens", "labels"), ("tokens", "so_pins"), ("tokens", "user_pins")
+  , ("tokens", "token_ids")
   ]
 
 knownSections :: [String]
@@ -591,7 +604,9 @@ build kvs = do
   tokLabels <- getStrArr kvs ("tokens", "labels") []
   tokSo <- getStrArr kvs ("tokens", "so_pins") []
   tokUser <- getStrArr kvs ("tokens", "user_pins") []
+  tokIdsRaw <- getStrArr kvs ("tokens", "token_ids") []
   tokEntries <- parseTokenCatalog kvs tokLabels tokSo tokUser
+  tokIds <- parseTokenIds kvs tokLabels tokIdsRaw
   pure Config
     { cfgSchemaVersion = schema
     , cfgProfile = profile
@@ -606,6 +621,7 @@ build kvs = do
     , cfgLimits = lims
     , cfgSim = SimCfg simOn delaySched tokenScript fwStart fwTicks
     , cfgTokens = TokensCfg tokEntries
+    , cfgTokenIds = tokIds
     }
 
 -- | Parse one @NAME:TICKS@ delay-schedule entry: a non-empty
@@ -690,7 +706,9 @@ parseTokenCatalog kvs labels soPins userPins
       pure (zip3 labels soPins userPins)
   where
     tokensPresent = any (`Map.member` kvs)
-      [("tokens", "labels"), ("tokens", "so_pins"), ("tokens", "user_pins")]
+      [ ("tokens", "labels"), ("tokens", "so_pins"), ("tokens", "user_pins")
+      , ("tokens", "token_ids")
+      ]
     nL = length labels
     nS = length soPins
     nU = length userPins
@@ -724,6 +742,55 @@ parseTokenCatalog kvs labels soPins userPins
             ++ show bound ++ " (policy v1: re-provision with a "
             ++ show policyPinMinLen ++ ".." ++ show policyPinMaxLen
             ++ " byte PIN)"))
+
+-- | Validate the optional @[tokens] token_ids@ parallel array
+-- into pinned stable identities, positional with the labels. An
+-- absent key is 'Nothing' (legacy positional reading: slot @n@
+-- owns @TokenId (n+1)@, which every existing file keeps). A
+-- present key must be rectangular with @labels@, all decimal
+-- ids in @1..2147483647@ (the portable 'Int' range the
+-- 16-hex-character encoding decodes on any width), unique
+-- (a duplicate identity refuses, naming the id), and
+-- home-anchored (@token_ids[0]@ is 1: slot 0 is the home
+-- token, unconditionally). Anything else refuses the whole
+-- config at load with an actionable message, exactly like the
+-- label and PIN checks above.
+parseTokenIds
+  :: Map TomlKey TomlVal -> [String] -> [String]
+  -> Either ConfigError (Maybe [TokenId])
+parseTokenIds kvs labels raw
+  | not idsPresent = pure Nothing
+  | length raw /= length labels = Left (CfgInvalid
+      ("tokens.token_ids length must match tokens.labels (ragged catalog): "
+        ++ show (length raw) ++ " ids for " ++ show (length labels) ++ " labels"))
+  | otherwise = do
+      ids <- mapM parseOne raw
+      case dupId ids of
+        Just tid -> Left (CfgInvalid
+          ("tokens.token_ids must be unique (duplicate identity "
+            ++ show (unTokenId tid) ++ ")"))
+        Nothing -> case ids of
+          (TokenId 1 : _) -> pure (Just ids)
+          _ -> Left (CfgInvalid
+            "tokens.token_ids[0] must be 1 (slot 0 is the home token)")
+  where
+    idsPresent = Map.member ("tokens", "token_ids") kvs
+    parseOne :: String -> Either ConfigError TokenId
+    parseOne s
+      | not (null s), all isDigit s, length s <= 10 =
+          let v = read s :: Integer
+          in if v >= 1 && v <= 0x7FFFFFFF
+            then Right (TokenId (fromInteger v))
+            else bad
+      | otherwise = bad
+      where
+        bad = Left (CfgInvalid
+          ("tokens.token_ids must be decimal ids in 1..2147483647: " ++ show s))
+    dupId :: [TokenId] -> Maybe TokenId
+    dupId [] = Nothing
+    dupId (x : xs)
+      | x `elem` xs = Just x
+      | otherwise = dupId xs
 
 -- ---------------------------------------------------------------------------
 -- Reporting

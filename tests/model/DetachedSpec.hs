@@ -20,7 +20,8 @@ import Control.Exception (AsyncException (..), SomeException, fromException, try
 import Control.Monad (forM_)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.IORef (IORef, newIORef, modifyIORef', readIORef)
+import Data.IORef (IORef, newIORef, modifyIORef', readIORef, writeIORef)
+import Data.List (nub, sort)
 import Data.Word (Word64)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
@@ -110,6 +111,8 @@ import Haskoki.Runtime.Storage
   , TokenRecord (..)
   , defaultLimits
   , emptyDelta
+  , encodeHexWord64
+  , jobIdCounterKey
   , scriptedFaults
   )
 import Haskoki.Runtime.Storage.Memory
@@ -160,12 +163,18 @@ spec = testGroup "Detached jobs"
   , testCase "opaque native work is unsaveable; attachment kept" caseOpaqueUnsaveable
   , testCase "retireLiveTable cancels active attachments" caseRetireCancels
   , testCase "ambiguous commit reconciles present: durable wins" caseAmbiguousPresent
+  , testCase "ambiguous insertion reconciles present at the detach layer" caseAmbiguousInsertPresent
   , testCase "ambiguous commit reconciles absent: kept live" caseAmbiguousAbsent
   , testCase "simultaneous two-session joins admit exactly one" caseJoinRaceTwoSessions
   , testCase "colliding job zero resolves per table" caseJoinRaceTwoTables
   , testCase "scoped retire closes one table, keeps the other" caseRetireScopedKeepsOther
   , testCase "start refusal rolls the claim back" caseJoinStartRefusalRollsBack
   , testCase "interruption after start retires the fresh job" caseJoinInterruptionRollsBack
+  , testCase "two contexts on one store mint distinct ids" caseTwoContextsDistinctIds
+  , testCase "two tokens share the store-wide counter" caseTwoTokensStoreWideCounter
+  , testCase "stale pre-reset id never names new work" caseStaleIdNeverReused
+  , testCase "failed insertion burns its id, never reuses it" caseFailedInsertBurnsId
+  , testCase "token mismatch refuses before replan" caseTokenMismatchBeforeReplan
   ]
 
 tokHome :: TokenId
@@ -459,8 +468,10 @@ caseDetachRefusals = do
     other -> assertFailure ("expected DetachOk, got " ++ show other)
   storeClose store
 
--- Detach failure (faulted durable commit) preserves the old live
--- attachment: the job still polls and no record is stored.
+-- Detach failure (a faulted durable commit — the scripted fault
+-- lands on the reservation, the first of the two commits)
+-- preserves the old live attachment: the job still polls, no
+-- record is stored, and the failed reservation burns no id.
 caseDetachStoreFailure :: IO ()
 caseDetachStoreFailure = do
   world <- newMemoryWorld
@@ -497,6 +508,8 @@ caseDetachStoreFailure = do
   assertEqual "live job preserved" (PollPending 1) p
   jobs <- loadJobs faulty
   assertEqual "no durable record on failure" 0 (length jobs)
+  ePid <- storeReserveJobId faulty
+  assertEqual "failed reservation burns nothing" (Right 1) ePid
   storeClose faulty
 
 -- | Reopen a memory world: close the old handle, open a fresh one
@@ -1090,10 +1103,12 @@ caseRetireCancels = do
     other -> assertFailure ("expected one record, got " ++ show other)
   storeClose store
 
--- An ambiguous durable commit reloads and reconciles: the record
--- IS present (the backend applied it before verification failed),
--- so detach succeeds exactly once — one record, old binding gone,
--- nothing duplicated. Real fault injection, no fakes.
+-- Ambiguous durable commits reload and reconcile: detach runs
+-- two commits (reservation, then insertion) and the script
+-- faults both; each reconciles present (the backend applied
+-- before verification), so detach succeeds exactly once — one
+-- record, old binding gone, nothing duplicated. Real fault
+-- injection, no fakes.
 caseAmbiguousPresent :: IO ()
 caseAmbiguousPresent = do
   world <- newMemoryWorld
@@ -1113,7 +1128,7 @@ caseAmbiguousPresent = do
     Committed -> pure ()
     other -> assertFailure ("token seat failed: " ++ show other)
   storeClose clean
-  inj <- scriptedFaults [FaultAmbiguousCommit, FaultVerifyReload]
+  inj <- scriptedFaults [FaultAmbiguousCommit, FaultAmbiguousCommit]
   eFaulty <- openMemoryStoreWith world defaultLimits inj
   faulty <- case eFaulty of
     Right s -> pure s
@@ -1139,19 +1154,59 @@ caseAmbiguousPresent = do
   assertEqual "attachment idle" (Just AvIdle) av
   storeClose faulty
 
+-- A clean reservation followed by an unknown-but-durable
+-- insertion: the insert really lands, only its outcome is
+-- hidden, so the detach layer reloads and reconciles present —
+-- exactly once, with the old binding revoked. (A shared fault
+-- script cannot stage this shape: its entries match in any
+-- probe order, so a verification fault would be consumed by
+-- the reservation's own probe first. The Store record itself
+-- is scripted instead; the reload-then-decide logic is what is
+-- pinned.)
+caseAmbiguousInsertPresent :: IO ()
+caseAmbiguousInsertPresent = do
+  (_world, backing) <- mkWorld
+  gen <- openLiveGen
+  let fake = backing
+        { storeCommit = \delta -> do
+            res <- storeCommit backing delta
+            case res of
+              Committed -> pure (CommitUnknown (StoreIO "scripted ambiguity"))
+              other -> pure other
+        }
+  dc <- mkDetached fake
+  runs <- newIORef 0
+  j0 <- startDigestJob gen "abc" 32 2
+  out <- detachJob dc (lgTable gen) j0 JobDigest
+  pid <- case out of
+    DetachOk p -> pure p
+    other -> assertFailure ("expected DetachOk, got " ++ show other)
+  jobs <- loadJobs backing
+  case jobs of
+    [rec] -> assertEqual "the reconciled record" pid (jrPersistentId rec)
+    other -> assertFailure ("expected one record, got " ++ show (length other))
+  p <- pollJob (countingRunner runs) (lgEnv gen) (lgTable gen) JobDigest j0
+  assertEqual "old binding revoked" PollUnknown p
+  av <- inspectAttachment dc pid
+  assertEqual "attachment idle" (Just AvIdle) av
+  storeClose backing
+
 -- The other reconcile branch, via a scripted store: the commit
 -- outcome is unknown AND the reload shows nothing was written, so
 -- detach reports the store failure with the live attachment
 -- preserved. (No backend produces this shape on demand — the memory
 -- backend applies before it can go ambiguous — so the Store record
--- itself is scripted; the reload-then-decide logic is what is pinned.)
+-- itself is scripted; the reload-then-decide logic is what is pinned.
+-- The reservation is pinned explicitly: a fixed scripted id, so
+-- the test never depends on the backing store's live counter.)
 caseAmbiguousAbsent :: IO ()
 caseAmbiguousAbsent = do
   (_world, backing) <- mkWorld
   gen <- openLiveGen
   captured <- newIORef (emptyDelta :: StoreDelta)
   let fake = backing
-        { storeCommit = \delta -> do
+        { storeReserveJobId = pure (Right 42)
+        , storeCommit = \delta -> do
             modifyIORef' captured (const delta)
             pure (CommitUnknown (StoreIO "scripted ambiguity"))
         , storeLoadJobs = pure (Right [])
@@ -1168,6 +1223,9 @@ caseAmbiguousAbsent = do
   assertEqual "live job preserved" (PollPending 1) p
   delta <- readIORef captured
   assertEqual "one commit attempted" 1 (length (sdPutJobs delta))
+  case sdPutJobs delta of
+    [rec] -> assertEqual "scripted reservation id used" 42 (jrPersistentId rec)
+    _ -> assertFailure "expected exactly one captured job put"
   storeClose backing
 
 -- Seeded starts share startJob validation: bad capacities refuse
@@ -1573,4 +1631,198 @@ caseJoinInterruptionRollsBack = do
   assertEqual "one write" 1 (length got)
   nRuns <- readIORef runs
   assertEqual "one engine run" 1 nRuns
+  storeClose store
+
+-- | Open a detach context homed to an arbitrary token.
+mkDetachedFor :: Store -> TokenId -> IO DetachCtx
+mkDetachedFor store tok = do
+  eDc <- openDetached store tok
+  case eDc of
+    Right dc -> pure dc
+    Left err -> assertFailure ("openDetached failed: " ++ show err)
+
+-- | Seat a second token (id 2, slot 1, generation 0) next to the
+-- home token; return its record.
+seatSecondToken :: Store -> IO TokenRecord
+seatSecondToken store = do
+  let tok = TokenRecord
+        { trId = TokenId 2
+        , trSlot = SlotId 1
+        , trGeneration = Generation 0
+        , trLabel = "detach-test-2"
+        , trAuth = tokenAuthNew
+        }
+  res <- storeCommit store emptyDelta { sdPutTokens = [tok] }
+  case res of
+    Committed -> pure tok
+    other -> assertFailure ("second token seat failed: " ++ show other)
+
+-- | Read the durable job-id mark ('Nothing' = the key is absent).
+loadCounter :: Store -> IO (Maybe String)
+loadCounter store = do
+  eMeta <- storeLoadMeta store
+  meta <- case eMeta of
+    Right m -> pure m
+    Left err -> assertFailure ("loadMeta failed: " ++ show err)
+  pure (lookup jobIdCounterKey meta)
+
+-- Two contexts over one store handle mint distinct ids: the
+-- store-wide reservation serializes them, so sequential detaches
+-- through sibling contexts hand out 1 then 2 with both records
+-- durable.
+caseTwoContextsDistinctIds :: IO ()
+caseTwoContextsDistinctIds = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  dcA <- mkDetached store
+  dcB <- mkDetached store
+  j0 <- startDigestJob gen "abc" 32 2
+  j1 <- startDigestJob gen "def" 32 2
+  DetachOk pidA <- detachJob dcA (lgTable gen) j0 JobDigest
+  DetachOk pidB <- detachJob dcB (lgTable gen) j1 JobDigest
+  assertEqual "sibling contexts share one counter" [1, 2] (sort [pidA, pidB])
+  assertEqual "no shared id" 2 (length (nub [pidA, pidB]))
+  jobs <- loadJobs store
+  assertEqual "both records durable" [1, 2] (sort (map jrPersistentId jobs))
+  mark <- loadCounter store
+  assertEqual "mark advanced past both" (Just (encodeHexWord64 3)) mark
+  storeClose store
+
+-- Two tokens on one store share the same store-wide counter:
+-- detaches through per-token contexts never collide, and each
+-- record stays homed to its own token.
+caseTwoTokensStoreWideCounter :: IO ()
+caseTwoTokensStoreWideCounter = do
+  (_world, store) <- mkWorld
+  tok2 <- seatSecondToken store
+  gen <- openLiveGen
+  dcA <- mkDetached store
+  dcB <- mkDetachedFor store (trId tok2)
+  j0 <- startDigestJob gen "abc" 32 2
+  j1 <- startDigestJob gen "def" 32 2
+  DetachOk pidA <- detachJob dcA (lgTable gen) j0 JobDigest
+  DetachOk pidB <- detachJob dcB (lgTable gen) j1 JobDigest
+  assertEqual "tokens share one counter" [1, 2] (sort [pidA, pidB])
+  jobs <- loadJobs store
+  case ( [r | r <- jobs, jrPersistentId r == pidA]
+       , [r | r <- jobs, jrPersistentId r == pidB] ) of
+    ([ra], [rb]) -> do
+      assertEqual "first record homed" tokHome (jrToken ra)
+      assertEqual "second record homed" (trId tok2) (jrToken rb)
+    other -> assertFailure ("expected two records, got " ++ show other)
+  storeClose store
+
+-- Detach, reset, reopen, detach again: reset drops the job rows
+-- but keeps the high-water mark, so the new detach mints a fresh
+-- id and the stale pre-reset id names nothing — never new work.
+caseStaleIdNeverReused :: IO ()
+caseStaleIdNeverReused = do
+  (world, storeA) <- mkWorld
+  genA <- openLiveGen
+  dcA <- mkDetached storeA
+  j0 <- startDigestJob genA "abc" 32 1
+  DetachOk pid1 <- detachJob dcA (lgTable genA) j0 JobDigest
+  let replacement = TokenRecord
+        { trId = tokHome
+        , trSlot = slotHome
+        , trGeneration = Generation 1
+        , trLabel = "detach-test"
+        , trAuth = tokenAuthNew
+        }
+  rr <- storeResetToken storeA tokHome (Generation 0) replacement
+  case rr of
+    Committed -> pure ()
+    other -> assertFailure ("reset failed: " ++ show other)
+  dropped <- loadJobs storeA
+  assertEqual "reset drops job rows" [] dropped
+  storeB <- reopenWorld world storeA
+  genB <- openLiveGen
+  dcB <- mkDetached storeB
+  j1 <- startDigestJob genB "def" 32 1
+  DetachOk pid2 <- detachJob dcB (lgTable genB) j1 JobDigest
+  assertEqual "mark kept across reset" 2 pid2
+  stale <- joinJob dcB (lgEnv genB) (lgTable genB) JoinRequest
+    { jqPid = pid1
+    , jqFunction = JobDigest
+    , jqSession = ssId (lgSession genB)
+    , jqCapacity = 32
+    }
+  assertEqual "stale id names nothing" JoinUnknown stale
+  jobs <- loadJobs storeB
+  assertEqual "only the new record exists" [pid2] (map jrPersistentId jobs)
+  storeClose storeB
+
+-- A failed insertion burns its reservation: the detach reports
+-- the store failure with the live job preserved, the next
+-- detach mints the following id (a gap, never a reuse), and
+-- the burned id names no record.
+caseFailedInsertBurnsId :: IO ()
+caseFailedInsertBurnsId = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  armed <- newIORef True
+  let flaky = store
+        { storeCommit = \delta -> do
+            arm <- readIORef armed
+            if arm && not (null (sdPutJobs delta))
+              then do
+                writeIORef armed False
+                pure (NotCommitted (StoreIO "scripted insert failure"))
+              else storeCommit store delta
+        }
+  dc <- mkDetached flaky
+  runs <- newIORef 0
+  j0 <- startDigestJob gen "abc" 32 2
+  j1 <- startDigestJob gen "def" 32 2
+  out <- detachJob dc (lgTable gen) j0 JobDigest
+  case out of
+    DetachStore _ -> pure ()
+    other -> assertFailure ("expected DetachStore, got " ++ show other)
+  p <- pollJob (countingRunner runs) (lgEnv gen) (lgTable gen) JobDigest j0
+  assertEqual "live job preserved" (PollPending 1) p
+  mark <- loadCounter store
+  assertEqual "reservation burned before the failed insert"
+    (Just (encodeHexWord64 2)) mark
+  DetachOk pid2 <- detachJob dc (lgTable gen) j1 JobDigest
+  assertEqual "gap, never a reuse" 2 pid2
+  jobs <- loadJobs store
+  assertEqual "burned id names no record" [2] (map jrPersistentId jobs)
+  storeClose store
+
+-- A token-identity mismatch refuses before any replan, even
+-- at an equal generation: the record names the second token
+-- at generation 0 (as does the home token) and carries an
+-- unknown recipe version (which would refuse as
+-- 'JoinUnknownVersion' if the body ran first). The join
+-- reports the id unknown to this home token, with nothing
+-- claimed and the record intact.
+caseTokenMismatchBeforeReplan :: IO ()
+caseTokenMismatchBeforeReplan = do
+  (_world, store) <- mkWorld
+  tok2 <- seatSecondToken store
+  gen <- openLiveGen
+  dc <- mkDetached store
+  let rec = JobRecord
+        { jrPersistentId = 41
+        , jrToken = trId tok2
+        , jrTokenGeneration = Generation 0
+        , jrFunction = "digest"
+        , jrState = JobQueued
+        , jrBody = JobPending "bogus/v9" "xx"
+        }
+  res <- storeCommit store emptyDelta { sdPutJobs = [rec] }
+  case res of
+    Committed -> pure ()
+    other -> assertFailure ("hand-commit failed: " ++ show other)
+  out <- joinJob dc (lgEnv gen) (lgTable gen) JoinRequest
+    { jqPid = 41
+    , jqFunction = JobDigest
+    , jqSession = ssId (lgSession gen)
+    , jqCapacity = 32
+    }
+  assertEqual "token mismatch refuses first" JoinUnknown out
+  av <- inspectAttachment dc 41
+  assertEqual "nothing claimed" Nothing av
+  jobs <- loadJobs store
+  assertEqual "record intact" 1 (length jobs)
   storeClose store

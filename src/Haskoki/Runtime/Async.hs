@@ -119,6 +119,7 @@ funnels: Standard\/Async\/Exports 'publishCommit' \/
   no-drain-on-fault shape; test-only, out of this contract.
 
 -}
+{-# LANGUAGE ForeignFunctionInterface #-}
 module Haskoki.Runtime.Async
   ( -- * Jobs and functions
     JobFunction (..)
@@ -223,7 +224,8 @@ import Control.Exception
   , uninterruptibleMask_
   )
 import Control.Monad (unless)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.Int (Int64)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -234,7 +236,6 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Word (Word32, Word64)
-import System.IO.Unsafe (unsafePerformIO)
 
 import Haskoki.Attribute (AttributeValue (..))
 import Haskoki.Engine.Driver (encodeResult)
@@ -605,15 +606,14 @@ data TableIdExhausted = TableIdExhausted
 
 instance Exception TableIdExhausted
 
--- | Process-wide table-identity counter: the sole mint, so every
--- table in the process carries a distinct identity. (The same
--- shape @base@ uses for 'Data.Unique': one 'NOINLINE' cell, one
--- atomic step per mint.) The mint refuses past 2^32-1 tables
+-- | Process-wide table-identity mint: C-owned surface state (the
+-- former Haskell global counter is gone with its import). Hands out
+-- table indices 0, 1, ... one atomic step per mint; past 2^32-1
+-- tables it refuses (-1) instead of wrapping or reusing an identity
 -- (see 'tableSaltFor'), leaving the counter untouched, so
 -- identities never wrap and salts never repeat.
-tableIdCounter :: IORef Int
-tableIdCounter = unsafePerformIO (newIORef 0)
-{-# NOINLINE tableIdCounter #-}
+foreign import ccall unsafe "haskoki_table_mint_next"
+  c_tableMintNext :: IO Int64
 
 -- | The exact handle salt for the n-th table (0-based): n+1, so the
 -- first table salts 1 (never zero) and every salt is nonzero and
@@ -627,15 +627,16 @@ tableSaltFor n
   | otherwise = Nothing
 
 -- | Mint the next table identity with its exact salt (single
--- atomic step). 'Nothing' past 2^32-1 tables: the counter is left
--- untouched, so a refused mint allocates nothing and consumes no
--- identity a later mint could observe.
+-- atomic step in the C-owned mint). 'Nothing' past 2^32-1 tables:
+-- the counter is left untouched, so a refused mint allocates
+-- nothing and consumes no identity a later mint could observe.
 mintTableId :: IO (Maybe (AsyncTableId, Word32))
-mintTableId =
-  atomicModifyIORef' tableIdCounter $ \n ->
-    case tableSaltFor n of
-      Nothing -> (n, Nothing)
-      Just salt -> (n + 1, Just (AsyncTableId n, salt))
+mintTableId = do
+  n <- c_tableMintNext
+  let i = fromIntegral n :: Int
+  pure $ case tableSaltFor i of
+    Nothing -> Nothing
+    Just salt -> Just (AsyncTableId i, salt)
 
 -- | The attached-job table: live jobs plus tombstones, the next
 -- job id, the live-job capacity, the async-enabled sessions, the

@@ -27,7 +27,7 @@ import Foreign.Ptr (Ptr, nullPtr, castPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr)
 import Foreign.Storable (peek, poke)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertEqual, assertBool, testCase)
+import Test.Tasty.HUnit (assertEqual, assertBool, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.FFI.Async (decodeAsyncFunctionName, jobFunctionCode)
@@ -44,6 +44,7 @@ import Haskoki.FFI.Standard
   , provisionedSoPin
   , provisionedUserPin
   , sessionScalars
+  , terminateSlotDelta
   , tokenScalars
   , StdInstance (..)
   , openStdInstance
@@ -83,8 +84,25 @@ import Haskoki.Model
   , emptyModel
   , lookupSession
   )
-import Haskoki.Operation (emptySessionOps, MsgState(..), MsgFamily(..), SlotKind(..), stagedOf)
+import Haskoki.Operation
+  ( DataGate (..)
+  , MsgFamily (..)
+  , MsgState (..)
+  , OpAuth (..)
+  , SlotKind (..)
+  , StepDeny (..)
+  , emptySessionOps
+  , gateDataCall
+  , insertOp
+  , mkActiveSign
+  , mkActiveVerify
+  , mkSlotCommon
+  , removeSingle
+  , stagedOf
+  )
 import Haskoki.Operation.Message (lookupMessage, messageBuffered)
+import Haskoki.Outcome (DeltaOp (..), StateDelta (..))
+import Haskoki.Registry (MechanismId (..), Operation (..))
 import Haskoki.Rules (Rules (..), defaultRules)
 import Haskoki.Runtime.Async (JobFunction (..))
 import Haskoki.Runtime.Config (defaultConfig)
@@ -92,6 +110,7 @@ import Haskoki.Runtime.Lifecycle (snapshotModel)
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( Generation (..)
+  , ObjectId (..)
   , Revision (..)
   , ReturnCode (..)
   , SessionId (..)
@@ -119,6 +138,7 @@ spec = testGroup "Standard surface"
   , testCase "message staged query short and exact" caseMessageStagedQuery
   , testCase "message empty staged output" caseMessageEmptyQuery
   , testCase "message verify presence and sign continuation" caseMessageSignals
+  , testCase "terminated slot drops a stranded context grant" caseTerminateDropsGrant
   ]
 
 caseAsyncFunctionNames :: IO ()
@@ -571,3 +591,52 @@ caseMessageSignals = withMessageFixture $ \ctx inst session _ mac ->
     before <- messageState inst session SlotVerify
     expectMessageRv "absent nonempty witness refuses" CKR_ARGUMENTS_BAD (haskokiStdMessageVerifyNext ctx session nullPtr 0 first firstn nullPtr 1)
     messageState inst session SlotVerify >>= assertEqual "decode refusal unchanged" before
+
+-- | Early termination drops a stranded context grant: removing the
+-- granted slot publishes the login back to a plain user login, so a
+-- later marked operation admits but cannot spend the stale grant —
+-- its first data call demands a fresh context login. A grant with
+-- other pending work left, or no grant at all, publishes no login
+-- change.
+caseTerminateDropsGrant :: IO ()
+caseTerminateDropsGrant = do
+  let sid = SessionId 1
+      base login ops = SessionState
+        { ssId = sid
+        , ssSlot = SlotId 0
+        , ssRevision = Revision 1
+        , ssGeneration = Generation 1
+        , ssReadOnly = False
+        , ssLogin = login
+        , ssOps = ops
+        }
+      pending op = mkSlotCommon hmacMech op (Just (ObjectId 9)) mempty AuthPending
+      ops0 = insertOp (mkActiveSign (pending OpSign)) emptySessionOps
+      granted = base LoginContextUser ops0
+      opsGone = removeSingle SlotSign ops0
+  -- The granted slot leaves and the stranded grant drops with it.
+  assertEqual "removal clears the stranded grant"
+    (StateDelta [ DeltaSetSessionOps sid opsGone
+                , DeltaSetSessionLogin sid LoginUser
+                ])
+    (terminateSlotDelta granted SlotSign)
+  -- A later marked operation admits on the cleared session, but its
+  -- first data call demands a fresh context login.
+  let cleared = base LoginUser opsGone
+  case gateDataCall cleared (pending OpSign) of
+    GateDeny d term -> do
+      assertEqual "stale grant spends nothing" CKR_USER_NOT_LOGGED_IN (sdCode d)
+      assertBool "grantless slot terminates" term
+    GateOk _ _ -> assertFailure "stale grant must not spend"
+  -- A grant with other pending work left survives the removal.
+  let opsPair = insertOp (mkActiveVerify (pending OpVerify)) ops0
+      grantedPair = base LoginContextUser opsPair
+  assertEqual "surviving pending work keeps the grant"
+    (StateDelta [DeltaSetSessionOps sid (removeSingle SlotSign opsPair)])
+    (terminateSlotDelta grantedPair SlotSign)
+  -- Without a grant there is no login change to publish.
+  assertEqual "grantless removal keeps the login"
+    (StateDelta [DeltaSetSessionOps sid opsGone])
+    (terminateSlotDelta (base LoginUser ops0) SlotSign)
+  where
+    hmacMech = MechanismId 0x251

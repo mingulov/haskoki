@@ -30,7 +30,7 @@ module StoreSpec
   ) where
 
 import Control.Concurrent (forkFinally, forkIO, killThread, threadDelay)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar, tryReadMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar, tryReadMVar, tryTakeMVar)
 import Control.Exception (AsyncException (ThreadKilled), bracket, bracket_, fromException, mask, onException)
 import Control.Monad (replicateM_, when)
 import qualified Data.ByteString as BS
@@ -45,7 +45,7 @@ import qualified Database.SQLite3 as S
 import Data.Word (Word64)
 import Foreign.C.Types (CInt (..))
 import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
-import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
+import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Error (catchIOError)
@@ -80,11 +80,15 @@ import Haskoki.Outcome
   )
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
+  , DesiredToken (..)
+  , IdentityRefusal (..)
   , JobBody (..)
   , JobExecState (..)
   , JobRecord (..)
   , ObjectPut (..)
   , ObjectRecord (..)
+  , ReconcilePlan (..)
+  , SlotMoveRefusal (..)
   , Store (..)
   , StoreDelta (..)
   , StoreError (..)
@@ -92,9 +96,31 @@ import Haskoki.Runtime.Storage
   , TokenRecord (..)
   , docTopKeys
   , emptyDelta
+  , encodeHexWord64
+  , jobIdCounterKey
   , objectToRecord
+  , planSlotMoves
+  , reconcileIdentities
+  , renderIdentityRefusal
+  , renderSlotMoveRefusal
   , reserveRestoredIds
   )
+import Haskoki.FFI.Standard
+  ( ObjectProjection (..)
+  , StdStore (..)
+  , StdStoreError (..)
+  , buildObjectProjection
+  , openStdStore
+  )
+import Haskoki.Runtime.Catalog (effectiveCatalog, identityCatalog)
+import Haskoki.Runtime.Config
+  ( Config (..)
+  , ConfigError (..)
+  , StorageCfg (..)
+  , StorageKind (..)
+  , parseConfig
+  )
+import Haskoki.Runtime.Lifecycle (newEnv, rulesFromConfig)
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
 import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), livenessFromProbes, openSQLiteStore)
 import Haskoki.Session (TokenAuth (..), tokenAuthNew)
@@ -200,6 +226,32 @@ spec = testGroup "store contract"
           testCase "pause binds to the intended opener" testPauseBindsToIntendedOpener
       , after AllFinish "/pause binds to the intended opener/" $
           testCase "lock naming pid 0 is takeable without probing" testPidZeroTakeable
+      -- The reserve-death case takes over a SIGKILLed child's
+      -- lock via the real /proc, so it joins the same chain.
+      , after AllFinish "/lock naming pid 0 is takeable without probing/" $
+          testCase "death after reservation leaves a gap, never reuse" testReserveDeathGap
+      ]
+  , testGroup "token identity parsing"
+      [ testCase "pinned token_ids parse and project" casePinnedIdsParse
+      , testCase "duplicate token_ids refused" caseDuplicateIdsRefused
+      , testCase "ragged token_ids refused" caseRaggedIdsRefused
+      , testCase "malformed token_ids refused" caseMalformedIdsRefused
+      , testCase "non-home slot zero id refused" caseNonHomeIdRefused
+      , testCase "absent token_ids read positionally" caseAbsentIdsPositional
+      , testCase "token_ids without labels refused" caseIdsWithoutLabelsRefused
+      , testCase "hand-built id mismatch falls back to positional" caseMismatchFallsBack
+      , testCase "duplicate desired identity refuses" caseDuplicateDesiredRefuses
+      , testCase "reconciler enforces the home anchor" caseReconcilerHomeAnchor
+      ]
+  , testGroup "standard open reconciliation"
+      [ testCase "standard open seeds a fresh file positionally" caseOpenSeedsFresh
+      , testCase "standard open refuses a reorder with the actionable message" caseOpenReorderRefuses
+      , testCase "standard open refuses a removal, preserving the file" caseOpenRemovalRefuses
+      , testCase "standard open accepts after an explicit move" caseOpenAcceptsMoved
+      , testCase "standard open refuses an interrupted move until completed" caseOpenInterruptedRefuses
+      , testCase "standard open refuses a positional downgrade over a moved store" caseOpenDowngradeRefuses
+      , testCase "PIN edit changes the credential for the same identity" caseOpenPinEditAccepted
+      , testCase "publication resolves moved slots through the reconciled layout" caseProjectionUsesReconciledLayout
       ]
   ]
 
@@ -240,6 +292,40 @@ contractSpec label mkOpener = testGroup label
       withOpener mkOpener testKilledOpener
   , testCase "token slot moves commit identically in either put order" $
       withOpener mkOpener tokenSlotMovesAreOrderIndependent
+  , testCase "reservation hands out increasing durable ids" $
+      withOpener mkOpener testReserveIncreasing
+  , testCase "reservation reconciles with stored jobs without lowering" $
+      withOpener mkOpener testReserveReconciles
+  , testCase "reset and drop keep the high-water mark" $
+      withOpener mkOpener testReserveSurvivesReset
+  , testCase "id space refuses before wrap" $
+      withOpener mkOpener testReserveExhaustion
+  , testCase "corrupt counter fails closed" $
+      withOpener mkOpener testReserveCorrupt
+  , testCase "legacy reset before first reservation never reuses" $
+      withOpener mkOpener testLegacyResetCovers
+  , testCase "legacy token drop before first reservation never reuses" $
+      withOpener mkOpener testLegacyDropCovers
+  , testCase "legacy job drop before first reservation never reuses" $
+      withOpener mkOpener testLegacyJobDropCovers
+  , testCase "phantom job drop burns nothing" $
+      withOpener mkOpener testPhantomDropBurnsNothing
+  , testCase "corrupt mark stays failed-closed across deletes" $
+      withOpener mkOpener testCorruptDeleteStaysClosed
+  , testCase "identity reconciliation seeds new tokens, keeps durable ones" $
+      withOpener mkOpener testIdentitySeedAppend
+  , testCase "reordered catalog refuses without touching bytes" $
+      withOpener mkOpener testIdentityReorderRefuses
+  , testCase "middle insertion refuses, append seeds" $
+      withOpener mkOpener testIdentityInsertion
+  , testCase "removed entry refuses and preserves durable data" $
+      withOpener mkOpener testIdentityRemovalRefuses
+  , testCase "relabeled entry refuses, durable label authoritative" $
+      withOpener mkOpener testIdentityLabelChangeRefuses
+  , testCase "explicit slot moves reassign slots atomically" $
+      withOpener mkOpener testIdentitySlotMoves
+  , testCase "fresh store seeds every configured token" $
+      withOpener mkOpener testIdentityFreshSeeds
   ]
 
 -- | Acceptance 1: the same logical token objects across a
@@ -490,9 +576,14 @@ refusalSpin o spunVar = go (0 :: Int)
 
 -- | Race a kill against one opening claim with the identity unowned.
 -- The opener signals entry before opening, so the kill provably races
--- a started open; the opener self-reports its attempt (see
--- 'claimOnce'), so a claim that completed before the kill is drained
--- (never leaked) and the identity is unowned on return.
+-- a started worker — but not provably a started open: a kill already
+-- pending when the worker enters its restored open is delivered
+-- before the open begins, so no report can exist on that schedule.
+-- The drain therefore distinguishes the pre-begin kill (no report;
+-- a probe open asserts nothing leaked, stranded, or wedged the owner
+-- cell) from the post-begin kill (the open completed first, so the
+-- self-report is required and the completed claim is drained, never
+-- leaked). Either way the identity is unowned on return.
 raceClaim :: Opener -> IO ()
 raceClaim o = do
   enteredVar <- newEmptyMVar
@@ -505,19 +596,33 @@ raceClaim o = do
     Just () -> pure ()
   killThread tid
   mOut <- timeout killGuard (takeMVar outcomeVar)
-  case mOut of
+  killed <- case mOut of
     Nothing -> assertFailure "killed opener join timed out (5s guard)"
     Just (Left e) -> case fromException e of
-      Just ThreadKilled -> pure ()
+      Just ThreadKilled -> pure True
       _ -> assertFailure ("opener worker died: " ++ show e)
-    Just (Right ()) -> pure ()
-  -- The worker is dead, so its self-report (if any) is final: drain
-  -- a completed claim, and fail on a completed refusal (impossible
-  -- on the unowned identity) or a missing report (the kill aborted
-  -- the open — the schedule this regression guards).
+    Just (Right ()) -> pure False
+  -- The worker is dead, so its self-report (if any) is final.
   mRep <- tryTakeMVar reportVar
   case mRep of
-    Nothing -> assertFailure "racing opener died without reporting its open"
+    -- Pre-begin kill: the pending kill was delivered at 'restore'
+    -- entry, before the open began (or aborted a backend open section
+    -- whose cleanup keeps the identity unowned), so no completed open
+    -- exists to drain and no report can be required. The probe asserts
+    -- the regression postcondition directly: the identity reopens
+    -- (nothing leaked, nothing stranded, the owner cell intact) and
+    -- closes cleanly.
+    Nothing
+      | killed -> do
+          eProbe <- openCurrent o
+          probe <- expectRight "identity opens after pre-begin kill" eProbe
+          storeClose probe
+      | otherwise ->
+          assertFailure "racing opener exited without reporting its open"
+    -- Post-begin kill (or a kill that missed entirely): the open
+    -- completed before the kill landed, so the self-report is
+    -- required — drain the completed claim, and fail on a completed
+    -- refusal (impossible on the unowned identity).
     Just (Left err) ->
       assertFailure ("racing opener refused on unowned identity: " ++ show err)
     Just (Right stray) -> storeClose stray
@@ -526,7 +631,9 @@ raceClaim o = do
 -- the ambient mask), and self-report the attempt under the same
 -- mask — acquisition through registration is atomic w.r.t. async
 -- exceptions, so a completed claim always reaches the drain. The
--- caller drains the report after joining the worker.
+-- caller drains the report after joining the worker; a kill landing
+-- before the restored open begins leaves no report, which the caller
+-- ('raceClaim') covers with its pre-begin probe instead.
 claimOnce :: Opener -> MVar () -> MVar (Either StoreError Store) -> IO ()
 claimOnce o enteredVar reportVar = mask $ \restore -> do
   putMVar enteredVar ()
@@ -806,6 +913,226 @@ testResetKillsOldIds o = do
     NotCommitted (StoreRevisionConflict _) -> pure ()
     other -> assertFailure ("expected missing reset refusal, got: " ++ show other)
   storeClose s
+
+-- | Read the durable job-id mark ('Nothing' = the key is absent).
+loadCounter :: Store -> IO (Maybe String)
+loadCounter s = do
+  eMeta <- storeLoadMeta s
+  meta <- either (\e -> assertFailure ("loadMeta: " ++ show e)) pure eMeta
+  pure (lookup jobIdCounterKey meta)
+
+-- | Reservation hands out increasing durable ids: 1, 2, then 3
+-- after a close/reopen boundary, with the mark persisted.
+testReserveIncreasing :: Opener -> IO ()
+testReserveIncreasing o = withStore o $ \s -> do
+  r1 <- storeReserveJobId s >>= expectRight "reserve 1"
+  r2 <- storeReserveJobId s >>= expectRight "reserve 2"
+  assertEqual "increasing" [1, 2] [r1, r2]
+  storeClose s
+  eStore2 <- openCurrent o
+  s2 <- either (\e -> assertFailure ("reopen: " ++ show e)) pure eStore2
+  r3 <- storeReserveJobId s2 >>= expectRight "reserve 3"
+  assertEqual "durable across reopen" 3 r3
+  mark <- loadCounter s2
+  assertEqual "mark persisted" (Just (encodeHexWord64 4)) mark
+  storeClose s2
+
+-- | A store with hand-seated jobs reconciles the mark with the
+-- stored maximum — without ever lowering a higher mark.
+testReserveReconciles :: Opener -> IO ()
+testReserveReconciles o = withStore o $ \s -> do
+  (tok, _) <- seedStore s
+  rJobs <- storeCommit s emptyDelta
+    { sdPutJobs = [demoJobPending 41 (trId tok) (trGeneration tok)] }
+  assertEqual "jobs seed" Committed rJobs
+  r1 <- storeReserveJobId s >>= expectRight "reserve past jobs"
+  assertEqual "reconciles with max job + 1" 42 r1
+  rMeta <- storeCommit s emptyDelta
+    { sdPutMeta = [(jobIdCounterKey, encodeHexWord64 100)] }
+  assertEqual "mark seed" Committed rMeta
+  r2 <- storeReserveJobId s >>= expectRight "reserve past mark"
+  assertEqual "never lowers the mark" 100 r2
+  mark <- loadCounter s
+  assertEqual "mark advanced" (Just (encodeHexWord64 101)) mark
+
+-- | Reset and token drop remove job rows but keep the
+-- high-water mark: later reservations never reuse ids.
+testReserveSurvivesReset :: Opener -> IO ()
+testReserveSurvivesReset o = withStore o $ \s -> do
+  (tok, _) <- seedStore s
+  let gen1 = trGeneration tok
+  r1 <- storeReserveJobId s >>= expectRight "reserve 1"
+  assertEqual "first id" 1 r1
+  rJobs <- storeCommit s emptyDelta
+    { sdPutJobs = [demoJobPending r1 (trId tok) gen1] }
+  assertEqual "job insert" Committed rJobs
+  let replacement = tok { trGeneration = Generation 2, trLabel = "seed-token-gen2" }
+  rr <- storeResetToken s (trId tok) gen1 replacement
+  assertEqual "reset commits" Committed rr
+  eJobs <- storeLoadJobs s
+  jobs <- either (\e -> assertFailure ("load jobs: " ++ show e)) pure eJobs
+  assertEqual "reset drops job rows" [] jobs
+  r2 <- storeReserveJobId s >>= expectRight "reserve after reset"
+  assertEqual "mark kept across reset" 2 r2
+  rDrop <- storeCommit s emptyDelta { sdDropTokens = [trId tok] }
+  assertEqual "drop commits" Committed rDrop
+  r3 <- storeReserveJobId s >>= expectRight "reserve after drop"
+  assertEqual "mark kept across drop" 3 r3
+
+-- | The id space refuses before the 'Word64' domain can wrap:
+-- the next-to-last id hands out once, then reservation fails
+-- with the mark parked (never wrapped to zero).
+testReserveExhaustion :: Opener -> IO ()
+testReserveExhaustion o = withStore o $ \s -> do
+  _ <- seedStore s
+  let nearMax = maxBound - 1 :: Word64
+  rMeta <- storeCommit s emptyDelta
+    { sdPutMeta = [(jobIdCounterKey, encodeHexWord64 nearMax)] }
+  assertEqual "mark seed" Committed rMeta
+  r1 <- storeReserveJobId s >>= expectRight "reserve next-to-last"
+  assertEqual "next-to-last hands out" nearMax r1
+  eFull <- storeReserveJobId s
+  case eFull of
+    Left (StoreFull _) -> pure ()
+    other -> assertFailure ("expected StoreFull, got: " ++ show other)
+  mark <- loadCounter s
+  assertEqual "mark parked, never wrapped" (Just (encodeHexWord64 maxBound)) mark
+  eJobs <- storeLoadJobs s
+  jobs <- either (\e -> assertFailure ("load jobs: " ++ show e)) pure eJobs
+  assertEqual "no phantom records" [] jobs
+
+-- | A corrupt counter fails closed (never a guessed id) and
+-- the store serves again once the mark is repaired.
+testReserveCorrupt :: Opener -> IO ()
+testReserveCorrupt o = withStore o $ \s -> do
+  _ <- seedStore s
+  rMeta <- storeCommit s emptyDelta
+    { sdPutMeta = [(jobIdCounterKey, "not-a-counter")] }
+  assertEqual "mark seed" Committed rMeta
+  eBad <- storeReserveJobId s
+  case eBad of
+    Left (StoreCorrupt _) -> pure ()
+    other -> assertFailure ("expected StoreCorrupt, got: " ++ show other)
+  rFix <- storeCommit s emptyDelta
+    { sdPutMeta = [(jobIdCounterKey, encodeHexWord64 5)] }
+  assertEqual "mark repair" Committed rFix
+  r1 <- storeReserveJobId s >>= expectRight "reserve after repair"
+  assertEqual "repaired mark serves" 5 r1
+
+-- | Seed the legacy shape: a token with a hand-minted job id 1
+-- while the durable mark still reads 1 (the pre-reservation
+-- allocator never advanced it). Return the token record.
+seedLegacy :: Store -> IO TokenRecord
+seedLegacy s = do
+  (tok, _) <- seedStore s
+  rJobs <- storeCommit s emptyDelta
+    { sdPutJobs = [demoJobPending 1 (trId tok) (trGeneration tok)] }
+  assertEqual "legacy job seed" Committed rJobs
+  rMeta <- storeCommit s emptyDelta
+    { sdPutMeta = [(jobIdCounterKey, encodeHexWord64 1)] }
+  assertEqual "legacy mark seed" Committed rMeta
+  pure tok
+
+-- | A legacy store reset before its first reservation still
+-- cannot re-mint the deleted id: the deleting commit folds the
+-- doomed pid into the mark.
+testLegacyResetCovers :: Opener -> IO ()
+testLegacyResetCovers o = withStore o $ \s -> do
+  tok <- seedLegacy s
+  let gen1 = trGeneration tok
+      replacement = tok { trGeneration = Generation 2, trLabel = "seed-token-gen2" }
+  rr <- storeResetToken s (trId tok) gen1 replacement
+  assertEqual "reset commits" Committed rr
+  eJobs <- storeLoadJobs s
+  jobs <- either (\e -> assertFailure ("load jobs: " ++ show e)) pure eJobs
+  assertEqual "reset drops job rows" [] jobs
+  r1 <- storeReserveJobId s >>= expectRight "first reservation after reset"
+  assertEqual "deleted id never re-minted" 2 r1
+
+-- | A legacy store whose token is dropped before its first
+-- reservation still cannot re-mint the cascade-deleted id.
+testLegacyDropCovers :: Opener -> IO ()
+testLegacyDropCovers o = withStore o $ \s -> do
+  tok <- seedLegacy s
+  rDrop <- storeCommit s emptyDelta { sdDropTokens = [trId tok] }
+  assertEqual "drop commits" Committed rDrop
+  eJobs <- storeLoadJobs s
+  jobs <- either (\e -> assertFailure ("load jobs: " ++ show e)) pure eJobs
+  assertEqual "drop cascades to jobs" [] jobs
+  r1 <- storeReserveJobId s >>= expectRight "first reservation after drop"
+  assertEqual "deleted id never re-minted" 2 r1
+
+-- | A legacy store whose job row is dropped explicitly before
+-- its first reservation still cannot re-mint the deleted id.
+testLegacyJobDropCovers :: Opener -> IO ()
+testLegacyJobDropCovers o = withStore o $ \s -> do
+  _ <- seedLegacy s
+  rDrop <- storeCommit s emptyDelta { sdDropJobs = [1] }
+  assertEqual "job drop commits" Committed rDrop
+  r1 <- storeReserveJobId s >>= expectRight "first reservation after job drop"
+  assertEqual "deleted id never re-minted" 2 r1
+
+-- | Dropping an unknown job id is a silent no-op that burns
+-- nothing: the next reservation still hands out 1.
+testPhantomDropBurnsNothing :: Opener -> IO ()
+testPhantomDropBurnsNothing o = withStore o $ \s -> do
+  _ <- seedStore s
+  rDrop <- storeCommit s emptyDelta { sdDropJobs = [9999] }
+  assertEqual "phantom drop commits" Committed rDrop
+  r1 <- storeReserveJobId s >>= expectRight "reserve after phantom drop"
+  assertEqual "nothing burned" 1 r1
+
+-- | A corrupt mark stays failed-closed across deletes and
+-- reset: removing rows never derives a reusable small counter
+-- from partial history (a previously returned higher id whose
+-- row is gone must not become mintable again).
+testCorruptDeleteStaysClosed :: Opener -> IO ()
+testCorruptDeleteStaysClosed o = withStore o $ \s -> do
+  (tok, _) <- seedStore s
+  let gen = trGeneration tok
+  r1 <- storeReserveJobId s >>= expectRight "reserve 1"
+  r2 <- storeReserveJobId s >>= expectRight "reserve 2"
+  r3 <- storeReserveJobId s >>= expectRight "reserve 3"
+  assertEqual "increasing" [1, 2, 3] [r1, r2, r3]
+  rJobs <- storeCommit s emptyDelta
+    { sdPutJobs =
+        [ demoJobPending r1 (trId tok) gen
+        , demoJobPending r2 (trId tok) gen
+        , demoJobPending r3 (trId tok) gen
+        ]
+    }
+  assertEqual "jobs seed" Committed rJobs
+  rDrop <- storeCommit s emptyDelta { sdDropJobs = [r3] }
+  assertEqual "drop commits" Committed rDrop
+  markBefore <- loadCounter s
+  assertEqual "healthy cover keeps the mark" (Just (encodeHexWord64 4)) markBefore
+  rMeta <- storeCommit s emptyDelta
+    { sdPutMeta = [(jobIdCounterKey, "not-a-counter")] }
+  assertEqual "mark corrupt" Committed rMeta
+  eBad <- storeReserveJobId s
+  case eBad of
+    Left (StoreCorrupt _) -> pure ()
+    other -> assertFailure ("expected StoreCorrupt, got: " ++ show other)
+  rDrop2 <- storeCommit s emptyDelta { sdDropJobs = [r2] }
+  assertEqual "delete under corruption commits" Committed rDrop2
+  markMid <- loadCounter s
+  assertEqual "delete never heals the mark" (Just "not-a-counter") markMid
+  eBad2 <- storeReserveJobId s
+  case eBad2 of
+    Left (StoreCorrupt _) -> pure ()
+    other -> assertFailure ("expected StoreCorrupt after delete, got: " ++ show other)
+  let replacement = tok { trGeneration = Generation 2, trLabel = "seed-token-gen2" }
+  rr <- storeResetToken s (trId tok) gen replacement
+  assertEqual "reset under corruption commits" Committed rr
+  eJobs <- storeLoadJobs s
+  jobs <- either (\e -> assertFailure ("load jobs: " ++ show e)) pure eJobs
+  assertEqual "reset drops job rows" [] jobs
+  markAfter <- loadCounter s
+  assertEqual "reset never heals the mark" (Just "not-a-counter") markAfter
+  eBad3 <- storeReserveJobId s
+  case eBad3 of
+    Left (StoreCorrupt _) -> pure ()
+    other -> assertFailure ("expected StoreCorrupt after reset, got: " ++ show other)
 
 -- | Referential validation: object and job puts naming a missing
 -- token refuse; a token created in the SAME delta satisfies refs.
@@ -1117,16 +1444,38 @@ maskedProcRefuses =
 -- done file, then closes and exits. Never returns to test code;
 -- uses 'exitImmediately' to avoid flushing the parent's stdio
 -- buffers.
+--
+-- Reserve mode (@HASKOKI_HOLDER_MODE=reserve@, passed only via
+-- the child's spawn environment): after opening, the child
+-- reserves one job id, records it at @HASKOKI_HOLDER_PIDFILE@,
+-- signals ready, then parks in the reserve/insert window
+-- without inserting, closing, or exiting — the parent kills it
+-- there to observe true process death between the two commits.
 holderMain :: FilePath -> FilePath -> FilePath -> IO ()
 holderMain path doneFile readyFile = do
+  mode <- lookupEnv "HASKOKI_HOLDER_MODE"
   e <- openSQLiteStore path
   case e of
     Left _ -> exitImmediately (ExitFailure 1)
-    Right s -> do
-      writeFile readyFile "ready\n"
-      awaitDone doneFile (6000 :: Int)
-      storeClose s
-      exitImmediately ExitSuccess
+    Right s -> case mode of
+      Just "reserve" -> do
+        ePid <- storeReserveJobId s
+        case ePid of
+          Left _ -> exitImmediately (ExitFailure 2)
+          Right pid -> do
+            mPidFile <- lookupEnv "HASKOKI_HOLDER_PIDFILE"
+            case mPidFile of
+              Just pidFile -> writeFile pidFile (show pid ++ "\n")
+              Nothing -> pure ()
+            writeFile readyFile "ready\n"
+            awaitDone doneFile (6000 :: Int)
+            -- Crash simulation: never close, never insert.
+            exitImmediately ExitSuccess
+      _ -> do
+        writeFile readyFile "ready\n"
+        awaitDone doneFile (6000 :: Int)
+        storeClose s
+        exitImmediately ExitSuccess
 
 -- | Poll for the done file (10ms steps, bounded so a stuck parent
 -- cannot wedge the suite past the tasty timeout).
@@ -1162,6 +1511,20 @@ spawnHolder :: FilePath -> FilePath -> FilePath -> IO ProcessHandle
 spawnHolder path doneFile readyFile = do
   exe <- getExecutablePath
   (_, _, _, ph) <- createProcess ((proc exe ["--holder", path, doneFile, readyFile]) { close_fds = True })
+  pure ph
+
+-- | Spawn a holder child with extra environment entries (merged
+-- over the parent's environment for the child only): mode
+-- switches travel here so concurrent holders never observe a
+-- process-wide mutation.
+spawnHolderEnv :: [(String, String)] -> FilePath -> FilePath -> FilePath -> IO ProcessHandle
+spawnHolderEnv extra path doneFile readyFile = do
+  exe <- getExecutablePath
+  parentEnv <- getEnvironment
+  let merged = extra ++ [(k, v) | (k, v) <- parentEnv, k `notElem` map fst extra]
+  (_, _, _, ph) <- createProcess
+    ((proc exe ["--holder", path, doneFile, readyFile])
+      { close_fds = True, env = Just merged })
   pure ph
 
 -- | The spawned child's pid for the lock-ownership handshake;
@@ -1684,6 +2047,59 @@ testPidZeroTakeable =
         assertEqual "pidzero: seeded token survives takeover" 1 (length loaded)
         storeClose s1
 
+-- | Death between reservation and insertion: a holder child in
+-- reserve mode opens the store, durably reserves one id,
+-- records it, and parks; the parent SIGKILLs it there (no
+-- close, no insert), takes over the stale lock via the real
+-- /proc, and proves the burned id is absent and never reused.
+testReserveDeathGap :: IO ()
+testReserveDeathGap =
+  bracket (makeTempDir "haskoki-storage-reservedeath") removeDirectoryRecursive $ \dir -> do
+    reaped <- newIORef False
+    let path = dir </> "store.db"
+        doneFile = dir </> "holder.done"
+        readyFile = dir </> "holder.ready"
+        pidFile = dir </> "holder.pid"
+    e0 <- openSQLiteStore path
+    s0 <- either (\e -> assertFailure ("reserve-death seed open: " ++ show e)) pure e0
+    (tok, _) <- seedStore s0
+    storeClose s0
+    let childEnv =
+          [ ("HASKOKI_HOLDER_MODE", "reserve")
+          , ("HASKOKI_HOLDER_PIDFILE", pidFile)
+          ]
+    bracket (spawnHolderEnv childEnv path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+      holderPid <- spawnedPid ph "reserve-death"
+      awaitLockOwner path holderPid
+      awaitDone readyFile (6000 :: Int)
+      pidText <- readFile pidFile
+      burned <- case reads pidText of
+        [(n, _)] -> pure (n :: Word64)
+        _ -> assertFailure "reserve-death: child recorded no id"
+      -- True process death in the reserve/insert window.
+      signalProcess sigKILL holderPid
+      mSt <- waitBounded ph 1000
+      case mSt of
+        Nothing -> assertFailure "reserve-death: child survived SIGKILL"
+        Just _ -> do
+          _ <- claimReap reaped
+          pure ()
+      -- Stale takeover, then the gap proof.
+      e1 <- openSQLiteStore path
+      s1 <- either (\e -> assertFailure ("reserve-death takeover failed: " ++ show e)) pure e1
+      eJobs <- storeLoadJobs s1
+      jobs <- either (\e -> assertFailure ("reserve-death load jobs: " ++ show e)) pure eJobs
+      assertEqual "burned id names no record" [] jobs
+      next <- storeReserveJobId s1 >>= expectRight "reserve-death next"
+      assertEqual "gap, never a reuse" (burned + 1) next
+      landed <- storeCommit s1 emptyDelta
+        { sdPutJobs = [demoJobPending next (trId tok) (trGeneration tok)] }
+      assertEqual "insert lands" Committed landed
+      eJobs2 <- storeLoadJobs s1
+      jobs2 <- either (\e -> assertFailure ("reserve-death reload jobs: " ++ show e)) pure eJobs2
+      assertEqual "only the new record exists" [next] (map jrPersistentId jobs2)
+      storeClose s1
+
 -- | Liveness-mapping unit test (finding 2): the pure verdict
 -- table over synthetic probe results, pinning the namespace-local
 -- ppid-0 rule (parent witness inapplicable, stale recovery works)
@@ -2205,3 +2621,815 @@ resolves m h = case Map.lookup h (mHandles m) of
   Just b -> case lookupObject m (hbObject b) of
     Nothing -> False
     Just ost -> hbGeneration b == osGeneration ost
+
+-- ---------------------------------------------------------------------------
+-- Durable token identity
+-- ---------------------------------------------------------------------------
+
+-- | The three-token fixture catalog (demo/ops/audit).
+threeLabels :: [String]
+threeLabels = ["haskoki-demo", "haskoki-ops", "haskoki-audit"]
+
+threeSo :: [String]
+threeSo = ["5678", "6789", "7890"]
+
+threeUser :: [String]
+threeUser = ["1234", "2345", "3456"]
+
+-- | A @[tokens]@ document with the given parallel arrays (an
+-- empty id list omits the @token_ids@ key: the legacy
+-- positional reading).
+catalogDoc :: [String] -> [String] -> [String] -> [String] -> String
+catalogDoc labels soPins userPins ids = unlines $
+  [ "schema_version = 1"
+  , "[tokens]"
+  , "labels = " ++ show labels
+  , "so_pins = " ++ show soPins
+  , "user_pins = " ++ show userPins
+  ] ++ ["token_ids = " ++ show ids | not (null ids)]
+
+-- | The legacy positional three-token document.
+positionalDoc :: String
+positionalDoc = catalogDoc threeLabels threeSo threeUser []
+
+-- | The swapped pinned document: audit moves to slot 1 with
+-- its own PINs, ops moves to slot 2 with its own PINs.
+swappedDoc :: String
+swappedDoc = catalogDoc
+  ["haskoki-demo", "haskoki-audit", "haskoki-ops"]
+  ["5678", "7890", "6789"]
+  ["1234", "3456", "2345"]
+  ["1", "3", "2"]
+
+-- | Parse a catalog document or fail the case.
+parseCatalog :: String -> IO Config
+parseCatalog body = case parseConfig body of
+  Left err -> assertFailure ("catalog must parse: " ++ show err)
+  Right cfg -> pure cfg
+
+-- | A catalog document must refuse as 'CfgInvalid'.
+expectInvalid :: String -> String -> IO ()
+expectInvalid ctx body = case parseConfig body of
+  Left (CfgInvalid _) -> pure ()
+  Left err -> assertFailure (ctx ++ ": wrong refusal: " ++ show err)
+  Right _ -> assertFailure (ctx ++ ": bad catalog parsed")
+
+-- | Desired tokens from a config, in slot order.
+desiredOf :: Config -> [DesiredToken]
+desiredOf cfg =
+  [ DesiredToken slot tid label
+  | (slot, (tid, label)) <- Map.toAscList (identityCatalog cfg)
+  ]
+
+-- | Which credential reaches which objects: per slot, the
+-- configured user PIN, the durable identity seated there, and
+-- its owned object ids. Call only on aligned layouts (after an
+-- accepted reconciliation); refused layouts keep the previous
+-- mapping.
+credentialReach :: Config -> [(TokenRecord, [ObjectRecord])] -> [(String, TokenId, [ObjectId])]
+credentialReach cfg loaded =
+  [ (userPin, tid, sort [orId o | o <- objs])
+  | (slot, (tid, _)) <- Map.toAscList (identityCatalog cfg)
+  , Just (t, objs) <- [lookup tid byId]
+  , trSlot t == slot
+  , Just (_, _, userPin) <- [Map.lookup slot (effectiveCatalog cfg)]
+  ]
+  where
+    byId = [(trId t, (t, os)) | (t, os) <- loaded]
+
+-- | Exact stored bytes: table, key, and full document per row.
+snapshotBytes :: Store -> IO [(String, String, String)]
+snapshotBytes s = do
+  docs <- expectInspect s
+  pure [(docTable d, docKey d, docJson d) | d <- docs]
+
+-- | Load every token with its objects or fail the case.
+expectLoaded :: Store -> IO [(TokenRecord, [ObjectRecord])]
+expectLoaded s = storeLoadTokens s >>= expectRight "load tokens"
+
+-- | Token-object template with a distinct label.
+idTmpl :: BS.ByteString -> [(AttributeType, AttributeValue)]
+idTmpl label =
+  [ (AttrClass, ValULong 3)
+  , (AttrToken, ValBool True)
+  , (AttrLabel, ValBytes label)
+  , (AttrValue, ValBytes "id3-bytes")
+  ]
+
+-- | Seed three positional tokens (demo/ops/audit at slots 0/1/2
+-- with ids 1/2/3), each owning one labeled object; return the
+-- token records in slot order.
+seedThreeTokens :: Store -> IO [TokenRecord]
+seedThreeTokens store = do
+  let s0 = SlotId 0
+      s1 = SlotId 1
+      s2 = SlotId 2
+  mSeated <- expectRight "id3 seat+open" (publishDelta
+    (addToken (addToken (addToken emptyModel s0) s1) s2)
+    (StateDelta [ DeltaOpenSession (SessionId 1) s0 False
+                , DeltaOpenSession (SessionId 2) s1 False
+                , DeltaOpenSession (SessionId 3) s2 False
+                ]))
+  st0 <- expectJust "id3 session 0" (lookupSession mSeated (SessionId 1))
+  st1 <- expectJust "id3 session 1" (lookupSession mSeated (SessionId 2))
+  st2 <- expectJust "id3 session 2" (lookupSession mSeated (SessionId 3))
+  (m1, _, oid1) <- expectCreated mSeated st0 (idTmpl "id3-demo")
+  (m2, _, oid2) <- expectCreated m1 st1 (idTmpl "id3-ops")
+  (m3, _, oid3) <- expectCreated m2 st2 (idTmpl "id3-audit")
+  ost1 <- expectJust "id3 object 1" (lookupObject m3 oid1)
+  ost2 <- expectJust "id3 object 2" (lookupObject m3 oid2)
+  ost3 <- expectJust "id3 object 3" (lookupObject m3 oid3)
+  let toks =
+        [ TokenRecord (TokenId 1) s0 (Generation 1) "haskoki-demo" tokenAuthNew
+        , TokenRecord (TokenId 2) s1 (Generation 1) "haskoki-ops" tokenAuthNew
+        , TokenRecord (TokenId 3) s2 (Generation 1) "haskoki-audit" tokenAuthNew
+        ]
+  result <- storeCommit store emptyDelta
+    { sdPutTokens = toks
+    , sdPutObjects =
+        [ ObjectPut Nothing (objectToRecord (TokenId 1) ost1)
+        , ObjectPut Nothing (objectToRecord (TokenId 2) ost2)
+        , ObjectPut Nothing (objectToRecord (TokenId 3) ost3)
+        ]
+    }
+  assertEqual "id3 seed commit" Committed result
+  pure toks
+
+-- | Reconciliation seeds new identities and keeps durable ones:
+-- a matching catalog plans nothing (steady state, zero
+-- writes); an appended token seeds with generation zero and
+-- fresh auth while every existing token, object, and
+-- credential mapping survives untouched.
+testIdentitySeedAppend :: Opener -> IO ()
+testIdentitySeedAppend o = withStore o $ \s -> do
+  toks <- seedThreeTokens s
+  assertEqual "three seeded" 3 (length toks)
+  loaded <- expectLoaded s
+  cfg <- parseCatalog positionalDoc
+  snapBefore <- snapshotBytes s
+  case reconcileIdentities (desiredOf cfg) [t | (t, _) <- loaded] of
+    Left refusal ->
+      assertFailure ("matching catalog refused: " ++ renderIdentityRefusal refusal)
+    Right plan -> assertEqual "steady state seeds nothing" [] (planSeeds plan)
+  snapSteady <- snapshotBytes s
+  assertEqual "steady reconcile writes nothing" snapBefore snapSteady
+  let reachBefore = credentialReach cfg loaded
+  assertEqual "three credentials served" 3 (length reachBefore)
+  cfgAppend <- parseCatalog (catalogDoc
+    (threeLabels ++ ["haskoki-vault"]) (threeSo ++ ["8901"]) (threeUser ++ ["4567"]) [])
+  plan <- case reconcileIdentities (desiredOf cfgAppend) [t | (t, _) <- loaded] of
+    Left refusal -> assertFailure ("append refused: " ++ renderIdentityRefusal refusal)
+    Right p -> pure p
+  case planSeeds plan of
+    [seed] -> do
+      assertEqual "seed identity" (TokenId 4) (trId seed)
+      assertEqual "seed slot" (SlotId 3) (trSlot seed)
+      assertEqual "seed label" "haskoki-vault" (trLabel seed)
+      assertEqual "seed generation" (Generation 0) (trGeneration seed)
+      assertEqual "seed auth" tokenAuthNew (trAuth seed)
+    other -> assertFailure ("append must seed exactly one token: " ++ show other)
+  rSeed <- storeCommit s emptyDelta { sdPutTokens = planSeeds plan }
+  assertEqual "seed commit" Committed rSeed
+  loadedAfter <- expectLoaded s
+  assertEqual "old credentials keep their objects"
+    (reachBefore ++ [( "4567", TokenId 4, [])])
+    (credentialReach cfgAppend loadedAfter)
+
+-- | A reordered catalog reopens refused: swapping two entries
+-- changes which credential would reach which token's objects,
+-- so the reconciler names the first drifted token and the
+-- durable bytes survive exactly.
+testIdentityReorderRefuses :: Opener -> IO ()
+testIdentityReorderRefuses o = withStore o $ \s -> do
+  _ <- seedThreeTokens s
+  loaded <- expectLoaded s
+  cfg <- parseCatalog positionalDoc
+  let reachBefore = credentialReach cfg loaded
+  bytesBefore <- snapshotBytes s
+  cfgSwap <- parseCatalog swappedDoc
+  case reconcileIdentities (desiredOf cfgSwap) [t | (t, _) <- loaded] of
+    Left refusal@(RefuseSlotChanged tid _ _ _) -> do
+      assertEqual "first drifted token" (TokenId 2) tid
+      assertBool "refusal names the explicit move"
+        ("planSlotMoves" `isInfixOf` renderIdentityRefusal refusal)
+    Left refusal ->
+      assertFailure ("reorder refused for the wrong reason: " ++ show refusal)
+    Right plan -> assertFailure ("reorder accepted: " ++ show (planSeeds plan))
+  bytesAfter <- snapshotBytes s
+  assertEqual "refused reorder preserves bytes exactly" bytesBefore bytesAfter
+  loadedAfter <- expectLoaded s
+  assertEqual "refused reorder keeps the mapping"
+    reachBefore (credentialReach cfg loadedAfter)
+
+-- | Insertion in the middle refuses under both readings (the
+-- legacy positional layout sees a label change; the pinned
+-- layout sees a slot shift). Neither refusal writes a byte.
+testIdentityInsertion :: Opener -> IO ()
+testIdentityInsertion o = withStore o $ \s -> do
+  _ <- seedThreeTokens s
+  loaded <- expectLoaded s
+  let stored = [t | (t, _) <- loaded]
+  bytesBefore <- snapshotBytes s
+  cfgLegacyMid <- parseCatalog (catalogDoc
+    ["haskoki-demo", "haskoki-new", "haskoki-ops", "haskoki-audit"]
+    ["5678", "1111", "6789", "7890"]
+    ["1234", "2222", "2345", "3456"] [])
+  case reconcileIdentities (desiredOf cfgLegacyMid) stored of
+    Left (RefuseLabelChanged tid _ _ _) ->
+      assertEqual "legacy insert hits id 2" (TokenId 2) tid
+    other -> assertFailure
+      ("legacy middle insert must refuse as a label change: " ++ show other)
+  cfgPinnedMid <- parseCatalog (catalogDoc
+    ["haskoki-demo", "haskoki-new", "haskoki-ops", "haskoki-audit"]
+    ["5678", "1111", "6789", "7890"]
+    ["1234", "2222", "2345", "3456"]
+    ["1", "9", "2", "3"])
+  case reconcileIdentities (desiredOf cfgPinnedMid) stored of
+    Left (RefuseSlotChanged tid _ _ _) ->
+      assertEqual "pinned insert hits id 2" (TokenId 2) tid
+    other -> assertFailure
+      ("pinned middle insert must refuse as a slot change: " ++ show other)
+  bytesAfter <- snapshotBytes s
+  assertEqual "refused insertions preserve bytes exactly" bytesBefore bytesAfter
+
+-- | A removed entry reopens refused: the durable token stays
+-- authoritative, its objects survive, and the bytes are exact.
+testIdentityRemovalRefuses :: Opener -> IO ()
+testIdentityRemovalRefuses o = withStore o $ \s -> do
+  _ <- seedThreeTokens s
+  loaded <- expectLoaded s
+  bytesBefore <- snapshotBytes s
+  cfgShrunk <- parseCatalog (catalogDoc
+    ["haskoki-demo", "haskoki-ops"] ["5678", "6789"] ["1234", "2345"] [])
+  case reconcileIdentities (desiredOf cfgShrunk) [t | (t, _) <- loaded] of
+    Left refusal@(RefuseStoredUnconfigured tid _ _) -> do
+      assertEqual "unconfigured token" (TokenId 3) tid
+      assertBool "refusal rules out pruning"
+        ("never pruned" `isInfixOf` renderIdentityRefusal refusal)
+    Left refusal ->
+      assertFailure ("removal refused for the wrong reason: " ++ show refusal)
+    Right plan -> assertFailure ("removal accepted: " ++ show (planSeeds plan))
+  bytesAfter <- snapshotBytes s
+  assertEqual "refused removal preserves bytes exactly" bytesBefore bytesAfter
+  reloaded <- expectLoaded s
+  case [os | (t, os) <- reloaded, trId t == TokenId 3] of
+    [objs] -> assertEqual "audit keeps its object" 1 (length objs)
+    _ -> assertFailure "audit token missing after refused removal"
+
+-- | A relabeled entry reopens refused: the durable label is
+-- authoritative and labels never identify, so the catalog does
+-- not rename the token silently.
+testIdentityLabelChangeRefuses :: Opener -> IO ()
+testIdentityLabelChangeRefuses o = withStore o $ \s -> do
+  _ <- seedThreeTokens s
+  loaded <- expectLoaded s
+  bytesBefore <- snapshotBytes s
+  cfgRenamed <- parseCatalog (catalogDoc
+    ["haskoki-demo", "haskoki-ops-renamed", "haskoki-audit"]
+    threeSo threeUser [])
+  case reconcileIdentities (desiredOf cfgRenamed) [t | (t, _) <- loaded] of
+    Left refusal@(RefuseLabelChanged tid _ durable desired) -> do
+      assertEqual "renamed token" (TokenId 2) tid
+      assertEqual "durable label" "haskoki-ops" durable
+      assertEqual "desired label" "haskoki-ops-renamed" desired
+      assertBool "refusal rules out silent rename"
+        ("labels never" `isInfixOf` renderIdentityRefusal refusal)
+    Left refusal ->
+      assertFailure ("relabel refused for the wrong reason: " ++ show refusal)
+    Right plan -> assertFailure ("relabel accepted: " ++ show (planSeeds plan))
+  bytesAfter <- snapshotBytes s
+  assertEqual "refused relabel preserves bytes exactly" bytesBefore bytesAfter
+  reloaded <- expectLoaded s
+  case [trLabel t | (t, _) <- reloaded, trId t == TokenId 2] of
+    ["haskoki-ops"] -> pure ()
+    other -> assertFailure ("durable label drifted: " ++ show other)
+
+-- | The explicit slot move is the only path between serving
+-- layouts: a swap commits atomically in one plan; occupied
+-- targets, unknown tokens, the home anchor, clashing targets,
+-- duplicated movers, and negative slots all refuse; settled
+-- plans are the empty delta. Objects ride along under their
+-- durable identity
+-- throughout, and the reconciler accepts the matching pinned
+-- catalog afterwards with the credentials following the
+-- identities.
+testIdentitySlotMoves :: Opener -> IO ()
+testIdentitySlotMoves o = withStore o $ \s -> do
+  _ <- seedThreeTokens s
+  loaded0 <- expectLoaded s
+  let stored0 = [t | (t, _) <- loaded0]
+      owned m = sort [(orToken oo, orId oo, orRevision oo) | (_, os) <- m, oo <- os]
+  case planSlotMoves [(TokenId 2, SlotId 2)] stored0 of
+    Left refusal@(MoveSlotOccupied slot holder) -> do
+      assertEqual "occupied slot" (SlotId 2) slot
+      assertEqual "holder named" (TokenId 3) holder
+      assertBool "refusal reroutes through a free slot"
+        ("free slot" `isInfixOf` renderSlotMoveRefusal refusal)
+    other -> assertFailure
+      ("lone move onto an occupied slot must refuse: " ++ show other)
+  case planSlotMoves [(TokenId 1, SlotId 1)] stored0 of
+    Left (MoveHomeAnchored tid slot) -> do
+      assertEqual "home token" (TokenId 1) tid
+      assertEqual "home target" (SlotId 1) slot
+    other -> assertFailure ("home move must refuse: " ++ show other)
+  case planSlotMoves [(TokenId 2, SlotId 0)] stored0 of
+    Left (MoveHomeAnchored _ _) -> pure ()
+    other -> assertFailure ("move into slot 0 must refuse: " ++ show other)
+  case planSlotMoves [(TokenId 9, SlotId 5)] stored0 of
+    Left (MoveUnknownToken tid) -> assertEqual "unknown token" (TokenId 9) tid
+    other -> assertFailure ("unknown move must refuse: " ++ show other)
+  case planSlotMoves [(TokenId 2, SlotId 5), (TokenId 3, SlotId 5)] stored0 of
+    Left (MoveTargetClash slot) -> assertEqual "clashing slot" (SlotId 5) slot
+    other -> assertFailure ("clashing plan must refuse: " ++ show other)
+  case planSlotMoves [(TokenId 2, SlotId 5), (TokenId 2, SlotId 6)] stored0 of
+    Left (MoveDuplicateMover tid) -> assertEqual "duplicated mover" (TokenId 2) tid
+    other -> assertFailure ("duplicated mover must refuse: " ++ show other)
+  case planSlotMoves [(TokenId 2, SlotId (-1))] stored0 of
+    Left (MoveBadSlot slot) -> assertEqual "bad slot" (SlotId (-1)) slot
+    other -> assertFailure ("negative target must refuse: " ++ show other)
+  case planSlotMoves [(TokenId 2, SlotId 1)] stored0 of
+    Right delta -> assertEqual "settled plan is empty" emptyDelta delta
+    Left refusal -> assertFailure ("settled plan must be empty: " ++ show refusal)
+  swap <- case planSlotMoves [(TokenId 2, SlotId 2), (TokenId 3, SlotId 1)] stored0 of
+    Left refusal -> assertFailure ("atomic swap must plan: " ++ show refusal)
+    Right delta -> pure delta
+  rSwap <- storeCommit s swap
+  assertEqual "atomic swap commits" Committed rSwap
+  assertSlotProjection s [(TokenId 1, SlotId 0), (TokenId 2, SlotId 2), (TokenId 3, SlotId 1)]
+  loaded1 <- expectLoaded s
+  assertEqual "objects ride along under their identities" (owned loaded0) (owned loaded1)
+  cfgSwap <- parseCatalog swappedDoc
+  case reconcileIdentities (desiredOf cfgSwap) [t | (t, _) <- loaded1] of
+    Left refusal ->
+      assertFailure ("post-swap catalog refused: " ++ renderIdentityRefusal refusal)
+    Right planAfter ->
+      assertEqual "post-swap layout is steady" [] (planSeeds planAfter)
+  let objsOf tid = sort [orId oo | (_, os) <- loaded1, oo <- os, orToken oo == tid]
+  assertEqual "credentials follow identities"
+    [ ("1234", TokenId 1, objsOf (TokenId 1))
+    , ("3456", TokenId 3, objsOf (TokenId 3))
+    , ("2345", TokenId 2, objsOf (TokenId 2))
+    ]
+    (credentialReach cfgSwap loaded1)
+  spare <- case planSlotMoves [(TokenId 2, SlotId 7)] [t | (t, _) <- loaded1] of
+    Left refusal -> assertFailure ("spare move must plan: " ++ show refusal)
+    Right delta -> pure delta
+  rSpare <- storeCommit s spare
+  assertEqual "spare move commits" Committed rSpare
+  assertSlotProjection s [(TokenId 1, SlotId 0), (TokenId 2, SlotId 7), (TokenId 3, SlotId 1)]
+  loadedSpare <- expectLoaded s
+  back <- case planSlotMoves [(TokenId 2, SlotId 2)] [t | (t, _) <- loadedSpare] of
+    Left refusal -> assertFailure ("return move must plan: " ++ show refusal)
+    Right delta -> pure delta
+  rBack <- storeCommit s back
+  assertEqual "return move commits" Committed rBack
+  assertSlotProjection s [(TokenId 1, SlotId 0), (TokenId 2, SlotId 2), (TokenId 3, SlotId 1)]
+
+-- | A fresh store seeds every configured token: each seed
+-- carries its pinned identity, slot, and label with generation
+-- zero and fresh auth.
+testIdentityFreshSeeds :: Opener -> IO ()
+testIdentityFreshSeeds o = withStore o $ \s -> do
+  loaded <- expectLoaded s
+  assertEqual "fresh store loads empty" [] loaded
+  cfg <- parseCatalog (catalogDoc threeLabels threeSo threeUser ["1", "2", "3"])
+  case reconcileIdentities (desiredOf cfg) [] of
+    Left refusal -> assertFailure ("fresh seeds refused: " ++ renderIdentityRefusal refusal)
+    Right plan -> do
+      let seeds = planSeeds plan
+      assertEqual "three seeds" 3 (length seeds)
+      assertEqual "seed layout"
+        [(TokenId 1, SlotId 0), (TokenId 2, SlotId 1), (TokenId 3, SlotId 2)]
+        [(trId t, trSlot t) | t <- seeds]
+      assertEqual "seed labels" threeLabels [trLabel t | t <- seeds]
+      assertEqual "seed generations" [Generation 0, Generation 0, Generation 0]
+        [trGeneration t | t <- seeds]
+      assertEqual "seed auths" [tokenAuthNew, tokenAuthNew, tokenAuthNew]
+        [trAuth t | t <- seeds]
+
+-- | Pinned @token_ids@ parse and project onto both catalogs:
+-- identities pin per entry while the serving triples stay
+-- positional.
+casePinnedIdsParse :: IO ()
+casePinnedIdsParse = do
+  cfg <- parseCatalog (catalogDoc threeLabels threeSo threeUser ["1", "2", "3"])
+  assertEqual "pinned ids" (Just [TokenId 1, TokenId 2, TokenId 3]) (cfgTokenIds cfg)
+  assertEqual "identity projection"
+    [ (SlotId 0, (TokenId 1, "haskoki-demo"))
+    , (SlotId 1, (TokenId 2, "haskoki-ops"))
+    , (SlotId 2, (TokenId 3, "haskoki-audit"))
+    ]
+    (Map.toAscList (identityCatalog cfg))
+  assertEqual "serving triples stay positional"
+    (zip3 threeLabels threeSo threeUser)
+    [triple | (_, triple) <- Map.toAscList (effectiveCatalog cfg)]
+
+-- | A duplicate pinned identity refuses the whole config.
+caseDuplicateIdsRefused :: IO ()
+caseDuplicateIdsRefused =
+  expectInvalid "duplicate ids" (catalogDoc threeLabels threeSo threeUser ["1", "2", "2"])
+
+-- | Pinned ids ragged against the labels refuse.
+caseRaggedIdsRefused :: IO ()
+caseRaggedIdsRefused =
+  expectInvalid "ragged ids" (catalogDoc threeLabels threeSo threeUser ["1", "2"])
+
+-- | Non-decimal, zero, and out-of-range ids refuse.
+caseMalformedIdsRefused :: IO ()
+caseMalformedIdsRefused = do
+  expectInvalid "non-decimal id"
+    (catalogDoc threeLabels threeSo threeUser ["1", "two", "3"])
+  expectInvalid "zero id"
+    (catalogDoc threeLabels threeSo threeUser ["1", "0", "3"])
+  expectInvalid "oversized id"
+    (catalogDoc threeLabels threeSo threeUser ["1", "4294967296", "3"])
+
+-- | Slot 0 must carry @TokenId 1@: a pinned catalog that seats
+-- anything else at slot 0 refuses.
+caseNonHomeIdRefused :: IO ()
+caseNonHomeIdRefused =
+  expectInvalid "non-home slot zero" (catalogDoc threeLabels threeSo threeUser ["2", "1", "3"])
+
+-- | Without @token_ids@ the catalog reads positionally.
+caseAbsentIdsPositional :: IO ()
+caseAbsentIdsPositional = do
+  cfg <- parseCatalog positionalDoc
+  assertEqual "no pinned ids" Nothing (cfgTokenIds cfg)
+  assertEqual "positional projection" [TokenId 1, TokenId 2, TokenId 3]
+    [tid | (_, (tid, _)) <- Map.toAscList (identityCatalog cfg)]
+
+-- | Pinned ids without any labeled entry refuse.
+caseIdsWithoutLabelsRefused :: IO ()
+caseIdsWithoutLabelsRefused =
+  expectInvalid "ids without labels" (unlines
+    [ "schema_version = 1"
+    , "[tokens]"
+    , "token_ids = [\"1\"]"
+    ])
+
+-- | A hand-built config whose pinned list mismatches the
+-- entries falls back to positional for every slot (total,
+-- never a silent mix).
+caseMismatchFallsBack :: IO ()
+caseMismatchFallsBack = do
+  cfg <- parseCatalog (catalogDoc threeLabels threeSo threeUser ["1", "2", "3"])
+  let short = cfg { cfgTokenIds = Just [TokenId 1] }
+      dropped = cfg { cfgTokenIds = Nothing }
+      positional = [TokenId 1, TokenId 2, TokenId 3]
+      project c = [tid | (_, (tid, _)) <- Map.toAscList (identityCatalog c)]
+  assertEqual "short list falls back" positional (project short)
+  assertEqual "dropped list falls back" positional (project dropped)
+
+-- | The reconciler refuses duplicate desired identities even
+-- for hand-built inputs (defense behind the parser check).
+caseDuplicateDesiredRefuses :: IO ()
+caseDuplicateDesiredRefuses =
+  case reconcileIdentities
+    [ DesiredToken (SlotId 1) (TokenId 2) "haskoki-ops"
+    , DesiredToken (SlotId 2) (TokenId 2) "haskoki-dup"
+    ] [] of
+    Left (RefuseDuplicateDesired tid) -> assertEqual "duplicate id" (TokenId 2) tid
+    other -> assertFailure ("duplicate desired identity must refuse: " ++ show other)
+
+-- | The reconciler enforces the home anchor in both
+-- directions: @TokenId 1@ sits at @SlotId 0@ only, and
+-- @SlotId 0@ holds @TokenId 1@ only.
+caseReconcilerHomeAnchor :: IO ()
+caseReconcilerHomeAnchor = do
+  case reconcileIdentities [DesiredToken (SlotId 2) (TokenId 1) "haskoki-demo"] [] of
+    Left (RefuseHomeAnchor tid slot) -> do
+      assertEqual "home token" (TokenId 1) tid
+      assertEqual "home slot" (SlotId 2) slot
+    other -> assertFailure ("home token away from slot 0 must refuse: " ++ show other)
+  case reconcileIdentities [DesiredToken (SlotId 0) (TokenId 5) "haskoki-demo"] [] of
+    Left (RefuseHomeAnchor tid slot) -> do
+      assertEqual "intruder token" (TokenId 5) tid
+      assertEqual "intruder slot" (SlotId 0) slot
+    other -> assertFailure ("intruder at slot 0 must refuse: " ++ show other)
+
+-- ---------------------------------------------------------------------------
+-- Standard open reconciliation
+-- ---------------------------------------------------------------------------
+
+-- | Run a case against a scratch SQLite file, cleaned up
+-- afterwards.
+withOpenFile :: (FilePath -> IO a) -> IO a
+withOpenFile use =
+  bracket (makeTempDir "haskoki-open-reconcile") removeDirectoryRecursive $ \dir ->
+    use (dir </> "store.db")
+
+-- | Open the store file at the path through the production
+-- acquisition (the same 'openStdStore' the instance open
+-- threads): typed reconciliation errors, no assembly.
+openReconciled :: FilePath -> Config -> IO (Either StdStoreError (Maybe StdStore))
+openReconciled path cfg = do
+  env <- newEnv (rulesFromConfig cfg)
+  openStdStore env cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+
+-- | Close an acquired store handle, if any.
+closeAcquired :: Maybe StdStore -> IO ()
+closeAcquired Nothing = pure ()
+closeAcquired (Just ss) = storeClose (stdStore ss)
+
+-- | Hand-built object fixture: one minimal token object
+-- shape per token (attributes stay minimal; ownership is what
+-- the open cases pin).
+openObject :: TokenId -> ObjectId -> ObjectRecord
+openObject tok oid = ObjectRecord
+  { orId = oid
+  , orToken = tok
+  , orClass = 3
+  , orKeyType = Nothing
+  , orAttrs = Map.fromList [(AttrClass, ValULong 3)]
+  , orMaterialEncoding = "none"
+  , orMaterial = Nothing
+  , orRevision = Revision 1
+  }
+
+-- | Seed a three-token file: tokens through the production
+-- open itself (fresh-file seeding path), then one object per
+-- token through a backend commit.
+seedOpenSeeded :: FilePath -> IO ()
+seedOpenSeeded path = do
+  cfg <- parseCatalog positionalDoc
+  eAcq <- openReconciled path cfg
+  case eAcq of
+    Left err -> assertFailure ("fresh open must seed: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+  eStore <- openSQLiteStore path
+  s <- either (assertFailure . show) pure eStore
+  result <- storeCommit s emptyDelta
+    { sdPutObjects =
+        [ ObjectPut Nothing (openObject (TokenId 1) (ObjectId 1))
+        , ObjectPut Nothing (openObject (TokenId 2) (ObjectId 2))
+        , ObjectPut Nothing (openObject (TokenId 3) (ObjectId 3))
+        ]
+    }
+  storeClose s
+  assertEqual "open seed objects commit" Committed result
+
+-- | Commit one backend delta against a closed file.
+commitFile :: FilePath -> StoreDelta -> IO CommitResult
+commitFile path delta = do
+  eStore <- openSQLiteStore path
+  s <- either (assertFailure . show) pure eStore
+  result <- storeCommit s delta
+  storeClose s
+  pure result
+
+-- | Inspect the exact bytes of a closed file.
+fileBytes :: FilePath -> IO [(String, String, String)]
+fileBytes path = do
+  eStore <- openSQLiteStore path
+  s <- either (assertFailure . show) pure eStore
+  docs <- expectInspect s
+  storeClose s
+  pure [(docTable d, docKey d, docJson d) | d <- docs]
+
+-- | Load every token with its objects from a closed file.
+fileLoaded :: FilePath -> IO [(TokenRecord, [ObjectRecord])]
+fileLoaded path = do
+  eStore <- openSQLiteStore path
+  s <- either (assertFailure . show) pure eStore
+  loaded <- expectLoaded s
+  storeClose s
+  pure loaded
+
+-- | A fresh file seeds positionally through the production
+-- open: three tokens with generation zero and fresh auth,
+-- and the reconciled layout the instance would publish
+-- through.
+caseOpenSeedsFresh :: IO ()
+caseOpenSeedsFresh = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  eAcq <- openReconciled path cfg
+  acquired <- case eAcq of
+    Left err -> assertFailure ("fresh open must seed: " ++ show err)
+    Right mAcq -> pure mAcq
+  case acquired of
+    Nothing -> assertFailure "sqlite open must acquire a store"
+    Just ss -> do
+      assertEqual "reconciled layout is positional"
+        [(SlotId 0, TokenId 1), (SlotId 1, TokenId 2), (SlotId 2, TokenId 3)]
+        (Map.toAscList (stdTokenIds ss))
+      closeAcquired acquired
+  loaded <- fileLoaded path
+  assertEqual "three tokens seeded" 3 (length loaded)
+  assertEqual "seeded labels" threeLabels [trLabel t | (t, _) <- loaded]
+  assertEqual "seed generations" [Generation 0, Generation 0, Generation 0]
+    [trGeneration t | (t, _) <- loaded]
+  assertEqual "seed auths" [tokenAuthNew, tokenAuthNew, tokenAuthNew]
+    [trAuth t | (t, _) <- loaded]
+
+-- | A reordered catalog refuses at the production open with
+-- the actionable message; the file survives byte-exact and
+-- the original catalog still opens afterwards.
+caseOpenReorderRefuses :: IO ()
+caseOpenReorderRefuses = withOpenFile $ \path -> do
+  seedOpenSeeded path
+  cfgSteady <- parseCatalog positionalDoc
+  loadedSteady <- fileLoaded path
+  let reachBefore = credentialReach cfgSteady loadedSteady
+  bytesBefore <- fileBytes path
+  cfgSwap <- parseCatalog swappedDoc
+  eAcq <- openReconciled path cfgSwap
+  case eAcq of
+    Left (StdStoreIdentityRefusal msg) ->
+      assertBool "refusal names the explicit move"
+        ("planSlotMoves" `isInfixOf` msg)
+    Left err -> assertFailure ("reorder refused for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "reordered open accepted"
+  bytesAfter <- fileBytes path
+  assertEqual "refused open preserves bytes exactly" bytesBefore bytesAfter
+  eAgain <- openReconciled path cfgSteady
+  case eAgain of
+    Left err -> assertFailure ("steady reopen refused after refusal: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+  loadedAgain <- fileLoaded path
+  assertEqual "mapping intact after refused open"
+    reachBefore (credentialReach cfgSteady loadedAgain)
+
+-- | A removed entry refuses at the production open: the
+-- durable token is never pruned, its objects survive, and
+-- the file survives byte-exact.
+caseOpenRemovalRefuses :: IO ()
+caseOpenRemovalRefuses = withOpenFile $ \path -> do
+  seedOpenSeeded path
+  bytesBefore <- fileBytes path
+  cfgShrunk <- parseCatalog (catalogDoc
+    ["haskoki-demo", "haskoki-ops"] ["5678", "6789"] ["1234", "2345"] [])
+  eAcq <- openReconciled path cfgShrunk
+  case eAcq of
+    Left (StdStoreIdentityRefusal msg) ->
+      assertBool "refusal rules out pruning" ("never pruned" `isInfixOf` msg)
+    Left err -> assertFailure ("removal refused for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "removal open accepted"
+  bytesAfter <- fileBytes path
+  assertEqual "refused removal preserves bytes exactly" bytesBefore bytesAfter
+  reloaded <- fileLoaded path
+  case [os | (t, os) <- reloaded, trId t == TokenId 3] of
+    [objs] -> assertEqual "audit keeps its object" 1 (length objs)
+    _ -> assertFailure "audit token missing after refused removal"
+
+-- | After an explicit swap committed underneath, the
+-- production open accepts the matching pinned catalog and
+-- hands the instance the moved layout, with the credentials
+-- following the identities to their objects.
+caseOpenAcceptsMoved :: IO ()
+caseOpenAcceptsMoved = withOpenFile $ \path -> do
+  seedOpenSeeded path
+  loaded <- fileLoaded path
+  swap <- case planSlotMoves [(TokenId 2, SlotId 2), (TokenId 3, SlotId 1)] [t | (t, _) <- loaded] of
+    Left refusal -> assertFailure ("swap must plan: " ++ show refusal)
+    Right delta -> pure delta
+  rSwap <- commitFile path swap
+  assertEqual "swap commits" Committed rSwap
+  cfgSwap <- parseCatalog swappedDoc
+  eAcq <- openReconciled path cfgSwap
+  acquired <- case eAcq of
+    Left err -> assertFailure ("moved open refused: " ++ show err)
+    Right mAcq -> pure mAcq
+  case acquired of
+    Nothing -> assertFailure "sqlite open must acquire a store"
+    Just ss -> do
+      assertEqual "reconciled layout follows the move"
+        [(SlotId 0, TokenId 1), (SlotId 1, TokenId 3), (SlotId 2, TokenId 2)]
+        (Map.toAscList (stdTokenIds ss))
+      closeAcquired acquired
+  loadedAfter <- fileLoaded path
+  let reach = credentialReach cfgSwap loadedAfter
+      objsOf tid = sort [orId o | (_, os) <- loadedAfter, o <- os, orToken o == tid]
+  assertEqual "credentials follow identities through the open"
+    [ ("1234", TokenId 1, objsOf (TokenId 1))
+    , ("3456", TokenId 3, objsOf (TokenId 3))
+    , ("2345", TokenId 2, objsOf (TokenId 2))
+    ]
+    reach
+
+-- | An interrupted move refuses at the production open under
+-- both the old and the target catalog; completing the
+-- remaining legs explicitly lets the target catalog open.
+caseOpenInterruptedRefuses :: IO ()
+caseOpenInterruptedRefuses = withOpenFile $ \path -> do
+  seedOpenSeeded path
+  loaded <- fileLoaded path
+  move <- case planSlotMoves [(TokenId 2, SlotId 7)] [t | (t, _) <- loaded] of
+    Left refusal -> assertFailure ("first leg must plan: " ++ show refusal)
+    Right delta -> pure delta
+  rMove <- commitFile path move
+  assertEqual "first leg commits" Committed rMove
+  bytesMid <- fileBytes path
+  cfgOld <- parseCatalog positionalDoc
+  eOld <- openReconciled path cfgOld
+  case eOld of
+    Left (StdStoreIdentityRefusal msg) ->
+      assertBool "old open names the drifted slot" ("SlotId 7" `isInfixOf` msg)
+    Left err -> assertFailure ("interrupted state misrefused the old catalog: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "interrupted state opened under the old catalog"
+  cfgTarget <- parseCatalog swappedDoc
+  eTarget <- openReconciled path cfgTarget
+  case eTarget of
+    Left (StdStoreIdentityRefusal _) -> pure ()
+    Left err -> assertFailure ("interrupted state misrefused the target catalog: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "interrupted state opened under the target catalog"
+  bytesRefused <- fileBytes path
+  assertEqual "refused opens preserve the mid-state exactly" bytesMid bytesRefused
+  loadedMid <- fileLoaded path
+  rest <- case planSlotMoves [(TokenId 3, SlotId 1), (TokenId 2, SlotId 2)] [t | (t, _) <- loadedMid] of
+    Left refusal -> assertFailure ("remaining legs must plan: " ++ show refusal)
+    Right delta -> pure delta
+  rRest <- commitFile path rest
+  assertEqual "remaining legs commit" Committed rRest
+  eDone <- openReconciled path cfgTarget
+  case eDone of
+    Left err -> assertFailure ("completed layout refused: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+
+-- | A positional downgrade over a moved store refuses at the
+-- production open; the matching pinned catalog still opens.
+caseOpenDowngradeRefuses :: IO ()
+caseOpenDowngradeRefuses = withOpenFile $ \path -> do
+  seedOpenSeeded path
+  loaded <- fileLoaded path
+  swap <- case planSlotMoves [(TokenId 2, SlotId 2), (TokenId 3, SlotId 1)] [t | (t, _) <- loaded] of
+    Left refusal -> assertFailure ("swap must plan: " ++ show refusal)
+    Right delta -> pure delta
+  rSwap <- commitFile path swap
+  assertEqual "swap commits" Committed rSwap
+  bytesBefore <- fileBytes path
+  cfgLegacy <- parseCatalog positionalDoc
+  eLegacy <- openReconciled path cfgLegacy
+  case eLegacy of
+    Left (StdStoreIdentityRefusal _) -> pure ()
+    Left err -> assertFailure ("downgrade refused for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "positional downgrade opened over a moved store"
+  bytesAfter <- fileBytes path
+  assertEqual "refused downgrade preserves bytes exactly" bytesBefore bytesAfter
+  cfgPinned <- parseCatalog swappedDoc
+  ePinned <- openReconciled path cfgPinned
+  case ePinned of
+    Left err -> assertFailure ("pinned catalog refused after downgrade refusal: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+
+-- | A PIN edit reopens accepted: PINs are not identity, so
+-- the changed credential reaches the same durable identity
+-- and the same objects, and nothing else moves.
+caseOpenPinEditAccepted :: IO ()
+caseOpenPinEditAccepted = withOpenFile $ \path -> do
+  seedOpenSeeded path
+  loaded <- fileLoaded path
+  cfg <- parseCatalog positionalDoc
+  let reachBefore = credentialReach cfg loaded
+  assertEqual "three credentials served" 3 (length reachBefore)
+  cfgRotated <- parseCatalog (catalogDoc threeLabels threeSo ["1234", "9999", "3456"] [])
+  bytesBefore <- fileBytes path
+  eAcq <- openReconciled path cfgRotated
+  case eAcq of
+    Left err -> assertFailure ("PIN edit refused: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+  bytesAfter <- fileBytes path
+  assertEqual "accepted PIN edit writes nothing" bytesBefore bytesAfter
+  loadedAfter <- fileLoaded path
+  let reachAfter = credentialReach cfgRotated loadedAfter
+      pinsOf reach = [pin | (pin, _, _) <- reach]
+      ownersOf reach = [(tid, objs) | (_, tid, objs) <- reach]
+  assertEqual "PINs before" ["1234", "2345", "3456"] (pinsOf reachBefore)
+  assertEqual "only the ops PIN changed" ["1234", "9999", "3456"] (pinsOf reachAfter)
+  assertEqual "owners untouched by PIN edit" (ownersOf reachBefore) (ownersOf reachAfter)
+
+-- | The durable publication path resolves serving slots
+-- through the reconciled layout: a real creation delta for a
+-- slot-1 object projects under the moved identity with the
+-- swapped map and under the legacy identity with the
+-- positional map. Reverting the projection to slot-plus-one
+-- fails the first assertion.
+caseProjectionUsesReconciledLayout :: IO ()
+caseProjectionUsesReconciledLayout = do
+  mSeated <- expectRight "proj seat+open" (publishDelta
+    (addToken (addToken emptyModel (SlotId 0)) (SlotId 1))
+    (StateDelta [DeltaOpenSession (SessionId 1) (SlotId 1) False]))
+  st <- expectJust "proj session" (lookupSession mSeated (SessionId 1))
+  pc <- case planCreateObject mSeated st (idTmpl "proj-moved") of
+    Immediate p -> pure p
+    _ -> assertFailure "expected Immediate creation plan"
+  mAfter <- expectRight "proj publish" (publishDelta mSeated (pcDelta pc))
+  let oid = ObjectId (mNextObject' mSeated)
+  ost <- expectJust "proj object" (lookupObject mAfter oid)
+  assertEqual "object created on slot 1" (SlotId 1) (osSlot ost)
+  let swapped = Map.fromList [(SlotId 0, TokenId 1), (SlotId 1, TokenId 3)]
+      positional = Map.fromList [(SlotId 0, TokenId 1), (SlotId 1, TokenId 2)]
+      tokensOf proj = [orToken (opRecord p) | p <- sdPutObjects (projDelta proj)]
+  assertEqual "reconciled layout attributes the moved identity"
+    [TokenId 3] (tokensOf (buildObjectProjection swapped mSeated mAfter (pcDelta pc)))
+  assertEqual "positional layout attributes the legacy identity"
+    [TokenId 2] (tokensOf (buildObjectProjection positional mSeated mAfter (pcDelta pc)))
