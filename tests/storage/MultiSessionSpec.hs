@@ -41,10 +41,14 @@ import Haskoki.FFI.Standard
   , StdInstance (..)
   , StdStore (..)
   , haskokiStdClose
+  , haskokiStdCloseSession
   , haskokiStdGetSessionInfo
+  , haskokiStdInitPin
+  , haskokiStdInitToken
   , haskokiStdLogin
   , haskokiStdLogout
   , haskokiStdOpenSession
+  , haskokiStdSetPin
   , openStdInstanceWith
   , openStdStoreWith
   , stdAcquisition
@@ -59,6 +63,7 @@ import Haskoki.Model
 import Haskoki.Outcome (DeltaOp (..), StateDelta (..))
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
+  , CredentialRecord (..)
   , FaultInjector (..)
   , FaultPoint (..)
   , ObjectPut (..)
@@ -161,6 +166,13 @@ spec = testGroup "Multi-session store"
   , testCase "unknown-but-landed login reconciles and serves on" caseLoginUnknownLanded
   , testCase "landed login publishes despite reload failure" caseLoginReloadFailsLanded
   , testCase "per-token lockout is independent and durable" caseLoginTokenIndependent
+  , testCase "changed PIN persists across close and reopen" caseSetPinDurable
+  , testCase "SO InitPIN recovers a locked-out user" caseInitPinRecovery
+  , testCase "InitToken resets the token and unsets the user PIN" caseInitTokenResets
+  , testCase "refused PIN change preserves the credential" caseSetPinRefusedPreserves
+  , testCase "public read/write session changes the user PIN" caseSetPinPublic
+  , testCase "read-only sessions refuse provisioning" caseProvisionReadOnly
+  , testCase "failed provisioning write dirties the view, login fails closed" caseProvisionDirty
   ]
 
 -- | Barrier rendezvous bound: 5 seconds, matching the commit
@@ -1100,6 +1112,194 @@ caseLoginTokenIndependent =
       s1 <- openAuthSessionOn ctx 1
       loginAs ctx s0 1 "1234" >>= assertEqual "slot-0 lockout durable" (stdRvOf CKR_PIN_LOCKED)
       loginAs ctx s1 1 "2345" >>= assertEqual "slot-1 serves" (CULong 0)
+
+-- | Call InitPIN on a session with a Haskell-string PIN.
+callInitPin :: StablePtr StdInstance -> CULong -> String -> IO CULong
+callInitPin ctx h pinStr =
+  BS.useAsCStringLen (BC8.pack pinStr) $ \(cstr, len) ->
+    haskokiStdInitPin ctx h (castPtr cstr) (fromIntegral len)
+
+-- | Call SetPIN on a session with Haskell-string old/new PINs.
+callSetPin :: StablePtr StdInstance -> CULong -> String -> String -> IO CULong
+callSetPin ctx h oldStr newStr =
+  BS.useAsCStringLen (BC8.pack oldStr) $ \(cOld, lenOld) ->
+    BS.useAsCStringLen (BC8.pack newStr) $ \(cNew, lenNew) ->
+      haskokiStdSetPin ctx h (castPtr cOld) (fromIntegral lenOld)
+        (castPtr cNew) (fromIntegral lenNew)
+
+-- | Call InitToken on a slot with a Haskell-string SO PIN and
+-- label (the label pads to the fixed 32 C bytes here, as the
+-- C caller would).
+callInitToken :: StablePtr StdInstance -> CULong -> String -> String -> IO CULong
+callInitToken ctx slot pinStr labelStr =
+  BS.useAsCStringLen (BC8.pack pinStr) $ \(cPin, lenPin) ->
+    BS.useAsCStringLen (BC8.pack (take 32 (labelStr ++ repeat ' '))) $ \(cLabel, _) ->
+      haskokiStdInitToken ctx slot (castPtr cPin) (fromIntegral lenPin) (castPtr cLabel)
+
+-- | Read the live instance's stored credentials (no second
+-- handle: the instance's own store answers).
+liveCredentials :: StablePtr StdInstance -> IO [CredentialRecord]
+liveCredentials ctx = do
+  inst <- deRefStablePtr ctx
+  case siStore inst of
+    Nothing -> assertFailure "expected a stored instance" >> pure []
+    Just ss -> do
+      eCreds <- storeLoadCredentials (stdStore ss)
+      either (assertFailure . show) pure eCreds
+
+-- | A user PIN change persists across close and reopen: the
+-- old PIN refuses, the new PIN serves.
+caseSetPinDurable :: IO ()
+caseSetPinDurable =
+  bracket (makeTempDir "haskoki-setpin-durable") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    withAuthInstance path $ \ctx -> do
+      h <- openAuthSession ctx
+      loginAs ctx h 1 "1234" >>= assertEqual "user login" (CULong 0)
+      callSetPin ctx h "1234" "9999" >>= assertEqual "set-pin" (CULong 0)
+      sessionLoginOf ctx h >>= assertEqual "still logged in" (CULong 1)
+      haskokiStdLogout ctx h >>= assertEqual "logout" (CULong 0)
+    withAuthInstance path $ \ctx -> do
+      h <- openAuthSession ctx
+      loginAs ctx h 1 "1234" >>= assertEqual "old PIN refused" (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx h 1 "9999" >>= assertEqual "new PIN serves" (CULong 0)
+
+-- | SO recovery: after the user locks out, an SO login plus
+-- InitPIN sets a fresh user PIN, clears the lock, and resets
+-- the counter; the user serves again on the new PIN.
+caseInitPinRecovery :: IO ()
+caseInitPinRecovery =
+  bracket (makeTempDir "haskoki-initpin-recovery") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    withAuthInstance path $ \ctx -> do
+      h <- openAuthSession ctx
+      loginAs ctx h 1 "0000" >>= assertEqual "strike 1" (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx h 1 "0000" >>= assertEqual "strike 2" (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx h 1 "0000" >>= assertEqual "strike 3 locks" (stdRvOf CKR_PIN_LOCKED)
+      loginAs ctx h 0 "5678" >>= assertEqual "SO login" (CULong 0)
+      callInitPin ctx h "5555" >>= assertEqual "init-pin" (CULong 0)
+      haskokiStdLogout ctx h >>= assertEqual "SO logout" (CULong 0)
+      loginAs ctx h 1 "5555" >>= assertEqual "user serves again" (CULong 0)
+    auth <- readTokenAuth path
+    assertEqual "attempts reset" 0 (taUserAttempts auth)
+    assertEqual "lock cleared" False (taUserLocked auth)
+
+-- | InitToken resets its token: fresh auth, the new SO PIN,
+-- the same label still reconciling, and an uninitialized user
+-- PIN (user login answers @CKR_USER_PIN_NOT_INITIALIZED@
+-- until the SO runs InitPIN). The full lifecycle then
+-- persists across a reopen.
+caseInitTokenResets :: IO ()
+caseInitTokenResets =
+  bracket (makeTempDir "haskoki-inittoken-resets") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    withAuthInstance path $ \ctx -> do
+      h <- openAuthSession ctx
+      loginAs ctx h 1 "0000" >>= assertEqual "strike 1" (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx h 1 "0000" >>= assertEqual "strike 2" (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx h 1 "0000" >>= assertEqual "strike 3 locks" (stdRvOf CKR_PIN_LOCKED)
+      haskokiStdCloseSession ctx h >>= assertEqual "close session" (CULong 0)
+      callInitToken ctx 0 "7777" "haskoki-demo" >>= assertEqual "init-token" (CULong 0)
+      h2 <- openAuthSession ctx
+      loginAs ctx h2 1 "1234" >>= assertEqual "user PIN uninitialized" (CULong 0x102)
+      loginAs ctx h2 0 "7777" >>= assertEqual "new SO PIN serves" (CULong 0)
+      callInitPin ctx h2 "8888" >>= assertEqual "init-pin" (CULong 0)
+      haskokiStdLogout ctx h2 >>= assertEqual "SO logout" (CULong 0)
+      loginAs ctx h2 1 "8888" >>= assertEqual "user serves on new PIN" (CULong 0)
+    auth <- readTokenAuth path
+    assertEqual "attempts fresh" 0 (taUserAttempts auth)
+    assertEqual "unlocked" False (taUserLocked auth)
+    withAuthInstance path $ \ctx -> do
+      h <- openAuthSession ctx
+      loginAs ctx h 1 "8888" >>= assertEqual "lifecycle survives reopen" (CULong 0)
+
+-- | A refused PIN change (wrong old PIN) preserves the stored
+-- credential byte-exact while consuming one attempt: the
+-- strike counts, the PIN does not move.
+caseSetPinRefusedPreserves :: IO ()
+caseSetPinRefusedPreserves =
+  bracket (makeTempDir "haskoki-setpin-refused") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    withAuthInstance path $ \ctx -> do
+      h <- openAuthSession ctx
+      loginAs ctx h 1 "1234" >>= assertEqual "user login" (CULong 0)
+      callSetPin ctx h "1234" "9999" >>= assertEqual "set-pin" (CULong 0)
+      before <- liveCredentials ctx
+      assertEqual "one credential row" 1 (length before)
+      callSetPin ctx h "0000" "1111" >>= assertEqual "wrong old PIN refused"
+        (stdRvOf CKR_PIN_INCORRECT)
+      after <- liveCredentials ctx
+      assertEqual "credential preserved" before after
+    auth <- readTokenAuth path
+    assertEqual "strike consumed" 1 (taUserAttempts auth)
+
+-- | Open one read-only session on slot 0 (fails unless OK).
+openAuthSessionRO :: StablePtr StdInstance -> IO CULong
+openAuthSessionRO ctx =
+  alloca $ \(phSession :: Ptr CULong) -> do
+    poke phSession (CULong 0)
+    rv <- haskokiStdOpenSession ctx (CULong 0) (CULong 1) phSession
+    assertEqual "open read-only session" (CULong 0) rv
+    peek phSession
+
+-- | The old PIN authenticates: a public read/write session
+-- changes the user PIN without logging in (the reference
+-- session-state rule), and the new PIN serves afterwards.
+caseSetPinPublic :: IO ()
+caseSetPinPublic =
+  bracket (makeTempDir "haskoki-setpin-public") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    withAuthInstance path $ \ctx -> do
+      h <- openAuthSession ctx
+      sessionLoginOf ctx h >>= assertEqual "session public" (CULong 0)
+      callSetPin ctx h "1234" "31337" >>= assertEqual "public set-pin" (CULong 0)
+      sessionLoginOf ctx h >>= assertEqual "session still public" (CULong 0)
+      loginAs ctx h 1 "31337" >>= assertEqual "new PIN serves" (CULong 0)
+
+-- | Read-only sessions refuse provisioning: SetPIN answers
+-- @CKR_SESSION_READ_ONLY@ even logged in, and InitPIN answers
+-- @CKR_USER_NOT_LOGGED_IN@ on any non-SO session (a read-only
+-- session can never be an SO session: opening one while the SO
+-- is logged in refuses, and the SO cannot log in while one is
+-- open). No refusal consumes an attempt.
+caseProvisionReadOnly :: IO ()
+caseProvisionReadOnly =
+  bracket (makeTempDir "haskoki-provision-ro") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    withAuthInstance path $ \ctx -> do
+      rw <- openAuthSession ctx
+      ro <- openAuthSessionRO ctx
+      loginAs ctx ro 1 "1234" >>= assertEqual "user login on read-only" (CULong 0)
+      callSetPin ctx ro "1234" "9999" >>= assertEqual "logged-in read-only refuses"
+        (stdRvOf CKR_SESSION_READ_ONLY)
+      callInitPin ctx ro "9999" >>= assertEqual "InitPIN on read-only refuses"
+        (stdRvOf CKR_USER_NOT_LOGGED_IN)
+      callInitPin ctx rw "9999" >>= assertEqual "InitPIN on public session refuses"
+        (stdRvOf CKR_USER_NOT_LOGGED_IN)
+    auth <- readTokenAuth path
+    assertEqual "no user strike" 0 (taUserAttempts auth)
+    assertEqual "no SO strike" 0 (taSoAttempts auth)
+
+-- | A failed provisioning write settles the serving view: the
+-- re-sync attempt fails here (the store handle is closed), so
+-- the slot marks dirty, and a later login — even one whose
+-- settled counters would bypass the store — fails closed with
+-- @CKR_GENERAL_ERROR@ instead of authenticating against a
+-- possibly stale view.
+caseProvisionDirty :: IO ()
+caseProvisionDirty =
+  bracket (makeTempDir "haskoki-provision-dirty") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    withAuthInstance path $ \ctx -> do
+      h <- openAuthSession ctx
+      inst <- deRefStablePtr ctx
+      case siStore inst of
+        Nothing -> assertFailure "expected a stored instance"
+        Just ss -> storeClose (stdStore ss)
+      callSetPin ctx h "1234" "9999" >>= assertEqual "set-pin fails closed"
+        (CULong 0x05)
+      loginAs ctx h 1 "1234" >>= assertEqual "login fails closed on dirty view"
+        (CULong 0x05)
 
 -- | A two-token SQLite config over the path (positional
 -- identities: slot 0 demo, slot 1 ops, with distinct PINs).

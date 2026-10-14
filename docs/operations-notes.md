@@ -255,23 +255,37 @@ interrupted sequence reopens refused under both the old and the
 target catalog until the remaining legs commit (see the
 interrupted fixture in `tests/storage/CommitSpec.hs`).
 
-Versions stay put: configuration keeps `schema_version = 1`
+Versions: configuration keeps `schema_version = 1`
 (`token_ids` is optional and additive), durable documents keep
-`format_version = 1` with no new fields (the token document
-already separates `token_id` from `slot`), and the SQLite
-schema keeps `schema_version = 1` with no migration. A wrong
-schema version refuses at open without writing (see
-`verifyExisting` in `src/Haskoki/Runtime/Storage/SQLite.hs` and
-the future-version case in `tests/storage/StoreSpec.hs`);
-unknown document versions refuse on decode, as before.
+`format_version = 1` (the token document already separates
+`token_id` from `slot`; the new credential document starts at
+its own `format_version = 1`), and the SQLite schema moves to
+`schema_version = 2` by one explicit migration: a version-1
+database gains the empty `credentials` table and the advanced
+marker in a single transaction at open, with no row rewritten
+or reinterpreted (see `migrateV1toV2` in
+`src/Haskoki/Runtime/Storage/SQLite.hs` and the migration case
+in `tests/storage/StoreSpec.hs`). Anything but version 1 or 2
+refuses at open without writing; unknown document versions
+refuse on decode, as before. Binary rollback across the bump
+refuses loudly: a version-1 binary meets `schema_version = 2`
+and declines, so operators upgrade every serving binary first.
 
-PIN values stay configuration-owned: the store carries no PIN
-and no PIN check, so a PIN edit changes the credential that
-reaches the same durable identity. There is no token-editor
-surface here: credential lifecycle changes wait for their own
-contract review, and no path reassigns one token's objects to
-another token's credential silently (every reassignment-shaped
-change above refuses loudly instead).
+PIN values start configuration-owned and become durable-owned on
+first provisioning: each token gains a credential row (the
+provisioned SO PIN plus the provisioned user PIN, or null while
+uninitialized) the first time `C_InitToken`, `C_InitPIN`, or
+`C_SetPIN` grants on it, and from then on the durable row wins
+over the catalog for that token. An unprovisioned token keeps
+serving its catalog PINs, so a PIN edit still changes the
+credential that reaches the same durable identity there; on a
+provisioned token the catalog PINs are seeds the durable row
+has superseded, and re-provisioning in-band is the way to move
+them. There is no token-editor surface here, and no path
+reassigns one token's objects to another token's credential
+silently (every reassignment-shaped change above refuses
+loudly instead; `C_InitToken` destroys only its own token's
+objects, jobs, and credential).
 
 Two boundaries stay outside this contract. Binary rollback is
 excluded: a moved store keeps versions every predecessor
@@ -389,9 +403,10 @@ The store path is explicit in config and single-writer; a pathless
 SQLite open or a second concurrent open refuses loudly instead of
 sharing state.
 
-PINs and auth state. PINs are fixed at open (home `1234` / `5678`,
-catalog PINs from the TOML file in plaintext) with no PIN-change
-path; comparison is the position-constant xor fold with length
+PINs and auth state. PINs start at their configured values (home `1234` /
+`5678`, catalog PINs from the TOML file in plaintext) and move in-band
+after that (`C_InitToken` / `C_InitPIN` / `C_SetPIN`, persisted per
+token); comparison is the position-constant xor fold with length
 short-circuit (`pinsMatch` in `ffi/Haskoki/FFI/Standard.hs`),
 with no uniform running-time guarantee. The
 persisted token row carries the login/attempt/lockout counters

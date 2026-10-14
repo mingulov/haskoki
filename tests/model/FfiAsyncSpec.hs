@@ -45,7 +45,13 @@ import Control.Concurrent
   , threadDelay
   , tryTakeMVar
   )
-import Control.Exception (AsyncException (..), SomeException, fromException, try)
+import Control.Exception
+  ( AsyncException (..)
+  , SomeException
+  , finally
+  , fromException
+  , try
+  )
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
@@ -75,12 +81,21 @@ import Haskoki.FFI.Async
   , allocJobHandle
   , asyncCloseCtx
   , asyncLiveHandles
+  , ctxAcquireBorrowTest
+  , ctxPendingReclaims
+  , ctxReclaimStats
+  , ctxReleaseBorrowTest
   , haskokiAsyncCancel
   , haskokiAsyncClose
   , haskokiAsyncJoin
   , haskokiAsyncStart
+  , joinAcquireTransfer
   , joinTransfer
+  , registerBorrowedCtx
+  , registerCtx
   , resolveJobHandle
+  , retireCtx
+  , setEnterTestHook
   , submitTransfer
   )
 import Haskoki.FFI.Standard (StdInstance, haskokiStdClose, openStdInstance)
@@ -116,6 +131,8 @@ import Haskoki.Runtime.Async
   , asyncTableSalt
   , cancelJob
   , enableAsyncSession
+  , enterTableUse
+  , exitTableUse
   , inspectTableGate
   , pollJob
   , startJob
@@ -190,6 +207,17 @@ spec = testGroup "FFI acquisition"
   , testCase "kill in the submit transfer cancels the fresh job" caseSubmitKillCancelsFresh
   , testCase "kill in the join handoff cancels the fresh join" caseHandoffKillCancelsJoin
   , testCase "join handoff publishes a live handle" caseHandoffPublishes
+  , testCase "kill after join commit cancels before publish" caseJoinAcquireKillAfterCommit
+  , testCase "join acquire publishes a live handle" caseJoinAcquirePublishes
+  , testCase "killed close releases; retry completes teardown" caseCloseKillRetryCompletes
+  , testCase "concurrent entry races close cleanly" caseEnterCloseRace
+  , testCase "borrowed start works" caseBorrowedStart
+  , testCase "owned close hands its index to a borrowed view" caseOwnedToBorrowedReuse
+  , testCase "caller parked pre-lookup meets the tombstone" caseEnterBarrierCloseTombstones
+  , testCase "retire clears the entry hook" caseRetireClearsHook
+  , testCase "registry roots reclaim across churn" caseRegistryRootsReclaim
+  , testCase "stacked displacements preserve every root" caseReclaimOverlappingReuse
+  , testCase "kill during acquire rolls back and nulls" caseJoinAcquireKillDuringAcquire
   ]
 
 isNull :: StablePtr a -> Bool
@@ -524,10 +552,11 @@ caseCloseOneKeepsOther = do
 -- Close admission (borrowers drain before teardown)
 -- ---------------------------------------------------------------------------
 
-rvOK, rvPending, rvGeneral :: CULong
+rvOK, rvPending, rvGeneral, rvBad :: CULong
 rvOK = CULong 0x0
 rvPending = CULong 0x204
 rvGeneral = CULong 0x05
+rvBad = CULong 0x07
 
 -- | The null job token: every out-pointer starts here, and every
 -- refusal leaves it here.
@@ -571,6 +600,7 @@ caseCloseWaitsForEntered = do
   done <- newEmptyMVar
   setJoinTestHook dc (putMVar entered () >> takeMVar proceed)
   sp <- newStablePtr ctx
+  registerCtx sp (acTable ctx)
   let sess = CULong (fromIntegral (unSessionId (acSession ctx)))
   _ <- forkIO $ do
     r <- try $ alloca $ \pHandleOut -> alloca $ \pNeedOut -> do
@@ -635,6 +665,7 @@ caseAdmittedCallsRun = do
   dc <- mkFfiDetached _store
   ctx <- mkFfiGen dc
   sp <- newStablePtr ctx
+  registerCtx sp (acTable ctx)
   let sess = CULong (fromIntegral (unSessionId (acSession ctx)))
       startOn pHandleOut = BS.useAsCString "abc" $ \p ->
         haskokiAsyncStart sp sess 2 (castPtr p) 3 32 1 pHandleOut
@@ -670,6 +701,7 @@ caseAdmittedCallsRun = do
   assertBool "no handle on refusal" (castStablePtrToPtr hAfter == nullPtr)
   (live2, term2, next2) <- tableStats (acTable ctx)
   assertEqual "refusal allocated nothing" (0, 1, 1) (live2, term2, next2)
+  retireCtx sp
   freeStablePtr sp
 
 -- ---------------------------------------------------------------------------
@@ -854,4 +886,576 @@ caseHandoffPublishes = do
   asyncCloseCtx ctx
   nLive2 <- asyncLiveHandles ctx
   assertEqual "close drains the handle" 0 nLive2
-  storeClose store
+  storeClose _store
+
+-- ---------------------------------------------------------------------------
+-- Combined acquisition, owned teardown, pre-dereference admission
+-- ---------------------------------------------------------------------------
+
+-- | A kill landing after the join acquisition commits but before
+-- the handle publishes cancels the fresh join through the detach
+-- wrapper: the committed attachment resolves canceled (durably),
+-- the out-pointer nulls, and no live orphan strands. The
+-- mid-window attachment read proves the kill lands strictly
+-- post-commit — before the combined acquisition, a kill there
+-- left the committed attachment with no handle.
+caseJoinAcquireKillAfterCommit :: IO ()
+caseJoinAcquireKillAfterCommit = do
+  store <- mkFfiStore
+  dc <- mkFfiDetached store
+  ctx <- mkFfiGen dc
+  j0 <- startFfiDigest ctx "abc" 32 1
+  eDet <- detachJob dc (acTable ctx) j0 JobDigest
+  pid <- case eDet of
+    DetachOk p -> pure p
+    other -> assertFailure ("detach failed: " ++ show other)
+  entered <- newEmptyMVar
+  proceed <- newEmptyMVar
+  done <- newEmptyMVar
+  alloca $ \pHandleOut -> alloca $ \pNeedOut -> do
+    poke pHandleOut nullJob
+    poke pNeedOut 0
+    acquirerTid <- forkIO $ do
+      r <- try (joinAcquireTransfer
+        (putMVar entered () >> takeMVar proceed) dc ctx JoinRequest
+          { jqPid = pid
+          , jqFunction = JobDigest
+          , jqSession = acSession ctx
+          , jqCapacity = 32
+          } pHandleOut pNeedOut)
+      putMVar done (r :: Either SomeException CULong)
+    mEntered <- timeout 10000000 (takeMVar entered)
+    case mEntered of
+      Nothing -> assertFailure "acquirer never entered the handoff window"
+      Just () -> pure ()
+    jidMid <- do
+      avMid <- inspectAttachment dc pid
+      case avMid of
+        Just (AvActive j) -> pure j
+        other -> assertFailure ("join not committed, got " ++ show other)
+    nLiveMid <- asyncLiveHandles ctx
+    assertEqual "no handle yet" 0 nLiveMid
+    killThread acquirerTid
+    mDone <- timeout 10000000 (takeMVar done)
+    r <- case mDone of
+      Nothing -> assertFailure "acquirer never reported after kill"
+      Just x -> pure x
+    case r of
+      Left e -> case fromException e of
+        Just ThreadKilled -> pure ()
+        Nothing -> assertFailure ("expected ThreadKilled, got " ++ show e)
+      Right rv -> assertFailure ("kill swallowed, acquire returned " ++ show rv)
+    hAfter <- peek pHandleOut
+    assertBool "out-pointer nulled" (castStablePtrToPtr hAfter == nullPtr)
+    cout <- cancelJob (acTable ctx) jidMid
+    case cout of
+      CancelAlready TermCanceled -> pure ()
+      other -> assertFailure ("fresh join not canceled, got " ++ show other)
+    avAfter <- inspectAttachment dc pid
+    assertEqual "attachment canceled" (Just (AvTerminal JobCanceled)) avAfter
+    jobs <- loadFfiJobs store
+    case [rec | rec <- jobs, jrPersistentId rec == pid] of
+      [rec] -> assertEqual "record canceled" JobCanceled (jrState rec)
+      other -> assertFailure ("expected one record, got " ++ show other)
+  (liveAfter, _termAfter, _nextAfter) <- tableStats (acTable ctx)
+  assertEqual "no live orphan" 0 liveAfter
+  asyncCloseCtx ctx
+  nLive2 <- asyncLiveHandles ctx
+  assertEqual "close drains clean" 0 nLive2
+
+-- | The combined acquisition without interruption publishes a
+-- live handle: pending with the out-pointer set and the need
+-- out-pointer untouched, resolving to the fresh join, and the
+-- attachment stays active until close drains it.
+caseJoinAcquirePublishes :: IO ()
+caseJoinAcquirePublishes = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  j0 <- startFfiDigest ctx "abc" 32 1
+  eDet <- detachJob dc (acTable ctx) j0 JobDigest
+  pid <- case eDet of
+    DetachOk p -> pure p
+    other -> assertFailure ("detach failed: " ++ show other)
+  (h, need) <- alloca $ \pHandleOut -> alloca $ \pNeedOut -> do
+    poke pHandleOut nullJob
+    poke pNeedOut 0
+    rv <- joinAcquireTransfer (pure ()) dc ctx JoinRequest
+      { jqPid = pid
+      , jqFunction = JobDigest
+      , jqSession = acSession ctx
+      , jqCapacity = 32
+      } pHandleOut pNeedOut
+    assertEqual "acquire pending" rvPending rv
+    hOut <- peek pHandleOut
+    assertBool "handle live" (castStablePtrToPtr hOut /= nullPtr)
+    needOut <- peek pNeedOut
+    pure (hOut, needOut)
+  assertEqual "need untouched on success" 0 need
+  m0 <- resolveJobHandle ctx h
+  jid <- case m0 of
+    Just j -> pure j
+    Nothing -> assertFailure "handle does not resolve"
+  av <- inspectAttachment dc pid
+  assertEqual "attachment active" (Just (AvActive jid)) av
+  nLive <- asyncLiveHandles ctx
+  assertEqual "one live handle" 1 nLive
+  asyncCloseCtx ctx
+  nLive2 <- asyncLiveHandles ctx
+  assertEqual "close drains the handle" 0 nLive2
+
+-- | Interrupting the winning slot-close releases its claim
+-- instead of stranding retired-but-undrained: the gate reopens
+-- with the borrower still counted, the slot stays set, and a
+-- retrying close re-claims and completes — draining the live
+-- handle, canceling the job, and nulling the slot. A third close
+-- is a silent no-op. Before the ownership transfer, the
+-- interrupted close left the gate retired with no owner, and the
+-- retry skipped teardown while nulling the slot.
+caseCloseKillRetryCompletes :: IO ()
+caseCloseKillRetryCompletes = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  j0 <- startFfiDigest ctx "abc" 32 1
+  h <- allocJobHandle ctx j0
+  sp <- newStablePtr ctx
+  registerCtx sp (acTable ctx)
+  alloca $ \pSlot -> do
+    poke pSlot sp
+    admitted <- enterTableUse (acTable ctx)
+    assertBool "borrower admitted" admitted
+    closedDone <- newEmptyMVar
+    closerTid <- forkIO $ do
+      r <- try (haskokiAsyncClose pSlot)
+      putMVar closedDone (r :: Either SomeException ())
+    awaitBlocked closerTid
+    killThread closerTid
+    mClosed <- timeout 10000000 (takeMVar closedDone)
+    case mClosed of
+      Nothing -> assertFailure "closer never reported after kill"
+      Just (Right ()) -> pure ()
+      Just (Left e) -> assertFailure ("closer leaked: " ++ show e)
+    gateMid <- inspectTableGate (acTable ctx)
+    assertEqual "kill released the claim" (1, False) gateMid
+    mid <- peek pSlot
+    assertBool "slot still set (teardown incomplete)" (not (isNull mid))
+    exitTableUse (acTable ctx)
+    haskokiAsyncClose pSlot
+    after <- peek pSlot
+    assertBool "retry nulled the slot" (isNull after)
+    gateAfter <- inspectTableGate (acTable ctx)
+    assertEqual "retired, no borrowers" (0, True) gateAfter
+    nLive <- asyncLiveHandles ctx
+    assertEqual "retry drained the handle" 0 nLive
+    mStale <- resolveJobHandle ctx h
+    assertEqual "handle retired" Nothing mStale
+    cout <- cancelJob (acTable ctx) j0
+    case cout of
+      CancelAlready TermCanceled -> pure ()
+      other -> assertFailure ("job not canceled, got " ++ show other)
+    haskokiAsyncClose pSlot
+    after3 <- peek pSlot
+    assertBool "slot stays nulled" (isNull after3)
+
+-- | Concurrent entry races a slot-close cleanly: four workers
+-- admit and release through the export while the owner closes
+-- underneath them. Admission runs before any dereference, so no
+-- worker can observe a freed pointer — every call either admits
+-- (typed handle refusal) or refuses at the retired gate, and the
+-- close still completes teardown exactly once. Before
+-- pre-dereference admission, a worker between its null check and
+-- its dereference could resume after the close freed the
+-- pointer.
+caseEnterCloseRace :: IO ()
+caseEnterCloseRace = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  sp <- newStablePtr ctx
+  registerCtx sp (acTable ctx)
+  alloca $ \pSlot -> do
+    poke pSlot sp
+    entered <- newEmptyMVar
+    dones <- mapM (const newEmptyMVar) [1 .. 4 :: Int]
+    let racer done = forkIO $ do
+          r <- try $ do
+            putMVar entered ()
+            mapM_ (const (probeOnce sp)) [1 .. 200 :: Int]
+          putMVar done (r :: Either SomeException ())
+    mapM_ racer dones
+    mapM_ (const (takeMVar entered)) [1 .. 4 :: Int]
+    haskokiAsyncClose pSlot
+    outs <- mapM (timeout 10000000 . takeMVar) dones
+    case sequence outs of
+      Nothing -> assertFailure "racer wedged past its backstop"
+      Just rs -> mapM_ checkOk rs
+    gateAfter <- inspectTableGate (acTable ctx)
+    assertEqual "retired, no borrowers" (0, True) gateAfter
+    after <- peek pSlot
+    assertBool "slot nulled" (isNull after)
+    nLive <- asyncLiveHandles ctx
+    assertEqual "no live handles" 0 nLive
+  where
+    probeOnce :: StablePtr AsyncCtx -> IO ()
+    probeOnce sp = do
+      rv <- haskokiAsyncCancel sp nullJob
+      if rv == rvBad || rv == rvGeneral
+        then pure ()
+        else assertFailure ("untyped race outcome: " ++ show rv)
+    checkOk :: Either SomeException () -> IO ()
+    checkOk (Right ()) = pure ()
+    checkOk (Left e) = assertFailure ("racer failed: " ++ show e)
+
+-- | Borrowed-view contract: a borrowed view registers admit-only at
+-- creation (the Standard surface assembles one view per session and
+-- retires it at session close, outside this module's ownership).
+-- Start admits and publishes, cancel retires, and closing through
+-- the slot reclaims the slot while tearing nothing down — the view
+-- stays registered and admittable. The value-level close claims and
+-- drains, and release retires the registration.
+caseBorrowedStart :: IO ()
+caseBorrowedStart = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  sp <- newStablePtr ctx
+  registerBorrowedCtx sp (acTable ctx)
+  let sess = CULong (fromIntegral (unSessionId (acSession ctx)))
+  h <- alloca $ \pHandleOut -> do
+    poke pHandleOut nullJob
+    rv <- BS.useAsCString "abc" $ \p ->
+      haskokiAsyncStart sp sess 2 (castPtr p) 3 32 1 pHandleOut
+    assertEqual "borrowed start pending" rvPending rv
+    hOut <- peek pHandleOut
+    assertBool "handle live" (castStablePtrToPtr hOut /= nullPtr)
+    pure hOut
+  gate1 <- inspectTableGate (acTable ctx)
+  assertEqual "borrower released" (0, False) gate1
+  rvCancel <- haskokiAsyncCancel sp h
+  assertEqual "borrowed cancel ok" rvOK rvCancel
+  alloca $ \pSlot -> do
+    poke pSlot sp
+    haskokiAsyncClose pSlot
+    after <- peek pSlot
+    assertBool "slot reclaimed" (isNull after)
+  gateStill <- inspectTableGate (acTable ctx)
+  assertEqual "slot close tore nothing down" (0, False) gateStill
+  rvAdmitted <- haskokiAsyncCancel sp nullJob
+  assertEqual "borrowed still admitted past the slot close" rvBad rvAdmitted
+  asyncCloseCtx ctx
+  nLive <- asyncLiveHandles ctx
+  assertEqual "drained" 0 nLive
+  retireCtx sp
+  freeStablePtr sp
+
+-- | Close a fresh owned context through its slot and immediately
+-- reallocate the freed index for a borrowed view. The realloc
+-- normally lands on the just-freed index; when a parallel worker's
+-- allocation lands first, that attempt's view retires and frees and
+-- the pair tries again within the bound. No assertion runs through
+-- freed bits here: the retired controls pin while allocated.
+reuseBorrowed :: DetachCtx -> AsyncCtx -> Int -> IO (StablePtr AsyncCtx)
+reuseBorrowed _ _ 0 =
+  assertFailure "freed index never came back within the bound"
+reuseBorrowed dc borrowed n = do
+  owned <- mkFfiGen dc
+  spOwned <- newStablePtr owned
+  registerCtx spOwned (acTable owned)
+  let ownedBits = castStablePtrToPtr spOwned
+  alloca $ \pSlot -> do
+    poke pSlot spOwned
+    haskokiAsyncClose pSlot
+    after <- peek pSlot
+    assertBool "slot nulled" (isNull after)
+    spBorrowed <- newStablePtr borrowed
+    registerBorrowedCtx spBorrowed (acTable borrowed)
+    if castStablePtrToPtr spBorrowed == ownedBits
+      then pure spBorrowed
+      else do
+        retireCtx spBorrowed
+        freeStablePtr spBorrowed
+        reuseBorrowed dc borrowed (n - 1)
+
+-- | Owned-to-borrowed index reuse: the borrowed view registers over
+-- the tombstone its freed index carries and admits — start pending,
+-- cancel ok. The retired controls pin while their pointer stays
+-- allocated (its index reserved, unreusable by anyone): a retired
+-- owned value refuses, and releasing the borrowed view retires it
+-- so the stale borrowed value refuses too.
+caseOwnedToBorrowedReuse :: IO ()
+caseOwnedToBorrowedReuse = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  -- Retired-owned control: retire while allocated, assert, free.
+  -- The live index cannot be reused underneath the assertion.
+  owned <- mkFfiGen dc
+  spOwned <- newStablePtr owned
+  registerCtx spOwned (acTable owned)
+  retireCtx spOwned
+  rvStale <- haskokiAsyncCancel spOwned nullJob
+  assertEqual "retired owned refuses" rvGeneral rvStale
+  freeStablePtr spOwned
+  asyncCloseCtx owned
+  -- Reuse flow: a slot-closed owned index hands to a borrowed view.
+  borrowed <- mkFfiGen dc
+  spBorrowed <- reuseBorrowed dc borrowed 100
+  let sess = CULong (fromIntegral (unSessionId (acSession borrowed)))
+  h <- alloca $ \pHandleOut -> do
+    poke pHandleOut nullJob
+    rv <- BS.useAsCString "abc" $ \p ->
+      haskokiAsyncStart spBorrowed sess 2 (castPtr p) 3 32 1 pHandleOut
+    assertEqual "borrowed start on the reused index admits" rvPending rv
+    hOut <- peek pHandleOut
+    assertBool "handle live" (castStablePtrToPtr hOut /= nullPtr)
+    pure hOut
+  rvCancel <- haskokiAsyncCancel spBorrowed h
+  assertEqual "borrowed cancel ok" rvOK rvCancel
+  -- Retired-borrowed control: retire while allocated, assert, free.
+  retireCtx spBorrowed
+  rvStaleBorrowed <- haskokiAsyncCancel spBorrowed nullJob
+  assertEqual "retired borrowed refuses" rvGeneral rvStaleBorrowed
+  freeStablePtr spBorrowed
+  asyncCloseCtx borrowed
+  awaitNoPendingReclaims
+
+-- | Deterministic pre-lookup barrier: a caller parks after its
+-- null check and before its registry lookup while the owner
+-- closes the context completely underneath it. On release the
+-- caller meets the tombstone and refuses typed — it never
+-- dereferences the freed pointer. Before tombstones, a caller
+-- resuming after the close fell through to a dereference of the
+-- freed pointer. The hook is scoped to this pointer and reset
+-- under 'finally', so parallel tests never observe it.
+caseEnterBarrierCloseTombstones :: IO ()
+caseEnterBarrierCloseTombstones = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  sp <- newStablePtr ctx
+  registerCtx sp (acTable ctx)
+  alloca $ \pSlot -> do
+    poke pSlot sp
+    entered <- newEmptyMVar
+    proceed <- newEmptyMVar
+    done <- newEmptyMVar
+    setEnterTestHook sp (Just (putMVar entered () >> takeMVar proceed))
+    (do
+      _ <- forkIO $ do
+        r <- try (haskokiAsyncCancel sp nullJob)
+        putMVar done (r :: Either SomeException CULong)
+      mEntered <- timeout 10000000 (takeMVar entered)
+      case mEntered of
+        Nothing -> assertFailure "caller never parked pre-lookup"
+        Just () -> pure ()
+      haskokiAsyncClose pSlot
+      after <- peek pSlot
+      assertBool "close completed under the parked caller" (isNull after)
+      gateMid <- inspectTableGate (acTable ctx)
+      assertEqual "retired, no borrowers" (0, True) gateMid
+      putMVar proceed ()
+      mDone <- timeout 10000000 (takeMVar done)
+      r <- case mDone of
+        Nothing -> assertFailure "caller never reported after release"
+        Just x -> pure x
+      case r of
+        Right rv -> assertEqual "parked caller refused by tombstone" rvGeneral rv
+        Left e -> assertFailure ("caller failed: " ++ show e)
+      ) `finally` setEnterTestHook sp Nothing
+
+-- | Retiring clears the entry hook in the same step as the
+-- tombstone: arm a hook, retire, then re-register the same
+-- pointer live and drive a call through it — the stale hook must
+-- not fire (its signal would surface in the rendezvous cell
+-- below). Registration preserves a live hook by design, so only
+-- the retire-time clear stands between the predecessor's hook
+-- and the new owner's calls.
+caseRetireClearsHook :: IO ()
+caseRetireClearsHook = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  sp <- newStablePtr ctx
+  registerCtx sp (acTable ctx)
+  fired <- newEmptyMVar
+  setEnterTestHook sp (Just (putMVar fired ()))
+  retireCtx sp
+  registerCtx sp (acTable ctx)
+  rv <- haskokiAsyncCancel sp nullJob
+  assertEqual "re-registered pointer admits" rvBad rv
+  mFired <- tryTakeMVar fired
+  case mFired of
+    Nothing -> pure ()
+    Just () -> assertFailure "stale entry hook fired after retire"
+  retireCtx sp
+  freeStablePtr sp
+  awaitNoPendingReclaims
+
+-- | Poll the C reclamation backlog to quiescence (bounded):
+-- borrows span adjacent lines only, so a live backlog drains
+-- immediately and anything standing past the bound is stranded.
+-- The table is process-wide and the suite runs cases in parallel,
+-- hence the poll instead of a single read.
+awaitNoPendingReclaims :: IO ()
+awaitNoPendingReclaims = go (100 :: Int)
+  where
+    go n
+      | n <= 0 = do
+          p <- ctxPendingReclaims
+          assertEqual "no stranded reclamation backlog" 0 p
+      | otherwise = do
+          p <- ctxPendingReclaims
+          if p == 0 then pure () else threadDelay 1000 >> go (n - 1)
+
+-- | Registry roots reclaim across churn: repeated owned
+-- register/retire cycles, borrowed register/retire cycles, and
+-- hook replacement/clear cycles leave no reclamation backlog once
+-- joined — every displaced root frees through its retire or its
+-- last release instead of standing retained.
+caseRegistryRootsReclaim :: IO ()
+caseRegistryRootsReclaim = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  mapM_ (\_ -> do
+    sp <- newStablePtr ctx
+    registerCtx sp (acTable ctx)
+    retireCtx sp
+    freeStablePtr sp) [1 .. 50 :: Int]
+  mapM_ (\_ -> do
+    sp <- newStablePtr ctx
+    registerBorrowedCtx sp (acTable ctx)
+    retireCtx sp
+    freeStablePtr sp) [1 .. 50 :: Int]
+  sp <- newStablePtr ctx
+  registerCtx sp (acTable ctx)
+  mapM_ (\_ -> do
+    setEnterTestHook sp (Just (pure ()))
+    setEnterTestHook sp Nothing) [1 .. 50 :: Int]
+  retireCtx sp
+  freeStablePtr sp
+  awaitNoPendingReclaims
+  awaitReclaimBalanced
+
+-- | Poll the displaced/taken/freed accounting to balance
+-- (bounded): every displaced root is taken exactly once and freed
+-- exactly once, so the three agree at quiescence. Parallel cases
+-- share the counters, hence the poll instead of a single read.
+awaitReclaimBalanced :: IO ()
+awaitReclaimBalanced = go (100 :: Int)
+  where
+    go n = do
+      (d, t, f) <- ctxReclaimStats
+      if d == t && t == f
+        then pure ()
+        else if n <= 0
+          then assertFailure ("reclamation imbalanced: " ++ show (d, t, f))
+          else threadDelay 1000 >> go (n - 1)
+
+-- | Stacked displacements preserve every root: hold one borrow,
+-- retire, reuse the same key, and retire again before releasing —
+-- both displaced roots queue instead of the second stranding the
+-- first. The held borrow pins at least two queued roots; the
+-- release drains both, and the accounting balances.
+caseReclaimOverlappingReuse :: IO ()
+caseReclaimOverlappingReuse = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  sp <- newStablePtr ctx
+  registerCtx sp (acTable ctx)
+  ctxAcquireBorrowTest sp
+  retireCtx sp
+  registerCtx sp (acTable ctx)
+  retireCtx sp
+  p <- ctxPendingReclaims
+  assertBool ("two stacked roots queued, saw " ++ show p) (p >= 2)
+  ctxReleaseBorrowTest sp
+  freeStablePtr sp
+  awaitNoPendingReclaims
+  awaitReclaimBalanced
+
+-- | A kill landing inside the acquisition — after the fresh job
+-- starts but before its claim commits — retires the fresh
+-- unregistered job, rolls the claim back, and nulls the
+-- out-pointer: the parked acquirer dies 'ThreadKilled', the
+-- durable job stands untouched and joinable, and a retry
+-- acquires cleanly. The acquisition runs masked end to end, so
+-- the pure commit boundary itself admits no kill; this window is
+-- the closest injectable point on the acquisition side of it.
+caseJoinAcquireKillDuringAcquire :: IO ()
+caseJoinAcquireKillDuringAcquire = do
+  store <- mkFfiStore
+  dc <- mkFfiDetached store
+  ctx <- mkFfiGen dc
+  j0 <- startFfiDigest ctx "abc" 32 1
+  eDet <- detachJob dc (acTable ctx) j0 JobDigest
+  pid <- case eDet of
+    DetachOk p -> pure p
+    other -> assertFailure ("detach failed: " ++ show other)
+  entered <- newEmptyMVar
+  proceed <- newEmptyMVar
+  done <- newEmptyMVar
+  setJoinTestHook dc (putMVar entered () >> takeMVar proceed)
+  alloca $ \pHandleOut -> alloca $ \pNeedOut -> do
+    poke pHandleOut nullJob
+    poke pNeedOut 0
+    acquirerTid <- forkIO $ do
+      r <- try (joinAcquireTransfer (pure ()) dc ctx JoinRequest
+        { jqPid = pid
+        , jqFunction = JobDigest
+        , jqSession = acSession ctx
+        , jqCapacity = 32
+        } pHandleOut pNeedOut)
+      putMVar done (r :: Either SomeException CULong)
+    mEntered <- timeout 10000000 (takeMVar entered)
+    case mEntered of
+      Nothing -> assertFailure "acquirer never entered the acquisition window"
+      Just () -> pure ()
+    (liveMid, _termMid, nextMid) <- tableStats (acTable ctx)
+    assertEqual "fresh job started" 1 liveMid
+    let freshJid = JobId (nextMid - 1)
+    avMid <- inspectAttachment dc pid
+    assertEqual "claim uncommitted" (Just AvIdle) avMid
+    nLiveMid <- asyncLiveHandles ctx
+    assertEqual "no handle yet" 0 nLiveMid
+    killThread acquirerTid
+    mDone <- timeout 10000000 (takeMVar done)
+    r <- case mDone of
+      Nothing -> assertFailure "acquirer never reported after kill"
+      Just x -> pure x
+    case r of
+      Left e -> case fromException e of
+        Just ThreadKilled -> pure ()
+        Nothing -> assertFailure ("expected ThreadKilled, got " ++ show e)
+      Right rv -> assertFailure ("kill swallowed, acquire returned " ++ show rv)
+    hAfter <- peek pHandleOut
+    assertBool "out-pointer nulled" (castStablePtrToPtr hAfter == nullPtr)
+    needAfter <- peek pNeedOut
+    assertEqual "need untouched" 0 needAfter
+    avAfter <- inspectAttachment dc pid
+    assertEqual "claim rolled back" (Just AvIdle) avAfter
+    (liveAfter, _termAfter, _nextAfter) <- tableStats (acTable ctx)
+    assertEqual "no live orphan" 0 liveAfter
+    cout <- cancelJob (acTable ctx) freshJid
+    case cout of
+      CancelAlready TermCanceled -> pure ()
+      other -> assertFailure ("fresh job not canceled, got " ++ show other)
+    jobs <- loadFfiJobs store
+    case [rec | rec <- jobs, jrPersistentId rec == pid] of
+      [rec] -> assertEqual "record untouched" JobQueued (jrState rec)
+      other -> assertFailure ("expected one record, got " ++ show other)
+    -- The rolled-back claim frees the id: a retry acquires cleanly.
+    setJoinTestHook dc (pure ())
+    rvRetry <- joinAcquireTransfer (pure ()) dc ctx JoinRequest
+      { jqPid = pid
+      , jqFunction = JobDigest
+      , jqSession = acSession ctx
+      , jqCapacity = 32
+      } pHandleOut pNeedOut
+    assertEqual "retry pending" rvPending rvRetry
+    hRetry <- peek pHandleOut
+    assertBool "retry handle live" (castStablePtrToPtr hRetry /= nullPtr)
+  asyncCloseCtx ctx
+  nLive2 <- asyncLiveHandles ctx
+  assertEqual "close drains clean" 0 nLive2

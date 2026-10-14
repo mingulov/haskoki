@@ -52,12 +52,29 @@ show two ways to move it to another process.
 ## Token provisioning and state
 
 The default token is slot 0, label `haskoki-demo`, with public fixture PINs:
-user `1234`, security officer `5678`. `C_InitToken`, `C_InitPIN`, and
-`C_SetPIN` are unsupported; provisioning happens from configuration at open.
+user `1234`, security officer `5678`; these are the initial credentials the
+token serves until it is provisioned in-band. `C_InitToken` reinitializes a
+token (no sessions may be open: the SO PIN and label become the caller
+values, every object and pending detached job on the token is destroyed,
+and the user PIN becomes uninitialized), the SO then sets the user PIN
+with `C_InitPIN` from a read/write SO session, and `C_SetPIN` changes the
+session role's own PIN (a read/write SO session changes the SO PIN; any
+other read/write session — public, user, or context — changes the user
+PIN, with the old PIN as the authentication, so no login is required;
+read-only sessions refuse). New PINs keep the 4..32 policy; a refused call
+changes nothing. Changed PINs persist across restarts; a relabel takes
+effect at once, and the next open reconciles the catalog against the new
+durable label (update the catalog entry to match before restarting — the
+refusal names the label). Slot 0 keeps `haskoki-demo`: the catalog
+anchors slot 0 to that label, so slot-0 relabels refuse in-band and only
+other slots relabel.
 Wrong guesses commit per-role retries before the return code is observed,
 until `CKR_PIN_LOCKED`; a restart keeps the counters, and the third strike
 locks durably. A correct login resets retries before lockout and commits
-the reset, but does not unlock a locked role.
+the reset, but does not unlock a locked role; a wrong old PIN in `C_SetPIN`
+consumes one attempt exactly like a login strike. A user login against an
+uninitialized user PIN refuses with `CKR_USER_PIN_NOT_INITIALIZED` without
+consuming an attempt.
 
 Memory storage starts fresh in each process. SQLite reloads token objects
 and attempt/lockout state; session objects are transient, and a reopened
@@ -67,15 +84,18 @@ but never inherits an authenticated session. Both store types use
 unencrypted key material. Stop clients before removing or replacing a
 store. SQLite refuses a second concurrent owner.
 
-Recovery limits: a locked role has no unlock call, so recovery means
-starting over on a new store path; a retry write that cannot land fails
-the call with `CKR_GENERAL_ERROR` instead of answering as if it had
-counted. An uncertain commit reloads and reconciles instead of replaying
-the operation: a landed write reloads inline and serves on, while an
-unlanded one stays unserved until close and reopen. `MultiSessionSpec`
-(`caseLoginLockoutDurable`, `caseLoginFailClosed`,
-`caseLoginUnknownLanded`) and `CommitSpec` (the `auth-only` cases) hold
-the checks behind these behaviors.
+Recovery: a locked-out user recovers through the SO — an SO login plus
+`C_InitPIN` sets a fresh user PIN, clears the lock, and resets the counter.
+A retry write that cannot land fails the call with `CKR_GENERAL_ERROR`
+instead of answering as if it had counted. An uncertain commit reloads and
+reconciles instead of replaying the operation: a landed write reloads inline
+and serves on, while an unlanded one stays unserved until close and reopen.
+`MultiSessionSpec` (`caseLoginLockoutDurable`, `caseLoginFailClosed`,
+`caseLoginUnknownLanded`, plus the `caseSetPinDurable`,
+`caseInitPinRecovery`, `caseInitTokenResets`, and
+`caseSetPinRefusedPreserves` provisioning cases), `CommitSpec` (the
+`auth-only` and `credential` cases), and `tests/c/consumer_provisioning.c`
+hold the checks behind these behaviors.
 
 A `[tokens]` catalog can configure up to 16 tokens. Slot IDs are their array
 indices; slot 0 must remain `haskoki-demo`. Labels and PIN arrays must have

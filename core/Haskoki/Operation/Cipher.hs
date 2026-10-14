@@ -21,6 +21,7 @@ module Haskoki.Operation.Cipher
   , finishCipher
   , finishCipherUpdate
   , cipherUpdateSplit
+  , validateCipherIn
   , pkcs7Pad
   , pkcs7Unpad
   ) where
@@ -42,7 +43,6 @@ import Haskoki.Operation
   , SlotKind (..)
   , StepDeny (..)
   , StepOutcome (..)
-  , appendBuffered
   , TypedError (..)
   , interpretError
   , denyOutcome
@@ -60,7 +60,6 @@ import Haskoki.Operation
   , gateDataCall
   , insertOp
   , lookupSingle
-  , maxBuffered
   , removeSingle
   , setStaged
   , setChainIv
@@ -76,6 +75,7 @@ import Haskoki.Operation
   , commonParams
   , mkActiveCipher
   , setBuffered
+  , validateOperationIn
   )
 import Haskoki.Outcome (ResourceRelease)
 import Haskoki.Output (OutputPlan (..), planOneShot)
@@ -137,6 +137,14 @@ withCipherSlot ops kind = do
           "cipher slot holds the wrong direction")
     Nothing -> Left (mkDeny CKR_GENERAL_ERROR
       "cipher slot holds a foreign operation")
+
+-- | Length preflight for cipher accumulation: the monomorphic cipher
+-- entry over the slot's buffered bytes plus the incoming part,
+-- decided from the two lengths alone through 'validateOperationIn'.
+-- Admitted bytes are the joined buffer the planners split and
+-- retain; an over-limit pair rejects without building it.
+validateCipherIn :: SlotCommon -> ByteString -> Either StepDeny ByteString
+validateCipherIn sc part = validateOperationIn (bufferedOf sc) part
 
 -- | The effect input for an encrypt step: padded bytes, or the raw
 -- buffer when unpadded (which must already be block-aligned; the
@@ -278,45 +286,49 @@ planCipherUpdate ops st kind part mIntent = case withCipherSlot ops kind of
   Right (dir, sc, spec) -> case stagedOf sc of
     Just _ -> (ops, st, denyOutcome (mkDeny CKR_OPERATION_NOT_INITIALIZED
       "cipher operation is finalized; retry the staged output instead"))
-    Nothing ->
-      let full = bufferedOf sc <> part
-          (streamable, _) =
-            cipherUpdateSplit (commonMech sc) spec dir (BS.length full)
-          cap = case mIntent of
-            Just (IntentBuffer n)
-              | n > fromIntegral (maxBound :: Int) -> maxBound
-              | otherwise -> fromIntegral n
-            _ -> maxBound
-          block = csBlock spec
-          isEcbMech =
-            maybe False ((== 0) . crIvBytes) (cipherRecipeFor (commonMech sc))
-          -- Retention rule: every small slice this module stores
-          -- in a slot is an independent copy ('BS.copy'), never a
-          -- view sharing its backing allocation. Async snapshots
-          -- pin slot state, so a 16-byte slice of a 16 MiB buffer
-          -- would keep the whole allocation alive behind a
-          -- 16-byte retention price.
-          lastBlock bs = BS.copy (BS.drop (max 0 (BS.length bs - block)) bs)
-      in if BS.length full > maxBuffered
-        then (removeSingle kind ops, st, denyOutcome (mkDeny CKR_ARGUMENTS_BAD
-          "multipart input exceeds the buffer bound"))
-        else if streamable > cap
+    -- Length preflight first (unchanged check order: the bound
+    -- refusal terminates before the short-buffer and gate checks):
+    -- an over-limit pair rejects without building the joined
+    -- buffer. The admitted bytes below are exactly the old 'full'.
+    Nothing -> case validateCipherIn sc part of
+      Left d -> (removeSingle kind ops, st, denyOutcome d)
+      Right full ->
+        let (streamable, _) =
+              cipherUpdateSplit (commonMech sc) spec dir (BS.length full)
+            cap = case mIntent of
+              Just (IntentBuffer n)
+                | n > fromIntegral (maxBound :: Int) -> maxBound
+                | otherwise -> fromIntegral n
+              _ -> maxBound
+            block = csBlock spec
+            isEcbMech =
+              maybe False ((== 0) . crIvBytes) (cipherRecipeFor (commonMech sc))
+            -- Retention rule: every small slice this module stores
+            -- in a slot is an independent copy ('BS.copy'), never a
+            -- view sharing its backing allocation. Async snapshots
+            -- pin slot state, so a 16-byte slice of a 16 MiB buffer
+            -- would keep the whole allocation alive behind a
+            -- 16-byte retention price.
+            lastBlock bs = BS.copy (BS.drop (max 0 (BS.length bs - block)) bs)
+        in if streamable > cap
           then (ops, st, denyOutcome (mkDeny CKR_BUFFER_TOO_SMALL
             ("update output needs " ++ show streamable ++ " bytes")))
           else case gateDataCall st sc of
             GateDeny d term ->
               (if term then removeSingle kind ops else ops, st, denyOutcome d)
             GateOk st' sc'
-              | streamable == 0 -> case appendBuffered sc' part of
-                  Left d -> (removeSingle kind ops, st', denyOutcome d)
-                  Right sc'' ->
-                    ( insertOp (mkActiveCipher dir (setDualLink Nothing sc'') spec) ops
-                    , st'
-                    , StepOutcome CKR_OK [] Nothing
-                        ["buffered " ++ show (BS.length part)
-                          ++ " bytes (" ++ show (BS.length (bufferedOf sc''))
-                          ++ " total)"] [] Nothing
-                    )
+              -- The gate spends auth only; the buffer is unchanged,
+              -- so the preflighted bytes store directly (the old
+              -- re-append could not fail here).
+              | streamable == 0 ->
+                  let sc'' = setBuffered full sc'
+                  in ( insertOp (mkActiveCipher dir (setDualLink Nothing sc'') spec) ops
+                     , st'
+                     , StepOutcome CKR_OK [] Nothing
+                         ["buffered " ++ show (BS.length part)
+                           ++ " bytes (" ++ show (BS.length (bufferedOf sc''))
+                           ++ " total)"] [] Nothing
+                     )
               | otherwise ->
                   let (streamBytes, retainBytes) = BS.splitAt streamable full
                       -- Independent copy per the retention rule
@@ -381,10 +393,11 @@ planCipherOneShot ops st kind _name input = case withCipherSlot ops kind of
             DirDecrypt -> runOneShot ops st' kind dir sc' spec input input
   where
     runOneShot o s k d sc' spec raw effectInput =
-      case appendBuffered sc' raw of
+      case validateCipherIn sc' raw of
         Left deny -> (removeSingle k o, s, denyOutcome deny)
-        Right sc'' ->
-          ( insertOp (mkActiveCipher d (setDualLink Nothing sc'') spec) o
+        Right joined ->
+          let sc'' = setBuffered joined sc'
+          in ( insertOp (mkActiveCipher d (setDualLink Nothing sc'') spec) o
           , s
           , StepOutcome CKR_OK
               [FxCipher d (commonMech sc'') (commonKey sc'') (commonParams sc'') effectInput]

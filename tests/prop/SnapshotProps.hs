@@ -39,6 +39,7 @@ import Haskoki.Operation
   , RecoverSpec (..)
   , SlotCommon
   , SlotKind (..)
+  , StepDeny (..)
   , StepOutcome (..)
   , activeDigest
   , dualOf
@@ -58,6 +59,7 @@ import Haskoki.Operation
   , msgOperation
   , setBuffered
   , setLive
+  , validateOperationIn
   )
 import Haskoki.Operation.Cipher (planCipherFinal, planCipherUpdate)
 import Haskoki.Operation.Digest (finishDigest, planDigestOneShot)
@@ -113,6 +115,7 @@ spec count =
     , testCase "cipher geometry mutations reject" (caseCipherGeometryRejects count)
     , testCase "recover geometry mutations reject" (caseRecoverGeometryRejects count)
     , testCase "live stream refuses save" caseStreamLive
+    , testCase "preflight admits exactly within-bound pairs" (casePreflight count)
     ]
 
 -- ---------------------------------------------------------------------------
@@ -783,3 +786,37 @@ caseStreamLive = do
     (Left (SaveStreamLive SlotDigest))
     (saveOperation defaultQuotas emptyModel stA Pkcs11_3_2
       (SaveSlot SlotDigest))
+
+-- | Length-preflight law: admission depends on the two lengths
+-- alone — admitted exactly when the joined bytes fit the bound —
+-- and admitted bytes equal the concatenation. Boundary edges plus
+-- generated small pairs; distinct fills pin the join order too.
+casePreflight :: Int -> IO ()
+casePreflight count = mapM_ check (edgePairs ++ genPairs)
+  where
+    edgeSizes :: [Int]
+    edgeSizes =
+      [0, 1, 15, 16, 17, maxBuffered - 1, maxBuffered, maxBuffered + 1]
+    edgePairs :: [(Int, Int)]
+    edgePairs = [(a, b) | a <- edgeSizes, b <- edgeSizes]
+    genPairs :: [(Int, Int)]
+    genPairs =
+      [ (s `mod` 257, (s * 7) `mod` 257)
+      | s <- [1 .. count]
+      ]
+    check :: (Int, Int) -> IO ()
+    check (n, m) =
+      let cur = BS.replicate n 0x41
+          inc = BS.replicate m 0x42
+          label = "preflight " ++ show (n, m)
+      in case validateOperationIn cur inc of
+        Left d
+          | n + m > maxBuffered ->
+              assertEqual (label ++ " code") CKR_ARGUMENTS_BAD (sdCode d)
+          | otherwise ->
+              assertFailure (label ++ ": within-bound pair rejected")
+        Right joined
+          | n + m <= maxBuffered ->
+              assertEqual (label ++ " bytes") (cur <> inc) joined
+          | otherwise ->
+              assertFailure (label ++ ": over-limit pair admitted")

@@ -121,6 +121,16 @@ extern uint64_t haskoki_std_login(void *instance, uint64_t h_session,
                                   uint64_t user_type, uint8_t *p_pin,
                                   uint64_t pin_len);
 extern uint64_t haskoki_std_logout(void *instance, uint64_t h_session);
+extern uint64_t haskoki_std_init_token(void *instance, uint64_t slot,
+                                       uint8_t *p_pin, uint64_t pin_len,
+                                       uint8_t *p_label32);
+extern uint64_t haskoki_std_init_pin(void *instance, uint64_t h_session,
+                                     uint8_t *p_pin, uint64_t pin_len);
+extern uint64_t haskoki_std_set_pin(void *instance, uint64_t h_session,
+                                    uint8_t *p_old, uint64_t old_len,
+                                    uint8_t *p_new, uint64_t new_len);
+extern uint64_t haskoki_std_token_user_init(void *instance, uint64_t slot,
+                                            uint64_t *p_init);
 extern uint64_t haskoki_std_digest_init(void *instance, uint64_t h_session,
                                         uint64_t mechanism, uint8_t *p_params,
                                         uint64_t params_len);
@@ -567,7 +577,7 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   CK_RV rv = 0;
   uint64_t nSess = 0, nRw = 0, uLock = 0, sLock = 0, uRem = 0, sRem = 0;
   uint64_t provMax = 0, tokMax = 0, rwMax = 0, pinMin = 0, pinMax = 0,
-           attempts = 0;
+           attempts = 0, uInit = 1;
   uint8_t label32[32];
   char serial16[17];
   lr = haskoki_state_lock();
@@ -598,6 +608,11 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
     (void)haskoki_state_unlock();
     return rv;
   }
+  rv = (CK_RV)haskoki_std_token_user_init(inst, (uint64_t)slotID, &uInit);
+  if (rv != CKR_OK) {
+    (void)haskoki_state_unlock();
+    return rv;
+  }
   if (pInfo == NULL_PTR) {
     (void)haskoki_state_unlock();
     return CKR_ARGUMENTS_BAD;
@@ -614,6 +629,9 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   tmp.flags = (CK_FLAGS)(CKF_RNG | CKF_LOGIN_REQUIRED |
                          CKF_USER_PIN_INITIALIZED | CKF_TOKEN_INITIALIZED |
                          CKF_ASYNC_SESSION_SUPPORTED);
+  if (uInit == 0) {
+    tmp.flags &= (CK_FLAGS)~CKF_USER_PIN_INITIALIZED;
+  }
   if (uLock != 0) {
     tmp.flags |= CKF_USER_PIN_LOCKED;
   } else if (uRem == 1) {
@@ -1391,6 +1409,100 @@ CK_RV std_Logout(CK_SESSION_HANDLE hSession) {
     return CKR_CRYPTOKI_NOT_INITIALIZED;
   }
   rv = (CK_RV)haskoki_std_logout(inst, (uint64_t)hSession);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+/* ---------- routed bodies: provisioning (init-token/init-pin/set-pin) ---------- */
+
+CK_RV std_InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin,
+                    CK_ULONG ulPinLen, CK_UTF8CHAR_PTR pLabel) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pPin == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  /* No NULL-label check here: bad slots refuse first (the
+   * token-info discipline), so the Haskell side validates the
+   * slot before the label pointer. */
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_init_token(inst, (uint64_t)slotID, (uint8_t *)pPin,
+                                     (uint64_t)ulPinLen, (uint8_t *)pLabel);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_InitPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
+                  CK_ULONG ulPinLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pPin == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_init_pin(inst, (uint64_t)hSession, (uint8_t *)pPin,
+                                   (uint64_t)ulPinLen);
+  (void)haskoki_state_unlock();
+  return rv;
+}
+
+CK_RV std_SetPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pOldPin,
+                 CK_ULONG ulOldLen, CK_UTF8CHAR_PTR pNewPin,
+                 CK_ULONG ulNewLen) {
+  if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
+  void *inst = 0;
+  /* Fast-path precedence peek (the resolve under the state lock
+   * below is authoritative; this keeps NOT_INITIALIZED first). */
+  if (!haskoki_live_interval()) {
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  CK_RV lr = 0;
+  CK_RV rv = 0;
+  if (pOldPin == NULL_PTR || pNewPin == NULL_PTR) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  lr = haskoki_state_lock();
+  if (lr != CKR_OK) {
+    return lr;
+  }
+  inst = live_std();
+  if (inst == 0) {
+    (void)haskoki_state_unlock();
+    return CKR_CRYPTOKI_NOT_INITIALIZED;
+  }
+  rv = (CK_RV)haskoki_std_set_pin(inst, (uint64_t)hSession, (uint8_t *)pOldPin,
+                                  (uint64_t)ulOldLen, (uint8_t *)pNewPin,
+                                  (uint64_t)ulNewLen);
   (void)haskoki_state_unlock();
   return rv;
 }

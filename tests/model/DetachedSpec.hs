@@ -28,9 +28,16 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
 
 import Haskoki.Operation (CryptoEffect (..), CryptoResult (..))
-import Haskoki.Model (Model (..), SessionState (..), lookupSession)
+import Haskoki.Model (Model (..), SessionState (..), lookupSession, lookupTokenAuth)
 import Haskoki.Operation.Codec (encodeInitInput)
-import Haskoki.Outcome (EffectRequest (..), EngineResult (..), PlanResult (..), PreparedCommit (..))
+import Haskoki.Outcome
+  ( DeltaOp (..)
+  , EffectRequest (..)
+  , EngineResult (..)
+  , PlanResult (..)
+  , PreparedCommit (..)
+  , StateDelta (..)
+  )
 import Haskoki.Output (maxOutputBytes)
 import Haskoki.Registry (MechanismId (..))
 import Haskoki.Request
@@ -1019,7 +1026,11 @@ caseJoinIncompatible = do
   storeClose store
 
 -- A token with an active login admits only authenticated joins: the
--- fresh public session is told to authenticate first.
+-- fresh public session is told to authenticate first. The login
+-- lives in the LIVE model (durable token records carry no
+-- login); the stored record pins that contract by staying
+-- login-free. Once the session itself logs in, the same join is
+-- admitted.
 caseJoinAuthRequired :: IO ()
 caseJoinAuthRequired = do
   world <- newMemoryWorld
@@ -1032,14 +1043,31 @@ caseJoinAuthRequired = do
         , trSlot = slotHome
         , trGeneration = Generation 0
         , trLabel = "detach-test"
-        , trAuth = tokenAuthNew { taLogin = Just AuthUser }
+        , trAuth = tokenAuthNew
         }
   res <- storeCommit store emptyDelta { sdPutTokens = [tok] }
   case res of
     Committed -> pure ()
     other -> assertFailure ("token seat failed: " ++ show other)
+  eToks <- storeLoadTokens store
+  case eToks of
+    Right toks -> case [t | (t, _) <- toks, trId t == tokHome] of
+      [t] -> assertEqual "stored record carries no login"
+        Nothing (taLogin (trAuth t))
+      _ -> assertFailure "home token record missing"
+    Left err -> assertFailure ("token load failed: " ++ show err)
   gen <- openLiveGen
   assertEqual "fresh session is public" LoginPublic (ssLogin (lgSession gen))
+  eLogin <- publish (lgEnv gen)
+    (StateDelta [DeltaSetTokenAuth slotHome (tokenAuthNew { taLogin = Just AuthUser })])
+  case eLogin of
+    Right () -> pure ()
+    Left f -> assertFailure ("live login failed: " ++ show f)
+  mLive <- snapshotModel (lgEnv gen)
+  case lookupTokenAuth mLive slotHome of
+    Just auth -> assertEqual "live login established"
+      (Just AuthUser) (taLogin auth)
+    Nothing -> assertFailure "live token missing"
   dc <- mkDetached store
   j0 <- startDigestJob gen "abc" 32 1
   DetachOk pid <- detachJob dc (lgTable gen) j0 JobDigest
@@ -1050,6 +1078,20 @@ caseJoinAuthRequired = do
     , jqCapacity = 32
     }
   assertEqual "public join refused" JoinAuthRequired out
+  eSession <- publish (lgEnv gen)
+    (StateDelta [DeltaSetSessionLogin (ssId (lgSession gen)) LoginUser])
+  case eSession of
+    Right () -> pure ()
+    Left f -> assertFailure ("session login failed: " ++ show f)
+  retry <- joinJob dc (lgEnv gen) (lgTable gen) JoinRequest
+    { jqPid = pid
+    , jqFunction = JobDigest
+    , jqSession = ssId (lgSession gen)
+    , jqCapacity = 32
+    }
+  case retry of
+    JoinOk _ -> pure ()
+    other -> assertFailure ("logged-in join failed: " ++ show other)
   storeClose store
 
 -- Adapter-flagged opaque work takes the permitted unsaveable

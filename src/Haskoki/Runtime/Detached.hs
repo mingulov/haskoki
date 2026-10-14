@@ -118,7 +118,7 @@ import Data.Word (Word64, Word8)
 
 import Haskoki.Attribute (AttributeType, AttributeValue)
 import Haskoki.CallWork (checkedCallWork)
-import Haskoki.Model (Model, SessionState (..), lookupSession)
+import Haskoki.Model (Model, SessionState (..), lookupSession, lookupTokenAuth)
 import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
@@ -1057,7 +1057,7 @@ joinRecord dc env table req rec = do
           eTok <- checkToken dc rec
           case eTok of
             Left refused -> pure refused
-            Right trec -> joinValidated dc env table req rec recFunc trec
+            Right () -> joinValidated dc env table req rec recFunc
 
 -- | The one-active-attachment gate: terminal stays terminal, live
 -- actives and in-progress claims refuse competitors under the
@@ -1131,12 +1131,15 @@ mustFunction rec = case nameJobFunction (S.jrFunction rec) of
   Just f -> f
   Nothing -> JobDigest
 
--- | Check token identity/generation against the live token
+-- | Check token identity/generation against the stored token
 -- record: the record must name this context's home token (an
 -- id homed elsewhere is unknown to this join, even at an equal
--- generation) at the current generation. Runs before session,
--- body, capacity, claim, replan, and start.
-checkToken :: DetachCtx -> JobRecord -> IO (Either JoinOutcome TokenRecord)
+-- generation) at the current generation. Identity and generation
+-- only — the stored record carries no login (durable state never
+-- persists the active login), so authentication reads the live
+-- model in 'joinValidated' instead. Runs before session, body,
+-- capacity, claim, replan, and start.
+checkToken :: DetachCtx -> JobRecord -> IO (Either JoinOutcome ())
 checkToken dc rec = do
   eToks <- storeLoadTokens (dcStore dc)
   case eToks of
@@ -1150,14 +1153,14 @@ checkToken dc rec = do
         | trGeneration trec /= jrTokenGeneration rec ->
             pure (Left (JoinStaleGeneration
               (jrTokenGeneration rec) (trGeneration trec)))
-        | otherwise -> pure (Right trec)
+        | otherwise -> pure (Right ())
 
 -- | Session, auth, body, capacity, replan, and start — after the
 -- attachment gate, function check, and token check all pass.
 joinValidated
   :: DetachCtx -> Env -> AsyncTable -> JoinRequest -> JobRecord
-  -> JobFunction -> TokenRecord -> IO JoinOutcome
-joinValidated dc env table req rec recFunc trec = do
+  -> JobFunction -> IO JoinOutcome
+joinValidated dc env table req rec recFunc = do
   m <- snapshotModel env
   case lookupSession m (jqSession req) of
     Nothing -> pure JoinBadSession
@@ -1167,16 +1170,21 @@ joinValidated dc env table req rec recFunc trec = do
           async <- isAsyncSession table (jqSession req)
           if not async
             then pure JoinSessionNotAsync
-            else if authBlocked trec st
+            else if authBlocked (lookupTokenAuth m (dcSlot dc)) st
               then pure JoinAuthRequired
               else joinBody dc env table req rec recFunc st
 
 -- | Auth rule: a token with an active login admits only
--- authenticated joins; a public session must log in first.
-authBlocked :: TokenRecord -> SessionState -> Bool
-authBlocked trec st = case taLogin (trAuth trec) of
+-- authenticated joins; a public session must log in first. The
+-- login comes from the LIVE model snapshot (durable token
+-- records carry no login, so the stored record cannot answer):
+-- a missing live entry means no login exists, and admits.
+authBlocked :: Maybe TokenAuth -> SessionState -> Bool
+authBlocked liveAuth st = case liveAuth of
   Nothing -> False
-  Just _ -> ssLogin st == LoginPublic
+  Just auth -> case taLogin auth of
+    Nothing -> False
+    Just _ -> ssLogin st == LoginPublic
 
 -- | Decode the record body (recipe or prepared result) and continue.
 joinBody

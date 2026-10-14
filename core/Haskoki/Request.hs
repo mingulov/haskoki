@@ -90,6 +90,9 @@ data FunctionId
   | F_SignRecover
   | F_VerifyRecoverInit
   | F_VerifyRecover
+  | F_InitToken
+  | F_InitPIN
+  | F_SetPIN
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | How the caller provided (or omitted) an output buffer. Null (absent)

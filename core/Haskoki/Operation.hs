@@ -74,6 +74,7 @@ module Haskoki.Operation
   , isRc4Mech
     -- * Buffer bound for the per-kind lifecycles
   , maxBuffered
+  , validateOperationIn
   , appendBuffered
   ) where
 
@@ -803,11 +804,32 @@ retryStaged ops kind intent = case lookupSingle ops kind of
 maxBuffered :: Int
 maxBuffered = 16 * 1024 * 1024
 
+-- | Length preflight for buffered operation input: admit the
+-- @(current, incoming)@ pair exactly when the joined bytes fit the
+-- buffer bound, deciding from the two lengths alone. An over-limit
+-- pair rejects WITHOUT building the concatenation (strict append
+-- copies the whole prefix, so concatenating first would allocate
+-- the oversized buffer only to discard it); the joined bytes are
+-- built only on the admitted path. Denial code and reason match
+-- the historic accumulation refusal, so every caller keeps its
+-- disposition. The per-family lifecycles route their accumulating
+-- entry points through this one monomorphic check
+-- ('Haskoki.Operation.Cipher.validateCipherIn',
+-- 'Haskoki.Operation.Signature.validateSignatureIn',
+-- 'Haskoki.Operation.Message.validateMessageIn'); digest and dual
+-- accumulation inherit it through 'appendBuffered'.
+validateOperationIn :: ByteString -> ByteString -> Either StepDeny ByteString
+validateOperationIn current incoming
+  | curLen > maxBuffered = Left boundDeny
+  | incLen > maxBuffered - curLen = Left boundDeny
+  | otherwise = Right (current <> incoming)
+  where
+    curLen = BS.length current
+    incLen = BS.length incoming
+    boundDeny = mkDeny CKR_ARGUMENTS_BAD "multipart input exceeds the buffer bound"
+
 -- | Append bytes to a slot's multipart accumulation, rejecting input
 -- past the buffer bound. Callers terminate the slot on denial.
 appendBuffered :: SlotCommon -> ByteString -> Either StepDeny SlotCommon
 appendBuffered sc part =
-  let buf = bufferedOf sc <> part
-  in if BS.length buf > maxBuffered
-    then Left (mkDeny CKR_ARGUMENTS_BAD "multipart input exceeds the buffer bound")
-    else Right (setBuffered buf sc)
+  setBuffered <$> validateOperationIn (bufferedOf sc) part

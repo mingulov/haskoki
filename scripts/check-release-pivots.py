@@ -105,12 +105,15 @@ def main() -> int:
     # Floor history: 15 while dual/recover sat in legacy stubs; 8 after
     # the 4 dual entries registered to std_Dual* bodies (T-M02,
     # 63e7ce0) and the 4 recover entries to std_*Recover* bodies
-    # (T-M03, 5f1b025). Remaining: PIN/token lifecycle, opstate pair
-    # (deliberate saveability stubs), object size, legacy
-    # status/cancel.
+    # (T-M03, 5f1b025); 5 after InitToken/InitPIN/SetPIN
+    # registered to std_InitToken/std_InitPIN/std_SetPIN bodies
+    # (provisioning-lifecycle routing;
+    # feat/v0.4.0.0-b9b-p6: feat: implement token provisioning
+    # lifecycle). Remaining: opstate pair (deliberate saveability
+    # stubs), object size, legacy status/cancel.
     # Lower deliberately with the routing commit cited.
     check("STUB-UNIFORM-LEGACY",
-          len(legacy) >= 8 and all(
+          len(legacy) >= 5 and all(
               body_voids_only(b, ("return stub_probe();",
                                    "return stub_parallel();"))
               for _, b in legacy),
@@ -121,7 +124,6 @@ def main() -> int:
     # same as the floor.
     check("STUB-IDENTITY-LEGACY",
           sorted(n for n, _ in legacy) == sorted([
-              "InitToken", "InitPIN", "SetPIN",
               "GetOperationState", "SetOperationState",
               "GetObjectSize", "GetFunctionStatus", "CancelFunction"]),
           f"legacy stub identities exact (got {sorted(n for n, _ in legacy)})")

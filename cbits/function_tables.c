@@ -799,14 +799,15 @@ static CK_RV on_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
  * yield the stub code (pinned by the STB stub-beats-args checks),
  * so argument bugs in stub CALLERS are invisible here by design;
  * routed entries keep liveness -> args -> behavior. Per-entry
- * setting (6 x stub_probe, 2 x stub_parallel): stub_InitToken,
- * stub_InitPIN, stub_SetPIN, stub_GetOperationState,
- * stub_SetOperationState, stub_GetObjectSize ->
- * stub_probe (NOT_INITIALIZED pre-init, NOT_SUPPORTED live);
- * stub_GetFunctionStatus, stub_CancelFunction -> stub_parallel
- * (legacy parallel pair: NOT_PARALLEL live). Revisit: when an
- * entry gains an implementation it leaves this table for the
- * routed shape. Structural uniformity is gated
+ * setting (3 x stub_probe, 2 x stub_parallel):
+ * stub_GetOperationState, stub_SetOperationState,
+ * stub_GetObjectSize -> stub_probe (NOT_INITIALIZED pre-init,
+ * NOT_SUPPORTED live); stub_GetFunctionStatus,
+ * stub_CancelFunction -> stub_parallel (legacy parallel pair:
+ * NOT_PARALLEL live). Revisit: when an entry gains an
+ * implementation it leaves this table for the routed shape
+ * (InitToken/InitPIN/SetPIN routed by the token-provisioning
+ * lifecycle). Structural uniformity is gated
  * (STUB-UNIFORM-LEGACY). */
 
 static CK_RV stub_probe(void) {
@@ -826,29 +827,7 @@ static CK_RV stub_parallel(void) {
 }
 
 /* Slot/token info routed (std_GetSlotInfo/std_GetTokenInfo). */
-static CK_RV stub_InitToken(CK_SLOT_ID s, CK_UTF8CHAR_PTR p, CK_ULONG n,
-                             CK_UTF8CHAR_PTR l) {
-  (void)s;
-  (void)p;
-  (void)n;
-  (void)l;
-  return stub_probe();
-}
-static CK_RV stub_InitPIN(CK_SESSION_HANDLE h, CK_UTF8CHAR_PTR p, CK_ULONG n) {
-  (void)h;
-  (void)p;
-  (void)n;
-  return stub_probe();
-}
-static CK_RV stub_SetPIN(CK_SESSION_HANDLE h, CK_UTF8CHAR_PTR o, CK_ULONG on,
-                          CK_UTF8CHAR_PTR nw, CK_ULONG nn) {
-  (void)h;
-  (void)o;
-  (void)on;
-  (void)nw;
-  (void)nn;
-  return stub_probe();
-}
+/* Provisioning routed (std_InitToken/std_InitPIN/std_SetPIN). */
 /* Sessions routed (std_OpenSession/std_CloseSession/
  * std_CloseAllSessions/std_GetSessionInfo). */
 static CK_RV stub_GetOperationState(CK_SESSION_HANDLE h, CK_BYTE_PTR p,
@@ -964,6 +943,13 @@ extern CK_RV std_FindObjectsFinal(CK_SESSION_HANDLE hSession);
 extern CK_RV std_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType,
                        CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen);
 extern CK_RV std_Logout(CK_SESSION_HANDLE hSession);
+extern CK_RV std_InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin,
+                           CK_ULONG ulPinLen, CK_UTF8CHAR_PTR pLabel);
+extern CK_RV std_InitPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
+                         CK_ULONG ulPinLen);
+extern CK_RV std_SetPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pOldPin,
+                        CK_ULONG ulOldLen, CK_UTF8CHAR_PTR pNewPin,
+                        CK_ULONG ulNewLen);
 extern CK_RV std_DigestInit(CK_SESSION_HANDLE hSession,
                             CK_MECHANISM_PTR pMechanism);
 extern CK_RV std_Digest(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
@@ -1081,9 +1067,9 @@ static struct CK_FUNCTION_LIST g_function_list = {
   .C_GetTokenInfo = std_GetTokenInfo,
   .C_GetMechanismList = std_GetMechanismList,
   .C_GetMechanismInfo = std_GetMechanismInfo,
-  .C_InitToken = stub_InitToken,
-  .C_InitPIN = stub_InitPIN,
-  .C_SetPIN = stub_SetPIN,
+  .C_InitToken = std_InitToken,
+  .C_InitPIN = std_InitPIN,
+  .C_SetPIN = std_SetPIN,
   .C_OpenSession = std_OpenSession,
   .C_CloseSession = std_CloseSession,
   .C_CloseAllSessions = std_CloseAllSessions,

@@ -63,6 +63,15 @@ PLANNED = {
                 [("haskoki-model-tests", "tests/model/SessionSpec.hs")]),
     "C_Logout": ("planCall:F_Logout",
                  [("haskoki-model-tests", "tests/model/SessionSpec.hs")]),
+    # Provisioning lifecycle: planCall arms plus the routed C-table
+    # bodies, exercised end to end by the provisioning consumer
+    # (the lifecycle owns exactly these rows).
+    "C_InitToken": ("planCall:F_InitToken",
+                    [("test-consumers.sh", "tests/c/consumer_provisioning.c")]),
+    "C_InitPIN": ("planCall:F_InitPIN",
+                  [("test-consumers.sh", "tests/c/consumer_provisioning.c")]),
+    "C_SetPIN": ("planCall:F_SetPIN",
+                 [("test-consumers.sh", "tests/c/consumer_provisioning.c")]),
     "C_CreateObject": ("planCall:F_CreateObject",
                        [("haskoki-model-tests", "tests/model/ObjectSpec.hs")]),
     "C_CopyObject": ("planCall:F_CopyObject",
@@ -348,10 +357,9 @@ UNWIRed_OP = ("operation-layer behavior tested but no planCall FunctionId "
 UNSUPPORTED = {
     # C_GetSessionInfo/C_GetSlotInfo/C_GetTokenInfo live in PLANNED
     # (standard-surface routes + executed behavior tests).
-    "C_InitToken": ("no C_InitToken planning; token setup exists only as "
-                    "the Ctl scenario fixture.load step"),
-    "C_InitPIN": "no PIN planning in the model; ABI layout only",
-    "C_SetPIN": "no PIN planning in the model; ABI layout only",
+    # C_InitToken/C_InitPIN/C_SetPIN live in PLANNED
+    # (provisioning lifecycle: planCall arms + routed bodies +
+    # the provisioning consumer).
     "C_LoginUser": ("no C_LoginUser entry; role-login planning covers "
                     "C_Login only"),
     "C_CloseAllSessions": "no close-all planning (single-session close only)",

@@ -48,6 +48,7 @@ import Data.Maybe (listToMaybe)
 
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
+  , CredentialRecord (..)
   , FaultInjector (..)
   , FaultPoint (..)
   , HandleState (..)
@@ -68,10 +69,12 @@ import Haskoki.Runtime.Storage
   , checkSlotUnique
   , checkTokenRefs
   , coverDeletedJobIds
+  , decodeCredentialRecord
   , decodeJobRecord
   , decodeObjectRecord
   , decodeTokenRecord
   , defaultLimits
+  , encodeCredentialRecord
   , encodeHexWord64
   , encodeJobRecord
   , encodeObjectRecord
@@ -79,6 +82,7 @@ import Haskoki.Runtime.Storage
   , jobIdCounterKey
   , nextJobReservation
   , noFaults
+  , reconcileCredentialsReload
   , reconcileJobsReload
   , reconcileReload
   , scrubDeltaAuth
@@ -93,6 +97,7 @@ data WorldState = WorldState
   , wsObjects :: !(Map ObjectId ObjectRecord)
   , wsJobs :: !(Map Word64 JobRecord)
   , wsMeta :: !(Map String String)
+  , wsCredentials :: !(Map TokenId CredentialRecord)
   }
 
 -- | One memory store identity: the state plus the single-writer
@@ -106,7 +111,7 @@ data MemoryWorld = MemoryWorld
 -- | A fresh empty world with no owner.
 newMemoryWorld :: IO MemoryWorld
 newMemoryWorld = MemoryWorld
-  <$> newMVar (WorldState Map.empty Map.empty Map.empty Map.empty)
+  <$> newMVar (WorldState Map.empty Map.empty Map.empty Map.empty Map.empty)
   <*> newMVar Nothing
 
 -- | Open the world with default limits and no fault injection.
@@ -159,6 +164,7 @@ mkStore :: MemoryWorld -> StoreLimits -> FaultInjector -> MVar [(TokenId, String
 mkStore world limits inj qVar sVar cVar tok closedVar = Store
   { storeLoadTokens = withUse cVar closedVar (loadTokens world)
   , storeLoadJobs = withUse cVar closedVar (loadJobs world)
+  , storeLoadCredentials = withUse cVar closedVar (loadCredentials world)
   , storeCommit = protocolDelta world limits inj qVar sVar cVar closedVar
   , storeResetToken = resetTokenWorld world limits inj qVar sVar cVar closedVar
   , storeReserveJobId = reserveJobIdWorld world inj qVar sVar cVar closedVar
@@ -324,6 +330,8 @@ resetEffective world tid wantGen replacement = withMVar (mwState world) $ \st ->
           , sdPutJobs = []
           , sdDropJobs = [jrPersistentId j | j <- Map.elems (wsJobs st), jrToken j == tid]
           , sdPutMeta = []
+          , sdPutCredentials = []
+          , sdDropCredentials = [tid]
           })
 
 -- | Reserve one store-wide persistent job id: closed-handle
@@ -511,22 +519,27 @@ protocolLocked world limits inj qVar sVar delta0 = do
           eLoaded <- loadTokens world
           eJobs <- loadJobs world
           eMeta <- loadMeta world
-          case (eLoaded, eJobs, eMeta) of
-            (Right loaded, Right jobs, Right meta)
+          eCreds <- loadCredentials world
+          case (eLoaded, eJobs, eMeta, eCreds) of
+            (Right loaded, Right jobs, Right meta, Right creds)
               | reconcileReload eff loaded == ReconciledPresent
               , reconcileJobsReload eff jobs == ReconciledPresent
-              , reconcileMetaReload eff meta == ReconciledPresent -> do
+              , reconcileMetaReload eff meta == ReconciledPresent
+              , reconcileCredentialsReload eff creds == ReconciledPresent -> do
                   bumpCommits sVar
                   postCommitTail affected
-            (Right _, Right _, Right _) ->
+            (Right _, Right _, Right _, Right _) ->
               pure (NotCommitted (StoreIO "ambiguous commit resolved: delta absent"))
-            (Left err, _, _) -> do
+            (Left err, _, _, _) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)
-            (_, Left err, _) -> do
+            (_, Left err, _, _) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)
-            (_, _, Left err) -> do
+            (_, _, Left err, _) -> do
+              quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
+              pure (CommitUnknown err)
+            (_, _, _, Left err) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)
     -- After a confirmed commit, a post-commit failure quarantines
@@ -568,6 +581,7 @@ currentLoaded st = LoadedState
       | t <- sortOn trId (Map.elems (wsTokens st))
       ]
   , lsJobs = sortOn jrPersistentId (Map.elems (wsJobs st))
+  , lsCredentials = sortOn crToken (Map.elems (wsCredentials st))
   }
 
 -- | Tokens a delta touches: named tokens plus the home tokens of
@@ -582,6 +596,8 @@ affectedTokens world delta = withMVar (mwState world) $ \st ->
         ++ sdDropTokens delta
         ++ map (orToken . opRecord) (sdPutObjects delta)
         ++ map jrToken (sdPutJobs delta)
+        ++ map crToken (sdPutCredentials delta)
+        ++ sdDropCredentials delta
     resolvedObjs st =
       [ orToken o
       | oid <- sdDropObjects delta
@@ -608,13 +624,18 @@ quarantineTokens qVar sVar tids why = do
 
 -- | Authoritative reload: a clean load clears the quarantine; a
 -- failed load keeps it and reports the error. Reloads never
--- consult the fault script.
+-- consult the fault script. Credentials load alongside tokens:
+-- a corrupt credential row keeps the quarantine like a corrupt
+-- token row (the job load stays as it was).
 reloadWorld :: MemoryWorld -> MVar [(TokenId, String)] -> IO (Either StoreError ())
 reloadWorld world qVar = do
   eLoaded <- loadTokens world
-  case eLoaded of
-    Left err -> pure (Left err)
-    Right _ -> modifyMVar_ qVar (\_ -> pure []) >> pure (Right ())
+  eCreds <- loadCredentials world
+  case (eLoaded, eCreds) of
+    (Right _, Right _) ->
+      modifyMVar_ qVar (\_ -> pure []) >> pure (Right ())
+    (Left err, _) -> pure (Left err)
+    (_, Left err) -> pure (Left err)
 
 -- | Compare a delta's expected meta rows against reloaded meta
 -- with full key/value equality. Every expected row must be
@@ -640,10 +661,12 @@ effectiveDelta applied delta =
       ]
 
 -- | Pure delta application (shared shape with the SQLite backend's
--- statement plan). Dropping a token removes its owned objects and
--- jobs, matching the SQLite @ON DELETE CASCADE@; an ordinary
--- same-id token put preserves them. Drops (with cascade) apply
--- before puts, so a drop/recreate pair cannot resurrect children.
+-- statement plan). Dropping a token removes its owned objects,
+-- jobs, and credential, matching the SQLite @ON DELETE CASCADE@;
+-- an ordinary same-id token put preserves them. Drops (with
+-- cascade) apply before puts, so a drop/recreate pair cannot
+-- resurrect children. Duplicate credential puts resolve
+-- first-wins (the token-row precedent).
 -- Pids present before the commit but absent after it (deleted,
 -- not replaced) fold into the job-id mark, so a legacy store
 -- whose mark never advanced still cannot re-mint them once the
@@ -657,6 +680,8 @@ applyDelta st delta =
         (foldr Map.delete (wsJobs st) (sdDropJobs delta))
       jobs2 = foldr (\j m -> Map.insert (jrPersistentId j) j m)
         jobs1 (sdPutJobs delta)
+      creds1 = Map.filter (\c -> crToken c `notElem` sdDropTokens delta)
+        (foldr Map.delete (wsCredentials st) (sdDropCredentials delta))
       doomed = [pid | pid <- Map.keys (wsJobs st), Map.notMember pid jobs2]
       meta1 = foldr (\(k, v) m -> Map.insert k v m) (wsMeta st) (sdPutMeta delta)
       meta2 = case coverDeletedJobIds (Map.lookup jobIdCounterKey meta1) doomed of
@@ -668,6 +693,8 @@ applyDelta st delta =
         objs1 (sdPutObjects delta)
     , wsJobs = jobs2
     , wsMeta = meta2
+    , wsCredentials = foldr (\c m -> Map.insert (crToken c) c m)
+        creds1 (sdPutCredentials delta)
     }
 
 -- | Load every meta row as key/value pairs.
@@ -686,6 +713,18 @@ loadJobs world = withMVar (mwState world) $ \st ->
       Nothing -> Left (StoreCorrupt ("corrupt job record: " ++ show (jrPersistentId j)))
       Just j' -> Right j'
 
+-- | Load every provisioned credential, home-token ascending.
+-- Decodes round-trip through the canonical bytes, so the memory
+-- backend can never harbor an unserializable credential.
+loadCredentials :: MemoryWorld -> IO (Either StoreError [CredentialRecord])
+loadCredentials world = withMVar (mwState world) $ \st ->
+  pure (mapM decodeOne (sortOn crToken (Map.elems (wsCredentials st))))
+  where
+    decodeOne :: CredentialRecord -> Either StoreError CredentialRecord
+    decodeOne c = case decodeCredentialRecord (encodeCredentialRecord c) of
+      Nothing -> Left (StoreCorrupt ("corrupt credential record: " ++ show (crToken c)))
+      Just c' -> Right c'
+
 -- | Render every stored record through its canonical bytes.
 inspectWorld :: MemoryWorld -> IO [StoredDoc]
 inspectWorld world = do
@@ -702,7 +741,11 @@ inspectWorld world = do
         [ StoredDoc "detached_jobs" (encodeHexWord64 (jrPersistentId j)) (encodeJobRecord j)
         | j <- sortOn jrPersistentId (Map.elems (wsJobs st))
         ]
-  pure (tokDocs ++ objDocs ++ jobDocs)
+      credDocs =
+        [ StoredDoc "credentials" (show (unTokenId (crToken c))) (encodeCredentialRecord c)
+        | c <- sortOn crToken (Map.elems (wsCredentials st))
+        ]
+  pure (tokDocs ++ objDocs ++ jobDocs ++ credDocs)
 
 -- Identifier projections ('unTokenId', 'unObjectId') come from 'Haskoki.Types'.
 
