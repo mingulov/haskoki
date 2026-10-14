@@ -832,4 +832,4 @@ validateOperationIn current incoming
 -- past the buffer bound. Callers terminate the slot on denial.
 appendBuffered :: SlotCommon -> ByteString -> Either StepDeny SlotCommon
 appendBuffered sc part =
-  setBuffered <$> validateOperationIn (bufferedOf sc) part
+  flip setBuffered sc <$> validateOperationIn (bufferedOf sc) part

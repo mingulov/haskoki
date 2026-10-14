@@ -1,0 +1,11 @@
+# PKCS#11 URLs for the GnuTLS journey legs. The token URL selects the
+# demo token; the key URL selects the private key the OpenSC journey
+# created (label review-ec, id 01:01). The runner passes these URLs to
+# p11tool verbatim; no shell expansion applies to the percent escapes.
+#
+# Discovery leg (list-tokens): no URL argument; the token below must
+# appear in the output.
+token-url: pkcs11:token=haskoki-demo
+# Enumeration leg (list-all): lists every object under the token URL.
+# Use leg (test-sign): signs with the persisted private key.
+key-url: pkcs11:token=haskoki-demo;object=review-ec;type=private

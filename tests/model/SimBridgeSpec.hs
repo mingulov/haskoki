@@ -204,18 +204,23 @@ caseScheduleBoost = do
 -- Verbs (b)
 -- ---------------------------------------------------------------------------
 
--- | The three new verbs validate as scenario actions.
+-- | The three new verbs validate as scenario actions (with
+-- their required arguments).
 caseVerbsValidate :: IO ()
 caseVerbsValidate = do
   let sc = JObj
         [ ("name", JStr "verbs")
-        , ("steps", JArr [verbStep "token.insert", verbStep "async.delay", verbStep "fault.window"])
+        , ("steps", JArr
+            [ verbStep "token.insert" [("slot", JNum 0)]
+            , verbStep "async.delay" [("polls", JNum 1)]
+            , verbStep "fault.window" [("start", JNum 0), ("ticks", JNum 1)]
+            ])
         ]
   case validateScenario sc of
     Left err -> assertFailure ("verbs must validate: " ++ err)
     Right v -> assertEqual "three steps" 3 (length (scSteps v))
   where
-    verbStep a = JObj [("action", JStr a)]
+    verbStep a args = JObj [("action", JStr a), ("arguments", JObj args)]
 
 -- | The sim scenario succeeds and runs byte-identically 3 times, with
 -- the token script and the fault window observably applied.

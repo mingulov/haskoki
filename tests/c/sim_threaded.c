@@ -22,6 +22,13 @@
  * Flakiness cuts AGAINST the provider: any observed failure fails the run.
  * Defaults N=4, M=50 (control-churn cycles), ITERS=20000 (worker
  * mixed-op iterations), overridable via HASKOKI_SIM_N/_M/_ITERS.
+ * V4b matrix legs (no-ops at defaults):
+ *   HASKOKI_SIM_WAVES=W  workers and churner run W synchronized
+ *                        waves over one reusable barrier instead
+ *                        of a single burst: the same threads are
+ *                        reused across waves (thread-reuse leg)
+ * (Socket-pinned legs need no probe hook: the driver pins the
+ * process with taskset and the probe runs unchanged.)
  *
  * This TU deliberately includes ONLY the pinned vendor headers; it
  * never consumes provider-generated artifacts (enforced by the
@@ -67,6 +74,9 @@ static atomic_long g_calls = 0;
 static atomic_long g_opens = 0;
 static atomic_long g_closes = 0;
 static CK_SLOT_ID worker_slot, churn_slot;
+/* Wave barrier for the thread-reuse leg (initialized only when
+ * waves > 1; the default single burst never touches it). */
+static pthread_barrier_t g_wave;
 
 /* Codes a live module legitimately produces for the hammered
  * entries. Notably absent: CKR_GENERAL_ERROR (the guarded-Haskell
@@ -113,6 +123,7 @@ static void note_bad(const char *what, CK_RV rv) {
 
 typedef struct {
   long iters;
+  long waves;
   long opens;
   long closes;
 } worker_arg_t;
@@ -123,9 +134,11 @@ static void *worker_main(void *arg) {
   CK_SESSION_HANDLE sess = 0;
   CK_MECHANISM mech;
   long i;
+  long w;
   mech.mechanism = CKM_SHA256;
   mech.pParameter = NULL_PTR;
   mech.ulParameterLen = 0;
+  for (w = 0; w < wa->waves; w++) {
   for (i = 0; i < wa->iters; i++) {
     CK_RV rv;
     switch (i % 6) {
@@ -187,6 +200,17 @@ static void *worker_main(void *arg) {
     }
     }
   }
+  /* Wave boundary: with more than one wave the same threads meet
+   * here before the next burst (the default single burst skips
+   * the barrier entirely). */
+  if (wa->waves > 1) {
+    int brc = pthread_barrier_wait(&g_wave);
+    if (brc != 0 && brc != PTHREAD_BARRIER_SERIAL_THREAD) {
+      note_bad("wave barrier", (CK_RV)brc);
+      return NULL;
+    }
+  }
+  }
   /* Thread-end conservation: close any held handle so per-thread
    * opens == closes regardless of where the iteration count lands. */
   if (sess != 0) {
@@ -207,6 +231,7 @@ static void *worker_main(void *arg) {
 
 typedef struct {
   long cycles;
+  long waves;
 } churner_arg_t;
 
 static CK_RV control_call(const char *req_json) {
@@ -226,6 +251,8 @@ static CK_RV control_call(const char *req_json) {
 static void *churner_main(void *arg) {
   churner_arg_t *ca = (churner_arg_t *)arg;
   long c;
+  long w;
+  for (w = 0; w < ca->waves; w++) {
   for (c = 0; c < ca->cycles; c++) {
     char request[256];
     snprintf(request, sizeof(request), "{\"schema_version\":1,\"command\":\"token.insert\",\"arguments\":{\"slot\":%lu}}", churn_slot);
@@ -240,6 +267,14 @@ static void *churner_main(void *arg) {
     if (rv != CKR_OK) {
       note_bad("control token.remove", rv);
     }
+  }
+  if (ca->waves > 1) {
+    int brc = pthread_barrier_wait(&g_wave);
+    if (brc != 0 && brc != PTHREAD_BARRIER_SERIAL_THREAD) {
+      note_bad("wave barrier", (CK_RV)brc);
+      return NULL;
+    }
+  }
   }
   return NULL;
 }
@@ -346,6 +381,8 @@ int main(int argc, char **argv) {
   long nworkers;
   long cycles;
   long iters;
+  long waves;
+  int wave_barrier = 0;
   pthread_t *workers;
   worker_arg_t *wargs;
   churner_arg_t carg;
@@ -368,10 +405,17 @@ int main(int argc, char **argv) {
   nworkers = env_long("HASKOKI_SIM_N", 4);
   cycles = env_long("HASKOKI_SIM_M", 50);
   iters = env_long("HASKOKI_SIM_ITERS", 20000);
+  waves = env_long("HASKOKI_SIM_WAVES", 1);
   if (nworkers > 64) {
     nworkers = 64;
   }
+  if (waves > 16) {
+    waves = 16;
+  }
   printf("sim: N=%ld M=%ld iters=%ld\n", nworkers, cycles, iters);
+  if (waves > 1) {
+    printf("sim: waves=%ld (thread reuse)\n", waves);
+  }
   write_config();
   handle = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
   if (!handle) {
@@ -416,8 +460,16 @@ int main(int argc, char **argv) {
     fprintf(stderr, "calloc failed\n");
     return 2;
   }
+  if (waves > 1) {
+    if (pthread_barrier_init(&g_wave, NULL, (unsigned)(nworkers + 1)) != 0) {
+      fprintf(stderr, "wave barrier init failed\n");
+      return 2;
+    }
+    wave_barrier = 1;
+  }
   for (i = 0; i < nworkers; i++) {
     wargs[i].iters = iters;
+    wargs[i].waves = waves;
     wargs[i].opens = 0;
     wargs[i].closes = 0;
     if (pthread_create(&workers[i], NULL, worker_main, &wargs[i]) != 0) {
@@ -426,6 +478,7 @@ int main(int argc, char **argv) {
     }
   }
   carg.cycles = cycles;
+  carg.waves = waves;
   if (pthread_create(&churner, NULL, churner_main, &carg) != 0) {
     fprintf(stderr, "pthread_create churner failed\n");
     return 2;
@@ -434,6 +487,9 @@ int main(int argc, char **argv) {
     if (bounded_join(workers[i])) return 2;
   }
   if (bounded_join(churner)) return 2;
+  if (wave_barrier) {
+    pthread_barrier_destroy(&g_wave);
+  }
   free(workers);
   free(wargs);
 

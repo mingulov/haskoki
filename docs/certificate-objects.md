@@ -67,3 +67,13 @@ exercises the C surface. The pinned proxy forwards the qualified lifecycle
 subset, but certificate visibility/restart legs remain direct-only under
 [proxy issue 27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27).
 The [parity driver](../scripts/test-proxy-parity.sh) defines the exact subset.
+
+## Client journeys
+
+The [supported-client portfolio](client-portfolio.md) carries the
+certificate-linked application journey: the
+[certlink journey](journey-certlink.md) links this object model to a
+key under one `CKA_ID` on the C surface and finishes with a Java
+KeyStore plus application-signing leg, while the
+[AEAD journey](journey-aead.md) covers the symmetric sealed-data
+path. Junction configs live in `tests/journeys/`.

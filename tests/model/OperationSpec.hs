@@ -48,6 +48,7 @@ import Haskoki.Operation
   , activeCipher
   , activeDigest
   , activeSlots
+  , appendBuffered
   , bufferedLength
   , bufferedOf
   , cancelDropsPendingAuth
@@ -72,6 +73,7 @@ import Haskoki.Operation
   , mkSlotCommon
   , retryStaged
   , sdReason
+  , setBuffered
   , setCommonAuth
   , setLive
   , streamOf
@@ -229,6 +231,7 @@ spec = testGroup "operation lifecycles"
   , testCase "dual failure terminates" caseDualFailure
   , testCase "dual consumes the grant at first update" caseDualAuth
   , testCase "preflight admits and rejects from lengths alone" casePreflightLengths
+  , testCase "appendBuffered stores admitted bytes, denies past bound" caseAppendBufferedSlot
   , testCase "preflight rejects oversized cipher updates first" casePreflightCipherUpdate
   , testCase "preflight admits exact-boundary cipher one-shot" casePreflightCipherOneShot
   , testCase "preflight bounds sign updates past the bound" casePreflightSignUpdate
@@ -2522,6 +2525,25 @@ casePreflightLengths = do
   case validateMessageIn (BS.replicate maxBuffered 0x41) (BS.singleton 0x42) of
     Left d -> assertEqual "message entry code" CKR_ARGUMENTS_BAD (sdCode d)
     Right _ -> assertFailure "message entry admitted over-limit input"
+
+-- | 'appendBuffered' stores the joined bytes on the slot on the
+-- admitted path and reports the pinned bound refusal past it, so a
+-- dropped slot argument (or any mis-routing of the validated bytes)
+-- fails loudly instead of stranding the slot update.
+caseAppendBufferedSlot :: IO ()
+caseAppendBufferedSlot = do
+  let sc0 = mkSlotCommon aesCbcMech OpEncrypt Nothing BS.empty AuthNone
+  case appendBuffered sc0 (BS.singleton 0x42) of
+    Right sc1 ->
+      assertEqual "admitted bytes stored" (BS.singleton 0x42) (bufferedOf sc1)
+    Left d -> assertFailure ("admitted append rejected: " ++ show d)
+  let full = setBuffered (BS.replicate maxBuffered 0x41) sc0
+  case appendBuffered full (BS.singleton 0x42) of
+    Left d -> do
+      assertEqual "deny code" CKR_ARGUMENTS_BAD (sdCode d)
+      assertEqual "deny reason"
+        "multipart input exceeds the buffer bound" (sdReason d)
+    Right _ -> assertFailure "over-limit append admitted"
 
 -- | An over-limit cipher update terminates the slot, and the bound
 -- refusal still precedes the short-buffer check: a zero-cap intent

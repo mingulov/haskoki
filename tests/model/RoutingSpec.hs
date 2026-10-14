@@ -651,6 +651,11 @@ caseEveryFunctionRoutes = mapM_ check [minBound .. maxBound]
       F_OpenSession -> case planCall defaultRules emptyModel openReq of
         Reject rej -> assertEqual "open without token" CKR_TOKEN_NOT_PRESENT (rejCode rej)
         other -> assertFailure ("open misrouted: " ++ show other)
+      -- InitToken is slot-scoped (no session): an arg-less
+      -- sessionless request dies on argument shape, not session.
+      F_InitToken -> case planCall defaultRules emptyModel (mkRequest fid Nothing) of
+        Reject rej -> assertEqual "inittoken needs slot args" CKR_ARGUMENTS_BAD (rejCode rej)
+        other -> assertFailure ("inittoken misrouted: " ++ show other)
       _ -> case planCall defaultRules emptyModel (mkRequest fid Nothing) of
         Reject rej -> assertEqual (show fid ++ " needs session")
           CKR_SESSION_HANDLE_INVALID (rejCode rej)

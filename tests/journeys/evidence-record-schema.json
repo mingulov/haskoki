@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "haskoki-journey-evidence-record/1",
+  "title": "Supported-client journey evidence record",
+  "description": "One CLI journey leg. Follows the product-review results.json shape (name, command, timeout_seconds, classification, env_overrides, log, exit_code, status, elapsed_seconds) extended with journey pins so the qualification matrix consumes it directly. See docs/client-portfolio.md.",
+  "type": "object",
+  "required": ["name", "command", "timeout_seconds", "classification", "env_overrides", "log", "exit_code", "status", "elapsed_seconds", "journey", "client", "module", "config", "expect"],
+  "properties": {
+    "name": {"type": "string", "description": "Leg id, e.g. opensc-create-ec."},
+    "command": {"type": "array", "items": {"type": "string"}, "description": "Exact argv; PIN fixture values appear literally."},
+    "timeout_seconds": {"type": "integer", "minimum": 1},
+    "classification": {"type": "string", "const": "independent-client"},
+    "env_overrides": {"type": "object", "description": "Runner environment deltas, e.g. HASKOKI_CONFIG and GNUTLS_PIN.", "additionalProperties": {"type": "string"}},
+    "log": {"type": "string", "description": "Captured combined output file name."},
+    "exit_code": {"type": "integer"},
+    "status": {"type": "string", "enum": ["pass", "fail"], "description": "pass only when the leg met its expect block."},
+    "elapsed_seconds": {"type": "number", "minimum": 0},
+    "journey": {"type": "string", "description": "Journey doc anchor defining this leg."},
+    "client": {
+      "type": "object",
+      "required": ["name", "package", "version"],
+      "properties": {
+        "name": {"type": "string", "enum": ["opensc", "gnutls", "java"]},
+        "package": {"type": "string"},
+        "version": {"type": "string", "description": "Exact pinned version."}
+      }
+    },
+    "module": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "config": {
+      "type": "object",
+      "required": ["file", "sha256"],
+      "properties": {
+        "file": {"type": "string", "description": "Substituted junction config path."},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "expect": {
+      "type": "object",
+      "required": ["status", "exit", "markers"],
+      "properties": {
+        "status": {"type": "string", "enum": ["pass"]},
+        "exit": {"type": "integer", "description": "Expected process exit; nonzero for refusal legs."},
+        "markers": {"type": "array", "items": {"type": "string"}, "description": "Output substrings that must appear."}
+      }
+    },
+    "expect_refusal": {
+      "type": "object",
+      "description": "Present on refusal legs only: the specified refusal.",
+      "required": ["rv", "markers"],
+      "properties": {
+        "rv": {"type": "string", "description": "Expected CKR name, e.g. CKR_PIN_INCORRECT."},
+        "markers": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

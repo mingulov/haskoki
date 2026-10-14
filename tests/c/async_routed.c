@@ -3,6 +3,19 @@
  * Only discovery is resolved by symbol name. No provider header, generated
  * layout, private trampoline, or numeric handle serves as an oracle.
  * Part of scripts/test-consumers.sh (named explicitly in its scenario list).
+ *
+ * V4b matrix legs (each a no-op unless selected; default behavior is
+ * unchanged when neither selector is set):
+ *   HASKOKI_ASYNC_REROUTE=1        run the sqlite lifecycle before
+ *                                  the memory lifecycle (storage
+ *                                  order reroute; same legs, only
+ *                                  the order changes)
+ *   HASKOKI_ASYNC_PARALLEL_SEED=N  N threads (1..16) attempt 25
+ *                                  C_SeedRandom calls each on their
+ *                                  own sessions; every attempt must
+ *                                  succeed (parallel seed-attempt
+ *                                  leg; the roundtrip consumer pins
+ *                                  the single-call SeedRandom shape)
  */
 #define _GNU_SOURCE
 #define CK_PTR *
@@ -1081,11 +1094,75 @@ static void restart_read(int delivered_id) {
   check("restart", delivered_id ? "delivered-refused" : "delivery", failures == before);
 }
 
-static int table_proofs(const char *path) {
+typedef struct {
+  int index;
+  int iters;
+  CK_RV worst;
+} seed_arg_t;
+
+static void *seed_thread(void *arg) {
+  seed_arg_t *sa = (seed_arg_t *)arg;
+  CK_SESSION_HANDLE sess = CK_INVALID_HANDLE;
+  CK_RV rv = api->C_OpenSession(home_slot, CKF_SERIAL_SESSION | CKF_RW_SESSION,
+                                NULL, NULL, &sess);
+  sa->worst = rv;
+  if (rv == CKR_OK && sess != CK_INVALID_HANDLE) {
+    int k;
+    for (k = 0; k < sa->iters; k++) {
+      CK_BYTE seed[16];
+      memset(seed, 0xA5 + sa->index + k, sizeof(seed));
+      rv = api->C_SeedRandom(sess, seed, sizeof(seed));
+      if (rv != CKR_OK) {
+        sa->worst = rv;
+        break;
+      }
+    }
+    rv = api->C_CloseSession(sess);
+    if (sa->worst == CKR_OK) sa->worst = rv;
+  }
+  return NULL;
+}
+
+static int parallel_seed_count(void) {
+  const char *text = getenv("HASKOKI_ASYNC_PARALLEL_SEED");
+  char *end = NULL;
+  long n;
+  if (text == NULL || *text == '\0') return 0;
+  n = strtol(text, &end, 10);
+  if (end == text || *end != '\0' || n < 1 || n > 16) return 0;
+  return (int)n;
+}
+
+static void parallel_seed_phase(int nthreads) {
+  pthread_t threads[16];
+  seed_arg_t args[16];
+  int created = 0, i;
+  for (i = 0; i < nthreads; i++) {
+    args[i].index = i;
+    args[i].iters = 25;
+    args[i].worst = CKR_GENERAL_ERROR;
+    if (pthread_create(&threads[i], NULL, seed_thread, &args[i]) != 0) {
+      check("seed", "parallel-spawn", 0);
+      break;
+    }
+    created++;
+  }
+  for (i = 0; i < created; i++) pthread_join(threads[i], NULL);
+  for (i = 0; i < created; i++) {
+    char leg[48];
+    snprintf(leg, sizeof(leg), "parallel-seed-%d", args[i].index);
+    expect_rv("C_SeedRandom", leg, args[i].worst, CKR_OK);
+  }
+  check("seed", "parallel", created == nthreads);
+}
+
+static void memory_leg(void) {
+  int seeds;
   fixture_configure(0);
-  if (!discovery(fixture_load(path))) return 1;
   lifecycle("memory-before-init");
   fixture_initialize("memory");
+  seeds = parallel_seed_count();
+  if (seeds > 0) parallel_seed_phase(seeds);
   guards_and_names();
   attached_fields();
   synchronous_controls();
@@ -1097,6 +1174,9 @@ static int table_proofs(const char *path) {
   selector_pages();
   fixture_finalize("memory");
   lifecycle("memory-after-finalize");
+}
+
+static void sqlite_leg(void) {
   fixture_configure(1);
   lifecycle("sqlite-before-init");
   fixture_initialize("sqlite");
@@ -1105,6 +1185,21 @@ static int table_proofs(const char *path) {
   joined_cancellation();
   fixture_finalize("sqlite");
   lifecycle("sqlite-after-finalize");
+}
+
+static int table_proofs(const char *path) {
+  const char *reroute = getenv("HASKOKI_ASYNC_REROUTE");
+  int sqlite_first = reroute != NULL && strcmp(reroute, "1") == 0;
+  fixture_configure(0);
+  if (!discovery(fixture_load(path))) return 1;
+  if (sqlite_first) {
+    printf("async:reroute/order/3.2 sqlite-first\n");
+    sqlite_leg();
+    memory_leg();
+  } else {
+    memory_leg();
+    sqlite_leg();
+  }
   protected_rejoin();
   fixture_cleanup();
   printf("async:summary/assertions/3.2 assertions=%u failures=%u\n", assertions, failures);

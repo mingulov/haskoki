@@ -1,33 +1,46 @@
-name: Qualification (build-only)
+name: Qualification (behavioral matrix)
 
-# Qualification lane (V4a early bootstrap): build-only remote execution
-# of a checked-out SHA. Manual dispatch (Actions -> Run workflow, with
-# an optional exact revision) plus one bounded weekly schedule. The lane
-# never runs on branch or tag activity, and PR scope stays explicit in
-# the CI workflow: this file adds no push, pull_request, or tag trigger.
+# Qualification lane (V4b behavioral matrix on native runners; builds
+# on the merged V4a lane): manual dispatch (Actions -> Run workflow,
+# with an optional exact revision) plus one bounded weekly schedule.
+# The lane never runs on branch or tag activity, and PR scope stays
+# explicit in the CI workflow: this file adds no push,
+# pull_request, or tag trigger.
 #
 # Permissions are read-only at the top level and no job widens them.
 # Nothing here creates tags, drafts, attestations, or registry entries:
 # the toolchain image is built with load-only semantics for same-run
 # use, and the proxy pair is rebuilt from the pinned source at the
-# locked recipe with the canonical hashes asserted before use.
+# locked recipe with the canonical hashes asserted before use (kept
+# for the build-only fallback manifest, which runs the parity leg;
+# the matrix cells themselves run direct, since the async proofs
+# provably cannot cross the proxy — parity DIRECT-ONLY issues
+# 24/25 — so the socket legs pin scheduling instead of proxying).
 #
-# Jobs: static-gates (build-free wiring gates) runs first and gates the
-# toolchain and proxy-pair setup jobs; qualify needs all three setups
-# and runs the repaired V1 manifest (scripts/release-evidence.sh) with
-# the built image and the verified proxy pair. Parity is never silently
-# omitted: the pair is re-verified at load time and a missing pair is
-# a hard failure, not a skipped leg. External versions and hashes land
-# in the per-job provenance artifacts; every job sets a timeout and
-# uploads its evidence through an always-run step so partial failure
-# artifacts survive a failing run.
+# Jobs: static-gates (build-free wiring gates, strict C builds, an
+# executed canary, driver negative controls) runs first and gates
+# the toolchain and proxy-pair setup jobs; qualify needs all three
+# setups and runs on the native self-hosted label, where a mode
+# selection step probes the setup results and selects behavioral
+# (the 25-cell matrix through the V4a driver shims, each cell with
+# its log and a pass/fail receipt) or buildonly (the repaired V1
+# manifest, as in V4a). A native runner that cannot run the matrix
+# still produces selected-mode evidence, never a silent skip.
+# report needs qualify and always runs: it renders the pass/fail
+# matrix from the qualify evidence into the job summary and
+# attaches the matrix artifact. External versions and hashes land
+# in the per-job provenance artifacts; every job sets a timeout
+# and uploads its evidence through an always-run step so partial
+# failure artifacts survive a failing run.
 #
 # Pin policy (F-4): same as the CI workflow — every third-party action
 # is pinned to a full commit SHA with the human-readable tag kept as a
 # trailing comment on the same line; the pin gate covers this file from
 # the CI static step, and check-qualification-wiring.py owns the lane
 # contract (triggers, read-only posture, pinning, setup gating,
-# timeouts, artifacts) with durable negative controls.
+# timeouts, artifacts, job set, native label, matrix cells, mode
+# selection with build-only fallback, static guards, and the
+# cell-to-driver-to-probe leg wiring) with durable negative controls.
 
 on:
   workflow_dispatch:
@@ -80,8 +93,34 @@ jobs:
                 tests/c/finalize_wait_race_probe.c tests/c/async_routed.c \
                 tests/c/notifications_routed.c tests/c/mutexes.c \
                 tests/c/consumer_multithread.c; do
-              cc -std=c11 -fsyntax-only -Ispec/vendor "$p"
+              cc -std=c11 -Wall -Wextra -Werror -fsyntax-only -Ispec/vendor "$p"
             done
+            # The 64-bit cell compiles every consumer scenario with
+            # the width macro: prove that shape warning-clean here.
+            for p in tests/c/consumer_*.c tests/c/message_routed.c \
+                tests/c/async_routed.c tests/c/notifications_routed.c; do
+              cc -std=c11 -Wall -Wextra -Werror -fsyntax-only -Ispec/vendor \
+                -DHASKOKI_WIDTH_LEG=64 "$p"
+            done
+            # Executed canary (standalone C, no toolchain needed).
+            cc -std=c11 -O2 -g -Wall -Wextra -Werror -Ispec/vendor \
+              -o /tmp/qual-mutexes tests/c/mutexes.c -lpthread
+            /tmp/qual-mutexes
+            cc -std=c11 -O2 -g -Wall -Wextra -Werror -Ispec/vendor \
+              -DHASKOKI_WIDTH_LEG=64 -o /tmp/qual-mutexes64 tests/c/mutexes.c -lpthread
+            /tmp/qual-mutexes64
+            # Driver negative controls: every bogus hint fails fast
+            # before any build, so each must exit nonzero here.
+            if HASKOKI_QUAL_ONLY=bogus sh scripts/test-consumers.sh >/dev/null 2>&1; then
+              echo "negative control failed: bogus scenario hint passed"; exit 2
+            fi
+            if HASKOKI_WIDTH_LEG=bogus sh scripts/test-consumers.sh >/dev/null 2>&1; then
+              echo "negative control failed: bogus width hint passed"; exit 2
+            fi
+            if HASKOKI_SOCKET_CPU=bogus sh scripts/test-sim-threaded.sh >/dev/null 2>&1; then
+              echo "negative control failed: bogus pinning hint passed"; exit 2
+            fi
+            echo "negative controls hold: bogus hints fail fast"
           } 2>&1 | tee static-gates.log
           test -s static-gates.log || { echo "static gate log missing"; exit 2; }
       - name: Upload static gate log
@@ -298,17 +337,18 @@ jobs:
           if-no-files-found: error
 
   # ------------------------------------------------------------------
-  # Qualify: load the built image, re-verify the proxy pair, and run
-  # the repaired V1 manifest (release-evidence.sh) to a same-run
-  # evidence directory. Measured wall is dominated by the manifest
-  # itself (the demo lane alone runs ~85 min); one 6-hour runner is
-  # the bound, and the always-run upload below preserves partial
-  # failure artifacts. A prepared failure here classifies against the
-  # manifest receipts; result allowances are never broadened to pass.
+  # Qualify: probe the setup bundles without failing, select the
+  # execution mode from the probe, then run the behavioral matrix
+  # (native docker legs through the V4a driver shims, one receipt
+  # per cell) or the build-only V1 manifest fallback. Collect-all:
+  # every cell runs and the step fails closed on any cell failure,
+  # while the always-run upload below preserves partial evidence.
+  # Measured wall is dominated by the full-suite rows; one 6-hour
+  # runner is the bound.
   # ------------------------------------------------------------------
   qualify:
     needs: [static-gates, toolchain, proxy-pair]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 360
     steps:
       - name: Checkout
@@ -325,24 +365,70 @@ jobs:
         with:
           name: qualification-proxy
           path: proxy-in/
-      - name: Load image and re-verify the proxy pair
+      - name: Probe setup status
+        run: |
+          # Soft probe (this step never fails the job): record what
+          # the mode selection below may use, so a native runner
+          # that cannot run the matrix still gets a receipted mode.
+          set -uo pipefail
+          {
+          DOCKER_OK=no
+          IMAGE_OK=no
+          PROXY_OK=no
+          command -v docker >/dev/null 2>&1 && DOCKER_OK=yes
+          if [ "$DOCKER_OK" = "yes" ] && [ -f toolchain-in/toolchain-image.tar.gz ]; then
+            if gunzip -c toolchain-in/toolchain-image.tar.gz | docker load; then
+              docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3 >/dev/null 2>&1 && IMAGE_OK=yes
+            fi
+          fi
+          if [ -f proxy-in/proxy-pair.tar.gz ] && tar xzf proxy-in/proxy-pair.tar.gz -C proxy-in; then
+            if [ -x proxy-in/proxy-pair/pkcs11-proxy-ng ] \
+                && [ -f proxy-in/proxy-pair/libpkcs11_proxy_ng_shim.so ] \
+                && (cd proxy-in/proxy-pair \
+                  && echo "91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b  pkcs11-proxy-ng" | sha256sum -c -) >/dev/null 2>&1 \
+                && (cd proxy-in/proxy-pair \
+                  && echo "87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75  libpkcs11_proxy_ng_shim.so" | sha256sum -c -) >/dev/null 2>&1; then
+              PROXY_OK=yes
+            fi
+          fi
+          python3 - "$DOCKER_OK" "$IMAGE_OK" "$PROXY_OK" > setup-status.json <<'PY' || true
+          import json, sys
+          print(json.dumps({
+            "docker": sys.argv[1],
+            "image": sys.argv[2],
+            "proxy": sys.argv[3],
+          }, indent=2))
+          PY
+          cat setup-status.json 2>/dev/null || echo "setup probe produced no status"
+          } 2>&1 | tee setup-probe.log
+          exit 0
+      - name: Select execution mode
+        id: select
         run: |
           set -euo pipefail
-          test -f toolchain-in/toolchain-image.tar.gz || { echo "toolchain image missing"; exit 2; }
-          test -f toolchain-in/toolchain-provenance.json || { echo "toolchain provenance missing"; exit 2; }
-          gunzip -c toolchain-in/toolchain-image.tar.gz | docker load
-          docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3 > /dev/null \
-            || { echo "loaded image missing"; exit 2; }
-          test -f proxy-in/proxy-pair.tar.gz || { echo "proxy pair archive missing"; exit 2; }
-          tar xzf proxy-in/proxy-pair.tar.gz -C proxy-in
-          test -f proxy-in/proxy-provenance.json || { echo "proxy provenance missing"; exit 2; }
-          test -x proxy-in/proxy-pair/pkcs11-proxy-ng || { echo "proxy daemon missing"; exit 2; }
-          test -f proxy-in/proxy-pair/libpkcs11_proxy_ng_shim.so || { echo "proxy shim missing"; exit 2; }
-          (cd proxy-in/proxy-pair \
-            && echo "91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b  pkcs11-proxy-ng" | sha256sum -c -)
-          (cd proxy-in/proxy-pair \
-            && echo "87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75  libpkcs11_proxy_ng_shim.so" | sha256sum -c -)
-          echo "image loaded and proxy pair re-verified"
+          {
+          MODE=buildonly
+          REASON="behavioral prerequisites unmet (see setup-status.json)"
+          DOCKER_OK=no
+          IMAGE_OK=no
+          if [ -f setup-status.json ]; then
+            DOCKER_OK=$(python3 -c 'import json;print(json.load(open("setup-status.json"))["docker"])')
+            IMAGE_OK=$(python3 -c 'import json;print(json.load(open("setup-status.json"))["image"])')
+          fi
+          # The matrix cells run direct through the toolchain image
+          # (the proxy pair serves only the fallback manifest parity
+          # leg), so docker plus the loaded image selects behavioral.
+          if [ "$DOCKER_OK" = "yes" ] && [ "$IMAGE_OK" = "yes" ]; then
+            MODE=behavioral
+            REASON="docker present and image loaded"
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          python3 - "$MODE" "$REASON" > classification.json <<'PY' || { echo "mode receipt failed"; exit 2; }
+          import json, sys
+          print(json.dumps({"mode": sys.argv[1], "reason": sys.argv[2]}, indent=2))
+          PY
+          cat classification.json
+          } 2>&1 | tee mode-select.log
       - name: Align checkout ownership with image user
         run: |
           # The image runs as uid:gid 1000:1000 but the runner owns the
@@ -357,7 +443,105 @@ jobs:
           # host keeps write access for the demo leg.
           sudo chown -R 1000:1000 "$GITHUB_WORKSPACE"
           sudo chmod -R a+rwX "$GITHUB_WORKSPACE"
-      - name: Run the repaired V1 manifest
+      - name: Run behavioral matrix
+        if: steps.select.outputs.mode == 'behavioral'
+        run: |
+          set -euo pipefail
+          {
+          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3
+          export HASKOKI_EVIDENCE_DIR="$RUNNER_TEMP/qualify-evidence"
+          mkdir -p "$HASKOKI_EVIDENCE_DIR/cells"
+          # One row per cell: name|driver|env assignments (an empty
+          # env runs the driver default). Tuned legs filter to their
+          # scenario; the two full-suite rows pin the default
+          # baseline and the explicit-64 compile of every scenario.
+          cat > cells.txt <<'EOF'
+          consumers/default|test-consumers.sh|
+          consumers/width-64|test-consumers.sh|HASKOKI_WIDTH_LEG=64
+          pin-rotate|test-consumers.sh|HASKOKI_QUAL_ONLY=consumer_multithread HASKOKI_MT_PIN_ROTATE=1
+          aging|test-consumers.sh|HASKOKI_QUAL_ONLY=consumer_multithread HASKOKI_MT_AGING=1
+          async-reroute|test-consumers.sh|HASKOKI_QUAL_ONLY=async_routed HASKOKI_ASYNC_REROUTE=1
+          async-parallel-seed|test-consumers.sh|HASKOKI_QUAL_ONLY=async_routed HASKOKI_ASYNC_PARALLEL_SEED=8
+          serial-fairness|test-consumers.sh|HASKOKI_QUAL_ONLY=consumer_multithread HASKOKI_MT_N=1 HASKOKI_MT_FAIR=1
+          fairness-1-app|test-consumers.sh|HASKOKI_QUAL_ONLY=consumer_multithread HASKOKI_MT_N=1 HASKOKI_MT_MUTEX=1 HASKOKI_MT_FAIR=1
+          fairness-2-null|test-consumers.sh|HASKOKI_QUAL_ONLY=consumer_multithread HASKOKI_MT_N=2 HASKOKI_MT_FAIR=1
+          fairness-2-app|test-consumers.sh|HASKOKI_QUAL_ONLY=consumer_multithread HASKOKI_MT_N=2 HASKOKI_MT_MUTEX=1 HASKOKI_MT_FAIR=1
+          fairness-4-null|test-consumers.sh|HASKOKI_QUAL_ONLY=consumer_multithread HASKOKI_MT_N=4 HASKOKI_MT_FAIR=1
+          mutex-fairness|test-consumers.sh|HASKOKI_QUAL_ONLY=consumer_multithread HASKOKI_MT_N=4 HASKOKI_MT_MUTEX=1 HASKOKI_MT_FAIR=1
+          fairness-8-null|test-consumers.sh|HASKOKI_QUAL_ONLY=consumer_multithread HASKOKI_MT_N=8 HASKOKI_MT_FAIR=1
+          fairness-8-app|test-consumers.sh|HASKOKI_QUAL_ONLY=consumer_multithread HASKOKI_MT_N=8 HASKOKI_MT_MUTEX=1 HASKOKI_MT_FAIR=1
+          hint-strictness|test-consumers.sh|HASKOKI_QUAL_ONLY=consumer_multithread HASKOKI_MT_HINT_STRICT=1
+          sim/default|test-sim-threaded.sh|
+          thread-reuse|test-sim-threaded.sh|HASKOKI_SIM_WAVES=3 HASKOKI_SIM_ITERS=5000 HASKOKI_SIM_M=20
+          socket-quiet|test-sim-threaded.sh|HASKOKI_SOCKET_CPU=0
+          finalize/default|test-finalize-race.sh|
+          finalize-wait|test-finalize-race.sh|HASKOKI_FINALIZE_WAIT_CYCLES=200
+          mutexes/default|test-c-mutexes.sh|
+          async-attached/default|test-async-attached.sh|
+          async-detached/default|test-async-detached.sh|
+          async-socket|test-async-detached.sh|HASKOKI_SOCKET_CPU=0
+          ossl4/default|test-ossl4-bounds.sh|
+          EOF
+          : > cell-results.txt
+          FAILURES=""
+          # Read from the file (never a pipeline) so the failure
+          # accumulator survives the loop; collect-all with a
+          # fail-closed exit, mirroring the consumer driver.
+          while IFS='|' read -r cell driver assignments; do
+            [ -n "$cell" ] || continue
+            safe=$(printf '%s' "$cell" | tr '/' '_')
+            log="$HASKOKI_EVIDENCE_DIR/cells/$safe.log"
+            echo "=== cell: $cell ($driver${assignments:+ }$assignments)"
+            # Selectors cross into the container as explicit --env
+            # flags: environment set on the docker client never
+            # reaches the container on its own.
+            ENV_ARGS=""
+            # shellcheck disable=SC2086
+            for assign in $assignments; do
+              ENV_ARGS="$ENV_ARGS --env $assign"
+            done
+            # shellcheck disable=SC2086
+            if docker run --rm $ENV_ARGS -v "$PWD:/work" -w /work \
+                "$HASKOKI_IMAGE" "scripts/$driver" >"$log" 2>&1; then
+              echo "$cell pass" >> cell-results.txt
+              echo "cell $cell: pass"
+            else
+              echo "$cell FAIL" >> cell-results.txt
+              echo "cell $cell: FAIL (see cells/$safe.log)"
+              FAILURES="$FAILURES $cell"
+            fi
+          done < cells.txt
+          python3 - cells.txt cell-results.txt \
+            > "$HASKOKI_EVIDENCE_DIR/matrix.json" <<'PY' || { echo "matrix receipt failed"; exit 2; }
+          import json, sys
+          rows, results = {}, {}
+          for line in open(sys.argv[1]):
+              line = line.strip()
+              if not line:
+                  continue
+              name, driver, env = line.split("|")
+              rows[name] = {"name": name, "driver": driver, "env": env,
+                            "result": "missing"}
+          for line in open(sys.argv[2]):
+              line = line.strip()
+              if not line:
+                  continue
+              name, result = line.rsplit(" ", 1)
+              results[name] = result
+          cells, failures = [], []
+          for name, row in rows.items():
+              row["result"] = results.get(name, "missing")
+              cells.append(row)
+              if row["result"] != "pass":
+                  failures.append(name)
+          print(json.dumps({"mode": "behavioral", "cells": cells,
+                            "failures": failures}, indent=2))
+          PY
+          cat "$HASKOKI_EVIDENCE_DIR/matrix.json"
+          [ -z "$FAILURES" ] || { echo "matrix failures:$FAILURES"; exit 1; }
+          } 2>&1 | tee "$RUNNER_TEMP/qualify-evidence-run.log"
+      - name: Run the build-only fallback manifest
+        if: steps.select.outputs.mode == 'buildonly'
         run: |
           set -euo pipefail
           export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3
@@ -376,6 +560,47 @@ jobs:
           bash scripts/release-evidence.sh 2>&1 | tee "$RUNNER_TEMP/qualify-evidence-run.log"
           test -f "$HASKOKI_EVIDENCE_DIR/MANIFEST.txt" \
             || { echo "manifest receipt missing"; exit 2; }
+      - name: Assemble matrix receipt
+        if: always()
+        run: |
+          # Guarantee the matrix receipt and the run log exist for
+          # the upload and the report job even when both execution
+          # steps above were skipped, and stage every receipt under
+          # the one evidence root: the upload below must see a
+          # single directory tree, never a mix of runner-temp and
+          # checkout paths (mixed roots nest unpredictably in the
+          # archive and the report would read the wrong layout).
+          set -uo pipefail
+          MODE=unknown
+          MODE=$(python3 -c 'import json;print(json.load(open("classification.json"))["mode"])' 2>/dev/null) || MODE=unknown
+          mkdir -p "$RUNNER_TEMP/qualify-evidence"
+          if [ ! -f "$RUNNER_TEMP/qualify-evidence/matrix.json" ]; then
+            MANIFEST=no
+            [ -f "$RUNNER_TEMP/qualify-evidence/MANIFEST.txt" ] && MANIFEST=yes
+            python3 - "$MODE" "$MANIFEST" > "$RUNNER_TEMP/qualify-evidence/matrix.json" <<'PY' || true
+          import json, sys
+          print(json.dumps({"mode": sys.argv[1], "cells": [],
+                            "failures": [], "fallback_manifest": sys.argv[2]}, indent=2))
+          PY
+          fi
+          STAGE_FAIL=""
+          for f in classification.json setup-status.json setup-probe.log mode-select.log; do
+            if [ -f "$f" ]; then
+              cp "$f" "$RUNNER_TEMP/qualify-evidence/" 2>/dev/null || STAGE_FAIL="$STAGE_FAIL $f"
+            else
+              STAGE_FAIL="$STAGE_FAIL $f(missing)"
+            fi
+          done
+          # Cell table and per-cell results exist only when the
+          # matrix step ran; stage them when present.
+          for f in cells.txt cell-results.txt; do
+            [ -f "$f" ] && cp "$f" "$RUNNER_TEMP/qualify-evidence/" 2>/dev/null
+          done || true
+          echo "mode=$MODE" >> "$RUNNER_TEMP/qualify-evidence-run.log" 2>/dev/null || true
+          cat "$RUNNER_TEMP/qualify-evidence/matrix.json" 2>/dev/null \
+            || echo "matrix receipt missing"
+          [ -z "$STAGE_FAIL" ] || { echo "receipt staging failed:$STAGE_FAIL"; exit 2; }
+          exit 0
       - name: Restore checkout ownership to runner
         if: always()
         run: |
@@ -391,4 +616,72 @@ jobs:
           path: |
             ${{ runner.temp }}/qualify-evidence/
             ${{ runner.temp }}/qualify-evidence-run.log
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # Report: render the pass/fail matrix from the qualify evidence
+  # into the job summary and attach the matrix artifact. Always
+  # runs, so a failed matrix still renders; only missing or
+  # unparseable evidence fails this job (qualify owns the matrix
+  # verdict itself).
+  # ------------------------------------------------------------------
+  report:
+    needs: qualify
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download qualification evidence
+        if: always()
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: qualification-evidence
+          path: evidence-in/
+      - name: Render pass/fail matrix
+        if: always()
+        run: |
+          set -uo pipefail
+          python3 - > MATRIX.md <<'PY' || { echo "matrix render failed"; exit 2; }
+          import json, os, sys
+          try:
+              with open("evidence-in/qualify-evidence/matrix.json") as handle:
+                  matrix = json.load(handle)
+          except (OSError, ValueError) as exc:
+              print(f"MISSING matrix receipt: {exc}")
+              sys.exit(2)
+          try:
+              with open("evidence-in/qualify-evidence/classification.json") as handle:
+                  mode = json.load(handle).get("mode", matrix.get("mode", "unknown"))
+          except (OSError, ValueError):
+              mode = matrix.get("mode", "unknown")
+          cells = matrix.get("cells", [])
+          passes = sum(1 for cell in cells if cell.get("result") == "pass")
+          fails = [cell.get("name", "?") for cell in cells if cell.get("result") != "pass"]
+          lines = ["# Qualification matrix", "", f"mode: {mode}",
+                   f"cells: {len(cells)} pass: {passes} fail: {len(fails)}", ""]
+          if cells:
+              lines += ["| cell | driver | result |", "| --- | --- | --- |"]
+              for cell in cells:
+                  lines.append(f"| {cell.get('name', '?')} | {cell.get('driver', '?')} "
+                               f"| {cell.get('result', '?')} |")
+              lines.append("")
+          else:
+              lines += [f"fallback manifest: {matrix.get('fallback_manifest', 'unknown')}", ""]
+          if fails:
+              lines += ["failures: " + ", ".join(fails), ""]
+          text = "\n".join(lines)
+          print(text)
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as handle:
+                  handle.write(text + "\n")
+          PY
+          cat MATRIX.md
+          exit 0
+      - name: Upload matrix artifact
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qualification-matrix
+          path: MATRIX.md
           if-no-files-found: error

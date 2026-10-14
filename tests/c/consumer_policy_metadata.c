@@ -489,12 +489,13 @@ static int child_pin(const char *sop) {
   rv = fl->C_Login(s, CKU_USER, (CK_UTF8CHAR_PTR)"1234", 4);
   CHECK(rv == CKR_PIN_LOCKED, "pin locked denies correct pin (0x%lx)",
         (unsigned long)rv);
-  /* Pre-provisioning: PIN setup stays an explicit stub refusal. */
+  /* Provisioned: PIN setup is live. InitPIN needs an SO session,
+     and SetPIN on the locked role stays locked. */
   rv = fl->C_InitPIN(s, (CK_UTF8CHAR_PTR)"9999", 4);
-  CHECK(rv == CKR_FUNCTION_NOT_SUPPORTED, "pin InitPIN pre-provisioning stub (0x%lx)",
+  CHECK(rv == CKR_USER_NOT_LOGGED_IN, "pin InitPIN needs SO (0x%lx)",
         (unsigned long)rv);
   rv = fl->C_SetPIN(s, (CK_UTF8CHAR_PTR)"1234", 4, (CK_UTF8CHAR_PTR)"9999", 4);
-  CHECK(rv == CKR_FUNCTION_NOT_SUPPORTED, "pin SetPIN pre-provisioning stub (0x%lx)",
+  CHECK(rv == CKR_PIN_LOCKED, "pin SetPIN locked role stays locked (0x%lx)",
         (unsigned long)rv);
   rv = fl->C_CloseSession(s);
   CHECK(rv == CKR_OK, "pin close ok");

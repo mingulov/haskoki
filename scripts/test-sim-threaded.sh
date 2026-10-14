@@ -15,6 +15,10 @@
 # Tuning (window sizing only; defaults are the pinned N=4, M=50):
 #   HASKOKI_SIM_N / HASKOKI_SIM_M / HASKOKI_SIM_ITERS
 #
+# Matrix legs (V4b; a no-op when unset, validated before the build):
+#   HASKOKI_SOCKET_CPU=<id>  pin the probe to one CPU with
+#                            taskset(1) (the socket-quiet cell)
+#
 # Run (from haskoki/), inside the Docker toolchain image via bind mount:
 #   docker run --rm -v "$PWD:/work" -w /work \
 #     haskoki-dev:ghc-9.10.3 scripts/test-sim-threaded.sh
@@ -29,6 +33,25 @@ cd "$PKG" || exit 1
 fail() {
   echo "FAIL: $1"
   exit 1
+}
+
+# Socket-pinned leg: strict numeric CPU id, validated before the
+# build so a bogus hint fails fast without a toolchain.
+PIN_PREFIX=""
+if [ -n "${HASKOKI_SOCKET_CPU:-}" ]; then
+  case "$HASKOKI_SOCKET_CPU" in
+    *[!0-9]*)
+      fail "HASKOKI_SOCKET_CPU must be a numeric CPU id (got: $HASKOKI_SOCKET_CPU)" ;;
+  esac
+  command -v taskset >/dev/null 2>&1 \
+    || fail "taskset(1) required for socket-pinned legs"
+  PIN_PREFIX="taskset -c $HASKOKI_SOCKET_CPU"
+  echo "socket pinning: CPU $HASKOKI_SOCKET_CPU"
+fi
+
+run_pinned() {
+  # shellcheck disable=SC2086
+  $PIN_PREFIX "$@"
 }
 
 cabal build all || fail "cabal build all failed"
@@ -73,7 +96,7 @@ cc -std=c11 -O2 -g -Wall -Wextra -Werror \
   || fail "sim_threaded did not compile"
 echo "probe compiled: $BIN (headers: spec/vendor)"
 
-timeout 240 "$BIN" "$SO"
+run_pinned timeout 240 "$BIN" "$SO"
 BIN_RC=$?
 if [ "$BIN_RC" -eq 124 ]; then
   fail "sim_threaded TIMED OUT after 240s (hang guard fired; deadlock or stranding)"

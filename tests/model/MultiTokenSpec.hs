@@ -138,8 +138,10 @@ openManualInstance slots = do
   notify <- newIORef Map.empty
   hub <- newSlotEvents (max 1 (length slots)) [SlotDefinition slot False | slot <- slots]
     >>= either (fail . show) pure
+  serving <- newIORef Map.empty
+  dirty <- newIORef []
   newStablePtr (StdInstance env be cursors Nothing Map.empty
-    hub (pure ()) (closeBackend be) table Nothing views bindings
+    serving dirty hub (pure ()) (closeBackend be) table Nothing views bindings
     notify invokeNativeNotify Nothing)
   where
     seatOne env slot = do

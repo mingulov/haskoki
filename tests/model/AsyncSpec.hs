@@ -146,6 +146,7 @@ import Haskoki.Types
   , ExternalHandle (..)
   , Generation (..)
   , JobId (..)
+  , ObjectId (..)
   , Outcome (..)
   , Pkcs11Version (..)
   , ReturnCode (..)
@@ -1899,9 +1900,9 @@ caseCipherSlicesIndependent = do
         , jrFunction = JobDigest
         , jrWork = WorkCall
             (Reservation "tail-snap" [] Nothing (Just (CryptoStep
-              F_Digest SlotEncrypt "" (IntentBuffer 0) opsE
+              F_Encrypt SlotEncrypt "tail" (IntentBuffer 0) opsE
               (st { ssOps = opsE }))))
-            (EffectCrypto (FxDigest (MechanismId 0x250) "abc"))
+            (EffectCrypto (FxCipher DirEncrypt (MechanismId 0x251) Nothing BS.empty "tail"))
         , jrTicks = 1
         , jrCapacity = 64
         }

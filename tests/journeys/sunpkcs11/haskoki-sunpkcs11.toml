@@ -1,0 +1,21 @@
+# Junction config: SunPKCS11 (Java) legs of the supported-client
+# portfolio. Fresh memory store per run, matching the reviewed Java
+# probe contract: the probe owns exactly one initialize interval and
+# the store vanishes with the process. Nothing persists, so PIN
+# retry state can never leak between runs.
+#
+# No path substitution is needed (memory store). The runner records
+# these exact bytes with the evidence record.
+schema_version = 1
+profile = "demo-maximal"
+
+[storage]
+kind = "memory"
+
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+
+[trace]
+enabled = false
