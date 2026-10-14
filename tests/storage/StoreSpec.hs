@@ -3410,12 +3410,12 @@ testCredentialShowRedacted _ = do
       redacted :: Int -> String
       redacted n = "{\"redacted\":true,\"kind\":\"pin\",\"length\":" ++ show n ++ "}"
   assertEqual "credential Show redacted"
-    ("CredentialRecord {crToken = TokenId 7, crSoPin = " ++ redacted 8
-      ++ ", crUserPin = Just " ++ redacted 10 ++ "}")
+    ("CredentialRecord {crToken = " ++ show (TokenId 7) ++ ", crSoPin = "
+      ++ redacted 8 ++ ", crUserPin = Just " ++ redacted 10 ++ "}")
     (show cred)
   assertEqual "uninitialized Show"
-    ("CredentialRecord {crToken = TokenId 7, crSoPin = " ++ redacted 8
-      ++ ", crUserPin = Nothing}")
+    ("CredentialRecord {crToken = " ++ show (TokenId 7) ++ ", crSoPin = "
+      ++ redacted 8 ++ ", crUserPin = Nothing}")
     (show (cred { crUserPin = Nothing }))
 
 -- | Pinned @token_ids@ parse and project onto both catalogs:
@@ -3738,7 +3738,7 @@ caseOpenInterruptedRefuses = withOpenFile $ \path -> do
   eOld <- openReconciled path cfgOld
   case eOld of
     Left (StdStoreIdentityRefusal msg) ->
-      assertBool "old open names the drifted slot" ("SlotId 7" `isInfixOf` msg)
+      assertBool "old open names the drifted slot" (show (SlotId 7) `isInfixOf` msg)
     Left err -> assertFailure ("interrupted state misrefused the old catalog: " ++ show err)
     Right mAcq -> do
       closeAcquired mAcq

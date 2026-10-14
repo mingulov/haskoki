@@ -760,6 +760,7 @@ caseSubmitKillCancelsFresh = do
     case r of
       Left e -> case fromException e of
         Just ThreadKilled -> pure ()
+        Just other -> assertFailure ("expected ThreadKilled, got async " ++ show other)
         Nothing -> assertFailure ("expected ThreadKilled, got " ++ show e)
       Right rv -> assertFailure ("kill swallowed, transfer returned " ++ show rv)
     hAfter <- peek pHandleOut
@@ -827,6 +828,7 @@ caseHandoffKillCancelsJoin = do
     case r of
       Left e -> case fromException e of
         Just ThreadKilled -> pure ()
+        Just other -> assertFailure ("expected ThreadKilled, got async " ++ show other)
         Nothing -> assertFailure ("expected ThreadKilled, got " ++ show e)
       Right rv -> assertFailure ("kill swallowed, handoff returned " ++ show rv)
     hAfter <- peek pHandleOut
@@ -943,6 +945,7 @@ caseJoinAcquireKillAfterCommit = do
     case r of
       Left e -> case fromException e of
         Just ThreadKilled -> pure ()
+        Just other -> assertFailure ("expected ThreadKilled, got async " ++ show other)
         Nothing -> assertFailure ("expected ThreadKilled, got " ++ show e)
       Right rv -> assertFailure ("kill swallowed, acquire returned " ++ show rv)
     hAfter <- peek pHandleOut
@@ -1427,6 +1430,7 @@ caseJoinAcquireKillDuringAcquire = do
     case r of
       Left e -> case fromException e of
         Just ThreadKilled -> pure ()
+        Just other -> assertFailure ("expected ThreadKilled, got async " ++ show other)
         Nothing -> assertFailure ("expected ThreadKilled, got " ++ show e)
       Right rv -> assertFailure ("kill swallowed, acquire returned " ++ show rv)
     hAfter <- peek pHandleOut

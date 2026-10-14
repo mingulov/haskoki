@@ -235,7 +235,7 @@ import Haskoki.Runtime.SlotEvents
   )
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
-  , JobExecState (..)
+  , JobExecState (JobCanceled)
   , JobRecord (..)
   , Store (..)
   , StoreDelta (..)

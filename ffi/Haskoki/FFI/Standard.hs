@@ -1937,8 +1937,8 @@ authPutsOf store ids m m'
           Nothing -> pure (Left (FaultInternal "auth projection: moved token row missing"))
           Just puts -> pure (Right puts)
   where
-    authMoved a b = any moved (Map.keys (mTokenAuth b))
-    moved slot = case (Map.lookup slot (mTokenAuth a), Map.lookup slot (mTokenAuth b)) of
+    authMoved a b = any (moved a b) (Map.keys (mTokenAuth b))
+    moved a b slot = case (Map.lookup slot (mTokenAuth a), Map.lookup slot (mTokenAuth b)) of
       (Just before, Just after) -> authDurableChanged before after
       -- A post-model slot with no pre-model auth is
       -- inconsistent; the projection fails closed after the
@@ -2597,7 +2597,7 @@ haskokiStdTokenLabel ctx slot pOut =
               else do
                 serving <- readIORef (siServing inst)
                 pokeArray pOut (padLabel32 (scLabel (servingFor serving sid)))
-            pure ckrOk
+                pure ckrOk
 
 -- | Blank-pad a catalog label to exactly 32 bytes (truncate past
 -- 32; validation caps labels at 32 chars, ASCII in practice).

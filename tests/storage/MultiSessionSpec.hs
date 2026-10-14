@@ -541,11 +541,11 @@ testFailedCloseRetains openWith = do
     -- The retry closes for real.
     storeClose store
     assertClosed store tok
-  withOpenStore openWith defaultLimits noFaults $ \re -> do
-    eLoaded <- storeLoadTokens re
-    loaded <- either (assertFailure . show) pure eLoaded
-    assertWholeSeed tok seedRecs loaded
-    storeClose re
+    withOpenStore openWith defaultLimits noFaults $ \re -> do
+      eLoaded <- storeLoadTokens re
+      loaded <- either (assertFailure . show) pure eLoaded
+      assertWholeSeed tok seedRecs loaded
+      storeClose re
 
 -- | An exception thrown from the close fault probe never
 -- strands the handle: the first close propagates the probe

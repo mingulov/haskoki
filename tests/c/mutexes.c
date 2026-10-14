@@ -4,7 +4,10 @@
  * simulated provider init/use/finalize intervals, including
  * partial-initialization cleanup: when lock provisioning fails at
  * step k, every previously created mutex must be destroyed exactly
- * once and no further callbacks may fire.
+ * once and no further callbacks may fire. The contention case pins
+ * the same contract under threads (exact lock/unlock counts from
+ * atomic-counting callbacks), and compile-time HASKOKI_WIDTH_LEG=64
+ * asserts the LP64 width the 64-bit matrix cell pins.
  *
  * Compiled against the pinned 3.2 headers ONLY
  * (spec/vendor): compile with -I spec/vendor.
@@ -18,6 +21,7 @@
 #include "pkcs11.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -210,15 +214,137 @@ static void case_null_guards(void) {
             "no counts on null");
 }
 
+/* ---------- threaded contention (atomic-counting callbacks) ---------- */
+
+#define CONTENTION_THREADS 4
+#define CONTENTION_ITERS 2000
+#define CONTENTION_LOCKS 3
+
+static atomic_long g_ccreated = 0;
+static atomic_long g_cdestroyed = 0;
+static atomic_long g_clocked = 0;
+static atomic_long g_cunlocked = 0;
+
+static CK_RV c_create(CK_VOID_PTR_PTR pp) {
+  pthread_mutex_t *m;
+  if (pp == NULL) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  m = malloc(sizeof(*m));
+  if (m == NULL) {
+    return CKR_GENERAL_ERROR;
+  }
+  pthread_mutex_init(m, NULL);
+  *pp = m;
+  atomic_fetch_add(&g_ccreated, 1);
+  return CKR_OK;
+}
+
+static CK_RV c_destroy(CK_VOID_PTR p) {
+  if (p == NULL) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  pthread_mutex_destroy((pthread_mutex_t *)p);
+  free(p);
+  atomic_fetch_add(&g_cdestroyed, 1);
+  return CKR_OK;
+}
+
+static CK_RV c_lock(CK_VOID_PTR p) {
+  if (p == NULL) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  pthread_mutex_lock((pthread_mutex_t *)p);
+  atomic_fetch_add(&g_clocked, 1);
+  return CKR_OK;
+}
+
+static CK_RV c_unlock(CK_VOID_PTR p) {
+  if (p == NULL) {
+    return CKR_ARGUMENTS_BAD;
+  }
+  atomic_fetch_add(&g_cunlocked, 1);
+  pthread_mutex_unlock((pthread_mutex_t *)p);
+  return CKR_OK;
+}
+
+static void *contention_worker(void *arg) {
+  int k;
+  for (k = 0; k < CONTENTION_ITERS; k++) {
+    provider_use((provider_t *)arg);
+  }
+  return NULL;
+}
+
+static void case_contention(void) {
+  provider_t p;
+  CK_RV rv;
+  pthread_t workers[CONTENTION_THREADS];
+  CK_CREATEMUTEX saved_create = g_create;
+  CK_DESTROYMUTEX saved_destroy = g_destroy;
+  CK_LOCKMUTEX saved_lock = g_lock;
+  CK_UNLOCKMUTEX saved_unlock = g_unlock;
+  int i;
+  long expect;
+  printf("case: threaded contention (exact counts)\n");
+  atomic_store(&g_ccreated, 0);
+  atomic_store(&g_cdestroyed, 0);
+  atomic_store(&g_clocked, 0);
+  atomic_store(&g_cunlocked, 0);
+  g_create = c_create;
+  g_destroy = c_destroy;
+  g_lock = c_lock;
+  g_unlock = c_unlock;
+  rv = provider_init(&p, CONTENTION_LOCKS);
+  EXPECT_EQ(rv, CKR_OK, "contention init rv");
+  {
+    int created = 0;
+    for (i = 0; i < CONTENTION_THREADS; i++) {
+      if (pthread_create(&workers[i], NULL, contention_worker, &p) != 0) {
+        printf("FAIL: contention pthread_create %d\n", i);
+        g_failures++;
+        break;
+      }
+      created++;
+    }
+    for (i = 0; i < created; i++) {
+      pthread_join(workers[i], NULL);
+    }
+    EXPECT_EQ(created, CONTENTION_THREADS, "contention workers spawned");
+  }
+  expect = (long)CONTENTION_THREADS * (long)CONTENTION_ITERS * (long)CONTENTION_LOCKS;
+  EXPECT_EQ(atomic_load(&g_clocked), expect, "contention locks");
+  EXPECT_EQ(atomic_load(&g_cunlocked), expect, "contention unlocks");
+  rv = provider_finalize(&p);
+  EXPECT_EQ(rv, CKR_OK, "contention finalize rv");
+  EXPECT_EQ(atomic_load(&g_ccreated), CONTENTION_LOCKS, "contention created");
+  EXPECT_EQ(atomic_load(&g_cdestroyed), CONTENTION_LOCKS, "contention destroyed");
+  g_create = saved_create;
+  g_destroy = saved_destroy;
+  g_lock = saved_lock;
+  g_unlock = saved_unlock;
+}
+
 int main(void) {
   int k;
+#ifdef HASKOKI_WIDTH_LEG
+  if (sizeof(CK_ULONG) != 8 || sizeof(void *) != 8) {
+    printf("FAIL: width leg requires 64-bit CK_ULONG and pointers\n");
+    g_failures++;
+  } else {
+    printf("width: CK_ULONG=%lu ptr=%lu leg=%d\n",
+           (unsigned long)sizeof(CK_ULONG),
+           (unsigned long)sizeof(void *), HASKOKI_WIDTH_LEG);
+  }
+#endif
   case_clean_interval();
   for (k = 1; k <= 4; k++) {
     case_partial_cleanup_at(k, 4);
   }
   case_null_guards();
+  case_contention();
   if (g_failures == 0) {
-    printf("PASS: mutexes (create/use/destroy + partial cleanup)\n");
+    printf("PASS: mutexes (create/use/destroy + partial cleanup + contention)\n");
     return 0;
   }
   printf("FAIL: mutexes (%d failures)\n", g_failures);

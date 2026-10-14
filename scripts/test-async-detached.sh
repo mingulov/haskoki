@@ -17,6 +17,10 @@
 #     docker run --rm -v "$PWD:/work" -w /work \
 #       haskoki-dev:ghc-9.10.3 scripts/test-async-detached.sh
 #
+# Matrix legs (V4b; a no-op when unset, validated before the build):
+#   HASKOKI_SOCKET_CPU=<id>  pin every proof to one CPU with
+#                            taskset(1) (the async-socket cell)
+#
 # Exit status: 0 iff every C proof passes.
 set -u
 
@@ -27,6 +31,25 @@ cd "$PKG" || exit 1
 fail() {
   echo "FAIL: $1"
   exit 1
+}
+
+# Socket-pinned leg: strict numeric CPU id, validated before the
+# build so a bogus hint fails fast without a toolchain.
+PIN_PREFIX=""
+if [ -n "${HASKOKI_SOCKET_CPU:-}" ]; then
+  case "$HASKOKI_SOCKET_CPU" in
+    *[!0-9]*)
+      fail "HASKOKI_SOCKET_CPU must be a numeric CPU id (got: $HASKOKI_SOCKET_CPU)" ;;
+  esac
+  command -v taskset >/dev/null 2>&1 \
+    || fail "taskset(1) required for socket-pinned legs"
+  PIN_PREFIX="taskset -c $HASKOKI_SOCKET_CPU"
+  echo "socket pinning: CPU $HASKOKI_SOCKET_CPU"
+fi
+
+run_pinned() {
+  # shellcheck disable=SC2086
+  $PIN_PREFIX "$@"
 }
 
 cabal build all || fail "cabal build all failed"
@@ -52,7 +75,7 @@ cc -std=c11 -O2 -g -Wall -Wextra -Werror -o "$BIN_RESTART" tests/c/async_restart
   || fail "restart C proof harness did not compile"
 echo "harnesses compiled: $BIN_DETACH $BIN_RESTART"
 
-"$BIN_DETACH" "$SO" || fail "detach C proof harness reported failures"
+run_pinned "$BIN_DETACH" "$SO" || fail "detach C proof harness reported failures"
 
 # Two-process SQLite recovery: process A detaches + exits, process B
 # opens the same DB file, rejoins, and completes.
@@ -60,7 +83,7 @@ RESTART_TMP=$(mktemp -d "${TMPDIR:-/tmp}/haskoki-async-restart.XXXXXX") \
   || fail "mktemp failed"
 DB="$RESTART_TMP/jobs.db"
 A_OUT="$RESTART_TMP/a.out"
-"$BIN_RESTART" A "$SO" "$DB" >"$A_OUT" 2>&1 || {
+run_pinned "$BIN_RESTART" A "$SO" "$DB" >"$A_OUT" 2>&1 || {
   cat "$A_OUT"
   rm -rf "$RESTART_TMP"
   fail "restart process A reported failures"
@@ -74,7 +97,7 @@ if [ -z "$PID" ] || [ -z "$HANDLE" ]; then
   fail "process A did not report PID/HANDLE ($LINE)"
 fi
 echo "A detached persistent id $PID (old handle $HANDLE); B rejoins"
-"$BIN_RESTART" B "$SO" "$DB" "$PID" "$HANDLE" || {
+run_pinned "$BIN_RESTART" B "$SO" "$DB" "$PID" "$HANDLE" || {
   rm -rf "$RESTART_TMP"
   fail "restart process B reported failures"
 }

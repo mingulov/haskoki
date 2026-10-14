@@ -892,7 +892,7 @@ testCredentialQuarantine openWith = do
   let rotated = CredentialRecord (trId tok) "so-pin-2" (Just "user-pin-2")
   refused <- storeCommit sFaulty emptyDelta { sdPutCredentials = [rotated] }
   case refused of
-    NotCommitted (StoreQuarantined _) -> pure ()
+    NotCommitted (StoreQuarantined _ _) -> pure ()
     other -> assertFailure ("expected quarantine refusal, got: " ++ show other)
   kept <- loadedCredential sFaulty (trId tok)
   assertEqual "quarantined write persisted nothing" before kept

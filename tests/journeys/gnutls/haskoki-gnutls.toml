@@ -1,0 +1,26 @@
+# Junction config: GnuTLS legs of the supported-client portfolio.
+#
+# Points at the SAME SQLite store as the OpenSC junction config: the
+# GnuTLS journey discovers and uses the identity the OpenSC journey
+# created (cross-client persistence). Run order is part of the
+# contract: OpenSC creation legs, then these GnuTLS legs, each in its
+# own process, never concurrently (single-writer store; a second
+# concurrent open refuses C_Initialize).
+#
+# Runner substitution: replace @JOURNEY_DIR@ with the absolute path of
+# the directory the OpenSC legs used. The runner records the
+# substituted file bytes with the evidence record.
+schema_version = 1
+profile = "demo-maximal"
+
+[storage]
+kind = "sqlite"
+path = "@JOURNEY_DIR@/shared-tokens.db"
+
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+
+[trace]
+enabled = false

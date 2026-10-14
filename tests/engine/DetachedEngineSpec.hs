@@ -60,6 +60,8 @@ import Haskoki.FFI.Async
   , haskokiAsyncStart
   , haskokiAsyncStoreClose
   , haskokiAsyncStoreOpen
+  , registerBorrowedCtx
+  , retireCtx
   )
 import Haskoki.FFI.Standard
   ( StdAcquisition (..), StdAsyncBinding (..), StdInstance (..), StdStore (..)
@@ -1157,14 +1159,11 @@ putRecord store rec = storeCommit store emptyDelta { sdPutJobs = [rec] } >>= ass
 caseAsyncJoinBoundary :: MVar () -> IO ()
 caseAsyncJoinBoundary envLock = do
   staleGeneration <- newIORef False
-  authRequired <- newIORef False
   let generationFault store = store { storeLoadTokens = do
         stale <- readIORef staleGeneration
-        auth <- readIORef authRequired
         loaded <- storeLoadTokens store
         pure $ fmap (map (\(tok, objects) ->
           (tok { trGeneration = if stale then Generation 999 else trGeneration tok
-               , trAuth = if auth then (trAuth tok) { taLogin = Just AuthUser } else trAuth tok
                }, objects))) loaded }
   withSurfaceStore envLock "join-table" generationFault $ \ctx inst store dc ->
     allocaBytes 64 $ \old -> allocaBytes 64 $ \out -> do
@@ -1202,7 +1201,10 @@ caseAsyncJoinBoundary envLock = do
       -- without changing Standard's home-slot binding rule.
       (_, wc) <- surfaceView inst wrongSlot
       let borrowed = wc { acDetach = Just dc }
-      bracket (newStablePtr borrowed) freeStablePtr $ \v ->
+      bracket
+        (newStablePtr borrowed >>= \v ->
+          registerBorrowedCtx v (acTable borrowed) >> pure v)
+        (\v -> retireCtx v >> freeStablePtr v) $ \v ->
         alloca $ \handle -> alloca $ \need -> do
           surfaceRV "wrong-slot worker validation" CKR_SESSION_HANDLE_INVALID
             (haskokiAsyncJoin v pid 2 wrongSlot 32 handle need)
@@ -1231,11 +1233,10 @@ caseAsyncJoinBoundary envLock = do
       forM_ variants $ \(rec, code) -> do
         putRecord store rec
         refuse "controlled record disposition" target "C_Digest" (fromIntegral (jrPersistentId rec)) 32 code
-      -- Read-side auth fixture avoids replacing SQLite's token row (which
-      -- can cascade removal of its jobs) just to reach the auth check.
-      writeIORef authRequired True
-      refuse "existing auth rule" target "C_Digest" pid 32 CKR_USER_NOT_LOGGED_IN
-      writeIORef authRequired False
+      -- The join auth gate reads the live model, which no
+      -- public flow can split from its sessions (per-token
+      -- login); that gate is pinned at model level by
+      -- 'caseJoinAuthRequired' instead of here.
       surfaceRV "retry attaches with public OK" CKR_OK (surfaceJoin ctx target pid out 32)
       surfaceCanary out 64
       competitor <- surfaceOpen ctx 0 True

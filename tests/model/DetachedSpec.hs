@@ -1636,6 +1636,7 @@ caseJoinInterruptionRollsBack = do
   case r of
     Left e -> case fromException e of
       Just ThreadKilled -> pure ()
+      Just other -> assertFailure ("expected ThreadKilled, got async " ++ show other)
       Nothing -> assertFailure ("expected ThreadKilled, got " ++ show e)
     Right out -> assertFailure ("kill swallowed, join returned " ++ show out)
   -- Claim rolled back; fresh job retired; nothing registered.

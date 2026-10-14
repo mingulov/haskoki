@@ -83,6 +83,7 @@ import Haskoki.Operation.Signature
 import Haskoki.Outcome
   ( CryptoStep (..)
   , DeltaOp (..)
+  , EffectRequest (..)
   , EngineResult (..)
   , BackendFailure (..)
   , ModelFault (..)

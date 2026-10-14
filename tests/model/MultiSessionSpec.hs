@@ -21,6 +21,7 @@ module MultiSessionSpec (spec) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
@@ -287,7 +288,7 @@ initSignOn env sid h = do
 planSignShot :: Env -> SessionId -> IO (Reservation, CryptoEffect)
 planSignShot env sid = do
   m <- snapshotModel env
-  let req = (mkReq F_Sign sid Nothing "hello")
+  let req = (mkReq F_Sign sid Nothing (BC8.pack "hello"))
         { reqRegions = [RegionBytes "sig" (IntentBuffer 64)] }
   case planCall defaultRules m req of
     Execute res (EffectCrypto fx) -> pure (res, fx)
@@ -311,10 +312,10 @@ mutateViaB env mut store = do
             (DRSetAttributeValue sidB keyHandle1 [(AttrSign, ValBool False)])
         MutLabel ->
           planDecoded defaultRules m
-            (DRSetAttributeValue sidB keyHandle1 [(AttrLabel, ValBytes "renamed")])
+            (DRSetAttributeValue sidB keyHandle1 [(AttrLabel, ValBytes (BC8.pack "renamed"))])
         MutOtherKey ->
           planDecoded defaultRules m
-            (DRSetAttributeValue sidB keyHandle2 [(AttrLabel, ValBytes "other")])
+            (DRSetAttributeValue sidB keyHandle2 [(AttrLabel, ValBytes (BC8.pack "other"))])
   _ <- expectImmediate env ("mutation " ++ show mut) pr
   modifyIORef' store $ case mut of
     MutDestroy -> Map.delete keyOid1

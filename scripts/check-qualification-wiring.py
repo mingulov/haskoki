@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""V4a qualification-lane wiring gate (build-free, stdlib only).
+"""V4b qualification-lane wiring gate (build-free, stdlib only).
 
-Validates the early bootstrap lane from the verification plan (V4a):
-the build-only remote workflow, the driver inventory it relies on
-(V1 repair), and the V4 probe-to-driver ownership it executes.
+Validates the behavioral lane from the verification plan (V4b),
+which builds on the merged V4a lane: the native behavioral matrix
+workflow, the driver inventory it relies on (V1 repair, unchanged),
+the V4 probe-to-driver ownership it executes (unchanged), and the
+matrix cell-to-driver-to-probe wiring the new legs add.
 
 Fails (exit 1) when any rule fails:
 
@@ -40,11 +42,50 @@ Fails (exit 1) when any rule fails:
   (the F-4 policy; `check-actions-pinned.py` also covers this file
   and owns the evasive-form grammar — this rule is a backstop).
 * QW-LANE-GATE: the setup jobs exist and gate execution: `qualify`
-  needs the static-gates, toolchain, and proxy-pair jobs, and the
-  toolchain/proxy-pair jobs need the static-gates job.
+  needs the static-gates, toolchain, and proxy-pair jobs, the
+  toolchain/proxy-pair jobs need the static-gates job, and the
+  report job needs the qualify job.
 * QW-LANE-TIMEOUT: every job sets `timeout-minutes`.
 * QW-LANE-ARTIFACT: every job uploads an artifact and carries an
   `if: always()` step so partial failure evidence survives a failing run.
+* QW-LANE-JOBS: exactly the five V4b jobs exist (static-gates,
+  toolchain, proxy-pair, qualify, report): no silent extra leg and
+  no dropped one.
+* QW-LANE-NATIVE: the `qualify` job runs on the native self-hosted
+  runner label (behavioral execution); the setup/report jobs stay
+  on hosted runners.
+* QW-LANE-MATRIX: every V4b matrix cell owns one table row in
+  the qualify job carrying its driver and (for tuned legs) its
+  selecting environment on that same row: consumer
+  default/width/pin-rotate/aging/async reroute/parallel-seed/
+  fairness-sweep/hint cells, sim default/thread-reuse/socket-quiet
+  cells, finalize default/finalize-wait cells, and the mutexes,
+  async-attached, async-detached (+socket), and ossl4 baseline
+  cells.
+* QW-LANE-EXECUTE: the qualify job executes the matrix drivers
+  through a docker-run invocation naming scripts/$driver with the
+  forwarded selectors on that same invocation (a row table without
+  the execution line, or an invocation that drops the transport,
+  would pass MATRIX while running defaults or nothing).
+* QW-LANE-LAYOUT: the qualify evidence upload lists runner-temp
+  paths only: every receipt stages under the one evidence root,
+  never as a bare checkout file beside it (mixed roots nest
+  unpredictably in the archive and the report would read the
+  wrong layout).
+* QW-LANE-FALLBACK: the qualify job keeps the build-only V1
+  manifest as a fallback behind an explicit runtime
+  classification step (behavioral vs build-only mode): a native
+  runner that cannot run the matrix still produces classified
+  build evidence, never a silent skip.
+* QW-LANE-STATIC: the static-gates job runs this gate's self-test
+  plus the build-free driver negative controls (a bogus leg hint
+  and a bogus width hint must fail fast), so new wiring ships
+  with executed guards.
+* QW-MTX-*: the matrix legs are honored end to end, not merely
+  named: the consumer driver implements the scenario filter and
+  the width passthrough, the sim/async-detached drivers implement
+  CPU-socket pinning through taskset, and the C probes read every
+  selecting variable the matrix sets.
 
 Run on HOST python3 from anywhere:
   python3 scripts/check-qualification-wiring.py
@@ -55,9 +96,13 @@ must-fail mutation per required driver owner (including the nested
 onboarding driver and the previously unowned finalize-wait probe),
 comment-out controls proving comment mentions are not ownership,
 execution-omission controls proving guard-only mentions are not
-ownership either, inventory drift/duplicate/role mutations, and one
+ownership either, inventory drift/duplicate/role mutations, one
 must-fail mutation per lane rule (triggers, permissions, build-only
-surface, pins, setup gating, timeouts, artifacts).
+surface, pins, setup gating, timeouts, artifacts, job set, native
+label, matrix cells, execution line, upload layout, fallback
+classification, static guards), and one must-fail mutation per
+matrix leg (scenario filter, width passthrough, pinning modes,
+and every probe-side selector).
 """
 import json
 import re
@@ -93,6 +138,78 @@ NESTED_PARENT = "test-demo-image.sh"
 
 SETUP_JOBS = ("static-gates", "toolchain", "proxy-pair")
 QUALIFY_JOB = "qualify"
+REPORT_JOB = "report"
+ALL_JOBS = ("static-gates", "toolchain", "proxy-pair", "qualify", "report")
+NATIVE_LABEL = "self-hosted"
+
+# (cell, driver script, required env tokens). Every cell owns one
+# table row starting with "name|driver|env": the driver and EVERY
+# token must sit on that same row, so a row that drops or retunes
+# any assignment fails even when another row still carries a
+# related token (a selector-less row would silently run the
+# default instead of the leg; a retuned row would mislabel it).
+_MT = "HASKOKI_QUAL_ONLY=consumer_multithread"
+_AR = "HASKOKI_QUAL_ONLY=async_routed"
+MATRIX_CELLS = [
+    ("consumers/default", "test-consumers.sh", ()),
+    ("consumers/width-64", "test-consumers.sh", ("HASKOKI_WIDTH_LEG=64",)),
+    ("pin-rotate", "test-consumers.sh", (_MT, "HASKOKI_MT_PIN_ROTATE=1")),
+    ("aging", "test-consumers.sh", (_MT, "HASKOKI_MT_AGING=1")),
+    ("async-reroute", "test-consumers.sh", (_AR, "HASKOKI_ASYNC_REROUTE=1")),
+    ("async-parallel-seed", "test-consumers.sh",
+     (_AR, "HASKOKI_ASYNC_PARALLEL_SEED=8")),
+    ("serial-fairness", "test-consumers.sh",
+     (_MT, "HASKOKI_MT_N=1", "HASKOKI_MT_FAIR=1")),
+    ("fairness-1-app", "test-consumers.sh",
+     (_MT, "HASKOKI_MT_N=1", "HASKOKI_MT_MUTEX=1", "HASKOKI_MT_FAIR=1")),
+    ("fairness-2-null", "test-consumers.sh",
+     (_MT, "HASKOKI_MT_N=2", "HASKOKI_MT_FAIR=1")),
+    ("fairness-2-app", "test-consumers.sh",
+     (_MT, "HASKOKI_MT_N=2", "HASKOKI_MT_MUTEX=1", "HASKOKI_MT_FAIR=1")),
+    ("fairness-4-null", "test-consumers.sh",
+     (_MT, "HASKOKI_MT_N=4", "HASKOKI_MT_FAIR=1")),
+    ("mutex-fairness", "test-consumers.sh",
+     (_MT, "HASKOKI_MT_N=4", "HASKOKI_MT_MUTEX=1", "HASKOKI_MT_FAIR=1")),
+    ("fairness-8-null", "test-consumers.sh",
+     (_MT, "HASKOKI_MT_N=8", "HASKOKI_MT_FAIR=1")),
+    ("fairness-8-app", "test-consumers.sh",
+     (_MT, "HASKOKI_MT_N=8", "HASKOKI_MT_MUTEX=1", "HASKOKI_MT_FAIR=1")),
+    ("hint-strictness", "test-consumers.sh", (_MT, "HASKOKI_MT_HINT_STRICT=1")),
+    ("sim/default", "test-sim-threaded.sh", ()),
+    ("thread-reuse", "test-sim-threaded.sh",
+     ("HASKOKI_SIM_WAVES=3", "HASKOKI_SIM_ITERS=5000", "HASKOKI_SIM_M=20")),
+    ("socket-quiet", "test-sim-threaded.sh", ("HASKOKI_SOCKET_CPU=0",)),
+    ("finalize/default", "test-finalize-race.sh", ()),
+    ("finalize-wait", "test-finalize-race.sh", ("HASKOKI_FINALIZE_WAIT_CYCLES=200",)),
+    ("mutexes/default", "test-c-mutexes.sh", ()),
+    ("async-attached/default", "test-async-attached.sh", ()),
+    ("async-detached/default", "test-async-detached.sh", ()),
+    ("async-socket", "test-async-detached.sh", ("HASKOKI_SOCKET_CPU=0",)),
+    ("ossl4/default", "test-ossl4-bounds.sh", ()),
+]
+
+# (probe, selecting variable): every matrix selector the qualify
+# job sets must be read by its probe. Presence in the probe file
+# (code or declaration comment) pins the contract; the native run
+# proves the behavior.
+MATRIX_PROBES = [
+    ("tests/c/consumer_multithread.c", "HASKOKI_MT_PIN_ROTATE"),
+    ("tests/c/consumer_multithread.c", "HASKOKI_MT_AGING"),
+    ("tests/c/consumer_multithread.c", "HASKOKI_MT_MUTEX"),
+    ("tests/c/consumer_multithread.c", "HASKOKI_MT_FAIR"),
+    ("tests/c/consumer_multithread.c", "HASKOKI_MT_HINT_STRICT"),
+    ("tests/c/consumer_multithread.c", "HASKOKI_WIDTH_LEG"),
+    ("tests/c/async_routed.c", "HASKOKI_ASYNC_REROUTE"),
+    ("tests/c/async_routed.c", "HASKOKI_ASYNC_PARALLEL_SEED"),
+    ("tests/c/sim_threaded.c", "HASKOKI_SIM_WAVES"),
+    ("tests/c/mutexes.c", "HASKOKI_WIDTH_LEG"),
+]
+
+# Drivers honoring CPU-socket pinning for the socket-quiet and
+# async-socket cells. (The proxy pair is a transport the async
+# proofs provably cannot cross — parity DIRECT-ONLY issues 24/25 —
+# so the socket legs pin scheduling instead of proxying.)
+PIN_DRIVERS = ("scripts/test-sim-threaded.sh", "scripts/test-async-detached.sh")
 
 # Substrings that must not appear anywhere in the build-only lane.
 BUILDONLY_DENY = [
@@ -363,6 +480,9 @@ def check_lane(root, failures):
     for name in blocks:
         if "publish" in name or "release" in name:
             _add(failures, "QW-LANE-BUILDONLY", f"publish-shaped job has no place here: {name}")
+    if set(blocks) != set(ALL_JOBS):
+        _add(failures, "QW-LANE-JOBS",
+             f"lane needs exactly the five V4b jobs, got: {sorted(blocks)}")
     for setup in SETUP_JOBS:
         if setup not in blocks:
             _add(failures, "QW-LANE-GATE", f"missing setup job: {setup}")
@@ -377,6 +497,73 @@ def check_lane(root, failures):
                 if setup not in needs:
                     _add(failures, "QW-LANE-GATE",
                          f"{QUALIFY_JOB} must need {setup} (setup must gate execution)")
+        if NATIVE_LABEL not in blocks[QUALIFY_JOB]:
+            _add(failures, "QW-LANE-NATIVE",
+                 f"{QUALIFY_JOB} must run on the native {NATIVE_LABEL} label")
+        rows = [line.strip() for line in blocks[QUALIFY_JOB].splitlines()
+                if "|" in line and not line.strip().startswith("#")]
+        for cell, driver, tokens in MATRIX_CELLS:
+            row = next((r for r in rows if r.startswith(cell + "|")), None)
+            if row is None:
+                _add(failures, "QW-LANE-MATRIX",
+                     f"matrix cell {cell} owns no table row in {QUALIFY_JOB}")
+                continue
+            if driver not in row:
+                _add(failures, "QW-LANE-MATRIX",
+                     f"matrix cell {cell} names no driver {driver} on its row")
+            for token in tokens:
+                if token not in row:
+                    _add(failures, "QW-LANE-MATRIX",
+                         f"matrix cell {cell} drops {token} from its row")
+        executed = any("docker run" in line and "scripts/$driver" in line
+                       and "$ENV_ARGS" in line
+                       for line in _code_lines(blocks[QUALIFY_JOB]))
+        if not executed:
+            _add(failures, "QW-LANE-EXECUTE",
+                 f"{QUALIFY_JOB} executes no matrix driver through "
+                 "docker run with forwarded selectors")
+        qualify = blocks[QUALIFY_JOB]
+        up = qualify.find("Upload qualification evidence")
+        if up < 0:
+            _add(failures, "QW-LANE-LAYOUT", f"{QUALIFY_JOB} has no evidence upload step")
+        else:
+            lines = qualify[up:].splitlines()
+            anchor = next((i for i, line in enumerate(lines)
+                           if line.strip() == "path: |"), None)
+            if anchor is None:
+                _add(failures, "QW-LANE-LAYOUT", f"{QUALIFY_JOB} upload lists no paths")
+            else:
+                for line in lines[anchor + 1:]:
+                    if not line.startswith("            ") or not line.strip():
+                        break
+                    if "runner.temp" not in line:
+                        _add(failures, "QW-LANE-LAYOUT",
+                             "qualify upload mixes a non-runner-temp path: "
+                             f"{line.strip()[:60]} (receipts must stage under one root)")
+        if "classif" not in qualify:
+            _add(failures, "QW-LANE-FALLBACK",
+                 f"{QUALIFY_JOB} has no runtime classification step")
+        if "behavioral" not in qualify or "buildonly" not in qualify:
+            _add(failures, "QW-LANE-FALLBACK",
+                 f"{QUALIFY_JOB} must select a behavioral vs buildonly mode")
+        if "release-evidence.sh" not in qualify:
+            _add(failures, "QW-LANE-FALLBACK",
+                 f"{QUALIFY_JOB} keeps no build-only manifest fallback")
+    if REPORT_JOB not in blocks:
+        _add(failures, "QW-LANE-GATE", f"missing matrix job: {REPORT_JOB}")
+    else:
+        needs = _needs_of(blocks[REPORT_JOB])
+        if needs is None or QUALIFY_JOB not in needs:
+            _add(failures, "QW-LANE-GATE",
+                 f"{REPORT_JOB} must need {QUALIFY_JOB} (matrix renders qualify evidence)")
+    if "static-gates" in blocks:
+        static = blocks["static-gates"]
+        if "check-qualification-wiring.py --self-test" not in static:
+            _add(failures, "QW-LANE-STATIC",
+                 "static-gates must run this gate's self-test")
+        if "HASKOKI_QUAL_ONLY=bogus" not in static:
+            _add(failures, "QW-LANE-STATIC",
+                 "static-gates must run the bogus-hint negative control")
     for setup in ("toolchain", "proxy-pair"):
         if setup in blocks:
             needs = _needs_of(blocks[setup])
@@ -393,6 +580,63 @@ def check_lane(root, failures):
                  f"job {name} has no if: always() step (partial failure evidence)")
 
 
+def check_matrix_wiring(root, failures):
+    """QW-MTX-*: every matrix selector is honored end to end: the
+    consumer driver implements the scenario filter and the width
+    passthrough on executable lines, the pinned drivers implement
+    CPU-socket pinning through taskset on executable lines, and
+    every probe reads its selectors (a getenv-family fetch or a
+    preprocessor conditional — a comment mention is not a read)."""
+    try:
+        consumers = (root / "scripts/test-consumers.sh").read_text()
+    except OSError:
+        _add(failures, "QW-MTX-DRIVER", "missing driver: scripts/test-consumers.sh")
+        consumers = None
+    if consumers is not None:
+        code = _code_lines(consumers)
+        if not any("HASKOKI_QUAL_ONLY" in line for line in code):
+            _add(failures, "QW-MTX-FILTER",
+                 "test-consumers.sh honors no HASKOKI_QUAL_ONLY scenario filter")
+        if not any("HASKOKI_WIDTH_LEG" in line for line in code):
+            _add(failures, "QW-MTX-WIDTH",
+                 "test-consumers.sh passes no HASKOKI_WIDTH_LEG width selector")
+    try:
+        mutexes = (root / "scripts/test-c-mutexes.sh").read_text()
+    except OSError:
+        _add(failures, "QW-MTX-DRIVER", "missing driver: scripts/test-c-mutexes.sh")
+        mutexes = None
+    if mutexes is not None:
+        if not any("HASKOKI_WIDTH_LEG" in line for line in _code_lines(mutexes)):
+            _add(failures, "QW-MTX-WIDTH",
+                 "test-c-mutexes.sh passes no HASKOKI_WIDTH_LEG width selector")
+    for driver in PIN_DRIVERS:
+        try:
+            text = (root / driver).read_text()
+        except OSError:
+            _add(failures, "QW-MTX-DRIVER", f"missing driver: {driver}")
+            continue
+        code = _code_lines(text)
+        if not any("HASKOKI_SOCKET_CPU" in line for line in code):
+            _add(failures, "QW-MTX-PIN", f"{driver} honors no HASKOKI_SOCKET_CPU pinning")
+        if not any("taskset" in line for line in code):
+            _add(failures, "QW-MTX-PIN", f"{driver} pins through no taskset invocation")
+    for probe, var in MATRIX_PROBES:
+        try:
+            text = (root / probe).read_text()
+        except OSError:
+            _add(failures, "QW-MTX-PROBE", f"missing probe file: {probe}")
+            continue
+        # A read is the variable on a line that fetches it: a
+        # direct getenv, a preprocessor conditional on the
+        # compile-time macro, or one of the file-local read
+        # wrappers (each calls getenv unconditionally).
+        read = any(var in line and ("getenv" in line or "#if" in line
+                                    or "env_enabled" in line or "env_long" in line)
+                   for line in text.splitlines())
+        if not read:
+            _add(failures, "QW-MTX-PROBE", f"{probe} never reads {var}")
+
+
 def run_all(root):
     """Run every rule against the tree at root; return failure strings."""
     failures = _failures()
@@ -401,6 +645,7 @@ def run_all(root):
     check_nested_invocation(root, failures)
     check_owners(root, failures)
     check_lane(root, failures)
+    check_matrix_wiring(root, failures)
     return failures
 
 
@@ -586,6 +831,85 @@ def self_test():
                  "uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2",
                  count=1)
         controls.expect_fail("drop a job artifact", root, "QW-LANE-ARTIFACT")
+        # One must-fail control per matrix cell: dropping the cell
+        # row must fail, and so must dropping a tuned leg's
+        # selector while the cell name survives (a selector-less
+        # leg would silently run the default).
+        for cell, _driver, _env in MATRIX_CELLS:
+            root = fresh()
+            _drop_lines(root / QUALIFICATION_YML, cell)
+            controls.expect_fail(f"drop matrix cell {cell}", root, "QW-LANE-MATRIX")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, "HASKOKI_MT_PIN_ROTATE=1", "HASKOKI_MT_PIN_ROTATE=0")
+        controls.expect_fail("drop the pin-rotate selector", root, "QW-LANE-MATRIX")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, "HASKOKI_SIM_WAVES=", "HASKOKI_SIM_WAVES_UNSET=")
+        controls.expect_fail("drop the thread-reuse selector", root, "QW-LANE-MATRIX")
+        root = fresh()
+        # Two pinned cells share this selector; both rows must lose
+        # it before the rule can fire (added pinned cells extend
+        # this count alongside MATRIX_CELLS). The static bogus
+        # control sets the same variable to a non-CPU value, so the
+        # needle pins the exact CPU and never touches that line.
+        _rewrite(root / QUALIFICATION_YML, "HASKOKI_SOCKET_CPU=0", "HASKOKI_SOCKET_CPU=9",
+                 count=2)
+        controls.expect_fail("drop the pinning selector", root, "QW-LANE-MATRIX")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, "HASKOKI_MT_N=8", "HASKOKI_MT_N=1")
+        controls.expect_fail("retune a worker count", root, "QW-LANE-MATRIX")
+        # Execution omission is not a matrix: removing the driver
+        # invocation while the row table survives must fail, and so
+        # must dropping the selector transport from the invocation.
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "scripts/$driver")
+        controls.expect_fail("omit the driver execution", root, "QW-LANE-EXECUTE")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "docker run --rm $ENV_ARGS", "docker run --rm")
+        controls.expect_fail("drop the selector transport", root, "QW-LANE-EXECUTE")
+        # Mixed upload roots nest unpredictably: a bare checkout
+        # file beside the runner-temp tree must fail.
+        root = fresh()
+        anchor = "            ${{ runner.temp }}/qualify-evidence-run.log"
+        _rewrite(root / QUALIFICATION_YML, anchor,
+                 anchor + "\n            classification.json")
+        controls.expect_fail("mix upload roots", root, "QW-LANE-LAYOUT")
+        # Native label, job set, fallback, and static-guard controls.
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "runs-on: [self-hosted, linux, x64]", "runs-on: ubuntu-latest")
+        controls.expect_fail("move qualify off the native label", root, "QW-LANE-NATIVE")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "  report:")
+        controls.expect_fail("drop the report job", root, "QW-LANE-JOBS")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "classification.json")
+        controls.expect_fail("drop runtime classification", root, "QW-LANE-FALLBACK")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "behavioral")
+        controls.expect_fail("drop the behavioral mode", root, "QW-LANE-FALLBACK")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "release-evidence.sh")
+        controls.expect_fail("drop the build-only fallback", root, "QW-LANE-FALLBACK")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "HASKOKI_QUAL_ONLY=bogus")
+        controls.expect_fail("drop the bogus-hint control", root, "QW-LANE-STATIC")
+        # One must-fail control per matrix leg: the scenario
+        # filter, the width passthrough, the socket modes, and
+        # every probe-side selector.
+        root = fresh()
+        _drop_lines(root / "scripts/test-consumers.sh", "HASKOKI_QUAL_ONLY")
+        controls.expect_fail("drop the scenario filter", root, "QW-MTX-FILTER")
+        root = fresh()
+        _drop_lines(root / "scripts/test-c-mutexes.sh", "HASKOKI_WIDTH_LEG")
+        controls.expect_fail("drop the canary width selector", root, "QW-MTX-WIDTH")
+        root = fresh()
+        _drop_lines(root / "scripts/test-sim-threaded.sh", "HASKOKI_SOCKET_CPU")
+        controls.expect_fail("drop the sim pinning mode", root, "QW-MTX-PIN")
+        for probe, var in MATRIX_PROBES:
+            root = fresh()
+            _drop_lines(root / probe, var)
+            controls.expect_fail(f"drop probe selector {var}", root, "QW-MTX-PROBE")
     finally:
         shutil.rmtree(template, ignore_errors=True)
         # Remove only the mutation fixtures allocated by this
@@ -614,7 +938,7 @@ def main(argv):
         for failure in failures:
             print(f"  {failure}")
         return 1
-    print("PASS: qualification wiring (inventory, owners, build-only lane)")
+    print("PASS: qualification wiring (inventory, owners, behavioral matrix lane)")
     return 0
 
 

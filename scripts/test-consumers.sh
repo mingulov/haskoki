@@ -26,6 +26,18 @@
 # Usage:
 #   scripts/test-consumers.sh             # build scenarios, run all (must PASS)
 #
+# Matrix legs (V4b behavioral qualification; each a no-op when unset,
+# and every bogus value fails fast before the build):
+#   HASKOKI_QUAL_ONLY=<basename>  run only the scenario whose basename
+#                                 (minus .c) matches exactly, e.g.
+#                                 consumer_multithread or async_routed
+#   HASKOKI_WIDTH_LEG=64          compile every scenario with
+#                                 -DHASKOKI_WIDTH_LEG=64 (the 64-bit cell)
+# Probe legs pass through untouched (the probes read them):
+# HASKOKI_MT_PIN_ROTATE, HASKOKI_MT_AGING, HASKOKI_MT_MUTEX,
+# HASKOKI_MT_FAIR, HASKOKI_MT_HINT_STRICT, HASKOKI_ASYNC_REROUTE,
+# HASKOKI_ASYNC_PARALLEL_SEED, HASKOKI_MT_N, HASKOKI_MT_ITERS.
+#
 # Run (from haskoki/), inside the Docker toolchain image via bind mount:
 #   docker run --rm -v "$PWD:/work" -w /work \
 #     haskoki-dev:ghc-9.10.3 scripts/test-consumers.sh
@@ -42,6 +54,17 @@ fail() {
   exit 1
 }
 
+# Width leg: strict (only 64 exists), validated before the build so
+# a bogus hint fails fast without a toolchain.
+WIDTH_FLAGS=""
+if [ -n "${HASKOKI_WIDTH_LEG:-}" ]; then
+  if [ "$HASKOKI_WIDTH_LEG" = "64" ]; then
+    WIDTH_FLAGS="-DHASKOKI_WIDTH_LEG=64"
+  else
+    fail "HASKOKI_WIDTH_LEG must be 64 (got: $HASKOKI_WIDTH_LEG)"
+  fi
+fi
+
 [ -f tests/c/message_routed.c ] || fail "message consumer missing"
 [ -f tests/c/async_routed.c ] || fail "async consumer missing"
 [ -f tests/c/notifications_routed.c ] || fail "notifications consumer missing"
@@ -54,18 +77,32 @@ SCEN_LIST=$(
   done | LC_ALL=C sort -u
 )
 [ -n "$SCEN_LIST" ] || fail "consumer scenario list empty"
-[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/message_routed.c')" -eq 1 ] \
-  || fail "message consumer must occur exactly once"
-[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/async_routed.c')" -eq 1 ] \
-  || fail "async consumer must occur exactly once"
-[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/notifications_routed.c')" -eq 1 ] \
-  || fail "notifications consumer must occur exactly once"
-[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_certificates.c')" -eq 1 ] \
-  || fail "certificates consumer must occur exactly once"
-[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_notifications_poll.c')" -eq 1 ] \
-  || fail "notifications polling consumer must occur exactly once"
-[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_multithread.c')" -eq 1 ] \
-  || fail "multithread consumer must occur exactly once"
+if [ -n "${HASKOKI_QUAL_ONLY:-}" ]; then
+  # Scenario filter: exact basename match (minus .c), validated
+  # before the build so a bogus hint fails fast without a toolchain.
+  QUAL_HIT=""
+  for scen in $SCEN_LIST; do
+    if [ "$(basename "$scen" .c)" = "$HASKOKI_QUAL_ONLY" ]; then
+      QUAL_HIT="$scen"
+    fi
+  done
+  [ -n "$QUAL_HIT" ] || fail "HASKOKI_QUAL_ONLY matched no scenario: $HASKOKI_QUAL_ONLY"
+  SCEN_LIST="$QUAL_HIT"
+  echo "scenario filter: $HASKOKI_QUAL_ONLY ($SCEN_LIST)"
+else
+  [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/message_routed.c')" -eq 1 ] \
+    || fail "message consumer must occur exactly once"
+  [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/async_routed.c')" -eq 1 ] \
+    || fail "async consumer must occur exactly once"
+  [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/notifications_routed.c')" -eq 1 ] \
+    || fail "notifications consumer must occur exactly once"
+  [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_certificates.c')" -eq 1 ] \
+    || fail "certificates consumer must occur exactly once"
+  [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_notifications_poll.c')" -eq 1 ] \
+    || fail "notifications polling consumer must occur exactly once"
+  [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_multithread.c')" -eq 1 ] \
+    || fail "multithread consumer must occur exactly once"
+fi
 for scen in $SCEN_LIST; do
   if grep -nE 'abi_generated|abi_stubs|abi-inventory' "$scen"; then
     fail "consumer independence violated: $scen"
@@ -105,8 +142,10 @@ run_scenario() {
   # Fail-closed is preserved: any recorded failure exits 1 below.
   base=$(basename "$1" .c)
   BIN="$TMPD/$base"
+  # shellcheck disable=SC2086
   if ! cc -std=c11 -O2 -g -Wall -Wextra -Werror \
     -Ispec/vendor \
+    $WIDTH_FLAGS \
     -o "$BIN" "$1" -ldl -lpthread; then
     echo "FAIL: $base did not compile"
     FAILURES="$FAILURES $base(compile)"

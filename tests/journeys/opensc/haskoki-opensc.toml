@@ -1,0 +1,27 @@
+# Junction config: OpenSC legs of the supported-client portfolio.
+#
+# Mirrors the diagnostic store that produced the passing OpenSC/GnuTLS
+# receipts (product review run 38346498528, source/independent-clients.toml):
+# one SQLite store shared by a strict sequence of single processes.
+# OpenSC legs run first (key creation); GnuTLS legs run after against
+# the same file (discovery and signing). Never run two client processes
+# against this store at the same time: SQLite is single-writer and a
+# second concurrent open refuses C_Initialize.
+#
+# Runner substitution: replace @JOURNEY_DIR@ with the absolute path of
+# a fresh empty directory owned by the run. The runner records the
+# substituted file bytes with the evidence record.
+schema_version = 1
+profile = "demo-maximal"
+
+[storage]
+kind = "sqlite"
+path = "@JOURNEY_DIR@/shared-tokens.db"
+
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+
+[trace]
+enabled = false

@@ -238,14 +238,14 @@ planSignOneShot ops st _name input = case withPlainSlot ops SlotSign of
                 Just d -> (removeSingle SlotSign ops, st', denyOutcome d)
                 Nothing ->
                   ( insertOp (mkActiveSign sc'') ops
-                , st'
-                , StepOutcome CKR_OK
-                    [FxSign (commonMech sc'') (commonKey sc'') (commonParams sc'')
-                      (bufferedOf sc'')]
-                    Nothing
-                    ["sign one-shot planned over "
-                      ++ show (BS.length input) ++ " bytes"] [] Nothing
-                )
+                  , st'
+                  , StepOutcome CKR_OK
+                      [FxSign (commonMech sc'') (commonKey sc'') (commonParams sc'')
+                        (bufferedOf sc'')]
+                      Nothing
+                      ["sign one-shot planned over "
+                        ++ show (BS.length input) ++ " bytes"] [] Nothing
+                  )
 
 -- | Plan a sign final: one effect over the concatenation.
 planSignFinal
@@ -353,14 +353,14 @@ planVerifyOneShot ops st _name input sig = case withPlainSlot ops SlotVerify of
                 Just d -> (removeSingle SlotVerify ops, st', denyOutcome d)
                 Nothing ->
                   ( insertOp (mkActiveVerify sc'') ops
-                , st'
-                , StepOutcome CKR_OK
-                    [FxVerify (commonMech sc'') (commonKey sc'') (commonParams sc'')
-                      (bufferedOf sc'') sig]
-                    Nothing
-                    ["verify one-shot planned over "
-                      ++ show (BS.length input) ++ " bytes"] [] Nothing
-                )
+                  , st'
+                  , StepOutcome CKR_OK
+                      [FxVerify (commonMech sc'') (commonKey sc'') (commonParams sc'')
+                        (bufferedOf sc'') sig]
+                      Nothing
+                      ["verify one-shot planned over "
+                        ++ show (BS.length input) ++ " bytes"] [] Nothing
+                  )
 
 -- | Plan a verify final: one effect over the concatenation plus the
 -- witness. An empty witness is invalid without an effect.
