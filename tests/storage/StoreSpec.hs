@@ -87,6 +87,7 @@ import Haskoki.Outcome
   )
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
+  , CredentialRecord (..)
   , DesiredToken (..)
   , IdentityRefusal (..)
   , JobBody (..)
@@ -94,6 +95,7 @@ import Haskoki.Runtime.Storage
   , JobRecord (..)
   , ObjectPut (..)
   , ObjectRecord (..)
+  , Reconcile (..)
   , ReconcilePlan (..)
   , SlotMoveRefusal (..)
   , Store (..)
@@ -107,6 +109,7 @@ import Haskoki.Runtime.Storage
   , jobIdCounterKey
   , objectToRecord
   , planSlotMoves
+  , reconcileCredentialsReload
   , reconcileIdentities
   , renderIdentityRefusal
   , renderSlotMoveRefusal
@@ -211,6 +214,7 @@ spec = testGroup "store contract"
   , testGroup "sqlite-only"
       [ testCase "garbage file is rejected without rewrite" testGarbageRejected
       , testCase "future schema version rejected without rewrite" testFutureVersionRejected
+      , testCase "version-1 database migrates explicitly" testV1Migrates
       , testCase "corrupt records diagnosed" testCorruptDiagnosed
       , testCase "raw columns contain no pointers or handles" testRawColumnsClean
       , testCase "live schema matches spec/storage-schema.sql" testSchemaShape
@@ -345,6 +349,18 @@ contractSpec label mkOpener = testGroup label
       withOpener mkOpener testAuthDurableOnly
   , testCase "stored auth bytes carry no principal or session" $
       withOpener mkOpener testAuthBytesRedacted
+  , testCase "credentials round-trip across close/reopen" $
+      withOpener mkOpener testCredentialsRoundTrip
+  , testCase "credential put for a missing token refuses" $
+      withOpener mkOpener testCredentialMissingToken
+  , testCase "token drop cascades the credential" $
+      withOpener mkOpener testCredentialCascade
+  , testCase "reset drops the credential" $
+      withOpener mkOpener testResetDropsCredential
+  , testCase "refused commits preserve stored bytes" $
+      withOpener mkOpener testRefusedPreservesBytes
+  , testCase "credential Show redacts both PINs" $
+      withOpener mkOpener testCredentialShowRedacted
   ]
 
 -- | Acceptance 1: the same logical token objects across a
@@ -799,13 +815,66 @@ testFutureVersionRejected =
         storeClose s
         assertFailure "future schema version opened"
       Left (StoreSchemaVersion expected found) -> do
-        assertEqual "expected version" 1 expected
+        assertEqual "expected version" 2 expected
         assertEqual "found version" "999" found
       Left other -> assertFailure ("wrong error: " ++ show other)
     bytesAfter <- BS.readFile path
     assertEqual "bytes untouched" before bytesAfter
     lockLeft <- doesFileExist (path ++ ".lock")
     assertBool "no stranded lock" (not lockLeft)
+
+-- | Acceptance (explicit migration): a version-1 database opens
+-- by migrating to version 2 — the empty @credentials@ table is
+-- created and the marker advances, in one transaction — while
+-- no existing row is rewritten or reinterpreted (a marker meta
+-- row survives byte-identical). Afterwards the store serves
+-- credentials and reopens cleanly at version 2. The version-1
+-- DDL below is frozen history (copied from the
+-- pre-provisioning @spec/storage-schema.sql@), not a live
+-- reference: it must never track the current schema.
+testV1Migrates :: IO ()
+testV1Migrates =
+  bracket (makeTempDir "haskoki-storage-migrate") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+        v1 =
+          [ "CREATE TABLE store_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)"
+          , "CREATE TABLE tokens (token_id TEXT PRIMARY KEY NOT NULL, slot_key BLOB NOT NULL CHECK (typeof(slot_key) = 'blob' AND length(slot_key) = 8), generation_key BLOB NOT NULL CHECK (typeof(generation_key) = 'blob' AND length(generation_key) = 8), record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1), UNIQUE(slot_key))"
+          , "CREATE TABLE objects (object_id TEXT PRIMARY KEY NOT NULL, token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, class_key BLOB NOT NULL CHECK (typeof(class_key) = 'blob' AND length(class_key) = 8), key_type_key BLOB CHECK (key_type_key IS NULL OR (typeof(key_type_key) = 'blob' AND length(key_type_key) = 8)), attributes_json TEXT NOT NULL, material_encoding TEXT NOT NULL, material_blob BLOB, revision INTEGER NOT NULL CHECK (revision > 0), format_version INTEGER NOT NULL CHECK (format_version = 1))"
+          , "CREATE INDEX objects_by_token ON objects(token_id)"
+          , "CREATE TABLE detached_jobs (persistent_id_key BLOB PRIMARY KEY NOT NULL CHECK (typeof(persistent_id_key) = 'blob' AND length(persistent_id_key) = 8), token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, token_generation_key BLOB NOT NULL CHECK (typeof(token_generation_key) = 'blob' AND length(token_generation_key) = 8), function_name TEXT NOT NULL, execution_state TEXT NOT NULL CHECK (execution_state IN ('queued','ready','failed','canceled','delivered')), record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1))"
+          , "CREATE INDEX jobs_by_token ON detached_jobs(token_id)"
+          , "INSERT INTO store_meta(key, value) VALUES ('store_format', 'haskoki-demo-v1')"
+          , "INSERT INTO store_meta(key, value) VALUES ('schema_version', '1')"
+          , "INSERT INTO store_meta(key, value) VALUES ('next_persistent_job_id', '0000000000000001')"
+          , "INSERT INTO store_meta(key, value) VALUES ('p6-migration-marker', 'kept')"
+          ]
+    mapM_ (rawExec path . T.pack) v1
+    eStore <- openSQLiteStore path
+    s <- either (\e -> assertFailure ("migrating open: " ++ show e)) pure eStore
+    eMeta <- storeLoadMeta s
+    meta <- either (\e -> assertFailure ("load meta: " ++ show e)) pure eMeta
+    assertEqual "marker survives migration" (Just "kept") (lookup "p6-migration-marker" meta)
+    storeClose s
+    db <- S.open (T.pack path)
+    ver <- rawTexts db (T.pack "SELECT value FROM store_meta WHERE key = 'schema_version'")
+    tables <- rawTexts db (T.pack "SELECT name FROM sqlite_master WHERE type = 'table'")
+    S.close db
+    assertEqual "version advanced to 2" ["2"] ver
+    assertBool "credentials table migrated" ("credentials" `elem` tables)
+    -- The migrated store serves credentials and reopens cleanly.
+    eStore2 <- openSQLiteStore path
+    s2 <- either (\e -> assertFailure ("post-migration open: " ++ show e)) pure eStore2
+    let tok = TokenRecord (TokenId 7) (SlotId 0) (Generation 1) "migrated" tokenAuthNew
+        cred = CredentialRecord (TokenId 7) "so-pin-1" (Just "user-pin-1")
+    r <- storeCommit s2 emptyDelta { sdPutTokens = [tok], sdPutCredentials = [cred] }
+    assertEqual "credential commits on migrated store" Committed r
+    storeClose s2
+    eStore3 <- openSQLiteStore path
+    s3 <- either (\e -> assertFailure ("reopen: " ++ show e)) pure eStore3
+    eCreds <- storeLoadCredentials s3
+    creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
+    assertEqual "credential survives reopen" [cred] creds
+    storeClose s3
 
 -- | Acceptance 4 (corrupt records): garbage in each decodable
 -- surface diagnoses 'StoreCorrupt' at load (open itself stays
@@ -1339,7 +1408,7 @@ testSchemaShape = do
           | s <- specStatements specText
           , "PRAGMA" `isPrefixOf` s
           ]
-    assertEqual "spec table+index count" 6 (length specDDLs)
+    assertEqual "spec table+index count" 7 (length specDDLs)
     assertEqual "spec pragma count" 4 (length specPragmas)
     bracket (makeTempDir "haskoki-storage-schema") removeDirectoryRecursive $ \dir -> do
       let path = dir </> "store.db"
@@ -3220,6 +3289,134 @@ testAuthBytesRedacted o = withStore o $ \s -> do
       assertBool "show redacts the body"
         (not ("mallory" `isInfixOf` show tokDoc))
     other -> assertFailure ("expected one token doc, got: " ++ show (length other))
+
+-- | Provisioned credentials round-trip byte-exact across
+-- close/reopen, for both the set user PIN and the
+-- uninitialized (null) user PIN. The credential document key
+-- set pins exactly, and the ambiguous-commit reconciliation
+-- covers the credential table (a put present reloads
+-- present).
+testCredentialsRoundTrip :: Opener -> IO ()
+testCredentialsRoundTrip o = do
+  eStore <- openCurrent o
+  s <- either (\e -> assertFailure ("open: " ++ show e)) pure eStore
+  (tok, _) <- seedStore s
+  let tid = trId tok
+      setCred = CredentialRecord tid "so-pin-1" (Just "user-pin-1")
+  r <- storeCommit s emptyDelta { sdPutCredentials = [setCred] }
+  assertEqual "credential put commits" Committed r
+  docs <- expectInspect s
+  case [d | d <- docs, docTable d == "credentials"] of
+    [credDoc] -> assertEqual "credential doc top keys pinned"
+      ["format_version", "so_pin", "token_id", "user_pin"]
+      (docTopKeys (docJson credDoc))
+    ds -> assertFailure ("expected one credential doc, got " ++ show (length ds))
+  storeClose s
+  eStore2 <- openCurrent o
+  s2 <- either (\e -> assertFailure ("reopen: " ++ show e)) pure eStore2
+  eCreds <- storeLoadCredentials s2
+  creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
+  assertEqual "credential round-trips" [setCred] creds
+  assertEqual "credential put reconciles present" ReconciledPresent
+    (reconcileCredentialsReload emptyDelta { sdPutCredentials = [setCred] } creds)
+  let unsetCred = CredentialRecord tid "so-pin-2" Nothing
+  r2 <- storeCommit s2 emptyDelta { sdPutCredentials = [unsetCred] }
+  assertEqual "uninitialized user PIN commits" Committed r2
+  storeClose s2
+  eStore3 <- openCurrent o
+  s3 <- either (\e -> assertFailure ("reopen2: " ++ show e)) pure eStore3
+  eCreds3 <- storeLoadCredentials s3
+  creds3 <- either (\e -> assertFailure ("load credentials2: " ++ show e)) pure eCreds3
+  assertEqual "uninitialized credential round-trips" [unsetCred] creds3
+  storeClose s3
+
+-- | A credential put naming a token outside the projected set
+-- refuses the whole delta (no orphan credentials), and the
+-- store loads empty afterwards.
+testCredentialMissingToken :: Opener -> IO ()
+testCredentialMissingToken o = withStore o $ \s -> do
+  let orphan = CredentialRecord (TokenId 99) "so-pin-1" (Just "user-pin-1")
+  r <- storeCommit s emptyDelta { sdPutCredentials = [orphan] }
+  case r of
+    NotCommitted (StoreRevisionConflict _) -> pure ()
+    other -> assertFailure ("expected revision conflict, got " ++ show other)
+  eCreds <- storeLoadCredentials s
+  creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
+  assertEqual "no credential stored" [] creds
+
+-- | Dropping a token removes its owned credential alongside
+-- its objects and jobs (the ownership cascade).
+testCredentialCascade :: Opener -> IO ()
+testCredentialCascade o = withStore o $ \s -> do
+  (tok, _) <- seedStore s
+  let tid = trId tok
+      cred = CredentialRecord tid "so-pin-1" (Just "user-pin-1")
+  r <- storeCommit s emptyDelta { sdPutCredentials = [cred] }
+  assertEqual "credential put commits" Committed r
+  r2 <- storeCommit s emptyDelta { sdDropTokens = [tid] }
+  assertEqual "token drop commits" Committed r2
+  eCreds <- storeLoadCredentials s
+  creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
+  assertEqual "credential cascaded away" [] creds
+
+-- | Reset drops the token's credential with its objects and
+-- jobs: the replacement token serves catalog PINs until it is
+-- provisioned again.
+testResetDropsCredential :: Opener -> IO ()
+testResetDropsCredential o = withStore o $ \s -> do
+  (tok, _) <- seedStore s
+  let tid = trId tok
+      cred = CredentialRecord tid "so-pin-1" (Just "user-pin-1")
+  r <- storeCommit s emptyDelta { sdPutCredentials = [cred] }
+  assertEqual "credential put commits" Committed r
+  let replacement = tok { trGeneration = Generation 2, trAuth = tokenAuthNew }
+  rr <- storeResetToken s tid (trGeneration tok) replacement
+  assertEqual "reset commits" Committed rr
+  eCreds <- storeLoadCredentials s
+  creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
+  assertEqual "reset drops the credential" [] creds
+  eLoaded <- storeLoadTokens s
+  loaded <- either (\e -> assertFailure ("load tokens: " ++ show e)) pure eLoaded
+  assertEqual "replacement token present" [replacement] (map fst loaded)
+
+-- | A refused commit changes nothing: the inspected bytes and
+-- the loaded records are identical before and after (the
+-- refused-change leg of the provisioning lifecycle).
+testRefusedPreservesBytes :: Opener -> IO ()
+testRefusedPreservesBytes o = withStore o $ \s -> do
+  (tok, _) <- seedStore s
+  let tid = trId tok
+      cred = CredentialRecord tid "so-pin-1" (Just "user-pin-1")
+  r <- storeCommit s emptyDelta { sdPutCredentials = [cred] }
+  assertEqual "credential put commits" Committed r
+  docsBefore <- expectInspect s
+  let badCred = CredentialRecord (TokenId 99) "so-x" (Just "user-x")
+  r2 <- storeCommit s emptyDelta { sdPutCredentials = [badCred] }
+  case r2 of
+    NotCommitted (StoreRevisionConflict _) -> pure ()
+    other -> assertFailure ("expected revision conflict, got " ++ show other)
+  docsAfter <- expectInspect s
+  assertEqual "refused commit preserves bytes"
+    (map show docsBefore) (map show docsAfter)
+  eCreds <- storeLoadCredentials s
+  creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
+  assertEqual "credential untouched" [cred] creds
+
+-- | 'Show' on a credential redacts both PINs (kind and length
+-- only); the home token renders normally.
+testCredentialShowRedacted :: Opener -> IO ()
+testCredentialShowRedacted _ = do
+  let cred = CredentialRecord (TokenId 7) "so-pin-1" (Just "user-pin-1")
+      redacted :: Int -> String
+      redacted n = "{\"redacted\":true,\"kind\":\"pin\",\"length\":" ++ show n ++ "}"
+  assertEqual "credential Show redacted"
+    ("CredentialRecord {crToken = TokenId 7, crSoPin = " ++ redacted 8
+      ++ ", crUserPin = Just " ++ redacted 10 ++ "}")
+    (show cred)
+  assertEqual "uninitialized Show"
+    ("CredentialRecord {crToken = TokenId 7, crSoPin = " ++ redacted 8
+      ++ ", crUserPin = Nothing}")
+    (show (cred { crUserPin = Nothing }))
 
 -- | Pinned @token_ids@ parse and project onto both catalogs:
 -- identities pin per entry while the serving triples stay

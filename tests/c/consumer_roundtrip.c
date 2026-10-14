@@ -545,20 +545,28 @@ int main(int argc, char **argv) {
     }
   }
   CHECK(rv == CKR_OK && sess != 0, "OpenSession RW ok");
-  rv = f->C_InitToken(0, (CK_UTF8CHAR_PTR) "5678", 4,
-                      (CK_UTF8CHAR_PTR) "roundtrip");
-  if (!isProxy) {
-    CHECK(rv == CKR_FUNCTION_NOT_SUPPORTED, "InitToken honestly NA");
-  } else {
-    if (rv == CKR_SLOT_ID_INVALID) {
-      CK_SLOT_ID psl[8];
-      CK_ULONG pn = 8;
-      if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
-        rv = f->C_InitToken(psl[0], (CK_UTF8CHAR_PTR) "5678", 4,
-                            (CK_UTF8CHAR_PTR) "roundtrip");
+  /* Sessions are open, so InitToken refuses without mutating
+   * (the full lifecycle lives in consumer_provisioning.c). The
+   * label honors the 32-byte caller contract and the slot-0
+   * stability anchor, so the refusal is SESSION_EXISTS (an
+   * off-anchor label would refuse earlier, on the arguments). */
+  {
+    CK_UTF8CHAR rtlabel[32];
+    memset(rtlabel, ' ', sizeof(rtlabel));
+    memcpy(rtlabel, "haskoki-demo", 12);
+    rv = f->C_InitToken(0, (CK_UTF8CHAR_PTR) "5678", 4, rtlabel);
+    if (!isProxy) {
+      CHECK(rv == CKR_SESSION_EXISTS, "InitToken with sessions refuses");
+    } else {
+      if (rv == CKR_SLOT_ID_INVALID) {
+        CK_SLOT_ID psl[8];
+        CK_ULONG pn = 8;
+        if (f->C_GetSlotList(0, psl, &pn) == CKR_OK && pn >= 1) {
+          rv = f->C_InitToken(psl[0], (CK_UTF8CHAR_PTR) "5678", 4, rtlabel);
+        }
       }
+      CHECK(rv == CKR_SESSION_EXISTS, "InitToken with sessions refuses");
     }
-    CHECK(rv == CKR_FUNCTION_NOT_SUPPORTED, "InitToken honestly NA");
   }
   /* ---- login/logout are real ---- */
   {

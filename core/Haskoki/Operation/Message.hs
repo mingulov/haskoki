@@ -30,6 +30,7 @@ module Haskoki.Operation.Message
   , familyAad
   , lookupMessage
   , messageBuffered
+  , validateMessageIn
   , planMessageBegin
   , planMessageNext
   , planMessageOneShot
@@ -77,6 +78,7 @@ import Haskoki.Operation
   , commonMech
   , mkActiveMessage
   , resetToBuffered
+  , validateOperationIn
   )
 import Haskoki.Operation.Cipher (pkcs7Pad, pkcs7Unpad)
 import Haskoki.Output (OpDisposition (..), OutputPlan (..), ResultDisposition (..), planOneShot)
@@ -238,6 +240,16 @@ nextParams stored incoming
   | BS.null incoming = stored
   | otherwise = incoming
 
+-- | Length preflight for message accumulation: the monomorphic
+-- message entry over the open message's buffered bytes plus the
+-- incoming part, decided from the two lengths alone through
+-- 'validateOperationIn'. Admitted bytes are the joined buffer the
+-- next-paths store; an over-limit pair rejects without building
+-- it. Callers abort the open message on denial while the outer
+-- context survives.
+validateMessageIn :: ByteString -> ByteString -> Either StepDeny ByteString
+validateMessageIn = validateOperationIn
+
 -- | Gate one message data call on the outer auth state. A grantless
 -- first call on a pending slot terminates the whole outer context
 -- (classic late-grant semantics: a later grant finds nothing to
@@ -339,13 +351,13 @@ runCipherNext ops st fam dir params part end = case withMessageSlot ops fam of
         Left denied -> denied
         Right (o, s, ms') ->
           let pa = nextParams storedPa params
-              buf' = buf <> part
-          in if BS.length buf' > maxBuffered
-            then ( storeMessage o (abortMessage ms')
-                 , s
-                 , denyOutcome (mkDeny CKR_ARGUMENTS_BAD
-                     "multipart input exceeds the buffer bound"))
-            else runEnd o s ms' pa storedAad buf'
+          -- Length preflight before joining: an over-limit pair
+          -- rejects without building the concatenation.
+          in case validateMessageIn buf part of
+            Left d -> ( storeMessage o (abortMessage ms')
+                      , s
+                      , denyOutcome d)
+            Right buf' -> runEnd o s ms' pa storedAad buf'
   where
     runEnd o s ms' pa aad buf'
       | not end =
@@ -458,14 +470,12 @@ runSignNext ops st fam params part end = case withMessageSlot ops fam of
         Left denied -> denied
         Right (o, s, ms') ->
           let pa = nextParams storedPa params
-              buf' = buf <> part
               sc = msCommon ms'
-          in if BS.length buf' > maxBuffered
-            then ( storeMessage o (abortMessage ms')
-                 , s
-                 , denyOutcome (mkDeny CKR_ARGUMENTS_BAD
-                     "multipart input exceeds the buffer bound"))
-            else
+          in case validateMessageIn buf part of
+            Left d -> ( storeMessage o (abortMessage ms')
+                      , s
+                      , denyOutcome d)
+            Right buf' ->
               ( storeMessage o (ms' { msInner = MsgOpen pa BS.empty buf' })
               , s
               , if end
@@ -504,13 +514,11 @@ runVerifyNext ops st fam params part witness = case withMessageSlot ops fam of
           Left denied -> denied
           Right (o, s, ms') ->
             let pa = nextParams storedPa params
-                buf' = buf <> part
-            in if BS.length buf' > maxBuffered
-              then ( storeMessage o (abortMessage ms')
-                   , s
-                   , denyOutcome (mkDeny CKR_ARGUMENTS_BAD
-                       "multipart input exceeds the buffer bound"))
-              else case witness of
+            in case validateMessageIn buf part of
+              Left d -> ( storeMessage o (abortMessage ms')
+                        , s
+                        , denyOutcome d)
+              Right buf' -> case witness of
                 Nothing ->
                   ( storeMessage o (ms' { msInner = MsgOpen pa BS.empty buf' })
                   , s

@@ -31,6 +31,7 @@ module Haskoki.Runtime.Storage
   , defaultLimits
     -- * Records
   , TokenRecord (..)
+  , CredentialRecord (..)
   , ObjectRecord (..)
   , ObjectPut (..)
   , JobRecord (..)
@@ -59,6 +60,7 @@ module Haskoki.Runtime.Storage
   , Reconcile (..)
   , reconcileReload
   , reconcileJobsReload
+  , reconcileCredentialsReload
   , jobIdCounterKey
   , nextJobReservation
   , coverDeletedJobIds
@@ -90,6 +92,8 @@ module Haskoki.Runtime.Storage
   , recordFormatVersion
   , encodeTokenRecord
   , decodeTokenRecord
+  , encodeCredentialRecord
+  , decodeCredentialRecord
   , encodeObjectRecord
   , decodeObjectRecord
   , encodeAttrsDoc
@@ -181,6 +185,31 @@ data TokenRecord = TokenRecord
   , trLabel :: !String
   , trAuth :: !TokenAuth
   } deriving (Eq, Show)
+
+-- | One persisted token credential: the provisioned SO PIN
+-- (always present once the row exists) and the provisioned user
+-- PIN ('Nothing' = uninitialized: no user login can succeed
+-- until the SO sets one). At most one row per token; a token
+-- without a row is unprovisioned and serves its catalog PINs.
+-- The row is owned by its token exactly like objects and jobs:
+-- dropping the token removes it, and reset removes it.
+data CredentialRecord = CredentialRecord
+  { crToken :: !TokenId
+  , crSoPin :: !ByteString
+  , crUserPin :: !(Maybe ByteString)
+  } deriving (Eq)
+
+-- | 'Show' redacts both PINs: each renders its kind and length
+-- only ('redactShown'); the home token renders normally.
+-- Explicit inspection pattern-matches the exported record
+-- (never 'Show').
+instance Show CredentialRecord where
+  show c = "CredentialRecord {crToken = " ++ show (crToken c)
+    ++ ", crSoPin = " ++ redactShown "pin" (BS.length (crSoPin c))
+    ++ ", crUserPin = " ++ showPin (crUserPin c) ++ "}"
+    where
+      showPin Nothing = "Nothing"
+      showPin (Just bs) = "Just " ++ redactShown "pin" (BS.length bs)
 
 -- | One persisted token object: stable logical id, home token,
 -- class\/key-type keys, the canonical attribute document, typed
@@ -283,9 +312,17 @@ data JobRecord = JobRecord
 --
 -- Ownership rule, enforced identically by both backends: an
 -- ordinary same-id token put updates the token row and preserves
--- every owned object and job; dropping a token removes its owned
--- objects and jobs; 'storeResetToken' is the generation-guarded
--- replacement-plus-removal path.
+-- every owned object, job, and credential; dropping a token
+-- removes its owned objects, jobs, and credential;
+-- 'storeResetToken' is the generation-guarded
+-- replacement-plus-removal path (the credential goes with the
+-- reset: the replacement token serves catalog PINs until it is
+-- provisioned again).
+--
+-- Duplicate credential puts for one token resolve first-wins in
+-- both backends (the token-row precedent): the validated
+-- projection and the memory map agree with the staged SQLite
+-- upserts.
 data StoreDelta = StoreDelta
   { sdPutTokens :: ![TokenRecord]
   , sdDropTokens :: ![TokenId]
@@ -294,6 +331,8 @@ data StoreDelta = StoreDelta
   , sdPutJobs :: ![JobRecord]
   , sdDropJobs :: ![Word64]
   , sdPutMeta :: ![(String, String)]
+  , sdPutCredentials :: ![CredentialRecord]
+  , sdDropCredentials :: ![TokenId]
   } deriving (Eq, Show)
 
 -- | The empty delta: commits nothing.
@@ -306,6 +345,8 @@ emptyDelta = StoreDelta
   , sdPutJobs = []
   , sdDropJobs = []
   , sdPutMeta = []
+  , sdPutCredentials = []
+  , sdDropCredentials = []
   }
 
 -- | The durable write classes of a delta: one per delta list.
@@ -319,6 +360,8 @@ data StoreDeltaClass
   | DeltaJobsPut
   | DeltaJobsDrop
   | DeltaMetaPut
+  | DeltaCredentialsPut
+  | DeltaCredentialsDrop
   deriving (Eq, Show, Enum, Bounded)
 
 -- | Classify a delta by its nonempty lists, in field order. The
@@ -330,7 +373,7 @@ data StoreDeltaClass
 -- loudly. No catch-all stands between a new durable write and
 -- its classification.
 deltaClasses :: StoreDelta -> [StoreDeltaClass]
-deltaClasses (StoreDelta putToks dropToks putObjs dropObjs putJobs dropJobs putMeta) = concat
+deltaClasses (StoreDelta putToks dropToks putObjs dropObjs putJobs dropJobs putMeta putCreds dropCreds) = concat
   [ [DeltaTokensPut | not (null putToks)]
   , [DeltaTokensDrop | not (null dropToks)]
   , [DeltaObjectsPut | not (null putObjs)]
@@ -338,6 +381,8 @@ deltaClasses (StoreDelta putToks dropToks putObjs dropObjs putJobs dropJobs putM
   , [DeltaJobsPut | not (null putJobs)]
   , [DeltaJobsDrop | not (null dropJobs)]
   , [DeltaMetaPut | not (null putMeta)]
+  , [DeltaCredentialsPut | not (null putCreds)]
+  , [DeltaCredentialsDrop | not (null dropCreds)]
   ]
 
 -- | Clear the transient authentication half of a token record
@@ -535,6 +580,22 @@ reconcileJobsReload delta jobs
     jobPutPresent j = lookup (jrPersistentId j) byId == Just j
     jobDropAbsent pid = pid `notElem` map fst byId
 
+-- | Compare a delta's credentials against reloaded credentials
+-- with full-record equality (the job-table precedent: backends
+-- AND this with 'reconcileReload' and 'reconcileJobsReload').
+-- A credential put naming a token dropped in the same delta
+-- never reaches reconciliation: 'checkTokenRefs' refuses it at
+-- validation, since the projected token set has no such token.
+reconcileCredentialsReload :: StoreDelta -> [CredentialRecord] -> Reconcile
+reconcileCredentialsReload delta creds
+  | all credPutPresent (sdPutCredentials delta)
+  , all credDropAbsent (sdDropCredentials delta) = ReconciledPresent
+  | otherwise = ReconciledAbsent
+  where
+    byToken = [(crToken c, c) | c <- creds]
+    credPutPresent c = lookup (crToken c) byToken == Just c
+    credDropAbsent tid = tid `notElem` map fst byToken
+
 -- | The metadata key carrying the store-wide
 -- next-persistent-job-id high-water mark (16-hex-character
 -- 'Word64', starting at 1). The key predates durable
@@ -609,10 +670,11 @@ coverDeletedJobIds mStored doomed
 -- ---------------------------------------------------------------------------
 
 -- | Loaded state for validation: tokens with their objects,
--- plus the detached jobs.
+-- the detached jobs, plus the provisioned credentials.
 data LoadedState = LoadedState
   { lsTokens :: ![(TokenRecord, [ObjectRecord])]
   , lsJobs :: ![JobRecord]
+  , lsCredentials :: ![CredentialRecord]
   } deriving (Eq, Show)
 
 -- | Project a delta against current state and enforce the
@@ -620,9 +682,9 @@ data LoadedState = LoadedState
 -- projected object and job counts, then the projected total
 -- stored bytes (exact UTF-8 sizes of the canonical documents).
 -- The projection drops explicitly removed records and cascades
--- token drops onto the owned objects and jobs, matching what
--- both backends commit. The first hit wins; 'Nothing' commits
--- clean.
+-- token drops onto the owned objects, jobs, and credentials,
+-- matching what both backends commit. The first hit wins;
+-- 'Nothing' commits clean.
 checkLimits :: StoreLimits -> StoreDelta -> LoadedState -> Maybe StoreError
 checkLimits lim delta current
   | Just over <- firstOverRecord =
@@ -638,10 +700,12 @@ checkLimits lim delta current
     putToks = sdPutTokens delta
     putObjs = map opRecord (sdPutObjects delta)
     putJobs = sdPutJobs delta
+    putCreds = sdPutCredentials delta
     sized =
       [("token " ++ show (trId t), utf8Bytes (encodeTokenRecord t)) | t <- putToks]
         ++ [("object " ++ show (orId o), utf8Bytes (encodeObjectRecord o)) | o <- putObjs]
         ++ [("job " ++ show (jrPersistentId j), utf8Bytes (encodeJobRecord j)) | j <- putJobs]
+        ++ [("credential " ++ show (crToken c), utf8Bytes (encodeCredentialRecord c)) | c <- putCreds]
     firstOverRecord = listToMaybe [d | (d, n) <- sized, n > limMaxRecordBytes lim]
     tokMap = foldr Map.delete
       (Map.fromList [(trId t, t) | (t, _) <- lsTokens current]) (sdDropTokens delta)
@@ -654,10 +718,15 @@ checkLimits lim delta current
       (Map.fromList [(jrPersistentId j, j) | j <- lsJobs current]) (sdDropJobs delta)
     jobKept = Map.filter (\j -> jrToken j `notElem` sdDropTokens delta) jobMap
     jobMap' = foldr (\j m -> Map.insert (jrPersistentId j) j m) jobKept putJobs
+    credMap = foldr Map.delete
+      (Map.fromList [(crToken c, c) | c <- lsCredentials current]) (sdDropCredentials delta)
+    credKept = Map.filter (\c -> crToken c `notElem` sdDropTokens delta) credMap
+    credMap' = foldr (\c m -> Map.insert (crToken c) c m) credKept putCreds
     totalBytes =
       sum [utf8Bytes (encodeTokenRecord t) | t <- Map.elems tokMap']
         + sum [utf8Bytes (encodeObjectRecord o) | o <- Map.elems objMap']
         + sum [utf8Bytes (encodeJobRecord j) | j <- Map.elems jobMap']
+        + sum [utf8Bytes (encodeCredentialRecord c) | c <- Map.elems credMap']
 
 -- | Exact UTF-8 byte size of canonical document text.
 utf8Bytes :: String -> Int
@@ -688,16 +757,22 @@ knownMaterialEncodings = ["none", "attr-value/v1"]
 
 -- | Enforce token references: every object put must name a token
 -- that exists in the projected token set (current minus drops
--- plus the delta's own puts), and every job put must name a
--- token at exactly the job's generation. The first conflict wins;
--- 'Nothing' applies clean. Reset kills old ids through this
--- check: a job stamped with a superseded generation refuses.
+-- plus the delta's own puts), every job put must name a
+-- token at exactly the job's generation, and every credential
+-- put must name a projected token (a credential for a missing
+-- or same-delta-dropped token refuses: no orphan credentials).
+-- The first conflict wins; 'Nothing' applies clean. Reset kills
+-- old ids through this check: a job stamped with a superseded
+-- generation refuses.
 checkTokenRefs :: [(TokenId, TokenRecord)] -> StoreDelta -> Maybe StoreError
 checkTokenRefs currentToks delta =
   case [o | o <- map opRecord (sdPutObjects delta), orToken o `Map.notMember` projected] of
     (o : _) -> Just (StoreRevisionConflict
       ("object " ++ show (orId o) ++ " references missing token " ++ show (orToken o)))
-    [] -> goJobs (sdPutJobs delta)
+    [] -> case [c | c <- sdPutCredentials delta, crToken c `Map.notMember` projected] of
+      (c : _) -> Just (StoreRevisionConflict
+        ("credential references missing token " ++ show (crToken c)))
+      [] -> goJobs (sdPutJobs delta)
   where
     projected = foldr (\t m -> Map.insert (trId t) t m)
       (foldr Map.delete (Map.fromList currentToks) (sdDropTokens delta))
@@ -1052,6 +1127,7 @@ renderSlotMoveRefusal r = case r of
 data Store = Store
   { storeLoadTokens :: IO (Either StoreError [(TokenRecord, [ObjectRecord])])
   , storeLoadJobs :: IO (Either StoreError [JobRecord])
+  , storeLoadCredentials :: IO (Either StoreError [CredentialRecord])
   , storeCommit :: StoreDelta -> IO CommitResult
   , storeResetToken :: TokenId -> Generation -> TokenRecord -> IO CommitResult
   -- | Reserve one store-wide persistent job id: the
@@ -1724,6 +1800,42 @@ decodeAuth kvs = do
     , taUserLocked = ulock
     , taSoLocked = slock
     }
+
+-- ---------------------------------------------------------------------------
+-- Credential documents
+-- ---------------------------------------------------------------------------
+
+-- | Canonical credential document bytes: the home token, the SO
+-- PIN (base64, always present), and the user PIN (base64, or
+-- null when uninitialized). PIN bytes ride base64 like every
+-- other stored byte string; the document carries no handle,
+-- pointer, or session reference.
+encodeCredentialRecord :: CredentialRecord -> String
+encodeCredentialRecord c = renderJson $ JObject
+  [ ("format_version", JNumber (fromIntegral recordFormatVersion))
+  , ("token_id", JString (encodeHex16 (unTokenId (crToken c))))
+  , ("so_pin", JString (encodeBase64 (crSoPin c)))
+  , ("user_pin", maybe JNull (JString . encodeBase64) (crUserPin c))
+  ]
+
+-- | Decode a credential document; unknown format versions,
+-- malformed PIN bytes, and out-of-range quantities all fail.
+decodeCredentialRecord :: String -> Maybe CredentialRecord
+decodeCredentialRecord s = do
+  JObject kvs <- parseJson s
+  JNumber v <- lookupField "format_version" kvs
+  if v /= fromIntegral recordFormatVersion then Nothing else do
+    tid <- lookupField "token_id" kvs >>= asString >>= decodeHex16
+    so <- lookupField "so_pin" kvs >>= asString >>= decodeBase64
+    user <- case lookupField "user_pin" kvs of
+      Just JNull -> Just Nothing
+      Just (JString b) -> Just <$> decodeBase64 b
+      _ -> Nothing
+    pure CredentialRecord
+      { crToken = TokenId tid
+      , crSoPin = so
+      , crUserPin = user
+      }
 
 -- ---------------------------------------------------------------------------
 -- Object documents

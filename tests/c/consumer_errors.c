@@ -21,12 +21,15 @@
  *     (CKR_STATE_UNSAVEABLE) is pinned at the Haskell level by the
  *     existing SnapshotSpec/DetachedSpec suites (no C entry
  *     surfaces it either).
- *   - stub-beats-args precedence (NULL/garbage args to
- *     stubs yield the stub code on every table, incl. 3.0-only
- *     C_LoginUser) — direct-only: the proxy shim interposes its
- *     own forwarding behavior, so these pins assert our module's
+ *   - routed provisioning precedence (NULL/garbage args to
+ *     InitToken/SetPIN yield argument errors, bad slots refuse
+ *     first — direct-only: the proxy shim interposes its own
+ *     forwarding behavior, so these pins assert our module's
  *     contract and stay out of the parity transcript (crypto: /
- *     invent: scoped, isProxy-gated).
+ *     invent: scoped, isProxy-gated); the remaining stubs keep
+ *     stub-beats-args precedence (NULL/garbage args to stubs
+ *     yield the stub code on every table, incl. 3.0-only
+ *     C_LoginUser).
  *   - C_OpenSession accepts a non-NULL Notify (no
  *     callback-refusal code exists in the spec return list);
  *     the session is usable and the callback never fires
@@ -328,17 +331,28 @@ static void write_config(void) {
     prv = (T)->C_GetOperationState(sess, NULL_PTR, &stateLen);             \
     CHECKC(prv == CKR_FUNCTION_NOT_SUPPORTED,                               \
           "%s: GetOperationState stub pinned", tag);                       \
-    /* stub-beats-args -- NULL/garbage args to stubs yield  */ \
-    /* the stub code on every table (uniform stub-first). Direct-only:   */ \
-    /* the proxy shim interposes its own forwarding behavior, so these   */ \
-    /* pins assert our module's contract, not the shim's. */                 \
+    /* routed provisioning precedence -- liveness -> args -> */ \
+    /* behavior. Direct-only: the proxy shim interposes its own */ \
+    /* forwarding behavior, so these pins assert our module's */ \
+    /* contract, not the shim's. The remaining stubs keep */ \
+    /* stub-beats-args (pinned on GetOperationState below). */ \
     if (!isProxy) {                                                          \
+      CK_UTF8CHAR lbl[32];                                                   \
+      memset(lbl, ' ', sizeof(lbl));                                         \
+      memcpy(lbl, "haskoki-demo", 12);                                       \
       prv = (T)->C_InitToken(99, NULL_PTR, 0xFFFFFFFFUL, NULL_PTR);          \
+      CHECKC(prv == CKR_ARGUMENTS_BAD,                                        \
+            "%s: routed init-token NULL PIN refuses", tag);                   \
+      prv = (T)->C_InitToken(99, (CK_UTF8CHAR_PTR)"so-fresh!!", 10, lbl);    \
+      CHECKC(prv == CKR_SLOT_ID_INVALID,                                      \
+            "%s: routed init-token bad slot first", tag);                     \
+      prv = (T)->C_SetPIN(0xFFFFFFFFUL, (CK_UTF8CHAR_PTR)"1234", 4,           \
+                          (CK_UTF8CHAR_PTR)"9999", 4);                        \
+      CHECKC(prv == CKR_SESSION_HANDLE_INVALID,                               \
+            "%s: routed set-pin bad session refuses", tag);                   \
+      prv = (T)->C_GetOperationState(sess, NULL_PTR, &stateLen);             \
       CHECKC(prv == CKR_FUNCTION_NOT_SUPPORTED,                               \
-            "%s: stub-beats-args init-token", tag);                           \
-      prv = (T)->C_SetPIN(0xFFFFFFFFUL, NULL_PTR, 0, NULL_PTR, 0);           \
-      CHECKC(prv == CKR_FUNCTION_NOT_SUPPORTED,                               \
-            "%s: stub-beats-args set-pin", tag);                              \
+            "%s: stub-beats-args get-operation-state", tag);                  \
     }                                                                        \
     prv = (T)->C_CloseSession(sess);                                       \
     CHECKC(prv == CKR_OK, "%s: session closes", tag);                       \

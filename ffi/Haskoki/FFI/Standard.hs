@@ -93,6 +93,8 @@ module Haskoki.FFI.Standard
   , provisionedUserPin
   , provisionedSoPin
   , tokenIdForSlot
+  , ServingCredential (..)
+  , servingFor
     -- * Template frames (pure; tested by StandardSurfaceSpec)
   , FrameError (..)
   , maxTemplateAttrs
@@ -148,6 +150,11 @@ module Haskoki.FFI.Standard
     -- * login/logout
   , haskokiStdLogin
   , haskokiStdLogout
+    -- * provisioning (init-token/init-pin/set-pin)
+  , haskokiStdInitToken
+  , haskokiStdInitPin
+  , haskokiStdSetPin
+  , haskokiStdTokenUserInit
     -- * crypto pipeline (shared) + digest
   , runCryptoPlan
   , runCryptoSilent
@@ -303,6 +310,8 @@ import Haskoki.FFI.Async
   , haskokiAsyncPoll
   , haskokiAsyncStart
   , jobFunctionCode
+  , registerBorrowedCtx
+  , retireCtx
   )
 import Haskoki.FFI.Decode (decodeInputBytes)
 import Haskoki.FFI.Encode
@@ -473,9 +482,11 @@ import Haskoki.Runtime.Lifecycle
   )
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
+  , CredentialRecord (..)
   , DesiredToken (..)
+  , JobRecord (..)
   , ObjectPut (..)
-  , ObjectRecord
+  , ObjectRecord (orId)
   , Reconcile (..)
   , ReconcilePlan (..)
   , Store (..)
@@ -484,7 +495,9 @@ import Haskoki.Runtime.Storage
   , TokenRecord (..)
   , emptyDelta
   , objectToRecord
+  , reconcileCredentialsReload
   , reconcileIdentities
+  , reconcileJobsReload
   , reconcileReload
   , renderIdentityRefusal
   )
@@ -495,12 +508,14 @@ import Haskoki.Session
   , SessionLogin (..)
   , TokenAuth (..)
   , authDurableChanged
+  , checkPinLength
   , clearTransientAuth
   , effectivePolicy
   )
 import Haskoki.Transition (finishEffect, planCall, planDecoded, publishDelta)
 import Haskoki.Types
   ( ExternalHandle (..)
+  , Generation (..)
   , Outcome (..)
   , Pkcs11Version (..)
   , ReturnCode (..)
@@ -508,6 +523,7 @@ import Haskoki.Types
   , SessionId (..)
   , SlotId (..)
   , TokenId (..)
+  , redactShown
   )
 
 -- ---------------------------------------------------------------------------
@@ -525,13 +541,17 @@ homeTokenId = TokenId 1
 homeTokenLabel :: String
 homeTokenLabel = let (label, _, _) = homeCatalogEntry in label
 
--- | Provisioned user PIN. Fixed at open; there is no PIN-change
--- path on the C surface (InitPIN\/SetPIN stay honestly
--- unsupported), so every process provisioning this token agrees.
+-- | Provisioned user PIN. The home token's INITIAL user PIN,
+-- served until the token is provisioned in-band ('C_InitPIN'
+-- or 'C_SetPIN' persist a durable credential that wins from
+-- then on); every process seeding this token from configuration
+-- agrees on it.
 provisionedUserPin :: ByteString
 provisionedUserPin = let (_, _, pin) = homeCatalogEntry in BC8.pack pin
 
--- | Provisioned security-officer PIN. Same fixity as the user PIN.
+-- | Provisioned security-officer PIN. The home token's INITIAL
+-- SO PIN, served until in-band provisioning ('C_InitToken' or
+-- 'C_SetPIN') persists a durable credential.
 provisionedSoPin :: ByteString
 provisionedSoPin = let (_, pin, _) = homeCatalogEntry in BC8.pack pin
 
@@ -545,11 +565,44 @@ provisionedSoPin = let (_, pin, _) = homeCatalogEntry in BC8.pack pin
 tokenIdForSlot :: SlotId -> TokenId
 tokenIdForSlot (SlotId n) = TokenId (n + 1)
 
--- | Look up a slot's catalog entry (label, SO PIN, user PIN),
--- falling back to the home entry for instances without catalog
--- data (manually seated test instances).
-catalogLookup :: StdInstance -> SlotId -> (String, String, String)
-catalogLookup inst slot = Map.findWithDefault homeCatalogEntry slot (siCatalog inst)
+-- | One slot's LIVE serving credential: the effective label
+-- plus the effective PINs. Seeded at open from the catalog,
+-- with durable provisioned rows winning where present; every
+-- granted provisioning call rewrites exactly its slot's entry
+-- after its commit lands, so the view tracks durable truth
+-- under the single-writer invariant (the store admits one
+-- owner, and every credential write in this process rides the
+-- gate-held publish that updates this view next).
+data ServingCredential = ServingCredential
+  { scLabel :: !String
+  , scSoPin :: !ByteString
+  , scUserPin :: !(Maybe ByteString)
+  } deriving (Eq)
+
+-- | 'Show' redacts both PINs (kind and length only); the label
+-- renders normally. Explicit inspection reads the exported
+-- fields (never 'Show').
+instance Show ServingCredential where
+  show s = "ServingCredential {scLabel = " ++ show (scLabel s)
+    ++ ", scSoPin = " ++ redactShown "pin" (BS.length (scSoPin s))
+    ++ ", scUserPin = " ++ showPin (scUserPin s) ++ "}"
+    where
+      showPin Nothing = "Nothing"
+      showPin (Just bs) = "Just " ++ redactShown "pin" (BS.length bs)
+
+-- | The home serving credential: the home catalog entry with
+-- both PINs set. The fallback for slots without serving data
+-- (manually seated test instances) and for the moot verdict
+-- behind an unknown session (the plan refuses those anyway).
+homeServing :: ServingCredential
+homeServing =
+  let (label, so, user) = homeCatalogEntry
+  in ServingCredential label (BC8.pack so) (Just (BC8.pack user))
+
+-- | Look up a slot's serving credential, falling back to
+-- 'homeServing' for instances without serving data.
+servingFor :: Map SlotId ServingCredential -> SlotId -> ServingCredential
+servingFor serving slot = Map.findWithDefault homeServing slot serving
 
 -- ---------------------------------------------------------------------------
 -- Instance
@@ -571,13 +624,21 @@ data StdStore = StdStore
 
 -- | The owned standard-surface instance: model environment, live
 -- OpenSSL4 backend, per-session find cursors, the optional process
--- store, and the effective serving catalog (per-slot labels/PINs).
+-- store, the effective serving catalog (per-slot labels/PINs as
+-- configured), the live serving-credential view (per-slot
+-- effective labels/PINs: catalog-seeded, durable-winning,
+-- rewritten by granted provisioning calls), and the dirty slots
+-- (serving entries whose authority is unknown after a failed
+-- provisioning write: authentication consults them only after a
+-- successful re-sync).
 data StdInstance = StdInstance
   { siEnv :: !Env
   , siBackend :: !(BackendEnv OpenSSL4)
   , siFind :: !(IORef (Map SessionId [ExternalHandle]))
   , siStore :: !(Maybe StdStore)
   , siCatalog :: !(Map SlotId (String, String, String))
+  , siServing :: !(IORef (Map SlotId ServingCredential))
+  , siDirty :: !(IORef [SlotId])
   , siSlots :: !SlotEvents
   , siUnbindPresenceOwner :: !(IO ())
   , siReleaseResources :: !(IO ())
@@ -827,11 +888,42 @@ assembleStdInstance env be mStore cfg slots unbind release invoker = do
       case opened of
         Left deny -> ioError (userError ("standard detached context: " ++ show deny))
         Right dc -> pure (Just dc)
+  serving <- newServingView mStore cfg
+  dirty <- newIORef []
   views <- newIORef Map.empty
   bindings <- newIORef Map.empty
   notify <- newIORef Map.empty
   pure (StdInstance env be cursors mStore (effectiveCatalog cfg)
-    slots unbind release table detach views bindings notify invoker Nothing)
+    serving dirty slots unbind release table detach views bindings notify invoker Nothing)
+
+-- | Seed the live serving-credential view: every catalog slot
+-- serves its catalog label and PINs unless the store holds a
+-- provisioned credential row for its token, which wins (both
+-- halves: the first provisioning call freezes the token's
+-- effective credential durably). A credential load failure
+-- fails the whole open loudly, exactly like the detached
+-- refusal above: serving must never start on an unknown
+-- credential.
+newServingView :: Maybe StdStore -> Config -> IO (IORef (Map SlotId ServingCredential))
+newServingView mStore cfg = do
+  eCreds <- case mStore of
+    Nothing -> pure (Right [])
+    Just ss -> storeLoadCredentials (stdStore ss)
+  case eCreds of
+    Left err -> ioError (userError ("standard credential view: " ++ show err))
+    Right creds -> newIORef (Map.fromList
+      [ (slot, entry slot triple)
+      | (slot, triple) <- Map.toAscList (effectiveCatalog cfg)
+      ])
+      where
+        ids = case mStore of
+          Nothing -> Map.empty
+          Just ss -> stdTokenIds ss
+        tokenOf slot = Map.findWithDefault (tokenIdForSlot slot) slot ids
+        entry slot (label, so, user) =
+          case find ((== tokenOf slot) . crToken) creds of
+            Just c -> ServingCredential label (crSoPin c) (crUserPin c)
+            Nothing -> ServingCredential label (BC8.pack so) (Just (BC8.pack user))
 
 -- | Seat every catalog slot in index order. The first refusal
 -- (past the seating bound) fails the whole open loudly — catalogs
@@ -1087,7 +1179,11 @@ freeStdAsyncView :: StdInstance -> SessionId -> IO ()
 freeStdAsyncView inst sid = mask_ $ do
   view <- atomicModifyIORef' (siAsyncViews inst) $ \views ->
     (Map.delete sid views, Map.lookup sid views)
-  forM_ view freeStablePtr
+  -- Retire strictly before free, mirroring the owned slot-close:
+  -- a caller resuming after the release meets the tombstone and
+  -- refuses instead of dereferencing a freed pointer, and the next
+  -- owner of a recycled index re-registers over it.
+  forM_ view $ \sp -> retireCtx sp >> freeStablePtr sp
 
 -- ---------------------------------------------------------------------------
 -- Template frames (pure)
@@ -1694,22 +1790,28 @@ projectAuthPuts ids loaded m m' =
           Just [row { trAuth = clearTransientAuth after }]
 
 -- | Gate-held caller reconciliation after 'CommitUnknown': re-read
--- tokens plus meta and compare every projected put/drop/meta row
--- against the reread state, token puts included (both sides
--- scrubbed, so an auth-only write reconciles like any other).
--- All match means the commit landed (publish @m'@); any mismatch
--- means it did not (keep @m@); a reread failure fails closed
--- (model unchanged, fault returned). Never calls
+-- tokens plus meta, jobs, and credentials, and compare every
+-- projected row against the reread state, token puts included
+-- (both sides scrubbed, so an auth-only write reconciles like
+-- any other). All match means the commit landed (publish @m'@);
+-- any mismatch means it did not (keep @m@); a reread failure
+-- fails closed (model unchanged, fault returned). Never calls
 -- 'restoreStoreState' (it would deadlock on the non-reentrant
--- gate) and never reissues the commit.
+-- gate) and never reissues the commit. Empty job and credential
+-- lists reconcile trivially, so paths that never write them
+-- observe exactly the old verdict.
 reconcileUnderGate :: Store -> StoreDelta -> IO Bool
 reconcileUnderGate store proj = do
   eToks <- storeLoadTokens store
   eMeta <- storeLoadMeta store
-  case (eToks, eMeta) of
-    (Right loaded, Right meta) ->
+  eJobs <- storeLoadJobs store
+  eCreds <- storeLoadCredentials store
+  case (eToks, eMeta, eJobs, eCreds) of
+    (Right loaded, Right meta, Right jobs, Right creds) ->
       pure (reconcileReload proj loaded == ReconciledPresent
-        && metaPresent (sdPutMeta proj) meta)
+        && metaPresent (sdPutMeta proj) meta
+        && reconcileJobsReload proj jobs == ReconciledPresent
+        && reconcileCredentialsReload proj creds == ReconciledPresent)
     _ -> pure False
   where
     metaPresent expected loaded =
@@ -1734,7 +1836,33 @@ reconcileUnderGate store proj = do
 -- rather than this one. An unlanded commit keeps the model and
 -- stays quarantined until close/reopen.
 publishStd :: StdInstance -> StateDelta -> IO (Either ModelFault ())
-publishStd inst delta = case siStore inst of
+publishStd inst delta = publishStdWithCred inst Nothing delta
+
+-- | One gate-held credential rewrite: the home token, the seed
+-- when no durable row exists yet (catalog-derived: the token
+-- serves catalog PINs until its first provisioning commit),
+-- and the pure modification producing the committed row. The
+-- read-modify-put runs inside the gate-held publish section,
+-- so concurrent provisioning calls linearize instead of losing
+-- each other's halves.
+data CredentialUpdate = CredentialUpdate
+  { cuToken :: !TokenId
+  , cuSeed :: !CredentialRecord
+  , cuModify :: !(CredentialRecord -> CredentialRecord)
+  }
+
+-- | 'publishStd' with an optional credential rewrite joining
+-- the committed store half. 'Nothing' is exactly 'publishStd'
+-- (same projections, same bypass rule, same ledger); 'Just'
+-- loads the current credential row under the gate, applies the
+-- modification, and commits the row with the model step — so a
+-- granted InitPIN\/SetPIN persists its new PIN atomically with
+-- its auth half, and a refused one persists nothing. The
+-- issued event stays object-focused (a credential-only write
+-- reports @issued{0,0,0}@: the counts name object puts, drops,
+-- and meta rows, as before).
+publishStdWithCred :: StdInstance -> Maybe CredentialUpdate -> StateDelta -> IO (Either ModelFault ())
+publishStdWithCred inst mCred delta = case siStore inst of
   Nothing -> publish (siEnv inst) delta
   Just (StdStore store _ ids) -> mask_ $ do
     r <- withHeldModel (siEnv inst)
@@ -1746,30 +1874,49 @@ publishStd inst delta = case siStore inst of
           eAuthPuts <- authPutsOf store ids m m'
           case eAuthPuts of
             Left fault -> pure (Left fault)
-            Right authPuts ->
-              let full = (projDelta proj) { sdPutTokens = authPuts }
-              in if nullProjection proj && null authPuts
-                then emit EvBypass >> pure (Right (Just m'))
-                else do
-                  emit (EvIssued (projPuts proj) (projDrops proj) (projMeta proj))
-                  res <- storeCommit store full
-                  case res of
-                    Committed -> emit EvCommitted >> pure (Right (Just m'))
-                    NotCommitted _ -> emit EvNotCommitted >> pure (Left (storeFault res))
-                    CommitUnknown _ -> do
-                      emit EvUnknown
-                      landed <- reconcileUnderGate store full
-                      emit (EvReconciled landed)
-                      if landed
-                        then do
-                          _ <- storeReload store
-                          pure (Right (Just m'))
-                        else pure (Left (storeFault res)))
+            Right authPuts -> do
+              eCredPuts <- credPutsOf store mCred
+              case eCredPuts of
+                Left fault -> pure (Left fault)
+                Right credPuts ->
+                  let full = (projDelta proj)
+                        { sdPutTokens = authPuts, sdPutCredentials = credPuts }
+                  in if nullProjection proj && null authPuts && null credPuts
+                    then emit EvBypass >> pure (Right (Just m'))
+                    else do
+                      emit (EvIssued (projPuts proj) (projDrops proj) (projMeta proj))
+                      res <- storeCommit store full
+                      case res of
+                        Committed -> emit EvCommitted >> pure (Right (Just m'))
+                        NotCommitted _ -> emit EvNotCommitted >> pure (Left (storeFault res))
+                        CommitUnknown _ -> do
+                          emit EvUnknown
+                          landed <- reconcileUnderGate store full
+                          emit (EvReconciled landed)
+                          if landed
+                            then do
+                              _ <- storeReload store
+                              pure (Right (Just m'))
+                            else pure (Left (storeFault res)))
       (emit EvPublished)
     pure (fmap (const ()) r)
   where
     emit e = forM_ (siLedger inst) (`modifyIORef'` (++ [e]))
     storeFault res = FaultInternal ("certificate store commit: " ++ show res)
+
+-- | Load the current credential row and project the rewrite:
+-- the stored row when present, else the catalog-derived seed.
+-- A load failure fails the publish closed (the auth-projection
+-- precedent: never fabricate, never skip silently).
+credPutsOf :: Store -> Maybe CredentialUpdate -> IO (Either ModelFault [CredentialRecord])
+credPutsOf _ Nothing = pure (Right [])
+credPutsOf store (Just upd) = do
+  eCreds <- storeLoadCredentials store
+  case eCreds of
+    Left err -> pure (Left (FaultInternal ("credential projection reload: " ++ show err)))
+    Right creds ->
+      let base = fromMaybe (cuSeed upd) (find ((== cuToken upd) . crToken) creds)
+      in pure (Right [cuModify upd base])
 
 -- | Load the current token rows and project the model step's
 -- durable authentication half. Steps whose durable auth is
@@ -1805,8 +1952,13 @@ authPutsOf store ids m m'
 -- publish still drains (drain-then-report) — releases free engine
 -- resources that exist independent of the model commit.
 publishCommit :: StdInstance -> PreparedCommit -> IO (Either ModelFault ())
-publishCommit inst pc = do
-  pr <- publishStd inst (pcDelta pc)
+publishCommit inst pc = publishCommitWithCred inst Nothing pc
+
+-- | 'publishCommit' with an optional credential rewrite joining
+-- the committed store half (the granted provisioning shape).
+publishCommitWithCred :: StdInstance -> Maybe CredentialUpdate -> PreparedCommit -> IO (Either ModelFault ())
+publishCommitWithCred inst mCred pc = do
+  pr <- publishStdWithCred inst mCred (pcDelta pc)
   case pr of
     -- Drain-then-report — a faulted publish still drains
     -- (same orphan analysis as 'commitAndTryDeliver''s fault arm:
@@ -1837,6 +1989,101 @@ publishRejectionE inst rej = do
   pr <- publishStd inst (rejDelta rej)
   drainReleases (siBackend inst) (rejReleases rej)
   pure pr
+
+-- | The InitToken publish outcome: committed, refused for a
+-- session that appeared under the gate, or faulted.
+data InitTokenOutcome
+  = InitTokenDone
+  | InitTokenBusy
+  | InitTokenFault !ModelFault
+
+-- | Publish an InitToken delta: the model step plus the token
+-- reinitialization half, store-first under the gate (masked).
+-- The sessions-empty precondition re-checks on the CURRENT
+-- model inside the gate, so a session opened between the
+-- snapshot and the commit refuses with 'InitTokenBusy' (the
+-- caller answers @CKR_SESSION_EXISTS@) instead of racing the
+-- reinitialization: concurrent open-vs-init linearizes here,
+-- and concurrent login-vs-PIN-change linearizes on the same
+-- gate behind the C state lock. Memory instances take the same
+-- gate-held path with no store half. Only 'Committed' — or an
+-- unknown commit that reconciles landed — publishes @m'@.
+publishStdInitToken
+  :: StdInstance -> SlotId -> TokenId -> String -> ByteString
+  -> StateDelta -> IO InitTokenOutcome
+publishStdInitToken inst slot tid newLabel newSoPin delta = mask_ $ do
+  busyVar <- newIORef False
+  r <- withHeldModel (siEnv inst)
+    (\m ->
+      if (not . null) (sessionsOnSlot m slot)
+        then writeIORef busyVar True >> pure (Right Nothing)
+        else case publishDelta m delta of
+          Left fault -> pure (Left fault)
+          Right m' -> case siStore inst of
+            Nothing -> pure (Right (Just m'))
+            Just (StdStore store _ _) -> do
+              eLoaded <- storeLoadTokens store
+              eJobs <- storeLoadJobs store
+              case (eLoaded, eJobs) of
+                (Right loaded, Right jobs) ->
+                  case buildInitTokenDelta slot tid newLabel newSoPin loaded jobs m' of
+                    Nothing -> pure (Left (FaultInternal "init-token projection: token row missing"))
+                    Just full -> do
+                      res <- storeCommit store full
+                      case res of
+                        Committed -> pure (Right (Just m'))
+                        NotCommitted _ -> pure (Left (initTokenStoreFault res))
+                        CommitUnknown _ -> do
+                          landed <- reconcileUnderGate store full
+                          if landed
+                            then do
+                              _ <- storeReload store
+                              pure (Right (Just m'))
+                            else pure (Left (initTokenStoreFault res))
+                _ -> pure (Left (FaultInternal "init-token projection reload failed")))
+    (pure ())
+  busy <- readIORef busyVar
+  pure (if busy then InitTokenBusy else either InitTokenFault (const InitTokenDone) r)
+  where
+    initTokenStoreFault res = FaultInternal ("init-token store commit: " ++ show res)
+
+-- | Build the InitToken durable half: the token-row
+-- replacement (same identity and slot, generation bumped, new
+-- label, cleared post-state auth), the drops of every object
+-- and job the token owns, the fresh SO credential with the
+-- user PIN uninitialized, and the id/revision high-water marks
+-- (the object-projection precedent). Scoped to exactly this
+-- token: no other token's rows are named. 'Nothing' fails
+-- closed: a missing token row or post-model auth is an
+-- internal inconsistency, and the publish refuses instead of
+-- fabricating a row.
+buildInitTokenDelta
+  :: SlotId -> TokenId -> String -> ByteString
+  -> [(TokenRecord, [ObjectRecord])] -> [JobRecord] -> Model
+  -> Maybe StoreDelta
+buildInitTokenDelta slot tid newLabel newSoPin loaded jobs m' = do
+  (row, _) <- find ((== tid) . trId . fst) loaded
+  after <- Map.lookup slot (mTokenAuth m')
+  let Generation g = trGeneration row
+      replacement = row
+        { trGeneration = Generation (g + 1)
+        , trLabel = newLabel
+        , trAuth = clearTransientAuth after
+        }
+      objDrops = [orId o | (t, os) <- loaded, trId t == tid, o <- os]
+      jobDrops = [jrPersistentId j | j <- jobs, jrToken j == tid]
+      cred = CredentialRecord tid newSoPin Nothing
+      meta =
+        [ ("handle_counter", show (mNextHandle m'))
+        , ("revision_counter", show (mNextRevision m'))
+        ]
+  pure emptyDelta
+    { sdPutTokens = [replacement]
+    , sdDropObjects = objDrops
+    , sdDropJobs = jobDrops
+    , sdPutCredentials = [cred]
+    , sdPutMeta = meta
+    }
 
 -- | Drop one session's find cursor (close/logout paths).
 clearCursor :: StdInstance -> SessionId -> IO ()
@@ -1920,6 +2167,18 @@ ckrAttrSensitive = CULong 0x11
 -- | @CKR_USER_TYPE_INVALID@ (0x103).
 ckrUserTypeInvalid :: CULong
 ckrUserTypeInvalid = CULong 0x103
+
+-- | @CKR_SESSION_EXISTS@ (0xB6).
+ckrSessionExists :: CULong
+ckrSessionExists = CULong 0xB6
+
+-- | @CKR_PIN_LEN_RANGE@ (0xA2).
+ckrPinLenRange :: CULong
+ckrPinLenRange = CULong 0xA2
+
+-- | @CKR_USER_PIN_NOT_INITIALIZED@ (0x102).
+ckrUserPinNotInitialized :: CULong
+ckrUserPinNotInitialized = CULong 0x102
 
 -- ---------------------------------------------------------------------------
 -- slot list, sessions, session info, token liveness
@@ -2098,9 +2357,16 @@ haskokiStdOpenSessionWithNotifyWith observe ctx slot (CULong ro) (CULong async) 
                           ]
                     -- The bracket owns the StablePtr until successful output.
                     -- Rollback only removes its map entry; it never frees twice.
+                    -- The view registers borrowed (admit-only, no teardown
+                    -- authority) with its allocation, before it can escape;
+                    -- every error path retires before it frees, so a recycled
+                    -- index never carries a stale entry into its next owner.
                     bracketOnError
-                      (newStablePtr (AsyncCtx (siEnv inst) (siBackend inst)
-                        sid (siAsyncTable inst) live detached)) freeStablePtr $ \view ->
+                      (do view <- newStablePtr (AsyncCtx (siEnv inst) (siBackend inst)
+                                sid (siAsyncTable inst) live detached)
+                          registerBorrowedCtx view (siAsyncTable inst)
+                          pure view)
+                      (\view -> retireCtx view >> freeStablePtr view) $ \view ->
                       (do
                         views <- readIORef (siAsyncViews inst)
                         installed <- evaluate (Map.insert sid view views)
@@ -2310,9 +2576,12 @@ foreign export ccall "haskoki_std_slot_present" haskokiStdSlotPresent
 
 -- | Project a seated slot's token label onto the 32-byte
 -- blank-padded @CK_TOKEN_INFO@ label field (the C side copies the
--- bytes verbatim). Unseated slots refuse with @SLOT_ID_INVALID@,
--- checked before the buffer (the "bad slots rejected first"
--- discipline).
+-- bytes verbatim). The label comes from the serving view, so an
+-- in-band relabel ('C_InitToken') reports immediately; a dirty
+-- entry that would not re-sync fails closed instead of
+-- reporting a possibly stale label. Unseated slots refuse
+-- with @SLOT_ID_INVALID@, checked before the buffer (the "bad
+-- slots rejected first" discipline).
 haskokiStdTokenLabel :: StablePtr StdInstance -> CULong -> Ptr Word8 -> IO CULong
 haskokiStdTokenLabel ctx slot pOut =
   withLiveStdCtx ctx $ \inst -> do
@@ -2322,8 +2591,12 @@ haskokiStdTokenLabel ctx slot pOut =
       Right sid
         | pOut == nullPtr -> pure ckrArgsBad
         | otherwise -> do
-            let (label, _, _) = catalogLookup inst sid
-            pokeArray pOut (padLabel32 label)
+            clean <- refreshServing inst sid
+            if not clean
+              then pure ckrGeneralError
+              else do
+                serving <- readIORef (siServing inst)
+                pokeArray pOut (padLabel32 (scLabel (servingFor serving sid)))
             pure ckrOk
 
 -- | Blank-pad a catalog label to exactly 32 bytes (truncate past
@@ -2339,6 +2612,35 @@ haskokiStdSlotPresent ctx slot =
   withLiveStdCtx ctx $ \inst -> do
     slots <- snapshotSlots (siSlots inst)
     pure (either id (const ckrOk) (tokenSlot slots slot))
+
+foreign export ccall "haskoki_std_token_user_init" haskokiStdTokenUserInit
+  :: StablePtr StdInstance -> CULong -> Ptr CULong -> IO CULong
+
+-- | Project a seated slot's user-PIN-initialized bit (1 set, 0
+-- unset) for the @CKF_USER_PIN_INITIALIZED@ token flag. The bit
+-- comes from the serving view, so an 'C_InitToken' clears it
+-- and an SO 'C_InitPIN' sets it immediately; a dirty entry
+-- that would not re-sync fails closed. Bad slots refuse
+-- before the buffer (the "bad slots rejected first"
+-- discipline); a null buffer refuses with @ARGUMENTS_BAD@ and
+-- writes nothing.
+haskokiStdTokenUserInit
+  :: StablePtr StdInstance -> CULong -> Ptr CULong -> IO CULong
+haskokiStdTokenUserInit ctx slot pInit =
+  withLiveStdCtx ctx $ \inst -> do
+    slots <- snapshotSlots (siSlots inst)
+    case tokenSlot slots slot of
+      Left rv -> pure rv
+      Right sid
+        | pInit == nullPtr -> pure ckrArgsBad
+        | otherwise -> do
+            clean <- refreshServing inst sid
+            if not clean
+              then pure ckrGeneralError
+              else do
+                serving <- readIORef (siServing inst)
+                poke pInit (if isJust (scUserPin (servingFor serving sid)) then 1 else 0)
+                pure ckrOk
 
 -- ---------------------------------------------------------------------------
 -- objects
@@ -2739,30 +3041,33 @@ maxPinBytes = 65536
 -- user, 2 context-specific acting for the user — anything else
 -- is @USER_TYPE_INVALID@), the caller PIN is compared with a
 -- position-constant xor fold with length short-circuit against
--- the session slot's catalog PIN (the provisioned PIN on slot 0;
--- accepted per the PIN-compare ruling, not machine constant-time), and the
--- verdict feeds the engine's attempt counting, lockout, and
--- session relabeling. Denials publish their counter moves; a
--- context-PIN lockout denial carries the full logout transition
--- and retires every find cursor on the slot like a logout.
--- Durable retry/lock moves commit store-first before the return
--- code is observed ('authDurableChanged'); transient-only
--- outcomes (grants on settled counters, logouts) bypass the
--- store, and a reopen never restores the granted session. A
--- durable write that does not land fails the call with
--- @CKR_GENERAL_ERROR@ instead of the denial code.
+-- the session slot's serving PIN (catalog-seeded, durable-
+-- winning; accepted per the PIN-compare ruling, not machine
+-- constant-time), and the verdict feeds the engine's attempt
+-- counting, lockout, and session relabeling. A user or context
+-- login against an uninitialized user PIN (no SO 'C_InitPIN'
+-- yet) refuses with @CKR_USER_PIN_NOT_INITIALIZED@ before
+-- planning, consuming no attempt. Denials publish their
+-- counter moves; a context-PIN lockout denial carries the full
+-- logout transition and retires every find cursor on the slot
+-- like a logout. Durable retry/lock moves commit store-first
+-- before the return code is observed ('authDurableChanged');
+-- transient-only outcomes (grants on settled counters, logouts)
+-- bypass the store, and a reopen never restores the granted
+-- session. A durable write that does not land fails the call
+-- with @CKR_GENERAL_ERROR@ instead of the denial code.
 haskokiStdLogin
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> IO CULong
 haskokiStdLogin ctx (CULong h) (CULong userType) pPin (CULong pinLen) =
   withStdCtx ctx $ \inst ->
     case userType of
-      0 -> loginAs inst "so" soPinOf
-      1 -> loginAs inst "user" userPinOf
-      2 -> loginAs inst "context" userPinOf
+      0 -> loginAs inst "so" (Just . scSoPin)
+      1 -> loginAs inst "user" scUserPin
+      2 -> loginAs inst "context" scUserPin
       _ -> pure ckrUserTypeInvalid
   where
-    loginAs :: StdInstance -> ByteString -> ((String, String, String) -> ByteString) -> IO CULong
+    loginAs :: StdInstance -> ByteString -> (ServingCredential -> Maybe ByteString) -> IO CULong
     loginAs inst who pick
       | pPin == nullPtr && pinLen /= 0 = pure ckrArgsBad
       | pinLen > maxPinBytes = pure ckrArgsBad
@@ -2771,40 +3076,55 @@ haskokiStdLogin ctx (CULong h) (CULong userType) pPin (CULong pinLen) =
             then pure BS.empty
             else BS.packCStringLen (castPtr pPin, fromIntegral pinLen)
           m0 <- snapshotModel (siEnv inst)
-          let expected = case lookupSession m0 (SessionId (fromIntegral h)) of
-                -- Unknown session: the plan refuses below, so the
-                -- verdict is moot; compare against home.
-                Nothing -> pick homeCatalogEntry
-                Just st -> pick (catalogLookup inst (ssSlot st))
-              verdict
-                | pinsMatch pin expected = "ok"
-                | otherwise = "bad"
-          let req = Request Pkcs11_3_2 F_Login
-                (Just (SessionId (fromIntegral h))) Nothing
-                (who <> ":" <> verdict) []
-          case planCall (envRules (siEnv inst)) m0 req of
-            Immediate pc -> do
-              pr <- publishCommit inst pc
-              case pr of
-                Left _ -> pure ckrGeneralError
-                Right ()
-                  | pcCode pc == CKR_OK -> pure ckrOk
-                  | otherwise -> pure (stdRvOf (pcCode pc))
-            Reject rej -> do
-              pr <- publishRejectionE inst rej
-              case pr of
-                -- Fail closed: the counters did not move, so the
-                -- denial code (with its remaining-attempts
-                -- implication) must not answer.
-                Left _ -> pure ckrGeneralError
-                Right () -> do
-                  when (rejectionLoggedOut rej) $
-                    forM_ (lookupSession m0 (SessionId (fromIntegral h))) $ \st ->
-                      clearSlotCursors inst m0 (ssSlot st)
-                  pure (stdRvOf (rejCode rej))
-            Execute _ _ -> pure ckrGeneralError
-    soPinOf (_, so, _) = BC8.pack so
-    userPinOf (_, _, user) = BC8.pack user
+          mExpected <- case lookupSession m0 (SessionId (fromIntegral h)) of
+            -- Unknown session: the plan refuses below, so the
+            -- verdict is moot; compare against home.
+            Nothing -> pure (Right (Just (fromMaybe BS.empty (pick homeServing))))
+            Just st -> do
+              -- The view re-reads after the refresh: a re-sync
+              -- may have replaced the entry (never read the
+              -- pre-refresh snapshot once dirty).
+              clean <- refreshServing inst (ssSlot st)
+              if not clean
+                then pure (Left ckrGeneralError)
+                else do
+                  serving <- readIORef (siServing inst)
+                  pure (Right (pick (servingFor serving (ssSlot st))))
+          case mExpected of
+            -- Dirty view that would not re-sync: fail closed
+            -- rather than authenticate against it.
+            Left rv -> pure rv
+            -- Uninitialized user PIN: nothing to attempt
+            -- against, so no attempt is consumed.
+            Right Nothing -> pure ckrUserPinNotInitialized
+            Right (Just expected) -> do
+              let verdict
+                    | pinsMatch pin expected = "ok"
+                    | otherwise = "bad"
+                  req = Request Pkcs11_3_2 F_Login
+                    (Just (SessionId (fromIntegral h))) Nothing
+                    (who <> ":" <> verdict) []
+              case planCall (envRules (siEnv inst)) m0 req of
+                Immediate pc -> do
+                  pr <- publishCommit inst pc
+                  case pr of
+                    Left _ -> pure ckrGeneralError
+                    Right ()
+                      | pcCode pc == CKR_OK -> pure ckrOk
+                      | otherwise -> pure (stdRvOf (pcCode pc))
+                Reject rej -> do
+                  pr <- publishRejectionE inst rej
+                  case pr of
+                    -- Fail closed: the counters did not move, so the
+                    -- denial code (with its remaining-attempts
+                    -- implication) must not answer.
+                    Left _ -> pure ckrGeneralError
+                    Right () -> do
+                      when (rejectionLoggedOut rej) $
+                        forM_ (lookupSession m0 (SessionId (fromIntegral h))) $ \st ->
+                          clearSlotCursors inst m0 (ssSlot st)
+                      pure (stdRvOf (rejCode rej))
+                Execute _ _ -> pure ckrGeneralError
 
 -- | Log out (refused without a login): publishes the engine's
 -- logout delta (session relabeling, private-handle
@@ -2833,6 +3153,390 @@ haskokiStdLogout ctx (CULong h) =
         publishRejection inst rej
         pure (stdRvOf (rejCode rej))
       Execute _ _ -> pure ckrGeneralError
+
+-- ---------------------------------------------------------------------------
+-- provisioning (init-token/init-pin/set-pin)
+-- ---------------------------------------------------------------------------
+
+foreign export ccall "haskoki_std_init_token" haskokiStdInitToken
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> IO CULong
+foreign export ccall "haskoki_std_init_pin" haskokiStdInitPin
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong
+  -> IO CULong
+foreign export ccall "haskoki_std_set_pin" haskokiStdSetPin
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> CULong -> IO CULong
+
+-- | Resolve a serving slot to its durable token identity: the
+-- reconciled layout where the store has one, else the legacy
+-- positional reading (the auth-projection precedent).
+slotTokenId :: StdInstance -> SlotId -> TokenId
+slotTokenId inst slot = case siStore inst of
+  Nothing -> tokenIdForSlot slot
+  Just ss -> Map.findWithDefault (tokenIdForSlot slot) slot (stdTokenIds ss)
+
+-- | Rewrite one slot's serving credential after its commit
+-- lands (the cursor-clearing precedent: the serving view
+-- updates post-commit, never speculatively).
+updateServingCredential :: StdInstance -> SlotId -> (ServingCredential -> ServingCredential) -> IO ()
+updateServingCredential inst slot f =
+  atomicModifyIORef' (siServing inst) (\m -> (Map.insert slot (f (servingFor m slot)) m, ()))
+
+-- | Mark one slot's serving entry dirty: its authority is
+-- unknown (a provisioning write failed, so the commit may or
+-- may not have landed). Authentication consults a dirty entry
+-- only after 'refreshServing' re-syncs it.
+markServingDirty :: StdInstance -> SlotId -> IO ()
+markServingDirty inst slot =
+  atomicModifyIORef' (siDirty inst) (\s -> (if slot `elem` s then s else slot : s, ()))
+
+-- | Re-sync one slot's serving entry from the store: the token
+-- row carries the authoritative label, the credential row (if
+-- any) the authoritative PINs, and the catalog seeds the
+-- halves no row covers. 'True' means the entry is
+-- authoritative again (the slot clears); 'False' means the
+-- re-read failed and the caller must fail closed without
+-- consulting the view. Memory instances have no durable half,
+-- so the view is trivially authoritative there.
+resyncServing :: StdInstance -> SlotId -> IO Bool
+resyncServing inst slot = case siStore inst of
+  Nothing -> pure True
+  Just (StdStore store _ ids) -> do
+    eToks <- storeLoadTokens store
+    eCreds <- storeLoadCredentials store
+    case (eToks, eCreds) of
+      (Right loaded, Right creds) ->
+        let tid = Map.findWithDefault (tokenIdForSlot slot) slot ids
+        in case (find ((== tid) . trId . fst) loaded, find ((== tid) . crToken) creds) of
+          (Just (row, _), mCred) -> do
+            let (_, catSo, catUser) = Map.findWithDefault homeCatalogEntry slot (siCatalog inst)
+                entry = ServingCredential
+                  { scLabel = trLabel row
+                  , scSoPin = maybe (BC8.pack catSo) crSoPin mCred
+                  , scUserPin = maybe (Just (BC8.pack catUser)) crUserPin mCred
+                  }
+            atomicModifyIORef' (siServing inst) (\m -> (Map.insert slot entry m, ()))
+            atomicModifyIORef' (siDirty inst) (\s -> (filter (/= slot) s, ()))
+            pure True
+          _ -> pure False
+      _ -> pure False
+
+-- | Settle one slot's serving entry before use: clean entries
+-- answer immediately, dirty ones re-sync first. 'False' means
+-- the view is unusable and the caller fails closed.
+refreshServing :: StdInstance -> SlotId -> IO Bool
+refreshServing inst slot = do
+  dirty <- readIORef (siDirty inst)
+  if slot `elem` dirty then resyncServing inst slot else pure True
+
+-- | Settle one slot after a failed provisioning write: a
+-- successful re-sync restores authority (the write either
+-- landed, and the view picks it up, or did not, and the view
+-- is confirmed); a failed re-sync marks the slot dirty so
+-- later authentication fails closed instead of consulting a
+-- possibly stale view.
+settleServingAfterFailure :: StdInstance -> SlotId -> IO ()
+settleServingAfterFailure inst slot = do
+  ok <- resyncServing inst slot
+  if ok then pure () else markServingDirty inst slot
+
+-- | Decode the fixed 32-byte InitToken label: trailing spaces
+-- and NULs strip, and 1..32 remaining bytes become the stored
+-- label (byte-preserving). An all-blank label refuses.
+parseInitLabel :: ByteString -> Maybe String
+parseInitLabel raw =
+  let stripped = BS.dropWhileEnd (\w -> w == 0x20 || w == 0x00) raw
+  in if BS.null stripped || BS.length stripped > 32
+    then Nothing
+    else Just (BC8.unpack stripped)
+
+-- | Resolve the SetPIN role from a snapshot: the session's
+-- slot plus whether the session is an SO session (the role
+-- comes from the session state: read/write SO sessions
+-- change the SO PIN, every other read/write session the user
+-- PIN). 'Nothing' when the session is unknown or read-only
+-- (the plan refuses both; this resolves the granted shape
+-- only).
+setPinRole :: Model -> SessionId -> Maybe (SlotId, Bool)
+setPinRole m sid = do
+  st <- lookupSession m sid
+  if ssReadOnly st
+    then Nothing
+    else Just (ssSlot st, ssLogin st == LoginSO)
+
+-- | Reinitialize the token in a slot: the SO PIN becomes the
+-- caller bytes, the label becomes the caller label, every
+-- object and detached job on the token is destroyed, the
+-- generation bumps (stale job references refuse), the auth
+-- state goes fresh, and the user PIN becomes uninitialized
+-- (the SO sets it with 'C_InitPIN'). The label pointer must
+-- offer 32 readable bytes (NULL refuses); the PIN pointer
+-- must be non-null and offer the passed length. Check order:
+-- bad slot first (the universal discipline), then the SO-PIN
+-- length (@CKR_PIN_LEN_RANGE@ outside the effective policy),
+-- then the label shape, cross-token uniqueness, and the
+-- slot-0 stability anchor (a duplicate label would strand
+-- the next open: the catalog cannot express two tokens under
+-- one label; slot 0 keeps 'homeTokenLabel' because the
+-- catalog cannot express any other slot-0 label — both
+-- relabels refuse instead), then the sessions-empty
+-- precondition (@CKR_SESSION_EXISTS@, re-checked under the
+-- gate). Only this token's rows commit; a refused call
+-- persists nothing, and a durable write that does not land
+-- fails with @CKR_GENERAL_ERROR@. The next open reconciles
+-- the catalog against the new durable label: the operator
+-- updates the catalog entry to match (the refusal names it),
+-- exactly as for any other catalog drift.
+haskokiStdInitToken
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> IO CULong
+haskokiStdInitToken ctx slot pPin (CULong pinLen) pLabel =
+  withLiveStdCtx ctx initTokenAs
+  where
+    initTokenAs inst
+      | pPin == nullPtr = pure ckrArgsBad
+      | pinLen > maxPinBytes = pure ckrArgsBad
+      | otherwise = do
+          (m0, slots) <- snapshotPresence (siEnv inst) (siSlots inst)
+          case tokenSlot slots slot of
+            Left rv -> pure rv
+            Right slotId
+              -- Bad slots refuse first (the token-info
+              -- discipline); the NULL label refuses next.
+              | pLabel == nullPtr -> pure ckrArgsBad
+              | otherwise -> do
+              soPin <- BS.packCStringLen (castPtr pPin, fromIntegral pinLen)
+              labelRaw <- BS.packCStringLen (castPtr pLabel, 32)
+              let policy = effectivePolicy (envRules (siEnv inst))
+              case checkPinLength policy (BS.length soPin) of
+                Just _ -> pure ckrPinLenRange
+                Nothing -> case parseInitLabel labelRaw of
+                  Nothing -> pure ckrArgsBad
+                  Just newLabel -> do
+                    -- The uniqueness check needs an
+                    -- authoritative view; a dirty entry that
+                    -- would not re-sync fails the call.
+                    clean <- refreshServing inst slotId
+                    if not clean
+                      then pure ckrGeneralError
+                      else do
+                        serving <- readIORef (siServing inst)
+                        if newLabel `elem` [scLabel e | (sl, e) <- Map.toList serving, sl /= slotId]
+                          then pure ckrArgsBad
+                          else if slotId == SlotId 0 && newLabel /= homeTokenLabel
+                            then pure ckrArgsBad
+                            else if (not . null) (sessionsOnSlot m0 slotId)
+                              then pure ckrSessionExists
+                              else do
+                                let req = Request Pkcs11_3_2 F_InitToken Nothing Nothing
+                                      (BC8.pack ("slot=" ++ show (unSlotId slotId))) []
+                                case planCall (envRules (siEnv inst)) m0 req of
+                                  Immediate pc
+                                    | pcCode pc == CKR_OK -> do
+                                        out <- publishStdInitToken inst slotId
+                                          (slotTokenId inst slotId) newLabel soPin (pcDelta pc)
+                                        case out of
+                                          InitTokenDone -> do
+                                            updateServingCredential inst slotId
+                                              (\e -> e { scLabel = newLabel
+                                                       , scSoPin = soPin
+                                                       , scUserPin = Nothing
+                                                       })
+                                            pure ckrOk
+                                          InitTokenBusy -> pure ckrSessionExists
+                                          InitTokenFault _ -> do
+                                            settleServingAfterFailure inst slotId
+                                            pure ckrGeneralError
+                                    | otherwise -> pure ckrGeneralError
+                                  Reject rej -> do
+                                    publishRejection inst rej
+                                    pure (stdRvOf (rejCode rej))
+                                  Execute _ _ -> pure ckrGeneralError
+
+-- | Set the user PIN from a read/write SO session (the SO
+-- recovery shape: it also resets the user attempt counter
+-- and clears a user lock). The PIN pointer must be non-null.
+-- Check order: the new-PIN length (@CKR_PIN_LEN_RANGE@)
+-- first, then the session (@CKR_SESSION_HANDLE_INVALID@ for
+-- unknown sessions, @CKR_USER_NOT_LOGGED_IN@ unless the
+-- session is a read/write SO session). The grant commits the
+-- new user PIN with its auth half store-first
+-- ('publishStdWithCred'); a durable write that does not land
+-- fails with @CKR_GENERAL_ERROR@, and a refused call persists
+-- nothing.
+haskokiStdInitPin
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong
+  -> IO CULong
+haskokiStdInitPin ctx (CULong h) pPin (CULong pinLen) =
+  withStdCtx ctx initPinAs
+  where
+    initPinAs inst
+      | pPin == nullPtr = pure ckrArgsBad
+      | pinLen > maxPinBytes = pure ckrArgsBad
+      | otherwise = do
+          newPin <- BS.packCStringLen (castPtr pPin, fromIntegral pinLen)
+          m0 <- snapshotModel (siEnv inst)
+          let policy = effectivePolicy (envRules (siEnv inst))
+          case checkPinLength policy (BS.length newPin) of
+            Just _ -> pure ckrPinLenRange
+            Nothing ->
+              let sid = SessionId (fromIntegral h)
+                  req = Request Pkcs11_3_2 F_InitPIN (Just sid) Nothing BS.empty []
+              in case planCall (envRules (siEnv inst)) m0 req of
+                Immediate pc
+                  | pcCode pc == CKR_OK ->
+                      case lookupSession m0 sid of
+                        Nothing -> pure ckrGeneralError
+                        Just st -> do
+                          -- The seed must come from an
+                          -- authoritative view: refuse rather
+                          -- than seed from a dirty entry.
+                          clean <- refreshServing inst (ssSlot st)
+                          if not clean
+                            then pure ckrGeneralError
+                            else do
+                              serving <- readIORef (siServing inst)
+                              let slot = ssSlot st
+                                  tid = slotTokenId inst slot
+                                  cur = servingFor serving slot
+                                  upd = CredentialUpdate tid
+                                    (CredentialRecord tid (scSoPin cur) (scUserPin cur))
+                                    (\c -> c { crUserPin = Just newPin })
+                              pr <- publishCommitWithCred inst (Just upd) pc
+                              case pr of
+                                Left _ -> do
+                                  settleServingAfterFailure inst slot
+                                  pure ckrGeneralError
+                                Right () -> do
+                                  updateServingCredential inst slot
+                                    (\e -> e { scUserPin = Just newPin })
+                                  pure ckrOk
+                  | otherwise -> pure ckrGeneralError
+                Reject rej -> do
+                  publishRejection inst rej
+                  pure (stdRvOf (rejCode rej))
+                Execute _ _ -> pure ckrGeneralError
+
+-- | Change the session role's own PIN: a read/write SO
+-- session changes the SO PIN, while a read/write public,
+-- user, or context-acting-for-user session changes the user
+-- PIN (the old PIN authenticates, so no login is required —
+-- the reference session-state rule). Both PIN pointers must
+-- be non-null. Check order: the new-PIN length
+-- (@CKR_PIN_LEN_RANGE@) first, then the session
+-- (@CKR_SESSION_HANDLE_INVALID@ for unknown sessions,
+-- @CKR_SESSION_READ_ONLY@ for read-only ones), then the
+-- old-PIN verdict. A locked role denies with @CKR_PIN_LOCKED@
+-- before the verdict, consuming nothing; a wrong old PIN
+-- consumes one role attempt and locks deterministically at
+-- the policy limit (a SetPIN strike counts exactly like a
+-- login strike). The grant commits the new PIN with its auth
+-- half store-first; a durable write that does not land fails
+-- with @CKR_GENERAL_ERROR@ instead of the denial code, and a
+-- refused call persists nothing. Sessions stay logged in
+-- across a PIN change, granted or denied.
+haskokiStdSetPin
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
+  -> CULong -> IO CULong
+haskokiStdSetPin ctx (CULong h) pOld (CULong oldLen) pNew (CULong newLen) =
+  withStdCtx ctx setPinAs
+  where
+    setPinAs inst
+      | pOld == nullPtr || pNew == nullPtr = pure ckrArgsBad
+      | oldLen > maxPinBytes || newLen > maxPinBytes = pure ckrArgsBad
+      | otherwise = do
+          oldPin <- BS.packCStringLen (castPtr pOld, fromIntegral oldLen)
+          newPin <- BS.packCStringLen (castPtr pNew, fromIntegral newLen)
+          m0 <- snapshotModel (siEnv inst)
+          let policy = effectivePolicy (envRules (siEnv inst))
+          case checkPinLength policy (BS.length newPin) of
+            Just _ -> pure ckrPinLenRange
+            Nothing -> do
+              let sid = SessionId (fromIntegral h)
+              mRole <- case lookupSession m0 sid of
+                -- Unknown or read-only session: the plan
+                -- refuses below, so the verdict is moot;
+                -- compare against home (read-only refuses
+                -- before the kind check, so any kind
+                -- agrees here).
+                Nothing ->
+                  pure (Right (Just ("user", fromMaybe BS.empty (scUserPin homeServing))))
+                Just st
+                  | ssReadOnly st ->
+                      pure (Right (Just ("user", fromMaybe BS.empty (scUserPin homeServing))))
+                  | otherwise -> do
+                      -- The view re-reads after the refresh (a
+                      -- re-sync may have replaced the entry).
+                      clean <- refreshServing inst (ssSlot st)
+                      if not clean
+                        then pure (Left ckrGeneralError)
+                        else do
+                          serving <- readIORef (siServing inst)
+                          let entry = servingFor serving (ssSlot st)
+                          pure (if ssLogin st == LoginSO
+                            then Right (Just ("so", scSoPin entry))
+                            else case scUserPin entry of
+                              -- Uninitialized user PIN: nothing
+                              -- to change, so no attempt is
+                              -- consumed.
+                              Nothing -> Right Nothing
+                              Just userPin -> Right (Just ("user", userPin)))
+              case mRole of
+                -- Dirty view that would not re-sync: fail
+                -- closed rather than verify against it.
+                Left rv -> pure rv
+                Right Nothing -> pure ckrUserPinNotInitialized
+                Right (Just (who, current)) -> do
+                  let verdict
+                        | pinsMatch oldPin current = "ok"
+                        | otherwise = "bad"
+                      req = Request Pkcs11_3_2 F_SetPIN (Just sid) Nothing
+                        (who <> ":" <> verdict) []
+                  case planCall (envRules (siEnv inst)) m0 req of
+                    Immediate pc
+                      | pcCode pc == CKR_OK ->
+                          case setPinRole m0 sid of
+                            Nothing -> pure ckrGeneralError
+                            Just (slot, isSO) -> do
+                              -- The seed must come from an
+                              -- authoritative view (re-check:
+                              -- the verdict read it above, but
+                              -- authority is per-use).
+                              clean <- refreshServing inst slot
+                              if not clean
+                                then pure ckrGeneralError
+                                else do
+                                  serving <- readIORef (siServing inst)
+                                  let tid = slotTokenId inst slot
+                                      cur = servingFor serving slot
+                                      upd = CredentialUpdate tid
+                                        (CredentialRecord tid (scSoPin cur) (scUserPin cur))
+                                        (if isSO
+                                          then \c -> c { crSoPin = newPin }
+                                          else \c -> c { crUserPin = Just newPin })
+                                  pr <- publishCommitWithCred inst (Just upd) pc
+                                  case pr of
+                                    Left _ -> do
+                                      settleServingAfterFailure inst slot
+                                      pure ckrGeneralError
+                                    Right () -> do
+                                      updateServingCredential inst slot
+                                        (if isSO
+                                          then \e -> e { scSoPin = newPin }
+                                          else \e -> e { scUserPin = Just newPin })
+                                      pure ckrOk
+                      | otherwise -> pure ckrGeneralError
+                    Reject rej -> do
+                      pr <- publishRejectionE inst rej
+                      case pr of
+                        -- Fail closed: the counter did not move,
+                        -- so the denial code (with its
+                        -- remaining-attempts implication) must not
+                        -- answer.
+                        Left _ -> pure ckrGeneralError
+                        Right () -> pure (stdRvOf (rejCode rej))
+                    Execute _ _ -> pure ckrGeneralError
 
 -- ---------------------------------------------------------------------------
 -- shared crypto pipeline (the crypto dialogue, generalized over slots)

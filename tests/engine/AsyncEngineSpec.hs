@@ -72,6 +72,7 @@ import Haskoki.FFI.Async
   , pokeCompletion
   , pokeNeed
   , resolveJobHandle
+  , retireCtx
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.FFI.Standard
@@ -963,6 +964,10 @@ caseFfiDrain envLock = do
   asyncCloseCtx c
   nLive2 <- asyncLiveHandles c
   assertEqual "drained" 0 nLive2
+  -- Value-level teardown frees no pointer: retire the
+  -- registration the open installed before freeing, so the
+  -- pointer value keeps its tombstone after it frees.
+  retireCtx ctx
   freeStablePtr ctx
 
 caseFfiDoubleClose :: MVar () -> IO ()

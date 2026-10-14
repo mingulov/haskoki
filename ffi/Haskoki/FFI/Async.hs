@@ -67,8 +67,17 @@ module Haskoki.FFI.Async
   , resolveJobHandle
   , encodeJobHandle
   , decodeJobHandle
+  , registerCtx
+  , registerBorrowedCtx
+  , retireCtx
+  , setEnterTestHook
+  , ctxPendingReclaims
+  , ctxReclaimStats
+  , ctxAcquireBorrowTest
+  , ctxReleaseBorrowTest
   , submitTransfer
   , joinTransfer
+  , joinAcquireTransfer
   , jobFunctionCode
   , codeJobFunction
   , decodeAsyncFunctionName
@@ -88,7 +97,15 @@ module Haskoki.FFI.Async
   , haskokiAsyncJoin
   ) where
 
-import Control.Exception (SomeException, finally, mask, mask_, onException, try)
+import Control.Exception
+  ( SomeException
+  , finally
+  , mask
+  , mask_
+  , onException
+  , try
+  , uninterruptibleMask_
+  )
 import Data.Bits ((.&.), (.|.), shiftL)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -98,7 +115,8 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Word (Word32, Word8, Word64)
 import Foreign.C.String (CString, peekCString)
-import Foreign.C.Types (CULong (..))
+import Foreign.C.Types (CInt (..), CULLong (..), CULong (..))
+import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr, ptrToWordPtr, wordPtrToPtr)
 import Foreign.StablePtr
@@ -151,6 +169,7 @@ import Haskoki.Runtime.Async
   , asyncTableSalt
   , awaitTableQuiescent
   , claimTableClose
+  , releaseTableClose
   , enterTableUse
   , exitTableUse
   , jobFunctionOf
@@ -338,12 +357,13 @@ isNullStable :: StablePtr a -> Bool
 isNullStable p = castStablePtrToPtr p == nullPtr
 
 -- | Admit one export call against the table's close gate: the
--- null check, the dereference, and the admission run masked as
--- one entry step (no interruptible operation inside, so no kill
--- can split them), and the admitted borrower holds its count
--- across the whole call — close retires the gate and waits the
--- count out before it drains or frees anything. Null and retired
--- contexts refuse identically, before touching any state.
+-- null check, the registry admission, and the dereference run
+-- masked as one entry step (no interruptible operation inside, so
+-- no kill can split them), and the admitted borrower holds its
+-- count across the whole call — close claims the gate and waits
+-- the count out before it drains or frees anything. Null,
+-- unknown, and retired contexts refuse identically, before
+-- touching any state.
 withCtx :: StablePtr AsyncCtx -> (AsyncCtx -> IO CULong) -> IO CULong
 withCtx ctx k = guarded $ mask $ \restore -> do
   mC <- enterCtx ctx
@@ -351,16 +371,279 @@ withCtx ctx k = guarded $ mask $ \restore -> do
     Nothing -> pure (toRV 0x05)
     Just c -> restore (k c) `finally` exitTableUse (acTable c)
 
--- | Masked entry step for 'withCtx': null check, dereference,
--- admission. Callers hold the mask; every step here is
--- non-blocking, so entry never parks while masked.
+-- | One registry entry: a live owned context behind its table, a
+-- live borrowed view behind its table (admit-only: never teardown
+-- authority), or a tombstone left by a closed one. Tombstones
+-- persist until their pointer value is reused (the new owner
+-- re-registers over its own tombstone): one small entry per close
+-- keeps every owned and borrowed lifetime distinguishable without
+-- dereferencing.
+data CtxEntry
+  = CtxLive !AsyncTable
+  | CtxBorrowed !AsyncTable
+  | CtxRetired
+
+-- | Process-wide registry of async contexts, C-owned (see
+-- @cbits/context_registry.c@): pointer bits to the context entry,
+-- plus the TEST-ONLY per-pointer entry hooks. The opens
+-- ('haskokiAsyncOpen', 'haskokiAsyncOpenOn') register before their
+-- pointer escapes; the winning slot-close retires before it frees.
+-- Borrowed views register at creation and retire at release the
+-- same way. A live entry always names a live pointer; a tombstone
+-- always refuses without dereferencing; an absent key was never
+-- registered (a foreign value). A hook runs after its pointer's
+-- null check and before its registry lookup — the exact interval
+-- a racing close can complete in — so a barrier test parks a
+-- caller there deterministically. Scoped per pointer (never
+-- process-wide), so parallel tests never observe each other's
+-- hooks; retirement clears the entry's hook in the same locked
+-- step as the tombstone, so a reused pointer value can never fire
+-- a stale hook. Production leaves every entry hookless, paying
+-- one locked lookup per entry.
+--
+-- The Haskell side holds no process-wide cell: every accessor here
+-- is one narrow call into the C table (the table-mint precedent).
+-- Table and hook references cross as 'StablePtr's with borrower-safe
+-- reclamation: a lookup that hands one out holds a borrow on its
+-- entry, the caller dereferences and then releases (dereference
+-- strictly before release, both adjacent to the lookup, under a
+-- mask). Every displaced root queues on its entry, however many
+-- displacements stack while borrows stand, and every accessor
+-- drains taken roots below: a root frees only when its entry holds
+-- no borrow, every root is preserved until freed, and nothing
+-- stands retained past joined teardown.
+foreign import ccall unsafe "haskoki_ctx_register"
+  c_ctxRegister :: Ptr () -> CInt -> StablePtr AsyncTable -> IO ()
+
+foreign import ccall unsafe "haskoki_ctx_retire"
+  c_ctxRetire :: Ptr () -> IO ()
+
+foreign import ccall unsafe "haskoki_ctx_lookup_acquire"
+  c_ctxLookupAcquire :: Ptr () -> Ptr (StablePtr AsyncTable) -> IO CInt
+
+foreign import ccall unsafe "haskoki_ctx_hook_set"
+  c_ctxHookSet :: Ptr () -> StablePtr (IO ()) -> IO ()
+
+foreign import ccall unsafe "haskoki_ctx_hook_acquire"
+  c_ctxHookAcquire :: Ptr () -> Ptr (StablePtr (IO ())) -> IO CInt
+
+foreign import ccall unsafe "haskoki_ctx_release"
+  c_ctxRelease :: Ptr () -> IO ()
+
+foreign import ccall unsafe "haskoki_ctx_take_reclaimable"
+  c_ctxTakeReclaimable :: Ptr (StablePtr ()) -> IO CInt
+
+foreign import ccall unsafe "haskoki_ctx_note_freed"
+  c_ctxNoteFreed :: CInt -> IO ()
+
+foreign import ccall unsafe "haskoki_ctx_pending"
+  c_ctxPending :: IO CInt
+
+foreign import ccall unsafe "haskoki_ctx_stats"
+  c_ctxStats :: Ptr CULLong -> Ptr CULLong -> Ptr CULLong -> IO ()
+
+-- | Free one root the C table handed back for reclamation (a null
+-- root means nothing to free). Roots are opaque addresses: table
+-- and hook roots share one representation.
+reclaimOne :: StablePtr a -> IO ()
+reclaimOne s =
+  if isNullStable s then pure () else freeStablePtr s
+
+-- | Drain every reclaimable root: take each one whose entry holds
+-- no borrow, free it, and report the batch. Masked throughout, so
+-- no kill can strand a taken root between its take and its free.
+drainReclaims :: IO ()
+drainReclaims = mask_ $ alloca $ \pRoot -> go pRoot 0
+  where
+    go pRoot n = do
+      more <- c_ctxTakeReclaimable pRoot
+      if more == 0
+        then if n == 0 then pure () else c_ctxNoteFreed n
+        else do
+          peek pRoot >>= reclaimOne
+          go pRoot (n + 1)
+
+-- | Release one borrowed-root hold, then drain: the release may
+-- open its entry's queued roots for reclamation.
+releaseCtxBorrow :: Ptr () -> IO ()
+releaseCtxBorrow key = do
+  c_ctxRelease key
+  drainReclaims
+
+-- | TEST-ONLY: live reclamation backlog — queued displaced roots.
+-- Drains to zero at quiescence; anything standing past joined
+-- teardown is stranded.
+ctxPendingReclaims :: IO Int
+ctxPendingReclaims = fromIntegral <$> c_ctxPending
+
+-- | TEST-ONLY: independent displaced/taken/freed accounting —
+-- every displaced root is taken exactly once and freed exactly
+-- once, so the three balance at quiescence.
+ctxReclaimStats :: IO (Word64, Word64, Word64)
+ctxReclaimStats =
+  alloca $ \pD -> alloca $ \pT -> alloca $ \pF -> do
+    c_ctxStats pD pT pF
+    d <- peek pD
+    t <- peek pT
+    f <- peek pF
+    pure (fromIntegral d, fromIntegral t, fromIntegral f)
+
+-- | The registry key of a context pointer: its bare bits, which
+-- need no dereference to read.
+ctxKey :: StablePtr AsyncCtx -> Ptr ()
+ctxKey sp = castPtr (castStablePtrToPtr sp)
+
+-- | Register an owned context under its pointer. The opens call
+-- this masked with the allocation, before the pointer escapes;
+-- tests register hand-built pointers the same way before driving
+-- them through the exports. Overwrites that value's tombstone
+-- (left by an owned or borrowed close) when the allocator reuses
+-- a freed pointer value, under the new owner's table.
+registerCtx :: StablePtr AsyncCtx -> AsyncTable -> IO ()
+registerCtx sp table = mask_ $ do
+  stable <- newStablePtr table
+  c_ctxRegister (ctxKey sp) 1 stable
+  drainReclaims
+
+-- | Register a borrowed view under its pointer: admit-only, never
+-- teardown authority — the view's table and backend stay owned by
+-- Standard. The Standard surface calls this masked with the
+-- allocation, before the pointer escapes, and retires at view
+-- release. Overwrites that value's tombstone when the allocator
+-- reuses a freed pointer value, so a valid borrowed view on a
+-- recycled index admits while genuinely retired contexts stay
+-- refused.
+registerBorrowedCtx :: StablePtr AsyncCtx -> AsyncTable -> IO ()
+registerBorrowedCtx sp table = mask_ $ do
+  stable <- newStablePtr table
+  c_ctxRegister (ctxKey sp) 2 stable
+  drainReclaims
+
+-- | Retire a context's registration: the entry becomes a
+-- tombstone that refuses without dereferencing, and the entry's
+-- test hook (if any) clears in the same step. The winning
+-- slot-close calls this after teardown and before it frees the
+-- pointer, and borrowed-view release calls this before it frees
+-- the view: retire strictly before free, so a caller resuming
+-- after the close — even one that passed its null check before
+-- it — meets the tombstone and refuses instead of dereferencing
+-- a freed pointer.
+retireCtx :: StablePtr AsyncCtx -> IO ()
+retireCtx sp = mask_ $ do
+  c_ctxRetire (ctxKey sp)
+  drainReclaims
+
+-- | TEST-ONLY: arm ('Just') or clear ('Nothing') a pointer's
+-- entry hook. Production leaves every entry hookless, paying
+-- one locked lookup per entry.
+setEnterTestHook :: StablePtr AsyncCtx -> Maybe (IO ()) -> IO ()
+setEnterTestHook sp mHook = mask_ $ case mHook of
+  Just hook -> do
+    stable <- newStablePtr hook
+    c_ctxHookSet (ctxKey sp) stable
+    drainReclaims
+  Nothing -> do
+    c_ctxHookSet (ctxKey sp) (castPtrToStablePtr nullPtr)
+    drainReclaims
+
+-- | TEST-ONLY: hold one borrow on a pointer's entry without
+-- dereferencing, for deterministic overlap coverage. Pairs with
+-- 'ctxReleaseBorrowTest'; production borrows always pair inside
+-- the lookup they came from.
+ctxAcquireBorrowTest :: StablePtr AsyncCtx -> IO ()
+ctxAcquireBorrowTest sp = mask_ $ alloca $ \pTable -> do
+  _ <- c_ctxLookupAcquire (ctxKey sp) pTable
+  pure ()
+
+-- | TEST-ONLY: release one borrow held by 'ctxAcquireBorrowTest',
+-- then drain.
+ctxReleaseBorrowTest :: StablePtr AsyncCtx -> IO ()
+ctxReleaseBorrowTest sp = mask_ $ releaseCtxBorrow (ctxKey sp)
+
+-- | Dereference one acquired live entry and release the borrow:
+-- the StablePtr mapping is read strictly before the release, so
+-- the root cannot free underneath the dereference.
+derefAcquired :: Ptr () -> Ptr (StablePtr AsyncTable)
+              -> (AsyncTable -> CtxEntry) -> IO (Maybe CtxEntry)
+derefAcquired key pTable con = do
+  stable <- peek pTable
+  table <- deRefStablePtr stable
+  releaseCtxBorrow key
+  pure (Just (con table))
+
+-- | Look up the entry behind a context pointer. A single locked
+-- acquire plus a borrow release — safe on any pointer value,
+-- including stale ones.
+lookupCtxEntry :: StablePtr AsyncCtx -> IO (Maybe CtxEntry)
+lookupCtxEntry sp = mask_ $ alloca $ \pTable -> do
+  kind <- c_ctxLookupAcquire (ctxKey sp) pTable
+  case kind of
+    1 -> derefAcquired (ctxKey sp) pTable CtxLive
+    2 -> derefAcquired (ctxKey sp) pTable CtxBorrowed
+    3 -> pure (Just CtxRetired)
+    _ -> pure Nothing
+
+-- | Look up a pointer's TEST-ONLY entry hook, when armed. A single
+-- locked acquire plus a borrow release — safe on any pointer value.
+lookupEnterHook :: StablePtr AsyncCtx -> IO (Maybe (IO ()))
+lookupEnterHook sp = mask_ $ alloca $ \pHook -> do
+  found <- c_ctxHookAcquire (ctxKey sp) pHook
+  if found == 0
+    then pure Nothing
+    else do
+      stable <- peek pHook
+      hook <- deRefStablePtr stable
+      releaseCtxBorrow (ctxKey sp)
+      pure (Just hook)
+
+-- | Masked entry step for 'withCtx': null check, test hook,
+-- externally reachable admission, then the dereference.
+-- Admission consults the registry — reachable from the bare
+-- pointer bits — BEFORE any dereference, so a concurrent
+-- slot-close cannot free the pointer between the check and the
+-- dereference: either this call admits first (and the close
+-- waits it out before freeing), the close claims first (and this
+-- call refuses at the gate without dereferencing), or the close
+-- completes first (and this call meets the tombstone and refuses
+-- without dereferencing). A stale live-table reference still
+-- refuses, because the claim flag persists past retirement.
+-- Callers hold the mask; every step here is non-blocking except
+-- a test-armed hook, so production entry never parks while
+-- masked.
 enterCtx :: StablePtr AsyncCtx -> IO (Maybe AsyncCtx)
 enterCtx ctx
   | isNullStable ctx = pure Nothing
   | otherwise = do
-      c <- deRefStablePtr ctx
-      ok <- enterTableUse (acTable c)
-      pure (if ok then Just c else Nothing)
+      mHook <- lookupEnterHook ctx
+      case mHook of
+        Nothing -> pure ()
+        Just hook -> hook
+      mEntry <- lookupCtxEntry ctx
+      case mEntry of
+        Just (CtxLive table) -> do
+          ok <- enterTableUse table
+          if ok
+            then Just <$> deRefStablePtr ctx
+            else pure Nothing
+        Just (CtxBorrowed table) -> do
+          ok <- enterTableUse table
+          if ok
+            then Just <$> deRefStablePtr ctx
+            else pure Nothing
+        Just CtxRetired -> pure Nothing
+        Nothing -> enterCtxUnregistered ctx
+
+-- | Entry for pointers never registered: foreign values. Owned
+-- contexts always register, borrowed views register at creation,
+-- and every close retires — so a stale owned or borrowed pointer
+-- meets 'CtxRetired', never this path. The legacy
+-- dereference-then-admit stands for foreign values: the gate
+-- still refuses retired tables.
+enterCtxUnregistered :: StablePtr AsyncCtx -> IO (Maybe AsyncCtx)
+enterCtxUnregistered ctx = do
+  c <- deRefStablePtr ctx
+  ok <- enterTableUse (acTable c)
+  pure (if ok then Just c else Nothing)
 
 -- | Encode a job id as its opaque handle token under the table's
 -- exact salt: the high 32 bits carry the salt, the low 32 the
@@ -582,39 +865,63 @@ haskokiAsyncOpen = guardedPtr $ do
                           Just table -> do
                             enableAsyncSession table sid
                             live <- newIORef Set.empty
-                            newStablePtr (AsyncCtx env be sid table live Nothing)
+                            let ctx = AsyncCtx env be sid table live Nothing
+                            mask_ $ do
+                              sp <- newStablePtr ctx
+                              registerCtx sp table
+                              pure sp
                   _ -> closeBackend be >> pure (castPtrToStablePtr nullPtr)
   where
     openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
 
--- | Close a context through its handle slot: the winning claim
--- retires the table gate, waits out admitted borrowers, cancels
--- every live job exactly once, retires every live handle, shuts
--- the backend, frees the pointer, and nulls the slot. A racing
--- second close through the same slot claims nothing and only
--- re-nulls the slot, so the pointer frees exactly once; closing
--- a null slot is a silent no-op, so close-through-the-slot stays
--- idempotent by construction. Context pointers must otherwise
--- not be used after close (@fclose@ parity with the crypto
--- context): calls admitted before the claim run to completion
--- first, and calls arriving after it are refused.
+-- | Close a context through its handle slot: resolve the entry
+-- through the registry (no dereference before the claim), and on
+-- the winning claim wait out admitted borrowers, cancel every
+-- live job exactly once, retire every live handle, shut the
+-- backend, retire the entry to a tombstone, free the pointer,
+-- and null the slot. The dereference runs only after the winning
+-- claim, when no other thread can free the pointer — racing
+-- closes never dereference. A racing second close through the
+-- same slot claims nothing and returns without touching the
+-- slot: the owner completes teardown and nulls it, so the
+-- pointer frees exactly once. Closing a null slot is a silent
+-- no-op, and closing a retired, borrowed, or never-registered
+-- value reclaims the slot without teardown (borrowed entries are
+-- released by their Standard owner, never here), so
+-- close-through-the-slot stays idempotent by construction.
+-- Context pointers must otherwise not be used after close
+-- (@fclose@ parity with the crypto context): calls admitted
+-- before the claim run to completion first, calls that lose the
+-- claim or meet the tombstone are refused, and a pointer value
+-- the allocator reuses names its new owner (callers must not
+-- retain context values across close, exactly as with @fclose@).
 haskokiAsyncClose :: Ptr (StablePtr AsyncCtx) -> IO ()
 haskokiAsyncClose pSlot = guardedUnit $
   if pSlot == nullPtr
     then pure ()
-    else do
-      ctx <- peek pSlot
-      if isNullStable ctx
+    else mask_ $ do
+      sp <- peek pSlot
+      if isNullStable sp
         then pure ()
         else do
-          c <- deRefStablePtr ctx
-          first <- claimTableClose (acTable c)
-          if first
-            then do
-              closeClaimedCtx c
-              freeStablePtr ctx
-            else pure ()
-          poke pSlot (castPtrToStablePtr nullPtr)
+          mEntry <- lookupCtxEntry sp
+          case mEntry of
+            Just (CtxLive table) -> do
+              first <- claimTableClose table
+              if first
+                then do
+                  c <- deRefStablePtr sp
+                  closeClaimedCtx c
+                  retireCtx sp
+                  freeStablePtr sp
+                  poke pSlot (castPtrToStablePtr nullPtr)
+                else pure ()
+            -- Retired (owned or borrowed, already closed), live
+            -- borrowed (owned by Standard), or never registered
+            -- (foreign): reclaim the caller's slot, teardown
+            -- nothing. Borrowed entries never carry teardown
+            -- authority here: their table and backend are shared.
+            _ -> poke pSlot (castPtrToStablePtr nullPtr)
 
 -- | The close worker: claim the table gate, wait out admitted
 -- borrowers, then run the same drain the export runs after its
@@ -622,11 +929,14 @@ haskokiAsyncClose pSlot = guardedUnit $
 -- active joins resolve canceled, durably; sibling contexts on
 -- the same store keep theirs), drain jobs and handles, shut the
 -- backend. Only the winning claim drains; closes after teardown
--- are silent no-ops. Value-level teardown only: a 'StablePtr'
--- owner frees its own pointer separately. Exported so tests
--- assert drain state through the same worker the export calls.
+-- are silent no-ops. The claim and the teardown run under one
+-- mask, so no kill can split the claim from the teardown
+-- ownership it installs. Value-level teardown only: a
+-- 'StablePtr' owner frees its own pointer separately. Exported
+-- so tests assert drain state through the same worker the export
+-- calls.
 asyncCloseCtx :: AsyncCtx -> IO ()
-asyncCloseCtx ctx = do
+asyncCloseCtx ctx = mask_ $ do
   first <- claimTableClose (acTable ctx)
   if first
     then closeClaimedCtx ctx
@@ -634,10 +944,27 @@ asyncCloseCtx ctx = do
 
 -- | Await admitted borrowers, then drain one claimed context.
 -- Runs only on the winning close claim (see 'asyncCloseCtx' and
--- 'haskokiAsyncClose').
+-- 'haskokiAsyncClose'). An interruption aborts the quiescence
+-- wait and releases the claim (masked, so the release itself is
+-- atomic): teardown ownership transfers back instead of
+-- stranding retired-but-undrained, and a retrying close
+-- re-claims and completes. Once the wait succeeds, the drain
+-- runs uninterruptibly — a kill can only land in the wait (where
+-- it releases) or after the drain (where teardown is done) —
+-- never mid-drain.
 closeClaimedCtx :: AsyncCtx -> IO ()
-closeClaimedCtx ctx = do
-  awaitTableQuiescent (acTable ctx)
+closeClaimedCtx ctx = mask $ \restore ->
+  (do restore (awaitTableQuiescent (acTable ctx))
+      uninterruptibleMask_ (drainClaimedCtx ctx))
+    `onException` mask_ (releaseTableClose (acTable ctx))
+
+-- | Drain one claimed context after its borrowers are gone:
+-- retire this table's detach attachments, drain its live jobs
+-- and handles, shut the backend. Runs only from
+-- 'closeClaimedCtx', after a successful quiescence wait, under
+-- an uninterruptible mask.
+drainClaimedCtx :: AsyncCtx -> IO ()
+drainClaimedCtx ctx = do
   case acDetach ctx of
     Nothing -> pure ()
     Just dc -> do
@@ -1115,7 +1442,11 @@ haskokiAsyncOpenOn box = guardedPtr $
                                   Just table -> do
                                     enableAsyncSession table sid
                                     live <- newIORef Set.empty
-                                    newStablePtr (AsyncCtx env be sid table live (Just (sbDetach b)))
+                                    let ctx = AsyncCtx env be sid table live (Just (sbDetach b))
+                                    mask_ $ do
+                                      sp <- newStablePtr ctx
+                                      registerCtx sp table
+                                      pure sp
                           _ -> closeBackend be >> pure (castPtrToStablePtr nullPtr)
   where
     openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
@@ -1155,7 +1486,8 @@ haskokiAsyncGetId ctx h (CULong func) pIdOut = withCtx ctx $ \c ->
 -- code with a null handle. An undersized capacity additionally
 -- reports its sizing through the need out-pointer (which may be
 -- NULL). A null handle out-pointer refuses without joining. The
--- handle handoff runs protected (see 'joinTransfer').
+-- acquisition and the handle handoff run under one protected
+-- ownership protocol (see 'joinAcquireTransfer').
 haskokiAsyncJoin
   :: StablePtr AsyncCtx -> CULong -> CULong -> CULong -> CULong
   -> Ptr (StablePtr JobHandle) -> Ptr Word64 -> IO CULong
@@ -1170,27 +1502,12 @@ haskokiAsyncJoin ctx (CULong pid) (CULong func) hSession (CULong cap)
           Nothing -> refuse pHandleOut (rvOf CKR_SESSION_HANDLE_INVALID)
           Just sid -> case codeJobFunction func of
             Nothing -> refuse pHandleOut (rvOf CKR_ARGUMENTS_BAD)
-            Just jfunc -> do
-              out <- joinJob dc (acEnv c) (acTable c) JoinRequest
-                { jqPid = pid
-                , jqFunction = jfunc
-                , jqSession = sid
-                , jqCapacity = cap
-                }
-              case out of
-                JoinOk jid
-                  | jobIdExhausted jid -> mask_ $ do
-                      -- Cancel through the detach wrapper so the
-                      -- durable attachment resolves canceled too;
-                      -- masked like the transfer so a kill cannot
-                      -- strand the fresh job mid-cancel.
-                      _ <- cancelThrough c jid
-                      refuse pHandleOut (rvOf CKR_HOST_MEMORY)
-                  | otherwise -> joinTransfer (pure ()) c jid pHandleOut
-                JoinShort need -> do
-                  if pNeedOut /= nullPtr then poke pNeedOut need else pure ()
-                  refuse pHandleOut (rvOf CKR_BUFFER_TOO_SMALL)
-                other -> refuse pHandleOut (rvOf (joinCode other))
+            Just jfunc -> joinAcquireTransfer (pure ()) dc c JoinRequest
+              { jqPid = pid
+              , jqFunction = jfunc
+              , jqSession = sid
+              , jqCapacity = cap
+              } pHandleOut pNeedOut
 
 -- | Transfer a joined job's handle to the caller as a single
 -- protected step: the test-only hook runs restored before the
@@ -1215,3 +1532,42 @@ joinTransfer hook c jid pHandleOut = mask $ \restore ->
     abandon = mask_ $ do
       _ <- cancelThrough c jid
       poke pHandleOut (castPtrToStablePtr nullPtr)
+
+-- | Acquire a join and transfer its handle to the caller under one
+-- exception-safe ownership protocol: the acquisition runs masked
+-- end to end (its inner restores inherit the mask, so a pending
+-- kill waits out the pure commit boundary instead of landing
+-- between the commit and the handoff's cleanup), and the
+-- committed 'JoinOk' crosses to the handoff's cleanup ownership
+-- while still masked — the first unmasking past the commit runs
+-- under 'joinTransfer' (whose cleanup cancels through the detach
+-- wrapper and nulls the out-pointer) rather than stranding a
+-- committed attachment with no handle. Blocking points inside
+-- the acquisition (test hooks) stay interruptible with the
+-- acquisition's own cleanup installed, and a kill there only
+-- nulls the untouched out-pointer on top of that cleanup. An
+-- exhausted fresh id cancels through the detach wrapper the
+-- same way; every other outcome refuses typed with a null
+-- handle, reporting sizing through the need out-pointer (which
+-- may be NULL) on the short path.
+joinAcquireTransfer
+  :: IO () -> DetachCtx -> AsyncCtx -> JoinRequest
+  -> Ptr (StablePtr JobHandle) -> Ptr Word64 -> IO CULong
+joinAcquireTransfer hook dc c req pHandleOut pNeedOut =
+  mask_ $ do
+    out <- joinJob dc (acEnv c) (acTable c) req
+      `onException` mask_ (poke pHandleOut (castPtrToStablePtr nullPtr))
+    case out of
+      JoinOk jid
+        | jobIdExhausted jid -> mask_ $ do
+            -- Cancel through the detach wrapper so the durable
+            -- attachment resolves canceled too; masked like the
+            -- transfer so a kill cannot strand the fresh job
+            -- mid-cancel.
+            _ <- cancelThrough c jid
+            refuse pHandleOut (rvOf CKR_HOST_MEMORY)
+        | otherwise -> joinTransfer hook c jid pHandleOut
+      JoinShort need -> do
+        if pNeedOut /= nullPtr then poke pNeedOut need else pure ()
+        refuse pHandleOut (rvOf CKR_BUFFER_TOO_SMALL)
+      other -> refuse pHandleOut (rvOf (joinCode other))

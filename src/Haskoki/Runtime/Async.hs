@@ -172,6 +172,7 @@ module Haskoki.Runtime.Async
   , enterTableUse
   , exitTableUse
   , claimTableClose
+  , releaseTableClose
   , awaitTableQuiescent
   , inspectTableGate
     -- * Detach support (snapshots, leases, seeded starts)
@@ -849,6 +850,18 @@ claimTableClose table = atomically $ do
     else do
       writeTVar (atGate table) (n, True)
       pure True
+
+-- | Release a close claim without teardown: the gate reopens for a
+-- later claim while the borrower count stands untouched. The close
+-- worker runs this (masked) when an interruption aborts its
+-- quiescence wait, so teardown ownership transfers back instead of
+-- stranding retired-but-undrained: a retrying close re-claims and
+-- completes. Idempotent — releasing an unclaimed gate is a quiet
+-- no-op — and a single STM step, so it never blocks.
+releaseTableClose :: AsyncTable -> IO ()
+releaseTableClose table = atomically $ do
+  (n, _retired) <- readTVar (atGate table)
+  writeTVar (atGate table) (n, False)
 
 -- | Block until no admitted use remains. The wait retries in STM
 -- (no polling, no locks), so it composes with the borrower

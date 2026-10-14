@@ -1135,12 +1135,14 @@ static void case_stub(CK_FUNCTION_LIST_PTR p11) {
   EXPECT_RV(rv, CKR_FUNCTION_NOT_PARALLEL, "legacy parallel status");
   rv = p11->C_CancelFunction(DUMMY_SESSION);
   EXPECT_RV(rv, CKR_FUNCTION_NOT_PARALLEL, "legacy parallel cancel");
-  /* stub-beats-args — garbage/NULL args to stubs yield
-   * the stub code, never an argument error (uniform stub-first). */
+  /* Routed provisioning entries validate (liveness -> args ->
+   * behavior) while the remaining stubs keep stub-beats-args
+   * (uniform stub-first). */
   rv = p11->C_InitToken(99, NULL, 0xFFFFFFFFu, NULL);
-  EXPECT_RV(rv, CKR_FUNCTION_NOT_SUPPORTED, "stub-beats-args init-token");
-  rv = p11->C_SetPIN(0xFFFFFFFFu, NULL, 0, NULL, 0);
-  EXPECT_RV(rv, CKR_FUNCTION_NOT_SUPPORTED, "stub-beats-args set-pin");
+  EXPECT_RV(rv, CKR_ARGUMENTS_BAD, "routed init-token NULL PIN refuses");
+  rv = p11->C_SetPIN(0xFFFFFFFFu, (CK_UTF8CHAR_PTR)"1234", 4,
+                     (CK_UTF8CHAR_PTR)"9999", 4);
+  EXPECT_RV(rv, CKR_SESSION_HANDLE_INVALID, "routed set-pin bad session refuses");
   rv = p11->C_GetOperationState(DUMMY_SESSION, NULL, NULL);
   EXPECT_RV(rv, CKR_FUNCTION_NOT_SUPPORTED, "stub-beats-args get-operation-state");
   rv = p11->C_Finalize(NULL);

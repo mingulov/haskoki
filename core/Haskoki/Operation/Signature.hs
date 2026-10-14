@@ -18,6 +18,7 @@ a plain slot.
 -}
 module Haskoki.Operation.Signature
   ( planSignUpdate
+  , validateSignatureIn
   , planSignOneShot
   , planSignFinal
   , finishSign
@@ -47,7 +48,6 @@ import Haskoki.Operation
   , SlotKind (..)
   , StepDeny (..)
   , StepOutcome (..)
-  , appendBuffered
   , TypedError (..)
   , interpretError
   , denyOutcome
@@ -69,6 +69,8 @@ import Haskoki.Operation
   , mkActiveRecover
   , mkActiveSign
   , mkActiveVerify
+  , setBuffered
+  , validateOperationIn
   )
 import Haskoki.Output
   ( OpDisposition (..)
@@ -169,6 +171,14 @@ withRecoverSlot ops kind role = case lookupSingle ops kind of
     Nothing -> Left (mkDeny CKR_OPERATION_NOT_INITIALIZED
       "not a recovery operation")
 
+-- | Length preflight for signature accumulation: the monomorphic
+-- signature entry over the slot's buffered bytes plus the incoming
+-- part, decided from the two lengths alone through
+-- 'validateOperationIn'. Admitted bytes are the joined buffer the
+-- planners store; an over-limit pair rejects without building it.
+validateSignatureIn :: SlotCommon -> ByteString -> Either StepDeny ByteString
+validateSignatureIn sc part = validateOperationIn (bufferedOf sc) part
+
 -- ---------------------------------------------------------------------------
 -- Sign
 -- ---------------------------------------------------------------------------
@@ -192,10 +202,11 @@ runBuffer ops st kind wrap sc part = case stagedOf sc of
   Nothing -> case gateDataCall st sc of
     GateDeny d term ->
       (if term then removeSingle kind ops else ops, st, denyOutcome d)
-    GateOk st' sc' -> case appendBuffered sc' part of
+    GateOk st' sc' -> case validateSignatureIn sc' part of
       Left d -> (removeSingle kind ops, st', denyOutcome d)
-      Right sc'' ->
-        ( insertOp (wrap sc'') ops
+      Right joined ->
+        let sc'' = setBuffered joined sc'
+        in ( insertOp (wrap sc'') ops
         , st'
         , StepOutcome CKR_OK [] Nothing
             ["buffered " ++ show (BS.length part)
@@ -219,12 +230,14 @@ planSignOneShot ops st _name input = case withPlainSlot ops SlotSign of
       | otherwise -> case gateDataCall st sc of
           GateDeny d term ->
             (if term then removeSingle SlotSign ops else ops, st, denyOutcome d)
-          GateOk st' sc' -> case appendBuffered sc' input of
+          GateOk st' sc' -> case validateSignatureIn sc' input of
             Left d -> (removeSingle SlotSign ops, st', denyOutcome d)
-            Right sc'' -> case rawFloorDeny sc'' (BS.length (bufferedOf sc'')) of
-              Just d -> (removeSingle SlotSign ops, st', denyOutcome d)
-              Nothing ->
-                ( insertOp (mkActiveSign sc'') ops
+            Right joined ->
+              let sc'' = setBuffered joined sc'
+              in case rawFloorDeny sc'' (BS.length (bufferedOf sc'')) of
+                Just d -> (removeSingle SlotSign ops, st', denyOutcome d)
+                Nothing ->
+                  ( insertOp (mkActiveSign sc'') ops
                 , st'
                 , StepOutcome CKR_OK
                     [FxSign (commonMech sc'') (commonKey sc'') (commonParams sc'')
@@ -332,12 +345,14 @@ planVerifyOneShot ops st _name input sig = case withPlainSlot ops SlotVerify of
       | otherwise -> case gateDataCall st sc of
           GateDeny d term ->
             (if term then removeSingle SlotVerify ops else ops, st, denyOutcome d)
-          GateOk st' sc' -> case appendBuffered sc' input of
+          GateOk st' sc' -> case validateSignatureIn sc' input of
             Left d -> (removeSingle SlotVerify ops, st', denyOutcome d)
-            Right sc'' -> case rawFloorDeny sc'' (BS.length (bufferedOf sc'')) of
-              Just d -> (removeSingle SlotVerify ops, st', denyOutcome d)
-              Nothing ->
-                ( insertOp (mkActiveVerify sc'') ops
+            Right joined ->
+              let sc'' = setBuffered joined sc'
+              in case rawFloorDeny sc'' (BS.length (bufferedOf sc'')) of
+                Just d -> (removeSingle SlotVerify ops, st', denyOutcome d)
+                Nothing ->
+                  ( insertOp (mkActiveVerify sc'') ops
                 , st'
                 , StepOutcome CKR_OK
                     [FxVerify (commonMech sc'') (commonKey sc'') (commonParams sc'')
@@ -452,11 +467,12 @@ planSignRecoverOneShot ops st _name input =
         | otherwise -> case gateDataCall st sc of
             GateDeny d term ->
               (if term then removeSingle SlotSign ops else ops, st, denyOutcome d)
-            GateOk st' sc' -> case appendBuffered sc' input of
+            GateOk st' sc' -> case validateSignatureIn sc' input of
               Left d -> (removeSingle SlotSign ops, st', denyOutcome d)
-              Right sc'' ->
-                ( insertOp
-                    (mkActiveRecover RoleSignRecover sc'' spec) ops
+              Right joined ->
+                let sc'' = setBuffered joined sc'
+                in ( insertOp
+                       (mkActiveRecover RoleSignRecover sc'' spec) ops
                 , st'
                 , StepOutcome CKR_OK
                     [FxSignRecover (commonMech sc'') (commonKey sc'') (commonParams sc'')
@@ -568,11 +584,12 @@ planVerifyRecoverOneShot ops st _name sig =
         | otherwise -> case gateDataCall st sc of
             GateDeny d term ->
               (if term then removeSingle SlotVerify ops else ops, st, denyOutcome d)
-            GateOk st' sc' -> case appendBuffered sc' sig of
+            GateOk st' sc' -> case validateSignatureIn sc' sig of
               Left d -> (removeSingle SlotVerify ops, st', denyOutcome d)
-              Right sc'' ->
-                ( insertOp
-                    (mkActiveRecover RoleVerifyRecover sc'' spec) ops
+              Right joined ->
+                let sc'' = setBuffered joined sc'
+                in ( insertOp
+                       (mkActiveRecover RoleVerifyRecover sc'' spec) ops
                 , st'
                 , StepOutcome CKR_OK
                     [FxVerifyRecover (commonMech sc'') (commonKey sc'') (commonParams sc'')

@@ -292,14 +292,14 @@
       ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A07",
         "A08",
         "A09",
         "A15"
       ],
-      "entry": "none",
+      "entry": "planCall:F_InitToken",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -309,18 +309,23 @@
       ],
       "name": "C_InitToken",
       "ordinal_3_2": 10,
-      "reason": "no C_InitToken planning; token setup exists only as the Ctl scenario fixture.load step",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_provisioning.c"
+        }
+      ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A07",
         "A08",
         "A09",
         "A15"
       ],
-      "entry": "none",
+      "entry": "planCall:F_InitPIN",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -330,18 +335,23 @@
       ],
       "name": "C_InitPIN",
       "ordinal_3_2": 11,
-      "reason": "no PIN planning in the model; ABI layout only",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_provisioning.c"
+        }
+      ]
     },
     {
-      "contract": "unsupported-with-reason",
+      "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A07",
         "A08",
         "A09",
         "A15"
       ],
-      "entry": "none",
+      "entry": "planCall:F_SetPIN",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -351,8 +361,13 @@
       ],
       "name": "C_SetPIN",
       "ordinal_3_2": 12,
-      "reason": "no PIN planning in the model; ABI layout only",
-      "test_evidence": []
+      "reason": null,
+      "test_evidence": [
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_provisioning.c"
+        }
+      ]
     },
     {
       "contract": "planned-with-behavior",

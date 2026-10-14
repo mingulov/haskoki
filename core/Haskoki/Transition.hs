@@ -29,6 +29,7 @@ module Haskoki.Transition
   ) where
 
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BC8
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, isNothing)
 
@@ -169,19 +170,23 @@ import Haskoki.Rules (Rules (..))
 import Haskoki.Session
   ( ActiveLogin (..)
   , AdmitDeny (..)
+  , EffectivePolicy (epMaxPinAttempts)
   , LoginKind (..)
   , LoginOutcome (..)
+  , PinCheck (..)
   , SessionLogin (..)
-  , TokenAuth (taLogin, taUserLocked)
+  , TokenAuth (taLogin, taSoAttempts, taSoLocked, taUserAttempts, taUserLocked)
   , admitCode
   , admitObjects
   , admitSession
   , closeSessionAuth
   , denyCode
+  , effectivePolicy
   , loginAttempt
   , logoutToken
   , parseLoginArgs
   , parseOpenArgs
+  , tokenAuthNew
   )
 import Haskoki.Types
   ( ExternalHandle (..)
@@ -206,6 +211,14 @@ planCall rules model req = case reqFunction req of
   F_CloseSession -> withSession $ \st -> planCloseSession model st
   F_Login -> withSession $ \st -> planLogin rules model req st
   F_Logout -> withSession $ \st -> planLogout model st
+  -- Provisioning lifecycle (pure auth/object half only): the new
+  -- PIN bytes NEVER ride 'reqInput' (they would render through
+  -- 'Show') — the FFI commits them as a durable credential
+  -- fragment alongside the published delta. InitToken is
+  -- slot-scoped (no session); InitPIN/SetPIN are session-scoped.
+  F_InitToken -> planInitToken model req
+  F_InitPIN -> withSession $ planInitPin model
+  F_SetPIN -> withSession $ \st -> planSetPin rules model req st
   F_SessionCancel -> withSession $ planSessionCancel req
   -- Legacy-bytes compat decode (see F_CreateObject).
   F_DigestInit -> withSession $ planInitCompat rules model req InitDigest
@@ -757,6 +770,211 @@ logoutTransition model slot auth' =
         ]
   in (ops, releases)
 
+-- | Plan InitToken: the pure half of token reinitialization —
+-- fresh authentication state ('tokenAuthNew': public, epoch
+-- zero, counters zero, nothing locked) plus the destruction of
+-- every object on the slot. Handles bound to destroyed objects
+-- stale-mark through 'publishDelta' automatically, so no
+-- invalidated handle can resurrect. The durable half (token-row
+-- replacement with the bumped generation and new label, owned
+-- job drops, the new SO credential) commits alongside this
+-- delta on the FFI's gate-held path; the new PIN bytes never
+-- ride the request.
+--
+-- Precondition: zero sessions on the slot. The FFI enforces it
+-- (a snapshot pre-check plus a gate-held re-check, both
+-- answering the FFI-owned @CKR_SESSION_EXISTS@): the core has
+-- no slot universe for that code, the slot-scoped FFI
+-- precedent, so the planner takes the precondition as given.
+-- With zero sessions the login is necessarily already clear
+-- (last-session-close logout), but the plan overwrites with
+-- fresh state unconditionally rather than asserting it.
+planInitToken :: Model -> Request -> PlanResult
+planInitToken model req =
+  case parseInitTokenArgs (reqInput req) of
+    Nothing -> badArgs "malformed init-token arguments"
+    Just slot -> case lookupTokenAuth model slot of
+      Nothing -> Reject Rejection
+        { rejCode = CKR_TOKEN_NOT_PRESENT
+        , rejOutputs = []
+        , rejDelta = StateDelta []
+        , rejReleases = []
+        , rejReasons = ["no token in slot"]
+        }
+      Just _ ->
+        let destroys =
+              [ DeltaDestroyObject oid
+              | (oid, ost) <- Map.toAscList (mObjects model)
+              , osSlot ost == slot
+              ]
+        in Immediate PreparedCommit
+          { pcCode = CKR_OK
+          , pcDelta = StateDelta (DeltaSetTokenAuth slot tokenAuthNew : destroys)
+          , pcPersist = []
+          , pcOutputs = []
+          , pcReleases = []
+          , pcReasons = ["token reinitialized"]
+          }
+
+-- | Decode InitToken arguments: @slot=\<nat\>@.
+parseInitTokenArgs :: BS.ByteString -> Maybe SlotId
+parseInitTokenArgs bs = do
+  rest <- BS.stripPrefix (BC8.pack "slot=") bs
+  n <- parseNat rest
+  pure (SlotId n)
+
+-- | Parse a non-negative decimal integer; rejects empty and
+-- non-digit input (the 'Haskoki.Session' reader precedent,
+-- which this module cannot reuse: it is not exported).
+parseNat :: BS.ByteString -> Maybe Int
+parseNat bs
+  | BS.null bs = Nothing
+  | BC8.all (`elem` ['0' .. '9']) bs =
+      case BC8.readInt bs of
+        Just (n, rest) | BS.null rest, n >= 0 -> Just n
+        _ -> Nothing
+  | otherwise = Nothing
+
+-- | Plan InitPIN: the SO sets the user PIN. Requires a
+-- read/write SO session (the session-state rule: a read-only
+-- session, or any non-SO session, refuses with
+-- 'CKR_USER_NOT_LOGGED_IN' and no mutation — a read-only
+-- session observes as public while the SO is logged in
+-- elsewhere, exactly like the reference state machine). A
+-- grant resets the user attempt counter and clears the user
+-- lock (SO recovery: the locked-out user serves again once
+-- the SO sets a fresh PIN); the SO half, the login, and the
+-- epoch are untouched. The new user PIN bytes commit as the
+-- durable credential fragment alongside this delta; the
+-- length check lives on the FFI (it owns the PIN bytes and
+-- the @CKR_PIN_LEN_RANGE@ code).
+planInitPin :: Model -> SessionState -> PlanResult
+planInitPin model st =
+  let slot = ssSlot st
+  in case lookupTokenAuth model slot of
+    Nothing -> Reject Rejection
+      { rejCode = CKR_TOKEN_NOT_PRESENT
+      , rejOutputs = []
+      , rejDelta = StateDelta []
+      , rejReleases = []
+      , rejReasons = ["no token in slot"]
+      }
+    Just auth
+      | ssReadOnly st || ssLogin st /= LoginSO -> Reject Rejection
+          { rejCode = CKR_USER_NOT_LOGGED_IN
+          , rejOutputs = []
+          , rejDelta = StateDelta []
+          , rejReleases = []
+          , rejReasons = ["init-pin requires a read/write SO session"]
+          }
+      | otherwise ->
+          let auth' = auth { taUserAttempts = 0, taUserLocked = False }
+              ops = [DeltaSetTokenAuth slot auth' | auth' /= auth]
+          in Immediate PreparedCommit
+            { pcCode = CKR_OK
+            , pcDelta = StateDelta ops
+            , pcPersist = []
+            , pcOutputs = []
+            , pcReleases = []
+            , pcReasons = ["user PIN initialized"]
+            }
+
+-- | Plan SetPIN: the session's role changes its own PIN. The
+-- request reuses the login-argument shape (@user:ok|bad@,
+-- @so:ok|bad@: role plus the FFI's old-PIN verdict — never the
+-- PIN bytes); a context kind refuses (a one-operation grant
+-- never changes credentials). The role comes from the SESSION
+-- state, exactly like the reference state machine: a
+-- read/write SO session changes the SO PIN, while a
+-- read/write public, user, or context-acting-for-user session
+-- changes the user PIN (the old PIN authenticates, so no
+-- login is required); a read-only session refuses with
+-- 'CKR_SESSION_READ_ONLY'. Check order: read-only first,
+-- then the kind must agree with the session role (a
+-- contradiction refuses with 'CKR_ARGUMENTS_BAD' — the FFI
+-- never sends one), then a locked role denies with
+-- 'CKR_PIN_LOCKED' (consuming nothing), then the verdict
+-- decides. A wrong
+-- old PIN bumps the role counter and locks deterministically
+-- at the policy limit (a SetPIN strike counts exactly like a
+-- login strike); a correct old PIN resets the role counter
+-- (never unlocking a locked role — unreachable here, since
+-- locked denies above). The new PIN bytes commit as the
+-- durable credential fragment alongside this delta. Sessions
+-- stay logged in: a PIN change, granted or denied, never logs
+-- the token out.
+planSetPin :: Rules -> Model -> Request -> SessionState -> PlanResult
+planSetPin rules model req st =
+  case parseLoginArgs (reqInput req) of
+    Nothing -> badArgs "malformed set-pin arguments"
+    Just (kind, _, pin) -> case kind of
+      LoginAsContext -> badArgs "context sessions never change PINs"
+      _ ->
+        let slot = ssSlot st
+        in case lookupTokenAuth model slot of
+          Nothing -> Reject Rejection
+            { rejCode = CKR_TOKEN_NOT_PRESENT
+            , rejOutputs = []
+            , rejDelta = StateDelta []
+            , rejReleases = []
+            , rejReasons = ["no token in slot"]
+            }
+          Just auth ->
+            let limit = epMaxPinAttempts (effectivePolicy rules)
+                kindIsSO = case kind of
+                  LoginAsSO -> True
+                  _ -> False
+                (roleLocked, roleAttempts) = case kind of
+                  LoginAsSO -> (taSoLocked auth, taSoAttempts auth)
+                  _ -> (taUserLocked auth, taUserAttempts auth)
+            in if ssReadOnly st
+              then Reject Rejection
+                { rejCode = CKR_SESSION_READ_ONLY
+                , rejOutputs = []
+                , rejDelta = StateDelta []
+                , rejReleases = []
+                , rejReasons = ["set-pin needs a read/write session"]
+                }
+              else if kindIsSO /= (ssLogin st == LoginSO)
+                then badArgs "set-pin role contradicts the session login"
+                else if roleLocked
+                  then Reject Rejection
+                    { rejCode = CKR_PIN_LOCKED
+                    , rejOutputs = []
+                    , rejDelta = StateDelta []
+                    , rejReleases = []
+                    , rejReasons = ["set-pin denied: role locked"]
+                    }
+                  else case pin of
+                    PinIncorrect ->
+                      let n' = roleAttempts + 1
+                          code = if n' >= limit then CKR_PIN_LOCKED else CKR_PIN_INCORRECT
+                          auth' = case kind of
+                            LoginAsSO -> auth
+                              { taSoAttempts = n', taSoLocked = n' >= limit }
+                            _ -> auth
+                              { taUserAttempts = n', taUserLocked = n' >= limit }
+                      in Reject Rejection
+                        { rejCode = code
+                        , rejOutputs = []
+                        , rejDelta = StateDelta [DeltaSetTokenAuth slot auth']
+                        , rejReleases = []
+                        , rejReasons = ["set-pin denied: old PIN incorrect"]
+                        }
+                    PinCorrect ->
+                      let auth' = case kind of
+                            LoginAsSO -> auth { taSoAttempts = 0 }
+                            _ -> auth { taUserAttempts = 0 }
+                          ops = [DeltaSetTokenAuth slot auth' | auth' /= auth]
+                      in Immediate PreparedCommit
+                        { pcCode = CKR_OK
+                        , pcDelta = StateDelta ops
+                        , pcPersist = []
+                        , pcOutputs = []
+                        , pcReleases = []
+                        , pcReasons = ["PIN changed"]
+                        }
+
 -- | Handles bound to live private objects on a slot, ascending.
 privateHandlesOnSlot :: Model -> SlotId -> [ExternalHandle]
 privateHandlesOnSlot model slot =
@@ -1286,6 +1504,9 @@ runFinisher step res = case csFunction step of
   F_SignUpdate -> Nothing
   F_VerifyInit -> Nothing
   F_VerifyRecoverInit -> Nothing
+  F_InitToken -> Nothing
+  F_InitPIN -> Nothing
+  F_SetPIN -> Nothing
   F_VerifyUpdate -> Nothing
   F_EncryptInit -> Nothing
   F_EncryptUpdate -> go finishCipherUpdate

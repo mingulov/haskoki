@@ -133,6 +133,7 @@ spec = testGroup "operation snapshots"
   , testCase "recovery lengths reject, target untouched" caseRecoverGeometry
   , testCase "message spec presence rejects, target untouched" caseMessagePresence
   , testCase "dual spec mutations reject, target untouched" caseDualGeometry
+  , testCase "restored buffers preflight the next update" casePreflightRestoredBuffer
   ]
 
 sha256Mech :: MechanismId
@@ -1260,3 +1261,33 @@ caseDualGeometry = do
   rejects "dual block 0" (CipherSpec 0 False)
   rejects "dual block 1025" (CipherSpec 1025 False)
   rejects "dual padded 256" (CipherSpec 256 True)
+
+-- | A restored cipher slot keeps its buffer bound: one byte past
+-- the restored buffer terminates the next update, while a total
+-- exactly at the bound still plans.
+casePreflightRestoredBuffer :: IO ()
+casePreflightRestoredBuffer = do
+  stFull <- restoreCipherBuffer (BS.replicate maxBuffered 0x41)
+  let (opsF, _, over) = planCipherUpdate (ssOps stFull) stFull SlotEncrypt
+        (BS.singleton 0x42) Nothing
+  assertEqual "past-bound restored code" CKR_ARGUMENTS_BAD (soCode over)
+  assertEqual "past-bound restored terminates" [] (activeSlots opsF)
+  stRoom <- restoreCipherBuffer (BS.replicate (maxBuffered - 1) 0x41)
+  let (_, _, u1) = planCipherUpdate (ssOps stRoom) stRoom SlotEncrypt
+        (BS.singleton 0x42) Nothing
+  assertEqual "boundary restored plans" CKR_OK (soCode u1)
+  where
+    restoreCipherBuffer :: BS.ByteString -> IO SessionState
+    restoreCipherBuffer buf = do
+      let sc = setBuffered buf
+            (mkSlotCommon aesCbcMech OpEncrypt (Just (ObjectId 9))
+              "0123456789abcdef" AuthNone)
+          stA = (mkSession (SessionId 1))
+            { ssOps = insertOp
+                (mkActiveCipher DirEncrypt sc (CipherSpec 16 False)) emptySessionOps }
+      bytes <- expectSaved modelWithAesKey stA Pkcs11_3_2 (SaveSlot SlotEncrypt)
+      case restoreOperation defaultQuotas modelWithAesKey
+          (mkSession (SessionId 2)) Pkcs11_3_2
+          (RestoreSingle (Just keyHandle)) bytes of
+        Left err -> assertFailure ("restore failed: " ++ show err) >> undefined
+        Right s -> pure s

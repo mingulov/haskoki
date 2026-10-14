@@ -36,6 +36,7 @@ import Haskoki.Operation
   , InitArgs (..)
   , InitOutcome (..)
   , KeyPolicy (..)
+  , MsgFamily (..)
   , OpAuth (..)
   , OpEnv (..)
   , RecoverSpec (..)
@@ -61,19 +62,23 @@ import Haskoki.Operation
   , hasSingleAuthPendingOp
   , hasStreamed
   , initDualOperation
+  , initMessageOperation
   , initOperation
   , insertOp
   , lookupSingle
+  , maxBuffered
   , mkActiveCipher
   , mkActiveDigest
   , mkSlotCommon
   , retryStaged
+  , sdReason
   , setCommonAuth
   , setLive
   , streamOf
   , slotAuth
   , validCipherSpec
   , validRecoverSpec
+  , validateOperationIn
   )
 import Haskoki.Operation.Cipher
   ( cipherUpdateSplit
@@ -84,6 +89,7 @@ import Haskoki.Operation.Cipher
   , planCipherFinal
   , planCipherOneShot
   , planCipherUpdate
+  , validateCipherIn
   )
 import Haskoki.Operation.Dual
   ( dualAuth
@@ -99,6 +105,14 @@ import Haskoki.Operation.Digest
   , planDigestOneShot
   , planDigestUpdate
   )
+import Haskoki.Operation.Message
+  ( MsgBegin (..)
+  , MsgNext (..)
+  , messageBuffered
+  , planMessageBegin
+  , planMessageNext
+  , validateMessageIn
+  )
 import Haskoki.Operation.Signature
   ( finishSign
   , finishSignRecover
@@ -112,6 +126,7 @@ import Haskoki.Operation.Signature
   , planVerifyOneShot
   , planVerifyRecoverOneShot
   , planVerifyUpdate
+  , validateSignatureIn
   )
 import Haskoki.Outcome (ResourceRelease (..))
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
@@ -213,6 +228,13 @@ spec = testGroup "operation lifecycles"
   , testCase "dual short-output retry replays pending only" caseDualShortRetry
   , testCase "dual failure terminates" caseDualFailure
   , testCase "dual consumes the grant at first update" caseDualAuth
+  , testCase "preflight admits and rejects from lengths alone" casePreflightLengths
+  , testCase "preflight rejects oversized cipher updates first" casePreflightCipherUpdate
+  , testCase "preflight admits exact-boundary cipher one-shot" casePreflightCipherOneShot
+  , testCase "preflight bounds sign updates past the bound" casePreflightSignUpdate
+  , testCase "preflight rejects oversized verify one-shot" casePreflightVerifyOneShot
+  , testCase "preflight bounds message parts; outer survives" casePreflightMessageNext
+  , testCase "preflight rejects oversized dual update" casePreflightDualUpdate
   ]
 
 -- ---------------------------------------------------------------------------
@@ -2446,3 +2468,173 @@ caseDualAuth = do
   assertEqual "grant consumed" LoginUser (ssLogin st1)
   assertEqual "dual satisfied" (Just AuthSatisfied) (dualAuth ops1)
   assertEqual "both buffered" (Just (6, 6)) (dualBuffered ops1)
+
+-- ---------------------------------------------------------------------------
+-- Part D: accumulation length preflight
+-- ---------------------------------------------------------------------------
+
+-- | The shared accumulation refusal pins its historic code and
+-- reason, so every preflighted entry point keeps its disposition.
+assertBoundDenied :: String -> Either StepDeny ByteString -> IO ()
+assertBoundDenied label res = case res of
+  Left d -> do
+    assertEqual (label ++ " code") CKR_ARGUMENTS_BAD (sdCode d)
+    assertEqual (label ++ " reason")
+      "multipart input exceeds the buffer bound" (sdReason d)
+  Right _ -> assertFailure (label ++ ": admitted over-limit input")
+
+-- | The shared preflight admits exactly the pairs whose joined
+-- bytes fit the bound: empty pairs, exact-boundary pairs, and a
+-- full buffer with an empty part admit with the joined bytes; any
+-- pair past the bound rejects with the pinned refusal.
+casePreflightLengths :: IO ()
+casePreflightLengths = do
+  case validateOperationIn BS.empty BS.empty of
+    Right joined -> assertEqual "empty joins empty" BS.empty joined
+    Left d -> assertFailure ("empty pair rejected: " ++ show d)
+  let nearFull = BS.replicate (maxBuffered - 1) 0x41
+  case validateOperationIn nearFull (BS.singleton 0x42) of
+    Right joined -> do
+      assertEqual "boundary length" maxBuffered (BS.length joined)
+      assertEqual "boundary bytes" (nearFull <> BS.singleton 0x42) joined
+    Left d -> assertFailure ("boundary pair rejected: " ++ show d)
+  case validateOperationIn (BS.replicate maxBuffered 0x41) BS.empty of
+    Right joined ->
+      assertEqual "full buffer with empty part" maxBuffered (BS.length joined)
+    Left d -> assertFailure ("full buffer with empty part rejected: " ++ show d)
+  assertBoundDenied "one past the bound" $
+    validateOperationIn (BS.replicate maxBuffered 0x41) (BS.singleton 0x42)
+  assertBoundDenied "oversized part on empty buffer" $
+    validateOperationIn BS.empty (BS.replicate (maxBuffered + 1) 0)
+  assertBoundDenied "oversized pair" $
+    validateOperationIn (BS.replicate maxBuffered 0x41)
+      (BS.replicate maxBuffered 0x42)
+  -- Each monomorphic family entry decides identically: the cipher
+  -- and message entries reject an over-limit pair, the signature
+  -- entry admits the empty pair.
+  let sc0 = mkSlotCommon aesCbcMech OpEncrypt Nothing BS.empty AuthNone
+  case validateCipherIn sc0 (BS.replicate (maxBuffered + 1) 0) of
+    Left d -> assertEqual "cipher entry code" CKR_ARGUMENTS_BAD (sdCode d)
+    Right _ -> assertFailure "cipher entry admitted over-limit input"
+  case validateSignatureIn sc0 BS.empty of
+    Right joined -> assertEqual "signature entry admits empty" BS.empty joined
+    Left d -> assertFailure ("signature entry rejected empty: " ++ show d)
+  case validateMessageIn (BS.replicate maxBuffered 0x41) (BS.singleton 0x42) of
+    Left d -> assertEqual "message entry code" CKR_ARGUMENTS_BAD (sdCode d)
+    Right _ -> assertFailure "message entry admitted over-limit input"
+
+-- | An over-limit cipher update terminates the slot, and the bound
+-- refusal still precedes the short-buffer check: a zero-cap intent
+-- reports the bound denial, not BUFFER_TOO_SMALL. Both directions
+-- share the entry point.
+casePreflightCipherUpdate :: IO ()
+casePreflightCipherUpdate = do
+  let huge = BS.replicate (maxBuffered + 1) 0
+      (ops0, _) = initOperation testEnv emptySessionOps testSession encryptArgs
+      (ops1, _, over) = planCipherUpdate ops0 testSession SlotEncrypt huge Nothing
+  assertEqual "oversize update code" CKR_ARGUMENTS_BAD (soCode over)
+  assertEqual "oversize update terminates" [] (activeSlots ops1)
+  let (ops2, _, capped) = planCipherUpdate ops0 testSession SlotEncrypt huge
+        (Just (IntentBuffer 0))
+  assertEqual "bound precedes the cap check" CKR_ARGUMENTS_BAD (soCode capped)
+  assertEqual "capped oversize terminates" [] (activeSlots ops2)
+  let (ops3, _) = initOperation testEnv emptySessionOps testSession decryptArgs
+      (ops4, _, overD) = planCipherUpdate ops3 testSession SlotDecrypt huge Nothing
+  assertEqual "oversize decrypt code" CKR_ARGUMENTS_BAD (soCode overD)
+  assertEqual "oversize decrypt terminates" [] (activeSlots ops4)
+
+-- | An exact-boundary cipher one-shot plans normally and stages
+-- through the short-buffer dialogue: the preflight admit feeds the
+-- unchanged stage/retry path. One byte past the bound terminates
+-- instead.
+casePreflightCipherOneShot :: IO ()
+casePreflightCipherOneShot = do
+  let full = BS.replicate maxBuffered 0x41
+      (ops0, _) = initOperation testEnv emptySessionOps testSession encryptArgs
+      (ops1, _, one) = planCipherOneShot ops0 testSession SlotEncrypt "ct" full
+  assertEqual "boundary one-shot plans" CKR_OK (soCode one)
+  assertEqual "boundary plans one effect" 1 (length (soEffects one))
+  let (ops2, short) = finishCipher ops1 SlotEncrypt "ct"
+        (GotBytes (BS.replicate 32 0xAB)) (IntentBuffer 2)
+  assertEqual "short buffer stages" CKR_BUFFER_TOO_SMALL (soCode short)
+  let (ops3, retry) = retryStaged ops2 SlotEncrypt (IntentBuffer 64)
+  assertEqual "retry completes" CKR_OK (soCode retry)
+  assertEqual "retry frees the slot" [] (activeSlots ops3)
+  let (ops4, _) = initOperation testEnv emptySessionOps testSession encryptArgs
+      (ops5, _, over) = planCipherOneShot ops4 testSession SlotEncrypt "ct"
+        (BS.replicate (maxBuffered + 1) 0)
+  assertEqual "oversize one-shot code" CKR_ARGUMENTS_BAD (soCode over)
+  assertEqual "oversize one-shot terminates" [] (activeSlots ops5)
+
+-- | Sign updates buffer exactly to the bound; the next byte
+-- terminates the slot with the bound denial.
+casePreflightSignUpdate :: IO ()
+casePreflightSignUpdate = do
+  let (ops0, i0) = initOperation signEnv emptySessionOps testSession signArgs
+  assertEqual "sign init ok" CKR_OK (ioCode i0)
+  let (ops1, _, u1) = planSignUpdate ops0 testSession
+        (BS.replicate maxBuffered 0x41)
+  assertEqual "boundary sign update ok" CKR_OK (soCode u1)
+  assertEqual "boundary fills the buffer"
+    (Just maxBuffered) (bufferedLength ops1 SlotSign)
+  let (ops2, _, u2) = planSignUpdate ops1 testSession (BS.singleton 0x42)
+  assertEqual "past-bound sign code" CKR_ARGUMENTS_BAD (soCode u2)
+  assertEqual "past-bound sign terminates" [] (activeSlots ops2)
+
+-- | Verify one-shots admit exactly to the bound and terminate one
+-- byte past it.
+casePreflightVerifyOneShot :: IO ()
+casePreflightVerifyOneShot = do
+  let (ops0, i0) = initOperation signEnv emptySessionOps testSession verifyArgs
+  assertEqual "verify init ok" CKR_OK (ioCode i0)
+  let (_, _, one) = planVerifyOneShot ops0 testSession "verify"
+        (BS.replicate maxBuffered 0x41) "tag"
+  assertEqual "boundary verify plans" CKR_OK (soCode one)
+  assertEqual "boundary plans one effect" 1 (length (soEffects one))
+  let (ops2, _) = initOperation signEnv emptySessionOps testSession verifyArgs
+      (ops3, _, over) = planVerifyOneShot ops2 testSession "verify"
+        (BS.replicate (maxBuffered + 1) 0) "tag"
+  assertEqual "oversize verify code" CKR_ARGUMENTS_BAD (soCode over)
+  assertEqual "oversize verify terminates" [] (activeSlots ops3)
+
+-- | Message parts buffer exactly to the bound; the next byte aborts
+-- the open message while the outer context survives for the next
+-- message.
+casePreflightMessageNext :: IO ()
+casePreflightMessageNext = do
+  let (ops0, i0) =
+        initMessageOperation MsgEncrypt testEnv emptySessionOps testSession encryptArgs
+  assertEqual "message init ok" CKR_OK (ioCode i0)
+  let beginA = MsgBegin { mbParams = BS.empty, mbAad = BS.empty }
+      (ops1, st1, _) = planMessageBegin ops0 testSession MsgEncrypt beginA
+      (ops2, st2, buffered) = planMessageNext ops1 st1 MsgEncrypt
+        (MsgNextCipher BS.empty (BS.replicate maxBuffered 0x41) False)
+  assertEqual "boundary message part ok" CKR_OK (soCode buffered)
+  assertEqual "boundary fills the message"
+    (Just maxBuffered) (messageBuffered ops2 SlotEncrypt)
+  let (ops3, st3, over) = planMessageNext ops2 st2 MsgEncrypt
+        (MsgNextCipher BS.empty (BS.singleton 0x42) False)
+  assertEqual "past-bound message code" CKR_ARGUMENTS_BAD (soCode over)
+  assertEqual "outer survives overflow" [SlotEncrypt] (activeSlots ops3)
+  assertEqual "message aborted" (Just 0) (messageBuffered ops3 SlotEncrypt)
+  let (_, _, b2) = planMessageBegin ops3 st3 MsgEncrypt beginA
+  assertEqual "begin after overflow" CKR_OK (soCode b2)
+
+-- | Dual updates buffer exactly to the bound on both sides; one
+-- byte past the bound frees the whole dual with the bound denial.
+casePreflightDualUpdate :: IO ()
+casePreflightDualUpdate = do
+  let (ops0, _) = initDualOperation testEnv emptySessionOps testSession
+        digestArgs encryptArgs
+      (ops1, _, u1) = planDualUpdate ops0 testSession
+        (BS.replicate maxBuffered 0x41)
+  assertEqual "boundary dual update ok" CKR_OK (soCode u1)
+  assertEqual "both sides fill together"
+    (Just (maxBuffered, maxBuffered)) (dualBuffered ops1)
+  let (ops2, _) = initDualOperation testEnv emptySessionOps testSession
+        digestArgs encryptArgs
+      (ops3, _, over) = planDualUpdate ops2 testSession
+        (BS.replicate (maxBuffered + 1) 0)
+  assertEqual "oversize dual code" CKR_ARGUMENTS_BAD (soCode over)
+  assertEqual "oversize dual frees" [] (activeSlots ops3)
+  assertEqual "no dual buffered" Nothing (dualBuffered ops3)

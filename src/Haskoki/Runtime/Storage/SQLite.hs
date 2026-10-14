@@ -84,6 +84,7 @@ import System.Posix.Types (Fd, ProcessID)
 
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
+  , CredentialRecord (..)
   , FaultInjector (..)
   , FaultPoint (..)
   , HandleState (..)
@@ -105,11 +106,13 @@ import Haskoki.Runtime.Storage
   , checkTokenRefs
   , coverDeletedJobIds
   , decodeAttrsDoc
+  , decodeCredentialRecord
   , decodeHex16
   , decodeJobRecord
   , decodeTokenRecord
   , defaultLimits
   , encodeAttrsDoc
+  , encodeCredentialRecord
   , encodeHex16
   , encodeHexWord64
   , encodeJobRecord
@@ -120,6 +123,7 @@ import Haskoki.Runtime.Storage
   , knownMaterialEncodings
   , nextJobReservation
   , noFaults
+  , reconcileCredentialsReload
   , reconcileJobsReload
   , reconcileReload
   , scrubDeltaAuth
@@ -129,8 +133,12 @@ import Haskoki.Runtime.Storage
 import Haskoki.Types (Generation (..), ObjectId (..), Revision (..), SlotId (..), TokenId (..))
 
 -- | The schema version this backend creates and accepts.
+-- Version 2 adds the @credentials@ table (one provisioned
+-- credential row per token); a version-1 database migrates
+-- explicitly at open ('migrateV1toV2'), and anything else
+-- refuses without writing.
 sqliteSchemaVersion :: Int
-sqliteSchemaVersion = 1
+sqliteSchemaVersion = 2
 
 -- | One open SQLite store: the connection, its guard lock, the
 -- per-handle lifecycle state, the owned paths, the held-open
@@ -703,9 +711,11 @@ removeIfOurs guardFd path = do
     _ <- tryIOError (removeLink path)
     pure ()
 
--- | Verify an existing database: all four tables present and the
--- schema version exactly ours. Anything else fails WITHOUT writing
--- a single byte. Never closes the handle (owned by 'openAndInit').
+-- | Verify an existing database: the version-1 tables present
+-- and the schema version exactly ours, or exactly its
+-- predecessor (which migrates explicitly). Anything else fails
+-- WITHOUT writing a single byte. Never closes the handle
+-- (owned by 'openAndInit').
 verifyExisting :: S.Database -> FilePath -> IO (Either StoreError S.Database)
 verifyExisting db path = do
   eTables <- queryRows db "SELECT name FROM sqlite_master WHERE type = 'table'" []
@@ -715,23 +725,62 @@ verifyExisting db path = do
       let names = [t | [S.SQLText t] <- rows]
           want = ["store_meta", "tokens", "objects", "detached_jobs"]
       if all (`elem` names) want
-        then checkVersion db path
+        then checkVersion db path names
         else pure (Left (StoreIO (path ++ ": not a haskoki store (missing tables)")))
 
--- | Check the integer schema version (exactly ours; wrong\/future
--- versions are rejected, never migrated silently — explicit
--- migrations arrive with a future format bump). Never closes the
--- handle (owned by 'openAndInit').
-checkVersion :: S.Database -> FilePath -> IO (Either StoreError S.Database)
-checkVersion db path = do
+-- | Check the integer schema version. Exactly ours proceeds (a
+-- version-2 database without its @credentials@ table is
+-- corruption, never silently repaired); exactly its predecessor
+-- migrates explicitly ('migrateV1toV2'); anything else is
+-- rejected, never migrated silently. Never closes the handle
+-- (owned by 'openAndInit').
+checkVersion :: S.Database -> FilePath -> [Text] -> IO (Either StoreError S.Database)
+checkVersion db path names = do
   eVer <- queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
   case eVer of
     Left err -> pure (Left err)
     Right [[S.SQLText v]]
-      | v == T.pack (show sqliteSchemaVersion) -> pure (Right db)
+      | v == T.pack (show sqliteSchemaVersion) ->
+          if "credentials" `elem` names
+            then pure (Right db)
+            else pure (Left (StoreCorrupt (path ++ ": schema version 2 without credentials table")))
+      | v == T.pack (show (sqliteSchemaVersion - 1)) -> migrateV1toV2 db path
       | otherwise -> pure
           (Left (StoreSchemaVersion sqliteSchemaVersion (T.unpack v)))
     Right _ -> pure (Left (StoreCorrupt (path ++ ": corrupt store metadata")))
+
+-- | Migrate a version-1 database to version 2: create the empty
+-- @credentials@ table (the exact 'schemaStatements' text, so the
+-- migrated schema matches a fresh one byte for byte in
+-- @sqlite_master@) and advance the version marker, in ONE
+-- transaction. No row is rewritten or reinterpreted: existing
+-- tokens keep serving their catalog PINs until provisioned. Any
+-- failure rolls back and refuses the open loudly, leaving the
+-- version-1 bytes intact for a retry; a hand-built version-1
+-- database that already carries a @credentials@ table refuses
+-- (the CREATE fails) rather than adopting unknown bytes. Never
+-- closes the handle (owned by 'openAndInit').
+migrateV1toV2 :: S.Database -> FilePath -> IO (Either StoreError S.Database)
+migrateV1toV2 db path = do
+  eBegin <- trySQLite (S.exec db "BEGIN IMMEDIATE")
+  case eBegin of
+    Left err -> pure (Left err)
+    Right () -> do
+      eBody <- trySQLite $ do
+        S.exec db createCredentialsTable
+        S.exec db (T.concat ["UPDATE store_meta SET value = '"
+          , T.pack (show sqliteSchemaVersion), "' WHERE key = 'schema_version'"])
+      case eBody of
+        Left err -> do
+          _ <- trySQLite (S.exec db "ROLLBACK")
+          pure (Left (StoreIO (path ++ ": schema migration 1->2 failed: " ++ show err)))
+        Right () -> do
+          eCommit <- trySQLite (S.exec db "COMMIT")
+          case eCommit of
+            Left err -> do
+              _ <- trySQLite (S.exec db "ROLLBACK")
+              pure (Left (StoreIO (path ++ ": schema migration 1->2 commit failed: " ++ show err)))
+            Right () -> verifyExisting db path
 
 -- | The schema (mirrors @spec\/storage-schema.sql@).
 schemaStatements :: [Text]
@@ -742,10 +791,19 @@ schemaStatements =
   , "CREATE INDEX objects_by_token ON objects(token_id)"
   , "CREATE TABLE detached_jobs (persistent_id_key BLOB PRIMARY KEY NOT NULL CHECK (typeof(persistent_id_key) = 'blob' AND length(persistent_id_key) = 8), token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, token_generation_key BLOB NOT NULL CHECK (typeof(token_generation_key) = 'blob' AND length(token_generation_key) = 8), function_name TEXT NOT NULL, execution_state TEXT NOT NULL CHECK (execution_state IN ('queued','ready','failed','canceled','delivered')), record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1))"
   , "CREATE INDEX jobs_by_token ON detached_jobs(token_id)"
+  , createCredentialsTable
   , "INSERT INTO store_meta(key, value) VALUES ('store_format', 'haskoki-demo-v1')"
-  , "INSERT INTO store_meta(key, value) VALUES ('schema_version', '1')"
+  , "INSERT INTO store_meta(key, value) VALUES ('schema_version', '2')"
   , "INSERT INTO store_meta(key, value) VALUES ('next_persistent_job_id', '0000000000000001')"
   ]
+
+-- | The @credentials@ table: one provisioned credential row per
+-- token, owned by its token (@ON DELETE CASCADE@, mirroring the
+-- object and job tables). Shared by fresh schemas and the
+-- version-1 migration, so both spell it identically.
+createCredentialsTable :: Text
+createCredentialsTable =
+  "CREATE TABLE credentials (token_id TEXT PRIMARY KEY NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1))"
 
 -- ---------------------------------------------------------------------------
 -- Store operations
@@ -760,6 +818,7 @@ mkStore :: SQLiteConn -> Store
 mkStore conn = Store
   { storeLoadTokens = withConn conn (pure (Left storeClosed)) loadTokens
   , storeLoadJobs = withConn conn (pure (Left storeClosed)) loadJobs
+  , storeLoadCredentials = withConn conn (pure (Left storeClosed)) loadCredentials
   , storeCommit = protocolDelta conn
   , storeResetToken = resetTokenConn conn
   , storeReserveJobId = reserveJobIdConn conn
@@ -890,6 +949,8 @@ resetEffectiveDb db tid wantGen replacement = do
                     , sdPutJobs = []
                     , sdDropJobs = pids
                     , sdPutMeta = []
+                    , sdPutCredentials = []
+                    , sdDropCredentials = [tid]
                     })
                   _ -> pure (Left (StoreCorrupt "corrupt reset ownership rows"))
               (Left err, _) -> pure (Left err)
@@ -1186,22 +1247,27 @@ protocolLocked conn db delta0 = do
           eLoaded <- loadTokens db
           eJobs <- loadJobs db
           eMeta <- loadMeta db
-          case (eLoaded, eJobs, eMeta) of
-            (Right loaded, Right jobs, Right meta)
+          eCreds <- loadCredentials db
+          case (eLoaded, eJobs, eMeta, eCreds) of
+            (Right loaded, Right jobs, Right meta, Right creds)
               | reconcileReload d loaded == ReconciledPresent
               , reconcileJobsReload d jobs == ReconciledPresent
-              , reconcileMetaReload d meta == ReconciledPresent -> do
+              , reconcileMetaReload d meta == ReconciledPresent
+              , reconcileCredentialsReload d creds == ReconciledPresent -> do
                   bumpCommits sVar
                   postCommitTail inj qVar sVar affected
-            (Right _, Right _, Right _) ->
+            (Right _, Right _, Right _, Right _) ->
               pure (NotCommitted (StoreIO "ambiguous commit resolved: delta absent"))
-            (Left err, _, _) -> do
+            (Left err, _, _, _) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)
-            (_, Left err, _) -> do
+            (_, Left err, _, _) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)
-            (_, _, Left err) -> do
+            (_, _, Left err, _) -> do
+              quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
+              pure (CommitUnknown err)
+            (_, _, _, Left err) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)
     -- After a confirmed commit, a post-commit failure quarantines
@@ -1216,13 +1282,15 @@ protocolLocked conn db delta0 = do
           quarantineTokens qVar sVar affected "post-commit failure"
           pure Committed
         else pure Committed
-    -- Drops before puts; tokens before the objects and jobs that
-    -- reference them (foreign keys stay satisfied throughout).
-    -- Token puts run staged (two phases within this transaction).
-    -- The doomed pids are read before the drops, then folded
-    -- into the job-id mark after the caller's meta puts, so a
-    -- legacy store whose mark never advanced still cannot
-    -- re-mint deleted ids once the records are gone.
+    -- Drops before puts; tokens before the objects, jobs, and
+    -- credentials that reference them (foreign keys stay
+    -- satisfied throughout). Token puts run staged (two phases
+    -- within this transaction); credential puts dedupe
+    -- first-wins (the token-row precedent). The doomed pids are
+    -- read before the drops, then folded into the job-id mark
+    -- after the caller's meta puts, so a legacy store whose
+    -- mark never advanced still cannot re-mint deleted ids once
+    -- the records are gone.
     runBody :: StoreDelta -> IO (Either StoreError [Word64])
     runBody d = do
       eDoomed <- readDoomedPids db d
@@ -1231,13 +1299,15 @@ protocolLocked conn db delta0 = do
         Right doomed -> do
           e1 <- runAll (map dropObjectStmt (sdDropObjects d))
           e2 <- runAll (map dropJobStmt (sdDropJobs d))
-          e3 <- runAll (map dropTokenStmt (sdDropTokens d))
-          e4 <- runTokenPuts (sdPutTokens d)
-          e5 <- runAll (map putObjectStmt (sdPutObjects d))
-          e6 <- runAll (map putJobStmt (sdPutJobs d))
-          e7 <- runAll (map putMetaStmt (sdPutMeta d))
-          e8 <- coverDeletedMeta db doomed
-          pure ((e1 >> e2 >> e3 >> e4 >> e5 >> e6 >> e7 >> e8) >> Right doomed)
+          e3 <- runAll (map dropCredentialStmt (sdDropCredentials d))
+          e4 <- runAll (map dropTokenStmt (sdDropTokens d))
+          e5 <- runTokenPuts (sdPutTokens d)
+          e6 <- runAll (map putObjectStmt (sdPutObjects d))
+          e7 <- runAll (map putJobStmt (sdPutJobs d))
+          e8 <- runAll (map putCredentialStmt (firstByCredential (sdPutCredentials d)))
+          e9 <- runAll (map putMetaStmt (sdPutMeta d))
+          e10 <- coverDeletedMeta db doomed
+          pure ((e1 >> e2 >> e3 >> e4 >> e5 >> e6 >> e7 >> e8 >> e9 >> e10) >> Right doomed)
       where
         runAll :: [(Text, [S.SQLData])] -> IO (Either StoreError ())
         runAll [] = pure (Right ())
@@ -1290,6 +1360,8 @@ tokensForDelta db delta = do
         ++ sdDropTokens delta
         ++ map (orToken . opRecord) (sdPutObjects delta)
         ++ map jrToken (sdPutJobs delta)
+        ++ map crToken (sdPutCredentials delta)
+        ++ sdDropCredentials delta
     -- Drops of unknown objects stay silent no-ops;
     -- only genuine query failures refuse the commit.
     ownerOf :: ObjectId -> IO (Either StoreError (Maybe TokenId))
@@ -1323,11 +1395,13 @@ validateDelta :: S.Database -> StoreLimits -> StoreDelta -> IO (Either StoreErro
 validateDelta db limits delta = do
   eLoaded <- loadTokens db
   eJobs <- loadJobs db
-  case (eLoaded, eJobs) of
-    (Left err, _) -> pure (Left err)
-    (_, Left err) -> pure (Left err)
-    (Right loaded, Right jobs) ->
-      let state = LoadedState loaded jobs
+  eCreds <- loadCredentials db
+  case (eLoaded, eJobs, eCreds) of
+    (Left err, _, _) -> pure (Left err)
+    (_, Left err, _) -> pure (Left err)
+    (_, _, Left err) -> pure (Left err)
+    (Right loaded, Right jobs, Right creds) ->
+      let state = LoadedState loaded jobs creds
           toks = [(trId t, t) | (t, _) <- loaded]
       in case checkLimits limits delta state of
         Just err -> pure (Left err)
@@ -1405,13 +1479,18 @@ quarantineTokens qVar sVar tids why = do
 -- | Authoritative reload: a clean load clears the quarantine; a
 -- failed load keeps it and reports the error. Reloads never
 -- consult the fault script. A closed handle reports closed
--- without touching the quarantine.
+-- without touching the quarantine. Credentials load alongside
+-- tokens: a corrupt credential row keeps the quarantine like a
+-- corrupt token row.
 reloadConn :: SQLiteConn -> IO (Either StoreError ())
 reloadConn conn = withConn conn (pure (Left storeClosed)) $ \db -> do
   eLoaded <- loadTokens db
-  case eLoaded of
-    Left err -> pure (Left err)
-    Right _ -> modifyMVar_ (sqQuarantine conn) (\_ -> pure []) >> pure (Right ())
+  eCreds <- loadCredentials db
+  case (eLoaded, eCreds) of
+    (Right _, Right _) ->
+      modifyMVar_ (sqQuarantine conn) (\_ -> pure []) >> pure (Right ())
+    (Left err, _) -> pure (Left err)
+    (_, Left err) -> pure (Left err)
 
 -- | Load every token with its home objects, token-id ascending,
 -- object-id ascending within each token.
@@ -1513,6 +1592,34 @@ decodeJobRow _ = Left (StoreCorrupt "corrupt job row shape")
 noteJob :: String -> Maybe a -> Either StoreError a
 noteJob col = maybe (Left (StoreCorrupt ("corrupt job record: bad " ++ col))) Right
 
+-- | Load every provisioned credential, home-token ascending. The
+-- full document decodes the record; the key column cross-checks
+-- it (the job-row precedent).
+loadCredentials :: S.Database -> IO (Either StoreError [CredentialRecord])
+loadCredentials db = do
+  eRows <- queryRows db
+    "SELECT token_id, record_json FROM credentials ORDER BY token_id" []
+  case eRows of
+    Left err -> pure (Left err)
+    Right rows -> pure (mapM decodeCredentialRow rows)
+
+-- | Decode one credential row: the document first, then the
+-- redundant key column must agree with it (any mismatch is
+-- corruption).
+decodeCredentialRow :: [S.SQLData] -> Either StoreError CredentialRecord
+decodeCredentialRow [S.SQLText tidT, S.SQLText doc] = do
+  tid <- noteCred "token_id" (decodeHex16 (T.unpack tidT))
+  rec <- noteCred "record_json" (decodeCredentialRecord (T.unpack doc))
+  _ <- if crToken rec == TokenId tid
+    then Right ()
+    else Left (StoreCorrupt "corrupt credential record: key/doc token mismatch")
+  Right rec
+decodeCredentialRow _ = Left (StoreCorrupt "corrupt credential row shape")
+
+-- | Tag a 'Maybe' credential decode with its column.
+noteCred :: String -> Maybe a -> Either StoreError a
+noteCred col = maybe (Left (StoreCorrupt ("corrupt credential record: bad " ++ col))) Right
+
 -- | Load every @store_meta@ row as key/value pairs.
 loadMeta :: S.Database -> IO (Either StoreError [(String, String)])
 loadMeta db = do
@@ -1532,8 +1639,9 @@ inspectConn :: S.Database -> IO (Either StoreError [StoredDoc])
 inspectConn db = do
   eLoaded <- loadTokens db
   eJobs <- loadJobs db
-  case (eLoaded, eJobs) of
-    (Right toks, Right jobs) -> pure $ Right $
+  eCreds <- loadCredentials db
+  case (eLoaded, eJobs, eCreds) of
+    (Right toks, Right jobs, Right creds) -> pure $ Right $
       [ StoredDoc "tokens" (show (unTokenId (trId t))) (encodeTokenRecord t)
       | (t, _) <- toks
       ]
@@ -1545,8 +1653,13 @@ inspectConn db = do
       [ StoredDoc "detached_jobs" (encodeHexWord64 (jrPersistentId j)) (encodeJobRecord j)
       | j <- jobs
       ]
-    (Left err, _) -> pure (Left err)
-    (_, Left err) -> pure (Left err)
+      ++
+      [ StoredDoc "credentials" (show (unTokenId (crToken c))) (encodeCredentialRecord c)
+      | c <- creds
+      ]
+    (Left err, _, _) -> pure (Left err)
+    (_, Left err, _) -> pure (Left err)
+    (_, _, Left err) -> pure (Left err)
 
 -- ---------------------------------------------------------------------------
 -- Statements
@@ -1566,6 +1679,35 @@ dropTokenStmt (TokenId n) =
 dropJobStmt :: Word64 -> (Text, [S.SQLData])
 dropJobStmt pid =
   ("DELETE FROM detached_jobs WHERE persistent_id_key = ?", [S.SQLBlob (encodeBlobW64 pid)])
+
+-- | DELETE one credential by home token.
+dropCredentialStmt :: TokenId -> (Text, [S.SQLData])
+dropCredentialStmt (TokenId n) =
+  ("DELETE FROM credentials WHERE token_id = ?", [S.SQLText (T.pack (encodeHex16 n))])
+
+-- | Upsert one credential row (full document plus the redundant
+-- key column, which loads cross-check). Callers dedupe
+-- first-wins ('firstByCredential'), matching the memory
+-- backend and the validated projection.
+putCredentialStmt :: CredentialRecord -> (Text, [S.SQLData])
+putCredentialStmt c =
+  ( "INSERT OR REPLACE INTO credentials (token_id, record_json, format_version) VALUES (?, ?, 1)"
+  , [ S.SQLText (T.pack (encodeHex16 (unTokenId (crToken c))))
+    , S.SQLText (T.pack (encodeCredentialRecord c))
+    ]
+  )
+
+-- | Keep the first put per home token (the 'firstByToken'
+-- precedent: the validated projection and the memory backend
+-- both resolve duplicate puts first-wins).
+firstByCredential :: [CredentialRecord] -> [CredentialRecord]
+firstByCredential = go []
+  where
+    go :: [TokenId] -> [CredentialRecord] -> [CredentialRecord]
+    go _ [] = []
+    go seen (c : rest)
+      | crToken c `elem` seen = go seen rest
+      | otherwise = c : go (crToken c : seen) rest
 
 -- | Upsert one job row (full document plus redundant key columns).
 putJobStmt :: JobRecord -> (Text, [S.SQLData])

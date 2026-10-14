@@ -65,6 +65,7 @@ import Haskoki.Outcome (DeltaOp (..), PlanResult (..), PreparedCommit (..), Stat
 import Data.Word (Word64)
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
+  , CredentialRecord (..)
   , DesiredToken (..)
   , FaultInjector
   , FaultPoint (..)
@@ -204,6 +205,12 @@ protocolCases withIdentity =
       withIdentity testAuthAmbiguousUnknown
   , testCase "auth-only post-commit failure quarantines until reload, reopen clean" $
       withIdentity testAuthPostCommit
+  , testCase "credential pre-commit failure keeps persisted rows" $
+      withIdentity testCredentialPreCommit
+  , testCase "credential post-commit failure quarantines until reload" $
+      withIdentity testCredentialPostCommit
+  , testCase "quarantined token refuses credential writes" $
+      withIdentity testCredentialQuarantine
   ]
 
 -- | The pre-commit limit cases every backend runs.
@@ -280,6 +287,10 @@ testDeltaClasses = do
     (deltaClasses emptyDelta { sdDropJobs = [9] })
   assertEqual "meta puts" [DeltaMetaPut]
     (deltaClasses emptyDelta { sdPutMeta = [("mark", "1")] })
+  assertEqual "credential puts" [DeltaCredentialsPut]
+    (deltaClasses emptyDelta { sdPutCredentials = [demoCred] })
+  assertEqual "credential drops" [DeltaCredentialsDrop]
+    (deltaClasses emptyDelta { sdDropCredentials = [TokenId 1] })
   let full = emptyDelta
         { sdPutTokens = [tok]
         , sdDropTokens = [TokenId 2]
@@ -288,9 +299,13 @@ testDeltaClasses = do
         , sdPutJobs = [job]
         , sdDropJobs = [10]
         , sdPutMeta = [("mark", "1")]
+        , sdPutCredentials = [demoCred]
+        , sdDropCredentials = [TokenId 2]
         }
   assertEqual "full delta pins every class"
     [minBound .. maxBound] (deltaClasses full)
+  where
+    demoCred = CredentialRecord (TokenId 1) "so-pin" (Just "user-pin")
 
 -- | The token codec persists retry counters and lock flags only:
 -- the encoded bytes carry no login, principal, or epoch, and the
@@ -783,6 +798,109 @@ testAuthPostCommit openWith = do
   assertEqual "login never restored" Nothing (taLogin authReopen)
   assertEqual "epoch never restored" 0 (taAuthEpoch authReopen)
   storeClose sReopen
+
+-- | Read one token's loaded credential (fails unless exactly one row).
+loadedCredential :: Store -> TokenId -> IO CredentialRecord
+loadedCredential s tid = do
+  eCreds <- storeLoadCredentials s
+  creds <- either (assertFailure . show) pure eCreds
+  case [c | c <- creds, crToken c == tid] of
+    [c] -> pure c
+    _ -> assertFailure "credential row missing after credential commit"
+
+-- | Credential pre-commit injection: the PIN write rolls back,
+-- the persisted credential keeps the old value, no commit is
+-- counted, and objects plus jobs are intact.
+testCredentialPreCommit :: OpenWith -> IO ()
+testCredentialPreCommit openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, recs) <- seedStore sClean
+  seedAuthJob sClean tok
+  let before = CredentialRecord (trId tok) "so-pin-1" (Just "user-pin-1")
+  rSeed <- storeCommit sClean emptyDelta { sdPutCredentials = [before] }
+  assertEqual "credential seed" Committed rSeed
+  storeClose sClean
+  inj <- scriptedFaults [FaultBeforeCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  let rotated = CredentialRecord (trId tok) "so-pin-1" (Just "user-pin-2")
+  result <- storeCommit sFaulty emptyDelta { sdPutCredentials = [rotated] }
+  case result of
+    NotCommitted _ -> pure ()
+    other -> assertFailure ("expected NotCommitted, got: " ++ show other)
+  kept <- loadedCredential sFaulty (trId tok)
+  assertEqual "persisted credential unmoved" before kept
+  eLoaded <- storeLoadTokens sFaulty
+  loaded <- either (assertFailure . show) pure eLoaded
+  assertEqual "seed records intact" recs (concatMap snd loaded)
+  eJobs <- storeLoadJobs sFaulty
+  jobs <- either (assertFailure . show) pure eJobs
+  assertEqual "job intact" 1 (length jobs)
+  storeClose sFaulty
+
+-- | Credential post-commit injection: durable truth is
+-- 'Committed' but the token quarantines until an authoritative
+-- reload resolves it; the new PIN is durable throughout.
+testCredentialPostCommit :: OpenWith -> IO ()
+testCredentialPostCommit openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, _) <- seedStore sClean
+  let before = CredentialRecord (trId tok) "so-pin-1" (Just "user-pin-1")
+  rSeed <- storeCommit sClean emptyDelta { sdPutCredentials = [before] }
+  assertEqual "credential seed" Committed rSeed
+  storeClose sClean
+  inj <- scriptedFaults [FaultAfterCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  let rotated = CredentialRecord (trId tok) "so-pin-2" (Just "user-pin-2")
+  result <- storeCommit sFaulty emptyDelta { sdPutCredentials = [rotated] }
+  assertEqual "post-commit credential write still committed" Committed result
+  quarantined <- storeQuarantined sFaulty
+  assertEqual "token quarantined" [trId tok] (map fst quarantined)
+  landed <- loadedCredential sFaulty (trId tok)
+  assertEqual "rotated PIN durable" rotated landed
+  eReload <- storeReload sFaulty
+  _ <- either (assertFailure . show) pure eReload
+  quarantinedAfter <- storeQuarantined sFaulty
+  assertEqual "reload clears quarantine" [] quarantinedAfter
+  again <- storeCommit sFaulty emptyDelta { sdPutCredentials = [before] }
+  assertEqual "credential write works after reload" Committed again
+  storeClose sFaulty
+
+-- | A quarantined token refuses credential writes with the
+-- quarantine diagnosis (the credential table joins the
+-- affected-token coverage); reload clears the way.
+testCredentialQuarantine :: OpenWith -> IO ()
+testCredentialQuarantine openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, _) <- seedStore sClean
+  let before = CredentialRecord (trId tok) "so-pin-1" (Just "user-pin-1")
+  rSeed <- storeCommit sClean emptyDelta { sdPutCredentials = [before] }
+  assertEqual "credential seed" Committed rSeed
+  storeClose sClean
+  inj <- scriptedFaults [FaultAfterCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  let bumped = tok { trAuth = (trAuth tok) { taUserAttempts = 1 } }
+  qr <- storeCommit sFaulty emptyDelta { sdPutTokens = [bumped] }
+  assertEqual "quarantining write committed" Committed qr
+  quarantined <- storeQuarantined sFaulty
+  assertEqual "token quarantined" [trId tok] (map fst quarantined)
+  let rotated = CredentialRecord (trId tok) "so-pin-2" (Just "user-pin-2")
+  refused <- storeCommit sFaulty emptyDelta { sdPutCredentials = [rotated] }
+  case refused of
+    NotCommitted (StoreQuarantined _) -> pure ()
+    other -> assertFailure ("expected quarantine refusal, got: " ++ show other)
+  kept <- loadedCredential sFaulty (trId tok)
+  assertEqual "quarantined write persisted nothing" before kept
+  eReload <- storeReload sFaulty
+  _ <- either (assertFailure . show) pure eReload
+  admitted <- storeCommit sFaulty emptyDelta { sdPutCredentials = [rotated] }
+  assertEqual "credential write works after reload" Committed admitted
+  storeClose sFaulty
 
 -- | Bounded rendezvous for every cross-thread wait in the
 -- interruption cases: 5 seconds, matching the pre-split guards.
