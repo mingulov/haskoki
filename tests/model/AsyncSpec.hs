@@ -11,7 +11,8 @@ module AsyncSpec (spec) where
 
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay, tryTakeMVar)
+import Control.Concurrent (ThreadId, forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay, tryTakeMVar)
+import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, modifyIORef', writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word64, Word8)
@@ -23,7 +24,15 @@ import System.Mem (performGC)
 import System.Mem.Weak (Weak, deRefWeak, mkWeak)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
-import Haskoki.Model (Model (..), SessionState (..), lookupSession)
+import Haskoki.Model
+  ( HandleBinding (..)
+  , Model (..)
+  , ObjectState (..)
+  , SessionState (..)
+  , addToken
+  , emptyModel
+  , lookupSession
+  )
 import Haskoki.Object (encodeHandle)
 import Haskoki.Operation (CryptoEffect (..), CryptoError (..), CryptoResult (..), StepOutcome (..))
 import Haskoki.Operation.Cipher (finishCipherUpdate, planCipherUpdate)
@@ -73,7 +82,14 @@ import Haskoki.Outcome
   )
 import Haskoki.Output (maxOutputBytes)
 import Haskoki.Registry (MechanismId (..), Operation (..))
-import Haskoki.Request (FunctionId (..), OutputIntent (..), OutputRegion (..), Request (..))
+import Haskoki.Request
+  ( DecodedRequest (..)
+  , FunctionId (..)
+  , InitFunction (..)
+  , OutputIntent (..)
+  , OutputRegion (..)
+  , Request (..)
+  )
 import Haskoki.Rules (defaultRules)
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Runtime.Async
@@ -82,6 +98,7 @@ import Haskoki.Runtime.Async
   , Delivery (..)
   , JobFunction (..)
   , JobRequest (..)
+  , JobSnapState (..)
   , JobView (..)
   , AsyncWork (..)
   , PollOutcome (..)
@@ -93,9 +110,15 @@ import Haskoki.Runtime.Async
   , cancelJob
   , completeJob
   , decodeCompletion
+  , disableAsyncSession
   , enableAsyncSession
+  , enabledSessionCount
   , encodeCompletion
   , inspectJob
+  , isAsyncSession
+  , jobSnapshotEpoch
+  , jobSnapshotState
+  , jobSnapshotTicks
   , maxRetainedBytes
   , maxRetainedTombstones
   , newAsyncTable
@@ -103,6 +126,7 @@ import Haskoki.Runtime.Async
   , reapJob
   , retainedBytes
   , sessionJobs
+  , snapshotJob
   , startJob
   , tableStats
   )
@@ -116,7 +140,7 @@ import Haskoki.Runtime.Lifecycle
   , seatToken
   , snapshotModel
   )
-import Haskoki.Transition (finishEffect, planCall)
+import Haskoki.Transition (finishEffect, planCall, planDecoded, publishDelta)
 import Haskoki.Types
   ( EngineResourceId (..)
   , ExternalHandle (..)
@@ -164,6 +188,11 @@ spec = testGroup "Attached async"
   , testCase "committed eviction reclaims without a later table read" caseCommitReclaimsWithoutRead
   , testCase "eviction race under count trigger observes winner-or-unknown" caseEvictionRaceCount
   , testCase "eviction race under byte trigger observes winner-or-unknown" caseEvictionRaceBytes
+  , testCase "disable is idempotent; count tracks the enabled set" caseDisableIdempotent
+  , testCase "lease snapshots: queued arbitration keeps epochs and writes exact" caseLeaseSnapshotQueue
+  , testCase "incoherent call submit refused without consuming an id" caseCallMismatchRefused
+  , testCase "call submit with a mismatched session refused" caseCallSessionRefused
+  , testCase "legacy unstepped submits still admitted" caseLegacyUnsteppedAdmitted
   ]
 
 sid1 :: SessionId
@@ -209,6 +238,21 @@ captureDelivery cap c = Delivery
 writesOf :: Capture -> IO [ByteString]
 writesOf = readIORef . capWrites
 
+-- | Barrier for a contender blocked on the delivery lease: accepts
+-- ONLY 'BlockedOnMVar' — a contender that never started (or one
+-- blocked anywhere else) must never satisfy a queueing proof.
+-- Bounded polling, never timing-hope.
+awaitLeaseWait :: ThreadId -> IO ()
+awaitLeaseWait tid = go (200 :: Int)
+  where
+    go n
+      | n <= 0 = assertFailure "contender never blocked on the lease"
+      | otherwise = do
+          st <- threadStatus tid
+          case st of
+            ThreadBlocked BlockedOnMVar -> pure ()
+            _ -> threadDelay 1000 >> go (n - 1)
+
 -- | Counting stub runner: records invocations, answers canned bytes.
 countingRunner :: IORef Int -> CryptoEffect -> IO CryptoResult
 countingRunner ref _fx = do
@@ -226,6 +270,161 @@ assertWrites :: String -> Capture -> [ByteString] -> IO ()
 assertWrites msg c want = do
   got <- writesOf c
   assertEqual msg want got
+
+-- ---------------------------------------------------------------------------
+-- Checked call-work submission (H1)
+-- ---------------------------------------------------------------------------
+
+-- | Plan a real sign one-shot on a pure model: token, session, a
+-- public key, a decoded sign init, and the one-shot over it. The
+-- returned reservation is planner-pinned (stepped).
+realSignPlan :: IO (SessionId, Reservation, CryptoEffect)
+realSignPlan = do
+  let m0 = addToken emptyModel (SlotId 0)
+      sid = SessionId 1
+      h = ExternalHandle 70
+      oid = ObjectId 9
+  m1 <- case planCall defaultRules m0
+      (Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []) of
+    Immediate pc -> case publishDelta m0 (pcDelta pc) of
+      Left fault -> assertFailure ("open delta fault: " ++ show fault)
+      Right m' -> pure m'
+    other -> assertFailure ("open failed: " ++ show other)
+  let ost = ObjectState
+        { osId = oid
+        , osRevision = Revision 1
+        , osGeneration = Generation 1
+        , osAttrs = Map.fromList [(AttrClass, ValULong 4), (AttrPrivate, ValBool False)]
+        , osOwner = Nothing
+        , osSlot = SlotId 0
+        }
+      mK = m1
+        { mObjects = Map.insert oid ost (mObjects m1)
+        , mHandles = Map.insert h (HandleBinding oid (Generation 1)) (mHandles m1)
+        }
+  m2 <- case planDecoded defaultRules mK
+      (DRInit sid InitSign (Just h) (MechanismId 0x251) [OpSign] False BS.empty) of
+    Immediate pc -> case publishDelta mK (pcDelta pc) of
+      Left fault -> assertFailure ("sign init delta fault: " ++ show fault)
+      Right m' -> pure m'
+    other -> assertFailure ("sign init did not persist: " ++ show other)
+  case planCall defaultRules m2
+      (Request Pkcs11_3_2 F_Sign (Just sid) Nothing "hello"
+        [RegionBytes "sig" (IntentBuffer 64)]) of
+    Execute res (EffectCrypto fx) -> pure (sid, res, fx)
+    other -> assertFailure ("sign one-shot did not execute: " ++ show other)
+
+-- | Re-pin a stepped reservation's function/slot pair.
+repin :: (CryptoStep -> CryptoStep) -> Reservation -> Reservation
+repin f res = res { resStep = fmap f (resStep res) }
+
+-- | A real signing reservation paired with a foreign effect — digest,
+-- cipher, verify, message, feed, allocation, consume, or key
+-- allocation — refuses at submit with no id consumed and the table
+-- untouched (the verdict and allocation shapes trip the holdability
+-- gate first, with the identical verdict); so do a re-pinned wrong
+-- slot and a function with no finishing leg. The real pair itself
+-- still submits (over-refusal guard), taking the unconsumed
+-- first id.
+caseCallMismatchRefused :: IO ()
+caseCallMismatchRefused = do
+  (sid, res, fxSign) <- realSignPlan
+  table <- newAsyncTable 8
+  enableAsyncSession table sid
+  before <- tableStats table
+  let bad fxs = mapM_ check fxs
+        where
+          check fx = do
+            r <- startJob table JobRequest
+              { jrSession = sid
+              , jrFunction = JobSign
+              , jrWork = WorkCall res (EffectCrypto fx)
+              , jrTicks = 1
+              , jrCapacity = 64
+              }
+            assertEqual ("refused: " ++ show fx) (Left StartIncompatibleWork) r
+  bad
+    [ FxDigest (MechanismId 0x250) "hello"
+    , FxCipher DirDecrypt (MechanismId 0x1082) Nothing BS.empty "0123456789abcdef"
+    , FxVerify (MechanismId 0x251) Nothing BS.empty "hello" "sig"
+    , FxMessageSign (MechanismId 0x251) Nothing BS.empty "hello"
+    , FxDigestFeed (EngineResourceId 3) "part"
+    , FxDigestInit (MechanismId 0x250)
+    , FxDigestConsume (EngineResourceId 3)
+    , FxGenerateKey (MechanismId 0x1082) BS.empty "genargs"
+    ]
+  let wrongSlot = repin (\s -> s { csKind = SlotDigest }) res
+  rSlot <- startJob table JobRequest
+    { jrSession = sid
+    , jrFunction = JobSign
+    , jrWork = WorkCall wrongSlot (EffectCrypto fxSign)
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  assertEqual "wrong slot refused" (Left StartIncompatibleWork) rSlot
+  let noLeg = repin (\s -> s { csFunction = F_SignInit }) res
+  rLeg <- startJob table JobRequest
+    { jrSession = sid
+    , jrFunction = JobSign
+    , jrWork = WorkCall noLeg (EffectCrypto fxSign)
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  assertEqual "legless function refused" (Left StartIncompatibleWork) rLeg
+  after <- tableStats table
+  assertEqual "refusals consume nothing" before after
+  let (_, _, next0) = before
+  goodReal <- startJob table JobRequest
+    { jrSession = sid
+    , jrFunction = JobSign
+    , jrWork = WorkCall res (EffectCrypto fxSign)
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  assertEqual "real pair takes the first id" (Right (JobId next0)) goodReal
+
+-- | A coherent pair submitted under a session that is async-enabled
+-- but NOT the step's session refuses as incompatible work (the
+-- enablement gate is not what fires: the other session is enabled).
+caseCallSessionRefused :: IO ()
+caseCallSessionRefused = do
+  (sid, res, fx) <- realSignPlan
+  let other = SessionId 2
+  table <- newAsyncTable 8
+  enableAsyncSession table sid
+  enableAsyncSession table other
+  before <- tableStats table
+  r <- startJob table JobRequest
+    { jrSession = other
+    , jrFunction = JobSign
+    , jrWork = WorkCall res (EffectCrypto fx)
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  assertEqual "mismatched session refused" (Left StartIncompatibleWork) r
+  after <- tableStats table
+  assertEqual "refusal consumes nothing" before after
+
+-- | Legacy unstepped fixtures still submit: the boundary admits them
+-- explicitly without sniffing effect content (even a key-management
+-- effect on call work admits here — holdability is the only content
+-- check at submit, and it passes).
+caseLegacyUnsteppedAdmitted :: IO ()
+caseLegacyUnsteppedAdmitted = do
+  table <- newAsyncTable 8
+  enableAsyncSession table sid1
+  r <- startJob table JobRequest
+    { jrSession = sid1
+    , jrFunction = JobSign
+    , jrWork = WorkCall
+        (Reservation "legacy-blind" [] Nothing Nothing)
+        (EffectCrypto (FxGenerateKey (MechanismId 0x1082) BS.empty "genargs"))
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  case r of
+    Right _ -> pure ()
+    Left deny -> assertFailure ("legacy submit refused: " ++ show deny)
 
 caseFirstTest :: IO ()
 caseFirstTest = do
@@ -1887,4 +2086,169 @@ caseEvictionRaceBytes = do
     (do deliverOneDigest table env run0 del 0
         mapM_ (deliverOneBigDigest table env run0 del size) [1 .. 7])
     (deliverOneBigDigest table env run0 del size 8)
+
+-- ---------------------------------------------------------------------------
+-- Session retirement accounting (disable + census)
+-- ---------------------------------------------------------------------------
+
+-- | Disable is idempotent and the census tracks the enabled set:
+-- withdrawing a never-enabled session is a quiet no-op, a
+-- withdrawn session refuses new starts while its live jobs still
+-- run to delivery, and re-enabling admits starts again.
+caseDisableIdempotent :: IO ()
+caseDisableIdempotent = do
+  (table, env) <- mkTable
+  let sid2 = SessionId 2
+  cap <- newCapture
+  let del = captureDelivery 64 cap
+      run = const (pure (GotBytes cannedSig))
+  enabledSessionCount table >>= assertEqual "one enabled session" 1
+  -- Withdrawing a never-enabled session changes nothing.
+  disableAsyncSession table sid2
+  enabledSessionCount table >>= assertEqual "unknown disable is quiet" 1
+  isAsyncSession table sid1 >>= assertEqual "owner still enabled" True
+  -- A second session enables, submits, then withdraws: the live
+  -- job still drives and delivers; only new starts refuse.
+  enableAsyncSession table sid2
+  enabledSessionCount table >>= assertEqual "two enabled sessions" 2
+  Right j0 <- startJob table (signRequest sid1 1)
+  Right j1 <- startJob table (signRequest sid2 1)
+  disableAsyncSession table sid2
+  disableAsyncSession table sid2
+  enabledSessionCount table >>= assertEqual "disable is idempotent" 1
+  isAsyncSession table sid2 >>= assertEqual "withdrawn reads sync" False
+  Left deny <- startJob table (signRequest sid2 1)
+  assertEqual "withdrawn session refuses starts" StartSessionNotAsync deny
+  (live, _, _) <- tableStats table
+  assertEqual "refusal allocates nothing" 2 live
+  PollReady <- pollJob run env table JobSign j1
+  c1 <- completeJob env table JobSign j1 del (\_ -> pure ())
+  case c1 of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "live job of withdrawn session delivers" cannedSig bs
+    other -> assertFailure ("expected delivery, got " ++ show other)
+  -- Re-enabling admits starts again.
+  enableAsyncSession table sid2
+  enabledSessionCount table >>= assertEqual "re-enable counts" 2
+  Right _ <- startJob table (signRequest sid2 1)
+  PollReady <- pollJob run env table JobSign j0
+  c0 <- completeJob env table JobSign j0 del (\_ -> pure ())
+  case c0 of
+    CompleteDelivered _ -> pure ()
+    other -> assertFailure ("expected delivery, got " ++ show other)
+  assertWrites "both jobs delivered once" cap [goldenBytes, goldenBytes]
+
+-- ---------------------------------------------------------------------------
+-- Lease snapshots (current record under the held lease)
+-- ---------------------------------------------------------------------------
+
+-- | A held runner queues a cancel and a complete behind the drive:
+-- neither finishes before the drive publishes Ready, and the two
+-- then arbitrate exactly one terminal winner with the loser's sink
+-- untouched. A second, uncontended job pins the epoch chain the
+-- queueing job traverses: Pending 0, Running 0 (the claim keeps
+-- the epoch), Ready 1, terminal 2.
+caseLeaseSnapshotQueue :: IO ()
+caseLeaseSnapshotQueue = do
+  (table, env) <- mkTable
+  -- Uncontended epoch chain first: every stage is observable
+  -- with no competitor queued.
+  epochCap <- newCapture
+  let epochDel = captureDelivery 64 epochCap
+  enteredE <- newEmptyMVar
+  releaseE <- newEmptyMVar
+  let gatedE _ = do
+        putMVar enteredE ()
+        takeMVar releaseE
+        pure (GotBytes cannedSig)
+  Right jE <- startJob table (signRequest sid1 1)
+  snapPending <- snapshotJob table jE
+  assertEqual "pending schedule" (Just (Just 1))
+    (fmap jobSnapshotTicks snapPending)
+  assertEqual "pending epoch" (Just 0)
+    (fmap jobSnapshotEpoch snapPending)
+  polledE <- newEmptyMVar
+  _ <- forkIO (pollJob gatedE env table JobSign jE >>= putMVar polledE)
+  takeMVar enteredE
+  snapRunning <- snapshotJob table jE
+  assertEqual "drive claims running" (Just SnapRunning)
+    (fmap jobSnapshotState snapRunning)
+  assertEqual "claim keeps the epoch" (Just 0)
+    (fmap jobSnapshotEpoch snapRunning)
+  putMVar releaseE ()
+  takeMVar polledE >>= assertEqual "drive publishes ready" PollReady
+  snapReady <- snapshotJob table jE
+  case fmap jobSnapshotState snapReady of
+    Just (SnapReady bs) -> assertEqual "held bytes" cannedSig bs
+    other -> assertFailure ("expected ready snapshot, got " ++ show other)
+  assertEqual "hold bumps the epoch" (Just 1)
+    (fmap jobSnapshotEpoch snapReady)
+  epochOut <- completeJob env table JobSign jE epochDel (\_ -> pure ())
+  case epochOut of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "delivered bytes" cannedSig bs
+    other -> assertFailure ("expected delivery, got " ++ show other)
+  snapTerminal <- snapshotJob table jE
+  case fmap jobSnapshotState snapTerminal of
+    Just (SnapTerminal (TermDelivered _)) -> pure ()
+    other -> assertFailure ("expected terminal snapshot, got " ++ show other)
+  assertEqual "terminal bumps the epoch" (Just 2)
+    (fmap jobSnapshotEpoch snapTerminal)
+  assertWrites "epoch job delivers once" epochCap [goldenBytes]
+  -- Queued arbitration: a cancel and a complete wait behind the
+  -- held drive, then exactly one wins terminal.
+  cap <- newCapture
+  let del = captureDelivery 64 cap
+  entered <- newEmptyMVar
+  release <- newEmptyMVar
+  let gated _ = do
+        putMVar entered ()
+        takeMVar release
+        pure (GotBytes cannedSig)
+  Right j0 <- startJob table (signRequest sid1 1)
+  polled <- newEmptyMVar
+  _ <- forkIO (pollJob gated env table JobSign j0 >>= putMVar polled)
+  takeMVar entered
+  canceled <- newEmptyMVar
+  completed <- newEmptyMVar
+  cancelTid <- forkIO (cancelJob table j0 >>= putMVar canceled)
+  completeTid <- forkIO
+    (completeJob env table JobSign j0 del (\_ -> pure ()) >>= putMVar completed)
+  -- Both contenders provably wait on the lease (not merely
+  -- unstarted): each pre-locked while the drive held Running, so
+  -- the terminal epoch below discriminates a stale-epoch
+  -- implementation, which would commit epoch 1 here.
+  awaitLeaseWait cancelTid
+  awaitLeaseWait completeTid
+  tryTakeMVar canceled >>= assertEqual "cancel queues behind drive" Nothing
+  tryTakeMVar completed >>= assertEqual "complete queues behind drive" Nothing
+  snapHeld <- snapshotJob table j0
+  assertEqual "drive still holds running" (Just SnapRunning)
+    (fmap jobSnapshotState snapHeld)
+  putMVar release ()
+  takeMVar polled >>= assertEqual "drive publishes ready" PollReady
+  k <- takeMVar canceled
+  c <- takeMVar completed
+  writes <- writesOf cap
+  needed <- readIORef (capNeeded cap)
+  case (c, k) of
+    (CompleteDelivered (CompBytes bs), CancelAlready (TermDelivered _)) -> do
+      assertEqual "winner bytes" cannedSig bs
+      assertEqual "one write on delivery" [goldenBytes] writes
+    (CompleteAlready TermCanceled, CancelOk) ->
+      assertEqual "no write on cancel" [] writes
+    other -> assertFailure ("inconsistent arbitration: " ++ show other)
+  assertEqual "no sizing reports" [] needed
+  stFinal <- inspectJob table j0
+  assertEqual "epoch: hold + terminal" (Just 2) (fmap jvEpoch stFinal)
+  -- Re-observing the terminal changes nothing, including the sink.
+  cAgain <- completeJob env table JobSign j0 del (\_ -> pure ())
+  kAgain <- cancelJob table j0
+  case (c, cAgain, kAgain) of
+    (CompleteDelivered _, CompleteAlready (TermDelivered _),
+      CancelAlready (TermDelivered _)) -> pure ()
+    (CompleteAlready TermCanceled, CompleteAlready TermCanceled,
+      CancelAlready TermCanceled) -> pure ()
+    other -> assertFailure ("terminal re-observe drifted: " ++ show other)
+  assertWrites "losers write nothing" cap writes
 

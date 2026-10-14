@@ -38,6 +38,36 @@ repair a claimed job if its runner throws or is interrupted; the
 Native digest contexts are borrowed under a registry lock while used;
 their lifetime is a runtime responsibility, not a consequence of purity.
 
+## Checked call work
+
+Call execution binds three values — the submitting session, the
+guarding reservation, and the planned effect — and every consumer
+must agree on what the triple means. [`CallWork`](../core/Haskoki/CallWork.hs)
+is the checked form of that triple: [`checkedCallWork`](../core/Haskoki/CallWork.hs)
+validates step presence, step/session identity, the function/slot
+family, and effect compatibility, in that order, reporting the first
+failure as a typed [`WorkMismatch`](../core/Haskoki/CallWork.hs). The
+function tables are explicit per-`FunctionId` arms with no wildcard,
+mirroring [`runFinisher`](../core/Haskoki/Transition.hs) leg for leg;
+the [matrix test](../tests/model/TransitionSpec.hs) pins every
+accepted triple and every refused cross-family combination, and the
+[coherence sweep](../tests/model/TransitionSpec.hs) proves every
+planner-produced execution checks.
+
+Enforcement sits at the boundaries that admit held work, never in the
+planner: async submit checks holdability first, then pair coherence,
+then enablement and capacity, refusing with no id consumed and the
+table untouched (see the [submit tests](../tests/model/AsyncSpec.hs));
+the FFI submit leg and the detach rejoin replay check their re-planned
+pairs the same way. Hand-built fixtures without a pinned step admit
+explicitly behind [`admitLegacyUnstepped`](../core/Haskoki/CallWork.hs) —
+the effect family is never guessed from a missing step. Key work keeps
+its own contract: submit admits it and the drive refuses incoherent
+pairs before the runner fires. The key-mutation half of the contract —
+start-time validity for in-flight effects, observed destruction for
+later calls — is recorded in the
+[async construction contract](async-config-design.md#construction-and-linearization).
+
 ## Costs and limits
 
 Loading the module also loads the GHC runtime. The release bundles its

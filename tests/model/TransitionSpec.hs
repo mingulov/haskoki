@@ -8,6 +8,8 @@ dependencies), so the same seed always yields the same cases.
 {-# LANGUAGE OverloadedStrings #-}
 module TransitionSpec (spec) where
 
+import qualified Data.ByteString as BS
+import Data.Either (isRight)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
@@ -15,27 +17,68 @@ import Data.Word (Word64)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 
+import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.CallWork
+  ( WorkMismatch (..)
+  , admitLegacyUnstepped
+  , callFunctionEffect
+  , callFunctionSlot
+  , callPairCompatible
+  , checkedCallWork
+  )
 import Haskoki.Model
-  ( Model (..)
+  ( HandleBinding (..)
+  , Model (..)
   , ObjectState (..)
   , SessionState (..)
+  , addToken
   , emptyModel
   , lookupSession
   )
 import Haskoki.Operation
-  ( CryptoEffect (..)
+  ( CipherDir (..)
+  , CipherSpec (..)
+  , CryptoEffect (..)
   , CryptoResult (..)
   , InitArgs (..)
+  , InitOutcome (..)
+  , KeyPolicy (..)
+  , MsgFamily (..)
   , OpAuth (..)
   , OpEnv (..)
+  , RecoverRole (..)
+  , RecoverSpec (..)
   , SessionOps
   , SlotKind (..)
   , StepOutcome (..)
   , emptySessionOps
+  , initMessageOperation
   , initOperation
   , insertOp
+  , mkActiveCipher
+  , mkActiveRecover
   , mkActiveSign
+  , mkActiveVerify
   , mkSlotCommon
+  )
+import Haskoki.Operation.Cipher (planCipherFinal, planCipherOneShot, planCipherUpdate)
+import Haskoki.Operation.Message
+  ( MsgBegin (..)
+  , MsgNext (..)
+  , MsgOneShot (..)
+  , planMessageBegin
+  , planMessageNext
+  , planMessageOneShot
+  )
+import Haskoki.Operation.Signature
+  ( planSignFinal
+  , planSignOneShot
+  , planSignRecoverOneShot
+  , planSignUpdate
+  , planVerifyFinal
+  , planVerifyOneShot
+  , planVerifyRecoverOneShot
+  , planVerifyUpdate
   )
 import Haskoki.Outcome
   ( CryptoStep (..)
@@ -53,7 +96,9 @@ import Haskoki.Outcome
   , StateDelta (..)
   )
 import Haskoki.Request
-  ( FunctionId (..)
+  ( DecodedRequest (..)
+  , FunctionId (..)
+  , InitFunction (..)
   , OutputIntent (..)
   , OutputRegion (..)
   , Request (..)
@@ -66,7 +111,14 @@ import Haskoki.Registry
   )
 import Haskoki.Rules (defaultRules)
 import Haskoki.Session (SessionLogin (..))
-import Haskoki.Transition (finishEffect, packStep, planCall, publishDelta, runFinisher)
+import Haskoki.Transition
+  ( finishEffect
+  , packStep
+  , planCall
+  , planDecoded
+  , publishDelta
+  , runFinisher
+  )
 import Haskoki.Types
   ( EngineResourceId (..)
   , ExternalHandle (..)
@@ -95,6 +147,13 @@ spec = testGroup "model transitions"
   , testCase "generated: unknown destroy reports exact fault" caseUnknownDestroy
   , testCase "unbind retains parked object and allocation counters" caseUnbindHandle
   , testCase "runFinisher finishing-leg set is pinned" caseFinisherCoverage
+  , testCase "call-work slot table matches the finisher legs" caseCallSlotPin
+  , testCase "call-work effect matrix refuses cross-family pairs" caseCallEffectMatrix
+  , testCase "legacy unstepped pairs pin the checked/compatible split" caseCallLegacySplit
+  , testCase "planned digest dialogue checks coherently" caseCoherentDigest
+  , testCase "planned sign dialogue checks coherently" caseCoherentSign
+  , testCase "seeded planner emissions check coherently" caseCoherentEmissions
+  , testCase "seeded message emissions check coherently" caseCoherentMessage
   ]
 
 caseUnbindHandle :: IO ()
@@ -473,3 +532,609 @@ caseUnknownDestroy = mapM_ check [0 .. 20]
       case publishDelta emptyModel (StateDelta prefix) of
         Left fault -> fail ("clean prefix faulted: " ++ show fault)
         Right m -> assertEqual "prefix creates k objects" k (Map.size (mObjects m))
+
+-- ---------------------------------------------------------------------------
+-- Checked call-work construction (H1)
+-- ---------------------------------------------------------------------------
+
+h1Sid, h1SidOther :: SessionId
+h1Sid = SessionId 1
+h1SidOther = SessionId 2
+
+sha256Mech, hmacMech, aesCbcMech :: MechanismId
+sha256Mech = MechanismId 0x250
+hmacMech = MechanismId 0x251
+aesCbcMech = MechanismId 0x1082
+
+h1KeyOid :: ObjectId
+h1KeyOid = ObjectId 9
+
+-- | A quiescent session snapshot for pinned steps.
+h1Session :: SessionState
+h1Session = SessionState
+  { ssId = h1Sid
+  , ssSlot = SlotId 0
+  , ssRevision = Revision 1
+  , ssGeneration = Generation 1
+  , ssReadOnly = False
+  , ssLogin = LoginPublic
+  , ssOps = emptySessionOps
+  }
+
+-- | A pinned step for a function/slot pair.
+h1Step :: FunctionId -> SlotKind -> CryptoStep
+h1Step fid slot = CryptoStep
+  { csFunction = fid
+  , csKind = slot
+  , csName = "h1"
+  , csIntent = IntentBuffer 64
+  , csOps = emptySessionOps
+  , csSession = h1Session
+  }
+
+-- | A stepped reservation pinning a function/slot pair.
+h1Res :: FunctionId -> SlotKind -> Reservation
+h1Res fid slot = Reservation "h1" [] Nothing (Just (h1Step fid slot))
+
+-- | One effect representative per call shape: digest one-shot, stream
+-- allocation, stream feed, stream consume, cipher directions, the
+-- sign/verify/recovery shapes, the message shapes, and every
+-- key-management shape (which never pairs with a call step).
+fxDigest, fxDigestInit, fxDigestFeed, fxDigestConsume :: CryptoEffect
+fxDigest = FxDigest sha256Mech "hello"
+fxDigestInit = FxDigestInit sha256Mech
+fxDigestFeed = FxDigestFeed (EngineResourceId 3) "part"
+fxDigestConsume = FxDigestConsume (EngineResourceId 3)
+
+fxCipherEnc, fxCipherDec :: CryptoEffect
+fxCipherEnc = FxCipher DirEncrypt aesCbcMech Nothing mempty "0123456789abcdef"
+fxCipherDec = FxCipher DirDecrypt aesCbcMech Nothing mempty "0123456789abcdef"
+
+fxSign, fxVerify, fxSignRecover, fxVerifyRecover :: CryptoEffect
+fxSign = FxSign hmacMech (Just h1KeyOid) mempty "hello"
+fxVerify = FxVerify hmacMech (Just h1KeyOid) mempty "hello" "sig"
+fxSignRecover = FxSignRecover hmacMech (Just h1KeyOid) mempty "hello" 32
+fxVerifyRecover = FxVerifyRecover hmacMech (Just h1KeyOid) mempty "sig" 32
+
+fxMsgCipherEnc, fxMsgCipherDec, fxMsgSign, fxMsgVerify :: CryptoEffect
+fxMsgCipherEnc =
+  FxMessageCipher DirEncrypt aesCbcMech Nothing mempty mempty "0123456789abcdef"
+fxMsgCipherDec =
+  FxMessageCipher DirDecrypt aesCbcMech Nothing mempty mempty "0123456789abcdef"
+fxMsgSign = FxMessageSign hmacMech (Just h1KeyOid) mempty "hello"
+fxMsgVerify = FxMessageVerify hmacMech (Just h1KeyOid) mempty "hello" "sig"
+
+fxGenKey, fxWrap, fxUnwrap, fxAuthWrap, fxAuthUnwrap :: CryptoEffect
+fxGenKey = FxGenerateKey aesCbcMech mempty "genargs"
+fxWrap = FxWrap aesCbcMech Nothing mempty "target"
+fxUnwrap = FxUnwrap aesCbcMech Nothing mempty "wrapped"
+fxAuthWrap = FxAuthWrap aesCbcMech Nothing mempty "target"
+fxAuthUnwrap = FxAuthUnwrap aesCbcMech Nothing mempty "wrapped"
+
+fxDerive, fxKemEnc, fxKemDec :: CryptoEffect
+fxDerive = FxDerive sha256Mech (Just h1KeyOid) Nothing mempty "info" 32
+fxKemEnc = FxKemEncaps aesCbcMech (Just h1KeyOid) mempty "seed"
+fxKemDec = FxKemDecaps aesCbcMech (Just h1KeyOid) mempty "ct"
+
+-- | Every representative, in constructor order.
+allReps :: [CryptoEffect]
+allReps =
+  [ fxDigest, fxDigestInit, fxDigestFeed, fxDigestConsume
+  , fxCipherEnc, fxCipherDec
+  , fxSign, fxVerify, fxSignRecover, fxVerifyRecover
+  , fxMsgCipherEnc, fxMsgCipherDec, fxMsgSign, fxMsgVerify
+  , fxGenKey, fxWrap, fxUnwrap, fxAuthWrap, fxAuthUnwrap
+  , fxDerive, fxKemEnc, fxKemDec
+  ]
+
+-- | The accepted (function, slot, effects) rows, in 'finisherJustSet'
+-- order: each row names the planner shapes behind it (the producing
+-- planner and call shape in parentheses).
+acceptRows :: [(FunctionId, SlotKind, [CryptoEffect])]
+acceptRows =
+  [ (F_DigestInit, SlotDigest, [fxDigestInit]) -- DRInit digest arm
+  , (F_Digest, SlotDigest, [fxDigest]) -- planDigestOneShot
+  , (F_Sign, SlotSign, [fxSign]) -- planSignOneShot
+  , (F_DigestUpdate, SlotDigest, [fxDigestFeed]) -- planDigestUpdate
+  , (F_DigestFinal, SlotDigest, [fxDigest, fxDigestConsume]) -- planDigestFinal
+  , (F_SignFinal, SlotSign, [fxSign]) -- planSignFinal
+  , (F_Verify, SlotVerify, [fxVerify]) -- planVerifyOneShot
+  , (F_VerifyFinal, SlotVerify, [fxVerify]) -- planVerifyFinal
+  , (F_Encrypt, SlotEncrypt, [fxCipherEnc]) -- planCipherOneShot
+  , (F_EncryptUpdate, SlotEncrypt, [fxCipherEnc]) -- planCipherUpdate
+  , (F_EncryptFinal, SlotEncrypt, [fxCipherEnc]) -- planCipherFinal
+  , (F_Decrypt, SlotDecrypt, [fxCipherDec]) -- planCipherOneShot
+  , (F_DecryptUpdate, SlotDecrypt, [fxCipherDec]) -- planCipherUpdate
+  , (F_DecryptFinal, SlotDecrypt, [fxCipherDec]) -- planCipherFinal
+  , (F_EncryptMessage, SlotEncrypt, [fxMsgCipherEnc]) -- planMessageOneShot
+  , (F_DecryptMessage, SlotDecrypt, [fxMsgCipherDec]) -- planMessageOneShot
+  , (F_SignMessage, SlotSign, [fxMsgSign]) -- planMessageOneShot
+  , (F_VerifyMessage, SlotVerify, [fxMsgVerify]) -- planMessageOneShot
+  , (F_EncryptMessageNext, SlotEncrypt, [fxMsgCipherEnc]) -- planMessageNext
+  , (F_DecryptMessageNext, SlotDecrypt, [fxMsgCipherDec]) -- planMessageNext
+  , (F_SignMessageNext, SlotSign, [fxMsgSign]) -- planMessageNext
+  , (F_VerifyMessageNext, SlotVerify, [fxMsgVerify]) -- planMessageNext
+  , (F_SignRecover, SlotSign, [fxSignRecover]) -- planSignRecoverOneShot
+  , (F_VerifyRecover, SlotVerify, [fxVerifyRecover]) -- planVerifyRecoverOneShot
+  ]
+
+-- | The slot table agrees with the finisher legs in both directions:
+-- exactly the finishing functions have a slot, so neither table can
+-- drift without failing this pin (and 'caseCallEffectMatrix' covers
+-- the rows themselves).
+caseCallSlotPin :: IO ()
+caseCallSlotPin = do
+  assertEqual "slot Just-set matches the finisher legs" finisherJustSet
+    [fid | fid <- [minBound .. maxBound], isJust (callFunctionSlot fid)]
+  assertEqual "accept rows cover the finisher legs" finisherJustSet
+    [fid | (fid, _, _) <- acceptRows]
+
+-- | The full cross product: every accepted triple checks, and every
+-- other combination — wrong effect, wrong slot, wrong session, or a
+-- function with no finishing leg — refuses with its exact typed
+-- mismatch. 'callPairCompatible' agrees with checked construction on
+-- every stepped case.
+caseCallEffectMatrix :: IO ()
+caseCallEffectMatrix = do
+  mapM_ checkAccept acceptRows
+  mapM_ checkRefuses acceptRows
+  mapM_ checkWrongSlot acceptRows
+  mapM_ checkWrongSession acceptRows
+  mapM_ checkNoLeg noLegs
+  where
+    noLegs = [fid | fid <- [minBound .. maxBound], fid `notElem` finisherJustSet]
+    ctx fid fx = " (" ++ show fid ++ " / " ++ show fx ++ ")"
+    checkAccept (fid, slot, fxs) = mapM_ check fxs
+      where
+        res = h1Res fid slot
+        check fx = do
+          let eff = EffectCrypto fx
+          assertBool ("accepts" ++ ctx fid fx)
+            (isRight (checkedCallWork h1Sid res eff))
+          assertEqual ("compatible" ++ ctx fid fx)
+            True (callPairCompatible h1Sid res eff)
+          assertEqual ("slot pins" ++ ctx fid fx)
+            (Just slot) (callFunctionSlot fid)
+          assertEqual ("effect pins" ++ ctx fid fx)
+            True (callFunctionEffect fid fx)
+    checkRefuses (fid, slot, fxs) =
+      mapM_ check [fx | fx <- allReps, fx `notElem` fxs]
+      where
+        res = h1Res fid slot
+        check fx = do
+          let eff = EffectCrypto fx
+          assertEqual ("refuses" ++ ctx fid fx)
+            (Left (WorkEffectMismatch fid fx)) (checkedCallWork h1Sid res eff)
+          assertEqual ("incompatible" ++ ctx fid fx)
+            False (callPairCompatible h1Sid res eff)
+          assertEqual ("effect refuses" ++ ctx fid fx)
+            False (callFunctionEffect fid fx)
+    checkWrongSlot (fid, slot, fxs) =
+      mapM_ check [s | s <- [minBound .. maxBound], s /= slot]
+      where
+        check s = mapM_ (checkFx s) fxs
+        checkFx s fx = do
+          let res = h1Res fid s
+              eff = EffectCrypto fx
+          assertEqual ("wrong slot refuses" ++ ctx fid fx)
+            (Left (WorkFunctionSlotMismatch fid s)) (checkedCallWork h1Sid res eff)
+          assertEqual ("wrong slot incompatible" ++ ctx fid fx)
+            False (callPairCompatible h1Sid res eff)
+    checkWrongSession (fid, slot, fxs) = mapM_ check fxs
+      where
+        res = h1Res fid slot
+        check fx = do
+          let eff = EffectCrypto fx
+          -- Session identity is checked first: a wrong session
+          -- reports even when slot and effect agree.
+          assertEqual ("wrong session refuses" ++ ctx fid fx)
+            (Left (WorkSessionMismatch h1SidOther h1Sid))
+            (checkedCallWork h1SidOther res eff)
+          assertEqual ("wrong session incompatible" ++ ctx fid fx)
+            False (callPairCompatible h1SidOther res eff)
+    checkNoLeg fid =
+      mapM_ check [s | s <- [minBound .. maxBound]]
+      where
+        check s = mapM_ (checkFx s) allReps
+        checkFx s fx = do
+          let res = h1Res fid s
+              eff = EffectCrypto fx
+          assertEqual ("legless refuses" ++ ctx fid fx)
+            (Left (WorkFunctionSlotMismatch fid s)) (checkedCallWork h1Sid res eff)
+          assertEqual ("legless incompatible" ++ ctx fid fx)
+            False (callPairCompatible h1Sid res eff)
+          assertEqual ("legless slot is Nothing" ++ ctx fid fx)
+            Nothing (callFunctionSlot fid)
+          assertEqual ("legless effect refuses" ++ ctx fid fx)
+            False (callFunctionEffect fid fx)
+
+-- | The explicit legacy split: unstepped reservations predate pinned
+-- steps, so checked construction refuses them ('WorkUnstepped')
+-- while the injected-boundary predicate still admits them — without
+-- ever sniffing the effect content (key-management effects admit
+-- exactly like call effects here).
+caseCallLegacySplit :: IO ()
+caseCallLegacySplit = mapM_ check allReps
+  where
+    res = Reservation "legacy" [] Nothing Nothing
+    check fx = do
+      let eff = EffectCrypto fx
+          ctx = " (" ++ show fx ++ ")"
+      assertEqual ("checked refuses unstepped" ++ ctx)
+        (Left WorkUnstepped) (checkedCallWork h1Sid res eff)
+      assertEqual ("compatible admits unstepped" ++ ctx)
+        True (callPairCompatible h1Sid res eff)
+      assertBool ("legacy admission names unstepped" ++ ctx)
+        (admitLegacyUnstepped res)
+
+-- | Open one read-write session on a seated token.
+openTokenSession :: IO (SessionId, Model)
+openTokenSession = do
+  let m0 = addToken emptyModel (SlotId 0)
+      req = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
+  case planCall defaultRules m0 req of
+    Immediate pc -> case publishDelta m0 (pcDelta pc) of
+      Left fault -> fail ("open delta fault: " ++ show fault)
+      Right m1 -> pure (SessionId (mNextSession m0), m1)
+    other -> fail ("open failed: " ++ show other)
+
+-- | Finish an effect against the model and publish the commit.
+finishPublish :: Model -> Reservation -> EngineResult -> IO Model
+finishPublish m res ans = case finishEffect defaultRules m res ans of
+  Left rej -> fail ("finish rejected: " ++ show (rejCode rej))
+  Right pc -> case publishDelta m (pcDelta pc) of
+    Left fault -> fail ("finish delta fault: " ++ show fault)
+    Right m' -> pure m'
+
+-- | Assert one planned execution checks coherently with its exact
+-- planned effect, returning the reservation for finishing.
+assertCoherent :: SessionId -> CryptoEffect -> PlanResult -> IO Reservation
+assertCoherent sid want pr = case pr of
+  Execute res (EffectCrypto fx) -> do
+    assertEqual "planned effect" want fx
+    assertBool ("checks: " ++ show (resOperation res))
+      (isRight (checkedCallWork sid res (EffectCrypto fx)))
+    assertEqual "compatible" True (callPairCompatible sid res (EffectCrypto fx))
+    pure res
+  other -> fail ("expected Execute, got: " ++ show other)
+
+-- | The digest streaming dialogue, planned end to end: init
+-- allocates, update feeds, final consumes, and a fresh one-shot
+-- digests — every execution checks with its exact effect.
+caseCoherentDigest :: IO ()
+caseCoherentDigest = do
+  (sid, m0) <- openTokenSession
+  let rid = EngineResourceId 11
+      ireq = DRInit sid InitDigest Nothing sha256Mech [] False mempty
+  resI <- assertCoherent sid (FxDigestInit sha256Mech)
+    (planDecoded defaultRules m0 ireq)
+  m1 <- finishPublish m0 resI (EngineOkResource rid)
+  let ureq = Request Pkcs11_3_2 F_DigestUpdate (Just sid) Nothing "abc" []
+  resU <- assertCoherent sid (FxDigestFeed rid "abc")
+    (planCall defaultRules m1 ureq)
+  m2 <- finishPublish m1 resU (EngineOkBytes mempty)
+  let freq = (Request Pkcs11_3_2 F_DigestFinal (Just sid) Nothing mempty [])
+        { reqRegions = [RegionBytes "digest" (IntentBuffer 64)] }
+  resF <- assertCoherent sid (FxDigestConsume rid)
+    (planCall defaultRules m2 freq)
+  m3 <- finishPublish m2 resF (EngineOkBytes "digest-bytes")
+  -- The slot terminated with the final: re-init, then one-shot.
+  resI2 <- assertCoherent sid (FxDigestInit sha256Mech)
+    (planDecoded defaultRules m3 ireq)
+  m4 <- finishPublish m3 resI2 (EngineOkResource (EngineResourceId 12))
+  let oreq = (Request Pkcs11_3_2 F_Digest (Just sid) Nothing "abc" [])
+        { reqRegions = [RegionBytes "digest" (IntentBuffer 64)] }
+  _ <- assertCoherent sid (FxDigest sha256Mech "abc")
+    (planCall defaultRules m4 oreq)
+  pure ()
+
+-- | A public visible key object bound to a handle (legacy seam: no
+-- usage attributes, so the caller-derived init permits apply).
+seedSignKey :: Model -> ExternalHandle -> Model
+seedSignKey m h = m
+  { mObjects = Map.insert oid ost (mObjects m)
+  , mHandles = Map.insert h (HandleBinding oid (Generation 1)) (mHandles m)
+  }
+  where
+    oid = ObjectId 9
+    ost = ObjectState
+      { osId = oid
+      , osRevision = Revision 1
+      , osGeneration = Generation 1
+      , osAttrs = Map.fromList [(AttrClass, ValULong 4), (AttrPrivate, ValBool False)]
+      , osOwner = Nothing
+      , osSlot = SlotId 0
+      }
+
+-- | The sign dialogue, planned end to end: a decoded init persists
+-- the slot, and the one-shot over it checks with its exact effect.
+caseCoherentSign :: IO ()
+caseCoherentSign = do
+  (sid, m0) <- openTokenSession
+  let h = ExternalHandle 70
+      mK = seedSignKey m0 h
+      ireq = DRInit sid InitSign (Just h) hmacMech [OpSign] False mempty
+  m1 <- case planDecoded defaultRules mK ireq of
+    Immediate pc -> case publishDelta mK (pcDelta pc) of
+      Left fault -> fail ("sign init delta fault: " ++ show fault)
+      Right m' -> pure m'
+    other -> fail ("sign init did not persist: " ++ show other)
+  let oreq = (Request Pkcs11_3_2 F_Sign (Just sid) Nothing "hello" [])
+        { reqRegions = [RegionBytes "sig" (IntentBuffer 64)] }
+  _ <- assertCoherent sid (FxSign hmacMech (Just (ObjectId 9)) mempty "hello")
+    (planCall defaultRules m1 oreq)
+  pure ()
+
+-- | Assert one seeded planner emission: the outcome plans exactly the
+-- wanted effect, and the effect checks under its finishing function.
+assertEmission
+  :: FunctionId -> SlotKind -> CryptoEffect -> StepOutcome -> IO CryptoEffect
+assertEmission fid slot want outcome = do
+  assertEqual ("code for " ++ show fid) CKR_OK (soCode outcome)
+  case soEffects outcome of
+    [fx] -> do
+      assertEqual ("emission for " ++ show fid) want fx
+      let res = h1Res fid slot
+      assertBool ("checks: " ++ show fid)
+        (isRight (checkedCallWork h1Sid res (EffectCrypto fx)))
+      assertEqual ("compatible: " ++ show fid)
+        True (callPairCompatible h1Sid res (EffectCrypto fx))
+      pure fx
+    fxs -> fail ("expected one effect for " ++ show fid ++ ", got: " ++ show fxs)
+
+-- | Every classic planner emission checks under its finishing
+-- function: sign/verify one-shots and finals, both recovery
+-- one-shots, and cipher one-shots, updates, and finals in both
+-- directions (cipher directions pin exactly: an encrypt emission
+-- refuses under every decrypt function and vice versa).
+caseCoherentEmissions :: IO ()
+caseCoherentEmissions = do
+  let st = h1Session
+      oid = Just h1KeyOid
+      sCommon = mkSlotCommon hmacMech OpSign oid mempty AuthNone
+      vCommon = mkSlotCommon hmacMech OpVerify oid mempty AuthNone
+      cCommon = mkSlotCommon aesCbcMech OpEncrypt oid mempty AuthNone
+      dCommon = mkSlotCommon aesCbcMech OpDecrypt oid mempty AuthNone
+      cipherSpec = CipherSpec 16 True
+      rSpec = RecoverSpec 256 32
+      signOps = insertOp (mkActiveSign sCommon) emptySessionOps
+      verifyOps = insertOp (mkActiveVerify vCommon) emptySessionOps
+      encOps = insertOp (mkActiveCipher DirEncrypt cCommon cipherSpec) emptySessionOps
+      decOps = insertOp (mkActiveCipher DirDecrypt dCommon cipherSpec) emptySessionOps
+      srOps = insertOp
+        (mkActiveRecover RoleSignRecover
+          (mkSlotCommon hmacMech OpSignRecover oid mempty AuthNone) rSpec)
+        emptySessionOps
+      vrOps = insertOp
+        (mkActiveRecover RoleVerifyRecover
+          (mkSlotCommon hmacMech OpVerifyRecover oid mempty AuthNone) rSpec)
+        emptySessionOps
+  -- Sign and verify verticals over seeded slots.
+  let (_, _, s1) = planSignOneShot signOps st "" "hello"
+  _ <- assertEmission F_Sign SlotSign
+    (FxSign hmacMech oid mempty "hello") s1
+  let (opsSU, stSU, sU) = planSignUpdate signOps st "hel"
+  assertEqual "sign update buffers" [] (soEffects sU)
+  let (_, _, sF) = planSignFinal opsSU stSU ""
+  _ <- assertEmission F_SignFinal SlotSign
+    (FxSign hmacMech oid mempty "hel") sF
+  let (_, _, v1) = planVerifyOneShot verifyOps st "" "hello" "sig"
+  _ <- assertEmission F_Verify SlotVerify
+    (FxVerify hmacMech oid mempty "hello" "sig") v1
+  let (opsVU, stVU, vU) = planVerifyUpdate verifyOps st "hel"
+  assertEqual "verify update buffers" [] (soEffects vU)
+  let (_, _, vF) = planVerifyFinal opsVU stVU "" "lo"
+  _ <- assertEmission F_VerifyFinal SlotVerify
+    (FxVerify hmacMech oid mempty "hel" "lo") vF
+  -- Recovery one-shots over seeded slots.
+  let (_, _, sR) = planSignRecoverOneShot srOps st "" "hello"
+  _ <- assertEmission F_SignRecover SlotSign
+    (FxSignRecover hmacMech oid mempty "hello" 32) sR
+  -- The recovery block must hold data past the tag length.
+  let vrWit = BS.replicate 64 0x51
+      (_, _, vR) = planVerifyRecoverOneShot vrOps st "" vrWit
+  _ <- assertEmission F_VerifyRecover SlotVerify
+    (FxVerifyRecover hmacMech oid mempty vrWit 32) vR
+  -- Cipher verticals in both directions (encrypt pads, so
+  -- one-shot/update/final pin the emitted direction and check the
+  -- emitted effect rather than exact padded bytes; decrypt passes
+  -- input through verbatim, pinned exactly).
+  let block = "0123456789abcdef0123456789abcdef"
+      (_, _, e1) = planCipherOneShot encOps st SlotEncrypt "" block
+  fxE1 <- case soEffects e1 of
+    [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
+      _ <- assertEmission F_Encrypt SlotEncrypt fx e1
+      pure fx
+    fxs -> fail ("expected one encrypt one-shot effect, got: " ++ show fxs)
+  let (_, _, eU) = planCipherUpdate encOps st SlotEncrypt block Nothing
+  fxEU <- case soEffects eU of
+    [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
+      _ <- assertEmission F_EncryptUpdate SlotEncrypt fx eU
+      pure fx
+    fxs -> fail ("expected one encrypt update effect, got: " ++ show fxs)
+  let (_, _, eF) = planCipherFinal encOps st SlotEncrypt ""
+  fxEF <- case soEffects eF of
+    [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
+      _ <- assertEmission F_EncryptFinal SlotEncrypt fx eF
+      pure fx
+    fxs -> fail ("expected one encrypt final effect, got: " ++ show fxs)
+  let (_, _, d1) = planCipherOneShot decOps st SlotDecrypt "" block
+  fxD1 <- assertEmission F_Decrypt SlotDecrypt
+    (FxCipher DirDecrypt aesCbcMech oid mempty block) d1
+  let (_, _, dU) = planCipherUpdate decOps st SlotDecrypt block Nothing
+  fxDU <- case soEffects dU of
+    [fx@(FxCipher DirDecrypt _ _ _ _)] -> do
+      _ <- assertEmission F_DecryptUpdate SlotDecrypt fx dU
+      pure fx
+    fxs -> fail ("expected one decrypt update effect, got: " ++ show fxs)
+  let (_, _, dF) = planCipherFinal decOps st SlotDecrypt ""
+  fxDF <- case soEffects dF of
+    [fx@(FxCipher DirDecrypt _ _ _ _)] -> do
+      _ <- assertEmission F_DecryptFinal SlotDecrypt fx dF
+      pure fx
+    fxs -> fail ("expected one decrypt final effect, got: " ++ show fxs)
+  -- Direction precision: encrypt emissions refuse under every
+  -- decrypt function and vice versa.
+  mapM_ (assertDirRefuses [F_Decrypt, F_DecryptUpdate, F_DecryptFinal])
+    [fxE1, fxEU, fxEF]
+  mapM_ (assertDirRefuses [F_Encrypt, F_EncryptUpdate, F_EncryptFinal])
+    [fxD1, fxDU, fxDF]
+  where
+    assertDirRefuses fids fx = mapM_ check fids
+      where
+        check fid = assertEqual ("direction refuses " ++ show fid)
+          False (callFunctionEffect fid fx)
+
+-- | Message fixtures mirroring the message-operation suite: a keyed
+-- model, an op env over the curated registry, and per-family init
+-- arguments.
+msgModel :: Model
+msgModel =
+  let ost = ObjectState
+        { osId = ObjectId 9
+        , osRevision = Revision 1
+        , osGeneration = Generation 1
+        , osAttrs = Map.fromList
+            [(AttrClass, ValULong 4), (AttrPrivate, ValBool False)]
+        , osOwner = Nothing
+        , osSlot = SlotId 0
+        }
+  in emptyModel
+    { mObjects = Map.singleton (ObjectId 9) ost
+    , mHandles = Map.singleton (ExternalHandle 3)
+        (HandleBinding (ObjectId 9) (Generation 1))
+    }
+
+msgEnv :: OpEnv
+msgEnv = OpEnv
+  { oeRegistry = curatedRegistry
+  , oeCaps = mkCapabilities
+      [ (sha256Mech, OpDigest)
+      , (hmacMech, OpSign)
+      , (hmacMech, OpVerify)
+      , (aesCbcMech, OpEncrypt)
+      , (aesCbcMech, OpDecrypt)
+      ]
+  , oeModel = msgModel
+  }
+
+msgKey :: [Operation] -> KeyPolicy
+msgKey permits = KeyPolicy
+  { kpHandle = ExternalHandle 3
+  , kpPermits = permits
+  , kpAlwaysAuth = False
+  }
+
+msgArgs :: MsgFamily -> InitArgs
+msgArgs MsgEncrypt = InitArgs
+  { iaOp = OpEncrypt
+  , iaMech = aesCbcMech
+  , iaParams = BS.replicate 16 0
+  , iaKey = Just (msgKey [OpEncrypt, OpDecrypt])
+  , iaCipher = Just (CipherSpec 16 True)
+  , iaRecover = Nothing
+  }
+msgArgs MsgDecrypt = InitArgs
+  { iaOp = OpDecrypt
+  , iaMech = aesCbcMech
+  , iaParams = BS.replicate 16 0
+  , iaKey = Just (msgKey [OpEncrypt, OpDecrypt])
+  , iaCipher = Just (CipherSpec 16 True)
+  , iaRecover = Nothing
+  }
+msgArgs MsgSign =
+  InitArgs OpSign hmacMech BS.empty
+    (Just (msgKey [OpSign, OpVerify])) Nothing Nothing
+msgArgs MsgVerify =
+  InitArgs OpVerify hmacMech BS.empty
+    (Just (msgKey [OpSign, OpVerify])) Nothing Nothing
+
+-- | Every message planner emission checks under its finishing
+-- function: one-shots and concluding nexts in all four families
+-- (cipher directions pin exactly across families too).
+caseCoherentMessage :: IO ()
+caseCoherentMessage = do
+  let encParams = BS.replicate 16 2
+  -- One-shots in all four families.
+  fxEO <- msgOneShot MsgEncrypt
+    (MsgOneShotCipher encParams BS.empty "second")
+  fxDO <- msgOneShot MsgDecrypt
+    (MsgOneShotCipher BS.empty BS.empty "0123456789abcdef")
+  fxSO <- msgOneShot MsgSign (MsgOneShotSign BS.empty "hello")
+  fxVO <- msgOneShot MsgVerify (MsgOneShotVerify BS.empty "hello" "sig")
+  assertMsgCipher F_EncryptMessage SlotEncrypt fxEO DirEncrypt
+  assertMsgCipher F_DecryptMessage SlotDecrypt fxDO DirDecrypt
+  assertMsgFamily F_SignMessage SlotSign fxSO
+  assertMsgFamily F_VerifyMessage SlotVerify fxVO
+  -- Concluding nexts in all four families.
+  fxEN <- msgNext MsgEncrypt (MsgBegin encParams BS.empty)
+    [ MsgNextCipher BS.empty "hello, " False
+    , MsgNextCipher BS.empty "world" True
+    ]
+  fxDN <- msgNext MsgDecrypt (MsgBegin BS.empty BS.empty)
+    [MsgNextCipher BS.empty "0123456789abcdef" True]
+  fxSN <- msgNext MsgSign (MsgBegin BS.empty BS.empty)
+    [ MsgNextSign BS.empty "hello, " False
+    , MsgNextSign BS.empty "world" True
+    ]
+  fxVN <- msgNext MsgVerify (MsgBegin BS.empty BS.empty)
+    [MsgNextVerify BS.empty "hello" (Just "sig")]
+  assertMsgCipher F_EncryptMessageNext SlotEncrypt fxEN DirEncrypt
+  assertMsgCipher F_DecryptMessageNext SlotDecrypt fxDN DirDecrypt
+  assertMsgFamily F_SignMessageNext SlotSign fxSN
+  assertMsgFamily F_VerifyMessageNext SlotVerify fxVN
+  -- Cross-family precision: cipher directions and families refuse
+  -- across each other.
+  assertEqual "encrypt refuses decrypt legs"
+    False (callFunctionEffect F_DecryptMessage fxEO)
+  assertEqual "decrypt refuses encrypt legs"
+    False (callFunctionEffect F_EncryptMessage fxDO)
+  assertEqual "cipher refuses sign legs"
+    False (callFunctionEffect F_SignMessage fxEO)
+  assertEqual "sign refuses cipher legs"
+    False (callFunctionEffect F_EncryptMessage fxSO)
+  where
+    msgOps fam =
+      case initMessageOperation fam msgEnv emptySessionOps h1Session (msgArgs fam) of
+        (ops, out)
+          | ioCode out == CKR_OK -> pure ops
+          | otherwise -> fail ("message init refused: " ++ show (ioCode out))
+    msgOneShot fam one = do
+      ops0 <- msgOps fam
+      let (_, _, o) = planMessageOneShot ops0 h1Session fam "" one
+      assertEqual ("one-shot code for " ++ show fam) CKR_OK (soCode o)
+      case soEffects o of
+        [fx] -> pure fx
+        fxs -> fail ("expected one effect for " ++ show fam ++ ", got: " ++ show fxs)
+    msgNext fam begin parts = do
+      ops0 <- msgOps fam
+      let (ops1, st1, b) = planMessageBegin ops0 h1Session fam begin
+      assertEqual ("begin code for " ++ show fam) CKR_OK (soCode b)
+      assertEqual ("begin plans no crypto for " ++ show fam) [] (soEffects b)
+      go ops1 st1 parts
+      where
+        go _ _ [] = fail ("no concluding next for " ++ show fam)
+        go ops s [n] = do
+          let (_, _, o) = planMessageNext ops s fam n
+          assertEqual ("next code for " ++ show fam) CKR_OK (soCode o)
+          case soEffects o of
+            [fx] -> pure fx
+            fxs -> fail ("expected one effect for " ++ show fam ++ ", got: " ++ show fxs)
+        go ops s (n : ns) = do
+          let (ops', s', o) = planMessageNext ops s fam n
+          assertEqual ("part code for " ++ show fam) CKR_OK (soCode o)
+          go ops' s' ns
+    assertMsgCipher fid slot fx dir = case fx of
+      FxMessageCipher dir' _ _ _ _ _
+        | dir' == dir -> assertChecked fid slot fx
+        | otherwise -> fail ("wrong direction for " ++ show fid)
+      _ -> fail ("expected message cipher for " ++ show fid ++ ", got: " ++ show fx)
+    assertMsgFamily fid slot fx = assertChecked fid slot fx
+    assertChecked fid slot fx = do
+      let res = h1Res fid slot
+      assertEqual ("effect pins " ++ show fid)
+        True (callFunctionEffect fid fx)
+      assertBool ("checks " ++ show fid)
+        (isRight (checkedCallWork h1Sid res (EffectCrypto fx)))
+      assertEqual ("compatible " ++ show fid)
+        True (callPairCompatible h1Sid res (EffectCrypto fx))

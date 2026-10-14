@@ -19,6 +19,9 @@ module StoreSpec
   , contractSpec
   , Opener (..)
   , holderMain
+  , spawnHolderEnv
+  , releaseHolder
+  , awaitHolderExit
   , makeTempDir
   , expectRight
   , expectJust
@@ -43,7 +46,11 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
 import Data.Word (Word64)
-import Foreign.C.Types (CInt (..))
+import Foreign.C.Types (CInt (..), CULong (..))
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.StablePtr (StablePtr, castStablePtrToPtr)
+import Foreign.Storable (peek, poke)
 import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
@@ -107,9 +114,16 @@ import Haskoki.Runtime.Storage
   )
 import Haskoki.FFI.Standard
   ( ObjectProjection (..)
+  , StdInstance
   , StdStore (..)
   , StdStoreError (..)
   , buildObjectProjection
+  , haskokiStdClose
+  , haskokiStdGetSessionInfo
+  , haskokiStdLogin
+  , haskokiStdLogout
+  , haskokiStdOpenSession
+  , openStdInstance
   , openStdStore
   )
 import Haskoki.Runtime.Catalog (effectiveCatalog, identityCatalog)
@@ -118,12 +132,13 @@ import Haskoki.Runtime.Config
   , ConfigError (..)
   , StorageCfg (..)
   , StorageKind (..)
+  , defaultConfig
   , parseConfig
   )
 import Haskoki.Runtime.Lifecycle (newEnv, rulesFromConfig)
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
 import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), livenessFromProbes, openSQLiteStore)
-import Haskoki.Session (TokenAuth (..), tokenAuthNew)
+import Haskoki.Session (ActiveLogin (..), TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
   ( ExternalHandle (..)
@@ -326,6 +341,10 @@ contractSpec label mkOpener = testGroup label
       withOpener mkOpener testIdentitySlotMoves
   , testCase "fresh store seeds every configured token" $
       withOpener mkOpener testIdentityFreshSeeds
+  , testCase "auth commits persist counters and locks, never the login" $
+      withOpener mkOpener testAuthDurableOnly
+  , testCase "stored auth bytes carry no principal or session" $
+      withOpener mkOpener testAuthBytesRedacted
   ]
 
 -- | Acceptance 1: the same logical token objects across a
@@ -1451,9 +1470,26 @@ maskedProcRefuses =
 -- signals ready, then parks in the reserve/insert window
 -- without inserting, closing, or exiting — the parent kills it
 -- there to observe true process death between the two commits.
+--
+-- Auth-probe mode (@HASKOKI_HOLDER_MODE=auth-probe@, likewise
+-- environment-only): the child opens a full serving instance
+-- over the path instead of the raw store and runs the
+-- @HASKOKI_AUTH_SCRIPT@ login ops (see 'authProbeMain').
 holderMain :: FilePath -> FilePath -> FilePath -> IO ()
 holderMain path doneFile readyFile = do
   mode <- lookupEnv "HASKOKI_HOLDER_MODE"
+  case mode of
+    -- The auth probe opens a full serving instance, never the
+    -- raw store: it must not become a bare store owner first
+    -- (the instance open would then refuse as a second writer).
+    Just "auth-probe" -> authProbeMain path
+    _ -> holderStoreMain path doneFile readyFile mode
+
+-- | The store-owner holder: open the raw store, optionally run
+-- the reserve window, handshake on the ready/done files, then
+-- close and exit.
+holderStoreMain :: FilePath -> FilePath -> FilePath -> Maybe String -> IO ()
+holderStoreMain path doneFile readyFile mode = do
   e <- openSQLiteStore path
   case e of
     Left _ -> exitImmediately (ExitFailure 1)
@@ -1476,6 +1512,94 @@ holderMain path doneFile readyFile = do
         awaitDone doneFile (6000 :: Int)
         storeClose s
         exitImmediately ExitSuccess
+
+-- | Auth-probe holder (@HASKOKI_HOLDER_MODE=auth-probe@): the
+-- second-process leg of the durable-login suite. Opens a full
+-- serving instance over the database path (home catalog, SQLite
+-- store), opens one read/write session on slot 0, runs the
+-- comma-separated @HASKOKI_AUTH_SCRIPT@ login ops, writes one
+-- @op=decimal@ line per op to @HASKOKI_AUTH_RESULT@, closes, and
+-- exits. Ops: @u-bad@\/@u-good@ (user login with a wrong\/home
+-- PIN), @s-bad@\/@s-good@ (SO login likewise), @logout@, and
+-- @info@ (the session login code). Any failure exits nonzero
+-- without writing further lines; the parent joins with
+-- 'awaitHolderExit' and asserts the exact lines.
+authProbeMain :: FilePath -> IO ()
+authProbeMain path = do
+  mScript <- lookupEnv "HASKOKI_AUTH_SCRIPT"
+  mResult <- lookupEnv "HASKOKI_AUTH_RESULT"
+  case (mScript, mResult) of
+    (Just script, Just result) -> do
+      ctx <- openStdInstance sqliteCfg
+      if castStablePtrToPtr ctx == nullPtr
+        then exitImmediately (ExitFailure 2)
+        else do
+          h <- openProbeSession ctx
+          case h of
+            Nothing -> exitImmediately (ExitFailure 3)
+            Just session -> do
+              outs <- mapM (runProbeOp ctx session) (splitScript script)
+              case sequence outs of
+                Nothing -> exitImmediately (ExitFailure 4)
+                Just rendered -> do
+                  writeFile result (unlines rendered)
+                  haskokiStdClose ctx
+                  exitImmediately ExitSuccess
+    _ -> exitImmediately (ExitFailure 5)
+  where
+    sqliteCfg = defaultConfig
+      { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+
+-- | Open one read/write session on slot 0 for the probe.
+openProbeSession :: StablePtr StdInstance -> IO (Maybe CULong)
+openProbeSession ctx =
+  alloca $ \(phSession :: Ptr CULong) -> do
+    poke phSession (CULong 0)
+    rv <- haskokiStdOpenSession ctx (CULong 0) (CULong 0) phSession
+    if rv /= CULong 0
+      then pure Nothing
+      else Just <$> peek phSession
+
+-- | Run one probe op, rendering its @op=decimal@ line ('Nothing'
+-- on an unknown op).
+runProbeOp :: StablePtr StdInstance -> CULong -> String -> IO (Maybe String)
+runProbeOp ctx h op = case op of
+  "u-bad" -> Just . render <$> probeLogin ctx h 1 "0000"
+  "u-good" -> Just . render <$> probeLogin ctx h 1 "1234"
+  "s-bad" -> Just . render <$> probeLogin ctx h 0 "0000"
+  "s-good" -> Just . render <$> probeLogin ctx h 0 "5678"
+  "logout" -> Just . render <$> haskokiStdLogout ctx h
+  "info" -> fmap (fmap render) (probeLoginCode ctx h)
+  _ -> pure Nothing
+  where
+    render (CULong n) = op ++ "=" ++ show n
+
+-- | Log in with literal PIN bytes.
+probeLogin :: StablePtr StdInstance -> CULong -> CULong -> String -> IO CULong
+probeLogin ctx h userType pinStr =
+  BS.useAsCStringLen (BC8.pack pinStr) $ \(cstr, len) ->
+    haskokiStdLogin ctx h userType (castPtr cstr) (fromIntegral len)
+
+-- | Read the session login code ('Nothing' unless the info call is OK).
+probeLoginCode :: StablePtr StdInstance -> CULong -> IO (Maybe CULong)
+probeLoginCode ctx h =
+  alloca $ \(pSlot :: Ptr CULong) ->
+  alloca $ \(pRO :: Ptr CULong) ->
+  alloca $ \(pLogin :: Ptr CULong) ->
+  alloca $ \(pDevErr :: Ptr CULong) -> do
+    rv <- haskokiStdGetSessionInfo ctx h pSlot pRO pLogin pDevErr
+    if rv /= CULong 0
+      then pure Nothing
+      else Just <$> peek pLogin
+
+-- | Split a comma-separated probe script.
+splitScript :: String -> [String]
+splitScript = go
+  where
+    go [] = []
+    go s = case break (== ',') s of
+      (op, []) -> [op]
+      (op, _ : rest) -> op : go rest
 
 -- | Poll for the done file (10ms steps, bounded so a stuck parent
 -- cannot wedge the suite past the tasty timeout).
@@ -3006,6 +3130,96 @@ testIdentityFreshSeeds o = withStore o $ \s -> do
         [trGeneration t | t <- seeds]
       assertEqual "seed auths" [tokenAuthNew, tokenAuthNew, tokenAuthNew]
         [trAuth t | t <- seeds]
+
+-- ---------------------------------------------------------------------------
+-- Durable authentication state
+-- ---------------------------------------------------------------------------
+
+-- | A token put carrying a fully populated auth (logged in with
+-- a principal, epoch, counters, and a lock) persists the
+-- durable half only: loads and close/reopen boundaries show
+-- the counters and locks with the transient half cleared, so
+-- reopening never restores an authenticated application session.
+testAuthDurableOnly :: Opener -> IO ()
+testAuthDurableOnly o = withStore o $ \s -> do
+  let full = tokenAuthNew
+        { taLogin = Just AuthUser
+        , taPrincipal = Just "alice"
+        , taAuthEpoch = 7
+        , taUserAttempts = 2
+        , taSoAttempts = 1
+        , taUserLocked = True
+        }
+      tok = TokenRecord
+        { trId = TokenId 7
+        , trSlot = SlotId 0
+        , trGeneration = Generation 1
+        , trLabel = "auth-token"
+        , trAuth = full
+        }
+      want = tokenAuthNew
+        { taUserAttempts = 2
+        , taSoAttempts = 1
+        , taUserLocked = True
+        }
+  r <- storeCommit s emptyDelta { sdPutTokens = [tok] }
+  assertEqual "auth put commits" Committed r
+  auth1 <- loadTokenAuth s (TokenId 7)
+  assertEqual "load clears transient, keeps durable" want auth1
+  storeClose s
+  eStore2 <- openCurrent o
+  s2 <- either (assertFailure . show) pure eStore2
+  auth2 <- loadTokenAuth s2 (TokenId 7)
+  assertEqual "reopen keeps durable, never the login" want auth2
+  storeClose s2
+
+-- | Read one token's loaded auth (fails unless exactly one row).
+loadTokenAuth :: Store -> TokenId -> IO TokenAuth
+loadTokenAuth s tid = do
+  eLoaded <- storeLoadTokens s
+  loaded <- either (assertFailure . show) pure eLoaded
+  case [trAuth t | (t, _) <- loaded, trId t == tid] of
+    [a] -> pure a
+    _ -> assertFailure "auth token row missing"
+
+-- | The stored token bytes carry retry counters and lock flags
+-- only: no login key, no principal key or bytes, no epoch key.
+-- The token-document top-level key set stays pinned, and the
+-- 'Show' rendering leaks nothing either (it redacts the body).
+testAuthBytesRedacted :: Opener -> IO ()
+testAuthBytesRedacted o = withStore o $ \s -> do
+  let full = tokenAuthNew
+        { taLogin = Just AuthSO
+        , taPrincipal = Just "mallory"
+        , taAuthEpoch = 9
+        , taUserAttempts = 1
+        , taSoLocked = True
+        }
+      tok = TokenRecord
+        { trId = TokenId 7
+        , trSlot = SlotId 0
+        , trGeneration = Generation 1
+        , trLabel = "auth-token"
+        , trAuth = full
+        }
+  r <- storeCommit s emptyDelta { sdPutTokens = [tok] }
+  assertEqual "auth put commits" Committed r
+  docs <- expectInspect s
+  case [d | d <- docs, docTable d == "tokens"] of
+    [tokDoc] -> do
+      let body = docJson tokDoc
+      assertEqual "token doc top keys pinned"
+        ["auth", "format_version", "generation", "label", "slot", "token_id"]
+        (docTopKeys body)
+      assertBool "no login key" (not ("\"login\"" `isInfixOf` body))
+      assertBool "no principal key" (not ("principal" `isInfixOf` body))
+      assertBool "no epoch key" (not ("auth_epoch" `isInfixOf` body))
+      assertBool "no principal bytes" (not ("mallory" `isInfixOf` body))
+      assertBool "counters present"
+        ("user_attempts" `isInfixOf` body && "so_locked" `isInfixOf` body)
+      assertBool "show redacts the body"
+        (not ("mallory" `isInfixOf` show tokDoc))
+    other -> assertFailure ("expected one token doc, got: " ++ show (length other))
 
 -- | Pinned @token_ids@ parse and project onto both catalogs:
 -- identities pin per entry while the serving triples stay

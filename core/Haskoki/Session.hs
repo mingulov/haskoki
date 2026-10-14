@@ -22,6 +22,11 @@ module Haskoki.Session
   , PinCheck (..)
   , TokenAuth (..)
   , tokenAuthNew
+    -- * Durable/transient split
+  , DurableAuth (..)
+  , durableAuthOf
+  , clearTransientAuth
+  , authDurableChanged
     -- * Login attempts
   , LoginDeny (..)
   , denyCode
@@ -110,6 +115,61 @@ tokenAuthNew = TokenAuth
   , taUserLocked = False
   , taSoLocked = False
   }
+
+-- | The DURABLE half of 'TokenAuth': per-role PIN retry counters
+-- and lock flags. This is the only authentication state the store
+-- persists; everything else in 'TokenAuth' is transient.
+data DurableAuth = DurableAuth
+  { daUserAttempts :: !Int
+  , daSoAttempts :: !Int
+  , daUserLocked :: !Bool
+  , daSoLocked :: !Bool
+  } deriving (Eq, Show)
+
+-- | Project a token auth onto its durable half.
+durableAuthOf :: TokenAuth -> DurableAuth
+durableAuthOf a = DurableAuth
+  { daUserAttempts = taUserAttempts a
+  , daSoAttempts = taSoAttempts a
+  , daUserLocked = taUserLocked a
+  , daSoLocked = taSoLocked a
+  }
+
+-- | Clear the TRANSIENT half of a token auth: the active
+-- application login, the named-user principal, and the session
+-- epoch. Counters and locks pass through untouched. Stored
+-- records always carry the cleared form, so reopening never
+-- restores an authenticated application session, a principal, or
+-- a stale epoch; per-operation context grants live on sessions
+-- alone and are never stored either.
+clearTransientAuth :: TokenAuth -> TokenAuth
+clearTransientAuth a = a
+  { taLogin = Nothing
+  , taPrincipal = Nothing
+  , taAuthEpoch = 0
+  }
+
+-- | Whether the durable half changed between two token auths.
+-- The commit-before-return rule keys off exactly this: a login,
+-- logout, or session-close transition commits its token row
+-- before the caller observes the return code if and only if the
+-- durable projection moved. In particular:
+--
+-- * a failed attempt (counter bump, possibly locking the role)
+--   commits before @CKR_PIN_INCORRECT@\/@CKR_PIN_LOCKED@;
+-- * a granted login commits before @CKR_OK@ exactly when it
+--   resets a nonzero attempt counter, and bypasses the store
+--   when the durable half is already settled (fresh token);
+-- * a logout, a last-session-close logout, and a conflict denial
+--   that moves nothing are transient-only and bypass the store;
+-- * a context grant commits before @CKR_OK@ exactly when it
+--   resets a nonzero user counter (the one-session grant itself
+--   stays transient);
+-- * a context-PIN lockout commits the lock before
+--   @CKR_PIN_LOCKED@ (the forced logout transition rides along
+--   in memory only).
+authDurableChanged :: TokenAuth -> TokenAuth -> Bool
+authDurableChanged before after = durableAuthOf before /= durableAuthOf after
 
 -- | Why a login attempt was denied. 'DenyPinIncorrect' carries the
 -- attempts remaining before lockout.

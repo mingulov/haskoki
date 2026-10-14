@@ -158,7 +158,9 @@ module Haskoki.Runtime.Async
   , maxRetainedBytes
   , retainedBytes
   , enableAsyncSession
+  , disableAsyncSession
   , isAsyncSession
+  , enabledSessionCount
   , tableStats
   , deliveredCount
   , JobView (..)
@@ -166,6 +168,12 @@ module Haskoki.Runtime.Async
   , jobReadyNeed
   , jobFunctionOf
   , sessionJobs
+    -- * Close admission (borrowers drain before teardown)
+  , enterTableUse
+  , exitTableUse
+  , claimTableClose
+  , awaitTableQuiescent
+  , inspectTableGate
     -- * Detach support (snapshots, leases, seeded starts)
   , JobSnapshot
   , jobSnapshotFunction
@@ -206,6 +214,7 @@ import Control.Concurrent.MVar
 import Control.Concurrent.STM
   ( TVar
   , atomically
+  , check
   , newTVarIO
   , readTVar
   , readTVarIO
@@ -238,6 +247,7 @@ import qualified Data.Text as T
 import Data.Word (Word32, Word64)
 
 import Haskoki.Attribute (AttributeValue (..))
+import Haskoki.CallWork (callPairCompatible)
 import Haskoki.Engine.Driver (encodeResult)
 import Haskoki.Model (SessionState (..), lookupSession)
 import Haskoki.Object (decodeHandle, encodeHandle)
@@ -640,7 +650,11 @@ mintTableId = do
 
 -- | The attached-job table: live jobs plus tombstones, the next
 -- job id, the live-job capacity, the async-enabled sessions, the
--- table's process-local identity, and its exact handle salt.
+-- table's process-local identity, its exact handle salt, and its
+-- close-admission gate @(live borrowers, close claimed)@: export
+-- calls admitted through the context boundary hold one borrower
+-- each across the whole call, and close claims the gate and waits
+-- the borrowers out before draining anything.
 data AsyncTable = AsyncTable
   { atJobs :: !(TVar (Map JobId Job))
   , atNext :: !(TVar Int)
@@ -648,6 +662,7 @@ data AsyncTable = AsyncTable
   , atAsync :: !(TVar (Set SessionId))
   , atId :: !AsyncTableId
   , atSalt :: !Word32
+  , atGate :: !(TVar (Int, Bool))
   }
 
 -- | A fresh table with the given live-job capacity, a fresh
@@ -674,7 +689,8 @@ tryNewAsyncTable cap = do
         <*> pure cap
         <*> newTVarIO Set.empty
         <*> pure tid
-        <*> pure salt)
+        <*> pure salt
+        <*> newTVarIO (0, False))
 
 -- | A table's process-local identity (stable for the table's life).
 asyncTableId :: AsyncTable -> AsyncTableId
@@ -695,11 +711,29 @@ enableAsyncSession table sid = atomically $ do
   async <- readTVar (atAsync table)
   writeTVar (atAsync table) (Set.insert sid async)
 
+-- | Withdraw asynchronous service from a session. Idempotent:
+-- withdrawing a session that was never enabled (or was already
+-- withdrawn) is a quiet no-op. Callers invoke it only after the
+-- session's successful retirement (close or removal publication),
+-- so a rollback — a refused close, a faulted publish — leaves the
+-- enabled set untouched.
+disableAsyncSession :: AsyncTable -> SessionId -> IO ()
+disableAsyncSession table sid = atomically $ do
+  async <- readTVar (atAsync table)
+  writeTVar (atAsync table) (Set.delete sid async)
+
 -- | Whether a session is async-enabled. Lock-free read; rejoin
 -- validation uses it for target-session compatibility.
 isAsyncSession :: AsyncTable -> SessionId -> IO Bool
 isAsyncSession table sid =
   Set.member sid <$> readTVarIO (atAsync table)
+
+-- | Count of async-enabled sessions. Lock-free test\/diagnostic
+-- census: retirement paths keep it equal to the live async
+-- sessions, and rollback paths leave it unchanged.
+enabledSessionCount :: AsyncTable -> IO Int
+enabledSessionCount table =
+  Set.size <$> readTVarIO (atAsync table)
 
 -- | Table census: @(live, terminal tombstones, next job id)@. The
 -- next id proves refusals allocate nothing.
@@ -777,16 +811,70 @@ sessionJobs table sid = do
   pure [jid | (jid, job) <- Map.toAscList jobs, jbSession job == sid]
 
 -- ---------------------------------------------------------------------------
+-- Close admission
+-- ---------------------------------------------------------------------------
+
+-- | Admit one table use (an export call entered through the
+-- context boundary): the borrower count rises by one unless the
+-- table is already claimed for close, in which case the caller is
+-- refused ('False') before it does anything. One STM step, so the
+-- check and the count move together; pairs with 'exitTableUse'
+-- under a bracket, and runs masked at the boundary so no kill can
+-- split admission from the dereference that precedes it.
+enterTableUse :: AsyncTable -> IO Bool
+enterTableUse table = atomically $ do
+  (n, retired) <- readTVar (atGate table)
+  if retired
+    then pure False
+    else do
+      writeTVar (atGate table) (n + 1, retired)
+      pure True
+
+-- | Release one admitted table use. Pairs with 'enterTableUse'.
+exitTableUse :: AsyncTable -> IO ()
+exitTableUse table = atomically $ do
+  (n, retired) <- readTVar (atGate table)
+  writeTVar (atGate table) (n - 1, retired)
+
+-- | Claim a table for close: the first claim wins ('True') and
+-- retires the gate so no later use is admitted; a racing second
+-- claim reports 'False' and must tear nothing down. The winner
+-- still waits out live borrowers with 'awaitTableQuiescent'
+-- before draining, so teardown never overlaps an admitted call.
+claimTableClose :: AsyncTable -> IO Bool
+claimTableClose table = atomically $ do
+  (n, retired) <- readTVar (atGate table)
+  if retired
+    then pure False
+    else do
+      writeTVar (atGate table) (n, True)
+      pure True
+
+-- | Block until no admitted use remains. The wait retries in STM
+-- (no polling, no locks), so it composes with the borrower
+-- bracket: every admitted call exits exactly once, and close
+-- proceeds only after the last one does.
+awaitTableQuiescent :: AsyncTable -> IO ()
+awaitTableQuiescent table = atomically $ do
+  (n, _) <- readTVar (atGate table)
+  check (n <= 0)
+
+-- | Gate census: @(live borrowers, close claimed)@. Lock-free
+-- test\/diagnostic read.
+inspectTableGate :: AsyncTable -> IO (Int, Bool)
+inspectTableGate table = readTVarIO (atGate table)
+
+-- ---------------------------------------------------------------------------
 -- Operations
 -- ---------------------------------------------------------------------------
 
--- | Submit a job. Work/result compatibility, enablement,
--- attached-capacity bounds, and live capacity are all validated
--- BEFORE pending, in one transaction with the id allocation, so
--- every refusal consumes no id and leaves the table unchanged.
--- Check order: compatibility, session, attached capacity, live
--- capacity. Terminal tombstones never count toward live capacity
--- (reap them with 'reapJob').
+-- | Submit a job. Work/result compatibility, call-work coherence,
+-- enablement, attached-capacity bounds, and live capacity are all
+-- validated BEFORE pending, in one transaction with the id
+-- allocation, so every refusal consumes no id and leaves the table
+-- unchanged. Check order: holdability, call coherence, session,
+-- attached capacity, live capacity. Terminal tombstones never
+-- count toward live capacity (reap them with 'reapJob').
 startJob :: AsyncTable -> JobRequest -> IO (Either StartDeny JobId)
 startJob table req = startJobWith table req (JobPending (jrTicks req))
 
@@ -801,11 +889,14 @@ startSeededJob table req bs = startJobWith table req (JobReady (GotBytes bs))
 -- | Shared submit: validate, allocate the id, and insert the job in
 -- the given initial state, all in one transaction. The static
 -- work/result compatibility check runs first (a misconstructed
--- job is refused however healthy the table is); then session,
--- attached capacity, live capacity, as before.
+-- job is refused however healthy the table is); then call-work
+-- coherence ('callWorkAdmissible'); then session, attached
+-- capacity, live capacity, as before.
 startJobWith :: AsyncTable -> JobRequest -> JobState -> IO (Either StartDeny JobId)
 startJobWith table req initial
   | not (effectHoldable (workEffect (jrWork req))) =
+      pure (Left StartIncompatibleWork)
+  | not (callWorkAdmissible (jrSession req) (jrWork req)) =
       pure (Left StartIncompatibleWork)
   | otherwise = do
       lock <- newMVar ()
@@ -844,6 +935,18 @@ startJobWith table req initial
       JobTerminal _ -> False
       _ -> True
 
+-- | Submit-time call-work admissibility: call pairs must be
+-- pair-compatible under the submitting session
+-- ('Haskoki.CallWork.callPairCompatible' — step/session identity,
+-- the function/slot family, and effect compatibility, with
+-- legacy unstepped fixtures admitted explicitly and never by
+-- content sniffing). Key pairs keep their existing contract:
+-- submit admits them and the drive refuses incoherent ones
+-- ('pairRefusal'), unchanged.
+callWorkAdmissible :: SessionId -> AsyncWork -> Bool
+callWorkAdmissible sid (WorkCall res eff) = callPairCompatible sid res eff
+callWorkAdmissible _ (WorkKey _ _ _) = True
+
 -- | Poll a job. A wrong-function poll is refused with the job
 -- untouched; a correct-function poll on a pending job counts down,
 -- and the last poll drives the effect into a held owned result and
@@ -851,19 +954,15 @@ startJobWith table req initial
 -- revisions fail the drive before any effect runs.
 pollJob
   :: EffectRunner -> Env -> AsyncTable -> JobFunction -> JobId -> IO PollOutcome
-pollJob run env table func jid = withJobLock table jid PollUnknown $ \job -> do
-  cur <- readJob table jid
-  case cur of
-    Just j | jbFunction j /= func ->
-      pure (PollWrongFunction (jbFunction j) func)
-    -- Evicted between lease admission and this re-read (a
-    -- third-party commit removes terminal jobs without taking
-    -- their lease): unknown, exactly as if the owner reaped it.
-    Nothing -> pure PollUnknown
-    -- The countdown routes through 'stepJob' (fresh state, lock-time
-    -- epoch, exactly as before); a rejection carries the state that
-    -- refused the tick, which decides drive versus observe.
-    Just j -> case stepJob EvTick (jbState j) (jbEpoch job) of
+pollJob run env table func jid = withJobLock table jid PollUnknown $ \job ->
+  -- The job arrives current under the held lease ('withJobLock'
+  -- reloaded it; a job missing there already took 'PollUnknown'),
+  -- so the countdown routes through 'stepJob' against one
+  -- consistent record; a rejection carries the state that refused
+  -- the tick, which decides drive versus observe.
+  if jbFunction job /= func
+    then pure (PollWrongFunction (jbFunction job) func)
+    else case stepJob EvTick (jbState job) (jbEpoch job) of
       Right s -> case stepState s of
         JobPending m -> do
           commitStep table jid s
@@ -889,10 +988,11 @@ pollJob run env table func jid = withJobLock table jid PollUnknown $ \job -> do
 -- terminalizes first, then rethrows (cancellation preserved after
 -- cleanup). Never a permanently running job.
 -- | The pre-execution refusal for a finisher-incoherent key
--- pair, if any. Call work has no static pairing to
--- check (its finisher consumes the driver answer, not the
--- effect); key work refuses through 'keyPairCompatible' before
--- any effect runs. Both 'Show' instances redact secrets.
+-- pair, if any. Call work checks at submit instead
+-- ('callWorkAdmissible', before any id is consumed), so every
+-- tabled call job already coheres by drive time; key work
+-- refuses here through 'keyPairCompatible' before any effect
+-- runs. Both 'Show' instances redact secrets.
 pairRefusal :: AsyncWork -> Maybe String
 pairRefusal (WorkKey _ pw fx)
   | not (keyPairCompatible pw fx) =
@@ -976,16 +1076,13 @@ completeJob
   :: Env -> AsyncTable -> JobFunction -> JobId -> Delivery
   -> (ResourceRelease -> IO ()) -> IO CompleteOutcome
 completeJob env table func jid del release =
-  withJobLock table jid CompleteUnknown $ \job -> do
-    cur <- readJob table jid
-    case cur of
-      Just j | jbFunction j /= func ->
-        pure (CompleteWrongFunction (jbFunction j) func)
-      -- Evicted between lease admission and this re-read (a
-      -- third-party commit removes terminal jobs without taking
-      -- their lease): unknown, exactly as if the owner reaped it.
-      Nothing -> pure CompleteUnknown
-      Just j -> case jbState j of
+  withJobLock table jid CompleteUnknown $ \job ->
+    -- The job arrives current under the held lease ('withJobLock'
+    -- reloaded it; a job missing there already took
+    -- 'CompleteUnknown').
+    if jbFunction job /= func
+      then pure (CompleteWrongFunction (jbFunction job) func)
+      else case jbState job of
         JobTerminal t -> pure (CompleteAlready t)
         JobPending n -> pure (CompletePending n)
         JobRunning -> pure (CompletePending 0)
@@ -997,12 +1094,11 @@ completeJob env table func jid del release =
           WorkKey _ pw _ -> keyComplete env table jid job del pw h release
         -- A held non-bytes result is a data-shape failure, not a
         -- transition decision: the shape is read here, the failure
-        -- commits through 'stepJob' (fresh state, lock-time epoch,
-        -- exactly as before).
+        -- commits through 'stepJob' against the current record.
         JobReady other ->
           let why = "non-bytes held result: " ++ heldTag other
           in case stepJob (EvFail CKR_GENERAL_ERROR why)
-              (jbState j) (jbEpoch job) of
+              (jbState job) (jbEpoch job) of
             Right s -> do
               commitStep table jid s
               pure (CompleteAlready (TermFailed CKR_GENERAL_ERROR why))
@@ -1068,24 +1164,25 @@ commitAndTryDeliver env table jid job del delta releases release completion = do
         Left fault -> do
           mapM_ release releases
           failJob table jid job CKR_GENERAL_ERROR (show fault)
-        -- Delivery commits through 'stepJob' against the live state
-        -- (re-read under the held lease: still the ready job the
-        -- complete step dispatched on) with the lock-time epoch,
-        -- exactly as before. Releases drain AFTER the successful
-        -- publish, like every other commit-application
-        -- site; a short completion drains nothing, while a faulted
-        -- publish still drains the commit's releases exactly once
-        -- (see above).
+        -- Delivery commits through 'stepJob' against the live
+        -- record re-read under the held lease (still the ready job
+        -- the complete step dispatched on: no other lease-holder can
+        -- have touched it, and eviction only removes terminal
+        -- jobs). State and epoch come from that one re-read.
+        -- Releases drain AFTER the successful publish, like every
+        -- other commit-application site; a short completion drains
+        -- nothing, while a faulted publish still drains the
+        -- commit's releases exactly once (see above).
         Right () -> mask_ $ do
           mapM_ release releases
           cur <- readJob table jid
-          -- Evicted between lease admission and this re-read: unknown,
-          -- exactly as if the owner reaped it. Nothing was written
-          -- yet: the write follows a successful step below.
+          -- Missing at this re-read: unknown, exactly as if the
+          -- owner reaped it. Nothing was written yet: the write
+          -- follows a successful step below.
           case cur of
             Nothing -> pure CompleteUnknown
             Just j -> case stepJob (EvDeliver completion)
-              (jbState j) (jbEpoch job) of
+              (jbState j) (jbEpoch j) of
               Right s -> do
                 -- Ownership rules R5\/R6: the write precedes the commit, so a
                 -- throwing sink leaves 'Ready' (recoverable, retry
@@ -1216,20 +1313,18 @@ keyCompletion _ _ = Nothing
 -- engine work past the cancel and no sink contact. Terminal jobs
 -- report the winner's state.
 cancelJob :: AsyncTable -> JobId -> IO CancelOutcome
-cancelJob table jid = withJobLock table jid CancelUnknown $ \job -> do
-  cur <- readJob table jid
-  case cur of
-    -- Cancel routes through 'stepJob' (fresh state, lock-time
-    -- epoch, exactly as before); a rejection carries the terminal
-    -- state the caller observes.
-    Just j -> case stepJob EvCancel (jbState j) (jbEpoch job) of
-      Right s -> do
-        commitStep table jid s
-        pure CancelOk
-      Left (JobReject _ (JobTerminal t)) -> pure (CancelAlready t)
-      Left _ -> pure (CancelAlready (TermFailed CKR_GENERAL_ERROR
-        "stepJob EvCancel breached its contract"))
-    Nothing -> pure CancelUnknown
+cancelJob table jid = withJobLock table jid CancelUnknown $ \job ->
+  -- Cancel routes through 'stepJob' against the current record
+  -- ('withJobLock' reloaded it; a job missing there already took
+  -- 'CancelUnknown'); a rejection carries the terminal state the
+  -- caller observes.
+  case stepJob EvCancel (jbState job) (jbEpoch job) of
+    Right s -> do
+      commitStep table jid s
+      pure CancelOk
+    Left (JobReject _ (JobTerminal t)) -> pure (CancelAlready t)
+    Left _ -> pure (CancelAlready (TermFailed CKR_GENERAL_ERROR
+      "stepJob EvCancel breached its contract"))
 
 -- | Whether a job state may be reaped.
 --
@@ -1284,19 +1379,18 @@ reapEligibility _ = BlockedLive
 -- report 'ReapLive' with the job untouched; unknown ids report
 -- 'ReapUnknown'.
 reapJob :: AsyncTable -> JobId -> IO ReapOutcome
-reapJob table jid = withJobLock table jid ReapUnknown $ \_ -> do
-  cur <- readJob table jid
-  case cur of
-    Just j -> case reapEligibility (jbState j) of
-      EligibleTerminal -> do
-        atomically $ do
-          jobs <- readTVar (atJobs table)
-          -- Forced: see the forcing invariant on 'commitStep'.
-          let jobs' = Map.delete jid jobs
-          jobs' `seq` writeTVar (atJobs table) jobs'
-        pure Reaped
-      BlockedLive -> pure ReapLive
-    Nothing -> pure ReapUnknown
+reapJob table jid = withJobLock table jid ReapUnknown $ \job ->
+  -- The job arrives current under the held lease (a job missing
+  -- there already took 'ReapUnknown').
+  case reapEligibility (jbState job) of
+    EligibleTerminal -> do
+      atomically $ do
+        jobs <- readTVar (atJobs table)
+        -- Forced: see the forcing invariant on 'commitStep'.
+        let jobs' = Map.delete jid jobs
+        jobs' `seq` writeTVar (atJobs table) jobs'
+      pure Reaped
+    BlockedLive -> pure ReapLive
 
 -- ---------------------------------------------------------------------------
 -- Lease helpers (STM touches job-table TVars only)
@@ -1304,6 +1398,15 @@ reapJob table jid = withJobLock table jid ReapUnknown $ \_ -> do
 
 -- | Run under a job's delivery lease. Unknown jobs take the
 -- default without locking.
+--
+-- The pre-lock record supplies ONLY the stable lease lock (the
+-- 'MVar' survives every record replacement for the job's life).
+-- The body always runs against the CURRENT record, reloaded under
+-- the held lease, so the state and epoch it decides on are read
+-- together — never a fresh state paired with a stale epoch. A job
+-- missing at reload — reaped or evicted while waiting for the
+-- lease (eviction takes no lease) — takes the default without
+-- running the body, exactly as if it were unknown at admission.
 --
 -- Ownership rule R1 backstop: an exception escaping a lease body with the job
 -- still claimed ('JobRunning') repairs the claim to failed (masked,
@@ -1316,7 +1419,11 @@ withJobLock table jid def k = do
   mj <- readTVarIO (atJobs table) >>= pure . Map.lookup jid
   case mj of
     Nothing -> pure def
-    Just job -> withMVar (jbLock job) (const (repairing (k job)))
+    Just pre -> withMVar (jbLock pre) (const (repairing (do
+      cur <- readJob table jid
+      case cur of
+        Nothing -> pure def
+        Just job -> k job)))
   where
     repairing body = body `onException` mask_ (do
       cur <- readJob table jid

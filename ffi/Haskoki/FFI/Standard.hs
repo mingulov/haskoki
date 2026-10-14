@@ -73,6 +73,7 @@ module Haskoki.FFI.Standard
   , openStdInstanceWithSlots
   , openStdInstanceWithNotify
   , openStdStore
+  , openStdStoreWith
   , NativeNotify, SessionNotify (..), NotifyDecision (..), NotifyInvoker
   , invokeNativeNotify, dispatchSessionNotifyWith
   , registerSessionNotify, retireSessionNotify, surrenderDigest
@@ -134,6 +135,8 @@ module Haskoki.FFI.Standard
   , beWord64
   , ObjectProjection (..)
   , buildObjectProjection
+  , projectAuthPuts
+  , authPutsOf
   , haskokiStdCreateObject
   , haskokiStdCopyObject
   , haskokiStdSetAttributeValue
@@ -438,6 +441,7 @@ import Haskoki.Rules (Rules (..))
 import Haskoki.Runtime.Async
   ( AsyncTable
   , JobFunction (..)
+  , disableAsyncSession
   , enableAsyncSession
   , isAsyncSession
   , newAsyncTable
@@ -471,6 +475,7 @@ import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , DesiredToken (..)
   , ObjectPut (..)
+  , ObjectRecord
   , Reconcile (..)
   , ReconcilePlan (..)
   , Store (..)
@@ -489,6 +494,8 @@ import Haskoki.Session
   , EffectivePolicy (..)
   , SessionLogin (..)
   , TokenAuth (..)
+  , authDurableChanged
+  , clearTransientAuth
   , effectivePolicy
   )
 import Haskoki.Transition (finishEffect, planCall, planDecoded, publishDelta)
@@ -868,7 +875,19 @@ data StdStoreError
   deriving (Eq, Show)
 
 openStdStore :: Env -> Config -> IO (Either StdStoreError (Maybe StdStore))
-openStdStore env cfg = case scKind (cfgStorage cfg) of
+openStdStore = openStdStoreWith openSQLiteStore
+
+-- | 'openStdStore' over an injected store opener: production
+-- passes 'openSQLiteStore'; fault-injection fixtures pass a
+-- scripted opener ('openSQLiteStoreWith' with limits and
+-- faults). The reconcile\/seat\/seed flow is identical either
+-- way, so injected faults exercise the production open path.
+openStdStoreWith
+  :: (FilePath -> IO (Either StoreError Store))
+  -> Env
+  -> Config
+  -> IO (Either StdStoreError (Maybe StdStore))
+openStdStoreWith openPath env cfg = case scKind (cfgStorage cfg) of
       StorageMemory -> do
         eSeat <- seatAll env (Map.keys catalog)
         case eSeat of
@@ -877,7 +896,7 @@ openStdStore env cfg = case scKind (cfgStorage cfg) of
       StorageSQLite -> case scPath (cfgStorage cfg) of
         Nothing -> pure (Left StdStoreNoPath)
         Just path -> do
-          eStore <- openSQLiteStore path
+          eStore <- openPath path
           case eStore of
             Left err -> pure (Left (StdStoreSQLite err))
             Right store -> do
@@ -1503,7 +1522,9 @@ setStdTokenPresenceWith release inst slot present = mask_ $ do
                     published <- readIORef committed
                     when published $ finishAll
                       (map (retireSessionNotify inst) sessions ++ map (clearCursor inst) sessions
-                        ++ map (freeStdAsyncView inst) sessions ++ map release releases)
+                        ++ map (freeStdAsyncView inst) sessions
+                        ++ map (disableAsyncSession (siAsyncTable inst)) sessions
+                        ++ map release releases)
               (do
                 canceled <- sum <$> mapM (cancelPresenceSession inst) sessions
                 _ <- evaluate canceled
@@ -1634,13 +1655,53 @@ buildObjectProjection ids m m' (StateDelta ops) = ObjectProjection
 nullProjection :: ObjectProjection -> Bool
 nullProjection p = projPuts p == 0 && projDrops p == 0 && projMeta p == 0
 
+-- | Project a published model step onto its durable
+-- authentication half (@loaded@ = current stored token rows,
+-- @m@ = pre model, @m'@ = projected model): every seated slot
+-- whose durable half moved ('authDurableChanged' between @m@
+-- and @m'@) becomes a token put — the stored row with its auth
+-- replaced by the cleared 'clearTransientAuth' post-state.
+-- Transient-only moves (grants on settled counters, logouts,
+-- last-session-close logouts, no-op denials) project to
+-- nothing: no write, no commit.
+--
+-- The comparison is over the pre\/post model maps directly, not
+-- over delta-op shapes, so no delta arm — present or future —
+-- can move durable auth past the projection silently. The puts
+-- are scrubbed before issuing, so ambiguous-commit
+-- reconciliation compares scrubbed against scrubbed.
+--
+-- 'Nothing' fails closed: a moved slot whose token row (or
+-- pre-model auth) is missing is an internal inconsistency, and
+-- the publish refuses instead of fabricating a row.
+projectAuthPuts
+  :: Map SlotId TokenId
+  -> [(TokenRecord, [ObjectRecord])]
+  -> Model
+  -> Model
+  -> Maybe [TokenRecord]
+projectAuthPuts ids loaded m m' =
+  fmap concat (mapM putOf (Map.keys (mTokenAuth m')))
+  where
+    tokenOf slot = Map.findWithDefault (tokenIdForSlot slot) slot ids
+    putOf slot = do
+      before <- Map.lookup slot (mTokenAuth m)
+      after <- Map.lookup slot (mTokenAuth m')
+      if not (authDurableChanged before after)
+        then Just []
+        else do
+          (row, _) <- find ((== tokenOf slot) . trId . fst) loaded
+          Just [row { trAuth = clearTransientAuth after }]
+
 -- | Gate-held caller reconciliation after 'CommitUnknown': re-read
 -- tokens plus meta and compare every projected put/drop/meta row
--- against the reread state. All match means the commit landed
--- (publish @m'@); any mismatch means it did not (keep @m@); a
--- reread failure fails closed (model unchanged, fault returned).
--- Never calls 'restoreStoreState' (it would deadlock on the
--- non-reentrant gate) and never reissues the commit.
+-- against the reread state, token puts included (both sides
+-- scrubbed, so an auth-only write reconciles like any other).
+-- All match means the commit landed (publish @m'@); any mismatch
+-- means it did not (keep @m@); a reread failure fails closed
+-- (model unchanged, fault returned). Never calls
+-- 'restoreStoreState' (it would deadlock on the non-reentrant
+-- gate) and never reissues the commit.
 reconcileUnderGate :: Store -> StoreDelta -> IO Bool
 reconcileUnderGate store proj = do
   eToks <- storeLoadTokens store
@@ -1656,11 +1717,22 @@ reconcileUnderGate store proj = do
 
 -- | Publish a delta through the instance environment. Memory stays
 -- the plain gate publication; a stored instance commits the
--- projected object half store-FIRST under the gate (masked, so no
+-- projected store half store-FIRST under the gate (masked, so no
 -- async exception can land between durable success and the model
 -- write): only 'Committed' -- or an unknown commit that
 -- reconciles landed -- publishes @m'@; anything else keeps @m@
--- and reports the store fault.
+-- and reports the store fault. The store half merges the object
+-- projection ('buildObjectProjection') with the durable
+-- authentication projection ('projectAuthPuts', loaded only when
+-- durable auth moved): an auth-only change is a real write, and
+-- a transient-only change bypasses the store. A landed unknown
+-- commit reloads authoritatively inline (clearing the backend
+-- quarantine) and publishes the reconciled model; even a failed
+-- reload still publishes, because the reload just proved durable
+-- holds this delta, so @m'@ is the authority-matching state —
+-- while a surviving quarantine fails the NEXT write closed
+-- rather than this one. An unlanded commit keeps the model and
+-- stays quarantined until close/reopen.
 publishStd :: StdInstance -> StateDelta -> IO (Either ModelFault ())
 publishStd inst delta = case siStore inst of
   Nothing -> publish (siEnv inst) delta
@@ -1671,26 +1743,61 @@ publishStd inst delta = case siStore inst of
         Right m' -> do
           emit EvProjectOk
           let proj = buildObjectProjection ids m m' delta
-          if nullProjection proj
-            then emit EvBypass >> pure (Right (Just m'))
-            else do
-              emit (EvIssued (projPuts proj) (projDrops proj) (projMeta proj))
-              res <- storeCommit store (projDelta proj)
-              case res of
-                Committed -> emit EvCommitted >> pure (Right (Just m'))
-                NotCommitted _ -> emit EvNotCommitted >> pure (Left (storeFault res))
-                CommitUnknown _ -> do
-                  emit EvUnknown
-                  landed <- reconcileUnderGate store (projDelta proj)
-                  emit (EvReconciled landed)
-                  if landed
-                    then pure (Right (Just m'))
-                    else pure (Left (storeFault res)))
+          eAuthPuts <- authPutsOf store ids m m'
+          case eAuthPuts of
+            Left fault -> pure (Left fault)
+            Right authPuts ->
+              let full = (projDelta proj) { sdPutTokens = authPuts }
+              in if nullProjection proj && null authPuts
+                then emit EvBypass >> pure (Right (Just m'))
+                else do
+                  emit (EvIssued (projPuts proj) (projDrops proj) (projMeta proj))
+                  res <- storeCommit store full
+                  case res of
+                    Committed -> emit EvCommitted >> pure (Right (Just m'))
+                    NotCommitted _ -> emit EvNotCommitted >> pure (Left (storeFault res))
+                    CommitUnknown _ -> do
+                      emit EvUnknown
+                      landed <- reconcileUnderGate store full
+                      emit (EvReconciled landed)
+                      if landed
+                        then do
+                          _ <- storeReload store
+                          pure (Right (Just m'))
+                        else pure (Left (storeFault res)))
       (emit EvPublished)
     pure (fmap (const ()) r)
   where
     emit e = forM_ (siLedger inst) (`modifyIORef'` (++ [e]))
     storeFault res = FaultInternal ("certificate store commit: " ++ show res)
+
+-- | Load the current token rows and project the model step's
+-- durable authentication half. Steps whose durable auth is
+-- unchanged skip the load and project to no puts (a pure
+-- pre-check, so the common session\/cursor\/object path pays no
+-- read); a load failure or a missing moved row fails the
+-- publish closed.
+authPutsOf
+  :: Store -> Map SlotId TokenId -> Model -> Model
+  -> IO (Either ModelFault [TokenRecord])
+authPutsOf store ids m m'
+  | not (authMoved m m') = pure (Right [])
+  | otherwise = do
+      eLoaded <- storeLoadTokens store
+      case eLoaded of
+        Left err -> pure (Left (FaultInternal ("auth projection reload: " ++ show err)))
+        Right loaded -> case projectAuthPuts ids loaded m m' of
+          Nothing -> pure (Left (FaultInternal "auth projection: moved token row missing"))
+          Just puts -> pure (Right puts)
+  where
+    authMoved a b = any moved (Map.keys (mTokenAuth b))
+    moved slot = case (Map.lookup slot (mTokenAuth a), Map.lookup slot (mTokenAuth b)) of
+      (Just before, Just after) -> authDurableChanged before after
+      -- A post-model slot with no pre-model auth is
+      -- inconsistent; the projection fails closed after the
+      -- load instead of skipping silently.
+      (Nothing, Just _) -> True
+      _ -> False
 
 -- | Publish a prepared commit, then drain its releases through the
 -- instance backend (every commit-application site routes
@@ -1717,8 +1824,19 @@ publishCommit inst pc = do
 -- rejections). Plan-time rejections carry none.
 publishRejection :: StdInstance -> Rejection -> IO ()
 publishRejection inst rej = do
-  _ <- publishStd inst (rejDelta rej)
+  _ <- publishRejectionE inst rej
+  pure ()
+
+-- | 'publishRejection' reporting the publish outcome. A faulted
+-- publish still drains (drain-then-report); the caller decides
+-- the code. Login denials use this to fail closed: a retry/lock
+-- write that does not land must not answer with the denial code
+-- as if the attempt had counted.
+publishRejectionE :: StdInstance -> Rejection -> IO (Either ModelFault ())
+publishRejectionE inst rej = do
+  pr <- publishStd inst (rejDelta rej)
   drainReleases (siBackend inst) (rejReleases rej)
+  pure pr
 
 -- | Drop one session's find cursor (close/logout paths).
 clearCursor :: StdInstance -> SessionId -> IO ()
@@ -2010,11 +2128,18 @@ haskokiStdOpenSessionWithNotifyWith observe ctx slot (CULong ro) (CULong async) 
 
 -- | Release failures after model close cannot retain a callable association or
 -- borrowed view. A failed publication with a still-live session retains both.
+-- Async enablement retires here too, under the same guard: only a
+-- session the model no longer holds is disabled, so rollback (a
+-- faulted close publish) leaves the enabled set intact.
 retireClosedSession :: StdInstance -> SessionId -> IO ()
 retireClosedSession inst sid = do
   model <- snapshotModel (siEnv inst)
   when (isNothing (lookupSession model sid)) $ finishAll
-    [retireSessionNotify inst sid, clearCursor inst sid, freeStdAsyncView inst sid]
+    [ retireSessionNotify inst sid
+    , clearCursor inst sid
+    , freeStdAsyncView inst sid
+    , disableAsyncSession (siAsyncTable inst) sid
+    ]
 
 -- | Close one session (unknown handles refuse; the engine also
 -- destroys the session's objects and applies last-close logout).
@@ -2620,6 +2745,12 @@ maxPinBytes = 65536
 -- session relabeling. Denials publish their counter moves; a
 -- context-PIN lockout denial carries the full logout transition
 -- and retires every find cursor on the slot like a logout.
+-- Durable retry/lock moves commit store-first before the return
+-- code is observed ('authDurableChanged'); transient-only
+-- outcomes (grants on settled counters, logouts) bypass the
+-- store, and a reopen never restores the granted session. A
+-- durable write that does not land fails the call with
+-- @CKR_GENERAL_ERROR@ instead of the denial code.
 haskokiStdLogin
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> IO CULong
@@ -2660,11 +2791,17 @@ haskokiStdLogin ctx (CULong h) (CULong userType) pPin (CULong pinLen) =
                   | pcCode pc == CKR_OK -> pure ckrOk
                   | otherwise -> pure (stdRvOf (pcCode pc))
             Reject rej -> do
-              publishRejection inst rej
-              when (rejectionLoggedOut rej) $
-                forM_ (lookupSession m0 (SessionId (fromIntegral h))) $ \st ->
-                  clearSlotCursors inst m0 (ssSlot st)
-              pure (stdRvOf (rejCode rej))
+              pr <- publishRejectionE inst rej
+              case pr of
+                -- Fail closed: the counters did not move, so the
+                -- denial code (with its remaining-attempts
+                -- implication) must not answer.
+                Left _ -> pure ckrGeneralError
+                Right () -> do
+                  when (rejectionLoggedOut rej) $
+                    forM_ (lookupSession m0 (SessionId (fromIntegral h))) $ \st ->
+                      clearSlotCursors inst m0 (ssSlot st)
+                  pure (stdRvOf (rejCode rej))
             Execute _ _ -> pure ckrGeneralError
     soPinOf (_, so, _) = BC8.pack so
     userPinOf (_, _, user) = BC8.pack user

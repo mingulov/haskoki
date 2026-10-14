@@ -49,7 +49,7 @@ import Control.Exception
   , fromException
   , getMaskingState
   )
-import Data.List (sortOn)
+import Data.List (isInfixOf, sortOn)
 import qualified Data.Map.Strict as Map
 import System.Directory (removeDirectoryRecursive)
 import System.FilePath ((</>))
@@ -77,6 +77,7 @@ import Haskoki.Runtime.Storage
   , ReconcilePlan (..)
   , Store (..)
   , StoreDelta (..)
+  , StoreDeltaClass (..)
   , StoreError (..)
   , StoreLimits (..)
   , StoreStats (..)
@@ -84,10 +85,13 @@ import Haskoki.Runtime.Storage
   , TokenRecord (..)
   , coverDeletedJobIds
   , decidePublication
+  , decodeTokenRecord
   , defaultLimits
+  , deltaClasses
   , emptyDelta
   , encodeHexWord64
   , encodeObjectRecord
+  , encodeTokenRecord
   , jobIdCounterKey
   , nextJobReservation
   , noFaults
@@ -97,15 +101,18 @@ import Haskoki.Runtime.Storage
   , reconcileReload
   , renderIdentityRefusal
   , reserveRestoredIds
+  , scrubDeltaAuth
+  , scrubTokenAuth
   , scriptedFaults
   , withMaskHook
   , withResultHook
   )
+import Haskoki.FFI.Standard (authPutsOf, projectAuthPuts)
 import Haskoki.Runtime.Catalog (identityCatalog)
 import Haskoki.Runtime.Config (Config (..), parseConfig)
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStoreWith)
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStoreWith)
-import Haskoki.Session (tokenAuthNew)
+import Haskoki.Session (ActiveLogin (..), TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
   ( Generation (..)
@@ -126,6 +133,11 @@ spec = testGroup "commit protocol"
       [ testCase "publication advice follows classification" testAdvice
       , testCase "reload reconciliation compares full records" testReconcile
       , testCase "reservation step reconciles without lowering" testNextJobReservation
+      , testCase "durable delta classification names every list" testDeltaClasses
+      , testCase "auth codec persists counters, never the session" testAuthCodec
+      , testCase "scrubbed puts reconcile present" testScrubbedReconcile
+      , testCase "auth projection commits durable moves only" testAuthProjection
+      , testCase "unchanged auth skips the projection load" testAuthPutsSkipLoad
       ]
   , testGroup "memory" (protocolCases withMemoryIdentity)
   , testGroup "sqlite" (protocolCases withSQLiteIdentity)
@@ -184,6 +196,14 @@ protocolCases withIdentity =
       withIdentity testUnappliedDeleteStaleCounter
   , testCase "ambiguous duplicate meta reconciles committed" $
       withIdentity testAmbiguousDuplicateMeta
+  , testCase "auth-only pre-commit failure keeps live and persisted counters" $
+      withIdentity testAuthPreCommit
+  , testCase "auth-only ambiguous commit lands once, never replays" $
+      withIdentity testAuthAmbiguous
+  , testCase "auth-only ambiguous plus verify failure resolves on reload" $
+      withIdentity testAuthAmbiguousUnknown
+  , testCase "auth-only post-commit failure quarantines until reload, reopen clean" $
+      withIdentity testAuthPostCommit
   ]
 
 -- | The pre-commit limit cases every backend runs.
@@ -232,6 +252,188 @@ testReconcile = do
     (reconcileReload delta [(tok, [rec, demoObject (TokenId 1) (ObjectId 9)])])
   assertEqual "altered content reconciles absent" ReconciledAbsent
     (reconcileReload delta [(tok { trLabel = "changed" }, [rec])])
+
+-- | Delta classification is exhaustive with no catch-all: the
+-- empty delta names nothing, each singleton delta names exactly
+-- its own list, and the full delta pins the whole
+-- @[minBound .. maxBound]@ class set, so a new delta list
+-- without a classifier arm fails here instead of classifying
+-- silently. An auth-only change is 'DeltaTokensPut': a real
+-- write class, never a bypass.
+testDeltaClasses :: IO ()
+testDeltaClasses = do
+  let tok = demoToken (TokenId 1)
+      rec = demoObject (TokenId 1) (ObjectId 2)
+      job = demoJobPending 9 (TokenId 1) (Generation 1)
+  assertEqual "empty names nothing" [] (deltaClasses emptyDelta)
+  assertEqual "token puts" [DeltaTokensPut]
+    (deltaClasses emptyDelta { sdPutTokens = [tok] })
+  assertEqual "token drops" [DeltaTokensDrop]
+    (deltaClasses emptyDelta { sdDropTokens = [TokenId 1] })
+  assertEqual "object puts" [DeltaObjectsPut]
+    (deltaClasses emptyDelta { sdPutObjects = [ObjectPut Nothing rec] })
+  assertEqual "object drops" [DeltaObjectsDrop]
+    (deltaClasses emptyDelta { sdDropObjects = [ObjectId 2] })
+  assertEqual "job puts" [DeltaJobsPut]
+    (deltaClasses emptyDelta { sdPutJobs = [job] })
+  assertEqual "job drops" [DeltaJobsDrop]
+    (deltaClasses emptyDelta { sdDropJobs = [9] })
+  assertEqual "meta puts" [DeltaMetaPut]
+    (deltaClasses emptyDelta { sdPutMeta = [("mark", "1")] })
+  let full = emptyDelta
+        { sdPutTokens = [tok]
+        , sdDropTokens = [TokenId 2]
+        , sdPutObjects = [ObjectPut Nothing rec]
+        , sdDropObjects = [ObjectId 3]
+        , sdPutJobs = [job]
+        , sdDropJobs = [10]
+        , sdPutMeta = [("mark", "1")]
+        }
+  assertEqual "full delta pins every class"
+    [minBound .. maxBound] (deltaClasses full)
+
+-- | The token codec persists retry counters and lock flags only:
+-- the encoded bytes carry no login, principal, or epoch, and the
+-- decoded auth is transient-cleared with the durable half
+-- intact. Legacy transient keys from an older writer decode to
+-- the same cleared form (tolerated, never restored); a document
+-- missing a durable key, or carrying a malformed durable value,
+-- refuses.
+testAuthCodec :: IO ()
+testAuthCodec = do
+  let full = tokenAuthNew
+        { taLogin = Just AuthUser
+        , taPrincipal = Just "alice"
+        , taAuthEpoch = 7
+        , taUserAttempts = 2
+        , taSoAttempts = 1
+        , taUserLocked = True
+        }
+      tok = (demoToken (TokenId 1)) { trAuth = full }
+      doc = encodeTokenRecord tok
+  assertBool "no login key" (not ("\"login\"" `isInfixOf` doc))
+  assertBool "no principal key" (not ("principal" `isInfixOf` doc))
+  assertBool "no epoch key" (not ("auth_epoch" `isInfixOf` doc))
+  assertBool "no principal bytes" (not ("alice" `isInfixOf` doc))
+  tok' <- expectJust "durable doc decodes" (decodeTokenRecord doc)
+  assertEqual "transient cleared, durable kept"
+    (tokenAuthNew { taUserAttempts = 2, taSoAttempts = 1, taUserLocked = True })
+    (trAuth tok')
+  let legacy = "{\"auth\":{\"auth_epoch\":\"0000000000000007\",\"login\":\"user\","
+        ++ "\"principal\":\"mallory\",\"so_attempts\":\"0000000000000001\","
+        ++ "\"so_locked\":false,\"user_attempts\":\"0000000000000002\","
+        ++ "\"user_locked\":true},\"format_version\":1,"
+        ++ "\"generation\":\"0000000000000001\",\"label\":\"demo\","
+        ++ "\"slot\":\"0000000000000000\",\"token_id\":\"0000000000000001\"}"
+  legacy' <- expectJust "legacy doc decodes" (decodeTokenRecord legacy)
+  assertEqual "legacy transient ignored, counters kept"
+    (tokenAuthNew { taUserAttempts = 2, taSoAttempts = 1, taUserLocked = True })
+    (trAuth legacy')
+  let complete =
+        "{\"auth\":{\"so_attempts\":\"0000000000000001\",\"so_locked\":false,"
+        ++ "\"user_attempts\":\"0000000000000002\",\"user_locked\":true},"
+        ++ "\"format_version\":1,\"generation\":\"0000000000000001\","
+        ++ "\"label\":\"demo\",\"slot\":\"0000000000000000\","
+        ++ "\"token_id\":\"0000000000000001\"}"
+  -- The complete durable-only doc decodes; the refusal fixtures
+  -- below drop and corrupt one durable key each.
+  _ <- expectJust "complete durable doc decodes" (decodeTokenRecord complete)
+  let dropped =
+        "{\"auth\":{\"so_attempts\":\"0000000000000001\",\"so_locked\":false,"
+        ++ "\"user_locked\":true},\"format_version\":1,"
+        ++ "\"generation\":\"0000000000000001\",\"label\":\"demo\","
+        ++ "\"slot\":\"0000000000000000\",\"token_id\":\"0000000000000001\"}"
+  assertEqual "missing durable key refuses" Nothing (decodeTokenRecord dropped)
+  let corrupt =
+        "{\"auth\":{\"so_attempts\":\"nope\",\"so_locked\":false,"
+        ++ "\"user_attempts\":\"0000000000000002\",\"user_locked\":true},"
+        ++ "\"format_version\":1,\"generation\":\"0000000000000001\","
+        ++ "\"label\":\"demo\",\"slot\":\"0000000000000000\","
+        ++ "\"token_id\":\"0000000000000001\"}"
+  assertEqual "malformed durable value refuses" Nothing (decodeTokenRecord corrupt)
+
+-- | Reconciliation compares scrubbed token puts: the scrubbed
+-- put reconciles present against the scrubbed load, while the
+-- same put with its transient half attached reconciles absent.
+-- This pins why the projection scrubs before issuing: an
+-- unscrubbed auth-only write could never verify after an
+-- ambiguous commit.
+testScrubbedReconcile :: IO ()
+testScrubbedReconcile = do
+  let full = (demoToken (TokenId 1))
+        { trAuth = tokenAuthNew
+            { taLogin = Just AuthUser
+            , taPrincipal = Just "alice"
+            , taAuthEpoch = 4
+            , taUserAttempts = 2
+            }
+        }
+      scrubbed = scrubTokenAuth full
+  assertEqual "scrubbed put reconciles present" ReconciledPresent
+    (reconcileReload emptyDelta { sdPutTokens = [scrubbed] } [(scrubbed, [])])
+  assertEqual "unscrubbed put reconciles absent" ReconciledAbsent
+    (reconcileReload emptyDelta { sdPutTokens = [full] } [(scrubbed, [])])
+  assertEqual "scrubbed delta reconciles present" ReconciledPresent
+    (reconcileReload (scrubDeltaAuth emptyDelta { sdPutTokens = [full] })
+      [(scrubbed, [])])
+
+-- | The authentication projection commits durable moves only: a
+-- counter move becomes a token put carrying the cleared
+-- post-state over the stored row; a transient-only move (login
+-- granted on settled counters, logout-shaped epoch bump)
+-- projects to no puts; and a moved slot with no stored row
+-- fails closed ('Nothing'). The comparison reads the pre\/post
+-- model maps directly, so the projection needs no delta-op
+-- shape to find a durable move.
+testAuthProjection :: IO ()
+testAuthProjection = do
+  m0 <- expectRight "seat" (publishDelta (addToken emptyModel (SlotId 0)) (StateDelta []))
+  let withAuth a = m0 { mTokenAuth = Map.singleton (SlotId 0) a }
+      stored = (demoToken (TokenId 1)) { trSlot = SlotId 0 }
+      ids = Map.singleton (SlotId 0) (TokenId 1)
+      loaded = [(stored, [])]
+      moved = tokenAuthNew { taUserAttempts = 1 }
+      granted = tokenAuthNew
+        { taLogin = Just AuthUser
+        , taPrincipal = Just "alice"
+        , taAuthEpoch = 1
+        }
+      resetGrant = tokenAuthNew
+        { taLogin = Just AuthUser
+        , taPrincipal = Just "alice"
+        , taAuthEpoch = 2
+        }
+  case projectAuthPuts ids loaded (withAuth tokenAuthNew) (withAuth moved) of
+    Just [put] -> do
+      assertEqual "same row" (trId stored) (trId put)
+      assertEqual "same slot" (trSlot stored) (trSlot put)
+      assertEqual "durable carried, transient cleared" moved (trAuth put)
+    other -> assertFailure ("counter move must put once, got: " ++ show other)
+  assertEqual "fresh grant projects nothing" (Just [])
+    (projectAuthPuts ids loaded (withAuth tokenAuthNew) (withAuth granted))
+  case projectAuthPuts ids loaded (withAuth moved) (withAuth resetGrant) of
+    Just [put] -> assertEqual "reset grant puts cleared counters"
+      tokenAuthNew (trAuth put)
+    other -> assertFailure ("reset grant must put once, got: " ++ show other)
+  assertEqual "unchanged models project nothing" (Just [])
+    (projectAuthPuts ids [] (withAuth moved) (withAuth moved))
+  assertEqual "missing row fails closed" Nothing
+    (projectAuthPuts ids [] (withAuth tokenAuthNew) (withAuth moved))
+
+-- | The loader skips its read when durable auth is unchanged:
+-- even against a closed store (whose load would fail), an
+-- unchanged step projects to no puts without touching the
+-- handle.
+testAuthPutsSkipLoad :: IO ()
+testAuthPutsSkipLoad = do
+  world <- newMemoryWorld
+  eStore <- openMemoryStoreWith world defaultLimits noFaults
+  s <- either (assertFailure . show) pure eStore
+  storeClose s
+  m0 <- expectRight "seat" (publishDelta (addToken emptyModel (SlotId 0)) (StateDelta []))
+  let same = m0 { mTokenAuth = Map.singleton (SlotId 0) tokenAuthNew }
+  r <- authPutsOf s Map.empty m0 same
+  assertEqual "unchanged step skips the load" (Right []) r
 
 -- | The shared reservation step: absent marks start at 1,
 -- stored jobs reconcile the mark upward without lowering,
@@ -411,6 +613,176 @@ testPostCommitQuarantine openWith = do
   again <- storeCommit sFaulty sdelta2
   assertEqual "commit works after reload" Committed again
   storeClose sFaulty
+
+-- | Seed one durable job on the token for the auth fault cases,
+-- so every case pins objects AND jobs intact beside the auth
+-- write.
+seedAuthJob :: Store -> TokenRecord -> IO ()
+seedAuthJob s tok = do
+  rJobs <- storeCommit s emptyDelta
+    { sdPutJobs = [demoJobPending 10 (trId tok) (trGeneration tok)] }
+  assertEqual "job seed" Committed rJobs
+
+-- | Read one token's loaded auth (fails unless exactly one row).
+loadedAuth :: Store -> TokenId -> IO TokenAuth
+loadedAuth s tid = do
+  eLoaded <- storeLoadTokens s
+  loaded <- either (assertFailure . show) pure eLoaded
+  case [trAuth t | (t, _) <- loaded, trId t == tid] of
+    [a] -> pure a
+    _ -> assertFailure "token row missing after auth commit"
+
+-- | Auth-only pre-commit injection: the counter write rolls
+-- back, live and persisted counters agree on the old value, no
+-- commit is counted, and objects plus jobs are intact.
+testAuthPreCommit :: OpenWith -> IO ()
+testAuthPreCommit openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, recs) <- seedStore sClean
+  seedAuthJob sClean tok
+  storeClose sClean
+  inj <- scriptedFaults [FaultBeforeCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  let bumped = tok { trAuth = (trAuth tok) { taUserAttempts = 1 } }
+  result <- storeCommit sFaulty emptyDelta { sdPutTokens = [bumped] }
+  case result of
+    NotCommitted _ -> pure ()
+    other -> assertFailure ("expected NotCommitted, got: " ++ show other)
+  auth <- loadedAuth sFaulty (trId tok)
+  assertEqual "persisted counters unmoved" (trAuth tok) auth
+  eLoaded <- storeLoadTokens sFaulty
+  loaded <- either (assertFailure . show) pure eLoaded
+  assertEqual "seed records intact" recs (concatMap snd loaded)
+  eJobs <- storeLoadJobs sFaulty
+  jobs <- either (assertFailure . show) pure eJobs
+  assertEqual "job intact" 1 (length jobs)
+  stats <- storeStats sFaulty
+  assertEqual "no commit counted" 0 (ssCommits stats)
+  storeClose sFaulty
+
+-- | Auth-only ambiguous injection: the counter write lands
+-- exactly once and the verification reload confirms it; nothing
+-- is ever reissued. The loaded counters show the single bump
+-- beside intact objects and jobs.
+testAuthAmbiguous :: OpenWith -> IO ()
+testAuthAmbiguous openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, recs) <- seedStore sClean
+  seedAuthJob sClean tok
+  storeClose sClean
+  inj <- scriptedFaults [FaultAmbiguousCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  let bumped = tok { trAuth = (trAuth tok) { taUserAttempts = 2 } }
+  result <- storeCommit sFaulty emptyDelta { sdPutTokens = [bumped] }
+  assertEqual "ambiguous auth write resolves committed" Committed result
+  stats <- storeStats sFaulty
+  assertEqual "exactly one durable commit" 1 (ssCommits stats)
+  assertEqual "exactly one verification reload" 1 (ssVerifyReloads stats)
+  auth <- loadedAuth sFaulty (trId tok)
+  assertEqual "single bump durable" 2 (taUserAttempts auth)
+  eLoaded <- storeLoadTokens sFaulty
+  loaded <- either (assertFailure . show) pure eLoaded
+  assertEqual "seed records intact" recs (concatMap snd loaded)
+  eJobs <- storeLoadJobs sFaulty
+  jobs <- either (assertFailure . show) pure eJobs
+  assertEqual "job intact" 1 (length jobs)
+  storeClose sFaulty
+
+-- | Auth-only ambiguous plus verification failure:
+-- 'CommitUnknown', the token quarantines, and an authoritative
+-- reload clears the quarantine and reconciles the auth write
+-- present. A fresh handle then reopens clean ('during reopen'):
+-- no quarantine, durable counters in place, login never
+-- restored.
+testAuthAmbiguousUnknown :: OpenWith -> IO ()
+testAuthAmbiguousUnknown openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, recs) <- seedStore sClean
+  seedAuthJob sClean tok
+  storeClose sClean
+  inj <- scriptedFaults [FaultAmbiguousCommit, FaultVerifyReload]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  let bumped = tok { trAuth = (trAuth tok) { taUserAttempts = 2 } }
+      sdelta = emptyDelta { sdPutTokens = [bumped] }
+  result <- storeCommit sFaulty sdelta
+  case result of
+    CommitUnknown _ -> pure ()
+    other -> assertFailure ("expected CommitUnknown, got: " ++ show other)
+  assertEqual "unknown reloads first" ReloadFirst (decidePublication result)
+  quarantined <- storeQuarantined sFaulty
+  assertEqual "token quarantined" [trId tok] (map fst quarantined)
+  eReload <- storeReload sFaulty
+  _ <- either (assertFailure . show) pure eReload
+  quarantinedAfter <- storeQuarantined sFaulty
+  assertEqual "quarantine cleared" [] quarantinedAfter
+  eLoaded <- storeLoadTokens sFaulty
+  loaded <- either (assertFailure . show) pure eLoaded
+  assertEqual "reload reconciles auth write present" ReconciledPresent
+    (reconcileReload sdelta loaded)
+  auth <- loadedAuth sFaulty (trId tok)
+  assertEqual "bump durable" 2 (taUserAttempts auth)
+  assertEqual "seed records intact" recs (concatMap snd loaded)
+  storeClose sFaulty
+  eReopen <- openWith defaultLimits noFaults
+  sReopen <- either (assertFailure . show) pure eReopen
+  quarantinedReopen <- storeQuarantined sReopen
+  assertEqual "fresh handle starts clean" [] quarantinedReopen
+  authReopen <- loadedAuth sReopen (trId tok)
+  assertEqual "counters survive reopen" 2 (taUserAttempts authReopen)
+  assertEqual "login never restored" Nothing (taLogin authReopen)
+  storeClose sReopen
+
+-- | Auth-only post-commit injection: durable truth is
+-- 'Committed' but the token quarantines until an authoritative
+-- reload resolves it; the store then serves the token again,
+-- and a close/reopen boundary keeps the counters with a clean
+-- handle.
+testAuthPostCommit :: OpenWith -> IO ()
+testAuthPostCommit openWith = do
+  eClean <- openWith defaultLimits noFaults
+  sClean <- either (assertFailure . show) pure eClean
+  (tok, recs) <- seedStore sClean
+  seedAuthJob sClean tok
+  storeClose sClean
+  inj <- scriptedFaults [FaultAfterCommit]
+  eFaulty <- openWith defaultLimits inj
+  sFaulty <- either (assertFailure . show) pure eFaulty
+  let bumped = tok { trAuth = (trAuth tok) { taUserAttempts = 2 } }
+  result <- storeCommit sFaulty emptyDelta { sdPutTokens = [bumped] }
+  assertEqual "post-commit auth write still committed" Committed result
+  quarantined <- storeQuarantined sFaulty
+  assertEqual "token quarantined" [trId tok] (map fst quarantined)
+  auth <- loadedAuth sFaulty (trId tok)
+  assertEqual "bump durable" 2 (taUserAttempts auth)
+  eReload <- storeReload sFaulty
+  _ <- either (assertFailure . show) pure eReload
+  quarantinedAfter <- storeQuarantined sFaulty
+  assertEqual "reload clears quarantine" [] quarantinedAfter
+  let bumpedAgain = bumped { trAuth = (trAuth bumped) { taUserAttempts = 3 } }
+  again <- storeCommit sFaulty emptyDelta { sdPutTokens = [bumpedAgain] }
+  assertEqual "auth write works after reload" Committed again
+  authAgain <- loadedAuth sFaulty (trId tok)
+  assertEqual "second bump durable" 3 (taUserAttempts authAgain)
+  eLoaded <- storeLoadTokens sFaulty
+  loaded <- either (assertFailure . show) pure eLoaded
+  assertEqual "seed records intact" recs (concatMap snd loaded)
+  eJobs <- storeLoadJobs sFaulty
+  jobs <- either (assertFailure . show) pure eJobs
+  assertEqual "job intact" 1 (length jobs)
+  storeClose sFaulty
+  eReopen <- openWith defaultLimits noFaults
+  sReopen <- either (assertFailure . show) pure eReopen
+  authReopen <- loadedAuth sReopen (trId tok)
+  assertEqual "counters survive reopen" 3 (taUserAttempts authReopen)
+  assertEqual "login never restored" Nothing (taLogin authReopen)
+  assertEqual "epoch never restored" 0 (taAuthEpoch authReopen)
+  storeClose sReopen
 
 -- | Bounded rendezvous for every cross-thread wait in the
 -- interruption cases: 5 seconds, matching the pre-split guards.

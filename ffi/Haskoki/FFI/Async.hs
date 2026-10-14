@@ -67,6 +67,8 @@ module Haskoki.FFI.Async
   , resolveJobHandle
   , encodeJobHandle
   , decodeJobHandle
+  , submitTransfer
+  , joinTransfer
   , jobFunctionCode
   , codeJobFunction
   , decodeAsyncFunctionName
@@ -86,7 +88,7 @@ module Haskoki.FFI.Async
   , haskokiAsyncJoin
   ) where
 
-import Control.Exception (SomeException, mask_, try)
+import Control.Exception (SomeException, finally, mask, mask_, onException, try)
 import Data.Bits ((.&.), (.|.), shiftL)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -109,6 +111,7 @@ import Foreign.StablePtr
   )
 import Foreign.Storable (peek, poke, peekByteOff)
 
+import Haskoki.CallWork (checkedCallWork)
 import Haskoki.Engine.Backend (BackendEnv, CryptoBackend (..), EngineResult (..))
 import Haskoki.Engine.Driver (drainReleases, encodeResult, runEffect)
 import Haskoki.Engine.OpenSSL4 (OpenSSL4)
@@ -146,6 +149,10 @@ import Haskoki.Runtime.Async
   , StartDeny (..)
   , asyncTableId
   , asyncTableSalt
+  , awaitTableQuiescent
+  , claimTableClose
+  , enterTableUse
+  , exitTableUse
   , jobFunctionOf
   , TerminalState (..)
   , cancelJob
@@ -330,11 +337,30 @@ guardedUnit body = do
 isNullStable :: StablePtr a -> Bool
 isNullStable p = castStablePtrToPtr p == nullPtr
 
+-- | Admit one export call against the table's close gate: the
+-- null check, the dereference, and the admission run masked as
+-- one entry step (no interruptible operation inside, so no kill
+-- can split them), and the admitted borrower holds its count
+-- across the whole call — close retires the gate and waits the
+-- count out before it drains or frees anything. Null and retired
+-- contexts refuse identically, before touching any state.
 withCtx :: StablePtr AsyncCtx -> (AsyncCtx -> IO CULong) -> IO CULong
-withCtx ctx k = guarded $
-  if isNullStable ctx
-    then pure (toRV 0x05)
-    else deRefStablePtr ctx >>= k
+withCtx ctx k = guarded $ mask $ \restore -> do
+  mC <- enterCtx ctx
+  case mC of
+    Nothing -> pure (toRV 0x05)
+    Just c -> restore (k c) `finally` exitTableUse (acTable c)
+
+-- | Masked entry step for 'withCtx': null check, dereference,
+-- admission. Callers hold the mask; every step here is
+-- non-blocking, so entry never parks while masked.
+enterCtx :: StablePtr AsyncCtx -> IO (Maybe AsyncCtx)
+enterCtx ctx
+  | isNullStable ctx = pure Nothing
+  | otherwise = do
+      c <- deRefStablePtr ctx
+      ok <- enterTableUse (acTable c)
+      pure (if ok then Just c else Nothing)
 
 -- | Encode a job id as its opaque handle token under the table's
 -- exact salt: the high 32 bits carry the salt, the low 32 the
@@ -561,13 +587,17 @@ haskokiAsyncOpen = guardedPtr $ do
   where
     openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
 
--- | Close a context through its handle slot: cancel every live
--- job exactly once, retire every live handle, shut the
--- backend, free the pointer, and null the slot. Closing a null
--- slot is a silent no-op, so close-through-the-slot is idempotent
--- by construction (no use-after-free on any conforming path).
--- Context pointers must otherwise not be used after close
--- (@fclose@ parity with the crypto context).
+-- | Close a context through its handle slot: the winning claim
+-- retires the table gate, waits out admitted borrowers, cancels
+-- every live job exactly once, retires every live handle, shuts
+-- the backend, frees the pointer, and nulls the slot. A racing
+-- second close through the same slot claims nothing and only
+-- re-nulls the slot, so the pointer frees exactly once; closing
+-- a null slot is a silent no-op, so close-through-the-slot stays
+-- idempotent by construction. Context pointers must otherwise
+-- not be used after close (@fclose@ parity with the crypto
+-- context): calls admitted before the claim run to completion
+-- first, and calls arriving after it are refused.
 haskokiAsyncClose :: Ptr (StablePtr AsyncCtx) -> IO ()
 haskokiAsyncClose pSlot = guardedUnit $
   if pSlot == nullPtr
@@ -578,17 +608,36 @@ haskokiAsyncClose pSlot = guardedUnit $
         then pure ()
         else do
           c <- deRefStablePtr ctx
-          asyncCloseCtx c
-          freeStablePtr ctx
+          first <- claimTableClose (acTable c)
+          if first
+            then do
+              closeClaimedCtx c
+              freeStablePtr ctx
+            else pure ()
           poke pSlot (castPtrToStablePtr nullPtr)
 
--- | The close worker: retire this table's detach attachments
--- (its active joins resolve canceled, durably; sibling contexts
--- on the same store keep theirs), drain jobs and handles, shut
--- the backend. Exported so tests assert drain state through the
--- same function the export calls.
+-- | The close worker: claim the table gate, wait out admitted
+-- borrowers, then run the same drain the export runs after its
+-- winning claim — retire this table's detach attachments (its
+-- active joins resolve canceled, durably; sibling contexts on
+-- the same store keep theirs), drain jobs and handles, shut the
+-- backend. Only the winning claim drains; closes after teardown
+-- are silent no-ops. Value-level teardown only: a 'StablePtr'
+-- owner frees its own pointer separately. Exported so tests
+-- assert drain state through the same worker the export calls.
 asyncCloseCtx :: AsyncCtx -> IO ()
 asyncCloseCtx ctx = do
+  first <- claimTableClose (acTable ctx)
+  if first
+    then closeClaimedCtx ctx
+    else pure ()
+
+-- | Await admitted borrowers, then drain one claimed context.
+-- Runs only on the winning close claim (see 'asyncCloseCtx' and
+-- 'haskokiAsyncClose').
+closeClaimedCtx :: AsyncCtx -> IO ()
+closeClaimedCtx ctx = do
+  awaitTableQuiescent (acTable ctx)
   case acDetach ctx of
     Nothing -> pure ()
     Just dc -> do
@@ -717,7 +766,11 @@ refuse pHandleOut code = do
 
 -- | Plan and submit: only @Execute@ plans become jobs. Rejections
 -- publish their termination and report their code; immediate plans
--- (sync recalls) publish and report with no job.
+-- (sync recalls) publish and report with no job. Coherent executions
+-- check their call work before submitting (a planner that pinned an
+-- incoherent pair fails closed here, before any id is consumed).
+-- The start-to-handle transfer runs protected (see
+-- 'submitTransfer').
 submitJob
   :: AsyncCtx -> SessionId -> JobFunction -> ByteString -> Word64 -> Word64
   -> Ptr (StablePtr JobHandle)
@@ -738,27 +791,57 @@ submitJob c sid jfunc input cap ticks pHandleOut = do
     Immediate pc -> do
       _ <- publishCommit (acEnv c) (acBackend c) pc
       refuse pHandleOut (rvOf (pcCode pc))
-    Execute res eff -> do
-      let jobReq = JobRequest
-            { jrSession = sid
-            , jrFunction = jfunc
-            , jrWork = WorkCall res eff
-            , jrTicks = fromIntegral ticks
-            , jrCapacity = cap
-            }
-      started <- startJob (acTable c) jobReq
-      case started of
-        Left deny -> refuse pHandleOut (rvOf (denyCode deny))
-        Right jid
-          | jobIdExhausted jid -> do
-              -- The fresh job never had a handle: cancel it before
-              -- refusing so the table holds no ghost.
-              _ <- cancelJob (acTable c) jid
-              refuse pHandleOut (rvOf CKR_HOST_MEMORY)
-          | otherwise -> do
-              h <- allocJobHandle c jid
-              poke pHandleOut h
-              pure (rvOf CKR_PENDING)
+    Execute res eff -> case checkedCallWork sid res eff of
+      -- Unreachable through the planner (every produced execution
+      -- checks — see the TransitionSpec coherence sweep): an
+      -- incoherent pair is an internal breach, refused loudly with
+      -- no submission and no id consumed.
+      Left _ -> refuse pHandleOut (rvOf CKR_GENERAL_ERROR)
+      Right _ -> do
+        let jobReq = JobRequest
+              { jrSession = sid
+              , jrFunction = jfunc
+              , jrWork = WorkCall res eff
+              , jrTicks = fromIntegral ticks
+              , jrCapacity = cap
+              }
+        submitTransfer (pure ()) c jobReq pHandleOut
+
+-- | Start one planned job and transfer its handle to the caller
+-- as a single protected step: the start, the admission, and the
+-- publication run masked, and the test-only hook runs restored
+-- between the start and the admission — the interruption window
+-- the transfer must survive. Production passes a no-op hook, so
+-- a kill lands only after the handle is published (owned and
+-- drainable); a kill inside the window cancels the fresh
+-- unregistered job and nulls the out-pointer instead, so no
+-- unreachable live job ever strands. An exhausted fresh id
+-- cancels the same way.
+submitTransfer
+  :: IO () -> AsyncCtx -> JobRequest -> Ptr (StablePtr JobHandle)
+  -> IO CULong
+submitTransfer hook c jobReq pHandleOut = mask $ \restore -> do
+  started <- startJob (acTable c) jobReq
+  case started of
+    Left deny -> refuse pHandleOut (rvOf (denyCode deny))
+    Right jid
+      | jobIdExhausted jid -> do
+          -- The fresh job never had a handle: cancel it before
+          -- refusing so the table holds no ghost.
+          _ <- cancelJob (acTable c) jid
+          refuse pHandleOut (rvOf CKR_HOST_MEMORY)
+      | otherwise ->
+          (restore hook >> admitAndPublish jid) `onException` abandon jid
+  where
+    admitAndPublish :: JobId -> IO CULong
+    admitAndPublish jid = do
+      h <- allocJobHandle c jid
+      poke pHandleOut h
+      pure (rvOf CKR_PENDING)
+    abandon :: JobId -> IO ()
+    abandon jid = mask_ $ do
+      _ <- cancelJob (acTable c) jid
+      poke pHandleOut (castPtrToStablePtr nullPtr)
 
 -- | Map a submit refusal to its source-backed code.
 denyCode :: StartDeny -> ReturnCode
@@ -1071,7 +1154,8 @@ haskokiAsyncGetId ctx h (CULong func) pIdOut = withCtx ctx $ \c ->
 -- @CKR_PENDING@ with a live handle; every refusal reports its typed
 -- code with a null handle. An undersized capacity additionally
 -- reports its sizing through the need out-pointer (which may be
--- NULL). A null handle out-pointer refuses without joining.
+-- NULL). A null handle out-pointer refuses without joining. The
+-- handle handoff runs protected (see 'joinTransfer').
 haskokiAsyncJoin
   :: StablePtr AsyncCtx -> CULong -> CULong -> CULong -> CULong
   -> Ptr (StablePtr JobHandle) -> Ptr Word64 -> IO CULong
@@ -1095,16 +1179,39 @@ haskokiAsyncJoin ctx (CULong pid) (CULong func) hSession (CULong cap)
                 }
               case out of
                 JoinOk jid
-                  | jobIdExhausted jid -> do
+                  | jobIdExhausted jid -> mask_ $ do
                       -- Cancel through the detach wrapper so the
-                      -- durable attachment resolves canceled too.
+                      -- durable attachment resolves canceled too;
+                      -- masked like the transfer so a kill cannot
+                      -- strand the fresh job mid-cancel.
                       _ <- cancelThrough c jid
                       refuse pHandleOut (rvOf CKR_HOST_MEMORY)
-                  | otherwise -> do
-                      h <- allocJobHandle c jid
-                      poke pHandleOut h
-                      pure (rvOf CKR_PENDING)
+                  | otherwise -> joinTransfer (pure ()) c jid pHandleOut
                 JoinShort need -> do
                   if pNeedOut /= nullPtr then poke pNeedOut need else pure ()
                   refuse pHandleOut (rvOf CKR_BUFFER_TOO_SMALL)
                 other -> refuse pHandleOut (rvOf (joinCode other))
+
+-- | Transfer a joined job's handle to the caller as a single
+-- protected step: the test-only hook runs restored before the
+-- admission, and the admission plus the publication run masked.
+-- Production passes a no-op hook, so a kill lands only after the
+-- handle is published (owned and drainable); a kill inside the
+-- window cancels through the detach wrapper — the committed
+-- attachment resolves canceled, durably — and nulls the
+-- out-pointer instead, so no unreachable live job ever strands.
+joinTransfer
+  :: IO () -> AsyncCtx -> JobId -> Ptr (StablePtr JobHandle)
+  -> IO CULong
+joinTransfer hook c jid pHandleOut = mask $ \restore ->
+  (restore hook >> admitAndPublish) `onException` abandon
+  where
+    admitAndPublish :: IO CULong
+    admitAndPublish = do
+      h <- allocJobHandle c jid
+      poke pHandleOut h
+      pure (rvOf CKR_PENDING)
+    abandon :: IO ()
+    abandon = mask_ $ do
+      _ <- cancelThrough c jid
+      poke pHandleOut (castPtrToStablePtr nullPtr)

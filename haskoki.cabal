@@ -82,6 +82,7 @@ library haskoki-core
     Haskoki.Types
     Haskoki.Request
     Haskoki.Outcome
+    Haskoki.CallWork
     Haskoki.Model
     Haskoki.Rules
     Haskoki.Session

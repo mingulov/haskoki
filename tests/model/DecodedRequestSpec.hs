@@ -23,7 +23,7 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Control.Exception (bracket)
 import Data.List (isInfixOf)
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word64, Word8)
@@ -38,6 +38,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.CallWork (callPairCompatible, checkedCallWork)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -181,6 +182,8 @@ spec = testGroup "Decoded requests"
     , testCase "Holdability battery" caseHoldableBattery
     , testCase "Pair-coherence battery" casePairBattery
     , testCase "Mismatched pair refused before execution" caseDriveRefusesMismatch
+    , testCase "Decoded digest init checks coherently" caseDecodedInitChecks
+    , testCase "Planned allocation submit stays refused" casePlannedAllocRefused
     ]
   , testGroup "parse-first"
     [ testCase "Keygen double-fault is the template code" caseKeygenDoubleFault
@@ -1226,6 +1229,40 @@ caseDriveRefusesMismatch = do
     other -> assertFailure ("mismatched drive not refused: " ++ show other)
   n <- readIORef fired
   assertEqual "runner never fired" 0 n
+
+-- | A decoded digest init plans an Execute that checks coherently:
+-- the decoded producer pins the init step the construction
+-- contract expects.
+caseDecodedInitChecks :: IO ()
+caseDecodedInitChecks = do
+  (sid, m0) <- openSession defaultRules seeded
+  let dreq = DRInit sid InitDigest Nothing sha256Mech [] False BS.empty
+  case planDecoded defaultRules m0 dreq of
+    Execute res eff -> do
+      assertBool "decoded init checks" (isRight (checkedCallWork sid res eff))
+      assertEqual "decoded init compatible" True (callPairCompatible sid res eff)
+    other -> assertFailure ("decoded init did not execute: " ++ show other)
+
+-- | A planned (stepped) allocation submit still refuses at submit:
+-- holdability fires first with the identical verdict, stepped or
+-- not, so the construction gates agree on order.
+casePlannedAllocRefused :: IO ()
+casePlannedAllocRefused = do
+  (sid, m0) <- openSession defaultRules seeded
+  table <- newAsyncTable 8
+  enableAsyncSession table sid
+  let dreq = DRInit sid InitDigest Nothing sha256Mech [] False BS.empty
+  case planDecoded defaultRules m0 dreq of
+    Execute res eff -> do
+      r <- startJob table JobRequest
+        { jrSession = sid
+        , jrFunction = JobDigest
+        , jrWork = WorkCall res eff
+        , jrTicks = 1
+        , jrCapacity = 64
+        }
+      assertEqual "planned allocation refused" (Left StartIncompatibleWork) r
+    other -> assertFailure ("decoded init did not execute: " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- Parse-first double-fault boundaries.

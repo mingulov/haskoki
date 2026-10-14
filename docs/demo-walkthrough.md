@@ -54,13 +54,28 @@ show two ways to move it to another process.
 The default token is slot 0, label `haskoki-demo`, with public fixture PINs:
 user `1234`, security officer `5678`. `C_InitToken`, `C_InitPIN`, and
 `C_SetPIN` are unsupported; provisioning happens from configuration at open.
-Wrong guesses reduce per-role retries until `CKR_PIN_LOCKED`. A correct
-login resets retries before lockout, but does not unlock a locked role.
+Wrong guesses commit per-role retries before the return code is observed,
+until `CKR_PIN_LOCKED`; a restart keeps the counters, and the third strike
+locks durably. A correct login resets retries before lockout and commits
+the reset, but does not unlock a locked role.
 
 Memory storage starts fresh in each process. SQLite reloads token objects
-and attempt/lockout state; session objects are transient. Both store types
-use unencrypted key material. Stop clients before removing or replacing a
+and attempt/lockout state; session objects are transient, and a reopened
+session is always public: the login itself is never restored, so a second
+process observes the same lockout through its own `C_Login` return codes
+but never inherits an authenticated session. Both store types use
+unencrypted key material. Stop clients before removing or replacing a
 store. SQLite refuses a second concurrent owner.
+
+Recovery limits: a locked role has no unlock call, so recovery means
+starting over on a new store path; a retry write that cannot land fails
+the call with `CKR_GENERAL_ERROR` instead of answering as if it had
+counted. An uncertain commit reloads and reconciles instead of replaying
+the operation: a landed write reloads inline and serves on, while an
+unlanded one stays unserved until close and reopen. `MultiSessionSpec`
+(`caseLoginLockoutDurable`, `caseLoginFailClosed`,
+`caseLoginUnknownLanded`) and `CommitSpec` (the `auth-only` cases) hold
+the checks behind these behaviors.
 
 A `[tokens]` catalog can configure up to 16 tokens. Slot IDs are their array
 indices; slot 0 must remain `haskoki-demo`. Labels and PIN arrays must have
