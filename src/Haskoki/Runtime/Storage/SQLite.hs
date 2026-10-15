@@ -52,6 +52,9 @@ retries for real.
 module Haskoki.Runtime.Storage.SQLite
   ( openSQLiteStore
   , openSQLiteStoreWith
+  , openSQLiteStoreWithHooks
+  , SQLiteTestHooks (..)
+  , noSQLiteTestHooks
   , sqliteSchemaVersion
   , livenessFromProbes
   , PidLiveness (..)
@@ -65,15 +68,16 @@ import Control.Monad (when)
 import Data.Bits (shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.List (nub)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text as T
 import Data.Text (Text)
 import Data.Word (Word64)
 import qualified Database.SQLite3 as S
+import Database.SQLite3.Direct (getAutoCommit)
 import Foreign.C.Types (CInt (..))
 import System.Environment (lookupEnv)
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
@@ -145,7 +149,9 @@ sqliteSchemaVersion = 2
 -- flocked lock fd (the kernel ownership guard), the held-open
 -- flocked database fd (the stable-identity guard: deleting the
 -- lock path cannot fork a live owner), and the live-handle
--- protocol state (injector, quarantine, stats).
+-- protocol state (injector, quarantine, the connection-wide
+-- quarantine left by a write transaction that could not be
+-- rolled back, stats).
 data SQLiteConn = SQLiteConn
   { sqDb :: !S.Database
   , sqLock :: !(MVar ())
@@ -156,8 +162,45 @@ data SQLiteConn = SQLiteConn
   , sqDbFd :: !Fd
   , sqInjector :: !FaultInjector
   , sqQuarantine :: !(MVar [(TokenId, String)])
+  , sqOpenTxn :: !(IORef (Maybe String))
   , sqStats :: !(IORef StoreStats)
   , sqLimits :: !StoreLimits
+  , sqHooks :: !SQLiteTestHooks
+  }
+
+-- | Test-only hooks run on the store's OWN connection (a second
+-- connection cannot install connection-local state such as TEMP
+-- triggers, functions, authorizers, commit hooks, or
+-- @max_page_count@). Production opens use 'noSQLiteTestHooks'.
+-- The hooks run under the connection guard inside the masked
+-- region of every write transaction: commits, token resets
+-- (which run the same commit flow) and job-id reservations. They
+-- are a statement-boundary seam: whatever failure a test
+-- stimulates through them is a real SQLite statement failure
+-- inside the real transaction, never a simulated result.
+data SQLiteTestHooks = SQLiteTestHooks
+  { sthBeforeBegin :: S.Database -> IO ()
+    -- ^ Immediately before @BEGIN IMMEDIATE@, after validation.
+  , sthAfterBodyFailure :: S.Database -> IO ()
+    -- ^ Immediately after the transaction body reports its
+    -- first failure, before any cleanup statement runs (the
+    -- native transaction state is still exactly what the failed
+    -- statement left).
+  , sthAfterCommitFailure :: S.Database -> IO ()
+    -- ^ Immediately after @COMMIT@ fails, before any cleanup
+    -- statement runs.
+  , sthAfterRollbackFailure :: S.Database -> IO ()
+    -- ^ Immediately after a cleanup @ROLLBACK@ fails, before the
+    -- native transaction state is re-read.
+  }
+
+-- | No hooks: every production open.
+noSQLiteTestHooks :: SQLiteTestHooks
+noSQLiteTestHooks = SQLiteTestHooks
+  { sthBeforeBegin = \_ -> pure ()
+  , sthAfterBodyFailure = \_ -> pure ()
+  , sthAfterCommitFailure = \_ -> pure ()
+  , sthAfterRollbackFailure = \_ -> pure ()
   }
 
 -- ---------------------------------------------------------------------------
@@ -192,7 +235,15 @@ openSQLiteStore path = openSQLiteStoreWith path defaultLimits noFaults
 -- retained across the construction itself — so the handoff has
 -- no async-delivery window at all.
 openSQLiteStoreWith :: FilePath -> StoreLimits -> FaultInjector -> IO (Either StoreError Store)
-openSQLiteStoreWith path limits inj = mask $ \restore -> do
+openSQLiteStoreWith path limits inj = openSQLiteStoreWithHooks path limits inj noSQLiteTestHooks
+
+-- | 'openSQLiteStoreWith' plus test-only connection hooks
+-- ('SQLiteTestHooks'); the storage suites use it to stimulate
+-- real statement failures on the store's own connection.
+openSQLiteStoreWithHooks
+  :: FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
+  -> IO (Either StoreError Store)
+openSQLiteStoreWithHooks path limits inj hooks = mask $ \restore -> do
   procRoot <- procRootFromEnv
   let lockPath = path ++ ".lock"
   eOwn <- takeOwnership path lockPath procRoot 3
@@ -224,6 +275,7 @@ openSQLiteStoreWith path limits inj = mask $ \restore -> do
           (do lock <- newMVar ()
               closed <- newMVar HandleOpen
               qVar <- newMVar []
+              openTxn <- newIORef Nothing
               sVar <- newIORef zeroStats
               let conn = SQLiteConn
                     { sqDb = db
@@ -235,8 +287,10 @@ openSQLiteStoreWith path limits inj = mask $ \restore -> do
                     , sqDbFd = dbFd
                     , sqInjector = inj
                     , sqQuarantine = qVar
+                    , sqOpenTxn = openTxn
                     , sqStats = sVar
                     , sqLimits = limits
+                    , sqHooks = hooks
                     }
               pure (Right (mkStore conn)))
             `onException` closeQuiet db
@@ -816,18 +870,18 @@ createCredentialsTable =
 -- database).
 mkStore :: SQLiteConn -> Store
 mkStore conn = Store
-  { storeLoadTokens = withConn conn (pure (Left storeClosed)) loadTokens
-  , storeLoadJobs = withConn conn (pure (Left storeClosed)) loadJobs
-  , storeLoadCredentials = withConn conn (pure (Left storeClosed)) loadCredentials
+  { storeLoadTokens = withLive conn Left loadTokens
+  , storeLoadJobs = withLive conn Left loadJobs
+  , storeLoadCredentials = withLive conn Left loadCredentials
   , storeCommit = protocolDelta conn
   , storeResetToken = resetTokenConn conn
   , storeReserveJobId = reserveJobIdConn conn
   , storeClose = closeConn conn
-  , storeInspect = withConn conn (pure (Left storeClosed)) inspectConn
+  , storeInspect = withLive conn Left inspectConn
   , storeQuarantined = readMVar (sqQuarantine conn)
   , storeReload = reloadConn conn
   , storeStats = readIORef (sqStats conn)
-  , storeLoadMeta = withConn conn (pure (Left storeClosed)) loadMeta
+  , storeLoadMeta = withLive conn Left loadMeta
   }
 
 -- | Run one connection use under the guard lock (async-safe
@@ -842,6 +896,26 @@ withConn conn onClosed f =
   bracket_ (takeMVar (sqLock conn)) (putMVar (sqLock conn) ()) $ do
     st <- readMVar (sqClosed conn)
     if st == HandleOpen then f (sqDb conn) else onClosed
+
+-- | 'withConn' for every use that reads or writes through the
+-- connection: a closed handle refuses with 'storeClosed', and a
+-- connection still holding a write transaction it could not roll
+-- back ('sqOpenTxn') refuses with 'connectionQuarantined' —
+-- anything read there would observe, and anything written would
+-- join, the unresolved transaction. Only 'reloadConn' (which
+-- resolves it) and 'closeConn' (whose native close rolls it back)
+-- pass.
+withLive :: SQLiteConn -> (StoreError -> a) -> (S.Database -> IO a) -> IO a
+withLive conn refuse f = withConn conn (pure (refuse storeClosed)) $ \db -> do
+  openTxn <- readIORef (sqOpenTxn conn)
+  case openTxn of
+    Just why -> pure (refuse (connectionQuarantined why))
+    Nothing -> f db
+
+-- | The refusal of a connection-wide quarantine.
+connectionQuarantined :: String -> StoreError
+connectionQuarantined why =
+  StoreIO ("connection quarantined until a reload rolls back or the store reopens: " ++ why)
 
 -- | Idempotent close under the connection guard: the close waits
 -- for any in-flight use, then either retires (the database
@@ -899,7 +973,7 @@ closeConn conn = mask_ $
 -- mid-flight.
 protocolDelta :: SQLiteConn -> StoreDelta -> IO CommitResult
 protocolDelta conn delta =
-  withConn conn (pure (NotCommitted storeClosed)) (\db -> protocolLocked conn db delta)
+  withLive conn NotCommitted (\db -> protocolLocked conn db delta)
 
 -- | Token reset: the expected generation must match the current
 -- one, then the replacement plus the removal of every owned
@@ -908,7 +982,7 @@ protocolDelta conn delta =
 -- all apply).
 resetTokenConn :: SQLiteConn -> TokenId -> Generation -> TokenRecord -> IO CommitResult
 resetTokenConn conn tid wantGen replacement =
-  withConn conn (pure (NotCommitted storeClosed)) $ \db -> do
+  withLive conn NotCommitted $ \db -> do
     eEff <- resetEffectiveDb db tid wantGen replacement
     case eEff of
       Left err -> pure (NotCommitted err)
@@ -1039,7 +1113,7 @@ coverDeletedMeta db doomed = do
 -- outcome.
 reserveJobIdConn :: SQLiteConn -> IO (Either StoreError Word64)
 reserveJobIdConn conn =
-  withConn conn (pure (Left storeClosed)) (reserveLocked conn)
+  withLive conn Left (reserveLocked conn)
 
 -- | The reservation flow with the connection guard already held.
 reserveLocked :: SQLiteConn -> S.Database -> IO (Either StoreError Word64)
@@ -1054,10 +1128,17 @@ reserveLocked conn db = do
       fullDisk <- fiFire inj FaultFullDisk
       eTxn <-
         if fullDisk
-          then pure (Left (StoreFull "disk full (injected)"))
+          then pure (Left (TxnRolledBack (StoreFull "disk full (injected)")))
           else runReserveTxn db
       (classification, ePid) <- case eTxn of
-        Left err -> pure (NotCommitted err, Left err)
+        -- A store-wide reservation names no token: an unresolved
+        -- outcome quarantines every token (the
+        -- 'resolveAmbiguousReserve' precedent). A reservation
+        -- that fails returns no id either way, so an advance that
+        -- did land only leaves a gap, never a reuse.
+        Left failure -> do
+          classification <- settleTxnFailure conn db Nothing failure
+          pure (classification, Left (txnFailureError failure))
         Right (pid, advanced, old) -> do
           ambiguous <- fiFire inj FaultAmbiguousCommit
           if ambiguous
@@ -1068,31 +1149,27 @@ reserveLocked conn db = do
       fiOnResult inj classification
       pure ePid
   where
-    -- One transaction; any failure rolls back and reports.
-    runReserveTxn :: S.Database -> IO (Either StoreError (Word64, String, Maybe String))
+    -- One transaction; a failure ends it by the native state
+    -- ('endFailedTxn').
+    runReserveTxn :: S.Database -> IO (Either TxnFailure (Word64, String, Maybe String))
     runReserveTxn d = do
+      sthBeforeBegin (sqHooks conn) d
       eBegin <- trySQLite (S.exec d "BEGIN IMMEDIATE")
       case eBegin of
-        Left err -> pure (Left err)
+        Left err -> pure (Left (TxnRolledBack err))
         Right () -> do
           eBody <- runReserveBody d
           case eBody of
-            Left err -> do
-              _ <- trySQLite (S.exec d "ROLLBACK")
-              pure (Left err)
+            Left err -> Left <$> endFailedTxn conn d AtBody err
             Right triple@(_, advanced, _) -> do
               let (sql, params) = putMetaStmt (jobIdCounterKey, advanced)
               ePut <- execParams d sql params
               case ePut of
-                Left err -> do
-                  _ <- trySQLite (S.exec d "ROLLBACK")
-                  pure (Left err)
+                Left err -> Left <$> endFailedTxn conn d AtBody err
                 Right () -> do
                   eCommit <- trySQLite (S.exec d "COMMIT")
                   case eCommit of
-                    Left err -> do
-                      _ <- trySQLite (S.exec d "ROLLBACK")
-                      pure (Left err)
+                    Left err -> Left <$> endFailedTxn conn d AtCommit err
                     Right () -> pure (Right triple)
     -- Read the mark and the stored maximum inside the
     -- transaction and compute the pure reservation step.
@@ -1154,15 +1231,111 @@ resolveAmbiguousReserve conn db pid advanced old = do
 -- caller still fails closed.
 quarantineAllTokensConn :: SQLiteConn -> S.Database -> String -> IO ()
 quarantineAllTokensConn conn db why = do
+  tids <- allTokenIds db
+  if null tids then pure () else quarantineTokens (sqQuarantine conn) (sqStats conn) tids why
+
+-- | Every stored token id, best-effort ('[]' when the list is
+-- unreadable: callers fail closed regardless).
+allTokenIds :: S.Database -> IO [TokenId]
+allTokenIds db = do
   eRows <- queryRows db "SELECT token_id FROM tokens" []
-  case eRows of
-    Left _ -> pure ()
-    Right rows -> case mapM parseTid rows of
-      Nothing -> pure ()
-      Just tids -> quarantineTokens (sqQuarantine conn) (sqStats conn) tids why
+  pure (case eRows of
+    Left _ -> []
+    Right rows -> fromMaybe [] (mapM parseTid rows))
   where
     parseTid [S.SQLText tidT] = TokenId <$> decodeHex16 (T.unpack tidT)
     parseTid _ = Nothing
+
+-- | Where a write transaction failed: in its body (no COMMIT was
+-- issued) or at its COMMIT.
+data TxnStep = AtBody | AtCommit
+
+-- | How a failed write transaction ended, judged from the native
+-- connection state alone ('getAutoCommit' before and after any
+-- cleanup) — never from a reload, and never by reissuing anything.
+data TxnFailure
+  = TxnRolledBack !StoreError
+    -- ^ provably not committed: SQLite rolled the whole
+    -- transaction back before any COMMIT was issued, or the
+    -- transaction was still active after the failure (so no
+    -- COMMIT took effect) and the explicit ROLLBACK succeeded
+  | TxnOutcomeUnknown !StoreError
+    -- ^ the transaction is over but its outcome is not
+    -- established: a COMMIT failed after SQLite had ended the
+    -- transaction (it may have landed or rolled back), or a
+    -- ROLLBACK reported an error; the connection itself is clean
+  | TxnStillOpen !StoreError
+    -- ^ the ROLLBACK did not run (or did not end the
+    -- transaction), so a write transaction is still open on the
+    -- connection: nothing it holds is durable yet, but every
+    -- later use of the connection would read or commit it
+
+-- | The error a transaction failure reports.
+txnFailureError :: TxnFailure -> StoreError
+txnFailureError f = case f of
+  TxnRolledBack err -> err
+  TxnOutcomeUnknown err -> err
+  TxnStillOpen err -> err
+
+-- | End a failed write transaction from the native state the
+-- failure left. The step's test hook fires first, before any
+-- cleanup. If SQLite has already ended the transaction, no
+-- statement runs (any statement would run, and commit, in
+-- autocommit mode): after a body failure that is SQLite's own
+-- whole rollback ('TxnRolledBack'); after a failed COMMIT the
+-- outcome is unknown. Otherwise the transaction is still active
+-- — so a failed COMMIT did not take effect — and the explicit
+-- ROLLBACK decides: success is a proven rollback, an error is
+-- surfaced (never discarded) as unknown, or as still open when
+-- the transaction survived it.
+endFailedTxn :: SQLiteConn -> S.Database -> TxnStep -> StoreError -> IO TxnFailure
+endFailedTxn conn db step err = do
+  case step of
+    AtBody -> sthAfterBodyFailure (sqHooks conn) db
+    AtCommit -> sthAfterCommitFailure (sqHooks conn) db
+  ended <- getAutoCommit db
+  if ended
+    then pure (case step of
+      AtBody -> TxnRolledBack err
+      AtCommit -> TxnOutcomeUnknown err)
+    else do
+      eRollback <- trySQLite (S.exec db "ROLLBACK")
+      either (\_ -> sthAfterRollbackFailure (sqHooks conn) db) pure eRollback
+      endedNow <- getAutoCommit db
+      pure (case (eRollback, endedNow) of
+        (Right (), True) -> TxnRolledBack err
+        (Right (), False) -> TxnStillOpen err
+        (Left rbErr, True) -> TxnOutcomeUnknown (withCleanupError err rbErr)
+        (Left rbErr, False) -> TxnStillOpen (withCleanupError err rbErr))
+
+-- | The original failure plus the cleanup failure, both reported.
+withCleanupError :: StoreError -> StoreError -> StoreError
+withCleanupError err rbErr =
+  StoreIO (show err ++ "; cleanup ROLLBACK failed: " ++ show rbErr)
+
+-- | Classify a transaction failure and apply its ownership
+-- consequence. A proven rollback is a clean 'NotCommitted'. An
+-- unknown outcome is 'CommitUnknown' with the affected tokens
+-- quarantined ('Nothing' = store-wide: every token) until an
+-- authoritative reload. A still-open transaction is
+-- 'CommitUnknown' with the whole connection quarantined
+-- ('sqOpenTxn', every token listed) until a reload that rolls it
+-- back or a close (SQLite rolls an open transaction back when the
+-- connection closes).
+settleTxnFailure :: SQLiteConn -> S.Database -> Maybe [TokenId] -> TxnFailure -> IO CommitResult
+settleTxnFailure conn db scope failure = case failure of
+  TxnRolledBack err -> pure (NotCommitted err)
+  TxnOutcomeUnknown err -> do
+    tids <- maybe (allTokenIds db) pure scope
+    quarantineTokens (sqQuarantine conn) (sqStats conn) tids
+      ("commit outcome unknown: " ++ show err)
+    pure (CommitUnknown err)
+  TxnStillOpen err -> do
+    let why = "write transaction still open: " ++ show err
+    writeIORef (sqOpenTxn conn) (Just why)
+    others <- allTokenIds db
+    quarantineTokens (sqQuarantine conn) (sqStats conn) (nub (fromMaybe [] scope ++ others)) why
+    pure (CommitUnknown err)
 
 -- | The commit flow with the connection guard already held. The
 -- delta is scrubbed first ('scrubDeltaAuth'): token puts persist
@@ -1195,10 +1368,10 @@ protocolLocked conn db delta0 = do
                   fullDisk <- fiFire inj FaultFullDisk
                   eTxn <-
                     if fullDisk
-                      then pure (Left (StoreFull "disk full (injected)"))
+                      then pure (Left (TxnRolledBack (StoreFull "disk full (injected)")))
                       else runTxn delta
                   result <- case eTxn of
-                    Left err -> pure (NotCommitted err)
+                    Left failure -> settleTxnFailure conn db (Just affected) failure
                     Right doomed -> do
                       ambiguous <- fiFire inj FaultAmbiguousCommit
                       if ambiguous
@@ -1209,30 +1382,42 @@ protocolLocked conn db delta0 = do
                   fiOnResult inj result
                   pure result
   where
-    -- One transaction; any failure rolls back and reports.
-    runTxn :: StoreDelta -> IO (Either StoreError [Word64])
+    -- One transaction. The body stops at its first failed
+    -- statement ('runBody'), so after a body or COMMIT failure
+    -- the only statement left is the cleanup, which follows the
+    -- native transaction state ('endFailedTxn'): no ROLLBACK at
+    -- all once SQLite has rolled the whole transaction back
+    -- itself (e.g. SQLITE_FULL during a page split, or a
+    -- trigger's RAISE(ROLLBACK)) — the connection is then in
+    -- autocommit mode, where any further statement would commit
+    -- on its own — and a surfaced, classified ROLLBACK otherwise.
+    -- A COMMIT that fails with the transaction still active
+    -- (SQLITE_BUSY) did not take effect; one that fails after the
+    -- transaction ended has an unknown outcome.
+    runTxn :: StoreDelta -> IO (Either TxnFailure [Word64])
     runTxn d = do
+      sthBeforeBegin (sqHooks conn) db
       eBegin <- trySQLite (S.exec db "BEGIN IMMEDIATE")
       case eBegin of
-        Left err -> pure (Left err)
+        Left err -> pure (Left (TxnRolledBack err))
         Right () -> do
           eBody <- runBody d
           case eBody of
-            Left err -> do
-              _ <- trySQLite (S.exec db "ROLLBACK")
-              pure (Left err)
+            Left err -> Left <$> endFailedTxn conn db AtBody err
             Right doomed -> do
               eCommit <- trySQLite (S.exec db "COMMIT")
               case eCommit of
-                Left err -> do
-                  _ <- trySQLite (S.exec db "ROLLBACK")
-                  pure (Left err)
+                Left err -> Left <$> endFailedTxn conn db AtCommit err
                 Right () -> pure (Right doomed)
     -- The observed outcome is discarded; a reload decides. Present
-    -- verifies committed (every table), absent verifies rolled
-    -- back, and a failed reload quarantines with 'CommitUnknown'.
-    -- Nothing reissues. The expectation is the effective delta:
-    -- the stored effect, not the raw request.
+    -- verifies committed (every table). Anything else — a failed
+    -- reload, or a reload that does not hold the whole delta —
+    -- quarantines with 'CommitUnknown': a mismatch is not proof
+    -- of absence (a partial reload would be labelled "absent"
+    -- while part of the delta is durable), and no pre-state is
+    -- recorded to prove one. Nothing reissues. The expectation is
+    -- the effective delta: the stored effect, not the raw
+    -- request.
     resolveAmbiguous
       :: FaultInjector -> MVar [(TokenId, String)] -> IORef StoreStats
       -> StoreDelta -> [TokenId] -> IO CommitResult
@@ -1256,8 +1441,10 @@ protocolLocked conn db delta0 = do
               , reconcileCredentialsReload d creds == ReconciledPresent -> do
                   bumpCommits sVar
                   postCommitTail inj qVar sVar affected
-            (Right _, Right _, Right _, Right _) ->
-              pure (NotCommitted (StoreIO "ambiguous commit resolved: delta absent"))
+            (Right _, Right _, Right _, Right _) -> do
+              let err = StoreIO "ambiguous commit unresolved: the reload does not hold the whole delta"
+              quarantineTokens qVar sVar affected (show err)
+              pure (CommitUnknown err)
             (Left err, _, _, _) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)
@@ -1284,7 +1471,10 @@ protocolLocked conn db delta0 = do
         else pure Committed
     -- Drops before puts; tokens before the objects, jobs, and
     -- credentials that reference them (foreign keys stay
-    -- satisfied throughout). Token puts run staged (two phases
+    -- satisfied throughout). The groups run fail-fast
+    -- ('firstFailure'): the first failed statement stops the
+    -- body, and no later group (nor later statement of the same
+    -- group) executes. Token puts run staged (two phases
     -- within this transaction); credential puts dedupe
     -- first-wins (the token-row precedent). The doomed pids are
     -- read before the drops, then folded into the job-id mark
@@ -1297,25 +1487,22 @@ protocolLocked conn db delta0 = do
       case eDoomed of
         Left err -> pure (Left err)
         Right doomed -> do
-          e1 <- runAll (map dropObjectStmt (sdDropObjects d))
-          e2 <- runAll (map dropJobStmt (sdDropJobs d))
-          e3 <- runAll (map dropCredentialStmt (sdDropCredentials d))
-          e4 <- runAll (map dropTokenStmt (sdDropTokens d))
-          e5 <- runTokenPuts (sdPutTokens d)
-          e6 <- runAll (map putObjectStmt (sdPutObjects d))
-          e7 <- runAll (map putJobStmt (sdPutJobs d))
-          e8 <- runAll (map putCredentialStmt (firstByCredential (sdPutCredentials d)))
-          e9 <- runAll (map putMetaStmt (sdPutMeta d))
-          e10 <- coverDeletedMeta db doomed
-          pure ((e1 >> e2 >> e3 >> e4 >> e5 >> e6 >> e7 >> e8 >> e9 >> e10) >> Right doomed)
+          eGroups <- firstFailure
+            [ runAll (map dropObjectStmt (sdDropObjects d))
+            , runAll (map dropJobStmt (sdDropJobs d))
+            , runAll (map dropCredentialStmt (sdDropCredentials d))
+            , runAll (map dropTokenStmt (sdDropTokens d))
+            , runTokenPuts (sdPutTokens d)
+            , runAll (map putObjectStmt (sdPutObjects d))
+            , runAll (map putJobStmt (sdPutJobs d))
+            , runAll (map putCredentialStmt (firstByCredential (sdPutCredentials d)))
+            , runAll (map putMetaStmt (sdPutMeta d))
+            , coverDeletedMeta db doomed
+            ]
+          pure (eGroups >> Right doomed)
       where
         runAll :: [(Text, [S.SQLData])] -> IO (Either StoreError ())
-        runAll [] = pure (Right ())
-        runAll ((sql, params) : rest) = do
-          e <- execParams db sql params
-          case e of
-            Left err -> pure (Left err)
-            Right () -> runAll rest
+        runAll stmts = firstFailure [execParams db sql params | (sql, params) <- stmts]
         -- Token puts apply in two phases. Sequential upserts would
         -- observe transient @UNIQUE(slot_key)@ conflicts whenever
         -- one put's target slot is still held by a token a later
@@ -1344,6 +1531,19 @@ protocolLocked conn db delta0 = do
                 case eStage of
                   Left err -> pure (Left err)
                   Right () -> runAll (map putTokenStmt uniq)
+
+-- | Run the actions in order, stopping at the first 'Left': no
+-- action after a failure executes (its IO never starts), so a
+-- failed statement can never be followed by a later write — in
+-- particular not by one that SQLite would run in autocommit mode
+-- after rolling the transaction back on its own.
+firstFailure :: [IO (Either StoreError ())] -> IO (Either StoreError ())
+firstFailure [] = pure (Right ())
+firstFailure (act : rest) = do
+  e <- act
+  case e of
+    Left err -> pure (Left err)
+    Right () -> firstFailure rest
 
 -- | Tokens a delta touches: named tokens plus the home tokens of
 -- named objects and jobs (drop owners resolved from current
@@ -1481,16 +1681,41 @@ quarantineTokens qVar sVar tids why = do
 -- consult the fault script. A closed handle reports closed
 -- without touching the quarantine. Credentials load alongside
 -- tokens: a corrupt credential row keeps the quarantine like a
--- corrupt token row.
+-- corrupt token row. A connection-wide quarantine (a write
+-- transaction left open by a failed ROLLBACK) resolves first:
+-- the ROLLBACK is retried, and only once SQLite reports the
+-- transaction ended does the reload read — durable state, never
+-- the open transaction's writes. Until then the reload refuses
+-- and every quarantine stays.
 reloadConn :: SQLiteConn -> IO (Either StoreError ())
 reloadConn conn = withConn conn (pure (Left storeClosed)) $ \db -> do
-  eLoaded <- loadTokens db
-  eCreds <- loadCredentials db
-  case (eLoaded, eCreds) of
-    (Right _, Right _) ->
-      modifyMVar_ (sqQuarantine conn) (\_ -> pure []) >> pure (Right ())
-    (Left err, _) -> pure (Left err)
-    (_, Left err) -> pure (Left err)
+  eOpen <- resolveOpenTxn conn db
+  case eOpen of
+    Left err -> pure (Left err)
+    Right () -> do
+      eLoaded <- loadTokens db
+      eCreds <- loadCredentials db
+      case (eLoaded, eCreds) of
+        (Right _, Right _) ->
+          modifyMVar_ (sqQuarantine conn) (\_ -> pure []) >> pure (Right ())
+        (Left err, _) -> pure (Left err)
+        (_, Left err) -> pure (Left err)
+
+-- | Retry the ROLLBACK of a write transaction left open
+-- ('sqOpenTxn'); clear the connection-wide quarantine only when
+-- SQLite reports the transaction ended.
+resolveOpenTxn :: SQLiteConn -> S.Database -> IO (Either StoreError ())
+resolveOpenTxn conn db = do
+  openTxn <- readIORef (sqOpenTxn conn)
+  case openTxn of
+    Nothing -> pure (Right ())
+    Just why -> do
+      ended <- getAutoCommit db
+      eRollback <- if ended then pure (Right ()) else trySQLite (S.exec db "ROLLBACK")
+      endedNow <- getAutoCommit db
+      if endedNow
+        then writeIORef (sqOpenTxn conn) Nothing >> pure (Right ())
+        else pure (Left (connectionQuarantined (why ++ either (\e -> "; retried ROLLBACK failed: " ++ show e) (const "") eRollback)))
 
 -- | Load every token with its home objects, token-id ascending,
 -- object-id ascending within each token.

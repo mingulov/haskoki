@@ -407,9 +407,22 @@ scrubDeltaAuth d = d { sdPutTokens = map scrubTokenAuth (sdPutTokens d) }
 --   in-memory delta.
 -- * 'NotCommitted': nothing was written (pre-commit failure, limit
 --   hit, revision conflict); the caller publishes nothing.
--- * 'CommitUnknown': the commit was issued but its
---   outcome could not be determined; the caller must reload and
+-- * 'CommitUnknown': the outcome could not be established (a
+--   COMMIT failed after the transaction ended, a cleanup ROLLBACK
+--   failed, or a verification reload did not settle it); the
+--   affected tokens — or, while a transaction stays open, the
+--   whole connection — are quarantined. The caller must reload and
 --   reconcile, and must NEVER blindly reissue the PKCS#11 operation.
+--   Quarantine is process-local state of the live handle: a clean
+--   'storeReload' or a reopen (fresh handle) clears it. A
+--   connection-wide quarantine (SQLite: a write transaction left
+--   open by a failed ROLLBACK) refuses every load, commit, reset
+--   and reservation; only a 'storeReload' whose retried ROLLBACK
+--   ends the transaction, or the close (C_Finalize closes the
+--   store; SQLite rolls the open transaction back), resolves it.
+--   The provisioning and login paths reload only after a commit
+--   reconciles landed, so for them it holds until close; the
+--   detached-job path reloads after every unknown result.
 data CommitResult
   = Committed
   | NotCommitted !StoreError
