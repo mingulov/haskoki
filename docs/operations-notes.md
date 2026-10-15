@@ -247,6 +247,13 @@ serial, the same label under another id reports another serial, and
 `C_InitToken` keeps it, because a reset keeps the `TokenId`. Deleting the
 store and reseeding it from the same catalog gives the same serials.
 
+Serials are unique within one store only, not globally. Every store
+seeded from a catalog gives its home token `0000000000000001`, so two
+stores built from the default catalog report identical token URIs
+(`token=haskoki-demo;serial=0000000000000001`). A client that loads two
+haskoki modules or configurations and selects by `serial=` alone matches
+both: add the module path or another attribute to tell them apart.
+
 v0.4 rendered the slot index plus one in decimal (`%016u`). The two forms
 agree for a positional catalog of up to 9 tokens, where slot `n` holds
 `TokenId (n+1)`: `0000000000000001` to `0000000000000009`. They differ for
@@ -266,10 +273,10 @@ positional layout still matches the durable one.
 A SQLite open reconciles the catalog against the durable
 identities before anything publishes. Matches proceed; unknown
 identities seed with generation zero and fresh auth; every
-drift refuses the whole open. The reconciler itself is pure and
-writes nothing, but it runs after the SQLite store has been
-opened, and that open can first commit a schema migration (below),
-so "refused" does not guarantee unchanged database bytes:
+drift refuses the whole open. The reconciler is pure, and the
+SQLite open before it only reads an existing store (a version-1
+store migrates inside the first commit, below), so a refused open
+leaves the database file unchanged:
 
 | Drift | Refusal | Operator action |
 |---|---|---|
@@ -297,28 +304,32 @@ Versions: configuration keeps `schema_version = 1`
 `token_id` from `slot`; the new credential document starts at
 its own `format_version = 1`), and the SQLite schema moves to
 `schema_version = 2` by one explicit migration: a version-1
-database gains the empty `credentials` table and the advanced
-marker in a single transaction at open, with no row rewritten
-or reinterpreted (see `migrateV1toV2` in
-`src/Haskoki/Runtime/Storage/SQLite.hs` and the migration case
+database opens without any write, and gains the empty
+`credentials` table and the advanced marker inside its first
+commit transaction, together with that commit's data, with no
+row rewritten or reinterpreted (see `migrateV1InTxn` in
+`src/Haskoki/Runtime/Storage/SQLite.hs` and the version-1 cases
 in `tests/storage/StoreSpec.hs`). Anything but version 1 or 2
 refuses at open without writing; unknown document versions
 refuse on decode, as before. Binary rollback across the bump
 refuses loudly: a version-1 binary meets `schema_version = 2`
 and declines, so operators upgrade every serving binary first.
 
-Migration happens before identity reconciliation. Opening a
-version-1 store with a catalog that is then refused (label,
-slot, stored-unconfigured or duplicate-identity drift) can
-therefore already have committed the version-1 to version-2
-migration and left the file at `schema_version = 2` even though
-the open failed. The migration is one transaction that rewrites
-no existing row, so this is not a data-loss path, but a
-version-1 binary can no longer open that file. There is no
-no-write-on-refusal guarantee for a rejected persistent open,
-and no preflight or migrate-only command exists: back up the
-database file before upgrading. A preflight/migrate command and a
-defined refusal contract are v0.5 work.
+Migration happens only when an open succeeds. Opening a version-1
+store reads it without writing. A version-1 store holding tokens
+always refuses: a label, slot, stored-unconfigured or
+duplicate-identity drift reports first, and otherwise every token
+lacks a credential row (version 1 has no `credentials` table), so
+the open refuses as migration-required. Either way the database
+file and its `-journal` stay byte-identical and the file stays at
+`schema_version = 1`, still openable by the binary that wrote it.
+Only the ownership sidecar `<db>.lock` is created and removed
+again. An empty version-1 store opens, and its seed commit
+migrates it and writes the seeded tokens and their credential rows
+in one transaction; if that commit fails, the file stays at version
+1. The async process-level store open follows the same rule: its
+home-token refusal writes nothing. Back up the database file before
+upgrading all the same.
 
 On a SQLite store, PIN values are durable from the moment a token
 exists: the open that creates a token row writes its credential
@@ -333,10 +344,13 @@ interval, as before.
 
 A store written before this (v0.4 and earlier) can hold tokens
 with no credential row. The open refuses such a store as
-migration-required, naming every token without a row, and
-writes nothing; the catalog PINs never stand in for a missing
-row. `haskoki-ctl store check --path FILE --config FILE`
-reports this without opening the file for writing, and
+migration-required before any write, so the file stays
+byte-identical; the catalog PINs never stand in for a missing
+row. The refusal fails `C_Initialize` with `CKR_GENERAL_ERROR`
+and does not print the token ids itself:
+`haskoki-ctl store check --path FILE --config FILE`
+names every token without a row without opening the file for
+writing, and
 `haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR`
 records the configured PINs as those tokens' rows after taking
 a backup. Identity refusals (a reorder, a removal, a relabel)

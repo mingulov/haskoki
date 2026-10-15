@@ -57,8 +57,8 @@ Invalid values return `CfgInvalid`; configuration errors stop the open.
 | `sim.fault_window_start` | E | seeds the fault window | `SimBridgeSpec` fault windows |
 | `sim.fault_window_ticks` | E | fault window length | `SimBridgeSpec` fault windows |
 | `tokens.labels` | E | catalog seating + served labels | `MultiTokenSpec` labels + `ConfigSpec` catalog validation |
-| `tokens.so_pins` | E | per-slot SO auth | `MultiTokenSpec` SO per-slot |
-| `tokens.user_pins` | E | per-slot user auth | `MultiTokenSpec` per-slot PINs |
+| `tokens.so_pins` | E | per-slot SO auth; on SQLite it seeds a new token only, and the stored credential row wins after | `MultiTokenSpec` SO per-slot |
+| `tokens.user_pins` | E | per-slot user auth; on SQLite it seeds a new token only, and the stored credential row wins after | `MultiTokenSpec` per-slot PINs |
 | `tokens.token_ids` | E | optional parallel array of decimal stable identities (strings in `1..2147483647`), positional with `tokens.labels`: same length, unique, `token_ids[0]` must be `1` (slot 0 is the home token), else the whole config refuses at load with `CfgInvalid`. Absent: slot `n` owns `TokenId (n+1)`. Pinned ids select durable identity, and the public token serial is that identity in 16 lowercase hex digits | `StoreSpec` pinned/duplicate/ragged/malformed/absent `token_ids` cases (parser: `parseTokenIds`) |
 
 Sections (9): `storage`, `engine`, `async`, `trace`, `control`,
