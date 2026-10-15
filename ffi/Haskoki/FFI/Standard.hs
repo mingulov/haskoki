@@ -570,8 +570,9 @@ tokenIdForSlot :: SlotId -> TokenId
 tokenIdForSlot (SlotId n) = TokenId (n + 1)
 
 -- | One slot's LIVE serving credential: the effective label
--- plus the effective PINs. Seeded at open from the catalog,
--- with durable provisioned rows winning where present; every
+-- plus the effective PINs. On a SQLite store the durable
+-- credential row is the only authority (a stored token without
+-- one serves no login); memory mode seeds from the catalog. Every
 -- granted provisioning call rewrites exactly its slot's entry
 -- after its commit lands, so the view tracks durable truth
 -- under the single-writer invariant (the store admits one
@@ -1000,9 +1001,12 @@ data StdStoreError
   | StdStoreCatalogMismatch
   | StdStoreIdentityRefusal !String
   -- | Stored tokens with no durable credential row (a store
-  -- written before credentials were seeded with each token).
-  -- Lists every such token, ascending; the open writes nothing
-  -- and never invents a credential from the catalog PINs.
+  -- written before credentials were seeded with each token,
+  -- including every token of a schema-1 store). Lists every
+  -- such token, ascending; the open writes nothing (the SQLite
+  -- open only reads, and a schema-1 store migrates only inside
+  -- a commit, which a refused open never reaches) and never
+  -- invents a credential from the catalog PINs.
   | StdStoreMigrationRequired ![TokenId]
   deriving (Eq, Show)
 
@@ -1014,6 +1018,11 @@ openStdStore = openStdStoreWith openSQLiteStore
 -- scripted opener ('openSQLiteStoreWith' with limits and
 -- faults). The reconcile\/seat\/seed flow is identical either
 -- way, so injected faults exercise the production open path.
+-- The seed commit is the open's only write: the SQLite opener
+-- only reads an existing store (a schema-1 store migrates inside
+-- that commit), and every refusal (identity first, then
+-- migration-required) returns before it, so a refused open
+-- leaves the database bytes unchanged.
 openStdStoreWith
   :: (FilePath -> IO (Either StoreError Store))
   -> Env
@@ -3306,12 +3315,13 @@ markServingDirty inst slot =
   atomicModifyIORef' (siDirty inst) (\s -> (if slot `elem` s then s else slot : s, ()))
 
 -- | Re-sync one slot's serving entry from the store: the token
--- row carries the authoritative label, the credential row (if
--- any) the authoritative PINs, and the catalog seeds the
--- halves no row covers. 'True' means the entry is
+-- row carries the authoritative label and the credential row
+-- the authoritative PINs. The durable row is the only
+-- authority: a missing token or credential row never falls
+-- back to the catalog PINs. 'True' means the entry is
 -- authoritative again (the slot clears); 'False' means the
--- re-read failed and the caller must fail closed without
--- consulting the view. Memory instances have no durable half,
+-- re-read failed or found no row, and the caller must fail
+-- closed without consulting the view. Memory instances have no durable half,
 -- so the view is trivially authoritative there.
 resyncServing :: StdInstance -> SlotId -> IO Bool
 resyncServing inst slot = case siStore inst of
@@ -3387,8 +3397,8 @@ setPinRole m sid = do
 -- generation bumps (stale job references refuse), the auth
 -- state goes fresh, and the user PIN becomes uninitialized
 -- (the SO sets it with 'C_InitPIN'). Every seated token
--- carries an SO PIN (catalog-seeded until its first
--- provisioning commit, durable after), so this call always
+-- carries an SO PIN (on SQLite its durable credential row,
+-- seeded with the token; in memory mode the catalog's), so this call always
 -- takes the reinitialization path: the caller PIN is checked
 -- against the token's existing SO PIN with the
 -- position-constant 'pinsMatch' fold, and a mismatch refuses
