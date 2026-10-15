@@ -58,7 +58,9 @@ import Haskoki.FFI.Standard
   , haskokiStdSetPin
   , haskokiStdTokenSerial
   , openStdInstanceWith
+  , openStdStore
   , openStdStoreWith
+  , StdStoreError (..)
   , stdAcquisition
   , stdRvOf
   )
@@ -98,6 +100,7 @@ import Haskoki.Runtime.Config
   , defaultConfig
   , parseConfig
   )
+import Haskoki.Runtime.Lifecycle (newEnv, rulesFromConfig)
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStoreWith)
 import Haskoki.Runtime.Storage.SQLite
   ( SQLiteTestHooks (..)
@@ -190,7 +193,7 @@ spec = testGroup "Multi-session store"
   , testCase "commit tests observe death deterministically (no busy-spin)" caseNoBusySpin
   , testCase "login lockout persists across close, reopen, and a second process" caseLoginLockoutDurable
   , testCase "edited config PINs never replace seeded durable credentials" caseConfigPinEditIgnored
-  , testCase "a stored token without a credential row fails closed" caseRowlessTokenFailsClosed
+  , testCase "a stored token without a credential row refuses the open" caseRowlessTokenFailsClosed
   , testCase "failed durable auth write fails the login closed" caseLoginFailClosed
   , testCase "unknown-but-landed login reconciles and serves on" caseLoginUnknownLanded
   , testCase "landed login publishes despite reload failure" caseLoginReloadFailsLanded
@@ -1459,9 +1462,9 @@ twoTokenConfigPins path soPins userPins = case parseConfig (unlines
     Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True })
 
 -- | A stored token whose credential row is gone never falls back
--- to the configured PINs: login with the catalog user PIN fails
--- closed (@CKR_GENERAL_ERROR@), while the token that kept its row
--- still authenticates.
+-- to the configured PINs: the next open refuses the whole store
+-- as migration-required, naming only that token, and the
+-- instance open fails closed instead of serving catalog PINs.
 caseRowlessTokenFailsClosed :: IO ()
 caseRowlessTokenFailsClosed =
   bracket (makeTempDir "haskoki-rowless") removeDirectoryRecursive $ \dir -> do
@@ -1473,12 +1476,19 @@ caseRowlessTokenFailsClosed =
     r <- storeCommit st emptyDelta { sdDropCredentials = [TokenId 2] }
     storeClose st
     assertEqual "ops credential row dropped" Committed r
-    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
-      ops <- openAuthSessionOn ctx 1
-      loginAs ctx ops 1 "2345" >>= assertEqual "catalog PIN never serves a stored token"
-        (CULong 0x05)
-      demo <- openAuthSessionOn ctx 0
-      loginAs ctx demo 1 "1234" >>= assertEqual "the token with a row still serves" (CULong 0)
+    env <- newEnv (rulesFromConfig cfg)
+    eAcq <- openStdStore env cfg
+    case eAcq of
+      Left (StdStoreMigrationRequired ids) ->
+        assertEqual "refusal names only the rowless token" [TokenId 2] ids
+      Left err -> assertFailure ("rowless open refused for the wrong reason: " ++ show err)
+      Right mAcq -> do
+        mapM_ (storeClose . stdStore) mAcq
+        assertFailure "store with a rowless token opened"
+    ctx <- openStdInstanceWith stdAcquisition cfg
+    when (castStablePtrToPtr ctx /= nullPtr) $ do
+      haskokiStdClose ctx
+      assertFailure "instance served a store with a rowless token"
 
 -- | Seeded tokens keep their durable credentials when the config
 -- PINs are edited: after one open seeds both tokens, a reopen with
