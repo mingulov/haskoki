@@ -19,34 +19,64 @@ Pinned pair (`/opt/pkcs11-proxy-ng`, proxy commit `1ed7cc15`, v0.2.2):
 
 `HASKOKI_PARITY_REPROBE=1 scripts/test-proxy-parity.sh` runs every
 excluded proxied leg anyway and records the outcome in
-`$HASKOKI_PARITY_ARTIFACTS/reprobe.tsv`. Each excluded leg is queued, and the
-queue runs on a fresh daemon with the same backend config after the gate
-daemon of its group has stopped. A re-probe never shares daemon state
-with a gated leg and never changes the gate result. The first re-probe
-run (2026-10-15) ran the excluded legs on the live certificate daemon.
-The leftover objects then failed the next gated atomicity census
-(`matches=3 expected=1`). The queue design comes from that run.
-Without the variable the excluded legs are skipped as before.
+`$HASKOKI_PARITY_ARTIFACTS/reprobe.tsv`. Each excluded leg is queued
+and runs on its own fresh daemon (and, for sqlite, its own empty
+database directory) after the gate daemon of its group has stopped. A
+re-probe never shares daemon state with a gated leg or with another
+re-probe, and never changes the gate result. The run ends in a
+`REPROBE-RUN` line, never the `PASS` line. Without the variable the
+excluded legs are skipped as before.
+
+Two earlier probes shared daemon state and gave misleading results:
+re-probing on the live certificate daemon left objects that failed the
+next gated atomicity census (`matches=3 expected=1`), and one daemon
+serving the whole version matrix made `visibility` fail from 3.0 on
+(`matches=2`). Both were driver artifacts. The gated certificate legs
+now use one fresh daemon per storage, version and leg too, as the direct side gives every leg a fresh store (a shared daemon also failed the atomicity census once `visibility` ran on it, `matches=3 expected=1`).
 
 An entry leaves the table only when its re-probe passes with an empty
-diff in every version and storage the entry covers.
+diff in every version and storage the entry covers. An entry may be
+narrowed by a leg, version or storage qualifier
+(`consumer_certificates:restart:sqlite`) to what the evidence supports.
 
-## Remaining entries (re-probed 2026-10-15)
+Development filters never produce a `PASS` line: `HASKOKI_PARITY_GROUPS`
+(an unknown group name fails) ends in `PARTIAL` with exit 1 unless
+`HASKOKI_PARITY_ALLOW_PARTIAL=1`.
 
-Receipt: `ws/evidence/v050-wp11/task3/` in the development workspace
-(`reprobe-run.log`, `reprobe-artifacts/reprobe.tsv`, and the per-leg
-direct, proxied and diff logs). Every row ran against the pinned pair
-above. The gate run with re-probes enabled passed.
+## Changes in fix round 1 (2026-10-16)
+
+Re-probe with a fresh daemon per version and storage (receipt:
+`ws/evidence/v050-wp11/fix1/probe-artifacts/reprobe.tsv` in the
+development workspace, sha256 `ffc57ccded61426c3b8a8bc4479dbf74204aeba676219bfd356b8eb2ceac9b3b`):
+
+- `consumer_certificates:visibility`: REMOVED. Passes with an empty
+  diff in all four versions and both storages, and is gated.
+- `consumer_certificates:restart`: NARROWED to sqlite storage. Passes
+  with an empty diff in all four versions with memory storage (gated);
+  with sqlite storage it fails in all four versions.
+
+## Remaining entries (re-probed 2026-10-15 and 2026-10-16)
+
+Receipts (development workspace): `ws/evidence/v050-wp11/task3/`
+(`reprobe-artifacts/reprobe.tsv`, the first three rows below) and
+`ws/evidence/v050-wp11/fix1/probe-artifacts/` (the certificate row).
+Every row ran against the pinned pair above.
 
 | Entry | Upstream | Re-probe result | Why it stays |
 | --- | --- | --- | --- |
 | `message_routed` | [#23](https://github.com/mingulov/pkcs11-proxy-ng/issues/23) | error (exit 1) | 10 failed checks: `C_EncryptMessageNext` IV repair, supply-at-end and replace-at-end; five GCM IV-placement shapes (supply-at-end and recover, sealed and opened); and the GCM KAT sweep (sealed, opened). |
 | `async_routed` | [#24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24) | error (exit 1) | 80 failed checks, and the table-proof child dies with signal 11 under 3.2. Async completion does not preserve the caller's output bindings. |
 | `notifications_routed` | [#25](https://github.com/mingulov/pkcs11-proxy-ng/issues/25) | error (exit 2) | All 72 matrix legs report `setup-error reason=discovery-symbols`. Callback association and provider control are not transported. |
-| `consumer_certificates:visibility` | [#27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27) | pass for 2.40 only; 3.0, 3.1 and 3.2 error in both storages | One daemon serves the whole version matrix and the leg uses a fixed token label, so the cross-session census finds `matches=2` after the first version. A per-version entry would make the gate depend on run order. |
-| `consumer_certificates:restart` | [#27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27) | pass with memory storage; error with sqlite storage in all four versions | Token objects outlive a client `C_Finalize`/`C_Initialize` through the proxy. With sqlite storage, `restart-token-refind` fails. The driver's entry grammar has no storage qualifier, so the whole leg stays. |
+| `consumer_certificates:restart:sqlite` | [#27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27) (closest reference) | error (exit 1) in 2.40, 3.0, 3.1 and 3.2 | Assertion `restart-token-refind` fails: after the client's `C_Finalize` and `C_Initialize`, finding the `CKA_TOKEN` object `restart-token` returns 0 matches through the proxy, while direct returns 1 (observed with a debug print on 2026-10-16). |
 
-No entry passed with an empty diff, so none was removed.
+#27 is closed upstream as by design (2026-10-05: backend objects outlive
+a client `C_Finalize`; per-client teardown is deferred to v0.3). Its
+report covers the opposite symptom, memory objects surviving the
+restart, which now passes. The sqlite symptom (object not found) is not
+described there, and its cause is not established. The entry is the
+narrowest the evidence supports, and #27 is the nearest upstream
+reference rather than a confirmed cause. A new upstream report is
+needed before the entry can name its own issue.
 
 ## Policy and metadata scenarios (#17)
 
@@ -60,17 +90,32 @@ config the consumer prints with `--print-config`:
   have no proxied session. Their proxied equivalent is a startup
   refusal: the daemon must exit nonzero without ever accepting on its
   port, and its log must show `Health status: NOT_SERVING`. The pinned
-  daemon exits with status 70 and prints no backend error text.
-- A negative control runs the proxied `limit2-null` child against a
-  daemon on the unconfigured default backend. It must exit 3 with
-  `policy:backend-mismatch max want=2 got=1024`. This shows the
-  comparison can fail.
+  daemon exits with status 70 and prints no backend error text. The
+  `pin` scenario, which uses a valid PIN on the same config shape,
+  starts and runs, so a refusal is not caused by a missing library or a
+  bad path.
+- Four negative controls run before the configured legs. Each runs a
+  proxied child against a daemon whose config differs in exactly the
+  property the scenario asserts, and must be refused with the named
+  cause: `limit2-null` against the unconfigured daemon (exit 3,
+  `max want=2 got=1024`), `multitoken` against it (exit 3,
+  `slots want=2 got=1`), `pin` against it (exit 3, `slots want=2 got=1`;
+  the `pin` config carries a second token and its own PINs), and `pin`
+  against a daemon with the right catalog but another demo user PIN
+  (exit 1, `pin correct user login ok` fails). A parity pass therefore
+  shows the daemon serves the scenario's own session limit, token
+  catalog and PINs.
 - `limit2-app` is a supported refusal, with no upstream issue. The
   pinned shim refuses application mutex callbacks, so `C_Initialize`
   returns `CKR_CANT_LOCK` (0xa). In proxy mode the consumer requires
   exactly that code and prints a `topology:` line, which the driver
   excludes from the diff. It then initializes again with OS locking, and
-  all remaining session and policy assertions are compared.
+  all remaining session and policy assertions are compared. Application
+  mutex behavior itself is not parity-tested through the proxy.
+- The driver checks its own guards at startup: the squatter self-check
+  requires the refusal to say `already bound`, and a daemon counts as
+  ready only when its own log shows `listening on tcp` and its process
+  is alive.
 
 ## Ledger rows
 

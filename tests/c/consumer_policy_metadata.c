@@ -223,15 +223,17 @@ typedef struct {
 } scenario_expect;
 
 /* limit2-*: [limits] sessions = 2, one token. multitoken: sessions 2,
- * two tokens. pin: no [limits], one token; ulMaxSessionCount is the
- * module's default of 1024. */
+ * two tokens. pin: no [limits], two tokens (demo + haskoki-pin) with
+ * their own PINs; ulMaxSessionCount is the module's default of 1024. */
 static const scenario_expect kExpect[] = {
     {"limit2-null", 1, {"haskoki-demo", NULL}, 2},
     {"limit2-os", 1, {"haskoki-demo", NULL}, 2},
     {"limit2-app", 1, {"haskoki-demo", NULL}, 2},
     {"multitoken", 2, {"haskoki-demo", "haskoki-ops"}, 2},
-    /* pin == default backend by design (pin config = default catalog) */
-    {"pin", 1, {"haskoki-demo", NULL}, 1024},
+    /* pin: a second token (slot 0 must stay haskoki-demo) and its own
+     * PINs, so a daemon on any other config is refused by the identity
+     * check (slot count) and by the login below (PIN) */
+    {"pin", 2, {"haskoki-demo", "haskoki-pin"}, 1024},
 };
 
 /* Slot ids as published by the module under test: 0-based direct, but
@@ -590,9 +592,9 @@ static const char kPinConfig[] =
     "[trace]\n"
     "enabled = false\n"
     "[tokens]\n"
-    "labels = [\"haskoki-demo\"]\n"
-    "so_pins = [\"5678\"]\n"
-    "user_pins = [\"1234\"]\n";
+    "labels = [\"haskoki-demo\", \"haskoki-pin\"]\n"
+    "so_pins = [\"8765\", \"7654\"]\n"
+    "user_pins = [\"4321\", \"3210\"]\n";
 
 static const char *toml_pin(void) { return kPinConfig; }
 
@@ -626,7 +628,7 @@ static int child_pin(const char *sop) {
                          NULL_PTR, &s);
   CHECK(rv == CKR_OK, "pin open ok");
   /* Normal PIN authenticates, then logs out cleanly. */
-  rv = fl->C_Login(s, CKU_USER, (CK_UTF8CHAR_PTR)"1234", 4);
+  rv = fl->C_Login(s, CKU_USER, (CK_UTF8CHAR_PTR)"4321", 4);
   CHECK(rv == CKR_OK, "pin correct user login ok");
   rv = fl->C_Logout(s);
   CHECK(rv == CKR_OK, "pin logout ok");
@@ -651,7 +653,7 @@ static int child_pin(const char *sop) {
   CHECK(rv == CKR_OK && (ti.flags & CKF_USER_PIN_LOCKED) != 0,
         "pin user-locked flag after lockout");
   /* A locked role stays locked even for the right PIN. */
-  rv = fl->C_Login(s, CKU_USER, (CK_UTF8CHAR_PTR)"1234", 4);
+  rv = fl->C_Login(s, CKU_USER, (CK_UTF8CHAR_PTR)"4321", 4);
   CHECK(rv == CKR_PIN_LOCKED, "pin locked denies correct pin (0x%lx)",
         (unsigned long)rv);
   /* Provisioned: PIN setup is live. InitPIN needs an SO session,
@@ -659,7 +661,7 @@ static int child_pin(const char *sop) {
   rv = fl->C_InitPIN(s, (CK_UTF8CHAR_PTR)"9999", 4);
   CHECK(rv == CKR_USER_NOT_LOGGED_IN, "pin InitPIN needs SO (0x%lx)",
         (unsigned long)rv);
-  rv = fl->C_SetPIN(s, (CK_UTF8CHAR_PTR)"1234", 4, (CK_UTF8CHAR_PTR)"9999", 4);
+  rv = fl->C_SetPIN(s, (CK_UTF8CHAR_PTR)"4321", 4, (CK_UTF8CHAR_PTR)"9999", 4);
   CHECK(rv == CKR_PIN_LOCKED, "pin SetPIN locked role stays locked (0x%lx)",
         (unsigned long)rv);
   rv = fl->C_CloseSession(s);
