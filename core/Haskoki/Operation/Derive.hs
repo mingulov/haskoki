@@ -854,10 +854,10 @@ planDerive rules model st mech baseH blob
                 (BS.length mat + BS.length auxMat)
         ConcatBaseAndData -> natural Nothing (BS.length mat + BS.length payBlob)
         ConcatDataAndBase -> natural Nothing (BS.length payBlob + BS.length mat)
-        XorBaseAndData
-          | BS.length mat /= BS.length payBlob -> KeyDenied (KeyDeny CKR_DATA_LEN_RANGE
-              "XOR data length differs from the base length")
-          | otherwise -> natural Nothing (BS.length mat)
+        -- PKCS#11 §6.43.6: the result covers the shorter of the
+        -- base and the data (an empty side leaves nothing and
+        -- refuses as an empty natural output).
+        XorBaseAndData -> natural Nothing (min (BS.length mat) (BS.length payBlob))
         ExtractKeyFromKey ->
           let baseBits = toInteger (BS.length mat) * 8
               remaining = (baseBits - toInteger offN) `div` 8

@@ -3740,8 +3740,7 @@ runEffect env resolve fx = case fx of
                 "driver: data-concat length out of range"))
           XorBaseAndData
             | outLen >= 1
-            , BS.length kb == BS.length dat
-            , outLen <= BS.length kb ->
+            , outLen <= min (BS.length kb) (BS.length dat) ->
                 pure (GotBytes (BS.take outLen (kb `xorB` dat)))
             | otherwise -> pure (GotCryptoError (CryptoFailed
                 "driver: XOR length out of range"))

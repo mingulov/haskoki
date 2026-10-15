@@ -2847,8 +2847,13 @@ caseByteOps = withSynth "11" $ \env -> do
     (FxDerive cbd (Just secOid) Nothing fBD BS.empty 49)
   expectFailed "wrong-row frame"
     (FxDerive ck (Just auxOid) (Just auxOid) fBD BS.empty 32)
-  expectFailed "xor mismatch"
-    (FxDerive xx (Just secOid) Nothing fBD BS.empty 16)
+  -- XOR over unequal lengths covers the shorter operand.
+  xShort <- deriveAs xx secOid Nothing fBD 16
+  assertEqual "xor short data" (BS.pack (zipWith xor [0 .. 15] (replicate 16 1))) xShort
+  xLong <- deriveAs xx secOid Nothing (encodeByteOpsParams 0 0 (BS.replicate 48 0x0f)) 32
+  assertEqual "xor long data" x1 xLong
+  expectFailed "xor past the shorter length"
+    (FxDerive xx (Just secOid) Nothing fBD BS.empty 17)
   expectFailed "extract overrun"
     (FxDerive xt (Just secOid) Nothing (encodeByteOpsParams 0 248 BS.empty) BS.empty 16)
 

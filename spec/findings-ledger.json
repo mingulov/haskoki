@@ -43,8 +43,8 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.5.0.0: withdraw GMAC message sign/verify flags (ruling 2, Task 4; 0x71 per ruling 5, Task 3)",
-   "test": "pending: WP12 Task 4",
-   "receipt": "pending: WP12 Task 4",
+   "test": "tests/model/MessageFlagBatterySpec.hs::withdrawnRows (0x108e) + scratch mutation",
+   "receipt": "tests/c/message_routed.c::gmac_shape_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -73,8 +73,8 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.5.0.0: withdraw GMAC message sign/verify flags (ruling 2, Task 4; 0x71 per ruling 5, Task 3)",
-   "test": "pending: WP12 Task 4",
-   "receipt": "pending: WP12 Task 4",
+   "test": "tests/model/MessageFlagBatterySpec.hs::withdrawnRows (0x108e) + scratch mutation",
+   "receipt": "tests/c/message_routed.c::gmac_shape_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -4524,12 +4524,12 @@
    "source": "release-notes-0.4.0.0 disclosure; CHANGELOG 0.4.0.0",
    "input": "xor-base-and-data-unequal-length",
    "expected": "explicit disposition",
-   "observed": "CKR_DATA_LEN_RANGE when base and data lengths differ (Derive.hs:857-860); spec permits min length",
+   "observed": "was CKR_DATA_LEN_RANGE when base and data lengths differed; spec permits min length",
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.5.0.0: result length = min(base, data) (ruling 4, Task 5)",
-   "test": "pending: WP12 Task 5",
-   "receipt": "pending: WP12 Task 5",
+   "test": "tests/recipes/RecipeByteOpsSpec.hs::casePlan (xor short/long data, past the shorter length)",
+   "receipt": "tests/c/consumer_roundtrip.c::xor_unequal_legs",
    "checker_pin": "n/a (not a checker case)"
   }
  ]

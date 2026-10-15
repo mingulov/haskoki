@@ -242,6 +242,9 @@ concatDataFrame = encodeByteOpsParams 0 0 (BS.replicate 16 1)
 xorFrame :: BS.ByteString
 xorFrame = encodeByteOpsParams 0 0 (BS.pack [0 .. 31])
 
+xorLongFrame :: BS.ByteString
+xorLongFrame = encodeByteOpsParams 0 0 (BS.replicate 48 0x0f)
+
 extractFrame :: BS.ByteString
 extractFrame = encodeByteOpsParams 0 0 BS.empty
 
@@ -299,10 +302,29 @@ casePlan = do
   expectDeny "over natural" CKR_KEY_SIZE_RANGE
     (planDerive defaultRules m testSession concatDataMech baseHandle
       (encodeDeriveParams concatDataFrame [derivedTmpl 49]))
-  -- XOR over mismatched lengths refuses typed.
-  expectDeny "xor mismatch" CKR_DATA_LEN_RANGE
+  -- XOR over unequal lengths uses the shorter one (PKCS#11
+  -- §6.43.6: the natural length is min(base, data)). Base 32 /
+  -- data 16 gives 16 bytes, by template or by default; base 32 /
+  -- data 48 gives 32; a template length past the minimum refuses
+  -- typed like every byte-op over-natural request.
+  case planDerive defaultRules m testSession xorMech baseHandle
+      (encodeDeriveParams concatDataFrame [derivedTmpl 16]) of
+    KeyEffect _ (FxDerive _ _ _ _ _ total) ->
+      assertEqual "xor short data, explicit" 16 total
+    other -> assertFailure ("expected xor effect, got " ++ show other)
+  case planDerive defaultRules m testSession xorMech baseHandle
+      (encodeDeriveParams concatDataFrame [derivedTmplNoLen]) of
+    KeyEffect _ (FxDerive _ _ _ _ _ total) ->
+      assertEqual "xor short data, natural" 16 total
+    other -> assertFailure ("expected xor effect, got " ++ show other)
+  case planDerive defaultRules m testSession xorMech baseHandle
+      (encodeDeriveParams xorLongFrame [derivedTmplNoLen]) of
+    KeyEffect _ (FxDerive _ _ _ _ _ total) ->
+      assertEqual "xor long data, natural" 32 total
+    other -> assertFailure ("expected xor effect, got " ++ show other)
+  expectDeny "xor past the shorter length" CKR_KEY_SIZE_RANGE
     (planDerive defaultRules m testSession xorMech baseHandle
-      (encodeDeriveParams concatDataFrame [derivedTmpl 16]))
+      (encodeDeriveParams concatDataFrame [derivedTmpl 17]))
   -- EXTRACT without a template length refuses typed.
   expectDeny "extract no length" CKR_TEMPLATE_INCOMPLETE
     (planDerive defaultRules m testSession extractMech baseHandle

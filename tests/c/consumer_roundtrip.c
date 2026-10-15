@@ -328,6 +328,85 @@ static void dsa_pair_roundtrip(CK_FUNCTION_LIST_PTR f, CK_SESSION_HANDLE s,
   CHECKC(r == CKR_SIGNATURE_INVALID, "%s: tampered DSA refused", tag);
 }
 
+/* XOR_BASE_AND_DATA over unequal lengths (PKCS#11 3.x 6.43.6):
+ * the result covers the shorter of base and data. Base bytes are
+ * (13i+5) and data bytes (37i+11), mod 256; the expected bytes come
+ * from an independent Python XOR of the truncated operands. Legs:
+ * base 16 / data 24 and base 24 / data 16 give 16 bytes with or
+ * without a template length; CKA_VALUE_LEN 17 refuses. */
+static void xor_unequal_legs(CK_FUNCTION_LIST_PTR f, CK_SESSION_HANDLE s) {
+  static const CK_BYTE want[16] = {
+    0x0e, 0x22, 0x4a, 0x56, 0xa6, 0x82, 0xba, 0x6e,
+    0x5e, 0x22, 0xfa, 0x36, 0x66, 0x42, 0xaa, 0xfe
+  };
+  static const CK_ULONG baseLens[2] = { 16, 24 };
+  static const CK_ULONG dataLens[2] = { 24, 16 };
+  CK_OBJECT_CLASS cls = CKO_SECRET_KEY;
+  CK_KEY_TYPE kt = CKK_GENERIC_SECRET;
+  CK_BBOOL t = CK_TRUE, fa = CK_FALSE;
+  CK_ULONG len16 = 16, len17 = 17;
+  int leg, i;
+  for (leg = 0; leg < 2; leg++) {
+    CK_BYTE base[24], data[24], got[24];
+    CK_OBJECT_HANDLE hb = 0, hd = 0;
+    CK_KEY_DERIVATION_STRING_DATA sd;
+    CK_MECHANISM m;
+    CK_RV r;
+    CK_ATTRIBUTE baseT[] = {
+      { CKA_CLASS, &cls, sizeof(cls) },
+      { CKA_KEY_TYPE, &kt, sizeof(kt) },
+      { CKA_TOKEN, &fa, sizeof(fa) },
+      { CKA_DERIVE, &t, sizeof(t) },
+      { CKA_VALUE, base, baseLens[leg] },
+    };
+    CK_ATTRIBUTE outT[] = {
+      { CKA_CLASS, &cls, sizeof(cls) },
+      { CKA_KEY_TYPE, &kt, sizeof(kt) },
+      { CKA_TOKEN, &fa, sizeof(fa) },
+      { CKA_SENSITIVE, &fa, sizeof(fa) },
+      { CKA_EXTRACTABLE, &t, sizeof(t) },
+      { CKA_VALUE_LEN, &len16, sizeof(len16) },
+    };
+    CK_ATTRIBUTE g[] = { { CKA_VALUE, got, sizeof(got) } };
+    for (i = 0; i < 24; i++) {
+      base[i] = (CK_BYTE)(i * 13 + 5);
+      data[i] = (CK_BYTE)(i * 37 + 11);
+    }
+    r = f->C_CreateObject(s, baseT, 5, &hb);
+    CHECKC(r == CKR_OK && hb != 0, "xor-unequal/%lu-%lu: base imports",
+           baseLens[leg], dataLens[leg]);
+    sd.pData = data;
+    sd.ulLen = dataLens[leg];
+    m.mechanism = CKM_XOR_BASE_AND_DATA;
+    m.pParameter = &sd;
+    m.ulParameterLen = sizeof(sd);
+    /* Explicit length at the minimum, then no length (natural). */
+    for (i = 0; i < 2; i++) {
+      CK_ULONG n = i == 0 ? 6 : 5;
+      hd = 0;
+      r = f->C_DeriveKey(s, &m, hb, outT, n, &hd);
+      CHECKC(r == CKR_OK && hd != 0, "xor-unequal/%lu-%lu/%s: derive ok rv=0x%lx",
+             baseLens[leg], dataLens[leg], i == 0 ? "len16" : "natural",
+             (unsigned long)r);
+      memset(got, 0, sizeof(got));
+      g[0].ulValueLen = sizeof(got);
+      r = f->C_GetAttributeValue(s, hd, g, 1);
+      CHECKC(r == CKR_OK && g[0].ulValueLen == 16 && memcmp(got, want, 16) == 0,
+             "xor-unequal/%lu-%lu/%s: 16 bytes match the oracle",
+             baseLens[leg], dataLens[leg], i == 0 ? "len16" : "natural");
+      if (hd != 0) f->C_DestroyObject(s, hd);
+    }
+    outT[5].pValue = &len17;
+    hd = 0;
+    r = f->C_DeriveKey(s, &m, hb, outT, 6, &hd);
+    CHECKC(r == CKR_KEY_SIZE_RANGE && hd == 0,
+           "xor-unequal/%lu-%lu: length 17 past the shorter operand refused rv=0x%lx",
+           baseLens[leg], dataLens[leg], (unsigned long)r);
+    if (hd != 0) f->C_DestroyObject(s, hd);
+    if (hb != 0) f->C_DestroyObject(s, hb);
+  }
+}
+
 int main(int argc, char **argv) {
   void *handle;
   CK_C_GetFunctionList pGetList;
@@ -6477,6 +6556,7 @@ int main(int argc, char **argv) {
             }
             rv = f->C_DestroyObject(sess, bd4);
             CHECKC(rv == CKR_OK, "byte-op secret destroyed");
+            xor_unequal_legs(f, sess);
           }
         }
       }

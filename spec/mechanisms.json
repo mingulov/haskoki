@@ -16446,7 +16446,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Byte-op recipe (core/Haskoki/Recipe/ByteOps.hs): output is base value XOR parameter data over a generic-secret base. Parameters are the CK_KEY_DERIVATION_STRING_DATA struct (data chase); base and data must have equal length or the plan refuses CKR_DATA_LEN_RANGE (SoftHSM cross-check: equal-length matrix only). A missing template length defaults to the full natural width. Vectors pinned (RoutingE2ESpec caseDriverByteOps); planner pins (RecipeByteOpsSpec); synthetic separation (SyntheticSpec caseByteOps); real KATs (KeyManagementSpec caseRealByteOpsVector).",
+      "notes": "Byte-op recipe (core/Haskoki/Recipe/ByteOps.hs): output is base value XOR parameter data over a generic-secret base. Parameters are the CK_KEY_DERIVATION_STRING_DATA struct (data chase); the natural width is the shorter of base and data (PKCS#11 6.43.6); a template length past it refuses CKR_KEY_SIZE_RANGE. A missing template length defaults to the full natural width. Unequal lengths pinned natively (consumer_roundtrip xor_unequal_legs, Python XOR oracle). Vectors pinned (RoutingE2ESpec caseDriverByteOps); planner pins (RecipeByteOpsSpec); synthetic separation (SyntheticSpec caseByteOps); real KATs (KeyManagementSpec caseRealByteOpsVector).",
       "numeric_id": "0x00000364",
       "routes": [
         {
