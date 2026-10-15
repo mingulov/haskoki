@@ -50,6 +50,24 @@ if [ "$SO_COUNT" -ne 1 ]; then
 fi
 SO="$SO_LIST"
 echo "module under test: $SO"
+# Byte-order collation: sort, comm and the committed inventory agree.
+export LC_ALL=C
+SYMS=tests/c/ossl4_test_symbols.txt
+[ -s "$SYMS" ] || fail "missing $SYMS"
+TMPO="${TMPDIR:-/tmp}/haskoki-ossl4-variants"; mkdir -p "$TMPO" || fail "cannot create $TMPO"
+CFL="-std=c11 -Wall -Wextra -Werror -pthread -I/opt/openssl-4.0.2/include"
+cc $CFL -c -o "$TMPO/prod.o" cbits/ossl4_ctx.c || fail "production-config shim did not compile"
+cc $CFL -DHSK_OSSL4_TEST_HOOKS -c -o "$TMPO/hooks.o" cbits/ossl4_ctx.c || fail "test-config shim did not compile"
+globals() { nm --defined-only -g "$1" | awk 'NF==3 && $2 ~ /^[TDBR]$/ {print $3}' | sort -u; }
+globals "$TMPO/prod.o" > "$TMPO/prod.syms"; globals "$TMPO/hooks.o" > "$TMPO/hooks.syms"
+comm -13 "$TMPO/prod.syms" "$TMPO/hooks.syms" > "$TMPO/only-hooks.syms"
+diff -u "$SYMS" "$TMPO/only-hooks.syms" || fail "test-only symbol inventory drifted (update $SYMS deliberately)"
+echo "STATIC: test-only symbol inventory matches ($(wc -l < "$SYMS") symbols)"
+nm -D --defined-only "$SO" | awk 'NF==3{print $3}' | sort -u > "$TMPO/so.syms"
+grep -qx hsk_ossl4_dh_derive "$TMPO/so.syms" || fail "nm sanity: hsk_ossl4_dh_derive not exported"
+LEAK=$(comm -12 "$SYMS" "$TMPO/so.syms")
+[ -z "$LEAK" ] || { echo "$LEAK"; fail "shipped module exports test-hook symbols"; }
+echo "STATIC: shipped module exports no test-hook symbol"
 
 BIN="${TMPDIR:-/tmp}/haskoki-ossl4-bounds"
 cc -std=c11 -O2 -g -Wall -Wextra -Werror -o "$BIN" tests/c/ossl4_bounds.c -ldl \

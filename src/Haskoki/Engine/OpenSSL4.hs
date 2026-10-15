@@ -50,6 +50,7 @@ implemented here):
   the native env alive across each use ('withForeignPtr'); every
   ownership transfer is an explicit masked step, never GC timing.
 -}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE TypeFamilies #-}
 -- No full laziness: it floats constant subexpressions (capability
 -- name lists, note tables) out of 'ossl4Caps' and 'probeCaps' into
@@ -63,6 +64,7 @@ module Haskoki.Engine.OpenSSL4
   , withBorrowedRegistry
   , lookupRegistry
   , takeRegistry
+#ifdef HSK_OSSL4_TEST_HOOKS
     -- * TEST-ONLY ownership gates
   , TestGate
   , openBackendGated
@@ -71,6 +73,7 @@ module Haskoki.Engine.OpenSSL4
   , digestInitGated
   , digestFinalGated
   , generateKeyECGated
+#endif
     -- * TEST-ONLY capability tables
   , ossl4StaticCaps
   , ossl4StaticCapsBuild
@@ -103,10 +106,12 @@ import Haskoki.Types (EngineResourceId (..))
 -- | Backend tag for the OpenSSL 4 engine.
 data OpenSSL4 = OpenSSL4 deriving (Eq, Show)
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY ownership gate: a per-test C object routing
 -- fault injection + accounting through the gated operations below.
--- Production operations pass no gate and never consult hook state.
+-- Defined only in the test configuration (HSK_OSSL4_TEST_HOOKS).
 type TestGate = Raw.TestGate
+#endif
 
 -- | Backend handle: private native env + registries. The cached
 -- 'osslCtx' pointer is valid only while 'osslEnv' is alive; every use
@@ -127,11 +132,13 @@ data OSSL4Env = OSSL4Env
   , osslGate :: !(MVar ())
   }
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY gated open (fault-or-delegate env construction,
 -- checkpoint-or-delegate provider loads).
 openBackendGated :: Ptr TestGate -> String -> IO (EngineResult (BackendEnv OpenSSL4))
 openBackendGated gate propq =
   openBackendWith (Raw.envNewGated gate) (Raw.envLoadGated gate) propq
+#endif
 
 -- | Open with a pluggable env allocator + provider loader.
 -- Ownership: the raw env is bracketed until adoption — provider
@@ -1005,6 +1012,7 @@ instance CryptoBackend OpenSSL4 where
     mh <- takeRegistry (osslDigests env) rid
     mapM_ (\h -> withForeignPtr (osslEnv env) $ \_ -> Raw.digestFree h) mh
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- ---------------------------------------------------------------------------
 -- TEST-ONLY gated operations
 -- ---------------------------------------------------------------------------
@@ -1079,6 +1087,7 @@ generateKeyECGated gate be ec =
       Right (priv, pub) -> pure (EngineOk (KeyDer priv, Just (KeyDer pub)))
   where
     spec = GenEC ec
+#endif
 
 -- ---------------------------------------------------------------------------
 -- Capabilities

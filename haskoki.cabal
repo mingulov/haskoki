@@ -235,6 +235,11 @@ library
     unix          >= 2.8   && < 2.9,
     haskoki:haskoki-core
   ghc-options:      -Wall
+  -- Test configuration of the native shim (live-sets, fault gates,
+  -- error seams). Defined here only: the foreign library (the shipped
+  -- libhaskoki.so) never defines it.
+  cc-options:       -Wall -Wextra -std=c11 -pthread -DHSK_OSSL4_TEST_HOOKS
+  cpp-options:      -DHSK_OSSL4_TEST_HOOKS
   default-language: GHC2024
 
 -- C-loadable provider module. Produces libhaskoki.so via the

@@ -748,7 +748,10 @@ int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
 /* --- TEST-ONLY ownership hooks (inert unless used) ----------------------- */
 /*
  * Fault injection + ownership accounting for the native transfer
- * tests. Production paths pass no gate (NULL) and never consult
+ * tests. Everything below except the gate type is compiled only
+ * with HSK_OSSL4_TEST_HOOKS (the Haskell library's test
+ * configuration); the shipped foreign library defines none of
+ * it. Production paths pass no gate (NULL) and never consult
  * hook state, so a normal configuration behaves exactly as
  * before: the hooks are inert unless a test explicitly creates a
  * gate and routes gated operations through it. Gates are
@@ -784,6 +787,8 @@ int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
  * is undefined); the test bracket releases before freeing.
  */
 typedef struct hsk_ossl4_test_gate hsk_ossl4_test_gate_t;
+
+#ifdef HSK_OSSL4_TEST_HOOKS
 
 hsk_ossl4_test_gate_t *hsk_ossl4_test_gate_new(void);
 void hsk_ossl4_test_gate_free(hsk_ossl4_test_gate_t *g);
@@ -891,6 +896,8 @@ long hsk_ossl4_test_env_doublefree(void);
 /* Env live-set overflows since process start. Tests assert
  * zero (complete tracking). */
 long hsk_ossl4_test_env_untracked(void);
+
+#endif /* HSK_OSSL4_TEST_HOOKS */
 
 #ifdef __cplusplus
 }

@@ -7,6 +7,7 @@ provider-only surface -- and converts shim results into owned strict
 'ByteString's, clearing native buffers with @hsk_ossl4_free@ after each
 copy. Nothing here is exported from the @haskoki@ package publicly.
 -}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 module Haskoki.FFI.OpenSSL4.Raw
   ( -- * Opaque native types
@@ -93,6 +94,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , rsaX509Decrypt
   , rsaX509Sign
   , rsaX509Verify
+#ifdef HSK_OSSL4_TEST_HOOKS
     -- * TEST-ONLY ownership gates
   , TestGate
   , envNewGated
@@ -104,12 +106,16 @@ module Haskoki.FFI.OpenSSL4.Raw
   , digestInitSizedGated
   , digestFinalGated
   , ecGenGated
+#endif
   ) where
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Unsafe as BSU
-import Control.Exception (finally, mask, mask_, onException, throwIO)
+import Control.Exception (finally, mask, mask_, onException)
+#ifdef HSK_OSSL4_TEST_HOOKS
+import Control.Exception (throwIO)
 import Control.Monad (when)
+#endif
 import Data.ByteString (ByteString)
 import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.C.Types (CChar (..), CInt (..), CLong (..), CSize (..), CUChar (..))
@@ -122,9 +128,11 @@ import Foreign.Storable (peek, poke)
 data OsslEnv
 data OsslLibCtx
 data DigestHandle
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY ownership gate (per-test fault/accounting object, owned
--- by the test; production paths pass 'nullPtr' and never consult it).
+-- by the test; defined only in the test configuration, HSK_OSSL4_TEST_HOOKS).
 data TestGate
+#endif
 
 -- Shim error codes (mirror cbits/ossl4_ctx.h).
 
@@ -353,6 +361,7 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_x509_sign"
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_rsa_x509_verify"
   c_rsa_x509_verify :: Ptr OsslLibCtx -> CString -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> Ptr CUChar -> CSize -> IO CInt
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- TEST-ONLY gate consultation (the ownership helpers call these only
 -- for a non-NULL gate; production pays no hook call at all).
 foreign import ccall unsafe "ossl4_ctx.h hsk_ossl4_test_gate_poll"
@@ -395,6 +404,7 @@ foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_init_sized_gated"
 
 foreign import ccall safe "ossl4_ctx.h hsk_ossl4_digest_final_gated"
   c_digest_final_gated :: Ptr TestGate -> Ptr DigestHandle -> Ptr (Ptr CUChar) -> IO CLong
+#endif
 
 -- Managed wrappers.
 
@@ -418,8 +428,122 @@ withOptBytes (Just bs) action = withBytes bs action
 -- | Ownership transfer: every helper below masks the
 -- acquire-to-registration step, registers cleanup for EVERY output
 -- before copying any, then restores the permitted copy work with
--- 'finally' cleanup. A NULL gate is production (no hook call);
--- tests pass a live gate whose faults strike at the copy boundary.
+-- 'finally' cleanup. The @*By@ helpers take the take function as an
+-- argument: production passes 'takeOwned' / 'takeOwnedPair' (no hook
+-- call at all); the test configuration (HSK_OSSL4_TEST_HOOKS) passes
+-- gated takes whose faults strike at the copy boundary.
+
+-- | Take ownership of a shim output buffer: copy @len@ bytes into an
+-- owned 'ByteString', then clear+free the native buffer exactly once
+-- on every exit (success, sync fault, or async kill). Shape note:
+-- like base 'bracket', the restored copy runs with async delivery
+-- permitted while 'finally' runs its cleanup masked.
+takeOwned :: Ptr CUChar -> Int -> IO ByteString
+takeOwned p n = mask $ \restore ->
+  restore (BS.packCStringLen (castPtr p, n))
+    `finally` c_free (castPtr p) (fromIntegral n)
+
+-- | Take ownership of a keypair: cleanup for BOTH halves is
+-- registered before either copy, so a fault between the copies
+-- still frees both exactly once.
+takeOwnedPair :: (Ptr CUChar, Int) -> (Ptr CUChar, Int)
+  -> IO (ByteString, ByteString)
+takeOwnedPair (p1, n1) (p2, n2) = mask $ \restore ->
+  restore (do
+    b1 <- BS.packCStringLen (castPtr p1, n1)
+    b2 <- BS.packCStringLen (castPtr p2, n2)
+    pure (b1, b2))
+    `finally` do
+      c_free (castPtr p1) (fromIntegral n1)
+      c_free (castPtr p2) (fromIntegral n2)
+
+-- | Run a shim call that reports a @long@ length-or-negative-code and
+-- an out-pointer; copy the output on success. The out-pointer is
+-- initialized defensively, and ownership is established under mask
+-- before the copy work is restored inside the take step.
+withOutBy :: (Ptr CUChar -> Int -> IO ByteString)
+  -> (Ptr (Ptr CUChar) -> IO CLong) -> IO (Either Int ByteString)
+withOutBy takeFn call = mask_ $ alloca $ \outp -> do
+  poke outp nullPtr
+  rc <- call outp
+  if rc < 0
+    then pure (Left (fromIntegral rc))
+    else do
+      p <- peek outp
+      if p == nullPtr
+        then pure (Left errNative)
+        else Right <$> takeFn p (fromIntegral rc)
+
+-- | 'withOutBy' with the production take.
+withOut :: (Ptr (Ptr CUChar) -> IO CLong) -> IO (Either Int ByteString)
+withOut = withOutBy takeOwned
+
+-- | Run a handle-consuming call (digest final): destruction
+-- transfers to C exactly at call entry (masked, and the safe call
+-- defers async delivery past entry, so the 'onException' below
+-- covers pre-entry failure only and frees then). After entry the
+-- handle is C's; post-call cleanup owns ONLY the output buffer —
+-- the handle is never freed again.
+withConsumingOutBy :: (Ptr CUChar -> Int -> IO ByteString) -> Ptr DigestHandle
+  -> (Ptr (Ptr CUChar) -> IO CLong) -> IO (Either Int ByteString)
+withConsumingOutBy takeFn h call = mask_ $ alloca $ \outp -> do
+  poke outp nullPtr
+  rc <- call outp `onException` c_digest_free h
+  if rc < 0
+    then pure (Left (fromIntegral rc))
+    else do
+      p <- peek outp
+      if p == nullPtr
+        then pure (Left errNative)
+        else Right <$> takeFn p (fromIntegral rc)
+
+-- | 'withConsumingOutBy' with the production take.
+withConsumingOut :: Ptr DigestHandle -> (Ptr (Ptr CUChar) -> IO CLong)
+  -> IO (Either Int ByteString)
+withConsumingOut = withConsumingOutBy takeOwned
+
+-- | Allocate + defensively initialize a keypair out-block.
+allocaPairOut :: (Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO a) -> IO a
+allocaPairOut k =
+  alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
+    poke ppriv nullPtr
+    poke npriv 0
+    poke ppub nullPtr
+    poke npub 0
+    k ppriv npriv ppub npub
+
+-- | Collect a keypair result: both live halves transfer via the
+-- pair take; a split NULL (the shim never splits — defensive)
+-- frees its live peer directly instead of stranding it.
+collectPairBy :: ((Ptr CUChar, Int) -> (Ptr CUChar, Int) -> IO (ByteString, ByteString))
+  -> Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize
+  -> IO (Either Int (ByteString, ByteString))
+collectPairBy takeFn ppriv npriv ppub npub = mask_ $ do
+  privp <- peek ppriv
+  privn <- peek npriv
+  pubp <- peek ppub
+  pubn <- peek npub
+  case (privp == nullPtr, pubp == nullPtr) of
+    (False, False) ->
+      Right <$> takeFn
+        (privp, fromIntegral privn) (pubp, fromIntegral pubn)
+    (True, True) -> pure (Left errNative)
+    (False, True) -> do
+      c_free (castPtr privp) (fromIntegral privn)
+      pure (Left errNative)
+    (True, False) -> do
+      c_free (castPtr pubp) (fromIntegral pubn)
+      pure (Left errNative)
+
+-- | 'collectPairBy' with the production pair take.
+collectPair :: Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize
+  -> IO (Either Int (ByteString, ByteString))
+collectPair = collectPairBy takeOwnedPair
+
+#ifdef HSK_OSSL4_TEST_HOOKS
+-- TEST-ONLY gated takes and helper instances (HSK_OSSL4_TEST_HOOKS).
+
+-- | The copy-boundary fault an armed gate injects.
 throwCopyFault :: IO a
 throwCopyFault = throwIO (userError "hsk_ossl4_test_copy_fault")
 
@@ -439,31 +563,23 @@ copyGate gate
           when (w /= 0) throwCopyFault
         _ -> pure ()
 
--- | Take ownership of a shim output buffer: register (+1) under
--- mask, copy with 'finally' cleanup, then clear+free exactly once
--- on every exit (success, sync fault, or async kill). The matching
+-- | Gated take: registers (+1) under mask, consults the gate
+-- before the copy, then frees through the gated destroy. The matching
 -- -1 fires on the ACTUAL native free inside the gated destroy, so
 -- the counter proves native destruction. Shape note: like base
 -- 'bracket', the restored copy runs with async delivery permitted
 -- while 'finally' runs its cleanup masked.
 takeOwnedGated :: Ptr TestGate -> Ptr CUChar -> Int -> IO ByteString
 takeOwnedGated gate p n = mask $ \restore -> do
-  when (gate /= nullPtr) (c_gate_note_buf gate 1)
+  c_gate_note_buf gate 1
   restore (copyGate gate >> BS.packCStringLen (castPtr p, n))
     `finally` c_free_gated gate (castPtr p) (fromIntegral n)
 
--- | Take ownership of a shim output buffer: copy @len@ bytes into an
--- owned 'ByteString', then clear+free the native buffer.
-takeOwned :: Ptr CUChar -> Int -> IO ByteString
-takeOwned = takeOwnedGated nullPtr
-
--- | Take ownership of a keypair: cleanup for BOTH halves is
--- registered before either copy, so a fault between the copies
--- still frees both exactly once.
+-- | Gated pair take: notes +2, consults the gate before each copy.
 takeOwnedPairGated :: Ptr TestGate -> (Ptr CUChar, Int) -> (Ptr CUChar, Int)
   -> IO (ByteString, ByteString)
 takeOwnedPairGated gate (p1, n1) (p2, n2) = mask $ \restore -> do
-  when (gate /= nullPtr) (c_gate_note_buf gate 2)
+  c_gate_note_buf gate 2
   restore (do
     copyGate gate
     b1 <- BS.packCStringLen (castPtr p1, n1)
@@ -473,10 +589,6 @@ takeOwnedPairGated gate (p1, n1) (p2, n2) = mask $ \restore -> do
     `finally` do
       c_free_gated gate (castPtr p1) (fromIntegral n1)
       c_free_gated gate (castPtr p2) (fromIntegral n2)
-
-takeOwnedPair :: (Ptr CUChar, Int) -> (Ptr CUChar, Int)
-  -> IO (ByteString, ByteString)
-takeOwnedPair = takeOwnedPairGated nullPtr
 
 -- | Take for a gate: production (NULL) flows through the
 -- spec-named 'takeOwned', tests through 'takeOwnedGated'.
@@ -492,82 +604,21 @@ takeOwnedPairFor gate
   | gate == nullPtr = takeOwnedPair
   | otherwise = takeOwnedPairGated gate
 
--- | Run a shim call that reports a @long@ length-or-negative-code and
--- an out-pointer; copy the output on success. The out-pointer is
--- initialized defensively, and ownership is established under mask
--- before the copy work is restored inside the take step.
+-- | Gated 'withOut'.
 withOutGated :: Ptr TestGate -> (Ptr (Ptr CUChar) -> IO CLong)
   -> IO (Either Int ByteString)
-withOutGated gate call = mask_ $ alloca $ \outp -> do
-  poke outp nullPtr
-  rc <- call outp
-  if rc < 0
-    then pure (Left (fromIntegral rc))
-    else do
-      p <- peek outp
-      if p == nullPtr
-        then pure (Left errNative)
-        else Right <$> takeOwnedFor gate p (fromIntegral rc)
+withOutGated gate = withOutBy (takeOwnedFor gate)
 
--- | Run a shim call that reports a @long@ length-or-negative-code and
--- an out-pointer; copy the output on success.
-withOut :: (Ptr (Ptr CUChar) -> IO CLong) -> IO (Either Int ByteString)
-withOut = withOutGated nullPtr
-
--- | Run a handle-consuming call (digest final): destruction
--- transfers to C exactly at call entry (masked, and the safe call
--- defers async delivery past entry, so the 'onException' below
--- covers pre-entry failure only and frees then). After entry the
--- handle is C's; post-call cleanup owns ONLY the output buffer —
--- the handle is never freed again.
+-- | Gated 'withConsumingOut'.
 withConsumingOutGated :: Ptr TestGate -> Ptr DigestHandle
   -> (Ptr (Ptr CUChar) -> IO CLong) -> IO (Either Int ByteString)
-withConsumingOutGated gate h call = mask_ $ alloca $ \outp -> do
-  poke outp nullPtr
-  rc <- call outp `onException` c_digest_free h
-  if rc < 0
-    then pure (Left (fromIntegral rc))
-    else do
-      p <- peek outp
-      if p == nullPtr
-        then pure (Left errNative)
-        else Right <$> takeOwnedFor gate p (fromIntegral rc)
+withConsumingOutGated gate = withConsumingOutBy (takeOwnedFor gate)
 
--- | Allocate + defensively initialize a keypair out-block.
-allocaPairOut :: (Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize -> IO a) -> IO a
-allocaPairOut k =
-  alloca $ \ppriv -> alloca $ \npriv -> alloca $ \ppub -> alloca $ \npub -> do
-    poke ppriv nullPtr
-    poke npriv 0
-    poke ppub nullPtr
-    poke npub 0
-    k ppriv npriv ppub npub
-
--- | Collect a keypair result: both live halves transfer via the
--- pair take; a split NULL (the shim never splits — defensive)
--- frees its live peer directly instead of stranding it.
+-- | Gated 'collectPair'.
 collectPairGated :: Ptr TestGate -> Ptr (Ptr CUChar) -> Ptr CSize
   -> Ptr (Ptr CUChar) -> Ptr CSize -> IO (Either Int (ByteString, ByteString))
-collectPairGated gate ppriv npriv ppub npub = mask_ $ do
-  privp <- peek ppriv
-  privn <- peek npriv
-  pubp <- peek ppub
-  pubn <- peek npub
-  case (privp == nullPtr, pubp == nullPtr) of
-    (False, False) ->
-      Right <$> takeOwnedPairFor gate
-        (privp, fromIntegral privn) (pubp, fromIntegral pubn)
-    (True, True) -> pure (Left errNative)
-    (False, True) -> do
-      c_free (castPtr privp) (fromIntegral privn)
-      pure (Left errNative)
-    (True, False) -> do
-      c_free (castPtr pubp) (fromIntegral pubn)
-      pure (Left errNative)
-
-collectPair :: Ptr (Ptr CUChar) -> Ptr CSize -> Ptr (Ptr CUChar) -> Ptr CSize
-  -> IO (Either Int (ByteString, ByteString))
-collectPair = collectPairGated nullPtr
+collectPairGated gate = collectPairBy (takeOwnedPairFor gate)
+#endif
 
 -- | Current oldest queued native error string (clears the queue).
 lastError :: IO String
@@ -582,14 +633,18 @@ libVersion = c_version >>= peekCString
 envNew :: IO (Ptr OsslEnv)
 envNew = c_env_new
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY gated env construction (fault-or-delegate).
 envNewGated :: Ptr TestGate -> IO (Ptr OsslEnv)
 envNewGated = c_env_new_gated
+#endif
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY gated provider load (checkpoint-or-delegate).
 envLoadGated :: Ptr TestGate -> Ptr OsslEnv -> String -> IO Int
 envLoadGated gate env name = withCString name $ \cname ->
   fromIntegral <$> c_env_load_gated gate env cname
+#endif
 
 envLoad :: Ptr OsslEnv -> String -> IO Int
 envLoad env name = withCString name $ \cname ->
@@ -621,6 +676,7 @@ digest ctx mdname propq msg =
       withBytes msg $ \(pmsg, nmsg) ->
         withOut (c_digest ctx cmd cpq pmsg nmsg)
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY gated one-shot digest (same transfer, gate-observed).
 digestGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> ByteString -> IO (Either Int ByteString)
 digestGated gate ctx mdname propq msg =
@@ -628,6 +684,7 @@ digestGated gate ctx mdname propq msg =
     withCString propq $ \cpq ->
       withBytes msg $ \(pmsg, nmsg) ->
         withOutGated gate (c_digest_gated gate ctx cmd cpq pmsg nmsg)
+#endif
 
 digestSized :: Ptr OsslLibCtx -> String -> String -> ByteString -> Int -> IO (Either Int ByteString)
 digestSized ctx mdname propq msg outsize =
@@ -636,6 +693,7 @@ digestSized ctx mdname propq msg outsize =
       withBytes msg $ \(pmsg, nmsg) ->
         withOut (c_digest_sized ctx cmd cpq pmsg nmsg (fromIntegral outsize))
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY gated sized one-shot digest.
 digestSizedGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> ByteString -> Int -> IO (Either Int ByteString)
 digestSizedGated gate ctx mdname propq msg outsize =
@@ -643,6 +701,7 @@ digestSizedGated gate ctx mdname propq msg outsize =
     withCString propq $ \cpq ->
       withBytes msg $ \(pmsg, nmsg) ->
         withOutGated gate (c_digest_sized_gated gate ctx cmd cpq pmsg nmsg (fromIntegral outsize))
+#endif
 
 digestXof :: Ptr OsslLibCtx -> String -> String -> ByteString -> Int -> IO (Either Int ByteString)
 digestXof ctx mdname propq msg outsize =
@@ -651,6 +710,7 @@ digestXof ctx mdname propq msg outsize =
       withBytes msg $ \(pmsg, nmsg) ->
         withOut (c_digest_xof ctx cmd cpq pmsg nmsg (fromIntegral outsize))
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY gated XOF one-shot digest.
 digestXofGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> ByteString -> Int -> IO (Either Int ByteString)
 digestXofGated gate ctx mdname propq msg outsize =
@@ -658,6 +718,7 @@ digestXofGated gate ctx mdname propq msg outsize =
     withCString propq $ \cpq ->
       withBytes msg $ \(pmsg, nmsg) ->
         withOutGated gate (c_digest_xof_gated gate ctx cmd cpq pmsg nmsg (fromIntegral outsize))
+#endif
 
 digestInit :: Ptr OsslLibCtx -> String -> String -> IO (Ptr DigestHandle)
 digestInit ctx mdname propq =
@@ -665,12 +726,14 @@ digestInit ctx mdname propq =
     withCString propq $ \cpq ->
       c_digest_init ctx cmd cpq
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY gated digest init (fault-or-delegate, +1 noted).
 digestInitGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> IO (Ptr DigestHandle)
 digestInitGated gate ctx mdname propq =
   withCString mdname $ \cmd ->
     withCString propq $ \cpq ->
       c_digest_init_gated gate ctx cmd cpq
+#endif
 
 digestInitSized :: Ptr OsslLibCtx -> String -> String -> Int -> IO (Ptr DigestHandle)
 digestInitSized ctx mdname propq outsize =
@@ -678,12 +741,14 @@ digestInitSized ctx mdname propq outsize =
     withCString propq $ \cpq ->
       c_digest_init_sized ctx cmd cpq (fromIntegral outsize)
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY gated sized digest init.
 digestInitSizedGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> Int -> IO (Ptr DigestHandle)
 digestInitSizedGated gate ctx mdname propq outsize =
   withCString mdname $ \cmd ->
     withCString propq $ \cpq ->
       c_digest_init_sized_gated gate ctx cmd cpq (fromIntegral outsize)
+#endif
 
 digestUpdate :: Ptr DigestHandle -> ByteString -> IO Int
 digestUpdate h msg =
@@ -691,11 +756,13 @@ digestUpdate h msg =
     fromIntegral <$> c_digest_update h pmsg nmsg
 
 digestFinal :: Ptr DigestHandle -> IO (Either Int ByteString)
-digestFinal h = withConsumingOutGated nullPtr h (c_digest_final h)
+digestFinal h = withConsumingOut h (c_digest_final h)
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY gated digest final (same consuming transfer, observed).
 digestFinalGated :: Ptr TestGate -> Ptr DigestHandle -> IO (Either Int ByteString)
 digestFinalGated gate h = withConsumingOutGated gate h (c_digest_final_gated gate h)
+#endif
 
 digestFree :: Ptr DigestHandle -> IO ()
 digestFree = c_digest_free
@@ -846,6 +913,7 @@ ecGen ctx group propq =
           then pure (Left (fromIntegral rc))
           else collectPair ppriv npriv ppub npub
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 -- | TEST-ONLY gated EC keygen (same pair transfer, gate-observed).
 ecGenGated :: Ptr TestGate -> Ptr OsslLibCtx -> String -> String -> IO (Either Int (ByteString, ByteString))
 ecGenGated gate ctx group propq =
@@ -856,6 +924,7 @@ ecGenGated gate ctx group propq =
         if rc /= 0
           then pure (Left (fromIntegral rc))
           else collectPairGated gate ppriv npriv ppub npub
+#endif
 
 randBytes :: Ptr OsslLibCtx -> Int -> IO (Either Int ByteString)
 randBytes ctx n =

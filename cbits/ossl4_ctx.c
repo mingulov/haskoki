@@ -61,6 +61,7 @@ struct hsk_ossl4_env {
     size_t nprov;
 };
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 /* --- TEST-ONLY live-sets (actual-destroy attribution + hardening) --------- */
 /*
  * Every digest handle and env rides its process-wide set:
@@ -147,6 +148,12 @@ static int hsk_test_live_claim(hsk_test_live_t *s, const void *h,
     pthread_mutex_unlock(&s->mu);
     return destroy;
 }
+
+#define HSK_LIVE_INSERT(set, h, g) hsk_test_live_insert((set), (h), (g))
+#else
+/* Production configuration: no live-sets; the gate is always NULL. */
+#define HSK_LIVE_INSERT(set, h, g) ((void)(g))
+#endif /* HSK_OSSL4_TEST_HOOKS */
 
 /* --- private context lifecycle -------------------------------------- */
 
@@ -249,7 +256,7 @@ static hsk_ossl4_env_t *hsk_ossl4_env_new_core(hsk_ossl4_test_gate_t *g)
         OPENSSL_free(env);
         return NULL;
     }
-    hsk_test_live_insert(&hsk_test_envs, env, g);
+    HSK_LIVE_INSERT(&hsk_test_envs, env, g);
     return env;
 }
 
@@ -279,15 +286,19 @@ OSSL_LIB_CTX *hsk_ossl4_env_ctx(const hsk_ossl4_env_t *env)
 
 void hsk_ossl4_env_free(hsk_ossl4_env_t *env)
 {
-    hsk_ossl4_test_gate_t *g = NULL;
     size_t i;
     if (env == NULL)
         return;
+#ifdef HSK_OSSL4_TEST_HOOKS
     /* Single-free: destroy exactly when claimed; the -1 notes the
      * ACTUAL native destruction to the creating gate (NULL: none). */
-    if (!hsk_test_live_claim(&hsk_test_envs, env, &g))
-        return;
-    hsk_ossl4_test_gate_note_env(g, -1);
+    {
+        hsk_ossl4_test_gate_t *g = NULL;
+        if (!hsk_test_live_claim(&hsk_test_envs, env, &g))
+            return;
+        hsk_ossl4_test_gate_note_env(g, -1);
+    }
+#endif
     for (i = 0; i < env->nprov; i++)
         hsk_ossl4_unload_provider(env->provs[i]);
     hsk_ossl4_free_ctx(env->ctx);
@@ -522,7 +533,7 @@ static hsk_ossl4_md_t *hsk_ossl4_digest_init_core(hsk_ossl4_test_gate_t *g,
         goto fail;
     if (!EVP_DigestInit_ex2(h->mctx, h->md, NULL))
         goto fail;
-    hsk_test_live_insert(&hsk_test_digests, h, g);
+    HSK_LIVE_INSERT(&hsk_test_digests, h, g);
     return h;
 fail:
     EVP_MD_CTX_free(h->mctx);
@@ -561,7 +572,7 @@ static hsk_ossl4_md_t *hsk_ossl4_digest_init_sized_core(
     params[1] = OSSL_PARAM_construct_end();
     if (!EVP_DigestInit_ex2(h->mctx, h->md, params))
         goto fail;
-    hsk_test_live_insert(&hsk_test_digests, h, g);
+    HSK_LIVE_INSERT(&hsk_test_digests, h, g);
     return h;
 fail:
     EVP_MD_CTX_free(h->mctx);
@@ -614,14 +625,18 @@ end:
 
 void hsk_ossl4_digest_free(hsk_ossl4_md_t *h)
 {
-    hsk_ossl4_test_gate_t *g = NULL;
     if (h == NULL)
         return;
+#ifdef HSK_OSSL4_TEST_HOOKS
     /* Single-free: destroy exactly when claimed; the -1 notes the
      * ACTUAL native destruction to the creating gate (NULL: none). */
-    if (!hsk_test_live_claim(&hsk_test_digests, h, &g))
-        return;
-    hsk_ossl4_test_gate_note_digest(g, -1);
+    {
+        hsk_ossl4_test_gate_t *g = NULL;
+        if (!hsk_test_live_claim(&hsk_test_digests, h, &g))
+            return;
+        hsk_ossl4_test_gate_note_digest(g, -1);
+    }
+#endif
     EVP_MD_CTX_free(h->mctx);
     EVP_MD_free(h->md);
     OPENSSL_clear_free(h, sizeof(*h));
@@ -5361,6 +5376,7 @@ end:
     return rc;
 }
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 /* --- TEST-ONLY ownership hooks ------------------------------------------- */
 
 struct hsk_ossl4_test_gate {
@@ -5745,3 +5761,5 @@ long hsk_ossl4_test_env_untracked(void)
     pthread_mutex_unlock(&hsk_test_envs.mu);
     return r;
 }
+
+#endif /* HSK_OSSL4_TEST_HOOKS */
