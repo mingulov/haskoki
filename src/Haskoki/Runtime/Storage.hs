@@ -194,8 +194,10 @@ data TokenRecord = TokenRecord
 -- seed transaction), and from then on the row is its only
 -- credential: config PIN edits never replace it, and a stored
 -- token without a row serves no login (a legacy store).
--- The row is owned by its token exactly like objects and jobs:
--- dropping the token removes it, and reset removes it.
+-- The row is owned by its token like objects and jobs: dropping
+-- the token removes it. A token reset keeps it (the durable
+-- credential always wins), unlike the reset token's objects and
+-- jobs.
 data CredentialRecord = CredentialRecord
   { crToken :: !TokenId
   , crSoPin :: !ByteString
