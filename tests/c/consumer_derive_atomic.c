@@ -367,15 +367,17 @@ static void expect_atomic(CK_SESSION_HANDLE ws, CK_SESSION_HANDLE ds,
           (unsigned long)i, (unsigned long)hAdds[i]);
   }
   CHECK(count_label(ws, prim.label) == 0, "%s publishes no primary", name);
-  if (g_nrefused < MAX_LABELS) {
-    snprintf(g_refused[g_nrefused++], 48, "%s", prim.label);
-  }
+  CHECK(g_nrefused < MAX_LABELS, "refused-label list full (%d)",
+        MAX_LABELS);
+  if (g_nrefused >= MAX_LABELS) abort();
+  snprintf(g_refused[g_nrefused++], 48, "%s", prim.label);
   for (i = 0; i < nadd; i++) {
     CHECK(count_label(ws, adds[i].label) == 0,
           "%s publishes no additional key %lu", name, (unsigned long)i);
-    if (g_nrefused < MAX_LABELS) {
-      snprintf(g_refused[g_nrefused++], 48, "%s", adds[i].label);
-    }
+    CHECK(g_nrefused < MAX_LABELS, "refused-label list full (%d)",
+          MAX_LABELS);
+    if (g_nrefused >= MAX_LABELS) abort();
+    snprintf(g_refused[g_nrefused++], 48, "%s", adds[i].label);
   }
   CHECK(count_all(ws) == census + 2, "%s census unchanged (probes only)",
         name);

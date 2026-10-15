@@ -54,9 +54,34 @@
   read as a shorter integer and accepted) now fails with the primary
   template's code: `CKR_TEMPLATE_INCONSISTENT` for a value of the wrong
   shape, `CKR_ATTRIBUTE_TYPE_INVALID` for an unknown attribute type.
-  The whole request then creates nothing.
+  A `CK_ULONG` larger than a platform integer fails with
+  `CKR_KEY_SIZE_RANGE`, and a byte value over 4 MiB with
+  `CKR_TEMPLATE_INCONSISTENT` (both were `CKR_ARGUMENTS_BAD`); a new
+  limit on the total packed template size fails with
+  `CKR_ARGUMENTS_BAD`. A `CKA_EC_PARAMS` OID is mapped to a curve name
+  as for primary-created objects. The whole request then creates
+  nothing.
+- SQLite write transactions stop at the first failed statement group. A
+  failure after SQLite has already rolled the transaction back can no
+  longer be followed by a later group committing independently while
+  the caller is told "not committed" (this could durably clear a user
+  PIN).
+- A `COMMIT` error after the transaction ended is an unknown outcome and
+  the store reconciles: if the write landed the PKCS#11 call returns
+  `CKR_OK`; if not, `CKR_GENERAL_ERROR`, and the affected token is
+  quarantined until `C_Finalize`. While quarantined, its writes
+  (including login-counter writes) fail with `CKR_GENERAL_ERROR`.
+  `COMMIT` returning `SQLITE_BUSY` is unchanged: a clean "not
+  committed", now pinned by a test.
+- A `ROLLBACK` failure is no longer silently discarded. If the
+  transaction still ended, the affected tokens are quarantined; if it
+  stays open, the whole connection is quarantined and `C_Login`,
+  `C_InitToken`/`C_InitPIN`/`C_SetPIN`, token-object creation, derive
+  and job reservation fail with `CKR_GENERAL_ERROR` until `C_Finalize`
+  and a fresh `C_Initialize`. There is no on-disk format change;
+  quarantine is process-local.
 
-## [0.3.1.0] - Unreleased
+## [0.3.1.0] - 2026-10-12
 
 - Shorter onboarding, a clearer development story, and dated model-usage
   statistics.

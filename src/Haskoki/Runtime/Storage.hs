@@ -420,9 +420,12 @@ scrubDeltaAuth d = d { sdPutTokens = map scrubTokenAuth (sdPutTokens d) }
 --   and reservation; only a 'storeReload' whose retried ROLLBACK
 --   ends the transaction, or the close (C_Finalize closes the
 --   store; SQLite rolls the open transaction back), resolves it.
---   The provisioning and login paths reload only after a commit
---   reconciles landed, so for them it holds until close; the
---   detached-job path reloads after every unknown result.
+--   No 'publishStd' path (object creation, derive, provisioning,
+--   login-counter writes) reloads after an unresolved commit, so
+--   for them it holds until close; only the detached-job path
+--   reloads after every unknown result, and its reconcile retries
+--   the ROLLBACK, so only there does a connection quarantine lift
+--   immediately.
 data CommitResult
   = Committed
   | NotCommitted !StoreError

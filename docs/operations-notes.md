@@ -213,9 +213,12 @@ error leaves the write transaction open, the whole connection is
 quarantined: every load, commit, reset and job-id reservation refuses
 until a `storeReload` retries the `ROLLBACK` and SQLite reports the
 transaction ended, or until the store closes (`C_Finalize`), which rolls
-the open transaction back. Provisioning and login paths do not reload
-after an unresolved commit, so in practice the connection stays refused
-until `C_Finalize` and a fresh `C_Initialize`. [CommitSpec](../tests/storage/CommitSpec.hs) exercises
+the open transaction back. No `publishStd` path (object creation, derive,
+provisioning, login-counter writes) reloads after an unresolved commit,
+so for them the connection stays refused until `C_Finalize` and a fresh
+`C_Initialize`. Only a detached-job commit reconciles with a reload that
+retries the `ROLLBACK`, so only there does a connection quarantine lift
+immediately. [CommitSpec](../tests/storage/CommitSpec.hs) exercises
 publication and fault handling.
 
 ## Token identity contract

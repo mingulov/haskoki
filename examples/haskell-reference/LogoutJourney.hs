@@ -79,7 +79,7 @@ main = do
   putLog ("session: " ++ show sid)
   check "exactly one session" (Map.size (mSessions m1) == 1)
 
-  stage "1: refusal — logout while public changes nothing"
+  stage "1: refusal -- logout while public changes nothing"
   m2 <- case planCall defaultRules m1 (logoutReq sid) of
     Reject rej -> do
       putLog ("planner said: Reject " ++ show (rejCode rej))
@@ -107,7 +107,7 @@ main = do
   putLog ("public session object: " ++ show scrOid)
   check "three objects live" (Map.size (mObjects m6) == 3)
 
-  stage "4: effect — sign through the session key"
+  stage "4: effect -- sign through the session key"
   keyHandle <- mustHandle m6 keyOid
   (_, m7) <- planAndPublish m6 (signInitReq sid keyHandle)
   putLog "sign initialized (Immediate commit)"
@@ -134,7 +134,7 @@ main = do
     other -> die ("expected Immediate, got: " ++ show other)
   m10 <- publish "logout commit" m9 (pcDelta pcLogout)
 
-  stage "6: publication — read the rule back from the model"
+  stage "6: publication -- read the rule back from the model"
   check "private session key destroyed" (isNothing (findByLabel m10 "journey-key"))
   check "public token object survives" (isJust (findByLabel m10 "journey-public"))
   check "public session object survives" (isJust (findByLabel m10 "journey-scratch"))
