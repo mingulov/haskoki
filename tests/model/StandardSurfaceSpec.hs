@@ -34,6 +34,7 @@ import Haskoki.FFI.Async (decodeAsyncFunctionName, jobFunctionCode)
 import Haskoki.FFI.Decode (maxInputBytes)
 import Haskoki.FFI.Standard
   ( FrameError (..)
+  , decodeFrameRecords
   , ecParamsFromWire
   , ecParamsToWire
   , frameErrorRV
@@ -126,6 +127,7 @@ spec = testGroup "Standard surface"
   , testCase "ulong/bool/bytes values decode" caseValues
   , testCase "truncation and bounds fail" caseMalformed
   , testCase "unknown type and bad value fail typed" caseTypedFaults
+  , testCase "embedded template records share the frame decoder" caseEmbeddedRecords
   , testCase "EC params map both ways" caseEcParams
   , testCase "session scalars project" caseSessionScalars
   , testCase "token scalars project" caseTokenScalars
@@ -298,6 +300,45 @@ caseMalformed = do
     (parseTemplateFrame (word 1 <> word 0x00 <> word 8 <> "abcd"))
   assertEqual "too many attrs" (Left FrameTooManyAttrs)
     (parseTemplateFrame (word 65))
+
+-- | Params-embedded templates (SP 800-108 additional keys) decode
+-- through 'decodeFrameRecords', the primary frame's decoder: every
+-- record decodes, or refuses with the same 'FrameError' (so the same
+-- @CK_RV@), exactly as the same record inside a primary frame.
+caseEmbeddedRecords :: IO ()
+caseEmbeddedRecords = do
+  let asPrimary recs = parseTemplateFrame
+        (word (fromIntegral (length recs)) <> mconcat [attr t v | (t, v) <- recs])
+      same name recs want = do
+        assertEqual (name ++ ": embedded") want (decodeFrameRecords recs)
+        assertEqual (name ++ ": primary") want (asPrimary recs)
+      big = BS.replicate (4194304 + 1) 0x41
+  -- Malformed encodings the additional-key chase used to admit
+  -- (3-byte word read as 16) or refuse with a different code.
+  same "3-byte CKA_VALUE_LEN" [(0x161, BS.pack [16, 0, 0])]
+    (Left (FrameBadValue AttrValueLen))
+  same "empty CKA_VALUE_LEN" [(0x161, BS.empty)]
+    (Left (FrameBadValue AttrValueLen))
+  same "9-byte CKA_VALUE_LEN" [(0x161, word 16 <> BS.singleton 0)]
+    (Left (FrameBadValue AttrValueLen))
+  same "2-byte CK_BBOOL" [(0x103, BS.pack [0, 0])]
+    (Left (FrameBadValue AttrSensitive))
+  same "CKA_ID past the value cap" [(0x102, big)]
+    (Left (FrameBadValue AttrId))
+  same "unmapped id" [(0x80004242, BS.singleton 1)]
+    (Left (FrameUnknownType 0x80004242))
+  -- A word past the platform int decodes (the planner refuses it).
+  same "CKA_VALUE_LEN 2^63" [(0x161, word (2 ^ (63 :: Int)))]
+    (Right [(AttrValueLen, ValULong (2 ^ (63 :: Int)))])
+  -- EC params map OIDs exactly like the primary frame.
+  same "EC params OID" [(0x180, BS.pack p256der)]
+    (Right [(AttrEcParams, ValBytes "P-256")])
+  -- A malformed record anywhere refuses the template.
+  same "valid then malformed"
+    [(0x00, word 4), (0x161, word 16), (0x161, BS.pack [16, 0, 0])]
+    (Left (FrameBadValue AttrValueLen))
+  assertEqual "3-byte word answers TEMPLATE_INCONSISTENT" (CULong 0xD1)
+    (either frameErrorRV (const 0) (decodeFrameRecords [(0x161, BS.pack [16, 0, 0])]))
 
 caseTypedFaults :: IO ()
 caseTypedFaults = do

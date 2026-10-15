@@ -59,7 +59,9 @@ import Haskoki.Operation.KeyManagement
   , PendingWork (..)
   , byteOpsProtectionOf
   , checkDataTemplate
+  , checkDerivedTarget
   , checkKeyTemplateAny
+  , DerivedDomain (..)
   , ckkEc
   , ckkEcMontgomery
   , ckkGenericSecret
@@ -67,6 +69,7 @@ import Haskoki.Operation.KeyManagement
   , ckoPrivateKey
   , ckoPublicKey
   , ckoSecretKey
+  , derivedObjectDomain
   , keyBytesOf
   , pendingFromAttrs
   , resolveByteOpsProtection
@@ -512,11 +515,17 @@ planDerive rules model st mech baseH blob
               (FxDerive mech (Just (osId ost)) Nothing info BS.empty)
               Nothing
               CKR_ARGUMENTS_BAD
+          -- Hash-KDF length rules (PKCS#11 SHA-1\/SHA-2\/SHA-3
+          -- key derivation): no type and no length gives a generic
+          -- secret of the digest width; a typed target without a
+          -- length takes its type's single defined length (DES3
+          -- 24) or refuses INCOMPLETE (AES has none); a length past
+          -- the digest width is a capacity error.
           | otherwise -> case kdfShaWidth r of
-              Just w -> finish tmpls w
+              Just w -> finishMerged Right tmpls w
                 "derived total exceeds the digest width"
                 (FxDerive mech (Just (osId ost)) Nothing BS.empty BS.empty)
-                (blakeDefaultLen r w)
+                (SpecLenDefault w False)
                 CKR_KEY_SIZE_RANGE
               -- SHAKE XOF rows: no fixed width — the output
               -- length rides the template lengths, capped by
@@ -763,7 +772,8 @@ planDerive rules model st mech baseH blob
         ("not a derive mechanism: " ++ show mech))
   where
     finish tmpls ceilingN ceilingMsg fx defLen ceilingCode =
-      finishMerged Right tmpls ceilingN ceilingMsg fx defLen ceilingCode
+      finishMerged Right tmpls ceilingN ceilingMsg fx
+        (maybe NoLenDefault GenericLenDefault defLen) ceilingCode
     -- | 'finish' with a per-template merge over the validated
     -- attributes: identity for every family except the byte
     -- operations, which resolve §6.43 source inheritance here
@@ -775,8 +785,19 @@ planDerive rules model st mech baseH blob
         Right keyed
           | null keyed -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
               "derive needs at least one template")
+          -- Ceiling before domain (recorded v0.4 ruling, the AC-16
+          -- family-specific exception): a request past the
+          -- mechanism's maximum output is a capacity error with the
+          -- family code (SHA-256 AES/33: CKR_KEY_SIZE_RANGE); the
+          -- type\/length domain (CKR_TEMPLATE_INCONSISTENT) governs
+          -- lengths within that capacity.
           | sum (map snd keyed) > ceilingN ->
               KeyDenied (KeyDeny ceilingCode ceilingMsg)
+          -- Key domain: every destination's type admits its length
+          -- (the shared validator), before admission or any
+          -- effect; one invalid template refuses the batch.
+          | Left deny <- mapM_ (uncurry checkDerivedTarget) keyed ->
+              KeyDenied deny
           | Left deny <- admitObjects rules (Map.size (mObjects model))
               (length keyed) ->
               KeyDenied (KeyDeny (admitCode deny)
@@ -848,7 +869,7 @@ planDerive rules model st mech baseH blob
           in finishMerged (byteOpsMerge Nothing) tmpls (fromInteger window)
             "EXTRACT window exceeds the base key"
             (FxDerive dMech (Just (osId ost)) mAux boBlob BS.empty)
-            Nothing
+            NoLenDefault
             CKR_ARGUMENTS_BAD
       where
         fx = FxDerive dMech (Just (osId ost)) mAux boBlob BS.empty
@@ -863,9 +884,13 @@ planDerive rules model st mech baseH blob
               "byte-op natural output is empty")
           | n > maxByteOpsOutput = KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
               "byte-op natural output exceeds the ceiling")
+          -- Concat\/XOR length rules (PKCS#11 v3.2 §6.43): no
+          -- type and no length gives a generic secret of the
+          -- natural width; a typed target without a length takes
+          -- its type's single defined length or refuses INCOMPLETE.
           | otherwise = finishMerged (byteOpsMerge mAuxAttrs) tmpls n
               "derived total exceeds the byte-op natural width"
-              fx (Just n)
+              fx (SpecLenDefault n True)
               CKR_KEY_SIZE_RANGE
     -- | Key-material admission after the frame validates: the
     -- single template applies to every output (v3.2 §6.39.6\/
@@ -886,6 +911,10 @@ planDerive rules model st mech baseH blob
               "derived template must not supply CKA_VALUE")
           | Map.member AttrValueLen attrs -> KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
               "key-material lengths come from params, not CKA_VALUE_LEN")
+          -- Key domain: each key output (template type, params
+          -- length; MAC outputs generic) fits its domain.
+          | Left deny <- mapM_ (\(outAttrs, n) -> checkDerivedTarget outAttrs n)
+              (outsFor attrs) -> KeyDenied deny
           | Just msg <- protectionMismatch (osAttrs ost) attrs ->
               KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT msg)
           | Left deny <- admitObjects rules (Map.size (mObjects model))
@@ -938,6 +967,10 @@ planDerive rules model st mech baseH blob
               "derived template must not supply CKA_VALUE")
           | Map.member AttrValueLen attrs -> KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
               "SSL3 key-material lengths come from params, not CKA_VALUE_LEN")
+          -- Key domain: each key output (template type, params
+          -- length; MAC outputs generic) fits its domain.
+          | Left deny <- mapM_ (\(outAttrs, n) -> checkDerivedTarget outAttrs n)
+              (outsFor attrs) -> KeyDenied deny
           | Just msg <- protectionMismatch (osAttrs ost) attrs ->
               KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT msg)
           | Left deny <- admitObjects rules (Map.size (mObjects model))
@@ -987,7 +1020,7 @@ planDerive rules model st mech baseH blob
           Just (ValBool x) -> x
           _ -> False
     checkAllMerged
-      :: Maybe Int
+      :: LenDefault
       -> (Map.Map AttributeType AttributeValue
           -> Either KeyDeny (Map.Map AttributeType AttributeValue))
       -> [[(AttributeType, AttributeValue)]]
@@ -995,16 +1028,10 @@ planDerive rules model st mech baseH blob
     checkAllMerged defLen merge = mapM $ \tmpl -> do
       (attrs, n) <- checkOne defLen tmpl
       (, n) <$> merge attrs
-    -- | BLAKE2B-KDF rows default a missing length to the digest
-    -- width (the lane's default-template legs derive full-width
-    -- generic secrets); SHA rows keep INCOMPLETE (v3.2 SHA-KDF:
-    -- generic secrets have no well-defined length).
-    blakeDefaultLen :: KdfRecipe -> Int -> Maybe Int
-    blakeDefaultLen r w = case rkDigestStem r of
-      Just s
-        | s == "BLAKE2B_160" || s == "BLAKE2B_256"
-        || s == "BLAKE2B_384" || s == "BLAKE2B_512" -> Just w
-      _ -> Nothing
+    -- | Stamp a defaulted length so readback matches an explicit
+    -- template.
+    stampLen attrs n =
+      Right (Map.insert AttrValueLen (ValULong (fromIntegral n)) attrs, n)
     -- | A derive template targets a generic secret when the key
     -- type is absent (the mechanism default) or explicitly generic.
     targetGeneric :: [(AttributeType, AttributeValue)] -> Bool
@@ -1012,14 +1039,22 @@ planDerive rules model st mech baseH blob
       Nothing -> True
       Just (ValULong k) -> k == ckkGenericSecret
       Just _ -> False
+    -- | One secret-key destination: shape ('checkKeyTemplateAny'),
+    -- then the destination type (asymmetric, vendor and
+    -- unserved types refuse before any length rule), then the
+    -- length (explicit or the family default). The type\/length
+    -- domain itself ('checkDerivedTarget') runs in 'finishMerged'
+    -- after the family ceiling, so over-ceiling requests keep
+    -- their family code.
     checkOne
-      :: Maybe Int -> [(AttributeType, AttributeValue)]
+      :: LenDefault -> [(AttributeType, AttributeValue)]
       -> Either KeyDeny (Map.Map AttributeType AttributeValue, Int)
     checkOne defLen tmpl = case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
       Left deny -> Left deny
       Right attrs
         | Map.member AttrValue attrs -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
             "derived template must not supply CKA_VALUE")
+        | Left deny <- derivedObjectDomain attrs -> Left deny
         | otherwise -> case Map.lookup AttrValueLen attrs of
         Just (ValULong n)
           | n < 1 -> Left (KeyDeny CKR_KEY_SIZE_RANGE
@@ -1030,27 +1065,31 @@ planDerive rules model st mech baseH blob
         Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
           "derived length is malformed")
         -- Constructions with a natural output width (ECDH: the
-        -- agreement secret; BLAKE2B-KDF: the digest width) default
-        -- a missing length to that width (PKCS#11 v3.2 ECDH: "if
-        -- it has one ... CKA_VALUE_LEN"); the default is stamped
-        -- so readback matches an explicit template. The default
-        -- covers generic-secret targets only (absent or generic
-        -- key type): an explicit variable-length target (AES)
-        -- without a length stays INCOMPLETE. Open-ended PBKDF2
-        -- and SHA-KDF over generic secrets keep INCOMPLETE
-        -- (v3.2 SHA-KDF: generic secrets have no well-defined
-        -- length); HKDF defaults to the hash length (mechanism
-        -- doc: VALUE_LEN "should be set").
+        -- agreement secret; HKDF: the hash length, mechanism doc:
+        -- VALUE_LEN "should be set") default a missing length to
+        -- that width for generic-secret targets only (absent or
+        -- generic key type); an explicit typed target without a
+        -- length stays INCOMPLETE. The hash-KDF and concat\/XOR
+        -- rows follow their PKCS#11 rule ('SpecLenDefault'): a
+        -- typed target takes its type's single defined length
+        -- (DES 8, DES2 16, DES3 24) and a type without one (AES,
+        -- HMAC) stays INCOMPLETE. Open-ended PBKDF2, EXTRACT and
+        -- the other families keep INCOMPLETE. Every default is
+        -- stamped so readback matches an explicit template.
         Nothing -> case defLen of
-          Just n
-            | targetGeneric tmpl -> Right
-                ( Map.insert AttrValueLen (ValULong (fromIntegral n)) attrs
-                , n
-                )
+          NoLenDefault -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+            "derived template needs CKA_VALUE_LEN")
+          GenericLenDefault n
+            | targetGeneric tmpl -> stampLen attrs n
             | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
                 "variable-length target needs CKA_VALUE_LEN")
-          Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
-            "derived template needs CKA_VALUE_LEN")
+          SpecLenDefault n genericToo
+            | typeAbsent || (genericToo && targetGeneric tmpl) -> stampLen attrs n
+            | Right (DomainLengths [d]) <- derivedObjectDomain attrs -> stampLen attrs d
+            | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
+                "target type has no single defined length; needs CKA_VALUE_LEN")
+            where
+              typeAbsent = lookup AttrKeyType tmpl == Nothing
     -- | 'finish' for data-output derivations: every template must
     -- describe a data object with a positive length (no
     -- length default — data objects have no natural width).
@@ -1089,6 +1128,21 @@ planDerive rules model st mech baseH blob
           "derived length is malformed")
         Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
           "derived data template needs CKA_VALUE_LEN")
+
+-- | How a derive family fills an omitted @CKA_VALUE_LEN@.
+data LenDefault
+  = NoLenDefault
+    -- ^ the length is required (INCOMPLETE when absent)
+  | GenericLenDefault !Int
+    -- ^ generic-secret targets default to this width; typed
+    -- targets need a length
+  | SpecLenDefault !Int !Bool
+    -- ^ the PKCS#11 hash-KDF and concat\/XOR rule: an untyped
+    -- target defaults to this width, a typed target to its type's
+    -- single defined length, otherwise INCOMPLETE. The flag keeps
+    -- the byte-op rows' pinned default for an explicit generic
+    -- type (hash KDF: an explicit generic secret has no defined
+    -- length, so it stays INCOMPLETE)
 
 -- | Resolve the base key: known handle, session-visible, derive
 -- mark set, stored material present. Shared by the HKDF and ECDH

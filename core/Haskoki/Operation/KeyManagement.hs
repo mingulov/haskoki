@@ -197,6 +197,9 @@ module Haskoki.Operation.KeyManagement
   , checkKeyTemplate
   , checkKeyTemplateAny
   , checkDataTemplate
+  , DerivedDomain (..)
+  , derivedObjectDomain
+  , checkDerivedTarget
   , pendingFromAttrs
   , ByteOpsProtection (..)
   , byteOpsProtectionOf
@@ -1320,6 +1323,11 @@ finishWork model st pw res
     | BS.length bs /= sum lens -> internal
         ("derive answer length " ++ show (BS.length bs)
           ++ " mismatches " ++ show (sum lens))
+    | length pos /= length lens -> internal "derive pending arity mismatch"
+    -- Key domain: the final material must fit each resolved type before
+    -- publication (no invalid typed object from incoherent work).
+    | Left deny <- mapM_ (\(po, mat) -> checkDerivedTarget (poAttrs po) (BS.length mat))
+        (zip pos (splitLens lens bs)) -> rejectOf deny
     | otherwise -> case publishPending model st
         [storeMaterial mat po | (po, mat) <- zip pos (splitLens lens bs)] of
         Left deny -> rejectOf deny
@@ -1343,6 +1351,11 @@ finishWork model st pw res
     | BS.length bs /= sum lens + ivCLen + ivSLen -> internal
         ("keymat answer length " ++ show (BS.length bs)
           ++ " mismatches " ++ show (sum lens + ivCLen + ivSLen))
+    | length pos /= length lens -> internal "keymat pending arity mismatch"
+    -- Key domain: key outputs (IVs are bytes, never objects) must fit
+    -- their resolved types before publication.
+    | Left deny <- mapM_ (\(po, mat) -> checkDerivedTarget (poAttrs po) (BS.length mat))
+        (zip pos (splitLens lens keyBs)) -> rejectOf deny
     | otherwise -> case publishPending model st
         [storeMaterial mat po | (po, mat) <- zip pos (splitLens lens keyBs)] of
         Left deny -> rejectOf deny
@@ -1874,6 +1887,105 @@ checkKeyTemplateAny wantClass defaultKey tmpl =
           Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
             "template key type is malformed")
     _ -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE "template is missing the class")
+
+-- | The material-length domain of a derived object: any positive
+-- length the mechanism yields, a discrete set of sizes, or an
+-- inclusive byte range (PKCS#11 v3.2: a derive template may select
+-- the key type, and a supplied length must fit that type).
+data DerivedDomain
+  = DomainAnyLength
+  | DomainLengths ![Int]
+  | DomainRange !Int !Int
+  deriving (Eq, Show)
+
+-- | The served secret-key destination types of a derivation and
+-- their algorithm length domains (bytes). Variable-length types —
+-- generic secrets, HKDF and the HMAC families — take any positive
+-- length the mechanism yields (their keygen rows cap at the 255-byte
+-- frame, which is a generation limit, not a key domain). AES is
+-- 16\/24\/32 and DES3 24 (the unwrap and PBKD2-generation tables),
+-- ChaCha20 32, HOTP the backend-enforced 16..64, RC4 1..256; every
+-- other served symmetric type takes its algorithm size from the keygen sweep
+-- ('keygenSweepSpecs': fixed, discrete or ranged). Unlisted types —
+-- asymmetric (RSA, EC, DSA, DH, ML-KEM, ...), unserved legacy and
+-- vendor numerics — have no secret-key domain ('Nothing') and refuse
+-- closed.
+secretKeyDomain :: Word64 -> Maybe DerivedDomain
+secretKeyDomain kt
+  | kt `elem` variableLength = Just DomainAnyLength
+  | kt == ckkAes = Just (DomainLengths [16, 24, 32])
+  | kt == ckkDes3 = Just (DomainLengths [24])
+  | kt == ckkChacha20 = Just (DomainLengths [32])
+  | kt == ckkHotp = Just (DomainRange hotpKeygenMinBytes hotpKeygenMaxBytes)
+  -- RC4 keys are 1 to 256 bytes (the keygen row stops at its
+  -- 255-byte frame).
+  | kt == ckkRc4 = Just (DomainRange 1 256)
+  | otherwise = case [lens | (_, (_, t, lens, _)) <- keygenSweepSpecs, t == kt] of
+      KeygenFixed d : _ -> Just (DomainLengths [d])
+      KeygenDiscrete ns : _ -> Just (DomainLengths ns)
+      KeygenRange lo hi : _ -> Just (DomainRange lo hi)
+      [] -> Nothing
+  where
+    variableLength =
+      [ ckkGenericSecret, ckkHkdf
+      , ckkSha1Hmac, ckkSha224Hmac, ckkSha256Hmac, ckkSha384Hmac
+      , ckkSha512Hmac, ckkSha512_224Hmac, ckkSha512_256Hmac, ckkSha512THmac
+      , ckkSha3_224Hmac, ckkSha3_256Hmac, ckkSha3_384Hmac, ckkSha3_512Hmac
+      , ckkBlake2b160Hmac, ckkBlake2b256Hmac, ckkBlake2b384Hmac
+      , ckkBlake2b512Hmac
+      ]
+
+-- | Resolve the destination domain of one derived object from its
+-- validated attributes: data objects (HKDF-DATA) take any length; a
+-- secret key takes its type's 'secretKeyDomain' (an absent type is
+-- the generic default); an unserved or asymmetric key type, and any
+-- other class, is a well-formed but incompatible template
+-- (@CKR_TEMPLATE_INCONSISTENT@). A missing class stays incomplete
+-- (the 'publishPending' rule).
+derivedObjectDomain
+  :: Map AttributeType AttributeValue -> Either KeyDeny DerivedDomain
+derivedObjectDomain attrs = case Map.lookup AttrClass attrs of
+  Just (ValULong c)
+    | c == ckoData -> Right DomainAnyLength
+    | c == ckoSecretKey -> case Map.lookup AttrKeyType attrs of
+        Just (ValULong kt) -> case secretKeyDomain kt of
+          Just d -> Right d
+          Nothing -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+            ("derived key type " ++ show kt ++ " is not a served secret-key type"))
+        -- An absent type is the derive default (generic secret);
+        -- the planners stamp it, so only bare pending work omits it.
+        Nothing -> Right DomainAnyLength
+        Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+          "derived key type is malformed")
+    | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("derived object class " ++ show c ++ " is not a secret key or data object"))
+  _ -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE "derived object lacks a class")
+
+-- | THE shared derive destination check: the object's resolved
+-- type admits @n@ material bytes, and a declared @CKA_VALUE_LEN@
+-- agrees with @n@. Planners call it on every
+-- resolved template before any effect (requested length) and
+-- 'finishWork' calls it on the final material before publication
+-- (returned length), so neither a template nor a wrong-sized answer
+-- can create an object outside its key domain. Refusals are
+-- @CKR_TEMPLATE_INCONSISTENT@ (the established type\/length
+-- convention; the unwrap coherence precedent).
+checkDerivedTarget :: Map AttributeType AttributeValue -> Int -> Either KeyDeny ()
+checkDerivedTarget attrs n = do
+  d <- derivedObjectDomain attrs
+  if not (admits d)
+    then Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+      ("derived length " ++ show n ++ " is outside the "
+        ++ show (Map.lookup AttrKeyType attrs) ++ " domain " ++ show d))
+    else case Map.lookup AttrValueLen attrs of
+      Just (ValULong m) | toInteger m /= toInteger n -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("derived material length " ++ show n ++ " differs from CKA_VALUE_LEN "
+          ++ show m))
+      _ -> Right ()
+  where
+    admits DomainAnyLength = n >= 1
+    admits (DomainLengths ns) = n `elem` ns
+    admits (DomainRange lo hi) = n >= lo && n <= hi
 
 -- | Check one data-object template for data-output derivations
 -- (@CKM_HKDF_DATA@): contradictions and wrong shapes reject, a

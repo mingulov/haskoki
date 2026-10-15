@@ -65,6 +65,7 @@ import Haskoki.FFI.NativeParams
   , tls12KeyMatNativeSize
   , KeyMatSlots (..)
   , DerivedKeySlot (..)
+  , chaseAttrRecords
   , normalizeIke1ExtParams
   , normalizeIke1PrfParams
   , normalizeIkePrfParams
@@ -112,7 +113,6 @@ import Haskoki.Recipe.Sp800108 (Sp800Mode (..), decodeSp800Params)
 import Haskoki.Recipe.Ssl3 (encodeSsl3KeyMatParams, encodeSsl3MasterParams, ssl3ParamsValid, ssl3RecipeFor)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams, tlsKeyMatParamsValid, tlsKeyMatRecipeFor)
 import Haskoki.Recipe.Pbe (encodePbeParams, pbeParamsValid, pbeRecipeFor)
-import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Recipe.Gmac (gmacParamsValid, gmacRecipeFor)
 import Haskoki.Recipe.MlDsa
   ( MldsaHedge (..)
@@ -1528,7 +1528,46 @@ spec = testGroup "native mechanism params"
             Just r -> assertEqual "recipe accepts" True (pbeParamsValid r canon)
             Nothing -> fail "pbe recipe missing"
         other -> fail ("null-iv shape refused: " ++ show (fmap fst other))
-  , testCase "sp800 additional-keys chase feeds templates plus slots" $ do
+  , testCase "additional-key template chase: raw records, packer bounds" $ do
+      -- The chase keeps raw records (a 3-byte word is not decoded or
+      -- refused here: the shared frame decoder owns that) and
+      -- applies only the C template packer's structural bounds.
+      let w = sizeOf (undefined :: CULong)
+          pw = sizeOf (undefined :: Ptr Word8)
+          attrSize = 3 * w
+          pokeRec base i typ vp len = do
+            let el = base `plusPtr` (i * attrSize)
+            pokeByteOff el 0 (CULong typ)
+            pokeByteOff el pw (castPtr vp :: Ptr Word8)
+            pokeByteOff el (2 * w) (CULong len)
+          nineMiB = 9 * 1024 * 1024 :: Int
+      raw3 <- allocaBytes 3 $ \v ->
+        allocaBytes attrSize $ \attrs -> do
+          pokeByteOff v 0 (16 :: Word8)
+          pokeByteOff v 1 (0 :: Word8)
+          pokeByteOff v 2 (0 :: Word8)
+          pokeRec attrs 0 0x161 v 3
+          chaseAttrRecords attrs 1
+      assertEqual "3-byte word kept raw" (Just [(0x161, BS.pack [16, 0, 0])]) raw3
+      -- A value past the 16 MiB input bound refuses before any copy
+      -- (the dangling pointer is never read).
+      overValue <- allocaBytes attrSize $ \attrs -> do
+        pokeRec attrs 0 0x102 (nullPtr `plusPtr` 0x10 :: Ptr Word8)
+          (16 * 1024 * 1024 + 1)
+        chaseAttrRecords attrs 1
+      assertEqual "value bound" Nothing overValue
+      -- Two 9 MiB values pass the per-value bound but not the
+      -- packed-frame bound (16 MiB of values in total).
+      overFrame <- allocaBytes nineMiB $ \v ->
+        allocaBytes (2 * attrSize) $ \attrs -> do
+          pokeRec attrs 0 0x102 v (fromIntegral nineMiB)
+          pokeRec attrs 1 0x102 v (fromIntegral nineMiB)
+          chaseAttrRecords attrs 2
+      assertEqual "frame bound" Nothing overFrame
+      -- Count bound: 65 entries refuse before any entry is read.
+      overCount <- chaseAttrRecords (nullPtr `plusPtr` 0x10) 65
+      assertEqual "count bound" Nothing overCount
+  , testCase "sp800 additional-keys chase feeds raw records plus slots" $ do
       let w = sizeOf (undefined :: CULong)
           pw = sizeOf (undefined :: Ptr Word8)
           prf = mustGeneratedId "CKM_SHA256_HMAC"
@@ -1586,8 +1625,13 @@ spec = testGroup "native mechanism params"
         Just (blob, [slot]) -> do
           assertEqual "frame decodes" True
             (case decodeSp800Params blob of Just _ -> True; Nothing -> False)
-          assertEqual "template" [(AttrClass, ValULong 0x4), (AttrKeyType, ValULong 0x10), (AttrValueLen, ValULong 16)]
-            (dksTemplate slot)
+          -- Raw caller records (type id, native little-endian
+          -- word bytes); value decoding is the shared frame
+          -- decoder's job, not the chase's.
+          let le8 :: Integer -> ByteString
+              le8 v = BS.pack [fromIntegral ((v `div` (256 ^ k)) `mod` 256) | k <- [0 .. 7 :: Int]]
+          assertEqual "records" [(0x0, le8 0x4), (0x100, le8 0x10), (0x161, le8 16)]
+            (dksRecords slot)
         other -> fail ("additional chase refused: " ++ show (fmap (const ()) other))
       -- Zero count with a dangling pointer refuses (spec: NULL).
       dangling <- withProfile $ \dps ->
