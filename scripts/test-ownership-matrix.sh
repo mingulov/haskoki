@@ -179,7 +179,7 @@ while IFS='|' read -r CASE SUITE PAT MIN STATUS CTR; do
   NAMES="$OUT/$CASE.names"
   LISTED=0
   LIST_RC=0
-  timeout -s KILL "$TMO" "$BIN" -p "$PAT" --list-tests > "$NAMES" 2> "$OUT/$CASE.list.err" || LIST_RC=$?
+  timeout -s KILL "$TMO" "$BIN" -p "$PAT" --list-tests < /dev/null > "$NAMES" 2> "$OUT/$CASE.list.err" || LIST_RC=$?
   rm -f "$OUT/$CASE.list.err"
   if [ "$LIST_RC" -eq 0 ]; then
     LISTED=$(grep -c . "$NAMES" || true)
@@ -201,7 +201,7 @@ while IFS='|' read -r CASE SUITE PAT MIN STATUS CTR; do
     elif [ "$LISTED" -lt "$MIN" ]; then
       WHY="pattern matched $LISTED tests, minimum $MIN"
     else
-      HASKOKI_OWNERSHIP_COUNTERS=1 timeout -s KILL "$TMO" "$BIN" -p "$PAT" -j "$N" +RTS -N"$N" -s -RTS > "$R.out" 2> "$R.err" || RC=$?
+      HASKOKI_OWNERSHIP_COUNTERS=1 timeout -s KILL "$TMO" "$BIN" -p "$PAT" -j "$N" +RTS -N"$N" -s -RTS < /dev/null > "$R.out" 2> "$R.err" || RC=$?
       PASSED=$(sed -n 's/^All \([0-9][0-9]*\) tests* passed.*/\1/p' "$R.out" | tail -n 1)
       PASSED=${PASSED:-0}
       if grep -Eq "using -N$N([^0-9]|\$)" "$R.err"; then

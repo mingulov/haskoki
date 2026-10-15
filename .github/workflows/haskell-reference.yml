@@ -71,12 +71,17 @@ jobs:
         # Runs even after a failure, so the logs above always carry the
         # revision and the stock toolchain they were produced with.
         if: always()
+        env:
+          RECEIPT_REVISION: ${{ github.sha }}
+          RECEIPT_REF: ${{ github.ref }}
+          RECEIPT_RUN: ${{ github.run_id }}
+          RECEIPT_ATTEMPT: ${{ github.run_attempt }}
         run: |
           mkdir -p reference-logs
           {
-            echo "revision: ${{ github.sha }}"
-            echo "ref: ${{ github.ref }}"
-            echo "run: ${{ github.run_id }} attempt ${{ github.run_attempt }}"
+            echo "revision: $RECEIPT_REVISION"
+            echo "ref: $RECEIPT_REF"
+            echo "run: $RECEIPT_RUN attempt $RECEIPT_ATTEMPT"
             echo "ghc: $(ghc --numeric-version 2>&1 || echo unavailable)"
             echo "cabal: $(cabal --numeric-version 2>&1 || echo unavailable)"
             echo "image: ubuntu:26.04"

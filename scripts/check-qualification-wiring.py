@@ -667,6 +667,29 @@ def check_lane(root, failures):
                  "(REQUESTED_REVISION = inputs.revision || github.sha), not the checkout HEAD")
         elif "--expect-sha" in blocks[job] and re.search(r"--expect-sha[^\n]*rev-parse", blocks[job]):
             _add(failures, "QW-LANE-VERIFY", f"{job}: expected sha derived from the checkout")
+    for job in (QUALIFY_JOB, REPORT_JOB):
+        if job not in blocks:
+            continue
+        osteps = [st for st in re.split(r"(?m)^      - name:", blocks[job])
+                  if "--verify-ownership" in "\n".join(_code_lines(st))]
+        if len(osteps) != 1:
+            _add(failures, "QW-LANE-OWNVERIFY",
+                 f"{job}: need exactly one --verify-ownership step (found {len(osteps)})")
+            continue
+        code = "\n".join(_code_lines(osteps[0]))
+        if "--expect-sha" not in code or '--expect-sha "$REQUESTED_REVISION"' not in code \
+                or "REQUESTED_REVISION: ${{ inputs.revision || github.sha }}" not in osteps[0]:
+            _add(failures, "QW-LANE-OWNVERIFY",
+                 f"{job}: ownership verifier must check the requested revision "
+                 "(REQUESTED_REVISION = inputs.revision || github.sha)")
+        if "|| true" in code or "|| :" in code or "continue-on-error" in osteps[0]:
+            _add(failures, "QW-LANE-OWNVERIFY", f"{job}: ownership verifier failure is swallowed")
+        if not re.search(r"(?m)^        if: always\(\)\s*$", osteps[0]):
+            _add(failures, "QW-LANE-OWNVERIFY", f"{job}: ownership verifier must run on if: always()")
+        want = ("$RUNNER_TEMP/qualify-evidence/ownership" if job == QUALIFY_JOB
+                else "evidence-in/qualify-evidence/ownership")
+        if want not in code:
+            _add(failures, "QW-LANE-OWNVERIFY", f"{job}: ownership verifier must read {want}")
     if QUALIFY_JOB in blocks:
         for token in ("requested_revision", "image_id", "nproc", "duration_s", "RECEIPT_SHA"):
             if token not in blocks[QUALIFY_JOB]:
@@ -818,6 +841,7 @@ def run_all(root):
     check_owners(root, failures)
     check_lane(root, failures)
     check_matrix_wiring(root, failures)
+    check_ownership_table(root, failures)
     return failures
 
 
@@ -936,6 +960,183 @@ def verify_matrix(receipt_dir, expect_sha):
             if result != "pass":
                 _add(failures, "QW-RCPT-RESULT", f"cell-results.txt: cell {name!r} is {result}")
     return failures
+
+
+# ------------------------------------------------------------------
+# QW-OWN-*: ownership receipt verifier (--verify-ownership DIR --expect-sha SHA).
+# The expected case set is independent of the driver's own CASE_TABLE:
+# the driver's PLANNED count is derived from that table, so a dropped or
+# renamed row would otherwise shrink the obligation silently. Editing a
+# row therefore means editing this list too (QW-OWN-TABLE pins the two).
+# ------------------------------------------------------------------
+
+OWNERSHIP_RTS = (1, 2, 4)
+# (case id, minimum listed tests, counters required)
+OWNERSHIP_CASES = [
+    ("m1-native-transfers", 11, True),
+    ("m1-openssl4-engine", 70, False),
+    ("m1-acquisition-hooks", 17, False),
+    ("m2-lease-protocol", 6, False),
+    ("m2-lifetime-gate", 12, True),
+    ("m3-handle-registry", 11, True),
+    ("m3-ffi-acquisition", 23, True),
+    ("m3-async-engine", 25, True),
+    ("m4-store-contract", 123, False),
+    ("m4-multi-session", 34, False),
+    ("m5-attachment-claims", 5, True),
+    ("m5-detached-jobs", 35, True),
+    ("m5-scoped-detach-leases", 9, False),
+    ("m6-two-contexts-distinct-ids", 1, False),
+    ("m6-store-wide-counter", 1, False),
+    ("m7-attached-async", 37, True),
+    ("m7-retirement", 5, False),
+]
+# Appended by their own WPs; the driver lists them but never counts them.
+OWNERSHIP_PENDING = ["wp07-pending", "wp08-pending", "wp09-pending"]
+OWNERSHIP_RECEIPT_RE = re.compile(r"^(?P<case>.+)\.N(?P<n>[0-9]+)\.json$")
+
+
+def _int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def verify_ownership(receipt_dir, expect_sha):
+    """Return QW-OWN failure strings for an ownership receipt directory.
+
+    Post-hoc and driver-independent: every expected (case, RTS) receipt
+    exists exactly once, nothing unexpected exists (renamed rows, N3,
+    pending rows), every receipt is a pass for the expected sha with
+    matching RTS evidence and a listed count at or above the floor, and
+    gated cases carry zero-valued counter lines of their own case.
+    """
+    receipt_dir = Path(receipt_dir)
+    failures = _failures()
+    if not re.fullmatch(r"[0-9a-f]{40}", expect_sha or ""):
+        _add(failures, "QW-OWN-SHA", f"expected sha is not 40 lowercase hex: {expect_sha!r}")
+    if not receipt_dir.is_dir():
+        _add(failures, "QW-OWN-MISSING", f"ownership receipt directory {receipt_dir} is absent")
+        return failures
+    expected = {(c, n): (m, g) for c, m, g in OWNERSHIP_CASES for n in OWNERSHIP_RTS}
+    found = {}
+    for path in sorted(receipt_dir.iterdir()):
+        match = OWNERSHIP_RECEIPT_RE.match(path.name)
+        if not match:
+            continue
+        key = (match.group("case"), int(match.group("n")))
+        if key not in expected:
+            _add(failures, "QW-OWN-UNKNOWN",
+                 f"unexpected receipt {path.name} (not in the expected case x RTS set)")
+            continue
+        found[key] = path
+    for case, n in sorted(expected):
+        if (case, n) not in found:
+            _add(failures, "QW-OWN-MISSING", f"missing receipt {case}.N{n}.json")
+    for (case, n), path in sorted(found.items()):
+        minimum, gated = expected[(case, n)]
+        name = path.name
+        try:
+            body = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            _add(failures, "QW-OWN-SHAPE", f"{name} is unreadable or not valid JSON: {exc}")
+            continue
+        if not isinstance(body, dict):
+            _add(failures, "QW-OWN-SHAPE", f"{name} must be a JSON object")
+            continue
+        if body.get("case") != case:
+            _add(failures, "QW-OWN-UNKNOWN", f"{name}: case field is {body.get('case')!r}")
+        if body.get("sha") != expect_sha:
+            _add(failures, "QW-OWN-SHA", f"{name}: sha {body.get('sha')!r} != expected {expect_sha!r}")
+        if body.get("rts_n") != n or body.get("using_n") != n:
+            _add(failures, "QW-OWN-RTS",
+                 f"{name}: rts_n={body.get('rts_n')!r} using_n={body.get('using_n')!r}, need {n}")
+        if body.get("status") != "pass" or body.get("rc") != 0 or body.get("reason"):
+            _add(failures, "QW-OWN-RESULT",
+                 f"{name}: status={body.get('status')!r} rc={body.get('rc')!r} "
+                 f"reason={body.get('reason')!r}")
+        listed, passed = body.get("listed"), body.get("passed")
+        if not _int(listed) or not _int(passed) or listed < minimum or passed != listed:
+            _add(failures, "QW-OWN-COUNT",
+                 f"{name}: listed={listed!r} passed={passed!r}, need passed == listed >= {minimum}")
+        if body.get("counters_required") is not gated:
+            _add(failures, "QW-OWN-COUNTERS",
+                 f"{name}: counters_required={body.get('counters_required')!r}, need {gated}")
+        lines = body.get("counters")
+        if not isinstance(lines, list):
+            _add(failures, "QW-OWN-SHAPE", f"{name}: counters must be a list")
+        elif gated:
+            if not lines:
+                _add(failures, "QW-OWN-COUNTERS", f"{name}: gated case has no counter lines")
+            for line in lines:
+                fields = str(line).split()
+                head = [f for f in fields if f.startswith("case=")]
+                values = [f for f in fields if "=" in f and not f.startswith(("case=", "test="))]
+                if head[:1] != [f"case={case}"]:
+                    _add(failures, "QW-OWN-COUNTERS", f"{name}: counter line for another case: {line!r}")
+                elif any(v.split("=", 1)[1] != "0" for v in values):
+                    _add(failures, "QW-OWN-COUNTERS", f"{name}: nonzero counter: {line!r}")
+    for pending in OWNERSHIP_PENDING:
+        for path in receipt_dir.glob(f"{pending}.N*.json"):
+            _add(failures, "QW-OWN-UNKNOWN", f"pending row {pending} has a receipt: {path.name}")
+
+    # index.tsv: one passing row per expected (case, RTS), nothing else.
+    try:
+        index_text = (receipt_dir / "index.tsv").read_text()
+    except OSError:
+        _add(failures, "QW-OWN-MISSING", "missing or unreadable index.tsv")
+    else:
+        rows = [ln.split("\t") for ln in index_text.splitlines()[1:] if ln.strip()]
+        keys = []
+        for row in rows:
+            if len(row) != 7 or not row[1].isdigit():
+                _add(failures, "QW-OWN-INDEX", f"index.tsv: unparseable row {row!r}")
+                continue
+            keys.append((row[0], int(row[1])))
+            if row[5] != "pass" or row[4] != "0":
+                _add(failures, "QW-OWN-INDEX", f"index.tsv: {row[0]} -N{row[1]} is {row[5]} rc {row[4]}")
+        for key in _dups(keys):
+            _add(failures, "QW-OWN-INDEX", f"index.tsv: duplicate row for {key[0]} -N{key[1]}")
+        got = set(keys)
+        for key in sorted(set(expected) - got):
+            _add(failures, "QW-OWN-INDEX", f"index.tsv: missing row for {key[0]} -N{key[1]}")
+        for key in sorted(got - set(expected)):
+            _add(failures, "QW-OWN-INDEX", f"index.tsv: unexpected row for {key[0]} -N{key[1]}")
+    return failures
+
+
+def check_ownership_table(root, failures):
+    """QW-OWN-TABLE: the driver's active CASE_TABLE rows equal OWNERSHIP_CASES."""
+    path = Path(root) / "scripts" / OWNERSHIP_DRIVER
+    try:
+        text = path.read_text()
+        body = text.split("<<'TABLE'\n", 1)[1].split("\nTABLE\n", 1)[0]
+    except (OSError, IndexError):
+        _add(failures, "QW-OWN-TABLE", f"cannot read the case table of {OWNERSHIP_DRIVER}")
+        return
+    rows, pending = [], []
+    for line in body.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        f = line.split("|")
+        if len(f) != 6 or not f[3].isdigit():
+            _add(failures, "QW-OWN-TABLE", f"malformed case table row: {line[:60]!r}")
+            continue
+        if f[4] == "pending":
+            pending.append(f[0])
+        elif f[4] == "active":
+            rows.append((f[0], int(f[3]), f[5] != "no"))
+        else:
+            _add(failures, "QW-OWN-TABLE", f"row {f[0]!r} has status {f[4]!r}")
+    for dup in _dups([r[0] for r in rows]):
+        _add(failures, "QW-OWN-TABLE", f"duplicate case row {dup!r}")
+    if sorted(rows) != sorted(OWNERSHIP_CASES):
+        only_driver = sorted(set(rows) - set(OWNERSHIP_CASES))
+        only_expected = sorted(set(OWNERSHIP_CASES) - set(rows))
+        _add(failures, "QW-OWN-TABLE",
+             f"driver table differs from OWNERSHIP_CASES: driver-only {only_driver}, "
+             f"expected-only {only_expected}")
+    if sorted(pending) != sorted(OWNERSHIP_PENDING):
+        _add(failures, "QW-OWN-TABLE",
+             f"pending rows {sorted(pending)} != OWNERSHIP_PENDING {sorted(OWNERSHIP_PENDING)}")
 
 
 # ------------------------------------------------------------------
@@ -1130,6 +1331,157 @@ def _receipt_controls(controls, fresh_dir):
     case("empty cells", "QW-RCPT-CELLS", empty)
 
 
+def _write_ownership(directory, mutate=None):
+    """Write a passing ownership receipt tree (every case x N1/N2/N4)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    receipts, index = {}, []
+    for case, minimum, ctr in OWNERSHIP_CASES:
+        for n in OWNERSHIP_RTS:
+            receipts[f"{case}.N{n}.json"] = {
+                "case": case, "suite": "model", "min_count": minimum, "rts_n": n,
+                "using_n": n, "sha": FIXTURE_SHA, "nproc": 4, "rc": 0,
+                "listed": minimum, "passed": minimum, "duration_s": 1,
+                "status": "pass", "reason": "", "counters_required": ctr,
+                "counters": ([f"OWNERSHIP-COUNTERS case={case} test=t bufs=0"] if ctr else [])}
+            index.append([case, str(n), str(minimum), str(minimum), "0", "pass", "1"])
+    if mutate:
+        mutate(receipts, index)
+    for name, body in receipts.items():
+        (directory / name).write_text(body if isinstance(body, str) else json.dumps(body))
+    if index is not None:
+        (directory / "index.tsv").write_text(
+            "case\trts\tlisted\tpassed\trc\tstatus\tduration_s\n"
+            + "".join("\t".join(r) + "\n" for r in index))
+
+
+def _ownership_controls(controls, fresh_dir):
+    def case(label, rule, mutate=None, expect_sha=FIXTURE_SHA, drop=None):
+        directory = fresh_dir()
+        _write_ownership(directory, mutate)
+        if drop:
+            (directory / drop).unlink()
+        failures = verify_ownership(directory, expect_sha)
+        if rule is None:
+            if failures:
+                controls.failed.append(f"{label}: expected pass, got {failures}")
+            else:
+                controls.passed += 1
+                print(f"PASS (control): {label}")
+        elif any(f.startswith(rule + ":") for f in failures):
+            controls.passed += 1
+            print(f"PASS (negative): {label} -> {rule}")
+        else:
+            controls.failed.append(f"{label}: expected {rule} failure, got {failures}")
+
+    victim = "m4-store-contract"
+    gated = next(c for c, _m, g in OWNERSHIP_CASES if g)
+    plain = next(c for c, _m, g in OWNERSHIP_CASES if not g)
+
+    def drop_row(r, idx):
+        for n in OWNERSHIP_RTS:
+            del r[f"{victim}.N{n}.json"]
+        idx[:] = [x for x in idx if x[0] != victim]
+
+    def rename_row(r, idx):
+        for n in OWNERSHIP_RTS:
+            body = r.pop(f"{victim}.N{n}.json")
+            body["case"] = "m4-store-contract-v2"
+            r[f"m4-store-contract-v2.N{n}.json"] = body
+        for x in idx:
+            if x[0] == victim:
+                x[0] = "m4-store-contract-v2"
+
+    def rename_files_only(r, idx):
+        r[f"{victim}-v2.N1.json"] = r.pop(f"{victim}.N1.json")
+
+    def wrong_sha(r, idx):
+        r[f"{plain}.N2.json"]["sha"] = "e" * 40
+
+    def wrong_rts(r, idx):
+        r[f"{plain}.N2.json"]["using_n"] = 1
+
+    def wrong_rts_n(r, idx):
+        r[f"{plain}.N2.json"]["rts_n"] = 4
+
+    def n3(r, idx):
+        r["m4-store-contract.N3.json"] = dict(r[f"{victim}.N1.json"], rts_n=3, using_n=3)
+
+    def failed(r, idx):
+        r[f"{plain}.N1.json"]["status"] = "fail"
+
+    def rc(r, idx):
+        r[f"{plain}.N1.json"]["rc"] = 1
+
+    def below_min(r, idx):
+        r[f"{plain}.N1.json"]["listed"] = 1
+        r[f"{plain}.N1.json"]["passed"] = 1
+
+    def passed_ne_listed(r, idx):
+        r[f"{plain}.N1.json"]["passed"] -= 1
+
+    def pending_ran(r, idx):
+        r["wp07-pending.N1.json"] = dict(r[f"{plain}.N1.json"], case="wp07-pending")
+
+    def no_counters(r, idx):
+        r[f"{gated}.N1.json"]["counters"] = []
+
+    def counters_off(r, idx):
+        r[f"{gated}.N1.json"]["counters_required"] = False
+
+    def other_counter(r, idx):
+        r[f"{gated}.N1.json"]["counters"] = ["OWNERSHIP-COUNTERS case=other test=t bufs=0"]
+
+    def nonzero_counter(r, idx):
+        r[f"{gated}.N1.json"]["counters"] = [f"OWNERSHIP-COUNTERS case={gated} test=t bufs=2"]
+
+    def bad_json(r, idx):
+        r[f"{plain}.N1.json"] = "{not json"
+
+    def index_dup(r, idx):
+        idx.append(list(idx[0]))
+
+    def index_short(r, idx):
+        del idx[0]
+
+    def index_fail(r, idx):
+        idx[0][5] = "fail"
+
+    case("passing full ownership receipt tree", None)
+    case("dropped row (all three receipts of a case)", "QW-OWN-MISSING", drop_row)
+    case("renamed row (case id changed in the table)", "QW-OWN-MISSING", rename_row)
+    case("renamed row also reports the unknown id", "QW-OWN-UNKNOWN", rename_row)
+    case("renamed receipt files only", "QW-OWN-MISSING", rename_files_only)
+    case("missing receipt (one RTS of one case)", "QW-OWN-MISSING", drop=f"{plain}.N2.json")
+    case("wrong sha in one receipt", "QW-OWN-SHA", wrong_sha)
+    case("wrong sha expected by the caller", "QW-OWN-SHA", expect_sha="f" * 40)
+    case("wrong RTS evidence (using_n != rts_n)", "QW-OWN-RTS", wrong_rts)
+    case("wrong RTS value (receipt rts_n != filename)", "QW-OWN-RTS", wrong_rts_n)
+    case("unexpected RTS value N3", "QW-OWN-UNKNOWN", n3)
+    case("failed receipt", "QW-OWN-RESULT", failed)
+    case("nonzero rc with pass status", "QW-OWN-RESULT", rc)
+    case("listed below the per-case minimum", "QW-OWN-COUNT", below_min)
+    case("passed != listed", "QW-OWN-COUNT", passed_ne_listed)
+    case("pending row executed and counted", "QW-OWN-UNKNOWN", pending_ran)
+    case("gated case without counter lines", "QW-OWN-COUNTERS", no_counters)
+    case("gated case with counters_required false", "QW-OWN-COUNTERS", counters_off)
+    case("counter line of another case", "QW-OWN-COUNTERS", other_counter)
+    case("nonzero counter value", "QW-OWN-COUNTERS", nonzero_counter)
+    case("malformed receipt json", "QW-OWN-SHAPE", bad_json)
+    case("duplicate index row", "QW-OWN-INDEX", index_dup)
+    case("index row missing", "QW-OWN-INDEX", index_short)
+    case("index row failed", "QW-OWN-INDEX", index_fail)
+    case("missing index.tsv", "QW-OWN-MISSING", drop="index.tsv")
+    case("empty receipt directory", "QW-OWN-MISSING",
+         lambda r, idx: (r.clear(), idx.clear()))
+    directory = fresh_dir()
+    failures = verify_ownership(directory / "absent", FIXTURE_SHA)
+    if any(f.startswith("QW-OWN-MISSING:") for f in failures):
+        controls.passed += 1
+        print("PASS (negative): ownership directory absent -> QW-OWN-MISSING")
+    else:
+        controls.failed.append(f"absent ownership dir: got {failures}")
+
+
 def self_test():
     controls = _Controls()
     try:
@@ -1150,6 +1502,7 @@ def self_test():
             return tmp / "receipt"
 
         _receipt_controls(controls, fresh_dir)
+        _ownership_controls(controls, fresh_dir)
 
         def fresh():
             tmp = Path(tempfile.mkdtemp(prefix="haskoki-qw-mut-"))
@@ -1417,6 +1770,36 @@ def self_test():
         _drop_lines(root / QUALIFICATION_YML, "duration_s")
         controls.expect_fail("drop per-cell duration from the receipt", root, "QW-LANE-VERIFY")
         root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '--verify-ownership \\\n            "$RUNNER_TEMP/qualify-evidence/ownership"',
+                 '--self-test \\\n            "$RUNNER_TEMP/qualify-evidence/ownership"')
+        controls.expect_fail("drop the qualify ownership verifier", root, "QW-LANE-OWNVERIFY")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '--verify-ownership \\\n            evidence-in/qualify-evidence/ownership',
+                 '--self-test \\\n            evidence-in/qualify-evidence/ownership')
+        controls.expect_fail("drop the report ownership verifier", root, "QW-LANE-OWNVERIFY")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '--verify-ownership \\\n            "$RUNNER_TEMP/qualify-evidence/ownership" --expect-sha "$REQUESTED_REVISION"',
+                 '--verify-ownership \\\n            "$RUNNER_TEMP/qualify-evidence/ownership" --expect-sha "$REQUESTED_REVISION" || true')
+        controls.expect_fail("swallow the qualify ownership verifier", root, "QW-LANE-OWNVERIFY")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '--verify-ownership \\\n            evidence-in/qualify-evidence/ownership --expect-sha "$REQUESTED_REVISION"',
+                 '--verify-ownership \\\n            evidence-in/qualify-evidence/ownership --expect-sha "$(git rev-parse HEAD)"')
+        controls.expect_fail("report ownership verifier uses the checkout sha", root, "QW-LANE-OWNVERIFY")
+        # Static drift between the driver's case table and the expected set.
+        driver = "scripts/" + OWNERSHIP_DRIVER
+        root = fresh()
+        _rewrite(root / driver, "m4-store-contract|storage", "m4-store-renamed|storage")
+        controls.expect_fail("driver table renames a case", root, "QW-OWN-TABLE")
+        root = fresh()
+        _drop_lines(root / driver, "m4-multi-session|")
+        controls.expect_fail("driver table drops a case", root, "QW-OWN-TABLE")
+        root = fresh()
+        _rewrite(root / driver, "$2 == \"store contract\"|123|", "$2 == \"store contract\"|1|")
+        controls.expect_fail("driver table lowers a minimum", root, "QW-OWN-TABLE")
+        root = fresh()
+        _rewrite(root / driver, "|5|active|claim-rival-refusal", "|5|active|no")
+        controls.expect_fail("driver table turns counters off for a gated case", root, "QW-OWN-TABLE")
+        root = fresh()
         _drop_lines(root / QUALIFICATION_YML, "HASKOKI_QUAL_ONLY=bogus")
         controls.expect_fail("drop the bogus-hint control", root, "QW-LANE-STATIC")
         # One must-fail control per matrix leg: the scenario
@@ -1463,8 +1846,20 @@ def main(argv):
             return 1
         print(f"PASS: matrix receipt ({len(MATRIX_CELLS)}/{len(MATRIX_CELLS)} behavioral, sha {argv[4]})")
         return 0
+    if len(argv) == 5 and argv[1] == "--verify-ownership" and argv[3] == "--expect-sha":
+        failures = verify_ownership(argv[2], argv[4])
+        if failures:
+            print(f"FAIL: ownership receipts ({len(failures)} findings):")
+            for failure in failures:
+                print(f"  {failure}")
+            return 1
+        total = len(OWNERSHIP_CASES) * len(OWNERSHIP_RTS)
+        print(f"PASS: ownership receipts ({total}/{total}: {len(OWNERSHIP_CASES)} cases x "
+              f"RTS {'/'.join(map(str, OWNERSHIP_RTS))}, sha {argv[4]})")
+        return 0
     if len(argv) != 1:
-        print("usage: check-qualification-wiring.py [--self-test | --verify-matrix DIR --expect-sha SHA]")
+        print("usage: check-qualification-wiring.py [--self-test | --verify-matrix DIR --expect-sha SHA"
+              " | --verify-ownership DIR --expect-sha SHA]")
         return 2
     failures = run_all(ROOT)
     if failures:

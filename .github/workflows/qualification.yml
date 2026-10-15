@@ -700,6 +700,18 @@ jobs:
             ${{ runner.temp }}/qualify-evidence/
             ${{ runner.temp }}/qualify-evidence-run.log
           if-no-files-found: error
+      - name: Verify ownership receipts
+        if: always()
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
+        run: |
+          # Post-hoc, driver-independent: the expected case x RTS set
+          # lives in check-qualification-wiring.py, not in the driver's
+          # own table, so a dropped or renamed row, a missing receipt,
+          # a wrong sha or a wrong RTS value fails the job.
+          set -euo pipefail
+          python3 scripts/check-qualification-wiring.py --verify-ownership \
+            "$RUNNER_TEMP/qualify-evidence/ownership" --expect-sha "$REQUESTED_REVISION"
       - name: Verify matrix receipt
         if: always()
         env:
@@ -787,6 +799,16 @@ jobs:
           set -euo pipefail
           python3 scripts/check-qualification-wiring.py --verify-matrix \
             evidence-in/qualify-evidence --expect-sha "$REQUESTED_REVISION"
+      - name: Verify ownership receipts
+        if: always()
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
+        run: |
+          # Same independent expected case x RTS set as the qualify
+          # job, applied to the downloaded artifact.
+          set -euo pipefail
+          python3 scripts/check-qualification-wiring.py --verify-ownership \
+            evidence-in/qualify-evidence/ownership --expect-sha "$REQUESTED_REVISION"
       - name: Upload matrix artifact
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -24,6 +24,8 @@ FAKE_BIN = """#!/bin/sh
 n=""
 list=0
 prev=""
+# A binary that reads stdin must not consume the driver's case table.
+[ -z "${FAKE_READ_STDIN:-}" ] || cat > /dev/null
 for a in "$@"; do
   case "$a" in
     --list-tests) list=1;;
@@ -332,6 +334,13 @@ class DriverControls(unittest.TestCase):
         self.assertNotIn("wp07-pending", ids)
         self.assertEqual(len(self.receipts()), 3 * len(ids))
         self.assertTrue((self.out / "index.tsv").is_file())
+
+    def test_binary_reading_stdin_does_not_eat_the_case_table(self):
+        p = self.run_driver(FAKE_COUNTER=1, FAKE_READ_STDIN=1)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        ids = {json.loads(r.read_text())["case"] for r in self.receipts()}
+        self.assertEqual(ids, {r["case"] for r in ACTIVE})
+        self.assertEqual(len(self.receipts()), 3 * len(ACTIVE))
 
 
 if __name__ == "__main__":
