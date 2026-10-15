@@ -37,7 +37,7 @@ case " $* " in
 esac
 if [ "$list" = 1 ]; then
   i=0
-  while [ "$i" -lt "${FAKE_LISTED:-3}" ]; do
+  while [ "$i" -lt "${FAKE_LISTED:-200}" ]; do
     echo "root.group.test $i"; i=$((i + 1))
   done
   exit 0
@@ -45,14 +45,22 @@ fi
 if [ -z "${FAKE_NO_USING:-}" ]; then
   echo "TASKS: 4 (1 bound, 3 peak workers (3 total), using -N${FAKE_USING:-$n})" >&2
 fi
-if [ -n "${FAKE_COUNTER:-}" ]; then
-  echo "OWNERSHIP-COUNTERS case=fake k=0"
+# Emits only when the driver sets HASKOKI_OWNERSHIP_COUNTERS=1 (ruling 5).
+if [ -n "${FAKE_COUNTER:-}" ] && [ "${HASKOKI_OWNERSHIP_COUNTERS:-}" = 1 ]; then
+  case " $* " in
+    *"native ownership transfers"*) c=m1-native-transfers;;
+    *"lifetime gate"*) c=m2-lifetime-gate;;
+    *) c=other;;
+  esac
+  [ -z "${FAKE_COUNTER_CASE:-}" ] || c="$FAKE_COUNTER_CASE"
+  printf 'some test name: '   # tasty may leave the name on the line
+  echo "OWNERSHIP-COUNTERS case=$c test=t bufs=0 digests=${FAKE_COUNTER_VAL:-0} envs=0"
 fi
 if [ "${FAKE_RC:-0}" -ne 0 ]; then
-  echo "1 out of ${FAKE_LISTED:-3} tests failed"
+  echo "1 out of ${FAKE_LISTED:-200} tests failed"
   exit "${FAKE_RC}"
 fi
-echo "All ${FAKE_PASSED:-${FAKE_LISTED:-3}} tests passed (0.01s)"
+echo "All ${FAKE_PASSED:-${FAKE_LISTED:-200}} tests passed (0.01s)"
 exit 0
 """
 
@@ -130,6 +138,57 @@ class DriverControls(unittest.TestCase):
         self.no_build()
 
     # ---- must fail after listing/running, never vacuously pass ----
+    # ---- ownership counters (Task 4) ----
+    def test_counter_line_missing_fails(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate")
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("counter line missing", p.stdout)
+        d = json.loads((self.out / "m2-lifetime-gate.N1.json").read_text())
+        self.assertEqual((d["status"], d["counters_required"]), ("fail", True))
+
+    def test_counter_line_missing_fails_for_native_transfers(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m1-native-transfers")
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("counter line missing", p.stdout)
+
+    def test_nonzero_counter_fails(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_COUNTER=1,
+                            FAKE_COUNTER_VAL=1)
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("counter nonzero: digests=1", p.stdout)
+
+    def test_counter_line_for_another_case_fails(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_COUNTER=1,
+                            FAKE_COUNTER_CASE="m1-native-transfers")
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("another case", p.stdout)
+
+    def test_counters_not_required_for_other_cases(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lease-protocol")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        d = json.loads((self.out / "m2-lease-protocol.N1.json").read_text())
+        self.assertEqual((d["counters_required"], d["counters"]), (False, []))
+
+    def test_receipt_records_tree_clean_boolean(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lease-protocol", HASKOKI_OWN_RTS="1")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        d = json.loads((self.out / "m2-lease-protocol.N1.json").read_text())
+        dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=REPO,
+                                    capture_output=True, text=True).stdout.strip())
+        self.assertIs(d["tree_clean"], not dirty)
+
+    def test_min_count_floors_are_the_observed_counts(self):
+        # A shrinking suite fails: each floor is the real-run count, so
+        # one test fewer than the floor must fail for every case.
+        floors = {"m1-native-transfers": 11, "m2-lease-protocol": 6, "m5-attachment-claims": 5,
+                  "m4-store-contract": 123, "m1-openssl4-engine": 70}
+        for case, n in floors.items():
+            with self.subTest(case=case):
+                p = self.run_driver(HASKOKI_OWN_CASE=case, HASKOKI_OWN_RTS="1",
+                                    FAKE_LISTED=n - 1, FAKE_COUNTER=1)
+                self.assertNotEqual(p.returncode, 0, p.stdout)
+                self.assertIn(f"matched {n - 1} tests, minimum {n}", p.stdout)
+
     def test_zero_match_pattern_fails(self):
         p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_LISTED=0)
         self.assertNotEqual(p.returncode, 0, p.stdout)
@@ -173,24 +232,28 @@ class DriverControls(unittest.TestCase):
             d = json.loads(r.read_text())
             self.assertEqual(d["sha"], SHA)
             self.assertEqual((d["listed"], d["passed"], d["rc"], d["status"]),
-                             (3, 3, 0, "pass"))
+                             (200, 200, 0, "pass"))
             self.assertEqual(d["using_n"], d["rts_n"])
             self.assertEqual(len(d["binary_sha256"]), 64)
             self.assertIn("nproc", d)
             self.assertIn("duration_s", d)
-            self.assertEqual(d["counters"], ["OWNERSHIP-COUNTERS case=fake k=0"])
+            self.assertEqual(d["counters"], [
+                "OWNERSHIP-COUNTERS case=m2-lifetime-gate test=t bufs=0 digests=0 envs=0"])
+            self.assertIs(d["counters_required"], True)
 
     def test_tasty_capability_bump_is_prevented_by_jobs_flag(self):
-        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_TASTY_BUMP=1)
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_TASTY_BUMP=1,
+                            FAKE_COUNTER=1)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
     def test_rts_subset(self):
-        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", HASKOKI_OWN_RTS="2")
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", HASKOKI_OWN_RTS="2",
+                            FAKE_COUNTER=1)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual([r.name for r in self.receipts()], ["m2-lifetime-gate.N2.json"])
 
     def test_full_table_runs_every_nonpending_case_and_lists_pending(self):
-        p = self.run_driver()
+        p = self.run_driver(FAKE_COUNTER=1)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("PENDING wp07-pending", p.stdout)
         ids = {json.loads(r.read_text())["case"] for r in self.receipts()}

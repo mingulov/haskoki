@@ -1,7 +1,7 @@
 #!/bin/sh
 # scripts/test-ownership-matrix.sh -- private-RTS ownership fixture matrix.
 #
-# Runs the named ownership fixtures (M1-M7 of the concurrency plan)
+# Runs the named ownership fixtures (the ownership matrix cases of the concurrency plan)
 # under a PRIVATE RTS setting -N1, -N2 and -N4, one receipt per
 # (case, RTS), in the pinned toolchain container. Role: qualification
 # (scripts/driver-inventory.json): inventoried so the drift rule owns
@@ -49,32 +49,35 @@ fail() {
   exit 1
 }
 
-# case|suite|tasty-pattern|min-count|status
+# case|suite|tasty-pattern|min-count|status|counters
+# min-count is the floor observed in the real run (a shrinking suite
+# fails). counters=yes: the case must print OWNERSHIP-COUNTERS lines
+# (HASKOKI_OWNERSHIP_COUNTERS=1), every value 0.
 # Patterns are tasty 1.5 awk expressions over the test path
 # ($1 = suite root, $2 = top group, $3 = subgroup). They must not
 # contain `|`. WP07-WP09 rows are appended by those packages as
 # `pending` until their fixtures exist.
 CASE_TABLE=$(cat <<'TABLE'
-m1-native-transfers|model|$2 == "Ownership" && $3 == "native ownership transfers"|1|active
-m1-openssl4-engine|engine|$2 == "openssl4 engine"|1|active
-m1-acquisition-hooks|engine|$2 == "Acquisition hooks"|1|active
-m2-lease-protocol|model|$2 == "Ownership" && $3 == "lease protocol"|1|active
-m2-lifetime-gate|model|$2 == "Ownership" && $3 == "lifetime gate"|2|active
-m3-handle-registry|model|$2 == "Ownership" && $3 == "handle registry"|1|active
-m3-ffi-acquisition|model|$2 == "FFI acquisition"|1|active
-m3-async-engine|engine|$2 == "Async engine"|1|active
-m4-store-contract|storage|$2 == "store contract"|1|active
-m4-multi-session|storage|$2 == "Multi-session store"|1|active
-m5-attachment-claims|model|$2 == "Ownership" && $3 == "attachment claims"|1|active
-m5-detached-jobs|model|$2 == "Detached jobs"|1|active
-m5-scoped-detach-leases|model|$2 == "Scoped detach leases"|1|active
-m6-two-contexts-distinct-ids|model|$2 == "Detached jobs" && /two contexts on one store/|1|active
-m6-store-wide-counter|model|$2 == "Detached jobs" && /two tokens share the store-wide counter/|1|active
-m7-attached-async|model|$2 == "Attached async"|1|active
-m7-retirement|model|$2 == "Ownership" && /retire/|1|active
-wp07-pending|model|-|0|pending
-wp08-pending|model|-|0|pending
-wp09-pending|model|-|0|pending
+m1-native-transfers|model|$2 == "Ownership" && $3 == "native ownership transfers"|11|active|yes
+m1-openssl4-engine|engine|$2 == "openssl4 engine"|70|active|no
+m1-acquisition-hooks|engine|$2 == "Acquisition hooks"|17|active|no
+m2-lease-protocol|model|$2 == "Ownership" && $3 == "lease protocol"|6|active|no
+m2-lifetime-gate|model|$2 == "Ownership" && $3 == "lifetime gate"|12|active|yes
+m3-handle-registry|model|$2 == "Ownership" && $3 == "handle registry"|11|active|no
+m3-ffi-acquisition|model|$2 == "FFI acquisition"|23|active|no
+m3-async-engine|engine|$2 == "Async engine"|25|active|no
+m4-store-contract|storage|$2 == "store contract"|123|active|no
+m4-multi-session|storage|$2 == "Multi-session store"|34|active|no
+m5-attachment-claims|model|$2 == "Ownership" && $3 == "attachment claims"|5|active|no
+m5-detached-jobs|model|$2 == "Detached jobs"|35|active|no
+m5-scoped-detach-leases|model|$2 == "Scoped detach leases"|9|active|no
+m6-two-contexts-distinct-ids|model|$2 == "Detached jobs" && /two contexts on one store/|1|active|no
+m6-store-wide-counter|model|$2 == "Detached jobs" && /two tokens share the store-wide counter/|1|active|no
+m7-attached-async|model|$2 == "Attached async"|37|active|no
+m7-retirement|model|$2 == "Ownership" && /retire/|5|active|no
+wp07-pending|model|-|0|pending|no
+wp08-pending|model|-|0|pending|no
+wp09-pending|model|-|0|pending|no
 TABLE
 )
 
@@ -142,13 +145,21 @@ json_str() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
+# tree_clean: git status --porcelain empty (a receipt from a dirty tree
+# is identifiable). Unknown (no git) counts as not clean.
+if [ -n "$(git status --porcelain 2>/dev/null || echo unknown)" ]; then
+  TREE_CLEAN=false
+else
+  TREE_CLEAN=true
+fi
+
 NPROC=$(nproc 2>/dev/null || echo 0)
 BAD=0
 PLANNED=0
 TOTAL_OK=0
 printf 'case\trts\tlisted\tpassed\trc\tstatus\tduration_s\n' > "$OUT/index.tsv"
 
-while IFS='|' read -r CASE SUITE PAT MIN STATUS; do
+while IFS='|' read -r CASE SUITE PAT MIN STATUS CTR; do
   [ -n "$CASE" ] || continue
   if [ "$STATUS" = pending ]; then
     echo "PENDING $CASE (not executed, not counted)"
@@ -183,22 +194,38 @@ while IFS='|' read -r CASE SUITE PAT MIN STATUS; do
     elif [ "$LISTED" -lt "$MIN" ]; then
       WHY="pattern matched $LISTED tests, minimum $MIN"
     else
-      timeout -s KILL "$TMO" "$BIN" -p "$PAT" -j "$N" +RTS -N"$N" -s -RTS > "$R.out" 2> "$R.err" || RC=$?
+      HASKOKI_OWNERSHIP_COUNTERS=1 timeout -s KILL "$TMO" "$BIN" -p "$PAT" -j "$N" +RTS -N"$N" -s -RTS > "$R.out" 2> "$R.err" || RC=$?
       PASSED=$(sed -n 's/^All \([0-9][0-9]*\) tests* passed.*/\1/p' "$R.out" | tail -n 1)
       PASSED=${PASSED:-0}
       if grep -Eq "using -N$N([^0-9]|\$)" "$R.err"; then
         USING=$N
       fi
-      COUNTERS=$(grep '^OWNERSHIP-COUNTERS ' "$R.out" || true)
+      # Unanchored: tasty may have printed the test name on the same line.
+      COUNTERS=$(grep -o 'OWNERSHIP-COUNTERS case=.*' "$R.out" || true)
       if [ "$RC" -ne 0 ]; then
         WHY="run exited $RC"
       elif [ "$USING" -ne "$N" ]; then
         WHY="RTS evidence missing: no 'using -N$N' in the -s output"
       elif [ "$PASSED" -ne "$LISTED" ]; then
         WHY="passed $PASSED of $LISTED listed tests"
+      elif [ "$CTR" = yes ]; then
+        if [ -z "$COUNTERS" ]; then
+          WHY="counter line missing: no OWNERSHIP-COUNTERS line for $CASE"
+        else
+          # Every line belongs to this case; every k=v after case/test is 0.
+          WHY=$(printf '%s\n' "$COUNTERS" | awk -v c="$CASE" '
+            { if ($2 != "case=" c) { print "counter line for another case: " $2; exit }
+              for (i = 3; i <= NF; i++) {
+                split($i, kv, "=")
+                if (kv[1] == "test") continue
+                if (kv[2] !~ /^[0-9]+$/ || kv[2] != 0) { print "counter nonzero: " $i " (" $3 ")"; exit }
+              } }')
+        fi
       fi
     fi
     DUR=$(( $(date +%s) - START ))
+    CTR_REQ=false
+    [ "$CTR" != yes ] || CTR_REQ=true
     if [ -z "$WHY" ]; then ST=pass; else ST=fail; fi
     {
       printf '{\n'
@@ -218,6 +245,8 @@ while IFS='|' read -r CASE SUITE PAT MIN STATUS; do
       printf '  "duration_s": %s,\n' "$DUR"
       printf '  "status": "%s",\n' "$ST"
       printf '  "reason": "%s",\n' "$(json_str "$WHY")"
+      printf '  "tree_clean": %s,\n' "$TREE_CLEAN"
+      printf '  "counters_required": %s,\n' "$CTR_REQ"
       printf '  "counters": ['
       FIRST=1
       if [ -n "$COUNTERS" ]; then

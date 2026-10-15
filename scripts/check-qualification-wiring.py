@@ -131,8 +131,11 @@ Receipt verifier (judges a real run, build-free):
   through docker run with the exact SHA and a receipt directory under
   the evidence root, on `if: always()` (both verdicts recorded) and
   never swallowed.
+* QW-LANE-OWNERSHIP also pins the receipt directory under
+  $RUNNER_TEMP/qualify-evidence and the always-run upload of that
+  whole root (so the ownership receipts are uploaded).
 * QW-LANE-VERIFY also rejects job-level `continue-on-error` on
-  qualify/report; QW-LANE-STATIC anchors on the SHA gate (first step
+  every job; QW-LANE-STATIC anchors on the SHA gate (first step
   after checkout, exits nonzero); QW-LANE-CONCURRENCY pins the
   schedule-only cancel-in-progress expression.
 * QW-LANE-GATE (ruling 7): qualify keeps `needs: toolchain`, and the
@@ -633,12 +636,13 @@ def check_lane(root, failures):
         if needs is None or QUALIFY_JOB not in needs:
             _add(failures, "QW-LANE-GATE",
                  f"{REPORT_JOB} must need {QUALIFY_JOB} (matrix renders qualify evidence)")
+    for job, jblock in blocks.items():
+        if re.search(r"(?m)^    continue-on-error:", jblock):
+            _add(failures, "QW-LANE-VERIFY",
+                 f"{job}: job-level continue-on-error would let a failed job report success")
     for job in (QUALIFY_JOB, REPORT_JOB):
         if job not in blocks:
             continue
-        if re.search(r"(?m)^    continue-on-error:", blocks[job]):
-            _add(failures, "QW-LANE-VERIFY",
-                 f"{job}: job-level continue-on-error would let a failed job report green")
         steps = re.split(r"(?m)^      - name:", blocks[job])
         last = steps[-1] if len(steps) > 1 else ""
         if job == QUALIFY_JOB and "--verify-matrix" not in last:
@@ -719,6 +723,20 @@ def check_lane(root, failures):
             if "HASKOKI_OWN_RECEIPTS" not in code or "qualify-evidence" not in code:
                 _add(failures, "QW-LANE-OWNERSHIP",
                      "ownership receipts must land under the qualify evidence root")
+            if 'OWN_DIR="$RUNNER_TEMP/qualify-evidence/ownership"' not in code \
+                    or '-v "$OWN_DIR:/ownership"' not in code:
+                _add(failures, "QW-LANE-OWNERSHIP",
+                     "ownership receipts (OWN_DIR) must be a directory under "
+                     "$RUNNER_TEMP/qualify-evidence mounted at /ownership")
+            qj = blocks[QUALIFY_JOB]
+            qup = qj.find("Upload qualification evidence")
+            ustep = qj[qup:].split("\n      - name:")[0] if qup >= 0 else ""
+            if not re.search(r"(?m)^        if: always\(\)", ustep) or \
+                    "${{ runner.temp }}/qualify-evidence/" not in \
+                    [ln.strip() for ln in ustep.splitlines()]:
+                _add(failures, "QW-LANE-OWNERSHIP",
+                     "the always-run evidence upload must cover the whole "
+                     "${{ runner.temp }}/qualify-evidence/ root (ownership receipts)")
             if not re.search(r"(?m)^        if: always\(\)", ost):
                 _add(failures, "QW-LANE-OWNERSHIP",
                      "ownership step must run on if: always() (record both verdicts)")
@@ -1280,7 +1298,7 @@ def self_test():
         controls.expect_fail("mutate the qualify runner label", root, "QW-LANE-RUNNER")
         root = fresh()
         _rewrite(root / QUALIFICATION_YML, "          exit 1  # buildonly-incomplete", "          exit 0  # buildonly-incomplete")
-        controls.expect_fail("build-only run exits green", root, "QW-LANE-FALLBACK")
+        controls.expect_fail("build-only run exits zero", root, "QW-LANE-FALLBACK")
         root = fresh()
         _drop_lines(root / QUALIFICATION_YML, "incomplete: behavioral prerequisites unmet (")
         controls.expect_fail("drop the build-only incomplete failure", root, "QW-LANE-FALLBACK")
@@ -1326,6 +1344,24 @@ def self_test():
                  "cancel-in-progress: ${{ github.event_name == 'schedule' }}",
                  "cancel-in-progress: true")
         controls.expect_fail("cancel dispatch runs in progress", root, "QW-LANE-CONCURRENCY")
+        # Every job: job-level continue-on-error (not only qualify/report).
+        for jname, jhead in (("static-gates", "  static-gates:\n"),
+                             ("toolchain", "  toolchain:\n"),
+                             ("proxy-pair", "  proxy-pair:\n")):
+            root = fresh()
+            _rewrite(root / QUALIFICATION_YML, jhead, jhead + "    continue-on-error: true\n")
+            controls.expect_fail(f"job-level continue-on-error on {jname}", root, "QW-LANE-VERIFY")
+        # Ownership receipts must be inside the uploaded evidence root.
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 'OWN_DIR="$RUNNER_TEMP/qualify-evidence/ownership"',
+                 'OWN_DIR="$RUNNER_TEMP/ownership"')
+        controls.expect_fail("ownership receipts outside the evidence root", root, "QW-LANE-OWNERSHIP")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "            ${{ runner.temp }}/qualify-evidence/\n            ${{ runner.temp }}/qualify-evidence-run.log",
+                 "            ${{ runner.temp }}/qualify-evidence-run.log")
+        controls.expect_fail("evidence upload drops the evidence root", root, "QW-LANE-OWNERSHIP")
         # Ownership matrix: qualification role + workflow wiring.
         root = fresh()
         _rewrite(root / INVENTORY,
