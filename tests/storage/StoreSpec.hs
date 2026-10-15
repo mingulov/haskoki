@@ -106,6 +106,7 @@ import Haskoki.Runtime.Storage
   , claimCensus
   , docTopKeys
   , emptyDelta
+  , encodeHex16
   , encodeHexWord64
   , jobIdCounterKey
   , markCensus
@@ -132,7 +133,7 @@ import Haskoki.FFI.Standard
   , openStdStore
   )
 import Haskoki.Runtime.Async (newAsyncTable)
-import Haskoki.Runtime.Catalog (effectiveCatalog, identityCatalog)
+import Haskoki.Runtime.Catalog (effectiveCatalog, identityCatalog, tokenSerial)
 import Haskoki.Runtime.Detached (markJobOpaque, openDetached)
 import Haskoki.Runtime.Config
   ( Config (..)
@@ -363,6 +364,7 @@ spec = testGroup "store contract"
       , testCase "hand-built id mismatch falls back to positional" caseMismatchFallsBack
       , testCase "duplicate desired identity refuses" caseDuplicateDesiredRefuses
       , testCase "reconciler enforces the home anchor" caseReconcilerHomeAnchor
+      , testCase "token serial is the canonical 16-hex identity" caseTokenSerialCanonical
       ]
   , testGroup "standard open reconciliation"
       [ testCase "standard open seeds a fresh file positionally" caseOpenSeedsFresh
@@ -3680,6 +3682,20 @@ caseReconcilerHomeAnchor = do
       assertEqual "intruder token" (TokenId 5) tid
       assertEqual "intruder slot" (SlotId 0) slot
     other -> assertFailure ("intruder at slot 0 must refuse: " ++ show other)
+
+-- | The serial projection is the stored 16-hex identity encoding:
+-- lowercase, fixed width, and the same bytes 'encodeHex16' writes
+-- for @token_id@ (ids above 9 tell hex from the old decimal form).
+caseTokenSerialCanonical :: IO ()
+caseTokenSerialCanonical = do
+  assertEqual "home serial" "0000000000000001" (tokenSerial (TokenId 1))
+  assertEqual "id 26 serial" "000000000000001a" (tokenSerial (TokenId 26))
+  let top = tokenSerial (TokenId 0x7fffffff)
+  assertEqual "max id serial" "000000007fffffff" top
+  assertEqual "max id serial width" 16 (length top)
+  assertBool "max id serial lowercase hex" (all (`elem` ("0123456789abcdef" :: String)) top)
+  assertEqual "serial is the stored id encoding"
+    (encodeHex16 0x7fffffff) top
 
 -- ---------------------------------------------------------------------------
 -- Standard open reconciliation
