@@ -326,7 +326,11 @@ EOF
 # token catalog (equal-length PIN arrays) and kind/path for the mode.
 write_cert_backend() {
   # $1 = storage mode, $2 = output path
+  # $TMPD is a fixed path that outlives the run: start the sqlite
+  # group on a fresh store, never on one a previous run (or another
+  # binary) left behind.
   if [ "$1" = "sqlite" ]; then
+    rm -rf "$TMPD/cert-$1" || fail "cannot clear $TMPD/cert-$1"
     mkdir -p "$TMPD/cert-$1" || fail "cannot create $TMPD/cert-$1"
   fi
   cat > "$2" <<EOF
