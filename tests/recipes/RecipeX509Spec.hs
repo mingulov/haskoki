@@ -12,7 +12,8 @@ consumers:
 
 * the model init path enforces empty X.509 parameters and refuses
   padded cipher specs for the RSA row ('validateInit',
-  'CKR_ARGUMENTS_BAD': the block-cipher planner's PKCS#7 framing
+  'CKR_MECHANISM_PARAM_INVALID' for parameters, 'CKR_ARGUMENTS_BAD'
+  for a padded spec: the block-cipher planner's PKCS#7 framing
   must never cover an asymmetric operation);
 * the driver maps the covered (mechanism, params) pair to its
   backend 'SigSpec' ('rsaX509SigFor') and cipher params
@@ -182,8 +183,9 @@ testEnv = OpEnv
   }
 
 -- | Unknown handle: valid parameters proceed PAST the parameter check
--- to key resolution (proving acceptance); bad parameters stop at
--- 'CKR_ARGUMENTS_BAD'.
+-- to key resolution ('CKR_KEY_HANDLE_INVALID', proving acceptance);
+-- bad parameters stop at 'CKR_MECHANISM_PARAM_INVALID' (PKCS#11 v3.1
+-- section 5.1.6: invalid parameters supplied to the mechanism).
 badKey :: KeyPolicy
 badKey = KeyPolicy (ExternalHandle 999) [OpEncrypt] False
 
@@ -192,13 +194,13 @@ runInit args = ioCode (snd (initOperation testEnv emptySessionOps testSession ar
 
 caseInitParams :: IO ()
 caseInitParams = do
-  assertEqual "non-empty params refused" CKR_ARGUMENTS_BAD
+  assertEqual "non-empty params refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpEncrypt x509Mech (BS.pack [0])
       (Just badKey) (Just (CipherSpec 256 False)) Nothing))
   assertEqual "padded spec refused" CKR_ARGUMENTS_BAD
     (runInit (InitArgs OpEncrypt x509Mech BS.empty
       (Just badKey) (Just (CipherSpec 256 True)) Nothing))
-  assertEqual "valid passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "valid passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpEncrypt x509Mech BS.empty
       (Just badKey) (Just (CipherSpec 256 False)) Nothing))
 
@@ -235,16 +237,16 @@ runRecInit args =
 
 caseRecoverInit :: IO ()
 caseRecoverInit = do
-  assertEqual "sign-recover non-empty refused" CKR_ARGUMENTS_BAD
+  assertEqual "sign-recover non-empty refused" CKR_MECHANISM_PARAM_INVALID
     (runRecInit (InitArgs OpSignRecover x509Mech (BS.pack [0])
       (Just badKey) Nothing (Just recSpec)))
-  assertEqual "sign-recover empty passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "sign-recover empty passes params" CKR_KEY_HANDLE_INVALID
     (runRecInit (InitArgs OpSignRecover x509Mech BS.empty
       (Just badKey) Nothing (Just recSpec)))
-  assertEqual "verify-recover non-empty refused" CKR_ARGUMENTS_BAD
+  assertEqual "verify-recover non-empty refused" CKR_MECHANISM_PARAM_INVALID
     (runRecInit (InitArgs OpVerifyRecover x509Mech (BS.pack [0])
       (Just badKey) Nothing (Just recSpec)))
-  assertEqual "verify-recover empty passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "verify-recover empty passes params" CKR_KEY_HANDLE_INVALID
     (runRecInit (InitArgs OpVerifyRecover x509Mech BS.empty
       (Just badKey) Nothing (Just recSpec)))
   assertEqual "sign-recover missing spec refused" CKR_ARGUMENTS_BAD

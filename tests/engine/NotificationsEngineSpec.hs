@@ -1502,7 +1502,9 @@ silentCrypto ptr inst h async out len = do
   initDigest ptr async
   -- The object belongs to h: the async key visibility refusal also remains
   -- silent, with no job submission or fallback callback.
-  silent "async-DigestKey-refusal" (haskokiStdDigestKey ptr async 999999 >>= assertEqual "unknown digest key" 0x82)
+  -- Unknown key handle: CKR_KEY_HANDLE_INVALID 0x60 (PKCS#11 v3.1 section
+  -- 5.1.6; C_DigestKey 5.12.4 lists it, not CKR_OBJECT_HANDLE_INVALID).
+  silent "async-DigestKey-refusal" (haskokiStdDigestKey ptr async 999999 >>= assertEqual "unknown digest key" 0x60)
   silent "object-destroy-aes" (haskokiStdDestroyObject ptr h 901 >>= assertEqual "destroy AES key" 0)
   silent "object-destroy-hmac" (haskokiStdDestroyObject ptr h 902 >>= assertEqual "destroy HMAC key" 0)
 

@@ -13,7 +13,7 @@ parameter validation, key-length rule, and mechanism table;
 these tests pin the recipe and its three consumers:
 
 * the model init path enforces GMAC parameters ('validateInit',
-  'CKR_ARGUMENTS_BAD');
+  'CKR_MECHANISM_PARAM_INVALID');
 * the driver maps every covered (mechanism, params, key length)
   triple to its AEAD spec plus IV ('gmacSpecFor') and executes
   GMAC over the backend GCM route;
@@ -178,8 +178,9 @@ testEnv = OpEnv
   }
 
 -- | Unknown handle: valid parameters proceed PAST the parameter check
--- to key resolution (proving acceptance); bad parameters stop at
--- 'CKR_ARGUMENTS_BAD'.
+-- to key resolution ('CKR_KEY_HANDLE_INVALID', proving acceptance);
+-- bad parameters stop at 'CKR_MECHANISM_PARAM_INVALID' (PKCS#11 v3.1
+-- section 5.1.6: invalid parameters supplied to the mechanism).
 badKey :: KeyPolicy
 badKey = KeyPolicy (ExternalHandle 999) [OpSign] False
 
@@ -188,15 +189,15 @@ runInit args = ioCode (snd (initOperation testEnv emptySessionOps testSession ar
 
 caseInitParams :: IO ()
 caseInitParams = do
-  assertEqual "empty refused" CKR_ARGUMENTS_BAD
+  assertEqual "empty refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign gmacMech BS.empty (Just badKey) Nothing Nothing))
-  assertEqual "truncated tag passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "truncated tag passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign gmacMech
       (encodeGcmParams iv12 BS.empty 4) (Just badKey) Nothing Nothing))
-  assertEqual "unapproved width refused" CKR_ARGUMENTS_BAD
+  assertEqual "unapproved width refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign gmacMech
       (encodeGcmParams iv12 BS.empty 5) (Just badKey) Nothing Nothing))
-  assertEqual "good passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "good passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign gmacMech
       (encodeGcmParams iv12 BS.empty 16) (Just badKey) Nothing Nothing))
 

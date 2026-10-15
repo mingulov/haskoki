@@ -432,7 +432,9 @@ int main(int argc, char **argv) {
     gp.ulIvLen = 0;
     gp.ulIvBits = 96;
     rv = f->C_EncryptInit(sess, &gm, key);
-    CHECKC(rv == CKR_ARGUMENTS_BAD, "generated IV refused");
+    /* PKCS#11 v3.1 section 5.1.6: an unsupported mechanism parameter
+     * value is CKR_MECHANISM_PARAM_INVALID. */
+    CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "generated IV refused");
     gp.ulIvLen = sizeof(iv);
     gp.ulIvBits = 64;
     rv = f->C_EncryptInit(sess, &gm, key);

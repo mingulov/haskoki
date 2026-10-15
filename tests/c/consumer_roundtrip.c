@@ -612,8 +612,10 @@ int main(int argc, char **argv) {
       rv = f->C_DigestInit(dsess, &mech);
       CHECKC(rv == CKR_OK, "init for bad-handle leg");
       rv = f->C_DigestKey(dsess, 0xFFFFFFFFUL);
-      CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
-             "digest-key bad handle is HANDLE_INVALID");
+      /* PKCS#11 v3.1 section 5.1.6; C_DigestKey (5.12.4) lists
+       * CKR_KEY_HANDLE_INVALID, not CKR_OBJECT_HANDLE_INVALID. */
+      CHECKC(rv == CKR_KEY_HANDLE_INVALID,
+             "digest-key bad handle is KEY_HANDLE_INVALID");
       rv = f->C_DigestInit(dsess, &mech);
       CHECKC(rv == CKR_OK, "re-init after bad handle ok (terminated)");
       rv = f->C_DestroyObject(dsess, dkey);
@@ -624,7 +626,9 @@ int main(int argc, char **argv) {
     }
     {
       /* The engine recipe requires empty digest params
-       * (checkMechParams): a stray param byte is ARGUMENTS_BAD. */
+       * (checkMechParams): a stray param byte is
+       * MECHANISM_PARAM_INVALID (PKCS#11 v3.1 section 5.1.6: invalid
+       * parameters supplied to the mechanism). */
       CK_MECHANISM bad;
       CK_BYTE param = 0;
       bad.mechanism = CKM_SHA256;
@@ -632,13 +636,13 @@ int main(int argc, char **argv) {
       bad.ulParameterLen = 1;
       rv = f->C_DigestInit(dsess, &bad);
       if (!isProxy) {
-        CHECKC(rv == CKR_ARGUMENTS_BAD,
-               "SHA-256 with stray param is ARGUMENTS_BAD");
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "SHA-256 with stray param is MECHANISM_PARAM_INVALID");
       } else {
         /* Init params are forwarded to the backend, whose
-         * ARGUMENTS_BAD surfaces unchanged. */
-        CHECKC(rv == CKR_ARGUMENTS_BAD,
-               "proxied stray param surfaces backend ARGS_BAD");
+         * MECHANISM_PARAM_INVALID surfaces unchanged. */
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "proxied stray param surfaces backend PARAM_INVALID");
       }
     }
     rv = f->C_CloseSession(dsess);
@@ -1261,7 +1265,9 @@ int main(int argc, char **argv) {
     rv = f->C_SignInit(ssess, NULL_PTR, priv);
     CHECKC(rv == CKR_ARGUMENTS_BAD, "SignInit NULL mech refused");
     rv = f->C_SignInit(ssess, &sm, 9999);
-    CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "SignInit bad key refused");
+    /* PKCS#11 v3.1 section 5.1.6: an unknown key handle at init is
+     * CKR_KEY_HANDLE_INVALID (the init return lists carry it). */
+    CHECKC(rv == CKR_KEY_HANDLE_INVALID, "SignInit bad key refused");
     rv = f->C_SignInit(ssess, &sm, pub);
     CHECKC(rv == CKR_KEY_FUNCTION_NOT_PERMITTED,
            "SignInit with verify-only key refused");
@@ -2419,7 +2425,9 @@ int main(int argc, char **argv) {
       ebm.pParameter = &ebad;
       ebm.ulParameterLen = sizeof(ebad);
       rv = f->C_SignInit(ssess, &ebm, epriv);
-      CHECKC(rv == CKR_ARGUMENTS_BAD,
+      /* PKCS#11 v3.1 section 5.1.6: an invalid mechanism parameter value
+       * is CKR_MECHANISM_PARAM_INVALID. */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
              "EdDSA prehash struct refused");
       rv = f->C_SignInit(ssess, &enm, epriv);
       CHECKC(rv == CKR_OK,
@@ -2581,7 +2589,9 @@ int main(int argc, char **argv) {
       mbm.pParameter = &mbad;
       mbm.ulParameterLen = sizeof(mbad);
       rv = f->C_SignInit(ssess, &mbm, mpriv);
-      CHECKC(rv == CKR_ARGUMENTS_BAD, "ML-DSA bad-hedge struct refused");
+      /* PKCS#11 v3.1 section 5.1.6: an invalid mechanism parameter value
+       * is CKR_MECHANISM_PARAM_INVALID. */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "ML-DSA bad-hedge struct refused");
       /* Tamper under NULL params (msig still holds the 2420
        * deterministic-signed bytes; the refusal started no op). */
       rv = f->C_VerifyInit(ssess, &mnm, mpub);
@@ -2729,7 +2739,9 @@ int main(int argc, char **argv) {
       sbm.pParameter = &sbad;
       sbm.ulParameterLen = sizeof(sbad);
       rv = f->C_SignInit(ssess, &sbm, spriv);
-      CHECKC(rv == CKR_ARGUMENTS_BAD, "SLH-DSA bad-hedge struct refused");
+      /* PKCS#11 v3.1 section 5.1.6: an invalid mechanism parameter value
+       * is CKR_MECHANISM_PARAM_INVALID. */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "SLH-DSA bad-hedge struct refused");
       /* Tamper under NULL params (ssig still holds the 7856
        * deterministic-signed bytes; the refusal started no op). */
       rv = f->C_VerifyInit(ssess, &snm, spub);
@@ -2808,18 +2820,20 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_OK, "DES3-MAC-GENERAL verify ok");
       dmacLen = 9;
       rv = f->C_SignInit(ssess, &dgm, dkey);
-      CHECKC(rv == CKR_ARGUMENTS_BAD, "DES3-MAC-GENERAL length 9 refused");
+      /* PKCS#11 v3.1 section 5.1.6: invalid mechanism parameters are
+       * CKR_MECHANISM_PARAM_INVALID (CKR_ARGUMENTS_BAD is generic). */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "DES3-MAC-GENERAL length 9 refused");
       dbm.mechanism = CKM_DES3_MAC;
       dbm.pParameter = &dmacLen;
       dbm.ulParameterLen = sizeof(dmacLen);
       rv = f->C_SignInit(ssess, &dbm, dkey);
       if (!isProxy) {
-        CHECKC(rv == CKR_ARGUMENTS_BAD, "DES3-MAC nonempty params refused");
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "DES3-MAC nonempty params refused");
       } else {
         /* Init params are forwarded to the backend, whose
-         * ARGUMENTS_BAD surfaces unchanged. */
-        CHECKC(rv == CKR_ARGUMENTS_BAD,
-               "proxied DES3-MAC nonempty params surfaces backend ARGS_BAD");
+         * MECHANISM_PARAM_INVALID (section 5.1.6) surfaces unchanged. */
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "proxied DES3-MAC nonempty params surfaces backend PARAM_INVALID");
       }
       rv = f->C_VerifyInit(ssess, &dnm, dkey);
       CHECKC(rv == CKR_OK, "DES3-MAC re-init for tamper");
@@ -2897,10 +2911,14 @@ int main(int argc, char **argv) {
       noiv.pParameter = NULL_PTR;
       noiv.ulParameterLen = 0;
       rv = f->C_EncryptInit(esess, &noiv, ekey);
-      CHECKC(rv == CKR_ARGUMENTS_BAD, "EncryptInit empty IV refused");
+      /* PKCS#11 v3.1 section 5.1.6: invalid mechanism parameters are
+       * CKR_MECHANISM_PARAM_INVALID (CKR_ARGUMENTS_BAD is generic). */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "EncryptInit empty IV refused");
     }
     rv = f->C_EncryptInit(esess, &em, 9999);
-    CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "EncryptInit bad key refused");
+    /* PKCS#11 v3.1 section 5.1.6: an unknown key handle at init is
+     * CKR_KEY_HANDLE_INVALID (the init return lists carry it). */
+    CHECKC(rv == CKR_KEY_HANDLE_INVALID, "EncryptInit bad key refused");
     rv = f->C_EncryptInit(esess, &em, ekey);
     CHECKC(rv == CKR_OK, "CBC-PAD EncryptInit ok");
     rv = f->C_EncryptInit(esess, &em, ekey);
@@ -3424,7 +3442,9 @@ int main(int argc, char **argv) {
       gp.ulIvLen = 0;
       gp.ulIvBits = 96;
       rv = f->C_EncryptInit(esess, &gm, ekey);
-      CHECKC(rv == CKR_ARGUMENTS_BAD, "GCM generated-IV refused");
+      /* PKCS#11 v3.1 section 5.1.6: invalid mechanism parameters are
+       * CKR_MECHANISM_PARAM_INVALID (CKR_ARGUMENTS_BAD is generic). */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "GCM generated-IV refused");
     }
     /* ChaCha20: keygen (exact-32) -> raw-stream KAT (RFC 8439
      * 2.4.2) -> Poly1305 AEAD KAT (RFC 8439 2.8.2) + tamper
@@ -7157,7 +7177,8 @@ int main(int argc, char **argv) {
            * cross-checked pin; and the six CBC_PAD oracle vectors
            * (pad framing over the shared CBC specs). Bad RC2
            * effective bits and mistimed images refuse
-           * CKR_ARGUMENTS_BAD at init. */
+           * CKR_MECHANISM_PARAM_INVALID at init (PKCS#11 v3.1
+           * section 5.1.6: invalid mechanism parameters). */
           CK_OBJECT_CLASS qckcls = CKO_SECRET_KEY;
           CK_KEY_TYPE qdes = CKK_DES, qrc2 = CKK_RC2, qrc4 = CKK_RC4;
           CK_KEY_TYPE qcast = CKK_CAST128, qidea = CKK_IDEA;
@@ -7422,17 +7443,17 @@ int main(int argc, char **argv) {
           qm.pParameter = &qrc2bad;
           qm.ulParameterLen = sizeof(qrc2bad);
           rv = f->C_EncryptInit(sess, &qm, qrc2k);
-          CHECKC(rv == CKR_ARGUMENTS_BAD, "rc2 zero bits refused");
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "rc2 zero bits refused");
           qm.pParameter = &qrc2ecb;
           qm.ulParameterLen = sizeof(qrc2ecb);
           rv = f->C_EncryptInit(sess, &qm, qrc2k);
           if (!isProxy) {
-            CHECKC(rv == CKR_ARGUMENTS_BAD, "rc2-cbc word-only image refused");
+            CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "rc2-cbc word-only image refused");
           } else {
             /* Init params are forwarded to the backend, whose
-             * ARGUMENTS_BAD surfaces unchanged. */
-            CHECKC(rv == CKR_ARGUMENTS_BAD,
-                   "proxied rc2-cbc word-only image surfaces backend ARGS_BAD");
+             * MECHANISM_PARAM_INVALID (section 5.1.6) surfaces unchanged. */
+            CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                   "proxied rc2-cbc word-only image surfaces backend PARAM_INVALID");
           }
           qm.mechanism = CKM_RC4;
           qm.pParameter = NULL_PTR;

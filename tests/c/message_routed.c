@@ -607,7 +607,8 @@ static void encrypt_legs(MessageApi *a) {
   rv("C_EncryptMessageNext","no-begin",a->C_EncryptMessageNext(f.session,NULL,0,plain,16,o.bytes+1,&o.length,CKF_END_OF_MESSAGE),CKR_OPERATION_NOT_INITIALIZED);
   untouched("C_EncryptMessageNext","no-begin",&o,777);
   rv("C_MessageEncryptFinal","no-init",a->C_MessageEncryptFinal(f.session),CKR_OPERATION_NOT_INITIALIZED);
-  rv("C_MessageEncryptInit","bad-key",a->C_MessageEncryptInit(f.session,&cbc,~0UL),CKR_OBJECT_HANDLE_INVALID);
+  /* Unknown key handle: CKR_KEY_HANDLE_INVALID (PKCS#11 v3.1 section 5.1.6; the message init return lists carry it, not CKR_OBJECT_HANDLE_INVALID). */
+  rv("C_MessageEncryptInit","bad-key",a->C_MessageEncryptInit(f.session,&cbc,~0UL),CKR_KEY_HANDLE_INVALID);
   rv("C_MessageEncryptInit","unknown-mechanism",a->C_MessageEncryptInit(f.session,&unknown,f.aes),CKR_MECHANISM_INVALID);
   rv("C_MessageEncryptInit","init-cbc",a->C_MessageEncryptInit(f.session,&cbc,f.aes),CKR_OK);
   rv("C_MessageEncryptInit","duplicate-init",a->C_MessageEncryptInit(f.session,&cbc,f.aes),CKR_OPERATION_ACTIVE);
@@ -742,7 +743,7 @@ static void decrypt_legs(MessageApi *a) {
   rv("C_DecryptMessageNext","no-begin",a->C_DecryptMessageNext(f.session,NULL,0,cipher,16,o.bytes+1,&o.length,CKF_END_OF_MESSAGE),CKR_OPERATION_NOT_INITIALIZED);
   untouched("C_DecryptMessageNext","no-begin",&o,777);
   rv("C_MessageDecryptFinal","no-init",a->C_MessageDecryptFinal(f.session),CKR_OPERATION_NOT_INITIALIZED);
-  rv("C_MessageDecryptInit","bad-key",a->C_MessageDecryptInit(f.session,&cbc,~0UL),CKR_OBJECT_HANDLE_INVALID);
+  rv("C_MessageDecryptInit","bad-key",a->C_MessageDecryptInit(f.session,&cbc,~0UL),CKR_KEY_HANDLE_INVALID);
   rv("C_MessageDecryptInit","unknown-mechanism",a->C_MessageDecryptInit(f.session,&unknown,f.aes),CKR_MECHANISM_INVALID);
   rv("C_MessageDecryptInit","init-cbc",a->C_MessageDecryptInit(f.session,&cbc,f.aes),CKR_OK);
   rv("C_MessageDecryptInit","duplicate-init",a->C_MessageDecryptInit(f.session,&cbc,f.aes),CKR_OPERATION_ACTIVE);
@@ -866,7 +867,7 @@ static void sign_legs(MessageApi *a) {
   rv("C_SignMessageNext","no-begin",a->C_SignMessageNext(f.session,NULL,0,textBytes,8,o.bytes+1,&o.length),CKR_OPERATION_NOT_INITIALIZED);
   untouched("C_SignMessageNext","no-begin",&o,777);
   rv("C_MessageSignFinal","missing-context",a->C_MessageSignFinal(f.session),CKR_OPERATION_NOT_INITIALIZED);
-  rv("C_MessageSignInit","bad-key",a->C_MessageSignInit(f.session,&hmac,~0UL),CKR_OBJECT_HANDLE_INVALID);
+  rv("C_MessageSignInit","bad-key",a->C_MessageSignInit(f.session,&hmac,~0UL),CKR_KEY_HANDLE_INVALID);
   rv("C_MessageSignInit","denied-sign-usage",a->C_MessageSignInit(f.session,&hmac,f.noSign),CKR_KEY_FUNCTION_NOT_PERMITTED);
   rv("C_MessageSignInit","init-hmac",a->C_MessageSignInit(f.session,&hmac,f.mac),CKR_OK);
   rv("C_MessageSignInit","duplicate-init",a->C_MessageSignInit(f.session,&hmac,f.mac),CKR_OPERATION_ACTIVE);
@@ -962,7 +963,7 @@ static void verify_legs(MessageApi *a) {
   rv("C_VerifyMessageBegin","no-init",a->C_VerifyMessageBegin(f.session,NULL,0),CKR_OPERATION_NOT_INITIALIZED);
   rv("C_VerifyMessageNext","no-begin",a->C_VerifyMessageNext(f.session,NULL,0,textBytes,8,witness,32),CKR_OPERATION_NOT_INITIALIZED);
   rv("C_MessageVerifyFinal","missing-context",a->C_MessageVerifyFinal(f.session),CKR_OPERATION_NOT_INITIALIZED);
-  rv("C_MessageVerifyInit","bad-key",a->C_MessageVerifyInit(f.session,&hmac,~0UL),CKR_OBJECT_HANDLE_INVALID);
+  rv("C_MessageVerifyInit","bad-key",a->C_MessageVerifyInit(f.session,&hmac,~0UL),CKR_KEY_HANDLE_INVALID);
   rv("C_MessageVerifyInit","denied-verify-usage",a->C_MessageVerifyInit(f.session,&hmac,f.noVerify),CKR_KEY_FUNCTION_NOT_PERMITTED);
   rv("C_MessageVerifyInit","init-hmac",a->C_MessageVerifyInit(f.session,&hmac,f.mac),CKR_OK);
   rv("C_MessageVerifyInit","duplicate-init",a->C_MessageVerifyInit(f.session,&hmac,f.mac),CKR_OPERATION_ACTIVE);
@@ -1226,10 +1227,12 @@ static void sweep_gcm_kat(MessageApi *a, CK_SESSION_HANDLE session, CK_OBJECT_HA
 }
 
 /* F-9 (FINAL-101, T-9 narrowed): header-native CK_GCM_MESSAGE_PARAMS
- * shapes refuse pinned CKR_ARGUMENTS_BAD at every GCM message entry
- * point (init, one-shot, begin, multipart end), for encrypt and
- * decrypt alike; truncated images refuse the same code at the same
- * points. The classic-shaped path (CK_GCM_PARAMS init plus the
+ * shapes refuse at every GCM message entry point (init, one-shot,
+ * begin, multipart end), for encrypt and decrypt alike; truncated
+ * images refuse the same code at the same points. At init the image
+ * is the mechanism parameter, so the code is CKR_MECHANISM_PARAM_INVALID
+ * (PKCS#11 v3.1 section 5.1.6: invalid parameters supplied to the
+ * mechanism); the per-message entry points keep CKR_ARGUMENTS_BAD. The classic-shaped path (CK_GCM_PARAMS init plus the
  * gcm-params/1 per-message image) stays served, including the
  * begin-empty/supply-at-end pattern and recovery after each refusal. */
 static void gcm_shape_legs(MessageApi *a) {
@@ -1250,9 +1253,9 @@ static void gcm_shape_legs(MessageApi *a) {
   if (result != CKR_OK) exit(1);
   memset(tag,0,sizeof(tag));
   key=make_key(a,s,CKK_AES,gcmKeyBytes,16,CK_TRUE,CK_TRUE,CK_FALSE,CK_FALSE);
-  rv("gcm-shape","native-init",a->C_MessageEncryptInit(s,&mNative0,key),CKR_ARGUMENTS_BAD);
-  rv("gcm-shape","native-decrypt-init",a->C_MessageDecryptInit(s,&mNativeTag,key),CKR_ARGUMENTS_BAD);
-  rv("gcm-shape","trunc-init",a->C_MessageEncryptInit(s,&mTrunc,key),CKR_ARGUMENTS_BAD);
+  rv("gcm-shape","native-init",a->C_MessageEncryptInit(s,&mNative0,key),CKR_MECHANISM_PARAM_INVALID);
+  rv("gcm-shape","native-decrypt-init",a->C_MessageDecryptInit(s,&mNativeTag,key),CKR_MECHANISM_PARAM_INVALID);
+  rv("gcm-shape","trunc-init",a->C_MessageEncryptInit(s,&mTrunc,key),CKR_MECHANISM_PARAM_INVALID);
   rv("gcm-shape","pm-init",a->C_MessageEncryptInit(s,&mClassic,key),CKR_OK);
   reset_output(&out,64);
   rv("gcm-shape","native-per-message",a->C_EncryptMessage(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag),gcmAad,8,gcmPt,16,out.bytes+1,&out.length),CKR_ARGUMENTS_BAD);

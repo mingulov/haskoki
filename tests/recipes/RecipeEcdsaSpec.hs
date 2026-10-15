@@ -12,7 +12,7 @@ validation, digest bindings, and mechanism table; these tests pin
 the recipe and its three consumers:
 
 * the model init path enforces ECDSA parameters ('validateInit',
-  'CKR_ARGUMENTS_BAD');
+  'CKR_MECHANISM_PARAM_INVALID');
 * the driver maps every covered (mechanism, params, key) triple to
   its backend 'SigSpec' ('ecdsaSpecFor' agrees with the recipe
   table; the curve label hints from the DER key's curve OID
@@ -221,8 +221,9 @@ testEnv = OpEnv
   }
 
 -- | Unknown handle: valid parameters proceed PAST the parameter check
--- to key resolution (proving acceptance); bad parameters stop at
--- 'CKR_ARGUMENTS_BAD'.
+-- to key resolution ('CKR_KEY_HANDLE_INVALID', proving acceptance);
+-- bad parameters stop at 'CKR_MECHANISM_PARAM_INVALID' (PKCS#11 v3.1
+-- section 5.1.6: invalid parameters supplied to the mechanism).
 badKey :: KeyPolicy
 badKey = KeyPolicy (ExternalHandle 999) [OpSign] False
 
@@ -231,15 +232,15 @@ runInit args = ioCode (snd (initOperation testEnv emptySessionOps testSession ar
 
 caseInitParams :: IO ()
 caseInitParams = do
-  assertEqual "PEM refused" CKR_ARGUMENTS_BAD
+  assertEqual "PEM refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign ecdsaMech "PEM" (Just badKey) Nothing Nothing))
-  assertEqual "DER passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "DER passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign ecdsaMech "DER" (Just badKey) Nothing Nothing))
-  assertEqual "empty passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "empty passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign ecdsaMech BS.empty (Just badKey) Nothing Nothing))
-  assertEqual "raw PEM refused" CKR_ARGUMENTS_BAD
+  assertEqual "raw PEM refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign rawMech "PEM" (Just badKey) Nothing Nothing))
-  assertEqual "raw RAW passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "raw RAW passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign rawMech "RAW" (Just badKey) Nothing Nothing))
 
 hex :: String -> BS.ByteString

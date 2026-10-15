@@ -171,6 +171,8 @@ spec = testGroup "operation lifecycles"
   , testCase "digest/encrypt pair permitted, same-kind rejected" casePairVsConflict
   , testCase "init checks source routes before engine caps" caseInitLegality
   , testCase "init enforces key shape and usage" caseInitKeyPolicy
+  , testCase "bad mechanism parameter at init is MECHANISM_PARAM_INVALID" caseMechParamCode
+  , testCase "stale or unknown key handle at init is KEY_HANDLE_INVALID" caseKeyHandleCode
   , testCase "context gate consumes only at the first data call" caseGate
   , testCase "digest multipart: update, update, final" caseDigestMultipart
   , testCase "Digest updates stream without buffering" caseDigestStreamsNoBuffer
@@ -455,7 +457,9 @@ caseGcmInit = do
   assertEqual "one active slot" [SlotEncrypt] (activeSlots ops1)
   let badArgs = gcmArgs { iaParams = "nope" }
       (_, outBad) = initOperation env emptySessionOps testSession badArgs
-  assertEqual "gcm bad params code" CKR_ARGUMENTS_BAD (ioCode outBad)
+  -- PKCS#11 v3.1 section 5.1.6: a malformed mechanism parameter is
+  -- CKR_MECHANISM_PARAM_INVALID, not the generic CKR_ARGUMENTS_BAD.
+  assertEqual "gcm bad params code" CKR_MECHANISM_PARAM_INVALID (ioCode outBad)
 
 ccmArgs :: InitArgs
 ccmArgs = InitArgs
@@ -566,7 +570,10 @@ caseInitKeyPolicy = do
   let badHandle = encryptArgs
         { iaKey = Just aesKey { kpHandle = ExternalHandle 99 } }
       (_, k5) = initOperation testEnv emptySessionOps testSession badHandle
-  assertEqual "bad handle" CKR_OBJECT_HANDLE_INVALID (ioCode k5)
+  -- PKCS#11 v3.1 section 5.1.6 (CKR_KEY_HANDLE_INVALID: "The specified
+  -- key handle is not valid"); C_EncryptInit (5.8.1) lists
+  -- CKR_KEY_HANDLE_INVALID, never CKR_OBJECT_HANDLE_INVALID.
+  assertEqual "bad handle" CKR_KEY_HANDLE_INVALID (ioCode k5)
   -- Key does not permit the requested op.
   let wrongPermits = encryptArgs
         { iaKey = Just aesKey { kpPermits = [OpDecrypt] } }
@@ -580,7 +587,9 @@ caseInitKeyPolicy = do
         }
       privEnv = testEnv { oeModel = privModel }
       (_, k7) = initOperation privEnv emptySessionOps testSession encryptArgs
-  assertEqual "private key hidden from public" CKR_OBJECT_HANDLE_INVALID (ioCode k7)
+  -- Same code as an unknown handle (section 5.1.6), so the refusal is
+  -- no existence oracle for private keys.
+  assertEqual "private key hidden from public" CKR_KEY_HANDLE_INVALID (ioCode k7)
   -- Always-authenticate key: public session cannot even init.
   let authKey = encryptArgs
         { iaKey = Just aesKey { kpAlwaysAuth = True } }
@@ -591,6 +600,125 @@ caseInitKeyPolicy = do
       (ops9, k9) = initOperation testEnv emptySessionOps logged authKey
   assertEqual "user login inits" CKR_OK (ioCode k9)
   assertEqual "slot marked pending" (Just AuthPending) (slotAuth ops9 SlotEncrypt)
+
+-- ---------------------------------------------------------------------------
+-- Refusal codes at init: mechanism parameter and key handle
+-- ---------------------------------------------------------------------------
+
+-- | Mechanisms whose init requires a parameter (the cipher, OAEP,
+-- ChaCha20, GMAC and HOTP guards, plus the GCM AEAD guard).
+oaepMech, chachaMech, chachaPolyMech, gmacMech, hotpMech :: MechanismId
+oaepMech = MechanismId 0x9
+chachaMech = MechanismId 0x1226
+chachaPolyMech = MechanismId 0x4021
+gmacMech = MechanismId 0x108E
+hotpMech = MechanismId 0x291
+
+refusalEnv :: OpEnv
+refusalEnv = testEnv
+  { oeCaps = mkCapabilities
+      [ (aesCbcMech, OpEncrypt), (aesCbcMech, OpDecrypt)
+      , (aesGcmMech, OpEncrypt)
+      , (oaepMech, OpEncrypt), (oaepMech, OpDecrypt)
+      , (chachaMech, OpEncrypt), (chachaPolyMech, OpEncrypt)
+      , (gmacMech, OpSign), (gmacMech, OpVerify)
+      , (hotpMech, OpSign), (hotpMech, OpVerify)
+      , (hmacMech, OpSign), (hmacMech, OpVerify)
+      ]
+  }
+
+refusalInit :: OpEnv -> SessionState -> InitArgs -> ReturnCode
+refusalInit env st args = ioCode (snd (initOperation env emptySessionOps st args))
+
+-- | PKCS#11 v3.1 section 5.1.6: CKR_MECHANISM_PARAM_INVALID is "Invalid
+-- parameters were supplied to the mechanism specified to the
+-- cryptographic operation"; CKR_ARGUMENTS_BAD is the generic code for
+-- inappropriate function arguments. A NULL (empty) or wrong-length
+-- pParameter for a mechanism that requires one is the former. The
+-- handle is unknown, so a parameter the guard accepts reaches key
+-- resolution instead (the acceptance control).
+caseMechParamCode :: IO ()
+caseMechParamCode = do
+  let ghost op = Just (KeyPolicy (ExternalHandle 999) [op] False)
+      run op mech params spec =
+        refusalInit refusalEnv testSession (InitArgs op mech params (ghost op) spec Nothing)
+      blk = Just (CipherSpec 16 False)
+      rsa = Just (CipherSpec 256 False)
+      strm = Just (CipherSpec 1 False)
+      mpi = CKR_MECHANISM_PARAM_INVALID
+  assertEqual "AES-CBC encrypt NULL iv" mpi (run OpEncrypt aesCbcMech BS.empty blk)
+  assertEqual "AES-CBC decrypt NULL iv" mpi (run OpDecrypt aesCbcMech BS.empty blk)
+  assertEqual "AES-CBC wrong-length iv" mpi
+    (run OpEncrypt aesCbcMech (BS.replicate 8 0) blk)
+  assertEqual "AES-GCM NULL params" mpi (run OpEncrypt aesGcmMech BS.empty strm)
+  assertEqual "RSA-OAEP encrypt NULL params" mpi (run OpEncrypt oaepMech BS.empty rsa)
+  assertEqual "RSA-OAEP decrypt NULL params" mpi (run OpDecrypt oaepMech BS.empty rsa)
+  assertEqual "RSA-OAEP wrong-length params" mpi
+    (run OpEncrypt oaepMech (BS.replicate 15 0) rsa)
+  assertEqual "ChaCha20 NULL params" mpi (run OpEncrypt chachaMech BS.empty strm)
+  assertEqual "ChaCha20 wrong-length params" mpi
+    (run OpEncrypt chachaMech (BS.replicate 7 0) strm)
+  assertEqual "ChaCha20-Poly1305 NULL params" mpi
+    (run OpEncrypt chachaPolyMech BS.empty strm)
+  assertEqual "GMAC sign NULL params" mpi (run OpSign gmacMech BS.empty Nothing)
+  assertEqual "GMAC verify NULL params" mpi (run OpVerify gmacMech BS.empty Nothing)
+  assertEqual "GMAC wrong-length params" mpi
+    (run OpSign gmacMech (BS.replicate 7 0) Nothing)
+  assertEqual "HOTP sign NULL params" mpi (run OpSign hotpMech BS.empty Nothing)
+  assertEqual "HOTP verify NULL params" mpi (run OpVerify hotpMech BS.empty Nothing)
+  assertEqual "HOTP wrong-length params" mpi (run OpSign hotpMech "x" Nothing)
+  -- Acceptance control: a well-formed IV passes the parameter guard.
+  assertEqual "AES-CBC valid iv reaches key resolution" CKR_KEY_HANDLE_INVALID
+    (run OpEncrypt aesCbcMech (BS.replicate 16 0) blk)
+  -- Function-argument faults are not mechanism parameters: they stay
+  -- CKR_ARGUMENTS_BAD (a NULL pMechanism is pinned natively in
+  -- tests/c/consumer_errors.c).
+  assertEqual "missing key stays ARGUMENTS_BAD" CKR_ARGUMENTS_BAD
+    (refusalInit refusalEnv testSession
+      (InitArgs OpEncrypt aesCbcMech (BS.replicate 16 0) Nothing blk Nothing))
+  assertEqual "missing cipher spec stays ARGUMENTS_BAD" CKR_ARGUMENTS_BAD
+    (run OpEncrypt aesCbcMech (BS.replicate 16 0) Nothing)
+
+-- | PKCS#11 v3.1 section 5.1.6: CKR_KEY_HANDLE_INVALID is "The
+-- specified key handle is not valid"; the return lists of
+-- C_EncryptInit (5.8.1), C_DecryptInit (5.10.1), C_SignInit (5.13.1)
+-- and C_VerifyInit (5.15.1) carry it and not CKR_OBJECT_HANDLE_INVALID.
+-- Unknown, stale (destroyed or regenerated) and invisible handles all
+-- refuse with it, matching the derive path's base-key refusal.
+caseKeyHandleCode :: IO ()
+caseKeyHandleCode = do
+  let khi = CKR_KEY_HANDLE_INVALID
+      ghost op = Just (KeyPolicy (ExternalHandle 99) [op] False)
+      cbc op = InitArgs op aesCbcMech (BS.replicate 16 0) (ghost op)
+        (Just (CipherSpec 16 False)) Nothing
+      mac op = InitArgs op hmacMech BS.empty (ghost op) Nothing Nothing
+      run = refusalInit refusalEnv testSession
+  assertEqual "encrypt unknown handle" khi (run (cbc OpEncrypt))
+  assertEqual "decrypt unknown handle" khi (run (cbc OpDecrypt))
+  assertEqual "sign unknown handle" khi (run (mac OpSign))
+  assertEqual "verify unknown handle" khi (run (mac OpVerify))
+  -- Destroyed: the binding outlives the object.
+  let destroyed = refusalEnv { oeModel = modelWithKey { mObjects = Map.empty } }
+  assertEqual "encrypt destroyed key" khi
+    (refusalInit destroyed testSession encryptArgs)
+  -- Regenerated: the object id is reused at a newer generation.
+  let regen = refusalEnv
+        { oeModel = modelWithKey
+            { mObjects = Map.adjust (\o -> o { osGeneration = Generation 2 })
+                (ObjectId 9) (mObjects modelWithKey) } }
+  assertEqual "encrypt stale-generation key" khi
+    (refusalInit regen testSession encryptArgs)
+  -- Invisible: indistinguishable from unknown.
+  let hidden = refusalEnv
+        { oeModel = modelWithKey
+            { mObjects = Map.adjust
+                (\o -> o { osAttrs = Map.insert AttrPrivate (ValBool True) (osAttrs o) })
+                (ObjectId 9) (mObjects modelWithKey) } }
+  assertEqual "encrypt invisible key" khi
+    (refusalInit hidden testSession encryptArgs)
+  -- Control: the live key still initializes.
+  assertEqual "encrypt live key" CKR_OK
+    (refusalInit refusalEnv testSession encryptArgs)
 
 -- ---------------------------------------------------------------------------
 -- Context gate: consumed only at the first data call
@@ -1737,6 +1865,9 @@ eddsaSignEnv = testEnv
       ]
   }
 
+-- Parameter refusals below are CKR_MECHANISM_PARAM_INVALID: PKCS#11
+-- v3.1 section 5.1.6 defines it as invalid parameters supplied to the
+-- mechanism (CKR_ARGUMENTS_BAD is the generic function-argument code).
 caseEddsaParams :: IO ()
 caseEddsaParams = do
   -- NULL params admit as pure (OASIS Table 42; rc2 registry
@@ -1756,17 +1887,17 @@ caseEddsaParams = do
   let (_, i2) = initOperation eddsaSignEnv emptySessionOps testSession
         (InitArgs OpSign eddsaMech (encodeEddsaParams True BS.empty)
           (Just signKey) Nothing Nothing)
-  assertEqual "eddsa prehash refused" CKR_ARGUMENTS_BAD (ioCode i2)
+  assertEqual "eddsa prehash refused" CKR_MECHANISM_PARAM_INVALID (ioCode i2)
   -- Non-empty context refuses the same way.
   let (_, i3) = initOperation eddsaSignEnv emptySessionOps testSession
         (InitArgs OpSign eddsaMech (encodeEddsaParams False "CTX")
           (Just signKey) Nothing Nothing)
-  assertEqual "eddsa context refused" CKR_ARGUMENTS_BAD (ioCode i3)
+  assertEqual "eddsa context refused" CKR_MECHANISM_PARAM_INVALID (ioCode i3)
   -- Verify init follows the same params gate.
   let (_, i4) = initOperation eddsaSignEnv emptySessionOps testSession
         (InitArgs OpVerify eddsaMech (encodeEddsaParams True BS.empty)
           (Just signKey) Nothing Nothing)
-  assertEqual "eddsa verify prehash refused" CKR_ARGUMENTS_BAD (ioCode i4)
+  assertEqual "eddsa verify prehash refused" CKR_MECHANISM_PARAM_INVALID (ioCode i4)
 
 ssl3MacSignEnv :: OpEnv
 ssl3MacSignEnv = testEnv
@@ -1812,6 +1943,9 @@ x931SignEnv = testEnv
       ]
   }
 
+-- Parameter refusals below are CKR_MECHANISM_PARAM_INVALID: PKCS#11
+-- v3.1 section 5.1.6 defines it as invalid parameters supplied to the
+-- mechanism (CKR_ARGUMENTS_BAD is the generic function-argument code).
 caseX931InitParams :: IO ()
 caseX931InitParams = do
   -- Empty params admit on both rows, sign and verify.
@@ -1827,10 +1961,10 @@ caseX931InitParams = do
   -- Non-empty params refuse with the recipe code.
   let (_, i2) = initOperation x931SignEnv emptySessionOps testSession
         (InitArgs OpSign x931Mech (BS.pack [0]) (Just signKey) Nothing Nothing)
-  assertEqual "x931 params refused" CKR_ARGUMENTS_BAD (ioCode i2)
+  assertEqual "x931 params refused" CKR_MECHANISM_PARAM_INVALID (ioCode i2)
   let (_, i3) = initOperation x931SignEnv emptySessionOps testSession
         (InitArgs OpVerify x931Sha1Mech (BS.pack [0]) (Just signKey) Nothing Nothing)
-  assertEqual "x931 sha1 verify params refused" CKR_ARGUMENTS_BAD (ioCode i3)
+  assertEqual "x931 sha1 verify params refused" CKR_MECHANISM_PARAM_INVALID (ioCode i3)
 
 poly1305SignEnv :: OpEnv
 poly1305SignEnv = testEnv
@@ -1839,6 +1973,9 @@ poly1305SignEnv = testEnv
       ]
   }
 
+-- Parameter refusals below are CKR_MECHANISM_PARAM_INVALID: PKCS#11
+-- v3.1 section 5.1.6 defines it as invalid parameters supplied to the
+-- mechanism (CKR_ARGUMENTS_BAD is the generic function-argument code).
 casePoly1305InitParams :: IO ()
 casePoly1305InitParams = do
   -- Empty params admit, sign and verify.
@@ -1851,7 +1988,7 @@ casePoly1305InitParams = do
   -- Non-empty params refuse with the recipe code.
   let (_, i1) = initOperation poly1305SignEnv emptySessionOps testSession
         (InitArgs OpSign poly1305Mech (BS.pack [0]) (Just signKey) Nothing Nothing)
-  assertEqual "poly1305 params refused" CKR_ARGUMENTS_BAD (ioCode i1)
+  assertEqual "poly1305 params refused" CKR_MECHANISM_PARAM_INVALID (ioCode i1)
 
 mldsaSignEnv :: OpEnv
 mldsaSignEnv = testEnv
@@ -1860,6 +1997,9 @@ mldsaSignEnv = testEnv
       ]
   }
 
+-- Parameter refusals below are CKR_MECHANISM_PARAM_INVALID: PKCS#11
+-- v3.1 section 5.1.6 defines it as invalid parameters supplied to the
+-- mechanism (CKR_ARGUMENTS_BAD is the generic function-argument code).
 caseMldsaParams :: IO ()
 caseMldsaParams = do
   -- NULL params admit (the struct is optional; empty means
@@ -1883,17 +2023,17 @@ caseMldsaParams = do
   let (_, i2) = initOperation mldsaSignEnv emptySessionOps testSession
         (InitArgs OpSign mldsaMech (BS.replicate 15 0 <> BS.singleton 3 <> BS.replicate 8 0)
           (Just signKey) Nothing Nothing)
-  assertEqual "mldsa bad hedge refused" CKR_ARGUMENTS_BAD (ioCode i2)
+  assertEqual "mldsa bad hedge refused" CKR_MECHANISM_PARAM_INVALID (ioCode i2)
   -- Overlong contexts refuse the same way.
   let (_, i3) = initOperation mldsaSignEnv emptySessionOps testSession
         (InitArgs OpSign mldsaMech (encodeMldsaParams HedgePreferred (BS.replicate 256 0x41))
           (Just signKey) Nothing Nothing)
-  assertEqual "mldsa overlong context refused" CKR_ARGUMENTS_BAD (ioCode i3)
+  assertEqual "mldsa overlong context refused" CKR_MECHANISM_PARAM_INVALID (ioCode i3)
   -- Verify init follows the same params gate.
   let (_, i4) = initOperation mldsaSignEnv emptySessionOps testSession
         (InitArgs OpVerify mldsaMech (encodeMldsaParams HedgePreferred (BS.replicate 256 0x41))
           (Just signKey) Nothing Nothing)
-  assertEqual "mldsa verify overlong refused" CKR_ARGUMENTS_BAD (ioCode i4)
+  assertEqual "mldsa verify overlong refused" CKR_MECHANISM_PARAM_INVALID (ioCode i4)
 
 caseRawDsaFloor :: IO ()
 caseRawDsaFloor = do

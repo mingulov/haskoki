@@ -4070,7 +4070,8 @@ foreign export ccall "haskoki_std_digest_key" haskokiStdDigestKey
 -- operation (spec 5.13.4: exactly as if the value had been passed
 -- to C_DigestUpdate, so op-presence and termination match the
 -- update path by construction). Unknown or invisible handles
--- refuse OBJECT_HANDLE_INVALID, non-secret keys
+-- refuse KEY_HANDLE_INVALID (PKCS#11 v3.1 section 5.1.6; the 5.12.4
+-- return list carries it, not OBJECT_HANDLE_INVALID), non-secret keys
 -- KEY_TYPE_INCONSISTENT; key-resolution refusals terminate the
 -- active digest like every other error. Digesting never exposes
 -- the value, so sensitivity/extractability do not gate it.
@@ -4081,12 +4082,12 @@ haskokiStdDigestKey ctx h (CULong keyH) =
     m <- snapshotModel (siEnv inst)
     let refuse code = terminateSlot inst sid SlotDigest >> pure code
     case resolveHandle m (ExternalHandle (fromIntegral keyH)) of
-      Nothing -> refuse (stdRvOf CKR_OBJECT_HANDLE_INVALID)
+      Nothing -> refuse (stdRvOf CKR_KEY_HANDLE_INVALID)
       Just ost -> case lookupSession m sid of
         Nothing -> pure (stdRvOf CKR_SESSION_HANDLE_INVALID)
         Just st
           | not (objectVisible st ost) ->
-              refuse (stdRvOf CKR_OBJECT_HANDLE_INVALID)
+              refuse (stdRvOf CKR_KEY_HANDLE_INVALID)
           | Map.lookup AttrClass (osAttrs ost)
               /= Just (ValULong ckoSecretKey) ->
               refuse (stdRvOf CKR_KEY_TYPE_INCONSISTENT)
@@ -4587,12 +4588,12 @@ runRecoverInit inst sid ifunc mid params key = do
   let h = ExternalHandle (fromIntegral key)
       op = initOperation ifunc
   case resolveHandle m h of
-    Nothing -> pure (stdRvOf CKR_OBJECT_HANDLE_INVALID)
+    Nothing -> pure (stdRvOf CKR_KEY_HANDLE_INVALID)
     Just ost -> case lookupSession m sid of
       Nothing -> pure (stdRvOf CKR_SESSION_HANDLE_INVALID)
       Just st
         | not (objectVisible st ost) ->
-            pure (stdRvOf CKR_OBJECT_HANDLE_INVALID)
+            pure (stdRvOf CKR_KEY_HANDLE_INVALID)
         | otherwise -> case recoverModulusWidth ost of
             Nothing
               | recoverRouteServed (rulesRegistry (envRules (siEnv inst))) mid op ->

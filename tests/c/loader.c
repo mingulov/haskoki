@@ -1040,14 +1040,16 @@ static void case_sha(CK_FUNCTION_LIST_PTR p11) {
   EXPECT_RV(rv, CKR_ARGUMENTS_BAD, "digest init NULL mech");
   {
     /* The engine recipe requires empty digest params (checkMechParams):
-     * a stray param byte is ARGUMENTS_BAD, not PARAM_INVALID (the legacy
-     * adapter's code). Same pin lives in consumer_roundtrip. */
+     * a stray param byte is MECHANISM_PARAM_INVALID (PKCS#11 v3.1 section
+     * 5.1.6: invalid parameters supplied to the mechanism; the generic
+     * ARGUMENTS_BAD stays for a NULL pMechanism). Same pin lives in
+     * consumer_roundtrip. */
     CK_BYTE param = 0;
     mech.mechanism = CKM_SHA256;
     mech.pParameter = &param;
     mech.ulParameterLen = 1;
     rv = p11->C_DigestInit(sess, &mech);
-    EXPECT_RV(rv, CKR_ARGUMENTS_BAD, "digest init rejects stray param");
+    EXPECT_RV(rv, CKR_MECHANISM_PARAM_INVALID, "digest init rejects stray param");
   }
   mech.mechanism = CKM_SHA256;
   mech.pParameter = NULL;

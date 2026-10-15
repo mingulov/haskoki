@@ -10,8 +10,9 @@ unadvertised. F-9 (FINAL-101) withdrawal: @CKM_AES_GCM@ keeps its
 cipher @message-*@ routes (classic-shaped @CK_GCM_PARAMS@ init
 plus the @gcm-params\/1@ per-message image stays served) but
 advertises neither cipher message flag (native
-@CK_GCM_MESSAGE_PARAMS@ refuses @CKR_ARGUMENTS_BAD@ per
-F-GCM-SHAPE). The flag leg pins that exact withdrawn state for
+@CK_GCM_MESSAGE_PARAMS@ refuses per F-GCM-SHAPE: at init as a
+mechanism parameter, @CKR_MECHANISM_PARAM_INVALID@ per PKCS#11 v3.1
+section 5.1.6; per message, @CKR_ARGUMENTS_BAD@). The flag leg pins that exact withdrawn state for
 the GCM row instead of the iff.
 
 Legs (each a named tasty case):

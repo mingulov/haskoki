@@ -895,7 +895,10 @@ caseVisibilitySOIsolation = do
   (codeS, _) <- runReject mSO (setReq a0 hk [label "relabeled"])
   assertEqual "SO set-attributes faults" CKR_OBJECT_HANDLE_INVALID codeS
   (codeI, _) <- runReject mSO (sReq a0 hk)
-  assertEqual "SO sign-init refused" CKR_OBJECT_HANDLE_INVALID codeI
+  -- A key handle the session cannot see refuses at init like an unknown
+  -- key handle: CKR_KEY_HANDLE_INVALID (PKCS#11 v3.1 section 5.1.6;
+  -- C_SignInit 5.13.1 lists it, not CKR_OBJECT_HANDLE_INVALID).
+  assertEqual "SO sign-init refused" CKR_KEY_HANDLE_INVALID codeI
   -- The user still uses the key at the same seam.
   (pcUI, _) <- runCommit m2 (sReq a0 hk)
   assertEqual "user sign-init commits" CKR_OK (pcCode pcUI)

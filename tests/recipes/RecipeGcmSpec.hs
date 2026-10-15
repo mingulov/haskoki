@@ -7,7 +7,7 @@ canonical codec and parameter validation; these tests pin the
 recipe and its two consumers:
 
 * the model init path enforces GCM parameters ('validateInit',
-  'CKR_ARGUMENTS_BAD');
+  'CKR_MECHANISM_PARAM_INVALID');
 * the driver maps every covered (mechanism, key length, params)
   triple to its backend 'AeadSpec' ('aeadSpecFor' agrees with
   the recipe table: key length selects the AES width, the IV
@@ -158,8 +158,9 @@ testEnv = OpEnv
   }
 
 -- | Unknown handle: valid parameters proceed PAST the parameter check
--- to key resolution (proving acceptance); bad parameters stop at
--- 'CKR_ARGUMENTS_BAD'.
+-- to key resolution ('CKR_KEY_HANDLE_INVALID', proving acceptance);
+-- bad parameters stop at 'CKR_MECHANISM_PARAM_INVALID' (PKCS#11 v3.1
+-- section 5.1.6: invalid parameters supplied to the mechanism).
 badKey :: KeyPolicy
 badKey = KeyPolicy (ExternalHandle 999) [OpEncrypt] False
 
@@ -173,13 +174,13 @@ mkArgs mech params = InitArgs OpEncrypt mech params (Just badKey)
 caseInitParams :: IO ()
 caseInitParams = do
   let good = encodeGcmParams iv12 "AD" 16
-  assertEqual "empty iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "empty iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs gcmMech (encodeGcmParams BS.empty "AD" 16)))
-  assertEqual "bad tag refused" CKR_ARGUMENTS_BAD
+  assertEqual "bad tag refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs gcmMech (encodeGcmParams iv12 "AD" 7)))
-  assertEqual "garbage refused" CKR_ARGUMENTS_BAD
+  assertEqual "garbage refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs gcmMech "nope"))
-  assertEqual "valid params pass to key resolution" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "valid params pass to key resolution" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs gcmMech good))
 
 caseDriverMap :: IO ()
