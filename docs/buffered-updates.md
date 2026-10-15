@@ -15,10 +15,11 @@ Every number below belongs to this one run and this one host.
 - GHC 9.10.3, runtime options `-T -N1` (single capability), one OS process per case
 - source commit 4cad819f17a483bde994e2c124a9a914ce256a9e (the benchmark was
   built and run at this commit)
-- the run held the shared build lock, so no other build on the machine ran
-  during it; other non-build processes were not excluded, which the load
+- the run held the shared build lock, so no other lane holding that lock
+  ran during it; other processes were not excluded, which the load
   averages above record
-- one run per cell, no repetition
+- one run per cell for the table; the borderline cells were repeated
+  afterwards (see "Repeat of the borderline cells")
 
 ## Table
 
@@ -63,11 +64,27 @@ Applying the rule to the numbers:
 - 1 MiB / 1 B cell: status `ok` (12.66 s), not censored.
 
 **Decision: justified: separate follow-up.** The rule fires on a single cell,
-16 MiB / 1 KiB, by a margin of 0.51 s from one unrepeated run; the figure
-is a record of this run on this host, not an estimate of typical cost. The
+16 MiB / 1 KiB, by a margin of 0.51 s in the table run. Three later repeats
+of that cell (below) stayed above the threshold, so the outcome does not
+rest on one sample; the figures are records of runs on this host, not an
+estimate of typical cost. The
 representation change is not part of this work package, because it touches
 the slot accessors, the snapshot codec and every final. The follow-up issue
-text is drafted in the SDD workspace and no issue is opened.
+text is drafted in the work package notes; no issue exists yet.
+
+### Repeat of the borderline cells
+
+Same host and binary, under the build lock, 2026-10-15 19:28 UTC, load
+average 2.67 before and 2.52 after, nproc 12, three rounds:
+
+| Cell | Elapsed (s), rounds 1-3 | Median | Status |
+| --- | --- | --- | --- |
+| 16 MiB / 1 KiB | 5.48, 5.41, 5.38 | 5.41 | ok, match |
+| 4 MiB / 1 KiB | 0.23, 0.24, 0.23 | 0.23 | ok, match |
+| 16 MiB / 64 KiB | 0.11, 0.11, 0.11 | 0.11 | ok, match |
+
+The 16 MiB / 1 KiB cell exceeded 5 s in every round (range 5.38-5.48 s),
+while its neighbours stayed far below it.
 
 ## Scope and limits
 
