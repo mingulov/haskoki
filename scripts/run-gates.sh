@@ -63,6 +63,8 @@ python3 scripts/check-test-execution.py --self-test
 python3 scripts/check-coverage-boundary.py
 python3 scripts/publish-coverage.py --check
 python3 scripts/check-release-pivots.py
+python3 scripts/check-findings-ledger.py
+python3 scripts/check-findings-ledger.py --self-test
 python3 scripts/check-loader-norm.py
 python3 scripts/check-history-codes.py
 python3 scripts/check-actions-pinned.py
