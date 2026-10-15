@@ -235,6 +235,15 @@ configuration parser, the reconciler, and the move planner each
 refuse anything else there (see `parseTokenIds`,
 `RefuseHomeAnchor`, and `MoveHomeAnchored`).
 
+The public serial number is not the stable identity. `C_GetTokenInfo`
+renders `serialNumber` from the slot index plus one
+(`cbits/standard_surface.c`, `%016u` of `slotID + 1`), so a token moved to
+another slot reports another serial, and a different identity seated in
+the same slot reports the same one. Durable identity, label, objects and
+credentials follow the `TokenId`; external clients that key on the serial
+should not rely on it surviving a slot move. A stable external serial and
+reset/migration semantics for it are v0.5 work.
+
 Stable identities come from the optional `[tokens] token_ids`
 parallel array (decimal ids in strings, positional with
 `labels`): pinned, unique, and home-anchored, or the whole
@@ -247,7 +256,10 @@ positional layout still matches the durable one.
 A SQLite open reconciles the catalog against the durable
 identities before anything publishes. Matches proceed; unknown
 identities seed with generation zero and fresh auth; every
-drift refuses the whole open without writing a byte:
+drift refuses the whole open. The reconciler itself is pure and
+writes nothing, but it runs after the SQLite store has been
+opened, and that open can first commit a schema migration (below),
+so "refused" does not guarantee unchanged database bytes:
 
 | Drift | Refusal | Operator action |
 |---|---|---|
@@ -285,6 +297,19 @@ refuse on decode, as before. Binary rollback across the bump
 refuses loudly: a version-1 binary meets `schema_version = 2`
 and declines, so operators upgrade every serving binary first.
 
+Migration happens before identity reconciliation. Opening a
+version-1 store with a catalog that is then refused (label,
+slot, stored-unconfigured or duplicate-identity drift) can
+therefore already have committed the version-1 to version-2
+migration and left the file at `schema_version = 2` even though
+the open failed. The migration is one transaction that rewrites
+no existing row, so this is not a data-loss path, but a
+version-1 binary can no longer open that file. There is no
+no-write-on-refusal guarantee for a rejected persistent open,
+and no preflight or migrate-only command exists: back up the
+database file before upgrading. A preflight/migrate command and a
+defined refusal contract are v0.5 work.
+
 PIN values start configuration-owned and become durable-owned on
 first provisioning: each token gains a credential row (the
 provisioned SO PIN plus the provisioned user PIN, or null while
@@ -300,6 +325,11 @@ reassigns one token's objects to another token's credential
 silently (every reassignment-shaped change above refuses
 loudly instead; `C_InitToken` destroys only its own token's
 objects, jobs, and credential).
+
+Until a token's first provisioning commit the configuration file is the
+credential authority: editing a catalog PIN changes what that token
+accepts. Seeding every new store's credentials durably at creation is v0.5
+work.
 
 Reinitializing a token is an authorized operation: every seated
 token carries an SO PIN (catalog-seeded until its first

@@ -13,8 +13,8 @@ system libraries in [host requirements](../SUPPORTED-HOSTS.md) are required.
 Extract the whole bundle so the module can find its runtime libraries.
 
 ```sh
-# v0.3.0.0 is the currently published version.
-HASKOKI_VERSION=0.3.0.0
+# v0.3.1.0 is the latest published release; v0.4.0.0 is not yet published.
+HASKOKI_VERSION=0.3.1.0
 tar -xzf "haskoki-$HASKOKI_VERSION-linux-x86_64.tar.gz"
 HASKOKI_BUNDLE="$PWD/haskoki-$HASKOKI_VERSION"
 "$HASKOKI_BUNDLE/bin/haskoki-ctl" --version

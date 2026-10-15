@@ -89,7 +89,7 @@ suites; the separate test client belongs to the repository checkout.
 With the native prerequisites above, or a prepared developer image:
 
 ```sh
-HASKOKI_VERSION=0.3.0.0  # currently published version
+HASKOKI_VERSION=0.3.1.0  # latest published release (0.4.0.0 not yet published)
 tar -xzf "haskoki-$HASKOKI_VERSION.tar.gz"
 cd "haskoki-$HASKOKI_VERSION"
 printf 'packages: .\nallow-newer: all\n' > cabal.project

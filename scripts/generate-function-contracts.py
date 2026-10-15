@@ -60,7 +60,8 @@ PLANNED = {
     "C_CloseSession": ("planCall:F_CloseSession",
                        [("haskoki-model-tests", "tests/model/SessionSpec.hs")]),
     "C_Login": ("planCall:F_Login",
-                [("haskoki-model-tests", "tests/model/SessionSpec.hs")]),
+                [("haskoki-model-tests", "tests/model/SessionSpec.hs"),
+                 ("test-consumers.sh", "tests/c/consumer_context_auth.c")]),
     "C_Logout": ("planCall:F_Logout",
                  [("haskoki-model-tests", "tests/model/SessionSpec.hs")]),
     # Provisioning lifecycle: planCall arms plus the routed C-table

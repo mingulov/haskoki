@@ -21,7 +21,7 @@ With Docker running, paste this into a terminal:
 ```sh
 mkdir -p out
 docker run --rm --network none --user "$(id -u):$(id -g)" \
-  -v "$PWD/out:/out" ghcr.io/mingulov/haskoki-demo:v0.3.0.0 demo
+  -v "$PWD/out:/out" ghcr.io/mingulov/haskoki-demo:v0.3.1.0 demo
 ```
 
 Docker downloads the image on the first run. The demo itself works offline:
@@ -38,7 +38,10 @@ physical token is needed. Reports and disposable keys remain in `out/demo-*/`.
 This checkout prepares **v0.4.0.0**, adding token provisioning
 (`C_InitToken`/`C_InitPIN`/`C_SetPIN`), authorized re-initialization, and
 logout-oracle coverage on top of the v0.3.1.0 demo experience. Its registry
-tag is available only after publication. The
+tag is available only after publication; the latest published release is
+v0.3.1.0. v0.4.0.0 is a bounded release: its
+[limitations](docs/release-notes-0.4.0.0.md#known-limitations-and-v05-deferrals)
+are stated up front. The
 [hands-on guide](docs/try-it.md) shows how to load a tested candidate,
 generate a key with `pkcs11-tool`, and sign your own message.
 

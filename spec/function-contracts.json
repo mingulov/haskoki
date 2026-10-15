@@ -539,6 +539,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/SessionSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_context_auth.c"
         }
       ]
     },

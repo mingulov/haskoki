@@ -2,7 +2,8 @@
 
 You need Docker running on Linux amd64. No Haskell setup or hardware
 token is needed. The [README](../README.md#try-it-with-docker) runs the
-published v0.3.0.0 demo; this guide uses the v0.3.1.0 commands.
+published v0.3.1.0 demo, the latest published release; this guide uses the
+same v0.3.1.0 commands. v0.4.0.0 is not published until its release workflow completes.
 
 ## Choose the image
 
