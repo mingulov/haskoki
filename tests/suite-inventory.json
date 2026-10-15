@@ -572,6 +572,7 @@
       ],
       "allowed_imports": {
         "Gen": ["propCases", "propSeedOverride"],
+        "System.IO": ["hPutStrLn", "stderr"],
         "Test.Tasty": ["defaultMain", "testGroup"]
       },
       "executed_by": [

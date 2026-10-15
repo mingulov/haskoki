@@ -1,6 +1,7 @@
 -- REGISTRATION: haskoki-prop-tests
 module Main (main) where
 
+import System.IO (hPutStrLn, stderr)
 import Test.Tasty (defaultMain, testGroup)
 
 import qualified BytesProps
@@ -23,7 +24,9 @@ main = do
   seedOv <- propSeedOverride
   -- Effective knobs, printed once per suite start: a seeded failure
   -- reruns bit-identically via PROP_SEED=<logged> PROP_CASES=<logged>.
-  putStrLn ("haskoki-prop-tests: effective PROP_SEED=" ++ showSeed seedOv
+  -- On stderr: stdout carries only test output (and the name list
+  -- under --list-tests, which the execution join counts).
+  hPutStrLn stderr ("haskoki-prop-tests: effective PROP_SEED=" ++ showSeed seedOv
     ++ " PROP_CASES=" ++ show count)
   defaultMain $
     testGroup

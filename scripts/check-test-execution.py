@@ -340,6 +340,16 @@ def join_suite(root, inventory_path, suite, list_path, result, out_path):
         print(f"test-execution join: FAIL (no-test: {suite} emitted "
               f"zero test names)")
         return 1
+    # Every captured line must be a test name under a required root:
+    # a banner or any other stdout line is never counted as a test.
+    stray = [n for n in names if not any(group_hit(n, g) for g in groups)]
+    if stray:
+        kind = "no-test, stray-line" if len(stray) == len(names) \
+            else "stray-line"
+        print(f"test-execution join: FAIL ({kind}: {suite} emitted "
+              f"{len(stray)} line(s) under no required root: "
+              f"{stray[:3]})")
+        return 1
     hits = {}
     for g in groups:
         hits[g] = sum(1 for n in names if group_hit(n, g))
@@ -530,7 +540,8 @@ def _write(path, text):
 
 def self_test():
     """Durable controls: the join fails empty captures, missing
-    groups, emptied module batteries, hostile Main trees, and
+    groups, lines under no required root (a banner beside names or
+    alone), emptied module batteries, hostile Main trees, and
     failed suites; roots anchor at position zero and batteries
     at depth two, so no decoy spelling credits an emptied
     battery; shared catalog rows fan into one executed name;
@@ -601,7 +612,8 @@ def self_test():
                and len(receipt["names_sha256_16"]) == 16,
                repr(receipt))
 
-        # A name extending the group word is not a member.
+        # A name extending the group word is not a member: it is a
+        # line under no required root.
         decoy_path = root / "decoy.list"
         decoy_path.write_text("alpha groupX/only\n")
         buf = io.StringIO()
@@ -609,7 +621,32 @@ def self_test():
             rc = join_suite(root, inv_path, "suite-a", decoy_path,
                             "pass", root / "decoy.receipt.json")
         expect("join-word-extension-misses",
-               rc == 1 and "missing-required-group" in buf.getvalue(),
+               rc == 1 and "stray-line" in buf.getvalue(),
+               buf.getvalue())
+
+        # A banner line beside real names is never counted as a test.
+        banner = "suite-a: effective PROP_SEED=random PROP_CASES=100\n"
+        banner_path = root / "banner.list"
+        banner_path.write_text(banner + list_path.read_text())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = join_suite(root, inv_path, "suite-a", banner_path,
+                            "pass", root / "banner.receipt.json")
+        expect("join-banner-with-names-fails-stray-line",
+               rc == 1 and "stray-line" in buf.getvalue()
+               and "PROP_SEED" in buf.getvalue(),
+               buf.getvalue())
+
+        # A banner alone is no test at all.
+        banner_only = root / "banner-only.list"
+        banner_only.write_text(banner)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = join_suite(root, inv_path, "suite-a", banner_only,
+                            "pass", root / "banner-only.receipt.json")
+        expect("join-banner-only-fails-no-test",
+               rc == 1 and "no-test" in buf.getvalue()
+               and "stray-line" in buf.getvalue(),
                buf.getvalue())
 
         # The empty battery: zero names fails even with result pass.
