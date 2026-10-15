@@ -385,6 +385,30 @@ class ReleaseEvidenceTests(unittest.TestCase):
 
     # Install argument contract (real script, build-free: both cases fail
     # before any docker use).
+    # Ruling 3: a role=qualification driver is inventoried (so the
+    # drift rule still owns it) but never executed by the manifest: the
+    # manifest stays at 19 steps.
+    def test_qualification_role_is_skipped_and_manifest_stays_19(self):
+        inv = json.loads(INVENTORY.read_text())
+        roles = {d["name"]: d["role"] for d in inv["drivers"]}
+        self.assertEqual(roles.get("test-ownership-matrix.sh"), "qualification")
+        fix = self.make()
+        proc = fix.run_runner()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("pass: 19 miss: 0 blocked: 0", fix.manifest())
+        self.assertNotIn("test-ownership-matrix.sh", fix.manifest())
+        self.assertNotIn("test-ownership-matrix.sh",
+                         (fix.root / "docker.log").read_text())
+
+    def test_qualification_driver_with_parent_fails(self):
+        inv = json.loads(INVENTORY.read_text())
+        for d in inv["drivers"]:
+            if d["name"] == "test-ownership-matrix.sh":
+                d["parent"] = "test-loader.sh"
+        fix = self.make(inventory=inv)
+        proc = fix.run_runner()
+        self.assertNotEqual(proc.returncode, 0)
+
     def test_install_contract_requires_explicit_args(self):
         fix = self.make()
         proc = subprocess.run(

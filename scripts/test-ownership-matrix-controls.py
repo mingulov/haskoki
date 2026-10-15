@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Build-free negative controls for scripts/test-ownership-matrix.sh.
+
+The driver is run against fake tasty binaries (HASKOKI_OWN_BIN_DIR), so
+nothing here builds or needs a toolchain. Every control that must fail
+asserts a nonzero exit AND that no cabal build was attempted when the
+failure is an argument-validation one.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+DRIVER = REPO / "scripts" / "test-ownership-matrix.sh"
+SHA = "0123456789abcdef0123456789abcdef01234567"
+
+FAKE_BIN = """#!/bin/sh
+# Fake tasty binary: behaviour selected by FAKE_* env.
+n=""
+list=0
+prev=""
+for a in "$@"; do
+  case "$a" in
+    --list-tests) list=1;;
+    -N*) n="${a#-N}";;
+  esac
+done
+# Emulate tasty: without -j <n> it bumps capabilities to the processor count.
+case " $* " in
+  *" -j "*) ;;
+  *) [ -z "${FAKE_TASTY_BUMP:-}" ] || n=12;;
+esac
+if [ "$list" = 1 ]; then
+  i=0
+  while [ "$i" -lt "${FAKE_LISTED:-3}" ]; do
+    echo "root.group.test $i"; i=$((i + 1))
+  done
+  exit 0
+fi
+if [ -z "${FAKE_NO_USING:-}" ]; then
+  echo "TASKS: 4 (1 bound, 3 peak workers (3 total), using -N${FAKE_USING:-$n})" >&2
+fi
+if [ -n "${FAKE_COUNTER:-}" ]; then
+  echo "OWNERSHIP-COUNTERS case=fake k=0"
+fi
+if [ "${FAKE_RC:-0}" -ne 0 ]; then
+  echo "1 out of ${FAKE_LISTED:-3} tests failed"
+  exit "${FAKE_RC}"
+fi
+echo "All ${FAKE_PASSED:-${FAKE_LISTED:-3}} tests passed (0.01s)"
+exit 0
+"""
+
+FAKE_CABAL = """#!/bin/sh
+echo "cabal $*" >> "$FAKE_CABAL_LOG"
+exit 99
+"""
+
+
+class DriverControls(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="own-matrix-"))
+        self.bins = self.tmp / "bins"
+        self.fakepath = self.tmp / "path"
+        self.out = self.tmp / "receipts"
+        self.bins.mkdir()
+        self.fakepath.mkdir()
+        for name in ("haskoki-model-tests", "haskoki-engine-tests",
+                     "haskoki-storage-tests"):
+            (self.bins / name).write_text(FAKE_BIN)
+            (self.bins / name).chmod(0o755)
+        (self.fakepath / "cabal").write_text(FAKE_CABAL)
+        (self.fakepath / "cabal").chmod(0o755)
+        self.cabal_log = self.tmp / "cabal.log"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_driver(self, fake_bins=True, **env):
+        e = dict(os.environ)
+        e["PATH"] = str(self.fakepath) + os.pathsep + e["PATH"]
+        e["FAKE_CABAL_LOG"] = str(self.cabal_log)
+        e["HASKOKI_OWN_SHA"] = SHA
+        e["HASKOKI_OWN_RECEIPTS"] = str(self.out)
+        if fake_bins:
+            e["HASKOKI_OWN_BIN_DIR"] = str(self.bins)
+        e.update({k: str(v) for k, v in env.items()})
+        return subprocess.run(["sh", str(DRIVER)], cwd=REPO, env=e,
+                              capture_output=True, text=True, timeout=120)
+
+    def receipts(self):
+        return sorted(self.out.glob("*.json")) if self.out.exists() else []
+
+    def no_build(self):
+        self.assertFalse(self.cabal_log.exists(), "cabal was invoked")
+
+    # ---- must fail before any build ----
+    def test_rts_n3_rejected_before_build(self):
+        p = self.run_driver(fake_bins=False, HASKOKI_OWN_RTS="3")
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("HASKOKI_OWN_RTS", p.stdout + p.stderr)
+        self.no_build()
+        self.assertEqual(self.receipts(), [])
+
+    def test_rts_list_with_one_bad_value_rejected(self):
+        p = self.run_driver(fake_bins=False, HASKOKI_OWN_RTS="1 N3")
+        self.assertNotEqual(p.returncode, 0)
+        self.no_build()
+
+    def test_unknown_case_rejected_before_build(self):
+        p = self.run_driver(fake_bins=False, HASKOKI_OWN_CASE="bogus")
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("HASKOKI_OWN_CASE", p.stdout + p.stderr)
+        self.no_build()
+
+    def test_pending_case_cannot_be_selected(self):
+        p = self.run_driver(fake_bins=False, HASKOKI_OWN_CASE="wp07-pending")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("pending", p.stdout + p.stderr)
+        self.no_build()
+
+    def test_bad_sha_rejected_before_build(self):
+        p = self.run_driver(fake_bins=False, HASKOKI_OWN_SHA="nothex")
+        self.assertNotEqual(p.returncode, 0)
+        self.no_build()
+
+    # ---- must fail after listing/running, never vacuously pass ----
+    def test_zero_match_pattern_fails(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_LISTED=0)
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("matched 0", p.stdout + p.stderr)
+        self.assertTrue(all(json.loads(r.read_text())["status"] == "fail"
+                            for r in self.receipts()))
+
+    def test_listed_below_minimum_fails(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_LISTED=1)
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+
+    def test_ignored_rts_flag_fails(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_NO_USING=1)
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("using -N", p.stdout + p.stderr)
+
+    def test_wrong_rts_evidence_fails(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", HASKOKI_OWN_RTS="4",
+                            FAKE_USING=2)
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+
+    def test_passed_count_mismatch_fails(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_PASSED=2)
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+
+    def test_failing_run_fails_and_still_writes_receipt(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_RC=1)
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        rs = self.receipts()
+        self.assertEqual(len(rs), 3)
+        self.assertTrue(all(json.loads(r.read_text())["rc"] == 1 for r in rs))
+
+    # ---- positive ----
+    def test_one_case_three_receipts(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_COUNTER=1)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        names = [r.name for r in self.receipts()]
+        self.assertEqual(names, ["m2-lifetime-gate.N1.json", "m2-lifetime-gate.N2.json",
+                                 "m2-lifetime-gate.N4.json"])
+        for r in self.receipts():
+            d = json.loads(r.read_text())
+            self.assertEqual(d["sha"], SHA)
+            self.assertEqual((d["listed"], d["passed"], d["rc"], d["status"]),
+                             (3, 3, 0, "pass"))
+            self.assertEqual(d["using_n"], d["rts_n"])
+            self.assertEqual(len(d["binary_sha256"]), 64)
+            self.assertIn("nproc", d)
+            self.assertIn("duration_s", d)
+            self.assertEqual(d["counters"], ["OWNERSHIP-COUNTERS case=fake k=0"])
+
+    def test_tasty_capability_bump_is_prevented_by_jobs_flag(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_TASTY_BUMP=1)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    def test_rts_subset(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", HASKOKI_OWN_RTS="2")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual([r.name for r in self.receipts()], ["m2-lifetime-gate.N2.json"])
+
+    def test_full_table_runs_every_nonpending_case_and_lists_pending(self):
+        p = self.run_driver()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("PENDING wp07-pending", p.stdout)
+        ids = {json.loads(r.read_text())["case"] for r in self.receipts()}
+        self.assertNotIn("wp07-pending", ids)
+        self.assertEqual(len(self.receipts()), 3 * len(ids))
+        self.assertTrue((self.out / "index.tsv").is_file())
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)

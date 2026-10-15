@@ -100,6 +100,8 @@ jobs:
             python3 scripts/check-actions-pinned.py .github/workflows/prop-nightly.yml
             python3 scripts/check-actions-pinned.py .github/workflows/qualification.yml
             python3 scripts/test-release-workflow.py
+            python3 scripts/test-ownership-matrix-controls.py
+            sh -n scripts/test-ownership-matrix.sh
             for d in scripts/test-sim-threaded.sh scripts/test-finalize-race.sh \
                 scripts/test-c-mutexes.sh scripts/test-consumers.sh \
                 scripts/test-async-attached.sh scripts/test-async-detached.sh \
@@ -594,6 +596,26 @@ jobs:
           cat "$HASKOKI_EVIDENCE_DIR/matrix.json"
           [ -z "$FAILURES" ] || { echo "matrix failures:$FAILURES"; exit 1; }
           } 2>&1 | tee "$RUNNER_TEMP/qualify-evidence-run.log"
+      - name: Run ownership matrix (private RTS)
+        # Separate obligation from the 25-cell matrix and from the
+        # 19-step manifest (scripts/driver-inventory.json role
+        # qualification): one receipt per (case, RTS -N1/-N2/-N4)
+        # under qualify-evidence/ownership. Runs even when the matrix
+        # step failed so both verdicts are recorded; fails the job on
+        # any failing or missing receipt.
+        if: always() && steps.select.outputs.mode == 'behavioral'
+        run: |
+          set -euo pipefail
+          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3
+          OWN_DIR="$RUNNER_TEMP/qualify-evidence/ownership"
+          mkdir -p "$OWN_DIR"
+          chmod a+rwx "$OWN_DIR"
+          docker run --rm --network host -v "$PWD:/work" -w /work \
+            -v "$OWN_DIR:/ownership" \
+            --env HASKOKI_OWN_SHA="$(git rev-parse HEAD)" \
+            --env HASKOKI_OWN_RECEIPTS=/ownership \
+            "$HASKOKI_IMAGE" scripts/test-ownership-matrix.sh 2>&1 \
+            | tee "$RUNNER_TEMP/qualify-evidence/ownership.log"
       - name: Run the build-only fallback manifest
         if: steps.select.outputs.mode == 'buildonly'
         run: |

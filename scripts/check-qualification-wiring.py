@@ -127,6 +127,14 @@ Receipt verifier (judges a real run, build-free):
   the builder emits the identity fields. The verifier also rejects
   requested_revision != sha, a pass cell with rc != 0, and cells
   lacking rc or duration_s.
+* QW-LANE-OWNERSHIP: the qualify job runs scripts/test-ownership-matrix.sh
+  through docker run with the exact SHA and a receipt directory under
+  the evidence root, on `if: always()` (both verdicts recorded) and
+  never swallowed.
+* QW-LANE-VERIFY also rejects job-level `continue-on-error` on
+  qualify/report; QW-LANE-STATIC anchors on the SHA gate (first step
+  after checkout, exits nonzero); QW-LANE-CONCURRENCY pins the
+  schedule-only cancel-in-progress expression.
 * QW-LANE-GATE (ruling 7): qualify keeps `needs: toolchain`, and the
   loaded image's id must equal the toolchain job's recorded
   builder_image_id ("toolchain image id mismatch" guard).
@@ -160,6 +168,7 @@ REQUIRED_OWNERS = [
     ("tests/c/notifications_routed.c", "scripts/test-consumers.sh", "scenario"),
     ("tests/c/consumer_multithread.c", "scripts/test-consumers.sh", "glob"),
 ]
+OWNERSHIP_DRIVER = "test-ownership-matrix.sh"
 NESTED_CHILD = "test-demo-onboarding.sh"
 NESTED_PARENT = "test-demo-image.sh"
 
@@ -298,9 +307,12 @@ def check_inventory(root, failures):
             continue
         seen[name] = True
         by_name[name] = entry
-        if role not in ("container", "host", "nested"):
+        if name == OWNERSHIP_DRIVER and role != "qualification":
+            _add(failures, "QW-INV-ROLE",
+                 f"{name}: must be role 'qualification' (outside the 19-step manifest), got {role!r}")
+        if role not in ("container", "host", "nested", "qualification"):
             _add(failures, "QW-INV-ROLE", f"{name}: bad role: {role!r}")
-        elif role in ("container", "host"):
+        elif role in ("container", "host", "qualification"):
             if parent is not None:
                 _add(failures, "QW-INV-PARENT", f"{name}: {role} driver must have null parent")
         # Nested parent existence is validated after the full pass.
@@ -522,6 +534,13 @@ def check_lane(root, failures):
     if "github.event_name" not in group_line:
         _add(failures, "QW-LANE-CONCURRENCY",
              "concurrency group must include github.event_name (schedule must not cancel dispatch)")
+    cancel_line = next((ln.strip() for ln in concurrency.splitlines()
+                        if ln.strip().startswith("cancel-in-progress:")), "")
+    if cancel_line != "cancel-in-progress: ${{ github.event_name == 'schedule' }}":
+        _add(failures, "QW-LANE-CONCURRENCY",
+             "cancel-in-progress must be exactly the schedule-only expression "
+             "(a dispatch run must never be cancelled): got "
+             f"{cancel_line or 'no cancel-in-progress'!r}")
     for setup in SETUP_JOBS:
         if setup not in blocks:
             _add(failures, "QW-LANE-GATE", f"missing setup job: {setup}")
@@ -617,6 +636,9 @@ def check_lane(root, failures):
     for job in (QUALIFY_JOB, REPORT_JOB):
         if job not in blocks:
             continue
+        if re.search(r"(?m)^    continue-on-error:", blocks[job]):
+            _add(failures, "QW-LANE-VERIFY",
+                 f"{job}: job-level continue-on-error would let a failed job report green")
         steps = re.split(r"(?m)^      - name:", blocks[job])
         last = steps[-1] if len(steps) > 1 else ""
         if job == QUALIFY_JOB and "--verify-matrix" not in last:
@@ -655,6 +677,22 @@ def check_lane(root, failures):
                 or "git rev-parse HEAD" not in static:
             _add(failures, "QW-LANE-STATIC",
                  "static-gates must check the requested revision is a full SHA equal to HEAD")
+        ssteps = re.split(r"(?m)^      - name:", static)[1:]
+        gate_idx = next((i for i, st in enumerate(ssteps)
+                         if "revision must be a full SHA" in st), None)
+        if gate_idx is None:
+            pass  # reported by the substring rule above
+        else:
+            if gate_idx != 1 or "actions/checkout@" not in ssteps[0]:
+                _add(failures, "QW-LANE-STATIC",
+                     "the full-SHA gate must be the first step after checkout "
+                     f"(found at step {gate_idx + 1})")
+            gate_lines = _code_lines(ssteps[gate_idx])
+            if not any(re.search(r"\bexit\s+[1-9]", ln) for ln in gate_lines):
+                _add(failures, "QW-LANE-STATIC",
+                     "the full-SHA gate must exit nonzero on a mismatch")
+            if any("|| true" in ln or "|| :" in ln for ln in gate_lines):
+                _add(failures, "QW-LANE-STATIC", "the full-SHA gate failure is swallowed")
         if "HASKOKI_QUAL_ONLY=bogus" not in static:
             _add(failures, "QW-LANE-STATIC",
                  "static-gates must run the bogus-hint negative control")
@@ -664,6 +702,28 @@ def check_lane(root, failures):
             if needs is None or "static-gates" not in needs:
                 _add(failures, "QW-LANE-GATE",
                      f"{setup} must need static-gates (setup failures gate execution)")
+    if QUALIFY_JOB in blocks:
+        osteps = [st for st in re.split(r"(?m)^      - name:", blocks[QUALIFY_JOB])
+                  if "scripts/test-ownership-matrix.sh" in "\n".join(_code_lines(st))]
+        if len(osteps) != 1:
+            _add(failures, "QW-LANE-OWNERSHIP",
+                 f"{QUALIFY_JOB} must run scripts/test-ownership-matrix.sh in exactly one step "
+                 f"(found {len(osteps)})")
+        else:
+            ost = osteps[0]
+            code = "\n".join(_code_lines(ost))
+            if "docker run" not in code:
+                _add(failures, "QW-LANE-OWNERSHIP", "ownership driver must run through docker run")
+            if "HASKOKI_OWN_SHA" not in code or "git rev-parse HEAD" not in code:
+                _add(failures, "QW-LANE-OWNERSHIP", "ownership driver must receive the exact SHA")
+            if "HASKOKI_OWN_RECEIPTS" not in code or "qualify-evidence" not in code:
+                _add(failures, "QW-LANE-OWNERSHIP",
+                     "ownership receipts must land under the qualify evidence root")
+            if not re.search(r"(?m)^        if: always\(\)", ost):
+                _add(failures, "QW-LANE-OWNERSHIP",
+                     "ownership step must run on if: always() (record both verdicts)")
+            if "continue-on-error" in ost or "|| true" in code or "|| :" in code:
+                _add(failures, "QW-LANE-OWNERSHIP", "ownership failure is swallowed")
     for name, block in blocks.items():
         if not re.search(r"(?m)^    timeout-minutes:\s*\d+\s*$", block):
             _add(failures, "QW-LANE-TIMEOUT", f"job {name} has no timeout-minutes")
@@ -1239,6 +1299,60 @@ def self_test():
         _rewrite(root / QUALIFICATION_YML, "group: qualification-${{ github.event_name }}-",
                  "group: qualification-")
         controls.expect_fail("concurrency group ignores the event name", root, "QW-LANE-CONCURRENCY")
+        # Checker hardening: job-level continue-on-error, the SHA
+        # gate anchor, and the schedule-only cancellation expression.
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "  qualify:\n    needs: [static-gates, toolchain, proxy-pair]\n    runs-on: ubuntu-latest",
+                 "  qualify:\n    needs: [static-gates, toolchain, proxy-pair]\n    continue-on-error: true\n    runs-on: ubuntu-latest")
+        controls.expect_fail("job-level continue-on-error on qualify", root, "QW-LANE-VERIFY")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "  report:\n    needs: qualify\n",
+                 "  report:\n    needs: qualify\n    continue-on-error: true\n")
+        controls.expect_fail("job-level continue-on-error on report", root, "QW-LANE-VERIFY")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "      - name: Require an exact full-SHA revision\n",
+                 "      - name: Interposed step\n        run: echo before the gate\n"
+                 "      - name: Require an exact full-SHA revision\n")
+        controls.expect_fail("move the SHA gate off the first step", root, "QW-LANE-STATIC")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 'HEAD $(git rev-parse HEAD)"; exit 2; }', 'HEAD $(git rev-parse HEAD)"; }')
+        controls.expect_fail("remove the SHA gate exit", root, "QW-LANE-STATIC")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "cancel-in-progress: ${{ github.event_name == 'schedule' }}",
+                 "cancel-in-progress: true")
+        controls.expect_fail("cancel dispatch runs in progress", root, "QW-LANE-CONCURRENCY")
+        # Ownership matrix: qualification role + workflow wiring.
+        root = fresh()
+        _rewrite(root / INVENTORY,
+                 '{"name": "test-ownership-matrix.sh", "role": "qualification", "parent": null}',
+                 '{"name": "test-ownership-matrix.sh", "role": "container", "parent": null}')
+        controls.expect_fail("ownership driver joins the manifest as container", root, "QW-INV-ROLE")
+        root = fresh()
+        _rewrite(root / INVENTORY,
+                 '{"name": "test-ownership-matrix.sh", "role": "qualification", "parent": null}',
+                 '{"name": "test-ownership-matrix.sh", "role": "bogus", "parent": null}')
+        controls.expect_fail("ownership driver gets an unknown role", root, "QW-INV-ROLE")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "scripts/test-ownership-matrix.sh")
+        controls.expect_fail("qualify never invokes the ownership driver", root, "QW-LANE-OWNERSHIP")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "        if: always() && steps.select.outputs.mode == 'behavioral'\n        run: |\n          set -euo pipefail\n          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3\n          OWN_DIR",
+                 "        if: steps.select.outputs.mode == 'behavioral'\n        run: |\n          set -euo pipefail\n          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3\n          OWN_DIR")
+        controls.expect_fail("ownership step skipped after a matrix failure", root, "QW-LANE-OWNERSHIP")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 'tee "$RUNNER_TEMP/qualify-evidence/ownership.log"',
+                 'tee "$RUNNER_TEMP/qualify-evidence/ownership.log" || true')
+        controls.expect_fail("swallow an ownership failure", root, "QW-LANE-OWNERSHIP")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "--env HASKOKI_OWN_SHA=")
+        controls.expect_fail("ownership driver loses the exact SHA", root, "QW-LANE-OWNERSHIP")
         root = fresh()
         _drop_lines(root / QUALIFICATION_YML, "toolchain image id mismatch")
         controls.expect_fail("drop the toolchain image id verification", root, "QW-LANE-GATE")

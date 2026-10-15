@@ -33,6 +33,9 @@
 #     test-demo-image.sh) run ONLY inside their parent and are never
 #     executed standalone here, so the parent pipeline runs once.
 #
+#   * role=qualification drivers (test-ownership-matrix.sh) are owned
+#     by the inventory but SKIPPED here: they belong to the
+#     qualification workflow and stay outside the 19-step manifest;
 # The driver inventory is the single source of truth AND is
 # drift-checked against scripts/test-*.sh: a new driver script fails
 # this manifest until it is classified there, and an inventory entry
@@ -94,9 +97,9 @@ for i, d in enumerate(drivers):
         die(f"entry {i} has bad name: {name!r}")
     if name in seen:
         die(f"duplicate driver: {name}")
-    if role not in ("container", "host", "nested"):
+    if role not in ("container", "host", "nested", "qualification"):
         die(f"{name}: bad role: {role!r}")
-    if role in ("container", "host"):
+    if role in ("container", "host", "qualification"):
         if parent is not None:
             die(f"{name}: top-level {role} driver must have null parent")
     elif not isinstance(parent, str) or parent == name:
