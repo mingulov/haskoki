@@ -59,7 +59,7 @@ Invalid values return `CfgInvalid`; configuration errors stop the open.
 | `tokens.labels` | E | catalog seating + served labels | `MultiTokenSpec` labels + `ConfigSpec` catalog validation |
 | `tokens.so_pins` | E | per-slot SO auth | `MultiTokenSpec` SO per-slot |
 | `tokens.user_pins` | E | per-slot user auth | `MultiTokenSpec` per-slot PINs |
-| `tokens.token_ids` | E | optional parallel array of decimal stable identities (strings in `1..2147483647`), positional with `tokens.labels`: same length, unique, `token_ids[0]` must be `1` (slot 0 is the home token), else the whole config refuses at load with `CfgInvalid`. Absent: slot `n` owns `TokenId (n+1)`. Pinned ids select durable identity; the public token serial is still slot-derived (see limitations) | `StoreSpec` pinned/duplicate/ragged/malformed/absent `token_ids` cases (parser: `parseTokenIds`) |
+| `tokens.token_ids` | E | optional parallel array of decimal stable identities (strings in `1..2147483647`), positional with `tokens.labels`: same length, unique, `token_ids[0]` must be `1` (slot 0 is the home token), else the whole config refuses at load with `CfgInvalid`. Absent: slot `n` owns `TokenId (n+1)`. Pinned ids select durable identity, and the public token serial is that identity in 16 lowercase hex digits | `StoreSpec` pinned/duplicate/ragged/malformed/absent `token_ids` cases (parser: `parseTokenIds`) |
 
 Sections (9): `storage`, `engine`, `async`, `trace`, `control`,
 `fixtures`, `limits`, `sim`, `tokens`. Any other section name is
@@ -165,10 +165,10 @@ and no transcript, aggregate-payload or depth bound exists. Read the
 There is no per-key inventory yet of configured value, effective value and
 native-versus-scenario applicability, and the completeness test compares
 selected keyword lists rather than the full parser key list; that audit is
-v0.5 work. Also note that `tokens.token_ids` pins internal identity only:
-the serial number a PKCS#11 client sees is derived from the slot index, and
-until a token is first provisioned the configuration remains the PIN
-authority (see [operations notes](operations-notes.md)).
+v0.5 work. On a SQLite store the catalog PINs only seed a token when it is
+first created; after that the stored credential row is the PIN authority,
+and editing `tokens.so_pins` or `tokens.user_pins` does not change what an
+existing token accepts (see [operations notes](operations-notes.md)).
 
 ## Serving presence and private scenario scope
 

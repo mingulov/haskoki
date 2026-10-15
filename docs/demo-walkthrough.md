@@ -53,7 +53,9 @@ show two ways to move it to another process.
 
 The default token is slot 0, label `haskoki-demo`, with public fixture PINs:
 user `1234`, security officer `5678`; these are the initial credentials the
-token serves until it is provisioned in-band. `C_InitToken` reinitializes a
+token serves until they are changed in-band. With a SQLite store they are
+stored with the token when it is created, so a later edit of the configured
+PINs does not change an existing token. `C_InitToken` reinitializes a
 token (no sessions may be open: the label becomes the caller label, the
 caller PIN must match the existing SO PIN to authorize the reset, every
 object and pending detached job on the token is destroyed, and the user
