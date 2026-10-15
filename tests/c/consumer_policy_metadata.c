@@ -32,6 +32,14 @@
  *
  * Compile with -Ispec/vendor. Part of scripts/test-consumers.sh.
  * Usage: consumer_policy_metadata <path-to-libhaskoki.so> [scenario]
+ *        consumer_policy_metadata <so> --print-config <scenario>
+ *
+ * Topology: HASKOKI_CONSUMER_TOPOLOGY=proxy means the module is a
+ * pkcs11 shim whose daemon already holds the scenario config, so the
+ * child neither writes a config nor sets HASKOKI_CONFIG. In both
+ * topologies the child verifies the backend identity (slot count,
+ * token labels, session maximum) right after C_Initialize and exits 3
+ * on a mismatch before any session is opened.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -76,7 +84,19 @@ static int g_failures = 0;
 static char g_cfg_path[256];
 static int g_cfg_ours = 0;
 
+static int proxy_mode(void) {
+  const char *t = getenv("HASKOKI_CONSUMER_TOPOLOGY");
+  return t != NULL && strcmp(t, "proxy") == 0;
+}
+
 static void write_config(const char *body) {
+  if (proxy_mode()) {
+    if (getenv("HASKOKI_CONFIG") != NULL) {
+      unsetenv("HASKOKI_CONFIG");
+    }
+    printf("policy:proxy-mode config=daemon\n");
+    return;
+  }
   char tmpl[] = "/tmp/haskoki-polmeta-XXXXXX";
   int fd = mkstemp(tmpl);
   size_t want;
@@ -192,6 +212,98 @@ static CK_FUNCTION_LIST_PTR load_module(const char *sop) {
 }
 
 /* ------------------------------------------------------------------ */
+/* backend identity: the scenario's expected backend shape            */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+  const char *name;
+  CK_ULONG slots;
+  const char *labels[2];
+  CK_ULONG max_sessions; /* ulMaxSessionCount of slot 0 */
+} scenario_expect;
+
+/* limit2-*: [limits] sessions = 2, one token. multitoken: sessions 2,
+ * two tokens. pin: no [limits], one token; ulMaxSessionCount is the
+ * module's default of 1024. */
+static const scenario_expect kExpect[] = {
+    {"limit2-null", 1, {"haskoki-demo", NULL}, 2},
+    {"limit2-os", 1, {"haskoki-demo", NULL}, 2},
+    {"limit2-app", 1, {"haskoki-demo", NULL}, 2},
+    {"multitoken", 2, {"haskoki-demo", "haskoki-ops"}, 2},
+    {"pin", 1, {"haskoki-demo", NULL}, 1024},
+};
+
+static void backend_mismatch(const char *field, const char *want,
+                             const char *got) {
+  printf("policy:backend-mismatch %s want=%s got=%s\n", field, want, got);
+  fflush(NULL);
+  drop_config();
+  exit(3);
+}
+
+static void trim_label(const CK_UTF8CHAR *raw, char *out) {
+  size_t n = 32;
+  memcpy(out, raw, n);
+  while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\0')) {
+    n--;
+  }
+  out[n] = '\0';
+}
+
+/* Right after C_Initialize, before any session: verify the backend is
+ * the one this scenario expects (slot count, each token label, session
+ * maximum). Exit 3 on mismatch; print the identity line on a match. */
+static void check_backend(CK_FUNCTION_LIST_PTR fl, const char *name) {
+  const scenario_expect *e = NULL;
+  size_t i;
+  CK_ULONG n = 0;
+  CK_RV rv;
+  char want[64], got[64], lab[40];
+  CK_TOKEN_INFO ti;
+  for (i = 0; i < sizeof(kExpect) / sizeof(kExpect[0]); i++) {
+    if (strcmp(kExpect[i].name, name) == 0) {
+      e = &kExpect[i];
+    }
+  }
+  if (e == NULL) {
+    fprintf(stderr, "no backend expectation for %s\n", name);
+    exit(2);
+  }
+  rv = fl->C_GetSlotList(CK_TRUE, NULL_PTR, &n);
+  if (rv != CKR_OK) {
+    snprintf(want, sizeof(want), "%lu", (unsigned long)e->slots);
+    snprintf(got, sizeof(got), "rv=0x%lx", (unsigned long)rv);
+    backend_mismatch("slots", want, got);
+  }
+  if (n != e->slots) {
+    snprintf(want, sizeof(want), "%lu", (unsigned long)e->slots);
+    snprintf(got, sizeof(got), "%lu", (unsigned long)n);
+    backend_mismatch("slots", want, got);
+  }
+  for (i = 0; i < e->slots; i++) {
+    char field[16];
+    snprintf(field, sizeof(field), "label[%zu]", i);
+    memset(&ti, 0, sizeof(ti));
+    rv = fl->C_GetTokenInfo((CK_SLOT_ID)i, &ti);
+    if (rv != CKR_OK) {
+      snprintf(got, sizeof(got), "rv=0x%lx", (unsigned long)rv);
+      backend_mismatch(field, e->labels[i], got);
+    }
+    trim_label(ti.label, lab);
+    if (strcmp(lab, e->labels[i]) != 0) {
+      backend_mismatch(field, e->labels[i], lab);
+    }
+    if (i == 0 && ti.ulMaxSessionCount != e->max_sessions) {
+      snprintf(want, sizeof(want), "%lu", (unsigned long)e->max_sessions);
+      snprintf(got, sizeof(got), "%lu", (unsigned long)ti.ulMaxSessionCount);
+      backend_mismatch("max", want, got);
+    }
+  }
+  printf("policy:backend slots=%lu max=%lu\n", (unsigned long)e->slots,
+         (unsigned long)e->max_sessions);
+}
+
+/* ------------------------------------------------------------------ */
 /* limit-2 leg (single token): maxima, refusal, close/reopen, canary  */
 /* ------------------------------------------------------------------ */
 
@@ -213,6 +325,8 @@ static const char kLimit2Config[] =
     "so_pins = [\"5678\"]\n"
     "user_pins = [\"1234\"]\n";
 
+static const char *toml_limit2(void) { return kLimit2Config; }
+
 static int all_canary(const unsigned char *p, size_t n) {
   size_t i;
   for (i = 0; i < n; i++) {
@@ -230,13 +344,18 @@ static int child_limit2(const char *sop, const char *mode) {
   CK_TOKEN_INFO ti;
   CK_SESSION_HANDLE s1, s2, s3;
   CK_RV rv;
-  write_config(kLimit2Config);
+  write_config(toml_limit2());
   fl = load_module(sop);
   rv = init_with(fl, mode);
   CHECK(rv == CKR_OK, "limit2/%s initialize ok", mode);
   if (rv != CKR_OK) {
     drop_config();
     return 1;
+  }
+  {
+    char nm[32];
+    snprintf(nm, sizeof(nm), "limit2-%s", mode);
+    check_backend(fl, nm);
   }
   memset(&ti, 0, sizeof(ti));
   rv = fl->C_GetTokenInfo(0, &ti);
@@ -339,12 +458,14 @@ static const char kMultitoken2Config[] =
     "so_pins = [\"5678\", \"6789\"]\n"
     "user_pins = [\"1234\", \"2345\"]\n";
 
+static const char *toml_multitoken(void) { return kMultitoken2Config; }
+
 static int child_multitoken(const char *sop) {
   CK_FUNCTION_LIST_PTR fl;
   CK_TOKEN_INFO t0, t1;
   CK_SESSION_HANDLE a, b, c;
   CK_RV rv;
-  write_config(kMultitoken2Config);
+  write_config(toml_multitoken());
   fl = load_module(sop);
   rv = fl->C_Initialize(NULL_PTR);
   CHECK(rv == CKR_OK, "multitoken initialize ok");
@@ -352,6 +473,7 @@ static int child_multitoken(const char *sop) {
     drop_config();
     return 1;
   }
+  check_backend(fl, "multitoken");
   memset(&t0, 0, sizeof(t0));
   memset(&t1, 0, sizeof(t1));
   rv = fl->C_GetTokenInfo(0, &t0);
@@ -432,12 +554,14 @@ static const char kPinConfig[] =
     "so_pins = [\"5678\"]\n"
     "user_pins = [\"1234\"]\n";
 
+static const char *toml_pin(void) { return kPinConfig; }
+
 static int child_pin(const char *sop) {
   CK_FUNCTION_LIST_PTR fl;
   CK_TOKEN_INFO ti;
   CK_SESSION_HANDLE s;
   CK_RV rv;
-  write_config(kPinConfig);
+  write_config(toml_pin());
   fl = load_module(sop);
   rv = fl->C_Initialize(NULL_PTR);
   CHECK(rv == CKR_OK, "pin initialize ok");
@@ -445,6 +569,7 @@ static int child_pin(const char *sop) {
     drop_config();
     return 1;
   }
+  check_backend(fl, "pin");
   memset(&ti, 0, sizeof(ti));
   rv = fl->C_GetTokenInfo(0, &ti);
   CHECK(rv == CKR_OK, "pin tokeninfo ok");
@@ -512,12 +637,9 @@ static int child_pin(const char *sop) {
 
 /* Out-of-policy configured PINs refuse at init: the config never
  * loads, so init fails loudly and nothing is half-installed. */
-static int child_pin_refuse(const char *sop, const char *user_pin,
-                            const char *tag) {
-  char body[2048];
-  CK_FUNCTION_LIST_PTR fl;
-  CK_RV rv;
-  CK_ULONG n = 0;
+/* TOML for the bad-PIN scenarios (user PIN out of the 4..32 policy). */
+static const char *toml_pin_refuse(const char *user_pin) {
+  static char body[2048];
   int w = snprintf(body, sizeof(body),
                    "schema_version = 1\n"
                    "profile = \"real-crypto\"\n"
@@ -538,7 +660,21 @@ static int child_pin_refuse(const char *sop, const char *user_pin,
     fprintf(stderr, "config body too long\n");
     exit(2);
   }
-  write_config(body);
+  return body;
+}
+
+static int child_pin_refuse(const char *sop, const char *user_pin,
+                            const char *tag) {
+  CK_FUNCTION_LIST_PTR fl;
+  CK_RV rv;
+  CK_ULONG n = 0;
+  if (proxy_mode()) {
+    /* The bad config would fail at the daemon's backend load, not at a
+     * C_Initialize the consumer can observe. */
+    printf("policy:pin-refuse proxy-mode unsupported\n");
+    return 4;
+  }
+  write_config(toml_pin_refuse(user_pin));
   fl = load_module(sop);
   rv = fl->C_Initialize(NULL_PTR);
   CHECK(rv == CKR_GENERAL_ERROR, "pin-%s init refused (0x%lx)", tag,
@@ -605,6 +741,31 @@ int main(int argc, char **argv) {
   if (argc < 2) {
     fprintf(stderr, "usage: %s <libhaskoki.so> [scenario]\n", argv[0]);
     return 2;
+  }
+  if (argc >= 3 && strcmp(argv[2], "--print-config") == 0) {
+    const char *scen = argc >= 4 ? argv[3] : "";
+    const char *toml = NULL;
+    if (strncmp(scen, "limit2-", 7) == 0 &&
+        (strcmp(scen + 7, "null") == 0 || strcmp(scen + 7, "os") == 0 ||
+         strcmp(scen + 7, "app") == 0)) {
+      toml = toml_limit2();
+    } else if (strcmp(scen, "multitoken") == 0) {
+      toml = toml_multitoken();
+    } else if (strcmp(scen, "pin") == 0) {
+      toml = toml_pin();
+    } else if (strcmp(scen, "pin-short") == 0) {
+      toml = toml_pin_refuse("X");
+    } else if (strcmp(scen, "pin-empty") == 0) {
+      toml = toml_pin_refuse("");
+    } else if (strcmp(scen, "pin-long") == 0) {
+      toml = toml_pin_refuse("123456789012345678901234567890123");
+    }
+    if (toml == NULL) {
+      fprintf(stderr, "unknown scenario: %s\n", scen);
+      return 2;
+    }
+    fputs(toml, stdout);
+    return 0;
   }
   if (argc >= 3) {
     const char *scen = argv[2];
