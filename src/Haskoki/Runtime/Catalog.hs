@@ -1,10 +1,16 @@
 -- | The effective serving catalog, shared by both interval owners.
-module Haskoki.Runtime.Catalog (effectiveCatalog, homeCatalogEntry, identityCatalog) where
+module Haskoki.Runtime.Catalog
+  ( effectiveCatalog
+  , homeCatalogEntry
+  , identityCatalog
+  , tokenSerial
+  ) where
 
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 
 import Haskoki.Runtime.Config (Config (..), TokensCfg (..))
+import Haskoki.Runtime.Storage (encodeHex16)
 import Haskoki.Types (SlotId (..), TokenId (..))
 
 -- | Label, SO PIN, user PIN. The absent-section provisioning is unchanged.
@@ -39,3 +45,12 @@ identityCatalog cfg = case tcEntries (cfgTokens cfg) of
 pinnedOrPositional :: Int -> Maybe [TokenId] -> [TokenId]
 pinnedOrPositional n (Just ids) | length ids == n = ids
 pinnedOrPositional n _ = [TokenId (k + 1) | k <- [0 .. n - 1]]
+
+-- | The token's @CK_TOKEN_INFO.serialNumber@: its durable identity
+-- in the one canonical 16-char lowercase-hex form the store
+-- writes for @token_id@ ('encodeHex16'), so the serial depends
+-- on the identity alone (never on slot, label or store). Every
+-- identity the config parser admits (@1..2147483647@) fits the
+-- 16 characters exactly.
+tokenSerial :: TokenId -> String
+tokenSerial = encodeHex16 . unTokenId
