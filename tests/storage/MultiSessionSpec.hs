@@ -189,6 +189,8 @@ spec = testGroup "Multi-session store"
       ]
   , testCase "commit tests observe death deterministically (no busy-spin)" caseNoBusySpin
   , testCase "login lockout persists across close, reopen, and a second process" caseLoginLockoutDurable
+  , testCase "edited config PINs never replace seeded durable credentials" caseConfigPinEditIgnored
+  , testCase "a stored token without a credential row fails closed" caseRowlessTokenFailsClosed
   , testCase "failed durable auth write fails the login closed" caseLoginFailClosed
   , testCase "unknown-but-landed login reconciles and serves on" caseLoginUnknownLanded
   , testCase "landed login publishes despite reload failure" caseLoginReloadFailsLanded
@@ -1442,15 +1444,68 @@ caseProvisionDirty =
 -- | A two-token SQLite config over the path (positional
 -- identities: slot 0 demo, slot 1 ops, with distinct PINs).
 twoTokenConfig :: FilePath -> IO Config
-twoTokenConfig path = case parseConfig (unlines
+twoTokenConfig path = twoTokenConfigPins path ["5678", "6789"] ["1234", "2345"]
+
+-- | 'twoTokenConfig' with explicit SO and user PIN lists.
+twoTokenConfigPins :: FilePath -> [String] -> [String] -> IO Config
+twoTokenConfigPins path soPins userPins = case parseConfig (unlines
   [ "schema_version = 1"
   , "[tokens]"
   , "labels = [\"haskoki-demo\", \"haskoki-ops\"]"
-  , "so_pins = [\"5678\", \"6789\"]"
-  , "user_pins = [\"1234\", \"2345\"]"
+  , "so_pins = " ++ show soPins
+  , "user_pins = " ++ show userPins
   ]) of
     Left err -> assertFailure ("two-token config must parse: " ++ show err)
     Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True })
+
+-- | A stored token whose credential row is gone never falls back
+-- to the configured PINs: login with the catalog user PIN fails
+-- closed (@CKR_GENERAL_ERROR@), while the token that kept its row
+-- still authenticates.
+caseRowlessTokenFailsClosed :: IO ()
+caseRowlessTokenFailsClosed =
+  bracket (makeTempDir "haskoki-rowless") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "rowless.db"
+    cfg <- twoTokenConfig path
+    withAuthInstanceOnCfg stdAcquisition cfg $ \_ -> pure ()
+    eSt <- openSQLiteStore path
+    st <- either (assertFailure . show) pure eSt
+    r <- storeCommit st emptyDelta { sdDropCredentials = [TokenId 2] }
+    storeClose st
+    assertEqual "ops credential row dropped" Committed r
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+      ops <- openAuthSessionOn ctx 1
+      loginAs ctx ops 1 "2345" >>= assertEqual "catalog PIN never serves a stored token"
+        (CULong 0x05)
+      demo <- openAuthSessionOn ctx 0
+      loginAs ctx demo 1 "1234" >>= assertEqual "the token with a row still serves" (CULong 0)
+
+-- | Seeded tokens keep their durable credentials when the config
+-- PINs are edited: after one open seeds both tokens, a reopen with
+-- the ops user PIN and the demo SO PIN changed still accepts the
+-- original PINs and rejects the edited ones, and the two unedited
+-- role PINs keep working.
+caseConfigPinEditIgnored :: IO ()
+caseConfigPinEditIgnored =
+  bracket (makeTempDir "haskoki-pin-edit") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "pins.db"
+    cfg <- twoTokenConfig path
+    withAuthInstanceOnCfg stdAcquisition cfg $ \_ -> pure ()
+    cfgEdited <- twoTokenConfigPins path ["1111", "6789"] ["1234", "9999"]
+    withAuthInstanceOnCfg stdAcquisition cfgEdited $ \ctx -> do
+      ops <- openAuthSessionOn ctx 1
+      loginAs ctx ops 1 "9999" >>= assertEqual "edited ops user PIN rejected"
+        (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx ops 1 "2345" >>= assertEqual "seeded ops user PIN accepted" (CULong 0)
+      haskokiStdLogout ctx ops >>= assertEqual "ops user logout" (CULong 0)
+      loginAs ctx ops 0 "6789" >>= assertEqual "unedited ops SO PIN accepted" (CULong 0)
+      haskokiStdLogout ctx ops >>= assertEqual "ops SO logout" (CULong 0)
+      demo <- openAuthSessionOn ctx 0
+      loginAs ctx demo 0 "1111" >>= assertEqual "edited demo SO PIN rejected"
+        (stdRvOf CKR_PIN_INCORRECT)
+      loginAs ctx demo 0 "5678" >>= assertEqual "seeded demo SO PIN accepted" (CULong 0)
+      haskokiStdLogout ctx demo >>= assertEqual "demo SO logout" (CULong 0)
+      loginAs ctx demo 1 "1234" >>= assertEqual "unedited demo user PIN accepted" (CULong 0)
 
 -- ---------------------------------------------------------------------------
 -- Public non-home InitToken under store failure (AC-01)

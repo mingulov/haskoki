@@ -379,7 +379,7 @@ spec = testGroup "store contract"
       , testCase "standard open accepts after an explicit move" caseOpenAcceptsMoved
       , testCase "standard open refuses an interrupted move until completed" caseOpenInterruptedRefuses
       , testCase "standard open refuses a positional downgrade over a moved store" caseOpenDowngradeRefuses
-      , testCase "PIN edit changes the credential for the same identity" caseOpenPinEditAccepted
+      , testCase "a config PIN edit leaves the seeded credentials in force" caseOpenPinEditIgnoredAfterSeed
       , testCase "publication resolves moved slots through the reconciled layout" caseProjectionUsesReconciledLayout
       ]
   ]
@@ -3880,6 +3880,24 @@ caseOpenAppendSeedsOne = withOpenFile $ \path -> do
     [(TokenId 4, "8901", Just "4567")]
     [c | c@(tid, _, _) <- credsAfter, tid == TokenId 4]
 
+-- | Which stored user PIN reaches which objects: per catalog slot
+-- in order, the durable credential row of the token seated there
+-- and that token's objects. Row-based: the configured PINs play
+-- no part.
+rowReach :: FilePath -> Config -> [(TokenRecord, [ObjectRecord])] -> IO [(String, TokenId, [ObjectId])]
+rowReach path cfg loaded = do
+  creds <- fileCredentials path
+  pure
+    [ (userPin, tid, sort [orId o | o <- objs])
+    | (slot, (tid, _)) <- Map.toAscList (identityCatalog cfg)
+    , Just (t, objs) <- [lookup tid byId]
+    , trSlot t == slot
+    , (ctid, _, Just userPin) <- creds
+    , ctid == tid
+    ]
+  where
+    byId = [(trId t, (t, os)) | (t, os) <- loaded]
+
 -- | Every credential row of a closed file, by token, PINs as
 -- text.
 fileCredentials :: FilePath -> IO [(TokenId, String, Maybe String)]
@@ -3900,7 +3918,7 @@ caseOpenReorderRefuses = withOpenFile $ \path -> do
   seedOpenSeeded path
   cfgSteady <- parseCatalog positionalDoc
   loadedSteady <- fileLoaded path
-  let reachBefore = credentialReach cfgSteady loadedSteady
+  reachBefore <- rowReach path cfgSteady loadedSteady
   bytesBefore <- fileBytes path
   cfgSwap <- parseCatalog swappedDoc
   eAcq <- openReconciled path cfgSwap
@@ -3919,8 +3937,8 @@ caseOpenReorderRefuses = withOpenFile $ \path -> do
     Left err -> assertFailure ("steady reopen refused after refusal: " ++ show err)
     Right mAcq -> closeAcquired mAcq
   loadedAgain <- fileLoaded path
-  assertEqual "mapping intact after refused open"
-    reachBefore (credentialReach cfgSteady loadedAgain)
+  reachAgain <- rowReach path cfgSteady loadedAgain
+  assertEqual "mapping intact after refused open" reachBefore reachAgain
 
 -- | A removed entry refuses at the production open: the
 -- durable token is never pruned, its objects survive, and
@@ -3972,8 +3990,8 @@ caseOpenAcceptsMoved = withOpenFile $ \path -> do
         (Map.toAscList (stdTokenIds ss))
       closeAcquired acquired
   loadedAfter <- fileLoaded path
-  let reach = credentialReach cfgSwap loadedAfter
-      objsOf tid = sort [orId o | (_, os) <- loadedAfter, o <- os, orToken o == tid]
+  reach <- rowReach path cfgSwap loadedAfter
+  let objsOf tid = sort [orId o | (_, os) <- loadedAfter, o <- os, orToken o == tid]
   assertEqual "credentials follow identities through the open"
     [ ("1234", TokenId 1, objsOf (TokenId 1))
     , ("3456", TokenId 3, objsOf (TokenId 3))
@@ -4052,16 +4070,18 @@ caseOpenDowngradeRefuses = withOpenFile $ \path -> do
     Left err -> assertFailure ("pinned catalog refused after downgrade refusal: " ++ show err)
     Right mAcq -> closeAcquired mAcq
 
--- | A PIN edit reopens accepted: PINs are not identity, so
--- the changed credential reaches the same durable identity
--- and the same objects, and nothing else moves.
-caseOpenPinEditAccepted :: IO ()
-caseOpenPinEditAccepted = withOpenFile $ \path -> do
+-- | A config PIN edit after the seed changes nothing durable:
+-- the reopen with the edited user PIN writes no bytes, and the
+-- seeded credential rows keep the original PINs, which keep
+-- reaching the same objects.
+caseOpenPinEditIgnoredAfterSeed :: IO ()
+caseOpenPinEditIgnoredAfterSeed = withOpenFile $ \path -> do
   seedOpenSeeded path
   loaded <- fileLoaded path
   cfg <- parseCatalog positionalDoc
-  let reachBefore = credentialReach cfg loaded
+  reachBefore <- rowReach path cfg loaded
   assertEqual "three credentials served" 3 (length reachBefore)
+  credsBefore <- fileCredentials path
   cfgRotated <- parseCatalog (catalogDoc threeLabels threeSo ["1234", "9999", "3456"] [])
   bytesBefore <- fileBytes path
   eAcq <- openReconciled path cfgRotated
@@ -4069,14 +4089,14 @@ caseOpenPinEditAccepted = withOpenFile $ \path -> do
     Left err -> assertFailure ("PIN edit refused: " ++ show err)
     Right mAcq -> closeAcquired mAcq
   bytesAfter <- fileBytes path
-  assertEqual "accepted PIN edit writes nothing" bytesBefore bytesAfter
+  assertEqual "a PIN edit writes nothing" bytesBefore bytesAfter
+  credsAfter <- fileCredentials path
+  assertEqual "stored credentials keep the seeded PINs" credsBefore credsAfter
   loadedAfter <- fileLoaded path
-  let reachAfter = credentialReach cfgRotated loadedAfter
-      pinsOf reach = [pin | (pin, _, _) <- reach]
-      ownersOf reach = [(tid, objs) | (_, tid, objs) <- reach]
-  assertEqual "PINs before" ["1234", "2345", "3456"] (pinsOf reachBefore)
-  assertEqual "only the ops PIN changed" ["1234", "9999", "3456"] (pinsOf reachAfter)
-  assertEqual "owners untouched by PIN edit" (ownersOf reachBefore) (ownersOf reachAfter)
+  reachAfter <- rowReach path cfgRotated loadedAfter
+  assertEqual "PINs unchanged by the edit" ["1234", "2345", "3456"]
+    [pin | (pin, _, _) <- reachAfter]
+  assertEqual "the same PINs reach the same objects" reachBefore reachAfter
 
 -- | The durable publication path resolves serving slots
 -- through the reconciled layout: a real creation delta for a

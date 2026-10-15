@@ -198,8 +198,11 @@ data TokenRecord = TokenRecord
 -- | One persisted token credential: the provisioned SO PIN
 -- (always present once the row exists) and the provisioned user
 -- PIN ('Nothing' = uninitialized: no user login can succeed
--- until the SO sets one). At most one row per token; a token
--- without a row is unprovisioned and serves its catalog PINs.
+-- until the SO sets one). At most one row per token. A stored
+-- token gets its row when it is seeded (the catalog PINs, in the
+-- seed transaction), and from then on the row is its only
+-- credential: config PIN edits never replace it, and a stored
+-- token without a row serves no login (a legacy store).
 -- The row is owned by its token exactly like objects and jobs:
 -- dropping the token removes it, and reset removes it.
 data CredentialRecord = CredentialRecord
@@ -833,10 +836,11 @@ checkSlotUnique currentToks delta =
 -- removal, or a label change reopens refused, with the durable
 -- bytes untouched, until the operator either restores the
 -- matching catalog or performs the explicit slot move
--- ('planSlotMoves'). PIN values stay configuration-owned (the
--- store carries no PIN and no PIN check): a PIN edit changes the
--- credential that reaches the SAME durable identity, and the
--- credential lifecycle itself stays outside this contract.
+-- ('planSlotMoves'). PINs are not part of identity: a token's
+-- PINs are its durable credential row (seeded from the catalog
+-- when the token is created), so a later catalog PIN edit is
+-- accepted here and changes nothing durable. The credential
+-- lifecycle itself stays outside this contract.
 --
 -- The home anchor is unconditional: 'TokenId' 1 sits at 'SlotId'
 -- 0 and 'SlotId' 0 holds 'TokenId' 1. The configuration parser,
