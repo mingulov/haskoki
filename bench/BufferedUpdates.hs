@@ -15,7 +15,8 @@ import Data.Bits (shiftR, xor)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import Data.List (isPrefixOf)
+import Data.List (isInfixOf, isPrefixOf)
+import Text.Read (readMaybe)
 import Data.Version (showVersion)
 import Data.Word (Word32, Word64)
 import GHC.Clock (getMonotonicTimeNSec)
@@ -194,13 +195,15 @@ hardCensored p c =
       row = rowText p c "censored-hard" ns Nothing Nothing Nothing "censored"
   in CaseResult "censored-hard" json row
 
+-- Same field set as every other record; unknown values are null, and the
+-- failure detail (with the child exit code) is carried in "result".
 errorCase :: Int -> Int -> String -> CaseResult
 errorCase p c msg =
-  let json = "{\"payload\":" ++ show p ++ ",\"chunk\":" ++ show c
-        ++ ",\"updates_total\":" ++ show (updatesTotal p c)
-        ++ ",\"updates_completed\":null,\"status\":\"error\""
-        ++ ",\"result\":\"error\",\"detail\":" ++ jsonStr (printable msg) ++ "}"
-      row = rowText p c "error" 0 Nothing Nothing Nothing "error"
+  let ns = 0 :: Word64
+      json = jsonRecord p c Nothing "error" ns (fromIntegral capUs * 1000) Nothing
+               Nothing Nothing Nothing Nothing "unknown"
+               ("error: " ++ printable msg)
+      row = rowText p c "error" ns Nothing Nothing Nothing "error"
   in CaseResult "error" json row
 
 childCase :: FilePath -> (Int, Int) -> IO CaseResult
@@ -215,7 +218,11 @@ childCase exe (p, c) = do
           rs = [drop 4 l | l <- ls, "ROW " `isPrefixOf` l]
       in case (code, js, rs) of
            (ExitSuccess, [j], [row]) -> CaseResult (statusOf j) j row
-           _ -> errorCase p c (take 400 err)
+           _ -> errorCase p c ("exit " ++ exitText code ++ ": " ++ take 400 err)
+
+exitText :: ExitCode -> String
+exitText ExitSuccess = "0"
+exitText (ExitFailure n) = show n
 
 allMain :: FilePath -> IO ()
 allMain out = do
@@ -242,8 +249,35 @@ selfTest = do
   mapM_ (\c -> check 65536 c "ok" =<< runCase capUs 65536 c False) [1, 1024, 65536]
   check 1048576 1 "censored" =<< runCase 1000 1048576 1 False
   check 65536 1024 "mismatch" =<< runCase capUs 65536 1024 True
+  let hc = hardCensored 1048576 1
+  check 1048576 1 "censored-hard" hc
+  ok <- runCase capUs 65536 1024 False
+  ec <- childCase "/bin/false" (65536, 1024)
+  check 65536 1024 "error" ec
+  failIf "error record lacks the exit code" (not ("exit 1" `isInfixOf` crJson ec))
+  failIf "error record field set differs" (keysOf (crJson ec) /= keysOf (crJson ok))
+  failIf "hard-censored record field set differs" (keysOf (crJson hc) /= keysOf (crJson ok))
+  failIf "usage parse accepts a zero chunk" (parseArgs ["--case", "65536", "0"] /= Nothing)
+  failIf "usage parse rejects a valid case"
+    (parseArgs ["--case", "65536", "1"] /= Just (OneCase (CaseArgs 65536 1)))
   putStrLn "self-test: ok"
   where
+    failIf msg bad = if bad then putStrLn ("self-test: " ++ msg) >> exitWith (ExitFailure 1) else pure ()
+    -- Top-level key names of a flat one-line JSON object.
+    keysOf :: String -> [String]
+    keysOf = go . drop 1
+      where
+        go [] = []
+        go ('"' : r) =
+          let (k, r') = break (== '"') r
+          in if take 2 (drop 1 r') == ":" then k : go (skipValue (drop 3 r')) else go (drop 1 r')
+        go (_ : r) = go r
+        -- skip a value up to the next top-level comma (values here are flat)
+        skipValue ('"' : r) = skipStr r
+        skipValue r = dropWhile (\ch -> ch /= ',' && ch /= '}') r
+        skipStr ('"' : r) = r
+        skipStr (_ : r) = skipStr r
+        skipStr [] = []
     check p c want r
       | crStatus r == want = pure ()
       | otherwise = do
@@ -251,13 +285,29 @@ selfTest = do
                     ++ " status " ++ crStatus r ++ ", want " ++ want)
           exitWith (ExitFailure 1)
 
+data Command = SelfTest | AllCases FilePath | OneCase CaseArgs
+  deriving Eq
+
+data CaseArgs = CaseArgs Int Int
+  deriving Eq
+
+-- Malformed argv or a non-positive payload/chunk is a usage error.
+parseArgs :: [String] -> Maybe Command
+parseArgs ["--self-test"] = Just SelfTest
+parseArgs ["--all", out] = Just (AllCases out)
+parseArgs ["--case", p, c] = do
+  pn <- readMaybe p
+  cn <- readMaybe c
+  if pn > 0 && cn > 0 then Just (OneCase (CaseArgs pn cn)) else Nothing
+parseArgs _ = Nothing
+
 main :: IO ()
 main = do
   args <- getArgs
-  case args of
-    ["--self-test"] -> selfTest
-    ["--all", out] -> allMain out
-    ["--case", p, c] -> caseMain (read p) (read c)
-    _ -> do
+  case parseArgs args of
+    Just SelfTest -> selfTest
+    Just (AllCases out) -> allMain out
+    Just (OneCase (CaseArgs p c)) -> caseMain p c
+    Nothing -> do
       hPutStrLn stderr "usage: buffered-updates --case PAYLOAD CHUNK | --all OUT.json | --self-test"
       exitWith (ExitFailure 2)
