@@ -1808,6 +1808,69 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_OK && b2gLen == 32 &&
              memcmp(b2g, b2tc1, 32) == 0, "GENERAL truncation is the prefix");
     }
+    /* BLAKE2B HMAC key types (PKCS#11 3.1 6.34.3, table 175: "generic
+     * secret or CKK_BLAKE2B_256_HMAC"): a generic-secret key signs and
+     * verifies BLAKE2B-256-HMAC (tag from Python hmac over
+     * hashlib.blake2b(digest_size=32), key 32 x 0x0b, "Hi There"); an
+     * AES key is outside the list and refuses KEY_TYPE_INCONSISTENT. */
+    {
+      static const CK_BYTE b2gs256[32] = {
+        0xad, 0x64, 0x79, 0xe4, 0xa9, 0x5c, 0xb3, 0x42, 0x62, 0x6a,
+        0x25, 0x6e, 0xc9, 0x75, 0x56, 0x7f, 0x51, 0xc9, 0x02, 0xf2,
+        0xb8, 0x37, 0x1a, 0x58, 0x59, 0x93, 0x13, 0x68, 0x11, 0x15,
+        0x74, 0x7c
+      };
+      CK_KEY_TYPE gskt = CKK_GENERIC_SECRET, aeskt = CKK_AES;
+      CK_BYTE gsval[32], gstag[32];
+      CK_ULONG gstagLen;
+      CK_OBJECT_HANDLE gsh = 0, aesh = 0;
+      CK_MECHANISM gsm;
+      CK_ATTRIBUTE gstmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &gskt, sizeof(gskt) },
+        { CKA_VALUE, gsval, sizeof(gsval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE aestmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &aeskt, sizeof(aeskt) },
+        { CKA_VALUE, gsval, sizeof(gsval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      memset(gsval, 0x0b, sizeof(gsval));
+      rv = f->C_CreateObject(ssess, gstmpl, 6, &gsh);
+      CHECKC(rv == CKR_OK && gsh != 0, "blake2b-key-type: generic secret imports");
+      gsm.mechanism = CKM_BLAKE2B_256_HMAC;
+      gsm.pParameter = NULL_PTR;
+      gsm.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &gsm, gsh);
+      CHECKC(rv == CKR_OK, "blake2b-key-type: generic secret SignInit ok rv=0x%lx",
+             (unsigned long)rv);
+      gstagLen = sizeof(gstag);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "Hi There", 8, gstag, &gstagLen);
+      CHECKC(rv == CKR_OK && gstagLen == 32 && memcmp(gstag, b2gs256, 32) == 0,
+             "blake2b-key-type: generic secret tag matches the oracle");
+      rv = f->C_VerifyInit(ssess, &gsm, gsh);
+      CHECKC(rv == CKR_OK, "blake2b-key-type: generic secret VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "Hi There", 8, gstag, gstagLen);
+      CHECKC(rv == CKR_OK, "blake2b-key-type: generic secret verify ok");
+      rv = f->C_CreateObject(ssess, aestmpl, 6, &aesh);
+      CHECKC(rv == CKR_OK && aesh != 0, "blake2b-key-type: AES key imports");
+      rv = f->C_SignInit(ssess, &gsm, aesh);
+      CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+             "blake2b-key-type: AES key refused KEY_TYPE_INCONSISTENT rv=0x%lx",
+             (unsigned long)rv);
+      rv = f->C_VerifyInit(ssess, &gsm, aesh);
+      CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+             "blake2b-key-type: AES key verify refused KEY_TYPE_INCONSISTENT rv=0x%lx",
+             (unsigned long)rv);
+      if (gsh != 0) f->C_DestroyObject(ssess, gsh);
+      if (aesh != 0) f->C_DestroyObject(ssess, aesh);
+    }
     gm.mechanism = CKM_SHA256_HMAC_GENERAL;
     gm.pParameter = &gpar;
     gm.ulParameterLen = sizeof(gpar);

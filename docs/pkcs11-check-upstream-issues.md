@@ -26,6 +26,29 @@ A source correction and an executed crypto case are different observations.
 These were originally tracked as P11C-001 through P11C-010. Other provider
 findings, such as unavailable `CKA_LOCAL`, are not erased by a checker fix.
 
+## Pending upstream reports
+
+Recorded for filing against the checker. The finding stays in the frozen
+shared set until the checker pin changes.
+
+**BLAKE2B HMAC wrong-key-type tests use a valid key type.**
+`test_registry_message_{sign,verify}_wrong_key_type[BLAKE2B_*_HMAC{,_GENERAL}]`
+(16 cases) picks `CKK_GENERIC_SECRET` as the wrong key whenever the registry
+key generator is not `CKM_GENERIC_SECRET_KEY_GEN`. The BLAKE2B rows use
+`CKM_BLAKE2B_*_KEY_GEN`, so they get a generic-secret key. PKCS#11 3.1
+section 6.33.3 says: "The keys it uses are generic secret keys and
+CKK_BLAKE2B_160_HMAC", and table 172 lists "generic secret or
+CKK_BLAKE2B_160_HMAC" for `C_Sign` and `C_Verify`. Sections 6.34.3 to 6.36.3
+say the same for the 256, 384 and 512 widths, and the non-general mechanisms
+are "a special case" of the general ones. A module that accepts the key is
+conforming. The SHA-2 and SHA-3 HMAC rows already skip this test because
+their registry generator is `CKM_GENERIC_SECRET_KEY_GEN`. Suggested
+correction: choose a key type outside the mechanism's list (for example
+`CKK_AES`) as the wrong key. Haskoki pins both sides natively: a
+generic-secret key signs and verifies BLAKE2B-256-HMAC against an independent
+oracle, and an AES key is refused with `CKR_KEY_TYPE_INCONSISTENT`
+(`tests/c/consumer_roundtrip.c`, "blake2b-key-type").
+
 ## Public issue reports
 
 | Report | What the test needed to distinguish |

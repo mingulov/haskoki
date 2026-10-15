@@ -103,8 +103,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -118,8 +118,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -133,8 +133,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -148,8 +148,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -163,8 +163,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -178,8 +178,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -193,8 +193,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -208,8 +208,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -223,8 +223,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -238,8 +238,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -253,8 +253,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -268,8 +268,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -283,8 +283,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -298,8 +298,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -313,8 +313,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -328,8 +328,8 @@
    "owner": "checker",
    "decision": "checker-fix",
    "target": "ruling 1: spec permits generic-secret keys for BLAKE2B-*-HMAC; upstream issue text and native legs in WP12 Task 6; stays in frozen shared set while pin unchanged",
-   "test": "tests/model/KeyManagementSpec.hs",
-   "receipt": "docs/release-results.md",
+   "test": "tests/c/consumer_roundtrip.c::blake2b-key-type (generic secret accepted, AES refused)",
+   "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {

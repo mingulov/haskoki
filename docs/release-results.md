@@ -30,7 +30,7 @@ feature coverage or conformance.
 | --- | ---: | --- |
 | GMAC message shape | 2 | Provider message-init parameter limitation |
 | HOTP parameters | 2 | Checker probes omit the provider's required parameters |
-| BLAKE2B key type | 16 | Provider key-type matrix gap in negative tests |
+| BLAKE2B key type | 16 | Checker defect: its "wrong" key is a generic secret, which PKCS#11 allows for BLAKE2B HMAC |
 | Async child results | 2 | Checker ctypes binding problem before the module call |
 
 The set is shared by direct and proxy modes, with no proxy-only findings in
