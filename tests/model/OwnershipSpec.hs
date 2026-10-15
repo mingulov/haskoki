@@ -79,9 +79,7 @@ import Control.Exception
   , try
   , uninterruptibleMask_
   )
-import Control.Monad (replicateM, replicateM_, when)
-import System.Environment (lookupEnv)
-import System.IO (hFlush, stdout)
+import Control.Monad (replicateM, replicateM_)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
@@ -96,6 +94,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
+import OwnershipCounters (assertCensusZero, assertZero, counted, emitCounters)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import qualified Haskoki.Engine.Backend as B
 import Haskoki.Engine.Driver (encodeResult, runEffect, toCryptoError)
@@ -297,49 +296,49 @@ spec = testGroup "Ownership"
     , testCase "init vs close stays typed"
         (guarded "gate-race-init" caseGateRaceInit)
     , testCase "update vs close stays typed"
-        (guarded "gate-race-update" (caseGateRaceUpdate (ctrTag "m2-lifetime-gate" "gate-race-update")))
+        (counted "m2-lifetime-gate" "gate-race-update" (guarded "gate-race-update" caseGateRaceUpdate))
     , testCase "final vs close stays typed"
-        (guarded "gate-race-final" (caseGateRaceFinal (ctrTag "m2-lifetime-gate" "gate-race-final")))
+        (counted "m2-lifetime-gate" "gate-race-final" (guarded "gate-race-final" caseGateRaceFinal))
     , testCase "release vs close frees once"
-        (guarded "gate-race-release" (caseGateRaceRelease (ctrTag "m2-lifetime-gate" "gate-race-release")))
+        (counted "m2-lifetime-gate" "gate-race-release" (guarded "gate-race-release" caseGateRaceRelease))
     , testCase "import vs close stays typed"
         (guarded "gate-race-import" caseGateRaceImportClose)
     , testCase "export vs close stays typed"
         (guarded "gate-race-export" caseGateRaceExportClose)
     , testCase "simultaneous close stays total"
-        (guarded "gate-simultaneous-close" (caseGateSimultaneousClose (ctrTag "m2-lifetime-gate" "gate-simultaneous-close")))
+        (counted "m2-lifetime-gate" "gate-simultaneous-close" (guarded "gate-simultaneous-close" caseGateSimultaneousClose))
     , testCase "close waits for an admitted borrower"
-        (guarded "gate-close-waits-borrow" (caseGateCloseWaitsForBorrow (ctrTag "m2-lifetime-gate" "gate-close-waits-borrow")))
+        (counted "m2-lifetime-gate" "gate-close-waits-borrow" (guarded "gate-close-waits-borrow" caseGateCloseWaitsForBorrow))
     , testCase "close waits through the take-to-consume window"
-        (guarded "gate-close-waits-final" (caseGateCloseWaitsForFinal (ctrTag "m2-lifetime-gate" "gate-close-waits-final")))
+        (counted "m2-lifetime-gate" "gate-close-waits-final" (guarded "gate-close-waits-final" caseGateCloseWaitsForFinal))
     , testCase "interruption cleanup releases the gate for close"
-        (guarded "gate-close-after-interrupt" (caseGateCloseAfterInterrupt (ctrTag "m2-lifetime-gate" "gate-close-after-interrupt")))
+        (counted "m2-lifetime-gate" "gate-close-after-interrupt" (guarded "gate-close-after-interrupt" caseGateCloseAfterInterrupt))
     , testCase "cancel while closing preserves the gate"
-        (guarded "gate-cancel-closing" (caseGateCancelWhileClosing (ctrTag "m2-lifetime-gate" "gate-cancel-closing")))
+        (counted "m2-lifetime-gate" "gate-cancel-closing" (guarded "gate-cancel-closing" caseGateCancelWhileClosing))
     ]
   , testGroup "native ownership transfers"
     [ testCase "gated copy fault frees the output (sync)"
-        (guarded "gated-copy-fault" (caseGatedCopyFaultSync (ctrTag "m1-native-transfers" "gated-copy-fault")))
+        (counted "m1-native-transfers" "gated-copy-fault" (guarded "gated-copy-fault" caseGatedCopyFaultSync))
     , testCase "parked copy dies ThreadKilled with zero outstanding"
-        (guarded "gated-copy-park" (caseGatedCopyParkKill (ctrTag "m1-native-transfers" "gated-copy-park")))
+        (counted "m1-native-transfers" "gated-copy-park" (guarded "gated-copy-park" caseGatedCopyParkKill))
     , testCase "pair fault between copies frees both"
-        (guarded "gated-pair-between" (caseGatedPairBetweenFault (ctrTag "m1-native-transfers" "gated-pair-between")))
+        (counted "m1-native-transfers" "gated-pair-between" (guarded "gated-pair-between" caseGatedPairBetweenFault))
     , testCase "consuming final plus copy fault frees once (sync)"
-        (guarded "gated-final-fault" (caseGatedFinalFaultSync (ctrTag "m1-native-transfers" "gated-final-fault")))
+        (counted "m1-native-transfers" "gated-final-fault" (guarded "gated-final-fault" caseGatedFinalFaultSync))
     , testCase "consuming final plus kill at copy frees once"
-        (guarded "gated-final-park" (caseGatedFinalParkKill (ctrTag "m1-native-transfers" "gated-final-park")))
+        (counted "m1-native-transfers" "gated-final-park" (guarded "gated-final-park" caseGatedFinalParkKill))
     , testCase "alloc fault before adoption fails clean"
-        (guarded "gated-adoption-alloc" (caseGatedAdoptionAllocFail (ctrTag "m1-native-transfers" "gated-adoption-alloc")))
+        (counted "m1-native-transfers" "gated-adoption-alloc" (guarded "gated-adoption-alloc" caseGatedAdoptionAllocFail))
     , testCase "load fault before adoption frees the live env"
-        (guarded "gated-adoption-load" (caseGatedAdoptionLoadFault (ctrTag "m1-native-transfers" "gated-adoption-load")))
+        (counted "m1-native-transfers" "gated-adoption-load" (guarded "gated-adoption-load" caseGatedAdoptionLoadFault))
     , testCase "parked pre-adoption load dies ThreadKilled, env freed"
-        (guarded "gated-adoption-park" (caseGatedAdoptionParkKill (ctrTag "m1-native-transfers" "gated-adoption-park")))
+        (counted "m1-native-transfers" "gated-adoption-park" (guarded "gated-adoption-park" caseGatedAdoptionParkKill))
     , testCase "alloc fault in digest init fails typed"
-        (guarded "gated-init-alloc" (caseGatedInitAllocFail (ctrTag "m1-native-transfers" "gated-init-alloc")))
+        (counted "m1-native-transfers" "gated-init-alloc" (guarded "gated-init-alloc" caseGatedInitAllocFail))
     , testCase "alloc fault in one-shot digest answers NOMEM"
-        (guarded "gated-digest-alloc" (caseGatedDigestAllocFail (ctrTag "m1-native-transfers" "gated-digest-alloc")))
+        (counted "m1-native-transfers" "gated-digest-alloc" (guarded "gated-digest-alloc" caseGatedDigestAllocFail))
     , testCase "gated normal paths match production, zero outstanding"
-        (guarded "gated-normal-zero" (caseGatedNormalZero (ctrTag "m1-native-transfers" "gated-normal-zero")))
+        (counted "m1-native-transfers" "gated-normal-zero" (guarded "gated-normal-zero" caseGatedNormalZero))
     ]
   , testGroup "publication contract"
     [ testCase "faulted publish drains releases, fails terminal, sink untouched"
@@ -371,39 +370,39 @@ spec = testGroup "Ownership"
     ]
   , testGroup "handle registry"
     [ testCase "key codec roundtrips; salts distinguish"
-        (guarded "handle-key-codec" caseHandleKeyCodec)
+        (counted "m3-handle-registry" "handle-key-codec" (guarded "handle-key-codec" caseHandleKeyCodec))
     , testCase "deterministic retire-then-use stays typed"
-        (guarded "handle-retire-then-use" caseHandleRetireThenUse)
+        (counted "m3-handle-registry" "handle-retire-then-use" (guarded "handle-retire-then-use" caseHandleRetireThenUse))
     , testCase "deterministic resolve-then-close stays typed"
-        (guarded "handle-resolve-then-close" caseHandleResolveThenClose)
+        (counted "m3-handle-registry" "handle-resolve-then-close" (guarded "handle-resolve-then-close" caseHandleResolveThenClose))
     , testCase "resolve-vs-retire race stays typed"
-        (guarded "handle-resolve-retire" caseHandleResolveRetire)
+        (counted "m3-handle-registry" "handle-resolve-retire" (guarded "handle-resolve-retire" caseHandleResolveRetire))
     , testCase "admission storm stays consistent"
-        (guarded "handle-admission-storm" caseHandleAdmissionStorm)
+        (counted "m3-handle-registry" "handle-admission-storm" (guarded "handle-admission-storm" caseHandleAdmissionStorm))
     , testCase "kill storm over admission retires clean"
-        (guarded "handle-kill-storm" caseHandleKillStorm)
+        (counted "m3-handle-registry" "handle-kill-storm" (guarded "handle-kill-storm" caseHandleKillStorm))
     , testCase "close-drain vs in-flight stays typed"
-        (guarded "handle-close-race" caseHandleCloseRace)
+        (counted "m3-handle-registry" "handle-close-race" (guarded "handle-close-race" caseHandleCloseRace))
     , testCase "foreign and bogus handles stay stale"
-        (guarded "handle-foreign-stale" caseHandleForeignStale)
+        (counted "m3-handle-registry" "handle-foreign-stale" (guarded "handle-foreign-stale" caseHandleForeignStale))
     , testCase "table salts are stable and distinguish contexts"
-        (guarded "handle-salt-stable" caseHandleSaltStable)
+        (counted "m3-handle-registry" "handle-salt-stable" (guarded "handle-salt-stable" caseHandleSaltStable))
     , testCase "table salts are exact, nonzero, and stable"
-        (guarded "table-salt-exact" caseTableSaltExact)
+        (counted "m3-handle-registry" "table-salt-exact" (guarded "table-salt-exact" caseTableSaltExact))
     , testCase "table salt mint refuses past the 32-bit bound"
-        (guarded "table-salt-bound" caseTableSaltBound)
+        (counted "m3-handle-registry" "table-salt-bound" (guarded "table-salt-bound" caseTableSaltBound))
     ]
   , testGroup "attachment claims"
     [ testCase "table identities are unique and stable"
-        (guarded "claim-table-id-unique" caseTableIdUnique)
+        (counted "m5-attachment-claims" "claim-table-id-unique" (guarded "claim-table-id-unique" caseTableIdUnique))
     , testCase "scoped retire is exact and idempotent"
-        (guarded "claim-scoped-retire" caseScopedRetireExactlyOnce)
+        (counted "m5-attachment-claims" "claim-scoped-retire" (guarded "claim-scoped-retire" caseScopedRetireExactlyOnce))
     , testCase "rival refusal preserves the owner's cancel"
-        (guarded "claim-rival-refusal" caseRivalRefusalPreservesOwner)
+        (counted "m5-attachment-claims" "claim-rival-refusal" (guarded "claim-rival-refusal" caseRivalRefusalPreservesOwner))
     , testCase "session churn and removal retire async enablement"
-        (guarded "retire-churn-removal" caseSessionRetirementAccounting)
+        (counted "m5-attachment-claims" "retire-churn-removal" (guarded "retire-churn-removal" caseSessionRetirementAccounting))
     , testCase "failed close and removal leave enablement intact"
-        (guarded "retire-rollback" caseRetirementRollback)
+        (counted "m5-attachment-claims" "retire-rollback" (guarded "retire-rollback" caseRetirementRollback))
     ]
   ]
 
@@ -1340,53 +1339,33 @@ awaitParked g = go (200 :: Int)
           p <- c_gateParked g
           if p /= 0 then pure () else threadDelay 5000 >> go (n - 1)
 
--- | Tag of one gated case's counter line: the matrix case id (the
--- driver's table key) and the test label.
-data CtrTag = CtrTag String String
-
-ctrTag :: String -> String -> CtrTag
-ctrTag = CtrTag
-
--- | Print one @OWNERSHIP-COUNTERS case=<id> test=<label> k=v ...@
--- line, only when HASKOKI_OWNERSHIP_COUNTERS=1 (ruling 5; precedent
--- DURABILITY). Printed before the assertions so a failing value is
--- still visible. One flushed 'putStr' so parallel tasty threads
--- interleave whole lines only.
-emitCounters :: CtrTag -> [(String, CLong)] -> IO ()
-emitCounters (CtrTag c t) kvs = do
-  on <- lookupEnv "HASKOKI_OWNERSHIP_COUNTERS"
-  when (on == Just "1") $ do
-    putStr ("OWNERSHIP-COUNTERS case=" ++ c ++ " test=" ++ t
-            ++ concatMap (\(k, v) -> " " ++ k ++ "=" ++ show v) kvs ++ "\n")
-    hFlush stdout
-
-assertOutstandingZero :: CtrTag -> Ptr TestGate -> IO ()
-assertOutstandingZero ctr g = do
+assertOutstandingZero :: Ptr TestGate -> IO ()
+assertOutstandingZero g = do
   b <- c_gateBufOutstanding g
   d <- c_gateDigestOutstanding g
   e <- c_gateEnvOutstanding g
-  emitCounters ctr [("bufs", b), ("digests", d), ("envs", e)]
+  emitCounters [("bufs", show b), ("digests", show d), ("envs", show e)]
   assertEqual "no stranded buffers" 0 b
   assertEqual "no stranded digests" 0 d
   assertEqual "no stranded envs" 0 e
 
 -- | The digest live-set counters are identically zero under the
 -- fixed transfer, so these assert without cross-test quiescence.
-assertDigestCountersClean :: CtrTag -> IO ()
-assertDigestCountersClean ctr = do
+assertDigestCountersClean :: IO ()
+assertDigestCountersClean = do
   df <- c_digestDoublefree
   du <- c_digestUntracked
-  emitCounters ctr [("digest_doublefree", df), ("digest_untracked", du)]
+  emitCounters [("digest_doublefree", show df), ("digest_untracked", show du)]
   assertEqual "no digest double-free" 0 df
   assertEqual "complete digest tracking" 0 du
 
 -- | The env live-set twin: identically zero under the fixed
 -- transfer (no double-free, complete tracking).
-assertEnvCountersClean :: CtrTag -> IO ()
-assertEnvCountersClean ctr = do
+assertEnvCountersClean :: IO ()
+assertEnvCountersClean = do
   ef <- c_envDoublefree
   eu <- c_envUntracked
-  emitCounters ctr [("env_doublefree", ef), ("env_untracked", eu)]
+  emitCounters [("env_doublefree", show ef), ("env_untracked", show eu)]
   assertEqual "no env double-free" 0 ef
   assertEqual "complete env tracking" 0 eu
 
@@ -1398,21 +1377,21 @@ expectGatedOk label r = case r of
 
 -- | Sync fault before the output copy: the primary exception is the
 -- injected fault (not cancellation) and the native buffer is freed.
-caseGatedCopyFaultSync :: CtrTag -> IO ()
-caseGatedCopyFaultSync ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGatedCopyFaultSync :: IO ()
+caseGatedCopyFaultSync = withGate $ \g -> withRealBackend $ \env -> do
   c_gateArmCheckpoint g 1
   r <- try (digestOneShotGated g env B.D_SHA256 "hello")
     :: IO (Either SomeException (B.EngineResult ByteString))
   assertCopyFault r
-  assertOutstandingZero ctr g
+  assertOutstandingZero g
 
 -- | Async kill issued at the copy checkpoint: the parked safe call
 -- cannot be killed out from under the gate mutex, so the forked
 -- killer's 'killThread' blocks until the release lets the call
 -- return — cancellation is preserved and the registered buffer is
 -- freed exactly once, before delivery.
-caseGatedCopyParkKill :: CtrTag -> IO ()
-caseGatedCopyParkKill ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGatedCopyParkKill :: IO ()
+caseGatedCopyParkKill = withGate $ \g -> withRealBackend $ \env -> do
   c_gateArmCheckpoint g 2
   withKillWorker g (digestOneShotGated g env B.D_SHA256 "hello") $ \done fire -> do
     awaitParked g
@@ -1421,38 +1400,38 @@ caseGatedCopyParkKill ctr = withGate $ \g -> withRealBackend $ \env -> do
     r <- readMVar done
       :: IO (Either SomeException (B.EngineResult ByteString))
     assertThreadKilled r
-    assertOutstandingZero ctr g
+    assertOutstandingZero g
 
 -- | Sync fault between the pair copies: cleanup for BOTH halves was
 -- registered before either copy, so both are freed.
-caseGatedPairBetweenFault :: CtrTag -> IO ()
-caseGatedPairBetweenFault ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGatedPairBetweenFault :: IO ()
+caseGatedPairBetweenFault = withGate $ \g -> withRealBackend $ \env -> do
   c_gateArmCheckpoint g 3
   r <- try (generateKeyECGated g env
       (B.EcSpec { B.ecCurve = "P-256", B.ecEncoding = "DER" }))
     :: IO (Either SomeException
         (B.EngineResult (B.KeyMaterial, Maybe B.KeyMaterial)))
   assertCopyFault r
-  assertOutstandingZero ctr g
+  assertOutstandingZero g
 
 -- | Sync fault after the final's C consumption: post-call cleanup
 -- owns only the output buffer (no second handle free), and the
 -- primary exception is the injected fault.
-caseGatedFinalFaultSync :: CtrTag -> IO ()
-caseGatedFinalFaultSync ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGatedFinalFaultSync :: IO ()
+caseGatedFinalFaultSync = withGate $ \g -> withRealBackend $ \env -> do
   rid <- expectGatedOk "gated init" =<< digestInitGated g env B.D_SHA256
   expectGatedOk "update" =<< B.digestUpdate env rid "hello"
   c_gateArmCheckpoint g 1
   r <- try (digestFinalGated g env rid)
     :: IO (Either SomeException (B.EngineResult ByteString))
   assertCopyFault r
-  assertOutstandingZero ctr g
-  assertDigestCountersClean ctr
+  assertOutstandingZero g
+  assertDigestCountersClean
 
 -- | Async kill issued at the final's copy checkpoint: cancellation
 -- preserved, output freed, handle consumed exactly once.
-caseGatedFinalParkKill :: CtrTag -> IO ()
-caseGatedFinalParkKill ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGatedFinalParkKill :: IO ()
+caseGatedFinalParkKill = withGate $ \g -> withRealBackend $ \env -> do
   rid <- expectGatedOk "gated init" =<< digestInitGated g env B.D_SHA256
   expectGatedOk "update" =<< B.digestUpdate env rid "hello"
   c_gateArmCheckpoint g 2
@@ -1463,14 +1442,14 @@ caseGatedFinalParkKill ctr = withGate $ \g -> withRealBackend $ \env -> do
     r <- readMVar done
       :: IO (Either SomeException (B.EngineResult ByteString))
     assertThreadKilled r
-    assertOutstandingZero ctr g
-    assertDigestCountersClean ctr
+    assertOutstandingZero g
+    assertDigestCountersClean
 
 -- | Alloc fault at env construction: the open fails typed (nothing
 -- adopted, nothing to free) and the one-shot arm is spent, so a
 -- second open succeeds on the healthy backend.
-caseGatedAdoptionAllocFail :: CtrTag -> IO ()
-caseGatedAdoptionAllocFail ctr = withGate $ \g -> do
+caseGatedAdoptionAllocFail :: IO ()
+caseGatedAdoptionAllocFail = withGate $ \g -> do
   c_gateArmAllocFail g
   r <- openBackendGated g "provider=default"
     :: IO (B.EngineResult (B.BackendEnv OpenSSL4))
@@ -1478,8 +1457,8 @@ caseGatedAdoptionAllocFail ctr = withGate $ \g -> do
     B.EngineFail _ -> pure ()
     B.EngineOk env ->
       B.closeBackend env >> assertFailure "adoption alloc-fail still opened"
-  assertOutstandingZero ctr g
-  assertEnvCountersClean ctr
+  assertOutstandingZero g
+  assertEnvCountersClean
   r2 <- openBackendGated g "provider=default"
     :: IO (B.EngineResult (B.BackendEnv OpenSSL4))
   case r2 of
@@ -1490,8 +1469,8 @@ caseGatedAdoptionAllocFail ctr = withGate $ \g -> do
 -- | Sync checkpoint fault at the pre-adoption provider load: the
 -- live env is freed on the failure path (never adopted), the open
 -- fails typed, and no env strands.
-caseGatedAdoptionLoadFault :: CtrTag -> IO ()
-caseGatedAdoptionLoadFault ctr = withGate $ \g -> do
+caseGatedAdoptionLoadFault :: IO ()
+caseGatedAdoptionLoadFault = withGate $ \g -> do
   c_gateArmCheckpoint g 1
   r <- openBackendGated g "provider=default"
     :: IO (B.EngineResult (B.BackendEnv OpenSSL4))
@@ -1499,8 +1478,8 @@ caseGatedAdoptionLoadFault ctr = withGate $ \g -> do
     B.EngineFail _ -> pure ()
     B.EngineOk env ->
       B.closeBackend env >> assertFailure "load-faulted open still opened"
-  assertOutstandingZero ctr g
-  assertEnvCountersClean ctr
+  assertOutstandingZero g
+  assertEnvCountersClean
 
 -- | Async kill issued at the pre-adoption load checkpoint: the
 -- forked killer's 'killThread' blocks until the fault-verdict
@@ -1508,8 +1487,8 @@ caseGatedAdoptionLoadFault ctr = withGate $ \g -> do
 -- (early delivery unwinds via the pre-adoption 'onException',
 -- late delivery lands after the masked failure cleanup) with the
 -- live env freed exactly once either way.
-caseGatedAdoptionParkKill :: CtrTag -> IO ()
-caseGatedAdoptionParkKill ctr = withGate $ \g -> do
+caseGatedAdoptionParkKill :: IO ()
+caseGatedAdoptionParkKill = withGate $ \g -> do
   c_gateArmCheckpoint g 2
   withKillWorker g (openBackendGated g "provider=default") $ \done fire -> do
     awaitParked g
@@ -1518,38 +1497,38 @@ caseGatedAdoptionParkKill ctr = withGate $ \g -> do
     r <- readMVar done
       :: IO (Either SomeException (B.EngineResult (B.BackendEnv OpenSSL4)))
     assertThreadKilled r
-    assertOutstandingZero ctr g
-    assertEnvCountersClean ctr
+    assertOutstandingZero g
+    assertEnvCountersClean
 
 -- | Alloc fault at digest init: typed failure, nothing registered.
-caseGatedInitAllocFail :: CtrTag -> IO ()
-caseGatedInitAllocFail ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGatedInitAllocFail :: IO ()
+caseGatedInitAllocFail = withGate $ \g -> withRealBackend $ \env -> do
   c_gateArmAllocFail g
   r <- digestInitGated g env B.D_SHA256
   case r of
     B.EngineFail _ -> pure ()
     B.EngineOk rid -> B.releaseResource env rid
       >> assertFailure "init alloc-fail still allocated"
-  assertOutstandingZero ctr g
+  assertOutstandingZero g
 
 -- | Alloc fault at the one-shot output: the shim answers NOMEM and
 -- the backend reports it typed.
-caseGatedDigestAllocFail :: CtrTag -> IO ()
-caseGatedDigestAllocFail ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGatedDigestAllocFail :: IO ()
+caseGatedDigestAllocFail = withGate $ \g -> withRealBackend $ \env -> do
   c_gateArmAllocFail g
   r <- digestOneShotGated g env B.D_SHA256 "hello"
   case r of
     B.EngineFail (B.BackendNative _ code _) ->
       assertEqual "NOMEM code" (-4) code
     _ -> assertFailure ("expected a NOMEM native failure, got " ++ show r)
-  assertOutstandingZero ctr g
+  assertOutstandingZero g
 
 -- | Characterization: unarmed gated paths match production bytes
 -- (plain, sized, XOF, multipart, pair) and leave zero outstanding.
 -- The gate observes without perturbing; the sized/XOF legs compare
 -- against production either way (served or refused alike).
-caseGatedNormalZero :: CtrTag -> IO ()
-caseGatedNormalZero ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGatedNormalZero :: IO ()
+caseGatedNormalZero = withGate $ \g -> withRealBackend $ \env -> do
   prod <- expectGatedOk "prod digest" =<< B.digestOneShot env B.D_SHA256 "abc"
   gated <- expectGatedOk "gated digest"
     =<< digestOneShotGated g env B.D_SHA256 "abc"
@@ -1572,8 +1551,8 @@ caseGatedNormalZero ctr = withGate $ \g -> withRealBackend $ \env -> do
       assertBool "priv half non-empty" (not (BS.null priv))
       assertBool "pub half non-empty" (not (BS.null pub))
     _ -> assertFailure ("EC keygen shape: " ++ show kg)
-  assertOutstandingZero ctr g
-  assertDigestCountersClean ctr
+  assertOutstandingZero g
+  assertDigestCountersClean
 
 sha256abc :: ByteString
 sha256abc = BS.pack
@@ -1630,8 +1609,8 @@ caseGateRaceInit = replicateM_ 15 $ withRealBackend $ \env ->
 -- | Update vs close on a live id: unit or InvalidState. Pre-gate
 -- this borrowed a handle close could free mid-call; the gate
 -- serializes the two, and the counters pin no double-free.
-caseGateRaceUpdate :: CtrTag -> IO ()
-caseGateRaceUpdate ctr = replicateM_ 15 $ withRealBackend $ \env -> do
+caseGateRaceUpdate :: IO ()
+caseGateRaceUpdate = replicateM_ 15 $ withRealBackend $ \env -> do
   rid <- expectGatedOk "init" =<< B.digestInit env B.D_SHA256
   raceWithCloseOn env $ do
     r <- B.digestUpdate env rid "hello"
@@ -1639,12 +1618,12 @@ caseGateRaceUpdate ctr = replicateM_ 15 $ withRealBackend $ \env -> do
       B.EngineOk () -> pure ()
       B.EngineFail (B.BackendInvalidState _ _) -> pure ()
       other -> assertFailure ("update vs close must stay typed, got " ++ show other)
-  assertDigestCountersClean ctr
+  assertDigestCountersClean
 
 -- | Final vs close on a fed id: bytes or InvalidState, the handle
 -- consumed exactly once either way.
-caseGateRaceFinal :: CtrTag -> IO ()
-caseGateRaceFinal ctr = replicateM_ 15 $ withRealBackend $ \env -> do
+caseGateRaceFinal :: IO ()
+caseGateRaceFinal = replicateM_ 15 $ withRealBackend $ \env -> do
   rid <- expectGatedOk "init" =<< B.digestInit env B.D_SHA256
   expectGatedOk "update" =<< B.digestUpdate env rid "hello"
   raceWithCloseOn env $ do
@@ -1653,20 +1632,20 @@ caseGateRaceFinal ctr = replicateM_ 15 $ withRealBackend $ \env -> do
       B.EngineOk _ -> pure ()
       B.EngineFail (B.BackendInvalidState _ _) -> pure ()
       other -> assertFailure ("final vs close must stay typed, got " ++ show other)
-  assertDigestCountersClean ctr
+  assertDigestCountersClean
 
 -- | Release vs close: both take the gate, so the take-to-free and
 -- the close drain cannot overlap — exactly one frees the handle.
-caseGateRaceRelease :: CtrTag -> IO ()
-caseGateRaceRelease ctr = replicateM_ 15 $ withRealBackend $ \env -> do
+caseGateRaceRelease :: IO ()
+caseGateRaceRelease = replicateM_ 15 $ withRealBackend $ \env -> do
   rid <- expectGatedOk "init" =<< B.digestInit env B.D_SHA256
   raceWithCloseOn env (B.releaseResource env rid)
-  assertDigestCountersClean ctr
+  assertDigestCountersClean
 
 -- | Simultaneous closes serialize into one drain: every closer
 -- returns, the backend reads closed after, native sets stay clean.
-caseGateSimultaneousClose :: CtrTag -> IO ()
-caseGateSimultaneousClose ctr = withRealBackend $ \env -> do
+caseGateSimultaneousClose :: IO ()
+caseGateSimultaneousClose = withRealBackend $ \env -> do
   done <- newEmptyMVar
   let closer = B.closeBackend env >> putMVar done ()
   replicateM_ 16 (forkIO closer)
@@ -1675,8 +1654,8 @@ caseGateSimultaneousClose ctr = withRealBackend $ \env -> do
   case r of
     B.EngineFail (B.BackendInvalidState _ _) -> pure ()
     other -> assertFailure ("post-close one-shot must be InvalidState, got " ++ show other)
-  assertEnvCountersClean ctr
-  assertDigestCountersClean ctr
+  assertEnvCountersClean
+  assertDigestCountersClean
 
 -- | Fork a backend closer joined on EVERY exit (the inner-bracket
 -- twin of 'withKillWorker'): the body observes the result with
@@ -1744,8 +1723,8 @@ caseGateRaceExportClose = replicateM_ 15 $ withRealBackend $ \env -> do
 -- correct bytes, and only then does the closer drain. The blocked
 -- proof plus undisturbed bytes is the deterministic
 -- close-waits-for-use ordering (no timing-hope).
-caseGateCloseWaitsForBorrow :: CtrTag -> IO ()
-caseGateCloseWaitsForBorrow ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGateCloseWaitsForBorrow :: IO ()
+caseGateCloseWaitsForBorrow = withGate $ \g -> withRealBackend $ \env -> do
   c_gateArmCheckpoint g 2
   withKillWorker g (digestOneShotGated g env B.D_SHA256 "abc") $ \opDone _fire -> do
     awaitParked g
@@ -1769,9 +1748,9 @@ caseGateCloseWaitsForBorrow ctr = withGate $ \g -> withRealBackend $ \env -> do
       case r of
         B.EngineFail (B.BackendInvalidState _ _) -> pure ()
         other -> assertFailure ("post-close one-shot must be InvalidState, got " ++ show other)
-    assertOutstandingZero ctr g
-    assertEnvCountersClean ctr
-    assertDigestCountersClean ctr
+    assertOutstandingZero g
+    assertEnvCountersClean
+    assertDigestCountersClean
 
 -- | Close waits through the take-to-consume window: the final takes
 -- the handle, then parks at its copy checkpoint holding the gate,
@@ -1779,8 +1758,8 @@ caseGateCloseWaitsForBorrow ctr = withGate $ \g -> withRealBackend $ \env -> do
 -- deliver first (matching the pre-captured production digest),
 -- then the closer drains. The consumed id reads InvalidState
 -- after (the closed check precedes the registry lookup).
-caseGateCloseWaitsForFinal :: CtrTag -> IO ()
-caseGateCloseWaitsForFinal ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGateCloseWaitsForFinal :: IO ()
+caseGateCloseWaitsForFinal = withGate $ \g -> withRealBackend $ \env -> do
   prod <- expectGatedOk "prod digest" =<< B.digestOneShot env B.D_SHA256 "hello"
   rid <- expectGatedOk "gated init" =<< digestInitGated g env B.D_SHA256
   expectGatedOk "update" =<< B.digestUpdate env rid "hello"
@@ -1807,16 +1786,16 @@ caseGateCloseWaitsForFinal ctr = withGate $ \g -> withRealBackend $ \env -> do
       case r of
         B.EngineFail (B.BackendInvalidState _ _) -> pure ()
         other -> assertFailure ("post-close final must be InvalidState, got " ++ show other)
-    assertOutstandingZero ctr g
-    assertEnvCountersClean ctr
-    assertDigestCountersClean ctr
+    assertOutstandingZero g
+    assertEnvCountersClean
+    assertDigestCountersClean
 
 -- | Interruption cleanup releases the gate: the parked one-shot is
 -- killed (forked killer plus release, the 'withKillWorker'
 -- protocol), the worker dies 'ThreadKilled', and the closer —
 -- provably blocked — proceeds through the freed gate and drains.
-caseGateCloseAfterInterrupt :: CtrTag -> IO ()
-caseGateCloseAfterInterrupt ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGateCloseAfterInterrupt :: IO ()
+caseGateCloseAfterInterrupt = withGate $ \g -> withRealBackend $ \env -> do
   c_gateArmCheckpoint g 2
   withKillWorker g (digestOneShotGated g env B.D_SHA256 "abc") $ \opDone fire -> do
     awaitParked g
@@ -1839,9 +1818,9 @@ caseGateCloseAfterInterrupt ctr = withGate $ \g -> withRealBackend $ \env -> do
       case r of
         B.EngineFail (B.BackendInvalidState _ _) -> pure ()
         other -> assertFailure ("post-close one-shot must be InvalidState, got " ++ show other)
-    assertOutstandingZero ctr g
-    assertEnvCountersClean ctr
-    assertDigestCountersClean ctr
+    assertOutstandingZero g
+    assertEnvCountersClean
+    assertDigestCountersClean
 
 -- | Cancel while closing: a gated op parked in its checkpoint holds
 -- the env gate, so the closer provably blocks on the gate (status
@@ -1853,8 +1832,8 @@ caseGateCloseAfterInterrupt ctr = withGate $ \g -> withRealBackend $ \env -> do
 -- teardown ('withKillWorker' outside, 'withJoinedCloser' inside),
 -- so every exit releases and joins both before the backend close
 -- and the C gate free.
-caseGateCancelWhileClosing :: CtrTag -> IO ()
-caseGateCancelWhileClosing ctr = withGate $ \g -> withRealBackend $ \env -> do
+caseGateCancelWhileClosing :: IO ()
+caseGateCancelWhileClosing = withGate $ \g -> withRealBackend $ \env -> do
   c_gateArmCheckpoint g 2
   withKillWorker g (digestOneShotGated g env B.D_SHA256 "abc") $ \opDone _fire -> do
     awaitParked g
@@ -1880,9 +1859,9 @@ caseGateCancelWhileClosing ctr = withGate $ \g -> withRealBackend $ \env -> do
       case r of
         B.EngineFail (B.BackendInvalidState _ _) -> pure ()
         other -> assertFailure ("post-close one-shot must be InvalidState, got " ++ show other)
-    assertOutstandingZero ctr g
-    assertEnvCountersClean ctr
-    assertDigestCountersClean ctr
+    assertOutstandingZero g
+    assertEnvCountersClean
+    assertDigestCountersClean
 
 -- ---------------------------------------------------------------------------
 -- Handle registry
@@ -1963,7 +1942,7 @@ caseHandleRetireThenUse = do
   out <- cancelJob (acTable ctx) j0
   assertEqual "owned id still cancels" CancelOk out
   nLive <- asyncLiveHandles ctx
-  assertEqual "no live handles" 0 nLive
+  assertZero "live_handles" "no live handles" nLive
   asyncCloseCtx ctx
 
 -- | Deterministic close-window reproduction (no threads): resolve
@@ -1985,7 +1964,7 @@ caseHandleResolveThenClose = do
     CancelAlready _ -> pure ()
     other -> assertFailure ("expected CancelAlready, got " ++ show other)
   nLive <- asyncLiveHandles ctx
-  assertEqual "no live handles" 0 nLive
+  assertZero "live_handles" "no live handles" nLive
 
 -- | Resolution racing retirement: four workers resolve one handle
 -- while the owner cycles retirement and re-admission around them
@@ -2019,7 +1998,7 @@ caseHandleResolveRetire = do
   mFinal <- resolveJobHandle ctx h
   assertEqual "retired handle stale" Nothing mFinal
   nLive <- asyncLiveHandles ctx
-  assertEqual "no live handles" 0 nLive
+  assertZero "live_handles" "no live handles" nLive
   asyncCloseCtx ctx
 
 -- | Admission storm: four workers admit\/resolve\/retire their own
@@ -2044,7 +2023,7 @@ caseHandleAdmissionStorm = do
   donesOut <- mapM takeMVar dones
   mapM_ assertWorkerOk donesOut
   nLive <- asyncLiveHandles ctx
-  assertEqual "storm drains to zero" 0 nLive
+  assertZero "live_handles" "storm drains to zero" nLive
   asyncCloseCtx ctx
 
 -- | Kill storm over admission: two workers admit\/resolve\/retire in
@@ -2097,7 +2076,7 @@ caseHandleKillStorm = do
   mapM_ (checkRecorded ctx ja jb) hs
   asyncCloseCtx ctx
   nLive <- asyncLiveHandles ctx
-  assertEqual "close drains storm" 0 nLive
+  assertZero "live_handles" "close drains storm" nLive
   -- The storm never cancels jobs (handles only), so retired jobs
   -- may still be pending: cancel them explicitly before the census.
   _ <- cancelJob (acTable ctx) ja
@@ -2146,9 +2125,9 @@ caseHandleCloseRace = do
   donesOut <- mapM takeMVar dones
   mapM_ assertWorkerOk donesOut
   nLive <- asyncLiveHandles ctx
-  assertEqual "no live handles" 0 nLive
+  assertZero "live_handles" "no live handles" nLive
   (liveJobs, _, _) <- tableStats (acTable ctx)
-  assertEqual "no live jobs" 0 liveJobs
+  assertZero "live_jobs" "no live jobs" liveJobs
 
 -- | Per-context authority: a handle admitted on one context stays
 -- stale on another, while staying live on its own; bogus and null
@@ -2420,7 +2399,7 @@ caseRivalRefusalPreservesOwner = do
   rival <- joinOn tableB
   assertEqual "rival refused" (JoinAlreadyAttached joinPolicyName) rival
   censusB <- tableStats tableB
-  assertEqual "rival table untouched" (0, 0, 0) censusB
+  assertCensusZero "rival table untouched" censusB
   (cout, cerr) <- cancelJoined dc tableA jA
   assertEqual "owner cancel wins" CancelOk cout
   assertEqual "owner mark clean" Nothing cerr

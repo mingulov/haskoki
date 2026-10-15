@@ -53,27 +53,33 @@ fail() {
 # min-count is the floor observed in the real run (a shrinking suite
 # fails). counters=yes: the case must print OWNERSHIP-COUNTERS lines
 # (HASKOKI_OWNERSHIP_COUNTERS=1), every value 0.
+# The counters column is `no`, or the exact comma-separated set of test=
+# labels the case must print (one per gated test): a test that stops
+# emitting, or a stray label, fails the cell.
+# m2-lifetime-gate: gate-race-oneshot, gate-race-init, gate-race-import and
+# gate-race-export never emit (no native outstanding counter) and are
+# excluded from its label set on purpose.
 # Patterns are tasty 1.5 awk expressions over the test path
 # ($1 = suite root, $2 = top group, $3 = subgroup). They must not
 # contain `|`. WP07-WP09 rows are appended by those packages as
 # `pending` until their fixtures exist.
 CASE_TABLE=$(cat <<'TABLE'
-m1-native-transfers|model|$2 == "Ownership" && $3 == "native ownership transfers"|11|active|yes
+m1-native-transfers|model|$2 == "Ownership" && $3 == "native ownership transfers"|11|active|gated-adoption-alloc,gated-adoption-load,gated-adoption-park,gated-copy-fault,gated-copy-park,gated-digest-alloc,gated-final-fault,gated-final-park,gated-init-alloc,gated-normal-zero,gated-pair-between
 m1-openssl4-engine|engine|$2 == "openssl4 engine"|70|active|no
 m1-acquisition-hooks|engine|$2 == "Acquisition hooks"|17|active|no
 m2-lease-protocol|model|$2 == "Ownership" && $3 == "lease protocol"|6|active|no
-m2-lifetime-gate|model|$2 == "Ownership" && $3 == "lifetime gate"|12|active|yes
-m3-handle-registry|model|$2 == "Ownership" && $3 == "handle registry"|11|active|no
-m3-ffi-acquisition|model|$2 == "FFI acquisition"|23|active|no
-m3-async-engine|engine|$2 == "Async engine"|25|active|no
+m2-lifetime-gate|model|$2 == "Ownership" && $3 == "lifetime gate"|12|active|gate-cancel-closing,gate-close-after-interrupt,gate-close-waits-borrow,gate-close-waits-final,gate-race-final,gate-race-release,gate-race-update,gate-simultaneous-close
+m3-handle-registry|model|$2 == "Ownership" && $3 == "handle registry"|11|active|handle-admission-storm,handle-close-race,handle-kill-storm,handle-resolve-retire,handle-resolve-then-close,handle-retire-then-use
+m3-ffi-acquisition|model|$2 == "FFI acquisition"|23|active|admitted-calls-run-close-retires-the-gate,borrowed-start-works,close-one-keeps-the-other-context-live,close-waits-for-an-entered-caller,concurrent-entry-races-close-cleanly,join-acquire-publishes-a-live-handle,join-handoff-publishes-a-live-handle,kill-after-join-commit-cancels-before-publish,kill-during-acquire-rolls-back-and-nulls,kill-in-the-join-handoff-cancels-the-fresh-join,kill-in-the-submit-transfer-cancels-the-fresh-job,killed-close-releases-retry-completes-teardown
+m3-async-engine|engine|$2 == "Async engine"|25|active|caseasyncadmissionwidths,caseasyncborrowedownership,caseasynccleanupsurface,caseasyncpubliccompletion,ffi-bogus-handle-refused-nothing-touched,ffi-cancel-frees-late-use-is-stale,ffi-close-drains-pending-jobs-exactly-once,ffi-close-one-keeps-other-context-live,ffi-concurrent-cancel-exactly-one-wins,ffi-concurrent-complete-single-delivery,ffi-cross-context-handle-use-is-stale,ffi-digest-pending-canaries-exact-delivery,ffi-drive-error-frees-the-handle-exactly-once
 m4-store-contract|storage|$2 == "store contract"|123|active|no
 m4-multi-session|storage|$2 == "Multi-session store"|34|active|no
-m5-attachment-claims|model|$2 == "Ownership" && $3 == "attachment claims"|5|active|no
-m5-detached-jobs|model|$2 == "Detached jobs"|35|active|no
+m5-attachment-claims|model|$2 == "Ownership" && $3 == "attachment claims"|5|active|claim-rival-refusal
+m5-detached-jobs|model|$2 == "Detached jobs"|35|active|interruption-after-start-retires-the-fresh-job,retire-rolls-a-racing-claim-back-the-join-cannot-commit
 m5-scoped-detach-leases|model|$2 == "Scoped detach leases"|9|active|no
 m6-two-contexts-distinct-ids|model|$2 == "Detached jobs" && /two contexts on one store/|1|active|no
 m6-store-wide-counter|model|$2 == "Detached jobs" && /two tokens share the store-wide counter/|1|active|no
-m7-attached-async|model|$2 == "Attached async"|37|active|no
+m7-attached-async|model|$2 == "Attached async"|37|active|byte-budget-clears-suite-shaped-fills-with-headroom,byte-evicted-store-delivery-retry-cancel-semantics-unchanged,byte-retention-bound-n-max-size-digests-keep-bytes-within-budget,capped-store-delivery-retry-cancel-semantics-unchanged,reap-drops-tombstones-live-jobs-survive,retention-bound-n-delivered-digests-keep-at-most-cap-tombstones,sync-sessions-stay-synchronous-under-async-storm
 m7-retirement|model|$2 == "Ownership" && /retire/|5|active|no
 wp07-pending|model|-|0|pending|no
 wp08-pending|model|-|0|pending|no
@@ -161,6 +167,7 @@ printf 'case\trts\tlisted\tpassed\trc\tstatus\tduration_s\n' > "$OUT/index.tsv"
 
 while IFS='|' read -r CASE SUITE PAT MIN STATUS CTR; do
   [ -n "$CASE" ] || continue
+  case "$CASE" in \#*) continue ;; esac
   if [ "$STATUS" = pending ]; then
     echo "PENDING $CASE (not executed, not counted)"
     continue
@@ -208,24 +215,30 @@ while IFS='|' read -r CASE SUITE PAT MIN STATUS CTR; do
         WHY="RTS evidence missing: no 'using -N$N' in the -s output"
       elif [ "$PASSED" -ne "$LISTED" ]; then
         WHY="passed $PASSED of $LISTED listed tests"
-      elif [ "$CTR" = yes ]; then
+      elif [ "$CTR" != no ]; then
         if [ -z "$COUNTERS" ]; then
           WHY="counter line missing: no OWNERSHIP-COUNTERS line for $CASE"
         else
-          # Every line belongs to this case; every k=v after case/test is 0.
-          WHY=$(printf '%s\n' "$COUNTERS" | awk -v c="$CASE" '
-            { if ($2 != "case=" c) { print "counter line for another case: " $2; exit }
-              for (i = 3; i <= NF; i++) {
+          # Every line belongs to this case; every k=v after case/test
+          # is 0; the set of test= labels equals the case's required
+          # set (a gated test that stops emitting fails).
+          WHY=$(printf '%s\n' "$COUNTERS" | awk -v c="$CASE" -v req="$CTR" '
+            BEGIN { n = split(req, r, ","); for (i = 1; i <= n; i++) want[r[i]] = 1 }
+            { if ($2 != "case=" c) { bad = 1; print "counter line for another case: " $2; exit }
+              if ($3 !~ /^test=./) { bad = 1; print "counter line has no test= label"; exit }
+              lbl = substr($3, 6); seen[lbl] = 1
+              if (!(lbl in want)) { bad = 1; print "unexpected counter label: " lbl; exit }
+              for (i = 4; i <= NF; i++) {
                 split($i, kv, "=")
-                if (kv[1] == "test") continue
-                if (kv[2] !~ /^[0-9]+$/ || kv[2] != 0) { print "counter nonzero: " $i " (" $3 ")"; exit }
-              } }')
+                if (kv[2] !~ /^[0-9]+$/ || kv[2] != 0) { bad = 1; print "counter nonzero: " $i " (" lbl ")"; exit }
+              } }
+            END { if (!bad) for (i = 1; i <= n; i++) if (!(r[i] in seen)) { print "counter label missing: " r[i]; exit } }')
         fi
       fi
     fi
     DUR=$(( $(date +%s) - START ))
-    CTR_REQ=false
-    [ "$CTR" != yes ] || CTR_REQ=true
+    CTR_REQ=true
+    [ "$CTR" != no ] || CTR_REQ=false
     if [ -z "$WHY" ]; then ST=pass; else ST=fail; fi
     {
       printf '{\n'

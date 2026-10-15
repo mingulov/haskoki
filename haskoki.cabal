@@ -399,8 +399,9 @@ test-suite haskoki-model-tests
   -- Per-group recipe specs live in tests/recipes/ but compile
   -- into this suite (recipes are pure core; the model suite is their
   -- home). Engine-executed recipe cases extend the engine suites.
-  hs-source-dirs:   tests/model tests/recipes
+  hs-source-dirs:   tests/model tests/recipes tests/support
   other-modules:
+    OwnershipCounters
     AdmissionSpec
     AsyncSpec
     ByteFormatSpec
@@ -507,10 +508,11 @@ test-suite haskoki-engine-tests
   import:           fatal-omissions
   type:             exitcode-stdio-1.0
   main-is:          Main.hs
-  hs-source-dirs:   tests/engine
+  hs-source-dirs:   tests/engine tests/support
   c-sources:        tests/engine/notifications_adapter.c
   include-dirs:     spec/vendor cbits
   other-modules:
+    OwnershipCounters
     AsyncEngineSpec
     CertificateEngineSpec
     CryptoExportSpec

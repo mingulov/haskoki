@@ -74,6 +74,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import qualified Haskoki.Engine.Backend as B
+import OwnershipCounters (assertZero, counted)
 import Haskoki.Engine.OpenSSL4 (OpenSSL4)
 import Haskoki.FFI.Async
   ( AsyncCtx (..)
@@ -195,29 +196,29 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "FFI acquisition"
-  [ testCase "std open succeeds then closes" caseStdSuccess
-  , testCase "std open bad sqlite path is NULL" caseStdBadSqlite
-  , testCase "std open zero slots is NULL" caseStdZeroSlots
-  , testCase "std open oversize catalog is NULL" caseStdOversize
-  , testCase "std failed open does not poison the next" caseStdNonPoison
-  , testCase "std async kill aborts the open (none swallowed)" caseStdAsyncSlow
-  , testCase "close-one keeps the other context live" caseCloseOneKeepsOther
-  , testCase "close waits for an entered caller" caseCloseWaitsForEntered
-  , testCase "admitted calls run; close retires the gate" caseAdmittedCallsRun
-  , testCase "kill in the submit transfer cancels the fresh job" caseSubmitKillCancelsFresh
-  , testCase "kill in the join handoff cancels the fresh join" caseHandoffKillCancelsJoin
-  , testCase "join handoff publishes a live handle" caseHandoffPublishes
-  , testCase "kill after join commit cancels before publish" caseJoinAcquireKillAfterCommit
-  , testCase "join acquire publishes a live handle" caseJoinAcquirePublishes
-  , testCase "killed close releases; retry completes teardown" caseCloseKillRetryCompletes
-  , testCase "concurrent entry races close cleanly" caseEnterCloseRace
-  , testCase "borrowed start works" caseBorrowedStart
-  , testCase "owned close hands its index to a borrowed view" caseOwnedToBorrowedReuse
-  , testCase "caller parked pre-lookup meets the tombstone" caseEnterBarrierCloseTombstones
-  , testCase "retire clears the entry hook" caseRetireClearsHook
-  , testCase "registry roots reclaim across churn" caseRegistryRootsReclaim
-  , testCase "stacked displacements preserve every root" caseReclaimOverlappingReuse
-  , testCase "kill during acquire rolls back and nulls" caseJoinAcquireKillDuringAcquire
+  [ testCase "std open succeeds then closes" (counted "m3-ffi-acquisition" "std-open-succeeds-then-closes" (caseStdSuccess))
+  , testCase "std open bad sqlite path is NULL" (counted "m3-ffi-acquisition" "std-open-bad-sqlite-path-is-null" (caseStdBadSqlite))
+  , testCase "std open zero slots is NULL" (counted "m3-ffi-acquisition" "std-open-zero-slots-is-null" (caseStdZeroSlots))
+  , testCase "std open oversize catalog is NULL" (counted "m3-ffi-acquisition" "std-open-oversize-catalog-is-null" (caseStdOversize))
+  , testCase "std failed open does not poison the next" (counted "m3-ffi-acquisition" "std-failed-open-does-not-poison-the-next" (caseStdNonPoison))
+  , testCase "std async kill aborts the open (none swallowed)" (counted "m3-ffi-acquisition" "std-async-kill-aborts-the-open-none-swallowed" (caseStdAsyncSlow))
+  , testCase "close-one keeps the other context live" (counted "m3-ffi-acquisition" "close-one-keeps-the-other-context-live" (caseCloseOneKeepsOther))
+  , testCase "close waits for an entered caller" (counted "m3-ffi-acquisition" "close-waits-for-an-entered-caller" (caseCloseWaitsForEntered))
+  , testCase "admitted calls run; close retires the gate" (counted "m3-ffi-acquisition" "admitted-calls-run-close-retires-the-gate" (caseAdmittedCallsRun))
+  , testCase "kill in the submit transfer cancels the fresh job" (counted "m3-ffi-acquisition" "kill-in-the-submit-transfer-cancels-the-fresh-job" (caseSubmitKillCancelsFresh))
+  , testCase "kill in the join handoff cancels the fresh join" (counted "m3-ffi-acquisition" "kill-in-the-join-handoff-cancels-the-fresh-join" (caseHandoffKillCancelsJoin))
+  , testCase "join handoff publishes a live handle" (counted "m3-ffi-acquisition" "join-handoff-publishes-a-live-handle" (caseHandoffPublishes))
+  , testCase "kill after join commit cancels before publish" (counted "m3-ffi-acquisition" "kill-after-join-commit-cancels-before-publish" (caseJoinAcquireKillAfterCommit))
+  , testCase "join acquire publishes a live handle" (counted "m3-ffi-acquisition" "join-acquire-publishes-a-live-handle" (caseJoinAcquirePublishes))
+  , testCase "killed close releases; retry completes teardown" (counted "m3-ffi-acquisition" "killed-close-releases-retry-completes-teardown" (caseCloseKillRetryCompletes))
+  , testCase "concurrent entry races close cleanly" (counted "m3-ffi-acquisition" "concurrent-entry-races-close-cleanly" (caseEnterCloseRace))
+  , testCase "borrowed start works" (counted "m3-ffi-acquisition" "borrowed-start-works" (caseBorrowedStart))
+  , testCase "owned close hands its index to a borrowed view" (counted "m3-ffi-acquisition" "owned-close-hands-its-index-to-a-borrowed-view" (caseOwnedToBorrowedReuse))
+  , testCase "caller parked pre-lookup meets the tombstone" (counted "m3-ffi-acquisition" "caller-parked-pre-lookup-meets-the-tombstone" (caseEnterBarrierCloseTombstones))
+  , testCase "retire clears the entry hook" (counted "m3-ffi-acquisition" "retire-clears-the-entry-hook" (caseRetireClearsHook))
+  , testCase "registry roots reclaim across churn" (counted "m3-ffi-acquisition" "registry-roots-reclaim-across-churn" (caseRegistryRootsReclaim))
+  , testCase "stacked displacements preserve every root" (counted "m3-ffi-acquisition" "stacked-displacements-preserve-every-root" (caseReclaimOverlappingReuse))
+  , testCase "kill during acquire rolls back and nulls" (counted "m3-ffi-acquisition" "kill-during-acquire-rolls-back-and-nulls" (caseJoinAcquireKillDuringAcquire))
   ]
 
 isNull :: StablePtr a -> Bool
@@ -507,7 +508,7 @@ caseCloseOneKeepsOther = do
   -- Close A: B keeps everything.
   asyncCloseCtx ctxA
   nLiveA <- asyncLiveHandles ctxA
-  assertEqual "A drained" 0 nLiveA
+  assertZero "live_handles" "A drained" nLiveA
   av1 <- inspectAttachment dc pid
   assertEqual "B still active after A closed" (Just (AvActive jB)) av1
   mB1 <- resolveJobHandle ctxB hB
@@ -544,7 +545,7 @@ caseCloseOneKeepsOther = do
   -- Close B: its handle drains; the delivered attachment stands.
   asyncCloseCtx ctxB
   nLiveB2 <- asyncLiveHandles ctxB
-  assertEqual "B drained" 0 nLiveB2
+  assertZero "live_handles" "B drained" nLiveB2
   av2 <- inspectAttachment dc pid
   assertEqual "B delivered terminal" (Just (AvTerminal JobDelivered)) av2
 
@@ -640,7 +641,7 @@ caseCloseWaitsForEntered = do
     gateAfter <- inspectTableGate (acTable ctx)
     assertEqual "retired, no borrowers" (0, True) gateAfter
     nLive <- asyncLiveHandles ctx
-    assertEqual "close drained the published handle" 0 nLive
+    assertZero "live_handles" "close drained the published handle" nLive
     av <- inspectAttachment dc pid
     assertEqual "committed join retired canceled" (Just (AvTerminal JobCanceled)) av
     jobs <- loadFfiJobs store
@@ -692,7 +693,7 @@ caseAdmittedCallsRun = do
   gate2 <- inspectTableGate (acTable ctx)
   assertEqual "close claimed" (0, True) gate2
   nLive <- asyncLiveHandles ctx
-  assertEqual "drained" 0 nLive
+  assertZero "live_handles" "drained" nLive
   hAfter <- alloca $ \pHandleOut -> do
     poke pHandleOut nullJob
     rv <- startOn pHandleOut
@@ -766,9 +767,9 @@ caseSubmitKillCancelsFresh = do
     hAfter <- peek pHandleOut
     assertBool "out-pointer nulled" (castStablePtrToPtr hAfter == nullPtr)
     nLive <- asyncLiveHandles ctx
-    assertEqual "no handle admitted" 0 nLive
+    assertZero "live_handles" "no handle admitted" nLive
     (liveAfter, termAfter, _nextAfter) <- tableStats (acTable ctx)
-    assertEqual "no live orphan" 0 liveAfter
+    assertZero "live_jobs" "no live orphan" liveAfter
     assertEqual "one canceled tombstone" 1 termAfter
     cout <- cancelJob (acTable ctx) freshJid
     case cout of
@@ -776,7 +777,7 @@ caseSubmitKillCancelsFresh = do
       other -> assertFailure ("fresh job not canceled, got " ++ show other)
   asyncCloseCtx ctx
   nLive2 <- asyncLiveHandles ctx
-  assertEqual "close drains clean" 0 nLive2
+  assertZero "live_handles" "close drains clean" nLive2
 
 -- | A kill landing in the join handoff window cancels the fresh
 -- join through the detach wrapper: the committed attachment
@@ -819,7 +820,7 @@ caseHandoffKillCancelsJoin = do
     avMid <- inspectAttachment dc pid
     assertEqual "join committed, unregistered" (Just (AvActive jid)) avMid
     nLiveMid <- asyncLiveHandles ctx
-    assertEqual "no handle yet" 0 nLiveMid
+    assertZero "live_handles" "no handle yet" nLiveMid
     killThread publisherTid
     mDone <- timeout 10000000 (takeMVar done)
     r <- case mDone of
@@ -844,10 +845,10 @@ caseHandoffKillCancelsJoin = do
       [rec] -> assertEqual "record canceled" JobCanceled (jrState rec)
       other -> assertFailure ("expected one record, got " ++ show other)
   (liveAfter, _termAfter, _nextAfter) <- tableStats (acTable ctx)
-  assertEqual "no live orphan" 0 liveAfter
+  assertZero "live_jobs" "no live orphan" liveAfter
   asyncCloseCtx ctx
   nLive2 <- asyncLiveHandles ctx
-  assertEqual "close drains clean" 0 nLive2
+  assertZero "live_handles" "close drains clean" nLive2
 
 -- | The join handoff without interruption publishes a live
 -- handle: pending with the out-pointer set, resolving to the
@@ -887,7 +888,7 @@ caseHandoffPublishes = do
   assertEqual "one live handle" 1 nLive
   asyncCloseCtx ctx
   nLive2 <- asyncLiveHandles ctx
-  assertEqual "close drains the handle" 0 nLive2
+  assertZero "live_handles" "close drains the handle" nLive2
   storeClose _store
 
 -- ---------------------------------------------------------------------------
@@ -936,7 +937,7 @@ caseJoinAcquireKillAfterCommit = do
         Just (AvActive j) -> pure j
         other -> assertFailure ("join not committed, got " ++ show other)
     nLiveMid <- asyncLiveHandles ctx
-    assertEqual "no handle yet" 0 nLiveMid
+    assertZero "live_handles" "no handle yet" nLiveMid
     killThread acquirerTid
     mDone <- timeout 10000000 (takeMVar done)
     r <- case mDone of
@@ -961,10 +962,10 @@ caseJoinAcquireKillAfterCommit = do
       [rec] -> assertEqual "record canceled" JobCanceled (jrState rec)
       other -> assertFailure ("expected one record, got " ++ show other)
   (liveAfter, _termAfter, _nextAfter) <- tableStats (acTable ctx)
-  assertEqual "no live orphan" 0 liveAfter
+  assertZero "live_jobs" "no live orphan" liveAfter
   asyncCloseCtx ctx
   nLive2 <- asyncLiveHandles ctx
-  assertEqual "close drains clean" 0 nLive2
+  assertZero "live_handles" "close drains clean" nLive2
 
 -- | The combined acquisition without interruption publishes a
 -- live handle: pending with the out-pointer set and the need
@@ -1005,7 +1006,7 @@ caseJoinAcquirePublishes = do
   assertEqual "one live handle" 1 nLive
   asyncCloseCtx ctx
   nLive2 <- asyncLiveHandles ctx
-  assertEqual "close drains the handle" 0 nLive2
+  assertZero "live_handles" "close drains the handle" nLive2
 
 -- | Interrupting the winning slot-close releases its claim
 -- instead of stranding retired-but-undrained: the gate reopens
@@ -1050,7 +1051,7 @@ caseCloseKillRetryCompletes = do
     gateAfter <- inspectTableGate (acTable ctx)
     assertEqual "retired, no borrowers" (0, True) gateAfter
     nLive <- asyncLiveHandles ctx
-    assertEqual "retry drained the handle" 0 nLive
+    assertZero "live_handles" "retry drained the handle" nLive
     mStale <- resolveJobHandle ctx h
     assertEqual "handle retired" Nothing mStale
     cout <- cancelJob (acTable ctx) j0
@@ -1098,7 +1099,7 @@ caseEnterCloseRace = do
     after <- peek pSlot
     assertBool "slot nulled" (isNull after)
     nLive <- asyncLiveHandles ctx
-    assertEqual "no live handles" 0 nLive
+    assertZero "live_handles" "no live handles" nLive
   where
     probeOnce :: StablePtr AsyncCtx -> IO ()
     probeOnce sp = do
@@ -1148,7 +1149,7 @@ caseBorrowedStart = do
   assertEqual "borrowed still admitted past the slot close" rvBad rvAdmitted
   asyncCloseCtx ctx
   nLive <- asyncLiveHandles ctx
-  assertEqual "drained" 0 nLive
+  assertZero "live_handles" "drained" nLive
   retireCtx sp
   freeStablePtr sp
 
@@ -1421,7 +1422,7 @@ caseJoinAcquireKillDuringAcquire = do
     avMid <- inspectAttachment dc pid
     assertEqual "claim uncommitted" (Just AvIdle) avMid
     nLiveMid <- asyncLiveHandles ctx
-    assertEqual "no handle yet" 0 nLiveMid
+    assertZero "live_handles" "no handle yet" nLiveMid
     killThread acquirerTid
     mDone <- timeout 10000000 (takeMVar done)
     r <- case mDone of
@@ -1440,7 +1441,7 @@ caseJoinAcquireKillDuringAcquire = do
     avAfter <- inspectAttachment dc pid
     assertEqual "claim rolled back" (Just AvIdle) avAfter
     (liveAfter, _termAfter, _nextAfter) <- tableStats (acTable ctx)
-    assertEqual "no live orphan" 0 liveAfter
+    assertZero "live_jobs" "no live orphan" liveAfter
     cout <- cancelJob (acTable ctx) freshJid
     case cout of
       CancelAlready TermCanceled -> pure ()
@@ -1462,4 +1463,4 @@ caseJoinAcquireKillDuringAcquire = do
     assertBool "retry handle live" (castStablePtrToPtr hRetry /= nullPtr)
   asyncCloseCtx ctx
   nLive2 <- asyncLiveHandles ctx
-  assertEqual "close drains clean" 0 nLive2
+  assertZero "live_handles" "close drains clean" nLive2

@@ -46,15 +46,26 @@ if [ -z "${FAKE_NO_USING:-}" ]; then
   echo "TASKS: 4 (1 bound, 3 peak workers (3 total), using -N${FAKE_USING:-$n})" >&2
 fi
 # Emits only when the driver sets HASKOKI_OWNERSHIP_COUNTERS=1 (ruling 5).
+# FAKE_CASES (a tsv: pattern, case id, comma labels; built from the real
+# case table) says which case this -p pattern is and which labels to print.
 if [ -n "${FAKE_COUNTER:-}" ] && [ "${HASKOKI_OWNERSHIP_COUNTERS:-}" = 1 ]; then
-  case " $* " in
-    *"native ownership transfers"*) c=m1-native-transfers;;
-    *"lifetime gate"*) c=m2-lifetime-gate;;
-    *) c=other;;
-  esac
+  pat=""; prev=""
+  for a in "$@"; do
+    [ "$prev" != -p ] || pat="$a"
+    prev="$a"
+  done
+  row=$(awk -F'\t' -v p="$pat" '$1 == p { print $2 "\t" $3 }' "$FAKE_CASES")
+  c=${row%%	*}; labels=${row#*	}
   [ -z "${FAKE_COUNTER_CASE:-}" ] || c="$FAKE_COUNTER_CASE"
-  printf 'some test name: '   # tasty may leave the name on the line
-  echo "OWNERSHIP-COUNTERS case=$c test=t bufs=0 digests=${FAKE_COUNTER_VAL:-0} envs=0"
+  first=1
+  for l in $(printf '%s' "$labels" | tr ',' ' ') ${FAKE_EXTRA:-}; do
+    [ "$l" != "${FAKE_DROP:-}" ] || continue
+    v=0
+    [ "$first" != 1 ] || v=${FAKE_COUNTER_VAL:-0}
+    first=0
+    printf 'some test name: '   # tasty may leave the name on the line
+    echo "OWNERSHIP-COUNTERS case=$c test=$l bufs=0 digests=$v envs=0"
+  done
 fi
 if [ "${FAKE_RC:-0}" -ne 0 ]; then
   echo "1 out of ${FAKE_LISTED:-200} tests failed"
@@ -68,6 +79,25 @@ FAKE_CABAL = """#!/bin/sh
 echo "cabal $*" >> "$FAKE_CABAL_LOG"
 exit 99
 """
+
+
+def case_table():
+    """Parse the driver's own case table (the heredoc) into rows."""
+    text = DRIVER.read_text()
+    body = text.split("<<'TABLE'\n", 1)[1].split("\nTABLE\n", 1)[0]
+    rows = []
+    for line in body.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        f = line.split("|")
+        assert len(f) == 6, line
+        rows.append(dict(case=f[0], suite=f[1], pat=f[2], min=int(f[3]),
+                         status=f[4], counters=f[5]))
+    return rows
+
+
+ACTIVE = [r for r in case_table() if r["status"] == "active"]
+GATED = [r for r in ACTIVE if r["counters"] != "no"]
 
 
 class DriverControls(unittest.TestCase):
@@ -85,6 +115,10 @@ class DriverControls(unittest.TestCase):
         (self.fakepath / "cabal").write_text(FAKE_CABAL)
         (self.fakepath / "cabal").chmod(0o755)
         self.cabal_log = self.tmp / "cabal.log"
+        self.cases = self.tmp / "fake-cases.tsv"
+        self.cases.write_text("".join(
+            f"{r['pat']}\t{r['case']}\t{r['counters'] if r['counters'] != 'no' else ''}\n"
+            for r in ACTIVE))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -93,6 +127,7 @@ class DriverControls(unittest.TestCase):
         e = dict(os.environ)
         e["PATH"] = str(self.fakepath) + os.pathsep + e["PATH"]
         e["FAKE_CABAL_LOG"] = str(self.cabal_log)
+        e["FAKE_CASES"] = str(self.cases)
         e["HASKOKI_OWN_SHA"] = SHA
         e["HASKOKI_OWN_RECEIPTS"] = str(self.out)
         if fake_bins:
@@ -177,17 +212,52 @@ class DriverControls(unittest.TestCase):
                                     capture_output=True, text=True).stdout.strip())
         self.assertIs(d["tree_clean"], not dirty)
 
-    def test_min_count_floors_are_the_observed_counts(self):
-        # A shrinking suite fails: each floor is the real-run count, so
-        # one test fewer than the floor must fail for every case.
-        floors = {"m1-native-transfers": 11, "m2-lease-protocol": 6, "m5-attachment-claims": 5,
-                  "m4-store-contract": 123, "m1-openssl4-engine": 70}
-        for case, n in floors.items():
-            with self.subTest(case=case):
-                p = self.run_driver(HASKOKI_OWN_CASE=case, HASKOKI_OWN_RTS="1",
-                                    FAKE_LISTED=n - 1, FAKE_COUNTER=1)
-                self.assertNotEqual(p.returncode, 0, p.stdout)
-                self.assertIn(f"matched {n - 1} tests, minimum {n}", p.stdout)
+    def test_min_count_floor_holds_for_every_case_in_the_table(self):
+        # A shrinking suite fails: for EVERY active case parsed from
+        # the driver's table, one test fewer than the floor fails and
+        # exactly the floor passes. (Floors are the real-run counts.)
+        self.assertGreaterEqual(len(ACTIVE), 17)
+        for r in ACTIVE:
+            with self.subTest(case=r["case"]):
+                self.assertGreaterEqual(r["min"], 1)
+                low = self.run_driver(HASKOKI_OWN_CASE=r["case"], HASKOKI_OWN_RTS="1",
+                                      FAKE_LISTED=r["min"] - 1, FAKE_COUNTER=1)
+                self.assertNotEqual(low.returncode, 0, low.stdout)
+                want = ("matched 0 tests" if r["min"] == 1
+                        else f"matched {r['min'] - 1} tests, minimum {r['min']}")
+                self.assertIn(want, low.stdout)
+                ok = self.run_driver(HASKOKI_OWN_CASE=r["case"], HASKOKI_OWN_RTS="1",
+                                     FAKE_LISTED=r["min"], FAKE_COUNTER=1)
+                self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+
+    def test_gated_cases_table_data(self):
+        # Gated cases carry an explicit, duplicate-free label list.
+        names = {r["case"] for r in GATED}
+        for want in ("m1-native-transfers", "m2-lifetime-gate", "m3-handle-registry",
+                     "m3-ffi-acquisition", "m3-async-engine"):
+            self.assertIn(want, names)
+        for r in GATED:
+            labels = r["counters"].split(",")
+            self.assertEqual(len(labels), len(set(labels)), r["case"])
+            self.assertTrue(all(l for l in labels), r["case"])
+
+    def test_dropping_one_tests_emission_fails_every_gated_case(self):
+        for r in GATED:
+            for lbl in r["counters"].split(","):
+                with self.subTest(case=r["case"], label=lbl):
+                    p = self.run_driver(HASKOKI_OWN_CASE=r["case"], HASKOKI_OWN_RTS="1",
+                                        FAKE_COUNTER=1, FAKE_DROP=lbl)
+                    self.assertNotEqual(p.returncode, 0, p.stdout)
+                    # Dropping the only label leaves no line at all.
+                    want = ("counter line missing" if "," not in r["counters"]
+                            else f"counter label missing: {lbl}")
+                    self.assertIn(want, p.stdout)
+
+    def test_unexpected_label_fails(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m3-handle-registry", HASKOKI_OWN_RTS="1",
+                            FAKE_COUNTER=1, FAKE_EXTRA="stowaway")
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("unexpected counter label: stowaway", p.stdout)
 
     def test_zero_match_pattern_fails(self):
         p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate", FAKE_LISTED=0)
@@ -238,7 +308,9 @@ class DriverControls(unittest.TestCase):
             self.assertIn("nproc", d)
             self.assertIn("duration_s", d)
             self.assertEqual(d["counters"], [
-                "OWNERSHIP-COUNTERS case=m2-lifetime-gate test=t bufs=0 digests=0 envs=0"])
+                f"OWNERSHIP-COUNTERS case=m2-lifetime-gate test={l} bufs=0 digests=0 envs=0"
+                for l in next(r["counters"] for r in ACTIVE
+                              if r["case"] == "m2-lifetime-gate").split(",")])
             self.assertIs(d["counters_required"], True)
 
     def test_tasty_capability_bump_is_prevented_by_jobs_flag(self):
