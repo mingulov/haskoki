@@ -137,7 +137,7 @@ def check_consistency(mechs):
             assert r["test_evidence"], f"{r['canonical_name']}: tested without evidence"
         if b in ("unsupported-with-reason", "not-applicable"):
             assert r["notes"].strip(), f"{r['canonical_name']}: {b} without reason"
-        if b in ("unsupported-with-reason", "not-applicable"):
+        if b in ("unsupported-with-reason", "not-applicable", "planned"):
             # The rendered reason is the first line of the notes; a
             # generator placeholder there is not a reviewed reason.
             assert not r["notes"].strip().splitlines()[0].startswith(

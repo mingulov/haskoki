@@ -518,7 +518,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider, same digest probe 2026-09-21); behavior stays planned.",
+      "notes": "MD2 with RSA PKCS#1: no MD2 in the pinned OpenSSL 4.0.2 provider, so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider, same digest probe 2026-09-21); behavior stays planned.",
       "numeric_id": "0x00000004",
       "routes": [],
       "source_refs": [
@@ -772,7 +772,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider, same digest probe 2026-09-21); behavior stays planned.",
+      "notes": "RIPEMD-128 with RSA PKCS#1: no RIPEMD-128 in the pinned OpenSSL 4.0.2 provider, so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider, same digest probe 2026-09-21); behavior stays planned.",
       "numeric_id": "0x00000007",
       "routes": [],
       "source_refs": [
@@ -9897,7 +9897,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (probed 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "MD2 digest: absent from the pinned OpenSSL 4.0.2 provider digest list; no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (probed 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned.",
       "numeric_id": "0x00000200",
       "routes": [],
       "source_refs": [
@@ -10559,7 +10559,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no RIPEMD-128 in the pinned OpenSSL 4.0.2 provider (only RIPEMD-160; probed 2026-09-21)); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "RIPEMD-128 digest: the pinned OpenSSL 4.0.2 provider has only RIPEMD-160; no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD-128 in the pinned OpenSSL 4.0.2 provider (only RIPEMD-160; probed 2026-09-21)); synthetic unbuilt (historical, no demand); behavior stays planned.",
       "numeric_id": "0x00000230",
       "routes": [],
       "source_refs": [
@@ -18419,7 +18419,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: no MD2 digest primitive in the pinned OpenSSL 4.0.2 default+legacy providers (digest-list probe), so the KDF root cannot run provider-backed (the DES cipher itself is served via legacy since slice 11p); behavior/synthetic stay planned, mirroring CKM_MD2.",
+      "notes": "PBE with MD2 and DES-CBC: no MD2 digest in the pinned OpenSSL 4.0.2 default+legacy providers, so the KDF root cannot run provider-backed; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: no MD2 digest primitive in the pinned OpenSSL 4.0.2 default+legacy providers (digest-list probe), so the KDF root cannot run provider-backed (the DES cipher itself is served via legacy since slice 11p); behavior/synthetic stay planned, mirroring CKM_MD2.",
       "numeric_id": "0x000003a0",
       "routes": [],
       "source_refs": [
@@ -20605,7 +20605,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned.",
+      "notes": "KIP wrap: KIP protocol surface is unmapped in Raw (CK_KIP_PARAMS known, behavior unreviewed); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned.",
       "numeric_id": "0x00000511",
       "routes": [],
       "source_refs": [
@@ -23444,7 +23444,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001008",
       "routes": [],
       "source_refs": [
@@ -23472,7 +23472,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001009",
       "routes": [],
       "source_refs": [
@@ -23500,7 +23500,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x0000100a",
       "routes": [],
       "source_refs": [
@@ -23856,7 +23856,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001034",
       "routes": [],
       "source_refs": [
@@ -23884,7 +23884,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001035",
       "routes": [],
       "source_refs": [
@@ -23912,7 +23912,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001036",
       "routes": [],
       "source_refs": [
@@ -25929,7 +25929,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001063",
       "routes": [],
       "source_refs": [
@@ -25957,7 +25957,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001064",
       "routes": [],
       "source_refs": [
@@ -25985,7 +25985,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001065",
       "routes": [],
       "source_refs": [
@@ -28905,7 +28905,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: no GOSTR3410 keygen route in the backend surface; behavior/synthetic stay planned.",
+      "notes": "GOST R 34.10 key-pair generation: no GOSTR3410 keygen route in the backend surface; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: no GOSTR3410 keygen route in the backend surface; behavior/synthetic stay planned.",
       "numeric_id": "0x00001200",
       "routes": [],
       "source_refs": [
@@ -28933,7 +28933,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.0.2 provider); behavior stays planned.",
+      "notes": "GOST R 34.10 signature: no GOST signatures in the pinned OpenSSL 4.0.2 provider; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.0.2 provider); behavior stays planned.",
       "numeric_id": "0x00001201",
       "routes": [],
       "source_refs": [
@@ -28961,7 +28961,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.0.2 provider); behavior stays planned.",
+      "notes": "GOST R 34.10 with GOST R 34.11: no GOST signatures in the pinned OpenSSL 4.0.2 provider; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.0.2 provider); behavior stays planned.",
       "numeric_id": "0x00001202",
       "routes": [],
       "source_refs": [
@@ -28989,7 +28989,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "GOST key wrap: GOST is absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001203",
       "routes": [],
       "source_refs": [
@@ -29045,7 +29045,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); probed 2026-09-21); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "GOST R 34.11 digest: no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); probed 2026-09-21); synthetic unbuilt (historical, no demand); behavior stays planned.",
       "numeric_id": "0x00001210",
       "routes": [],
       "source_refs": [
@@ -29290,7 +29290,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "GOST key wrap: GOST is absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001224",
       "routes": [],
       "source_refs": [
@@ -31164,7 +31164,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (TPM 1.1 encodings have no pinned provider equivalent); behavior stays planned.",
+      "notes": "RSA PKCS#1 TPM 1.1 encoding: no pinned-provider equivalent; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (TPM 1.1 encodings have no pinned provider equivalent); behavior stays planned.",
       "numeric_id": "0x00004001",
       "routes": [],
       "source_refs": [
@@ -31192,7 +31192,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (TPM 1.1 encodings have no pinned provider equivalent); behavior stays planned.",
+      "notes": "RSA OAEP TPM 1.1 encoding: no pinned-provider equivalent; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (TPM 1.1 encodings have no pinned provider equivalent); behavior stays planned.",
       "numeric_id": "0x00004002",
       "routes": [],
       "source_refs": [
@@ -33708,7 +33708,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Salsa20 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Salsa20-Poly1305: Salsa20 is absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Salsa20 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00004022",
       "routes": [],
       "source_refs": [
@@ -33736,7 +33736,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004023",
       "routes": [],
       "source_refs": [
@@ -33764,7 +33764,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004024",
       "routes": [],
       "source_refs": [
@@ -33792,7 +33792,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004025",
       "routes": [],
       "source_refs": [
@@ -33820,7 +33820,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004026",
       "routes": [],
       "source_refs": [
@@ -33848,7 +33848,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004027",
       "routes": [],
       "source_refs": [
@@ -33876,7 +33876,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004028",
       "routes": [],
       "source_refs": [
@@ -33904,7 +33904,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no XEdDSA in the pinned OpenSSL 4.0.2 provider signature list); behavior stays planned.",
+      "notes": "XEdDSA: not in the pinned OpenSSL 4.0.2 provider signature list; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no XEdDSA in the pinned OpenSSL 4.0.2 provider signature list); behavior stays planned.",
       "numeric_id": "0x00004029",
       "routes": [],
       "source_refs": [
