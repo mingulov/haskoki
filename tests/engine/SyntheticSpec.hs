@@ -609,7 +609,7 @@ caseSign = withSynth "11" $ \env -> do
   expectAuthFailed "wrong key rejected" =<<
     verify env ecdsaDer otherKey32 "msg" sig
   expectAuthFailed "tampered sig rejected" =<<
-    verify env ecdsaDer key32 "msg" (BS.init sig <> "X")
+    verify env ecdsaDer key32 "msg" (tamperLast sig)
   -- Encodings are explicit participants: DER and RAW both run, give
   -- different bytes, and never verify across (no silent conversion).
   sigR <- expectOk "sign raw" =<< sign env ecdsaRaw key32 "msg"
@@ -3326,3 +3326,8 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   case rGcm of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("cipher GCM empty params: expected Failed, got: " ++ show other)
+
+-- | Change the last byte (always differs: +1 wraps on Word8). Replacing it
+-- with a fixed byte is a no-op when a randomized value already ends in it.
+tamperLast :: ByteString -> ByteString
+tamperLast bs = BS.init bs <> BS.singleton (BS.last bs + 1)

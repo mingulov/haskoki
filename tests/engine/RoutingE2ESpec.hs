@@ -1162,7 +1162,7 @@ caseDriverRsaX509Wrap = withBackend $ \env -> do
   assertEqual "x509 trailing key bytes" target (tailOf p1)
   -- Tampering garbles instead of failing: raw RSA has no verdict.
   g1 <- runEffect env res
-      (FxUnwrap rsaX509WrapMech (Just privOid) BS.empty (BS.init c1 <> "X"))
+      (FxUnwrap rsaX509WrapMech (Just privOid) BS.empty (tamperLast c1))
     >>= expectBytes
   assertBool "x509 tamper garbles" (tailOf g1 /= target)
   -- X.509 takes no parameters.
@@ -2588,3 +2588,8 @@ caseVerifyE2E = withBackend $ \env -> do
   case finishEffect defaultRules m2 res2 (encodeResult crypto2) of
     Left rej -> assertFailure ("finish rejected: " ++ show (rejCode rej))
     Right pc -> assertEqual "mismatch commits INVALID" CKR_SIGNATURE_INVALID (pcCode pc)
+
+-- | Change the last byte (always differs: +1 wraps on Word8). Replacing it
+-- with a fixed byte is a no-op when a randomized value already ends in it.
+tamperLast :: ByteString -> ByteString
+tamperLast bs = BS.init bs <> BS.singleton (BS.last bs + 1)

@@ -2125,7 +2125,7 @@ caseRsaKats = withBackend $ \env -> do
   assertEqual "rsa-sha256 kat" rsaSig256 sig
   expectOk "rsa-sha256 verify kat" =<< verify env sha256 pub rsaMsg rsaSig256
   expectAuthFailed "rsa-sha256 tampered" =<<
-    verify env sha256 pub rsaMsg (BS.init rsaSig256 <> "X")
+    verify env sha256 pub rsaMsg (tamperLast rsaSig256)
   expectAuthFailed "rsa-sha256 wrong msg" =<<
     verify env sha256 pub "wrong message" rsaSig256
   -- Raw KAT: block-type-1 over the input, no hashing.
@@ -2133,7 +2133,7 @@ caseRsaKats = withBackend $ \env -> do
   assertEqual "rsa-raw kat" rsaRawSig rsig
   expectOk "rsa-raw verify kat" =<< verify env SigRSA_Raw pub rsaRawMsg rsaRawSig
   expectAuthFailed "rsa-raw tampered" =<<
-    verify env SigRSA_Raw pub rsaRawMsg (BS.init rsaRawSig <> "X")
+    verify env SigRSA_Raw pub rsaRawMsg (tamperLast rsaRawSig)
   -- Every other bound digest roundtrips (sign is deterministic:
   -- signing twice agrees, and cross-digest verifies fail).
   mapM_ (roundtrip env priv pub)
@@ -2168,7 +2168,7 @@ caseRsaPssVectors = withBackend $ \env -> do
   expectOk "pss-sha256 verify cli vector" =<<
     verify env sha256 pub pssMsg pssSig256
   expectAuthFailed "pss-sha256 tampered" =<<
-    verify env sha256 pub pssMsg (BS.init pssSig256 <> "X")
+    verify env sha256 pub pssMsg (tamperLast pssSig256)
   expectAuthFailed "pss-sha256 wrong msg" =<<
     verify env sha256 pub "wrong message" pssSig256
   expectAuthFailed "pss-sha256 wrong salt rejected" =<<
@@ -2220,7 +2220,7 @@ caseRsaOaepVectors = withBackend $ \env -> do
   expectAuthFailed "oaep wrong label rejected" =<<
     pkeyDecrypt env sha256 priv oaepCtLabel
   expectAuthFailed "oaep tampered rejected" =<<
-    pkeyDecrypt env sha256 priv (BS.init oaepCt256 <> "X")
+    pkeyDecrypt env sha256 priv (tamperLast oaepCt256)
   -- Uniformity (Manger 2001): every modulus-wide invalid
   -- ciphertext is the same AuthFailed verdict — no reason-code
   -- partition across padding-failure shapes.
@@ -2321,10 +2321,10 @@ caseRsaX509Vectors = withBackend $ \env -> do
   -- mismatched messages verify to a verdict; the zero block is
   -- the identity.
   garbled <- expectOk "x509 tampered opens" =<<
-    pkeyDecrypt env RsaX509 priv (BS.init x509Ct <> "X")
+    pkeyDecrypt env RsaX509 priv (tamperLast x509Ct)
   assertBool "x509 tamper garbles" (garbled /= padded)
   expectAuthFailed "x509 tampered sig rejected" =<<
-    verify env SigRSA_X509 pub x509Msg (BS.init x509Sig <> "X")
+    verify env SigRSA_X509 pub x509Msg (tamperLast x509Sig)
   expectAuthFailed "x509 wrong msg rejected" =<<
     verify env SigRSA_X509 pub "tampered-data-32-bytes-payload!!!" x509Sig
   zeroPt <- expectOk "x509 zero opens" =<<
@@ -2383,7 +2383,7 @@ caseRsaX931Vectors = withBackend $ \env -> do
   assertEqual "x931 deterministic" s1 s2
   expectOk "x931 verify kat" =<< verify env raw pub x931Digest x931Sig
   expectAuthFailed "x931 tampered sig rejected" =<<
-    verify env raw pub x931Digest (BS.init x931Sig <> "X")
+    verify env raw pub x931Digest (tamperLast x931Sig)
   expectAuthFailed "x931 wrong digest rejected" =<<
     verify env raw pub (BS.replicate 32 0x55) x931Sig
   -- Every other hash-id length roundtrips (20/48/64 bytes).
@@ -2424,7 +2424,7 @@ casePoly1305Vector = withBackend $ \env -> do
   assertEqual "poly1305 tag length" 16 (BS.length tag)
   _ <- expectOk "poly1305 verify kat" =<< macVerify env MacPoly1305 key polyMsg polyTag
   expectAuthFailed "poly1305 tampered rejected" =<<
-    macVerify env MacPoly1305 key polyMsg (BS.init polyTag <> "X")
+    macVerify env MacPoly1305 key polyMsg (tamperLast polyTag)
   expectAuthFailed "poly1305 wrong msg rejected" =<<
     macVerify env MacPoly1305 key "tampered message" polyTag
   -- Key independence: a second key tags differently.
@@ -2488,21 +2488,21 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
   expectOk "verify cli t283" =<<
     verify env sT283 (KeyDer ecT283Pub) ecMsgT283 ecSigT283
   expectAuthFailed "p384 tampered" =<<
-    verify env s384 (KeyDer ecP384Pub) ecMsg384 (BS.init ecSig384 <> "X")
+    verify env s384 (KeyDer ecP384Pub) ecMsg384 (tamperLast ecSig384)
   -- Interop on BLAKE2B-512: the CLI's P-256 bytes verify.
   let sB2 = SigECDSA (mkEc "P-256" "DER") (Just D_BLAKE2B512)
   expectOk "verify cli blake2b512" =<<
     verify env sB2 (KeyDer ecB2Pub) ecMsgB2 ecSigB2
   expectAuthFailed "blake2b512 tampered" =<<
-    verify env sB2 (KeyDer ecB2Pub) ecMsgB2 (BS.init ecSigB2 <> "X")
+    verify env sB2 (KeyDer ecB2Pub) ecMsgB2 (tamperLast ecSigB2)
   expectAuthFailed "t283 tampered" =<<
-    verify env sT283 (KeyDer ecT283Pub) ecMsgT283 (BS.init ecSigT283 <> "X")
+    verify env sT283 (KeyDer ecT283Pub) ecMsgT283 (tamperLast ecSigT283)
   -- Raw interop: the CLI's raw P-256 bytes verify under the raw row.
   let sraw = SigECDSA (mkEc "P-256" "DER") Nothing
   expectOk "verify cli raw" =<<
     verify env sraw (KeyDer ecPubDer) ecRaw32 ecRawSig
   expectAuthFailed "raw tampered" =<<
-    verify env sraw (KeyDer ecPubDer) ecRaw32 (BS.init ecRawSig <> "X")
+    verify env sraw (KeyDer ecPubDer) ecRaw32 (tamperLast ecRawSig)
   -- Raw input bounds follow SEC1: 33 bytes on P-256 truncates
   -- to the leftmost 256 bits (a verdict input, never a refusal).
   sig33 <- expectOk "raw overlong sign truncates" =<<
@@ -5458,3 +5458,8 @@ mkKem a = KemSpec { kemAlg = a }
 
 mkResId :: Word32 -> EngineResourceId
 mkResId = EngineResourceId
+
+-- | Change the last byte (always differs: +1 wraps on Word8). Replacing it
+-- with a fixed byte is a no-op when a randomized value already ends in it.
+tamperLast :: ByteString -> ByteString
+tamperLast bs = BS.init bs <> BS.singleton (BS.last bs + 1)
