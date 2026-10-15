@@ -185,7 +185,7 @@ module Haskoki.FFI.NativeParams
   , tls12KeyMatNativeSize
   , KeyMatSlots (..)
   , DerivedKeySlot (..)
-  , chaseAttrTemplate
+  , chaseAttrRecords
   , maxSp800AdditionalKeys
   , normalizeByteOpsConcatKeyParams
   , normalizeByteOpsStringDataParams
@@ -276,15 +276,6 @@ import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, tlsKdfPrfCodeFor)
 import Haskoki.Recipe.Ssl3 (encodeSsl3KeyMatParams, encodeSsl3MasterParams)
 import Haskoki.Recipe.TlsKeyMat (encodeTlsKeyMatParams)
 import Haskoki.Recipe.Pbe (encodePbeParams)
-import Haskoki.Attribute
-  ( AttributeType (..)
-  , AttributeValue (..)
-  , Shape (..)
-  , attributeTypeByName
-  , decodeValue
-  , shapeOf
-  )
-import Haskoki.Attribute.Generated (generatedAttributes)
 import Haskoki.Object (maxTemplateEntries)
 import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Registry.Generated (mustGeneratedId)
@@ -1341,10 +1332,15 @@ data KeyMatSlots = KeyMatSlots
   , kmsIvSLen :: !Int
   } deriving (Eq, Show)
 
--- | One chased @CK_DERIVED_KEY@: its template plus the
--- caller handle slot.
+-- | One chased @CK_DERIVED_KEY@: its raw attribute records
+-- (native type id, value bytes, in caller order) plus the caller
+-- handle slot. The records are not decoded here: the caller runs
+-- them through the primary template's frame decoder
+-- ('Haskoki.FFI.Standard.decodeFrameRecords'), so an
+-- additional-key template is admitted, refused and coded exactly
+-- like the primary template.
 data DerivedKeySlot = DerivedKeySlot
-  { dksTemplate :: ![(AttributeType, AttributeValue)]
+  { dksRecords :: ![(Word64, ByteString)]
   , dksOut :: !(Ptr CULong)
   } deriving (Eq, Show)
 
@@ -1353,51 +1349,51 @@ data DerivedKeySlot = DerivedKeySlot
 maxSp800AdditionalKeys :: Word64
 maxSp800AdditionalKeys = 15
 
--- | A native attribute id onto its model type ('Nothing' for
--- unmapped ids, which refuse the chase).
-attrTypeByNativeId :: Word64 -> Maybe AttributeType
-attrTypeByNativeId w =
-  lookup w [(i, n) | (i, n, _) <- generatedAttributes] >>= attributeTypeByName
-
 -- | Native @CK_ATTRIBUTE@ image size: type word, value
 -- pointer, length word.
 ckAttrSize :: Int
 ckAttrSize = 3 * wordSize
 
--- | Chase a native attribute array into a template: over-long
--- arrays, null arrays, unmapped ids, refused value chases,
--- and cross-shape values refuse ('Nothing'). Entries chase in
--- order and short-circuit on the first refusal. Native words
--- decode little-endian (caller layout); bytes and bools ride
--- the canonical value decoder.
-chaseAttrTemplate :: Ptr Word8 -> Word64 -> IO (Maybe [(AttributeType, AttributeValue)])
-chaseAttrTemplate pAttrs n
+-- | Chase a native attribute array into raw records: the
+-- structural checks the C template packer applies to the primary
+-- template (@haskoki_std_pack_template@: more than
+-- 'maxTemplateEntries' entries, a null array under a nonzero
+-- count, a null value under a nonzero length, a value past the
+-- 16 MiB input bound, a template whose packed frame would pass
+-- 'maxTemplateFrameBytes') refuse ('Nothing'), before the
+-- offending value is copied. Value decoding is left to the shared
+-- frame decoder. Entries chase in order and short-circuit on the
+-- first refusal.
+chaseAttrRecords :: Ptr Word8 -> Word64 -> IO (Maybe [(Word64, ByteString)])
+chaseAttrRecords pAttrs n
   | n > fromIntegral maxTemplateEntries = pure Nothing
   | n == 0 = pure (Just [])
   | pAttrs == nullPtr = pure Nothing
-  | otherwise = go 0
+  | otherwise = go 0 8
   where
-    go :: Word64 -> IO (Maybe [(AttributeType, AttributeValue)])
-    go i
+    go :: Word64 -> Word64 -> IO (Maybe [(Word64, ByteString)])
+    go i total
       | i >= n = pure (Just [])
       | otherwise = do
           let el = pAttrs `plusPtr` (fromIntegral i * ckAttrSize)
           CULong typ <- peekByteOff el 0
           pVal <- peekByteOff el wordSize
           CULong vlen <- peekByteOff el (2 * wordSize)
-          mOne <- case attrTypeByNativeId typ of
-            Nothing -> pure Nothing
-            Just t -> do
+          if vlen > maxInputBytes || total + 16 + vlen > maxTemplateFrameBytes
+            then pure Nothing
+            else do
               mBs <- chaseBytes pVal vlen
-              pure $ do
-                bs <- mBs
-                v <- case shapeOf t of
-                  ShapeULong -> ValULong . fromIntegral <$> leWordToInt bs
-                  _ -> decodeValue t bs
-                pure (t, v)
-          case mOne of
-            Nothing -> pure Nothing
-            Just one -> (fmap . fmap) (one :) (go (i + 1))
+              case mBs of
+                Nothing -> pure Nothing
+                Just bs ->
+                  (fmap . fmap) ((typ, bs) :) (go (i + 1) (total + 16 + vlen))
+
+-- | The packed-frame bound of one template, mirroring the C
+-- packer's @STD_FRAME_MAX@ (an 8-byte count, 16 bytes of record
+-- header per entry, 16 MiB of values in total).
+maxTemplateFrameBytes :: Word64
+maxTemplateFrameBytes =
+  maxInputBytes + 8 + 16 * fromIntegral maxTemplateEntries
 
 -- | Native @CK_DERIVED_KEY@ image size: template pointer,
 -- count word, handle-slot pointer.
@@ -1422,7 +1418,7 @@ chaseDerivedKeys pArr n
           pTmpl <- peekByteOff el 0
           CULong tcount <- peekByteOff el ptrSize
           phKey <- peekByteOff el (ptrSize + wordSize)
-          mTmpl <- chaseAttrTemplate pTmpl tcount
+          mTmpl <- chaseAttrRecords pTmpl tcount
           case (mTmpl, phKey == (nullPtr :: Ptr CULong)) of
             (Just t, False) ->
               (fmap . fmap) (DerivedKeySlot t phKey :) (go (i + 1))

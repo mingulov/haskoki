@@ -19,6 +19,42 @@
 - Function-contract catalog regenerated with reworded reason texts
   (section 4 of the B3 docs inventory records each row).
   The C library version is now {0, 4}.
+- `C_DeriveKey` checks the derived key type and length before it does
+  any work and again before it creates an object. An AES result must be
+  16, 24, or 32 bytes, and RC4 1 to 256 bytes. A secret key cannot use
+  an RSA, EC, or other asymmetric key type, or an unserved vendor type.
+  A length the mechanism can produce but the key type does not allow
+  fails with `CKR_TEMPLATE_INCONSISTENT`. A length beyond the
+  mechanism's output (for example more than 32 bytes from SHA-256 key
+  derivation) still fails first with `CKR_KEY_SIZE_RANGE`. Refused
+  requests create no object and leave the output handle unchanged.
+- Fixed-width hash key derivation (the MD5, SHA-1, SHA-2, SHA-3 and
+  BLAKE2B rows) and the concatenate and XOR mechanisms follow the PKCS#11
+  length defaults. With no key type and no length, the result is a
+  generic secret of the natural width: the digest width for hash key
+  derivation, the combined input width for concatenation, and the base
+  key length for XOR. A key type with a single defined length takes
+  that length when none is given (for example DES 8, DES2 16, DES3 24
+  and ChaCha20 32 bytes); if the mechanism cannot produce that many
+  bytes, the request fails with `CKR_KEY_SIZE_RANGE`. A key type
+  without a single defined length, such as AES, fails with
+  `CKR_TEMPLATE_INCOMPLETE`. For hash key derivation an explicit
+  `CKK_GENERIC_SECRET` without a length also fails with
+  `CKR_TEMPLATE_INCOMPLETE`; this changes BLAKE2B, which used to give
+  it the digest width. Concatenation and XOR still give an explicit
+  generic secret the natural width.
+- A multi-output `C_DeriveKey` (SP 800-108 with additional derived
+  keys) that mixes valid and invalid destinations refuses as a whole.
+  A new native journey test pins this for token objects: no handle
+  slot is written, no object or handle is consumed, and after the
+  SQLite store is closed and reopened no subset of the outputs exists.
+- SP 800-108 additional-key templates are decoded by the same template
+  decoder as the primary `C_DeriveKey` template. A malformed value (for
+  example a `CKA_VALUE_LEN` that is not exactly a `CK_ULONG`, which was
+  read as a shorter integer and accepted) now fails with the primary
+  template's code: `CKR_TEMPLATE_INCONSISTENT` for a value of the wrong
+  shape, `CKR_ATTRIBUTE_TYPE_INVALID` for an unknown attribute type.
+  The whole request then creates nothing.
 
 ## [0.3.1.0] - Unreleased
 

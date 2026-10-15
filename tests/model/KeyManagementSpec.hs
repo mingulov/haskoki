@@ -296,6 +296,7 @@ import Haskoki.Registry.Generated
   , ckm_PKCS5_PBKD2
   , ckm_SHA256
   , ckm_SHA256_HMAC
+  , ckm_SHA1_KEY_DERIVATION
   , ckm_SHA256_KEY_DERIVATION
   , ckm_SP800_108_COUNTER_KDF
   , ckm_SP800_108_DOUBLE_PIPELINE_KDF
@@ -388,6 +389,10 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Wrap padding mirrors the cipher construction" casePadMirror
   , testCase "Multi-key derive delivers N handles" caseDeriveMulti
   , testCase "Invalid additional template publishes zero objects" caseDeriveInvalidExtra
+  , testCase "Derive refuses destinations outside their key domain"
+      caseDeriveRejectsInvalidTargetDomain
+  , testCase "Derive finish refuses off-domain material"
+      caseDeriveFinishRejectsOffDomainMaterial
   , testCase "Derive codec round-trips and rejects malformed frames" caseDeriveCodec
   , testCase "pub-from-priv RSA ignores CKA_DERIVE, maps attrs" casePubPrivRsa
   , testCase "pub-from-priv EC serves embedded, refuses scalar-only" casePubPrivEc
@@ -4154,6 +4159,248 @@ caseDeriveInvalidExtra = withSynth $ \answer -> do
       assertEqual "malformed frame code" CKR_ARGUMENTS_BAD code
     other -> assertFailure ("malformed frame must deny, got: " ++ show other)
   assertEqual "zero objects published" before (Map.size (mObjects m1))
+
+-- | Derived key domain: every shared opaque derive path validates
+-- the destination key domain before any effect. Well-formed but
+-- incompatible type/length templates refuse
+-- @CKR_TEMPLATE_INCONSISTENT@ (AES: 16\/24\/32 only; asymmetric
+-- and unserved numeric types never publish as secret keys), valid
+-- typed and generic controls plan, mechanism ceilings/defaults
+-- keep their own codes and precedence (an off-domain length past
+-- the family ceiling keeps the ceiling code), and one invalid
+-- template refuses the whole batch. A refusal is a pure
+-- 'KeyDenied' (no effect, no pending objects, no counters).
+caseDeriveRejectsInvalidTargetDomain :: IO ()
+caseDeriveRejectsInvalidTargetDomain = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
+    ] (BS.pack [0 .. 47])
+  let vendorKt = 0x80000123 :: Word64
+      typed :: Word64 -> Word64 -> [(AttributeType, AttributeValue)]
+      typed kt n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong kt)
+        , (AttrValueLen, ValULong n)
+        , (AttrToken, ValBool False)
+        ]
+      typedNoLen kt = [a | a@(t, _) <- typed kt 1, t /= AttrValueLen]
+      untyped n = [a | a@(t, _) <- typed 0 n, t /= AttrKeyType]
+      untypedNoLen = [a | a@(t, _) <- untyped 1, t /= AttrValueLen]
+      plan mech frame tmpls = planDerive defaultRules m1 st mech baseH
+        (encodeDeriveParams frame tmpls)
+      refuses label code p = case p of
+        KeyDenied (KeyDeny c _) -> assertEqual (label ++ " code") code c
+        other -> assertFailure (label ++ " must refuse: " ++ show other)
+      plans label n p = case p of
+        KeyEffect (PwDerive _ _) (FxDerive _ _ _ _ _ total) ->
+          assertEqual (label ++ " total") n total
+        other -> assertFailure (label ++ " must plan: " ++ show other)
+      plansTyped label kt n p = case p of
+        KeyEffect (PwDerive [po] [k]) _ -> do
+          assertEqual (label ++ " length") n k
+          assertEqual (label ++ " type") (Just (ValULong kt))
+            (Map.lookup AttrKeyType (poAttrs po))
+        other -> assertFailure (label ++ " must plan: " ++ show other)
+      -- Shared-validator families (finish/checkOne): byte concat
+      -- (natural 64), SHA-256 KDF (digest 32), HKDF, SP 800-108
+      -- and PBKDF2 derive.
+      families =
+        [ ("concat", concatDataMech, encodeByteOpsParams 0 0 byteOpsD16)
+        , ("sha256", MechanismId ckm_SHA256_KEY_DERIVATION, BS.empty)
+        , ("hkdf", hkdfDeriveMech, encodeHkdfInfo 4 0x02 BS.empty "ac16")
+        , ("sp800-108", sp800CounterMech
+          , encodeSp800Params 4 32 32 BS.empty sp800Fixed)
+        , ("pbkdf2", MechanismId ckm_PKCS5_PBKD2
+          , encodePbkd2Params 4 1 "salt" BS.empty)
+        ]
+  mapM_ (\(name, mech, frame) -> do
+    mapM_ (\n -> refuses (name ++ " AES/" ++ show n) CKR_TEMPLATE_INCONSISTENT
+      (plan mech frame [typed ckkAes n])) [1, 15, 17, 20, 31]
+    -- AES/33 is off-domain; past a family ceiling (SHA-256: the
+    -- 32-byte digest) the family's sourced ceiling code wins.
+    refuses (name ++ " AES/33") (if name == "sha256" then CKR_KEY_SIZE_RANGE
+      else CKR_TEMPLATE_INCONSISTENT) (plan mech frame [typed ckkAes 33])
+    mapM_ (\kt -> refuses (name ++ " SECRET_KEY/" ++ show kt)
+      CKR_TEMPLATE_INCONSISTENT (plan mech frame [typed kt 16]))
+      [ckkRsa, ckkEc, ckkDsa, ckkDh, ckkEcMontgomery, ckkMlKem, vendorKt]
+    refuses (name ++ " SECRET_KEY/RSA without length") CKR_TEMPLATE_INCONSISTENT
+      (plan mech frame [typedNoLen ckkRsa])
+    mapM_ (\n -> plansTyped (name ++ " AES/" ++ show n) ckkAes (fromIntegral n)
+      (plan mech frame [typed ckkAes n])) [16, 24, 32]
+    plansTyped (name ++ " GENERIC/1") ckkGenericSecret 1
+      (plan mech frame [typed ckkGenericSecret 1])
+    plansTyped (name ++ " untyped/7") ckkGenericSecret 7
+      (plan mech frame [untyped 7])
+    -- AES has no single defined length: a missing length stays
+    -- incomplete in every family.
+    refuses (name ++ " AES without length") CKR_TEMPLATE_INCOMPLETE
+      (plan mech frame [typedNoLen ckkAes])
+    -- Zero keeps its pre-existing size code.
+    refuses (name ++ " AES/0") CKR_KEY_SIZE_RANGE
+      (plan mech frame [typed ckkAes 0])
+    -- One invalid destination refuses the whole batch.
+    refuses (name ++ " mixed batch") CKR_TEMPLATE_INCONSISTENT
+      (plan mech frame [typed ckkAes 16, typed ckkAes 1]))
+    families
+  -- Mechanism defaults per family. Hash KDF and concat\/XOR follow
+  -- PKCS#11: no type and no length gives a generic secret of the
+  -- digest\/combined width; a typed target without a length takes
+  -- its type's single defined length (DES 8, DES2 16, DES3 24) or
+  -- refuses INCOMPLETE (AES, HMAC); a defined length past the
+  -- digest width is a capacity error. HKDF keeps its hash-length
+  -- generic default; its typed defaults are left unpinned.
+  let sha1 = MechanismId ckm_SHA1_KEY_DERIVATION
+      sha256 = MechanismId ckm_SHA256_KEY_DERIVATION
+      concatD = plan concatDataMech (encodeByteOpsParams 0 0 byteOpsD16)
+      xorD = plan xorMech (encodeByteOpsParams 0 0 (BS.pack [0 .. 47]))
+  plans "concat untyped default" 64 (concatD [untypedNoLen])
+  plans "xor untyped default" 48 (xorD [untypedNoLen])
+  plans "hkdf untyped default" 32
+    (plan hkdfDeriveMech (encodeHkdfInfo 4 0x02 BS.empty "ac16") [untypedNoLen])
+  plansTyped "sha256 untyped default" ckkGenericSecret 32
+    (plan sha256 BS.empty [untypedNoLen])
+  plansTyped "sha1 untyped default" ckkGenericSecret 20
+    (plan sha1 BS.empty [untypedNoLen])
+  mapM_ (\(kt, d) -> do
+    plansTyped ("concat " ++ show kt ++ " default") kt d (concatD [typedNoLen kt])
+    plansTyped ("xor " ++ show kt ++ " default") kt d (xorD [typedNoLen kt])
+    plansTyped ("sha256 " ++ show kt ++ " default") kt d
+      (plan sha256 BS.empty [typedNoLen kt]))
+    [(ckkDes, 8), (ckkDes2, 16), (ckkDes3, 24)]
+  refuses "sha1 DES3 default past the digest" CKR_KEY_SIZE_RANGE
+    (plan sha1 BS.empty [typedNoLen ckkDes3])
+  refuses "concat HMAC without length" CKR_TEMPLATE_INCOMPLETE
+    (concatD [typedNoLen ckkSha256Hmac])
+  refuses "sha256 HMAC without length" CKR_TEMPLATE_INCOMPLETE
+    (plan sha256 BS.empty [typedNoLen ckkSha256Hmac])
+  refuses "sha256 GENERIC/33 ceiling" CKR_KEY_SIZE_RANGE
+    (plan (MechanismId ckm_SHA256_KEY_DERIVATION) BS.empty
+      [typed ckkGenericSecret 33])
+  -- The served secret-key domains (algorithm sizes, not keygen
+  -- frame caps): fixed, discrete and ranged types refuse off-domain
+  -- lengths; variable-length types (generic, HMAC) take any length
+  -- the mechanism yields (300 bytes is past every keygen cap).
+  let hkdf tmpl = plan hkdfDeriveMech (encodeHkdfInfo 4 0x02 BS.empty "ac16") [tmpl]
+  mapM_ (\(kt, good, bad) -> do
+    plansTyped ("domain " ++ show kt ++ "/" ++ show good) kt
+      (fromIntegral good) (hkdf (typed kt good))
+    refuses ("domain " ++ show kt ++ "/" ++ show bad)
+      CKR_TEMPLATE_INCONSISTENT (hkdf (typed kt bad)))
+    [ (ckkDes, 8, 7), (ckkDes3, 24, 16), (ckkAesXts, 64, 48)
+    , (ckkChacha20, 32, 16), (ckkCast128, 16, 17), (ckkBlowfish, 56, 3)
+    , (ckkAria, 24, 20), (mustKeyTypeId "CKK_HOTP", 20, 15)
+    , (ckkRc4, 256, 257)
+    ]
+  mapM_ (\kt -> plansTyped ("variable " ++ show kt) kt 300 (hkdf (typed kt 300)))
+    [ckkGenericSecret, ckkSha256Hmac, ckkHkdf]
+  -- Key-material rows (PwDeriveIv): the cipher-key outputs carry
+  -- the template type with the params length, so the same domain
+  -- applies; MAC outputs stay generic at any length.
+  let keyMat kt = (AttrKeyType, ValULong kt)
+        : [a | a@(t, _) <- keyMatKid, t /= AttrKeyType]
+      tls key = encodeTlsKeyMatParams 4 20 key 16 keyMatCr keyMatSr
+      ssl3 key = encodeSsl3KeyMatParams 16 key 16 ssl3Cr ssl3Sr
+  mapM_ (\(name, mech, frame, mac) -> do
+    case plan mech (frame 16) [keyMat ckkAes] of
+      KeyEffect (PwDeriveIv pos lens _) _ -> do
+        assertEqual (name ++ " lens") [mac, mac, 16, 16] lens
+        assertEqual (name ++ " types")
+          (map (Just . ValULong) [ckkGenericSecret, ckkGenericSecret, ckkAes, ckkAes])
+          (map (Map.lookup AttrKeyType . poAttrs) pos)
+      other -> assertFailure (name ++ " AES/16 must plan: " ++ show other)
+    refuses (name ++ " AES/7 key") CKR_TEMPLATE_INCONSISTENT
+      (plan mech (frame 7) [keyMat ckkAes])
+    refuses (name ++ " RSA key") CKR_TEMPLATE_INCONSISTENT
+      (plan mech (frame 16) [keyMat ckkRsa]))
+    [ ("tls12 keymat", keyMat12Mech, tls, 20)
+    , ("ssl3 keymat", ssl3KeyMatMech, ssl3, 16)
+    ]
+
+-- | Derived key domain, defense in depth: 'finishWork' checks the
+-- final returned material of every derived secret against its
+-- resolved type and declared length before publication, so
+-- incoherent pending work (an injected wrong-sized split) cannot
+-- create an invalid typed object. Refusals publish nothing and
+-- write no outputs; coherent controls (secret and data objects)
+-- publish. A real driver answer cut short by one byte (the shape a
+-- short backend result takes on the SHA and byte-op paths, which
+-- return the requested prefix) refuses through the answer-length
+-- guard with an empty delta.
+caseDeriveFinishRejectsOffDomainMaterial :: IO ()
+caseDeriveFinishRejectsOffDomainMaterial = withSynth $ \answer -> do
+  m <- seedModel
+  st <- getSession m
+  let secret kt n = pendingFromAttrs st (Map.fromList
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong kt)
+        , (AttrValueLen, ValULong n)
+        , (AttrToken, ValBool False)
+        ])
+      dataObj n = pendingFromAttrs st (Map.fromList
+        [ (AttrClass, ValULong ckoData)
+        , (AttrValueLen, ValULong n)
+        , (AttrToken, ValBool False)
+        ])
+      bytes n = BS.replicate n 0x5a
+      refused label pw bs = case finishWork m st pw (GotBytes bs) of
+        Reject r -> do
+          assertEqual (label ++ " code") CKR_TEMPLATE_INCONSISTENT (rejCode r)
+          assertEqual (label ++ " empty delta") (StateDelta []) (rejDelta r)
+          assertEqual (label ++ " no outputs") 0 (length (rejOutputs r))
+        other -> assertFailure (label ++ " must refuse: " ++ show other)
+      published label n pw bs = case finishWork m st pw (GotBytes bs) of
+        Immediate c -> assertEqual (label ++ " handles") n
+          (length [() | NativeOutput (RegionHandle _) _ <- pcOutputs c])
+        other -> assertFailure (label ++ " must publish: " ++ show other)
+  published "AES/16 control" 1 (PwDerive [secret ckkAes 16] [16]) (bytes 16)
+  (m1, baseH) <- plantKey m st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] "abc"
+  case planDerive defaultRules m1 st (MechanismId ckm_SHA256_KEY_DERIVATION) baseH
+      (encodeDeriveParams BS.empty
+        [ [ (AttrClass, ValULong ckoSecretKey)
+          , (AttrKeyType, ValULong ckkAes)
+          , (AttrValueLen, ValULong 16)
+          , (AttrToken, ValBool False)
+          ] ]) of
+    KeyEffect pw fx -> do
+      res <- answer m1 fx
+      case res of
+        GotBytes full -> do
+          assertEqual "driver answer width" 16 (BS.length full)
+          case finishWork m1 st pw (GotBytes (BS.take 15 full)) of
+            Reject r -> do
+              assertEqual "short answer code" CKR_GENERAL_ERROR (rejCode r)
+              assertEqual "short answer empty delta" (StateDelta []) (rejDelta r)
+              assertEqual "short answer no outputs" 0 (length (rejOutputs r))
+            other -> assertFailure ("short answer must refuse: " ++ show other)
+        other -> assertFailure ("driver must answer bytes: " ++ show other)
+    other -> assertFailure ("SHA-256 AES/16 must plan: " ++ show other)
+  published "data control" 1 (PwDerive [dataObj 5] [5]) (bytes 5)
+  refused "AES/1" (PwDerive [secret ckkAes 1] [1]) (bytes 1)
+  refused "AES/33" (PwDerive [secret ckkAes 33] [33]) (bytes 33)
+  refused "SECRET_KEY/RSA" (PwDerive [secret ckkRsa 16] [16]) (bytes 16)
+  refused "declared 16, answered 24" (PwDerive [secret ckkAes 16] [24]) (bytes 24)
+  refused "mixed split" (PwDerive [secret ckkAes 16, secret ckkAes 16] [15, 17])
+    (bytes 32)
+  published "keymat control" 4
+    (PwDeriveIv [secret ckkGenericSecret 20, secret ckkGenericSecret 20
+      , secret ckkAes 16, secret ckkAes 16] [20, 20, 16, 16] (16, 16))
+    (bytes 104)
+  refused "keymat AES/7"
+    (PwDeriveIv [secret ckkGenericSecret 20, secret ckkGenericSecret 20
+      , secret ckkAes 7, secret ckkAes 7] [20, 20, 7, 7] (16, 16))
+    (bytes 86)
 
 caseDeriveCodec :: IO ()
 caseDeriveCodec = do

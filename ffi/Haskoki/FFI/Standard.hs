@@ -101,6 +101,7 @@ module Haskoki.FFI.Standard
   , FrameError (..)
   , maxTemplateAttrs
   , parseTemplateFrame
+  , decodeFrameRecords
   , decodeNativeValue
     -- * Wire mappings (pure)
   , ecParamsFromWire
@@ -1229,7 +1230,7 @@ parseTemplateFrame bs = case takeU64le bs of
     | otherwise -> case takeRecords (fromIntegral n) rest of
         Nothing -> Left FrameTruncated
         Just (entries, trailing)
-          | BS.null trailing -> mapM decodeEntry entries
+          | BS.null trailing -> decodeFrameRecords entries
           | otherwise -> Left FrameTruncated
   where
     takeRecords :: Int -> ByteString -> Maybe ([(Word64, ByteString)], ByteString)
@@ -1244,6 +1245,18 @@ parseTemplateFrame bs = case takeU64le bs of
           let (val, r3) = BS.splitAt len r2
           (more, r4) <- takeRecords (k - 1) r3
           pure ((t, val) : more, r4)
+
+-- | Decode raw template records (native type id, value bytes) in
+-- order: the one value decoder for every caller template, shared
+-- by the primary frame ('parseTemplateFrame') and the
+-- params-embedded templates (SP 800-108 additional keys), so both
+-- admit the same encodings and refuse the same malformed ones with
+-- the same 'FrameError' (and so the same @CK_RV@ via
+-- 'frameErrorRV'). Unknown ids are 'FrameUnknownType'; values off
+-- their type's shape are 'FrameBadValue'.
+decodeFrameRecords :: [(Word64, ByteString)] -> Either FrameError [(AttributeType, AttributeValue)]
+decodeFrameRecords = mapM decodeEntry
+  where
     decodeEntry :: (Word64, ByteString) -> Either FrameError (AttributeType, AttributeValue)
     decodeEntry (t, val) = case attributeNameById t >>= attributeTypeByName of
       Nothing -> Left (FrameUnknownType t)
@@ -5744,8 +5757,12 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
               Right entries ->
                 if not (isOpaqueDeriveMech mid)
                   then pure (stdRvOf CKR_MECHANISM_INVALID)
-                  else do
-                    (blob, extraTmpls, wb) <- deriveBlobEx mid raw
+                  else deriveBlobEx mid raw >>= \case
+                   -- An additional-key template that the shared
+                   -- frame decoder refuses answers the primary
+                   -- template's code, before planning.
+                   Left rv -> pure rv
+                   Right (blob, extraTmpls, wb) -> do
                     m <- snapshotModel (siEnv inst)
                     let plan = planDerive (envRules (siEnv inst)) m st mid
                           (ExternalHandle (fromIntegral baseH))
@@ -5768,31 +5785,40 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
         | length rest == length slots -> do
             zipWithM_ poke slots (map CULong rest)
             poke phKey (CULong oh) >> pure ckrOk
+      -- Unreachable, and it runs after the commit: 'planDerive'
+      -- builds one pending object per template
+      -- (@[entries] ++ extraTmpls@, so primary plus one per slot),
+      -- 'finishWork' refuses a 'PwDerive' whose object and length
+      -- counts disagree, and 'publishPending' mints one handle per
+      -- pending object, so a published result always carries
+      -- exactly @1 + length slots@ handles here.
       _ -> pure ckrGeneralError
     deriveBlobEx mid raw = case multiIntake mid of
       Just intake -> do
         mOut <- intake
-        pure (fromMaybe (raw, [], WbNone) mOut)
+        pure (fromMaybe (Right (raw, [], WbNone)) mOut)
       Nothing -> do
         blob <- deriveBlob mid raw
-        pure (blob, [], WbNone)
+        pure (Right (blob, [], WbNone))
     multiIntake mid
       | Just r <- sp800RecipeFor mid = Just $ do
           mMulti <- normalizeSp800KdfParams (rsMode r) pParams paramsLen
           pure $ case mMulti of
-            Just (b, slots) ->
-              Just (b, map dksTemplate slots, WbSp800 (map dksOut slots))
+            Just (b, slots) -> Just $
+              case mapM (decodeFrameRecords . dksRecords) slots of
+                Left ferr -> Left (frameErrorRV ferr)
+                Right tmpls -> Right (b, tmpls, WbSp800 (map dksOut slots))
             Nothing -> Nothing
       | Just r <- tlsKeyMatRecipeFor mid = Just $ do
           mKm <- keyMatNormalizer (tkmKind r) pParams paramsLen
           pure $ case mKm of
-            Just (b, slots) -> Just (b, [], WbKeyMat slots)
+            Just (b, slots) -> Just (Right (b, [], WbKeyMat slots))
             Nothing -> Nothing
       | Just r <- ssl3RecipeFor mid
       , ssl3Kind r == Ssl3KeyMat = Just $ do
           mKm <- normalizeSsl3KeyMatParams pParams paramsLen
           pure $ case mKm of
-            Just (b, slots) -> Just (b, [], WbKeyMat slots)
+            Just (b, slots) -> Just (Right (b, [], WbKeyMat slots))
             Nothing -> Nothing
       | otherwise = Nothing
     deriveBlob mid raw
