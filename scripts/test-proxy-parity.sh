@@ -105,6 +105,11 @@
 #                                           # exits 1 unless
 #                                           # HASKOKI_PARITY_ALLOW_PARTIAL=1;
 #                                           # never use it for evidence
+#   HASKOKI_PARITY_STORAGE=memory scripts/test-proxy-parity.sh
+#                                           # narrows the certificate
+#                                           # storage cells; any set other
+#                                           # than memory+sqlite is PARTIAL
+#                                           # (same exit rule as GROUPS)
 #   HASKOKI_PARITY_REPROBE=1 scripts/test-proxy-parity.sh
 #                                           # also re-probes excluded legs;
 #                                           # ends in REPROBE-RUN, not PASS
@@ -232,8 +237,9 @@ done
 # consumer_certificates:restart:sqlite (fix round 1: NARROWED from the
 # whole leg -- the leg passes with memory storage in all four versions
 # and is gated there; with sqlite storage the proxied re-find of the
-# CKA_TOKEN object after client Finalize/Initialize returns 0 matches
-# (direct: 1), assertion restart-token-refind, all four versions).
+# CKA_TOKEN object after client Finalize/Initialize fails, assertion
+# restart-token-refind, all four versions; a reverted debug print
+# showed 0 matches against 1 direct, no committed log keeps it).
 # Closest upstream reference, closed by design on 2026-10-05
 # (backend objects outlive client Finalize; per-client teardown
 # deferred to v0.3):
@@ -1227,9 +1233,11 @@ done
 fi
 
 # Final line: only a complete default run prints the PASS line that
-# evidence is quoted from.
-if [ "$GROUPS_NORM" != "R C P" ]; then
-  echo "PARTIAL: test-proxy-parity.sh groups run: $GROUPS_NORM (not a gate result; full run needs R C P)"
+# evidence is quoted from. A narrowed storage set is partial too: it
+# drops the other storage's certificate cells and exclusion skips.
+STORAGE_NORM=$(printf '%s\n' $HASKOKI_PARITY_STORAGE | sort -u | tr '\n' ' ' | sed 's/ $//')
+if [ "$GROUPS_NORM" != "R C P" ] || [ "$STORAGE_NORM" != "memory sqlite" ]; then
+  echo "PARTIAL: test-proxy-parity.sh groups run: $GROUPS_NORM, storage: $STORAGE_NORM (not a gate result; full run needs R C P with memory sqlite)"
   [ "${HASKOKI_PARITY_ALLOW_PARTIAL:-0}" = "1" ] || exit 1
   exit 0
 fi
