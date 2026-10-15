@@ -210,9 +210,20 @@ class DriverControls(unittest.TestCase):
         p = self.run_driver(HASKOKI_OWN_CASE="m2-lease-protocol", HASKOKI_OWN_RTS="1")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         d = json.loads((self.out / "m2-lease-protocol.N1.json").read_text())
-        dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=REPO,
-                                    capture_output=True, text=True).stdout.strip())
-        self.assertIs(d["tree_clean"], not dirty)
+        # The driver's rule: clean only when git status succeeds and is
+        # empty; a failing git (no repository, or a container checkout
+        # git refuses as unsafe) is unknown, which counts as not clean.
+        st = subprocess.run(["git", "status", "--porcelain"], cwd=REPO,
+                            capture_output=True, text=True)
+        clean = st.returncode == 0 and not st.stdout.strip()
+        self.assertIs(d["tree_clean"], clean)
+
+    def test_receipt_tree_clean_false_when_git_fails(self):
+        p = self.run_driver(HASKOKI_OWN_CASE="m2-lease-protocol", HASKOKI_OWN_RTS="1",
+                            GIT_DIR=str(self.tmp / "no-such-git-dir"))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        d = json.loads((self.out / "m2-lease-protocol.N1.json").read_text())
+        self.assertIs(d["tree_clean"], False)
 
     def test_min_count_floor_holds_for_every_case_in_the_table(self):
         # A shrinking suite fails: for EVERY active case parsed from
