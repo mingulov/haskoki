@@ -276,6 +276,7 @@ static void extra_legs(MessageApi *a);
 static void oversize_legs(MessageApi *a);
 static void sweep_legs(MessageApi *a);
 static void gcm_shape_legs(MessageApi *a);
+static void gmac_shape_legs(MessageApi *a);
 
 int main(int argc, char **argv) {
   if (argc != 2) return 2;
@@ -321,6 +322,7 @@ int main(int argc, char **argv) {
     extra_legs(&a);
     sweep_legs(&a);
     gcm_shape_legs(&a);
+    gmac_shape_legs(&a);
     if (!proxy) oversize_legs(&a);
     rv("C_Finalize","end",a.C_Finalize(NULL),CKR_OK);
     boundary_legs(&a,1,"post-finalize");
@@ -1321,6 +1323,37 @@ static void gcm_shape_legs(MessageApi *a) {
   rv("gcm-shape","close",a->C_CloseSession(s),CKR_OK);
 }
 
+/* GMAC message flags are withdrawn: PKCS#11 v3.2 defines no message-API
+ * parameter shape for CKM_AES_GMAC. A caller passing the native
+ * CK_GCM_MESSAGE_PARAMS to C_MessageSignInit/C_MessageVerifyInit gets
+ * CKR_MECHANISM_PARAM_INVALID (section 5.1.6), and single-part GMAC with
+ * the classic CK_GCM_PARAMS still signs and verifies. */
+static void gmac_shape_legs(MessageApi *a) {
+  static CK_BYTE data[16] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f};
+  CK_SESSION_HANDLE s=0;
+  CK_OBJECT_HANDLE key=0;
+  CK_BYTE tag[16];
+  CK_BYTE mac[32];
+  CK_ULONG macLen=sizeof(mac);
+  CK_GCM_MESSAGE_PARAMS native={gcmNonce,12,0,CKG_NO_GENERATE,tag,128};
+  CK_GCM_PARAMS gp={gcmNonce,12,96,NULL,0,128};
+  CK_MECHANISM mNative={CKM_AES_GMAC,(CK_VOID_PTR)&native,sizeof(native)};
+  CK_MECHANISM mClassic={CKM_AES_GMAC,(CK_VOID_PTR)&gp,sizeof(gp)};
+  CK_RV result=a->C_OpenSession(tokenSlot,CKF_SERIAL_SESSION|CKF_RW_SESSION,NULL,NULL,&s);
+  rv("gmac-shape","open",result,CKR_OK);
+  if (result != CKR_OK) exit(1);
+  memset(tag,0,sizeof(tag));
+  key=make_key(a,s,CKK_AES,gcmKeyBytes,16,CK_FALSE,CK_FALSE,CK_TRUE,CK_TRUE);
+  rv("gmac-shape","native-sign-init",a->C_MessageSignInit(s,&mNative,key),CKR_MECHANISM_PARAM_INVALID);
+  rv("gmac-shape","native-verify-init",a->C_MessageVerifyInit(s,&mNative,key),CKR_MECHANISM_PARAM_INVALID);
+  rv("gmac-shape","classic-sign-init",a->C_SignInit(s,&mClassic,key),CKR_OK);
+  rv("gmac-shape","classic-sign",a->C_Sign(s,data,sizeof(data),mac,&macLen),CKR_OK);
+  check("gmac-shape","classic-tag-length",macLen == 16);
+  rv("gmac-shape","classic-verify-init",a->C_VerifyInit(s,&mClassic,key),CKR_OK);
+  rv("gmac-shape","classic-verify",a->C_Verify(s,data,sizeof(data),mac,macLen),CKR_OK);
+  rv("gmac-shape","close",a->C_CloseSession(s),CKR_OK);
+}
+
 static void sweep_ecdsa_msg(MessageApi *a, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE priv, CK_OBJECT_HANDLE pub) {
   static CK_BYTE data[32] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f};
   static CK_BYTE sig[256];
@@ -1456,7 +1489,7 @@ static void sweep_legs(MessageApi *a) {
     sweep_sign(a,s,"hmac-sha256-general",&mHmacGen,hmac20,hmac20);
     sweep_flags(a,CKM_AES_CMAC,"aes-cmac",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
     sweep_sign(a,s,"aes-cmac",&mCmac,aes,aes);
-    sweep_flags(a,CKM_AES_GMAC,"aes-gmac",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_flags(a,CKM_AES_GMAC,"aes-gmac",0); /* message flags withdrawn: no message-API GMAC parameter shape */
     sweep_sign(a,s,"aes-gmac",&mGmac,aes,aes);
     sweep_flags(a,CKM_AES_XCBC_MAC,"aes-xcbc-mac",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
     sweep_sign(a,s,"aes-xcbc-mac",&mXcbc,aes,aes);

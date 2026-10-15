@@ -27861,15 +27861,13 @@
       "mechanism_info": {
         "flags": [
           "CKF_SIGN",
-          "CKF_VERIFY",
-          "CKF_MESSAGE_SIGN",
-          "CKF_MESSAGE_VERIFY"
+          "CKF_VERIFY"
         ],
         "key_size_unit": "mechanism-specific",
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "GMAC recipe (core/Haskoki/Recipe/Gmac.hs): gcm-params/1 image (tag width from the SP 800-38D approved set per OASIS v3.2 section 6.13.6, caller IV 1..64 bytes); keys 128/192/256-bit CKK_AES. The message travels as the GCM AAD with empty plaintext (the params AAD field carries no meaning on the sign path and is ignored); the tag is the GCM authentication tag. The driver executes over the backend AES-GCM route \u2014 real AES-GCM on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverGmac: Python-cryptography AESGCM tags, the AEAD oracle root); constructions pinned (SyntheticSpec caseGmac); params/init/map pinned (RecipeGmacSpec).",
+      "notes": "GMAC recipe (core/Haskoki/Recipe/Gmac.hs): gcm-params/1 image (tag width from the SP 800-38D approved set per OASIS v3.2 section 6.13.6, caller IV 1..64 bytes); keys 128/192/256-bit CKK_AES. The message travels as the GCM AAD with empty plaintext (the params AAD field carries no meaning on the sign path and is ignored); the tag is the GCM authentication tag. The driver executes over the backend AES-GCM route \u2014 real AES-GCM on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverGmac: Python-cryptography AESGCM tags, the AEAD oracle root); constructions pinned (SyntheticSpec caseGmac); params/init/map pinned (RecipeGmacSpec). Message flags withdrawn (v0.5): PKCS#11 v3.2 defines no message-API parameter shape for GMAC, so CKF_MESSAGE_SIGN/VERIFY are not advertised; the message-sign/verify routes stay for classic-shaped CK_GCM_PARAMS and native CK_GCM_MESSAGE_PARAMS refuses with CKR_MECHANISM_PARAM_INVALID (MessageFlagBatterySpec, message_routed gmac-shape).",
       "numeric_id": "0x0000108e",
       "routes": [
         {
