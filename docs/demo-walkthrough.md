@@ -54,9 +54,10 @@ show two ways to move it to another process.
 The default token is slot 0, label `haskoki-demo`, with public fixture PINs:
 user `1234`, security officer `5678`; these are the initial credentials the
 token serves until it is provisioned in-band. `C_InitToken` reinitializes a
-token (no sessions may be open: the SO PIN and label become the caller
-values, every object and pending detached job on the token is destroyed,
-and the user PIN becomes uninitialized), the SO then sets the user PIN
+token (no sessions may be open: the label becomes the caller label, the
+caller PIN must match the existing SO PIN to authorize the reset, every
+object and pending detached job on the token is destroyed, and the user
+PIN becomes uninitialized), the SO then sets the user PIN
 with `C_InitPIN` from a read/write SO session, and `C_SetPIN` changes the
 session role's own PIN (a read/write SO session changes the SO PIN; any
 other read/write session — public, user, or context — changes the user

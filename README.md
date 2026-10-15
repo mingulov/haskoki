@@ -35,8 +35,10 @@ demo-ok: 8/8 verifications hold
 That's the complete first run. No clone, compiler, account, PIN setup, or
 physical token is needed. Reports and disposable keys remain in `out/demo-*/`.
 
-This checkout prepares **v0.3.1.0**, adding a prepared shell and p11-kit
-remoting. Its registry tag is available only after publication. The
+This checkout prepares **v0.4.0.0**, adding token provisioning
+(`C_InitToken`/`C_InitPIN`/`C_SetPIN`), authorized re-initialization, and
+logout-oracle coverage on top of the v0.3.1.0 demo experience. Its registry
+tag is available only after publication. The
 [hands-on guide](docs/try-it.md) shows how to load a tested candidate,
 generate a key with `pkcs11-tool`, and sign your own message.
 

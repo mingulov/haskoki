@@ -26,10 +26,12 @@ Engine policy (documented, no silent substitution):
   from the optional @token_ids@ key ('identityCatalog') or the
   legacy positional reading; a SQLite open reconciles the
   catalog against the durable identities and refuses drift
-  loudly instead of migrating silently. There is no InitToken
-  path (that entry stays honestly @NOT_SUPPORTED@);
-  provisioning is documented in @docs\/demo-walkthrough.md@ and
-  the identity rules in @docs\/operations-notes.md@.
+  loudly instead of migrating silently. Provisioning rides the
+  routed @C_InitToken@/@C_InitPIN@/@C_SetPIN@ entries
+  (re-initialization checks the caller PIN against the existing
+  SO PIN); the flow is documented in
+  @docs\/demo-walkthrough.md@ and the identity rules in
+  @docs\/operations-notes.md@.
 * Template arguments cross as template frames (see
   'parseTemplateFrame'): @count:u64le@ then @count@ records of
   @type:u64le, len:u64le, value:len bytes@. The C side packs them

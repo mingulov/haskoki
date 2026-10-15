@@ -725,9 +725,7 @@
       "main": "tests/model/LogoutOracleMain.hs",
       "modules": [],
       "required_groups": [
-        "logout oracle and variant KAT",
-        "logout policy oracle",
-        "mechanism variant KAT"
+        "logout oracle and variant KAT"
       ],
       "allowed_imports": {
         "Data.ByteString": [

@@ -354,6 +354,11 @@ POLICY_REFS = {
 # name -> exact-gap reason (no behavior claim without tests).
 UNWIRed_OP = ("operation-layer behavior tested but no planCall FunctionId "
               "and no C-table route")
+# Routed above the planner: behavior tested at the operation layer, served
+# by a real entry, but with no planCall FunctionId (planner-scope gap only;
+# asserts nothing about C-table routing, per the scope disclaimer).
+UNWIRED_PLANNER = ("operation-layer behavior tested but no planCall FunctionId "
+                   "(served above the planner by the routed entry)")
 UNSUPPORTED = {
     # C_GetSessionInfo/C_GetSlotInfo/C_GetTokenInfo live in PLANNED
     # (standard-surface routes + executed behavior tests).
@@ -362,23 +367,26 @@ UNSUPPORTED = {
     # the provisioning consumer).
     "C_LoginUser": ("no C_LoginUser entry; role-login planning covers "
                     "C_Login only"),
-    "C_CloseAllSessions": "no close-all planning (single-session close only)",
+    "C_CloseAllSessions": ("no close-all planning (single-session close only; "
+                           "served above the planner by the routed entry)"),
     "C_GetOperationState": ("no C_GetOperationState framing; engine snapshot "
                             "machinery is tested but unwired to this entry"),
     "C_SetOperationState": ("no C_SetOperationState framing; engine snapshot "
                             "machinery is tested but unwired to this entry"),
     "C_GetObjectSize": "no model planning; ABI layout only",
-    "C_FindObjectsInit": "one-shot find only; no cursor state (planner scope: pure-engine one-shot model; the public FFI cursor lives above this layer)",
-    "C_FindObjectsFinal": "one-shot find only; no cursor state (planner scope: pure-engine one-shot model; the public FFI cursor lives above this layer)",
+    "C_FindObjectsInit": "planner scope: one-shot find model only, no cursor state (serving cursors live in the public FFI layer above)",
+    "C_FindObjectsFinal": "planner scope: one-shot find model only, no cursor state (serving cursors live in the public FFI layer above)",
     # Recover rows live in PLANNED (wired + executed).
     # Dual rows live in PLANNED (wired + executed).
-    "C_GenerateKey": UNWIRed_OP + " (KeyManagementSpec keygen cases)",
-    "C_GenerateKeyPair": UNWIRed_OP + " (KeyManagementSpec keypair + KEM cases)",
-    "C_DeriveKey": UNWIRed_OP + " (KeyManagementSpec derive cases)",
-    "C_SeedRandom": "no model planning; ABI layout only",
-    "C_GenerateRandom": "no model planning; ABI layout only",
-    "C_EncapsulateKey": UNWIRed_OP + " (KeyManagementSpec KEM encaps cases, SyntheticSpec KEM)",
-    "C_DecapsulateKey": UNWIRed_OP + " (KeyManagementSpec KEM cases, SyntheticSpec KEM)",
+    "C_GenerateKey": UNWIRED_PLANNER + " (KeyManagementSpec keygen cases)",
+    "C_GenerateKeyPair": UNWIRED_PLANNER + " (KeyManagementSpec keypair + KEM cases)",
+    "C_DeriveKey": UNWIRED_PLANNER + " (KeyManagementSpec derive cases)",
+    "C_SeedRandom": ("no model planning "
+                     "(served above the planner by the routed entry)"),
+    "C_GenerateRandom": ("no model planning "
+                         "(served above the planner by the routed entry)"),
+    "C_EncapsulateKey": UNWIRED_PLANNER + " (KeyManagementSpec KEM encaps cases, SyntheticSpec KEM)",
+    "C_DecapsulateKey": UNWIRED_PLANNER + " (KeyManagementSpec KEM cases, SyntheticSpec KEM)",
     "C_VerifySignatureInit": "no validation-object verify planning",
     "C_VerifySignature": "no validation-object verify planning",
     "C_VerifySignatureUpdate": "no validation-object verify planning",
@@ -389,12 +397,12 @@ UNSUPPORTED = {
 }
 
 NOT_APPLICABLE = {
-    "C_GetFunctionStatus": ("legacy parallel-management entry; specified "
-                            "CKR_FUNCTION_NOT_SUPPORTED outside legacy mode, "
-                            "which haskoki never enters"),
-    "C_CancelFunction": ("legacy parallel-management entry; specified "
-                         "CKR_FUNCTION_NOT_SUPPORTED outside legacy mode, "
-                         "which haskoki never enters"),
+    "C_GetFunctionStatus": ("legacy parallel-management entry; haskoki never "
+                            "enters legacy mode and the stub returns "
+                            "CKR_FUNCTION_NOT_PARALLEL (loader pin)"),
+    "C_CancelFunction": ("legacy parallel-management entry; haskoki never "
+                         "enters legacy mode and the stub returns "
+                         "CKR_FUNCTION_NOT_PARALLEL (loader pin)"),
 }
 
 # Reviewed task-label aliases: the dual/recover rows cite the
