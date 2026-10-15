@@ -33,7 +33,9 @@ import Control.Concurrent (ThreadId, forkFinally, killThread, threadDelay)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar)
 import Control.Exception (AsyncException (..), SomeException, bracket, finally, fromException, throwIO, try)
 import Control.Monad (replicateM, when)
-import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.Text (Text)
+import qualified Database.SQLite3 as S
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.FFI.Standard
@@ -91,7 +93,26 @@ import Haskoki.Runtime.Config
   , parseConfig
   )
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStoreWith)
-import Haskoki.Runtime.Storage.SQLite (openSQLiteStore, openSQLiteStoreWith)
+import Haskoki.Runtime.Storage.SQLite
+  ( SQLiteTestHooks (..)
+  , noSQLiteTestHooks
+  , openSQLiteStore
+  , openSQLiteStoreWith
+  , openSQLiteStoreWithHooks
+  )
+import SQLiteSeams
+  ( CommitSeam (..)
+  , TxnSeam (..)
+  , assertTablesEqual
+  , commitsSinceMark
+  , dumpTables
+  , failTokenUpsert
+  , installCommitSeam
+  , installTxnSeam
+  , markCommits
+  , newCommitSeam
+  , newTxnSeam
+  )
 import Haskoki.Session (TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
@@ -173,6 +194,11 @@ spec = testGroup "Multi-session store"
   , testCase "public read/write session changes the user PIN" caseSetPinPublic
   , testCase "read-only sessions refuse provisioning" caseProvisionReadOnly
   , testCase "failed provisioning write dirties the view, login fails closed" caseProvisionDirty
+  , testGroup "non-home InitToken store failure (sqlite seams)"
+      [ testCase "injected body failure keeps the old credential, label and generation" caseInitTokenBodyFailure
+      , testCase "injected cleanup failure quarantines the connection until reopen" caseInitTokenCleanupFailure
+      , testCase "injected unknown COMMIT keeps the token quarantined, never replays" caseInitTokenCommitUnknown
+      ]
   ]
 
 -- | Barrier rendezvous bound: 5 seconds, matching the commit
@@ -1317,3 +1343,204 @@ twoTokenConfig path = case parseConfig (unlines
   ]) of
     Left err -> assertFailure ("two-token config must parse: " ++ show err)
     Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True })
+
+-- ---------------------------------------------------------------------------
+-- Public non-home InitToken under store failure (AC-01)
+-- ---------------------------------------------------------------------------
+
+-- These cases drive 'haskokiStdInitToken' — the implementation the
+-- exported @haskoki_std_init_token@ symbol (and so the C ABI's
+-- C_InitToken) runs — on slot 1 of a two-token SQLite instance,
+-- opened through the production acquisition path
+-- ('openStdStoreWith') over a hooked store: the test-only seams
+-- act on the store's own connection inside the real InitToken
+-- commit. Preconditions are the granted shape: the existing SO PIN
+-- (6789), no sessions on the slot, a bounded relabel
+-- (@ops-relabelled@). Each stimulus is labelled injected.
+
+-- | The test-only hooks: the transaction-control and commit
+-- seams install on the first commit (the open-time commits run
+-- through them unstimulated), and an armed stimulus fires once,
+-- immediately before the next @BEGIN IMMEDIATE@.
+data InitTokenSeams = InitTokenSeams
+  { itArmed :: IORef (Maybe (S.Database -> IO ()))
+  , itTxn :: TxnSeam
+  , itCommit :: CommitSeam
+  }
+
+newInitTokenSeams :: IO InitTokenSeams
+newInitTokenSeams = InitTokenSeams <$> newIORef Nothing <*> newTxnSeam <*> newCommitSeam
+
+-- | Acquisition over the hooked opener (production open flow).
+seamAcquisition :: InitTokenSeams -> StdAcquisition
+seamAcquisition seams = stdAcquisition
+  { saOpenStore = \env cfg ->
+      openStdStoreWith (\p -> openSQLiteStoreWithHooks p defaultLimits noFaults hooks) env cfg
+  }
+  where
+    hooks = noSQLiteTestHooks
+      { sthBeforeBegin = \db -> do
+          installTxnSeam (itTxn seams) db
+          installCommitSeam (itCommit seams) db
+          stimulus <- atomicModifyIORef' (itArmed seams) (\m -> (Nothing, m))
+          maybe (pure ()) ($ db) stimulus
+          markCommits (itCommit seams)
+      }
+
+-- | Run one public call with the stimulus armed, returning its
+-- code, the transaction-control statements it prepared, and how
+-- many commits reached the commit point during it.
+armedCall :: InitTokenSeams -> (S.Database -> IO ()) -> IO CULong -> IO (CULong, [Text], Int)
+armedCall seams stimulus call = do
+  ops0 <- length <$> readIORef (tsLog (itTxn seams))
+  markCommits (itCommit seams)
+  writeIORef (itArmed seams) (Just stimulus)
+  rv <- call
+  ops <- drop ops0 . reverse <$> readIORef (tsLog (itTxn seams))
+  calls <- commitsSinceMark (itCommit seams)
+  pure (rv, ops, calls)
+
+-- | Seed the two-token store: slot 1's user PIN is provisioned to
+-- 4242 (a durable credential row next to SO PIN 6789), then a
+-- plain open\/close settles any open-time writes.
+seedNonHome :: Config -> IO ()
+seedNonHome cfg = do
+  withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+    h <- openAuthSessionOn ctx 1
+    callSetPin ctx h "2345" "4242" >>= assertEqual "provision slot-1 user PIN" (CULong 0)
+    haskokiStdCloseSession ctx h >>= assertEqual "close session" (CULong 0)
+  withAuthInstanceOnCfg stdAcquisition cfg $ \_ -> pure ()
+
+-- | Slot 1's durable token row and credential rows, read from the
+-- closed file.
+slotOneDurable :: FilePath -> IO (TokenRecord, [CredentialRecord])
+slotOneDurable path = do
+  st <- openSQLiteStore path >>= expectRight "open raw"
+  loaded <- storeLoadTokens st >>= expectRight "load tokens"
+  creds <- storeLoadCredentials st >>= expectRight "load credentials"
+  storeClose st
+  case [t | (t, _) <- loaded, trSlot t == SlotId 1] of
+    [t] -> pure (t, [c | c <- creds, crToken c == trId t])
+    other -> assertFailure ("expected one slot-1 token row, got: " ++ show other)
+
+-- | The durable state is wholly the seeded one: every raw row
+-- equal, slot 1's token (label @haskoki-ops@, generation) and
+-- credential (SO 6789, user 4242) unchanged, and a fresh instance
+-- serves the old user and SO PINs on slot 1.
+assertNonHomeOld :: Config -> FilePath -> [(Text, [[S.SQLData]])] -> (TokenRecord, [CredentialRecord]) -> IO ()
+assertNonHomeOld cfg path before (tokBefore, credBefore) = do
+  after <- dumpTables path
+  assertTablesEqual before after
+  (tokAfter, credAfter) <- slotOneDurable path
+  assertEqual "slot-1 label unchanged" "haskoki-ops" (trLabel tokAfter)
+  assertEqual "slot-1 token row (label, generation, auth) unchanged" tokBefore tokAfter
+  assertEqual "slot-1 credential unchanged" credBefore credAfter
+  assertEqual "the old user PIN is the stored one" [Just (BC8.pack "4242")] (map crUserPin credAfter)
+  withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+    h <- openAuthSessionOn ctx 1
+    loginAs ctx h 1 "4242" >>= assertEqual "old user PIN serves after reopen" (CULong 0)
+    haskokiStdLogout ctx h >>= assertEqual "logout" (CULong 0)
+    loginAs ctx h 0 "6789" >>= assertEqual "old SO PIN serves after reopen" (CULong 0)
+
+-- | Injected @RAISE(ROLLBACK)@ at the token upsert (sequencing
+-- only): SQLite rolls the whole InitToken transaction back
+-- natively, no later group runs, no cleanup statement runs, and
+-- the call fails with @CKR_GENERAL_ERROR@. The serving view stays
+-- the old one, nothing is quarantined, and after reopen the old
+-- user credential, label and generation are unchanged.
+caseInitTokenBodyFailure :: IO ()
+caseInitTokenBodyFailure =
+  bracket (makeTempDir "haskoki-inittoken-body") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    cfg <- twoTokenConfig path
+    seedNonHome cfg
+    durableBefore <- slotOneDurable path
+    before <- dumpTables path
+    seams <- newInitTokenSeams
+    withAuthInstanceOnCfg (seamAcquisition seams) cfg $ \ctx -> do
+      (rv, ops, commits) <- armedCall seams (failTokenUpsert "ROLLBACK")
+        (callInitToken ctx 1 "6789" "ops-relabelled")
+      assertEqual "forced body failure fails the call" (CULong 0x05) rv
+      assertEqual "rolled back natively: no cleanup statement" ["BEGIN"] ops
+      assertEqual "nothing reached the commit point" 0 commits
+      liveQuarantine ctx >>= assertEqual "a proven rollback quarantines nothing" []
+      h <- openAuthSessionOn ctx 1
+      loginAs ctx h 1 "4242" >>= assertEqual "the live view still serves the old user PIN" (CULong 0)
+      haskokiStdLogout ctx h >>= assertEqual "logout" (CULong 0)
+    assertNonHomeOld cfg path before durableBefore
+
+-- | Injected cleanup failure: a still-active body ABORT, then the
+-- ROLLBACK denied, so the InitToken write transaction stays open
+-- on the store connection. The call fails with
+-- @CKR_GENERAL_ERROR@; the whole connection is quarantined (both
+-- tokens) and refuses loads, so the open transaction is never
+-- reconciled as "landed" nor served: a slot-1 login fails closed.
+-- Closing the instance rolls the transaction back natively, and
+-- the reopened store holds the whole old state.
+caseInitTokenCleanupFailure :: IO ()
+caseInitTokenCleanupFailure =
+  bracket (makeTempDir "haskoki-inittoken-cleanup") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    cfg <- twoTokenConfig path
+    seedNonHome cfg
+    durableBefore@(tokBefore, _) <- slotOneDurable path
+    before <- dumpTables path
+    seams <- newInitTokenSeams
+    let stimulus db = failTokenUpsert "ABORT" db >> writeIORef (tsDeny (itTxn seams)) ["ROLLBACK"]
+    withAuthInstanceOnCfg (seamAcquisition seams) cfg $ \ctx -> do
+      (rv, ops, commits) <- armedCall seams stimulus (callInitToken ctx 1 "6789" "ops-relabelled")
+      assertEqual "cleanup failure fails the call" (CULong 0x05) rv
+      assertEqual "the ROLLBACK was denied" ["BEGIN", "ROLLBACK:denied"] ops
+      assertEqual "nothing reached the commit point" 0 commits
+      quarantined <- sort <$> liveQuarantine ctx
+      assertEqual "the whole connection is quarantined (both tokens)" 2 (length quarantined)
+      assertBool "the slot-1 token is quarantined" (trId tokBefore `elem` quarantined)
+      h <- openAuthSessionOn ctx 1
+      loginAs ctx h 1 "4242" >>= assertEqual "slot-1 login fails closed" (CULong 0x05)
+    assertNonHomeOld cfg path before durableBefore
+
+-- | Injected unknown COMMIT: the commit hook turns the InitToken
+-- COMMIT into a rollback, so COMMIT fails with the connection
+-- back in autocommit — an outcome the store cannot establish. The
+-- call fails with @CKR_GENERAL_ERROR@ after exactly one COMMIT
+-- (never reissued, no ROLLBACK). The slot-1 token stays
+-- quarantined: the serving view re-syncs from durable truth (the
+-- old user PIN serves on settled counters), but writes touching
+-- the token — a SetPIN, a repeated InitToken — fail closed
+-- without reaching the store. After reopen the whole old state
+-- holds, and the same InitToken then succeeds (the stimulus alone
+-- failed it).
+caseInitTokenCommitUnknown :: IO ()
+caseInitTokenCommitUnknown =
+  bracket (makeTempDir "haskoki-inittoken-unknown") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "auth.db"
+    cfg <- twoTokenConfig path
+    seedNonHome cfg
+    durableBefore@(tokBefore, _) <- slotOneDurable path
+    before <- dumpTables path
+    seams <- newInitTokenSeams
+    let failCommit _ = writeIORef (csFailNext (itCommit seams)) True
+    withAuthInstanceOnCfg (seamAcquisition seams) cfg $ \ctx -> do
+      (rv, ops, commits) <- armedCall seams failCommit (callInitToken ctx 1 "6789" "ops-relabelled")
+      assertEqual "unknown COMMIT fails the call" (CULong 0x05) rv
+      assertEqual "one BEGIN, one COMMIT, no ROLLBACK" ["BEGIN", "COMMIT"] ops
+      assertEqual "the COMMIT reached the commit point once (never replayed)" 1 commits
+      liveQuarantine ctx >>= assertEqual "the slot-1 token stays quarantined" [trId tokBefore]
+      h <- openAuthSessionOn ctx 1
+      loginAs ctx h 1 "4242" >>= assertEqual "durable-truth view serves the old user PIN" (CULong 0)
+      haskokiStdLogout ctx h >>= assertEqual "logout" (CULong 0)
+      (rvSet, opsSet, commitsSet) <- armedCall seams (\_ -> pure ())
+        (callSetPin ctx h "4242" "9999")
+      assertEqual "a write on the quarantined token fails closed" (CULong 0x05) rvSet
+      assertEqual "the refused write ran no transaction" [] opsSet
+      assertEqual "the refused write reached no commit" 0 commitsSet
+      haskokiStdCloseSession ctx h >>= assertEqual "close session" (CULong 0)
+      (rvAgain, opsAgain, commitsAgain) <- armedCall seams (\_ -> pure ())
+        (callInitToken ctx 1 "6789" "ops-relabelled")
+      assertEqual "a repeated InitToken fails closed" (CULong 0x05) rvAgain
+      assertEqual "the repeat ran no transaction" [] opsAgain
+      assertEqual "the repeat reached no commit" 0 commitsAgain
+      liveQuarantine ctx >>= assertEqual "quarantine retained" [trId tokBefore]
+    assertNonHomeOld cfg path before durableBefore
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx ->
+      callInitToken ctx 1 "6789" "ops-relabelled" >>= assertEqual "control: the same InitToken succeeds" (CULong 0)

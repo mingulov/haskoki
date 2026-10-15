@@ -19,6 +19,22 @@ an authoritative reload resolves it.
   quarantines until reload resolves it.
 * The commit region runs masked: both commit probes observe
   'MaskedInterruptible'.
+* SQLite body failure (SQLite only): the first failed statement
+  of the transaction body stops every later delta group — after
+  an injected @RAISE(ROLLBACK)@ (sequencing only), a
+  still-active statement ABORT, and a genuine page-cap
+  @SQLITE_FULL@ that SQLite answers by rolling the whole
+  transaction back — and every logical table is unchanged on
+  reopen.
+* SQLite COMMIT and cleanup failure (SQLite only): a genuine
+  @SQLITE_BUSY@ COMMIT with the transaction still active rolls
+  back to an exact 'NotCommitted'; an injected COMMIT failure
+  after the transaction ended is 'CommitUnknown' with the token
+  quarantined and the COMMIT never reissued; an injected ROLLBACK
+  denial that leaves the transaction open quarantines the whole
+  connection until a rolling-back reload or a close; and a
+  partial ambiguous-verification reload is unknown, never
+  "absent".
 * Interruption is honestly scoped: a kill delivered after the
   commit result is determined is observed as 'ThreadKilled' via
   outcome capture while the captured 'Committed' result stays
@@ -49,14 +65,22 @@ import Control.Exception
   , fromException
   , getMaskingState
   )
-import Data.List (isInfixOf, sortOn)
+import Control.Monad (when)
+import Data.ByteString (ByteString)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.List (isInfixOf, sort, sortOn)
 import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Database.SQLite3 as S
+import Database.SQLite3.Direct (getAutoCommit)
 import System.Directory (removeDirectoryRecursive)
 import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
 import System.Timeout (timeout)
+import GHC.Clock (getMonotonicTime)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, testCaseInfo)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model (Model (..), SessionState, addToken, emptyModel, lookupObject)
@@ -67,7 +91,7 @@ import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , CredentialRecord (..)
   , DesiredToken (..)
-  , FaultInjector
+  , FaultInjector (..)
   , FaultPoint (..)
   , IdentityRefusal (..)
   , JobRecord (..)
@@ -112,7 +136,27 @@ import Haskoki.FFI.Standard (authPutsOf, projectAuthPuts)
 import Haskoki.Runtime.Catalog (identityCatalog)
 import Haskoki.Runtime.Config (Config (..), parseConfig)
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStoreWith)
-import Haskoki.Runtime.Storage.SQLite (openSQLiteStoreWith)
+import Haskoki.Runtime.Storage.SQLite (SQLiteTestHooks (..), openSQLiteStoreWith, openSQLiteStoreWithHooks)
+import SQLiteSeams
+  ( CommitSeam (..)
+  , TxnSeam (..)
+  , assertTablesEqual
+  , dumpTables
+  , failTokenUpsert
+  , injectedMarker
+  , commitsSinceMark
+  , installCommitSeam
+  , installTxnSeam
+  , installWriteLog
+  , laterTables
+  , loggedTables
+  , markCommits
+  , newCommitSeam
+  , newTxnSeam
+  , queryInt
+  , queryText
+  , withSharedReadLock
+  )
 import Haskoki.Session (ActiveLogin (..), TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
@@ -146,6 +190,8 @@ spec = testGroup "commit protocol"
   , testGroup "limits-sqlite" (limitCases withSQLiteIdentity)
   , testGroup "identity-memory" (identityCases withMemoryIdentity)
   , testGroup "identity-sqlite" (identityCases withSQLiteIdentity)
+  , testGroup "body-failure-sqlite" bodyFailureCases
+  , testGroup "commit-failure-sqlite" commitFailureCases
   ]
 
 -- | Fresh memory identity per case.
@@ -1162,9 +1208,11 @@ testCompletionControl openWith = do
   runCase `finally` storeClose victim
 
 -- | Injected full disk: a clean 'NotCommitted' with no durable
--- or model effect, and the store stays healthy afterwards. (A
--- real full disk surfaces through the same 'StoreFull'
--- classification; filling a disk portably is not testable.)
+-- or model effect, and the store stays healthy afterwards. The
+-- injection refuses BEFORE the transaction starts, so it proves
+-- pre-transaction refusal only; a native SQLITE_FULL inside the
+-- transaction body is covered by the SQLite-only
+-- @body-failure-sqlite@ group (page-capped connection).
 testFullDisk :: OpenWith -> IO ()
 testFullDisk openWith = do
   eClean <- openWith defaultLimits noFaults
@@ -1909,3 +1957,759 @@ testDowngradeRefuses open = do
   bytesAfter <- bytesOf s2
   assertEqual "refused downgrade preserves bytes exactly" bytesBefore bytesAfter
   storeClose s2
+
+-- ---------------------------------------------------------------------------
+-- SQLite transaction-body failure (AC-01)
+-- ---------------------------------------------------------------------------
+
+-- | SQLite-only: once one transaction-body statement fails, no
+-- later delta group executes. Every case stimulates a real
+-- statement failure on the store's OWN connection
+-- ('SQLiteTestHooks'), inside the real commit transaction, and
+-- records the native transaction state the failure left
+-- ('getAutoCommit' at the failure: 'True' means SQLite already
+-- rolled the whole transaction back, so any later statement would
+-- run — and commit — on its own in autocommit mode).
+--
+-- * The injected @RAISE(ROLLBACK)@ case proves group SEQUENCING
+--   only: it reaches SQLite's whole-transaction rollback branch
+--   deterministically, but it is not a capacity failure.
+-- * The @RAISE(ABORT)@ control fails one statement with the
+--   transaction still active (the explicit-rollback branch).
+-- * The genuine case caps @max_page_count@ on the store's
+--   connection over the review's packed token layout (small
+--   token rows, staged token upsert) within a bounded layout
+--   search, and must reach SQLite's automatic-rollback branch
+--   with a native @SQLITE_FULL@.
+bodyFailureCases :: [TestTree]
+bodyFailureCases =
+  [ testCaseInfo "caseBodyFailureStopsFollowingGroups: injected RAISE(ROLLBACK) at the token upsert (sequencing only)"
+      caseBodyFailureStopsFollowingGroups
+  , testCaseInfo "statement ABORT with the transaction still active stops later groups"
+      caseBodyAbortStopsFollowingGroups
+  , testCaseInfo "genuine page-cap FULL on the packed token layout stops later groups"
+      caseGenuineFullStopsFollowingGroups
+  ]
+
+-- | What the hooks observed on the store's own connection.
+data BodyProbe = BodyProbe
+  { bpWrites :: IORef [String]
+    -- ^ row writes (@table:op@), most recent first
+  , bpAutoCommit :: IORef (Maybe Bool)
+    -- ^ native autocommit state right after the body failure
+  , bpCommitAutoCommit :: IORef (Maybe Bool)
+    -- ^ native autocommit state right after a failed COMMIT
+  , bpVersion :: IORef String
+    -- ^ the linked SQLite library version
+  , bpTxn :: TxnSeam
+    -- ^ every BEGIN/COMMIT/ROLLBACK prepared (and any denial)
+  , bpCommit :: CommitSeam
+    -- ^ commits reaching the commit point (and any forced failure)
+  }
+
+newBodyProbe :: IO BodyProbe
+newBodyProbe = BodyProbe <$> newIORef [] <*> newIORef Nothing <*> newIORef Nothing
+  <*> newIORef "unread" <*> newTxnSeam <*> newCommitSeam
+
+-- | The transaction-control statements prepared so far, in order.
+txnOps :: BodyProbe -> IO [Text]
+txnOps probe = reverse <$> readIORef (tsLog (bpTxn probe))
+
+-- | Hooks that record the linked version, install the write log
+-- on the given tables plus the transaction-control and commit
+-- seams, then apply the case's stimulus — all on the store's
+-- connection, immediately before @BEGIN IMMEDIATE@ — and capture
+-- the native autocommit state at the body or COMMIT failure,
+-- before any cleanup.
+probeHooks :: BodyProbe -> [Text] -> (S.Database -> IO ()) -> SQLiteTestHooks
+probeHooks probe logged stimulus = SQLiteTestHooks
+  { sthBeforeBegin = \db -> do
+      writeIORef (bpVersion probe) =<< queryText db "SELECT sqlite_version()"
+      installWriteLog (bpWrites probe) logged db
+      installTxnSeam (bpTxn probe) db
+      installCommitSeam (bpCommit probe) db
+      stimulus db
+      markCommits (bpCommit probe)
+  , sthAfterBodyFailure = \db ->
+      writeIORef (bpAutoCommit probe) . Just =<< getAutoCommit db
+  , sthAfterCommitFailure = \db ->
+      writeIORef (bpCommitAutoCommit probe) . Just =<< getAutoCommit db
+  , sthAfterRollbackFailure = \_ -> pure ()
+  }
+
+-- | The injected RAISE(ROLLBACK) regression (sequencing only).
+caseBodyFailureStopsFollowingGroups :: IO String
+caseBodyFailureStopsFollowingGroups = injectedBodyFailure "ROLLBACK" True
+
+-- | The still-active statement-ABORT control.
+caseBodyAbortStopsFollowingGroups :: IO String
+caseBodyAbortStopsFollowingGroups = injectedBodyFailure "ABORT" False
+
+-- | Seed the mixed fixture (token, two objects, one queued job, a
+-- provisioned credential, a probe meta row), then commit an
+-- InitToken-shaped mixed delta whose token upsert (group 5)
+-- fails through the injected trigger. Groups 1 and 2 (object and
+-- job drops) run before it; groups 8, 9 and 10 (credential put
+-- clearing the user PIN, meta put, deleted-job mark coverage)
+-- must never run. Asserts the classification, the native branch,
+-- every durable row after close, the exact statement-boundary
+-- write log, the reopen state, and — as a control — that the
+-- identical delta commits on an unhooked handle.
+injectedBodyFailure :: Text -> Bool -> IO String
+injectedBodyFailure kind expectAutoCommit =
+  bracket (makeTempDir "haskoki-body-failure") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+    MixedFixture tok delta docsBefore <- seedMixedFixture path []
+    let tid = trId tok
+    before <- dumpTables path
+    probe <- newBodyProbe
+    s <- openSQLiteStoreWithHooks path defaultLimits noFaults (probeHooks probe loggedTables (failTokenUpsert kind))
+      >>= expectRight "open hooked"
+    result <- storeCommit s delta
+    case result of
+      NotCommitted (StoreIO msg) | T.unpack injectedMarker `isInfixOf` msg -> pure ()
+      other -> assertFailure ("expected the injected NotCommitted, got: " ++ show other)
+    autoAt <- readIORef (bpAutoCommit probe)
+    assertEqual "native autocommit at the failure (True = SQLite rolled back already)"
+      (Just expectAutoCommit) autoAt
+    stats <- storeStats s
+    assertEqual "no commit counted" 0 (ssCommits stats)
+    quarantined <- storeQuarantined s
+    assertEqual "clean refusal quarantines nothing" [] quarantined
+    docsSame <- expectInspect s
+    storeClose s
+    after <- dumpTables path
+    assertTablesEqual before after
+    assertEqual "same handle read the old state (no open transaction)" docsBefore docsSame
+    writes <- reverse <$> readIORef (bpWrites probe)
+    assertEqual "groups 1, 2 and token staging ran; nothing after the failed upsert"
+      ["objects:delete", "detached_jobs:delete", "tokens:update"] writes
+    -- The cleanup follows the native state: no ROLLBACK statement
+    -- at all once SQLite has rolled back itself (one would only
+    -- fail with "no transaction is active", now an unknown
+    -- outcome), the explicit ROLLBACK while still active.
+    ops <- txnOps probe
+    assertEqual "transaction-control statements"
+      (if expectAutoCommit then ["BEGIN"] else ["BEGIN", "ROLLBACK"]) ops
+    -- Reopen: the old token, credential and meta survive, and the
+    -- identical delta commits on an unhooked handle (the failure
+    -- was the stimulus alone, and every later group's write is
+    -- observable when it does land).
+    sR <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "reopen"
+    assertEqual "reopen keeps the provisioned user PIN"
+      [Just "user-pin-7"] =<< userPinsOf sR tid
+    assertEqual "reopen keeps the old token" [tok] =<< tokensWithId sR tid
+    assertEqual "reopen keeps the old meta" (Just "old") =<< metaOf sR "probe"
+    assertEqual "reopen keeps the dropped job" [41] . map jrPersistentId
+      =<< (storeLoadJobs sR >>= expectRight "reopen jobs")
+    commitOk sR "control: the identical delta commits unhooked" delta
+    assertEqual "control clears the user PIN" [Nothing] =<< userPinsOf sR tid
+    assertEqual "control writes the meta" (Just "new") =<< metaOf sR "probe"
+    storeClose sR
+    version <- readIORef (bpVersion probe)
+    pure ("SQLite " ++ version ++ "; injected RAISE(" ++ T.unpack kind
+      ++ "); autocommit at failure " ++ show autoAt ++ "; writes " ++ show writes
+      ++ "; transaction statements " ++ show ops)
+
+-- | The seeded mixed fixture: the target token, the
+-- InitToken-shaped delta over it, and the store's inspected
+-- documents after seeding.
+data MixedFixture = MixedFixture TokenRecord StoreDelta [StoredDoc]
+
+-- | Seed the mixed fixture on a closed store file (token, two
+-- objects, queued job 41, a provisioned credential, a probe meta
+-- row, plus any bystander tokens) and build the InitToken-shaped
+-- delta: object drop (g1), job drop (g2), relabel plus generation
+-- bump (g5), credential clearing the user PIN (g8), meta put (g9)
+-- and the deleted-job mark coverage (g10).
+seedMixedFixture :: FilePath -> [TokenRecord] -> IO MixedFixture
+seedMixedFixture path bystanders = do
+  s0 <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "open seed"
+  (tok, objs) <- seedStore s0
+  let tid = trId tok
+  dropped <- case objs of
+    o : _ -> pure (orId o)
+    [] -> assertFailure "seed has no objects"
+  commitOk s0 "seed job" emptyDelta { sdPutJobs = [demoJobPending 41 tid (trGeneration tok)] }
+  commitOk s0 "seed credential" emptyDelta { sdPutCredentials = [mixedCredential tid (Just "user-pin-7")] }
+  commitOk s0 "seed meta" emptyDelta { sdPutMeta = [("probe", "old")] }
+  mapM_ (\b -> commitOk s0 "seed bystander" emptyDelta { sdPutTokens = [b] }) bystanders
+  docs <- expectInspect s0
+  storeClose s0
+  pure (MixedFixture tok emptyDelta
+    { sdDropObjects = [dropped]
+    , sdDropJobs = [41]
+    , sdPutTokens = [tok { trLabel = "relabelled-token", trGeneration = Generation 2 }]
+    , sdPutCredentials = [mixedCredential tid Nothing]
+    , sdPutMeta = [("probe", "new")]
+    } docs)
+
+-- | Reopen the closed file unhooked and require the fixture's
+-- old state: provisioned user PIN, old token, old meta, job 41.
+assertMixedOld :: FilePath -> TokenRecord -> IO ()
+assertMixedOld path tok = do
+  let tid = trId tok
+  sR <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "reopen"
+  assertEqual "reopen keeps the provisioned user PIN"
+    [Just "user-pin-7"] =<< userPinsOf sR tid
+  assertEqual "reopen keeps the old token" [tok] =<< tokensWithId sR tid
+  assertEqual "reopen keeps the old meta" (Just "old") =<< metaOf sR "probe"
+  assertEqual "reopen keeps the dropped job" [41] . map jrPersistentId
+    =<< (storeLoadJobs sR >>= expectRight "reopen jobs")
+  storeClose sR
+
+-- | The fixture credential: a fixed SO PIN and the given user PIN.
+mixedCredential :: TokenId -> Maybe ByteString -> CredentialRecord
+mixedCredential tid = CredentialRecord tid "so-pin-7"
+
+-- | Commit and require 'Committed'.
+commitOk :: Store -> String -> StoreDelta -> IO ()
+commitOk s ctx delta = assertEqual ctx Committed =<< storeCommit s delta
+
+-- | The stored user PINs of one token's credential rows.
+userPinsOf :: Store -> TokenId -> IO [Maybe ByteString]
+userPinsOf s tid = do
+  creds <- storeLoadCredentials s >>= expectRight "load credentials"
+  pure [crUserPin c | c <- creds, crToken c == tid]
+
+-- | The stored token records with one id.
+tokensWithId :: Store -> TokenId -> IO [TokenRecord]
+tokensWithId s tid = do
+  loaded <- storeLoadTokens s >>= expectRight "load tokens"
+  pure [t | (t, _) <- loaded, trId t == tid]
+
+-- | One stored meta value.
+metaOf :: Store -> String -> IO (Maybe String)
+metaOf s key = lookup key <$> (storeLoadMeta s >>= expectRight "load meta")
+
+-- | Which native branch a page-capped commit reached.
+data FullBranch
+  = FullRoom
+    -- ^ the delta fit the existing pages and committed
+  | FullStillActive
+    -- ^ @SQLITE_FULL@ with the transaction still active
+  | FullAutoRolledBack
+    -- ^ @SQLITE_FULL@ after SQLite rolled the transaction back
+  | FullAtCommit
+    -- ^ @SQLITE_FULL@ from the COMMIT itself (the body completed)
+  deriving (Eq, Show)
+
+-- | The bounded packed-layout search: the review's layout first
+-- (14 token rows, 13-byte filler labels), then nearby row counts
+-- and filler lengths. 3 x 13 = 39 layouts at most.
+packedLayouts :: [(Int, Int)]
+packedLayouts = [(c, f) | f <- [13, 9, 17], c <- 14 : [c' | c' <- [8 .. 20], c' /= 14]]
+
+-- | The genuine-FULL regression: walk 'packedLayouts' until one
+-- reaches SQLite's automatic-rollback branch with a native
+-- @SQLITE_FULL@ (every FULL on the way — either branch — must
+-- already satisfy the same invariants). Reaching no
+-- automatic-rollback layout within the bound fails, recording
+-- every branch reached.
+caseGenuineFullStopsFollowingGroups :: IO String
+caseGenuineFullStopsFollowingGroups = go [] packedLayouts
+  where
+    go seen [] = assertFailure
+      ("no bounded packed layout reached SQLite's automatic rollback; reached: "
+        ++ show (reverse seen))
+    go seen (layout : rest) = do
+      (branch, record) <- runPackedLayout layout
+      case branch of
+        FullAutoRolledBack -> pure (record ++ "; layouts tried before: " ++ show (reverse seen))
+        _ -> go ((layout, branch) : seen) rest
+
+-- | One packed layout: @count@ small token rows on slots
+-- @0 .. count-1@ (slot 0 @haskoki-demo@, the target on slot 1
+-- labelled @target@, the rest distinct filler labels), the
+-- target's provisioned credential and a meta row. A hooked
+-- handle caps @max_page_count@ at the current page count on its
+-- own connection, then commits the InitToken-shaped delta: a
+-- relabelled (32-byte label), generation-bumped target (token
+-- staging then upsert), its credential with the user PIN
+-- cleared, and a meta put.
+runPackedLayout :: (Int, Int) -> IO (FullBranch, String)
+runPackedLayout (count, filler) =
+  bracket (makeTempDir "haskoki-genuine-full") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+        tokens = [packedToken n | n <- [0 .. count - 1]]
+        packedToken n = TokenRecord
+          { trId = TokenId (fromIntegral n + 1)
+          , trSlot = SlotId n
+          , trGeneration = Generation 1
+          , trLabel = packedLabel n
+          , trAuth = tokenAuthNew
+          }
+        packedLabel n
+          | n == 0 = "haskoki-demo"
+          | n == 1 = "target"
+          | otherwise = take filler (show n ++ "-" ++ replicate filler 'a')
+        target = packedToken 1
+        tid = trId target
+        cred = CredentialRecord tid "5678"
+        delta = emptyDelta
+          { sdPutTokens = [target { trLabel = replicate 32 'B', trGeneration = Generation 2 }]
+          , sdPutCredentials = [cred Nothing]
+          , sdPutMeta = [("probe", "2")]
+          }
+    s0 <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "open packed"
+    commitOk s0 "seed packed layout" emptyDelta
+      { sdPutTokens = tokens
+      , sdPutCredentials = [cred (Just "1234")]
+      , sdPutMeta = [("probe", "1")]
+      }
+    docsBefore <- expectInspect s0
+    storeClose s0
+    before <- dumpTables path
+    probe <- newBodyProbe
+    pagesRef <- newIORef 0
+    let capPages db = do
+          pages <- queryInt db "PRAGMA main.page_count"
+          writeIORef pagesRef pages
+          S.exec db (T.pack ("PRAGMA main.max_page_count = " ++ show pages))
+    s <- openSQLiteStoreWithHooks path defaultLimits noFaults (probeHooks probe laterTables capPages)
+      >>= expectRight "open capped"
+    result <- storeCommit s delta
+    autoAt <- readIORef (bpAutoCommit probe)
+    commitAutoAt <- readIORef (bpCommitAutoCommit probe)
+    writes <- reverse <$> readIORef (bpWrites probe)
+    pages <- readIORef pagesRef
+    version <- readIORef (bpVersion probe)
+    let record branch = "SQLite " ++ version ++ "; layout " ++ show count ++ " tokens, filler "
+          ++ show filler ++ "; page cap " ++ show pages ++ "; " ++ show branch
+          ++ "; result " ++ show result ++ "; writes " ++ show writes
+    case result of
+      Committed -> do
+        storeClose s
+        pure (FullRoom, record FullRoom)
+      _ | Just _ <- commitAutoAt -> do
+        -- FULL from the COMMIT itself: its own branch, recorded
+        -- and searched past (the body-failure invariants do not
+        -- apply); the classification must still follow the
+        -- native state — never a clean refusal with the
+        -- transaction gone, never an unquarantined unknown.
+        quarantined <- storeQuarantined s
+        stats <- storeStats s
+        ops <- txnOps probe
+        storeClose s
+        assertEqual "no commit counted" 0 (ssCommits stats)
+        case (result, commitAutoAt) of
+          (NotCommitted (StoreFull _), Just False) -> do
+            assertEqual "transaction-control statements" ["BEGIN", "COMMIT", "ROLLBACK"] ops
+            after <- dumpTables path
+            assertTablesEqual before after
+          (CommitUnknown _, Just True) -> do
+            assertEqual "transaction-control statements" ["BEGIN", "COMMIT"] ops
+            assertEqual "unknown COMMIT outcome quarantines the target" [tid] (map fst quarantined)
+          _ -> assertFailure ("COMMIT-time FULL misclassified: " ++ record FullAtCommit)
+        pure (FullAtCommit, record FullAtCommit)
+      NotCommitted (StoreFull _) -> do
+        branch <- case autoAt of
+          Just True -> pure FullAutoRolledBack
+          Just False -> pure FullStillActive
+          Nothing -> assertFailure ("FULL with neither failure hook fired: " ++ record FullRoom)
+        quarantined <- storeQuarantined s
+        stats <- storeStats s
+        assertEqual "no commit counted" 0 (ssCommits stats)
+        docsSame <- expectInspect s
+        storeClose s
+        after <- dumpTables path
+        assertTablesEqual before after
+        assertEqual ("no later group wrote: " ++ record branch) [] writes
+        assertEqual "clean refusal quarantines nothing" [] quarantined
+        assertEqual "same handle read the old state (no open transaction)" docsBefore docsSame
+        ops <- txnOps probe
+        assertEqual "transaction-control statements"
+          (if branch == FullAutoRolledBack then ["BEGIN"] else ["BEGIN", "ROLLBACK"]) ops
+        sR <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "reopen packed"
+        assertEqual "reopen keeps the provisioned user PIN" [Just "1234"] =<< userPinsOf sR tid
+        assertEqual "reopen keeps the old target token" [target] =<< tokensWithId sR tid
+        commitOk sR "control: the identical delta commits uncapped" delta
+        assertEqual "control clears the user PIN" [Nothing] =<< userPinsOf sR tid
+        storeClose sR
+        pure (branch, record branch)
+      other -> assertFailure ("expected Committed or StoreFull under the page cap, got: " ++ show other)
+
+-- ---------------------------------------------------------------------------
+-- SQLite COMMIT and cleanup failure (AC-01, issue #18)
+-- ---------------------------------------------------------------------------
+
+-- | SQLite-only: a failed COMMIT or a failed cleanup is classified
+-- from the native transaction state alone, never by replaying
+-- anything.
+--
+-- * Genuine: a second connection holds a SHARED lock, so the real
+--   COMMIT returns @SQLITE_BUSY@ after the store's own 5s busy
+--   timeout with the transaction still active; the ROLLBACK
+--   succeeds and the result is an exact 'NotCommitted' with the
+--   whole old state.
+-- * Injected (commit hook): COMMIT fails after SQLite has ended
+--   the transaction, so the outcome cannot be established:
+--   'CommitUnknown', the affected token stays quarantined until an
+--   authoritative reload, and the COMMIT is never reissued.
+-- * Injected (authorizer denial): the ROLLBACK — after a
+--   still-active body ABORT, or after a denied COMMIT — never
+--   runs, so a write transaction stays open on the connection:
+--   'CommitUnknown' and the WHOLE connection quarantines (loads,
+--   commits and reservations refuse) until a reload that does
+--   roll back, or a close (which rolls back natively).
+-- * The same for a job-id reservation.
+-- * Ambiguous verification (post-success flag; classification
+--   only, not COMMIT-error evidence): a reload matching neither
+--   the delta nor a proven pre-state is unknown, never "absent".
+commitFailureCases :: [TestTree]
+commitFailureCases =
+  [ testCaseInfo "caseCommitBusyRollsBackWholeDelta: genuine SQLITE_BUSY at COMMIT under a held read lock"
+      caseCommitBusyRollsBackWholeDelta
+  , testCaseInfo "injected commit-hook COMMIT failure after the transaction ended is unknown and quarantined"
+      caseCommitOutcomeUnknownQuarantines
+  , testCaseInfo "injected ROLLBACK denial after a still-active body ABORT quarantines the connection until close"
+      (caseCleanupFailureQuarantinesConnection False)
+  , testCaseInfo "injected COMMIT and ROLLBACK denial quarantines the connection until a rolling-back reload"
+      (caseCleanupFailureQuarantinesConnection True)
+  , testCaseInfo "injected failed ROLLBACK that ends the transaction is unknown with per-token quarantine"
+      caseRollbackErrorEndsTxnQuarantinesTokens
+  , testCaseInfo "injected reservation COMMIT and ROLLBACK denial quarantines the connection"
+      caseReserveCleanupFailureQuarantines
+  , testCase "ambiguous verification: a partial reload is unknown, never absent (post-success flag; classification only)"
+      casePartialReloadIsUnknown
+  ]
+
+-- | Every row write of the fixture delta's whole body, in order:
+-- the body completed before the COMMIT step.
+fullBodyWrites :: [String]
+fullBodyWrites =
+  [ "objects:delete", "detached_jobs:delete", "tokens:update", "tokens:update"
+  , "credentials:insert", "store_meta:insert", "store_meta:insert"
+  ]
+
+-- | The genuine COMMIT-BUSY regression: the whole InitToken-shaped
+-- body runs, the COMMIT waits out the busy timeout against the
+-- reader's SHARED lock and fails with the transaction still
+-- active, and the explicit ROLLBACK restores the whole old state:
+-- an exact 'NotCommitted', nothing quarantined, the same handle
+-- reads the old state (no open transaction), every table is
+-- byte-identical after close, and the reopened store holds the
+-- old token, credential, meta and job.
+caseCommitBusyRollsBackWholeDelta :: IO String
+caseCommitBusyRollsBackWholeDelta =
+  bracket (makeTempDir "haskoki-commit-busy") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+    MixedFixture tok delta docsBefore <- seedMixedFixture path []
+    before <- dumpTables path
+    probe <- newBodyProbe
+    s <- openSQLiteStoreWithHooks path defaultLimits noFaults (probeHooks probe loggedTables (\_ -> pure ()))
+      >>= expectRight "open hooked"
+    t0 <- getMonotonicTime
+    mResult <- timeout (30 * 1000000) (withSharedReadLock path (storeCommit s delta))
+    t1 <- getMonotonicTime
+    result <- maybe (assertFailure "the contended COMMIT did not return within 30s") pure mResult
+    case result of
+      NotCommitted (StoreIO msg) | "ErrorBusy" `isInfixOf` msg, "COMMIT" `isInfixOf` msg -> pure ()
+      other -> assertFailure ("expected NotCommitted from the busy COMMIT, got: " ++ show other)
+    assertEqual "the body completed (no body failure)" Nothing =<< readIORef (bpAutoCommit probe)
+    commitAuto <- readIORef (bpCommitAutoCommit probe)
+    assertEqual "COMMIT failed with the transaction still active" (Just False) commitAuto
+    assertBool ("the COMMIT waited out the store's 5s busy timeout, took " ++ show (t1 - t0) ++ "s")
+      (t1 - t0 >= 4.5)
+    writes <- reverse <$> readIORef (bpWrites probe)
+    assertEqual "the whole body ran once" fullBodyWrites writes
+    ops <- txnOps probe
+    assertEqual "BEGIN, the busy COMMIT, then the explicit ROLLBACK" ["BEGIN", "COMMIT", "ROLLBACK"] ops
+    calls <- commitsSinceMark (bpCommit probe)
+    assertEqual "the busy COMMIT never reached the commit point" 0 calls
+    stats <- storeStats s
+    assertEqual "no commit counted" 0 (ssCommits stats)
+    assertEqual "a proven rollback quarantines nothing" [] =<< storeQuarantined s
+    docsSame <- expectInspect s
+    assertEqual "same handle reads the old state (no open transaction)" docsBefore docsSame
+    storeClose s
+    after <- dumpTables path
+    assertTablesEqual before after
+    assertMixedOld path tok
+    sR <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "reopen control"
+    commitOk sR "control: the identical delta commits uncontended" delta
+    storeClose sR
+    version <- readIORef (bpVersion probe)
+    pure ("SQLite " ++ version ++ "; genuine SQLITE_BUSY at COMMIT after " ++ show (t1 - t0)
+      ++ "s; autocommit at COMMIT failure " ++ show commitAuto ++ "; result " ++ show result
+      ++ "; transaction statements " ++ show ops)
+
+-- | The injected unknown-COMMIT case: the commit hook turns the
+-- COMMIT into a rollback, so COMMIT reports an error with the
+-- connection already back in autocommit — the native facts of a
+-- commit that may or may not have landed. The store must report
+-- 'CommitUnknown', run no ROLLBACK and no second COMMIT, and keep
+-- the affected token quarantined (commits touching it refuse)
+-- until an authoritative reload resolves it.
+caseCommitOutcomeUnknownQuarantines :: IO String
+caseCommitOutcomeUnknownQuarantines =
+  bracket (makeTempDir "haskoki-commit-unknown") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+    MixedFixture tok delta docsBefore <- seedMixedFixture path []
+    let tid = trId tok
+    before <- dumpTables path
+    probe <- newBodyProbe
+    let failCommit _ = writeIORef (csFailNext (bpCommit probe)) True
+    s <- openSQLiteStoreWithHooks path defaultLimits noFaults (probeHooks probe loggedTables failCommit)
+      >>= expectRight "open hooked"
+    result <- storeCommit s delta
+    case result of
+      CommitUnknown (StoreIO msg) | "COMMIT" `isInfixOf` msg -> pure ()
+      other -> assertFailure ("expected CommitUnknown from the failed COMMIT, got: " ++ show other)
+    assertEqual "unknown reloads first" ReloadFirst (decidePublication result)
+    commitAuto <- readIORef (bpCommitAutoCommit probe)
+    assertEqual "the failed COMMIT ended the transaction" (Just True) commitAuto
+    ops <- txnOps probe
+    assertEqual "no ROLLBACK and no second COMMIT" ["BEGIN", "COMMIT"] ops
+    assertEqual "the COMMIT reached the commit point exactly once" 1
+      =<< commitsSinceMark (bpCommit probe)
+    writes <- reverse <$> readIORef (bpWrites probe)
+    assertEqual "the whole body ran once" fullBodyWrites writes
+    stats <- storeStats s
+    assertEqual "no commit counted" 0 (ssCommits stats)
+    assertEqual "one quarantine event" 1 (ssQuarantines stats)
+    assertEqual "the affected token is quarantined" [tid] . map fst =<< storeQuarantined s
+    refused <- storeCommit s delta
+    case refused of
+      NotCommitted (StoreQuarantined t _) -> assertEqual "quarantined token" tid t
+      other -> assertFailure ("expected a quarantine refusal, got: " ++ show other)
+    assertEqual "the refusal ran no transaction" ["BEGIN", "COMMIT"] =<< txnOps probe
+    -- Resolution: the connection is clean (autocommit), so an
+    -- authoritative reload reads the true durable state — here the
+    -- old one, since the hook rolled the commit back.
+    _ <- storeReload s >>= expectRight "reload"
+    assertEqual "reload resolves the quarantine" [] =<< storeQuarantined s
+    assertEqual "durable state is the old one" docsBefore =<< expectInspect s
+    storeClose s
+    after <- dumpTables path
+    assertTablesEqual before after
+    assertMixedOld path tok
+    pure ("injected commit hook; autocommit at COMMIT failure " ++ show commitAuto
+      ++ "; result " ++ show result ++ "; transaction statements " ++ show ops)
+
+-- | The injected cleanup-failure cases: the ROLLBACK is denied
+-- (after a still-active body ABORT, or after a denied COMMIT), so
+-- the write transaction stays open on the store's connection. The
+-- store must report 'CommitUnknown' with the cleanup error,
+-- quarantine every token (the bystander too) and refuse loads,
+-- commits, reservations and a still-failing reload — anything
+-- read or written there would see or commit the open
+-- transaction. The body variant resolves by close (SQLite rolls
+-- the open transaction back natively); the COMMIT variant lifts
+-- the denial and resolves through a reload that rolls back.
+caseCleanupFailureQuarantinesConnection :: Bool -> IO String
+caseCleanupFailureQuarantinesConnection atCommit =
+  bracket (makeTempDir "haskoki-cleanup-failure") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+        bystander = TokenRecord
+          { trId = TokenId 77
+          , trSlot = SlotId 5
+          , trGeneration = Generation 1
+          , trLabel = "bystander"
+          , trAuth = tokenAuthNew
+          }
+    MixedFixture tok delta docsBefore <- seedMixedFixture path [bystander]
+    let tid = trId tok
+    before <- dumpTables path
+    probe <- newBodyProbe
+    armed <- newIORef True
+    let deny ops = writeIORef (tsDeny (bpTxn probe)) ops
+        -- One shot: only the first commit on the handle is stimulated.
+        stimulus db = do
+          fire <- readIORef armed
+          writeIORef armed False
+          when fire $
+            if atCommit
+              then deny ["COMMIT", "ROLLBACK"]
+              else failTokenUpsert "ABORT" db >> deny ["ROLLBACK"]
+    s <- openSQLiteStoreWithHooks path defaultLimits noFaults (probeHooks probe loggedTables stimulus)
+      >>= expectRight "open hooked"
+    result <- storeCommit s delta
+    case result of
+      CommitUnknown (StoreIO msg) | "ROLLBACK" `isInfixOf` msg, "not authorized" `isInfixOf` msg -> pure ()
+      other -> assertFailure ("expected CommitUnknown naming the failed ROLLBACK, got: " ++ show other)
+    autoAt <- readIORef (if atCommit then bpCommitAutoCommit probe else bpAutoCommit probe)
+    assertEqual "the transaction was still active at the failure" (Just False) autoAt
+    ops <- txnOps probe
+    assertEqual "transaction-control statements"
+      (if atCommit then ["BEGIN", "COMMIT:denied", "ROLLBACK:denied"] else ["BEGIN", "ROLLBACK:denied"]) ops
+    assertEqual "nothing reached the commit point" 0 =<< commitsSinceMark (bpCommit probe)
+    stats <- storeStats s
+    assertEqual "no commit counted" 0 (ssCommits stats)
+    assertEqual "every token quarantined (connection scope)" (sort [tid, trId bystander])
+      . sort . map fst =<< storeQuarantined s
+    let connRefusal ctx e = case e of
+          StoreIO m | "connection quarantined" `isInfixOf` m -> pure ()
+          other -> assertFailure (ctx ++ ": expected the connection refusal, got: " ++ show other)
+    storeLoadTokens s >>= either (connRefusal "load tokens") (\_ -> assertFailure "load served an open transaction")
+    storeLoadCredentials s >>= either (connRefusal "load credentials") (\_ -> assertFailure "credential load served")
+    storeInspect s >>= either (connRefusal "inspect") (\_ -> assertFailure "inspect served")
+    bystanderCommit <- storeCommit s emptyDelta { sdPutTokens = [bystander { trLabel = "moved" }] }
+    case bystanderCommit of
+      NotCommitted e -> connRefusal "bystander commit" e
+      other -> assertFailure ("bystander commit must refuse, got: " ++ show other)
+    storeReserveJobId s >>= either (connRefusal "reserve") (\_ -> assertFailure "reservation served")
+    assertEqual "refusals ran no transaction statement" ops =<< txnOps probe
+    storeReload s >>= either (connRefusal "reload while the ROLLBACK is still denied")
+      (\_ -> assertFailure "reload cleared a connection whose transaction is still open")
+    assertEqual "the reload retried the ROLLBACK (still denied)" (ops ++ ["ROLLBACK:denied"]) =<< txnOps probe
+    assertEqual "quarantine retained" 2 . length =<< storeQuarantined s
+    if atCommit
+      then do
+        deny []
+        _ <- storeReload s >>= expectRight "reload once the ROLLBACK can run"
+        assertEqual "the reload rolled the open transaction back" (ops ++ ["ROLLBACK:denied", "ROLLBACK"]) =<< txnOps probe
+        assertEqual "resolved: quarantine cleared" [] =<< storeQuarantined s
+        assertEqual "durable state is the old one" docsBefore =<< expectInspect s
+        commitOk s "the resolved connection commits" emptyDelta { sdPutMeta = [("probe", "old")] }
+        storeClose s
+      else storeClose s
+    after <- dumpTables path
+    assertTablesEqual before after
+    assertMixedOld path tok
+    pure ("injected " ++ (if atCommit then "COMMIT+ROLLBACK" else "body ABORT + ROLLBACK")
+      ++ " denial; autocommit at failure " ++ show autoAt ++ "; result " ++ show result
+      ++ "; transaction statements " ++ show ops)
+
+-- | The reservation analogue: COMMIT and ROLLBACK denied leave
+-- the mark-advance transaction open, so the reservation fails,
+-- the connection quarantines (every token) and later reservations
+-- refuse until a reload rolls back; the durable mark never moved,
+-- and a fresh handle then reserves normally.
+caseReserveCleanupFailureQuarantines :: IO String
+caseReserveCleanupFailureQuarantines =
+  bracket (makeTempDir "haskoki-reserve-cleanup") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+    s0 <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "open seed"
+    (tok, _) <- seedStore s0
+    markBefore <- metaOf s0 jobIdCounterKey
+    storeClose s0
+    probe <- newBodyProbe
+    let deny ops = writeIORef (tsDeny (bpTxn probe)) ops
+    s <- openSQLiteStoreWithHooks path defaultLimits noFaults
+      (probeHooks probe laterTables (\_ -> deny ["COMMIT", "ROLLBACK"]))
+      >>= expectRight "open hooked"
+    failed <- storeReserveJobId s
+    case failed of
+      Left (StoreIO msg) | "ROLLBACK" `isInfixOf` msg -> pure ()
+      other -> assertFailure ("expected the reservation to fail naming the ROLLBACK, got: " ++ show other)
+    ops <- txnOps probe
+    assertEqual "transaction-control statements" ["BEGIN", "COMMIT:denied", "ROLLBACK:denied"] ops
+    assertEqual "every token quarantined" [trId tok] . map fst =<< storeQuarantined s
+    storeReserveJobId s >>= either (\_ -> pure ()) (\pid -> assertFailure ("reserved " ++ show pid ++ " on an open transaction"))
+    storeLoadMeta s >>= either (\_ -> pure ()) (\_ -> assertFailure "meta load served an open transaction")
+    deny []
+    _ <- storeReload s >>= expectRight "reload once the ROLLBACK can run"
+    assertEqual "resolved: quarantine cleared" [] =<< storeQuarantined s
+    assertEqual "the durable mark never moved" markBefore =<< metaOf s jobIdCounterKey
+    storeClose s
+    sC <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "control"
+    control <- storeReserveJobId sC >>= expectRight "control reserve"
+    storeClose sC
+    pure ("injected reservation COMMIT+ROLLBACK denial; " ++ show failed ++ "; transaction statements "
+      ++ show ops ++ "; control reserves " ++ show control)
+
+-- | Ambiguous-verification classification: the delta lands, then
+-- (inside the post-success ambiguity flag, before the reload) a
+-- plain second connection reverts only its meta row, so the
+-- reload matches neither the delta nor the pre-state. That must
+-- be 'CommitUnknown' with the token quarantined — never
+-- 'NotCommitted' "delta absent". This proves the classification
+-- only: a post-success flag is not COMMIT-error evidence.
+casePartialReloadIsUnknown :: IO ()
+casePartialReloadIsUnknown =
+  bracket (makeTempDir "haskoki-partial-reload") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+    s0 <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "open seed"
+    (tok, _) <- seedStore s0
+    commitOk s0 "seed meta" emptyDelta { sdPutMeta = [("probe", "old")] }
+    storeClose s0
+    armed <- newIORef True
+    let revertMetaOnly = bracket (S.open (T.pack path)) S.close $ \db ->
+          S.exec db "UPDATE store_meta SET value = 'old' WHERE key = 'probe'"
+        inj = noFaults
+          { fiFire = \p -> case p of
+              FaultAmbiguousCommit -> do
+                fire <- readIORef armed
+                writeIORef armed False
+                if fire then revertMetaOnly >> pure True else pure False
+              _ -> pure False
+          }
+        relabelled = tok { trLabel = "partially-landed" }
+    s <- openSQLiteStoreWith path defaultLimits inj >>= expectRight "open"
+    result <- storeCommit s emptyDelta { sdPutTokens = [relabelled], sdPutMeta = [("probe", "new")] }
+    case result of
+      CommitUnknown _ -> pure ()
+      other -> assertFailure ("a partial reload must be unknown, got: " ++ show other)
+    assertEqual "the token is quarantined" [trId tok] . map fst =<< storeQuarantined s
+    stats <- storeStats s
+    assertEqual "no commit counted" 0 (ssCommits stats)
+    assertEqual "one verification reload" 1 (ssVerifyReloads stats)
+    storeClose s
+    sR <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "reopen"
+    assertEqual "the token half is durable" [relabelled] =<< tokensWithId sR (trId tok)
+    assertEqual "the meta half is not" (Just "old") =<< metaOf sR "probe"
+    storeClose sR
+
+-- | The ROLLBACK-error-that-ends-the-transaction branch. SQLite
+-- 3.45.0 offers no in-process primitive for it (a ROLLBACK that
+-- fails while running still ends the transaction, but only an I\/O
+-- fault makes it fail), so the seam composes the native facts:
+-- after a still-active body ABORT the ROLLBACK is denied (it fails
+-- at prepare and never runs), and the after-ROLLBACK-failure hook
+-- then ends the transaction with its own real ROLLBACK on the same
+-- connection before the store re-reads the native state. The
+-- store sees a ROLLBACK error with the transaction over, so it
+-- must report 'CommitUnknown' naming both errors and quarantine
+-- only the affected token: the connection is clean, so loads
+-- serve (the old state) and the bystander stays servable, while
+-- commits touching the token refuse until a reload resolves.
+caseRollbackErrorEndsTxnQuarantinesTokens :: IO String
+caseRollbackErrorEndsTxnQuarantinesTokens =
+  bracket (makeTempDir "haskoki-rollback-error-ended") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+        bystander = TokenRecord
+          { trId = TokenId 77
+          , trSlot = SlotId 5
+          , trGeneration = Generation 1
+          , trLabel = "bystander"
+          , trAuth = tokenAuthNew
+          }
+    MixedFixture tok delta docsBefore <- seedMixedFixture path [bystander]
+    let tid = trId tok
+    before <- dumpTables path
+    probe <- newBodyProbe
+    armed <- newIORef True
+    let deny ops = writeIORef (tsDeny (bpTxn probe)) ops
+        stimulus db = do
+          fire <- readIORef armed
+          writeIORef armed False
+          when fire (failTokenUpsert "ABORT" db >> deny ["ROLLBACK"])
+        endTxn db = deny [] >> S.exec db "ROLLBACK"
+        hooks = (probeHooks probe loggedTables stimulus) { sthAfterRollbackFailure = endTxn }
+    s <- openSQLiteStoreWithHooks path defaultLimits noFaults hooks >>= expectRight "open hooked"
+    result <- storeCommit s delta
+    case result of
+      CommitUnknown (StoreIO msg) | "ROLLBACK" `isInfixOf` msg, "not authorized" `isInfixOf` msg -> pure ()
+      other -> assertFailure ("expected CommitUnknown naming the failed ROLLBACK, got: " ++ show other)
+    assertEqual "the transaction was still active at the body failure" (Just False)
+      =<< readIORef (bpAutoCommit probe)
+    ops <- txnOps probe
+    assertEqual "the denied ROLLBACK, then the seam's own ending ROLLBACK"
+      ["BEGIN", "ROLLBACK:denied", "ROLLBACK"] ops
+    stats <- storeStats s
+    assertEqual "no commit counted" 0 (ssCommits stats)
+    assertEqual "only the affected token is quarantined" [tid] . map fst =<< storeQuarantined s
+    assertEqual "the clean connection serves the old state" docsBefore =<< expectInspect s
+    refused <- storeCommit s delta
+    case refused of
+      NotCommitted (StoreQuarantined t _) -> assertEqual "quarantined token" tid t
+      other -> assertFailure ("expected a quarantine refusal, got: " ++ show other)
+    _ <- storeReload s >>= expectRight "reload"
+    assertEqual "reload resolves the quarantine" [] =<< storeQuarantined s
+    storeClose s
+    after <- dumpTables path
+    assertTablesEqual before after
+    assertMixedOld path tok
+    pure ("injected ROLLBACK denial + seam-ended transaction; result " ++ show result
+      ++ "; transaction statements " ++ show ops)

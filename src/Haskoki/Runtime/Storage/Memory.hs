@@ -503,10 +503,14 @@ protocolLocked world limits inj qVar sVar delta0 = do
                   pure result
   where
     -- The observed outcome is discarded; a reload decides. Present
-    -- verifies committed (every table), absent verifies rolled
-    -- back, and a failed reload quarantines with 'CommitUnknown'.
-    -- Nothing reissues. The expectation is the effective delta:
-    -- the stored effect, not the raw request.
+    -- verifies committed (every table). Anything else — a failed
+    -- reload, or a reload that does not hold the whole delta —
+    -- quarantines with 'CommitUnknown': a mismatch is not proof
+    -- of absence (the SQLite backend's contract; here the delta
+    -- applies atomically and no other writer exists, so the
+    -- mismatch is unreachable). Nothing reissues. The
+    -- expectation is the effective delta: the stored effect, not
+    -- the raw request.
     resolveAmbiguous :: [TokenId] -> StoreDelta -> IO CommitResult
     resolveAmbiguous affected eff = do
       bumpVerifyReloads sVar
@@ -528,8 +532,10 @@ protocolLocked world limits inj qVar sVar delta0 = do
               , reconcileCredentialsReload eff creds == ReconciledPresent -> do
                   bumpCommits sVar
                   postCommitTail affected
-            (Right _, Right _, Right _, Right _) ->
-              pure (NotCommitted (StoreIO "ambiguous commit resolved: delta absent"))
+            (Right _, Right _, Right _, Right _) -> do
+              let err = StoreIO "ambiguous commit unresolved: the reload does not hold the whole delta"
+              quarantineTokens qVar sVar affected (show err)
+              pure (CommitUnknown err)
             (Left err, _, _, _) -> do
               quarantineTokens qVar sVar affected ("reload failed: " ++ show err)
               pure (CommitUnknown err)

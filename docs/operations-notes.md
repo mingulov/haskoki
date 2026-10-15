@@ -201,7 +201,21 @@ commit can also quarantine the token while retaining the committed result.
 
 An authoritative `storeReload` clears quarantine only after a clean load.
 Quarantine reasons and statistics belong to the live store handle; fresh
-handles start clean. [CommitSpec](../tests/storage/CommitSpec.hs) exercises
+handles start clean.
+
+A failed SQLite transaction is classified from the native transaction
+state, never by reissuing it. A rollback SQLite performed itself, or a
+successful `ROLLBACK` after a failure that left the transaction active
+(for example `COMMIT` returning `SQLITE_BUSY`), is `NotCommitted`. A
+`COMMIT` error after the transaction ended, or a `ROLLBACK` error, is
+`CommitUnknown` and quarantines the affected tokens. If the `ROLLBACK`
+error leaves the write transaction open, the whole connection is
+quarantined: every load, commit, reset and job-id reservation refuses
+until a `storeReload` retries the `ROLLBACK` and SQLite reports the
+transaction ended, or until the store closes (`C_Finalize`), which rolls
+the open transaction back. Provisioning and login paths do not reload
+after an unresolved commit, so in practice the connection stays refused
+until `C_Finalize` and a fresh `C_Initialize`. [CommitSpec](../tests/storage/CommitSpec.hs) exercises
 publication and fault handling.
 
 ## Token identity contract
